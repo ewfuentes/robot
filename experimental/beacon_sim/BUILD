@@ -1,5 +1,11 @@
 
 cc_library(
+  name = "world_map",
+  hdrs = ["world_map.hh"],
+  srcs = ["world_map.cc"],
+)
+
+cc_library(
   name = "robot",
   hdrs = ["robot.hh"],
   srcs = ["robot.cc"],
