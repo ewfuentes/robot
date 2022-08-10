@@ -1,4 +1,15 @@
 
+cc_binary(
+  name = "beacon_sim",
+  srcs = ["beacon_sim.cc"],
+  deps = [
+    ":world_map",
+    ":robot",
+    ":generate_observations",
+    "@ncurses//:ncurses",
+  ],
+)
+
 cc_library(
   name = "world_map",
   hdrs = ["world_map.hh"],
