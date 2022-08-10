@@ -6,3 +6,9 @@ http_archive(
   strip_prefix = "googletest-5f467ec04df33024e3c6760fa403b5cd5d8e9ace",
   sha256 = "aff2e98fd8fb11becd00d3820f33839eb16370c82693bb8552118c93d963773a"
 ) 
+
+new_local_repository(
+  name="ncurses",
+  path = "/usr",
+  build_file = "third_party/BUILD.ncurses",
+)
