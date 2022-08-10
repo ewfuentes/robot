@@ -6,7 +6,7 @@
 #include "gtest/gtest.h"
 
 namespace experimental::beacon_sim {
-  TEST(GenerateObservationsTest, single_beacon_test) {
+TEST(GenerateObservationsTest, single_beacon_test) {
     // SETUP
     //                                    ┌─┐
     //                                    └─┘
@@ -48,5 +48,5 @@ namespace experimental::beacon_sim {
     EXPECT_NEAR(maybe_observation->maybe_range_m.value(), EXPECTED_RANGE_M, TOL);
     ASSERT_TRUE(maybe_observation->maybe_bearing_rad.has_value());
     EXPECT_NEAR(maybe_observation->maybe_bearing_rad.value(), EXPECTED_BEARING_RAD, TOL);
-  }
 }
+}  // namespace experimental::beacon_sim
