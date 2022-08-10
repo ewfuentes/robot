@@ -1,7 +1,7 @@
 
 #pragma once
 
-namespace experimental::beacon_toy_sim {
+namespace experimental::beacon_sim {
   struct RobotState {
     RobotState(const double pos_x_m, const double pos_y_m, const double heading_rad) : pos_x_m_(pos_x_m), pos_y_m_(pos_y_m), heading_rad_(heading_rad){}
 

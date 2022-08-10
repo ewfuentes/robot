@@ -1,3 +1,4 @@
+
 cc_library(
   name = "robot",
   hdrs = ["robot.hh"],
@@ -10,3 +11,4 @@ cc_test(
   deps = [":robot",
   "@com_google_googletest//:gtest_main"],
 )
+

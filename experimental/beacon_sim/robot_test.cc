@@ -1,11 +1,11 @@
 
-#include "experimental/beacon_toy_sim/robot.hh"
+#include "experimental/beacon_sim/robot.hh"
 
 #include <numbers>
 
 #include "gtest/gtest.h"
 
-namespace experimental::beacon_toy_sim {
+namespace experimental::beacon_sim {
   TEST(RobotTest, robot_moves_as_expected) {
     // SETUP
     constexpr double TOL = 1e-6;
