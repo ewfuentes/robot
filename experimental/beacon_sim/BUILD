@@ -18,3 +18,22 @@ cc_test(
   "@com_google_googletest//:gtest_main"],
 )
 
+cc_library(
+  name = "generate_observations",
+  hdrs = ["generate_observations.hh"],
+  srcs = ["generate_observations.cc"],
+  deps = [
+    ":world_map",
+    ":robot",
+  ],
+)
+
+cc_test(
+  name = "generate_observations_test",
+  srcs = ["generate_observations_test.cc"],
+  deps = [
+    ":generate_observations",
+    "@com_google_googletest//:gtest_main"
+  ]
+)
+

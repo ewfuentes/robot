@@ -6,6 +6,7 @@
 
 namespace experimental::beacon_sim {
   struct Beacon {
+    int id;
     double pos_x_m;
     double pos_y_m;
   };
@@ -22,7 +23,7 @@ namespace experimental::beacon_sim {
   public:
     WorldMap(const WorldMapOptions &options);
 
-    const std::vector<Beacon> &beacons() { return beacons_; }
+    const std::vector<Beacon> &beacons() const { return beacons_; }
 
   private:
     std::vector<Beacon> beacons_;
