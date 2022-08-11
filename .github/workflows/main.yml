@@ -26,11 +26,11 @@ jobs:
       # Runs a set of commands using the runners shell
       - name: Setup Dependencies
         run: |
-          shopt -s globstar
           ./setup.sh
 
       - name: Lint C++ Files
         run: |
+          shopt -s globstar
           clang-format --dry-run --Werror **/*.cc **/*.hh
 
       - name: Run Unit Tests 
