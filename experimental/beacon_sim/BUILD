@@ -2,11 +2,11 @@
 cc_binary(
   name = "beacon_sim",
   srcs = ["beacon_sim.cc"],
+  linkopts = ["-lncurses"],
   deps = [
     ":world_map",
     ":robot",
     ":generate_observations",
-    "@ncurses//:ncurses",
   ],
 )
 

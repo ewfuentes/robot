@@ -14,9 +14,3 @@ http_archive(
   build_file="@//third_party:BUILD.glfw",
   sha256 = "4d025083cc4a3dd1f91ab9b9ba4f5807193823e565a5bcf4be202669d9911ea6",
 )
-
-new_local_repository(
-  name="ncurses",
-  path = "/usr",
-  build_file = "third_party/BUILD.ncurses",
-)
