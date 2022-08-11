@@ -19,7 +19,6 @@ TEST(RobotTest, robot_moves_as_expected) {
     EXPECT_NEAR(new_state.pos_x_m(), init_state.pos_x_m() + MOVE_DIST_M, TOL);
     EXPECT_NEAR(new_state.pos_y_m(), init_state.pos_y_m(), TOL);
     EXPECT_NEAR(new_state.heading_rad(), init_state.heading_rad(), TOL);
-    EXPECT_TRUE(false);
 }
 
 TEST(RobotTest, robot_turns_as_expected) {
