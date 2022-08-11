@@ -28,3 +28,7 @@ jobs:
         run: |
           shopt -s globstar
           clang-format --dry-run --Werror **/*.cc **/*.hh
+
+      - name: Run Unit Tests 
+        run: |
+          bazel test //... 
