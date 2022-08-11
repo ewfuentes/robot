@@ -31,4 +31,5 @@ jobs:
 
       - name: Run Unit Tests 
         run: |
+          ./setup.sh
           bazel test //... 
