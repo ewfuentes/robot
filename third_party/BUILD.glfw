@@ -33,7 +33,7 @@ cc_library(
   strip_include_prefix="include/",
   visibility=["//visibility:public"],
   local_defines = ["_GLFW_X11"],
-  linkopts=["-lX11",],
+  linkopts=["-lX11", "-lGL",],
   copts=["-Wno-error",
          "-Wno-unused-parameter",
          "-Wno-pedantic",
