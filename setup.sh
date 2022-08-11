@@ -2,5 +2,6 @@
 
 set -x # enable echo
 
-# Install clang14
-sudo apt install clang-14 libncurses-dev
+# Install clang14 and other required system packages
+sudo apt install clang-14 libncurses-dev libxcursor-dev libxrandr-dev \
+     libxinerama-dev libxi-dev
