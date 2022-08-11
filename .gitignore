@@ -1,4 +1,1 @@
-bazel-bin
-bazel-out
-bazel-mit
-bazel-testlogs
+bazel-*
