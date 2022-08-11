@@ -87,8 +87,8 @@ void display_state(const WorldMap &world_map, const RobotState &robot,
         glMatrixMode(GL_PROJECTION);
         glLoadIdentity();
         glMatrixMode(GL_MODELVIEW);
-        glLoadIdentity(); // In Screen Frame
-        glScaled(PX_FROM_M, PX_FROM_M, 0.0); // In world frame
+        glLoadIdentity();                     // In Screen Frame
+        glScaled(PX_FROM_M, PX_FROM_M, 0.0);  // In world frame
 
         // Draw beacons
         for (const auto &beacon : world_map.beacons()) {
@@ -110,26 +110,25 @@ void display_state(const WorldMap &world_map, const RobotState &robot,
         glBegin(GL_LINE_LOOP);
         glColor4f(0.5, 0.5, 1.0, 1.0);
         for (const auto &[dx, dy] :
-               std::array<std::pair<double, double>, 3>{{{0.0, 0.5}, {1.5, 0.0}, {0.0, -0.5}}}) {
+             std::array<std::pair<double, double>, 3>{{{0.0, 0.5}, {1.5, 0.0}, {0.0, -0.5}}}) {
             const double x_in_robot_m = dx * ROBOT_SIZE_M;
             const double y_in_robot_m = dy * ROBOT_SIZE_M;
             glVertex2d(x_in_robot_m, y_in_robot_m);
         }
         glEnd();
 
-        for (const auto &obs: observations) {
-          glPushMatrix();
-          glRotated(DEG_FROM_RAD * obs.maybe_bearing_rad.value(), 0.0, 0.0, 1.0);
-          glBegin(GL_LINES);
-          glColor4f(0.5, 1.0, 0.5, 1.0);
-          glVertex2d(0.0, 0.0);
-          glVertex2d(obs.maybe_range_m.value(), 0.0);
-          glEnd();
-          glPopMatrix(); // Pop from Measurement Frame to robot frame
+        for (const auto &obs : observations) {
+            glPushMatrix();
+            glRotated(DEG_FROM_RAD * obs.maybe_bearing_rad.value(), 0.0, 0.0, 1.0);
+            glBegin(GL_LINES);
+            glColor4f(0.5, 1.0, 0.5, 1.0);
+            glVertex2d(0.0, 0.0);
+            glVertex2d(obs.maybe_range_m.value(), 0.0);
+            glEnd();
+            glPopMatrix();  // Pop from Measurement Frame to robot frame
         }
 
-
-        glPopMatrix(); // Pop from Robot Frame to world frame
+        glPopMatrix();  // Pop from Robot Frame to world frame
     });
 }
 

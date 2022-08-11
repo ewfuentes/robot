@@ -58,8 +58,8 @@ void window_loop(const int width, const int height, const std::string &title,
 
         WindowData *data = reinterpret_cast<WindowData *>(glfwGetWindowUserPointer(window));
         if (data) {
-          std::lock_guard<std::mutex> guard(data->mutex);
-          maybe_call(data->callbacks.render);
+            std::lock_guard<std::mutex> guard(data->mutex);
+            maybe_call(data->callbacks.render);
         }
 
         glfwSwapBuffers(window);
