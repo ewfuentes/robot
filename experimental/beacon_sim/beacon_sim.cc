@@ -75,7 +75,7 @@ void display_state(const WorldMap &world_map, const RobotState &robot,
 
     constexpr double PX_FROM_M = 0.05;
     constexpr double BEACON_HALF_WIDTH_M = 0.25;
-    constexpr double ROBOT_SIZE_M = 0.5;
+    constexpr double ROBOT_SIZE_M = 0.5; 
     constexpr double DEG_FROM_RAD = 180.0 / std::numbers::pi;
 
     window.register_render_callback([=]() {
