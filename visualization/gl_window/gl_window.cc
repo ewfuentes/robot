@@ -2,6 +2,7 @@
 #include "visualization/gl_window/gl_window.hh"
 
 #include <iostream>
+#include <semaphore>
 
 namespace visualization::gl_window {
 struct Callbacks {
@@ -104,6 +105,26 @@ void GlWindow::register_keyboard_callback(GlWindow::KeyboardCallback f) {
 void GlWindow::register_render_callback(GlWindow::RenderCallback f) {
     std::lock_guard<std::mutex> guard(window_data_->mutex);
     window_data_->callbacks.render = std::move(f);
+}
+
+std::unordered_map<int, JoystickState> GlWindow::get_joystick_states() {
+    std::binary_semaphore sem(false);
+    std::unordered_map<int, JoystickState> out;
+    queue_.submit_work([&sem, &out](auto) mutable {
+        GLFWgamepadstate state;
+        for (int id = GLFW_JOYSTICK_1; id <= GLFW_JOYSTICK_LAST; id++) {
+            if (glfwGetGamepadState(id, &state) == GLFW_FALSE) {
+                continue;
+            }
+
+            std::copy(std::begin(state.buttons), std::end(state.buttons), out[id].buttons.begin());
+            std::copy(std::begin(state.axes), std::end(state.axes), out[id].axes.begin());
+        }
+        sem.release();
+    });
+    sem.acquire();
+
+    return out;
 }
 
 void GlWindow::close() {

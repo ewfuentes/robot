@@ -1,11 +1,12 @@
 #pragma once
 
+#include <array>
 #include <functional>
-#include <memory>
 #include <mutex>
 #include <queue>
 #include <string>
 #include <thread>
+#include <unordered_map>
 
 #include "GLFW/glfw3.h"
 
@@ -38,6 +39,11 @@ class WorkQueue {
 
 struct WindowData;
 
+struct JoystickState {
+    std::array<double, 6> axes;
+    std::array<int, 15> buttons;
+};
+
 class GlWindow {
    public:
     GlWindow(const int width, const int height, const std::string &title = "gl_window");
@@ -47,6 +53,8 @@ class GlWindow {
     using MousePosCallback = std::function<void(const double x, const double y)>;
     using KeyboardCallback =
         std::function<void(const int key, const int scancode, const int action, const int mods)>;
+
+    std::unordered_map<int, JoystickState> get_joystick_states();
 
     // Functions to register callbacks on window events. Note that these are run on the ui thread,
     // so ensure proper synchonization is used.
