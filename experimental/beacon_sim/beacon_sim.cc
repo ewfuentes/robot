@@ -39,7 +39,9 @@ struct KeyCommand {
     }
 };
 
-RobotCommand get_command(const KeyCommand key_command) {
+RobotCommand get_command(
+    const KeyCommand key_command,
+    const std::unordered_map<int, visualization::gl_window::JoystickState> &joysticks) {
     // Handle Keyboard Commands
     if (key_command.q) {
         return {.turn_rad = 0, .move_m = 0, .should_exit = true};
@@ -51,6 +53,20 @@ RobotCommand get_command(const KeyCommand key_command) {
         return {.turn_rad = 0.0, .move_m = 0.1, .should_exit = false};
     } else if (key_command.arrow_down) {
         return {.turn_rad = 0.0, .move_m = -0.1, .should_exit = false};
+    }
+
+    for (const auto &[id, state] : joysticks) {
+        if (state.buttons[GLFW_GAMEPAD_BUTTON_CIRCLE] == GLFW_PRESS) {
+          return {.turn_rad = 0, .move_m = 0, .should_exit = true};
+        }
+        const double left = -state.axes[GLFW_GAMEPAD_AXIS_LEFT_Y];
+        const double right = -state.axes[GLFW_GAMEPAD_AXIS_RIGHT_Y];
+
+        const double mean = (left + right) / 2.0;
+        const double mean_diff = (right-left) / 2.0;
+
+
+        return {.turn_rad = 0.1 * mean_diff, .move_m = mean * 0.1, .should_exit = false};
     }
     return {.turn_rad = 0, .move_m = 0, .should_exit = false};
 }
@@ -181,7 +197,8 @@ void run_simulation() {
         }
 
         // get command
-        const auto command = get_command(key_command.exchange(KeyCommand::make_reset()));
+        const auto command = get_command(key_command.exchange(KeyCommand::make_reset()),
+                                         gl_window.get_joystick_states());
         if (command.turn_rad != 0.0 || command.move_m != 0.0) {
             did_update = true;
         }
