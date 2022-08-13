@@ -57,14 +57,13 @@ RobotCommand get_command(
 
     for (const auto &[id, state] : joysticks) {
         if (state.buttons[GLFW_GAMEPAD_BUTTON_CIRCLE] == GLFW_PRESS) {
-          return {.turn_rad = 0, .move_m = 0, .should_exit = true};
+            return {.turn_rad = 0, .move_m = 0, .should_exit = true};
         }
         const double left = -state.axes[GLFW_GAMEPAD_AXIS_LEFT_Y];
         const double right = -state.axes[GLFW_GAMEPAD_AXIS_RIGHT_Y];
 
         const double mean = (left + right) / 2.0;
-        const double mean_diff = (right-left) / 2.0;
-
+        const double mean_diff = (right - left) / 2.0;
 
         return {.turn_rad = 0.1 * mean_diff, .move_m = mean * 0.1, .should_exit = false};
     }

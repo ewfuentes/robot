@@ -108,23 +108,23 @@ void GlWindow::register_render_callback(GlWindow::RenderCallback f) {
 }
 
 std::unordered_map<int, JoystickState> GlWindow::get_joystick_states() {
-  std::binary_semaphore sem(false);
-  std::unordered_map<int, JoystickState> out;
-  queue_.submit_work([&sem, &out](auto) mutable {
-    GLFWgamepadstate state;
-    for (int id = GLFW_JOYSTICK_1; id <= GLFW_JOYSTICK_LAST; id++) {
-      if (glfwGetGamepadState(id, &state) == GLFW_FALSE) {
-        continue;
-      }
+    std::binary_semaphore sem(false);
+    std::unordered_map<int, JoystickState> out;
+    queue_.submit_work([&sem, &out](auto) mutable {
+        GLFWgamepadstate state;
+        for (int id = GLFW_JOYSTICK_1; id <= GLFW_JOYSTICK_LAST; id++) {
+            if (glfwGetGamepadState(id, &state) == GLFW_FALSE) {
+                continue;
+            }
 
-      std::copy(std::begin(state.buttons), std::end(state.buttons), out[id].buttons.begin());
-      std::copy(std::begin(state.axes), std::end(state.axes), out[id].axes.begin());
-    }
-    sem.release();
-  });
-  sem.acquire();
+            std::copy(std::begin(state.buttons), std::end(state.buttons), out[id].buttons.begin());
+            std::copy(std::begin(state.axes), std::end(state.axes), out[id].axes.begin());
+        }
+        sem.release();
+    });
+    sem.acquire();
 
-  return out;
+    return out;
 }
 
 void GlWindow::close() {

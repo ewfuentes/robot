@@ -40,9 +40,8 @@ class WorkQueue {
 struct WindowData;
 
 struct JoystickState {
-  std::string guid;
-  std::array<double, 6> axes;
-  std::array<int, 15> buttons;
+    std::array<double, 6> axes;
+    std::array<int, 15> buttons;
 };
 
 class GlWindow {
