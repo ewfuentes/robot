@@ -7,6 +7,7 @@ namespace visualization::gl_window {
 struct Callbacks {
     GlWindow::RenderCallback render;
     GlWindow::MousePosCallback mouse_pos;
+    GlWindow::KeyboardCallback keyboard;
 };
 struct WindowData {
     std::mutex mutex;
@@ -21,7 +22,7 @@ void maybe_call(const T &f, Args... args) {
     }
 }
 
-void mouse_pos_callback(GLFWwindow *window, double x, double y) {
+void mouse_pos_callback(GLFWwindow *window, const double x, const double y) {
     WindowData *data = reinterpret_cast<WindowData *>(glfwGetWindowUserPointer(window));
     if (data) {
         std::lock_guard<std::mutex> guard(data->mutex);
@@ -29,8 +30,18 @@ void mouse_pos_callback(GLFWwindow *window, double x, double y) {
     }
 }
 
+void keyboard_callback(GLFWwindow *window, const int key, const int scancode, const int action,
+                       const int mods) {
+    WindowData *data = reinterpret_cast<WindowData *>(glfwGetWindowUserPointer(window));
+    if (data) {
+        std::lock_guard<std::mutex> guard(data->mutex);
+        maybe_call(data->callbacks.keyboard, key, scancode, action, mods);
+    }
+}
+
 void register_callbacks(GLFWwindow *window) {
     glfwSetCursorPosCallback(window, mouse_pos_callback);
+    glfwSetKeyCallback(window, keyboard_callback);
 }
 
 void window_loop(const int width, const int height, const std::string &title,
@@ -83,6 +94,11 @@ GlWindow::~GlWindow() { close(); }
 void GlWindow::register_mouse_pos_callback(GlWindow::MousePosCallback f) {
     std::lock_guard<std::mutex> guard(window_data_->mutex);
     window_data_->callbacks.mouse_pos = std::move(f);
+}
+
+void GlWindow::register_keyboard_callback(GlWindow::KeyboardCallback f) {
+    std::lock_guard<std::mutex> guard(window_data_->mutex);
+    window_data_->callbacks.keyboard = std::move(f);
 }
 
 void GlWindow::register_render_callback(GlWindow::RenderCallback f) {

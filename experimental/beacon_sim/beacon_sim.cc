@@ -1,10 +1,10 @@
 
 #include <GL/glu.h>
-#include <curses.h>
 
 #include <array>
 #include <chrono>
 #include <iostream>
+#include <memory>
 #include <thread>
 #include <utility>
 
@@ -23,22 +23,35 @@ struct RobotCommand {
     bool should_exit;
 };
 
-RobotCommand get_command() {
-    const int ch = getch();
-    if (ch == ERR) {
-        return {.turn_rad = 0, .move_m = 0, .should_exit = false};
-    } else if (ch == 'q') {
+struct KeyCommand {
+    bool arrow_left;
+    bool arrow_right;
+    bool arrow_up;
+    bool arrow_down;
+    bool q;
+
+    static KeyCommand make_reset() {
+        return KeyCommand{.arrow_left = false,
+                          .arrow_right = false,
+                          .arrow_up = false,
+                          .arrow_down = false,
+                          .q = false};
+    }
+};
+
+RobotCommand get_command(const KeyCommand key_command) {
+    // Handle Keyboard Commands
+    if (key_command.q) {
         return {.turn_rad = 0, .move_m = 0, .should_exit = true};
-    } else if (ch == KEY_LEFT) {
+    } else if (key_command.arrow_left) {
         return {.turn_rad = std::numbers::pi / 4.0, .move_m = 0, .should_exit = false};
-    } else if (ch == KEY_RIGHT) {
+    } else if (key_command.arrow_right) {
         return {.turn_rad = -std::numbers::pi / 4.0, .move_m = 0, .should_exit = false};
-    } else if (ch == KEY_UP) {
+    } else if (key_command.arrow_up) {
         return {.turn_rad = 0.0, .move_m = 0.1, .should_exit = false};
-    } else if (ch == KEY_DOWN) {
+    } else if (key_command.arrow_down) {
         return {.turn_rad = 0.0, .move_m = -0.1, .should_exit = false};
     }
-
     return {.turn_rad = 0, .move_m = 0, .should_exit = false};
 }
 
@@ -62,17 +75,6 @@ WorldMapOptions world_map_config() {
 void display_state(const WorldMap &world_map, const RobotState &robot,
                    const std::vector<BeaconObservation> &observations,
                    visualization::gl_window::GlWindow &window) {
-    clear();
-    printw("Press `q` to quit\n");
-    printw("Num Beacons: %zu RobotState: (%f, %f, %f) Num Observations: %zu\n",
-           world_map.beacons().size(), robot.pos_x_m(), robot.pos_y_m(), robot.heading_rad(),
-           observations.size());
-    printw("Observations\n");
-    for (const auto &obs : observations) {
-        printw("ID: %d Range: %f Bearing: %f\n", obs.maybe_id.value(), obs.maybe_range_m.value(),
-               obs.maybe_bearing_rad.value());
-    }
-
     constexpr double PX_FROM_M = 0.05;
     constexpr double BEACON_HALF_WIDTH_M = 0.25;
     constexpr double ROBOT_SIZE_M = 0.5;
@@ -81,7 +83,7 @@ void display_state(const WorldMap &world_map, const RobotState &robot,
     window.register_render_callback([=]() {
         const auto gl_error = glGetError();
         if (gl_error != GL_NO_ERROR) {
-            printw("GL ERROR: %d: %s\n", gl_error, gluErrorString(gl_error));
+            std::cout << "GL ERROR: " << gl_error << ": " << gluErrorString(gl_error) << std::endl;
         }
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glMatrixMode(GL_PROJECTION);
@@ -147,12 +149,28 @@ void run_simulation() {
     constexpr ObservationConfig OBS_CONFIG = {};
     RobotState robot(INIT_POS_X_M, INIT_POS_Y_M, INIT_HEADING_RAD);
 
+    std::atomic<KeyCommand> key_command;
+    gl_window.register_keyboard_callback(
+        [&key_command](const int key, const int, const int action, const int) mutable {
+            if (action == GLFW_RELEASE) {
+                return;
+            }
+            auto update = key_command.load();
+            if (key == GLFW_KEY_LEFT) {
+                update.arrow_left = true;
+            } else if (key == GLFW_KEY_RIGHT) {
+                update.arrow_right = true;
+            } else if (key == GLFW_KEY_UP) {
+                update.arrow_up = true;
+            } else if (key == GLFW_KEY_DOWN) {
+                update.arrow_down = true;
+            } else if (key == GLFW_KEY_Q) {
+                update.q = true;
+            }
+            key_command.store(update);
+        });
+
     bool did_update = true;
-    auto *window = initscr();
-    noecho();
-    cbreak();
-    nodelay(window, true);
-    keypad(window, true);
     while (run) {
         // generate observations
         const auto observations = generate_observations(map, robot, OBS_CONFIG);
@@ -163,7 +181,7 @@ void run_simulation() {
         }
 
         // get command
-        const auto command = get_command();
+        const auto command = get_command(key_command.exchange(KeyCommand::make_reset()));
         if (command.turn_rad != 0.0 || command.move_m != 0.0) {
             did_update = true;
         }
@@ -177,9 +195,6 @@ void run_simulation() {
         robot.move(command.move_m);
         std::this_thread::sleep_for(25ms);
     }
-    nocbreak();
-    echo();
-    endwin();
 }
 }  // namespace experimental::beacon_sim
 

@@ -2,7 +2,7 @@
 cc_binary(
   name = "beacon_sim",
   srcs = ["beacon_sim.cc"],
-  linkopts = ["-lncurses", "-lGLU"],
+  linkopts = ["-latomic", "-lGLU"],
   deps = [
     ":world_map",
     ":robot",
