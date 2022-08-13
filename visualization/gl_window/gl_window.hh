@@ -45,11 +45,14 @@ class GlWindow {
 
     using RenderCallback = std::function<void()>;
     using MousePosCallback = std::function<void(const double x, const double y)>;
+    using KeyboardCallback =
+        std::function<void(const int key, const int scancode, const int action, const int mods)>;
 
     // Functions to register callbacks on window events. Note that these are run on the ui thread,
     // so ensure proper synchonization is used.
     void register_render_callback(RenderCallback f);
     void register_mouse_pos_callback(MousePosCallback f);
+    void register_keyboard_callback(KeyboardCallback f);
 
     // Request to close the window and blocks until the ui thread exits
     void close();
