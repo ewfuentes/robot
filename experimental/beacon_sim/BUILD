@@ -23,6 +23,7 @@ cc_library(
   srcs = ["robot.cc"],
   deps = [
     "@eigen//:eigen",
+    "@sophus//:liegroups",
   ]
 )
 

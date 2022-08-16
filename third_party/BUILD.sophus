@@ -1,0 +1,18 @@
+
+cc_library(
+  name = "liegroups",
+  visibility=["//visibility:public"],
+  hdrs = [
+    "sophus/so2.hpp",
+    "sophus/so3.hpp",
+    "sophus/se2.hpp",
+    "sophus/se3.hpp",
+  ],
+  srcs = [
+    "sophus/common.hpp",
+    "sophus/rotation_matrix.hpp",
+    "sophus/types.hpp",
+  ],
+  defines=["SOPHUS_USE_BASIC_LOGGING"],
+  deps = ["@eigen//:eigen"],
+)

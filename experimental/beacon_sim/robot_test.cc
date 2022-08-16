@@ -52,6 +52,6 @@ TEST(RobotTest, robot_moves_in_square) {
     // VERIFICATION
     EXPECT_NEAR(new_state.pos_x_m(), init_state.pos_x_m(), TOL);
     EXPECT_NEAR(new_state.pos_y_m(), init_state.pos_y_m(), TOL);
-    EXPECT_NEAR(new_state.heading_rad(), init_state.heading_rad() + 2 * std::numbers::pi, TOL);
+    EXPECT_NEAR(new_state.heading_rad(), init_state.heading_rad(), TOL);
 }
 }  // namespace experimental::beacon_sim
