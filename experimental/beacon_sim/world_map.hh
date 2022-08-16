@@ -1,13 +1,14 @@
 
 #pragma once
 
+#include "Eigen/Core"
+
 #include <vector>
 
 namespace experimental::beacon_sim {
 struct Beacon {
     int id;
-    double pos_x_m;
-    double pos_y_m;
+    Eigen::Vector2d pos_in_local_m;
 };
 
 struct FixedBeacons {
