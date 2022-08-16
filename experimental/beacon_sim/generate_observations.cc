@@ -6,12 +6,11 @@
 namespace experimental::beacon_sim {
 std::optional<BeaconObservation> generate_observation(const Beacon &beacon, const RobotState &robot,
                                                       const ObservationConfig &) {
-    const double dx_m = beacon.pos_x_m - robot.pos_x_m();
-    const double dy_m = beacon.pos_y_m - robot.pos_y_m();
-    const double range_m = std::hypot(dx_m, dy_m);
+    const double range_m = (robot.local_from_robot().translation() - beacon.pos_in_local).norm();
 
-    const double angle_rad = std::atan2(dy_m, dx_m);
-    const double bearing_rad = angle_rad - robot.heading_rad();
+    const Eigen::Vector2d robot_from_beacon =
+        robot.local_from_robot().inverse() * beacon.pos_in_local;
+    const double bearing_rad = std::atan2(robot_from_beacon.y(), robot_from_beacon.x());
     return BeaconObservation{
         .maybe_id = beacon.id, .maybe_range_m = range_m, .maybe_bearing_rad = bearing_rad};
 }

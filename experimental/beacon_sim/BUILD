@@ -15,6 +15,9 @@ cc_library(
   name = "world_map",
   hdrs = ["world_map.hh"],
   srcs = ["world_map.cc"],
+  deps = [
+    "@eigen//:eigen",
+  ],
 )
 
 cc_library(
@@ -23,6 +26,7 @@ cc_library(
   srcs = ["robot.cc"],
   deps = [
     "@eigen//:eigen",
+    "@sophus//:liegroups",
   ]
 )
 

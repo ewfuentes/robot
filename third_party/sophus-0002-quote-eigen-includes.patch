@@ -1,0 +1,80 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Erick Fuentes <erick@csail.mit.edu>
+Date: Tue, 16 Aug 2022 10:13:06 -0400
+Subject: quote eigen includes
+
+
+diff --git a/sophus/common.hpp b/sophus/common.hpp
+index 765f922..1ca8adf 100644
+--- a/sophus/common.hpp
++++ b/sophus/common.hpp
+@@ -9,7 +9,7 @@
+ #include <random>
+ #include <type_traits>
+ 
+-#include <Eigen/Core>
++#include "Eigen/Core"
+ 
+ #undef SOPHUS_COMPILE_TIME_FMT
+ 
+diff --git a/sophus/interpolate.hpp b/sophus/interpolate.hpp
+index c937dbd..b239f95 100644
+--- a/sophus/interpolate.hpp
++++ b/sophus/interpolate.hpp
+@@ -3,7 +3,7 @@
+ 
+ #pragma once
+ 
+-#include <Eigen/Eigenvalues>
++#include "Eigen/Eigenvalues"
+ 
+ #include "interpolate_details.hpp"
+ 
+diff --git a/sophus/rotation_matrix.hpp b/sophus/rotation_matrix.hpp
+index 358ce7a..3d213fc 100644
+--- a/sophus/rotation_matrix.hpp
++++ b/sophus/rotation_matrix.hpp
+@@ -3,8 +3,8 @@
+ 
+ #pragma once
+ 
+-#include <Eigen/Dense>
+-#include <Eigen/SVD>
++#include "Eigen/Dense"
++#include "Eigen/SVD"
+ 
+ #include "types.hpp"
+ 
+diff --git a/sophus/so2.hpp b/sophus/so2.hpp
+index f296c1f..a9f0846 100644
+--- a/sophus/so2.hpp
++++ b/sophus/so2.hpp
+@@ -7,7 +7,7 @@
+ 
+ // Include only the selective set of Eigen headers that we need.
+ // This helps when using Sophus with unusual compilers, like nvcc.
+-#include <Eigen/LU>
++#include "Eigen/LU"
+ 
+ #include "rotation_matrix.hpp"
+ #include "types.hpp"
+diff --git a/sophus/so3.hpp b/sophus/so3.hpp
+index c3975b0..65d2152 100644
+--- a/sophus/so3.hpp
++++ b/sophus/so3.hpp
+@@ -9,9 +9,9 @@
+ 
+ // Include only the selective set of Eigen headers that we need.
+ // This helps when using Sophus with unusual compilers, like nvcc.
+-#include <Eigen/src/Geometry/OrthoMethods.h>
+-#include <Eigen/src/Geometry/Quaternion.h>
+-#include <Eigen/src/Geometry/RotationBase.h>
++#include "Eigen/src/Geometry/OrthoMethods.h"
++#include "Eigen/src/Geometry/Quaternion.h"
++#include "Eigen/src/Geometry/RotationBase.h"
+ 
+ namespace Sophus {
+ template <class Scalar_, int Options = 0>
+-- 
+2.34.1
+

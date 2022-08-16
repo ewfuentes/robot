@@ -1,0 +1,59 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Erick Fuentes <erick@csail.mit.edu>
+Date: Tue, 16 Aug 2022 10:12:44 -0400
+Subject: C++ 20 __VA_ARGS__ changes
+
+
+diff --git a/sophus/common.hpp b/sophus/common.hpp
+index 9e87ee6..765f922 100644
+--- a/sophus/common.hpp
++++ b/sophus/common.hpp
+@@ -51,13 +51,13 @@
+ #endif  // ! SOPHUS_COMPILE_TIME_FMT
+ 
+ #define SOPHUS_FMT_CSTR(description, ...) \
+-  fmt::format(SOPHUS_FMT_STRING(description), ##__VA_ARGS__).c_str()
++  fmt::format(SOPHUS_FMT_STRING(description) __VA_OPT__(,) __VA_ARGS__).c_str()
+ 
+ #define SOPHUS_FMT_STR(description, ...) \
+-  fmt::format(SOPHUS_FMT_STRING(description), ##__VA_ARGS__)
++  fmt::format(SOPHUS_FMT_STRING(description) __VA_OPT__(,) __VA_ARGS__)
+ 
+ #define SOPHUS_FMT_PRINT(description, ...)                   \
+-  fmt::print(SOPHUS_FMT_STRING(description), ##__VA_ARGS__); \
++  fmt::print(SOPHUS_FMT_STRING(description) __VA_OPT__(,) __VA_ARGS__); \
+   fmt::print("\n")
+ 
+ #endif  // !SOPHUS_USE_BASIC_LOGGING
+@@ -106,7 +106,7 @@ void ensureFailed(char const* function, char const* file, int line,
+   ((expr)                                                            \
+        ? ((void)0)                                                   \
+        : ::Sophus::ensureFailed(SOPHUS_FUNCTION, __FILE__, __LINE__, \
+-                                SOPHUS_FMT_CSTR(description, ##__VA_ARGS__)))
++                                SOPHUS_FMT_CSTR(description __VA_OPT__(,) __VA_ARGS__)))
+ #else
+ 
+ #define SOPHUS_DEDAULT_ENSURE_FAILURE_IMPL(function, file, line, description, \
+@@ -116,7 +116,7 @@ void ensureFailed(char const* function, char const* file, int line,
+         "Sophus ensure failed in function '%s', "                             \
+         "file '%s', line %d.\n",                                              \
+         function, file, line);                                                \
+-    SOPHUS_FMT_PRINT(description, ##__VA_ARGS__);                             \
++    SOPHUS_FMT_PRINT(description __VA_OPT__(,) __VA_ARGS__);                  \
+     std::abort();                                                             \
+   } while (false)
+ 
+@@ -136,8 +136,8 @@ void ensureFailed(char const* function, char const* file, int line,
+ #define SOPHUS_ENSURE(expr, ...)                                              \
+   do {                                                                        \
+     if (!(expr)) {                                                            \
+-      SOPHUS_DEDAULT_ENSURE_FAILURE_IMPL(SOPHUS_FUNCTION, __FILE__, __LINE__, \
+-                                         ##__VA_ARGS__);                      \
++      SOPHUS_DEDAULT_ENSURE_FAILURE_IMPL(SOPHUS_FUNCTION, __FILE__, __LINE__  \
++                                         __VA_OPT__(,) __VA_ARGS__);          \
+     }                                                                         \
+   } while (false)
+ #endif
+-- 
+2.34.1
+

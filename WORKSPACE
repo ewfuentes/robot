@@ -22,3 +22,16 @@ http_archive(
   build_file="@//third_party:BUILD.eigen",
   sha256 = "1ccaabbfe870f60af3d6a519c53e09f3dcf630207321dffa553564a8e75c4fc8",
 )
+
+http_archive(
+  name = "sophus",
+  urls = ["https://github.com/strasdat/Sophus/archive/refs/tags/v22.04.1.zip"],
+  strip_prefix= "Sophus-22.04.1",
+  build_file="@//third_party:BUILD.sophus",
+  patches = [
+    "@//third_party:sophus-0001-cpp20-va-args-changes.patch",
+    "@//third_party:sophus-0002-quote-eigen-includes.patch",
+  ],
+  patch_args=["-p1"],
+  sha256 = "60d1d6c81426af8f330960002fb351db06e595501274310ddbe7bfc0aacda97a",
+)
