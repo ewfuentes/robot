@@ -14,3 +14,11 @@ http_archive(
   build_file="@//third_party:BUILD.glfw",
   sha256 = "4d025083cc4a3dd1f91ab9b9ba4f5807193823e565a5bcf4be202669d9911ea6",
 )
+
+http_archive(
+  name = "eigen",
+  urls = ["https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.zip"],
+  strip_prefix = "eigen-3.4.0",
+  build_file="@//third_party:BUILD.eigen",
+  sha256 = "1ccaabbfe870f60af3d6a519c53e09f3dcf630207321dffa553564a8e75c4fc8",
+)

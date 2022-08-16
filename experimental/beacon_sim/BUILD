@@ -21,6 +21,9 @@ cc_library(
   name = "robot",
   hdrs = ["robot.hh"],
   srcs = ["robot.cc"],
+  deps = [
+    "@eigen//:eigen",
+  ]
 )
 
 cc_test(
