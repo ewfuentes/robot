@@ -81,7 +81,7 @@ WorldMapOptions world_map_config() {
     for (int r = 0; r < NUM_ROWS; r++) {
         for (int c = 0; c < NUM_COLS; c++) {
             out.fixed_beacons.beacons.push_back(
-                Beacon{.id = beacon_id++, .pos_in_local_m = {c * SPACING_M, r * SPACING_M}});
+                Beacon{.id = beacon_id++, .pos_in_local = {c * SPACING_M, r * SPACING_M}});
         }
     }
     return out;
@@ -114,7 +114,7 @@ void display_state(const WorldMap &world_map, const RobotState &robot,
             for (const auto &corner : std::array<Eigen::Vector2d, 4>{
                      {{-1.0, -1.0}, {-1.0, 1.0}, {1.0, 1.0}, {1.0, -1.0}}}) {
                 const Eigen::Vector2d point_in_local =
-                    beacon.pos_in_local_m + corner * BEACON_HALF_WIDTH_M;
+                    beacon.pos_in_local + corner * BEACON_HALF_WIDTH_M;
                 glVertex2d(point_in_local.x(), point_in_local.y());
             }
             glEnd();

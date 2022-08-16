@@ -8,7 +8,7 @@
 namespace experimental::beacon_sim {
 struct Beacon {
     int id;
-    Eigen::Vector2d pos_in_local_m;
+    Eigen::Vector2d pos_in_local;
 };
 
 struct FixedBeacons {
