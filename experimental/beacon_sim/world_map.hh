@@ -1,9 +1,9 @@
 
 #pragma once
 
-#include "Eigen/Core"
-
 #include <vector>
+
+#include "Eigen/Core"
 
 namespace experimental::beacon_sim {
 struct Beacon {
