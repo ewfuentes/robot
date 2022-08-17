@@ -1,4 +1,6 @@
 
+#include <memory>
+
 namespace cpp {
 template <typename T>
 class Out {
