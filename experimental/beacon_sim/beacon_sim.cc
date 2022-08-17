@@ -5,6 +5,7 @@
 #include <chrono>
 #include <iostream>
 #include <memory>
+#include <random>
 #include <thread>
 #include <utility>
 
@@ -152,6 +153,8 @@ void display_state(const WorldMap &world_map, const RobotState &robot,
 void run_simulation() {
     bool run = true;
 
+    std::mt19937 gen(0);
+
     visualization::gl_window::GlWindow gl_window(1024, 768);
 
     // Initialize world map
@@ -161,7 +164,9 @@ void run_simulation() {
     constexpr double INIT_POS_X_M = 0.0;
     constexpr double INIT_POS_Y_M = 0.0;
     constexpr double INIT_HEADING_RAD = 0.0;
-    constexpr ObservationConfig OBS_CONFIG = {};
+    constexpr ObservationConfig OBS_CONFIG = {
+        .range_noise_std_m = 0.5,
+    };
     RobotState robot(INIT_POS_X_M, INIT_POS_Y_M, INIT_HEADING_RAD);
 
     std::atomic<KeyCommand> key_command;
@@ -185,22 +190,15 @@ void run_simulation() {
             key_command.store(update);
         });
 
-    bool did_update = true;
     while (run) {
         // generate observations
-        const auto observations = generate_observations(map, robot, OBS_CONFIG);
+        const auto observations = generate_observations(map, robot, gen, OBS_CONFIG);
 
-        if (did_update) {
-            did_update = false;
-            display_state(map, robot, observations, gl_window);
-        }
+        display_state(map, robot, observations, gl_window);
 
         // get command
         const auto command = get_command(key_command.exchange(KeyCommand::make_reset()),
                                          gl_window.get_joystick_states());
-        if (command.turn_rad != 0.0 || command.move_m != 0.0) {
-            did_update = true;
-        }
 
         if (command.should_exit) {
             run = false;
