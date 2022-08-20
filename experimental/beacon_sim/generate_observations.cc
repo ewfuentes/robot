@@ -36,7 +36,7 @@ std::vector<BeaconObservation> generate_observations(const WorldMap &map, const 
     std::vector<BeaconObservation> out;
     out.reserve(map.beacons().size());
     for (const auto &beacon : map.beacons()) {
-      const auto maybe_observation = generate_observation(beacon, robot, config, gen);
+        const auto maybe_observation = generate_observation(beacon, robot, config, gen);
         if (maybe_observation.has_value()) {
             out.push_back(maybe_observation.value());
         }

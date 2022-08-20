@@ -43,4 +43,4 @@ InOut<T> make_in_out(T &obj) {
     return InOut(obj);
 }
 
-}  // namespace robot::cpp
+}  // namespace robot

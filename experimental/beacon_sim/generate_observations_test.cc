@@ -36,7 +36,8 @@ TEST(GenerateObservationsTest, single_beacon_test) {
     std::mt19937 gen;
 
     // ACTION
-    const auto maybe_observation = generate_observation(beacon, robot_state, CONFIG, make_in_out(gen));
+    const auto maybe_observation =
+        generate_observation(beacon, robot_state, CONFIG, make_in_out(gen));
 
     // VERIFICATION
     constexpr double EXPECTED_RANGE_M = 2 * std::numbers::sqrt2;
