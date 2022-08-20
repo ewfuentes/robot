@@ -1,11 +1,10 @@
 
-#include "common/cpp/argument_wrapper.hh"
+#include "common/argument_wrapper.hh"
 
 #include "gtest/gtest.h"
 
-namespace cpp {
+namespace robot::cpp {
 namespace {
-
 // chosen by fair dice roll
 // guaranteed to be random
 constexpr int RANDOM_NUMBER = 4;
@@ -42,4 +41,4 @@ TEST(ArgumentWrapperTest, make_inout) {
     // Verification
     EXPECT_EQ(num, EXPECTED);
 }
-}  // namespace cpp
+}  // namespace robot::cpp

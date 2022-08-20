@@ -1,7 +1,7 @@
 
 #include <memory>
 
-namespace cpp {
+namespace robot {
 template <typename T>
 class Out {
    public:
@@ -43,4 +43,4 @@ InOut<T> make_in_out(T &obj) {
     return InOut(obj);
 }
 
-}  // namespace cpp
+}  // namespace robot::cpp

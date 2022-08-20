@@ -5,7 +5,7 @@
 
 #include "gtest/gtest.h"
 
-namespace experimental::beacon_sim {
+namespace robot::experimental::beacon_sim {
 TEST(GenerateObservationsTest, single_beacon_test) {
     // SETUP
     //                                    ┌─┐
@@ -36,7 +36,7 @@ TEST(GenerateObservationsTest, single_beacon_test) {
     std::mt19937 gen;
 
     // ACTION
-    const auto maybe_observation = generate_observation(beacon, robot_state, gen, CONFIG);
+    const auto maybe_observation = generate_observation(beacon, robot_state, CONFIG, make_in_out(gen));
 
     // VERIFICATION
     constexpr double EXPECTED_RANGE_M = 2 * std::numbers::sqrt2;
@@ -50,4 +50,4 @@ TEST(GenerateObservationsTest, single_beacon_test) {
     ASSERT_TRUE(maybe_observation->maybe_bearing_rad.has_value());
     EXPECT_NEAR(maybe_observation->maybe_bearing_rad.value(), EXPECTED_BEARING_RAD, TOL);
 }
-}  // namespace experimental::beacon_sim
+}  // namespace robot::experimental::beacon_sim
