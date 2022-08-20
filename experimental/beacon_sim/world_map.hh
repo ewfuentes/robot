@@ -5,7 +5,7 @@
 
 #include "Eigen/Core"
 
-namespace experimental::beacon_sim {
+namespace robot::experimental::beacon_sim {
 struct Beacon {
     int id;
     Eigen::Vector2d pos_in_local;
@@ -28,4 +28,4 @@ class WorldMap {
    private:
     std::vector<Beacon> beacons_;
 };
-}  // namespace experimental::beacon_sim
+}  // namespace robot::experimental::beacon_sim

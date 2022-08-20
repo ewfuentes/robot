@@ -5,7 +5,7 @@
 
 #include "gtest/gtest.h"
 
-namespace experimental::beacon_sim {
+namespace robot::experimental::beacon_sim {
 TEST(RobotTest, robot_moves_as_expected) {
     // SETUP
     constexpr double TOL = 1e-6;
@@ -54,4 +54,4 @@ TEST(RobotTest, robot_moves_in_square) {
     EXPECT_NEAR(new_state.pos_y_m(), init_state.pos_y_m(), TOL);
     EXPECT_NEAR(new_state.heading_rad(), init_state.heading_rad(), TOL);
 }
-}  // namespace experimental::beacon_sim
+}  // namespace robot::experimental::beacon_sim

@@ -4,7 +4,7 @@
 #include <iostream>
 #include <semaphore>
 
-namespace visualization::gl_window {
+namespace robot::visualization::gl_window {
 struct Callbacks {
     GlWindow::RenderCallback render;
     GlWindow::MousePosCallback mouse_pos;
@@ -131,4 +131,4 @@ void GlWindow::close() {
     queue_.submit_work([](GLFWwindow *window) { glfwSetWindowShouldClose(window, true); });
     ui_thread_.join();
 }
-}  // namespace visualization::gl_window
+}  // namespace robot::visualization::gl_window

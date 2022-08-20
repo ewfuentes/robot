@@ -5,10 +5,11 @@
 #include <random>
 #include <vector>
 
+#include "common/argument_wrapper.hh"
 #include "experimental/beacon_sim/robot.hh"
 #include "experimental/beacon_sim/world_map.hh"
 
-namespace experimental::beacon_sim {
+namespace robot::experimental::beacon_sim {
 struct ObservationConfig {
     std::optional<double> range_noise_std_m;
 };
@@ -20,9 +21,10 @@ struct BeaconObservation {
 };
 
 std::optional<BeaconObservation> generate_observation(const Beacon &beacon, const RobotState &robot,
-                                                      std::mt19937 &gen,
-                                                      const ObservationConfig &config);
+                                                      const ObservationConfig &config,
+                                                      InOut<std::mt19937> gen);
+
 std::vector<BeaconObservation> generate_observations(const WorldMap &map, const RobotState &robot,
-                                                     std::mt19937 &gen,
-                                                     const ObservationConfig &config);
-}  // namespace experimental::beacon_sim
+                                                     const ObservationConfig &config,
+                                                     InOut<std::mt19937> gen);
+}  // namespace robot::experimental::beacon_sim

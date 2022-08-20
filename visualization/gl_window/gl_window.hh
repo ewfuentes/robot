@@ -10,7 +10,7 @@
 
 #include "GLFW/glfw3.h"
 
-namespace visualization::gl_window {
+namespace robot::visualization::gl_window {
 
 template <typename Callable>
 class WorkQueue {
@@ -70,4 +70,4 @@ class GlWindow {
     std::thread ui_thread_;
     std::unique_ptr<WindowData> window_data_;
 };
-}  // namespace visualization::gl_window
+}  // namespace robot::visualization::gl_window

@@ -16,7 +16,7 @@
 
 using namespace std::literals::chrono_literals;
 
-namespace experimental::beacon_sim {
+namespace robot::experimental::beacon_sim {
 
 struct RobotCommand {
     double turn_rad;
@@ -192,7 +192,7 @@ void run_simulation() {
 
     while (run) {
         // generate observations
-        const auto observations = generate_observations(map, robot, gen, OBS_CONFIG);
+        const auto observations = generate_observations(map, robot, OBS_CONFIG, make_in_out(gen));
 
         display_state(map, robot, observations, gl_window);
 
@@ -210,9 +210,9 @@ void run_simulation() {
         std::this_thread::sleep_for(25ms);
     }
 }
-}  // namespace experimental::beacon_sim
+}  // namespace robot::experimental::beacon_sim
 
 int main() {
     std::cout << "Hello World!" << std::endl;
-    experimental::beacon_sim::run_simulation();
+    robot::experimental::beacon_sim::run_simulation();
 }

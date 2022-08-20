@@ -44,6 +44,7 @@ cc_library(
   deps = [
     ":world_map",
     ":robot",
+    "//common:argument_wrapper",
   ],
 )
 
