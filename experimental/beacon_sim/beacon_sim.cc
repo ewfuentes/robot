@@ -11,6 +11,7 @@
 
 #include "experimental/beacon_sim/generate_observations.hh"
 #include "experimental/beacon_sim/robot.hh"
+#include "experimental/beacon_sim/sim_clock.hh"
 #include "experimental/beacon_sim/world_map.hh"
 #include "visualization/gl_window/gl_window.hh"
 
@@ -196,6 +197,8 @@ void run_simulation() {
             key_command.store(update);
         });
 
+    SimClock::reset();
+    const auto DT = 25ms;
     while (run) {
         // generate observations
         const auto observations = generate_observations(map, robot, OBS_CONFIG, make_in_out(gen));
@@ -213,7 +216,8 @@ void run_simulation() {
         // simulate robot forward
         robot.turn(command.turn_rad);
         robot.move(command.move_m);
-        std::this_thread::sleep_for(25ms);
+        std::this_thread::sleep_for(DT);
+        SimClock::advance(DT);
     }
 }
 }  // namespace robot::experimental::beacon_sim

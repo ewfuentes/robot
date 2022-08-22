@@ -7,6 +7,7 @@ cc_binary(
     ":world_map",
     ":robot",
     ":generate_observations",
+    ":sim_clock",
     "//visualization/gl_window",
   ],
 )
@@ -54,6 +55,21 @@ cc_test(
   deps = [
     ":generate_observations",
     "@com_google_googletest//:gtest_main"
+  ]
+)
+
+cc_library(
+  name = "sim_clock",
+  hdrs = ["sim_clock.hh"],
+  srcs = ["sim_clock.cc"],
+)
+
+cc_test(
+  name = "sim_clock_test",
+  srcs= ["sim_clock_test.cc"],
+  deps = [
+    ":sim_clock",
+    "@com_google_googletest//:gtest_main",
   ]
 )
 
