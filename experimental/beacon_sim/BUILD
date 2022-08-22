@@ -57,3 +57,18 @@ cc_test(
   ]
 )
 
+cc_library(
+  name = "sim_clock",
+  hdrs = ["sim_clock.hh"],
+  srcs = ["sim_clock.cc"],
+)
+
+cc_test(
+  name = "sim_clock_test",
+  srcs= ["sim_clock_test.cc"],
+  deps = [
+    ":sim_clock",
+    "@com_google_googletest//:gtest_main",
+  ]
+)
+
