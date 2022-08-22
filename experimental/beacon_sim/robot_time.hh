@@ -23,6 +23,7 @@ class RobotTimestamp {
     constexpr RobotTimestamp() : time_since_epoch_(0) {}
 
     constexpr duration time_since_epoch() const { return time_since_epoch_; }
+
     constexpr RobotTimestamp &operator+=(const duration &d) {
         time_since_epoch_ += d;
         return *this;
