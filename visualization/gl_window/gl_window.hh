@@ -44,6 +44,11 @@ struct JoystickState {
     std::array<int, 15> buttons;
 };
 
+struct WindowDims {
+    int width;
+    int height;
+};
+
 class GlWindow {
    public:
     GlWindow(const int width, const int height, const std::string &title = "gl_window");
@@ -53,6 +58,7 @@ class GlWindow {
     using MousePosCallback = std::function<void(const double x, const double y)>;
     using KeyboardCallback =
         std::function<void(const int key, const int scancode, const int action, const int mods)>;
+    using ResizeCallback = std::function<void(const int width, const int height)>;
 
     std::unordered_map<int, JoystickState> get_joystick_states();
 
@@ -61,9 +67,12 @@ class GlWindow {
     void register_render_callback(RenderCallback f);
     void register_mouse_pos_callback(MousePosCallback f);
     void register_keyboard_callback(KeyboardCallback f);
+    void register_window_resize_callback(ResizeCallback f);
 
     // Request to close the window and blocks until the ui thread exits
     void close();
+
+    WindowDims get_window_dims() const;
 
    private:
     WorkQueue<std::function<void(GLFWwindow *)>> queue_;

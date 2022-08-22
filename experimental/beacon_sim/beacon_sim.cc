@@ -91,10 +91,12 @@ WorldMapOptions world_map_config() {
 void display_state(const WorldMap &world_map, const RobotState &robot,
                    const std::vector<BeaconObservation> &observations,
                    visualization::gl_window::GlWindow &window) {
-    constexpr double PX_FROM_M = 0.05;
     constexpr double BEACON_HALF_WIDTH_M = 0.25;
     constexpr double ROBOT_SIZE_M = 0.5;
     constexpr double DEG_FROM_RAD = 180.0 / std::numbers::pi;
+    constexpr double WINDOW_WIDTH_M = 15;
+    const auto [screen_width_px, screen_height_px] = window.get_window_dims();
+    const double aspect_ratio = static_cast<double>(screen_height_px) / screen_width_px;
 
     window.register_render_callback([=]() {
         const auto gl_error = glGetError();
@@ -104,9 +106,10 @@ void display_state(const WorldMap &world_map, const RobotState &robot,
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glMatrixMode(GL_PROJECTION);
         glLoadIdentity();
+        glOrtho(-WINDOW_WIDTH_M, WINDOW_WIDTH_M, -WINDOW_WIDTH_M * aspect_ratio,
+                WINDOW_WIDTH_M * aspect_ratio, -1.0, 1.0);
         glMatrixMode(GL_MODELVIEW);
-        glLoadIdentity();                     // In Screen Frame
-        glScaled(PX_FROM_M, PX_FROM_M, 0.0);  // In world frame
+        glLoadIdentity();
 
         // Draw beacons
         for (const auto &beacon : world_map.beacons()) {
@@ -168,6 +171,9 @@ void run_simulation() {
         .range_noise_std_m = 0.5,
     };
     RobotState robot(INIT_POS_X_M, INIT_POS_Y_M, INIT_HEADING_RAD);
+
+    gl_window.register_window_resize_callback(
+        [](const int width, const int height) { glViewport(0, 0, width, height); });
 
     std::atomic<KeyCommand> key_command;
     gl_window.register_keyboard_callback(
