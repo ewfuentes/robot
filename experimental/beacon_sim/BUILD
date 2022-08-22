@@ -7,6 +7,7 @@ cc_binary(
     ":world_map",
     ":robot",
     ":generate_observations",
+    ":sim_clock",
     "//visualization/gl_window",
   ],
 )
