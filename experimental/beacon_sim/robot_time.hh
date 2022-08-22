@@ -52,6 +52,10 @@ constexpr RobotTimestamp operator-(const RobotTimestamp &a, const RobotTimestamp
     return out;
 }
 
+constexpr RobotTimestamp::duration operator-(const RobotTimestamp &a, const RobotTimestamp &b) {
+    return a.time_since_epoch() - b.time_since_epoch();
+}
+
 constexpr RobotTimestamp operator+(const RobotTimestamp::duration &a, const RobotTimestamp &b) {
     return b + a;
 }

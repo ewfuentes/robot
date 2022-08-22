@@ -2,8 +2,11 @@
 #include "experimental/beacon_sim/robot_time.hh"
 
 #include <chrono>
+#include <thread>
 
 #include "gtest/gtest.h"
+
+#include "experimental/beacon_sim/sim_clock.hh"
 
 using namespace std::literals::chrono_literals;
 
@@ -105,7 +108,7 @@ TEST(RobotTimeTest, logical_operator_greater_than_less_than) {
     EXPECT_GT(DT_2 + RobotTimestamp(), DT_1 + RobotTimestamp());
 }
 
-  TEST(RobotTimeTest, logical_operator_greater_than_less_than_or_equal) {
+TEST(RobotTimeTest, logical_operator_greater_than_less_than_or_equal) {
     // Setup
     constexpr RobotTimestamp::duration DT_1 = 25ms;
     constexpr RobotTimestamp::duration DT_2 = 100ms;
@@ -115,6 +118,41 @@ TEST(RobotTimeTest, logical_operator_greater_than_less_than) {
     EXPECT_GE(DT_2 + RobotTimestamp(), DT_1 + RobotTimestamp());
     EXPECT_LE(DT_1 + RobotTimestamp(), DT_1 + RobotTimestamp());
     EXPECT_GE(DT_2 + RobotTimestamp(), DT_2 + RobotTimestamp());
+}
+
+TEST(RobotTimeTest, current_time_steady) {
+    // Setup
+    set_default_time_provider(TimeProvider::STEADY);
+    constexpr auto SLEEP_DT = 100ms;
+
+    // Action
+    const RobotTimestamp t1 = current_robot_time();
+    std::this_thread::sleep_for(SLEEP_DT);
+    const RobotTimestamp t2 = current_robot_time();
+
+    // Verification
+    EXPECT_LT(t1, t2);
+    EXPECT_LE(t1 + SLEEP_DT, t2);
+}
+
+  TEST(RobotTimeTest, current_time_sim) {
+    // Setup
+    set_default_time_provider(TimeProvider::SIM);
+    constexpr auto SLEEP_DT = 100ms;
+    constexpr auto ADVANCE_DT = 150ms;
+
+    // Action
+    const RobotTimestamp t1 = current_robot_time();
+    std::this_thread::sleep_for(SLEEP_DT);
+    const RobotTimestamp t2 = current_robot_time();
+    SimClock::advance(ADVANCE_DT);
+    const RobotTimestamp t3 = current_robot_time();
+
+    // Verification
+    EXPECT_EQ(t1, RobotTimestamp());
+    EXPECT_EQ(t1, t2);
+    EXPECT_LT(t1, t3);
+    EXPECT_EQ(t3-t1, ADVANCE_DT);
   }
 
 }  // namespace robot::experimental::beacon_sim

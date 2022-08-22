@@ -88,6 +88,7 @@ cc_test(
   deps = [
     ":robot_time",
     "@com_google_googletest//:gtest_main",
+   ":sim_clock",
   ]
 )
 
