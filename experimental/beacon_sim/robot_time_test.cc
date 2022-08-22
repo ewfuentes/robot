@@ -4,9 +4,8 @@
 #include <chrono>
 #include <thread>
 
-#include "gtest/gtest.h"
-
 #include "experimental/beacon_sim/sim_clock.hh"
+#include "gtest/gtest.h"
 
 using namespace std::literals::chrono_literals;
 
@@ -135,7 +134,7 @@ TEST(RobotTimeTest, current_time_steady) {
     EXPECT_LE(t1 + SLEEP_DT, t2);
 }
 
-  TEST(RobotTimeTest, current_time_sim) {
+TEST(RobotTimeTest, current_time_sim) {
     // Setup
     set_default_time_provider(TimeProvider::SIM);
     constexpr auto SLEEP_DT = 100ms;
@@ -152,7 +151,7 @@ TEST(RobotTimeTest, current_time_steady) {
     EXPECT_EQ(t1, RobotTimestamp());
     EXPECT_EQ(t1, t2);
     EXPECT_LT(t1, t3);
-    EXPECT_EQ(t3-t1, ADVANCE_DT);
-  }
+    EXPECT_EQ(t3 - t1, ADVANCE_DT);
+}
 
 }  // namespace robot::experimental::beacon_sim
