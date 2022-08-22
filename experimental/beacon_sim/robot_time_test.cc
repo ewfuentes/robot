@@ -1,0 +1,120 @@
+
+#include "experimental/beacon_sim/robot_time.hh"
+
+#include <chrono>
+
+#include "gtest/gtest.h"
+
+using namespace std::literals::chrono_literals;
+
+namespace robot::experimental::beacon_sim {
+TEST(RobotTimeTest, default_construction) {
+    // Setup + Action
+    const RobotTimestamp default_timestamp;
+    // Verification
+    EXPECT_EQ(default_timestamp.time_since_epoch(), 0s);
+}
+
+TEST(RobotTimeTest, inplace_add_subtract) {
+    // Setup
+    constexpr RobotTimestamp::duration DT_1 = 25ms;
+    constexpr RobotTimestamp::duration DT_2 = -75ms;
+    {
+        // Action
+        RobotTimestamp t;
+        t += DT_1;
+
+        // Verification
+        EXPECT_EQ(t.time_since_epoch(), DT_1);
+    }
+    {
+        // Action
+        RobotTimestamp t;
+        t -= DT_2;
+
+        // Verification
+        EXPECT_EQ(t.time_since_epoch(), -DT_2);
+    }
+}
+
+TEST(RobotTimeTest, operate_on_left) {
+    // Setup
+    constexpr RobotTimestamp::duration DT = 25ms;
+
+    {
+        // Action
+        constexpr RobotTimestamp t = RobotTimestamp() + DT;
+
+        // Verification
+        EXPECT_EQ(t.time_since_epoch(), DT);
+    }
+    {
+        // Action
+        constexpr RobotTimestamp t = RobotTimestamp() - DT;
+
+        // Verification
+        EXPECT_EQ(t.time_since_epoch(), -DT);
+    }
+}
+
+TEST(RobotTimeTest, operate_on_right) {
+    // Setup
+    constexpr RobotTimestamp::duration DT = 25ms;
+
+    {
+        // Action
+        constexpr RobotTimestamp t = DT + RobotTimestamp();
+
+        // Verification
+        EXPECT_EQ(t.time_since_epoch(), DT);
+    }
+    {
+        // Action
+        constexpr RobotTimestamp t = DT - RobotTimestamp();
+
+        // Verification
+        EXPECT_EQ(t.time_since_epoch(), -DT);
+    }
+}
+
+TEST(RobotTimeTest, logical_operator_equal) {
+    // Setup
+    constexpr RobotTimestamp::duration DT_1 = 25ms;
+    constexpr RobotTimestamp::duration DT_2 = 100ms;
+
+    // Action + Verification
+    EXPECT_EQ(DT_1 * 4 + RobotTimestamp(), DT_2 + RobotTimestamp());
+}
+
+TEST(RobotTimeTest, logical_operator_not_equal) {
+    // Setup
+    constexpr RobotTimestamp::duration DT_1 = 25ms;
+    constexpr RobotTimestamp::duration DT_2 = 100ms;
+
+    // Action + Verification
+    EXPECT_NE(DT_1 + RobotTimestamp(), DT_2 + RobotTimestamp());
+}
+
+TEST(RobotTimeTest, logical_operator_greater_than_less_than) {
+    // Setup
+    constexpr RobotTimestamp::duration DT_1 = 25ms;
+    constexpr RobotTimestamp::duration DT_2 = 100ms;
+
+    // Action + Verification
+    EXPECT_LT(DT_1 + RobotTimestamp(), DT_2 + RobotTimestamp());
+    EXPECT_GT(DT_2 + RobotTimestamp(), DT_1 + RobotTimestamp());
+}
+
+  TEST(RobotTimeTest, logical_operator_greater_than_less_than_or_equal) {
+    // Setup
+    constexpr RobotTimestamp::duration DT_1 = 25ms;
+    constexpr RobotTimestamp::duration DT_2 = 100ms;
+
+    // Action + Verification
+    EXPECT_LE(DT_1 + RobotTimestamp(), DT_2 + RobotTimestamp());
+    EXPECT_GE(DT_2 + RobotTimestamp(), DT_1 + RobotTimestamp());
+    EXPECT_LE(DT_1 + RobotTimestamp(), DT_1 + RobotTimestamp());
+    EXPECT_GE(DT_2 + RobotTimestamp(), DT_2 + RobotTimestamp());
+  }
+
+}  // namespace robot::experimental::beacon_sim

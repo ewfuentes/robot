@@ -73,3 +73,21 @@ cc_test(
   ]
 )
 
+cc_library(
+  name = "robot_time",
+  hdrs = ["robot_time.hh"],
+  srcs = ["robot_time.cc"],
+  deps = [
+   ":sim_clock",
+  ]
+)
+
+cc_test(
+  name = "robot_time_test",
+  srcs = ["robot_time_test.cc"],
+  deps = [
+    ":robot_time",
+    "@com_google_googletest//:gtest_main",
+  ]
+)
+
