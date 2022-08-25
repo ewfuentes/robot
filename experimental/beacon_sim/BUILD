@@ -92,3 +92,23 @@ cc_test(
   ]
 )
 
+cc_library(
+  name = "ekf_slam",
+  hdrs = ["ekf_slam.hh"],
+  srcs = ["ekf_slam.cc"],
+  deps = [
+    ":generate_observations",
+    "@eigen//:eigen",
+    "@sophus//:liegroups",
+  ]
+)
+
+cc_test(
+  name = "ekf_slam_test",
+  srcs = ["ekf_slam_test.cc"],
+  deps = [
+    ":ekf_slam",
+    "@com_google_googletest//:gtest_main",
+  ]
+)
+
