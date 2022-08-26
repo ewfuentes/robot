@@ -93,4 +93,58 @@ TEST(EkfSlamTest, measurement_updates_as_expected) {
     EXPECT_TRUE(maybe_beacon_in_local.has_value());
     EXPECT_NEAR((maybe_beacon_in_local.value() - beacon_in_local).norm(), 0.0, 1e-6);
 }
+
+TEST(CreateMeasurementTest, incomplete_measurements_rejected) {
+    // Setup
+    const std::vector<BeaconObservation> observations{
+        {.maybe_id = std::nullopt, .maybe_range_m = 10.0, .maybe_bearing_rad = 6.0},
+        {.maybe_id = 123, .maybe_range_m = std::nullopt, .maybe_bearing_rad = 5.0},
+        {.maybe_id = 456, .maybe_range_m = 20.0, .maybe_bearing_rad = std::nullopt},
+        {.maybe_id = 789, .maybe_range_m = 30.0, .maybe_bearing_rad = 3.0}};
+
+    const int ESTIMATE_DIM = 3 + 2 * observations.size();
+    const EkfSlamEstimate estimate = {.mean = Eigen::VectorXd::Zero(ESTIMATE_DIM),
+                                      .cov = Eigen::MatrixXd::Zero(ESTIMATE_DIM, ESTIMATE_DIM),
+                                      .beacon_ids = {123, 456, 789}};
+
+    // Action
+    const auto [meas, obs_mat] =
+        detail::compute_measurement_vector_and_observation_matrix(observations, estimate);
+
+    // Verification
+    EXPECT_EQ(meas.rows(), 2);
+    EXPECT_EQ(meas(0), observations.back().maybe_range_m.value());
+    EXPECT_EQ(meas(1), observations.back().maybe_bearing_rad.value());
+    EXPECT_EQ(obs_mat.rows(), 2);
+    EXPECT_EQ(obs_mat.cols(), ESTIMATE_DIM);
+}
+
+TEST(CreateMeasurementTest, correct_observation_matrix) {
+    // Setup
+    const std::vector<BeaconObservation> observations{
+        {.maybe_id = 123, .maybe_range_m = 10.0, .maybe_bearing_rad = 0.0},
+        {.maybe_id = 456, .maybe_range_m = 20.0, .maybe_bearing_rad = std::numbers::pi / 2.0},
+    };
+
+    const int ESTIMATE_DIM = 3 + 2 * observations.size();
+    // Place the robot at the origin with the +x axes aligned. Place a beacon at (10.0, 0.0) and
+    // (0.0, 20.0) in the world frame.
+
+    const EkfSlamEstimate estimate = {.mean = (Eigen::VectorXd(ESTIMATE_DIM) << 0.0, 0.0, 0.0, 10, 0.0, 0.0, 20.0).finished(),
+                                      .cov = Eigen::MatrixXd::Zero(ESTIMATE_DIM, ESTIMATE_DIM),
+                                      .beacon_ids = {123, 456}};
+
+    // Action
+    const auto [meas, obs_mat] =
+        detail::compute_measurement_vector_and_observation_matrix(observations, estimate);
+
+    // Verification
+    EXPECT_EQ(meas.rows(), 4);
+    EXPECT_EQ(meas(0), observations.front().maybe_range_m.value());
+    EXPECT_EQ(meas(1), observations.front().maybe_bearing_rad.value());
+    EXPECT_EQ(meas(2), observations.back().maybe_range_m.value());
+    EXPECT_EQ(meas(3), observations.back().maybe_bearing_rad.value());
+    EXPECT_EQ(obs_mat.rows(), 4);
+    EXPECT_EQ(obs_mat.cols(), ESTIMATE_DIM);
+}
 }  // namespace robot::experimental::beacon_sim

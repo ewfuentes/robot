@@ -50,4 +50,9 @@ class EkfSlam {
     EkfSlamConfig config_;
     EkfSlamEstimate estimate_;
 };
+
+namespace detail {
+std::tuple<Eigen::VectorXd, Eigen::MatrixXd> compute_measurement_vector_and_observation_matrix(
+    const std::vector<BeaconObservation> &observations, const EkfSlamEstimate &est);
+}
 }  // namespace robot::experimental::beacon_sim
