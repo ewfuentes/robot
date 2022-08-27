@@ -23,8 +23,8 @@ std::optional<int> find_beacon_matrix_idx(const std::vector<int> &ids, const int
 }  // namespace
 
 namespace detail {
-UpdateInputs compute_measurement_and_prediction(
-    const std::vector<BeaconObservation> &observations, const EkfSlamEstimate &est) {
+UpdateInputs compute_measurement_and_prediction(const std::vector<BeaconObservation> &observations,
+                                                const EkfSlamEstimate &est) {
     // Preallocate space for the maximum possible size
     Eigen::VectorXd measurement_vec = Eigen::VectorXd::Zero(observations.size() * 2);
     Eigen::VectorXd prediction_vec = Eigen::VectorXd::Zero(observations.size() * 2);
@@ -166,6 +166,8 @@ std::optional<Eigen::Matrix2d> EkfSlamEstimate::beacon_cov(const int beacon_id) 
 EkfSlam::EkfSlam(const EkfSlamConfig &config) : config_(config) {
     const int total_dim = ROBOT_STATE_DIM + BEACON_DIM * config_.max_num_beacons;
     estimate_.mean = Eigen::VectorXd::Zero(total_dim);
+    // Initialize the beacon positions to be somewhere other than on top of the robot at init time
+    estimate_.mean(Eigen::seq(ROBOT_STATE_DIM, Eigen::last)).array() += 30.0;
     estimate_.cov = Eigen::MatrixXd::Identity(total_dim, total_dim) *
                     config_.initial_beacon_uncertainty_m * config_.initial_beacon_uncertainty_m;
     estimate_.cov.block(0, 0, ROBOT_STATE_DIM, ROBOT_STATE_DIM) = Eigen::Matrix3d::Zero();
@@ -215,6 +217,28 @@ const EkfSlamEstimate &EkfSlam::update(const std::vector<BeaconObservation> &obs
         detail::compute_measurement_and_prediction(observations, estimate_);
 
     // Compute the innovation
+    const Eigen::MatrixXd observation_noise = [&, measurement_dim = measurement_vec.rows()]() {
+        Eigen::MatrixXd noise = Eigen::MatrixXd::Identity(measurement_dim, measurement_dim);
+        // Set the even rows to be the range noise
+        noise(Eigen::seqN(0, Eigen::last, 2), Eigen::all) *=
+            config_.range_measurement_noise_m * config_.range_measurement_noise_m;
+        // Set the odd rows to be the bearing noise
+        noise(Eigen::seqN(1, Eigen::last, 2), Eigen::all) *=
+            config_.bearing_measurement_noise_rad * config_.range_measurement_noise_m;
+        return noise;
+    }();
+
+    const Eigen::VectorXd innovation = measurement_vec - prediction_vec;
+    const Eigen::MatrixXd innovation_cov =
+        observation_mat * estimate_.cov * observation_mat.transpose() + observation_noise;
+
+    // Use a solve instead of an inverse
+    const Eigen::MatrixXd kalman_gain =
+        estimate_.cov * observation_mat.transpose() * innovation_cov.inverse();
+    estimate_.mean += kalman_gain * innovation;
+    estimate_.cov = (Eigen::MatrixXd::Identity(estimate_.cov.rows(), estimate_.cov.cols()) -
+                     kalman_gain * observation_mat) *
+                    estimate_.cov;
 
     return estimate_;
 }

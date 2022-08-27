@@ -17,7 +17,7 @@ struct EkfSlamConfig {
     double heading_process_noise_rad_per_rt_meter;
     double beacon_pos_process_noise_m_per_rt_s;
     double range_measurement_noise_m;
-    double bearing_measurment_noise_rad;
+    double bearing_measurement_noise_rad;
 };
 
 struct EkfSlamEstimate {
