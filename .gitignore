@@ -1,1 +1,4 @@
 bazel-*
+
+# Ignore temporary emacs files
+.#*
