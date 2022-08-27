@@ -1,9 +1,34 @@
 
 #include "experimental/beacon_sim/ekf_slam.hh"
 
+#include <iostream>
+
 #include "gtest/gtest.h"
 
 namespace robot::experimental::beacon_sim {
+namespace {
+Eigen::VectorXd compute_gradient(const std::function<double(const Eigen::VectorXd &)> &f,
+                                 const Eigen::VectorXd &eval_pt) {
+    constexpr double PERTURB = 1e-3;
+    auto perturb = [](const Eigen::VectorXd &pt, const int idx, const double step) {
+        Eigen::VectorXd out = pt;
+        out(idx) += step;
+        return out;
+    };
+    Eigen::VectorXd out = Eigen::VectorXd::Zero(eval_pt.rows());
+    for (int i = 0; i < eval_pt.rows(); i++) {
+        const Eigen::VectorXd neg_perturb = perturb(eval_pt, i, -PERTURB);
+        const Eigen::VectorXd pos_perturb = perturb(eval_pt, i, PERTURB);
+
+        const double neg_eval = f(neg_perturb);
+        const double pos_eval = f(pos_perturb);
+
+        out(i) = (pos_eval - neg_eval) / (2 * PERTURB);
+    }
+    return out;
+}
+}  // namespace
+
 TEST(EkfSlamTest, estimate_has_expected_dimensions) {
     // Setup
     constexpr auto CONFIG = EkfSlamConfig{
@@ -108,8 +133,8 @@ TEST(CreateMeasurementTest, incomplete_measurements_rejected) {
                                       .beacon_ids = {123, 456, 789}};
 
     // Action
-    const auto [meas, obs_mat] =
-        detail::compute_measurement_vector_and_observation_matrix(observations, estimate);
+    const auto [meas, pred, obs_mat] =
+        detail::compute_measurement_and_prediction(observations, estimate);
 
     // Verification
     EXPECT_EQ(meas.rows(), 2);
@@ -129,22 +154,68 @@ TEST(CreateMeasurementTest, correct_observation_matrix) {
     const int ESTIMATE_DIM = 3 + 2 * observations.size();
     // Place the robot at the origin with the +x axes aligned. Place a beacon at (10.0, 0.0) and
     // (0.0, 20.0) in the world frame.
+    // This default constructs to the identity
+    const Sophus::SE2d est_local_from_robot;
+    const Eigen::Vector2d est_beacon_123_in_local{10.0, 0.0};
+    const Eigen::Vector2d est_beacon_456_in_local{0.0, 20.0};
 
-    const EkfSlamEstimate estimate = {.mean = (Eigen::VectorXd(ESTIMATE_DIM) << 0.0, 0.0, 0.0, 10, 0.0, 0.0, 20.0).finished(),
-                                      .cov = Eigen::MatrixXd::Zero(ESTIMATE_DIM, ESTIMATE_DIM),
-                                      .beacon_ids = {123, 456}};
+    const EkfSlamEstimate estimate = {
+        .mean = (Eigen::VectorXd(ESTIMATE_DIM) << est_local_from_robot.log(),
+                 est_beacon_123_in_local, est_beacon_456_in_local)
+                    .finished(),
+        .cov = Eigen::MatrixXd::Zero(ESTIMATE_DIM, ESTIMATE_DIM),
+        .beacon_ids = {123, 456}};
 
     // Action
-    const auto [meas, obs_mat] =
-        detail::compute_measurement_vector_and_observation_matrix(observations, estimate);
+    const auto [meas, pred, obs_mat] =
+        detail::compute_measurement_and_prediction(observations, estimate);
 
     // Verification
     EXPECT_EQ(meas.rows(), 4);
-    EXPECT_EQ(meas(0), observations.front().maybe_range_m.value());
-    EXPECT_EQ(meas(1), observations.front().maybe_bearing_rad.value());
-    EXPECT_EQ(meas(2), observations.back().maybe_range_m.value());
-    EXPECT_EQ(meas(3), observations.back().maybe_bearing_rad.value());
+    EXPECT_EQ(pred.rows(), 4);
     EXPECT_EQ(obs_mat.rows(), 4);
     EXPECT_EQ(obs_mat.cols(), ESTIMATE_DIM);
+
+    {
+        // Check Beacon 123
+        const Eigen::Vector2d est_beacon_in_robot =
+            est_local_from_robot.inverse() * est_beacon_123_in_local;
+
+        EXPECT_EQ(meas(0), observations.front().maybe_range_m.value());
+        EXPECT_EQ(pred(0), est_beacon_in_robot.norm());
+
+        EXPECT_EQ(meas(1), observations.front().maybe_bearing_rad.value());
+        EXPECT_EQ(pred(1), std::atan2(est_beacon_in_robot.y(), est_beacon_in_robot.x()));
+    }
+    {
+        // Check Beacon 456
+        const Eigen::Vector2d est_beacon_in_robot =
+            est_local_from_robot.inverse() * est_beacon_456_in_local;
+
+        EXPECT_EQ(meas(2), observations.back().maybe_range_m.value());
+        EXPECT_EQ(pred(2), est_beacon_in_robot.norm());
+
+        EXPECT_EQ(meas(3), observations.back().maybe_bearing_rad.value());
+        EXPECT_EQ(pred(3), std::atan2(est_beacon_in_robot.y(), est_beacon_in_robot.x()));
+    }
+
+    // Check the observation matrix using finite differences
+    auto extract_prediction_entry = [&](const int i) {
+        // Capture i by value to avoid a dangling reference
+        auto compute_value = [&, i](const Eigen::VectorXd &pt) {
+            EkfSlamEstimate perturb = estimate;
+            perturb.mean = pt;
+            const auto result = detail::compute_measurement_and_prediction(observations, perturb);
+            return result.prediction(i);
+        };
+        return compute_value;
+    };
+
+    for (int i = 0; i < obs_mat.rows(); i++) {
+        EXPECT_NEAR((obs_mat.row(i).transpose() -
+                     compute_gradient(extract_prediction_entry(i), estimate.mean))
+                        .norm(),
+                    0.0, 1e-6);
+    }
 }
 }  // namespace robot::experimental::beacon_sim

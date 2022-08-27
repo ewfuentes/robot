@@ -52,7 +52,14 @@ class EkfSlam {
 };
 
 namespace detail {
-std::tuple<Eigen::VectorXd, Eigen::MatrixXd> compute_measurement_vector_and_observation_matrix(
-    const std::vector<BeaconObservation> &observations, const EkfSlamEstimate &est);
-}
+struct UpdateInputs {
+    Eigen::VectorXd measurement;
+    Eigen::VectorXd prediction;
+    Eigen::MatrixXd observation_matrix;
+};
+
+UpdateInputs
+compute_measurement_and_prediction(const std::vector<BeaconObservation> &observations,
+                                   const EkfSlamEstimate &est);
+}  // namespace detail
 }  // namespace robot::experimental::beacon_sim
