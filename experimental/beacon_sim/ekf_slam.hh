@@ -58,8 +58,7 @@ struct UpdateInputs {
     Eigen::MatrixXd observation_matrix;
 };
 
-UpdateInputs
-compute_measurement_and_prediction(const std::vector<BeaconObservation> &observations,
-                                   const EkfSlamEstimate &est);
+UpdateInputs compute_measurement_and_prediction(const std::vector<BeaconObservation> &observations,
+                                                const EkfSlamEstimate &est);
 }  // namespace detail
 }  // namespace robot::experimental::beacon_sim
