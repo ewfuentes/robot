@@ -1,4 +1,5 @@
 
+#include <GL/gl.h>
 #include <GL/glu.h>
 
 #include <array>
@@ -9,15 +10,33 @@
 #include <thread>
 #include <utility>
 
+#include "common/argument_wrapper.hh"
+#include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/generate_observations.hh"
 #include "experimental/beacon_sim/robot.hh"
 #include "experimental/beacon_sim/sim_clock.hh"
 #include "experimental/beacon_sim/world_map.hh"
+#include "sophus/se3.hpp"
+#include "sophus/sim3.hpp"
 #include "visualization/gl_window/gl_window.hh"
 
 using namespace std::literals::chrono_literals;
 
 namespace robot::experimental::beacon_sim {
+namespace {
+Sophus::SE3d se3_from_se2(const Sophus::SE2d &a_from_b) {
+    Eigen::Matrix4d mat = Eigen::Matrix4d::Identity();
+    Eigen::Matrix3d a_from_b_mat = a_from_b.matrix();
+    mat.topLeftCorner(2, 2) = a_from_b_mat.topLeftCorner(2, 2);
+    mat.topRightCorner(2, 1) = a_from_b_mat.topRightCorner(2, 1);
+    return Sophus::SE3d(mat);
+}
+Sophus::Sim3d sim3_from_2d_cov(const Eigen::Matrix2d &cov) {
+    Eigen::Matrix4d mat = Eigen::Matrix4d::Identity();
+    mat.topLeftCorner(2, 2) = cov;
+    return Sophus::Sim3d(mat);
+}
+}  // namespace
 
 struct RobotCommand {
     double turn_rad;
@@ -31,13 +50,21 @@ struct KeyCommand {
     bool arrow_up;
     bool arrow_down;
     bool q;
+    bool a;
+    bool b;
+    bool c;
 
     static KeyCommand make_reset() {
-        return KeyCommand{.arrow_left = false,
-                          .arrow_right = false,
-                          .arrow_up = false,
-                          .arrow_down = false,
-                          .q = false};
+        return KeyCommand{
+            .arrow_left = false,
+            .arrow_right = false,
+            .arrow_up = false,
+            .arrow_down = false,
+            .q = false,
+            .a = false,
+            .b = false,
+            .c = false,
+        };
     }
 };
 
@@ -91,15 +118,16 @@ WorldMapOptions world_map_config() {
 
 void display_state(const WorldMap &world_map, const RobotState &robot,
                    const std::vector<BeaconObservation> &observations,
-                   visualization::gl_window::GlWindow &window) {
+                   const EkfSlamEstimate &ekf_estimate,
+                   InOut<visualization::gl_window::GlWindow> window) {
     constexpr double BEACON_HALF_WIDTH_M = 0.25;
     constexpr double ROBOT_SIZE_M = 0.5;
     constexpr double DEG_FROM_RAD = 180.0 / std::numbers::pi;
     constexpr double WINDOW_WIDTH_M = 15;
-    const auto [screen_width_px, screen_height_px] = window.get_window_dims();
+    const auto [screen_width_px, screen_height_px] = window->get_window_dims();
     const double aspect_ratio = static_cast<double>(screen_height_px) / screen_width_px;
 
-    window.register_render_callback([=]() {
+    window->register_render_callback([=]() {
         const auto gl_error = glGetError();
         if (gl_error != GL_NO_ERROR) {
             std::cout << "GL ERROR: " << gl_error << ": " << gluErrorString(gl_error) << std::endl;
@@ -151,6 +179,25 @@ void display_state(const WorldMap &world_map, const RobotState &robot,
         }
 
         glPopMatrix();  // Pop from Robot Frame to world frame
+
+        // Draw ekf estimates
+        glPushMatrix();
+        const Sophus::SE3d est_local_from_robot = se3_from_se2(ekf_estimate.local_from_robot());
+        std::cout << "Robot Pose: " << ekf_estimate.local_from_robot().log().transpose() << std::endl;
+        std::cout << "Robot Cov: " << std::endl <<  ekf_estimate.robot_cov() << std::endl;
+        glMultMatrixd(est_local_from_robot.matrix().data());
+        const Sophus::Sim3d est_robot_from_unscaled_cov =
+            sim3_from_2d_cov(ekf_estimate.robot_cov().topLeftCorner(2, 2));
+        glMultMatrixd(est_robot_from_unscaled_cov.data());
+
+        glBegin(GL_LINE_LOOP);
+        glColor4f(1.0, 0.5, 0.5, 1.0);
+        for (double theta = 0; theta < 2 * std::numbers::pi; theta += 0.05) {
+          glVertex2d(2.0 * std::cos(theta), 2.0 * std::sin(theta));
+        }
+        glEnd();
+        glPopMatrix();  // Pop from estimated robot frame to world frame
+
     });
 }
 
@@ -169,14 +216,26 @@ void run_simulation() {
     constexpr double INIT_POS_Y_M = 0.0;
     constexpr double INIT_HEADING_RAD = 0.0;
     constexpr ObservationConfig OBS_CONFIG = {
-        .range_noise_std_m = 0.5,
+        .range_noise_std_m = 0.005,
     };
     RobotState robot(INIT_POS_X_M, INIT_POS_Y_M, INIT_HEADING_RAD);
+
+    constexpr EkfSlamConfig EKF_CONFIG = {
+        .max_num_beacons = 30,
+        .initial_beacon_uncertainty_m = 1000,
+        .along_track_process_noise_m_per_rt_meter = 0.1,
+        .cross_track_process_noise_m_per_rt_meter = 0.05,
+        .heading_process_noise_rad_per_rt_meter = 0.005,
+        .beacon_pos_process_noise_m_per_rt_s = 0.1,
+        .range_measurement_noise_m = 1.0,
+        .bearing_measurement_noise_rad = 0.005,
+    };
+    EkfSlam ekf_slam(EKF_CONFIG);
 
     gl_window.register_window_resize_callback(
         [](const int width, const int height) { glViewport(0, 0, width, height); });
 
-    std::atomic<KeyCommand> key_command;
+    std::atomic<KeyCommand> key_command{KeyCommand::make_reset()};
     gl_window.register_keyboard_callback(
         [&key_command](const int key, const int, const int action, const int) mutable {
             if (action == GLFW_RELEASE) {
@@ -200,11 +259,6 @@ void run_simulation() {
     SimClock::reset();
     const auto DT = 25ms;
     while (run) {
-        // generate observations
-        const auto observations = generate_observations(map, robot, OBS_CONFIG, make_in_out(gen));
-
-        display_state(map, robot, observations, gl_window);
-
         // get command
         const auto command = get_command(key_command.exchange(KeyCommand::make_reset()),
                                          gl_window.get_joystick_states());
@@ -216,10 +270,23 @@ void run_simulation() {
         // simulate robot forward
         robot.turn(command.turn_rad);
         robot.move(command.move_m);
+
         std::this_thread::sleep_for(DT);
         SimClock::advance(DT);
+
+        const Sophus::SE2d old_robot_from_new_robot =
+            Sophus::SE2d::trans(command.move_m, 0.0) * Sophus::SE2d::rot(command.turn_rad);
+
+        ekf_slam.predict(old_robot_from_new_robot);
+
+        // generate observations
+        const auto observations = generate_observations(map, robot, OBS_CONFIG, make_in_out(gen));
+
+        const auto ekf_estimate = ekf_slam.update(observations);
+
+        display_state(map, robot, observations, ekf_estimate, make_in_out(gl_window));
     }
-}
+}  // namespace robot::experimental::beacon_sim
 }  // namespace robot::experimental::beacon_sim
 
 int main() {

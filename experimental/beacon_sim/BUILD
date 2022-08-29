@@ -8,7 +8,10 @@ cc_binary(
     ":robot",
     ":generate_observations",
     ":sim_clock",
+    ":ekf_slam",
     "//visualization/gl_window",
+    "//common:argument_wrapper",
+    "@sophus//:liegroups",
   ],
 )
 

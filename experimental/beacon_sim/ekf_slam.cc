@@ -220,10 +220,10 @@ const EkfSlamEstimate &EkfSlam::update(const std::vector<BeaconObservation> &obs
     const Eigen::MatrixXd observation_noise = [&, measurement_dim = measurement_vec.rows()]() {
         Eigen::MatrixXd noise = Eigen::MatrixXd::Identity(measurement_dim, measurement_dim);
         // Set the even rows to be the range noise
-        noise(Eigen::seqN(0, Eigen::last, 2), Eigen::all) *=
+        noise(Eigen::seq(0, Eigen::last, 2), Eigen::all) *=
             config_.range_measurement_noise_m * config_.range_measurement_noise_m;
         // Set the odd rows to be the bearing noise
-        noise(Eigen::seqN(1, Eigen::last, 2), Eigen::all) *=
+        noise(Eigen::seq(1, Eigen::last, 2), Eigen::all) *=
             config_.bearing_measurement_noise_rad * config_.range_measurement_noise_m;
         return noise;
     }();
