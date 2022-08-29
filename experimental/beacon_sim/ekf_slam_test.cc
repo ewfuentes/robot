@@ -6,6 +6,13 @@
 #include "gtest/gtest.h"
 
 namespace robot::experimental::beacon_sim {
+constexpr double TOL = 1e-6;
+
+class EkfSlamTestHelper {
+   public:
+    static EkfSlamEstimate &estimate(InOut<EkfSlam> ekf_slam) { return ekf_slam->estimate_; }
+};
+
 namespace {
 Eigen::VectorXd compute_gradient(const std::function<double(const Eigen::VectorXd &)> &f,
                                  const Eigen::VectorXd &eval_pt) {
@@ -83,7 +90,7 @@ TEST(EkfSlamTest, prediction_updates_as_expected) {
 
     // Verification
     const auto local_from_new_robot = initial_est.local_from_robot() * old_robot_from_new_robot;
-    EXPECT_NEAR((local_from_new_robot.log() - est.local_from_robot().log()).norm(), 0.0, 1e-6);
+    EXPECT_NEAR((local_from_new_robot.log() - est.local_from_robot().log()).norm(), 0.0, TOL);
 }
 
 TEST(EkfSlamTest, measurement_updates_as_expected) {
@@ -118,6 +125,100 @@ TEST(EkfSlamTest, measurement_updates_as_expected) {
     EXPECT_TRUE(maybe_beacon_in_local.has_value());
     // After the initial update, it should be within 10 meters of the true position
     EXPECT_LT((maybe_beacon_in_local.value() - beacon_in_local).norm(), 10.0);
+}
+
+TEST(EkfSlamTest, identity_update_does_not_change_estimate) {
+    // Setup
+    constexpr auto CONFIG = EkfSlamConfig{
+        .max_num_beacons = 1,
+        .initial_beacon_uncertainty_m = 1e3,
+        .along_track_process_noise_m_per_rt_meter = 0.1,
+        .cross_track_process_noise_m_per_rt_meter = 0.01,
+        .heading_process_noise_rad_per_rt_meter = 0.001,
+        .beacon_pos_process_noise_m_per_rt_s = 1e-6,
+        .range_measurement_noise_m = 1e-3,
+        .bearing_measurement_noise_rad = 1e-6,
+    };
+
+    EkfSlam ekf_slam(CONFIG);
+
+    // Action
+    constexpr int NUM_ITERS = 1000;
+    for (int i = 0; i < NUM_ITERS; i++) {
+        ekf_slam.predict(Sophus::SE2d());
+    }
+
+    const auto est = ekf_slam.estimate();
+
+    // Verification
+    EXPECT_NEAR((est.local_from_robot().log() - Eigen::Vector3d::Zero()).norm(), 0.0, 1e-6);
+    // Note that this is actually incorrect. If we don't move, then no noise should be accumulated,
+    // but I currently don't scale by arclength.
+    auto sq = [](const double value) { return value * value; };
+    EXPECT_NEAR(est.robot_cov()(0, 0),
+                sq(CONFIG.along_track_process_noise_m_per_rt_meter) * NUM_ITERS, TOL);
+    EXPECT_NEAR(est.robot_cov()(1, 1),
+                sq(CONFIG.cross_track_process_noise_m_per_rt_meter) * NUM_ITERS, TOL);
+    EXPECT_NEAR(est.robot_cov()(2, 2),
+                sq(CONFIG.heading_process_noise_rad_per_rt_meter) * NUM_ITERS, TOL);
+}
+
+TEST(EkfSlamTest, position_estimate_converges_given_known_beacon) {
+    // Setup
+    constexpr auto CONFIG = EkfSlamConfig{
+        .max_num_beacons = 1,
+        .initial_beacon_uncertainty_m = 1e-9,
+        .along_track_process_noise_m_per_rt_meter = 1.0,
+        .cross_track_process_noise_m_per_rt_meter = 1.0,
+        .heading_process_noise_rad_per_rt_meter = 1.0,
+        .beacon_pos_process_noise_m_per_rt_s = 1e-6,
+        .range_measurement_noise_m = 1e-6,
+        .bearing_measurement_noise_rad = 1e-9,
+    };
+
+    constexpr int BEACON_ID = 10;
+    const Eigen::Vector2d beacon_in_local{10, 20};
+    const Sophus::SE2d expected_local_from_robot =
+        Sophus::SE2d(std::numbers::pi / 3.0, {5.0, 12.0});
+
+    EkfSlam ekf_slam(CONFIG);
+
+    EkfSlamTestHelper::estimate(make_in_out(ekf_slam)).mean(Eigen::seqN(3, 2)) = beacon_in_local;
+    EkfSlamTestHelper::estimate(make_in_out(ekf_slam)).cov.topLeftCorner(3, 3) =
+        1e6 * Eigen::Matrix3d::Identity();
+
+    const auto beacon_in_robot = expected_local_from_robot.inverse() * beacon_in_local;
+    const BeaconObservation obs = {
+        .maybe_id = BEACON_ID,
+        .maybe_range_m = beacon_in_robot.norm(),
+        .maybe_bearing_rad = std::atan2(beacon_in_robot.y(), beacon_in_robot.x())};
+
+    // Action
+    for (int i = 0; i < 10; i++) {
+        if (i % 1 == 0) {
+            std::cout << "Iter " << i << std::endl;
+            std::cout << ekf_slam.estimate().local_from_robot().matrix() << std::endl;
+            std::cout << "cov:" << std::endl;
+            std::cout << ekf_slam.estimate().robot_cov().matrix() << std::endl << std::endl;
+        }
+        ekf_slam.predict(Sophus::SE2d());
+        ekf_slam.update({obs});
+    }
+
+    const auto est = ekf_slam.estimate();
+
+    // Verification
+    EXPECT_NEAR(
+        (est.local_from_robot().translation() - expected_local_from_robot.translation()).norm(),
+        0.0, 1.0);
+    EXPECT_NEAR(est.local_from_robot().so2().log() - expected_local_from_robot.so2().log(), 0.0,
+                0.02);
+    std::cout << "Expected local from robot: " << std::endl
+              << expected_local_from_robot.matrix() << std::endl;
+    std::cout << "local from robot: " << std::endl << est.local_from_robot().matrix() << std::endl;
+    std::cout << "robot cov: " << std::endl << est.robot_cov() << std::endl;
+    std::cout << "beacon_in_local: " << std::endl
+              << est.beacon_in_local(BEACON_ID).value() << std::endl;
 }
 
 TEST(CreateMeasurementTest, incomplete_measurements_rejected) {

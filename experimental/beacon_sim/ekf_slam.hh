@@ -49,6 +49,8 @@ class EkfSlam {
    private:
     EkfSlamConfig config_;
     EkfSlamEstimate estimate_;
+
+  friend class EkfSlamTestHelper;
 };
 
 namespace detail {
