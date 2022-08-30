@@ -1,8 +1,6 @@
 
 #include "experimental/beacon_sim/ekf_slam.hh"
 
-#include <iostream>
-
 namespace robot::experimental::beacon_sim {
 namespace {
 
@@ -28,6 +26,7 @@ UpdateInputs compute_measurement_and_prediction(const std::vector<BeaconObservat
     // Preallocate space for the maximum possible size
     Eigen::VectorXd measurement_vec = Eigen::VectorXd::Zero(observations.size() * 2);
     Eigen::VectorXd prediction_vec = Eigen::VectorXd::Zero(observations.size() * 2);
+    Eigen::VectorXd innovation_vec = Eigen::VectorXd::Zero(observations.size() * 2);
     Eigen::MatrixXd observation_mat =
         Eigen::MatrixXd::Zero(observations.size() * 2, est.mean.rows());
 
@@ -51,9 +50,17 @@ UpdateInputs compute_measurement_and_prediction(const std::vector<BeaconObservat
             est.beacon_in_local(obs.maybe_id.value()).value();
         const Eigen::Vector2d est_beacon_in_robot =
             est_local_from_robot.inverse() * est_beacon_in_local;
+
         prediction_vec(start_idx) = est_beacon_in_robot.norm();
         prediction_vec(start_idx + 1) =
             std::atan2(est_beacon_in_robot.y(), est_beacon_in_robot.x());
+
+        const Sophus::SO2 robot_from_measured(obs.maybe_bearing_rad.value());
+        const Sophus::SO2 robot_from_predicted(prediction_vec(start_idx + 1));
+
+        innovation_vec(start_idx) = measurement_vec(start_idx) - prediction_vec(start_idx);
+        innovation_vec(start_idx + 1) =
+            (robot_from_predicted.inverse() * robot_from_measured).log();
 
         // Populate the measurement matrix
 
@@ -129,12 +136,15 @@ UpdateInputs compute_measurement_and_prediction(const std::vector<BeaconObservat
     }
 
     // Shrink the measurement vector and observation matrix to the number of valid rows
-    measurement_vec.conservativeResize(num_valid_observations * BEACON_DIM);
-    prediction_vec.conservativeResize(num_valid_observations * BEACON_DIM);
-    observation_mat.conservativeResize(num_valid_observations * BEACON_DIM, Eigen::NoChange_t{});
+    const int expected_size = num_valid_observations * BEACON_DIM;
+    measurement_vec.conservativeResize(expected_size);
+    prediction_vec.conservativeResize(expected_size);
+    innovation_vec.conservativeResize(expected_size);
+    observation_mat.conservativeResize(expected_size, Eigen::NoChange_t{});
 
     return {.measurement = measurement_vec,
             .prediction = prediction_vec,
+            .innovation = innovation_vec,
             .observation_matrix = observation_mat};
 }
 }  // namespace detail
@@ -175,8 +185,8 @@ EkfSlam::EkfSlam(const EkfSlamConfig &config) : config_(config) {
 
 const EkfSlamEstimate &EkfSlam::predict(const Sophus::SE2d &old_robot_from_new_robot) {
     // Update the robot mean
-    // Since these are perturbations on the right, they can be directly added
-    estimate_.mean(Eigen::seqN(0, ROBOT_STATE_DIM)) += old_robot_from_new_robot.log();
+    const auto local_from_new_robot = (estimate_.local_from_robot() * old_robot_from_new_robot);
+    estimate_.mean(Eigen::seqN(0, ROBOT_STATE_DIM)) = local_from_new_robot.log();
 
     // Update the covariances
     // TODO: This should use the length of the geodesic between old and new poses
@@ -213,22 +223,21 @@ const EkfSlamEstimate &EkfSlam::update(const std::vector<BeaconObservation> &obs
     }
 
     // turn the observations into a column vector of beacon in robot points
-    const auto [measurement_vec, prediction_vec, observation_mat] =
+    const auto [measurement_vec, prediction_vec, innovation, observation_mat] =
         detail::compute_measurement_and_prediction(observations, estimate_);
 
     // Compute the innovation
     const Eigen::MatrixXd observation_noise = [&, measurement_dim = measurement_vec.rows()]() {
         Eigen::MatrixXd noise = Eigen::MatrixXd::Identity(measurement_dim, measurement_dim);
         // Set the even rows to be the range noise
-        noise(Eigen::seqN(0, Eigen::last, 2), Eigen::all) *=
+        noise(Eigen::seq(0, Eigen::last, 2), Eigen::all) *=
             config_.range_measurement_noise_m * config_.range_measurement_noise_m;
         // Set the odd rows to be the bearing noise
-        noise(Eigen::seqN(1, Eigen::last, 2), Eigen::all) *=
+        noise(Eigen::seq(1, Eigen::last, 2), Eigen::all) *=
             config_.bearing_measurement_noise_rad * config_.range_measurement_noise_m;
         return noise;
     }();
 
-    const Eigen::VectorXd innovation = measurement_vec - prediction_vec;
     const Eigen::MatrixXd innovation_cov =
         observation_mat * estimate_.cov * observation_mat.transpose() + observation_noise;
 

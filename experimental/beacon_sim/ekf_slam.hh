@@ -49,12 +49,15 @@ class EkfSlam {
    private:
     EkfSlamConfig config_;
     EkfSlamEstimate estimate_;
+
+    friend class EkfSlamTestHelper;
 };
 
 namespace detail {
 struct UpdateInputs {
     Eigen::VectorXd measurement;
     Eigen::VectorXd prediction;
+    Eigen::VectorXd innovation;
     Eigen::MatrixXd observation_matrix;
 };
 
