@@ -317,6 +317,4 @@ void run_simulation() {
 }
 }  // namespace robot::experimental::beacon_sim
 
-int main() {
-    robot::experimental::beacon_sim::run_simulation();
-}
+int main() { robot::experimental::beacon_sim::run_simulation(); }

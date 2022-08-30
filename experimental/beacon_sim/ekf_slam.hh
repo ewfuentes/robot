@@ -50,7 +50,7 @@ class EkfSlam {
     EkfSlamConfig config_;
     EkfSlamEstimate estimate_;
 
-  friend class EkfSlamTestHelper;
+    friend class EkfSlamTestHelper;
 };
 
 namespace detail {
