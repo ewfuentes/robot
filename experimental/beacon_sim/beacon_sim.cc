@@ -180,6 +180,17 @@ void display_state(const WorldMap &world_map, const RobotState &robot,
             glPushMatrix();
             const Sophus::SE3d est_local_from_robot = se3_from_se2(ekf_estimate.local_from_robot());
             glMultMatrixd(est_local_from_robot.matrix().data());
+
+            glBegin(GL_LINE_LOOP);
+            glColor4f(0.75, 0.75, 1.0, 1.0);
+            for (const auto &[dx, dy] :
+                 std::array<std::pair<double, double>, 3>{{{0.0, 0.5}, {1.5, 0.0}, {0.0, -0.5}}}) {
+                const double x_in_robot_m = dx * ROBOT_SIZE_M;
+                const double y_in_robot_m = dy * ROBOT_SIZE_M;
+                glVertex2d(x_in_robot_m, y_in_robot_m);
+            }
+            glEnd();
+
             const Eigen::Matrix2d pos_cov = ekf_estimate.robot_cov().topLeftCorner(2, 2);
             const Eigen::LLT<Eigen::Matrix2d> cov_llt(pos_cov);
 
@@ -204,7 +215,7 @@ void display_state(const WorldMap &world_map, const RobotState &robot,
             const Eigen::LLT<Eigen::Matrix2d> cov_llt(pos_cov);
 
             glBegin(GL_LINE_LOOP);
-            glColor4f(0.0, 1.0, 0.0, 1.0);
+            glColor4f(0.75, 0.75, 1.0, 1.0);
             for (double theta = 0; theta < 2 * std::numbers::pi; theta += 0.05) {
                 const Eigen::Vector2d pt =
                     cov_llt.matrixL() *
@@ -233,17 +244,17 @@ void run_simulation() {
     constexpr double INIT_POS_Y_M = 0.0;
     constexpr double INIT_HEADING_RAD = 0.0;
     constexpr ObservationConfig OBS_CONFIG = {
-        .range_noise_std_m = 0.005,
+        .range_noise_std_m = 0.5,
     };
     RobotState robot(INIT_POS_X_M, INIT_POS_Y_M, INIT_HEADING_RAD);
 
     constexpr EkfSlamConfig EKF_CONFIG = {
-        .max_num_beacons = 30,
+        .max_num_beacons = 25,
         .initial_beacon_uncertainty_m = 1000,
-        .along_track_process_noise_m_per_rt_meter = 0.1,
-        .cross_track_process_noise_m_per_rt_meter = 0.05,
-        .heading_process_noise_rad_per_rt_meter = 0.005,
-        .beacon_pos_process_noise_m_per_rt_s = 0.1,
+        .along_track_process_noise_m_per_rt_meter = 0.01,
+        .cross_track_process_noise_m_per_rt_meter = 0.005,
+        .heading_process_noise_rad_per_rt_meter = 0.0005,
+        .beacon_pos_process_noise_m_per_rt_s = 1.0,
         .range_measurement_noise_m = 1.0,
         .bearing_measurement_noise_rad = 0.005,
     };
@@ -303,10 +314,9 @@ void run_simulation() {
 
         display_state(map, robot, observations, ekf_estimate, make_in_out(gl_window));
     }
-}  // namespace robot::experimental::beacon_sim
+}
 }  // namespace robot::experimental::beacon_sim
 
 int main() {
-    std::cout << "Hello World!" << std::endl;
     robot::experimental::beacon_sim::run_simulation();
 }

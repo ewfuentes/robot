@@ -57,6 +57,7 @@ namespace detail {
 struct UpdateInputs {
     Eigen::VectorXd measurement;
     Eigen::VectorXd prediction;
+    Eigen::VectorXd innovation;
     Eigen::MatrixXd observation_matrix;
 };
 

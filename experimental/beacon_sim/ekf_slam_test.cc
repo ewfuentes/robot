@@ -235,7 +235,7 @@ TEST(CreateMeasurementTest, incomplete_measurements_rejected) {
                                       .beacon_ids = {123, 456, 789}};
 
     // Action
-    const auto [meas, pred, obs_mat] =
+    const auto [meas, pred, innovation, obs_mat] =
         detail::compute_measurement_and_prediction(observations, estimate);
 
     // Verification
@@ -269,7 +269,7 @@ TEST(CreateMeasurementTest, correct_observation_matrix) {
         .beacon_ids = {123, 456}};
 
     // Action
-    const auto [meas, pred, obs_mat] =
+    const auto [meas, pred, innovation, obs_mat] =
         detail::compute_measurement_and_prediction(observations, estimate);
 
     // Verification
@@ -300,6 +300,63 @@ TEST(CreateMeasurementTest, correct_observation_matrix) {
         EXPECT_EQ(meas(3), observations.back().maybe_bearing_rad.value());
         EXPECT_EQ(pred(3), std::atan2(est_beacon_in_robot.y(), est_beacon_in_robot.x()));
     }
+
+    // Check the observation matrix using finite differences
+    auto extract_prediction_entry = [&](const int i) {
+        // Capture i by value to avoid a dangling reference
+        auto compute_value = [&, i](const Eigen::VectorXd &pt) {
+            EkfSlamEstimate perturb = estimate;
+            perturb.mean = pt;
+            const auto result = detail::compute_measurement_and_prediction(observations, perturb);
+            return result.prediction(i);
+        };
+        return compute_value;
+    };
+
+    for (int i = 0; i < obs_mat.rows(); i++) {
+        EXPECT_NEAR((obs_mat.row(i).transpose() -
+                     compute_gradient(extract_prediction_entry(i), estimate.mean))
+                        .norm(),
+                    0.0, 1e-6);
+    }
+}
+
+TEST(CreateMeasurementTest, innovation_handles_wrap_around) {
+    // Setup
+    constexpr int BEACON_ID = 123;
+    constexpr double RANGE_M = 10.0;
+    constexpr double MEASURED_BEARING_RAD = 3.0;
+    constexpr double ESTIMATED_BEARING_RAD = -3.0;
+    const std::vector<BeaconObservation> observations{
+        {.maybe_id = BEACON_ID,
+         .maybe_range_m = RANGE_M,
+         .maybe_bearing_rad = MEASURED_BEARING_RAD},
+    };
+
+    const int ESTIMATE_DIM = 3 + 2 * observations.size();
+    // Place the robot at the origin with the +x axes aligned. Place a beacon at (10.0, 0.0) and
+    // (0.0, 20.0) in the world frame.
+    // This default constructs to the identity
+    const Sophus::SE2d est_local_from_robot;
+    const Eigen::Vector2d est_beacon_123_in_local{RANGE_M * std::cos(ESTIMATED_BEARING_RAD),
+                                                  RANGE_M * std::sin(ESTIMATED_BEARING_RAD)};
+
+    const EkfSlamEstimate estimate = {
+        .mean =
+            (Eigen::VectorXd(ESTIMATE_DIM) << est_local_from_robot.log(), est_beacon_123_in_local)
+                .finished(),
+        .cov = Eigen::MatrixXd::Zero(ESTIMATE_DIM, ESTIMATE_DIM),
+        .beacon_ids = {BEACON_ID}};
+
+    // Action
+    const auto [meas, pred, innovation, obs_mat] =
+        detail::compute_measurement_and_prediction(observations, estimate);
+
+    // Verification
+    auto angle_wrap = [](const double angle_rad) {
+        return std::fmod(angle_rad + std::numbers::pi, 2 * std::numbers::pi) - std::numbers::pi;
+    };
+    EXPECT_NEAR(innovation(1), angle_wrap(MEASURED_BEARING_RAD - ESTIMATED_BEARING_RAD), TOL);
 
     // Check the observation matrix using finite differences
     auto extract_prediction_entry = [&](const int i) {
