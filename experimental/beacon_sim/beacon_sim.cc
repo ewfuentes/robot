@@ -45,9 +45,6 @@ struct KeyCommand {
     bool arrow_up;
     bool arrow_down;
     bool q;
-    bool a;
-    bool b;
-    bool c;
 
     static KeyCommand make_reset() {
         return KeyCommand{
@@ -56,9 +53,6 @@ struct KeyCommand {
             .arrow_up = false,
             .arrow_down = false,
             .q = false,
-            .a = false,
-            .b = false,
-            .c = false,
         };
     }
 };
