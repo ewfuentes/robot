@@ -4,7 +4,7 @@
 namespace robot::experimental::beacon_sim {
 namespace {
 
-constexpr int ROBOT_STATE_DIM = Sophus::SE2d::DoF;
+constexpr int ROBOT_STATE_DIM = liegroups::SE2::DoF;
 constexpr int BEACON_DIM = 2;
 
 std::optional<int> find_beacon_matrix_idx(const std::vector<int> &ids, const int id) {
@@ -55,8 +55,8 @@ UpdateInputs compute_measurement_and_prediction(const std::vector<BeaconObservat
         prediction_vec(start_idx + 1) =
             std::atan2(est_beacon_in_robot.y(), est_beacon_in_robot.x());
 
-        const Sophus::SO2 robot_from_measured(obs.maybe_bearing_rad.value());
-        const Sophus::SO2 robot_from_predicted(prediction_vec(start_idx + 1));
+        const liegroups::SO2 robot_from_measured(obs.maybe_bearing_rad.value());
+        const liegroups::SO2 robot_from_predicted(prediction_vec(start_idx + 1));
 
         innovation_vec(start_idx) = measurement_vec(start_idx) - prediction_vec(start_idx);
         innovation_vec(start_idx + 1) =
@@ -79,7 +79,7 @@ UpdateInputs compute_measurement_and_prediction(const std::vector<BeaconObservat
         const Eigen::Matrix<double, 2, 3> d_pr_d_X = [&]() {
             Eigen::Matrix<double, 2, 3> out;
             out << -Eigen::Matrix2d::Identity(),
-                R.transpose() * Sophus::SO2d::generator() * (t - est_beacon_in_local);
+                R.transpose() * liegroups::SO2::generator() * (t - est_beacon_in_local);
             return out;
         }();
         const Eigen::Matrix2d d_pr_d_pl = R.transpose();
@@ -149,8 +149,8 @@ UpdateInputs compute_measurement_and_prediction(const std::vector<BeaconObservat
 }
 }  // namespace detail
 
-Sophus::SE2d EkfSlamEstimate::local_from_robot() const {
-    return Sophus::SE2d::exp(mean(Eigen::seqN(0, ROBOT_STATE_DIM)));
+liegroups::SE2 EkfSlamEstimate::local_from_robot() const {
+    return liegroups::SE2::exp(mean(Eigen::seqN(0, ROBOT_STATE_DIM)));
 }
 Eigen::Matrix3d EkfSlamEstimate::robot_cov() const {
     return cov.block(0, 0, ROBOT_STATE_DIM, ROBOT_STATE_DIM);
@@ -183,7 +183,7 @@ EkfSlam::EkfSlam(const EkfSlamConfig &config) : config_(config) {
     estimate_.cov.block(0, 0, ROBOT_STATE_DIM, ROBOT_STATE_DIM) = Eigen::Matrix3d::Zero();
 }
 
-const EkfSlamEstimate &EkfSlam::predict(const Sophus::SE2d &old_robot_from_new_robot) {
+const EkfSlamEstimate &EkfSlam::predict(const liegroups::SE2 &old_robot_from_new_robot) {
     // Update the robot mean
     const auto local_from_new_robot = (estimate_.local_from_robot() * old_robot_from_new_robot);
     estimate_.mean(Eigen::seqN(0, ROBOT_STATE_DIM)) = local_from_new_robot.log();

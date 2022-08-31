@@ -11,7 +11,8 @@ cc_binary(
     ":ekf_slam",
     "//visualization/gl_window",
     "//common:argument_wrapper",
-    "@sophus//:liegroups",
+    "//common/liegroups:se2",
+    "//common/liegroups:se3",
   ],
 )
 
@@ -30,7 +31,7 @@ cc_library(
   srcs = ["robot.cc"],
   deps = [
     "@eigen//:eigen",
-    "@sophus//:liegroups",
+    "//common/liegroups:se2",
   ]
 )
 
@@ -68,7 +69,7 @@ cc_library(
   deps = [
     ":generate_observations",
     "@eigen//:eigen",
-    "@sophus//:liegroups",
+    "//common/liegroups:se2",
   ]
 )
 

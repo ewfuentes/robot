@@ -12,24 +12,24 @@
 
 #include "Eigen/Cholesky"
 #include "common/argument_wrapper.hh"
+#include "common/liegroups/se3.hh"
 #include "common/time/sim_clock.hh"
 #include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/generate_observations.hh"
 #include "experimental/beacon_sim/robot.hh"
 #include "experimental/beacon_sim/world_map.hh"
-#include "sophus/se3.hpp"
 #include "visualization/gl_window/gl_window.hh"
 
 using namespace std::literals::chrono_literals;
 
 namespace robot::experimental::beacon_sim {
 namespace {
-Sophus::SE3d se3_from_se2(const Sophus::SE2d &a_from_b) {
+liegroups::SE3 se3_from_se2(const liegroups::SE2 &a_from_b) {
     Eigen::Matrix4d mat = Eigen::Matrix4d::Identity();
     Eigen::Matrix3d a_from_b_mat = a_from_b.matrix();
     mat.topLeftCorner(2, 2) = a_from_b_mat.topLeftCorner(2, 2);
     mat.topRightCorner(2, 1) = a_from_b_mat.topRightCorner(2, 1);
-    return Sophus::SE3d(mat);
+    return liegroups::SE3(mat);
 }
 }  // namespace
 
@@ -172,7 +172,8 @@ void display_state(const WorldMap &world_map, const RobotState &robot,
         // Draw ekf estimates
         {
             glPushMatrix();
-            const Sophus::SE3d est_local_from_robot = se3_from_se2(ekf_estimate.local_from_robot());
+            const liegroups::SE3 est_local_from_robot =
+                se3_from_se2(ekf_estimate.local_from_robot());
             glMultMatrixd(est_local_from_robot.matrix().data());
 
             glBegin(GL_LINE_LOOP);
@@ -202,8 +203,8 @@ void display_state(const WorldMap &world_map, const RobotState &robot,
 
         for (const auto beacon_id : ekf_estimate.beacon_ids) {
             glPushMatrix();
-            const Sophus::SE3d local_from_beacon =
-                se3_from_se2(Sophus::SE2d::trans(ekf_estimate.beacon_in_local(beacon_id).value()));
+            const liegroups::SE3 local_from_beacon = se3_from_se2(
+                liegroups::SE2::trans(ekf_estimate.beacon_in_local(beacon_id).value()));
             glMultMatrixd(local_from_beacon.matrix().data());
             const Eigen::Matrix2d pos_cov = ekf_estimate.beacon_cov(beacon_id).value();
             const Eigen::LLT<Eigen::Matrix2d> cov_llt(pos_cov);
@@ -296,8 +297,8 @@ void run_simulation() {
         std::this_thread::sleep_for(DT);
         time::SimClock::advance(DT);
 
-        const Sophus::SE2d old_robot_from_new_robot =
-            Sophus::SE2d::trans(command.move_m, 0.0) * Sophus::SE2d::rot(command.turn_rad);
+        const liegroups::SE2 old_robot_from_new_robot =
+            liegroups::SE2::trans(command.move_m, 0.0) * liegroups::SE2::rot(command.turn_rad);
 
         ekf_slam.predict(old_robot_from_new_robot);
 

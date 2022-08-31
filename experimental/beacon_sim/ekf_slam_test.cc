@@ -1,8 +1,6 @@
 
 #include "experimental/beacon_sim/ekf_slam.hh"
 
-#include <iostream>
-
 #include "gtest/gtest.h"
 
 namespace robot::experimental::beacon_sim {
@@ -81,7 +79,7 @@ TEST(EkfSlamTest, prediction_updates_as_expected) {
         .bearing_measurement_noise_rad = 0.001,
     };
     EkfSlam ekf_slam(CONFIG);
-    const Sophus::SE2d old_robot_from_new_robot = Sophus::SE2d::exp({1.0, 2.0, 3.0});
+    const liegroups::SE2 old_robot_from_new_robot = liegroups::SE2::exp({1.0, 2.0, 3.0});
     const EkfSlamEstimate initial_est = ekf_slam.estimate();
 
     // Action
@@ -109,7 +107,7 @@ TEST(EkfSlamTest, measurement_updates_as_expected) {
     constexpr int BEACON_ID = 10;
     const Eigen::Vector2d beacon_in_local{3, 4};
     EkfSlam ekf_slam(CONFIG);
-    const auto initial_est = ekf_slam.predict(Sophus::SE2d());
+    const auto initial_est = ekf_slam.predict(liegroups::SE2());
 
     const auto beacon_in_robot = initial_est.local_from_robot().inverse() * beacon_in_local;
     const BeaconObservation obs = {
@@ -145,7 +143,7 @@ TEST(EkfSlamTest, identity_update_does_not_change_estimate) {
     // Action
     constexpr int NUM_ITERS = 1000;
     for (int i = 0; i < NUM_ITERS; i++) {
-        ekf_slam.predict(Sophus::SE2d());
+        ekf_slam.predict(liegroups::SE2());
     }
 
     const auto est = ekf_slam.estimate();
@@ -178,8 +176,8 @@ TEST(EkfSlamTest, position_estimate_converges_given_known_beacon) {
 
     constexpr int BEACON_ID = 10;
     const Eigen::Vector2d beacon_in_local{10, 20};
-    const Sophus::SE2d expected_local_from_robot =
-        Sophus::SE2d(std::numbers::pi / 3.0, {5.0, 12.0});
+    const liegroups::SE2 expected_local_from_robot =
+        liegroups::SE2(std::numbers::pi / 3.0, {5.0, 12.0});
 
     EkfSlam ekf_slam(CONFIG);
 
@@ -201,7 +199,7 @@ TEST(EkfSlamTest, position_estimate_converges_given_known_beacon) {
             std::cout << "cov:" << std::endl;
             std::cout << ekf_slam.estimate().robot_cov().matrix() << std::endl << std::endl;
         }
-        ekf_slam.predict(Sophus::SE2d());
+        ekf_slam.predict(liegroups::SE2());
         ekf_slam.update({obs});
     }
 
@@ -257,7 +255,7 @@ TEST(CreateMeasurementTest, correct_observation_matrix) {
     // Place the robot at the origin with the +x axes aligned. Place a beacon at (10.0, 0.0) and
     // (0.0, 20.0) in the world frame.
     // This default constructs to the identity
-    const Sophus::SE2d est_local_from_robot;
+    const liegroups::SE2 est_local_from_robot;
     const Eigen::Vector2d est_beacon_123_in_local{10.0, 0.0};
     const Eigen::Vector2d est_beacon_456_in_local{0.0, 20.0};
 
@@ -337,7 +335,7 @@ TEST(CreateMeasurementTest, innovation_handles_wrap_around) {
     // Place the robot at the origin with the +x axes aligned. Place a beacon at (10.0, 0.0) and
     // (0.0, 20.0) in the world frame.
     // This default constructs to the identity
-    const Sophus::SE2d est_local_from_robot;
+    const liegroups::SE2 est_local_from_robot;
     const Eigen::Vector2d est_beacon_123_in_local{RANGE_M * std::cos(ESTIMATED_BEARING_RAD),
                                                   RANGE_M * std::sin(ESTIMATED_BEARING_RAD)};
 
