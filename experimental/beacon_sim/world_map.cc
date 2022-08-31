@@ -5,7 +5,8 @@
 #include <chrono>
 
 namespace robot::experimental::beacon_sim {
-WorldMap::WorldMap(const WorldMapOptions &options, std::unique_ptr<std::mt19937> generator) {
+WorldMap::WorldMap(const WorldMapOptions &options, std::unique_ptr<std::mt19937> generator)
+    : options_(options) {
     const int num_beacons =
         options.fixed_beacons.beacons.size() + options.blinking_beacons.beacons.size();
     beacons_.reserve(num_beacons);
@@ -20,7 +21,7 @@ WorldMap::WorldMap(const WorldMapOptions &options, std::unique_ptr<std::mt19937>
                     .transition_times = {time::RobotTimestamp::min(), time::RobotTimestamp::max()}};
         });
 
-    const time::RobotTimestamp init_time = time::current_robot_time();
+    const time::RobotTimestamp init_time = time::RobotTimestamp();
     const double average_visible_time_s = 1.0 / options.blinking_beacons.beacon_disappear_rate_hz;
     const double average_invisible_time_s = 1.0 / options.blinking_beacons.beacon_appear_rate_hz;
     const double is_visible_probability =
@@ -56,8 +57,25 @@ std::vector<Beacon> WorldMap::visible_beacons(const time::RobotTimestamp &t) con
     return out;
 }
 
+void WorldMap::update(const time::RobotTimestamp &t) {
+    for (auto &beacon : beacons_) {
+        while (t >= beacon.transition_times.back()) {
+            const double transition_rate_hz = beacon.is_visible(t)
+                                               ? options_.blinking_beacons.beacon_disappear_rate_hz
+                                               : options_.blinking_beacons.beacon_appear_rate_hz;
+            const double next_segment_length_s =
+                std::exponential_distribution(transition_rate_hz)(*generator_);
+            const time::RobotTimestamp::duration next_segment_length = time::as_duration(next_segment_length_s);
+            const time::RobotTimestamp next_transition_time =
+                beacon.transition_times.back() + next_segment_length;
+            beacon.transition_times.push_back(next_transition_time);
+        }
+    }
+}
+
 bool WorldMap::CompleteBeacon::is_visible(const time::RobotTimestamp &t) const {
-    (void)t;
-    return true;
+    const auto iter = std::lower_bound(transition_times.begin(), transition_times.end(), t);
+    const int segment_idx = std::distance(transition_times.begin(), iter);
+    return segment_idx % 2 == 1 ? is_initially_visible : !is_initially_visible;
 }
 }  // namespace robot::experimental::beacon_sim

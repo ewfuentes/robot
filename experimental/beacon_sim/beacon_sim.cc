@@ -102,6 +102,12 @@ WorldMapOptions world_map_config() {
                 Beacon{.id = beacon_id++, .pos_in_local = {c * SPACING_M, r * SPACING_M}});
         }
     }
+
+    out.blinking_beacons = {
+        .beacons = {{.id = beacon_id++, .pos_in_local = {-SPACING_M, -SPACING_M}}},
+        .beacon_appear_rate_hz = 1.0,
+        .beacon_disappear_rate_hz = 0.5,
+    };
     return out;
 }
 
@@ -296,6 +302,8 @@ void run_simulation() {
 
         std::this_thread::sleep_for(DT);
         time::SimClock::advance(DT);
+
+        map.update(time::current_robot_time());
 
         const liegroups::SE2 old_robot_from_new_robot =
             liegroups::SE2::trans(command.move_m, 0.0) * liegroups::SE2::rot(command.turn_rad);

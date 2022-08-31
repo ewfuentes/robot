@@ -59,6 +59,7 @@ class WorldMap {
         bool is_visible(const time::RobotTimestamp &t) const;
     };
 
+    WorldMapOptions options_;
     std::vector<CompleteBeacon> beacons_;
     std::unique_ptr<std::mt19937> generator_;
 };
