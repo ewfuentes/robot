@@ -34,12 +34,25 @@ class RobotTimestamp {
         return *this;
     }
 
-    static constexpr RobotTimestamp min() noexcept;
-    static constexpr RobotTimestamp max() noexcept;
+    RobotTimestamp &operator+(const duration &duration) noexcept {
+        *this += duration;
+        return *this;
+    }
+
+    static constexpr RobotTimestamp min() noexcept { return RobotTimestamp() + duration::min(); }
+    static constexpr RobotTimestamp max() noexcept { return RobotTimestamp() + duration::max(); }
 
    private:
     duration time_since_epoch_;
 };
+
+constexpr RobotTimestamp::duration as_duration(const double time_s) {
+    constexpr auto ratio_den = RobotTimestamp::duration::period::den;
+    constexpr auto ratio_num = RobotTimestamp::duration::period::num;
+    const auto num_ticks =
+        static_cast<RobotTimestamp::duration::rep>(time_s * ratio_den / ratio_num);
+    return RobotTimestamp::duration(num_ticks);
+}
 
 constexpr RobotTimestamp operator+(const RobotTimestamp &a, const RobotTimestamp::duration &b) {
     RobotTimestamp out = a;

@@ -22,11 +22,4 @@ RobotTimestamp current_robot_time() {
     }
     return RobotTimestamp();
 }
-
-constexpr RobotTimestamp RobotTimestamp::min() noexcept {
-    return duration::min() + RobotTimestamp();
-}
-constexpr RobotTimestamp RobotTimestamp::max() noexcept {
-    return duration::max() + RobotTimestamp();
-}
 }  // namespace robot::time

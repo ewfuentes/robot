@@ -21,8 +21,18 @@ cc_library(
   hdrs = ["world_map.hh"],
   srcs = ["world_map.cc"],
   deps = [
+    "//common/time:robot_time",
     "@eigen//:eigen",
   ],
+)
+
+cc_test(
+  name = "world_map_test",
+  srcs = ["world_map_test.cc"],
+  deps = [
+    ":world_map",
+    "@com_google_googletest//:gtest_main",
+  ]
 )
 
 cc_library(
