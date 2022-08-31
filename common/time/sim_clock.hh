@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <ratio>
 
-namespace robot::experimental::beacon_sim {
+namespace robot::time {
 using namespace std::literals::chrono_literals;
 class SimClock {
    public:
@@ -31,4 +31,4 @@ class SimClock {
     // Default constructed to zero
     static time_point now_;
 };
-}  // namespace robot::experimental::beacon_sim
+}  // namespace robot::time

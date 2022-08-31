@@ -1,11 +1,11 @@
 
-#include "experimental/beacon_sim/sim_clock.hh"
+#include "common/time/sim_clock.hh"
 
 #include <chrono>
 
 #include "gtest/gtest.h"
 
-namespace robot::experimental::beacon_sim {
+namespace robot::time {
 TEST(SimClockTest, is_clock) { static_assert(std::chrono::is_clock<SimClock>()); }
 TEST(SimClockTest, advances_as_expected) {
     constexpr SimClock::duration DT = 100ms;
@@ -17,4 +17,4 @@ TEST(SimClockTest, advances_as_expected) {
 
     EXPECT_EQ(t1 - t0, DT);
 }
-}  // namespace robot::experimental::beacon_sim
+}  // namespace robot::time

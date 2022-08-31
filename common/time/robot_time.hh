@@ -4,7 +4,7 @@
 #include <chrono>
 #include <cstdint>
 
-namespace robot::experimental::beacon_sim {
+namespace robot::time {
 
 // RobotTime represents a std::chrono::time_point which comes from the
 // configured clock source.
