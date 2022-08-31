@@ -4,8 +4,8 @@
 #include <optional>
 
 #include "Eigen/Core"
-#include "experimental/beacon_sim/generate_observations.hh"
 #include "common/liegroups/se2.hh"
+#include "experimental/beacon_sim/generate_observations.hh"
 
 namespace robot::experimental::beacon_sim {
 

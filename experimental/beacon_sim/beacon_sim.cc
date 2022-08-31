@@ -12,12 +12,12 @@
 
 #include "Eigen/Cholesky"
 #include "common/argument_wrapper.hh"
+#include "common/liegroups/se3.hh"
 #include "common/time/sim_clock.hh"
 #include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/generate_observations.hh"
 #include "experimental/beacon_sim/robot.hh"
 #include "experimental/beacon_sim/world_map.hh"
-#include "common/liegroups/se3.hh"
 #include "visualization/gl_window/gl_window.hh"
 
 using namespace std::literals::chrono_literals;
@@ -172,7 +172,8 @@ void display_state(const WorldMap &world_map, const RobotState &robot,
         // Draw ekf estimates
         {
             glPushMatrix();
-            const liegroups::SE3 est_local_from_robot = se3_from_se2(ekf_estimate.local_from_robot());
+            const liegroups::SE3 est_local_from_robot =
+                se3_from_se2(ekf_estimate.local_from_robot());
             glMultMatrixd(est_local_from_robot.matrix().data());
 
             glBegin(GL_LINE_LOOP);
@@ -202,8 +203,8 @@ void display_state(const WorldMap &world_map, const RobotState &robot,
 
         for (const auto beacon_id : ekf_estimate.beacon_ids) {
             glPushMatrix();
-            const liegroups::SE3 local_from_beacon =
-                se3_from_se2(liegroups::SE2::trans(ekf_estimate.beacon_in_local(beacon_id).value()));
+            const liegroups::SE3 local_from_beacon = se3_from_se2(
+                liegroups::SE2::trans(ekf_estimate.beacon_in_local(beacon_id).value()));
             glMultMatrixd(local_from_beacon.matrix().data());
             const Eigen::Matrix2d pos_cov = ekf_estimate.beacon_cov(beacon_id).value();
             const Eigen::LLT<Eigen::Matrix2d> cov_llt(pos_cov);
