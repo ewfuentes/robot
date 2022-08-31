@@ -1,4 +1,7 @@
 
+#pragma once
+
+#include "common/liegroups/so2.hh"
 #include "sophus/se2.hpp"
 
 namespace robot::liegroups {

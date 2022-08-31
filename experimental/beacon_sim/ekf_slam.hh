@@ -5,7 +5,7 @@
 
 #include "Eigen/Core"
 #include "experimental/beacon_sim/generate_observations.hh"
-#include "sophus/se2.hpp"
+#include "common/liegroups/se2.hh"
 
 namespace robot::experimental::beacon_sim {
 
@@ -28,7 +28,7 @@ struct EkfSlamEstimate {
     // This vector gives the beacon id of the ith landmark
     std::vector<int> beacon_ids;
 
-    Sophus::SE2d local_from_robot() const;
+    liegroups::SE2 local_from_robot() const;
     Eigen::Matrix3d robot_cov() const;
 
     // Returns none if beacon id estimated
@@ -40,7 +40,7 @@ class EkfSlam {
    public:
     explicit EkfSlam(const EkfSlamConfig &config);
 
-    const EkfSlamEstimate &predict(const Sophus::SE2d &old_robot_from_new_robot);
+    const EkfSlamEstimate &predict(const liegroups::SE2 &old_robot_from_new_robot);
 
     const EkfSlamEstimate &update(const std::vector<BeaconObservation> &observations);
 

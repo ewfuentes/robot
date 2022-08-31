@@ -2,10 +2,20 @@
 package(default_visibility=["//visibility:public"])
 
 cc_library(
+  name = "so2",
+  hdrs = ["so2.hh"],
+  deps = [
+    "@sophus//:liegroups",
+  ]
+)
+
+
+cc_library(
   name = "se2",
   hdrs = ["se2.hh"],
   srcs = ["se2.cc"],
   deps = [
+    ":so2",
     "@sophus//:liegroups",
   ]
 )
