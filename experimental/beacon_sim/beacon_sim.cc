@@ -105,8 +105,8 @@ WorldMapOptions world_map_config() {
     return out;
 }
 
-void display_state(const WorldMap &world_map, const RobotState &robot,
-                   const std::vector<BeaconObservation> &observations,
+void display_state(const time::RobotTimestamp &t, const WorldMap &world_map,
+                   const RobotState &robot, const std::vector<BeaconObservation> &observations,
                    const EkfSlamEstimate &ekf_estimate,
                    InOut<visualization::gl_window::GlWindow> window) {
     constexpr double BEACON_HALF_WIDTH_M = 0.25;
@@ -116,7 +116,7 @@ void display_state(const WorldMap &world_map, const RobotState &robot,
     const auto [screen_width_px, screen_height_px] = window->get_window_dims();
     const double aspect_ratio = static_cast<double>(screen_height_px) / screen_width_px;
 
-    window->register_render_callback([=]() {
+    window->register_render_callback([=, beacons = world_map.visible_beacons(t)]() {
         const auto gl_error = glGetError();
         if (gl_error != GL_NO_ERROR) {
             std::cout << "GL ERROR: " << gl_error << ": " << gluErrorString(gl_error) << std::endl;
@@ -130,7 +130,7 @@ void display_state(const WorldMap &world_map, const RobotState &robot,
         glLoadIdentity();
 
         // Draw beacons
-        for (const auto &beacon : world_map.beacons()) {
+        for (const auto &beacon : beacons) {
             glBegin(GL_LINE_LOOP);
             glColor4f(1.0, 0.0, 0.0, 0.0);
             for (const auto &corner : std::array<Eigen::Vector2d, 4>{
@@ -232,7 +232,7 @@ void run_simulation() {
     visualization::gl_window::GlWindow gl_window(1024, 768);
 
     // Initialize world map
-    const WorldMap map(world_map_config());
+    WorldMap map(world_map_config(), std::make_unique<std::mt19937>(0));
 
     // Initialize robot state
     constexpr double INIT_POS_X_M = 0.0;
@@ -303,11 +303,13 @@ void run_simulation() {
         ekf_slam.predict(old_robot_from_new_robot);
 
         // generate observations
-        const auto observations = generate_observations(map, robot, OBS_CONFIG, make_in_out(gen));
+        const auto observations = generate_observations(time::current_robot_time(), map, robot,
+                                                        OBS_CONFIG, make_in_out(gen));
 
         const auto ekf_estimate = ekf_slam.update(observations);
 
-        display_state(map, robot, observations, ekf_estimate, make_in_out(gl_window));
+        display_state(time::current_robot_time(), map, robot, observations, ekf_estimate,
+                      make_in_out(gl_window));
     }
 }
 }  // namespace robot::experimental::beacon_sim

@@ -39,16 +39,13 @@ struct BlinkingBeaconsConfig {
 struct WorldMapOptions {
     FixedBeaconsConfig fixed_beacons;
     BlinkingBeaconsConfig blinking_beacons;
-
-    // Generator to use when generating random numbers
-    std::unique_ptr<std::mt19937> generator;
 };
 
 class WorldMap {
    public:
-    WorldMap(WorldMapOptions options);
+    WorldMap(const WorldMapOptions &options, std::unique_ptr<std::mt19937> generator);
 
-    std::vector<Beacon> visible_beacons() const;
+    std::vector<Beacon> visible_beacons(const time::RobotTimestamp &t) const;
 
     void update(const time::RobotTimestamp &t);
 
@@ -58,6 +55,8 @@ class WorldMap {
         Eigen::Vector2d pos_in_local;
         bool is_initially_visible;
         std::vector<time::RobotTimestamp> transition_times;
+
+        bool is_visible(const time::RobotTimestamp &t) const;
     };
 
     std::vector<CompleteBeacon> beacons_;
