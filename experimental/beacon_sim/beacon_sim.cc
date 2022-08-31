@@ -12,10 +12,10 @@
 
 #include "Eigen/Cholesky"
 #include "common/argument_wrapper.hh"
+#include "common/time/sim_clock.hh"
 #include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/generate_observations.hh"
 #include "experimental/beacon_sim/robot.hh"
-#include "common/time/sim_clock.hh"
 #include "experimental/beacon_sim/world_map.hh"
 #include "sophus/se3.hpp"
 #include "visualization/gl_window/gl_window.hh"

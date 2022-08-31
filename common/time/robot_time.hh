@@ -86,4 +86,4 @@ constexpr bool operator>=(const RobotTimestamp &a, const RobotTimestamp &b) {
 constexpr bool operator<=(const RobotTimestamp &a, const RobotTimestamp &b) {
     return a < b || a == b;
 }
-}  // namespace robot::experimental::beacon_sim
+}  // namespace robot::time
