@@ -1,15 +1,15 @@
 
-#include "experimental/beacon_sim/robot_time.hh"
+#include "common/time/robot_time.hh"
 
 #include <chrono>
 #include <thread>
 
-#include "experimental/beacon_sim/sim_clock.hh"
+#include "common/time/sim_clock.hh"
 #include "gtest/gtest.h"
 
 using namespace std::literals::chrono_literals;
 
-namespace robot::experimental::beacon_sim {
+namespace robot::time {
 TEST(RobotTimeTest, default_construction) {
     // Setup + Action
     const RobotTimestamp default_timestamp;
@@ -154,4 +154,4 @@ TEST(RobotTimeTest, current_time_sim) {
     EXPECT_EQ(t3 - t1, ADVANCE_DT);
 }
 
-}  // namespace robot::experimental::beacon_sim
+}  // namespace robot::time

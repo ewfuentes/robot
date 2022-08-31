@@ -12,10 +12,10 @@
 
 #include "Eigen/Cholesky"
 #include "common/argument_wrapper.hh"
+#include "common/time/sim_clock.hh"
 #include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/generate_observations.hh"
 #include "experimental/beacon_sim/robot.hh"
-#include "experimental/beacon_sim/sim_clock.hh"
 #include "experimental/beacon_sim/world_map.hh"
 #include "sophus/se3.hpp"
 #include "visualization/gl_window/gl_window.hh"
@@ -278,7 +278,7 @@ void run_simulation() {
             key_command.store(update);
         });
 
-    SimClock::reset();
+    time::SimClock::reset();
     const auto DT = 25ms;
     while (run) {
         // get command
@@ -294,7 +294,7 @@ void run_simulation() {
         robot.move(command.move_m);
 
         std::this_thread::sleep_for(DT);
-        SimClock::advance(DT);
+        time::SimClock::advance(DT);
 
         const Sophus::SE2d old_robot_from_new_robot =
             Sophus::SE2d::trans(command.move_m, 0.0) * Sophus::SE2d::rot(command.turn_rad);

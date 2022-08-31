@@ -1,9 +1,9 @@
 
-#include "experimental/beacon_sim/robot_time.hh"
+#include "common/time/robot_time.hh"
 
-#include "experimental/beacon_sim/sim_clock.hh"
+#include "common/time/sim_clock.hh"
 
-namespace robot::experimental::beacon_sim {
+namespace robot::time {
 namespace {
 static TimeProvider time_provider = TimeProvider::STEADY;
 }
@@ -29,4 +29,4 @@ constexpr RobotTimestamp RobotTimestamp::min() noexcept {
 constexpr RobotTimestamp RobotTimestamp::max() noexcept {
     return duration::max() + RobotTimestamp();
 }
-}  // namespace robot::experimental::beacon_sim
+}  // namespace robot::time
