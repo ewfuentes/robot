@@ -68,3 +68,23 @@ http_archive(
   strip_prefix = "cxxopts-3.0.0",
   sha256 = "36f41fa2a46b3c1466613b63f3fa73dc24d912bc90d667147f1e43215a8c6d00"
 )
+
+http_archive(
+    name = "rules_python",
+    sha256 = "8c8fe44ef0a9afc256d1e75ad5f448bb59b81aba149b8958f02f7b3a98f5d9b4",
+    strip_prefix = "rules_python-0.13.0",
+    url = "https://github.com/bazelbuild/rules_python/archive/refs/tags/0.13.0.tar.gz",
+)
+
+load("@rules_python//python:repositories.bzl", "python_register_toolchains")
+python_register_toolchains(
+    name = "python3_11",
+    python_version = "3.11",
+)
+load("@python3_11//:defs.bzl", "interpreter")
+
+load("@rules_python//python:pip.bzl", "pip_parse")
+
+pip_parse(
+  python_interpreter_target = interpreter,
+)
