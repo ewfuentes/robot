@@ -34,7 +34,7 @@ class RobotTimestamp {
         return *this;
     }
 
-    RobotTimestamp &operator+(const duration &duration) noexcept {
+    constexpr RobotTimestamp &operator+(const duration &duration) noexcept {
         *this += duration;
         return *this;
     }
