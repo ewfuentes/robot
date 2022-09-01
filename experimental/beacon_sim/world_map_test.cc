@@ -50,6 +50,5 @@ TEST(BeaconTest, blinking_beacon_test) {
         map.update(t);
         const auto beacons = map.visible_beacons();
     }
-
 }
 }  // namespace robot::experimental::beacon_sim
