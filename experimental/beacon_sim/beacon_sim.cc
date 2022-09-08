@@ -102,12 +102,20 @@ WorldMapOptions world_map_config() {
                 Beacon{.id = beacon_id++, .pos_in_local = {c * SPACING_M, r * SPACING_M}});
         }
     }
-
     out.blinking_beacons = {
-        .beacons = {{.id = beacon_id++, .pos_in_local = {-SPACING_M, -SPACING_M}}},
+        .beacons = {},
         .beacon_appear_rate_hz = 1.0,
         .beacon_disappear_rate_hz = 0.5,
     };
+
+    out.blinking_beacons.beacons.reserve(NUM_ROWS * NUM_COLS);
+
+    for (int r = 0; r < NUM_ROWS; r++) {
+        for (int c = 0; c < NUM_COLS; c++) {
+            out.blinking_beacons.beacons.push_back(
+                Beacon{.id = beacon_id++, .pos_in_local = {-c * SPACING_M, -r * SPACING_M}});
+        }
+    }
     return out;
 }
 
@@ -250,7 +258,7 @@ void run_simulation() {
     RobotState robot(INIT_POS_X_M, INIT_POS_Y_M, INIT_HEADING_RAD);
 
     constexpr EkfSlamConfig EKF_CONFIG = {
-        .max_num_beacons = 25,
+        .max_num_beacons = 50,
         .initial_beacon_uncertainty_m = 1000,
         .along_track_process_noise_m_per_rt_meter = 0.01,
         .cross_track_process_noise_m_per_rt_meter = 0.005,
