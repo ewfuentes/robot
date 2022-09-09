@@ -102,11 +102,25 @@ WorldMapOptions world_map_config() {
                 Beacon{.id = beacon_id++, .pos_in_local = {c * SPACING_M, r * SPACING_M}});
         }
     }
+    out.blinking_beacons = {
+        .beacons = {},
+        .beacon_appear_rate_hz = 1.0,
+        .beacon_disappear_rate_hz = 0.5,
+    };
+
+    out.blinking_beacons.beacons.reserve(NUM_ROWS * NUM_COLS);
+
+    for (int r = 0; r < NUM_ROWS; r++) {
+        for (int c = 0; c < NUM_COLS; c++) {
+            out.blinking_beacons.beacons.push_back(
+                Beacon{.id = beacon_id++, .pos_in_local = {-c * SPACING_M, -r * SPACING_M}});
+        }
+    }
     return out;
 }
 
-void display_state(const WorldMap &world_map, const RobotState &robot,
-                   const std::vector<BeaconObservation> &observations,
+void display_state(const time::RobotTimestamp &t, const WorldMap &world_map,
+                   const RobotState &robot, const std::vector<BeaconObservation> &observations,
                    const EkfSlamEstimate &ekf_estimate,
                    InOut<visualization::gl_window::GlWindow> window) {
     constexpr double BEACON_HALF_WIDTH_M = 0.25;
@@ -116,7 +130,7 @@ void display_state(const WorldMap &world_map, const RobotState &robot,
     const auto [screen_width_px, screen_height_px] = window->get_window_dims();
     const double aspect_ratio = static_cast<double>(screen_height_px) / screen_width_px;
 
-    window->register_render_callback([=]() {
+    window->register_render_callback([=, beacons = world_map.visible_beacons(t)]() {
         const auto gl_error = glGetError();
         if (gl_error != GL_NO_ERROR) {
             std::cout << "GL ERROR: " << gl_error << ": " << gluErrorString(gl_error) << std::endl;
@@ -130,7 +144,7 @@ void display_state(const WorldMap &world_map, const RobotState &robot,
         glLoadIdentity();
 
         // Draw beacons
-        for (const auto &beacon : world_map.beacons()) {
+        for (const auto &beacon : beacons) {
             glBegin(GL_LINE_LOOP);
             glColor4f(1.0, 0.0, 0.0, 0.0);
             for (const auto &corner : std::array<Eigen::Vector2d, 4>{
@@ -218,7 +232,6 @@ void display_state(const WorldMap &world_map, const RobotState &robot,
                 glVertex2d(pt.x(), pt.y());
             }
             glEnd();
-
             glPopMatrix();
         }
     });
@@ -232,7 +245,7 @@ void run_simulation() {
     visualization::gl_window::GlWindow gl_window(1024, 768);
 
     // Initialize world map
-    const WorldMap map(world_map_config());
+    WorldMap map(world_map_config(), std::make_unique<std::mt19937>(0));
 
     // Initialize robot state
     constexpr double INIT_POS_X_M = 0.0;
@@ -244,7 +257,7 @@ void run_simulation() {
     RobotState robot(INIT_POS_X_M, INIT_POS_Y_M, INIT_HEADING_RAD);
 
     constexpr EkfSlamConfig EKF_CONFIG = {
-        .max_num_beacons = 25,
+        .max_num_beacons = 50,
         .initial_beacon_uncertainty_m = 1000,
         .along_track_process_noise_m_per_rt_meter = 0.01,
         .cross_track_process_noise_m_per_rt_meter = 0.005,
@@ -297,17 +310,21 @@ void run_simulation() {
         std::this_thread::sleep_for(DT);
         time::SimClock::advance(DT);
 
+        map.update(time::current_robot_time());
+
         const liegroups::SE2 old_robot_from_new_robot =
             liegroups::SE2::trans(command.move_m, 0.0) * liegroups::SE2::rot(command.turn_rad);
 
         ekf_slam.predict(old_robot_from_new_robot);
 
         // generate observations
-        const auto observations = generate_observations(map, robot, OBS_CONFIG, make_in_out(gen));
+        const auto observations = generate_observations(time::current_robot_time(), map, robot,
+                                                        OBS_CONFIG, make_in_out(gen));
 
         const auto ekf_estimate = ekf_slam.update(observations);
 
-        display_state(map, robot, observations, ekf_estimate, make_in_out(gl_window));
+        display_state(time::current_robot_time(), map, robot, observations, ekf_estimate,
+                      make_in_out(gl_window));
     }
 }
 }  // namespace robot::experimental::beacon_sim

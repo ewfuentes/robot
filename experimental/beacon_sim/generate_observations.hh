@@ -24,7 +24,8 @@ std::optional<BeaconObservation> generate_observation(const Beacon &beacon, cons
                                                       const ObservationConfig &config,
                                                       InOut<std::mt19937> gen);
 
-std::vector<BeaconObservation> generate_observations(const WorldMap &map, const RobotState &robot,
+std::vector<BeaconObservation> generate_observations(const time::RobotTimestamp &t,
+                                                     const WorldMap &map, const RobotState &robot,
                                                      const ObservationConfig &config,
                                                      InOut<std::mt19937> gen);
 }  // namespace robot::experimental::beacon_sim

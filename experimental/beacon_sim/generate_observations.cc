@@ -30,12 +30,14 @@ std::optional<BeaconObservation> generate_observation(const Beacon &beacon, cons
                              .maybe_bearing_rad = bearing_rad};
 }
 
-std::vector<BeaconObservation> generate_observations(const WorldMap &map, const RobotState &robot,
+std::vector<BeaconObservation> generate_observations(const time::RobotTimestamp &t,
+                                                     const WorldMap &map, const RobotState &robot,
                                                      const ObservationConfig &config,
                                                      InOut<std::mt19937> gen) {
     std::vector<BeaconObservation> out;
-    out.reserve(map.beacons().size());
-    for (const auto &beacon : map.beacons()) {
+    const auto beacons = map.visible_beacons(t);
+    out.reserve(beacons.size());
+    for (const auto &beacon : beacons) {
         const auto maybe_observation = generate_observation(beacon, robot, config, gen);
         if (maybe_observation.has_value()) {
             out.push_back(maybe_observation.value());
