@@ -232,7 +232,6 @@ void display_state(const time::RobotTimestamp &t, const WorldMap &world_map,
                 glVertex2d(pt.x(), pt.y());
             }
             glEnd();
-
             glPopMatrix();
         }
     });

@@ -60,12 +60,13 @@ std::vector<Beacon> WorldMap::visible_beacons(const time::RobotTimestamp &t) con
 void WorldMap::update(const time::RobotTimestamp &t) {
     for (auto &beacon : beacons_) {
         while (t >= beacon.transition_times.back()) {
-            const double transition_rate_hz = beacon.is_visible(t)
-                                               ? options_.blinking_beacons.beacon_disappear_rate_hz
-                                               : options_.blinking_beacons.beacon_appear_rate_hz;
+            const double transition_rate_hz =
+                beacon.is_visible(t) ? options_.blinking_beacons.beacon_disappear_rate_hz
+                                     : options_.blinking_beacons.beacon_appear_rate_hz;
             const double next_segment_length_s =
                 std::exponential_distribution(transition_rate_hz)(*generator_);
-            const time::RobotTimestamp::duration next_segment_length = time::as_duration(next_segment_length_s);
+            const time::RobotTimestamp::duration next_segment_length =
+                time::as_duration(next_segment_length_s);
             const time::RobotTimestamp next_transition_time =
                 beacon.transition_times.back() + next_segment_length;
             beacon.transition_times.push_back(next_transition_time);

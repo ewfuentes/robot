@@ -1,6 +1,8 @@
 
 #include "experimental/beacon_sim/world_map.hh"
 
+#include <chrono>
+
 #include "gtest/gtest.h"
 
 namespace robot::experimental::beacon_sim {
@@ -30,7 +32,7 @@ TEST(BeaconTest, static_beacon_test) {
 }
 
 TEST(BeaconTest, blinking_beacon_test) {
-    using std::literals::chrono_literals::*;
+    using namespace std::literals::chrono_literals;
     // Setup
     const WorldMapOptions config = {
         .fixed_beacons = {},
@@ -46,10 +48,9 @@ TEST(BeaconTest, blinking_beacon_test) {
     constexpr time::RobotTimestamp::duration DT = 10ms;
 
     // Action
-    for (time::RobotTimestamp t = time::RobotTimestamp; t < MAX_TIME; t += DT) {
+    for (time::RobotTimestamp t = time::RobotTimestamp(); t < MAX_TIME; t += DT) {
         map.update(t);
-        const auto beacons = map.visible_beacons();
+        const auto beacons = map.visible_beacons(t);
     }
-
 }
 }  // namespace robot::experimental::beacon_sim
