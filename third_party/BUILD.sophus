@@ -36,34 +36,18 @@ filegroup(
 
 cmake(
   name = "liegroups",
-  install = False,
   lib_source = ":sophus_sources",
   visibility = ["//visibility:public"],
+  out_headers_only = True,
   cache_entries = {
     "SOPHUS_USE_BASIC_LOGGING": "ON",
     "BUILD_SOPHUS_TESTS": "OFF",
     "BUILD_SOPHUS_EXAMPLES": "OFF",
-  }
+  },
+  defines = [
+    "SOPHUS_USE_BASIC_LOGGING",
+  ],
+  deps = [
+    "@eigen//:eigen",
+  ],
 )
-
- #cc_library(
- #  name = "liegroups",
- #  visibility=["//visibility:public"],
- #  hdrs = [
- #    "sophus/so2.hpp",
- #    "sophus/so3.hpp",
- #    "sophus/se2.hpp",
- #    "sophus/se3.hpp",
- #    "sophus/sim3.hpp",
- #    "sophus/sim2.hpp",
- #  ],
- #  srcs = [
- #    "sophus/common.hpp",
- #    "sophus/rotation_matrix.hpp",
- #    "sophus/types.hpp",
- #    "sophus/rxso3.hpp",
- #    "sophus/sim_details.hpp",
- #  ],
- #  defines=["SOPHUS_USE_BASIC_LOGGING"],
- #  deps = ["@eigen//:eigen"],
- #)
