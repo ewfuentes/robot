@@ -205,12 +205,41 @@ TEST(EkfSlamTest, position_estimate_converges_given_known_beacon) {
         0.0, 1.0);
     EXPECT_NEAR(est.local_from_robot().so2().log() - expected_local_from_robot.so2().log(), 0.0,
                 0.02);
-    std::cout << "Expected local from robot: " << std::endl
-              << expected_local_from_robot.matrix() << std::endl;
-    std::cout << "local from robot: " << std::endl << est.local_from_robot().matrix() << std::endl;
-    std::cout << "robot cov: " << std::endl << est.robot_cov() << std::endl;
-    std::cout << "beacon_in_local: " << std::endl
-              << est.beacon_in_local(BEACON_ID).value() << std::endl;
+}
+
+TEST(EkfSlamTest, rotating_in_place_yields_same_pos_covariance_directions) {
+    // Setup
+    constexpr auto CONFIG = EkfSlamConfig{
+        .max_num_beacons = 0,
+        .initial_beacon_uncertainty_m = 0,
+        .along_track_process_noise_m_per_rt_meter = 0.0,
+        .cross_track_process_noise_m_per_rt_meter = 0.0,
+        .heading_process_noise_rad_per_rt_meter = 0.0,
+        .beacon_pos_process_noise_m_per_rt_s = 0.0,
+        .range_measurement_noise_m = 0.0,
+        .bearing_measurement_noise_rad = 0.0,
+    };
+    const EkfSlamEstimate est = {
+        .mean = liegroups::SE2::trans(12.0, 34.0).log(),
+        .cov = Eigen::DiagonalMatrix<double, 3>(1.0, 2.0, 3.0),
+    };
+
+    const liegroups::SE2 old_robot_from_new_robot = liegroups::SE2(std::numbers::pi / 2, {0, 0});
+
+    // Action
+    const EkfSlamEstimate new_est =
+        detail::prediction_update(est, old_robot_from_new_robot, CONFIG);
+
+    // Verification
+    const auto cov_in_local = [](const auto &est) -> Eigen::Matrix3d {
+        const Eigen::Matrix3d adjoint = est.local_from_robot().Adj();
+        return adjoint.transpose() * est.robot_cov() * adjoint;
+    };
+    const Eigen::Matrix3d init_cov_in_local = cov_in_local(est);
+    const Eigen::Matrix3d new_cov_in_local = cov_in_local(new_est);
+    std::cout << "Old Cov: " << std::endl << init_cov_in_local << std::endl;
+    std::cout << "New Cov: " << std::endl << new_cov_in_local << std::endl;
+    EXPECT_NEAR((init_cov_in_local.topLeftCorner(2, 2) - new_cov_in_local.topLeftCorner(2,2)).norm(), 0.0, 1e-6);
 }
 
 TEST(CreateMeasurementTest, incomplete_measurements_rejected) {

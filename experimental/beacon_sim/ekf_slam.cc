@@ -147,6 +147,42 @@ UpdateInputs compute_measurement_and_prediction(const std::vector<BeaconObservat
             .innovation = innovation_vec,
             .observation_matrix = observation_mat};
 }
+
+EkfSlamEstimate prediction_update(const EkfSlamEstimate &est,
+                                  const liegroups::SE2 &old_robot_from_new_robot,
+                                  const EkfSlamConfig &config) {
+    // Update the robot mean
+    EkfSlamEstimate out = est;
+    const auto local_from_new_robot = (est.local_from_robot() * old_robot_from_new_robot);
+    out.mean(Eigen::seqN(0, ROBOT_STATE_DIM)) = local_from_new_robot.log();
+
+    // Update the covariances
+    // TODO: This should use the length of the geodesic between old and new poses
+    // TODO: These are perturbations in the robot frame. I think this is correct...
+
+    const Eigen::Matrix3d process_noise = Eigen::DiagonalMatrix<double, ROBOT_STATE_DIM>(
+        config.along_track_process_noise_m_per_rt_meter *
+            config.along_track_process_noise_m_per_rt_meter,
+        config.cross_track_process_noise_m_per_rt_meter *
+            config.cross_track_process_noise_m_per_rt_meter,
+        config.heading_process_noise_rad_per_rt_meter *
+            config.heading_process_noise_rad_per_rt_meter);
+
+    const Eigen::Matrix3d old_from_new_adj = old_robot_from_new_robot.Adj();
+    out.cov.block(0, 0, ROBOT_STATE_DIM, ROBOT_STATE_DIM) =
+        old_from_new_adj.transpose() * out.cov.block(0, 0, ROBOT_STATE_DIM, ROBOT_STATE_DIM) *
+            old_from_new_adj +
+        process_noise;
+
+    const int num_landmark_cov_cols = out.cov.cols() - ROBOT_STATE_DIM;
+    out.cov.topRightCorner(ROBOT_STATE_DIM, num_landmark_cov_cols) =
+      old_from_new_adj * out.cov.topRightCorner(ROBOT_STATE_DIM, num_landmark_cov_cols);
+    out.cov.bottomLeftCorner(num_landmark_cov_cols, ROBOT_STATE_DIM) =
+      out.cov.bottomLeftCorner(num_landmark_cov_cols, ROBOT_STATE_DIM) * old_from_new_adj.transpose();
+
+    return out;
+}
+
 }  // namespace detail
 
 liegroups::SE2 EkfSlamEstimate::local_from_robot() const {
@@ -184,22 +220,7 @@ EkfSlam::EkfSlam(const EkfSlamConfig &config) : config_(config) {
 }
 
 const EkfSlamEstimate &EkfSlam::predict(const liegroups::SE2 &old_robot_from_new_robot) {
-    // Update the robot mean
-    const auto local_from_new_robot = (estimate_.local_from_robot() * old_robot_from_new_robot);
-    estimate_.mean(Eigen::seqN(0, ROBOT_STATE_DIM)) = local_from_new_robot.log();
-
-    // Update the covariances
-    // TODO: This should use the length of the geodesic between old and new poses
-    // TODO: These are perturbations in the robot frame. I think this is correct...
-    estimate_.cov.block(0, 0, ROBOT_STATE_DIM, ROBOT_STATE_DIM) +=
-        Eigen::DiagonalMatrix<double, ROBOT_STATE_DIM>(
-            config_.along_track_process_noise_m_per_rt_meter *
-                config_.along_track_process_noise_m_per_rt_meter,
-            config_.cross_track_process_noise_m_per_rt_meter *
-                config_.cross_track_process_noise_m_per_rt_meter,
-            config_.heading_process_noise_rad_per_rt_meter *
-                config_.heading_process_noise_rad_per_rt_meter);
-
+    estimate_ = detail::prediction_update(estimate_, old_robot_from_new_robot, config_);
     return estimate_;
 }
 
