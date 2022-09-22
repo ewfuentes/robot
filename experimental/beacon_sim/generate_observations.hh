@@ -12,6 +12,7 @@
 namespace robot::experimental::beacon_sim {
 struct ObservationConfig {
     std::optional<double> range_noise_std_m;
+    std::optional<double> max_sensor_range_m;
 };
 
 struct BeaconObservation {
