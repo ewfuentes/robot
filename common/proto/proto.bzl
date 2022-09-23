@@ -19,6 +19,7 @@ def multi_proto_library(name, **kwargs):
     
     # Create the proto rule for the current srcs, adding the underlying deps
     underlying_proto_name = UNDERLYING_TAG + name
+
     proto_library(
       name = underlying_proto_name,
       srcs = srcs,
@@ -27,13 +28,13 @@ def multi_proto_library(name, **kwargs):
 
     native.cc_proto_library(
       name = name,
-      deps = [underlying_proto_name],
+      deps = [":" + underlying_proto_name],
       features=["-warning_compile_flags"],
       **kwargs,
     )
 
     py_proto_library(
       name = name + "_py",
-      deps = [underlying_proto_name],
+      srcs = srcs,
       **kwargs,
     )
