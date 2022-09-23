@@ -1,0 +1,13 @@
+diff --git a/BUILD.bazel b/updated_build.bazel
+index 0f6e41e..b473abd 100644
+--- a/BUILD.bazel
++++ b/updated_build.bazel
+@@ -16,6 +16,8 @@ load(
+     "py_proto_library",
+ )
+ 
++package(features=["-warning_compile_flags"])
++
+ licenses(["notice"])
+ 
+ exports_files(["LICENSE"])

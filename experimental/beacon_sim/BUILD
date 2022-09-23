@@ -1,4 +1,11 @@
 
+load("//common/proto:proto.bzl", "multi_proto_library")
+
+multi_proto_library(
+  name = "sim_log_proto",
+  srcs = ["sim_log.proto"],
+)
+
 cc_binary(
   name = "beacon_sim",
   srcs = ["beacon_sim.cc"],
@@ -6,6 +13,7 @@ cc_binary(
   deps = [
     ":world_map",
     ":robot",
+    ":sim_log_proto",
     ":generate_observations",
     "//common/time:sim_clock",
     ":ekf_slam",

@@ -1,6 +1,32 @@
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 http_archive(
+    name = "rules_proto",
+    sha256 = "80d3a4ec17354cccc898bfe32118edd934f851b03029d63ef3fc7c8663a7415c",
+    strip_prefix = "rules_proto-5.3.0-21.5",
+    urls = [
+        "https://github.com/bazelbuild/rules_proto/archive/refs/tags/5.3.0-21.5.tar.gz",
+    ],
+)
+load("@rules_proto//proto:repositories.bzl", "rules_proto_dependencies", "rules_proto_toolchains")
+rules_proto_dependencies()
+rules_proto_toolchains()
+
+http_archive(
+  name = "com_google_protobuf",
+  urls = ["https://github.com/protocolbuffers/protobuf/archive/refs/tags/v21.6.tar.gz"],
+  strip_prefix="protobuf-21.6",
+  sha256 = "dbb16fdbca8f277c9a194d9a837395cde408ca136738d94743130dd0de015efd",
+  patches = [
+    "@//third_party:protobuf-0001-disable-warning-flags.patch",
+  ],
+  patch_args=["-p1"],
+)
+
+load("@com_google_protobuf//:protobuf_deps.bzl", "protobuf_deps")
+protobuf_deps()
+
+http_archive(
   name = "com_google_googletest",
   urls = ["https://github.com/google/googletest/archive/5f467ec04df33024e3c6760fa403b5cd5d8e9ace.zip"],
   strip_prefix = "googletest-5f467ec04df33024e3c6760fa403b5cd5d8e9ace",
