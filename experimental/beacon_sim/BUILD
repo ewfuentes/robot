@@ -100,3 +100,26 @@ cc_test(
   ]
 )
 
+multi_proto_library(
+  name = "world_map_config_proto",
+  srcs = ["world_map_config.proto"],
+)
+
+cc_library(
+  name = "world_map_config_to_proto",
+  hdrs = ["world_map_config_to_proto.hh"],
+  srcs = ["world_map_config_to_proto.cc"],
+  deps = [
+    ":world_map_config_proto",
+    ":world_map",
+  ]
+)
+
+cc_test(
+  name = "world_map_config_to_proto_test",
+  srcs = ["world_map_config_to_proto_test.cc"],
+  deps = [
+    ":world_map_config_to_proto",
+    "@com_google_googletest//:gtest_main",
+  ]
+)

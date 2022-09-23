@@ -88,12 +88,12 @@ RobotCommand get_command(
     return {.turn_rad = 0, .move_m = 0, .should_exit = false};
 }
 
-WorldMapOptions world_map_config() {
+WorldMapConfig world_map_config() {
     // Create a grid of beacons
     constexpr int NUM_ROWS = 4;
     constexpr int NUM_COLS = 5;
     constexpr double SPACING_M = 3.0;
-    WorldMapOptions out;
+    WorldMapConfig out;
     out.fixed_beacons.beacons.reserve(NUM_ROWS * NUM_COLS);
     int beacon_id = 0;
     for (int r = 0; r < NUM_ROWS; r++) {

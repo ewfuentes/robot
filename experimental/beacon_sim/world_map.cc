@@ -5,15 +5,15 @@
 #include <chrono>
 
 namespace robot::experimental::beacon_sim {
-WorldMap::WorldMap(const WorldMapOptions &options, std::unique_ptr<std::mt19937> generator)
-    : options_(options) {
+WorldMap::WorldMap(const WorldMapConfig &config, std::unique_ptr<std::mt19937> generator)
+    : config_(config) {
     const int num_beacons =
-        options.fixed_beacons.beacons.size() + options.blinking_beacons.beacons.size();
+        config.fixed_beacons.beacons.size() + config.blinking_beacons.beacons.size();
     beacons_.reserve(num_beacons);
     generator_ = std::move(generator);
 
     std::transform(
-        options.fixed_beacons.beacons.begin(), options.fixed_beacons.beacons.end(),
+        config.fixed_beacons.beacons.begin(), config.fixed_beacons.beacons.end(),
         std::back_inserter(beacons_), [](const auto &beacon) -> CompleteBeacon {
             return {.id = beacon.id,
                     .pos_in_local = beacon.pos_in_local,
@@ -22,17 +22,17 @@ WorldMap::WorldMap(const WorldMapOptions &options, std::unique_ptr<std::mt19937>
         });
 
     const time::RobotTimestamp init_time = time::RobotTimestamp();
-    const double average_visible_time_s = 1.0 / options.blinking_beacons.beacon_disappear_rate_hz;
-    const double average_invisible_time_s = 1.0 / options.blinking_beacons.beacon_appear_rate_hz;
+    const double average_visible_time_s = 1.0 / config.blinking_beacons.beacon_disappear_rate_hz;
+    const double average_invisible_time_s = 1.0 / config.blinking_beacons.beacon_appear_rate_hz;
     const double is_visible_probability =
         average_visible_time_s / (average_visible_time_s + average_invisible_time_s);
-    std::transform(options.blinking_beacons.beacons.begin(), options.blinking_beacons.beacons.end(),
+    std::transform(config.blinking_beacons.beacons.begin(), config.blinking_beacons.beacons.end(),
                    std::back_inserter(beacons_), [&](const auto &beacon) -> CompleteBeacon {
                        const bool is_initially_visible =
                            std::bernoulli_distribution(is_visible_probability)(*generator_);
                        const double transition_rate_hz =
-                           is_initially_visible ? options.blinking_beacons.beacon_disappear_rate_hz
-                                                : options.blinking_beacons.beacon_appear_rate_hz;
+                           is_initially_visible ? config.blinking_beacons.beacon_disappear_rate_hz
+                                                : config.blinking_beacons.beacon_appear_rate_hz;
 
                        const double transition_time_s =
                            std::exponential_distribution(transition_rate_hz)(*generator_);
@@ -61,8 +61,8 @@ void WorldMap::update(const time::RobotTimestamp &t) {
     for (auto &beacon : beacons_) {
         while (t >= beacon.transition_times.back()) {
             const double transition_rate_hz =
-                beacon.is_visible(t) ? options_.blinking_beacons.beacon_disappear_rate_hz
-                                     : options_.blinking_beacons.beacon_appear_rate_hz;
+                beacon.is_visible(t) ? config_.blinking_beacons.beacon_disappear_rate_hz
+                                     : config_.blinking_beacons.beacon_appear_rate_hz;
             const double next_segment_length_s =
                 std::exponential_distribution(transition_rate_hz)(*generator_);
             const time::RobotTimestamp::duration next_segment_length =

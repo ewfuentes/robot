@@ -8,7 +8,7 @@
 namespace robot::experimental::beacon_sim {
 TEST(BeaconTest, static_beacon_test) {
     // Setup
-    const WorldMapOptions config = {
+    const WorldMapConfig config = {
         .fixed_beacons = {.beacons = {{.id = 1, .pos_in_local = {2.0, 3.0}},
                                       {.id = 4, .pos_in_local = {5.0, 6.0}},
                                       {.id = 7, .pos_in_local = {8.0, 9.0}}}},
@@ -34,7 +34,7 @@ TEST(BeaconTest, static_beacon_test) {
 TEST(BeaconTest, blinking_beacon_test) {
     using namespace std::literals::chrono_literals;
     // Setup
-    const WorldMapOptions config = {
+    const WorldMapConfig config = {
         .fixed_beacons = {},
         .blinking_beacons = {.beacons = {{.id = 1, .pos_in_local = {2.0, 3.0}},
                                          {.id = 4, .pos_in_local = {5.0, 6.0}},
