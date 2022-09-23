@@ -36,14 +36,14 @@ struct BlinkingBeaconsConfig {
     double beacon_disappear_rate_hz;
 };
 
-struct WorldMapOptions {
+struct WorldMapConfig {
     FixedBeaconsConfig fixed_beacons;
     BlinkingBeaconsConfig blinking_beacons;
 };
 
 class WorldMap {
    public:
-    WorldMap(const WorldMapOptions &options, std::unique_ptr<std::mt19937> generator);
+    WorldMap(const WorldMapConfig &config, std::unique_ptr<std::mt19937> generator);
 
     std::vector<Beacon> visible_beacons(const time::RobotTimestamp &t) const;
 
@@ -59,7 +59,7 @@ class WorldMap {
         bool is_visible(const time::RobotTimestamp &t) const;
     };
 
-    WorldMapOptions options_;
+    WorldMapConfig config_;
     std::vector<CompleteBeacon> beacons_;
     std::unique_ptr<std::mt19937> generator_;
 };

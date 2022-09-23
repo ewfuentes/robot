@@ -1,0 +1,25 @@
+
+syntax = "proto3";
+
+package robot.experimental.beacon_sim.proto;
+
+message Beacon {
+  int32 id = 1;
+  double pos_x_m = 2;
+  double pos_y_m = 3;
+}
+
+message FixedBeaconsConfig {
+  repeated Beacon beacons = 1;
+}
+
+message BlinkingBeaconsConfig {
+  repeated Beacon beacons = 1;
+  double beacon_appear_rate_hz = 2;
+  double beacon_disappear_rate_hz = 3;
+}
+
+message WorldMapConfig {
+  FixedBeaconsConfig fixed_beacons = 1;
+  BlinkingBeaconsConfig blinking_beacons = 2;
+}
