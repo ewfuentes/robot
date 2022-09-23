@@ -14,6 +14,10 @@ double compute_range_noise(const ObservationConfig &config, InOut<std::mt19937> 
 
     return range_noise_m(*gen);
 }
+
+bool is_beyond_sensor_range(const double range_m, const std::optional<double> &max_sensor_range_m) {
+    return max_sensor_range_m.has_value() && range_m > max_sensor_range_m.value();
+}
 }  // namespace
 
 std::optional<BeaconObservation> generate_observation(const Beacon &beacon, const RobotState &robot,
@@ -22,6 +26,10 @@ std::optional<BeaconObservation> generate_observation(const Beacon &beacon, cons
     const Eigen::Vector2d beacon_in_robot =
         robot.local_from_robot().inverse() * beacon.pos_in_local;
     const double range_m = beacon_in_robot.norm();
+
+    if (is_beyond_sensor_range(range_m, config.max_sensor_range_m)) {
+        return std::nullopt;
+    }
 
     const double range_noise_m = compute_range_noise(config, gen);
     const double bearing_rad = std::atan2(beacon_in_robot.y(), beacon_in_robot.x());

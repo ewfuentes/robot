@@ -193,12 +193,6 @@ TEST(EkfSlamTest, position_estimate_converges_given_known_beacon) {
 
     // Action
     for (int i = 0; i < 10; i++) {
-        if (i % 1 == 0) {
-            std::cout << "Iter " << i << std::endl;
-            std::cout << ekf_slam.estimate().local_from_robot().matrix() << std::endl;
-            std::cout << "cov:" << std::endl;
-            std::cout << ekf_slam.estimate().robot_cov().matrix() << std::endl << std::endl;
-        }
         ekf_slam.predict(liegroups::SE2());
         ekf_slam.update({obs});
     }

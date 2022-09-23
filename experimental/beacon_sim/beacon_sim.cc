@@ -252,7 +252,8 @@ void run_simulation() {
     constexpr double INIT_POS_Y_M = 0.0;
     constexpr double INIT_HEADING_RAD = 0.0;
     constexpr ObservationConfig OBS_CONFIG = {
-        .range_noise_std_m = 0.5,
+        .range_noise_std_m = 0.1,
+        .max_sensor_range_m = 5.0,
     };
     RobotState robot(INIT_POS_X_M, INIT_POS_Y_M, INIT_HEADING_RAD);
 
