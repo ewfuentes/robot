@@ -56,8 +56,8 @@ TEST(GenerateObservationsTest, out_of_range_single_beacon_test) {
     const RobotState robot_state(5.0, 6.0, std::numbers::pi / 2.0);
     const Beacon beacon = {.id = 123, .pos_in_local = {7.0, 8.0}};
     constexpr ObservationConfig CONFIG{
-      .range_noise_std_m = std::nullopt,
-      .max_sensor_range_m = 2.0,
+        .range_noise_std_m = std::nullopt,
+        .max_sensor_range_m = 2.0,
     };
     std::mt19937 gen;
 
