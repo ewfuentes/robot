@@ -1,7 +1,7 @@
 
 syntax = "proto3";
 
-package experimental.beacon_sim.sim_log;
+package robot.experimental.beacon_sim.proto;
 
 message SimLog {
 }

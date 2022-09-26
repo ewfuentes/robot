@@ -4,6 +4,7 @@
 
 #include <array>
 #include <chrono>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <random>
@@ -14,9 +15,11 @@
 #include "common/argument_wrapper.hh"
 #include "common/liegroups/se3.hh"
 #include "common/time/sim_clock.hh"
+#include "cxxopts.hpp"
 #include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/generate_observations.hh"
 #include "experimental/beacon_sim/robot.hh"
+#include "experimental/beacon_sim/sim_log.pb.h"
 #include "experimental/beacon_sim/world_map.hh"
 #include "visualization/gl_window/gl_window.hh"
 
@@ -24,6 +27,11 @@ using namespace std::literals::chrono_literals;
 
 namespace robot::experimental::beacon_sim {
 namespace {
+
+struct SimConfig {
+    std::string log_path;
+};
+
 liegroups::SE3 se3_from_se2(const liegroups::SE2 &a_from_b) {
     Eigen::Matrix4d mat = Eigen::Matrix4d::Identity();
     Eigen::Matrix3d a_from_b_mat = a_from_b.matrix();
@@ -237,7 +245,13 @@ void display_state(const time::RobotTimestamp &t, const WorldMap &world_map,
     });
 }
 
-void run_simulation() {
+void write_out_log_file(const SimConfig &sim_config) {
+    proto::SimLog log_proto;
+    std::fstream file_out(sim_config.log_path, std::ios::binary | std::ios::out | std::ios::trunc);
+    log_proto.SerializeToOstream(&file_out);
+}
+
+void run_simulation(const SimConfig &sim_config) {
     bool run = true;
 
     std::mt19937 gen(0);
@@ -327,7 +341,24 @@ void run_simulation() {
         display_state(time::current_robot_time(), map, robot, observations, ekf_estimate,
                       make_in_out(gl_window));
     }
+
+    write_out_log_file(sim_config);
 }
 }  // namespace robot::experimental::beacon_sim
 
-int main() { robot::experimental::beacon_sim::run_simulation(); }
+int main(int argc, char **argv) {
+    const std::string DEFAULT_LOG_LOCATION = "/tmp/beacon_sim.pb";
+    cxxopts::Options options("beacon_sim", "Simple Localization Simulator with Beacons");
+    options.add_options()("log_file", "Path to output file.",
+                          cxxopts::value<std::string>()->default_value(DEFAULT_LOG_LOCATION))(
+        "help", "Print usage");
+
+    auto args = options.parse(argc, argv);
+    if (args.count("help")) {
+        std::cout << options.help() << std::endl;
+        std::exit(0);
+    }
+    robot::experimental::beacon_sim::run_simulation({
+        .log_path = args["log_file"].as<std::string>(),
+    });
+}
