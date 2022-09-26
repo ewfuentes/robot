@@ -21,6 +21,7 @@ cc_binary(
     "//common:argument_wrapper",
     "//common/liegroups:se2",
     "//common/liegroups:se3",
+    "@cxxopts//:cxxopts",
   ],
 )
 

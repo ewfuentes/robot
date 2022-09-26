@@ -61,3 +61,10 @@ http_archive(
   patch_args=["-p1"],
   sha256 = "60d1d6c81426af8f330960002fb351db06e595501274310ddbe7bfc0aacda97a",
 )
+
+http_archive(
+  name = "cxxopts",
+  urls = ["https://github.com/jarro2783/cxxopts/archive/refs/tags/v3.0.0.tar.gz"],
+  strip_prefix = "cxxopts-3.0.0",
+  sha256 = "36f41fa2a46b3c1466613b63f3fa73dc24d912bc90d667147f1e43215a8c6d00"
+)
