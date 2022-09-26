@@ -1,10 +1,10 @@
 
-#include "gtest/gtest.h"
-
 #include "common/time/robot_time_to_proto.hh"
 
+#include "gtest/gtest.h"
+
 namespace robot::time {
-  TEST(RobotTimeToProtoTest, pack_unpack) {
+TEST(RobotTimeToProtoTest, pack_unpack) {
     // Setup
     const time::RobotTimestamp in = RobotTimestamp() + std::chrono::milliseconds(123456);
 
@@ -15,6 +15,5 @@ namespace robot::time {
 
     // Verification
     EXPECT_EQ(in, out);
-
-  }
 }
+}  // namespace robot::time
