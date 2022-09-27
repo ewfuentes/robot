@@ -1,8 +1,6 @@
 
 #pragma once
 
-#include <iostream>
-
 #include "Eigen/Core"
 #include "common/math/matrix.pb.h"
 
