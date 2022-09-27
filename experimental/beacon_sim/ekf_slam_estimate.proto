@@ -1,0 +1,12 @@
+
+syntax = "proto3";
+
+import "common/math/matrix.proto";
+
+package robot.experimental.beacon_sim.proto;
+
+message EkfSlamEstimate {
+  robot.math.proto.Matrix mean = 1;
+  robot.math.proto.Matrix cov = 2;
+  repeated int32 beacon_ids = 3;
+}

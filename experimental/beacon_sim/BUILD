@@ -15,14 +15,25 @@ cc_binary(
     ":robot",
     ":sim_log_proto",
     ":generate_observations",
+    ":beacon_sim_debug_proto",
     "//common/time:sim_clock",
     ":ekf_slam",
     "//visualization/gl_window",
     "//common:argument_wrapper",
     "//common/liegroups:se2",
     "//common/liegroups:se3",
+    "//common/time:robot_time_to_proto",
     "@cxxopts//:cxxopts",
   ],
+)
+
+multi_proto_library(
+  name = "beacon_sim_debug_proto",
+  srcs = ["beacon_sim_debug.proto"],
+  deps = [
+    ":ekf_slam_estimate_proto",
+    "//common/time:robot_time_proto",
+  ]
 )
 
 cc_library(
@@ -121,6 +132,34 @@ cc_test(
   srcs = ["world_map_config_to_proto_test.cc"],
   deps = [
     ":world_map_config_to_proto",
+    "@com_google_googletest//:gtest_main",
+  ]
+)
+
+multi_proto_library(
+  name = "ekf_slam_estimate_proto",
+  srcs = ["ekf_slam_estimate.proto"],
+  deps = [
+    "//common/math:matrix_proto",
+  ]
+)
+
+cc_library(
+  name = "ekf_slam_estimate_to_proto",
+  hdrs = ["ekf_slam_estimate_to_proto.hh"],
+  srcs = ["ekf_slam_estimate_to_proto.cc"],
+  deps = [
+    ":ekf_slam",
+    ":ekf_slam_estimate_proto",
+    "//common/math:matrix_to_proto",
+  ]
+)
+
+cc_test(
+  name = "ekf_slam_estimate_to_proto_test",
+  srcs = ["ekf_slam_estimate_to_proto_test.cc"],
+  deps = [
+    ":ekf_slam_estimate_to_proto",
     "@com_google_googletest//:gtest_main",
   ]
 )

@@ -1,9 +1,11 @@
 
 load("@//common/proto:proto.bzl", "multi_proto_library")
 
+
 multi_proto_library(
   name = "matrix_proto",
   srcs = ["matrix.proto"],
+  visibility = ["//visibility:public"],
 )
 
 cc_library(
@@ -12,7 +14,8 @@ cc_library(
   deps = [
     "@eigen//:eigen",
     ":matrix_proto",
-  ]
+  ],
+  visibility = ["//visibility:public"],
 )
 
 cc_test(
