@@ -14,11 +14,11 @@
 #include "Eigen/Cholesky"
 #include "common/argument_wrapper.hh"
 #include "common/liegroups/se3.hh"
-#include "common/time/sim_clock.hh"
 #include "common/time/robot_time_to_proto.hh"
+#include "common/time/sim_clock.hh"
 #include "cxxopts.hpp"
-#include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/beacon_sim_debug.pb.h"
+#include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/generate_observations.hh"
 #include "experimental/beacon_sim/robot.hh"
 #include "experimental/beacon_sim/sim_log.pb.h"
@@ -312,7 +312,6 @@ void run_simulation(const SimConfig &sim_config) {
     time::SimClock::reset();
     const auto DT = 25ms;
     while (run) {
-
         // get command
         const auto command = get_command(key_command.exchange(KeyCommand::make_reset()),
                                          gl_window.get_joystick_states());
@@ -331,7 +330,6 @@ void run_simulation(const SimConfig &sim_config) {
 
         proto::BeaconSimDebug debug_msg;
         pack_into(time::current_robot_time(), debug_msg.mutable_time_of_validity());
-
 
         const liegroups::SE2 old_robot_from_new_robot =
             liegroups::SE2::trans(command.move_m, 0.0) * liegroups::SE2::rot(command.turn_rad);

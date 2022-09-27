@@ -1,7 +1,7 @@
 
-#include <algorithm>
-
 #include "experimental/beacon_sim/ekf_slam_estimate_to_proto.hh"
+
+#include <algorithm>
 
 #include "common/math/matrix_to_proto.hh"
 
