@@ -16,6 +16,7 @@ cc_binary(
     ":sim_log_proto",
     ":generate_observations",
     ":beacon_sim_debug_proto",
+    ":ekf_slam_estimate_to_proto",
     "//common/time:sim_clock",
     ":ekf_slam",
     "//visualization/gl_window",
