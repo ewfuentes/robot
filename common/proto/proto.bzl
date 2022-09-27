@@ -8,6 +8,9 @@ def underlying_proto_target_from_label(label):
     head, tail = label.split(':')
     return head + ":" + UNDERLYING_TAG + tail
 
+def python_proto_target_from_label(label):
+    return label + "_py"
+
 def multi_proto_library(name, **kwargs):
     srcs = kwargs["srcs"]
     deps = kwargs.get("deps", {})
@@ -24,6 +27,7 @@ def multi_proto_library(name, **kwargs):
       name = underlying_proto_name,
       srcs = srcs,
       deps = underlying_deps,
+      **kwargs
     )
 
     native.cc_proto_library(
@@ -33,8 +37,10 @@ def multi_proto_library(name, **kwargs):
       **kwargs,
     )
 
+    python_deps = [python_proto_target_from_label(label) for label in deps]
     py_proto_library(
       name = name + "_py",
       srcs = srcs,
+      deps = python_deps,
       **kwargs,
     )

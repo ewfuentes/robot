@@ -14,9 +14,12 @@
 #include "Eigen/Cholesky"
 #include "common/argument_wrapper.hh"
 #include "common/liegroups/se3.hh"
+#include "common/time/robot_time_to_proto.hh"
 #include "common/time/sim_clock.hh"
 #include "cxxopts.hpp"
+#include "experimental/beacon_sim/beacon_sim_debug.pb.h"
 #include "experimental/beacon_sim/ekf_slam.hh"
+#include "experimental/beacon_sim/ekf_slam_estimate_to_proto.hh"
 #include "experimental/beacon_sim/generate_observations.hh"
 #include "experimental/beacon_sim/robot.hh"
 #include "experimental/beacon_sim/sim_log.pb.h"
@@ -324,19 +327,23 @@ void run_simulation(const SimConfig &sim_config) {
 
         std::this_thread::sleep_for(DT);
         time::SimClock::advance(DT);
-
         map.update(time::current_robot_time());
+
+        proto::BeaconSimDebug debug_msg;
+        pack_into(time::current_robot_time(), debug_msg.mutable_time_of_validity());
+        pack_into(ekf_slam.estimate(), debug_msg.mutable_prior());
 
         const liegroups::SE2 old_robot_from_new_robot =
             liegroups::SE2::trans(command.move_m, 0.0) * liegroups::SE2::rot(command.turn_rad);
 
-        ekf_slam.predict(old_robot_from_new_robot);
+        pack_into(ekf_slam.predict(old_robot_from_new_robot), debug_msg.mutable_prediction());
 
         // generate observations
         const auto observations = generate_observations(time::current_robot_time(), map, robot,
                                                         OBS_CONFIG, make_in_out(gen));
 
         const auto ekf_estimate = ekf_slam.update(observations);
+        pack_into(ekf_estimate, debug_msg.mutable_posterior());
 
         display_state(time::current_robot_time(), map, robot, observations, ekf_estimate,
                       make_in_out(gl_window));

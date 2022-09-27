@@ -1,0 +1,10 @@
+
+syntax = "proto3";
+
+package robot.math.proto;
+
+message Matrix {
+  int32 num_rows = 1;
+  int32 num_cols = 2;
+  repeated double data = 3;
+}
