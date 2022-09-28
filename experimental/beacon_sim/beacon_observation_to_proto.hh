@@ -3,8 +3,8 @@
 
 #include <vector>
 
-#include "experimental/beacon_sim/generate_observations.hh"
 #include "experimental/beacon_sim/beacon_observation.pb.h"
+#include "experimental/beacon_sim/generate_observations.hh"
 
 namespace robot::experimental::beacon_sim::proto {
 
