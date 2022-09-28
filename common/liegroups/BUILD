@@ -122,3 +122,24 @@ cc_test(
     "@com_google_googletest//:gtest_main",
   ]
 )
+
+cc_library(
+  name = "se2_to_proto",
+  hdrs = ["se2_to_proto.hh"],
+  srcs = ["se2_to_proto.cc"],
+  deps = [
+    ":se2",
+    ":se2_proto",
+    ":so2_to_proto",
+    "//common/math:matrix_to_proto",
+  ]
+)
+
+cc_test(
+  name = "se2_to_proto_test",
+  srcs = ["se2_to_proto_test.cc"],
+  deps = [
+    ":se2_to_proto",
+    "@com_google_googletest//:gtest_main",
+  ]
+)
