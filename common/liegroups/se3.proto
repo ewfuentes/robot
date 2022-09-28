@@ -7,6 +7,6 @@ import "common/liegroups/so3.proto";
 import "common/math/matrix.proto";
 
 message SE3 {
-  robot.liegroups.proto.SO3 rot = 1;
-  robot.math.proto.Matrix trans = 2;
+  robot.liegroups.proto.SO3 rotation = 1;
+  robot.math.proto.Matrix translation = 2;
 }
