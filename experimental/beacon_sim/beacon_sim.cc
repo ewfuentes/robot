@@ -3,7 +3,6 @@
 #include <GL/glu.h>
 
 #include <array>
-#include <algorithm>
 #include <chrono>
 #include <fstream>
 #include <iostream>
@@ -14,8 +13,8 @@
 
 #include "Eigen/Cholesky"
 #include "common/argument_wrapper.hh"
-#include "common/liegroups/se3.hh"
 #include "common/liegroups/se2_to_proto.hh"
+#include "common/liegroups/se3.hh"
 #include "common/time/robot_time_to_proto.hh"
 #include "common/time/sim_clock.hh"
 #include "cxxopts.hpp"
@@ -251,10 +250,11 @@ void display_state(const time::RobotTimestamp &t, const WorldMap &world_map,
     });
 }
 
-  void write_out_log_file(const SimConfig &sim_config, std::vector<proto::BeaconSimDebug> debug_msgs) {
+void write_out_log_file(const SimConfig &sim_config,
+                        std::vector<proto::BeaconSimDebug> debug_msgs) {
     proto::SimLog log_proto;
     for (proto::BeaconSimDebug &msg : debug_msgs) {
-      log_proto.mutable_debug_msgs()->Add(std::move(msg));
+        log_proto.mutable_debug_msgs()->Add(std::move(msg));
     }
     std::fstream file_out(sim_config.log_path, std::ios::binary | std::ios::out | std::ios::trunc);
     log_proto.SerializeToOstream(&file_out);
