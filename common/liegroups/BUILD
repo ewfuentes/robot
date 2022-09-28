@@ -1,4 +1,6 @@
 
+load("//common/proto/proto.bzl", "multi_proto_library")
+
 package(default_visibility=["//visibility:public"])
 
 cc_library(
@@ -45,4 +47,32 @@ cc_test(
     ":se3",
     "@com_google_googletest//:gtest_main",
   ],
+)
+
+multi_proto_library(
+  name = "so2_proto",
+  srcs = ["so2.proto"],
+)
+
+multi_proto_library(
+  name = "so3_proto",
+  srcs = ["so3.proto"],
+)
+
+multi_proto_library(
+  name = "se2_proto",
+  srcs = ["se2.proto"],
+  deps = [
+    ":so2_proto",
+    "//common/math:matrix_proto",
+  ]
+)
+
+multi_proto_library(
+  name = "se3_proto",
+  srcs = ["se3.proto"],
+  deps = [
+    ":so3_proto",
+    "//common/math:matrix_proto",
+  ]
 )

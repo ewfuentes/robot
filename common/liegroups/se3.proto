@@ -1,0 +1,12 @@
+
+syntax = "proto3";
+
+package robot.liegroups.proto;
+
+import "common/liegroups/so3.proto"
+import "common/math/matrix.proto"
+
+message SE3 {
+  robot.liegroups.proto.SO3 rot = 1;
+  robot.math.Matrix trans = 2;
+}
