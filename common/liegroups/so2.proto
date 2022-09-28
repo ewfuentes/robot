@@ -8,5 +8,5 @@ message SO2 {
     double real = 1;
     double imag = 2;
   }
-  ComplexNumber number = 1;
+  ComplexNumber complex = 1;
 }

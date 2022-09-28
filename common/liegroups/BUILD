@@ -76,3 +76,22 @@ multi_proto_library(
     "//common/math:matrix_proto",
   ]
 )
+
+cc_library(
+  name = "so2_to_proto",
+  hdrs = ["so2_to_proto.hh"],
+  srcs = ["so2_to_proto.cc"],
+  deps = [
+    ":so2",
+    ":so2_proto",
+  ]
+)
+
+cc_test(
+  name = "so2_to_proto_test",
+  srcs = ["so2_to_proto_test.cc"],
+  deps = [
+    ":so2_to_proto",
+    "@com_google_googletest//:gtest_main",
+  ]
+)
