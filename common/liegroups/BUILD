@@ -1,5 +1,5 @@
 
-load("//common/proto/proto.bzl", "multi_proto_library")
+load("//common/proto:proto.bzl", "multi_proto_library")
 
 package(default_visibility=["//visibility:public"])
 
