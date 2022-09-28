@@ -15,6 +15,7 @@ cc_binary(
     ":robot",
     ":sim_log_proto",
     ":generate_observations",
+    ":beacon_observation_to_proto",
     ":beacon_sim_debug_proto",
     ":ekf_slam_estimate_to_proto",
     "//common/time:sim_clock",
@@ -33,6 +34,7 @@ multi_proto_library(
   srcs = ["beacon_sim_debug.proto"],
   deps = [
     ":ekf_slam_estimate_proto",
+    ":beacon_observation_proto",
     "//common/time:robot_time_proto",
   ]
 )
@@ -161,6 +163,30 @@ cc_test(
   srcs = ["ekf_slam_estimate_to_proto_test.cc"],
   deps = [
     ":ekf_slam_estimate_to_proto",
+    "@com_google_googletest//:gtest_main",
+  ]
+)
+
+multi_proto_library(
+  name = "beacon_observation_proto",
+  srcs = ["beacon_observation.proto"],
+)
+
+cc_library(
+  name = "beacon_observation_to_proto",
+  hdrs = ["beacon_observation_to_proto.hh"],
+  srcs = ["beacon_observation_to_proto.cc"],
+  deps = [
+    ":beacon_observation_proto",
+    ":generate_observations",
+  ]
+)
+
+cc_test(
+  name = "beacon_observation_to_proto_test",
+  srcs = ["beacon_observation_to_proto_test.cc"],
+  deps = [
+    ":beacon_observation_to_proto",
     "@com_google_googletest//:gtest_main",
   ]
 )

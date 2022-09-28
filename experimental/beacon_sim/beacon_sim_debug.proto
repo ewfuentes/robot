@@ -3,6 +3,7 @@ syntax = "proto3";
 
 import "common/time/robot_time.proto";
 import "experimental/beacon_sim/ekf_slam_estimate.proto";
+import "experimental/beacon_sim/beacon_observation.proto";
 
 package robot.experimental.beacon_sim.proto;
 
@@ -11,6 +12,6 @@ message BeaconSimDebug {
   robot.experimental.beacon_sim.proto.EkfSlamEstimate prior = 2;
   // robot.liegroups.proto.SE2 old_robot_from_new_robot = 3;
   robot.experimental.beacon_sim.proto.EkfSlamEstimate prediction = 4;
-  // robot.experimental.beacon_sim.proto.Observation observations = 5;
+  robot.experimental.beacon_sim.proto.BeaconObservations observations = 5;
   robot.experimental.beacon_sim.proto.EkfSlamEstimate posterior = 6;
 }

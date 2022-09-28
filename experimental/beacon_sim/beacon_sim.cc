@@ -17,6 +17,7 @@
 #include "common/time/robot_time_to_proto.hh"
 #include "common/time/sim_clock.hh"
 #include "cxxopts.hpp"
+#include "experimental/beacon_sim/beacon_observation_to_proto.hh"
 #include "experimental/beacon_sim/beacon_sim_debug.pb.h"
 #include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/ekf_slam_estimate_to_proto.hh"
@@ -341,6 +342,7 @@ void run_simulation(const SimConfig &sim_config) {
         // generate observations
         const auto observations = generate_observations(time::current_robot_time(), map, robot,
                                                         OBS_CONFIG, make_in_out(gen));
+        pack_into(observations, debug_msg.mutable_observations());
 
         const auto ekf_estimate = ekf_slam.update(observations);
         pack_into(ekf_estimate, debug_msg.mutable_posterior());
