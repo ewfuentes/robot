@@ -11,6 +11,14 @@ cc_library(
   ]
 )
 
+cc_library(
+  name = "so3",
+  hdrs = ["so3.hh"],
+  deps = [
+    "@sophus//:liegroups",
+  ]
+)
+
 
 cc_library(
   name = "se2",
@@ -92,6 +100,25 @@ cc_test(
   srcs = ["so2_to_proto_test.cc"],
   deps = [
     ":so2_to_proto",
+    "@com_google_googletest//:gtest_main",
+  ]
+)
+
+cc_library(
+  name = "so3_to_proto",
+  hdrs = ["so3_to_proto.hh"],
+  srcs = ["so3_to_proto.cc"],
+  deps = [
+    ":so3",
+    ":so3_proto",
+  ]
+)
+
+cc_test(
+  name = "so3_to_proto_test",
+  srcs = ["so3_to_proto_test.cc"],
+  deps = [
+    ":so3_to_proto",
     "@com_google_googletest//:gtest_main",
   ]
 )
