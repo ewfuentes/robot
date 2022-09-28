@@ -13,6 +13,7 @@
 
 #include "Eigen/Cholesky"
 #include "common/argument_wrapper.hh"
+#include "common/liegroups/se2_to_proto.hh"
 #include "common/liegroups/se3.hh"
 #include "common/time/robot_time_to_proto.hh"
 #include "common/time/sim_clock.hh"
@@ -249,8 +250,12 @@ void display_state(const time::RobotTimestamp &t, const WorldMap &world_map,
     });
 }
 
-void write_out_log_file(const SimConfig &sim_config) {
+void write_out_log_file(const SimConfig &sim_config,
+                        std::vector<proto::BeaconSimDebug> debug_msgs) {
     proto::SimLog log_proto;
+    for (proto::BeaconSimDebug &msg : debug_msgs) {
+        log_proto.mutable_debug_msgs()->Add(std::move(msg));
+    }
     std::fstream file_out(sim_config.log_path, std::ios::binary | std::ios::out | std::ios::trunc);
     log_proto.SerializeToOstream(&file_out);
 }
@@ -313,6 +318,8 @@ void run_simulation(const SimConfig &sim_config) {
 
     time::SimClock::reset();
     const auto DT = 25ms;
+    std::vector<proto::BeaconSimDebug> debug_msgs;
+    debug_msgs.reserve(10000);
     while (run) {
         // get command
         const auto command = get_command(key_command.exchange(KeyCommand::make_reset()),
@@ -336,6 +343,7 @@ void run_simulation(const SimConfig &sim_config) {
 
         const liegroups::SE2 old_robot_from_new_robot =
             liegroups::SE2::trans(command.move_m, 0.0) * liegroups::SE2::rot(command.turn_rad);
+        pack_into(old_robot_from_new_robot, debug_msg.mutable_old_robot_from_new_robot());
 
         pack_into(ekf_slam.predict(old_robot_from_new_robot), debug_msg.mutable_prediction());
 
@@ -349,9 +357,10 @@ void run_simulation(const SimConfig &sim_config) {
 
         display_state(time::current_robot_time(), map, robot, observations, ekf_estimate,
                       make_in_out(gl_window));
+        debug_msgs.emplace_back(std::move(debug_msg));
     }
 
-    write_out_log_file(sim_config);
+    write_out_log_file(sim_config, std::move(debug_msgs));
 }
 }  // namespace robot::experimental::beacon_sim
 

@@ -4,6 +4,9 @@ load("//common/proto:proto.bzl", "multi_proto_library")
 multi_proto_library(
   name = "sim_log_proto",
   srcs = ["sim_log.proto"],
+  deps = [
+    ":beacon_sim_debug_proto",
+  ]
 )
 
 cc_binary(
@@ -23,6 +26,7 @@ cc_binary(
     "//visualization/gl_window",
     "//common:argument_wrapper",
     "//common/liegroups:se2",
+    "//common/liegroups:se2_to_proto",
     "//common/liegroups:se3",
     "//common/time:robot_time_to_proto",
     "@cxxopts//:cxxopts",
@@ -36,6 +40,7 @@ multi_proto_library(
     ":ekf_slam_estimate_proto",
     ":beacon_observation_proto",
     "//common/time:robot_time_proto",
+    "//common/liegroups:se2_proto",
   ]
 )
 

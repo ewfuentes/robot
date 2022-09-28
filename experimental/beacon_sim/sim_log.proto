@@ -1,8 +1,11 @@
 
 syntax = "proto3";
 
+import "experimental/beacon_sim/beacon_sim_debug.proto";
+
 package robot.experimental.beacon_sim.proto;
 
 message SimLog {
+  repeated BeaconSimDebug debug_msgs = 1;
 }
 
