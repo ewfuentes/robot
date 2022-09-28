@@ -1,0 +1,14 @@
+
+syntax = "proto3";
+
+package robot.experimental.beacon_sim.proto;
+
+message BeaconObservation {
+  optional int32 id = 1;
+  optional double range_m = 2;
+  optional double bearing_rad = 3;
+}
+
+message BeaconObservations {
+  repeated BeaconObservation observations = 1;
+}
