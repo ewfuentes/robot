@@ -32,6 +32,31 @@ Eigen::VectorXd compute_gradient(const std::function<double(const Eigen::VectorX
     }
     return out;
 }
+
+Eigen::MatrixXd compute_jacobian(const std::function<Eigen::VectorXd(const Eigen::VectorXd &)> &f,
+                                 const Eigen::VectorXd &eval_pt) {
+    constexpr double PERTURB = 1e-3;
+    auto perturb = [](const Eigen::VectorXd &pt, const int idx, const double step) {
+        Eigen::VectorXd out = pt;
+        out(idx) += step;
+        return out;
+    };
+    Eigen::MatrixXd out;
+    for (int i = 0; i < eval_pt.rows(); i++) {
+        const Eigen::VectorXd neg_perturb = perturb(eval_pt, i, -PERTURB);
+        const Eigen::VectorXd pos_perturb = perturb(eval_pt, i, PERTURB);
+
+        const Eigen::VectorXd neg_eval = f(neg_perturb);
+        const Eigen::VectorXd pos_eval = f(pos_perturb);
+
+        if (out.size() == 0) {
+            out = Eigen::MatrixXd::Zero(neg_eval.rows(), eval_pt.rows());
+        }
+
+        out.col(i) = (pos_eval - neg_eval) / (2 * PERTURB);
+    }
+    return out;
+}
 }  // namespace
 
 TEST(EkfSlamTest, estimate_has_expected_dimensions) {
@@ -239,7 +264,9 @@ TEST(EkfSlamTest, rotating_in_place_yields_same_pos_covariance_directions) {
     const Eigen::Matrix3d new_cov_in_local = cov_in_local(new_est);
     std::cout << "Old Cov: " << std::endl << init_cov_in_local << std::endl;
     std::cout << "New Cov: " << std::endl << new_cov_in_local << std::endl;
-    EXPECT_NEAR((init_cov_in_local.topLeftCorner(2, 2) - new_cov_in_local.topLeftCorner(2,2)).norm(), 0.0, 1e-6);
+    EXPECT_NEAR(
+        (init_cov_in_local.topLeftCorner(2, 2) - new_cov_in_local.topLeftCorner(2, 2)).norm(), 0.0,
+        1e-6);
 }
 
 TEST(CreateMeasurementTest, incomplete_measurements_rejected) {
@@ -398,4 +425,18 @@ TEST(CreateMeasurementTest, innovation_handles_wrap_around) {
                     0.0, 1e-6);
     }
 }
+
+TEST(DynamicsJacobianTest, test) {
+    const liegroups::SE2::Tangent curr_tangent{{0.1, 0.2, 0.3}};
+    const liegroups::SE2 old_from_new = liegroups::SE2::exp({1.0, 2.0, 3.0});
+    auto f = [&](const Eigen::Vector3d &tangent) {
+        return (liegroups::SE2::exp(tangent) * old_from_new).log();
+    };
+
+    const Eigen::MatrixXd jac = compute_jacobian(f, curr_tangent);
+
+    std::cout << "Jacobian: " << std::endl << jac << std::endl;
+    std::cout << "control adjoint: " << std::endl << old_from_new.inverse().Adj() << std::endl;
+}
+
 }  // namespace robot::experimental::beacon_sim

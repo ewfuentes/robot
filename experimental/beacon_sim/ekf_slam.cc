@@ -18,6 +18,31 @@ std::optional<int> find_beacon_matrix_idx(const std::vector<int> &ids, const int
     return ROBOT_STATE_DIM + BEACON_DIM * beacon_idx;
 }
 
+Eigen::MatrixXd compute_jacobian(const std::function<Eigen::VectorXd(const Eigen::VectorXd &)> &f,
+                                 const Eigen::VectorXd &eval_pt) {
+    constexpr double PERTURB = 1e-3;
+    auto perturb = [](const Eigen::VectorXd &pt, const int idx, const double step) {
+        Eigen::VectorXd out = pt;
+        out(idx) += step;
+        return out;
+    };
+    Eigen::MatrixXd out;
+    for (int i = 0; i < eval_pt.rows(); i++) {
+        const Eigen::VectorXd neg_perturb = perturb(eval_pt, i, -PERTURB);
+        const Eigen::VectorXd pos_perturb = perturb(eval_pt, i, PERTURB);
+
+        const Eigen::VectorXd neg_eval = f(neg_perturb);
+        const Eigen::VectorXd pos_eval = f(pos_perturb);
+
+        if (out.size() == 0) {
+            out = Eigen::MatrixXd::Zero(neg_eval.rows(), eval_pt.rows());
+        }
+
+        out.col(i) = (pos_eval - neg_eval) / (2 * PERTURB);
+    }
+    return out;
+}
+
 }  // namespace
 
 namespace detail {
@@ -153,8 +178,10 @@ EkfSlamEstimate prediction_update(const EkfSlamEstimate &est,
                                   const EkfSlamConfig &config) {
     // Update the robot mean
     EkfSlamEstimate out = est;
-    const auto local_from_new_robot = (est.local_from_robot() * old_robot_from_new_robot);
-    out.mean(Eigen::seqN(0, ROBOT_STATE_DIM)) = local_from_new_robot.log();
+    auto f = [&](const liegroups::SE2::Tangent &x) {
+        return (liegroups::SE2::exp(x) * old_robot_from_new_robot).log();
+    };
+    out.mean(Eigen::seqN(0, ROBOT_STATE_DIM)) = f(est.mean.head<3>());
 
     // Update the covariances
     // TODO: This should use the length of the geodesic between old and new poses
@@ -168,7 +195,7 @@ EkfSlamEstimate prediction_update(const EkfSlamEstimate &est,
         config.heading_process_noise_rad_per_rt_meter *
             config.heading_process_noise_rad_per_rt_meter);
 
-    const Eigen::Matrix3d old_from_new_adj = old_robot_from_new_robot.Adj();
+    const Eigen::Matrix3d old_from_new_adj = compute_jacobian(f, est.mean.head<3>());
     out.cov.block(0, 0, ROBOT_STATE_DIM, ROBOT_STATE_DIM) =
         old_from_new_adj.transpose() * out.cov.block(0, 0, ROBOT_STATE_DIM, ROBOT_STATE_DIM) *
             old_from_new_adj +
@@ -176,9 +203,10 @@ EkfSlamEstimate prediction_update(const EkfSlamEstimate &est,
 
     const int num_landmark_cov_cols = out.cov.cols() - ROBOT_STATE_DIM;
     out.cov.topRightCorner(ROBOT_STATE_DIM, num_landmark_cov_cols) =
-      old_from_new_adj * out.cov.topRightCorner(ROBOT_STATE_DIM, num_landmark_cov_cols);
+        old_from_new_adj * out.cov.topRightCorner(ROBOT_STATE_DIM, num_landmark_cov_cols);
     out.cov.bottomLeftCorner(num_landmark_cov_cols, ROBOT_STATE_DIM) =
-      out.cov.bottomLeftCorner(num_landmark_cov_cols, ROBOT_STATE_DIM) * old_from_new_adj.transpose();
+        out.cov.bottomLeftCorner(num_landmark_cov_cols, ROBOT_STATE_DIM) *
+        old_from_new_adj.transpose();
 
     return out;
 }
