@@ -76,15 +76,21 @@ RobotCommand get_command(
     const std::unordered_map<int, visualization::gl_window::JoystickState> &joysticks) {
     // Handle Keyboard Commands
     if (key_command.q) {
-      return {.turn_rad = 0, .move_m = 0, .should_exit = true, .should_step = true};
+        return {.turn_rad = 0, .move_m = 0, .should_exit = true, .should_step = true};
     } else if (key_command.arrow_left) {
-      return {.turn_rad = std::numbers::pi / 4.0, .move_m = 0, .should_exit = false, .should_step=true};
+        return {.turn_rad = std::numbers::pi / 4.0,
+                .move_m = 0,
+                .should_exit = false,
+                .should_step = true};
     } else if (key_command.arrow_right) {
-      return {.turn_rad = -std::numbers::pi / 4.0, .move_m = 0, .should_exit = false, .should_step=true};
+        return {.turn_rad = -std::numbers::pi / 4.0,
+                .move_m = 0,
+                .should_exit = false,
+                .should_step = true};
     } else if (key_command.arrow_up) {
-      return {.turn_rad = 0.0, .move_m = 0.1, .should_exit = false, .should_step=true};
+        return {.turn_rad = 0.0, .move_m = 0.1, .should_exit = false, .should_step = true};
     } else if (key_command.arrow_down) {
-      return {.turn_rad = 0.0, .move_m = -0.1, .should_exit = false, .should_step=true};
+        return {.turn_rad = 0.0, .move_m = -0.1, .should_exit = false, .should_step = true};
     }
 
     for (const auto &[id, state] : joysticks) {
@@ -97,9 +103,12 @@ RobotCommand get_command(
         const double mean = (left + right) / 2.0;
         const double mean_diff = (right - left) / 2.0;
 
-        return {.turn_rad = 0.1 * mean_diff, .move_m = mean * 0.1, .should_exit = false, .should_step=true};
+        return {.turn_rad = 0.1 * mean_diff,
+                .move_m = mean * 0.1,
+                .should_exit = false,
+                .should_step = true};
     }
-    return {.turn_rad = 0, .move_m = 0, .should_exit = false, .should_step=false};
+    return {.turn_rad = 0, .move_m = 0, .should_exit = false, .should_step = false};
 }
 
 WorldMapConfig world_map_config() {
@@ -214,8 +223,11 @@ void display_state(const time::RobotTimestamp &t, const WorldMap &world_map,
             }
             glEnd();
 
-            const Eigen::Matrix2d pos_cov = ekf_estimate.robot_cov().topLeftCorner(2, 2);
-            const Eigen::LLT<Eigen::Matrix2d> cov_llt(pos_cov);
+            const Eigen::Matrix3d pos_cov = ekf_estimate.robot_cov();
+            const Eigen::Matrix3d pos_cov_in_local =
+                ekf_estimate.local_from_robot().Adj() * pos_cov *
+                ekf_estimate.local_from_robot().Adj().transpose();
+            const Eigen::LLT<Eigen::Matrix2d> cov_llt(pos_cov_in_local.topLeftCorner(2, 2));
 
             glBegin(GL_LINE_LOOP);
             glColor4f(1.0, 0.5, 0.5, 1.0);
@@ -282,14 +294,20 @@ void run_simulation(const SimConfig &sim_config) {
     RobotState robot(INIT_POS_X_M, INIT_POS_Y_M, INIT_HEADING_RAD);
 
     constexpr EkfSlamConfig EKF_CONFIG = {
-        .max_num_beacons = 50,
+        .max_num_beacons = 0,
         .initial_beacon_uncertainty_m = 1000,
-        .along_track_process_noise_m_per_rt_meter = 0.01,
-        .cross_track_process_noise_m_per_rt_meter = 0.005,
-        .heading_process_noise_rad_per_rt_meter = 0.0005,
-        .beacon_pos_process_noise_m_per_rt_s = 1.0,
-        .range_measurement_noise_m = 1.0,
-        .bearing_measurement_noise_rad = 0.005,
+        .along_track_process_noise_m_per_rt_meter = 0.0,
+        .cross_track_process_noise_m_per_rt_meter = 0.00,
+        .heading_process_noise_rad_per_rt_meter = 0.000,
+        .beacon_pos_process_noise_m_per_rt_s = 0.0,
+        .range_measurement_noise_m = 0.0,
+        .bearing_measurement_noise_rad = 0.000,
+        // .along_track_process_noise_m_per_rt_meter = 0.01,
+        // .cross_track_process_noise_m_per_rt_meter = 0.005,
+        // .heading_process_noise_rad_per_rt_meter = 0.0005,
+        // .beacon_pos_process_noise_m_per_rt_s = 1.0,
+        // .range_measurement_noise_m = 1.0,
+        // .bearing_measurement_noise_rad = 0.005,
     };
     EkfSlam ekf_slam(EKF_CONFIG);
 
@@ -331,40 +349,39 @@ void run_simulation(const SimConfig &sim_config) {
         }
 
         if (command.should_step) {
-          // simulate robot forward
-          robot.turn(command.turn_rad);
-          robot.move(command.move_m);
+            // simulate robot forward
+            robot.turn(command.turn_rad);
+            robot.move(command.move_m);
 
-          time::SimClock::advance(DT);
+            time::SimClock::advance(DT);
 
-          map.update(time::current_robot_time());
+            map.update(time::current_robot_time());
 
-          proto::BeaconSimDebug debug_msg;
-          pack_into(time::current_robot_time(), debug_msg.mutable_time_of_validity());
-          pack_into(ekf_slam.estimate(), debug_msg.mutable_prior());
+            proto::BeaconSimDebug debug_msg;
+            pack_into(time::current_robot_time(), debug_msg.mutable_time_of_validity());
+            pack_into(ekf_slam.estimate(), debug_msg.mutable_prior());
 
+            const liegroups::SE2 old_robot_from_new_robot =
+                liegroups::SE2::trans(command.move_m, 0.0) * liegroups::SE2::rot(command.turn_rad);
+            pack_into(old_robot_from_new_robot, debug_msg.mutable_old_robot_from_new_robot());
 
-          const liegroups::SE2 old_robot_from_new_robot =
-            liegroups::SE2::trans(command.move_m, 0.0) * liegroups::SE2::rot(command.turn_rad);
-        pack_into(old_robot_from_new_robot, debug_msg.mutable_old_robot_from_new_robot());
+            pack_into(ekf_slam.predict(old_robot_from_new_robot), debug_msg.mutable_prediction());
 
-          pack_into(ekf_slam.predict(old_robot_from_new_robot), debug_msg.mutable_prediction());
+            // generate observations
+            const auto observations = generate_observations(time::current_robot_time(), map, robot,
+                                                            OBS_CONFIG, make_in_out(gen));
+            pack_into(observations, debug_msg.mutable_observations());
 
-          // generate observations
-          const auto observations = generate_observations(time::current_robot_time(), map, robot,
-                                                          OBS_CONFIG, make_in_out(gen));
-          pack_into(observations, debug_msg.mutable_observations());
+            // const auto ekf_estimate = ekf_slam.update(observations);
+            const auto ekf_estimate = ekf_slam.estimate();
+            pack_into(ekf_estimate, debug_msg.mutable_posterior());
 
-          const auto ekf_estimate = ekf_slam.update(observations);
-          pack_into(ekf_estimate, debug_msg.mutable_posterior());
-
-          display_state(time::current_robot_time(), map, robot, observations, ekf_estimate,
-                        make_in_out(gl_window));
-          debug_msgs.emplace_back(std::move(debug_msg));
+            display_state(time::current_robot_time(), map, robot, observations, ekf_estimate,
+                          make_in_out(gl_window));
+            debug_msgs.emplace_back(std::move(debug_msg));
         }
 
         std::this_thread::sleep_for(DT);
-
     }
 
     write_out_log_file(sim_config, std::move(debug_msgs));

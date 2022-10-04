@@ -1,6 +1,8 @@
 
 #include "experimental/beacon_sim/ekf_slam.hh"
 
+#include <iostream>
+
 namespace robot::experimental::beacon_sim {
 namespace {
 
@@ -18,30 +20,31 @@ std::optional<int> find_beacon_matrix_idx(const std::vector<int> &ids, const int
     return ROBOT_STATE_DIM + BEACON_DIM * beacon_idx;
 }
 
-Eigen::MatrixXd compute_jacobian(const std::function<Eigen::VectorXd(const Eigen::VectorXd &)> &f,
-                                 const Eigen::VectorXd &eval_pt) {
-    constexpr double PERTURB = 1e-3;
-    auto perturb = [](const Eigen::VectorXd &pt, const int idx, const double step) {
-        Eigen::VectorXd out = pt;
-        out(idx) += step;
-        return out;
-    };
-    Eigen::MatrixXd out;
-    for (int i = 0; i < eval_pt.rows(); i++) {
-        const Eigen::VectorXd neg_perturb = perturb(eval_pt, i, -PERTURB);
-        const Eigen::VectorXd pos_perturb = perturb(eval_pt, i, PERTURB);
-
-        const Eigen::VectorXd neg_eval = f(neg_perturb);
-        const Eigen::VectorXd pos_eval = f(pos_perturb);
-
-        if (out.size() == 0) {
-            out = Eigen::MatrixXd::Zero(neg_eval.rows(), eval_pt.rows());
-        }
-
-        out.col(i) = (pos_eval - neg_eval) / (2 * PERTURB);
-    }
-    return out;
-}
+// Eigen::MatrixXd compute_jacobian(const std::function<Eigen::VectorXd(const Eigen::VectorXd &)>
+// &f,
+//                                  const Eigen::VectorXd &eval_pt) {
+//     constexpr double PERTURB = 1e-3;
+//     auto perturb = [](const Eigen::VectorXd &pt, const int idx, const double step) {
+//         Eigen::VectorXd out = pt;
+//         out(idx) += step;
+//         return out;
+//     };
+//     Eigen::MatrixXd out;
+//     for (int i = 0; i < eval_pt.rows(); i++) {
+//         const Eigen::VectorXd neg_perturb = perturb(eval_pt, i, -PERTURB);
+//         const Eigen::VectorXd pos_perturb = perturb(eval_pt, i, PERTURB);
+//
+//         const Eigen::VectorXd neg_eval = f(neg_perturb);
+//         const Eigen::VectorXd pos_eval = f(pos_perturb);
+//
+//         if (out.size() == 0) {
+//             out = Eigen::MatrixXd::Zero(neg_eval.rows(), eval_pt.rows());
+//         }
+//
+//         out.col(i) = (pos_eval - neg_eval) / (2 * PERTURB);
+//     }
+//     return out;
+// }
 
 }  // namespace
 
@@ -178,10 +181,17 @@ EkfSlamEstimate prediction_update(const EkfSlamEstimate &est,
                                   const EkfSlamConfig &config) {
     // Update the robot mean
     EkfSlamEstimate out = est;
-    auto f = [&](const liegroups::SE2::Tangent &x) {
-        return (liegroups::SE2::exp(x) * old_robot_from_new_robot).log();
-    };
-    out.mean(Eigen::seqN(0, ROBOT_STATE_DIM)) = f(est.mean.head<3>());
+    //    auto f = [&](const Eigen::Vector3d &x) {
+    //        const auto local_from_new_robot =
+    //            (liegroups::SE2(x(2), x.head<2>()) * old_robot_from_new_robot);
+    //        return (Eigen::Vector3d() << local_from_new_robot.translation(),
+    //                local_from_new_robot.so2().log())
+    //            .finished();
+    //    };
+    const auto local_from_new_robot = est.local_from_robot() * old_robot_from_new_robot;
+    out.mean(Eigen::seqN(0, ROBOT_STATE_DIM)) =
+        (Eigen::Vector3d() << local_from_new_robot.translation(), local_from_new_robot.so2().log())
+            .finished();
 
     // Update the covariances
     // TODO: This should use the length of the geodesic between old and new poses
@@ -194,19 +204,33 @@ EkfSlamEstimate prediction_update(const EkfSlamEstimate &est,
             config.cross_track_process_noise_m_per_rt_meter,
         config.heading_process_noise_rad_per_rt_meter *
             config.heading_process_noise_rad_per_rt_meter);
+    std::cout << "prior cov: " << std::endl
+              << out.cov.block(0, 0, ROBOT_STATE_DIM, ROBOT_STATE_DIM) << std::endl;
 
-    const Eigen::Matrix3d old_from_new_adj = compute_jacobian(f, est.mean.head<3>());
+    const Eigen::Matrix3d dynamics_jac_wrt_state = old_robot_from_new_robot.inverse().Adj();
     out.cov.block(0, 0, ROBOT_STATE_DIM, ROBOT_STATE_DIM) =
-        old_from_new_adj.transpose() * out.cov.block(0, 0, ROBOT_STATE_DIM, ROBOT_STATE_DIM) *
-            old_from_new_adj +
+        dynamics_jac_wrt_state * out.cov.block(0, 0, ROBOT_STATE_DIM, ROBOT_STATE_DIM) *
+            dynamics_jac_wrt_state.transpose() +
         process_noise;
 
-    const int num_landmark_cov_cols = out.cov.cols() - ROBOT_STATE_DIM;
-    out.cov.topRightCorner(ROBOT_STATE_DIM, num_landmark_cov_cols) =
-        old_from_new_adj * out.cov.topRightCorner(ROBOT_STATE_DIM, num_landmark_cov_cols);
-    out.cov.bottomLeftCorner(num_landmark_cov_cols, ROBOT_STATE_DIM) =
-        out.cov.bottomLeftCorner(num_landmark_cov_cols, ROBOT_STATE_DIM) *
-        old_from_new_adj.transpose();
+    std::cout << "Robot tangent: " << est.mean.head<3>().transpose() << std::endl;
+    std::cout << "control: " << old_robot_from_new_robot.log().transpose() << std::endl;
+    std::cout << "Robot Jac: " << std::endl << dynamics_jac_wrt_state << std::endl;
+    std::cout << "updated cov: " << std::endl
+              << out.cov.block(0, 0, ROBOT_STATE_DIM, ROBOT_STATE_DIM) << std::endl;
+
+    std::cout << "In local frame: " << std::endl
+              << out.local_from_robot().Adj() * out.robot_cov() *
+                     out.local_from_robot().Adj().transpose()
+              << std::endl;
+
+    // const int num_landmark_cov_cols = out.cov.cols() - ROBOT_STATE_DIM;
+    // out.cov.topRightCorner(ROBOT_STATE_DIM, num_landmark_cov_cols) =
+    //     dynamics_jac_wrt_state.tranpose() * out.cov.topRightCorner(ROBOT_STATE_DIM,
+    //     num_landmark_cov_cols);
+    // out.cov.bottomLeftCorner(num_landmark_cov_cols, ROBOT_STATE_DIM) =
+    //     out.cov.bottomLeftCorner(num_landmark_cov_cols, ROBOT_STATE_DIM) *
+    //     dynamics_jac_wrt_state;
 
     return out;
 }
@@ -214,7 +238,7 @@ EkfSlamEstimate prediction_update(const EkfSlamEstimate &est,
 }  // namespace detail
 
 liegroups::SE2 EkfSlamEstimate::local_from_robot() const {
-    return liegroups::SE2::exp(mean(Eigen::seqN(0, ROBOT_STATE_DIM)));
+    return liegroups::SE2(mean(2), mean.head<2>());
 }
 Eigen::Matrix3d EkfSlamEstimate::robot_cov() const {
     return cov.block(0, 0, ROBOT_STATE_DIM, ROBOT_STATE_DIM);
@@ -244,7 +268,8 @@ EkfSlam::EkfSlam(const EkfSlamConfig &config) : config_(config) {
     estimate_.mean(Eigen::seq(ROBOT_STATE_DIM, Eigen::last)).array() += 30.0;
     estimate_.cov = Eigen::MatrixXd::Identity(total_dim, total_dim) *
                     config_.initial_beacon_uncertainty_m * config_.initial_beacon_uncertainty_m;
-    estimate_.cov.block(0, 0, ROBOT_STATE_DIM, ROBOT_STATE_DIM) = Eigen::Matrix3d::Zero();
+    estimate_.cov.block(0, 0, ROBOT_STATE_DIM, ROBOT_STATE_DIM) = Eigen::Matrix3d::Identity();
+    estimate_.cov(0, 0) *= 2;
 }
 
 const EkfSlamEstimate &EkfSlam::predict(const liegroups::SE2 &old_robot_from_new_robot) {
