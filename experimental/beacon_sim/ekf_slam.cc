@@ -181,13 +181,6 @@ EkfSlamEstimate prediction_update(const EkfSlamEstimate &est,
                                   const EkfSlamConfig &config) {
     // Update the robot mean
     EkfSlamEstimate out = est;
-    //    auto f = [&](const Eigen::Vector3d &x) {
-    //        const auto local_from_new_robot =
-    //            (liegroups::SE2(x(2), x.head<2>()) * old_robot_from_new_robot);
-    //        return (Eigen::Vector3d() << local_from_new_robot.translation(),
-    //                local_from_new_robot.so2().log())
-    //            .finished();
-    //    };
     const auto local_from_new_robot = est.local_from_robot() * old_robot_from_new_robot;
     out.mean(Eigen::seqN(0, ROBOT_STATE_DIM)) =
         (Eigen::Vector3d() << local_from_new_robot.translation(), local_from_new_robot.so2().log())
@@ -197,40 +190,39 @@ EkfSlamEstimate prediction_update(const EkfSlamEstimate &est,
     // TODO: This should use the length of the geodesic between old and new poses
     // TODO: These are perturbations in the robot frame. I think this is correct...
 
-    const Eigen::Matrix3d process_noise = Eigen::DiagonalMatrix<double, ROBOT_STATE_DIM>(
+    const Eigen::Matrix3d robot_process_noise = Eigen::DiagonalMatrix<double, ROBOT_STATE_DIM>(
         config.along_track_process_noise_m_per_rt_meter *
-            config.along_track_process_noise_m_per_rt_meter,
+                config.along_track_process_noise_m_per_rt_meter *
+                old_robot_from_new_robot.arclength() +
+            config.pos_process_noise_m_per_rt_s * config.pos_process_noise_m_per_rt_s,
         config.cross_track_process_noise_m_per_rt_meter *
-            config.cross_track_process_noise_m_per_rt_meter,
+                config.cross_track_process_noise_m_per_rt_meter *
+                old_robot_from_new_robot.arclength() +
+            config.pos_process_noise_m_per_rt_s * config.pos_process_noise_m_per_rt_s,
         config.heading_process_noise_rad_per_rt_meter *
-            config.heading_process_noise_rad_per_rt_meter);
-    std::cout << "prior cov: " << std::endl
-              << out.cov.block(0, 0, ROBOT_STATE_DIM, ROBOT_STATE_DIM) << std::endl;
+                config.heading_process_noise_rad_per_rt_meter *
+                old_robot_from_new_robot.arclength() +
+            config.heading_process_noise_rad_per_rt_s * config.heading_process_noise_rad_per_rt_s);
 
     const Eigen::Matrix3d dynamics_jac_wrt_state = old_robot_from_new_robot.inverse().Adj();
     out.cov.block(0, 0, ROBOT_STATE_DIM, ROBOT_STATE_DIM) =
         dynamics_jac_wrt_state * out.cov.block(0, 0, ROBOT_STATE_DIM, ROBOT_STATE_DIM) *
             dynamics_jac_wrt_state.transpose() +
-        process_noise;
+        robot_process_noise;
 
-    std::cout << "Robot tangent: " << est.mean.head<3>().transpose() << std::endl;
-    std::cout << "control: " << old_robot_from_new_robot.log().transpose() << std::endl;
-    std::cout << "Robot Jac: " << std::endl << dynamics_jac_wrt_state << std::endl;
-    std::cout << "updated cov: " << std::endl
-              << out.cov.block(0, 0, ROBOT_STATE_DIM, ROBOT_STATE_DIM) << std::endl;
+    const int num_landmark_cov_cols = out.cov.cols() - ROBOT_STATE_DIM;
+    out.cov.topRightCorner(ROBOT_STATE_DIM, num_landmark_cov_cols) =
+        dynamics_jac_wrt_state * out.cov.topRightCorner(ROBOT_STATE_DIM, num_landmark_cov_cols);
+    out.cov.bottomLeftCorner(num_landmark_cov_cols, ROBOT_STATE_DIM) =
+        out.cov.bottomLeftCorner(num_landmark_cov_cols, ROBOT_STATE_DIM) *
+        dynamics_jac_wrt_state.transpose();
 
-    std::cout << "In local frame: " << std::endl
-              << out.local_from_robot().Adj() * out.robot_cov() *
-                     out.local_from_robot().Adj().transpose()
-              << std::endl;
+    const Eigen::MatrixXd landmark_pos_process_noise =
+        Eigen::MatrixXd::Identity(num_landmark_cov_cols, num_landmark_cov_cols) *
+        config.beacon_pos_process_noise_m_per_rt_s * config.beacon_pos_process_noise_m_per_rt_s;
 
-    // const int num_landmark_cov_cols = out.cov.cols() - ROBOT_STATE_DIM;
-    // out.cov.topRightCorner(ROBOT_STATE_DIM, num_landmark_cov_cols) =
-    //     dynamics_jac_wrt_state.tranpose() * out.cov.topRightCorner(ROBOT_STATE_DIM,
-    //     num_landmark_cov_cols);
-    // out.cov.bottomLeftCorner(num_landmark_cov_cols, ROBOT_STATE_DIM) =
-    //     out.cov.bottomLeftCorner(num_landmark_cov_cols, ROBOT_STATE_DIM) *
-    //     dynamics_jac_wrt_state;
+    out.cov.bottomRightCorner(num_landmark_cov_cols, num_landmark_cov_cols) +=
+        landmark_pos_process_noise;
 
     return out;
 }
@@ -268,8 +260,7 @@ EkfSlam::EkfSlam(const EkfSlamConfig &config) : config_(config) {
     estimate_.mean(Eigen::seq(ROBOT_STATE_DIM, Eigen::last)).array() += 30.0;
     estimate_.cov = Eigen::MatrixXd::Identity(total_dim, total_dim) *
                     config_.initial_beacon_uncertainty_m * config_.initial_beacon_uncertainty_m;
-    estimate_.cov.block(0, 0, ROBOT_STATE_DIM, ROBOT_STATE_DIM) = Eigen::Matrix3d::Identity();
-    estimate_.cov(0, 0) *= 2;
+    estimate_.cov.block(0, 0, ROBOT_STATE_DIM, ROBOT_STATE_DIM) = Eigen::Matrix3d::Zero();
 }
 
 const EkfSlamEstimate &EkfSlam::predict(const liegroups::SE2 &old_robot_from_new_robot) {
@@ -319,9 +310,12 @@ const EkfSlamEstimate &EkfSlam::update(const std::vector<BeaconObservation> &obs
     const Eigen::MatrixXd kalman_gain =
         estimate_.cov * observation_mat.transpose() * innovation_cov.inverse();
     estimate_.mean += kalman_gain * innovation;
-    estimate_.cov = (Eigen::MatrixXd::Identity(estimate_.cov.rows(), estimate_.cov.cols()) -
-                     kalman_gain * observation_mat) *
-                    estimate_.cov;
+    const Eigen::MatrixXd I_min_KH =
+        (Eigen::MatrixXd::Identity(estimate_.cov.rows(), estimate_.cov.cols()) -
+         kalman_gain * observation_mat);
+    // Use joseph form of update
+    estimate_.cov = I_min_KH * estimate_.cov * I_min_KH.transpose() +
+                    kalman_gain * observation_noise * kalman_gain.transpose();
 
     return estimate_;
 }

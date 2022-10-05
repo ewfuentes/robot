@@ -113,16 +113,16 @@ RobotCommand get_command(
 
 WorldMapConfig world_map_config() {
     // Create a grid of beacons
-    constexpr int NUM_ROWS = 1;
-    constexpr int NUM_COLS = 1;
-    constexpr double SPACING_M = 3.0;
+    constexpr int NUM_ROWS = 2;
+    constexpr int NUM_COLS = 2;
+    constexpr double SPACING_M = 4.0;
     WorldMapConfig out;
     out.fixed_beacons.beacons.reserve(NUM_ROWS * NUM_COLS);
     int beacon_id = 0;
     for (int r = 0; r < NUM_ROWS; r++) {
         for (int c = 0; c < NUM_COLS; c++) {
             out.fixed_beacons.beacons.push_back(Beacon{
-                .id = beacon_id++, .pos_in_local = {c * SPACING_M + 5.0, r * SPACING_M + 4.0}});
+                .id = beacon_id++, .pos_in_local = {c * SPACING_M, r * SPACING_M}});
         }
     }
     out.blinking_beacons = {
@@ -222,7 +222,12 @@ void display_state(const time::RobotTimestamp &t, const WorldMap &world_map,
                 glVertex2d(x_in_robot_m, y_in_robot_m);
             }
             glEnd();
+            glPopMatrix(); // Pop from estimated robot frame to world frame
 
+            glPushMatrix();
+            // Translate to the robot origin, but throw away the rotation
+            glMultMatrixd(
+                liegroups::SE3::trans(est_local_from_robot.translation()).matrix().data());
             const Eigen::Matrix3d pos_cov = ekf_estimate.robot_cov();
             const Eigen::Matrix3d pos_cov_in_local =
                 ekf_estimate.local_from_robot().Adj() * pos_cov *
@@ -238,7 +243,7 @@ void display_state(const time::RobotTimestamp &t, const WorldMap &world_map,
                 glVertex2d(pt.x(), pt.y());
             }
             glEnd();
-            glPopMatrix();  // Pop from estimated robot frame to world frame
+            glPopMatrix(); // Pop from robot location to world frame
         }
 
         for (const auto beacon_id : ekf_estimate.beacon_ids) {
@@ -289,25 +294,21 @@ void run_simulation(const SimConfig &sim_config) {
     constexpr double INIT_HEADING_RAD = 0.0;
     constexpr ObservationConfig OBS_CONFIG = {
         .range_noise_std_m = 0.1,
-        .max_sensor_range_m = 5.0,
+        .max_sensor_range_m = 10.0,
     };
     RobotState robot(INIT_POS_X_M, INIT_POS_Y_M, INIT_HEADING_RAD);
 
     constexpr EkfSlamConfig EKF_CONFIG = {
-        .max_num_beacons = 0,
-        .initial_beacon_uncertainty_m = 1000,
-        .along_track_process_noise_m_per_rt_meter = 0.0,
-        .cross_track_process_noise_m_per_rt_meter = 0.00,
-        .heading_process_noise_rad_per_rt_meter = 0.000,
-        .beacon_pos_process_noise_m_per_rt_s = 0.0,
-        .range_measurement_noise_m = 0.0,
-        .bearing_measurement_noise_rad = 0.000,
-        // .along_track_process_noise_m_per_rt_meter = 0.01,
-        // .cross_track_process_noise_m_per_rt_meter = 0.005,
-        // .heading_process_noise_rad_per_rt_meter = 0.0005,
-        // .beacon_pos_process_noise_m_per_rt_s = 1.0,
-        // .range_measurement_noise_m = 1.0,
-        // .bearing_measurement_noise_rad = 0.005,
+        .max_num_beacons = 10,
+        .initial_beacon_uncertainty_m = 100,
+        .along_track_process_noise_m_per_rt_meter = 0.01,
+        .cross_track_process_noise_m_per_rt_meter = 0.05,
+        .pos_process_noise_m_per_rt_s = 0.001,
+        .heading_process_noise_rad_per_rt_meter = 0.0005,
+        .heading_process_noise_rad_per_rt_s =1e-6,
+        .beacon_pos_process_noise_m_per_rt_s = 0.001,
+        .range_measurement_noise_m = 0.25,
+        .bearing_measurement_noise_rad = 0.0001,
     };
     EkfSlam ekf_slam(EKF_CONFIG);
 
@@ -372,8 +373,7 @@ void run_simulation(const SimConfig &sim_config) {
                                                             OBS_CONFIG, make_in_out(gen));
             pack_into(observations, debug_msg.mutable_observations());
 
-            // const auto ekf_estimate = ekf_slam.update(observations);
-            const auto ekf_estimate = ekf_slam.estimate();
+            const auto ekf_estimate = ekf_slam.update(observations);
             pack_into(ekf_estimate, debug_msg.mutable_posterior());
 
             display_state(time::current_robot_time(), map, robot, observations, ekf_estimate,

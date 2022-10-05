@@ -14,7 +14,9 @@ struct EkfSlamConfig {
     double initial_beacon_uncertainty_m;
     double along_track_process_noise_m_per_rt_meter;
     double cross_track_process_noise_m_per_rt_meter;
+    double pos_process_noise_m_per_rt_s;
     double heading_process_noise_rad_per_rt_meter;
+    double heading_process_noise_rad_per_rt_s;
     double beacon_pos_process_noise_m_per_rt_s;
     double range_measurement_noise_m;
     double bearing_measurement_noise_rad;
