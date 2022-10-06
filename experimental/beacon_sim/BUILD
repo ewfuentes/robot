@@ -4,6 +4,7 @@ load("//common/proto:proto.bzl", "multi_proto_library")
 multi_proto_library(
   name = "sim_log_proto",
   srcs = ["sim_log.proto"],
+  visibility = [":__subpackages__"],
   deps = [
     ":beacon_sim_debug_proto",
   ]

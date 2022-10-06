@@ -20,32 +20,6 @@ std::optional<int> find_beacon_matrix_idx(const std::vector<int> &ids, const int
     return ROBOT_STATE_DIM + BEACON_DIM * beacon_idx;
 }
 
-// Eigen::MatrixXd compute_jacobian(const std::function<Eigen::VectorXd(const Eigen::VectorXd &)>
-// &f,
-//                                  const Eigen::VectorXd &eval_pt) {
-//     constexpr double PERTURB = 1e-3;
-//     auto perturb = [](const Eigen::VectorXd &pt, const int idx, const double step) {
-//         Eigen::VectorXd out = pt;
-//         out(idx) += step;
-//         return out;
-//     };
-//     Eigen::MatrixXd out;
-//     for (int i = 0; i < eval_pt.rows(); i++) {
-//         const Eigen::VectorXd neg_perturb = perturb(eval_pt, i, -PERTURB);
-//         const Eigen::VectorXd pos_perturb = perturb(eval_pt, i, PERTURB);
-//
-//         const Eigen::VectorXd neg_eval = f(neg_perturb);
-//         const Eigen::VectorXd pos_eval = f(pos_perturb);
-//
-//         if (out.size() == 0) {
-//             out = Eigen::MatrixXd::Zero(neg_eval.rows(), eval_pt.rows());
-//         }
-//
-//         out.col(i) = (pos_eval - neg_eval) / (2 * PERTURB);
-//     }
-//     return out;
-// }
-
 }  // namespace
 
 namespace detail {
@@ -285,6 +259,18 @@ const EkfSlamEstimate &EkfSlam::update(const std::vector<BeaconObservation> &obs
             continue;
         }
         estimate_.beacon_ids.push_back(obs.maybe_id.value());
+        const int beacon_start_idx =
+            find_beacon_matrix_idx(estimate_.beacon_ids, obs.maybe_id.value()).value();
+        // initialize the mean to be where the observation places it
+        const double &range_m = obs.maybe_range_m.value();
+        const double &bearing_rad = obs.maybe_bearing_rad.value();
+        const Eigen::Vector2d beacon_in_robot{range_m * std::cos(bearing_rad),
+                                              range_m * std::sin(bearing_rad)};
+
+        const Eigen::Vector2d beacon_in_local =
+            estimate_.local_from_robot().inverse() * beacon_in_robot;
+        estimate_.mean(Eigen::seqN(beacon_start_idx, BEACON_DIM)) =
+            beacon_in_local;
     }
 
     // turn the observations into a column vector of beacon in robot points

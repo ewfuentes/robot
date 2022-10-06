@@ -299,14 +299,14 @@ void run_simulation(const SimConfig &sim_config) {
     RobotState robot(INIT_POS_X_M, INIT_POS_Y_M, INIT_HEADING_RAD);
 
     constexpr EkfSlamConfig EKF_CONFIG = {
-        .max_num_beacons = 10,
+        .max_num_beacons = 4,
         .initial_beacon_uncertainty_m = 100,
-        .along_track_process_noise_m_per_rt_meter = 0.01,
-        .cross_track_process_noise_m_per_rt_meter = 0.05,
-        .pos_process_noise_m_per_rt_s = 0.001,
-        .heading_process_noise_rad_per_rt_meter = 0.0005,
-        .heading_process_noise_rad_per_rt_s =1e-6,
-        .beacon_pos_process_noise_m_per_rt_s = 0.001,
+        .along_track_process_noise_m_per_rt_meter = 1e-2,
+        .cross_track_process_noise_m_per_rt_meter = 1e-9,
+        .pos_process_noise_m_per_rt_s = 1e-9,
+        .heading_process_noise_rad_per_rt_meter = 1e-6,
+        .heading_process_noise_rad_per_rt_s =1e-10,
+        .beacon_pos_process_noise_m_per_rt_s = 0.000001,
         .range_measurement_noise_m = 0.25,
         .bearing_measurement_noise_rad = 0.0001,
     };
@@ -375,6 +375,7 @@ void run_simulation(const SimConfig &sim_config) {
 
             const auto ekf_estimate = ekf_slam.update(observations);
             pack_into(ekf_estimate, debug_msg.mutable_posterior());
+            pack_into(robot.local_from_robot(), debug_msg.mutable_local_from_true_robot());
 
             display_state(time::current_robot_time(), map, robot, observations, ekf_estimate,
                           make_in_out(gl_window));
