@@ -242,7 +242,7 @@ const EkfSlamEstimate &EkfSlam::predict(const liegroups::SE2 &old_robot_from_new
     return estimate_;
 }
 
-const EkfSlamEstimate &EkfSlam::update(const std::vector<BeaconObservation> &observations) {
+UpdateResult EkfSlam::update(const std::vector<BeaconObservation> &observations) {
     // Initialize any new beacons we may have observed
     for (const auto &obs : observations) {
         if (!(obs.maybe_id.has_value() && obs.maybe_range_m.has_value() &&
@@ -269,8 +269,7 @@ const EkfSlamEstimate &EkfSlam::update(const std::vector<BeaconObservation> &obs
 
         const Eigen::Vector2d beacon_in_local =
             estimate_.local_from_robot().inverse() * beacon_in_robot;
-        estimate_.mean(Eigen::seqN(beacon_start_idx, BEACON_DIM)) =
-            beacon_in_local;
+        estimate_.mean(Eigen::seqN(beacon_start_idx, BEACON_DIM)) = beacon_in_local;
     }
 
     // turn the observations into a column vector of beacon in robot points
@@ -285,7 +284,7 @@ const EkfSlamEstimate &EkfSlam::update(const std::vector<BeaconObservation> &obs
             config_.range_measurement_noise_m * config_.range_measurement_noise_m;
         // Set the odd rows to be the bearing noise
         noise(Eigen::seq(1, Eigen::last, 2), Eigen::all) *=
-            config_.bearing_measurement_noise_rad * config_.range_measurement_noise_m;
+            config_.bearing_measurement_noise_rad * config_.bearing_measurement_noise_rad;
         return noise;
     }();
 
@@ -295,7 +294,19 @@ const EkfSlamEstimate &EkfSlam::update(const std::vector<BeaconObservation> &obs
     // Use a solve instead of an inverse
     const Eigen::MatrixXd kalman_gain =
         estimate_.cov * observation_mat.transpose() * innovation_cov.inverse();
-    estimate_.mean += kalman_gain * innovation;
+    // Break up the mean update. Perform an exp on the robot state components
+    const Eigen::VectorXd update_vector = kalman_gain * innovation;
+
+    const liegroups::SE2 local_from_updated_robot =
+        estimate_.local_from_robot() * liegroups::SE2::exp(update_vector.head<ROBOT_STATE_DIM>());
+
+    estimate_.mean(Eigen::seqN(0, ROBOT_STATE_DIM)) =
+        (Eigen::Vector3d() << local_from_updated_robot.translation(),
+         local_from_updated_robot.so2().log())
+            .finished();
+    estimate_.mean(Eigen::seq(ROBOT_STATE_DIM, Eigen::last)) +=
+        update_vector(Eigen::seq(ROBOT_STATE_DIM, Eigen::last));
+
     const Eigen::MatrixXd I_min_KH =
         (Eigen::MatrixXd::Identity(estimate_.cov.rows(), estimate_.cov.cols()) -
          kalman_gain * observation_mat);
@@ -303,6 +314,12 @@ const EkfSlamEstimate &EkfSlam::update(const std::vector<BeaconObservation> &obs
     estimate_.cov = I_min_KH * estimate_.cov * I_min_KH.transpose() +
                     kalman_gain * observation_noise * kalman_gain.transpose();
 
-    return estimate_;
+    return UpdateResult{
+        .estimate = estimate_,
+        .measurement_vec = measurement_vec,
+        .prediction_vec = prediction_vec,
+        .innovation_vec = innovation,
+        .observation_mat = observation_mat,
+    };
 }
 }  // namespace robot::experimental::beacon_sim

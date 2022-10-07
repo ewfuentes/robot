@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "Eigen/Cholesky"
+#include "common/math/matrix_to_proto.hh"
 #include "common/argument_wrapper.hh"
 #include "common/liegroups/se2_to_proto.hh"
 #include "common/liegroups/se3.hh"
@@ -308,7 +309,7 @@ void run_simulation(const SimConfig &sim_config) {
         .heading_process_noise_rad_per_rt_s =1e-10,
         .beacon_pos_process_noise_m_per_rt_s = 0.000001,
         .range_measurement_noise_m = 0.25,
-        .bearing_measurement_noise_rad = 0.0001,
+        .bearing_measurement_noise_rad = 0.01,
     };
     EkfSlam ekf_slam(EKF_CONFIG);
 
@@ -373,11 +374,15 @@ void run_simulation(const SimConfig &sim_config) {
                                                             OBS_CONFIG, make_in_out(gen));
             pack_into(observations, debug_msg.mutable_observations());
 
-            const auto ekf_estimate = ekf_slam.update(observations);
-            pack_into(ekf_estimate, debug_msg.mutable_posterior());
+            const auto update_result = ekf_slam.update(observations);
+            pack_into(update_result.estimate, debug_msg.mutable_posterior());
             pack_into(robot.local_from_robot(), debug_msg.mutable_local_from_true_robot());
+            pack_into(update_result.measurement_vec, debug_msg.mutable_measurement_vec());
+            pack_into(update_result.prediction_vec, debug_msg.mutable_prediction_vec());
+            pack_into(update_result.innovation_vec, debug_msg.mutable_innovation_vec());
+            pack_into(update_result.observation_mat, debug_msg.mutable_observation_mat());
 
-            display_state(time::current_robot_time(), map, robot, observations, ekf_estimate,
+            display_state(time::current_robot_time(), map, robot, observations, update_result.estimate,
                           make_in_out(gl_window));
             debug_msgs.emplace_back(std::move(debug_msg));
         }

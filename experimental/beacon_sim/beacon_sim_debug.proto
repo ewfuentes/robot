@@ -5,6 +5,7 @@ import "common/liegroups/se2.proto";
 import "common/time/robot_time.proto";
 import "experimental/beacon_sim/ekf_slam_estimate.proto";
 import "experimental/beacon_sim/beacon_observation.proto";
+import "common/math/matrix.proto";
 
 package robot.experimental.beacon_sim.proto;
 
@@ -14,6 +15,12 @@ message BeaconSimDebug {
   robot.liegroups.proto.SE2 old_robot_from_new_robot = 3;
   robot.experimental.beacon_sim.proto.EkfSlamEstimate prediction = 4;
   robot.experimental.beacon_sim.proto.BeaconObservations observations = 5;
+
+  robot.math.proto.Matrix measurement_vec = 8;
+  robot.math.proto.Matrix prediction_vec = 9;
+  robot.math.proto.Matrix innovation_vec = 10;
+  robot.math.proto.Matrix observation_mat = 11;
+
   robot.experimental.beacon_sim.proto.EkfSlamEstimate posterior = 6;
   robot.liegroups.proto.SE2 local_from_true_robot = 7;
 }

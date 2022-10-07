@@ -1,4 +1,6 @@
 bazel-*
 
+.ipynb_checkpoints
+
 # Ignore temporary emacs files
 .#*

@@ -30,6 +30,7 @@ cc_binary(
     "//common/liegroups:se2_to_proto",
     "//common/liegroups:se3",
     "//common/time:robot_time_to_proto",
+    "//common/math:matrix_to_proto",
     "@cxxopts//:cxxopts",
   ],
 )
@@ -42,6 +43,7 @@ multi_proto_library(
     ":beacon_observation_proto",
     "//common/time:robot_time_proto",
     "//common/liegroups:se2_proto",
+    "//common/math:matrix_proto",
   ]
 )
 

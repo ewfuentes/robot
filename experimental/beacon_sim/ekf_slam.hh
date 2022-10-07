@@ -38,13 +38,21 @@ struct EkfSlamEstimate {
     std::optional<Eigen::Matrix2d> beacon_cov(const int beacon_id) const;
 };
 
+struct UpdateResult {
+    EkfSlamEstimate estimate;
+    Eigen::VectorXd measurement_vec;
+    Eigen::VectorXd prediction_vec;
+    Eigen::VectorXd innovation_vec;
+    Eigen::MatrixXd observation_mat;
+};
+
 class EkfSlam {
    public:
     explicit EkfSlam(const EkfSlamConfig &config);
 
     const EkfSlamEstimate &predict(const liegroups::SE2 &old_robot_from_new_robot);
 
-    const EkfSlamEstimate &update(const std::vector<BeaconObservation> &observations);
+    UpdateResult update(const std::vector<BeaconObservation> &observations);
 
     const EkfSlamEstimate &estimate() const { return estimate_; }
 
