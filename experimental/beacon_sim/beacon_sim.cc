@@ -12,10 +12,10 @@
 #include <utility>
 
 #include "Eigen/Cholesky"
-#include "common/math/matrix_to_proto.hh"
 #include "common/argument_wrapper.hh"
 #include "common/liegroups/se2_to_proto.hh"
 #include "common/liegroups/se3.hh"
+#include "common/math/matrix_to_proto.hh"
 #include "common/time/robot_time_to_proto.hh"
 #include "common/time/sim_clock.hh"
 #include "cxxopts.hpp"
@@ -122,8 +122,8 @@ WorldMapConfig world_map_config() {
     int beacon_id = 0;
     for (int r = 0; r < NUM_ROWS; r++) {
         for (int c = 0; c < NUM_COLS; c++) {
-            out.fixed_beacons.beacons.push_back(Beacon{
-                .id = beacon_id++, .pos_in_local = {c * SPACING_M, r * SPACING_M}});
+            out.fixed_beacons.beacons.push_back(
+                Beacon{.id = beacon_id++, .pos_in_local = {c * SPACING_M, r * SPACING_M}});
         }
     }
     out.blinking_beacons = {
@@ -223,7 +223,7 @@ void display_state(const time::RobotTimestamp &t, const WorldMap &world_map,
                 glVertex2d(x_in_robot_m, y_in_robot_m);
             }
             glEnd();
-            glPopMatrix(); // Pop from estimated robot frame to world frame
+            glPopMatrix();  // Pop from estimated robot frame to world frame
 
             glPushMatrix();
             // Translate to the robot origin, but throw away the rotation
@@ -244,7 +244,7 @@ void display_state(const time::RobotTimestamp &t, const WorldMap &world_map,
                 glVertex2d(pt.x(), pt.y());
             }
             glEnd();
-            glPopMatrix(); // Pop from robot location to world frame
+            glPopMatrix();  // Pop from robot location to world frame
         }
 
         for (const auto beacon_id : ekf_estimate.beacon_ids) {
@@ -306,7 +306,7 @@ void run_simulation(const SimConfig &sim_config) {
         .cross_track_process_noise_m_per_rt_meter = 1e-9,
         .pos_process_noise_m_per_rt_s = 1e-9,
         .heading_process_noise_rad_per_rt_meter = 1e-6,
-        .heading_process_noise_rad_per_rt_s =1e-10,
+        .heading_process_noise_rad_per_rt_s = 1e-10,
         .beacon_pos_process_noise_m_per_rt_s = 0.000001,
         .range_measurement_noise_m = 0.25,
         .bearing_measurement_noise_rad = 0.01,
@@ -382,8 +382,8 @@ void run_simulation(const SimConfig &sim_config) {
             pack_into(update_result.innovation_vec, debug_msg.mutable_innovation_vec());
             pack_into(update_result.observation_mat, debug_msg.mutable_observation_mat());
 
-            display_state(time::current_robot_time(), map, robot, observations, update_result.estimate,
-                          make_in_out(gl_window));
+            display_state(time::current_robot_time(), map, robot, observations,
+                          update_result.estimate, make_in_out(gl_window));
             debug_msgs.emplace_back(std::move(debug_msg));
         }
 
