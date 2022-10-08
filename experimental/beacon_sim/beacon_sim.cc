@@ -364,8 +364,8 @@ void run_simulation(const SimConfig &sim_config) {
             pack_into(ekf_estimate, debug_msg.mutable_posterior());
             pack_into(robot.local_from_robot(), debug_msg.mutable_local_from_true_robot());
 
-            display_state(time::current_robot_time(), map, robot, observations,
-                          ekf_estimate, make_in_out(gl_window));
+            display_state(time::current_robot_time(), map, robot, observations, ekf_estimate,
+                          make_in_out(gl_window));
             debug_msgs.emplace_back(std::move(debug_msg));
         }
 
