@@ -360,11 +360,11 @@ void run_simulation(const SimConfig &sim_config) {
                                                             OBS_CONFIG, make_in_out(gen));
             pack_into(observations, debug_msg.mutable_observations());
 
-            const auto update_result = ekf_slam.update(observations);
-            pack_into(update_result.estimate, debug_msg.mutable_posterior());
+            const auto ekf_estimate = ekf_slam.update(observations);
+            pack_into(ekf_estimate, debug_msg.mutable_posterior());
 
             display_state(time::current_robot_time(), map, robot, observations,
-                          update_result.estimate, make_in_out(gl_window));
+                          ekf_estimate, make_in_out(gl_window));
             debug_msgs.emplace_back(std::move(debug_msg));
         }
 
