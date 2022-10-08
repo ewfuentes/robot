@@ -189,6 +189,8 @@ TEST(EkfSlamTest, position_estimate_converges_given_known_beacon) {
     EkfSlamTestHelper::estimate(make_in_out(ekf_slam)).cov.topLeftCorner(2, 2) =
         1e2 * Eigen::Matrix2d::Identity();
     EkfSlamTestHelper::estimate(make_in_out(ekf_slam)).cov(2, 2) = 3.0;
+    std::copy(BEACON_IDS.begin(), BEACON_IDS.end(),
+              std::back_inserter(EkfSlamTestHelper::estimate(make_in_out(ekf_slam)).beacon_ids));
 
     std::vector<BeaconObservation> observations;
     for (int beacon_idx = 0; beacon_idx < static_cast<int>(BEACON_IDS.size()); beacon_idx++) {
