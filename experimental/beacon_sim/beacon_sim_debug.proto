@@ -15,4 +15,5 @@ message BeaconSimDebug {
   robot.experimental.beacon_sim.proto.EkfSlamEstimate prediction = 4;
   robot.experimental.beacon_sim.proto.BeaconObservations observations = 5;
   robot.experimental.beacon_sim.proto.EkfSlamEstimate posterior = 6;
+  robot.liegroups.proto.SE2 local_from_true_robot = 7;
 }
