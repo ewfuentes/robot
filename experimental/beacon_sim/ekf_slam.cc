@@ -159,9 +159,6 @@ EkfSlamEstimate prediction_update(const EkfSlamEstimate &est,
             .finished();
 
     // Update the covariances
-    // TODO: This should use the length of the geodesic between old and new poses
-    // TODO: These are perturbations in the robot frame. I think this is correct...
-
     const Eigen::Matrix3d robot_process_noise = Eigen::DiagonalMatrix<double, ROBOT_STATE_DIM>(
         config.along_track_process_noise_m_per_rt_meter *
                 config.along_track_process_noise_m_per_rt_meter *
