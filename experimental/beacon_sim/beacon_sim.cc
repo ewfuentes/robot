@@ -103,16 +103,19 @@ RobotCommand get_command(
         const double mean = (left + right) / 2.0;
         const double mean_diff = (right - left) / 2.0;
 
-        return {.turn_rad = 0.1 * mean_diff, .move_m = mean * 0.1, .should_exit = false};
+        return {.turn_rad = 0.1 * mean_diff,
+                .move_m = mean * 0.1,
+                .should_exit = false,
+                .should_step = true};
     }
-    return {.turn_rad = 0, .move_m = 0, .should_exit = false};
+    return {.turn_rad = 0, .move_m = 0, .should_exit = false, .should_step = false};
 }
 
 WorldMapConfig world_map_config() {
     // Create a grid of beacons
-    constexpr int NUM_ROWS = 4;
-    constexpr int NUM_COLS = 5;
-    constexpr double SPACING_M = 3.0;
+    constexpr int NUM_ROWS = 2;
+    constexpr int NUM_COLS = 2;
+    constexpr double SPACING_M = 4.0;
     WorldMapConfig out;
     out.fixed_beacons.beacons.reserve(NUM_ROWS * NUM_COLS);
     int beacon_id = 0;
@@ -370,7 +373,7 @@ void run_simulation(const SimConfig &sim_config) {
                                                             OBS_CONFIG, make_in_out(gen));
             pack_into(observations, debug_msg.mutable_observations());
 
-            const auto ekf_estimate = ekf_slam.update(observations);
+            const auto &ekf_estimate = ekf_slam.update(observations);
             pack_into(ekf_estimate, debug_msg.mutable_posterior());
             pack_into(robot.local_from_robot(), debug_msg.mutable_local_from_true_robot());
 
