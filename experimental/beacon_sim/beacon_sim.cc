@@ -50,6 +50,7 @@ struct RobotCommand {
     double turn_rad;
     double move_m;
     bool should_exit;
+    bool should_step;
 };
 
 struct KeyCommand {
@@ -75,15 +76,21 @@ RobotCommand get_command(
     const std::unordered_map<int, visualization::gl_window::JoystickState> &joysticks) {
     // Handle Keyboard Commands
     if (key_command.q) {
-        return {.turn_rad = 0, .move_m = 0, .should_exit = true};
+        return {.turn_rad = 0, .move_m = 0, .should_exit = true, .should_step = true};
     } else if (key_command.arrow_left) {
-        return {.turn_rad = std::numbers::pi / 4.0, .move_m = 0, .should_exit = false};
+        return {.turn_rad = std::numbers::pi / 4.0,
+                .move_m = 0,
+                .should_exit = false,
+                .should_step = true};
     } else if (key_command.arrow_right) {
-        return {.turn_rad = -std::numbers::pi / 4.0, .move_m = 0, .should_exit = false};
+        return {.turn_rad = -std::numbers::pi / 4.0,
+                .move_m = 0,
+                .should_exit = false,
+                .should_step = true};
     } else if (key_command.arrow_up) {
-        return {.turn_rad = 0.0, .move_m = 0.1, .should_exit = false};
+        return {.turn_rad = 0.0, .move_m = 0.1, .should_exit = false, .should_step = true};
     } else if (key_command.arrow_down) {
-        return {.turn_rad = 0.0, .move_m = -0.1, .should_exit = false};
+        return {.turn_rad = 0.0, .move_m = -0.1, .should_exit = false, .should_step = true};
     }
 
     for (const auto &[id, state] : joysticks) {
@@ -329,35 +336,39 @@ void run_simulation(const SimConfig &sim_config) {
             run = false;
         }
 
-        // simulate robot forward
-        robot.turn(command.turn_rad);
-        robot.move(command.move_m);
+        if (command.should_step) {
+            // simulate robot forward
+            robot.turn(command.turn_rad);
+            robot.move(command.move_m);
+
+            time::SimClock::advance(DT);
+
+            map.update(time::current_robot_time());
+
+            proto::BeaconSimDebug debug_msg;
+            pack_into(time::current_robot_time(), debug_msg.mutable_time_of_validity());
+            pack_into(ekf_slam.estimate(), debug_msg.mutable_prior());
+
+            const liegroups::SE2 old_robot_from_new_robot =
+                liegroups::SE2::trans(command.move_m, 0.0) * liegroups::SE2::rot(command.turn_rad);
+            pack_into(old_robot_from_new_robot, debug_msg.mutable_old_robot_from_new_robot());
+
+            pack_into(ekf_slam.predict(old_robot_from_new_robot), debug_msg.mutable_prediction());
+
+            // generate observations
+            const auto observations = generate_observations(time::current_robot_time(), map, robot,
+                                                            OBS_CONFIG, make_in_out(gen));
+            pack_into(observations, debug_msg.mutable_observations());
+
+            const auto update_result = ekf_slam.update(observations);
+            pack_into(update_result.estimate, debug_msg.mutable_posterior());
+
+            display_state(time::current_robot_time(), map, robot, observations,
+                          update_result.estimate, make_in_out(gl_window));
+            debug_msgs.emplace_back(std::move(debug_msg));
+        }
 
         std::this_thread::sleep_for(DT);
-        time::SimClock::advance(DT);
-        map.update(time::current_robot_time());
-
-        proto::BeaconSimDebug debug_msg;
-        pack_into(time::current_robot_time(), debug_msg.mutable_time_of_validity());
-        pack_into(ekf_slam.estimate(), debug_msg.mutable_prior());
-
-        const liegroups::SE2 old_robot_from_new_robot =
-            liegroups::SE2::trans(command.move_m, 0.0) * liegroups::SE2::rot(command.turn_rad);
-        pack_into(old_robot_from_new_robot, debug_msg.mutable_old_robot_from_new_robot());
-
-        pack_into(ekf_slam.predict(old_robot_from_new_robot), debug_msg.mutable_prediction());
-
-        // generate observations
-        const auto observations = generate_observations(time::current_robot_time(), map, robot,
-                                                        OBS_CONFIG, make_in_out(gen));
-        pack_into(observations, debug_msg.mutable_observations());
-
-        const auto ekf_estimate = ekf_slam.update(observations);
-        pack_into(ekf_estimate, debug_msg.mutable_posterior());
-
-        display_state(time::current_robot_time(), map, robot, observations, ekf_estimate,
-                      make_in_out(gl_window));
-        debug_msgs.emplace_back(std::move(debug_msg));
     }
 
     write_out_log_file(sim_config, std::move(debug_msgs));
