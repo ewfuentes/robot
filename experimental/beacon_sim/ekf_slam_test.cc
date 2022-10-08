@@ -41,6 +41,7 @@ TEST(EkfSlamTest, estimate_has_expected_dimensions) {
         .initial_beacon_uncertainty_m = 100,
         .along_track_process_noise_m_per_rt_meter = 0.1,
         .cross_track_process_noise_m_per_rt_meter = 0.01,
+        .pos_process_noise_m_per_rt_s = 0.0,
         .heading_process_noise_rad_per_rt_meter = 0.001,
         .beacon_pos_process_noise_m_per_rt_s = 0.1,
         .range_measurement_noise_m = 0.5,
@@ -73,6 +74,7 @@ TEST(EkfSlamTest, prediction_updates_as_expected) {
         .initial_beacon_uncertainty_m = 100,
         .along_track_process_noise_m_per_rt_meter = 0.1,
         .cross_track_process_noise_m_per_rt_meter = 0.01,
+        .pos_process_noise_m_per_rt_s = 0.0,
         .heading_process_noise_rad_per_rt_meter = 0.001,
         .beacon_pos_process_noise_m_per_rt_s = 0.1,
         .range_measurement_noise_m = 0.5,
@@ -98,6 +100,7 @@ TEST(EkfSlamTest, measurement_updates_as_expected) {
         .initial_beacon_uncertainty_m = 1000,
         .along_track_process_noise_m_per_rt_meter = 0.1,
         .cross_track_process_noise_m_per_rt_meter = 0.01,
+        .pos_process_noise_m_per_rt_s = 0.0,
         .heading_process_noise_rad_per_rt_meter = 0.001,
         .beacon_pos_process_noise_m_per_rt_s = 0.1,
         .range_measurement_noise_m = 0.5,
@@ -132,6 +135,7 @@ TEST(EkfSlamTest, identity_update_does_not_change_estimate) {
         .initial_beacon_uncertainty_m = 1e3,
         .along_track_process_noise_m_per_rt_meter = 0.1,
         .cross_track_process_noise_m_per_rt_meter = 0.01,
+        .pos_process_noise_m_per_rt_s = 0.0,
         .heading_process_noise_rad_per_rt_meter = 0.001,
         .beacon_pos_process_noise_m_per_rt_s = 1e-6,
         .range_measurement_noise_m = 1e-3,
@@ -150,51 +154,56 @@ TEST(EkfSlamTest, identity_update_does_not_change_estimate) {
 
     // Verification
     EXPECT_NEAR((est.local_from_robot().log() - Eigen::Vector3d::Zero()).norm(), 0.0, 1e-6);
-    // Note that this is actually incorrect. If we don't move, then no noise should be accumulated,
-    // but I currently don't scale by arclength.
-    auto sq = [](const double value) { return value * value; };
-    EXPECT_NEAR(est.robot_cov()(0, 0),
-                sq(CONFIG.along_track_process_noise_m_per_rt_meter) * NUM_ITERS, TOL);
-    EXPECT_NEAR(est.robot_cov()(1, 1),
-                sq(CONFIG.cross_track_process_noise_m_per_rt_meter) * NUM_ITERS, TOL);
-    EXPECT_NEAR(est.robot_cov()(2, 2),
-                sq(CONFIG.heading_process_noise_rad_per_rt_meter) * NUM_ITERS, TOL);
+    // We should probably accumulate some uncertainty in position/rotation as a function rotation
+    EXPECT_NEAR(est.robot_cov()(0, 0), 0.0, TOL);
+    EXPECT_NEAR(est.robot_cov()(1, 1), 0.0, TOL);
+    EXPECT_NEAR(est.robot_cov()(2, 2), 0.0, TOL);
 }
 
 TEST(EkfSlamTest, position_estimate_converges_given_known_beacon) {
     // Setup
     constexpr auto CONFIG = EkfSlamConfig{
-        .max_num_beacons = 1,
-        .initial_beacon_uncertainty_m = 1e-9,
+        .max_num_beacons = 2,
+        .initial_beacon_uncertainty_m = 1e-6,
         .along_track_process_noise_m_per_rt_meter = 1.0,
         .cross_track_process_noise_m_per_rt_meter = 1.0,
+        .pos_process_noise_m_per_rt_s = 0.1,
         .heading_process_noise_rad_per_rt_meter = 1.0,
-        .beacon_pos_process_noise_m_per_rt_s = 1e-6,
-        .range_measurement_noise_m = 1e-6,
-        .bearing_measurement_noise_rad = 1e-9,
+        .heading_process_noise_rad_per_rt_s = 0.01,
+        .beacon_pos_process_noise_m_per_rt_s = 1e-9,
+        .range_measurement_noise_m = 1e-3,
+        .bearing_measurement_noise_rad = 1e-3,
     };
 
-    constexpr int BEACON_ID = 10;
-    const Eigen::Vector2d beacon_in_local{10, 20};
+    constexpr std::array<int, 2> BEACON_IDS = {10, 11};
+    const std::array<Eigen::Vector2d, 2> beacons_in_local{{{10.0, 20.0}, {10.0, 30.0}}};
     const liegroups::SE2 expected_local_from_robot =
         liegroups::SE2(std::numbers::pi / 3.0, {5.0, 12.0});
 
     EkfSlam ekf_slam(CONFIG);
 
-    EkfSlamTestHelper::estimate(make_in_out(ekf_slam)).mean(Eigen::seqN(3, 2)) = beacon_in_local;
-    EkfSlamTestHelper::estimate(make_in_out(ekf_slam)).cov.topLeftCorner(3, 3) =
-        1e6 * Eigen::Matrix3d::Identity();
+    EkfSlamTestHelper::estimate(make_in_out(ekf_slam)).mean(Eigen::seqN(3, 2)) =
+        beacons_in_local[0];
+    EkfSlamTestHelper::estimate(make_in_out(ekf_slam)).mean(Eigen::seqN(5, 2)) =
+        beacons_in_local[1];
+    EkfSlamTestHelper::estimate(make_in_out(ekf_slam)).cov.topLeftCorner(2, 2) =
+        1e2 * Eigen::Matrix2d::Identity();
+    EkfSlamTestHelper::estimate(make_in_out(ekf_slam)).cov(2, 2) = 3.0;
 
-    const auto beacon_in_robot = expected_local_from_robot.inverse() * beacon_in_local;
-    const BeaconObservation obs = {
-        .maybe_id = BEACON_ID,
-        .maybe_range_m = beacon_in_robot.norm(),
-        .maybe_bearing_rad = std::atan2(beacon_in_robot.y(), beacon_in_robot.x())};
+    std::vector<BeaconObservation> observations;
+    for (int beacon_idx = 0; beacon_idx < static_cast<int>(BEACON_IDS.size()); beacon_idx++) {
+        const Eigen::Vector2d beacon_in_expected_robot =
+            expected_local_from_robot.inverse() * beacons_in_local[beacon_idx];
+        observations.push_back({.maybe_id = BEACON_IDS[beacon_idx],
+                                .maybe_range_m = beacon_in_expected_robot.norm(),
+                                .maybe_bearing_rad = std::atan2(beacon_in_expected_robot.y(),
+                                                                beacon_in_expected_robot.x())});
+    }
 
     // Action
     for (int i = 0; i < 10; i++) {
         ekf_slam.predict(liegroups::SE2());
-        ekf_slam.update({obs});
+        ekf_slam.update(observations);
     }
 
     const auto est = ekf_slam.estimate();
@@ -205,12 +214,42 @@ TEST(EkfSlamTest, position_estimate_converges_given_known_beacon) {
         0.0, 1.0);
     EXPECT_NEAR(est.local_from_robot().so2().log() - expected_local_from_robot.so2().log(), 0.0,
                 0.02);
-    std::cout << "Expected local from robot: " << std::endl
-              << expected_local_from_robot.matrix() << std::endl;
-    std::cout << "local from robot: " << std::endl << est.local_from_robot().matrix() << std::endl;
-    std::cout << "robot cov: " << std::endl << est.robot_cov() << std::endl;
-    std::cout << "beacon_in_local: " << std::endl
-              << est.beacon_in_local(BEACON_ID).value() << std::endl;
+}
+
+TEST(EkfSlamTest, rotating_in_place_yields_same_pos_covariance_directions) {
+    // Setup
+    constexpr auto CONFIG = EkfSlamConfig{
+        .max_num_beacons = 0,
+        .initial_beacon_uncertainty_m = 0,
+        .along_track_process_noise_m_per_rt_meter = 0.0,
+        .cross_track_process_noise_m_per_rt_meter = 0.0,
+        .pos_process_noise_m_per_rt_s = 0.0,
+        .heading_process_noise_rad_per_rt_meter = 0.0,
+        .beacon_pos_process_noise_m_per_rt_s = 0.0,
+        .range_measurement_noise_m = 0.0,
+        .bearing_measurement_noise_rad = 0.0,
+    };
+    const EkfSlamEstimate est = {
+        .mean = liegroups::SE2::trans(12.0, 34.0).log(),
+        .cov = Eigen::DiagonalMatrix<double, 3>(1.0, 2.0, 3.0),
+    };
+
+    const liegroups::SE2 old_robot_from_new_robot = liegroups::SE2(std::numbers::pi / 2, {0, 0});
+
+    // Action
+    const EkfSlamEstimate new_est =
+        detail::prediction_update(est, old_robot_from_new_robot, CONFIG);
+
+    // Verification
+    const auto cov_in_local = [](const auto &est) -> Eigen::Matrix3d {
+        const Eigen::Matrix3d adjoint = est.local_from_robot().Adj();
+        return adjoint.transpose() * est.robot_cov() * adjoint;
+    };
+    const Eigen::Matrix3d init_cov_in_local = cov_in_local(est);
+    const Eigen::Matrix3d new_cov_in_local = cov_in_local(new_est);
+    EXPECT_NEAR(
+        (init_cov_in_local.topLeftCorner(2, 2) - new_cov_in_local.topLeftCorner(2, 2)).norm(), 0.0,
+        1e-6);
 }
 
 TEST(CreateMeasurementTest, incomplete_measurements_rejected) {
@@ -369,4 +408,5 @@ TEST(CreateMeasurementTest, innovation_handles_wrap_around) {
                     0.0, 1e-6);
     }
 }
+
 }  // namespace robot::experimental::beacon_sim

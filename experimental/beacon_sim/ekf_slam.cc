@@ -147,10 +147,59 @@ UpdateInputs compute_measurement_and_prediction(const std::vector<BeaconObservat
             .innovation = innovation_vec,
             .observation_matrix = observation_mat};
 }
+
+EkfSlamEstimate prediction_update(const EkfSlamEstimate &est,
+                                  const liegroups::SE2 &old_robot_from_new_robot,
+                                  const EkfSlamConfig &config) {
+    // Update the robot mean
+    EkfSlamEstimate out = est;
+    const auto local_from_new_robot = est.local_from_robot() * old_robot_from_new_robot;
+    out.mean(Eigen::seqN(0, ROBOT_STATE_DIM)) =
+        (Eigen::Vector3d() << local_from_new_robot.translation(), local_from_new_robot.so2().log())
+            .finished();
+
+    // Update the covariances
+    const Eigen::Matrix3d robot_process_noise = Eigen::DiagonalMatrix<double, ROBOT_STATE_DIM>(
+        config.along_track_process_noise_m_per_rt_meter *
+                config.along_track_process_noise_m_per_rt_meter *
+                old_robot_from_new_robot.arclength() +
+            config.pos_process_noise_m_per_rt_s * config.pos_process_noise_m_per_rt_s,
+        config.cross_track_process_noise_m_per_rt_meter *
+                config.cross_track_process_noise_m_per_rt_meter *
+                old_robot_from_new_robot.arclength() +
+            config.pos_process_noise_m_per_rt_s * config.pos_process_noise_m_per_rt_s,
+        config.heading_process_noise_rad_per_rt_meter *
+                config.heading_process_noise_rad_per_rt_meter *
+                old_robot_from_new_robot.arclength() +
+            config.heading_process_noise_rad_per_rt_s * config.heading_process_noise_rad_per_rt_s);
+
+    const Eigen::Matrix3d dynamics_jac_wrt_state = old_robot_from_new_robot.inverse().Adj();
+    out.cov.block(0, 0, ROBOT_STATE_DIM, ROBOT_STATE_DIM) =
+        dynamics_jac_wrt_state * out.cov.block(0, 0, ROBOT_STATE_DIM, ROBOT_STATE_DIM) *
+            dynamics_jac_wrt_state.transpose() +
+        robot_process_noise;
+
+    const int num_landmark_cov_cols = out.cov.cols() - ROBOT_STATE_DIM;
+    out.cov.topRightCorner(ROBOT_STATE_DIM, num_landmark_cov_cols) =
+        dynamics_jac_wrt_state * out.cov.topRightCorner(ROBOT_STATE_DIM, num_landmark_cov_cols);
+    out.cov.bottomLeftCorner(num_landmark_cov_cols, ROBOT_STATE_DIM) =
+        out.cov.bottomLeftCorner(num_landmark_cov_cols, ROBOT_STATE_DIM) *
+        dynamics_jac_wrt_state.transpose();
+
+    const Eigen::MatrixXd landmark_pos_process_noise =
+        Eigen::MatrixXd::Identity(num_landmark_cov_cols, num_landmark_cov_cols) *
+        config.beacon_pos_process_noise_m_per_rt_s * config.beacon_pos_process_noise_m_per_rt_s;
+
+    out.cov.bottomRightCorner(num_landmark_cov_cols, num_landmark_cov_cols) +=
+        landmark_pos_process_noise;
+
+    return out;
+}
+
 }  // namespace detail
 
 liegroups::SE2 EkfSlamEstimate::local_from_robot() const {
-    return liegroups::SE2::exp(mean(Eigen::seqN(0, ROBOT_STATE_DIM)));
+    return liegroups::SE2(mean(2), mean.head<2>());
 }
 Eigen::Matrix3d EkfSlamEstimate::robot_cov() const {
     return cov.block(0, 0, ROBOT_STATE_DIM, ROBOT_STATE_DIM);
@@ -184,22 +233,7 @@ EkfSlam::EkfSlam(const EkfSlamConfig &config) : config_(config) {
 }
 
 const EkfSlamEstimate &EkfSlam::predict(const liegroups::SE2 &old_robot_from_new_robot) {
-    // Update the robot mean
-    const auto local_from_new_robot = (estimate_.local_from_robot() * old_robot_from_new_robot);
-    estimate_.mean(Eigen::seqN(0, ROBOT_STATE_DIM)) = local_from_new_robot.log();
-
-    // Update the covariances
-    // TODO: This should use the length of the geodesic between old and new poses
-    // TODO: These are perturbations in the robot frame. I think this is correct...
-    estimate_.cov.block(0, 0, ROBOT_STATE_DIM, ROBOT_STATE_DIM) +=
-        Eigen::DiagonalMatrix<double, ROBOT_STATE_DIM>(
-            config_.along_track_process_noise_m_per_rt_meter *
-                config_.along_track_process_noise_m_per_rt_meter,
-            config_.cross_track_process_noise_m_per_rt_meter *
-                config_.cross_track_process_noise_m_per_rt_meter,
-            config_.heading_process_noise_rad_per_rt_meter *
-                config_.heading_process_noise_rad_per_rt_meter);
-
+    estimate_ = detail::prediction_update(estimate_, old_robot_from_new_robot, config_);
     return estimate_;
 }
 
