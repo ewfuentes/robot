@@ -195,3 +195,23 @@ cc_test(
     "@com_google_googletest//:gtest_main",
   ]
 )
+
+cc_library(
+  name = "obstacle",
+  hdrs = ["obstacle.hh"],
+  srcs = ["obstacle.cc"],
+  deps = [
+    "@eigen//:eigen",
+    "//common/liegroups:se2",
+  ]
+)
+
+
+cc_test(
+  name = "obstacle_test",
+  srcs = ["obstacle_test.cc"],
+  deps = [
+    ":obstacle",
+    "@com_google_googletest//:gtest_main",
+  ]
+)
