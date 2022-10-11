@@ -111,6 +111,30 @@ RobotCommand get_command(
     return {.turn_rad = 0, .move_m = 0, .should_exit = false, .should_step = false};
 }
 
+// Creates a star centered on the origin.
+std::vector<Eigen::Vector2d> create_star(const int num_points, const double aspect_ratio,
+                                         const double point_dist) {
+    std::vector<Eigen::Vector2d> out;
+    const int num_steps = num_points * 2;
+    for (int i = 0; i < num_steps; i++) {
+        const double theta = (std::numbers::pi * i) / num_points;
+
+        const double dist = point_dist * ((i % 2) == 0 ? 1.0 : aspect_ratio);
+
+        out.emplace_back(Eigen::Vector2d{{dist * std::cos(theta), dist * std::sin(theta)}});
+    }
+
+    return out;
+}
+
+std::vector<Eigen::Vector2d> transform_points(std::vector<Eigen::Vector2d> &&pts_in_a,
+                                              const liegroups::SE2 &b_from_a) {
+    // Transform the elements in place
+    std::transform(pts_in_a.begin(), pts_in_a.end(), pts_in_a.begin(),
+                   [&b_from_a](const Eigen::Vector2d &pt_in_a) { return b_from_a * pt_in_a; });
+    return pts_in_a;
+}
+
 WorldMapConfig world_map_config() {
     // Create a grid of beacons
     constexpr int NUM_ROWS = 2;
@@ -139,6 +163,43 @@ WorldMapConfig world_map_config() {
                 Beacon{.id = beacon_id++, .pos_in_local = {-c * SPACING_M, -r * SPACING_M}});
         }
     }
+
+    // Create obstacles
+    {
+        constexpr int NUM_STAR_POINTS = 5;
+        constexpr double ASPECT_RATIO = 0.5;
+        constexpr double POINT_LENGTH_M = 3.0;
+        const liegroups::SE2 local_from_center(std::numbers::pi / 2.0, {5.0, 6.0});
+        out.obstacles.obstacles.emplace_back(Obstacle(transform_points(
+            create_star(NUM_STAR_POINTS, ASPECT_RATIO, POINT_LENGTH_M), local_from_center)));
+    }
+    {
+        constexpr int NUM_STAR_POINTS = 3;
+        constexpr double ASPECT_RATIO = 0.5;
+        constexpr double POINT_LENGTH_M = 3.0;
+        const liegroups::SE2 local_from_center(std::numbers::pi / 2.0, {-5.0, 6.0});
+        out.obstacles.obstacles.emplace_back(Obstacle(transform_points(
+            create_star(NUM_STAR_POINTS, ASPECT_RATIO, POINT_LENGTH_M), local_from_center)));
+    }
+
+    {
+        constexpr int NUM_STAR_POINTS = 4;
+        constexpr double ASPECT_RATIO = 0.5;
+        constexpr double POINT_LENGTH_M = 3.0;
+        const liegroups::SE2 local_from_center(0.0, {-5.0, -6.0});
+        out.obstacles.obstacles.emplace_back(Obstacle(transform_points(
+            create_star(NUM_STAR_POINTS, ASPECT_RATIO, POINT_LENGTH_M), local_from_center)));
+    }
+
+    {
+        constexpr int NUM_STAR_POINTS = 6;
+        constexpr double ASPECT_RATIO = 0.5;
+        constexpr double POINT_LENGTH_M = 4.0;
+        const liegroups::SE2 local_from_center(0.0, {5.0, -6.0});
+        out.obstacles.obstacles.emplace_back(Obstacle(transform_points(
+            create_star(NUM_STAR_POINTS, ASPECT_RATIO, POINT_LENGTH_M), local_from_center)));
+    }
+
     return out;
 }
 
@@ -153,7 +214,8 @@ void display_state(const time::RobotTimestamp &t, const WorldMap &world_map,
     const auto [screen_width_px, screen_height_px] = window->get_window_dims();
     const double aspect_ratio = static_cast<double>(screen_height_px) / screen_width_px;
 
-    window->register_render_callback([=, beacons = world_map.visible_beacons(t)]() {
+    window->register_render_callback([=, beacons = world_map.visible_beacons(t),
+                                      obstacles = world_map.obstacles()]() {
         const auto gl_error = glGetError();
         if (gl_error != GL_NO_ERROR) {
             std::cout << "GL ERROR: " << gl_error << ": " << gluErrorString(gl_error) << std::endl;
@@ -205,6 +267,22 @@ void display_state(const time::RobotTimestamp &t, const WorldMap &world_map,
         }
 
         glPopMatrix();  // Pop from Robot Frame to world frame
+
+        // Draw Obstacles
+        {
+            for (const auto &obstacle : obstacles) {
+                glBegin(GL_LINE_LOOP);
+                if (obstacle.is_inside(robot.local_from_robot().translation())) {
+                    glColor4ub(168, 50, 50, 255);
+                } else {
+                    glColor4ub(124, 187, 235, 255);
+                }
+                for (const Eigen::Vector2d &pt : obstacle.pts_in_frame()) {
+                    glVertex2d(pt.x(), pt.y());
+                }
+                glEnd();
+            }
+        }
 
         // Draw ekf estimates
         {

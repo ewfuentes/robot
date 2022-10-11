@@ -51,6 +51,7 @@ cc_library(
   deps = [
     "//common/time:robot_time",
     "@eigen//:eigen",
+    ":obstacle",
   ],
 )
 
