@@ -6,7 +6,7 @@
 
 namespace robot::experimental::beacon_sim {
 WorldMap::WorldMap(const WorldMapConfig &config, std::unique_ptr<std::mt19937> generator)
-    : config_(config) {
+    : config_(config), obstacles_(config.obstacles.obstacles) {
     const int num_beacons =
         config.fixed_beacons.beacons.size() + config.blinking_beacons.beacons.size();
     beacons_.reserve(num_beacons);

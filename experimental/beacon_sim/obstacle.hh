@@ -32,6 +32,8 @@ class Obstacle {
         }
     }
 
+    const std::vector<Eigen::Vector2d> &pts_in_frame() const { return pts_in_frame_; }
+
    private:
     std::vector<Eigen::Vector2d> pts_in_frame_;
 };

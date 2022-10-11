@@ -8,6 +8,7 @@
 
 #include "Eigen/Core"
 #include "common/time/robot_time.hh"
+#include "experimental/beacon_sim/obstacle.hh"
 
 namespace robot::experimental::beacon_sim {
 struct Beacon {
@@ -36,9 +37,14 @@ struct BlinkingBeaconsConfig {
     double beacon_disappear_rate_hz;
 };
 
+struct ObstaclesConfig {
+    std::vector<Obstacle> obstacles;
+};
+
 struct WorldMapConfig {
     FixedBeaconsConfig fixed_beacons;
     BlinkingBeaconsConfig blinking_beacons;
+    ObstaclesConfig obstacles;
 };
 
 class WorldMap {
@@ -46,6 +52,8 @@ class WorldMap {
     WorldMap(const WorldMapConfig &config, std::unique_ptr<std::mt19937> generator);
 
     std::vector<Beacon> visible_beacons(const time::RobotTimestamp &t) const;
+
+    const std::vector<Obstacle> &obstacles() const { return obstacles_; }
 
     void update(const time::RobotTimestamp &t);
 
@@ -60,6 +68,7 @@ class WorldMap {
     };
 
     WorldMapConfig config_;
+    std::vector<Obstacle> obstacles_;
     std::vector<CompleteBeacon> beacons_;
     std::unique_ptr<std::mt19937> generator_;
 };
