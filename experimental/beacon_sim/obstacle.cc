@@ -30,7 +30,7 @@ bool Obstacle::is_inside(const Eigen::Vector2d &query_in_frame) const {
         if (straddles_x_axis) {
             // Check if the intersection occurs before or after the ray
             const double intersection_frac =
-              std::abs(a_in_query.y()) / std::abs((b_in_query - a_in_query).y());
+                std::abs(a_in_query.y()) / std::abs((b_in_query - a_in_query).y());
             const Eigen::Vector2d intersection_in_query =
                 a_in_query + intersection_frac * (b_in_query - a_in_query);
             if (intersection_in_query.x() > 0.0) {
