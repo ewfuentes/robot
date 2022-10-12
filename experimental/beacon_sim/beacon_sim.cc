@@ -35,6 +35,7 @@ namespace {
 
 struct SimConfig {
     std::string log_path;
+    bool autostep;
 };
 
 liegroups::SE3 se3_from_se2(const liegroups::SE2 &a_from_b) {
@@ -427,7 +428,7 @@ void run_simulation(const SimConfig &sim_config) {
             run = false;
         }
 
-        if (command.should_step) {
+        if (command.should_step || sim_config.autostep) {
             // simulate robot forward
             robot.turn(command.turn_rad);
             robot.move(command.move_m);
@@ -472,7 +473,7 @@ int main(int argc, char **argv) {
     cxxopts::Options options("beacon_sim", "Simple Localization Simulator with Beacons");
     options.add_options()("log_file", "Path to output file.",
                           cxxopts::value<std::string>()->default_value(DEFAULT_LOG_LOCATION))(
-        "help", "Print usage");
+        "autostep", "automatically step the sim")("help", "Print usage");
 
     auto args = options.parse(argc, argv);
     if (args.count("help")) {
@@ -481,5 +482,6 @@ int main(int argc, char **argv) {
     }
     robot::experimental::beacon_sim::run_simulation({
         .log_path = args["log_file"].as<std::string>(),
+        .autostep = args["autostep"].as<bool>(),
     });
 }
