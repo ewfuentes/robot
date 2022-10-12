@@ -473,8 +473,7 @@ int main(int argc, char **argv) {
     cxxopts::Options options("beacon_sim", "Simple Localization Simulator with Beacons");
     options.add_options()("log_file", "Path to output file.",
                           cxxopts::value<std::string>()->default_value(DEFAULT_LOG_LOCATION))(
-        "autostep", "automatically step the sim")(
-        "help", "Print usage");
+        "autostep", "automatically step the sim")("help", "Print usage");
 
     auto args = options.parse(argc, argv);
     if (args.count("help")) {
