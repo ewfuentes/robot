@@ -1,20 +1,25 @@
 
 #include "visualization/gl_window/gl_window.hh"
 
+#include <condition_variable>
 #include <iostream>
+#include <optional>
 #include <semaphore>
 
 namespace robot::visualization::gl_window {
 struct Callbacks {
     GlWindow::RenderCallback render;
     GlWindow::MousePosCallback mouse_pos;
+    GlWindow::MouseButtonCallback mouse_button;
     GlWindow::KeyboardCallback keyboard;
     GlWindow::ResizeCallback resize;
 };
 struct WindowData {
     std::mutex mutex;
     Callbacks callbacks;
-    WindowDims window_dims;
+    std::condition_variable window_dims_cv;
+    std::optional<WindowDims> window_dims;
+    bool is_open;
 };
 
 namespace {
@@ -33,6 +38,14 @@ void mouse_pos_callback(GLFWwindow *window, const double x, const double y) {
     }
 }
 
+void mouse_button_callback(GLFWwindow *window, const int button, const int action, const int mods) {
+    WindowData *data = reinterpret_cast<WindowData *>(glfwGetWindowUserPointer(window));
+    if (data) {
+        std::lock_guard<std::mutex> guard(data->mutex);
+        maybe_call(data->callbacks.mouse_button, button, action, mods);
+    }
+}
+
 void keyboard_callback(GLFWwindow *window, const int key, const int scancode, const int action,
                        const int mods) {
     WindowData *data = reinterpret_cast<WindowData *>(glfwGetWindowUserPointer(window));
@@ -46,14 +59,19 @@ void resize_callback(GLFWwindow *window, const int width, const int height) {
     WindowData *data = reinterpret_cast<WindowData *>(glfwGetWindowUserPointer(window));
     if (data) {
         std::lock_guard<std::mutex> guard(data->mutex);
-        data->window_dims.width = width;
-        data->window_dims.height = height;
+        WindowDims dims{
+            .width = width,
+            .height = height,
+        };
+        data->window_dims = dims;
+        data->window_dims_cv.notify_all();
         maybe_call(data->callbacks.resize, width, height);
     }
 }
 
 void register_callbacks(GLFWwindow *window) {
     glfwSetCursorPosCallback(window, mouse_pos_callback);
+    glfwSetMouseButtonCallback(window, mouse_button_callback);
     glfwSetKeyCallback(window, keyboard_callback);
     glfwSetFramebufferSizeCallback(window, resize_callback);
 }
@@ -91,6 +109,12 @@ void window_loop(const int width, const int height, const std::string &title,
         glfwPollEvents();
     }
 
+    // Set the is open flag to false
+    WindowData *data = reinterpret_cast<WindowData *>(glfwGetWindowUserPointer(window));
+    if (data) {
+        std::lock_guard<std::mutex> guard(data->mutex);
+        data->is_open = false;
+    }
     glfwTerminate();
 }
 }  // namespace
@@ -101,10 +125,16 @@ GlWindow::GlWindow(const int width, const int height, const std::string &title)
       window_data_{std::make_unique<WindowData>()} {
     queue_.submit_work(
         [this](GLFWwindow *window) { glfwSetWindowUserPointer(window, window_data_.get()); });
+    queue_.submit_work([this](GLFWwindow *) {
+        std::lock_guard<std::mutex> guard(window_data_->mutex);
+        window_data_->is_open = true;
+    });
     queue_.submit_work([this](GLFWwindow *window) {
         std::lock_guard<std::mutex> guard(window_data_->mutex);
-        glfwGetFramebufferSize(window, &window_data_->window_dims.width,
-                               &window_data_->window_dims.height);
+        WindowDims dims;
+        glfwGetFramebufferSize(window, &dims.width, &dims.height);
+        window_data_->window_dims = dims;
+        window_data_->window_dims_cv.notify_all();
     });
 }
 
@@ -113,6 +143,11 @@ GlWindow::~GlWindow() { close(); }
 void GlWindow::register_mouse_pos_callback(GlWindow::MousePosCallback f) {
     std::lock_guard<std::mutex> guard(window_data_->mutex);
     window_data_->callbacks.mouse_pos = std::move(f);
+}
+
+void GlWindow::register_mouse_button_callback(GlWindow::MouseButtonCallback f) {
+    std::lock_guard<std::mutex> guard(window_data_->mutex);
+    window_data_->callbacks.mouse_button = std::move(f);
 }
 
 void GlWindow::register_keyboard_callback(GlWindow::KeyboardCallback f) {
@@ -150,14 +185,21 @@ std::unordered_map<int, JoystickState> GlWindow::get_joystick_states() {
     return out;
 }
 
+bool GlWindow::is_window_open() const {
+    std::lock_guard<std::mutex> guard(window_data_->mutex);
+    return window_data_->is_open;
+}
+
 void GlWindow::close() {
     queue_.submit_work([](GLFWwindow *window) { glfwSetWindowShouldClose(window, true); });
     ui_thread_.join();
 }
 
 WindowDims GlWindow::get_window_dims() const {
-    std::lock_guard<std::mutex> guard(window_data_->mutex);
-    return window_data_->window_dims;
+    std::unique_lock<std::mutex> lock(window_data_->mutex);
+    window_data_->window_dims_cv.wait(lock,
+                                      [&]() { return window_data_->window_dims.has_value(); });
+    return window_data_->window_dims.value();
 }
 
 }  // namespace robot::visualization::gl_window
