@@ -67,5 +67,27 @@ TEST(ProbabilisticRoadMapTest, sample_points) {
     RoadMap road_map = create_road_map(sdf_map, config);
 
     // Verification
+    // Check that the appropriate number of points are in the map and that the max degree is
+    // respected
+    EXPECT_EQ(road_map.points.size(), config.num_valid_points);
+    EXPECT_EQ(road_map.adj.rows(), road_map.adj.cols());
+    EXPECT_EQ(road_map.adj.rows(), config.num_valid_points);
+
+    EXPECT_LE(road_map.adj.colwise().sum().maxCoeff(), config.max_node_degree);
+
+    // Check that it's symmetric and that all edges are free
+    for (int i = 0; i < road_map.adj.rows(); i++) {
+        // Self edges are not allowed
+        EXPECT_EQ(road_map.adj(i, i), 0);
+        for (int j = i + 1; j < road_map.adj.cols(); j++) {
+            // Check that edges are undirected
+            EXPECT_EQ(road_map.adj(i, j), road_map.adj(j, i));
+
+            // If the edge exists, enure that it is in free space
+            if (road_map.adj(i, j) > 0) {
+                EXPECT_TRUE(sdf_map.in_free_space(road_map.points.at(i), road_map.points.at(j)));
+            }
+        }
+    }
 }
 }  // namespace robot::planning
