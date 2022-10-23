@@ -21,7 +21,7 @@ TEST(AStarTest, uninformed_search) {
             if (node == std::get<0>(edge) || node == std::get<1>(edge)) {
                 const auto &other_node = node == node_a ? node_b : node_a;
                 out.push_back({
-                    .state= other_node,
+                    .state = other_node,
                     .edge_cost = std::get<double>(edge),
                 });
             }
