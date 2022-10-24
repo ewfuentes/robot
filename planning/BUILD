@@ -19,9 +19,6 @@ cc_test(
 cc_library(
   name = "a_star",
   hdrs = ["a_star.hh"],
-  deps = [
-    "//visualization/gl_window",
-  ]
 )
 
 cc_test(
