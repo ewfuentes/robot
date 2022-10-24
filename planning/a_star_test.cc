@@ -18,11 +18,6 @@ struct hash<tuple<int, int>> {
     }
 };
 
-ostream &operator<<(ostream &out, const tuple<int, int> &item) {
-    const auto &[a, b] = item;
-    out << "{" << a << ", " << b << "}";
-    return out;
-}
 }  // namespace std
 
 namespace robot::planning {
