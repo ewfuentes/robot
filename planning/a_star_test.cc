@@ -6,6 +6,24 @@
 
 #include "gtest/gtest.h"
 
+namespace std {
+// Add a std::hash specialization for tuple<int, int>
+template <>
+struct hash<tuple<int, int>> {
+    size_t operator()(const tuple<int, int> &item) const {
+        hash<int> int_hasher;
+        const auto &[a, b] = item;
+        return int_hasher(a) ^ (int_hasher(b) << 4);
+    }
+};
+
+ostream &operator<<(ostream &out, const tuple<int, int> &item) {
+    const auto &[a, b] = item;
+    out << "{" << a << ", " << b << "}";
+    return out;
+}
+}  // namespace std
+
 namespace robot::planning {
 TEST(AStarTest, uninformed_search) {
     // SETUP
@@ -44,5 +62,46 @@ TEST(AStarTest, uninformed_search) {
     EXPECT_EQ(result->states.at(1), "B");
     EXPECT_EQ(result->states.at(2), "D");
     EXPECT_EQ(result->cost, 17);
+}
+
+TEST(AStarTest, grid_world) {
+    // SETUP
+    // Create a grid world with unit move cost
+    using Cell = std::tuple<int, int>;
+    // Add a goal at x = 10, y = 0
+    constexpr Cell GOAL{10, 0};
+    auto successor_func = [](const Cell &cell) -> std::vector<Successor<Cell>> {
+        const auto [cell_x, cell_y] = cell;
+        std::vector<Successor<Cell>> out;
+        for (const auto &[delta_x, delta_y] :
+             std::array<Cell, 4>{{{-1, 0}, {1, 0}, {0, -1}, {0, 1}}}) {
+            // Add an infinite wall at x = 5 with a gap at y = 10
+            if (cell_x + delta_x == 5 && cell_y + delta_y != 10) {
+                continue;
+            }
+            out.push_back(Successor<Cell>{
+                .state = {cell_x + delta_x, cell_y + delta_y},
+                .edge_cost = 1.0,
+            });
+        }
+
+        return out;
+    };
+
+    // Manhattan Distance
+    auto heuristic_func = [GOAL = GOAL](const Cell &cell) -> double {
+        return std::abs(std::get<0>(GOAL) - std::get<0>(cell)) +
+               std::abs(std::get<1>(GOAL) - std::get<1>(cell));
+    };
+
+    auto termination_check = [GOAL = GOAL](const Cell &cell) { return cell == GOAL; };
+
+    // ACTION
+    const auto result = a_star<Cell>(Cell{0, 0}, successor_func, heuristic_func, termination_check);
+
+    // VERIFICATION
+    EXPECT_TRUE(result.has_value());
+    std::cout << "nodes expanded: " << result->num_nodes_expanded << std::endl;
+    std::cout << "nodes visited: " << result->num_nodes_visited << std::endl;
 }
 }  // namespace robot::planning

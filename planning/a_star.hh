@@ -1,9 +1,10 @@
 
 #pragma once
 
+#include <iostream>
 #include <optional>
 #include <queue>
-#include <unordered_set>
+#include <unordered_map>
 #include <vector>
 
 namespace robot::planning {
@@ -22,26 +23,35 @@ struct Successor {
     double edge_cost;
 };
 
+template <typename State>
+struct Node {
+    State state;
+    std::optional<int> maybe_parent_idx;
+    double cost_to_come;
+    double est_cost_to_go;
+    bool in_open;
+    bool in_closed;
+};
+
+template <typename State>
+std::ostream &operator<<(std::ostream &out, const Node<State> &node) {
+    out << "{S: " << node.state << " f: " << node.cost_to_come + node.est_cost_to_go
+        << " g: " << node.cost_to_come << " h: " << node.est_cost_to_go << "}";
+    return out;
+}
+
 // Find a path through a graph.
 // SuccessorFunc returns a list of successors and must have the interface:
 //     Iterable<Successor<State>>(const State &)
 // HeuristicFunc returns the estimated cost from the argument node to a goal node. It should have
 //     the interface: double(const State &)
 // GoalCheck returns true if the node is a goal state.
-// if is_consistent_heuristic is true, the algorithm will track which nodes have been expanded.
-//      Note that this will only return the optimal path if the heuristic is consistent
 template <typename State, typename SuccessorFunc, typename HeuristicFunc, typename GoalCheck>
 std::optional<AStarResult<State>> a_star(const State &initial_state,
                                          const SuccessorFunc &successors_for_state,
                                          const HeuristicFunc &heuristic,
                                          const GoalCheck &termination_check) {
-    struct PathNode {
-        State state;
-        std::optional<int> maybe_parent_idx;
-        double cost_to_come;
-        double est_cost_to_go;
-    };
-
+    using PathNode = Node<State>;
     struct Compare {
         std::vector<PathNode> &path_nodes;
         bool operator()(const int a, const int b) const {
@@ -73,15 +83,17 @@ std::optional<AStarResult<State>> a_star(const State &initial_state,
 
     std::priority_queue<int, std::vector<int>, Compare> queue(Compare{.path_nodes = path_nodes});
     queue.push(0);
-    std::unordered_set<State> expanded_nodes;
+    std::unordered_map<State, double> expanded_nodes;
     int nodes_expanded = 0;
     while (!queue.empty()) {
         nodes_expanded++;
         const int path_node_idx = queue.top();
         queue.pop();
-        const auto &curr_node = path_nodes.at(path_node_idx);
+        auto &curr_node = path_nodes.at(path_node_idx);
+        std::cout << "Popping " << curr_node << std::endl;
 
-        expanded_nodes.insert(curr_node.state);
+        expanded_nodes[curr_node.state] = curr_node.cost_to_come;
+        curr_node.in_closed = true;
 
         // Goal Check
         if (termination_check(curr_node.state)) {
@@ -94,21 +106,33 @@ std::optional<AStarResult<State>> a_star(const State &initial_state,
             };
         }
 
-        // For each neighbor
+        // push_back can re-alloc, so store a copy of the edge cost
+        const double curr_node_cost_to_come = curr_node.cost_to_come;
         for (const Successor<State> &successor : successors_for_state(curr_node.state)) {
-            // Check if it's already been expanded
-            if (expanded_nodes.contains(successor.state)) {
-                continue;
-            }
-            // If not, add it to the priority queue, using the cost to come and the estimated cost
-            // to go
-            path_nodes.push_back(PathNode{
+            const PathNode successor_node = PathNode{
                 .state = successor.state,
                 .maybe_parent_idx = path_node_idx,
-                .cost_to_come = curr_node.cost_to_come + successor.edge_cost,
+                .cost_to_come = curr_node_cost_to_come + successor.edge_cost,
                 .est_cost_to_go = heuristic(successor.state),
-            });
+                .in_open = false,
+                .in_closed = false,
+            };
+            // if the node has been expanded and it's worse than the previous expansion
+            // skip it
+            const auto expanded_iter = expanded_nodes.find(successor_node.state);
+            if (expanded_iter != expanded_nodes.end() &&
+                expanded_iter->second <= successor_node.cost_to_come) {
+                std::cout << "\tAlready expanded " << successor_node.state << std::endl;
+                continue;
+            }
+            // if the node is in the open set and it's worse than the previous expansion
+            // skip it
+
+
+            path_nodes.push_back(successor_node);
+            std::cout << "\tQueuing " << path_nodes.back() << std::endl;
             queue.push(path_nodes.size() - 1);
+            path_nodes.back().in_open = true;
         }
     }
     return std::nullopt;
