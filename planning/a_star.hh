@@ -125,8 +125,8 @@ std::optional<AStarResult<State>> a_star(const State &initial_state,
 
             // if the node is in the open set and it's not better than the previous item
             // skip it
-            auto in_open_iter = std::find_if(
-                nodes.begin(), nodes.end(), [&successor_node](const Node &node) {
+            auto in_open_iter =
+                std::find_if(nodes.begin(), nodes.end(), [&successor_node](const Node &node) {
                     return node.in_open && node.state == successor_node.state;
                 });
 
