@@ -1,6 +1,7 @@
 
 #include "planning/a_star.hh"
 
+#include <cmath>
 #include <string>
 #include <tuple>
 
@@ -70,6 +71,7 @@ TEST(AStarTest, grid_world) {
     using Cell = std::tuple<int, int>;
     // Add a goal at x = 10, y = 0
     constexpr Cell GOAL{10, 0};
+    constexpr Cell INITIAL_STATE{0, 0};
     auto successor_func = [](const Cell &cell) -> std::vector<Successor<Cell>> {
         const auto [cell_x, cell_y] = cell;
         std::vector<Successor<Cell>> out;
@@ -90,8 +92,9 @@ TEST(AStarTest, grid_world) {
 
     // Manhattan Distance
     auto heuristic_func = [GOAL = GOAL](const Cell &cell) -> double {
-        return std::abs(std::get<0>(GOAL) - std::get<0>(cell)) +
-               std::abs(std::get<1>(GOAL) - std::get<1>(cell));
+        const int delta_x = std::get<0>(GOAL) - std::get<0>(cell);
+        const int delta_y = std::get<1>(GOAL) - std::get<1>(cell);
+        return std::abs(delta_x) + std::abs(delta_y);
     };
 
     auto termination_check = [GOAL = GOAL](const Cell &cell) { return cell == GOAL; };
@@ -101,7 +104,9 @@ TEST(AStarTest, grid_world) {
 
     // VERIFICATION
     EXPECT_TRUE(result.has_value());
-    std::cout << "nodes expanded: " << result->num_nodes_expanded << std::endl;
-    std::cout << "nodes visited: " << result->num_nodes_visited << std::endl;
+    EXPECT_EQ(result->states.size(), 31);
+    EXPECT_EQ(result->states.at(0), INITIAL_STATE);
+    EXPECT_EQ(result->states.at(30), GOAL);
+    EXPECT_EQ(result->states.at(15), (Cell{5, 10}));
 }
 }  // namespace robot::planning
