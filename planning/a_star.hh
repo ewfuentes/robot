@@ -39,6 +39,7 @@ std::optional<AStarResult<State>> a_star(const State &initial_state,
         double cost_to_come;
         double est_cost_to_go;
         bool in_open;
+        bool should_skip;
     };
     struct Compare {
         std::vector<Node> *nodes;
@@ -76,6 +77,7 @@ std::optional<AStarResult<State>> a_star(const State &initial_state,
         .cost_to_come = 0,
         .est_cost_to_go = 0,
         .in_open = true,
+        .should_skip = false,
     });
 
     std::priority_queue<int, std::vector<int>, Compare> queue(Compare{.nodes = &nodes});
@@ -83,12 +85,15 @@ std::optional<AStarResult<State>> a_star(const State &initial_state,
     std::unordered_map<State, double> expanded_nodes;
     int nodes_expanded = 0;
     while (!queue.empty()) {
-        nodes_expanded++;
         const int node_idx = queue.top();
-        queue.pop();
         auto &curr_node = nodes.at(node_idx);
         curr_node.in_open = false;
+        queue.pop();
+        if (curr_node.should_skip) {
+            continue
+        }
 
+        nodes_expanded++;
         expanded_nodes[curr_node.state] = curr_node.cost_to_come;
 
         // Goal Check
@@ -133,15 +138,9 @@ std::optional<AStarResult<State>> a_star(const State &initial_state,
                 if (in_open_iter->cost_to_come <= successor_node.cost_to_come) {
                     continue;
                 } else {
-                    // Remove the existing element and rebuild the priority queue
-                    in_open_iter->in_open = false;
-                    queue = std::priority_queue<int, std::vector<int>, Compare>(
-                        Compare{.nodes = &nodes});
-                    for (int i = 0; i < static_cast<int>(nodes.size()); i++) {
-                        if (nodes.at(i).in_open) {
-                            queue.push(i);
-                        }
-                    }
+                    // The new successor is better than the existing item in the queue. We should
+                    // skip the existing item.
+                    in_open_iter->should_skip = true;
                 }
             }
 
