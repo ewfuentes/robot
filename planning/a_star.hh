@@ -90,7 +90,7 @@ std::optional<AStarResult<State>> a_star(const State &initial_state,
         curr_node.in_open = false;
         queue.pop();
         if (curr_node.should_skip) {
-            continue
+            continue;
         }
 
         nodes_expanded++;
