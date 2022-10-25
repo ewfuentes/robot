@@ -15,3 +15,17 @@ cc_test(
     "@com_google_googletest//:gtest_main",
   ]
 )
+
+cc_library(
+  name = "a_star",
+  hdrs = ["a_star.hh"],
+)
+
+cc_test(
+  name = "a_star_test",
+  srcs = ["a_star_test.cc"],
+  deps = [
+    ":a_star",
+    "@com_google_googletest//:gtest_main",
+  ]
+)
