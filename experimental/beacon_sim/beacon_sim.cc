@@ -26,6 +26,7 @@
 #include "experimental/beacon_sim/robot.hh"
 #include "experimental/beacon_sim/sim_log.pb.h"
 #include "experimental/beacon_sim/world_map.hh"
+#include "planning/probabilistic_road_map.hh"
 #include "visualization/gl_window/gl_window.hh"
 
 using namespace std::literals::chrono_literals;
@@ -206,8 +207,9 @@ WorldMapConfig world_map_config() {
 
 void display_state(const time::RobotTimestamp &t, const WorldMap &world_map,
                    const RobotState &robot, const std::vector<BeaconObservation> &observations,
-                   const EkfSlamEstimate &ekf_estimate,
+                   const EkfSlamEstimate &ekf_estimate, const planning::RoadMap &road_map,
                    InOut<visualization::gl_window::GlWindow> window) {
+    (void)road_map;
     constexpr double BEACON_HALF_WIDTH_M = 0.25;
     constexpr double ROBOT_SIZE_M = 0.5;
     constexpr double DEG_FROM_RAD = 180.0 / std::numbers::pi;
@@ -342,9 +344,85 @@ void display_state(const time::RobotTimestamp &t, const WorldMap &world_map,
                 glVertex2d(pt.x(), pt.y());
             }
             glEnd();
-            glPopMatrix();
+            glPopMatrix();  // Pop from beacon frame to world frame
+        }
+
+        // Draw Road map
+        int num_points = road_map.points.size();
+        for (int i = 0; i < num_points; i++) {
+            // Draw the node
+            const Eigen::Vector2d &pt = road_map.points.at(i);
+            glPushMatrix();
+            const liegroups::SE3 local_from_node = se3_from_se2(liegroups::SE2::trans(pt));
+            glMultMatrixd(local_from_node.matrix().data());
+            glBegin(GL_LINE_LOOP);
+            glColor3f(0.0, 0.5, 0.5);
+            for (const auto &corner : std::array<Eigen::Vector2d, 4>{
+                     {{-1.0, -1.0}, {-1.0, 1.0}, {1.0, 1.0}, {1.0, -1.0}}}) {
+                constexpr double NODE_HALF_WIDTH_M = 0.25 / 2.0;
+                const Eigen::Vector2d corner_in_node = corner * NODE_HALF_WIDTH_M;
+                glVertex2d(corner_in_node.x(), corner_in_node.y());
+            }
+            glEnd();
+
+            glPopMatrix();  // Pop from road map node frame to world frame
+
+            for (int j = i + 1; j < num_points; j++) {
+                if (road_map.adj(i, j)) {
+                    // Draw an edge between the two points
+                    const Eigen::Vector2d other_pt = road_map.points.at(j);
+                    glColor3f(0.4, 0.4, 0.4);
+                    glBegin(GL_LINES);
+                    glVertex2d(pt.x(), pt.y());
+                    glVertex2d(other_pt.x(), other_pt.y());
+                    glEnd();
+                }
+            }
         }
     });
+}
+
+planning::RoadMap create_road_map(const WorldMap &map) {
+    const planning::RoadmapCreationConfig config = {
+        .seed = 0,
+        .num_valid_points = 60,
+        .max_node_degree = 5,
+    };
+    struct MapInterface {
+        const WorldMap *map_ptr;
+
+        bool in_free_space(const Eigen::Vector2d &pt) const {
+            for (const auto &obstacle : map_ptr->obstacles()) {
+                if (obstacle.is_inside(pt)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        bool in_free_space(const Eigen::Vector2d &pt_a, const Eigen::Vector2d &pt_b) const {
+            const Eigen::Vector2d delta = pt_b - pt_a;
+            for (double alpha = 0; alpha <= 1; alpha += 0.01) {
+                const Eigen::Vector2d query_pt = pt_a + alpha * delta;
+                for (const auto &obstacle : map_ptr->obstacles()) {
+                    if (obstacle.is_inside(query_pt)) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+
+        planning::MapBounds map_bounds() const {
+            return planning::MapBounds{
+                .bottom_left = Eigen::Vector2d{-15.0, -11.0},
+                .top_right = Eigen::Vector2d{15.0, 11.0},
+            };
+        }
+    };
+
+    return create_road_map(MapInterface{.map_ptr = &map}, config,
+                           {{-14.5, -10.5}, {14.5, -10.5}, {14.5, 10.5}, {-14.5, 10.5}});
 }
 
 void write_out_log_file(const SimConfig &sim_config,
@@ -419,6 +497,9 @@ void run_simulation(const SimConfig &sim_config) {
     const auto DT = 25ms;
     std::vector<proto::BeaconSimDebug> debug_msgs;
     debug_msgs.reserve(10000);
+
+    const planning::RoadMap road_map = create_road_map(map);
+
     while (run) {
         // get command
         const auto command = get_command(key_command.exchange(KeyCommand::make_reset()),
@@ -458,7 +539,7 @@ void run_simulation(const SimConfig &sim_config) {
             pack_into(robot.local_from_robot(), debug_msg.mutable_local_from_true_robot());
 
             display_state(time::current_robot_time(), map, robot, observations, ekf_estimate,
-                          make_in_out(gl_window));
+                          road_map, make_in_out(gl_window));
             debug_msgs.emplace_back(std::move(debug_msg));
         }
 

@@ -29,6 +29,7 @@ cc_binary(
     "//common/liegroups:se2_to_proto",
     "//common/liegroups:se3",
     "//common/time:robot_time_to_proto",
+    "//planning:probabilistic_road_map",
     "@cxxopts//:cxxopts",
   ],
 )
