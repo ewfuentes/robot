@@ -2,6 +2,7 @@
 cc_library(
   name = "probabilistic_road_map",
   hdrs = ["probabilistic_road_map.hh"],
+  visibility = ["//visibility:public"],
   deps = [
     "@eigen//:eigen",
   ]
@@ -19,6 +20,7 @@ cc_test(
 cc_library(
   name = "a_star",
   hdrs = ["a_star.hh"],
+  visibility = ["//visibility:public"],
 )
 
 cc_test(
