@@ -5,6 +5,7 @@
 
 #include "Eigen/Core"
 #include "common/liegroups/se2.hh"
+#include "common/time/robot_time.hh"
 #include "experimental/beacon_sim/generate_observations.hh"
 
 namespace robot::experimental::beacon_sim {
@@ -23,6 +24,8 @@ struct EkfSlamConfig {
 };
 
 struct EkfSlamEstimate {
+    time::RobotTimestamp time_of_validity;
+
     // The full mean and covariance of the robot position and beacon positions
     Eigen::VectorXd mean;
     Eigen::MatrixXd cov;
@@ -40,9 +43,10 @@ struct EkfSlamEstimate {
 
 class EkfSlam {
    public:
-    explicit EkfSlam(const EkfSlamConfig &config);
+    explicit EkfSlam(const EkfSlamConfig &config, const time::RobotTimestamp &time);
 
-    const EkfSlamEstimate &predict(const liegroups::SE2 &old_robot_from_new_robot);
+    const EkfSlamEstimate &predict(const time::RobotTimestamp &time,
+                                   const liegroups::SE2 &old_robot_from_new_robot);
 
     const EkfSlamEstimate &update(const std::vector<BeaconObservation> &observations);
 

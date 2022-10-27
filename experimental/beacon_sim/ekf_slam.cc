@@ -148,30 +148,35 @@ UpdateInputs compute_measurement_and_prediction(const std::vector<BeaconObservat
             .observation_matrix = observation_mat};
 }
 
-EkfSlamEstimate prediction_update(const EkfSlamEstimate &est,
+EkfSlamEstimate prediction_update(const EkfSlamEstimate &est, const time::RobotTimestamp &time,
                                   const liegroups::SE2 &old_robot_from_new_robot,
                                   const EkfSlamConfig &config) {
     // Update the robot mean
     EkfSlamEstimate out = est;
+    out.time_of_validity = time;
     const auto local_from_new_robot = est.local_from_robot() * old_robot_from_new_robot;
     out.mean(Eigen::seqN(0, ROBOT_STATE_DIM)) =
         (Eigen::Vector3d() << local_from_new_robot.translation(), local_from_new_robot.so2().log())
             .finished();
 
     // Update the covariances
+    const std::chrono::duration<double> dt_s = (time - est.time_of_validity);
     const Eigen::Matrix3d robot_process_noise = Eigen::DiagonalMatrix<double, ROBOT_STATE_DIM>(
         config.along_track_process_noise_m_per_rt_meter *
                 config.along_track_process_noise_m_per_rt_meter *
                 old_robot_from_new_robot.arclength() +
-            config.pos_process_noise_m_per_rt_s * config.pos_process_noise_m_per_rt_s,
+            config.pos_process_noise_m_per_rt_s * config.pos_process_noise_m_per_rt_s *
+                dt_s.count(),
         config.cross_track_process_noise_m_per_rt_meter *
                 config.cross_track_process_noise_m_per_rt_meter *
                 old_robot_from_new_robot.arclength() +
-            config.pos_process_noise_m_per_rt_s * config.pos_process_noise_m_per_rt_s,
+            config.pos_process_noise_m_per_rt_s * config.pos_process_noise_m_per_rt_s *
+                dt_s.count(),
         config.heading_process_noise_rad_per_rt_meter *
                 config.heading_process_noise_rad_per_rt_meter *
                 old_robot_from_new_robot.arclength() +
-            config.heading_process_noise_rad_per_rt_s * config.heading_process_noise_rad_per_rt_s);
+            config.heading_process_noise_rad_per_rt_s * config.heading_process_noise_rad_per_rt_s *
+                dt_s.count());
 
     const Eigen::Matrix3d dynamics_jac_wrt_state = old_robot_from_new_robot.inverse().Adj();
     out.cov.block(0, 0, ROBOT_STATE_DIM, ROBOT_STATE_DIM) =
@@ -188,7 +193,8 @@ EkfSlamEstimate prediction_update(const EkfSlamEstimate &est,
 
     const Eigen::MatrixXd landmark_pos_process_noise =
         Eigen::MatrixXd::Identity(num_landmark_cov_cols, num_landmark_cov_cols) *
-        config.beacon_pos_process_noise_m_per_rt_s * config.beacon_pos_process_noise_m_per_rt_s;
+        config.beacon_pos_process_noise_m_per_rt_s * config.beacon_pos_process_noise_m_per_rt_s *
+        dt_s.count();
 
     out.cov.bottomRightCorner(num_landmark_cov_cols, num_landmark_cov_cols) +=
         landmark_pos_process_noise;
@@ -222,8 +228,9 @@ std::optional<Eigen::Matrix2d> EkfSlamEstimate::beacon_cov(const int beacon_id) 
     return cov.block(beacon_idx, beacon_idx, BEACON_DIM, BEACON_DIM);
 }
 
-EkfSlam::EkfSlam(const EkfSlamConfig &config) : config_(config) {
+EkfSlam::EkfSlam(const EkfSlamConfig &config, const time::RobotTimestamp &time) : config_(config) {
     const int total_dim = ROBOT_STATE_DIM + BEACON_DIM * config_.max_num_beacons;
+    estimate_.time_of_validity = time;
     estimate_.mean = Eigen::VectorXd::Zero(total_dim);
     // Initialize the beacon positions to be somewhere other than on top of the robot at init time
     estimate_.mean(Eigen::seq(ROBOT_STATE_DIM, Eigen::last)).array() += 30.0;
@@ -232,8 +239,9 @@ EkfSlam::EkfSlam(const EkfSlamConfig &config) : config_(config) {
     estimate_.cov.block(0, 0, ROBOT_STATE_DIM, ROBOT_STATE_DIM) = Eigen::Matrix3d::Zero();
 }
 
-const EkfSlamEstimate &EkfSlam::predict(const liegroups::SE2 &old_robot_from_new_robot) {
-    estimate_ = detail::prediction_update(estimate_, old_robot_from_new_robot, config_);
+const EkfSlamEstimate &EkfSlam::predict(const time::RobotTimestamp &time,
+                                        const liegroups::SE2 &old_robot_from_new_robot) {
+    estimate_ = detail::prediction_update(estimate_, time, old_robot_from_new_robot, config_);
     return estimate_;
 }
 
