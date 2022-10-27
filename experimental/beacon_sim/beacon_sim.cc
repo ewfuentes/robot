@@ -446,26 +446,29 @@ void run_simulation(const SimConfig &sim_config) {
     // Initialize world map
     WorldMap map(world_map_config(), std::make_unique<std::mt19937>(0));
 
+    time::set_default_time_provider(time::TimeProvider::SIM);
+    time::SimClock::reset();
+
     // Initialize robot state
     constexpr double INIT_POS_X_M = 0.0;
     constexpr double INIT_POS_Y_M = 0.0;
     constexpr double INIT_HEADING_RAD = 0.0;
     constexpr ObservationConfig OBS_CONFIG = {
         .range_noise_std_m = 0.1,
-        .max_sensor_range_m = 10.0,
+        .max_sensor_range_m = 5.0,
     };
     RobotState robot(INIT_POS_X_M, INIT_POS_Y_M, INIT_HEADING_RAD);
 
     constexpr EkfSlamConfig EKF_CONFIG = {
         .max_num_beacons = 50,
         .initial_beacon_uncertainty_m = 100,
-        .along_track_process_noise_m_per_rt_meter = 1e-2,
+        .along_track_process_noise_m_per_rt_meter = 5e-2,
         .cross_track_process_noise_m_per_rt_meter = 1e-9,
-        .pos_process_noise_m_per_rt_s = 1e-9,
-        .heading_process_noise_rad_per_rt_meter = 1e-6,
+        .pos_process_noise_m_per_rt_s = 1e-3,
+        .heading_process_noise_rad_per_rt_meter = 1e-3,
         .heading_process_noise_rad_per_rt_s = 1e-10,
-        .beacon_pos_process_noise_m_per_rt_s = 0.000001,
-        .range_measurement_noise_m = 0.25,
+        .beacon_pos_process_noise_m_per_rt_s = 1e-3,
+        .range_measurement_noise_m = 0.1,
         .bearing_measurement_noise_rad = 0.01,
     };
     EkfSlam ekf_slam(EKF_CONFIG, time::current_robot_time());
