@@ -138,32 +138,32 @@ std::vector<Eigen::Vector2d> transform_points(std::vector<Eigen::Vector2d> &&pts
 }
 
 WorldMapConfig world_map_config() {
-    // Create a grid of beacons
-    constexpr int NUM_ROWS = 2;
-    constexpr int NUM_COLS = 2;
-    constexpr double SPACING_M = 4.0;
     WorldMapConfig out;
-    out.fixed_beacons.beacons.reserve(NUM_ROWS * NUM_COLS);
+    // Add Beacons around the perimeter
     int beacon_id = 0;
-    for (int r = 0; r < NUM_ROWS; r++) {
-        for (int c = 0; c < NUM_COLS; c++) {
-            out.fixed_beacons.beacons.push_back(
-                Beacon{.id = beacon_id++, .pos_in_local = {c * SPACING_M, r * SPACING_M}});
-        }
-    }
-    out.blinking_beacons = {
-        .beacons = {},
-        .beacon_appear_rate_hz = 1.0,
-        .beacon_disappear_rate_hz = 0.5,
-    };
+    constexpr double TOP_EDGE_LENGTH_M = 28.0;
+    constexpr double SIDE_EDGE_LENGTH_M = 20.0;
+    constexpr int NUM_STEPS = 5;
+    for (int i = 0; i < NUM_STEPS; i++) {
+        const double alpha = static_cast<double>(i) / NUM_STEPS;
+        // Top Edge from 0 to +x +y
+        out.fixed_beacons.beacons.push_back(Beacon{
+            .id = beacon_id++,
+            .pos_in_local = {alpha * TOP_EDGE_LENGTH_M / 2.0, SIDE_EDGE_LENGTH_M / 2.0},
+        });
 
-    out.blinking_beacons.beacons.reserve(NUM_ROWS * NUM_COLS);
+        // Bottom Edge from +x -y to -x -y
+        out.fixed_beacons.beacons.push_back(Beacon{
+            .id = beacon_id++,
+            .pos_in_local = {TOP_EDGE_LENGTH_M / 2.0 - alpha * TOP_EDGE_LENGTH_M,
+                             -SIDE_EDGE_LENGTH_M / 2.0},
+        });
 
-    for (int r = 0; r < NUM_ROWS; r++) {
-        for (int c = 0; c < NUM_COLS; c++) {
-            out.blinking_beacons.beacons.push_back(
-                Beacon{.id = beacon_id++, .pos_in_local = {-c * SPACING_M, -r * SPACING_M}});
-        }
+        // Right Edge from +x +y to +x -y
+        out.fixed_beacons.beacons.push_back(Beacon{
+            .id = beacon_id++,
+            .pos_in_local = {TOP_EDGE_LENGTH_M / 2.0, (1 - 2 * alpha) * SIDE_EDGE_LENGTH_M / 2.0},
+        });
     }
 
     // Create obstacles
