@@ -29,7 +29,7 @@ Tiger::Result Tiger::step(const Tiger::Action &action) {
     is_done_ = true;
     const bool is_tiger = (is_tiger_left_ && action == Tiger::Action::OPEN_LEFT) ||
                           (!is_tiger_left_ && action == Tiger::Action::OPEN_RIGHT);
-    return Tiger::Result {
+    return Tiger::Result{
         .reward = is_tiger ? config_.tiger_reward : config_.treasure_reward,
         .observation = is_tiger ? Tiger::Observation::TIGER : Tiger::Observation::TREASURE,
         .is_done = is_done_,
