@@ -2,6 +2,7 @@
 syntax = "proto3";
 
 import "common/math/matrix.proto";
+import "common/time/robot_time.proto";
 
 package robot.experimental.beacon_sim.proto;
 
@@ -9,4 +10,5 @@ message EkfSlamEstimate {
   robot.math.proto.Matrix mean = 1;
   robot.math.proto.Matrix cov = 2;
   repeated int32 beacon_ids = 3;
+  robot.time.proto.RobotTimestamp time_of_validity = 4;
 }

@@ -359,6 +359,7 @@ void write_out_log_file(const SimConfig &sim_config,
 
 void run_simulation(const SimConfig &sim_config) {
     bool run = true;
+    time::set_default_time_provider(time::TimeProvider::SIM);
 
     std::mt19937 gen(0);
 
@@ -389,7 +390,7 @@ void run_simulation(const SimConfig &sim_config) {
         .range_measurement_noise_m = 0.25,
         .bearing_measurement_noise_rad = 0.01,
     };
-    EkfSlam ekf_slam(EKF_CONFIG);
+    EkfSlam ekf_slam(EKF_CONFIG, time::current_robot_time());
 
     gl_window.register_window_resize_callback(
         [](const int width, const int height) { glViewport(0, 0, width, height); });
@@ -415,7 +416,6 @@ void run_simulation(const SimConfig &sim_config) {
             key_command.store(update);
         });
 
-    time::SimClock::reset();
     const auto DT = 25ms;
     std::vector<proto::BeaconSimDebug> debug_msgs;
     debug_msgs.reserve(10000);
@@ -445,7 +445,8 @@ void run_simulation(const SimConfig &sim_config) {
                 liegroups::SE2::trans(command.move_m, 0.0) * liegroups::SE2::rot(command.turn_rad);
             pack_into(old_robot_from_new_robot, debug_msg.mutable_old_robot_from_new_robot());
 
-            pack_into(ekf_slam.predict(old_robot_from_new_robot), debug_msg.mutable_prediction());
+            pack_into(ekf_slam.predict(time::current_robot_time(), old_robot_from_new_robot),
+                      debug_msg.mutable_prediction());
 
             // generate observations
             const auto observations = generate_observations(time::current_robot_time(), map, robot,

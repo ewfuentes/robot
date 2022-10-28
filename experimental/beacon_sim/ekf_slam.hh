@@ -71,6 +71,7 @@ UpdateInputs compute_measurement_and_prediction(const std::vector<BeaconObservat
                                                 const EkfSlamEstimate &est);
 
 EkfSlamEstimate prediction_update(const EkfSlamEstimate &est,
+                                  const time::RobotTimestamp &time,
                                   const liegroups::SE2 &old_robot_from_new_robot,
                                   const EkfSlamConfig &config);
 }  // namespace detail
