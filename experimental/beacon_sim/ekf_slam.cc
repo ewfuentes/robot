@@ -262,9 +262,11 @@ const EkfSlamEstimate &EkfSlam::update(const std::vector<BeaconObservation> &obs
         const Eigen::Vector2d beacon_in_robot{range_m * std::cos(bearing_rad),
                                               range_m * std::sin(bearing_rad)};
 
-        const Eigen::Vector2d beacon_in_local =
-            estimate_.local_from_robot().inverse() * beacon_in_robot;
+        const Eigen::Vector2d beacon_in_local = estimate_.local_from_robot() * beacon_in_robot;
         estimate_.mean(Eigen::seqN(beacon_start_idx, BEACON_DIM)) = beacon_in_local;
+        estimate_.cov.block(beacon_start_idx, beacon_start_idx, BEACON_DIM, BEACON_DIM) =
+            Eigen::Matrix<double, BEACON_DIM, BEACON_DIM>::Identity() *
+            config_.initial_beacon_uncertainty_m * config_.initial_beacon_uncertainty_m;
     }
 
     // turn the observations into a column vector of beacon in robot points
