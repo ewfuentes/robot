@@ -447,7 +447,6 @@ void run_simulation(const SimConfig &sim_config) {
     WorldMap map(world_map_config(), std::make_unique<std::mt19937>(0));
 
     time::set_default_time_provider(time::TimeProvider::SIM);
-    time::SimClock::reset();
 
     // Initialize robot state
     constexpr double INIT_POS_X_M = 0.0;
