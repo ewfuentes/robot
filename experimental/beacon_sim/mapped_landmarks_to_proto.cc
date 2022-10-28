@@ -1,8 +1,8 @@
 
 #include "experimental/beacon_sim/mapped_landmarks_to_proto.hh"
 
-#include "experimental/beacon_sim/world_map_config_to_proto.hh"
 #include "common/math/matrix_to_proto.hh"
+#include "experimental/beacon_sim/world_map_config_to_proto.hh"
 
 namespace robot::experimental::beacon_sim::proto {
 void pack_into(const beacon_sim::MappedLandmarks &in, MappedLandmarks *out) {

@@ -51,9 +51,9 @@ TEST(ExtractMappedLandmarksTest, extract_landmarks_from_est) {
         EXPECT_EQ(landmark.beacon.id, beacon.id);
         EXPECT_EQ(landmark.beacon.pos_in_local, beacon.pos_in_local);
         EXPECT_NEAR((landmark.cov_in_local -
-                   Eigen::Matrix<double, BEACON_DIM, BEACON_DIM>::Ones() * cov_multiplier)
-                      .norm(),
-                  0.0, TOL);
+                     Eigen::Matrix<double, BEACON_DIM, BEACON_DIM>::Ones() * cov_multiplier)
+                        .norm(),
+                    0.0, TOL);
     }
 }
 }  // namespace robot::experimental::beacon_sim

@@ -1,7 +1,6 @@
 
-#include "experimental/beacon_sim/world_map.hh"
-
 #include "Eigen/Dense"
+#include "experimental/beacon_sim/world_map.hh"
 
 namespace robot::experimental::beacon_sim {
 
