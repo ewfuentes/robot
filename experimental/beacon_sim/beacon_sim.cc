@@ -431,6 +431,8 @@ planning::RoadMap create_road_map(const WorldMap &map) {
 void write_out_log_file(const SimConfig &sim_config,
                         std::vector<proto::BeaconSimDebug> debug_msgs) {
     proto::SimLog log_proto;
+    std::cout << "Saving " << debug_msgs.size() << " debug messages to " << sim_config.log_path
+              << std::endl;
     for (proto::BeaconSimDebug &msg : debug_msgs) {
         log_proto.mutable_debug_msgs()->Add(std::move(msg));
     }
@@ -440,8 +442,10 @@ void write_out_log_file(const SimConfig &sim_config,
 
 void write_out_map(const SimConfig &sim_config, const EkfSlamEstimate &est) {
     proto::MappedLandmarks map_proto;
+    std::cout << "Saving map to " << sim_config.map_output_path << std::endl;
     pack_into(extract_mapped_landmarks(est), &map_proto);
-    std::fstream file_out(sim_config.map_output_path, std::ios::binary | std::ios::out | std::ios::trunc);
+    std::fstream file_out(sim_config.map_output_path,
+                          std::ios::binary | std::ios::out | std::ios::trunc);
     map_proto.SerializeToOstream(&file_out);
 }
 
