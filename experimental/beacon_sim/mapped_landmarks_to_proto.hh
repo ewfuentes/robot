@@ -1,4 +1,6 @@
 
+#pragma once
+
 #include "experimental/beacon_sim/mapped_landmarks.hh"
 #include "experimental/beacon_sim/mapped_landmarks.pb.h"
 

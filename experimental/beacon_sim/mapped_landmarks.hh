@@ -1,4 +1,6 @@
 
+#pragma once
+
 #include "Eigen/Dense"
 #include "experimental/beacon_sim/world_map.hh"
 

@@ -21,6 +21,8 @@ cc_binary(
     ":beacon_observation_to_proto",
     ":beacon_sim_debug_proto",
     ":ekf_slam_estimate_to_proto",
+    ":extract_mapped_landmarks",
+    ":mapped_landmarks_to_proto",
     "//common/time:sim_clock",
     ":ekf_slam",
     "//visualization/gl_window",
@@ -257,7 +259,7 @@ multi_proto_library(
 )
 
 cc_library(
-  name = "mapped_landmark_to_proto",
+  name = "mapped_landmarks_to_proto",
   hdrs = ["mapped_landmarks_to_proto.hh"],
   srcs = ["mapped_landmarks_to_proto.cc"],
   deps = [
@@ -272,7 +274,7 @@ cc_test(
   name = "mapped_landmarks_to_proto_test",
   srcs = ["mapped_landmarks_to_proto_test.cc"],
   deps = [
-    ":mapped_landmark_to_proto",
+    ":mapped_landmarks_to_proto",
     "@com_google_googletest//:gtest_main",
   ]
 )
