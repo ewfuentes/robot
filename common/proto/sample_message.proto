@@ -1,0 +1,14 @@
+
+syntax = "proto3";
+
+package robot.proto;
+
+message SampleMessage {
+  message NestedMessage {
+    bool test_bool = 1;
+  }
+
+  int32 test_int = 1;
+  string test_string = 2;
+  NestedMessage test_nested = 3;
+}
