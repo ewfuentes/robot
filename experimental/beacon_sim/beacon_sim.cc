@@ -26,6 +26,7 @@
 #include "experimental/beacon_sim/robot.hh"
 #include "experimental/beacon_sim/sim_log.pb.h"
 #include "experimental/beacon_sim/world_map.hh"
+#include "planning/probabilistic_road_map.hh"
 #include "visualization/gl_window/gl_window.hh"
 
 using namespace std::literals::chrono_literals;
@@ -137,32 +138,32 @@ std::vector<Eigen::Vector2d> transform_points(std::vector<Eigen::Vector2d> &&pts
 }
 
 WorldMapConfig world_map_config() {
-    // Create a grid of beacons
-    constexpr int NUM_ROWS = 2;
-    constexpr int NUM_COLS = 2;
-    constexpr double SPACING_M = 4.0;
     WorldMapConfig out;
-    out.fixed_beacons.beacons.reserve(NUM_ROWS * NUM_COLS);
+    // Add Beacons around the perimeter
     int beacon_id = 0;
-    for (int r = 0; r < NUM_ROWS; r++) {
-        for (int c = 0; c < NUM_COLS; c++) {
-            out.fixed_beacons.beacons.push_back(
-                Beacon{.id = beacon_id++, .pos_in_local = {c * SPACING_M, r * SPACING_M}});
-        }
-    }
-    out.blinking_beacons = {
-        .beacons = {},
-        .beacon_appear_rate_hz = 1.0,
-        .beacon_disappear_rate_hz = 0.5,
-    };
+    constexpr double TOP_EDGE_LENGTH_M = 28.0;
+    constexpr double SIDE_EDGE_LENGTH_M = 20.0;
+    constexpr int NUM_STEPS = 5;
+    for (int i = 0; i < NUM_STEPS; i++) {
+        const double alpha = static_cast<double>(i) / NUM_STEPS;
+        // Top Edge from 0 to +x +y
+        out.fixed_beacons.beacons.push_back(Beacon{
+            .id = beacon_id++,
+            .pos_in_local = {alpha * TOP_EDGE_LENGTH_M / 2.0, SIDE_EDGE_LENGTH_M / 2.0},
+        });
 
-    out.blinking_beacons.beacons.reserve(NUM_ROWS * NUM_COLS);
+        // Bottom Edge from +x -y to -x -y
+        out.fixed_beacons.beacons.push_back(Beacon{
+            .id = beacon_id++,
+            .pos_in_local = {TOP_EDGE_LENGTH_M / 2.0 - alpha * TOP_EDGE_LENGTH_M,
+                             -SIDE_EDGE_LENGTH_M / 2.0},
+        });
 
-    for (int r = 0; r < NUM_ROWS; r++) {
-        for (int c = 0; c < NUM_COLS; c++) {
-            out.blinking_beacons.beacons.push_back(
-                Beacon{.id = beacon_id++, .pos_in_local = {-c * SPACING_M, -r * SPACING_M}});
-        }
+        // Right Edge from +x +y to +x -y
+        out.fixed_beacons.beacons.push_back(Beacon{
+            .id = beacon_id++,
+            .pos_in_local = {TOP_EDGE_LENGTH_M / 2.0, (1 - 2 * alpha) * SIDE_EDGE_LENGTH_M / 2.0},
+        });
     }
 
     // Create obstacles
@@ -206,8 +207,9 @@ WorldMapConfig world_map_config() {
 
 void display_state(const time::RobotTimestamp &t, const WorldMap &world_map,
                    const RobotState &robot, const std::vector<BeaconObservation> &observations,
-                   const EkfSlamEstimate &ekf_estimate,
+                   const EkfSlamEstimate &ekf_estimate, const planning::RoadMap &road_map,
                    InOut<visualization::gl_window::GlWindow> window) {
+    (void)road_map;
     constexpr double BEACON_HALF_WIDTH_M = 0.25;
     constexpr double ROBOT_SIZE_M = 0.5;
     constexpr double DEG_FROM_RAD = 180.0 / std::numbers::pi;
@@ -342,9 +344,85 @@ void display_state(const time::RobotTimestamp &t, const WorldMap &world_map,
                 glVertex2d(pt.x(), pt.y());
             }
             glEnd();
-            glPopMatrix();
+            glPopMatrix();  // Pop from beacon frame to world frame
+        }
+
+        // Draw Road map
+        int num_points = road_map.points.size();
+        for (int i = 0; i < num_points; i++) {
+            // Draw the node
+            const Eigen::Vector2d &pt = road_map.points.at(i);
+            glPushMatrix();
+            const liegroups::SE3 local_from_node = se3_from_se2(liegroups::SE2::trans(pt));
+            glMultMatrixd(local_from_node.matrix().data());
+            glBegin(GL_LINE_LOOP);
+            glColor3f(0.0, 0.5, 0.5);
+            for (const auto &corner : std::array<Eigen::Vector2d, 4>{
+                     {{-1.0, -1.0}, {-1.0, 1.0}, {1.0, 1.0}, {1.0, -1.0}}}) {
+                constexpr double NODE_HALF_WIDTH_M = 0.25 / 2.0;
+                const Eigen::Vector2d corner_in_node = corner * NODE_HALF_WIDTH_M;
+                glVertex2d(corner_in_node.x(), corner_in_node.y());
+            }
+            glEnd();
+
+            glPopMatrix();  // Pop from road map node frame to world frame
+
+            for (int j = i + 1; j < num_points; j++) {
+                if (road_map.adj(i, j)) {
+                    // Draw an edge between the two points
+                    const Eigen::Vector2d other_pt = road_map.points.at(j);
+                    glColor3f(0.4, 0.4, 0.4);
+                    glBegin(GL_LINES);
+                    glVertex2d(pt.x(), pt.y());
+                    glVertex2d(other_pt.x(), other_pt.y());
+                    glEnd();
+                }
+            }
         }
     });
+}
+
+planning::RoadMap create_road_map(const WorldMap &map) {
+    const planning::RoadmapCreationConfig config = {
+        .seed = 0,
+        .num_valid_points = 60,
+        .max_node_degree = 5,
+    };
+    struct MapInterface {
+        const WorldMap *map_ptr;
+
+        bool in_free_space(const Eigen::Vector2d &pt) const {
+            for (const auto &obstacle : map_ptr->obstacles()) {
+                if (obstacle.is_inside(pt)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        bool in_free_space(const Eigen::Vector2d &pt_a, const Eigen::Vector2d &pt_b) const {
+            const Eigen::Vector2d delta = pt_b - pt_a;
+            for (double alpha = 0; alpha <= 1; alpha += 0.01) {
+                const Eigen::Vector2d query_pt = pt_a + alpha * delta;
+                for (const auto &obstacle : map_ptr->obstacles()) {
+                    if (obstacle.is_inside(query_pt)) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+
+        planning::MapBounds map_bounds() const {
+            return planning::MapBounds{
+                .bottom_left = Eigen::Vector2d{-15.0, -11.0},
+                .top_right = Eigen::Vector2d{15.0, 11.0},
+            };
+        }
+    };
+
+    return create_road_map(MapInterface{.map_ptr = &map}, config,
+                           {{-14.5, -10.5}, {14.5, -10.5}, {14.5, 10.5}, {-14.5, 10.5}});
 }
 
 void write_out_log_file(const SimConfig &sim_config,
@@ -368,26 +446,28 @@ void run_simulation(const SimConfig &sim_config) {
     // Initialize world map
     WorldMap map(world_map_config(), std::make_unique<std::mt19937>(0));
 
+    time::set_default_time_provider(time::TimeProvider::SIM);
+
     // Initialize robot state
     constexpr double INIT_POS_X_M = 0.0;
     constexpr double INIT_POS_Y_M = 0.0;
     constexpr double INIT_HEADING_RAD = 0.0;
     constexpr ObservationConfig OBS_CONFIG = {
         .range_noise_std_m = 0.1,
-        .max_sensor_range_m = 10.0,
+        .max_sensor_range_m = 5.0,
     };
     RobotState robot(INIT_POS_X_M, INIT_POS_Y_M, INIT_HEADING_RAD);
 
     constexpr EkfSlamConfig EKF_CONFIG = {
         .max_num_beacons = 50,
         .initial_beacon_uncertainty_m = 100,
-        .along_track_process_noise_m_per_rt_meter = 1e-2,
+        .along_track_process_noise_m_per_rt_meter = 5e-2,
         .cross_track_process_noise_m_per_rt_meter = 1e-9,
-        .pos_process_noise_m_per_rt_s = 1e-9,
-        .heading_process_noise_rad_per_rt_meter = 1e-6,
+        .pos_process_noise_m_per_rt_s = 1e-3,
+        .heading_process_noise_rad_per_rt_meter = 1e-3,
         .heading_process_noise_rad_per_rt_s = 1e-10,
-        .beacon_pos_process_noise_m_per_rt_s = 0.000001,
-        .range_measurement_noise_m = 0.25,
+        .beacon_pos_process_noise_m_per_rt_s = 1e-3,
+        .range_measurement_noise_m = 0.1,
         .bearing_measurement_noise_rad = 0.01,
     };
     EkfSlam ekf_slam(EKF_CONFIG, time::current_robot_time());
@@ -419,6 +499,9 @@ void run_simulation(const SimConfig &sim_config) {
     const auto DT = 25ms;
     std::vector<proto::BeaconSimDebug> debug_msgs;
     debug_msgs.reserve(10000);
+
+    const planning::RoadMap road_map = create_road_map(map);
+
     while (run) {
         // get command
         const auto command = get_command(key_command.exchange(KeyCommand::make_reset()),
@@ -458,7 +541,7 @@ void run_simulation(const SimConfig &sim_config) {
             pack_into(robot.local_from_robot(), debug_msg.mutable_local_from_true_robot());
 
             display_state(time::current_robot_time(), map, robot, observations, ekf_estimate,
-                          make_in_out(gl_window));
+                          road_map, make_in_out(gl_window));
             debug_msgs.emplace_back(std::move(debug_msg));
         }
 

@@ -1,8 +1,6 @@
 
 #include "experimental/beacon_sim/obstacle.hh"
 
-#include <iostream>
-
 #include "common/liegroups/se2.hh"
 
 namespace robot::experimental::beacon_sim {
