@@ -243,7 +243,7 @@ TEST(EkfSlamTest, rotating_in_place_yields_same_pos_covariance_directions) {
 
     // Action
     const EkfSlamEstimate new_est =
-      detail::prediction_update(est, time::RobotTimestamp(), old_robot_from_new_robot, CONFIG);
+        detail::prediction_update(est, time::RobotTimestamp(), old_robot_from_new_robot, CONFIG);
 
     // Verification
     const auto cov_in_local = [](const auto &est) -> Eigen::Matrix3d {
