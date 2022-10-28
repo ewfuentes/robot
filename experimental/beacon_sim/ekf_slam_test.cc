@@ -5,6 +5,7 @@
 
 namespace robot::experimental::beacon_sim {
 constexpr double TOL = 1e-6;
+using namespace std::literals::chrono_literals;
 
 class EkfSlamTestHelper {
    public:
@@ -52,7 +53,7 @@ TEST(EkfSlamTest, estimate_has_expected_dimensions) {
     constexpr int EXPECTED_DIM = EXPECTED_ROBOT_DIM + EXPECTED_BEACON_DIM * CONFIG.max_num_beacons;
 
     // Action
-    const EkfSlam ekf_slam(CONFIG);
+    const EkfSlam ekf_slam(CONFIG, time::RobotTimestamp());
     const EkfSlamEstimate &est = ekf_slam.estimate();
 
     // Verification
@@ -80,12 +81,12 @@ TEST(EkfSlamTest, prediction_updates_as_expected) {
         .range_measurement_noise_m = 0.5,
         .bearing_measurement_noise_rad = 0.001,
     };
-    EkfSlam ekf_slam(CONFIG);
+    EkfSlam ekf_slam(CONFIG, time::RobotTimestamp());
     const liegroups::SE2 old_robot_from_new_robot = liegroups::SE2::exp({1.0, 2.0, 3.0});
     const EkfSlamEstimate initial_est = ekf_slam.estimate();
 
     // Action
-    ekf_slam.predict(old_robot_from_new_robot);
+    ekf_slam.predict(1s + time::RobotTimestamp(), old_robot_from_new_robot);
     const EkfSlamEstimate &est = ekf_slam.estimate();
 
     // Verification
@@ -109,8 +110,8 @@ TEST(EkfSlamTest, measurement_updates_as_expected) {
 
     constexpr int BEACON_ID = 10;
     const Eigen::Vector2d beacon_in_local{3, 4};
-    EkfSlam ekf_slam(CONFIG);
-    const auto initial_est = ekf_slam.predict(liegroups::SE2());
+    EkfSlam ekf_slam(CONFIG, time::RobotTimestamp());
+    const auto initial_est = ekf_slam.predict(time::RobotTimestamp(), liegroups::SE2());
 
     const auto beacon_in_robot = initial_est.local_from_robot().inverse() * beacon_in_local;
     const BeaconObservation obs = {
@@ -142,12 +143,13 @@ TEST(EkfSlamTest, identity_update_does_not_change_estimate) {
         .bearing_measurement_noise_rad = 1e-6,
     };
 
-    EkfSlam ekf_slam(CONFIG);
+    EkfSlam ekf_slam(CONFIG, time::RobotTimestamp());
 
     // Action
     constexpr int NUM_ITERS = 1000;
+    constexpr time::RobotTimestamp::duration DT = 100ms;
     for (int i = 0; i < NUM_ITERS; i++) {
-        ekf_slam.predict(liegroups::SE2());
+        ekf_slam.predict(i * DT + time::RobotTimestamp(), liegroups::SE2());
     }
 
     const auto est = ekf_slam.estimate();
@@ -180,7 +182,7 @@ TEST(EkfSlamTest, position_estimate_converges_given_known_beacon) {
     const liegroups::SE2 expected_local_from_robot =
         liegroups::SE2(std::numbers::pi / 3.0, {5.0, 12.0});
 
-    EkfSlam ekf_slam(CONFIG);
+    EkfSlam ekf_slam(CONFIG, time::RobotTimestamp());
 
     EkfSlamTestHelper::estimate(make_in_out(ekf_slam)).mean(Eigen::seqN(3, 2)) =
         beacons_in_local[0];
@@ -203,8 +205,9 @@ TEST(EkfSlamTest, position_estimate_converges_given_known_beacon) {
     }
 
     // Action
+    constexpr time::RobotTimestamp::duration DT = 100ms;
     for (int i = 0; i < 10; i++) {
-        ekf_slam.predict(liegroups::SE2());
+        ekf_slam.predict(i * DT + time::RobotTimestamp(), liegroups::SE2());
         ekf_slam.update(observations);
     }
 
@@ -240,7 +243,7 @@ TEST(EkfSlamTest, rotating_in_place_yields_same_pos_covariance_directions) {
 
     // Action
     const EkfSlamEstimate new_est =
-        detail::prediction_update(est, old_robot_from_new_robot, CONFIG);
+        detail::prediction_update(est, time::RobotTimestamp(), old_robot_from_new_robot, CONFIG);
 
     // Verification
     const auto cov_in_local = [](const auto &est) -> Eigen::Matrix3d {

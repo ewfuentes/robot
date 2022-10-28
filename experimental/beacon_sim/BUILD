@@ -150,6 +150,7 @@ multi_proto_library(
   srcs = ["ekf_slam_estimate.proto"],
   deps = [
     "//common/math:matrix_proto",
+    "//common/time:robot_time_proto",
   ]
 )
 
@@ -161,6 +162,7 @@ cc_library(
     ":ekf_slam",
     ":ekf_slam_estimate_proto",
     "//common/math:matrix_to_proto",
+    "//common/time:robot_time_to_proto",
   ]
 )
 
