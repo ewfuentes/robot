@@ -7,6 +7,7 @@
 #include "common/liegroups/se2.hh"
 #include "common/time/robot_time.hh"
 #include "experimental/beacon_sim/generate_observations.hh"
+#include "experimental/beacon_sim/mapped_landmarks.hh"
 
 namespace robot::experimental::beacon_sim {
 
@@ -44,6 +45,8 @@ struct EkfSlamEstimate {
 class EkfSlam {
    public:
     explicit EkfSlam(const EkfSlamConfig &config, const time::RobotTimestamp &time);
+
+    const EkfSlamEstimate &load_map(const MappedLandmarks &landmarks);
 
     const EkfSlamEstimate &predict(const time::RobotTimestamp &time,
                                    const liegroups::SE2 &old_robot_from_new_robot);
