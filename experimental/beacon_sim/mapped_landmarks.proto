@@ -1,0 +1,16 @@
+
+
+syntax = "proto3";
+
+import "experimental/beacon_sim/world_map_config.proto";
+import "common/math/matrix.proto";
+
+package robot.experimental.beacon_sim.proto;
+
+message MappedLandmarks {
+  message LandmarkBelief {
+    robot.experimental.beacon_sim.proto.Beacon beacon = 1;
+    robot.math.proto.Matrix cov_in_local = 2;
+  }
+  repeated LandmarkBelief landmarks = 1;
+}

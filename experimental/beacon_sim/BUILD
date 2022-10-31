@@ -21,6 +21,8 @@ cc_binary(
     ":beacon_observation_to_proto",
     ":beacon_sim_debug_proto",
     ":ekf_slam_estimate_to_proto",
+    ":extract_mapped_landmarks",
+    ":mapped_landmarks_to_proto",
     "//common/time:sim_clock",
     ":ekf_slam",
     "//visualization/gl_window",
@@ -210,12 +212,69 @@ cc_library(
   ]
 )
 
-
 cc_test(
   name = "obstacle_test",
   srcs = ["obstacle_test.cc"],
   deps = [
     ":obstacle",
+    "@com_google_googletest//:gtest_main",
+  ]
+)
+
+cc_library(
+  name = "mapped_landmarks",
+  hdrs = ["mapped_landmarks.hh"],
+  deps = [
+    ":world_map",
+    "@eigen//:eigen",
+  ]
+)
+
+cc_library(
+  name = "extract_mapped_landmarks",
+  hdrs = ["extract_mapped_landmarks.hh"],
+  srcs = ["extract_mapped_landmarks.cc"],
+  deps = [
+    ":mapped_landmarks",
+    ":ekf_slam",
+  ],
+)
+
+cc_test(
+  name = "extract_mapped_landmarks_test",
+  srcs = ["extract_mapped_landmarks_test.cc"],
+  deps = [
+    "@com_google_googletest//:gtest_main",
+    ":extract_mapped_landmarks",
+  ]
+)
+
+multi_proto_library(
+  name = "mapped_landmarks_proto",
+  srcs = ["mapped_landmarks.proto"],
+  deps = [
+    ":world_map_config_proto",
+    "//common/math:matrix_proto",
+  ]
+)
+
+cc_library(
+  name = "mapped_landmarks_to_proto",
+  hdrs = ["mapped_landmarks_to_proto.hh"],
+  srcs = ["mapped_landmarks_to_proto.cc"],
+  deps = [
+    ":world_map_config_to_proto",
+    "//common/math:matrix_to_proto",
+    ":mapped_landmarks_proto",
+    ":mapped_landmarks",
+  ],
+)
+
+cc_test(
+  name = "mapped_landmarks_to_proto_test",
+  srcs = ["mapped_landmarks_to_proto_test.cc"],
+  deps = [
+    ":mapped_landmarks_to_proto",
     "@com_google_googletest//:gtest_main",
   ]
 )
