@@ -18,6 +18,21 @@ std::optional<int> find_beacon_matrix_idx(const std::vector<int> &ids, const int
     return ROBOT_STATE_DIM + BEACON_DIM * beacon_idx;
 }
 
+std::optional<int> find_beacon_matrix_idx_or_add(const int id, InOut<EkfSlamEstimate> est) {
+    std::optional<int> maybe_idx = find_beacon_matrix_idx(est->beacon_ids, id);
+    if (maybe_idx.has_value()) {
+        return maybe_idx.value();
+    }
+
+    const int max_num_landmarks = (est->mean.rows() - ROBOT_STATE_DIM) / BEACON_DIM;
+    if (max_num_landmarks <= static_cast<int>(est->beacon_ids.size())) {
+        return std::nullopt;
+    }
+
+    est->beacon_ids.push_back(id);
+    return find_beacon_matrix_idx(est->beacon_ids, id);
+}
+
 }  // namespace
 
 namespace detail {
@@ -202,6 +217,22 @@ EkfSlamEstimate prediction_update(const EkfSlamEstimate &est, const time::RobotT
     return out;
 }
 
+EkfSlamEstimate incorporate_mapped_landmarks(const EkfSlamEstimate &est,
+                                             const MappedLandmarks &landmarks) {
+    EkfSlamEstimate out = est;
+    for (const auto &landmark : landmarks.landmarks) {
+        const std::optional<int> maybe_matrix_idx =
+            find_beacon_matrix_idx_or_add(landmark.beacon.id, make_in_out(out));
+        if (!maybe_matrix_idx.has_value()) {
+            return out;
+        }
+        const int &matrix_idx = maybe_matrix_idx.value();
+
+        out.mean(Eigen::seqN(matrix_idx, BEACON_DIM)) = landmark.beacon.pos_in_local;
+        out.cov.block(matrix_idx, matrix_idx, BEACON_DIM, BEACON_DIM) = landmark.cov_in_local;
+    }
+    return out;
+}
 }  // namespace detail
 
 liegroups::SE2 EkfSlamEstimate::local_from_robot() const {
@@ -242,6 +273,17 @@ EkfSlam::EkfSlam(const EkfSlamConfig &config, const time::RobotTimestamp &time) 
 const EkfSlamEstimate &EkfSlam::predict(const time::RobotTimestamp &time,
                                         const liegroups::SE2 &old_robot_from_new_robot) {
     estimate_ = detail::prediction_update(estimate_, time, old_robot_from_new_robot, config_);
+    return estimate_;
+}
+
+const EkfSlamEstimate &EkfSlam::load_map(const MappedLandmarks &landmarks) {
+    estimate_ = detail::incorporate_mapped_landmarks(estimate_, landmarks);
+    // Set the ego uncertainty to be really large
+    const double position_uncertainty_sq_m = 20.0;
+    const double heading_uncertainty_sq_rad = 9.0;
+    estimate_.cov(0, 0) = position_uncertainty_sq_m;
+    estimate_.cov(1, 1) = position_uncertainty_sq_m;
+    estimate_.cov(2, 2) = heading_uncertainty_sq_rad;
     return estimate_;
 }
 

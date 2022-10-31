@@ -257,6 +257,50 @@ TEST(EkfSlamTest, rotating_in_place_yields_same_pos_covariance_directions) {
         1e-6);
 }
 
+TEST(EkfSlamTest, incorporate_mapped_landmark) {
+    // Setup
+    constexpr auto CONFIG = EkfSlamConfig{
+        .max_num_beacons = 1,
+        .initial_beacon_uncertainty_m = 100,
+        .along_track_process_noise_m_per_rt_meter = 0.0,
+        .cross_track_process_noise_m_per_rt_meter = 0.0,
+        .pos_process_noise_m_per_rt_s = 0.0,
+        .heading_process_noise_rad_per_rt_meter = 0.0,
+        .beacon_pos_process_noise_m_per_rt_s = 0.0,
+        .range_measurement_noise_m = 0.0,
+        .bearing_measurement_noise_rad = 0.0,
+    };
+
+    constexpr int BEACON_ID = 0;
+    const Eigen::Vector2d BEACON_IN_LOCAL{{1.0, 2.0}};
+    const Eigen::Matrix2d COV_IN_LOCAL{{{3.0, 4.0}, {3.0, 4.0}}};
+    const MappedLandmarks landmarks = {
+        .landmarks =
+            {
+                {
+                    .beacon =
+                        {
+                            .id = BEACON_ID,
+                            .pos_in_local = BEACON_IN_LOCAL,
+                        },
+                    .cov_in_local = COV_IN_LOCAL,
+                },
+            },
+    };
+    EkfSlam ekf_slam(CONFIG, time::RobotTimestamp());
+
+    // Action
+    const EkfSlamEstimate &est = ekf_slam.load_map(landmarks);
+
+    // Verification
+    const std::optional<Eigen::Vector2d> maybe_beacon_in_local = est.beacon_in_local(BEACON_ID);
+    const std::optional<Eigen::Matrix2d> maybe_cov_in_local = est.beacon_cov(BEACON_ID);
+    EXPECT_TRUE(maybe_beacon_in_local.has_value());
+    EXPECT_TRUE(maybe_cov_in_local.has_value());
+    EXPECT_NEAR((maybe_beacon_in_local.value() - BEACON_IN_LOCAL).norm(), 0.0, TOL);
+    EXPECT_NEAR((maybe_cov_in_local.value() - COV_IN_LOCAL).norm(), 0.0, TOL);
+}
+
 TEST(CreateMeasurementTest, incomplete_measurements_rejected) {
     // Setup
     const std::vector<BeaconObservation> observations{
@@ -353,7 +397,7 @@ TEST(CreateMeasurementTest, correct_observation_matrix) {
         EXPECT_NEAR((obs_mat.row(i).transpose() -
                      compute_gradient(extract_prediction_entry(i), estimate.mean))
                         .norm(),
-                    0.0, 1e-6);
+                    0.0, TOL);
     }
 }
 

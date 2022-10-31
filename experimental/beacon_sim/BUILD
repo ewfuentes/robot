@@ -30,6 +30,7 @@ cc_binary(
     "//common/liegroups:se2",
     "//common/liegroups:se2_to_proto",
     "//common/liegroups:se3",
+    "//common/proto:load_from_file",
     "//common/time:robot_time_to_proto",
     "//planning:probabilistic_road_map",
     "@cxxopts//:cxxopts",
@@ -110,6 +111,7 @@ cc_library(
   srcs = ["ekf_slam.cc"],
   deps = [
     ":generate_observations",
+    ":mapped_landmarks",
     "@eigen//:eigen",
     "//common/liegroups:se2",
   ]

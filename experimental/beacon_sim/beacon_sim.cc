@@ -15,6 +15,7 @@
 #include "common/argument_wrapper.hh"
 #include "common/liegroups/se2_to_proto.hh"
 #include "common/liegroups/se3.hh"
+#include "common/proto/load_from_file.hh"
 #include "common/time/robot_time_to_proto.hh"
 #include "common/time/sim_clock.hh"
 #include "cxxopts.hpp"
@@ -37,8 +38,9 @@ namespace robot::experimental::beacon_sim {
 namespace {
 
 struct SimConfig {
-    std::string log_path;
-    std::string map_output_path;
+    std::optional<std::string> log_path;
+    std::optional<std::string> map_input_path;
+    std::optional<std::string> map_output_path;
     bool autostep;
 };
 
@@ -431,22 +433,40 @@ planning::RoadMap create_road_map(const WorldMap &map) {
 void write_out_log_file(const SimConfig &sim_config,
                         std::vector<proto::BeaconSimDebug> debug_msgs) {
     proto::SimLog log_proto;
-    std::cout << "Saving " << debug_msgs.size() << " debug messages to " << sim_config.log_path
-              << std::endl;
+    std::cout << "Saving " << debug_msgs.size() << " debug messages to "
+              << sim_config.log_path.value() << std::endl;
     for (proto::BeaconSimDebug &msg : debug_msgs) {
         log_proto.mutable_debug_msgs()->Add(std::move(msg));
     }
-    std::fstream file_out(sim_config.log_path, std::ios::binary | std::ios::out | std::ios::trunc);
+    std::fstream file_out(sim_config.log_path.value(),
+                          std::ios::binary | std::ios::out | std::ios::trunc);
     log_proto.SerializeToOstream(&file_out);
 }
 
 void write_out_map(const SimConfig &sim_config, const EkfSlamEstimate &est) {
     proto::MappedLandmarks map_proto;
-    std::cout << "Saving map to " << sim_config.map_output_path << std::endl;
+    std::cout << "Saving map to " << sim_config.map_output_path.value() << std::endl;
     pack_into(extract_mapped_landmarks(est), &map_proto);
-    std::fstream file_out(sim_config.map_output_path,
+    std::fstream file_out(sim_config.map_output_path.value(),
                           std::ios::binary | std::ios::out | std::ios::trunc);
     map_proto.SerializeToOstream(&file_out);
+}
+
+void load_map(const SimConfig &sim_config, InOut<EkfSlam> ekf_slam) {
+    const std::filesystem::path map_path = sim_config.map_input_path.value();
+    if (!std::filesystem::exists(map_path)) {
+        std::cerr << "Tried load map from: " << map_path << " but it does not exist." << std::endl;
+        return;
+    }
+
+    const auto maybe_proto = robot::proto::load_from_file<proto::MappedLandmarks>(map_path);
+    if (!maybe_proto.has_value()) {
+        std::cerr << "Unable to read file at: " << map_path << std::endl;
+        return;
+    }
+
+    MappedLandmarks map = unpack_from(maybe_proto.value());
+    ekf_slam->load_map(map);
 }
 
 void run_simulation(const SimConfig &sim_config) {
@@ -485,6 +505,10 @@ void run_simulation(const SimConfig &sim_config) {
         .bearing_measurement_noise_rad = 0.01,
     };
     EkfSlam ekf_slam(EKF_CONFIG, time::current_robot_time());
+
+    if (sim_config.map_input_path) {
+        load_map(sim_config, make_in_out(ekf_slam));
+    }
 
     gl_window.register_window_resize_callback(
         [](const int width, const int height) { glViewport(0, 0, width, height); });
@@ -562,19 +586,25 @@ void run_simulation(const SimConfig &sim_config) {
         std::this_thread::sleep_for(DT);
     }
 
-    write_out_log_file(sim_config, std::move(debug_msgs));
-    write_out_map(sim_config, ekf_slam.estimate());
+    if (sim_config.log_path) {
+        write_out_log_file(sim_config, std::move(debug_msgs));
+    }
+    if (sim_config.map_output_path) {
+        write_out_map(sim_config, ekf_slam.estimate());
+    }
 }
 }  // namespace robot::experimental::beacon_sim
 
 int main(int argc, char **argv) {
     const std::string DEFAULT_LOG_LOCATION = "/tmp/beacon_sim.pb";
     const std::string DEFAULT_MAP_SAVE_LOCATION = "/tmp/beacon_sim_map.pb";
+    const std::string DEFAULT_MAP_LOAD_LOCATION = "/tmp/beacon_sim_map.pb";
     // clang-format off
     cxxopts::Options options("beacon_sim", "Simple Localization Simulator with Beacons");
     options.add_options()
       ("log_file", "Path to output file.", cxxopts::value<std::string>()->default_value(DEFAULT_LOG_LOCATION))
-      ("map_output_path", "Path to save final map file" , cxxopts::value<std::string>()->default_value(DEFAULT_MAP_SAVE_LOCATION))
+      ("map_output_path", "Path to save map file to" , cxxopts::value<std::string>()->default_value(DEFAULT_MAP_SAVE_LOCATION))
+      ("map_input_path", "Path to load map file from", cxxopts::value<std::string>()->default_value(DEFAULT_MAP_LOAD_LOCATION))
       ("autostep", "automatically step the sim")
       ("help", "Print usage");
     // clang-format on
@@ -585,8 +615,14 @@ int main(int argc, char **argv) {
         std::exit(0);
     }
     robot::experimental::beacon_sim::run_simulation({
-        .log_path = args["log_file"].as<std::string>(),
-        .map_output_path = args["map_output_path"].as<std::string>(),
+        .log_path = args.count("log_file") ? std::make_optional(args["log_file"].as<std::string>())
+                                           : std::nullopt,
+        .map_input_path = args.count("map_input_path")
+                              ? std::make_optional(args["map_input_path"].as<std::string>())
+                              : std::nullopt,
+        .map_output_path = args.count("map_output_path")
+                               ? std::make_optional(args["map_output_path"].as<std::string>())
+                               : std::nullopt,
         .autostep = args["autostep"].as<bool>(),
     });
 }

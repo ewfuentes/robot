@@ -8,6 +8,7 @@ multi_proto_library(
 cc_library(
   name = "load_from_file",
   hdrs = ["load_from_file.hh"],
+  visibility = ["//visibility:public"],
 )
 
 cc_test(
