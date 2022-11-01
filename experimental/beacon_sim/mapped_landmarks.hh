@@ -7,10 +7,8 @@
 namespace robot::experimental::beacon_sim {
 
 struct MappedLandmarks {
-    struct LandmarkBelief {
-        Beacon beacon;
-        Eigen::Matrix2d cov_in_local;
-    };
-    std::vector<LandmarkBelief> landmarks;
+    std::vector<int> beacon_ids;
+    std::vector<Eigen::Vector2d> beacon_in_local;
+    Eigen::MatrixXd cov_in_local;
 };
 }  // namespace robot::experimental::beacon_sim
