@@ -89,6 +89,48 @@ def _impl(ctx):
             )
           ]
       ),
+      feature(
+          name="dbg",
+          enabled=False,
+          flag_sets = [
+            flag_set(
+              actions = all_compile_actions,
+              flag_groups = [
+                flag_group(
+                  flags=["-ggdb"],
+                )
+              ]
+            )
+          ]
+      ),
+      feature(
+          name="opt",
+          enabled=False,
+          flag_sets = [
+            flag_set(
+              actions = all_compile_actions,
+              flag_groups = [
+                flag_group(
+                  flags=["-O2"],
+                )
+              ]
+            )
+          ]
+      ),
+      feature(
+          name="fastbuild",
+          enabled=False,
+          flag_sets = [
+            flag_set(
+              actions = all_compile_actions,
+              flag_groups = [
+                flag_group(
+                  flags=["-O1"],
+                )
+              ]
+            )
+          ]
+      ),
     ]
 
     return cc_common.create_cc_toolchain_config_info(
