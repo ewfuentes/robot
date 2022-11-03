@@ -312,20 +312,19 @@ void display_state(const time::RobotTimestamp &t, const WorldMap &world_map,
 
             glPushMatrix();
             // Translate to the robot origin, but throw away the rotation
-            glMultMatrixd(
-                liegroups::SE3::trans(est_local_from_robot.translation()).matrix().data());
             const Eigen::Matrix3d pos_cov = ekf_estimate.robot_cov();
-            const Eigen::Matrix3d pos_cov_in_local =
-                ekf_estimate.local_from_robot().Adj() * pos_cov *
-                ekf_estimate.local_from_robot().Adj().transpose();
-            const Eigen::LLT<Eigen::Matrix2d> cov_llt(pos_cov_in_local.topLeftCorner(2, 2));
+            const Eigen::LLT<Eigen::Matrix3d> cov_llt(pos_cov);
 
             glBegin(GL_LINE_LOOP);
-            glColor4f(1.0, 0.5, 0.5, 1.0);
-            for (double theta = 0; theta < 2 * std::numbers::pi; theta += 0.05) {
-                const Eigen::Vector2d pt =
+            glColor4f(1.0, 0.0, 0.0, 1.0);
+            for (double theta = 0.0; theta <= 2 * std::numbers::pi; theta += 0.005) {
+                const Eigen::Vector3d tangent_vec =
                     cov_llt.matrixL() *
-                    Eigen::Vector2d{2.0 * std::cos(theta), 2.0 * std::sin(theta)};
+                    Eigen::Vector3d{2.0 * std::cos(theta), 2.0 * std::sin(theta), 0.0};
+                const liegroups::SE2 local_from_ellipse_pt =
+                    ekf_estimate.local_from_robot() * liegroups::SE2::exp(tangent_vec);
+                const Eigen::Vector2d pt = local_from_ellipse_pt.translation();
+
                 glVertex2d(pt.x(), pt.y());
             }
             glEnd();
