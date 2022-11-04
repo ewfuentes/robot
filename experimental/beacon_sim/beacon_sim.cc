@@ -310,13 +310,11 @@ void display_state(const time::RobotTimestamp &t, const WorldMap &world_map,
             glEnd();
             glPopMatrix();  // Pop from estimated robot frame to world frame
 
-            glPushMatrix();
-            // Translate to the robot origin, but throw away the rotation
             const Eigen::Matrix3d pos_cov = ekf_estimate.robot_cov();
             const Eigen::LLT<Eigen::Matrix3d> cov_llt(pos_cov);
 
             glBegin(GL_LINE_LOOP);
-            glColor4f(1.0, 0.0, 0.0, 1.0);
+            glColor4f(1.0, 0.5, 0.5, 1.0);
             for (double theta = 0.0; theta <= 2 * std::numbers::pi; theta += 0.005) {
                 const Eigen::Vector3d tangent_vec =
                     cov_llt.matrixL() *
@@ -328,7 +326,6 @@ void display_state(const time::RobotTimestamp &t, const WorldMap &world_map,
                 glVertex2d(pt.x(), pt.y());
             }
             glEnd();
-            glPopMatrix();  // Pop from robot location to world frame
         }
 
         for (const auto beacon_id : ekf_estimate.beacon_ids) {
@@ -474,7 +471,7 @@ void run_simulation(const SimConfig &sim_config) {
 
     std::mt19937 gen(0);
 
-    visualization::gl_window::GlWindow gl_window(1024, 768);
+    visualization::gl_window::GlWindow gl_window(1280, 960);
 
     // Initialize world map
     WorldMap map(world_map_config(), std::make_unique<std::mt19937>(0));
