@@ -279,7 +279,7 @@ const EkfSlamEstimate &EkfSlam::predict(const time::RobotTimestamp &time,
 const EkfSlamEstimate &EkfSlam::load_map(const MappedLandmarks &landmarks) {
     estimate_ = detail::incorporate_mapped_landmarks(estimate_, landmarks);
     // Set the ego uncertainty to be really large
-    const double position_uncertainty_sq_m = 20.0;
+    const double position_uncertainty_sq_m = 3000.0;
     const double heading_uncertainty_sq_rad = 9.0;
     estimate_.cov(0, 0) = position_uncertainty_sq_m;
     estimate_.cov(1, 1) = position_uncertainty_sq_m;
