@@ -30,7 +30,7 @@ jobs:
           path: |
             .cache/bazel
             .cache/bazelisk
-            ${{ runner.os }}-${{ env.cache-name }}
+          key: ${{ runner.os }}-${{ env.cache-name }}
 
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - uses: actions/checkout@v3
