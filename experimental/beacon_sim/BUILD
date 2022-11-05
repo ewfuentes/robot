@@ -1,11 +1,5 @@
 
 load("//common/proto:proto.bzl", "multi_proto_library")
-load("@rules_python//python:defs.bzl", "py_binary")
-
-py_binary(
-  name = "hello_world",
-  srcs = ["hello_world.py"],
-)
 
 multi_proto_library(
   name = "sim_log_proto",

@@ -1,5 +1,32 @@
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
+# Note that rules_python must be loaded before protobuf
+http_archive(
+    name = "rules_python",
+    sha256 = "8c8fe44ef0a9afc256d1e75ad5f448bb59b81aba149b8958f02f7b3a98f5d9b4",
+    strip_prefix = "rules_python-0.13.0",
+    url = "https://github.com/bazelbuild/rules_python/archive/refs/tags/0.13.0.tar.gz",
+)
+
+load("@rules_python//python:repositories.bzl", "python_register_toolchains")
+python_register_toolchains(
+    name = "python3_10",
+    python_version = "3.10",
+)
+
+load("@python3_10//:defs.bzl", "interpreter")
+
+load("@rules_python//python:pip.bzl", "pip_parse")
+
+pip_parse(
+  name = "pip",
+  python_interpreter_target = interpreter,
+  requirements = "@//third_party/python:requirements.txt",
+)
+
+load("@pip//:requirements.bzl", "install_deps")
+install_deps()
+
 http_archive(
     name = "rules_proto",
     sha256 = "80d3a4ec17354cccc898bfe32118edd934f851b03029d63ef3fc7c8663a7415c",
@@ -69,42 +96,3 @@ http_archive(
   sha256 = "36f41fa2a46b3c1466613b63f3fa73dc24d912bc90d667147f1e43215a8c6d00"
 )
 
-http_archive(
-    name = "rules_python",
-    sha256 = "8c8fe44ef0a9afc256d1e75ad5f448bb59b81aba149b8958f02f7b3a98f5d9b4",
-    strip_prefix = "rules_python-0.13.0",
-    url = "https://github.com/bazelbuild/rules_python/archive/refs/tags/0.13.0.tar.gz",
-)
-
-http_archive(
-    name = "python_interpreter",
-    build_file_content = """
-exports_files(["python_bin"])
-filegroup(
-    name = "files",
-    srcs = glob(["bazel_install/**"], exclude = ["**/* *"]),
-    visibility = ["//visibility:public"],
-)
-""",
-    patch_cmds = [
-        "mkdir $(pwd)/bazel_install",
-        "make",
-        "make install",
-        "ln -s bazel_install/bin/python3 python_bin",
-    ],
-    strip_prefix = "Python-3.10.7",
-    urls = ["https://www.python.org/ftp/python/3.11.0/Python-3.11.0.tgz"],
-)
-
-load("@rules_python//python:repositories.bzl", "python_register_toolchains")
-python_register_toolchains(
-    name = "python3_11",
-    python_version = "3.11",
-)
-load("@python3_11//:defs.bzl", "interpreter")
-
-load("@rules_python//python:pip.bzl", "pip_parse")
-
-pip_parse(
-  python_interpreter_target = interpreter,
-)
