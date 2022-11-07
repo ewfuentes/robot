@@ -233,7 +233,7 @@ EkfSlamEstimate incorporate_mapped_landmarks(const EkfSlamEstimate &est,
 
         // Copy the main diagonal block
         out.cov.block(idx, idx, BEACON_DIM, BEACON_DIM) =
-            landmarks.cov_in_local.block(i, i, BEACON_DIM, BEACON_DIM);
+            landmarks.cov_in_local.block(BEACON_DIM * i, BEACON_DIM * i, BEACON_DIM, BEACON_DIM);
 
         for (int j = i + 1; j < static_cast<int>(landmarks.beacon_ids.size()); j++) {
             const auto maybe_other_matrix_idx =
@@ -243,11 +243,11 @@ EkfSlamEstimate incorporate_mapped_landmarks(const EkfSlamEstimate &est,
             }
             const auto &other_idx = maybe_other_matrix_idx.value();
             // Copy the i, j off diagonal blocks
-            out.cov.block(idx, other_idx, BEACON_DIM, BEACON_DIM) =
-                landmarks.cov_in_local.block(i, j, BEACON_DIM, BEACON_DIM);
+            out.cov.block(idx, other_idx, BEACON_DIM, BEACON_DIM) = landmarks.cov_in_local.block(
+                BEACON_DIM * i, BEACON_DIM * j, BEACON_DIM, BEACON_DIM);
 
-            out.cov.block(other_idx, idx, BEACON_DIM, BEACON_DIM) =
-                landmarks.cov_in_local.block(j, i, BEACON_DIM, BEACON_DIM);
+            out.cov.block(other_idx, idx, BEACON_DIM, BEACON_DIM) = landmarks.cov_in_local.block(
+                BEACON_DIM * j, BEACON_DIM * i, BEACON_DIM, BEACON_DIM);
         }
     }
     return out;
