@@ -43,7 +43,8 @@ TEST(ExtractMappedLandmarksTest, extract_landmarks_from_est) {
     const MappedLandmarks mapped_landmarks = extract_mapped_landmarks(est);
 
     // Verification
-    EXPECT_EQ(beacons_and_cov.size(), mapped_landmarks.landmarks.size());
+    EXPECT_EQ(beacons_and_cov.size(), mapped_landmarks.beacon_ids.size());
+    EXPECT_EQ(beacons_and_cov.size(), mapped_landmarks.beacon_in_local.size());
     constexpr double TOL = 1e-6;
     for (int i = 0; i < static_cast<int>(beacons_and_cov.size()); i++) {
         const auto &landmark = mapped_landmarks.landmarks.at(i);
