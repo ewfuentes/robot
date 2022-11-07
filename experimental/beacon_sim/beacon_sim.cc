@@ -560,6 +560,7 @@ void run_simulation(const SimConfig &sim_config) {
         }
         if (command.should_print_cov) {
             // Print out the covariance for each beacon
+            std::cout << "************************************************ " << std::endl;
             const auto &ekf_estimate = ekf_slam.estimate();
             for (const int beacon_id : ekf_estimate.beacon_ids) {
                 std::cout << "================== Beacon: " << beacon_id << std::endl;
