@@ -46,7 +46,8 @@ class EkfSlam {
    public:
     explicit EkfSlam(const EkfSlamConfig &config, const time::RobotTimestamp &time);
 
-    const EkfSlamEstimate &load_map(const MappedLandmarks &landmarks);
+    const EkfSlamEstimate &load_map(const MappedLandmarks &landmarks,
+                                    const bool should_load_off_diagonals);
 
     const EkfSlamEstimate &predict(const time::RobotTimestamp &time,
                                    const liegroups::SE2 &old_robot_from_new_robot);

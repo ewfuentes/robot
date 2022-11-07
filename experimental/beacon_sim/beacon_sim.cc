@@ -41,6 +41,7 @@ struct SimConfig {
     std::optional<std::string> log_path;
     std::optional<std::string> map_input_path;
     std::optional<std::string> map_output_path;
+    bool load_off_diagonals;
     bool autostep;
 };
 
@@ -473,7 +474,7 @@ void load_map(const SimConfig &sim_config, InOut<EkfSlam> ekf_slam) {
     }
 
     MappedLandmarks map = unpack_from(maybe_proto.value());
-    ekf_slam->load_map(map);
+    ekf_slam->load_map(map, sim_config.load_off_diagonals);
 }
 
 void run_simulation(const SimConfig &sim_config) {
@@ -622,6 +623,7 @@ int main(int argc, char **argv) {
       ("log_file", "Path to output file.", cxxopts::value<std::string>()->default_value(DEFAULT_LOG_LOCATION))
       ("map_output_path", "Path to save map file to" , cxxopts::value<std::string>()->default_value(DEFAULT_MAP_SAVE_LOCATION))
       ("map_input_path", "Path to load map file from", cxxopts::value<std::string>()->default_value(DEFAULT_MAP_LOAD_LOCATION))
+      ("load_off_diagonals", "Whether off diagonal terms should be loaded from map")
       ("autostep", "automatically step the sim")
       ("help", "Print usage");
     // clang-format on
@@ -640,6 +642,7 @@ int main(int argc, char **argv) {
         .map_output_path = args.count("map_output_path")
                                ? std::make_optional(args["map_output_path"].as<std::string>())
                                : std::nullopt,
+        .load_off_diagonals = args["load_off_diagonals"].as<bool>(),
         .autostep = args["autostep"].as<bool>(),
     });
 }
