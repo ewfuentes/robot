@@ -274,23 +274,16 @@ TEST(EkfSlamTest, incorporate_mapped_landmark) {
     constexpr int BEACON_ID = 0;
     const Eigen::Vector2d BEACON_IN_LOCAL{{1.0, 2.0}};
     const Eigen::Matrix2d COV_IN_LOCAL{{{3.0, 4.0}, {3.0, 4.0}}};
+    constexpr bool SHOULD_DROP_OFF_DIAGONAL = false;
     const MappedLandmarks landmarks = {
-        .landmarks =
-            {
-                {
-                    .beacon =
-                        {
-                            .id = BEACON_ID,
-                            .pos_in_local = BEACON_IN_LOCAL,
-                        },
-                    .cov_in_local = COV_IN_LOCAL,
-                },
-            },
+        .beacon_ids = {BEACON_ID},
+        .beacon_in_local = {{BEACON_IN_LOCAL}},
+        .cov_in_local = COV_IN_LOCAL,
     };
     EkfSlam ekf_slam(CONFIG, time::RobotTimestamp());
 
     // Action
-    const EkfSlamEstimate &est = ekf_slam.load_map(landmarks);
+    const EkfSlamEstimate &est = ekf_slam.load_map(landmarks, SHOULD_DROP_OFF_DIAGONAL);
 
     // Verification
     const std::optional<Eigen::Vector2d> maybe_beacon_in_local = est.beacon_in_local(BEACON_ID);
