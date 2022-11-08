@@ -41,6 +41,7 @@ struct SimConfig {
     std::optional<std::string> log_path;
     std::optional<std::string> map_input_path;
     std::optional<std::string> map_output_path;
+    bool load_off_diagonals;
     bool autostep;
 };
 
@@ -58,6 +59,7 @@ struct RobotCommand {
     double move_m;
     bool should_exit;
     bool should_step;
+    bool should_print_cov;
 };
 
 struct KeyCommand {
@@ -66,6 +68,7 @@ struct KeyCommand {
     bool arrow_up;
     bool arrow_down;
     bool q;
+    bool p;
 
     static KeyCommand make_reset() {
         return KeyCommand{
@@ -74,6 +77,7 @@ struct KeyCommand {
             .arrow_up = false,
             .arrow_down = false,
             .q = false,
+            .p = false,
         };
     }
 };
@@ -81,28 +85,38 @@ struct KeyCommand {
 RobotCommand get_command(
     const KeyCommand key_command,
     const std::unordered_map<int, visualization::gl_window::JoystickState> &joysticks) {
+    constexpr double TURN_AMOUNT_RAD = std::numbers::pi / 4.0;
+    constexpr double MOVE_AMOUNT_M = 0.1;
     // Handle Keyboard Commands
+    RobotCommand out = {
+        .turn_rad = 0,
+        .move_m = 0,
+        .should_exit = false,
+        .should_step = false,
+        .should_print_cov = false,
+    };
     if (key_command.q) {
-        return {.turn_rad = 0, .move_m = 0, .should_exit = true, .should_step = true};
+        out.should_exit = true;
     } else if (key_command.arrow_left) {
-        return {.turn_rad = std::numbers::pi / 4.0,
-                .move_m = 0,
-                .should_exit = false,
-                .should_step = true};
+        out.turn_rad = TURN_AMOUNT_RAD;
+        out.should_step = true;
     } else if (key_command.arrow_right) {
-        return {.turn_rad = -std::numbers::pi / 4.0,
-                .move_m = 0,
-                .should_exit = false,
-                .should_step = true};
+        out.turn_rad = -TURN_AMOUNT_RAD;
+        out.should_step = true;
     } else if (key_command.arrow_up) {
-        return {.turn_rad = 0.0, .move_m = 0.1, .should_exit = false, .should_step = true};
+        out.move_m = MOVE_AMOUNT_M;
+        out.should_step = true;
     } else if (key_command.arrow_down) {
-        return {.turn_rad = 0.0, .move_m = -0.1, .should_exit = false, .should_step = true};
+        out.move_m = -MOVE_AMOUNT_M;
+        out.should_step = true;
+    } else if (key_command.p) {
+        out.should_print_cov = true;
     }
 
     for (const auto &[id, state] : joysticks) {
         if (state.buttons[GLFW_GAMEPAD_BUTTON_CIRCLE] == GLFW_PRESS) {
-            return {.turn_rad = 0, .move_m = 0, .should_exit = true};
+            out.should_exit = true;
+            out.should_step = true;
         }
         const double left = -state.axes[GLFW_GAMEPAD_AXIS_LEFT_Y];
         const double right = -state.axes[GLFW_GAMEPAD_AXIS_RIGHT_Y];
@@ -110,12 +124,10 @@ RobotCommand get_command(
         const double mean = (left + right) / 2.0;
         const double mean_diff = (right - left) / 2.0;
 
-        return {.turn_rad = 0.1 * mean_diff,
-                .move_m = mean * 0.1,
-                .should_exit = false,
-                .should_step = true};
+        out.turn_rad = 0.1 * mean_diff;
+        out.move_m = mean * 0.1, out.should_step = true;
     }
-    return {.turn_rad = 0, .move_m = 0, .should_exit = false, .should_step = false};
+    return out;
 }
 
 // Creates a star centered on the origin.
@@ -148,7 +160,7 @@ WorldMapConfig world_map_config() {
     int beacon_id = 0;
     constexpr double TOP_EDGE_LENGTH_M = 28.0;
     constexpr double SIDE_EDGE_LENGTH_M = 20.0;
-    constexpr int NUM_STEPS = 5;
+    constexpr int NUM_STEPS = 2;
     for (int i = 0; i < NUM_STEPS; i++) {
         const double alpha = static_cast<double>(i) / NUM_STEPS;
         // Top Edge from 0 to +x +y
@@ -462,7 +474,7 @@ void load_map(const SimConfig &sim_config, InOut<EkfSlam> ekf_slam) {
     }
 
     MappedLandmarks map = unpack_from(maybe_proto.value());
-    ekf_slam->load_map(map);
+    ekf_slam->load_map(map, sim_config.load_off_diagonals);
 }
 
 void run_simulation(const SimConfig &sim_config) {
@@ -526,6 +538,8 @@ void run_simulation(const SimConfig &sim_config) {
                 update.arrow_down = true;
             } else if (key == GLFW_KEY_Q) {
                 update.q = true;
+            } else if (key == GLFW_KEY_P) {
+                update.p = true;
             }
             key_command.store(update);
         });
@@ -543,6 +557,15 @@ void run_simulation(const SimConfig &sim_config) {
 
         if (command.should_exit) {
             run = false;
+        }
+        if (command.should_print_cov) {
+            // Print out the covariance for each beacon
+            std::cout << "************************************************ " << std::endl;
+            const auto &ekf_estimate = ekf_slam.estimate();
+            for (const int beacon_id : ekf_estimate.beacon_ids) {
+                std::cout << "================== Beacon: " << beacon_id << std::endl;
+                std::cout << ekf_estimate.beacon_cov(beacon_id).value() << std::endl;
+            }
         }
 
         if (command.should_step || sim_config.autostep) {
@@ -601,6 +624,7 @@ int main(int argc, char **argv) {
       ("log_file", "Path to output file.", cxxopts::value<std::string>()->default_value(DEFAULT_LOG_LOCATION))
       ("map_output_path", "Path to save map file to" , cxxopts::value<std::string>()->default_value(DEFAULT_MAP_SAVE_LOCATION))
       ("map_input_path", "Path to load map file from", cxxopts::value<std::string>()->default_value(DEFAULT_MAP_LOAD_LOCATION))
+      ("load_off_diagonals", "Whether off diagonal terms should be loaded from map")
       ("autostep", "automatically step the sim")
       ("help", "Print usage");
     // clang-format on
@@ -619,6 +643,7 @@ int main(int argc, char **argv) {
         .map_output_path = args.count("map_output_path")
                                ? std::make_optional(args["map_output_path"].as<std::string>())
                                : std::nullopt,
+        .load_off_diagonals = args["load_off_diagonals"].as<bool>(),
         .autostep = args["autostep"].as<bool>(),
     });
 }

@@ -218,18 +218,42 @@ EkfSlamEstimate prediction_update(const EkfSlamEstimate &est, const time::RobotT
 }
 
 EkfSlamEstimate incorporate_mapped_landmarks(const EkfSlamEstimate &est,
-                                             const MappedLandmarks &landmarks) {
+                                             const MappedLandmarks &landmarks,
+                                             const bool should_load_off_diagonals) {
     EkfSlamEstimate out = est;
-    for (const auto &landmark : landmarks.landmarks) {
-        const std::optional<int> maybe_matrix_idx =
-            find_beacon_matrix_idx_or_add(landmark.beacon.id, make_in_out(out));
+    for (int i = 0; i < static_cast<int>(landmarks.beacon_ids.size()); i++) {
+        const auto maybe_matrix_idx =
+            find_beacon_matrix_idx_or_add(landmarks.beacon_ids.at(i), make_in_out(out));
         if (!maybe_matrix_idx.has_value()) {
-            return out;
+            continue;
         }
-        const int &matrix_idx = maybe_matrix_idx.value();
+        const auto &idx = maybe_matrix_idx.value();
 
-        out.mean(Eigen::seqN(matrix_idx, BEACON_DIM)) = landmark.beacon.pos_in_local;
-        out.cov.block(matrix_idx, matrix_idx, BEACON_DIM, BEACON_DIM) = landmark.cov_in_local;
+        // Copy the mean
+        out.mean(Eigen::seqN(idx, BEACON_DIM)) = landmarks.beacon_in_local.at(i);
+
+        // Copy the main diagonal block
+        out.cov.block(idx, idx, BEACON_DIM, BEACON_DIM) =
+            landmarks.cov_in_local.block(BEACON_DIM * i, BEACON_DIM * i, BEACON_DIM, BEACON_DIM);
+
+        if (!should_load_off_diagonals) {
+            continue;
+        }
+
+        for (int j = i + 1; j < static_cast<int>(landmarks.beacon_ids.size()); j++) {
+            const auto maybe_other_matrix_idx =
+                find_beacon_matrix_idx_or_add(landmarks.beacon_ids.at(j), make_in_out(out));
+            if (!maybe_other_matrix_idx.has_value()) {
+                continue;
+            }
+            const auto &other_idx = maybe_other_matrix_idx.value();
+            // Copy the i, j off diagonal blocks
+            out.cov.block(idx, other_idx, BEACON_DIM, BEACON_DIM) = landmarks.cov_in_local.block(
+                BEACON_DIM * i, BEACON_DIM * j, BEACON_DIM, BEACON_DIM);
+
+            out.cov.block(other_idx, idx, BEACON_DIM, BEACON_DIM) = landmarks.cov_in_local.block(
+                BEACON_DIM * j, BEACON_DIM * i, BEACON_DIM, BEACON_DIM);
+        }
     }
     return out;
 }
@@ -247,6 +271,7 @@ std::optional<Eigen::Vector2d> EkfSlamEstimate::beacon_in_local(const int beacon
     if (!maybe_beacon_idx.has_value()) {
         return std::nullopt;
     }
+
     return mean(Eigen::seqN(maybe_beacon_idx.value(), BEACON_DIM));
 }
 
@@ -276,8 +301,10 @@ const EkfSlamEstimate &EkfSlam::predict(const time::RobotTimestamp &time,
     return estimate_;
 }
 
-const EkfSlamEstimate &EkfSlam::load_map(const MappedLandmarks &landmarks) {
-    estimate_ = detail::incorporate_mapped_landmarks(estimate_, landmarks);
+const EkfSlamEstimate &EkfSlam::load_map(const MappedLandmarks &landmarks,
+                                         const bool should_load_off_diagonals) {
+    estimate_ =
+        detail::incorporate_mapped_landmarks(estimate_, landmarks, should_load_off_diagonals);
     // Set the ego uncertainty to be really large
     const double position_uncertainty_sq_m = 3000.0;
     const double heading_uncertainty_sq_rad = 9.0;

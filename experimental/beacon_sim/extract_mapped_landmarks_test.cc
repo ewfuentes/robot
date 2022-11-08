@@ -43,14 +43,15 @@ TEST(ExtractMappedLandmarksTest, extract_landmarks_from_est) {
     const MappedLandmarks mapped_landmarks = extract_mapped_landmarks(est);
 
     // Verification
-    EXPECT_EQ(beacons_and_cov.size(), mapped_landmarks.landmarks.size());
+    EXPECT_EQ(beacons_and_cov.size(), mapped_landmarks.beacon_ids.size());
+    EXPECT_EQ(beacons_and_cov.size(), mapped_landmarks.beacon_in_local.size());
     constexpr double TOL = 1e-6;
     for (int i = 0; i < static_cast<int>(beacons_and_cov.size()); i++) {
-        const auto &landmark = mapped_landmarks.landmarks.at(i);
         const auto &[beacon, cov_multiplier] = beacons_and_cov.at(i);
-        EXPECT_EQ(landmark.beacon.id, beacon.id);
-        EXPECT_EQ(landmark.beacon.pos_in_local, beacon.pos_in_local);
-        EXPECT_NEAR((landmark.cov_in_local -
+        EXPECT_EQ(mapped_landmarks.beacon_ids.at(i), beacon.id);
+        EXPECT_EQ(mapped_landmarks.beacon_in_local.at(i), beacon.pos_in_local);
+        EXPECT_NEAR((mapped_landmarks.cov_in_local.block(i * BEACON_DIM, i * BEACON_DIM, BEACON_DIM,
+                                                         BEACON_DIM) -
                      Eigen::Matrix<double, BEACON_DIM, BEACON_DIM>::Ones() * cov_multiplier)
                         .norm(),
                     0.0, TOL);

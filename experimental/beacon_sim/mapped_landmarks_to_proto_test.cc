@@ -7,13 +7,12 @@ namespace robot::experimental::beacon_sim {
 TEST(MappedLandmarksToProtoTest, pack_unpack) {
     // Setup
     const MappedLandmarks in = {
-        .landmarks =
-            {
-                {.beacon = {.id = 123, .pos_in_local = {3.0, 4.0}},
-                 .cov_in_local = Eigen::Matrix2d{{{1.0, 2.0}, {2.0, 1.0}}}},
-                {.beacon = {.id = 234, .pos_in_local = {5.0, 6.0}},
-                 .cov_in_local = Eigen::Matrix2d{{{3.0, 4.0}, {4.0, 3.0}}}},
-            },
+        .beacon_ids = {123, 234},
+        .beacon_in_local = {{3.0, 4.0}, {5.0, 6.0}},
+        .cov_in_local = Eigen::MatrixXd{{5.0, 6.0, 7.0, 8.0},
+                                        {6.0, 7.0, 8.0, 9.0},
+                                        {7.0, 8.0, 9.0, 0.0},
+                                        {8.0, 9.0, 0.0, 1.0}},
     };
 
     // Action
@@ -23,14 +22,12 @@ TEST(MappedLandmarksToProtoTest, pack_unpack) {
 
     // Verification
     constexpr double TOL = 1e-6;
-    EXPECT_EQ(in.landmarks.size(), out.landmarks.size());
-    for (int i = 0; i < static_cast<int>(in.landmarks.size()); i++) {
-        const auto &in_landmark = in.landmarks.at(i);
-        const auto &out_landmark = out.landmarks.at(i);
-        EXPECT_EQ(in_landmark.beacon.id, out_landmark.beacon.id);
-        EXPECT_NEAR((in_landmark.beacon.pos_in_local - out_landmark.beacon.pos_in_local).norm(),
-                    0.0, TOL);
-        EXPECT_NEAR((in_landmark.cov_in_local - out_landmark.cov_in_local).norm(), 0.0, TOL);
+    EXPECT_EQ(in.beacon_ids.size(), out.beacon_ids.size());
+    EXPECT_EQ(in.beacon_in_local.size(), out.beacon_in_local.size());
+    for (int i = 0; i < static_cast<int>(in.beacon_ids.size()); i++) {
+        EXPECT_EQ(in.beacon_ids.at(i), out.beacon_ids.at(i));
+        EXPECT_EQ(in.beacon_in_local.at(i), out.beacon_in_local.at(i));
     }
+    EXPECT_NEAR((in.cov_in_local - out.cov_in_local).norm(), 0.0, TOL);
 }
 }  // namespace robot::experimental::beacon_sim
