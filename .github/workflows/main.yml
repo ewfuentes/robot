@@ -33,7 +33,8 @@ jobs:
           path: |
             ~/.cache/bazel
             ~/.cache/bazelisk
-          key: ${{ runner.os }}-${{ env.cache-name }}
+          key: ${{ runner.os }}-${{ env.cache-name }}-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}-${{ github.event_name }}
+          restore_keys: ${{ runner.os }}-${{ env.cache-name }}
 
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - name: Checking out  ${{ github.sha }}
