@@ -19,11 +19,14 @@ liegroups::SE3 se3_from_se2(const liegroups::SE2 &a_from_b) {
 }
 }  // namespace
 
-void visualize_beacon_sim(const BeaconSimState &state, const double window_aspect_ratio) {
+void visualize_beacon_sim(const BeaconSimState &state, const double zoom_factor,
+                          const double window_aspect_ratio) {
     constexpr double BEACON_HALF_WIDTH_M = 0.25;
     constexpr double ROBOT_SIZE_M = 0.5;
     constexpr double DEG_FROM_RAD = 180.0 / std::numbers::pi;
-    constexpr double WINDOW_WIDTH_M = 15;
+    constexpr double DEFAULT_WIDTH_M = 15;
+    const double window_width_m = DEFAULT_WIDTH_M * zoom_factor;
+    const double window_height_m = window_width_m * window_aspect_ratio;
 
     const auto gl_error = glGetError();
     if (gl_error != GL_NO_ERROR) {
@@ -32,8 +35,7 @@ void visualize_beacon_sim(const BeaconSimState &state, const double window_aspec
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
-    glOrtho(-WINDOW_WIDTH_M, WINDOW_WIDTH_M, -WINDOW_WIDTH_M * window_aspect_ratio,
-            WINDOW_WIDTH_M * window_aspect_ratio, -1.0, 1.0);
+    glOrtho(-window_width_m, window_width_m, -window_height_m, window_height_m, -1.0, 1.0);
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
 
