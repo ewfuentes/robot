@@ -29,13 +29,15 @@ jobs:
         uses: ewfuentes/cache@maybe_skip_write
         env:
           cache-name: bazel-cache
+          ref_name: ${{ github.ref_name }}
         with:
           path: |
             ~/.cache/bazel
             ~/.cache/bazelisk
           key: ${{ runner.os }}-${{ env.cache-name }}-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}-${{ github.event_name }}
           restore-keys: ${{ runner.os }}-${{ env.cache-name }}
-          skip-cache-write: false
+          # If this is a nightly run, then
+          skip-cache-write: ${{ github.ref_name == "main" && "false" || "true" }} 
 
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - name: Checking out  ${{ github.sha }}
