@@ -37,7 +37,7 @@ jobs:
           key: ${{ runner.os }}-${{ env.cache-name }}-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}-${{ github.event_name }}
           restore-keys: ${{ runner.os }}-${{ env.cache-name }}
           # If this is a nightly run, then
-          skip-cache-write: ${{ github.ref_name == "main" && "false" || "true" }} 
+          skip-cache-write: ${{ github.ref_name == main && false || true }} 
 
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - name: Checking out  ${{ github.sha }}
