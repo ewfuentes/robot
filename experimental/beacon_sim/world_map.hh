@@ -49,7 +49,7 @@ struct WorldMapConfig {
 
 class WorldMap {
    public:
-    WorldMap(const WorldMapConfig &config, std::unique_ptr<std::mt19937> generator);
+    WorldMap(const WorldMapConfig &config, const size_t seed = 0);
 
     std::vector<Beacon> visible_beacons(const time::RobotTimestamp &t) const;
 
@@ -68,8 +68,8 @@ class WorldMap {
     };
 
     WorldMapConfig config_;
+    std::mt19937 generator_;
     std::vector<Obstacle> obstacles_;
     std::vector<CompleteBeacon> beacons_;
-    std::unique_ptr<std::mt19937> generator_;
 };
 }  // namespace robot::experimental::beacon_sim
