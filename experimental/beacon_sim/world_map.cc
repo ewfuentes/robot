@@ -5,12 +5,11 @@
 #include <chrono>
 
 namespace robot::experimental::beacon_sim {
-WorldMap::WorldMap(const WorldMapConfig &config, std::unique_ptr<std::mt19937> generator)
-    : config_(config), obstacles_(config.obstacles.obstacles) {
+WorldMap::WorldMap(const WorldMapConfig &config, const size_t seed)
+    : config_(config), generator_(seed), obstacles_(config.obstacles.obstacles) {
     const int num_beacons =
         config.fixed_beacons.beacons.size() + config.blinking_beacons.beacons.size();
     beacons_.reserve(num_beacons);
-    generator_ = std::move(generator);
 
     std::transform(
         config.fixed_beacons.beacons.begin(), config.fixed_beacons.beacons.end(),
@@ -29,13 +28,13 @@ WorldMap::WorldMap(const WorldMapConfig &config, std::unique_ptr<std::mt19937> g
     std::transform(config.blinking_beacons.beacons.begin(), config.blinking_beacons.beacons.end(),
                    std::back_inserter(beacons_), [&](const auto &beacon) -> CompleteBeacon {
                        const bool is_initially_visible =
-                           std::bernoulli_distribution(is_visible_probability)(*generator_);
+                           std::bernoulli_distribution(is_visible_probability)(generator_);
                        const double transition_rate_hz =
                            is_initially_visible ? config.blinking_beacons.beacon_disappear_rate_hz
                                                 : config.blinking_beacons.beacon_appear_rate_hz;
 
                        const double transition_time_s =
-                           std::exponential_distribution(transition_rate_hz)(*generator_);
+                           std::exponential_distribution(transition_rate_hz)(generator_);
 
                        const time::RobotTimestamp::duration transition_time =
                            time::as_duration(transition_time_s);
@@ -64,7 +63,7 @@ void WorldMap::update(const time::RobotTimestamp &t) {
                 beacon.is_visible(t) ? config_.blinking_beacons.beacon_disappear_rate_hz
                                      : config_.blinking_beacons.beacon_appear_rate_hz;
             const double next_segment_length_s =
-                std::exponential_distribution(transition_rate_hz)(*generator_);
+                std::exponential_distribution(transition_rate_hz)(generator_);
             const time::RobotTimestamp::duration next_segment_length =
                 time::as_duration(next_segment_length_s);
             const time::RobotTimestamp next_transition_time =

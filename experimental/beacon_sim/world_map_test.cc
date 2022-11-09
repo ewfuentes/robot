@@ -16,7 +16,7 @@ TEST(BeaconTest, static_beacon_test) {
     };
 
     // Action
-    const WorldMap map(config, nullptr);
+    const WorldMap map(config);
     const auto visible_beacons = map.visible_beacons(time::current_robot_time());
 
     // Verification
@@ -43,7 +43,7 @@ TEST(BeaconTest, blinking_beacon_test) {
                              .beacon_disappear_rate_hz = 0.5},
     };
 
-    WorldMap map(config, std::make_unique<std::mt19937>(0));
+    WorldMap map(config);
     constexpr time::RobotTimestamp MAX_TIME = time::RobotTimestamp() + 20s;
     constexpr time::RobotTimestamp::duration DT = 10ms;
 

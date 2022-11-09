@@ -1,7 +1,4 @@
 
-#include <GL/gl.h>
-#include <GL/glu.h>
-
 #include <array>
 #include <chrono>
 #include <fstream>
@@ -14,13 +11,13 @@
 #include "Eigen/Cholesky"
 #include "common/argument_wrapper.hh"
 #include "common/liegroups/se2_to_proto.hh"
-#include "common/liegroups/se3.hh"
 #include "common/proto/load_from_file.hh"
 #include "common/time/robot_time_to_proto.hh"
 #include "common/time/sim_clock.hh"
 #include "cxxopts.hpp"
 #include "experimental/beacon_sim/beacon_observation_to_proto.hh"
 #include "experimental/beacon_sim/beacon_sim_debug.pb.h"
+#include "experimental/beacon_sim/beacon_sim_state.hh"
 #include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/ekf_slam_estimate_to_proto.hh"
 #include "experimental/beacon_sim/extract_mapped_landmarks.hh"
@@ -28,6 +25,7 @@
 #include "experimental/beacon_sim/mapped_landmarks_to_proto.hh"
 #include "experimental/beacon_sim/robot.hh"
 #include "experimental/beacon_sim/sim_log.pb.h"
+#include "experimental/beacon_sim/visualize_beacon_sim.hh"
 #include "experimental/beacon_sim/world_map.hh"
 #include "planning/probabilistic_road_map.hh"
 #include "visualization/gl_window/gl_window.hh"
@@ -45,13 +43,6 @@ struct SimConfig {
     bool autostep;
 };
 
-liegroups::SE3 se3_from_se2(const liegroups::SE2 &a_from_b) {
-    Eigen::Matrix4d mat = Eigen::Matrix4d::Identity();
-    Eigen::Matrix3d a_from_b_mat = a_from_b.matrix();
-    mat.topLeftCorner(2, 2) = a_from_b_mat.topLeftCorner(2, 2);
-    mat.topRightCorner(2, 1) = a_from_b_mat.topRightCorner(2, 1);
-    return liegroups::SE3(mat);
-}
 }  // namespace
 
 struct RobotCommand {
@@ -60,6 +51,8 @@ struct RobotCommand {
     bool should_exit;
     bool should_step;
     bool should_print_cov;
+    bool time_travel_backward;
+    bool time_travel_forward;
 };
 
 struct KeyCommand {
@@ -69,6 +62,8 @@ struct KeyCommand {
     bool arrow_down;
     bool q;
     bool p;
+    bool left_bracket;
+    bool right_bracket;
 
     static KeyCommand make_reset() {
         return KeyCommand{
@@ -78,6 +73,8 @@ struct KeyCommand {
             .arrow_down = false,
             .q = false,
             .p = false,
+            .left_bracket = false,
+            .right_bracket = false,
         };
     }
 };
@@ -94,6 +91,8 @@ RobotCommand get_command(
         .should_exit = false,
         .should_step = false,
         .should_print_cov = false,
+        .time_travel_backward = false,
+        .time_travel_forward = false,
     };
     if (key_command.q) {
         out.should_exit = true;
@@ -111,6 +110,10 @@ RobotCommand get_command(
         out.should_step = true;
     } else if (key_command.p) {
         out.should_print_cov = true;
+    } else if (key_command.left_bracket) {
+        out.time_travel_backward = true;
+    } else if (key_command.right_bracket) {
+        out.time_travel_forward = true;
     }
 
     for (const auto &[id, state] : joysticks) {
@@ -222,177 +225,11 @@ WorldMapConfig world_map_config() {
     return out;
 }
 
-void display_state(const time::RobotTimestamp &t, const WorldMap &world_map,
-                   const RobotState &robot, const std::vector<BeaconObservation> &observations,
-                   const EkfSlamEstimate &ekf_estimate, const planning::RoadMap &road_map,
-                   InOut<visualization::gl_window::GlWindow> window) {
-    (void)road_map;
-    constexpr double BEACON_HALF_WIDTH_M = 0.25;
-    constexpr double ROBOT_SIZE_M = 0.5;
-    constexpr double DEG_FROM_RAD = 180.0 / std::numbers::pi;
-    constexpr double WINDOW_WIDTH_M = 15;
+void display_state(const BeaconSimState &state, InOut<visualization::gl_window::GlWindow> window) {
     const auto [screen_width_px, screen_height_px] = window->get_window_dims();
     const double aspect_ratio = static_cast<double>(screen_height_px) / screen_width_px;
 
-    window->register_render_callback([=, beacons = world_map.visible_beacons(t),
-                                      obstacles = world_map.obstacles()]() {
-        const auto gl_error = glGetError();
-        if (gl_error != GL_NO_ERROR) {
-            std::cout << "GL ERROR: " << gl_error << ": " << gluErrorString(gl_error) << std::endl;
-        }
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        glMatrixMode(GL_PROJECTION);
-        glLoadIdentity();
-        glOrtho(-WINDOW_WIDTH_M, WINDOW_WIDTH_M, -WINDOW_WIDTH_M * aspect_ratio,
-                WINDOW_WIDTH_M * aspect_ratio, -1.0, 1.0);
-        glMatrixMode(GL_MODELVIEW);
-        glLoadIdentity();
-
-        // Draw beacons
-        for (const auto &beacon : beacons) {
-            glBegin(GL_LINE_LOOP);
-            glColor4f(1.0, 0.0, 0.0, 0.0);
-            for (const auto &corner : std::array<Eigen::Vector2d, 4>{
-                     {{-1.0, -1.0}, {-1.0, 1.0}, {1.0, 1.0}, {1.0, -1.0}}}) {
-                const Eigen::Vector2d point_in_local =
-                    beacon.pos_in_local + corner * BEACON_HALF_WIDTH_M;
-                glVertex2d(point_in_local.x(), point_in_local.y());
-            }
-            glEnd();
-        }
-
-        // Draw robot
-        glPushMatrix();
-        glTranslated(robot.pos_x_m(), robot.pos_y_m(), 0.0);
-        glRotated(DEG_FROM_RAD * robot.heading_rad(), 0.0, 0.0, 1.0);
-        glBegin(GL_LINE_LOOP);
-        glColor4f(0.5, 0.5, 1.0, 1.0);
-        for (const auto &[dx, dy] :
-             std::array<std::pair<double, double>, 3>{{{0.0, 0.5}, {1.5, 0.0}, {0.0, -0.5}}}) {
-            const double x_in_robot_m = dx * ROBOT_SIZE_M;
-            const double y_in_robot_m = dy * ROBOT_SIZE_M;
-            glVertex2d(x_in_robot_m, y_in_robot_m);
-        }
-        glEnd();
-
-        for (const auto &obs : observations) {
-            glPushMatrix();
-            glRotated(DEG_FROM_RAD * obs.maybe_bearing_rad.value(), 0.0, 0.0, 1.0);
-            glBegin(GL_LINES);
-            glColor4f(0.5, 1.0, 0.5, 1.0);
-            glVertex2d(0.0, 0.0);
-            glVertex2d(obs.maybe_range_m.value(), 0.0);
-            glEnd();
-            glPopMatrix();  // Pop from Measurement Frame to robot frame
-        }
-
-        glPopMatrix();  // Pop from Robot Frame to world frame
-
-        // Draw Obstacles
-        {
-            for (const auto &obstacle : obstacles) {
-                glBegin(GL_LINE_LOOP);
-                if (obstacle.is_inside(robot.local_from_robot().translation())) {
-                    glColor4ub(168, 50, 50, 255);
-                } else {
-                    glColor4ub(124, 187, 235, 255);
-                }
-                for (const Eigen::Vector2d &pt : obstacle.pts_in_frame()) {
-                    glVertex2d(pt.x(), pt.y());
-                }
-                glEnd();
-            }
-        }
-
-        // Draw ekf estimates
-        {
-            glPushMatrix();
-            const liegroups::SE3 est_local_from_robot =
-                se3_from_se2(ekf_estimate.local_from_robot());
-            glMultMatrixd(est_local_from_robot.matrix().data());
-
-            glBegin(GL_LINE_LOOP);
-            glColor4f(0.75, 0.75, 1.0, 1.0);
-            for (const auto &[dx, dy] :
-                 std::array<std::pair<double, double>, 3>{{{0.0, 0.5}, {1.5, 0.0}, {0.0, -0.5}}}) {
-                const double x_in_robot_m = dx * ROBOT_SIZE_M;
-                const double y_in_robot_m = dy * ROBOT_SIZE_M;
-                glVertex2d(x_in_robot_m, y_in_robot_m);
-            }
-            glEnd();
-            glPopMatrix();  // Pop from estimated robot frame to world frame
-
-            const Eigen::Matrix3d pos_cov = ekf_estimate.robot_cov();
-            const Eigen::LLT<Eigen::Matrix3d> cov_llt(pos_cov);
-
-            glBegin(GL_LINE_LOOP);
-            glColor4f(1.0, 0.5, 0.5, 1.0);
-            for (double theta = 0.0; theta <= 2 * std::numbers::pi; theta += 0.005) {
-                const Eigen::Vector3d tangent_vec =
-                    cov_llt.matrixL() *
-                    Eigen::Vector3d{2.0 * std::cos(theta), 2.0 * std::sin(theta), 0.0};
-                const liegroups::SE2 local_from_ellipse_pt =
-                    ekf_estimate.local_from_robot() * liegroups::SE2::exp(tangent_vec);
-                const Eigen::Vector2d pt = local_from_ellipse_pt.translation();
-
-                glVertex2d(pt.x(), pt.y());
-            }
-            glEnd();
-        }
-
-        for (const auto beacon_id : ekf_estimate.beacon_ids) {
-            glPushMatrix();
-            const liegroups::SE3 local_from_beacon = se3_from_se2(
-                liegroups::SE2::trans(ekf_estimate.beacon_in_local(beacon_id).value()));
-            glMultMatrixd(local_from_beacon.matrix().data());
-            const Eigen::Matrix2d pos_cov = ekf_estimate.beacon_cov(beacon_id).value();
-            const Eigen::LLT<Eigen::Matrix2d> cov_llt(pos_cov);
-
-            glBegin(GL_LINE_LOOP);
-            glColor4f(0.75, 0.75, 1.0, 1.0);
-            for (double theta = 0; theta < 2 * std::numbers::pi; theta += 0.05) {
-                const Eigen::Vector2d pt =
-                    cov_llt.matrixL() *
-                    Eigen::Vector2d{2.0 * std::cos(theta), 2.0 * std::sin(theta)};
-                glVertex2d(pt.x(), pt.y());
-            }
-            glEnd();
-            glPopMatrix();  // Pop from beacon frame to world frame
-        }
-
-        // Draw Road map
-        int num_points = road_map.points.size();
-        for (int i = 0; i < num_points; i++) {
-            // Draw the node
-            const Eigen::Vector2d &pt = road_map.points.at(i);
-            glPushMatrix();
-            const liegroups::SE3 local_from_node = se3_from_se2(liegroups::SE2::trans(pt));
-            glMultMatrixd(local_from_node.matrix().data());
-            glBegin(GL_LINE_LOOP);
-            glColor3f(0.0, 0.5, 0.5);
-            for (const auto &corner : std::array<Eigen::Vector2d, 4>{
-                     {{-1.0, -1.0}, {-1.0, 1.0}, {1.0, 1.0}, {1.0, -1.0}}}) {
-                constexpr double NODE_HALF_WIDTH_M = 0.25 / 2.0;
-                const Eigen::Vector2d corner_in_node = corner * NODE_HALF_WIDTH_M;
-                glVertex2d(corner_in_node.x(), corner_in_node.y());
-            }
-            glEnd();
-
-            glPopMatrix();  // Pop from road map node frame to world frame
-
-            for (int j = i + 1; j < num_points; j++) {
-                if (road_map.adj(i, j)) {
-                    // Draw an edge between the two points
-                    const Eigen::Vector2d other_pt = road_map.points.at(j);
-                    glColor3f(0.4, 0.4, 0.4);
-                    glBegin(GL_LINES);
-                    glVertex2d(pt.x(), pt.y());
-                    glVertex2d(other_pt.x(), other_pt.y());
-                    glEnd();
-                }
-            }
-        }
-    });
+    window->register_render_callback([=]() { visualize_beacon_sim(state, aspect_ratio); });
 }
 
 planning::RoadMap create_road_map(const WorldMap &map) {
@@ -477,28 +314,51 @@ void load_map(const SimConfig &sim_config, InOut<EkfSlam> ekf_slam) {
     ekf_slam->load_map(map, sim_config.load_off_diagonals);
 }
 
-void run_simulation(const SimConfig &sim_config) {
-    bool run = true;
-    time::set_default_time_provider(time::TimeProvider::SIM);
-
-    std::mt19937 gen(0);
-
-    visualization::gl_window::GlWindow gl_window(1280, 960);
-
-    // Initialize world map
-    WorldMap map(world_map_config(), std::make_unique<std::mt19937>(0));
-
-    time::set_default_time_provider(time::TimeProvider::SIM);
-
-    // Initialize robot state
-    constexpr double INIT_POS_X_M = 0.0;
-    constexpr double INIT_POS_Y_M = 0.0;
-    constexpr double INIT_HEADING_RAD = 0.0;
+proto::BeaconSimDebug tick_sim(const RobotCommand &command, InOut<BeaconSimState> state) {
     constexpr ObservationConfig OBS_CONFIG = {
         .range_noise_std_m = 0.1,
         .max_sensor_range_m = 5.0,
     };
-    RobotState robot(INIT_POS_X_M, INIT_POS_Y_M, INIT_HEADING_RAD);
+
+    // simulate robot forward
+    state->robot.turn(command.turn_rad);
+    state->robot.move(command.move_m);
+
+    state->map.update(state->time_of_validity);
+
+    proto::BeaconSimDebug debug_msg;
+    pack_into(state->time_of_validity, debug_msg.mutable_time_of_validity());
+    pack_into(state->ekf.estimate(), debug_msg.mutable_prior());
+
+    const liegroups::SE2 old_robot_from_new_robot =
+        liegroups::SE2::trans(command.move_m, 0.0) * liegroups::SE2::rot(command.turn_rad);
+    pack_into(old_robot_from_new_robot, debug_msg.mutable_old_robot_from_new_robot());
+
+    pack_into(state->ekf.predict(state->time_of_validity, old_robot_from_new_robot),
+              debug_msg.mutable_prediction());
+
+    // generate observations
+    state->observations = generate_observations(state->time_of_validity, state->map, state->robot,
+                                                OBS_CONFIG, make_in_out(state->gen));
+    pack_into(state->observations, debug_msg.mutable_observations());
+
+    const auto &ekf_estimate = state->ekf.update(state->observations);
+    pack_into(ekf_estimate, debug_msg.mutable_posterior());
+    pack_into(state->robot.local_from_robot(), debug_msg.mutable_local_from_true_robot());
+
+    return debug_msg;
+}
+
+void run_simulation(const SimConfig &sim_config) {
+    bool run = true;
+    time::set_default_time_provider(time::TimeProvider::SIM);
+
+    visualization::gl_window::GlWindow gl_window(1280, 960);
+
+    // Initial robot state
+    constexpr double INIT_POS_X_M = 0.0;
+    constexpr double INIT_POS_Y_M = 0.0;
+    constexpr double INIT_HEADING_RAD = 0.0;
 
     constexpr EkfSlamConfig EKF_CONFIG = {
         .max_num_beacons = 50,
@@ -512,10 +372,20 @@ void run_simulation(const SimConfig &sim_config) {
         .range_measurement_noise_m = 0.1,
         .bearing_measurement_noise_rad = 0.01,
     };
-    EkfSlam ekf_slam(EKF_CONFIG, time::current_robot_time());
+
+    WorldMap map = WorldMap(world_map_config());
+    BeaconSimState state = {
+        .time_of_validity = time::current_robot_time(),
+        .map = map,
+        .road_map = create_road_map(map),
+        .robot = RobotState(INIT_POS_X_M, INIT_POS_Y_M, INIT_HEADING_RAD),
+        .ekf = EkfSlam(EKF_CONFIG, time::current_robot_time()),
+        .observations = {},
+        .gen = std::mt19937(0),
+    };
 
     if (sim_config.map_input_path) {
-        load_map(sim_config, make_in_out(ekf_slam));
+        load_map(sim_config, make_in_out(state.ekf));
     }
 
     gl_window.register_window_resize_callback(
@@ -540,7 +410,12 @@ void run_simulation(const SimConfig &sim_config) {
                 update.q = true;
             } else if (key == GLFW_KEY_P) {
                 update.p = true;
+            } else if (key == GLFW_KEY_LEFT_BRACKET) {
+                update.left_bracket = true;
+            } else if (key == GLFW_KEY_RIGHT_BRACKET) {
+                update.right_bracket = true;
             }
+
             key_command.store(update);
         });
 
@@ -548,8 +423,10 @@ void run_simulation(const SimConfig &sim_config) {
     std::vector<proto::BeaconSimDebug> debug_msgs;
     debug_msgs.reserve(10000);
 
-    const planning::RoadMap road_map = create_road_map(map);
-
+    constexpr int MAX_STATE_QUEUE_SIZE = 500;
+    std::deque<BeaconSimState> state_queue;
+    state_queue.push_back(state);
+    auto to_display_iter = state_queue.rbegin();
     while (run) {
         // get command
         const auto command = get_command(key_command.exchange(KeyCommand::make_reset()),
@@ -561,45 +438,56 @@ void run_simulation(const SimConfig &sim_config) {
         if (command.should_print_cov) {
             // Print out the covariance for each beacon
             std::cout << "************************************************ " << std::endl;
-            const auto &ekf_estimate = ekf_slam.estimate();
+            const auto &ekf_estimate = state.ekf.estimate();
             for (const int beacon_id : ekf_estimate.beacon_ids) {
                 std::cout << "================== Beacon: " << beacon_id << std::endl;
                 std::cout << ekf_estimate.beacon_cov(beacon_id).value() << std::endl;
             }
         }
 
+        const int distance_to_newest = std::distance(state_queue.rbegin(), to_display_iter);
+        const int distance_to_oldest = std::distance(to_display_iter, state_queue.rend());
+        if (command.time_travel_backward || command.time_travel_forward) {
+            std::cout << "Time travelling! " << distance_to_oldest << " / " << state_queue.size()
+                      << std::endl;
+        }
+        if (command.time_travel_backward) {
+            if (distance_to_oldest > 1) {
+                to_display_iter++;
+            } else {
+                std::cout << "Can't go further back in time" << std::endl;
+            }
+        } else if (command.time_travel_forward) {
+            if (distance_to_newest > 0) {
+                to_display_iter--;
+            } else {
+                std::cout << "Already at present" << std::endl;
+            }
+        } else if (command.should_step && to_display_iter != state_queue.rbegin()) {
+            state = *to_display_iter;
+            std::cout << "Stepping Forward while in past! Starting new timeline and dropping "
+                      << distance_to_newest << " future states." << std::endl;
+            while (to_display_iter != state_queue.rbegin()) {
+                state_queue.pop_back();
+            }
+            time::SimClock::reset();
+            time::SimClock::advance(state.time_of_validity.time_since_epoch());
+        }
+
         if (command.should_step || sim_config.autostep) {
-            // simulate robot forward
-            robot.turn(command.turn_rad);
-            robot.move(command.move_m);
-
             time::SimClock::advance(DT);
-
-            map.update(time::current_robot_time());
-
-            proto::BeaconSimDebug debug_msg;
-            pack_into(time::current_robot_time(), debug_msg.mutable_time_of_validity());
-            pack_into(ekf_slam.estimate(), debug_msg.mutable_prior());
-
-            const liegroups::SE2 old_robot_from_new_robot =
-                liegroups::SE2::trans(command.move_m, 0.0) * liegroups::SE2::rot(command.turn_rad);
-            pack_into(old_robot_from_new_robot, debug_msg.mutable_old_robot_from_new_robot());
-
-            pack_into(ekf_slam.predict(time::current_robot_time(), old_robot_from_new_robot),
-                      debug_msg.mutable_prediction());
-
-            // generate observations
-            const auto observations = generate_observations(time::current_robot_time(), map, robot,
-                                                            OBS_CONFIG, make_in_out(gen));
-            pack_into(observations, debug_msg.mutable_observations());
-
-            const auto &ekf_estimate = ekf_slam.update(observations);
-            pack_into(ekf_estimate, debug_msg.mutable_posterior());
-            pack_into(robot.local_from_robot(), debug_msg.mutable_local_from_true_robot());
-
-            display_state(time::current_robot_time(), map, robot, observations, ekf_estimate,
-                          road_map, make_in_out(gl_window));
+            auto debug_msg = tick_sim(command, make_in_out(state));
             debug_msgs.emplace_back(std::move(debug_msg));
+
+            state_queue.push_back(state);
+            to_display_iter = state_queue.rbegin();
+            while (static_cast<int>(state_queue.size()) > MAX_STATE_QUEUE_SIZE) {
+                state_queue.pop_front();
+            }
+        }
+
+        if (to_display_iter != state_queue.rend()) {
+            display_state(*to_display_iter, make_in_out(gl_window));
         }
 
         std::this_thread::sleep_for(DT);
@@ -609,9 +497,9 @@ void run_simulation(const SimConfig &sim_config) {
         write_out_log_file(sim_config, std::move(debug_msgs));
     }
     if (sim_config.map_output_path) {
-        write_out_map(sim_config, ekf_slam.estimate());
+        write_out_map(sim_config, state.ekf.estimate());
     }
-}
+}  // namespace robot::experimental::beacon_sim
 }  // namespace robot::experimental::beacon_sim
 
 int main(int argc, char **argv) {

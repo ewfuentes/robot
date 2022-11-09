@@ -12,7 +12,7 @@ multi_proto_library(
 cc_binary(
   name = "beacon_sim",
   srcs = ["beacon_sim.cc"],
-  linkopts = ["-latomic", "-lGLU"],
+  linkopts = ["-latomic"],
   deps = [
     ":world_map",
     ":robot",
@@ -20,16 +20,17 @@ cc_binary(
     ":generate_observations",
     ":beacon_observation_to_proto",
     ":beacon_sim_debug_proto",
+    ":beacon_sim_state",
     ":ekf_slam_estimate_to_proto",
     ":extract_mapped_landmarks",
     ":mapped_landmarks_to_proto",
     "//common/time:sim_clock",
     ":ekf_slam",
+    ":visualize_beacon_sim",
     "//visualization/gl_window",
     "//common:argument_wrapper",
     "//common/liegroups:se2",
     "//common/liegroups:se2_to_proto",
-    "//common/liegroups:se3",
     "//common/proto:load_from_file",
     "//common/time:robot_time_to_proto",
     "//planning:probabilistic_road_map",
@@ -278,5 +279,29 @@ cc_test(
   deps = [
     ":mapped_landmarks_to_proto",
     "@com_google_googletest//:gtest_main",
+  ]
+)
+
+cc_library(
+  name = "visualize_beacon_sim",
+  hdrs = ["visualize_beacon_sim.hh"],
+  srcs = ["visualize_beacon_sim.cc"],
+  linkopts = ["-lGLU"],
+  deps = [
+    ":beacon_sim_state",
+    "//common/liegroups:se3",
+  ]
+)
+
+cc_library(
+  name = "beacon_sim_state",
+  hdrs = ["beacon_sim_state.hh"],
+  deps = [
+    ":world_map",
+    ":ekf_slam",
+    ":robot",
+    ":generate_observations",
+    "//common/time:robot_time",
+    "//planning:probabilistic_road_map",
   ]
 )
