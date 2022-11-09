@@ -369,7 +369,7 @@ void run_simulation(const SimConfig &sim_config) {
     visualization::gl_window::GlWindow gl_window(1280, 960);
 
     // Initial robot state
-    constexpr double INIT_POS_X_M = -3.0;
+    constexpr double INIT_POS_X_M = 0.0;
     constexpr double INIT_POS_Y_M = 0.0;
     constexpr double INIT_HEADING_RAD = 0.0;
 
