@@ -51,6 +51,8 @@ struct RobotCommand {
     bool should_exit;
     bool should_step;
     bool should_print_cov;
+    bool time_travel_backward;
+    bool time_travel_forward;
 };
 
 struct KeyCommand {
@@ -60,6 +62,8 @@ struct KeyCommand {
     bool arrow_down;
     bool q;
     bool p;
+    bool left_bracket;
+    bool right_bracket;
 
     static KeyCommand make_reset() {
         return KeyCommand{
@@ -69,6 +73,8 @@ struct KeyCommand {
             .arrow_down = false,
             .q = false,
             .p = false,
+            .left_bracket = false,
+            .right_bracket = false,
         };
     }
 };
@@ -85,6 +91,8 @@ RobotCommand get_command(
         .should_exit = false,
         .should_step = false,
         .should_print_cov = false,
+        .time_travel_backward = false,
+        .time_travel_forward = false,
     };
     if (key_command.q) {
         out.should_exit = true;
@@ -102,6 +110,10 @@ RobotCommand get_command(
         out.should_step = true;
     } else if (key_command.p) {
         out.should_print_cov = true;
+    } else if (key_command.left_bracket) {
+        out.time_travel_backward = true;
+    } else if (key_command.right_bracket) {
+        out.time_travel_forward = true;
     }
 
     for (const auto &[id, state] : joysticks) {
@@ -326,11 +338,11 @@ proto::BeaconSimDebug tick_sim(const RobotCommand &command, InOut<BeaconSimState
               debug_msg.mutable_prediction());
 
     // generate observations
-    const auto observations = generate_observations(
-        state->time_of_validity, state->map, state->robot, OBS_CONFIG, make_in_out(state->gen));
-    pack_into(observations, debug_msg.mutable_observations());
+    state->observations = generate_observations(state->time_of_validity, state->map, state->robot,
+                                                OBS_CONFIG, make_in_out(state->gen));
+    pack_into(state->observations, debug_msg.mutable_observations());
 
-    const auto &ekf_estimate = state->ekf.update(observations);
+    const auto &ekf_estimate = state->ekf.update(state->observations);
     pack_into(ekf_estimate, debug_msg.mutable_posterior());
     pack_into(state->robot.local_from_robot(), debug_msg.mutable_local_from_true_robot());
 
@@ -398,7 +410,12 @@ void run_simulation(const SimConfig &sim_config) {
                 update.q = true;
             } else if (key == GLFW_KEY_P) {
                 update.p = true;
+            } else if (key == GLFW_KEY_LEFT_BRACKET) {
+                update.left_bracket = true;
+            } else if (key == GLFW_KEY_RIGHT_BRACKET) {
+                update.right_bracket = true;
             }
+
             key_command.store(update);
         });
 
@@ -406,6 +423,10 @@ void run_simulation(const SimConfig &sim_config) {
     std::vector<proto::BeaconSimDebug> debug_msgs;
     debug_msgs.reserve(10000);
 
+    constexpr int MAX_STATE_QUEUE_SIZE = 500;
+    std::deque<BeaconSimState> state_queue;
+    state_queue.push_back(state);
+    auto to_display_iter = state_queue.rbegin();
     while (run) {
         // get command
         const auto command = get_command(key_command.exchange(KeyCommand::make_reset()),
@@ -424,13 +445,50 @@ void run_simulation(const SimConfig &sim_config) {
             }
         }
 
+        const int distance_to_newest = std::distance(state_queue.rbegin(), to_display_iter);
+        const int distance_to_oldest = std::distance(to_display_iter, state_queue.rend());
+        if (command.time_travel_backward || command.time_travel_forward) {
+            std::cout << "Time travelling! " << distance_to_oldest << " / " << state_queue.size()
+                      << std::endl;
+        }
+        if (command.time_travel_backward) {
+            if (distance_to_oldest > 1) {
+                to_display_iter++;
+            } else {
+                std::cout << "Can't go further back in time" << std::endl;
+            }
+        } else if (command.time_travel_forward) {
+            if (distance_to_newest > 0) {
+                to_display_iter--;
+            } else {
+                std::cout << "Already at present" << std::endl;
+            }
+        } else if (command.should_step && to_display_iter != state_queue.rbegin()) {
+            state = *to_display_iter;
+            std::cout << "Stepping Forward while in past! Starting new timeline and dropping "
+                      << distance_to_newest << " future states." << std::endl;
+            while (to_display_iter != state_queue.rbegin()) {
+                state_queue.pop_back();
+            }
+            time::SimClock::reset();
+            time::SimClock::advance(state.time_of_validity.time_since_epoch());
+        }
+
         if (command.should_step || sim_config.autostep) {
             time::SimClock::advance(DT);
             auto debug_msg = tick_sim(command, make_in_out(state));
             debug_msgs.emplace_back(std::move(debug_msg));
+
+            state_queue.push_back(state);
+            to_display_iter = state_queue.rbegin();
+            while (static_cast<int>(state_queue.size()) > MAX_STATE_QUEUE_SIZE) {
+                state_queue.pop_front();
+            }
         }
 
-        display_state(state, make_in_out(gl_window));
+        if (to_display_iter != state_queue.rend()) {
+            display_state(*to_display_iter, make_in_out(gl_window));
+        }
 
         std::this_thread::sleep_for(DT);
     }
