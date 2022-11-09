@@ -35,7 +35,7 @@ jobs:
             ~/.cache/bazelisk
           key: ${{ runner.os }}-${{ env.cache-name }}-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}-${{ github.event_name }}
           restore-keys: ${{ runner.os }}-${{ env.cache-name }}
-          skip-cache-write: true
+          skip-cache-write: false
 
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - name: Checking out  ${{ github.sha }}
