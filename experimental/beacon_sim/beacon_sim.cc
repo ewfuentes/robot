@@ -48,6 +48,7 @@ struct SimConfig {
 struct RobotCommand {
     double turn_rad;
     double move_m;
+    double zoom_mult;
     bool should_exit;
     bool should_step;
     bool should_print_cov;
@@ -64,6 +65,8 @@ struct KeyCommand {
     bool p;
     bool left_bracket;
     bool right_bracket;
+    bool minus;
+    bool equal;
 
     static KeyCommand make_reset() {
         return KeyCommand{
@@ -75,6 +78,8 @@ struct KeyCommand {
             .p = false,
             .left_bracket = false,
             .right_bracket = false,
+            .minus = false,
+            .equal = false,
         };
     }
 };
@@ -84,10 +89,12 @@ RobotCommand get_command(
     const std::unordered_map<int, visualization::gl_window::JoystickState> &joysticks) {
     constexpr double TURN_AMOUNT_RAD = std::numbers::pi / 4.0;
     constexpr double MOVE_AMOUNT_M = 0.1;
+    constexpr double ZOOM_FACTOR_ADJUST = 1.1;
     // Handle Keyboard Commands
     RobotCommand out = {
         .turn_rad = 0,
         .move_m = 0,
+        .zoom_mult = 1.0,
         .should_exit = false,
         .should_step = false,
         .should_print_cov = false,
@@ -114,6 +121,10 @@ RobotCommand get_command(
         out.time_travel_backward = true;
     } else if (key_command.right_bracket) {
         out.time_travel_forward = true;
+    } else if (key_command.minus) {
+        out.zoom_mult *= ZOOM_FACTOR_ADJUST;
+    } else if (key_command.equal) {
+        out.zoom_mult /= ZOOM_FACTOR_ADJUST;
     }
 
     for (const auto &[id, state] : joysticks) {
@@ -225,11 +236,13 @@ WorldMapConfig world_map_config() {
     return out;
 }
 
-void display_state(const BeaconSimState &state, InOut<visualization::gl_window::GlWindow> window) {
+void display_state(const BeaconSimState &state, const double zoom_factor,
+                   InOut<visualization::gl_window::GlWindow> window) {
     const auto [screen_width_px, screen_height_px] = window->get_window_dims();
     const double aspect_ratio = static_cast<double>(screen_height_px) / screen_width_px;
 
-    window->register_render_callback([=]() { visualize_beacon_sim(state, aspect_ratio); });
+    window->register_render_callback(
+        [=]() { visualize_beacon_sim(state, zoom_factor, aspect_ratio); });
 }
 
 planning::RoadMap create_road_map(const WorldMap &map) {
@@ -414,6 +427,10 @@ void run_simulation(const SimConfig &sim_config) {
                 update.left_bracket = true;
             } else if (key == GLFW_KEY_RIGHT_BRACKET) {
                 update.right_bracket = true;
+            } else if (key == GLFW_KEY_EQUAL) {
+                update.equal = true;
+            } else if (key == GLFW_KEY_MINUS) {
+                update.minus = true;
             }
 
             key_command.store(update);
@@ -427,6 +444,7 @@ void run_simulation(const SimConfig &sim_config) {
     std::deque<BeaconSimState> state_queue;
     state_queue.push_back(state);
     auto to_display_iter = state_queue.rbegin();
+    double zoom_factor = 1.0;
     while (run) {
         // get command
         const auto command = get_command(key_command.exchange(KeyCommand::make_reset()),
@@ -435,6 +453,10 @@ void run_simulation(const SimConfig &sim_config) {
         if (command.should_exit) {
             run = false;
         }
+        // Handle zoom
+        zoom_factor *= command.zoom_mult;
+
+        // Handle Covariance printing
         if (command.should_print_cov) {
             // Print out the covariance for each beacon
             std::cout << "************************************************ " << std::endl;
@@ -445,6 +467,7 @@ void run_simulation(const SimConfig &sim_config) {
             }
         }
 
+        // Handle Time Travel
         const int distance_to_newest = std::distance(state_queue.rbegin(), to_display_iter);
         const int distance_to_oldest = std::distance(to_display_iter, state_queue.rend());
         if (command.time_travel_backward || command.time_travel_forward) {
@@ -487,7 +510,7 @@ void run_simulation(const SimConfig &sim_config) {
         }
 
         if (to_display_iter != state_queue.rend()) {
-            display_state(*to_display_iter, make_in_out(gl_window));
+            display_state(*to_display_iter, zoom_factor, make_in_out(gl_window));
         }
 
         std::this_thread::sleep_for(DT);
