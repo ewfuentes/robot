@@ -306,11 +306,11 @@ const EkfSlamEstimate &EkfSlam::load_map(const MappedLandmarks &landmarks,
     estimate_ =
         detail::incorporate_mapped_landmarks(estimate_, landmarks, should_load_off_diagonals);
     // Set the ego uncertainty to be really large
-    const double position_uncertainty_sq_m = 3000.0;
-    const double heading_uncertainty_sq_rad = 9.0;
-    estimate_.cov(0, 0) = position_uncertainty_sq_m;
-    estimate_.cov(1, 1) = position_uncertainty_sq_m;
-    estimate_.cov(2, 2) = heading_uncertainty_sq_rad;
+    estimate_.cov(0, 0) =
+        config_.on_map_load_position_uncertainty_m * config_.on_map_load_position_uncertainty_m;
+    estimate_.cov(1, 1) = estimate_.cov(0, 0);
+    estimate_.cov(2, 2) =
+        config_.on_map_load_heading_uncertainty_rad * config_.on_map_load_heading_uncertainty_rad;
     return estimate_;
 }
 

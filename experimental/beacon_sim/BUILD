@@ -305,3 +305,23 @@ cc_library(
     "//planning:probabilistic_road_map",
   ]
 )
+
+cc_library(
+  name = "belief_road_map_planner",
+  hdrs = ["belief_road_map_planner.hh"],
+  srcs = ["belief_road_map_planner.cc"],
+  deps = [
+    ":ekf_slam",
+    "//planning:belief_road_map",
+    "//planning:probabilistic_road_map",
+  ]
+)
+
+cc_test(
+  name = "belief_road_map_planner_test",
+  srcs = ["belief_road_map_planner_test.cc"],
+  deps = [
+    ":belief_road_map_planner",
+    "@com_google_googletest//:gtest_main",
+  ],
+)

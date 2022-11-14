@@ -384,6 +384,8 @@ void run_simulation(const SimConfig &sim_config) {
         .beacon_pos_process_noise_m_per_rt_s = 1e-3,
         .range_measurement_noise_m = 0.1,
         .bearing_measurement_noise_rad = 0.01,
+        .on_map_load_position_uncertainty_m = 5.0,
+        .on_map_load_heading_uncertainty_rad = 1.0,
     };
 
     WorldMap map = WorldMap(world_map_config());
