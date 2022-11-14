@@ -33,19 +33,6 @@ BRMPlan brm_plan_from_a_star_result(const AStarResult<BRMSearchState> &a_star_re
 }
 }  // namespace
 
-std::ostream &operator<<(std::ostream &out, const Belief &belief) {
-    out << "Mean: " << belief.mean.transpose() << " cov:" << std::endl;
-    out << belief.cov;
-    return out;
-}
-
-std::ostream &operator<<(std::ostream &out, const BRMPlan &plan) {
-    for (int i = 0; i < static_cast<int>(plan.nodes.size()); i++) {
-        out << "Node: " << plan.nodes.at(i) << " " << plan.beliefs.at(i) << std::endl;
-    }
-    return out;
-}
-
 std::vector<Successor<BRMSearchState>> successors_for_state(const BRMSearchState &state,
                                                             const RoadMap &road_map,
                                                             const BeliefUpdater &belief_updater,

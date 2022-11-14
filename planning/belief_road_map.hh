@@ -2,7 +2,6 @@
 #pragma once
 
 #include <functional>
-#include <iostream>
 #include <optional>
 
 #include "planning/probabilistic_road_map.hh"
@@ -20,9 +19,6 @@ struct BRMPlan {
     std::vector<int> nodes;
     std::vector<Belief> beliefs;
 };
-
-std::ostream &operator<<(std::ostream &out, const Belief &belief);
-std::ostream &operator<<(std::ostream &out, const BRMPlan &plan);
 
 using BeliefUpdater =
     std::function<Belief(const Belief &initial_belief, const int start_idx, const int end_idx)>;
