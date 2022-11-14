@@ -83,6 +83,8 @@ std::vector<Successor<BRMSearchState>> successors_for_state(const BRMSearchState
         return out;
     }
 
+    // This step cost is added to the edge cost to give preference to shorter paths
+    constexpr double STEP_COST = 1e-6;
     for (int i = 0; i < static_cast<int>(road_map.points.size()); i++) {
         if (road_map.adj(state.node_idx, i)) {
             // Queue up each neighbor
@@ -93,7 +95,7 @@ std::vector<Successor<BRMSearchState>> successors_for_state(const BRMSearchState
                         .belief = new_belief,
                         .node_idx = i,
                     },
-                .edge_cost = new_belief.cov.determinant() - state.belief.cov.determinant(),
+                .edge_cost = new_belief.cov.determinant() - state.belief.cov.determinant() + STEP_COST,
             });
         }
     }
@@ -106,9 +108,6 @@ std::optional<BRMPlan> plan(const RoadMap &road_map, const Belief &initial_belie
     // Find nearest node to start and end states
     const int nearest_to_start_idx = find_nearest_node_idx(road_map, initial_belief.mean);
     const int nearest_to_end_idx = find_nearest_node_idx(road_map, goal_state);
-
-    std::cout << "Nearest to start: " << nearest_to_start_idx << std::endl;
-    std::cout << "Nearest to end: " << nearest_to_end_idx << std::endl;
 
     const auto successors_func = [nearest_to_start_idx, nearest_to_end_idx, &belief_updater,
                                   &road_map](const BRMSearchState &state) {
