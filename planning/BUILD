@@ -31,3 +31,24 @@ cc_test(
     "@com_google_googletest//:gtest_main",
   ]
 )
+
+cc_library(
+  name = "belief_road_map",
+  hdrs = ["belief_road_map.hh"],
+  srcs = ["belief_road_map.cc"],
+  deps = [
+    ":a_star",
+    ":probabilistic_road_map",
+    "@eigen//:eigen",
+  ],
+)
+
+cc_test(
+  name = "belief_road_map_test",
+  srcs = ["belief_road_map_test.cc"],
+  deps = [
+    ":belief_road_map",
+    "@com_google_googletest//:gtest_main",
+  ],
+)
+
