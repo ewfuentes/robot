@@ -95,7 +95,8 @@ std::vector<Successor<BRMSearchState>> successors_for_state(const BRMSearchState
                         .belief = new_belief,
                         .node_idx = i,
                     },
-                .edge_cost = new_belief.cov.determinant() - state.belief.cov.determinant() + STEP_COST,
+                .edge_cost =
+                    new_belief.cov.determinant() - state.belief.cov.determinant() + STEP_COST,
             });
         }
     }
