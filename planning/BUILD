@@ -35,7 +35,6 @@ cc_test(
 cc_library(
   name = "belief_road_map",
   hdrs = ["belief_road_map.hh"],
-  srcs = ["belief_road_map.cc"],
   visibility = ["//visibility:public"],
   deps = [
     ":a_star",
