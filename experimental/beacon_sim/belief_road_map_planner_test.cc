@@ -104,19 +104,19 @@ std::tuple<planning::RoadMap, EkfSlam> create_environment(const EkfSlamConfig &e
 }  // namespace
 
 TEST(BeliefRoadMapPlannerTest, grid_road_map) {
-  // Setup
+    // Setup
     const EkfSlamConfig ekf_config{
-      .max_num_beacons = 1,
-      .along_track_process_noise_m_per_rt_meter = 0.05,
-      .cross_track_process_noise_m_per_rt_meter = 0.05,
-      .pos_process_noise_m_per_rt_s = 0.0,
-      .heading_process_noise_rad_per_rt_meter = 1e-3,
-      .heading_process_noise_rad_per_rt_s = 0.0,
-      .beacon_pos_process_noise_m_per_rt_s = 1e-6,
-      .range_measurement_noise_m = 0.25,
-      .bearing_measurement_noise_rad = 1e-3,
-      .on_map_load_position_uncertainty_m = 2.0,
-      .on_map_load_heading_uncertainty_rad = 0.5,
+        .max_num_beacons = 1,
+        .along_track_process_noise_m_per_rt_meter = 0.05,
+        .cross_track_process_noise_m_per_rt_meter = 0.05,
+        .pos_process_noise_m_per_rt_s = 0.0,
+        .heading_process_noise_rad_per_rt_meter = 1e-3,
+        .heading_process_noise_rad_per_rt_s = 0.0,
+        .beacon_pos_process_noise_m_per_rt_s = 1e-6,
+        .range_measurement_noise_m = 0.25,
+        .bearing_measurement_noise_rad = 1e-3,
+        .on_map_load_position_uncertainty_m = 2.0,
+        .on_map_load_heading_uncertainty_rad = 0.5,
     };
     const auto &[road_map, ekf_slam] = create_environment(ekf_config);
 
