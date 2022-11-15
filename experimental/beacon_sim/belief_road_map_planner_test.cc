@@ -119,9 +119,10 @@ TEST(BeliefRoadMapPlannerTest, grid_road_map) {
         .on_map_load_heading_uncertainty_rad = 0.5,
     };
     const auto &[road_map, ekf_slam] = create_environment(ekf_config);
+    const Eigen::Vector2d goal_state = {10, -5};
 
     // Action
-    const auto plan = compute_belief_road_map_plan(road_map, ekf_slam);
+    const auto plan = compute_belief_road_map_plan(road_map, ekf_slam, goal_state);
     (void)plan;
 
     // Verification

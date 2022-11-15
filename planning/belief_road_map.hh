@@ -9,8 +9,6 @@
 #include "planning/probabilistic_road_map.hh"
 
 namespace robot::planning {
-
-// Interface
 template <typename Belief>
 struct BRMPlan {
     static constexpr int INITIAL_BELIEF_NODE_IDX = -1;
@@ -38,7 +36,7 @@ std::optional<BRMPlan<Belief>> plan(const RoadMap &road_map, const Belief &initi
                                     const BeliefUpdater<Belief> &belief_updater,
                                     const Eigen::Vector2d &goal_state);
 
-// Implementation details
+// Implementation details follow from here
 namespace detail {
 template <typename Belief>
 struct BRMSearchState {
@@ -59,14 +57,7 @@ int find_nearest_node_idx(const RoadMap &road_map, const Belief &belief) {
     return std::distance(road_map.points.begin(), iter);
 }
 
-int find_nearest_node_idx(const RoadMap &road_map, const Eigen::Vector2d &state) {
-    const auto iter =
-        std::min_element(road_map.points.begin(), road_map.points.end(),
-                         [&state](const Eigen::Vector2d &a, const Eigen::Vector2d &b) {
-                             return (a - state).squaredNorm() < (b - state).squaredNorm();
-                         });
-    return std::distance(road_map.points.begin(), iter);
-}
+int find_nearest_node_idx(const RoadMap &road_map, const Eigen::Vector2d &state);
 
 template <typename Belief>
 std::vector<Successor<BRMSearchState<Belief>>> successors_for_state(
