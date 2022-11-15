@@ -10,4 +10,4 @@ int find_nearest_node_idx(const RoadMap &road_map, const Eigen::Vector2d &state)
                          });
     return std::distance(road_map.points.begin(), iter);
 }
-}  // namespace robot::planning
+}  // namespace robot::planning::detail
