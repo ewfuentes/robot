@@ -21,6 +21,7 @@ cc_binary(
     ":beacon_observation_to_proto",
     ":beacon_sim_debug_proto",
     ":beacon_sim_state",
+    ":belief_road_map_planner",
     ":ekf_slam_estimate_to_proto",
     ":extract_mapped_landmarks",
     ":mapped_landmarks_to_proto",
@@ -301,6 +302,7 @@ cc_library(
     ":ekf_slam",
     ":robot",
     ":generate_observations",
+    ":belief_road_map_planner",
     "//common/time:robot_time",
     "//planning:probabilistic_road_map",
   ]

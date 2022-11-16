@@ -18,6 +18,7 @@
 #include "experimental/beacon_sim/beacon_observation_to_proto.hh"
 #include "experimental/beacon_sim/beacon_sim_debug.pb.h"
 #include "experimental/beacon_sim/beacon_sim_state.hh"
+#include "experimental/beacon_sim/belief_road_map_planner.hh"
 #include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/ekf_slam_estimate_to_proto.hh"
 #include "experimental/beacon_sim/extract_mapped_landmarks.hh"
@@ -332,6 +333,19 @@ proto::BeaconSimDebug tick_sim(const RobotCommand &command, InOut<BeaconSimState
         .range_noise_std_m = 0.1,
         .max_sensor_range_m = 5.0,
     };
+
+    const Eigen::Vector2d goal_state{-14.0, 0.0};
+
+    // Plan
+    std::cout << "Starting to Plan" << std::endl;
+    const auto brm_plan = compute_belief_road_map_plan(state->road_map, state->ekf, goal_state,
+                                                       OBS_CONFIG.max_sensor_range_m.value());
+    std::cout << "plan complete" << std::endl;
+    for (int idx = 0; idx < static_cast<int>(brm_plan->nodes.size()); idx++) {
+        std::cout << idx << " " << brm_plan->nodes.at(idx) << " "
+                  << brm_plan->beliefs.at(idx).local_from_robot.translation().transpose() << std::endl;
+    }
+    state->plan = brm_plan.value();
 
     // simulate robot forward
     state->robot.turn(command.turn_rad);

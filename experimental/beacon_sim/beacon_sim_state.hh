@@ -1,8 +1,10 @@
 
 #pragma once
 
+#include <optional>
 #include <random>
 
+#include "experimental/beacon_sim/belief_road_map_planner.hh"
 #include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/generate_observations.hh"
 #include "experimental/beacon_sim/robot.hh"
@@ -17,6 +19,7 @@ struct BeaconSimState {
     RobotState robot;
     EkfSlam ekf;
     std::vector<BeaconObservation> observations;
+    std::optional<planning::BRMPlan<RobotBelief>> plan;
     std::mt19937 gen;
 };
 }  // namespace robot::experimental::beacon_sim
