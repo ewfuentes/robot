@@ -118,14 +118,21 @@ TEST(BeliefRoadMapPlannerTest, grid_road_map) {
         .on_map_load_position_uncertainty_m = 2.0,
         .on_map_load_heading_uncertainty_rad = 0.5,
     };
+    constexpr double MAX_SENSOR_RANGE_M = 5.0;
     const auto &[road_map, ekf_slam] = create_environment(ekf_config);
-    const Eigen::Vector2d goal_state = {10, -5};
+    const Eigen::Vector2d GOAL_STATE = {10, -5};
 
     // Action
-    const auto plan = compute_belief_road_map_plan(road_map, ekf_slam, goal_state);
-    (void)plan;
+    const auto maybe_plan =
+        compute_belief_road_map_plan(road_map, ekf_slam, GOAL_STATE, MAX_SENSOR_RANGE_M);
 
     // Verification
+    EXPECT_TRUE(maybe_plan.has_value());
+    const auto &plan = maybe_plan.value();
+    std::cout << "Num Nodes: " << plan.nodes.size() << std::endl;
+    for (int i = 0; i < static_cast<int>(plan.nodes.size()); i++) {
+      std::cout << i << " idx: " << plan.nodes.at(i) << std::endl;
+    }
 }
 
 }  // namespace robot::experimental::beacon_sim

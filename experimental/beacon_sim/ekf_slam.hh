@@ -58,6 +58,8 @@ class EkfSlam {
 
     const EkfSlamEstimate &estimate() const { return estimate_; }
 
+    const EkfSlamConfig &config() const { return config_; }
+
    private:
     EkfSlamConfig config_;
     EkfSlamEstimate estimate_;
