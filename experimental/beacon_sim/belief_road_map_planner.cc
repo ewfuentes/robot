@@ -2,23 +2,64 @@
 #include "experimental/beacon_sim/belief_road_map_planner.hh"
 
 #include <iostream>
+#include <random>
+
+#include "experimental/beacon_sim/generate_observations.hh"
+#include "experimental/beacon_sim/robot.hh"
 
 namespace robot::experimental::beacon_sim {
 namespace {
+
+std::vector<BeaconObservation> generate_observations(const liegroups::SE2 &local_from_robot,
+                                                     const EkfSlamEstimate &estimate,
+                                                     const double max_sensor_range_m) {
+    std::vector<BeaconObservation> out;
+    const RobotState robot_state(local_from_robot);
+    const ObservationConfig config = {
+        .range_noise_std_m = std::nullopt,
+        .max_sensor_range_m = max_sensor_range_m,
+    };
+
+    for (const int beacon_id : estimate.beacon_ids) {
+        std::mt19937 gen(0);
+        Beacon beacon = {
+            .id = beacon_id,
+            .pos_in_local = estimate.beacon_in_local(beacon_id).value(),
+        };
+        const auto &maybe_observation =
+            generate_observation(beacon, robot_state, config, make_in_out(gen));
+        if (maybe_observation.has_value()) {
+            out.push_back(maybe_observation.value());
+        }
+    }
+    return out;
+}
+Eigen::MatrixXd build_measurement_noise(const int num_observations,
+                                        const double range_measurement_noise_m,
+                                        const double bearing_measurement_noise_rad) {
+    Eigen::MatrixXd noise = Eigen::MatrixXd::Identity(2 * num_observations, 2 * num_observations);
+
+    noise(Eigen::seq(0, Eigen::last, 2), Eigen::all) *=
+        range_measurement_noise_m * range_measurement_noise_m;
+    noise(Eigen::seq(1, Eigen::last, 2), Eigen::all) *=
+        bearing_measurement_noise_rad * bearing_measurement_noise_rad;
+
+    return noise;
+}
+
 planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap &road_map,
                                                          const Eigen::Vector2d &goal_state,
                                                          const double max_sensor_range_m,
                                                          const EkfSlam &ekf) {
     return [&road_map, goal_state, max_sensor_range_m, &ekf](
                const RobotBelief &initial_belief, const int start_idx, const int end_idx) {
-        std::cout << "Traversing " << start_idx << " to " << end_idx << std::endl;
-        constexpr double DT_S = 0.1;
+        (void)start_idx;
+        constexpr double DT_S = 1.0;
         constexpr double VELOCITY_MPS = 2.0;
         constexpr double ANGULAR_VELOCITY_RADPS = 2.0;
         const Eigen::Vector2d end_position =
             end_idx >= 0 ? road_map.points.at(end_idx) : goal_state;
 
-        std::cout << "End Position: " << end_position.transpose() << std::endl;
         RobotBelief out = initial_belief;
         const EkfSlamConfig &config = ekf.config();
         const EkfSlamEstimate &est = ekf.estimate();
@@ -30,7 +71,7 @@ planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap
                 const liegroups::SE2 old_robot_from_new_robot = [&]() {
                     constexpr double ANGLE_TOL = 1e-6;
                     const Eigen::Vector2d goal_in_robot =
-                        out.local_from_robot.inverse() * goal_state;
+                        out.local_from_robot.inverse() * end_position;
                     const double angle_to_goal_rad =
                         std::atan2(goal_in_robot.y(), goal_in_robot.x());
                     if (std::abs(angle_to_goal_rad) > ANGLE_TOL) {
@@ -73,17 +114,36 @@ planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap
 
             // Measurement Update
             {
-                std::cout << "Robot Pos: " << out.local_from_robot.translation().transpose()
-                          << std::endl;
-                for (const auto beacon_id : est.beacon_ids) {
-                    const Eigen::Vector2d beacon_in_local = est.beacon_in_local(beacon_id).value();
-                    const Eigen::Vector2d beacon_in_robot =
-                        out.local_from_robot.inverse() * beacon_in_local;
-                    if (beacon_in_robot.norm() > max_sensor_range_m) {
-                        continue;
-                    }
-                    std::cout << "In range of beacon " << beacon_id << std::endl;
+                const std::vector<BeaconObservation> observations =
+                    generate_observations(out.local_from_robot, ekf.estimate(), max_sensor_range_m);
+
+                if (observations.size() == 0) {
+                    continue;
                 }
+
+                EkfSlamEstimate updated_est = est;
+
+                updated_est.mean.head<2>() = out.local_from_robot.translation();
+                updated_est.mean(2) = out.local_from_robot.so2().log();
+
+                const detail::UpdateInputs inputs =
+                    detail::compute_measurement_and_prediction(observations, updated_est);
+
+                const Eigen::MatrixXd observation_matrix =
+                    inputs.observation_matrix(Eigen::all, Eigen::seqN(0, 3));
+
+                const Eigen::MatrixXd measurement_noise =
+                    build_measurement_noise(observations.size(), config.range_measurement_noise_m,
+                                            config.bearing_measurement_noise_rad);
+
+                const Eigen::MatrixXd innovation_cov =
+                    observation_matrix * out.cov_in_robot * observation_matrix.transpose() +
+                    measurement_noise;
+                const Eigen::MatrixXd kalman_gain =
+                    out.cov_in_robot * observation_matrix.transpose() * innovation_cov.inverse();
+                const Eigen::Matrix3d I_min_KH =
+                    Eigen::Matrix3d::Identity() - kalman_gain * observation_matrix;
+                out.cov_in_robot = I_min_KH * out.cov_in_robot;
             }
         }
         return out;
@@ -102,13 +162,13 @@ double uncertainty_size(const RobotBelief &belief) {
 }
 
 bool operator==(const RobotBelief &a, const RobotBelief &b) {
-    constexpr double TOL = 1e-6;
-    const auto mean_diff = (a.local_from_robot.log() - b.local_from_robot.log()).norm();
-    const auto cov_diff = (a.cov_in_robot - b.cov_in_robot).norm();
+    constexpr double TOL = 1e-3;
+    // Note that we don't consider covariance
+    const auto mean_diff =
+        (a.local_from_robot.translation() - b.local_from_robot.translation()).norm();
 
     const bool is_mean_near = mean_diff < TOL;
-    const bool is_cov_near = cov_diff < (TOL * TOL);
-    return is_mean_near && is_cov_near;
+    return is_mean_near;
 }
 
 std::optional<planning::BRMPlan<RobotBelief>> compute_belief_road_map_plan(
@@ -131,8 +191,8 @@ struct std::hash<robot::experimental::beacon_sim::RobotBelief> {
     std::size_t operator()(const robot::experimental::beacon_sim::RobotBelief &belief) const {
         std::hash<double> double_hasher;
         // This is probably a terrible hash function
-        return (double_hasher(belief.local_from_robot.log().norm()) << 3) ^
-               double_hasher(belief.cov_in_robot.determinant());
+        // Note that we don't consider the heading or covariance
+        return double_hasher(belief.local_from_robot.translation().norm());
     }
 };
 }  // namespace std

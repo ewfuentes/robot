@@ -312,8 +312,10 @@ cc_library(
   srcs = ["belief_road_map_planner.cc"],
   deps = [
     ":ekf_slam",
+    ":robot",
     "//planning:belief_road_map",
     "//planning:probabilistic_road_map",
+    ":generate_observations",
   ]
 )
 

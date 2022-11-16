@@ -7,7 +7,7 @@
 namespace robot::experimental::beacon_sim {
 namespace {
 MappedLandmarks create_mapped_landmarks() {
-    const Eigen::Vector2d beacon_in_local{-2.5, -2.5};
+    const Eigen::Vector2d beacon_in_local{-7.5, -2.5};
     constexpr double POSITION_UNCERTAINTY_M = 0.1;
     const Eigen::Matrix2d cov_in_local{{{POSITION_UNCERTAINTY_M * POSITION_UNCERTAINTY_M, 0.0},
                                         {0.0, POSITION_UNCERTAINTY_M * POSITION_UNCERTAINTY_M}}};
@@ -61,26 +61,28 @@ std::tuple<planning::RoadMap, EkfSlam> create_environment(const EkfSlamConfig &e
     // Create the environment depicted below
     //
     //
-    //             Start
-    //               │
-    //               │          +Y▲
-    //               │5m          │
-    //               │            └──►
-    //         5m    │   5m          +X
-    //     X─────────X─────────X
-    //    6│        7│        8│
-    //     │         │         │
-    //  5m │         │         │
-    //     │         │         │
-    //     │         │(0,0)    │
-    //     X─────────X─────────X
-    //    3│        4│        5│
-    //     │         │         │
-    //  5m │    B    │         │
-    //     │         │         │
-    //     │         │         │   5m
-    //     X─────────X─────────X───────── Goal
-    //     0         1         2
+    //                            Start
+    //                              │
+    //                              │          +Y▲
+    //                              │5m          │
+    //                              │            └──►
+    //                        5m    │   5m          +X
+    //                    X─────────X─────────X
+    //                   6│        7│        8│
+    //                    │         │         │
+    //                    │         │         │ 5m
+    //                    │         │         │
+    //                    │         │(0,0)    │
+    //                    X─────────X─────────X
+    //                   3│        4│        5│
+    //                    │         │         │
+    //                B   │         │         │ 5m
+    //   (-7.5, -2.5)     │         │         │
+    //                    │         │         │   5m
+    //                    X─────────X─────────X───────── Goal
+    //                    0         1         2
+    //
+    //
     //
     //
     // Note that:
@@ -113,12 +115,12 @@ TEST(BeliefRoadMapPlannerTest, grid_road_map) {
         .heading_process_noise_rad_per_rt_meter = 1e-3,
         .heading_process_noise_rad_per_rt_s = 0.0,
         .beacon_pos_process_noise_m_per_rt_s = 1e-6,
-        .range_measurement_noise_m = 0.25,
-        .bearing_measurement_noise_rad = 1e-3,
+        .range_measurement_noise_m = 1e-3,
+        .bearing_measurement_noise_rad = 1e-4,
         .on_map_load_position_uncertainty_m = 2.0,
         .on_map_load_heading_uncertainty_rad = 0.5,
     };
-    constexpr double MAX_SENSOR_RANGE_M = 5.0;
+    constexpr double MAX_SENSOR_RANGE_M = 3.0;
     const auto &[road_map, ekf_slam] = create_environment(ekf_config);
     const Eigen::Vector2d GOAL_STATE = {10, -5};
 
@@ -131,7 +133,7 @@ TEST(BeliefRoadMapPlannerTest, grid_road_map) {
     const auto &plan = maybe_plan.value();
     std::cout << "Num Nodes: " << plan.nodes.size() << std::endl;
     for (int i = 0; i < static_cast<int>(plan.nodes.size()); i++) {
-      std::cout << i << " idx: " << plan.nodes.at(i) << std::endl;
+        std::cout << i << " idx: " << plan.nodes.at(i) << std::endl;
     }
 }
 

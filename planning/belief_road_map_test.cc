@@ -40,11 +40,9 @@ double uncertainty_size(const GaussianBelief &belief) { return belief.cov.determ
 bool operator==(const GaussianBelief &a, const GaussianBelief &b) {
     constexpr double TOL = 1e-6;
     const double mean_diff = (a.mean - b.mean).norm();
-    const double cov_diff = (a.cov - b.cov).norm();
 
     const bool is_mean_near = mean_diff < TOL;
-    const bool is_cov_near = cov_diff < TOL * TOL;
-    return is_mean_near && is_cov_near;
+    return is_mean_near;
 }
 }  // namespace
 
@@ -106,7 +104,7 @@ template <>
 struct std::hash<robot::planning::GaussianBelief> {
     size_t operator()(const robot::planning::GaussianBelief &belief) const {
         std::hash<double> double_hasher;
-        return (double_hasher(belief.mean.norm()) << 3) ^ (double_hasher(belief.cov.determinant()));
+        return double_hasher(belief.mean.norm());
     }  // namespace std
 };
 }  // namespace std

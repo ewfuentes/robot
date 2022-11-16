@@ -385,9 +385,7 @@ const EkfSlamEstimate &EkfSlam::update(const std::vector<BeaconObservation> &obs
     const Eigen::MatrixXd I_min_KH =
         (Eigen::MatrixXd::Identity(estimate_.cov.rows(), estimate_.cov.cols()) -
          kalman_gain * observation_mat);
-    // Use joseph form of update
-    estimate_.cov = I_min_KH * estimate_.cov * I_min_KH.transpose() +
-                    kalman_gain * observation_noise * kalman_gain.transpose();
+    estimate_.cov = I_min_KH * estimate_.cov;
 
     return estimate_;
 }

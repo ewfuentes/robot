@@ -96,8 +96,6 @@ std::vector<Successor<BRMSearchState<Belief>>> successors_for_state(
         return out;
     }
 
-    // This step cost is added to the edge cost to give preference to shorter paths
-    constexpr double STEP_COST = 1e-6;
     for (int i = 0; i < static_cast<int>(road_map.points.size()); i++) {
         if (road_map.adj(state.node_idx, i)) {
             // Queue up each neighbor
@@ -109,7 +107,7 @@ std::vector<Successor<BRMSearchState<Belief>>> successors_for_state(
                         .node_idx = i,
                     },
                 .edge_cost =
-                    uncertainty_size(new_belief) - uncertainty_size(state.belief) + STEP_COST,
+                    uncertainty_size(new_belief) - uncertainty_size(state.belief),
             });
         }
     }
