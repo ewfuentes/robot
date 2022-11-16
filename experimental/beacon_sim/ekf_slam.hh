@@ -22,6 +22,8 @@ struct EkfSlamConfig {
     double beacon_pos_process_noise_m_per_rt_s;
     double range_measurement_noise_m;
     double bearing_measurement_noise_rad;
+    double on_map_load_position_uncertainty_m;
+    double on_map_load_heading_uncertainty_rad;
 };
 
 struct EkfSlamEstimate {
@@ -55,6 +57,8 @@ class EkfSlam {
     const EkfSlamEstimate &update(const std::vector<BeaconObservation> &observations);
 
     const EkfSlamEstimate &estimate() const { return estimate_; }
+
+    const EkfSlamConfig &config() const { return config_; }
 
    private:
     EkfSlamConfig config_;

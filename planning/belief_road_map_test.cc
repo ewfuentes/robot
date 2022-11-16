@@ -5,10 +5,16 @@
 
 namespace robot::planning {
 namespace {
+struct GaussianBelief {
+    Eigen::Vector2d mean;
+    Eigen::Matrix2d cov;
+};
+
 constexpr double NOISE_PER_M = 0.1;
 constexpr double NOISE_REDUCTION = 0.1;
-BeliefUpdater make_belief_updater(const RoadMap &road_map, const Eigen::Vector2d &goal_state) {
-    return [&road_map, &goal_state](const Belief &initial_belief, const int start_idx,
+BeliefUpdater<GaussianBelief> make_belief_updater(const RoadMap &road_map,
+                                                  const Eigen::Vector2d &goal_state) {
+    return [&road_map, &goal_state](const GaussianBelief &initial_belief, const int start_idx,
                                     const int end_idx) {
         const bool should_decrease =
             (start_idx == 0 || start_idx == 1) && (end_idx == 0 || end_idx == 1);
@@ -17,12 +23,26 @@ BeliefUpdater make_belief_updater(const RoadMap &road_map, const Eigen::Vector2d
 
         const double dist_m = (initial_belief.mean - new_mean).norm();
 
-        return Belief{
+        return GaussianBelief{
             .mean = new_mean,
             .cov = (initial_belief.cov + Eigen::Matrix2d::Identity() * NOISE_PER_M * dist_m) *
                    cov_mult,
         };
     };
+}
+
+double distance_to(const Eigen::Vector2d &pt, const GaussianBelief &belief) {
+    return (pt - belief.mean).norm();
+}
+
+double uncertainty_size(const GaussianBelief &belief) { return belief.cov.determinant(); }
+
+bool operator==(const GaussianBelief &a, const GaussianBelief &b) {
+    constexpr double TOL = 1e-6;
+    const double mean_diff = (a.mean - b.mean).norm();
+
+    const bool is_mean_near = mean_diff < TOL;
+    return is_mean_near;
 }
 }  // namespace
 
@@ -38,7 +58,7 @@ TEST(BeliefRoadMapTest, linear_graph) {
         .adj = Eigen::Matrix3d{{{0.0, 1.0, 0.0}, {1.0, 0.0, 1.0}, {0.0, 1.0, 0.0}}},
     };
 
-    const Belief initial_belief = {
+    const GaussianBelief initial_belief = {
         .mean = {0.0, 3.0},
         .cov = Eigen::Matrix2d{{3.0, 0.0}, {0.0, 3.0}},
     };
@@ -69,8 +89,8 @@ TEST(BeliefRoadMapTest, linear_graph) {
     const auto &plan = maybe_brm_plan.value();
 
     constexpr double TOL = 1e-6;
-    EXPECT_EQ(plan.nodes.front(), BRMPlan::INITIAL_BELIEF_NODE_IDX);
-    EXPECT_EQ(plan.nodes.back(), BRMPlan::GOAL_BELIEF_NODE_IDX);
+    EXPECT_EQ(plan.nodes.front(), BRMPlan<GaussianBelief>::INITIAL_BELIEF_NODE_IDX);
+    EXPECT_EQ(plan.nodes.back(), BRMPlan<GaussianBelief>::GOAL_BELIEF_NODE_IDX);
     EXPECT_EQ(plan.beliefs.back().mean, goal_state);
     EXPECT_NEAR(plan.beliefs.back().cov(0, 0), expected_cov, TOL);
     EXPECT_NEAR(plan.beliefs.back().cov(1, 1), expected_cov, TOL);
@@ -78,3 +98,13 @@ TEST(BeliefRoadMapTest, linear_graph) {
     EXPECT_NEAR(plan.beliefs.back().cov(1, 0), 0.0, TOL);
 }
 }  // namespace robot::planning
+
+namespace std {
+template <>
+struct std::hash<robot::planning::GaussianBelief> {
+    size_t operator()(const robot::planning::GaussianBelief &belief) const {
+        std::hash<double> double_hasher;
+        return double_hasher(belief.mean.norm());
+    }  // namespace std
+};
+}  // namespace std

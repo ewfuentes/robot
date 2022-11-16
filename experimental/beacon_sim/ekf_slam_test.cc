@@ -269,6 +269,8 @@ TEST(EkfSlamTest, incorporate_mapped_landmark) {
         .beacon_pos_process_noise_m_per_rt_s = 0.0,
         .range_measurement_noise_m = 0.0,
         .bearing_measurement_noise_rad = 0.0,
+        .on_map_load_position_uncertainty_m = 100.0,
+        .on_map_load_heading_uncertainty_rad = 3.0,
     };
 
     constexpr int BEACON_ID = 0;
