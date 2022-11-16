@@ -106,8 +106,7 @@ std::vector<Successor<BRMSearchState<Belief>>> successors_for_state(
                         .belief = new_belief,
                         .node_idx = i,
                     },
-                .edge_cost =
-                    uncertainty_size(new_belief) - uncertainty_size(state.belief),
+                .edge_cost = uncertainty_size(new_belief) - uncertainty_size(state.belief),
             });
         }
     }

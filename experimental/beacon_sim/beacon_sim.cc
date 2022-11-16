@@ -343,7 +343,8 @@ proto::BeaconSimDebug tick_sim(const RobotCommand &command, InOut<BeaconSimState
     std::cout << "plan complete" << std::endl;
     for (int idx = 0; idx < static_cast<int>(brm_plan->nodes.size()); idx++) {
         std::cout << idx << " " << brm_plan->nodes.at(idx) << " "
-                  << brm_plan->beliefs.at(idx).local_from_robot.translation().transpose() << std::endl;
+                  << brm_plan->beliefs.at(idx).local_from_robot.translation().transpose()
+                  << std::endl;
     }
     state->plan = brm_plan.value();
 
