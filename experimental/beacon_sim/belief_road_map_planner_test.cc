@@ -115,8 +115,8 @@ TEST(BeliefRoadMapPlannerTest, grid_road_map) {
         .heading_process_noise_rad_per_rt_meter = 1e-3,
         .heading_process_noise_rad_per_rt_s = 0.0,
         .beacon_pos_process_noise_m_per_rt_s = 1e-6,
-        .range_measurement_noise_m = 1e-3,
-        .bearing_measurement_noise_rad = 1e-4,
+        .range_measurement_noise_m = 1e-1,
+        .bearing_measurement_noise_rad = 1e-1,
         .on_map_load_position_uncertainty_m = 2.0,
         .on_map_load_heading_uncertainty_rad = 0.5,
     };
