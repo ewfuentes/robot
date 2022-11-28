@@ -41,6 +41,7 @@ struct SimConfig {
     std::optional<std::string> map_input_path;
     std::optional<std::string> map_output_path;
     bool load_off_diagonals;
+    bool enable_brm_planner;
     bool autostep;
 };
 
@@ -328,7 +329,8 @@ void load_map(const SimConfig &sim_config, InOut<EkfSlam> ekf_slam) {
     ekf_slam->load_map(map, sim_config.load_off_diagonals);
 }
 
-proto::BeaconSimDebug tick_sim(const RobotCommand &command, InOut<BeaconSimState> state) {
+proto::BeaconSimDebug tick_sim(const RobotCommand &command, InOut<BeaconSimState> state,
+                               const SimConfig &config) {
     constexpr ObservationConfig OBS_CONFIG = {
         .range_noise_std_m = 0.1,
         .max_sensor_range_m = 5.0,
@@ -336,17 +338,19 @@ proto::BeaconSimDebug tick_sim(const RobotCommand &command, InOut<BeaconSimState
 
     const Eigen::Vector2d goal_state{-14.0, 0.0};
 
-    // Plan
-    std::cout << "Starting to Plan" << std::endl;
-    const auto brm_plan = compute_belief_road_map_plan(state->road_map, state->ekf, goal_state,
-                                                       OBS_CONFIG.max_sensor_range_m.value());
-    std::cout << "plan complete" << std::endl;
-    for (int idx = 0; idx < static_cast<int>(brm_plan->nodes.size()); idx++) {
-        std::cout << idx << " " << brm_plan->nodes.at(idx) << " "
-                  << brm_plan->beliefs.at(idx).local_from_robot.translation().transpose()
-                  << std::endl;
+    if (config.enable_brm_planner) {
+        // Plan
+        std::cout << "Starting to Plan" << std::endl;
+        const auto brm_plan = compute_belief_road_map_plan(state->road_map, state->ekf, goal_state,
+                                                           OBS_CONFIG.max_sensor_range_m.value());
+        std::cout << "plan complete" << std::endl;
+        for (int idx = 0; idx < static_cast<int>(brm_plan->nodes.size()); idx++) {
+            std::cout << idx << " " << brm_plan->nodes.at(idx) << " "
+                      << brm_plan->beliefs.at(idx).local_from_robot.translation().transpose()
+                      << std::endl;
+        }
+        state->plan = brm_plan.value();
     }
-    state->plan = brm_plan.value();
 
     // simulate robot forward
     state->robot.turn(command.turn_rad);
@@ -517,7 +521,7 @@ void run_simulation(const SimConfig &sim_config) {
 
         if (command.should_step || sim_config.autostep) {
             time::SimClock::advance(DT);
-            auto debug_msg = tick_sim(command, make_in_out(state));
+            auto debug_msg = tick_sim(command, make_in_out(state), sim_config);
             debug_msgs.emplace_back(std::move(debug_msg));
 
             state_queue.push_back(state);
@@ -540,7 +544,7 @@ void run_simulation(const SimConfig &sim_config) {
     if (sim_config.map_output_path) {
         write_out_map(sim_config, state.ekf.estimate());
     }
-}  // namespace robot::experimental::beacon_sim
+}
 }  // namespace robot::experimental::beacon_sim
 
 int main(int argc, char **argv) {
@@ -554,6 +558,7 @@ int main(int argc, char **argv) {
       ("map_output_path", "Path to save map file to" , cxxopts::value<std::string>()->default_value(DEFAULT_MAP_SAVE_LOCATION))
       ("map_input_path", "Path to load map file from", cxxopts::value<std::string>()->default_value(DEFAULT_MAP_LOAD_LOCATION))
       ("load_off_diagonals", "Whether off diagonal terms should be loaded from map")
+      ("enable_brm_planner", "Enable planning after each step")
       ("autostep", "automatically step the sim")
       ("help", "Print usage");
     // clang-format on
@@ -573,6 +578,7 @@ int main(int argc, char **argv) {
                                ? std::make_optional(args["map_output_path"].as<std::string>())
                                : std::nullopt,
         .load_off_diagonals = args["load_off_diagonals"].as<bool>(),
+        .enable_brm_planner = args["enable_brm_planner"].as<bool>(),
         .autostep = args["autostep"].as<bool>(),
     });
 }

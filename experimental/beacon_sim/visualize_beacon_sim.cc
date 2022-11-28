@@ -186,7 +186,7 @@ void visualize_beacon_sim(const BeaconSimState &state, const double zoom_factor,
     // Draw Plan
     if (state.plan.has_value()) {
         const auto &plan = state.plan.value();
-        const int num_nodes_to_draw = std::min(static_cast<int>(plan.nodes.size()), 5);
+        const int num_nodes_to_draw = std::min(static_cast<int>(plan.nodes.size()), 10000);
         glColor3ub(250, 11, 220);
         glBegin(GL_LINE_STRIP);
         for (int plan_idx = 0; plan_idx < num_nodes_to_draw; plan_idx++) {
