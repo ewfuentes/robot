@@ -31,7 +31,7 @@ jobs:
       - name: Setup Cache
         uses: ewfuentes/cache@maybe_skip_write
         env:
-          cache-name: bazel-cache-${{ matrix.version }}
+          cache-name: bazel-cache-${{ matrix.build_config}}
           ref_name: ${{ github.ref_name }}
         with:
           path: |
@@ -58,4 +58,4 @@ jobs:
 
       - name: Run Unit Tests
         run: |
-          bazel test --config=${{ matrix.version }} //... --test_output=errors
+          bazel test --config=${{ matrix.build_config }} //... --test_output=errors
