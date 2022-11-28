@@ -16,11 +16,21 @@ on:
 
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  # This workflow contains a single job called "build"
   lint:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checking out  ${{ github.sha }}
+        uses: actions/checkout@v3
+
+      - name: Lint C++ Files
+        run: |
+          shopt -s globstar
+          clang-format --dry-run --Werror **/*.cc **/*.hh
+
+  unit-test:
     strategy:
       matrix:
-        build_config: [gcc, clang]
+        build-config: [gcc, clang]
     # The type of runner that the job will run on
     runs-on: ubuntu-22.04
 
@@ -31,7 +41,7 @@ jobs:
       - name: Setup Cache
         uses: ewfuentes/cache@maybe_skip_write
         env:
-          cache-name: bazel-cache-${{ matrix.build_config}}
+          cache-name: bazel-cache-${{ matrix.build-config}}
           ref_name: ${{ github.ref_name }}
         with:
           path: |
@@ -51,11 +61,6 @@ jobs:
         run: |
           ./setup.sh
 
-      - name: Lint C++ Files
-        run: |
-          shopt -s globstar
-          clang-format --dry-run --Werror **/*.cc **/*.hh
-
       - name: Run Unit Tests
         run: |
-          bazel test --config=${{ matrix.build_config }} //... --test_output=errors
+          bazel test --config=${{ matrix.build-config }} //... --test_output=errors
