@@ -13,6 +13,7 @@ TEST(BeaconTest, static_beacon_test) {
                                       {.id = 4, .pos_in_local = {5.0, 6.0}},
                                       {.id = 7, .pos_in_local = {8.0, 9.0}}}},
         .blinking_beacons = {},
+        .obstacles = {},
     };
 
     // Action
@@ -41,6 +42,7 @@ TEST(BeaconTest, blinking_beacon_test) {
                                          {.id = 7, .pos_in_local = {8.0, 9.0}}},
                              .beacon_appear_rate_hz = 1.0,
                              .beacon_disappear_rate_hz = 0.5},
+        .obstacles = {},
     };
 
     WorldMap map(config);

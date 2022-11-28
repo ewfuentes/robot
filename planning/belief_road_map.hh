@@ -158,7 +158,7 @@ std::optional<BRMPlan<Belief>> plan(const RoadMap &road_map, const Belief &initi
 
 namespace std {
 template <typename Belief>
-struct std::hash<robot::planning::detail::BRMSearchState<Belief>> {
+struct hash<robot::planning::detail::BRMSearchState<Belief>> {
     size_t operator()(const robot::planning::detail::BRMSearchState<Belief> &state) const {
         std::hash<Belief> belief_hasher;
         std::hash<int> int_hasher;

@@ -101,7 +101,7 @@ TEST(BeliefRoadMapTest, linear_graph) {
 
 namespace std {
 template <>
-struct std::hash<robot::planning::GaussianBelief> {
+struct hash<robot::planning::GaussianBelief> {
     size_t operator()(const robot::planning::GaussianBelief &belief) const {
         std::hash<double> double_hasher;
         return double_hasher(belief.mean.norm());

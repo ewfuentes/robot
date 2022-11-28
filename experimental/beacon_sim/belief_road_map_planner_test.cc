@@ -109,6 +109,7 @@ TEST(BeliefRoadMapPlannerTest, grid_road_map) {
     // Setup
     const EkfSlamConfig ekf_config{
         .max_num_beacons = 1,
+        .initial_beacon_uncertainty_m = 100.0,
         .along_track_process_noise_m_per_rt_meter = 0.05,
         .cross_track_process_noise_m_per_rt_meter = 0.05,
         .pos_process_noise_m_per_rt_s = 0.0,

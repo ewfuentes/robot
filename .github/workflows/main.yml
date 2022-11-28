@@ -18,6 +18,9 @@ on:
 jobs:
   # This workflow contains a single job called "build"
   lint:
+    strategy:
+      matrix:
+        build_config: [gcc, clang]
     # The type of runner that the job will run on
     runs-on: ubuntu-22.04
 
@@ -28,7 +31,7 @@ jobs:
       - name: Setup Cache
         uses: ewfuentes/cache@maybe_skip_write
         env:
-          cache-name: bazel-cache
+          cache-name: bazel-cache-${{ matrix.version }}
           ref_name: ${{ github.ref_name }}
         with:
           path: |
@@ -55,4 +58,4 @@ jobs:
 
       - name: Run Unit Tests
         run: |
-          bazel test //... --test_output=errors
+          bazel test --config=${{ matrix.version }} //... --test_output=errors

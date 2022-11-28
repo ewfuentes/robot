@@ -6,7 +6,7 @@ def _impl(ctx):
     tool_paths = [
       tool_path(
         name = "gcc",
-        path = "/usr/bin/clang-14",
+        path = "/usr/bin/gcc-11",
       ),
       tool_path(
         name = "ar",
@@ -14,7 +14,7 @@ def _impl(ctx):
       ),
       tool_path(
         name = "ld",
-        path = "/usr/bin/ld.lld-14",
+        path = "/usr/bin/ld.gold",
       ),
       tool_path(
         name = "cpp",
@@ -90,50 +90,6 @@ def _impl(ctx):
           ]
       ),
       feature(
-          name="ubsan",
-          enabled=False,
-          flag_sets = [
-            flag_set(
-              actions = all_compile_actions + all_link_actions,
-              flag_groups = [
-                flag_group(
-                  flags=["-fsanitize=undefined"],
-                )
-              ]
-            ),
-            flag_set(
-              actions = all_link_actions,
-              flag_groups = [
-                flag_group(
-                  flags=["-fuse-ld=lld", "-lubsan"],
-                )
-              ]
-            )
-          ]
-      ),
-      feature(
-          name="asan",
-          enabled=False,
-          flag_sets = [
-            flag_set(
-              actions = all_compile_actions + all_link_actions,
-              flag_groups = [
-                flag_group(
-                  flags=["-fsanitize=address"],
-                )
-              ]
-            ),
-            flag_set(
-              actions = all_link_actions,
-              flag_groups = [
-                flag_group(
-                  flags=["-fuse-ld=lld"],
-                )
-              ]
-            )
-          ]
-      ),
-      feature(
           name="dbg",
           enabled=False,
           flag_sets = [
@@ -181,24 +137,22 @@ def _impl(ctx):
       ctx=ctx,
       features = features,
       cxx_builtin_include_directories = [
-        "/usr/lib/llvm-14/lib/clang/14.0.0/include",
         "/usr/include",
-        "/usr/include/c++/12",
-        "/usr/include/x86_64-linux-gnu/c++/12",
-        "/usr/lib/llvm-14/lib/clang/14.0.0/share",
+        "/usr/include/c++/11",
+        "/usr/lib/gcc/x86_64-linux-gnu/11/include",
       ],
-      toolchain_identifier="k8-clang-toolchain",
+      toolchain_identifier="k8-gcc-toolchain",
       host_system_name="local",
       target_system_name="local",
       target_cpu="k8",
       target_libc="unknown",
-      compiler="clang",
+      compiler="gcc",
       abi_version="unknown",
       abi_libc_version="unknown",
       tool_paths = tool_paths
     )
 
-cc_toolchain_config = rule(
+gcc_toolchain_config = rule(
     implementation = _impl,
     attrs = {},
     provides = [CcToolchainConfigInfo]

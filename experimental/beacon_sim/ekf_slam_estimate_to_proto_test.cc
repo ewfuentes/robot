@@ -7,6 +7,7 @@ namespace robot::experimental::beacon_sim {
 TEST(EkfSlamEstimateToProtoTest, pack_unpack) {
     // Setup
     const EkfSlamEstimate in = {
+        .time_of_validity = std::chrono::milliseconds(987) + time::RobotTimestamp(),
         .mean = Eigen::VectorXd{{1.0, 2.0, 3.0, 4.0}},
         .cov = Eigen::MatrixXd{{0.1, 0.2, 0.3}, {90.0, 80.0, 70.0}, {-100.0, -200.0, -300.0}},
         .beacon_ids = {123, 234, 345, 567},
