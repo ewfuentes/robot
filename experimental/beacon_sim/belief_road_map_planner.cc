@@ -187,7 +187,7 @@ std::optional<planning::BRMPlan<RobotBelief>> compute_belief_road_map_plan(
 
 namespace std {
 template <>
-struct std::hash<robot::experimental::beacon_sim::RobotBelief> {
+struct hash<robot::experimental::beacon_sim::RobotBelief> {
     std::size_t operator()(const robot::experimental::beacon_sim::RobotBelief &belief) const {
         std::hash<double> double_hasher;
         // This is probably a terrible hash function

@@ -67,6 +67,8 @@ beacon_sim::WorldMapConfig unpack_from(const WorldMapConfig &in) {
     return beacon_sim::WorldMapConfig{
         .fixed_beacons = unpack_from(in.fixed_beacons()),
         .blinking_beacons = unpack_from(in.blinking_beacons()),
+        // TODO add pack/unpack for obstacles
+        .obstacles = {},
     };
 }
 }  // namespace robot::experimental::beacon_sim::proto

@@ -117,6 +117,7 @@ std::optional<AStarResult<State>> a_star(const State &initial_state,
                 .cost_to_come = curr_node_cost_to_come + successor.edge_cost,
                 .est_cost_to_go = heuristic(successor.state),
                 .in_open = true,
+                .should_skip = false,
             };
             auto in_expanded_iter = expanded_nodes.find(successor_node.state);
             if (in_expanded_iter != expanded_nodes.end()) {

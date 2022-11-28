@@ -1,6 +1,7 @@
 
 build --config=clang
-
-build:clang --crosstool_top=//toolchain:clang_suite
+build --crosstool_top=//toolchain:cpp_suite
 build:clang --compiler=clang
 build:clang --host_crosstool_top=@bazel_tools//tools/cpp:toolchain
+build:gcc --compiler=gcc
+build:gcc --host_crosstool_top=@bazel_tools//tools/cpp:toolchain

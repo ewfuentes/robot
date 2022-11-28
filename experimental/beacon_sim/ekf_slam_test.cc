@@ -44,9 +44,12 @@ TEST(EkfSlamTest, estimate_has_expected_dimensions) {
         .cross_track_process_noise_m_per_rt_meter = 0.01,
         .pos_process_noise_m_per_rt_s = 0.0,
         .heading_process_noise_rad_per_rt_meter = 0.001,
+        .heading_process_noise_rad_per_rt_s = 0.0,
         .beacon_pos_process_noise_m_per_rt_s = 0.1,
         .range_measurement_noise_m = 0.5,
         .bearing_measurement_noise_rad = 0.001,
+        .on_map_load_position_uncertainty_m = 100.0,
+        .on_map_load_heading_uncertainty_rad = 3.0,
     };
     constexpr int EXPECTED_ROBOT_DIM = 3;
     constexpr int EXPECTED_BEACON_DIM = 2;
@@ -77,9 +80,12 @@ TEST(EkfSlamTest, prediction_updates_as_expected) {
         .cross_track_process_noise_m_per_rt_meter = 0.01,
         .pos_process_noise_m_per_rt_s = 0.0,
         .heading_process_noise_rad_per_rt_meter = 0.001,
+        .heading_process_noise_rad_per_rt_s = 0.0,
         .beacon_pos_process_noise_m_per_rt_s = 0.1,
         .range_measurement_noise_m = 0.5,
         .bearing_measurement_noise_rad = 0.001,
+        .on_map_load_position_uncertainty_m = 100.0,
+        .on_map_load_heading_uncertainty_rad = 3.0,
     };
     EkfSlam ekf_slam(CONFIG, time::RobotTimestamp());
     const liegroups::SE2 old_robot_from_new_robot = liegroups::SE2::exp({1.0, 2.0, 3.0});
@@ -103,9 +109,12 @@ TEST(EkfSlamTest, measurement_updates_as_expected) {
         .cross_track_process_noise_m_per_rt_meter = 0.01,
         .pos_process_noise_m_per_rt_s = 0.0,
         .heading_process_noise_rad_per_rt_meter = 0.001,
+        .heading_process_noise_rad_per_rt_s = 0.0,
         .beacon_pos_process_noise_m_per_rt_s = 0.1,
         .range_measurement_noise_m = 0.5,
         .bearing_measurement_noise_rad = 0.001,
+        .on_map_load_position_uncertainty_m = 100.0,
+        .on_map_load_heading_uncertainty_rad = 3.0,
     };
 
     constexpr int BEACON_ID = 10;
@@ -138,9 +147,12 @@ TEST(EkfSlamTest, identity_update_does_not_change_estimate) {
         .cross_track_process_noise_m_per_rt_meter = 0.01,
         .pos_process_noise_m_per_rt_s = 0.0,
         .heading_process_noise_rad_per_rt_meter = 0.001,
+        .heading_process_noise_rad_per_rt_s = 0.0,
         .beacon_pos_process_noise_m_per_rt_s = 1e-6,
         .range_measurement_noise_m = 1e-3,
         .bearing_measurement_noise_rad = 1e-6,
+        .on_map_load_position_uncertainty_m = 100.0,
+        .on_map_load_heading_uncertainty_rad = 3.0,
     };
 
     EkfSlam ekf_slam(CONFIG, time::RobotTimestamp());
@@ -175,6 +187,8 @@ TEST(EkfSlamTest, position_estimate_converges_given_known_beacon) {
         .beacon_pos_process_noise_m_per_rt_s = 1e-9,
         .range_measurement_noise_m = 1e-3,
         .bearing_measurement_noise_rad = 1e-3,
+        .on_map_load_position_uncertainty_m = 100.0,
+        .on_map_load_heading_uncertainty_rad = 3.0,
     };
 
     constexpr std::array<int, 2> BEACON_IDS = {10, 11};
@@ -230,13 +244,18 @@ TEST(EkfSlamTest, rotating_in_place_yields_same_pos_covariance_directions) {
         .cross_track_process_noise_m_per_rt_meter = 0.0,
         .pos_process_noise_m_per_rt_s = 0.0,
         .heading_process_noise_rad_per_rt_meter = 0.0,
+        .heading_process_noise_rad_per_rt_s = 0.0,
         .beacon_pos_process_noise_m_per_rt_s = 0.0,
         .range_measurement_noise_m = 0.0,
         .bearing_measurement_noise_rad = 0.0,
+        .on_map_load_position_uncertainty_m = 100.0,
+        .on_map_load_heading_uncertainty_rad = 3.0,
     };
     const EkfSlamEstimate est = {
+        .time_of_validity = time::RobotTimestamp(),
         .mean = liegroups::SE2::trans(12.0, 34.0).log(),
         .cov = Eigen::DiagonalMatrix<double, 3>(1.0, 2.0, 3.0),
+        .beacon_ids = {},
     };
 
     const liegroups::SE2 old_robot_from_new_robot = liegroups::SE2(std::numbers::pi / 2, {0, 0});
@@ -266,6 +285,7 @@ TEST(EkfSlamTest, incorporate_mapped_landmark) {
         .cross_track_process_noise_m_per_rt_meter = 0.0,
         .pos_process_noise_m_per_rt_s = 0.0,
         .heading_process_noise_rad_per_rt_meter = 0.0,
+        .heading_process_noise_rad_per_rt_s = 0.0,
         .beacon_pos_process_noise_m_per_rt_s = 0.0,
         .range_measurement_noise_m = 0.0,
         .bearing_measurement_noise_rad = 0.0,
@@ -305,7 +325,8 @@ TEST(CreateMeasurementTest, incomplete_measurements_rejected) {
         {.maybe_id = 789, .maybe_range_m = 30.0, .maybe_bearing_rad = 3.0}};
 
     const int ESTIMATE_DIM = 3 + 2 * observations.size();
-    const EkfSlamEstimate estimate = {.mean = Eigen::VectorXd::Zero(ESTIMATE_DIM),
+    const EkfSlamEstimate estimate = {.time_of_validity = time::RobotTimestamp(),
+                                      .mean = Eigen::VectorXd::Zero(ESTIMATE_DIM),
                                       .cov = Eigen::MatrixXd::Zero(ESTIMATE_DIM, ESTIMATE_DIM),
                                       .beacon_ids = {123, 456, 789}};
 
@@ -337,6 +358,7 @@ TEST(CreateMeasurementTest, correct_observation_matrix) {
     const Eigen::Vector2d est_beacon_456_in_local{0.0, 20.0};
 
     const EkfSlamEstimate estimate = {
+        .time_of_validity = time::RobotTimestamp(),
         .mean = (Eigen::VectorXd(ESTIMATE_DIM) << est_local_from_robot.log(),
                  est_beacon_123_in_local, est_beacon_456_in_local)
                     .finished(),
@@ -417,6 +439,7 @@ TEST(CreateMeasurementTest, innovation_handles_wrap_around) {
                                                   RANGE_M * std::sin(ESTIMATED_BEARING_RAD)};
 
     const EkfSlamEstimate estimate = {
+        .time_of_validity = time::RobotTimestamp(),
         .mean =
             (Eigen::VectorXd(ESTIMATE_DIM) << est_local_from_robot.log(), est_beacon_123_in_local)
                 .finished(),

@@ -411,6 +411,7 @@ void run_simulation(const SimConfig &sim_config) {
         .robot = RobotState(INIT_POS_X_M, INIT_POS_Y_M, INIT_HEADING_RAD),
         .ekf = EkfSlam(EKF_CONFIG, time::current_robot_time()),
         .observations = {},
+        .plan = std::nullopt,
         .gen = std::mt19937(0),
     };
 

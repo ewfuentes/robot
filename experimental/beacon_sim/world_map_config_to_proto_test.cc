@@ -112,6 +112,8 @@ TEST(WorldMapConfigToProtoTest, world_map_config_pack_unpack) {
                 .beacon_appear_rate_hz = 100.0,
                 .beacon_disappear_rate_hz = -300.0,
             },
+        // TODO Add obstacles to pack/unpack
+        .obstacles = {},
     };
 
     // Action
