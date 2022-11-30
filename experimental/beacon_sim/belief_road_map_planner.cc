@@ -228,8 +228,6 @@ EdgeBeliefTransform compute_edge_belief_transform(const liegroups::SE2 &local_fr
     constexpr double DT_S = 1.0;
     constexpr double VELOCITY_MPS = 2.0;
     constexpr double ANGULAR_VELOCITY_RADPS = 2.0;
-    (void)ekf_estimate;
-    (void)max_sensor_range_m;
 
     liegroups::SE2 local_from_new_robot = local_from_robot;
     constexpr double TOL = 1e-6;
