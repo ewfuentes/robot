@@ -558,7 +558,7 @@ int main(int argc, char **argv) {
       ("map_output_path", "Path to save map file to" , cxxopts::value<std::string>()->default_value(DEFAULT_MAP_SAVE_LOCATION))
       ("map_input_path", "Path to load map file from", cxxopts::value<std::string>()->default_value(DEFAULT_MAP_LOAD_LOCATION))
       ("load_off_diagonals", "Whether off diagonal terms should be loaded from map")
-      ("enable_brm_planner", "Enable planning after each step")
+      ("enable_brm_planner", "Generate BRM plan after each step")
       ("autostep", "automatically step the sim")
       ("help", "Print usage");
     // clang-format on
