@@ -256,7 +256,7 @@ EdgeBeliefTransform compute_edge_belief_transform(const liegroups::SE2 &local_fr
     for (Eigen::Vector2d end_in_robot = local_from_robot.inverse() * end_state_in_local;
          end_in_robot.norm() > TOL;
          end_in_robot = local_from_new_robot.inverse() * end_state_in_local) {
-            // Move towards the goal
+        // Move towards the goal
         const liegroups::SE2 old_robot_from_new_robot = [&]() {
             const double angle_to_goal_rad = std::atan2(end_in_robot.y(), end_in_robot.x());
             if (std::abs(angle_to_goal_rad) > TOL) {
