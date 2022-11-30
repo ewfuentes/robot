@@ -247,7 +247,7 @@ EdgeBeliefTransform compute_edge_belief_transform(const liegroups::SE2 &local_fr
                                                   const EkfSlamConfig &ekf_config,
                                                   const EkfSlamEstimate &ekf_estimate,
                                                   const double max_sensor_range_m) {
-    constexpr double DT_S = 0.1;
+    constexpr double DT_S = 1.0;
     constexpr double VELOCITY_MPS = 2.0;
     constexpr double ANGULAR_VELOCITY_RADPS = 2.0;
 
