@@ -247,7 +247,7 @@ EdgeBeliefTransform compute_edge_belief_transform(const liegroups::SE2 &local_fr
                                                   const EkfSlamConfig &ekf_config,
                                                   const EkfSlamEstimate &ekf_estimate,
                                                   const double max_sensor_range_m) {
-    constexpr double DT_S = 1.0;
+    constexpr double DT_S = 0.1;
     constexpr double VELOCITY_MPS = 2.0;
     constexpr double ANGULAR_VELOCITY_RADPS = 2.0;
 
@@ -257,14 +257,17 @@ EdgeBeliefTransform compute_edge_belief_transform(const liegroups::SE2 &local_fr
     for (Eigen::Vector2d end_in_robot = local_from_robot.inverse() * end_state_in_local;
          end_in_robot.norm() > TOL;
          end_in_robot = local_from_new_robot.inverse() * end_state_in_local) {
+            // Move towards the goal
         const liegroups::SE2 old_robot_from_new_robot = [&]() {
             const double angle_to_goal_rad = std::atan2(end_in_robot.y(), end_in_robot.x());
             if (std::abs(angle_to_goal_rad) > TOL) {
+                // First turn to face the goal
                 constexpr double MAX_ANGLE_STEP_RAD = DT_S * ANGULAR_VELOCITY_RADPS;
                 const double angle_step_rad = std::copysign(
                     std::min(std::abs(angle_to_goal_rad), MAX_ANGLE_STEP_RAD), angle_to_goal_rad);
                 return liegroups::SE2::rot(angle_step_rad);
             } else {
+                // Then drive towards the goal
                 constexpr double MAX_DIST_STEP_M = DT_S * VELOCITY_MPS;
                 const double dist_step_m = std::min(end_in_robot.x(), MAX_DIST_STEP_M);
                 return liegroups::SE2::transX(dist_step_m);
