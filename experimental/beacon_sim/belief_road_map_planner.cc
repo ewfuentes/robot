@@ -93,6 +93,17 @@ BeliefTransformMatrix compute_process_transform(const Eigen::Matrix3d &process_n
     const Eigen::Matrix3d inv_dynamics_jac_wrt_state_trans =
         old_robot_from_new_robot.Adj().transpose();
 
+    // The usual process update is:
+    // sigma_{t|t-1} = F * sigma_{t-1} * F' + Q
+    // Substituting sigma_{t-1} = A * B^-1
+    // sigma_{t|t-1} = (F * A) * (B^-1 * F') + Q
+    // sigma_{t|t-1} = (F * A) * (B^-1 * F') + Q * (B^-1 * F')^-1 * (B^-1 * F')
+    // sigma_{t|t-1} = (F * A + Q * (B^`-1 * F')^-1) * (B^-1 * F')
+    // sigma_{t|t-1} = (F * A + Q * F'^-1 * B) * (B^-1 * F')
+    // sigma_{t|t-1} = (F * A + Q * F'^-1 * B) * (F'^-1 * B)^-1
+    // [A_{t|t-1} B_{t|t-1}]' = [[F, Q*F'^-1]  [A, B]'
+    //                           [0,   F'^-1]]
+
     return (BeliefTransformMatrix() << dynamics_jac_wrt_state,
             process_noise * inv_dynamics_jac_wrt_state_trans, Eigen::Matrix3d::Zero(),
             inv_dynamics_jac_wrt_state_trans)
@@ -127,6 +138,17 @@ BeliefTransformMatrix compute_measurement_transform(const liegroups::SE2 &local_
     const Eigen::MatrixXd measurement_noise =
         build_measurement_noise(observations.size(), ekf_config.range_measurement_noise_m,
                                 ekf_config.bearing_measurement_noise_rad);
+
+    // The Information form of the update is:
+    // sigma_t = (sigma_{t|t-1}^-1 + H' * R^-1 * H)^-1
+    // Substituting sigma_{t|t-1} = A * B^-1
+    // sigma_t = ((A * B^-1)^-1 + H' * R^-1 * H)^-1
+    // sigma_t = ((B * A^-1 + H' * R^-1 * H)^-1
+    // sigma_t = ((B * A^-1 + H' * R^-1 * H * A * A^-1)^-1
+    // sigma_t = ((B + H' * R^-1 * H * A) * A^-1 )^-1
+    // sigma_t = A * (B + H' * R^-1 * H * A)^-1
+    // [A_t B_t]' = [[        I, 0]  [A, B]'
+    //               [H'*R^-1*H, I]]
 
     return (BeliefTransformMatrix() << Eigen::Matrix3d::Identity(), Eigen::Matrix3d::Zero(),
             observation_matrix.transpose() * measurement_noise.inverse() * observation_matrix,
