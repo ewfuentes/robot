@@ -6,11 +6,16 @@
 #include <unordered_map>
 
 #include "Eigen/Core"
+#include "common/liegroups/se2.hh"
+#include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/generate_observations.hh"
 #include "experimental/beacon_sim/robot.hh"
 
 namespace robot::experimental::beacon_sim {
 namespace {
+using BeliefTransformMatrix =
+    Eigen::Matrix<double, 2 * liegroups::SE2::DoF, 2 * liegroups::SE2::DoF>;
+
 struct DirectedEdge {
     int source;
     int destination;
@@ -31,173 +36,128 @@ struct DirectedEdgeHash {
     }
 };
 
-struct EdgeBeliefTransform {
-    liegroups::SE2 local_from_robot;
-    Eigen::Matrix2d cov_transform;
-};
+Eigen::Matrix3d compute_process_noise(const EkfSlamConfig &config, const double dt_s,
+                                      const double arclength_m) {
+    const auto sq = [](const double x) { return x * x; };
 
-// std::vector<BeaconObservation> generate_observations(const liegroups::SE2 &local_from_robot,
-//                                                      const EkfSlamEstimate &estimate,
-//                                                      const double max_sensor_range_m) {
-//     std::vector<BeaconObservation> out;
-//     const RobotState robot_state(local_from_robot);
-//     const ObservationConfig config = {
-//         .range_noise_std_m = std::nullopt,
-//         .max_sensor_range_m = max_sensor_range_m,
-//     };
-//
-//     for (const int beacon_id : estimate.beacon_ids) {
-//         std::mt19937 gen(0);
-//         Beacon beacon = {
-//             .id = beacon_id,
-//             .pos_in_local = estimate.beacon_in_local(beacon_id).value(),
-//         };
-//         const auto &maybe_observation =
-//             generate_observation(beacon, robot_state, config, make_in_out(gen));
-//         if (maybe_observation.has_value()) {
-//             out.push_back(maybe_observation.value());
-//         }
-//     }
-//     return out;
-// }
-//
-// Eigen::MatrixXd build_measurement_noise(const int num_observations,
-//                                         const double range_measurement_noise_m,
-//                                         const double bearing_measurement_noise_rad) {
-//     Eigen::MatrixXd noise = Eigen::MatrixXd::Identity(2 * num_observations, 2 *
-//     num_observations);
-//
-//     noise(Eigen::seq(0, Eigen::last, 2), Eigen::all) *=
-//         range_measurement_noise_m * range_measurement_noise_m;
-//     noise(Eigen::seq(1, Eigen::last, 2), Eigen::all) *=
-//         bearing_measurement_noise_rad * bearing_measurement_noise_rad;
-//
-//     return noise;
-// }
+    return Eigen::DiagonalMatrix<double, 3>(
+        sq(config.along_track_process_noise_m_per_rt_meter) * arclength_m +
+            sq(config.pos_process_noise_m_per_rt_s) * dt_s,
+        sq(config.cross_track_process_noise_m_per_rt_meter) * arclength_m +
+            sq(config.pos_process_noise_m_per_rt_s) * dt_s,
+        sq(config.heading_process_noise_rad_per_rt_meter) * arclength_m +
+            sq(config.heading_process_noise_rad_per_rt_s) * dt_s);
+}
 
-EdgeBeliefTransform compute_edge_transform(const planning::RoadMap &road_map,
-                                           const liegroups::SE2 &local_from_initial_robot,
-                                           const Eigen::Vector2d &neighbor_pos_in_local) {
-         constexpr double DT_S = 1.0;
-         constexpr double VELOCITY_MPS = 2.0;
-         constexpr double ANGULAR_VELOCITY_RADPS = 2.0;
-    //     RobotBelief out = initial_belief;
-    //     const EkfSlamConfig &config = ekf.config();
-    //     const EkfSlamEstimate &est = ekf.estimate();
-    //
-    //     while ((out.local_from_robot.inverse() * end_position).norm() > 1e-6) {
-    //         // Prediction Update
-    //         {
-    //             // Compute the control action to get us closer to the goal
-    //             const liegroups::SE2 old_robot_from_new_robot = [&]() {
-    //                 constexpr double ANGLE_TOL = 1e-6;
-    //                 const Eigen::Vector2d goal_in_robot = out.local_from_robot.inverse() *
-    //                 end_position; const double angle_to_goal_rad = std::atan2(goal_in_robot.y(),
-    //                 goal_in_robot.x()); if (std::abs(angle_to_goal_rad) > ANGLE_TOL) {
-    //                     constexpr double MAX_STEP_TURN_RAD = ANGULAR_VELOCITY_RADPS * DT_S;
-    //                     const double step_turn_amount_rad =
-    //                         std::copysign(std::min(std::abs(angle_to_goal_rad),
-    //                         MAX_STEP_TURN_RAD),
-    //                                       angle_to_goal_rad);
-    //                     return liegroups::SE2::rot(step_turn_amount_rad);
-    //                 } else {
-    //                     constexpr double MAX_STEP_DIST_M = VELOCITY_MPS * DT_S;
-    //                     const double dist_to_goal_m = goal_in_robot.norm();
-    //                     const double step_travel_m = std::min(dist_to_goal_m, MAX_STEP_DIST_M);
-    //                     return liegroups::SE2::transX(step_travel_m);
-    //                 }
-    //             }();
-    //
-    //             const auto sq = [](const double x) { return x * x; };
-    //             const Eigen::Matrix3d process_noise_in_robot = Eigen::DiagonalMatrix<double, 3>{
-    //                 // Along track noise
-    //                 sq(config.along_track_process_noise_m_per_rt_meter) *
-    //                         old_robot_from_new_robot.arclength() +
-    //                     sq(config.pos_process_noise_m_per_rt_s) * DT_S,
-    //                 // Cross track noise
-    //                 sq(config.cross_track_process_noise_m_per_rt_meter) *
-    //                         old_robot_from_new_robot.arclength() +
-    //                     sq(config.pos_process_noise_m_per_rt_s) * DT_S,
-    //                 // Heading noise
-    //                 sq(config.heading_process_noise_rad_per_rt_meter) *
-    //                         old_robot_from_new_robot.arclength() +
-    //                     sq(config.heading_process_noise_rad_per_rt_s) * DT_S,
-    //             };
-    //
-    //             out.local_from_robot = out.local_from_robot * old_robot_from_new_robot;
-    //             const Eigen::Matrix3d dynamics_jac_wrt_state =
-    //             old_robot_from_new_robot.inverse().Adj(); out.cov_in_robot =
-    //                 dynamics_jac_wrt_state * out.cov_in_robot *
-    //                 dynamics_jac_wrt_state.transpose() + process_noise_in_robot;
-    //         }
-    //
-    //         // Measurement Update
-    //         {
-    //             const std::vector<BeaconObservation> observations =
-    //                 generate_observations(out.local_from_robot, ekf.estimate(),
-    //                 max_sensor_range_m);
-    //
-    //             if (observations.size() == 0) {
-    //                 continue;
-    //             }
-    //
-    //             EkfSlamEstimate updated_est = est;
-    //
-    //             updated_est.mean.head<2>() = out.local_from_robot.translation();
-    //             updated_est.mean(2) = out.local_from_robot.so2().log();
-    //
-    //             const detail::UpdateInputs inputs =
-    //                 detail::compute_measurement_and_prediction(observations, updated_est);
-    //
-    //             const Eigen::MatrixXd observation_matrix =
-    //                 inputs.observation_matrix(Eigen::all, Eigen::seqN(0, 3));
-    //
-    //             const Eigen::MatrixXd measurement_noise =
-    //                 build_measurement_noise(observations.size(),
-    //                 config.range_measurement_noise_m,
-    //                                         config.bearing_measurement_noise_rad);
-    //
-    //             const Eigen::MatrixXd innovation_cov =
-    //                 observation_matrix * out.cov_in_robot * observation_matrix.transpose() +
-    //                 measurement_noise;
-    //             const Eigen::MatrixXd kalman_gain =
-    //                 out.cov_in_robot * observation_matrix.transpose() * innovation_cov.inverse();
-    //             const Eigen::Matrix3d I_min_KH =
-    //                 Eigen::Matrix3d::Identity() - kalman_gain * observation_matrix;
-    //             out.cov_in_robot = I_min_KH * out.cov_in_robot;
-    //         }
-    //     }
-    return EdgeBeliefTransform{
-        .local_from_robot = liegroups::SE2(),
-        .cov_transform = Eigen::MatrixXd(),
+std::vector<BeaconObservation> generate_observations(const liegroups::SE2 &local_from_robot,
+                                                     const EkfSlamEstimate &estimate,
+                                                     const double max_sensor_range_m) {
+    std::vector<BeaconObservation> out;
+    const RobotState robot_state(local_from_robot);
+    const ObservationConfig config = {
+        .range_noise_std_m = std::nullopt,
+        .max_sensor_range_m = max_sensor_range_m,
     };
+
+    for (const int beacon_id : estimate.beacon_ids) {
+        std::mt19937 gen(0);
+        Beacon beacon = {
+            .id = beacon_id,
+            .pos_in_local = estimate.beacon_in_local(beacon_id).value(),
+        };
+        const auto &maybe_observation =
+            generate_observation(beacon, robot_state, config, make_in_out(gen));
+        if (maybe_observation.has_value()) {
+            out.push_back(maybe_observation.value());
+        }
+    }
+    return out;
+}
+
+Eigen::MatrixXd build_measurement_noise(const int num_observations,
+                                        const double range_measurement_noise_m,
+                                        const double bearing_measurement_noise_rad) {
+    Eigen::MatrixXd noise = Eigen::MatrixXd::Identity(2 * num_observations, 2 * num_observations);
+
+    noise(Eigen::seq(0, Eigen::last, 2), Eigen::all) *=
+        range_measurement_noise_m * range_measurement_noise_m;
+    noise(Eigen::seq(1, Eigen::last, 2), Eigen::all) *=
+        bearing_measurement_noise_rad * bearing_measurement_noise_rad;
+
+    return noise;
+}
+
+BeliefTransformMatrix compute_process_transform(const Eigen::Matrix3d &process_noise,
+                                                const liegroups::SE2 &old_robot_from_new_robot) {
+    const Eigen::Matrix3d dynamics_jac_wrt_state = old_robot_from_new_robot.inverse().Adj();
+    const Eigen::Matrix3d inv_dynamics_jac_wrt_state_trans =
+        old_robot_from_new_robot.Adj().transpose();
+
+    return (BeliefTransformMatrix() << dynamics_jac_wrt_state,
+            process_noise * inv_dynamics_jac_wrt_state_trans, Eigen::Matrix3d::Zero(),
+            inv_dynamics_jac_wrt_state_trans)
+        .finished();
+}
+
+BeliefTransformMatrix compute_measurement_transform(const liegroups::SE2 &local_from_robot,
+                                                    const EkfSlamConfig &ekf_config,
+                                                    const EkfSlamEstimate &ekf_estimate,
+                                                    const double max_sensor_range_m) {
+    // Simulate observations
+    const auto observations =
+        generate_observations(local_from_robot, ekf_estimate, max_sensor_range_m);
+
+    if (observations.empty()) {
+        return BeliefTransformMatrix::Identity();
+    }
+
+    // Generate the observation matrix
+    EkfSlamEstimate updated_est = ekf_estimate;
+
+    updated_est.mean.head<2>() = local_from_robot.translation();
+    updated_est.mean(2) = local_from_robot.so2().log();
+
+    const detail::UpdateInputs inputs =
+        detail::compute_measurement_and_prediction(observations, updated_est);
+
+    const Eigen::MatrixXd observation_matrix =
+        inputs.observation_matrix(Eigen::all, Eigen::seqN(0, liegroups::SE2::DoF));
+
+    // Generate the measurement noise
+    const Eigen::MatrixXd measurement_noise =
+        build_measurement_noise(observations.size(), ekf_config.range_measurement_noise_m,
+                                ekf_config.bearing_measurement_noise_rad);
+
+    return (BeliefTransformMatrix() << Eigen::Matrix3d::Identity(), Eigen::Matrix3d::Zero(),
+            observation_matrix.transpose() * measurement_noise.inverse() * observation_matrix,
+            Eigen::Matrix3d::Identity())
+        .finished();
 }
 
 planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap &road_map,
                                                          const Eigen::Vector2d &goal_state,
                                                          const double max_sensor_range_m,
                                                          const EkfSlam &ekf) {
-    std::unordered_map<DirectedEdge, EdgeBeliefTransform, DirectedEdgeHash> edge_transform_cache;
+    std::unordered_map<DirectedEdge, detail::EdgeBeliefTransform, DirectedEdgeHash>
+        edge_transform_cache;
     return [&road_map, goal_state, max_sensor_range_m, &ekf,
             edge_transform_cache = std::move(edge_transform_cache)](
-               const RobotBelief &initial_belief, const int start_idx, const int end_idx) mutable {
-        (void)road_map;
-        (void)goal_state;
-        (void)max_sensor_range_m;
-        (void)ekf;
+               const RobotBelief &initial_belief, const int start_idx,
+               const int end_idx) mutable -> RobotBelief {
         // Get the belief edge transform, optionally updating the cache
         const DirectedEdge edge = {
             .source = start_idx,
             .destination = end_idx,
-            .initial_heading_in_local = initial_belief.local_from_robot.so().log(),
+            .initial_heading_in_local = initial_belief.local_from_robot.so2().log(),
         };
         const auto cache_iter = edge_transform_cache.find(edge);
         const bool is_in_cache = cache_iter != edge_transform_cache.end();
         const auto end_pos_in_local = end_idx < 0 ? goal_state : road_map.points.at(end_idx);
-        const EdgeBeliefTransform &transform =
+        const detail::EdgeBeliefTransform &transform =
             is_in_cache ? cache_iter->second
-                        : compute_edge_transform(road_map, initial_belief.local_from_robot,
-                                                 end_pos_in_local);
+                        : detail::compute_edge_belief_transform(initial_belief.local_from_robot,
+                                                                end_pos_in_local, ekf.config(),
+                                                                ekf.estimate(), max_sensor_range_m);
         if (!is_in_cache) {
             // Add the transform to the cache in case it's missing
             edge_transform_cache[edge] = transform;
@@ -258,6 +218,67 @@ std::optional<planning::BRMPlan<RobotBelief>> compute_belief_road_map_plan(
     const auto belief_updater = make_belief_updater(road_map, goal_state, max_sensor_range_m, ekf);
     return planning::plan<RobotBelief>(road_map, initial_belief, belief_updater, goal_state);
 }
+
+namespace detail {
+EdgeBeliefTransform compute_edge_belief_transform(const liegroups::SE2 &local_from_robot,
+                                                  const Eigen::Vector2d &end_state_in_local,
+                                                  const EkfSlamConfig &ekf_config,
+                                                  const EkfSlamEstimate &ekf_estimate,
+                                                  const double max_sensor_range_m) {
+    constexpr double DT_S = 1.0;
+    constexpr double VELOCITY_MPS = 2.0;
+    constexpr double ANGULAR_VELOCITY_RADPS = 2.0;
+    (void)ekf_estimate;
+    (void)max_sensor_range_m;
+
+    liegroups::SE2 local_from_new_robot = local_from_robot;
+    constexpr double TOL = 1e-6;
+    BeliefTransformMatrix edge_transform = BeliefTransformMatrix::Identity();
+    for (Eigen::Vector2d end_in_robot = local_from_robot.inverse() * end_state_in_local;
+         end_in_robot.norm() > TOL;
+         end_in_robot = local_from_new_robot.inverse() * end_state_in_local) {
+        const liegroups::SE2 old_robot_from_new_robot = [&]() {
+            const double angle_to_goal_rad = std::atan2(end_in_robot.y(), end_in_robot.x());
+            if (std::abs(angle_to_goal_rad) > TOL) {
+                constexpr double MAX_ANGLE_STEP_RAD = DT_S * ANGULAR_VELOCITY_RADPS;
+                const double angle_step_rad = std::copysign(
+                    std::min(std::abs(angle_to_goal_rad), MAX_ANGLE_STEP_RAD), angle_to_goal_rad);
+                return liegroups::SE2::rot(angle_step_rad);
+            } else {
+                constexpr double MAX_DIST_STEP_M = DT_S * VELOCITY_MPS;
+                const double dist_step_m = std::min(end_in_robot.x(), MAX_DIST_STEP_M);
+                return liegroups::SE2::transX(dist_step_m);
+            }
+        }();
+
+        // Update the mean
+        local_from_new_robot = local_from_new_robot * old_robot_from_new_robot;
+
+        // Compute the process update for the covariance
+        const Eigen::Matrix3d process_noise_in_robot =
+            compute_process_noise(ekf_config, DT_S, old_robot_from_new_robot.arclength());
+
+        const BeliefTransformMatrix process_transform =
+            compute_process_transform(process_noise_in_robot, old_robot_from_new_robot);
+
+        // Update the edge transform
+        edge_transform = process_transform * edge_transform;
+
+        // Compute the measurement update for the covariance
+        const BeliefTransformMatrix measurement_transform = compute_measurement_transform(
+            local_from_new_robot, ekf_config, ekf_estimate, max_sensor_range_m);
+
+        edge_transform = measurement_transform * edge_transform;
+    }
+
+    return EdgeBeliefTransform{
+        // Avoid numerical issues by directly setting the translation
+        .local_from_robot = liegroups::SE2(local_from_new_robot.so2().log(), end_state_in_local),
+        .cov_transform = edge_transform,
+    };
+}
+
+}  // namespace detail
 }  // namespace robot::experimental::beacon_sim
 
 namespace std {
