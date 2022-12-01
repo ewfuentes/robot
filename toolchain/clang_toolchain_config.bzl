@@ -83,7 +83,7 @@ def _impl(ctx):
               actions = [ACTION_NAMES.cpp_compile],
               flag_groups = [
                 flag_group(
-                  flags=["-std=c++20"],
+                  flags=["-std=c++20", "-fno-omit-frame-pointer", "-g"],
                 )
               ]
             )

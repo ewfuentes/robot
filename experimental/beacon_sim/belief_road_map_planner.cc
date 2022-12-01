@@ -122,13 +122,8 @@ BeliefTransformMatrix compute_measurement_transform(const liegroups::SE2 &local_
     }
 
     // Generate the observation matrix
-    EkfSlamEstimate updated_est = ekf_estimate;
-
-    updated_est.mean.head<2>() = local_from_robot.translation();
-    updated_est.mean(2) = local_from_robot.so2().log();
-
     const detail::UpdateInputs inputs =
-        detail::compute_measurement_and_prediction(observations, updated_est);
+        detail::compute_measurement_and_prediction(observations, ekf_estimate, local_from_robot);
 
     const Eigen::MatrixXd observation_matrix =
         inputs.observation_matrix(Eigen::all, Eigen::seqN(0, liegroups::SE2::DoF));
@@ -246,7 +241,7 @@ EdgeBeliefTransform compute_edge_belief_transform(const liegroups::SE2 &local_fr
                                                   const EkfSlamConfig &ekf_config,
                                                   const EkfSlamEstimate &ekf_estimate,
                                                   const double max_sensor_range_m) {
-    constexpr double DT_S = 1.0;
+    constexpr double DT_S = 0.5;
     constexpr double VELOCITY_MPS = 2.0;
     constexpr double ANGULAR_VELOCITY_RADPS = 2.0;
 
