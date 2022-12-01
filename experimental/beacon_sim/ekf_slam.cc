@@ -36,8 +36,9 @@ std::optional<int> find_beacon_matrix_idx_or_add(const int id, InOut<EkfSlamEsti
 }  // namespace
 
 namespace detail {
-UpdateInputs compute_measurement_and_prediction(const std::vector<BeaconObservation> &observations,
-                                                const EkfSlamEstimate &est) {
+UpdateInputs compute_measurement_and_prediction(
+    const std::vector<BeaconObservation> &observations, const EkfSlamEstimate &est,
+    const std::optional<liegroups::SE2> &maybe_local_from_robot) {
     // Preallocate space for the maximum possible size
     Eigen::VectorXd measurement_vec = Eigen::VectorXd::Zero(observations.size() * 2);
     Eigen::VectorXd prediction_vec = Eigen::VectorXd::Zero(observations.size() * 2);
@@ -46,7 +47,9 @@ UpdateInputs compute_measurement_and_prediction(const std::vector<BeaconObservat
         Eigen::MatrixXd::Zero(observations.size() * 2, est.mean.rows());
 
     int num_valid_observations = 0;
-    const auto est_local_from_robot = est.local_from_robot();
+    const auto est_local_from_robot = maybe_local_from_robot.has_value()
+                                          ? maybe_local_from_robot.value()
+                                          : est.local_from_robot();
     for (const auto &obs : observations) {
         const bool is_complete_observation = obs.maybe_id.has_value() &&
                                              obs.maybe_range_m.has_value() &&

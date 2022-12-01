@@ -1,4 +1,5 @@
 
+build --strip=never
 build --config=clang
 build --crosstool_top=//toolchain:cpp_suite
 build:clang --compiler=clang

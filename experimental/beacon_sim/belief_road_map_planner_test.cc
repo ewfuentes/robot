@@ -27,8 +27,8 @@ planning::RoadMap create_road_map() {
     std::vector<Eigen::Vector2d> points;
     Eigen::MatrixXd adj = Eigen::MatrixXd::Zero(NUM_NODES, NUM_NODES);
 
-    constexpr double ROW_OFFSET_M = -(NUM_ROWS - (NUM_ROWS % 2)) / 2 * NODE_SPACING_M;
-    constexpr double COL_OFFSET_M = -(NUM_COLS - (NUM_COLS % 2)) / 2 * NODE_SPACING_M;
+    constexpr double ROW_OFFSET_M = -(NUM_ROWS - (NUM_ROWS % 2)) / 2.0 * NODE_SPACING_M;
+    constexpr double COL_OFFSET_M = -(NUM_COLS - (NUM_COLS % 2)) / 2.0 * NODE_SPACING_M;
 
     for (int row = 0; row < NUM_ROWS; row++) {
         for (int col = 0; col < NUM_COLS; col++) {
@@ -136,6 +136,74 @@ TEST(BeliefRoadMapPlannerTest, grid_road_map) {
     for (int i = 0; i < static_cast<int>(plan.nodes.size()); i++) {
         std::cout << i << " idx: " << plan.nodes.at(i) << std::endl;
     }
+}
+
+TEST(BeliefRoadMapPlannerTest, compute_edge_transform_no_measurements) {
+    // Setup
+    const EkfSlamConfig ekf_config{
+        .max_num_beacons = 1,
+        .initial_beacon_uncertainty_m = 100.0,
+        .along_track_process_noise_m_per_rt_meter = 0.05,
+        .cross_track_process_noise_m_per_rt_meter = 0.05,
+        .pos_process_noise_m_per_rt_s = 0.0,
+        .heading_process_noise_rad_per_rt_meter = 1e-3,
+        .heading_process_noise_rad_per_rt_s = 0.0,
+        .beacon_pos_process_noise_m_per_rt_s = 1e-6,
+        .range_measurement_noise_m = 1e-1,
+        .bearing_measurement_noise_rad = 1e-1,
+        .on_map_load_position_uncertainty_m = 2.0,
+        .on_map_load_heading_uncertainty_rad = 0.5,
+    };
+    constexpr double MAX_SENSOR_RANGE_M = 3.0;
+    const auto &[road_map, ekf_slam] = create_environment(ekf_config);
+
+    constexpr int START_NODE_IDX = 6;
+    constexpr int END_NODE_IDX = 3;
+    const liegroups::SE2 local_from_robot =
+        liegroups::SE2::trans(road_map.points.at(START_NODE_IDX));
+    const Eigen::Vector2d end_pos = road_map.points.at(END_NODE_IDX);
+
+    // Action
+    const auto edge_belief_transform = detail::compute_edge_belief_transform(
+        local_from_robot, end_pos, ekf_slam.config(), ekf_slam.estimate(), MAX_SENSOR_RANGE_M);
+
+    // Verification
+    EXPECT_EQ(edge_belief_transform.local_from_robot.translation().x(), end_pos.x());
+    EXPECT_EQ(edge_belief_transform.local_from_robot.translation().y(), end_pos.y());
+}
+
+TEST(BeliefRoadMapPlannerTest, compute_edge_transform_with_measurement) {
+    // Setup
+    const EkfSlamConfig ekf_config{
+        .max_num_beacons = 1,
+        .initial_beacon_uncertainty_m = 100.0,
+        .along_track_process_noise_m_per_rt_meter = 0.05,
+        .cross_track_process_noise_m_per_rt_meter = 0.05,
+        .pos_process_noise_m_per_rt_s = 0.0,
+        .heading_process_noise_rad_per_rt_meter = 1e-3,
+        .heading_process_noise_rad_per_rt_s = 0.0,
+        .beacon_pos_process_noise_m_per_rt_s = 1e-6,
+        .range_measurement_noise_m = 1e-1,
+        .bearing_measurement_noise_rad = 1e-1,
+        .on_map_load_position_uncertainty_m = 2.0,
+        .on_map_load_heading_uncertainty_rad = 0.5,
+    };
+    constexpr double MAX_SENSOR_RANGE_M = 3.0;
+    const auto &[road_map, ekf_slam] = create_environment(ekf_config);
+
+    constexpr int START_NODE_IDX = 3;
+    constexpr int END_NODE_IDX = 0;
+    const liegroups::SE2 local_from_robot =
+        liegroups::SE2::trans(road_map.points.at(START_NODE_IDX));
+    const Eigen::Vector2d end_pos = road_map.points.at(END_NODE_IDX);
+
+    // Action
+    const auto edge_belief_transform = detail::compute_edge_belief_transform(
+        local_from_robot, end_pos, ekf_slam.config(), ekf_slam.estimate(), MAX_SENSOR_RANGE_M);
+
+    // Verification
+    EXPECT_EQ(edge_belief_transform.local_from_robot.translation().x(), end_pos.x());
+    EXPECT_EQ(edge_belief_transform.local_from_robot.translation().y(), end_pos.y());
 }
 
 }  // namespace robot::experimental::beacon_sim

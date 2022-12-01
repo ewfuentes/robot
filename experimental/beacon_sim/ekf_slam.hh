@@ -75,8 +75,12 @@ struct UpdateInputs {
     Eigen::MatrixXd observation_matrix;
 };
 
-UpdateInputs compute_measurement_and_prediction(const std::vector<BeaconObservation> &observations,
-                                                const EkfSlamEstimate &est);
+// Compute the relevant quantities to perform a measurement update.
+// By default, the measurement predictions are made from the current robot position.
+// If a local from robot is passed in, use this pose instead of the estimated pose.
+UpdateInputs compute_measurement_and_prediction(
+    const std::vector<BeaconObservation> &observations, const EkfSlamEstimate &est,
+    const std::optional<liegroups::SE2> &maybe_local_from_robot = std::nullopt);
 
 EkfSlamEstimate prediction_update(const EkfSlamEstimate &est, const time::RobotTimestamp &time,
                                   const liegroups::SE2 &old_robot_from_new_robot,
