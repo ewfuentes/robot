@@ -1,2 +1,6 @@
-
+sympy==1.11
 numpy==1.23.4
+notebook==6.5.2
+matplotlib==3.6.2
+Pillow==9.3.0
+

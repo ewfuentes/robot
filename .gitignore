@@ -11,3 +11,7 @@ bazel-*
 /compile_commands.json
 # Ignore the directory in which `clangd` stores its local index.
 /.cache/
+
+# python files
+__pycache__
+.ipynb_checkpoints
