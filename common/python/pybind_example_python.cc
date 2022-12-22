@@ -1,7 +1,6 @@
 
-#include "pybind11/pybind11.h"
-
 #include "common/python/test_function.hh"
+#include "pybind11/pybind11.h"
 
 namespace robot::python {
 
