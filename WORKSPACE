@@ -1,6 +1,20 @@
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 http_archive(
+  name = "pybind11_bazel",
+  strip_prefix = "pybind11_bazel-faf56fb3df11287f26dbc66fdedf60a2fc2c6631",
+  urls = ["https://github.com/pybind/pybind11_bazel/archive/faf56fb3df11287f26dbc66fdedf60a2fc2c6631.zip"],
+)
+# We still require the pybind library.
+http_archive(
+  name = "pybind11",
+  build_file = "@pybind11_bazel//:pybind11.BUILD",
+  strip_prefix = "pybind11-2.10.2",
+  urls = ["https://github.com/pybind/pybind11/archive/v2.10.2.tar.gz"],
+  sha256 = "93bd1e625e43e03028a3ea7389bba5d3f9f2596abc074b068e70f4ef9b1314ae",
+)
+
+http_archive(
     name = "zlib",
     build_file = "@//third_party:BUILD.zlib",
     sha256 = "629380c90a77b964d896ed37163f5c3a34f6e6d897311f1df2a7016355c45eff",
@@ -22,7 +36,10 @@ python_register_toolchains(
     python_version = "3.10",
 )
 
+
 load("@python3_10//:defs.bzl", "interpreter")
+load("@pybind11_bazel//:python_configure.bzl", "python_configure")
+python_configure(name = "local_config_python", python_interpreter_target=interpreter)
 
 load("@rules_python//python:pip.bzl", "pip_parse")
 
