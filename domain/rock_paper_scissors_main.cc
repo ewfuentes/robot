@@ -1,15 +1,31 @@
 
-#include "domain/rock_paper_scissors.hh"
-
 #include <iostream>
+#include <limits>
+
+#include "domain/rock_paper_scissors.hh"
 
 namespace robot::domain {
 
-RPSAction get_input(const RPSPlayer player) {
-  if (player == RPSPlayer::PLAYER1) {
-    return RPSAction::ROCK;
-  }
-  return RPSAction::SCISSORS;
+std::optional<RPSAction> get_input(const RPSPlayer player) {
+    std::cout << "Enter action for player " << (player == RPSPlayer::PLAYER1 ? "1" : "2")
+              << std::endl;
+    std::cout << "{1: Rock, 2: Paper, 3: Scissors}" << std::endl;
+    int action;
+    std::cin >> action;
+    if (std::cin.fail() || action < 1 || action > 3) {
+        std::cout << "Invalid Input!" << std::endl;
+        std::cin.clear();
+        std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+        return std::nullopt;
+    }
+
+    if (action == 1) {
+        return RPSAction::ROCK;
+    } else if (action == 2) {
+        return RPSAction::PAPER;
+    } else {
+        return RPSAction::SCISSORS;
+    }
 }
 
 void play_game() {
@@ -20,8 +36,10 @@ void play_game() {
         if (!maybe_player.has_value()) {
             break;
         }
-        const RPSAction action = get_input(maybe_player.value());
-        history = play(history, action);
+        const std::optional<RPSAction> maybe_action = get_input(maybe_player.value());
+        if (maybe_action.has_value()) {
+            history = play(history, maybe_action.value());
+        }
     }
 
     const int player_1_terminal_value = terminal_value(history, RPSPlayer::PLAYER1).value();
