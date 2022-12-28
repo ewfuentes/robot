@@ -15,26 +15,26 @@ TEST(RPSTest, empty_history) {
 }
 
 TEST(RPSTest, player_1_wins) {
-  // Setup
-  RPSHistory history;
+    // Setup
+    RPSHistory history;
 
-  // Action
-  history = play(history, RPSAction::ROCK);
-  history = play(history, RPSAction::SCISSORS);
+    // Action
+    history = play(history, RPSAction::ROCK);
+    history = play(history, RPSAction::SCISSORS);
 
-  // Verification
-  EXPECT_EQ(up_next(history), std::nullopt);
+    // Verification
+    EXPECT_EQ(up_next(history), std::nullopt);
 
-  const auto p1_terminal_value = terminal_value(history, RPSPlayer::PLAYER1);
-  EXPECT_TRUE(p1_terminal_value.has_value());
-  EXPECT_EQ(p1_terminal_value.value(), 1);
+    const auto p1_terminal_value = terminal_value(history, RPSPlayer::PLAYER1);
+    EXPECT_TRUE(p1_terminal_value.has_value());
+    EXPECT_EQ(p1_terminal_value.value(), 1);
 
-  const auto p2_terminal_value = terminal_value(history, RPSPlayer::PLAYER2);
-  EXPECT_TRUE(p2_terminal_value.has_value());
-  EXPECT_EQ(p2_terminal_value.value(), -1);
+    const auto p2_terminal_value = terminal_value(history, RPSPlayer::PLAYER2);
+    EXPECT_TRUE(p2_terminal_value.has_value());
+    EXPECT_EQ(p2_terminal_value.value(), -1);
 }
 
-  TEST(RPSTest, player_2_wins) {
+TEST(RPSTest, player_2_wins) {
     // Setup
     RPSHistory history;
 
@@ -52,9 +52,9 @@ TEST(RPSTest, player_1_wins) {
     const auto p2_terminal_value = terminal_value(history, RPSPlayer::PLAYER2);
     EXPECT_TRUE(p2_terminal_value.has_value());
     EXPECT_EQ(p2_terminal_value.value(), 1);
-  }
+}
 
-  TEST(RPSTest, tie_game) {
+TEST(RPSTest, tie_game) {
     // Setup
     RPSHistory history;
 
@@ -72,5 +72,5 @@ TEST(RPSTest, player_1_wins) {
     const auto p2_terminal_value = terminal_value(history, RPSPlayer::PLAYER2);
     EXPECT_TRUE(p2_terminal_value.has_value());
     EXPECT_EQ(p2_terminal_value.value(), 0);
-  }
+}
 }  // namespace robot::domain
