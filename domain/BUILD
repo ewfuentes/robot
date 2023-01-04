@@ -23,7 +23,11 @@ cc_library(
   name = "rock_paper_scissors",
   hdrs = ["rock_paper_scissors.hh"],
   srcs = ["rock_paper_scissors.cc"],
-  deps = [":fog"],
+  visibility = ["//visibility:public"],
+  deps = [
+    ":fog",
+    "@wise_enum//:wise_enum",
+  ],
 )
 
 cc_binary(
