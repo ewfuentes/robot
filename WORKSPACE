@@ -121,6 +121,14 @@ http_archive(
   sha256 = "36f41fa2a46b3c1466613b63f3fa73dc24d912bc90d667147f1e43215a8c6d00"
 )
 
+http_archive(
+  name = "wise_enum",
+  urls = ["https://github.com/quicknir/wise_enum/archive/34ac79f7ea2658a148359ce82508cc9301e31dd3.zip"],
+  strip_prefix = "wise_enum-34ac79f7ea2658a148359ce82508cc9301e31dd3",
+  build_file="@//third_party:BUILD.wise_enum",
+  sha256 = "9bd940ecb810aa6af15372436731a8fb898abf170342acf95850e8ce2747eda8",
+)
+
 # Hedron's Compile Commands Extractor for Bazel
 # https://github.com/hedronvision/bazel-compile-commands-extractor
 http_archive(
