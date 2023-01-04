@@ -1,0 +1,10 @@
+
+cc_library(
+  name="wise_enum",
+  hdrs=[
+    "wise_enum.h",
+    "wise_enum_detail.h",
+    "wise_enum_generated.h",
+  ],
+  visibility=["//visibility:public"],
+)

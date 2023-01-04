@@ -13,3 +13,20 @@ cc_test(
     "@com_google_googletest//:gtest_main",
   ]
 )
+
+cc_library(
+  name = "indexed_array",
+  hdrs = ["indexed_array.hh"],
+  deps = ["@wise_enum//:wise_enum"],
+  visibility=["//visibility:public"],
+)
+
+cc_test(
+  name = "indexed_array_test",
+  srcs = ["indexed_array_test.cc"],
+  deps =  [
+    ":indexed_array",
+    "@wise_enum//:wise_enum",
+    "@com_google_googletest//:gtest_main",
+  ]
+)
