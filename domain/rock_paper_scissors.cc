@@ -62,4 +62,14 @@ RPSHistory play(const RPSHistory &history, const RPSAction &action) {
     }
     return out;
 }
+
+double compute_counterfactual_regret(const RPSHistory &history, const RPSPlayer player,
+                                     const RPSAction new_action) {
+    RPSHistory counterfactual = history;
+    RPSHistory::FogAction &player_action = player == RPSPlayer::PLAYER1
+                                               ? counterfactual.player_1_action
+                                               : counterfactual.player_2_action;
+    player_action = RPSHistory::FogAction(new_action, [](...) { return true; });
+    return terminal_value(counterfactual, player).value() - terminal_value(history, player).value();
+}
 }  // namespace robot::domain
