@@ -30,4 +30,7 @@ std::optional<RPSPlayer> up_next(const RPSHistory &history);
 std::vector<RPSAction> possible_actions(const RPSHistory &history);
 
 std::optional<int> terminal_value(const RPSHistory &history, const RPSPlayer player);
+
+double compute_counterfactual_regret(const RPSHistory &history, const RPSPlayer player,
+                                     const RPSAction new_action);
 }  // namespace robot::domain
