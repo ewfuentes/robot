@@ -46,3 +46,14 @@ cc_test(
     "@com_google_googletest//:gtest_main"
   ],
 )
+
+cc_library(
+  name = "blotto",
+  hdrs = ["blotto.hh"],
+  srcs = ["blotto.cc"],
+  visibility = ["//visibility:public"],
+  deps = [
+    ":fog",
+    "@wise_enum//:wise_enum",
+  ]
+)
