@@ -1,12 +1,15 @@
 
 #pragma once
 
+#include <iterator>
 #include <type_traits>
+#include <unordered_map>
 
 #include "wise_enum.h"
 
 namespace robot {
 
+namespace detail {
 template <typename EnumT>
 constexpr bool is_contiguous_and_zero_indexed() {
     static_assert(wise_enum::is_wise_enum_v<EnumT>, "Indexing Type must be a wise_enum");
@@ -19,12 +22,11 @@ constexpr bool is_contiguous_and_zero_indexed() {
     }
     return true;
 };
+}  // namespace detail
 
 template <typename T, typename EnumT>
 class IndexedArray {
    public:
-    static_assert(is_contiguous_and_zero_indexed<EnumT>(),
-                  "Enum must be contiguous and zero indexed");
     using container_type = std::array<T, wise_enum::size<EnumT>>;
 
     constexpr IndexedArray() = default;
@@ -39,11 +41,31 @@ class IndexedArray {
         }
     };
 
-    const T& operator[](const EnumT& index) const { return data_[static_cast<int>(index)]; }
+    constexpr const T& operator[](const EnumT& index) const {
+        if constexpr (detail::is_contiguous_and_zero_indexed<EnumT>()) {
+            return data_[static_cast<int>(index)];
+        } else {
+            const auto iter = std::find_if(
+                wise_enum::range<EnumT>.begin(), wise_enum::range<EnumT>.end(),
+                [index](const auto& enum_and_name) { return enum_and_name.value == index; });
+            const int idx = std::distance(wise_enum::range<EnumT>.begin(), iter);
+            return data_[idx];
+        }
+    }
 
-    T& operator[](const EnumT& index) { return data_[static_cast<int>(index)]; }
+    constexpr T& operator[](const EnumT& index) {
+        if constexpr (detail::is_contiguous_and_zero_indexed<EnumT>()) {
+            return data_[static_cast<int>(index)];
+        } else {
+            const auto iter = std::find_if(
+                wise_enum::range<EnumT>.begin(), wise_enum::range<EnumT>.end(),
+                [index](const auto& enum_and_name) { return enum_and_name.value == index; });
+            const int idx = std::distance(wise_enum::range<EnumT>.begin(), iter);
+            return data_[idx];
+        }
+    }
 
-    int size() const { return wise_enum::size<EnumT>; }
+    constexpr int size() const { return wise_enum::size<EnumT>; }
 
     struct ConstIterator {
         using enum_iter = decltype(wise_enum::range<EnumT>.cbegin());
@@ -93,14 +115,14 @@ class IndexedArray {
         data_iter data_iter_;
     };
 
-    ConstIterator begin() const {
+    constexpr ConstIterator begin() const {
         return ConstIterator(wise_enum::range<EnumT>.begin(), data_.cbegin());
     };
-    ConstIterator end() const {
+    constexpr ConstIterator end() const {
         return ConstIterator(wise_enum::range<EnumT>.end(), data_.cend());
     };
-    Iterator begin() { return Iterator(wise_enum::range<EnumT>.begin(), data_.begin()); };
-    Iterator end() { return Iterator(wise_enum::range<EnumT>.end(), data_.end()); };
+    constexpr Iterator begin() { return Iterator(wise_enum::range<EnumT>.begin(), data_.begin()); };
+    constexpr Iterator end() { return Iterator(wise_enum::range<EnumT>.end(), data_.end()); };
 
    private:
     container_type data_;
