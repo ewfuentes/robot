@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <random>
+#include <sstream>
 
 namespace robot::domain {
 namespace {
@@ -34,7 +35,7 @@ KuhnHistory play(const KuhnHistory &history, const KuhnAction &action) {
     return out;
 }
 
-KuhnHistory play(const KuhnHistory &history, InOut<std::mt19937> gen) {
+ChanceResult play(const KuhnHistory &history, InOut<std::mt19937> gen) {
     using Card = KuhnHistory::Card;
     std::vector<Card> deck{Card::A, Card::K, Card::Q};
     KuhnHistory out = history;
@@ -48,16 +49,18 @@ KuhnHistory play(const KuhnHistory &history, InOut<std::mt19937> gen) {
 
     std::shuffle(deck.begin(), deck.end(), *gen);
 
+    double probability = 1.0;
     for (const auto player : {KuhnPlayer::PLAYER1, KuhnPlayer::PLAYER2}) {
         if (!out.hands[player].has_value()) {
             out.hands[player] = KuhnHistory::FogCard(
                 deck.back(),
                 [curr_player = player](const auto player) { return player == curr_player; });
+            probability *= 1.0 / deck.size();
             deck.pop_back();
         }
     }
 
-    return out;
+    return {.history = std::move(out), .probability = probability};
 }
 
 std::optional<KuhnPlayer> up_next(const KuhnHistory &history) {
@@ -108,4 +111,43 @@ std::optional<int> terminal_value(const KuhnHistory &history, const KuhnPlayer p
         return sign * player_1_value;
     }
 }
+
+KuhnPoker::InfoSetId infoset_id_from_history(const KuhnHistory &history) {
+    // Pack private card
+    const auto current_player = up_next(history).value();
+    const auto private_card = history.hands[current_player].value();
+    return infoset_id_from_information(private_card, history.actions);
+}
+
+KuhnPoker::InfoSetId infoset_id_from_information(const KuhnHistory::Card private_card,
+                                                 const std::vector<KuhnAction> &actions) {
+    int out = 0;
+    // Pack actions
+    for (const auto action : actions) {
+        out = (out << 2) | (static_cast<int>(action) + 1);
+    }
+
+    // Pack private card
+    out = (out << 2) | (static_cast<int>(private_card) + 1);
+
+    return out;
+}
+
+std::string to_string(const KuhnHistory &history) {
+    const auto current_player = up_next(history).value();
+    std::stringstream id;
+    // Serialize the private information
+    id << wise_enum::to_string(history.hands[current_player].value());
+    if (!history.actions.empty()) {
+        id << "_[";
+        // Serialize the public information
+        for (auto action : history.actions) {
+            id << wise_enum::to_string(action) << ",";
+        }
+        id.seekp(-1, std::ios_base::end);
+        id << "]";
+    }
+    return id.str();
+}
+
 }  // namespace robot::domain

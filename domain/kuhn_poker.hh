@@ -21,13 +21,24 @@ struct KuhnHistory {
 struct KuhnPoker {
     using Players = KuhnPlayer;
     using Actions = KuhnAction;
-    using History = KuhnPoker;
-    using InfoSetId = std::string;
+    using History = KuhnHistory;
+    using InfoSetId = int;
+};
+
+struct ChanceResult {
+    KuhnHistory history;
+    double probability;
 };
 
 KuhnHistory play(const KuhnHistory &history, const KuhnAction &action);
-KuhnHistory play(const KuhnHistory &history, InOut<std::mt19937> gen);
+ChanceResult play(const KuhnHistory &history, InOut<std::mt19937> gen);
 std::optional<KuhnPlayer> up_next(const KuhnHistory &history);
 std::vector<KuhnAction> possible_actions(const KuhnHistory &history);
 std::optional<int> terminal_value(const KuhnHistory &history, const KuhnPlayer player);
+
+KuhnPoker::InfoSetId infoset_id_from_history(const KuhnHistory &hist);
+KuhnPoker::InfoSetId infoset_id_from_information(const KuhnHistory::Card private_card,
+                                                 const std::vector<KuhnAction> &actions);
+std::string to_string(const KuhnHistory &hist);
+
 }  // namespace robot::domain

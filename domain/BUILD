@@ -62,6 +62,7 @@ cc_library(
   name = "kuhn_poker",
   hdrs = ["kuhn_poker.hh"],
   srcs = ["kuhn_poker.cc"],
+  visibility = ["//visibility:public"],
   deps = [
     ":fog",
     "//common:argument_wrapper",

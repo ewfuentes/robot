@@ -17,5 +17,6 @@ cc_test(
     "@com_google_googletest//:gtest_main",
     "//domain:rock_paper_scissors",
     "//domain:blotto",
+    "//domain:kuhn_poker",
   ]
 )
