@@ -11,7 +11,7 @@ WISE_ENUM_CLASS(KuhnAction, PASS, BET);
 WISE_ENUM_CLASS(KuhnPlayer, PLAYER1, PLAYER2, CHANCE);
 
 struct KuhnHistory {
-    WISE_ENUM_CLASS_MEMBER(Card, Q, K, A);
+    WISE_ENUM_CLASS_MEMBER(Card, Q, K, A)
     using FogCard = Fog<Card, KuhnPlayer>;
 
     IndexedArray<FogCard, KuhnPlayer> hands;
