@@ -27,7 +27,7 @@ TEST(KuhnPokerTest, deal_required_before_actions) {
     }
     {
         // Check that dealing leads to the game advancing
-        history = play(history, make_in_out(gen));
+        history = play(history, make_in_out(gen)).history;
         const auto maybe_next_player = up_next(history);
         EXPECT_TRUE(maybe_next_player.has_value());
         EXPECT_NE(maybe_next_player.value(), KuhnPlayer::CHANCE);

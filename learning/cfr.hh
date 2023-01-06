@@ -47,7 +47,7 @@ typename T::Actions sample_strategy(const Strategy<T> &strategy, InOut<std::mt19
 template <typename T>
 struct MinRegretStrategy {
     std::optional<Strategy<T>> operator()(const typename T::History &history) const;
-    std::optional<Strategy<T>> operator()(const typename T::InfoSetId &id) const ;
+    std::optional<Strategy<T>> operator()(const typename T::InfoSetId &id) const;
 
     std::unordered_map<typename T::InfoSetId, Strategy<T>> strategy_from_infoset_id;
     std::function<typename T::InfoSetId(typename T::History)> infoset_id_from_hist;
@@ -65,17 +65,18 @@ MinRegretStrategy<T> train_min_regret_strategy(const MinRegretTrainConfig<T> &co
 
 // Implementations
 template <typename T>
-std::optional<Strategy<T>> MinRegretStrategy<T>::operator()(const typename T::History &history) const {
+std::optional<Strategy<T>> MinRegretStrategy<T>::operator()(
+    const typename T::History &history) const {
     return (*this)(infoset_id_from_hist(history));
 }
 
 template <typename T>
 std::optional<Strategy<T>> MinRegretStrategy<T>::operator()(const typename T::InfoSetId &id) const {
-  const auto iter = strategy_from_infoset_id.find(id);
-  if (iter == strategy_from_infoset_id.end()) {
-    return std::nullopt;
-  }
-  return iter->second;
+    const auto iter = strategy_from_infoset_id.find(id);
+    if (iter == strategy_from_infoset_id.end()) {
+        return std::nullopt;
+    }
+    return iter->second;
 }
 
 template <typename T>
