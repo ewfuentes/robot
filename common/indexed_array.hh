@@ -1,6 +1,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <iterator>
 #include <type_traits>
 #include <unordered_map>
@@ -72,6 +73,9 @@ class IndexedArray {
         using data_iter = decltype(std::array<T, wise_enum::size<EnumT>>{}.cbegin());
         using iterator_category = std::forward_iterator_tag;
         using value_type = std::pair<EnumT, const T&>;
+        using reference = std::pair<EnumT, const T&>;
+        using pointer = std::pair<EnumT, const T&>*;
+        using difference_type = std::ptrdiff_t;
 
         ConstIterator(const enum_iter& enum_iter, const data_iter& data_iter)
             : enum_iter_{enum_iter}, data_iter_{data_iter} {}
@@ -96,6 +100,9 @@ class IndexedArray {
         using data_iter = decltype(std::array<T, wise_enum::size<EnumT>>{}.begin());
         using iterator_category = std::forward_iterator_tag;
         using value_type = std::pair<EnumT, T&>;
+        using reference = std::pair<EnumT, T&>;
+        using pointer = std::pair<EnumT, T&>*;
+        using difference_type = std::ptrdiff_t;
 
         Iterator(const enum_iter& enum_iter, const data_iter& data_iter)
             : enum_iter_(enum_iter), data_iter_(data_iter) {}
