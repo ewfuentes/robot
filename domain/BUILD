@@ -57,3 +57,24 @@ cc_library(
     "@wise_enum//:wise_enum",
   ]
 )
+
+cc_library(
+  name = "kuhn_poker",
+  hdrs = ["kuhn_poker.hh"],
+  srcs = ["kuhn_poker.cc"],
+  deps = [
+    ":fog",
+    "//common:argument_wrapper",
+    "//common:indexed_array",
+    "@wise_enum//:wise_enum",
+  ]
+)
+
+cc_test(
+  name = "kuhn_poker_test",
+  srcs = ["kuhn_poker_test.cc"],
+  deps = [
+    ":kuhn_poker",
+    "@com_google_googletest//:gtest_main",
+  ]
+)

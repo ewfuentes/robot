@@ -5,6 +5,10 @@
 
 namespace robot::domain {
 
+auto make_private_info(const auto owner) {
+    return [owner](const auto player) { return player == owner; };
+}
+
 template <typename T, typename PlayerT>
 class Fog {
    public:
