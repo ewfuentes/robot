@@ -177,12 +177,20 @@ double compute_counterfactual_regret(
     if constexpr (has_chance) {
         if (current_player == T::Players::CHANCE) {
             const auto chance_result = play(history, gen);
-            auto new_action_probabilities = action_probabilities;
-            new_action_probabilities[T::Players::CHANCE] *= chance_result.probability;
-            return compute_counterfactual_regret<T>(
-                chance_result.history, to_update, iteration, new_action_probabilities,
-                infoset_id_from_history, gen, counts_from_infoset_id);
+            return compute_counterfactual_regret<T>(chance_result.history, to_update, iteration,
+                                                    action_probabilities, infoset_id_from_history,
+                                                    gen, counts_from_infoset_id);
         }
+    }
+
+    const double opponent_probability = std::accumulate(
+        action_probabilities.begin(), action_probabilities.end(), 1.0,
+        [current_player](const double probability, const auto &player_and_probability) {
+            const auto &[player, player_probability] = player_and_probability;
+            return probability * (player == current_player ? 1.0 : player_probability);
+        });
+    if (opponent_probability == 0.0 && action_probabilities[current_player] == 0.0) {
+        return 0.0;
     }
 
     // Compute the value of the current node
@@ -206,12 +214,6 @@ double compute_counterfactual_regret(
 
     // Update the counts for the current player if appropriate
     if (current_player == to_update) {
-        const double opponent_probability = std::accumulate(
-            action_probabilities.begin(), action_probabilities.end(), 1.0,
-            [current_player](const double probability, const auto &player_and_probability) {
-                const auto &[player, player_probability] = player_and_probability;
-                return probability * (player == current_player ? 1.0 : player_probability);
-            });
         for (const auto &[action, action_value] : action_values) {
             counts.regret_sum[action] += opponent_probability * (action_value - node_value);
             counts.strategy_sum[action] += action_probabilities[current_player] * strategy[action];
