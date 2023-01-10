@@ -104,6 +104,20 @@ cc_library(
   srcs = ["rob_poker.cc"],
   deps = [
   ":fog",
+  ":deck",
+  "//common:argument_wrapper",
+  "//common:indexed_array",
     "@wise_enum//:wise_enum",
   ]
+)
+
+cc_test(
+  name = "rob_poker_test",
+  srcs = ["rob_poker_test.cc"],
+  deps = [
+    ":rob_poker",
+    "@com_google_googletest//:gtest_main",
+  ]
+
+
 )
