@@ -1,0 +1,47 @@
+
+
+cc_library(
+  name = "ompeval_lib",
+  hdrs = [
+          "omp/HandEvaluator.h",
+          ],
+  srcs = [
+          "omp/CardRange.h",
+          "omp/CombinedRange.h",
+          "omp/Constants.h",
+          "omp/EquityCalculator.h",
+          "omp/Hand.h",
+          "omp/OffsetTable.hxx",
+          "omp/Random.h",
+          "omp/Util.h",
+          "omp/CardRange.cpp",
+          "omp/CombinedRange.cpp",
+          "omp/EquityCalculator.cpp",
+          "omp/HandEvaluator.cpp",
+          ],
+  copts = [
+    "-Wno-unused-parameter",
+    "-Wno-deprecated-copy-with-user-provided-copy",
+    "-std=c++11",
+  ],
+  visibility = ["//visibility:public"],
+  deps = [
+    ":libdivide",
+  ]
+)
+
+cc_library(
+  name = "libdivide",
+  hdrs = ["libdivide/libdivide.h"],
+)
+
+cc_binary(
+  name = "benchmark",
+  srcs = ["benchmark.cpp", "test.cpp", "ttest/ttest.h"],
+  deps = [":ompeval_lib"],
+  copts = [
+    "-Wno-unused-parameter",
+    "-Wno-deprecated-copy-with-user-provided-copy",
+    "-std=c++11",
+  ],
+)

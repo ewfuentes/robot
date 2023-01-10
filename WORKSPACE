@@ -140,3 +140,16 @@ http_archive(
 load("@hedron_compile_commands//:workspace_setup.bzl", "hedron_compile_commands_setup")
 hedron_compile_commands_setup()
 
+# Poker hand evaluator
+http_archive(
+  name = "ompeval",
+  url = "https://github.com/zekyll/OMPEval/archive/4aec210ff75b0851af0ee170b35a7899e1a4fe8f.zip",
+  strip_prefix="OMPEval-4aec210ff75b0851af0ee170b35a7899e1a4fe8f",
+  build_file="@//third_party:BUILD.ompeval",
+  patches = [
+    "@//third_party:ompeval-0001-build-patches.patch",
+  ],
+  patch_args=["-p1"],
+  sha256 = "816febbcd7f1c014cfe57fae7b73732c7938a26355582a63666fcb96457949d0",
+)
+

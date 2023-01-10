@@ -1,0 +1,77 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Erick Fuentes <erick@csail.mit.edu>
+Date: Tue, 10 Jan 2023 11:23:57 -0500
+Subject: build patches
+
+
+diff --git a/omp/EquityCalculator.h b/omp/EquityCalculator.h
+index 934787b..221f2a7 100644
+--- a/omp/EquityCalculator.h
++++ b/omp/EquityCalculator.h
+@@ -10,6 +10,7 @@
+ #include <chrono>
+ #include <thread>
+ #include <mutex>
++#include <functional>
+ #include <atomic>
+ #include <unordered_map>
+ #include <array>
+@@ -93,7 +94,7 @@ public:
+     void setTimeLimit(double seconds)
+     {
+         std::lock_guard<std::mutex> lock(mMutex);
+-        mTimeLimit = seconds <= 0 ? INFINITE : seconds;
++        mTimeLimit = seconds <= 0 ? static_cast<double>(INFINITE) : seconds;
+     }
+ 
+     // Set a hand limit for the calculation or 0 to disable. Disabled by default.
+diff --git a/omp/Hand.h b/omp/Hand.h
+index b9de057..92f1ad2 100644
+--- a/omp/Hand.h
++++ b/omp/Hand.h
+@@ -34,8 +34,22 @@ struct Hand
+     {
+         #if OMP_SSE2
+         omp_assert((uintptr_t)&mData % sizeof(__m128i) == 0);
++        mData = other.mData;
++        #else
++        mKey = other.mKey;
++        mMask = other.mMask;
+         #endif
+-        *this = other;
++    }
++
++    Hand &operator=(const Hand& other) {
++#if OMP_SSE2
++      omp_assert((uintptr_t)&mData % sizeof(__m128i) == 0);
++      mData = other.mData;
++#else
++      mKey = other.mKey;
++      mMask = other.mMask;
++#endif
++      return *this;
+     }
+ 
+     // Create a Hand from a card. CardIdx is an integer between 0 and 51, so that CARD = 4 * RANK + SUIT, where
+diff --git a/omp/Random.h b/omp/Random.h
+index c35078c..63a3db3 100644
+--- a/omp/Random.h
++++ b/omp/Random.h
+@@ -29,12 +29,9 @@ public:
+         return result;
+     }
+ 
+-    static uint64_t min()
+-    {
+-        return 0;
+-    }
++    static constexpr uint64_t min() { return 0; }
+ 
+-    static uint64_t max()
++    static constexpr uint64_t max()
+     {
+         return ~(uint64_t)0;
+     }
+-- 
+2.34.1
+
