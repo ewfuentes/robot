@@ -103,10 +103,11 @@ cc_library(
   hdrs = ["rob_poker.hh"],
   srcs = ["rob_poker.cc"],
   deps = [
-  ":fog",
-  ":deck",
-  "//common:argument_wrapper",
-  "//common:indexed_array",
+    ":fog",
+    ":deck",
+    "//common:argument_wrapper",
+    "//common:indexed_array",
+    "@ompeval//:ompeval_lib",
     "@wise_enum//:wise_enum",
   ]
 )

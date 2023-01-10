@@ -278,4 +278,42 @@ TEST(RobPokerTest, test_game) {
     EXPECT_TRUE(maybe_terminal_value.has_value());
 }
 
+TEST(RobPokerEvaluateHandTest, hand_evaluation) {
+    // Setup
+    const RobPokerHistory history = {
+        .hole_cards =
+            {
+                {RobPokerPlayer::PLAYER1,
+                 {make_fog_card(SCard{.rank = Ranks::_A, .suit = Suits::SPADES}),
+                  make_fog_card(SCard{.rank = Ranks::_A, .suit = Suits::CLUBS})}},
+                {RobPokerPlayer::PLAYER2,
+                 {make_fog_card(SCard{.rank = Ranks::_K, .suit = Suits::SPADES}),
+                  make_fog_card(SCard{.rank = Ranks::_K, .suit = Suits::CLUBS})}},
+            },
+
+        .common_cards =
+            {
+                make_fog_card(SCard{.rank = Ranks::_A, .suit = Suits::DIAMONDS}),
+                make_fog_card(SCard{.rank = Ranks::_K, .suit = Suits::DIAMONDS}),
+                make_fog_card(SCard{.rank = Ranks::_4, .suit = Suits::DIAMONDS}),
+                make_fog_card(SCard{.rank = Ranks::_5, .suit = Suits::DIAMONDS}),
+                make_fog_card(SCard{.rank = Ranks::_6, .suit = Suits::SPADES}),
+            },
+        .actions = {},
+    };
+
+    // Action
+    const auto player_1_hand_rank = evaluate_hand(history, RobPokerPlayer::PLAYER1);
+    const auto player_2_hand_rank = evaluate_hand(history, RobPokerPlayer::PLAYER2);
+
+    // Verification
+    EXPECT_GT(player_1_hand_rank, player_2_hand_rank);
+}
+
+  TEST(RobPokerTest, terminal_value_test) {
+    // SETUP
+    // ACTION
+    // VERIFICATION
+  }
+
 }  // namespace robot::domain

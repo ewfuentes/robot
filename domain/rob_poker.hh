@@ -50,4 +50,6 @@ RobPoker::InfoSetId infoset_id_from_information(
     const std::vector<RobPokerAction> &actions);
 std::string to_string(const RobPokerHistory &hist);
 
+int evaluate_hand(const RobPokerHistory &history, const RobPokerPlayer player);
+
 }  // namespace robot::domain

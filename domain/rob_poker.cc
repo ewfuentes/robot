@@ -3,22 +3,27 @@
 
 #include <ios>
 #include <iostream>
+#include <limits>
 #include <sstream>
 
 #include "domain/deck.hh"
 #include "domain/fog.hh"
+#include "omp/Hand.h"
+#include "omp/HandEvaluator.h"
 
 namespace robot::domain {
 namespace {
 struct BettingState {
     bool is_game_over;
+    bool showdown_required;
     int round;
     int position;
 };
 
 BettingState compute_betting_state(const RobPokerHistory &history) {
     using A = RobPokerAction;
-    BettingState state = {.is_game_over = false, .round = 0, .position = 0};
+    BettingState state = {
+        .is_game_over = false, .showdown_required = false, .round = 0, .position = 0};
     if (history.actions.empty()) {
         return state;
     }
@@ -48,6 +53,7 @@ BettingState compute_betting_state(const RobPokerHistory &history) {
 
                 if (state.round >= 3 && last_card_is_black) {
                     state.is_game_over = true;
+                    state.showdown_required = true;
                     return state;
                 }
 
@@ -62,6 +68,7 @@ BettingState compute_betting_state(const RobPokerHistory &history) {
     }
     return state;
 }
+
 }  // namespace
 
 std::ostream &operator<<(std::ostream &out, const RobPokerPlayer player) {
@@ -177,12 +184,32 @@ std::vector<RobPokerAction> possible_actions(const RobPokerHistory &history) {
 
 std::optional<int> terminal_value(const RobPokerHistory &history, const RobPokerPlayer player) {
     const auto betting_state = compute_betting_state(history);
-    (void) player;
+    (void)player;
     if (!betting_state.is_game_over) {
         return std::nullopt;
     }
+    const RobPokerPlayer opponent =
+        player == RobPokerPlayer::PLAYER1 ? RobPokerPlayer::PLAYER2 : RobPokerPlayer::PLAYER1;
 
-    return 0;
+    const pot_value = 1;
+
+    if (betting_state.showdown_required) {
+        const int player_hand_rank = evaluate_hand(history, player);
+        const int opponent_hand_rank = evaluate_hand(history, opponent);
+        const int sign = player_hand_rank > opponent_hand_rank ? 1 : -1;
+        return sign * pot_value;
+    }
+    // determine which player folded and get sign
+    // Player 1 starts the first round of betting, so if the betting position is even, player 1
+    // folded
+    // On later rounds, player 2 starts the betting, so if the betting position is even, player
+    // 2 folded
+    const auto folding_player =
+        betting_state.round == 0
+            ? (betting_state.position % 2 == 0 ? RobPokerPlayer::PLAYER1 : RobPokerPlayer::PLAYER2)
+            : (betting_state.position % 2 == 0 ? RobPokerPlayer::PLAYER2 : RobPokerPlayer::PLAYER1);
+    const int sign = player == folding_player ? -1 : 1;
+    return sign * pot_value;
 }
 //
 // RobPokerPoker::InfoSetId infoset_id_from_history(const RobPokerHistory &hist);
@@ -206,6 +233,58 @@ std::string to_string(const RobPokerHistory &hist) {
     out << "]";
 
     return out.str();
+}
+
+int evaluate_hand(const RobPokerHistory &history, const RobPokerPlayer player) {
+    const auto common_card_end_iter =
+        std::find_if_not(history.common_cards.begin(), history.common_cards.end(),
+                         [](const auto &card) { return card.has_value(); });
+    const int common_card_end_idx =
+        std::distance(history.common_cards.begin(), common_card_end_iter);
+    constexpr int MAX_HAND_SIZE = 5;
+    // Enumerate all possible 5 card hands for the current player and keep the max;
+    int max_hand_value = std::numeric_limits<int>::lowest();
+    std::array<int, MAX_HAND_SIZE> idxs = {-2, -1, 0, 1, 2};
+    bool done = false;
+    auto card_idx_from_card = [](const auto card) {
+        const int card_idx = static_cast<int>(card.rank) * 4 + static_cast<int>(card.suit);
+        return card_idx;
+    };
+    const omp::HandEvaluator evaluator;
+    while (!done) {
+        // Create the hand
+        omp::Hand hand = omp::Hand::empty();
+        for (const auto idx : idxs) {
+            if (idx < 0) {
+                hand += omp::Hand(
+                    card_idx_from_card(history.hole_cards[player].at(std::abs(idx) - 1).value()));
+            } else {
+                hand += omp::Hand(card_idx_from_card(history.common_cards.at(idx).value()));
+            }
+        }
+
+        // Evaluate the hand
+        max_hand_value = std::max(max_hand_value, static_cast<int>(evaluator.evaluate(hand)));
+
+        // Try to get the next indices
+        bool did_update = false;
+        for (int idx = 4; idx >= 0; idx--) {
+            const int idx_from_end = idxs.size() - idx;
+            const int max_for_curr_idx = common_card_end_idx - idx_from_end;
+            if (idxs[idx] < max_for_curr_idx) {
+                idxs[idx]++;
+                for (int future_idx = idx + 1; future_idx < static_cast<int>(idxs.size());
+                     future_idx++) {
+                    idxs[future_idx] = idxs[future_idx - 1] + 1;
+                }
+                did_update = true;
+                break;
+            }
+        }
+        // If we can't, we're done
+        done = !did_update;
+    }
+    return max_hand_value;
 }
 
 }  // namespace robot::domain
