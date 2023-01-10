@@ -1,0 +1,21 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Erick Fuentes <erick@csail.mit.edu>
+Date: Tue, 10 Jan 2023 12:30:09 -0500
+Subject: fix unused parameter issue
+
+
+diff --git a/omp/Util.h b/omp/Util.h
+index 4814816..7ddb033 100644
+--- a/omp/Util.h
++++ b/omp/Util.h
+@@ -147,6 +147,7 @@ public:
+ 
+     void deallocate(T* p, size_t n)
+     {
++        (void)n;
+         alignedDelete(p);
+     }
+ 
+-- 
+2.34.1
+

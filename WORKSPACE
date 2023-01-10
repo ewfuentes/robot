@@ -148,6 +148,7 @@ http_archive(
   build_file="@//third_party:BUILD.ompeval",
   patches = [
     "@//third_party:ompeval-0001-build-patches.patch",
+    "@//third_party:ompeval-0002-fix-unused-parameter-issue.patch",
   ],
   patch_args=["-p1"],
   sha256 = "816febbcd7f1c014cfe57fae7b73732c7938a26355582a63666fcb96457949d0",
