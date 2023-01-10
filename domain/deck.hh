@@ -15,14 +15,14 @@ WISE_ENUM_CLASS(StandardSuits, SPADES, HEARTS, CLUBS, DIAMONDS);
 WISE_ENUM_CLASS(StandardRanks, _2, _3, _4, _5, _6, _7, _8, _9, _10, _J, _Q, _K, _A);
 
 template <typename RankEnum, typename SuitEnum>
-struct Card {
+struct CardT {
     using Ranks = RankEnum;
     using Suits = SuitEnum;
 
     RankEnum rank;
     SuitEnum suit;
 
-    bool operator==(const Card &other) const { return rank == other.rank && suit == other.suit; }
+    bool operator==(const CardT &other) const { return rank == other.rank && suit == other.suit; }
 };
 
 template <typename T>
@@ -44,7 +44,7 @@ struct Deck {
    public:
     using Ranks = RankEnum;
     using Suits = SuitEnum;
-    using Card = Card<Ranks, Suits>;
+    using Card = CardT<Ranks, Suits>;
     static constexpr int RANK_SIZE = wise_enum::size<Ranks>;
     static constexpr int SUIT_SIZE = wise_enum::size<Suits>;
     static constexpr int NUM_CARDS = RANK_SIZE * SUIT_SIZE;
