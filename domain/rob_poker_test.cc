@@ -248,34 +248,34 @@ INSTANTIATE_TEST_SUITE_P(PossibleActions, RobPokerPossibleActionsTest,
                          testing::ValuesIn(possible_actions_test_cases),
                          [](const auto &info) { return make_test_name_range_to_range(info); });
 
-// TEST(RobPokerTest, test_game) {
-//     // Setup
-//     std::mt19937 gen(0);
-//     RobPokerHistory history;
-//
-//     // Action
-//     auto maybe_current_player = up_next(history);
-//     while (maybe_current_player.has_value()) {
-//         const auto current_player = maybe_current_player.value();
-//         if (current_player == RobPokerPlayer::CHANCE) {
-//             const auto chance_result = play(history, make_in_out(gen));
-//             history = chance_result.history;
-//         } else {
-//             const auto actions = possible_actions(history);
-//             for (const auto desired_action : {RobPokerAction::CHECK, RobPokerAction::CALL}) {
-//                 const auto iter = std::find(actions.begin(), actions.end(), desired_action);
-//                 if (iter != actions.end()) {
-//                     history = play(history, desired_action);
-//                     break;
-//                 }
-//             }
-//         }
-//         maybe_current_player = up_next(history);
-//     }
-//
-//     // Verification
-//     const auto maybe_terminal_value = terminal_value(history, RobPokerPlayer::PLAYER1);
-//     EXPECT_TRUE(maybe_terminal_value.has_value());
-// }
+TEST(RobPokerTest, test_game) {
+    // Setup
+    std::mt19937 gen(0);
+    RobPokerHistory history;
+
+    // Action
+    auto maybe_current_player = up_next(history);
+    while (maybe_current_player.has_value()) {
+        const auto current_player = maybe_current_player.value();
+        if (current_player == RobPokerPlayer::CHANCE) {
+            const auto chance_result = play(history, make_in_out(gen));
+            history = chance_result.history;
+        } else {
+            const auto actions = possible_actions(history);
+            for (const auto desired_action : {RobPokerAction::CHECK, RobPokerAction::CALL}) {
+                const auto iter = std::find(actions.begin(), actions.end(), desired_action);
+                if (iter != actions.end()) {
+                    history = play(history, desired_action);
+                    break;
+                }
+            }
+        }
+        maybe_current_player = up_next(history);
+    }
+
+    // Verification
+    const auto maybe_terminal_value = terminal_value(history, RobPokerPlayer::PLAYER1);
+    EXPECT_TRUE(maybe_terminal_value.has_value());
+}
 
 }  // namespace robot::domain

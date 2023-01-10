@@ -37,23 +37,23 @@ BettingState compute_betting_state(const RobPokerHistory &history) {
             const bool is_check_check = is(A::CHECK, A::CHECK);
             const bool is_raise_call = is(A::RAISE, A::CALL);
             if ((is_call_check || is_check_check || is_raise_call) && state.position > 0) {
-                state.position = 0;
-                state.round++;
-                did_advance_to_new_betting_round = true;
-
                 // This is the last card that was dealt after the previous round that ended
                 // Note that this is incorrect for the first round of betting, but is only relevant
                 // after the fourth betting round (after the river)
-                const int last_card_idx = state.round;
+                const int last_card_idx = state.round + 1;
                 const auto &last_card = history.common_cards.at(last_card_idx);
                 const bool last_card_is_black =
                     last_card.value().suit == StandardDeck::Suits::SPADES ||
                     last_card.value().suit == StandardDeck::Suits::CLUBS;
 
-                if (state.round > 3 && last_card_is_black) {
+                if (state.round >= 3 && last_card_is_black) {
                     state.is_game_over = true;
                     return state;
                 }
+
+                state.position = 0;
+                state.round++;
+                did_advance_to_new_betting_round = true;
             }
         }
         if (!did_advance_to_new_betting_round) {
@@ -176,8 +176,12 @@ std::vector<RobPokerAction> possible_actions(const RobPokerHistory &history) {
 }
 
 std::optional<int> terminal_value(const RobPokerHistory &history, const RobPokerPlayer player) {
-    (void)history;
-    (void)player;
+    const auto betting_state = compute_betting_state(history);
+    (void) player;
+    if (!betting_state.is_game_over) {
+        return std::nullopt;
+    }
+
     return 0;
 }
 //
