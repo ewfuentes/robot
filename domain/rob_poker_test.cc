@@ -18,17 +18,30 @@ auto make_fog_card(const StandardDeck::Card card,
     return RobPokerHistory::FogCard(card, make_private_info(owner));
 }
 
-std::string make_test_name(const auto &test_param_info) {
+std::string range_to_string(const auto &range) {
     std::stringstream out;
-    const auto &test_input = test_param_info.param;
-    out << (test_input.first.empty() ? "none_" : "");
-    for (const auto action : test_input.first) {
-        out << wise_enum::to_string(action) << "_";
+    out << (range.empty() ? "none" : "");
+    for (const auto &item : range) {
+        out << wise_enum::to_string(item);
+        if (&item != &range.back()) {
+            out << "_";
+        }
     }
-    out << "yields_"
-        << (test_input.second.has_value() ? wise_enum::to_string(test_input.second.value())
-                                          : "none");
     return out.str();
+}
+
+std::string optional_to_string(const auto &maybe_item) {
+    return std::string(maybe_item.has_value() ? wise_enum::to_string(maybe_item.value()) : "none");
+}
+
+std::string make_test_name_range_to_optional(const auto &test_param_info) {
+    const auto &test_input = test_param_info.param;
+    return range_to_string(test_input.first) + "_yields_" + optional_to_string(test_input.second);
+}
+
+std::string make_test_name_range_to_range(const auto &test_param_info) {
+    const auto &test_input = test_param_info.param;
+    return range_to_string(test_input.first) + "_yields_" + range_to_string(test_input.second);
 }
 }  // namespace
 
@@ -91,7 +104,7 @@ std::pair<std::vector<Action>, std::optional<RobPokerPlayer>> up_next_no_run_tes
 };
 INSTANTIATE_TEST_SUITE_P(UpNext, RobPokerUpNextNoRunTest,
                          testing::ValuesIn(up_next_no_run_test_cases),
-                         [](const auto &info) { return make_test_name(info); });
+                         [](const auto &info) { return make_test_name_range_to_optional(info); });
 
 class RobPokerUpNextWithRunTest : public RobPokerUpNextNoRunTest {};
 
@@ -152,12 +165,88 @@ std::pair<std::vector<Action>, std::optional<RobPokerPlayer>> up_next_with_run_t
       Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK},
      RobPokerPlayer::PLAYER2},
     {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
-       Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK},
+      Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK},
      {}},
 };
 INSTANTIATE_TEST_SUITE_P(UpNext, RobPokerUpNextWithRunTest,
                          testing::ValuesIn(up_next_with_run_test_cases),
-                         [](const auto &info) { return make_test_name(info); });
+                         [](const auto &info) { return make_test_name_range_to_optional(info); });
+
+class RobPokerPossibleActionsTest
+    : public testing::Test,
+      public testing::WithParamInterface<std::pair<std::vector<Action>, std::vector<Action>>> {};
+
+TEST_P(RobPokerPossibleActionsTest, test_possible_actions) {
+    // Setup
+    const auto &[action_history, expected_actions] = GetParam();
+    const RobPokerHistory history = {
+        .hole_cards =
+            {
+                {RobPokerPlayer::PLAYER1,
+                 {make_fog_card(SCard{.rank = Ranks::_A, .suit = Suits::SPADES}),
+                  make_fog_card(SCard{.rank = Ranks::_A, .suit = Suits::CLUBS})}},
+                {RobPokerPlayer::PLAYER2,
+                 {make_fog_card(SCard{.rank = Ranks::_K, .suit = Suits::SPADES}),
+                  make_fog_card(SCard{.rank = Ranks::_K, .suit = Suits::CLUBS})}},
+            },
+
+        .common_cards =
+            {
+                make_fog_card(SCard{.rank = Ranks::_2, .suit = Suits::DIAMONDS}),
+                make_fog_card(SCard{.rank = Ranks::_3, .suit = Suits::DIAMONDS}),
+                make_fog_card(SCard{.rank = Ranks::_4, .suit = Suits::DIAMONDS}),
+                make_fog_card(SCard{.rank = Ranks::_5, .suit = Suits::DIAMONDS}),
+                make_fog_card(SCard{.rank = Ranks::_6, .suit = Suits::HEARTS}),
+                make_fog_card(SCard{.rank = Ranks::_7, .suit = Suits::DIAMONDS}),
+                make_fog_card(SCard{.rank = Ranks::_8, .suit = Suits::CLUBS}),
+            },
+        .actions = action_history,
+    };
+
+    // Action
+    const auto actions = possible_actions(history);
+
+    // Verification
+    EXPECT_EQ(expected_actions.size(), actions.size());
+    for (const auto action : expected_actions) {
+        const auto iter = std::find(actions.begin(), actions.end(), action);
+        EXPECT_NE(iter, actions.end());
+    }
+}
+
+std::pair<std::vector<Action>, std::vector<Action>> possible_actions_test_cases[] = {
+    {{}, {Action::CALL, Action::RAISE, Action::FOLD}},
+    {{Action::CALL}, {Action::RAISE, Action::FOLD, Action::CHECK}},
+    {{Action::RAISE}, {Action::CALL, Action::RAISE, Action::FOLD}},
+    {{Action::FOLD}, {}},
+    {{Action::CALL, Action::CHECK}, {Action::RAISE, Action::CHECK, Action::FOLD}},
+    {{Action::CALL, Action::RAISE}, {Action::CALL, Action::RAISE, Action::FOLD}},
+    {{Action::CALL, Action::RAISE, Action::RAISE}, {Action::CALL, Action::RAISE, Action::FOLD}},
+    // After first check in second betting round
+    {{Action::CALL, Action::CHECK, Action::CHECK}, {Action::RAISE, Action::FOLD, Action::CHECK}},
+    // At start of third betting round
+    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK},
+     {Action::RAISE, Action::FOLD, Action::CHECK}},
+    // After first check of fourth betting round
+    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
+      Action::CHECK},
+     {Action::RAISE, Action::FOLD, Action::CHECK}},
+    // At start of fifth betting round
+    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
+      Action::CHECK, Action::CHECK},
+     {Action::RAISE, Action::FOLD, Action::CHECK}},
+    // After first check of fifth betting round
+    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
+      Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK},
+     {Action::RAISE, Action::FOLD, Action::CHECK}},
+    // At the end of the last betting round
+    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
+      Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK},
+     {}},
+};
+INSTANTIATE_TEST_SUITE_P(PossibleActions, RobPokerPossibleActionsTest,
+                         testing::ValuesIn(possible_actions_test_cases),
+                         [](const auto &info) { return make_test_name_range_to_range(info); });
 
 // TEST(RobPokerTest, test_game) {
 //     // Setup
