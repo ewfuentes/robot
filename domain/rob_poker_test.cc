@@ -34,9 +34,23 @@ std::string optional_to_string(const auto &maybe_item) {
     return std::string(maybe_item.has_value() ? wise_enum::to_string(maybe_item.value()) : "none");
 }
 
+std::string optional_int_to_string(const auto &maybe_item) {
+    if (!maybe_item.has_value()) {
+        return "none";
+    }
+    const int item = maybe_item.value();
+    return (item < 0 ? "neg" : "") + std::to_string(std::abs(item));
+}
+
 std::string make_test_name_range_to_optional(const auto &test_param_info) {
     const auto &test_input = test_param_info.param;
     return range_to_string(test_input.first) + "_yields_" + optional_to_string(test_input.second);
+}
+
+std::string make_test_name_range_to_optional_int(const auto &test_param_info) {
+    const auto &test_input = test_param_info.param;
+    return range_to_string(test_input.first) + "_yields_" +
+           optional_int_to_string(test_input.second);
 }
 
 std::string make_test_name_range_to_range(const auto &test_param_info) {
@@ -310,10 +324,145 @@ TEST(RobPokerEvaluateHandTest, hand_evaluation) {
     EXPECT_GT(player_1_hand_rank, player_2_hand_rank);
 }
 
-  TEST(RobPokerTest, terminal_value_test) {
-    // SETUP
-    // ACTION
-    // VERIFICATION
-  }
+class RobPokerTerminalValueNoRunTest
+    : public testing::Test,
+      public testing::WithParamInterface<std::pair<std::vector<Action>, std::optional<int>>> {};
+
+TEST_P(RobPokerTerminalValueNoRunTest, test_terminal_value) {
+    // Setup
+    const auto &[actions, expected_value] = GetParam();
+    const RobPokerHistory history = {
+        .hole_cards =
+            {
+                {RobPokerPlayer::PLAYER1,
+                 {make_fog_card(SCard{.rank = Ranks::_A, .suit = Suits::SPADES}),
+                  make_fog_card(SCard{.rank = Ranks::_A, .suit = Suits::CLUBS})}},
+                {RobPokerPlayer::PLAYER2,
+                 {make_fog_card(SCard{.rank = Ranks::_K, .suit = Suits::SPADES}),
+                  make_fog_card(SCard{.rank = Ranks::_K, .suit = Suits::CLUBS})}},
+            },
+
+        .common_cards =
+            {
+                make_fog_card(SCard{.rank = Ranks::_2, .suit = Suits::DIAMONDS}),
+                make_fog_card(SCard{.rank = Ranks::_3, .suit = Suits::DIAMONDS}),
+                make_fog_card(SCard{.rank = Ranks::_4, .suit = Suits::DIAMONDS}),
+                make_fog_card(SCard{.rank = Ranks::_5, .suit = Suits::DIAMONDS}),
+                make_fog_card(SCard{.rank = Ranks::_7, .suit = Suits::SPADES}),
+            },
+        .actions = actions,
+    };
+
+    // Action
+    const auto maybe_value = terminal_value(history, RobPokerPlayer::PLAYER1);
+
+    // Verification
+    ASSERT_EQ(maybe_value.has_value(), expected_value.has_value());
+    if (expected_value.has_value()) {
+        EXPECT_EQ(maybe_value.value(), expected_value.value());
+    }
+}
+
+std::pair<std::vector<Action>, std::optional<int>> terminal_value_no_run_test_cases[] = {
+    {{}, {}},
+    {{Action::CALL}, {}},
+    {{Action::RAISE}, {}},
+    {{Action::FOLD}, -1},
+    {{Action::CALL, Action::CHECK}, {}},
+    {{Action::CALL, Action::RAISE}, {}},
+    {{Action::CALL, Action::RAISE, Action::RAISE}, {}},
+    {{Action::CALL, Action::CHECK, Action::CHECK}, {}},
+    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK}, {}},
+    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
+      Action::CHECK},
+     {}},
+    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
+      Action::FOLD},
+     1},
+    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
+      Action::CHECK, Action::FOLD},
+     -1},
+    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
+      Action::CHECK, Action::CHECK},
+     1},
+};
+INSTANTIATE_TEST_SUITE_P(TerminalValue, RobPokerTerminalValueNoRunTest,
+                         testing::ValuesIn(terminal_value_no_run_test_cases), [](const auto &info) {
+                             return make_test_name_range_to_optional_int(info);
+                         });
+
+class RobPokerTerminalValueWithRunTest : public RobPokerTerminalValueNoRunTest {};
+
+TEST_P(RobPokerTerminalValueWithRunTest, test_terminal_value) {
+    // Setup
+    const auto &[actions, expected_value] = GetParam();
+    const RobPokerHistory history = {
+        .hole_cards =
+            {
+                {RobPokerPlayer::PLAYER1,
+                 {make_fog_card(SCard{.rank = Ranks::_A, .suit = Suits::SPADES}),
+                  make_fog_card(SCard{.rank = Ranks::_A, .suit = Suits::CLUBS})}},
+                {RobPokerPlayer::PLAYER2,
+                 {make_fog_card(SCard{.rank = Ranks::_K, .suit = Suits::SPADES}),
+                  make_fog_card(SCard{.rank = Ranks::_K, .suit = Suits::CLUBS})}},
+            },
+
+        .common_cards =
+            {
+                make_fog_card(SCard{.rank = Ranks::_2, .suit = Suits::DIAMONDS}),
+                make_fog_card(SCard{.rank = Ranks::_3, .suit = Suits::DIAMONDS}),
+                make_fog_card(SCard{.rank = Ranks::_4, .suit = Suits::DIAMONDS}),
+                make_fog_card(SCard{.rank = Ranks::_5, .suit = Suits::DIAMONDS}),
+                make_fog_card(SCard{.rank = Ranks::_6, .suit = Suits::HEARTS}),
+                make_fog_card(SCard{.rank = Ranks::_7, .suit = Suits::DIAMONDS}),
+                make_fog_card(SCard{.rank = Ranks::_8, .suit = Suits::CLUBS}),
+            },
+        .actions = actions,
+    };
+
+    // Action
+    const auto maybe_value = terminal_value(history, RobPokerPlayer::PLAYER2);
+
+    // Verification
+    ASSERT_EQ(maybe_value.has_value(), expected_value.has_value());
+    if (expected_value.has_value()) {
+        EXPECT_EQ(maybe_value.value(), expected_value.value());
+    }
+}
+
+std::pair<std::vector<Action>, std::optional<int>> terminal_value_with_run_test_cases[] = {
+    {{}, {}},
+    {{Action::CALL}, {}},
+    {{Action::RAISE}, {}},
+    {{Action::FOLD}, 1},
+    {{Action::CALL, Action::CHECK}, {}},
+    {{Action::CALL, Action::RAISE}, {}},
+    {{Action::CALL, Action::RAISE, Action::RAISE}, {}},
+    {{Action::CALL, Action::CHECK, Action::CHECK}, {}},
+    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK}, {}},
+    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
+      Action::CHECK},
+     {}},
+    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
+      Action::CHECK, Action::CHECK},
+     {}},
+    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
+      Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK},
+     {}},
+    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
+      Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK},
+     0},
+    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
+      Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::FOLD},
+     1},
+    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
+      Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::FOLD},
+     -1},
+};
+INSTANTIATE_TEST_SUITE_P(TerminalValue, RobPokerTerminalValueWithRunTest,
+                         testing::ValuesIn(terminal_value_with_run_test_cases),
+                         [](const auto &info) {
+                             return make_test_name_range_to_optional_int(info);
+                         });
 
 }  // namespace robot::domain

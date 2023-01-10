@@ -191,11 +191,14 @@ std::optional<int> terminal_value(const RobPokerHistory &history, const RobPoker
     const RobPokerPlayer opponent =
         player == RobPokerPlayer::PLAYER1 ? RobPokerPlayer::PLAYER2 : RobPokerPlayer::PLAYER1;
 
-    const pot_value = 1;
+    const int pot_value = 1;
 
     if (betting_state.showdown_required) {
         const int player_hand_rank = evaluate_hand(history, player);
         const int opponent_hand_rank = evaluate_hand(history, opponent);
+        if (player_hand_rank == opponent_hand_rank) {
+            return 0;
+        }
         const int sign = player_hand_rank > opponent_hand_rank ? 1 : -1;
         return sign * pot_value;
     }
