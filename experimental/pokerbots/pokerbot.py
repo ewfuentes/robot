@@ -1,8 +1,13 @@
 from typing import Union
 
+import os
 import sys
 
 print(sys.version)
+os.system("ldd --version")
+os.system("uname -a")
+os.system("lsb_release -a")
+os.system("lscpu")
 
 from python_skeleton.skeleton import bot
 from python_skeleton.skeleton.states import GameState, RoundState, TerminalState
@@ -13,6 +18,7 @@ from python_skeleton.skeleton.actions import (
     RaiseAction,
 )
 from python_skeleton.skeleton import runner
+from common.python.pybind_example_python import add as pybind_add
 
 
 class Pokerbot(bot.Bot):
@@ -20,6 +26,7 @@ class Pokerbot(bot.Bot):
 
     def __init__(self):
         """Init."""
+        print('Calling pybind add: ', pybind_add(1, 2))
         pass
 
     def handle_new_round(

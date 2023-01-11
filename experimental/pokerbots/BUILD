@@ -1,3 +1,4 @@
+load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
 load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_runtime")
 load("@rules_pkg//pkg:zip.bzl", "pkg_zip")
 
@@ -24,6 +25,9 @@ py_runtime(
 py_binary(
     name="pokerbot",
     srcs=["pokerbot.py"],
+    data = [
+      "//common/python:pybind_example_python.so"
+    ],
     deps=[
         "@mit_pokerbots//:framework",
     ],

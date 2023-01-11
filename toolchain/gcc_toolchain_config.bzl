@@ -3,10 +3,11 @@ load("@bazel_tools//tools/build_defs/cc:action_names.bzl", "ACTION_NAMES")
 load("@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl", "feature", "flag_group", "flag_set", "tool_path")
 
 def _impl(ctx):
+    gcc_version = ctx.attr.gcc_version
     tool_paths = [
       tool_path(
         name = "gcc",
-        path = "/usr/bin/gcc-11",
+        path = "/usr/bin/gcc-{}".format(gcc_version),
       ),
       tool_path(
         name = "ar",
@@ -138,8 +139,8 @@ def _impl(ctx):
       features = features,
       cxx_builtin_include_directories = [
         "/usr/include",
-        "/usr/include/c++/11",
-        "/usr/lib/gcc/x86_64-linux-gnu/11/include",
+        "/usr/include/c++/{}".format(gcc_version),
+        "/usr/lib/gcc/x86_64-linux-gnu/{}/include".format(gcc_version),
       ],
       toolchain_identifier="k8-gcc-toolchain",
       host_system_name="local",
@@ -154,6 +155,8 @@ def _impl(ctx):
 
 gcc_toolchain_config = rule(
     implementation = _impl,
-    attrs = {},
+    attrs = {
+      "gcc_version": attr.string(),
+    },
     provides = [CcToolchainConfigInfo]
 )

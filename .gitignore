@@ -1,4 +1,5 @@
 bazel-*
+.dazel_run
 
 # Ignore temporary emacs files
 .#*
