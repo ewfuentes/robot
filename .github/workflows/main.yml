@@ -64,3 +64,37 @@ jobs:
       - name: Run Unit Tests
         run: |
           bazel test --config=${{ matrix.build-config }} //... --test_output=errors
+
+  build-bot:
+    # The type of runner that the job will run on
+    runs-on: ubuntu-20.04
+
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+      # Setup caching of bazel build dirs
+      - name: Setup Cache
+        uses: ewfuentes/cache@maybe_skip_write
+        env:
+          cache-name: bazel-cache-
+          ref_name: ${{ github.ref_name }}
+        with:
+          path: |
+            ~/.cache/bazel
+            ~/.cache/bazelisk
+          key: ${{ runner.os }}-${{ env.cache-name }}-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}-${{ github.event_name }}
+          restore-keys: ${{ runner.os }}-${{ env.cache-name }}
+          # If this is a nightly run, then
+          skip-cache-write: ${{ github.ref_name == 'main' && 'false' || 'true' }}
+
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - name: Checking out  ${{ github.sha }}
+        uses: actions/checkout@v3
+
+      # Runs a set of commands using the runners shell
+      - name: Setup Dependencies
+        run: |
+          ./setup.sh
+
+      - name: Run Unit Tests
+        run: |
+          bazel build //experimental/pokerbots:zipped_bot
