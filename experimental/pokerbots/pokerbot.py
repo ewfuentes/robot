@@ -7,6 +7,7 @@ print(sys.version)
 os.system("ldd --version")
 os.system("uname -a")
 os.system("lsb_release -a")
+os.system("lscpu")
 
 from python_skeleton.skeleton import bot
 from python_skeleton.skeleton.states import GameState, RoundState, TerminalState

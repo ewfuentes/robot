@@ -1,7 +1,6 @@
 
 build --strip=never
-build --config=clang
+build --config=gcc-10
 build --crosstool_top=//toolchain:cpp_suite
-build:clang --compiler=clang
 build:gcc --compiler=gcc-11
 build:gcc-10 --compiler=gcc-10
