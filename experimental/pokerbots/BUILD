@@ -16,13 +16,8 @@ filegroup(
 
 py_runtime(
     name="system_runtime",
-    interpreter_path=select(
-        {
-            # Update paths as appropriate for your system.
-            "@bazel_tools//tools/python:PY2": "/usr/bin/python",
-            "@bazel_tools//tools/python:PY3": "/usr/bin/python3",
-        }
-    ),
+    python_version="PY3",
+    interpreter_path="/usr/bin/python3",
     files=[],
 )
 
