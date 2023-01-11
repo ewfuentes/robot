@@ -1,0 +1,15 @@
+
+# load("@pip//:requirements.bzl", "requirement")
+load("@rules_python//python:defs.bzl", "py_binary", "py_library")
+
+
+py_library(
+  name="framework",
+  srcs = [
+    "python_skeleton/skeleton/actions.py",
+    "python_skeleton/skeleton/bot.py",
+    "python_skeleton/skeleton/runner.py",
+    "python_skeleton/skeleton/states.py",
+  ],
+  visibility=["//visibility:public"],
+)
