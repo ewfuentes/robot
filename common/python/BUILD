@@ -21,8 +21,10 @@ cc_library(
 
 pybind_extension(
   name = "pybind_example_python",
-  srcs = ["pybind_example_python.cc"],
+  srcs = [
+  "pybind_example_python.cc",],
   copts = ["-fPIC"],
+  visibility=["//visibility:public"],
   deps = [
     ":test_function",
   ]
