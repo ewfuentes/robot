@@ -158,7 +158,7 @@ EquityResult evaluate_hand_potential(const std::string &hand_str, const std::str
         static_cast<double>(counts[0][2] + (counts[0][1] + counts[1][2]) / 2.0) / num_evals;
 
     const double negative_potential =
-        static_cast<double>(counts[2][1] + (counts[2][1] + counts[1][0]) / 2.0) / num_evals;
+        static_cast<double>(counts[2][0] + (counts[2][1] + counts[1][0]) / 2.0) / num_evals;
 
     const double hand_potential =
         (1.0 - hand_strength) * positive_potential + hand_strength * (1.0 - negative_potential);
