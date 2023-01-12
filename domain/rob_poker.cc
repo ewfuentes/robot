@@ -1,7 +1,6 @@
 
 #include "domain/rob_poker.hh"
 
-#include <algorithm>
 #include <ios>
 #include <iostream>
 #include <limits>
@@ -159,37 +158,16 @@ ChanceResult play(const RobPokerHistory &history, InOut<std::mt19937> gen) {
     auto out = history;
     double probability;
     bool is_done_dealing = false;
-    StandardDeck deck;
-    for (const auto &cards : {history.hole_cards[RobPokerPlayer::PLAYER1],
-                              history.hole_cards[RobPokerPlayer::PLAYER2]}) {
-        for (const auto &card : cards) {
-            if (card.has_value()) {
-                std::remove_if(deck.begin(), deck.end(), [&card](const auto &deck_card) {
-                    return deck_card == card.value();
-                });
-            }
-        }
-    }
-    for (const auto &card : history.common_cards) {
-        if (card.has_value()) {
-            std::remove_if(deck.begin(), deck.end(), [&card](const auto &deck_card) {
-                return deck_card == card.value();
-            });
-        }
-    }
-
     while (!is_done_dealing) {
         probability = 1.0;
-        StandardDeck deck_copy = deck;
-        deck_copy.shuffle(gen);
+        StandardDeck deck;
+        deck.shuffle(gen);
         // Deal the player cards
         for (const auto player : {RobPokerPlayer::PLAYER1, RobPokerPlayer::PLAYER2}) {
             for (auto &card : out.hole_cards[player]) {
                 probability *= 1.0 / deck.size();
-                if (!card.has_value()) {
-                    card = RobPokerHistory::FogCard(deck_copy.deal_card().value(),
-                                                    make_private_info(player));
-                }
+                card =
+                    RobPokerHistory::FogCard(deck.deal_card().value(), make_private_info(player));
             }
         }
 
@@ -197,10 +175,8 @@ ChanceResult play(const RobPokerHistory &history, InOut<std::mt19937> gen) {
         for (int i = 0; i < static_cast<int>(history.common_cards.size()); i++) {
             if (!is_done_dealing) {
                 probability *= 1.0 / deck.size();
-                if (!out.common_cards[i].has_value()) {
-                    out.common_cards[i] = RobPokerHistory::FogCard(
-                        deck_copy.deal_card().value(), make_private_info(RobPokerPlayer::CHANCE));
-                }
+                out.common_cards[i] = RobPokerHistory::FogCard(
+                    deck.deal_card().value(), make_private_info(RobPokerPlayer::CHANCE));
 
                 // A deal is complete if at least 5 cards have been dealt and the last card isn't
                 // red

@@ -5,6 +5,7 @@ import pickle
 
 import experimental.pokerbots.hand_evaluator_python as hep
 
+
 def main(output_path):
     ranks = '23456789TJQKA'
     suits = 'shcd'
@@ -17,6 +18,7 @@ def main(output_path):
 
     with open(output_path, 'wb') as file_out:
         pickle.dump(equity, file_out)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

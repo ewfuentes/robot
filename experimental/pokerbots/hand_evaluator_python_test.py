@@ -17,6 +17,26 @@ class HandEvaluatorPythonTest(unittest.TestCase):
         print('Player Equity:', result.equity)
         print('hands evaluated:', result.num_evaluations)
 
+    def test_hand_potential(self):
+        # Setup
+        player_hand = 'AsAc'
+        board = 'KsQcJd'
+
+        # Action
+        hep.evaluate_hand_potential(player_hand, board, 0.005)
+
+        # Verification
+
+    def test_hand_potential_draw(self):
+        # Setup
+        player_hand = 'AsAc'
+        board = 'KsQcJd'
+
+        # Action
+        hep.evaluate_hand_potential(player_hand, board, 0.005)
+
+        # Verification
+
 
 
 if __name__ == "__main__":

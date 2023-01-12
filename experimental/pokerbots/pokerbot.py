@@ -46,13 +46,15 @@ class Pokerbot(bot.Bot):
             if self.preflop_equity is None:
                 # This is the preflop round, just compute hand strength
                 key = "".join(sorted(hole, key=card_key))
-                print('Equity:', self._preflop_equities[key])
+                print("Equity:", self._preflop_equities[key])
                 self.preflop_equity = self._preflop_equities[key]
             return self.preflop_equity
         else:
             # This is a post flop round, compute effective hand strength
             TIME_LIMIT_S = 0.02
-            result = hep.evaluate_hand("".join(hole), "random", "".join(board), TIME_LIMIT_S)
+            result = hep.evaluate_hand_potential(
+                "".join(hole), "".join(board), TIME_LIMIT_S
+            )
             print(f"evaluated {result.num_evaluations} hands")
             return result.equity
 
