@@ -83,6 +83,7 @@ cc_test(
 cc_library(
   name = "deck",
   hdrs = ["deck.hh"],
+  visibility = ["//visibility:public"],
   deps = [
     "@wise_enum//:wise_enum",
     "//common:argument_wrapper",

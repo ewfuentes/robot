@@ -11,7 +11,6 @@
 #include "wise_enum.h"
 
 namespace robot::domain {
-
 struct FoldAction {
     static constexpr std::string_view name = "Fold";
     constexpr bool operator==(const FoldAction &) const { return true; }
@@ -42,7 +41,7 @@ struct AllInAction {
 
 using RobPokerAction =
     std::variant<FoldAction, CheckAction, CallAction, RaiseAction, RaisePotAction, AllInAction>;
-WISE_ENUM_CLASS(RobPokerPlayer, PLAYER1, PLAYER2, CHANCE);
+WISE_ENUM_CLASS(RobPokerPlayer, PLAYER1, PLAYER2, CHANCE)
 
 struct BettingState {
     bool is_game_over;
