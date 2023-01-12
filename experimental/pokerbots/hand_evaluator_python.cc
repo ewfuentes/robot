@@ -6,10 +6,10 @@
 
 namespace robot::experimental::pokerbots {
 namespace {
-  struct EquityResult {
+struct EquityResult {
     double equity;
     uint64_t num_evaluations;
-  };
+};
 
 EquityResult evaluate_hand(const std::string &hand, const std::string &opponent_hand_str,
                            const std::string &board_str) {
@@ -22,8 +22,8 @@ EquityResult evaluate_hand(const std::string &hand, const std::string &opponent_
     const auto results = calculator.getResults();
 
     return {
-      .equity = results.equity[0],
-      .num_evaluations = results.hands,
+        .equity = results.equity[0],
+        .num_evaluations = results.hands,
     };
 }
 }  // namespace
@@ -34,8 +34,8 @@ PYBIND11_MODULE(hand_evaluator_python, m) {
     m.doc() = "Hand Evaluator";
 
     py::class_<EquityResult>(m, "EquityResult")
-      .def_readonly("equity", &EquityResult::equity)
-      .def_readonly("num_evaluations", &EquityResult::num_evaluations);
+        .def_readonly("equity", &EquityResult::equity)
+        .def_readonly("num_evaluations", &EquityResult::num_evaluations);
 
     m.def("evaluate_hand", &evaluate_hand);
 }
