@@ -23,6 +23,7 @@ cc_library(
     "-Wno-unused-parameter",
     "-Wno-deprecated-copy-with-user-provided-copy",
     "-std=c++11",
+    "-fPIC",
   ],
   visibility = ["//visibility:public"],
   deps = [

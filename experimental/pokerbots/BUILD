@@ -19,14 +19,29 @@ py_runtime(
     name="system_runtime",
     python_version="PY3",
     interpreter_path="/usr/bin/python3",
-    files=[],
+)
+
+pybind_extension(
+  name = "hand_evaluator_python",
+  srcs = ["hand_evaluator_python.cc"],
+  copts = ["-fPIC"],
+  deps = [
+    "@ompeval//:ompeval_lib",
+  ]
+)
+
+py_test(
+  name = "hand_evaluator_python_test",
+  srcs = ["hand_evaluator_python_test.py"],
+  data = [":hand_evaluator_python.so"],
 )
 
 py_binary(
     name="pokerbot",
     srcs=["pokerbot.py"],
     data = [
-      "//common/python:pybind_example_python.so"
+      "//common/python:pybind_example_python.so",
+      ":hand_evaluator_python.so",
     ],
     deps=[
         "@mit_pokerbots//:framework",
