@@ -25,6 +25,10 @@ std::ostream &operator<<(std::ostream &out, const RobPokerPlayer player);
 std::ostream &operator<<(std::ostream &out, const RobPokerAction player);
 
 struct RobPokerHistory {
+    static constexpr int STARTING_STACK_SIZE = 400;
+    static constexpr int SMALL_BLIND = 1;
+    static constexpr int BIG_BLIND = 2;
+
     // TODO Fog card really seems like overkill... We could replace the function call with a
     // boolean
     using FogCard = Fog<StandardDeck::Card, RobPokerPlayer>;
