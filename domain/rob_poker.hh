@@ -2,6 +2,7 @@
 #pragma once
 
 #include <random>
+#include <variant>
 
 #include "common/argument_wrapper.hh"
 #include "common/indexed_array.hh"
@@ -10,14 +11,26 @@
 #include "wise_enum.h"
 
 namespace robot::domain {
-WISE_ENUM_CLASS(RobPokerAction, FOLD, CHECK, CALL, RAISE);
+
+struct FoldAction {};
+struct CheckAction {};
+struct CallAction {};
+struct RaiseAction {
+    int amount;
+};
+using RobPokerAction = std::variant<FoldAction, CheckAction, CallAction, RaiseAction>;
 WISE_ENUM_CLASS(RobPokerPlayer, PLAYER1, PLAYER2, CHANCE);
 
 std::ostream &operator<<(std::ostream &out, const RobPokerPlayer player);
 std::ostream &operator<<(std::ostream &out, const RobPokerAction player);
 
 struct RobPokerHistory {
-    // TODO Fog card really seems like overkill... We could replace the function call with a boolean
+    static constexpr int STARTING_STACK_SIZE = 400;
+    static constexpr int SMALL_BLIND = 1;
+    static constexpr int BIG_BLIND = 2;
+
+    // TODO Fog card really seems like overkill... We could replace the function call with a
+    // boolean
     using FogCard = Fog<StandardDeck::Card, RobPokerPlayer>;
     IndexedArray<std::array<FogCard, 2>, RobPokerPlayer> hole_cards;
     // 26 red cards + 5 black cards is the longest it could be

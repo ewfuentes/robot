@@ -40,6 +40,6 @@ bool Obstacle::is_inside(const Eigen::Vector2d &query_in_frame) const {
     });
 
     return (intersection_counts % 2) == 1;
-};
+}
 
 }  // namespace robot::experimental::beacon_sim

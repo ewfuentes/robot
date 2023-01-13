@@ -5,7 +5,10 @@
 #include <iostream>
 #include <limits>
 #include <sstream>
+#include <type_traits>
+#include <variant>
 
+#include "common/indexed_array.hh"
 #include "domain/deck.hh"
 #include "domain/fog.hh"
 #include "omp/Hand.h"
@@ -18,30 +21,56 @@ struct BettingState {
     bool showdown_required;
     int round;
     int position;
+    IndexedArray<int, RobPokerPlayer> put_in_pot;
 };
 
 BettingState compute_betting_state(const RobPokerHistory &history) {
-    using A = RobPokerAction;
-    BettingState state = {
-        .is_game_over = false, .showdown_required = false, .round = 0, .position = 0};
+    BettingState state = {.is_game_over = false,
+                          .showdown_required = false,
+                          .round = 0,
+                          .position = 0,
+                          .put_in_pot = {0}};
     if (history.actions.empty()) {
         return state;
     }
+
+    RobPokerPlayer current_player = RobPokerPlayer::PLAYER1;
     for (int i = 0; i < static_cast<int>(history.actions.size()); i++) {
+        RobPokerPlayer other_player = current_player == RobPokerPlayer::PLAYER1
+                                          ? RobPokerPlayer::PLAYER2
+                                          : RobPokerPlayer::PLAYER1;
         const auto curr_action = history.actions.at(i);
+
+        // Update the bet amounts
+        std::visit(
+            [&state, &current_player, &other_player](const auto &action) mutable {
+                using T = std::decay_t<decltype(action)>;
+                const int continue_cost =
+                    state.put_in_pot[other_player] - state.put_in_pot[current_player];
+                if constexpr (std::is_same_v<T, RaiseAction>) {
+                    state.put_in_pot[current_player] += continue_cost + action.amount;
+                } else if constexpr (std::is_same_v<T, CallAction>) {
+                    state.put_in_pot[current_player] += continue_cost;
+                }
+            },
+            curr_action);
+
         bool did_advance_to_new_betting_round = false;
-        if (curr_action == A::FOLD) {
+        if (std::holds_alternative<FoldAction>(curr_action)) {
             state.is_game_over = true;
             return state;
         } else if (i > 0) {
             const auto prev_action = history.actions.at(i - 1);
-            const auto is = [prev_action, curr_action](const auto &a, const auto &b) {
-                return prev_action == a && curr_action == b;
+            const auto is = [prev_action, curr_action](auto a, auto b) {
+                return std::holds_alternative<decltype(a)>(prev_action) &&
+                       std::holds_alternative<decltype(b)>(curr_action);
             };
-            const bool is_call_check = is(A::CALL, A::CHECK);
-            const bool is_check_check = is(A::CHECK, A::CHECK);
-            const bool is_raise_call = is(A::RAISE, A::CALL);
-            if ((is_call_check || is_check_check || is_raise_call) && state.position > 0) {
+            const bool is_call_check = is(CallAction{}, CheckAction{});
+            const bool is_check_check = is(CheckAction{}, CheckAction{});
+            const bool is_raise_call = is(RaiseAction{}, CallAction{});
+            const bool is_opening_call = is_raise_call && i == 2;
+            if ((is_call_check || is_check_check || is_raise_call) && state.position > 0 &&
+                !is_opening_call) {
                 // This is the last card that was dealt after the previous round that ended
                 // Note that this is incorrect for the first round of betting, but is only relevant
                 // after the fourth betting round (after the river)
@@ -58,12 +87,14 @@ BettingState compute_betting_state(const RobPokerHistory &history) {
                 }
 
                 state.position = 0;
+                current_player = RobPokerPlayer::PLAYER2;
                 state.round++;
                 did_advance_to_new_betting_round = true;
             }
         }
         if (!did_advance_to_new_betting_round) {
             state.position++;
+            current_player = other_player;
         }
     }
     return state;
@@ -77,7 +108,22 @@ std::ostream &operator<<(std::ostream &out, const RobPokerPlayer player) {
 }
 
 std::ostream &operator<<(std::ostream &out, const RobPokerAction action) {
-    out << wise_enum::to_string(action);
+    out << std::visit(
+        [](auto &&action) -> std::string {
+            using T = std::decay_t<decltype(action)>;
+            if constexpr (std::is_same_v<T, FoldAction>) {
+                return "Fold";
+            } else if constexpr (std::is_same_v<T, CheckAction>) {
+                return "Check";
+            } else if constexpr (std::is_same_v<T, CallAction>) {
+                return "Call";
+            } else if constexpr (std::is_same_v<T, RaiseAction>) {
+                return "Raise" + std::to_string(action.amount);
+            } else {
+                return std::string("Unknown Action");
+            }
+        },
+        action);
     return out;
 }
 
@@ -141,6 +187,12 @@ ChanceResult play(const RobPokerHistory &history, InOut<std::mt19937> gen) {
         }
     }
 
+    // It feels icky to do this here, but post the blinds
+    if (out.actions.empty()) {
+        out.actions.push_back(RaiseAction{RobPokerHistory::SMALL_BLIND});
+        out.actions.push_back(RaiseAction{RobPokerHistory::BIG_BLIND});
+    }
+
     return {.history = out, .probability = probability};
 }
 
@@ -159,39 +211,36 @@ std::vector<RobPokerAction> possible_actions(const RobPokerHistory &history) {
         return out;
     }
     // Folding is always an option while the game is underway
-    out.push_back(RobPokerAction::FOLD);
+    out.push_back(FoldAction{});
 
     // Raising is always an option
     // TODO take chip stack size into account
-    out.push_back(RobPokerAction::RAISE);
+    out.push_back(RaiseAction{});
 
     // Calling is only possible if the previous action in the current betting round was a raise or
     // it's the first action of the first round
     const bool is_first_action = history.actions.empty();
     const bool was_previous_raise =
-        !history.actions.empty() && history.actions.back() == RobPokerAction::RAISE;
+        !history.actions.empty() && std::holds_alternative<RaiseAction>(history.actions.back());
     const bool is_after_first_action_in_round = betting_state.position > 0;
     if (is_first_action || (is_after_first_action_in_round && was_previous_raise)) {
-        out.push_back(RobPokerAction::CALL);
+        out.push_back(CallAction{});
     }
 
     // You can't check after a raise
     if (!(was_previous_raise || is_first_action)) {
-        out.push_back(RobPokerAction::CHECK);
+        out.push_back(CheckAction{});
     }
     return out;
 }
 
 std::optional<int> terminal_value(const RobPokerHistory &history, const RobPokerPlayer player) {
     const auto betting_state = compute_betting_state(history);
-    (void)player;
     if (!betting_state.is_game_over) {
         return std::nullopt;
     }
     const RobPokerPlayer opponent =
         player == RobPokerPlayer::PLAYER1 ? RobPokerPlayer::PLAYER2 : RobPokerPlayer::PLAYER1;
-
-    const int pot_value = 1;
 
     if (betting_state.showdown_required) {
         const int player_hand_rank = evaluate_hand(history, player);
@@ -199,8 +248,8 @@ std::optional<int> terminal_value(const RobPokerHistory &history, const RobPoker
         if (player_hand_rank == opponent_hand_rank) {
             return 0;
         }
-        const int sign = player_hand_rank > opponent_hand_rank ? 1 : -1;
-        return sign * pot_value;
+        return player_hand_rank > opponent_hand_rank ? betting_state.put_in_pot[opponent]
+                                                     : -betting_state.put_in_pot[player];
     }
     // determine which player folded and get sign
     // Player 1 starts the first round of betting, so if the betting position is even, player 1
@@ -211,8 +260,8 @@ std::optional<int> terminal_value(const RobPokerHistory &history, const RobPoker
         betting_state.round == 0
             ? (betting_state.position % 2 == 0 ? RobPokerPlayer::PLAYER1 : RobPokerPlayer::PLAYER2)
             : (betting_state.position % 2 == 0 ? RobPokerPlayer::PLAYER2 : RobPokerPlayer::PLAYER1);
-    const int sign = player == folding_player ? -1 : 1;
-    return sign * pot_value;
+    return player == folding_player ? -betting_state.put_in_pot[player]
+                                    : betting_state.put_in_pot[opponent];
 }
 //
 // RobPokerPoker::InfoSetId infoset_id_from_history(const RobPokerHistory &hist);

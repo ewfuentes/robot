@@ -2,6 +2,7 @@
 #pragma once
 
 #include <array>
+#include <cctype>
 #include <optional>
 #include <random>
 #include <sstream>
@@ -11,8 +12,8 @@
 
 namespace robot::domain {
 
-WISE_ENUM_CLASS(StandardSuits, SPADES, HEARTS, CLUBS, DIAMONDS);
-WISE_ENUM_CLASS(StandardRanks, _2, _3, _4, _5, _6, _7, _8, _9, _10, _J, _Q, _K, _A);
+WISE_ENUM_CLASS(StandardSuits, SPADES, HEARTS, CLUBS, DIAMONDS)
+WISE_ENUM_CLASS(StandardRanks, _2, _3, _4, _5, _6, _7, _8, _9, _T, _J, _Q, _K, _A)
 
 template <typename RankEnum, typename SuitEnum>
 struct CardT {
@@ -26,16 +27,22 @@ struct CardT {
 };
 
 template <typename T>
+concept CardLike = requires(T a) {
+    a.rank;
+    a.suit;
+};
+
+template <CardLike T>
 struct CardHash {
     std::size_t operator()(const T &card) const {
         return (static_cast<int>(card.rank) << 16) | static_cast<int>(card.suit);
     }
 };
 
-template <typename CardT>
-std::string to_string(const CardT &card) {
+template <CardLike Card>
+std::string to_string(const Card &card) {
     std::stringstream out;
-    out << wise_enum::to_string(card.rank) << wise_enum::to_string(card.suit);
+    out << wise_enum::to_string(card.rank)[1] << std::tolower(wise_enum::to_string(card.suit)[0]);
     return out.str();
 }
 
