@@ -1,8 +1,8 @@
 
 
 #pragma once
-
 #include <functional>
+#include <iostream>
 #include <iterator>
 #include <numeric>
 #include <optional>
@@ -146,6 +146,7 @@ MinRegretStrategy<T> train_min_regret_strategy(const MinRegretTrainConfig<T> &co
     }
 
     for (int iter = 0; iter < config.num_iterations; iter++) {
+        std::cout << "Iteration " << iter << std::endl;
         for (auto player : non_chance_players) {
             compute_counterfactual_regret({}, player, iter, {1.0}, config.infoset_id_from_hist,
                                           make_in_out(gen), make_in_out(counts_from_infoset_id));
@@ -166,6 +167,7 @@ double compute_counterfactual_regret(
     InOut<std::mt19937> gen,
     InOut<std::unordered_map<typename T::InfoSetId, InfoSetCounts<T>>> counts_from_infoset_id) {
     // If this is a terminal state, return terminal_value
+    std::cout << history << std::endl;
     const auto maybe_current_player = up_next(history);
     if (!maybe_current_player.has_value()) {
         return terminal_value(history, to_update).value();
@@ -203,7 +205,8 @@ double compute_counterfactual_regret(
     Strategy<T> strategy = strategy_from_counts(counts);
 
     auto new_action_probabilities = action_probabilities;
-    for (const auto &[action, probability] : strategy) {
+    for (const auto &action : possible_actions(history)) {
+        const auto probability = strategy[action];
         new_action_probabilities[current_player] =
             action_probabilities[current_player] * probability;
         action_values[action] = compute_counterfactual_regret(

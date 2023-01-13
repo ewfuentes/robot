@@ -47,3 +47,13 @@ py_binary(
         "@mit_pokerbots//:framework",
     ],
 )
+
+cc_binary(
+  name = "pokerbot_master",
+  srcs = ["pokerbot_master.cc"],
+  deps = [
+    "//domain:rob_poker",
+    "//learning:cfr",
+    "@cxxopts//:cxxopts",
+  ]
+)

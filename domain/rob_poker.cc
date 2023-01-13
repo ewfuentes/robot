@@ -107,23 +107,26 @@ std::ostream &operator<<(std::ostream &out, const RobPokerPlayer player) {
     return out;
 }
 
-std::ostream &operator<<(std::ostream &out, const RobPokerAction action) {
-    out << std::visit(
+std::string to_string(const RobPokerAction &action) {
+    return std::visit(
         [](auto &&action) -> std::string {
             using T = std::decay_t<decltype(action)>;
-            if constexpr (std::is_same_v<T, FoldAction>) {
-                return "Fold";
-            } else if constexpr (std::is_same_v<T, CheckAction>) {
-                return "Check";
-            } else if constexpr (std::is_same_v<T, CallAction>) {
-                return "Call";
-            } else if constexpr (std::is_same_v<T, RaiseAction>) {
+            if constexpr (std::is_same_v<T, RaiseAction>) {
                 return "Raise" + std::to_string(action.amount);
             } else {
-                return std::string("Unknown Action");
+                return std::string(T::name);
             }
         },
         action);
+}
+
+std::ostream &operator<<(std::ostream &out, const RobPokerAction action) {
+    out << to_string(action);
+    return out;
+}
+
+std::ostream &operator<<(std::ostream &out, const RobPokerHistory &history) {
+    out << to_string(history);
     return out;
 }
 
@@ -280,6 +283,13 @@ std::string to_string(const RobPokerHistory &hist) {
         if (card.has_value()) {
             out << to_string(card.value()) << ",";
         }
+    }
+    out.seekp(-1, std::ios_base::end);
+    out << "]";
+
+    out << " Actions: [";
+    for (const auto &action: hist.actions) {
+      out << action << ",";
     }
     out.seekp(-1, std::ios_base::end);
     out << "]";
