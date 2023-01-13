@@ -2,6 +2,7 @@
 #include "domain/rob_poker.hh"
 
 #include <random>
+#include <variant>
 
 #include "domain/deck.hh"
 #include "gtest/gtest.h"
@@ -22,7 +23,7 @@ std::string range_to_string(const auto &range) {
     std::stringstream out;
     out << (range.empty() ? "none" : "");
     for (const auto &item : range) {
-        out << wise_enum::to_string(item);
+        out << item;
         if (&item != &range.back()) {
             out << "_";
         }
@@ -101,19 +102,19 @@ TEST_P(RobPokerUpNextNoRunTest, test_up_next) {
 
 std::pair<std::vector<Action>, std::optional<RobPokerPlayer>> up_next_no_run_test_cases[] = {
     {{}, RobPokerPlayer::PLAYER1},
-    {{Action::CALL}, RobPokerPlayer::PLAYER2},
-    {{Action::RAISE}, RobPokerPlayer::PLAYER2},
-    {{Action::FOLD}, {}},
-    {{Action::CALL, Action::CHECK}, RobPokerPlayer::PLAYER2},
-    {{Action::CALL, Action::RAISE}, RobPokerPlayer::PLAYER1},
-    {{Action::CALL, Action::RAISE, Action::RAISE}, RobPokerPlayer::PLAYER2},
-    {{Action::CALL, Action::CHECK, Action::CHECK}, RobPokerPlayer::PLAYER1},
-    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK}, RobPokerPlayer::PLAYER2},
-    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
-      Action::CHECK},
+    {{CallAction{}}, RobPokerPlayer::PLAYER2},
+    {{RaiseAction{}}, RobPokerPlayer::PLAYER2},
+    {{FoldAction{}}, {}},
+    {{CallAction{}, CheckAction{}}, RobPokerPlayer::PLAYER2},
+    {{CallAction{}, RaiseAction{}}, RobPokerPlayer::PLAYER1},
+    {{CallAction{}, RaiseAction{}, RaiseAction{}}, RobPokerPlayer::PLAYER2},
+    {{CallAction{}, CheckAction{}, CheckAction{}}, RobPokerPlayer::PLAYER1},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}}, RobPokerPlayer::PLAYER2},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{},
+      CheckAction{}},
      RobPokerPlayer::PLAYER1},
-    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
-      Action::CHECK, Action::CHECK},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{},
+      CheckAction{}, CheckAction{}},
      {}},
 };
 INSTANTIATE_TEST_SUITE_P(UpNext, RobPokerUpNextNoRunTest,
@@ -161,25 +162,25 @@ TEST_P(RobPokerUpNextWithRunTest, test_up_next) {
 
 std::pair<std::vector<Action>, std::optional<RobPokerPlayer>> up_next_with_run_test_cases[] = {
     {{}, RobPokerPlayer::PLAYER1},
-    {{Action::CALL}, RobPokerPlayer::PLAYER2},
-    {{Action::RAISE}, RobPokerPlayer::PLAYER2},
-    {{Action::FOLD}, {}},
-    {{Action::CALL, Action::CHECK}, RobPokerPlayer::PLAYER2},
-    {{Action::CALL, Action::RAISE}, RobPokerPlayer::PLAYER1},
-    {{Action::CALL, Action::RAISE, Action::RAISE}, RobPokerPlayer::PLAYER2},
-    {{Action::CALL, Action::CHECK, Action::CHECK}, RobPokerPlayer::PLAYER1},
-    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK}, RobPokerPlayer::PLAYER2},
-    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
-      Action::CHECK},
+    {{CallAction{}}, RobPokerPlayer::PLAYER2},
+    {{RaiseAction{}}, RobPokerPlayer::PLAYER2},
+    {{FoldAction{}}, {}},
+    {{CallAction{}, CheckAction{}}, RobPokerPlayer::PLAYER2},
+    {{CallAction{}, RaiseAction{}}, RobPokerPlayer::PLAYER1},
+    {{CallAction{}, RaiseAction{}, RaiseAction{}}, RobPokerPlayer::PLAYER2},
+    {{CallAction{}, CheckAction{}, CheckAction{}}, RobPokerPlayer::PLAYER1},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}}, RobPokerPlayer::PLAYER2},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{},
+      CheckAction{}},
      RobPokerPlayer::PLAYER1},
-    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
-      Action::CHECK, Action::CHECK},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{},
+      CheckAction{}, CheckAction{}},
      RobPokerPlayer::PLAYER2},
-    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
-      Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{},
+      CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}},
      RobPokerPlayer::PLAYER2},
-    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
-      Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{},
+      CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}},
      {}},
 };
 INSTANTIATE_TEST_SUITE_P(UpNext, RobPokerUpNextWithRunTest,
@@ -223,39 +224,41 @@ TEST_P(RobPokerPossibleActionsTest, test_possible_actions) {
     // Verification
     EXPECT_EQ(expected_actions.size(), actions.size());
     for (const auto action : expected_actions) {
-        const auto iter = std::find(actions.begin(), actions.end(), action);
+        const auto iter = std::find_if(actions.begin(), actions.end(), [&action](const auto &item) {
+            return action.index() == item.index();
+        });
         EXPECT_NE(iter, actions.end());
     }
 }
 
 std::pair<std::vector<Action>, std::vector<Action>> possible_actions_test_cases[] = {
-    {{}, {Action::CALL, Action::RAISE, Action::FOLD}},
-    {{Action::CALL}, {Action::RAISE, Action::FOLD, Action::CHECK}},
-    {{Action::RAISE}, {Action::CALL, Action::RAISE, Action::FOLD}},
-    {{Action::FOLD}, {}},
-    {{Action::CALL, Action::CHECK}, {Action::RAISE, Action::CHECK, Action::FOLD}},
-    {{Action::CALL, Action::RAISE}, {Action::CALL, Action::RAISE, Action::FOLD}},
-    {{Action::CALL, Action::RAISE, Action::RAISE}, {Action::CALL, Action::RAISE, Action::FOLD}},
+    {{}, {CallAction{}, RaiseAction{}, FoldAction{}}},
+    {{CallAction{}}, {RaiseAction{}, FoldAction{}, CheckAction{}}},
+    {{RaiseAction{}}, {CallAction{}, RaiseAction{}, FoldAction{}}},
+    {{FoldAction{}}, {}},
+    {{CallAction{}, CheckAction{}}, {RaiseAction{}, CheckAction{}, FoldAction{}}},
+    {{CallAction{}, RaiseAction{}}, {CallAction{}, RaiseAction{}, FoldAction{}}},
+    {{CallAction{}, RaiseAction{}, RaiseAction{}}, {CallAction{}, RaiseAction{}, FoldAction{}}},
     // After first check in second betting round
-    {{Action::CALL, Action::CHECK, Action::CHECK}, {Action::RAISE, Action::FOLD, Action::CHECK}},
+    {{CallAction{}, CheckAction{}, CheckAction{}}, {RaiseAction{}, FoldAction{}, CheckAction{}}},
     // At start of third betting round
-    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK},
-     {Action::RAISE, Action::FOLD, Action::CHECK}},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}},
+     {RaiseAction{}, FoldAction{}, CheckAction{}}},
     // After first check of fourth betting round
-    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
-      Action::CHECK},
-     {Action::RAISE, Action::FOLD, Action::CHECK}},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{},
+      CheckAction{}},
+     {RaiseAction{}, FoldAction{}, CheckAction{}}},
     // At start of fifth betting round
-    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
-      Action::CHECK, Action::CHECK},
-     {Action::RAISE, Action::FOLD, Action::CHECK}},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{},
+      CheckAction{}, CheckAction{}},
+     {RaiseAction{}, FoldAction{}, CheckAction{}}},
     // After first check of fifth betting round
-    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
-      Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK},
-     {Action::RAISE, Action::FOLD, Action::CHECK}},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{},
+      CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}},
+     {RaiseAction{}, FoldAction{}, CheckAction{}}},
     // At the end of the last betting round
-    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
-      Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{},
+      CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}},
      {}},
 };
 INSTANTIATE_TEST_SUITE_P(PossibleActions, RobPokerPossibleActionsTest,
@@ -276,8 +279,11 @@ TEST(RobPokerTest, test_game) {
             history = chance_result.history;
         } else {
             const auto actions = possible_actions(history);
-            for (const auto desired_action : {RobPokerAction::CHECK, RobPokerAction::CALL}) {
-                const auto iter = std::find(actions.begin(), actions.end(), desired_action);
+            for (const auto desired_action : std::vector<Action>{CheckAction{}, CallAction{}}) {
+                const auto iter = std::find_if(actions.begin(), actions.end(),
+                                               [&desired_action](const auto &action) {
+                                                   return desired_action.index() == action.index();
+                                               });
                 if (iter != actions.end()) {
                     history = play(history, desired_action);
                     break;
@@ -365,25 +371,25 @@ TEST_P(RobPokerTerminalValueNoRunTest, test_terminal_value) {
 
 std::pair<std::vector<Action>, std::optional<int>> terminal_value_no_run_test_cases[] = {
     {{}, {}},
-    {{Action::CALL}, {}},
-    {{Action::RAISE}, {}},
-    {{Action::FOLD}, -1},
-    {{Action::CALL, Action::CHECK}, {}},
-    {{Action::CALL, Action::RAISE}, {}},
-    {{Action::CALL, Action::RAISE, Action::RAISE}, {}},
-    {{Action::CALL, Action::CHECK, Action::CHECK}, {}},
-    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK}, {}},
-    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
-      Action::CHECK},
+    {{CallAction{}}, {}},
+    {{RaiseAction{}}, {}},
+    {{FoldAction{}}, -1},
+    {{CallAction{}, CheckAction{}}, {}},
+    {{CallAction{}, RaiseAction{}}, {}},
+    {{CallAction{}, RaiseAction{}, RaiseAction{}}, {}},
+    {{CallAction{}, CheckAction{}, CheckAction{}}, {}},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}}, {}},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{},
+      CheckAction{}},
      {}},
-    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
-      Action::FOLD},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{},
+      FoldAction{}},
      1},
-    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
-      Action::CHECK, Action::FOLD},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{},
+      CheckAction{}, FoldAction{}},
      -1},
-    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
-      Action::CHECK, Action::CHECK},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{},
+      CheckAction{}, CheckAction{}},
      1},
 };
 INSTANTIATE_TEST_SUITE_P(TerminalValue, RobPokerTerminalValueNoRunTest,
@@ -432,31 +438,31 @@ TEST_P(RobPokerTerminalValueWithRunTest, test_terminal_value) {
 
 std::pair<std::vector<Action>, std::optional<int>> terminal_value_with_run_test_cases[] = {
     {{}, {}},
-    {{Action::CALL}, {}},
-    {{Action::RAISE}, {}},
-    {{Action::FOLD}, 1},
-    {{Action::CALL, Action::CHECK}, {}},
-    {{Action::CALL, Action::RAISE}, {}},
-    {{Action::CALL, Action::RAISE, Action::RAISE}, {}},
-    {{Action::CALL, Action::CHECK, Action::CHECK}, {}},
-    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK}, {}},
-    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
-      Action::CHECK},
+    {{CallAction{}}, {}},
+    {{RaiseAction{}}, {}},
+    {{FoldAction{}}, 1},
+    {{CallAction{}, CheckAction{}}, {}},
+    {{CallAction{}, RaiseAction{}}, {}},
+    {{CallAction{}, RaiseAction{}, RaiseAction{}}, {}},
+    {{CallAction{}, CheckAction{}, CheckAction{}}, {}},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}}, {}},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{},
+      CheckAction{}},
      {}},
-    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
-      Action::CHECK, Action::CHECK},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{},
+      CheckAction{}, CheckAction{}},
      {}},
-    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
-      Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{},
+      CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}},
      {}},
-    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
-      Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{},
+      CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}},
      0},
-    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
-      Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::FOLD},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{},
+      CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, FoldAction{}},
      1},
-    {{Action::CALL, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK,
-      Action::CHECK, Action::CHECK, Action::CHECK, Action::CHECK, Action::FOLD},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{},
+      CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, FoldAction{}},
      -1},
 };
 INSTANTIATE_TEST_SUITE_P(TerminalValue, RobPokerTerminalValueWithRunTest,

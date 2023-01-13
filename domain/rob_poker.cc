@@ -5,6 +5,8 @@
 #include <iostream>
 #include <limits>
 #include <sstream>
+#include <type_traits>
+#include <variant>
 
 #include "domain/deck.hh"
 #include "domain/fog.hh"
@@ -21,7 +23,6 @@ struct BettingState {
 };
 
 BettingState compute_betting_state(const RobPokerHistory &history) {
-    using A = RobPokerAction;
     BettingState state = {
         .is_game_over = false, .showdown_required = false, .round = 0, .position = 0};
     if (history.actions.empty()) {
@@ -30,17 +31,18 @@ BettingState compute_betting_state(const RobPokerHistory &history) {
     for (int i = 0; i < static_cast<int>(history.actions.size()); i++) {
         const auto curr_action = history.actions.at(i);
         bool did_advance_to_new_betting_round = false;
-        if (curr_action == A::FOLD) {
+        if (std::holds_alternative<FoldAction>(curr_action)) {
             state.is_game_over = true;
             return state;
         } else if (i > 0) {
             const auto prev_action = history.actions.at(i - 1);
-            const auto is = [prev_action, curr_action](const auto &a, const auto &b) {
-                return prev_action == a && curr_action == b;
+            const auto is = [prev_action, curr_action](auto a, auto b) {
+                return std::holds_alternative<decltype(a)>(prev_action) &&
+                       std::holds_alternative<decltype(b)>(curr_action);
             };
-            const bool is_call_check = is(A::CALL, A::CHECK);
-            const bool is_check_check = is(A::CHECK, A::CHECK);
-            const bool is_raise_call = is(A::RAISE, A::CALL);
+            const bool is_call_check = is(CallAction{}, CheckAction{});
+            const bool is_check_check = is(CheckAction{}, CheckAction{});
+            const bool is_raise_call = is(RaiseAction{}, CallAction{});
             if ((is_call_check || is_check_check || is_raise_call) && state.position > 0) {
                 // This is the last card that was dealt after the previous round that ended
                 // Note that this is incorrect for the first round of betting, but is only relevant
@@ -77,7 +79,22 @@ std::ostream &operator<<(std::ostream &out, const RobPokerPlayer player) {
 }
 
 std::ostream &operator<<(std::ostream &out, const RobPokerAction action) {
-    out << wise_enum::to_string(action);
+    out << std::visit(
+        [](auto &&action) -> std::string {
+            using T = std::decay_t<decltype(action)>;
+            if constexpr (std::is_same_v<T, FoldAction>) {
+                return "Fold";
+            } else if constexpr (std::is_same_v<T, CheckAction>) {
+                return "Check";
+            } else if constexpr (std::is_same_v<T, CallAction>) {
+                return "Call";
+            } else if constexpr (std::is_same_v<T, RaiseAction>) {
+                return "Raise" + std::to_string(action.amount);
+            } else {
+                return std::string("Unknown Action");
+            }
+        },
+        action);
     return out;
 }
 
@@ -159,25 +176,25 @@ std::vector<RobPokerAction> possible_actions(const RobPokerHistory &history) {
         return out;
     }
     // Folding is always an option while the game is underway
-    out.push_back(RobPokerAction::FOLD);
+    out.push_back(FoldAction{});
 
     // Raising is always an option
     // TODO take chip stack size into account
-    out.push_back(RobPokerAction::RAISE);
+    out.push_back(RaiseAction{});
 
     // Calling is only possible if the previous action in the current betting round was a raise or
     // it's the first action of the first round
     const bool is_first_action = history.actions.empty();
     const bool was_previous_raise =
-        !history.actions.empty() && history.actions.back() == RobPokerAction::RAISE;
+        !history.actions.empty() && std::holds_alternative<RaiseAction>(history.actions.back());
     const bool is_after_first_action_in_round = betting_state.position > 0;
     if (is_first_action || (is_after_first_action_in_round && was_previous_raise)) {
-        out.push_back(RobPokerAction::CALL);
+        out.push_back(CallAction{});
     }
 
     // You can't check after a raise
     if (!(was_previous_raise || is_first_action)) {
-        out.push_back(RobPokerAction::CHECK);
+        out.push_back(CheckAction{});
     }
     return out;
 }
