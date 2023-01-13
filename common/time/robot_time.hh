@@ -76,7 +76,7 @@ constexpr RobotTimestamp operator+(const RobotTimestamp::duration &a, const Robo
 
 constexpr RobotTimestamp operator-(const RobotTimestamp::duration &a, const RobotTimestamp &b) {
     return b - a;
-};
+}
 
 constexpr bool operator==(const RobotTimestamp &a, const RobotTimestamp &b) {
     return a.time_since_epoch() == b.time_since_epoch();

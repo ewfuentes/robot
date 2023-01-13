@@ -25,8 +25,11 @@ struct BettingState {
 };
 
 BettingState compute_betting_state(const RobPokerHistory &history) {
-    BettingState state = {
-        .is_game_over = false, .showdown_required = false, .round = 0, .position = 0};
+    BettingState state = {.is_game_over = false,
+                          .showdown_required = false,
+                          .round = 0,
+                          .position = 0,
+                          .put_in_pot = {0}};
     if (history.actions.empty()) {
         return state;
     }
