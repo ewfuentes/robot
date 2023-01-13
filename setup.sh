@@ -3,7 +3,8 @@
 set -x # enable echo
 
 # Install clang14 and other required system packages
-sudo apt update
-sudo apt install clang-14 libxcursor-dev libxrandr-dev \
+sudo apt-get clean
+sudo apt-get update
+sudo apt-get install clang-14 libxcursor-dev libxrandr-dev \
      libxinerama-dev libxi-dev freeglut3-dev libstdc++-12-dev \
      gcc-11
