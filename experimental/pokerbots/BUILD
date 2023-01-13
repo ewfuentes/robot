@@ -3,6 +3,7 @@ load("@pip//:requirements.bzl", "requirement")
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
 load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_runtime")
 load("@rules_pkg//pkg:zip.bzl", "pkg_zip")
+load("@pip//:requirements.bzl", "requirement")
 
 pkg_zip(
     name="zipped_bot",
@@ -152,4 +153,12 @@ multi_proto_library(
   name = "bin_centers_proto",
   srcs = ["bin_centers.proto"],
   visibility = ["//visibility:public"],
+
+py_binary(
+    name ="pokerbots_scrape",
+    srcs = ["pokerbots_scrape.py"],
+    deps = [
+    requirement("requests"),
+    requirement("beautifulsoup4"),
+    ]
 )
