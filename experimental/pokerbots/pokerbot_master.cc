@@ -1,4 +1,5 @@
 
+#include <string_view>
 #include <variant>
 
 #include "cxxopts.hpp"
@@ -6,23 +7,21 @@
 #include "learning/cfr.hh"
 
 namespace robot {
+namespace {
+constexpr std::tuple<domain::RobPokerAction, std::string_view> make_index_item(const auto action) {
+    using T = std::decay_t<decltype(action)>;
+    return {T{}, T::name};
+}
+}  // namespace
 
 struct RobPokerActionIndex {
-    static constexpr std::array<std::tuple<domain::RobPokerAction, std::string_view>, 8> index{
-        {
-            {domain::FoldAction{}, domain::FoldAction::name},
-            {domain::CheckAction{}, domain::CheckAction::name},
-            {domain::CallAction{}, domain::CallAction::name},
-            {domain::RaiseAction{20}, "Raise20"},
-            {domain::RaiseAction{40}, "Raise40"},
-            {domain::RaiseAction{80}, "Raise80"},
-            {domain::RaiseAction{160}, "Raise160"},
-        }
-        // action_element(domain::FoldAction{}),    action_element(domain::CheckAction{}),
-        //        action_element(domain::CallAction{}),    action_element(domain::RaiseAction{5}),
-        //        action_element(domain::RaiseAction{10}), action_element(domain::RaiseAction{20}),
-        //        action_element(domain::RaiseAction{40}), action_element(domain::RaiseAction{80}),
-    };
+    static constexpr std::array<std::tuple<domain::RobPokerAction, std::string_view>, 5> index{{
+        make_index_item(domain::FoldAction{}),
+        make_index_item(domain::CheckAction{}),
+        make_index_item(domain::CallAction{}),
+        make_index_item(domain::RaisePotAction{}),
+        make_index_item(domain::AllInAction{}),
+    }};
     static constexpr int size = index.size();
 };
 
@@ -45,16 +44,14 @@ std::vector<domain::RobPokerAction> action_generator(const domain::RobPokerHisto
     out.reserve(RobPokerActionIndex::size);
     for (const auto &action : domain::possible_actions(history)) {
         if (std::holds_alternative<domain::RaiseAction>(action)) {
-            if (betting_state.position > 5) {
-                continue;
-            }
             const int max_raise = std::get<domain::RaiseAction>(action).amount;
-            for (const auto &[possible_action, _] : RobPokerActionIndex::index) {
-                if (std::holds_alternative<domain::RaiseAction>(possible_action) &&
-                    std::get<domain::RaiseAction>(possible_action).amount <= max_raise) {
-                    out.push_back(possible_action);
-                }
+            const int pot_size = betting_state.put_in_pot[domain::RobPokerPlayer::PLAYER1] +
+                                 betting_state.put_in_pot[domain::RobPokerPlayer::PLAYER2];
+            const int max_actions = betting_state.round == 0 ? 6 : 4;
+            if (pot_size < max_raise && betting_state.position < max_actions) {
+                out.push_back(domain::RaisePotAction{});
             }
+            out.push_back(domain::AllInAction{});
         } else {
             out.push_back(action);
         }

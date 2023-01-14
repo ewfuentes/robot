@@ -487,4 +487,38 @@ INSTANTIATE_TEST_SUITE_P(TerminalValue, RobPokerTerminalValueWithRunTest,
                              return make_test_name_range_to_optional_int(info);
                          });
 
+TEST(RobPokerTest, allin_call_is_game_end) {
+    // Setup
+    RobPokerHistory history = {
+        .hole_cards =
+            {
+                {RobPokerPlayer::PLAYER1,
+                 {make_fog_card(SCard{.rank = Ranks::_A, .suit = Suits::SPADES}),
+                  make_fog_card(SCard{.rank = Ranks::_A, .suit = Suits::CLUBS})}},
+                {RobPokerPlayer::PLAYER2,
+                 {make_fog_card(SCard{.rank = Ranks::_K, .suit = Suits::SPADES}),
+                  make_fog_card(SCard{.rank = Ranks::_K, .suit = Suits::CLUBS})}},
+            },
+
+        .common_cards =
+            {
+                make_fog_card(SCard{.rank = Ranks::_2, .suit = Suits::DIAMONDS}),
+                make_fog_card(SCard{.rank = Ranks::_3, .suit = Suits::DIAMONDS}),
+                make_fog_card(SCard{.rank = Ranks::_4, .suit = Suits::DIAMONDS}),
+                make_fog_card(SCard{.rank = Ranks::_5, .suit = Suits::DIAMONDS}),
+                make_fog_card(SCard{.rank = Ranks::_6, .suit = Suits::HEARTS}),
+                make_fog_card(SCard{.rank = Ranks::_7, .suit = Suits::DIAMONDS}),
+                make_fog_card(SCard{.rank = Ranks::_8, .suit = Suits::CLUBS}),
+            },
+        .actions = {SMALL_BLIND, BIG_BLIND, AllInAction{}},
+    };
+
+    // Action
+    history = play(history, CallAction{});
+    const auto maybe_value = terminal_value(history, RobPokerPlayer::PLAYER1);
+
+    // Verification
+    ASSERT_TRUE(maybe_value.has_value());
+    EXPECT_EQ(maybe_value.value(), 0);
+}
 }  // namespace robot::domain
