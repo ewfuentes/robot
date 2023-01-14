@@ -150,4 +150,9 @@ std::string to_string(const KuhnHistory &history) {
     return id.str();
 }
 
+std::ostream &operator<<(std::ostream &out, const KuhnHistory &history) {
+  out << to_string(history);
+    return out;
+}
+
 }  // namespace robot::domain

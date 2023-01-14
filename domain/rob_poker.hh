@@ -33,8 +33,13 @@ struct RaiseAction {
 using RobPokerAction = std::variant<FoldAction, CheckAction, CallAction, RaiseAction>;
 WISE_ENUM_CLASS(RobPokerPlayer, PLAYER1, PLAYER2, CHANCE);
 
-std::ostream &operator<<(std::ostream &out, const RobPokerPlayer player);
-std::ostream &operator<<(std::ostream &out, const RobPokerAction action);
+struct BettingState {
+    bool is_game_over;
+    bool showdown_required;
+    int round;
+    int position;
+    IndexedArray<int, RobPokerPlayer> put_in_pot;
+};
 
 struct RobPokerHistory {
     static constexpr int STARTING_STACK_SIZE = 400;
@@ -51,8 +56,6 @@ struct RobPokerHistory {
     std::vector<RobPokerAction> actions;
 };
 
-std::ostream &operator<<(std::ostream &out, const RobPokerHistory &history);
-
 struct ChanceResult {
     RobPokerHistory history;
     double probability;
@@ -64,6 +67,10 @@ struct RobPoker {
     using History = RobPokerHistory;
     using InfoSetId = std::string;
 };
+
+std::ostream &operator<<(std::ostream &out, const RobPokerHistory &history);
+std::ostream &operator<<(std::ostream &out, const RobPokerPlayer player);
+std::ostream &operator<<(std::ostream &out, const RobPokerAction action);
 
 ChanceResult play(const RobPokerHistory &history, InOut<std::mt19937> gen);
 RobPokerHistory play(const RobPokerHistory &history, const RobPokerAction &action);
@@ -79,5 +86,5 @@ std::string to_string(const RobPokerHistory &hist);
 std::string to_string(const RobPokerAction &hist);
 
 int evaluate_hand(const RobPokerHistory &history, const RobPokerPlayer player);
-
+BettingState compute_betting_state(const RobPokerHistory &history);
 }  // namespace robot::domain

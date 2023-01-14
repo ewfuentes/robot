@@ -1,5 +1,6 @@
 
 #include <random>
+#include <iostream>
 
 #include "common/argument_wrapper.hh"
 #include "common/indexed_array.hh"
@@ -40,5 +41,6 @@ KuhnPoker::InfoSetId infoset_id_from_history(const KuhnHistory &hist);
 KuhnPoker::InfoSetId infoset_id_from_information(const KuhnHistory::Card private_card,
                                                  const std::vector<KuhnAction> &actions);
 std::string to_string(const KuhnHistory &hist);
+std::ostream &operator<<(std::ostream &out, const KuhnHistory &hist);
 
 }  // namespace robot::domain

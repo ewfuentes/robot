@@ -15,15 +15,6 @@
 #include "omp/HandEvaluator.h"
 
 namespace robot::domain {
-namespace {
-struct BettingState {
-    bool is_game_over;
-    bool showdown_required;
-    int round;
-    int position;
-    IndexedArray<int, RobPokerPlayer> put_in_pot;
-};
-
 BettingState compute_betting_state(const RobPokerHistory &history) {
     BettingState state = {.is_game_over = false,
                           .showdown_required = false,
@@ -99,8 +90,6 @@ BettingState compute_betting_state(const RobPokerHistory &history) {
     }
     return state;
 }
-
-}  // namespace
 
 std::ostream &operator<<(std::ostream &out, const RobPokerPlayer player) {
     out << wise_enum::to_string(player);
@@ -193,7 +182,8 @@ ChanceResult play(const RobPokerHistory &history, InOut<std::mt19937> gen) {
     // It feels icky to do this here, but post the blinds
     if (out.actions.empty()) {
         out.actions.push_back(RaiseAction{RobPokerHistory::SMALL_BLIND});
-        out.actions.push_back(RaiseAction{RobPokerHistory::BIG_BLIND});
+        out.actions.push_back(
+            RaiseAction{RobPokerHistory::BIG_BLIND - RobPokerHistory::SMALL_BLIND});
     }
 
     return {.history = out, .probability = probability};
@@ -216,22 +206,22 @@ std::vector<RobPokerAction> possible_actions(const RobPokerHistory &history) {
     // Folding is always an option while the game is underway
     out.push_back(FoldAction{});
 
-    // Raising is always an option
-    // TODO take chip stack size into account
-    out.push_back(RaiseAction{});
+    const int most_contributed =
+        std::max(betting_state.put_in_pot[RobPokerPlayer::PLAYER1],
+                 betting_state.put_in_pot[RobPokerPlayer::PLAYER2]);
+
+    out.push_back(RaiseAction{RobPokerHistory::STARTING_STACK_SIZE - most_contributed});
 
     // Calling is only possible if the previous action in the current betting round was a raise or
     // it's the first action of the first round
-    const bool is_first_action = history.actions.empty();
     const bool was_previous_raise =
         !history.actions.empty() && std::holds_alternative<RaiseAction>(history.actions.back());
-    const bool is_after_first_action_in_round = betting_state.position > 0;
-    if (is_first_action || (is_after_first_action_in_round && was_previous_raise)) {
+    if (was_previous_raise) {
         out.push_back(CallAction{});
     }
 
     // You can't check after a raise
-    if (!(was_previous_raise || is_first_action)) {
+    if (!was_previous_raise) {
         out.push_back(CheckAction{});
     }
     return out;
@@ -288,8 +278,8 @@ std::string to_string(const RobPokerHistory &hist) {
     out << "]";
 
     out << " Actions: [";
-    for (const auto &action: hist.actions) {
-      out << action << ",";
+    for (const auto &action : hist.actions) {
+        out << action << ",";
     }
     out.seekp(-1, std::ios_base::end);
     out << "]";

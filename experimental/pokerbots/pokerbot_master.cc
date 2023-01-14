@@ -1,4 +1,6 @@
 
+#include <variant>
+
 #include "cxxopts.hpp"
 #include "domain/rob_poker.hh"
 #include "learning/cfr.hh"
@@ -11,7 +13,10 @@ struct RobPokerActionIndex {
             {domain::FoldAction{}, domain::FoldAction::name},
             {domain::CheckAction{}, domain::CheckAction::name},
             {domain::CallAction{}, domain::CallAction::name},
-            {domain::RaiseAction{5}, "Raise5"},
+            {domain::RaiseAction{20}, "Raise20"},
+            {domain::RaiseAction{40}, "Raise40"},
+            {domain::RaiseAction{80}, "Raise80"},
+            {domain::RaiseAction{160}, "Raise160"},
         }
         // action_element(domain::FoldAction{}),    action_element(domain::CheckAction{}),
         //        action_element(domain::CallAction{}),    action_element(domain::RaiseAction{5}),
@@ -34,10 +39,34 @@ struct Range<domain::RobPokerAction> {
 namespace experimental::pokerbots {
 using RobPoker = domain::RobPoker;
 
+std::vector<domain::RobPokerAction> action_generator(const domain::RobPokerHistory &history) {
+    const domain::BettingState betting_state = domain::compute_betting_state(history);
+    std::vector<domain::RobPokerAction> out;
+    out.reserve(RobPokerActionIndex::size);
+    for (const auto &action : domain::possible_actions(history)) {
+        if (std::holds_alternative<domain::RaiseAction>(action)) {
+            if (betting_state.position > 5) {
+                continue;
+            }
+            const int max_raise = std::get<domain::RaiseAction>(action).amount;
+            for (const auto &[possible_action, _] : RobPokerActionIndex::index) {
+                if (std::holds_alternative<domain::RaiseAction>(possible_action) &&
+                    std::get<domain::RaiseAction>(possible_action).amount <= max_raise) {
+                    out.push_back(possible_action);
+                }
+            }
+        } else {
+            out.push_back(action);
+        }
+    }
+    return out;
+}
+
 int train() {
     const learning::MinRegretTrainConfig<RobPoker> config = {
         .num_iterations = 1000,
         .infoset_id_from_hist = [](const RobPoker::History &) { return RobPoker::InfoSetId{}; },
+        .action_generator = action_generator,
         .seed = 0,
     };
     train_min_regret_strategy<RobPoker>(config);

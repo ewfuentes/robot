@@ -63,6 +63,10 @@ RPSHistory play(const RPSHistory &history, const RPSAction &action) {
     return out;
 }
 
+std::vector<RPSAction> possible_actions(const RPSHistory &) {
+    return {RPSAction::ROCK, RPSAction::PAPER, RPSAction::SCISSORS};
+}
+
 double compute_counterfactual_regret(const RPSHistory &history, const RPSPlayer player,
                                      const RPSAction new_action) {
     RPSHistory counterfactual = history;
