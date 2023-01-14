@@ -138,5 +138,7 @@ TEST_P(CfrTest, kuhn_poker_test) {
 INSTANTIATE_TEST_SUITE_P(SampleStrategies, CfrTest,
                          testing::Values(SampleStrategy::CHANCE_SAMPLING,
                                          SampleStrategy::EXTERNAL_SAMPLING),
-                         [](const auto &info) { return std::string(wise_enum::to_string(info.param)); });
+                         [](const auto &info) {
+                             return std::string(wise_enum::to_string(info.param));
+                         });
 }  // namespace robot::learning
