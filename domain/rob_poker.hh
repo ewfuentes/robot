@@ -30,7 +30,18 @@ struct RaiseAction {
     constexpr bool operator==(const RaiseAction &other) const { return amount == other.amount; }
 };
 
-using RobPokerAction = std::variant<FoldAction, CheckAction, CallAction, RaiseAction>;
+struct RaisePotAction {
+    static constexpr std::string_view name = "RaisePot";
+    constexpr bool operator==(const RaisePotAction &) const { return true; }
+};
+
+struct AllInAction {
+    static constexpr std::string_view name = "AllIn";
+    constexpr bool operator==(const AllInAction &) const { return true; }
+};
+
+using RobPokerAction =
+    std::variant<FoldAction, CheckAction, CallAction, RaiseAction, RaisePotAction, AllInAction>;
 WISE_ENUM_CLASS(RobPokerPlayer, PLAYER1, PLAYER2, CHANCE);
 
 struct BettingState {

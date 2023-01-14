@@ -20,6 +20,7 @@ class Fog {
         : has_value_{true}, is_visible_{f}, value_(action) {}
 
     bool is_visible_to(const PlayerT &player) const { return is_visible_(player); }
+    void update_visibility(const VisibilityFunc &f) { is_visible_ = f; }
 
     bool has_value() const { return has_value_; }
 

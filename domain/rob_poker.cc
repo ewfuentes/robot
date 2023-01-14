@@ -40,6 +40,12 @@ BettingState compute_betting_state(const RobPokerHistory &history) {
                     state.put_in_pot[other_player] - state.put_in_pot[current_player];
                 if constexpr (std::is_same_v<T, RaiseAction>) {
                     state.put_in_pot[current_player] += continue_cost + action.amount;
+                } else if constexpr (std::is_same_v<T, RaisePotAction>) {
+                    const int current_pot =
+                        state.put_in_pot[current_player] + state.put_in_pot[other_player];
+                    state.put_in_pot[current_player] = continue_cost + current_pot;
+                } else if constexpr (std::is_same_v<T, AllInAction>) {
+                    state.put_in_pot[current_player] = RobPokerHistory::STARTING_STACK_SIZE;
                 } else if constexpr (std::is_same_v<T, CallAction>) {
                     state.put_in_pot[current_player] += continue_cost;
                 }
@@ -58,8 +64,10 @@ BettingState compute_betting_state(const RobPokerHistory &history) {
             };
             const bool is_call_check = is(CallAction{}, CheckAction{});
             const bool is_check_check = is(CheckAction{}, CheckAction{});
-            const bool is_raise_call = is(RaiseAction{}, CallAction{});
+            const bool is_raise_call =
+                is(RaiseAction{}, CallAction{}) || is(RaisePotAction{}, CallAction{});
             const bool is_opening_call = is_raise_call && i == 2;
+            const bool is_allin_call = is(AllInAction{}, CallAction{});
             if ((is_call_check || is_check_check || is_raise_call) && state.position > 0 &&
                 !is_opening_call) {
                 // This is the last card that was dealt after the previous round that ended
@@ -81,6 +89,10 @@ BettingState compute_betting_state(const RobPokerHistory &history) {
                 current_player = RobPokerPlayer::PLAYER2;
                 state.round++;
                 did_advance_to_new_betting_round = true;
+            } else if (is_allin_call) {
+                state.is_game_over = true;
+                state.showdown_required = true;
+                return state;
             }
         }
         if (!did_advance_to_new_betting_round) {
@@ -192,7 +204,29 @@ ChanceResult play(const RobPokerHistory &history, InOut<std::mt19937> gen) {
 RobPokerHistory play(const RobPokerHistory &history, const RobPokerAction &action) {
     auto out = history;
     out.actions.push_back(action);
+    const BettingState betting_state = compute_betting_state(out);
 
+    // If this is the start of a new round, update the visibility of the cards
+    if (betting_state.is_game_over && betting_state.showdown_required) {
+        for (auto &card : out.common_cards) {
+            if (card.has_value()) {
+                card.update_visibility([](const RobPokerPlayer) { return true; });
+            }
+        }
+    } else if (betting_state.position == 0) {
+        if (betting_state.round == 1) {
+            // Show the flop
+            for (int i = 0; i < 3; i++) {
+                out.common_cards[i].update_visibility([](const RobPokerPlayer) { return true; });
+            }
+        } else if (betting_state.round > 1) {
+            // Show each subsequent card
+            if (out.common_cards[betting_state.round + 1].has_value()) {
+                out.common_cards[betting_state.round + 1].update_visibility(
+                    [](const RobPokerPlayer) { return true; });
+            }
+        }
+    }
     return out;
 }
 
@@ -209,12 +243,16 @@ std::vector<RobPokerAction> possible_actions(const RobPokerHistory &history) {
     const int most_contributed = std::max(betting_state.put_in_pot[RobPokerPlayer::PLAYER1],
                                           betting_state.put_in_pot[RobPokerPlayer::PLAYER2]);
 
-    out.push_back(RaiseAction{RobPokerHistory::STARTING_STACK_SIZE - most_contributed});
+    const int max_raise = RobPokerHistory::STARTING_STACK_SIZE - most_contributed;
+    if (max_raise > 0) {
+        out.push_back(RaiseAction{max_raise});
+    }
 
-    // Calling is only possible if the previous action in the current betting round was a raise or
-    // it's the first action of the first round
+    // Calling is only possible if the previous action in the current betting round was a raise
     const bool was_previous_raise =
-        !history.actions.empty() && std::holds_alternative<RaiseAction>(history.actions.back());
+        std::holds_alternative<RaiseAction>(history.actions.back()) ||
+        std::holds_alternative<RaisePotAction>(history.actions.back()) ||
+        std::holds_alternative<AllInAction>(history.actions.back());
     if (was_previous_raise) {
         out.push_back(CallAction{});
     }
@@ -262,25 +300,40 @@ std::optional<int> terminal_value(const RobPokerHistory &history, const RobPoker
 std::string to_string(const RobPokerHistory &hist) {
     std::stringstream out;
     for (const auto player : {RobPokerPlayer::PLAYER1, RobPokerPlayer::PLAYER2}) {
-        out << wise_enum::to_string(player) << ": ["
-            << to_string(hist.hole_cards[player].at(0).value()) << ", "
-            << to_string(hist.hole_cards[player].at(1).value()) << "] ";
+        out << wise_enum::to_string(player) << ": [";
+        if (hist.hole_cards[player][0].has_value()) {
+            out << to_string(hist.hole_cards[player].at(0).value()) << ", "
+                << to_string(hist.hole_cards[player].at(1).value());
+        }
+        out << "] ";
     }
 
     out << "Common Cards: [";
-    for (const auto &card : hist.common_cards) {
-        if (card.has_value()) {
-            out << to_string(card.value()) << ",";
+    {
+        bool did_print = false;
+        for (const auto &card : hist.common_cards) {
+            if (card.has_value() && card.is_visible_to(RobPokerPlayer::PLAYER1)) {
+                out << to_string(card.value()) << ",";
+                did_print = true;
+            }
+        }
+        if (did_print) {
+            out.seekp(-1, std::ios_base::end);
         }
     }
-    out.seekp(-1, std::ios_base::end);
     out << "]";
 
     out << " Actions: [";
-    for (const auto &action : hist.actions) {
-        out << action << ",";
+    {
+        bool did_print = false;
+        for (const auto &action : hist.actions) {
+            out << action << ",";
+            did_print = true;
+        }
+        if (did_print) {
+            out.seekp(-1, std::ios_base::end);
+        }
     }
-    out.seekp(-1, std::ios_base::end);
     out << "]";
 
     return out.str();
