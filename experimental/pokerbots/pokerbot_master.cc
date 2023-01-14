@@ -64,7 +64,7 @@ std::vector<domain::RobPokerAction> action_generator(const domain::RobPokerHisto
 
 int train() {
     const learning::MinRegretTrainConfig<RobPoker> config = {
-        .num_iterations = 1000,
+        .num_iterations = 100000,
         .infoset_id_from_hist = [](const RobPoker::History &) { return RobPoker::InfoSetId{}; },
         .action_generator = action_generator,
         .seed = 0,

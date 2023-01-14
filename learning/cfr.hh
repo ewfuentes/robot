@@ -41,7 +41,8 @@ typename T::Actions sample_strategy(const Strategy<T> &strategy, InOut<std::mt19
             return action;
         }
     }
-    return wise_enum::range<typename T::Actions>.begin()->value;
+    const auto &[value, _] = *Range<typename T::Actions>::value.begin();
+    return value;
 }
 
 template <typename T>
