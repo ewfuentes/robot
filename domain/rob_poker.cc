@@ -206,9 +206,8 @@ std::vector<RobPokerAction> possible_actions(const RobPokerHistory &history) {
     // Folding is always an option while the game is underway
     out.push_back(FoldAction{});
 
-    const int most_contributed =
-        std::max(betting_state.put_in_pot[RobPokerPlayer::PLAYER1],
-                 betting_state.put_in_pot[RobPokerPlayer::PLAYER2]);
+    const int most_contributed = std::max(betting_state.put_in_pot[RobPokerPlayer::PLAYER1],
+                                          betting_state.put_in_pot[RobPokerPlayer::PLAYER2]);
 
     out.push_back(RaiseAction{RobPokerHistory::STARTING_STACK_SIZE - most_contributed});
 

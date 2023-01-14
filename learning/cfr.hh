@@ -183,8 +183,7 @@ double compute_counterfactual_regret(
             const auto chance_result = play(history, gen);
             return compute_counterfactual_regret<T>(chance_result.history, to_update, iteration,
                                                     action_probabilities, infoset_id_from_history,
-                                                    action_generator,
-                                                    gen, counts_from_infoset_id);
+                                                    action_generator, gen, counts_from_infoset_id);
         }
     }
 

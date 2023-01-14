@@ -1,6 +1,6 @@
 
-#include <random>
 #include <iostream>
+#include <random>
 
 #include "common/argument_wrapper.hh"
 #include "common/indexed_array.hh"
