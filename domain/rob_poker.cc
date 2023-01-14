@@ -248,13 +248,11 @@ std::vector<RobPokerAction> possible_actions(const RobPokerHistory &history) {
         out.push_back(RaiseAction{max_raise});
     }
 
-    // Calling is only possible if the previous action in the current betting round was a raise or
-    // it's the first action of the first round
+    // Calling is only possible if the previous action in the current betting round was a raise
     const bool was_previous_raise =
-        !history.actions.empty() &&
-        (std::holds_alternative<RaiseAction>(history.actions.back()) ||
-         std::holds_alternative<RaisePotAction>(history.actions.back()) ||
-         std::holds_alternative<AllInAction>(history.actions.back()));
+        std::holds_alternative<RaiseAction>(history.actions.back()) ||
+        std::holds_alternative<RaisePotAction>(history.actions.back()) ||
+        std::holds_alternative<AllInAction>(history.actions.back());
     if (was_previous_raise) {
         out.push_back(CallAction{});
     }
