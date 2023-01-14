@@ -1,6 +1,6 @@
 
-
 #pragma once
+
 #include <functional>
 #include <iostream>
 #include <iterator>
@@ -41,7 +41,8 @@ typename T::Actions sample_strategy(const Strategy<T> &strategy, InOut<std::mt19
             return action;
         }
     }
-    return wise_enum::range<typename T::Actions>.begin()->value;
+    const auto &[value, _] = *Range<typename T::Actions>::value.begin();
+    return value;
 }
 
 template <typename T>
@@ -53,12 +54,15 @@ struct MinRegretStrategy {
     std::function<typename T::InfoSetId(typename T::History)> infoset_id_from_hist;
 };
 
+WISE_ENUM_CLASS(SampleStrategy, CHANCE_SAMPLING, EXTERNAL_SAMPLING)
+
 template <typename T>
 struct MinRegretTrainConfig {
     int num_iterations;
     std::function<typename T::InfoSetId(const typename T::History &)> infoset_id_from_hist;
     std::function<std::vector<typename T::Actions>(const typename T::History &)> action_generator;
     int seed;
+    SampleStrategy sample_strategy;
 };
 
 template <typename T>
@@ -148,9 +152,15 @@ MinRegretStrategy<T> train_min_regret_strategy(const MinRegretTrainConfig<T> &co
 
     for (int iter = 0; iter < config.num_iterations; iter++) {
         for (auto player : non_chance_players) {
-            compute_counterfactual_regret({}, player, iter, {1.0}, config.infoset_id_from_hist,
-                                          config.action_generator, make_in_out(gen),
-                                          make_in_out(counts_from_infoset_id));
+            if (config.sample_strategy == SampleStrategy::CHANCE_SAMPLING) {
+                compute_chance_sampled_counterfactual_regret(
+                    {}, player, iter, {1.0}, config.infoset_id_from_hist, config.action_generator,
+                    make_in_out(gen), make_in_out(counts_from_infoset_id));
+            } else {
+                compute_external_sampled_counterfactual_regret(
+                    {}, player, iter, config.infoset_id_from_hist, config.action_generator,
+                    make_in_out(gen), make_in_out(counts_from_infoset_id));
+            }
         }
     }
 
@@ -160,7 +170,85 @@ MinRegretStrategy<T> train_min_regret_strategy(const MinRegretTrainConfig<T> &co
 }
 
 template <typename T>
-double compute_counterfactual_regret(
+double compute_external_sampled_counterfactual_regret(
+    const typename T::History &history, const typename T::Players to_update, const int iteration,
+    const std::function<typename T::InfoSetId(const typename T::History &)>
+        &infoset_id_from_history,
+    const std::function<std::vector<typename T::Actions>(const typename T::History &)>
+        &action_generator,
+    InOut<std::mt19937> gen,
+    InOut<std::unordered_map<typename T::InfoSetId, InfoSetCounts<T>>> counts_from_infoset_id) {
+    const auto maybe_current_player = up_next(history);
+    // If this is a leaf node, return the value
+    if (!maybe_current_player.has_value()) {
+        return terminal_value(history, to_update).value();
+    }
+
+    const auto &current_player = maybe_current_player.value();
+
+    // If a chance player is up next, sample it and get its value
+    constexpr bool has_chance = requires { T::Players::CHANCE; };
+    if constexpr (has_chance) {
+        if (current_player == T::Players::CHANCE) {
+            const auto chance_result = play(history, gen);
+            return compute_external_sampled_counterfactual_regret<T>(
+                chance_result.history, to_update, iteration, infoset_id_from_history,
+                action_generator, gen, counts_from_infoset_id);
+        }
+    }
+    // Get the current strategy for this infoset. We have a non const reference since we
+    // may update them further down.
+    InfoSetCounts<T> &counts = (*counts_from_infoset_id)[infoset_id_from_history(history)];
+    const Strategy<T> maybe_invalid_strategy = strategy_from_counts(counts);
+    Strategy<T> valid_strategy = {0.0};
+    double normalizer = 0;
+    const auto valid_actions = action_generator(history);
+    {
+        for (const auto &action : valid_actions) {
+            normalizer += maybe_invalid_strategy[action];
+            valid_strategy[action] = maybe_invalid_strategy[action];
+        }
+        for (const auto &action : valid_actions) {
+            valid_strategy[action] = valid_strategy[action] / normalizer;
+        }
+    }
+
+    if (current_player == to_update) {
+        double node_value = 0.0;
+        IndexedArray<double, typename T::Actions> action_values = {0.0};
+
+        // Compute the node and action values
+        for (const auto &action : valid_actions) {
+            action_values[action] = compute_external_sampled_counterfactual_regret(
+                play(history, action), to_update, iteration, infoset_id_from_history,
+                action_generator, gen, counts_from_infoset_id);
+            node_value += valid_strategy[action] * action_values[action];
+        }
+
+        // Update the regrets
+        for (const auto &action : valid_actions) {
+            const double counterfactual_regret = action_values[action] - node_value;
+            counts.regret_sum[action] += counterfactual_regret;
+        }
+        return node_value;
+
+    } else {
+        // This is some player other than the one we are updating regrets for
+        // Need to assign invalid strategies 0 probability an renormalize
+        const auto action = sample_strategy<T>(valid_strategy, gen);
+        const double value = compute_external_sampled_counterfactual_regret(
+            play(history, action), to_update, iteration, infoset_id_from_history, action_generator,
+            gen, counts_from_infoset_id);
+
+        for (const auto &[action, probability] : valid_strategy) {
+            counts.strategy_sum[action] += probability;
+        }
+        return value;
+    }
+}
+
+template <typename T>
+double compute_chance_sampled_counterfactual_regret(
     const typename T::History &history, const typename T::Players to_update, const int iteration,
     const IndexedArray<double, typename T::Players> &action_probabilities,
     const std::function<typename T::InfoSetId(const typename T::History &)>
@@ -181,9 +269,9 @@ double compute_counterfactual_regret(
     if constexpr (has_chance) {
         if (current_player == T::Players::CHANCE) {
             const auto chance_result = play(history, gen);
-            return compute_counterfactual_regret<T>(chance_result.history, to_update, iteration,
-                                                    action_probabilities, infoset_id_from_history,
-                                                    action_generator, gen, counts_from_infoset_id);
+            return compute_chance_sampled_counterfactual_regret<T>(
+                chance_result.history, to_update, iteration, action_probabilities,
+                infoset_id_from_history, action_generator, gen, counts_from_infoset_id);
         }
     }
 
@@ -211,9 +299,11 @@ double compute_counterfactual_regret(
         const auto probability = strategy[action];
         new_action_probabilities[current_player] =
             action_probabilities[current_player] * probability;
-        action_values[action] = compute_counterfactual_regret(
+
+        action_values[action] = compute_chance_sampled_counterfactual_regret(
             play(history, action), to_update, iteration, new_action_probabilities,
             infoset_id_from_history, action_generator, gen, counts_from_infoset_id);
+
         node_value += probability * action_values[action];
     }
 

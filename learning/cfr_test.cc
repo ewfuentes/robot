@@ -7,16 +7,21 @@
 #include "gtest/gtest.h"
 
 namespace robot::learning {
-TEST(CfrTest, rock_paper_scissors_test) {
+
+class CfrTest : public testing::Test, public testing::WithParamInterface<SampleStrategy> {};
+
+TEST_P(CfrTest, rock_paper_scissors_test) {
     using RPS = domain::RockPaperScissors;
     const std::string INFOSET_ID = "rps";
     // Setup
+    const int external_iter_scale_factor = GetParam() == SampleStrategy::EXTERNAL_SAMPLING ? 10 : 1;
     const MinRegretTrainConfig<RPS> config = {
-        .num_iterations = 100000,
+        .num_iterations = 10000 * external_iter_scale_factor,
         .infoset_id_from_hist = [&INFOSET_ID](const RPS::History &) { return INFOSET_ID; },
         .action_generator =
             [](const RPS::History &history) { return domain::possible_actions(history); },
         .seed = 0,
+        .sample_strategy = GetParam(),
     };
 
     // Action
@@ -33,16 +38,18 @@ TEST(CfrTest, rock_paper_scissors_test) {
     EXPECT_NEAR(strategy[RPS::Actions::SCISSORS], 0.333, 1e-2);
 }
 
-TEST(CfrTest, blotto_test) {
+TEST_P(CfrTest, blotto_test) {
     using Blotto = domain::Blotto;
     const std::string INFOSET_ID = "blotto";
     // Setup
+    const int external_iter_scale_factor = GetParam() == SampleStrategy::EXTERNAL_SAMPLING ? 10 : 1;
     const MinRegretTrainConfig<Blotto> config = {
-        .num_iterations = 10000,
+        .num_iterations = 10000 * external_iter_scale_factor,
         .infoset_id_from_hist = [&INFOSET_ID](const Blotto::History &) { return INFOSET_ID; },
         .action_generator =
             [](const Blotto::History &history) { return domain::possible_actions(history); },
         .seed = 0,
+        .sample_strategy = GetParam(),
     };
 
     // Action
@@ -62,19 +69,21 @@ TEST(CfrTest, blotto_test) {
     EXPECT_NEAR(strategy[Blotto::Actions::ASSIGN_005], 0.0, 1e-6);
 }
 
-TEST(CfrTest, kuhn_poker_test) {
+TEST_P(CfrTest, kuhn_poker_test) {
     using KuhnPoker = domain::KuhnPoker;
     using Card = domain::KuhnPoker::History::Card;
     using Action = domain::KuhnPoker::Actions;
 
     // Setup
     constexpr double TOL = 1e-3;
+    const int external_iter_scale_factor = GetParam() == SampleStrategy::EXTERNAL_SAMPLING ? 10 : 1;
     const MinRegretTrainConfig<KuhnPoker> config = {
-        .num_iterations = 100000,
+        .num_iterations = 100000 * external_iter_scale_factor,
         .infoset_id_from_hist = &domain::infoset_id_from_history,
         .action_generator =
             [](const domain::KuhnHistory &history) { return domain::possible_actions(history); },
         .seed = 0,
+        .sample_strategy = GetParam(),
     };
 
     // Action
@@ -125,4 +134,11 @@ TEST(CfrTest, kuhn_poker_test) {
         EXPECT_GT(maybe_strategy.value()[Action::PASS], TOL);
     }
 }
+
+INSTANTIATE_TEST_SUITE_P(SampleStrategies, CfrTest,
+                         testing::Values(SampleStrategy::CHANCE_SAMPLING,
+                                         SampleStrategy::EXTERNAL_SAMPLING),
+                         [](const auto &info) {
+                             return std::string(wise_enum::to_string(info.param));
+                         });
 }  // namespace robot::learning

@@ -1,4 +1,5 @@
 
+#include <iostream>
 #include <vector>
 
 #include "domain/fog.hh"
@@ -33,5 +34,6 @@ std::vector<BlottoAction> possible_actions(const BlottoHistory &history);
 std::optional<int> terminal_value(const BlottoHistory &history, const BlottoPlayer player);
 double compute_counterfactual_regret(const BlottoHistory &history, const BlottoPlayer player,
                                      const BlottoAction new_action);
+std::ostream &operator<<(std::ostream &out, const BlottoHistory &history);
 
 }  // namespace robot::domain

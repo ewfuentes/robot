@@ -72,4 +72,18 @@ double compute_counterfactual_regret(const BlottoHistory &history, const BlottoP
     player_action = BlottoHistory::FogAction(new_action, [](...) { return true; });
     return terminal_value(counterfactual, player).value() - terminal_value(history, player).value();
 }
+
+std::ostream &operator<<(std::ostream &out, const BlottoHistory &history) {
+    out << wise_enum::to_string(BlottoPlayer::PLAYER1) << "["
+        << (history.player_1_action.has_value()
+                ? wise_enum::to_string(history.player_1_action.value())
+                : "")
+        << "] ";
+    out << wise_enum::to_string(BlottoPlayer::PLAYER2) << "["
+        << (history.player_2_action.has_value()
+                ? wise_enum::to_string(history.player_2_action.value())
+                : "")
+        << "] ";
+    return out;
+}
 }  // namespace robot::domain
