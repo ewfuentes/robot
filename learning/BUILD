@@ -2,6 +2,7 @@
 cc_library(
   name = "cfr",
   hdrs = ["cfr.hh"],
+  visibility = ["//visibility:public"],
   deps = [
     "//common:argument_wrapper",
     "//common:indexed_array",

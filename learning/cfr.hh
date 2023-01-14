@@ -1,8 +1,8 @@
 
 
 #pragma once
-
 #include <functional>
+#include <iostream>
 #include <iterator>
 #include <numeric>
 #include <optional>
@@ -57,6 +57,7 @@ template <typename T>
 struct MinRegretTrainConfig {
     int num_iterations;
     std::function<typename T::InfoSetId(const typename T::History &)> infoset_id_from_hist;
+    std::function<std::vector<typename T::Actions>(const typename T::History &)> action_generator;
     int seed;
 };
 
@@ -148,7 +149,8 @@ MinRegretStrategy<T> train_min_regret_strategy(const MinRegretTrainConfig<T> &co
     for (int iter = 0; iter < config.num_iterations; iter++) {
         for (auto player : non_chance_players) {
             compute_counterfactual_regret({}, player, iter, {1.0}, config.infoset_id_from_hist,
-                                          make_in_out(gen), make_in_out(counts_from_infoset_id));
+                                          config.action_generator, make_in_out(gen),
+                                          make_in_out(counts_from_infoset_id));
         }
     }
 
@@ -163,6 +165,8 @@ double compute_counterfactual_regret(
     const IndexedArray<double, typename T::Players> &action_probabilities,
     const std::function<typename T::InfoSetId(const typename T::History &)>
         &infoset_id_from_history,
+    const std::function<std::vector<typename T::Actions>(const typename T::History &)>
+        &action_generator,
     InOut<std::mt19937> gen,
     InOut<std::unordered_map<typename T::InfoSetId, InfoSetCounts<T>>> counts_from_infoset_id) {
     // If this is a terminal state, return terminal_value
@@ -179,7 +183,7 @@ double compute_counterfactual_regret(
             const auto chance_result = play(history, gen);
             return compute_counterfactual_regret<T>(chance_result.history, to_update, iteration,
                                                     action_probabilities, infoset_id_from_history,
-                                                    gen, counts_from_infoset_id);
+                                                    action_generator, gen, counts_from_infoset_id);
         }
     }
 
@@ -203,12 +207,13 @@ double compute_counterfactual_regret(
     Strategy<T> strategy = strategy_from_counts(counts);
 
     auto new_action_probabilities = action_probabilities;
-    for (const auto &[action, probability] : strategy) {
+    for (const auto &action : action_generator(history)) {
+        const auto probability = strategy[action];
         new_action_probabilities[current_player] =
             action_probabilities[current_player] * probability;
         action_values[action] = compute_counterfactual_regret(
             play(history, action), to_update, iteration, new_action_probabilities,
-            infoset_id_from_history, gen, counts_from_infoset_id);
+            infoset_id_from_history, action_generator, gen, counts_from_infoset_id);
         node_value += probability * action_values[action];
     }
 

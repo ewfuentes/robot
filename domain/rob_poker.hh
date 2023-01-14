@@ -12,17 +12,34 @@
 
 namespace robot::domain {
 
-struct FoldAction {};
-struct CheckAction {};
-struct CallAction {};
-struct RaiseAction {
-    int amount;
+struct FoldAction {
+    static constexpr std::string_view name = "Fold";
+    constexpr bool operator==(const FoldAction &) const { return true; }
 };
+struct CheckAction {
+    static constexpr std::string_view name = "Check";
+    constexpr bool operator==(const CheckAction &) const { return true; }
+};
+struct CallAction {
+    static constexpr std::string_view name = "Call";
+    constexpr bool operator==(const CallAction &) const { return true; }
+};
+struct RaiseAction {
+    static constexpr std::string_view name = "Raise";
+    int amount;
+    constexpr bool operator==(const RaiseAction &other) const { return amount == other.amount; }
+};
+
 using RobPokerAction = std::variant<FoldAction, CheckAction, CallAction, RaiseAction>;
 WISE_ENUM_CLASS(RobPokerPlayer, PLAYER1, PLAYER2, CHANCE);
 
-std::ostream &operator<<(std::ostream &out, const RobPokerPlayer player);
-std::ostream &operator<<(std::ostream &out, const RobPokerAction player);
+struct BettingState {
+    bool is_game_over;
+    bool showdown_required;
+    int round;
+    int position;
+    IndexedArray<int, RobPokerPlayer> put_in_pot;
+};
 
 struct RobPokerHistory {
     static constexpr int STARTING_STACK_SIZE = 400;
@@ -51,6 +68,10 @@ struct RobPoker {
     using InfoSetId = std::string;
 };
 
+std::ostream &operator<<(std::ostream &out, const RobPokerHistory &history);
+std::ostream &operator<<(std::ostream &out, const RobPokerPlayer player);
+std::ostream &operator<<(std::ostream &out, const RobPokerAction action);
+
 ChanceResult play(const RobPokerHistory &history, InOut<std::mt19937> gen);
 RobPokerHistory play(const RobPokerHistory &history, const RobPokerAction &action);
 std::optional<RobPokerPlayer> up_next(const RobPokerHistory &history);
@@ -62,7 +83,8 @@ RobPoker::InfoSetId infoset_id_from_information(
     const std::array<StandardDeck::Card, 2> &private_cards,
     const std::vector<RobPokerAction> &actions);
 std::string to_string(const RobPokerHistory &hist);
+std::string to_string(const RobPokerAction &hist);
 
 int evaluate_hand(const RobPokerHistory &history, const RobPokerPlayer player);
-
+BettingState compute_betting_state(const RobPokerHistory &history);
 }  // namespace robot::domain

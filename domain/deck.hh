@@ -42,7 +42,8 @@ struct CardHash {
 template <CardLike Card>
 std::string to_string(const Card &card) {
     std::stringstream out;
-    out << wise_enum::to_string(card.rank)[1] << std::tolower(wise_enum::to_string(card.suit)[0]);
+    out << wise_enum::to_string(card.rank)[1]
+        << static_cast<char>(std::tolower(wise_enum::to_string(card.suit)[0]));
     return out.str();
 }
 

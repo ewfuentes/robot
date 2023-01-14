@@ -14,6 +14,8 @@ TEST(CfrTest, rock_paper_scissors_test) {
     const MinRegretTrainConfig<RPS> config = {
         .num_iterations = 100000,
         .infoset_id_from_hist = [&INFOSET_ID](const RPS::History &) { return INFOSET_ID; },
+        .action_generator =
+            [](const RPS::History &history) { return domain::possible_actions(history); },
         .seed = 0,
     };
 
@@ -38,6 +40,8 @@ TEST(CfrTest, blotto_test) {
     const MinRegretTrainConfig<Blotto> config = {
         .num_iterations = 10000,
         .infoset_id_from_hist = [&INFOSET_ID](const Blotto::History &) { return INFOSET_ID; },
+        .action_generator =
+            [](const Blotto::History &history) { return domain::possible_actions(history); },
         .seed = 0,
     };
 
@@ -68,6 +72,8 @@ TEST(CfrTest, kuhn_poker_test) {
     const MinRegretTrainConfig<KuhnPoker> config = {
         .num_iterations = 100000,
         .infoset_id_from_hist = &domain::infoset_id_from_history,
+        .action_generator =
+            [](const domain::KuhnHistory &history) { return domain::possible_actions(history); },
         .seed = 0,
     };
 

@@ -102,6 +102,7 @@ cc_library(
   name = "rob_poker",
   hdrs = ["rob_poker.hh"],
   srcs = ["rob_poker.cc"],
+  visibility = ["//visibility:public"],
   deps = [
     ":fog",
     ":deck",
