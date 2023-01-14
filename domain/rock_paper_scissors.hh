@@ -1,4 +1,5 @@
 
+#include <iostream>
 #include <optional>
 #include <string>
 
@@ -33,4 +34,6 @@ std::optional<int> terminal_value(const RPSHistory &history, const RPSPlayer pla
 
 double compute_counterfactual_regret(const RPSHistory &history, const RPSPlayer player,
                                      const RPSAction new_action);
+
+std::ostream &operator<<(std::ostream &out, const RPSHistory &history);
 }  // namespace robot::domain
