@@ -10,6 +10,9 @@
 #include "omp/CardRange.h"
 #include "omp/EquityCalculator.h"
 
+namespace robot::domain {
+extern std::array<uint64_t, 33> eval_counts;
+}
 namespace robot::experimental::pokerbots {
 using Card = domain::StandardDeck::Card;
 
@@ -37,7 +40,7 @@ domain::RobPokerHistory create_history_from_known_cards(const T1 &hole_cards,
     }
     for (int i = 0; i < static_cast<int>(board_cards.size()); i++) {
         current_state.common_cards[i] =
-          domain::RobPokerHistory::FogCard(board_cards[i], [](const auto){return true;});
+            domain::RobPokerHistory::FogCard(board_cards[i], [](const auto) { return true; });
     }
 
     return current_state;
@@ -101,7 +104,10 @@ StrengthPotentialResult evaluate_strength_potential(
     const auto get_rank_idx = [](const int a, const int b) { return a == b ? 0 : (a < b ? 0 : 2); };
     const auto flat_idx = [](const int a, const int b) { return a * 3 + b; };
 
-    std::cout << *gen << std::endl;
+    for (const auto &item : domain::eval_counts) {
+        std::cout << item << ",";
+    }
+    std::cout << std::endl;
 
     const int before_player_rank = domain::evaluate_hand(history, player);
     while (time::current_robot_time() - start < eval_time && num_evals < hand_limit) {
@@ -127,8 +133,7 @@ StrengthPotentialResult evaluate_strength_potential(
             if (!is_done_dealing) {
                 if (!sample_future.common_cards[i].has_value()) {
                     sample_future.common_cards[i] = domain::RobPokerHistory::FogCard(
-                        deck.deal_card().value(),
-                        [](const auto &){return true;});
+                        deck.deal_card().value(), [](const auto &) { return true; });
                 }
 
                 // A deal is complete if at least 5 cards have been dealt and the last card isn't
