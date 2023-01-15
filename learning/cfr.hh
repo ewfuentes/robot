@@ -72,7 +72,7 @@ struct MinRegretTrainConfig {
     SampleStrategy sample_strategy;
     std::function<bool(const int,
                        const std::unordered_map<typename T::InfoSetId, InfoSetCounts<T>>)>
-    iteration_callback = [](const auto &, const auto &){return true;};
+        iteration_callback = [](const auto &, const auto &) { return true; };
 };
 
 template <typename T>
