@@ -13,8 +13,8 @@ def main(output_path):
     equity = {}
     for i, hole_cards in enumerate(itertools.combinations(cards, 2)):
         hole_cards = ''.join(hole_cards)
-        result = hep.evaluate_hand(hole_cards, 'random', '', 0.1)
-        equity[hole_cards] = result.equity
+        result = hep.evaluate_expected_strength(hole_cards, 'random', '', 0.1)
+        equity[hole_cards] = result.strength
 
     with open(output_path, 'wb') as file_out:
         pickle.dump(equity, file_out)

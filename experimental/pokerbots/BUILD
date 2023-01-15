@@ -26,10 +26,7 @@ pybind_extension(
   srcs = ["hand_evaluator_python.cc"],
   copts = ["-fPIC"],
   deps = [
-    "//common/time:robot_time",
-    "//domain:deck",
-    "//domain:rob_poker",
-    "@ompeval//:ompeval_lib",
+  ":hand_evaluator",
   ]
 )
 
@@ -72,4 +69,16 @@ genrule(
     outs = ["preflop_equities.p"],
     tools = [":compute_preflop_equity"],
     cmd = "$(location :compute_preflop_equity) --output $(OUTS)",
+)
+
+cc_library(
+  name = "hand_evaluator",
+  hdrs = ["hand_evaluator.hh"],
+  srcs = ["hand_evaluator.cc"],
+  deps = [
+    "@ompeval//:ompeval_lib",
+    "//domain:deck",
+    "//domain:rob_poker",
+    "//common/time:robot_time",
+  ],
 )

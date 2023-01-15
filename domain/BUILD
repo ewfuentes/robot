@@ -121,6 +121,4 @@ cc_test(
     ":rob_poker",
     "@com_google_googletest//:gtest_main",
   ]
-
-
 )

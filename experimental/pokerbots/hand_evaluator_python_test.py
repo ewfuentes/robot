@@ -11,10 +11,10 @@ class HandEvaluatorPythonTest(unittest.TestCase):
         opponent_hand = ''
 
         # Action
-        result = hep.evaluate_hand(player_hand, opponent_hand, board, 0.05)
+        result = hep.evaluate_expected_strength(player_hand, opponent_hand, board, 0.05)
 
         # Verification
-        print('Player Equity:', result.equity)
+        print('Player Equity:', result.strength)
         print('hands evaluated:', result.num_evaluations)
 
     def test_hand_potential(self):
@@ -23,17 +23,17 @@ class HandEvaluatorPythonTest(unittest.TestCase):
         board = 'KsQcJd'
 
         # Action
-        hep.evaluate_hand_potential(player_hand, board, 0.005)
+        hep.evaluate_strength_potential(player_hand, board, 0.005)
 
         # Verification
 
-    def test_hand_potential_draw(self):
+    def test_hand_potential_flush_draw(self):
         # Setup
         player_hand = 'AsAc'
-        board = 'KsQcJd'
+        board = 'KcQcJc'
 
         # Action
-        hep.evaluate_hand_potential(player_hand, board, 0.005)
+        hep.evaluate_strength_potential(player_hand, board, 0.005)
 
         # Verification
 
