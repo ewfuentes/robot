@@ -104,11 +104,6 @@ StrengthPotentialResult evaluate_strength_potential(
     const auto get_rank_idx = [](const int a, const int b) { return a == b ? 0 : (a < b ? 0 : 2); };
     const auto flat_idx = [](const int a, const int b) { return a * 3 + b; };
 
-    for (const auto &item : domain::eval_counts) {
-        std::cout << item << ",";
-    }
-    std::cout << std::endl;
-
     const int before_player_rank = domain::evaluate_hand(history, player);
     while (time::current_robot_time() - start < eval_time && num_evals < hand_limit) {
         num_evals++;
