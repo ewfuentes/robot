@@ -46,6 +46,7 @@ WISE_ENUM_CLASS(RobPokerPlayer, PLAYER1, PLAYER2, CHANCE)
 struct BettingState {
     bool is_game_over;
     bool showdown_required;
+    bool is_final_betting_round;
     int round;
     int position;
     IndexedArray<int, RobPokerPlayer> put_in_pot;
@@ -75,7 +76,7 @@ struct RobPoker {
     using Players = RobPokerPlayer;
     using Actions = RobPokerAction;
     using History = RobPokerHistory;
-    using InfoSetId = std::string;
+    using InfoSetId = uint64_t;
 };
 
 std::ostream &operator<<(std::ostream &out, const RobPokerHistory &history);
@@ -88,10 +89,6 @@ std::optional<RobPokerPlayer> up_next(const RobPokerHistory &history);
 std::vector<RobPokerAction> possible_actions(const RobPokerHistory &history);
 std::optional<int> terminal_value(const RobPokerHistory &history, const RobPokerPlayer player);
 
-RobPoker::InfoSetId infoset_id_from_history(const RobPokerHistory &hist);
-RobPoker::InfoSetId infoset_id_from_information(
-    const std::array<StandardDeck::Card, 2> &private_cards,
-    const std::vector<RobPokerAction> &actions);
 std::string to_string(const RobPokerHistory &hist);
 std::string to_string(const RobPokerAction &hist);
 

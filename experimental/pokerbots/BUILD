@@ -81,5 +81,15 @@ cc_library(
     "//domain:deck",
     "//domain:rob_poker",
     "//common/time:robot_time",
+    ]
+)
+
+cc_library(
+  name = "generate_infoset_id",
+  hdrs = ["generate_infoset_id.hh"],
+  srcs = ["generate_infoset_id.cc"],
+  deps = [
+    "//domain:deck",
+    "//domain:rob_poker",
   ],
 )

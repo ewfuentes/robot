@@ -71,6 +71,26 @@ int train() {
     return 0;
 }
 
+  uint64_t count_infosets(const domain::RobPokerHistory &history = {}) {
+    const auto maybe_next_player = up_next(history);
+    if (!maybe_next_player.has_value()) {
+      return 1;
+    } else if (maybe_next_player.value() == domain::RobPokerPlayer::CHANCE) {
+        std::mt19937 gen;
+        return count_infosets(play(history, make_in_out(gen)).history);
+    }
+    const auto betting_state = domain::compute_betting_state(history);
+    if (betting_state.position == 0) {
+      return 1;
+    }
+
+    uint64_t num_actions = 0;
+    for (const auto &action : action_generator(history)) {
+        num_actions += count_infosets(play(history, action));
+    }
+    return num_actions;
+}
+
 }  // namespace experimental::pokerbots
 }  // namespace robot
 
@@ -78,5 +98,8 @@ int main(int argc, char **argv) {
     cxxopts::Options options("cfr_train", "I wanna be the very best, like no one ever was.");
     auto args = options.parse(argc, argv);
 
-    return robot::experimental::pokerbots::train();
+    // return robot::experimental::pokerbots::train();
+    const uint64_t num_infosets = robot::experimental::pokerbots::count_infosets();
+    std::cout << "num abstracted info sets: " << num_infosets << std::endl;
+    std::cout << "num_bytes: " << num_infosets * sizeof(robot::learning::InfoSetCounts<robot::domain::RobPoker>) << std::endl;
 }
