@@ -1,8 +1,8 @@
 
 #pragma once
 
-#include "domain/rob_poker.hh"
 #include "domain/deck.hh"
+#include "domain/rob_poker.hh"
 
 namespace robot::experimental::pokerbots {
 domain::RobPoker::InfoSetId infoset_id_from_history(const domain::RobPokerHistory &history);
