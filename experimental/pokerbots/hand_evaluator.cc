@@ -91,8 +91,7 @@ StrengthPotentialResult evaluate_strength_potential(const domain::RobPokerHistor
     const auto get_rank_idx = [](const int a, const int b) { return a == b ? 0 : (a < b ? 0 : 2); };
     const auto flat_idx = [](const int a, const int b) { return a * 3 + b; };
 
-    const int before_player_rank =
-        domain::evaluate_hand(history, player);
+    const int before_player_rank = domain::evaluate_hand(history, player);
     while (time::current_robot_time() < end_time) {
         num_evals++;
         auto sample_future = history;
@@ -182,6 +181,7 @@ StrengthPotentialResult evaluate_strength_potential(const std::string &hand_str,
     const auto board_cards = cards_from_string(board_str);
     const auto history = create_history_from_known_cards(hole_cards, board_cards);
     std::mt19937 gen(0);
-    return evaluate_strength_potential(history, domain::RobPokerPlayer::PLAYER1, timeout_s, make_in_out(gen));
+    return evaluate_strength_potential(history, domain::RobPokerPlayer::PLAYER1, timeout_s,
+                                       make_in_out(gen));
 }
 }  // namespace robot::experimental::pokerbots
