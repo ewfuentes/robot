@@ -9,7 +9,12 @@
 #include "experimental/pokerbots/generate_infoset_id.hh"
 #include "learning/cfr.hh"
 
+
 namespace robot {
+  namespace domain {
+    
+    extern std::array<int, 33> eval_counts;
+  }
 namespace {
 constexpr std::tuple<domain::RobPokerAction, std::string_view> make_index_item(const auto action) {
     using T = std::decay_t<decltype(action)>;
@@ -62,9 +67,10 @@ std::vector<domain::RobPokerAction> action_generator(const domain::RobPokerHisto
     return out;
 }
 
+
 int train() {
     const learning::MinRegretTrainConfig<RobPoker> config = {
-        .num_iterations = 10000,
+        .num_iterations = 2000,
         .infoset_id_from_hist =
             [](const RobPoker::History &history) { return infoset_id_from_history(history); },
         .action_generator = action_generator,
@@ -78,8 +84,8 @@ int train() {
                 if (iter % ITERS_BETWEEN_PRINTS == 0) {
                     const auto now = time::current_robot_time();
                     if (prev_t.has_value()) {
-                      const auto dt = now - prev_t.value();
-                      const auto dt_s = std::chrono::duration<double>(dt).count();
+                        const auto dt = now - prev_t.value();
+                        const auto dt_s = std::chrono::duration<double>(dt).count();
                         std::cout << iter << " dt: " << dt_s
                                   << " sec samples/sec:" << ITERS_BETWEEN_PRINTS / dt_s
                                   << std::endl;
@@ -94,6 +100,10 @@ int train() {
     const auto dt = time::current_robot_time() - t_start;
     const auto dt_s = std::chrono::duration<double>(dt).count();
     std::cout << "total time: " << dt_s << std::endl;
+    for (const auto &item : domain::eval_counts) {
+        std::cout << item << ",";
+    }
+    std::cout << std::endl;
     return 0;
 }
 
