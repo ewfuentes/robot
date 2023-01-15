@@ -340,32 +340,35 @@ std::string to_string(const RobPokerHistory &hist) {
     return out.str();
 }
 
-int evaluate_hand(const RobPokerHistory &history, const RobPokerPlayer player) {
-    const auto common_card_end_iter =
-        std::find_if_not(history.common_cards.begin(), history.common_cards.end(),
-                         [](const auto &card) { return card.has_value(); });
-    const int common_card_end_idx =
-        std::distance(history.common_cards.begin(), common_card_end_iter);
-    constexpr int MAX_HAND_SIZE = 5;
-    // Enumerate all possible 5 card hands for the current player and keep the max;
-    int max_hand_value = std::numeric_limits<int>::lowest();
-    std::array<int, MAX_HAND_SIZE> idxs = {-2, -1, 0, 1, 2};
-    bool done = false;
+int evaluate_hand(const std::array<StandardDeck::Card, 33> &cards, const int num_cards) {
+    const thread_local omp::HandEvaluator evaluator;
     auto card_idx_from_card = [](const auto card) {
         const int card_idx = static_cast<int>(card.rank) * 4 + static_cast<int>(card.suit);
         return card_idx;
     };
-    const omp::HandEvaluator evaluator;
+
+    if (num_cards < 8) {
+        omp::Hand hand = omp::Hand::empty();
+        for (int i = 0; i < num_cards; i++) {
+            hand += omp::Hand(card_idx_from_card(cards[i]));
+        }
+        return evaluator.evaluate(hand);
+    }
+
+    const int max_hand_size = num_cards < 12 ? 7 : 5;
+    // std::cout << "Too many cards! evaluating by " << max_hand_size << std::endl;
+    // Enumerate all possible 5 or 7 card hands for the current player and keep the max;
+    int max_hand_value = std::numeric_limits<int>::lowest();
+    std::vector<int> idxs(max_hand_size);
+    std::iota(idxs.begin(), idxs.end(), 0);
+    bool done = false;
+    int num_evals = 0;
     while (!done) {
+        num_evals++;
         // Create the hand
         omp::Hand hand = omp::Hand::empty();
         for (const auto idx : idxs) {
-            if (idx < 0) {
-                hand += omp::Hand(
-                    card_idx_from_card(history.hole_cards[player].at(std::abs(idx) - 1).value()));
-            } else {
-                hand += omp::Hand(card_idx_from_card(history.common_cards.at(idx).value()));
-            }
+            hand += omp::Hand(card_idx_from_card(cards[idx]));
         }
 
         // Evaluate the hand
@@ -373,10 +376,15 @@ int evaluate_hand(const RobPokerHistory &history, const RobPokerPlayer player) {
 
         // Try to get the next indices
         bool did_update = false;
-        for (int idx = 4; idx >= 0; idx--) {
-            const int idx_from_end = idxs.size() - idx;
-            const int max_for_curr_idx = common_card_end_idx - idx_from_end;
+        for (int idx = max_hand_size - 1; idx >= 0; idx--) {
+            // Distance from the end of the index list. The last element is 1 away
+            const int idx_from_end = max_hand_size - idx;
+            // The furthest along the cards array this index can be. The last index can go up to the
+            // end, the second to last can go up to the second to last card, etc.
+            const int max_for_curr_idx = num_cards - idx_from_end;
             if (idxs[idx] < max_for_curr_idx) {
+                // This is the first index that we could increment, increment it and initialize all
+                // following indices
                 idxs[idx]++;
                 for (int future_idx = idx + 1; future_idx < static_cast<int>(idxs.size());
                      future_idx++) {
@@ -386,10 +394,27 @@ int evaluate_hand(const RobPokerHistory &history, const RobPokerPlayer player) {
                 break;
             }
         }
-        // If we can't, we're done
+        // If we weren't able to update any of the indices, then we've enumerated all possibilities
         done = !did_update;
     }
+    // std::cout << "num evals" << num_evals << std::endl;
     return max_hand_value;
+}
+
+int evaluate_hand(const RobPokerHistory &history, const RobPokerPlayer player) {
+    int num_cards = 0;
+    std::array<StandardDeck::Card, 33> cards{};
+    for (const auto &fog_card : history.hole_cards[player]) {
+        cards[num_cards++] = fog_card.value();
+    }
+    for (const auto &fog_card : history.common_cards) {
+        if (fog_card.has_value() && fog_card.is_visible_to(player)) {
+            cards[num_cards++] = fog_card.value();
+        } else {
+            break;
+        }
+    }
+    return evaluate_hand(cards, num_cards);
 }
 
 }  // namespace robot::domain
