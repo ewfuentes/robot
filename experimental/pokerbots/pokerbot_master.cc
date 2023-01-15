@@ -9,12 +9,11 @@
 #include "experimental/pokerbots/generate_infoset_id.hh"
 #include "learning/cfr.hh"
 
-
 namespace robot {
-  namespace domain {
-    
-    extern std::array<int, 33> eval_counts;
-  }
+namespace domain {
+
+extern std::array<uint64_t, 33> eval_counts;
+}
 namespace {
 constexpr std::tuple<domain::RobPokerAction, std::string_view> make_index_item(const auto action) {
     using T = std::decay_t<decltype(action)>;
@@ -66,7 +65,6 @@ std::vector<domain::RobPokerAction> action_generator(const domain::RobPokerHisto
     }
     return out;
 }
-
 
 int train() {
     const learning::MinRegretTrainConfig<RobPoker> config = {

@@ -15,7 +15,7 @@
 #include "omp/HandEvaluator.h"
 
 namespace robot::domain {
-std::array<int, 33> eval_counts = {0};
+std::array<uint64_t, 33> eval_counts = {0};
 BettingState compute_betting_state(const RobPokerHistory &history) {
     BettingState state = {.is_game_over = false,
                           .showdown_required = false,
