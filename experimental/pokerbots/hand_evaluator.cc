@@ -37,7 +37,7 @@ domain::RobPokerHistory create_history_from_known_cards(const T1 &hole_cards,
     }
     for (int i = 0; i < static_cast<int>(board_cards.size()); i++) {
         current_state.common_cards[i] =
-            domain::RobPokerHistory::FogCard(board_cards[i], make_private_info(PLAYER));
+          domain::RobPokerHistory::FogCard(board_cards[i], [](const auto){return true;});
     }
 
     return current_state;
