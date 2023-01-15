@@ -64,7 +64,7 @@ std::vector<domain::RobPokerAction> action_generator(const domain::RobPokerHisto
 
 int train() {
     const learning::MinRegretTrainConfig<RobPoker> config = {
-        .num_iterations = 1000,
+        .num_iterations = 10000,
         .infoset_id_from_hist =
             [](const RobPoker::History &history) { return infoset_id_from_history(history); },
         .action_generator = action_generator,
@@ -74,7 +74,7 @@ int train() {
             [prev_t = std::optional<time::RobotTimestamp>{}](
                 const int iter, const auto &counts_from_infoset_id) mutable {
                 (void)counts_from_infoset_id;
-                constexpr int ITERS_BETWEEN_PRINTS = 100;
+                constexpr int ITERS_BETWEEN_PRINTS = 1000;
                 if (iter % ITERS_BETWEEN_PRINTS == 0) {
                     const auto now = time::current_robot_time();
                     if (prev_t.has_value()) {
@@ -89,7 +89,11 @@ int train() {
                 return true;
             },
     };
+    const auto t_start = time::current_robot_time();
     train_min_regret_strategy<RobPoker>(config);
+    const auto dt = time::current_robot_time() - t_start;
+    const auto dt_s = std::chrono::duration<double>(dt).count();
+    std::cout << "total time: " << dt_s << std::endl;
     return 0;
 }
 
