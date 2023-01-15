@@ -69,6 +69,7 @@ genrule(
     outs = ["preflop_equities.p"],
     tools = [":compute_preflop_equity"],
     cmd = "$(location :compute_preflop_equity) --output $(OUTS)",
+    tags = ["manual"],
 )
 
 cc_library(
