@@ -89,8 +89,9 @@ EquityResult evaluate_hand_potential(const std::string &hand_str, const std::str
     // counts[b][a] keeps track of results before and after showing
     // b = before, a = after
     // 0 = behind, 1 = tied, 2 = ahead
-    std::array<std::array<int, 3>, 3> counts{0};
+    std::array<int, 9> counts{0};
     const auto get_rank_idx = [](const int a, const int b) { return a == b ? 0 : (a < b ? 0 : 2); };
+    const auto flat_idx = [](const int a, const int b) { return a * 3 + b; };
 
     const int before_player_rank =
         domain::evaluate_hand(initial_state, domain::RobPokerPlayer::PLAYER1);
@@ -140,11 +141,11 @@ EquityResult evaluate_hand_potential(const std::string &hand_str, const std::str
         const int after_opponent_rank =
             domain::evaluate_hand(sample_history, domain::RobPokerPlayer::PLAYER2);
         const int after_idx = get_rank_idx(after_player_rank, after_opponent_rank);
-        counts[before_idx][after_idx]++;
+        counts[flat_idx(before_idx, after_idx)]++;
     }
 
     const auto sum_row = [&](const int row) {
-        return counts[row][0] + counts[row][1] + counts[row][2];
+        return counts[flat_idx(row, 0)] + counts[flat_idx(row, 1)] + counts[flat_idx(row, 2)];
     };
 
     const int before_behind_counts = sum_row(0);
@@ -155,17 +156,21 @@ EquityResult evaluate_hand_potential(const std::string &hand_str, const std::str
         static_cast<double>(before_ahead_counts + before_tied_counts / 2.0) / num_evals;
 
     const double positive_potential =
-        static_cast<double>(counts[0][2] + (counts[0][1] + counts[1][2]) / 2.0) / num_evals;
+        static_cast<double>(counts[flat_idx(0, 2)] +
+                            (counts[flat_idx(0, 1)] + counts[flat_idx(1, 2)]) / 2.0) /
+        num_evals;
 
     const double negative_potential =
-        static_cast<double>(counts[2][0] + (counts[2][1] + counts[1][0]) / 2.0) / num_evals;
+        static_cast<double>(counts[flat_idx(2, 0)] +
+                            (counts[flat_idx(2, 1)] + counts[flat_idx(1, 0)]) / 2.0) /
+        num_evals;
 
     const double hand_potential =
         (1.0 - hand_strength) * positive_potential + hand_strength * (1.0 - negative_potential);
     std::cout << "Counts for hole cards: " << hand_str << " board: " << board_str << std::endl;
-    for (const auto &row : counts) {
-        for (const auto &item : row) {
-            std::cout << item << " ";
+    for (int row = 0; row < 3; row++) {
+        for (int col = 0; col < 3; col++) {
+            std::cout << counts[flat_idx(row, col)] << " ";
         }
         std::cout << std::endl;
     }
