@@ -8,6 +8,7 @@
 #include <sstream>
 
 #include "common/argument_wrapper.hh"
+#include "omp/Random.h"
 #include "wise_enum.h"
 
 namespace robot::domain {
@@ -70,10 +71,12 @@ struct Deck {
     }
 
     void shuffle(InOut<std::mt19937> gen) {
+        // seed a faster random number generator using the generator passed in
+        omp::XoroShiro128Plus fast_gen((*gen)());
         for (int i = bottom_location_ - 1; i > top_location_; i--) {
             // Work from the end to the beginning, picking which card goes in the i'th position
-            std::uniform_int_distribution<> card_picker(top_location_, i);
-            const int idx = card_picker(*gen);
+            omp::FastUniformIntDistribution<> card_picker(top_location_, i);
+            const int idx = card_picker(fast_gen);
             // Swap the cards at the i'th and the idx'th position
             std::swap(elements_[i], elements_[idx]);
         }

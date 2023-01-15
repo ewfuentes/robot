@@ -86,6 +86,7 @@ cc_library(
   visibility = ["//visibility:public"],
   deps = [
     "@wise_enum//:wise_enum",
+    "@ompeval//:ompeval_lib",
     "//common:argument_wrapper",
   ],
 )
