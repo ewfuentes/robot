@@ -1,4 +1,5 @@
 from typing import Union
+import pickle
 
 from python_skeleton.skeleton import bot
 from python_skeleton.skeleton.states import (
@@ -18,46 +19,75 @@ from python_skeleton.skeleton.actions import (
 )
 
 from python_skeleton.skeleton import runner
-from common.python.pybind_example_python import add as pybind_add
 import experimental.pokerbots.hand_evaluator_python as hep
 import random
 
-def calc_strength(hole, board):
-    '''
+import os
 
-    '''
-    result = hep.evaluate_hand(''.join(hole), 'random', ''.join(board))
-    print(f'evaluated {result.num_evaluations} hands')
-    return result.equity
+if os.environ["RUNFILES_DIR"]:
+    os.chdir(os.path.join(os.environ["RUNFILES_DIR"], "__main__"))
+
+
+def card_key(card):
+    """Rank a card based on rank and suit."""
+    rank = card[0]
+    suit = card[1]
+    rank_index = "23456789TJQKA".find(rank)
+    suit_index = "shcd".find(suit)
+    return rank_index * 4 + suit_index
+
 
 class Pokerbot(bot.Bot):
     """First pass pokerbot."""
 
+    def calc_strength(self, hole: str, board: str, street: int):
+        """Compute hand strength or effective hand strength post flop."""
+        if street == 0:
+            if self.preflop_equity is None:
+                # This is the preflop round, just compute hand strength
+                key = "".join(sorted(hole, key=card_key))
+                print("Equity:", self._preflop_equities[key])
+                self.preflop_equity = self._preflop_equities[key]
+            return self.preflop_equity
+        else:
+            # This is a post flop round, compute effective hand strength
+            TIME_LIMIT_S = 0.02
+            result = hep.evaluate_hand_potential(
+                "".join(hole), "".join(board), TIME_LIMIT_S
+            )
+            print(f"evaluated {result.num_evaluations} hands")
+            return result.equity
 
     def __init__(self):
         """Init."""
-        print("Calling pybind add: ", pybind_add(1, 2))
-        pass
+        with open("experimental/pokerbots/preflop_equities.p", "rb") as file_in:
+            self._preflop_equities = pickle.load(file_in)
 
     def handle_new_round(
         self, game_state: GameState, round_state: RoundState, active
     ) -> None:
         """Handle New Round."""
-        print("******************* New Round")
-        print("game_state:", game_state)
-        print("round_state:", round_state)
-        print("active:", active)
-        pass
+        print(
+            f"******************* New Round {game_state.round_num} Player: {active} Clock Remaning: {game_state.game_clock}"
+        )
+        self.preflop_equity = None
+        # print("game_state:", game_state)
+        # print("round_state:", round_state)
+        # print("active:", active)
+        # pass
 
     def handle_round_over(
         self, game_state: GameState, terminal_state: TerminalState, active
     ):
         """Handle Round Over."""
-        print("############ End Round")
-        print("game_state:", game_state)
-        print("terminal_state:", terminal_state)
-        print("active:", active)
-        pass
+        print(f"############ End Round deltas: {terminal_state.deltas}")
+        print(
+            f"Hands: {terminal_state.previous_state.hands} Board: {terminal_state.previous_state.deck}"
+        )
+        # print("game_state:", game_state)
+        # print("terminal_state:", terminal_state)
+        # print("active:", active)
+        # pass
 
     def get_action(
         self, game_state: GameState, round_state: RoundState, active
@@ -122,20 +152,12 @@ class Pokerbot(bot.Bot):
         else:
             temp_action = FoldAction()
 
-        strength = calc_strength(my_cards, board_cards)
+        strength = self.calc_strength(my_cards, board_cards, street)
 
         if continue_cost > 0:
-            scary = 0
-            if continue_cost > 6:
-                scary = 0.15
-            if continue_cost > 12:
-                scary = 0.25
-            if continue_cost > 50:
-                scary = 0.35
-            strength = max([0, strength - scary])
             pot_odds = continue_cost / (pot_total + continue_cost)
             if strength > pot_odds:
-                if random.random() < strength and strength > 0.5:
+                if random.random() < strength:
                     my_action = temp_action
                 else:
                     my_action = CallAction()

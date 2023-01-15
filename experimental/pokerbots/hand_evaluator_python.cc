@@ -1,42 +1,29 @@
 
-#include "omp/CardRange.h"
-#include "omp/EquityCalculator.h"
+
+#include "experimental/pokerbots/hand_evaluator.hh"
 #include "pybind11/pybind11.h"
-#include "vector"
 
 namespace robot::experimental::pokerbots {
-namespace {
-struct EquityResult {
-    double equity;
-    uint64_t num_evaluations;
-};
-
-EquityResult evaluate_hand(const std::string &hand, const std::string &opponent_hand_str,
-                           const std::string &board_str) {
-    const std::vector<omp::CardRange> ranges = {{hand}, {opponent_hand_str}};
-    const uint64_t board = omp::CardRange::getCardMask(board_str);
-    omp::EquityCalculator calculator;
-    calculator.setTimeLimit(0.02);
-    calculator.start(ranges, board);
-    calculator.wait();
-    const auto results = calculator.getResults();
-
-    return {
-        .equity = results.equity[0],
-        .num_evaluations = results.hands,
-    };
-}
-}  // namespace
 
 namespace py = pybind11;
 
 PYBIND11_MODULE(hand_evaluator_python, m) {
     m.doc() = "Hand Evaluator";
 
-    py::class_<EquityResult>(m, "EquityResult")
-        .def_readonly("equity", &EquityResult::equity)
-        .def_readonly("num_evaluations", &EquityResult::num_evaluations);
+    py::class_<ExpectedStrengthResult>(m, "ExpectedStrengthResult")
+        .def_readonly("strength", &ExpectedStrengthResult::strength)
+        .def_readonly("num_evaluations", &ExpectedStrengthResult::num_evaluations);
 
-    m.def("evaluate_hand", &evaluate_hand);
+    py::class_<StrengthPotentialResult>(m, "StrengthPotentialResult")
+        .def_readonly("strength", &StrengthPotentialResult::strength)
+        .def_readonly("strength_potential", &StrengthPotentialResult::strength_potential)
+        .def_readonly("positive_potential", &StrengthPotentialResult::positive_potential)
+        .def_readonly("negative_potential", &StrengthPotentialResult::negative_potential)
+        .def_readonly("num_evaluations", &StrengthPotentialResult::num_evaluations);
+
+    m.def("evaluate_expected_strength", &evaluate_expected_strength);
+    m.def("evaluate_strength_potential",
+          py::overload_cast<const std::string&, const std::string&, const double>(
+              &evaluate_strength_potential));
 }
 }  // namespace robot::experimental::pokerbots

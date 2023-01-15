@@ -66,10 +66,11 @@ struct Deck {
             }
         }
         top_location_ = 0;
+        bottom_location_ = NUM_CARDS;
     }
 
     void shuffle(InOut<std::mt19937> gen) {
-        for (int i = NUM_CARDS - 1; i > top_location_; i--) {
+        for (int i = bottom_location_ - 1; i > top_location_; i--) {
             // Work from the end to the beginning, picking which card goes in the i'th position
             std::uniform_int_distribution<> card_picker(top_location_, i);
             const int idx = card_picker(*gen);
@@ -79,24 +80,32 @@ struct Deck {
     }
 
     std::optional<Card> deal_card() {
-        if (top_location_ < NUM_CARDS) {
+        if (top_location_ < bottom_location_) {
             return elements_[top_location_++];
         }
         return std::nullopt;
     }
 
-    int size() const { return NUM_CARDS - top_location_; }
+    int size() const { return bottom_location_ - top_location_; }
+
+    constexpr typename Container::iterator erase(const typename Container::iterator &new_end) {
+        bottom_location_ = std::distance(begin(), new_end);
+        return end();
+    }
 
     constexpr typename Container::const_iterator begin() const {
         return elements_.begin() + top_location_;
     };
-    constexpr typename Container::const_iterator end() const { return elements_.end(); };
+    constexpr typename Container::const_iterator end() const {
+        return elements_.begin() + bottom_location_;
+    };
     constexpr typename Container::iterator begin() { return elements_.begin() + top_location_; };
-    constexpr typename Container::iterator end() { return elements_.end(); };
+    constexpr typename Container::iterator end() { return elements_.begin() + bottom_location_; };
 
    private:
     Container elements_;
     int top_location_;
+    int bottom_location_;
 };
 
 using StandardDeck = Deck<StandardRanks, StandardSuits>;

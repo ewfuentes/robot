@@ -26,7 +26,7 @@ pybind_extension(
   srcs = ["hand_evaluator_python.cc"],
   copts = ["-fPIC"],
   deps = [
-    "@ompeval//:ompeval_lib",
+  ":hand_evaluator",
   ]
 )
 
@@ -40,8 +40,8 @@ py_binary(
     name="pokerbot",
     srcs=["pokerbot.py"],
     data = [
-      "//common/python:pybind_example_python.so",
       ":hand_evaluator_python.so",
+      ":preflop_equities",
     ],
     deps=[
         "@mit_pokerbots//:framework",
@@ -56,4 +56,30 @@ cc_binary(
     "//learning:cfr",
     "@cxxopts//:cxxopts",
   ]
+)
+
+py_binary(
+    name = "compute_preflop_equity",
+    srcs= ["compute_preflop_equity.py"],
+    data = [":hand_evaluator_python.so"],
+)
+
+genrule(
+    name = "preflop_equities",
+    outs = ["preflop_equities.p"],
+    tools = [":compute_preflop_equity"],
+    cmd = "$(location :compute_preflop_equity) --output $(OUTS)",
+    tags = ["manual"],
+)
+
+cc_library(
+  name = "hand_evaluator",
+  hdrs = ["hand_evaluator.hh"],
+  srcs = ["hand_evaluator.cc"],
+  deps = [
+    "@ompeval//:ompeval_lib",
+    "//domain:deck",
+    "//domain:rob_poker",
+    "//common/time:robot_time",
+  ],
 )
