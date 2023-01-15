@@ -12,6 +12,7 @@
 namespace robot {
 namespace domain {
 
+extern uint64_t evaluate_hand_counts;
 extern std::array<uint64_t, 33> eval_counts;
 }
 namespace {
@@ -43,6 +44,7 @@ struct Range<domain::RobPokerAction> {
 };
 
 namespace experimental::pokerbots {
+extern int strength_potential_counts;
 using RobPoker = domain::RobPoker;
 
 std::vector<domain::RobPokerAction> action_generator(const domain::RobPokerHistory &history) {
@@ -102,6 +104,8 @@ int train() {
         std::cout << item << ",";
     }
     std::cout << std::endl;
+    std::cout << "Strength potential counts: " << strength_potential_counts << std::endl;
+    std::cout << "evaluate hand counts: " << domain::evaluate_hand_counts << std::endl;
     return 0;
 }
 

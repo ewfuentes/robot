@@ -9,6 +9,7 @@
 #include "experimental/pokerbots/hand_evaluator.hh"
 
 namespace robot::experimental::pokerbots {
+  int strength_potential_counts = 0;
 domain::RobPoker::InfoSetId infoset_id_from_history(const domain::RobPokerHistory &history) {
     const auto player = up_next(history).value();
     const auto betting_state = compute_betting_state(history);
@@ -93,6 +94,7 @@ domain::RobPoker::InfoSetId infoset_id_from_information(
     } else {
         constexpr std::optional<time::RobotTimestamp::duration> timeout = {};
         constexpr std::optional<int> hand_limit = 1000;
+        strength_potential_counts++;
         const StrengthPotentialResult result =
             evaluate_strength_potential(private_cards, common_cards, timeout, hand_limit);
         // Bin the hand by expected hand strength, positve and negative potential

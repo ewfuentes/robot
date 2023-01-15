@@ -126,7 +126,7 @@ StrengthPotentialResult evaluate_strength_potential(
                 if (!sample_future.common_cards[i].has_value()) {
                     sample_future.common_cards[i] = domain::RobPokerHistory::FogCard(
                         deck.deal_card().value(),
-                        make_private_info(domain::RobPokerPlayer::CHANCE));
+                        [](const auto &){return true;});
                 }
 
                 // A deal is complete if at least 5 cards have been dealt and the last card isn't
