@@ -199,6 +199,7 @@ double compute_external_sampled_counterfactual_regret(
     // Get the current strategy for this infoset. We have a non const reference since we
     // may update them further down.
     InfoSetCounts<T> &counts = (*counts_from_infoset_id)[infoset_id_from_history(history)];
+    counts.iter_count++;
     const Strategy<T> maybe_invalid_strategy = strategy_from_counts(counts);
     Strategy<T> valid_strategy = {0.0};
     double normalizer = 0;
