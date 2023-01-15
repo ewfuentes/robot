@@ -2,6 +2,7 @@
 #include <string_view>
 #include <variant>
 
+#include "experimental/pokerbots/generate_infoset_id.hh"
 #include "cxxopts.hpp"
 #include "domain/rob_poker.hh"
 #include "learning/cfr.hh"
@@ -62,7 +63,7 @@ std::vector<domain::RobPokerAction> action_generator(const domain::RobPokerHisto
 int train() {
     const learning::MinRegretTrainConfig<RobPoker> config = {
         .num_iterations = 100000,
-        .infoset_id_from_hist = [](const RobPoker::History &) { return RobPoker::InfoSetId{}; },
+        .infoset_id_from_hist = [](const RobPoker::History &history) { return infoset_id_from_history(history); },
         .action_generator = action_generator,
         .seed = 0,
         .sample_strategy = learning::SampleStrategy::EXTERNAL_SAMPLING,
@@ -98,8 +99,5 @@ int main(int argc, char **argv) {
     cxxopts::Options options("cfr_train", "I wanna be the very best, like no one ever was.");
     auto args = options.parse(argc, argv);
 
-    // return robot::experimental::pokerbots::train();
-    const uint64_t num_infosets = robot::experimental::pokerbots::count_infosets();
-    std::cout << "num abstracted info sets: " << num_infosets << std::endl;
-    std::cout << "num_bytes: " << num_infosets * sizeof(robot::learning::InfoSetCounts<robot::domain::RobPoker>) << std::endl;
+    return robot::experimental::pokerbots::train();
 }

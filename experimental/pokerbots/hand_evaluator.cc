@@ -25,8 +25,9 @@ std::vector<Card> cards_from_string(const std::string &cards_str) {
     return out;
 }
 
-domain::RobPokerHistory create_history_from_known_cards(const std::vector<Card> &hole_cards,
-                                                        const std::vector<Card> &board_cards) {
+template <typename T1, typename T2>
+domain::RobPokerHistory create_history_from_known_cards(const T1 &hole_cards,
+                                                        const T2 &board_cards) {
     constexpr auto PLAYER = domain::RobPokerPlayer::PLAYER1;
     domain::RobPokerHistory current_state;
     for (int i = 0; i < static_cast<int>(hole_cards.size()); i++) {
@@ -172,6 +173,15 @@ StrengthPotentialResult evaluate_strength_potential(const domain::RobPokerHistor
         .negative_potential = negative_potential,
         .num_evaluations = static_cast<uint64_t>(num_evals),
     };
+}
+
+StrengthPotentialResult evaluate_strength_potential(
+    const std::array<domain::StandardDeck::Card, 2> &hand,
+    const std::vector<domain::StandardDeck::Card> &board, const double timeout_s) {
+    const auto history = create_history_from_known_cards(hand, board);
+    std::mt19937 gen(0);
+    return evaluate_strength_potential(history, domain::RobPokerPlayer::PLAYER1, timeout_s,
+                                       make_in_out(gen));
 }
 
 StrengthPotentialResult evaluate_strength_potential(const std::string &hand_str,

@@ -5,6 +5,7 @@
 
 #include "domain/deck.hh"
 #include "domain/rob_poker.hh"
+#include "experimental/pokerbots/hand_evaluator.hh"
 
 namespace robot::experimental::pokerbots {
 domain::RobPoker::InfoSetId infoset_id_from_history(const domain::RobPokerHistory &history) {
@@ -89,6 +90,9 @@ domain::RobPoker::InfoSetId infoset_id_from_information(
             out |= (is_higher_red ? 5 : 4);
         }
     } else {
+        const double TIMEOUT_S = 0.02;
+        const StrengthPotentialResult result =
+            evaluate_strength_potential(private_cards, common_cards, TIMEOUT_S);
         // Bin the hand by expected hand strength, positve and negative potential
         // Hand strength bins:
         //  0 - [0.0, 0.2)
@@ -96,12 +100,42 @@ domain::RobPoker::InfoSetId infoset_id_from_information(
         //  2 - [0.4, 0.6)
         //  3 - [0.6, 0.8)
         //  4 - [0.8, 1.0]
+        int hand_strength_bin = 0;
+        if (result.strength < 0.2) {
+            hand_strength_bin = 0;
+        } else if (result.strength < 0.4) {
+            hand_strength_bin = 1;
+        } else if (result.strength < 0.6) {
+            hand_strength_bin = 2;
+        } else if (result.strength < 0.8) {
+            hand_strength_bin = 3;
+        } else {
+            hand_strength_bin = 4;
+        }
 
         // Negative/Postive potential bins:
         // 0 - [0.0, 0.1)
         // 1 - [0.1, 0.2)
         // 2 - [0.2, 1.0]
+        int negative_potential_bin = 0;
+        if (result.negative_potential < 0.1) {
+            negative_potential_bin = 0;
+        } else if (result.negative_potential < 0.2) {
+            negative_potential_bin = 1;
+        } else {
+            negative_potential_bin = 2;
+        }
 
+        int positive_potential_bin = 0;
+        if (result.positive_potential < 0.1) {
+            positive_potential_bin = 0;
+        } else if (result.positive_potential < 0.2) {
+            positive_potential_bin = 1;
+        } else {
+            positive_potential_bin = 2;
+        }
+
+        out |= (hand_strength_bin << 8) | (negative_potential_bin << 4) | (positive_potential_bin);
         // 5 * 3 * 3 bins = 45 bins
     }
     return out;
