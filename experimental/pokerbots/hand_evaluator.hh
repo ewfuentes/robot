@@ -4,6 +4,7 @@
 #include <string>
 
 #include "common/argument_wrapper.hh"
+#include "common/time/robot_time.hh"
 #include "domain/deck.hh"
 #include "domain/rob_poker.hh"
 
@@ -24,17 +25,22 @@ struct StrengthPotentialResult {
 ExpectedStrengthResult evaluate_expected_strength(const std::string &hand,
                                                   const std::string &opponent_hand_str,
                                                   const std::string &board_str,
-                                                  const double timeout_s);
+                                                  const std::optional<double> timeout_s,
+                                                  const std::optional<int> num_hands);
 
 StrengthPotentialResult evaluate_strength_potential(const std::string &hand_str,
                                                     const std::string &board_str,
-                                                    const double timeout_s);
+                                                    const std::optional<double> timeout_s,
+                                                    const std::optional<int> num_hands);
 
 StrengthPotentialResult evaluate_strength_potential(
     const std::array<domain::StandardDeck::Card, 2> &hand,
-    const std::vector<domain::StandardDeck::Card> &board, const double timeout_s);
+    const std::vector<domain::StandardDeck::Card> &board,
+    const std::optional<time::RobotTimestamp::duration> timeout,
+    const std::optional<int> num_hands);
 
-StrengthPotentialResult evaluate_strength_potential(const domain::RobPokerHistory &history,
-                                                    const domain::RobPokerPlayer player,
-                                                    InOut<std::mt19937> gen);
+StrengthPotentialResult evaluate_strength_potential(
+    const domain::RobPokerHistory &history, const domain::RobPokerPlayer player,
+    const std::optional<time::RobotTimestamp::duration> timeout, const std::optional<int> num_hands,
+    InOut<std::mt19937> gen);
 }  // namespace robot::experimental::pokerbots

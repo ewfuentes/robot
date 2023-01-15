@@ -3,6 +3,7 @@
 
 #include <variant>
 
+#include "common/time/robot_time.hh"
 #include "domain/deck.hh"
 #include "domain/rob_poker.hh"
 #include "experimental/pokerbots/hand_evaluator.hh"
@@ -90,19 +91,20 @@ domain::RobPoker::InfoSetId infoset_id_from_information(
             out |= (is_higher_red ? 5 : 4);
         }
     } else {
-        const double TIMEOUT_S = 0.02;
-        const StrengthPotentialResult result =
-            evaluate_strength_potential(private_cards, common_cards, TIMEOUT_S);
-        // Bin the hand by expected hand strength, positve and negative potential
-        // Hand strength bins:
-        //  0 - [0.0, 0.2)
-        //  1 - [0.2, 0.4)
-        //  2 - [0.4, 0.6)
-        //  3 - [0.6, 0.8)
-        //  4 - [0.8, 1.0]
-        int hand_strength_bin = 0;
-        if (result.strength < 0.2) {
-            hand_strength_bin = 0;
+      constexpr std::optional<time::RobotTimestamp::duration> timeout = {};
+      constexpr std::optional<int> hand_limit = 1000;
+      const StrengthPotentialResult result =
+        evaluate_strength_potential(private_cards, common_cards, timeout, hand_limit);
+      // Bin the hand by expected hand strength, positve and negative potential
+      // Hand strength bins:
+      //  0 - [0.0, 0.2)
+      //  1 - [0.2, 0.4)
+      //  2 - [0.4, 0.6)
+      //  3 - [0.6, 0.8)
+      //  4 - [0.8, 1.0]
+      int hand_strength_bin = 0;
+      if (result.strength < 0.2) {
+          hand_strength_bin = 0;
         } else if (result.strength < 0.4) {
             hand_strength_bin = 1;
         } else if (result.strength < 0.6) {

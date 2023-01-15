@@ -4,11 +4,13 @@ load("@rules_pkg//pkg:zip.bzl", "pkg_zip")
 
 pkg_zip(
     name="zipped_bot",
+    tags=["manual"],
     srcs=[":pokerbot_zip", "commands.json"],
 )
 
 filegroup(
     name="pokerbot_zip",
+    tags=["manual"],
     srcs=[
         ":pokerbot",
     ],
@@ -39,6 +41,7 @@ py_test(
 py_binary(
     name="pokerbot",
     srcs=["pokerbot.py"],
+    tags=["manual"],
     data = [
       ":hand_evaluator_python.so",
       ":preflop_equities",
