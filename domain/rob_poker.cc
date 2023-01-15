@@ -18,6 +18,7 @@ namespace robot::domain {
 BettingState compute_betting_state(const RobPokerHistory &history) {
     BettingState state = {.is_game_over = false,
                           .showdown_required = false,
+                          .is_final_betting_round = false,
                           .round = 0,
                           .position = 0,
                           .put_in_pot = {0}};
@@ -68,17 +69,20 @@ BettingState compute_betting_state(const RobPokerHistory &history) {
                 is(RaiseAction{}, CallAction{}) || is(RaisePotAction{}, CallAction{});
             const bool is_opening_call = is_raise_call && i == 2;
             const bool is_allin_call = is(AllInAction{}, CallAction{});
+            // This is the last card that was dealt after the previous round that ended
+            // Note that this is incorrect for the first round of betting, but is only relevant
+            // after the fourth betting round (after the river)
+            const int last_card_idx = state.round + 1;
+            const auto &last_card = history.common_cards.at(last_card_idx);
+            const bool last_card_is_black = last_card.value().suit == StandardDeck::Suits::SPADES ||
+                                            last_card.value().suit == StandardDeck::Suits::CLUBS;
+
+            if (state.round >= 3 && last_card_is_black) {
+                state.is_final_betting_round = true;
+            }
+
             if ((is_call_check || is_check_check || is_raise_call) && state.position > 0 &&
                 !is_opening_call) {
-                // This is the last card that was dealt after the previous round that ended
-                // Note that this is incorrect for the first round of betting, but is only relevant
-                // after the fourth betting round (after the river)
-                const int last_card_idx = state.round + 1;
-                const auto &last_card = history.common_cards.at(last_card_idx);
-                const bool last_card_is_black =
-                    last_card.value().suit == StandardDeck::Suits::SPADES ||
-                    last_card.value().suit == StandardDeck::Suits::CLUBS;
-
                 if (state.round >= 3 && last_card_is_black) {
                     state.is_game_over = true;
                     state.showdown_required = true;
@@ -293,10 +297,7 @@ std::optional<int> terminal_value(const RobPokerHistory &history, const RobPoker
     return player == folding_player ? -betting_state.put_in_pot[player]
                                     : betting_state.put_in_pot[opponent];
 }
-//
-// RobPokerPoker::InfoSetId infoset_id_from_history(const RobPokerHistory &hist);
-// RobPokerPoker::InfoSetId infoset_id_from_information(const RobPokerHistory::Card private_card,
-//                                                      const std::vector<RobPokerAction> &actions);
+
 std::string to_string(const RobPokerHistory &hist) {
     std::stringstream out;
     for (const auto player : {RobPokerPlayer::PLAYER1, RobPokerPlayer::PLAYER2}) {

@@ -4,6 +4,7 @@
 
 #include "cxxopts.hpp"
 #include "domain/rob_poker.hh"
+#include "experimental/pokerbots/generate_infoset_id.hh"
 #include "learning/cfr.hh"
 
 namespace robot {
@@ -61,14 +62,35 @@ std::vector<domain::RobPokerAction> action_generator(const domain::RobPokerHisto
 
 int train() {
     const learning::MinRegretTrainConfig<RobPoker> config = {
-        .num_iterations = 100000,
-        .infoset_id_from_hist = [](const RobPoker::History &) { return RobPoker::InfoSetId{}; },
+        .num_iterations = 5000,
+        .infoset_id_from_hist =
+            [](const RobPoker::History &history) { return infoset_id_from_history(history); },
         .action_generator = action_generator,
         .seed = 0,
         .sample_strategy = learning::SampleStrategy::EXTERNAL_SAMPLING,
     };
     train_min_regret_strategy<RobPoker>(config);
     return 0;
+}
+
+uint64_t count_infosets(const domain::RobPokerHistory &history = {}) {
+    const auto maybe_next_player = up_next(history);
+    if (!maybe_next_player.has_value()) {
+        return 1;
+    } else if (maybe_next_player.value() == domain::RobPokerPlayer::CHANCE) {
+        std::mt19937 gen;
+        return count_infosets(play(history, make_in_out(gen)).history);
+    }
+    const auto betting_state = domain::compute_betting_state(history);
+    if (betting_state.position == 0) {
+        return 1;
+    }
+
+    uint64_t num_actions = 0;
+    for (const auto &action : action_generator(history)) {
+        num_actions += count_infosets(play(history, action));
+    }
+    return num_actions;
 }
 
 }  // namespace experimental::pokerbots

@@ -1,8 +1,8 @@
 
 #pragma once
 
+#include <chrono>
 #include <functional>
-#include <iostream>
 #include <iterator>
 #include <numeric>
 #include <optional>
@@ -31,6 +31,13 @@ std::string to_string(const Strategy<T> &strategy) {
     out << "]";
     return out.str();
 }
+
+template <typename T>
+struct InfoSetCounts {
+    IndexedArray<double, typename T::Actions> regret_sum = {0};
+    IndexedArray<double, typename T::Actions> strategy_sum = {0};
+    int iter_count = 0;
+};
 
 template <typename T>
 typename T::Actions sample_strategy(const Strategy<T> &strategy, InOut<std::mt19937> gen) {
@@ -63,6 +70,9 @@ struct MinRegretTrainConfig {
     std::function<std::vector<typename T::Actions>(const typename T::History &)> action_generator;
     int seed;
     SampleStrategy sample_strategy;
+    std::function<bool(const int,
+                       const std::unordered_map<typename T::InfoSetId, InfoSetCounts<T>>)>
+        iteration_callback = [](const auto &, const auto &) { return true; };
 };
 
 template <typename T>
@@ -83,13 +93,6 @@ std::optional<Strategy<T>> MinRegretStrategy<T>::operator()(const typename T::In
     }
     return iter->second;
 }
-
-template <typename T>
-struct InfoSetCounts {
-    IndexedArray<double, typename T::Actions> regret_sum = {0};
-    IndexedArray<double, typename T::Actions> strategy_sum = {0};
-    int iter_count = 0;
-};
 
 template <typename T>
 Strategy<T> strategy_from_counts(const InfoSetCounts<T> &counts) {
@@ -149,8 +152,11 @@ MinRegretStrategy<T> train_min_regret_strategy(const MinRegretTrainConfig<T> &co
         }
         non_chance_players.push_back(player);
     }
-
-    for (int iter = 0; iter < config.num_iterations; iter++) {
+    bool run = true;
+    for (int iter = 0; iter < config.num_iterations && run; iter++) {
+        if (config.iteration_callback) {
+            run = config.iteration_callback(iter, counts_from_infoset_id);
+        }
         for (auto player : non_chance_players) {
             if (config.sample_strategy == SampleStrategy::CHANCE_SAMPLING) {
                 compute_chance_sampled_counterfactual_regret(
@@ -199,6 +205,7 @@ double compute_external_sampled_counterfactual_regret(
     // Get the current strategy for this infoset. We have a non const reference since we
     // may update them further down.
     InfoSetCounts<T> &counts = (*counts_from_infoset_id)[infoset_id_from_history(history)];
+    counts.iter_count++;
     const Strategy<T> maybe_invalid_strategy = strategy_from_counts(counts);
     Strategy<T> valid_strategy = {0.0};
     double normalizer = 0;

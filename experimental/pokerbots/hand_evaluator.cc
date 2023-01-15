@@ -2,6 +2,7 @@
 #include "experimental/pokerbots/hand_evaluator.hh"
 
 #include <iostream>
+#include <limits>
 
 #include "common/time/robot_time.hh"
 #include "domain/deck.hh"
@@ -25,8 +26,9 @@ std::vector<Card> cards_from_string(const std::string &cards_str) {
     return out;
 }
 
-domain::RobPokerHistory create_history_from_known_cards(const std::vector<Card> &hole_cards,
-                                                        const std::vector<Card> &board_cards) {
+template <typename T1, typename T2>
+domain::RobPokerHistory create_history_from_known_cards(const T1 &hole_cards,
+                                                        const T2 &board_cards) {
     constexpr auto PLAYER = domain::RobPokerPlayer::PLAYER1;
     domain::RobPokerHistory current_state;
     for (int i = 0; i < static_cast<int>(hole_cards.size()); i++) {
@@ -62,11 +64,17 @@ domain::StandardDeck deck_from_history(const domain::RobPokerHistory &history,
 ExpectedStrengthResult evaluate_expected_strength(const std::string &hand,
                                                   const std::string &opponent_hand_str,
                                                   const std::string &board_str,
-                                                  const double timeout_s) {
+                                                  const std::optional<double> timeout_s,
+                                                  const std::optional<int> num_hands) {
     const std::vector<omp::CardRange> ranges = {{hand}, {opponent_hand_str}};
     const uint64_t board = omp::CardRange::getCardMask(board_str);
     omp::EquityCalculator calculator;
-    calculator.setTimeLimit(timeout_s);
+    if (timeout_s.has_value()) {
+        calculator.setTimeLimit(timeout_s.value());
+    }
+    if (num_hands.has_value()) {
+        calculator.setHandLimit(num_hands.value());
+    }
     calculator.start(ranges, board);
     calculator.wait();
     const auto results = calculator.getResults();
@@ -76,13 +84,15 @@ ExpectedStrengthResult evaluate_expected_strength(const std::string &hand,
     };
 }
 
-StrengthPotentialResult evaluate_strength_potential(const domain::RobPokerHistory &history,
-                                                    const domain::RobPokerPlayer player,
-                                                    const double timeout_s,
-                                                    InOut<std::mt19937> gen) {
+StrengthPotentialResult evaluate_strength_potential(
+    const domain::RobPokerHistory &history, const domain::RobPokerPlayer player,
+    const std::optional<time::RobotTimestamp::duration> timeout, const std::optional<int> num_hands,
+
+    InOut<std::mt19937> gen) {
     const auto remaining_deck = deck_from_history(history, player);
+    const auto eval_time = timeout.value_or(time::RobotTimestamp::duration::max());
     const time::RobotTimestamp start = time::current_robot_time();
-    const time::RobotTimestamp end_time = start + time::as_duration(timeout_s);
+    const int hand_limit = num_hands.value_or(std::numeric_limits<int>::max());
     int num_evals = 0;
     // counts[b][a] keeps track of results before and after showing
     // b = before, a = after
@@ -92,7 +102,7 @@ StrengthPotentialResult evaluate_strength_potential(const domain::RobPokerHistor
     const auto flat_idx = [](const int a, const int b) { return a * 3 + b; };
 
     const int before_player_rank = domain::evaluate_hand(history, player);
-    while (time::current_robot_time() < end_time) {
+    while (time::current_robot_time() - start < eval_time && num_evals < hand_limit) {
         num_evals++;
         auto sample_future = history;
         auto deck = remaining_deck;
@@ -174,14 +184,29 @@ StrengthPotentialResult evaluate_strength_potential(const domain::RobPokerHistor
     };
 }
 
+StrengthPotentialResult evaluate_strength_potential(
+    const std::array<domain::StandardDeck::Card, 2> &hand,
+    const std::vector<domain::StandardDeck::Card> &board,
+    const std::optional<time::RobotTimestamp::duration> timeout,
+    const std::optional<int> num_hands) {
+    const auto history = create_history_from_known_cards(hand, board);
+    std::mt19937 gen(0);
+    return evaluate_strength_potential(history, domain::RobPokerPlayer::PLAYER1, timeout, num_hands,
+                                       make_in_out(gen));
+}
+
 StrengthPotentialResult evaluate_strength_potential(const std::string &hand_str,
                                                     const std::string &board_str,
-                                                    const double timeout_s) {
+                                                    const std::optional<double> timeout_s,
+                                                    const std::optional<int> num_hands) {
     const auto hole_cards = cards_from_string(hand_str);
     const auto board_cards = cards_from_string(board_str);
     const auto history = create_history_from_known_cards(hole_cards, board_cards);
     std::mt19937 gen(0);
-    return evaluate_strength_potential(history, domain::RobPokerPlayer::PLAYER1, timeout_s,
+    const auto timeout = timeout_s.has_value()
+                             ? std::make_optional(time::as_duration(timeout_s.value()))
+                             : std::nullopt;
+    return evaluate_strength_potential(history, domain::RobPokerPlayer::PLAYER1, timeout, num_hands,
                                        make_in_out(gen));
 }
 }  // namespace robot::experimental::pokerbots
