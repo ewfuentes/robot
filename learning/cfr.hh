@@ -184,7 +184,6 @@ double compute_external_sampled_counterfactual_regret(
         &action_generator,
     InOut<std::mt19937> gen,
     InOut<std::unordered_map<typename T::InfoSetId, InfoSetCounts<T>>> counts_from_infoset_id) {
-  std::cout << history << std::endl;
     const auto maybe_current_player = up_next(history);
     // If this is a leaf node, return the value
     if (!maybe_current_player.has_value()) {
