@@ -90,6 +90,20 @@ def _impl(ctx):
           ]
       ),
       feature(
+          name="valgrind_info",
+          enabled=False,
+          flag_sets = [
+            flag_set(
+              actions = [ACTION_NAMES.cpp_compile],
+              flag_groups = [
+                flag_group(
+                  flags=["-gdwarf-4"],
+                )
+              ]
+            )
+          ]
+      ),
+      feature(
           name="ubsan",
           enabled=False,
           flag_sets = [
