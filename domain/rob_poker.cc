@@ -3,6 +3,7 @@
 
 #include <ios>
 #include <limits>
+#include <span>
 #include <sstream>
 #include <type_traits>
 #include <variant>
@@ -339,56 +340,6 @@ std::string to_string(const RobPokerHistory &hist) {
     return out.str();
 }
 
-const std::vector<std::vector<int>> &n_choose_k(const int n, const int k) {
-    struct PairHash {
-        size_t operator()(const std::tuple<int, int> &key) const {
-            return std::get<0>(key) << 16 | std::get<1>(key);
-        }
-    };
-    static std::unordered_map<std::tuple<int, int>, std::vector<std::vector<int>>, PairHash>
-        combinations_cache;
-    auto iter = combinations_cache.find(std::make_tuple(n, k));
-    if (iter == combinations_cache.end()) {
-        constexpr auto multiply_range = [](const int low, const int high) {
-            uint64_t out = 1;
-            for (int i = low; i <= high; i++) {
-                out *= i;
-            }
-            return out;
-        };
-
-        const std::int64_t num = multiply_range(n - k + 1, n);
-        const std::int64_t den = multiply_range(2, k);
-        const int num_combinations = num / den;
-        std::vector<std::vector<int>> out(num_combinations);
-        std::vector<int> idxs(k);
-        std::iota(idxs.begin(), idxs.end(), 0);
-        for (int i = 0; i < num_combinations; i++) {
-            out[i] = idxs;
-            for (int idx = k - 1; idx >= 0; idx--) {
-                // Distance from the end of the index list. The last element is 1 away
-                const int idx_from_end = k - idx;
-                // The furthest along the cards array this index can be. The last index can go up to
-                // the end, the second to last can go up to the second to last card, etc.
-                const int max_for_curr_idx = n - idx_from_end;
-                if (idxs[idx] < max_for_curr_idx) {
-                    // This is the first index that we could increment, increment it and initialize
-                    // all following indices
-                    idxs[idx]++;
-                    for (int future_idx = idx + 1; future_idx < static_cast<int>(idxs.size());
-                         future_idx++) {
-                        idxs[future_idx] = idxs[future_idx - 1] + 1;
-                    }
-                    break;
-                }
-            }
-        }
-        iter = combinations_cache.insert({std::make_tuple(n, k), out}).first;
-    }
-
-    return iter->second;
-}
-
 int evaluate_hand(const std::array<StandardDeck::Card, 33> &cards, const int num_cards) {
     const thread_local omp::HandEvaluator evaluator;
     auto card_idx_from_card = [](const auto card) {
@@ -408,7 +359,7 @@ int evaluate_hand(const std::array<StandardDeck::Card, 33> &cards, const int num
     // Enumerate all possible 5 or 7 card hands for the current player and keep the max;
     int max_hand_value = std::numeric_limits<int>::lowest();
     int num_evals = 0;
-    for (const auto &idxs : n_choose_k(num_cards, max_hand_size)) {
+    for (const auto &idxs : detail::n_choose_k(num_cards, max_hand_size)) {
         num_evals++;
         // Create the hand
         omp::Hand hand = omp::Hand::empty();
@@ -438,5 +389,48 @@ int evaluate_hand(const RobPokerHistory &history, const RobPokerPlayer player) {
     }
     return evaluate_hand(cards, num_cards);
 }
+
+namespace detail {
+
+std::span<const std::vector<int>> n_choose_k(const int n, const int k) {
+    thread_local std::unordered_map<int, std::vector<std::vector<int>>> combinations_cache;
+    constexpr auto multiply_range = [](const int low, const int high) {
+        uint64_t out = 1;
+        for (int i = low; i <= high; i++) {
+            out *= i;
+        }
+        return out;
+    };
+
+    const std::int64_t num = multiply_range(n - k + 1, n);
+    const std::int64_t den = multiply_range(2, k);
+    const int num_combinations = num / den;
+    std::vector<std::vector<int>> &combos = combinations_cache[k];
+    if (k == 1 && n > static_cast<int>(combos.size())) {
+        for (int i = combos.size(); i < n; i++) {
+            combos.push_back({i});
+        }
+        return std::span<const std::vector<int>>(combos.begin(), n);
+    } else if (n == k && combos.size() == 0) {
+        std::vector<int> idxs(n);
+        std::iota(idxs.begin(), idxs.end(), 0);
+        combos.emplace_back(std::move(idxs));
+    }
+
+    if (static_cast<int>(combos.size()) < num_combinations) {
+        const auto n_min_one_choose_k = n_choose_k(n - 1, k);
+        const auto n_min_one_choose_k_min_one = n_choose_k(n - 1, k - 1);
+        assert(combos.size() == n_min_one_choose_k.size());
+        for (const auto &idxs : n_min_one_choose_k_min_one) {
+            std::vector<int> new_idxs = idxs;
+            new_idxs.push_back(n - 1);
+            combos.emplace_back((std::move(new_idxs)));
+        }
+    }
+
+    return std::span<const std::vector<int>>(combos.begin(), num_combinations);
+}
+
+}  // namespace detail
 
 }  // namespace robot::domain
