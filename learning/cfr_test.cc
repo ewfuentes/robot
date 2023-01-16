@@ -14,7 +14,8 @@ TEST_P(CfrTest, rock_paper_scissors_test) {
     using RPS = domain::RockPaperScissors;
     const std::string INFOSET_ID = "rps";
     // Setup
-    const int external_iter_scale_factor = GetParam() == SampleStrategy::EXTERNAL_SAMPLING ? 10 : 1;
+    const uint64_t external_iter_scale_factor =
+        GetParam() == SampleStrategy::EXTERNAL_SAMPLING ? 10 : 1;
     const MinRegretTrainConfig<RPS> config = {
         .num_iterations = 10000 * external_iter_scale_factor,
         .infoset_id_from_hist = [&INFOSET_ID](const RPS::History &) { return INFOSET_ID; },
@@ -42,7 +43,8 @@ TEST_P(CfrTest, blotto_test) {
     using Blotto = domain::Blotto;
     const std::string INFOSET_ID = "blotto";
     // Setup
-    const int external_iter_scale_factor = GetParam() == SampleStrategy::EXTERNAL_SAMPLING ? 10 : 1;
+    const uint64_t external_iter_scale_factor =
+        GetParam() == SampleStrategy::EXTERNAL_SAMPLING ? 10 : 1;
     const MinRegretTrainConfig<Blotto> config = {
         .num_iterations = 10000 * external_iter_scale_factor,
         .infoset_id_from_hist = [&INFOSET_ID](const Blotto::History &) { return INFOSET_ID; },
@@ -76,7 +78,8 @@ TEST_P(CfrTest, kuhn_poker_test) {
 
     // Setup
     constexpr double TOL = 1e-3;
-    const int external_iter_scale_factor = GetParam() == SampleStrategy::EXTERNAL_SAMPLING ? 10 : 1;
+    const uint64_t external_iter_scale_factor =
+        GetParam() == SampleStrategy::EXTERNAL_SAMPLING ? 10 : 1;
     const MinRegretTrainConfig<KuhnPoker> config = {
         .num_iterations = 100000 * external_iter_scale_factor,
         .infoset_id_from_hist = &domain::infoset_id_from_history,
