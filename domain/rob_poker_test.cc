@@ -25,7 +25,7 @@ auto make_fog_card(const StandardDeck::Card card,
 }
 
 auto make_public_card(const StandardDeck::Card card) {
-  return RobPokerHistory::FogCard(card, [](const auto &){return true;});
+    return RobPokerHistory::FogCard(card, [](const auto &) { return true; });
 }
 
 std::string range_to_string(const auto &range) {

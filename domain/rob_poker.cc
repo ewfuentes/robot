@@ -413,7 +413,7 @@ int evaluate_hand(const std::array<StandardDeck::Card, 33> &cards, const int num
         // Create the hand
         omp::Hand hand = omp::Hand::empty();
         for (const auto &idx : idxs) {
-          hand += omp::Hand(card_idx_from_card(cards[idx]));
+            hand += omp::Hand(card_idx_from_card(cards[idx]));
         }
 
         // Evaluate the hand
