@@ -24,6 +24,7 @@ cc_library(
     "-Wno-deprecated-copy-with-user-provided-copy",
     "-std=c++11",
     "-fPIC",
+    "-msse4.1",
   ],
   visibility = ["//visibility:public"],
   deps = [
