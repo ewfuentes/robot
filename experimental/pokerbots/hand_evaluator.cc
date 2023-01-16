@@ -10,9 +10,6 @@
 #include "omp/CardRange.h"
 #include "omp/EquityCalculator.h"
 
-namespace robot::domain {
-extern std::array<uint64_t, 33> eval_counts;
-}
 namespace robot::experimental::pokerbots {
 using Card = domain::StandardDeck::Card;
 
@@ -96,7 +93,6 @@ StrengthPotentialResult evaluate_strength_potential(
     const time::RobotTimestamp start = time::current_robot_time();
     const int hand_limit = num_hands.value_or(std::numeric_limits<int>::max());
     int num_evals = 0;
-    // std::cout << "*****************************" << std::endl;
 
     // Create a container for all of the cards
     // The first two cards are the hole cards for the player of interest
@@ -122,16 +118,12 @@ StrengthPotentialResult evaluate_strength_potential(
 
     auto pop_back = [&num_cards](const int num_items = 1) mutable { num_cards -= num_items; };
 
-    // std::cout << "Prepopulate player cards: " << num_cards << std::endl;
     populate_hole_cards(player_cards);
-    // std::cout << "Prepopulate board cards: " << num_cards << std::endl;
     for (const auto &fog_card : history.common_cards) {
         if (fog_card.has_value() && fog_card.is_visible_to(player)) {
             push_card(fog_card.value());
         }
     }
-
-    // std::cout << "post populate board cards: " << num_cards << std::endl;
 
     // counts[b][a] keeps track of results before and after showing
     // b = before, a = after
@@ -155,7 +147,6 @@ StrengthPotentialResult evaluate_strength_potential(
         const int before_opponent_rank = domain::evaluate_hand(workspace, num_cards);
         const int before_idx = get_rank_idx(before_player_rank, before_opponent_rank);
 
-        // std::cout << "pre dealing new cards: " << num_cards << std::endl;
         // Deal remaining board
         bool is_done_dealing = false;
         int cards_dealt = 0;
@@ -172,23 +163,14 @@ StrengthPotentialResult evaluate_strength_potential(
                 is_done_dealing = is_last_card_black && at_least_board_five_cards;
             }
         }
-        // std::cout << "cards dealt: " << cards_dealt << " num_cards: " << num_cards<< std::endl;
 
         // Evaluate hands
-        // std::cout << "evaluating after opponent: " << num_cards << std::endl;
-        // std::cout << "evaluating [";
-        // for (int i = 0; i < num_cards; i ++) {
-        //   std::cout << to_string(workspace[i]) << ", ";
-        // }
-        // std::cout << "]" << std::endl;
         const int after_opponent_rank = domain::evaluate_hand(workspace, num_cards);
         populate_hole_cards(player_cards);
-        // std::cout << "evaluating after player: " << num_cards << std::endl;
         const int after_player_rank = domain::evaluate_hand(workspace, num_cards);
         const int after_idx = get_rank_idx(after_player_rank, after_opponent_rank);
         counts[flat_idx(before_idx, after_idx)]++;
         pop_back(cards_dealt);
-        // std::cout << "removing dealt cards: " << num_cards << std::endl << std::endl;;
     }
 
     const auto sum_row = [&](const int row) {

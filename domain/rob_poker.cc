@@ -14,8 +14,6 @@
 #include "omp/HandEvaluator.h"
 
 namespace robot::domain {
-uint64_t evaluate_hand_counts = 0;
-std::array<uint64_t, 33> eval_counts = {0};
 BettingState compute_betting_state(const RobPokerHistory &history) {
     BettingState state = {.is_game_over = false,
                           .showdown_required = false,
@@ -392,9 +390,6 @@ const std::vector<std::vector<int>> &n_choose_k(const int n, const int k) {
 }
 
 int evaluate_hand(const std::array<StandardDeck::Card, 33> &cards, const int num_cards) {
-    evaluate_hand_counts++;
-    eval_counts[num_cards]++;
-
     const thread_local omp::HandEvaluator evaluator;
     auto card_idx_from_card = [](const auto card) {
         const int card_idx = static_cast<int>(card.rank) * 4 + static_cast<int>(card.suit);

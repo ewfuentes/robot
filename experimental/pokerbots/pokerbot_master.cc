@@ -10,11 +10,6 @@
 #include "learning/cfr.hh"
 
 namespace robot {
-namespace domain {
-
-extern uint64_t evaluate_hand_counts;
-extern std::array<uint64_t, 33> eval_counts;
-}
 namespace {
 constexpr std::tuple<domain::RobPokerAction, std::string_view> make_index_item(const auto action) {
     using T = std::decay_t<decltype(action)>;
@@ -44,7 +39,6 @@ struct Range<domain::RobPokerAction> {
 };
 
 namespace experimental::pokerbots {
-extern int strength_potential_counts;
 using RobPoker = domain::RobPoker;
 
 std::vector<domain::RobPokerAction> action_generator(const domain::RobPokerHistory &history) {
@@ -100,12 +94,6 @@ int train() {
     const auto dt = time::current_robot_time() - t_start;
     const auto dt_s = std::chrono::duration<double>(dt).count();
     std::cout << "total time: " << dt_s << std::endl;
-    for (const auto &item : domain::eval_counts) {
-        std::cout << item << ",";
-    }
-    std::cout << std::endl;
-    std::cout << "Strength potential counts: " << strength_potential_counts << std::endl;
-    std::cout << "evaluate hand counts: " << domain::evaluate_hand_counts << std::endl;
     return 0;
 }
 
