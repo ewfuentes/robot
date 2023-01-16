@@ -58,6 +58,7 @@ cc_binary(
     ":generate_infoset_id",
     "//domain:rob_poker",
     "//learning:cfr",
+    "//learning:min_regret_strategy_to_proto",
     "@cxxopts//:cxxopts",
   ]
 )

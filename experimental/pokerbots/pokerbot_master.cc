@@ -1,5 +1,8 @@
 
 #include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <ios>
 #include <string_view>
 #include <variant>
 
@@ -8,6 +11,7 @@
 #include "domain/rob_poker.hh"
 #include "experimental/pokerbots/generate_infoset_id.hh"
 #include "learning/cfr.hh"
+#include "learning/min_regret_strategy_to_proto.hh"
 
 namespace robot {
 namespace {
@@ -62,16 +66,16 @@ std::vector<domain::RobPokerAction> action_generator(const domain::RobPokerHisto
     return out;
 }
 
-int train() {
+int train(const std::filesystem::path &output_directory, const uint64_t num_iterations) {
     const learning::MinRegretTrainConfig<RobPoker> config = {
-        .num_iterations = 10000,
+        .num_iterations = num_iterations,
         .infoset_id_from_hist =
             [](const RobPoker::History &history) { return infoset_id_from_history(history); },
         .action_generator = action_generator,
         .seed = 0,
         .sample_strategy = learning::SampleStrategy::EXTERNAL_SAMPLING,
         .iteration_callback =
-            [prev_t = std::optional<time::RobotTimestamp>{}](
+            [prev_t = std::optional<time::RobotTimestamp>{}, &output_directory](
                 const int iter, const auto &counts_from_infoset_id) mutable {
                 (void)counts_from_infoset_id;
                 constexpr int ITERS_BETWEEN_PRINTS = 1000;
@@ -85,6 +89,17 @@ int train() {
                                   << std::endl;
                     }
                     prev_t = now;
+                }
+
+                constexpr int ITERS_BETWEEN_SAVES = 10000;
+                if (iter % ITERS_BETWEEN_SAVES == 0) {
+                    const auto path =
+                        output_directory / ("pokerbot_checkpoint_" + std::to_string(iter) + ".pb");
+
+                    learning::proto::MinRegretStrategy proto;
+                    pack_into(counts_from_infoset_id, &proto);
+                    std::ofstream out(path, std::ios_base::binary | std::ios_base::trunc);
+                    proto.SerializeToOstream(&out);
                 }
                 return true;
             },
@@ -121,7 +136,27 @@ uint64_t count_infosets(const domain::RobPokerHistory &history = {}) {
 
 int main(int argc, char **argv) {
     cxxopts::Options options("cfr_train", "I wanna be the very best, like no one ever was.");
+    // clang-format off
+    options.add_options()
+      ("output_directory", "Directory where checkpoints should be written to", cxxopts::value<std::string>())
+      ("num_iterations", "Number of iterations", cxxopts::value<uint64_t>())
+      ("help", "Print usage");
+    // clang-format on
     auto args = options.parse(argc, argv);
+    if (args.count("help")) {
+        std::cout << options.help() << std::endl;
+        std::exit(0);
+    }
 
-    return robot::experimental::pokerbots::train();
+    if (args.count("output_directory") == 0) {
+        std::cout << "output_directory is a required option" << std::endl;
+        std::exit(1);
+    }
+    if (args.count("num_iterations") == 0) {
+        std::cout << "num_iterations is a required option" << std::endl;
+        std::exit(1);
+    }
+
+    return robot::experimental::pokerbots::train(args["output_directory"].as<std::string>(),
+                                                 args["num_iterations"].as<uint64_t>());
 }

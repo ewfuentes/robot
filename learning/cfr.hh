@@ -40,6 +40,9 @@ struct InfoSetCounts {
 };
 
 template <typename T>
+using CountsFromInfoSetId = std::unordered_map<typename T::InfoSetId, InfoSetCounts<T>>;
+
+template <typename T>
 typename T::Actions sample_strategy(const Strategy<T> &strategy, InOut<std::mt19937> gen) {
     double rand_value = std::uniform_real_distribution<>()(*gen);
     for (const auto &[action, prob] : strategy) {
@@ -65,14 +68,13 @@ WISE_ENUM_CLASS(SampleStrategy, CHANCE_SAMPLING, EXTERNAL_SAMPLING)
 
 template <typename T>
 struct MinRegretTrainConfig {
-    int num_iterations;
+    uint64_t num_iterations;
     std::function<typename T::InfoSetId(const typename T::History &)> infoset_id_from_hist;
     std::function<std::vector<typename T::Actions>(const typename T::History &)> action_generator;
     int seed;
     SampleStrategy sample_strategy;
-    std::function<bool(const int,
-                       const std::unordered_map<typename T::InfoSetId, InfoSetCounts<T>>)>
-        iteration_callback = [](const auto &, const auto &) { return true; };
+    std::function<bool(const int, const CountsFromInfoSetId<T> &)> iteration_callback =
+        [](const auto &, const auto &) { return true; };
 };
 
 template <typename T>
@@ -117,7 +119,7 @@ Strategy<T> strategy_from_counts(const InfoSetCounts<T> &counts) {
 
 template <typename T>
 std::unordered_map<typename T::InfoSetId, Strategy<T>> compute_average_strategy(
-    const std::unordered_map<typename T::InfoSetId, InfoSetCounts<T>> &counts_from_infoset_id) {
+    const CountsFromInfoSetId<T> &counts_from_infoset_id) {
     std::unordered_map<typename T::InfoSetId, Strategy<T>> out;
     std::transform(counts_from_infoset_id.begin(), counts_from_infoset_id.end(),
                    std::inserter(out, out.begin()),
@@ -140,7 +142,7 @@ std::unordered_map<typename T::InfoSetId, Strategy<T>> compute_average_strategy(
 template <typename T>
 MinRegretStrategy<T> train_min_regret_strategy(const MinRegretTrainConfig<T> &config) {
     std::mt19937 gen(config.seed);
-    std::unordered_map<typename T::InfoSetId, InfoSetCounts<T>> counts_from_infoset_id;
+    CountsFromInfoSetId<T> counts_from_infoset_id;
 
     std::vector<typename T::Players> non_chance_players;
     for (const auto &[player, name] : wise_enum::range<typename T::Players>) {
@@ -153,7 +155,7 @@ MinRegretStrategy<T> train_min_regret_strategy(const MinRegretTrainConfig<T> &co
         non_chance_players.push_back(player);
     }
     bool run = true;
-    for (int iter = 0; iter < config.num_iterations && run; iter++) {
+    for (uint64_t iter = 0; iter <= config.num_iterations && run; iter++) {
         if (config.iteration_callback) {
             run = config.iteration_callback(iter, counts_from_infoset_id);
         }
@@ -182,8 +184,7 @@ double compute_external_sampled_counterfactual_regret(
         &infoset_id_from_history,
     const std::function<std::vector<typename T::Actions>(const typename T::History &)>
         &action_generator,
-    InOut<std::mt19937> gen,
-    InOut<std::unordered_map<typename T::InfoSetId, InfoSetCounts<T>>> counts_from_infoset_id) {
+    InOut<std::mt19937> gen, InOut<CountsFromInfoSetId<T>> counts_from_infoset_id) {
     const auto maybe_current_player = up_next(history);
     // If this is a leaf node, return the value
     if (!maybe_current_player.has_value()) {
@@ -262,8 +263,7 @@ double compute_chance_sampled_counterfactual_regret(
         &infoset_id_from_history,
     const std::function<std::vector<typename T::Actions>(const typename T::History &)>
         &action_generator,
-    InOut<std::mt19937> gen,
-    InOut<std::unordered_map<typename T::InfoSetId, InfoSetCounts<T>>> counts_from_infoset_id) {
+    InOut<std::mt19937> gen, InOut<CountsFromInfoSetId<T>> counts_from_infoset_id) {
     // If this is a terminal state, return terminal_value
     const auto maybe_current_player = up_next(history);
     if (!maybe_current_player.has_value()) {

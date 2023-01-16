@@ -1,0 +1,19 @@
+
+syntax = "proto3";
+
+package robot.learning.proto;
+
+message InfoSetCounts {
+  oneof id_oneof {
+    string id_str = 1;
+    uint64 id_num = 2;
+  }
+  repeated double regret_sum = 3;
+  repeated double strategy_sum = 4;
+  int32 iter_count = 5;
+}
+
+message MinRegretStrategy {
+  repeated InfoSetCounts infoset_counts = 1;
+  repeated string actions = 2;
+}
