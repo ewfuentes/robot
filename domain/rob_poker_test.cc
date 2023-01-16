@@ -24,6 +24,10 @@ auto make_fog_card(const StandardDeck::Card card,
     return RobPokerHistory::FogCard(card, make_private_info(owner));
 }
 
+auto make_public_card(const StandardDeck::Card card) {
+    return RobPokerHistory::FogCard(card, [](const auto &) { return true; });
+}
+
 std::string range_to_string(const auto &range) {
     std::stringstream out;
     out << (range.empty() ? "none" : "");
@@ -363,11 +367,11 @@ TEST_P(RobPokerTerminalValueNoRunTest, test_terminal_value) {
 
         .common_cards =
             {
-                make_fog_card(SCard{.rank = Ranks::_2, .suit = Suits::DIAMONDS}),
-                make_fog_card(SCard{.rank = Ranks::_3, .suit = Suits::DIAMONDS}),
-                make_fog_card(SCard{.rank = Ranks::_4, .suit = Suits::DIAMONDS}),
-                make_fog_card(SCard{.rank = Ranks::_5, .suit = Suits::DIAMONDS}),
-                make_fog_card(SCard{.rank = Ranks::_7, .suit = Suits::SPADES}),
+                make_public_card(SCard{.rank = Ranks::_2, .suit = Suits::DIAMONDS}),
+                make_public_card(SCard{.rank = Ranks::_3, .suit = Suits::DIAMONDS}),
+                make_public_card(SCard{.rank = Ranks::_4, .suit = Suits::DIAMONDS}),
+                make_public_card(SCard{.rank = Ranks::_5, .suit = Suits::DIAMONDS}),
+                make_public_card(SCard{.rank = Ranks::_7, .suit = Suits::SPADES}),
             },
         .actions = actions,
     };
@@ -428,13 +432,13 @@ TEST_P(RobPokerTerminalValueWithRunTest, test_terminal_value) {
 
         .common_cards =
             {
-                make_fog_card(SCard{.rank = Ranks::_2, .suit = Suits::DIAMONDS}),
-                make_fog_card(SCard{.rank = Ranks::_3, .suit = Suits::DIAMONDS}),
-                make_fog_card(SCard{.rank = Ranks::_4, .suit = Suits::DIAMONDS}),
-                make_fog_card(SCard{.rank = Ranks::_5, .suit = Suits::DIAMONDS}),
-                make_fog_card(SCard{.rank = Ranks::_6, .suit = Suits::HEARTS}),
-                make_fog_card(SCard{.rank = Ranks::_7, .suit = Suits::DIAMONDS}),
-                make_fog_card(SCard{.rank = Ranks::_8, .suit = Suits::CLUBS}),
+                make_public_card(SCard{.rank = Ranks::_2, .suit = Suits::DIAMONDS}),
+                make_public_card(SCard{.rank = Ranks::_3, .suit = Suits::DIAMONDS}),
+                make_public_card(SCard{.rank = Ranks::_4, .suit = Suits::DIAMONDS}),
+                make_public_card(SCard{.rank = Ranks::_5, .suit = Suits::DIAMONDS}),
+                make_public_card(SCard{.rank = Ranks::_6, .suit = Suits::HEARTS}),
+                make_public_card(SCard{.rank = Ranks::_7, .suit = Suits::DIAMONDS}),
+                make_public_card(SCard{.rank = Ranks::_8, .suit = Suits::CLUBS}),
             },
         .actions = actions,
     };

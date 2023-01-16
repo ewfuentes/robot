@@ -2,7 +2,6 @@
 #include "domain/rob_poker.hh"
 
 #include <ios>
-#include <iostream>
 #include <limits>
 #include <sstream>
 #include <type_traits>
@@ -340,56 +339,104 @@ std::string to_string(const RobPokerHistory &hist) {
     return out.str();
 }
 
-int evaluate_hand(const RobPokerHistory &history, const RobPokerPlayer player) {
-    const auto common_card_end_iter =
-        std::find_if_not(history.common_cards.begin(), history.common_cards.end(),
-                         [](const auto &card) { return card.has_value(); });
-    const int common_card_end_idx =
-        std::distance(history.common_cards.begin(), common_card_end_iter);
-    constexpr int MAX_HAND_SIZE = 5;
-    // Enumerate all possible 5 card hands for the current player and keep the max;
-    int max_hand_value = std::numeric_limits<int>::lowest();
-    std::array<int, MAX_HAND_SIZE> idxs = {-2, -1, 0, 1, 2};
-    bool done = false;
+const std::vector<std::vector<int>> &n_choose_k(const int n, const int k) {
+    struct PairHash {
+        size_t operator()(const std::tuple<int, int> &key) const {
+            return std::get<0>(key) << 16 | std::get<1>(key);
+        }
+    };
+    static std::unordered_map<std::tuple<int, int>, std::vector<std::vector<int>>, PairHash>
+        combinations_cache;
+    auto iter = combinations_cache.find(std::make_tuple(n, k));
+    if (iter == combinations_cache.end()) {
+        constexpr auto multiply_range = [](const int low, const int high) {
+            uint64_t out = 1;
+            for (int i = low; i <= high; i++) {
+                out *= i;
+            }
+            return out;
+        };
+
+        const std::int64_t num = multiply_range(n - k + 1, n);
+        const std::int64_t den = multiply_range(2, k);
+        const int num_combinations = num / den;
+        std::vector<std::vector<int>> out(num_combinations);
+        std::vector<int> idxs(k);
+        std::iota(idxs.begin(), idxs.end(), 0);
+        for (int i = 0; i < num_combinations; i++) {
+            out[i] = idxs;
+            for (int idx = k - 1; idx >= 0; idx--) {
+                // Distance from the end of the index list. The last element is 1 away
+                const int idx_from_end = k - idx;
+                // The furthest along the cards array this index can be. The last index can go up to
+                // the end, the second to last can go up to the second to last card, etc.
+                const int max_for_curr_idx = n - idx_from_end;
+                if (idxs[idx] < max_for_curr_idx) {
+                    // This is the first index that we could increment, increment it and initialize
+                    // all following indices
+                    idxs[idx]++;
+                    for (int future_idx = idx + 1; future_idx < static_cast<int>(idxs.size());
+                         future_idx++) {
+                        idxs[future_idx] = idxs[future_idx - 1] + 1;
+                    }
+                    break;
+                }
+            }
+        }
+        iter = combinations_cache.insert({std::make_tuple(n, k), out}).first;
+    }
+
+    return iter->second;
+}
+
+int evaluate_hand(const std::array<StandardDeck::Card, 33> &cards, const int num_cards) {
+    const thread_local omp::HandEvaluator evaluator;
     auto card_idx_from_card = [](const auto card) {
         const int card_idx = static_cast<int>(card.rank) * 4 + static_cast<int>(card.suit);
         return card_idx;
     };
-    const omp::HandEvaluator evaluator;
-    while (!done) {
+
+    if (num_cards < 8) {
+        omp::Hand hand = omp::Hand::empty();
+        for (int i = 0; i < num_cards; i++) {
+            hand += omp::Hand(card_idx_from_card(cards[i]));
+        }
+        return evaluator.evaluate(hand);
+    }
+
+    const int max_hand_size = num_cards < 12 ? 7 : 5;
+    // Enumerate all possible 5 or 7 card hands for the current player and keep the max;
+    int max_hand_value = std::numeric_limits<int>::lowest();
+    int num_evals = 0;
+    for (const auto &idxs : n_choose_k(num_cards, max_hand_size)) {
+        num_evals++;
         // Create the hand
         omp::Hand hand = omp::Hand::empty();
-        for (const auto idx : idxs) {
-            if (idx < 0) {
-                hand += omp::Hand(
-                    card_idx_from_card(history.hole_cards[player].at(std::abs(idx) - 1).value()));
-            } else {
-                hand += omp::Hand(card_idx_from_card(history.common_cards.at(idx).value()));
-            }
+        for (const auto &idx : idxs) {
+            hand += omp::Hand(card_idx_from_card(cards[idx]));
         }
 
         // Evaluate the hand
         max_hand_value = std::max(max_hand_value, static_cast<int>(evaluator.evaluate(hand)));
-
-        // Try to get the next indices
-        bool did_update = false;
-        for (int idx = 4; idx >= 0; idx--) {
-            const int idx_from_end = idxs.size() - idx;
-            const int max_for_curr_idx = common_card_end_idx - idx_from_end;
-            if (idxs[idx] < max_for_curr_idx) {
-                idxs[idx]++;
-                for (int future_idx = idx + 1; future_idx < static_cast<int>(idxs.size());
-                     future_idx++) {
-                    idxs[future_idx] = idxs[future_idx - 1] + 1;
-                }
-                did_update = true;
-                break;
-            }
-        }
-        // If we can't, we're done
-        done = !did_update;
     }
+
     return max_hand_value;
+}
+
+int evaluate_hand(const RobPokerHistory &history, const RobPokerPlayer player) {
+    int num_cards = 0;
+    std::array<StandardDeck::Card, 33> cards{};
+    for (const auto &fog_card : history.hole_cards[player]) {
+        cards[num_cards++] = fog_card.value();
+    }
+    for (const auto &fog_card : history.common_cards) {
+        if (fog_card.has_value() && fog_card.is_visible_to(player)) {
+            cards[num_cards++] = fog_card.value();
+        } else {
+            break;
+        }
+    }
+    return evaluate_hand(cards, num_cards);
 }
 
 }  // namespace robot::domain

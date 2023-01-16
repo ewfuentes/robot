@@ -37,7 +37,7 @@ domain::RobPokerHistory create_history_from_known_cards(const T1 &hole_cards,
     }
     for (int i = 0; i < static_cast<int>(board_cards.size()); i++) {
         current_state.common_cards[i] =
-            domain::RobPokerHistory::FogCard(board_cards[i], make_private_info(PLAYER));
+            domain::RobPokerHistory::FogCard(board_cards[i], [](const auto) { return true; });
     }
 
     return current_state;
@@ -87,13 +87,44 @@ ExpectedStrengthResult evaluate_expected_strength(const std::string &hand,
 StrengthPotentialResult evaluate_strength_potential(
     const domain::RobPokerHistory &history, const domain::RobPokerPlayer player,
     const std::optional<time::RobotTimestamp::duration> timeout, const std::optional<int> num_hands,
-
     InOut<std::mt19937> gen) {
     const auto remaining_deck = deck_from_history(history, player);
     const auto eval_time = timeout.value_or(time::RobotTimestamp::duration::max());
     const time::RobotTimestamp start = time::current_robot_time();
     const int hand_limit = num_hands.value_or(std::numeric_limits<int>::max());
     int num_evals = 0;
+
+    // Create a container for all of the cards
+    // The first two cards are the hole cards for the player of interest
+    // The remaining cards are the board cards
+    int num_cards = 0;
+    std::array<domain::StandardDeck::Card, 33> workspace;
+    const std::array<domain::StandardDeck::Card, 2> player_cards = {
+        history.hole_cards[player][0].value(),
+        history.hole_cards[player][1].value(),
+    };
+
+    auto populate_hole_cards = [&num_cards, &workspace](const auto &hole_cards) mutable {
+        workspace[0] = hole_cards[0];
+        workspace[1] = hole_cards[1];
+        if (num_cards < 2) {
+            num_cards = 2;
+        }
+    };
+
+    auto push_card = [&num_cards, &workspace](const auto &card) mutable {
+        workspace[num_cards++] = card;
+    };
+
+    auto pop_back = [&num_cards](const int num_items = 1) mutable { num_cards -= num_items; };
+
+    populate_hole_cards(player_cards);
+    for (const auto &fog_card : history.common_cards) {
+        if (fog_card.has_value() && fog_card.is_visible_to(player)) {
+            push_card(fog_card.value());
+        }
+    }
+
     // counts[b][a] keeps track of results before and after showing
     // b = before, a = after
     // 0 = behind, 1 = tied, 2 = ahead
@@ -101,54 +132,45 @@ StrengthPotentialResult evaluate_strength_potential(
     const auto get_rank_idx = [](const int a, const int b) { return a == b ? 0 : (a < b ? 0 : 2); };
     const auto flat_idx = [](const int a, const int b) { return a * 3 + b; };
 
-    const int before_player_rank = domain::evaluate_hand(history, player);
+    const int before_player_rank = domain::evaluate_hand(workspace, num_cards);
     while (time::current_robot_time() - start < eval_time && num_evals < hand_limit) {
         num_evals++;
-        auto sample_future = history;
         auto deck = remaining_deck;
         deck.shuffle(gen);
 
         // Deal two cards to the second player
-        for (auto &hole_card : sample_future.hole_cards[domain::RobPokerPlayer::PLAYER2]) {
-            hole_card = domain::RobPokerHistory::FogCard(
-                deck.deal_card().value(), make_private_info(domain::RobPokerPlayer::PLAYER2));
-        }
+        const std::array<domain::StandardDeck::Card, 2> opponent_cards = {deck.deal_card().value(),
+                                                                          deck.deal_card().value()};
 
         // Evaluate hands
-        const int before_opponent_rank =
-            domain::evaluate_hand(sample_future, domain::RobPokerPlayer::PLAYER2);
+        populate_hole_cards(opponent_cards);
+        const int before_opponent_rank = domain::evaluate_hand(workspace, num_cards);
         const int before_idx = get_rank_idx(before_player_rank, before_opponent_rank);
 
         // Deal remaining board
         bool is_done_dealing = false;
-        for (int i = 0; i < static_cast<int>(sample_future.common_cards.size()); i++) {
+        int cards_dealt = 0;
+        for (int i = num_cards; i < static_cast<int>(workspace.size()); i++) {
             if (!is_done_dealing) {
-                if (!sample_future.common_cards[i].has_value()) {
-                    sample_future.common_cards[i] = domain::RobPokerHistory::FogCard(
-                        deck.deal_card().value(),
-                        make_private_info(domain::RobPokerPlayer::CHANCE));
-                }
-
+                cards_dealt++;
+                push_card(deck.deal_card().value());
                 // A deal is complete if at least 5 cards have been dealt and the last card isn't
                 // red
-                const bool is_last_card_black = sample_future.common_cards[i].value().suit ==
-                                                    domain::StandardDeck::Suits::CLUBS ||
-                                                sample_future.common_cards[i].value().suit ==
-                                                    domain::StandardDeck::Suits::SPADES;
-                const bool at_least_five_cards = i >= 4;
-                is_done_dealing = is_last_card_black && at_least_five_cards;
-            } else {
-                sample_future.common_cards[i] = {};
+                const bool is_last_card_black =
+                    workspace[num_cards - 1].suit == domain::StandardDeck::Suits::CLUBS ||
+                    workspace[num_cards - 1].suit == domain::StandardDeck::Suits::SPADES;
+                const bool at_least_board_five_cards = num_cards >= 7;
+                is_done_dealing = is_last_card_black && at_least_board_five_cards;
             }
         }
 
         // Evaluate hands
-        const int after_player_rank =
-            domain::evaluate_hand(sample_future, domain::RobPokerPlayer::PLAYER1);
-        const int after_opponent_rank =
-            domain::evaluate_hand(sample_future, domain::RobPokerPlayer::PLAYER2);
+        const int after_opponent_rank = domain::evaluate_hand(workspace, num_cards);
+        populate_hole_cards(player_cards);
+        const int after_player_rank = domain::evaluate_hand(workspace, num_cards);
         const int after_idx = get_rank_idx(after_player_rank, after_opponent_rank);
         counts[flat_idx(before_idx, after_idx)]++;
+        pop_back(cards_dealt);
     }
 
     const auto sum_row = [&](const int row) {

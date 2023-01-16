@@ -1,7 +1,9 @@
 
+#include <chrono>
 #include <string_view>
 #include <variant>
 
+#include "common/time/robot_time.hh"
 #include "cxxopts.hpp"
 #include "domain/rob_poker.hh"
 #include "experimental/pokerbots/generate_infoset_id.hh"
@@ -62,14 +64,36 @@ std::vector<domain::RobPokerAction> action_generator(const domain::RobPokerHisto
 
 int train() {
     const learning::MinRegretTrainConfig<RobPoker> config = {
-        .num_iterations = 5000,
+        .num_iterations = 10000,
         .infoset_id_from_hist =
             [](const RobPoker::History &history) { return infoset_id_from_history(history); },
         .action_generator = action_generator,
         .seed = 0,
         .sample_strategy = learning::SampleStrategy::EXTERNAL_SAMPLING,
+        .iteration_callback =
+            [prev_t = std::optional<time::RobotTimestamp>{}](
+                const int iter, const auto &counts_from_infoset_id) mutable {
+                (void)counts_from_infoset_id;
+                constexpr int ITERS_BETWEEN_PRINTS = 1000;
+                if (iter % ITERS_BETWEEN_PRINTS == 0) {
+                    const auto now = time::current_robot_time();
+                    if (prev_t.has_value()) {
+                        const auto dt = now - prev_t.value();
+                        const auto dt_s = std::chrono::duration<double>(dt).count();
+                        std::cout << iter << " dt: " << dt_s
+                                  << " sec samples/sec:" << ITERS_BETWEEN_PRINTS / dt_s
+                                  << std::endl;
+                    }
+                    prev_t = now;
+                }
+                return true;
+            },
     };
+    const auto t_start = time::current_robot_time();
     train_min_regret_strategy<RobPoker>(config);
+    const auto dt = time::current_robot_time() - t_start;
+    const auto dt_s = std::chrono::duration<double>(dt).count();
+    std::cout << "total time: " << dt_s << std::endl;
     return 0;
 }
 
@@ -92,7 +116,6 @@ uint64_t count_infosets(const domain::RobPokerHistory &history = {}) {
     }
     return num_actions;
 }
-
 }  // namespace experimental::pokerbots
 }  // namespace robot
 

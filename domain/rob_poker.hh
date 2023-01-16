@@ -93,5 +93,6 @@ std::string to_string(const RobPokerHistory &hist);
 std::string to_string(const RobPokerAction &hist);
 
 int evaluate_hand(const RobPokerHistory &history, const RobPokerPlayer player);
+int evaluate_hand(const std::array<StandardDeck::Card, 33> &cards, const int num_cards);
 BettingState compute_betting_state(const RobPokerHistory &history);
 }  // namespace robot::domain
