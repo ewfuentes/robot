@@ -116,12 +116,6 @@ uint64_t count_infosets(const domain::RobPokerHistory &history = {}) {
     }
     return num_actions;
 }
-
-
-  // Compile time combinations?
-  // multicore
-  // GPU?
-
 }  // namespace experimental::pokerbots
 }  // namespace robot
 
