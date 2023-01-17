@@ -9,8 +9,6 @@
 #include "experimental/pokerbots/hand_evaluator.hh"
 
 namespace robot::experimental::pokerbots {
-uint64_t low_counts = 0;
-uint64_t high_counts = 0;
 domain::RobPoker::InfoSetId infoset_id_from_history(const domain::RobPokerHistory &history) {
     const auto player = up_next(history).value();
     const auto betting_state = compute_betting_state(history);
@@ -58,7 +56,6 @@ domain::RobPoker::InfoSetId infoset_id_from_information(
     out = (out << 8) | betting_round;
 
     if (betting_state.round == 0) {
-        low_counts++;
         // Map the hole cards into a bucket
         // bits 16 - 31: rank bit mask
         out = (out << 16);
@@ -94,7 +91,6 @@ domain::RobPoker::InfoSetId infoset_id_from_information(
             out |= (is_higher_red ? 5 : 4);
         }
     } else {
-        high_counts++;
         constexpr std::optional<time::RobotTimestamp::duration> timeout = {};
         constexpr std::optional<int> hand_limit = 1000;
         const StrengthPotentialResult result =
@@ -141,9 +137,8 @@ domain::RobPoker::InfoSetId infoset_id_from_information(
             positive_potential_bin = 2;
         }
 
-        // out = (out<<32) | (hand_strength_bin << 8) | (negative_potential_bin << 4) |
-        // (positive_potential_bin);
-        out |= (hand_strength_bin << 8) | (negative_potential_bin << 4) | (positive_potential_bin);
+        out = (out << 32) | (hand_strength_bin << 8) | (negative_potential_bin << 4) |
+              (positive_potential_bin);
         //  5 * 3 * 3 bins = 45 bins
     }
     return out;
