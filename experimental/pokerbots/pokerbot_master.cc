@@ -127,7 +127,7 @@ int train(const std::filesystem::path &output_directory, const uint64_t num_iter
     std::cout << "]" << std::endl;
     std::cout << "evaluate_hand time [";
     for (const auto &item : domain::eval_time) {
-      std::cout << std::chrono::duration<double>(item) << ", ";
+        std::cout << std::chrono::duration<double>(item) << ", ";
     }
     std::cout << "]" << std::endl;
     std::cout << "evaluate_strength_potential [";
