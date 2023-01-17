@@ -141,8 +141,10 @@ domain::RobPoker::InfoSetId infoset_id_from_information(
             positive_potential_bin = 2;
         }
 
+        // out = (out<<32) | (hand_strength_bin << 8) | (negative_potential_bin << 4) |
+        // (positive_potential_bin);
         out |= (hand_strength_bin << 8) | (negative_potential_bin << 4) | (positive_potential_bin);
-        // 5 * 3 * 3 bins = 45 bins
+        //  5 * 3 * 3 bins = 45 bins
     }
     return out;
 }
