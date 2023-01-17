@@ -44,12 +44,20 @@ py_binary(
     tags=["manual"],
     data = [
       ":hand_evaluator_python.so",
-      "pokerbot_checkpoint_7100000.pb",
+      "pokerbot_checkpoint_10000.pb",
     ],
     deps=[
         "@mit_pokerbots//:framework",
         "//learning:min_regret_strategy_proto_py",
     ],
+)
+
+py_test(
+    name = "pokerbot_test",
+    srcs = ["pokerbot_test.py"],
+    deps = [
+      ":pokerbot",
+    ]
 )
 
 cc_binary(

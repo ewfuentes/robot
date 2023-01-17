@@ -83,7 +83,7 @@ domain::RobPoker::InfoSetId infoset_id_from_information(
         if (is_suit_equal) {
             // Suited black or red
             out |= (is_higher_red ? 1 : 0);
-        } else if (is_higher_red && is_lower_red) {
+        } else if (is_higher_red == is_lower_red) {
             // off suit, both black or both red
             out |= (is_higher_red ? 3 : 2);
         } else {
