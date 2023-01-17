@@ -29,7 +29,8 @@ pybind_extension(
   copts = ["-fPIC"],
   deps = [
   ":hand_evaluator",
-  ]
+  ],
+  visibility=["//visibility:public"],
 )
 
 py_test(
