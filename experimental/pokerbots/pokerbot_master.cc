@@ -49,6 +49,8 @@ struct Range<domain::RobPokerAction> {
 
 namespace experimental::pokerbots {
 using RobPoker = domain::RobPoker;
+extern uint64_t low_counts;
+extern uint64_t high_counts;
 
 std::vector<domain::RobPokerAction> action_generator(const domain::RobPokerHistory &history) {
     const domain::BettingState betting_state = domain::compute_betting_state(history);
