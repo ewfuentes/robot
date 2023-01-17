@@ -71,8 +71,6 @@ std::vector<domain::RobPokerAction> action_generator(const domain::RobPokerHisto
     return out;
 }
 
-extern std::array<uint64_t, 33> eval_strength_time;
-
 int train(const std::filesystem::path &output_directory, const uint64_t num_iterations) {
     const learning::MinRegretTrainConfig<RobPoker> config = {
         .num_iterations = num_iterations,
