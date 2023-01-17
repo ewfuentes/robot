@@ -44,10 +44,11 @@ py_binary(
     tags=["manual"],
     data = [
       ":hand_evaluator_python.so",
-      ":preflop_equities",
+      "pokerbot_checkpoint_7100000.pb",
     ],
     deps=[
         "@mit_pokerbots//:framework",
+        "//learning:min_regret_strategy_proto_py",
     ],
 )
 

@@ -20,6 +20,7 @@ from python_skeleton.skeleton.actions import (
 
 from python_skeleton.skeleton import runner
 import experimental.pokerbots.hand_evaluator_python as hep
+import learning.min_regret_strategy_pb2
 import random
 
 import os
@@ -60,8 +61,9 @@ class Pokerbot(bot.Bot):
 
     def __init__(self):
         """Init."""
-        with open("experimental/pokerbots/preflop_equities.p", "rb") as file_in:
-            self._preflop_equities = pickle.load(file_in)
+        with open('experimental/pokerbots/pokerbot_checkpoint_7100000.pb', 'rb') as file_in:
+            self._strategy = learning.min_regret_strategy_pb2.MinRegretStrategy()
+            self._strategy.ParseFromString(file_in.read())
 
     def handle_new_round(
         self, game_state: GameState, round_state: RoundState, active
@@ -70,11 +72,7 @@ class Pokerbot(bot.Bot):
         print(
             f"******************* New Round {game_state.round_num} Player: {active} Clock Remaning: {game_state.game_clock}"
         )
-        self.preflop_equity = None
-        # print("game_state:", game_state)
-        # print("round_state:", round_state)
-        # print("active:", active)
-        # pass
+        self._prev_state = None
 
     def handle_round_over(
         self, game_state: GameState, terminal_state: TerminalState, active
@@ -131,43 +129,10 @@ class Pokerbot(bot.Bot):
 
         pot_total = my_contribution + opp_contribution
 
-        if street < 3:
-            raise_amount = int(
-                my_pip + continue_cost + 0.4 * (pot_total + continue_cost)
-            )
-        else:
-            raise_amount = int(
-                my_pip + continue_cost + 0.75 * (pot_total + continue_cost)
-            )
+        # Compute the infoset id
 
-        raise_amount = max([min_raise, raise_amount])
-        raise_cost = raise_amount - my_pip
 
-        if RaiseAction in legal_actions and (raise_cost <= my_stack):
-            temp_action = RaiseAction(raise_amount)
-        elif CallAction in legal_actions and (continue_cost <= my_stack):
-            temp_action = CallAction()
-        elif CheckAction in legal_actions:
-            temp_action = CheckAction()
-        else:
-            temp_action = FoldAction()
-
-        strength = self.calc_strength(my_cards, board_cards, street)
-
-        if continue_cost > 0:
-            pot_odds = continue_cost / (pot_total + continue_cost)
-            if strength > pot_odds:
-                if random.random() < strength:
-                    my_action = temp_action
-                else:
-                    my_action = CallAction()
-            else:
-                my_action = FoldAction()
-        else:
-            if random.random() < strength:
-                my_action = temp_action
-            else:
-                my_action = CheckAction()
+        self._prev_state = round_state
         return my_action
 
 
