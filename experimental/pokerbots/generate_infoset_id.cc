@@ -83,7 +83,7 @@ domain::RobPoker::InfoSetId infoset_id_from_information(
         if (is_suit_equal) {
             // Suited black or red
             out |= (is_higher_red ? 1 : 0);
-        } else if (is_higher_red && is_lower_red) {
+        } else if (is_higher_red == is_lower_red) {
             // off suit, both black or both red
             out |= (is_higher_red ? 3 : 2);
         } else {
@@ -137,8 +137,9 @@ domain::RobPoker::InfoSetId infoset_id_from_information(
             positive_potential_bin = 2;
         }
 
-        out |= (hand_strength_bin << 8) | (negative_potential_bin << 4) | (positive_potential_bin);
-        // 5 * 3 * 3 bins = 45 bins
+        out = (out << 32) | (hand_strength_bin << 8) | (negative_potential_bin << 4) |
+              (positive_potential_bin);
+        //  5 * 3 * 3 bins = 45 bins
     }
     return out;
 }

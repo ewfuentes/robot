@@ -1,5 +1,6 @@
 
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <ios>
@@ -14,6 +15,10 @@
 #include "learning/min_regret_strategy_to_proto.hh"
 
 namespace robot {
+namespace domain {
+extern std::array<uint64_t, 33> eval_counts;
+extern std::array<time::RobotTimestamp::duration, 33> eval_time;
+}  // namespace domain
 namespace {
 constexpr std::tuple<domain::RobPokerAction, std::string_view> make_index_item(const auto action) {
     using T = std::decay_t<decltype(action)>;
@@ -109,6 +114,16 @@ int train(const std::filesystem::path &output_directory, const uint64_t num_iter
     const auto dt = time::current_robot_time() - t_start;
     const auto dt_s = std::chrono::duration<double>(dt).count();
     std::cout << "total time: " << dt_s << std::endl;
+    std::cout << "evaluate_hand [";
+    for (const auto &item : domain::eval_counts) {
+        std::cout << item << ", ";
+    }
+    std::cout << "]" << std::endl;
+    std::cout << "evaluate_hand time [";
+    for (const auto &item : domain::eval_time) {
+        std::cout << std::chrono::duration<double>(item).count() << ", ";
+    }
+    std::cout << "]" << std::endl;
     return 0;
 }
 

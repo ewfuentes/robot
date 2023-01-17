@@ -112,6 +112,7 @@ cc_library(
     "//common:indexed_array",
     "@ompeval//:ompeval_lib",
     "@wise_enum//:wise_enum",
+    "//common/time:robot_time",
   ]
 )
 

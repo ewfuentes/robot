@@ -9,6 +9,7 @@
 #include <variant>
 
 #include "common/indexed_array.hh"
+#include "common/time/robot_time.hh"
 #include "domain/deck.hh"
 #include "domain/fog.hh"
 #include "omp/Hand.h"
@@ -340,8 +341,13 @@ std::string to_string(const RobPokerHistory &hist) {
     return out.str();
 }
 
+std::array<uint64_t, 33> eval_counts = {0};
+std::array<time::RobotTimestamp::duration, 33> eval_time = {};
 int evaluate_hand(const std::array<StandardDeck::Card, 33> &cards, const int num_cards) {
+    eval_counts[num_cards]++;
     const thread_local omp::HandEvaluator evaluator;
+    const auto start = time::current_robot_time();
+
     auto card_idx_from_card = [](const auto card) {
         const int card_idx = static_cast<int>(card.rank) * 4 + static_cast<int>(card.suit);
         return card_idx;
@@ -370,6 +376,8 @@ int evaluate_hand(const std::array<StandardDeck::Card, 33> &cards, const int num
         // Evaluate the hand
         max_hand_value = std::max(max_hand_value, static_cast<int>(evaluator.evaluate(hand)));
     }
+    const auto end = time::current_robot_time();
+    eval_time[num_cards] += end - start;
 
     return max_hand_value;
 }
