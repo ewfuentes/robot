@@ -71,7 +71,6 @@ std::vector<domain::RobPokerAction> action_generator(const domain::RobPokerHisto
     return out;
 }
 
-extern std::array<uint64_t, 33> eval_strength_counts;
 extern std::array<uint64_t, 33> eval_strength_time;
 
 int train(const std::filesystem::path &output_directory, const uint64_t num_iterations) {
@@ -125,11 +124,6 @@ int train(const std::filesystem::path &output_directory, const uint64_t num_iter
     std::cout << "evaluate_hand time [";
     for (const auto &item : domain::eval_time) {
         std::cout << std::chrono::duration<double>(item).count() << ", ";
-    }
-    std::cout << "]" << std::endl;
-    std::cout << "evaluate_strength_potential [";
-    for (const auto &item : eval_strength_counts) {
-        std::cout << item << ", ";
     }
     std::cout << "]" << std::endl;
     return 0;
