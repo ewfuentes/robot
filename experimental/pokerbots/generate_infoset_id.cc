@@ -96,7 +96,7 @@ domain::RobPoker::InfoSetId infoset_id_from_information(
     } else {
         high_counts++;
         constexpr std::optional<time::RobotTimestamp::duration> timeout = {};
-        constexpr std::optional<int> hand_limit = 1000;
+        constexpr std::optional<int> hand_limit = 250;
         const StrengthPotentialResult result =
             evaluate_strength_potential(private_cards, common_cards, timeout, hand_limit);
         // Bin the hand by expected hand strength, positve and negative potential

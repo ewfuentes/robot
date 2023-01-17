@@ -158,11 +158,14 @@ std::optional<RobPokerPlayer> up_next(const RobPokerHistory &history) {
                           : (is_even_position ? P::PLAYER2 : P::PLAYER1);
 }
 
+std::array<uint64_t, 33> board_sizes = {0};
 ChanceResult play(const RobPokerHistory &history, InOut<std::mt19937> gen) {
     static_assert(StandardDeck::NUM_CARDS >= std::tuple_size_v<decltype(history.common_cards)>);
     auto out = history;
     double probability;
+
     bool is_done_dealing = false;
+    int cards_dealt = 0;
     while (!is_done_dealing) {
         probability = 1.0;
         StandardDeck deck;
@@ -179,6 +182,7 @@ ChanceResult play(const RobPokerHistory &history, InOut<std::mt19937> gen) {
         // Deal the common cards
         for (int i = 0; i < static_cast<int>(history.common_cards.size()); i++) {
             if (!is_done_dealing) {
+                cards_dealt++;
                 probability *= 1.0 / deck.size();
                 out.common_cards[i] = RobPokerHistory::FogCard(
                     deck.deal_card().value(), make_private_info(RobPokerPlayer::CHANCE));
@@ -194,7 +198,14 @@ ChanceResult play(const RobPokerHistory &history, InOut<std::mt19937> gen) {
                 out.common_cards[i] = {};
             }
         }
+
     }
+
+    if (cards_dealt > 5) {
+      // Redeal if there are more than 5 cards on the board
+      return play(history, gen);
+    }
+    board_sizes[cards_dealt]++;
 
     // It feels icky to do this here, but post the blinds
     if (out.actions.empty()) {
@@ -343,6 +354,7 @@ std::string to_string(const RobPokerHistory &hist) {
 
 std::array<uint64_t, 33> eval_counts = {0};
 std::array<time::RobotTimestamp::duration, 33> eval_time = {};
+std::array<time::RobotTimestamp::duration, 33> max_eval_time = {};
 int evaluate_hand(const std::array<StandardDeck::Card, 33> &cards, const int num_cards) {
     eval_counts[num_cards]++;
     const thread_local omp::HandEvaluator evaluator;
@@ -376,8 +388,11 @@ int evaluate_hand(const std::array<StandardDeck::Card, 33> &cards, const int num
         // Evaluate the hand
         max_hand_value = std::max(max_hand_value, static_cast<int>(evaluator.evaluate(hand)));
     }
-    const auto end = time::current_robot_time();
-    eval_time[num_cards] += end - start;
+    const auto dt = time::current_robot_time() - start;
+    eval_time[num_cards] += dt;
+    if (max_eval_time[num_cards] < dt) {
+        max_eval_time[num_cards] = dt;
+    }
 
     return max_hand_value;
 }

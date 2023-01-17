@@ -17,7 +17,9 @@
 namespace robot {
 namespace domain {
 extern std::array<uint64_t, 33> eval_counts;
+extern std::array<uint64_t, 33> board_sizes;
 extern std::array<time::RobotTimestamp::duration, 33> eval_time;
+extern std::array<time::RobotTimestamp::duration, 33> max_eval_time;
 }  // namespace domain
 namespace {
 constexpr std::tuple<domain::RobPokerAction, std::string_view> make_index_item(const auto action) {
@@ -88,7 +90,7 @@ int train(const std::filesystem::path &output_directory, const uint64_t num_iter
             [prev_t = std::optional<time::RobotTimestamp>{}, &output_directory](
                 const int iter, const auto &counts_from_infoset_id) mutable {
                 (void)counts_from_infoset_id;
-                constexpr int ITERS_BETWEEN_PRINTS = 1000;
+                constexpr int ITERS_BETWEEN_PRINTS = 10000;
                 if (iter % ITERS_BETWEEN_PRINTS == 0) {
                     const auto now = time::current_robot_time();
                     if (prev_t.has_value()) {
@@ -119,14 +121,28 @@ int train(const std::filesystem::path &output_directory, const uint64_t num_iter
     const auto dt = time::current_robot_time() - t_start;
     const auto dt_s = std::chrono::duration<double>(dt).count();
     std::cout << "total time: " << dt_s << std::endl;
+    std::cout << low_counts << " " << high_counts << std::endl;
+    std::cout << "board_sizes [";
+    for (const auto &item : domain::board_sizes) {
+        std::cout << item << ", ";
+    }
+    std::cout << "]" << std::endl;
     std::cout << "evaluate_hand [";
     for (const auto &item : domain::eval_counts) {
         std::cout << item << ", ";
     }
     std::cout << "]" << std::endl;
     std::cout << "evaluate_hand time [";
+    double eval_hand_time_s = 0;
     for (const auto &item : domain::eval_time) {
+        eval_hand_time_s += std::chrono::duration<double>(item).count();
         std::cout << std::chrono::duration<double>(item).count() << ", ";
+    }
+    std::cout << "]" << std::endl;
+    std::cout << "eval hand time total: " << eval_hand_time_s << std::endl;
+    std::cout << "evaluate_hand time max [";
+    for (const auto &item : domain::max_eval_time) {
+        std::cout << std::chrono::duration<double>(item) << ", ";
     }
     std::cout << "]" << std::endl;
     return 0;

@@ -167,6 +167,13 @@ StrengthPotentialResult evaluate_strength_potential(
             }
         }
 
+        if (cards_dealt > 4) {
+          // Too many cards dealt, not worth evaluating
+          num_evals--;
+          pop_back(cards_dealt);
+          continue;
+        }
+
         // Evaluate hands
         const int after_opponent_rank = domain::evaluate_hand(workspace, num_cards);
         populate_hole_cards(player_cards);
