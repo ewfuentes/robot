@@ -1,3 +1,4 @@
+load("@pip//:requirements.bzl", "requirement")
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
 load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_runtime")
 load("@rules_pkg//pkg:zip.bzl", "pkg_zip")
@@ -45,11 +46,21 @@ py_binary(
     tags=["manual"],
     data = [
       ":hand_evaluator_python.so",
-      ":preflop_equities",
+      "pokerbot_checkpoint_003100000.pb",
     ],
     deps=[
+        requirement("numpy"),
         "@mit_pokerbots//:framework",
+        "//learning:min_regret_strategy_proto_py",
     ],
+)
+
+py_test(
+    name = "pokerbot_test",
+    srcs = ["pokerbot_test.py"],
+    deps = [
+      ":pokerbot",
+    ]
 )
 
 cc_binary(

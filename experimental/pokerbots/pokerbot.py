@@ -20,7 +20,9 @@ from python_skeleton.skeleton.actions import (
 
 from python_skeleton.skeleton import runner
 import experimental.pokerbots.hand_evaluator_python as hep
+import learning.min_regret_strategy_pb2
 import random
+import numpy as np
 
 import os
 
@@ -28,13 +30,155 @@ if os.environ["RUNFILES_DIR"]:
     os.chdir(os.path.join(os.environ["RUNFILES_DIR"], "__main__"))
 
 
-def card_key(card):
-    """Rank a card based on rank and suit."""
-    rank = card[0]
-    suit = card[1]
-    rank_index = "23456789TJQKA".find(rank)
-    suit_index = "shcd".find(suit)
-    return rank_index * 4 + suit_index
+def compute_opponent_action(current_state: RoundState, player_num: int):
+    prev_state = current_state.previous_state
+    if prev_state is None:
+        # This is the first action
+        return None
+
+    other_player = 1 - player_num
+    # detect fold
+    # detect check
+    is_new_street = current_state.street != prev_state.street
+    if is_new_street and player_num == 1:
+        # Player 1 starts every betting round after the first
+        return None
+    pip_change = current_state.pips[other_player] - prev_state.pips[other_player]
+    if pip_change == 0:
+        return "Check"
+    elif current_state.pips[other_player] == current_state.pips[player_num]:
+        return "Call"
+
+    # detect call
+    pip_diff = current_state.pips[other_player] - current_state.pips[player_num]
+    previous_pot = 2 * STARTING_STACK - sum(prev_state.stacks)
+    raise_fraction = pip_diff / previous_pot
+
+    if current_state.stacks[other_player] == 0:
+        return "AllIn"
+
+    if raise_fraction < 4.0:
+        return "RaisePot"
+    else:
+        return "AllIn"
+
+
+def compute_betting_round(round_state: RoundState):
+    if len(round_state.deck) == 0:
+        return 0
+    betting_round = len(round_state.deck) - 2
+    if betting_round < 3:
+        return betting_round
+
+    last_card = round_state.deck[-1]
+    if last_card[1] in "sc":
+        return 4
+    return 3
+
+
+def card_idx(card_str):
+
+    suits = "shcd"
+    ranks = "23456789TJQKA"
+    rank_idx = ranks.find(card_str[0])
+    suit_idx = suits.find(card_str[1])
+    out = rank_idx * 4 + suit_idx
+    return out
+
+
+def compute_infoset_id(action_queue, betting_round, hand, board_cards):
+    infoset_id = 0
+    action_dict = {
+        "Fold": 1,
+        "Check": 2,
+        "Call": 3,
+        "Raise": 4,
+        "RaisePot": 5,
+        "AllIn": 6,
+    }
+    for action in action_queue:
+        infoset_id = (infoset_id << 4) | action_dict[action]
+
+    infoset_id = (infoset_id << 8) | betting_round
+
+    hand = sorted(hand, key=card_idx)
+    # Compute the infoset id
+    if betting_round == 0:
+        # encode the hole card ranks and suits
+        infoset_id = infoset_id << 16
+        infoset_id = infoset_id | (1 << (card_idx(hand[0]) // 4))
+        infoset_id = infoset_id | (1 << (card_idx(hand[1]) // 4))
+
+        infoset_id = infoset_id << 16
+        lower_suit = card_idx(hand[0]) % 4
+        higher_suit = card_idx(hand[1]) % 4
+        is_lower_red = (lower_suit % 2) == 1
+        is_higher_red = (higher_suit % 2) == 1
+        is_suit_equal = lower_suit == higher_suit
+
+        print("id for:", (action_queue, betting_round, hand))
+        if is_suit_equal:
+            # suited red or black
+            infoset_id = infoset_id | (1 if is_higher_red else 0)
+        elif is_higher_red == is_lower_red:
+            # off suit, but both black or red
+            infoset_id = infoset_id | (3 if is_higher_red else 2)
+        else:
+            # off suit of different colors
+            infoset_id = infoset_id | (5 if is_higher_red else 4)
+
+    else:
+        # compute the hand potential and encode it into the infoset id
+        TIMEOUT_S = 0.02
+        HAND_LIMIT = 1000
+        result = hep.evaluate_strength_potential(
+            "".join(hand), "".join(board_cards), TIMEOUT_S, HAND_LIMIT
+        )
+
+        if result.strength < 0.2:
+            hand_strength_bin = 0
+        elif result.strength < 0.4:
+            hand_strength_bin = 1
+        elif result.strength < 0.6:
+            hand_strength_bin = 2
+        elif result.strength < 0.8:
+            hand_strength_bin = 3
+        else:
+            hand_strength_bin = 4
+
+        if result.negative_potential < 0.1:
+            negative_potential_bin = 0
+        elif result.negative_potential < 0.2:
+            negative_potential_bin = 1
+        else:
+            negative_potential_bin = 2
+
+        if result.positive_potential < 0.1:
+            positive_potential_bin = 0
+        elif result.positive_potential < 0.2:
+            positive_potential_bin = 1
+        else:
+            positive_potential_bin = 2
+
+        infoset_id = infoset_id << 32
+        infoset_id = (
+            infoset_id
+            | (hand_strength_bin << 8)
+            | (negative_potential_bin << 4)
+            | (positive_potential_bin)
+        )
+        print(
+            "id for:",
+            (
+                action_queue,
+                betting_round,
+                hand_strength_bin,
+                negative_potential_bin,
+                positive_potential_bin,
+            ), 'num evals:', result.num_evaluations
+        )
+
+    return infoset_id
 
 
 class Pokerbot(bot.Bot):
@@ -45,8 +189,7 @@ class Pokerbot(bot.Bot):
         if street == 0:
             if self.preflop_equity is None:
                 # This is the preflop round, just compute hand strength
-                key = "".join(sorted(hole, key=card_key))
-                print("Equity:", self._preflop_equities[key])
+                key = "".join(sorted(hole, key=card_idx))
                 self.preflop_equity = self._preflop_equities[key]
             return self.preflop_equity
         else:
@@ -55,39 +198,36 @@ class Pokerbot(bot.Bot):
             result = hep.evaluate_hand_potential(
                 "".join(hole), "".join(board), TIME_LIMIT_S
             )
-            print(f"evaluated {result.num_evaluations} hands")
             return result.equity
 
     def __init__(self):
         """Init."""
-        with open("experimental/pokerbots/preflop_equities.p", "rb") as file_in:
-            self._preflop_equities = pickle.load(file_in)
+        with open(
+            "experimental/pokerbots/pokerbot_checkpoint_003100000.pb", "rb"
+        ) as file_in:
+            strategy = learning.min_regret_strategy_pb2.MinRegretStrategy()
+            strategy.ParseFromString(file_in.read())
+        self._strategy = {x.id_num: x for x in strategy.infoset_counts}
+        self._rng = np.random.default_rng()
+        self._round_state = {}
 
     def handle_new_round(
         self, game_state: GameState, round_state: RoundState, active
     ) -> None:
         """Handle New Round."""
         print(
-            f"******************* New Round {game_state.round_num} Player: {active} Clock Remaning: {game_state.game_clock}"
+            f"*** Round {game_state.round_num} Player: {active} Clock: {game_state.game_clock}"
         )
-        self.preflop_equity = None
-        # print("game_state:", game_state)
-        # print("round_state:", round_state)
-        # print("active:", active)
-        # pass
+        self._round_state = {"action_queue": [], "street": 0, 'have_gone_all_in': False}
 
     def handle_round_over(
         self, game_state: GameState, terminal_state: TerminalState, active
     ):
         """Handle Round Over."""
-        print(f"############ End Round deltas: {terminal_state.deltas}")
         print(
             f"Hands: {terminal_state.previous_state.hands} Board: {terminal_state.previous_state.deck}"
         )
-        # print("game_state:", game_state)
-        # print("terminal_state:", terminal_state)
-        # print("active:", active)
-        # pass
+        print(f"### End Round deltas: {terminal_state.deltas}")
 
     def get_action(
         self, game_state: GameState, round_state: RoundState, active
@@ -127,48 +267,72 @@ class Pokerbot(bot.Bot):
         ) = (
             round_state.raise_bounds()
         )  # the smallest and largest numbers of chips for a legal bet/raise
-        my_action = None
+
+        if self._round_state["have_gone_all_in"]:
+            return CheckAction()
+
+        if self._round_state["street"] != round_state.street:
+            print("Street", round_state.street)
+            self._round_state["action_queue"].clear()
 
         pot_total = my_contribution + opp_contribution
+        maybe_action = compute_opponent_action(round_state, active)
+        if maybe_action:
+            print("Detected:", maybe_action)
+            self._round_state["action_queue"].append(maybe_action)
+        print("Action Queue:", self._round_state["action_queue"])
+        betting_round = compute_betting_round(round_state)
 
-        if street < 3:
-            raise_amount = int(
-                my_pip + continue_cost + 0.4 * (pot_total + continue_cost)
-            )
+        # look up the strategy
+        infoset_id = compute_infoset_id(
+            self._round_state["action_queue"], betting_round, my_cards, board_cards
+        )
+
+        print(hex(infoset_id), infoset_id)
+
+        actions = ["Fold", "Check", "Call", "RaisePot", "AllIn"]
+        if infoset_id in self._strategy:
+            strategy_sum = np.array(self._strategy[infoset_id].strategy_sum)
+            strategy = strategy_sum / np.sum(strategy_sum)
+
         else:
-            raise_amount = int(
-                my_pip + continue_cost + 0.75 * (pot_total + continue_cost)
-            )
+            print("could not find strategy! uniform over valid actions")
+            strategy = np.zeros(len(actions))
+            if FoldAction in legal_actions:
+                strategy[0] = 1.0
+            if CheckAction in legal_actions:
+                strategy[1] = 1.0
+            if RaiseAction in legal_actions:
+                if max_raise > pot_total:
+                    strategy[3] = 1
+                strategy[4] = 1
+            strategy = strategy / np.sum(strategy)
 
-        raise_amount = max([min_raise, raise_amount])
-        raise_cost = raise_amount - my_pip
+        print("Strategy", strategy)
+        action_idx = self._rng.choice(len(actions), p=strategy)
+        action = actions[action_idx]
+        self._round_state["action_queue"].append(action)
 
-        if RaiseAction in legal_actions and (raise_cost <= my_stack):
-            temp_action = RaiseAction(raise_amount)
-        elif CallAction in legal_actions and (continue_cost <= my_stack):
-            temp_action = CallAction()
-        elif CheckAction in legal_actions:
-            temp_action = CheckAction()
-        else:
-            temp_action = FoldAction()
+        action_dict = {
+            "Fold": FoldAction(),
+            "Check": CheckAction(),
+            "Call": CallAction(),
+            "RaisePot": RaiseAction(amount=max(min_raise, pot_total)),
+            "AllIn": RaiseAction(amount=max_raise),
+        }
+        if action == "Fold" and continue_cost == 0:
+            action = "Check"
+        if action == "RaisePot" and action_dict["RaisePot"].amount > max_raise:
+            action = "AllIn"
+        print("Selected action", action, action_dict[action])
 
-        strength = self.calc_strength(my_cards, board_cards, street)
+        if action == 'AllIn':
+            self._round_state['have_gone_all_in'] = True
 
-        if continue_cost > 0:
-            pot_odds = continue_cost / (pot_total + continue_cost)
-            if strength > pot_odds:
-                if random.random() < strength:
-                    my_action = temp_action
-                else:
-                    my_action = CallAction()
-            else:
-                my_action = FoldAction()
-        else:
-            if random.random() < strength:
-                my_action = temp_action
-            else:
-                my_action = CheckAction()
-        return my_action
+        self._round_state["street"] = round_state.street
+        print("")
+
+        return action_dict[action]
 
 
 if __name__ == "__main__":

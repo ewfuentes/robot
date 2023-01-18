@@ -45,7 +45,7 @@ constexpr bool is_contiguous_and_zero_indexed() {
     } else {
         return false;
     }
-};
+}
 
 template <typename T, Indexable EnumT>
 class IndexedArray {
