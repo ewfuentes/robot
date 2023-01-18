@@ -1,7 +1,6 @@
 
 #include "domain/rob_poker.hh"
 
-#include <execution>
 #include <ios>
 #include <limits>
 #include <span>
