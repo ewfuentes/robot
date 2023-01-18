@@ -19,8 +19,8 @@ std::vector<Card> cards_from_string(const std::string &cards_str) {
     std::vector<Card> out;
     for (int i = 0; i < static_cast<int>(cards_str.size()); i += 2) {
         out.push_back({
-            .rank = static_cast<domain::StandardRanks>(ranks.find(cards_str[i])),
-            .suit = static_cast<domain::StandardSuits>(suits.find(cards_str[i + 1])),
+            static_cast<domain::StandardRanks>(ranks.find(cards_str[i])),
+            static_cast<domain::StandardSuits>(suits.find(cards_str[i + 1])),
         });
     }
     return out;
@@ -167,12 +167,12 @@ StrengthPotentialResult evaluate_strength_potential(
             }
         }
 
-        if (cards_dealt > 4) {
-          // Too many cards dealt, not worth evaluating
-          num_evals--;
-          pop_back(cards_dealt);
-          continue;
-        }
+        // if (cards_dealt > 4) {
+        //     // Too many cards dealt, not worth evaluating
+        //     num_evals--;
+        //     pop_back(cards_dealt);
+        //     continue;
+        // }
 
         // Evaluate hands
         const int after_opponent_rank = domain::evaluate_hand(workspace, num_cards);

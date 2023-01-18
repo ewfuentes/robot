@@ -89,7 +89,7 @@ int train(const std::filesystem::path &output_directory, const uint64_t num_iter
             [prev_t = std::optional<time::RobotTimestamp>{}, &output_directory](
                 const int iter, const auto &counts_from_infoset_id) mutable {
                 (void)counts_from_infoset_id;
-                constexpr int ITERS_BETWEEN_PRINTS = 10000;
+                constexpr int ITERS_BETWEEN_PRINTS = 100;
                 if (iter % ITERS_BETWEEN_PRINTS == 0) {
                     const auto now = time::current_robot_time();
                     if (prev_t.has_value()) {

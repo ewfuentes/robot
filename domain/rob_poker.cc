@@ -1,6 +1,7 @@
 
 #include "domain/rob_poker.hh"
 
+#include <execution>
 #include <ios>
 #include <limits>
 #include <span>
@@ -198,13 +199,12 @@ ChanceResult play(const RobPokerHistory &history, InOut<std::mt19937> gen) {
                 out.common_cards[i] = {};
             }
         }
-
     }
 
-    if (cards_dealt > 5) {
-      // Redeal if there are more than 5 cards on the board
-      return play(history, gen);
-    }
+    // if (cards_dealt > 5) {
+    //   // Redeal if there are more than 5 cards on the board
+    //   return play(history, gen);
+    // }
     board_sizes[cards_dealt]++;
 
     // It feels icky to do this here, but post the blinds
@@ -360,34 +360,42 @@ int evaluate_hand(const std::array<StandardDeck::Card, 33> &cards, const int num
     const thread_local omp::HandEvaluator evaluator;
     const auto start = time::current_robot_time();
 
-    auto card_idx_from_card = [](const auto card) {
-        const int card_idx = static_cast<int>(card.rank) * 4 + static_cast<int>(card.suit);
-        return card_idx;
-    };
-
     if (num_cards < 8) {
         omp::Hand hand = omp::Hand::empty();
         for (int i = 0; i < num_cards; i++) {
-            hand += omp::Hand(card_idx_from_card(cards[i]));
+            hand += omp::Hand(cards[i].card_idx);
         }
         return evaluator.evaluate(hand);
     }
 
-    const int max_hand_size = num_cards < 12 ? 7 : 5;
     // Enumerate all possible 5 or 7 card hands for the current player and keep the max;
     int max_hand_value = std::numeric_limits<int>::lowest();
-    int num_evals = 0;
-    for (const auto &idxs : detail::n_choose_k(num_cards, max_hand_size)) {
-        num_evals++;
-        // Create the hand
-        omp::Hand hand = omp::Hand::empty();
-        for (const auto &idx : idxs) {
-            hand += omp::Hand(card_idx_from_card(cards[idx]));
+    omp::Hand hand = omp::Hand::empty();
+    // We only consider hands where we use at least 1 private card. We bound the first card index to
+    // 2
+    for (int a = 0; a < 2; a++) {
+        hand += cards[a].card_idx;
+        for (int b = a + 1; b < num_cards - 3; b++) {
+            hand += cards[b].card_idx;
+            for (int c = b + 1; c < num_cards - 2; c++) {
+                hand += cards[c].card_idx;
+                for (int d = c + 1; d < num_cards - 1; d++) {
+                    hand += cards[d].card_idx;
+                    for (int e = d + 1; e < num_cards; e++) {
+                        hand += cards[e].card_idx;
+                        max_hand_value =
+                            std::max(max_hand_value, static_cast<int>(evaluator.evaluate(hand)));
+                        hand -= cards[e].card_idx;
+                    }
+                    hand -= cards[d].card_idx;
+                }
+                hand -= cards[c].card_idx;
+            }
+            hand -= cards[b].card_idx;
         }
-
-        // Evaluate the hand
-        max_hand_value = std::max(max_hand_value, static_cast<int>(evaluator.evaluate(hand)));
+        hand -= cards[a].card_idx;
     }
+
     const auto dt = time::current_robot_time() - start;
     eval_time[num_cards] += dt;
     if (max_eval_time[num_cards] < dt) {
@@ -453,7 +461,5 @@ std::span<const std::vector<int>> n_choose_k(const int n, const int k) {
 
     return std::span<const std::vector<int>>(combos.begin(), num_combinations);
 }
-
 }  // namespace detail
-
 }  // namespace robot::domain

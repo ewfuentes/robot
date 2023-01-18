@@ -56,7 +56,6 @@ domain::RobPoker::InfoSetId infoset_id_from_information(
     out = (out << 8) | betting_round;
 
     if (betting_state.round == 0) {
-        // bits 16 - 31: rank bit mask
         out = (out << 16);
         for (const auto card : private_cards) {
             out |= 1 << static_cast<int>(card.rank);
@@ -90,7 +89,6 @@ domain::RobPoker::InfoSetId infoset_id_from_information(
             out |= (is_higher_red ? 5 : 4);
         }
     } else {
-        high_counts++;
         constexpr std::optional<time::RobotTimestamp::duration> timeout = {};
         constexpr std::optional<int> hand_limit = 250;
         const StrengthPotentialResult result =
