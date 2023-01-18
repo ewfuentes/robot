@@ -201,10 +201,6 @@ ChanceResult play(const RobPokerHistory &history, InOut<std::mt19937> gen) {
         }
     }
 
-    // if (cards_dealt > 5) {
-    //   // Redeal if there are more than 5 cards on the board
-    //   return play(history, gen);
-    // }
     board_sizes[cards_dealt]++;
 
     // It feels icky to do this here, but post the blinds
