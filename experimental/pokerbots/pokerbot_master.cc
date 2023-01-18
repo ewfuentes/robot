@@ -142,7 +142,7 @@ int train(const std::filesystem::path &output_directory, const uint64_t num_iter
     std::cout << "eval hand time total: " << eval_hand_time_s << std::endl;
     std::cout << "evaluate_hand time max [";
     for (const auto &item : domain::max_eval_time) {
-        std::cout << std::chrono::duration<double>(item) << ", ";
+        std::cout << std::chrono::duration<double>(item).count() << ", ";
     }
     std::cout << "]" << std::endl;
     return 0;
