@@ -522,6 +522,7 @@ TEST(RobPokerTest, allin_call_is_game_end) {
     const auto maybe_value = terminal_value(history, RobPokerPlayer::PLAYER1);
 
     // Verification
+    // While not part of the rules, we make the assumption that we must use at least one private card
     ASSERT_TRUE(maybe_value.has_value());
     EXPECT_EQ(maybe_value.value(), 400);
 }
