@@ -306,9 +306,9 @@ class Pokerbot(bot.Bot):
 
         action_dict = {
             "Fold": FoldAction(),
-            "Check": CallAction(),
+            "Check": CheckAction(),
             "Call": CallAction(),
-            "RaisePot": RaiseAction(amount=pot_total),
+            "RaisePot": RaiseAction(amount=max(min_raise, pot_total)),
             "AllIn": RaiseAction(amount=max_raise),
         }
         if action == "Fold" and continue_cost == 0:
