@@ -45,7 +45,7 @@ py_binary(
     tags=["manual"],
     data = [
       ":hand_evaluator_python.so",
-      "pokerbot_checkpoint_001270000.pb",
+      "pokerbot_checkpoint_003100000.pb",
     ],
     deps=[
         requirement("numpy"),

@@ -55,6 +55,9 @@ def compute_opponent_action(current_state: RoundState, player_num: int):
     previous_pot = 2 * STARTING_STACK - sum(prev_state.stacks)
     raise_fraction = pip_diff / previous_pot
 
+    if current_state.stacks[other_player] == 0:
+        return "AllIn"
+
     if raise_fraction < 4.0:
         return "RaisePot"
     else:
@@ -114,6 +117,7 @@ def compute_infoset_id(action_queue, betting_round, hand, board_cards):
         is_higher_red = (higher_suit % 2) == 1
         is_suit_equal = lower_suit == higher_suit
 
+        print("id for:", (action_queue, betting_round, hand))
         if is_suit_equal:
             # suited red or black
             infoset_id = infoset_id | (1 if is_higher_red else 0)
@@ -163,6 +167,16 @@ def compute_infoset_id(action_queue, betting_round, hand, board_cards):
             | (negative_potential_bin << 4)
             | (positive_potential_bin)
         )
+        print(
+            "id for:",
+            (
+                action_queue,
+                betting_round,
+                hand_strength_bin,
+                negative_potential_bin,
+                positive_potential_bin,
+            ),
+        )
 
     return infoset_id
 
@@ -189,7 +203,7 @@ class Pokerbot(bot.Bot):
     def __init__(self):
         """Init."""
         with open(
-            "experimental/pokerbots/pokerbot_checkpoint_001270000.pb", "rb"
+            "experimental/pokerbots/pokerbot_checkpoint_003100000.pb", "rb"
         ) as file_in:
             strategy = learning.min_regret_strategy_pb2.MinRegretStrategy()
             strategy.ParseFromString(file_in.read())
@@ -204,10 +218,7 @@ class Pokerbot(bot.Bot):
         print(
             f"******************* New Round {game_state.round_num} Player: {active} Clock Remaining: {game_state.game_clock}"
         )
-        self._round_state = {
-            'action_queue': [],
-            'street': 0
-        }
+        self._round_state = {"action_queue": [], "street": 0, 'have_gone_all_in': False}
 
     def handle_round_over(
         self, game_state: GameState, terminal_state: TerminalState, active
@@ -257,23 +268,24 @@ class Pokerbot(bot.Bot):
             round_state.raise_bounds()
         )  # the smallest and largest numbers of chips for a legal bet/raise
 
-        if (
-            self._round_state['street'] != round_state.street
-        ):
-            print('Street', round_state.street)
-            self._round_data['action_queue'].clear()
+        if self._round_state["have_gone_all_in"]:
+            return CheckAction()
+
+        if self._round_state["street"] != round_state.street:
+            print("Street", round_state.street)
+            self._round_state["action_queue"].clear()
 
         pot_total = my_contribution + opp_contribution
         maybe_action = compute_opponent_action(round_state, active)
         if maybe_action:
             print("Detected:", maybe_action)
-            self._action_queue.append(maybe_action)
-        print("Action Queue:", self._action_queue)
+            self._round_state["action_queue"].append(maybe_action)
+        print("Action Queue:", self._round_state["action_queue"])
         betting_round = compute_betting_round(round_state)
 
         # look up the strategy
         infoset_id = compute_infoset_id(
-            self._action_queue, betting_round, my_cards, board_cards
+            self._round_state["action_queue"], betting_round, my_cards, board_cards
         )
 
         print(hex(infoset_id), infoset_id)
@@ -296,10 +308,10 @@ class Pokerbot(bot.Bot):
                 strategy[4] = 1
             strategy = strategy / np.sum(strategy)
 
-        print('Strategy', strategy)
+        print("Strategy", strategy)
         action_idx = self._rng.choice(len(actions), p=strategy)
         action = actions[action_idx]
-        self._action_queue.append(action)
+        self._round_state["action_queue"].append(action)
 
         action_dict = {
             "Fold": FoldAction(),
@@ -310,9 +322,17 @@ class Pokerbot(bot.Bot):
         }
         if action == "Fold" and continue_cost == 0:
             action = "Check"
+        if action == "RaisePot" and action_dict["RaisePot"].amount > max_raise:
+            action = "AllIn"
+        print(legal_actions, (min_raise, max_raise))
         print("Selected action", action, action_dict[action])
 
-        self._round_state['street'] = round_state.street
+        if action == 'AllIn':
+            self._round_state['have_gone_all_in'] = True
+
+        self._round_state["street"] = round_state.street
+        print("")
+
         return action_dict[action]
 
 
