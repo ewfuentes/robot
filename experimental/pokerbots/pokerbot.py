@@ -31,7 +31,7 @@ if os.environ["RUNFILES_DIR"]:
 
 
 def compute_opponent_action(current_state: RoundState, player_num: int):
-    print("Current state:", current_state)
+    print(current_state, player_num)
     prev_state = current_state.previous_state
     if prev_state is None:
         # This is the first action
@@ -54,8 +54,6 @@ def compute_opponent_action(current_state: RoundState, player_num: int):
     pip_diff = current_state.pips[other_player] - current_state.pips[player_num]
     previous_pot = 2 * STARTING_STACK - sum(prev_state.stacks)
     raise_fraction = pip_diff / previous_pot
-
-    print(f"Raised {pip_diff} on {previous_pot}. Frac: {raise_fraction}")
 
     if raise_fraction < 4.0:
         return "RaisePot"
@@ -191,12 +189,13 @@ class Pokerbot(bot.Bot):
     def __init__(self):
         """Init."""
         with open(
-            "experimental/pokerbots/pokerbot_checkpoint_000590000.pb", "rb"
+            "experimental/pokerbots/pokerbot_checkpoint_001270000.pb", "rb"
         ) as file_in:
             strategy = learning.min_regret_strategy_pb2.MinRegretStrategy()
             strategy.ParseFromString(file_in.read())
         self._strategy = {x.id_num: x for x in strategy.infoset_counts}
         self._rng = np.random.default_rng()
+        self._round_state = {}
 
     def handle_new_round(
         self, game_state: GameState, round_state: RoundState, active
@@ -205,7 +204,10 @@ class Pokerbot(bot.Bot):
         print(
             f"******************* New Round {game_state.round_num} Player: {active} Clock Remaining: {game_state.game_clock}"
         )
-        self._action_queue = []
+        self._round_state = {
+            'action_queue': [],
+            'street': 0
+        }
 
     def handle_round_over(
         self, game_state: GameState, terminal_state: TerminalState, active
@@ -215,10 +217,6 @@ class Pokerbot(bot.Bot):
             f"Hands: {terminal_state.previous_state.hands} Board: {terminal_state.previous_state.deck}"
         )
         print(f"############ End Round deltas: {terminal_state.deltas}")
-        # print("game_state:", game_state)
-        # print("terminal_state:", terminal_state)
-        # print("active:", active)
-        # pass
 
     def get_action(
         self, game_state: GameState, round_state: RoundState, active
@@ -260,10 +258,10 @@ class Pokerbot(bot.Bot):
         )  # the smallest and largest numbers of chips for a legal bet/raise
 
         if (
-            round_state.street > 0
-            and round_state.street != round_state.previous_state.street
+            self._round_state['street'] != round_state.street
         ):
-            self._action_queue.clear()
+            print('Street', round_state.street)
+            self._round_data['action_queue'].clear()
 
         pot_total = my_contribution + opp_contribution
         maybe_action = compute_opponent_action(round_state, active)
@@ -282,8 +280,6 @@ class Pokerbot(bot.Bot):
 
         actions = ["Fold", "Check", "Call", "RaisePot", "AllIn"]
         if infoset_id in self._strategy:
-            print("Found infoset!")
-            print(self._strategy[infoset_id])
             strategy_sum = np.array(self._strategy[infoset_id].strategy_sum)
             strategy = strategy_sum / np.sum(strategy_sum)
 
@@ -300,6 +296,7 @@ class Pokerbot(bot.Bot):
                 strategy[4] = 1
             strategy = strategy / np.sum(strategy)
 
+        print('Strategy', strategy)
         action_idx = self._rng.choice(len(actions), p=strategy)
         action = actions[action_idx]
         self._action_queue.append(action)
@@ -315,6 +312,7 @@ class Pokerbot(bot.Bot):
             action = "Check"
         print("Selected action", action, action_dict[action])
 
+        self._round_state['street'] = round_state.street
         return action_dict[action]
 
 
