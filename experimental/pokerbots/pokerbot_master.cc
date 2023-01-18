@@ -79,6 +79,7 @@ extern std::array<uint64_t, 33> eval_strength_counts;
 extern std::array<uint64_t, 33> eval_strength_time;
 
 int train(const std::filesystem::path &output_directory, const uint64_t num_iterations) {
+    std::filesystem::create_directories(output_directory);
     const learning::MinRegretTrainConfig<RobPoker> config = {
         .num_iterations = num_iterations,
         .infoset_id_from_hist =
@@ -105,8 +106,10 @@ int train(const std::filesystem::path &output_directory, const uint64_t num_iter
 
                 constexpr int ITERS_BETWEEN_SAVES = 10000;
                 if (iter % ITERS_BETWEEN_SAVES == 0) {
+                    std::stringstream idx;
+                    idx << std::setfill('0') << std::setw(9) << iter;
                     const auto path =
-                        output_directory / ("pokerbot_checkpoint_" + std::to_string(iter) + ".pb");
+                        output_directory / ("pokerbot_checkpoint_" + idx.str() + ".pb");
 
                     learning::proto::MinRegretStrategy proto;
                     pack_into(counts_from_infoset_id, &proto);
