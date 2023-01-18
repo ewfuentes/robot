@@ -2,6 +2,7 @@
 #pragma once
 
 #include <chrono>
+#include <cmath>
 #include <functional>
 #include <iterator>
 #include <numeric>
@@ -24,8 +25,8 @@ template <typename T>
 std::string to_string(const Strategy<T> &strategy) {
     std::stringstream out;
     out << "[";
-    for (const auto &[action, prob] : strategy) {
-        out << wise_enum::to_string(action) << ": " << prob << " ";
+    for (const auto &[action, name] : Range<typename T::Actions>::value) {
+        out << name << ": " << strategy[action] << " ";
     }
     out.seekp(-1, std::ios_base::end);
     out << "]";
@@ -217,7 +218,12 @@ double compute_external_sampled_counterfactual_regret(
             valid_strategy[action] = maybe_invalid_strategy[action];
         }
         for (const auto &action : valid_actions) {
-            valid_strategy[action] = valid_strategy[action] / normalizer;
+            if (normalizer == 0.0) {
+                // There are no valid actions left, so we pick a uniform over valid actions
+                valid_strategy[action] = 1.0 / valid_actions.size();
+            } else {
+                valid_strategy[action] = valid_strategy[action] / normalizer;
+            }
         }
     }
 

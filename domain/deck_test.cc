@@ -8,7 +8,7 @@
 namespace robot::domain {
 TEST(DeckTest, deck_contains_all_cards) {
     // Setup
-    constexpr StandardDeck deck;
+    StandardDeck deck;
 
     // Action + Verification
     EXPECT_EQ(deck.size(), StandardDeck::RANK_SIZE * StandardDeck::SUIT_SIZE);

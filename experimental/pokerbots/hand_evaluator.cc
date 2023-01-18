@@ -19,8 +19,8 @@ std::vector<Card> cards_from_string(const std::string &cards_str) {
     std::vector<Card> out;
     for (int i = 0; i < static_cast<int>(cards_str.size()); i += 2) {
         out.push_back({
-            .rank = static_cast<domain::StandardRanks>(ranks.find(cards_str[i])),
-            .suit = static_cast<domain::StandardSuits>(suits.find(cards_str[i + 1])),
+            static_cast<domain::StandardRanks>(ranks.find(cards_str[i])),
+            static_cast<domain::StandardSuits>(suits.find(cards_str[i + 1])),
         });
     }
     return out;
@@ -84,6 +84,7 @@ ExpectedStrengthResult evaluate_expected_strength(const std::string &hand,
     };
 }
 
+std::array<uint64_t, 33> eval_strength_counts = {0};
 StrengthPotentialResult evaluate_strength_potential(
     const domain::RobPokerHistory &history, const domain::RobPokerPlayer player,
     const std::optional<time::RobotTimestamp::duration> timeout, const std::optional<int> num_hands,
@@ -131,6 +132,8 @@ StrengthPotentialResult evaluate_strength_potential(
     std::array<int, 9> counts{0};
     const auto get_rank_idx = [](const int a, const int b) { return a == b ? 0 : (a < b ? 0 : 2); };
     const auto flat_idx = [](const int a, const int b) { return a * 3 + b; };
+
+    eval_strength_counts[num_cards]++;
 
     const int before_player_rank = domain::evaluate_hand(workspace, num_cards);
     while (time::current_robot_time() - start < eval_time && num_evals < hand_limit) {

@@ -20,9 +20,14 @@ template <typename RankEnum, typename SuitEnum>
 struct CardT {
     using Ranks = RankEnum;
     using Suits = SuitEnum;
+    CardT(const RankEnum rank = RankEnum::_2, const SuitEnum suit = SuitEnum::SPADES)
+        : rank(rank), suit(suit) {
+        card_idx = static_cast<int>(rank) * 4 + static_cast<int>(suit);
+    };
 
     RankEnum rank;
     SuitEnum suit;
+    int card_idx;
 
     bool operator==(const CardT &other) const { return rank == other.rank && suit == other.suit; }
 };
@@ -59,7 +64,7 @@ struct Deck {
     static constexpr int NUM_CARDS = RANK_SIZE * SUIT_SIZE;
     using Container = std::array<Card, NUM_CARDS>;
 
-    constexpr Deck() {
+    Deck() {
         int i = 0;
         for (const auto &[rank, _] : wise_enum::range<Ranks>) {
             for (const auto &[suit, _] : wise_enum::range<Suits>) {

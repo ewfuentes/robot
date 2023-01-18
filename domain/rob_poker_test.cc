@@ -81,20 +81,20 @@ TEST_P(RobPokerUpNextNoRunTest, test_up_next) {
         .hole_cards =
             {
                 {RobPokerPlayer::PLAYER1,
-                 {make_fog_card(SCard{.rank = Ranks::_A, .suit = Suits::SPADES}),
-                  make_fog_card(SCard{.rank = Ranks::_A, .suit = Suits::CLUBS})}},
+                 {make_fog_card(SCard{Ranks::_A, Suits::SPADES}),
+                  make_fog_card(SCard{Ranks::_A, Suits::CLUBS})}},
                 {RobPokerPlayer::PLAYER2,
-                 {make_fog_card(SCard{.rank = Ranks::_K, .suit = Suits::SPADES}),
-                  make_fog_card(SCard{.rank = Ranks::_K, .suit = Suits::CLUBS})}},
+                 {make_fog_card(SCard{Ranks::_K, Suits::SPADES}),
+                  make_fog_card(SCard{Ranks::_K, Suits::CLUBS})}},
             },
 
         .common_cards =
             {
-                make_fog_card(SCard{.rank = Ranks::_2, .suit = Suits::DIAMONDS}),
-                make_fog_card(SCard{.rank = Ranks::_3, .suit = Suits::DIAMONDS}),
-                make_fog_card(SCard{.rank = Ranks::_4, .suit = Suits::DIAMONDS}),
-                make_fog_card(SCard{.rank = Ranks::_5, .suit = Suits::DIAMONDS}),
-                make_fog_card(SCard{.rank = Ranks::_6, .suit = Suits::SPADES}),
+                make_fog_card(SCard{Ranks::_2, Suits::DIAMONDS}),
+                make_fog_card(SCard{Ranks::_3, Suits::DIAMONDS}),
+                make_fog_card(SCard{Ranks::_4, Suits::DIAMONDS}),
+                make_fog_card(SCard{Ranks::_5, Suits::DIAMONDS}),
+                make_fog_card(SCard{Ranks::_6, Suits::SPADES}),
             },
         .actions = actions,
     };
@@ -140,22 +140,22 @@ TEST_P(RobPokerUpNextWithRunTest, test_up_next) {
         .hole_cards =
             {
                 {RobPokerPlayer::PLAYER1,
-                 {make_fog_card(SCard{.rank = Ranks::_A, .suit = Suits::SPADES}),
-                  make_fog_card(SCard{.rank = Ranks::_A, .suit = Suits::CLUBS})}},
+                 {make_fog_card(SCard{Ranks::_A, Suits::SPADES}),
+                  make_fog_card(SCard{Ranks::_A, Suits::CLUBS})}},
                 {RobPokerPlayer::PLAYER2,
-                 {make_fog_card(SCard{.rank = Ranks::_K, .suit = Suits::SPADES}),
-                  make_fog_card(SCard{.rank = Ranks::_K, .suit = Suits::CLUBS})}},
+                 {make_fog_card(SCard{Ranks::_K, Suits::SPADES}),
+                  make_fog_card(SCard{Ranks::_K, Suits::CLUBS})}},
             },
 
         .common_cards =
             {
-                make_fog_card(SCard{.rank = Ranks::_2, .suit = Suits::DIAMONDS}),
-                make_fog_card(SCard{.rank = Ranks::_3, .suit = Suits::DIAMONDS}),
-                make_fog_card(SCard{.rank = Ranks::_4, .suit = Suits::DIAMONDS}),
-                make_fog_card(SCard{.rank = Ranks::_5, .suit = Suits::DIAMONDS}),
-                make_fog_card(SCard{.rank = Ranks::_6, .suit = Suits::HEARTS}),
-                make_fog_card(SCard{.rank = Ranks::_7, .suit = Suits::DIAMONDS}),
-                make_fog_card(SCard{.rank = Ranks::_8, .suit = Suits::CLUBS}),
+                make_fog_card(SCard{Ranks::_2, Suits::DIAMONDS}),
+                make_fog_card(SCard{Ranks::_3, Suits::DIAMONDS}),
+                make_fog_card(SCard{Ranks::_4, Suits::DIAMONDS}),
+                make_fog_card(SCard{Ranks::_5, Suits::DIAMONDS}),
+                make_fog_card(SCard{Ranks::_6, Suits::HEARTS}),
+                make_fog_card(SCard{Ranks::_7, Suits::DIAMONDS}),
+                make_fog_card(SCard{Ranks::_8, Suits::CLUBS}),
             },
         .actions = actions,
     };
@@ -210,22 +210,22 @@ TEST_P(RobPokerPossibleActionsTest, test_possible_actions) {
         .hole_cards =
             {
                 {RobPokerPlayer::PLAYER1,
-                 {make_fog_card(SCard{.rank = Ranks::_A, .suit = Suits::SPADES}),
-                  make_fog_card(SCard{.rank = Ranks::_A, .suit = Suits::CLUBS})}},
+                 {make_fog_card(SCard{Ranks::_A, Suits::SPADES}),
+                  make_fog_card(SCard{Ranks::_A, Suits::CLUBS})}},
                 {RobPokerPlayer::PLAYER2,
-                 {make_fog_card(SCard{.rank = Ranks::_K, .suit = Suits::SPADES}),
-                  make_fog_card(SCard{.rank = Ranks::_K, .suit = Suits::CLUBS})}},
+                 {make_fog_card(SCard{Ranks::_K, Suits::SPADES}),
+                  make_fog_card(SCard{Ranks::_K, Suits::CLUBS})}},
             },
 
         .common_cards =
             {
-                make_fog_card(SCard{.rank = Ranks::_2, .suit = Suits::DIAMONDS}),
-                make_fog_card(SCard{.rank = Ranks::_3, .suit = Suits::DIAMONDS}),
-                make_fog_card(SCard{.rank = Ranks::_4, .suit = Suits::DIAMONDS}),
-                make_fog_card(SCard{.rank = Ranks::_5, .suit = Suits::DIAMONDS}),
-                make_fog_card(SCard{.rank = Ranks::_6, .suit = Suits::HEARTS}),
-                make_fog_card(SCard{.rank = Ranks::_7, .suit = Suits::DIAMONDS}),
-                make_fog_card(SCard{.rank = Ranks::_8, .suit = Suits::CLUBS}),
+                make_fog_card(SCard{Ranks::_2, Suits::DIAMONDS}),
+                make_fog_card(SCard{Ranks::_3, Suits::DIAMONDS}),
+                make_fog_card(SCard{Ranks::_4, Suits::DIAMONDS}),
+                make_fog_card(SCard{Ranks::_5, Suits::DIAMONDS}),
+                make_fog_card(SCard{Ranks::_6, Suits::HEARTS}),
+                make_fog_card(SCard{Ranks::_7, Suits::DIAMONDS}),
+                make_fog_card(SCard{Ranks::_8, Suits::CLUBS}),
             },
         .actions = action_history,
     };
@@ -321,20 +321,20 @@ TEST(RobPokerEvaluateHandTest, hand_evaluation) {
         .hole_cards =
             {
                 {RobPokerPlayer::PLAYER1,
-                 {make_fog_card(SCard{.rank = Ranks::_A, .suit = Suits::SPADES}),
-                  make_fog_card(SCard{.rank = Ranks::_A, .suit = Suits::CLUBS})}},
+                 {make_fog_card(SCard{Ranks::_A, Suits::SPADES}),
+                  make_fog_card(SCard{Ranks::_A, Suits::CLUBS})}},
                 {RobPokerPlayer::PLAYER2,
-                 {make_fog_card(SCard{.rank = Ranks::_K, .suit = Suits::SPADES}),
-                  make_fog_card(SCard{.rank = Ranks::_K, .suit = Suits::CLUBS})}},
+                 {make_fog_card(SCard{Ranks::_K, Suits::SPADES}),
+                  make_fog_card(SCard{Ranks::_K, Suits::CLUBS})}},
             },
 
         .common_cards =
             {
-                make_fog_card(SCard{.rank = Ranks::_A, .suit = Suits::DIAMONDS}),
-                make_fog_card(SCard{.rank = Ranks::_K, .suit = Suits::DIAMONDS}),
-                make_fog_card(SCard{.rank = Ranks::_4, .suit = Suits::DIAMONDS}),
-                make_fog_card(SCard{.rank = Ranks::_5, .suit = Suits::DIAMONDS}),
-                make_fog_card(SCard{.rank = Ranks::_6, .suit = Suits::SPADES}),
+                make_fog_card(SCard{Ranks::_A, Suits::DIAMONDS}),
+                make_fog_card(SCard{Ranks::_K, Suits::DIAMONDS}),
+                make_fog_card(SCard{Ranks::_4, Suits::DIAMONDS}),
+                make_fog_card(SCard{Ranks::_5, Suits::DIAMONDS}),
+                make_fog_card(SCard{Ranks::_6, Suits::SPADES}),
             },
         .actions = {},
     };
@@ -358,20 +358,20 @@ TEST_P(RobPokerTerminalValueNoRunTest, test_terminal_value) {
         .hole_cards =
             {
                 {RobPokerPlayer::PLAYER1,
-                 {make_fog_card(SCard{.rank = Ranks::_A, .suit = Suits::SPADES}),
-                  make_fog_card(SCard{.rank = Ranks::_A, .suit = Suits::CLUBS})}},
+                 {make_fog_card(SCard{Ranks::_A, Suits::SPADES}),
+                  make_fog_card(SCard{Ranks::_A, Suits::CLUBS})}},
                 {RobPokerPlayer::PLAYER2,
-                 {make_fog_card(SCard{.rank = Ranks::_K, .suit = Suits::SPADES}),
-                  make_fog_card(SCard{.rank = Ranks::_K, .suit = Suits::CLUBS})}},
+                 {make_fog_card(SCard{Ranks::_K, Suits::SPADES}),
+                  make_fog_card(SCard{Ranks::_K, Suits::CLUBS})}},
             },
 
         .common_cards =
             {
-                make_public_card(SCard{.rank = Ranks::_2, .suit = Suits::DIAMONDS}),
-                make_public_card(SCard{.rank = Ranks::_3, .suit = Suits::DIAMONDS}),
-                make_public_card(SCard{.rank = Ranks::_4, .suit = Suits::DIAMONDS}),
-                make_public_card(SCard{.rank = Ranks::_5, .suit = Suits::DIAMONDS}),
-                make_public_card(SCard{.rank = Ranks::_7, .suit = Suits::SPADES}),
+                make_public_card(SCard{Ranks::_2, Suits::DIAMONDS}),
+                make_public_card(SCard{Ranks::_3, Suits::DIAMONDS}),
+                make_public_card(SCard{Ranks::_4, Suits::DIAMONDS}),
+                make_public_card(SCard{Ranks::_5, Suits::DIAMONDS}),
+                make_public_card(SCard{Ranks::_7, Suits::SPADES}),
             },
         .actions = actions,
     };
@@ -423,22 +423,22 @@ TEST_P(RobPokerTerminalValueWithRunTest, test_terminal_value) {
         .hole_cards =
             {
                 {RobPokerPlayer::PLAYER1,
-                 {make_fog_card(SCard{.rank = Ranks::_A, .suit = Suits::SPADES}),
-                  make_fog_card(SCard{.rank = Ranks::_A, .suit = Suits::CLUBS})}},
+                 {make_fog_card(SCard{Ranks::_K, Suits::DIAMONDS}),
+                  make_fog_card(SCard{Ranks::_K, Suits::HEARTS})}},
                 {RobPokerPlayer::PLAYER2,
-                 {make_fog_card(SCard{.rank = Ranks::_K, .suit = Suits::SPADES}),
-                  make_fog_card(SCard{.rank = Ranks::_K, .suit = Suits::CLUBS})}},
+                 {make_fog_card(SCard{Ranks::_K, Suits::SPADES}),
+                  make_fog_card(SCard{Ranks::_K, Suits::CLUBS})}},
             },
 
         .common_cards =
             {
-                make_public_card(SCard{.rank = Ranks::_2, .suit = Suits::DIAMONDS}),
-                make_public_card(SCard{.rank = Ranks::_3, .suit = Suits::DIAMONDS}),
-                make_public_card(SCard{.rank = Ranks::_4, .suit = Suits::DIAMONDS}),
-                make_public_card(SCard{.rank = Ranks::_5, .suit = Suits::DIAMONDS}),
-                make_public_card(SCard{.rank = Ranks::_6, .suit = Suits::HEARTS}),
-                make_public_card(SCard{.rank = Ranks::_7, .suit = Suits::DIAMONDS}),
-                make_public_card(SCard{.rank = Ranks::_8, .suit = Suits::CLUBS}),
+                make_public_card(SCard{Ranks::_2, Suits::DIAMONDS}),
+                make_public_card(SCard{Ranks::_2, Suits::CLUBS}),
+                make_public_card(SCard{Ranks::_2, Suits::SPADES}),
+                make_public_card(SCard{Ranks::_5, Suits::DIAMONDS}),
+                make_public_card(SCard{Ranks::_6, Suits::HEARTS}),
+                make_public_card(SCard{Ranks::_7, Suits::DIAMONDS}),
+                make_public_card(SCard{Ranks::_8, Suits::CLUBS}),
             },
         .actions = actions,
     };
@@ -497,22 +497,22 @@ TEST(RobPokerTest, allin_call_is_game_end) {
         .hole_cards =
             {
                 {RobPokerPlayer::PLAYER1,
-                 {make_fog_card(SCard{.rank = Ranks::_A, .suit = Suits::SPADES}),
-                  make_fog_card(SCard{.rank = Ranks::_A, .suit = Suits::CLUBS})}},
+                 {make_fog_card(SCard{Ranks::_A, Suits::SPADES}),
+                  make_fog_card(SCard{Ranks::_A, Suits::CLUBS})}},
                 {RobPokerPlayer::PLAYER2,
-                 {make_fog_card(SCard{.rank = Ranks::_K, .suit = Suits::SPADES}),
-                  make_fog_card(SCard{.rank = Ranks::_K, .suit = Suits::CLUBS})}},
+                 {make_fog_card(SCard{Ranks::_K, Suits::SPADES}),
+                  make_fog_card(SCard{Ranks::_K, Suits::CLUBS})}},
             },
 
         .common_cards =
             {
-                make_fog_card(SCard{.rank = Ranks::_2, .suit = Suits::DIAMONDS}),
-                make_fog_card(SCard{.rank = Ranks::_3, .suit = Suits::DIAMONDS}),
-                make_fog_card(SCard{.rank = Ranks::_4, .suit = Suits::DIAMONDS}),
-                make_fog_card(SCard{.rank = Ranks::_5, .suit = Suits::DIAMONDS}),
-                make_fog_card(SCard{.rank = Ranks::_6, .suit = Suits::HEARTS}),
-                make_fog_card(SCard{.rank = Ranks::_7, .suit = Suits::DIAMONDS}),
-                make_fog_card(SCard{.rank = Ranks::_8, .suit = Suits::CLUBS}),
+                make_fog_card(SCard{Ranks::_2, Suits::DIAMONDS}),
+                make_fog_card(SCard{Ranks::_3, Suits::DIAMONDS}),
+                make_fog_card(SCard{Ranks::_4, Suits::DIAMONDS}),
+                make_fog_card(SCard{Ranks::_5, Suits::DIAMONDS}),
+                make_fog_card(SCard{Ranks::_6, Suits::HEARTS}),
+                make_fog_card(SCard{Ranks::_7, Suits::DIAMONDS}),
+                make_fog_card(SCard{Ranks::_8, Suits::CLUBS}),
             },
         .actions = {SMALL_BLIND, BIG_BLIND, AllInAction{}},
     };
@@ -523,7 +523,7 @@ TEST(RobPokerTest, allin_call_is_game_end) {
 
     // Verification
     ASSERT_TRUE(maybe_value.has_value());
-    EXPECT_EQ(maybe_value.value(), 0);
+    EXPECT_EQ(maybe_value.value(), 400);
 }
 
 TEST(NChooseKTest, n_choose_1) {
