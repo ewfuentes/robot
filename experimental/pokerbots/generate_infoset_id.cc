@@ -56,6 +56,8 @@ domain::RobPoker::InfoSetId infoset_id_from_information(
     out = (out << 8) | betting_round;
 
     if (betting_state.round == 0) {
+        // Map the hole cards into a bucker
+        // bits 16-31: rank bit mask
         out = (out << 16);
         for (const auto card : private_cards) {
             out |= 1 << static_cast<int>(card.rank);
