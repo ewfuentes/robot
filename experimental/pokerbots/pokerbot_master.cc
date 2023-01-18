@@ -51,8 +51,6 @@ struct Range<domain::RobPokerAction> {
 
 namespace experimental::pokerbots {
 using RobPoker = domain::RobPoker;
-extern uint64_t low_counts;
-extern uint64_t high_counts;
 
 std::vector<domain::RobPokerAction> action_generator(const domain::RobPokerHistory &history) {
     const domain::BettingState betting_state = domain::compute_betting_state(history);
@@ -124,7 +122,6 @@ int train(const std::filesystem::path &output_directory, const uint64_t num_iter
     const auto dt = time::current_robot_time() - t_start;
     const auto dt_s = std::chrono::duration<double>(dt).count();
     std::cout << "total time: " << dt_s << std::endl;
-    std::cout << low_counts << " " << high_counts << std::endl;
     std::cout << "board_sizes [";
     for (const auto &item : domain::board_sizes) {
         std::cout << item << ", ";
