@@ -64,7 +64,7 @@ struct Deck {
     static constexpr int NUM_CARDS = RANK_SIZE * SUIT_SIZE;
     using Container = std::array<Card, NUM_CARDS>;
 
-    constexpr Deck() {
+    Deck() {
         int i = 0;
         for (const auto &[rank, _] : wise_enum::range<Ranks>) {
             for (const auto &[suit, _] : wise_enum::range<Suits>) {
