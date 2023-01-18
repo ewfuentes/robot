@@ -31,7 +31,6 @@ if os.environ["RUNFILES_DIR"]:
 
 
 def compute_opponent_action(current_state: RoundState, player_num: int):
-    print(current_state, player_num)
     prev_state = current_state.previous_state
     if prev_state is None:
         # This is the first action
@@ -131,8 +130,9 @@ def compute_infoset_id(action_queue, betting_round, hand, board_cards):
     else:
         # compute the hand potential and encode it into the infoset id
         TIMEOUT_S = 0.02
+        HAND_LIMIT = 1000
         result = hep.evaluate_strength_potential(
-            "".join(hand), "".join(board_cards), TIMEOUT_S
+            "".join(hand), "".join(board_cards), TIMEOUT_S, HAND_LIMIT
         )
 
         if result.strength < 0.2:
@@ -175,7 +175,7 @@ def compute_infoset_id(action_queue, betting_round, hand, board_cards):
                 hand_strength_bin,
                 negative_potential_bin,
                 positive_potential_bin,
-            ),
+            ), 'num evals:', result.num_evaluations
         )
 
     return infoset_id
@@ -216,7 +216,7 @@ class Pokerbot(bot.Bot):
     ) -> None:
         """Handle New Round."""
         print(
-            f"******************* New Round {game_state.round_num} Player: {active} Clock Remaining: {game_state.game_clock}"
+            f"*** Round {game_state.round_num} Player: {active} Clock: {game_state.game_clock}"
         )
         self._round_state = {"action_queue": [], "street": 0, 'have_gone_all_in': False}
 
@@ -227,7 +227,7 @@ class Pokerbot(bot.Bot):
         print(
             f"Hands: {terminal_state.previous_state.hands} Board: {terminal_state.previous_state.deck}"
         )
-        print(f"############ End Round deltas: {terminal_state.deltas}")
+        print(f"### End Round deltas: {terminal_state.deltas}")
 
     def get_action(
         self, game_state: GameState, round_state: RoundState, active
@@ -324,7 +324,6 @@ class Pokerbot(bot.Bot):
             action = "Check"
         if action == "RaisePot" and action_dict["RaisePot"].amount > max_raise:
             action = "AllIn"
-        print(legal_actions, (min_raise, max_raise))
         print("Selected action", action, action_dict[action])
 
         if action == 'AllIn':
