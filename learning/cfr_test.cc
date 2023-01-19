@@ -84,7 +84,7 @@ TEST_P(CfrTest, kuhn_poker_test) {
     constexpr double TOL = 1e-2;
     const uint64_t external_iter_scale_factor =
         GetParam() == SampleStrategy::EXTERNAL_SAMPLING ? 10 : 1;
-    const uint64_t num_iterations = 100000 * external_iter_scale_factor;
+    const uint64_t num_iterations = 200000 * external_iter_scale_factor;
     const MinRegretTrainConfig<KuhnPoker> config = {
         .num_iterations = num_iterations,
         .infoset_id_from_hist = &domain::infoset_id_from_history,
