@@ -5,10 +5,12 @@
 #include <cmath>
 #include <functional>
 #include <iterator>
+#include <mutex>
 #include <numeric>
 #include <optional>
 #include <random>
 #include <sstream>
+#include <thread>
 #include <unordered_map>
 
 #include "common/argument_wrapper.hh"
@@ -35,6 +37,7 @@ std::string to_string(const Strategy<T> &strategy) {
 
 template <typename T>
 struct InfoSetCounts {
+    std::mutex regret_sum_mutex;
     IndexedArray<double, typename T::Actions> regret_sum = {0};
     IndexedArray<double, typename T::Actions> strategy_sum = {0};
     int iter_count = 0;
@@ -74,7 +77,7 @@ struct MinRegretTrainConfig {
     std::function<std::vector<typename T::Actions>(const typename T::History &)> action_generator;
     int seed;
     SampleStrategy sample_strategy;
-    std::function<bool(const int, const CountsFromInfoSetId<T> &)> iteration_callback =
+    std::function<int(const int, const CountsFromInfoSetId<T> &)> iteration_callback =
         [](const auto &, const auto &) { return true; };
 };
 
@@ -98,17 +101,20 @@ std::optional<Strategy<T>> MinRegretStrategy<T>::operator()(const typename T::In
 }
 
 template <typename T>
-Strategy<T> strategy_from_counts(const InfoSetCounts<T> &counts) {
+Strategy<T> strategy_from_counts(InfoSetCounts<T> &counts) {
     // Compute the normalization factor
+    counts.regret_sum_mutex.lock();
+    const auto regret_sum = counts.regret_sum;
+    counts.regret_sum_mutex.unlock();
     const double partition =
-        std::accumulate(counts.regret_sum.begin(), counts.regret_sum.end(), 0.0,
+        std::accumulate(regret_sum.begin(), regret_sum.end(), 0.0,
                         [](const double positive_regret_sum, const auto &action_and_regret) {
                             return positive_regret_sum + std::max(action_and_regret.second, 0.0);
                         });
 
     // Select action in proportion to positive regrets
     Strategy<T> out;
-    for (const auto &[action, regret] : counts.regret_sum) {
+    for (const auto &[action, regret] : regret_sum) {
         if (partition == 0.0) {
             out[action] = 1.0 / out.size();
         } else {
@@ -155,22 +161,35 @@ MinRegretStrategy<T> train_min_regret_strategy(const MinRegretTrainConfig<T> &co
         }
         non_chance_players.push_back(player);
     }
-    bool run = true;
-    for (uint64_t iter = 0; iter <= config.num_iterations && run; iter++) {
-        if (config.iteration_callback) {
-            run = config.iteration_callback(iter, counts_from_infoset_id);
+    for (uint64_t iter = 0; iter <= config.num_iterations;) {
+        const int iters_to_run = config.iteration_callback(iter, counts_from_infoset_id);
+        if (iters_to_run == 0) {
+            break;
         }
+        IndexedArray<std::jthread, typename T::Players> thread_handles;
         for (auto player : non_chance_players) {
-            if (config.sample_strategy == SampleStrategy::CHANCE_SAMPLING) {
-                compute_chance_sampled_counterfactual_regret(
-                    {}, player, iter, {1.0}, config.infoset_id_from_hist, config.action_generator,
-                    make_in_out(gen), make_in_out(counts_from_infoset_id));
-            } else {
-                compute_external_sampled_counterfactual_regret(
-                    {}, player, iter, config.infoset_id_from_hist, config.action_generator,
-                    make_in_out(gen), make_in_out(counts_from_infoset_id));
-            }
+            thread_handles[player] = std::jthread(
+                [config, player, iters_to_run](const int seed,
+                                               InOut<CountsFromInfoSetId<T>> counts_from_infoset_id,
+                                               const int outer_iter) {
+                    std::mt19937 thread_gen(seed);
+                    for (int i = 0; i < iters_to_run; i++) {
+                        if (config.sample_strategy == SampleStrategy::CHANCE_SAMPLING) {
+                            compute_chance_sampled_counterfactual_regret(
+                                {}, player, outer_iter + i, {1.0}, config.infoset_id_from_hist,
+                                config.action_generator, make_in_out(thread_gen),
+                                counts_from_infoset_id);
+                        } else {
+                            compute_external_sampled_counterfactual_regret(
+                                {}, player, outer_iter + i, config.infoset_id_from_hist,
+                                config.action_generator, make_in_out(thread_gen),
+                                counts_from_infoset_id);
+                        }
+                    }
+                },
+                gen(), make_in_out(counts_from_infoset_id), iter);
         }
+        iter += iters_to_run;
     }
 
     // Output the average strategy
@@ -240,9 +259,12 @@ double compute_external_sampled_counterfactual_regret(
         }
 
         // Update the regrets
-        for (const auto &action : valid_actions) {
-            const double counterfactual_regret = action_values[action] - node_value;
-            counts.regret_sum[action] += counterfactual_regret;
+        {
+            std::lock_guard<std::mutex> lock_guard(counts.regret_sum_mutex);
+            for (const auto &action : valid_actions) {
+                const double counterfactual_regret = action_values[action] - node_value;
+                counts.regret_sum[action] += counterfactual_regret;
+            }
         }
         return node_value;
 
@@ -322,6 +344,7 @@ double compute_chance_sampled_counterfactual_regret(
 
     // Update the counts for the current player if appropriate
     if (current_player == to_update) {
+        std::lock_guard<std::mutex> lock_guard(counts.regret_sum_mutex);
         for (const auto &[action, action_value] : action_values) {
             counts.regret_sum[action] += opponent_probability * (action_value - node_value);
             counts.strategy_sum[action] += action_probabilities[current_player] * strategy[action];
