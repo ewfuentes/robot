@@ -1,6 +1,7 @@
 
 #include "experimental/pokerbots/hand_evaluator.hh"
 
+#include <deque>
 #include <iostream>
 #include <limits>
 
@@ -9,6 +10,7 @@
 #include "domain/rob_poker.hh"
 #include "omp/CardRange.h"
 #include "omp/EquityCalculator.h"
+#include "omp/Hand.h"
 
 namespace robot::experimental::pokerbots {
 using Card = domain::StandardDeck::Card;
@@ -89,6 +91,8 @@ StrengthPotentialResult evaluate_strength_potential(
     const domain::RobPokerHistory &history, const domain::RobPokerPlayer player,
     const std::optional<time::RobotTimestamp::duration> timeout, const std::optional<int> num_hands,
     InOut<std::mt19937> gen) {
+    constexpr int MAX_RESULT_CACHE_SIZE = 1024;
+    thread_local std::deque<std::pair<omp::Hand, StrengthPotentialResult>> result_cache;
     const auto remaining_deck = deck_from_history(history, player);
     const auto eval_time = timeout.value_or(time::RobotTimestamp::duration::max());
     const time::RobotTimestamp start = time::current_robot_time();
@@ -123,6 +127,18 @@ StrengthPotentialResult evaluate_strength_potential(
     for (const auto &fog_card : history.common_cards) {
         if (fog_card.has_value() && fog_card.is_visible_to(player)) {
             push_card(fog_card.value());
+        }
+    }
+
+    // Check if this board is already in our cache
+    omp::Hand query_hand = omp::Hand::empty();
+    for (int i = 0; i < num_cards; i++) {
+        query_hand += workspace[i].card_idx;
+    }
+
+    for (const auto &[key, result] : result_cache) {
+        if (key == query_hand) {
+            return result;
         }
     }
 
@@ -200,13 +216,19 @@ StrengthPotentialResult evaluate_strength_potential(
     const double hand_potential =
         (1.0 - hand_strength) * positive_potential + hand_strength * (1.0 - negative_potential);
 
-    return {
+    const StrengthPotentialResult out = {
         .strength = hand_strength,
         .strength_potential = hand_potential,
         .positive_potential = positive_potential,
         .negative_potential = negative_potential,
         .num_evaluations = static_cast<uint64_t>(num_evals),
     };
+
+    result_cache.push_front(std::make_pair(query_hand, out));
+    if (result_cache.size() > MAX_RESULT_CACHE_SIZE) {
+        result_cache.resize(MAX_RESULT_CACHE_SIZE);
+    }
+    return out;
 }
 
 StrengthPotentialResult evaluate_strength_potential(
