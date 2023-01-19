@@ -114,7 +114,7 @@ int train(const std::filesystem::path &output_directory, const uint64_t num_iter
                     std::ofstream out(path, std::ios_base::binary | std::ios_base::trunc);
                     proto.SerializeToOstream(&out);
                 }
-                return true;
+                return ITERS_BETWEEN_SAVES;
             },
     };
     const auto t_start = time::current_robot_time();

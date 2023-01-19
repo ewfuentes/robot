@@ -5,10 +5,12 @@
 #include <cmath>
 #include <functional>
 #include <iterator>
+#include <mutex>
 #include <numeric>
 #include <optional>
 #include <random>
 #include <sstream>
+#include <thread>
 #include <unordered_map>
 
 #include "common/argument_wrapper.hh"
@@ -74,7 +76,7 @@ struct MinRegretTrainConfig {
     std::function<std::vector<typename T::Actions>(const typename T::History &)> action_generator;
     int seed;
     SampleStrategy sample_strategy;
-    std::function<bool(const int, const CountsFromInfoSetId<T> &)> iteration_callback =
+    std::function<uint64_t(const int, const CountsFromInfoSetId<T> &)> iteration_callback =
         [](const auto &, const auto &) { return true; };
 };
 
@@ -144,6 +146,8 @@ template <typename T>
 MinRegretStrategy<T> train_min_regret_strategy(const MinRegretTrainConfig<T> &config) {
     std::mt19937 gen(config.seed);
     CountsFromInfoSetId<T> counts_from_infoset_id;
+    std::unordered_map<typename T::InfoSetId, std::mutex> counts_mutex_from_id;
+    std::mutex mutex_map_mutex;
 
     std::vector<typename T::Players> non_chance_players;
     for (const auto &[player, name] : wise_enum::range<typename T::Players>) {
@@ -155,22 +159,38 @@ MinRegretStrategy<T> train_min_regret_strategy(const MinRegretTrainConfig<T> &co
         }
         non_chance_players.push_back(player);
     }
-    bool run = true;
-    for (uint64_t iter = 0; iter <= config.num_iterations && run; iter++) {
-        if (config.iteration_callback) {
-            run = config.iteration_callback(iter, counts_from_infoset_id);
+    for (uint64_t iter = 0; iter <= config.num_iterations;) {
+        const int iters_to_run = config.iteration_callback(iter, counts_from_infoset_id);
+        if (iters_to_run == 0) {
+            break;
         }
+        IndexedArray<std::jthread, typename T::Players> thread_handles;
         for (auto player : non_chance_players) {
-            if (config.sample_strategy == SampleStrategy::CHANCE_SAMPLING) {
-                compute_chance_sampled_counterfactual_regret(
-                    {}, player, iter, {1.0}, config.infoset_id_from_hist, config.action_generator,
-                    make_in_out(gen), make_in_out(counts_from_infoset_id));
-            } else {
-                compute_external_sampled_counterfactual_regret(
-                    {}, player, iter, config.infoset_id_from_hist, config.action_generator,
-                    make_in_out(gen), make_in_out(counts_from_infoset_id));
-            }
+            thread_handles[player] = std::jthread(
+                [config, player, iters_to_run](
+                    const int seed, InOut<CountsFromInfoSetId<T>> counts_from_infoset_id,
+                    const int outer_iter, InOut<std::mutex> mutex_map_mutex,
+                    InOut<std::unordered_map<typename T::InfoSetId, std::mutex>>
+                        counts_mutex_from_id) {
+                    std::mt19937 thread_gen(seed);
+                    for (int i = 0; i < iters_to_run; i++) {
+                        if (config.sample_strategy == SampleStrategy::CHANCE_SAMPLING) {
+                            compute_chance_sampled_counterfactual_regret(
+                                {}, player, outer_iter + i, {1.0}, config.infoset_id_from_hist,
+                                config.action_generator, make_in_out(thread_gen),
+                                counts_from_infoset_id, mutex_map_mutex, counts_mutex_from_id);
+                        } else {
+                            compute_external_sampled_counterfactual_regret(
+                                {}, player, outer_iter + i, config.infoset_id_from_hist,
+                                config.action_generator, make_in_out(thread_gen),
+                                counts_from_infoset_id, mutex_map_mutex, counts_mutex_from_id);
+                        }
+                    }
+                },
+                gen(), make_in_out(counts_from_infoset_id), iter, make_in_out(mutex_map_mutex),
+                make_in_out(counts_mutex_from_id));
         }
+        iter += iters_to_run;
     }
 
     // Output the average strategy
@@ -185,7 +205,9 @@ double compute_external_sampled_counterfactual_regret(
         &infoset_id_from_history,
     const std::function<std::vector<typename T::Actions>(const typename T::History &)>
         &action_generator,
-    InOut<std::mt19937> gen, InOut<CountsFromInfoSetId<T>> counts_from_infoset_id) {
+    InOut<std::mt19937> gen, InOut<CountsFromInfoSetId<T>> counts_from_infoset_id,
+    InOut<std::mutex> mutex_map_mutex,
+    InOut<std::unordered_map<typename T::InfoSetId, std::mutex>> counts_mutex_from_id) {
     const auto maybe_current_player = up_next(history);
     // If this is a leaf node, return the value
     if (!maybe_current_player.has_value()) {
@@ -201,14 +223,23 @@ double compute_external_sampled_counterfactual_regret(
             const auto chance_result = play(history, gen);
             return compute_external_sampled_counterfactual_regret<T>(
                 chance_result.history, to_update, iteration, infoset_id_from_history,
-                action_generator, gen, counts_from_infoset_id);
+                action_generator, gen, counts_from_infoset_id, mutex_map_mutex,
+                counts_mutex_from_id);
         }
     }
     // Get the current strategy for this infoset. We have a non const reference since we
     // may update them further down.
-    InfoSetCounts<T> &counts = (*counts_from_infoset_id)[infoset_id_from_history(history)];
+    const auto infoset_id = infoset_id_from_history(history);
+    mutex_map_mutex->lock();
+    // This may potentially create a new node, so we lock it
+    InfoSetCounts<T> &counts = (*counts_from_infoset_id)[infoset_id];
+    std::mutex &counts_mutex = (*counts_mutex_from_id)[infoset_id];
+    mutex_map_mutex->unlock();
     counts.iter_count++;
+
+    counts_mutex.lock();
     const Strategy<T> maybe_invalid_strategy = strategy_from_counts(counts);
+    counts_mutex.unlock();
     Strategy<T> valid_strategy = {0.0};
     double normalizer = 0;
     const auto valid_actions = action_generator(history);
@@ -235,14 +266,18 @@ double compute_external_sampled_counterfactual_regret(
         for (const auto &action : valid_actions) {
             action_values[action] = compute_external_sampled_counterfactual_regret(
                 play(history, action), to_update, iteration, infoset_id_from_history,
-                action_generator, gen, counts_from_infoset_id);
+                action_generator, gen, counts_from_infoset_id, mutex_map_mutex,
+                counts_mutex_from_id);
             node_value += valid_strategy[action] * action_values[action];
         }
 
         // Update the regrets
-        for (const auto &action : valid_actions) {
-            const double counterfactual_regret = action_values[action] - node_value;
-            counts.regret_sum[action] += counterfactual_regret;
+        {
+            std::lock_guard<std::mutex> lock_guard(counts_mutex);
+            for (const auto &action : valid_actions) {
+                const double counterfactual_regret = action_values[action] - node_value;
+                counts.regret_sum[action] += counterfactual_regret;
+            }
         }
         return node_value;
 
@@ -252,10 +287,15 @@ double compute_external_sampled_counterfactual_regret(
         const auto action = sample_strategy<T>(valid_strategy, gen);
         const double value = compute_external_sampled_counterfactual_regret(
             play(history, action), to_update, iteration, infoset_id_from_history, action_generator,
-            gen, counts_from_infoset_id);
+            gen, counts_from_infoset_id, mutex_map_mutex, counts_mutex_from_id);
 
-        for (const auto &[action, probability] : valid_strategy) {
-            counts.strategy_sum[action] += probability;
+        {
+            // Not strictly necessary as the strategy sum is only used in the average strategy
+            // computation
+            std::lock_guard<std::mutex> lock_guard(counts_mutex);
+            for (const auto &[action, probability] : valid_strategy) {
+                counts.strategy_sum[action] += probability;
+            }
         }
         return value;
     }
@@ -269,7 +309,9 @@ double compute_chance_sampled_counterfactual_regret(
         &infoset_id_from_history,
     const std::function<std::vector<typename T::Actions>(const typename T::History &)>
         &action_generator,
-    InOut<std::mt19937> gen, InOut<CountsFromInfoSetId<T>> counts_from_infoset_id) {
+    InOut<std::mt19937> gen, InOut<CountsFromInfoSetId<T>> counts_from_infoset_id,
+    InOut<std::mutex> mutex_map_mutex,
+    InOut<std::unordered_map<typename T::InfoSetId, std::mutex>> counts_mutex_from_id) {
     // If this is a terminal state, return terminal_value
     const auto maybe_current_player = up_next(history);
     if (!maybe_current_player.has_value()) {
@@ -284,7 +326,8 @@ double compute_chance_sampled_counterfactual_regret(
             const auto chance_result = play(history, gen);
             return compute_chance_sampled_counterfactual_regret<T>(
                 chance_result.history, to_update, iteration, action_probabilities,
-                infoset_id_from_history, action_generator, gen, counts_from_infoset_id);
+                infoset_id_from_history, action_generator, gen, counts_from_infoset_id,
+                mutex_map_mutex, counts_mutex_from_id);
         }
     }
 
@@ -304,8 +347,15 @@ double compute_chance_sampled_counterfactual_regret(
     // Note that this isn't const because we may update it later
     // We want to construct a new InfoSetCounts if it doesn't already exist, so we use [] instead of
     // at()
-    InfoSetCounts<T> &counts = (*counts_from_infoset_id)[infoset_id_from_history(history)];
+    const auto infoset_id = infoset_id_from_history(history);
+    mutex_map_mutex->lock();
+    InfoSetCounts<T> &counts = (*counts_from_infoset_id)[infoset_id];
+    std::mutex &counts_mutex = (*counts_mutex_from_id)[infoset_id];
+    mutex_map_mutex->unlock();
+
+    counts_mutex.lock();
     Strategy<T> strategy = strategy_from_counts(counts);
+    counts_mutex.unlock();
 
     auto new_action_probabilities = action_probabilities;
     for (const auto &action : action_generator(history)) {
@@ -315,13 +365,15 @@ double compute_chance_sampled_counterfactual_regret(
 
         action_values[action] = compute_chance_sampled_counterfactual_regret(
             play(history, action), to_update, iteration, new_action_probabilities,
-            infoset_id_from_history, action_generator, gen, counts_from_infoset_id);
+            infoset_id_from_history, action_generator, gen, counts_from_infoset_id, mutex_map_mutex,
+            counts_mutex_from_id);
 
         node_value += probability * action_values[action];
     }
 
     // Update the counts for the current player if appropriate
     if (current_player == to_update) {
+        std::lock_guard<std::mutex> lock_guard(counts_mutex);
         for (const auto &[action, action_value] : action_values) {
             counts.regret_sum[action] += opponent_probability * (action_value - node_value);
             counts.strategy_sum[action] += action_probabilities[current_player] * strategy[action];
