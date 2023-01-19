@@ -100,7 +100,7 @@ std::optional<Strategy<T>> MinRegretStrategy<T>::operator()(const typename T::In
 }
 
 template <typename T>
-Strategy<T> strategy_from_counts(InfoSetCounts<T> &counts) {
+Strategy<T> strategy_from_counts(const InfoSetCounts<T> &counts) {
     // Compute the normalization factor
     const double partition =
         std::accumulate(counts.regret_sum.begin(), counts.regret_sum.end(), 0.0,
