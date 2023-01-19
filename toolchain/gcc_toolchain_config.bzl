@@ -72,15 +72,12 @@ def _impl(ctx):
                 flag_group(
                   flags=[
                     "-Wall", "-Wextra", "-Werror",
-                    "-Wcast-qual",
-                    "-Wconversion-null",
                     "-Woverlength-strings",
                     "-Wpointer-arith",
                     "-Wunused-local-typedefs",
                     "-Wunused-result",
                     "-Wvarargs",
                     "-Wvla",
-                    "-Wwrite-strings",
                   ]
                 )
               ]

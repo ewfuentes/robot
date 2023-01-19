@@ -76,7 +76,6 @@ def _impl(ctx):
                     "-Wno-gcc-compat",
                     "-Wno-c++98-compat",
                     "-Wno-c++98-compat-pedantic",
-                    "-Wcast-qual",
                     "-Wconversion-null",
                     "-Woverlength-strings",
                     "-Wpointer-arith",
@@ -85,6 +84,7 @@ def _impl(ctx):
                     "-Wvarargs",
                     "-Wvla",
                     "-Wwrite-strings",
+                    "-Wno-incompatible-pointer-types-discards-qualifiers",
                     ]
                 )
               ]

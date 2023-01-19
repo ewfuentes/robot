@@ -8,12 +8,9 @@
 #include "common/time/robot_time.hh"
 #include "domain/deck.hh"
 #include "domain/rob_poker.hh"
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wcast-qual"
 #include "omp/CardRange.h"
 #include "omp/EquityCalculator.h"
 #include "omp/Hand.h"
-#pragma clang diagnostic pop
 
 namespace robot::experimental::pokerbots {
 using Card = domain::StandardDeck::Card;
