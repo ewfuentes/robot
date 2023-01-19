@@ -5,6 +5,7 @@
 #include <fstream>
 #include <ios>
 #include <string_view>
+#include <thread>
 #include <variant>
 
 #include "common/time/robot_time.hh"
@@ -76,7 +77,8 @@ std::vector<domain::RobPokerAction> action_generator(const domain::RobPokerHisto
 extern std::array<uint64_t, 33> eval_strength_counts;
 extern std::array<uint64_t, 33> eval_strength_time;
 
-int train(const std::filesystem::path &output_directory, const uint64_t num_iterations) {
+int train(const std::filesystem::path &output_directory, const uint64_t num_iterations,
+          const std::optional<std::filesystem::path> &maybe_load_checkpoint) {
     std::filesystem::create_directories(output_directory);
     const learning::MinRegretTrainConfig<RobPoker> config = {
         .num_iterations = num_iterations,
@@ -86,10 +88,21 @@ int train(const std::filesystem::path &output_directory, const uint64_t num_iter
         .seed = 0,
         .sample_strategy = learning::SampleStrategy::EXTERNAL_SAMPLING,
         .iteration_callback =
-            [prev_t = std::optional<time::RobotTimestamp>{}, &output_directory](
-                const int iter, const auto &counts_from_infoset_id) mutable {
-                (void)counts_from_infoset_id;
+            [prev_t = std::optional<time::RobotTimestamp>{}, &output_directory,
+             &maybe_load_checkpoint](const int iter, auto counts_from_infoset_id) mutable {
                 constexpr int ITERS_BETWEEN_PRINTS = 10000;
+                if (iter == 0 && maybe_load_checkpoint.has_value()) {
+                    if (std::filesystem::exists(maybe_load_checkpoint.value())) {
+                        // load the existing checkpoint
+                        learning::proto::MinRegretStrategy proto;
+                        std::ifstream in(*maybe_load_checkpoint, std::ios_base::binary);
+                        proto.ParseFromIstream(&in);
+                        *counts_from_infoset_id = unpack_from<RobPoker>(proto);
+                    } else {
+                        std::cout << maybe_load_checkpoint.value()
+                                  << " does not exist! Skipping checkpoint load" << std::endl;
+                    }
+                }
                 if (iter % ITERS_BETWEEN_PRINTS == 0) {
                     const auto now = time::current_robot_time();
                     if (prev_t.has_value()) {
@@ -110,7 +123,7 @@ int train(const std::filesystem::path &output_directory, const uint64_t num_iter
                         output_directory / ("pokerbot_checkpoint_" + idx.str() + ".pb");
 
                     learning::proto::MinRegretStrategy proto;
-                    pack_into(counts_from_infoset_id, &proto);
+                    pack_into(*counts_from_infoset_id, &proto);
                     std::ofstream out(path, std::ios_base::binary | std::ios_base::trunc);
                     proto.SerializeToOstream(&out);
                 }
@@ -176,6 +189,7 @@ int main(int argc, char **argv) {
     options.add_options()
       ("output_directory", "Directory where checkpoints should be written to", cxxopts::value<std::string>())
       ("num_iterations", "Number of iterations", cxxopts::value<uint64_t>())
+      ("load_checkpoint", "Path to checkpoint file to continue", cxxopts::value<std::string>())
       ("help", "Print usage");
     // clang-format on
     auto args = options.parse(argc, argv);
@@ -193,6 +207,9 @@ int main(int argc, char **argv) {
         std::exit(1);
     }
 
-    return robot::experimental::pokerbots::train(args["output_directory"].as<std::string>(),
-                                                 args["num_iterations"].as<uint64_t>());
+    return robot::experimental::pokerbots::train(
+        args["output_directory"].as<std::string>(), args["num_iterations"].as<uint64_t>(),
+        args.count("load_checkpoint")
+            ? std::make_optional(args["load_checkpoint"].as<std::string>())
+            : std::nullopt);
 }

@@ -76,8 +76,8 @@ struct MinRegretTrainConfig {
     std::function<std::vector<typename T::Actions>(const typename T::History &)> action_generator;
     int seed;
     SampleStrategy sample_strategy;
-    std::function<uint64_t(const int, const CountsFromInfoSetId<T> &)> iteration_callback =
-        [](const auto &, const auto &) { return true; };
+    std::function<uint64_t(const int, InOut<CountsFromInfoSetId<T>>)> iteration_callback =
+        [](const auto &, const auto &) { return 1; };
 };
 
 template <typename T>
@@ -160,7 +160,8 @@ MinRegretStrategy<T> train_min_regret_strategy(const MinRegretTrainConfig<T> &co
         non_chance_players.push_back(player);
     }
     for (uint64_t iter = 0; iter <= config.num_iterations;) {
-        const int iters_to_run = config.iteration_callback(iter, counts_from_infoset_id);
+        const int iters_to_run =
+            config.iteration_callback(iter, make_in_out(counts_from_infoset_id));
         if (iters_to_run == 0) {
             break;
         }
