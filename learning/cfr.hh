@@ -76,7 +76,7 @@ struct MinRegretTrainConfig {
     std::function<std::vector<typename T::Actions>(const typename T::History &)> action_generator;
     int seed;
     SampleStrategy sample_strategy;
-    std::function<int(const int, const CountsFromInfoSetId<T> &)> iteration_callback =
+    std::function<uint64_t(const int, const CountsFromInfoSetId<T> &)> iteration_callback =
         [](const auto &, const auto &) { return true; };
 };
 
@@ -230,11 +230,11 @@ double compute_external_sampled_counterfactual_regret(
     // Get the current strategy for this infoset. We have a non const reference since we
     // may update them further down.
     const auto infoset_id = infoset_id_from_history(history);
-    // mutex_map_mutex->lock();
+    mutex_map_mutex->lock();
     // This may potentially create a new node, so we lock it
     InfoSetCounts<T> &counts = (*counts_from_infoset_id)[infoset_id];
     std::mutex &counts_mutex = (*counts_mutex_from_id)[infoset_id];
-    // mutex_map_mutex->unlock();
+    mutex_map_mutex->unlock();
     counts.iter_count++;
 
     counts_mutex.lock();
@@ -348,10 +348,10 @@ double compute_chance_sampled_counterfactual_regret(
     // We want to construct a new InfoSetCounts if it doesn't already exist, so we use [] instead of
     // at()
     const auto infoset_id = infoset_id_from_history(history);
-    // mutex_map_mutex->lock();
+    mutex_map_mutex->lock();
     InfoSetCounts<T> &counts = (*counts_from_infoset_id)[infoset_id];
     std::mutex &counts_mutex = (*counts_mutex_from_id)[infoset_id];
-    // mutex_map_mutex->unlock();
+    mutex_map_mutex->unlock();
 
     counts_mutex.lock();
     Strategy<T> strategy = strategy_from_counts(counts);

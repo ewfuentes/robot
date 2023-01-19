@@ -16,13 +16,15 @@ TEST_P(CfrTest, rock_paper_scissors_test) {
     // Setup
     const uint64_t external_iter_scale_factor =
         GetParam() == SampleStrategy::EXTERNAL_SAMPLING ? 10 : 1;
+    const uint64_t num_iterations = 10000 * external_iter_scale_factor;
     const MinRegretTrainConfig<RPS> config = {
-        .num_iterations = 10000 * external_iter_scale_factor,
+        .num_iterations = num_iterations,
         .infoset_id_from_hist = [&INFOSET_ID](const RPS::History &) { return INFOSET_ID; },
         .action_generator =
             [](const RPS::History &history) { return domain::possible_actions(history); },
         .seed = 0,
         .sample_strategy = GetParam(),
+        .iteration_callback = [&](const auto &, const auto &) { return num_iterations; },
     };
 
     // Action
@@ -45,13 +47,15 @@ TEST_P(CfrTest, blotto_test) {
     // Setup
     const uint64_t external_iter_scale_factor =
         GetParam() == SampleStrategy::EXTERNAL_SAMPLING ? 10 : 1;
+    const uint64_t num_iterations = 10000 * external_iter_scale_factor;
     const MinRegretTrainConfig<Blotto> config = {
-        .num_iterations = 10000 * external_iter_scale_factor,
+        .num_iterations = num_iterations,
         .infoset_id_from_hist = [&INFOSET_ID](const Blotto::History &) { return INFOSET_ID; },
         .action_generator =
             [](const Blotto::History &history) { return domain::possible_actions(history); },
         .seed = 0,
         .sample_strategy = GetParam(),
+        .iteration_callback = [&](const auto &, const auto &) { return num_iterations; },
     };
 
     // Action
@@ -80,13 +84,15 @@ TEST_P(CfrTest, kuhn_poker_test) {
     constexpr double TOL = 1e-3;
     const uint64_t external_iter_scale_factor =
         GetParam() == SampleStrategy::EXTERNAL_SAMPLING ? 10 : 1;
+    const uint64_t num_iterations = 100000 * external_iter_scale_factor;
     const MinRegretTrainConfig<KuhnPoker> config = {
-        .num_iterations = 100000 * external_iter_scale_factor,
+        .num_iterations = num_iterations,
         .infoset_id_from_hist = &domain::infoset_id_from_history,
         .action_generator =
             [](const domain::KuhnHistory &history) { return domain::possible_actions(history); },
         .seed = 0,
         .sample_strategy = GetParam(),
+        .iteration_callback = [&](const auto &, const auto &) { return num_iterations; },
     };
 
     // Action
