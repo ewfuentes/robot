@@ -12,6 +12,12 @@ load("@rules_pkg//:deps.bzl", "rules_pkg_dependencies")
 rules_pkg_dependencies()
 
 http_archive(
+  name = "absl",
+  urls = ["https://github.com/abseil/abseil-cpp/archive/refs/tags/20220623.1.zip"],
+  strip_prefix = "abseil-cpp-20220623.1",
+)
+
+http_archive(
   name = "pybind11_bazel",
   strip_prefix = "pybind11_bazel-faf56fb3df11287f26dbc66fdedf60a2fc2c6631",
   urls = ["https://github.com/pybind/pybind11_bazel/archive/faf56fb3df11287f26dbc66fdedf60a2fc2c6631.zip"],
