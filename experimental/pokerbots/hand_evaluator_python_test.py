@@ -23,7 +23,7 @@ class HandEvaluatorPythonTest(unittest.TestCase):
         board = 'KsQcJd'
 
         # Action
-        hep.evaluate_strength_potential(player_hand, board, 0.005)
+        hep.evaluate_strength_potential(player_hand, board, timeout_s= 0.005)
 
         # Verification
 
@@ -33,7 +33,7 @@ class HandEvaluatorPythonTest(unittest.TestCase):
         board = 'KcQcJc'
 
         # Action
-        hep.evaluate_strength_potential(player_hand, board, 0.005)
+        hep.evaluate_strength_potential(player_hand, board, timeout_s=0.005)
 
         # Verification
 

@@ -27,8 +27,10 @@ PYBIND11_MODULE(hand_evaluator_python, m) {
           "opponent_hand_str"_a = "random", "board_str"_a, "timeout_s"_a = std::nullopt,
           "num_hands"_a = std::nullopt);
     m.def("evaluate_strength_potential",
-          py::overload_cast<const std::string&, const std::string&, const std::optional<double>,
-                            const std::optional<int>>(&evaluate_strength_potential),
-          "hand_str"_a, "board_str"_a, "timeout_s"_a = std::nullopt, "num_hands"_a = std::nullopt);
+          py::overload_cast<const std::string &, const std::string &, const std::optional<int>,
+                            const std::optional<double>, const std::optional<int>>(
+              &evaluate_strength_potential),
+          "hand_str"_a, "board_str"_a, "max_additional_cards"_a = std::nullopt,
+          "timeout_s"_a = std::nullopt, "num_hands"_a = std::nullopt);
 }
 }  // namespace robot::experimental::pokerbots
