@@ -70,7 +70,18 @@ def _impl(ctx):
               actions = all_compile_actions,
               flag_groups = [
                 flag_group(
-                  flags=["-Wall", "-Wextra", "-Wpedantic", "-Werror"]
+                  flags=[
+                    "-Wall", "-Wextra", "-Werror",
+                    "-Wcast-qual",
+                    "-Wconversion-null",
+                    "-Woverlength-strings",
+                    "-Wpointer-arith",
+                    "-Wunused-local-typedefs",
+                    "-Wunused-result",
+                    "-Wvarargs",
+                    "-Wvla",
+                    "-Wwrite-strings",
+                  ]
                 )
               ]
             )

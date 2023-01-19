@@ -77,7 +77,7 @@ domain::RobPoker::InfoSetId infoset_id_from_information(
         const bool is_higher_red =
             higher_card.suit == Suits::HEARTS || higher_card.suit == Suits::DIAMONDS;
         const bool is_lower_red =
-            lower_card.suit == Suits::HEARTS || higher_card.suit == Suits::DIAMONDS;
+            lower_card.suit == Suits::HEARTS || lower_card.suit == Suits::DIAMONDS;
         const bool is_suit_equal = higher_card.suit == lower_card.suit;
 
         if (is_suit_equal) {

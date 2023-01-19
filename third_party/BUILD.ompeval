@@ -25,6 +25,7 @@ cc_library(
     "-std=c++11",
     "-fPIC",
     "-msse4.1",
+    "-Wno-cast-qual",
   ],
   visibility = ["//visibility:public"],
   deps = [
