@@ -30,17 +30,20 @@ ExpectedStrengthResult evaluate_expected_strength(const std::string &hand,
 
 StrengthPotentialResult evaluate_strength_potential(const std::string &hand_str,
                                                     const std::string &board_str,
+                                                    const std::optional<int> max_additional_cards,
                                                     const std::optional<double> timeout_s,
                                                     const std::optional<int> num_hands);
 
 StrengthPotentialResult evaluate_strength_potential(
     const std::array<domain::StandardDeck::Card, 2> &hand,
     const std::vector<domain::StandardDeck::Card> &board,
+    const std::optional<int> max_additional_cards,
     const std::optional<time::RobotTimestamp::duration> timeout,
     const std::optional<int> num_hands);
 
 StrengthPotentialResult evaluate_strength_potential(
     const domain::RobPokerHistory &history, const domain::RobPokerPlayer player,
+    const std::optional<int> max_additional_cards,
     const std::optional<time::RobotTimestamp::duration> timeout, const std::optional<int> num_hands,
     InOut<std::mt19937> gen);
 }  // namespace robot::experimental::pokerbots

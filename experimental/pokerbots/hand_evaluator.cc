@@ -89,6 +89,7 @@ ExpectedStrengthResult evaluate_expected_strength(const std::string &hand,
 std::array<uint64_t, 33> eval_strength_counts = {0};
 StrengthPotentialResult evaluate_strength_potential(
     const domain::RobPokerHistory &history, const domain::RobPokerPlayer player,
+    const std::optional<int> max_additional_cards,
     const std::optional<time::RobotTimestamp::duration> timeout, const std::optional<int> num_hands,
     InOut<std::mt19937> gen) {
     constexpr int MAX_RESULT_CACHE_SIZE = 1024;
@@ -167,19 +168,23 @@ StrengthPotentialResult evaluate_strength_potential(
         const int before_idx = get_rank_idx(before_player_rank, before_opponent_rank);
 
         // Deal remaining board
-        bool is_done_dealing = false;
         int cards_dealt = 0;
         for (int i = num_cards; i < static_cast<int>(workspace.size()); i++) {
-            if (!is_done_dealing) {
-                cards_dealt++;
-                push_card(deck.deal_card().value());
-                // A deal is complete if at least 5 cards have been dealt and the last card isn't
-                // red
-                const bool is_last_card_black =
-                    workspace[num_cards - 1].suit == domain::StandardDeck::Suits::CLUBS ||
-                    workspace[num_cards - 1].suit == domain::StandardDeck::Suits::SPADES;
-                const bool at_least_board_five_cards = num_cards >= 7;
-                is_done_dealing = is_last_card_black && at_least_board_five_cards;
+            cards_dealt++;
+            push_card(deck.deal_card().value());
+            // A deal is complete if at least 5 cards have been dealt and the last card isn't
+            // red
+            const bool is_last_card_black =
+                workspace[num_cards - 1].suit == domain::StandardDeck::Suits::CLUBS ||
+                workspace[num_cards - 1].suit == domain::StandardDeck::Suits::SPADES;
+            const bool is_at_card_limit = max_additional_cards.has_value()
+                                              ? max_additional_cards.value() == cards_dealt
+                                              : false;
+            const bool at_least_board_five_cards = num_cards >= 7;
+            const bool is_done_dealing =
+                at_least_board_five_cards && (is_last_card_black || is_at_card_limit);
+            if (is_done_dealing) {
+                break;
             }
         }
 
@@ -234,16 +239,18 @@ StrengthPotentialResult evaluate_strength_potential(
 StrengthPotentialResult evaluate_strength_potential(
     const std::array<domain::StandardDeck::Card, 2> &hand,
     const std::vector<domain::StandardDeck::Card> &board,
+    const std::optional<int> max_additional_cards,
     const std::optional<time::RobotTimestamp::duration> timeout,
     const std::optional<int> num_hands) {
     const auto history = create_history_from_known_cards(hand, board);
     std::mt19937 gen(0);
-    return evaluate_strength_potential(history, domain::RobPokerPlayer::PLAYER1, timeout, num_hands,
-                                       make_in_out(gen));
+    return evaluate_strength_potential(history, domain::RobPokerPlayer::PLAYER1,
+                                       max_additional_cards, timeout, num_hands, make_in_out(gen));
 }
 
 StrengthPotentialResult evaluate_strength_potential(const std::string &hand_str,
                                                     const std::string &board_str,
+                                                    const std::optional<int> max_additional_cards,
                                                     const std::optional<double> timeout_s,
                                                     const std::optional<int> num_hands) {
     const auto hole_cards = cards_from_string(hand_str);
@@ -253,7 +260,7 @@ StrengthPotentialResult evaluate_strength_potential(const std::string &hand_str,
     const auto timeout = timeout_s.has_value()
                              ? std::make_optional(time::as_duration(timeout_s.value()))
                              : std::nullopt;
-    return evaluate_strength_potential(history, domain::RobPokerPlayer::PLAYER1, timeout, num_hands,
-                                       make_in_out(gen));
+    return evaluate_strength_potential(history, domain::RobPokerPlayer::PLAYER1,
+                                       max_additional_cards, timeout, num_hands, make_in_out(gen));
 }
 }  // namespace robot::experimental::pokerbots
