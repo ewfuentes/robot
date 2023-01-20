@@ -1,0 +1,17 @@
+
+syntax = "proto3";
+
+package robot.experimental.pokerbots.proto;
+
+message BinCenter {
+  float strength = 1;
+  float negative_potential = 2;
+  float positive_potential = 3;
+}
+
+message PerTurnBinCenters {
+  repeated BinCenter preflop_centers = 1;
+  repeated BinCenter flop_centers = 2;
+  repeated BinCenter turn_centers = 3;
+  repeated BinCenter river_centers = 4;
+}

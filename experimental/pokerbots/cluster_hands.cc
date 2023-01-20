@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <tuple>
 #include <vector>
 
 #include "common/time/robot_time.hh"
@@ -16,6 +17,21 @@ const std::filesystem::path BASE_DIR = "/tmp/cluster_hands";
 
 namespace robot::experimental::pokerbots {
 
+  namespace {
+  std::vector<domain::StandardDeck::Card> cards_from_string(const std::string &cards_str) {
+      const std::string ranks = "23456789TJQKA";
+      const std::string suits = "shcd";
+      std::vector<domain::StandardDeck::Card> out;
+      for (int i = 0; i < static_cast<int>(cards_str.size()); i += 2) {
+          out.push_back({
+              static_cast<domain::StandardRanks>(ranks.find(cards_str[i])),
+              static_cast<domain::StandardSuits>(suits.find(cards_str[i + 1])),
+          });
+      }
+      return out;
+  }
+
+  }  // namespace
 void evaluate_hole_cards() {
     const std::filesystem::path HOLE_CARDS_OUTPUT = BASE_DIR / "hole_cards_output.csv";
     std::cout << "Start!" << std::endl;
@@ -47,6 +63,52 @@ void evaluate_hole_cards() {
     std::cout << "Done!" << std::endl;
 }
 
+std::vector<StrengthPotentialResult> evaluate_hands(const std::vector<std::string> &hands,
+                                                    const int max_additional_cards,
+                                                    const int hands_per_eval) {
+    using HoleCards = std::array<domain::StandardDeck::Card, 2>;
+    using BoardCards = std::vector<domain::StandardDeck::Card>;
+    using EvalInput = std::tuple<int, HoleCards, BoardCards>;
+
+    std::vector<EvalInput> inputs;
+    inputs.reserve(hands.size());
+    for (int i = 0; i < static_cast<int>(hands.size()); i++) {
+        auto cards = cards_from_string(hands[i]);
+        inputs.emplace_back(
+            EvalInput(i, {cards[0], cards[1]}, BoardCards(cards.begin() + 2, cards.end())));
+    }
+
+    constexpr int NUM_CHUNKS = 100;
+    const int chunk_size = hands.size() / NUM_CHUNKS;
+
+    std::vector<int> chunk_starts;
+    for (int i = 0; i < static_cast<int>(hands.size()); i += chunk_size) {
+        chunk_starts.push_back(i);
+    }
+
+    std::vector<StrengthPotentialResult> outputs(hands.size());
+    std::cout << "Num Chunks: " << chunk_starts.size() << std::endl;
+    std::for_each(
+        std::execution::par, chunk_starts.begin(), chunk_starts.end(),
+        [&inputs, &outputs, chunk_size, max_additional_cards,
+         hands_per_eval](const int chunk_start) {
+            const auto start = time::current_robot_time();
+            std::cout << "Starting chunk at " << chunk_start << std::endl;
+            for (int i = chunk_start;
+                 i < chunk_start + chunk_size && i < static_cast<int>(inputs.size()); i++) {
+                const auto &[idx, hole_cards, board_cards] = inputs[i];
+                std::mt19937 gen(idx);
+                outputs[idx] =
+                    evaluate_strength_potential(hole_cards, board_cards, max_additional_cards, {},
+                                                hands_per_eval, make_in_out(gen));
+            }
+            const auto dt = time::current_robot_time() - start;
+            std::cout << "Chunk at " << chunk_start << " finished in: "
+                      << std::chrono::duration_cast<std::chrono::milliseconds>(dt) << std::endl;
+        });
+    return outputs;
+}
+
 void evaluate_flops() {
     const std::filesystem::path FLOP_CARDS_OUTPUT = BASE_DIR / "flop_cards";
     std::filesystem::create_directories(FLOP_CARDS_OUTPUT);
@@ -62,9 +124,6 @@ void evaluate_flops() {
             hole_cards.push_back({*iter_1, *iter_2});
         }
     }
-
-    std::vector<std::vector<StrengthPotentialResult>> results;
-    results.reserve(hole_cards.size());
 
     const auto now = time::current_robot_time();
     std::for_each(
