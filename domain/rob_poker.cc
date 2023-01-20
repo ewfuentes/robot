@@ -17,23 +17,30 @@
 
 namespace robot::domain {
 BettingState compute_betting_state(const RobPokerHistory &history) {
-    BettingState state = {.is_game_over = false,
-                          .showdown_required = false,
-                          .is_final_betting_round = false,
-                          .round = 0,
-                          .position = 0,
-                          .put_in_pot = {0}};
+    BettingState state = {
+        .put_in_pot = {0},
+        .is_game_over = false,
+        .showdown_required = false,
+        .last_played = RobPokerPlayer::PLAYER2,
+        .to_bet = {{
+            .is_final_betting_round = false,
+            .round = 0,
+            .position = 0,
+        }},
+    };
     if (history.actions.empty()) {
         return state;
     }
 
-    RobPokerPlayer current_player = RobPokerPlayer::PLAYER1;
     for (int i = 0; i < static_cast<int>(history.actions.size()); i++) {
-        RobPokerPlayer other_player = current_player == RobPokerPlayer::PLAYER1
-                                          ? RobPokerPlayer::PLAYER2
-                                          : RobPokerPlayer::PLAYER1;
+        const bool is_new_round_after_first =
+            state.to_bet->position == 0 && state.to_bet->round > 0;
+        const RobPokerPlayer other_player =
+            is_new_round_after_first ? RobPokerPlayer::PLAYER1 : state.last_played;
+        const RobPokerPlayer current_player = other_player == RobPokerPlayer::PLAYER1
+                                                  ? RobPokerPlayer::PLAYER2
+                                                  : RobPokerPlayer::PLAYER1;
         const auto curr_action = history.actions.at(i);
-
         // Update the bet amounts
         std::visit(
             [&state, &current_player, &other_player](const auto &action) mutable {
@@ -57,6 +64,8 @@ BettingState compute_betting_state(const RobPokerHistory &history) {
         bool did_advance_to_new_betting_round = false;
         if (std::holds_alternative<FoldAction>(curr_action)) {
             state.is_game_over = true;
+            state.last_played = current_player;
+            state.to_bet = std::nullopt;
             return state;
         } else if (i > 0) {
             const auto prev_action = history.actions.at(i - 1);
@@ -68,41 +77,58 @@ BettingState compute_betting_state(const RobPokerHistory &history) {
             const bool is_check_check = is(CheckAction{}, CheckAction{});
             const bool is_raise_call =
                 is(RaiseAction{}, CallAction{}) || is(RaisePotAction{}, CallAction{});
-            const bool is_opening_call = is_raise_call && i == 2;
+            const bool is_opening_call = is_raise_call && i == 2 && state.to_bet->round == 0;
             const bool is_allin_call = is(AllInAction{}, CallAction{});
             // This is the last card that was dealt after the previous round that ended
             // Note that this is incorrect for the first round of betting, but is only relevant
             // after the fourth betting round (after the river)
-            const int last_card_idx = state.round + 1;
-            const auto &last_card = history.common_cards.at(last_card_idx);
-            const bool last_card_is_black = last_card.value().suit == StandardDeck::Suits::SPADES ||
-                                            last_card.value().suit == StandardDeck::Suits::CLUBS;
+            const bool is_new_round_next = (is_call_check || is_check_check || is_raise_call) &&
+                                           !is_opening_call && state.to_bet->position > 0;
 
-            if (state.round >= 3 && last_card_is_black) {
-                state.is_final_betting_round = true;
-            }
-
-            if ((is_call_check || is_check_check || is_raise_call) && state.position > 0 &&
-                !is_opening_call) {
-                if (state.round >= 3 && last_card_is_black) {
-                    state.is_game_over = true;
-                    state.showdown_required = true;
-                    return state;
-                }
-
-                state.position = 0;
-                current_player = RobPokerPlayer::PLAYER2;
-                state.round++;
-                did_advance_to_new_betting_round = true;
-            } else if (is_allin_call) {
+            if (is_allin_call) {
                 state.is_game_over = true;
                 state.showdown_required = true;
+                state.last_played = current_player;
+                state.to_bet = std::nullopt;
                 return state;
+            }
+
+            const int last_card_idx = state.to_bet->round + 1;
+            const auto &last_card = history.common_cards.at(last_card_idx).value();
+            const bool is_last_card_black =
+                last_card.suit == StandardSuits::SPADES || last_card.suit == StandardSuits::CLUBS;
+
+            if (is_new_round_next && is_last_card_black && state.to_bet->round > 2) {
+                state.is_game_over = true;
+                state.showdown_required = true;
+                state.last_played = current_player;
+                state.to_bet = std::nullopt;
+                return state;
+            } else if (is_new_round_next) {
+                state.to_bet->round++;
+                state.to_bet->position = 0;
+                did_advance_to_new_betting_round = true;
+                // Check if we're entering the final round
+                const int next_card_idx = state.to_bet->round + 1;
+                const auto &next_card = history.common_cards.at(next_card_idx).value();
+                const bool is_next_card_black = next_card.suit == StandardSuits::SPADES ||
+                                                next_card.suit == StandardSuits::CLUBS;
+
+                if (is_next_card_black && state.to_bet->round > 2) {
+                    state.to_bet->is_final_betting_round = true;
+                }
             }
         }
         if (!did_advance_to_new_betting_round) {
-            state.position++;
-            current_player = other_player;
+            state.to_bet->position++;
+            state.last_played = current_player;
+            const int last_card_idx = state.to_bet->round + 1;
+            const auto &last_card = history.common_cards.at(last_card_idx).value();
+            const bool is_last_card_black =
+                last_card.suit == StandardSuits::SPADES || last_card.suit == StandardSuits::CLUBS;
+            if (is_last_card_black && state.to_bet->round > 2) {
+                state.to_bet->is_final_betting_round = true;
+            }
         }
     }
     return state;
@@ -151,11 +177,10 @@ std::optional<RobPokerPlayer> up_next(const RobPokerHistory &history) {
         return std::nullopt;
     }
 
-    // Player 1 starts the first betting round, but player 2 starts each following round.
-    const bool is_first_round = betting_state.round == 0;
-    const bool is_even_position = betting_state.position % 2 == 0;
-    return is_first_round ? (is_even_position ? P::PLAYER1 : P::PLAYER2)
-                          : (is_even_position ? P::PLAYER2 : P::PLAYER1);
+    const bool is_new_round =
+        betting_state.to_bet->position == 0 && betting_state.to_bet->round > 0;
+    return is_new_round ? P::PLAYER2
+                        : (betting_state.last_played == P::PLAYER1 ? P::PLAYER2 : P::PLAYER1);
 }
 
 std::array<uint64_t, 33> board_sizes = {0};
@@ -224,16 +249,16 @@ RobPokerHistory play(const RobPokerHistory &history, const RobPokerAction &actio
                 card.update_visibility([](const RobPokerPlayer) { return true; });
             }
         }
-    } else if (betting_state.position == 0) {
-        if (betting_state.round == 1) {
+    } else if (betting_state.to_bet->position == 0) {
+        if (betting_state.to_bet->round == 1) {
             // Show the flop
             for (int i = 0; i < 3; i++) {
                 out.common_cards[i].update_visibility([](const RobPokerPlayer) { return true; });
             }
-        } else if (betting_state.round > 1) {
+        } else if (betting_state.to_bet->round > 1) {
             // Show each subsequent card
-            if (out.common_cards[betting_state.round + 1].has_value()) {
-                out.common_cards[betting_state.round + 1].update_visibility(
+            if (out.common_cards[betting_state.to_bet->round + 1].has_value()) {
+                out.common_cards[betting_state.to_bet->round + 1].update_visibility(
                     [](const RobPokerPlayer) { return true; });
             }
         }
@@ -292,15 +317,7 @@ std::optional<int> terminal_value(const RobPokerHistory &history, const RobPoker
         return player_hand_rank > opponent_hand_rank ? betting_state.put_in_pot[opponent]
                                                      : -betting_state.put_in_pot[player];
     }
-    // determine which player folded and get sign
-    // Player 1 starts the first round of betting, so if the betting position is even, player 1
-    // folded
-    // On later rounds, player 2 starts the betting, so if the betting position is even, player
-    // 2 folded
-    const auto folding_player =
-        betting_state.round == 0
-            ? (betting_state.position % 2 == 0 ? RobPokerPlayer::PLAYER1 : RobPokerPlayer::PLAYER2)
-            : (betting_state.position % 2 == 0 ? RobPokerPlayer::PLAYER2 : RobPokerPlayer::PLAYER1);
+    const auto folding_player = betting_state.last_played;
     return player == folding_player ? -betting_state.put_in_pot[player]
                                     : betting_state.put_in_pot[opponent];
 }

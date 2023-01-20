@@ -64,8 +64,8 @@ std::vector<domain::RobPokerAction> action_generator(const domain::RobPokerHisto
             const int max_raise = std::get<domain::RaiseAction>(action).amount;
             const int pot_size = betting_state.put_in_pot[domain::RobPokerPlayer::PLAYER1] +
                                  betting_state.put_in_pot[domain::RobPokerPlayer::PLAYER2];
-            const int max_actions = betting_state.round == 0 ? 6 : 4;
-            if (pot_size < max_raise && betting_state.position < max_actions) {
+            const int max_actions = betting_state.to_bet->round == 0 ? 6 : 4;
+            if (pot_size < max_raise && betting_state.to_bet->position < max_actions) {
                 out.push_back(domain::RaisePotAction{});
             }
             out.push_back(domain::AllInAction{});
@@ -191,7 +191,7 @@ uint64_t count_infosets(const domain::RobPokerHistory &history = {}) {
         return count_infosets(play(history, make_in_out(gen)).history);
     }
     const auto betting_state = domain::compute_betting_state(history);
-    if (betting_state.position == 0) {
+    if (betting_state.to_bet->position == 0) {
         return 1;
     }
 

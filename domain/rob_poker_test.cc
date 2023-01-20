@@ -77,15 +77,15 @@ class RobPokerUpNextNoRunTest : public testing::Test,
 TEST_P(RobPokerUpNextNoRunTest, test_up_next) {
     // Setup
     const auto &[actions, expected_value] = GetParam();
-    const RobPokerHistory history = {
+    RobPokerHistory history = {
         .hole_cards =
             {
                 {RobPokerPlayer::PLAYER1,
-                 {make_fog_card(SCard{Ranks::_A, Suits::SPADES}),
-                  make_fog_card(SCard{Ranks::_A, Suits::CLUBS})}},
+                 {make_fog_card(SCard{Ranks::_A, Suits::SPADES}, RobPokerPlayer::PLAYER1),
+                  make_fog_card(SCard{Ranks::_A, Suits::CLUBS}, RobPokerPlayer::PLAYER1)}},
                 {RobPokerPlayer::PLAYER2,
-                 {make_fog_card(SCard{Ranks::_K, Suits::SPADES}),
-                  make_fog_card(SCard{Ranks::_K, Suits::CLUBS})}},
+                 {make_fog_card(SCard{Ranks::_K, Suits::SPADES}, RobPokerPlayer::PLAYER2),
+                  make_fog_card(SCard{Ranks::_K, Suits::CLUBS}, RobPokerPlayer::PLAYER2)}},
             },
 
         .common_cards =
@@ -96,8 +96,11 @@ TEST_P(RobPokerUpNextNoRunTest, test_up_next) {
                 make_fog_card(SCard{Ranks::_5, Suits::DIAMONDS}),
                 make_fog_card(SCard{Ranks::_6, Suits::SPADES}),
             },
-        .actions = actions,
+        .actions = {SMALL_BLIND, BIG_BLIND},
     };
+    for (const auto action : actions) {
+        history = play(history, action);
+    }
 
     // Action
     const auto maybe_next_player = up_next(history);
@@ -110,21 +113,20 @@ TEST_P(RobPokerUpNextNoRunTest, test_up_next) {
 }
 
 std::pair<std::vector<Action>, std::optional<RobPokerPlayer>> up_next_no_run_test_cases[] = {
-    {{SMALL_BLIND, BIG_BLIND}, RobPokerPlayer::PLAYER1},
-    {{SMALL_BLIND, BIG_BLIND, CallAction{}}, RobPokerPlayer::PLAYER2},
-    {{SMALL_BLIND, BIG_BLIND, RaiseAction{}}, RobPokerPlayer::PLAYER2},
-    {{SMALL_BLIND, BIG_BLIND, FoldAction{}}, {}},
-    {{SMALL_BLIND, BIG_BLIND, CallAction{}, CheckAction{}}, RobPokerPlayer::PLAYER2},
-    {{SMALL_BLIND, BIG_BLIND, CallAction{}, RaiseAction{}}, RobPokerPlayer::PLAYER1},
-    {{SMALL_BLIND, BIG_BLIND, CallAction{}, RaiseAction{}, RaiseAction{}}, RobPokerPlayer::PLAYER2},
-    {{SMALL_BLIND, BIG_BLIND, CallAction{}, CheckAction{}, CheckAction{}}, RobPokerPlayer::PLAYER1},
-    {{SMALL_BLIND, BIG_BLIND, CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}},
-     RobPokerPlayer::PLAYER2},
-    {{SMALL_BLIND, BIG_BLIND, CallAction{}, CheckAction{}, CheckAction{}, CheckAction{},
-      CheckAction{}, CheckAction{}, CheckAction{}},
+    {{}, RobPokerPlayer::PLAYER1},
+    {{CallAction{}}, RobPokerPlayer::PLAYER2},
+    {{RaiseAction{}}, RobPokerPlayer::PLAYER2},
+    {{FoldAction{}}, {}},
+    {{CallAction{}, CheckAction{}}, RobPokerPlayer::PLAYER2},
+    {{CallAction{}, RaiseAction{}}, RobPokerPlayer::PLAYER1},
+    {{CallAction{}, RaiseAction{}, RaiseAction{}}, RobPokerPlayer::PLAYER2},
+    {{CallAction{}, CheckAction{}, CheckAction{}}, RobPokerPlayer::PLAYER1},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}}, RobPokerPlayer::PLAYER2},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{},
+      CheckAction{}},
      RobPokerPlayer::PLAYER1},
-    {{SMALL_BLIND, BIG_BLIND, CallAction{}, CheckAction{}, CheckAction{}, CheckAction{},
-      CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{},
+      CheckAction{}, CheckAction{}},
      {}},
 };
 INSTANTIATE_TEST_SUITE_P(UpNext, RobPokerUpNextNoRunTest,
@@ -136,7 +138,7 @@ class RobPokerUpNextWithRunTest : public RobPokerUpNextNoRunTest {};
 TEST_P(RobPokerUpNextWithRunTest, test_up_next) {
     // Setup
     const auto &[actions, expected_value] = GetParam();
-    const RobPokerHistory history = {
+    RobPokerHistory history = {
         .hole_cards =
             {
                 {RobPokerPlayer::PLAYER1,
@@ -157,8 +159,11 @@ TEST_P(RobPokerUpNextWithRunTest, test_up_next) {
                 make_fog_card(SCard{Ranks::_7, Suits::DIAMONDS}),
                 make_fog_card(SCard{Ranks::_8, Suits::CLUBS}),
             },
-        .actions = actions,
+        .actions = {SMALL_BLIND, BIG_BLIND},
     };
+    for (const auto action : actions) {
+        history = play(history, action);
+    }
 
     // Action
     const auto maybe_next_player = up_next(history);
@@ -171,28 +176,26 @@ TEST_P(RobPokerUpNextWithRunTest, test_up_next) {
 }
 
 std::pair<std::vector<Action>, std::optional<RobPokerPlayer>> up_next_with_run_test_cases[] = {
-    {{SMALL_BLIND, BIG_BLIND}, RobPokerPlayer::PLAYER1},
-    {{SMALL_BLIND, BIG_BLIND, CallAction{}}, RobPokerPlayer::PLAYER2},
-    {{SMALL_BLIND, BIG_BLIND, RaiseAction{}}, RobPokerPlayer::PLAYER2},
-    {{SMALL_BLIND, BIG_BLIND, FoldAction{}}, {}},
-    {{SMALL_BLIND, BIG_BLIND, CallAction{}, CheckAction{}}, RobPokerPlayer::PLAYER2},
-    {{SMALL_BLIND, BIG_BLIND, CallAction{}, RaiseAction{}}, RobPokerPlayer::PLAYER1},
-    {{SMALL_BLIND, BIG_BLIND, CallAction{}, RaiseAction{}, RaiseAction{}}, RobPokerPlayer::PLAYER2},
-    {{SMALL_BLIND, BIG_BLIND, CallAction{}, CheckAction{}, CheckAction{}}, RobPokerPlayer::PLAYER1},
-    {{SMALL_BLIND, BIG_BLIND, CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}},
-     RobPokerPlayer::PLAYER2},
-    {{SMALL_BLIND, BIG_BLIND, CallAction{}, CheckAction{}, CheckAction{}, CheckAction{},
-      CheckAction{}, CheckAction{}, CheckAction{}},
+    {{}, RobPokerPlayer::PLAYER1},
+    {{CallAction{}}, RobPokerPlayer::PLAYER2},
+    {{RaiseAction{}}, RobPokerPlayer::PLAYER2},
+    {{FoldAction{}}, {}},
+    {{CallAction{}, CheckAction{}}, RobPokerPlayer::PLAYER2},
+    {{CallAction{}, RaiseAction{}}, RobPokerPlayer::PLAYER1},
+    {{CallAction{}, RaiseAction{}, RaiseAction{}}, RobPokerPlayer::PLAYER2},
+    {{CallAction{}, CheckAction{}, CheckAction{}}, RobPokerPlayer::PLAYER1},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}}, RobPokerPlayer::PLAYER2},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{},
+      CheckAction{}},
      RobPokerPlayer::PLAYER1},
-    {{SMALL_BLIND, BIG_BLIND, CallAction{}, CheckAction{}, CheckAction{}, CheckAction{},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{},
+      CheckAction{}, CheckAction{}},
+     RobPokerPlayer::PLAYER2},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{},
       CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}},
      RobPokerPlayer::PLAYER2},
-    {{SMALL_BLIND, BIG_BLIND, CallAction{}, CheckAction{}, CheckAction{}, CheckAction{},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{},
       CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}},
-     RobPokerPlayer::PLAYER2},
-    {{SMALL_BLIND, BIG_BLIND, CallAction{}, CheckAction{}, CheckAction{}, CheckAction{},
-      CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{},
-      CheckAction{}, CheckAction{}},
      {}},
 };
 INSTANTIATE_TEST_SUITE_P(UpNext, RobPokerUpNextWithRunTest,
@@ -206,7 +209,7 @@ class RobPokerPossibleActionsTest
 TEST_P(RobPokerPossibleActionsTest, test_possible_actions) {
     // Setup
     const auto &[action_history, expected_actions] = GetParam();
-    const RobPokerHistory history = {
+    RobPokerHistory history = {
         .hole_cards =
             {
                 {RobPokerPlayer::PLAYER1,
@@ -227,8 +230,12 @@ TEST_P(RobPokerPossibleActionsTest, test_possible_actions) {
                 make_fog_card(SCard{Ranks::_7, Suits::DIAMONDS}),
                 make_fog_card(SCard{Ranks::_8, Suits::CLUBS}),
             },
-        .actions = action_history,
+        .actions = {SMALL_BLIND, BIG_BLIND},
     };
+
+    for (const auto action : action_history) {
+        history = play(history, action);
+    }
 
     // Action
     const auto actions = possible_actions(history);
@@ -244,38 +251,33 @@ TEST_P(RobPokerPossibleActionsTest, test_possible_actions) {
 }
 
 std::pair<std::vector<Action>, std::vector<Action>> possible_actions_test_cases[] = {
-    {{SMALL_BLIND, BIG_BLIND}, {CallAction{}, RaiseAction{}, FoldAction{}}},
-    {{SMALL_BLIND, BIG_BLIND, CallAction{}}, {RaiseAction{}, FoldAction{}, CheckAction{}}},
-    {{SMALL_BLIND, BIG_BLIND, RaiseAction{}}, {CallAction{}, RaiseAction{}, FoldAction{}}},
-    {{SMALL_BLIND, BIG_BLIND, FoldAction{}}, {}},
-    {{SMALL_BLIND, BIG_BLIND, CallAction{}, CheckAction{}},
-     {RaiseAction{}, CheckAction{}, FoldAction{}}},
-    {{SMALL_BLIND, BIG_BLIND, CallAction{}, RaiseAction{}},
-     {CallAction{}, RaiseAction{}, FoldAction{}}},
-    {{SMALL_BLIND, BIG_BLIND, CallAction{}, RaiseAction{}, RaiseAction{}},
-     {CallAction{}, RaiseAction{}, FoldAction{}}},
+    {{}, {CallAction{}, RaiseAction{}, FoldAction{}}},
+    {{CallAction{}}, {RaiseAction{}, FoldAction{}, CheckAction{}}},
+    {{RaiseAction{}}, {CallAction{}, RaiseAction{}, FoldAction{}}},
+    {{FoldAction{}}, {}},
+    {{CallAction{}, CheckAction{}}, {RaiseAction{}, CheckAction{}, FoldAction{}}},
+    {{CallAction{}, RaiseAction{}}, {CallAction{}, RaiseAction{}, FoldAction{}}},
+    {{CallAction{}, RaiseAction{}, RaiseAction{}}, {CallAction{}, RaiseAction{}, FoldAction{}}},
     // After first check in second betting round
-    {{SMALL_BLIND, BIG_BLIND, CallAction{}, CheckAction{}, CheckAction{}},
-     {RaiseAction{}, FoldAction{}, CheckAction{}}},
+    {{CallAction{}, CheckAction{}, CheckAction{}}, {RaiseAction{}, FoldAction{}, CheckAction{}}},
     // At start of third betting round
-    {{SMALL_BLIND, BIG_BLIND, CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}},
      {RaiseAction{}, FoldAction{}, CheckAction{}}},
     // After first check of fourth betting round
-    {{SMALL_BLIND, BIG_BLIND, CallAction{}, CheckAction{}, CheckAction{}, CheckAction{},
-      CheckAction{}, CheckAction{}, CheckAction{}},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{},
+      CheckAction{}},
      {RaiseAction{}, FoldAction{}, CheckAction{}}},
     // At start of fifth betting round
-    {{SMALL_BLIND, BIG_BLIND, CallAction{}, CheckAction{}, CheckAction{}, CheckAction{},
-      CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{},
+      CheckAction{}, CheckAction{}},
      {RaiseAction{}, FoldAction{}, CheckAction{}}},
     // After first check of fifth betting round
-    {{SMALL_BLIND, BIG_BLIND, CallAction{}, CheckAction{}, CheckAction{}, CheckAction{},
-      CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{},
+      CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}},
      {RaiseAction{}, FoldAction{}, CheckAction{}}},
     // At the end of the last betting round
-    {{SMALL_BLIND, BIG_BLIND, CallAction{}, CheckAction{}, CheckAction{}, CheckAction{},
-      CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{},
-      CheckAction{}, CheckAction{}},
+    {{CallAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{},
+      CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}, CheckAction{}},
      {}},
 };
 INSTANTIATE_TEST_SUITE_P(PossibleActions, RobPokerPossibleActionsTest,
@@ -526,6 +528,41 @@ TEST(RobPokerTest, allin_call_is_game_end) {
     // card
     ASSERT_TRUE(maybe_value.has_value());
     EXPECT_EQ(maybe_value.value(), 400);
+}
+
+TEST(ComputeBettingStateTest, five_card_board_has_correct_betting_state) {
+    // Setup
+    const RobPokerHistory history = {
+        .hole_cards =
+            {
+                {RobPokerPlayer::PLAYER1,
+                 {make_fog_card(SCard(Ranks::_5, Suits::HEARTS), RobPokerPlayer::PLAYER1),
+                  make_fog_card(SCard(Ranks::_K, Suits::DIAMONDS), RobPokerPlayer::PLAYER1)}},
+                {RobPokerPlayer::PLAYER2,
+                 {make_fog_card(SCard(Ranks::_7, Suits::CLUBS), RobPokerPlayer::PLAYER2),
+                  make_fog_card(SCard(Ranks::_3, Suits::CLUBS), RobPokerPlayer::PLAYER2)}},
+            },
+        .common_cards =
+            {
+                make_public_card(SCard(Ranks::_7, Suits::HEARTS)),
+                make_public_card(SCard(Ranks::_9, Suits::HEARTS)),
+                make_public_card(SCard(Ranks::_2, Suits::HEARTS)),
+                make_public_card(SCard(Ranks::_J, Suits::CLUBS)),
+                make_public_card(SCard(Ranks::_6, Suits::SPADES)),
+            },
+        .actions = {SMALL_BLIND, BIG_BLIND, CallAction(), CheckAction(), CheckAction(), CheckAction(), CheckAction(),
+                    CheckAction()}};
+
+    // Action
+    const auto betting_state = compute_betting_state(history);
+
+    // Verification
+    EXPECT_FALSE(betting_state.is_game_over);
+    EXPECT_FALSE(betting_state.showdown_required);
+    EXPECT_TRUE(betting_state.to_bet.has_value());
+    EXPECT_EQ(betting_state.to_bet->round, 3);
+    EXPECT_EQ(betting_state.to_bet->position, 0);
+    EXPECT_TRUE(betting_state.to_bet->is_final_betting_round);
 }
 
 TEST(NChooseKTest, n_choose_1) {
