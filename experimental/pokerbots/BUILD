@@ -111,3 +111,13 @@ cc_library(
     ":hand_evaluator",
   ],
 )
+
+cc_binary(
+  name = "cluster_hands",
+  srcs = ["cluster_hands.cc"],
+  deps = [
+    "//domain:deck",
+    ":hand_evaluator",
+    "//common/time:robot_time"
+  ]
+)

@@ -38,8 +38,8 @@ StrengthPotentialResult evaluate_strength_potential(
     const std::array<domain::StandardDeck::Card, 2> &hand,
     const std::vector<domain::StandardDeck::Card> &board,
     const std::optional<int> max_additional_cards,
-    const std::optional<time::RobotTimestamp::duration> timeout,
-    const std::optional<int> num_hands);
+    const std::optional<time::RobotTimestamp::duration> timeout, const std::optional<int> num_hands,
+    InOut<std::mt19937> gen);
 
 StrengthPotentialResult evaluate_strength_potential(
     const domain::RobPokerHistory &history, const domain::RobPokerPlayer player,
