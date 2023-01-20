@@ -17,21 +17,21 @@ const std::filesystem::path BASE_DIR = "/tmp/cluster_hands";
 
 namespace robot::experimental::pokerbots {
 
-  namespace {
-  std::vector<domain::StandardDeck::Card> cards_from_string(const std::string &cards_str) {
-      const std::string ranks = "23456789TJQKA";
-      const std::string suits = "shcd";
-      std::vector<domain::StandardDeck::Card> out;
-      for (int i = 0; i < static_cast<int>(cards_str.size()); i += 2) {
-          out.push_back({
-              static_cast<domain::StandardRanks>(ranks.find(cards_str[i])),
-              static_cast<domain::StandardSuits>(suits.find(cards_str[i + 1])),
-          });
-      }
-      return out;
-  }
+namespace {
+std::vector<domain::StandardDeck::Card> cards_from_string(const std::string &cards_str) {
+    const std::string ranks = "23456789TJQKA";
+    const std::string suits = "shcd";
+    std::vector<domain::StandardDeck::Card> out;
+    for (int i = 0; i < static_cast<int>(cards_str.size()); i += 2) {
+        out.push_back({
+            static_cast<domain::StandardRanks>(ranks.find(cards_str[i])),
+            static_cast<domain::StandardSuits>(suits.find(cards_str[i + 1])),
+        });
+    }
+    return out;
+}
 
-  }  // namespace
+}  // namespace
 void evaluate_hole_cards() {
     const std::filesystem::path HOLE_CARDS_OUTPUT = BASE_DIR / "hole_cards_output.csv";
     std::cout << "Start!" << std::endl;
