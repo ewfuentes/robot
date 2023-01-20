@@ -56,7 +56,7 @@ void evaluate_hole_cards() {
         }
         const auto dt = time::current_robot_time() - now;
         std::cout << "time elapsed to evaluate all hole cards: "
-                  << std::chrono::duration_cast<std::chrono::milliseconds>(dt) << std::endl;
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(dt).count() << std::endl;
     }
 
     // For every pair of hole cards and each possible board, compute what the strength potential is
@@ -104,7 +104,8 @@ std::vector<StrengthPotentialResult> evaluate_hands(const std::vector<std::strin
             }
             const auto dt = time::current_robot_time() - start;
             std::cout << "Chunk at " << chunk_start << " finished in: "
-                      << std::chrono::duration_cast<std::chrono::milliseconds>(dt) << std::endl;
+                      << std::chrono::duration_cast<std::chrono::milliseconds>(dt).count()
+                      << std::endl;
         });
     return outputs;
 }
@@ -158,12 +159,13 @@ void evaluate_flops() {
             }
             const auto dt = time::current_robot_time() - start;
             std::cout << to_string(cards[0]) << to_string(cards[1]) << " in "
-                      << std::chrono::duration_cast<std::chrono::milliseconds>(dt) << std::endl;
+                      << std::chrono::duration_cast<std::chrono::milliseconds>(dt).count()
+                      << std::endl;
         });
 
     const auto dt = time::current_robot_time() - now;
     std::cout << "time elapsed to evaluate all hole cards: "
-              << std::chrono::duration_cast<std::chrono::milliseconds>(dt) << std::endl;
+              << std::chrono::duration_cast<std::chrono::milliseconds>(dt).count() << std::endl;
 
     // For every pair of hole cards and each possible board, compute what the strength potential is
     std::cout << "Done!" << std::endl;

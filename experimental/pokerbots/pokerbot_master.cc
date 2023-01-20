@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <ios>
+#include <random>
 #include <string_view>
 #include <thread>
 #include <variant>
@@ -83,7 +84,10 @@ int train(const std::filesystem::path &output_directory, const uint64_t num_iter
     const learning::MinRegretTrainConfig<RobPoker> config = {
         .num_iterations = num_iterations,
         .infoset_id_from_hist =
-            [](const RobPoker::History &history) { return infoset_id_from_history(history); },
+            [](const RobPoker::History &history) {
+                std::mt19937 gen(0);
+                return infoset_id_from_history(history, make_in_out(gen));
+            },
         .action_generator = action_generator,
         .seed = 0,
         .sample_strategy = learning::SampleStrategy::EXTERNAL_SAMPLING,

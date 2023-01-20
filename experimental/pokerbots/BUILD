@@ -107,6 +107,7 @@ cc_library(
   hdrs = ["generate_infoset_id.hh"],
   srcs = ["generate_infoset_id.cc"],
   deps = [
+    "//common:argument_wrapper",
     "//domain:deck",
     "//domain:rob_poker",
     ":hand_evaluator",

@@ -1,6 +1,7 @@
 
 #include "experimental/pokerbots/generate_infoset_id.hh"
 
+#include <random>
 #include <variant>
 
 #include "common/time/robot_time.hh"
@@ -9,7 +10,8 @@
 #include "experimental/pokerbots/hand_evaluator.hh"
 
 namespace robot::experimental::pokerbots {
-domain::RobPoker::InfoSetId infoset_id_from_history(const domain::RobPokerHistory &history) {
+domain::RobPoker::InfoSetId infoset_id_from_history(const domain::RobPokerHistory &history,
+                                                    InOut<std::mt19937> gen) {
     const auto player = up_next(history).value();
     const auto betting_state = compute_betting_state(history);
     std::vector<domain::StandardDeck::Card> public_cards;
@@ -22,13 +24,14 @@ domain::RobPoker::InfoSetId infoset_id_from_history(const domain::RobPokerHistor
 
     return infoset_id_from_information(
         {history.hole_cards[player][0].value(), history.hole_cards[player][1].value()},
-        public_cards, history.actions, betting_state);
+        public_cards, history.actions, betting_state, gen);
 }
 
 domain::RobPoker::InfoSetId infoset_id_from_information(
     const std::array<domain::StandardDeck::Card, 2> &private_cards,
     const std::vector<domain::StandardDeck::Card> &common_cards,
-    const std::vector<domain::RobPokerAction> &actions, const domain::BettingState &betting_state) {
+    const std::vector<domain::RobPokerAction> &actions, const domain::BettingState &betting_state,
+    InOut<std::mt19937> gen) {
     using Suits = domain::StandardDeck::Suits;
     // There can be up to 6 actions, we allocate 4 bits for each actions
     // bits 40 - 63: observed actions
@@ -95,7 +98,7 @@ domain::RobPoker::InfoSetId infoset_id_from_information(
         constexpr std::optional<int> hand_limit = 250;
         constexpr int max_additional_cards = 2;
         const StrengthPotentialResult result = evaluate_strength_potential(
-            private_cards, common_cards, max_additional_cards, timeout, hand_limit);
+            private_cards, common_cards, max_additional_cards, timeout, hand_limit, gen);
         // Bin the hand by expected hand strength, positve and negative potential
         // Hand strength bins:
         //  0 - [0.0, 0.2)
