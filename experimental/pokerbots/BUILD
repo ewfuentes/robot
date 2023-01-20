@@ -29,7 +29,7 @@ pybind_extension(
   name = "hand_evaluator_python",
   srcs = ["hand_evaluator_python.cc"],
   deps = [
-  ":hand_evaluator",
+    ":hand_evaluator",
   ],
   visibility=["//visibility:public"],
 )
@@ -46,12 +46,15 @@ py_binary(
     tags=["manual"],
     data = [
       ":hand_evaluator_python.so",
-      "pokerbot_checkpoint_003100000.pb",
+      "pokerbot_checkpoint_006500000.pb",
+      "bin_centers.pb",
     ],
+    visibility=["//visibility:public"],
     deps=[
         requirement("numpy"),
         "@mit_pokerbots//:framework",
         "//learning:min_regret_strategy_proto_py",
+        ":bin_centers_proto_py",
     ],
 )
 
@@ -114,6 +117,16 @@ cc_library(
     ":bin_centers_proto",
   ],
 )
+
+cc_test(
+  name = "generate_infoset_id_test",
+  srcs = ["generate_infoset_id_test.cc"],
+  deps = [
+    ":generate_infoset_id",
+    "@com_google_googletest//:gtest_main",
+  ]
+)
+
 
 cc_library(
   name = "evaluate_mass_hands",

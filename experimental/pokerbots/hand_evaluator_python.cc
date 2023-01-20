@@ -23,8 +23,8 @@ PYBIND11_MODULE(hand_evaluator_python, m) {
         .def_readonly("num_evaluations", &StrengthPotentialResult::num_evaluations);
 
     m.def("evaluate_expected_strength", &evaluate_expected_strength, "hand"_a,
-          "opponent_hand_str"_a = "random", "board_str"_a, "timeout_s"_a = std::nullopt,
-          "num_hands"_a = std::nullopt);
+          "opponent_hand_str"_a = "random", "board_str"_a, 
+          "timeout_s"_a = std::nullopt, "num_hands"_a = std::nullopt);
     m.def("evaluate_strength_potential",
           py::overload_cast<const std::string &, const std::string &, const std::optional<int>,
                             const std::optional<double>, const std::optional<int>>(

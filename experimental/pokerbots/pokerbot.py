@@ -1,15 +1,13 @@
 from typing import Union
-import pickle
+import os
 
 from python_skeleton.skeleton import bot
 from python_skeleton.skeleton.states import (
     GameState,
     RoundState,
     TerminalState,
-    NUM_ROUNDS,
     STARTING_STACK,
-    BIG_BLIND,
-    SMALL_BLIND,
+    NUM_ROUNDS,
 )
 from python_skeleton.skeleton.actions import (
     FoldAction,
@@ -20,14 +18,15 @@ from python_skeleton.skeleton.actions import (
 
 from python_skeleton.skeleton import runner
 import experimental.pokerbots.hand_evaluator_python as hep
+import experimental.pokerbots.bin_centers_pb2
 import learning.min_regret_strategy_pb2
-import random
 import numpy as np
 
-import os
+np.set_printoptions(precision=3)
 
-if os.environ["RUNFILES_DIR"]:
-    os.chdir(os.path.join(os.environ["RUNFILES_DIR"], "__main__"))
+runfiles_dir = os.environ.get("RUNFILES_DIR")
+if runfiles_dir:
+    os.chdir(os.path.join(runfiles_dir, "__main__"))
 
 
 def compute_opponent_action(current_state: RoundState, player_num: int):
@@ -72,8 +71,8 @@ def compute_betting_round(round_state: RoundState):
 
     last_card = round_state.deck[-1]
     if last_card[1] in "sc":
-        return 4
-    return 3
+        return 3
+    return 2
 
 
 def card_idx(card_str):
@@ -86,7 +85,9 @@ def card_idx(card_str):
     return out
 
 
-def compute_infoset_id(action_queue, betting_round, hand, board_cards):
+def compute_infoset_id(
+    action_queue, betting_round, hand, board_cards, per_turn_bin_centers
+):
     infoset_id = 0
     action_dict = {
         "Fold": 1,
@@ -96,7 +97,7 @@ def compute_infoset_id(action_queue, betting_round, hand, board_cards):
         "RaisePot": 5,
         "AllIn": 6,
     }
-    for action in action_queue:
+    for action in action_queue[::-1]:
         infoset_id = (infoset_id << 4) | action_dict[action]
 
     infoset_id = (infoset_id << 8) | betting_round
@@ -116,7 +117,6 @@ def compute_infoset_id(action_queue, betting_round, hand, board_cards):
         is_higher_red = (higher_suit % 2) == 1
         is_suit_equal = lower_suit == higher_suit
 
-        print("id for:", (action_queue, betting_round, hand))
         if is_suit_equal:
             # suited red or black
             infoset_id = infoset_id | (1 if is_higher_red else 0)
@@ -127,11 +127,13 @@ def compute_infoset_id(action_queue, betting_round, hand, board_cards):
             # off suit of different colors
             infoset_id = infoset_id | (5 if is_higher_red else 4)
 
+        return [infoset_id]
+
     else:
         # compute the hand potential and encode it into the infoset id
         TIMEOUT_S = 0.02
         HAND_LIMIT = 1000
-        MAX_ADDITIONAL_CARDS = 2
+        MAX_ADDITIONAL_CARDS = 7
         result = hep.evaluate_strength_potential(
             "".join(hand),
             "".join(board_cards),
@@ -140,52 +142,32 @@ def compute_infoset_id(action_queue, betting_round, hand, board_cards):
             HAND_LIMIT,
         )
 
-        if result.strength < 0.2:
-            hand_strength_bin = 0
-        elif result.strength < 0.4:
-            hand_strength_bin = 1
-        elif result.strength < 0.6:
-            hand_strength_bin = 2
-        elif result.strength < 0.8:
-            hand_strength_bin = 3
+        if betting_round == 1:
+            bin_centers = per_turn_bin_centers.flop_centers
+        elif betting_round == 2:
+            bin_centers = per_turn_bin_centers.turn_centers
         else:
-            hand_strength_bin = 4
+            bin_centers = per_turn_bin_centers.river_centers
 
-        if result.negative_potential < 0.1:
-            negative_potential_bin = 0
-        elif result.negative_potential < 0.2:
-            negative_potential_bin = 1
-        else:
-            negative_potential_bin = 2
+        def dist_to_bin(bin_center, strength_potential):
+            d_strength = bin_center.strength - strength_potential.strength
+            d_neg_pot = (
+                bin_center.negative_potential - strength_potential.negative_potential
+            )
+            d_pos_pot = (
+                bin_center.positive_potential - strength_potential.positive_potential
+            )
+            return (
+                d_strength * d_strength + d_neg_pot * d_neg_pot + d_pos_pot * d_pos_pot
+            )
 
-        if result.positive_potential < 0.1:
-            positive_potential_bin = 0
-        elif result.positive_potential < 0.2:
-            positive_potential_bin = 1
-        else:
-            positive_potential_bin = 2
+        nearest_bucket_idx = sorted(
+            range(len(bin_centers)),
+            key=lambda idx: dist_to_bin(bin_centers[idx], result),
+        )
 
         infoset_id = infoset_id << 32
-        infoset_id = (
-            infoset_id
-            | (hand_strength_bin << 8)
-            | (negative_potential_bin << 4)
-            | (positive_potential_bin)
-        )
-        print(
-            "id for:",
-            (
-                action_queue,
-                betting_round,
-                hand_strength_bin,
-                negative_potential_bin,
-                positive_potential_bin,
-            ),
-            "num evals:",
-            result.num_evaluations,
-        )
-
-    return infoset_id
+        return [(infoset_id | idx) for idx in nearest_bucket_idx]
 
 
 class Pokerbot(bot.Bot):
@@ -194,21 +176,35 @@ class Pokerbot(bot.Bot):
     def __init__(self):
         """Init."""
         with open(
-            "experimental/pokerbots/pokerbot_checkpoint_003100000.pb", "rb"
+            "experimental/pokerbots/pokerbot_checkpoint_006500000.pb", "rb"
         ) as file_in:
             strategy = learning.min_regret_strategy_pb2.MinRegretStrategy()
             strategy.ParseFromString(file_in.read())
         self._strategy = {x.id_num: x for x in strategy.infoset_counts}
+
+        with open("experimental/pokerbots/bin_centers.pb", "rb") as file_in:
+            self._per_turn_bin_centers = (
+                experimental.pokerbots.bin_centers_pb2.PerTurnBinCenters()
+            )
+            self._per_turn_bin_centers.ParseFromString(file_in.read())
+
         self._rng = np.random.default_rng()
         self._round_state = {}
+        self._should_check_fold = False
 
     def handle_new_round(
         self, game_state: GameState, round_state: RoundState, active
     ) -> None:
         """Handle New Round."""
+        rounds_remaining = NUM_ROUNDS - game_state.round_num
+        check_fold_cost_per_round = 1.5
+        cost_to_check_fold = rounds_remaining * check_fold_cost_per_round + 10
+        if cost_to_check_fold < game_state.bankroll:
+            self._should_check_fold = True
         print(
-            f"*** Round {game_state.round_num} Player: {active} Clock: {game_state.game_clock}"
+            f"*** Round {game_state.round_num} Player: {active} BankRoll: {game_state.bankroll} Clock: {game_state.game_clock} check fold: {self._should_check_fold}"
         )
+
         self._round_state = {"action_queue": [], "street": 0, "have_gone_all_in": False}
 
     def handle_round_over(
@@ -269,40 +265,57 @@ class Pokerbot(bot.Bot):
         pot_total = my_contribution + opp_contribution
         maybe_action = compute_opponent_action(round_state, active)
         if maybe_action:
-            print("Detected:", maybe_action)
             self._round_state["action_queue"].append(maybe_action)
-        print("Action Queue:", self._round_state["action_queue"])
         betting_round = compute_betting_round(round_state)
 
-        # look up the strategy
-        infoset_id = compute_infoset_id(
-            self._round_state["action_queue"], betting_round, my_cards, board_cards
+        # Get nearest infoset ids
+        infoset_ids = compute_infoset_id(
+            self._round_state["action_queue"],
+            betting_round,
+            my_cards,
+            board_cards,
+            self._per_turn_bin_centers,
         )
 
-        print(hex(infoset_id), infoset_id)
-
         actions = ["Fold", "Check", "Call", "RaisePot", "AllIn"]
-        if infoset_id in self._strategy:
+        strategy = None
+        ids_skipped = 0
+        for infoset_id in infoset_ids:
+            if infoset_id not in self._strategy:
+                ids_skipped += 1
+                continue
             strategy_sum = np.array(self._strategy[infoset_id].strategy_sum)
+            partition = np.sum(strategy_sum)
+            if partition == 0.0:
+                ids_skipped += 1
+                continue
+            print("id:", hex(infoset_id))
+            if ids_skipped:
+                print("Skipped", ids_skipped, "ids")
             strategy = strategy_sum / np.sum(strategy_sum)
+            break
 
-        else:
-            print("could not find strategy! uniform over valid actions")
+        if strategy is None:
+            print("Could not find strategy!")
             strategy = np.zeros(len(actions))
             if FoldAction in legal_actions:
-                strategy[0] = 1.0
+                strategy[0] = 0.5
             if CheckAction in legal_actions:
                 strategy[1] = 1.0
+            if CallAction in legal_actions:
+                strategy[2] = 1.0
             if RaiseAction in legal_actions:
                 if max_raise > pot_total:
-                    strategy[3] = 1
-                strategy[4] = 1
+                    strategy[3] = 0.5
+                strategy[4] = 0.01
             strategy = strategy / np.sum(strategy)
 
-        print("Strategy", strategy)
+        # Purify strategy
+        strategy[strategy < 0.1] = 0.0
+        strategy = strategy / np.sum(strategy)
+        print(strategy)
         action_idx = self._rng.choice(len(actions), p=strategy)
         action = actions[action_idx]
-        self._round_state["action_queue"].append(action)
 
         action_dict = {
             "Fold": FoldAction(),
@@ -315,11 +328,18 @@ class Pokerbot(bot.Bot):
             action = "Check"
         if action == "RaisePot" and action_dict["RaisePot"].amount > max_raise:
             action = "AllIn"
-        print("Selected action", action, action_dict[action])
+        if self._should_check_fold:
+            if FoldAction in legal_actions:
+                action = "Fold"
+            if CheckAction in legal_actions:
+                action = "Check"
+
+        print(action)
 
         if action == "AllIn":
             self._round_state["have_gone_all_in"] = True
 
+        self._round_state["action_queue"].append(action)
         self._round_state["street"] = round_state.street
         print("")
 
