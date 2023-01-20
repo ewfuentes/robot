@@ -550,8 +550,8 @@ TEST(ComputeBettingStateTest, five_card_board_has_correct_betting_state) {
                 make_public_card(SCard(Ranks::_J, Suits::CLUBS)),
                 make_public_card(SCard(Ranks::_6, Suits::SPADES)),
             },
-        .actions = {SMALL_BLIND, BIG_BLIND, CallAction(), CheckAction(), CheckAction(), CheckAction(), CheckAction(),
-                    CheckAction()}};
+        .actions = {SMALL_BLIND, BIG_BLIND, CallAction(), CheckAction(), CheckAction(),
+                    CheckAction(), CheckAction(), CheckAction()}};
 
     // Action
     const auto betting_state = compute_betting_state(history);
