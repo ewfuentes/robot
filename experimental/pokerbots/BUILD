@@ -1,3 +1,4 @@
+load("//common/proto:proto.bzl", "multi_proto_library")
 load("@pip//:requirements.bzl", "requirement")
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
 load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_runtime")
@@ -26,7 +27,7 @@ py_runtime(
 
 pybind_extension(
   name = "hand_evaluator_python",
-  srcs = ["hand_evaluator_python.cc"],
+  srcs = ["hand_evaluator_python.cc", "cluster_hands.cc"],
   copts = ["-fPIC"],
   deps = [
   ":hand_evaluator",
@@ -106,8 +107,25 @@ cc_library(
   hdrs = ["generate_infoset_id.hh"],
   srcs = ["generate_infoset_id.cc"],
   deps = [
+    "//common:argument_wrapper",
     "//domain:deck",
     "//domain:rob_poker",
     ":hand_evaluator",
   ],
+)
+
+cc_binary(
+  name = "cluster_hands",
+  srcs = ["cluster_hands.cc"],
+  deps = [
+    "//domain:deck",
+    ":hand_evaluator",
+    "//common/time:robot_time"
+  ]
+)
+
+multi_proto_library(
+  name = "bin_centers_proto",
+  srcs = ["bin_centers.proto"],
+  visibility = ["//visibility:public"],
 )

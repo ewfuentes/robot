@@ -240,12 +240,11 @@ StrengthPotentialResult evaluate_strength_potential(
     const std::array<domain::StandardDeck::Card, 2> &hand,
     const std::vector<domain::StandardDeck::Card> &board,
     const std::optional<int> max_additional_cards,
-    const std::optional<time::RobotTimestamp::duration> timeout,
-    const std::optional<int> num_hands) {
+    const std::optional<time::RobotTimestamp::duration> timeout, const std::optional<int> num_hands,
+    InOut<std::mt19937> gen) {
     const auto history = create_history_from_known_cards(hand, board);
-    std::mt19937 gen(0);
     return evaluate_strength_potential(history, domain::RobPokerPlayer::PLAYER1,
-                                       max_additional_cards, timeout, num_hands, make_in_out(gen));
+                                       max_additional_cards, timeout, num_hands, gen);
 }
 
 StrengthPotentialResult evaluate_strength_potential(const std::string &hand_str,
