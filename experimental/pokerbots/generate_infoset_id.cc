@@ -1,6 +1,7 @@
 
 #include "experimental/pokerbots/generate_infoset_id.hh"
 
+#include <limits>
 #include <random>
 #include <variant>
 
@@ -11,6 +12,7 @@
 
 namespace robot::experimental::pokerbots {
 domain::RobPoker::InfoSetId infoset_id_from_history(const domain::RobPokerHistory &history,
+                                                    const proto::PerTurnBinCenters &bin_centers,
                                                     InOut<std::mt19937> gen) {
     const auto player = up_next(history).value();
     const auto betting_state = compute_betting_state(history);
@@ -24,14 +26,14 @@ domain::RobPoker::InfoSetId infoset_id_from_history(const domain::RobPokerHistor
 
     return infoset_id_from_information(
         {history.hole_cards[player][0].value(), history.hole_cards[player][1].value()},
-        public_cards, history.actions, betting_state, gen);
+        public_cards, history.actions, betting_state, bin_centers, gen);
 }
 
 domain::RobPoker::InfoSetId infoset_id_from_information(
     const std::array<domain::StandardDeck::Card, 2> &private_cards,
     const std::vector<domain::StandardDeck::Card> &common_cards,
     const std::vector<domain::RobPokerAction> &actions, const domain::BettingState &betting_state,
-    InOut<std::mt19937> gen) {
+    const proto::PerTurnBinCenters &bin_centers, InOut<std::mt19937> gen) {
     using Suits = domain::StandardDeck::Suits;
     // There can be up to 6 actions, we allocate 4 bits for each actions
     // bits 40 - 63: observed actions
@@ -99,51 +101,32 @@ domain::RobPoker::InfoSetId infoset_id_from_information(
         constexpr int max_additional_cards = 2;
         const StrengthPotentialResult result = evaluate_strength_potential(
             private_cards, common_cards, max_additional_cards, timeout, hand_limit, gen);
-        // Bin the hand by expected hand strength, positve and negative potential
-        // Hand strength bins:
-        //  0 - [0.0, 0.2)
-        //  1 - [0.2, 0.4)
-        //  2 - [0.4, 0.6)
-        //  3 - [0.6, 0.8)
-        //  4 - [0.8, 1.0]
-        int hand_strength_bin = 0;
-        if (result.strength < 0.2) {
-            hand_strength_bin = 0;
-        } else if (result.strength < 0.4) {
-            hand_strength_bin = 1;
-        } else if (result.strength < 0.6) {
-            hand_strength_bin = 2;
-        } else if (result.strength < 0.8) {
-            hand_strength_bin = 3;
-        } else {
-            hand_strength_bin = 4;
-        }
 
-        // Negative/Postive potential bins:
-        // 0 - [0.0, 0.1)
-        // 1 - [0.1, 0.2)
-        // 2 - [0.2, 1.0]
-        int negative_potential_bin = 0;
-        if (result.negative_potential < 0.1) {
-            negative_potential_bin = 0;
-        } else if (result.negative_potential < 0.2) {
-            negative_potential_bin = 1;
-        } else {
-            negative_potential_bin = 2;
-        }
+        const auto &turn_bin_centers = [&bin_centers, betting_round]() {
+            if (betting_round == 1) {
+                return bin_centers.flop_centers();
+            } else if (betting_round == 2) {
+                return bin_centers.turn_centers();
+            } else {
+                return bin_centers.river_centers();
+            }
+        }();
 
-        int positive_potential_bin = 0;
-        if (result.positive_potential < 0.1) {
-            positive_potential_bin = 0;
-        } else if (result.positive_potential < 0.2) {
-            positive_potential_bin = 1;
-        } else {
-            positive_potential_bin = 2;
-        }
+        const auto dist_to_center = [&result](const auto &bin_center) {
+            const double d_strength = result.strength - bin_center.strength();
+            const double d_neg_pot = result.negative_potential - bin_center.negative_potential();
+            const double d_pos_pot = result.positive_potential - bin_center.positive_potential();
+            return std::hypot(d_strength, d_neg_pot, d_pos_pot);
+        };
 
-        out = (out << 32) | (hand_strength_bin << 8) | (negative_potential_bin << 4) |
-              (positive_potential_bin);
-        //  5 * 3 * 3 bins = 45 bins
+        const auto min_bucket_iter =
+            std::min_element(turn_bin_centers.begin(), turn_bin_centers.end(),
+                             [&dist_to_center](const auto &a, const auto &b) {
+                                 return dist_to_center(a) < dist_to_center(b);
+                             });
+        const int bucket_idx = std::distance(turn_bin_centers.begin(), min_bucket_iter);
+
+        out = (out << 32) | bucket_idx;
     }
     return out;
 }

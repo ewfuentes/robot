@@ -69,6 +69,7 @@ cc_binary(
   srcs = ["pokerbot_master.cc"],
   deps = [
     ":generate_infoset_id",
+    ":bin_centers_proto",
     "//domain:rob_poker",
     "//learning:cfr",
     "//learning:min_regret_strategy_to_proto",
@@ -111,6 +112,7 @@ cc_library(
     "//domain:deck",
     "//domain:rob_poker",
     ":hand_evaluator",
+    ":bin_centers_proto",
   ],
 )
 

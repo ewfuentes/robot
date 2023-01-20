@@ -12,6 +12,7 @@
 #include "common/time/robot_time.hh"
 #include "cxxopts.hpp"
 #include "domain/rob_poker.hh"
+#include "experimental/pokerbots/bin_centers.pb.h"
 #include "experimental/pokerbots/generate_infoset_id.hh"
 #include "learning/cfr.hh"
 #include "learning/min_regret_strategy_to_proto.hh"
@@ -79,14 +80,30 @@ extern std::array<uint64_t, 33> eval_strength_counts;
 extern std::array<uint64_t, 33> eval_strength_time;
 
 int train(const std::filesystem::path &output_directory, const uint64_t num_iterations,
+          const std::filesystem::path &bin_centers_path,
           const std::optional<std::filesystem::path> &maybe_load_checkpoint) {
+    // create the ouput directory
     std::filesystem::create_directories(output_directory);
+
+    // Load the bin centers file
+    if (!std::filesystem::exists(bin_centers_path)) {
+        std::cout << "Unable to find bin centers file at: " << bin_centers_path << std::endl;
+        return 1;
+    }
+
+    const proto::PerTurnBinCenters bin_centers = [&bin_centers_path]() {
+        proto::PerTurnBinCenters proto;
+        std::ifstream file_in(bin_centers_path, std::ios_base::binary);
+        proto.ParseFromIstream(&file_in);
+        return proto;
+    }();
+
     const learning::MinRegretTrainConfig<RobPoker> config = {
         .num_iterations = num_iterations,
         .infoset_id_from_hist =
-            [](const RobPoker::History &history) {
+            [&bin_centers](const RobPoker::History &history) {
                 std::mt19937 gen(0);
-                return infoset_id_from_history(history, make_in_out(gen));
+                return infoset_id_from_history(history, bin_centers, make_in_out(gen));
             },
         .action_generator = action_generator,
         .seed = 0,
@@ -193,6 +210,7 @@ int main(int argc, char **argv) {
     options.add_options()
       ("output_directory", "Directory where checkpoints should be written to", cxxopts::value<std::string>())
       ("num_iterations", "Number of iterations", cxxopts::value<uint64_t>())
+      ("bins", "Path to hand bins file", cxxopts::value<std::string>())
       ("load_checkpoint", "Path to checkpoint file to continue", cxxopts::value<std::string>())
       ("help", "Print usage");
     // clang-format on
@@ -210,9 +228,14 @@ int main(int argc, char **argv) {
         std::cout << "num_iterations is a required option" << std::endl;
         std::exit(1);
     }
+    if (args.count("bins") == 0) {
+        std::cout << "bins is a required option" << std::endl;
+        std::exit(1);
+    }
 
     return robot::experimental::pokerbots::train(
         args["output_directory"].as<std::string>(), args["num_iterations"].as<uint64_t>(),
+        args["bins"].as<std::string>(),
         args.count("load_checkpoint")
             ? std::make_optional(args["load_checkpoint"].as<std::string>())
             : std::nullopt);
