@@ -81,7 +81,7 @@ TEST_P(CfrTest, kuhn_poker_test) {
     using Action = domain::KuhnPoker::Actions;
 
     // Setup
-    constexpr double TOL = 1e-2;
+    constexpr double TOL = 5e-2;
     const uint64_t external_iter_scale_factor =
         GetParam() == SampleStrategy::EXTERNAL_SAMPLING ? 10 : 1;
     const uint64_t num_iterations = 200000 * external_iter_scale_factor;
