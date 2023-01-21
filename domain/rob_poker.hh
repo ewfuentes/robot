@@ -45,12 +45,16 @@ using RobPokerAction =
 WISE_ENUM_CLASS(RobPokerPlayer, PLAYER1, PLAYER2, CHANCE)
 
 struct BettingState {
+    struct ToBet {
+        bool is_final_betting_round;
+        int round;
+        int position;
+    };
+    IndexedArray<int, RobPokerPlayer> put_in_pot;
     bool is_game_over;
     bool showdown_required;
-    bool is_final_betting_round;
-    int round;
-    int position;
-    IndexedArray<int, RobPokerPlayer> put_in_pot;
+    RobPokerPlayer last_played;
+    std::optional<ToBet> to_bet;
 };
 
 struct RobPokerHistory {

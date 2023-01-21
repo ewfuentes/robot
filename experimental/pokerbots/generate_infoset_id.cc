@@ -41,7 +41,8 @@ domain::RobPoker::InfoSetId infoset_id_from_information(
     // bits 0 - 31: bucket idx
     uint64_t out = 0;
     // We omit the blinds as actions
-    const int num_actions_this_round = betting_state.position - (betting_state.round == 0 ? 2 : 0);
+    const int num_actions_this_round =
+        betting_state.to_bet->position - (betting_state.to_bet->round == 0 ? 2 : 0);
     // If the action is going to fit in 4 bits, there need to be fewer than 14 options
     static_assert(std::variant_size_v<domain::RobPokerAction> < 15);
     for (int idx_offset = 0; idx_offset < num_actions_this_round; idx_offset++) {
@@ -54,13 +55,13 @@ domain::RobPoker::InfoSetId infoset_id_from_information(
     //  1 - Postflop/pre turn
     //  2 - Preriver/ prerun
     //  3 - Final betting round
-    const int betting_round = betting_state.round < 3
-                                  ? betting_state.round
-                                  : (betting_state.is_final_betting_round ? 3 : 2);
+    const int betting_round = betting_state.to_bet->round < 3
+                                  ? betting_state.to_bet->round
+                                  : (betting_state.to_bet->is_final_betting_round ? 3 : 2);
 
     out = (out << 8) | betting_round;
 
-    if (betting_state.round == 0) {
+    if (betting_round == 0) {
         // Map the hole cards into a bucket
         // bits 16 - 31: rank bit mask
         out = (out << 16);
