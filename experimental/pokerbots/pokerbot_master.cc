@@ -112,7 +112,7 @@ int train(const std::filesystem::path &output_directory, const uint64_t num_iter
         .iteration_callback =
             [prev_t = std::optional<time::RobotTimestamp>{}, &output_directory,
              &maybe_load_checkpoint](const int iter, auto counts_from_infoset_id) mutable {
-                constexpr int ITERS_BETWEEN_PRINTS = 100000;
+                constexpr int ITERS_BETWEEN_SAVES = 100000;
                 if (iter == 0 && maybe_load_checkpoint.has_value()) {
                     if (std::filesystem::exists(maybe_load_checkpoint.value())) {
                         // load the existing checkpoint
@@ -125,30 +125,24 @@ int train(const std::filesystem::path &output_directory, const uint64_t num_iter
                                   << " does not exist! Skipping checkpoint load" << std::endl;
                     }
                 }
-                if (iter % ITERS_BETWEEN_PRINTS == 0) {
-                    const auto now = time::current_robot_time();
-                    if (prev_t.has_value()) {
-                        const auto dt = now - prev_t.value();
-                        const auto dt_s = std::chrono::duration<double>(dt).count();
-                        std::cout << iter << " dt: " << dt_s
-                                  << " sec samples/sec:" << ITERS_BETWEEN_PRINTS / dt_s
-                                  << std::endl;
-                    }
-                    prev_t = now;
-                }
 
-                constexpr int ITERS_BETWEEN_SAVES = 100000;
-                if (iter % ITERS_BETWEEN_SAVES == 0) {
-                    std::stringstream idx;
-                    idx << std::setfill('0') << std::setw(9) << iter;
-                    const auto path =
-                        output_directory / ("pokerbot_checkpoint_" + idx.str() + ".pb");
-
-                    learning::proto::MinRegretStrategy proto;
-                    pack_into(*counts_from_infoset_id, &proto);
-                    std::ofstream out(path, std::ios_base::binary | std::ios_base::trunc);
-                    proto.SerializeToOstream(&out);
+                const auto now = time::current_robot_time();
+                if (prev_t.has_value()) {
+                    const auto dt = now - prev_t.value();
+                    const auto dt_s = std::chrono::duration<double>(dt).count();
+                    std::cout << iter << " dt: " << dt_s
+                              << " sec samples/sec:" << ITERS_BETWEEN_SAVES / dt_s << std::endl;
                 }
+                prev_t = now;
+
+                std::stringstream idx;
+                idx << std::setfill('0') << std::setw(9) << iter;
+                const auto path = output_directory / ("pokerbot_checkpoint_" + idx.str() + ".pb");
+
+                learning::proto::MinRegretStrategy proto;
+                pack_into(*counts_from_infoset_id, &proto);
+                std::ofstream out(path, std::ios_base::binary | std::ios_base::trunc);
+                proto.SerializeToOstream(&out);
                 return ITERS_BETWEEN_SAVES;
             },
     };
