@@ -6,8 +6,6 @@
 #include "absl/container/flat_hash_map.h"
 #include "gtest/gtest.h"
 
-#include "absl/container/flat_hash_map.h"
-
 namespace robot::domain {
 TEST(DeckTest, deck_contains_all_cards) {
     // Setup
