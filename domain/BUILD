@@ -97,6 +97,7 @@ cc_test(
   deps = [
     ":deck",
     "@com_google_googletest//:gtest_main",
+    "@absl//absl/container:flat_hash_map",
   ]
 )
 

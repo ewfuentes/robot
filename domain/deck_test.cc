@@ -5,6 +5,8 @@
 
 #include "gtest/gtest.h"
 
+#include "absl/container/flat_hash_map.h"
+
 namespace robot::domain {
 TEST(DeckTest, deck_contains_all_cards) {
     // Setup
@@ -54,5 +56,25 @@ TEST(DeckTest, dealing_reduces_size) {
 
     // Verification
     EXPECT_EQ(deck.size(), StandardDeck::NUM_CARDS - NUM_TO_DEAL);
+}
+
+TEST(DeckTest, deal_all_combinations_test) {
+    // Setup
+    std::mt19937 gen(0);
+    StandardDeck deck;
+
+    // Action
+    absl::flat_hash_map<std::pair<StandardDeck::Card, StandardDeck::Card>, int> counts_map;
+    for (int i = 0; i < 100000; i++) {
+        StandardDeck deck;
+        deck.shuffle(make_in_out(gen));
+        const auto card_1 = deck.deal_card().value();
+        const auto card_2 = deck.deal_card().value();
+        counts_map[{card_1, card_2}]++;
+    }
+
+    // Verification
+    EXPECT_EQ(counts_map.size(), 52 * 51);
+
 }
 }  // namespace robot::domain
