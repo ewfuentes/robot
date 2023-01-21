@@ -3,9 +3,8 @@
 
 #include <unordered_set>
 
-#include "gtest/gtest.h"
-
 #include "absl/container/flat_hash_map.h"
+#include "gtest/gtest.h"
 
 namespace robot::domain {
 TEST(DeckTest, deck_contains_all_cards) {
@@ -75,6 +74,5 @@ TEST(DeckTest, deal_all_combinations_test) {
 
     // Verification
     EXPECT_EQ(counts_map.size(), 52 * 51);
-
 }
 }  // namespace robot::domain
