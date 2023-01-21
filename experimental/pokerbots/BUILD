@@ -27,8 +27,7 @@ py_runtime(
 
 pybind_extension(
   name = "hand_evaluator_python",
-  srcs = ["hand_evaluator_python.cc", "cluster_hands.cc"],
-  copts = ["-fPIC"],
+  srcs = ["hand_evaluator_python.cc"],
   deps = [
   ":hand_evaluator",
   ],
@@ -116,13 +115,23 @@ cc_library(
   ],
 )
 
-cc_binary(
-  name = "cluster_hands",
-  srcs = ["cluster_hands.cc"],
+cc_library(
+  name = "evaluate_mass_hands",
+  hdrs = ["evaluate_mass_hands.hh"],
+  srcs = ["evaluate_mass_hands.cc"],
+  linkopts = ["-ltbb"],
   deps = [
     "//domain:deck",
     ":hand_evaluator",
     "//common/time:robot_time"
+  ]
+)
+
+pybind_extension(
+  name = "evaluate_mass_hands_python",
+  srcs = ["evaluate_mass_hands_python.cc"],
+  deps = [
+    ":evaluate_mass_hands",
   ]
 )
 
