@@ -75,6 +75,7 @@ struct MinRegretTrainConfig {
     std::function<typename T::InfoSetId(const typename T::History &)> infoset_id_from_hist;
     std::function<std::vector<typename T::Actions>(const typename T::History &)> action_generator;
     int seed;
+    int num_threads;
     SampleStrategy sample_strategy;
     std::function<uint64_t(const int, InOut<CountsFromInfoSetId<T>>)> iteration_callback =
         [](const auto &, const auto &) { return 1; };
@@ -159,22 +160,25 @@ MinRegretStrategy<T> train_min_regret_strategy(const MinRegretTrainConfig<T> &co
         }
         non_chance_players.push_back(player);
     }
+    const int max_num_threads =
+        std::min(config.num_threads, static_cast<int>(std::thread::hardware_concurrency()));
+    const int num_threads = std::max(max_num_threads, 1);
     for (uint64_t iter = 0; iter <= config.num_iterations;) {
         const int iters_to_run =
             config.iteration_callback(iter, make_in_out(counts_from_infoset_id));
         if (iters_to_run == 0) {
             break;
         }
-        IndexedArray<std::jthread, typename T::Players> thread_handles;
-        for (auto player : non_chance_players) {
-            thread_handles[player] = std::jthread(
-                [config, player, iters_to_run](
-                    const int seed, InOut<CountsFromInfoSetId<T>> counts_from_infoset_id,
-                    const int outer_iter, InOut<std::mutex> mutex_map_mutex,
-                    InOut<std::unordered_map<typename T::InfoSetId, std::mutex>>
-                        counts_mutex_from_id) {
-                    std::mt19937 thread_gen(seed);
-                    for (int i = 0; i < iters_to_run; i++) {
+        auto run_iterations =
+            [config, iter, num_iters = iters_to_run / num_threads, non_chance_players](
+                const int thread_idx, const int seed,
+                InOut<CountsFromInfoSetId<T>> counts_from_infoset_id,
+                InOut<std::unordered_map<typename T::InfoSetId, std::mutex>> counts_mutex_from_id,
+                InOut<std::mutex> mutex_map_mutex) {
+                std::mt19937 thread_gen(seed);
+                const int outer_iter = iter + thread_idx * num_iters;
+                for (auto player : non_chance_players) {
+                    for (int i = 0; i < num_iters; i++) {
                         if (config.sample_strategy == SampleStrategy::CHANCE_SAMPLING) {
                             compute_chance_sampled_counterfactual_regret(
                                 {}, player, outer_iter + i, {1.0}, config.infoset_id_from_hist,
@@ -187,9 +191,20 @@ MinRegretStrategy<T> train_min_regret_strategy(const MinRegretTrainConfig<T> &co
                                 counts_from_infoset_id, mutex_map_mutex, counts_mutex_from_id);
                         }
                     }
-                },
-                gen(), make_in_out(counts_from_infoset_id), iter, make_in_out(mutex_map_mutex),
-                make_in_out(counts_mutex_from_id));
+                }
+            };
+
+        if (num_threads == 1) {
+            const int thread_idx = 0;
+            run_iterations(thread_idx, gen(), make_in_out(counts_from_infoset_id),
+                           make_in_out(counts_mutex_from_id), make_in_out(mutex_map_mutex));
+        } else {
+            std::vector<std::jthread> thread_handles;
+            for (int thread_idx = 0; thread_idx < num_threads; thread_idx++) {
+                thread_handles.push_back(std::jthread(
+                    run_iterations, thread_idx, gen(), make_in_out(counts_from_infoset_id),
+                    make_in_out(counts_mutex_from_id), make_in_out(mutex_map_mutex)));
+            }
         }
         iter += iters_to_run;
     }
