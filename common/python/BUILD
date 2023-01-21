@@ -17,6 +17,7 @@ py_binary(
     requirement("scikit-learn"),
     "//learning:min_regret_strategy_proto_py",
     "//experimental/pokerbots:bin_centers_proto_py",
+    "//experimental/pokerbots:pokerbot",
   ],
 )
 
