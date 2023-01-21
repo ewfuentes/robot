@@ -131,8 +131,13 @@ def compute_infoset_id(action_queue, betting_round, hand, board_cards):
         # compute the hand potential and encode it into the infoset id
         TIMEOUT_S = 0.02
         HAND_LIMIT = 1000
+        MAX_ADDITIONAL_CARDS = 2
         result = hep.evaluate_strength_potential(
-            "".join(hand), "".join(board_cards), TIMEOUT_S, HAND_LIMIT
+            "".join(hand),
+            "".join(board_cards),
+            MAX_ADDITIONAL_CARDS,
+            TIMEOUT_S,
+            HAND_LIMIT,
         )
 
         if result.strength < 0.2:
@@ -175,7 +180,9 @@ def compute_infoset_id(action_queue, betting_round, hand, board_cards):
                 hand_strength_bin,
                 negative_potential_bin,
                 positive_potential_bin,
-            ), 'num evals:', result.num_evaluations
+            ),
+            "num evals:",
+            result.num_evaluations,
         )
 
     return infoset_id
@@ -183,22 +190,6 @@ def compute_infoset_id(action_queue, betting_round, hand, board_cards):
 
 class Pokerbot(bot.Bot):
     """First pass pokerbot."""
-
-    def calc_strength(self, hole: str, board: str, street: int):
-        """Compute hand strength or effective hand strength post flop."""
-        if street == 0:
-            if self.preflop_equity is None:
-                # This is the preflop round, just compute hand strength
-                key = "".join(sorted(hole, key=card_idx))
-                self.preflop_equity = self._preflop_equities[key]
-            return self.preflop_equity
-        else:
-            # This is a post flop round, compute effective hand strength
-            TIME_LIMIT_S = 0.02
-            result = hep.evaluate_hand_potential(
-                "".join(hole), "".join(board), TIME_LIMIT_S
-            )
-            return result.equity
 
     def __init__(self):
         """Init."""
@@ -218,7 +209,7 @@ class Pokerbot(bot.Bot):
         print(
             f"*** Round {game_state.round_num} Player: {active} Clock: {game_state.game_clock}"
         )
-        self._round_state = {"action_queue": [], "street": 0, 'have_gone_all_in': False}
+        self._round_state = {"action_queue": [], "street": 0, "have_gone_all_in": False}
 
     def handle_round_over(
         self, game_state: GameState, terminal_state: TerminalState, active
@@ -326,8 +317,8 @@ class Pokerbot(bot.Bot):
             action = "AllIn"
         print("Selected action", action, action_dict[action])
 
-        if action == 'AllIn':
-            self._round_state['have_gone_all_in'] = True
+        if action == "AllIn":
+            self._round_state["have_gone_all_in"] = True
 
         self._round_state["street"] = round_state.street
         print("")

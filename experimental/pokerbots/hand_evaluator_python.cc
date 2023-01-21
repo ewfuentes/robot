@@ -4,13 +4,10 @@
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
 
-namespace robot::experimental::pokerbots {
-std::vector<StrengthPotentialResult> evaluate_hands(const std::vector<std::string> &hands,
-                                                    const int max_additional_cards,
-                                                    const int hands_per_eval);
 namespace py = pybind11;
 using namespace pybind11::literals;
 
+namespace robot::experimental::pokerbots {
 PYBIND11_MODULE(hand_evaluator_python, m) {
     m.doc() = "Hand Evaluator";
 
@@ -25,7 +22,6 @@ PYBIND11_MODULE(hand_evaluator_python, m) {
         .def_readonly("negative_potential", &StrengthPotentialResult::negative_potential)
         .def_readonly("num_evaluations", &StrengthPotentialResult::num_evaluations);
 
-    m.def("evaluate_hands", &evaluate_hands);
     m.def("evaluate_expected_strength", &evaluate_expected_strength, "hand"_a,
           "opponent_hand_str"_a = "random", "board_str"_a, "timeout_s"_a = std::nullopt,
           "num_hands"_a = std::nullopt);

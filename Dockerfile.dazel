@@ -4,7 +4,7 @@ ARG USERNAME=dazel
 ARG USER_UID=1000
 ARG USER_GID=$USER_UID
 
-RUN apt-get update && apt-get -qq install -y wget gcc-10 gcc g++-10 python3 sudo libtbb-dev
+RUN apt-get update && apt-get -qq install -y wget gcc-10 gcc g++-10 python3 sudo
 RUN wget https://github.com/bazelbuild/bazelisk/releases/download/v1.15.0/bazelisk-linux-amd64  -O /usr/bin/bazel --quiet && chmod +x /usr/bin/bazel
 RUN chmod 777 /usr/bin/bazel
 RUN echo ${USERNAME} ${USER_UID} ${USER_GID}
