@@ -30,6 +30,11 @@ struct CardT {
     int card_idx;
 
     bool operator==(const CardT &other) const { return rank == other.rank && suit == other.suit; }
+
+    template <typename H>
+    friend H AbslHashValue(H h, const CardT &card) {
+        return H::combine(std::move(h), card.card_idx);
+    }
 };
 
 template <typename T>
@@ -78,6 +83,13 @@ struct Deck {
     void shuffle(InOut<std::mt19937> gen) {
         // seed a faster random number generator using the generator passed in
         omp::XoroShiro128Plus fast_gen((*gen)());
+        omp::FastUniformIntDistribution<> burn_chooser(0, 10);
+        // For some reason this rng won't produce every possible combination of hands without
+        // burning at least one entry
+        const int num_to_burn = burn_chooser(fast_gen);
+        for (int i = 0; i < num_to_burn; i++) {
+            (void)fast_gen();
+        }
         for (int i = bottom_location_ - 1; i > top_location_; i--) {
             // Work from the end to the beginning, picking which card goes in the i'th position
             omp::FastUniformIntDistribution<> card_picker(top_location_, i);
