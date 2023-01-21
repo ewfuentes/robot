@@ -107,11 +107,12 @@ int train(const std::filesystem::path &output_directory, const uint64_t num_iter
             },
         .action_generator = action_generator,
         .seed = 0,
+        .num_threads = 20,
         .sample_strategy = learning::SampleStrategy::EXTERNAL_SAMPLING,
         .iteration_callback =
             [prev_t = std::optional<time::RobotTimestamp>{}, &output_directory,
              &maybe_load_checkpoint](const int iter, auto counts_from_infoset_id) mutable {
-                constexpr int ITERS_BETWEEN_PRINTS = 10000;
+                constexpr int ITERS_BETWEEN_PRINTS = 100000;
                 if (iter == 0 && maybe_load_checkpoint.has_value()) {
                     if (std::filesystem::exists(maybe_load_checkpoint.value())) {
                         // load the existing checkpoint
@@ -136,7 +137,7 @@ int train(const std::filesystem::path &output_directory, const uint64_t num_iter
                     prev_t = now;
                 }
 
-                constexpr int ITERS_BETWEEN_SAVES = 10000;
+                constexpr int ITERS_BETWEEN_SAVES = 100000;
                 if (iter % ITERS_BETWEEN_SAVES == 0) {
                     std::stringstream idx;
                     idx << std::setfill('0') << std::setw(9) << iter;

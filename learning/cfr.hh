@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <functional>
+#include <iostream>
 #include <iterator>
 #include <mutex>
 #include <numeric>
@@ -163,7 +164,7 @@ MinRegretStrategy<T> train_min_regret_strategy(const MinRegretTrainConfig<T> &co
     const int max_num_threads =
         std::min(config.num_threads, static_cast<int>(std::thread::hardware_concurrency()));
     const int num_threads = std::max(max_num_threads, 1);
-    for (uint64_t iter = 0; iter <= config.num_iterations;) {
+    for (uint64_t iter = 0; iter < config.num_iterations;) {
         const int iters_to_run =
             config.iteration_callback(iter, make_in_out(counts_from_infoset_id));
         if (iters_to_run == 0) {
@@ -177,8 +178,8 @@ MinRegretStrategy<T> train_min_regret_strategy(const MinRegretTrainConfig<T> &co
                 InOut<std::mutex> mutex_map_mutex) {
                 std::mt19937 thread_gen(seed);
                 const int outer_iter = iter + thread_idx * num_iters;
-                for (auto player : non_chance_players) {
-                    for (int i = 0; i < num_iters; i++) {
+                for (int i = 0; i < num_iters; i++) {
+                    for (auto player : non_chance_players) {
                         if (config.sample_strategy == SampleStrategy::CHANCE_SAMPLING) {
                             compute_chance_sampled_counterfactual_regret(
                                 {}, player, outer_iter + i, {1.0}, config.infoset_id_from_hist,
