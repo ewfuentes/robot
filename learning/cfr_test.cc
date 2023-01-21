@@ -23,6 +23,7 @@ TEST_P(CfrTest, rock_paper_scissors_test) {
         .action_generator =
             [](const RPS::History &history) { return domain::possible_actions(history); },
         .seed = 0,
+        .num_threads = 1,
         .sample_strategy = GetParam(),
         .iteration_callback = [&](const auto &, const auto &) { return num_iterations; },
     };
@@ -54,6 +55,7 @@ TEST_P(CfrTest, blotto_test) {
         .action_generator =
             [](const Blotto::History &history) { return domain::possible_actions(history); },
         .seed = 0,
+        .num_threads = 1,
         .sample_strategy = GetParam(),
         .iteration_callback = [&](const auto &, const auto &) { return num_iterations; },
     };
@@ -84,13 +86,14 @@ TEST_P(CfrTest, kuhn_poker_test) {
     constexpr double TOL = 5e-2;
     const uint64_t external_iter_scale_factor =
         GetParam() == SampleStrategy::EXTERNAL_SAMPLING ? 10 : 1;
-    const uint64_t num_iterations = 200000 * external_iter_scale_factor;
+    const uint64_t num_iterations = 400000 * external_iter_scale_factor;
     const MinRegretTrainConfig<KuhnPoker> config = {
         .num_iterations = num_iterations,
         .infoset_id_from_hist = &domain::infoset_id_from_history,
         .action_generator =
             [](const domain::KuhnHistory &history) { return domain::possible_actions(history); },
         .seed = 0,
+        .num_threads = 1,
         .sample_strategy = GetParam(),
         .iteration_callback = [&](const auto &, const auto &) { return num_iterations; },
     };
