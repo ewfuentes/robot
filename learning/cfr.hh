@@ -5,7 +5,6 @@
 #include <chrono>
 #include <cmath>
 #include <functional>
-#include <iostream>
 #include <iterator>
 #include <limits>
 #include <mutex>
