@@ -14,8 +14,9 @@ struct RoadmapCreationConfig {
     // The number of required points in free space
     int num_valid_points;
 
-    // The maximum number of connections between nodes
-    int max_node_degree;
+    // The desired number of connections between nodes
+    // When adding edges, try to have at least this many edges per node
+    int desired_node_degree;
 };
 
 struct RoadMap {
@@ -70,15 +71,35 @@ RoadMap create_road_map(const Map &map, const RoadmapCreationConfig &config,
     // Create connections up to appropriate degree
     Eigen::MatrixXd adjacency =
         Eigen::MatrixXd::Zero(config.num_valid_points, config.num_valid_points);
+    std::vector<int> sample_idxs(sample_points.size());
+    std::iota(sample_idxs.begin(), sample_idxs.end(), 0);
     for (int i = 0; i < static_cast<int>(sample_points.size()); i++) {
-        int edge_count = adjacency.col(i).sum();
-        for (int j = i + 1;
-             j < static_cast<int>(sample_points.size()) && edge_count < config.max_node_degree;
-             j++) {
-            if (map.in_free_space(sample_points.at(i), sample_points.at(j))) {
-                adjacency(i, j) = 1;
-                adjacency(j, i) = 1;
-                edge_count += 1;
+        // Sort the points by distance and ensure that at least
+        const auto &pt = sample_points.at(i);
+        const auto dist_sq_to_point = [&pt](const Eigen::Vector2d &other) {
+            const double dx = pt.x() - other.x();
+            const double dy = pt.y() - other.y();
+            return dx * dx + dy * dy;
+        };
+        std::sort(sample_idxs.begin(), sample_idxs.end(),
+                  [&dist_sq_to_point, &sample_points](const int a, const int b) {
+                      return dist_sq_to_point(sample_points.at(a)) <
+                             dist_sq_to_point(sample_points.at(b));
+                  });
+        int edges_added = 0;
+        for (const int other_idx : sample_idxs) {
+            const auto &other_pt = sample_points.at(other_idx);
+            if (pt == other_pt) {
+                continue;
+            }
+            if (map.in_free_space(pt, other_pt)) {
+                adjacency(i, other_idx) = 1;
+                adjacency(other_idx, i) = 1;
+                edges_added++;
+            }
+            if (edges_added >= config.desired_node_degree) {
+                // Enough edges added for this node, continue to the next node
+                break;
             }
         }
     }

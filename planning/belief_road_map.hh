@@ -2,6 +2,7 @@
 #pragma once
 
 #include <functional>
+#include <numeric>
 #include <optional>
 
 #include "Eigen/Dense"
@@ -13,6 +14,7 @@ template <typename Belief>
 struct BRMPlan {
     static constexpr int INITIAL_BELIEF_NODE_IDX = -1;
     static constexpr int GOAL_BELIEF_NODE_IDX = -2;
+
     std::vector<int> nodes;
     std::vector<Belief> beliefs;
 };
@@ -48,36 +50,44 @@ struct BRMSearchState {
 };
 
 template <typename Belief>
-int find_nearest_node_idx(const RoadMap &road_map, const Belief &belief) {
-    const auto iter =
-        std::min_element(road_map.points.begin(), road_map.points.end(),
-                         [&belief](const Eigen::Vector2d &a, const Eigen::Vector2d &b) {
-                             return distance_to(a, belief) < distance_to(b, belief);
-                         });
-    return std::distance(road_map.points.begin(), iter);
+std::vector<int> find_nearest_node_idxs(const RoadMap &road_map, const Belief &belief,
+                                        const int num_to_find) {
+    std::vector<int> idxs(road_map.points.size());
+    std::iota(idxs.begin(), idxs.end(), 0);
+    std::sort(idxs.begin(), idxs.end(),
+              [&belief, &points = road_map.points](const int &a_idx, const int &b_idx) {
+                  return distance_to(points.at(a_idx), belief) <
+                         distance_to(points.at(b_idx), belief);
+              });
+
+    return std::vector<int>(idxs.begin(),
+                            idxs.begin() + std::min(num_to_find, static_cast<int>(idxs.size())));
 }
 
-int find_nearest_node_idx(const RoadMap &road_map, const Eigen::Vector2d &state);
+std::vector<int> find_nearest_node_idxs(const RoadMap &road_map, const Eigen::Vector2d &state,
+                                        const int num_to_find);
 
 template <typename Belief>
 std::vector<Successor<BRMSearchState<Belief>>> successors_for_state(
     const BRMSearchState<Belief> &state, const RoadMap &road_map,
-    const BeliefUpdater<Belief> &belief_updater, const int nearest_to_start_idx,
-    const int nearest_to_end_idx) {
+    const BeliefUpdater<Belief> &belief_updater, const std::vector<int> &nearest_to_start,
+    const std::vector<int> &nearest_to_end) {
     std::vector<Successor<BRMSearchState<Belief>>> out;
     if (state.node_idx == BRMPlan<Belief>::INITIAL_BELIEF_NODE_IDX) {
         // If we're at the start node, add a successor to the nearest node
-        const Belief new_belief =
-            belief_updater(state.belief, state.node_idx, nearest_to_start_idx);
-        out.push_back(Successor<BRMSearchState<Belief>>{
-            .state =
-                BRMSearchState<Belief>{
-                    .belief = new_belief,
-                    .node_idx = nearest_to_start_idx,
-                },
-            .edge_cost = uncertainty_size(new_belief) - uncertainty_size(state.belief),
-        });
-    } else if (state.node_idx == nearest_to_end_idx) {
+        for (const int idx : nearest_to_start) {
+            const Belief new_belief = belief_updater(state.belief, state.node_idx, idx);
+            out.push_back(Successor<BRMSearchState<Belief>>{
+                .state =
+                    BRMSearchState<Belief>{
+                        .belief = new_belief,
+                        .node_idx = idx,
+                    },
+                .edge_cost = uncertainty_size(new_belief) - uncertainty_size(state.belief),
+            });
+        }
+    } else if (std::find(nearest_to_end.begin(), nearest_to_end.end(), state.node_idx) !=
+               nearest_to_end.end()) {
         // If we're at the node nearest to the goal pose, add a successor to the goal
         const Belief new_belief =
             belief_updater(state.belief, state.node_idx, BRMPlan<Belief>::GOAL_BELIEF_NODE_IDX);
@@ -130,13 +140,16 @@ std::optional<BRMPlan<Belief>> plan(const RoadMap &road_map, const Belief &initi
                                     const BeliefUpdater<Belief> &belief_updater,
                                     const Eigen::Vector2d &goal_state) {
     // Find nearest node to start and end states
-    const int nearest_to_start_idx = detail::find_nearest_node_idx(road_map, initial_belief);
-    const int nearest_to_end_idx = detail::find_nearest_node_idx(road_map, goal_state);
+    constexpr int IDXS_TO_FIND = 6;
+    const std::vector<int> nearest_to_start_idxs =
+        detail::find_nearest_node_idxs(road_map, initial_belief, IDXS_TO_FIND);
+    const std::vector<int> nearest_to_end_idxs =
+        detail::find_nearest_node_idxs(road_map, goal_state, IDXS_TO_FIND);
 
-    const auto successors_func = [nearest_to_start_idx, nearest_to_end_idx, &belief_updater,
+    const auto successors_func = [nearest_to_start_idxs, nearest_to_end_idxs, &belief_updater,
                                   &road_map](const detail::BRMSearchState<Belief> &state) {
-        return detail::successors_for_state(state, road_map, belief_updater, nearest_to_start_idx,
-                                            nearest_to_end_idx);
+        return detail::successors_for_state(state, road_map, belief_updater, nearest_to_start_idxs,
+                                            nearest_to_end_idxs);
     };
 
     const auto heuristic_func = [](const auto &) { return 0.0; };

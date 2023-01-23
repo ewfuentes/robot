@@ -2,12 +2,17 @@
 #include "planning/belief_road_map.hh"
 
 namespace robot::planning::detail {
-int find_nearest_node_idx(const RoadMap &road_map, const Eigen::Vector2d &state) {
-    const auto iter =
-        std::min_element(road_map.points.begin(), road_map.points.end(),
-                         [&state](const Eigen::Vector2d &a, const Eigen::Vector2d &b) {
-                             return (a - state).squaredNorm() < (b - state).squaredNorm();
-                         });
-    return std::distance(road_map.points.begin(), iter);
+std::vector<int> find_nearest_node_idxs(const RoadMap &road_map, const Eigen::Vector2d &state,
+                                        const int num_to_find) {
+    std::vector<int> idxs(road_map.points.size());
+    std::iota(idxs.begin(), idxs.end(), 0);
+    std::sort(idxs.begin(), idxs.end(),
+              [&state, &points = road_map.points](const int &a_idx, const int &b_idx) {
+                  return (points.at(a_idx) - state).squaredNorm() <
+                         (points.at(b_idx) - state).squaredNorm();
+              });
+
+    return std::vector<int>(idxs.begin(),
+                            idxs.begin() + std::min(num_to_find, static_cast<int>(idxs.size())));
 }
 }  // namespace robot::planning::detail
