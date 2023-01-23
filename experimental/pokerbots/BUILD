@@ -153,12 +153,14 @@ multi_proto_library(
   name = "bin_centers_proto",
   srcs = ["bin_centers.proto"],
   visibility = ["//visibility:public"],
+)
 
-py_binary(
+py_library(
     name ="pokerbots_scrape",
     srcs = ["pokerbots_scrape.py"],
     deps = [
-    requirement("requests"),
-    requirement("beautifulsoup4"),
+        requirement("requests"),
+        requirement("beautifulsoup4"),
+        requirement("pandas"),
     ]
 )
