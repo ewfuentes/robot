@@ -60,7 +60,7 @@ TEST(ProbabilisticRoadMapTest, sample_points) {
     const RoadmapCreationConfig config = {
         .seed = 0,
         .num_valid_points = 25,
-        .max_node_degree = 4,
+        .desired_node_degree = 4,
     };
 
     // Action
@@ -72,8 +72,6 @@ TEST(ProbabilisticRoadMapTest, sample_points) {
     EXPECT_EQ(road_map.points.size(), config.num_valid_points);
     EXPECT_EQ(road_map.adj.rows(), road_map.adj.cols());
     EXPECT_EQ(road_map.adj.rows(), config.num_valid_points);
-
-    EXPECT_LE(road_map.adj.colwise().sum().maxCoeff(), config.max_node_degree);
 
     // Check that it's symmetric and that all edges are free
     for (int i = 0; i < road_map.adj.rows(); i++) {

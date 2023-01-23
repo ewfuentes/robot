@@ -14,8 +14,9 @@ struct RoadmapCreationConfig {
     // The number of required points in free space
     int num_valid_points;
 
-    // The maximum number of connections between nodes
-    int max_node_degree;
+    // The desired number of connections between nodes
+    // When adding edges, try to have at least this many edges per node
+    int desired_node_degree;
 };
 
 struct RoadMap {
@@ -96,7 +97,7 @@ RoadMap create_road_map(const Map &map, const RoadmapCreationConfig &config,
                 adjacency(other_idx, i) = 1;
                 edges_added++;
             }
-            if (edges_added >= config.max_node_degree) {
+            if (edges_added >= config.desired_node_degree) {
                 // Enough edges added for this node, continue to the next node
                 break;
             }

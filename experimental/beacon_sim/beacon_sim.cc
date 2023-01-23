@@ -251,7 +251,7 @@ planning::RoadMap create_road_map(const WorldMap &map) {
     const planning::RoadmapCreationConfig config = {
         .seed = 0,
         .num_valid_points = 60,
-        .max_node_degree = 5,
+        .desired_node_degree = 5,
     };
     struct MapInterface {
         const WorldMap *map_ptr;
