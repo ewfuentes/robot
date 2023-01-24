@@ -103,6 +103,7 @@ cc_library(
     "//domain:deck",
     "//domain:rob_poker",
     "//common/time:robot_time",
+    "@absl//absl/container:inlined_vector",
     ]
 )
 

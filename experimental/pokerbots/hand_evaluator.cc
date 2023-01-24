@@ -5,6 +5,7 @@
 #include <iostream>
 #include <limits>
 
+#include "absl/container/inlined_vector.h"
 #include "common/time/robot_time.hh"
 #include "domain/deck.hh"
 #include "domain/rob_poker.hh"
@@ -103,38 +104,26 @@ StrengthPotentialResult evaluate_strength_potential(
     // Create a container for all of the cards
     // The first two cards are the hole cards for the player of interest
     // The remaining cards are the board cards
-    int num_cards = 0;
-    std::array<domain::StandardDeck::Card, 33> workspace;
+    absl::InlinedVector<domain::StandardDeck::Card, 33> workspace;
     const std::array<domain::StandardDeck::Card, 2> player_cards = {
         history.hole_cards[player][0].value(),
         history.hole_cards[player][1].value(),
     };
 
-    auto populate_hole_cards = [&num_cards, &workspace](const auto &hole_cards) mutable {
-        workspace[0] = hole_cards[0];
-        workspace[1] = hole_cards[1];
-        if (num_cards < 2) {
-            num_cards = 2;
-        }
-    };
+    for (const auto &card : player_cards) {
+        workspace.push_back(card);
+    }
 
-    auto push_card = [&num_cards, &workspace](const auto &card) mutable {
-        workspace[num_cards++] = card;
-    };
-
-    auto pop_back = [&num_cards](const int num_items = 1) mutable { num_cards -= num_items; };
-
-    populate_hole_cards(player_cards);
     for (const auto &fog_card : history.common_cards) {
         if (fog_card.has_value() && fog_card.is_visible_to(player)) {
-            push_card(fog_card.value());
+            workspace.push_back(fog_card.value());
         }
     }
 
     // Check if this board is already in our cache
     omp::Hand query_hand = omp::Hand::empty();
-    for (int i = 0; i < num_cards; i++) {
-        query_hand += workspace[i].card_idx;
+    for (const auto &card : workspace) {
+        query_hand += card.card_idx;
     }
 
     for (const auto &[key, result] : result_cache) {
@@ -150,9 +139,9 @@ StrengthPotentialResult evaluate_strength_potential(
     const auto get_rank_idx = [](const int a, const int b) { return a == b ? 0 : (a < b ? 0 : 2); };
     const auto flat_idx = [](const int a, const int b) { return a * 3 + b; };
 
-    eval_strength_counts[num_cards]++;
+    eval_strength_counts[workspace.size()]++;
 
-    const int before_player_rank = domain::evaluate_hand(workspace, num_cards);
+    const int before_player_rank = domain::evaluate_hand(workspace);
     while (time::current_robot_time() - start < eval_time && num_evals < hand_limit) {
         num_evals++;
         auto deck = remaining_deck;
@@ -163,24 +152,25 @@ StrengthPotentialResult evaluate_strength_potential(
                                                                           deck.deal_card().value()};
 
         // Evaluate hands
-        populate_hole_cards(opponent_cards);
-        const int before_opponent_rank = domain::evaluate_hand(workspace, num_cards);
+        workspace[0] = opponent_cards[0];
+        workspace[1] = opponent_cards[1];
+        const int before_opponent_rank = domain::evaluate_hand(workspace);
         const int before_idx = get_rank_idx(before_player_rank, before_opponent_rank);
 
         // Deal remaining board
         int cards_dealt = 0;
-        for (int i = num_cards; i < static_cast<int>(workspace.size()); i++) {
+        while (true) {
             cards_dealt++;
-            push_card(deck.deal_card().value());
+            workspace.push_back(deck.deal_card().value());
             // A deal is complete if at least 5 cards have been dealt and the last card isn't
             // red
             const bool is_last_card_black =
-                workspace[num_cards - 1].suit == domain::StandardDeck::Suits::CLUBS ||
-                workspace[num_cards - 1].suit == domain::StandardDeck::Suits::SPADES;
+                workspace.back().suit == domain::StandardDeck::Suits::CLUBS ||
+                workspace.back().suit == domain::StandardDeck::Suits::SPADES;
             const bool is_at_card_limit = max_additional_cards.has_value()
                                               ? max_additional_cards.value() == cards_dealt
                                               : false;
-            const bool at_least_board_five_cards = num_cards >= 7;
+            const bool at_least_board_five_cards = workspace.size() >= 7;
             const bool is_done_dealing =
                 at_least_board_five_cards && (is_last_card_black || is_at_card_limit);
             if (is_done_dealing) {
@@ -189,12 +179,13 @@ StrengthPotentialResult evaluate_strength_potential(
         }
 
         // Evaluate hands
-        const int after_opponent_rank = domain::evaluate_hand(workspace, num_cards);
-        populate_hole_cards(player_cards);
-        const int after_player_rank = domain::evaluate_hand(workspace, num_cards);
+        const int after_opponent_rank = domain::evaluate_hand(workspace);
+        workspace[0] = player_cards[0];
+        workspace[1] = player_cards[1];
+        const int after_player_rank = domain::evaluate_hand(workspace);
         const int after_idx = get_rank_idx(after_player_rank, after_opponent_rank);
         counts[flat_idx(before_idx, after_idx)]++;
-        pop_back(cards_dealt);
+        workspace.erase(workspace.end() - cards_dealt, workspace.end());
     }
 
     const auto sum_row = [&](const int row) {
@@ -261,5 +252,132 @@ StrengthPotentialResult evaluate_strength_potential(const std::string &hand_str,
                              : std::nullopt;
     return evaluate_strength_potential(history, domain::RobPokerPlayer::PLAYER1,
                                        max_additional_cards, timeout, num_hands, make_in_out(gen));
+}
+
+HandDistributionResult estimate_hand_distribution(const std::string &hand_str,
+                                                  const std::string &board_str, const int num_bins,
+                                                  const std::optional<int> num_board_rollouts,
+                                                  const std::optional<int> max_additional_cards,
+                                                  std::optional<double> timeout_s) {
+    std::mt19937 gen(0);
+    const auto hand = cards_from_string(hand_str);
+    const auto board = cards_from_string(board_str);
+    const auto timeout = timeout_s.has_value()
+                             ? std::make_optional(time::as_duration(timeout_s.value()))
+                             : std::nullopt;
+
+    return estimate_hand_distribution({hand.at(0), hand.at(1)}, board, num_bins, num_board_rollouts,
+                                      max_additional_cards, timeout, make_in_out(gen));
+}
+
+HandDistributionResult estimate_hand_distribution(
+    const std::array<domain::StandardDeck::Card, 2> &hand,
+    const std::vector<domain::StandardDeck::Card> &board, const int num_bins,
+    const std::optional<int> num_board_rollouts, const std::optional<int> max_additional_cards,
+    const std::optional<time::RobotTimestamp::duration> timeout, InOut<std::mt19937> gen) {
+    const double bin_step = 1.0 / num_bins;
+    constexpr auto PLAYER = domain::RobPokerPlayer::PLAYER1;
+    constexpr int MAX_RESULT_CACHE_SIZE = 1024;
+    thread_local std::deque<std::pair<omp::Hand, HandDistributionResult>> result_cache;
+    const auto history = create_history_from_known_cards(hand, board);
+    const auto remaining_deck = deck_from_history(history, PLAYER);
+    const auto eval_time = timeout.value_or(time::RobotTimestamp::duration::max());
+    const int max_num_board_rollouts = num_board_rollouts.value_or(std::numeric_limits<int>::max());
+    const time::RobotTimestamp start = time::current_robot_time();
+
+    std::vector<uint64_t> counts(num_bins, 0);
+
+    // Create a container for all of the cards
+    // The first two cards are the hole cards for the player of interest
+    // The remaining cards are the board cards
+    absl::InlinedVector<domain::StandardDeck::Card, 33> workspace;
+    workspace.push_back(hand[0]);
+    workspace.push_back(hand[1]);
+    for (const auto &card : board) {
+        workspace.push_back(card);
+    }
+
+    // Check if this board is already in our cache
+    omp::Hand query_hand = omp::Hand::empty();
+    for (const auto &card : workspace) {
+        query_hand += card.card_idx;
+    }
+
+    for (const auto &[key, result] : result_cache) {
+        if (key == query_hand) {
+            return result;
+        }
+    }
+
+    int num_evals = 0;
+    while (time::current_robot_time() - start < eval_time && num_evals < max_num_board_rollouts) {
+        num_evals++;
+        auto deck = remaining_deck;
+        deck.shuffle(gen);
+
+        // Deal remaining board
+        int cards_dealt = 0;
+        while (true) {
+            cards_dealt++;
+            workspace.push_back(deck.deal_card().value());
+            // A deal is complete if at least 5 cards have been dealt and the last card isn't
+            // red
+            const bool is_last_card_black =
+                workspace.back().suit == domain::StandardDeck::Suits::CLUBS ||
+                workspace.back().suit == domain::StandardDeck::Suits::SPADES;
+            const bool is_at_card_limit = max_additional_cards.has_value()
+                                              ? max_additional_cards.value() == cards_dealt
+                                              : false;
+            const bool at_least_board_five_cards = workspace.size() >= 7;
+            const bool is_done_dealing =
+                at_least_board_five_cards && (is_last_card_black || is_at_card_limit);
+            if (is_done_dealing) {
+                break;
+            }
+        }
+
+        // Compute the hand rank
+        workspace[0] = hand[0];
+        workspace[1] = hand[1];
+
+        const int player_rank = domain::evaluate_hand(workspace);
+
+        // Evaluate all possible opponent hands
+        int opponent_hand_count = 0;
+        int opponent_loss_count = 0;
+        int opponent_tie_count = 0;
+        for (auto card_1_iter = deck.begin(); card_1_iter != deck.end() - 1; card_1_iter++) {
+            workspace[0] = *card_1_iter;
+            for (auto card_2_iter = card_1_iter + 1; card_2_iter != deck.end(); card_2_iter++) {
+                workspace[1] = *card_2_iter;
+                const int opp_rank = domain::evaluate_hand(workspace);
+                if (opp_rank < player_rank) {
+                    opponent_loss_count++;
+                } else if (opp_rank == player_rank) {
+                    opponent_tie_count++;
+                }
+                opponent_hand_count++;
+            }
+        }
+
+        const double equity = static_cast<double>(opponent_loss_count + opponent_tie_count / 2.0) /
+                              opponent_hand_count;
+        const int bin_idx = static_cast<int>(equity / bin_step);
+        counts[bin_idx]++;
+
+        // remove all cards that were dealt
+        workspace.erase(workspace.begin() + 2 + board.size(), workspace.end());
+    }
+
+    const HandDistributionResult out = {
+        .distribution = counts,
+        .num_board_rollouts = static_cast<uint64_t>(num_evals),
+    };
+
+    result_cache.push_front(std::make_pair(query_hand, out));
+    if (result_cache.size() > MAX_RESULT_CACHE_SIZE) {
+        result_cache.resize(MAX_RESULT_CACHE_SIZE);
+    }
+    return out;
 }
 }  // namespace robot::experimental::pokerbots
