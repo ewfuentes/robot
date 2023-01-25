@@ -340,9 +340,12 @@ proto::BeaconSimDebug tick_sim(const RobotCommand &command, InOut<BeaconSimState
 
     if (config.enable_brm_planner) {
         // Plan
+        constexpr int NUM_START_CONNECTIONS = 6;
+        constexpr int NUM_GOAL_CONNECTIONS = 6;
         std::cout << "Starting to Plan" << std::endl;
-        const auto brm_plan = compute_belief_road_map_plan(state->road_map, state->ekf, goal_state,
-                                                           OBS_CONFIG.max_sensor_range_m.value());
+        const auto brm_plan = compute_belief_road_map_plan(
+            state->road_map, state->ekf, goal_state, OBS_CONFIG.max_sensor_range_m.value(),
+            NUM_START_CONNECTIONS, NUM_GOAL_CONNECTIONS);
         std::cout << "plan complete" << std::endl;
         for (int idx = 0; idx < static_cast<int>(brm_plan->nodes.size()); idx++) {
             std::cout << idx << " " << brm_plan->nodes.at(idx) << " "
