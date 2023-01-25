@@ -51,7 +51,7 @@ std::optional<BreadthFirstResult<State>> breadth_first_search(
         for (const auto &successor : successors_for_state(n.state)) {
             nodes_visited++;
 
-            // Find the last time we visited this node
+            // Check if we should add this node to the queue
             if (should_queue_check(successor, node_idx, nodes)) {
                 node_idx_queue.push_back(nodes.size());
                 nodes.push_back({.state = successor.state,
