@@ -72,7 +72,7 @@ cc_binary(
   srcs = ["pokerbot_master.cc"],
   deps = [
     ":generate_infoset_id",
-    ":bin_centers_proto",
+    ":bin_centers_to_proto",
     "//domain:rob_poker",
     "//learning:cfr",
     "//learning:min_regret_strategy_to_proto",
@@ -115,7 +115,7 @@ cc_library(
     "//domain:deck",
     "//domain:rob_poker",
     ":hand_evaluator",
-    ":bin_centers_proto",
+    ":bin_centers",
   ],
 )
 
@@ -163,4 +163,19 @@ py_library(
         requirement("beautifulsoup4"),
         requirement("pandas"),
     ]
+)
+
+cc_library(
+  name = "bin_centers",
+  hdrs = ["bin_centers.hh"],
+)
+
+cc_library(
+  name = "bin_centers_to_proto",
+  hdrs = ["bin_centers_to_proto.hh"],
+  srcs = ["bin_centers_to_proto.cc"],
+  deps = [
+    ":bin_centers",
+    ":bin_centers_proto",
+  ]
 )

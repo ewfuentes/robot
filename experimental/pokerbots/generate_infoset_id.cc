@@ -12,7 +12,7 @@
 
 namespace robot::experimental::pokerbots {
 domain::RobPoker::InfoSetId infoset_id_from_history(const domain::RobPokerHistory &history,
-                                                    const proto::PerTurnBinCenters &bin_centers,
+                                                    const PerTurnBinCenters &bin_centers,
                                                     InOut<std::mt19937> gen) {
     const auto player = up_next(history).value();
     const auto betting_state = compute_betting_state(history);
@@ -33,7 +33,7 @@ domain::RobPoker::InfoSetId infoset_id_from_information(
     const std::array<domain::StandardDeck::Card, 2> &private_cards,
     const std::vector<domain::StandardDeck::Card> &common_cards,
     const std::vector<domain::RobPokerAction> &actions, const domain::BettingState &betting_state,
-    const proto::PerTurnBinCenters &bin_centers, InOut<std::mt19937> gen) {
+    const PerTurnBinCenters &bin_centers, InOut<std::mt19937> gen) {
     using Suits = domain::StandardDeck::Suits;
     // There can be up to 6 actions, we allocate 4 bits for each actions
     // bits 40 - 63: observed actions
@@ -105,19 +105,19 @@ domain::RobPoker::InfoSetId infoset_id_from_information(
 
         const auto &turn_bin_centers = [&bin_centers, betting_round]() {
             if (betting_round == 1) {
-                return bin_centers.flop_centers();
+                return bin_centers.flop_centers;
             } else if (betting_round == 2) {
-                return bin_centers.turn_centers();
+                return bin_centers.turn_centers;
             } else {
-                return bin_centers.river_centers();
+                return bin_centers.river_centers;
             }
         }();
 
         const auto dist_to_center = [&result](const auto &bin_center) {
-            const double d_strength = result.strength - bin_center.strength();
-            const double d_neg_pot = result.negative_potential - bin_center.negative_potential();
-            const double d_pos_pot = result.positive_potential - bin_center.positive_potential();
-            return std::hypot(d_strength, d_neg_pot, d_pos_pot);
+            const double d_strength = result.strength - bin_center.strength;
+            const double d_neg_pot = result.negative_potential - bin_center.negative_potential;
+            const double d_pos_pot = result.positive_potential - bin_center.positive_potential;
+            return d_strength * d_strength + d_neg_pot * d_neg_pot + d_pos_pot * d_pos_pot;
         };
 
         const auto min_bucket_iter =
