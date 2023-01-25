@@ -1,5 +1,7 @@
 
 
+#include <pstl/glue_execution_defs.h>
+
 #include <algorithm>
 #include <chrono>
 #include <execution>
@@ -93,7 +95,7 @@ std::vector<HandDistributionResult> mass_estimate_hand_distribution(
     }
 
     std::vector<HandDistributionResult> out(hands.size());
-    std::for_each(inputs.begin(), inputs.end(), [&](const EvalInput &input) {
+    std::for_each(std::execution::par, inputs.begin(), inputs.end(), [&](const EvalInput &input) {
         const auto &[idx, hand, board] = input;
         std::mt19937 gen(idx);
         out[idx] = estimate_hand_distribution(hand, board, num_bins, num_board_rollouts,

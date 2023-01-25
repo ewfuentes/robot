@@ -277,7 +277,7 @@ HandDistributionResult estimate_hand_distribution(
     const std::optional<time::RobotTimestamp::duration> timeout, InOut<std::mt19937> gen) {
     const double bin_step = 1.0 / num_bins;
     constexpr auto PLAYER = domain::RobPokerPlayer::PLAYER1;
-    constexpr int MAX_RESULT_CACHE_SIZE = 1024;
+    // constexpr int MAX_RESULT_CACHE_SIZE = 1024;
     thread_local std::deque<std::pair<omp::Hand, HandDistributionResult>> result_cache;
     const auto history = create_history_from_known_cards(hand, board);
     const auto remaining_deck = deck_from_history(history, PLAYER);
@@ -374,10 +374,10 @@ HandDistributionResult estimate_hand_distribution(
         .num_board_rollouts = static_cast<uint64_t>(num_evals),
     };
 
-    result_cache.push_front(std::make_pair(query_hand, out));
-    if (result_cache.size() > MAX_RESULT_CACHE_SIZE) {
-        result_cache.resize(MAX_RESULT_CACHE_SIZE);
-    }
+    // result_cache.push_front(std::make_pair(query_hand, out));
+    // if (result_cache.size() > MAX_RESULT_CACHE_SIZE) {
+    //     result_cache.resize(MAX_RESULT_CACHE_SIZE);
+    // }
     return out;
 }
 }  // namespace robot::experimental::pokerbots

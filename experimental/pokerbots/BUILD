@@ -145,6 +145,8 @@ cc_library(
 pybind_extension(
   name = "evaluate_mass_hands_python",
   srcs = ["evaluate_mass_hands_python.cc"],
+  visibility = ["//visibility:public"],
+  data = [":hand_evaluator_python.so"],
   deps = [
     ":evaluate_mass_hands",
   ]
@@ -159,6 +161,7 @@ multi_proto_library(
 py_library(
     name ="pokerbots_scrape",
     srcs = ["pokerbots_scrape.py"],
+    visibility=["//visibility:public"],
     deps = [
         requirement("requests"),
         requirement("beautifulsoup4"),
@@ -179,4 +182,32 @@ cc_library(
     ":bin_centers",
     ":bin_centers_proto",
   ]
+)
+
+py_binary(
+    name = "compute_hand_distribution",
+    srcs = ["compute_hand_distribution.py"],
+    data = [":hand_evaluator_python.so"],
+    deps = [
+      requirement("pandas"),
+    ]
+)
+
+filegroup(
+    name="compute_hand_distribution_zip",
+    tags=["manual"],
+    srcs=[
+        ":compute_hand_distribution",
+    ],
+    output_group="python_zip_file",
+)
+
+pkg_zip(
+    name = "compute_hand_distribution_cloud_zip",
+    tags=["manual"],
+    srcs=[
+      "main.py",
+      ":compute_hand_distribution_zip",
+      "requirements.txt"
+    ],
 )
