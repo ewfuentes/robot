@@ -53,6 +53,8 @@ TEST(BeliefRoadMapTest, linear_graph) {
     // The process noise is such that moving from B to A, then to B and C results in a tighter
     // covariance at the goal.
 
+    constexpr int NUM_START_CONNECTIONS = 4;
+    constexpr int NUM_GOAL_CONNECTIONS = 4;
     const RoadMap road_map = {
         .points = {{-10.0, 0.0}, {0.0, 0.0}, {10.0, 0.0}},
         .adj = Eigen::Matrix3d{{{0.0, 1.0, 0.0}, {1.0, 0.0, 1.0}, {0.0, 1.0, 0.0}}},
@@ -82,7 +84,8 @@ TEST(BeliefRoadMapTest, linear_graph) {
 
     // Action
     const auto maybe_brm_plan =
-        plan(road_map, initial_belief, make_belief_updater(road_map, goal_state), goal_state);
+        plan(road_map, initial_belief, make_belief_updater(road_map, goal_state), goal_state,
+             NUM_START_CONNECTIONS, NUM_GOAL_CONNECTIONS);
 
     // Verification
     EXPECT_TRUE(maybe_brm_plan.has_value());
