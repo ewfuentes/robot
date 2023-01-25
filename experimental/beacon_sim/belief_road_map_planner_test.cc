@@ -124,10 +124,13 @@ TEST(BeliefRoadMapPlannerTest, grid_road_map) {
     constexpr double MAX_SENSOR_RANGE_M = 3.0;
     const auto &[road_map, ekf_slam] = create_environment(ekf_config);
     const Eigen::Vector2d GOAL_STATE = {10, -5};
+    constexpr int NUM_START_CONNECTIONS = 1;
+    constexpr int NUM_GOAL_CONENCTIONS = 1;
 
     // Action
     const auto maybe_plan =
-        compute_belief_road_map_plan(road_map, ekf_slam, GOAL_STATE, MAX_SENSOR_RANGE_M);
+        compute_belief_road_map_plan(road_map, ekf_slam, GOAL_STATE, MAX_SENSOR_RANGE_M,
+                                     NUM_START_CONNECTIONS, NUM_GOAL_CONENCTIONS);
 
     // Verification
     EXPECT_TRUE(maybe_plan.has_value());

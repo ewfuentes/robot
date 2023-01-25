@@ -224,7 +224,8 @@ bool operator==(const RobotBelief &a, const RobotBelief &b) {
 
 std::optional<planning::BRMPlan<RobotBelief>> compute_belief_road_map_plan(
     const planning::RoadMap &road_map, const EkfSlam &ekf, const Eigen::Vector2d &goal_state,
-    const double max_sensor_range_m) {
+    const double max_sensor_range_m, const int num_start_connections,
+    const int num_goal_connections) {
     const auto &estimate = ekf.estimate();
 
     const RobotBelief initial_belief = {
@@ -232,7 +233,8 @@ std::optional<planning::BRMPlan<RobotBelief>> compute_belief_road_map_plan(
         .cov_in_robot = estimate.robot_cov(),
     };
     const auto belief_updater = make_belief_updater(road_map, goal_state, max_sensor_range_m, ekf);
-    return planning::plan<RobotBelief>(road_map, initial_belief, belief_updater, goal_state);
+    return planning::plan<RobotBelief>(road_map, initial_belief, belief_updater, goal_state,
+                                       num_start_connections, num_goal_connections);
 }
 
 namespace detail {

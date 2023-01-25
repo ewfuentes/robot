@@ -36,7 +36,9 @@ using BeliefUpdater =
 template <typename Belief>
 std::optional<BRMPlan<Belief>> plan(const RoadMap &road_map, const Belief &initial_belief,
                                     const BeliefUpdater<Belief> &belief_updater,
-                                    const Eigen::Vector2d &goal_state);
+                                    const Eigen::Vector2d &goal_state,
+                                    const int num_start_connections,
+                                    const int num_goal_connections);
 
 // Implementation details follow from here
 namespace detail {
@@ -138,13 +140,14 @@ BRMPlan<Belief> brm_plan_from_a_star_result(
 template <typename Belief>
 std::optional<BRMPlan<Belief>> plan(const RoadMap &road_map, const Belief &initial_belief,
                                     const BeliefUpdater<Belief> &belief_updater,
-                                    const Eigen::Vector2d &goal_state) {
+                                    const Eigen::Vector2d &goal_state,
+                                    const int num_start_connections,
+                                    const int num_goal_connections) {
     // Find nearest node to start and end states
-    constexpr int IDXS_TO_FIND = 6;
     const std::vector<int> nearest_to_start_idxs =
-        detail::find_nearest_node_idxs(road_map, initial_belief, IDXS_TO_FIND);
+        detail::find_nearest_node_idxs(road_map, initial_belief, num_start_connections);
     const std::vector<int> nearest_to_end_idxs =
-        detail::find_nearest_node_idxs(road_map, goal_state, IDXS_TO_FIND);
+        detail::find_nearest_node_idxs(road_map, goal_state, num_goal_connections);
 
     const auto successors_func = [nearest_to_start_idxs, nearest_to_end_idxs, &belief_updater,
                                   &road_map](const detail::BRMSearchState<Belief> &state) {
