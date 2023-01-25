@@ -53,3 +53,17 @@ cc_test(
   ],
 )
 
+cc_library(
+  name = "breadth_first_search",
+  hdrs = ["breadth_first_search.hh"],
+  visibility = ["//visibility:public"],
+)
+
+cc_test(
+  name = "breadth_first_search_test",
+  srcs = ["breadth_first_search_test.cc"],
+  deps = [
+    ":breadth_first_search",
+    "@com_google_googletest//:gtest_main",
+  ]
+)
