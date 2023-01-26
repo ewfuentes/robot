@@ -9,7 +9,8 @@ struct BinCenter {
     double negative_potential;
     double positive_potential;
 };
-  struct PerTurnBinCenters {
+
+struct PerTurnBinCenters {
     std::vector<BinCenter> preflop_centers;
     std::vector<BinCenter> flop_centers;
     std::vector<BinCenter> turn_centers;
