@@ -112,6 +112,7 @@ int train(const std::filesystem::path &output_directory, const uint64_t num_iter
         .iteration_callback =
             [prev_t = std::optional<time::RobotTimestamp>{}, &output_directory,
              &maybe_load_checkpoint](const int iter, auto counts_from_infoset_id) mutable {
+                constexpr int ITERS_BETWEEN_DISCOUNTS = 1000000;
                 constexpr int ITERS_BETWEEN_SAVES = 100000;
                 if (iter == 0 && maybe_load_checkpoint.has_value()) {
                     if (std::filesystem::exists(maybe_load_checkpoint.value())) {
@@ -143,6 +144,15 @@ int train(const std::filesystem::path &output_directory, const uint64_t num_iter
                 pack_into(*counts_from_infoset_id, &proto);
                 std::ofstream out(path, std::ios_base::binary | std::ios_base::trunc);
                 proto.SerializeToOstream(&out);
+
+                const int num_periods = iter / ITERS_BETWEEN_DISCOUNTS;
+                const double factor = num_periods / (num_periods + 1.0);
+                for (auto &[_, counts] : *counts_from_infoset_id) {
+                    for (auto &[action, _] : Range<domain::RobPokerAction>::value) {
+                        counts.regret_sum[action] *= factor;
+                        counts.strategy_sum[action] *= factor;
+                    }
+                }
                 return ITERS_BETWEEN_SAVES;
             },
     };
