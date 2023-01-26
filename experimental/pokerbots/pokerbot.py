@@ -176,13 +176,13 @@ class Pokerbot(bot.Bot):
     def __init__(self):
         """Init."""
         with open(
-            "experimental/pokerbots/pokerbot_checkpoint_031070000.pb", "rb"
+            "experimental/pokerbots/pokerbot_checkpoint_1000_bins_054800000.pb", "rb"
         ) as file_in:
             strategy = learning.min_regret_strategy_pb2.MinRegretStrategy()
             strategy.ParseFromString(file_in.read())
         self._strategy = {x.id_num: x for x in strategy.infoset_counts}
 
-        with open("experimental/pokerbots/bin_centers.pb", "rb") as file_in:
+        with open("experimental/pokerbots/bin_centers_1000.pb", "rb") as file_in:
             self._per_turn_bin_centers = (
                 experimental.pokerbots.bin_centers_pb2.PerTurnBinCenters()
             )
