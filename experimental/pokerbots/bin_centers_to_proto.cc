@@ -1,7 +1,6 @@
 
 #include "experimental/pokerbots/bin_centers_to_proto.hh"
 
-
 namespace robot::experimental::pokerbots::proto {
 pokerbots::PerTurnBinCenters unpack_from(const PerTurnBinCenters &in) {
     const auto unpack_vector = [](const auto &list) {
@@ -21,6 +20,7 @@ pokerbots::PerTurnBinCenters unpack_from(const PerTurnBinCenters &in) {
         .river_centers = unpack_vector(in.river_centers()),
     };
 }
+
 pokerbots::BinCenter unpack_from(const BinCenter &in) {
     return {
         .strength = in.strength(),
