@@ -47,8 +47,8 @@ py_binary(
     tags=["manual"],
     data = [
       ":hand_evaluator_python.so",
-      "pokerbot_checkpoint_031070000.pb",
-      "bin_centers.pb",
+      "pokerbot_checkpoint_1000_bins_054800000.pb",
+      "bin_centers_1000.pb",
     ],
     visibility=["//visibility:public"],
     deps=[
