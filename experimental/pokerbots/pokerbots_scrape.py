@@ -16,7 +16,6 @@ def load_session_value(path=os.path.expanduser("~/.pokerbots_session")):
         return file_in.read().strip()
 
 
-@functools.lru_cache(maxsize=1024)
 def make_request(path, session_value):
     headers = {"cookie": f"session={session_value}"}
 
