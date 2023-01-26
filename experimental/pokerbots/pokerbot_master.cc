@@ -12,7 +12,7 @@
 #include "common/time/robot_time.hh"
 #include "cxxopts.hpp"
 #include "domain/rob_poker.hh"
-#include "experimental/pokerbots/bin_centers.pb.h"
+#include "experimental/pokerbots/bin_centers_to_proto.hh"
 #include "experimental/pokerbots/generate_infoset_id.hh"
 #include "learning/cfr.hh"
 #include "learning/min_regret_strategy_to_proto.hh"
@@ -91,11 +91,11 @@ int train(const std::filesystem::path &output_directory, const uint64_t num_iter
         return 1;
     }
 
-    const proto::PerTurnBinCenters bin_centers = [&bin_centers_path]() {
+    const PerTurnBinCenters bin_centers = [&bin_centers_path]() {
         proto::PerTurnBinCenters proto;
         std::ifstream file_in(bin_centers_path, std::ios_base::binary);
         proto.ParseFromIstream(&file_in);
-        return proto;
+        return unpack_from(proto);
     }();
 
     const learning::MinRegretTrainConfig<RobPoker> config = {

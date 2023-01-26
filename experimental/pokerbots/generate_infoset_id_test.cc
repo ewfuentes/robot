@@ -13,7 +13,7 @@ using Ranks = domain::StandardDeck::Card::Ranks;
 }  // namespace
 TEST(GenerateInfosetIdTest, basic_test) {
     // Setup
-    const proto::PerTurnBinCenters bin_centers{};
+    const PerTurnBinCenters bin_centers{};
     const domain::BettingState betting_state = {
         .put_in_pot = {0},
         .is_game_over = false,
