@@ -166,18 +166,20 @@ def parse_game_round(game_round):
     )
 
 
-def parse_game_log(game_log):
+def parse_game_log(row, game_log):
+    Game = namedtuple('Game', ['a_bot', 'b_bot', 'rounds'])
     rounds = []
     for game_round in game_log.split("\n\n"):
         if not game_round.startswith("Round"):
             continue
         rounds.append(parse_game_round(game_round))
-    return rounds
+    return Game(a_bot=row.challenger, b_bot=row.opponent, rounds=rounds)
 
 
-def get_game_log(path, session_value):
+def get_game_log(row, session_value):
+    path = row.game_log
     game_log = make_request(path, session_value).get_text()
-    return parse_game_log(game_log)
+    return parse_game_log(row, game_log)
 
 
 def main(session_path, page_limit):
