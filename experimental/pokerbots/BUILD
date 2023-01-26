@@ -183,31 +183,3 @@ cc_library(
     ":bin_centers_proto",
   ]
 )
-
-py_binary(
-    name = "compute_hand_distribution",
-    srcs = ["compute_hand_distribution.py"],
-    data = [":hand_evaluator_python.so"],
-    deps = [
-      requirement("pandas"),
-    ]
-)
-
-filegroup(
-    name="compute_hand_distribution_zip",
-    tags=["manual"],
-    srcs=[
-        ":compute_hand_distribution",
-    ],
-    output_group="python_zip_file",
-)
-
-pkg_zip(
-    name = "compute_hand_distribution_cloud_zip",
-    tags=["manual"],
-    srcs=[
-      "main.py",
-      ":compute_hand_distribution_zip",
-      "requirements.txt"
-    ],
-)
