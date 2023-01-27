@@ -113,7 +113,7 @@ int train(const std::filesystem::path &output_directory, const uint64_t num_iter
             [prev_t = std::optional<time::RobotTimestamp>{}, &output_directory,
              &maybe_load_checkpoint](const int iter, auto counts_from_infoset_id) mutable {
                 constexpr int ITERS_BETWEEN_DISCOUNTS = 1000000;
-                constexpr int ITERS_BETWEEN_SAVES = 100000;
+                constexpr int ITERS_BETWEEN_SAVES = 1000000;
                 if (iter == 0 && maybe_load_checkpoint.has_value()) {
                     if (std::filesystem::exists(maybe_load_checkpoint.value())) {
                         // load the existing checkpoint

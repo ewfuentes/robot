@@ -58,7 +58,7 @@ domain::RobPoker::InfoSetId infoset_id_from_information(
     constexpr int MAX_INTERNAL_BETS = 8;
     const int betting_round = betting_state.to_bet->is_final_betting_round
                                   ? 64
-                                  : std::max(betting_state.to_bet->round, MAX_INTERNAL_BETS);
+                                  : std::min(betting_state.to_bet->round, MAX_INTERNAL_BETS);
 
     out = (out << 8) | betting_round;
 

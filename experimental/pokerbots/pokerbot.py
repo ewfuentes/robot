@@ -65,14 +65,13 @@ def compute_opponent_action(current_state: RoundState, player_num: int):
 def compute_betting_round(round_state: RoundState):
     if len(round_state.deck) == 0:
         return 0
+    MAX_INTERNAL_BETS = 8
+    is_last_round = round_state.deck[-1][1] in 'sc'
     betting_round = len(round_state.deck) - 2
-    if betting_round < 3:
-        return betting_round
 
-    last_card = round_state.deck[-1]
-    if last_card[1] in "sc":
-        return 3
-    return 2
+    if is_last_round:
+        return 64
+    return min(betting_round, MAX_INTERNAL_BETS)
 
 
 def card_idx(card_str):
