@@ -143,10 +143,10 @@ def compute_infoset_id(
 
         if betting_round == 1:
             bin_centers = per_turn_bin_centers.flop_centers
-        elif betting_round == 2:
-            bin_centers = per_turn_bin_centers.turn_centers
-        else:
+        elif betting_round == 64:
             bin_centers = per_turn_bin_centers.river_centers
+        else:
+            bin_centers = per_turn_bin_centers.turn_centers
 
         def dist_to_bin(bin_center, strength_potential):
             d_strength = bin_center.strength - strength_potential.strength
