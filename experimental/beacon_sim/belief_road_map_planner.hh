@@ -17,7 +17,7 @@ struct RobotBelief {
 std::optional<planning::BRMPlan<RobotBelief>> compute_belief_road_map_plan(
     const planning::RoadMap &road_map, const EkfSlam &ekf, const Eigen::Vector2d &goal_state,
     const double max_sensor_range_m, const int num_start_connections,
-    const int num_goal_connections);
+    const int num_goal_connections, const double uncertainty_tolerance);
 
 namespace detail {
 struct EdgeBeliefTransform {

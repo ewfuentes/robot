@@ -1,4 +1,6 @@
 
+#pragma once
+
 #include <algorithm>
 #include <deque>
 #include <optional>
@@ -41,7 +43,8 @@ std::optional<BreadthFirstResult<State>> breadth_first_search(
         // Pop the front of the queue
         const int node_idx = node_idx_queue.front();
         node_idx_queue.pop_front();
-        const Node<State> &n = nodes[node_idx];
+        // Make a copy to avoid invalidated references when pushing back on nodes
+        const Node<State> n = nodes[node_idx];
         nodes_expanded++;
         if (goal_check_func(n)) {
             break;

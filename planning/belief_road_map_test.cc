@@ -53,8 +53,9 @@ TEST(BeliefRoadMapTest, linear_graph) {
     // The process noise is such that moving from B to A, then to B and C results in a tighter
     // covariance at the goal.
 
-    constexpr int NUM_START_CONNECTIONS = 4;
-    constexpr int NUM_GOAL_CONNECTIONS = 4;
+    constexpr double UNCERTAINTY_TOLERANCE = 1e-6;
+    constexpr int NUM_START_CONNECTIONS = 1;
+    constexpr int NUM_GOAL_CONNECTIONS = 1;
     const RoadMap road_map = {
         .points = {{-10.0, 0.0}, {0.0, 0.0}, {10.0, 0.0}},
         .adj = Eigen::Matrix3d{{{0.0, 1.0, 0.0}, {1.0, 0.0, 1.0}, {0.0, 1.0, 0.0}}},
@@ -85,13 +86,14 @@ TEST(BeliefRoadMapTest, linear_graph) {
     // Action
     const auto maybe_brm_plan =
         plan(road_map, initial_belief, make_belief_updater(road_map, goal_state), goal_state,
-             NUM_START_CONNECTIONS, NUM_GOAL_CONNECTIONS);
+             NUM_START_CONNECTIONS, NUM_GOAL_CONNECTIONS, UNCERTAINTY_TOLERANCE);
 
     // Verification
     EXPECT_TRUE(maybe_brm_plan.has_value());
     const auto &plan = maybe_brm_plan.value();
 
     constexpr double TOL = 1e-6;
+    ASSERT_GT(plan.nodes.size(), 1);
     EXPECT_EQ(plan.nodes.front(), BRMPlan<GaussianBelief>::INITIAL_BELIEF_NODE_IDX);
     EXPECT_EQ(plan.nodes.back(), BRMPlan<GaussianBelief>::GOAL_BELIEF_NODE_IDX);
     EXPECT_EQ(plan.beliefs.back().mean, goal_state);
