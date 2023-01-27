@@ -49,6 +49,7 @@ def get_rows_from_page(page):
     table = page.find("table")
     table_header = table.thead
     fields = [clean_up_column_name(elem.string) for elem in table_header.find_all("th")]
+    fields.append("game_id")
     RowType = namedtuple("Row", fields)
 
     rows = []
@@ -69,7 +70,11 @@ def get_rows_from_page(page):
                             elements.append(datetime.datetime.fromisoformat(cell_data))
                         except:
                             elements.append(cell_data)
-        rows.append(RowType(*elements))
+        player_log = elements[-1]
+        m = re.match(r"/team/game/(\d+)/player_log", player_log)
+        if m:
+            elements.append(int(m.group(1)))
+            rows.append(RowType(*elements))
     return rows
 
 
@@ -83,8 +88,10 @@ def pull_rows(page_limit, session_value):
 
     return pd.DataFrame(rows)
 
+
 def parse_cards(card_str):
-    return card_str[1:-1].split(' ')
+    return card_str[1:-1].split(" ")
+
 
 def parse_game_round(game_round):
     GameRound = namedtuple(
@@ -99,8 +106,8 @@ def parse_game_round(game_round):
             "B_hand",
             "round_actions",
             "board_states",
-            'A_delta',
-            'B_delta',
+            "A_delta",
+            "B_delta",
         ],
     )
     round_actions = []
@@ -122,18 +129,18 @@ def parse_game_round(game_round):
             board_states.append([])
 
         elif words[0] in "AB":
-            if words[1] == 'dealt':
-                cards = parse_cards(re.search(r'(\[.*\])', line).group(1))
-                if words[0] == 'A':
+            if words[1] == "dealt":
+                cards = parse_cards(re.search(r"(\[.*\])", line).group(1))
+                if words[0] == "A":
                     a_hand = cards
                 else:
                     b_hand = cards
-            elif words[1] == 'posts':
-                round_actions[-1].append((words[0], 'posts', int(words[-1])))
-            elif words[1] in ['bets', 'raises']:
-                round_actions[-1].append((words[0], 'raises', int(words[-1])))
-            elif words[1] == 'awarded':
-                if words[0] == 'A':
+            elif words[1] == "posts":
+                round_actions[-1].append((words[0], "posts", int(words[-1])))
+            elif words[1] in ["bets", "raises"]:
+                round_actions[-1].append((words[0], "raises", int(words[-1])))
+            elif words[1] == "awarded":
+                if words[0] == "A":
                     a_delta = int(words[-1])
                 else:
                     b_delta = int(words[-1])
@@ -142,10 +149,10 @@ def parse_game_round(game_round):
 
         elif words[0] in ["Flop", "Turn", "River", "Run"]:
             round_actions.append([])
-            cards = parse_cards(re.search(r'(\[.*\])', line).group(1))
+            cards = parse_cards(re.search(r"(\[.*\])", line).group(1))
             board_states.append(cards)
         else:
-            print('Unknown line:', line)
+            print("Unknown line:", line)
             print(game_round)
     return GameRound(
         round_number=round_number,
@@ -167,13 +174,13 @@ def parse_game_round(game_round):
 
 
 def parse_game_log(row, game_log):
-    Game = namedtuple('Game', ['a_bot', 'b_bot', 'rounds'])
+    Game = namedtuple("Game", ['id', "a_bot", "b_bot", "rounds"])
     rounds = []
     for game_round in game_log.split("\n\n"):
         if not game_round.startswith("Round"):
             continue
         rounds.append(parse_game_round(game_round))
-    return Game(a_bot=row.challenger, b_bot=row.opponent, rounds=rounds)
+    return Game(id = row['game_id'], a_bot=row.challenger, b_bot=row.opponent, rounds=rounds)
 
 
 def get_game_log(row, session_value):
