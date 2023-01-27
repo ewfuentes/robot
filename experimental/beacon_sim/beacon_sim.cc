@@ -383,7 +383,7 @@ proto::BeaconSimDebug tick_sim(const RobotCommand &command, InOut<BeaconSimState
                     const Eigen::Vector2d target_in_robot =
                         local_from_est_robot.inverse() * local_from_next_robot.translation();
 
-                    if (target_in_robot.norm() > 0.1)  {
+                    if (target_in_robot.norm() > 0.1) {
                         next_command.turn_rad =
                             std::atan2(target_in_robot.y(), target_in_robot.x());
                     }
