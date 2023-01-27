@@ -38,7 +38,7 @@ cc_library(
   srcs = ["belief_road_map.cc"],
   visibility = ["//visibility:public"],
   deps = [
-    ":a_star",
+    ":breadth_first_search",
     ":probabilistic_road_map",
     "@eigen//:eigen",
   ],

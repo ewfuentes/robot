@@ -1,12 +1,14 @@
 
 #pragma once
 
+#include <algorithm>
 #include <functional>
+#include <iostream>
 #include <numeric>
 #include <optional>
 
 #include "Eigen/Dense"
-#include "planning/a_star.hh"
+#include "planning/breadth_first_search.hh"
 #include "planning/probabilistic_road_map.hh"
 
 namespace robot::planning {
@@ -126,10 +128,10 @@ std::vector<Successor<BRMSearchState<Belief>>> successors_for_state(
 }
 
 template <typename Belief>
-BRMPlan<Belief> brm_plan_from_a_star_result(
-    const AStarResult<BRMSearchState<Belief>> &a_star_result) {
+BRMPlan<Belief> brm_plan_from_bfs_result(
+    const BreadthFirstResult<BRMSearchState<Belief>> &bfs_result) {
     BRMPlan<Belief> out;
-    for (const auto &plan_node : a_star_result.states) {
+    for (const auto &plan_node : bfs_result.path) {
         out.nodes.push_back(plan_node.node_idx);
         out.beliefs.push_back(plan_node.belief);
     }
@@ -141,8 +143,9 @@ template <typename Belief>
 std::optional<BRMPlan<Belief>> plan(const RoadMap &road_map, const Belief &initial_belief,
                                     const BeliefUpdater<Belief> &belief_updater,
                                     const Eigen::Vector2d &goal_state,
-                                    const int num_start_connections,
-                                    const int num_goal_connections) {
+                                    const int num_start_connections, const int num_goal_connections,
+                                    const double uncertainty_tolerance) {
+    using SearchState = detail::BRMSearchState<Belief>;
     // Find nearest node to start and end states
     const std::vector<int> nearest_to_start_idxs =
         detail::find_nearest_node_idxs(road_map, initial_belief, num_start_connections);
@@ -150,23 +153,80 @@ std::optional<BRMPlan<Belief>> plan(const RoadMap &road_map, const Belief &initi
         detail::find_nearest_node_idxs(road_map, goal_state, num_goal_connections);
 
     const auto successors_func = [nearest_to_start_idxs, nearest_to_end_idxs, &belief_updater,
-                                  &road_map](const detail::BRMSearchState<Belief> &state) {
+                                  &road_map](const SearchState &state) {
         return detail::successors_for_state(state, road_map, belief_updater, nearest_to_start_idxs,
                                             nearest_to_end_idxs);
     };
 
-    const auto heuristic_func = [](const auto &) { return 0.0; };
-    const auto goal_check_func = [](const auto &brm_search_state) {
-        return brm_search_state.node_idx == BRMPlan<Belief>::GOAL_BELIEF_NODE_IDX;
+    const auto goal_check_func = [](const Node<SearchState> &) { return false; };
+
+    const auto identify_end_func =
+        [](const std::vector<Node<SearchState>> &nodes) -> std::optional<int> {
+        const auto iter = std::min_element(
+            nodes.begin(), nodes.end(), [](const Node<SearchState> &a, const Node<SearchState> &b) {
+                const bool is_a_goal_node =
+                    a.state.node_idx == BRMPlan<Belief>::GOAL_BELIEF_NODE_IDX;
+                const bool is_b_goal_node =
+                    b.state.node_idx == BRMPlan<Belief>::GOAL_BELIEF_NODE_IDX;
+
+                if (is_a_goal_node && is_b_goal_node) {
+                    return uncertainty_size(a.state.belief) < uncertainty_size(b.state.belief);
+                } else if (is_a_goal_node) {
+                    return true;
+                } else {
+                    return false;
+                }
+            });
+        if (iter == nodes.end() || iter->state.node_idx != BRMPlan<Belief>::GOAL_BELIEF_NODE_IDX) {
+            return std::nullopt;
+        }
+        return std::distance(nodes.begin(), iter);
     };
 
-    const auto a_star_result =
-        a_star(detail::BRMSearchState<Belief>{.belief = initial_belief,
-                                              .node_idx = BRMPlan<Belief>::INITIAL_BELIEF_NODE_IDX},
-               successors_func, heuristic_func, goal_check_func);
+    std::unordered_map<int, double> min_uncertainty_from_node;
+    auto should_queue_check = [uncertainty_tolerance, &min_uncertainty_from_node](
+                                  const Successor<SearchState> &successor, const int parent_idx,
+                                  const std::vector<Node<SearchState>> &nodes) {
+        const int node_idx = successor.state.node_idx;
+        const double uncertainty = uncertainty_size(successor.state.belief);
+        const auto iter = min_uncertainty_from_node.find(node_idx);
+        if (iter != min_uncertainty_from_node.end()) {
+            const bool should_queue = iter->second * (1 - uncertainty_tolerance) > uncertainty;
+            if (should_queue) {
+                min_uncertainty_from_node[node_idx] = uncertainty;
+            }
+            return should_queue;
+        }
+        std::optional<int> prev_idx = parent_idx;
+        while (prev_idx.has_value()) {
+            if (nodes[prev_idx.value()].state == successor.state) {
+                break;
+            }
+            prev_idx = nodes[prev_idx.value()].maybe_parent_idx;
+        }
 
-    return a_star_result.has_value()
-               ? std::make_optional(detail::brm_plan_from_a_star_result(a_star_result.value()))
+        if (!prev_idx.has_value()) {
+            // If we haven't seen this node before on our path, allow it to be added
+            min_uncertainty_from_node[node_idx] = uncertainty_size(successor.state.belief);
+            return true;
+        } else if (uncertainty_size(successor.state.belief) <
+                   ((1 - uncertainty_tolerance) *
+                    uncertainty_size(nodes[prev_idx.value()].state.belief))) {
+            // We're revisiting a node, but it has lower uncertainty
+            min_uncertainty_from_node[node_idx] = uncertainty_size(successor.state.belief);
+            return true;
+        }
+        // We've seen this node before, but it's not much better than last time
+        return false;
+    };
+
+    const auto bfs_result = breadth_first_search(
+        detail::BRMSearchState<Belief>{.belief = initial_belief,
+                                       .node_idx = BRMPlan<Belief>::INITIAL_BELIEF_NODE_IDX},
+        successors_func, should_queue_check, goal_check_func, identify_end_func);
+
+    return bfs_result.has_value()
+               ? std::make_optional(detail::brm_plan_from_bfs_result(bfs_result.value()))
                : std::nullopt;
     return std::nullopt;
 }
