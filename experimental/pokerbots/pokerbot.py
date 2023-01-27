@@ -176,7 +176,7 @@ class Pokerbot(bot.Bot):
     def __init__(self):
         """Init."""
         with open(
-            "experimental/pokerbots/pokerbot_checkpoint_1000_bins_054800000.pb", "rb"
+            "experimental/pokerbots/pokerbot_checkpoint_1000_bins_discount_100000000.pb", "rb"
         ) as file_in:
             strategy = learning.min_regret_strategy_pb2.MinRegretStrategy()
             strategy.ParseFromString(file_in.read())
