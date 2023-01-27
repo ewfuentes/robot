@@ -383,15 +383,6 @@ proto::BeaconSimDebug tick_sim(const RobotCommand &command, InOut<BeaconSimState
                     const Eigen::Vector2d target_in_robot =
                         local_from_est_robot.inverse() * local_from_next_robot.translation();
 
-                    std::cout << "Time since plan tov: " << time_since_plan_tov
-                              << " next target tov: " << time_along_plan + step_dt << std::endl;
-
-                    std::cout << "local_from_target: "
-                              << local_from_next_robot.translation().transpose() << std::endl;
-                    std::cout << "local_from_robot: "
-                              << local_from_est_robot.translation().transpose() << std::endl;
-                    std::cout << "target_from_robot: " << target_in_robot.transpose() << std::endl;
-
                     if (target_in_robot.norm() > 0.1)  {
                         next_command.turn_rad =
                             std::atan2(target_in_robot.y(), target_in_robot.x());
@@ -399,8 +390,6 @@ proto::BeaconSimDebug tick_sim(const RobotCommand &command, InOut<BeaconSimState
                     next_command.move_m =
                         std::min(MAX_SPEED_MPS * std::chrono::duration<double>(DT).count(),
                                  target_in_robot.norm());
-                    std::cout << " Move amount: " << next_command.move_m;
-                    std::cout << " turn amount: " << next_command.turn_rad << std::endl;
                     break;
                 } else {
                     time_along_plan += step_dt;
