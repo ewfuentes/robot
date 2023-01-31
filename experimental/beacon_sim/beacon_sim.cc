@@ -1,4 +1,6 @@
 
+#include <bits/chrono.h>
+
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -332,6 +334,50 @@ void load_map(const SimConfig &sim_config, InOut<EkfSlam> ekf_slam) {
     ekf_slam->load_map(map, sim_config.load_off_diagonals);
 }
 
+std::optional<RobotCommand> compute_command_from_plan(const time::RobotTimestamp &time_of_validity,
+                                                      const liegroups::SE2 &local_from_est_robot,
+                                                      const Plan &plan) {
+    constexpr double MAX_SPEED_MPS = 5.0;
+    const auto time_since_plan_tov = time_of_validity - plan.time_of_validity;
+    const std::vector<RobotBelief> &beliefs = plan.brm_plan.beliefs;
+    time::RobotTimestamp::duration time_along_plan(0);
+    for (int i = 1; i < static_cast<int>(beliefs.size()); i++) {
+        const liegroups::SE2 &local_from_prev_robot = beliefs.at(i - 1).local_from_robot;
+        const liegroups::SE2 &local_from_next_robot = beliefs.at(i).local_from_robot;
+        const Eigen::Vector2d target_in_start =
+            local_from_next_robot.translation() - local_from_prev_robot.translation();
+        const double dist_m = target_in_start.norm();
+        const time::RobotTimestamp::duration step_dt = time::as_duration(dist_m / MAX_SPEED_MPS);
+        if (time_along_plan + step_dt > time_since_plan_tov) {
+            // Compute expected pose
+            // Construct a pose at the start node facing the next node
+            const double heading_rad = std::atan2(target_in_start.y(), target_in_start.x());
+
+            const liegroups::SE2 local_from_start_node =
+                liegroups::SE2(liegroups::SO2(heading_rad), local_from_prev_robot.translation());
+            const double frac =
+                (time_since_plan_tov - time_along_plan) / std::chrono::duration<double>(step_dt);
+            const liegroups::SE2 start_from_expected = liegroups::SE2::trans(frac * dist_m, 0.0);
+            const liegroups::SE2 local_from_expected = local_from_start_node * start_from_expected;
+
+            // Compute command
+            const Eigen::Vector2d expected_in_estimated =
+                local_from_est_robot.inverse() * local_from_expected.translation();
+            const Eigen::Vector2d target_in_estimated =
+                local_from_est_robot.inverse() * local_from_next_robot.translation();
+
+            RobotCommand command;
+            command.turn_rad = std::atan2(target_in_estimated.y(), target_in_estimated.x());
+            command.move_m = std::min(MAX_SPEED_MPS * std::chrono::duration<double>(DT).count(),
+                                      expected_in_estimated.norm());
+            return command;
+        } else {
+            time_along_plan += step_dt;
+        }
+    }
+    return std::nullopt;
+}
+
 proto::BeaconSimDebug tick_sim(const RobotCommand &command, InOut<BeaconSimState> state,
                                const SimConfig &config) {
     constexpr ObservationConfig OBS_CONFIG = {
@@ -364,36 +410,12 @@ proto::BeaconSimDebug tick_sim(const RobotCommand &command, InOut<BeaconSimState
         }
         if (state->plan.has_value()) {
             // Figure out which which node we should be targeting
-            constexpr double MAX_SPEED_MPS = 5.0;
-            const auto time_since_plan_tov =
-                state->time_of_validity - state->plan->time_of_validity;
-            const std::vector<RobotBelief> &beliefs = state->plan->brm_plan.beliefs;
-            time::RobotTimestamp::duration time_along_plan = std::chrono::seconds(0);
-            for (int i = 1; i < static_cast<int>(beliefs.size()); i++) {
-                const liegroups::SE2 &local_from_prev_robot = beliefs.at(i - 1).local_from_robot;
-                const liegroups::SE2 &local_from_next_robot = beliefs.at(i).local_from_robot;
-                const liegroups::SE2 next_from_prev =
-                    local_from_next_robot.inverse() * local_from_prev_robot;
-                const double dist_m = next_from_prev.arclength();
-                const time::RobotTimestamp::duration step_dt =
-                    time::as_duration(dist_m / MAX_SPEED_MPS);
-                if (time_along_plan + step_dt > time_since_plan_tov) {
-                    const liegroups::SE2 local_from_est_robot =
-                        state->ekf.estimate().local_from_robot();
-                    const Eigen::Vector2d target_in_robot =
-                        local_from_est_robot.inverse() * local_from_next_robot.translation();
-
-                    if (target_in_robot.norm() > 0.1) {
-                        next_command.turn_rad =
-                            std::atan2(target_in_robot.y(), target_in_robot.x());
-                    }
-                    next_command.move_m =
-                        std::min(MAX_SPEED_MPS * std::chrono::duration<double>(DT).count(),
-                                 target_in_robot.norm());
-                    break;
-                } else {
-                    time_along_plan += step_dt;
-                }
+            const auto plan_command = compute_command_from_plan(
+                state->time_of_validity, state->ekf.estimate().local_from_robot(),
+                state->plan.value());
+            if (plan_command.has_value()) {
+                next_command.turn_rad = plan_command->turn_rad;
+                next_command.move_m = plan_command->move_m;
             }
         }
     }
