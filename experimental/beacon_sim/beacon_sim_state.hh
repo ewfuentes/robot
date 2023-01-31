@@ -19,6 +19,11 @@ struct Plan {
     planning::BRMPlan<RobotBelief> brm_plan;
 };
 
+struct Goal {
+    time::RobotTimestamp time_of_validity;
+    Eigen::Vector2d goal_state;
+};
+
 struct BeaconSimState {
     time::RobotTimestamp time_of_validity;
     WorldMap map;
@@ -26,6 +31,7 @@ struct BeaconSimState {
     RobotState robot;
     EkfSlam ekf;
     std::vector<BeaconObservation> observations;
+    std::optional<Goal> goal;
     std::optional<Plan> plan;
     std::mt19937 gen;
 };
