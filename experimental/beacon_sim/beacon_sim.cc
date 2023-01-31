@@ -1,6 +1,7 @@
 
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -12,6 +13,7 @@
 #include "common/argument_wrapper.hh"
 #include "common/liegroups/se2_to_proto.hh"
 #include "common/proto/load_from_file.hh"
+#include "common/time/robot_time.hh"
 #include "common/time/robot_time_to_proto.hh"
 #include "common/time/sim_clock.hh"
 #include "cxxopts.hpp"
@@ -35,6 +37,7 @@ using namespace std::literals::chrono_literals;
 
 namespace robot::experimental::beacon_sim {
 namespace {
+const auto DT = 25ms;
 
 struct SimConfig {
     std::optional<std::string> log_path;
@@ -329,6 +332,49 @@ void load_map(const SimConfig &sim_config, InOut<EkfSlam> ekf_slam) {
     ekf_slam->load_map(map, sim_config.load_off_diagonals);
 }
 
+std::optional<RobotCommand> compute_command_from_plan(const time::RobotTimestamp &time_of_validity,
+                                                      const liegroups::SE2 &local_from_est_robot,
+                                                      const Plan &plan) {
+    constexpr double MAX_SPEED_MPS = 5.0;
+    const auto time_since_plan_tov = time_of_validity - plan.time_of_validity;
+    const std::vector<RobotBelief> &beliefs = plan.brm_plan.beliefs;
+    time::RobotTimestamp::duration time_along_plan(0);
+    for (int i = 1; i < static_cast<int>(beliefs.size()); i++) {
+        const Eigen::Vector2d prev_node_in_local = beliefs.at(i - 1).local_from_robot.translation();
+        const Eigen::Vector2d next_node_in_local = beliefs.at(i).local_from_robot.translation();
+        const Eigen::Vector2d next_in_prev = next_node_in_local - prev_node_in_local;
+        const double dist_m = next_in_prev.norm();
+        const time::RobotTimestamp::duration step_dt = time::as_duration(dist_m / MAX_SPEED_MPS);
+        if (time_along_plan + step_dt > time_since_plan_tov) {
+            // Compute expected pose
+            // Construct a pose at the start node facing the next node
+            const double heading_rad = std::atan2(next_in_prev.y(), next_in_prev.x());
+
+            const liegroups::SE2 local_from_start_node =
+                liegroups::SE2(liegroups::SO2(heading_rad), prev_node_in_local);
+            const double frac =
+                (time_since_plan_tov - time_along_plan) / std::chrono::duration<double>(step_dt);
+            const liegroups::SE2 start_from_expected = liegroups::SE2::trans(frac * dist_m, 0.0);
+            const liegroups::SE2 local_from_expected = local_from_start_node * start_from_expected;
+
+            // Compute command
+            const Eigen::Vector2d expected_in_estimated =
+                local_from_est_robot.inverse() * local_from_expected.translation();
+            const Eigen::Vector2d target_in_estimated =
+                local_from_est_robot.inverse() * next_node_in_local;
+
+            RobotCommand command;
+            command.turn_rad = std::atan2(target_in_estimated.y(), target_in_estimated.x());
+            command.move_m = std::min(MAX_SPEED_MPS * std::chrono::duration<double>(DT).count(),
+                                      expected_in_estimated.norm());
+            return command;
+        } else {
+            time_along_plan += step_dt;
+        }
+    }
+    return std::nullopt;
+}
+
 proto::BeaconSimDebug tick_sim(const RobotCommand &command, InOut<BeaconSimState> state,
                                const SimConfig &config) {
     constexpr ObservationConfig OBS_CONFIG = {
@@ -338,27 +384,41 @@ proto::BeaconSimDebug tick_sim(const RobotCommand &command, InOut<BeaconSimState
 
     const Eigen::Vector2d goal_state{-14.0, 0.0};
 
+    RobotCommand next_command = command;
     if (config.enable_brm_planner) {
         // Plan
-        constexpr int NUM_START_CONNECTIONS = 6;
-        constexpr int NUM_GOAL_CONNECTIONS = 6;
-        constexpr double UNCERTAINTY_TOLERANCE = 0.01;
-        std::cout << "Starting to Plan" << std::endl;
-        const auto brm_plan = compute_belief_road_map_plan(
-            state->road_map, state->ekf, goal_state, OBS_CONFIG.max_sensor_range_m.value(),
-            NUM_START_CONNECTIONS, NUM_GOAL_CONNECTIONS, UNCERTAINTY_TOLERANCE);
-        std::cout << "plan complete" << std::endl;
-        for (int idx = 0; idx < static_cast<int>(brm_plan->nodes.size()); idx++) {
-            std::cout << idx << " " << brm_plan->nodes.at(idx) << " "
-                      << brm_plan->beliefs.at(idx).local_from_robot.translation().transpose()
-                      << std::endl;
+        if (!state->plan.has_value()) {
+            constexpr int NUM_START_CONNECTIONS = 6;
+            constexpr int NUM_GOAL_CONNECTIONS = 6;
+            constexpr double UNCERTAINTY_TOLERANCE = 0.1;
+            std::cout << "Starting to Plan" << std::endl;
+            const auto brm_plan = compute_belief_road_map_plan(
+                state->road_map, state->ekf, goal_state, OBS_CONFIG.max_sensor_range_m.value(),
+                NUM_START_CONNECTIONS, NUM_GOAL_CONNECTIONS, UNCERTAINTY_TOLERANCE);
+            std::cout << "plan complete" << std::endl;
+            for (int idx = 0; idx < static_cast<int>(brm_plan->nodes.size()); idx++) {
+                std::cout << idx << " " << brm_plan->nodes.at(idx) << " "
+                          << brm_plan->beliefs.at(idx).local_from_robot.translation().transpose()
+                          << " cov det: " << brm_plan->beliefs.at(idx).cov_in_robot.determinant()
+                          << std::endl;
+            }
+            state->plan = {.time_of_validity = state->time_of_validity,
+                           .brm_plan = brm_plan.value()};
         }
-        state->plan = brm_plan.value();
+        if (state->plan.has_value()) {
+            // Figure out which which node we should be targeting
+            const auto plan_command = compute_command_from_plan(
+                state->time_of_validity, state->ekf.estimate().local_from_robot(),
+                state->plan.value());
+            if (plan_command.has_value()) {
+                next_command.turn_rad = plan_command->turn_rad;
+                next_command.move_m = plan_command->move_m;
+            }
+        }
     }
-
     // simulate robot forward
-    state->robot.turn(command.turn_rad);
-    state->robot.move(command.move_m);
+    state->robot.turn(next_command.turn_rad);
+    state->robot.move(next_command.move_m);
 
     state->map.update(state->time_of_validity);
 
@@ -366,8 +426,8 @@ proto::BeaconSimDebug tick_sim(const RobotCommand &command, InOut<BeaconSimState
     pack_into(state->time_of_validity, debug_msg.mutable_time_of_validity());
     pack_into(state->ekf.estimate(), debug_msg.mutable_prior());
 
-    const liegroups::SE2 old_robot_from_new_robot =
-        liegroups::SE2::trans(command.move_m, 0.0) * liegroups::SE2::rot(command.turn_rad);
+    const liegroups::SE2 old_robot_from_new_robot = liegroups::SE2::rot(next_command.turn_rad) *
+                                                    liegroups::SE2::trans(next_command.move_m, 0.0);
     pack_into(old_robot_from_new_robot, debug_msg.mutable_old_robot_from_new_robot());
 
     pack_into(state->ekf.predict(state->time_of_validity, old_robot_from_new_robot),
@@ -462,7 +522,6 @@ void run_simulation(const SimConfig &sim_config) {
             key_command.store(update);
         });
 
-    const auto DT = 25ms;
     std::vector<proto::BeaconSimDebug> debug_msgs;
     debug_msgs.reserve(10000);
 
@@ -525,6 +584,7 @@ void run_simulation(const SimConfig &sim_config) {
 
         if (command.should_step || sim_config.autostep) {
             time::SimClock::advance(DT);
+            state.time_of_validity = time::current_robot_time();
             auto debug_msg = tick_sim(command, make_in_out(state), sim_config);
             debug_msgs.emplace_back(std::move(debug_msg));
 
