@@ -340,19 +340,18 @@ std::optional<RobotCommand> compute_command_from_plan(const time::RobotTimestamp
     const std::vector<RobotBelief> &beliefs = plan.brm_plan.beliefs;
     time::RobotTimestamp::duration time_along_plan(0);
     for (int i = 1; i < static_cast<int>(beliefs.size()); i++) {
-        const liegroups::SE2 &local_from_prev_robot = beliefs.at(i - 1).local_from_robot;
-        const liegroups::SE2 &local_from_next_robot = beliefs.at(i).local_from_robot;
-        const Eigen::Vector2d target_in_start =
-            local_from_next_robot.translation() - local_from_prev_robot.translation();
-        const double dist_m = target_in_start.norm();
+        const Eigen::Vector2d prev_node_in_local = beliefs.at(i - 1).local_from_robot.translation();
+        const Eigen::Vector2d next_node_in_local = beliefs.at(i).local_from_robot.translation();
+        const Eigen::Vector2d next_in_prev = next_node_in_local - prev_node_in_local;
+        const double dist_m = next_in_prev.norm();
         const time::RobotTimestamp::duration step_dt = time::as_duration(dist_m / MAX_SPEED_MPS);
         if (time_along_plan + step_dt > time_since_plan_tov) {
             // Compute expected pose
             // Construct a pose at the start node facing the next node
-            const double heading_rad = std::atan2(target_in_start.y(), target_in_start.x());
+            const double heading_rad = std::atan2(next_in_prev.y(), next_in_prev.x());
 
             const liegroups::SE2 local_from_start_node =
-                liegroups::SE2(liegroups::SO2(heading_rad), local_from_prev_robot.translation());
+                liegroups::SE2(liegroups::SO2(heading_rad), prev_node_in_local);
             const double frac =
                 (time_since_plan_tov - time_along_plan) / std::chrono::duration<double>(step_dt);
             const liegroups::SE2 start_from_expected = liegroups::SE2::trans(frac * dist_m, 0.0);
@@ -362,7 +361,7 @@ std::optional<RobotCommand> compute_command_from_plan(const time::RobotTimestamp
             const Eigen::Vector2d expected_in_estimated =
                 local_from_est_robot.inverse() * local_from_expected.translation();
             const Eigen::Vector2d target_in_estimated =
-                local_from_est_robot.inverse() * local_from_next_robot.translation();
+                local_from_est_robot.inverse() * next_node_in_local;
 
             RobotCommand command;
             command.turn_rad = std::atan2(target_in_estimated.y(), target_in_estimated.x());
