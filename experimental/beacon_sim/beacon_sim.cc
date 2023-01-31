@@ -382,19 +382,23 @@ proto::BeaconSimDebug tick_sim(const RobotCommand &command, InOut<BeaconSimState
         .max_sensor_range_m = 5.0,
     };
 
-    const Eigen::Vector2d goal_state{-14.0, 0.0};
-
     RobotCommand next_command = command;
     if (config.enable_brm_planner) {
         // Plan
-        if (!state->plan.has_value()) {
+        const bool have_plan = state->plan.has_value();
+        const bool have_goal = state->goal.has_value();
+        const bool should_plan =
+            have_goal && (!have_plan || (have_plan && state->goal->time_of_validity >
+                                                          state->plan->time_of_validity));
+        if (should_plan) {
             constexpr int NUM_START_CONNECTIONS = 6;
             constexpr int NUM_GOAL_CONNECTIONS = 6;
             constexpr double UNCERTAINTY_TOLERANCE = 0.1;
             std::cout << "Starting to Plan" << std::endl;
             const auto brm_plan = compute_belief_road_map_plan(
-                state->road_map, state->ekf, goal_state, OBS_CONFIG.max_sensor_range_m.value(),
-                NUM_START_CONNECTIONS, NUM_GOAL_CONNECTIONS, UNCERTAINTY_TOLERANCE);
+                state->road_map, state->ekf, state->goal->goal_state,
+                OBS_CONFIG.max_sensor_range_m.value(), NUM_START_CONNECTIONS, NUM_GOAL_CONNECTIONS,
+                UNCERTAINTY_TOLERANCE);
             std::cout << "plan complete" << std::endl;
             for (int idx = 0; idx < static_cast<int>(brm_plan->nodes.size()); idx++) {
                 std::cout << idx << " " << brm_plan->nodes.at(idx) << " "
@@ -479,6 +483,7 @@ void run_simulation(const SimConfig &sim_config) {
         .robot = RobotState(INIT_POS_X_M, INIT_POS_Y_M, INIT_HEADING_RAD),
         .ekf = EkfSlam(EKF_CONFIG, time::current_robot_time()),
         .observations = {},
+        .goal = {{.time_of_validity = time::current_robot_time(), .goal_state = {-14.0, 0.0}}},
         .plan = std::nullopt,
         .gen = std::mt19937(0),
     };
