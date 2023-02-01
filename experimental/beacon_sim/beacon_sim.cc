@@ -11,23 +11,21 @@
 
 #include "Eigen/Cholesky"
 #include "common/argument_wrapper.hh"
-#include "common/liegroups/se2_to_proto.hh"
 #include "common/proto/load_from_file.hh"
 #include "common/time/robot_time.hh"
-#include "common/time/robot_time_to_proto.hh"
 #include "common/time/sim_clock.hh"
 #include "cxxopts.hpp"
-#include "experimental/beacon_sim/beacon_observation_to_proto.hh"
 #include "experimental/beacon_sim/beacon_sim_debug.pb.h"
 #include "experimental/beacon_sim/beacon_sim_state.hh"
 #include "experimental/beacon_sim/belief_road_map_planner.hh"
 #include "experimental/beacon_sim/ekf_slam.hh"
-#include "experimental/beacon_sim/ekf_slam_estimate_to_proto.hh"
 #include "experimental/beacon_sim/extract_mapped_landmarks.hh"
 #include "experimental/beacon_sim/generate_observations.hh"
 #include "experimental/beacon_sim/mapped_landmarks_to_proto.hh"
 #include "experimental/beacon_sim/robot.hh"
+#include "experimental/beacon_sim/sim_config.hh"
 #include "experimental/beacon_sim/sim_log.pb.h"
+#include "experimental/beacon_sim/tick_sim.hh"
 #include "experimental/beacon_sim/visualize_beacon_sim.hh"
 #include "experimental/beacon_sim/world_map.hh"
 #include "planning/probabilistic_road_map.hh"
@@ -36,23 +34,9 @@
 using namespace std::literals::chrono_literals;
 
 namespace robot::experimental::beacon_sim {
-namespace {
-const auto DT = 25ms;
 
-struct SimConfig {
-    std::optional<std::string> log_path;
-    std::optional<std::string> map_input_path;
-    std::optional<std::string> map_output_path;
-    bool load_off_diagonals;
-    bool enable_brm_planner;
-    bool autostep;
-};
-
-}  // namespace
-
-struct RobotCommand {
-    double turn_rad;
-    double move_m;
+struct SimCommand {
+    RobotCommand robot_command;
     double zoom_mult;
     bool should_exit;
     bool should_step;
@@ -89,16 +73,15 @@ struct KeyCommand {
     }
 };
 
-RobotCommand get_command(
+SimCommand get_command(
     const KeyCommand key_command,
     const std::unordered_map<int, visualization::gl_window::JoystickState> &joysticks) {
     constexpr double TURN_AMOUNT_RAD = std::numbers::pi / 4.0;
     constexpr double MOVE_AMOUNT_M = 0.1;
     constexpr double ZOOM_FACTOR_ADJUST = 1.1;
     // Handle Keyboard Commands
-    RobotCommand out = {
-        .turn_rad = 0,
-        .move_m = 0,
+    SimCommand out = {
+        .robot_command = {.turn_rad = 0, .move_m = 0},
         .zoom_mult = 1.0,
         .should_exit = false,
         .should_step = false,
@@ -109,16 +92,16 @@ RobotCommand get_command(
     if (key_command.q) {
         out.should_exit = true;
     } else if (key_command.arrow_left) {
-        out.turn_rad = TURN_AMOUNT_RAD;
+        out.robot_command.turn_rad = TURN_AMOUNT_RAD;
         out.should_step = true;
     } else if (key_command.arrow_right) {
-        out.turn_rad = -TURN_AMOUNT_RAD;
+        out.robot_command.turn_rad = -TURN_AMOUNT_RAD;
         out.should_step = true;
     } else if (key_command.arrow_up) {
-        out.move_m = MOVE_AMOUNT_M;
+        out.robot_command.move_m = MOVE_AMOUNT_M;
         out.should_step = true;
     } else if (key_command.arrow_down) {
-        out.move_m = -MOVE_AMOUNT_M;
+        out.robot_command.move_m = -MOVE_AMOUNT_M;
         out.should_step = true;
     } else if (key_command.p) {
         out.should_print_cov = true;
@@ -143,8 +126,8 @@ RobotCommand get_command(
         const double mean = (left + right) / 2.0;
         const double mean_diff = (right - left) / 2.0;
 
-        out.turn_rad = 0.1 * mean_diff;
-        out.move_m = mean * 0.1, out.should_step = true;
+        out.robot_command.turn_rad = 0.1 * mean_diff;
+        out.robot_command.move_m = mean * 0.1, out.should_step = true;
     }
     return out;
 }
@@ -332,123 +315,6 @@ void load_map(const SimConfig &sim_config, InOut<EkfSlam> ekf_slam) {
     ekf_slam->load_map(map, sim_config.load_off_diagonals);
 }
 
-std::optional<RobotCommand> compute_command_from_plan(const time::RobotTimestamp &time_of_validity,
-                                                      const liegroups::SE2 &local_from_est_robot,
-                                                      const Plan &plan) {
-    constexpr double MAX_SPEED_MPS = 5.0;
-    const auto time_since_plan_tov = time_of_validity - plan.time_of_validity;
-    const std::vector<RobotBelief> &beliefs = plan.brm_plan.beliefs;
-    time::RobotTimestamp::duration time_along_plan(0);
-    for (int i = 1; i < static_cast<int>(beliefs.size()); i++) {
-        const Eigen::Vector2d prev_node_in_local = beliefs.at(i - 1).local_from_robot.translation();
-        const Eigen::Vector2d next_node_in_local = beliefs.at(i).local_from_robot.translation();
-        const Eigen::Vector2d next_in_prev = next_node_in_local - prev_node_in_local;
-        const double dist_m = next_in_prev.norm();
-        const time::RobotTimestamp::duration step_dt = time::as_duration(dist_m / MAX_SPEED_MPS);
-        if (time_along_plan + step_dt > time_since_plan_tov) {
-            // Compute expected pose
-            // Construct a pose at the start node facing the next node
-            const double heading_rad = std::atan2(next_in_prev.y(), next_in_prev.x());
-
-            const liegroups::SE2 local_from_start_node =
-                liegroups::SE2(liegroups::SO2(heading_rad), prev_node_in_local);
-            const double frac =
-                (time_since_plan_tov - time_along_plan) / std::chrono::duration<double>(step_dt);
-            const liegroups::SE2 start_from_expected = liegroups::SE2::trans(frac * dist_m, 0.0);
-            const liegroups::SE2 local_from_expected = local_from_start_node * start_from_expected;
-
-            // Compute command
-            const Eigen::Vector2d expected_in_estimated =
-                local_from_est_robot.inverse() * local_from_expected.translation();
-            const Eigen::Vector2d target_in_estimated =
-                local_from_est_robot.inverse() * next_node_in_local;
-
-            RobotCommand command;
-            command.turn_rad = std::atan2(target_in_estimated.y(), target_in_estimated.x());
-            command.move_m = std::min(MAX_SPEED_MPS * std::chrono::duration<double>(DT).count(),
-                                      expected_in_estimated.norm());
-            return command;
-        } else {
-            time_along_plan += step_dt;
-        }
-    }
-    return std::nullopt;
-}
-
-proto::BeaconSimDebug tick_sim(const RobotCommand &command, InOut<BeaconSimState> state,
-                               const SimConfig &config) {
-    constexpr ObservationConfig OBS_CONFIG = {
-        .range_noise_std_m = 0.1,
-        .max_sensor_range_m = 5.0,
-    };
-
-    RobotCommand next_command = command;
-    if (config.enable_brm_planner) {
-        // Plan
-        const bool have_plan = state->plan.has_value();
-        const bool have_goal = state->goal.has_value();
-        const bool should_plan =
-            have_goal && (!have_plan || (have_plan && state->goal->time_of_validity >
-                                                          state->plan->time_of_validity));
-        if (should_plan) {
-            constexpr int NUM_START_CONNECTIONS = 6;
-            constexpr int NUM_GOAL_CONNECTIONS = 6;
-            constexpr double UNCERTAINTY_TOLERANCE = 0.1;
-            std::cout << "Starting to Plan" << std::endl;
-            const auto brm_plan = compute_belief_road_map_plan(
-                state->road_map, state->ekf, state->goal->goal_state,
-                OBS_CONFIG.max_sensor_range_m.value(), NUM_START_CONNECTIONS, NUM_GOAL_CONNECTIONS,
-                UNCERTAINTY_TOLERANCE);
-            std::cout << "plan complete" << std::endl;
-            for (int idx = 0; idx < static_cast<int>(brm_plan->nodes.size()); idx++) {
-                std::cout << idx << " " << brm_plan->nodes.at(idx) << " "
-                          << brm_plan->beliefs.at(idx).local_from_robot.translation().transpose()
-                          << " cov det: " << brm_plan->beliefs.at(idx).cov_in_robot.determinant()
-                          << std::endl;
-            }
-            state->plan = {.time_of_validity = state->time_of_validity,
-                           .brm_plan = brm_plan.value()};
-        }
-        if (state->plan.has_value()) {
-            // Figure out which which node we should be targeting
-            const auto plan_command = compute_command_from_plan(
-                state->time_of_validity, state->ekf.estimate().local_from_robot(),
-                state->plan.value());
-            if (plan_command.has_value()) {
-                next_command.turn_rad = plan_command->turn_rad;
-                next_command.move_m = plan_command->move_m;
-            }
-        }
-    }
-    // simulate robot forward
-    state->robot.turn(next_command.turn_rad);
-    state->robot.move(next_command.move_m);
-
-    state->map.update(state->time_of_validity);
-
-    proto::BeaconSimDebug debug_msg;
-    pack_into(state->time_of_validity, debug_msg.mutable_time_of_validity());
-    pack_into(state->ekf.estimate(), debug_msg.mutable_prior());
-
-    const liegroups::SE2 old_robot_from_new_robot = liegroups::SE2::rot(next_command.turn_rad) *
-                                                    liegroups::SE2::trans(next_command.move_m, 0.0);
-    pack_into(old_robot_from_new_robot, debug_msg.mutable_old_robot_from_new_robot());
-
-    pack_into(state->ekf.predict(state->time_of_validity, old_robot_from_new_robot),
-              debug_msg.mutable_prediction());
-
-    // generate observations
-    state->observations = generate_observations(state->time_of_validity, state->map, state->robot,
-                                                OBS_CONFIG, make_in_out(state->gen));
-    pack_into(state->observations, debug_msg.mutable_observations());
-
-    const auto &ekf_estimate = state->ekf.update(state->observations);
-    pack_into(ekf_estimate, debug_msg.mutable_posterior());
-    pack_into(state->robot.local_from_robot(), debug_msg.mutable_local_from_true_robot());
-
-    return debug_msg;
-}
-
 void run_simulation(const SimConfig &sim_config) {
     bool run = true;
     time::set_default_time_provider(time::TimeProvider::SIM);
@@ -588,9 +454,9 @@ void run_simulation(const SimConfig &sim_config) {
         }
 
         if (command.should_step || sim_config.autostep) {
-            time::SimClock::advance(DT);
+            time::SimClock::advance(sim_config.dt);
             state.time_of_validity = time::current_robot_time();
-            auto debug_msg = tick_sim(command, make_in_out(state), sim_config);
+            auto debug_msg = tick_sim(sim_config, command.robot_command, make_in_out(state));
             debug_msgs.emplace_back(std::move(debug_msg));
 
             state_queue.push_back(state);
@@ -604,7 +470,7 @@ void run_simulation(const SimConfig &sim_config) {
             display_state(*to_display_iter, zoom_factor, make_in_out(gl_window));
         }
 
-        std::this_thread::sleep_for(DT);
+        std::this_thread::sleep_for(sim_config.dt);
     }
 
     if (sim_config.log_path) {
@@ -646,6 +512,7 @@ int main(int argc, char **argv) {
         .map_output_path = args.count("map_output_path")
                                ? std::make_optional(args["map_output_path"].as<std::string>())
                                : std::nullopt,
+        .dt = 25ms,
         .load_off_diagonals = args["load_off_diagonals"].as<bool>(),
         .enable_brm_planner = args["enable_brm_planner"].as<bool>(),
         .autostep = args["autostep"].as<bool>(),

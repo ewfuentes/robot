@@ -9,11 +9,33 @@ multi_proto_library(
   ]
 )
 
+cc_library(
+  name = "tick_sim",
+  hdrs = ["tick_sim.hh"],
+  srcs = ["tick_sim.cc"],
+  deps = [
+    "//common:argument_wrapper",
+    "//common/time:robot_time_to_proto",
+    "//common/liegroups:se2_to_proto",
+    ":beacon_sim_state",
+    ":sim_config",
+    ":beacon_sim_debug_proto",
+    ":ekf_slam_estimate_to_proto",
+    ":beacon_observation_to_proto",
+  ]
+)
+
+cc_library(
+  name = "sim_config",
+  hdrs = ["sim_config.hh"],
+)
+
 cc_binary(
   name = "beacon_sim",
   srcs = ["beacon_sim.cc"],
   linkopts = ["-latomic"],
   deps = [
+    ":sim_config",
     ":world_map",
     ":robot",
     ":sim_log_proto",
@@ -27,6 +49,7 @@ cc_binary(
     ":mapped_landmarks_to_proto",
     "//common/time:sim_clock",
     ":ekf_slam",
+    ":tick_sim",
     ":visualize_beacon_sim",
     "//visualization/gl_window",
     "//common:argument_wrapper",
