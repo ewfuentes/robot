@@ -98,6 +98,11 @@ proto::BeaconSimDebug tick_sim(const SimConfig &config, const RobotCommand &comm
                 next_command.move_m = plan_command->move_m;
             }
         }
+        std::cout << "time: "
+                  << std::chrono::duration<double>(state->time_of_validity.time_since_epoch())
+                  << " should plan? " << should_plan
+                  << " next_command turn: " << next_command.turn_rad
+                  << " move: " << next_command.move_m << std::endl;
     }
     // simulate robot forward
     state->robot.turn(next_command.turn_rad);
@@ -120,6 +125,7 @@ proto::BeaconSimDebug tick_sim(const SimConfig &config, const RobotCommand &comm
     state->observations = generate_observations(state->time_of_validity, state->map, state->robot,
                                                 OBS_CONFIG, make_in_out(state->gen));
     pack_into(state->observations, debug_msg.mutable_observations());
+
 
     const auto &ekf_estimate = state->ekf.update(state->observations);
     pack_into(ekf_estimate, debug_msg.mutable_posterior());

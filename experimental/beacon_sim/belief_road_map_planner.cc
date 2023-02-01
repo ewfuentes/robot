@@ -1,6 +1,7 @@
 
 #include "experimental/beacon_sim/belief_road_map_planner.hh"
 
+#include <iostream>
 #include <random>
 #include <unordered_map>
 
@@ -129,9 +130,9 @@ BeliefTransformMatrix compute_measurement_transform(const liegroups::SE2 &local_
         inputs.observation_matrix(Eigen::all, Eigen::seqN(0, liegroups::SE2::DoF));
 
     // Generate the measurement noise
-    const Eigen::MatrixXd measurement_noise =
-        build_measurement_noise(observations.size(), ekf_config.range_measurement_noise_m,
-                                ekf_config.bearing_measurement_noise_rad);
+    const Eigen::MatrixXd measurement_noise = build_measurement_noise(
+        inputs.observation_matrix.rows()/2, ekf_config.range_measurement_noise_m,
+        ekf_config.bearing_measurement_noise_rad);
 
     // The Information form of the update is:
     // sigma_t = (sigma_{t|t-1}^-1 + H' * R^-1 * H)^-1

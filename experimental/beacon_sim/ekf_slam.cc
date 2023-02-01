@@ -1,6 +1,8 @@
 
 #include "experimental/beacon_sim/ekf_slam.hh"
 
+#include <iostream>
+
 namespace robot::experimental::beacon_sim {
 namespace {
 
@@ -68,6 +70,12 @@ UpdateInputs compute_measurement_and_prediction(
             est.beacon_in_local(obs.maybe_id.value()).value();
         const Eigen::Vector2d est_beacon_in_robot =
             est_local_from_robot.inverse() * est_beacon_in_local;
+
+        if (est_beacon_in_robot.norm() < 0.1) {
+            // We're too close, so we won't get a good linearization on heading
+            // Skip for now
+            continue;
+        }
 
         prediction_vec(start_idx) = est_beacon_in_robot.norm();
         prediction_vec(start_idx + 1) =
