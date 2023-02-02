@@ -1,8 +1,6 @@
 
 #include "experimental/beacon_sim/ekf_slam.hh"
 
-#include <iostream>
-
 namespace robot::experimental::beacon_sim {
 namespace {
 
@@ -77,7 +75,6 @@ UpdateInputs compute_measurement_and_prediction(
             // valid measurement will be written in the same location, if no
             // valid measurements are remaining, the measurement vector will be
             // appropriately resized.
-          std::cout << "Beacon " << obs.maybe_id.value() << " is getting skipped" << std::endl;
             continue;
         }
 
