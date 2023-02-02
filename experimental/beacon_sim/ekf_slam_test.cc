@@ -325,8 +325,11 @@ TEST(CreateMeasurementTest, incomplete_measurements_rejected) {
         {.maybe_id = 789, .maybe_range_m = 30.0, .maybe_bearing_rad = 3.0}};
 
     const int ESTIMATE_DIM = 3 + 2 * observations.size();
+
     const EkfSlamEstimate estimate = {.time_of_validity = time::RobotTimestamp(),
-                                      .mean = Eigen::VectorXd::Zero(ESTIMATE_DIM),
+                                      .mean = (Eigen::VectorXd(ESTIMATE_DIM) << 1.0, 2.0, 3.0, 4.0,
+                                               5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0)
+                                                  .finished(),
                                       .cov = Eigen::MatrixXd::Zero(ESTIMATE_DIM, ESTIMATE_DIM),
                                       .beacon_ids = {123, 456, 789}};
 

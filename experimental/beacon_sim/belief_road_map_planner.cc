@@ -130,7 +130,7 @@ BeliefTransformMatrix compute_measurement_transform(const liegroups::SE2 &local_
 
     // Generate the measurement noise
     const Eigen::MatrixXd measurement_noise = build_measurement_noise(
-        inputs.observation_matrix.rows()/2, ekf_config.range_measurement_noise_m,
+        inputs.observation_matrix.rows() / 2, ekf_config.range_measurement_noise_m,
         ekf_config.bearing_measurement_noise_rad);
 
     // The Information form of the update is:
