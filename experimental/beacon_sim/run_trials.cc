@@ -236,7 +236,7 @@ void run_trials() {
             }
         });
     time::RobotTimestamp::duration dt = time::current_robot_time() - start;
-    std::cout << std::chrono::duration<double>(dt) << std::endl;
+    std::cout << std::chrono::duration<double>(dt).count() << std::endl;
     // Record results
 }
 }  // namespace robot::experimental::beacon_sim
