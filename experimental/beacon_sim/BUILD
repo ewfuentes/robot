@@ -1,4 +1,4 @@
-
+load("@pip//:requirements.bzl", "requirement")
 load("//common/proto:proto.bzl", "multi_proto_library")
 
 multi_proto_library(
@@ -373,4 +373,15 @@ cc_binary(
     "//common/time:robot_time",
     "@cxxopts//:cxxopts",
   ],
+)
+
+py_binary(
+  name = "plot_trials",
+  srcs = ["plot_trials.py"],
+  deps = [
+    ":sim_log_proto_py",
+    requirement("matplotlib"),
+    requirement("numpy"),
+    requirement("tqdm"),
+  ]
 )
