@@ -66,8 +66,8 @@ def compute_betting_round(round_state: RoundState):
     if len(round_state.deck) == 0:
         return 0
     MAX_INTERNAL_BETS = 8
-    is_last_round = round_state.deck[-1][1] in 'sc'
     betting_round = len(round_state.deck) - 2
+    is_last_round = round_state.deck[-1][1] in 'sc' and betting_round > 2
 
     if is_last_round:
         return 64
@@ -175,7 +175,7 @@ class Pokerbot(bot.Bot):
     def __init__(self):
         """Init."""
         with open(
-            "experimental/pokerbots/pokerbot_checkpoint_1000_bins_discount_100000000.pb", "rb"
+            "experimental/pokerbots/pokerbot_checkpoint_more_bins_111000000.pb", "rb"
         ) as file_in:
             strategy = learning.min_regret_strategy_pb2.MinRegretStrategy()
             strategy.ParseFromString(file_in.read())
