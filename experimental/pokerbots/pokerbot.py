@@ -56,7 +56,7 @@ def compute_opponent_action(
     raise_by = current_state.pips[other_player] - current_state.pips[player_num]
     # The previous pot size is any chips put in this round (including the other player's
     # continue cost) plus any chips put in the previous round
-    chips_in_previous_round = 2 * STARTING_STACK - sum(prev_state.stacks)
+    chips_in_previous_round = 2 * STARTING_STACK - sum(prev_state.stacks) if current_state.street > 0 else 0
     previous_pot = chips_in_previous_round + 2 * current_state.pips[player_num]
     raise_fraction = raise_by / previous_pot
     min_raise_fraction = min_raise_by / previous_pot
@@ -79,22 +79,21 @@ def compute_opponent_action(
 
     print(
         f"Raise by: {raise_by} min_raise_by: {min_raise_by}",
-        f"max_raise_by: {max_raise_by} prev_pot: {previous_pot}",
+        f"max_raise_by: {max_raise_by} prev_chips: {chips_in_previous_round} prev_pot: {previous_pot}",
         f"raise_frac: {raise_fraction} min_raise_frac: {min_raise_fraction}",
         f"max_raise_frac: {max_raise_fraction}",
-        f"A: {A} B: {B} low: {low_action}, high: {high_action}"
+        f"A: {A} B: {B} low: {low_action}, high: {high_action}",
     )
 
-
     if A == B:
-        print('Reached max bet limit!')
+        print("Reached max bet limit!")
         return "AllIn"
 
     accept_prob = (B - raise_fraction) * (1 + A) / ((B - A) * (1 + raise_fraction))
     rand = rng.uniform()
     action = low_action if rand < accept_prob else high_action
-    
-    print(f'rand: {rand} accept prob: {accept_prob} action: {action}')
+
+    print(f"rand: {rand} accept prob: {accept_prob} action: {action}")
     return action
 
 
@@ -128,10 +127,12 @@ def compute_infoset_id(
         "Fold": 1,
         "Check": 2,
         "Call": 3,
-        "Raise": 4,
         "RaisePot": 5,
         "AllIn": 6,
     }
+    print(
+        f"action_queue {action_queue} betting round: {betting_round} hand: {hand} board_cards {board_cards}"
+    )
     for action in action_queue[::-1]:
         infoset_id = (infoset_id << 4) | action_dict[action]
 
@@ -308,6 +309,7 @@ class Pokerbot(bot.Bot):
             board_cards,
             self._per_turn_bin_centers,
         )
+        print(f"infoset ids {[hex(x) for x in infoset_ids[:4]]}")
 
         actions = ["Fold", "Check", "Call", "RaisePot", "AllIn"]
         strategy = None
@@ -327,7 +329,9 @@ class Pokerbot(bot.Bot):
             strategy = strategy_sum / np.sum(strategy_sum)
             break
 
+        strategy_missing = False
         if strategy is None:
+            strategy_missing = True
             print("Could not find strategy!")
             strategy = np.zeros(len(actions))
             if FoldAction in legal_actions:
@@ -356,15 +360,27 @@ class Pokerbot(bot.Bot):
             "RaisePot": RaiseAction(amount=max(min_raise, pot_total)),
             "AllIn": RaiseAction(amount=max_raise),
         }
+        if strategy_missing:
+            if (
+                continue_cost > 0
+                and len(self._round_state["action_queue"]) > 0
+                and self._round_state["action_queue"][-1] == "Check"
+            ):
+                print(
+                    "small bet mapped to check and could not find strategy, forcing call"
+                )
+                action = "Call"
+            else:
+                print("COULD NOT FIND STRATEGY")
         if action == "Fold" and continue_cost == 0:
             action = "Check"
         if action == "RaisePot" and action_dict["RaisePot"].amount > max_raise:
             action = "AllIn"
         if action == "Check" and CheckAction not in legal_actions:
-            print('Tried to check after a bet!')
+            print("Tried to check after a bet!")
             action = "Call"
-        if action in ['RaisePot', 'AllIn'] and RaiseAction not in legal_actions:
-            print('Tried to raise when all in')
+        if action in ["RaisePot", "AllIn"] and RaiseAction not in legal_actions:
+            print("Tried to raise when all in")
             action = "Check"
         if self._should_check_fold:
             if FoldAction in legal_actions:
