@@ -352,3 +352,24 @@ cc_test(
     "@com_google_googletest//:gtest_main",
   ],
 )
+
+cc_binary(
+  name = "run_trials",
+  srcs = ["run_trials.cc"],
+  linkopts = ["-ltbb"],
+  deps = [
+    ":beacon_sim_state",
+    ":ekf_slam",
+    ":robot",
+    ":world_map",
+    ":mapped_landmarks",
+    ":sim_config",
+    ":belief_road_map_planner",
+    ":tick_sim",
+    ":sim_log_proto",
+    "//planning:probabilistic_road_map",
+    "//common/liegroups:se2",
+    "//common/time:robot_time",
+    "@cxxopts//:cxxopts",
+  ],
+)

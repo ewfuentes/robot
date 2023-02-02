@@ -69,6 +69,15 @@ UpdateInputs compute_measurement_and_prediction(
         const Eigen::Vector2d est_beacon_in_robot =
             est_local_from_robot.inverse() * est_beacon_in_local;
 
+        if (est_beacon_in_robot.norm() < 0.1) {
+            // We're too close, so we won't get a good linearization on heading
+            // Skip for now. Since start_idx has not been incremented, the next
+            // valid measurement will be written in the same location, if no
+            // valid measurements are remaining, the measurement vector will be
+            // appropriately resized.
+            continue;
+        }
+
         prediction_vec(start_idx) = est_beacon_in_robot.norm();
         prediction_vec(start_idx + 1) =
             std::atan2(est_beacon_in_robot.y(), est_beacon_in_robot.x());
