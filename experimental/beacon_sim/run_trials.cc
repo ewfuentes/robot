@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <execution>
+#include <filesystem>
+#include <fstream>
 #include <random>
 #include <vector>
 
@@ -14,6 +17,7 @@
 #include "experimental/beacon_sim/mapped_landmarks.hh"
 #include "experimental/beacon_sim/robot.hh"
 #include "experimental/beacon_sim/sim_config.hh"
+#include "experimental/beacon_sim/sim_log.pb.h"
 #include "experimental/beacon_sim/tick_sim.hh"
 #include "experimental/beacon_sim/world_map.hh"
 #include "planning/probabilistic_road_map.hh"
@@ -22,7 +26,7 @@ namespace robot::experimental::beacon_sim {
 namespace {
 WorldMapConfig create_world_map_config(const double max_x_m, const double max_y_m) {
     // Create a box of beacons
-    constexpr double BEACON_SPACING_M = 4.0;
+    constexpr double BEACON_SPACING_M = 5.0;
     constexpr int VERTICAL_ID_OFFSET = 1000;
 
     std::vector<Beacon> beacons;
@@ -61,7 +65,8 @@ WorldMapConfig create_world_map_config(const double max_x_m, const double max_y_
     return {.fixed_beacons = {beacons}, .blinking_beacons = {}, .obstacles = {}};
 }
 
-std::vector<WorldMapConfig> create_all_beacon_presences(const WorldMapConfig &input) {
+std::vector<std::tuple<int, WorldMapConfig>> create_all_beacon_presences(
+    const WorldMapConfig &input) {
     // There are 2**N possible configurations with N beacons.
     // One way to assign whether the `k`'th beacon in present in configuration `C` is to consider
     // the `k`th bit in the binary representation of `C`. If this bit is set, we choose to erase
@@ -69,12 +74,12 @@ std::vector<WorldMapConfig> create_all_beacon_presences(const WorldMapConfig &in
     const uint64_t num_configurations = 1 << input.fixed_beacons.beacons.size();
     const int num_beacons = input.fixed_beacons.beacons.size();
 
-    std::vector<WorldMapConfig> configs;
+    std::vector<std::tuple<int, WorldMapConfig>> configs;
     configs.reserve(num_configurations);
     for (uint64_t config_idx = 0; config_idx < num_configurations; config_idx++) {
         // Create a copy of the input config
-        configs.push_back(input);
-        auto &beacons = configs.back().fixed_beacons.beacons;
+        configs.push_back(std::make_tuple(config_idx, input));
+        auto &beacons = std::get<1>(configs.back()).fixed_beacons.beacons;
         for (int beacon_idx = num_beacons - 1; beacon_idx >= 0; beacon_idx--) {
             if (config_idx & (1 << beacon_idx)) {
                 // If the `k`th bit is set, erase it
@@ -165,7 +170,6 @@ void run_trials() {
                                                    UNCERTAINTY_TOLERANCE);
 
     // Cycle through all possible assignments to beacon presence
-    int i = 0;
     time::RobotTimestamp start = time::current_robot_time();
 
     const SimConfig sim_config = {
@@ -177,11 +181,6 @@ void run_trials() {
         .enable_brm_planner = true,
         .autostep = false,
     };
-    const RobotCommand robot_command = {
-        .turn_rad = 0.0,
-        .move_m = 0.0,
-    };
-
     std::cout << "Plan: " << std::endl;
     for (const auto &node : plan->beliefs) {
         std::cout << node.local_from_robot.translation().transpose() << std::endl;
@@ -189,36 +188,55 @@ void run_trials() {
 
     std::cout << "End Plan" << std::endl;
 
-    for (const auto &masked_map_config : create_all_beacon_presences(base_map_config)) {
-        i++;
-        BeaconSimState state = {
-            .time_of_validity = time::RobotTimestamp(),
-            .map = WorldMap(masked_map_config),
-            .road_map = road_map,
-            .robot = RobotState(liegroups::SE2()),
-            .ekf = ekf,
-            .observations = {},
-            .goal = {{.time_of_validity = time::RobotTimestamp(), .goal_state = goal_state}},
-            .plan = {{.time_of_validity = time::RobotTimestamp(), .brm_plan = plan.value()}},
-            .gen = std::mt19937(0),
-        };
-
-        int sim_iter = 0;
-        std::cout << "Starting iter " << sim_iter << std::endl;
-        const std::optional<liegroups::SE2> maybe_prev_pose;
-        while (true) {
-            state.time_of_validity = time::RobotTimestamp() + sim_config.dt * sim_iter;
-            tick_sim(sim_config, robot_command, make_in_out(state));
-            if (maybe_prev_pose.has_value() &&
-                (maybe_prev_pose->log() - state.robot.local_from_robot().log()).norm() == 0.0) {
-                // Not moving any more! call it done
-                break;
+    const auto inputs = create_all_beacon_presences(base_map_config);
+    std::filesystem::create_directories("/tmp/beacon_sim_log/");
+    std::for_each(
+        std::execution::par, inputs.begin(), inputs.end(),
+        [&sim_config, &goal_state, &plan, &ekf, &road_map](const auto &input) {
+            const auto &[idx, masked_map_config] = input;
+            if (idx % 1000 == 0) {
+                std::cout << "idx: " << idx << std::endl;
             }
-        }
-    }
+            BeaconSimState state = {
+                .time_of_validity = time::RobotTimestamp(),
+                .map = WorldMap(masked_map_config),
+                .road_map = road_map,
+                .robot = RobotState(liegroups::SE2()),
+                .ekf = ekf,
+                .observations = {},
+                .goal = {{.time_of_validity = time::RobotTimestamp(), .goal_state = goal_state}},
+                .plan = {{.time_of_validity = time::RobotTimestamp(), .brm_plan = plan.value()}},
+                .gen = std::mt19937(0),
+            };
+            const RobotCommand robot_command = {
+                .turn_rad = 0.0,
+                .move_m = 0.0,
+            };
+
+            int sim_iter = 0;
+            std::optional<liegroups::SE2> maybe_prev_pose;
+            std::vector<proto::BeaconSimDebug> debug_msgs;
+            while (true) {
+                state.time_of_validity = time::RobotTimestamp() + sim_config.dt * sim_iter;
+                debug_msgs.emplace_back(tick_sim(sim_config, robot_command, make_in_out(state)));
+                if (maybe_prev_pose.has_value() &&
+                    (maybe_prev_pose->log() - state.robot.local_from_robot().log()).norm() == 0.0) {
+                    // Not moving any more! call it done
+                    break;
+                }
+                maybe_prev_pose = state.robot.local_from_robot();
+                sim_iter++;
+            }
+
+            {
+                std::ofstream file_out("/tmp/beacon_sim_log/" + std::to_string(idx) + ".pb");
+                proto::SimLog log_proto;
+                log_proto.mutable_debug_msgs()->Add()->CopyFrom(debug_msgs.back());
+                log_proto.SerializeToOstream(&file_out);
+            }
+        });
     time::RobotTimestamp::duration dt = time::current_robot_time() - start;
-    std::cout << std::chrono::duration<double>(dt) << " to process " << i << " configurations "
-              << std::endl;
+    std::cout << std::chrono::duration<double>(dt) << std::endl;
     // Record results
 }
 }  // namespace robot::experimental::beacon_sim

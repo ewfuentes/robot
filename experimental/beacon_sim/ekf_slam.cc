@@ -1,8 +1,6 @@
 
 #include "experimental/beacon_sim/ekf_slam.hh"
 
-#include <iostream>
-
 namespace robot::experimental::beacon_sim {
 namespace {
 

@@ -1,7 +1,6 @@
 
 #include "experimental/beacon_sim/belief_road_map_planner.hh"
 
-#include <iostream>
 #include <random>
 #include <unordered_map>
 
