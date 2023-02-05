@@ -5,12 +5,12 @@
 #include <span>
 #include <variant>
 
+#include "absl/container/inlined_vector.h"
 #include "common/argument_wrapper.hh"
 #include "common/indexed_array.hh"
 #include "domain/deck.hh"
 #include "domain/fog.hh"
 #include "wise_enum.h"
-#include "absl/container/inlined_vector.h"
 
 namespace robot::domain {
 struct FoldAction {
