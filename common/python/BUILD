@@ -16,10 +16,7 @@ py_binary(
     requirement("numpy"),
     requirement("pandas"),
     requirement("scikit-learn"),
-    "//learning:min_regret_strategy_proto_py",
-    "//experimental/pokerbots:bin_centers_proto_py",
-    "//experimental/pokerbots:pokerbot",
-    "//experimental/pokerbots:pokerbots_scrape",
+    "//experimental/beacon_sim:plot_trials"
   ],
 )
 

@@ -34,7 +34,7 @@ void sigusr_1_handler(int) { debug = true; }
 WorldMapConfig create_world_map_config(const double max_x_m, const double max_y_m) {
     // Create a box of beacons
     constexpr double BEACON_SPACING_M = 5.0;
-    constexpr int VERTICAL_ID_OFFSET = 1000;
+    constexpr int VERTICAL_ID_OFFSET = 50;
 
     std::vector<Beacon> beacons;
     for (double pos = 0.0; pos < std::max(max_x_m, max_y_m); pos += BEACON_SPACING_M) {
@@ -148,7 +148,7 @@ proto::RolloutStatistics compute_statistics(const std::vector<proto::BeaconSimDe
 void run_trials() {
     constexpr double MAX_X_M = 20.0;
     constexpr double MAX_Y_M = 20.0;
-    constexpr double ROAD_MAP_OFFSET_M = 1.0;
+    constexpr double ROAD_MAP_OFFSET_M = 5.0;
     constexpr double MAX_SENSOR_RANGE_M = 5.0;
     constexpr int NUM_START_CONNECTIONS = 1;
     constexpr int NUM_GOAL_CONNECTIONS = 1;
@@ -168,7 +168,7 @@ void run_trials() {
 
     // Create a road map
     const auto road_map = planning::create_road_map(
-        Map{}, {.seed = 0, .num_valid_points = 20, .desired_node_degree = 4});
+        Map{}, {.seed = 0, .num_valid_points = 50, .desired_node_degree = 4});
 
     // Create an ekf
     const auto ekf = create_ekf(base_map_config);
