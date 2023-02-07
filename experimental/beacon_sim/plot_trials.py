@@ -1,22 +1,44 @@
 
 import argparse
+import sys
 import os
-import tqdm
+import numpy as np
 
-from experimental.beacon_sim.sim_log_pb2 import SimLog
+import matplotlib
+import matplotlib.style
+matplotlib.style.use('ggplot')
+import matplotlib.pyplot as plt
+
+from experimental.beacon_sim.rollout_statistics_pb2 import AllStatistics
+from common.math.matrix_pb2 import Matrix as ProtoMat
 
 def load_results(results_path):
-    results = {}
-    for file_name in tqdm.tqdm(os.listdir(results_path)):
-        with open(os.path.join(results_path, file_name), 'rb') as file_in:
-            idx = int(file_name.split('.')[0])
-            results[idx] = SimLog()
-            results[idx].ParseFromString(file_in.read())
+    with open(results_path, 'rb') as file_in:
+        results = AllStatistics()
+        results.ParseFromString(file_in.read())
     return results
+
+def matrix_from_proto(mat: ProtoMat):
+    out  = np.zeros((mat.num_rows, mat.num_cols))
+    for r in range(mat.num_rows):
+        for c in range(mat.num_cols):
+            out[r, c] = mat.data[r * mat.num_cols + c]
+    return out
+
+def compute_covariance_size(results: AllStatistics):
+    out = []
+    for statistic in results.statistics:
+        full_cov = matrix_from_proto(statistic.final_step.posterior.cov)
+        robot_cov = full_cov[:3, :3]
+        out.append(np.linalg.det(robot_cov))
+    return out
 
 def main(results_path: str):
     results = load_results(results_path)
-    print(len(results))
+    covariance_sizes = compute_covariance_size(results)
+    plt.figure()
+    plt.hist(covariance_sizes, bins=1000)
+    plt.savefig('/tmp/plot.png')
 
 
 if __name__ == "__main__":

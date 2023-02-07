@@ -1,0 +1,19 @@
+
+syntax = "proto3";
+
+import "experimental/beacon_sim/beacon_sim_debug.proto";
+import "experimental/beacon_sim/world_map_config.proto";
+import "planning/road_map.proto";
+
+package robot.experimental.beacon_sim.proto;
+
+message RolloutStatistics {
+  // Final
+  robot.experimental.beacon_sim.proto.BeaconSimDebug final_step = 1;
+}
+
+message AllStatistics {
+  robot.experimental.beacon_sim.proto.WorldMapConfig world_map_config = 3;
+  robot.planning.proto.RoadMap road_map = 2;
+  repeated RolloutStatistics statistics = 1;
+}

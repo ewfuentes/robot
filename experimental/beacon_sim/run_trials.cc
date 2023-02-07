@@ -16,11 +16,13 @@
 #include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/mapped_landmarks.hh"
 #include "experimental/beacon_sim/robot.hh"
+#include "experimental/beacon_sim/rollout_statistics.pb.h"
 #include "experimental/beacon_sim/sim_config.hh"
-#include "experimental/beacon_sim/sim_log.pb.h"
 #include "experimental/beacon_sim/tick_sim.hh"
 #include "experimental/beacon_sim/world_map.hh"
+#include "experimental/beacon_sim/world_map_config_to_proto.hh"
 #include "planning/probabilistic_road_map.hh"
+#include "planning/road_map_to_proto.hh"
 
 namespace robot::experimental::beacon_sim {
 namespace {
@@ -131,6 +133,12 @@ EkfSlam create_ekf(const WorldMapConfig &map_config) {
     return ekf;
 }
 
+proto::RolloutStatistics compute_statistics(const std::vector<proto::BeaconSimDebug> &debug_msgs) {
+    proto::RolloutStatistics out;
+    out.mutable_final_step()->CopyFrom(debug_msgs.back());
+    return out;
+}
+
 }  // namespace
 void run_trials() {
     constexpr double MAX_X_M = 20.0;
@@ -190,9 +198,10 @@ void run_trials() {
 
     const auto inputs = create_all_beacon_presences(base_map_config);
     std::filesystem::create_directories("/tmp/beacon_sim_log/");
+    std::vector<proto::RolloutStatistics> results(inputs.size());
     std::for_each(
         std::execution::par, inputs.begin(), inputs.end(),
-        [&sim_config, &goal_state, &plan, &ekf, &road_map](const auto &input) {
+        [&sim_config, &goal_state, &plan, &ekf, &road_map, &results](const auto &input) {
             const auto &[idx, masked_map_config] = input;
             if (idx % 1000 == 0) {
                 std::cout << "idx: " << idx << std::endl;
@@ -228,16 +237,20 @@ void run_trials() {
                 sim_iter++;
             }
 
-            {
-                std::ofstream file_out("/tmp/beacon_sim_log/" + std::to_string(idx) + ".pb");
-                proto::SimLog log_proto;
-                log_proto.mutable_debug_msgs()->Add()->CopyFrom(debug_msgs.back());
-                log_proto.SerializeToOstream(&file_out);
-            }
+            results[idx] = compute_statistics(debug_msgs);
         });
     time::RobotTimestamp::duration dt = time::current_robot_time() - start;
     std::cout << std::chrono::duration<double>(dt).count() << std::endl;
+
     // Record results
+    proto::AllStatistics out;
+    pack_into(base_map_config, out.mutable_world_map_config());
+    pack_into(road_map, out.mutable_road_map());
+    for (auto &&trial_statistics : results) {
+        out.mutable_statistics()->Add(std::move(trial_statistics));
+    }
+    std::ofstream file_out("/tmp/beacon_sim_log/results.pb");
+    out.SerializeToOstream(&file_out);
 }
 }  // namespace robot::experimental::beacon_sim
 
