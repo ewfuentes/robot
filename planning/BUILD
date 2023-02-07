@@ -1,3 +1,4 @@
+load("//common/proto:proto.bzl", "multi_proto_library")
 
 cc_library(
   name = "probabilistic_road_map",
@@ -64,6 +65,36 @@ cc_test(
   srcs = ["breadth_first_search_test.cc"],
   deps = [
     ":breadth_first_search",
+    "@com_google_googletest//:gtest_main",
+  ]
+)
+
+multi_proto_library(
+  name = "road_map_proto",
+  srcs = ["road_map.proto"],
+  visibility = ["//visibility:public"],
+  deps = [
+    "//common/math:matrix_proto",
+  ]
+)
+
+cc_library(
+  name = "road_map_to_proto",
+  hdrs = ["road_map_to_proto.hh"],
+  srcs = ["road_map_to_proto.cc"],
+  visibility = ["//visibility:public"],
+  deps = [
+    ":probabilistic_road_map",
+    ":road_map_proto",
+    "//common/math:matrix_to_proto",
+  ]
+)
+
+cc_test(
+  name = "road_map_to_proto_test",
+  srcs = ["road_map_to_proto_test.cc"],
+  deps = [
+    ":road_map_to_proto",
     "@com_google_googletest//:gtest_main",
   ]
 )
