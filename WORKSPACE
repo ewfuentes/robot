@@ -58,6 +58,10 @@ python_register_toolchains(
 load("@python3_10//:defs.bzl", "interpreter")
 load("@pybind11_bazel//:python_configure.bzl", "python_configure")
 python_configure(name = "local_config_python", python_interpreter_target=interpreter)
+bind(
+  name = "python_headers",
+  actual = "@python3_10//:python_headers",
+)
 
 load("@rules_python//python:pip.bzl", "pip_parse")
 
