@@ -3,8 +3,13 @@
 
 #include <algorithm>
 #include <deque>
+#include <iostream>
 #include <optional>
 #include <vector>
+
+namespace robot::experimental::beacon_sim {
+extern bool debug;
+}
 
 namespace robot::planning {
 template <typename State>
@@ -39,7 +44,17 @@ std::optional<BreadthFirstResult<State>> breadth_first_search(
     std::vector<Node<State>> nodes = {
         {.state = initial_state, .maybe_parent_idx = {}, .cost = 0.0}};
     std::deque<int> node_idx_queue = {0};
+    bool should_print = false;
     while (!node_idx_queue.empty()) {
+        if (experimental::beacon_sim::debug == true) {
+            experimental::beacon_sim::debug = false;
+            should_print = true;
+        }
+        if (nodes_expanded % 100000 == 0) {
+            std::cout << "Nodes expanded: " << nodes_expanded
+                      << " Queue size: " << node_idx_queue.size() << " num nodes: " << nodes.size()
+                      << std::endl;
+        }
         // Pop the front of the queue
         const int node_idx = node_idx_queue.front();
         node_idx_queue.pop_front();
@@ -49,20 +64,32 @@ std::optional<BreadthFirstResult<State>> breadth_first_search(
         if (goal_check_func(n)) {
             break;
         }
+        if (should_print) {
+            std::cout << "Popped node idx: " << node_idx << " node id: " << n.state.node_idx
+                      << std::endl;
+        }
 
         // For each neighbor in the queue
         for (const auto &successor : successors_for_state(n.state)) {
             nodes_visited++;
+            const bool should_queue = should_queue_check(successor, node_idx, nodes, should_print);
+
+            if (should_print) {
+              std::cout << "should queue id " << successor.state.node_idx << "? " << should_queue << std::endl;
+            }
 
             // Check if we should add this node to the queue
-            if (should_queue_check(successor, node_idx, nodes)) {
+            if (should_queue) {
                 node_idx_queue.push_back(nodes.size());
                 nodes.push_back({.state = successor.state,
                                  .maybe_parent_idx = node_idx,
                                  .cost = n.cost + successor.edge_cost});
             }
         }
+        should_print = false;
     }
+
+    std::cout << "Done with search, creating path" << std::endl;
 
     std::optional<int> end_idx = identify_end_func(nodes);
     std::vector<State> path;

@@ -174,6 +174,17 @@ planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap
 
         const Eigen::MatrixXd new_cov_in_robot = result.topRightCorner(cov_dim, cov_dim);
 
+        const double initial_det = initial_belief.cov_in_robot.determinant();
+        const double det = new_cov_in_robot.determinant();
+        if (det < 0) {
+            std::cout << "Negative determinant going from " << start_idx << " to " << end_idx
+                      << std::endl;
+            std::cout << "Initial det: " << initial_det << " new det: " << det << std::endl;
+            std::cout << "Num det: " << numerator.determinant()
+                      << " den det: " << denominator.determinant() << std::endl;
+            std::exit(0);
+        }
+
         return RobotBelief{
             .local_from_robot = transform.local_from_robot,
             .cov_in_robot = new_cov_in_robot,
