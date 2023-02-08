@@ -47,7 +47,7 @@ py_binary(
     tags=["manual"],
     data = [
       ":hand_evaluator_python.so",
-      "pokerbot_checkpoint_1000_bins_discount_100000000.pb",
+      "pokerbot_checkpoint_more_bins_111000000.pb",
       "bin_centers_1000.pb",
     ],
     visibility=["//visibility:public"],
@@ -103,6 +103,7 @@ cc_library(
     "//domain:deck",
     "//domain:rob_poker",
     "//common/time:robot_time",
+    "@absl//absl/container:inlined_vector",
     ]
 )
 
@@ -144,6 +145,8 @@ cc_library(
 pybind_extension(
   name = "evaluate_mass_hands_python",
   srcs = ["evaluate_mass_hands_python.cc"],
+  visibility = ["//visibility:public"],
+  data = [":hand_evaluator_python.so"],
   deps = [
     ":evaluate_mass_hands",
   ]
@@ -158,6 +161,7 @@ multi_proto_library(
 py_library(
     name ="pokerbots_scrape",
     srcs = ["pokerbots_scrape.py"],
+    visibility=["//visibility:public"],
     deps = [
         requirement("requests"),
         requirement("beautifulsoup4"),

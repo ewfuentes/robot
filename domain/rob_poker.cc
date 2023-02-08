@@ -367,15 +367,15 @@ std::string to_string(const RobPokerHistory &hist) {
 std::array<uint64_t, 33> eval_counts = {0};
 std::array<time::RobotTimestamp::duration, 33> eval_time = {};
 std::array<time::RobotTimestamp::duration, 33> max_eval_time = {};
-int evaluate_hand(const std::array<StandardDeck::Card, 33> &cards, const int num_cards) {
-    eval_counts[num_cards]++;
+int evaluate_hand(const absl::InlinedVector<StandardDeck::Card, 33> &cards) {
+    eval_counts[cards.size()]++;
     const thread_local omp::HandEvaluator evaluator;
     const auto start = time::current_robot_time();
 
-    if (num_cards < 8) {
+    if (cards.size() < 8) {
         omp::Hand hand = omp::Hand::empty();
-        for (int i = 0; i < num_cards; i++) {
-            hand += omp::Hand(cards[i].card_idx);
+        for (const auto &card : cards) {
+            hand += omp::Hand(card.card_idx);
         }
         return evaluator.evaluate(hand);
     }
@@ -385,6 +385,7 @@ int evaluate_hand(const std::array<StandardDeck::Card, 33> &cards, const int num
     omp::Hand hand = omp::Hand::empty();
     // We only consider hands where we use at least 1 private card. We bound the first card index to
     // 2
+    const int num_cards = cards.size();
     for (int a = 0; a < 2; a++) {
         hand += cards[a].card_idx;
         for (int b = a + 1; b < num_cards - 3; b++) {
@@ -418,19 +419,18 @@ int evaluate_hand(const std::array<StandardDeck::Card, 33> &cards, const int num
 }
 
 int evaluate_hand(const RobPokerHistory &history, const RobPokerPlayer player) {
-    int num_cards = 0;
-    std::array<StandardDeck::Card, 33> cards{};
+    absl::InlinedVector<StandardDeck::Card, 33> cards;
     for (const auto &fog_card : history.hole_cards[player]) {
-        cards[num_cards++] = fog_card.value();
+        cards.push_back(fog_card.value());
     }
     for (const auto &fog_card : history.common_cards) {
         if (fog_card.has_value() && fog_card.is_visible_to(player)) {
-            cards[num_cards++] = fog_card.value();
+            cards.push_back(fog_card.value());
         } else {
             break;
         }
     }
-    return evaluate_hand(cards, num_cards);
+    return evaluate_hand(cards);
 }
 
 namespace detail {

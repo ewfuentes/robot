@@ -51,13 +51,14 @@ domain::RobPoker::InfoSetId infoset_id_from_information(
     }
 
     // Betting Rounds:
-    //  0 - Preflop
-    //  1 - Postflop/pre turn
-    //  2 - Preriver/ prerun
-    //  3 - Final betting round
-    const int betting_round = betting_state.to_bet->round < 3
-                                  ? betting_state.to_bet->round
-                                  : (betting_state.to_bet->is_final_betting_round ? 3 : 2);
+    //  0 - Pre-flop
+    //  1 - Post-flop/pre turn
+    //  2 - 8 Pre-river/ prerun
+    //  64 - Final betting round
+    constexpr int MAX_INTERNAL_BETS = 8;
+    const int betting_round = betting_state.to_bet->is_final_betting_round
+                                  ? 64
+                                  : std::min(betting_state.to_bet->round, MAX_INTERNAL_BETS);
 
     out = (out << 8) | betting_round;
 
@@ -106,10 +107,10 @@ domain::RobPoker::InfoSetId infoset_id_from_information(
         const auto &turn_bin_centers = [&bin_centers, betting_round]() {
             if (betting_round == 1) {
                 return bin_centers.flop_centers;
-            } else if (betting_round == 2) {
-                return bin_centers.turn_centers;
-            } else {
+            } else if (betting_round == 64) {
                 return bin_centers.river_centers;
+            } else {
+                return bin_centers.turn_centers;
             }
         }();
 

@@ -1,5 +1,7 @@
 
 
+#include <pstl/glue_execution_defs.h>
+
 #include <algorithm>
 #include <chrono>
 #include <execution>
@@ -75,5 +77,30 @@ std::vector<StrengthPotentialResult> evaluate_mass_hands(const std::vector<std::
                       << std::endl;
         });
     return outputs;
+}
+
+std::vector<HandDistributionResult> mass_estimate_hand_distribution(
+    const std::vector<std::string> &hands, const int max_additional_cards,
+    const int num_board_rollouts, const int num_bins) {
+    using HoleCards = std::array<domain::StandardDeck::Card, 2>;
+    using BoardCards = std::vector<domain::StandardDeck::Card>;
+    using EvalInput = std::tuple<int, HoleCards, BoardCards>;
+
+    std::vector<EvalInput> inputs;
+    inputs.reserve(hands.size());
+    for (int i = 0; i < static_cast<int>(hands.size()); i++) {
+        auto cards = cards_from_string(hands[i]);
+        inputs.emplace_back(
+            EvalInput(i, {cards[0], cards[1]}, BoardCards(cards.begin() + 2, cards.end())));
+    }
+
+    std::vector<HandDistributionResult> out(hands.size());
+    std::for_each(std::execution::par, inputs.begin(), inputs.end(), [&](const EvalInput &input) {
+        const auto &[idx, hand, board] = input;
+        std::mt19937 gen(idx);
+        out[idx] = estimate_hand_distribution(hand, board, num_bins, num_board_rollouts,
+                                              max_additional_cards, {}, make_in_out(gen));
+    });
+    return out;
 }
 }  // namespace robot::experimental::pokerbots

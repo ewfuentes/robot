@@ -37,6 +37,17 @@ class HandEvaluatorPythonTest(unittest.TestCase):
 
         # Verification
 
+    def test_hand_distribution(self):
+
+        player_hand = "AsAc"
+        board = "KcQcJc"
+
+        result = hep.estimate_hand_distribution(
+            player_hand, board, num_bins=20, num_board_rollouts=100
+        )
+
+        print(result)
+
 
 if __name__ == "__main__":
     unittest.main()

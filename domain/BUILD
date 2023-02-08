@@ -114,6 +114,7 @@ cc_library(
     "@ompeval//:ompeval_lib",
     "@wise_enum//:wise_enum",
     "//common/time:robot_time",
+    "@absl//absl/container:inlined_vector",
   ]
 )
 

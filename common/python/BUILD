@@ -7,6 +7,7 @@ py_binary(
   srcs = ["jupyter_notebook.py"],
   data = [
     "//experimental/pokerbots:hand_evaluator_python.so",
+    "//experimental/pokerbots:evaluate_mass_hands_python.so",
   ],
   deps = [
     requirement("notebook"),
@@ -18,6 +19,7 @@ py_binary(
     "//learning:min_regret_strategy_proto_py",
     "//experimental/pokerbots:bin_centers_proto_py",
     "//experimental/pokerbots:pokerbot",
+    "//experimental/pokerbots:pokerbots_scrape",
   ],
 )
 

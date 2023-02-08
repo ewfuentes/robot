@@ -5,6 +5,7 @@
 #include <span>
 #include <variant>
 
+#include "absl/container/inlined_vector.h"
 #include "common/argument_wrapper.hh"
 #include "common/indexed_array.hh"
 #include "domain/deck.hh"
@@ -98,7 +99,7 @@ std::string to_string(const RobPokerHistory &hist);
 std::string to_string(const RobPokerAction &hist);
 
 int evaluate_hand(const RobPokerHistory &history, const RobPokerPlayer player);
-int evaluate_hand(const std::array<StandardDeck::Card, 33> &cards, const int num_cards);
+int evaluate_hand(const absl::InlinedVector<StandardDeck::Card, 33> &cards);
 BettingState compute_betting_state(const RobPokerHistory &history);
 namespace detail {
 std::span<const std::vector<int>> n_choose_k(const int n, const int k);
