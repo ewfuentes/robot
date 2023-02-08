@@ -23,7 +23,7 @@ struct StrengthPotentialResult {
 };
 
 struct HandDistributionResult {
-  std::vector<uint64_t> distribution;
+    std::vector<uint64_t> distribution;
     uint64_t num_board_rollouts;
 };
 
