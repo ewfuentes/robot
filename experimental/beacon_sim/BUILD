@@ -340,6 +340,7 @@ cc_library(
     ":robot",
     "//planning:belief_road_map",
     "//planning:probabilistic_road_map",
+    "//common/math:redheffer_star",
     ":generate_observations",
   ]
 )

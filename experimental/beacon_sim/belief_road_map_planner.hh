@@ -20,12 +20,12 @@ std::optional<planning::BRMPlan<RobotBelief>> compute_belief_road_map_plan(
     const int num_goal_connections, const double uncertainty_tolerance);
 
 namespace detail {
-struct EdgeBeliefTransform {
+struct ScatteringTransform {
     liegroups::SE2 local_from_robot;
     Eigen::Matrix<double, 2 * liegroups::SE2::DoF, 2 * liegroups::SE2::DoF> cov_transform;
 };
 
-EdgeBeliefTransform compute_edge_belief_transform(const liegroups::SE2 &local_from_robot,
+ScatteringTransform compute_edge_belief_transform(const liegroups::SE2 &local_from_robot,
                                                   const Eigen::Vector2d &end_state_in_local,
                                                   const EkfSlamConfig &ekf_config,
                                                   const EkfSlamEstimate &ekf_estimate,
