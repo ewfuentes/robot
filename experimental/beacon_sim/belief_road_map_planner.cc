@@ -6,13 +6,14 @@
 
 #include "Eigen/Core"
 #include "common/liegroups/se2.hh"
+#include "common/math/redheffer_star.hh"
 #include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/generate_observations.hh"
 #include "experimental/beacon_sim/robot.hh"
 
 namespace robot::experimental::beacon_sim {
 namespace {
-using BeliefTransformMatrix =
+using ScatteringTransformMatrix =
     Eigen::Matrix<double, 2 * liegroups::SE2::DoF, 2 * liegroups::SE2::DoF>;
 
 struct DirectedEdge {
@@ -86,40 +87,32 @@ Eigen::MatrixXd build_measurement_noise(const int num_observations,
     return noise;
 }
 
-BeliefTransformMatrix compute_process_transform(const Eigen::Matrix3d &process_noise,
-                                                const liegroups::SE2 &old_robot_from_new_robot) {
+ScatteringTransformMatrix compute_process_transform(
+    const Eigen::Matrix3d &process_noise, const liegroups::SE2 &old_robot_from_new_robot) {
     const Eigen::Matrix3d dynamics_jac_wrt_state = old_robot_from_new_robot.inverse().Adj();
-    const Eigen::Matrix3d inv_dynamics_jac_wrt_state_trans =
-        old_robot_from_new_robot.Adj().transpose();
 
-    // The usual process update is:
-    // sigma_{t|t-1} = F * sigma_{t-1} * F' + Q
-    // Substituting sigma_{t-1} = A * B^-1
-    // sigma_{t|t-1} = (F * A) * (B^-1 * F') + Q
-    // sigma_{t|t-1} = (F * A) * (B^-1 * F') + Q * (B^-1 * F')^-1 * (B^-1 * F')
-    // sigma_{t|t-1} = (F * A + Q * (B^`-1 * F')^-1) * (B^-1 * F')
-    // sigma_{t|t-1} = (F * A + Q * F'^-1 * B) * (B^-1 * F')
-    // sigma_{t|t-1} = (F * A + Q * F'^-1 * B) * (F'^-1 * B)^-1
-    // [A_{t|t-1} B_{t|t-1}]' = [[F, Q*F'^-1]  [A, B]'
-    //                           [0,   F'^-1]]
+    // See equation 69 from
+    // https://dspace.mit.edu/bitstream/handle/1721.1/58752/Roy_The%20belief.pdf
 
-    return (BeliefTransformMatrix() << dynamics_jac_wrt_state,
-            process_noise * inv_dynamics_jac_wrt_state_trans, Eigen::Matrix3d::Zero(),
-            inv_dynamics_jac_wrt_state_trans)
+    return (ScatteringTransformMatrix() << dynamics_jac_wrt_state, process_noise,
+            Eigen::Matrix3d::Zero(), dynamics_jac_wrt_state.transpose())
         .finished();
 }
 
-BeliefTransformMatrix compute_measurement_transform(const liegroups::SE2 &local_from_robot,
-                                                    const EkfSlamConfig &ekf_config,
-                                                    const EkfSlamEstimate &ekf_estimate,
-                                                    const double max_sensor_range_m) {
+ScatteringTransformMatrix compute_measurement_transform(const liegroups::SE2 &local_from_robot,
+                                                        const EkfSlamConfig &ekf_config,
+                                                        const EkfSlamEstimate &ekf_estimate,
+                                                        const double max_sensor_range_m) {
     // Simulate observations
     const auto observations =
         generate_observations(local_from_robot, ekf_estimate, max_sensor_range_m);
 
     if (observations.empty()) {
-        return BeliefTransformMatrix::Identity();
+        return ScatteringTransformMatrix::Identity();
     }
+
+    // See equation 70 from
+    // https://dspace.mit.edu/bitstream/handle/1721.1/58752/Roy_The%20belief.pdf
 
     // Generate the observation matrix
     const detail::UpdateInputs inputs =
@@ -133,19 +126,8 @@ BeliefTransformMatrix compute_measurement_transform(const liegroups::SE2 &local_
         inputs.observation_matrix.rows() / 2, ekf_config.range_measurement_noise_m,
         ekf_config.bearing_measurement_noise_rad);
 
-    // The Information form of the update is:
-    // sigma_t = (sigma_{t|t-1}^-1 + H' * R^-1 * H)^-1
-    // Substituting sigma_{t|t-1} = A * B^-1
-    // sigma_t = ((A * B^-1)^-1 + H' * R^-1 * H)^-1
-    // sigma_t = ((B * A^-1 + H' * R^-1 * H)^-1
-    // sigma_t = ((B * A^-1 + H' * R^-1 * H * A * A^-1)^-1
-    // sigma_t = ((B + H' * R^-1 * H * A) * A^-1 )^-1
-    // sigma_t = A * (B + H' * R^-1 * H * A)^-1
-    // [A_t B_t]' = [[        I, 0]  [A, B]'
-    //               [H'*R^-1*H, I]]
-
-    return (BeliefTransformMatrix() << Eigen::Matrix3d::Identity(), Eigen::Matrix3d::Zero(),
-            observation_matrix.transpose() * measurement_noise.inverse() * observation_matrix,
+    return (ScatteringTransformMatrix() << Eigen::Matrix3d::Identity(), Eigen::Matrix3d::Zero(),
+            -observation_matrix.transpose() * measurement_noise.inverse() * observation_matrix,
             Eigen::Matrix3d::Identity())
         .finished();
 }
@@ -154,7 +136,7 @@ planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap
                                                          const Eigen::Vector2d &goal_state,
                                                          const double max_sensor_range_m,
                                                          const EkfSlam &ekf) {
-    std::unordered_map<DirectedEdge, detail::EdgeBeliefTransform, DirectedEdgeHash>
+    std::unordered_map<DirectedEdge, detail::ScatteringTransform, DirectedEdgeHash>
         edge_transform_cache;
     return [&road_map, goal_state, max_sensor_range_m, &ekf,
             edge_transform_cache = std::move(edge_transform_cache)](
@@ -169,7 +151,7 @@ planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap
         const auto cache_iter = edge_transform_cache.find(edge);
         const bool is_in_cache = cache_iter != edge_transform_cache.end();
         const auto end_pos_in_local = end_idx < 0 ? goal_state : road_map.points.at(end_idx);
-        const detail::EdgeBeliefTransform &transform =
+        const detail::ScatteringTransform &transform =
             is_in_cache ? cache_iter->second
                         : detail::compute_edge_belief_transform(initial_belief.local_from_robot,
                                                                 end_pos_in_local, ekf.config(),
@@ -180,19 +162,17 @@ planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap
         }
 
         // Compute the new covariance
-        // [A] = [C D][cov]
-        // [B]   [E F][ I ]
+        // [- new_cov] = [I cov] * edge_transform
+        // [-       -]   [0   I]
         // new_cov  = A * B^-1
         const int cov_dim = initial_belief.cov_in_robot.rows();
-        Eigen::MatrixXd input = Eigen::MatrixXd::Zero(2 * cov_dim, cov_dim);
-        input.topLeftCorner(cov_dim, cov_dim) = initial_belief.cov_in_robot;
-        input.bottomLeftCorner(cov_dim, cov_dim) = Eigen::MatrixXd::Identity(cov_dim, cov_dim);
+        Eigen::MatrixXd input = Eigen::MatrixXd::Identity(2 * cov_dim, 2 * cov_dim);
+        input.topRightCorner(cov_dim, cov_dim) = initial_belief.cov_in_robot;
 
-        const Eigen::MatrixXd transformed = transform.cov_transform * input;
-        const Eigen::MatrixXd numerator = transformed.topLeftCorner(cov_dim, cov_dim);
-        const Eigen::MatrixXd denominator = transformed.bottomLeftCorner(cov_dim, cov_dim);
+        const ScatteringTransformMatrix result =
+            math::redheffer_star(input, transform.cov_transform);
 
-        const Eigen::MatrixXd new_cov_in_robot = numerator * denominator.inverse();
+        const Eigen::MatrixXd new_cov_in_robot = result.topRightCorner(cov_dim, cov_dim);
 
         return RobotBelief{
             .local_from_robot = transform.local_from_robot,
@@ -239,7 +219,7 @@ std::optional<planning::BRMPlan<RobotBelief>> compute_belief_road_map_plan(
 }
 
 namespace detail {
-EdgeBeliefTransform compute_edge_belief_transform(const liegroups::SE2 &local_from_robot,
+ScatteringTransform compute_edge_belief_transform(const liegroups::SE2 &local_from_robot,
                                                   const Eigen::Vector2d &end_state_in_local,
                                                   const EkfSlamConfig &ekf_config,
                                                   const EkfSlamEstimate &ekf_estimate,
@@ -250,7 +230,7 @@ EdgeBeliefTransform compute_edge_belief_transform(const liegroups::SE2 &local_fr
 
     liegroups::SE2 local_from_new_robot = local_from_robot;
     constexpr double TOL = 1e-6;
-    BeliefTransformMatrix edge_transform = BeliefTransformMatrix::Identity();
+    ScatteringTransformMatrix scattering_transform = ScatteringTransformMatrix::Identity();
     for (Eigen::Vector2d end_in_robot = local_from_robot.inverse() * end_state_in_local;
          end_in_robot.norm() > TOL;
          end_in_robot = local_from_new_robot.inverse() * end_state_in_local) {
@@ -278,23 +258,21 @@ EdgeBeliefTransform compute_edge_belief_transform(const liegroups::SE2 &local_fr
         const Eigen::Matrix3d process_noise_in_robot =
             compute_process_noise(ekf_config, DT_S, old_robot_from_new_robot.arclength());
 
-        const BeliefTransformMatrix process_transform =
+        const ScatteringTransformMatrix process_transform =
             compute_process_transform(process_noise_in_robot, old_robot_from_new_robot);
 
-        // Update the edge transform
-        edge_transform = process_transform * edge_transform;
-
         // Compute the measurement update for the covariance
-        const BeliefTransformMatrix measurement_transform = compute_measurement_transform(
+        const ScatteringTransformMatrix measurement_transform = compute_measurement_transform(
             local_from_new_robot, ekf_config, ekf_estimate, max_sensor_range_m);
 
-        edge_transform = measurement_transform * edge_transform;
+        scattering_transform = math::redheffer_star(measurement_transform, scattering_transform);
+        scattering_transform = math::redheffer_star(process_transform, scattering_transform);
     }
 
-    return EdgeBeliefTransform{
+    return ScatteringTransform{
         // Avoid numerical issues by directly setting the translation
         .local_from_robot = liegroups::SE2(local_from_new_robot.so2().log(), end_state_in_local),
-        .cov_transform = edge_transform,
+        .cov_transform = scattering_transform,
     };
 }
 
