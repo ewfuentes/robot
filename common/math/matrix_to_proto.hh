@@ -17,10 +17,12 @@ template <typename Derived>
 void pack_into(const Eigen::MatrixBase<Derived> &in, Matrix *out) {
     out->set_num_rows(in.rows());
     out->set_num_cols(in.cols());
-    out->mutable_data()->Clear();
+    auto &data = *out->mutable_data();
+    data.Clear();
+    data.Reserve(in.rows() * in.cols());
     for (int i = 0; i < in.rows(); i++) {
         for (int j = 0; j < in.cols(); j++) {
-            out->add_data(in(i, j));
+            data.AddAlreadyReserved(in(i, j));
         }
     }
 }

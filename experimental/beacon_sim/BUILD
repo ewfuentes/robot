@@ -1,4 +1,4 @@
-
+load("@pip//:requirements.bzl", "requirement")
 load("//common/proto:proto.bzl", "multi_proto_library")
 
 multi_proto_library(
@@ -367,10 +367,35 @@ cc_binary(
     ":sim_config",
     ":belief_road_map_planner",
     ":tick_sim",
-    ":sim_log_proto",
+    ":rollout_statistics_proto",
+    ":world_map_config_to_proto",
     "//planning:probabilistic_road_map",
+    "//planning:road_map_to_proto",
     "//common/liegroups:se2",
+    "//common/liegroups:se2_to_proto",
     "//common/time:robot_time",
     "@cxxopts//:cxxopts",
   ],
+)
+
+py_binary(
+  name = "plot_trials",
+  srcs = ["plot_trials.py"],
+  visibility = ["//visibility:public"],
+  deps = [
+    ":rollout_statistics_proto_py",
+    requirement("matplotlib"),
+    requirement("numpy"),
+  ]
+)
+
+multi_proto_library(
+  name = "rollout_statistics_proto",
+  srcs = ["rollout_statistics.proto"],
+  deps = [
+    ":beacon_sim_debug_proto",
+    ":world_map_config_proto",
+    "//planning:road_map_proto",
+    "//common/liegroups:se2_proto",
+  ]
 )
