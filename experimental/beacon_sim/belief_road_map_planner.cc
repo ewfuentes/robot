@@ -180,8 +180,6 @@ planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap
             std::cout << "Negative determinant going from " << start_idx << " to " << end_idx
                       << std::endl;
             std::cout << "Initial det: " << initial_det << " new det: " << det << std::endl;
-            std::cout << "Num det: " << numerator.determinant()
-                      << " den det: " << denominator.determinant() << std::endl;
             std::exit(0);
         }
 
