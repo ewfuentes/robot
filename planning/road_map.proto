@@ -1,0 +1,11 @@
+
+syntax = "proto3";
+
+import "common/math/matrix.proto";
+
+package robot.planning.proto;
+
+message RoadMap {
+  repeated robot.math.proto.Matrix points = 1;
+  robot.math.proto.Matrix adj = 2;
+}
