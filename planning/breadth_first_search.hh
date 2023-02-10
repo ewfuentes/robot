@@ -55,8 +55,7 @@ std::optional<BreadthFirstResult<State>> breadth_first_search(
             nodes_visited++;
 
             // Check if we should add this node to the queue
-            const bool should_queue = should_queue_check(successor, node_idx, nodes);
-            if (should_queue) {
+            if (should_queue_check(successor, node_idx, nodes)) {
                 node_idx_queue.push_back(nodes.size());
                 nodes.push_back({.state = successor.state,
                                  .maybe_parent_idx = node_idx,
