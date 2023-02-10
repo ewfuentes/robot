@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "common/liegroups/se2.hh"
+#include "common/liegroups/se2_to_proto.hh"
 #include "common/time/robot_time.hh"
 #include "cxxopts.hpp"
 #include "experimental/beacon_sim/beacon_sim_state.hh"
@@ -27,14 +28,13 @@
 namespace robot::experimental::beacon_sim {
 namespace {
 
-WorldMapConfig create_world_map_config(const double max_x_m, const double max_y_m) {
+  WorldMapConfig create_world_map_config(const double max_x_m, const double max_y_m, double beacon_spacing_m) {
     // Create a box of beacons
-    constexpr double BEACON_SPACING_M = 5.0;
     constexpr int VERTICAL_ID_OFFSET = 50;
 
     std::vector<Beacon> beacons;
-    for (double pos = 0.0; pos < std::max(max_x_m, max_y_m); pos += BEACON_SPACING_M) {
-        const int beacon_idx = pos / BEACON_SPACING_M;
+    for (double pos = 0.0; pos < std::max(max_x_m, max_y_m); pos += beacon_spacing_m) {
+        const int beacon_idx = pos / beacon_spacing_m;
         // Add beacons in a counterclockwise order
         if (pos < max_x_m) {
             // bottom left to bottom right
@@ -144,6 +144,7 @@ proto::RolloutStatistics compute_statistics(const std::vector<proto::BeaconSimDe
 void run_trials() {
     constexpr double MAX_X_M = 20.0;
     constexpr double MAX_Y_M = 20.0;
+    constexpr double BEACON_SPACING_M = MAX_X_M / 3.0;
     constexpr double ROAD_MAP_OFFSET_M = 5.0;
     constexpr double MAX_SENSOR_RANGE_M = 5.0;
     constexpr int NUM_START_CONNECTIONS = 1;
@@ -160,7 +161,7 @@ void run_trials() {
     };
 
     // Create a world map
-    const auto base_map_config = create_world_map_config(MAX_X_M, MAX_Y_M);
+    const auto base_map_config = create_world_map_config(MAX_X_M, MAX_Y_M, BEACON_SPACING_M);
 
     // Create a road map
     const auto road_map = planning::create_road_map(
@@ -247,6 +248,12 @@ void run_trials() {
     proto::AllStatistics out;
     pack_into(base_map_config, out.mutable_world_map_config());
     pack_into(road_map, out.mutable_road_map());
+    for (const auto &node : plan->nodes) {
+        out.add_plan(node);
+    }
+    out.mutable_goal()->set_x(goal_state.x());
+    out.mutable_goal()->set_y(goal_state.y());
+    pack_into(ekf.estimate().local_from_robot(), out.mutable_local_from_start());
     for (auto &&trial_statistics : results) {
         out.mutable_statistics()->Add(std::move(trial_statistics));
     }

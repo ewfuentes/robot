@@ -1,6 +1,7 @@
 
 syntax = "proto3";
 
+import "common/liegroups/se2.proto";
 import "experimental/beacon_sim/beacon_sim_debug.proto";
 import "experimental/beacon_sim/world_map_config.proto";
 import "planning/road_map.proto";
@@ -12,8 +13,16 @@ message RolloutStatistics {
   robot.experimental.beacon_sim.proto.BeaconSimDebug final_step = 1;
 }
 
+message Point {
+  float x = 1;
+  float y = 2;
+}
+
 message AllStatistics {
   robot.experimental.beacon_sim.proto.WorldMapConfig world_map_config = 3;
   robot.planning.proto.RoadMap road_map = 2;
   repeated RolloutStatistics statistics = 1;
+  repeated int32 plan = 4;
+  robot.liegroups.proto.SE2 local_from_start = 5;
+  Point goal = 6;
 }
