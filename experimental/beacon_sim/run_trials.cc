@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <csignal>
 #include <execution>
 #include <filesystem>
 #include <fstream>
@@ -26,10 +25,7 @@
 #include "planning/road_map_to_proto.hh"
 
 namespace robot::experimental::beacon_sim {
-bool debug = true;
 namespace {
-
-void sigusr_1_handler(int) { debug = true; }
 
 WorldMapConfig create_world_map_config(const double max_x_m, const double max_y_m) {
     // Create a box of beacons
@@ -181,7 +177,6 @@ void run_trials() {
     const auto plan = compute_belief_road_map_plan(road_map, ekf, goal_state, MAX_SENSOR_RANGE_M,
                                                    NUM_START_CONNECTIONS, NUM_GOAL_CONNECTIONS,
                                                    UNCERTAINTY_TOLERANCE);
-    std::cout << "Done planning" << std::endl;
 
     // Cycle through all possible assignments to beacon presence
     time::RobotTimestamp start = time::current_robot_time();
@@ -260,7 +255,4 @@ void run_trials() {
 }
 }  // namespace robot::experimental::beacon_sim
 
-int main() {
-    std::signal(SIGUSR1, robot::experimental::beacon_sim::sigusr_1_handler);
-    robot::experimental::beacon_sim::run_trials();
-}
+int main() { robot::experimental::beacon_sim::run_trials(); }

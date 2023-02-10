@@ -110,9 +110,6 @@ std::vector<Successor<BRMSearchState<Belief>>> successors_for_state(
     }
 
     for (int i = 0; i < static_cast<int>(road_map.points.size()); i++) {
-        std::cout << "Edge exists " << state.node_idx << "->" << i << "? "
-                  << road_map.adj(i, state.node_idx) << " " << road_map.adj(state.node_idx, i)
-                  << std::endl;
         if (road_map.adj(state.node_idx, i)) {
             // Queue up each neighbor
             const Belief new_belief = belief_updater(state.belief, state.node_idx, i);
@@ -188,22 +185,12 @@ std::optional<BRMPlan<Belief>> plan(const RoadMap &road_map, const Belief &initi
     std::unordered_map<int, double> min_uncertainty_from_node;
     auto should_queue_check = [uncertainty_tolerance, &min_uncertainty_from_node](
                                   const Successor<SearchState> &successor, const int parent_idx,
-                                  const std::vector<Node<SearchState>> &nodes,
-                                  const bool should_print) {
-        if (should_print) {
-            std::cout << "Checking edge from " << nodes[parent_idx].state.node_idx << " to "
-                      << successor.state.node_idx << std::endl;
-        }
+                                  const std::vector<Node<SearchState>> &nodes) {
         const int node_idx = successor.state.node_idx;
         const double uncertainty = uncertainty_size(successor.state.belief);
         const auto iter = min_uncertainty_from_node.find(node_idx);
         if (iter != min_uncertainty_from_node.end()) {
             const bool should_queue = iter->second * (1 - uncertainty_tolerance) > uncertainty;
-            if (should_print) {
-                std::cout << "found old uncertainty: " << iter->second
-                          << " new uncertainty: " << uncertainty << " should queue? "
-                          << should_queue << std::endl;
-            }
             if (should_queue) {
                 min_uncertainty_from_node[node_idx] = uncertainty;
             }
@@ -220,26 +207,15 @@ std::optional<BRMPlan<Belief>> plan(const RoadMap &road_map, const Belief &initi
         if (!prev_idx.has_value()) {
             // If we haven't seen this node before on our path, allow it to be added
             min_uncertainty_from_node[node_idx] = uncertainty_size(successor.state.belief);
-            if (should_print) {
-                std::cout << "Have not seen, caching and adding to queue" << std::endl;
-            }
             return true;
         } else if (uncertainty_size(successor.state.belief) <
                    ((1 - uncertainty_tolerance) *
                     uncertainty_size(nodes[prev_idx.value()].state.belief))) {
             // We're revisiting a node, but it has lower uncertainty
             min_uncertainty_from_node[node_idx] = uncertainty_size(successor.state.belief);
-            if (should_print) {
-                std::cout << "Have seen before and lower uncertainty, updating caching and adding "
-                             "to queue"
-                          << std::endl;
-            }
             return true;
         }
         // We've seen this node before, but it's not much better than last time
-        if (should_print) {
-            std::cout << "have seen before and not better" << std::endl;
-        }
         return false;
     };
 
