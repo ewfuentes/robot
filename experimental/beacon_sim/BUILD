@@ -385,7 +385,6 @@ py_binary(
     ":rollout_statistics_proto_py",
     requirement("matplotlib"),
     requirement("numpy"),
-    requirement("protobuf"),
   ]
 )
 
