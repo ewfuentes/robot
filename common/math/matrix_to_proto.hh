@@ -22,7 +22,7 @@ void pack_into(const Eigen::MatrixBase<Derived> &in, Matrix *out) {
     data.Reserve(in.rows() * in.cols());
     for (int i = 0; i < in.rows(); i++) {
         for (int j = 0; j < in.cols(); j++) {
-          data.AddAlreadyReserved(in(i, j));
+            data.AddAlreadyReserved(in(i, j));
         }
     }
 }

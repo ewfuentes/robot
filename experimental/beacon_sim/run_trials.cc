@@ -28,7 +28,8 @@
 namespace robot::experimental::beacon_sim {
 namespace {
 
-  WorldMapConfig create_world_map_config(const double max_x_m, const double max_y_m, double beacon_spacing_m) {
+WorldMapConfig create_world_map_config(const double max_x_m, const double max_y_m,
+                                       double beacon_spacing_m) {
     // Create a box of beacons
     constexpr int VERTICAL_ID_OFFSET = 50;
 
