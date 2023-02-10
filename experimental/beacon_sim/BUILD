@@ -396,5 +396,6 @@ multi_proto_library(
     ":beacon_sim_debug_proto",
     ":world_map_config_proto",
     "//planning:road_map_proto",
+    "//common/liegroups:se2_proto",
   ]
 )
