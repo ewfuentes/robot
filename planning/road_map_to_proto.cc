@@ -13,12 +13,12 @@ void pack_into(const planning::RoadMap &in, RoadMap *out) {
 }
 
 planning::RoadMap unpack_from(const RoadMap &in) {
-  planning::RoadMap out;
-  for (const auto &pt: in.points()) {
-    out.points.push_back(unpack_from<Eigen::Vector2d>(pt));
-  }
+    planning::RoadMap out;
+    for (const auto &pt : in.points()) {
+        out.points.push_back(unpack_from<Eigen::Vector2d>(pt));
+    }
 
-  out.adj = unpack_from<Eigen::MatrixXd>(in.adj());
-  return out;
+    out.adj = unpack_from<Eigen::MatrixXd>(in.adj());
+    return out;
 }
 }  // namespace robot::planning::proto
