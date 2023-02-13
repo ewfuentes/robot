@@ -100,7 +100,7 @@ std::vector<std::tuple<int, WorldMapConfig>> create_all_beacon_presences(
     return configs;
 }
 
-EkfSlam create_ekf(const WorldMapConfig &map_config) {
+EkfSlam create_ekf(const WorldMapConfig &map_config, const liegroups::SE2 &local_from_robot) {
     const EkfSlamConfig ekf_config = {
         .max_num_beacons = static_cast<int>(map_config.fixed_beacons.beacons.size()),
         .initial_beacon_uncertainty_m = 10.0,
@@ -136,6 +136,7 @@ EkfSlam create_ekf(const WorldMapConfig &map_config) {
     }();
 
     EkfSlam ekf(ekf_config, time::RobotTimestamp());
+    ekf.estimate().local_from_robot(local_from_robot);
     constexpr bool LOAD_OFF_DIAGONALS = true;
     ekf.load_map(landmarks, LOAD_OFF_DIAGONALS);
     return ekf;
@@ -175,7 +176,7 @@ void run_trials(const TrialsConfig &config) {
         Map{}, {.seed = 0, .num_valid_points = 50, .desired_node_degree = 4});
 
     // Create an ekf
-    const auto ekf = create_ekf(base_map_config);
+    const auto ekf = create_ekf(base_map_config, config.local_from_robot);
 
     // Compute the plan
     std::cout << "Starting to plan: " << std::endl;
@@ -221,7 +222,7 @@ void run_trials(const TrialsConfig &config) {
                 .ekf = ekf,
                 .observations = {},
                 .goal = {{.time_of_validity = time::RobotTimestamp(),
-                              .goal_position = goal_position}},
+                          .goal_position = goal_position}},
                 .plan = {{.time_of_validity = time::RobotTimestamp(), .brm_plan = plan.value()}},
                 .gen = std::mt19937(0),
             };

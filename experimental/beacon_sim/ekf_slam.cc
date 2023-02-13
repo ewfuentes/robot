@@ -274,6 +274,12 @@ EkfSlamEstimate incorporate_mapped_landmarks(const EkfSlamEstimate &est,
 liegroups::SE2 EkfSlamEstimate::local_from_robot() const {
     return liegroups::SE2(mean(2), mean.head<2>());
 }
+
+void EkfSlamEstimate::local_from_robot(const liegroups::SE2 &local_from_robot) {
+    mean(2) = local_from_robot.so2().log();
+    mean.head<2>() = local_from_robot.translation();
+}
+
 Eigen::Matrix3d EkfSlamEstimate::robot_cov() const {
     return cov.block(0, 0, ROBOT_STATE_DIM, ROBOT_STATE_DIM);
 }

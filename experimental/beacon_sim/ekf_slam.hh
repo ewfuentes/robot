@@ -39,6 +39,8 @@ struct EkfSlamEstimate {
     liegroups::SE2 local_from_robot() const;
     Eigen::Matrix3d robot_cov() const;
 
+    void local_from_robot(const liegroups::SE2 &local_from_robot);
+
     // Returns none if beacon id estimated
     std::optional<Eigen::Vector2d> beacon_in_local(const int beacon_id) const;
     std::optional<Eigen::Matrix2d> beacon_cov(const int beacon_id) const;
@@ -57,6 +59,7 @@ class EkfSlam {
     const EkfSlamEstimate &update(const std::vector<BeaconObservation> &observations);
 
     const EkfSlamEstimate &estimate() const { return estimate_; }
+    EkfSlamEstimate &estimate() { return estimate_; }
 
     const EkfSlamConfig &config() const { return config_; }
 
