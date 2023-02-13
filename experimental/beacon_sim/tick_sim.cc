@@ -75,7 +75,7 @@ proto::BeaconSimDebug tick_sim(const SimConfig &config, const RobotCommand &comm
             constexpr double UNCERTAINTY_TOLERANCE = 0.1;
             std::cout << "Starting to Plan" << std::endl;
             const auto brm_plan = compute_belief_road_map_plan(
-                state->road_map, state->ekf, state->goal->goal_state,
+                state->road_map, state->ekf, state->goal->goal_position,
                 OBS_CONFIG.max_sensor_range_m.value(), NUM_START_CONNECTIONS, NUM_GOAL_CONNECTIONS,
                 UNCERTAINTY_TOLERANCE);
             std::cout << "plan complete" << std::endl;

@@ -21,7 +21,7 @@ struct Plan {
 
 struct Goal {
     time::RobotTimestamp time_of_validity;
-    Eigen::Vector2d goal_state;
+    Eigen::Vector2d goal_position;
 };
 
 struct BeaconSimState {

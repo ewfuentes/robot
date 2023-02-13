@@ -28,6 +28,12 @@
 namespace robot::experimental::beacon_sim {
 namespace {
 
+struct TrialsConfig {
+    std::filesystem::path output_path;
+    Eigen::Vector2d goal_position;
+    liegroups::SE2 local_from_robot;
+};
+
 WorldMapConfig create_world_map_config(const double max_x_m, const double max_y_m,
                                        double beacon_spacing_m) {
     // Create a box of beacons
@@ -94,7 +100,7 @@ std::vector<std::tuple<int, WorldMapConfig>> create_all_beacon_presences(
     return configs;
 }
 
-EkfSlam create_ekf(const WorldMapConfig &map_config) {
+EkfSlam create_ekf(const WorldMapConfig &map_config, const liegroups::SE2 &local_from_robot) {
     const EkfSlamConfig ekf_config = {
         .max_num_beacons = static_cast<int>(map_config.fixed_beacons.beacons.size()),
         .initial_beacon_uncertainty_m = 10.0,
@@ -130,6 +136,7 @@ EkfSlam create_ekf(const WorldMapConfig &map_config) {
     }();
 
     EkfSlam ekf(ekf_config, time::RobotTimestamp());
+    ekf.estimate().local_from_robot(local_from_robot);
     constexpr bool LOAD_OFF_DIAGONALS = true;
     ekf.load_map(landmarks, LOAD_OFF_DIAGONALS);
     return ekf;
@@ -142,7 +149,7 @@ proto::RolloutStatistics compute_statistics(const std::vector<proto::BeaconSimDe
 }
 
 }  // namespace
-void run_trials() {
+void run_trials(const TrialsConfig &config) {
     constexpr double MAX_X_M = 20.0;
     constexpr double MAX_Y_M = 20.0;
     constexpr double BEACON_SPACING_M = MAX_X_M / 3.0;
@@ -169,16 +176,13 @@ void run_trials() {
         Map{}, {.seed = 0, .num_valid_points = 50, .desired_node_degree = 4});
 
     // Create an ekf
-    const auto ekf = create_ekf(base_map_config);
-
-    // Provide a goal
-    const Eigen::Vector2d goal_state = {0.0, MAX_Y_M + ROAD_MAP_OFFSET_M};
+    const auto ekf = create_ekf(base_map_config, config.local_from_robot);
 
     // Compute the plan
     std::cout << "Starting to plan: " << std::endl;
-    const auto plan = compute_belief_road_map_plan(road_map, ekf, goal_state, MAX_SENSOR_RANGE_M,
-                                                   NUM_START_CONNECTIONS, NUM_GOAL_CONNECTIONS,
-                                                   UNCERTAINTY_TOLERANCE);
+    const auto plan = compute_belief_road_map_plan(road_map, ekf, config.goal_position,
+                                                   MAX_SENSOR_RANGE_M, NUM_START_CONNECTIONS,
+                                                   NUM_GOAL_CONNECTIONS, UNCERTAINTY_TOLERANCE);
 
     // Cycle through all possible assignments to beacon presence
     time::RobotTimestamp start = time::current_robot_time();
@@ -204,7 +208,8 @@ void run_trials() {
     std::vector<proto::RolloutStatistics> results(inputs.size());
     std::for_each(
         std::execution::par, inputs.begin(), inputs.end(),
-        [&sim_config, &goal_state, &plan, &ekf, &road_map, &results](const auto &input) {
+        [&sim_config, &goal_position = config.goal_position, &plan, &ekf, &road_map,
+         &results](const auto &input) {
             const auto &[idx, masked_map_config] = input;
             if (idx % 1000 == 0) {
                 std::cout << "idx: " << idx << std::endl;
@@ -216,7 +221,8 @@ void run_trials() {
                 .robot = RobotState(liegroups::SE2()),
                 .ekf = ekf,
                 .observations = {},
-                .goal = {{.time_of_validity = time::RobotTimestamp(), .goal_state = goal_state}},
+                .goal = {{.time_of_validity = time::RobotTimestamp(),
+                          .goal_position = goal_position}},
                 .plan = {{.time_of_validity = time::RobotTimestamp(), .brm_plan = plan.value()}},
                 .gen = std::mt19937(0),
             };
@@ -252,15 +258,58 @@ void run_trials() {
     for (const auto &node : plan->nodes) {
         out.add_plan(node);
     }
-    out.mutable_goal()->set_x(goal_state.x());
-    out.mutable_goal()->set_y(goal_state.y());
+    out.mutable_goal()->set_x(config.goal_position.x());
+    out.mutable_goal()->set_y(config.goal_position.y());
     pack_into(ekf.estimate().local_from_robot(), out.mutable_local_from_start());
     for (auto &&trial_statistics : results) {
         out.mutable_statistics()->Add(std::move(trial_statistics));
     }
-    std::ofstream file_out("/tmp/beacon_sim_log/results.pb");
+    std::ofstream file_out(config.output_path);
     out.SerializeToOstream(&file_out);
 }
 }  // namespace robot::experimental::beacon_sim
 
-int main() { robot::experimental::beacon_sim::run_trials(); }
+int main(const int argc, const char **argv) {
+    const std::string DEFAULT_OUTPUT_PATH = "/tmp/results.pb";
+    cxxopts::Options options("run_trials", "Run beacon sim trials");
+    // clang-format off
+    options.add_options()
+      ("output", "Output path containing statistics for all rollouts",
+         cxxopts::value<std::string>()->default_value(DEFAULT_OUTPUT_PATH))
+      ("goal", "2D goal position (e.g. 3.0,4.5)", cxxopts::value<std::vector<double>>())
+      ("local_from_start", "Starting robot pose X,Y,Theta", cxxopts::value<std::vector<double>>())
+      ("help", "Print usage");
+    // clang-format on
+
+    auto args = options.parse(argc, argv);
+
+    if (args.count("help")) {
+        std::cout << options.help() << std::endl;
+        std::exit(0);
+    }
+
+    if (args.count("goal") == 0) {
+        std::cout << "--goal argument is required but missing." << std::endl;
+        std::exit(1);
+    } else if (args["goal"].as<std::vector<double>>().size() != 2) {
+        std::cout << "Goal must be a 2D vector." << std::endl;
+        std::exit(1);
+    }
+
+    if (args.count("local_from_start") == 0) {
+        std::cout << "--local_from_start argument is required but missing." << std::endl;
+        std::exit(1);
+    } else if (args["local_from_start"].as<std::vector<double>>().size() != 3) {
+        std::cout << "local_from_start must be a 3D vector." << std::endl;
+        std::exit(1);
+    }
+
+    const auto &goal_position = args["goal"].as<std::vector<double>>();
+    const auto &local_from_start_XYT = args["local_from_start"].as<std::vector<double>>();
+    robot::experimental::beacon_sim::run_trials({
+        .output_path = args["output"].as<std::string>(),
+        .goal_position = Eigen::Vector2d{goal_position[0], goal_position[1]},
+        .local_from_robot = robot::liegroups::SE2(
+            local_from_start_XYT[2], {local_from_start_XYT[0], local_from_start_XYT[1]}),
+    });
+}
