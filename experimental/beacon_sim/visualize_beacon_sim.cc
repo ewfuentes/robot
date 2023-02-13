@@ -200,14 +200,14 @@ void visualize_beacon_sim(const BeaconSimState &state, const double zoom_factor,
 
     // Draw Goal
     if (state.goal.has_value()) {
-        const Eigen::Vector2d &goal_state = state.goal->goal_state;
+        const Eigen::Vector2d &goal_position = state.goal->goal_position;
         glBegin(GL_LINE_LOOP);
         glColor4ub(255, 233, 0, 255);
         for (const auto &corner :
              std::array<Eigen::Vector2d, 4>{{{-1.0, -1.0}, {-1.0, 1.0}, {1.0, 1.0}, {1.0, -1.0}}}) {
             constexpr double NODE_HALF_WIDTH_M = 0.75 / 2.0;
             const Eigen::Vector2d corner_in_node = corner * NODE_HALF_WIDTH_M;
-            glVertex2d(corner_in_node.x() + goal_state.x(), corner_in_node.y() + goal_state.y());
+            glVertex2d(corner_in_node.x() + goal_position.x(), corner_in_node.y() + goal_position.y());
         }
         glEnd();
     }

@@ -177,14 +177,11 @@ void run_trials(const TrialsConfig &config) {
     // Create an ekf
     const auto ekf = create_ekf(base_map_config);
 
-    // Provide a goal
-    const Eigen::Vector2d goal_state = {0.0, MAX_Y_M + ROAD_MAP_OFFSET_M};
-
     // Compute the plan
     std::cout << "Starting to plan: " << std::endl;
-    const auto plan = compute_belief_road_map_plan(road_map, ekf, goal_state, MAX_SENSOR_RANGE_M,
-                                                   NUM_START_CONNECTIONS, NUM_GOAL_CONNECTIONS,
-                                                   UNCERTAINTY_TOLERANCE);
+    const auto plan = compute_belief_road_map_plan(road_map, ekf, config.goal_position,
+                                                   MAX_SENSOR_RANGE_M, NUM_START_CONNECTIONS,
+                                                   NUM_GOAL_CONNECTIONS, UNCERTAINTY_TOLERANCE);
 
     // Cycle through all possible assignments to beacon presence
     time::RobotTimestamp start = time::current_robot_time();
@@ -210,7 +207,8 @@ void run_trials(const TrialsConfig &config) {
     std::vector<proto::RolloutStatistics> results(inputs.size());
     std::for_each(
         std::execution::par, inputs.begin(), inputs.end(),
-        [&sim_config, &goal_state, &plan, &ekf, &road_map, &results](const auto &input) {
+        [&sim_config, &goal_position = config.goal_position, &plan, &ekf, &road_map,
+         &results](const auto &input) {
             const auto &[idx, masked_map_config] = input;
             if (idx % 1000 == 0) {
                 std::cout << "idx: " << idx << std::endl;
@@ -222,7 +220,8 @@ void run_trials(const TrialsConfig &config) {
                 .robot = RobotState(liegroups::SE2()),
                 .ekf = ekf,
                 .observations = {},
-                .goal = {{.time_of_validity = time::RobotTimestamp(), .goal_state = goal_state}},
+                .goal = {{.time_of_validity = time::RobotTimestamp(),
+                              .goal_position = goal_position}},
                 .plan = {{.time_of_validity = time::RobotTimestamp(), .brm_plan = plan.value()}},
                 .gen = std::mt19937(0),
             };
@@ -258,8 +257,8 @@ void run_trials(const TrialsConfig &config) {
     for (const auto &node : plan->nodes) {
         out.add_plan(node);
     }
-    out.mutable_goal()->set_x(goal_state.x());
-    out.mutable_goal()->set_y(goal_state.y());
+    out.mutable_goal()->set_x(config.goal_position.x());
+    out.mutable_goal()->set_y(config.goal_position.y());
     pack_into(ekf.estimate().local_from_robot(), out.mutable_local_from_start());
     for (auto &&trial_statistics : results) {
         out.mutable_statistics()->Add(std::move(trial_statistics));
