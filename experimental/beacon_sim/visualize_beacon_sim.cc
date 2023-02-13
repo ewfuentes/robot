@@ -207,7 +207,8 @@ void visualize_beacon_sim(const BeaconSimState &state, const double zoom_factor,
              std::array<Eigen::Vector2d, 4>{{{-1.0, -1.0}, {-1.0, 1.0}, {1.0, 1.0}, {1.0, -1.0}}}) {
             constexpr double NODE_HALF_WIDTH_M = 0.75 / 2.0;
             const Eigen::Vector2d corner_in_node = corner * NODE_HALF_WIDTH_M;
-            glVertex2d(corner_in_node.x() + goal_position.x(), corner_in_node.y() + goal_position.y());
+            glVertex2d(corner_in_node.x() + goal_position.x(),
+                       corner_in_node.y() + goal_position.y());
         }
         glEnd();
     }
