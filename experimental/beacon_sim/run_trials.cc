@@ -28,6 +28,12 @@
 namespace robot::experimental::beacon_sim {
 namespace {
 
+struct TrialsConfig {
+    std::filesystem::path output_path;
+    Eigen::Vector2d goal_position;
+    liegroups::SE2 local_from_robot;
+};
+
 WorldMapConfig create_world_map_config(const double max_x_m, const double max_y_m,
                                        double beacon_spacing_m) {
     // Create a box of beacons
@@ -142,7 +148,7 @@ proto::RolloutStatistics compute_statistics(const std::vector<proto::BeaconSimDe
 }
 
 }  // namespace
-void run_trials() {
+void run_trials(const TrialsConfig &config) {
     constexpr double MAX_X_M = 20.0;
     constexpr double MAX_Y_M = 20.0;
     constexpr double BEACON_SPACING_M = MAX_X_M / 3.0;
@@ -258,9 +264,52 @@ void run_trials() {
     for (auto &&trial_statistics : results) {
         out.mutable_statistics()->Add(std::move(trial_statistics));
     }
-    std::ofstream file_out("/tmp/beacon_sim_log/results.pb");
+    std::ofstream file_out(config.output_path);
     out.SerializeToOstream(&file_out);
 }
 }  // namespace robot::experimental::beacon_sim
 
-int main() { robot::experimental::beacon_sim::run_trials(); }
+int main(const int argc, const char **argv) {
+    const std::string DEFAULT_OUTPUT_PATH = "/tmp/results.pb";
+    cxxopts::Options options("run_trials", "Run beacon sim trials");
+    // clang-format off
+    options.add_options()
+      ("output", "Output path containing statistics for all rollouts",
+         cxxopts::value<std::string>()->default_value(DEFAULT_OUTPUT_PATH))
+      ("goal", "2D goal position (e.g. 3.0,4.5)", cxxopts::value<std::vector<double>>())
+      ("local_from_start", "Starting robot pose X,Y,Theta", cxxopts::value<std::vector<double>>())
+      ("help", "Print usage");
+    // clang-format on
+
+    auto args = options.parse(argc, argv);
+
+    if (args.count("help")) {
+        std::cout << options.help() << std::endl;
+        std::exit(0);
+    }
+
+    if (args.count("goal") == 0) {
+        std::cout << "--goal argument is required but missing." << std::endl;
+        std::exit(1);
+    } else if (args["goal"].as<std::vector<double>>().size() != 2) {
+        std::cout << "Goal must be a 2D vector." << std::endl;
+        std::exit(1);
+    }
+
+    if (args.count("local_from_start") == 0) {
+        std::cout << "--local_from_start argument is required but missing." << std::endl;
+        std::exit(1);
+    } else if (args["local_from_start"].as<std::vector<double>>().size() != 3) {
+        std::cout << "local_from_start must be a 3D vector." << std::endl;
+        std::exit(1);
+    }
+
+    const auto &goal_position = args["goal"].as<std::vector<double>>();
+    const auto &local_from_start_XYT = args["local_from_start"].as<std::vector<double>>();
+    robot::experimental::beacon_sim::run_trials({
+        .output_path = args["output"].as<std::string>(),
+        .goal_position = Eigen::Vector2d{goal_position[0], goal_position[1]},
+        .local_from_robot = robot::liegroups::SE2(
+            local_from_start_XYT[2], {local_from_start_XYT[0], local_from_start_XYT[1]}),
+    });
+}
