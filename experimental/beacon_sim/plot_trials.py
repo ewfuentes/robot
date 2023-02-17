@@ -9,7 +9,7 @@ import matplotlib.style
 matplotlib.style.use('ggplot')
 import matplotlib.pyplot as plt
 
-from experimental.beacon_sim.rollout_statistics_pb2 import AllStatistics
+from experimental.beacon_sim.rollout_statistics_pb2 import AllStatistics, RolloutStatistics
 from common.math.matrix_pb2 import Matrix as ProtoMat
 
 def load_results(results_path):
@@ -25,13 +25,10 @@ def matrix_from_proto(mat: ProtoMat):
             out[r, c] = mat.data[r * mat.num_cols + c]
     return out
 
-def compute_covariance_size(results: AllStatistics):
-    out = []
-    for statistic in results.statistics:
-        full_cov = matrix_from_proto(statistic.final_step.posterior.cov)
-        robot_cov = full_cov[:3, :3]
-        out.append(np.linalg.det(robot_cov))
-    return out
+def compute_covariance_size(result: RolloutStatistics):
+    full_cov = matrix_from_proto(result.final_step.posterior.cov)
+    robot_cov = full_cov[:3, :3]
+    return np.linalg.det(robot_cov)
 
 def main(results_path: str):
     results = load_results(results_path)
