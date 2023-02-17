@@ -399,3 +399,12 @@ multi_proto_library(
     "//common/liegroups:se2_proto",
   ]
 )
+
+py_binary(
+  name = "run_many_trials",
+  srcs = ["run_many_trials.py"],
+  data = [":run_trials"],
+  deps = [
+    requirement("matplotlib")
+  ]
+)

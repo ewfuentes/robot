@@ -5,10 +5,6 @@ load("@rules_python//python:defs.bzl", "py_binary")
 py_binary(
   name = "jupyter_notebook",
   srcs = ["jupyter_notebook.py"],
-  data = [
-    "//experimental/pokerbots:hand_evaluator_python.so",
-    "//experimental/pokerbots:evaluate_mass_hands_python.so",
-  ],
   deps = [
     requirement("notebook"),
     requirement("matplotlib"),
@@ -16,6 +12,7 @@ py_binary(
     requirement("numpy"),
     requirement("pandas"),
     requirement("scikit-learn"),
+    requirement("tqdm"),
     "//experimental/beacon_sim:plot_trials"
   ],
 )
