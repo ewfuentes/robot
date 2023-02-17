@@ -208,7 +208,8 @@ void run_trials(const TrialsConfig &config) {
     std::vector<proto::RolloutStatistics> results(inputs.size());
     std::for_each(
         std::execution::par, inputs.begin(), inputs.end(),
-        [&sim_config, &goal_position = config.goal_position, &plan, &ekf, &road_map,
+        [&sim_config, &local_from_robot = config.local_from_robot,
+         &goal_position = config.goal_position, &plan, &ekf, &road_map,
          &results](const auto &input) {
             const auto &[idx, masked_map_config] = input;
             if (idx % 1000 == 0) {
@@ -218,7 +219,7 @@ void run_trials(const TrialsConfig &config) {
                 .time_of_validity = time::RobotTimestamp(),
                 .map = WorldMap(masked_map_config),
                 .road_map = road_map,
-                .robot = RobotState(liegroups::SE2()),
+                .robot = RobotState(local_from_robot),
                 .ekf = ekf,
                 .observations = {},
                 .goal = {{.time_of_validity = time::RobotTimestamp(),
