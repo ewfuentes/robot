@@ -5,6 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 import subprocess
+from typing import Optional
 
 def get_points_of_interest(x_range_m, y_range_m, min_dist_away_m, num_points, rng: np.random.Generator):
     points = []
@@ -22,8 +23,11 @@ def get_points_of_interest(x_range_m, y_range_m, min_dist_away_m, num_points, rn
             points.append((x, y))
     return points
 
-def launch_trials(points, output_dir):
+def launch_trials(points, output_dir, instance_set: Optional[list[int]]):
     for trial_idx, ((idx_1, pt_1), (idx_2, pt_2)) in enumerate(itertools.permutations(enumerate(points), 2)):
+        if instance_set is not None and trial_idx not in instance_set:
+            continue
+
         print(trial_idx, idx_1, pt_1, idx_2, pt_2)
         args = ['experimental/beacon_sim/run_trials',
                 '--output', os.path.join(output_dir, f'trial_{trial_idx:06}.pb'),
@@ -35,7 +39,7 @@ def launch_trials(points, output_dir):
 
 
 
-def main(output_dir: str):
+def main(output_dir: str, instance_set: Optional[list[int]]):
     X_RANGE_M = (-5.0, 25.0)
     Y_RANGE_M = (-5.0, 25.0)
     NUM_POINTS = 35
@@ -44,10 +48,13 @@ def main(output_dir: str):
 
     points = get_points_of_interest(X_RANGE_M, Y_RANGE_M, MIN_DIST_AWAY_M, NUM_POINTS, rng)
 
-    launch_trials(points, output_dir)
+    os.makedirs(output_dir, exist_ok=True)
+
+    launch_trials(points, output_dir, instance_set)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--output_dir', help='Output directory')
+    parser.add_argument('--output_dir', help='Output directory', required=True)
+    parser.add_argument('--instance_set', help='Run this set of instances', nargs="+", type=int)
     args = parser.parse_args()
-    main(args.output_dir)
+    main(args.output_dir, args.instance_set)
