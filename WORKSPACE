@@ -125,15 +125,15 @@ http_archive(
 
 http_archive(
   name = "sophus",
-  urls = ["https://github.com/strasdat/Sophus/archive/refs/tags/v22.04.1.zip"],
-  strip_prefix= "Sophus-22.04.1",
+  urls = ["https://github.com/strasdat/Sophus/archive/refs/tags/1.22.4.zip"],
+  strip_prefix= "Sophus-1.22.4",
   build_file="@//third_party:BUILD.sophus",
   patches = [
     "@//third_party:sophus-0001-cpp20-va-args-changes.patch",
     "@//third_party:sophus-0002-quote-eigen-includes.patch",
   ],
   patch_args=["-p1"],
-  sha256 = "60d1d6c81426af8f330960002fb351db06e595501274310ddbe7bfc0aacda97a",
+  sha256 = "7748c82c21f29a71b0f22c529bfb3ec468f52b313b26041257aca3dc330ddb90"
 )
 
 http_archive(
