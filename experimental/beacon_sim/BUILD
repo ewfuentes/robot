@@ -408,3 +408,20 @@ py_binary(
     requirement("matplotlib")
   ]
 )
+
+py_library(
+  name = "correlated_beacons",
+  srcs = ["correlated_beacons.py"],
+  deps = [
+    requirement("numpy"),
+    requirement("scipy"),
+  ]
+)
+
+py_test(
+  name = "correlated_beacons_test",
+  srcs = ["correlated_beacons_test.py"],
+  deps = [
+    ":correlated_beacons",
+  ]
+)
