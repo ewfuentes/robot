@@ -22,6 +22,10 @@ class BeaconPotential(NamedTuple):
     bias: float
 
     def log_prob(self, assignments: dict[int, bool]) -> float:
+        """Compute the log probability of the given configuration
+
+        Note that this function will assert if one of the members isn't given an assignment
+        """
         input_list = []
         for member in self.members:
             assert member in assignments
@@ -30,6 +34,7 @@ class BeaconPotential(NamedTuple):
         return (input_array @ self.covariance @ input_array.T + self.bias)[0, 0]
 
     def __mul__(self, other: BeaconPotential) -> BeaconPotential:
+        """Combine two beacon potentials"""
         assert set(self.members).isdisjoint(
             set(other.members)
         ), rf"members should be disjoint but self /\ other = {set(self.members) & set(other.members)}"
@@ -78,6 +83,7 @@ def create_correlated_beacons(clique: BeaconClique) -> BeaconPotential:
     # the log probability of no beacons being present
     bias = np.log(p_no_beacon)
 
+    # Note that this distribution is normalized by construction.
     return BeaconPotential(
         members=clique.members,
         covariance=covar,
