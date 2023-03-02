@@ -422,6 +422,7 @@ py_test(
   name = "correlated_beacons_test",
   srcs = ["correlated_beacons_test.py"],
   deps = [
+    requirement("numpy"),
     ":correlated_beacons",
   ]
 )

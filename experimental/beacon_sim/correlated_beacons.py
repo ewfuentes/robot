@@ -16,10 +16,21 @@ class BeaconPotential(NamedTuple):
     members: list[int]
     covariance: np.ndarray
     bias: float
-    log_normalizer: float
+
+    def log_prob(self, assignments: dict[int, bool]) -> float:
+        input_list = []
+        for member in self.members:
+            assert member in assignments
+            input_list.append(int(assignments[member]))
+        input_array = np.array(input_list, ndmin=2)
+        print(self.covariance)
+        print(self.bias)
+        return (input_array @ self.covariance @ input_array.T + self.bias)[0, 0]
+
+
 
 def create_correlated_beacons(clique: BeaconClique) -> BeaconPotential:
-    assert clique.p_all_beacons <= clique.p_beacon, 'Probability of all beacons must be less than marginal probability'
+    assert clique.p_all_beacons < clique.p_beacon, 'Probability of all beacons must be less than marginal probability'
 
     n = len(clique.members)
 
@@ -31,12 +42,9 @@ def create_correlated_beacons(clique: BeaconClique) -> BeaconPotential:
     covar = np.eye(n) * diag + (np.ones((n,n)) - np.eye(n)) * off_diag / 2
     bias = np.log(p_no_beacon)
 
-    log_normalizer = 2**n * (bias + diag) + 2**(n-2) * off_diag
-
     return BeaconPotential(
         members=clique.members,
         covariance=covar,
         bias=bias,
-        log_normalizer=log_normalizer,
     )
 
