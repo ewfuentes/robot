@@ -30,16 +30,36 @@ class BeaconPotential(NamedTuple):
 
 
 def create_correlated_beacons(clique: BeaconClique) -> BeaconPotential:
-    assert clique.p_all_beacons < clique.p_beacon, 'Probability of all beacons must be less than marginal probability'
+    assert clique.p_beacon >= 0 and clique.p_beacon <= 1.0
+    # For a beacon clique, all beacons have the same pairwise interactions.
+    # For a beacon pair, they can either both be present, both be absent, or one of
+    # the two is present. Denote these configurations as {00, 11, 01, 10}. Then
+    # the marginal probability of the first beacon being present is:
+    # p_beacon = p_10 + p_11
+    # The probability of both beacons being present is p_11 = p_all_beacons.
+    # For this reason, we must ensure that p_11 < p_beacon.
+    assert (
+        clique.p_all_beacons < clique.p_beacon
+    ), "Probability of all beacons must be less than marginal probability"
 
     n = len(clique.members)
 
-    p_single_beacon = clique.p_beacon - clique.p_all_beacons
-    p_no_beacon = 1 - (clique.p_beacon + p_single_beacon)
-    off_diag = np.log(p_no_beacon * clique.p_all_beacons / p_single_beacon**2)
-    diag = np.log(p_single_beacon / p_no_beacon)
+    # Expressed in exponential form, the distribution is:
+    # exp(log(p_00) + x1 * log(p_10/p_00) + x2 * log(p_01/p_00) + x1 * x2 * log(p_00 * p_11 / (p_01 * p_10)))
+    # In matrix form:
+    # exp( [x1 x2] [[                      log(p_10 / p_00) 0.5 * log(p_00 * p_11 / (p_01 * p_10))] [[x1] + log(p_00))
+    #               [0.5 * log(p_00 * p_11 / (p_01 * p_10))                       log(p_01 / p_00)]] [x2]]
 
-    covar = np.eye(n) * diag + (np.ones((n,n)) - np.eye(n)) * off_diag / 2
+    # Compute p_01 = p_10 = p_11 + p_01 - p_11
+    p_single_beacon = clique.p_beacon - clique.p_all_beacons
+    # compute p_00 = 1 - p_01 - p_11 - p_10
+    p_no_beacon = 1 - (clique.p_beacon + p_single_beacon)
+    # compute the diagonal and off diagonal terms of the matrix above
+    off_diag = np.log(p_no_beacon * clique.p_all_beacons / p_single_beacon ** 2)
+    diag = np.log(p_single_beacon / p_no_beacon)
+    covar = np.eye(n) * diag + (np.ones((n, n)) - np.eye(n)) * off_diag / 2
+
+    # the log probability of no beacons being present
     bias = np.log(p_no_beacon)
 
     return BeaconPotential(
@@ -47,4 +67,3 @@ def create_correlated_beacons(clique: BeaconClique) -> BeaconPotential:
         covariance=covar,
         bias=bias,
     )
-
