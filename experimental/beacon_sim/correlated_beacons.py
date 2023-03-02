@@ -1,16 +1,20 @@
+from __future__ import annotations
 
 import numpy as np
 from typing import NamedTuple
 
+
 class BeaconClique(NamedTuple):
-    '''
+    """
     This represents a set of beacons that are correlated in appearance
-    '''
+    """
+
     # The marginal probability of each beacon being present
     p_beacon: float
     # The probability of all pair of beacons being present
     p_all_beacons: float
     members: list[int]
+
 
 class BeaconPotential(NamedTuple):
     members: list[int]
@@ -23,10 +27,22 @@ class BeaconPotential(NamedTuple):
             assert member in assignments
             input_list.append(int(assignments[member]))
         input_array = np.array(input_list, ndmin=2)
-        print(self.covariance)
-        print(self.bias)
         return (input_array @ self.covariance @ input_array.T + self.bias)[0, 0]
 
+    def __mul__(self, other: BeaconPotential) -> BeaconPotential:
+        assert set(self.members).isdisjoint(
+            set(other.members)
+        ), rf"members should be disjoint but self /\ other = {set(self.members) & set(other.members)}"
+        n = len(self.members)
+        m = len(other.members)
+
+        new_covar = np.zeros((n + m, n + m))
+        new_covar[:n, :n] = self.covariance
+        new_covar[-m:, -m:] = other.covariance
+        new_bias = self.bias + other.bias
+        return BeaconPotential(
+            members=self.members + other.members, covariance=new_covar, bias=new_bias
+        )
 
 
 def create_correlated_beacons(clique: BeaconClique) -> BeaconPotential:

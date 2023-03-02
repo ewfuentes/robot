@@ -54,5 +54,58 @@ class CorrelatedBeaconsTest(unittest.TestCase):
         self.assertAlmostEqual(p_01, p_10, places=6)
         self.assertAlmostEqual(p_00 + p_01 + p_10 + p_11, 1.0, places=6)
 
+    def test_cannot_join_distributions_with_common_members(self):
+        # Setup
+        p_beacon = 0.75
+        p_together = p_beacon - 0.01
+        clique_1 = cb.BeaconClique(
+            p_beacon=p_beacon, p_all_beacons=p_together, members=[1, 2]
+        )
+        clique_2 = cb.BeaconClique(
+            p_beacon=p_beacon, p_all_beacons=p_together, members=[2, 3]
+        )
+
+        # Action + Verification
+        pot_1 = cb.create_correlated_beacons(clique_1)
+        pot_2 = cb.create_correlated_beacons(clique_2)
+        with self.assertRaises(AssertionError):
+            combined_pot = pot_1 * pot_2
+
+    def test_combined_distributions(self):
+        # Setup
+        # Create a clique that are positively correlated
+        p_beacon = 0.75
+        p_together = p_beacon - 0.001
+        clique_1 = cb.BeaconClique(
+            p_beacon=p_beacon, p_all_beacons=p_together, members=[1, 2]
+        )
+        # Create a clique that is negatively correlated
+        p_beacon = 0.5
+        p_together = 0.001
+        clique_2 = cb.BeaconClique(
+            p_beacon=p_beacon, p_all_beacons=p_together, members=[10, 11]
+        )
+
+        # Action
+        pot_1 = cb.create_correlated_beacons(clique_1)
+        pot_2 = cb.create_correlated_beacons(clique_2)
+        combined_pot = pot_1 * pot_2
+
+        # Verification
+        # Test an unlikely scenario, the first clique being different the second being the same
+        self.assertAlmostEqual(
+            np.exp(combined_pot.log_prob({1: True, 2: False, 10: False, 11: False})),
+            0.0,
+            places=3,
+        )
+
+        # Expect symmetry in the second clique
+        self.assertAlmostEqual(
+            np.exp(combined_pot.log_prob({1: True, 2: True, 10: True, 11: False})),
+            np.exp(combined_pot.log_prob({1: True, 2: True, 10: False, 11: True})),
+            places=6,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
