@@ -2,17 +2,19 @@ from __future__ import annotations
 
 import numpy as np
 from typing import NamedTuple
+from scipy import optimize, special
+import math
 
 
 class BeaconClique(NamedTuple):
     """
     This represents a set of beacons that are correlated in appearance
     """
-
-    # The marginal probability of each beacon being present
+    # The marginal probability of a beacon
     p_beacon: float
-    # The probability of all pair of beacons being present
-    p_all_beacons: float
+    # The probability that all beacons are gone
+    p_no_beacon: float
+
     members: list[int]
 
 
@@ -52,36 +54,36 @@ class BeaconPotential(NamedTuple):
 
 def create_correlated_beacons(clique: BeaconClique) -> BeaconPotential:
     assert clique.p_beacon >= 0 and clique.p_beacon <= 1.0
-    # For a beacon clique, all beacons have the same pairwise interactions.
-    # For a beacon pair, they can either both be present, both be absent, or one of
-    # the two is present. Denote these configurations as {00, 11, 01, 10}. Then
-    # the marginal probability of the first beacon being present is:
-    # p_beacon = p_10 + p_11
-    # The probability of both beacons being present is p_11 = p_all_beacons.
-    # For this reason, we must ensure that p_11 < p_beacon.
-    assert (
-        clique.p_all_beacons < clique.p_beacon
-    ), "Probability of all beacons must be less than marginal probability"
+    assert clique.p_no_beacon >= 0 and clique.p_no_beacon <= 1.0
 
     n = len(clique.members)
 
-    # Expressed in exponential form, the distribution is:
-    # exp(log(p_00) + x1 * log(p_10/p_00) + x2 * log(p_01/p_00) + x1 * x2 * log(p_00 * p_11 / (p_01 * p_10)))
-    # In matrix form:
-    # exp( [x1 x2] [[                      log(p_10 / p_00) 0.5 * log(p_00 * p_11 / (p_01 * p_10))] [[x1] + log(p_00))
-    #               [0.5 * log(p_00 * p_11 / (p_01 * p_10))                       log(p_01 / p_00)]] [x2]]
+    def log_marginal_prob(phi: float, psi: float):
+        def kth_term(n: int, k: int, phi: float, psi: float) -> float:
+            return np.log(math.comb(n, k)) + (k+1) * phi + (k+1) * k / 2 * psi + np.log(clique.p_no_beacon)
+        return special.logsumexp([kth_term(n-1, k, phi, psi) for k in range(n)])
 
-    # Compute p_01 = p_10 = p_11 + p_01 - p_11
-    p_single_beacon = clique.p_beacon - clique.p_all_beacons
-    # compute p_00 = 1 - p_01 - p_11 - p_10
-    p_no_beacon = 1 - (clique.p_beacon + p_single_beacon)
-    # compute the diagonal and off diagonal terms of the matrix above
-    off_diag = np.log(p_no_beacon * clique.p_all_beacons / p_single_beacon ** 2)
-    diag = np.log(p_single_beacon / p_no_beacon)
-    covar = np.eye(n) * diag + (np.ones((n, n)) - np.eye(n)) * off_diag / 2
+    def log_total_prob(phi: float, psi: float):
+        def kth_term(n: int, k: int, phi: float, psi: float) -> float:
+            return np.log(math.comb(n, k)) + k * phi + (k-1) * k / 2 * psi + np.log(clique.p_no_beacon)
+        return special.logsumexp([kth_term(n, k, phi, psi) for k in range(n+1)])
+
+    def loss(x):
+        return ((np.log(clique.p_beacon) - log_marginal_prob(x[0], x[1])) ** 2
+                + log_total_prob(x[0], x[1]) ** 2)
+
+    result = optimize.minimize(loss, (1.0, 1.0), tol=1e-12, method='nelder-mead')
+    assert result.success, f'Failed to find distribution that matches desiderata: {result}'
+    assert result.fun < 1e-6, f'Can\'t satisfy total probability constraint or desired marginal probability: {result}'
+
+    phi, psi = result.x
+    off_diag = psi
+    diag = phi
+    off_diag_entries = np.ones((n, n)) - np.eye(n)
+    covar = np.eye(n) * diag + off_diag_entries * off_diag / 2
 
     # the log probability of no beacons being present
-    bias = np.log(p_no_beacon)
+    bias = np.log(clique.p_no_beacon)
 
     # Note that this distribution is normalized by construction.
     return BeaconPotential(
