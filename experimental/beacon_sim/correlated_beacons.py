@@ -58,22 +58,46 @@ def create_correlated_beacons(clique: BeaconClique) -> BeaconPotential:
 
     n = len(clique.members)
 
+    # We use an ising model to model the interactions between beacons. However, it can be hard to
+    # make global statements from a model that works locally. To work around this, we setup an
+    # optimization problem where the parameters are tweaked until the global conditions are
+    # satisfied.
+
+    # In an ising model, the probability of a configuration can be expressed as:
+    # P(x) = exp[x.T @ C + x + log(p_no_beacon)], where C is a symmetric matrix and x is a boolean
+    # vector where the i'th entry expresses if the i'th beacon is present or not.
+
+    # This compute the marginal probability of some arbitrary beacon being present.
     def log_marginal_prob(phi: float, psi: float):
         def kth_term(n: int, k: int, phi: float, psi: float) -> float:
+            # compute log(nCr(n, k) * exp[x.T @ C @ x + np.log(p_no_beacon)])
+            # n is the number of other beacons that exist and k is the number of other beacons that
+            # present. We then have k+1 diagonal terms and (k+1)*k/2 edges where both nodes are
+            # present, including the one that we are computing the probability for.
             return np.log(math.comb(n, k)) + (k+1) * phi + (k+1) * k / 2 * psi + np.log(clique.p_no_beacon)
+        # Since one beacon is already present, we go through [0, n-1] other beacons being present
         return special.logsumexp([kth_term(n-1, k, phi, psi) for k in range(n)])
 
+    # This computes the sum of the probability of all configurations
     def log_total_prob(phi: float, psi: float):
         def kth_term(n: int, k: int, phi: float, psi: float) -> float:
             return np.log(math.comb(n, k)) + k * phi + (k-1) * k / 2 * psi + np.log(clique.p_no_beacon)
         return special.logsumexp([kth_term(n, k, phi, psi) for k in range(n+1)])
 
     def loss(x):
+        # The first term ensures that the marginal probability "constraint" is satisfied
+        # The second term ensures that the total probability is log(1) = 0.
         return ((np.log(clique.p_beacon) - log_marginal_prob(x[0], x[1])) ** 2
                 + log_total_prob(x[0], x[1]) ** 2)
 
+    # I worked with the log probabilities because I thought that it would be easier to optimize,
+    # but BFGS tended to fail for reasons unknown. I found that nelder-mead, a derivative free
+    # worked well enough. These methods tend to fail when the number of decision variables gets to
+    # be too high, but we've only got two, so no trouble here.
     result = optimize.minimize(loss, (1.0, 1.0), tol=1e-12, method='nelder-mead')
     assert result.success, f'Failed to find distribution that matches desiderata: {result}'
+    # Our costs (beacon marginal and total probability = 1) are actually constraints. Only accept
+    # solutions if the costs are near zero.
     assert result.fun < 1e-6, f'Can\'t satisfy total probability constraint or desired marginal probability: {result}'
 
     phi, psi = result.x
