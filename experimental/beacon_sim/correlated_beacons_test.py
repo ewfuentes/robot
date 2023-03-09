@@ -54,7 +54,7 @@ class CorrelatedBeaconsTest(unittest.TestCase):
         self.assertAlmostEqual(
             p_000 + p_001 + p_010 + p_011 + p_100 + p_101 + p_110 + p_111, 1.0, places=6
         )
-        self.assertAlmostEqual(p_00, p_no_beacons, places=6)
+        self.assertAlmostEqual(p_000, p_no_beacons, places=6)
         self.assertAlmostEqual(p_001 + p_011 + p_101 + p_111, 0.75, places=6)
         self.assertAlmostEqual(p_010 + p_011 + p_110 + p_111, 0.75, places=6)
         self.assertAlmostEqual(p_100 + p_101 + p_110 + p_111, 0.75, places=6)
