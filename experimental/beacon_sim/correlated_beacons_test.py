@@ -8,10 +8,10 @@ class CorrelatedBeaconsTest(unittest.TestCase):
     def test_independent_beacons(self):
         # Setup
         p_beacon = 0.75
-        p_no_beacon = (1 - p_beacon) ** 2
+        p_no_beacons = (1 - p_beacon) ** 2
         bc = cb.BeaconClique(
             p_beacon=p_beacon,
-            p_no_beacon=p_no_beacon,
+            p_no_beacons=p_no_beacons,
             members=[1, 2],
         )
         # Action
@@ -23,6 +23,7 @@ class CorrelatedBeaconsTest(unittest.TestCase):
         p_11 = np.exp(beacon_pot.log_prob({1: True, 2: True}))
 
         # Verification
+        self.assertAlmostEqual(p_00, p_no_beacons, places=6)
         self.assertAlmostEqual(p_01 + p_11, 0.75, places=6)
         self.assertAlmostEqual(p_10 + p_11, 0.75, places=6)
         self.assertAlmostEqual(p_01, p_10, places=6)
@@ -31,10 +32,10 @@ class CorrelatedBeaconsTest(unittest.TestCase):
     def test_three_independent_beacons(self):
         # Setup
         p_beacon = 0.75
-        p_no_beacon = (1 - p_beacon) ** 3
+        p_no_beacons = (1 - p_beacon) ** 3
         bc = cb.BeaconClique(
             p_beacon=p_beacon,
-            p_no_beacon=p_no_beacon,
+            p_no_beacons=p_no_beacons,
             members=[1, 2, 3],
         )
         # Action
@@ -53,6 +54,7 @@ class CorrelatedBeaconsTest(unittest.TestCase):
         self.assertAlmostEqual(
             p_000 + p_001 + p_010 + p_011 + p_100 + p_101 + p_110 + p_111, 1.0, places=6
         )
+        self.assertAlmostEqual(p_00, p_no_beacons, places=6)
         self.assertAlmostEqual(p_001 + p_011 + p_101 + p_111, 0.75, places=6)
         self.assertAlmostEqual(p_010 + p_011 + p_110 + p_111, 0.75, places=6)
         self.assertAlmostEqual(p_100 + p_101 + p_110 + p_111, 0.75, places=6)
@@ -64,10 +66,10 @@ class CorrelatedBeaconsTest(unittest.TestCase):
     def test_correlated_beacons(self):
         # Setup
         p_beacon = 0.75
-        p_no_beacon = 0.1
+        p_no_beacons = 0.1
         bc = cb.BeaconClique(
             p_beacon=p_beacon,
-            p_no_beacon=p_no_beacon,
+            p_no_beacons=p_no_beacons,
             members=[1, 2],
         )
         # Action
@@ -79,7 +81,7 @@ class CorrelatedBeaconsTest(unittest.TestCase):
         p_11 = np.exp(beacon_pot.log_prob({1: True, 2: True}))
 
         # Verification
-        self.assertAlmostEqual(p_00, p_no_beacon, places=6)
+        self.assertAlmostEqual(p_00, p_no_beacons, places=6)
         self.assertAlmostEqual(p_00 + p_01 + p_10 + p_11, 1.0, places=6)
         self.assertAlmostEqual(p_01 + p_11, p_beacon, places=6)
         self.assertAlmostEqual(p_10 + p_11, p_beacon, places=6)
@@ -88,15 +90,15 @@ class CorrelatedBeaconsTest(unittest.TestCase):
     def test_cannot_join_distributions_with_common_members(self):
         # Setup
         p_beacon = 0.75
-        p_no_beacon = (1 - p_beacon) ** 2
+        p_no_beacons = (1 - p_beacon) ** 2
         clique_1 = cb.BeaconClique(
             p_beacon=p_beacon,
-            p_no_beacon=p_no_beacon,
+            p_no_beacons=p_no_beacons,
             members=[1, 2],
         )
         clique_2 = cb.BeaconClique(
             p_beacon=p_beacon,
-            p_no_beacon=p_no_beacon,
+            p_no_beacons=p_no_beacons,
             members=[2, 3],
         )
 
@@ -110,18 +112,18 @@ class CorrelatedBeaconsTest(unittest.TestCase):
         # Setup
         # Create a clique that are positively correlated
         p_beacon = 0.75
-        p_no_beacon = 0.1
+        p_no_beacons = 0.1
         clique_1 = cb.BeaconClique(
             p_beacon=p_beacon,
-            p_no_beacon=p_no_beacon,
+            p_no_beacons=p_no_beacons,
             members=[1, 2],
         )
         # Create a clique that is negatively correlated
         p_beacon = 0.5
-        p_no_beacon = 0.001
+        p_no_beacons = 0.001
         clique_2 = cb.BeaconClique(
             p_beacon=p_beacon,
-            p_no_beacon=p_no_beacon,
+            p_no_beacons=p_no_beacons,
             members=[10, 11],
         )
 
@@ -129,7 +131,6 @@ class CorrelatedBeaconsTest(unittest.TestCase):
         pot_1 = cb.create_correlated_beacons(clique_1)
         pot_2 = cb.create_correlated_beacons(clique_2)
         combined_pot = pot_1 * pot_2
-
         # Verification
         # Test an unlikely scenario, the first clique being different the second being the same
         self.assertAlmostEqual(

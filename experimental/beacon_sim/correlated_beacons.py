@@ -8,12 +8,12 @@ import math
 
 class BeaconClique(NamedTuple):
     """
-    This represents a set of beacons that are correlated in appearance
+    This represents a set of beacons that are correlated in their presence/absence
     """
-    # The marginal probability of a beacon
+    # The marginal probability of a single beacon within the clique
     p_beacon: float
-    # The probability that all beacons are gone
-    p_no_beacon: float
+    # The probability that all beacons within the clique are absent
+    p_no_beacons: float
 
     members: list[int]
 
@@ -36,7 +36,7 @@ class BeaconPotential(NamedTuple):
         return (input_array @ self.covariance @ input_array.T + self.bias)[0, 0]
 
     def __mul__(self, other: BeaconPotential) -> BeaconPotential:
-        """Combine two beacon potentials"""
+        """Combine two independent beacon potentials"""
         assert set(self.members).isdisjoint(
             set(other.members)
         ), rf"members should be disjoint but self /\ other = {set(self.members) & set(other.members)}"
@@ -54,7 +54,7 @@ class BeaconPotential(NamedTuple):
 
 def create_correlated_beacons(clique: BeaconClique) -> BeaconPotential:
     assert clique.p_beacon >= 0 and clique.p_beacon <= 1.0
-    assert clique.p_no_beacon >= 0 and clique.p_no_beacon <= 1.0
+    assert clique.p_no_beacons >= 0 and clique.p_no_beacons <= 1.0
 
     n = len(clique.members)
 
@@ -64,24 +64,24 @@ def create_correlated_beacons(clique: BeaconClique) -> BeaconPotential:
     # satisfied.
 
     # In an ising model, the probability of a configuration can be expressed as:
-    # P(x) = exp[x.T @ C + x + log(p_no_beacon)], where C is a symmetric matrix and x is a boolean
+    # P(x) = exp[x.T @ C + x + log(p_no_beacons)], where C is a symmetric matrix and x is a boolean
     # vector where the i'th entry expresses if the i'th beacon is present or not.
 
     # This compute the marginal probability of some arbitrary beacon being present.
     def log_marginal_prob(phi: float, psi: float):
         def kth_term(n: int, k: int, phi: float, psi: float) -> float:
-            # compute log(nCr(n, k) * exp[x.T @ C @ x + np.log(p_no_beacon)])
+            # compute log(nCr(n, k) * exp[x.T @ C @ x + np.log(p_no_beacons)])
             # n is the number of other beacons that exist and k is the number of other beacons that
             # present. We then have k+1 diagonal terms and (k+1)*k/2 edges where both nodes are
             # present, including the one that we are computing the probability for.
-            return np.log(math.comb(n, k)) + (k+1) * phi + (k+1) * k / 2 * psi + np.log(clique.p_no_beacon)
+            return np.log(math.comb(n, k)) + (k+1) * phi + (k+1) * k / 2 * psi + np.log(clique.p_no_beacons)
         # Since one beacon is already present, we go through [0, n-1] other beacons being present
         return special.logsumexp([kth_term(n-1, k, phi, psi) for k in range(n)])
 
     # This computes the sum of the probability of all configurations
     def log_total_prob(phi: float, psi: float):
         def kth_term(n: int, k: int, phi: float, psi: float) -> float:
-            return np.log(math.comb(n, k)) + k * phi + (k-1) * k / 2 * psi + np.log(clique.p_no_beacon)
+            return np.log(math.comb(n, k)) + k * phi + (k-1) * k / 2 * psi + np.log(clique.p_no_beacons)
         return special.logsumexp([kth_term(n, k, phi, psi) for k in range(n+1)])
 
     def loss(x):
@@ -107,7 +107,7 @@ def create_correlated_beacons(clique: BeaconClique) -> BeaconPotential:
     covar = np.eye(n) * diag + off_diag_entries * off_diag / 2
 
     # the log probability of no beacons being present
-    bias = np.log(clique.p_no_beacon)
+    bias = np.log(clique.p_no_beacons)
 
     # Note that this distribution is normalized by construction.
     return BeaconPotential(
