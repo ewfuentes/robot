@@ -13,7 +13,8 @@ py_binary(
     requirement("pandas"),
     requirement("scikit-learn"),
     requirement("tqdm"),
-    "//experimental/beacon_sim:plot_trials"
+    "//experimental/beacon_sim:plot_trials",
+    "//experimental/beacon_sim:correlated_beacons",
   ],
 )
 

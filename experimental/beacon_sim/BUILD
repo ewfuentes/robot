@@ -412,6 +412,7 @@ py_binary(
 py_library(
   name = "correlated_beacons",
   srcs = ["correlated_beacons.py"],
+  visibility=["//common/python:__subpackages__",],
   deps = [
     requirement("numpy"),
     requirement("scipy"),
