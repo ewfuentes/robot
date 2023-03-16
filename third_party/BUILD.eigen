@@ -16,7 +16,8 @@ cc_library(
     "Eigen/KLUSupport",
     "Eigen/LU",
     "Eigen/MetisSupport",
-    "Eigen/OrderingMethods", "Eigen/PardisoSupport",
+    "Eigen/OrderingMethods",
+    "Eigen/PardisoSupport",
     "Eigen/PaStiXSupport",
     "Eigen/QR",
     "Eigen/QtAlignedMalloc",
@@ -34,6 +35,8 @@ cc_library(
     "Eigen/UmfPackSupport",
   ],
   srcs = glob(["Eigen/src/**/*"]),
+  # Other third party dependencies often pull in Eigen using angle brackets
+  # This makes it so that Eigen is available at both "Eigen/Core" and <Eigen/Core>
   includes=[""],
 )
 

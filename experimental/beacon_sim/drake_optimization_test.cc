@@ -1,5 +1,4 @@
 
-#include <iostream>
 #include "drake/solvers/mathematical_program.h"
 #include "drake/solvers/solve.h"
 #include "drake/common/symbolic/expression.h"

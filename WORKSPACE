@@ -192,8 +192,3 @@ http_archive(
   build_file="@//third_party:BUILD.drake",
   sha256 = "1ac9f48e0d8dd38c742c1ddb6d4d7ede05ecb67b2278cdac3b9d7ee6eed8545c",
 )
-
-
-
-
-
