@@ -5,10 +5,10 @@ cc_library(
   name = "libfmt",
   hdrs = FMT_HEADERS,
   srcs = [
-    "src/fmt.cc",
     "src/format.cc",
     "src/os.cc",
   ],
+  visibility=["//visibility:public"],
   strip_include_prefix="include",
   includes = [""],
   deps = [],
