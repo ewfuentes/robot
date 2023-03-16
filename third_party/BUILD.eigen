@@ -16,8 +16,7 @@ cc_library(
     "Eigen/KLUSupport",
     "Eigen/LU",
     "Eigen/MetisSupport",
-    "Eigen/OrderingMethods",
-    "Eigen/PardisoSupport",
+    "Eigen/OrderingMethods", "Eigen/PardisoSupport",
     "Eigen/PaStiXSupport",
     "Eigen/QR",
     "Eigen/QtAlignedMalloc",
@@ -34,5 +33,25 @@ cc_library(
     "Eigen/SVD",
     "Eigen/UmfPackSupport",
   ],
-  srcs = glob(["Eigen/src/**/*"])
+  srcs = glob(["Eigen/src/**/*"]),
+  includes=[""],
+)
+
+cc_library(
+  name = "eigen_unsupported",
+  visibility=["//visibility:public"],
+  hdrs = [
+    "unsupported/Eigen/AutoDiff",
+    "unsupported/Eigen/Polynomials",
+  ],
+  srcs = [
+    "unsupported/Eigen/src/AutoDiff/AutoDiffScalar.h",
+    "unsupported/Eigen/src/AutoDiff/AutoDiffJacobian.h",
+    "unsupported/Eigen/src/Polynomials/Companion.h",
+    "unsupported/Eigen/src/Polynomials/PolynomialUtils.h",
+    "unsupported/Eigen/src/Polynomials/PolynomialSolver.h",
+  ],
+  deps = [
+    ":eigen",
+  ]
 )

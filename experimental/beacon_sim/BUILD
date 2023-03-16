@@ -426,3 +426,12 @@ py_test(
     ":correlated_beacons",
   ]
 )
+
+cc_test(
+  name = "drake_optimization_test",
+  srcs = ["drake_optimization_test.cc"],
+  deps = [
+    "@com_google_googletest//:gtest_main",
+    "@drake//:libdrake",
+  ]
+)
