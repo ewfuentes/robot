@@ -1,0 +1,15 @@
+
+FMT_HEADERS = glob(["include/fmt/*.h"])
+
+cc_library(
+  name = "libfmt",
+  hdrs = FMT_HEADERS,
+  srcs = [
+    "src/fmt.cc",
+    "src/format.cc",
+    "src/os.cc",
+  ],
+  strip_include_prefix="include",
+  includes = [""],
+  deps = [],
+)

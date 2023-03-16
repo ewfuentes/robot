@@ -186,6 +186,14 @@ http_archive(
 )
 
 http_archive(
+  name = "fmt",
+  url = "https://github.com/fmtlib/fmt/archive/refs/tags/9.1.0.zip",
+  strip_prefix="fmt-9.1.0",
+  build_file="@//third_party:BUILD.fmt",
+  sha256 = "cdc885473510ae0ea909b5589367f8da784df8b00325c55c7cbbab3058424120",
+)
+
+http_archive(
   name = "drake",
   url = "https://github.com/RobotLocomotion/drake/releases/download/v1.14.0/drake-20230315-jammy.tar.gz",
   strip_prefix="drake",
