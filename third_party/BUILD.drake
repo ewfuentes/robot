@@ -2,7 +2,7 @@
 DRAKE_HEADERS = glob(["include/drake/**/*.h"])
 
 cc_library(
-  name = "libdrake",
+  name = "drake",
   hdrs = DRAKE_HEADERS,
   visibility = ["//visibility:public"],
   strip_include_prefix = "include",
@@ -16,6 +16,5 @@ cc_library(
   deps=[
     "@eigen//:eigen",
     "@eigen//:eigen_unsupported",
-    "@fmt//:libfmt",
   ]
 )
