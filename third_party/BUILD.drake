@@ -1,0 +1,20 @@
+
+DRAKE_HEADERS = glob(["include/drake/**/*.h"])
+
+cc_library(
+  name = "drake",
+  hdrs = DRAKE_HEADERS,
+  visibility = ["//visibility:public"],
+  strip_include_prefix = "include",
+  srcs=[
+    "lib/libdrake.so",
+    "lib/libdrake_lcm.so",
+    "lib/libdrake_marker.so",
+    "lib/libmosek64.so.10.0",
+    "lib/libtbb.so.12.6",
+  ],
+  deps=[
+    "@eigen//:eigen",
+    "@eigen//:eigen_unsupported",
+  ]
+)
