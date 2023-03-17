@@ -1,5 +1,6 @@
 load("@pip//:requirements.bzl", "requirement")
 load("//common/proto:proto.bzl", "multi_proto_library")
+load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
 
 multi_proto_library(
   name = "sim_log_proto",
@@ -409,8 +410,25 @@ py_binary(
   ]
 )
 
-py_library(
+cc_library(
   name = "correlated_beacons",
+  hdrs = ["correlated_beacons.hh"],
+  srcs = ["correlated_beacons.cc"],
+  deps = [
+    "@eigen//:eigen",
+  ]
+)
+
+pybind_extension(
+  name = "correlated_beacons_python",
+  srcs = ["correlated_beacons_python.cc"],
+  deps = [
+    ":correlated_beacons",
+  ]
+)
+
+py_library(
+  name = "correlated_beacons_py",
   srcs = ["correlated_beacons.py"],
   visibility=["//common/python:__subpackages__",],
   deps = [
@@ -422,9 +440,12 @@ py_library(
 py_test(
   name = "correlated_beacons_test",
   srcs = ["correlated_beacons_test.py"],
+  data = [
+    ":correlated_beacons_python.so",
+  ],
   deps = [
     requirement("numpy"),
-    ":correlated_beacons",
+    ":correlated_beacons_py",
   ]
 )
 

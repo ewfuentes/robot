@@ -1,7 +1,7 @@
 import unittest
 import numpy as np
 
-from experimental.beacon_sim import correlated_beacons as cb
+from experimental.beacon_sim import correlated_beacons_python as cb
 
 
 class CorrelatedBeaconsTest(unittest.TestCase):
