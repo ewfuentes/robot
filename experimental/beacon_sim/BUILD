@@ -416,6 +416,7 @@ cc_library(
   srcs = ["correlated_beacons.cc"],
   deps = [
     "@eigen//:eigen",
+    "@drake//:drake",
   ]
 )
 

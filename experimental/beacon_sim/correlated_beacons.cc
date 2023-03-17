@@ -3,6 +3,8 @@
 
 #include <unordered_map>
 
+#include "drake/solvers/mathematical_program.h"
+
 namespace robot::experimental::beacon_sim {
 
 BeaconPotential::BeaconPotential(const Eigen::MatrixXd &covariance, const double bias,
@@ -18,6 +20,7 @@ BeaconPotential::BeaconPotential(const Eigen::MatrixXd &covariance, const double
 double BeaconPotential::log_prob(const std::unordered_map<int, bool> &) const { return 0.0; }
 
 BeaconPotential create_correlated_beacons(const BeaconClique &) {
+    drake::solvers::MathematicalProgram program;
     return BeaconPotential(Eigen::MatrixXd(), 0.0, {});
 }
 
