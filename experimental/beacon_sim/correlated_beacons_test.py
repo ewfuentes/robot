@@ -23,6 +23,8 @@ class CorrelatedBeaconsTest(unittest.TestCase):
         p_11 = np.exp(beacon_pot.log_prob({1: True, 2: True}))
 
         # Verification
+        print('p_no_beacon:', p_00)
+        print('p_marginal:', p_01 + p_11)
         self.assertAlmostEqual(p_00, p_no_beacons, places=6)
         self.assertAlmostEqual(p_01 + p_11, 0.75, places=6)
         self.assertAlmostEqual(p_10 + p_11, 0.75, places=6)

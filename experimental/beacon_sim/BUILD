@@ -417,12 +417,23 @@ cc_library(
   deps = [
     "@eigen//:eigen",
     "@drake//:drake",
+    "//common/math:n_choose_k",
+  ]
+)
+
+cc_test(
+  name = "correlated_beacons_test_cc",
+  srcs = ["correlated_beacons_test.cc"],
+  deps = [
+    "@com_google_googletest//:gtest_main",
+    ":correlated_beacons",
   ]
 )
 
 pybind_extension(
   name = "correlated_beacons_python",
   srcs = ["correlated_beacons_python.cc"],
+  visibility=["//common/python:__subpackages__"],
   deps = [
     ":correlated_beacons",
   ]
