@@ -1,0 +1,13 @@
+
+cc_library(
+  name = "assert",
+  hdrs = ["include/assert.hpp"],
+  srcs = [
+    "src/assert.cpp",
+    "third_party/magic_enum.hpp",
+  ],
+  copts = ["-I external/assert/include"],
+  include_prefix = "assert",
+  strip_include_prefix = "include",
+  visibility = ["//visibility:public"],
+)

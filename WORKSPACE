@@ -200,6 +200,14 @@ http_archive(
 )
 
 http_archive(
+  name = "assert",
+  url = "https://github.com/jeremy-rifkin/libassert/archive/9bd1faa21448953021b54cebce77862be5444b7e.zip",
+  build_file="@//third_party:BUILD.libassert",
+  strip_prefix="libassert-9bd1faa21448953021b54cebce77862be5444b7e",
+  sha256 = "3acedd8aceae934081f88570098d786db621cb0f003f6782ba1edf60c6b3eb86",
+)
+
+http_archive(
   name = "sophus_lie",
   urls = ["https://github.com/strasdat/Sophus/archive/refs/tags/1.22.4.zip"],
   strip_prefix= "Sophus-1.22.4",
@@ -268,6 +276,7 @@ http_archive(
   build_file_content="#",
   sha256="bc7259271c058d4ad68a898b9f2aeec44cbaa6e25a45eb0bfd57387905bdfca5",
 )
+
 load("@drake_lib//:share/drake/repo.bzl", "drake_repository")
 drake_repository(name="drake", excludes=["eigen", "fmt"])
 
