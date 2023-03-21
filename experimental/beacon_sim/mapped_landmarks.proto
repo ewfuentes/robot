@@ -2,7 +2,6 @@
 
 syntax = "proto3";
 
-import "experimental/beacon_sim/world_map_config.proto";
 import "common/math/matrix.proto";
 
 package robot.experimental.beacon_sim.proto;

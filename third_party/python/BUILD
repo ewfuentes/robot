@@ -6,6 +6,7 @@ load("@pip//:requirements.bzl", "requirement")
 compile_pip_requirements( name = "requirements",
   requirements_in="requirements.in",
   requirements_txt="requirements.txt",
+  timeout="moderate",
 )
 
 
