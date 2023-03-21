@@ -1,7 +1,7 @@
 import unittest
 import numpy as np
 
-from experimental.beacon_sim import correlated_beacons as cb
+from experimental.beacon_sim import correlated_beacons_python as cb
 
 
 class CorrelatedBeaconsTest(unittest.TestCase):
@@ -105,7 +105,7 @@ class CorrelatedBeaconsTest(unittest.TestCase):
         # Action + Verification
         pot_1 = cb.create_correlated_beacons(clique_1)
         pot_2 = cb.create_correlated_beacons(clique_2)
-        with self.assertRaises(AssertionError):
+        with self.assertRaises(RuntimeError):
             combined_pot = pot_1 * pot_2
 
     def test_combined_distributions(self):

@@ -5,6 +5,9 @@ load("@rules_python//python:defs.bzl", "py_binary")
 py_binary(
   name = "jupyter_notebook",
   srcs = ["jupyter_notebook.py"],
+  data = [
+    "//experimental/beacon_sim:correlated_beacons_python.so",
+  ],
   deps = [
     requirement("notebook"),
     requirement("matplotlib"),
@@ -14,7 +17,6 @@ py_binary(
     requirement("scikit-learn"),
     requirement("tqdm"),
     "//experimental/beacon_sim:plot_trials",
-    "//experimental/beacon_sim:correlated_beacons",
   ],
 )
 
