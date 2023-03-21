@@ -3,10 +3,6 @@
 
 #include "gtest/gtest.h"
 
-namespace robot::third_party {
 TEST(AssertTest, assert_test) {
-    // Action + Verification
-    VERIFY(false, "Expected true to be false");
+    ASSERT_THROW(VERIFY(false, "Expected true to be false"), libassert::verification_failure);
 }
-
-}  // namespace robot::third_party
