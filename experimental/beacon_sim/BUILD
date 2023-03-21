@@ -421,31 +421,12 @@ cc_library(
   ]
 )
 
-cc_test(
-  name = "correlated_beacons_test_cc",
-  srcs = ["correlated_beacons_test.cc"],
-  deps = [
-    "@com_google_googletest//:gtest_main",
-    ":correlated_beacons",
-  ]
-)
-
 pybind_extension(
   name = "correlated_beacons_python",
   srcs = ["correlated_beacons_python.cc"],
   visibility=["//common/python:__subpackages__"],
   deps = [
     ":correlated_beacons",
-  ]
-)
-
-py_library(
-  name = "correlated_beacons_py",
-  srcs = ["correlated_beacons.py"],
-  visibility=["//common/python:__subpackages__",],
-  deps = [
-    requirement("numpy"),
-    requirement("scipy"),
   ]
 )
 
@@ -457,7 +438,6 @@ py_test(
   ],
   deps = [
     requirement("numpy"),
-    ":correlated_beacons_py",
   ]
 )
 
