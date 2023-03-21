@@ -1,7 +1,8 @@
 
-#include "Eigen/Dense"
 #include <unordered_map>
 #include <vector>
+
+#include "Eigen/Dense"
 
 namespace robot::experimental::beacon_sim {
 
