@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <iterator>
 #include <numeric>
 #include <unordered_map>
 
@@ -58,7 +59,7 @@ drake::symbolic::Expression compute_total_log_prob(const int n,
 
     std::vector<drake::symbolic::Expression> terms;
     terms.reserve(n);
-    for (int k = 0; k < n+1; k++) {
+    for (int k = 0; k < n + 1; k++) {
         terms.push_back(kth_term(n, k));
     }
 
@@ -68,13 +69,20 @@ drake::symbolic::Expression compute_total_log_prob(const int n,
 
 BeaconPotential::BeaconPotential(const Eigen::MatrixXd &covariance, const double bias,
                                  const std::vector<int> &members)
-    : covariance_(covariance), bias_(bias), members_(members) {
-    (void)covariance_;
-    (void)bias_;
-    (void)members_;
-}
+    : covariance_(covariance), bias_(bias), members_(members) {}
 
-BeaconPotential BeaconPotential::operator*(const BeaconPotential &) { return *this; }
+BeaconPotential BeaconPotential::operator*(const BeaconPotential &other) {
+    const int my_size = members_.size();
+    const int other_size = other.members_.size();
+    const int new_size = my_size + other_size;
+    Eigen::MatrixXd new_cov = Eigen::MatrixXd::Zero(new_size, new_size);
+    new_cov.topLeftCorner(my_size, my_size) = covariance_;
+    new_cov.bottomRightCorner(other_size, other_size) = other.covariance_;
+    const double new_bias = bias_ + other.bias_;
+    std::vector<int> new_members(members_.begin(), members_.end());
+    new_members.insert(new_members.end(), other.members_.begin(), other.members_.end());
+    return BeaconPotential(new_cov, new_bias, new_members);
+}
 
 double BeaconPotential::log_prob(const std::unordered_map<int, bool> &assignment) const {
     Eigen::VectorXd x(members_.size());
@@ -105,16 +113,6 @@ BeaconPotential create_correlated_beacons(const BeaconClique &clique) {
 
     const auto result = Solve(program);
 
-    std::cout << "diag: " << result.GetSolution(diag)
-              << " off diag: " << result.GetSolution(off_diag)
-              << " bias: " << result.GetSolution(bias) << std::endl;
-
-    std::cout << "total log prog: "
-              << compute_total_log_prob(clique.members.size(), diag, off_diag, bias)
-                     .Evaluate({{diag, result.GetSolution(diag)},
-                                {off_diag, result.GetSolution(off_diag)},
-                                {bias, result.GetSolution(bias)}})
-              << std::endl;
     const int n = clique.members.size();
     Eigen::MatrixXd cov(n, n);
     for (int i = 0; i < n; i++) {
@@ -124,9 +122,6 @@ BeaconPotential create_correlated_beacons(const BeaconClique &clique) {
             cov(j, i) = result.GetSolution(off_diag) / 2.0;
         }
     }
-
-    std::cout << "Bias: " << result.GetSolution(bias) << std::endl;
-    std::cout << "cov: " << std::endl << cov << std::endl;
 
     return BeaconPotential(cov, result.GetSolution(bias), clique.members);
 }
