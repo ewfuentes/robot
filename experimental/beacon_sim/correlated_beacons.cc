@@ -6,6 +6,8 @@
 #include <iostream>
 #include <iterator>
 #include <numeric>
+#include <sstream>
+#include <stdexcept>
 #include <unordered_map>
 
 #include "common/math/n_choose_k.hh"
@@ -15,6 +17,21 @@
 namespace robot::experimental::beacon_sim {
 
 namespace {
+
+std::vector<int> sorted_vector(const std::vector<int> &in) {
+    std::vector<int> sorted_members = in;
+    std::sort(sorted_members.begin(), sorted_members.end());
+    return sorted_members;
+}
+
+std::vector<int> sorted_keys(const std::unordered_map<int, bool> &in) {
+    std::vector<int> items;
+    std::transform(in.begin(), in.end(), std::back_inserter(items),
+                   [](const auto &key_and_value) { return key_and_value.first; });
+    std::sort(items.begin(), items.end());
+    return items;
+}
+
 auto logsumexp(const auto &terms) {
     if (terms.size() == 1) {
         return terms[0];
@@ -72,6 +89,30 @@ BeaconPotential::BeaconPotential(const Eigen::MatrixXd &covariance, const double
     : covariance_(covariance), bias_(bias), members_(members) {}
 
 BeaconPotential BeaconPotential::operator*(const BeaconPotential &other) {
+    const std::vector<int> sorted_members = sorted_vector(members_);
+    const std::vector<int> other_sorted_members = sorted_vector(other.members_);
+
+    std::vector<int> common_elements;
+    std::set_intersection(sorted_members.begin(), sorted_members.end(),
+                          other_sorted_members.begin(), other_sorted_members.end(),
+                          std::back_inserter(common_elements));
+
+    if (!common_elements.empty()) {
+        std::ostringstream out;
+        out << "BeaconPotential::operator* cannot accept arguments with members common elements: {";
+        bool is_first = true;
+        for (const auto &key : common_elements) {
+            if (is_first) {
+                is_first = false;
+            } else {
+                out << ", ";
+            }
+            out << key;
+        }
+        out << "}";
+        throw std::runtime_error(out.str());
+    }
+
     const int my_size = members_.size();
     const int other_size = other.members_.size();
     const int new_size = my_size + other_size;
@@ -85,6 +126,28 @@ BeaconPotential BeaconPotential::operator*(const BeaconPotential &other) {
 }
 
 double BeaconPotential::log_prob(const std::unordered_map<int, bool> &assignment) const {
+    const std::vector<int> sorted_members = sorted_vector(members_);
+    const std::vector<int> keys = sorted_keys(assignment);
+    std::vector<int> missing_keys;
+    std::set_difference(sorted_members.begin(), sorted_members.end(), keys.begin(), keys.end(),
+                        std::back_inserter(missing_keys));
+
+    if (!missing_keys.empty()) {
+        std::ostringstream out;
+        out << "Missing keys from assignment {";
+        bool is_first = true;
+        for (const auto &key : missing_keys) {
+            if (is_first) {
+                is_first = false;
+            } else {
+                out << ", ";
+            }
+            out << key;
+        }
+        out << "}";
+        throw std::runtime_error(out.str());
+    }
+
     Eigen::VectorXd x(members_.size());
     for (int i = 0; i < static_cast<int>(members_.size()); i++) {
         x(i) = assignment.at(members_.at(i));
