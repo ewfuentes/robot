@@ -28,6 +28,10 @@ class BeaconPotential {
 
     BeaconPotential operator*(const BeaconPotential &other);
 
+    const Eigen::MatrixXd &covariance() const { return covariance_; };
+    double bias() const { return bias_; };
+    std::vector<int> members() const { return members_; };
+
    private:
     Eigen::MatrixXd covariance_;
     double bias_;

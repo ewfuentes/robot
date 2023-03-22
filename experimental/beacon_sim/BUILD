@@ -449,3 +449,29 @@ cc_test(
     "@drake//:drake",
   ]
 )
+
+multi_proto_library(
+  name = "correlated_beacons_proto",
+  srcs = ["correlated_beacons.proto"],
+  deps = ["//common/math:matrix_proto"],
+)
+
+cc_library(
+  name = "correlated_beacons_to_proto",
+  hdrs = ["correlated_beacons_to_proto.hh"],
+  srcs = ["correlated_beacons_to_proto.cc"],
+  deps = [
+    ":correlated_beacons",
+    ":correlated_beacons_proto",
+    "//common/math:matrix_to_proto",
+  ]
+)
+
+cc_test(
+  name = "correlated_beacons_to_proto_test",
+  srcs = ["correlated_beacons_to_proto_test.cc"],
+  deps = [
+    "@com_google_googletest//:gtest_main",
+    ":correlated_beacons_to_proto",
+  ]
+)
