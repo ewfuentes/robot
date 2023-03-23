@@ -41,6 +41,10 @@ struct BlinkingBeaconsConfig {
 struct CorrelatedBeaconsConfig {
     std::vector<Beacon> beacons;
     BeaconPotential potential;
+    // If configuration is specified, and the i'th entry is true, then the
+    // i'th beacon is present. If the configuration isn't specified, then
+    // a random configuration will be selected at map construction time.
+    std::optional<std::vector<bool>> configuration;
 };
 
 struct ObstaclesConfig {

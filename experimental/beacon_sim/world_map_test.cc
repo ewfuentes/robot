@@ -57,4 +57,24 @@ TEST(BeaconTest, blinking_beacon_test) {
         const auto beacons = map.visible_beacons(t);
     }
 }
+
+TEST(BeaconTest, correlated_beacon_test) {
+    // Setup
+  const BeaconPotential potential = create_correlated_beacons({.p_beacon = 0.7, .p_no_beacons = 0.2, .members = {1, 4, 7}});
+    const WorldMapConfig config = {
+        .fixed_beacons = {},
+        .blinking_beacons = {},
+        .correlated_beacons =
+            {
+                .beacons = {{.id = 1, .pos_in_local = {2.0, 3.0}},
+                            {.id = 4, .pos_in_local = {5.0, 6.0}},
+                            {.id = 7, .pos_in_local = {8.0, 9.0}}},
+                .potential = potential,
+                .configuration = {},
+            },
+        .obstacles = {},
+    };
+
+}
+
 }  // namespace robot::experimental::beacon_sim
