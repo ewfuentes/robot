@@ -112,6 +112,17 @@ TEST(WorldMapConfigToProtoTest, world_map_config_pack_unpack) {
                 .beacon_appear_rate_hz = 100.0,
                 .beacon_disappear_rate_hz = -300.0,
             },
+        .correlated_beacons =
+            {
+                .beacons =
+                    {
+                        {
+                            .id = 3,
+                            .pos_in_local = {7.8, 9.0},
+                        },
+                    },
+                .potential = BeaconPotential(Eigen::MatrixXd::Zero(1, 1), 1.0, {3}),
+            },
         // TODO Add obstacles to pack/unpack
         .obstacles = {},
     };
@@ -125,6 +136,9 @@ TEST(WorldMapConfigToProtoTest, world_map_config_pack_unpack) {
     // Assume that if the correct number of items were unpacked, the rest of it is correct
     EXPECT_EQ(config.fixed_beacons.beacons.size(), other.fixed_beacons.beacons.size());
     EXPECT_EQ(config.blinking_beacons.beacons.size(), other.blinking_beacons.beacons.size());
+    EXPECT_EQ(config.correlated_beacons.beacons.size(), other.correlated_beacons.beacons.size());
+    EXPECT_EQ(config.correlated_beacons.potential.members().size(),
+              other.correlated_beacons.potential.members().size());
 }
 
 }  // namespace robot::experimental::beacon_sim

@@ -14,6 +14,9 @@ beacon_sim::FixedBeaconsConfig unpack_from(const FixedBeaconsConfig &in);
 void pack_into(const beacon_sim::BlinkingBeaconsConfig &in, BlinkingBeaconsConfig *out);
 beacon_sim::BlinkingBeaconsConfig unpack_from(const BlinkingBeaconsConfig &in);
 
+void pack_into(const beacon_sim::CorrelatedBeaconsConfig &in, CorrelatedBeaconsConfig *out);
+beacon_sim::CorrelatedBeaconsConfig unpack_from(const CorrelatedBeaconsConfig &in);
+
 void pack_into(const beacon_sim::WorldMapConfig &in, WorldMapConfig *out);
 beacon_sim::WorldMapConfig unpack_from(const WorldMapConfig &in);
 }  // namespace robot::experimental::beacon_sim::proto
