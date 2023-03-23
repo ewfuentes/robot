@@ -72,7 +72,10 @@ WorldMapConfig create_world_map_config(const double max_x_m, const double max_y_
         }
     }
 
-    return {.fixed_beacons = {beacons}, .blinking_beacons = {}, .obstacles = {}};
+    return {.fixed_beacons = {beacons},
+            .blinking_beacons = {},
+            .correlated_beacons = {},
+            .obstacles = {}};
 }
 
 std::vector<std::tuple<int, WorldMapConfig>> create_all_beacon_presences(

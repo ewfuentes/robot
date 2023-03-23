@@ -1,6 +1,8 @@
 
 syntax = "proto3";
 
+import "experimental/beacon_sim/correlated_beacons.proto";
+
 package robot.experimental.beacon_sim.proto;
 
 message Beacon {
@@ -13,6 +15,11 @@ message FixedBeaconsConfig {
   repeated Beacon beacons = 1;
 }
 
+message CorrelatedBeaconsConfig {
+  repeated Beacon beacons = 1;
+  robot.experimental.beacon_sim.proto.BeaconPotential potential = 2;
+}
+
 message BlinkingBeaconsConfig {
   repeated Beacon beacons = 1;
   double beacon_appear_rate_hz = 2;
@@ -22,4 +29,5 @@ message BlinkingBeaconsConfig {
 message WorldMapConfig {
   FixedBeaconsConfig fixed_beacons = 1;
   BlinkingBeaconsConfig blinking_beacons = 2;
+  CorrelatedBeaconsConfig correlated_beacons = 3;
 }

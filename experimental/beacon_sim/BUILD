@@ -81,6 +81,7 @@ cc_library(
   deps = [
     "//common/time:robot_time",
     "@eigen//:eigen",
+    ":correlated_beacons",
     ":obstacle",
   ],
 )
@@ -155,6 +156,9 @@ cc_test(
 multi_proto_library(
   name = "world_map_config_proto",
   srcs = ["world_map_config.proto"],
+  deps = [
+    ":correlated_beacons_proto",
+  ]
 )
 
 cc_library(
@@ -164,6 +168,7 @@ cc_library(
   deps = [
     ":world_map_config_proto",
     ":world_map",
+    ":correlated_beacons_to_proto",
   ]
 )
 

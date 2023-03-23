@@ -8,6 +8,7 @@
 
 #include "Eigen/Core"
 #include "common/time/robot_time.hh"
+#include "experimental/beacon_sim/correlated_beacons.hh"
 #include "experimental/beacon_sim/obstacle.hh"
 
 namespace robot::experimental::beacon_sim {
@@ -37,6 +38,11 @@ struct BlinkingBeaconsConfig {
     double beacon_disappear_rate_hz;
 };
 
+struct CorrelatedBeaconsConfig {
+    std::vector<Beacon> beacons;
+    BeaconPotential potential;
+};
+
 struct ObstaclesConfig {
     std::vector<Obstacle> obstacles;
 };
@@ -44,6 +50,7 @@ struct ObstaclesConfig {
 struct WorldMapConfig {
     FixedBeaconsConfig fixed_beacons;
     BlinkingBeaconsConfig blinking_beacons;
+    CorrelatedBeaconsConfig correlated_beacons;
     ObstaclesConfig obstacles;
 };
 

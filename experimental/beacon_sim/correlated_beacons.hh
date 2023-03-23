@@ -1,4 +1,6 @@
 
+#pragma once
+
 #include <unordered_map>
 #include <vector>
 
@@ -21,6 +23,7 @@ struct BeaconClique {
 // A probability distribution over beacon presences/absences
 class BeaconPotential {
    public:
+    BeaconPotential() = default;
     BeaconPotential(const Eigen::MatrixXd &covariance, const double bias,
                     const std::vector<int> &members);
 

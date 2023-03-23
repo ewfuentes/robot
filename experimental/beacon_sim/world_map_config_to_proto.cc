@@ -1,6 +1,9 @@
 
 #include "experimental/beacon_sim/world_map_config_to_proto.hh"
 
+#include "experimental/beacon_sim/correlated_beacons_to_proto.hh"
+#include "experimental/beacon_sim/world_map.hh"
+
 namespace robot::experimental::beacon_sim::proto {
 void pack_into(const beacon_sim::Beacon &in, Beacon *out) {
     out->set_pos_x_m(in.pos_in_local.x());
@@ -58,15 +61,38 @@ beacon_sim::BlinkingBeaconsConfig unpack_from(const BlinkingBeaconsConfig &in) {
     return out;
 }
 
+void pack_into(const beacon_sim::CorrelatedBeaconsConfig &in, CorrelatedBeaconsConfig *out) {
+    for (const auto &beacon : in.beacons) {
+        pack_into(beacon, out->add_beacons());
+    }
+
+    pack_into(in.potential, out->mutable_potential());
+}
+
+beacon_sim::CorrelatedBeaconsConfig unpack_from(const CorrelatedBeaconsConfig &in) {
+    std::vector<beacon_sim::Beacon> beacons;
+    beacons.reserve(in.beacons_size());
+    for (const auto &proto_beacon : in.beacons()) {
+        beacons.push_back(unpack_from(proto_beacon));
+    }
+
+    return {
+        .beacons = std::move(beacons),
+        .potential = unpack_from(in.potential()),
+    };
+}
+
 void pack_into(const beacon_sim::WorldMapConfig &in, WorldMapConfig *out) {
     pack_into(in.fixed_beacons, out->mutable_fixed_beacons());
     pack_into(in.blinking_beacons, out->mutable_blinking_beacons());
+    pack_into(in.correlated_beacons, out->mutable_correlated_beacons());
 }
 
 beacon_sim::WorldMapConfig unpack_from(const WorldMapConfig &in) {
     return beacon_sim::WorldMapConfig{
         .fixed_beacons = unpack_from(in.fixed_beacons()),
         .blinking_beacons = unpack_from(in.blinking_beacons()),
+        .correlated_beacons = unpack_from(in.correlated_beacons()),
         // TODO add pack/unpack for obstacles
         .obstacles = {},
     };
