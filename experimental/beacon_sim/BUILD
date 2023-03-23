@@ -79,6 +79,7 @@ cc_library(
   hdrs = ["world_map.hh"],
   srcs = ["world_map.cc"],
   deps = [
+    "//common:argument_wrapper",
     "//common/time:robot_time",
     "@eigen//:eigen",
     ":correlated_beacons",
