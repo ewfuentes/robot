@@ -1,6 +1,8 @@
 
 #include "experimental/beacon_sim/world_map_config_to_proto.hh"
 
+#include "experimental/beacon_sim/correlated_beacons.hh"
+#include "experimental/beacon_sim/world_map.hh"
 #include "gtest/gtest.h"
 
 namespace robot::experimental::beacon_sim {
@@ -89,6 +91,91 @@ TEST(WorldMapConfigToProtoTest, blinking_beacons_config_pack_unpack) {
     EXPECT_EQ(config.beacon_disappear_rate_hz, other.beacon_disappear_rate_hz);
 }
 
+TEST(WorldMapConfigToProtoTest, correlated_beacons_config_without_configuration_pack_unpack) {
+    // Setup
+    const CorrelatedBeaconsConfig config = {
+        .beacons =
+            {
+                {
+                    .id = 1,
+                    .pos_in_local = {2.3, 3.4},
+                },
+                {
+                    .id = 2,
+                    .pos_in_local = {4.5, 5.6},
+                },
+            },
+        .potential = BeaconPotential(Eigen::Matrix2d::Identity(), 7.8, {1, 2}),
+        .configuration = {},
+    };
+
+    // Action
+    proto::CorrelatedBeaconsConfig proto;
+    proto::pack_into(config, &proto);
+    const CorrelatedBeaconsConfig other = unpack_from(proto);
+
+    // Verification
+    EXPECT_EQ(config.beacons.size(), other.beacons.size());
+    for (int i = 0; i < static_cast<int>(config.beacons.size()); i++) {
+        const auto &beacon = config.beacons.at(i);
+        const auto &other_beacon = other.beacons.at(i);
+        EXPECT_EQ(beacon.pos_in_local.x(), other_beacon.pos_in_local.x());
+        EXPECT_EQ(beacon.pos_in_local.y(), other_beacon.pos_in_local.y());
+    }
+    constexpr double TOL = 1e-6;
+    EXPECT_NEAR((config.potential.covariance() - other.potential.covariance()).norm(), 0.0, TOL);
+    EXPECT_NEAR(config.potential.bias(), other.potential.bias(), TOL);
+    EXPECT_EQ(config.potential.members().size(), other.potential.members().size());
+    for (int i = 0; i < static_cast<int>(config.potential.members().size()); i++) {
+        EXPECT_EQ(config.potential.members().at(i), other.potential.members().at(i));
+    }
+    EXPECT_EQ(config.configuration.has_value(), other.configuration.has_value());
+}
+
+TEST(WorldMapConfigToProtoTest, correlated_beacons_config_with_configuration_pack_unpack) {
+    // Setup
+    const CorrelatedBeaconsConfig config = {
+        .beacons =
+            {
+                {
+                    .id = 1,
+                    .pos_in_local = {2.3, 3.4},
+                },
+                {
+                    .id = 2,
+                    .pos_in_local = {4.5, 5.6},
+                },
+            },
+        .potential = BeaconPotential(Eigen::Matrix2d::Identity(), 7.8, {1, 2}),
+        .configuration = {{false, true}},
+    };
+
+    // Action
+    proto::CorrelatedBeaconsConfig proto;
+    proto::pack_into(config, &proto);
+    const CorrelatedBeaconsConfig other = unpack_from(proto);
+
+    // Verification
+    EXPECT_EQ(config.beacons.size(), other.beacons.size());
+    for (int i = 0; i < static_cast<int>(config.beacons.size()); i++) {
+        const auto &beacon = config.beacons.at(i);
+        const auto &other_beacon = other.beacons.at(i);
+        EXPECT_EQ(beacon.pos_in_local.x(), other_beacon.pos_in_local.x());
+        EXPECT_EQ(beacon.pos_in_local.y(), other_beacon.pos_in_local.y());
+    }
+    constexpr double TOL = 1e-6;
+    EXPECT_NEAR((config.potential.covariance() - other.potential.covariance()).norm(), 0.0, TOL);
+    EXPECT_NEAR(config.potential.bias(), other.potential.bias(), TOL);
+    EXPECT_EQ(config.potential.members().size(), other.potential.members().size());
+    for (int i = 0; i < static_cast<int>(config.potential.members().size()); i++) {
+        EXPECT_EQ(config.potential.members().at(i), other.potential.members().at(i));
+    }
+    EXPECT_EQ(config.configuration.has_value(), other.configuration.has_value());
+    for (int i = 0; i < static_cast<int>(config.configuration->size()); i++) {
+        EXPECT_EQ(config.configuration->at(i), other.configuration->at(i));
+    }
+}
+
 TEST(WorldMapConfigToProtoTest, world_map_config_pack_unpack) {
     // Setup
 
@@ -122,6 +209,7 @@ TEST(WorldMapConfigToProtoTest, world_map_config_pack_unpack) {
                         },
                     },
                 .potential = BeaconPotential(Eigen::MatrixXd::Zero(1, 1), 1.0, {3}),
+                .configuration = {},
             },
         // TODO Add obstacles to pack/unpack
         .obstacles = {},
@@ -139,6 +227,7 @@ TEST(WorldMapConfigToProtoTest, world_map_config_pack_unpack) {
     EXPECT_EQ(config.correlated_beacons.beacons.size(), other.correlated_beacons.beacons.size());
     EXPECT_EQ(config.correlated_beacons.potential.members().size(),
               other.correlated_beacons.potential.members().size());
+    EXPECT_FALSE(other.correlated_beacons.configuration.has_value());
 }
 
 }  // namespace robot::experimental::beacon_sim

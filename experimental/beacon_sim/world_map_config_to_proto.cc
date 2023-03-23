@@ -1,4 +1,5 @@
 
+
 #include "experimental/beacon_sim/world_map_config_to_proto.hh"
 
 #include "experimental/beacon_sim/correlated_beacons_to_proto.hh"
@@ -67,6 +68,19 @@ void pack_into(const beacon_sim::CorrelatedBeaconsConfig &in, CorrelatedBeaconsC
     }
 
     pack_into(in.potential, out->mutable_potential());
+    if (in.configuration.has_value()) {
+        const int num_bytes = (in.configuration->size() + 8) / 8;
+        std::vector<char> bytes(num_bytes, 0);
+        for (int i = 0; i < static_cast<int>(in.configuration->size()); i++) {
+            const int byte_idx = i / 8;
+            const int bit_idx = i % 8;
+
+            if (in.configuration->at(i)) {
+                bytes.at(byte_idx) |= (1 << bit_idx);
+            }
+        }
+        out->set_configuration(bytes.data(), bytes.size());
+    }
 }
 
 beacon_sim::CorrelatedBeaconsConfig unpack_from(const CorrelatedBeaconsConfig &in) {
@@ -76,9 +90,21 @@ beacon_sim::CorrelatedBeaconsConfig unpack_from(const CorrelatedBeaconsConfig &i
         beacons.push_back(unpack_from(proto_beacon));
     }
 
+    std::optional<std::vector<bool>> configuration;
+    if (in.has_configuration()) {
+        configuration = std::vector<bool>();
+        configuration->reserve(in.beacons_size());
+        for (const auto &c : in.configuration()) {
+            for (int i = 0; i < 8; i++) {
+                configuration->push_back(c & (1 << i));
+            }
+        }
+    }
+
     return {
         .beacons = std::move(beacons),
         .potential = unpack_from(in.potential()),
+        .configuration = configuration,
     };
 }
 

@@ -18,6 +18,7 @@ message FixedBeaconsConfig {
 message CorrelatedBeaconsConfig {
   repeated Beacon beacons = 1;
   robot.experimental.beacon_sim.proto.BeaconPotential potential = 2;
+  optional bytes configuration = 3;
 }
 
 message BlinkingBeaconsConfig {
