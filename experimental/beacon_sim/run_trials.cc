@@ -89,18 +89,23 @@ WorldMapConfig create_world_map_config(const double max_x_m, const double max_y_
         ids.push_back(beacon.id);
     }
 
-    return {.fixed_beacons = {},
-            .blinking_beacons = {},
-            .correlated_beacons =
-                {
-                    .beacons = beacons,
-                    .potential = create_correlated_beacons({
-                        .p_beacon = p_beacon,
-                        .p_no_beacons = p_no_beacons,
-                        .members = ids,
-                    }),
-                },
-            .obstacles = {}};
+    return {
+        .fixed_beacons = {},
+        .blinking_beacons = {},
+        .correlated_beacons =
+            {
+                .beacons = beacons,
+                .potential = create_correlated_beacons({
+                    .p_beacon = p_beacon,
+                    .p_no_beacons = p_no_beacons,
+                    .members = ids,
+                }),
+                // All beacons present by default
+                .configuration = std::vector<bool>(ids.size(), true),
+
+            },
+        .obstacles = {},
+    };
 }
 
 std::vector<std::tuple<int, WorldMapConfig>> create_all_beacon_presences(
@@ -109,8 +114,8 @@ std::vector<std::tuple<int, WorldMapConfig>> create_all_beacon_presences(
     // One way to assign whether the `k`'th beacon in present in configuration `C` is to consider
     // the `k`th bit in the binary representation of `C`. If this bit is set, we choose to erase
     // this element.
-    const uint64_t num_configurations = 1 << input.fixed_beacons.beacons.size();
-    const int num_beacons = input.fixed_beacons.beacons.size();
+    const uint64_t num_configurations = 1 << input.correlated_beacons.beacons.size();
+    const int num_beacons = input.correlated_beacons.beacons.size();
 
     std::vector<std::tuple<int, WorldMapConfig>> configs;
     configs.reserve(num_configurations);
@@ -125,7 +130,7 @@ std::vector<std::tuple<int, WorldMapConfig>> create_all_beacon_presences(
 
 EkfSlam create_ekf(const WorldMapConfig &map_config, const liegroups::SE2 &local_from_robot) {
     const EkfSlamConfig ekf_config = {
-        .max_num_beacons = static_cast<int>(map_config.fixed_beacons.beacons.size()),
+        .max_num_beacons = static_cast<int>(map_config.correlated_beacons.beacons.size()),
         .initial_beacon_uncertainty_m = 10.0,
         .along_track_process_noise_m_per_rt_meter = 0.1,
         .cross_track_process_noise_m_per_rt_meter = 0.01,
@@ -145,7 +150,7 @@ EkfSlam create_ekf(const WorldMapConfig &map_config, const liegroups::SE2 &local
         constexpr double BEACON_VARIANCE_SQ_M = BEACON_UNCERTAINTY_M * BEACON_UNCERTAINTY_M;
         std::vector<int> beacon_ids;
         std::vector<Eigen::Vector2d> beacon_in_local;
-        for (const auto &beacon : map_config.fixed_beacons.beacons) {
+        for (const auto &beacon : map_config.correlated_beacons.beacons) {
             beacon_ids.push_back(beacon.id);
             beacon_in_local.push_back(beacon.pos_in_local);
         }
@@ -170,8 +175,8 @@ proto::RolloutStatistics compute_statistics(const std::vector<proto::BeaconSimDe
     out.mutable_final_step()->CopyFrom(debug_msgs.back());
     return out;
 }
-
 }  // namespace
+
 void run_trials(const TrialsConfig &config) {
     constexpr double MAX_X_M = 20.0;
     constexpr double MAX_Y_M = 20.0;
@@ -228,7 +233,7 @@ void run_trials(const TrialsConfig &config) {
     std::cout << "End Plan" << std::endl;
 
     const auto inputs = create_all_beacon_presences(base_map_config);
-    std::filesystem::create_directories("/tmp/beacon_sim_log/");
+    std::filesystem::create_directories(config.output_path.parent_path());
     std::vector<proto::RolloutStatistics> results(inputs.size());
     std::for_each(
         std::execution::par, inputs.begin(), inputs.end(),
@@ -286,6 +291,7 @@ void run_trials(const TrialsConfig &config) {
     out.mutable_goal()->set_x(config.goal_position.x());
     out.mutable_goal()->set_y(config.goal_position.y());
     pack_into(ekf.estimate().local_from_robot(), out.mutable_local_from_start());
+    std::cout << "Ran " << results.size() << " trials." << std::endl;
     for (auto &&trial_statistics : results) {
         out.mutable_statistics()->Add(std::move(trial_statistics));
     }

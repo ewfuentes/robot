@@ -56,8 +56,9 @@ std::vector<bool> get_beacon_configuration(const CorrelatedBeaconsConfig &config
 WorldMap::WorldMap(const WorldMapConfig &config, const size_t seed)
     : config_(config), generator_(seed), obstacles_(config.obstacles.obstacles) {
     // Add the fixed beacons
-    const int num_beacons =
-        config.fixed_beacons.beacons.size() + config.blinking_beacons.beacons.size();
+    const int num_beacons = config.fixed_beacons.beacons.size() +
+                            config.blinking_beacons.beacons.size() +
+                            config.correlated_beacons.beacons.size();
     beacons_.reserve(num_beacons);
 
     std::transform(
