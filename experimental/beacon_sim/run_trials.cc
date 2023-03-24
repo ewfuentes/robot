@@ -291,7 +291,6 @@ void run_trials(const TrialsConfig &config) {
     out.mutable_goal()->set_x(config.goal_position.x());
     out.mutable_goal()->set_y(config.goal_position.y());
     pack_into(ekf.estimate().local_from_robot(), out.mutable_local_from_start());
-    std::cout << "Ran " << results.size() << " trials." << std::endl;
     for (auto &&trial_statistics : results) {
         out.mutable_statistics()->Add(std::move(trial_statistics));
     }
