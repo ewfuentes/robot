@@ -18,6 +18,7 @@
 #include "experimental/beacon_sim/beacon_sim_debug.pb.h"
 #include "experimental/beacon_sim/beacon_sim_state.hh"
 #include "experimental/beacon_sim/belief_road_map_planner.hh"
+#include "experimental/beacon_sim/correlated_beacons.hh"
 #include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/extract_mapped_landmarks.hh"
 #include "experimental/beacon_sim/generate_observations.hh"
@@ -156,7 +157,7 @@ std::vector<Eigen::Vector2d> transform_points(std::vector<Eigen::Vector2d> &&pts
     return pts_in_a;
 }
 
-WorldMapConfig world_map_config() {
+WorldMapConfig world_map_config(const std::optional<int> &configuration) {
     WorldMapConfig out;
     // Add Beacons around the perimeter
     int beacon_id = 0;
@@ -166,23 +167,38 @@ WorldMapConfig world_map_config() {
     for (int i = 0; i < NUM_STEPS; i++) {
         const double alpha = static_cast<double>(i) / NUM_STEPS;
         // Top Edge from 0 to +x +y
-        out.fixed_beacons.beacons.push_back(Beacon{
+        out.correlated_beacons.beacons.push_back(Beacon{
             .id = beacon_id++,
             .pos_in_local = {alpha * TOP_EDGE_LENGTH_M / 2.0, SIDE_EDGE_LENGTH_M / 2.0},
         });
 
         // Bottom Edge from +x -y to -x -y
-        out.fixed_beacons.beacons.push_back(Beacon{
+        out.correlated_beacons.beacons.push_back(Beacon{
             .id = beacon_id++,
             .pos_in_local = {TOP_EDGE_LENGTH_M / 2.0 - alpha * TOP_EDGE_LENGTH_M,
                              -SIDE_EDGE_LENGTH_M / 2.0},
         });
 
         // Right Edge from +x +y to +x -y
-        out.fixed_beacons.beacons.push_back(Beacon{
+        out.correlated_beacons.beacons.push_back(Beacon{
             .id = beacon_id++,
             .pos_in_local = {TOP_EDGE_LENGTH_M / 2.0, (1 - 2 * alpha) * SIDE_EDGE_LENGTH_M / 2.0},
         });
+    }
+    out.correlated_beacons.potential =
+        create_correlated_beacons({.p_beacon = 0.5, .p_no_beacons = 0.25, .members = [&out]() {
+                                       std::vector<int> ids;
+                                       for (const auto &beacon : out.correlated_beacons.beacons) {
+                                           ids.push_back(beacon.id);
+                                       }
+                                       return ids;
+                                   }()});
+    if (configuration) {
+        std::vector<bool> bool_config(out.correlated_beacons.beacons.size());
+        for (int i = 0; i < static_cast<int>(bool_config.size()); i++) {
+            bool_config.at(i) = (configuration.value() & (1 << i));
+        }
+        out.correlated_beacons.configuration = bool_config;
     }
 
     // Create obstacles
@@ -341,7 +357,7 @@ void run_simulation(const SimConfig &sim_config) {
         .on_map_load_heading_uncertainty_rad = 1.0,
     };
 
-    WorldMap map = WorldMap(world_map_config());
+    WorldMap map = WorldMap(world_map_config(sim_config.correlated_beacons_configuration));
     BeaconSimState state = {
         .time_of_validity = time::current_robot_time(),
         .map = map,
@@ -495,6 +511,8 @@ int main(int argc, char **argv) {
       ("load_off_diagonals", "Whether off diagonal terms should be loaded from map")
       ("enable_brm_planner", "Generate BRM plan after each step")
       ("autostep", "automatically step the sim")
+      ("correlated_beacons_config", "Desired Beacon Configuration. The ith beacon is present if the ith bit is set",
+           cxxopts::value<int>())
       ("help", "Print usage");
     // clang-format on
 
@@ -516,5 +534,9 @@ int main(int argc, char **argv) {
         .load_off_diagonals = args["load_off_diagonals"].as<bool>(),
         .enable_brm_planner = args["enable_brm_planner"].as<bool>(),
         .autostep = args["autostep"].as<bool>(),
+        .correlated_beacons_configuration =
+            args.count("correlated_beacons_config")
+                ? std::make_optional(args["correlated_beacons_config"].as<int>())
+                : std::nullopt,
     });
 }
