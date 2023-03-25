@@ -7,7 +7,7 @@ cc_library(
   name = "so2",
   hdrs = ["so2.hh"],
   deps = [
-    "@sophus//:liegroups",
+    "@sophus_lie//:liegroups",
   ]
 )
 
@@ -15,7 +15,7 @@ cc_library(
   name = "so3",
   hdrs = ["so3.hh"],
   deps = [
-    "@sophus//:liegroups",
+    "@sophus_lie//:liegroups",
   ]
 )
 
@@ -26,7 +26,7 @@ cc_library(
   srcs = ["se2.cc"],
   deps = [
     ":so2",
-    "@sophus//:liegroups",
+    "@sophus_lie//:liegroups",
   ]
 )
 
@@ -44,7 +44,7 @@ cc_library(
   hdrs = ["se3.hh"],
   srcs = ["se3.cc"],
   deps = [
-    "@sophus//:liegroups",
+    "@sophus_lie//:liegroups",
   ]
 )
 
