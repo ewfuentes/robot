@@ -14,6 +14,7 @@
 #include "cxxopts.hpp"
 #include "experimental/beacon_sim/beacon_sim_state.hh"
 #include "experimental/beacon_sim/belief_road_map_planner.hh"
+#include "experimental/beacon_sim/correlated_beacons.hh"
 #include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/mapped_landmarks.hh"
 #include "experimental/beacon_sim/robot.hh"
@@ -32,10 +33,21 @@ struct TrialsConfig {
     std::filesystem::path output_path;
     Eigen::Vector2d goal_position;
     liegroups::SE2 local_from_robot;
+    double p_beacon;
+    double p_no_beacons;
 };
 
+std::vector<bool> configuration_from_index(const int idx, const int num_beacons) {
+    std::vector<bool> out(num_beacons);
+    for (int i = 0; i < num_beacons; i++) {
+        out.at(i) = idx & (1 << i);
+    }
+    return out;
+}
+
 WorldMapConfig create_world_map_config(const double max_x_m, const double max_y_m,
-                                       double beacon_spacing_m) {
+                                       const double beacon_spacing_m, const double p_beacon,
+                                       const double p_no_beacons) {
     // Create a box of beacons
     constexpr int VERTICAL_ID_OFFSET = 50;
 
@@ -72,10 +84,28 @@ WorldMapConfig create_world_map_config(const double max_x_m, const double max_y_
         }
     }
 
-    return {.fixed_beacons = {beacons},
-            .blinking_beacons = {},
-            .correlated_beacons = {},
-            .obstacles = {}};
+    std::vector<int> ids;
+    for (const auto &beacon : beacons) {
+        ids.push_back(beacon.id);
+    }
+
+    return {
+        .fixed_beacons = {},
+        .blinking_beacons = {},
+        .correlated_beacons =
+            {
+                .beacons = beacons,
+                .potential = create_correlated_beacons({
+                    .p_beacon = p_beacon,
+                    .p_no_beacons = p_no_beacons,
+                    .members = ids,
+                }),
+                // All beacons present by default
+                .configuration = std::vector<bool>(ids.size(), true),
+
+            },
+        .obstacles = {},
+    };
 }
 
 std::vector<std::tuple<int, WorldMapConfig>> create_all_beacon_presences(
@@ -84,28 +114,23 @@ std::vector<std::tuple<int, WorldMapConfig>> create_all_beacon_presences(
     // One way to assign whether the `k`'th beacon in present in configuration `C` is to consider
     // the `k`th bit in the binary representation of `C`. If this bit is set, we choose to erase
     // this element.
-    const uint64_t num_configurations = 1 << input.fixed_beacons.beacons.size();
-    const int num_beacons = input.fixed_beacons.beacons.size();
+    const uint64_t num_configurations = 1 << input.correlated_beacons.beacons.size();
+    const int num_beacons = input.correlated_beacons.beacons.size();
 
     std::vector<std::tuple<int, WorldMapConfig>> configs;
     configs.reserve(num_configurations);
     for (uint64_t config_idx = 0; config_idx < num_configurations; config_idx++) {
         // Create a copy of the input config
         configs.push_back(std::make_tuple(config_idx, input));
-        auto &beacons = std::get<1>(configs.back()).fixed_beacons.beacons;
-        for (int beacon_idx = num_beacons - 1; beacon_idx >= 0; beacon_idx--) {
-            if (config_idx & (1 << beacon_idx)) {
-                // If the `k`th bit is set, erase it
-                beacons.erase(beacons.begin() + beacon_idx);
-            }
-        }
+        std::get<1>(configs.back()).correlated_beacons.configuration =
+            configuration_from_index(config_idx, num_beacons);
     }
     return configs;
 }
 
 EkfSlam create_ekf(const WorldMapConfig &map_config, const liegroups::SE2 &local_from_robot) {
     const EkfSlamConfig ekf_config = {
-        .max_num_beacons = static_cast<int>(map_config.fixed_beacons.beacons.size()),
+        .max_num_beacons = static_cast<int>(map_config.correlated_beacons.beacons.size()),
         .initial_beacon_uncertainty_m = 10.0,
         .along_track_process_noise_m_per_rt_meter = 0.1,
         .cross_track_process_noise_m_per_rt_meter = 0.01,
@@ -125,7 +150,7 @@ EkfSlam create_ekf(const WorldMapConfig &map_config, const liegroups::SE2 &local
         constexpr double BEACON_VARIANCE_SQ_M = BEACON_UNCERTAINTY_M * BEACON_UNCERTAINTY_M;
         std::vector<int> beacon_ids;
         std::vector<Eigen::Vector2d> beacon_in_local;
-        for (const auto &beacon : map_config.fixed_beacons.beacons) {
+        for (const auto &beacon : map_config.correlated_beacons.beacons) {
             beacon_ids.push_back(beacon.id);
             beacon_in_local.push_back(beacon.pos_in_local);
         }
@@ -150,8 +175,8 @@ proto::RolloutStatistics compute_statistics(const std::vector<proto::BeaconSimDe
     out.mutable_final_step()->CopyFrom(debug_msgs.back());
     return out;
 }
-
 }  // namespace
+
 void run_trials(const TrialsConfig &config) {
     constexpr double MAX_X_M = 20.0;
     constexpr double MAX_Y_M = 20.0;
@@ -172,7 +197,8 @@ void run_trials(const TrialsConfig &config) {
     };
 
     // Create a world map
-    const auto base_map_config = create_world_map_config(MAX_X_M, MAX_Y_M, BEACON_SPACING_M);
+    const auto base_map_config = create_world_map_config(MAX_X_M, MAX_Y_M, BEACON_SPACING_M,
+                                                         config.p_beacon, config.p_no_beacons);
 
     // Create a road map
     const auto road_map = planning::create_road_map(
@@ -198,6 +224,7 @@ void run_trials(const TrialsConfig &config) {
         .load_off_diagonals = false,
         .enable_brm_planner = true,
         .autostep = false,
+        .correlated_beacons_configuration = {},
     };
     std::cout << "Plan: " << std::endl;
     for (const auto &node : plan->beliefs) {
@@ -207,7 +234,7 @@ void run_trials(const TrialsConfig &config) {
     std::cout << "End Plan" << std::endl;
 
     const auto inputs = create_all_beacon_presences(base_map_config);
-    std::filesystem::create_directories("/tmp/beacon_sim_log/");
+    std::filesystem::create_directories(config.output_path.parent_path());
     std::vector<proto::RolloutStatistics> results(inputs.size());
     std::for_each(
         std::execution::par, inputs.begin(), inputs.end(),
@@ -282,6 +309,8 @@ int main(const int argc, const char **argv) {
          cxxopts::value<std::string>()->default_value(DEFAULT_OUTPUT_PATH))
       ("goal", "2D goal position (e.g. 3.0,4.5)", cxxopts::value<std::vector<double>>())
       ("local_from_start", "Starting robot pose X,Y,Theta", cxxopts::value<std::vector<double>>())
+      ("p_beacon", "Marginal probability of a single beacon being present", cxxopts::value<double>())
+      ("p_no_beacons", "Probability of no beacons being present", cxxopts::value<double>())
       ("help", "Print usage");
     // clang-format on
 
@@ -308,6 +337,16 @@ int main(const int argc, const char **argv) {
         std::exit(1);
     }
 
+    if (args.count("p_beacon") == 0) {
+        std::cout << "--p_beacon argument is required but missing." << std::endl;
+        std::exit(1);
+    }
+
+    if (args.count("p_no_beacons") == 0) {
+        std::cout << "--p_no_beacons argument is required but missing." << std::endl;
+        std::exit(1);
+    }
+
     const auto &goal_position = args["goal"].as<std::vector<double>>();
     const auto &local_from_start_XYT = args["local_from_start"].as<std::vector<double>>();
     robot::experimental::beacon_sim::run_trials({
@@ -315,5 +354,7 @@ int main(const int argc, const char **argv) {
         .goal_position = Eigen::Vector2d{goal_position[0], goal_position[1]},
         .local_from_robot = robot::liegroups::SE2(
             local_from_start_XYT[2], {local_from_start_XYT[0], local_from_start_XYT[1]}),
+        .p_beacon = args["p_beacon"].as<double>(),
+        .p_no_beacons = args["p_no_beacons"].as<double>(),
     });
 }

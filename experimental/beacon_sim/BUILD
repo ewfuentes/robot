@@ -45,6 +45,7 @@ cc_binary(
     ":beacon_sim_debug_proto",
     ":beacon_sim_state",
     ":belief_road_map_planner",
+    ":correlated_beacons",
     ":ekf_slam_estimate_to_proto",
     ":extract_mapped_landmarks",
     ":mapped_landmarks_to_proto",
