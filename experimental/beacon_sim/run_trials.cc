@@ -224,6 +224,7 @@ void run_trials(const TrialsConfig &config) {
         .load_off_diagonals = false,
         .enable_brm_planner = true,
         .autostep = false,
+        .correlated_beacons_configuration = {},
     };
     std::cout << "Plan: " << std::endl;
     for (const auto &node : plan->beliefs) {
