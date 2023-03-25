@@ -7,6 +7,7 @@
 #include "Eigen/Core"
 #include "common/liegroups/se2.hh"
 #include "common/math/redheffer_star.hh"
+#include "experimental/beacon_sim/correlated_beacons.hh"
 #include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/generate_observations.hh"
 #include "experimental/beacon_sim/robot.hh"
@@ -102,7 +103,8 @@ ScatteringTransformMatrix compute_process_transform(
 ScatteringTransformMatrix compute_measurement_transform(const liegroups::SE2 &local_from_robot,
                                                         const EkfSlamConfig &ekf_config,
                                                         const EkfSlamEstimate &ekf_estimate,
-                                                        const double max_sensor_range_m) {
+                                                        const double max_sensor_range_m,
+                                                        const BeaconPotential &beacon_potential) {
     // Simulate observations
     const auto observations =
         generate_observations(local_from_robot, ekf_estimate, max_sensor_range_m);
@@ -126,6 +128,8 @@ ScatteringTransformMatrix compute_measurement_transform(const liegroups::SE2 &lo
         inputs.observation_matrix.rows() / 2, ekf_config.range_measurement_noise_m,
         ekf_config.bearing_measurement_noise_rad);
 
+    (void)beacon_potential;
+
     return (ScatteringTransformMatrix() << Eigen::Matrix3d::Identity(), Eigen::Matrix3d::Zero(),
             -observation_matrix.transpose() * measurement_noise.inverse() * observation_matrix,
             Eigen::Matrix3d::Identity())
@@ -135,11 +139,13 @@ ScatteringTransformMatrix compute_measurement_transform(const liegroups::SE2 &lo
 planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap &road_map,
                                                          const Eigen::Vector2d &goal_state,
                                                          const double max_sensor_range_m,
-                                                         const EkfSlam &ekf) {
+                                                         const EkfSlam &ekf,
+                                                         const BeaconPotential &beacon_potential) {
     std::unordered_map<DirectedEdge, detail::ScatteringTransform, DirectedEdgeHash>
         edge_transform_cache;
     return [&road_map, goal_state, max_sensor_range_m, &ekf,
-            edge_transform_cache = std::move(edge_transform_cache)](
+            edge_transform_cache = std::move(edge_transform_cache),
+            &beacon_potential](
                const RobotBelief &initial_belief, const int start_idx,
                const int end_idx) mutable -> RobotBelief {
         // Get the belief edge transform, optionally updating the cache
@@ -153,9 +159,9 @@ planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap
         const auto end_pos_in_local = end_idx < 0 ? goal_state : road_map.points.at(end_idx);
         const detail::ScatteringTransform &transform =
             is_in_cache ? cache_iter->second
-                        : detail::compute_edge_belief_transform(initial_belief.local_from_robot,
-                                                                end_pos_in_local, ekf.config(),
-                                                                ekf.estimate(), max_sensor_range_m);
+                        : detail::compute_edge_belief_transform(
+                              initial_belief.local_from_robot, end_pos_in_local, ekf.config(),
+                              ekf.estimate(), max_sensor_range_m, beacon_potential);
         if (!is_in_cache) {
             // Add the transform to the cache in case it's missing
             edge_transform_cache[edge] = transform;
@@ -203,16 +209,18 @@ bool operator==(const RobotBelief &a, const RobotBelief &b) {
 }
 
 std::optional<planning::BRMPlan<RobotBelief>> compute_belief_road_map_plan(
-    const planning::RoadMap &road_map, const EkfSlam &ekf, const Eigen::Vector2d &goal_state,
-    const double max_sensor_range_m, const int num_start_connections,
-    const int num_goal_connections, const double uncertainty_tolerance) {
+    const planning::RoadMap &road_map, const EkfSlam &ekf, const BeaconPotential &beacon_potential,
+    const Eigen::Vector2d &goal_state, const double max_sensor_range_m,
+    const int num_start_connections, const int num_goal_connections,
+    const double uncertainty_tolerance) {
     const auto &estimate = ekf.estimate();
 
     const RobotBelief initial_belief = {
         .local_from_robot = estimate.local_from_robot(),
         .cov_in_robot = estimate.robot_cov(),
     };
-    const auto belief_updater = make_belief_updater(road_map, goal_state, max_sensor_range_m, ekf);
+    const auto belief_updater =
+        make_belief_updater(road_map, goal_state, max_sensor_range_m, ekf, beacon_potential);
     return planning::plan<RobotBelief>(road_map, initial_belief, belief_updater, goal_state,
                                        num_start_connections, num_goal_connections,
                                        uncertainty_tolerance);
@@ -223,7 +231,8 @@ ScatteringTransform compute_edge_belief_transform(const liegroups::SE2 &local_fr
                                                   const Eigen::Vector2d &end_state_in_local,
                                                   const EkfSlamConfig &ekf_config,
                                                   const EkfSlamEstimate &ekf_estimate,
-                                                  const double max_sensor_range_m) {
+                                                  const double max_sensor_range_m,
+                                                  const BeaconPotential &beacon_potential) {
     constexpr double DT_S = 0.5;
     constexpr double VELOCITY_MPS = 2.0;
     constexpr double ANGULAR_VELOCITY_RADPS = 2.0;
@@ -263,7 +272,7 @@ ScatteringTransform compute_edge_belief_transform(const liegroups::SE2 &local_fr
 
         // Compute the measurement update for the covariance
         const ScatteringTransformMatrix measurement_transform = compute_measurement_transform(
-            local_from_new_robot, ekf_config, ekf_estimate, max_sensor_range_m);
+            local_from_new_robot, ekf_config, ekf_estimate, max_sensor_range_m, beacon_potential);
 
         scattering_transform = math::redheffer_star(measurement_transform, scattering_transform);
         scattering_transform = math::redheffer_star(process_transform, scattering_transform);

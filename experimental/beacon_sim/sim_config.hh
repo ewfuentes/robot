@@ -15,6 +15,7 @@ struct SimConfig {
     bool load_off_diagonals;
     bool enable_brm_planner;
     bool autostep;
+    // Should this be here?
     std::optional<int> correlated_beacons_configuration;
 };
 }  // namespace robot::experimental::beacon_sim
