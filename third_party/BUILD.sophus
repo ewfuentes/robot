@@ -1,3 +1,4 @@
+load("@pip//:requirements.bzl", "requirement")
 
 cc_library(
   name = "liegroups",
@@ -19,4 +20,24 @@ cc_library(
   ],
   defines=["SOPHUS_USE_BASIC_LOGGING"],
   deps = ["@eigen//:eigen"],
+)
+
+py_library(
+  name = "liegroups_python",
+  visibility=["//visibility:public"],
+  srcs = [
+    "sympy/sophus/cse_codegen.py",
+    "sympy/sophus/complex.py",
+    "sympy/sophus/se2.py",
+    "sympy/sophus/se3.py",
+    "sympy/sophus/so2.py",
+    "sympy/sophus/so3.py",
+    "sympy/sophus/matrix.py",
+    "sympy/sophus/quaternion.py",
+    "sympy/sophus/__init__.py",
+  ],
+  deps = [
+    requirement("sympy"),
+  ],
+  imports = ["sympy"],
 )

@@ -126,7 +126,7 @@ http_archive(
 )
 
 http_archive(
-  name = "sophus",
+  name = "sophus_lie",
   urls = ["https://github.com/strasdat/Sophus/archive/refs/tags/1.22.4.zip"],
   strip_prefix= "Sophus-1.22.4",
   build_file="@//third_party:BUILD.sophus",

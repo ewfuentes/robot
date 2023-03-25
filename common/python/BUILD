@@ -17,6 +17,7 @@ py_binary(
     requirement("scikit-learn"),
     requirement("tqdm"),
     "//experimental/beacon_sim:plot_trials",
+    "@sophus_lie//:liegroups_python",
   ],
 )
 
