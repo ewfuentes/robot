@@ -3,6 +3,6 @@ build --strip=never
 build --config=clang
 build --crosstool_top=//toolchain:cpp_suite
 build --define use_fast_cpp_protos=true
-build:clang --compiler=clang
-build:gcc --compiler=gcc-11
-build:gcc-10 --compiler=gcc-10
+build:clang --compiler=clang --platform_suffix=clang
+build:gcc --compiler=gcc-11 --platform_suffix=gcc11
+build:gcc-10 --compiler=gcc-10 --platform_suffix=gcc10
