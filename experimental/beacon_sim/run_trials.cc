@@ -35,6 +35,7 @@ struct TrialsConfig {
     liegroups::SE2 local_from_robot;
     double p_beacon;
     double p_no_beacons;
+    bool store_entire_plan;
 };
 
 std::vector<bool> configuration_from_index(const int idx, const int num_beacons) {
@@ -170,9 +171,16 @@ EkfSlam create_ekf(const WorldMapConfig &map_config, const liegroups::SE2 &local
     return ekf;
 }
 
-proto::RolloutStatistics compute_statistics(const std::vector<proto::BeaconSimDebug> &debug_msgs) {
+proto::RolloutStatistics compute_statistics(const std::vector<proto::BeaconSimDebug> &debug_msgs,
+                                            const int trial_idx, const bool store_entire_plan) {
     proto::RolloutStatistics out;
     out.mutable_final_step()->CopyFrom(debug_msgs.back());
+    out.set_trial_idx(trial_idx);
+    if (store_entire_plan) {
+        for (const auto &debug_msg : debug_msgs) {
+            out.add_entire_plan()->CopyFrom(debug_msg);
+        }
+    }
     return out;
 }
 }  // namespace
@@ -234,13 +242,12 @@ void run_trials(const TrialsConfig &config) {
     std::cout << "End Plan" << std::endl;
 
     const auto inputs = create_all_beacon_presences(base_map_config);
-    std::filesystem::create_directories(config.output_path.parent_path());
     std::vector<proto::RolloutStatistics> results(inputs.size());
     std::for_each(
         std::execution::par, inputs.begin(), inputs.end(),
         [&sim_config, &local_from_robot = config.local_from_robot,
-         &goal_position = config.goal_position, &plan, &ekf, &road_map,
-         &results](const auto &input) {
+         &goal_position = config.goal_position, &plan, &ekf, &road_map, &results,
+         &store_entire_plan = config.store_entire_plan](const auto &input) {
             const auto &[idx, masked_map_config] = input;
             if (idx % 1000 == 0) {
                 std::cout << "idx: " << idx << std::endl;
@@ -277,12 +284,13 @@ void run_trials(const TrialsConfig &config) {
                 sim_iter++;
             }
 
-            results[idx] = compute_statistics(debug_msgs);
+            results[idx] = compute_statistics(debug_msgs, idx, store_entire_plan);
         });
     time::RobotTimestamp::duration dt = time::current_robot_time() - start;
     std::cout << std::chrono::duration<double>(dt).count() << std::endl;
 
     // Record results
+    std::filesystem::create_directories(config.output_path.parent_path());
     proto::AllStatistics out;
     pack_into(base_map_config, out.mutable_world_map_config());
     pack_into(road_map, out.mutable_road_map());
@@ -292,6 +300,24 @@ void run_trials(const TrialsConfig &config) {
     out.mutable_goal()->set_x(config.goal_position.x());
     out.mutable_goal()->set_y(config.goal_position.y());
     pack_into(ekf.estimate().local_from_robot(), out.mutable_local_from_start());
+    if (config.store_entire_plan) {
+        const auto single_trace_path =
+            std::filesystem::path(config.output_path).replace_extension();
+        std::filesystem::create_directories(single_trace_path);
+        for (auto &trial_statistics : results) {
+            // Write out a copy of the result with just this trace
+            proto::AllStatistics single_trace_proto;
+            single_trace_proto.CopyFrom(out);
+            single_trace_proto.add_statistics()->CopyFrom(trial_statistics);
+
+            // Clear the trace
+            trial_statistics.clear_entire_plan();
+
+            std::ofstream file_out(single_trace_path /
+                                   (std::to_string(trial_statistics.trial_idx()) + ".pb"));
+            single_trace_proto.SerializeToOstream(&file_out);
+        }
+    }
     for (auto &&trial_statistics : results) {
         out.mutable_statistics()->Add(std::move(trial_statistics));
     }
@@ -311,6 +337,7 @@ int main(const int argc, const char **argv) {
       ("local_from_start", "Starting robot pose X,Y,Theta", cxxopts::value<std::vector<double>>())
       ("p_beacon", "Marginal probability of a single beacon being present", cxxopts::value<double>())
       ("p_no_beacons", "Probability of no beacons being present", cxxopts::value<double>())
+      ("store_entire_plan", "Save entire plan to output")
       ("help", "Print usage");
     // clang-format on
 
@@ -356,5 +383,6 @@ int main(const int argc, const char **argv) {
             local_from_start_XYT[2], {local_from_start_XYT[0], local_from_start_XYT[1]}),
         .p_beacon = args["p_beacon"].as<double>(),
         .p_no_beacons = args["p_no_beacons"].as<double>(),
+        .store_entire_plan = args["store_entire_plan"].as<bool>(),
     });
 }

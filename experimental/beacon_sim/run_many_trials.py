@@ -32,6 +32,7 @@ def launch_trials(
     instance_set: Optional[list[int]],
     p_beacon: float,
     p_no_beacons: float,
+    store_entire_plan: bool,
 ):
     for trial_idx, ((idx_1, pt_1), (idx_2, pt_2)) in enumerate(
         itertools.permutations(enumerate(points), 2)
@@ -52,6 +53,7 @@ def launch_trials(
             f"{p_beacon}",
             "--p_no_beacons",
             f"{p_no_beacons}",
+            f"--store_entire_plan={store_entire_plan}",
         ]
         print(f"Running trial {trial_idx}...")
         subprocess.run(args)
@@ -62,6 +64,7 @@ def main(
     instance_set: Optional[list[int]],
     p_beacon: float,
     p_no_beacons: float,
+    store_entire_plan: bool,
 ):
     X_RANGE_M = (-5.0, 25.0)
     Y_RANGE_M = (-5.0, 25.0)
@@ -75,7 +78,7 @@ def main(
 
     os.makedirs(output_dir, exist_ok=True)
 
-    launch_trials(points, output_dir, instance_set, p_beacon, p_no_beacons)
+    launch_trials(points, output_dir, instance_set, p_beacon, p_no_beacons, store_entire_plan)
 
 
 if __name__ == "__main__":
@@ -96,5 +99,11 @@ if __name__ == "__main__":
         type=float,
         required=True,
     )
+    parser.add_argument(
+        "--store_entire_plan",
+        help="If set, store entire state trace instead of just the last timestep.",
+        action='store_true'
+    )
+
     args = parser.parse_args()
-    main(args.output_dir, args.instance_set, args.p_beacon, args.p_no_beacons)
+    main(args.output_dir, args.instance_set, args.p_beacon, args.p_no_beacons, args.store_entire_plan)

@@ -11,6 +11,8 @@ package robot.experimental.beacon_sim.proto;
 message RolloutStatistics {
   // Final
   robot.experimental.beacon_sim.proto.BeaconSimDebug final_step = 1;
+  int32 trial_idx = 2;
+  repeated robot.experimental.beacon_sim.proto.BeaconSimDebug entire_plan = 3;
 }
 
 message Point {
