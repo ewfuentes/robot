@@ -217,9 +217,9 @@ void run_trials(const TrialsConfig &config) {
 
     // Compute the plan
     std::cout << "Starting to plan: " << std::endl;
-    const auto plan = compute_belief_road_map_plan(road_map, ekf, config.goal_position,
-                                                   MAX_SENSOR_RANGE_M, NUM_START_CONNECTIONS,
-                                                   NUM_GOAL_CONNECTIONS, UNCERTAINTY_TOLERANCE);
+    const auto plan = compute_belief_road_map_plan(
+        road_map, ekf, WorldMap(base_map_config).beacon_potential(), config.goal_position,
+        MAX_SENSOR_RANGE_M, NUM_START_CONNECTIONS, NUM_GOAL_CONNECTIONS, UNCERTAINTY_TOLERANCE);
 
     // Cycle through all possible assignments to beacon presence
     time::RobotTimestamp start = time::current_robot_time();

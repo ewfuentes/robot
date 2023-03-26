@@ -6,6 +6,7 @@
 
 #include "common/time/robot_time.hh"
 #include "experimental/beacon_sim/belief_road_map_planner.hh"
+#include "experimental/beacon_sim/correlated_beacons.hh"
 #include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/generate_observations.hh"
 #include "experimental/beacon_sim/robot.hh"

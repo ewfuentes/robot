@@ -108,6 +108,8 @@ WorldMap::WorldMap(const WorldMapConfig &config, const size_t seed)
             .transition_times = {time::RobotTimestamp::min(), time::RobotTimestamp::max()},
         });
     }
+    // TODO Incorporate fixed beacons into potential
+    beacon_potential_ = config.correlated_beacons.potential;
 }
 
 std::vector<Beacon> WorldMap::visible_beacons(const time::RobotTimestamp &t) const {
