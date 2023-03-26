@@ -199,8 +199,8 @@ void visualize_beacon_sim(const BeaconSimState &state, const double zoom_factor,
     }
 
     // Draw Goal
-    if (state.planning_inputs.has_value()) {
-        const Eigen::Vector2d &goal_position = state.planning_inputs->goal.goal_position;
+    if (state.goal.has_value()) {
+        const Eigen::Vector2d &goal_position = state.goal->goal_position;
         glBegin(GL_LINE_LOOP);
         glColor4ub(255, 233, 0, 255);
         for (const auto &corner :

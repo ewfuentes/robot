@@ -65,19 +65,18 @@ proto::BeaconSimDebug tick_sim(const SimConfig &config, const RobotCommand &comm
     if (config.enable_brm_planner) {
         // Plan
         const bool have_plan = state->plan.has_value();
-        const bool have_inputs = state->planning_inputs.has_value();
+        const bool have_goal = state->goal.has_value();
         const bool should_plan =
-            have_inputs &&
-            (!have_plan || (have_plan && state->planning_inputs->goal.time_of_validity >
-                                             state->plan->time_of_validity));
+            have_goal && (!have_plan || (have_plan && state->goal->time_of_validity >
+                                                          state->plan->time_of_validity));
         if (should_plan) {
             constexpr int NUM_START_CONNECTIONS = 6;
             constexpr int NUM_GOAL_CONNECTIONS = 6;
             constexpr double UNCERTAINTY_TOLERANCE = 0.1;
             std::cout << "Starting to Plan" << std::endl;
             const auto brm_plan = compute_belief_road_map_plan(
-                state->road_map, state->ekf, state->planning_inputs->beacon_potential,
-                state->planning_inputs->goal.goal_position, OBS_CONFIG.max_sensor_range_m.value(),
+                state->road_map, state->ekf, state->map.beacon_potential(),
+                state->goal->goal_position, OBS_CONFIG.max_sensor_range_m.value(),
                 NUM_START_CONNECTIONS, NUM_GOAL_CONNECTIONS, UNCERTAINTY_TOLERANCE);
             std::cout << "plan complete" << std::endl;
             for (int idx = 0; idx < static_cast<int>(brm_plan->nodes.size()); idx++) {

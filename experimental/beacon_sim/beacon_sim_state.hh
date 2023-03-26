@@ -26,8 +26,7 @@ struct Goal {
 };
 
 struct PlanningInputs {
-  Goal goal;
-  BeaconPotential beacon_potential;
+    BeaconPotential beacon_potential;
 };
 
 struct BeaconSimState {
@@ -37,7 +36,7 @@ struct BeaconSimState {
     RobotState robot;
     EkfSlam ekf;
     std::vector<BeaconObservation> observations;
-    std::optional<PlanningInputs> planning_inputs;
+    std::optional<Goal> goal;
     std::optional<Plan> plan;
     std::mt19937 gen;
 };

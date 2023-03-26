@@ -365,13 +365,9 @@ void run_simulation(const SimConfig &sim_config) {
         .robot = RobotState(INIT_POS_X_M, INIT_POS_Y_M, INIT_HEADING_RAD),
         .ekf = EkfSlam(EKF_CONFIG, time::current_robot_time()),
         .observations = {},
-        .planning_inputs = {{
-            .goal =
-                {
-                    .time_of_validity = time::current_robot_time(),
-                    .goal_position = {-14.0, 0.0},
-                },
-            .beacon_potential = map.beacon_potential(),
+        .goal = {{
+            .time_of_validity = time::current_robot_time(),
+            .goal_position = {-14.0, 0.0},
         }},
         .plan = std::nullopt,
         .gen = std::mt19937(0),
