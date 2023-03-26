@@ -7,7 +7,6 @@
 #include "Eigen/Core"
 #include "common/liegroups/se2.hh"
 #include "common/math/redheffer_star.hh"
-#include "experimental/beacon_sim/correlated_beacons.hh"
 #include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/generate_observations.hh"
 #include "experimental/beacon_sim/robot.hh"

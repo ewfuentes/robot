@@ -25,10 +25,6 @@ struct Goal {
     Eigen::Vector2d goal_position;
 };
 
-struct PlanningInputs {
-    BeaconPotential beacon_potential;
-};
-
 struct BeaconSimState {
     time::RobotTimestamp time_of_validity;
     WorldMap map;
