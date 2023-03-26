@@ -130,7 +130,7 @@ TEST(BeliefRoadMapPlannerTest, grid_road_map) {
 
     // Action
     const auto maybe_plan = compute_belief_road_map_plan(
-        road_map, ekf_slam, GOAL_STATE, MAX_SENSOR_RANGE_M, NUM_START_CONNECTIONS,
+        road_map, ekf_slam, {}, GOAL_STATE, MAX_SENSOR_RANGE_M, NUM_START_CONNECTIONS,
         NUM_GOAL_CONENCTIONS, UNCERTAINTY_TOLERANCE);
 
     // Verification
@@ -169,7 +169,7 @@ TEST(BeliefRoadMapPlannerTest, compute_edge_transform_no_measurements) {
 
     // Action
     const auto edge_belief_transform = detail::compute_edge_belief_transform(
-        local_from_robot, end_pos, ekf_slam.config(), ekf_slam.estimate(), MAX_SENSOR_RANGE_M);
+        local_from_robot, end_pos, ekf_slam.config(), ekf_slam.estimate(), {}, MAX_SENSOR_RANGE_M);
 
     // Verification
     EXPECT_EQ(edge_belief_transform.local_from_robot.translation().x(), end_pos.x());
@@ -203,7 +203,7 @@ TEST(BeliefRoadMapPlannerTest, compute_edge_transform_with_measurement) {
 
     // Action
     const auto edge_belief_transform = detail::compute_edge_belief_transform(
-        local_from_robot, end_pos, ekf_slam.config(), ekf_slam.estimate(), MAX_SENSOR_RANGE_M);
+        local_from_robot, end_pos, ekf_slam.config(), ekf_slam.estimate(), {}, MAX_SENSOR_RANGE_M);
 
     // Verification
     EXPECT_EQ(edge_belief_transform.local_from_robot.translation().x(), end_pos.x());
