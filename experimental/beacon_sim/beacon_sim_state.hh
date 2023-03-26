@@ -6,6 +6,7 @@
 
 #include "common/time/robot_time.hh"
 #include "experimental/beacon_sim/belief_road_map_planner.hh"
+#include "experimental/beacon_sim/correlated_beacons.hh"
 #include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/generate_observations.hh"
 #include "experimental/beacon_sim/robot.hh"
@@ -24,6 +25,11 @@ struct Goal {
     Eigen::Vector2d goal_position;
 };
 
+struct PlanningInputs {
+  Goal goal;
+  BeaconPotential beacon_potential;
+};
+
 struct BeaconSimState {
     time::RobotTimestamp time_of_validity;
     WorldMap map;
@@ -31,7 +37,7 @@ struct BeaconSimState {
     RobotState robot;
     EkfSlam ekf;
     std::vector<BeaconObservation> observations;
-    std::optional<Goal> goal;
+    std::optional<PlanningInputs> planning_inputs;
     std::optional<Plan> plan;
     std::mt19937 gen;
 };

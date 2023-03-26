@@ -334,6 +334,7 @@ cc_library(
     ":robot",
     ":generate_observations",
     ":belief_road_map_planner",
+    ":correlated_beacons",
     "//common/time:robot_time",
     "//planning:probabilistic_road_map",
   ]

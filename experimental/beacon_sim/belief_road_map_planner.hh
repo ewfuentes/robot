@@ -31,6 +31,7 @@ ScatteringTransform compute_edge_belief_transform(const liegroups::SE2 &local_fr
                                                   const Eigen::Vector2d &end_state_in_local,
                                                   const EkfSlamConfig &ekf_config,
                                                   const EkfSlamEstimate &ekf_estimate,
+                                                  const BeaconPotential &beacon_potential,
                                                   const double max_sensor_range_m);
 }  // namespace detail
 }  // namespace robot::experimental::beacon_sim

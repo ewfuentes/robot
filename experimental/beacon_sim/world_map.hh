@@ -68,6 +68,8 @@ class WorldMap {
 
     void update(const time::RobotTimestamp &t);
 
+    const BeaconPotential &beacon_potential() const { return beacon_potential_; }
+
    private:
     struct CompleteBeacon {
         int id;
@@ -82,5 +84,6 @@ class WorldMap {
     std::mt19937 generator_;
     std::vector<Obstacle> obstacles_;
     std::vector<CompleteBeacon> beacons_;
+    BeaconPotential beacon_potential_;
 };
 }  // namespace robot::experimental::beacon_sim

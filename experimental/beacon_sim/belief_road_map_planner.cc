@@ -103,8 +103,8 @@ ScatteringTransformMatrix compute_process_transform(
 ScatteringTransformMatrix compute_measurement_transform(const liegroups::SE2 &local_from_robot,
                                                         const EkfSlamConfig &ekf_config,
                                                         const EkfSlamEstimate &ekf_estimate,
-                                                        const double max_sensor_range_m,
-                                                        const BeaconPotential &beacon_potential) {
+                                                        const BeaconPotential &beacon_potential,
+                                                        const double max_sensor_range_m) {
     // Simulate observations
     const auto observations =
         generate_observations(local_from_robot, ekf_estimate, max_sensor_range_m);
@@ -145,9 +145,8 @@ planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap
         edge_transform_cache;
     return [&road_map, goal_state, max_sensor_range_m, &ekf,
             edge_transform_cache = std::move(edge_transform_cache),
-            &beacon_potential](
-               const RobotBelief &initial_belief, const int start_idx,
-               const int end_idx) mutable -> RobotBelief {
+            &beacon_potential](const RobotBelief &initial_belief, const int start_idx,
+                               const int end_idx) mutable -> RobotBelief {
         // Get the belief edge transform, optionally updating the cache
         const DirectedEdge edge = {
             .source = start_idx,
@@ -161,7 +160,7 @@ planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap
             is_in_cache ? cache_iter->second
                         : detail::compute_edge_belief_transform(
                               initial_belief.local_from_robot, end_pos_in_local, ekf.config(),
-                              ekf.estimate(), max_sensor_range_m, beacon_potential);
+                              ekf.estimate(), beacon_potential, max_sensor_range_m);
         if (!is_in_cache) {
             // Add the transform to the cache in case it's missing
             edge_transform_cache[edge] = transform;
@@ -231,8 +230,8 @@ ScatteringTransform compute_edge_belief_transform(const liegroups::SE2 &local_fr
                                                   const Eigen::Vector2d &end_state_in_local,
                                                   const EkfSlamConfig &ekf_config,
                                                   const EkfSlamEstimate &ekf_estimate,
-                                                  const double max_sensor_range_m,
-                                                  const BeaconPotential &beacon_potential) {
+                                                  const BeaconPotential &beacon_potential,
+                                                  const double max_sensor_range_m) {
     constexpr double DT_S = 0.5;
     constexpr double VELOCITY_MPS = 2.0;
     constexpr double ANGULAR_VELOCITY_RADPS = 2.0;
@@ -272,7 +271,7 @@ ScatteringTransform compute_edge_belief_transform(const liegroups::SE2 &local_fr
 
         // Compute the measurement update for the covariance
         const ScatteringTransformMatrix measurement_transform = compute_measurement_transform(
-            local_from_new_robot, ekf_config, ekf_estimate, max_sensor_range_m, beacon_potential);
+            local_from_new_robot, ekf_config, ekf_estimate, beacon_potential, max_sensor_range_m);
 
         scattering_transform = math::redheffer_star(measurement_transform, scattering_transform);
         scattering_transform = math::redheffer_star(process_transform, scattering_transform);
