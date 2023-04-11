@@ -11,3 +11,19 @@ py_binary(
     requirement("IPython"),
   ]
 )
+
+py_library(
+  name = "model",
+  srcs = ["model.py"],
+  deps = [
+    requirement("torch")
+  ]
+)
+
+py_test(
+  name = "model_test",
+  srcs = ["model_test.py"],
+  deps = [
+    ":model"
+  ]
+)

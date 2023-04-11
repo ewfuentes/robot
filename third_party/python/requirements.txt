@@ -4,6 +4,8 @@
 #
 #    bazel run //third_party/python:requirements.update
 #
+--extra-index-url https://download.pytorch.org/whl/nightly/cu117
+
 anyio==3.6.2 \
     --hash=sha256:25ea0d673ae30af41a0c442f81cf3b38c7e79fdc7b60335a4c14e05eb0947421 \
     --hash=sha256:fbbe32bd270d2a2ef3ed1c5d45041250284e31fc0a4df4a5a6071842051a51e3
@@ -333,6 +335,12 @@ fastjsonschema==2.16.2 \
     --hash=sha256:01e366f25d9047816fe3d288cbfc3e10541daf0af2044763f3d0ade42476da18 \
     --hash=sha256:21f918e8d9a1a4ba9c22e09574ba72267a6762d47822db9add95f6454e51cc1c
     # via nbformat
+filelock==3.11.0 \
+    --hash=sha256:3618c0da67adcc0506b015fd11ef7faf1b493f0b40d87728e19986b536890c37 \
+    --hash=sha256:f08a52314748335c6460fc8fe40cd5638b85001225db78c2aa01c8c0db83b318
+    # via
+    #   pytorch-triton
+    #   torch
 fonttools==4.38.0 \
     --hash=sha256:2bb244009f9bf3fa100fc3ead6aeb99febe5985fa20afbfbaa2f8946c2fbdaf1 \
     --hash=sha256:820466f43c8be8c3009aef8b87e785014133508f0de64ec469e4efb643ae54fb
@@ -371,6 +379,7 @@ jinja2==3.1.2 \
     #   nbclassic
     #   nbconvert
     #   notebook
+    #   torch
 joblib==1.2.0 \
     --hash=sha256:091138ed78f800342968c523bdde947e7a305b8594b910a0fea2ab83c3c6d385 \
     --hash=sha256:e1cee4a79e4af22881164f218d4311f60074197fb707e082e803b61f6d137018
@@ -612,6 +621,10 @@ nest-asyncio==1.5.6 \
     #   jupyter-client
     #   nbclassic
     #   notebook
+networkx==3.1 \
+    --hash=sha256:4f33f68cb2afcf86f28a45f43efc27a9386b535d567d2127f8f61d51dec58d36 \
+    --hash=sha256:de346335408f84de0eada6ff9fafafff9bcda11f0a0dfaa931133debb146ab61
+    # via torch
 notebook==6.5.2 \
     --hash=sha256:c1897e5317e225fc78b45549a6ab4b668e4c996fd03a04e938fe5e7af2bfffd0 \
     --hash=sha256:e04f9018ceb86e4fa841e92ea8fb214f8d23c1cedfde530cc96f92446924f0e4
@@ -872,6 +885,12 @@ python-dateutil==2.8.2 \
     #   jupyter-client
     #   matplotlib
     #   pandas
+pytorch-triton==2.1.0+46672772b4 \
+    --hash=sha256:30ed945f59278110abffa0fb9d4ecc0e764df1e54eb3bd784cab9484fca73883 \
+    --hash=sha256:417a1c80a5be9f59e5c2419fa53ece02408f4317643325965f88002c6a41273a \
+    --hash=sha256:54941460bf12ce22557d51b5c0410a20e638eeb07902496616e8b123bd114da7 \
+    --hash=sha256:b88d6ad0fd0ce812a36a794da9fea53af2cf4051050878e8547d74067b7296d1
+    # via torch
 pytz==2022.7.1 \
     --hash=sha256:01a0681c4b9684a28304615eba55d1ab31ae00bf68ec157ec3708a8182dbbcd0 \
     --hash=sha256:78f4f37d8198e0627c5f1143240bb0206b8691d8d7ac6d78fee88b78733f8c4a
@@ -1035,7 +1054,9 @@ stack-data==0.6.2 \
 sympy==1.11 \
     --hash=sha256:1fe96b4c56bb7a7630cdf150a6cd98bc97a79e6be233e30502aba1cf54dee33d \
     --hash=sha256:b53069f5f30e4a4690b57cdb8e3d0d9065fff42627239db718214f804e442481
-    # via -r third_party/python/requirements.in
+    # via
+    #   -r third_party/python/requirements.in
+    #   torch
 terminado==0.17.1 \
     --hash=sha256:6ccbbcd3a4f8a25a5ec04991f39a0b8db52dfcd487ea0e578d977e6752380333 \
     --hash=sha256:8650d44334eba354dd591129ca3124a6ba42c3d5b70df5051b6921d506fdaeae
@@ -1051,6 +1072,16 @@ tinycss2==1.2.1 \
     --hash=sha256:2b80a96d41e7c3914b8cda8bc7f705a4d9c49275616e886103dd839dfc847847 \
     --hash=sha256:8cff3a8f066c2ec677c06dbc7b45619804a6938478d9d73c284b29d14ecb0627
     # via nbconvert
+torch==2.1.0.dev20230411+cu117 \
+    --hash=sha256:12e5fe1b12f347c133f41e3c931e88247a4d2e0f32119921afe4acb8238b56bf \
+    --hash=sha256:34d66c00080af831b3c309a689378a22a8a7b2e2dd9d9f81d2b267d21d15dd83 \
+    --hash=sha256:3d58c57a77bf9599bb1b5d323d984020c41ddf31c9e8a9f5d0aeddcc799cb1ec \
+    --hash=sha256:53173c77c134091e0836c5412fbe4d54ade042c6f218c0376935988601ada756 \
+    --hash=sha256:7d381df1b3731ea227f6bfdce3882a67ab344c3eb4f6c154fe4d39dfbc662a8a \
+    --hash=sha256:a2f1690e0764c5e73cab6f05beb7c043992fbd967b219c532215c2c2178d7334 \
+    --hash=sha256:aaee7bbc3e35398b7c5322364debd6f528f3f7493bc541fc3af8fd5319af0b22 \
+    --hash=sha256:fbf851e11402ac923aae64c84c30d53f5b2b5b5e9de73ed28b88b9d6e3b44f46
+    # via -r third_party/python/requirements.in
 tornado==6.2 \
     --hash=sha256:1d54d13ab8414ed44de07efecb97d4ef7c39f7438cf5e976ccd356bebb1b5fca \
     --hash=sha256:20f638fd8cc85f3cbae3c732326e96addff0a15e22d80f049e00121651e82e72 \
@@ -1089,6 +1120,10 @@ traitlets==5.8.1 \
     #   nbconvert
     #   nbformat
     #   notebook
+typing-extensions==4.5.0 \
+    --hash=sha256:5cb5f4a79139d699607b3ef622a1dedafa84e115ab0024e0d9c044a9479ca7cb \
+    --hash=sha256:fb33085c39dd998ac16d1431ebc293a8b3eedd00fd4a32de0ff79002c19511b4
+    # via torch
 urllib3==1.26.14 \
     --hash=sha256:076907bf8fd355cde77728471316625a4d2f7e713c125f51953bb5b3eecf4f72 \
     --hash=sha256:75edcdc2f7d85b137124a6c3c9fc3933cdeaa12ecb9a6a959f22797a0feca7e1
@@ -1111,3 +1146,9 @@ websocket-client==1.4.2 \
     --hash=sha256:d6b06432f184438d99ac1f456eaf22fe1ade524c3dd16e661142dc54e9cba574 \
     --hash=sha256:d6e8f90ca8e2dd4e8027c4561adeb9456b54044312dba655e7cae652ceb9ae59
     # via jupyter-server
+
+# The following packages are considered to be unsafe in a requirements file:
+setuptools==67.6.1 \
+    --hash=sha256:257de92a9d50a60b8e22abfcbb771571fde0dbf3ec234463212027a4eeecbe9a \
+    --hash=sha256:e728ca814a823bf7bf60162daf9db95b93d532948c4c0bea762ce62f60189078
+    # via -r third_party/python/requirements.in
