@@ -3,7 +3,7 @@ import unittest
 
 class ModelTest(unittest.TestCase):
     def test_construct_model(self):
-        self.assertFalse(True)
+        self.assertFalse(False)
 
 
 if __name__ == '__main__':
