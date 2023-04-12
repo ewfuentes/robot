@@ -8,17 +8,8 @@ import tqdm.contrib.concurrent
 from typing import NamedTuple
 import pickle
 
-KeypointDescriptorDtype = np.dtype([
-    ('image_id', np.int64),
-    ('angle', np.float32),
-    ('class_id', np.int32),
-    ('octave', np.int32),
-    ('x', np.float32),
-    ('y', np.float32),
-    ('response', np.float32),
-    ('size', np.float32),
-    ('descriptor', np.uint8, (1, 32))
-])
+from experimental.beacon_dist.utils import KeypointDescriptorDtype
+
 
 def sample_image(rng, width=1280, height=720):
     with Image(width=width, height=height, background=Color('#fff')) as img:
