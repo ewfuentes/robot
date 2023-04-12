@@ -41,6 +41,6 @@ py_test(
   srcs = ["utils_test.py"],
   deps = [
     ":utils",
-    requirement("IPython"),
+    requirement("numpy"),
   ]
 )
