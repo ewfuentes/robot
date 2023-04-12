@@ -53,3 +53,6 @@ class Dataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return self._data.image_id.size(0)
+
+    def __repr__(self):
+        return f'<Dataset: {len(self)} examples>'
