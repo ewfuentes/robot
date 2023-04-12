@@ -8,7 +8,7 @@ py_binary(
     requirement("Wand"),
     requirement("numpy"),
     requirement("tqdm"),
-    requirement("IPython"),
+    ":utils",
   ]
 )
 
@@ -25,5 +25,22 @@ py_test(
   srcs = ["model_test.py"],
   deps = [
     ":model"
+  ]
+)
+
+py_library(
+  name = "utils",
+  srcs = ["utils.py"],
+  deps = [
+    requirement("torch")
+  ]
+)
+
+py_test(
+  name = "utils_test",
+  srcs = ["utils_test.py"],
+  deps = [
+    ":utils",
+    requirement("IPython"),
   ]
 )
