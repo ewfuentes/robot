@@ -42,6 +42,7 @@ py_test(
   deps = [
     ":utils",
     requirement("numpy"),
+    requirement("IPython"),
   ]
 )
 
@@ -49,6 +50,8 @@ py_binary(
   name = "train",
   srcs = ["train.py"],
   deps = [
+    requirement("torch"),
     ":utils",
+    ":model",
   ]
 )
