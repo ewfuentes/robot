@@ -11,7 +11,6 @@ from experimental.beacon_dist.utils import (
 )
 
 
-
 class DatasetTest(unittest.TestCase):
     def test_dataset_from_filename(self):
         # Setup

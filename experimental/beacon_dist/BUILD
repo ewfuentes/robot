@@ -42,7 +42,6 @@ py_test(
   deps = [
     ":utils",
     requirement("numpy"),
-    requirement("IPython"),
   ]
 )
 
