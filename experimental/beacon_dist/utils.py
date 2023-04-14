@@ -2,7 +2,6 @@ import torch
 import numpy as np
 from typing import NamedTuple, Callable
 from collections import defaultdict
-import IPython
 
 KeypointDescriptorDtype = np.dtype(
     [
