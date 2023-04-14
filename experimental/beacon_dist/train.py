@@ -36,8 +36,6 @@ def train(dataset: Dataset, train_config: TrainConfig):
     # create model
     model = Reconstructor()
 
-    # create loss function
-
     # create dataloader
     rng = torch.Generator()
     rng.manual_seed(train_config.random_seed)
@@ -49,8 +47,8 @@ def train(dataset: Dataset, train_config: TrainConfig):
     optim = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
 
     for epoch_idx in range(train_config.num_epochs):
-        print(f'Epoch {epoch_idx}')
-        for batch in data_loader:
+        loss = None
+        for batch_idx, batch in enumerate(data_loader):
 
             # Zero gradients
             optim.zero_grad()
@@ -64,6 +62,7 @@ def train(dataset: Dataset, train_config: TrainConfig):
 
             # take step
             optim.step()
+        print(f'End of Epoch {epoch_idx} Loss: {loss}')
 
 
 def main(train_config: TrainConfig):
