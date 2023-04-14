@@ -91,6 +91,7 @@ def sample_keypoints(
 ) -> ReconstructorBatch:
     # This function only works on single sample
     assert sample.image_id.ndim == 1
+    assert sample.image_id.size(0) == 1
 
     num_keypoints= sample.x.shape[1]
     if num_keypoints> num_keypoints_to_sample:
