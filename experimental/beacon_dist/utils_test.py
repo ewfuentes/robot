@@ -6,6 +6,7 @@ import torch
 from experimental.beacon_dist.utils import (
     Dataset,
     KeypointDescriptorDtype,
+    reconstruction_loss,
     sample_keypoints,
     batchify,
 )
@@ -77,6 +78,19 @@ class UtilsTest(unittest.TestCase):
         self.assertNotEqual(batched.x[2, 0], torch.finfo(torch.float32).min)
         self.assertEqual(batched.x[2, 1], torch.finfo(torch.float32).min)
         self.assertEqual(batched.x[2, 2], torch.finfo(torch.float32).min)
+
+    def test_reconstructor_loss(self):
+        # Setup
+        dataset = Dataset(data=get_test_data())
+        batch_in = batchify(dataset._data)
+        batch_out = batch_in._replace(x=batch_in.x + 0.1)
+        expected_loss = torch.mean((batch_out.x - batch_in.x) ** 2)
+
+        # Action
+        loss = reconstruction_loss(batch_in, batch_out)
+
+        # Verification
+        self.assertEqual(loss, expected_loss)
 
 
 if __name__ == "__main__":

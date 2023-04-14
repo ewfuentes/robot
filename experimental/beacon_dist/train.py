@@ -9,6 +9,7 @@ from experimental.beacon_dist.utils import (
     Dataset,
     ReconstructorBatch,
     reconstruction_loss,
+    batchify,
 )
 from experimental.beacon_dist.model import Reconstructor
 
@@ -27,14 +28,8 @@ def collate_fn(samples: list[ReconstructorBatch]) -> ReconstructorBatch:
         fields[f] = torch.nested.nested_tensor(
             [getattr(sample, f) for sample in samples]
         )
-        if fields[f].dim() == 1:
-            fields[f] = torch.tensor(fields[f])
-        else:
-            fields[f] = torch.nested.to_padded_tensor(
-                fields[f], -float('inf')
-            )
 
-    return ReconstructorBatch(**fields)
+    return batchify(ReconstructorBatch(**fields))
 
 
 def train(dataset: Dataset, train_config: TrainConfig):

@@ -71,7 +71,10 @@ class Dataset(torch.utils.data.Dataset):
         # unsqueeze to add a batch dimension
         return self._sample_transform_fn(
             ReconstructorBatch(
-                **{f: getattr(self._data, f)[idx].unsqueeze(0) for f in self._data._fields}
+                **{
+                    f: getattr(self._data, f)[idx].unsqueeze(0)
+                    for f in self._data._fields
+                }
             )
         )
 
@@ -82,10 +85,6 @@ class Dataset(torch.utils.data.Dataset):
         return f"<Dataset: {len(self)} examples>"
 
 
-def reconstruction_loss(input_batch, model_output) -> torch.Tensor:
-    return torch.tensor(0.0, requires_grad=True)
-
-
 def sample_keypoints(
     sample: ReconstructorBatch, num_keypoints_to_sample: int, gen: torch.Generator
 ) -> ReconstructorBatch:
@@ -93,8 +92,8 @@ def sample_keypoints(
     assert sample.image_id.ndim == 1
     assert sample.image_id.size(0) == 1
 
-    num_keypoints= sample.x.shape[1]
-    if num_keypoints> num_keypoints_to_sample:
+    num_keypoints = sample.x.shape[1]
+    if num_keypoints > num_keypoints_to_sample:
         # We need to sample the data
         idxs = torch.multinomial(
             torch.arange(0, num_keypoints, dtype=torch.float32),
@@ -112,6 +111,7 @@ def sample_keypoints(
         return ReconstructorBatch(**new_fields)
     return sample
 
+
 def batchify(sample: ReconstructorBatch) -> ReconstructorBatch:
     new_fields = {}
     for field_name in sample._fields:
@@ -120,7 +120,26 @@ def batchify(sample: ReconstructorBatch) -> ReconstructorBatch:
             new_fields[field_name] = torch.stack(field.unbind())
         else:
             info = torch.finfo if field.dtype.is_floating_point else torch.iinfo
-            padding_value=info(field.dtype).min
-            new_fields[field_name] = torch.nested.to_padded_tensor(field, padding=padding_value)
+            padding_value = info(field.dtype).min
+            new_fields[field_name] = torch.nested.to_padded_tensor(
+                field, padding=padding_value
+            )
 
     return ReconstructorBatch(**new_fields)
+
+
+def reconstruction_loss(
+    input_batch: ReconstructorBatch,
+    model_output: ReconstructorBatch,
+    fields_to_compare: None | list[str] = None,
+) -> torch.Tensor:
+    if fields_to_compare is None:
+        fields_to_compare = ["x", "y"]
+
+    loss = torch.tensor(0.0)
+    for field_name in fields_to_compare:
+        assert field_name in input_batch._fields
+        input_field = getattr(input_batch, field_name)
+        output_field = getattr(model_output, field_name)
+        loss += torch.nn.functional.mse_loss(input_field, output_field)
+    return loss
