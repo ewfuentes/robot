@@ -16,6 +16,7 @@ py_library(
   name = "model",
   srcs = ["model.py"],
   deps = [
+    requirement("numpy"),
     requirement("torch")
   ]
 )
@@ -24,6 +25,7 @@ py_test(
   name = "model_test",
   srcs = ["model_test.py"],
   deps = [
+    ":test_helpers",
     ":model"
   ]
 )
@@ -36,10 +38,20 @@ py_library(
   ]
 )
 
+py_library(
+  name = "test_helpers",
+  srcs = ["test_helpers.py"],
+  deps = [
+    requirement("numpy"),
+    ":utils",
+  ]
+)
+
 py_test(
   name = "utils_test",
   srcs = ["utils_test.py"],
   deps = [
+    ":test_helpers",
     ":utils",
     requirement("numpy"),
   ]
