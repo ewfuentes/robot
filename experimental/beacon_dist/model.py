@@ -10,6 +10,8 @@ class ReconstructorParams(NamedTuple):
     descriptor_size: int
     descriptor_embedding_size: int
     position_encoding_factor: float
+    num_encoder_heads: int
+    num_encoder_layers: int
 
 
 def expand_descriptor(descriptor_tensor: torch.Tensor):
@@ -24,14 +26,14 @@ def expand_descriptor(descriptor_tensor: torch.Tensor):
 
 def encode_position(x: torch.Tensor, y: torch.Tensor, output_size: int, factor: float):
     assert output_size % 4 == 0, "Output size must be divisible by 4"
-    assert len(x.shape) == 3
-    assert len(y.shape) == 3
+    assert len(x.shape) == 2
+    assert len(y.shape) == 2
     out = torch.zeros((*x.shape, output_size), dtype=torch.float32)
     for i in range(0, output_size, 4):
-        out[:,:,:, 4 * i + 0] = torch.sin(x / factor ** (4 * i / output_size))
-        out[:,:,:, 4 * i + 1] = torch.cos(x / factor ** (4 * i / output_size))
-        out[:,:,:, 4 * i + 2] = torch.sin(y / factor ** (4 * i / output_size))
-        out[:,:,:, 4 * i + 3] = torch.cos(y / factor ** (4 * i / output_size))
+        out[:, :, i + 0] = torch.sin(x / (factor ** (i / output_size)))
+        out[:, :, i + 1] = torch.cos(x / (factor ** (i / output_size)))
+        out[:, :, i + 2] = torch.sin(y / (factor ** (i / output_size)))
+        out[:, :, i + 3] = torch.cos(y / (factor ** (i / output_size)))
     return out
 
 
@@ -39,9 +41,7 @@ class Reconstructor(torch.nn.Module):
     def __init__(self, params: ReconstructorParams):
         super().__init__()
 
-        # Ignore token
-
-        # descriptor encoder
+        # descriptor embedding
         self._descriptor_embedding = torch.nn.Linear(
             params.descriptor_size,
             params.descriptor_embedding_size,
@@ -49,7 +49,15 @@ class Reconstructor(torch.nn.Module):
             dtype=torch.float32,
         )
 
-        # Position encoder
+        # encoder
+        encoder_layer = torch.nn.TransformerEncoderLayer(
+            d_model=params.descriptor_embedding_size,
+            nhead=params.num_encoder_heads,
+            batch_first=True,
+        )
+        self._encoder = torch.nn.TransformerEncoder(
+            encoder_layer, num_layers=params.num_encoder_layers
+        )
 
         self._params = params
 
@@ -66,12 +74,12 @@ class Reconstructor(torch.nn.Module):
         )
 
     def forward(self, x: utils.ReconstructorBatch):
-
         # Encode the descriptors
         embedded_descriptors = self.encode_descriptors(
             x.descriptor
         ) + self.position_encoding(x.x, x.y)
 
         # Pass through transformer encoder layers
+        encoded_result = self._encoder(embedded_descriptors)
 
-        return x._replace(x=x.x)
+        return encoded_result

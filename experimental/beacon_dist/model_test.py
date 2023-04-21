@@ -33,8 +33,8 @@ class ModelTest(unittest.TestCase):
 
     def test_position_encoding(self):
         # Setup
-        x = torch.tensor([[[1, 2, 3, 4]]])
-        y = torch.tensor([[[10, 9, 8, 4]]])
+        x = torch.tensor([[1, 2, 3, 4]])
+        y = torch.tensor([[10, 9, 8, 4]])
         OUTPUT_SIZE = 16
         FACTOR = 10000
 
@@ -42,22 +42,24 @@ class ModelTest(unittest.TestCase):
         position_embedding = model.encode_position(x, y, OUTPUT_SIZE, FACTOR)
 
         # Verification
-        print(position_embedding.shape)
-        print(position_embedding)
+        self.assertEqual(position_embedding.shape, (*x.shape, OUTPUT_SIZE))
 
     def test_run_model(self):
         # Setup
-        batch = batchify(Dataset(data=get_test_data())._data)
+        batch = batchify(Dataset(data=get_test_data()).data())
         m = model.Reconstructor(model.ReconstructorParams(
             descriptor_size=256,
-            descriptor_embedding_size=16,
-            position_encoding_factor=100000
+            descriptor_embedding_size=32,
+            position_encoding_factor=100000,
+            num_encoder_heads = 4,
+            num_encoder_layers = 2,
         ))
 
         # Action
         output = m(batch)
 
         # Verification
+        print('encoder output shape:', output.shape)
         self.assertIsNotNone(output)
 
 

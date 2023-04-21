@@ -84,6 +84,8 @@ class Dataset(torch.utils.data.Dataset):
     def __repr__(self) -> str:
         return f"<Dataset: {len(self)} examples>"
 
+    def data(self) -> ReconstructorBatch:
+        return self._data
 
 def sample_keypoints(
     sample: ReconstructorBatch, num_keypoints_to_sample: int, gen: torch.Generator
