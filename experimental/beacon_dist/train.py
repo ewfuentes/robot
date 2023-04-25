@@ -1,14 +1,13 @@
 import argparse
 import os
 import torch
-import sys
 from typing import NamedTuple
+import time
 
 
 from experimental.beacon_dist.utils import (
     Dataset,
     KeypointBatch,
-    reconstruction_loss,
     batchify,
 )
 from experimental.beacon_dist.model import ConfigurationModel, ConfigurationModelParams
@@ -35,21 +34,23 @@ def collate_fn(samples: list[KeypointBatch]) -> KeypointBatch:
 def train(dataset: Dataset, train_config: TrainConfig):
     # create model
     model = ConfigurationModel(ConfigurationModelParams(
-        descriptor_size=32,
+        descriptor_size=256,
         descriptor_embedding_size=256,
         position_encoding_factor=10000,
         num_encoder_heads=4,
         num_encoder_layers=4,
         num_decoder_heads=4,
         num_decoder_layers=4
-    ))
+    )).to('cuda')
 
     # create dataloader
     rng = torch.Generator()
     rng.manual_seed(train_config.random_seed)
     data_loader = torch.utils.data.DataLoader(
-        dataset, batch_size=4, shuffle=True, collate_fn=collate_fn, drop_last=True
+        dataset, batch_size=32, shuffle=True, collate_fn=collate_fn, drop_last=True
     )
+
+    print(model)
 
     loss_func = torch.nn.BCEWithLogitsLoss()
 
@@ -59,8 +60,8 @@ def train(dataset: Dataset, train_config: TrainConfig):
     for epoch_idx in range(train_config.num_epochs):
         loss = None
         for batch_idx, batch in enumerate(data_loader):
-
             # Zero gradients
+            batch = batch.to('cuda')
             optim.zero_grad()
 
             # compute model outputs

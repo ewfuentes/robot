@@ -35,6 +35,9 @@ class KeypointBatch(NamedTuple):
     # Tensor with dimension [Batch, key_point_number, 32]
     descriptor: torch.Tensor
 
+    def to(self, *args, **kwargs):
+        return KeypointBatch(**{key: value.to(*args, **kwargs) for key, value in self._asdict().items()})
+
 
 class Dataset(torch.utils.data.Dataset):
     def __init__(
@@ -72,7 +75,7 @@ class Dataset(torch.utils.data.Dataset):
         return self._sample_transform_fn(
             KeypointBatch(
                 **{
-                    f: getattr(self._data, f)[idx].unsqueeze(0)
+                    f: getattr(self._data, f)[idx]
                     for f in self._data._fields
                 }
             )
@@ -91,10 +94,9 @@ def sample_keypoints(
     sample: KeypointBatch, num_keypoints_to_sample: int, gen: torch.Generator
 ) -> KeypointBatch:
     # This function only works on single sample
-    assert sample.image_id.ndim == 1
-    assert sample.image_id.size(0) == 1
+    assert sample.image_id.ndim == 0
 
-    num_keypoints = sample.x.shape[1]
+    num_keypoints = len(sample.x)
     if num_keypoints > num_keypoints_to_sample:
         # We need to sample the data
         idxs = torch.multinomial(
@@ -106,8 +108,8 @@ def sample_keypoints(
         new_fields = {}
         for field_name in sample._fields:
             field = getattr(sample, field_name)
-            if field.ndim > 1:
-                new_fields[field_name] = field[:1, idxs, ...]
+            if field.ndim > 0:
+                new_fields[field_name] = field[idxs, ...]
             else:
                 new_fields[field_name] = field
         return KeypointBatch(**new_fields)

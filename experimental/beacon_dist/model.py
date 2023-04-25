@@ -20,7 +20,7 @@ def expand_descriptor(descriptor_tensor: torch.Tensor):
     BITS_PER_BYTE = 8
     shape = descriptor_tensor.shape
     new_shape = *shape[:-1], shape[-1] * BITS_PER_BYTE
-    out = torch.zeros(new_shape)
+    out = torch.zeros(new_shape, device=descriptor_tensor.device)
     for i in range(BITS_PER_BYTE):
         out[:, :, i::BITS_PER_BYTE] = torch.bitwise_and(descriptor_tensor, 1 << i) > 0
     return out
@@ -30,7 +30,7 @@ def encode_position(x: torch.Tensor, y: torch.Tensor, output_size: int, factor: 
     assert output_size % 4 == 0, "Output size must be divisible by 4"
     assert len(x.shape) == 2
     assert len(y.shape) == 2
-    out = torch.zeros((*x.shape, output_size), dtype=torch.float32)
+    out = torch.zeros((*x.shape, output_size), dtype=torch.float32, device=x.device)
     for i in range(0, output_size, 4):
         out[:, :, i + 0] = torch.sin(x / (factor ** (i / output_size)))
         out[:, :, i + 1] = torch.cos(x / (factor ** (i / output_size)))
@@ -93,9 +93,6 @@ class ConfigurationModel(torch.nn.Module):
     def forward(self, context: utils.KeypointBatch, query: torch.Tensor):
         # Query is a [batch, keypoint] binary tensor where we want the model to
         # compute the probability that the query is a valid configuration
-        for field_name in context._fields:
-            print(field_name, getattr(context, field_name).shape)
-        print(query.shape)
         assert query.ndim == 2
         assert query.shape[0] == context.x.shape[0]
 
@@ -116,7 +113,7 @@ class ConfigurationModel(torch.nn.Module):
         )
 
         # add padding masks for the target and memory
-        decoder_output = self._decoder(target=query_descriptors, memory=encoded_context)
+        decoder_output = self._decoder(tgt=query_descriptors, memory=encoded_context)
 
         # Average pooling across the keypoints
         # TODO consider using attention based pooling instead

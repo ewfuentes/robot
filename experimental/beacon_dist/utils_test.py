@@ -21,7 +21,7 @@ class DatasetTest(unittest.TestCase):
 
         # Verification
         self.assertEqual(len(dataset), 3)
-        self.assertEqual(dataset[1].descriptor[0, 0, 0], 4)
+        self.assertEqual(dataset[1].descriptor[0, 0], 4)
 
 
 class UtilsTest(unittest.TestCase):
@@ -35,10 +35,8 @@ class UtilsTest(unittest.TestCase):
         subsampled = sample_keypoints(dataset[0], num_keypoints_to_sample=2, gen=gen)
 
         # Verification
-        # The batch dimension should be one
-        self.assertEqual(subsampled.image_id.shape[0], 1)
         # There should be two keypoints even though the original sample had 3 points
-        self.assertEqual(subsampled.x.shape[1], 2)
+        self.assertEqual(subsampled.x.shape[0], 2)
 
     def test_batchify(self):
         # Setup
