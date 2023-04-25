@@ -119,5 +119,5 @@ class ConfigurationModel(torch.nn.Module):
         # TODO consider using attention based pooling instead
         average_output = torch.mean(decoder_output, dim=1)
 
-        # Product the log probability of this being a valid configuration
+        # Produce the log probability of this being a valid configuration
         return self._classifier(average_output)
