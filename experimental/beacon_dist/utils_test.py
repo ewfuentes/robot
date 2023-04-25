@@ -3,27 +3,13 @@ import unittest
 import numpy as np
 import torch
 
+from experimental.beacon_dist.test_helpers import get_test_data
 from experimental.beacon_dist.utils import (
     Dataset,
-    KeypointDescriptorDtype,
     reconstruction_loss,
     sample_keypoints,
     batchify,
 )
-
-
-def get_test_data():
-    return np.array(
-        [
-            (0, 1, 2, 3, 4, 5, 6, 7, np.ones((32,), dtype=np.int16) * 1),
-            (0, 8, 9, 10, 11, 12, 13, 14, np.ones((32,), dtype=np.int16) * 2),
-            (0, 15, 16, 17, 18, 19, 20, 21, np.ones((32,), dtype=np.int16) * 3),
-            (1, 22, 23, 24, 25, 26, 27, 28, np.ones((32,), dtype=np.int16) * 4),
-            (1, 29, 30, 31, 32, 33, 34, 35, np.ones((32,), dtype=np.int16) * 5),
-            (2, 36, 37, 38, 39, 40, 41, 42, np.ones((32,), dtype=np.int16) * 6),
-        ],
-        dtype=KeypointDescriptorDtype,
-    )
 
 
 class DatasetTest(unittest.TestCase):
@@ -35,7 +21,7 @@ class DatasetTest(unittest.TestCase):
 
         # Verification
         self.assertEqual(len(dataset), 3)
-        self.assertEqual(dataset[1].descriptor[0, 0, 0], 4)
+        self.assertEqual(dataset[1].descriptor[0, 0], 4)
 
 
 class UtilsTest(unittest.TestCase):
@@ -49,10 +35,8 @@ class UtilsTest(unittest.TestCase):
         subsampled = sample_keypoints(dataset[0], num_keypoints_to_sample=2, gen=gen)
 
         # Verification
-        # The batch dimension should be one
-        self.assertEqual(subsampled.image_id.shape[0], 1)
         # There should be two keypoints even though the original sample had 3 points
-        self.assertEqual(subsampled.x.shape[1], 2)
+        self.assertEqual(subsampled.x.shape[0], 2)
 
     def test_batchify(self):
         # Setup
