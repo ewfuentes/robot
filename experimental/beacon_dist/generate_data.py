@@ -6,7 +6,6 @@ import numpy as np
 import time
 import tqdm.contrib.concurrent
 from typing import NamedTuple
-import IPython
 
 np.set_printoptions(linewidth=200)
 
