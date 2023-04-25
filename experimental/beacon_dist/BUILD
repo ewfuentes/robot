@@ -8,7 +8,6 @@ py_binary(
     requirement("Wand"),
     requirement("numpy"),
     requirement("tqdm"),
-    requirement("IPython"),
     ":utils",
   ]
 )
