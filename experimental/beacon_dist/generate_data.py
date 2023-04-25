@@ -7,8 +7,6 @@ import time
 import tqdm.contrib.concurrent
 from typing import NamedTuple
 
-np.set_printoptions(linewidth=200)
-
 from experimental.beacon_dist.utils import KeypointDescriptorDtype
 
 LETTERS = 'ABC'

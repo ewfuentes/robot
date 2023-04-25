@@ -32,9 +32,11 @@ class KeypointBatch(NamedTuple):
     y: torch.Tensor
     response: torch.Tensor
     size: torch.Tensor
+    class_label: torch.Tensor
 
     # Tensor with dimension [Batch, key_point_number, 32]
     descriptor: torch.Tensor
+
 
     def to(self, *args, **kwargs):
         return KeypointBatch(**{key: value.to(*args, **kwargs) for key, value in self._asdict().items()})
@@ -62,7 +64,7 @@ class Dataset(torch.utils.data.Dataset):
                         torch.from_numpy(np.array(subset[0]["image_id"]))
                     )
                     continue
-                tensors[field].append(torch.from_numpy(subset[field]))
+                tensors[field].append(torch.from_numpy(subset[field].copy()))
 
         self._data = KeypointBatch(
             **{key: torch.nested.nested_tensor(value) for key, value in tensors.items()}
