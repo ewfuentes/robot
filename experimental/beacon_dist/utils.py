@@ -14,6 +14,7 @@ KeypointDescriptorDtype = np.dtype(
         ("response", np.float32),
         ("size", np.float32),
         ("descriptor", np.int16, (32,)),
+        ("class_label", np.int64),
     ]
 )
 
