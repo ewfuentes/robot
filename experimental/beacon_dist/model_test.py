@@ -47,16 +47,20 @@ class ModelTest(unittest.TestCase):
     def test_run_model(self):
         # Setup
         batch = batchify(Dataset(data=get_test_data()).data())
-        m = model.Reconstructor(model.ReconstructorParams(
+        query = torch.Tensor([[True, True, True], [True, True, False], [True, False, False]]).to(torch.bool)
+        m = model.ConfigurationModel(model.ConfigurationModelParams(
             descriptor_size=256,
             descriptor_embedding_size=32,
             position_encoding_factor=100000,
             num_encoder_heads = 4,
             num_encoder_layers = 2,
+            num_decoder_heads = 4,
+            num_decoder_layers = 2,
         ))
 
         # Action
-        output = m(batch)
+        print(query)
+        output = m(context=batch, query=query)
 
         # Verification
         print('encoder output shape:', output.shape)

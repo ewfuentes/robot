@@ -6,12 +6,14 @@ from typing import NamedTuple
 from experimental.beacon_dist import utils
 
 
-class ReconstructorParams(NamedTuple):
+class ConfigurationModelParams(NamedTuple):
     descriptor_size: int
     descriptor_embedding_size: int
     position_encoding_factor: float
     num_encoder_heads: int
     num_encoder_layers: int
+    num_decoder_heads: int
+    num_decoder_layers: int
 
 
 def expand_descriptor(descriptor_tensor: torch.Tensor):
@@ -37,8 +39,8 @@ def encode_position(x: torch.Tensor, y: torch.Tensor, output_size: int, factor: 
     return out
 
 
-class Reconstructor(torch.nn.Module):
-    def __init__(self, params: ReconstructorParams):
+class ConfigurationModel(torch.nn.Module):
+    def __init__(self, params: ConfigurationModelParams):
         super().__init__()
 
         # descriptor embedding
@@ -59,6 +61,21 @@ class Reconstructor(torch.nn.Module):
             encoder_layer, num_layers=params.num_encoder_layers
         )
 
+        decoder_layer = torch.nn.TransformerDecoderLayer(
+            d_model=params.descriptor_embedding_size,
+            nhead=params.num_decoder_heads,
+        )
+        self._decoder = torch.nn.TransformerDecoder(
+            decoder_layer,
+            num_layers=params.num_decoder_layers,
+        )
+
+        self._classifier = torch.nn.Linear(params.descriptor_embedding_size, 1)
+
+        self._mask_marker = torch.nn.Parameter(
+            data=torch.tensor((params.descriptor_embedding_size,), dtype=torch.float32)
+        )
+
         self._params = params
 
     def encode_descriptors(self, descriptors: torch.Tensor):
@@ -73,13 +90,37 @@ class Reconstructor(torch.nn.Module):
             self._params.position_encoding_factor,
         )
 
-    def forward(self, x: utils.ReconstructorBatch):
+    def forward(self, context: utils.KeypointBatch, query: torch.Tensor):
+        # Query is a [batch, keypoint] binary tensor where we want the model to
+        # compute the probability that the query is a valid configuration
+        for field_name in context._fields:
+            print(field_name, getattr(context, field_name).shape)
+        print(query.shape)
+        assert query.ndim == 2
+        assert query.shape[0] == context.x.shape[0]
+
         # Encode the descriptors
-        embedded_descriptors = self.encode_descriptors(
-            x.descriptor
-        ) + self.position_encoding(x.x, x.y)
+        context_descriptors = self.encode_descriptors(
+            context.descriptor
+        ) + self.position_encoding(context.x, context.y)
 
         # Pass through transformer encoder layers
-        encoded_result = self._encoder(embedded_descriptors)
+        # TODO mask out padding entries
+        encoded_context = self._encoder(context_descriptors)
 
-        return encoded_result
+        # Encode the query
+        query_descriptors = (
+            self.encode_descriptors(context.descriptor)
+            + self.position_encoding(context.x, context.y)
+            + torch.einsum('ij,k->ijk', torch.logical_not(query), self._mask_marker)
+        )
+
+        # add padding masks for the target and memory
+        decoder_output = self._decoder(target=query_descriptors, memory=encoded_context)
+
+        # Average pooling across the keypoints
+        # TODO consider using attention based pooling instead
+        average_output = torch.mean(decoder_output, dim=1)
+
+        # Product the log probability of this being a valid configuration
+        return self._classifier(average_output)

@@ -18,7 +18,7 @@ KeypointDescriptorDtype = np.dtype(
 )
 
 
-class ReconstructorBatch(NamedTuple):
+class KeypointBatch(NamedTuple):
     # dimension [Batch]
     image_id: torch.Tensor
 
@@ -43,7 +43,7 @@ class Dataset(torch.utils.data.Dataset):
         data: None | np.ndarray = None,
         filename: None | str = None,
         sample_transform_fn: None
-        | Callable[[ReconstructorBatch], ReconstructorBatch] = None,
+        | Callable[[KeypointBatch], KeypointBatch] = None,
     ):
         if filename:
             data = np.load(filename)
@@ -60,17 +60,17 @@ class Dataset(torch.utils.data.Dataset):
                     continue
                 tensors[field].append(torch.from_numpy(subset[field]))
 
-        self._data = ReconstructorBatch(
+        self._data = KeypointBatch(
             **{key: torch.nested.nested_tensor(value) for key, value in tensors.items()}
         )
         self._sample_transform_fn = (
             sample_transform_fn if sample_transform_fn is not None else lambda x: x
         )
 
-    def __getitem__(self, idx: int) -> ReconstructorBatch:
+    def __getitem__(self, idx: int) -> KeypointBatch:
         # unsqueeze to add a batch dimension
         return self._sample_transform_fn(
-            ReconstructorBatch(
+            KeypointBatch(
                 **{
                     f: getattr(self._data, f)[idx].unsqueeze(0)
                     for f in self._data._fields
@@ -84,12 +84,12 @@ class Dataset(torch.utils.data.Dataset):
     def __repr__(self) -> str:
         return f"<Dataset: {len(self)} examples>"
 
-    def data(self) -> ReconstructorBatch:
+    def data(self) -> KeypointBatch:
         return self._data
 
 def sample_keypoints(
-    sample: ReconstructorBatch, num_keypoints_to_sample: int, gen: torch.Generator
-) -> ReconstructorBatch:
+    sample: KeypointBatch, num_keypoints_to_sample: int, gen: torch.Generator
+) -> KeypointBatch:
     # This function only works on single sample
     assert sample.image_id.ndim == 1
     assert sample.image_id.size(0) == 1
@@ -110,11 +110,11 @@ def sample_keypoints(
                 new_fields[field_name] = field[:1, idxs, ...]
             else:
                 new_fields[field_name] = field
-        return ReconstructorBatch(**new_fields)
+        return KeypointBatch(**new_fields)
     return sample
 
 
-def batchify(sample: ReconstructorBatch) -> ReconstructorBatch:
+def batchify(sample: KeypointBatch) -> KeypointBatch:
     new_fields = {}
     for field_name in sample._fields:
         field = getattr(sample, field_name)
@@ -127,12 +127,12 @@ def batchify(sample: ReconstructorBatch) -> ReconstructorBatch:
                 field, padding=padding_value
             )
 
-    return ReconstructorBatch(**new_fields)
+    return KeypointBatch(**new_fields)
 
 
 def reconstruction_loss(
-    input_batch: ReconstructorBatch,
-    model_output: ReconstructorBatch,
+    input_batch: KeypointBatch,
+    model_output: KeypointBatch,
     fields_to_compare: None | list[str] = None,
 ) -> torch.Tensor:
     if fields_to_compare is None:

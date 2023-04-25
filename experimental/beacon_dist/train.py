@@ -7,11 +7,11 @@ from typing import NamedTuple
 
 from experimental.beacon_dist.utils import (
     Dataset,
-    ReconstructorBatch,
+    KeypointBatch,
     reconstruction_loss,
     batchify,
 )
-from experimental.beacon_dist.model import Reconstructor
+from experimental.beacon_dist.model import ConfigurationModel, ConfigurationModelParams
 
 
 class TrainConfig(NamedTuple):
@@ -21,27 +21,37 @@ class TrainConfig(NamedTuple):
     random_seed: int
 
 
-def collate_fn(samples: list[ReconstructorBatch]) -> ReconstructorBatch:
+def collate_fn(samples: list[KeypointBatch]) -> KeypointBatch:
     """Join multiple samples into a single batch"""
     fields = {}
-    for f in ReconstructorBatch._fields:
+    for f in KeypointBatch._fields:
         fields[f] = torch.nested.nested_tensor(
             [getattr(sample, f) for sample in samples]
         )
 
-    return batchify(ReconstructorBatch(**fields))
+    return batchify(KeypointBatch(**fields))
 
 
 def train(dataset: Dataset, train_config: TrainConfig):
     # create model
-    model = Reconstructor()
+    model = ConfigurationModel(ConfigurationModelParams(
+        descriptor_size=32,
+        descriptor_embedding_size=256,
+        position_encoding_factor=10000,
+        num_encoder_heads=4,
+        num_encoder_layers=4,
+        num_decoder_heads=4,
+        num_decoder_layers=4
+    ))
 
     # create dataloader
     rng = torch.Generator()
     rng.manual_seed(train_config.random_seed)
     data_loader = torch.utils.data.DataLoader(
-        dataset, batch_size=256, shuffle=True, collate_fn=collate_fn, drop_last=True
+        dataset, batch_size=4, shuffle=True, collate_fn=collate_fn, drop_last=True
     )
+
+    loss_func = torch.nn.BCEWithLogitsLoss()
 
     # Create the optimizer
     optim = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
@@ -54,10 +64,10 @@ def train(dataset: Dataset, train_config: TrainConfig):
             optim.zero_grad()
 
             # compute model outputs
-            out = model(batch)
+            out = model(batch, torch.ones_like(batch.x).to(torch.bool))
 
             # compute loss
-            loss = reconstruction_loss(batch, out)
+            loss = loss_func(out, torch.ones_like(out))
             loss.backward()
 
             # take step
@@ -67,7 +77,7 @@ def train(dataset: Dataset, train_config: TrainConfig):
 
 def main(train_config: TrainConfig):
     if not os.path.exists(train_config.output_dir):
-        print(f"Creating output directory: {output_dir}")
+        print(f"Creating output directory: {train_config.output_dir}")
         os.makedirs(train_config.output_dir)
 
     train(Dataset(filename=train_config.dataset_path), train_config)
