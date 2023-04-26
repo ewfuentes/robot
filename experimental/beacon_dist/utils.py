@@ -153,22 +153,15 @@ def reconstruction_loss(
 def is_valid_configuration(input_batch: KeypointBatch, query: torch.Tensor):
     # a configuration is valid if all exclusive keypoints are present
     exclusive_keypoints = np.remainder(np.log2(input_batch.class_label), 1.0) < 1e-6
-    # print('exclusive keypoints')
-    # print(exclusive_keypoints)
     unique_classes = torch.unique(exclusive_keypoints * input_batch.class_label)
-    # print(unique_classes)
 
     is_valid_mask = torch.ones((query.shape[0], 1), dtype=torch.bool)
     for class_name in unique_classes:
         if class_name == 0:
             continue
-        # print(f'checking class: {class_name}')
         class_mask = input_batch.class_label == class_name
         class_present_in_query = torch.logical_and(class_mask, query)
-        # print('class_mask\n', class_mask)
-        # print('class present in query\n', class_present_in_query)
         class_matches = torch.all(class_mask == class_present_in_query, dim=1, keepdim=True)
-        # print('mask match?\n', class_matches)
         is_valid_mask = torch.logical_and(class_matches, is_valid_mask)
 
     return is_valid_mask.to(torch.float32)
