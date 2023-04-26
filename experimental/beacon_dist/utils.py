@@ -37,9 +37,10 @@ class KeypointBatch(NamedTuple):
     # Tensor with dimension [Batch, key_point_number, 32]
     descriptor: torch.Tensor
 
-
     def to(self, *args, **kwargs):
-        return KeypointBatch(**{key: value.to(*args, **kwargs) for key, value in self._asdict().items()})
+        return KeypointBatch(
+            **{key: value.to(*args, **kwargs) for key, value in self._asdict().items()}
+        )
 
 
 class Dataset(torch.utils.data.Dataset):
@@ -48,8 +49,7 @@ class Dataset(torch.utils.data.Dataset):
         *,
         data: None | np.ndarray = None,
         filename: None | str = None,
-        sample_transform_fn: None
-        | Callable[[KeypointBatch], KeypointBatch] = None,
+        sample_transform_fn: None | Callable[[KeypointBatch], KeypointBatch] = None,
     ):
         if filename:
             data = np.load(filename)
@@ -77,10 +77,7 @@ class Dataset(torch.utils.data.Dataset):
         # unsqueeze to add a batch dimension
         return self._sample_transform_fn(
             KeypointBatch(
-                **{
-                    f: getattr(self._data, f)[idx]
-                    for f in self._data._fields
-                }
+                **{f: getattr(self._data, f)[idx] for f in self._data._fields}
             )
         )
 
@@ -92,6 +89,7 @@ class Dataset(torch.utils.data.Dataset):
 
     def data(self) -> KeypointBatch:
         return self._data
+
 
 def sample_keypoints(
     sample: KeypointBatch, num_keypoints_to_sample: int, gen: torch.Generator
@@ -150,3 +148,38 @@ def reconstruction_loss(
         output_field = getattr(model_output, field_name)
         loss += torch.nn.functional.mse_loss(input_field, output_field)
     return loss
+
+
+def is_valid_configuration(input_batch: KeypointBatch, query: torch.Tensor):
+    # a configuration is valid if all exclusive keypoints are present
+    exclusive_keypoints = np.remainder(np.log2(input_batch.class_label), 1.0) < 1e-6
+    # print('exclusive keypoints')
+    # print(exclusive_keypoints)
+    unique_classes = torch.unique(exclusive_keypoints * input_batch.class_label)
+    # print(unique_classes)
+
+    is_valid_mask = torch.ones((query.shape[0], 1), dtype=torch.bool)
+    for class_name in unique_classes:
+        if class_name == 0:
+            continue
+        # print(f'checking class: {class_name}')
+        class_mask = input_batch.class_label == class_name
+        class_present_in_query = torch.logical_and(class_mask, query)
+        # print('class_mask\n', class_mask)
+        # print('class present in query\n', class_present_in_query)
+        class_matches = torch.all(class_mask == class_present_in_query, dim=1, keepdim=True)
+        # print('mask match?\n', class_matches)
+        is_valid_mask = torch.logical_and(class_matches, is_valid_mask)
+
+    return is_valid_mask.to(torch.float32)
+
+
+def valid_configuration_loss(
+    input_batch: KeypointBatch,
+    query: torch.Tensor,
+    model_output: torch.Tensor,
+):
+    # Compute if this is a valid configuration
+    labels = is_valid_configuration(input_batch, query)
+
+    return torch.nn.functional.binary_cross_entropy_with_logits(model_output, labels)

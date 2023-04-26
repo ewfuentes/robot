@@ -9,6 +9,7 @@ from experimental.beacon_dist.utils import (
     reconstruction_loss,
     sample_keypoints,
     batchify,
+    valid_configuration_loss,
 )
 
 
@@ -40,7 +41,6 @@ class UtilsTest(unittest.TestCase):
 
     def test_batchify(self):
         # Setup
-        gen = torch.manual_seed(0)
         test_data = get_test_data()
         dataset = Dataset(data=test_data)
         batch = dataset._data
@@ -76,6 +76,65 @@ class UtilsTest(unittest.TestCase):
         # Verification
         self.assertEqual(loss, expected_loss)
 
+    def test_valid_configuration_loss_valid_queries_are_likely(self):
+        # Setup
+        dataset = Dataset(data=get_test_data())
+        batch = batchify(dataset._data)
+        query = torch.tensor([[1, 1, 1],
+                              [1, 1, 0],
+                              [1, 0, 0]])
+        model_output = torch.tensor([[100.0], [100.0], [100.0]])
+
+        # Action
+        loss = valid_configuration_loss(batch, query, model_output)
+
+        # Verification
+        self.assertAlmostEqual(loss, 0.0, 1e-6)
+
+    def test_valid_configuration_loss_invalid_queries_are_unlikely(self):
+        # Setup
+        dataset = Dataset(data=get_test_data())
+        batch = batchify(dataset._data)
+        query = torch.tensor([[0, 1, 1],
+                              [1, 1, 0],
+                              [1, 0, 0]])
+        model_output = torch.tensor([[-100.0], [100.0], [100.0]])
+
+        # Action
+        loss = valid_configuration_loss(batch, query, model_output)
+
+        # Verification
+        self.assertAlmostEqual(loss, 0.0, 1e-6)
+
+    def test_valid_configuration_loss_common_keypoints_are_ignored(self):
+        # Setup
+        dataset = Dataset(data=get_test_data())
+        batch = batchify(dataset._data)
+        query = torch.tensor([[1, 1, 1],
+                              [1, 0, 0],
+                              [1, 0, 0]])
+        model_output = torch.tensor([[100.0], [100.0], [100.0]])
+
+        # Action
+        loss = valid_configuration_loss(batch, query, model_output)
+
+        # Verification
+        self.assertAlmostEqual(loss, 0.0, 1e-6)
+
+    def test_valid_configuration_loss_bad_prediction_yields_nonzero_loss(self):
+        # Setup
+        dataset = Dataset(data=get_test_data())
+        batch = batchify(dataset._data)
+        query = torch.tensor([[1, 1, 1],
+                              [1, 1, 0],
+                              [1, 0, 0]])
+        model_output = torch.tensor([[-100.0], [100.0], [100.0]])
+
+        # Action
+        loss = valid_configuration_loss(batch, query, model_output)
+
+        # Verification
+        self.assertGreater(loss, 0.0)
 
 if __name__ == "__main__":
     unittest.main()
