@@ -150,16 +150,17 @@ def reconstruction_loss(
     return loss
 
 
-def is_valid_configuration(input_batch: KeypointBatch, query: torch.Tensor):
+def is_valid_configuration(class_labels: torch.Tensor, query: torch.Tensor):
     # a configuration is valid if all exclusive keypoints are present
-    exclusive_keypoints = np.remainder(np.log2(input_batch.class_label), 1.0) < 1e-6
-    unique_classes = torch.unique(exclusive_keypoints * input_batch.class_label)
+    assert class_labels.shape == query.shape
+    exclusive_keypoints = np.remainder(np.log2(class_labels), 1.0) < 1e-6
+    unique_classes = torch.unique(exclusive_keypoints * class_labels)
 
     is_valid_mask = torch.ones((query.shape[0], 1), dtype=torch.bool)
     for class_name in unique_classes:
         if class_name == 0:
             continue
-        class_mask = input_batch.class_label == class_name
+        class_mask = class_labels == class_name
         class_present_in_query = torch.logical_and(class_mask, query)
         class_matches = torch.all(class_mask == class_present_in_query, dim=1, keepdim=True)
         is_valid_mask = torch.logical_and(class_matches, is_valid_mask)
@@ -168,11 +169,14 @@ def is_valid_configuration(input_batch: KeypointBatch, query: torch.Tensor):
 
 
 def valid_configuration_loss(
-    input_batch: KeypointBatch,
+    class_labels: torch.Tensor,
     query: torch.Tensor,
     model_output: torch.Tensor,
 ):
     # Compute if this is a valid configuration
-    labels = is_valid_configuration(input_batch, query)
+    labels = is_valid_configuration(class_labels, query)
 
     return torch.nn.functional.binary_cross_entropy_with_logits(model_output, labels)
+
+def generate_valid_queries(class_labels: torch.tensor):
+    pass

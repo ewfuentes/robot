@@ -86,7 +86,7 @@ class UtilsTest(unittest.TestCase):
         model_output = torch.tensor([[100.0], [100.0], [100.0]])
 
         # Action
-        loss = valid_configuration_loss(batch, query, model_output)
+        loss = valid_configuration_loss(batch.class_label, query, model_output)
 
         # Verification
         self.assertAlmostEqual(loss, 0.0, 1e-6)
@@ -101,7 +101,7 @@ class UtilsTest(unittest.TestCase):
         model_output = torch.tensor([[-100.0], [100.0], [100.0]])
 
         # Action
-        loss = valid_configuration_loss(batch, query, model_output)
+        loss = valid_configuration_loss(batch.class_label, query, model_output)
 
         # Verification
         self.assertAlmostEqual(loss, 0.0, 1e-6)
@@ -116,7 +116,7 @@ class UtilsTest(unittest.TestCase):
         model_output = torch.tensor([[100.0], [100.0], [100.0]])
 
         # Action
-        loss = valid_configuration_loss(batch, query, model_output)
+        loss = valid_configuration_loss(batch.class_label, query, model_output)
 
         # Verification
         self.assertAlmostEqual(loss, 0.0, 1e-6)
@@ -131,7 +131,7 @@ class UtilsTest(unittest.TestCase):
         model_output = torch.tensor([[-100.0], [100.0], [100.0]])
 
         # Action
-        loss = valid_configuration_loss(batch, query, model_output)
+        loss = valid_configuration_loss(batch.class_label, query, model_output)
 
         # Verification
         self.assertGreater(loss, 0.0)
@@ -146,7 +146,7 @@ class UtilsTest(unittest.TestCase):
         model_output = torch.tensor([[100.0], [100.0], [100.0]])
 
         # Action
-        loss = valid_configuration_loss(batch, query, model_output)
+        loss = valid_configuration_loss(batch.class_label, query, model_output)
 
         # Verification
         self.assertGreater(loss, 0.0)
