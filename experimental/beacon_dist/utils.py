@@ -152,7 +152,7 @@ def reconstruction_loss(
 
 def find_unique_classes(class_labels: torch.Tensor) -> torch.Tensor:
     exclusive_keypoints = np.remainder(np.log2(class_labels), 1.0) < 1e-6
-    return torch.unique(exclusive_keypoints * class_labels)
+    return [x for x in torch.unique(exclusive_keypoints * class_labels) if x != 0]
 
 
 def is_valid_configuration(class_labels: torch.Tensor, query: torch.Tensor):
@@ -162,8 +162,6 @@ def is_valid_configuration(class_labels: torch.Tensor, query: torch.Tensor):
 
     is_valid_mask = torch.ones((query.shape[0], 1), dtype=torch.bool)
     for class_name in unique_classes:
-        if class_name == 0:
-            continue
         class_mask = class_labels == class_name
         class_present_in_query = torch.logical_and(class_mask, query)
         class_matches = torch.all(
@@ -185,28 +183,72 @@ def valid_configuration_loss(
     return torch.nn.functional.binary_cross_entropy_with_logits(model_output, labels)
 
 
-def query_from_class_samples(class_labels: torch.Tensor, present_classes: list[int]):
+def query_from_class_samples(
+    class_labels: torch.Tensor, present_classes: list[int], exclusive_points_only=False
+):
+    assert class_labels.ndim == 1
     query = torch.zeros_like(class_labels, dtype=torch.bool)
     for class_name in present_classes:
-        class_mask = torch.bitwise_and(class_labels, class_name) > 0
+        if exclusive_points_only:
+            class_mask = class_labels == class_name
+        else:
+            class_mask = torch.bitwise_and(class_labels, class_name) > 0
         query = torch.logical_xor(query, class_mask)
     return query
 
 
 def generate_valid_queries(
-    class_labels: torch.tensor, rng: torch.Generator, class_probability=0.9
+    class_labels: torch.Tensor,
+    rng: torch.Generator,
+    class_probability=0.9,
+    exclusive_points_only=False,
 ) -> torch.Tensor:
+    assert class_labels.ndim == 2
     # Create a [batch, keypoint_id] tensor of valid configurations
     queries = []
     for batch_idx in range(class_labels.shape[0]):
         # For each batch, find all unique class labels
         present_classes = []
         for class_name in find_unique_classes(class_labels[batch_idx, ...]):
-            if class_name == 0:
-                continue
             if torch.bernoulli(torch.tensor([0.9]), generator=rng) > 0:
                 present_classes.append(class_name)
         queries.append(
-            query_from_class_samples(class_labels[batch_idx, ...], present_classes)
+            query_from_class_samples(
+                class_labels[batch_idx, ...], present_classes, exclusive_points_only
+            )
         )
     return torch.stack(queries)
+
+
+def generate_invalid_queries(
+    class_labels: torch.Tensor, valid_queries: torch.Tensor, rng: torch.Generator
+):
+    assert class_labels.shape == valid_queries.shape
+    present_beacon_classes = class_labels * valid_queries
+    queries = []
+    for batch_idx in range(class_labels.shape[0]):
+        print(f"Batch: {batch_idx}")
+        unique_classes = find_unique_classes(present_beacon_classes[batch_idx, ...])
+        did_update = False
+        query = valid_queries[batch_idx, ...]
+        while not did_update:
+            for class_name in unique_classes:
+                exclusive_class_mask = present_beacon_classes[batch_idx] == class_name
+                update_mask = torch.randint(
+                    2, exclusive_class_mask.shape, generator=rng
+                )
+
+                new_class_mask = np.logical_and(update_mask, exclusive_class_mask)
+
+                unaffected_bits = np.logical_and(
+                    np.logical_not(exclusive_class_mask), query
+                )
+                print(f"Class Name: {class_name}")
+                print(f"Class mask: {exclusive_class_mask}")
+                print(f"update_mask: {update_mask}")
+                print(f"new_mask: {new_class_mask}")
+                query = np.logical_or(unaffected_bits, new_class_mask)
+
+            did_update = not torch.all(query == valid_queries[batch_idx, ...])
+        queries.append(query)
+    return np.stack(queries)

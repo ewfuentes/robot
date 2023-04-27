@@ -11,6 +11,7 @@ from experimental.beacon_dist.utils import (
     batchify,
     valid_configuration_loss,
     generate_valid_queries,
+    generate_invalid_queries,
     query_from_class_samples,
 )
 
@@ -82,9 +83,7 @@ class UtilsTest(unittest.TestCase):
         # Setup
         dataset = Dataset(data=get_test_data())
         batch = batchify(dataset._data)
-        query = torch.tensor([[1, 1, 1],
-                              [1, 1, 0],
-                              [1, 0, 0]])
+        query = torch.tensor([[1, 1, 1], [1, 1, 0], [1, 0, 0]])
         model_output = torch.tensor([[100.0], [100.0], [100.0]])
 
         # Action
@@ -97,9 +96,7 @@ class UtilsTest(unittest.TestCase):
         # Setup
         dataset = Dataset(data=get_test_data())
         batch = batchify(dataset._data)
-        query = torch.tensor([[0, 1, 1],
-                              [1, 1, 0],
-                              [1, 0, 0]])
+        query = torch.tensor([[0, 1, 1], [1, 1, 0], [1, 0, 0]])
         model_output = torch.tensor([[-100.0], [100.0], [100.0]])
 
         # Action
@@ -112,9 +109,7 @@ class UtilsTest(unittest.TestCase):
         # Setup
         dataset = Dataset(data=get_test_data())
         batch = batchify(dataset._data)
-        query = torch.tensor([[1, 1, 1],
-                              [1, 0, 0],
-                              [1, 0, 0]])
+        query = torch.tensor([[1, 1, 1], [1, 0, 0], [1, 0, 0]])
         model_output = torch.tensor([[100.0], [100.0], [100.0]])
 
         # Action
@@ -127,9 +122,7 @@ class UtilsTest(unittest.TestCase):
         # Setup
         dataset = Dataset(data=get_test_data())
         batch = batchify(dataset._data)
-        query = torch.tensor([[1, 1, 1],
-                              [1, 1, 0],
-                              [1, 0, 0]])
+        query = torch.tensor([[1, 1, 1], [1, 1, 0], [1, 0, 0]])
         model_output = torch.tensor([[-100.0], [100.0], [100.0]])
 
         # Action
@@ -142,9 +135,7 @@ class UtilsTest(unittest.TestCase):
         # Setup
         dataset = Dataset(data=get_test_data())
         batch = batchify(dataset._data)
-        query = torch.tensor([[0, 0, 1],
-                              [1, 1, 0],
-                              [1, 0, 0]])
+        query = torch.tensor([[0, 0, 1], [1, 1, 0], [1, 0, 0]])
         model_output = torch.tensor([[100.0], [100.0], [100.0]])
 
         # Action
@@ -159,26 +150,69 @@ class UtilsTest(unittest.TestCase):
         present_classes = [1, 2]
 
         # Action
-        query = query_from_class_samples(class_labels, present_classes)
+        query = query_from_class_samples(
+            class_labels, present_classes, exclusive_points_only=False
+        )
+        exclusive_query = query_from_class_samples(
+            class_labels, present_classes, exclusive_points_only=True
+        )
 
         # Verification
-        self.assertTrue(torch.all(query == torch.tensor([True, True, False, False, True, True])))
+        self.assertTrue(
+            torch.all(query == torch.tensor([True, True, False, False, True, True]))
+        )
+        self.assertTrue(
+            torch.all(exclusive_query == torch.tensor([True, True, False, False, False, False]))
+        )
 
     def test_valid_query_generator(self):
         # Setup
         rng = torch.Generator()
         rng.manual_seed(98764)
-        class_labels = torch.tensor([
-            [1, 2, 3, 4, 5, 6],
-            [1, 1, 1, 1, 1, 1],
-            [16, 16, 8, 8, 4, 4],
-        ])
+        class_labels = torch.tensor(
+            [
+                [1, 2, 3, 4, 5, 6],
+                [1, 1, 1, 1, 1, 1],
+                [16, 16, 8, 8, 4, 4],
+            ]
+        )
 
         # Action
         queries = generate_valid_queries(class_labels, rng)
 
         # Verification
         self.assertEqual(class_labels.shape, queries.shape)
+
+    def test_invalid_query_generator(self):
+        # Setup
+        rng = torch.Generator()
+        rng.manual_seed(12345678)
+        class_labels = torch.tensor(
+            [
+                [1, 2, 3, 4, 5, 6],
+                [1, 1, 1, 1, 1, 1],
+                [16, 16, 8, 8, 4, 4],
+            ]
+        )
+
+        valid_queries = torch.tensor(
+            [
+                [True, True, False, False, False, False],
+                [True, True, True, True, True, True],
+                [True, True, False, False, True, True],
+            ]
+        )
+
+        # Action
+        invalid_queries = generate_invalid_queries(class_labels, valid_queries, rng)
+
+        # Verification
+        print('valid queries')
+        print(valid_queries)
+        print('invalid queries')
+        print(invalid_queries)
+        
+
 
 
 if __name__ == "__main__":
