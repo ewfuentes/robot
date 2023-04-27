@@ -35,6 +35,7 @@ py_library(
   srcs = ["utils.py"],
   deps = [
     requirement("torch"),
+    requirement("ipdb"),
   ]
 )
 

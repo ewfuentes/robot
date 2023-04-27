@@ -207,12 +207,8 @@ class UtilsTest(unittest.TestCase):
         invalid_queries = generate_invalid_queries(class_labels, valid_queries, rng)
 
         # Verification
-        print('valid queries')
-        print(valid_queries)
-        print('invalid queries')
-        print(invalid_queries)
-        
-
+        self.assertTrue(valid_queries.shape == invalid_queries.shape)
+        self.assertFalse(torch.all(valid_queries == invalid_queries))
 
 
 if __name__ == "__main__":

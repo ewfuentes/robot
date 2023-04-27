@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 from typing import NamedTuple, Callable
+import ipdb
 from collections import defaultdict
 
 KeypointDescriptorDtype = np.dtype(
@@ -227,28 +228,49 @@ def generate_invalid_queries(
     present_beacon_classes = class_labels * valid_queries
     queries = []
     for batch_idx in range(class_labels.shape[0]):
-        print(f"Batch: {batch_idx}")
         unique_classes = find_unique_classes(present_beacon_classes[batch_idx, ...])
         did_update = False
         query = valid_queries[batch_idx, ...]
         while not did_update:
             for class_name in unique_classes:
                 exclusive_class_mask = present_beacon_classes[batch_idx] == class_name
-                update_mask = torch.randint(
-                    2, exclusive_class_mask.shape, generator=rng
+                inclusive_class_mask = (
+                    torch.bitwise_and(class_labels[batch_idx, ...], class_name) > 0
                 )
+                if torch.sum(exclusive_class_mask) > 1:
+                    # If more than a single exclusive beacon for this class is present
+                    # we can make it invalid by turning off some fraction of these beacons
+                    update_mask = torch.randint(
+                        2, exclusive_class_mask.shape, generator=rng
+                    )
 
-                new_class_mask = np.logical_and(update_mask, exclusive_class_mask)
+                    new_class_mask = np.logical_and(update_mask, exclusive_class_mask)
 
-                unaffected_bits = np.logical_and(
-                    np.logical_not(exclusive_class_mask), query
-                )
-                print(f"Class Name: {class_name}")
-                print(f"Class mask: {exclusive_class_mask}")
-                print(f"update_mask: {update_mask}")
-                print(f"new_mask: {new_class_mask}")
-                query = np.logical_or(unaffected_bits, new_class_mask)
-
+                    unaffected_bits = np.logical_and(
+                        np.logical_not(exclusive_class_mask), query
+                    )
+                    query = np.logical_or(unaffected_bits, new_class_mask)
+                elif torch.sum(exclusive_class_mask) > 0 and torch.sum(
+                    inclusive_class_mask
+                ) > torch.sum(exclusive_class_mask):
+                    if torch.randint(2, size=(1,), generator=rng) < 1:
+                        continue
+                    # There is at least one exclusive beacon present and shared landmarks exist, we
+                    # make an invalid config by turning off the exclusive beacon and turning on the
+                    # shared beacon
+                    unaffected_bits = np.logical_and(
+                        np.logical_not(inclusive_class_mask), query
+                    )
+                    disable_exclusive_beacons = np.logical_and(
+                        np.logical_not(exclusive_class_mask), query
+                    )
+                    shared_beacons = np.logical_xor(
+                        exclusive_class_mask, inclusive_class_mask
+                    )
+                    query = np.logical_or(
+                        np.logical_or(unaffected_bits, disable_exclusive_beacons),
+                        shared_beacons,
+                    )
             did_update = not torch.all(query == valid_queries[batch_idx, ...])
         queries.append(query)
-    return np.stack(queries)
+    return torch.stack(queries).to(torch.bool)
