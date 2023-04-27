@@ -185,24 +185,28 @@ def valid_configuration_loss(
     return torch.nn.functional.binary_cross_entropy_with_logits(model_output, labels)
 
 
-def generate_valid_queries(class_labels: torch.tensor) -> torch.Tensor:
-    # Create a [batch, configuration_id, keypoint_id] nested tensor of valid configurations
-    # Note that this currently isn't exhaustive. In particular, the shared keypoints are always not included
-    # For each batch, find all unique class labels
-    configurations = []
+def query_from_class_samples(class_labels: torch.Tensor, present_classes: list[int]):
+    query = torch.zeros_like(class_labels, dtype=torch.bool)
+    for class_name in present_classes:
+        class_mask = torch.bitwise_and(class_labels, class_name) > 0
+        query = torch.logical_xor(query, class_mask)
+    return query
+
+
+def generate_valid_queries(
+    class_labels: torch.tensor, rng: torch.Generator, class_probability=0.9
+) -> torch.Tensor:
+    # Create a [batch, keypoint_id] tensor of valid configurations
+    queries = []
     for batch_idx in range(class_labels.shape[0]):
-        print('batch:', batch_idx)
-        valid_queries = torch.zeros((1, class_labels.shape[1]), dtype=bool)
+        # For each batch, find all unique class labels
+        present_classes = []
         for class_name in find_unique_classes(class_labels[batch_idx, ...]):
             if class_name == 0:
                 continue
-            print('class:', class_name)
-            print(valid_queries)
-            class_mask = class_labels[batch_idx, ...] == class_name
-            num_existing_configs = valid_queries.shape[0]
-            valid_queries = valid_queries.repeat(2, 1)
-            valid_queries[:num_existing_configs] = torch.logical_or(
-                valid_queries[:num_existing_configs, ...], class_mask
-            )
-        configurations.append(valid_queries)
-    return torch.nested.nested_tensor(configurations)
+            if torch.bernoulli(torch.tensor([0.9]), generator=rng) > 0:
+                present_classes.append(class_name)
+        queries.append(
+            query_from_class_samples(class_labels[batch_idx, ...], present_classes)
+        )
+    return torch.stack(queries)

@@ -11,6 +11,7 @@ from experimental.beacon_dist.utils import (
     batchify,
     valid_configuration_loss,
     generate_valid_queries,
+    query_from_class_samples,
 )
 
 
@@ -152,8 +153,21 @@ class UtilsTest(unittest.TestCase):
         # Verification
         self.assertGreater(loss, 0.0)
 
+    def test_query_from_class_samples(self):
+        # Setup
+        class_labels = torch.tensor([1, 2, 3, 4, 5, 6])
+        present_classes = [1, 2]
+
+        # Action
+        query = query_from_class_samples(class_labels, present_classes)
+
+        # Verification
+        self.assertTrue(torch.all(query == torch.tensor([True, True, False, False, True, True])))
+
     def test_valid_query_generator(self):
         # Setup
+        rng = torch.Generator()
+        rng.manual_seed(98764)
         class_labels = torch.tensor([
             [1, 2, 3, 4, 5, 6],
             [1, 1, 1, 1, 1, 1],
@@ -161,11 +175,10 @@ class UtilsTest(unittest.TestCase):
         ])
 
         # Action
-        queries = generate_valid_queries(class_labels)
+        queries = generate_valid_queries(class_labels, rng)
 
         # Verification
-        print(queries)
-        ...
+        self.assertEqual(class_labels.shape, queries.shape)
 
 
 if __name__ == "__main__":
