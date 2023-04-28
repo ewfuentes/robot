@@ -53,7 +53,6 @@ py_test(
   deps = [
     ":test_helpers",
     ":utils",
-    requirement("numpy"),
   ]
 )
 

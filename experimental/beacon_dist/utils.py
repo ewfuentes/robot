@@ -150,29 +150,126 @@ def reconstruction_loss(
     return loss
 
 
-def is_valid_configuration(input_batch: KeypointBatch, query: torch.Tensor):
+def find_unique_classes(class_labels: torch.Tensor) -> torch.Tensor:
+    exclusive_keypoints = np.remainder(np.log2(class_labels), 1.0) < 1e-6
+    return [x for x in torch.unique(exclusive_keypoints * class_labels) if x != 0]
+
+
+def is_valid_configuration(class_labels: torch.Tensor, query: torch.Tensor):
     # a configuration is valid if all exclusive keypoints are present
-    exclusive_keypoints = np.remainder(np.log2(input_batch.class_label), 1.0) < 1e-6
-    unique_classes = torch.unique(exclusive_keypoints * input_batch.class_label)
+    assert class_labels.shape == query.shape
+    unique_classes = find_unique_classes(class_labels)
 
     is_valid_mask = torch.ones((query.shape[0], 1), dtype=torch.bool)
     for class_name in unique_classes:
-        if class_name == 0:
-            continue
-        class_mask = input_batch.class_label == class_name
+        class_mask = class_labels == class_name
         class_present_in_query = torch.logical_and(class_mask, query)
-        class_matches = torch.all(class_mask == class_present_in_query, dim=1, keepdim=True)
+        class_matches = torch.all(
+            class_mask == class_present_in_query, dim=1, keepdim=True
+        )
         is_valid_mask = torch.logical_and(class_matches, is_valid_mask)
 
     return is_valid_mask.to(torch.float32)
 
 
 def valid_configuration_loss(
-    input_batch: KeypointBatch,
+    class_labels: torch.Tensor,
     query: torch.Tensor,
     model_output: torch.Tensor,
 ):
     # Compute if this is a valid configuration
-    labels = is_valid_configuration(input_batch, query)
+    labels = is_valid_configuration(class_labels, query)
 
     return torch.nn.functional.binary_cross_entropy_with_logits(model_output, labels)
+
+
+def query_from_class_samples(
+    class_labels: torch.Tensor, present_classes: list[int], exclusive_points_only=False
+):
+    assert class_labels.ndim == 1
+    query = torch.zeros_like(class_labels, dtype=torch.bool)
+    for class_name in present_classes:
+        if exclusive_points_only:
+            class_mask = class_labels == class_name
+        else:
+            class_mask = torch.bitwise_and(class_labels, class_name) > 0
+        query = torch.logical_xor(query, class_mask)
+    return query
+
+
+def generate_valid_queries(
+    class_labels: torch.Tensor,
+    rng: torch.Generator,
+    class_probability=0.9,
+    exclusive_points_only=False,
+) -> torch.Tensor:
+    assert class_labels.ndim == 2
+    # Create a [batch, keypoint_id] tensor of valid configurations
+    queries = []
+    for batch_idx in range(class_labels.shape[0]):
+        # For each batch, find all unique class labels
+        present_classes = []
+        for class_name in find_unique_classes(class_labels[batch_idx, ...]):
+            if torch.bernoulli(torch.tensor([0.9]), generator=rng) > 0:
+                present_classes.append(class_name)
+        queries.append(
+            query_from_class_samples(
+                class_labels[batch_idx, ...], present_classes, exclusive_points_only
+            )
+        )
+    return torch.stack(queries)
+
+
+def generate_invalid_queries(
+    class_labels: torch.Tensor, valid_queries: torch.Tensor, rng: torch.Generator
+):
+    assert class_labels.shape == valid_queries.shape
+    present_beacon_classes = class_labels * valid_queries
+    queries = []
+    for batch_idx in range(class_labels.shape[0]):
+        unique_classes = find_unique_classes(present_beacon_classes[batch_idx, ...])
+        did_update = False
+        query = valid_queries[batch_idx, ...]
+        while not did_update:
+            for class_name in unique_classes:
+                exclusive_class_mask = present_beacon_classes[batch_idx] == class_name
+                inclusive_class_mask = (
+                    torch.bitwise_and(class_labels[batch_idx, ...], class_name) > 0
+                )
+                if torch.sum(exclusive_class_mask) > 1:
+                    # If more than a single exclusive beacon for this class is present
+                    # we can make it invalid by turning off some fraction of these beacons
+                    update_mask = torch.randint(
+                        2, exclusive_class_mask.shape, generator=rng
+                    )
+
+                    new_class_mask = np.logical_and(update_mask, exclusive_class_mask)
+
+                    unaffected_bits = np.logical_and(
+                        np.logical_not(exclusive_class_mask), query
+                    )
+                    query = np.logical_or(unaffected_bits, new_class_mask)
+                elif torch.sum(exclusive_class_mask) > 0 and torch.sum(
+                    inclusive_class_mask
+                ) > torch.sum(exclusive_class_mask):
+                    if torch.randint(2, size=(1,), generator=rng) < 1:
+                        continue
+                    # There is at least one exclusive beacon present and shared landmarks exist, we
+                    # make an invalid config by turning off the exclusive beacon and turning on the
+                    # shared beacon
+                    unaffected_bits = np.logical_and(
+                        np.logical_not(inclusive_class_mask), query
+                    )
+                    disable_exclusive_beacons = np.logical_and(
+                        np.logical_not(exclusive_class_mask), query
+                    )
+                    shared_beacons = np.logical_xor(
+                        exclusive_class_mask, inclusive_class_mask
+                    )
+                    query = np.logical_or(
+                        np.logical_or(unaffected_bits, disable_exclusive_beacons),
+                        shared_beacons,
+                    )
+            did_update = not torch.all(query == valid_queries[batch_idx, ...])
+        queries.append(query)
+    return torch.stack(queries).to(torch.bool)
