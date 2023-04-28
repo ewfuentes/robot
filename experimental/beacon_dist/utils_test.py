@@ -1,6 +1,5 @@
 import unittest
 
-import numpy as np
 import torch
 
 from experimental.beacon_dist.test_helpers import get_test_data
