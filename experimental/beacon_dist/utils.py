@@ -1,7 +1,6 @@
 import torch
 import numpy as np
 from typing import NamedTuple, Callable
-import ipdb
 from collections import defaultdict
 
 KeypointDescriptorDtype = np.dtype(
