@@ -98,7 +98,7 @@ def train(dataset: Dataset, train_config: TrainConfig):
             optim.step()
             batch_time = time.time() - batch_start_time
             if batch_idx % 10 == 0:
-                print(f"Batch: {batch_idx} dt: {batch_time: 0.3f} s")
+                print(f"Batch: {batch_idx} dt: {batch_time: 0.3f} s Loss: {loss}")
 
         print(f"End of Epoch {epoch_idx} Loss: {loss}", flush=True)
         if epoch_idx % 100 == 0:
