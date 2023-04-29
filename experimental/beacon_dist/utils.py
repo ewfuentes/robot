@@ -2,6 +2,8 @@ import torch
 import numpy as np
 from typing import NamedTuple, Callable
 from collections import defaultdict
+import IPython
+import ipdb
 
 KeypointDescriptorDtype = np.dtype(
     [
@@ -151,7 +153,7 @@ def reconstruction_loss(
 
 
 def find_unique_classes(class_labels: torch.Tensor) -> torch.Tensor:
-    exclusive_keypoints = np.remainder(np.log2(class_labels), 1.0) < 1e-6
+    exclusive_keypoints = torch.remainder(torch.log2(class_labels), 1.0) < 1e-6
     return [x for x in torch.unique(exclusive_keypoints * class_labels) if x != 0]
 
 
@@ -160,7 +162,9 @@ def is_valid_configuration(class_labels: torch.Tensor, query: torch.Tensor):
     assert class_labels.shape == query.shape
     unique_classes = find_unique_classes(class_labels)
 
-    is_valid_mask = torch.ones((query.shape[0], 1), dtype=torch.bool)
+    is_valid_mask = torch.ones(
+        (query.shape[0], 1), dtype=torch.bool, device=class_labels.device
+    )
     for class_name in unique_classes:
         class_mask = class_labels == class_name
         class_present_in_query = torch.logical_and(class_mask, query)
@@ -230,7 +234,31 @@ def generate_invalid_queries(
         unique_classes = find_unique_classes(present_beacon_classes[batch_idx, ...])
         did_update = False
         query = valid_queries[batch_idx, ...]
+
         while not did_update:
+            if len(unique_classes) == 0:
+                # No beacons have been set, set some fraction of exclusive beacons
+                for class_name in find_unique_classes(class_labels[batch_idx]):
+                    inclusive_class_mask = (
+                        torch.bitwise_and(class_labels[batch_idx, ...], class_name) > 0
+                    )
+                    if torch.randint(2, size=(1,), generator=rng) < 1:
+                        continue
+                    # All exclusive beacons are disabled but there are beacons of this class that exist
+                    # Set some fraction of them
+                    unaffected_bits = np.logical_and(
+                        np.logical_not(inclusive_class_mask), query
+                    )
+                    update_mask = torch.randint(
+                        2, inclusive_class_mask.shape, generator=rng
+                    )
+                    shared_beacons = np.logical_and(inclusive_class_mask, update_mask)
+
+                    query = np.logical_or(
+                        unaffected_bits,
+                        shared_beacons,
+                    )
+
             for class_name in unique_classes:
                 exclusive_class_mask = present_beacon_classes[batch_idx] == class_name
                 inclusive_class_mask = (

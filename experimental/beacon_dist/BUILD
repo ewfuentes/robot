@@ -35,6 +35,7 @@ py_library(
   srcs = ["utils.py"],
   deps = [
     requirement("torch"),
+    requirement("ipdb"),
   ]
 )
 
@@ -61,6 +62,7 @@ py_binary(
   srcs = ["train.py"],
   deps = [
     requirement("torch"),
+    requirement("IPython"),
     ":utils",
     ":model",
   ]
