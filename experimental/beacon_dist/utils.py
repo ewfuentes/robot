@@ -244,8 +244,8 @@ def generate_invalid_queries(
                     )
                     if torch.randint(2, size=(1,), generator=rng) < 1:
                         continue
-                    # All exclusive beacons are disabled but there are beacons of this class that exist
-                    # Set some fraction of them
+                    # All exclusive beacons are disabled but there are beacons of this class that
+                    # exist. Set some fraction of them
                     unaffected_bits = np.logical_and(
                         np.logical_not(inclusive_class_mask), query
                     )
@@ -303,31 +303,74 @@ def generate_invalid_queries(
     return torch.stack(queries).to(torch.bool)
 
 
+def gen_descriptor(value: int):
+    out = np.zeros((DESCRIPTOR_SIZE,), dtype=np.int16)
+    out[0] = value
+    return out
+
+
 def get_descriptor_test_dataset() -> np.ndarray[KeypointDescriptorDtype]:
-    ''' Generate a dataset where the points vary only in their descriptors '''
+    """Generate a dataset where the points vary only in their descriptors"""
     IMAGE_ID = 0
     ANGLE = 0
     CLASS_ID = 0
     OCTAVE = 0
     X = 0.0
     Y = 0.0
-    RESPONSE = 0
+    RESPONSE = 0.0
     SIZE = 0.0
 
-    def gen_descriptor(idx: int):
-        out = np.zeros((DESCRIPTOR_SIZE, ), dtype=np.int16)
-        descriptor_idx = int(idx / 8)
-        remainder_idx = idx % 8
-        out[descriptor_idx] = 1 << remainder_idx
-        return out
+    # fmt: off
+    return np.array(
+        [
+             (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, X, Y, RESPONSE, SIZE, gen_descriptor(1), 1),
+             (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, X, Y, RESPONSE, SIZE, gen_descriptor(2), 1),
+             (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, X, Y, RESPONSE, SIZE, gen_descriptor(3), 2),
+             (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, X, Y, RESPONSE, SIZE, gen_descriptor(4), 2),
+        ],
+        dtype=KeypointDescriptorDtype,
+    )
+    # fmt: on
+
+
+def get_x_position_test_dataset() -> np.ndarray[KeypointDescriptorDtype]:
+    """Generate a dataset where the points vary only in their descriptors"""
+    IMAGE_ID = 0
+    ANGLE = 0
+    CLASS_ID = 0
+    OCTAVE = 0
+    RESPONSE = 0
+    SIZE = 0.0
 
     # fmt: off
     return np.ndarray(
         [
-            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, X, Y, RESPONSE, SIZE, gen_descriptor(0), 1),
-            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, X, Y, RESPONSE, SIZE, gen_descriptor(1), 1),
-            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, X, Y, RESPONSE, SIZE, gen_descriptor(2), 2),
-            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, X, Y, RESPONSE, SIZE, gen_descriptor(3), 2),
+            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 1.0, 0.0, RESPONSE, SIZE, gen_descriptor(4), 1),
+            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 2.0, 0.0, RESPONSE, SIZE, gen_descriptor(4), 2),
+            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 3.0, 0.0, RESPONSE, SIZE, gen_descriptor(4), 1),
+            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 4.0, 0.0, RESPONSE, SIZE, gen_descriptor(4), 2),
+        ],
+        dtype=KeypointDescriptorDtype,
+    )
+    # fmt: on
+
+
+def get_y_position_test_dataset() -> np.ndarray[KeypointDescriptorDtype]:
+    """Generate a dataset where the points vary only in their descriptors"""
+    IMAGE_ID = 0
+    ANGLE = 0
+    CLASS_ID = 0
+    OCTAVE = 0
+    RESPONSE = 0
+    SIZE = 0.0
+
+    # fmt: off
+    return np.ndarray(
+        [
+            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 0.0, 1.0, RESPONSE, SIZE, gen_descriptor(4), 1),
+            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 0.0, 2.0, RESPONSE, SIZE, gen_descriptor(4), 2),
+            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 0.0, 3.0, RESPONSE, SIZE, gen_descriptor(4), 1),
+            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 0.0, 4.0, RESPONSE, SIZE, gen_descriptor(4), 2),
         ],
         dtype=KeypointDescriptorDtype,
     )

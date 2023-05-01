@@ -72,10 +72,6 @@ class ConfigurationModel(torch.nn.Module):
 
         self._classifier = torch.nn.Linear(params.descriptor_embedding_size, 1)
 
-        self._mask_marker = torch.nn.Parameter(
-            data=torch.tensor((params.descriptor_embedding_size,), dtype=torch.float32)
-        )
-
         self._params = params
 
     def encode_descriptors(self, descriptors: torch.Tensor):
@@ -109,7 +105,6 @@ class ConfigurationModel(torch.nn.Module):
         query_descriptors = (
             self.encode_descriptors(context.descriptor)
             + self.position_encoding(context.x, context.y)
-            + torch.einsum('ij,k->ijk', torch.logical_not(query), self._mask_marker)
         )
 
         # add padding masks for the target and memory
