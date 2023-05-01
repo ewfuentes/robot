@@ -61,7 +61,6 @@ py_binary(
   srcs = ["train.py"],
   deps = [
     requirement("torch"),
-    requirement("IPython"),
     ":utils",
     ":model",
   ]
