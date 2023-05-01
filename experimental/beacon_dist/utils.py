@@ -3,6 +3,8 @@ import numpy as np
 from typing import NamedTuple, Callable
 from collections import defaultdict
 
+DESCRIPTOR_SIZE = 32
+
 KeypointDescriptorDtype = np.dtype(
     [
         ("image_id", np.int64),
@@ -13,7 +15,7 @@ KeypointDescriptorDtype = np.dtype(
         ("y", np.float32),
         ("response", np.float32),
         ("size", np.float32),
-        ("descriptor", np.int16, (32,)),
+        ("descriptor", np.int16, (DESCRIPTOR_SIZE,)),
         ("class_label", np.int64),
     ]
 )
@@ -299,3 +301,34 @@ def generate_invalid_queries(
             did_update = not torch.all(query == valid_queries[batch_idx, ...])
         queries.append(query)
     return torch.stack(queries).to(torch.bool)
+
+
+def get_descriptor_test_dataset() -> np.ndarray[KeypointDescriptorDtype]:
+    ''' Generate a dataset where the points vary only in their descriptors '''
+    IMAGE_ID = 0
+    ANGLE = 0
+    CLASS_ID = 0
+    OCTAVE = 0
+    X = 0.0
+    Y = 0.0
+    RESPONSE = 0
+    SIZE = 0.0
+
+    def gen_descriptor(idx: int):
+        out = np.zeros((DESCRIPTOR_SIZE, ), dtype=np.int16)
+        descriptor_idx = int(idx / 8)
+        remainder_idx = idx % 8
+        out[descriptor_idx] = 1 << remainder_idx
+        return out
+
+    # fmt: off
+    return np.ndarray(
+        [
+            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, X, Y, RESPONSE, SIZE, gen_descriptor(0), 1),
+            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, X, Y, RESPONSE, SIZE, gen_descriptor(1), 1),
+            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, X, Y, RESPONSE, SIZE, gen_descriptor(2), 2),
+            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, X, Y, RESPONSE, SIZE, gen_descriptor(3), 2),
+        ],
+        dtype=KeypointDescriptorDtype,
+    )
+    # fmt: on
