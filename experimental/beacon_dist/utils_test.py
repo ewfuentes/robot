@@ -249,6 +249,34 @@ class UtilsTest(unittest.TestCase):
         for i, label in enumerate(labels):
             self.assertEqual(label, 1 if i < 4 else 0)
 
+    def test_is_valid_configuration_shared_points(self):
+        # Setup
+        queries = torch.tensor(
+            [
+                # Valid Queries
+                [0, 0, 0],
+                [1, 0, 0],
+                [0, 1, 0],
+                [1, 0, 1],
+                [0, 1, 1],
+                [1, 1, 0],
+                [1, 1, 1],
+                # Invalid Queries with one beacon
+                [0, 0, 1],
+            ],
+            dtype=torch.bool,
+        )
+        class_labels = torch.tensor([1, 2, 3]).repeat(queries.shape[0], 1)
+
+        # Action
+        labels = is_valid_configuration(class_labels, queries)
+
+        print('labels\n', labels)
+
+        # Verification
+        for i, label in enumerate(labels):
+            self.assertEqual(label, 1 if i < 7 else 0)
+
 
 if __name__ == "__main__":
     unittest.main()

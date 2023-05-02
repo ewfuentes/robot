@@ -4,6 +4,7 @@ import torch
 from typing import NamedTuple
 import time
 
+import IPython
 
 from experimental.beacon_dist.utils import (
     Dataset,
@@ -38,12 +39,40 @@ def collate_fn(samples: list[KeypointBatch]) -> KeypointBatch:
     return batchify(KeypointBatch(**fields))
 
 
+def get_all_queries():
+    return torch.tensor(
+        [
+            # Valid Queries
+            [0, 0, 0, 0],
+            [1, 1, 0, 0],
+            [0, 0, 1, 1],
+            [1, 1, 1, 1],
+            # Invalid Queries with one beacon
+            [1, 0, 0, 0],
+            [0, 1, 0, 0],
+            [0, 0, 1, 0],
+            [0, 0, 0, 1],
+            # Invalid with two beacons
+            [1, 0, 1, 0],
+            [1, 0, 0, 1],
+            [0, 1, 1, 0],
+            [0, 1, 0, 1],
+            # Invalid with three beacons
+            [1, 1, 1, 0],
+            [1, 1, 0, 1],
+            [0, 1, 1, 1],
+            [0, 1, 1, 1],
+        ],
+        dtype=torch.bool,
+    )
+
+
 def train(dataset: Dataset, train_config: TrainConfig):
     # create model
     model = ConfigurationModel(
         ConfigurationModelParams(
             descriptor_size=256,
-            descriptor_embedding_size=16,
+            descriptor_embedding_size=32,
             position_encoding_factor=10000,
             num_encoder_heads=2,
             num_encoder_layers=2,
@@ -55,6 +84,7 @@ def train(dataset: Dataset, train_config: TrainConfig):
     # create dataloader
     rng = torch.Generator()
     rng.manual_seed(train_config.random_seed)
+    torch.manual_seed(train_config.random_seed + 1)
     data_loader = torch.utils.data.DataLoader(
         dataset, batch_size=1, shuffle=True, collate_fn=collate_fn, drop_last=True
     )
@@ -62,29 +92,38 @@ def train(dataset: Dataset, train_config: TrainConfig):
     print(model)
 
     # Create the optimizer
-    optim = torch.optim.SGD(model.parameters(), lr=1e-6, momentum=0.9)
+    optim = torch.optim.SGD(model.parameters(), lr=1e-2, momentum=0.0)
 
     for epoch_idx in range(train_config.num_epochs):
         loss = None
         for batch_idx, batch in enumerate(data_loader):
             # batch_start_time = time.time()
-            valid_queries = generate_valid_queries(batch.class_label, rng)
-            invalid_queries = generate_invalid_queries(
-                batch.class_label, valid_queries, rng
+            # valid_queries = generate_valid_queries(batch.class_label, rng)
+            # invalid_queries = generate_invalid_queries(
+            #     batch.class_label, valid_queries, rng
+            # )
+
+            # valid_query_selector = torch.randint(
+            #     low=0,
+            #     high=2,
+            #     size=(batch.x.shape[0], 1),
+            #     dtype=torch.bool,
+            #     generator=rng,
+            # )
+            # invalid_query_selector = torch.logical_not(valid_query_selector)
+            # queries = (
+            #     valid_queries * valid_query_selector
+            #     + invalid_queries * invalid_query_selector
+            # )
+
+            queries = get_all_queries()
+            batch = KeypointBatch(
+                **{
+                    k: v.repeat(*([[queries.shape[0]] + [1] * len(v.shape[1:])]))
+                    for k, v in batch._asdict().items()
+                }
             )
 
-            valid_query_selector = torch.randint(
-                low=0,
-                high=2,
-                size=(batch.x.shape[0], 1),
-                dtype=torch.bool,
-                generator=rng,
-            )
-            invalid_query_selector = torch.logical_not(valid_query_selector)
-            queries = (
-                valid_queries * valid_query_selector
-                + invalid_queries * invalid_query_selector
-            )
             # Zero gradients
             batch = batch.to("cuda")
             queries = queries.to("cuda")
@@ -103,13 +142,16 @@ def train(dataset: Dataset, train_config: TrainConfig):
             # if batch_idx % 10 == 0:
             #     print(f"Batch: {batch_idx} dt: {batch_time: 0.3f} s Loss: {loss}")
 
-        print(f"End of Epoch {epoch_idx} Loss: {loss}", flush=True)
         if epoch_idx % 100 == 0:
-            file_name = os.path.join(
-                train_config.output_dir, f"model_{epoch_idx:09}.pt"
-            )
-            print(f"Saving model: {file_name}", flush=True)
-            torch.save(model.state_dict(), file_name)
+            print(f"End of Epoch {epoch_idx} Loss: {loss}", flush=True)
+            # file_name = os.path.join(
+            #     train_config.output_dir, f"model_{epoch_idx:09}.pt"
+            # )
+            # print(f"Saving model: {file_name}", flush=True)
+            # torch.save(model.state_dict(), file_name)
+
+    IPython.embed()
+
 
 
 def main(train_config: TrainConfig):
@@ -124,9 +166,9 @@ def main(train_config: TrainConfig):
         dataset = Dataset(filename=train_config.dataset_path)
     elif train_config.test_dataset:
         dataset_generator = {
-            'x': get_x_position_test_dataset,
-            'y': get_y_position_test_dataset,
-            'descriptor': get_descriptor_test_dataset,
+            "x": get_x_position_test_dataset,
+            "y": get_y_position_test_dataset,
+            "descriptor": get_descriptor_test_dataset,
         }
         dataset = Dataset(data=dataset_generator[train_config.test_dataset]())
 

@@ -3,6 +3,9 @@ import numpy as np
 from typing import NamedTuple, Callable
 from collections import defaultdict
 
+import sys
+import IPython
+
 DESCRIPTOR_SIZE = 32
 
 KeypointDescriptorDtype = np.dtype(
@@ -162,21 +165,40 @@ def is_valid_configuration(class_labels: torch.Tensor, query: torch.Tensor):
     assert class_labels.shape == query.shape
     unique_classes = find_unique_classes(class_labels)
 
-    is_valid_mask = torch.ones(
+    is_exclusive_valid = torch.ones(
+        (query.shape[0], 1), dtype=torch.bool, device=class_labels.device
+    )
+    is_shared_valid = torch.ones(
         (query.shape[0], 1), dtype=torch.bool, device=class_labels.device
     )
     for class_name in unique_classes:
-        class_mask = class_labels == class_name
-        not_in_class = torch.logical_not(class_mask)
-        all_from_class_present = torch.all(np.logical_or(not_in_class, query), dim=1, keepdim=True)
-        all_from_class_absent = torch.all(
-            np.logical_or(not_in_class, np.logical_not(query)), dim=1, keepdim=True
+        #         print("Class name", class_name)
+        exclusive_class_mask = class_labels == class_name
+        inclusive_class_mask = torch.bitwise_and(class_labels, class_name) > 0
+        shared_class_mask = torch.logical_and(
+            torch.logical_not(exclusive_class_mask), inclusive_class_mask
         )
-        is_valid_for_class = np.logical_or(all_from_class_present, all_from_class_absent)
+        #         print("exclusive mask:\n", exclusive_class_mask)
+        #         print("inclusive mask:\n", inclusive_class_mask)
+        #         print("shared mask:\n", shared_class_mask)
+        not_in_class = torch.logical_not(exclusive_class_mask)
+        all_from_class_present = torch.all(
+            torch.logical_or(not_in_class, query), dim=1, keepdim=True
+        )
+        all_from_class_absent = torch.all(
+            torch.logical_or(not_in_class, torch.logical_not(query)),
+            dim=1,
+            keepdim=True,
+        )
+        is_exclusive_valid_for_class = torch.logical_or(
+            all_from_class_present, all_from_class_absent
+        )
 
-        is_valid_mask = torch.logical_and(is_valid_mask, is_valid_for_class)
+        is_exclusive_valid = torch.logical_and(
+            is_exclusive_valid, is_exclusive_valid_for_class
+        )
 
-    return is_valid_mask.to(torch.float32)
+    return torch.logical_and(is_exclusive_valid, is_shared_valid).to(torch.float32)
 
 
 def valid_configuration_loss(
@@ -346,11 +368,11 @@ def get_x_position_test_dataset() -> np.ndarray[KeypointDescriptorDtype]:
     SIZE = 0.0
 
     # fmt: off
-    return np.ndarray(
+    return np.array(
         [
             (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 1.0, 0.0, RESPONSE, SIZE, gen_descriptor(4), 1),
-            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 2.0, 0.0, RESPONSE, SIZE, gen_descriptor(4), 2),
             (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 3.0, 0.0, RESPONSE, SIZE, gen_descriptor(4), 1),
+            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 2.0, 0.0, RESPONSE, SIZE, gen_descriptor(4), 2),
             (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 4.0, 0.0, RESPONSE, SIZE, gen_descriptor(4), 2),
         ],
         dtype=KeypointDescriptorDtype,
@@ -368,11 +390,11 @@ def get_y_position_test_dataset() -> np.ndarray[KeypointDescriptorDtype]:
     SIZE = 0.0
 
     # fmt: off
-    return np.ndarray(
+    return np.array(
         [
             (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 0.0, 1.0, RESPONSE, SIZE, gen_descriptor(4), 1),
-            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 0.0, 2.0, RESPONSE, SIZE, gen_descriptor(4), 2),
             (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 0.0, 3.0, RESPONSE, SIZE, gen_descriptor(4), 1),
+            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 0.0, 2.0, RESPONSE, SIZE, gen_descriptor(4), 2),
             (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 0.0, 4.0, RESPONSE, SIZE, gen_descriptor(4), 2),
         ],
         dtype=KeypointDescriptorDtype,
