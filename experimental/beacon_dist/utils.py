@@ -167,11 +167,14 @@ def is_valid_configuration(class_labels: torch.Tensor, query: torch.Tensor):
     )
     for class_name in unique_classes:
         class_mask = class_labels == class_name
-        class_present_in_query = torch.logical_and(class_mask, query)
-        class_matches = torch.all(
-            class_mask == class_present_in_query, dim=1, keepdim=True
+        not_in_class = torch.logical_not(class_mask)
+        all_from_class_present = torch.all(np.logical_or(not_in_class, query), dim=1, keepdim=True)
+        all_from_class_absent = torch.all(
+            np.logical_or(not_in_class, np.logical_not(query)), dim=1, keepdim=True
         )
-        is_valid_mask = torch.logical_and(class_matches, is_valid_mask)
+        is_valid_for_class = np.logical_or(all_from_class_present, all_from_class_absent)
+
+        is_valid_mask = torch.logical_and(is_valid_mask, is_valid_for_class)
 
     return is_valid_mask.to(torch.float32)
 

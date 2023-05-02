@@ -12,6 +12,7 @@ from experimental.beacon_dist.utils import (
     generate_valid_queries,
     generate_invalid_queries,
     query_from_class_samples,
+    is_valid_configuration,
 )
 
 
@@ -161,7 +162,10 @@ class UtilsTest(unittest.TestCase):
             torch.all(query == torch.tensor([True, True, False, False, True, True]))
         )
         self.assertTrue(
-            torch.all(exclusive_query == torch.tensor([True, True, False, False, False, False]))
+            torch.all(
+                exclusive_query
+                == torch.tensor([True, True, False, False, False, False])
+            )
         )
 
     def test_valid_query_generator(self):
@@ -208,6 +212,42 @@ class UtilsTest(unittest.TestCase):
         # Verification
         self.assertTrue(valid_queries.shape == invalid_queries.shape)
         self.assertFalse(torch.all(valid_queries == invalid_queries))
+
+    def test_is_valid_configuration(self):
+        # Setup
+        queries = torch.tensor(
+            [
+                # Valid Queries
+                [0, 0, 0, 0],
+                [1, 1, 0, 0],
+                [0, 0, 1, 1],
+                [1, 1, 1, 1],
+                # Invalid Queries with one beacon
+                [1, 0, 0, 0],
+                [0, 1, 0, 0],
+                [0, 0, 1, 0],
+                [0, 0, 0, 1],
+                # Invalid with two beacons
+                [1, 0, 1, 0],
+                [1, 0, 0, 1],
+                [0, 1, 1, 0],
+                [0, 1, 0, 1],
+                # Invalid with three beacons
+                [1, 1, 1, 0],
+                [1, 1, 0, 1],
+                [0, 1, 1, 1],
+                [0, 1, 1, 1],
+            ],
+            dtype=torch.bool,
+        )
+        class_labels = torch.tensor([1, 1, 2, 2]).repeat(queries.shape[0], 1)
+
+        # Action
+        labels = is_valid_configuration(class_labels, queries)
+
+        # Verification
+        for i, label in enumerate(labels):
+            self.assertEqual(label, 1 if i < 4 else 0)
 
 
 if __name__ == "__main__":
