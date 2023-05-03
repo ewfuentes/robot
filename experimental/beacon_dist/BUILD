@@ -18,6 +18,7 @@ py_library(
   deps = [
     requirement("numpy"),
     requirement("torch")
+    requirement("IPython")
   ]
 )
 

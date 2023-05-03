@@ -1,7 +1,6 @@
 import torch
 
 from typing import NamedTuple
-import IPython
 
 from experimental.beacon_dist import utils
 
