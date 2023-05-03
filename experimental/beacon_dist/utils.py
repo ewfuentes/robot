@@ -3,9 +3,6 @@ import numpy as np
 from typing import NamedTuple, Callable
 from collections import defaultdict
 
-import sys
-import IPython
-
 DESCRIPTOR_SIZE = 32
 
 KeypointDescriptorDtype = np.dtype(
@@ -163,24 +160,18 @@ def find_unique_classes(class_labels: torch.Tensor) -> torch.Tensor:
 def is_valid_configuration(class_labels: torch.Tensor, query: torch.Tensor):
     # a configuration is valid if all exclusive keypoints are present
     assert class_labels.shape == query.shape
-    unique_classes = find_unique_classes(class_labels)
+    nonzero_class_labels = class_labels * (class_labels > 0)
+    unique_classes = find_unique_classes(nonzero_class_labels)
 
     is_exclusive_valid = torch.ones(
         (query.shape[0], 1), dtype=torch.bool, device=class_labels.device
     )
-    is_shared_valid = torch.ones(
-        (query.shape[0], 1), dtype=torch.bool, device=class_labels.device
-    )
+    # negative class labels correspond to padded entries
+    # ignore these entries for the purposes of determining validity
+    is_shared_valid = class_labels < 0
     for class_name in unique_classes:
-        #         print("Class name", class_name)
-        exclusive_class_mask = class_labels == class_name
-        inclusive_class_mask = torch.bitwise_and(class_labels, class_name) > 0
-        shared_class_mask = torch.logical_and(
-            torch.logical_not(exclusive_class_mask), inclusive_class_mask
-        )
-        #         print("exclusive mask:\n", exclusive_class_mask)
-        #         print("inclusive mask:\n", inclusive_class_mask)
-        #         print("shared mask:\n", shared_class_mask)
+        # Compute if the exclusive beacons have are valid
+        exclusive_class_mask = nonzero_class_labels == class_name
         not_in_class = torch.logical_not(exclusive_class_mask)
         all_from_class_present = torch.all(
             torch.logical_or(not_in_class, query), dim=1, keepdim=True
@@ -198,6 +189,23 @@ def is_valid_configuration(class_labels: torch.Tensor, query: torch.Tensor):
             is_exclusive_valid, is_exclusive_valid_for_class
         )
 
+        # compute if the shared beacons are valid
+        inclusive_class_mask = torch.bitwise_and(nonzero_class_labels, class_name) > 0
+        shared_class_mask = torch.logical_and(
+            torch.logical_not(exclusive_class_mask), inclusive_class_mask
+        )
+
+        # exclusive beacons are automatically valid
+        shared_and_explained_by_class = torch.logical_and(
+            shared_class_mask,
+            torch.logical_or(all_from_class_present, torch.logical_not(query)),
+        )
+        is_shared_valid_for_class = torch.logical_or(
+            exclusive_class_mask, shared_and_explained_by_class
+        )
+        is_shared_valid = np.logical_or(is_shared_valid, is_shared_valid_for_class)
+
+    is_shared_valid = torch.all(is_shared_valid, dim=1, keepdim=True)
     return torch.logical_and(is_exclusive_valid, is_shared_valid).to(torch.float32)
 
 

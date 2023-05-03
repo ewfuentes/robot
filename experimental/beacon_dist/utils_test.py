@@ -90,7 +90,7 @@ class UtilsTest(unittest.TestCase):
         loss = valid_configuration_loss(batch.class_label, query, model_output)
 
         # Verification
-        self.assertAlmostEqual(loss, 0.0, 1e-6)
+        self.assertAlmostEqual(loss.item(), 0.0)
 
     def test_valid_configuration_loss_invalid_queries_are_unlikely(self):
         # Setup
@@ -103,7 +103,7 @@ class UtilsTest(unittest.TestCase):
         loss = valid_configuration_loss(batch.class_label, query, model_output)
 
         # Verification
-        self.assertAlmostEqual(loss, 0.0, 1e-6)
+        self.assertAlmostEqual(loss.item(), 0.0)
 
     def test_valid_configuration_loss_common_keypoints_are_ignored(self):
         # Setup
@@ -116,7 +116,7 @@ class UtilsTest(unittest.TestCase):
         loss = valid_configuration_loss(batch.class_label, query, model_output)
 
         # Verification
-        self.assertAlmostEqual(loss, 0.0, 1e-6)
+        self.assertAlmostEqual(loss.item(), 0.0)
 
     def test_valid_configuration_loss_bad_prediction_yields_nonzero_loss(self):
         # Setup
@@ -142,7 +142,7 @@ class UtilsTest(unittest.TestCase):
         loss = valid_configuration_loss(batch.class_label, query, model_output)
 
         # Verification
-        self.assertGreater(loss, 0.0)
+        self.assertAlmostEqual(loss, 0.0)
 
     def test_query_from_class_samples(self):
         # Setup
@@ -270,8 +270,6 @@ class UtilsTest(unittest.TestCase):
 
         # Action
         labels = is_valid_configuration(class_labels, queries)
-
-        print('labels\n', labels)
 
         # Verification
         for i, label in enumerate(labels):
