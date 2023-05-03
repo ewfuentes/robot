@@ -17,8 +17,8 @@ py_library(
   srcs = ["model.py"],
   deps = [
     requirement("numpy"),
-    requirement("torch")
-    requirement("IPython")
+    requirement("torch"),
+    requirement("IPython"),
   ]
 )
 
