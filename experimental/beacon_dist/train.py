@@ -27,17 +27,50 @@ class TrainConfig(NamedTuple):
     test_dataset: str
     output_dir: str
     random_seed: int
+    num_environments_per_batch: int
+    num_queries_per_environment: int
 
 
-def collate_fn(samples: list[KeypointBatch]) -> KeypointBatch:
-    """Join multiple samples into a single batch"""
-    fields = {}
-    for f in KeypointBatch._fields:
-        fields[f] = torch.nested.nested_tensor(
-            [getattr(sample, f) for sample in samples]
+def make_collator_fn(num_queries_per_environment: int):
+    def __inner__(samples: list[KeypointBatch]) -> KeypointBatch:
+        """Join multiple samples into a single batch"""
+        fields = {}
+        for f in KeypointBatch._fields:
+            fields[f] = torch.nested.nested_tensor(
+                [getattr(sample, f) for sample in samples]
+            )
+        batch = batchify(KeypointBatch(**fields))
+        batch = KeypointBatch(
+            **{
+                k: v.repeat_interleave(num_queries_per_environment, dim=0)
+                for k, v in batch._asdict().items()
+            }
         )
 
-    return batchify(KeypointBatch(**fields))
+        # This will get called from a dataloader which may spawn multiple processes
+        # we have different environments, so we should generate different queries
+        rng = torch.Generator(device='cpu')
+        rng.manual_seed(0)
+        valid_queries = generate_valid_queries(batch.class_label, rng)
+        invalid_queries = generate_invalid_queries(
+            batch.class_label, valid_queries, rng
+        )
+
+        valid_query_selector = torch.randint(
+            low=0,
+            high=2,
+            size=(batch.x.shape[0], 1),
+            dtype=torch.bool,
+            generator=rng,
+        )
+        invalid_query_selector = torch.logical_not(valid_query_selector)
+        queries = (
+            valid_queries * valid_query_selector
+            + invalid_queries * invalid_query_selector
+        )
+        return batch, queries
+
+    return __inner__
 
 
 def train(dataset: Dataset, train_config: TrainConfig, collator_fn: Callable):
@@ -59,7 +92,10 @@ def train(dataset: Dataset, train_config: TrainConfig, collator_fn: Callable):
     rng.manual_seed(train_config.random_seed)
     torch.manual_seed(train_config.random_seed + 1)
     data_loader = torch.utils.data.DataLoader(
-        dataset, batch_size=1, shuffle=True, collate_fn=collator_fn, drop_last=True
+        dataset,
+        batch_size=train_config.num_environments_per_batch,
+        shuffle=True,
+        collate_fn=collator_fn,
     )
 
     print(model)
@@ -71,23 +107,6 @@ def train(dataset: Dataset, train_config: TrainConfig, collator_fn: Callable):
         loss = None
         for batch_idx, (batch, queries) in enumerate(data_loader):
             batch_start_time = time.time()
-            # valid_queries = generate_valid_queries(batch.class_label, rng)
-            # invalid_queries = generate_invalid_queries(
-            #     batch.class_label, valid_queries, rng
-            # )
-
-            # valid_query_selector = torch.randint(
-            #     low=0,
-            #     high=2,
-            #     size=(batch.x.shape[0], 1),
-            #     dtype=torch.bool,
-            #     generator=rng,
-            # )
-            # invalid_query_selector = torch.logical_not(valid_query_selector)
-            # queries = (
-            #     valid_queries * valid_query_selector
-            #     + invalid_queries * invalid_query_selector
-            # )
 
             # Zero gradients
             batch = batch.to("cuda")
@@ -104,8 +123,8 @@ def train(dataset: Dataset, train_config: TrainConfig, collator_fn: Callable):
             # take step
             optim.step()
             batch_time = time.time() - batch_start_time
-            # if batch_idx % 10 == 0:
-            #     print(f"Batch: {batch_idx} dt: {batch_time: 0.3f} s Loss: {loss}")
+            if batch_idx % 10 == 0:
+                print(f"Batch: {batch_idx} dt: {batch_time: 0.3f} s Loss: {loss}")
 
         if epoch_idx % 100 == 0:
             print(f"End of Epoch {epoch_idx} Loss: {loss}", flush=True)
@@ -128,7 +147,7 @@ def main(train_config: TrainConfig):
 
     if train_config.dataset_path:
         dataset = Dataset(filename=train_config.dataset_path)
-        collator_fn = collate_fn
+        collator_fn = make_collator_fn(train_config.num_queries_per_environment)
     elif train_config.test_dataset:
         dataset_generator = {
             "x": get_x_position_test_dataset,
@@ -136,6 +155,7 @@ def main(train_config: TrainConfig):
             "descriptor": get_descriptor_test_dataset,
         }
         dataset = Dataset(data=dataset_generator[train_config.test_dataset]())
+        train_config = train_config._replace(num_environments_per_batch=1)
         collator_fn = test_dataset_collator
 
     train(dataset, train_config, collator_fn)
@@ -173,6 +193,22 @@ if __name__ == "__main__":
         type=int,
         # Set an arbitrary initial seed
         default=0xFFBD5654,
+    )
+
+    parser.add_argument(
+        "--num_environments_per_batch",
+        help="number_of_environments_per_batch",
+        nargs="?",
+        type=int,
+        default=8,
+    )
+
+    parser.add_argument(
+        "--num_queries_per_environment",
+        help="Number of queries per environment",
+        nargs="?",
+        type=int,
+        default=8,
     )
 
     args = parser.parse_args()
