@@ -1,5 +1,4 @@
 import torch
-import numpy as np
 
 from typing import NamedTuple
 
@@ -61,20 +60,22 @@ class ConfigurationModel(torch.nn.Module):
             encoder_layer, num_layers=params.num_encoder_layers
         )
 
+        # decoder
         decoder_layer = torch.nn.TransformerDecoderLayer(
             d_model=params.descriptor_embedding_size,
             nhead=params.num_decoder_heads,
+            batch_first=True,
         )
         self._decoder = torch.nn.TransformerDecoder(
             decoder_layer,
             num_layers=params.num_decoder_layers,
         )
 
-        self._classifier = torch.nn.Linear(params.descriptor_embedding_size, 1)
-
-        self._mask_marker = torch.nn.Parameter(
-            data=torch.tensor((params.descriptor_embedding_size,), dtype=torch.float32)
+        self._valid_classification_token = torch.nn.Parameter(
+            data=torch.randn(1, 1, params.descriptor_embedding_size)
         )
+
+        self._classifier = torch.nn.Linear(params.descriptor_embedding_size, 1)
 
         self._params = params
 
@@ -95,6 +96,7 @@ class ConfigurationModel(torch.nn.Module):
         # compute the probability that the query is a valid configuration
         assert query.ndim == 2
         assert query.shape[0] == context.x.shape[0]
+        batch_size = query.shape[0]
 
         # Encode the descriptors
         context_descriptors = self.encode_descriptors(
@@ -106,14 +108,26 @@ class ConfigurationModel(torch.nn.Module):
         encoded_context = self._encoder(context_descriptors)
 
         # Encode the query
-        query_descriptors = (
-            self.encode_descriptors(context.descriptor)
-            + self.position_encoding(context.x, context.y)
-            + torch.einsum('ij,k->ijk', torch.logical_not(query), self._mask_marker)
+        query_descriptors = self.encode_descriptors(
+            context.descriptor
+        ) + self.position_encoding(context.x, context.y)
+
+        classification_token = self._valid_classification_token.repeat(batch_size, 1, 1)
+
+        query_descriptors_with_classification_token = torch.cat(
+            [classification_token, query_descriptors], dim=1
+        )
+
+        expanded_query = torch.cat(
+            [torch.ones(batch_size, 1, dtype=torch.bool, device=query.device), query], dim=1
         )
 
         # add padding masks for the target and memory
-        decoder_output = self._decoder(tgt=query_descriptors, memory=encoded_context)
+        decoder_output = self._decoder(
+            tgt=query_descriptors_with_classification_token,
+            memory=encoded_context,
+            tgt_key_padding_mask=torch.logical_not(expanded_query),
+        )
 
         # Average pooling across the keypoints
         # TODO consider using attention based pooling instead

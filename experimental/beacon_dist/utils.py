@@ -3,6 +3,8 @@ import numpy as np
 from typing import NamedTuple, Callable
 from collections import defaultdict
 
+DESCRIPTOR_SIZE = 32
+
 KeypointDescriptorDtype = np.dtype(
     [
         ("image_id", np.int64),
@@ -13,7 +15,7 @@ KeypointDescriptorDtype = np.dtype(
         ("y", np.float32),
         ("response", np.float32),
         ("size", np.float32),
-        ("descriptor", np.int16, (32,)),
+        ("descriptor", np.int16, (DESCRIPTOR_SIZE,)),
         ("class_label", np.int64),
     ]
 )
@@ -158,20 +160,53 @@ def find_unique_classes(class_labels: torch.Tensor) -> torch.Tensor:
 def is_valid_configuration(class_labels: torch.Tensor, query: torch.Tensor):
     # a configuration is valid if all exclusive keypoints are present
     assert class_labels.shape == query.shape
-    unique_classes = find_unique_classes(class_labels)
+    nonzero_class_labels = class_labels * (class_labels > 0)
+    unique_classes = find_unique_classes(nonzero_class_labels)
 
-    is_valid_mask = torch.ones(
+    is_exclusive_valid = torch.ones(
         (query.shape[0], 1), dtype=torch.bool, device=class_labels.device
     )
+    # negative class labels correspond to padded entries
+    # ignore these entries for the purposes of determining validity
+    is_shared_valid = class_labels < 0
     for class_name in unique_classes:
-        class_mask = class_labels == class_name
-        class_present_in_query = torch.logical_and(class_mask, query)
-        class_matches = torch.all(
-            class_mask == class_present_in_query, dim=1, keepdim=True
+        # Compute if the exclusive beacons have are valid
+        exclusive_class_mask = nonzero_class_labels == class_name
+        not_in_class = torch.logical_not(exclusive_class_mask)
+        all_from_class_present = torch.all(
+            torch.logical_or(not_in_class, query), dim=1, keepdim=True
         )
-        is_valid_mask = torch.logical_and(class_matches, is_valid_mask)
+        all_from_class_absent = torch.all(
+            torch.logical_or(not_in_class, torch.logical_not(query)),
+            dim=1,
+            keepdim=True,
+        )
+        is_exclusive_valid_for_class = torch.logical_or(
+            all_from_class_present, all_from_class_absent
+        )
 
-    return is_valid_mask.to(torch.float32)
+        is_exclusive_valid = torch.logical_and(
+            is_exclusive_valid, is_exclusive_valid_for_class
+        )
+
+        # compute if the shared beacons are valid
+        inclusive_class_mask = torch.bitwise_and(nonzero_class_labels, class_name) > 0
+        shared_class_mask = torch.logical_and(
+            torch.logical_not(exclusive_class_mask), inclusive_class_mask
+        )
+
+        # exclusive beacons are automatically valid
+        shared_and_explained_by_class = torch.logical_and(
+            shared_class_mask,
+            torch.logical_or(all_from_class_present, torch.logical_not(query)),
+        )
+        is_shared_valid_for_class = torch.logical_or(
+            exclusive_class_mask, shared_and_explained_by_class
+        )
+        is_shared_valid = torch.logical_or(is_shared_valid, is_shared_valid_for_class)
+
+    is_shared_valid = torch.all(is_shared_valid, dim=1, keepdim=True)
+    return torch.logical_and(is_exclusive_valid, is_shared_valid).to(torch.float32)
 
 
 def valid_configuration_loss(
@@ -242,17 +277,17 @@ def generate_invalid_queries(
                     )
                     if torch.randint(2, size=(1,), generator=rng) < 1:
                         continue
-                    # All exclusive beacons are disabled but there are beacons of this class that exist
-                    # Set some fraction of them
-                    unaffected_bits = np.logical_and(
-                        np.logical_not(inclusive_class_mask), query
+                    # All exclusive beacons are disabled but there are beacons of this class that
+                    # exist. Set some fraction of them
+                    unaffected_bits = torch.logical_and(
+                        torch.logical_not(inclusive_class_mask), query
                     )
                     update_mask = torch.randint(
                         2, inclusive_class_mask.shape, generator=rng
                     )
-                    shared_beacons = np.logical_and(inclusive_class_mask, update_mask)
+                    shared_beacons = torch.logical_and(inclusive_class_mask, update_mask)
 
-                    query = np.logical_or(
+                    query = torch.logical_or(
                         unaffected_bits,
                         shared_beacons,
                     )
@@ -269,12 +304,12 @@ def generate_invalid_queries(
                         2, exclusive_class_mask.shape, generator=rng
                     )
 
-                    new_class_mask = np.logical_and(update_mask, exclusive_class_mask)
+                    new_class_mask = torch.logical_and(update_mask, exclusive_class_mask)
 
-                    unaffected_bits = np.logical_and(
-                        np.logical_not(exclusive_class_mask), query
+                    unaffected_bits = torch.logical_and(
+                        torch.logical_not(exclusive_class_mask), query
                     )
-                    query = np.logical_or(unaffected_bits, new_class_mask)
+                    query = torch.logical_or(unaffected_bits, new_class_mask)
                 elif torch.sum(exclusive_class_mask) > 0 and torch.sum(
                     inclusive_class_mask
                 ) > torch.sum(exclusive_class_mask):
@@ -283,19 +318,136 @@ def generate_invalid_queries(
                     # There is at least one exclusive beacon present and shared landmarks exist, we
                     # make an invalid config by turning off the exclusive beacon and turning on the
                     # shared beacon
-                    unaffected_bits = np.logical_and(
-                        np.logical_not(inclusive_class_mask), query
+                    unaffected_bits = torch.logical_and(
+                        torch.logical_not(inclusive_class_mask), query
                     )
-                    disable_exclusive_beacons = np.logical_and(
-                        np.logical_not(exclusive_class_mask), query
+                    disable_exclusive_beacons = torch.logical_and(
+                        torch.logical_not(exclusive_class_mask), query
                     )
-                    shared_beacons = np.logical_xor(
+                    shared_beacons = torch.logical_xor(
                         exclusive_class_mask, inclusive_class_mask
                     )
-                    query = np.logical_or(
-                        np.logical_or(unaffected_bits, disable_exclusive_beacons),
+                    query = torch.logical_or(
+                        torch.logical_or(unaffected_bits, disable_exclusive_beacons),
                         shared_beacons,
                     )
             did_update = not torch.all(query == valid_queries[batch_idx, ...])
         queries.append(query)
     return torch.stack(queries).to(torch.bool)
+
+
+def gen_descriptor(value: int):
+    out = np.zeros((DESCRIPTOR_SIZE,), dtype=np.int16)
+    out[0] = value
+    return out
+
+
+def get_descriptor_test_dataset() -> np.ndarray[KeypointDescriptorDtype]:
+    """Generate a dataset where the points vary only in their descriptors"""
+    IMAGE_ID = 0
+    ANGLE = 0
+    CLASS_ID = 0
+    OCTAVE = 0
+    X = 0.0
+    Y = 0.0
+    RESPONSE = 0.0
+    SIZE = 0.0
+
+    # fmt: off
+    return np.array(
+        [
+             (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, X, Y, RESPONSE, SIZE, gen_descriptor(1), 1),
+             (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, X, Y, RESPONSE, SIZE, gen_descriptor(2), 1),
+             (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, X, Y, RESPONSE, SIZE, gen_descriptor(3), 2),
+             (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, X, Y, RESPONSE, SIZE, gen_descriptor(4), 2),
+        ],
+        dtype=KeypointDescriptorDtype,
+    )
+    # fmt: on
+
+
+def get_x_position_test_dataset() -> np.ndarray[KeypointDescriptorDtype]:
+    """Generate a dataset where the points vary only in their descriptors"""
+    IMAGE_ID = 0
+    ANGLE = 0
+    CLASS_ID = 0
+    OCTAVE = 0
+    RESPONSE = 0
+    SIZE = 0.0
+
+    # fmt: off
+    return np.array(
+        [
+            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 1.0, 0.0, RESPONSE, SIZE, gen_descriptor(4), 1),
+            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 3.0, 0.0, RESPONSE, SIZE, gen_descriptor(4), 1),
+            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 2.0, 0.0, RESPONSE, SIZE, gen_descriptor(4), 2),
+            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 4.0, 0.0, RESPONSE, SIZE, gen_descriptor(4), 2),
+        ],
+        dtype=KeypointDescriptorDtype,
+    )
+    # fmt: on
+
+
+def get_y_position_test_dataset() -> np.ndarray[KeypointDescriptorDtype]:
+    """Generate a dataset where the points vary only in their descriptors"""
+    IMAGE_ID = 0
+    ANGLE = 0
+    CLASS_ID = 0
+    OCTAVE = 0
+    RESPONSE = 0
+    SIZE = 0.0
+
+    # fmt: off
+    return np.array(
+        [
+            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 0.0, 1.0, RESPONSE, SIZE, gen_descriptor(4), 1),
+            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 0.0, 3.0, RESPONSE, SIZE, gen_descriptor(4), 1),
+            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 0.0, 2.0, RESPONSE, SIZE, gen_descriptor(4), 2),
+            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 0.0, 4.0, RESPONSE, SIZE, gen_descriptor(4), 2),
+        ],
+        dtype=KeypointDescriptorDtype,
+    )
+    # fmt: on
+
+
+def get_test_all_queries():
+    return torch.tensor(
+        [
+            # Valid Queries
+            [0, 0, 0, 0],
+            [1, 1, 0, 0],
+            [0, 0, 1, 1],
+            [1, 1, 1, 1],
+            # Invalid Queries with one beacon
+            [1, 0, 0, 0],
+            [0, 1, 0, 0],
+            [0, 0, 1, 0],
+            [0, 0, 0, 1],
+            # Invalid with two beacons
+            [1, 0, 1, 0],
+            [1, 0, 0, 1],
+            [0, 1, 1, 0],
+            [0, 1, 0, 1],
+            # Invalid with three beacons
+            [1, 1, 1, 0],
+            [1, 1, 0, 1],
+            [0, 1, 1, 1],
+            [0, 1, 1, 1],
+        ],
+        dtype=torch.bool,
+    )
+
+
+def test_dataset_collator(
+    samples: list[KeypointBatch],
+) -> tuple[KeypointBatch, torch.Tensor]:
+    assert len(samples) == 1
+    queries = get_test_all_queries()
+    num_queries = queries.shape[0]
+    out_batch = KeypointBatch(
+        **{
+            k: torch.nested.nested_tensor([v] * num_queries)
+            for k, v in samples[0]._asdict().items()
+        }
+    )
+    return batchify(out_batch), queries
