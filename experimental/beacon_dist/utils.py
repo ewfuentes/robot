@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+import numpy.typing as npt
 from typing import NamedTuple, Callable
 from collections import defaultdict
 
@@ -342,7 +343,7 @@ def gen_descriptor(value: int):
     return out
 
 
-def get_descriptor_test_dataset() -> np.ndarray[KeypointDescriptorDtype]:
+def get_descriptor_test_dataset() -> npt.NDArray[KeypointDescriptorDtype]:
     """Generate a dataset where the points vary only in their descriptors"""
     IMAGE_ID = 0
     ANGLE = 0
@@ -366,7 +367,7 @@ def get_descriptor_test_dataset() -> np.ndarray[KeypointDescriptorDtype]:
     # fmt: on
 
 
-def get_x_position_test_dataset() -> np.ndarray[KeypointDescriptorDtype]:
+def get_x_position_test_dataset() -> npt.NDArray[KeypointDescriptorDtype]:
     """Generate a dataset where the points vary only in their descriptors"""
     IMAGE_ID = 0
     ANGLE = 0
@@ -388,7 +389,7 @@ def get_x_position_test_dataset() -> np.ndarray[KeypointDescriptorDtype]:
     # fmt: on
 
 
-def get_y_position_test_dataset() -> np.ndarray[KeypointDescriptorDtype]:
+def get_y_position_test_dataset() -> npt.NDArray[KeypointDescriptorDtype]:
     """Generate a dataset where the points vary only in their descriptors"""
     IMAGE_ID = 0
     ANGLE = 0

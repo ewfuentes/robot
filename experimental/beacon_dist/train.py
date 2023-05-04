@@ -49,7 +49,7 @@ def make_collator_fn(num_queries_per_environment: int):
 
         # This will get called from a dataloader which may spawn multiple processes
         # we have different environments, so we should generate different queries
-        rng = torch.Generator(device='cpu')
+        rng = torch.Generator(device="cpu")
         rng.manual_seed(0)
         valid_queries = generate_valid_queries(batch.class_label, rng)
         invalid_queries = generate_invalid_queries(
@@ -96,6 +96,8 @@ def train(dataset: Dataset, train_config: TrainConfig, collator_fn: Callable):
         batch_size=train_config.num_environments_per_batch,
         shuffle=True,
         collate_fn=collator_fn,
+        num_workers=4,
+        persistent_workers=True,
     )
 
     print(model)
@@ -105,9 +107,10 @@ def train(dataset: Dataset, train_config: TrainConfig, collator_fn: Callable):
     model.train()
     for epoch_idx in range(train_config.num_epochs):
         loss = None
+        epoch_loss = 0.0
+        epoch_start_time = time.time()
         for batch_idx, (batch, queries) in enumerate(data_loader):
             batch_start_time = time.time()
-
             # Zero gradients
             batch = batch.to("cuda")
             queries = queries.to("cuda")
@@ -122,12 +125,18 @@ def train(dataset: Dataset, train_config: TrainConfig, collator_fn: Callable):
 
             # take step
             optim.step()
-            batch_time = time.time() - batch_start_time
+            batch_dt = time.time() - batch_start_time
             if batch_idx % 10 == 0:
-                print(f"Batch: {batch_idx} dt: {batch_time: 0.3f} s Loss: {loss}")
+                # print(f"Batch: {batch_idx} dt: {batch_dt: 0.6f} s Loss: {loss: 0.6f}")
+                ...
+            epoch_loss += loss.detach().item()
 
+        epoch_dt = time.time() - epoch_start_time
         if epoch_idx % 100 == 0:
-            print(f"End of Epoch {epoch_idx} Loss: {loss}", flush=True)
+            print(
+                f"End of Epoch {epoch_idx} dt: {epoch_dt: 0.6f} s Loss: {epoch_loss: 0.6f}",
+                flush=True,
+            )
             # file_name = os.path.join(
             #     train_config.output_dir, f"model_{epoch_idx:09}.pt"
             # )
