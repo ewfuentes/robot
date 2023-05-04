@@ -1,7 +1,8 @@
 import argparse
 import os
 import torch
-from typing import NamedTuple
+from typing import NamedTuple, Callable
+import time
 
 import IPython
 
@@ -15,6 +16,7 @@ from experimental.beacon_dist.utils import (
     get_descriptor_test_dataset,
     get_x_position_test_dataset,
     get_y_position_test_dataset,
+    test_dataset_collator,
 )
 from experimental.beacon_dist.model import ConfigurationModel, ConfigurationModelParams
 
@@ -38,7 +40,7 @@ def collate_fn(samples: list[KeypointBatch]) -> KeypointBatch:
     return batchify(KeypointBatch(**fields))
 
 
-def train(dataset: Dataset, train_config: TrainConfig):
+def train(dataset: Dataset, train_config: TrainConfig, collator_fn: Callable):
     # create model
     model = ConfigurationModel(
         ConfigurationModelParams(
@@ -57,18 +59,18 @@ def train(dataset: Dataset, train_config: TrainConfig):
     rng.manual_seed(train_config.random_seed)
     torch.manual_seed(train_config.random_seed + 1)
     data_loader = torch.utils.data.DataLoader(
-        dataset, batch_size=1, shuffle=True, collate_fn=collate_fn, drop_last=True
+        dataset, batch_size=1, shuffle=True, collate_fn=collator_fn, drop_last=True
     )
 
     print(model)
 
     # Create the optimizer
     optim = torch.optim.SGD(model.parameters(), lr=1e-2, momentum=0.0)
-
+    model.train()
     for epoch_idx in range(train_config.num_epochs):
         loss = None
-        for batch_idx, batch in enumerate(data_loader):
-            # batch_start_time = time.time()
+        for batch_idx, (batch, queries) in enumerate(data_loader):
+            batch_start_time = time.time()
             # valid_queries = generate_valid_queries(batch.class_label, rng)
             # invalid_queries = generate_invalid_queries(
             #     batch.class_label, valid_queries, rng
@@ -87,14 +89,6 @@ def train(dataset: Dataset, train_config: TrainConfig):
             #     + invalid_queries * invalid_query_selector
             # )
 
-            queries = get_all_queries()
-            batch = KeypointBatch(
-                **{
-                    k: v.repeat(*([[queries.shape[0]] + [1] * len(v.shape[1:])]))
-                    for k, v in batch._asdict().items()
-                }
-            )
-
             # Zero gradients
             batch = batch.to("cuda")
             queries = queries.to("cuda")
@@ -109,7 +103,7 @@ def train(dataset: Dataset, train_config: TrainConfig):
 
             # take step
             optim.step()
-            # batch_time = time.time() - batch_start_time
+            batch_time = time.time() - batch_start_time
             # if batch_idx % 10 == 0:
             #     print(f"Batch: {batch_idx} dt: {batch_time: 0.3f} s Loss: {loss}")
 
@@ -120,9 +114,8 @@ def train(dataset: Dataset, train_config: TrainConfig):
             # )
             # print(f"Saving model: {file_name}", flush=True)
             # torch.save(model.state_dict(), file_name)
-
+    model.eval()
     IPython.embed()
-
 
 
 def main(train_config: TrainConfig):
@@ -135,6 +128,7 @@ def main(train_config: TrainConfig):
 
     if train_config.dataset_path:
         dataset = Dataset(filename=train_config.dataset_path)
+        collator_fn = collate_fn
     elif train_config.test_dataset:
         dataset_generator = {
             "x": get_x_position_test_dataset,
@@ -142,8 +136,9 @@ def main(train_config: TrainConfig):
             "descriptor": get_descriptor_test_dataset,
         }
         dataset = Dataset(data=dataset_generator[train_config.test_dataset]())
+        collator_fn = test_dataset_collator
 
-    train(dataset, train_config)
+    train(dataset, train_config, collator_fn)
 
 
 if __name__ == "__main__":

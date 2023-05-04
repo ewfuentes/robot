@@ -203,7 +203,7 @@ def is_valid_configuration(class_labels: torch.Tensor, query: torch.Tensor):
         is_shared_valid_for_class = torch.logical_or(
             exclusive_class_mask, shared_and_explained_by_class
         )
-        is_shared_valid = np.logical_or(is_shared_valid, is_shared_valid_for_class)
+        is_shared_valid = torch.logical_or(is_shared_valid, is_shared_valid_for_class)
 
     is_shared_valid = torch.all(is_shared_valid, dim=1, keepdim=True)
     return torch.logical_and(is_exclusive_valid, is_shared_valid).to(torch.float32)
@@ -279,15 +279,15 @@ def generate_invalid_queries(
                         continue
                     # All exclusive beacons are disabled but there are beacons of this class that
                     # exist. Set some fraction of them
-                    unaffected_bits = np.logical_and(
-                        np.logical_not(inclusive_class_mask), query
+                    unaffected_bits = torch.logical_and(
+                        torch.logical_not(inclusive_class_mask), query
                     )
                     update_mask = torch.randint(
                         2, inclusive_class_mask.shape, generator=rng
                     )
-                    shared_beacons = np.logical_and(inclusive_class_mask, update_mask)
+                    shared_beacons = torch.logical_and(inclusive_class_mask, update_mask)
 
-                    query = np.logical_or(
+                    query = torch.logical_or(
                         unaffected_bits,
                         shared_beacons,
                     )
@@ -304,12 +304,12 @@ def generate_invalid_queries(
                         2, exclusive_class_mask.shape, generator=rng
                     )
 
-                    new_class_mask = np.logical_and(update_mask, exclusive_class_mask)
+                    new_class_mask = torch.logical_and(update_mask, exclusive_class_mask)
 
-                    unaffected_bits = np.logical_and(
-                        np.logical_not(exclusive_class_mask), query
+                    unaffected_bits = torch.logical_and(
+                        torch.logical_not(exclusive_class_mask), query
                     )
-                    query = np.logical_or(unaffected_bits, new_class_mask)
+                    query = torch.logical_or(unaffected_bits, new_class_mask)
                 elif torch.sum(exclusive_class_mask) > 0 and torch.sum(
                     inclusive_class_mask
                 ) > torch.sum(exclusive_class_mask):
@@ -318,17 +318,17 @@ def generate_invalid_queries(
                     # There is at least one exclusive beacon present and shared landmarks exist, we
                     # make an invalid config by turning off the exclusive beacon and turning on the
                     # shared beacon
-                    unaffected_bits = np.logical_and(
-                        np.logical_not(inclusive_class_mask), query
+                    unaffected_bits = torch.logical_and(
+                        torch.logical_not(inclusive_class_mask), query
                     )
-                    disable_exclusive_beacons = np.logical_and(
-                        np.logical_not(exclusive_class_mask), query
+                    disable_exclusive_beacons = torch.logical_and(
+                        torch.logical_not(exclusive_class_mask), query
                     )
-                    shared_beacons = np.logical_xor(
+                    shared_beacons = torch.logical_xor(
                         exclusive_class_mask, inclusive_class_mask
                     )
-                    query = np.logical_or(
-                        np.logical_or(unaffected_bits, disable_exclusive_beacons),
+                    query = torch.logical_or(
+                        torch.logical_or(unaffected_bits, disable_exclusive_beacons),
                         shared_beacons,
                     )
             did_update = not torch.all(query == valid_queries[batch_idx, ...])
@@ -450,4 +450,4 @@ def test_dataset_collator(
             for k, v in samples[0]._asdict().items()
         }
     )
-    return out_batch, queries
+    return batchify(out_batch), queries
