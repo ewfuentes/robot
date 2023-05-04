@@ -38,34 +38,6 @@ def collate_fn(samples: list[KeypointBatch]) -> KeypointBatch:
     return batchify(KeypointBatch(**fields))
 
 
-def get_all_queries():
-    return torch.tensor(
-        [
-            # Valid Queries
-            [0, 0, 0, 0],
-            [1, 1, 0, 0],
-            [0, 0, 1, 1],
-            [1, 1, 1, 1],
-            # Invalid Queries with one beacon
-            [1, 0, 0, 0],
-            [0, 1, 0, 0],
-            [0, 0, 1, 0],
-            [0, 0, 0, 1],
-            # Invalid with two beacons
-            [1, 0, 1, 0],
-            [1, 0, 0, 1],
-            [0, 1, 1, 0],
-            [0, 1, 0, 1],
-            # Invalid with three beacons
-            [1, 1, 1, 0],
-            [1, 1, 0, 1],
-            [0, 1, 1, 1],
-            [0, 1, 1, 1],
-        ],
-        dtype=torch.bool,
-    )
-
-
 def train(dataset: Dataset, train_config: TrainConfig):
     # create model
     model = ConfigurationModel(

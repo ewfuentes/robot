@@ -13,6 +13,8 @@ from experimental.beacon_dist.utils import (
     generate_invalid_queries,
     query_from_class_samples,
     is_valid_configuration,
+    test_dataset_collator,
+    get_x_position_test_dataset,
 )
 
 
@@ -274,6 +276,22 @@ class UtilsTest(unittest.TestCase):
         # Verification
         for i, label in enumerate(labels):
             self.assertEqual(label, 1 if i < 7 else 0)
+
+    def test_test_dataset_collator(self):
+        # Setup
+        dataset = Dataset(data=get_x_position_test_dataset())
+
+        loader = torch.utils.data.DataLoader(
+            dataset, batch_size=1, collate_fn=test_dataset_collator
+        )
+
+        # Action
+        batch, query = next(iter(loader))
+        batch = batchify(batch)
+
+        # Verification
+        print(batch)
+        print(query)
 
 
 if __name__ == "__main__":

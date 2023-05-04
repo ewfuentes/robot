@@ -408,3 +408,46 @@ def get_y_position_test_dataset() -> np.ndarray[KeypointDescriptorDtype]:
         dtype=KeypointDescriptorDtype,
     )
     # fmt: on
+
+
+def get_test_all_queries():
+    return torch.tensor(
+        [
+            # Valid Queries
+            [0, 0, 0, 0],
+            [1, 1, 0, 0],
+            [0, 0, 1, 1],
+            [1, 1, 1, 1],
+            # Invalid Queries with one beacon
+            [1, 0, 0, 0],
+            [0, 1, 0, 0],
+            [0, 0, 1, 0],
+            [0, 0, 0, 1],
+            # Invalid with two beacons
+            [1, 0, 1, 0],
+            [1, 0, 0, 1],
+            [0, 1, 1, 0],
+            [0, 1, 0, 1],
+            # Invalid with three beacons
+            [1, 1, 1, 0],
+            [1, 1, 0, 1],
+            [0, 1, 1, 1],
+            [0, 1, 1, 1],
+        ],
+        dtype=torch.bool,
+    )
+
+
+def test_dataset_collator(
+    samples: list[KeypointBatch],
+) -> tuple[KeypointBatch, torch.Tensor]:
+    assert len(samples) == 1
+    queries = get_test_all_queries()
+    num_queries = queries.shape[0]
+    out_batch = KeypointBatch(
+        **{
+            k: torch.nested.nested_tensor([v] * num_queries)
+            for k, v in samples[0]._asdict().items()
+        }
+    )
+    return out_batch, queries
