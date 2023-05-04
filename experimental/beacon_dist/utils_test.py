@@ -287,7 +287,6 @@ class UtilsTest(unittest.TestCase):
 
         # Action
         batch, query = next(iter(loader))
-        batch = batchify(batch)
 
         # Verification
         self.assertEqual(batch.x.shape, query.shape)
