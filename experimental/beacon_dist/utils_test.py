@@ -290,8 +290,7 @@ class UtilsTest(unittest.TestCase):
         batch = batchify(batch)
 
         # Verification
-        print(batch)
-        print(query)
+        self.assertEqual(batch.x.shape, query.shape)
 
 
 if __name__ == "__main__":
