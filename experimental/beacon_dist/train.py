@@ -88,11 +88,14 @@ def train(dataset: Dataset, train_config: TrainConfig, collator_fn: Callable):
     ).to("cuda")
 
     # create dataloader
+    torch.manual_seed(train_config.random_seed + 1)
     rng = torch.Generator()
     rng.manual_seed(train_config.random_seed)
-    torch.manual_seed(train_config.random_seed + 1)
-    data_loader = torch.utils.data.DataLoader(
-        dataset,
+    train_dataset, test_dataset = torch.utils.data.random_split(
+        dataset, [0.9, 0.1], generator=rng
+    )
+    train_data_loader = torch.utils.data.DataLoader(
+        train_dataset,
         batch_size=train_config.num_environments_per_batch,
         shuffle=True,
         collate_fn=collator_fn,
@@ -100,16 +103,23 @@ def train(dataset: Dataset, train_config: TrainConfig, collator_fn: Callable):
         persistent_workers=True,
     )
 
+    test_data_loader = torch.utils.data.DataLoader(
+        test_dataset,
+        batch_size=train_config.num_environments_per_batch,
+        collate_fn=collator_fn,
+    )
+
     print(model)
 
     # Create the optimizer
     optim = torch.optim.SGD(model.parameters(), lr=1e-2, momentum=0.0)
-    model.train()
     for epoch_idx in range(train_config.num_epochs):
         loss = None
         epoch_loss = 0.0
         epoch_start_time = time.time()
-        for batch_idx, (batch, queries) in enumerate(data_loader):
+        model.train()
+        # Train
+        for batch_idx, (batch, queries) in enumerate(train_data_loader):
             batch_start_time = time.time()
             # Zero gradients
             batch = batch.to("cuda")
@@ -131,10 +141,24 @@ def train(dataset: Dataset, train_config: TrainConfig, collator_fn: Callable):
                 ...
             epoch_loss += loss.detach().item()
 
+        model.eval()
+        # Evaluation
+        validation_loss = 0.0
+        with torch.no_grad():
+            for batch_idx, (batch, queries) in enumerate(test_data_loader):
+                batch = batch.to("cuda")
+                queries = queries.to("cuda")
+
+                model_out = model(batch, queries)
+                validation_loss += valid_configuration_loss(
+                    batch.class_label, queries, model_out, reduction="sum"
+                )
+
         epoch_dt = time.time() - epoch_start_time
-        if epoch_idx % 100 == 0:
+        if epoch_idx % 1 == 0:
             print(
-                f"End of Epoch {epoch_idx} dt: {epoch_dt: 0.6f} s Loss: {epoch_loss: 0.6f}",
+                f"End of Epoch {epoch_idx} dt: {epoch_dt: 0.6f} s Epoch Loss: {epoch_loss: 0.6f}",
+                f"Validation Loss: {validation_loss: 0.6f}",
                 flush=True,
             )
             # file_name = os.path.join(

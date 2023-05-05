@@ -214,11 +214,14 @@ def valid_configuration_loss(
     class_labels: torch.Tensor,
     query: torch.Tensor,
     model_output: torch.Tensor,
+    reduction: str = "mean",
 ):
     # Compute if this is a valid configuration
     labels = is_valid_configuration(class_labels, query)
 
-    return torch.nn.functional.binary_cross_entropy_with_logits(model_output, labels)
+    return torch.nn.functional.binary_cross_entropy_with_logits(
+        model_output, labels, reduction=reduction
+    )
 
 
 def query_from_class_samples(
@@ -286,7 +289,9 @@ def generate_invalid_queries(
                     update_mask = torch.randint(
                         2, inclusive_class_mask.shape, generator=rng
                     )
-                    shared_beacons = torch.logical_and(inclusive_class_mask, update_mask)
+                    shared_beacons = torch.logical_and(
+                        inclusive_class_mask, update_mask
+                    )
 
                     query = torch.logical_or(
                         unaffected_bits,
@@ -305,7 +310,9 @@ def generate_invalid_queries(
                         2, exclusive_class_mask.shape, generator=rng
                     )
 
-                    new_class_mask = torch.logical_and(update_mask, exclusive_class_mask)
+                    new_class_mask = torch.logical_and(
+                        update_mask, exclusive_class_mask
+                    )
 
                     unaffected_bits = torch.logical_and(
                         torch.logical_not(exclusive_class_mask), query
