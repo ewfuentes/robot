@@ -15,6 +15,7 @@ py_binary(
 py_library(
   name = "model",
   srcs = ["model.py"],
+  visibility = ["//common/python:__subpackages__"],
   deps = [
     requirement("torch"),
   ]
@@ -32,6 +33,7 @@ py_test(
 py_library(
   name = "utils",
   srcs = ["utils.py"],
+  visibility = ["//common/python:__subpackages__"],
   deps = [
     requirement("torch"),
     requirement("numpy"),
@@ -59,6 +61,7 @@ py_test(
 py_binary(
   name = "train",
   srcs = ["train.py"],
+  visibility = ["//common/python:__subpackages__"],
   deps = [
     requirement("torch"),
     requirement("IPython"),
@@ -66,3 +69,4 @@ py_binary(
     ":model",
   ]
 )
+
