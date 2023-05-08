@@ -92,7 +92,7 @@ def train(dataset: Dataset, train_config: TrainConfig, collator_fn: Callable):
     rng = torch.Generator()
     rng.manual_seed(train_config.random_seed)
     train_dataset, test_dataset = torch.utils.data.random_split(
-        dataset, [0.9, 0.1], generator=rng
+        dataset, [0.90, 0.10], generator=rng
     )
     train_data_loader = torch.utils.data.DataLoader(
         train_dataset,
@@ -117,7 +117,6 @@ def train(dataset: Dataset, train_config: TrainConfig, collator_fn: Callable):
         loss = None
         epoch_loss = 0.0
         epoch_start_time = time.time()
-        model.train()
         # Train
         for batch_idx, (batch, queries) in enumerate(train_data_loader):
             batch_start_time = time.time()
@@ -139,9 +138,9 @@ def train(dataset: Dataset, train_config: TrainConfig, collator_fn: Callable):
             if batch_idx % 10 == 0:
                 # print(f"Batch: {batch_idx} dt: {batch_dt: 0.6f} s Loss: {loss: 0.6f}")
                 ...
-            epoch_loss += loss.detach().item()
+            epoch_loss += loss.detach().item() * queries.shape[0]
 
-        model.eval()
+        model.train(False)
         # Evaluation
         validation_loss = 0.0
         with torch.no_grad():
@@ -153,6 +152,7 @@ def train(dataset: Dataset, train_config: TrainConfig, collator_fn: Callable):
                 validation_loss += valid_configuration_loss(
                     batch.class_label, queries, model_out, reduction="sum"
                 )
+        model.train(True)
 
         epoch_dt = time.time() - epoch_start_time
         if epoch_idx % 1 == 0:
@@ -161,11 +161,12 @@ def train(dataset: Dataset, train_config: TrainConfig, collator_fn: Callable):
                 f"Validation Loss: {validation_loss: 0.6f}",
                 flush=True,
             )
-            # file_name = os.path.join(
-            #     train_config.output_dir, f"model_{epoch_idx:09}.pt"
-            # )
-            # print(f"Saving model: {file_name}", flush=True)
-            # torch.save(model.state_dict(), file_name)
+        if epoch_idx % 100 == 0:
+            file_name = os.path.join(
+                train_config.output_dir, f"model_{epoch_idx:09}.pt"
+            )
+            print(f"Saving model: {file_name}", flush=True)
+            torch.save(model.state_dict(), file_name)
     model.eval()
     IPython.embed()
 
