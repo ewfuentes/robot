@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+import numpy.typing as npt
 from typing import NamedTuple, Callable
 from collections import defaultdict
 
@@ -213,11 +214,14 @@ def valid_configuration_loss(
     class_labels: torch.Tensor,
     query: torch.Tensor,
     model_output: torch.Tensor,
+    reduction: str = "mean",
 ):
     # Compute if this is a valid configuration
     labels = is_valid_configuration(class_labels, query)
 
-    return torch.nn.functional.binary_cross_entropy_with_logits(model_output, labels)
+    return torch.nn.functional.binary_cross_entropy_with_logits(
+        model_output, labels, reduction=reduction
+    )
 
 
 def query_from_class_samples(
@@ -285,7 +289,9 @@ def generate_invalid_queries(
                     update_mask = torch.randint(
                         2, inclusive_class_mask.shape, generator=rng
                     )
-                    shared_beacons = torch.logical_and(inclusive_class_mask, update_mask)
+                    shared_beacons = torch.logical_and(
+                        inclusive_class_mask, update_mask
+                    )
 
                     query = torch.logical_or(
                         unaffected_bits,
@@ -304,7 +310,9 @@ def generate_invalid_queries(
                         2, exclusive_class_mask.shape, generator=rng
                     )
 
-                    new_class_mask = torch.logical_and(update_mask, exclusive_class_mask)
+                    new_class_mask = torch.logical_and(
+                        update_mask, exclusive_class_mask
+                    )
 
                     unaffected_bits = torch.logical_and(
                         torch.logical_not(exclusive_class_mask), query
@@ -342,7 +350,7 @@ def gen_descriptor(value: int):
     return out
 
 
-def get_descriptor_test_dataset() -> np.ndarray[KeypointDescriptorDtype]:
+def get_descriptor_test_dataset() -> npt.NDArray[KeypointDescriptorDtype]:
     """Generate a dataset where the points vary only in their descriptors"""
     IMAGE_ID = 0
     ANGLE = 0
@@ -366,7 +374,7 @@ def get_descriptor_test_dataset() -> np.ndarray[KeypointDescriptorDtype]:
     # fmt: on
 
 
-def get_x_position_test_dataset() -> np.ndarray[KeypointDescriptorDtype]:
+def get_x_position_test_dataset() -> npt.NDArray[KeypointDescriptorDtype]:
     """Generate a dataset where the points vary only in their descriptors"""
     IMAGE_ID = 0
     ANGLE = 0
@@ -388,7 +396,7 @@ def get_x_position_test_dataset() -> np.ndarray[KeypointDescriptorDtype]:
     # fmt: on
 
 
-def get_y_position_test_dataset() -> np.ndarray[KeypointDescriptorDtype]:
+def get_y_position_test_dataset() -> npt.NDArray[KeypointDescriptorDtype]:
     """Generate a dataset where the points vary only in their descriptors"""
     IMAGE_ID = 0
     ANGLE = 0
