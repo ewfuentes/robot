@@ -21,6 +21,16 @@ KeypointDescriptorDtype = np.dtype(
     ]
 )
 
+ImageDescriptorDtype = np.dtype(
+    [
+        ("image_id", np.int64),
+        ("char", (np.unicode_, 1)),
+        ("x", np.float32),
+        ("y", np.float32),
+        ("theta", np.float32),
+    ]
+)
+
 
 class KeypointBatch(NamedTuple):
     # dimension [Batch]
@@ -56,6 +66,8 @@ class Dataset(torch.utils.data.Dataset):
     ):
         if filename:
             data = np.load(filename)
+            if isinstance(data, np.lib.npyio.NpzFile):
+                data = data['data']
         assert data is not None
 
         tensors = defaultdict(list)

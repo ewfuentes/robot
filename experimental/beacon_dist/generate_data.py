@@ -3,19 +3,23 @@ import numpy as np
 import time
 import multiprocessing
 from typing import NamedTuple
+from wand.image import Image
+from wand.color import Color
+from wand.drawing import Drawing
 
-from experimental.beacon_dist.utils import KeypointDescriptorDtype
-
-
-class ImageSample(NamedTuple):
-    final_image: np.ndarray
-    class_images: dict[str, np.ndarray]
+from experimental.beacon_dist.utils import KeypointDescriptorDtype, ImageDescriptorDtype
 
 
 class LetterPosition(NamedTuple):
     x: float
     y: float
     angle: float
+
+
+class ImageSample(NamedTuple):
+    final_image: np.ndarray
+    class_images: dict[str, np.ndarray]
+    letter_set: dict[str, LetterPosition]
 
 
 def sample_letter_set(
@@ -41,9 +45,6 @@ def sample_letter_set(
 def image_from_letter_set(
     letter_set: dict[str, LetterPosition], height, width
 ) -> np.ndarray:
-    from wand.image import Image
-    from wand.color import Color
-    from wand.drawing import Drawing
     with Image(width=width, height=height, background=Color("#fff")) as img:
         with Drawing() as ctx:
             ctx.font_size = 100
@@ -63,13 +64,17 @@ def sample_image(
     for s, position in letter_set.items():
         images[s] = image_from_letter_set({s: position}, height, width)
 
-    return ImageSample(final_image=final_image, class_images=images)
+    return ImageSample(
+        final_image=final_image, class_images=images, letter_set=letter_set
+    )
 
 
-def serialize_keypoints_and_descriptors(image_id, keypoints, descriptors, class_labels):
-    out = np.zeros(len(keypoints), KeypointDescriptorDtype)
+def serialize_keypoints_and_descriptors(
+    image_id, keypoints, descriptors, class_labels, letter_set
+):
+    keypoints_out = np.zeros(len(keypoints), KeypointDescriptorDtype)
     for i, kp in enumerate(keypoints):
-        out[i] = (
+        keypoints_out[i] = (
             image_id,
             kp.angle,
             kp.class_id,
@@ -82,11 +87,17 @@ def serialize_keypoints_and_descriptors(image_id, keypoints, descriptors, class_
             class_labels[i],
         )
 
-    return out
+    image_descriptor = np.zeros(len(letter_set), ImageDescriptorDtype)
+
+    for i, (char, pos) in enumerate(letter_set.items()):
+        image_descriptor[i] = (image_id, char, pos.x, pos.y, pos.angle)
+
+    return keypoints_out, image_descriptor
 
 
 def detect_orb_features(image_sample: ImageSample, letters: str):
     import cv2 as cv
+
     orb = cv.ORB_create(nfeatures=200)
     # Detect keypoints in the final image
     keypoints = orb.detect(image_sample.final_image, None)
@@ -115,7 +126,7 @@ def generate_data(idx: int, letters: str):
     keypoints, descriptors, class_labels = detect_orb_features(sampled_images, letters)
 
     return serialize_keypoints_and_descriptors(
-        idx, keypoints, descriptors, class_labels
+        idx, keypoints, descriptors, class_labels, sampled_images.letter_set
     )
 
 
@@ -131,7 +142,11 @@ def main(num_images: int, letters: str, output_path: str):
         f"{end-start} seconds to generate {num_images} images. {(end-start)/num_images} s/image"
     )
     with open(output_path, "wb") as file_out:
-        np.save(file_out, np.concatenate(result))
+        np.savez(
+            file_out,
+            data=np.concatenate([x[0] for x in result]),
+            image_descriptor=np.concatenate([x[1] for x in result]),
+        )
 
 
 if __name__ == "__main__":
