@@ -20,6 +20,7 @@ py_binary(
     "//experimental/beacon_dist:model",
     "//experimental/beacon_dist:utils",
     "//experimental/beacon_dist:train",
+    "//experimental/beacon_dist:generate_data",
     "@sophus_lie//:liegroups_python",
   ],
 )
