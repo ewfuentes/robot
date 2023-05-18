@@ -27,7 +27,7 @@ def sample_letter_set(
 ) -> dict[str, LetterPosition]:
     out: dict[str, LetterPosition] = {}
 
-    num_letters = rng.integers(1, 10, endpoint=True)
+    num_letters = rng.integers(1, min(10, len(letters)), endpoint=True)
     # Note that the class label is currently 1 << (letters.find(letter)) so we can't
     # yet handle multiple letters of the same kind. The fix is to export the sampled letters
     # this will also allow us to regenerate the image in the future.
