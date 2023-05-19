@@ -189,8 +189,8 @@ http_archive(
 
 http_archive(
   name = "drake",
-  url = "https://github.com/RobotLocomotion/drake/releases/download/v1.14.0/drake-20230315-jammy.tar.gz",
+  url = "https://github.com/RobotLocomotion/drake/releases/download/v1.16.0/drake-20230518-jammy.tar.gz",
   strip_prefix="drake",
   build_file="@//third_party:BUILD.drake",
-  sha256 = "1ac9f48e0d8dd38c742c1ddb6d4d7ede05ecb67b2278cdac3b9d7ee6eed8545c",
+  sha256="811c24a328ffc0113c5b8127de2276f2d2d98f68cf036dc552766a11984f0b01",
 )
