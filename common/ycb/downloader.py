@@ -4,7 +4,7 @@ import bs4
 import os
 
 
-def main(output_path: str, url: str, column_to_grab: str):
+def download_ycb(output_path: str, url: str, column_to_grab: str, force: bool, verbose=False):
     result: requests.Response = requests.get(url)
     assert result.status_code == 200
 
@@ -29,14 +29,22 @@ def main(output_path: str, url: str, column_to_grab: str):
         object_name = cells[0].contents[0].strip()
         link = cells[column_idx].find("a")
         if link is None:
-            print(f'No Link found for: {object_name}')
+            if verbose:
+                print(f"No Link found for: {object_name}")
             continue
-        download_url = requests.compat.urljoin(url, link['href'])
+        download_url = requests.compat.urljoin(url, link["href"])
 
-        print(object_name, download_url)
+        file_name = os.path.basename(link["href"])
+        file_path = os.path.join(sub_path, file_name)
+        if os.path.exists(file_path) and not force:
+            if verbose:
+                print(f'{object_name} already exists at {file_path}. Skipping...')
+            continue
 
-        file_name = os.path.basename(link['href'])
-        with open(os.path.join(sub_path, file_name), 'wb') as file_out:
+        if verbose:
+            print(f'Downloading {object_name} to {file_path}...')
+
+        with open(file_path, "wb") as file_out:
             result = requests.get(download_url)
             file_out.write(result.content)
 
@@ -57,7 +65,9 @@ if __name__ == "__main__":
         help=f"Column to grab. default: {DEFAULT_COLUMN}",
         default=DEFAULT_COLUMN,
     )
+    parser.add_argument("--force", help="Force download if already exists.", action='store_true')
+    parser.add_argument("--verbose", action='store_true')
 
     args = parser.parse_args()
 
-    main(args.output, args.url, args.column)
+    download_ycb(args.output, args.url, args.column, args.force, args.verbose)
