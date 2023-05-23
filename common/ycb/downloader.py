@@ -2,6 +2,7 @@ import argparse
 import requests
 import bs4
 import os
+import tarfile
 
 
 def download_ycb(output_path: str, url: str, column_to_grab: str, force: bool, verbose=False):
@@ -19,8 +20,7 @@ def download_ycb(output_path: str, url: str, column_to_grab: str, force: bool, v
     ), f'Unable to find "{column_to_grab}" in {[x.string for x in headers]}'
     column_idx = column_idx[0]
 
-    sub_path = os.path.join(output_path, column_to_grab)
-    os.makedirs(sub_path, exist_ok=True)
+    os.makedirs(output_path, exist_ok=True)
 
     for row in table.find_all("tr"):
         cells = row.find_all("td")
@@ -35,7 +35,7 @@ def download_ycb(output_path: str, url: str, column_to_grab: str, force: bool, v
         download_url = requests.compat.urljoin(url, link["href"])
 
         file_name = os.path.basename(link["href"])
-        file_path = os.path.join(sub_path, file_name)
+        file_path = os.path.join(output_path, file_name)
         if os.path.exists(file_path) and not force:
             if verbose:
                 print(f'{object_name} already exists at {file_path}. Skipping...')
@@ -47,6 +47,12 @@ def download_ycb(output_path: str, url: str, column_to_grab: str, force: bool, v
         with open(file_path, "wb") as file_out:
             result = requests.get(download_url)
             file_out.write(result.content)
+
+        tgz = tarfile.open(file_path)
+        tgz.extractall(output_path)
+        tgz.close()
+
+
 
 
 if __name__ == "__main__":

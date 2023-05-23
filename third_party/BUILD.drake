@@ -1,6 +1,11 @@
 
 DRAKE_HEADERS = glob(["include/drake/**/*.h"])
 
+filegroup(
+  name = "drake_resources",
+  srcs = glob(["share/drake/**/*"])
+)
+
 cc_library(
   name = "drake",
   hdrs = DRAKE_HEADERS,
@@ -12,6 +17,9 @@ cc_library(
     "lib/libdrake_marker.so",
     "lib/libmosek64.so.10.0",
     "lib/libtbb.so.12.6",
+  ],
+  data = [
+    ":drake_resources",
   ],
   deps=[
     "@eigen//:eigen",
