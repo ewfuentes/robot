@@ -327,13 +327,13 @@ defusedxml==0.7.1 \
     --hash=sha256:1bb3032db185915b62d7c6209c5a8792be6a32ab2fedacc84e01b52c51aa3e69 \
     --hash=sha256:a352e7e428770286cc899e2542b6cdaedb2b4953ff269a210103ec58f6198a61
     # via nbconvert
-drake==1.16.0 \
-    --hash=sha256:1cfad58c4925c55140b80765470e7dfb448a718527ec0c3fc365afa6e78bd47d \
-    --hash=sha256:5abae6608962cabc1e4f48e0470973c4b2eddf3be38344be4dacba8c15780014 \
-    --hash=sha256:76fef54f1ec98ff135984748354bc5ef29057e6102e5c5eeb39fadac1fb807c6 \
-    --hash=sha256:80f34472ab209e86a3ce9aec4e3509bd24f3a98fb36a6d8aee5ce619dec0c92b \
-    --hash=sha256:89b1af755f00abd6ca51feaddfec76a3186f8598b64c238865df291e677ad6b9 \
-    --hash=sha256:f38bed6fc6a40aa27a46f8b65532e34e5efd3e8a91f6b23ba4e9bd78104cfdfa
+drake==1.17.0 \
+    --hash=sha256:3d76708984e4fdf6f1c850bcd0e3c3ef925d04060d1c98615a4c4932a991d92a \
+    --hash=sha256:59a6effe3ef14418a9a95ec5aeb54a03d07725a5834aaecf33b6c468af78a5b3 \
+    --hash=sha256:7678d4d3ea4a7266bb432ab152b49fb09e4a3dce0cab3ff4a4cdec9213586f79 \
+    --hash=sha256:827dd28de5760a57ce0841d2a1815a1ba456bfe31da792cf8f91a89e631f0a72 \
+    --hash=sha256:8b828373646ab88eb3da84eddbd93e3712d0b7d92a68b72259637b41e68f7146 \
+    --hash=sha256:945de9dbd37480a29d01181a54930d0a52a6ef30624dd2241f060cf20c012b29
     # via -r third_party/python/requirements.in
 entrypoints==0.4 \
     --hash=sha256:b706eddaa9218a19ebcd67b56818f05bb27589b1ca9e8d797b74affad4ccacd4 \
