@@ -88,14 +88,10 @@ class LoadYcbTest(unittest.TestCase):
 
         diagram = builder.Build()
 
-        print(diagram.GetGraphvizString())
+        print(diagram.GetGraphvizString(), flush=True)
 
         # Action
-        # joint_sliders.Run(diagram)
-
-
-
-
+        joint_sliders.Run(diagram)
 
         # Verification
 
