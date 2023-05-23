@@ -3,24 +3,28 @@ import unittest
 import numpy as np
 
 from pydrake.all import (
-    DiagramBuilder,
+    AbstractValue,
     AddMultibodyPlantSceneGraph,
-    MultibodyPlant,
-    Parser,
-    Meshcat,
-    ModelVisualizer,
-    MakeRenderEngineVtk,
-    RenderEngineVtkParams,
-    RenderCameraCore,
     CameraInfo,
-    RigidTransform,
-    RgbdSensor,
-    DepthRenderCamera,
-    DepthRange,
     ClippingRange,
+    Context,
+    DepthRange,
+    DepthRenderCamera,
+    DiagramBuilder,
+    JointSliders,
+    LeafSystem,
+    Image,
+    MakeRenderEngineVtk,
+    Meshcat,
     MeshcatVisualizer,
     MeshcatVisualizerParams,
-    JointSliders,
+    MultibodyPlant,
+    Parser,
+    PixelType,
+    RenderCameraCore,
+    RenderEngineVtkParams,
+    RgbdSensor,
+    RigidTransform,
 )
 
 
@@ -36,11 +40,29 @@ def load_object(plant: MultibodyPlant, name: str):
     )
 
 
+class ImageEvaluator(LeafSystem):
+    def __init__(self):
+        super().__init__()
+        self._image_in = self.DeclareAbstractInputPort(
+            name="image_in", model_value=AbstractValue.Make(Image[PixelType.kRgba8U]())
+        )
+        self.DeclarePeriodicUnrestrictedUpdateEvent(
+            period_sec=0.1, offset_sec=0.0, update=self.eval_image
+        )
+        self.DeclareForcedPublishEvent(self.eval_image)
+
+    def eval_image(self, context: Context):
+        self._image_in.Eval(context)
+
+    def image_input_port(self):
+        return self._image_in
+
+
 class LoadYcbTest(unittest.TestCase):
     def test_load_ycb_object(self):
         # Setup
         TIME_STEP_S = 0.0
-        RENDERER_NAME = 'my_renderer'
+        RENDERER_NAME = "my_renderer"
         meshcat = Meshcat()
         builder = DiagramBuilder()
         plant, scene_graph = AddMultibodyPlantSceneGraph(builder, TIME_STEP_S)
@@ -62,7 +84,9 @@ class LoadYcbTest(unittest.TestCase):
             X_BS=RigidTransform(),
         )
 
-        depth_camera = DepthRenderCamera(camera_core, DepthRange(min_in=0.1, min_out=3.0))
+        depth_camera = DepthRenderCamera(
+            camera_core, DepthRange(min_in=0.1, min_out=3.0)
+        )
         world_from_camera = RigidTransform()
         rgbd_camera = builder.AddSystem(
             RgbdSensor(
@@ -78,13 +102,22 @@ class LoadYcbTest(unittest.TestCase):
         joint_sliders = JointSliders(meshcat, plant)
         builder.AddSystem(joint_sliders)
 
-        builder.ExportOutput(rgbd_camera.color_image_output_port(), 'rgbd_image')
-        builder.ExportOutput(rgbd_camera.depth_image_32F_output_port(), 'depth_image')
+        builder.ExportOutput(rgbd_camera.color_image_output_port(), "rgbd_image")
+        builder.ExportOutput(rgbd_camera.depth_image_32F_output_port(), "depth_image")
 
-        builder.Connect(scene_graph.get_query_output_port(),
-                        rgbd_camera.query_object_input_port())
+        image_evaluator = ImageEvaluator()
+        builder.AddSystem(image_evaluator)
 
-        MeshcatVisualizer.AddToBuilder(builder, scene_graph, meshcat, MeshcatVisualizerParams())
+        builder.Connect(
+            scene_graph.get_query_output_port(), rgbd_camera.query_object_input_port()
+        )
+        builder.Connect(
+            rgbd_camera.color_image_output_port(), image_evaluator.image_input_port()
+        )
+
+        MeshcatVisualizer.AddToBuilder(
+            builder, scene_graph, meshcat, MeshcatVisualizerParams()
+        )
 
         diagram = builder.Build()
 
