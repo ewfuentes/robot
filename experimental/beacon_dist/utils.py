@@ -5,6 +5,7 @@ from typing import NamedTuple, Callable
 from collections import defaultdict
 
 DESCRIPTOR_SIZE = 32
+CLASS_SIZE = 4
 
 KeypointDescriptorDtype = np.dtype(
     [
@@ -17,7 +18,7 @@ KeypointDescriptorDtype = np.dtype(
         ("response", np.float32),
         ("size", np.float32),
         ("descriptor", np.int16, (DESCRIPTOR_SIZE,)),
-        ("class_label", np.int64),
+        ("class_label", np.uint64, (CLASS_SIZE,)),
     ]
 )
 
