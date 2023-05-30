@@ -28,6 +28,11 @@ class DatasetTest(unittest.TestCase):
         # Verification
         self.assertEqual(len(dataset), 3)
         self.assertEqual(dataset[1].descriptor[0, 0], 4)
+        self.assertTrue(
+            torch.all(
+                dataset[2].class_label == torch.tensor([[False, False, False, True]])
+            )
+        )
 
 
 class UtilsTest(unittest.TestCase):
@@ -242,7 +247,9 @@ class UtilsTest(unittest.TestCase):
             ],
             dtype=torch.bool,
         )
-        class_labels = torch.tensor([1, 1, 2, 2]).repeat(queries.shape[0], 1)
+        class_labels = torch.tensor(
+            [[True, False], [True, False], [False, True], [False, True]]
+        ).repeat(queries.shape[0], 1, 1)
 
         # Action
         labels = is_valid_configuration(class_labels, queries)
@@ -268,7 +275,9 @@ class UtilsTest(unittest.TestCase):
             ],
             dtype=torch.bool,
         )
-        class_labels = torch.tensor([1, 2, 3]).repeat(queries.shape[0], 1)
+        class_labels = torch.tensor(
+            [[True, False], [False, True], [True, True]]
+        ).repeat(queries.shape[0], 1, 1)
 
         # Action
         labels = is_valid_configuration(class_labels, queries)
