@@ -1,6 +1,7 @@
 import unittest
 
 import torch
+import numpy as np
 
 from experimental.beacon_dist.test_helpers import get_test_data
 from experimental.beacon_dist.utils import (
@@ -153,7 +154,10 @@ class UtilsTest(unittest.TestCase):
 
     def test_query_from_class_samples(self):
         # Setup
-        class_labels = torch.tensor([1, 2, 3, 4, 5, 6])
+        class_idxs = np.expand_dims(np.array([1, 2, 3, 4, 5, 6], dtype=np.uint8), -1)
+        class_labels = torch.from_numpy(
+            np.unpackbits(class_idxs, axis=-1, bitorder='little').astype(bool)
+        )
         present_classes = [1, 2]
 
         # Action
@@ -179,30 +183,38 @@ class UtilsTest(unittest.TestCase):
         # Setup
         rng = torch.Generator()
         rng.manual_seed(98764)
-        class_labels = torch.tensor(
+        class_idxs = np.expand_dims(np.array(
             [
                 [1, 2, 3, 4, 5, 6],
                 [1, 1, 1, 1, 1, 1],
                 [16, 16, 8, 8, 4, 4],
-            ]
+            ],
+            dtype=np.uint8,
+        ), -1)
+        class_labels = torch.from_numpy(
+            np.unpackbits(class_idxs, bitorder="little", axis=-1).astype(bool)
         )
 
         # Action
         queries = generate_valid_queries(class_labels, rng)
 
         # Verification
-        self.assertEqual(class_labels.shape, queries.shape)
+        self.assertEqual(class_labels.shape[:-1], queries.shape)
 
     def test_invalid_query_generator(self):
         # Setup
         rng = torch.Generator()
         rng.manual_seed(12345678)
-        class_labels = torch.tensor(
+        class_idxs = np.expand_dims(np.array(
             [
                 [1, 2, 3, 4, 5, 6],
                 [1, 1, 1, 1, 1, 1],
                 [16, 16, 8, 8, 4, 4],
-            ]
+            ],
+            dtype=np.uint8,
+        ), -1)
+        class_labels = torch.from_numpy(
+            np.unpackbits(class_idxs, bitorder="little", axis=-1).astype(bool)
         )
 
         valid_queries = torch.tensor(
