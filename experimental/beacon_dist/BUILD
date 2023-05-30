@@ -13,6 +13,16 @@ py_binary(
   ]
 )
 
+py_binary(
+  name = "generate_ycb_dataset",
+  srcs = ["generate_ycb_dataset.py"],
+  visibility = ["//common/python:__subpackages__"],
+  deps = [
+    requirement("drake"),
+    requirement("numpy"),
+  ]
+)
+
 py_library(
   name = "model",
   srcs = ["model.py"],
