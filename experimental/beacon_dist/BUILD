@@ -54,6 +54,7 @@ py_test(
   name = "utils_test",
   srcs = ["utils_test.py"],
   deps = [
+    requirement("numpy"),
     ":test_helpers",
     ":utils",
   ]

@@ -5,6 +5,7 @@ from typing import NamedTuple, Callable
 from collections import defaultdict
 
 DESCRIPTOR_SIZE = 32
+CLASS_SIZE = 4
 
 KeypointDescriptorDtype = np.dtype(
     [
@@ -17,7 +18,7 @@ KeypointDescriptorDtype = np.dtype(
         ("response", np.float32),
         ("size", np.float32),
         ("descriptor", np.int16, (DESCRIPTOR_SIZE,)),
-        ("class_label", np.int64),
+        ("class_label", np.uint64, (CLASS_SIZE,)),
     ]
 )
 
@@ -56,6 +57,27 @@ class KeypointBatch(NamedTuple):
         )
 
 
+def int_array_to_binary_tensor(arr: np.ndarray):
+    num_bits_per_entry = arr.dtype.itemsize * 8
+    mask_arr = (1 << np.arange(num_bits_per_entry)).astype(np.uint64)
+    mask_arr = np.expand_dims(mask_arr, 0)
+    arrs_to_concat = []
+    for col in range(arr.shape[1]):
+        arrs_to_concat.append(
+            np.bitwise_and(np.expand_dims(arr[:, col], 1), mask_arr) > 0
+        )
+    return torch.from_numpy(np.concatenate(arrs_to_concat, axis=1))
+
+
+def trim_class_label(class_labels: list[torch.Tensor]):
+    max_class_idx = 0
+    for label in class_labels:
+        _, col = torch.nonzero(label, as_tuple=True)
+        max_class_idx = max(max_class_idx, torch.max(col).item())
+
+    return [label[:, : max_class_idx + 1] for label in class_labels]
+
+
 class Dataset(torch.utils.data.Dataset):
     def __init__(
         self,
@@ -67,7 +89,7 @@ class Dataset(torch.utils.data.Dataset):
         if filename:
             data = np.load(filename)
             if isinstance(data, np.lib.npyio.NpzFile):
-                data = data['data']
+                data = data["data"]
         assert data is not None
 
         tensors = defaultdict(list)
@@ -79,7 +101,14 @@ class Dataset(torch.utils.data.Dataset):
                         torch.from_numpy(np.array(subset[0]["image_id"]))
                     )
                     continue
+                if field == "class_label":
+                    tensors[field].append(int_array_to_binary_tensor(subset[field]))
+                    continue
                 tensors[field].append(torch.from_numpy(subset[field].copy()))
+
+        # The class label tensor is a num_examples x (CLASS_SIZE * 64) binary tensor.
+        # Save some GPU RAM by making it smaller
+        tensors["class_label"] = trim_class_label(tensors["class_label"])
 
         self._data = KeypointBatch(
             **{key: torch.nested.nested_tensor(value) for key, value in tensors.items()}
@@ -139,8 +168,11 @@ def batchify(sample: KeypointBatch) -> KeypointBatch:
         if field.ndim == 1:
             new_fields[field_name] = torch.stack(field.unbind())
         else:
-            info = torch.finfo if field.dtype.is_floating_point else torch.iinfo
-            padding_value = info(field.dtype).min
+            if field.dtype == torch.bool:
+                padding_value = False
+            else:
+                info = torch.finfo if field.dtype.is_floating_point else torch.iinfo
+                padding_value = info(field.dtype).min
             new_fields[field_name] = torch.nested.to_padded_tensor(
                 field, padding=padding_value
             )
@@ -165,26 +197,44 @@ def reconstruction_loss(
     return loss
 
 
-def find_unique_classes(class_labels: torch.Tensor) -> torch.Tensor:
-    exclusive_keypoints = torch.remainder(torch.log2(class_labels), 1.0) < 1e-6
-    return [x for x in torch.unique(exclusive_keypoints * class_labels) if x != 0]
+def find_unique_class_idxs(class_labels: torch.Tensor) -> torch.Tensor:
+    idxs = torch.nonzero(class_labels, as_tuple=True)
+    return torch.unique(idxs[-1])
 
 
 def is_valid_configuration(class_labels: torch.Tensor, query: torch.Tensor):
     # a configuration is valid if all exclusive keypoints are present
-    assert class_labels.shape == query.shape
-    nonzero_class_labels = class_labels * (class_labels > 0)
-    unique_classes = find_unique_classes(nonzero_class_labels)
+    assert class_labels.shape[:-1] == query.shape
+    # valid_landmarks is a num_environments x num_landmarks tensor. vl[i, j]
+    # is true if the j'th landmark in the i'th environment has at least one class label
+    # set. A landmark may not be set if was introduced through padding.
+    valid_landmarks = torch.sum(class_labels, dim=-1)
+    unique_class_idxs = find_unique_class_idxs(class_labels)
 
     is_exclusive_valid = torch.ones(
         (query.shape[0], 1), dtype=torch.bool, device=class_labels.device
     )
     # negative class labels correspond to padded entries
     # ignore these entries for the purposes of determining validity
-    is_shared_valid = class_labels < 0
-    for class_name in unique_classes:
+    is_shared_valid = torch.logical_not(valid_landmarks)
+    for class_idx in unique_class_idxs:
         # Compute if the exclusive beacons have are valid
-        exclusive_class_mask = nonzero_class_labels == class_name
+        # exclusive_class_mask is a num_environemnts x num_landmark. ecm[i, j] is true
+        # if the j'th landmark in the i'th environment exclusively belongs to the class
+        # identified by class_idx
+        # we compute the the valid landmarks by xoring with a tensor with the desired class set
+        # If the class for the beacon is set, it is cleared. If it is unset, then the bool is set
+        # We then logical_or (implemented by summing) across the class dimension. The exclusive
+        # landmarks are those that have no labels set.
+        class_mask = torch.zeros(
+            (1, 1, class_labels.shape[-1]), dtype=torch.bool, device=class_labels.device
+        )
+        class_mask[:, :, class_idx] = True
+        class_removed = torch.logical_xor(class_labels, class_mask)
+        exclusive_class_mask = torch.logical_not(
+            torch.sum(class_removed, -1, dtype=torch.bool)
+        )
+
         not_in_class = torch.logical_not(exclusive_class_mask)
         all_from_class_present = torch.all(
             torch.logical_or(not_in_class, query), dim=1, keepdim=True
@@ -203,7 +253,9 @@ def is_valid_configuration(class_labels: torch.Tensor, query: torch.Tensor):
         )
 
         # compute if the shared beacons are valid
-        inclusive_class_mask = torch.bitwise_and(nonzero_class_labels, class_name) > 0
+        inclusive_class_mask = torch.sum(
+            torch.logical_and(class_labels, class_mask), -1, dtype=bool
+        )
         shared_class_mask = torch.logical_and(
             torch.logical_not(exclusive_class_mask), inclusive_class_mask
         )
@@ -239,13 +291,17 @@ def valid_configuration_loss(
 def query_from_class_samples(
     class_labels: torch.Tensor, present_classes: list[int], exclusive_points_only=False
 ):
-    assert class_labels.ndim == 1
-    query = torch.zeros_like(class_labels, dtype=torch.bool)
-    for class_name in present_classes:
+    assert class_labels.ndim == 2
+    query = torch.zeros((class_labels.shape[0],), dtype=torch.bool)
+    for present_idx in present_classes:
+        present_mask = torch.zeros((1, class_labels.shape[-1]), dtype=torch.bool)
+        present_mask[:, present_idx - 1] = True
         if exclusive_points_only:
-            class_mask = class_labels == class_name
+            class_mask = torch.logical_not(
+                torch.sum(torch.logical_xor(class_labels, present_mask), -1)
+            )
         else:
-            class_mask = torch.bitwise_and(class_labels, class_name) > 0
+            class_mask = torch.sum(torch.bitwise_and(class_labels, present_mask), -1)
         query = torch.logical_xor(query, class_mask)
     return query
 
@@ -256,15 +312,15 @@ def generate_valid_queries(
     class_probability=0.9,
     exclusive_points_only=False,
 ) -> torch.Tensor:
-    assert class_labels.ndim == 2
+    assert class_labels.ndim == 3
     # Create a [batch, keypoint_id] tensor of valid configurations
     queries = []
     for batch_idx in range(class_labels.shape[0]):
         # For each batch, find all unique class labels
         present_classes = []
-        for class_name in find_unique_classes(class_labels[batch_idx, ...]):
+        for class_idx in find_unique_class_idxs(class_labels[batch_idx, ...]):
             if torch.bernoulli(torch.tensor([0.9]), generator=rng) > 0:
-                present_classes.append(class_name)
+                present_classes.append(class_idx)
         queries.append(
             query_from_class_samples(
                 class_labels[batch_idx, ...], present_classes, exclusive_points_only
@@ -276,11 +332,14 @@ def generate_valid_queries(
 def generate_invalid_queries(
     class_labels: torch.Tensor, valid_queries: torch.Tensor, rng: torch.Generator
 ):
-    assert class_labels.shape == valid_queries.shape
-    present_beacon_classes = class_labels * valid_queries
+    assert class_labels.shape[:-1] == valid_queries.shape
+
+    present_beacon_classes = torch.logical_and(
+        class_labels, valid_queries.unsqueeze(-1)
+    )
     queries = []
     for batch_idx in range(class_labels.shape[0]):
-        unique_classes = find_unique_classes(present_beacon_classes[batch_idx, ...])
+        unique_classes = find_unique_class_idxs(present_beacon_classes[batch_idx, ...])
         did_update = False
         query = valid_queries[batch_idx, ...]
 
@@ -289,9 +348,15 @@ def generate_invalid_queries(
             count += 1
             if len(unique_classes) == 0:
                 # No beacons have been set, set some fraction of exclusive beacons
-                for class_name in find_unique_classes(class_labels[batch_idx]):
-                    inclusive_class_mask = (
-                        torch.bitwise_and(class_labels[batch_idx, ...], class_name) > 0
+                for class_name in find_unique_class_idxs(class_labels[batch_idx]):
+                    class_mask = torch.zeros(
+                        (1, class_labels.shape[-1]), dtype=torch.bool
+                    )
+                    class_mask[:, class_name] = True
+                    inclusive_class_mask = torch.sum(
+                        torch.logical_and(class_labels[batch_idx, ...], class_mask),
+                        -1,
+                        dtype=bool,
                     )
                     if torch.randint(2, size=(1,), generator=rng) < 1:
                         continue
@@ -313,10 +378,20 @@ def generate_invalid_queries(
                     )
 
             for class_name in unique_classes:
-                exclusive_class_mask = present_beacon_classes[batch_idx] == class_name
-                inclusive_class_mask = (
-                    torch.bitwise_and(class_labels[batch_idx, ...], class_name) > 0
+                class_mask = torch.zeros((1, class_labels.shape[-1]), dtype=torch.bool)
+                class_mask[:, class_name] = True
+                class_removed = torch.logical_xor(
+                    present_beacon_classes[batch_idx, ...], class_mask
                 )
+                exclusive_class_mask = torch.logical_not(
+                    torch.sum(class_removed, -1, dtype=torch.bool)
+                )
+                inclusive_class_mask = torch.sum(
+                    torch.logical_and(class_labels[batch_idx, ...], class_mask),
+                    -1,
+                    dtype=bool,
+                )
+
                 if torch.sum(exclusive_class_mask) > 1:
                     # If more than a single exclusive beacon for this class is present
                     # we can make it invalid by turning off some fraction of these beacons
@@ -378,10 +453,10 @@ def get_descriptor_test_dataset() -> npt.NDArray[KeypointDescriptorDtype]:
     # fmt: off
     return np.array(
         [
-             (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, X, Y, RESPONSE, SIZE, gen_descriptor(1), 1),
-             (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, X, Y, RESPONSE, SIZE, gen_descriptor(2), 1),
-             (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, X, Y, RESPONSE, SIZE, gen_descriptor(3), 2),
-             (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, X, Y, RESPONSE, SIZE, gen_descriptor(4), 2),
+             (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, X, Y, RESPONSE, SIZE, gen_descriptor(1), (1, 0, 0, 0)),
+             (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, X, Y, RESPONSE, SIZE, gen_descriptor(2), (1, 0, 0, 0)),
+             (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, X, Y, RESPONSE, SIZE, gen_descriptor(3), (2, 0, 0, 0)),
+             (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, X, Y, RESPONSE, SIZE, gen_descriptor(4), (2, 0, 0, 0)),
         ],
         dtype=KeypointDescriptorDtype,
     )
@@ -400,10 +475,10 @@ def get_x_position_test_dataset() -> npt.NDArray[KeypointDescriptorDtype]:
     # fmt: off
     return np.array(
         [
-            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 1.0, 0.0, RESPONSE, SIZE, gen_descriptor(4), 1),
-            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 3.0, 0.0, RESPONSE, SIZE, gen_descriptor(4), 1),
-            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 2.0, 0.0, RESPONSE, SIZE, gen_descriptor(4), 2),
-            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 4.0, 0.0, RESPONSE, SIZE, gen_descriptor(4), 2),
+            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 1.0, 0.0, RESPONSE, SIZE, gen_descriptor(4), (1, 0, 0, 0)),
+            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 3.0, 0.0, RESPONSE, SIZE, gen_descriptor(4), (1, 0, 0, 0)),
+            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 2.0, 0.0, RESPONSE, SIZE, gen_descriptor(4), (2, 0, 0, 0)),
+            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 4.0, 0.0, RESPONSE, SIZE, gen_descriptor(4), (2, 0, 0, 0)),
         ],
         dtype=KeypointDescriptorDtype,
     )
@@ -422,10 +497,10 @@ def get_y_position_test_dataset() -> npt.NDArray[KeypointDescriptorDtype]:
     # fmt: off
     return np.array(
         [
-            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 0.0, 1.0, RESPONSE, SIZE, gen_descriptor(4), 1),
-            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 0.0, 3.0, RESPONSE, SIZE, gen_descriptor(4), 1),
-            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 0.0, 2.0, RESPONSE, SIZE, gen_descriptor(4), 2),
-            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 0.0, 4.0, RESPONSE, SIZE, gen_descriptor(4), 2),
+            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 0.0, 1.0, RESPONSE, SIZE, gen_descriptor(4), (1, 0, 0, 0)),
+            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 0.0, 3.0, RESPONSE, SIZE, gen_descriptor(4), (1, 0, 0, 0)),
+            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 0.0, 2.0, RESPONSE, SIZE, gen_descriptor(4), (2, 0, 0, 0)),
+            (IMAGE_ID, ANGLE, CLASS_ID, OCTAVE, 0.0, 4.0, RESPONSE, SIZE, gen_descriptor(4), (2, 0, 0, 0)),
         ],
         dtype=KeypointDescriptorDtype,
     )

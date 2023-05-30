@@ -7,7 +7,7 @@ from wand.image import Image
 from wand.color import Color
 from wand.drawing import Drawing
 
-from experimental.beacon_dist.utils import KeypointDescriptorDtype, ImageDescriptorDtype
+from experimental.beacon_dist.utils import KeypointDescriptorDtype, ImageDescriptorDtype, CLASS_SIZE
 
 
 class LetterPosition(NamedTuple):
@@ -73,7 +73,9 @@ def serialize_keypoints_and_descriptors(
     image_id, keypoints, descriptors, class_labels, letter_set
 ):
     keypoints_out = np.zeros(len(keypoints), KeypointDescriptorDtype)
+    class_label = np.zeros((CLASS_SIZE,), dtype=np.uint64)
     for i, kp in enumerate(keypoints):
+        class_label[0] = class_labels[i]
         keypoints_out[i] = (
             image_id,
             kp.angle,
@@ -84,7 +86,7 @@ def serialize_keypoints_and_descriptors(
             kp.response,
             kp.size,
             descriptors[i, :],
-            class_labels[i],
+            class_label,
         )
 
     image_descriptor = np.zeros(len(letter_set), ImageDescriptorDtype)
