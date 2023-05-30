@@ -1,8 +1,8 @@
 load("@pip//:requirements.bzl", "requirement")
 
 py_binary(
-  name="generate_data",
-  srcs=["generate_data.py"],
+  name="generate_letter_dataset",
+  srcs=["generate_letter_dataset.py"],
   visibility = ["//common/python:__subpackages__"],
   deps=[
     requirement("opencv-python"),
