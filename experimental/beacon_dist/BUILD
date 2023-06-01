@@ -21,7 +21,7 @@ py_binary(
     requirement("drake"),
     requirement("numpy"),
     requirement("opencv-python"),
-    requirement("IPython"),
+    requirement("tqdm"),
   ]
 )
 

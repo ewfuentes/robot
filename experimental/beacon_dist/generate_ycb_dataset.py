@@ -2,7 +2,8 @@ import argparse
 from typing import NamedTuple
 import numpy as np
 import os
-import IPython
+import tqdm
+import cv2 as cv
 
 from pydrake.all import (
     AddMultibodyPlantSceneGraph,
@@ -55,9 +56,16 @@ class CameraParams(NamedTuple):
     fov_y_rad: float
 
 
-class Scene(NamedTuple):
+class CameraViewResult(NamedTuple):
+    world_from_camera: RigidTransform
+    keypoints: list[cv.KeyPoint]
+    descriptors: np.ndarray
+    labels: list[set[str]]
+
+
+class SceneResult(NamedTuple):
+    camera_view_results: list[CameraViewResult]
     world_from_objects: dict[str, RigidTransform]
-    diagram: Diagram
 
 
 RENDERER_NAME = "my_renderer"
@@ -89,7 +97,8 @@ SAMPLING_STRATEGIES: dict[str, CameraSamplingStrategy] = {
 
 
 def get_ycb_objects_list(ycb_path: str) -> list[str]:
-    return sorted(filter(lambda x: ".tgz" not in x, os.listdir(ycb_path)))
+    # TODO: remove before landing
+    return sorted(filter(lambda x: ".tgz" not in x, os.listdir(ycb_path)))[:10]
 
 
 def load_object(
@@ -127,13 +136,12 @@ def generate_diagram_from_poses(
     return diagram
 
 
-def generate_scene(
-    ycb_path: str, scene_params: SceneParams, rng: np.random.Generator
-) -> Scene:
-    ycb_objects_list = get_ycb_objects_list(ycb_path)
+def sample_objects_and_poses(
+    ycb_objects: list[str], scene_params: SceneParams, rng: np.random.Generator
+) -> dict[str, RigidTransform]:
     num_objects = rng.integers(2, scene_params.max_num_objects, endpoint=True)
-    object_idxs = rng.choice(len(ycb_objects_list), size=num_objects, replace=False)
-    object_names = [ycb_objects_list[x] for x in object_idxs]
+    object_idxs = rng.choice(len(ycb_objects), size=num_objects, replace=False)
+    object_names = [ycb_objects[x] for x in object_idxs]
 
     centroid_range = (
         scene_params.centroid_bounding_box.max - scene_params.centroid_bounding_box.min
@@ -153,12 +161,7 @@ def generate_scene(
 
         world_from_objects[name] = RigidTransform(angle_axis, centroid_in_world)
 
-    # Create a scene from the sampled poses
-    diagram = generate_diagram_from_poses(world_from_objects, ycb_path)
-    return Scene(
-        world_from_objects=world_from_objects,
-        diagram=diagram,
-    )
+    return world_from_objects
 
 
 def create_origin_facing_world_from_pt(pt_in_world: np.ndarray) -> RotationMatrix:
@@ -216,8 +219,12 @@ def generate_world_from_camera_poses(
 
 
 def render_scene(
-    scene: Scene, camera_params: CameraParams, world_from_cameras: list[RigidTransform]
+    diagram: Diagram,
+    world_from_objects: dict[str, RigidTransform],
+    world_from_camera: RigidTransform,
+    camera_params: CameraParams,
 ) -> tuple[Image, Image]:
+    # Create the camera
     camera_intrinsics = CameraInfo(
         width=camera_params.width_px,
         height=camera_params.height_px,
@@ -233,61 +240,111 @@ def render_scene(
     )
     color_camera = ColorRenderCamera(camera_core, show_window=False)
 
-    root_context = scene.diagram.CreateDefaultContext()
-
-    rgb_images = []
-    label_images = []
-    world_frame_id = scene.diagram.GetSubsystemByName('scene_graph').world_frame_id()
-    for world_from_camera in world_from_cameras:
-        query_object = scene.diagram.GetOutputPort("query_object").Eval(root_context)
-
-        rgb_images.append(
-            query_object.RenderColorImage(
-                color_camera, world_frame_id, world_from_camera
-            )
-        )
-        label_images.append(
-            query_object.RenderLabelImage(
-                color_camera, world_frame_id, world_from_camera
-            )
+    # Set the object poses
+    root_context = diagram.CreateDefaultContext()
+    plant = diagram.GetSubsystemByName("plant")
+    context = plant.GetMyContextFromRoot(root_context)
+    for body_idx in plant.GetFloatingBaseBodies():
+        body = plant.get_body(body_idx)
+        plant.SetFreeBodyPose(
+            context,
+            body,
+            world_from_objects.get(
+                body.name(), RigidTransform(np.array([0, 0, 100.0]))
+            ),
         )
 
-    return rgb_images, label_images
+    world_frame_id = diagram.GetSubsystemByName("scene_graph").world_frame_id()
+    query_object = diagram.GetOutputPort("query_object").Eval(root_context)
+
+    rgb_image = query_object.RenderColorImage(
+        color_camera, world_frame_id, world_from_camera
+    )
+    label_image = query_object.RenderLabelImage(
+        color_camera, world_frame_id, world_from_camera
+    )
+
+    return rgb_image, label_image
 
 
 def opencv_image_from_drake_image(img: Image):
     return np.stack([img.data[:, :, 2], img.data[:, :, 1], img.data[:, :, 0]], axis=-1)
 
 
-def generate_keypoints_and_labels_from_images(rgb_image: Image, label_image: Image):
-    print(rgb_image.data.shape)
-    import cv2 as cv
-
+def generate_keypoints_and_labels_from_images(
+    all_object_image: Image, image_from_object_name: dict[str, Image]
+) -> tuple[list[cv.KeyPoint], np.ndarray, list[set[str]]]:
     orb = cv.ORB_create(nfeatures=300)
-    img = opencv_image_from_drake_image(rgb_image)
+    img = opencv_image_from_drake_image(all_object_image)
     kp = orb.detect(img, None)
     kp, descriptors = orb.compute(img, kp)
 
-    kp_img = img.copy()
-    cv.drawKeypoints(img, kp, kp_img)
+    labels = [set() for i in range(len(kp))]
+    for object_name, object_img in image_from_object_name.items():
+        object_img = opencv_image_from_drake_image(object_img)
+        object_kp, object_descriptors = orb.compute(object_img, kp)
 
-    IPython.embed()
+        # The nonzero object descriptors point to the keypoints associated with this object
+        # Note that the same key point maybe associated with multiple objects
+        kp_idxs = np.nonzero(np.sum(object_descriptors, axis=1))[0]
+        if len(kp_idxs) == 0:
+            print(f"No keypoints associated with {object_name}")
+            continue
+
+        for kp_idx in kp_idxs:
+            labels[kp_idx].add(object_name)
+
+    return kp, descriptors, labels
 
 
 def generate_keypoints_and_labels(
-    scene: Scene, camera_params: CameraParams, world_from_cameras: list[RigidTransform]
-):
+    diagram: Diagram,
+    world_from_objects: dict[str, RigidTransform],
+    world_from_camera: RigidTransform,
+    camera_params: CameraParams,
+) -> tuple[list[cv.KeyPoint], np.ndarray, list[set[str]]]:
     # Render an RGB image and a label image
-    rgb_images, label_images = render_scene(scene, camera_params, world_from_cameras)
-    for rgb_image, label_image in zip(rgb_images, label_images):
-        kp, descriptors, labels = generate_keypoints_and_labels_from_images(rgb_image, label_image)
+    all_object_image, _ = render_scene(
+        diagram, world_from_objects, world_from_camera, camera_params
+    )
+    image_from_object_name = {
+        object_name: render_scene(
+            diagram,
+            {object_name: world_from_objects[object_name]},
+            world_from_camera,
+            camera_params,
+        )[0]
+        for object_name in world_from_objects
+    }
+
+    return generate_keypoints_and_labels_from_images(
+        all_object_image, image_from_object_name
+    )
+
+
+def generate_scene(ycb_path: str) -> tuple[Diagram, list[str]]:
+    TIME_STEP_S = 0.0
+    ycb_objects_list = get_ycb_objects_list(ycb_path)
+    builder = DiagramBuilder()
+    plant, scene_graph = AddMultibodyPlantSceneGraph(builder, TIME_STEP_S)
+    renderer = MakeRenderEngineVtk(RenderEngineVtkParams())
+    scene_graph.AddRenderer(RENDERER_NAME, renderer)
+
+    for object_name in ycb_objects_list:
+        load_object(ycb_path, plant, object_name)
+
+    builder.ExportOutput(scene_graph.get_query_output_port(), "query_object")
+    plant.Finalize()
+    return builder.Build(), ycb_objects_list
+
+
+def serialize_results(scene_results: list[SceneResult], output_path: str):
     ...
-    return None, None
 
 
 def main(
     output_path: str,
-    ycb_objects: str,
+    ycb_path: str,
     num_scenes: int,
     num_views_per_scene: int,
     camera_strategy: str,
@@ -303,10 +360,13 @@ def main(
         fov_y_rad=np.pi / 4.0,
     )
 
-    for scene_idx in range(num_scenes):
+    diagram, ycb_objects = generate_scene(ycb_path)
+
+    scene_results = []
+    for scene_idx in tqdm.tqdm(range(num_scenes)):
         # Generate a scene
         rng = np.random.default_rng(seed=scene_idx)
-        scene = generate_scene(
+        world_from_objects = sample_objects_and_poses(
             ycb_objects,
             SceneParams(
                 max_num_objects=10,
@@ -321,12 +381,32 @@ def main(
         world_from_cameras = generate_world_from_camera_poses(camera_params)
 
         # Generate keypoints and class labels
-        keypoints, labels = generate_keypoints_and_labels(
-            scene, camera_params, world_from_cameras
+        camera_view_results = []
+        for world_from_camera in world_from_cameras:
+            keypoints, descriptors, labels = generate_keypoints_and_labels(
+                diagram, world_from_objects, world_from_camera, camera_params
+            )
+            camera_view_results.append(
+                CameraViewResult(
+                    world_from_camera=world_from_camera,
+                    keypoints=keypoints,
+                    descriptors=descriptors,
+                    labels=labels,
+                )
+            )
+
+        scene_results.append(
+            SceneResult(
+                camera_view_results=camera_view_results,
+                world_from_objects=world_from_objects,
+            )
         )
 
-        ...
-    ...
+    # Write out generated data
+    serialize_results(
+        scene_results,
+        output_path,
+    )
 
 
 if __name__ == "__main__":
