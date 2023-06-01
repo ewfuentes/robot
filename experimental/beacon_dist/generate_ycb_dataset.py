@@ -2,7 +2,7 @@ import argparse
 from typing import NamedTuple
 import numpy as np
 import os
-import time
+import IPython
 
 from pydrake.all import (
     AddMultibodyPlantSceneGraph,
@@ -231,7 +231,7 @@ def render_scene(
         clipping=ClippingRange(near=0.10, far=10.0),
         X_BS=body_from_sensor,
     )
-    color_camera = ColorRenderCamera(camera_core, show_window=True)
+    color_camera = ColorRenderCamera(camera_core, show_window=False)
 
     root_context = scene.diagram.CreateDefaultContext()
 
@@ -251,9 +251,27 @@ def render_scene(
                 color_camera, world_frame_id, world_from_camera
             )
         )
-        time.sleep(2.0)
 
     return rgb_images, label_images
+
+
+def opencv_image_from_drake_image(img: Image):
+    return np.stack([img.data[:, :, 2], img.data[:, :, 1], img.data[:, :, 0]], axis=-1)
+
+
+def generate_keypoints_and_labels_from_images(rgb_image: Image, label_image: Image):
+    print(rgb_image.data.shape)
+    import cv2 as cv
+
+    orb = cv.ORB_create(nfeatures=300)
+    img = opencv_image_from_drake_image(rgb_image)
+    kp = orb.detect(img, None)
+    kp, descriptors = orb.compute(img, kp)
+
+    kp_img = img.copy()
+    cv.drawKeypoints(img, kp, kp_img)
+
+    IPython.embed()
 
 
 def generate_keypoints_and_labels(
@@ -261,6 +279,8 @@ def generate_keypoints_and_labels(
 ):
     # Render an RGB image and a label image
     rgb_images, label_images = render_scene(scene, camera_params, world_from_cameras)
+    for rgb_image, label_image in zip(rgb_images, label_images):
+        kp, descriptors, labels = generate_keypoints_and_labels_from_images(rgb_image, label_image)
     ...
     return None, None
 

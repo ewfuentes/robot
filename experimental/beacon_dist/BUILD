@@ -20,6 +20,8 @@ py_binary(
   deps = [
     requirement("drake"),
     requirement("numpy"),
+    requirement("opencv-python"),
+    requirement("IPython"),
   ]
 )
 
