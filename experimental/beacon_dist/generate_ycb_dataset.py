@@ -223,7 +223,7 @@ def render_scene(
     world_from_objects: dict[str, RigidTransform],
     world_from_camera: RigidTransform,
     camera_params: CameraParams,
-) -> tuple[Image, Image]:
+) -> Image:
     # Create the camera
     camera_intrinsics = CameraInfo(
         width=camera_params.width_px,
@@ -260,11 +260,8 @@ def render_scene(
     rgb_image = query_object.RenderColorImage(
         color_camera, world_frame_id, world_from_camera
     )
-    label_image = query_object.RenderLabelImage(
-        color_camera, world_frame_id, world_from_camera
-    )
 
-    return rgb_image, label_image
+    return rgb_image
 
 
 def opencv_image_from_drake_image(img: Image):
@@ -304,7 +301,7 @@ def generate_keypoints_and_labels(
     camera_params: CameraParams,
 ) -> tuple[list[cv.KeyPoint], np.ndarray, list[set[str]]]:
     # Render an RGB image and a label image
-    all_object_image, _ = render_scene(
+    all_object_image = render_scene(
         diagram, world_from_objects, world_from_camera, camera_params
     )
     image_from_object_name = {
@@ -313,7 +310,7 @@ def generate_keypoints_and_labels(
             {object_name: world_from_objects[object_name]},
             world_from_camera,
             camera_params,
-        )[0]
+        )
         for object_name in world_from_objects
     }
 
