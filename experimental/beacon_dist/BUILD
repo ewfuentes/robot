@@ -1,13 +1,26 @@
 load("@pip//:requirements.bzl", "requirement")
 
 py_binary(
-  name="generate_data",
-  srcs=["generate_data.py"],
+  name="generate_letter_dataset",
+  srcs=["generate_letter_dataset.py"],
   visibility = ["//common/python:__subpackages__"],
   deps=[
     requirement("opencv-python"),
     requirement("Wand"),
     requirement("numpy"),
+    requirement("tqdm"),
+    ":utils",
+  ]
+)
+
+py_binary(
+  name = "generate_ycb_dataset",
+  srcs = ["generate_ycb_dataset.py"],
+  visibility = ["//common/python:__subpackages__"],
+  deps = [
+    requirement("drake"),
+    requirement("numpy"),
+    requirement("opencv-python"),
     requirement("tqdm"),
     ":utils",
   ]
