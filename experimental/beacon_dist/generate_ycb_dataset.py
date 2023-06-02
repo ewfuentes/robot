@@ -4,7 +4,6 @@ import numpy as np
 import os
 import tqdm
 import cv2 as cv
-
 from experimental.beacon_dist.utils import KeypointDescriptorDtype, CLASS_SIZE
 
 from pydrake.all import (
@@ -99,8 +98,7 @@ SAMPLING_STRATEGIES: dict[str, CameraSamplingStrategy] = {
 
 
 def get_ycb_objects_list(ycb_path: str) -> list[str]:
-    # TODO: remove before landing
-    return sorted(filter(lambda x: ".tgz" not in x, os.listdir(ycb_path)))[:10]
+    return sorted(filter(lambda x: ".tgz" not in x, os.listdir(ycb_path)))
 
 
 def load_object(
