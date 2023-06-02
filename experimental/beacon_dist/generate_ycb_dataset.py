@@ -5,6 +5,8 @@ import os
 import tqdm
 import cv2 as cv
 
+from experimental.beacon_dist.utils import KeypointDescriptorDtype, CLASS_SIZE
+
 from pydrake.all import (
     AddMultibodyPlantSceneGraph,
     AngleAxis,
@@ -335,8 +337,88 @@ def generate_scene(ycb_path: str) -> tuple[Diagram, list[str]]:
     return builder.Build(), ycb_objects_list
 
 
-def serialize_results(scene_results: list[SceneResult], output_path: str):
-    ...
+def class_label_from_label_set(labels: set[str], ycb_objects: list[str]) -> np.ndarray:
+    out = np.zeros((CLASS_SIZE), dtype=np.uint64)
+    for label in labels:
+        object_idx = ycb_objects.index(label)
+        idx = object_idx // 64
+        bit_idx = object_idx % 64
+        flag = np.left_shift(np.uint64(1), np.uint64(bit_idx))
+        out[idx] = np.bitwise_or(out[idx], flag)
+
+    return out
+
+
+def serialize_results(
+    scene_results: list[SceneResult], ycb_objects: list[str], output_path: str
+):
+    max_name_size = max([len(x) for x in ycb_objects])
+    image_id = 0
+    keypoint_data = []
+    scene_info = []
+    image_info = []
+    for scene_id, scene_result in enumerate(scene_results):
+        scene_info.append(
+            np.array(
+                [
+                    (scene_id, name, transform.GetAsMatrix34())
+                    for name, transform in scene_result.world_from_objects.items()
+                ],
+                dtype=[
+                    ("scene_id", np.uint64),
+                    ("object_name", (np.unicode_, max_name_size)),
+                    ("world_from_object", np.float64, (3, 4)),
+                ],
+            )
+        )
+
+        for camera_view_result in scene_result.camera_view_results:
+            image_info.append(
+                np.array(
+                    (
+                        image_id,
+                        scene_id,
+                        camera_view_result.world_from_camera.GetAsMatrix34(),
+                    ),
+                    dtype=[
+                        ("image_id", np.uint64),
+                        ("scene_id", np.uint64),
+                        ("world_from_camera", np.float64, (3, 4)),
+                    ],
+                )
+            )
+            for i in range(len(camera_view_result.keypoints)):
+                kp = camera_view_result.keypoints[i]
+                keypoint_data.append(
+                    np.array(
+                        [
+                            (
+                                image_id,
+                                kp.angle,
+                                kp.class_id,
+                                kp.octave,
+                                kp.pt[0],
+                                kp.pt[1],
+                                kp.response,
+                                kp.size,
+                                camera_view_result.descriptors[i, :],
+                                class_label_from_label_set(
+                                    camera_view_result.labels[i], ycb_objects
+                                ),
+                            )
+                        ],
+                        dtype=KeypointDescriptorDtype,
+                    )
+                )
+            image_id += 1
+
+    np.savez(
+        output_path,
+        data=np.stack(keypoint_data),
+        scene_info=np.stack(scene_info),
+        image_info=np.stack(image_info),
+        objects=np.array(ycb_objects),
+    )
 
 
 def main(
@@ -402,6 +484,7 @@ def main(
     # Write out generated data
     serialize_results(
         scene_results,
+        ycb_objects,
         output_path,
     )
 

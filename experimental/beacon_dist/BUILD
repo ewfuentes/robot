@@ -22,6 +22,8 @@ py_binary(
     requirement("numpy"),
     requirement("opencv-python"),
     requirement("tqdm"),
+    requirement("IPython"),
+    ":utils",
   ]
 )
 
