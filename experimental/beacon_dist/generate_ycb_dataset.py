@@ -4,7 +4,6 @@ import numpy as np
 import os
 import tqdm
 import cv2 as cv
-import IPython
 
 from experimental.beacon_dist.utils import KeypointDescriptorDtype, CLASS_SIZE
 
@@ -413,7 +412,6 @@ def serialize_results(
                 )
             image_id += 1
 
-    IPython.embed()
     np.savez(
         output_path,
         data=np.concatenate(keypoint_data),
