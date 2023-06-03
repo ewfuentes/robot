@@ -3,12 +3,16 @@ from typing import NamedTuple
 import numpy as np
 import os
 import tqdm
+import time
 import cv2 as cv
 from experimental.beacon_dist.utils import KeypointDescriptorDtype, CLASS_SIZE
+import multiprocessing
+import queue
 
 from pydrake.all import (
     AddMultibodyPlantSceneGraph,
     AngleAxis,
+    Context,
     Diagram,
     DiagramBuilder,
     Image,
@@ -44,6 +48,16 @@ class SphericalCamera(NamedTuple):
 CameraSamplingStrategy = MovingCamera | SphericalCamera
 
 
+class KeyPoint(NamedTuple):
+    angle: float
+    class_id: int
+    octave: int
+    x: float
+    y: float
+    response: float
+    size: float
+
+
 class SceneParams(NamedTuple):
     max_num_objects: int
     centroid_bounding_box: Range
@@ -59,7 +73,7 @@ class CameraParams(NamedTuple):
 
 class CameraViewResult(NamedTuple):
     world_from_camera: RigidTransform
-    keypoints: list[cv.KeyPoint]
+    keypoints: list[KeyPoint]
     descriptors: np.ndarray
     labels: list[set[str]]
 
@@ -67,6 +81,12 @@ class CameraViewResult(NamedTuple):
 class SceneResult(NamedTuple):
     camera_view_results: list[CameraViewResult]
     world_from_objects: dict[str, RigidTransform]
+
+
+class SceneData(NamedTuple):
+    diagram: Diagram
+    context: Context
+    ycb_objects: list[str]
 
 
 RENDERER_NAME = "my_renderer"
@@ -220,6 +240,7 @@ def generate_world_from_camera_poses(
 
 def render_scene(
     diagram: Diagram,
+    root_context: Context,
     world_from_objects: dict[str, RigidTransform],
     world_from_camera: RigidTransform,
     camera_params: CameraParams,
@@ -241,7 +262,6 @@ def render_scene(
     color_camera = ColorRenderCamera(camera_core, show_window=False)
 
     # Set the object poses
-    root_context = diagram.CreateDefaultContext()
     plant = diagram.GetSubsystemByName("plant")
     context = plant.GetMyContextFromRoot(root_context)
     for body_idx in plant.GetFloatingBaseBodies():
@@ -268,14 +288,25 @@ def opencv_image_from_drake_image(img: Image):
     return np.stack([img.data[:, :, 2], img.data[:, :, 1], img.data[:, :, 0]], axis=-1)
 
 
+def key_point_from_cv_key_point(kp: cv.KeyPoint) -> KeyPoint:
+    return KeyPoint(
+        angle=kp.angle,
+        class_id=kp.class_id,
+        octave=kp.octave,
+        x=kp.pt[0],
+        y=kp.pt[1],
+        response=kp.response,
+        size=kp.size
+    )
+
+
 def generate_keypoints_and_labels_from_images(
     all_object_image: Image, image_from_object_name: dict[str, Image]
-) -> tuple[list[cv.KeyPoint], np.ndarray, list[set[str]]]:
+) -> tuple[list[KeyPoint], np.ndarray, list[set[str]]]:
     orb = cv.ORB_create(nfeatures=300)
     img = opencv_image_from_drake_image(all_object_image)
     kp = orb.detect(img, None)
     kp, descriptors = orb.compute(img, kp)
-
     labels = [set() for i in range(len(kp))]
     for object_name, object_img in image_from_object_name.items():
         object_img = opencv_image_from_drake_image(object_img)
@@ -285,28 +316,31 @@ def generate_keypoints_and_labels_from_images(
         # Note that the same key point maybe associated with multiple objects
         kp_idxs = np.nonzero(np.sum(object_descriptors, axis=1))[0]
         if len(kp_idxs) == 0:
-            print(f"No keypoints associated with {object_name}")
             continue
 
         for kp_idx in kp_idxs:
             labels[kp_idx].add(object_name)
+
+    kp = [key_point_from_cv_key_point(k) for k in kp]
 
     return kp, descriptors, labels
 
 
 def generate_keypoints_and_labels(
     diagram: Diagram,
+    context: Context,
     world_from_objects: dict[str, RigidTransform],
     world_from_camera: RigidTransform,
     camera_params: CameraParams,
-) -> tuple[list[cv.KeyPoint], np.ndarray, list[set[str]]]:
+) -> tuple[list[KeyPoint], np.ndarray, list[set[str]]]:
     # Render an RGB image and a label image
     all_object_image = render_scene(
-        diagram, world_from_objects, world_from_camera, camera_params
+        diagram, context, world_from_objects, world_from_camera, camera_params
     )
     image_from_object_name = {
         object_name: render_scene(
             diagram,
+            context,
             {object_name: world_from_objects[object_name]},
             world_from_camera,
             camera_params,
@@ -319,7 +353,7 @@ def generate_keypoints_and_labels(
     )
 
 
-def generate_scene(ycb_path: str) -> tuple[Diagram, list[str]]:
+def generate_scene(ycb_path: str) -> SceneData:
     TIME_STEP_S = 0.0
     ycb_objects_list = get_ycb_objects_list(ycb_path)
     builder = DiagramBuilder()
@@ -332,7 +366,12 @@ def generate_scene(ycb_path: str) -> tuple[Diagram, list[str]]:
 
     builder.ExportOutput(scene_graph.get_query_output_port(), "query_object")
     plant.Finalize()
-    return builder.Build(), ycb_objects_list
+    diagram = builder.Build()
+    return SceneData(
+        diagram=diagram,
+        context=diagram.CreateDefaultContext(),
+        ycb_objects=ycb_objects_list,
+    )
 
 
 def class_label_from_label_set(labels: set[str], ycb_objects: list[str]) -> np.ndarray:
@@ -372,12 +411,14 @@ def serialize_results(
 
         for camera_view_result in scene_result.camera_view_results:
             image_info.append(
-                np.array([
-                    (
-                        image_id,
-                        scene_id,
-                        camera_view_result.world_from_camera.GetAsMatrix34(),
-                    )],
+                np.array(
+                    [
+                        (
+                            image_id,
+                            scene_id,
+                            camera_view_result.world_from_camera.GetAsMatrix34(),
+                        )
+                    ],
                     dtype=[
                         ("image_id", np.uint64),
                         ("scene_id", np.uint64),
@@ -395,8 +436,8 @@ def serialize_results(
                                 kp.angle,
                                 kp.class_id,
                                 kp.octave,
-                                kp.pt[0],
-                                kp.pt[1],
+                                kp.x,
+                                kp.y,
                                 kp.response,
                                 kp.size,
                                 camera_view_result.descriptors[i, :],
@@ -419,6 +460,80 @@ def serialize_results(
     )
 
 
+def compute_scene_result(
+    scene_data: SceneData, camera_params: CameraParams, scene_idx: int
+) -> SceneResult:
+    rng = np.random.default_rng(seed=scene_idx + 0x8e072e3c)
+    world_from_objects = sample_objects_and_poses(
+        scene_data.ycb_objects,
+        SceneParams(
+            max_num_objects=10,
+            centroid_bounding_box=Range(
+                min=np.array([-0.5, -0.5, -0.5]), max=np.array([0.5, 0.5, 0.5])
+            ),
+        ),
+        rng,
+    )
+
+    # Sample camera positions
+    world_from_cameras = generate_world_from_camera_poses(camera_params)
+
+    # Generate keypoints and class labels
+    camera_view_results = []
+    for world_from_camera in world_from_cameras:
+        keypoints, descriptors, labels = generate_keypoints_and_labels(
+            scene_data.diagram,
+            scene_data.context,
+            world_from_objects,
+            world_from_camera,
+            camera_params,
+        )
+        camera_view_results.append(
+            CameraViewResult(
+                world_from_camera=world_from_camera,
+                keypoints=keypoints,
+                descriptors=descriptors,
+                labels=labels,
+            )
+        )
+    return SceneResult(
+        camera_view_results=camera_view_results, world_from_objects=world_from_objects
+    )
+
+
+def worker_func(
+    ycb_path: str,
+    camera_params: CameraParams,
+    worker_idx: int,
+    task_queue: multiprocessing.Queue,
+    result_queue: multiprocessing.Queue,
+):
+    print("Starting worker", worker_idx)
+    scene_data = generate_scene(ycb_path)
+    run = True
+    while run:
+        try:
+            scene_idx = task_queue.get_nowait()
+            if scene_idx < 0:
+                run = False
+                task_queue.put(scene_idx, block=True)
+                task_queue.close()
+                result_queue.close()
+                continue
+            scene_result = compute_scene_result(
+                scene_data, camera_params, scene_idx
+            )
+            result_queue.put((scene_idx, scene_result))
+
+        except queue.Empty:
+            ...
+        except ValueError:
+            print("Queue closed")
+            run = False
+
+        time.sleep(0.05)
+
+
 def main(
     output_path: str,
     ycb_path: str,
@@ -437,52 +552,68 @@ def main(
         fov_y_rad=np.pi / 4.0,
     )
 
-    diagram, ycb_objects = generate_scene(ycb_path)
-
     scene_results = []
-    for scene_idx in tqdm.tqdm(range(num_scenes)):
-        # Generate a scene
-        rng = np.random.default_rng(seed=scene_idx)
-        world_from_objects = sample_objects_and_poses(
-            ycb_objects,
-            SceneParams(
-                max_num_objects=10,
-                centroid_bounding_box=Range(
-                    min=np.array([-0.5, -0.5, -0.5]), max=np.array([0.5, 0.5, 0.5])
-                ),
-            ),
-            rng,
+    task_queue = multiprocessing.Queue(maxsize=1)
+    result_queue = multiprocessing.Queue(maxsize=100)
+
+    NUM_WORKERS = 2
+    workers = [
+        multiprocessing.Process(
+            target=worker_func,
+            args=(ycb_path, camera_params, worker_idx, task_queue, result_queue),
         )
+        for worker_idx in range(NUM_WORKERS)
+    ]
 
-        # Sample camera positions
-        world_from_cameras = generate_world_from_camera_poses(camera_params)
+    for worker in workers:
+        worker.start()
 
-        # Generate keypoints and class labels
-        camera_view_results = []
-        for world_from_camera in world_from_cameras:
-            keypoints, descriptors, labels = generate_keypoints_and_labels(
-                diagram, world_from_objects, world_from_camera, camera_params
-            )
-            camera_view_results.append(
-                CameraViewResult(
-                    world_from_camera=world_from_camera,
-                    keypoints=keypoints,
-                    descriptors=descriptors,
-                    labels=labels,
-                )
-            )
+    print(workers)
 
-        scene_results.append(
-            SceneResult(
-                camera_view_results=camera_view_results,
-                world_from_objects=world_from_objects,
-            )
-        )
+    remaining_tasks = set(range(num_scenes))
+    task_generator = iter(tqdm.tqdm(range(num_scenes)))
+    next_task = next(task_generator)
+    while len(remaining_tasks):
+        if next_task is not None:
+            try:
+                task_queue.put_nowait(next_task)
+                next_task = next(task_generator)
+            except queue.Full:
+                ...
+            except StopIteration:
+
+                next_task = None
+
+        try:
+            scene_idx, scene_result = result_queue.get_nowait()
+            remaining_tasks.remove(scene_idx)
+            scene_results.append((scene_idx, scene_result))
+        except queue.Empty:
+            ...
+
+        for worker in workers:
+            if not worker.is_alive():
+                print(f'{worker} exited with {worker.exitcode}')
+
+        time.sleep(0.05)
+    task_queue.put(-1)
+
+    print('closing queues')
+    task_queue.close()
+    result_queue.close()
+    print('joining workers')
+    for worker in workers:
+        worker.join()
+    print('joining queues')
+    task_queue.join_thread()
+    result_queue.join_thread()
+
+    scene_results = sorted(scene_results, key=lambda x: x[0])
 
     # Write out generated data
     serialize_results(
-        scene_results,
-        ycb_objects,
+        [x[1] for x in scene_results],
+        get_ycb_objects_list(ycb_path),
         output_path,
     )
 
