@@ -188,9 +188,11 @@ http_archive(
 )
 
 http_archive(
-  name = "cdrake",
+  name = "drake_lib",
   url = "https://github.com/RobotLocomotion/drake/releases/download/v1.16.0/drake-20230518-jammy.tar.gz",
   strip_prefix="drake",
-  build_file="@//third_party:BUILD.drake",
+  build_file_content="#",
   sha256="811c24a328ffc0113c5b8127de2276f2d2d98f68cf036dc552766a11984f0b01",
 )
+load("@drake_lib//:share/drake/repo.bzl", "drake_repository")
+drake_repository(name="drake", excludes=["eigen"])

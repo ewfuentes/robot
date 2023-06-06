@@ -424,7 +424,7 @@ cc_library(
   srcs = ["correlated_beacons.cc"],
   deps = [
     "@eigen//:eigen",
-    "@cdrake//:drake",
+    "@drake//:drake_shared_library",
     "//common/math:n_choose_k",
   ]
 )
@@ -454,7 +454,7 @@ cc_test(
   srcs = ["drake_optimization_test.cc"],
   deps = [
     "@com_google_googletest//:gtest_main",
-    "@cdrake//:drake",
+    "@drake//:drake_shared_library",
   ]
 )
 

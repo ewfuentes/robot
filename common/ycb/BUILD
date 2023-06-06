@@ -15,7 +15,7 @@ py_test(
     srcs = ["load_ycb_test.py"],
     tags=["manual"],
     deps = [
-        requirement("drake"),
         requirement("IPython"),
+        "@drake//bindings/pydrake",
     ]
 )

@@ -16,7 +16,7 @@ py_binary(
     requirement("pandas"),
     requirement("scikit-learn"),
     requirement("tqdm"),
-    requirement("drake"),
+    "@drake//bindings/pydrake",
     "//experimental/beacon_sim:plot_trials",
     "//experimental/beacon_dist:model",
     "//experimental/beacon_dist:utils",
