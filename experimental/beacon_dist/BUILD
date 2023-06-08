@@ -18,10 +18,10 @@ py_binary(
   srcs = ["generate_ycb_dataset.py"],
   visibility = ["//common/python:__subpackages__"],
   deps = [
-    requirement("drake"),
     requirement("numpy"),
     requirement("opencv-python"),
     requirement("tqdm"),
+    "@drake//bindings/pydrake",
     ":utils",
   ]
 )

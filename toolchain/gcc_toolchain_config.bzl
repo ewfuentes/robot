@@ -56,7 +56,7 @@ def _impl(ctx):
             actions = all_link_actions,
             flag_groups = [
               flag_group(
-                flags=["-lstdc++", "-lm"],
+                flags=["-lstdc++", "-lm", "-Wl,--disable-new-dtags"],
               ),
             ],
           ),
