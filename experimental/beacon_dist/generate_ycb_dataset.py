@@ -450,7 +450,7 @@ def serialize_results(
                     )
                 )
             image_id += 1
-
+CameraParams
     np.savez(
         output_path,
         data=np.concatenate(keypoint_data),
@@ -460,7 +460,7 @@ def serialize_results(
     )
 
 
-def compute_scene_result(
+def computa_scene_result(
     scene_data: SceneData, camera_params: CameraParams, scene_idx: int
 ) -> SceneResult:
     rng = np.random.default_rng(seed=scene_idx + 0x8e072e3c)

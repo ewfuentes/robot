@@ -2,6 +2,7 @@
 #include "experimental/beacon_dist/render_ycb_scene.hh"
 
 #include <filesystem>
+#include <random>
 
 #include "drake/geometry/render_vtk/factory.h"
 #include "drake/multibody/parsing/parser.h"
@@ -10,6 +11,12 @@
 
 namespace robot::experimental::beacon_dist {
 namespace {
+struct SampleObjectPosesParams {
+    int max_objects;
+    Eigen::Vector3d min;
+    Eigen::Vector3d max;
+};
+
 std::string renderer_name_from_id(const int renderer_id) {
     return "my_renderer_" + std::to_string(renderer_id);
 }
@@ -24,6 +31,90 @@ drake::geometry::render::ColorRenderCamera get_color_camera(const CameraParams &
 
     constexpr bool DONT_SHOW_WINDOW = false;
     return drake::geometry::render::ColorRenderCamera(camera_core, DONT_SHOW_WINDOW);
+}
+
+std::unordered_map<std::string, drake::math::RigidTransformd> sample_object_poses(
+    const std::vector<std::string> &objects, const SampleObjectPosesParams &params,
+    InOut<std::mt19937> gen) {
+    // Choose how many objects to display
+    std::uniform_int_distribution<> num_objects_dist(2, params.max_objects);
+    const size_t num_objects = num_objects_dist(*gen);
+
+    // Choose which objects to include
+    std::uniform_int_distribution<> object_dist(0, objects.size() - 1);
+    std::unordered_set<int> selected_object_idx;
+    while (selected_object_idx.size() < num_objects &&
+           selected_object_idx.size() != objects.size()) {
+        selected_object_idx.insert(static_cast<int>(object_dist(*gen)));
+    }
+
+    // Sample a pose for each object
+    std::uniform_real_distribution<> translation_dist(0.0, 1.0);
+    std::normal_distribution<> rot_dist(0.0, 10.0);
+    std::unordered_map<std::string, drake::math::RigidTransformd> out;
+    for (const int object_idx : selected_object_idx) {
+        const auto &object_name = objects[object_idx];
+        const Eigen::Vector3d translation{
+            (params.max.x() - params.min.x()) * translation_dist(*gen) + params.min.x(),
+            (params.max.y() - params.min.y()) * translation_dist(*gen) + params.min.y(),
+            (params.max.z() - params.min.z()) * translation_dist(*gen) + params.min.z(),
+        };
+        const Eigen::Vector3d rot{
+            (params.max.x() - params.min.x()) * translation_dist(*gen) + params.min.x(),
+            (params.max.y() - params.min.y()) * translation_dist(*gen) + params.min.y(),
+            (params.max.z() - params.min.z()) * translation_dist(*gen) + params.min.z(),
+        };
+        const double angle_rad = rot.norm();
+        const Eigen::Vector3d axis = rot.normalized();
+        out[object_name] = drake::math::RigidTransformd({angle_rad, axis}, translation);
+    }
+    return out;
+}
+
+Eigen::Matrix3d compute_look_at_origin_rotation(
+    [[maybe_unused]] const Eigen::Vector3d &center_in_world) {
+    return Eigen::Matrix3d::Identity();
+}
+
+template <typename T>
+std::vector<drake::math::RigidTransformd> sample_world_from_camera(const CameraParams camera_params,
+                                                                   InOut<std::mt19937> gen);
+
+template <>
+std::vector<drake::math::RigidTransformd> sample_world_from_camera<MovingCamera>(
+    const CameraParams camera_params, [[maybe_unused]] InOut<std::mt19937> gen) {
+    const auto strategy = std::get<MovingCamera>(camera_params.camera_strategy);
+
+    std::vector<drake::math::RigidTransformd> out;
+    for (int i = 0; i < camera_params.num_views; i++) {
+        const double frac = static_cast<double>(i) /
+                            (camera_params.num_views > 1 ? camera_params.num_views - 1 : 1);
+        const Eigen::Vector3d center_in_world =
+            frac * strategy.end_in_world + (1 - frac) * strategy.start_in_world;
+        const Eigen::Matrix3d world_from_camera_rot =
+            compute_look_at_origin_rotation(center_in_world);
+        out.push_back(drake::math::RigidTransformd(
+            drake::math::RotationMatrix(world_from_camera_rot), center_in_world));
+    }
+    return out;
+}
+
+std::vector<drake::math::RigidTransformd> sample_world_from_camera(const CameraParams camera_params,
+                                                                   InOut<std::mt19937> gen) {
+    return std::visit(
+        [&](auto &&arg) {
+            using T = std::decay_t<decltype(arg)>;
+            return sample_world_from_camera<T>(camera_params, gen);
+        },
+        camera_params.camera_strategy);
+}
+
+std::tuple<std::vector<KeyPoint>, std::vector<Descriptor>, std::vector<std::unordered_set<int>>>
+compute_keypoints_descriptors_labels(
+    [[maybe_unused]] const drake::systems::sensors::ImageRgba8U &all_objects,
+    [[maybe_unused]] const std::unordered_map<std::string, drake::systems::sensors::ImageRgba8U>
+        &image_by_object) {
+    return {{}, {}, {}};
 }
 }  // namespace
 
@@ -101,5 +192,54 @@ drake::systems::sensors::ImageRgba8U render_scene(
     drake::systems::sensors::ImageRgba8U out(camera_params.width_px, camera_params.height_px);
     query_object.RenderColorImage(camera, scene_graph.world_frame_id(), world_from_camera, &out);
     return out;
+}
+
+SceneResult compute_scene_result(const SceneData &scene_data, const CameraParams &camera_params,
+                                 const int renderer_id, const int64_t scene_id,
+                                 InOut<drake::systems::Context<double>> root_context) {
+    // Create RNG
+    std::mt19937 gen(scene_id + 0x8e072e3c);
+
+    // Sample Object Poses
+    const auto &world_from_objects = sample_object_poses(scene_data.object_list,
+                                                         {
+                                                             .max_objects = 10,
+                                                             .min = Eigen::Vector3d::Ones() * -0.5,
+                                                             .max = Eigen::Vector3d::Ones() * 0.5,
+                                                         },
+                                                         make_in_out(gen));
+
+    // Compute Camera Poses
+    const auto &world_from_cameras = sample_world_from_camera(camera_params, make_in_out(gen));
+
+    std::vector<ViewResult> view_results;
+    for (const auto &world_from_camera : world_from_cameras) {
+        std::unordered_map<std::string, drake::systems::sensors::ImageRgba8U> images_by_object;
+
+        // Render Scenes
+        const auto all_objects_scene = render_scene(scene_data, camera_params, world_from_objects,
+                                                    world_from_camera, renderer_id, root_context);
+        for (const auto &[object, world_from_object] : world_from_objects) {
+            images_by_object[object] =
+                render_scene(scene_data, camera_params, {{object, world_from_object}},
+                             world_from_camera, renderer_id, root_context);
+        }
+
+        const auto [keypoints, descriptors, labels] =
+            compute_keypoints_descriptors_labels(all_objects_scene, images_by_object);
+
+        view_results.push_back(ViewResult{
+            .world_from_camera = world_from_camera,
+            .keypoints = std::move(keypoints),
+            .descriptors = std::move(descriptors),
+            .labels = std::move(labels),
+        });
+    }
+
+    // Compute Keypoints, Descriptors and Labels
+    return SceneResult{
+        .world_from_objects = std::move(world_from_objects),
+        .view_results = std::move(view_results),
+    };
 }
 }  // namespace robot::experimental::beacon_dist
