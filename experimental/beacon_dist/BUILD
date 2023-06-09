@@ -85,3 +85,29 @@ py_binary(
   ]
 )
 
+cc_library(
+  name = "render_ycb_scene",
+  hdrs = ["render_ycb_scene.hh"],
+  srcs = ["render_ycb_scene.cc"],
+  deps = [
+    "@drake//:drake_shared_library",
+    "//common:argument_wrapper",
+  ]
+)
+
+cc_test(
+  name = "render_ycb_scene_test",
+  srcs = ["render_ycb_scene_test.cc"],
+  # Rendering requires running on a machine with an Xserver running, which isn't present
+  # on a CI machine.
+  tags = ["manual"],
+  data = [
+      "@drake_models",
+  ],
+  deps = [
+      ":render_ycb_scene",
+      "@drake//:drake_shared_library",
+      "@com_google_googletest//:gtest_main",
+  ]
+)
+

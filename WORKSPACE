@@ -19,6 +19,18 @@ http_archive(
 )
 
 http_archive(
+  name = "fmt",
+  urls = ["https://github.com/fmtlib/fmt/releases/download/10.0.0/fmt-10.0.0.zip"],
+  strip_prefix="fmt-10.0.0",
+  patch_cmds=[
+    "mv support/bazel/.bazelversion .bazelversion",
+    "mv support/bazel/BUILD.bazel BUILD.bazel",
+    "mv support/bazel/WORKSPACE.bazel WORKSPACE.bazel",
+  ],
+  sha256 = "4943cb165f3f587f26da834d3056ee8733c397e024145ca7d2a8a96bb71ac281",
+)
+
+http_archive(
   name = "pybind11_bazel",
   strip_prefix = "pybind11_bazel-faf56fb3df11287f26dbc66fdedf60a2fc2c6631",
   urls = ["https://github.com/pybind/pybind11_bazel/archive/faf56fb3df11287f26dbc66fdedf60a2fc2c6631.zip"],
@@ -195,4 +207,4 @@ http_archive(
   sha256="811c24a328ffc0113c5b8127de2276f2d2d98f68cf036dc552766a11984f0b01",
 )
 load("@drake_lib//:share/drake/repo.bzl", "drake_repository")
-drake_repository(name="drake", excludes=["eigen"])
+drake_repository(name="drake", excludes=["eigen", "fmt"])
