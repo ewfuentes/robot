@@ -3,7 +3,7 @@
 
 #include <filesystem>
 
-#include "drake/geometry/render_gl/factory.h"
+#include "drake/geometry/render_vtk/factory.h"
 #include "drake/multibody/parsing/parser.h"
 #include "drake/multibody/plant/multibody_plant.h"
 #include "drake/systems/framework/diagram_builder.h"
@@ -55,7 +55,7 @@ SceneData load_ycb_objects(
 
     // Add the desired number of renderers
     for (int i = 0; i < num_renderers; i++) {
-        scene_graph.AddRenderer(renderer_name_from_id(i), drake::geometry::MakeRenderEngineGl({}));
+        scene_graph.AddRenderer(renderer_name_from_id(i), drake::geometry::MakeRenderEngineVtk({}));
     }
 
     std::vector<std::string> object_list;
