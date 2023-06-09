@@ -18,16 +18,12 @@ drake::geometry::render::ColorRenderCamera get_color_camera(const CameraParams &
                                                             const int renderer_id) {
     const auto camera_core = drake::geometry::render::RenderCameraCore(
         renderer_name_from_id(renderer_id),
-        drake::systems::sensors::CameraInfo(
-            camera_params.width_px,
-            camera_params.height_px,
-            camera_params.fov_y_rad
-        ),
-        drake::geometry::render::ClippingRange(0.1, 10.0),
-        drake::math::RigidTransformd()
-    );
+        drake::systems::sensors::CameraInfo(camera_params.width_px, camera_params.height_px,
+                                            camera_params.fov_y_rad),
+        drake::geometry::render::ClippingRange(0.1, 10.0), drake::math::RigidTransformd());
 
-    return drake::geometry::render::ColorRenderCamera(camera_core, false);
+    constexpr bool DONT_SHOW_WINDOW = false;
+    return drake::geometry::render::ColorRenderCamera(camera_core, DONT_SHOW_WINDOW);
 }
 }  // namespace
 
@@ -49,8 +45,9 @@ SceneData load_ycb_objects(const std::filesystem::path &ycb_path, const int num_
     return load_ycb_objects(names_and_paths, num_renderers);
 }
 
-SceneData load_ycb_objects(const std::unordered_map<std::string, std::filesystem::path> &names_and_paths,
-                           const int num_renderers) {
+SceneData load_ycb_objects(
+    const std::unordered_map<std::string, std::filesystem::path> &names_and_paths,
+    const int num_renderers) {
     drake::systems::DiagramBuilder<double> builder{};
     auto plant_and_scene_graph =
         drake::multibody::AddMultibodyPlantSceneGraph<double>(&builder, 0.0);
@@ -75,9 +72,7 @@ SceneData load_ycb_objects(const std::unordered_map<std::string, std::filesystem
         .diagram = builder.Build(),
         .object_list = std::move(object_list),
     };
-
 }
-    
 
 drake::systems::sensors::ImageRgba8U render_scene(
     const SceneData &scene_data, const CameraParams &camera_params,
@@ -101,7 +96,8 @@ drake::systems::sensors::ImageRgba8U render_scene(
     }
 
     const auto camera = get_color_camera(camera_params, renderer_id);
-    const auto &query_object = scene_data.diagram->GetOutputPort("query_object").Eval<drake::geometry::QueryObject<double>>(*root_context);
+    const auto &query_object = scene_data.diagram->GetOutputPort("query_object")
+                                   .Eval<drake::geometry::QueryObject<double>>(*root_context);
     drake::systems::sensors::ImageRgba8U out(camera_params.width_px, camera_params.height_px);
     query_object.RenderColorImage(camera, scene_graph.world_frame_id(), world_from_camera, &out);
     return out;

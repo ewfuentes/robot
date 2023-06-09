@@ -25,17 +25,17 @@ TEST(RenderYcbTest, load_ycb_dataset_and_render) {
         .fov_y_rad = std::numbers::pi / 2.0,
     };
     const std::unordered_map<std::string, drake::math::RigidTransformd> world_from_objects = {
-        {"sugar_box", drake::math::RigidTransformd()},{"mustard_bottle", drake::math::RigidTransformd(Eigen::Vector3d{0.25, 0.0, 0.0})}
-    };
+        {"sugar_box", drake::math::RigidTransformd()},
+        {"mustard_bottle", drake::math::RigidTransformd(Eigen::Vector3d{0.25, 0.0, 0.0})}};
 
     const drake::math::RigidTransformd world_from_camera{Eigen::Vector3d{0.0, 0.0, -1.0}};
 
     // Action
-    const auto &scene_data =
-        load_ycb_objects(objects_and_paths, num_renderers);
+    const auto &scene_data = load_ycb_objects(objects_and_paths, num_renderers);
     auto root_context = scene_data.diagram->CreateDefaultContext();
 
-    const auto image = render_scene(scene_data, CAMERA_PARAMS, world_from_objects, world_from_camera, RENDERER_ID, make_in_out(*root_context));
+    const auto image = render_scene(scene_data, CAMERA_PARAMS, world_from_objects,
+                                    world_from_camera, RENDERER_ID, make_in_out(*root_context));
 
     // Verification
     EXPECT_EQ(image.width(), CAMERA_PARAMS.width_px);
