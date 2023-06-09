@@ -89,6 +89,20 @@ load("@pip//:requirements.bzl", "install_deps")
 install_deps()
 
 http_archive(
+    name = "rules_foreign_cc",
+    # TODO: Get the latest sha256 value from a bazel debug message or the latest 
+    #       release on the releases page: https://github.com/bazelbuild/rules_foreign_cc/releases
+    #
+    sha256 = "bdaa954208400a084cb19f8271dd81524a8d1fb341da3e2694e2781244670ed9",
+    strip_prefix = "rules_foreign_cc-62230f8a2123a64b411a3888f75128a10bfe0755",
+    url = "https://github.com/bazelbuild/rules_foreign_cc/archive/62230f8a2123a64b411a3888f75128a10bfe0755.tar.gz",
+)
+
+load("@rules_foreign_cc//foreign_cc:repositories.bzl", "rules_foreign_cc_dependencies")
+rules_foreign_cc_dependencies()
+
+
+http_archive(
     name = "rules_proto",
     sha256 = "80d3a4ec17354cccc898bfe32118edd934f851b03029d63ef3fc7c8663a7415c",
     strip_prefix = "rules_proto-5.3.0-21.5",
@@ -208,3 +222,12 @@ http_archive(
 )
 load("@drake_lib//:share/drake/repo.bzl", "drake_repository")
 drake_repository(name="drake", excludes=["eigen", "fmt"])
+
+http_archive(
+  name = "opencv",
+  url = "https://github.com/opencv/opencv/archive/refs/tags/4.7.0.zip",
+  strip_prefix="opencv-4.7.0",
+  build_file="//third_party:BUILD.opencv",
+  sha256 = "db6fb5e7dc76829d738fdbcdba11a810c66ca0a4752e531eaf3d793361e96de8",
+)
+

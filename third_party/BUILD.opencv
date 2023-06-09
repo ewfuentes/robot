@@ -1,0 +1,23 @@
+load("@rules_foreign_cc//foreign_cc:defs.bzl", "cmake")
+
+filegroup(
+  name = "all",
+  srcs = glob(["**"]),
+)
+
+cmake(
+    name = "opencv",
+    generate_args = [
+        "-GNinja",
+        "-DBUILD_LIST=core,highgui,imgcodecs,imgproc,python3",
+    ],
+    lib_source = "@opencv//:all",
+    out_include_dir = "include/opencv4",
+    out_shared_libs = [
+        "libopencv_core.so",
+        "libopencv_highgui.so",
+        "libopencv_imgcodecs.so",
+        "libopencv_imgproc.so",
+    ],
+    visibility = ["//visibility:public"],
+)
