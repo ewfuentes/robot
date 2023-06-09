@@ -26,11 +26,13 @@ SceneData load_ycb_objects(
     const std::filesystem::path &ycb_path, const int num_renderers,
     const std::optional<std::unordered_set<std::string>> &allow_list = std::nullopt);
 
+SceneData load_ycb_objects(const std::unordered_map<std::string, std::filesystem::path> &names_and_paths,
+                           const int num_renderers);
+
 drake::systems::sensors::ImageRgba8U render_scene(
     const SceneData &scene_data, const CameraParams &camera_params,
     const std::unordered_map<std::string, drake::math::RigidTransformd> &world_from_objects,
-    const drake::math::RigidTransformd &world_from_camera,
-    const int renderer_id,
+    const drake::math::RigidTransformd &world_from_camera, const int renderer_id,
     InOut<drake::systems::Context<double>> root_context);
 
 }  // namespace robot::experimental::beacon_dist

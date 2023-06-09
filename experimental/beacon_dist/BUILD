@@ -98,7 +98,9 @@ cc_library(
 cc_test(
   name = "render_ycb_scene_test",
   srcs = ["render_ycb_scene_test.cc"],
-  tags=["manual"],
+  data = [
+      "@drake_models",
+  ],
   deps = [
       ":render_ycb_scene",
       "@drake//:drake_shared_library",

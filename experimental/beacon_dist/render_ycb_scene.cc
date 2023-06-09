@@ -33,6 +33,24 @@ drake::geometry::render::ColorRenderCamera get_color_camera(const CameraParams &
 
 SceneData load_ycb_objects(const std::filesystem::path &ycb_path, const int num_renderers,
                            const std::optional<std::unordered_set<std::string>> &allow_list) {
+    // Load all objects from the given folder
+    std::unordered_map<std::string, std::filesystem::path> names_and_paths;
+    const std::filesystem::path model_path = "google_16k/textured.obj";
+    for (const auto &item : std::filesystem::directory_iterator(ycb_path)) {
+        const auto maybe_object_path = item.path() / model_path;
+        if (item.is_directory() && std::filesystem::exists(maybe_object_path)) {
+            const std::string object_name = item.path().filename();
+            if (allow_list.has_value() && !allow_list->contains(object_name)) {
+                continue;
+            }
+            names_and_paths[object_name] = maybe_object_path;
+        }
+    }
+    return load_ycb_objects(names_and_paths, num_renderers);
+}
+
+SceneData load_ycb_objects(const std::unordered_map<std::string, std::filesystem::path> &names_and_paths,
+                           const int num_renderers) {
     drake::systems::DiagramBuilder<double> builder{};
     auto plant_and_scene_graph =
         drake::multibody::AddMultibodyPlantSceneGraph<double>(&builder, 0.0);
@@ -43,20 +61,12 @@ SceneData load_ycb_objects(const std::filesystem::path &ycb_path, const int num_
         scene_graph.AddRenderer(renderer_name_from_id(i), drake::geometry::MakeRenderEngineGl({}));
     }
 
-    // Load all objects from the given folder
     std::vector<std::string> object_list;
     drake::multibody::Parser parser(&plant, &scene_graph);
-    const std::filesystem::path model_path = "google_16k/textured.obj";
-    for (const auto &item : std::filesystem::directory_iterator(ycb_path)) {
-        const auto maybe_object_path = item.path() / model_path;
-        if (item.is_directory() && std::filesystem::exists(maybe_object_path)) {
-            const std::string object_name = item.path().filename();
-            if (allow_list.has_value() && !allow_list->contains(object_name)) {
-                continue;
-            }
-            object_list.push_back(item.path().filename());
-            parser.AddModelFromFile(maybe_object_path, object_list.back());
-        }
+
+    for (const auto &[name, path] : names_and_paths) {
+        parser.AddModelFromFile(path, name);
+        object_list.push_back(name);
     }
 
     builder.ExportOutput(scene_graph.get_query_output_port(), "query_object");
@@ -65,7 +75,9 @@ SceneData load_ycb_objects(const std::filesystem::path &ycb_path, const int num_
         .diagram = builder.Build(),
         .object_list = std::move(object_list),
     };
+
 }
+    
 
 drake::systems::sensors::ImageRgba8U render_scene(
     const SceneData &scene_data, const CameraParams &camera_params,
