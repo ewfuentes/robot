@@ -98,6 +98,9 @@ cc_library(
 cc_test(
   name = "render_ycb_scene_test",
   srcs = ["render_ycb_scene_test.cc"],
+  # Rendering requires running on a machine with an Xserver running, which isn't present
+  # on a CI machine.
+  tags = ["manual"],
   data = [
       "@drake_models",
   ],
