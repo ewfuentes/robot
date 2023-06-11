@@ -1,3 +1,5 @@
+workspace(name = "robot")
+
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 http_archive(
@@ -90,9 +92,6 @@ install_deps()
 
 http_archive(
     name = "rules_foreign_cc",
-    # TODO: Get the latest sha256 value from a bazel debug message or the latest 
-    #       release on the releases page: https://github.com/bazelbuild/rules_foreign_cc/releases
-    #
     sha256 = "bdaa954208400a084cb19f8271dd81524a8d1fb341da3e2694e2781244670ed9",
     strip_prefix = "rules_foreign_cc-62230f8a2123a64b411a3888f75128a10bfe0755",
     url = "https://github.com/bazelbuild/rules_foreign_cc/archive/62230f8a2123a64b411a3888f75128a10bfe0755.tar.gz",

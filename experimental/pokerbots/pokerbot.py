@@ -25,8 +25,9 @@ import numpy as np
 np.set_printoptions(precision=3)
 
 runfiles_dir = os.environ.get("RUNFILES_DIR")
-if runfiles_dir:
-    os.chdir(os.path.join(runfiles_dir, "__main__"))
+
+if runfiles_dir and runfiles_dir != os.getcwd():
+    os.chdir(os.path.join(runfiles_dir))
 
 
 def compute_opponent_action(
@@ -212,13 +213,13 @@ class Pokerbot(bot.Bot):
     def __init__(self):
         """Init."""
         with open(
-            "experimental/pokerbots/pokerbot_checkpoint_more_bins_111000000.pb", "rb"
+            "robot/experimental/pokerbots/pokerbot_checkpoint_more_bins_111000000.pb", "rb"
         ) as file_in:
             strategy = learning.min_regret_strategy_pb2.MinRegretStrategy()
             strategy.ParseFromString(file_in.read())
         self._strategy = {x.id_num: x for x in strategy.infoset_counts}
 
-        with open("experimental/pokerbots/bin_centers_1000.pb", "rb") as file_in:
+        with open("robot/experimental/pokerbots/bin_centers_1000.pb", "rb") as file_in:
             self._per_turn_bin_centers = (
                 experimental.pokerbots.bin_centers_pb2.PerTurnBinCenters()
             )

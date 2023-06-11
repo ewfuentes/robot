@@ -18,7 +18,7 @@ def _impl(ctx):
       ),
       tool_path(
         name = "cpp",
-        path = "/bin/false",
+        path = "/usr/bin/clang++-14",
       ),
       tool_path(
         name = "gcov",
