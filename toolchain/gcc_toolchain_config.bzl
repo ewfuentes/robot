@@ -19,7 +19,7 @@ def _impl(ctx):
       ),
       tool_path(
         name = "cpp",
-        path = "/bin/false",
+        path = "/usr/bin/g++-{}".format(gcc_version),
       ),
       tool_path(
         name = "gcov",
