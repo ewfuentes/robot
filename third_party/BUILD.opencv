@@ -11,12 +11,20 @@ cmake_crosstool(
   name = "opencv_crosstool",
 )
 
+SHARED_LIBS = [
+  "libopencv_core.so",
+  "libopencv_highgui.so",
+  "libopencv_imgcodecs.so",
+  "libopencv_imgproc.so",
+  "libopencv_features2d.so",
+  "libopencv_flann.so",
+]
 
 cmake(
     name = "opencv",
     generate_args = [
         "-GNinja",
-        "-DBUILD_LIST=core,highgui,imgcodecs,imgproc,python3",
+        "-DBUILD_LIST=core,highgui,imgcodecs,imgproc,python3,features2d,flann",
         "-DCMAKE_CXX_STANDARD=20",
     ],
     cache_entries={
@@ -27,13 +35,9 @@ cmake(
     },
     lib_source = "@opencv//:all",
     out_include_dir = "include/opencv4",
-    out_shared_libs = [
-        "libopencv_core.so",
-        "libopencv_highgui.so",
-        "libopencv_imgcodecs.so",
-        "libopencv_imgproc.so",
-    ],
     generate_crosstool_file = False,
     data = [":opencv_crosstool"],
+    out_shared_libs = SHARED_LIBS + 
+    [lib + ".407" for lib in SHARED_LIBS],
     visibility = ["//visibility:public"],
 )

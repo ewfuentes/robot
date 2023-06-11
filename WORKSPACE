@@ -212,12 +212,19 @@ http_archive(
   sha256 = "4acd3c8d68305c6f3fb18bca2e2ef043fd938fe4b09ae8c2759b5cce545f8aaf",
 )
 
+# http_archive(
+#   name = "drake_lib",
+#   url = "https://github.com/RobotLocomotion/drake/releases/download/v1.16.0/drake-20230518-jammy.tar.gz",
+#   strip_prefix="drake",
+#   build_file_content="#",
+#   sha256="811c24a328ffc0113c5b8127de2276f2d2d98f68cf036dc552766a11984f0b01",
+# )
 http_archive(
   name = "drake_lib",
-  url = "https://github.com/RobotLocomotion/drake/releases/download/v1.16.0/drake-20230518-jammy.tar.gz",
+  url = "https://drake-packages.csail.mit.edu/drake/nightly/drake-20230609-jammy.tar.gz",
   strip_prefix="drake",
   build_file_content="#",
-  sha256="811c24a328ffc0113c5b8127de2276f2d2d98f68cf036dc552766a11984f0b01",
+  sha256 = "e2320ff066e5797df54e884395c7bfde26823d6c3532790180063f2ce7d438fa",
 )
 load("@drake_lib//:share/drake/repo.bzl", "drake_repository")
 drake_repository(name="drake", excludes=["eigen", "fmt"])
