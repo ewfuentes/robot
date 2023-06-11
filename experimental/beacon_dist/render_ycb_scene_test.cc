@@ -76,7 +76,7 @@ TEST(RenderYcbSceneTest, compute_scene_result) {
 
 TEST(RenderYcbSceneTest, build_dataset) {
     // Setup
-    constexpr int NUM_VIEWS = 4;
+    constexpr int NUM_VIEWS = 1;
     const auto &scene_data = get_default_scene_data();
     const CameraParams CAMERA_PARAMS = {
         .width_px = 1280,
@@ -86,7 +86,7 @@ TEST(RenderYcbSceneTest, build_dataset) {
         .camera_strategy =
             MovingCamera{.start_in_world = {0.0, 0.0, -1.0}, .end_in_world = {0.0, 0.0, -1.0}},
     };
-    constexpr int NUM_SCENES = 128;
+    constexpr int NUM_SCENES = 10000;
     auto root_context = scene_data.diagram->CreateDefaultContext();
 
     // Action
