@@ -4,7 +4,6 @@
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
-#include <iostream>
 #include <iterator>
 #include <memory>
 #include <mutex>
@@ -349,12 +348,12 @@ std::vector<SceneResult> build_dataset(const SceneData &scene_data,
     const int num_workers = scene_graph.RendererCount();
     std::vector<WorkerState> workers(num_workers);
 
-
-
     for (int i = 0; i < num_workers; i++) {
-        auto worker_func = [&state = workers.at(i), renderer_id = i, &scene_data, &camera_params]() {
+        auto worker_func = [&state = workers.at(i), renderer_id = i, &scene_data,
+                            &camera_params]() {
             auto root_context = scene_data.diagram->CreateDefaultContext();
-            render_scene(scene_data, camera_params, {}, {}, renderer_id, make_in_out(*root_context));
+            render_scene(scene_data, camera_params, {}, {}, renderer_id,
+                         make_in_out(*root_context));
             bool run = true;
             bool is_request_ready = false;
             int requested_scene_id = 0;
@@ -367,8 +366,7 @@ std::vector<SceneResult> build_dataset(const SceneData &scene_data,
                 }
 
                 if (is_request_ready) {
-                    std::cout << "[" << renderer_id << "] processing " << requested_scene_id << std::endl; 
-                    auto result = 
+                    auto result =
                         compute_scene_result(scene_data, camera_params, renderer_id,
                                              requested_scene_id, make_in_out(*root_context));
 
@@ -391,7 +389,8 @@ std::vector<SceneResult> build_dataset(const SceneData &scene_data,
             for (auto &worker_state : workers) {
                 std::lock_guard<std::mutex> guard(worker_state.mutex);
                 if (worker_state.is_result_ready) {
-                    out.at(worker_state.requested_scene_id) = worker_state.maybe_scene_result.value();
+                    out.at(worker_state.requested_scene_id) =
+                        worker_state.maybe_scene_result.value();
                     worker_state.is_result_ready = false;
                 }
 

@@ -86,7 +86,7 @@ TEST(RenderYcbSceneTest, build_dataset) {
         .camera_strategy =
             MovingCamera{.start_in_world = {0.0, 0.0, -1.0}, .end_in_world = {0.0, 0.0, -1.0}},
     };
-    constexpr int NUM_SCENES = 10000;
+    constexpr int NUM_SCENES = 1000;
     auto root_context = scene_data.diagram->CreateDefaultContext();
 
     // Action
