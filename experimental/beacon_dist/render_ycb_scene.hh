@@ -1,4 +1,6 @@
 
+#pragma once
+
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -39,10 +41,13 @@ struct CameraParams {
 using Descriptor = std::array<std::uint8_t, 32>;
 
 struct KeyPoint {
+    double angle;
+    int class_id;
+    int octave;
     double x;
     double y;
-    double angle;
-    double octave;
+    double response;
+    double size;
 };
 
 struct ViewResult {
@@ -74,5 +79,8 @@ drake::systems::sensors::ImageRgba8U render_scene(
 SceneResult compute_scene_result(const SceneData &scene_data, const CameraParams &params,
                                  const int renderer_id, const int64_t scene_id,
                                  InOut<drake::systems::Context<double>> root_context);
+
+std::vector<SceneResult> build_dataset(const SceneData &scene_data, const CameraParams &params,
+                                       const int64_t num_scenes);
 
 }  // namespace robot::experimental::beacon_dist

@@ -90,8 +90,9 @@ cc_library(
   hdrs = ["render_ycb_scene.hh"],
   srcs = ["render_ycb_scene.cc"],
   deps = [
-    "@drake//:drake_shared_library",
     "//common:argument_wrapper",
+    "@drake//:drake_shared_library",
+    "@opencv//:opencv",
   ]
 )
 

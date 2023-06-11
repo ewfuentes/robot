@@ -16,7 +16,7 @@ SceneData get_default_scene_data() {
         {"mustard_bottle", "external/drake_models/ycb/meshes/006_mustard_bottle_textured.obj"},
     };
 
-    constexpr int num_renderers = 3;
+    constexpr int num_renderers = 8;
     return load_ycb_objects(objects_and_paths, num_renderers);
 }
 }  // namespace
@@ -72,5 +72,26 @@ TEST(RenderYcbSceneTest, compute_scene_result) {
     // Verification
     EXPECT_EQ(scene_result.view_results.size(), NUM_VIEWS);
     EXPECT_EQ(scene_result.view_results[0].keypoints.size(), 300);
+}
+
+TEST(RenderYcbSceneTest, build_dataset) {
+    // Setup
+    constexpr int NUM_VIEWS = 4;
+    const auto &scene_data = get_default_scene_data();
+    const CameraParams CAMERA_PARAMS = {
+        .width_px = 1280,
+        .height_px = 1024,
+        .fov_y_rad = std::numbers::pi / 2.0,
+        .num_views = NUM_VIEWS,
+        .camera_strategy =
+            MovingCamera{.start_in_world = {0.0, 0.0, -1.0}, .end_in_world = {0.0, 0.0, -1.0}},
+    };
+    constexpr int NUM_SCENES = 128;
+    auto root_context = scene_data.diagram->CreateDefaultContext();
+
+    // Action
+    const auto &dataset = build_dataset(scene_data, CAMERA_PARAMS, NUM_SCENES);
+    // Verification
+    EXPECT_EQ(dataset.size(), NUM_SCENES);
 }
 }  // namespace robot::experimental::beacon_dist
