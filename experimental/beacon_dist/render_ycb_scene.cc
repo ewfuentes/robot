@@ -15,7 +15,9 @@
 #include "drake/multibody/parsing/parser.h"
 #include "drake/multibody/plant/multibody_plant.h"
 #include "drake/systems/framework/diagram_builder.h"
+#include "drake/systems/sensors/image_writer.h"
 #include "opencv2/features2d.hpp"
+#include "opencv2/imgcodecs.hpp"
 #include "opencv2/imgproc.hpp"
 
 namespace robot::experimental::beacon_dist {
@@ -207,6 +209,7 @@ SceneData load_ycb_objects(const std::filesystem::path &ycb_path,
     // Load all objects from the given folder
     std::unordered_map<std::string, std::filesystem::path> names_and_paths;
     const std::filesystem::path model_path = "google_16k/textured.obj";
+    int i = 0;
     for (const auto &item : std::filesystem::directory_iterator(ycb_path)) {
         const auto maybe_object_path = item.path() / model_path;
         if (item.is_directory() && std::filesystem::exists(maybe_object_path)) {
@@ -215,6 +218,10 @@ SceneData load_ycb_objects(const std::filesystem::path &ycb_path,
                 continue;
             }
             names_and_paths[object_name] = maybe_object_path;
+            i++;
+        }
+        if (i > 10) {
+            break;
         }
     }
     return load_ycb_objects(names_and_paths);
@@ -293,7 +300,8 @@ SceneResult compute_scene_result(const SceneData &scene_data, const CameraParams
     const auto &world_from_cameras = sample_world_from_camera(camera_params, make_in_out(gen));
 
     std::vector<ViewResult> view_results;
-    for (const auto &world_from_camera : world_from_cameras) {
+    for (int i = 0; i < static_cast<int>(world_from_cameras.size()); i++) {
+        const auto &world_from_camera = world_from_cameras.at(i);
         std::unordered_map<std::string, drake::systems::sensors::ImageRgba8U> images_by_object;
         // Render Scenes
         const auto all_objects_scene = render_scene(scene_data, camera_params, world_from_objects,
