@@ -1,4 +1,5 @@
 load("@pip//:requirements.bzl", "requirement")
+load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
 
 py_binary(
   name="generate_letter_dataset",
@@ -17,11 +18,9 @@ py_binary(
   name = "generate_ycb_dataset",
   srcs = ["generate_ycb_dataset.py"],
   visibility = ["//common/python:__subpackages__"],
+  data = [":render_ycb_scene_python.so"],
   deps = [
     requirement("numpy"),
-    requirement("opencv-python"),
-    requirement("tqdm"),
-    "@drake//bindings/pydrake",
     ":utils",
   ]
 )
@@ -109,5 +108,11 @@ cc_test(
       ":render_ycb_scene",
       "@com_google_googletest//:gtest_main",
   ]
+)
+
+pybind_extension(
+    name = "render_ycb_scene_python",
+    srcs = ["render_ycb_scene_python.cc"],
+    deps = [":render_ycb_scene"],
 )
 
