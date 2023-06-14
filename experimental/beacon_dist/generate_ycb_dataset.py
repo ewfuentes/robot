@@ -55,7 +55,6 @@ def serialize_results(
     scene_info = []
     image_info = []
     for scene_id, scene_result in enumerate(scene_results):
-        print(scene_id, scene_result)
         scene_info.append(
             np.array(
                 [
@@ -71,7 +70,6 @@ def serialize_results(
         )
 
         for view_result in scene_result.view_results:
-            print(view_result, len(view_result.keypoints))
             image_info.append(
                 np.array(
                     [
@@ -145,7 +143,7 @@ def main(
     start_time = time.time()
     scene_data = rys.load_ycb_objects(ycb_path, None)
     end_load_time = time.time()
-    print('Load time:', end_load_time - start_time)
+    print('Load time:', end_load_time - start_time, 'Num objects:', len(scene_data.object_list))
     print('Building dataset')
     scene_results = rys.build_dataset(scene_data, camera_params, num_scenes, num_workers)
     end_dataset_time = time.time()

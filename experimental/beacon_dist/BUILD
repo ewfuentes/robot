@@ -21,12 +21,7 @@ py_binary(
   data = [":render_ycb_scene_python.so"],
   deps = [
     requirement("numpy"),
-    requirement("opencv-python"),
-    requirement("tqdm"),
     ":utils",
-    requirement("PyYAML"),
-    requirement("matplotlib"),
-    "@drake//bindings/pydrake",
   ]
 )
 
