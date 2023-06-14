@@ -38,6 +38,11 @@ jobs:
     steps:
 
       # Setup caching of bazel build dirs
+      - name: Fetch Secrets
+        env:
+          CACHE_AUTH: ${{ secrets.BAZEL_CACHE_BASE64 }}
+        run: |
+          echo $CACHE_AUTH | base64 --decode > cache_auth.json
       - name: Setup Cache
         uses: ewfuentes/cache@maybe_skip_write
         env:
@@ -65,4 +70,4 @@ jobs:
 
       - name: Run Unit Tests
         run: |
-          bazel test --config=${{ matrix.build-config }} //... --test_output=errors
+          bazel test --config=${{ matrix.build-config }} --remote_cache=https://storage.googleapis.com/robot-research-bazel-cache --google_credentials=cache_auth.json //... --test_output=errors
