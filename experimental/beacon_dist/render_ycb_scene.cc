@@ -293,7 +293,7 @@ SceneResult compute_scene_result(const SceneData &scene_data, const CameraParams
     const auto &world_from_cameras = sample_world_from_camera(camera_params, make_in_out(gen));
 
     std::vector<ViewResult> view_results;
-    for (const auto &world_from_camera: world_from_cameras) {
+    for (const auto &world_from_camera : world_from_cameras) {
         std::unordered_map<std::string, drake::systems::sensors::ImageRgba8U> images_by_object;
         // Render Scenes
         const auto all_objects_scene = render_scene(scene_data, camera_params, world_from_objects,
