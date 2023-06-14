@@ -15,9 +15,7 @@
 #include "drake/multibody/parsing/parser.h"
 #include "drake/multibody/plant/multibody_plant.h"
 #include "drake/systems/framework/diagram_builder.h"
-#include "drake/systems/sensors/image_writer.h"
 #include "opencv2/features2d.hpp"
-#include "opencv2/imgcodecs.hpp"
 #include "opencv2/imgproc.hpp"
 
 namespace robot::experimental::beacon_dist {
@@ -301,14 +299,6 @@ SceneResult compute_scene_result(const SceneData &scene_data, const CameraParams
         // Render Scenes
         const auto all_objects_scene = render_scene(scene_data, camera_params, world_from_objects,
                                                     world_from_camera, root_context);
-
-        drake::systems::sensors::SaveToPng(
-            all_objects_scene,
-            "/tmp/scene_" + std::to_string(scene_id) + "_view_" + std::to_string(i) + ".png");
-
-        cv::imwrite(
-            "/tmp/scene_" + std::to_string(scene_id) + "_view_" + std::to_string(i) + "_ocv.png",
-            opencv_image_from_drake_image(all_objects_scene));
 
         for (const auto &[object, world_from_object] : world_from_objects) {
             images_by_object[object] =
