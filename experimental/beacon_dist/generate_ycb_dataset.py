@@ -2,6 +2,7 @@ import argparse
 import numpy as np
 import os
 import time
+import tqdm
 from experimental.beacon_dist.utils import KeypointDescriptorDtype, CLASS_SIZE
 import experimental.beacon_dist.render_ycb_scene_python as rys
 
@@ -35,7 +36,7 @@ SAMPLING_STRATEGIES: dict[str, CameraSamplingStrategy] = {
 }
 
 
-def class_label_from_label_set(labels: set[int], ycb_objects: list[str]) -> np.ndarray:
+def class_label_from_label_set(labels: set[int]) -> np.ndarray:
     out = np.zeros((CLASS_SIZE), dtype=np.uint64)
     for object_idx in labels:
         idx = object_idx // 64
@@ -54,7 +55,7 @@ def serialize_results(
     keypoint_data = []
     scene_info = []
     image_info = []
-    for scene_id, scene_result in enumerate(scene_results):
+    for scene_id, scene_result in tqdm.tqdm(enumerate(scene_results)):
         scene_info.append(
             np.array(
                 [
@@ -101,9 +102,7 @@ def serialize_results(
                                 kp.response,
                                 kp.size,
                                 view_result.descriptors[i],
-                                class_label_from_label_set(
-                                    view_result.labels[i], ycb_objects
-                                ),
+                                class_label_from_label_set(view_result.labels[i]),
                             )
                         ],
                         dtype=KeypointDescriptorDtype,
@@ -139,25 +138,40 @@ def main(
         fov_y_rad=np.pi / 4.0,
     )
 
-    print('Loading YCB Objects')
+    print("Loading YCB Objects")
     start_time = time.time()
     scene_data = rys.load_ycb_objects(ycb_path, None)
     end_load_time = time.time()
-    print('Load time:', end_load_time - start_time, 'Num objects:', len(scene_data.object_list))
-    print('Building dataset')
-    scene_results = rys.build_dataset(scene_data, camera_params, num_scenes, num_workers)
+    print(
+        "Load time:",
+        end_load_time - start_time,
+        "Num objects:",
+        len(scene_data.object_list),
+    )
+    print("Building dataset")
+    progress_bar = tqdm.tqdm(total=num_scenes)
+
+    def progress_update(scene_id):
+        progress_bar.update()
+        progress_bar.refresh()
+        return True
+
+    scene_results = rys.build_dataset(
+        scene_data, camera_params, num_scenes, num_workers, progress_update
+    )
+    progress_bar.close()
     end_dataset_time = time.time()
-    print('Dataset time:', end_dataset_time - end_load_time)
+    print("Dataset time:", end_dataset_time - end_load_time)
 
     # Write out generated data
-    print('Serializing Results')
+    print("Serializing Results")
     serialize_results(
         scene_results,
         scene_data.object_list,
         output_path,
     )
     end_serialize_time = time.time()
-    print('Serialize time:', end_serialize_time - end_dataset_time)
+    print("Serialize time:", end_serialize_time - end_dataset_time)
 
 
 if __name__ == "__main__":

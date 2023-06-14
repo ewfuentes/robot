@@ -2,6 +2,7 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <random>
@@ -80,6 +81,7 @@ SceneResult compute_scene_result(const SceneData &scene_data, const CameraParams
                                  InOut<drake::systems::Context<double>> root_context);
 
 std::vector<SceneResult> build_dataset(const SceneData &scene_data, const CameraParams &params,
-                                       const int64_t num_scenes, const int num_workers);
+                                       const int64_t num_scenes, const int num_workers,
+                                       const std::function<bool(int)> &progress_callback = {});
 
 }  // namespace robot::experimental::beacon_dist
