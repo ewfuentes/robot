@@ -44,7 +44,7 @@ jobs:
 
       - name: Fetch Secrets
         run: |
-          echo ${{ runner }}
+          echo ${{ toJson(runner) }}
           # echo ${{ env.cache_auth }} | base64 --decode > ${{ env.cache_secret_file }}
 
       # Setup caching of bazel build dirs
