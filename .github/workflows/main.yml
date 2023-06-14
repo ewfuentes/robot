@@ -35,7 +35,7 @@ jobs:
     runs-on: ubuntu-22.04
 
     env:
-      CACHE_SECRET_FILE: $RUNNER_TEMP/cache_auth.json
+      CACHE_SECRET_FILE: ${RUNNER_TEMP}/cache_auth.json
       CACHE_URL: https://storage.googleapis.com/robot-research-bazel-cache
 
     # Steps represent a sequence of tasks that will be executed as part of the job
