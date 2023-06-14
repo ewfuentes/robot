@@ -52,7 +52,12 @@ def download_ycb(output_path: str, url: str, column_to_grab: str, force: bool, v
         tgz.extractall(output_path)
         tgz.close()
 
-
+    # Delete the mtl file and rename the texture
+    for path, subdirs, files in os.walk(output_path):
+        if 'texture_map.png' in files:
+            os.rename(os.path.join(path, 'texture_map.png'), os.path.join(path, 'textured.png'))
+            with open(os.path.join(path, 'textured.mtl'), 'w') as file_out:
+                file_out.write('newmtl material_0\n# shader_type beckmann\nmap_Kd textured.png')
 
 
 if __name__ == "__main__":
