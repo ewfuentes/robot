@@ -107,7 +107,6 @@ cc_test(
   ],
   deps = [
       ":render_ycb_scene",
-      "@drake//:drake_shared_library",
       "@com_google_googletest//:gtest_main",
   ]
 )
