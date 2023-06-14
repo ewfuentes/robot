@@ -15,7 +15,9 @@
 #include "drake/multibody/parsing/parser.h"
 #include "drake/multibody/plant/multibody_plant.h"
 #include "drake/systems/framework/diagram_builder.h"
+#include "drake/systems/sensors/image_writer.h"
 #include "opencv2/features2d.hpp"
+#include "opencv2/imgcodecs.hpp"
 #include "opencv2/imgproc.hpp"
 
 namespace robot::experimental::beacon_dist {
@@ -37,14 +39,11 @@ struct SampleObjectPosesParams {
     Eigen::Vector3d max;
 };
 
-std::string renderer_name_from_id(const int renderer_id) {
-    return "my_renderer_" + std::to_string(renderer_id);
-}
+const std::string RENDERER_ID = "my_renderer";
 
-drake::geometry::render::ColorRenderCamera get_color_camera(const CameraParams &camera_params,
-                                                            const int renderer_id) {
+drake::geometry::render::ColorRenderCamera get_color_camera(const CameraParams &camera_params) {
     const auto camera_core = drake::geometry::render::RenderCameraCore(
-        renderer_name_from_id(renderer_id),
+        RENDERER_ID,
         drake::systems::sensors::CameraInfo(camera_params.width_px, camera_params.height_px,
                                             camera_params.fov_y_rad),
         drake::geometry::render::ClippingRange(0.1, 10.0), drake::math::RigidTransformd());
@@ -91,9 +90,15 @@ std::unordered_map<std::string, drake::math::RigidTransformd> sample_object_pose
     return out;
 }
 
-Eigen::Matrix3d compute_look_at_origin_rotation(
-    [[maybe_unused]] const Eigen::Vector3d &center_in_world) {
-    return Eigen::Matrix3d::Identity();
+Eigen::Matrix3d compute_look_at_origin_rotation(const Eigen::Vector3d &center_in_world) {
+    // The +Z axis points toward the center
+    const Eigen::Vector3d camera_z_axis = -center_in_world.normalized();
+    // The +X axis points right in the camera frame
+    const Eigen::Vector3d camera_x_axis = camera_z_axis.cross(Eigen::Vector3d::UnitZ());
+    // The +Y axis points down in the camera frame
+    const Eigen::Vector3d camera_y_axis = camera_z_axis.cross(camera_x_axis);
+
+    return (Eigen::Matrix3d() << camera_x_axis, camera_y_axis, camera_z_axis).finished();
 }
 
 template <typename T>
@@ -135,7 +140,7 @@ cv::Mat opencv_image_from_drake_image(const drake::systems::sensors::ImageRgba8U
     for (int row = 0; row < drake_image.height(); row++) {
         for (int col = 0; col < drake_image.width(); col++) {
             const auto src_pixel_data = drake_image.at(col, row);
-            auto dst_pixel_data = out.at<cv::Vec3b>(row, col);
+            auto &dst_pixel_data = out.at<cv::Vec3b>(row, col);
             // Convert RGBA to BGR
             dst_pixel_data[0] = src_pixel_data[2];
             dst_pixel_data[1] = src_pixel_data[1];
@@ -151,8 +156,8 @@ compute_keypoints_descriptors_labels(
     const drake::systems::sensors::ImageRgba8U &all_objects,
     const std::unordered_map<std::string, drake::systems::sensors::ImageRgba8U> &image_by_object) {
     const auto all_objects_image = opencv_image_from_drake_image(all_objects);
-    constexpr int NUM_FEATURES = 600;
-    const auto &orb_features = cv::ORB::create(NUM_FEATURES);
+    constexpr int NUM_FEATURES = 500;
+    const auto orb_features = cv::ORB::create(NUM_FEATURES);
     std::vector<cv::KeyPoint> keypoints;
     cv::Mat descriptors;
     orb_features->detect(all_objects_image, keypoints);
@@ -199,7 +204,7 @@ compute_keypoints_descriptors_labels(
 }
 }  // namespace
 
-SceneData load_ycb_objects(const std::filesystem::path &ycb_path, const int num_renderers,
+SceneData load_ycb_objects(const std::filesystem::path &ycb_path,
                            const std::optional<std::unordered_set<std::string>> &allow_list) {
     // Load all objects from the given folder
     std::unordered_map<std::string, std::filesystem::path> names_and_paths;
@@ -214,21 +219,17 @@ SceneData load_ycb_objects(const std::filesystem::path &ycb_path, const int num_
             names_and_paths[object_name] = maybe_object_path;
         }
     }
-    return load_ycb_objects(names_and_paths, num_renderers);
+    return load_ycb_objects(names_and_paths);
 }
 
 SceneData load_ycb_objects(
-    const std::unordered_map<std::string, std::filesystem::path> &names_and_paths,
-    const int num_renderers) {
+    const std::unordered_map<std::string, std::filesystem::path> &names_and_paths) {
     drake::systems::DiagramBuilder<double> builder{};
     auto plant_and_scene_graph =
         drake::multibody::AddMultibodyPlantSceneGraph<double>(&builder, 0.0);
     auto &[plant, scene_graph] = plant_and_scene_graph;
 
-    // Add the desired number of renderers
-    for (int i = 0; i < num_renderers; i++) {
-        scene_graph.AddRenderer(renderer_name_from_id(i), drake::geometry::MakeRenderEngineGl({}));
-    }
+    scene_graph.AddRenderer(RENDERER_ID, drake::geometry::MakeRenderEngineGl({}));
 
     std::vector<std::string> object_list;
     drake::multibody::Parser parser(&plant, &scene_graph);
@@ -249,7 +250,7 @@ SceneData load_ycb_objects(
 drake::systems::sensors::ImageRgba8U render_scene(
     const SceneData &scene_data, const CameraParams &camera_params,
     const std::unordered_map<std::string, drake::math::RigidTransformd> &world_from_objects,
-    const drake::math::RigidTransformd &world_from_camera, const int renderer_id,
+    const drake::math::RigidTransformd &world_from_camera,
     InOut<drake::systems::Context<double>> root_context) {
     auto &plant =
         scene_data.diagram->GetDowncastSubsystemByName<drake::multibody::MultibodyPlant>("plant");
@@ -267,7 +268,7 @@ drake::systems::sensors::ImageRgba8U render_scene(
         plant.SetFreeBodyPose(&context, body, world_from_object);
     }
 
-    const auto camera = get_color_camera(camera_params, renderer_id);
+    const auto camera = get_color_camera(camera_params);
     const auto &query_object = scene_data.diagram->GetOutputPort("query_object")
                                    .Eval<drake::geometry::QueryObject<double>>(*root_context);
     drake::systems::sensors::ImageRgba8U out(camera_params.width_px, camera_params.height_px);
@@ -276,7 +277,7 @@ drake::systems::sensors::ImageRgba8U render_scene(
 }
 
 SceneResult compute_scene_result(const SceneData &scene_data, const CameraParams &camera_params,
-                                 const int renderer_id, const int64_t scene_id,
+                                 const int64_t scene_id,
                                  InOut<drake::systems::Context<double>> root_context) {
     // Create RNG
     std::mt19937 gen(scene_id + 0x8e072e3c);
@@ -285,8 +286,8 @@ SceneResult compute_scene_result(const SceneData &scene_data, const CameraParams
     const auto &world_from_objects = sample_object_poses(scene_data.object_list,
                                                          {
                                                              .max_objects = 10,
-                                                             .min = Eigen::Vector3d::Ones() * -0.5,
-                                                             .max = Eigen::Vector3d::Ones() * 0.5,
+                                                             .min = Eigen::Vector3d::Ones() * -0.25,
+                                                             .max = Eigen::Vector3d::Ones() * 0.25,
                                                          },
                                                          make_in_out(gen));
 
@@ -294,16 +295,25 @@ SceneResult compute_scene_result(const SceneData &scene_data, const CameraParams
     const auto &world_from_cameras = sample_world_from_camera(camera_params, make_in_out(gen));
 
     std::vector<ViewResult> view_results;
-    for (const auto &world_from_camera : world_from_cameras) {
+    for (int i = 0; i < static_cast<int>(world_from_cameras.size()); i++) {
+        const auto &world_from_camera = world_from_cameras.at(i);
         std::unordered_map<std::string, drake::systems::sensors::ImageRgba8U> images_by_object;
-
         // Render Scenes
         const auto all_objects_scene = render_scene(scene_data, camera_params, world_from_objects,
-                                                    world_from_camera, renderer_id, root_context);
+                                                    world_from_camera, root_context);
+
+        drake::systems::sensors::SaveToPng(
+            all_objects_scene,
+            "/tmp/scene_" + std::to_string(scene_id) + "_view_" + std::to_string(i) + ".png");
+
+        cv::imwrite(
+            "/tmp/scene_" + std::to_string(scene_id) + "_view_" + std::to_string(i) + "_ocv.png",
+            opencv_image_from_drake_image(all_objects_scene));
+
         for (const auto &[object, world_from_object] : world_from_objects) {
             images_by_object[object] =
                 render_scene(scene_data, camera_params, {{object, world_from_object}},
-                             world_from_camera, renderer_id, root_context);
+                             world_from_camera, root_context);
         }
 
         const auto [keypoints, descriptors, labels] =
@@ -341,19 +351,14 @@ SceneResult compute_scene_result(const SceneData &scene_data, const CameraParams
 }
 
 std::vector<SceneResult> build_dataset(const SceneData &scene_data,
-                                       const CameraParams &camera_params,
-                                       const int64_t num_scenes) {
-    const auto &scene_graph =
-        scene_data.diagram->GetDowncastSubsystemByName<drake::geometry::SceneGraph>("scene_graph");
-    const int num_workers = scene_graph.RendererCount();
+                                       const CameraParams &camera_params, const int64_t num_scenes,
+                                       const int num_workers) {
     std::vector<WorkerState> workers(num_workers);
 
     for (int i = 0; i < num_workers; i++) {
-        auto worker_func = [&state = workers.at(i), renderer_id = i, &scene_data,
-                            &camera_params]() {
+        auto worker_func = [&state = workers.at(i), &scene_data, &camera_params]() {
             auto root_context = scene_data.diagram->CreateDefaultContext();
-            render_scene(scene_data, camera_params, {}, {}, renderer_id,
-                         make_in_out(*root_context));
+            render_scene(scene_data, camera_params, {}, {}, make_in_out(*root_context));
             bool run = true;
             bool is_request_ready = false;
             int requested_scene_id = 0;
@@ -366,9 +371,8 @@ std::vector<SceneResult> build_dataset(const SceneData &scene_data,
                 }
 
                 if (is_request_ready) {
-                    auto result =
-                        compute_scene_result(scene_data, camera_params, renderer_id,
-                                             requested_scene_id, make_in_out(*root_context));
+                    auto result = compute_scene_result(
+                        scene_data, camera_params, requested_scene_id, make_in_out(*root_context));
 
                     std::lock_guard<std::mutex> guard(state.mutex);
                     state.maybe_scene_result = std::move(result);

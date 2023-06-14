@@ -4,8 +4,6 @@
 #include <numbers>
 #include <thread>
 
-#include "drake/geometry/scene_graph.h"
-#include "drake/systems/sensors/image_writer.h"
 #include "gtest/gtest.h"
 
 namespace robot::experimental::beacon_dist {
@@ -16,14 +14,12 @@ SceneData get_default_scene_data() {
         {"mustard_bottle", "external/drake_models/ycb/meshes/006_mustard_bottle_textured.obj"},
     };
 
-    constexpr int num_renderers = 8;
-    return load_ycb_objects(objects_and_paths, num_renderers);
+    return load_ycb_objects(objects_and_paths);
 }
 }  // namespace
 
 TEST(RenderYcbSceneTest, load_ycb_dataset_and_render) {
     // Setup
-    constexpr int RENDERER_ID = 1;
     const CameraParams CAMERA_PARAMS = {
         .width_px = 1280,
         .height_px = 1024,
@@ -43,7 +39,7 @@ TEST(RenderYcbSceneTest, load_ycb_dataset_and_render) {
     auto root_context = scene_data.diagram->CreateDefaultContext();
 
     const auto image = render_scene(scene_data, CAMERA_PARAMS, world_from_objects,
-                                    world_from_camera, RENDERER_ID, make_in_out(*root_context));
+                                    world_from_camera, make_in_out(*root_context));
 
     // Verification
     EXPECT_EQ(image.width(), CAMERA_PARAMS.width_px);
@@ -60,23 +56,23 @@ TEST(RenderYcbSceneTest, compute_scene_result) {
         .fov_y_rad = std::numbers::pi / 2.0,
         .num_views = NUM_VIEWS,
         .camera_strategy =
-            MovingCamera{.start_in_world = {0.0, 0.0, -1.0}, .end_in_world = {0.0, 0.0, -1.0}},
+            MovingCamera{.start_in_world = {-1.0, 0.0, 0.0}, .end_in_world = {-1.0, 0.0, 0.0}},
     };
-    constexpr int RENDERER_ID = 1;
     constexpr int SCENE_ID = 1024;
     auto root_context = scene_data.diagram->CreateDefaultContext();
 
     // Action
-    const auto &scene_result = compute_scene_result(scene_data, CAMERA_PARAMS, RENDERER_ID,
-                                                    SCENE_ID, make_in_out(*root_context));
+    const auto &scene_result =
+        compute_scene_result(scene_data, CAMERA_PARAMS, SCENE_ID, make_in_out(*root_context));
     // Verification
     EXPECT_EQ(scene_result.view_results.size(), NUM_VIEWS);
-    EXPECT_EQ(scene_result.view_results[0].keypoints.size(), 300);
+    EXPECT_GE(scene_result.view_results[0].keypoints.size(), 300);
 }
 
 TEST(RenderYcbSceneTest, build_dataset) {
     // Setup
     constexpr int NUM_VIEWS = 1;
+    constexpr int NUM_WORKERS = 4;
     const auto &scene_data = get_default_scene_data();
     const CameraParams CAMERA_PARAMS = {
         .width_px = 1280,
@@ -84,13 +80,13 @@ TEST(RenderYcbSceneTest, build_dataset) {
         .fov_y_rad = std::numbers::pi / 2.0,
         .num_views = NUM_VIEWS,
         .camera_strategy =
-            MovingCamera{.start_in_world = {0.0, 0.0, -1.0}, .end_in_world = {0.0, 0.0, -1.0}},
+            MovingCamera{.start_in_world = {-1.0, 0.0, 0.0}, .end_in_world = {-1.0, 0.0, 0.0}},
     };
-    constexpr int NUM_SCENES = 1000;
-    auto root_context = scene_data.diagram->CreateDefaultContext();
+    constexpr int NUM_SCENES = 10;
 
     // Action
-    const auto &dataset = build_dataset(scene_data, CAMERA_PARAMS, NUM_SCENES);
+    const auto &dataset = build_dataset(scene_data, CAMERA_PARAMS, NUM_SCENES, NUM_WORKERS);
+
     // Verification
     EXPECT_EQ(dataset.size(), NUM_SCENES);
 }

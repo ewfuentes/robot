@@ -63,24 +63,23 @@ struct SceneResult {
 };
 
 SceneData load_ycb_objects(
-    const std::filesystem::path &ycb_path, const int num_renderers,
+    const std::filesystem::path &ycb_path,
     const std::optional<std::unordered_set<std::string>> &allow_list = std::nullopt);
 
 SceneData load_ycb_objects(
-    const std::unordered_map<std::string, std::filesystem::path> &names_and_paths,
-    const int num_renderers);
+    const std::unordered_map<std::string, std::filesystem::path> &names_and_paths);
 
 drake::systems::sensors::ImageRgba8U render_scene(
     const SceneData &scene_data, const CameraParams &camera_params,
     const std::unordered_map<std::string, drake::math::RigidTransformd> &world_from_objects,
-    const drake::math::RigidTransformd &world_from_camera, const int renderer_id,
+    const drake::math::RigidTransformd &world_from_camera,
     InOut<drake::systems::Context<double>> root_context);
 
 SceneResult compute_scene_result(const SceneData &scene_data, const CameraParams &params,
-                                 const int renderer_id, const int64_t scene_id,
+                                 const int64_t scene_id,
                                  InOut<drake::systems::Context<double>> root_context);
 
 std::vector<SceneResult> build_dataset(const SceneData &scene_data, const CameraParams &params,
-                                       const int64_t num_scenes);
+                                       const int64_t num_scenes, const int num_workers);
 
 }  // namespace robot::experimental::beacon_dist
