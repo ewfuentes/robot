@@ -35,16 +35,17 @@ jobs:
     runs-on: ubuntu-22.04
 
     env:
-      cache_secret_file: ${{ runner.temp }}/cache_auth.json
-      cache_url: https://storage.googleapis.com/robot-research-bazel-cache
-      cache_auth: ${{ secrets.BAZEL_CACHE_BASE64 }}
+      # cache_secret_file: ${{ runner.temp }}/cache_auth.json
+      # cache_url: https://storage.googleapis.com/robot-research-bazel-cache
+      # cache_auth: ${{ secrets.BAZEL_CACHE_BASE64 }}
 
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
 
       - name: Fetch Secrets
         run: |
-          echo ${{ env.cache_auth }} | base64 --decode > ${{ env.cache_secret_file }}
+          echo ${{ runner }}
+          # echo ${{ env.cache_auth }} | base64 --decode > ${{ env.cache_secret_file }}
 
       # Setup caching of bazel build dirs
       - name: Setup Cache
