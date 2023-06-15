@@ -3,9 +3,9 @@ import numpy as np
 import os
 import time
 import tqdm
+import tqdm.contrib.concurrent
 from experimental.beacon_dist.utils import KeypointDescriptorDtype, CLASS_SIZE
 import experimental.beacon_dist.render_ycb_scene_python as rys
-import multiprocessing
 
 RENDERER_NAME = "my_renderer"
 
@@ -114,6 +114,7 @@ def serialize_results(
     scene_results: list[rys.SceneResult],
     ycb_objects: list[str],
     initial_image_id: int,
+    initial_scene_id: int,
     output_path: str,
 ):
 
@@ -124,19 +125,16 @@ def serialize_results(
     )
     num_scenes = len(scene_results)
 
-    with multiprocessing.Pool() as pool:
-        results = pool.starmap(
-            serialize_result,
-            zip(
-                scene_results,
-                image_id_starts,
-                range(num_scenes),
-                [max_name_size] * num_scenes,
-            ),
-        )
-        scene_info = [x[0] for x in results]
-        image_info = [x[1] for x in results]
-        keypoint_data = [x[2] for x in results]
+    results = tqdm.contrib.concurrent.process_map(
+        serialize_result,
+        scene_results,
+        image_id_starts,
+        range(initial_scene_id, initial_scene_id + num_scenes),
+        [max_name_size] * num_scenes,
+    )
+    scene_info = [x[0] for x in results]
+    image_info = [x[1] for x in results]
+    keypoint_data = [x[2] for x in results]
 
     np.savez(
         output_path,
@@ -177,21 +175,29 @@ def main(
         len(scene_data.object_list),
     )
 
-    progress_bar = tqdm.tqdm(total=num_scenes)
-
-    def progress_update(scene_id):
-        progress_bar.update()
-        progress_bar.refresh()
-        return True
-
     generated_scenes = 0
-    MAX_NUM_SCENES_PER_ROUND = 20000
+    start_image_id = 0
+    MAX_NUM_SCENES_PER_ROUND = 5000
+    print(
+        "Splitting up into",
+        num_scenes // MAX_NUM_SCENES_PER_ROUND
+        + (1 if (num_scenes % MAX_NUM_SCENES_PER_ROUND) > 0 else 0),
+        "chunks.",
+    )
     while generated_scenes != num_scenes:
         scenes_to_generate = min(
             MAX_NUM_SCENES_PER_ROUND, num_scenes - generated_scenes
         )
         print("Building dataset")
 
+        progress_bar = tqdm.tqdm(total=scenes_to_generate)
+
+        def progress_update(scene_id):
+            progress_bar.update()
+            progress_bar.refresh()
+            return True
+
+        start_dataset_time = time.time()
         scene_results = rys.build_dataset(
             scene_data,
             camera_params,
@@ -202,7 +208,7 @@ def main(
         )
         progress_bar.close()
         end_dataset_time = time.time()
-        print("Dataset time:", end_dataset_time - end_load_time)
+        print("Dataset time:", end_dataset_time - start_dataset_time)
 
         # Write out generated data
         print("Serializing Results")
@@ -214,14 +220,18 @@ def main(
             )
         else:
             file_path = output_path
+
         serialize_results(
-            scene_results,
-            scene_data.object_list,
-            file_path,
+            scene_results=scene_results,
+            ycb_objects=scene_data.object_list,
+            initial_image_id=start_image_id,
+            initial_scene_id=generated_scenes,
+            output_path=file_path,
         )
         end_serialize_time = time.time()
         print("Serialize time:", end_serialize_time - end_dataset_time)
 
+        start_image_id += sum([len(x.view_results) for x in scene_results])
         generated_scenes += scenes_to_generate
 
 
