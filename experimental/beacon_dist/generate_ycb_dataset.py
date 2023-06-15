@@ -68,13 +68,13 @@ def serialize_result(
 
     image_info = []
     keypoint_data = []
-    for i, view_result in enumerate(scene_result.view_results):
+    for view_idx, view_result in enumerate(scene_result.view_results):
         class_labels = rys.convert_class_labels_to_matrix(view_result.labels, 4)
         image_info.append(
             np.array(
                 [
                     (
-                        image_id_start + i,
+                        image_id_start + view_idx,
                         scene_id,
                         view_result.world_from_camera,
                     )
@@ -86,13 +86,13 @@ def serialize_result(
                 ],
             )
         )
-        for i in range(len(view_result.keypoints)):
-            kp = view_result.keypoints[i]
+        for kp_idx in range(len(view_result.keypoints)):
+            kp = view_result.keypoints[kp_idx]
             keypoint_data.append(
                 np.array(
                     [
                         (
-                            image_id_start + i,
+                            image_id_start + view_idx,
                             kp.angle,
                             kp.class_id,
                             kp.octave,
@@ -100,8 +100,8 @@ def serialize_result(
                             kp.y,
                             kp.response,
                             kp.size,
-                            view_result.descriptors[i],
-                            class_labels[i],
+                            view_result.descriptors[kp_idx],
+                            class_labels[kp_idx],
                         )
                     ],
                     dtype=KeypointDescriptorDtype,
@@ -216,7 +216,7 @@ def main(
         if num_scenes > MAX_NUM_SCENES_PER_ROUND:
             file, ext = os.path.splitext(output_path)
             file_path = (
-                f"{file}.part_{generated_scenes // MAX_NUM_SCENES_PER_ROUND}{ext}"
+                    f"{file}.part_{generated_scenes // MAX_NUM_SCENES_PER_ROUND:05d}{ext}"
             )
         else:
             file_path = output_path
