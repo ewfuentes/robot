@@ -37,17 +37,6 @@ SAMPLING_STRATEGIES: dict[str, CameraSamplingStrategy] = {
 }
 
 
-def class_label_from_label_set(labels: set[int], ycb_objects: list[str]) -> np.ndarray:
-    out = np.zeros((CLASS_SIZE), dtype=np.uint64)
-    for object_idx in labels:
-        idx = object_idx // 64
-        bit_idx = object_idx % 64
-        flag = np.left_shift(np.uint64(1), np.uint64(bit_idx))
-        out[idx] = np.bitwise_or(out[idx], flag)
-
-    return out
-
-
 def serialize_result(
     scene_result: rys.SceneResult,
     image_id_start: int,
@@ -69,7 +58,7 @@ def serialize_result(
     image_info = []
     keypoint_data = []
     for view_idx, view_result in enumerate(scene_result.view_results):
-        class_labels = rys.convert_class_labels_to_matrix(view_result.labels, 4)
+        class_labels = rys.convert_class_labels_to_matrix(view_result.labels, CLASS_SIZE)
         image_info.append(
             np.array(
                 [
