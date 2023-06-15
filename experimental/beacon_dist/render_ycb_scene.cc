@@ -341,8 +341,7 @@ SceneResult compute_scene_result(const SceneData &scene_data, const CameraParams
 
 std::vector<SceneResult> build_dataset(const SceneData &scene_data,
                                        const CameraParams &camera_params, const int64_t num_scenes,
-                                       const int64_t start_scene_id,
-                                       const int num_workers,
+                                       const int64_t start_scene_id, const int num_workers,
                                        const std::function<bool(int)> &progress_callback) {
     std::vector<WorkerState> workers(num_workers);
 
