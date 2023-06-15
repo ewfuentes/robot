@@ -410,4 +410,22 @@ std::vector<SceneResult> build_dataset(const SceneData &scene_data,
 
     return out;
 }
+
+Eigen::MatrixX<uint64_t> convert_class_labels_to_matrix(
+    const std::vector<std::unordered_set<int>> &labels, const int num_longs) {
+    Eigen::MatrixX<uint64_t> out = Eigen::MatrixX<uint64_t>::Zero(labels.size(), num_longs);
+    auto rows = out.rowwise();
+    std::transform(labels.begin(), labels.end(), rows.begin(),
+                   [&num_longs](const std::unordered_set<int> &items) {
+                       Eigen::RowVectorX<uint64_t> row_out =
+                           Eigen::RowVectorX<uint64_t>::Zero(num_longs);
+                       for (const int obj_idx : items) {
+                           const int entry_idx = obj_idx / 64;
+                           const int bit_idx = obj_idx % 64;
+                           row_out(entry_idx) |= (1 << bit_idx);
+                       }
+                       return row_out;
+                   });
+    return out;
+}
 }  // namespace robot::experimental::beacon_dist
