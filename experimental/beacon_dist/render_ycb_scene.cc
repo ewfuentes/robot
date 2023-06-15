@@ -344,6 +344,7 @@ SceneResult compute_scene_result(const SceneData &scene_data, const CameraParams
 
 std::vector<SceneResult> build_dataset(const SceneData &scene_data,
                                        const CameraParams &camera_params, const int64_t num_scenes,
+                                       const int64_t start_scene_id,
                                        const int num_workers,
                                        const std::function<bool(int)> &progress_callback) {
     std::vector<WorkerState> workers(num_workers);
@@ -390,14 +391,14 @@ std::vector<SceneResult> build_dataset(const SceneData &scene_data,
             for (auto &worker_state : workers) {
                 std::lock_guard<std::mutex> guard(worker_state.mutex);
                 if (worker_state.is_result_ready) {
-                    out.at(worker_state.requested_scene_id) =
+                    out.at(worker_state.requested_scene_id - start_scene_id) =
                         worker_state.maybe_scene_result.value();
-                    run = progress_callback(worker_state.requested_scene_id);
+                    run = progress_callback(worker_state.requested_scene_id + start_scene_id);
                     worker_state.is_result_ready = false;
                 }
 
                 if (!worker_state.is_request_ready) {
-                    worker_state.requested_scene_id = current_scene_id;
+                    worker_state.requested_scene_id = current_scene_id + start_scene_id;
                     worker_state.is_request_ready = true;
                     run = false;
                     break;
@@ -413,8 +414,8 @@ std::vector<SceneResult> build_dataset(const SceneData &scene_data,
         }
         worker.thread.join();
         if (worker.is_result_ready) {
-            out.at(worker.requested_scene_id) = worker.maybe_scene_result.value();
-            progress_callback(worker.requested_scene_id);
+            out.at(worker.requested_scene_id - start_scene_id) = worker.maybe_scene_result.value();
+            progress_callback(worker.requested_scene_id + start_scene_id);
         }
     }
 

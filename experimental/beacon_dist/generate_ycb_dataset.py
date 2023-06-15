@@ -113,12 +113,15 @@ def serialize_result(
 def serialize_results(
     scene_results: list[rys.SceneResult],
     ycb_objects: list[str],
+    initial_image_id: int,
     output_path: str,
 ):
 
     max_name_size = max([len(x) for x in ycb_objects])
     num_images_for_scene = [len(x.view_results) for x in scene_results]
-    image_id_starts = [0] + list(np.cumsum(num_images_for_scene)[:-1])
+    image_id_starts = [initial_image_id] + list(
+        initial_image_id + np.cumsum(num_images_for_scene)[:-1]
+    )
     num_scenes = len(scene_results)
 
     with multiprocessing.Pool() as pool:
@@ -173,7 +176,7 @@ def main(
         "Num objects:",
         len(scene_data.object_list),
     )
-    print("Building dataset")
+
     progress_bar = tqdm.tqdm(total=num_scenes)
 
     def progress_update(scene_id):
@@ -181,22 +184,45 @@ def main(
         progress_bar.refresh()
         return True
 
-    scene_results = rys.build_dataset(
-        scene_data, camera_params, num_scenes, num_workers, progress_update
-    )
-    progress_bar.close()
-    end_dataset_time = time.time()
-    print("Dataset time:", end_dataset_time - end_load_time)
+    generated_scenes = 0
+    MAX_NUM_SCENES_PER_ROUND = 20000
+    while generated_scenes != num_scenes:
+        scenes_to_generate = min(
+            MAX_NUM_SCENES_PER_ROUND, num_scenes - generated_scenes
+        )
+        print("Building dataset")
 
-    # Write out generated data
-    print("Serializing Results")
-    serialize_results(
-        scene_results,
-        scene_data.object_list,
-        output_path,
-    )
-    end_serialize_time = time.time()
-    print("Serialize time:", end_serialize_time - end_dataset_time)
+        scene_results = rys.build_dataset(
+            scene_data,
+            camera_params,
+            scenes_to_generate,
+            generated_scenes,
+            num_workers,
+            progress_update,
+        )
+        progress_bar.close()
+        end_dataset_time = time.time()
+        print("Dataset time:", end_dataset_time - end_load_time)
+
+        # Write out generated data
+        print("Serializing Results")
+
+        if num_scenes > MAX_NUM_SCENES_PER_ROUND:
+            file, ext = os.path.splitext(output_path)
+            file_path = (
+                f"{file}.part_{generated_scenes // MAX_NUM_SCENES_PER_ROUND}{ext}"
+            )
+        else:
+            file_path = output_path
+        serialize_results(
+            scene_results,
+            scene_data.object_list,
+            file_path,
+        )
+        end_serialize_time = time.time()
+        print("Serialize time:", end_serialize_time - end_dataset_time)
+
+        generated_scenes += scenes_to_generate
 
 
 if __name__ == "__main__":
