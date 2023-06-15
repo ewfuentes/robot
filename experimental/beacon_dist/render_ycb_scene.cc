@@ -154,7 +154,7 @@ compute_keypoints_descriptors_labels(
     const drake::systems::sensors::ImageRgba8U &all_objects,
     const std::unordered_map<std::string, drake::systems::sensors::ImageRgba8U> &image_by_object) {
     const auto all_objects_image = opencv_image_from_drake_image(all_objects);
-    constexpr int NUM_FEATURES = 500;
+    constexpr int NUM_FEATURES = 300;
     const auto orb_features = cv::ORB::create(NUM_FEATURES);
     std::vector<cv::KeyPoint> keypoints;
     cv::Mat descriptors;
@@ -341,7 +341,8 @@ SceneResult compute_scene_result(const SceneData &scene_data, const CameraParams
 
 std::vector<SceneResult> build_dataset(const SceneData &scene_data,
                                        const CameraParams &camera_params, const int64_t num_scenes,
-                                       const int num_workers) {
+                                       const int64_t start_scene_id, const int num_workers,
+                                       const std::function<bool(int)> &progress_callback) {
     std::vector<WorkerState> workers(num_workers);
 
     for (int i = 0; i < num_workers; i++) {
@@ -371,7 +372,11 @@ std::vector<SceneResult> build_dataset(const SceneData &scene_data,
                 std::this_thread::sleep_for(std::chrono::milliseconds(25));
             }
         };
-        workers.at(i).thread = std::jthread(worker_func);
+        WorkerState &worker = workers.at(i);
+        worker.is_result_ready = false, worker.is_request_ready = false,
+        worker.shutdown_requested = false, worker.requested_scene_id = 0,
+        worker.maybe_scene_result = std::nullopt;
+        worker.thread = std::jthread(worker_func);
     }
 
     std::vector<SceneResult> out(num_scenes);
@@ -382,13 +387,14 @@ std::vector<SceneResult> build_dataset(const SceneData &scene_data,
             for (auto &worker_state : workers) {
                 std::lock_guard<std::mutex> guard(worker_state.mutex);
                 if (worker_state.is_result_ready) {
-                    out.at(worker_state.requested_scene_id) =
+                    out.at(worker_state.requested_scene_id - start_scene_id) =
                         worker_state.maybe_scene_result.value();
+                    run = progress_callback(worker_state.requested_scene_id + start_scene_id);
                     worker_state.is_result_ready = false;
                 }
 
                 if (!worker_state.is_request_ready) {
-                    worker_state.requested_scene_id = current_scene_id;
+                    worker_state.requested_scene_id = current_scene_id + start_scene_id;
                     worker_state.is_request_ready = true;
                     run = false;
                     break;
@@ -404,7 +410,8 @@ std::vector<SceneResult> build_dataset(const SceneData &scene_data,
         }
         worker.thread.join();
         if (worker.is_result_ready) {
-            out.at(worker.requested_scene_id) = worker.maybe_scene_result.value();
+            out.at(worker.requested_scene_id - start_scene_id) = worker.maybe_scene_result.value();
+            progress_callback(worker.requested_scene_id + start_scene_id);
         }
     }
 

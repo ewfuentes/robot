@@ -21,6 +21,7 @@ py_binary(
   data = [":render_ycb_scene_python.so"],
   deps = [
     requirement("numpy"),
+    requirement("tqdm"),
     ":utils",
   ]
 )
