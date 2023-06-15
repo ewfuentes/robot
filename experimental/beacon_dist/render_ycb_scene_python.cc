@@ -65,5 +65,7 @@ PYBIND11_MODULE(render_ycb_scene_python, m) {
     m.def("load_ycb_objects",
           py::overload_cast<const std::unordered_map<std::string, std::filesystem::path> &>(
               &load_ycb_objects));
+
+    m.def("convert_class_labels_to_matrix", &convert_class_labels_to_matrix);
 }
 }  // namespace robot::experimental::beacon_dist

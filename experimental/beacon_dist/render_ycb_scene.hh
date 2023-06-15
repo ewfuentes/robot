@@ -82,4 +82,6 @@ SceneResult compute_scene_result(const SceneData &scene_data, const CameraParams
 std::vector<SceneResult> build_dataset(const SceneData &scene_data, const CameraParams &params,
                                        const int64_t num_scenes, const int num_workers);
 
+Eigen::MatrixX<uint64_t> convert_class_labels_to_matrix(
+    const std::vector<std::unordered_set<int>> &labels, const int num_longs);
 }  // namespace robot::experimental::beacon_dist
