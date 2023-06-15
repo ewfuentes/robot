@@ -2,6 +2,8 @@ import argparse
 import numpy as np
 import os
 import time
+import tqdm
+import tqdm.contrib.concurrent
 from experimental.beacon_dist.utils import KeypointDescriptorDtype, CLASS_SIZE
 import experimental.beacon_dist.render_ycb_scene_python as rys
 
@@ -46,70 +48,93 @@ def class_label_from_label_set(labels: set[int], ycb_objects: list[str]) -> np.n
     return out
 
 
-def serialize_results(
-    scene_results: list[rys.SceneResult], ycb_objects: list[str], output_path: str
+def serialize_result(
+    scene_result: rys.SceneResult,
+    image_id_start: int,
+    scene_id: int,
+    max_name_size: int,
 ):
-    max_name_size = max([len(x) for x in ycb_objects])
-    image_id = 0
-    keypoint_data = []
-    scene_info = []
+    scene_info = np.array(
+        [
+            (scene_id, name, transform)
+            for name, transform in scene_result.world_from_objects.items()
+        ],
+        dtype=[
+            ("scene_id", np.uint64),
+            ("object_name", (np.unicode_, max_name_size)),
+            ("world_from_object", np.float64, (3, 4)),
+        ],
+    )
+
     image_info = []
-    for scene_id, scene_result in enumerate(scene_results):
-        scene_info.append(
+    keypoint_data = []
+    for view_idx, view_result in enumerate(scene_result.view_results):
+        class_labels = rys.convert_class_labels_to_matrix(view_result.labels, 4)
+        image_info.append(
             np.array(
                 [
-                    (scene_id, name, transform)
-                    for name, transform in scene_result.world_from_objects.items()
+                    (
+                        image_id_start + view_idx,
+                        scene_id,
+                        view_result.world_from_camera,
+                    )
                 ],
                 dtype=[
+                    ("image_id", np.uint64),
                     ("scene_id", np.uint64),
-                    ("object_name", (np.unicode_, max_name_size)),
-                    ("world_from_object", np.float64, (3, 4)),
+                    ("world_from_camera", np.float64, (3, 4)),
                 ],
             )
         )
-
-        for view_result in scene_result.view_results:
-            image_info.append(
+        for kp_idx in range(len(view_result.keypoints)):
+            kp = view_result.keypoints[kp_idx]
+            keypoint_data.append(
                 np.array(
                     [
                         (
-                            image_id,
-                            scene_id,
-                            view_result.world_from_camera,
+                            image_id_start + view_idx,
+                            kp.angle,
+                            kp.class_id,
+                            kp.octave,
+                            kp.x,
+                            kp.y,
+                            kp.response,
+                            kp.size,
+                            view_result.descriptors[kp_idx],
+                            class_labels[kp_idx],
                         )
                     ],
-                    dtype=[
-                        ("image_id", np.uint64),
-                        ("scene_id", np.uint64),
-                        ("world_from_camera", np.float64, (3, 4)),
-                    ],
+                    dtype=KeypointDescriptorDtype,
                 )
             )
-            for i in range(len(view_result.keypoints)):
-                kp = view_result.keypoints[i]
-                keypoint_data.append(
-                    np.array(
-                        [
-                            (
-                                image_id,
-                                kp.angle,
-                                kp.class_id,
-                                kp.octave,
-                                kp.x,
-                                kp.y,
-                                kp.response,
-                                kp.size,
-                                view_result.descriptors[i],
-                                class_label_from_label_set(
-                                    view_result.labels[i], ycb_objects
-                                ),
-                            )
-                        ],
-                        dtype=KeypointDescriptorDtype,
-                    )
-                )
-            image_id += 1
+    return scene_info, image_info, keypoint_data
+
+
+def serialize_results(
+    scene_results: list[rys.SceneResult],
+    ycb_objects: list[str],
+    initial_image_id: int,
+    initial_scene_id: int,
+    output_path: str,
+):
+
+    max_name_size = max([len(x) for x in ycb_objects])
+    num_images_for_scene = [len(x.view_results) for x in scene_results]
+    image_id_starts = [initial_image_id] + list(
+        initial_image_id + np.cumsum(num_images_for_scene)[:-1]
+    )
+    num_scenes = len(scene_results)
+
+    results = tqdm.contrib.concurrent.process_map(
+        serialize_result,
+        scene_results,
+        image_id_starts,
+        range(initial_scene_id, initial_scene_id + num_scenes),
+        [max_name_size] * num_scenes,
+    )
+    scene_info = [x[0] for x in results]
+    image_info = [x[1] for x in results]
+    keypoint_data = [x[2] for x in results]
 
     np.savez(
         output_path,
@@ -139,25 +164,75 @@ def main(
         fov_y_rad=np.pi / 4.0,
     )
 
-    print('Loading YCB Objects')
+    print("Loading YCB Objects")
     start_time = time.time()
     scene_data = rys.load_ycb_objects(ycb_path, None)
     end_load_time = time.time()
-    print('Load time:', end_load_time - start_time, 'Num objects:', len(scene_data.object_list))
-    print('Building dataset')
-    scene_results = rys.build_dataset(scene_data, camera_params, num_scenes, num_workers)
-    end_dataset_time = time.time()
-    print('Dataset time:', end_dataset_time - end_load_time)
-
-    # Write out generated data
-    print('Serializing Results')
-    serialize_results(
-        scene_results,
-        scene_data.object_list,
-        output_path,
+    print(
+        "Load time:",
+        end_load_time - start_time,
+        "Num objects:",
+        len(scene_data.object_list),
     )
-    end_serialize_time = time.time()
-    print('Serialize time:', end_serialize_time - end_dataset_time)
+
+    generated_scenes = 0
+    start_image_id = 0
+    MAX_NUM_SCENES_PER_ROUND = 5000
+    print(
+        "Splitting up into",
+        num_scenes // MAX_NUM_SCENES_PER_ROUND
+        + (1 if (num_scenes % MAX_NUM_SCENES_PER_ROUND) > 0 else 0),
+        "chunks.",
+    )
+    while generated_scenes != num_scenes:
+        scenes_to_generate = min(
+            MAX_NUM_SCENES_PER_ROUND, num_scenes - generated_scenes
+        )
+        print("Building dataset")
+
+        progress_bar = tqdm.tqdm(total=scenes_to_generate)
+
+        def progress_update(scene_id):
+            progress_bar.update()
+            progress_bar.refresh()
+            return True
+
+        start_dataset_time = time.time()
+        scene_results = rys.build_dataset(
+            scene_data,
+            camera_params,
+            scenes_to_generate,
+            generated_scenes,
+            num_workers,
+            progress_update,
+        )
+        progress_bar.close()
+        end_dataset_time = time.time()
+        print("Dataset time:", end_dataset_time - start_dataset_time)
+
+        # Write out generated data
+        print("Serializing Results")
+
+        if num_scenes > MAX_NUM_SCENES_PER_ROUND:
+            file, ext = os.path.splitext(output_path)
+            file_path = (
+                    f"{file}.part_{generated_scenes // MAX_NUM_SCENES_PER_ROUND:05d}{ext}"
+            )
+        else:
+            file_path = output_path
+
+        serialize_results(
+            scene_results=scene_results,
+            ycb_objects=scene_data.object_list,
+            initial_image_id=start_image_id,
+            initial_scene_id=generated_scenes,
+            output_path=file_path,
+        )
+        end_serialize_time = time.time()
+        print("Serialize time:", end_serialize_time - end_dataset_time)
+
+        start_image_id += sum([len(x.view_results) for x in scene_results])
+        generated_scenes += scenes_to_generate
 
 
 if __name__ == "__main__":
