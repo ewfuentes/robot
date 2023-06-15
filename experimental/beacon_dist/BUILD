@@ -1,6 +1,20 @@
 load("@pip//:requirements.bzl", "requirement")
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
 
+py_library(
+  name = "multiview_dataset",
+  srcs = ["multiview_dataset.py"],
+  deps = [
+    requirement("torch"),
+  ]
+)
+
+py_test(
+  name = "multiview_dataset_test",
+  srcs = ["multiview_dataset_test.py"],
+  deps = [":multiview_dataset"],
+)
+
 py_binary(
   name="generate_letter_dataset",
   srcs=["generate_letter_dataset.py"],
