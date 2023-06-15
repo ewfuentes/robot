@@ -5,6 +5,7 @@ import time
 import tqdm
 from experimental.beacon_dist.utils import KeypointDescriptorDtype, CLASS_SIZE
 import experimental.beacon_dist.render_ycb_scene_python as rys
+import multiprocessing
 
 RENDERER_NAME = "my_renderer"
 
@@ -47,68 +48,92 @@ def class_label_from_label_set(labels: set[int]) -> np.ndarray:
     return out
 
 
-def serialize_results(
-    scene_results: list[rys.SceneResult], ycb_objects: list[str], output_path: str
+def serialize_result(
+    scene_result: rys.SceneResult,
+    image_id_start: int,
+    scene_id: int,
+    max_name_size: int,
 ):
-    max_name_size = max([len(x) for x in ycb_objects])
-    image_id = 0
-    keypoint_data = []
-    scene_info = []
+    scene_info = np.array(
+        [
+            (scene_id, name, transform)
+            for name, transform in scene_result.world_from_objects.items()
+        ],
+        dtype=[
+            ("scene_id", np.uint64),
+            ("object_name", (np.unicode_, max_name_size)),
+            ("world_from_object", np.float64, (3, 4)),
+        ],
+    )
+
     image_info = []
-    for scene_id, scene_result in tqdm.tqdm(enumerate(scene_results)):
-        scene_info.append(
+    keypoint_data = []
+    for i, view_result in enumerate(scene_result.view_results):
+        class_labels = rys.convert_class_labels_to_matrix(view_result.labels, 4)
+        image_info.append(
             np.array(
                 [
-                    (scene_id, name, transform)
-                    for name, transform in scene_result.world_from_objects.items()
+                    (
+                        image_id_start + i,
+                        scene_id,
+                        view_result.world_from_camera,
+                    )
                 ],
                 dtype=[
+                    ("image_id", np.uint64),
                     ("scene_id", np.uint64),
-                    ("object_name", (np.unicode_, max_name_size)),
-                    ("world_from_object", np.float64, (3, 4)),
+                    ("world_from_camera", np.float64, (3, 4)),
                 ],
             )
         )
-
-        for view_result in scene_result.view_results:
-            image_info.append(
+        for i in range(len(view_result.keypoints)):
+            kp = view_result.keypoints[i]
+            keypoint_data.append(
                 np.array(
                     [
                         (
-                            image_id,
-                            scene_id,
-                            view_result.world_from_camera,
+                            image_id_start + i,
+                            kp.angle,
+                            kp.class_id,
+                            kp.octave,
+                            kp.x,
+                            kp.y,
+                            kp.response,
+                            kp.size,
+                            view_result.descriptors[i],
+                            class_labels[i],
                         )
                     ],
-                    dtype=[
-                        ("image_id", np.uint64),
-                        ("scene_id", np.uint64),
-                        ("world_from_camera", np.float64, (3, 4)),
-                    ],
+                    dtype=KeypointDescriptorDtype,
                 )
             )
-            for i in range(len(view_result.keypoints)):
-                kp = view_result.keypoints[i]
-                keypoint_data.append(
-                    np.array(
-                        [
-                            (
-                                image_id,
-                                kp.angle,
-                                kp.class_id,
-                                kp.octave,
-                                kp.x,
-                                kp.y,
-                                kp.response,
-                                kp.size,
-                                view_result.descriptors[i],
-                                class_label_from_label_set(view_result.labels[i]),
-                            )
-                        ],
-                        dtype=KeypointDescriptorDtype,
-                    )
-                )
-            image_id += 1
+    return scene_info, image_info, keypoint_data
+
+
+def serialize_results(
+    scene_results: list[rys.SceneResult],
+    ycb_objects: list[str],
+    output_path: str,
+):
+
+    max_name_size = max([len(x) for x in ycb_objects])
+    num_images_for_scene = [len(x.view_results) for x in scene_results]
+    image_id_starts = [0] + list(np.cumsum(num_images_for_scene)[:-1])
+    num_scenes = len(scene_results)
+
+    with multiprocessing.Pool() as pool:
+        results = pool.starmap(
+            serialize_result,
+            zip(
+                scene_results,
+                image_id_starts,
+                range(num_scenes),
+                [max_name_size] * num_scenes,
+            ),
+        )
+        scene_info = [x[0] for x in results]
+        image_info = [x[1] for x in results]
+        keypoint_data = [x[2] for x in results]
 
     np.savez(
         output_path,

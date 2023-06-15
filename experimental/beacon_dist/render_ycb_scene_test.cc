@@ -90,4 +90,24 @@ TEST(RenderYcbSceneTest, build_dataset) {
     // Verification
     EXPECT_EQ(dataset.size(), NUM_SCENES);
 }
+
+TEST(RenderYcbSceneTest, convert_class_labels) {
+    // Setup
+    constexpr int NUM_LONGS = 4;
+    const std::vector<std::unordered_set<int>> labels = {
+        {0, 64, 128, 192},
+        {1, 65, 129, 193},
+        {2, 66, 130, 194},
+    };
+
+    // Action
+    const Eigen::MatrixX<uint64_t> out = convert_class_labels_to_matrix(labels, NUM_LONGS);
+
+    // Verification
+    for (int i = 0; i < out.rows(); i++) {
+        for (int j = 0; j < out.cols(); j++) {
+            EXPECT_EQ(out(i, j), 1 << i);
+        }
+    }
+}
 }  // namespace robot::experimental::beacon_dist

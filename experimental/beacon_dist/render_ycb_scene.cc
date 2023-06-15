@@ -1,8 +1,11 @@
 
 #include "experimental/beacon_dist/render_ycb_scene.hh"
 
+#include <pstl/glue_execution_defs.h>
+
 #include <algorithm>
 #include <chrono>
+#include <execution>
 #include <filesystem>
 #include <iterator>
 #include <memory>
@@ -372,7 +375,11 @@ std::vector<SceneResult> build_dataset(const SceneData &scene_data,
                 std::this_thread::sleep_for(std::chrono::milliseconds(25));
             }
         };
-        workers.at(i).thread = std::jthread(worker_func);
+        WorkerState &worker = workers.at(i);
+        worker.is_result_ready = false, worker.is_request_ready = false,
+        worker.shutdown_requested = false, worker.requested_scene_id = 0,
+        worker.maybe_scene_result = std::nullopt;
+        worker.thread = std::jthread(worker_func);
     }
 
     std::vector<SceneResult> out(num_scenes);
@@ -411,6 +418,24 @@ std::vector<SceneResult> build_dataset(const SceneData &scene_data,
         }
     }
 
+    return out;
+}
+
+Eigen::MatrixX<uint64_t> convert_class_labels_to_matrix(
+    const std::vector<std::unordered_set<int>> &labels, const int num_longs) {
+    Eigen::MatrixX<uint64_t> out = Eigen::MatrixX<uint64_t>::Zero(labels.size(), num_longs);
+    auto rows = out.rowwise();
+    std::transform(labels.begin(), labels.end(), rows.begin(),
+                   [&num_longs](const std::unordered_set<int> &items) {
+                       Eigen::RowVectorX<uint64_t> row_out =
+                           Eigen::RowVectorX<uint64_t>::Zero(num_longs);
+                       for (const int obj_idx : items) {
+                           const int entry_idx = obj_idx / 64;
+                           const int bit_idx = obj_idx % 64;
+                           row_out(entry_idx) |= (1 << bit_idx);
+                       }
+                       return row_out;
+                   });
     return out;
 }
 }  // namespace robot::experimental::beacon_dist
