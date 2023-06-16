@@ -5,6 +5,8 @@ py_library(
   name = "multiview_dataset",
   srcs = ["multiview_dataset.py"],
   deps = [
+    ":utils",
+    requirement("numpy"),
     requirement("torch"),
   ]
 )
@@ -12,7 +14,11 @@ py_library(
 py_test(
   name = "multiview_dataset_test",
   srcs = ["multiview_dataset_test.py"],
-  deps = [":multiview_dataset"],
+  deps = [
+    ":multiview_dataset",
+    ":utils",
+    requirement("numpy"),
+  ],
 )
 
 py_binary(
