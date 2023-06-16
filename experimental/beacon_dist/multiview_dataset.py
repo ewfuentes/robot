@@ -7,7 +7,7 @@ import numpy as np
 import tqdm
 import itertools
 
-from experimental.beacon_dist.utils import KeypointBatch
+from experimental.beacon_dist import utils
 
 ImageInfoDtype = np.dtype(
     [
@@ -54,8 +54,8 @@ class DatasetInputs(NamedTuple):
 
 
 class KeypointPairs(NamedTuple):
-    context: KeypointBatch
-    query: KeypointBatch
+    context: utils.KeypointBatch
+    query: utils.KeypointBatch
 
     def to(self, *args, **kwargs):
         return KeypointPairs(
@@ -112,6 +112,19 @@ def build_pairs_from_index(scene_index: dict[int, SceneIndexEntry]):
     return out
 
 
+def keypoint_tensor_from_array(
+    arr_in: np.ndarray[utils.KeypointDescriptorDtype], num_classes: int
+) -> utils.KeypointBatch:
+    tensors = {}
+    for field in arr_in.dtype.names:
+        if field == "class_label":
+            tensors[field] = utils.int_array_to_binary_tensor(arr_in[field])[:, :num_classes]
+            continue
+        tensors[field] = torch.from_numpy(arr_in[field].copy())
+
+    return utils.KeypointBatch(**tensors)
+
+
 class MultiviewDataset(torch.utils.data.Dataset):
     def __init__(
         self,
@@ -133,7 +146,7 @@ class MultiviewDataset(torch.utils.data.Dataset):
             self._partitions = inputs.data_tables
 
         for i, p in enumerate(self._partitions):
-            for table in ["data", "image_info"]:
+            for table in ["data", "image_info", "object_list"]:
                 assert table in p, f"{table} not in partition {i}"
 
         if inputs.index_path:
@@ -146,18 +159,28 @@ class MultiviewDataset(torch.utils.data.Dataset):
             sample_transform_fn if sample_transform_fn is not None else lambda x: x
         )
 
+        self._num_classes = len(self._partitions[0]["object_list"])
+
     def get_keypoint_array(self, entry: ImageIndexEntry) -> torch.Tensor:
-        np_array = self._partitions[entry.partition_idx]["data"][entry.start_idx:entry.end_idx]
+        np_array = self._partitions[entry.partition_idx]["data"][
+            entry.start_idx : entry.end_idx
+        ]
         return np_array
 
     def __getitem__(self, idx: int):
         context_image_idx, query_image_idx = self._pairs_from_index[idx]
+
         context_entry = self._index.image_index[context_image_idx]
+        context_array = self.get_keypoint_array(context_entry)
+        context_tensor = keypoint_tensor_from_array(context_array, self._num_classes)
+
         query_entry = self._index.image_index[query_image_idx]
+        query_array = self.get_keypoint_array(query_entry)
+        query_tensor = keypoint_tensor_from_array(query_array, self._num_classes)
 
         return KeypointPairs(
-            context=self._sample_transform_fn(self.get_keypoint_array(context_entry)),
-            query=self._sample_transform_fn(self.get_keypoint_array(query_entry)),
+            context=self._sample_transform_fn(context_tensor),
+            query=self._sample_transform_fn(query_tensor),
         )
 
     def __len__(self) -> int:

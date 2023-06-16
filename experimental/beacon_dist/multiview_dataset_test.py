@@ -55,14 +55,18 @@ def get_test_dataset() -> list[dict[str, np.ndarray]]:
         dtype=mvd.ImageInfoDtype,
     )
 
+    object_list = ['obj_1', 'obj_2', 'obj_3']
+
     return [
         {
             "data": keypoint_data_1,
             "image_info": image_info_1,
+            "object_list": object_list,
         },
         {
             "data": keypoint_data_2,
             "image_info": image_info_2,
+            "object_list": object_list,
         },
     ]
 
@@ -120,9 +124,11 @@ class MultiviewDatasetTest(unittest.TestCase):
 
         # Action
         dataset = mvd.MultiviewDataset(dataset_inputs)
+        sample = dataset[10]
 
         # Verification
-        print(dataset[1])
+        # Fix me
+        self.assertEqual(sample.query.image_id, 0.0)
 
 
 if __name__ == "__main__":
