@@ -69,15 +69,13 @@ def int_array_to_binary_tensor(arr: np.ndarray):
     return torch.from_numpy(np.concatenate(arrs_to_concat, axis=1))
 
 
-def trim_class_label(class_labels: list[torch.Tensor], num_classes: int | None):
-    if num_classes is None:
-        max_class_idx = 0
-        for label in class_labels:
-            _, col = torch.nonzero(label, as_tuple=True)
-            max_class_idx = max(max_class_idx, torch.max(col).item())
-        num_classes = max_class_idx + 1
+def trim_class_label(class_labels: list[torch.Tensor]):
+    max_class_idx = 0
+    for label in class_labels:
+        _, col = torch.nonzero(label, as_tuple=True)
+        max_class_idx = max(max_class_idx, torch.max(col).item())
 
-    return [label[:, :num_classes] for label in class_labels]
+    return [label[:, : max_class_idx + 1] for label in class_labels]
 
 
 class Dataset(torch.utils.data.Dataset):
