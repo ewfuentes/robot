@@ -110,7 +110,6 @@ class Dataset(torch.utils.data.Dataset):
 
         # The class label tensor is a num_examples x (CLASS_SIZE * 64) binary tensor.
         # Save some GPU RAM by making it smaller
-
         tensors["class_label"] = trim_class_label(tensors["class_label"])
 
         self._data = KeypointBatch(
