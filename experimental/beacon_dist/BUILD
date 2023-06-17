@@ -8,6 +8,7 @@ py_library(
     ":utils",
     requirement("numpy"),
     requirement("torch"),
+    requirement("tqdm"),
   ]
 )
 
