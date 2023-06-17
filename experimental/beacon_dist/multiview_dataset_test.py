@@ -122,13 +122,14 @@ class MultiviewDatasetTest(unittest.TestCase):
             file_paths=None, index_path=None, data_tables=get_test_dataset()
         )
 
-        # Action
+        # Action + Verification
         dataset = mvd.MultiviewDataset(dataset_inputs)
-        sample = dataset[10]
 
-        # Verification
-        # Fix me
-        self.assertEqual(sample.query.image_id, 0.0)
+        for i in range(len(dataset)):
+            sample = dataset[i]
+            for arr in [sample.context, sample.query]:
+                for i in range(len(arr.image_id)):
+                    self.assertEqual(arr.image_id[i], arr.image_id[0])
 
 
 if __name__ == "__main__":
