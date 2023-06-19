@@ -91,17 +91,20 @@ class ConfigurationModel(torch.nn.Module):
             self._params.position_encoding_factor,
         )
 
-    def forward(self, context: utils.KeypointBatch, query: torch.Tensor):
-        # Query is a [batch, keypoint] binary tensor where we want the model to
-        # compute the probability that the query is a valid configuration
-        assert query.ndim == 2
-        assert query.shape[0] == context.x.shape[0]
-        batch_size = query.shape[0]
+    def forward(
+        self, context_and_query: utils.KeypointPairs, configuration: torch.Tensor
+    ):
+        context_data, query_data = context_and_query
+        # Configuration is a [batch, keypoint] binary tensor where we want the model to
+        # compute the probability that the configuration is valid
+        assert configuration.ndim == 2
+        assert configuration.shape[0] == query_data.x.shape[0]
+        batch_size = configuration.shape[0]
 
         # Encode the descriptors
         context_descriptors = self.encode_descriptors(
-            context.descriptor
-        ) + self.position_encoding(context.x, context.y)
+            context_and_query.context.descriptor
+        ) + self.position_encoding(context_data.x, context_data.y)
 
         # Pass through transformer encoder layers
         # TODO mask out padding entries
@@ -109,8 +112,8 @@ class ConfigurationModel(torch.nn.Module):
 
         # Encode the query
         query_descriptors = self.encode_descriptors(
-            context.descriptor
-        ) + self.position_encoding(context.x, context.y)
+            query_data.descriptor
+        ) + self.position_encoding(query_data.x, query_data.y)
 
         classification_token = self._valid_classification_token.repeat(batch_size, 1, 1)
 
@@ -119,7 +122,13 @@ class ConfigurationModel(torch.nn.Module):
         )
 
         expanded_query = torch.cat(
-            [torch.ones(batch_size, 1, dtype=torch.bool, device=query.device), query], dim=1
+            [
+                torch.ones(
+                    batch_size, 1, dtype=torch.bool, device=configuration.device
+                ),
+                configuration,
+            ],
+            dim=1,
         )
 
         # add padding masks for the target and memory

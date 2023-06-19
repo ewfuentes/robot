@@ -57,6 +57,17 @@ class KeypointBatch(NamedTuple):
         )
 
 
+class KeypointPairs(NamedTuple):
+    context: KeypointBatch
+    query: KeypointBatch
+
+    def to(self, *args, **kwargs):
+        return KeypointPairs(
+            context=self.context.to(*args, **kwargs),
+            query=self.query.to(*args, **kwargs),
+        )
+
+
 def int_array_to_binary_tensor(arr: np.ndarray):
     num_bits_per_entry = arr.dtype.itemsize * 8
     mask_arr = (1 << np.arange(num_bits_per_entry)).astype(np.uint64)
@@ -536,15 +547,20 @@ def get_test_all_queries():
 
 
 def test_dataset_collator(
-    samples: list[KeypointBatch],
-) -> tuple[KeypointBatch, torch.Tensor]:
+    samples: list[KeypointPairs],
+) -> tuple[KeypointPairs, torch.Tensor]:
     assert len(samples) == 1
     queries = get_test_all_queries()
     num_queries = queries.shape[0]
-    out_batch = KeypointBatch(
+    replicated = KeypointBatch(
         **{
             k: torch.nested.nested_tensor([v] * num_queries)
-            for k, v in samples[0]._asdict().items()
+            for k, v in samples[0].context._asdict().items()
         }
     )
-    return batchify(out_batch), queries
+    batched = batchify(replicated)
+    out = KeypointPairs(
+        context=batched,
+        query=batched,
+    )
+    return out, queries

@@ -143,7 +143,6 @@ class MultiviewDatasetTest(unittest.TestCase):
 
         # Verification
         self.assertEqual(len(dataset), 1)
-        print(dataset[0])
 
 
 if __name__ == "__main__":

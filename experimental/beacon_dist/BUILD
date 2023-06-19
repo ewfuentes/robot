@@ -101,8 +101,9 @@ py_binary(
   deps = [
     requirement("torch"),
     requirement("IPython"),
-    ":utils",
     ":model",
+    ":multiview_dataset",
+    ":utils",
   ]
 )
 

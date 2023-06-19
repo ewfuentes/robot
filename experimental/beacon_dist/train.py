@@ -18,12 +18,13 @@ from experimental.beacon_dist.utils import (
     get_y_position_test_dataset,
     test_dataset_collator,
 )
+import experimental.beacon_dist.multiview_dataset as mvd
 from experimental.beacon_dist.model import ConfigurationModel, ConfigurationModelParams
 
 
 class TrainConfig(NamedTuple):
     num_epochs: int
-    dataset_path: str
+    dataset_path: list[str]
     test_dataset: str
     output_dir: str
     random_seed: int
@@ -118,18 +119,18 @@ def train(dataset: Dataset, train_config: TrainConfig, collator_fn: Callable):
         epoch_loss = 0.0
         epoch_start_time = time.time()
         # Train
-        for batch_idx, (batch, queries) in enumerate(train_data_loader):
+        for batch_idx, (batch, configs) in enumerate(train_data_loader):
             batch_start_time = time.time()
             # Zero gradients
             batch = batch.to("cuda")
-            queries = queries.to("cuda")
+            configs = configs.to("cuda")
             optim.zero_grad()
 
             # compute model outputs
-            model_out = model(batch, queries)
+            model_out = model(batch, configs)
 
             # compute loss
-            loss = valid_configuration_loss(batch.class_label, queries, model_out)
+            loss = valid_configuration_loss(batch.query.class_label, configs, model_out)
             loss.backward()
 
             # take step
@@ -138,19 +139,19 @@ def train(dataset: Dataset, train_config: TrainConfig, collator_fn: Callable):
             if batch_idx % 10 == 0:
                 # print(f"Batch: {batch_idx} dt: {batch_dt: 0.6f} s Loss: {loss: 0.6f}")
                 ...
-            epoch_loss += loss.detach().item() * queries.shape[0]
+            epoch_loss += loss.detach().item() * configs.shape[0]
 
         model.train(False)
         # Evaluation
         validation_loss = 0.0
         with torch.no_grad():
-            for batch_idx, (batch, queries) in enumerate(test_data_loader):
+            for batch_idx, (batch, configs) in enumerate(test_data_loader):
                 batch = batch.to("cuda")
-                queries = queries.to("cuda")
+                configs = configs .to("cuda")
 
-                model_out = model(batch, queries)
+                model_out = model(batch, configs)
                 validation_loss += valid_configuration_loss(
-                    batch.class_label, queries, model_out, reduction="sum"
+                    batch.class_label, configs, model_out, reduction="sum"
                 )
         model.train(True)
 
@@ -180,7 +181,18 @@ def main(train_config: TrainConfig):
         os.makedirs(train_config.output_dir)
 
     if train_config.dataset_path:
-        dataset = Dataset(filename=train_config.dataset_path)
+        try:
+            dataset = mvd.MultiviewDataset(
+                mvd.DatasetInputs(
+                    filename=train_config.dataset_path,
+                    index_path=None,
+                    data_tables=None,
+                )
+            )
+        except AssertionError:
+            dataset = mvd.MultiviewDataset.from_single_view(
+                filename=train_config.dataset_path[0]
+            )
         collator_fn = make_collator_fn(train_config.num_queries_per_environment)
     elif train_config.test_dataset:
         dataset_generator = {
@@ -188,7 +200,9 @@ def main(train_config: TrainConfig):
             "y": get_y_position_test_dataset,
             "descriptor": get_descriptor_test_dataset,
         }
-        dataset = Dataset(data=dataset_generator[train_config.test_dataset]())
+        dataset = mvd.MultiviewDataset.from_single_view(
+            data=dataset_generator[train_config.test_dataset]()
+        )
         train_config = train_config._replace(num_environments_per_batch=1)
         collator_fn = test_dataset_collator
 
@@ -200,6 +214,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dataset_path",
         help="path to dataset",
+        nargs='+',
         type=str,
     )
     parser.add_argument(

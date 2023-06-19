@@ -55,16 +55,6 @@ class DatasetInputs(NamedTuple):
     data_tables: list[dict[str, np.ndarray]] | None
 
 
-class KeypointPairs(NamedTuple):
-    context: utils.KeypointBatch
-    query: utils.KeypointBatch
-
-    def to(self, *args, **kwargs):
-        return KeypointPairs(
-            context=self.context.to(*args, **kwargs),
-            query=self.query.to(*args, **kwargs),
-        )
-
 
 def build_partition_index(partition_idx: int, f: np.lib.npyio.NpzFile) -> DatasetIndex:
     image_ids = f["data"]["image_id"]
@@ -182,7 +172,7 @@ class MultiviewDataset(torch.utils.data.Dataset):
         query_array = self.get_keypoint_array(query_entry)
         query_tensor = keypoint_tensor_from_array(query_array, self._num_classes)
 
-        return KeypointPairs(
+        return utils.KeypointPairs(
             context=self._sample_transform_fn(context_tensor),
             query=self._sample_transform_fn(query_tensor),
         )
@@ -192,10 +182,9 @@ class MultiviewDataset(torch.utils.data.Dataset):
 
     @staticmethod
     def from_single_view(
-        *,
         data: np.ndarray | None = None,
         filename: str | None = None,
-        sample_transform_fn: Callable[[utils.KeypointBatch], utils.KeypointBatch],
+        sample_transform_fn: Callable[[utils.KeypointBatch], utils.KeypointBatch] = None,
     ):
         assert (data is None) != (filename is None)
         if filename:
@@ -216,7 +205,6 @@ class MultiviewDataset(torch.utils.data.Dataset):
         )
 
         # Create a dummy object list
-        print(data["class_label"])
         class_labels = data["class_label"]
         all_class_bits = np.bitwise_or.reduce(data["class_label"], axis=0)
         classes_per_entry = class_labels.dtype.itemsize * 8
