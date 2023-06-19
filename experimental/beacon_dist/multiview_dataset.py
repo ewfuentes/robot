@@ -6,8 +6,10 @@ import torch
 import numpy as np
 import tqdm
 import itertools
+from collections import defaultdict
 
 from experimental.beacon_dist import utils
+
 
 ImageInfoDtype = np.dtype(
     [
@@ -118,7 +120,9 @@ def keypoint_tensor_from_array(
     tensors = {}
     for field in arr_in.dtype.names:
         if field == "class_label":
-            tensors[field] = utils.int_array_to_binary_tensor(arr_in[field])[:, :num_classes]
+            tensors[field] = utils.int_array_to_binary_tensor(arr_in[field])[
+                :, :num_classes
+            ]
             continue
         tensors[field] = torch.from_numpy(arr_in[field].copy())
 
@@ -129,7 +133,7 @@ class MultiviewDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         inputs: DatasetInputs,
-        sample_transform_fn: Callable[[KeypointPairs], KeypointPairs] | None = None,
+        sample_transform_fn: Callable[[utils.KeypointBatch], utils.KeypointBatch] | None = None,
     ):
         assert (inputs.file_paths is None) != (inputs.data_tables is None)
         if inputs.file_paths:
@@ -185,3 +189,63 @@ class MultiviewDataset(torch.utils.data.Dataset):
 
     def __len__(self) -> int:
         return len(self._pairs_from_index)
+
+    @staticmethod
+    def from_single_view(
+        *,
+        data: np.ndarray | None = None,
+        filename: str | None = None,
+        sample_transform_fn: Callable[[utils.KeypointBatch], utils.KeypointBatch],
+    ):
+        assert (data is None) != (filename is None)
+        if filename:
+            data = np.load(filename)
+            if isinstance(data, np.lib.npyio.NpzFile):
+                data = data["data"]
+        assert data is not None
+
+        # Create a dummy image info table
+        image_ids = np.unique(data['image_id'])
+        image_info = np.array(
+            [(i, i, np.eye(3, 4)) for i in image_ids],
+            dtype=[
+                ("image_id", np.uint64),
+                ("scene_id", np.uint64),
+                ("world_from_camera", np.float64, (3, 4)),
+            ],
+        )
+
+        # Create a dummy object list
+        print(data["class_label"])
+        class_labels = data["class_label"]
+        all_class_bits = np.bitwise_or.reduce(data["class_label"], axis=0)
+        classes_per_entry = class_labels.dtype.itemsize * 8
+        max_possible_classes = class_labels.shape[1] * classes_per_entry
+
+        for class_idx in range(max_possible_classes-1, 0, -1):
+            arr_idx = class_idx // classes_per_entry
+            bit_idx = class_idx % classes_per_entry
+            mask = np.uint64(1 << bit_idx)
+
+            is_class_present = np.bitwise_and(all_class_bits[arr_idx], mask)
+
+            if is_class_present > 0:
+                break
+
+        object_list = [f"obj_{i}" for i in range(class_idx + 1)]
+
+        data_tables = {
+            "data": data,
+            "image_info": image_info,
+            "object_list": object_list,
+        }
+
+        # Apply sample_transform_fn to both the context and the query
+        sample_transform_fn = (
+            sample_transform_fn if sample_transform_fn is not None else lambda x: x
+        )
+
+        return MultiviewDataset(
+            DatasetInputs(file_paths=None, index_path=None, data_tables=[data_tables]),
+            sample_transform_fn,
+        )

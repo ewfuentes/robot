@@ -3,7 +3,11 @@ import unittest
 import numpy as np
 
 import experimental.beacon_dist.multiview_dataset as mvd
-from experimental.beacon_dist.utils import KeypointDescriptorDtype, DESCRIPTOR_SIZE
+from experimental.beacon_dist.utils import (
+    KeypointDescriptorDtype,
+    DESCRIPTOR_SIZE,
+    get_x_position_test_dataset,
+)
 
 
 def descriptor(i: int):
@@ -55,7 +59,7 @@ def get_test_dataset() -> list[dict[str, np.ndarray]]:
         dtype=mvd.ImageInfoDtype,
     )
 
-    object_list = ['obj_1', 'obj_2', 'obj_3']
+    object_list = ["obj_1", "obj_2", "obj_3"]
 
     return [
         {
@@ -130,6 +134,16 @@ class MultiviewDatasetTest(unittest.TestCase):
             for arr in [sample.context, sample.query]:
                 for i in range(len(arr.image_id)):
                     self.assertEqual(arr.image_id[i], arr.image_id[0])
+
+    def test_from_single_view_dataset(self):
+        # Setup + Action
+        dataset = mvd.MultiviewDataset.from_single_view(
+            data=get_x_position_test_dataset(), filename=None, sample_transform_fn=None
+        )
+
+        # Verification
+        self.assertEqual(len(dataset), 1)
+        print(dataset[0])
 
 
 if __name__ == "__main__":
