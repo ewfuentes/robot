@@ -55,7 +55,6 @@ class DatasetInputs(NamedTuple):
     data_tables: list[dict[str, np.ndarray]] | None
 
 
-
 def build_partition_index(partition_idx: int, f: np.lib.npyio.NpzFile) -> DatasetIndex:
     image_ids = f["data"]["image_id"]
 
@@ -110,7 +109,7 @@ def keypoint_tensor_from_array(
     tensors = {}
     for field in arr_in.dtype.names:
         if field == "class_label":
-            tensors[field] = utils.int_array_to_binary_tensor(arr_in[field])[
+            tensors[field] = utils.int_array_to_binary_tensor(arr_in[field].astype(np.uint64))[
                 :, :num_classes
             ]
             continue
@@ -123,18 +122,13 @@ class MultiviewDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         inputs: DatasetInputs,
-        sample_transform_fn: Callable[[utils.KeypointBatch], utils.KeypointBatch] | None = None,
+        sample_transform_fn: Callable[[utils.KeypointBatch], utils.KeypointBatch]
+        | None = None,
     ):
         assert (inputs.file_paths is None) != (inputs.data_tables is None)
         if inputs.file_paths:
             # Load from files
             self._partitions = [np.load(f, "r") for f in inputs.file_paths]
-            print(
-                "num_scenes:",
-                len(self._index.scene_index),
-                "num images:",
-                len(self._index.image_index),
-            )
         else:
             # Load from the existing data tables
             self._partitions = inputs.data_tables
@@ -184,7 +178,9 @@ class MultiviewDataset(torch.utils.data.Dataset):
     def from_single_view(
         data: np.ndarray | None = None,
         filename: str | None = None,
-        sample_transform_fn: Callable[[utils.KeypointBatch], utils.KeypointBatch] = None,
+        sample_transform_fn: Callable[
+            [utils.KeypointBatch], utils.KeypointBatch
+        ] = None,
     ):
         assert (data is None) != (filename is None)
         if filename:
@@ -194,7 +190,7 @@ class MultiviewDataset(torch.utils.data.Dataset):
         assert data is not None
 
         # Create a dummy image info table
-        image_ids = np.unique(data['image_id'])
+        image_ids = np.unique(data["image_id"])
         image_info = np.array(
             [(i, i, np.eye(3, 4)) for i in image_ids],
             dtype=[
@@ -208,14 +204,18 @@ class MultiviewDataset(torch.utils.data.Dataset):
         class_labels = data["class_label"]
         all_class_bits = np.bitwise_or.reduce(data["class_label"], axis=0)
         classes_per_entry = class_labels.dtype.itemsize * 8
-        max_possible_classes = class_labels.shape[1] * classes_per_entry
+        num_entries = 1 if class_labels.ndim == 1 else class_labels.shape[1]
+        max_possible_classes = num_entries * classes_per_entry
 
-        for class_idx in range(max_possible_classes-1, 0, -1):
+        for class_idx in range(max_possible_classes - 1, 0, -1):
             arr_idx = class_idx // classes_per_entry
             bit_idx = class_idx % classes_per_entry
             mask = np.uint64(1 << bit_idx)
 
-            is_class_present = np.bitwise_and(all_class_bits[arr_idx], mask)
+            entry_under_test = np.uint64(
+                all_class_bits[arr_idx] if num_entries > 1 else all_class_bits
+            )
+            is_class_present = np.bitwise_and(entry_under_test, mask)
 
             if is_class_present > 0:
                 break

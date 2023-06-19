@@ -9,6 +9,7 @@ import IPython
 from experimental.beacon_dist.utils import (
     Dataset,
     KeypointBatch,
+    KeypointPairs,
     batchify,
     generate_valid_queries,
     generate_invalid_queries,
@@ -33,43 +34,49 @@ class TrainConfig(NamedTuple):
 
 
 def make_collator_fn(num_queries_per_environment: int):
-    def __inner__(samples: list[KeypointBatch]) -> KeypointBatch:
-        """Join multiple samples into a single batch"""
+    def __collate_keypoint_batch__(samples: list[KeypointBatch]) -> KeypointBatch:
         fields = {}
         for f in KeypointBatch._fields:
             fields[f] = torch.nested.nested_tensor(
                 [getattr(sample, f) for sample in samples]
             )
         batch = batchify(KeypointBatch(**fields))
-        batch = KeypointBatch(
+        return KeypointBatch(
             **{
                 k: v.repeat_interleave(num_queries_per_environment, dim=0)
                 for k, v in batch._asdict().items()
             }
         )
 
+    def __inner__(samples: list[KeypointPairs]) -> KeypointPairs:
+        # Work with KeypointPairs
+        batch = KeypointPairs(
+            context=__collate_keypoint_batch__([x.context for x in samples]),
+            query=__collate_keypoint_batch__([x.query for x in samples])
+        )
+
         # This will get called from a dataloader which may spawn multiple processes
         # we have different environments, so we should generate different queries
         rng = torch.Generator(device="cpu")
         rng.manual_seed(0)
-        valid_queries = generate_valid_queries(batch.class_label, rng)
-        invalid_queries = generate_invalid_queries(
-            batch.class_label, valid_queries, rng
+        valid_configs = generate_valid_queries(batch.query.class_label, rng)
+        invalid_configs = generate_invalid_queries(
+            batch.query.class_label, valid_configs, rng
         )
 
-        valid_query_selector = torch.randint(
+        valid_config_selector = torch.randint(
             low=0,
             high=2,
-            size=(batch.x.shape[0], 1),
+            size=(batch.query.x.shape[0], 1),
             dtype=torch.bool,
             generator=rng,
         )
-        invalid_query_selector = torch.logical_not(valid_query_selector)
-        queries = (
-            valid_queries * valid_query_selector
-            + invalid_queries * invalid_query_selector
+        invalid_config_selector = torch.logical_not(valid_config_selector)
+        configs = (
+            valid_configs * valid_config_selector
+            + invalid_configs * invalid_config_selector
         )
-        return batch, queries
+        return batch, configs
 
     return __inner__
 
@@ -151,7 +158,7 @@ def train(dataset: Dataset, train_config: TrainConfig, collator_fn: Callable):
 
                 model_out = model(batch, configs)
                 validation_loss += valid_configuration_loss(
-                    batch.class_label, configs, model_out, reduction="sum"
+                    batch.query.class_label, configs, model_out, reduction="sum"
                 )
         model.train(True)
 
@@ -184,7 +191,7 @@ def main(train_config: TrainConfig):
         try:
             dataset = mvd.MultiviewDataset(
                 mvd.DatasetInputs(
-                    filename=train_config.dataset_path,
+                    file_paths=train_config.dataset_path,
                     index_path=None,
                     data_tables=None,
                 )

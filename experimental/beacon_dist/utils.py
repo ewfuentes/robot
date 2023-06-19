@@ -73,9 +73,14 @@ def int_array_to_binary_tensor(arr: np.ndarray):
     mask_arr = (1 << np.arange(num_bits_per_entry)).astype(np.uint64)
     mask_arr = np.expand_dims(mask_arr, 0)
     arrs_to_concat = []
-    for col in range(arr.shape[1]):
+    if arr.ndim > 1:
+        for col in range(arr.shape[1]):
+            arrs_to_concat.append(
+                np.bitwise_and(np.expand_dims(arr[:, col], 1), mask_arr) > 0
+            )
+    else:
         arrs_to_concat.append(
-            np.bitwise_and(np.expand_dims(arr[:, col], 1), mask_arr) > 0
+            np.bitwise_and(np.expand_dims(arr, 1), mask_arr) > 0
         )
     return torch.from_numpy(np.concatenate(arrs_to_concat, axis=1))
 
