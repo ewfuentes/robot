@@ -126,14 +126,19 @@ class MultiviewDatasetTest(unittest.TestCase):
             file_paths=None, index_path=None, data_tables=get_test_dataset()
         )
 
-        # Action + Verification
+        # Action 
         dataset = mvd.MultiviewDataset(dataset_inputs)
+
+        # Verification
+        expected_pairs = set([(0, 0), (0, 1), (0, 2),
+                             (1, 0), (1, 1), (1, 2),
+                             (2, 0), (2, 1), (2, 2),
+                             (3, 3), (3, 4), (4, 3), (4, 4)])
 
         for i in range(len(dataset)):
             sample = dataset[i]
-            for arr in [sample.context, sample.query]:
-                for i in range(len(arr.image_id)):
-                    self.assertEqual(arr.image_id[i], arr.image_id[0])
+            expected_pairs.remove((sample.context.image_id.item(), sample.query.image_id.item()))
+        self.assertEqual(len(expected_pairs), 0)
 
     def test_from_single_view_dataset(self):
         # Setup + Action

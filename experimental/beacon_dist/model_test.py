@@ -3,7 +3,17 @@ import unittest
 
 from experimental.beacon_dist import model
 from experimental.beacon_dist.test_helpers import get_test_data
-from experimental.beacon_dist.utils import Dataset, batchify, KeypointPairs
+from experimental.beacon_dist.utils import batchify_pair, KeypointBatch, KeypointPairs
+from experimental.beacon_dist.multiview_dataset import MultiviewDataset
+
+
+def create_batch_from_dataset(dataset: MultiviewDataset) -> KeypointPairs:
+    samples = list(dataset)
+    fields = {}
+    for field in KeypointBatch._fields:
+        fields[field] = torch.nested.nested_tensor([getattr(x.context, field) for x in samples])
+    single = KeypointBatch(**fields)
+    return KeypointPairs(single, single)
 
 
 class ModelTest(unittest.TestCase):
@@ -46,8 +56,8 @@ class ModelTest(unittest.TestCase):
 
     def test_run_model(self):
         # Setup
-        sample = batchify(Dataset(data=get_test_data()).data())
-        batch = KeypointPairs(context=sample, query=sample)
+        dataset = MultiviewDataset.from_single_view(data=get_test_data())
+        batch = batchify_pair(create_batch_from_dataset(dataset))
         config = torch.Tensor(
             [[True, True, True], [True, True, False], [True, False, False]]
         ).to(torch.bool)

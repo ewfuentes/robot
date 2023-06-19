@@ -7,7 +7,6 @@ import time
 import IPython
 
 from experimental.beacon_dist.utils import (
-    Dataset,
     KeypointBatch,
     KeypointPairs,
     batchify,
@@ -81,7 +80,7 @@ def make_collator_fn(num_queries_per_environment: int):
     return __inner__
 
 
-def train(dataset: Dataset, train_config: TrainConfig, collator_fn: Callable):
+def train(dataset: mvd.MultiviewDataset, train_config: TrainConfig, collator_fn: Callable):
     # create model
     model = ConfigurationModel(
         ConfigurationModelParams(
@@ -99,22 +98,31 @@ def train(dataset: Dataset, train_config: TrainConfig, collator_fn: Callable):
     torch.manual_seed(train_config.random_seed + 1)
     rng = torch.Generator()
     rng.manual_seed(train_config.random_seed)
-    train_dataset, test_dataset = torch.utils.data.random_split(
-        dataset, [0.90, 0.10], generator=rng
-    )
+    train_frac = 0.9
+    num_samples = len(dataset)
+    num_train_samples = int(num_samples * train_frac)
+
+    train_dataset = torch.utils.data.Subset(dataset, list(range(num_train_samples)))
+    test_dataset = torch.utils.data.Subset(dataset, list(range(num_train_samples, num_samples)))
+
     train_data_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=train_config.num_environments_per_batch,
-        shuffle=True,
+        shuffle=False,
         collate_fn=collator_fn,
-        num_workers=4,
+        num_workers=1,
+        prefetch_factor=10,
         persistent_workers=True,
     )
 
     test_data_loader = torch.utils.data.DataLoader(
         test_dataset,
         batch_size=train_config.num_environments_per_batch,
+        shuffle=False,
         collate_fn=collator_fn,
+        num_workers=1,
+        prefetch_factor=10,
+        persistent_workers=True,
     )
 
     print(model)
@@ -127,6 +135,7 @@ def train(dataset: Dataset, train_config: TrainConfig, collator_fn: Callable):
         epoch_start_time = time.time()
         # Train
         for batch_idx, (batch, configs) in enumerate(train_data_loader):
+            print('Running!')
             batch_start_time = time.time()
             # Zero gradients
             batch = batch.to("cuda")
@@ -147,6 +156,7 @@ def train(dataset: Dataset, train_config: TrainConfig, collator_fn: Callable):
                 # print(f"Batch: {batch_idx} dt: {batch_dt: 0.6f} s Loss: {loss: 0.6f}")
                 ...
             epoch_loss += loss.detach().item() * configs.shape[0]
+            print('End!')
 
         model.train(False)
         # Evaluation

@@ -103,7 +103,7 @@ class ConfigurationModel(torch.nn.Module):
 
         # Encode the descriptors
         context_descriptors = self.encode_descriptors(
-            context_and_query.context.descriptor
+            context_data.descriptor
         ) + self.position_encoding(context_data.x, context_data.y)
 
         # Pass through transformer encoder layers

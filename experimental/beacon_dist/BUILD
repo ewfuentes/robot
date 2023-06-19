@@ -61,7 +61,8 @@ py_test(
   srcs = ["model_test.py"],
   deps = [
     ":test_helpers",
-    ":model"
+    ":model",
+    ":multiview_dataset",
   ]
 )
 
