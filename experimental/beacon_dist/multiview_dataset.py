@@ -109,13 +109,12 @@ def keypoint_tensor_from_array(
     for field in arr_in.dtype.names:
         if field == "class_label":
             tensors[field] = utils.int_array_to_binary_tensor(
-                arr_in[field].astype(np.uint64).squeeze()
-            )[:, :num_classes]
+                arr_in[field])[:, :num_classes]
             continue
         elif field == "image_id":
             tensors[field] = torch.tensor(arr_in[field][0].copy())
             continue
-        tensors[field] = torch.from_numpy(arr_in[field].copy()).squeeze()
+        tensors[field] = torch.from_numpy(arr_in[field].copy())
 
     return utils.KeypointBatch(**tensors)
 
@@ -158,7 +157,6 @@ class MultiviewDataset(torch.utils.data.Dataset):
         return np_array
 
     def __getitem__(self, idx: int):
-        print('Grabbing',  idx)
         context_image_idx, query_image_idx = self._pairs_from_index[idx]
 
         context_entry = self._index.image_index[context_image_idx]

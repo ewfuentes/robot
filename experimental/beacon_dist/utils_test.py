@@ -44,6 +44,11 @@ class UtilsTest(unittest.TestCase):
         # There should be two keypoints even though the original sample had 3 points
         self.assertEqual(subsampled.x.shape[0], 2)
 
+    def test_single_row_sample(self):
+        test_data = get_test_data()
+        dataset = MultiviewDataset.from_single_view(data=test_data)
+        print(dataset[2])
+
     def test_batchify(self):
         # Setup
         test_data = get_test_data()

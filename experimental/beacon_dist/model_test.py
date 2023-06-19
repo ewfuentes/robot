@@ -11,7 +11,8 @@ def create_batch_from_dataset(dataset: MultiviewDataset) -> KeypointPairs:
     samples = list(dataset)
     fields = {}
     for field in KeypointBatch._fields:
-        fields[field] = torch.nested.nested_tensor([getattr(x.context, field) for x in samples])
+        tensors = [getattr(x.context, field) for x in samples]
+        fields[field] = torch.nested.nested_tensor(tensors)
     single = KeypointBatch(**fields)
     return KeypointPairs(single, single)
 
