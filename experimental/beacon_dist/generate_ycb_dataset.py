@@ -58,16 +58,16 @@ def serialize_result(
     image_info = []
     keypoint_data = []
     for view_idx, view_result in enumerate(scene_result.view_results):
-        class_labels = rys.convert_class_labels_to_matrix(view_result.labels, CLASS_SIZE)
+        class_labels = rys.convert_class_labels_to_matrix(
+            view_result.labels, CLASS_SIZE
+        )
         image_info.append(
             np.array(
-                [
-                    (
-                        image_id_start + view_idx,
-                        scene_id,
-                        view_result.world_from_camera,
-                    )
-                ],
+                (
+                    image_id_start + view_idx,
+                    scene_id,
+                    view_result.world_from_camera,
+                ),
                 dtype=[
                     ("image_id", np.uint64),
                     ("scene_id", np.uint64),
@@ -79,20 +79,18 @@ def serialize_result(
             kp = view_result.keypoints[kp_idx]
             keypoint_data.append(
                 np.array(
-                    [
-                        (
-                            image_id_start + view_idx,
-                            kp.angle,
-                            kp.class_id,
-                            kp.octave,
-                            kp.x,
-                            kp.y,
-                            kp.response,
-                            kp.size,
-                            view_result.descriptors[kp_idx],
-                            class_labels[kp_idx],
-                        )
-                    ],
+                    (
+                        image_id_start + view_idx,
+                        kp.angle,
+                        kp.class_id,
+                        kp.octave,
+                        kp.x,
+                        kp.y,
+                        kp.response,
+                        kp.size,
+                        view_result.descriptors[kp_idx],
+                        class_labels[kp_idx],
+                    ),
                     dtype=KeypointDescriptorDtype,
                 )
             )
@@ -106,7 +104,6 @@ def serialize_results(
     initial_scene_id: int,
     output_path: str,
 ):
-
     max_name_size = max([len(x) for x in ycb_objects])
     num_images_for_scene = [len(x.view_results) for x in scene_results]
     image_id_starts = [initial_image_id] + list(
@@ -205,7 +202,7 @@ def main(
         if num_scenes > MAX_NUM_SCENES_PER_ROUND:
             file, ext = os.path.splitext(output_path)
             file_path = (
-                    f"{file}.part_{generated_scenes // MAX_NUM_SCENES_PER_ROUND:05d}{ext}"
+                f"{file}.part_{generated_scenes // MAX_NUM_SCENES_PER_ROUND:05d}{ext}"
             )
         else:
             file_path = output_path
