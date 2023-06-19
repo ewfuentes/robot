@@ -3,7 +3,7 @@ import unittest
 
 from experimental.beacon_dist import model
 from experimental.beacon_dist.test_helpers import get_test_data
-from experimental.beacon_dist.utils import Dataset, batchify
+from experimental.beacon_dist.utils import Dataset, batchify, KeypointPairs
 
 
 class ModelTest(unittest.TestCase):
@@ -46,24 +46,27 @@ class ModelTest(unittest.TestCase):
 
     def test_run_model(self):
         # Setup
-        batch = batchify(Dataset(data=get_test_data()).data())
-        query = torch.Tensor([[True, True, True], [True, True, False], [True, False, False]]).to(torch.bool)
-        m = model.ConfigurationModel(model.ConfigurationModelParams(
-            descriptor_size=256,
-            descriptor_embedding_size=32,
-            position_encoding_factor=100000,
-            num_encoder_heads = 4,
-            num_encoder_layers = 2,
-            num_decoder_heads = 4,
-            num_decoder_layers = 2,
-        ))
+        sample = batchify(Dataset(data=get_test_data()).data())
+        batch = KeypointPairs(context=sample, query=sample)
+        config = torch.Tensor(
+            [[True, True, True], [True, True, False], [True, False, False]]
+        ).to(torch.bool)
+        m = model.ConfigurationModel(
+            model.ConfigurationModelParams(
+                descriptor_size=256,
+                descriptor_embedding_size=32,
+                position_encoding_factor=100000,
+                num_encoder_heads=4,
+                num_encoder_layers=2,
+                num_decoder_heads=4,
+                num_decoder_layers=2,
+            )
+        )
 
         # Action
-        print(query)
-        output = m(context=batch, query=query)
+        output = m(context_and_query=batch, configuration=config)
 
         # Verification
-        print('encoder output shape:', output.shape)
         self.assertIsNotNone(output)
 
 

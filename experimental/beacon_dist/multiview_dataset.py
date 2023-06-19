@@ -134,7 +134,7 @@ class MultiviewDataset(torch.utils.data.Dataset):
             self._partitions = inputs.data_tables
 
         for i, p in enumerate(self._partitions):
-            for table in ["data", "image_info", "object_list"]:
+            for table in ["data", "image_info", "objects"]:
                 assert table in p, f"{table} not in partition {i}"
 
         if inputs.index_path:
@@ -147,7 +147,7 @@ class MultiviewDataset(torch.utils.data.Dataset):
             sample_transform_fn if sample_transform_fn is not None else lambda x: x
         )
 
-        self._num_classes = len(self._partitions[0]["object_list"])
+        self._num_classes = len(self._partitions[0]["objects"])
 
     def get_keypoint_array(self, entry: ImageIndexEntry) -> torch.Tensor:
         np_array = self._partitions[entry.partition_idx]["data"][
@@ -225,7 +225,7 @@ class MultiviewDataset(torch.utils.data.Dataset):
         data_tables = {
             "data": data,
             "image_info": image_info,
-            "object_list": object_list,
+            "objects": object_list,
         }
 
         # Apply sample_transform_fn to both the context and the query

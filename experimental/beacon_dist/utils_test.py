@@ -18,6 +18,8 @@ from experimental.beacon_dist.utils import (
     get_x_position_test_dataset,
 )
 
+from experimental.beacon_dist.multiview_dataset import MultiviewDataset
+
 
 class DatasetTest(unittest.TestCase):
     def test_dataset_from_filename(self):
@@ -300,7 +302,7 @@ class UtilsTest(unittest.TestCase):
 
     def test_test_dataset_collator(self):
         # Setup
-        dataset = Dataset(data=get_x_position_test_dataset())
+        dataset = MultiviewDataset.from_single_view(data=get_x_position_test_dataset())
 
         loader = torch.utils.data.DataLoader(
             dataset, batch_size=1, collate_fn=test_dataset_collator
@@ -310,7 +312,8 @@ class UtilsTest(unittest.TestCase):
         batch, query = next(iter(loader))
 
         # Verification
-        self.assertEqual(batch.x.shape, query.shape)
+        self.assertEqual(batch.context.x.shape, query.shape)
+        self.assertEqual(batch.query.x.shape, query.shape)
 
 
 if __name__ == "__main__":

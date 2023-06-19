@@ -65,12 +65,12 @@ def get_test_dataset() -> list[dict[str, np.ndarray]]:
         {
             "data": keypoint_data_1,
             "image_info": image_info_1,
-            "object_list": object_list,
+            "objects": object_list,
         },
         {
             "data": keypoint_data_2,
             "image_info": image_info_2,
-            "object_list": object_list,
+            "objects": object_list,
         },
     ]
 

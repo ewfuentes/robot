@@ -90,6 +90,7 @@ py_test(
   deps = [
     requirement("numpy"),
     ":test_helpers",
+    ":multiview_dataset",
     ":utils",
   ]
 )
