@@ -6,7 +6,6 @@ import torch
 import numpy as np
 import tqdm
 import itertools
-from collections import defaultdict
 
 from experimental.beacon_dist import utils
 
