@@ -141,7 +141,7 @@ class MultiviewDataset(torch.utils.data.Dataset):
         else:
             # Load from the existing data tables
             self._partitions = inputs.data_tables
-            self._data = [x.data for x in self._partitions]
+            self._data = [x['data'] for x in self._partitions]
 
         for i, p in enumerate(self._partitions):
             for table in ["data", "image_info", "objects"]:
