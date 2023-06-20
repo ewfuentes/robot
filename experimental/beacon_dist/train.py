@@ -108,7 +108,7 @@ def train(dataset: mvd.MultiviewDataset, train_config: TrainConfig, collator_fn:
         shuffle=True,
         collate_fn=collator_fn,
         num_workers=5,
-        prefetch_factor=10,
+        prefetch_factor=2,
         persistent_workers=True,
     )
 
