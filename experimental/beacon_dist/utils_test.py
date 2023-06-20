@@ -5,8 +5,6 @@ import numpy as np
 
 from experimental.beacon_dist.test_helpers import get_test_data
 from experimental.beacon_dist.utils import (
-    Dataset,
-    reconstruction_loss,
     sample_keypoints,
     batchify,
     valid_configuration_loss,
@@ -16,24 +14,18 @@ from experimental.beacon_dist.utils import (
     is_valid_configuration,
     test_dataset_collator,
     get_x_position_test_dataset,
+    KeypointBatch,
 )
 
+from experimental.beacon_dist.multiview_dataset import MultiviewDataset
 
-class DatasetTest(unittest.TestCase):
-    def test_dataset_from_filename(self):
-        # Setup
-        test_data = get_test_data()
-        # Action
-        dataset = Dataset(data=test_data)
 
-        # Verification
-        self.assertEqual(len(dataset), 3)
-        self.assertEqual(dataset[1].descriptor[0, 0], 4)
-        self.assertTrue(
-            torch.all(
-                dataset[2].class_label == torch.tensor([[False, False, False, True]])
-            )
-        )
+def create_context_batch_from_dataset(dataset: MultiviewDataset) -> KeypointBatch:
+    samples = list(dataset)
+    fields = {}
+    for field in KeypointBatch._fields:
+        fields[field] = torch.nested.nested_tensor([getattr(x.context, field) for x in samples])
+    return KeypointBatch(**fields)
 
 
 class UtilsTest(unittest.TestCase):
@@ -41,20 +33,27 @@ class UtilsTest(unittest.TestCase):
         # Setup
         gen = torch.manual_seed(0)
         test_data = get_test_data()
-        dataset = Dataset(data=test_data)
+        dataset = MultiviewDataset.from_single_view(data=test_data)
 
         # Action
-        subsampled = sample_keypoints(dataset[0], num_keypoints_to_sample=2, gen=gen)
+        subsampled = sample_keypoints(
+            dataset[0].context, num_keypoints_to_sample=2, gen=gen
+        )
 
         # Verification
         # There should be two keypoints even though the original sample had 3 points
         self.assertEqual(subsampled.x.shape[0], 2)
 
+    def test_single_row_sample(self):
+        test_data = get_test_data()
+        dataset = MultiviewDataset.from_single_view(data=test_data)
+        print(dataset[2])
+
     def test_batchify(self):
         # Setup
         test_data = get_test_data()
-        dataset = Dataset(data=test_data)
-        batch = dataset._data
+        dataset = MultiviewDataset.from_single_view(data=test_data)
+        batch = create_context_batch_from_dataset(dataset)
 
         # Action
         batched = batchify(batch)
@@ -74,23 +73,10 @@ class UtilsTest(unittest.TestCase):
         self.assertEqual(batched.x[2, 1], torch.finfo(torch.float32).min)
         self.assertEqual(batched.x[2, 2], torch.finfo(torch.float32).min)
 
-    def test_reconstructor_loss(self):
-        # Setup
-        dataset = Dataset(data=get_test_data())
-        batch_in = batchify(dataset._data)
-        batch_out = batch_in._replace(x=batch_in.x + 0.1)
-        expected_loss = torch.mean((batch_out.x - batch_in.x) ** 2)
-
-        # Action
-        loss = reconstruction_loss(batch_in, batch_out)
-
-        # Verification
-        self.assertEqual(loss, expected_loss)
-
     def test_valid_configuration_loss_valid_queries_are_likely(self):
         # Setup
-        dataset = Dataset(data=get_test_data())
-        batch = batchify(dataset._data)
+        dataset = MultiviewDataset.from_single_view(data=get_test_data())
+        batch = batchify(create_context_batch_from_dataset(dataset))
         query = torch.tensor([[1, 1, 1], [1, 1, 0], [1, 0, 0]])
         model_output = torch.tensor([[100.0], [100.0], [100.0]])
 
@@ -102,8 +88,8 @@ class UtilsTest(unittest.TestCase):
 
     def test_valid_configuration_loss_invalid_queries_are_unlikely(self):
         # Setup
-        dataset = Dataset(data=get_test_data())
-        batch = batchify(dataset._data)
+        dataset = MultiviewDataset.from_single_view(data=get_test_data())
+        batch = batchify(create_context_batch_from_dataset(dataset))
         query = torch.tensor([[0, 1, 1], [1, 1, 0], [1, 0, 0]])
         model_output = torch.tensor([[-100.0], [100.0], [100.0]])
 
@@ -115,8 +101,8 @@ class UtilsTest(unittest.TestCase):
 
     def test_valid_configuration_loss_common_keypoints_are_ignored(self):
         # Setup
-        dataset = Dataset(data=get_test_data())
-        batch = batchify(dataset._data)
+        dataset = MultiviewDataset.from_single_view(data=get_test_data())
+        batch = batchify(create_context_batch_from_dataset(dataset))
         query = torch.tensor([[1, 1, 1], [1, 0, 0], [1, 0, 0]])
         model_output = torch.tensor([[100.0], [100.0], [100.0]])
 
@@ -128,8 +114,8 @@ class UtilsTest(unittest.TestCase):
 
     def test_valid_configuration_loss_bad_prediction_yields_nonzero_loss(self):
         # Setup
-        dataset = Dataset(data=get_test_data())
-        batch = batchify(dataset._data)
+        dataset = MultiviewDataset.from_single_view(data=get_test_data())
+        batch = batchify(create_context_batch_from_dataset(dataset))
         query = torch.tensor([[1, 1, 1], [1, 1, 0], [1, 0, 0]])
         model_output = torch.tensor([[-100.0], [100.0], [100.0]])
 
@@ -141,8 +127,8 @@ class UtilsTest(unittest.TestCase):
 
     def test_valid_configuration_loss_missing_exclusive_keypoints_are_valid(self):
         # Setup
-        dataset = Dataset(data=get_test_data())
-        batch = batchify(dataset._data)
+        dataset = MultiviewDataset.from_single_view(data=get_test_data())
+        batch = batchify(create_context_batch_from_dataset(dataset))
         query = torch.tensor([[0, 0, 1], [1, 1, 0], [1, 0, 0]])
         model_output = torch.tensor([[100.0], [100.0], [100.0]])
 
@@ -156,7 +142,7 @@ class UtilsTest(unittest.TestCase):
         # Setup
         class_idxs = np.expand_dims(np.array([1, 2, 3, 4, 5, 6], dtype=np.uint8), -1)
         class_labels = torch.from_numpy(
-            np.unpackbits(class_idxs, axis=-1, bitorder='little').astype(bool)
+            np.unpackbits(class_idxs, axis=-1, bitorder="little").astype(bool)
         )
         present_classes = [1, 2]
 
@@ -183,14 +169,17 @@ class UtilsTest(unittest.TestCase):
         # Setup
         rng = torch.Generator()
         rng.manual_seed(98764)
-        class_idxs = np.expand_dims(np.array(
-            [
-                [1, 2, 3, 4, 5, 6],
-                [1, 1, 1, 1, 1, 1],
-                [16, 16, 8, 8, 4, 4],
-            ],
-            dtype=np.uint8,
-        ), -1)
+        class_idxs = np.expand_dims(
+            np.array(
+                [
+                    [1, 2, 3, 4, 5, 6],
+                    [1, 1, 1, 1, 1, 1],
+                    [16, 16, 8, 8, 4, 4],
+                ],
+                dtype=np.uint8,
+            ),
+            -1,
+        )
         class_labels = torch.from_numpy(
             np.unpackbits(class_idxs, bitorder="little", axis=-1).astype(bool)
         )
@@ -205,14 +194,17 @@ class UtilsTest(unittest.TestCase):
         # Setup
         rng = torch.Generator()
         rng.manual_seed(12345678)
-        class_idxs = np.expand_dims(np.array(
-            [
-                [1, 2, 3, 4, 5, 6],
-                [1, 1, 1, 1, 1, 1],
-                [16, 16, 8, 8, 4, 4],
-            ],
-            dtype=np.uint8,
-        ), -1)
+        class_idxs = np.expand_dims(
+            np.array(
+                [
+                    [1, 2, 3, 4, 5, 6],
+                    [1, 1, 1, 1, 1, 1],
+                    [16, 16, 8, 8, 4, 4],
+                ],
+                dtype=np.uint8,
+            ),
+            -1,
+        )
         class_labels = torch.from_numpy(
             np.unpackbits(class_idxs, bitorder="little", axis=-1).astype(bool)
         )
@@ -300,7 +292,7 @@ class UtilsTest(unittest.TestCase):
 
     def test_test_dataset_collator(self):
         # Setup
-        dataset = Dataset(data=get_x_position_test_dataset())
+        dataset = MultiviewDataset.from_single_view(data=get_x_position_test_dataset())
 
         loader = torch.utils.data.DataLoader(
             dataset, batch_size=1, collate_fn=test_dataset_collator
@@ -310,7 +302,8 @@ class UtilsTest(unittest.TestCase):
         batch, query = next(iter(loader))
 
         # Verification
-        self.assertEqual(batch.x.shape, query.shape)
+        self.assertEqual(batch.context.x.shape, query.shape)
+        self.assertEqual(batch.query.x.shape, query.shape)
 
 
 if __name__ == "__main__":

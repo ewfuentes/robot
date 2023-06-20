@@ -3,7 +3,11 @@ import unittest
 import numpy as np
 
 import experimental.beacon_dist.multiview_dataset as mvd
-from experimental.beacon_dist.utils import KeypointDescriptorDtype, DESCRIPTOR_SIZE
+from experimental.beacon_dist.utils import (
+    KeypointDescriptorDtype,
+    DESCRIPTOR_SIZE,
+    get_x_position_test_dataset,
+)
 
 
 def descriptor(i: int):
@@ -55,18 +59,18 @@ def get_test_dataset() -> list[dict[str, np.ndarray]]:
         dtype=mvd.ImageInfoDtype,
     )
 
-    object_list = ['obj_1', 'obj_2', 'obj_3']
+    object_list = ["obj_1", "obj_2", "obj_3"]
 
     return [
         {
             "data": keypoint_data_1,
             "image_info": image_info_1,
-            "object_list": object_list,
+            "objects": object_list,
         },
         {
             "data": keypoint_data_2,
             "image_info": image_info_2,
-            "object_list": object_list,
+            "objects": object_list,
         },
     ]
 
@@ -122,14 +126,28 @@ class MultiviewDatasetTest(unittest.TestCase):
             file_paths=None, index_path=None, data_tables=get_test_dataset()
         )
 
-        # Action + Verification
+        # Action 
         dataset = mvd.MultiviewDataset(dataset_inputs)
+
+        # Verification
+        expected_pairs = set([(0, 0), (0, 1), (0, 2),
+                             (1, 0), (1, 1), (1, 2),
+                             (2, 0), (2, 1), (2, 2),
+                             (3, 3), (3, 4), (4, 3), (4, 4)])
 
         for i in range(len(dataset)):
             sample = dataset[i]
-            for arr in [sample.context, sample.query]:
-                for i in range(len(arr.image_id)):
-                    self.assertEqual(arr.image_id[i], arr.image_id[0])
+            expected_pairs.remove((sample.context.image_id.item(), sample.query.image_id.item()))
+        self.assertEqual(len(expected_pairs), 0)
+
+    def test_from_single_view_dataset(self):
+        # Setup + Action
+        dataset = mvd.MultiviewDataset.from_single_view(
+            data=get_x_position_test_dataset(), filename=None, sample_transform_fn=None
+        )
+
+        # Verification
+        self.assertEqual(len(dataset), 1)
 
 
 if __name__ == "__main__":

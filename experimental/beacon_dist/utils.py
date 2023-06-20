@@ -57,15 +57,29 @@ class KeypointBatch(NamedTuple):
         )
 
 
+class KeypointPairs(NamedTuple):
+    context: KeypointBatch
+    query: KeypointBatch
+
+    def to(self, *args, **kwargs):
+        return KeypointPairs(
+            context=self.context.to(*args, **kwargs),
+            query=self.query.to(*args, **kwargs),
+        )
+
+
 def int_array_to_binary_tensor(arr: np.ndarray):
     num_bits_per_entry = arr.dtype.itemsize * 8
     mask_arr = (1 << np.arange(num_bits_per_entry)).astype(np.uint64)
     mask_arr = np.expand_dims(mask_arr, 0)
     arrs_to_concat = []
-    for col in range(arr.shape[1]):
-        arrs_to_concat.append(
-            np.bitwise_and(np.expand_dims(arr[:, col], 1), mask_arr) > 0
-        )
+    if arr.ndim > 1:
+        for col in range(arr.shape[1]):
+            arrs_to_concat.append(
+                np.bitwise_and(np.expand_dims(arr[:, col], 1), mask_arr) > 0
+            )
+    else:
+        arrs_to_concat.append(np.bitwise_and(np.expand_dims(arr, 1), mask_arr) > 0)
     return torch.from_numpy(np.concatenate(arrs_to_concat, axis=1))
 
 
@@ -76,63 +90,6 @@ def trim_class_label(class_labels: list[torch.Tensor]):
         max_class_idx = max(max_class_idx, torch.max(col).item())
 
     return [label[:, : max_class_idx + 1] for label in class_labels]
-
-
-class Dataset(torch.utils.data.Dataset):
-    def __init__(
-        self,
-        *,
-        data: None | np.ndarray = None,
-        filename: None | str = None,
-        sample_transform_fn: None | Callable[[KeypointBatch], KeypointBatch] = None,
-    ):
-        if filename:
-            data = np.load(filename)
-            if isinstance(data, np.lib.npyio.NpzFile):
-                data = data["data"]
-        assert data is not None
-
-        tensors = defaultdict(list)
-        _, first_idx = np.unique(data["image_id"], return_index=True)
-        for subset in np.split(data, first_idx[1:]):
-            for field in data.dtype.names:
-                if field == "image_id":
-                    tensors[field].append(
-                        torch.from_numpy(np.array(subset[0]["image_id"]))
-                    )
-                    continue
-                if field == "class_label":
-                    tensors[field].append(int_array_to_binary_tensor(subset[field]))
-                    continue
-                tensors[field].append(torch.from_numpy(subset[field].copy()))
-
-        # The class label tensor is a num_examples x (CLASS_SIZE * 64) binary tensor.
-        # Save some GPU RAM by making it smaller
-        tensors["class_label"] = trim_class_label(tensors["class_label"])
-
-        self._data = KeypointBatch(
-            **{key: torch.nested.nested_tensor(value) for key, value in tensors.items()}
-        )
-        self._sample_transform_fn = (
-            sample_transform_fn if sample_transform_fn is not None else lambda x: x
-        )
-
-    def __getitem__(self, idx: int) -> KeypointBatch:
-        # unsqueeze to add a batch dimension
-        return self._sample_transform_fn(
-            KeypointBatch(
-                **{f: getattr(self._data, f)[idx] for f in self._data._fields}
-            )
-        )
-
-    def __len__(self) -> int:
-        return self._data.image_id.size(0)
-
-    def __repr__(self) -> str:
-        return f"<Dataset: {len(self)} examples>"
-
-    def data(self) -> KeypointBatch:
-        return self._data
 
 
 def sample_keypoints(
@@ -161,6 +118,14 @@ def sample_keypoints(
     return sample
 
 
+def batchify_pair(sample: KeypointPairs) -> KeypointPairs:
+    return KeypointPairs(
+        context=batchify(sample.context),
+        query=batchify(sample.query),
+    )
+
+
+# Convert a keypoint batch where each field contains a nested tensor into a padded batch
 def batchify(sample: KeypointBatch) -> KeypointBatch:
     new_fields = {}
     for field_name in sample._fields:
@@ -178,23 +143,6 @@ def batchify(sample: KeypointBatch) -> KeypointBatch:
             )
 
     return KeypointBatch(**new_fields)
-
-
-def reconstruction_loss(
-    input_batch: KeypointBatch,
-    model_output: KeypointBatch,
-    fields_to_compare: None | list[str] = None,
-) -> torch.Tensor:
-    if fields_to_compare is None:
-        fields_to_compare = ["x", "y"]
-
-    loss = torch.tensor(0.0)
-    for field_name in fields_to_compare:
-        assert field_name in input_batch._fields
-        input_field = getattr(input_batch, field_name)
-        output_field = getattr(model_output, field_name)
-        loss += torch.nn.functional.mse_loss(input_field, output_field)
-    return loss
 
 
 def find_unique_class_idxs(class_labels: torch.Tensor) -> torch.Tensor:
@@ -536,15 +484,20 @@ def get_test_all_queries():
 
 
 def test_dataset_collator(
-    samples: list[KeypointBatch],
-) -> tuple[KeypointBatch, torch.Tensor]:
+    samples: list[KeypointPairs],
+) -> tuple[KeypointPairs, torch.Tensor]:
     assert len(samples) == 1
     queries = get_test_all_queries()
     num_queries = queries.shape[0]
-    out_batch = KeypointBatch(
+    replicated = KeypointBatch(
         **{
             k: torch.nested.nested_tensor([v] * num_queries)
-            for k, v in samples[0]._asdict().items()
+            for k, v in samples[0].context._asdict().items()
         }
     )
-    return batchify(out_batch), queries
+    batched = batchify(replicated)
+    out = KeypointPairs(
+        context=batched,
+        query=batched,
+    )
+    return out, queries

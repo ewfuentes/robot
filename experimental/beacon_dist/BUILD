@@ -61,7 +61,8 @@ py_test(
   srcs = ["model_test.py"],
   deps = [
     ":test_helpers",
-    ":model"
+    ":model",
+    ":multiview_dataset",
   ]
 )
 
@@ -90,6 +91,7 @@ py_test(
   deps = [
     requirement("numpy"),
     ":test_helpers",
+    ":multiview_dataset",
     ":utils",
   ]
 )
@@ -101,8 +103,9 @@ py_binary(
   deps = [
     requirement("torch"),
     requirement("IPython"),
-    ":utils",
     ":model",
+    ":multiview_dataset",
+    ":utils",
   ]
 )
 

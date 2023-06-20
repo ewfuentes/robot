@@ -7,8 +7,8 @@ import time
 import IPython
 
 from experimental.beacon_dist.utils import (
-    Dataset,
     KeypointBatch,
+    KeypointPairs,
     batchify,
     generate_valid_queries,
     generate_invalid_queries,
@@ -18,12 +18,13 @@ from experimental.beacon_dist.utils import (
     get_y_position_test_dataset,
     test_dataset_collator,
 )
+import experimental.beacon_dist.multiview_dataset as mvd
 from experimental.beacon_dist.model import ConfigurationModel, ConfigurationModelParams
 
 
 class TrainConfig(NamedTuple):
     num_epochs: int
-    dataset_path: str
+    dataset_path: list[str]
     test_dataset: str
     output_dir: str
     random_seed: int
@@ -32,48 +33,54 @@ class TrainConfig(NamedTuple):
 
 
 def make_collator_fn(num_queries_per_environment: int):
-    def __inner__(samples: list[KeypointBatch]) -> KeypointBatch:
-        """Join multiple samples into a single batch"""
+    def __collate_keypoint_batch__(samples: list[KeypointBatch]) -> KeypointBatch:
         fields = {}
         for f in KeypointBatch._fields:
             fields[f] = torch.nested.nested_tensor(
                 [getattr(sample, f) for sample in samples]
             )
         batch = batchify(KeypointBatch(**fields))
-        batch = KeypointBatch(
+        return KeypointBatch(
             **{
                 k: v.repeat_interleave(num_queries_per_environment, dim=0)
                 for k, v in batch._asdict().items()
             }
         )
 
+    def __inner__(samples: list[KeypointPairs]) -> KeypointPairs:
+        # Work with KeypointPairs
+        batch = KeypointPairs(
+            context=__collate_keypoint_batch__([x.context for x in samples]),
+            query=__collate_keypoint_batch__([x.query for x in samples])
+        )
+
         # This will get called from a dataloader which may spawn multiple processes
         # we have different environments, so we should generate different queries
         rng = torch.Generator(device="cpu")
         rng.manual_seed(0)
-        valid_queries = generate_valid_queries(batch.class_label, rng)
-        invalid_queries = generate_invalid_queries(
-            batch.class_label, valid_queries, rng
+        valid_configs = generate_valid_queries(batch.query.class_label, rng)
+        invalid_configs = generate_invalid_queries(
+            batch.query.class_label, valid_configs, rng
         )
 
-        valid_query_selector = torch.randint(
+        valid_config_selector = torch.randint(
             low=0,
             high=2,
-            size=(batch.x.shape[0], 1),
+            size=(batch.query.x.shape[0], 1),
             dtype=torch.bool,
             generator=rng,
         )
-        invalid_query_selector = torch.logical_not(valid_query_selector)
-        queries = (
-            valid_queries * valid_query_selector
-            + invalid_queries * invalid_query_selector
+        invalid_config_selector = torch.logical_not(valid_config_selector)
+        configs = (
+            valid_configs * valid_config_selector
+            + invalid_configs * invalid_config_selector
         )
-        return batch, queries
+        return batch, configs
 
     return __inner__
 
 
-def train(dataset: Dataset, train_config: TrainConfig, collator_fn: Callable):
+def train(dataset: mvd.MultiviewDataset, train_config: TrainConfig, collator_fn: Callable):
     # create model
     model = ConfigurationModel(
         ConfigurationModelParams(
@@ -97,16 +104,21 @@ def train(dataset: Dataset, train_config: TrainConfig, collator_fn: Callable):
     train_data_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=train_config.num_environments_per_batch,
-        shuffle=True,
+        shuffle=False,
         collate_fn=collator_fn,
-        num_workers=4,
+        num_workers=1,
+        prefetch_factor=10,
         persistent_workers=True,
     )
 
     test_data_loader = torch.utils.data.DataLoader(
         test_dataset,
         batch_size=train_config.num_environments_per_batch,
+        shuffle=False,
         collate_fn=collator_fn,
+        num_workers=1,
+        prefetch_factor=10,
+        persistent_workers=True,
     )
 
     print(model)
@@ -118,18 +130,18 @@ def train(dataset: Dataset, train_config: TrainConfig, collator_fn: Callable):
         epoch_loss = 0.0
         epoch_start_time = time.time()
         # Train
-        for batch_idx, (batch, queries) in enumerate(train_data_loader):
+        for batch_idx, (batch, configs) in enumerate(train_data_loader):
             batch_start_time = time.time()
             # Zero gradients
             batch = batch.to("cuda")
-            queries = queries.to("cuda")
+            configs = configs.to("cuda")
             optim.zero_grad()
 
             # compute model outputs
-            model_out = model(batch, queries)
+            model_out = model(batch, configs)
 
             # compute loss
-            loss = valid_configuration_loss(batch.class_label, queries, model_out)
+            loss = valid_configuration_loss(batch.query.class_label, configs, model_out)
             loss.backward()
 
             # take step
@@ -138,19 +150,19 @@ def train(dataset: Dataset, train_config: TrainConfig, collator_fn: Callable):
             if batch_idx % 10 == 0:
                 # print(f"Batch: {batch_idx} dt: {batch_dt: 0.6f} s Loss: {loss: 0.6f}")
                 ...
-            epoch_loss += loss.detach().item() * queries.shape[0]
+            epoch_loss += loss.detach().item() * configs.shape[0]
 
         model.train(False)
         # Evaluation
         validation_loss = 0.0
         with torch.no_grad():
-            for batch_idx, (batch, queries) in enumerate(test_data_loader):
+            for batch_idx, (batch, configs) in enumerate(test_data_loader):
                 batch = batch.to("cuda")
-                queries = queries.to("cuda")
+                configs = configs .to("cuda")
 
-                model_out = model(batch, queries)
+                model_out = model(batch, configs)
                 validation_loss += valid_configuration_loss(
-                    batch.class_label, queries, model_out, reduction="sum"
+                    batch.query.class_label, configs, model_out, reduction="sum"
                 )
         model.train(True)
 
@@ -180,7 +192,18 @@ def main(train_config: TrainConfig):
         os.makedirs(train_config.output_dir)
 
     if train_config.dataset_path:
-        dataset = Dataset(filename=train_config.dataset_path)
+        try:
+            dataset = mvd.MultiviewDataset(
+                mvd.DatasetInputs(
+                    file_paths=train_config.dataset_path,
+                    index_path=None,
+                    data_tables=None,
+                )
+            )
+        except AssertionError:
+            dataset = mvd.MultiviewDataset.from_single_view(
+                filename=train_config.dataset_path[0]
+            )
         collator_fn = make_collator_fn(train_config.num_queries_per_environment)
     elif train_config.test_dataset:
         dataset_generator = {
@@ -188,7 +211,9 @@ def main(train_config: TrainConfig):
             "y": get_y_position_test_dataset,
             "descriptor": get_descriptor_test_dataset,
         }
-        dataset = Dataset(data=dataset_generator[train_config.test_dataset]())
+        dataset = mvd.MultiviewDataset.from_single_view(
+            data=dataset_generator[train_config.test_dataset]()
+        )
         train_config = train_config._replace(num_environments_per_batch=1)
         collator_fn = test_dataset_collator
 
@@ -200,6 +225,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dataset_path",
         help="path to dataset",
+        nargs='+',
         type=str,
     )
     parser.add_argument(
