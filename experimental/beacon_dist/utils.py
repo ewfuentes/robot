@@ -292,7 +292,7 @@ def generate_invalid_queries(
         query = valid_queries[batch_idx, ...]
 
         count = 0
-        while not did_update and count < 100:
+        while not did_update and count < 10:
             count += 1
             if len(unique_classes) == 0:
                 # No beacons have been set, set some fraction of exclusive beacons

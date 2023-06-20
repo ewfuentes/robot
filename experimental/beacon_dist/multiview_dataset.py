@@ -108,8 +108,9 @@ def keypoint_tensor_from_array(
     tensors = {}
     for field in arr_in.dtype.names:
         if field == "class_label":
-            tensors[field] = utils.int_array_to_binary_tensor(
-                arr_in[field])[:, :num_classes]
+            tensors[field] = utils.int_array_to_binary_tensor(arr_in[field])[
+                :, :num_classes
+            ]
             continue
         elif field == "image_id":
             tensors[field] = torch.tensor(arr_in[field][0].copy())
@@ -129,10 +130,18 @@ class MultiviewDataset(torch.utils.data.Dataset):
         assert (inputs.file_paths is None) != (inputs.data_tables is None)
         if inputs.file_paths:
             # Load from files
-            self._partitions = [np.load(f, "r") for f in inputs.file_paths]
+            partitions = []
+            data = []
+            print("Loading data...")
+            for f in tqdm.tqdm(inputs.file_paths):
+                partitions.append(np.load(f))
+                data.append(partitions[-1]["data"])
+            self._partitions = partitions
+            self._data = data
         else:
             # Load from the existing data tables
             self._partitions = inputs.data_tables
+            self._data = [x['data'] for x in self._partitions]
 
         for i, p in enumerate(self._partitions):
             for table in ["data", "image_info", "objects"]:
@@ -151,9 +160,7 @@ class MultiviewDataset(torch.utils.data.Dataset):
         self._num_classes = len(self._partitions[0]["objects"])
 
     def get_keypoint_array(self, entry: ImageIndexEntry) -> torch.Tensor:
-        np_array = self._partitions[entry.partition_idx]["data"][
-            entry.start_idx : entry.end_idx
-        ]
+        np_array = self._data[entry.partition_idx][entry.start_idx:entry.end_idx]
         return np_array
 
     def __getitem__(self, idx: int):
