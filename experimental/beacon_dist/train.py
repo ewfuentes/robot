@@ -56,6 +56,7 @@ def make_collator_fn(num_queries_per_environment: int):
 
         # This will get called from a dataloader which may spawn multiple processes
         # we have different environments, so we should generate different queries
+
         rng = torch.Generator(device="cpu")
         rng.manual_seed(0)
         valid_configs = generate_valid_queries(batch.query.class_label, rng)
@@ -104,9 +105,9 @@ def train(dataset: mvd.MultiviewDataset, train_config: TrainConfig, collator_fn:
     train_data_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=train_config.num_environments_per_batch,
-        shuffle=False,
+        shuffle=True,
         collate_fn=collator_fn,
-        num_workers=1,
+        num_workers=5,
         prefetch_factor=10,
         persistent_workers=True,
     )
@@ -146,7 +147,8 @@ def train(dataset: mvd.MultiviewDataset, train_config: TrainConfig, collator_fn:
 
             # take step
             optim.step()
-            batch_dt = time.time() - batch_start_time
+            batch_end_time = time.time()
+            batch_dt = batch_end_time - batch_start_time
             if batch_idx % 10 == 0:
                 # print(f"Batch: {batch_idx} dt: {batch_dt: 0.6f} s Loss: {loss: 0.6f}")
                 ...
