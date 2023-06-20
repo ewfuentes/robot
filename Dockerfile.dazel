@@ -1,14 +1,16 @@
-FROM debian:bullseye
+FROM nvidia/cuda:11.7.1-devel-ubuntu22.04
 
-ARG USERNAME=dazel
-ARG USER_UID=1000
+ARG USERNAME
+ARG USER_UID
 ARG USER_GID=$USER_UID
 
-RUN apt-get update && apt-get -qq install -y wget gcc-10 gcc g++-10 python3 sudo
-RUN wget https://github.com/bazelbuild/bazelisk/releases/download/v1.15.0/bazelisk-linux-amd64  -O /usr/bin/bazel --quiet && chmod +x /usr/bin/bazel
-RUN chmod 777 /usr/bin/bazel
 RUN echo ${USERNAME} ${USER_UID} ${USER_GID}
 RUN groupadd --gid $USER_GID $USERNAME
 RUN useradd --uid $USER_UID --gid $USER_GID -m $USERNAME
+RUN apt-get update && apt-get -qq install -y wget gcc-10 gcc g++-10 python3 sudo
+COPY setup.sh setup.sh
+RUN ./setup.sh
+RUN wget https://github.com/bazelbuild/bazelisk/releases/download/v1.17.0/bazelisk-linux-amd64  -O /usr/bin/bazel --quiet && chmod +x /usr/bin/bazel
+RUN chmod 777 /usr/bin/bazel
 USER $USERNAME 
 WORKDIR /home/$USERNAME

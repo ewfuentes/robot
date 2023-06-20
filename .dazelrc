@@ -19,7 +19,7 @@ DAZEL_DOCKERFILE="Dockerfile.dazel"  # in DAZEL_DIRECTORY
 #DAZEL_REPOSITORY="dazel"
 #
 ## The directory to build the dazel image in.
-DAZEL_DIRECTORY="/home/erick/code/robot"
+DAZEL_DIRECTORY="$PWD"
 #
 ## The command to run inside the container.
 ## NOTE: You should add flags to the .bazelrc file instead of here, since it is
@@ -31,7 +31,7 @@ DAZEL_DIRECTORY="/home/erick/code/robot"
 ## This can be a python iterable, or a comma-separated string.
 ## If working on windows add drive name to avoid conflicts, e.g.
 ## DAZEL_VOLUMES = ["C:\\tmp:/C/tmp"]
-#DAZEL_VOLUMES=[]
+DAZEL_VOLUMES=['${HOME}:${HOME}', '/tmp:/tmp']
 #
 ## Add any ports you want to publish from the dazel container to the host, in the
 ## normal "interface:dockerport:hostport" (e.g. "0.0.0.0:80:80").
@@ -45,7 +45,7 @@ DAZEL_DIRECTORY="/home/erick/code/robot"
 #DAZEL_ENV_VARS=[]
 #
 ## The GPUs to expose to the Docker container, "all" for every installed GPU
-#DAZEL_GPUS=""
+DAZEL_GPUS="all"
 #
 ## The name of the network on which to load all run dependencies and dazel container.
 ## If you are using a docker-compose.yml file to load the environment, this must
@@ -99,4 +99,6 @@ DAZEL_DIRECTORY="/home/erick/code/robot"
 #
 ## The user, in the same format as the --user option docker run and docker exec takes,
 ## to use when starting the container and executing commands inside of the container
-DAZEL_USER="dazel"
+DAZEL_USER="${whoami}"
+
+DAZEL_DOCKER_BUILD_ARGS = '--build-arg USERNAME=`whoami` --build-arg USER_UID=`id -u`'
