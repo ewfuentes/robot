@@ -102,6 +102,7 @@ py3_image(
   base = "//common/docker:cuda_python",
   srcs = ["train.py"],
   visibility = ["//common/python:__subpackages__"],
+  tags=["manual"],
   deps = [
     requirement("torch"),
     requirement("IPython"),
