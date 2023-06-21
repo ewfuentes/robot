@@ -107,6 +107,7 @@ py3_image(
   deps = [
     requirement("torch"),
     requirement("IPython"),
+    requirement("tqdm"),
     ":model",
     ":multiview_dataset",
     ":utils",

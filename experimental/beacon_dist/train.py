@@ -3,6 +3,7 @@ import os
 import torch
 from typing import NamedTuple, Callable
 import time
+import tqdm
 
 import IPython
 
@@ -30,6 +31,8 @@ class TrainConfig(NamedTuple):
     random_seed: int
     num_environments_per_batch: int
     num_queries_per_environment: int
+    data_parallel: bool
+    epochs_between_checkpoints: int
 
 
 def make_collator_fn(num_queries_per_environment: int):
@@ -51,7 +54,7 @@ def make_collator_fn(num_queries_per_environment: int):
         # Work with KeypointPairs
         batch = KeypointPairs(
             context=__collate_keypoint_batch__([x.context for x in samples]),
-            query=__collate_keypoint_batch__([x.query for x in samples])
+            query=__collate_keypoint_batch__([x.query for x in samples]),
         )
 
         # This will get called from a dataloader which may spawn multiple processes
@@ -81,7 +84,9 @@ def make_collator_fn(num_queries_per_environment: int):
     return __inner__
 
 
-def train(dataset: mvd.MultiviewDataset, train_config: TrainConfig, collator_fn: Callable):
+def train(
+    dataset: mvd.MultiviewDataset, train_config: TrainConfig, collator_fn: Callable
+):
     # create model
     model = ConfigurationModel(
         ConfigurationModelParams(
@@ -122,6 +127,9 @@ def train(dataset: mvd.MultiviewDataset, train_config: TrainConfig, collator_fn:
         persistent_workers=True,
     )
 
+    if train_config.data_parallel:
+        model = torch.nn.DataParallel(model)
+
     print(model)
 
     # Create the optimizer
@@ -131,7 +139,9 @@ def train(dataset: mvd.MultiviewDataset, train_config: TrainConfig, collator_fn:
         epoch_loss = 0.0
         epoch_start_time = time.time()
         # Train
-        for batch_idx, (batch, configs) in enumerate(train_data_loader):
+        for batch_idx, (batch, configs) in tqdm.tqdm(
+            enumerate(train_data_loader), total=len(train_data_loader)
+        ):
             batch_start_time = time.time()
             # Zero gradients
             batch = batch.to("cuda")
@@ -160,7 +170,7 @@ def train(dataset: mvd.MultiviewDataset, train_config: TrainConfig, collator_fn:
         with torch.no_grad():
             for batch_idx, (batch, configs) in enumerate(test_data_loader):
                 batch = batch.to("cuda")
-                configs = configs .to("cuda")
+                configs = configs.to("cuda")
 
                 model_out = model(batch, configs)
                 validation_loss += valid_configuration_loss(
@@ -175,7 +185,7 @@ def train(dataset: mvd.MultiviewDataset, train_config: TrainConfig, collator_fn:
                 f"Validation Loss: {validation_loss: 0.6f}",
                 flush=True,
             )
-        if epoch_idx % 100 == 0:
+        if (epoch_idx % train_config.epochs_between_checkpoints) == 0:
             file_name = os.path.join(
                 train_config.output_dir, f"model_{epoch_idx:09}.pt"
             )
@@ -227,7 +237,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dataset_path",
         help="path to dataset",
-        nargs='+',
+        nargs="+",
         type=str,
     )
     parser.add_argument(
@@ -271,6 +281,19 @@ if __name__ == "__main__":
         nargs="?",
         type=int,
         default=8,
+    )
+
+    parser.add_argument(
+        "--data_parallel",
+        help="Wrap the model in a DataParallel Block",
+        action="store_true",
+    )
+
+    parser.add_argument(
+        "--epochs_between_checkpoints",
+        help="Number of epoch between checkpoints",
+        type=int,
+        default=10,
     )
 
     args = parser.parse_args()
