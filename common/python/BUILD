@@ -20,7 +20,7 @@ py_binary(
     "//experimental/beacon_sim:plot_trials",
     "//experimental/beacon_dist:model",
     "//experimental/beacon_dist:utils",
-    "//experimental/beacon_dist:train",
+    "//experimental/beacon_dist:train.binary",
     "//experimental/beacon_dist:generate_letter_dataset",
     "//experimental/beacon_dist:generate_ycb_dataset",
     "@sophus_lie//:liegroups_python",
