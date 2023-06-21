@@ -261,3 +261,5 @@ container_pull(
   digest = "sha256:a9f41355320a9a029e75ce6227132de853b28870fe53dc740ad463b6eda19c83",
 )
 
+load("@io_bazel_rules_docker//python3:image.bzl", _py_image_repos = "repositories")
+_py_image_repos()
