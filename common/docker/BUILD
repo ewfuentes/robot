@@ -7,6 +7,7 @@ download_pkgs(
    name = "python3_pkgs",
    image_tar = "@cuda_base//image",
    packages = ["python3", "python-is-python3"],
+   tags = ["manual"]
 )
 
 install_pkgs(
@@ -16,6 +17,7 @@ install_pkgs(
     installation_cleanup_commands = "rm -rf /var/lib/apt/lists/*",
     output_image_name="cuda_python",
     visibility=["//visibility:public"],
+    tags = ["manual"]
 )
 
 
