@@ -1,5 +1,6 @@
 load("@pip//:requirements.bzl", "requirement")
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
+load("@io_bazel_rules_docker//python3:image.bzl", "py3_image")
 
 py_library(
   name = "multiview_dataset",
@@ -96,8 +97,9 @@ py_test(
   ]
 )
 
-py_binary(
+py3_image(
   name = "train",
+  base = "//common/docker:cuda_python",
   srcs = ["train.py"],
   visibility = ["//common/python:__subpackages__"],
   deps = [
