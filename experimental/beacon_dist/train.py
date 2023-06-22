@@ -112,8 +112,8 @@ def train(
         batch_size=train_config.num_environments_per_batch,
         shuffle=True,
         collate_fn=collator_fn,
-        num_workers=5,
-        prefetch_factor=2,
+        num_workers=max(5, os.cpu_count() // 2),
+        prefetch_factor=4,
         persistent_workers=True,
     )
 
@@ -122,8 +122,8 @@ def train(
         batch_size=train_config.num_environments_per_batch,
         shuffle=False,
         collate_fn=collator_fn,
-        num_workers=1,
-        prefetch_factor=10,
+        num_workers=max(5, os.cpu_count() // 2),
+        prefetch_factor=4,
         persistent_workers=True,
     )
 

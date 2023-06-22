@@ -121,6 +121,7 @@ container_push(
   registry = "docker.io",
   repository = "ewfuentes/robot",
   tag = "train",
+  tags = ["manual"],
 )
 
 cc_library(
