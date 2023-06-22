@@ -1,6 +1,7 @@
 load("@pip//:requirements.bzl", "requirement")
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
 load("@io_bazel_rules_docker//python3:image.bzl", "py3_image")
+load("@io_bazel_rules_docker//container:container.bzl", "container_push")
 
 py_library(
   name = "multiview_dataset",
@@ -106,10 +107,21 @@ py3_image(
   deps = [
     requirement("torch"),
     requirement("IPython"),
+    requirement("tqdm"),
     ":model",
     ":multiview_dataset",
     ":utils",
   ]
+)
+
+container_push(
+  name = "train_push",
+  format = "Docker",
+  image = ":train",
+  registry = "docker.io",
+  repository = "ewfuentes/robot",
+  tag = "train",
+  tags = ["manual"],
 )
 
 cc_library(
