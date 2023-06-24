@@ -84,16 +84,29 @@ def make_collator_fn(num_queries_per_environment: int):
 
     return __inner__
 
+
 def setup_distributed_training():
     world_size = int(os.environ["SLURM_NTASKS"])
     rank = int(os.environ["SLURM_PROCID"])
-    print('World size:', world_size, "rank:", rank)
-    print('CPUs allocated', os.environ["SLURM_CPUS_PER_GPU"], 'gpu count:', torch.cuda.device_count())
-    # Note that this function expects the MASTER_ADDR and MASTER_PORT environment variables to be set
+    print("World size:", world_size, "rank:", rank)
+    print(
+        "CPUs allocated",
+        os.environ["SLURM_CPUS_PER_GPU"],
+        "gpu count:",
+        torch.cuda.device_count(),
+    )
+    # Note that this function expects the MASTER_ADDR and MASTER_PORT
+    # environment variables to be set
     torch.distributed.init_process_group(rank=rank, world_size=world_size)
-    print('torch rank:', torch.distributed.get_rank(),
-          'torch world size:', torch.distributed.get_world_size(),
-          'is_init:', torch.distributed.is_initialized())
+    print(
+        "torch rank:",
+        torch.distributed.get_rank(),
+        "torch world size:",
+        torch.distributed.get_world_size(),
+        "is_init:",
+        torch.distributed.is_initialized(),
+    )
+
 
 def is_master():
     if not torch.distributed.is_initialized():
@@ -137,7 +150,7 @@ def train(
     train_sampler = None
     if train_config.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
-    num_cpus = int(os.environ.get('SLURM_CPUS_PER_GPU', os.cpu_count()))
+    num_cpus = int(os.environ.get("SLURM_CPUS_PER_GPU", os.cpu_count()))
     train_data_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=train_config.num_environments_per_batch,
@@ -173,8 +186,9 @@ def train(
         if train_config.distributed:
             train_sampler.set_epoch(epoch_idx)
         for batch_idx, (batch, configs) in tqdm.tqdm(
-            enumerate(train_data_loader), total=len(train_data_loader),
-            disable=not is_master()
+            enumerate(train_data_loader),
+            total=len(train_data_loader),
+            disable=not is_master(),
         ):
             batch_start_time = time.time()
             # Zero gradients
@@ -224,9 +238,12 @@ def train(
                 train_config.output_dir, f"model_{epoch_idx:09}.pt"
             )
             print(f"Saving model: {file_name}", flush=True)
-            torch.save(model.module.state_dict()
-                    if train_config.distributed or train_config.data_parallel
-                    else model.state_dict(), file_name)
+            torch.save(
+                model.module.state_dict()
+                if train_config.distributed or train_config.data_parallel
+                else model.state_dict(),
+                file_name,
+            )
     model.eval()
     IPython.embed()
 
@@ -338,7 +355,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--distributed",
         help="Run the training script in a distributed mode",
-        action='store_true',
+        action="store_true",
     )
 
     args = parser.parse_args()
