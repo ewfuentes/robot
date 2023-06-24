@@ -120,7 +120,7 @@ container_push(
   image = ":train",
   registry = "docker.io",
   repository = "ewfuentes/robot",
-  tag = "train",
+  tag = "train_distributed",
   tags = ["manual"],
 )
 
