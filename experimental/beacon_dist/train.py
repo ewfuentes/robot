@@ -95,8 +95,7 @@ def setup_distributed_training():
         "gpu count:",
         torch.cuda.device_count(),
     )
-    # Note that this function expects the MASTER_ADDR and MASTER_PORT
-    # environment variables to be set
+    # Note that this function expects the MASTER_ADDR and MASTER_PORT environment variables to be set
     torch.distributed.init_process_group(rank=rank, world_size=world_size)
     print(
         "torch rank:",
