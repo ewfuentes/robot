@@ -6,6 +6,7 @@ load("@io_bazel_rules_docker//container:container.bzl", "container_push")
 py_library(
   name = "multiview_dataset",
   srcs = ["multiview_dataset.py"],
+  visibility = ["//common/python:__subpackages__"],
   deps = [
     ":utils",
     requirement("numpy"),
