@@ -33,6 +33,7 @@ class TrainConfig(NamedTuple):
     num_queries_per_environment: int
     data_parallel: bool
     epochs_between_checkpoints: int
+    distributed: bool
 
 
 def make_collator_fn(num_queries_per_environment: int):
@@ -84,6 +85,34 @@ def make_collator_fn(num_queries_per_environment: int):
     return __inner__
 
 
+def setup_distributed_training():
+    world_size = int(os.environ["SLURM_NTASKS"])
+    rank = int(os.environ["SLURM_PROCID"])
+    print("World size:", world_size, "rank:", rank)
+    print(
+        "CPUs allocated",
+        os.environ["SLURM_CPUS_PER_GPU"],
+        "gpu count:",
+        torch.cuda.device_count(),
+    )
+    # Note that this function expects the MASTER_ADDR and MASTER_PORT environment variables to be set
+    torch.distributed.init_process_group(rank=rank, world_size=world_size)
+    print(
+        "torch rank:",
+        torch.distributed.get_rank(),
+        "torch world size:",
+        torch.distributed.get_world_size(),
+        "is_init:",
+        torch.distributed.is_initialized(),
+    )
+
+
+def is_master():
+    if not torch.distributed.is_initialized():
+        return True
+    return torch.distributed.get_rank() == 0
+
+
 def train(
     dataset: mvd.MultiviewDataset, train_config: TrainConfig, collator_fn: Callable
 ):
@@ -100,6 +129,15 @@ def train(
         )
     ).to("cuda")
 
+    if train_config.data_parallel:
+        model = torch.nn.DataParallel(model)
+
+    if train_config.distributed:
+        model = torch.nn.parallel.DistributedDataParallel(model)
+
+    if is_master():
+        print(model)
+
     # create dataloader
     torch.manual_seed(train_config.random_seed + 1)
     rng = torch.Generator()
@@ -107,30 +145,35 @@ def train(
     train_dataset, test_dataset = torch.utils.data.random_split(
         dataset, [0.90, 0.10], generator=rng
     )
+
+    train_sampler = None
+    if train_config.distributed:
+        train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
+    num_cpus = int(os.environ.get("SLURM_CPUS_PER_GPU", os.cpu_count()))
     train_data_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=train_config.num_environments_per_batch,
-        shuffle=True,
+        shuffle=(train_sampler is None),
         collate_fn=collator_fn,
-        num_workers=max(5, os.cpu_count() // 2),
+        num_workers=max(5, num_cpus),
         prefetch_factor=4,
         persistent_workers=True,
+        sampler=train_sampler,
     )
 
+    test_sampler = None
+    if train_config.distributed:
+        test_sampler = torch.utils.data.distributed.DistributedSampler(test_dataset)
     test_data_loader = torch.utils.data.DataLoader(
         test_dataset,
         batch_size=train_config.num_environments_per_batch,
-        shuffle=False,
+        shuffle=(test_sampler is None),
         collate_fn=collator_fn,
         num_workers=max(5, os.cpu_count() // 2),
         prefetch_factor=4,
         persistent_workers=True,
+        sampler=test_sampler,
     )
-
-    if train_config.data_parallel:
-        model = torch.nn.DataParallel(model)
-
-    print(model)
 
     # Create the optimizer
     optim = torch.optim.SGD(model.parameters(), lr=1e-2, momentum=0.0)
@@ -139,8 +182,12 @@ def train(
         epoch_loss = 0.0
         epoch_start_time = time.time()
         # Train
+        if train_config.distributed:
+            train_sampler.set_epoch(epoch_idx)
         for batch_idx, (batch, configs) in tqdm.tqdm(
-            enumerate(train_data_loader), total=len(train_data_loader)
+            enumerate(train_data_loader),
+            total=len(train_data_loader),
+            disable=not is_master(),
         ):
             batch_start_time = time.time()
             # Zero gradients
@@ -179,18 +226,23 @@ def train(
         model.train(True)
 
         epoch_dt = time.time() - epoch_start_time
-        if epoch_idx % 1 == 0:
+        if epoch_idx % 1 == 0 and is_master():
             print(
                 f"End of Epoch {epoch_idx} dt: {epoch_dt: 0.6f} s Epoch Loss: {epoch_loss: 0.6f}",
                 f"Validation Loss: {validation_loss: 0.6f}",
                 flush=True,
             )
-        if (epoch_idx % train_config.epochs_between_checkpoints) == 0:
+        if (epoch_idx % train_config.epochs_between_checkpoints) == 0 and is_master():
             file_name = os.path.join(
                 train_config.output_dir, f"model_{epoch_idx:09}.pt"
             )
             print(f"Saving model: {file_name}", flush=True)
-            torch.save(model.state_dict(), file_name)
+            torch.save(
+                model.module.state_dict()
+                if train_config.distributed or train_config.data_parallel
+                else model.state_dict(),
+                file_name,
+            )
     model.eval()
     IPython.embed()
 
@@ -202,6 +254,9 @@ def main(train_config: TrainConfig):
     if not os.path.exists(train_config.output_dir):
         print(f"Creating output directory: {train_config.output_dir}")
         os.makedirs(train_config.output_dir)
+
+    if train_config.distributed:
+        setup_distributed_training()
 
     if train_config.dataset_path:
         try:
@@ -294,6 +349,12 @@ if __name__ == "__main__":
         help="Number of epoch between checkpoints",
         type=int,
         default=10,
+    )
+
+    parser.add_argument(
+        "--distributed",
+        help="Run the training script in a distributed mode",
+        action="store_true",
     )
 
     args = parser.parse_args()
