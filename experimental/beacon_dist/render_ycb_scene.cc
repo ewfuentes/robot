@@ -92,7 +92,8 @@ Eigen::Matrix3d compute_look_at_origin_rotation(const Eigen::Vector3d &center_in
     // The +Z axis points toward the center
     const Eigen::Vector3d camera_z_axis = -center_in_world.normalized();
     // The +X axis points right in the camera frame
-    const Eigen::Vector3d camera_x_axis = camera_z_axis.cross(Eigen::Vector3d::UnitZ());
+    const Eigen::Vector3d camera_x_axis =
+        camera_z_axis.cross(Eigen::Vector3d::UnitZ()).normalized();
     // The +Y axis points down in the camera frame
     const Eigen::Vector3d camera_y_axis = camera_z_axis.cross(camera_x_axis);
 
@@ -100,13 +101,45 @@ Eigen::Matrix3d compute_look_at_origin_rotation(const Eigen::Vector3d &center_in
 }
 
 template <typename T>
-std::vector<drake::math::RigidTransformd> sample_world_from_camera(const CameraParams camera_params,
-                                                                   InOut<std::mt19937> gen);
+std::vector<drake::math::RigidTransformd> sample_world_from_camera(
+    const CameraParams &camera_params, InOut<std::mt19937> gen);
+
+template <>
+std::vector<drake::math::RigidTransformd> sample_world_from_camera<SphericalCamera>(
+    const CameraParams &camera_params, [[maybe_unused]] InOut<std::mt19937> gen) {
+    std::vector<drake::math::RigidTransformd> out;
+    out.reserve(camera_params.num_views);
+    const auto &strategy = std::get<SphericalCamera>(camera_params.camera_strategy);
+    // Note that max should be greater than min to ensure the correct arc is selected.
+    // Divide Azimuth evenly and sample inclination and radius uniformly
+    const double azimuth_step_rad =
+        (strategy.azimuth_range_rad.max - strategy.azimuth_range_rad.min) / camera_params.num_views;
+    for (int i = 0; i < camera_params.num_views; i++) {
+        const double azimuth_rad = azimuth_step_rad * i + strategy.azimuth_range_rad.min;
+        std::uniform_real_distribution<> inclination_dist(strategy.inclination_range_rad.min,
+                                                          strategy.inclination_range_rad.max);
+        std::uniform_real_distribution<> radial_dist(strategy.radial_distance_m.min,
+                                                     strategy.radial_distance_m.max);
+        const double inclination_rad = inclination_dist(*gen);
+        const double radial_dist_m = radial_dist(*gen);
+
+        const double z_m = radial_dist_m * std::cos(inclination_rad);
+        const double xy_plane_dist_m = radial_dist_m * std::sin(inclination_rad);
+        const double x_m = xy_plane_dist_m * std::cos(azimuth_rad);
+        const double y_m = xy_plane_dist_m * std::sin(azimuth_rad);
+        const Eigen::Vector3d camera_center_in_world{x_m, y_m, z_m};
+        const Eigen::Matrix3d world_from_camera_rot =
+            compute_look_at_origin_rotation(camera_center_in_world);
+        out.push_back(drake::math::RigidTransformd(
+            drake::math::RotationMatrix(world_from_camera_rot), camera_center_in_world));
+    }
+    return out;
+}
 
 template <>
 std::vector<drake::math::RigidTransformd> sample_world_from_camera<MovingCamera>(
-    const CameraParams camera_params, [[maybe_unused]] InOut<std::mt19937> gen) {
-    const auto strategy = std::get<MovingCamera>(camera_params.camera_strategy);
+    const CameraParams &camera_params, [[maybe_unused]] InOut<std::mt19937> gen) {
+    const auto &strategy = std::get<MovingCamera>(camera_params.camera_strategy);
 
     std::vector<drake::math::RigidTransformd> out;
     for (int i = 0; i < camera_params.num_views; i++) {
@@ -122,8 +155,8 @@ std::vector<drake::math::RigidTransformd> sample_world_from_camera<MovingCamera>
     return out;
 }
 
-std::vector<drake::math::RigidTransformd> sample_world_from_camera(const CameraParams camera_params,
-                                                                   InOut<std::mt19937> gen) {
+std::vector<drake::math::RigidTransformd> sample_world_from_camera(
+    const CameraParams &camera_params, InOut<std::mt19937> gen) {
     return std::visit(
         [&](auto &&arg) {
             using T = std::decay_t<decltype(arg)>;
@@ -340,8 +373,9 @@ SceneResult compute_scene_result(const SceneData &scene_data, const CameraParams
 }
 
 std::vector<SceneResult> build_dataset(const SceneData &scene_data,
-                                       const CameraParams &camera_params, const int64_t num_scenes,
-                                       const int64_t start_scene_id, const int num_workers,
+                                       const CameraParams &camera_params,
+                                       const int64_t start_scene_id, const int64_t num_scenes,
+                                       const int num_workers,
                                        const std::function<bool(int)> &progress_callback) {
     std::vector<WorkerState> workers(num_workers);
 
@@ -389,7 +423,9 @@ std::vector<SceneResult> build_dataset(const SceneData &scene_data,
                 if (worker_state.is_result_ready) {
                     out.at(worker_state.requested_scene_id - start_scene_id) =
                         worker_state.maybe_scene_result.value();
-                    run = progress_callback(worker_state.requested_scene_id + start_scene_id);
+                    if (progress_callback) {
+                        run = progress_callback(worker_state.requested_scene_id + start_scene_id);
+                    }
                     worker_state.is_result_ready = false;
                 }
 
@@ -411,7 +447,9 @@ std::vector<SceneResult> build_dataset(const SceneData &scene_data,
         worker.thread.join();
         if (worker.is_result_ready) {
             out.at(worker.requested_scene_id - start_scene_id) = worker.maybe_scene_result.value();
-            progress_callback(worker.requested_scene_id + start_scene_id);
+            if (progress_callback) {
+                progress_callback(worker.requested_scene_id + start_scene_id);
+            }
         }
     }
 

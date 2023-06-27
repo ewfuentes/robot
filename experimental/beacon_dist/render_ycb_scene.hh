@@ -29,7 +29,18 @@ struct MovingCamera {
     Eigen::Vector3d end_in_world;
 };
 
-using CameraStrategy = std::variant<MovingCamera>;
+struct Range {
+    double min;
+    double max;
+};
+
+struct SphericalCamera {
+    Range radial_distance_m;
+    Range azimuth_range_rad;
+    Range inclination_range_rad;
+};
+
+using CameraStrategy = std::variant<MovingCamera, SphericalCamera>;
 
 struct CameraParams {
     int width_px;

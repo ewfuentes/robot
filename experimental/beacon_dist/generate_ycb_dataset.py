@@ -16,7 +16,7 @@ SAMPLING_STRATEGIES: dict[str, CameraSamplingStrategy] = {
         start_in_world=np.array([1.0, 0.0, 0.0]),
         end_in_world=np.array([1.0, 0.0, 0.0]),
     ),
-    "move_away": rys.MovingCamera(
+    "zoom": rys.MovingCamera(
         start_in_world=np.array([0.5, 0.0, 0.0]),
         end_in_world=np.array([2.0, 0.0, 0.0]),
     ),
@@ -24,16 +24,11 @@ SAMPLING_STRATEGIES: dict[str, CameraSamplingStrategy] = {
         start_in_world=np.array([1.0, -0.25, 0.0]),
         end_in_world=np.array([1.0, 0.25, 0.0]),
     ),
-    # "rotate_xy": SphericalCamera(
-    #     radial_distance_m=Range(min=2.0, max=2.0),
-    #     azimuth_range_rad=Range(min=0.0, max=2 * np.pi),
-    #     inclination_range_rad=Range(min=np.pi / 2.0, max=np.pi / 2.0),
-    # ),
-    # "sphere": SphericalCamera(
-    #     radial_distance_m=Range(min=2.0, max=2.0),
-    #     azimuth_range_rad=Range(min=0.0, max=2 * np.pi),
-    #     inclination_range_rad=Range(min=0.0, max=np.pi),
-    # ),
+    "xy_ring": rys.SphericalCamera(
+        radial_distance_m=rys.Range(min=1.0, max=2.0),
+        azimuth_range_rad=rys.Range(min=0.0, max=2 * np.pi),
+        inclination_range_rad=rys.Range(min=np.pi / 2.0, max=np.pi / 2.0),
+    ),
 }
 
 

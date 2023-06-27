@@ -69,6 +69,31 @@ TEST(RenderYcbSceneTest, compute_scene_result) {
     EXPECT_GE(scene_result.view_results[0].keypoints.size(), 300);
 }
 
+TEST(RenderYcbSceneTest, compute_scene_result_spherical_camera) {
+    // Setup
+    constexpr int NUM_VIEWS = 4;
+    const auto &scene_data = get_default_scene_data();
+    const CameraParams CAMERA_PARAMS = {
+        .width_px = 1280,
+        .height_px = 1024,
+        .fov_y_rad = std::numbers::pi / 2.0,
+        .num_views = NUM_VIEWS,
+        .camera_strategy =
+            SphericalCamera{.radial_distance_m = {1.0, 2.0},
+                            .azimuth_range_rad = {-1.0, 1.0},
+                            .inclination_range_rad = {std::numbers::pi / 2.0, std::numbers::pi}},
+    };
+    constexpr int SCENE_ID = 1024;
+    auto root_context = scene_data.diagram->CreateDefaultContext();
+
+    // Action
+    const auto &scene_result =
+        compute_scene_result(scene_data, CAMERA_PARAMS, SCENE_ID, make_in_out(*root_context));
+    // Verification
+    EXPECT_EQ(scene_result.view_results.size(), NUM_VIEWS);
+    EXPECT_GE(scene_result.view_results[0].keypoints.size(), 100);
+}
+
 TEST(RenderYcbSceneTest, build_dataset) {
     // Setup
     constexpr int NUM_VIEWS = 1;
@@ -83,9 +108,11 @@ TEST(RenderYcbSceneTest, build_dataset) {
             MovingCamera{.start_in_world = {-1.0, 0.0, 0.0}, .end_in_world = {-1.0, 0.0, 0.0}},
     };
     constexpr int NUM_SCENES = 10;
+    constexpr int START_SCENE_ID = 0;
 
     // Action
-    const auto &dataset = build_dataset(scene_data, CAMERA_PARAMS, NUM_SCENES, NUM_WORKERS);
+    const auto &dataset =
+        build_dataset(scene_data, CAMERA_PARAMS, START_SCENE_ID, NUM_SCENES, NUM_WORKERS);
 
     // Verification
     EXPECT_EQ(dataset.size(), NUM_SCENES);
