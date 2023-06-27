@@ -182,8 +182,8 @@ def main(
         scene_results = rys.build_dataset(
             scene_data,
             camera_params,
-            scenes_to_generate,
             generated_scenes,
+            scenes_to_generate,
             num_workers,
             progress_update,
         )
