@@ -22,14 +22,23 @@ http_archive(
 
 http_archive(
   name = "fmt",
-  urls = ["https://github.com/fmtlib/fmt/releases/download/10.0.0/fmt-10.0.0.zip"],
-  strip_prefix="fmt-10.0.0",
+  urls = ["https://github.com/fmtlib/fmt/releases/download/8.1.1/fmt-8.1.1.zip"],
+  strip_prefix="fmt-8.1.1",
   patch_cmds=[
+    "mv support/bazel/.bazelrc .bazelrc",
     "mv support/bazel/.bazelversion .bazelversion",
     "mv support/bazel/BUILD.bazel BUILD.bazel",
     "mv support/bazel/WORKSPACE.bazel WORKSPACE.bazel",
   ],
-  sha256 = "4943cb165f3f587f26da834d3056ee8733c397e024145ca7d2a8a96bb71ac281",
+  sha256 = "23778bad8edba12d76e4075da06db591f3b0e3c6c04928ced4a7282ca3400e5d",
+)
+
+http_archive(
+    name = "spdlog",
+    urls = ["https://github.com/gabime/spdlog/archive/refs/tags/v1.10.0.zip"],
+    strip_prefix="spdlog-1.10.0",
+    build_file = "@//third_party:BUILD.spdlog",
+    sha256 = "7be28ff05d32a8a11cfba94381e820dd2842835f7f319f843993101bcab44b66",
 )
 
 http_archive(
@@ -214,10 +223,10 @@ http_archive(
 
 http_archive(
   name = "drake_lib",
-  url = "https://drake-packages.csail.mit.edu/drake/nightly/drake-20230609-jammy.tar.gz",
+  url = "https://github.com/RobotLocomotion/drake/releases/download/v1.19.0/drake-20230713-jammy.tar.gz",
   strip_prefix="drake",
   build_file_content="#",
-  sha256 = "e2320ff066e5797df54e884395c7bfde26823d6c3532790180063f2ce7d438fa",
+  sha256 = "c229c50c6718989a8f1f79daa474b8b6107f44a1a066d47233c9e962ddd1008f",
 )
 load("@drake_lib//:share/drake/repo.bzl", "drake_repository")
 drake_repository(name="drake", excludes=["eigen", "fmt"])

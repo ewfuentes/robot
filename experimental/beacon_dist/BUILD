@@ -131,7 +131,7 @@ cc_library(
   srcs = ["render_ycb_scene.cc"],
   deps = [
     "//common:argument_wrapper",
-    "@drake//:drake_shared_library",
+    "//common:drake",
     "@opencv//:opencv",
   ]
 )

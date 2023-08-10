@@ -30,3 +30,12 @@ cc_test(
     "@com_google_googletest//:gtest_main",
   ]
 )
+
+cc_library(
+  name = "drake",
+  deps = [
+    "@drake//:drake_shared_library",
+    "@spdlog",
+  ],
+  visibility = ["//visibility:public"],
+)
