@@ -15,9 +15,9 @@ rules_pkg_dependencies()
 
 http_archive(
   name = "absl",
-  urls = ["https://github.com/abseil/abseil-cpp/archive/refs/tags/20220623.1.zip"],
-  strip_prefix = "abseil-cpp-20220623.1",
-  sha256 = "54707f411cb62a26a776dad5fd60829098c181700edcd022ea5c2ca49e9b7ef1",
+  urls = ["https://github.com/abseil/abseil-cpp/archive/refs/tags/20230802.0.zip"],
+  strip_prefix = "abseil-cpp-20230802.0",
+  sha256 = "2942db09db29359e0c1982986167167d226e23caac50eea1f07b2eb2181169cf"
 )
 
 http_archive(

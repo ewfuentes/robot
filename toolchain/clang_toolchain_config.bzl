@@ -6,7 +6,7 @@ def _impl(ctx):
     tool_paths = [
       tool_path(
         name = "gcc",
-        path = "/usr/bin/clang-14",
+        path = "/usr/bin/clang-15",
       ),
       tool_path(
         name = "ar",
@@ -14,11 +14,11 @@ def _impl(ctx):
       ),
       tool_path(
         name = "ld",
-        path = "/usr/bin/ld.lld-14",
+        path = "/usr/bin/ld.lld-15",
       ),
       tool_path(
         name = "cpp",
-        path = "/usr/bin/clang++-14",
+        path = "/usr/bin/clang++-15",
       ),
       tool_path(
         name = "gcov",
@@ -85,6 +85,7 @@ def _impl(ctx):
                     "-Wvla",
                     "-Wwrite-strings",
                     "-Wno-incompatible-pointer-types-discards-qualifiers",
+                    "-Wno-deprecated-builtins",
                     ]
                 )
               ]
@@ -99,7 +100,7 @@ def _impl(ctx):
               actions = [ACTION_NAMES.cpp_compile],
               flag_groups = [
                 flag_group(
-                  flags=["-std=c++20", "-fno-omit-frame-pointer", "-g", "-fPIC", "-gdwarf-4"],
+                  flags=["-stdlib=libstdc++", "-std=c++20", "-fno-omit-frame-pointer", "-g", "-fPIC", "-gdwarf-4"],
                 )
               ]
             )
@@ -211,11 +212,12 @@ def _impl(ctx):
       ctx=ctx,
       features = features,
       cxx_builtin_include_directories = [
-        "/usr/lib/llvm-14/lib/clang/14.0.0/include",
+        "/usr/lib/llvm-15/lib/clang/15.0.7/include",
         "/usr/include",
         "/usr/include/c++/12",
         "/usr/include/x86_64-linux-gnu/c++/12",
-        "/usr/lib/llvm-14/lib/clang/14.0.0/share",
+        "/usr/lib/llvm-15/lib/clang/15.0.7/share",
+        "/usr/lib/llvm-15/include/c++/v1/",
       ],
       toolchain_identifier="k8-clang-toolchain",
       host_system_name="local",

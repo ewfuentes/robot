@@ -1,7 +1,4 @@
 
-
-#include <pstl/glue_execution_defs.h>
-
 #include <algorithm>
 #include <chrono>
 #include <execution>
