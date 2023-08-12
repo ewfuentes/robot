@@ -225,12 +225,17 @@ std::optional<planning::BRMPlan<RobotBelief>> compute_belief_road_map_plan(
 }
 
 namespace detail {
+
 ScatteringTransform compute_edge_belief_transform(const liegroups::SE2 &local_from_robot,
                                                   const Eigen::Vector2d &end_state_in_local,
                                                   const EkfSlamConfig &ekf_config,
                                                   const EkfSlamEstimate &ekf_estimate,
                                                   const BeaconPotential &beacon_potential,
                                                   const double max_sensor_range_m) {
+    // Find all beacons along the path
+    // For each configuration, compute the scattering transform, probability, compute the transfer matrix
+    // Compute the expected transfer matrix
+    // Compute the scattering matrix
     constexpr double DT_S = 0.5;
     constexpr double VELOCITY_MPS = 2.0;
     constexpr double ANGULAR_VELOCITY_RADPS = 2.0;
