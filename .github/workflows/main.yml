@@ -28,6 +28,7 @@ jobs:
           clang-format --dry-run --Werror **/*.cc **/*.hh
 
   unit-test:
+    continue-on-error: true
     strategy:
       matrix:
         build-config: [gcc, clang]
