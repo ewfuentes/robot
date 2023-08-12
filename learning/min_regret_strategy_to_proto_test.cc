@@ -54,11 +54,9 @@ TEST(MinRegretStrategyToProtoTest, happy_case) {
         EXPECT_NE(iter, unpacked_counts.end());
         EXPECT_EQ(iter->second.iter_count, counts.iter_count);
 
-        int i = 0;
         for (const auto &[action, name] : Range<RPS::Actions>::value) {
             EXPECT_EQ(iter->second.regret_sum[action], counts.regret_sum[action]);
             EXPECT_EQ(iter->second.strategy_sum[action], counts.strategy_sum[action]);
-            i++;
         }
     }
 }

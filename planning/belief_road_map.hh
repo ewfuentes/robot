@@ -5,6 +5,7 @@
 #include <functional>
 #include <numeric>
 #include <optional>
+#include <unordered_map>
 
 #include "Eigen/Dense"
 #include "planning/breadth_first_search.hh"

@@ -1,6 +1,7 @@
 
 #include "planning/a_star.hh"
 
+#include <array>
 #include <cmath>
 #include <string>
 #include <tuple>

@@ -4,7 +4,7 @@
 #
 #    bazel run //third_party/python:requirements.update
 #
---extra-index-url https://download.pytorch.org/whl/nightly/cu117
+--extra-index-url https://download.pytorch.org/whl/nightly/cu121
 
 anyio==3.6.2 \
     --hash=sha256:25ea0d673ae30af41a0c442f81cf3b38c7e79fdc7b60335a4c14e05eb0947421 \
@@ -944,11 +944,11 @@ python-dateutil==2.8.2 \
     #   jupyter-client
     #   matplotlib
     #   pandas
-pytorch-triton==2.1.0+9820899b38 \
-    --hash=sha256:03d2f2f146ab4a9ebda34760b0a3e5eb9c4bb667f9907ce7989423d0e61d7903 \
-    --hash=sha256:97d5eed0986957ff671f88203b9115ca2c271f67536560cde8968f5b026e1c91 \
-    --hash=sha256:99cea6811ba638d96ada3d065171b4e01e1db3a8b603e423158658afc4a27b81 \
-    --hash=sha256:dcd621edb2fe85bdff6393fc92a15a013b94e62f70f9896f6bde5f836f796097
+pytorch-triton==2.1.0+e6216047b8 \
+    --hash=sha256:4b78850b9546c861a2404f9663d1bea3647133be593152ecd85ae3cdc679923e \
+    --hash=sha256:59a918dcbc579e4fc0be702d16a5ea3555f27832d2d7b2f47ec11a569720a0ea \
+    --hash=sha256:8c02285aa45f255ccf04b74cce8daba88cfa82e52f8cf4d87c778a23930743dc \
+    --hash=sha256:ba86d347dbaf23389cf75ba9ffee6740cf1e2cce1b20971f1aee564925f360bb
     # via torch
 pytz==2022.7.1 \
     --hash=sha256:01a0681c4b9684a28304615eba55d1ab31ae00bf68ec157ec3708a8182dbbcd0 \
@@ -1178,15 +1178,15 @@ tomli==2.0.1 \
     --hash=sha256:939de3e7a6161af0c887ef91b7d41a53e7c5a1ca976325f429cb46ea9bc30ecc \
     --hash=sha256:de526c12914f0c550d15924c62d72abc48d6fe7364aa87328337a31007fe8a4f
     # via ipdb
-torch==2.1.0.dev20230610+cu117 \
-    --hash=sha256:2b84eece4db42eb3cb046118455f56e4f7952c179594767bea9dc8b940b1d10f \
-    --hash=sha256:3d49df2f766a641d060a890b2f0a573e4f4e6ded09e012d0435f9ce95aa27711 \
-    --hash=sha256:5624445e9ad397197aad73b27a48e85ab468a20419cdaa3d5d81d64b1b19c9b7 \
-    --hash=sha256:7b59faeed44893c8bfbf97d86370642245917f37bb1aa628095cebfdb37505a4 \
-    --hash=sha256:b575e7d881cdb7ec85f2c0a04cb2710e9cfb177a007f3ec199dffa35fc445ccb \
-    --hash=sha256:cb1c57dd1f39efa8661714916c8a5923cc4a4016dd882c515c77e6454123de1b \
-    --hash=sha256:cc472482ecf3e2b418283060520adb7f2a0b8e28f49e0c2095aaf009a1a36367 \
-    --hash=sha256:f4f61b37890b2c34007f0bfadc08bc786018f9e76452ed8bcc6ca494af615a76
+torch==2.1.0.dev20230810+cu121 \
+    --hash=sha256:163b735895bba5e8e2ec7bd33ad6c680b31c93be405a1061c7b5d11fbb335e5d \
+    --hash=sha256:18e2e7990dd83cdb5ebd33af76735a3c97a3653908a0b1bb7ea6ce6bc8b11729 \
+    --hash=sha256:4ad5e218b622bfaffb2f68cf6a114f2c0a798cccff0619cb11dbe9399b48d7d9 \
+    --hash=sha256:992e49381fa953e4340b0fec2da4bd31e0e9a470d630fb21a8a57c3d4d0f6dd3 \
+    --hash=sha256:b979c685209ed5c274434adaa260e090c115f7cc4e45f1fe3dd59e05a6dbb85a \
+    --hash=sha256:c554940869b4a2d2b019486e47c10e693866c499a7288c4c3deedd70a6b69ddf \
+    --hash=sha256:ebb8f03a4b073312cdc99401423c43c8fd58338e13c09fb5a59229ae02fcbe56 \
+    --hash=sha256:ece8077c99d46144f8599d1110e82cc18a0450ed1dc1de365d4245c0a00bcdf5
     # via -r third_party/python/requirements.in
 tornado==6.2 \
     --hash=sha256:1d54d13ab8414ed44de07efecb97d4ef7c39f7438cf5e976ccd356bebb1b5fca \

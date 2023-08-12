@@ -1,6 +1,8 @@
 
 #include "experimental/beacon_sim/ekf_slam.hh"
 
+#include <numbers>
+
 #include "gtest/gtest.h"
 
 namespace robot::experimental::beacon_sim {

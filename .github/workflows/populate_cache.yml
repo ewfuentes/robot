@@ -10,6 +10,7 @@ on:
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
   populate-cache:
+    continue-on-error: true
     strategy:
       matrix:
         build-config: [gcc, clang]

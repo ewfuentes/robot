@@ -2,6 +2,7 @@
 #include <iostream>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "domain/fog.hh"
 #include "wise_enum.h"
