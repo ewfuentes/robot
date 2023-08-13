@@ -1,8 +1,6 @@
 
 #include "Eigen/Core"
 
-#include <iostream>
-
 namespace robot::geometry {
 
 template <int DIM>
