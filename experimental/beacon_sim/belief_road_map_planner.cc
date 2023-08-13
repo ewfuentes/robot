@@ -3,6 +3,7 @@
 
 #include <random>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "Eigen/Core"
 #include "common/liegroups/se2.hh"
@@ -226,6 +227,15 @@ std::optional<planning::BRMPlan<RobotBelief>> compute_belief_road_map_plan(
 
 namespace detail {
 
+std::unordered_set<int> find_beacons_along_path(const Eigen::Vector2d &start_in_local,
+                                                const Eigen::Vector2d &end_in_local,
+                                                const EkfSlamEstimate &est,
+                                                const double max_sensor_range_m) {
+
+    return {};
+
+}
+
 ScatteringTransform compute_edge_belief_transform(const liegroups::SE2 &local_from_robot,
                                                   const Eigen::Vector2d &end_state_in_local,
                                                   const EkfSlamConfig &ekf_config,
@@ -233,8 +243,13 @@ ScatteringTransform compute_edge_belief_transform(const liegroups::SE2 &local_fr
                                                   const BeaconPotential &beacon_potential,
                                                   const double max_sensor_range_m) {
     // Find all beacons along the path
+    const std::unordered_set<int> beacon_ids = find_beacons_along_path(local_from_robot.translation(), end_state_in_local, ekf_estimate, max_sensor_range_m);
+
+    
     // For each configuration, compute the scattering transform, probability, compute the transfer matrix
+
     // Compute the expected transfer matrix
+
     // Compute the scattering matrix
     constexpr double DT_S = 0.5;
     constexpr double VELOCITY_MPS = 2.0;
