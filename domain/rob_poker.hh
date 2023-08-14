@@ -101,7 +101,4 @@ std::string to_string(const RobPokerAction &hist);
 int evaluate_hand(const RobPokerHistory &history, const RobPokerPlayer player);
 int evaluate_hand(const absl::InlinedVector<StandardDeck::Card, 33> &cards);
 BettingState compute_betting_state(const RobPokerHistory &history);
-namespace detail {
-std::span<const std::vector<int>> n_choose_k(const int n, const int k);
-}
 }  // namespace robot::domain

@@ -22,10 +22,14 @@ jobs:
       - name: Checking out  ${{ github.sha }}
         uses: actions/checkout@v3
 
+      - name: Setup Dependencies
+        run: |
+          ./setup.sh
+
       - name: Lint C++ Files
         run: |
           shopt -s globstar
-          clang-format --dry-run --Werror **/*.cc **/*.hh
+          clang-format-15 --dry-run --Werror **/*.cc **/*.hh
 
   unit-test:
     continue-on-error: true

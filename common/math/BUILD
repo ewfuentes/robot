@@ -60,3 +60,20 @@ cc_test(
     ":n_choose_k",
   ]
 )
+
+cc_library(
+  name = "combinations",
+  hdrs = ["combinations.hh"],
+  srcs = ["combinations.cc"],
+  deps = [":n_choose_k"],
+  visibility = ["//visibility:public"],
+)
+
+cc_test(
+  name = "combinations_test",
+  srcs = ["combinations_test.cc"],
+  deps = [
+    ":combinations",
+    "@com_google_googletest//:gtest_main",
+  ]
+)

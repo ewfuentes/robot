@@ -27,9 +27,7 @@ struct Range<T, std::enable_if_t<wise_enum::is_wise_enum_v<T>>> {
 };
 
 template <typename T>
-concept Indexable = requires {
-    IndexSize<T>::value;
-};
+concept Indexable = requires { IndexSize<T>::value; };
 
 template <Indexable EnumT>
 constexpr bool is_contiguous_and_zero_indexed() {
