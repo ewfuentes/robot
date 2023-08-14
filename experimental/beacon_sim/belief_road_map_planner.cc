@@ -1,12 +1,16 @@
 
 #include "experimental/beacon_sim/belief_road_map_planner.hh"
 
+#include <algorithm>
+#include <iterator>
 #include <random>
 #include <unordered_map>
 #include <unordered_set>
 
 #include "Eigen/Core"
+#include "common/geometry/nearest_point_on_segment.hh"
 #include "common/liegroups/se2.hh"
+#include "common/math/combinations.hh"
 #include "common/math/redheffer_star.hh"
 #include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/generate_observations.hh"
@@ -50,9 +54,9 @@ Eigen::Matrix3d compute_process_noise(const EkfSlamConfig &config, const double 
             sq(config.heading_process_noise_rad_per_rt_s) * dt_s);
 }
 
-std::vector<BeaconObservation> generate_observations(const liegroups::SE2 &local_from_robot,
-                                                     const EkfSlamEstimate &estimate,
-                                                     const double max_sensor_range_m) {
+std::vector<BeaconObservation> generate_observations(
+    const liegroups::SE2 &local_from_robot, const EkfSlamEstimate &estimate,
+    const std::optional<std::vector<int>> &available_beacons, const double max_sensor_range_m) {
     std::vector<BeaconObservation> out;
     const RobotState robot_state(local_from_robot);
     const ObservationConfig config = {
@@ -60,7 +64,10 @@ std::vector<BeaconObservation> generate_observations(const liegroups::SE2 &local
         .max_sensor_range_m = max_sensor_range_m,
     };
 
-    for (const int beacon_id : estimate.beacon_ids) {
+    const std::vector<int> &beacon_list =
+        available_beacons.has_value() ? available_beacons.value() : estimate.beacon_ids;
+
+    for (const int beacon_id : beacon_list) {
         std::mt19937 gen(0);
         Beacon beacon = {
             .id = beacon_id,
@@ -100,14 +107,13 @@ ScatteringTransformMatrix compute_process_transform(
         .finished();
 }
 
-ScatteringTransformMatrix compute_measurement_transform(const liegroups::SE2 &local_from_robot,
-                                                        const EkfSlamConfig &ekf_config,
-                                                        const EkfSlamEstimate &ekf_estimate,
-                                                        const BeaconPotential &beacon_potential,
-                                                        const double max_sensor_range_m) {
+ScatteringTransformMatrix compute_measurement_transform(
+    const liegroups::SE2 &local_from_robot, const EkfSlamConfig &ekf_config,
+    const EkfSlamEstimate &ekf_estimate, const std::optional<std::vector<int>> &available_beacons,
+    const double max_sensor_range_m) {
     // Simulate observations
-    const auto observations =
-        generate_observations(local_from_robot, ekf_estimate, max_sensor_range_m);
+    const auto observations = generate_observations(local_from_robot, ekf_estimate,
+                                                    available_beacons, max_sensor_range_m);
 
     if (observations.empty()) {
         return ScatteringTransformMatrix::Identity();
@@ -127,8 +133,6 @@ ScatteringTransformMatrix compute_measurement_transform(const liegroups::SE2 &lo
     const Eigen::MatrixXd measurement_noise = build_measurement_noise(
         inputs.observation_matrix.rows() / 2, ekf_config.range_measurement_noise_m,
         ekf_config.bearing_measurement_noise_rad);
-
-    (void)beacon_potential;
 
     return (ScatteringTransformMatrix() << Eigen::Matrix3d::Identity(), Eigen::Matrix3d::Zero(),
             -observation_matrix.transpose() * measurement_noise.inverse() * observation_matrix,
@@ -227,30 +231,32 @@ std::optional<planning::BRMPlan<RobotBelief>> compute_belief_road_map_plan(
 
 namespace detail {
 
-std::unordered_set<int> find_beacons_along_path(const Eigen::Vector2d &start_in_local,
-                                                const Eigen::Vector2d &end_in_local,
-                                                const EkfSlamEstimate &est,
-                                                const double max_sensor_range_m) {
+std::vector<int> find_beacons_along_path(const Eigen::Vector2d &start_in_local,
+                                         const Eigen::Vector2d &end_in_local,
+                                         const EkfSlamEstimate &est,
+                                         const double max_sensor_range_m) {
+    std::unordered_set<int> beacon_ids;
+    for (const int beacon_id : est.beacon_ids) {
+        const Eigen::Vector2d beacon_in_local = est.beacon_in_local(beacon_id).value();
 
-    return {};
+        const auto result = geometry::nearest_point_on_segment_result(start_in_local, end_in_local,
+                                                                      beacon_in_local);
 
+        const double dist_m = (beacon_in_local - result.nearest_pt_in_frame).norm();
+        if (dist_m < max_sensor_range_m) {
+            beacon_ids.insert(beacon_id);
+        }
+    }
+    std::vector<int> out;
+    std::copy(beacon_ids.begin(), beacon_ids.end(), std::back_inserter(out));
+    std::sort(out.begin(), out.end());
+    return out;
 }
 
-ScatteringTransform compute_edge_belief_transform(const liegroups::SE2 &local_from_robot,
-                                                  const Eigen::Vector2d &end_state_in_local,
-                                                  const EkfSlamConfig &ekf_config,
-                                                  const EkfSlamEstimate &ekf_estimate,
-                                                  const BeaconPotential &beacon_potential,
-                                                  const double max_sensor_range_m) {
-    // Find all beacons along the path
-    const std::unordered_set<int> beacon_ids = find_beacons_along_path(local_from_robot.translation(), end_state_in_local, ekf_estimate, max_sensor_range_m);
-
-    
-    // For each configuration, compute the scattering transform, probability, compute the transfer matrix
-
-    // Compute the expected transfer matrix
-
-    // Compute the scattering matrix
+ScatteringTransform compute_edge_belief_transform(
+    const liegroups::SE2 &local_from_robot, const Eigen::Vector2d &end_state_in_local,
+    const EkfSlamConfig &ekf_config, const EkfSlamEstimate &ekf_estimate,
+    const std::optional<std::vector<int>> &available_beacons, const double max_sensor_range_m) {
     constexpr double DT_S = 0.5;
     constexpr double VELOCITY_MPS = 2.0;
     constexpr double ANGULAR_VELOCITY_RADPS = 2.0;
@@ -290,7 +296,7 @@ ScatteringTransform compute_edge_belief_transform(const liegroups::SE2 &local_fr
 
         // Compute the measurement update for the covariance
         const ScatteringTransformMatrix measurement_transform = compute_measurement_transform(
-            local_from_new_robot, ekf_config, ekf_estimate, beacon_potential, max_sensor_range_m);
+            local_from_new_robot, ekf_config, ekf_estimate, max_sensor_range_m, available_beacons);
 
         scattering_transform = math::redheffer_star(measurement_transform, scattering_transform);
         scattering_transform = math::redheffer_star(process_transform, scattering_transform);
@@ -301,6 +307,39 @@ ScatteringTransform compute_edge_belief_transform(const liegroups::SE2 &local_fr
         .local_from_robot = liegroups::SE2(local_from_new_robot.so2().log(), end_state_in_local),
         .cov_transform = scattering_transform,
     };
+}
+
+ScatteringTransform compute_edge_belief_transform(const liegroups::SE2 &local_from_robot,
+                                                  const Eigen::Vector2d &end_state_in_local,
+                                                  const EkfSlamConfig &ekf_config,
+                                                  const EkfSlamEstimate &ekf_estimate,
+                                                  const BeaconPotential &beacon_potential,
+                                                  const double max_sensor_range_m) {
+    // Find all beacons along the path
+    const std::vector<int> nearby_beacon_ids = find_beacons_along_path(
+        local_from_robot.translation(), end_state_in_local, ekf_estimate, max_sensor_range_m);
+
+    // For each configuration, compute the scattering transform, probability, compute the transfer
+    // matrix
+    for (int num_present_beacons = 0;
+         num_present_beacons <= static_cast<int>(nearby_beacon_ids.size()); num_present_beacons++) {
+        for (const auto &beacon_idxs :
+             math::combinations(nearby_beacon_ids.size(), num_present_beacons)) {
+            std::vector<int> present_beacons;
+            std::transform(beacon_idxs.begin(), beacon_idxs.end(),
+                           std::back_inserter(present_beacons),
+                           [&](const int idx) { return nearby_beacon_ids.at(idx); });
+            const auto scattering_transform =
+                compute_edge_belief_transform(local_from_robot, end_state_in_local, ekf_config,
+                                              ekf_estimate, present_beacons, max_sensor_range_m);
+
+            const double log_prob = 0;
+        }
+    }
+
+    // Compute the expected transfer matrix
+
+    // Compute the expected scattering matrix
 }
 
 }  // namespace detail

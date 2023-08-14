@@ -346,11 +346,13 @@ cc_library(
   srcs = ["belief_road_map_planner.cc"],
   deps = [
     ":ekf_slam",
+    ":generate_observations",
     ":robot",
     "//planning:belief_road_map",
     "//planning:probabilistic_road_map",
+    "//common/math:combinations",
     "//common/math:redheffer_star",
-    ":generate_observations",
+    "//common/geometry:nearest_point_on_segment",
   ]
 )
 
