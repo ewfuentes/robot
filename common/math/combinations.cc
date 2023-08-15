@@ -13,7 +13,11 @@ std::span<const std::vector<int>> combinations(const int n, const int k) {
     thread_local std::unordered_map<int, std::vector<std::vector<int>>> combinations_cache;
     const int num_combinations = n_choose_k(n, k);
     std::vector<std::vector<int>> &combos = combinations_cache[k];
-    if (k == 1 && n > static_cast<int>(combos.size())) {
+    if (k == 0) {
+        if (combos.empty()) {
+            combos.push_back({});
+        }
+    } else if (k == 1 && n > static_cast<int>(combos.size())) {
         for (int i = combos.size(); i < n; i++) {
             combos.push_back({i});
         }

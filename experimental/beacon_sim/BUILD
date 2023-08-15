@@ -425,6 +425,7 @@ cc_library(
   deps = [
     "@eigen//:eigen",
     "//common:drake",
+    "//common/math:combinations",
     "//common/math:n_choose_k",
   ]
 )

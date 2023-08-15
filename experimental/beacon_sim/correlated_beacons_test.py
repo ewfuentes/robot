@@ -146,6 +146,27 @@ class CorrelatedBeaconsTest(unittest.TestCase):
             places=6,
         )
 
+    def test_three_independent_beacons_marginalization(self):
+        # Setup
+        p_beacon = 0.75
+        p_no_beacons = (1 - p_beacon) ** 3
+        bc = cb.BeaconClique(
+            p_beacon=p_beacon,
+            p_no_beacons=p_no_beacons,
+            members=[1, 2, 3],
+        )
+
+        beacon_pot = cb.create_correlated_beacons(bc)
+
+        # Action
+        log_marginals = beacon_pot.compute_log_marginals([1])
+
+        # Verification
+        no_beacon, with_beacon = log_marginals if len(log_marginals[0].present_beacons) == 0 else log_marginals[::-1]
+        print(log_marginals)
+        self.assertAlmostEqual(np.exp(with_beacon.log_marginal), p_beacon, places=6)
+        self.assertAlmostEqual(np.exp(no_beacon.log_marginal), 1 - p_beacon, places=6)
+
 
 if __name__ == "__main__":
     unittest.main()
