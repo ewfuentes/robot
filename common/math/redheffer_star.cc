@@ -17,7 +17,7 @@ Eigen::MatrixXd scattering_from_transfer(const Eigen::MatrixXd &a) {
 
     const Eigen::MatrixXd D_inv = D.inverse();
 
-    return (Eigen::MatrixXd(2 * dim, 2 * dim) << A - B * D_inv * C, B*D_inv, -D_inv * C, D_inv)
+    return (Eigen::MatrixXd(2 * dim, 2 * dim) << A - B * D_inv * C, B * D_inv, -D_inv * C, D_inv)
         .finished();
 }
 

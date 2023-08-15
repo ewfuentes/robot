@@ -319,7 +319,21 @@ ScatteringTransform compute_edge_belief_transform(const liegroups::SE2 &local_fr
     const std::vector<int> nearby_beacon_ids = find_beacons_along_path(
         local_from_robot.translation(), end_state_in_local, ekf_estimate, max_sensor_range_m);
 
-    const auto log_marginals = beacon_potential.compute_log_marginals(nearby_beacon_ids);
+    // Find the beacons that are part of the potential
+    std::unordered_set<int> potential_beacons(beacon_potential.members().begin(),
+                                              beacon_potential.members().end());
+
+    std::vector<int> nearby_potential_beacons;
+    std::vector<int> nearby_forever_beacons;
+    for (const int beacon_id : nearby_beacon_ids) {
+        if (potential_beacons.contains(beacon_id)) {
+            nearby_potential_beacons.push_back(beacon_id);
+        } else {
+            nearby_forever_beacons.push_back(beacon_id);
+        }
+    }
+
+    const auto log_marginals = beacon_potential.compute_log_marginals(nearby_potential_beacons);
 
     // For each configuration, compute the scattering transform, probability, compute the transfer
     // matrix
@@ -328,20 +342,26 @@ ScatteringTransform compute_edge_belief_transform(const liegroups::SE2 &local_fr
         .cov_transform = ScatteringTransform::Matrix::Zero(),
     };
 
-    for (const auto &log_marginal: log_marginals) {
+    for (const auto &log_marginal : log_marginals) {
+        std::vector<int> present_beacons;
+        std::copy(nearby_forever_beacons.begin(), nearby_forever_beacons.end(),
+                  std::back_inserter(present_beacons));
+        std::copy(log_marginal.present_beacons.begin(), log_marginal.present_beacons.end(),
+                  std::back_inserter(present_beacons));
         const auto scattering_transform =
             compute_edge_belief_transform(local_from_robot, end_state_in_local, ekf_config,
-                                          ekf_estimate, log_marginal.present_beacons, max_sensor_range_m);
+                                          ekf_estimate, present_beacons, max_sensor_range_m);
 
-        const ScatteringTransform::Matrix transfer_matrix = math::transfer_from_scattering(scattering_transform.cov_transform);
+        const ScatteringTransform::Matrix transfer_matrix =
+            math::transfer_from_scattering(scattering_transform.cov_transform);
 
-        expected_transfer_matrix.cov_transform += std::exp(log_marginal.log_marginal) * transfer_matrix;
+        expected_transfer_matrix.cov_transform +=
+            std::exp(log_marginal.log_marginal) * transfer_matrix;
         expected_transfer_matrix.local_from_robot = scattering_transform.local_from_robot;
     }
     return {
         .local_from_robot = expected_transfer_matrix.local_from_robot,
-        .cov_transform = math::scattering_from_transfer(expected_transfer_matrix.cov_transform)
-    };
+        .cov_transform = math::scattering_from_transfer(expected_transfer_matrix.cov_transform)};
 }
 
 }  // namespace detail
