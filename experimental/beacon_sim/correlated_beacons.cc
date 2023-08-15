@@ -164,7 +164,8 @@ double BeaconPotential::log_prob(const std::unordered_map<int, bool> &assignment
     return x.transpose() * precision_ * x - log_normalizer_;
 }
 
-std::vector<LogMarginal> BeaconPotential::compute_log_marginals(const std::vector<int> &remaining) {
+std::vector<LogMarginal> BeaconPotential::compute_log_marginals(
+    const std::vector<int> &remaining) const {
     // Find the members that we need to marginalize over
     const std::vector<int> to_marginalize = [&]() {
         std::vector<int> out;
