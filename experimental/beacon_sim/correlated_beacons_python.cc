@@ -1,6 +1,6 @@
 
 
-#include <pybind11/detail/common.h>
+#include <sstream>
 
 #include "experimental/beacon_sim/correlated_beacons.hh"
 #include "pybind11/pybind11.h"
@@ -20,10 +20,27 @@ PYBIND11_MODULE(correlated_beacons_python, m) {
         .def_readwrite("p_no_beacons", &BeaconClique::p_no_beacons)
         .def_readwrite("members", &BeaconClique::members);
 
+    py::class_<LogMarginal>(m, "LogMarginal")
+        .def_readwrite("present_beacons", &LogMarginal::present_beacons)
+        .def_readwrite("log_marginal", &LogMarginal::log_marginal)
+        .def("__repr__", [](const LogMarginal &self) {
+            std::ostringstream oss;
+            oss << "<LogMarginal present_beacons=[";
+            for (int i = 0; i < static_cast<int>(self.present_beacons.size()); i++) {
+                oss << self.present_beacons.at(i);
+                if (i < static_cast<int>(self.present_beacons.size()) - 1) {
+                    oss << ", ";
+                }
+            }
+            oss << "] log_marginal=" << self.log_marginal << ">";
+            return oss.str();
+        });
+
     py::class_<BeaconPotential>(m, "BeaconPotential")
         .def(py::init<Eigen::MatrixXd, double, std::vector<int>>())
         .def("log_prob", &BeaconPotential::log_prob)
-        .def("__mul__", &BeaconPotential::operator*);
+        .def("__mul__", &BeaconPotential::operator*)
+        .def("compute_log_marginals", &BeaconPotential::compute_log_marginals);
 
     m.def("create_correlated_beacons", create_correlated_beacons);
 }

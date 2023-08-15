@@ -14,8 +14,8 @@ TEST(CorrelatedBeaconsToProtoTest, pack_unpack) {
 
     // Verification
     constexpr double TOL = 1e-6;
-    EXPECT_NEAR((unpacked.covariance() - pot.covariance()).norm(), 0.0, TOL);
-    EXPECT_NEAR(unpacked.bias(), pot.bias(), TOL);
+    EXPECT_NEAR((unpacked.precision() - pot.precision()).norm(), 0.0, TOL);
+    EXPECT_NEAR(unpacked.log_normalizer(), pot.log_normalizer(), TOL);
     ASSERT_EQ(unpacked.members().size(), pot.members().size());
     EXPECT_EQ(unpacked.members().at(0), pot.members().at(0));
     EXPECT_EQ(unpacked.members().at(1), pot.members().at(1));

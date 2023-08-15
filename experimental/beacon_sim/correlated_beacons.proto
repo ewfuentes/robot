@@ -7,6 +7,6 @@ package robot.experimental.beacon_sim.proto;
 
 message BeaconPotential {
   repeated int32 members = 1;
-  robot.math.proto.Matrix covariance = 2;
-  double bias = 3;
+  robot.math.proto.Matrix precision = 2;
+  double log_normalizer = 3;
 }

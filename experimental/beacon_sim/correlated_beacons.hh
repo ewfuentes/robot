@@ -20,24 +20,32 @@ struct BeaconClique {
     std::vector<int> members;
 };
 
+struct LogMarginal {
+    std::vector<int> present_beacons;
+    double log_marginal;
+};
+
 // A probability distribution over beacon presences/absences
 class BeaconPotential {
    public:
     BeaconPotential() = default;
-    BeaconPotential(const Eigen::MatrixXd &covariance, const double bias,
+    BeaconPotential(const Eigen::MatrixXd &information, const double log_normalizer,
                     const std::vector<int> &members);
 
     double log_prob(const std::unordered_map<int, bool> &assignments) const;
 
     BeaconPotential operator*(const BeaconPotential &other);
 
-    const Eigen::MatrixXd &covariance() const { return covariance_; };
-    double bias() const { return bias_; };
-    std::vector<int> members() const { return members_; };
+    const Eigen::MatrixXd &precision() const { return precision_; };
+    double log_normalizer() const { return log_normalizer_; };
+
+    std::vector<LogMarginal> compute_log_marginals(const std::vector<int> &remaining);
+
+    const std::vector<int> &members() const { return members_; };
 
    private:
-    Eigen::MatrixXd covariance_;
-    double bias_;
+    Eigen::MatrixXd precision_;
+    double log_normalizer_;
     std::vector<int> members_;
 };
 

@@ -123,8 +123,8 @@ TEST(WorldMapConfigToProtoTest, correlated_beacons_config_without_configuration_
         EXPECT_EQ(beacon.pos_in_local.y(), other_beacon.pos_in_local.y());
     }
     constexpr double TOL = 1e-6;
-    EXPECT_NEAR((config.potential.covariance() - other.potential.covariance()).norm(), 0.0, TOL);
-    EXPECT_NEAR(config.potential.bias(), other.potential.bias(), TOL);
+    EXPECT_NEAR((config.potential.precision() - other.potential.precision()).norm(), 0.0, TOL);
+    EXPECT_NEAR(config.potential.log_normalizer(), other.potential.log_normalizer(), TOL);
     EXPECT_EQ(config.potential.members().size(), other.potential.members().size());
     for (int i = 0; i < static_cast<int>(config.potential.members().size()); i++) {
         EXPECT_EQ(config.potential.members().at(i), other.potential.members().at(i));
@@ -164,8 +164,8 @@ TEST(WorldMapConfigToProtoTest, correlated_beacons_config_with_configuration_pac
         EXPECT_EQ(beacon.pos_in_local.y(), other_beacon.pos_in_local.y());
     }
     constexpr double TOL = 1e-6;
-    EXPECT_NEAR((config.potential.covariance() - other.potential.covariance()).norm(), 0.0, TOL);
-    EXPECT_NEAR(config.potential.bias(), other.potential.bias(), TOL);
+    EXPECT_NEAR((config.potential.precision() - other.potential.precision()).norm(), 0.0, TOL);
+    EXPECT_NEAR(config.potential.log_normalizer(), other.potential.log_normalizer(), TOL);
     EXPECT_EQ(config.potential.members().size(), other.potential.members().size());
     for (int i = 0; i < static_cast<int>(config.potential.members().size()); i++) {
         EXPECT_EQ(config.potential.members().at(i), other.potential.members().at(i));
