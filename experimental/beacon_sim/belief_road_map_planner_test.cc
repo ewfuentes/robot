@@ -8,7 +8,7 @@ namespace robot::experimental::beacon_sim {
 namespace {
 constexpr int BEACON_ID = 123;
 
-MappedLandmarks create_mapped_landmarks() {
+MappedLandmarks create_grid_mapped_landmarks() {
     const Eigen::Vector2d beacon_in_local{-7.5, -2.5};
     constexpr double POSITION_UNCERTAINTY_M = 0.1;
     const Eigen::Matrix2d cov_in_local{{{POSITION_UNCERTAINTY_M * POSITION_UNCERTAINTY_M, 0.0},
@@ -20,7 +20,7 @@ MappedLandmarks create_mapped_landmarks() {
     };
 }
 
-planning::RoadMap create_road_map() {
+planning::RoadMap create_grid_road_map() {
     constexpr double NODE_SPACING_M = 5.0;
     constexpr int NUM_ROWS = 3;
     constexpr int NUM_COLS = 3;
@@ -59,7 +59,7 @@ planning::RoadMap create_road_map() {
     };
 }
 
-std::tuple<planning::RoadMap, EkfSlam> create_environment(const EkfSlamConfig &ekf_config) {
+std::tuple<planning::RoadMap, EkfSlam> create_grid_environment(const EkfSlamConfig &ekf_config) {
     // Create the environment depicted below
     //
     //
@@ -94,8 +94,8 @@ std::tuple<planning::RoadMap, EkfSlam> create_environment(const EkfSlamConfig &e
     //  - The robot starts at (0, 10)
     //  - node indices start in the lower left and increase to the right, then increase up
 
-    const auto mapped_landmarks = create_mapped_landmarks();
-    const auto road_map = create_road_map();
+    const auto mapped_landmarks = create_grid_mapped_landmarks();
+    const auto road_map = create_grid_road_map();
     auto ekf_slam = EkfSlam(ekf_config, time::RobotTimestamp());
     constexpr bool LOAD_OFF_DIAGONALS = true;
     // Move the robot to (0, 10) and have it face down
@@ -124,7 +124,7 @@ TEST(BeliefRoadMapPlannerTest, grid_road_map) {
         .on_map_load_heading_uncertainty_rad = 0.5,
     };
     constexpr double MAX_SENSOR_RANGE_M = 3.0;
-    const auto &[road_map, ekf_slam] = create_environment(ekf_config);
+    const auto &[road_map, ekf_slam] = create_grid_environment(ekf_config);
     const Eigen::Vector2d GOAL_STATE = {10, -5};
     constexpr int NUM_START_CONNECTIONS = 1;
     constexpr int NUM_GOAL_CONENCTIONS = 1;
@@ -161,7 +161,7 @@ TEST(BeliefRoadMapPlannerTest, grid_road_map_with_unlikely_beacon) {
         .on_map_load_heading_uncertainty_rad = 0.5,
     };
     constexpr double MAX_SENSOR_RANGE_M = 3.0;
-    const auto &[road_map, ekf_slam] = create_environment(ekf_config);
+    const auto &[road_map, ekf_slam] = create_grid_environment(ekf_config);
     const Eigen::Vector2d GOAL_STATE = {10, -5};
     constexpr int NUM_START_CONNECTIONS = 1;
     constexpr int NUM_GOAL_CONENCTIONS = 1;
@@ -199,7 +199,7 @@ TEST(BeliefRoadMapPlannerTest, compute_edge_transform_no_measurements) {
         .on_map_load_heading_uncertainty_rad = 0.5,
     };
     constexpr double MAX_SENSOR_RANGE_M = 3.0;
-    const auto &[road_map, ekf_slam] = create_environment(ekf_config);
+    const auto &[road_map, ekf_slam] = create_grid_environment(ekf_config);
 
     constexpr int START_NODE_IDX = 6;
     constexpr int END_NODE_IDX = 3;
@@ -233,7 +233,7 @@ TEST(BeliefRoadMapPlannerTest, compute_edge_transform_with_measurement) {
         .on_map_load_heading_uncertainty_rad = 0.5,
     };
     constexpr double MAX_SENSOR_RANGE_M = 3.0;
-    const auto &[road_map, ekf_slam] = create_environment(ekf_config);
+    const auto &[road_map, ekf_slam] = create_grid_environment(ekf_config);
 
     constexpr int START_NODE_IDX = 3;
     constexpr int END_NODE_IDX = 0;
