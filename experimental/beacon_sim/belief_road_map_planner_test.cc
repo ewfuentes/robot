@@ -6,13 +6,15 @@
 
 namespace robot::experimental::beacon_sim {
 namespace {
+constexpr int BEACON_ID = 123;
+
 MappedLandmarks create_mapped_landmarks() {
     const Eigen::Vector2d beacon_in_local{-7.5, -2.5};
     constexpr double POSITION_UNCERTAINTY_M = 0.1;
     const Eigen::Matrix2d cov_in_local{{{POSITION_UNCERTAINTY_M * POSITION_UNCERTAINTY_M, 0.0},
                                         {0.0, POSITION_UNCERTAINTY_M * POSITION_UNCERTAINTY_M}}};
     return MappedLandmarks{
-        .beacon_ids = {123},
+        .beacon_ids = {BEACON_ID},
         .beacon_in_local = {beacon_in_local},
         .cov_in_local = cov_in_local,
     };
@@ -142,6 +144,44 @@ TEST(BeliefRoadMapPlannerTest, grid_road_map) {
     }
 }
 
+TEST(BeliefRoadMapPlannerTest, grid_road_map_with_unlikely_beacon) {
+    // Setup
+    const EkfSlamConfig ekf_config{
+        .max_num_beacons = 1,
+        .initial_beacon_uncertainty_m = 100.0,
+        .along_track_process_noise_m_per_rt_meter = 0.05,
+        .cross_track_process_noise_m_per_rt_meter = 0.05,
+        .pos_process_noise_m_per_rt_s = 0.0,
+        .heading_process_noise_rad_per_rt_meter = 1e-3,
+        .heading_process_noise_rad_per_rt_s = 0.0,
+        .beacon_pos_process_noise_m_per_rt_s = 1e-6,
+        .range_measurement_noise_m = 1e-1,
+        .bearing_measurement_noise_rad = 1e-1,
+        .on_map_load_position_uncertainty_m = 2.0,
+        .on_map_load_heading_uncertainty_rad = 0.5,
+    };
+    constexpr double MAX_SENSOR_RANGE_M = 3.0;
+    const auto &[road_map, ekf_slam] = create_environment(ekf_config);
+    const Eigen::Vector2d GOAL_STATE = {10, -5};
+    constexpr int NUM_START_CONNECTIONS = 1;
+    constexpr int NUM_GOAL_CONENCTIONS = 1;
+    constexpr double UNCERTAINTY_TOLERANCE = 1e-3;
+
+    constexpr double P_BEACON = 1e-7;
+    const double LOG_NORM = -std::log(1 - P_BEACON);
+    const double PARAM = std::log(P_BEACON) + LOG_NORM;
+    const BeaconPotential potential(Eigen::Matrix<double, 1, 1>{PARAM}, LOG_NORM, {BEACON_ID});
+
+    // Action
+    const auto maybe_plan = compute_belief_road_map_plan(
+        road_map, ekf_slam, potential, GOAL_STATE, MAX_SENSOR_RANGE_M, NUM_START_CONNECTIONS,
+        NUM_GOAL_CONENCTIONS, UNCERTAINTY_TOLERANCE);
+
+    // Verification
+    EXPECT_TRUE(maybe_plan.has_value());
+    EXPECT_EQ(maybe_plan.value().nodes.size(), 6);
+}
+
 TEST(BeliefRoadMapPlannerTest, compute_edge_transform_no_measurements) {
     // Setup
     const EkfSlamConfig ekf_config{
@@ -209,5 +249,4 @@ TEST(BeliefRoadMapPlannerTest, compute_edge_transform_with_measurement) {
     EXPECT_EQ(edge_belief_transform.local_from_robot.translation().x(), end_pos.x());
     EXPECT_EQ(edge_belief_transform.local_from_robot.translation().y(), end_pos.y());
 }
-
 }  // namespace robot::experimental::beacon_sim
