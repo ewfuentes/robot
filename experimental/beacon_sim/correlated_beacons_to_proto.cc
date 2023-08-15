@@ -13,7 +13,8 @@ void pack_into(const beacon_sim::BeaconPotential &in, BeaconPotential *out) {
 }
 
 beacon_sim::BeaconPotential unpack_from(const BeaconPotential &in) {
-    return beacon_sim::BeaconPotential(unpack_from<Eigen::MatrixXd>(in.precision()), in.log_normalizer(),
+    return beacon_sim::BeaconPotential(unpack_from<Eigen::MatrixXd>(in.precision()),
+                                       in.log_normalizer(),
                                        std::vector<int>(in.members().begin(), in.members().end()));
 }
 }  // namespace robot::experimental::beacon_sim::proto
