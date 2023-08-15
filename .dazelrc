@@ -42,7 +42,7 @@ DAZEL_VOLUMES=['${HOME}:${HOME}', '/tmp:/tmp']
 ## Add any environment variables you want to set in the dazel container
 ## They will be set via -e in the docker run command
 ## This can be a python iterable, or a comma-separated string.
-#DAZEL_ENV_VARS=[]
+DAZEL_ENV_VARS=['DISPLAY=$DISPLAY']
 #
 ## The GPUs to expose to the Docker container, "all" for every installed GPU
 DAZEL_GPUS="all"
