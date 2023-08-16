@@ -306,7 +306,7 @@ TEST(BeliefRoadMapPlannerTest, diamond_road_map_with_uncorrelated_beacons) {
     // Verification
     EXPECT_TRUE(maybe_plan.has_value());
     const auto &plan = maybe_plan.value();
-    for (const int node_id: plan.nodes) {
+    for (const int node_id : plan.nodes) {
         EXPECT_NE(node_id, 1);
     }
 }
@@ -346,7 +346,7 @@ TEST(BeliefRoadMapPlannerTest, diamond_road_map_with_correlated_beacons) {
     // Verification
     EXPECT_TRUE(maybe_plan.has_value());
     const auto &plan = maybe_plan.value();
-    for (const int node_id: plan.nodes) {
+    for (const int node_id : plan.nodes) {
         EXPECT_NE(node_id, 2);
     }
 }
