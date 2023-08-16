@@ -93,7 +93,7 @@ BeaconPotential::BeaconPotential(const Eigen::MatrixXd &precision, const double 
                                  const std::vector<int> &members)
     : precision_(precision), log_normalizer_(log_norm), members_(members) {}
 
-BeaconPotential BeaconPotential::operator*(const BeaconPotential &other) {
+BeaconPotential BeaconPotential::operator*(const BeaconPotential &other) const {
     const std::vector<int> sorted_members = sorted_vector(members_);
     const std::vector<int> other_sorted_members = sorted_vector(other.members_);
 
@@ -164,7 +164,8 @@ double BeaconPotential::log_prob(const std::unordered_map<int, bool> &assignment
     return x.transpose() * precision_ * x - log_normalizer_;
 }
 
-std::vector<LogMarginal> BeaconPotential::compute_log_marginals(const std::vector<int> &remaining) {
+std::vector<LogMarginal> BeaconPotential::compute_log_marginals(
+    const std::vector<int> &remaining) const {
     // Find the members that we need to marginalize over
     const std::vector<int> to_marginalize = [&]() {
         std::vector<int> out;

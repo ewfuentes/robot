@@ -2,6 +2,7 @@
 cc_library(
   name = "nearest_point_on_segment",
   hdrs = ["nearest_point_on_segment.hh"],
+  visibility = ["//visibility:public"],
   deps = [
     "@eigen",
   ]

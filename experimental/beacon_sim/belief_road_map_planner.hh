@@ -23,8 +23,10 @@ std::optional<planning::BRMPlan<RobotBelief>> compute_belief_road_map_plan(
 
 namespace detail {
 struct ScatteringTransform {
+    static constexpr int DIM = 2 * liegroups::SE2::DoF;
+    using Matrix = Eigen::Matrix<double, DIM, DIM>;
     liegroups::SE2 local_from_robot;
-    Eigen::Matrix<double, 2 * liegroups::SE2::DoF, 2 * liegroups::SE2::DoF> cov_transform;
+    Matrix cov_transform;
 };
 
 ScatteringTransform compute_edge_belief_transform(const liegroups::SE2 &local_from_robot,

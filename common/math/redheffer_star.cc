@@ -15,10 +15,15 @@ Eigen::MatrixXd scattering_from_transfer(const Eigen::MatrixXd &a) {
     const Eigen::MatrixXd C = a.bottomLeftCorner(dim, dim);
     const Eigen::MatrixXd D = a.bottomRightCorner(dim, dim);
 
-    const Eigen::MatrixXd A_inv = A.inverse();
+    const Eigen::MatrixXd D_inv = D.inverse();
 
-    return (Eigen::MatrixXd(2 * dim, 2 * dim) << A_inv, -A_inv * B, C * A_inv, D - C * A_inv * B)
+    return (Eigen::MatrixXd(2 * dim, 2 * dim) << A - B * D_inv * C, B * D_inv, -D_inv * C, D_inv)
         .finished();
+}
+
+Eigen::MatrixXd transfer_from_scattering(const Eigen::MatrixXd &a) {
+    // The same transformation brings us back
+    return scattering_from_transfer(a);
 }
 
 Eigen::MatrixXd redheffer_star(const Eigen::MatrixXd &a, const Eigen::MatrixXd &b) {
