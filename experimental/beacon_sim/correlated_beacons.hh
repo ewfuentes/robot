@@ -34,7 +34,7 @@ class BeaconPotential {
 
     double log_prob(const std::unordered_map<int, bool> &assignments) const;
 
-    BeaconPotential operator*(const BeaconPotential &other);
+    BeaconPotential operator*(const BeaconPotential &other) const;
 
     const Eigen::MatrixXd &precision() const { return precision_; };
     double log_normalizer() const { return log_normalizer_; };

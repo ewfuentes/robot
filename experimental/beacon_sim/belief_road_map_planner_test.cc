@@ -1,12 +1,17 @@
 
 #include "experimental/beacon_sim/belief_road_map_planner.hh"
 
+#include <stack>
+
+#include "experimental/beacon_sim/correlated_beacons.hh"
+#include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/mapped_landmarks.hh"
 #include "gtest/gtest.h"
+#include "planning/probabilistic_road_map.hh"
 
 namespace robot::experimental::beacon_sim {
 namespace {
-constexpr int BEACON_ID = 123;
+constexpr int GRID_BEACON_ID = 123;
 
 MappedLandmarks create_grid_mapped_landmarks() {
     const Eigen::Vector2d beacon_in_local{-7.5, -2.5};
@@ -14,7 +19,7 @@ MappedLandmarks create_grid_mapped_landmarks() {
     const Eigen::Matrix2d cov_in_local{{{POSITION_UNCERTAINTY_M * POSITION_UNCERTAINTY_M, 0.0},
                                         {0.0, POSITION_UNCERTAINTY_M * POSITION_UNCERTAINTY_M}}};
     return MappedLandmarks{
-        .beacon_ids = {BEACON_ID},
+        .beacon_ids = {GRID_BEACON_ID},
         .beacon_in_local = {beacon_in_local},
         .cov_in_local = cov_in_local,
     };
@@ -105,6 +110,90 @@ std::tuple<planning::RoadMap, EkfSlam> create_grid_environment(const EkfSlamConf
 
     return {road_map, ekf_slam};
 }
+
+MappedLandmarks create_diamond_mapped_landmarks() {
+    constexpr int LONE_BEACON_ID = 123;
+    const Eigen::Vector2d LONE_BEACON_IN_LOCAL{-1, 6};
+    constexpr int START_STACKED_BEACON_ID = 10;
+    const Eigen::Vector2d STACKED_BEACON_IN_LOCAL{6, -1};
+    constexpr int NUM_STACKED_BEACONS = 10;
+    constexpr double POSITION_UNCERTAINTY_M = 0.1;
+    constexpr int NUM_BEACONS = NUM_STACKED_BEACONS + 1;
+    const Eigen::Matrix2d cov_in_local{{{POSITION_UNCERTAINTY_M * POSITION_UNCERTAINTY_M, 0.0},
+                                        {0.0, POSITION_UNCERTAINTY_M * POSITION_UNCERTAINTY_M}}};
+
+    MappedLandmarks out;
+    out.cov_in_local = Eigen::MatrixXd::Zero(2 * NUM_BEACONS, 2 * NUM_BEACONS);
+    // Add the lone beacon
+    out.beacon_ids.push_back(LONE_BEACON_ID);
+    out.beacon_in_local.push_back(LONE_BEACON_IN_LOCAL);
+    out.cov_in_local.block<2, 2>(0, 0) = cov_in_local;
+
+    // Add the stacked beacons
+    for (int i = 1; i <= NUM_STACKED_BEACONS; i++) {
+        out.beacon_ids.push_back(START_STACKED_BEACON_ID + i);
+        out.beacon_in_local.push_back(STACKED_BEACON_IN_LOCAL);
+        out.cov_in_local.block<2, 2>(2 * i, 2 * i) = cov_in_local;
+    }
+
+    return out;
+}
+
+planning::RoadMap create_diamond_road_map() {
+    return {
+        .points = {{0.0, 0.0}, {0.0, 5.0}, {5.0, 0.0}, {5.0, 5.0}},
+        .adj = (Eigen::MatrixXd(4, 4) << 0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0).finished(),
+    };
+}
+
+std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_diamond_environment(
+    const EkfSlamConfig &ekf_config, const double p_lone_beacon, const double p_no_stack_beacon,
+    const double p_stacked_beacon) {
+    // Create the environment depicted below
+    //
+    //            B (-1, 6)
+    //                        3
+    //              X────────X─────Goal
+    //              │1       │  2m
+    //              │        │
+    //              │        │ 5m
+    //              │        │
+    //    Start─────X────────X 2
+    //          2m   0
+    //                  5m     Bx10
+    //                         (6, -1)
+    // Note that:
+    // - each X is a PRM node,
+    // - there is a beacon at (-1, 6) and there are 10 beacons at (6, -1)
+    // - The robot starts at (-2, 0)
+
+    const auto mapped_landmarks = create_diamond_mapped_landmarks();
+    const auto road_map = create_diamond_road_map();
+    auto ekf_slam = EkfSlam(ekf_config, time::RobotTimestamp());
+    constexpr bool LOAD_OFF_DIAGONALS = true;
+
+    // Lone beacon potential
+    const double lone_log_norm = -std::log(1 - p_lone_beacon);
+    const double lone_param = std::log(p_lone_beacon) + lone_log_norm;
+    const auto lone_potential =
+        BeaconPotential(Eigen::Matrix<double, 1, 1>{lone_param}, lone_log_norm, {123});
+
+    // Stacked Potential
+    const auto stacked_potential = create_correlated_beacons({
+        .p_beacon = p_stacked_beacon,
+        .p_no_beacons = p_no_stack_beacon,
+        .members = {11, 12, 12, 13, 14, 15, 16, 17, 18, 19, 20},
+    });
+    const auto beacon_potential = lone_potential * stacked_potential;
+
+    // Move the robot to (-2, 0) and have it face down
+    const liegroups::SE2 old_robot_from_new_robot(-std::numbers::pi / 2.0, {-2, 0});
+    ekf_slam.predict(time::RobotTimestamp(), old_robot_from_new_robot);
+    ekf_slam.load_map(mapped_landmarks, LOAD_OFF_DIAGONALS);
+
+    return {road_map, ekf_slam, beacon_potential};
+}
+
 }  // namespace
 
 TEST(BeliefRoadMapPlannerTest, grid_road_map) {
@@ -121,14 +210,14 @@ TEST(BeliefRoadMapPlannerTest, grid_road_map) {
         .range_measurement_noise_m = 1e-1,
         .bearing_measurement_noise_rad = 1e-1,
         .on_map_load_position_uncertainty_m = 2.0,
-        .on_map_load_heading_uncertainty_rad = 0.5,
+        .on_map_load_heading_uncertainty_rad = 0.1,
     };
     constexpr double MAX_SENSOR_RANGE_M = 3.0;
     const auto &[road_map, ekf_slam] = create_grid_environment(ekf_config);
     const Eigen::Vector2d GOAL_STATE = {10, -5};
     constexpr int NUM_START_CONNECTIONS = 1;
     constexpr int NUM_GOAL_CONENCTIONS = 1;
-    constexpr double UNCERTAINTY_TOLERANCE = 1e-3;
+    constexpr double UNCERTAINTY_TOLERANCE = 1e-2;
 
     // Action
     const auto maybe_plan = compute_belief_road_map_plan(
@@ -170,7 +259,7 @@ TEST(BeliefRoadMapPlannerTest, grid_road_map_with_unlikely_beacon) {
     constexpr double P_BEACON = 1e-7;
     const double LOG_NORM = -std::log(1 - P_BEACON);
     const double PARAM = std::log(P_BEACON) + LOG_NORM;
-    const BeaconPotential potential(Eigen::Matrix<double, 1, 1>{PARAM}, LOG_NORM, {BEACON_ID});
+    const BeaconPotential potential(Eigen::Matrix<double, 1, 1>{PARAM}, LOG_NORM, {GRID_BEACON_ID});
 
     // Action
     const auto maybe_plan = compute_belief_road_map_plan(
@@ -180,6 +269,86 @@ TEST(BeliefRoadMapPlannerTest, grid_road_map_with_unlikely_beacon) {
     // Verification
     EXPECT_TRUE(maybe_plan.has_value());
     EXPECT_EQ(maybe_plan.value().nodes.size(), 6);
+}
+
+TEST(BeliefRoadMapPlannerTest, diamond_road_map_with_uncorrelated_beacons) {
+    // Setup
+    const EkfSlamConfig ekf_config{
+        .max_num_beacons = 11,
+        .initial_beacon_uncertainty_m = 100.0,
+        .along_track_process_noise_m_per_rt_meter = 0.05,
+        .cross_track_process_noise_m_per_rt_meter = 0.05,
+        .pos_process_noise_m_per_rt_s = 0.0,
+        .heading_process_noise_rad_per_rt_meter = 1e-3,
+        .heading_process_noise_rad_per_rt_s = 0.0,
+        .beacon_pos_process_noise_m_per_rt_s = 1e-6,
+        .range_measurement_noise_m = 1e-1,
+        .bearing_measurement_noise_rad = 1e-1,
+        .on_map_load_position_uncertainty_m = 2.0,
+        .on_map_load_heading_uncertainty_rad = 0.5,
+    };
+    constexpr double P_LONE_BEACON = 0.5;
+    constexpr double P_NO_STACKED_BEACON = 0.01;
+    constexpr double P_STACKED_BEACON = 0.1;
+    constexpr double MAX_SENSOR_RANGE_M = 3.0;
+    const auto &[road_map, ekf_slam, beacon_potential] = create_diamond_environment(
+        ekf_config, P_LONE_BEACON, P_NO_STACKED_BEACON, P_STACKED_BEACON);
+    const Eigen::Vector2d GOAL_STATE = {5, 7};
+    constexpr int NUM_START_CONNECTIONS = 1;
+    constexpr int NUM_GOAL_CONENCTIONS = 1;
+    constexpr double UNCERTAINTY_TOLERANCE = 1e-3;
+
+    // Action
+    const auto maybe_plan = compute_belief_road_map_plan(
+        road_map, ekf_slam, beacon_potential, GOAL_STATE, MAX_SENSOR_RANGE_M, NUM_START_CONNECTIONS,
+        NUM_GOAL_CONENCTIONS, UNCERTAINTY_TOLERANCE);
+
+    // Verification
+    EXPECT_TRUE(maybe_plan.has_value());
+    const auto &plan = maybe_plan.value();
+    for (const int node_id: plan.nodes) {
+        EXPECT_NE(node_id, 1);
+    }
+}
+
+TEST(BeliefRoadMapPlannerTest, diamond_road_map_with_correlated_beacons) {
+    // Setup
+    const EkfSlamConfig ekf_config{
+        .max_num_beacons = 11,
+        .initial_beacon_uncertainty_m = 100.0,
+        .along_track_process_noise_m_per_rt_meter = 0.05,
+        .cross_track_process_noise_m_per_rt_meter = 0.05,
+        .pos_process_noise_m_per_rt_s = 0.0,
+        .heading_process_noise_rad_per_rt_meter = 1e-3,
+        .heading_process_noise_rad_per_rt_s = 0.0,
+        .beacon_pos_process_noise_m_per_rt_s = 1e-6,
+        .range_measurement_noise_m = 1e-1,
+        .bearing_measurement_noise_rad = 1e-1,
+        .on_map_load_position_uncertainty_m = 2.0,
+        .on_map_load_heading_uncertainty_rad = 0.5,
+    };
+    constexpr double P_LONE_BEACON = 0.5;
+    constexpr double P_NO_STACKED_BEACON = 0.899;
+    constexpr double P_STACKED_BEACON = 0.1;
+    constexpr double MAX_SENSOR_RANGE_M = 3.0;
+    const auto &[road_map, ekf_slam, beacon_potential] = create_diamond_environment(
+        ekf_config, P_LONE_BEACON, P_NO_STACKED_BEACON, P_STACKED_BEACON);
+    const Eigen::Vector2d GOAL_STATE = {5, 7};
+    constexpr int NUM_START_CONNECTIONS = 1;
+    constexpr int NUM_GOAL_CONENCTIONS = 1;
+    constexpr double UNCERTAINTY_TOLERANCE = 1e-3;
+
+    // Action
+    const auto maybe_plan = compute_belief_road_map_plan(
+        road_map, ekf_slam, beacon_potential, GOAL_STATE, MAX_SENSOR_RANGE_M, NUM_START_CONNECTIONS,
+        NUM_GOAL_CONENCTIONS, UNCERTAINTY_TOLERANCE);
+
+    // Verification
+    EXPECT_TRUE(maybe_plan.has_value());
+    const auto &plan = maybe_plan.value();
+    for (const int node_id: plan.nodes) {
+        EXPECT_NE(node_id, 2);
+    }
 }
 
 TEST(BeliefRoadMapPlannerTest, compute_edge_transform_no_measurements) {

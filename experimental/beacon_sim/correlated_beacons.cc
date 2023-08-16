@@ -93,7 +93,7 @@ BeaconPotential::BeaconPotential(const Eigen::MatrixXd &precision, const double 
                                  const std::vector<int> &members)
     : precision_(precision), log_normalizer_(log_norm), members_(members) {}
 
-BeaconPotential BeaconPotential::operator*(const BeaconPotential &other) {
+BeaconPotential BeaconPotential::operator*(const BeaconPotential &other) const {
     const std::vector<int> sorted_members = sorted_vector(members_);
     const std::vector<int> other_sorted_members = sorted_vector(other.members_);
 
