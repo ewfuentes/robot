@@ -897,6 +897,19 @@ pure-eval==0.2.2 \
     --hash=sha256:01eaab343580944bc56080ebe0a674b39ec44a945e6d09ba7db3cb8cec289350 \
     --hash=sha256:2b45320af6dfaa1750f543d714b6d1c520a1688dec6fd24d339063ce0aaa9ac3
     # via stack-data
+pycairo==1.24.0 \
+    --hash=sha256:031f5ef2c80792673f2c54ee285f2a31779a44d7521a27a7f82e4a5ecfafc26e \
+    --hash=sha256:1444d52f1bb4cc79a4a0c0fe2ccec4bd78ff885ab01ebe1c0f637d8392bcafb6 \
+    --hash=sha256:220742f187d3940d695c1af1a0c1646e26dc2199d65b7bafaa527e15c3520fd3 \
+    --hash=sha256:26fe2c32ba24caae524d855f26f3ee1a0c1ea3291da2a19604264ed29f64d834 \
+    --hash=sha256:3199d6a0538d6482c71efb816bd330515e98bb06f182e23572c77d92be98f536 \
+    --hash=sha256:4631ed794a3376ec314ce47826c3e51940b54695f4ef7d5b3245b203037ae760 \
+    --hash=sha256:6ad5c3425408ebb0dfaad2cca4a80e7524d7a309305acdb2569638b5cc988fe7 \
+    --hash=sha256:afccac552386ab628e8ae658185fa363e8d15a5afe96d1de43f97027dd78bdd6 \
+    --hash=sha256:c5f6efdd86fe13d36a6b004c64d8e97cde9854d599cf6cca962afb1966fe533d \
+    --hash=sha256:c7c79e748ec849811241d29553184c3ad93c857558dbe9954a49327680b8d356 \
+    --hash=sha256:ed0622a0ccffb873ffe7fee1699d60779f1260fba143390e5366d55f1d1739f5
+    # via pygobject
 pycparser==2.21 \
     --hash=sha256:8ee45429555515e1f6b185e78100aea234072576aa43ab53aefcae078162fca9 \
     --hash=sha256:e644fdec12f7872f86c58ff790da456218b10f863970249516d60a5eaca77206
@@ -907,6 +920,9 @@ pygments==2.13.0 \
     # via
     #   ipython
     #   nbconvert
+pygobject==3.44.1 \
+    --hash=sha256:665fbe980c91e8b31ad78ed3f66879946948200864002d193f67eccc1d7d5d83
+    # via -r third_party/python/requirements.in
 pyparsing==3.0.9 \
     --hash=sha256:2b020ecf7d21b687f219b71ecad3631f644a47f01403fa1d1036b0c6416d70fb \
     --hash=sha256:5026bae9a10eeaefb61dab2f09052b9f4307d44aee4eda64b309723d8d206bbc

@@ -6,4 +6,5 @@ set -x # enable echo
 sudo apt-get update
 sudo DEBIAN_FRONTEND=noninteractive apt-get -y install clang-15 clang-format-15 libxcursor-dev \
      libxrandr-dev libxinerama-dev libxi-dev freeglut3-dev libstdc++-12-dev gcc-11 libtbb-dev \
-     libfmt-dev libspdlog-dev libvtk9-dev coinor-libipopt-dev coinor-libclp-dev
+     libfmt-dev libspdlog-dev libvtk9-dev coinor-libipopt-dev coinor-libclp-dev \
+     libgirepository1.0-dev

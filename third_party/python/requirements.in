@@ -25,3 +25,4 @@ ipdb==0.13.13
 beautifulsoup4==4.12.2
 line_profiler==4.0.3
 PyYAML==6.0
+PyGObject==3.44.1
