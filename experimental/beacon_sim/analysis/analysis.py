@@ -7,6 +7,7 @@ import click
 import numpy as np
 import numpy.linalg as LA
 from collections import defaultdict
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 
 from experimental.beacon_sim.analysis.belief_propagation import BeliefPropagation
@@ -144,4 +145,5 @@ def sens(
 
 
 if __name__ == "__main__":
+    mpl.use("GTK3Agg")
     main()
