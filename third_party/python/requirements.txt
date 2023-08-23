@@ -222,6 +222,10 @@ charset-normalizer==3.0.1 \
     --hash=sha256:f9d0c5c045a3ca9bedfc35dca8526798eb91a07aa7a2c0fee134c6c6f321cbd7 \
     --hash=sha256:ff6f3db31555657f3163b15a6b7c6938d08df7adbfc9dd13d9d19edad678f1e8
     # via requests
+click==8.1.7 \
+    --hash=sha256:ae74fb96c20a0277a1d615f1e4d73c8414f5a98db8b799a7931d1582f3390c28 \
+    --hash=sha256:ca9853ad459e787e2192211578cc907e7594e294c7ccc834310722b41b9ca6de
+    # via -r third_party/python/requirements.in
 contourpy==1.0.6 \
     --hash=sha256:0236875c5a0784215b49d00ebbe80c5b6b5d5244b3655a36dda88105334dea17 \
     --hash=sha256:03d1b9c6b44a9e30d554654c72be89af94fab7510b4b9f62356c64c81cec8b7d \
