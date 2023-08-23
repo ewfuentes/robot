@@ -4,7 +4,7 @@ Module modeling implementing belief progration for EKF with one-step transfor fu
 import numpy as np
 from numpy.linalg import inv, eig, cond, det, norm
 
-from star import sblocks, sprod
+from experimental.beacon_sim.analysis.star import sblocks, sprod
 
 class BeliefPropagation:
     """

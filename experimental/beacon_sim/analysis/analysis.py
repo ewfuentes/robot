@@ -9,9 +9,9 @@ import numpy.linalg as LA
 from collections import defaultdict
 import matplotlib.pyplot as plt
 
-from belief_propagation import BeliefPropagation
-from models import SingleIntegrator, DoubleIntegrator
-from star import scattering_from_transfer, transfer_from_scattering
+from experimental.beacon_sim.analysis.belief_propagation import BeliefPropagation
+from experimental.beacon_sim.analysis.models import SingleIntegrator, DoubleIntegrator
+from experimental.beacon_sim.analysis.star import scattering_from_transfer, transfer_from_scattering
 
 
 def add_xy_to_axes(x, y, ax, name='', xlabel='', ylabel='', use_log=False):
