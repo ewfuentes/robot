@@ -97,21 +97,24 @@ class BeliefPropagation:
             return s[0:n,n:2*n]
 
     def compute_one_step_process_tf(self):
+        F = self.model.F()
+        Q = self.model.Q
+        inv_F = inv(F)
         if self.filter_type == FilterType.COVARIANCE:
-            block_1 = self.models.F()
-            block_2 = self.models.Q @ inv(self.model.F().transpose())
+            block_1 = F
+            block_2 = Q @ inv_F.transpose()
             block_3 = np.zeros_like(block_1)
-            block_4 = inv(block_1.transpose())
+            block_4 = inv_F.transpose()
         else:
-            block_1 = inv(self.models.F().transpose())
+            block_1 = inv_F.transpose()
             block_2 = np.zeros_like(block_1)
-            block_3 = self.models.Q @ inv(self.model.F().transpose())
-            block_4 = self.models.F()
+            block_3 = Q @ inv_F.transpose()
+            block_4 = F
 
         return np.block([[block_1, block_2], [block_3, block_4]])
 
     def compute_one_step_measurement_tf(self):
-        M = self.models.M()
+        M = self.model.M()
         I = np.eye(M.shape[0])
         if self.filter_type == FilterType.COVARIANCE:
             block_1 = I
@@ -126,8 +129,8 @@ class BeliefPropagation:
         return np.block([[block_1, block_2], [block_3, block_4]])
 
     def compute_one_step_process_scatter(self):
-        F = self.models.F()
-        Q = self.models.Q
+        F = self.model.F()
+        Q = self.model.Q
         if self.filter_type == FilterType.COVARIANCE:
             block_1 = F
             block_2 = Q
@@ -143,7 +146,7 @@ class BeliefPropagation:
         return np.block([[block_1, block_2], [block_3, block_4]])
 
     def compute_one_step_measurement_scatter(self):
-        M = self.models.F()
+        M = self.model.F()
         I = np.identity(M.shape[0])
         if self.filter_type == FilterType.COVARIANCE:
             block_1 = I
