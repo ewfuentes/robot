@@ -10,7 +10,7 @@ from collections import defaultdict
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
-from experimental.beacon_sim.analysis.belief_propagation import BeliefPropagation
+from experimental.beacon_sim.analysis.belief_propagation import BeliefPropagation, FilterType
 from experimental.beacon_sim.analysis.models import SingleIntegrator, DoubleIntegrator
 from experimental.beacon_sim.analysis.star import scattering_from_transfer, transfer_from_scattering
 
@@ -33,11 +33,13 @@ def main():
 @click.option("--num-steps", type=int, default=100, help='number of time steps')
 @click.option("--dt", type=float, default=1, help='length of time step')
 @click.option("--incr", type=int, default=1, help='increments to display in figures')
+@click.option("--info", is_flag=True, type=bool, default=False, help='Use information filter')
 def run_cond(
     model,
     num_steps,
     dt,
     incr,
+    info
 ):
     #setup model
     if model=='si':
@@ -50,7 +52,8 @@ def run_cond(
         print('error. invalid model')
         raise
 
-    bp = BeliefPropagation(robot)   
+    filter_type = FilterType.INFORMATION if info else FilterType.COVARIANCE
+    bp = BeliefPropagation(robot, filter_type)
 
     data={}
 
@@ -104,10 +107,12 @@ def run_cond(
 @click.argument("model", default="si")
 @click.option("--num-props", type=int, default=500)
 @click.option("--dt", type=float, default=0.1)
+@click.option("--info", is_flag=True, type=bool, default=False, help='Use information filter')
 def sens(
     model,
     num_props, #968, largest num props before fail for di
     dt,
+    info
 ):
     #setup model
     if model=='si':
@@ -120,7 +125,8 @@ def sens(
         print('error. invalid model')
         raise
 
-    bp = BeliefPropagation(robot)
+    filter_type = FilterType.INFORMATION if info else FilterType.COVARIANCE
+    bp = BeliefPropagation(robot, filter_type)
 
     P_ekf = bp.prop(P, k=num_props)
     P_scatter = bp.prop_scatter(P, k=num_props)
