@@ -9,10 +9,13 @@ import numpy.linalg as LA
 from collections import defaultdict
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+import IPython
 
 from experimental.beacon_sim.analysis.belief_propagation import BeliefPropagation, FilterType
 from experimental.beacon_sim.analysis.models import SingleIntegrator, DoubleIntegrator
-from experimental.beacon_sim.analysis.star import scattering_from_transfer, transfer_from_scattering
+from experimental.beacon_sim.analysis.star import scattering_from_transfer, transfer_from_scattering, sprod, sblocks
+
+np.set_printoptions(linewidth=200)
 
 
 def add_xy_to_axes(x, y, ax, name='', xlabel='', ylabel='', use_log=False):
@@ -26,6 +29,38 @@ def add_xy_to_axes(x, y, ax, name='', xlabel='', ylabel='', use_log=False):
 @click.group()
 def main():
     pass
+
+
+@main.command(name="sandbox", help='sandbox')
+@click.argument("model", default="si")
+@click.option("--num-steps", type=int, default=100, help='number of time steps')
+@click.option("--dt", type=float, default=1, help='length of time step')
+@click.option("--info", is_flag=True, type=bool, default=False, help='Use information filter')
+def sandbox(model, num_steps, dt, info):
+    if model=='si':
+        P = np.identity(2)
+        robot = SingleIntegrator(dt=dt)
+    elif model=='di':
+        P = np.identity(4)
+        robot = DoubleIntegrator(dt=dt)
+    else:
+        print('error. invalid model')
+        raise
+
+    filter_type = FilterType.INFORMATION if info else FilterType.COVARIANCE
+    print('Filter Type:', filter_type)
+    bp = BeliefPropagation(robot, filter_type)
+
+    s_only_pred = bp.compute_scatter(k=num_steps, only_predict=True)
+    s_with_meas = bp.compute_scatter(k=num_steps, only_predict=False)
+
+    s_all_meas = sprod(s_with_meas, sprod(s_with_meas, s_with_meas))
+    s_all_pred = sprod(s_only_pred, sprod(s_only_pred, s_only_pred))
+    s_mixed = sprod(s_only_pred, sprod(s_with_meas, s_only_pred))
+
+    IPython.embed()
+
+
 
 
 @main.command(name="cond", help='Plot condition number for one-step update forms')
@@ -53,6 +88,7 @@ def run_cond(
         raise
 
     filter_type = FilterType.INFORMATION if info else FilterType.COVARIANCE
+    print('Filter Type:', filter_type)
     bp = BeliefPropagation(robot, filter_type)
 
     data={}

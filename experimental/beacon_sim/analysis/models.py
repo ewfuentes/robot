@@ -37,7 +37,7 @@ class SingleIntegrator():
 
     def F(self):
         #jacobian of process wrt to states
-        return np.identity(2)
+        return np.array([[1.0, 0.1],[0.0, 1.0]])
 
     def L(self):
         #jacobian of process wrt to process noise
