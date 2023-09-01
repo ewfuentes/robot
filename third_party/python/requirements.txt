@@ -6,9 +6,9 @@
 #
 --extra-index-url https://download.pytorch.org/whl/nightly/cu121
 
-anyio==3.7.1 \
-    --hash=sha256:44a3c9aba0f5defa43261a8b3efb97891f2bd7d804e0e1f56419befa1adfc780 \
-    --hash=sha256:91dee416e570e92c64041bd18b900d1d6fa78dff7048769ce5ac5ddad004fbb5
+anyio==4.0.0 \
+    --hash=sha256:cfdb2b588b9fc25ede96d8db56ed50848b0b649dca3dd1df0b11f683bb9e0b5f \
+    --hash=sha256:f7ed51751b2c2add651e5747c891b47e26d2a21be5d32d9311dfe9692f3e5d7a
     # via jupyter-server
 argon2-cffi==23.1.0 \
     --hash=sha256:879c3e79a2729ce768ebb7d36d4609e3a78a4ca2ec3a9f12286ca057e3d0db08 \
@@ -301,7 +301,9 @@ defusedxml==0.7.1 \
 exceptiongroup==1.1.3 \
     --hash=sha256:097acd85d473d75af5bb98e41b61ff7fe35efe6675e4f9370ec6ec5126d160e9 \
     --hash=sha256:343280667a4585d195ca1cf9cef84a4e178c4b6cf2274caef9859782b567d5e3
-    # via anyio
+    # via
+    #   anyio
+    #   ipython
 executing==1.2.0 \
     --hash=sha256:0314a69e37426e3608aada02473b4161d4caf5a4b244d1d0c48072b8fee7bacc \
     --hash=sha256:19da64c18d2d851112f09c287f8d3dbbdf725ab0e569077efb6cdcbd3497c107
@@ -377,9 +379,9 @@ ipykernel==6.25.1 \
     # via
     #   nbclassic
     #   notebook
-ipython==8.14.0 \
-    --hash=sha256:1d197b907b6ba441b692c48cf2a3a2de280dc0ac91a3405b39349a50272ca0a1 \
-    --hash=sha256:248aca623f5c99a6635bc3857677b7320b9b8039f99f070ee0d20a5ca5a8e6bf
+ipython==8.15.0 \
+    --hash=sha256:2baeb5be6949eeebf532150f81746f8333e2ccce02de1c7eedde3f23ed5e9f1e \
+    --hash=sha256:45a2c3a529296870a97b7de34eda4a31bee16bc7bf954e07d39abe49caf8f887
     # via
     #   ipdb
     #   ipykernel
@@ -449,9 +451,9 @@ jupyter-events==0.7.0 \
     --hash=sha256:4753da434c13a37c3f3c89b500afa0c0a6241633441421f6adafe2fb2e2b924e \
     --hash=sha256:7be27f54b8388c03eefea123a4f79247c5b9381c49fb1cd48615ee191eb12615
     # via jupyter-server
-jupyter-server==2.7.2 \
-    --hash=sha256:98a375347b580e837e7016007c24680a4261ed8ad7cd35196ac087d229f48e5a \
-    --hash=sha256:d64fb4e593907290e5df916e3c9399c15ab2cd7bdb71cbcd1d36452dbfb30523
+jupyter-server==2.7.3 \
+    --hash=sha256:8e4b90380b59d7a1e31086c4692231f2a2ea4cb269f5516e60aba72ce8317fc9 \
+    --hash=sha256:d4916c8581c4ebbc534cebdaa8eca2478d9f3bfdd88eae29fcab0120eac57649
     # via
     #   nbclassic
     #   notebook-shim
@@ -1019,10 +1021,10 @@ python-json-logger==2.0.7 \
     --hash=sha256:f380b826a991ebbe3de4d897aeec42760035ac760345e57b812938dc8b35e2bd
     # via jupyter-events
 pytorch-triton==2.1.0+e6216047b8 \
-    --hash=sha256:8cd6069de1681573114dab4f9a235b093120d9f00b230b5d013632931cfcb124 \
-    --hash=sha256:d581418583f548b5709545c30613acc5f14d46542bcaf3a4e57098dfe43c769c \
-    --hash=sha256:ea92b519261d0b244ce0c45d69352a1fa938dfe24f92513f2079283aeb8ce599 \
-    --hash=sha256:f0a680de30e176016fcccfc53057dfe2567dc4776f44272cda12e48c130f7687
+    --hash=sha256:9623405c970a146990c16b14b18788469486d07622a48d85b3c7b12d496a207b \
+    --hash=sha256:cf0969bd08989eb0bb88d09e55a71e84878017982d05a561b381c1962b26f406 \
+    --hash=sha256:ea49681a3f48b865cdbe8691a19c94ae0a749b1c00e5ebde1506e7089c3210d3 \
+    --hash=sha256:f2c2e738195a7db7e255764bceae28caad5cfdda3a991f9ea15b689846f62f42
     # via torch
 pytz==2023.3 \
     --hash=sha256:1d8ce29db189191fb55338ee6d0387d82ab59f3d00eac103412d64e0ebd0c588 \
