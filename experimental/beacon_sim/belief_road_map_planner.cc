@@ -3,10 +3,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <iterator>
+#include <numeric>
 #include <random>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 #include "Eigen/Core"
 #include "common/geometry/nearest_point_on_segment.hh"
@@ -143,14 +146,14 @@ ScatteringTransformMatrix compute_measurement_transform(
 planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap &road_map,
                                                          const Eigen::Vector2d &goal_state,
                                                          const double max_sensor_range_m,
+                                                         const int max_num_transforms,
                                                          const EkfSlam &ekf,
                                                          const BeaconPotential &beacon_potential) {
-    std::unordered_map<DirectedEdge, detail::ScatteringTransform, DirectedEdgeHash>
-        edge_transform_cache;
+    std::unordered_map<DirectedEdge, detail::EdgeTransform, DirectedEdgeHash> edge_transform_cache;
     return [&road_map, goal_state, max_sensor_range_m, &ekf,
-            edge_transform_cache = std::move(edge_transform_cache),
-            &beacon_potential](const RobotBelief &initial_belief, const int start_idx,
-                               const int end_idx) mutable -> RobotBelief {
+            edge_transform_cache = std::move(edge_transform_cache), &beacon_potential,
+            max_num_transforms](const RobotBelief &initial_belief, const int start_idx,
+                                const int end_idx) mutable -> RobotBelief {
         // Get the belief edge transform, optionally updating the cache
         const DirectedEdge edge = {
             .source = start_idx,
@@ -160,14 +163,15 @@ planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap
         const auto cache_iter = edge_transform_cache.find(edge);
         const bool is_in_cache = cache_iter != edge_transform_cache.end();
         const auto end_pos_in_local = end_idx < 0 ? goal_state : road_map.points.at(end_idx);
-        const detail::ScatteringTransform &transform =
-            is_in_cache ? cache_iter->second
-                        : detail::compute_edge_belief_transform(
-                              initial_belief.local_from_robot, end_pos_in_local, ekf.config(),
-                              ekf.estimate(), beacon_potential, max_sensor_range_m);
+        const detail::EdgeTransform &edge_transform =
+            is_in_cache
+                ? cache_iter->second
+                : detail::compute_edge_belief_transform(
+                      initial_belief.local_from_robot, end_pos_in_local, ekf.config(),
+                      ekf.estimate(), beacon_potential, max_sensor_range_m, max_num_transforms);
         if (!is_in_cache) {
             // Add the transform to the cache in case it's missing
-            edge_transform_cache[edge] = transform;
+            edge_transform_cache[edge] = edge_transform;
         }
 
         // Compute the new covariance
@@ -178,13 +182,19 @@ planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap
         Eigen::MatrixXd input = Eigen::MatrixXd::Identity(2 * cov_dim, 2 * cov_dim);
         input.topRightCorner(cov_dim, cov_dim) = initial_belief.cov_in_robot;
 
-        const ScatteringTransformMatrix result =
-            math::redheffer_star(input, transform.cov_transform);
-
-        const Eigen::MatrixXd new_cov_in_robot = result.topRightCorner(cov_dim, cov_dim);
+        Eigen::MatrixXd new_cov_in_robot = Eigen::MatrixXd::Zero(cov_dim, cov_dim);
+        const double weight_total =
+            std::accumulate(edge_transform.weight.begin(), edge_transform.weight.end(), 0.0);
+        for (int i = 0; i < static_cast<int>(edge_transform.weight.size()); i++) {
+            const double weight = edge_transform.weight.at(i) / weight_total;
+            const auto &cov_transform = edge_transform.transforms.at(i);
+            const ScatteringTransformMatrix result = math::redheffer_star(input, cov_transform);
+            const Eigen::MatrixXd sample_cov_in_robot = result.topRightCorner(cov_dim, cov_dim);
+            new_cov_in_robot += weight * sample_cov_in_robot;
+        }
 
         return RobotBelief{
-            .local_from_robot = transform.local_from_robot,
+            .local_from_robot = edge_transform.local_from_robot,
             .cov_in_robot = new_cov_in_robot,
         };
     };
@@ -213,9 +223,7 @@ bool operator==(const RobotBelief &a, const RobotBelief &b) {
 
 std::optional<planning::BRMPlan<RobotBelief>> compute_belief_road_map_plan(
     const planning::RoadMap &road_map, const EkfSlam &ekf, const BeaconPotential &beacon_potential,
-    const Eigen::Vector2d &goal_state, const double max_sensor_range_m,
-    const int num_start_connections, const int num_goal_connections,
-    const double uncertainty_tolerance) {
+    const Eigen::Vector2d &goal_state, const BeliefRoadMapOptions &options) {
     const auto &estimate = ekf.estimate();
 
     const RobotBelief initial_belief = {
@@ -223,10 +231,11 @@ std::optional<planning::BRMPlan<RobotBelief>> compute_belief_road_map_plan(
         .cov_in_robot = estimate.robot_cov(),
     };
     const auto belief_updater =
-        make_belief_updater(road_map, goal_state, max_sensor_range_m, ekf, beacon_potential);
+        make_belief_updater(road_map, goal_state, options.max_sensor_range_m,
+                            options.max_num_edge_transforms, ekf, beacon_potential);
     return planning::plan<RobotBelief>(road_map, initial_belief, belief_updater, goal_state,
-                                       num_start_connections, num_goal_connections,
-                                       uncertainty_tolerance);
+                                       options.num_start_connections, options.num_goal_connections,
+                                       options.uncertainty_tolerance);
 }
 
 namespace detail {
@@ -253,7 +262,7 @@ std::vector<int> find_beacons_along_path(const Eigen::Vector2d &start_in_local,
     return out;
 }
 
-ScatteringTransform compute_edge_belief_transform(
+std::tuple<liegroups::SE2, EdgeTransform::Matrix> compute_edge_belief_transform(
     const liegroups::SE2 &local_from_robot, const Eigen::Vector2d &end_state_in_local,
     const EkfSlamConfig &ekf_config, const EkfSlamEstimate &ekf_estimate,
     const std::optional<std::vector<int>> &available_beacons, const double max_sensor_range_m) {
@@ -302,19 +311,53 @@ ScatteringTransform compute_edge_belief_transform(
         scattering_transform = math::redheffer_star(process_transform, scattering_transform);
     }
 
-    return ScatteringTransform{
-        // Avoid numerical issues by directly setting the translation
-        .local_from_robot = liegroups::SE2(local_from_new_robot.so2().log(), end_state_in_local),
-        .cov_transform = scattering_transform,
-    };
+    return std::make_tuple(liegroups::SE2(local_from_new_robot.so2().log(), end_state_in_local),
+                           scattering_transform);
 }
 
-ScatteringTransform compute_edge_belief_transform(const liegroups::SE2 &local_from_robot,
-                                                  const Eigen::Vector2d &end_state_in_local,
-                                                  const EkfSlamConfig &ekf_config,
-                                                  const EkfSlamEstimate &ekf_estimate,
-                                                  const BeaconPotential &beacon_potential,
-                                                  const double max_sensor_range_m) {
+std::vector<LogMarginal> sample_log_marginals(const std::vector<LogMarginal> all_marginals,
+                                              const int num_samples) {
+    std::mt19937 gen(0);
+    std::uniform_real_distribution<> dist;
+    std::vector<double> rand_nums{};
+    for (int i = 0; i < num_samples; i++) {
+        rand_nums.push_back(dist(gen));
+    }
+    std::sort(rand_nums.begin(), rand_nums.end());
+
+    double accumulated_prob = 0.0;
+    std::vector<LogMarginal> out;
+    auto rand_num_start = rand_nums.begin();
+
+    for (const auto &marginal : all_marginals) {
+        accumulated_prob += std::exp(marginal.log_marginal);
+
+        const auto new_start = std::find_if(
+            rand_num_start, rand_nums.end(),
+            [&accumulated_prob](const double rand_num) { return rand_num > accumulated_prob; });
+
+        const int counts = std::distance(rand_num_start, new_start);
+        if (counts > 0) {
+            out.push_back({
+                .present_beacons = marginal.present_beacons,
+                .log_marginal = std::log(counts),
+            });
+        }
+        rand_num_start = new_start;
+        if (rand_num_start == rand_nums.end()) {
+            break;
+        }
+    }
+    return out;
+}
+
+EdgeTransform compute_edge_belief_transform(const liegroups::SE2 &local_from_robot,
+                                            const Eigen::Vector2d &end_state_in_local,
+                                            const EkfSlamConfig &ekf_config,
+                                            const EkfSlamEstimate &ekf_estimate,
+                                            const BeaconPotential &beacon_potential,
+                                            const double max_sensor_range_m,
+                                            const int max_num_transforms) {
     // Find all beacons along the path
     const std::vector<int> nearby_beacon_ids = find_beacons_along_path(
         local_from_robot.translation(), end_state_in_local, ekf_estimate, max_sensor_range_m);
@@ -333,37 +376,35 @@ ScatteringTransform compute_edge_belief_transform(const liegroups::SE2 &local_fr
         }
     }
 
-    const auto log_marginals = beacon_potential.compute_log_marginals(nearby_potential_beacons);
+    const auto all_log_marginals = beacon_potential.compute_log_marginals(nearby_potential_beacons);
+    const auto log_marginals = static_cast<int>(all_log_marginals.size()) > max_num_transforms
+                                   ? sample_log_marginals(all_log_marginals, max_num_transforms)
+                                   : all_log_marginals;
 
-    // For each configuration, compute the scattering transform, probability, compute the transfer
-    // matrix
-    ScatteringTransform expected_transfer_matrix = {
-        .local_from_robot = liegroups::SE2(),
-        .cov_transform = ScatteringTransform::Matrix::Zero(),
-    };
-
+    std::vector<double> weights;
+    std::vector<EdgeTransform::Matrix> transforms;
+    liegroups::SE2 local_from_end_robot;
     for (const auto &log_marginal : log_marginals) {
         std::vector<int> present_beacons;
         std::copy(nearby_forever_beacons.begin(), nearby_forever_beacons.end(),
                   std::back_inserter(present_beacons));
         std::copy(log_marginal.present_beacons.begin(), log_marginal.present_beacons.end(),
                   std::back_inserter(present_beacons));
-        const auto scattering_transform =
+        const auto &[local_from_final_robot, scattering_transform] =
             compute_edge_belief_transform(local_from_robot, end_state_in_local, ekf_config,
                                           ekf_estimate, present_beacons, max_sensor_range_m);
 
-        const ScatteringTransform::Matrix transfer_matrix =
-            math::transfer_from_scattering(scattering_transform.cov_transform);
-
-        expected_transfer_matrix.cov_transform +=
-            std::exp(log_marginal.log_marginal) * transfer_matrix;
-        expected_transfer_matrix.local_from_robot = scattering_transform.local_from_robot;
+        weights.push_back(std::exp(log_marginal.log_marginal));
+        transforms.push_back(scattering_transform);
+        local_from_end_robot = local_from_final_robot;
     }
-    return {
-        .local_from_robot = expected_transfer_matrix.local_from_robot,
-        .cov_transform = math::scattering_from_transfer(expected_transfer_matrix.cov_transform)};
-}
 
+    return EdgeTransform{
+        .local_from_robot = local_from_end_robot,
+        .weight = std::move(weights),
+        .transforms = std::move(transforms),
+    };
+}
 }  // namespace detail
 }  // namespace robot::experimental::beacon_sim
 

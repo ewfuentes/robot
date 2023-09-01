@@ -3,6 +3,7 @@
 #include <sstream>
 
 #include "experimental/beacon_sim/correlated_beacons.hh"
+#include "pybind11/eigen.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
 

@@ -74,10 +74,16 @@ proto::BeaconSimDebug tick_sim(const SimConfig &config, const RobotCommand &comm
             constexpr int NUM_GOAL_CONNECTIONS = 6;
             constexpr double UNCERTAINTY_TOLERANCE = 0.1;
             std::cout << "Starting to Plan" << std::endl;
-            const auto brm_plan = compute_belief_road_map_plan(
-                state->road_map, state->ekf, state->map.beacon_potential(),
-                state->goal->goal_position, OBS_CONFIG.max_sensor_range_m.value(),
-                NUM_START_CONNECTIONS, NUM_GOAL_CONNECTIONS, UNCERTAINTY_TOLERANCE);
+            const BeliefRoadMapOptions options = {
+                .max_sensor_range_m = OBS_CONFIG.max_sensor_range_m.value(),
+                .num_start_connections = NUM_START_CONNECTIONS,
+                .num_goal_connections = NUM_GOAL_CONNECTIONS,
+                .uncertainty_tolerance = UNCERTAINTY_TOLERANCE,
+                .max_num_edge_transforms = 1000,
+            };
+            const auto brm_plan = compute_belief_road_map_plan(state->road_map, state->ekf,
+                                                               state->map.beacon_potential(),
+                                                               state->goal->goal_position, options);
             std::cout << "plan complete" << std::endl;
             for (int idx = 0; idx < static_cast<int>(brm_plan->nodes.size()); idx++) {
                 std::cout << idx << " " << brm_plan->nodes.at(idx) << " "

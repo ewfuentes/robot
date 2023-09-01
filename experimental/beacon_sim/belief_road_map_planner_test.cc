@@ -182,7 +182,7 @@ std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_diamond_environme
     const auto stacked_potential = create_correlated_beacons({
         .p_beacon = p_stacked_beacon,
         .p_no_beacons = p_no_stack_beacon,
-        .members = {11, 12, 12, 13, 14, 15, 16, 17, 18, 19, 20},
+        .members = {11, 12, 13, 14, 15, 16, 17, 18, 19, 20},
     });
     const auto beacon_potential = lone_potential * stacked_potential;
 
@@ -212,17 +212,19 @@ TEST(BeliefRoadMapPlannerTest, grid_road_map) {
         .on_map_load_position_uncertainty_m = 2.0,
         .on_map_load_heading_uncertainty_rad = 0.1,
     };
-    constexpr double MAX_SENSOR_RANGE_M = 3.0;
     const auto &[road_map, ekf_slam] = create_grid_environment(ekf_config);
     const Eigen::Vector2d GOAL_STATE = {10, -5};
-    constexpr int NUM_START_CONNECTIONS = 1;
-    constexpr int NUM_GOAL_CONENCTIONS = 1;
-    constexpr double UNCERTAINTY_TOLERANCE = 1e-2;
+    constexpr BeliefRoadMapOptions OPTIONS = {
+        .max_sensor_range_m = 3.0,
+        .num_start_connections = 1,
+        .num_goal_connections = 1,
+        .uncertainty_tolerance = 1e-2,
+        .max_num_edge_transforms = 1,
+    };
 
     // Action
-    const auto maybe_plan = compute_belief_road_map_plan(
-        road_map, ekf_slam, {}, GOAL_STATE, MAX_SENSOR_RANGE_M, NUM_START_CONNECTIONS,
-        NUM_GOAL_CONENCTIONS, UNCERTAINTY_TOLERANCE);
+    const auto maybe_plan =
+        compute_belief_road_map_plan(road_map, ekf_slam, {}, GOAL_STATE, OPTIONS);
 
     // Verification
     EXPECT_TRUE(maybe_plan.has_value());
@@ -249,12 +251,15 @@ TEST(BeliefRoadMapPlannerTest, grid_road_map_with_unlikely_beacon) {
         .on_map_load_position_uncertainty_m = 2.0,
         .on_map_load_heading_uncertainty_rad = 0.5,
     };
-    constexpr double MAX_SENSOR_RANGE_M = 3.0;
     const auto &[road_map, ekf_slam] = create_grid_environment(ekf_config);
     const Eigen::Vector2d GOAL_STATE = {10, -5};
-    constexpr int NUM_START_CONNECTIONS = 1;
-    constexpr int NUM_GOAL_CONENCTIONS = 1;
-    constexpr double UNCERTAINTY_TOLERANCE = 1e-3;
+    constexpr BeliefRoadMapOptions OPTIONS = {
+        .max_sensor_range_m = 3.0,
+        .num_start_connections = 1,
+        .num_goal_connections = 1,
+        .uncertainty_tolerance = 1e-2,
+        .max_num_edge_transforms = 1,
+    };
 
     constexpr double P_BEACON = 1e-7;
     const double LOG_NORM = -std::log(1 - P_BEACON);
@@ -262,9 +267,8 @@ TEST(BeliefRoadMapPlannerTest, grid_road_map_with_unlikely_beacon) {
     const BeaconPotential potential(Eigen::Matrix<double, 1, 1>{PARAM}, LOG_NORM, {GRID_BEACON_ID});
 
     // Action
-    const auto maybe_plan = compute_belief_road_map_plan(
-        road_map, ekf_slam, potential, GOAL_STATE, MAX_SENSOR_RANGE_M, NUM_START_CONNECTIONS,
-        NUM_GOAL_CONENCTIONS, UNCERTAINTY_TOLERANCE);
+    const auto maybe_plan =
+        compute_belief_road_map_plan(road_map, ekf_slam, potential, GOAL_STATE, OPTIONS);
 
     // Verification
     EXPECT_TRUE(maybe_plan.has_value());
@@ -290,18 +294,20 @@ TEST(BeliefRoadMapPlannerTest, diamond_road_map_with_uncorrelated_beacons) {
     constexpr double P_LONE_BEACON = 0.5;
     constexpr double P_NO_STACKED_BEACON = 0.01;
     constexpr double P_STACKED_BEACON = 0.1;
-    constexpr double MAX_SENSOR_RANGE_M = 3.0;
     const auto &[road_map, ekf_slam, beacon_potential] = create_diamond_environment(
         ekf_config, P_LONE_BEACON, P_NO_STACKED_BEACON, P_STACKED_BEACON);
     const Eigen::Vector2d GOAL_STATE = {5, 7};
-    constexpr int NUM_START_CONNECTIONS = 1;
-    constexpr int NUM_GOAL_CONENCTIONS = 1;
-    constexpr double UNCERTAINTY_TOLERANCE = 1e-3;
+    constexpr BeliefRoadMapOptions OPTIONS = {
+        .max_sensor_range_m = 3.0,
+        .num_start_connections = 1,
+        .num_goal_connections = 1,
+        .uncertainty_tolerance = 1e-2,
+        .max_num_edge_transforms = 10000,
+    };
 
     // Action
-    const auto maybe_plan = compute_belief_road_map_plan(
-        road_map, ekf_slam, beacon_potential, GOAL_STATE, MAX_SENSOR_RANGE_M, NUM_START_CONNECTIONS,
-        NUM_GOAL_CONENCTIONS, UNCERTAINTY_TOLERANCE);
+    const auto maybe_plan =
+        compute_belief_road_map_plan(road_map, ekf_slam, beacon_potential, GOAL_STATE, OPTIONS);
 
     // Verification
     EXPECT_TRUE(maybe_plan.has_value());
@@ -330,18 +336,20 @@ TEST(BeliefRoadMapPlannerTest, diamond_road_map_with_correlated_beacons) {
     constexpr double P_LONE_BEACON = 0.5;
     constexpr double P_NO_STACKED_BEACON = 0.899;
     constexpr double P_STACKED_BEACON = 0.1;
-    constexpr double MAX_SENSOR_RANGE_M = 3.0;
     const auto &[road_map, ekf_slam, beacon_potential] = create_diamond_environment(
         ekf_config, P_LONE_BEACON, P_NO_STACKED_BEACON, P_STACKED_BEACON);
     const Eigen::Vector2d GOAL_STATE = {5, 7};
-    constexpr int NUM_START_CONNECTIONS = 1;
-    constexpr int NUM_GOAL_CONENCTIONS = 1;
-    constexpr double UNCERTAINTY_TOLERANCE = 1e-3;
+    constexpr BeliefRoadMapOptions OPTIONS = {
+        .max_sensor_range_m = 3.0,
+        .num_start_connections = 1,
+        .num_goal_connections = 1,
+        .uncertainty_tolerance = 1e-2,
+        .max_num_edge_transforms = 1000,
+    };
 
     // Action
-    const auto maybe_plan = compute_belief_road_map_plan(
-        road_map, ekf_slam, beacon_potential, GOAL_STATE, MAX_SENSOR_RANGE_M, NUM_START_CONNECTIONS,
-        NUM_GOAL_CONENCTIONS, UNCERTAINTY_TOLERANCE);
+    const auto maybe_plan =
+        compute_belief_road_map_plan(road_map, ekf_slam, beacon_potential, GOAL_STATE, OPTIONS);
 
     // Verification
     EXPECT_TRUE(maybe_plan.has_value());
@@ -368,6 +376,7 @@ TEST(BeliefRoadMapPlannerTest, compute_edge_transform_no_measurements) {
         .on_map_load_heading_uncertainty_rad = 0.5,
     };
     constexpr double MAX_SENSOR_RANGE_M = 3.0;
+    constexpr int MAX_NUM_TRANSFORMS = 10;
     const auto &[road_map, ekf_slam] = create_grid_environment(ekf_config);
 
     constexpr int START_NODE_IDX = 6;
@@ -378,7 +387,8 @@ TEST(BeliefRoadMapPlannerTest, compute_edge_transform_no_measurements) {
 
     // Action
     const auto edge_belief_transform = detail::compute_edge_belief_transform(
-        local_from_robot, end_pos, ekf_slam.config(), ekf_slam.estimate(), {}, MAX_SENSOR_RANGE_M);
+        local_from_robot, end_pos, ekf_slam.config(), ekf_slam.estimate(), {}, MAX_SENSOR_RANGE_M,
+        MAX_NUM_TRANSFORMS);
 
     // Verification
     EXPECT_EQ(edge_belief_transform.local_from_robot.translation().x(), end_pos.x());
@@ -402,6 +412,7 @@ TEST(BeliefRoadMapPlannerTest, compute_edge_transform_with_measurement) {
         .on_map_load_heading_uncertainty_rad = 0.5,
     };
     constexpr double MAX_SENSOR_RANGE_M = 3.0;
+    constexpr int MAX_NUM_TRANSFORMS = 10;
     const auto &[road_map, ekf_slam] = create_grid_environment(ekf_config);
 
     constexpr int START_NODE_IDX = 3;
@@ -412,7 +423,8 @@ TEST(BeliefRoadMapPlannerTest, compute_edge_transform_with_measurement) {
 
     // Action
     const auto edge_belief_transform = detail::compute_edge_belief_transform(
-        local_from_robot, end_pos, ekf_slam.config(), ekf_slam.estimate(), {}, MAX_SENSOR_RANGE_M);
+        local_from_robot, end_pos, ekf_slam.config(), ekf_slam.estimate(), {}, MAX_SENSOR_RANGE_M,
+        MAX_NUM_TRANSFORMS);
 
     // Verification
     EXPECT_EQ(edge_belief_transform.local_from_robot.translation().x(), end_pos.x());
