@@ -1,7 +1,6 @@
 
-#include "gtest/gtest.h"
-
 #include "embag/view.h"
+#include "gtest/gtest.h"
 
 namespace robot::ros {
 GTEST_TEST(RosbagReaderTest, read_rosbag) {
@@ -16,15 +15,15 @@ GTEST_TEST(RosbagReaderTest, read_rosbag) {
 
     const auto topics = view.topics();
     std::cout << "Topics:" << std::endl;
-    for (const auto &topic: topics) {
+    for (const auto &topic : topics) {
         std::cout << topic << std::endl;
     }
     view.getMessages();
 
     std::cout << "Messages:" << std::endl;
     for (const auto &message : view) {
-        std::cout << message->topic << " " <<  message->getTypeName() << std::endl;
+        std::cout << message->topic << " " << message->getTypeName() << std::endl;
         std::cout << message->toString() << std::endl;
     }
 }
-}
+}  // namespace robot::ros
