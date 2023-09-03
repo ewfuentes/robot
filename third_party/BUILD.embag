@@ -1,0 +1,45 @@
+
+load("@rules_cc//cc:defs.bzl", "cc_binary")
+load("@pybind11_bazel//:build_defs.bzl", "pybind_library")
+
+pybind_library(
+    name = "embag",
+    srcs = [
+        "lib/embag.cc",
+        "lib/message_def_parser.cc",
+        "lib/message_parser.cc",
+        "lib/ros_value.cc",
+        "lib/view.cc",
+    ],
+    hdrs = [
+        "lib/decompression.h",
+        "lib/embag.h",
+        "lib/message_def_parser.h",
+        "lib/message_parser.h",
+        "lib/ros_bag_types.h",
+        "lib/ros_message.h",
+        "lib/ros_msg_types.h",
+        "lib/ros_value.h",
+        "lib/util.h",
+        "lib/view.h",
+    ],
+    strip_include_prefix="lib",
+    include_prefix="embag",
+    copts = [
+        "-Wno-unused-parameter",
+        "-Wno-return-type",
+    ],
+    # This is required to build in the manylinux image
+    linkopts = [
+        "-lstdc++",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@boost//:fusion",
+        "@boost//:iostreams",
+        "@boost//:spirit",
+        "@boost//:variant",
+        "@org_bzip_bzip2//:bz2lib",
+        "@liblz4//:lz4_frame",
+    ],
+)

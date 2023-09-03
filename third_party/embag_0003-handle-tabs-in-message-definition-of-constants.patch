@@ -1,0 +1,25 @@
+From 102588510e0a08ae153157489a877cd45e8954d0 Mon Sep 17 00:00:00 2001
+From: Erick Fuentes <fuentes.erick@gmail.com>
+Date: Sun, 3 Sep 2023 00:39:43 -0400
+Subject: [PATCH 3/5] handle tabs in message definition of constants
+
+---
+ lib/message_def_parser.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/lib/message_def_parser.cc b/lib/message_def_parser.cc
+index 6776648..fc75c58 100644
+--- a/lib/message_def_parser.cc
++++ b/lib/message_def_parser.cc
+@@ -83,7 +83,7 @@ struct ros_msg_grammar : qi::grammar<Iterator, RosMsgTypes::MsgDef::parseable_in
+     // Parse a constant in the form: type constant_name=constant_value
+     constant_name %= lexeme[+(char_ - (space | lit('=')))];
+     constant_value %= lexeme[+(char_ - (space | eol | '#'))];
+-    constant = type >> +lit(' ') >> constant_name >> *lit(' ') >> lit('=') >> *lit(' ') >> constant_value;
++    constant = type >> +lit(' ') >> constant_name >> *lit(' ') >> *lit('\t') >> lit('=') >> *lit(' ') >> *lit('\t') >> constant_value;
+ 
+     // Each line of a message definition can be a constant or a field declaration
+     member = constant | field;
+-- 
+2.34.1
+
