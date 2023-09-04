@@ -21,6 +21,14 @@ http_archive(
 )
 
 http_archive(
+    name = "org_bzip_bzip2",
+    sha256 = "ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269",
+    strip_prefix = "bzip2-1.0.8",
+    build_file = "@//third_party:BUILD.bz2.bazel",
+    urls = ["https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz"],
+)
+
+http_archive(
   name = "fmt",
   urls = ["https://github.com/fmtlib/fmt/releases/download/8.1.1/fmt-8.1.1.zip"],
   strip_prefix="fmt-8.1.1",
@@ -98,6 +106,38 @@ pip_parse(
 
 load("@pip//:requirements.bzl", "install_deps")
 install_deps()
+http_archive(
+  name="embag",
+  url="https://github.com/embarktrucks/embag/archive/74c0b5f9d50bd45bcb6ed8e44718cd60924c13d0.zip",
+  strip_prefix="embag-74c0b5f9d50bd45bcb6ed8e44718cd60924c13d0",
+  build_file="@//third_party:BUILD.embag",
+  sha256 = "d1715dc5887b6a9cbf67ddd3fe05a3507c0528101d41cf9858d1408597f01536",
+  patches = [
+    "@//third_party:embag_0001-delete-lib-build-file.patch",
+    "@//third_party:embag_0002-use-std-span.patch",
+    "@//third_party:embag_0003-handle-tabs-in-message-definition-of-constants.patch",
+    "@//third_party:embag_0004-fix-build-warnings.patch",
+    "@//third_party:embag_0005-display-primitive-arrays.patch",
+  ],
+  patch_args=["-p1"],
+)
+
+http_archive(
+    name = "com_github_nelhage_rules_boost",
+    urls = ["https://github.com/nelhage/rules_boost/archive/49dc7d0e697c784f207fb1773b5b371c2511bfb8.zip"],
+    strip_prefix="rules_boost-49dc7d0e697c784f207fb1773b5b371c2511bfb8",
+    sha256 = "2e7138b6900f2be1d1aec6ad06a64aee6cc9d48dd278eb1e9845380284914495",
+)
+load("@com_github_nelhage_rules_boost//:boost/boost.bzl", "boost_deps")
+boost_deps()
+
+http_archive(
+    name = "liblz4",
+    build_file = "@embag//lz4:BUILD",
+    sha256 = "658ba6191fa44c92280d4aa2c271b0f4fbc0e34d249578dd05e50e76d0e5efcc",
+    strip_prefix = "lz4-1.9.2",
+    urls = ["https://github.com/lz4/lz4/archive/v1.9.2.tar.gz"],
+)
 
 http_archive(
     name = "rules_foreign_cc",

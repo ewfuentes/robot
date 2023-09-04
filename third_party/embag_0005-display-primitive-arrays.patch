@@ -1,0 +1,45 @@
+From 1c15f6db5556d678cf33f6ed1f07e2e469c4655f Mon Sep 17 00:00:00 2001
+From: Erick Fuentes <fuentes.erick@gmail.com>
+Date: Sun, 3 Sep 2023 00:41:13 -0400
+Subject: [PATCH 5/5] Display primitive arrays
+
+---
+ lib/ros_value.cc | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/lib/ros_value.cc b/lib/ros_value.cc
+index b0b73e5..9eea7ae 100644
+--- a/lib/ros_value.cc
++++ b/lib/ros_value.cc
+@@ -1,3 +1,4 @@
++#include <algorithm>
+ #include <iostream>
+ #include <sstream>
+ 
+@@ -195,6 +196,23 @@ std::string RosValue::toString(const std::string &path) const {
+       }
+       return output.str();
+     }
++    case Type::primitive_array: {
++      std::ostringstream output;
++      bool is_first = true;
++      const size_t num_to_show = std::min(10UL, primitive_array_info_.length);
++      for (size_t i = 0; i < num_to_show; ++i) {
++        if (is_first) {
++          is_first = false;
++        } else {
++          output << std::endl;
++        }
++        output << at(i)->toString(path + "[" + std::to_string(i) + "]");
++      }
++      if (num_to_show < primitive_array_info_.length) {
++        output << std::endl << primitive_array_info_.length - num_to_show << " remaining entries...";
++      }
++      return output.str();
++    }
+     default: {
+       return path + " -> unknown type";
+     }
+-- 
+2.34.1
+
