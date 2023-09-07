@@ -35,6 +35,7 @@ py_binary(
     ":models",
     ":star",
     requirement("click"),
+    requirement("IPython"),
     requirement("matplotlib"),
     requirement("numpy"),
     requirement("PyGObject"),
