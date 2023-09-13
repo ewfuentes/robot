@@ -78,7 +78,9 @@ proto::BeaconSimDebug tick_sim(const SimConfig &config, const RobotCommand &comm
                 .max_sensor_range_m = OBS_CONFIG.max_sensor_range_m.value(),
                 .num_start_connections = NUM_START_CONNECTIONS,
                 .num_goal_connections = NUM_GOAL_CONNECTIONS,
-                .uncertainty_tolerance = UNCERTAINTY_TOLERANCE,
+                .uncertainty_tolerance = config.allow_brm_backtracking
+                                             ? std::make_optional(UNCERTAINTY_TOLERANCE)
+                                             : std::nullopt,
                 .max_num_edge_transforms = 1000,
             };
             const auto brm_plan = compute_belief_road_map_plan(state->road_map, state->ekf,

@@ -196,6 +196,45 @@ std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_diamond_environme
 
 }  // namespace
 
+TEST(BeliefRoadMapPlannerTest, grid_road_map_no_backtrack) {
+    // Setup
+    const EkfSlamConfig ekf_config{
+        .max_num_beacons = 1,
+        .initial_beacon_uncertainty_m = 100.0,
+        .along_track_process_noise_m_per_rt_meter = 0.05,
+        .cross_track_process_noise_m_per_rt_meter = 0.05,
+        .pos_process_noise_m_per_rt_s = 0.0,
+        .heading_process_noise_rad_per_rt_meter = 1e-3,
+        .heading_process_noise_rad_per_rt_s = 0.0,
+        .beacon_pos_process_noise_m_per_rt_s = 1e-6,
+        .range_measurement_noise_m = 1e-1,
+        .bearing_measurement_noise_rad = 1e-1,
+        .on_map_load_position_uncertainty_m = 2.0,
+        .on_map_load_heading_uncertainty_rad = 0.1,
+    };
+    const auto &[road_map, ekf_slam] = create_grid_environment(ekf_config);
+    const Eigen::Vector2d GOAL_STATE = {10, -5};
+    constexpr BeliefRoadMapOptions OPTIONS = {
+        .max_sensor_range_m = 3.0,
+        .num_start_connections = 1,
+        .num_goal_connections = 1,
+        .uncertainty_tolerance = std::nullopt,
+        .max_num_edge_transforms = 1,
+    };
+
+    // Action
+    const auto maybe_plan =
+        compute_belief_road_map_plan(road_map, ekf_slam, {}, GOAL_STATE, OPTIONS);
+
+    // Verification
+    EXPECT_TRUE(maybe_plan.has_value());
+    const auto &plan = maybe_plan.value();
+    std::cout << "Num Nodes: " << plan.nodes.size() << std::endl;
+    for (int i = 0; i < static_cast<int>(plan.nodes.size()); i++) {
+        std::cout << i << " idx: " << plan.nodes.at(i) << std::endl;
+    }
+}
+
 TEST(BeliefRoadMapPlannerTest, grid_road_map) {
     // Setup
     const EkfSlamConfig ekf_config{

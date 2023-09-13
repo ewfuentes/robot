@@ -193,13 +193,15 @@ WorldMapConfig world_map_config(const std::optional<int> &configuration) {
                                        }
                                        return ids;
                                    }()});
-    if (configuration) {
-        std::vector<bool> bool_config(out.correlated_beacons.beacons.size());
-        for (int i = 0; i < static_cast<int>(bool_config.size()); i++) {
+    std::vector<bool> bool_config(out.correlated_beacons.beacons.size());
+    for (int i = 0; i < static_cast<int>(bool_config.size()); i++) {
+        if (configuration) {
             bool_config.at(i) = (configuration.value() & (1 << i));
+        } else {
+            bool_config.at(i) = true;
         }
-        out.correlated_beacons.configuration = bool_config;
     }
+    out.correlated_beacons.configuration = bool_config;
 
     // Create obstacles
     {
@@ -514,6 +516,7 @@ int main(int argc, char **argv) {
       ("load_off_diagonals", "Whether off diagonal terms should be loaded from map")
       ("enable_brm_planner", "Generate BRM plan after each step")
       ("autostep", "automatically step the sim")
+      ("allow_brm_backtracking", "Allow backtracking in BRM")
       ("correlated_beacons_config", "Desired Beacon Configuration. The ith beacon is present if the ith bit is set",
            cxxopts::value<int>())
       ("help", "Print usage");
@@ -536,6 +539,7 @@ int main(int argc, char **argv) {
         .dt = 25ms,
         .load_off_diagonals = args["load_off_diagonals"].as<bool>(),
         .enable_brm_planner = args["enable_brm_planner"].as<bool>(),
+        .allow_brm_backtracking = args["allow_brm_backtracking"].as<bool>(),
         .autostep = args["autostep"].as<bool>(),
         .correlated_beacons_configuration =
             args.count("correlated_beacons_config")

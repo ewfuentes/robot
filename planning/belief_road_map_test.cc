@@ -86,7 +86,8 @@ TEST(BeliefRoadMapTest, linear_graph) {
     // Action
     const auto maybe_brm_plan =
         plan(road_map, initial_belief, make_belief_updater(road_map, goal_state), goal_state,
-             NUM_START_CONNECTIONS, NUM_GOAL_CONNECTIONS, UNCERTAINTY_TOLERANCE);
+             NUM_START_CONNECTIONS, NUM_GOAL_CONNECTIONS,
+             MinUncertaintyToleranceOptions{UNCERTAINTY_TOLERANCE});
 
     // Verification
     EXPECT_TRUE(maybe_brm_plan.has_value());
@@ -101,6 +102,40 @@ TEST(BeliefRoadMapTest, linear_graph) {
     EXPECT_NEAR(plan.beliefs.back().cov(1, 1), expected_cov, TOL);
     EXPECT_NEAR(plan.beliefs.back().cov(0, 1), 0.0, TOL);
     EXPECT_NEAR(plan.beliefs.back().cov(1, 0), 0.0, TOL);
+}
+TEST(BeliefRoadMapTest, linear_graph_no_backtracking) {
+    // Setup
+    // Create a graph A - B - C where to robot starts at B and the goal is at C.
+    // The robot receives measurements along the edge (A, B), reducing it's uncertainty.
+    // However, the robot is not able to backtrack, so much go directly to C
+
+    constexpr int NUM_START_CONNECTIONS = 1;
+    constexpr int NUM_GOAL_CONNECTIONS = 1;
+    const RoadMap road_map = {
+        .points = {{-10.0, 0.0}, {0.0, 0.0}, {10.0, 0.0}},
+        .adj = Eigen::Matrix3d{{{0.0, 1.0, 0.0}, {1.0, 0.0, 1.0}, {0.0, 1.0, 0.0}}},
+    };
+
+    const GaussianBelief initial_belief = {
+        .mean = {0.0, 3.0},
+        .cov = Eigen::Matrix2d{{3.0, 0.0}, {0.0, 3.0}},
+    };
+
+    const Eigen::Vector2d goal_state{12.0, 0.0};
+
+    // Action
+    const auto maybe_brm_plan =
+        plan(road_map, initial_belief, make_belief_updater(road_map, goal_state), goal_state,
+             NUM_START_CONNECTIONS, NUM_GOAL_CONNECTIONS, NoBacktrackingOptions{});
+
+    // Verification
+    EXPECT_TRUE(maybe_brm_plan.has_value());
+    const auto &plan = maybe_brm_plan.value();
+
+    ASSERT_EQ(plan.nodes.size(), 4);
+    EXPECT_EQ(plan.nodes.front(), BRMPlan<GaussianBelief>::INITIAL_BELIEF_NODE_IDX);
+    EXPECT_EQ(plan.nodes.back(), BRMPlan<GaussianBelief>::GOAL_BELIEF_NODE_IDX);
+    EXPECT_EQ(plan.beliefs.back().mean, goal_state);
 }
 }  // namespace robot::planning
 

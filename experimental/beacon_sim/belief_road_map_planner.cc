@@ -18,6 +18,7 @@
 #include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/generate_observations.hh"
 #include "experimental/beacon_sim/robot.hh"
+#include "planning/belief_road_map.hh"
 
 namespace robot::experimental::beacon_sim {
 namespace {
@@ -233,9 +234,16 @@ std::optional<planning::BRMPlan<RobotBelief>> compute_belief_road_map_plan(
     const auto belief_updater =
         make_belief_updater(road_map, goal_state, options.max_sensor_range_m,
                             options.max_num_edge_transforms, ekf, beacon_potential);
-    return planning::plan<RobotBelief>(road_map, initial_belief, belief_updater, goal_state,
-                                       options.num_start_connections, options.num_goal_connections,
-                                       options.uncertainty_tolerance);
+    if (options.uncertainty_tolerance.has_value()) {
+        return planning::plan<RobotBelief>(
+            road_map, initial_belief, belief_updater, goal_state, options.num_start_connections,
+            options.num_goal_connections,
+            planning::MinUncertaintyToleranceOptions{options.uncertainty_tolerance.value()});
+    } else {
+        return planning::plan<RobotBelief>(
+            road_map, initial_belief, belief_updater, goal_state, options.num_start_connections,
+            options.num_goal_connections, planning::NoBacktrackingOptions{});
+    }
 }
 
 namespace detail {
@@ -279,6 +287,7 @@ std::tuple<liegroups::SE2, EdgeTransform::Matrix> compute_edge_belief_transform(
         // Move towards the goal
         const liegroups::SE2 old_robot_from_new_robot = [&]() {
             const double angle_to_goal_rad = std::atan2(end_in_robot.y(), end_in_robot.x());
+
             if (std::abs(angle_to_goal_rad) > TOL) {
                 // First turn to face the goal
                 constexpr double MAX_ANGLE_STEP_RAD = DT_S * ANGULAR_VELOCITY_RADPS;
