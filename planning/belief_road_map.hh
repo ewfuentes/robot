@@ -3,9 +3,11 @@
 
 #include <algorithm>
 #include <functional>
+#include <iostream>
 #include <numeric>
 #include <optional>
 #include <unordered_map>
+#include <variant>
 
 #include "Eigen/Dense"
 #include "planning/breadth_first_search.hh"
@@ -25,6 +27,13 @@ template <typename Belief>
 using BeliefUpdater =
     std::function<Belief(const Belief &initial_belief, const int start_idx, const int end_idx)>;
 
+struct NoBacktrackingOptions {};
+struct MinUncertaintyToleranceOptions {
+    double uncertainty_tolerance;
+};
+
+using BRMSearchOptions = std::variant<NoBacktrackingOptions, MinUncertaintyToleranceOptions>;
+
 // Belief is a type that represents the mean and uncertainty of our current state.
 // It is expected that the following methods are defined:
 // - double distance_to(const Eigen::Vector2d &pt, const Belief &belief)
@@ -39,8 +48,8 @@ template <typename Belief>
 std::optional<BRMPlan<Belief>> plan(const RoadMap &road_map, const Belief &initial_belief,
                                     const BeliefUpdater<Belief> &belief_updater,
                                     const Eigen::Vector2d &goal_state,
-                                    const int num_start_connections,
-                                    const int num_goal_connections);
+                                    const int num_start_connections, const int num_goal_connections,
+                                    const BRMSearchOptions &options);
 
 // Implementation details follow from here
 namespace detail {
@@ -144,7 +153,7 @@ std::optional<BRMPlan<Belief>> plan(const RoadMap &road_map, const Belief &initi
                                     const BeliefUpdater<Belief> &belief_updater,
                                     const Eigen::Vector2d &goal_state,
                                     const int num_start_connections, const int num_goal_connections,
-                                    const double uncertainty_tolerance) {
+                                    const BRMSearchOptions &options) {
     using SearchState = detail::BRMSearchState<Belief>;
     // Find nearest node to start and end states
     const std::vector<int> nearest_to_start_idxs =

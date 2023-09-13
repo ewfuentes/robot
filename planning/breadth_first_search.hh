@@ -3,8 +3,10 @@
 
 #include <algorithm>
 #include <deque>
+#include <functional>
 #include <optional>
 #include <vector>
+#include <iostream>
 
 namespace robot::planning {
 template <typename State>

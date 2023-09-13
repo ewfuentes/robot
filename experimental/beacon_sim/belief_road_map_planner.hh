@@ -19,7 +19,7 @@ struct BeliefRoadMapOptions {
     double max_sensor_range_m;
     int num_start_connections;
     int num_goal_connections;
-    double uncertainty_tolerance;
+    std::optional<double> uncertainty_tolerance;
     // This config controls when we switch from exact to approximate edge transforms.
     // If the number of landmark presence configurations is less than or equal this amount,
     // we compute the expectation exactly. If the number of configurations are greater than this,
