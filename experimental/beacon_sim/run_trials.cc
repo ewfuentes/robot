@@ -237,6 +237,7 @@ void run_trials(const TrialsConfig &config) {
         .dt = std::chrono::milliseconds(25),
         .load_off_diagonals = false,
         .enable_brm_planner = true,
+        .allow_brm_backtracking = true,
         .autostep = false,
         .correlated_beacons_configuration = {},
     };
