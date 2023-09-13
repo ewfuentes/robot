@@ -14,6 +14,7 @@ struct Node {
     State state;
     std::optional<int> maybe_parent_idx;
     double cost;
+    bool should_skip;
 };
 
 template <typename State>
@@ -29,11 +30,21 @@ struct BreadthFirstResult {
     int num_nodes_visited;
 };
 
-template <typename State, typename SuccessorFunc, typename ShouldQueueCheckFunc,
-          typename GoalCheckFunc, typename IdentifyPathEndFunc>
+template <typename State>
+struct ShouldQueueResult {
+    Node<State> node;
+    bool remove_open_queue_nodes;
+};
+
+template <typename State>
+using ShouldQueueFunc = std::function<std::optional<ShouldQueueResult<State>>(
+    const Successor<State> &, const int parent_idx, const std::vector<Node<State>> &node_list)>;
+
+template <typename State, typename SuccessorFunc, typename GoalCheckFunc,
+          typename IdentifyPathEndFunc>
 std::optional<BreadthFirstResult<State>> breadth_first_search(
     const State &initial_state, const SuccessorFunc &successors_for_state,
-    const ShouldQueueCheckFunc &should_queue_check, GoalCheckFunc &goal_check_func,
+    const ShouldQueueFunc<State> &should_queue_check, GoalCheckFunc &goal_check_func,
     IdentifyPathEndFunc &identify_end_func) {
     int nodes_expanded = 0;
     int nodes_visited = 0;
@@ -48,6 +59,9 @@ std::optional<BreadthFirstResult<State>> breadth_first_search(
         // Make a copy to avoid invalidated references when pushing back on nodes
         const Node<State> n = nodes[node_idx];
         nodes_expanded++;
+        if (n.should_skip) {
+            continue;
+        }
         if (goal_check_func(n)) {
             break;
         }
@@ -57,12 +71,23 @@ std::optional<BreadthFirstResult<State>> breadth_first_search(
             nodes_visited++;
 
             // Check if we should add this node to the queue
-            if (should_queue_check(successor, node_idx, nodes)) {
-                node_idx_queue.push_back(nodes.size());
-                nodes.push_back({.state = successor.state,
-                                 .maybe_parent_idx = node_idx,
-                                 .cost = n.cost + successor.edge_cost});
+            const auto maybe_should_queue_result = should_queue_check(successor, node_idx, nodes);
+            if (!maybe_should_queue_result.has_value()) {
+                continue;
             }
+
+            nodes.push_back(maybe_should_queue_result->node);
+            if (maybe_should_queue_result->remove_open_queue_nodes) {
+                std::cout << "Clearing nodes matching: " << maybe_should_queue_result->node.state.node_idx << " new node idx: " << nodes.size()-1 << std::endl;
+                for (int node_idx : node_idx_queue) {
+                    if (nodes.at(node_idx).state == nodes.back().state) {
+                        std::cout << nodes.at(node_idx).state.node_idx << " " << nodes.back().state.node_idx << std::endl;
+                        nodes.at(node_idx).should_skip = true;
+                    }
+                }
+            }
+            node_idx_queue.push_back(nodes.size());
+
         }
     }
 
