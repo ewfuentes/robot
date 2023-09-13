@@ -193,13 +193,15 @@ WorldMapConfig world_map_config(const std::optional<int> &configuration) {
                                        }
                                        return ids;
                                    }()});
-    if (configuration) {
-        std::vector<bool> bool_config(out.correlated_beacons.beacons.size());
-        for (int i = 0; i < static_cast<int>(bool_config.size()); i++) {
+    std::vector<bool> bool_config(out.correlated_beacons.beacons.size());
+    for (int i = 0; i < static_cast<int>(bool_config.size()); i++) {
+        if (configuration) {
             bool_config.at(i) = (configuration.value() & (1 << i));
+        } else {
+            bool_config.at(i) = true;
         }
-        out.correlated_beacons.configuration = bool_config;
     }
+    out.correlated_beacons.configuration = bool_config;
 
     // Create obstacles
     {
