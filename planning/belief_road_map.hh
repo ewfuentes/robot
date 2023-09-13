@@ -160,13 +160,16 @@ std::optional<BRMPlan<Belief>> plan(const RoadMap &road_map, const Belief &initi
     const std::vector<int> nearest_to_end_idxs =
         detail::find_nearest_node_idxs(road_map, goal_state, num_goal_connections);
 
-    const SuccessorFunc<SearchState> successors_func = [nearest_to_start_idxs, nearest_to_end_idxs, &belief_updater,
-                                  &road_map](const SearchState &state) {
+    const SuccessorFunc<SearchState> successors_func = [nearest_to_start_idxs, nearest_to_end_idxs,
+                                                        &belief_updater,
+                                                        &road_map](const SearchState &state) {
         return detail::successors_for_state(state, road_map, belief_updater, nearest_to_start_idxs,
                                             nearest_to_end_idxs);
     };
 
-    const GoalCheckFunc<SearchState> goal_check_func = [](const Node<SearchState> &) { return false; };
+    const GoalCheckFunc<SearchState> goal_check_func = [](const Node<SearchState> &) {
+        return false;
+    };
 
     const IdentifyPathEndFunc<SearchState> identify_end_func =
         [](const std::vector<Node<SearchState>> &nodes) -> std::optional<int> {
@@ -196,24 +199,12 @@ std::optional<BRMPlan<Belief>> plan(const RoadMap &road_map, const Belief &initi
         if (std::holds_alternative<MinUncertaintyToleranceOptions>(options)) {
             const auto &min_uncertainty_opts = std::get<MinUncertaintyToleranceOptions>(options);
             return [uncertainty_tolerance = min_uncertainty_opts.uncertainty_tolerance,
-                    &min_uncertainty_from_node](const Successor<SearchState> &successor,
-                                                const int parent_idx,
-                                                const std::vector<Node<SearchState>> &nodes)
-                       -> std::optional<ShouldQueueResult<SearchState>> {
+                    &min_uncertainty_from_node](
+                       const Successor<SearchState> &successor, const int parent_idx,
+                       const std::vector<Node<SearchState>> &nodes) -> ShouldQueueResult {
                 const int node_idx = successor.state.node_idx;
-                const auto &parent_node = nodes.at(parent_idx);
                 const double uncertainty = uncertainty_size(successor.state.belief);
                 const auto iter = min_uncertainty_from_node.find(node_idx);
-
-                const auto result_if_valid = ShouldQueueResult<SearchState>{
-                    .node =
-                        Node<SearchState>{
-                            .state = successor.state,
-                            .maybe_parent_idx = parent_idx,
-                            .cost = parent_node.cost + successor.edge_cost,
-                            .should_skip = false,
-                        },
-                    .remove_open_queue_nodes = false};
 
                 if (iter != min_uncertainty_from_node.end()) {
                     const bool should_queue =
@@ -221,7 +212,7 @@ std::optional<BRMPlan<Belief>> plan(const RoadMap &road_map, const Belief &initi
                     if (should_queue) {
                         min_uncertainty_from_node.at(node_idx) = uncertainty;
                     }
-                    return should_queue ? std::make_optional(result_if_valid) : std::nullopt;
+                    return should_queue ? ShouldQueueResult::QUEUE : ShouldQueueResult::SKIP;
                 }
                 std::optional<int> prev_idx = parent_idx;
                 while (prev_idx.has_value()) {
@@ -234,22 +225,47 @@ std::optional<BRMPlan<Belief>> plan(const RoadMap &road_map, const Belief &initi
                 if (!prev_idx.has_value()) {
                     // If we haven't seen this node before on our path, allow it to be added
                     min_uncertainty_from_node[node_idx] = uncertainty_size(successor.state.belief);
-                    return result_if_valid;
+                    return ShouldQueueResult::QUEUE;
                 } else if (uncertainty_size(successor.state.belief) <
                            ((1 - uncertainty_tolerance) *
                             uncertainty_size(nodes[prev_idx.value()].state.belief))) {
                     // We're revisiting a node, but it has lower uncertainty
                     min_uncertainty_from_node[node_idx] = uncertainty_size(successor.state.belief);
-                    return result_if_valid;
+                    return ShouldQueueResult::QUEUE;
                 }
                 // We've seen this node before, but it's not much better than last time
-                return std::nullopt;
+                return ShouldQueueResult::SKIP;
             };
         } else {
-            return []([[maybe_unused]] const Successor<SearchState> &successor,
-                      [[maybe_unused]] const int parent_idx,
-                      [[maybe_unused]] const std::vector<Node<SearchState>> &nodes)
-                       -> std::optional<ShouldQueueResult<SearchState>> { return std::nullopt; };
+            return [&min_uncertainty_from_node](
+                       const Successor<SearchState> &successor, const int parent_idx,
+                       const std::vector<Node<SearchState>> &nodes) -> ShouldQueueResult {
+                // If node was previously on path, skip it
+                std::optional<int> path_node_idx = parent_idx;
+                while (path_node_idx.has_value()) {
+                    const auto &path_node = nodes.at(path_node_idx.value());
+                    if (path_node.state == successor.state) {
+                        return ShouldQueueResult::SKIP;
+                    }
+                    path_node_idx = path_node.maybe_parent_idx;
+                }
+
+                // If the node has previously been visited with a lower uncertainty, don't queue
+                // this node
+                const auto maybe_prev_uncertainty =
+                    min_uncertainty_from_node.find(successor.state.node_idx);
+                const double successor_uncertainty_size = uncertainty_size(successor.state.belief);
+                const bool should_queue =
+                    (maybe_prev_uncertainty == min_uncertainty_from_node.end()) ||
+                    successor_uncertainty_size < maybe_prev_uncertainty->second;
+
+                if (should_queue) {
+                    min_uncertainty_from_node[successor.state.node_idx] =
+                        successor_uncertainty_size;
+                    return ShouldQueueResult::QUEUE_AND_CLEAR_MATCHING_IN_OPEN;
+                }
+                return ShouldQueueResult::SKIP;
+            };
         }
     }();
 

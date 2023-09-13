@@ -29,17 +29,17 @@ struct BreadthFirstResult {
     int num_nodes_visited;
 };
 
-template <typename State>
-struct ShouldQueueResult {
-    Node<State> node;
-    bool remove_open_queue_nodes;
+enum class ShouldQueueResult {
+    SKIP,
+    QUEUE,
+    QUEUE_AND_CLEAR_MATCHING_IN_OPEN,
 };
 
 template <typename State>
-using SuccessorFunc = std::function<std::vector<Successor<State>>(const State& start)>;
+using SuccessorFunc = std::function<std::vector<Successor<State>>(const State &start)>;
 
 template <typename State>
-using ShouldQueueFunc = std::function<std::optional<ShouldQueueResult<State>>(
+using ShouldQueueFunc = std::function<ShouldQueueResult(
     const Successor<State> &, const int parent_idx, const std::vector<Node<State>> &node_list)>;
 
 template <typename State>
@@ -57,7 +57,7 @@ std::optional<BreadthFirstResult<State>> breadth_first_search(
     int nodes_visited = 0;
 
     std::vector<Node<State>> nodes = {
-        {.state = initial_state, .maybe_parent_idx = {}, .cost = 0.0, .should_skip=false}};
+        {.state = initial_state, .maybe_parent_idx = {}, .cost = 0.0, .should_skip = false}};
     std::deque<int> node_idx_queue = {0};
     while (!node_idx_queue.empty()) {
         // Pop the front of the queue
@@ -78,20 +78,25 @@ std::optional<BreadthFirstResult<State>> breadth_first_search(
             nodes_visited++;
 
             // Check if we should add this node to the queue
-            const auto maybe_should_queue_result = should_queue_check(successor, node_idx, nodes);
-            if (!maybe_should_queue_result.has_value()) {
+            const auto should_queue = should_queue_check(successor, node_idx, nodes);
+
+            if (should_queue == ShouldQueueResult::SKIP) {
                 continue;
             }
 
-            nodes.push_back(maybe_should_queue_result->node);
-            if (maybe_should_queue_result->remove_open_queue_nodes) {
+            nodes.push_back(Node<State>{.state = successor.state,
+                                        .maybe_parent_idx = node_idx,
+                                        .cost = n.cost + successor.edge_cost,
+                                        .should_skip = false});
+
+            if (should_queue == ShouldQueueResult::QUEUE_AND_CLEAR_MATCHING_IN_OPEN) {
                 for (int node_idx : node_idx_queue) {
                     if (nodes.at(node_idx).state == nodes.back().state) {
                         nodes.at(node_idx).should_skip = true;
                     }
                 }
             }
-            node_idx_queue.push_back(nodes.size()-1);
+            node_idx_queue.push_back(nodes.size() - 1);
         }
     }
 
