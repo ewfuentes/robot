@@ -287,6 +287,7 @@ std::tuple<liegroups::SE2, EdgeTransform::Matrix> compute_edge_belief_transform(
         // Move towards the goal
         const liegroups::SE2 old_robot_from_new_robot = [&]() {
             const double angle_to_goal_rad = std::atan2(end_in_robot.y(), end_in_robot.x());
+
             if (std::abs(angle_to_goal_rad) > TOL) {
                 // First turn to face the goal
                 constexpr double MAX_ANGLE_STEP_RAD = DT_S * ANGULAR_VELOCITY_RADPS;
