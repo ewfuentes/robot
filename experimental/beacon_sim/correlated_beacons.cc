@@ -134,6 +134,16 @@ BeaconPotential BeaconPotential::operator*(const BeaconPotential &other) const {
     return BeaconPotential(new_precision, new_log_norm, new_members);
 }
 
+double BeaconPotential::log_prob(const std::vector<int> &present_beacons) const {
+    std::unordered_map<int, bool> assignment;
+    for (const int member_id : members_) {
+        const auto iter = std::find(present_beacons.begin(), present_beacons.end(), member_id);
+        assignment[member_id] = iter == present_beacons.end() ? false : true;
+    }
+
+    return log_prob(assignment);
+}
+
 double BeaconPotential::log_prob(const std::unordered_map<int, bool> &assignment) const {
     const std::vector<int> sorted_members = sorted_vector(members_);
     const std::vector<int> keys = sorted_keys(assignment);

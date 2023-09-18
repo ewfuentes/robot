@@ -28,9 +28,30 @@ struct BeliefRoadMapOptions {
     int max_num_edge_transforms;
 };
 
+struct ExpectedBeliefRoadMapOptions {
+    // The algorithm requires looking over all possible paths from the start to the goal. To make
+    // the problem tractable, we wil only consider paths that are within a multiplicative factor
+    // of the shortest path.
+    double max_path_length_ratio;
+
+    // How far we should look to connect the start and goal to the roadmap
+    double start_goal_connection_radius_m;
+
+    double max_sensor_range_m;
+};
+
+struct ExpectedBeliefPlanResult {
+    std::vector<int> plan;
+    Eigen::Matrix3d expected_cov;
+};
+
 std::optional<planning::BRMPlan<RobotBelief>> compute_belief_road_map_plan(
     const planning::RoadMap &road_map, const EkfSlam &ekf, const BeaconPotential &beacon_potential,
     const Eigen::Vector2d &goal_state, const BeliefRoadMapOptions &options);
+
+ExpectedBeliefPlanResult compute_expected_belief_road_map_plan(
+    const planning::RoadMap &road_map, const EkfSlam &ekf, const BeaconPotential &beacon_potential,
+    const Eigen::Vector2d &goal_state, const ExpectedBeliefRoadMapOptions &options);
 
 namespace detail {
 struct EdgeTransform {
@@ -48,5 +69,10 @@ EdgeTransform compute_edge_belief_transform(const liegroups::SE2 &local_from_rob
                                             const BeaconPotential &beacon_potential,
                                             const double max_sensor_range_m,
                                             const int max_num_transforms);
+
+std::tuple<liegroups::SE2, EdgeTransform::Matrix> compute_edge_belief_transform(
+    const liegroups::SE2 &local_from_robot, const Eigen::Vector2d &end_state_in_local,
+    const EkfSlamConfig &ekf_config, const EkfSlamEstimate &ekf_estimate,
+    const std::optional<std::vector<int>> &available_beacons, const double max_sensor_range_m);
 }  // namespace detail
 }  // namespace robot::experimental::beacon_sim

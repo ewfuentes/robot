@@ -39,7 +39,10 @@ PYBIND11_MODULE(correlated_beacons_python, m) {
 
     py::class_<BeaconPotential>(m, "BeaconPotential")
         .def(py::init<Eigen::MatrixXd, double, std::vector<int>>())
-        .def("log_prob", &BeaconPotential::log_prob)
+        .def("log_prob", py::overload_cast<const std::unordered_map<int, bool> &>(
+                             &BeaconPotential::log_prob, py::const_))
+        .def("log_prob",
+             py::overload_cast<const std::vector<int> &>(&BeaconPotential::log_prob, py::const_))
         .def("__mul__", &BeaconPotential::operator*)
         .def("compute_log_marginals", &BeaconPotential::compute_log_marginals);
 

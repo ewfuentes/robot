@@ -64,7 +64,8 @@ planning::RoadMap create_grid_road_map() {
     };
 }
 
-std::tuple<planning::RoadMap, EkfSlam> create_grid_environment(const EkfSlamConfig &ekf_config) {
+std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_grid_environment(
+    const EkfSlamConfig &ekf_config, const double p_lone_beacon = 0.5) {
     // Create the environment depicted below
     //
     //
@@ -103,12 +104,19 @@ std::tuple<planning::RoadMap, EkfSlam> create_grid_environment(const EkfSlamConf
     const auto road_map = create_grid_road_map();
     auto ekf_slam = EkfSlam(ekf_config, time::RobotTimestamp());
     constexpr bool LOAD_OFF_DIAGONALS = true;
+
+    // Lone beacon potential
+    const double lone_log_norm = -std::log(1 - p_lone_beacon);
+    const double lone_param = std::log(p_lone_beacon) + lone_log_norm;
+    const auto lone_potential =
+        BeaconPotential(Eigen::Matrix<double, 1, 1>{lone_param}, lone_log_norm, {GRID_BEACON_ID});
+
     // Move the robot to (0, 10) and have it face down
     const liegroups::SE2 old_robot_from_new_robot(-std::numbers::pi / 2.0, {0, 10});
     ekf_slam.predict(time::RobotTimestamp(), old_robot_from_new_robot);
     ekf_slam.load_map(mapped_landmarks, LOAD_OFF_DIAGONALS);
 
-    return {road_map, ekf_slam};
+    return {road_map, ekf_slam, lone_potential};
 }
 
 MappedLandmarks create_diamond_mapped_landmarks() {
@@ -212,7 +220,7 @@ TEST(BeliefRoadMapPlannerTest, grid_road_map_no_backtrack) {
         .on_map_load_position_uncertainty_m = 2.0,
         .on_map_load_heading_uncertainty_rad = 0.1,
     };
-    const auto &[road_map, ekf_slam] = create_grid_environment(ekf_config);
+    const auto &[road_map, ekf_slam, _] = create_grid_environment(ekf_config);
     const Eigen::Vector2d GOAL_STATE = {10, -5};
     constexpr BeliefRoadMapOptions OPTIONS = {
         .max_sensor_range_m = 3.0,
@@ -251,7 +259,7 @@ TEST(BeliefRoadMapPlannerTest, grid_road_map) {
         .on_map_load_position_uncertainty_m = 2.0,
         .on_map_load_heading_uncertainty_rad = 0.1,
     };
-    const auto &[road_map, ekf_slam] = create_grid_environment(ekf_config);
+    const auto &[road_map, ekf_slam, _] = create_grid_environment(ekf_config);
     const Eigen::Vector2d GOAL_STATE = {10, -5};
     constexpr BeliefRoadMapOptions OPTIONS = {
         .max_sensor_range_m = 3.0,
@@ -290,7 +298,8 @@ TEST(BeliefRoadMapPlannerTest, grid_road_map_with_unlikely_beacon) {
         .on_map_load_position_uncertainty_m = 2.0,
         .on_map_load_heading_uncertainty_rad = 0.5,
     };
-    const auto &[road_map, ekf_slam] = create_grid_environment(ekf_config);
+    constexpr double P_BEACON = 1e-7;
+    const auto &[road_map, ekf_slam, potential] = create_grid_environment(ekf_config, P_BEACON);
     const Eigen::Vector2d GOAL_STATE = {10, -5};
     constexpr BeliefRoadMapOptions OPTIONS = {
         .max_sensor_range_m = 3.0,
@@ -299,11 +308,6 @@ TEST(BeliefRoadMapPlannerTest, grid_road_map_with_unlikely_beacon) {
         .uncertainty_tolerance = 1e-2,
         .max_num_edge_transforms = 1,
     };
-
-    constexpr double P_BEACON = 1e-7;
-    const double LOG_NORM = -std::log(1 - P_BEACON);
-    const double PARAM = std::log(P_BEACON) + LOG_NORM;
-    const BeaconPotential potential(Eigen::Matrix<double, 1, 1>{PARAM}, LOG_NORM, {GRID_BEACON_ID});
 
     // Action
     const auto maybe_plan =
@@ -416,7 +420,7 @@ TEST(BeliefRoadMapPlannerTest, compute_edge_transform_no_measurements) {
     };
     constexpr double MAX_SENSOR_RANGE_M = 3.0;
     constexpr int MAX_NUM_TRANSFORMS = 10;
-    const auto &[road_map, ekf_slam] = create_grid_environment(ekf_config);
+    const auto &[road_map, ekf_slam, _] = create_grid_environment(ekf_config);
 
     constexpr int START_NODE_IDX = 6;
     constexpr int END_NODE_IDX = 3;
@@ -452,7 +456,7 @@ TEST(BeliefRoadMapPlannerTest, compute_edge_transform_with_measurement) {
     };
     constexpr double MAX_SENSOR_RANGE_M = 3.0;
     constexpr int MAX_NUM_TRANSFORMS = 10;
-    const auto &[road_map, ekf_slam] = create_grid_environment(ekf_config);
+    const auto &[road_map, ekf_slam, _] = create_grid_environment(ekf_config);
 
     constexpr int START_NODE_IDX = 3;
     constexpr int END_NODE_IDX = 0;
@@ -469,4 +473,46 @@ TEST(BeliefRoadMapPlannerTest, compute_edge_transform_with_measurement) {
     EXPECT_EQ(edge_belief_transform.local_from_robot.translation().x(), end_pos.x());
     EXPECT_EQ(edge_belief_transform.local_from_robot.translation().y(), end_pos.y());
 }
+
+TEST(ExpectedBeliefRoadMapPlannerTest, grid_road_map) {
+    // Setup
+    const EkfSlamConfig ekf_config{
+        .max_num_beacons = 1,
+        .initial_beacon_uncertainty_m = 100.0,
+        .along_track_process_noise_m_per_rt_meter = 0.05,
+        .cross_track_process_noise_m_per_rt_meter = 0.05,
+        .pos_process_noise_m_per_rt_s = 0.0,
+        .heading_process_noise_rad_per_rt_meter = 1e-3,
+        .heading_process_noise_rad_per_rt_s = 0.0,
+        .beacon_pos_process_noise_m_per_rt_s = 1e-6,
+        .range_measurement_noise_m = 1e-1,
+        .bearing_measurement_noise_rad = 1e-1,
+        .on_map_load_position_uncertainty_m = 2.0,
+        .on_map_load_heading_uncertainty_rad = 0.1,
+    };
+
+    constexpr double P_BEACON = 0.5;
+    const auto &[road_map, ekf_slam, potential] = create_grid_environment(ekf_config, P_BEACON);
+    const Eigen::Vector2d GOAL_STATE = {10, -5};
+    constexpr ExpectedBeliefRoadMapOptions OPTIONS = {
+        .max_path_length_ratio = 1.4,
+        .start_goal_connection_radius_m = 6.0,
+        .max_sensor_range_m = 3.0,
+    };
+
+    // Action
+    const auto plan =
+        compute_expected_belief_road_map_plan(road_map, ekf_slam, potential, GOAL_STATE, OPTIONS);
+
+    // Verification
+    const double pos_uncertainty_m_sq = ekf_config.on_map_load_position_uncertainty_m *
+                                        ekf_config.on_map_load_position_uncertainty_m;
+    const double heading_uncertainty_rad_sq = ekf_config.on_map_load_heading_uncertainty_rad *
+                                              ekf_config.on_map_load_heading_uncertainty_rad;
+    const double initial_cov_det =
+        pos_uncertainty_m_sq * pos_uncertainty_m_sq * heading_uncertainty_rad_sq;
+
+    EXPECT_LT(plan.expected_cov.determinant(), initial_cov_det);
+}
+
 }  // namespace robot::experimental::beacon_sim
