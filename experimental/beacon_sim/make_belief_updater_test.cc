@@ -35,7 +35,7 @@ TEST(MakeBeliefUpdaterTest, compute_edge_transform_no_measurements) {
     // Action
     const auto edge_belief_transform = compute_edge_belief_transform(
         local_from_robot, end_pos, ekf_slam.config(), ekf_slam.estimate(), {}, MAX_SENSOR_RANGE_M,
-        MAX_NUM_TRANSFORMS);
+        MAX_NUM_TRANSFORMS, TransformType::COVARIANCE);
 
     // Verification
     EXPECT_EQ(edge_belief_transform.local_from_robot.translation().x(), end_pos.x());
@@ -71,7 +71,7 @@ TEST(MakeBeliefUpdaterTest, compute_edge_transform_with_measurement) {
     // Action
     const auto edge_belief_transform = compute_edge_belief_transform(
         local_from_robot, end_pos, ekf_slam.config(), ekf_slam.estimate(), {}, MAX_SENSOR_RANGE_M,
-        MAX_NUM_TRANSFORMS);
+        MAX_NUM_TRANSFORMS, TransformType::COVARIANCE);
 
     // Verification
     EXPECT_EQ(edge_belief_transform.local_from_robot.translation().x(), end_pos.x());
