@@ -1,16 +1,15 @@
 
 #pragma once
 
-#include "Eigen/Core"
-
 #include <unordered_set>
 
+#include "Eigen/Core"
 #include "common/liegroups/se2.hh"
-#include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/correlated_beacons.hh"
+#include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/robot_belief.hh"
-#include "planning/probabilistic_road_map.hh"
 #include "planning/belief_road_map.hh"
+#include "planning/probabilistic_road_map.hh"
 
 namespace robot::experimental::beacon_sim {
 struct EdgeTransform {
@@ -47,4 +46,4 @@ planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap
                                                          const EkfSlam &ekf,
                                                          const std::vector<int> &present_beacons);
 
-}
+}  // namespace robot::experimental::beacon_sim

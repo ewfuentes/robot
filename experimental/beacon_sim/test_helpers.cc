@@ -5,8 +5,6 @@
 
 namespace robot::experimental::beacon_sim {
 
-
-
 MappedLandmarks create_grid_mapped_landmarks() {
     const Eigen::Vector2d beacon_in_local{-7.5, -2.5};
     constexpr double POSITION_UNCERTAINTY_M = 0.1;
@@ -196,4 +194,4 @@ std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_diamond_environme
     return {road_map, ekf_slam, beacon_potential};
 }
 
-}
+}  // namespace robot::experimental::beacon_sim

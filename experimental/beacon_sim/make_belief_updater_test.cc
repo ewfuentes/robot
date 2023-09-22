@@ -1,9 +1,8 @@
 
 #include "experimental/beacon_sim/make_belief_updater.hh"
 
-#include "gtest/gtest.h"
-
 #include "experimental/beacon_sim/test_helpers.hh"
+#include "gtest/gtest.h"
 
 namespace robot::experimental::beacon_sim {
 
@@ -79,4 +78,4 @@ TEST(MakeBeliefUpdaterTest, compute_edge_transform_with_measurement) {
     EXPECT_EQ(edge_belief_transform.local_from_robot.translation().y(), end_pos.y());
 }
 
-}
+}  // namespace robot::experimental::beacon_sim

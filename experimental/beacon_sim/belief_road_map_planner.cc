@@ -21,8 +21,8 @@
 #include "experimental/beacon_sim/correlated_beacons.hh"
 #include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/generate_observations.hh"
-#include "experimental/beacon_sim/robot.hh"
 #include "experimental/beacon_sim/make_belief_updater.hh"
+#include "experimental/beacon_sim/robot.hh"
 #include "planning/belief_road_map.hh"
 #include "planning/breadth_first_search.hh"
 #include "planning/probabilistic_road_map.hh"
@@ -279,9 +279,7 @@ ExpectedBeliefPlanResult compute_expected_belief_road_map_plan(
     };
 }
 
-namespace detail {
-
-}  // namespace detail
+namespace detail {}  // namespace detail
 }  // namespace robot::experimental::beacon_sim
 
 namespace std {

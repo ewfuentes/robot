@@ -1,8 +1,8 @@
 
 #include "experimental/beacon_sim/make_belief_updater.hh"
 
-#include "common/math/redheffer_star.hh"
 #include "common/geometry/nearest_point_on_segment.hh"
+#include "common/math/redheffer_star.hh"
 
 namespace robot::experimental::beacon_sim {
 namespace {
@@ -49,7 +49,6 @@ std::vector<int> find_beacons_along_path(const Eigen::Vector2d &start_in_local,
     return out;
 }
 
-
 std::vector<LogMarginal> sample_log_marginals(const std::vector<LogMarginal> all_marginals,
                                               const int num_samples) {
     std::mt19937 gen(0);
@@ -86,9 +85,7 @@ std::vector<LogMarginal> sample_log_marginals(const std::vector<LogMarginal> all
     return out;
 }
 
-
-}
-
+}  // namespace
 
 Eigen::Matrix3d compute_process_noise(const EkfSlamConfig &config, const double dt_s,
                                       const double arclength_m) {
@@ -144,8 +141,8 @@ Eigen::MatrixXd build_measurement_noise(const int num_observations,
     return noise;
 }
 
-EdgeTransform::Matrix compute_process_transform(
-    const Eigen::Matrix3d &process_noise, const liegroups::SE2 &old_robot_from_new_robot) {
+EdgeTransform::Matrix compute_process_transform(const Eigen::Matrix3d &process_noise,
+                                                const liegroups::SE2 &old_robot_from_new_robot) {
     const Eigen::Matrix3d dynamics_jac_wrt_state = old_robot_from_new_robot.inverse().Adj();
 
     // See equation 69 from
@@ -188,7 +185,6 @@ EdgeTransform::Matrix compute_measurement_transform(
             Eigen::Matrix3d::Identity())
         .finished();
 }
-
 
 EdgeTransform compute_edge_belief_transform(const liegroups::SE2 &local_from_robot,
                                             const Eigen::Vector2d &end_state_in_local,
@@ -322,9 +318,9 @@ planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap
         const EdgeTransform &edge_transform =
             is_in_cache
                 ? cache_iter->second
-                : compute_edge_belief_transform(
-                      initial_belief.local_from_robot, end_pos_in_local, ekf.config(),
-                      ekf.estimate(), beacon_potential, max_sensor_range_m, max_num_transforms);
+                : compute_edge_belief_transform(initial_belief.local_from_robot, end_pos_in_local,
+                                                ekf.config(), ekf.estimate(), beacon_potential,
+                                                max_sensor_range_m, max_num_transforms);
         if (!is_in_cache) {
             // Add the transform to the cache in case it's missing
             edge_transform_cache[edge] = edge_transform;
@@ -406,4 +402,4 @@ planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap
     };
 }
 
-}
+}  // namespace robot::experimental::beacon_sim
