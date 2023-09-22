@@ -6,6 +6,7 @@
 #include "Eigen/Core"
 #include "common/liegroups/se2.hh"
 #include "common/time/robot_time.hh"
+#include "experimental/beacon_sim/robot_belief.hh"
 #include "experimental/beacon_sim/generate_observations.hh"
 #include "experimental/beacon_sim/mapped_landmarks.hh"
 
@@ -40,6 +41,8 @@ struct EkfSlamEstimate {
     Eigen::Matrix3d robot_cov() const;
 
     void local_from_robot(const liegroups::SE2 &local_from_robot);
+
+    RobotBelief robot_belief() const;
 
     // Returns none if beacon id estimated
     std::optional<Eigen::Vector2d> beacon_in_local(const int beacon_id) const;

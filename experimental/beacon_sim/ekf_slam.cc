@@ -275,6 +275,13 @@ liegroups::SE2 EkfSlamEstimate::local_from_robot() const {
     return liegroups::SE2(mean(2), mean.head<2>());
 }
 
+RobotBelief EkfSlamEstimate::robot_belief() const {
+    return  {
+    .local_from_robot = local_from_robot(),
+    .cov_in_robot = robot_cov(),
+    };
+}
+
 void EkfSlamEstimate::local_from_robot(const liegroups::SE2 &local_from_robot) {
     mean(2) = local_from_robot.so2().log();
     mean.head<2>() = local_from_robot.translation();
