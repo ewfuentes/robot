@@ -1,7 +1,9 @@
 
+#include "experimental/beacon_sim/make_belief_updater.hh"
+
 #include "gtest/gtest.h"
 
-#include "experimental/beacom_sim/make_belief_updater.hh"
+#include "experimental/beacon_sim/test_helpers.hh"
 
 namespace robot::experimental::beacon_sim {
 
@@ -32,7 +34,7 @@ TEST(MakeBeliefUpdaterTest, compute_edge_transform_no_measurements) {
     const Eigen::Vector2d end_pos = road_map.points.at(END_NODE_IDX);
 
     // Action
-    const auto edge_belief_transform = detail::compute_edge_belief_transform(
+    const auto edge_belief_transform = compute_edge_belief_transform(
         local_from_robot, end_pos, ekf_slam.config(), ekf_slam.estimate(), {}, MAX_SENSOR_RANGE_M,
         MAX_NUM_TRANSFORMS);
 
@@ -68,7 +70,7 @@ TEST(MakeBeliefUpdaterTest, compute_edge_transform_with_measurement) {
     const Eigen::Vector2d end_pos = road_map.points.at(END_NODE_IDX);
 
     // Action
-    const auto edge_belief_transform = detail::compute_edge_belief_transform(
+    const auto edge_belief_transform = compute_edge_belief_transform(
         local_from_robot, end_pos, ekf_slam.config(), ekf_slam.estimate(), {}, MAX_SENSOR_RANGE_M,
         MAX_NUM_TRANSFORMS);
 

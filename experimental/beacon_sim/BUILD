@@ -361,6 +361,7 @@ cc_test(
   srcs = ["belief_road_map_planner_test.cc"],
   deps = [
     ":belief_road_map_planner",
+    ":test_helpers",
     "@com_google_googletest//:gtest_main",
   ],
 )
@@ -509,6 +510,7 @@ cc_test(
   srcs = ["make_belief_updater_test.cc"],
   deps = [
     ":make_belief_updater",
+    ":test_helpers",
     "@com_google_googletest//:gtest_main",
   ]
 )
@@ -520,4 +522,14 @@ cc_library(
     "//common/liegroups:se2",
     "@eigen",
   ]
+)
+
+cc_library(
+    name = "test_helpers",
+    hdrs = ["test_helpers.hh"],
+    srcs = ["test_helpers.cc"],
+    deps = [
+      ":ekf_slam",
+      "//planning:probabilistic_road_map",
+    ]
 )
