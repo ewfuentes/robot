@@ -15,7 +15,6 @@
 #include <utility>
 
 #include "Eigen/Core"
-#include "common/geometry/nearest_point_on_segment.hh"
 #include "common/liegroups/se2.hh"
 #include "common/math/combinations.hh"
 #include "common/math/redheffer_star.hh"
@@ -30,8 +29,6 @@
 
 namespace robot::experimental::beacon_sim {
 namespace {
-using ScatteringTransformMatrix =
-    Eigen::Matrix<double, 2 * liegroups::SE2::DoF, 2 * liegroups::SE2::DoF>;
 
 std::vector<std::vector<int>> find_paths(const Eigen::Vector2d start_in_local,
                                          const Eigen::Vector2d goal_in_local,
@@ -284,119 +281,6 @@ ExpectedBeliefPlanResult compute_expected_belief_road_map_plan(
 
 namespace detail {
 
-std::vector<int> find_beacons_along_path(const Eigen::Vector2d &start_in_local,
-                                         const Eigen::Vector2d &end_in_local,
-                                         const EkfSlamEstimate &est,
-                                         const double max_sensor_range_m) {
-    std::unordered_set<int> beacon_ids;
-    for (const int beacon_id : est.beacon_ids) {
-        const Eigen::Vector2d beacon_in_local = est.beacon_in_local(beacon_id).value();
-
-        const auto result = geometry::nearest_point_on_segment_result(start_in_local, end_in_local,
-                                                                      beacon_in_local);
-
-        const double dist_m = (beacon_in_local - result.nearest_pt_in_frame).norm();
-        if (dist_m < max_sensor_range_m) {
-            beacon_ids.insert(beacon_id);
-        }
-    }
-    std::vector<int> out;
-    std::copy(beacon_ids.begin(), beacon_ids.end(), std::back_inserter(out));
-    std::sort(out.begin(), out.end());
-    return out;
-}
-
-
-std::vector<LogMarginal> sample_log_marginals(const std::vector<LogMarginal> all_marginals,
-                                              const int num_samples) {
-    std::mt19937 gen(0);
-    std::uniform_real_distribution<> dist;
-    std::vector<double> rand_nums{};
-    for (int i = 0; i < num_samples; i++) {
-        rand_nums.push_back(dist(gen));
-    }
-    std::sort(rand_nums.begin(), rand_nums.end());
-
-    double accumulated_prob = 0.0;
-    std::vector<LogMarginal> out;
-    auto rand_num_start = rand_nums.begin();
-
-    for (const auto &marginal : all_marginals) {
-        accumulated_prob += std::exp(marginal.log_marginal);
-
-        const auto new_start = std::find_if(
-            rand_num_start, rand_nums.end(),
-            [&accumulated_prob](const double rand_num) { return rand_num > accumulated_prob; });
-
-        const int counts = std::distance(rand_num_start, new_start);
-        if (counts > 0) {
-            out.push_back({
-                .present_beacons = marginal.present_beacons,
-                .log_marginal = std::log(counts),
-            });
-        }
-        rand_num_start = new_start;
-        if (rand_num_start == rand_nums.end()) {
-            break;
-        }
-    }
-    return out;
-}
-
-EdgeTransform compute_edge_belief_transform(const liegroups::SE2 &local_from_robot,
-                                            const Eigen::Vector2d &end_state_in_local,
-                                            const EkfSlamConfig &ekf_config,
-                                            const EkfSlamEstimate &ekf_estimate,
-                                            const BeaconPotential &beacon_potential,
-                                            const double max_sensor_range_m,
-                                            const int max_num_transforms) {
-    // Find all beacons along the path
-    const std::vector<int> nearby_beacon_ids = find_beacons_along_path(
-        local_from_robot.translation(), end_state_in_local, ekf_estimate, max_sensor_range_m);
-
-    // Find the beacons that are part of the potential
-    std::unordered_set<int> potential_beacons(beacon_potential.members().begin(),
-                                              beacon_potential.members().end());
-
-    std::vector<int> nearby_potential_beacons;
-    std::vector<int> nearby_forever_beacons;
-    for (const int beacon_id : nearby_beacon_ids) {
-        if (potential_beacons.contains(beacon_id)) {
-            nearby_potential_beacons.push_back(beacon_id);
-        } else {
-            nearby_forever_beacons.push_back(beacon_id);
-        }
-    }
-
-    const auto all_log_marginals = beacon_potential.compute_log_marginals(nearby_potential_beacons);
-    const auto log_marginals = static_cast<int>(all_log_marginals.size()) > max_num_transforms
-                                   ? sample_log_marginals(all_log_marginals, max_num_transforms)
-                                   : all_log_marginals;
-
-    std::vector<double> weights;
-    std::vector<EdgeTransform::Matrix> transforms;
-    liegroups::SE2 local_from_end_robot;
-    for (const auto &log_marginal : log_marginals) {
-        std::vector<int> present_beacons;
-        std::copy(nearby_forever_beacons.begin(), nearby_forever_beacons.end(),
-                  std::back_inserter(present_beacons));
-        std::copy(log_marginal.present_beacons.begin(), log_marginal.present_beacons.end(),
-                  std::back_inserter(present_beacons));
-        const auto &[local_from_final_robot, scattering_transform] =
-            compute_edge_belief_transform(local_from_robot, end_state_in_local, ekf_config,
-                                          ekf_estimate, present_beacons, max_sensor_range_m);
-
-        weights.push_back(std::exp(log_marginal.log_marginal));
-        transforms.push_back(scattering_transform);
-        local_from_end_robot = local_from_final_robot;
-    }
-
-    return EdgeTransform{
-        .local_from_robot = local_from_end_robot,
-        .weight = std::move(weights),
-        .transforms = std::move(transforms),
-    };
-}
 }  // namespace detail
 }  // namespace robot::experimental::beacon_sim
 

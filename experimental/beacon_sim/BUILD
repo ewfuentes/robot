@@ -349,11 +349,10 @@ cc_library(
     ":generate_observations",
     ":robot",
     ":robot_belief",
+    ":make_belief_updater",
     "//planning:belief_road_map",
     "//planning:probabilistic_road_map",
     "//common/math:combinations",
-    "//common/math:redheffer_star",
-    "//common/geometry:nearest_point_on_segment",
   ]
 )
 
@@ -498,6 +497,8 @@ cc_library(
     ":correlated_beacons",
     ":robot_belief",
     "//common/liegroups:se2",
+    "//common/geometry:nearest_point_on_segment",
+    "//common/math:redheffer_star",
     "//planning:belief_road_map",
     "//planning:probabilistic_road_map",
   ]
