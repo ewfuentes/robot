@@ -6,15 +6,11 @@
 #include "common/liegroups/se2.hh"
 #include "experimental/beacon_sim/correlated_beacons.hh"
 #include "experimental/beacon_sim/ekf_slam.hh"
+#include "experimental/beacon_sim/robot_belief.hh"
 #include "planning/belief_road_map.hh"
 #include "planning/probabilistic_road_map.hh"
 
 namespace robot::experimental::beacon_sim {
-struct RobotBelief {
-    liegroups::SE2 local_from_robot;
-    Eigen::Matrix3d cov_in_robot;
-};
-
 struct BeliefRoadMapOptions {
     double max_sensor_range_m;
     int num_start_connections;
@@ -53,26 +49,4 @@ ExpectedBeliefPlanResult compute_expected_belief_road_map_plan(
     const planning::RoadMap &road_map, const EkfSlam &ekf, const BeaconPotential &beacon_potential,
     const Eigen::Vector2d &goal_state, const ExpectedBeliefRoadMapOptions &options);
 
-namespace detail {
-struct EdgeTransform {
-    static constexpr int DIM = 2 * liegroups::SE2::DoF;
-    using Matrix = Eigen::Matrix<double, DIM, DIM>;
-    liegroups::SE2 local_from_robot;
-    std::vector<double> weight;
-    std::vector<Matrix> transforms;
-};
-
-EdgeTransform compute_edge_belief_transform(const liegroups::SE2 &local_from_robot,
-                                            const Eigen::Vector2d &end_state_in_local,
-                                            const EkfSlamConfig &ekf_config,
-                                            const EkfSlamEstimate &ekf_estimate,
-                                            const BeaconPotential &beacon_potential,
-                                            const double max_sensor_range_m,
-                                            const int max_num_transforms);
-
-std::tuple<liegroups::SE2, EdgeTransform::Matrix> compute_edge_belief_transform(
-    const liegroups::SE2 &local_from_robot, const Eigen::Vector2d &end_state_in_local,
-    const EkfSlamConfig &ekf_config, const EkfSlamEstimate &ekf_estimate,
-    const std::optional<std::vector<int>> &available_beacons, const double max_sensor_range_m);
-}  // namespace detail
 }  // namespace robot::experimental::beacon_sim
