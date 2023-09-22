@@ -348,11 +348,11 @@ cc_library(
     ":ekf_slam",
     ":generate_observations",
     ":robot",
+    ":robot_belief",
+    ":make_belief_updater",
     "//planning:belief_road_map",
     "//planning:probabilistic_road_map",
     "//common/math:combinations",
-    "//common/math:redheffer_star",
-    "//common/geometry:nearest_point_on_segment",
   ]
 )
 
@@ -361,6 +361,7 @@ cc_test(
   srcs = ["belief_road_map_planner_test.cc"],
   deps = [
     ":belief_road_map_planner",
+    ":test_helpers",
     "@com_google_googletest//:gtest_main",
   ],
 )
@@ -485,4 +486,50 @@ cc_test(
     "@com_google_googletest//:gtest_main",
     ":correlated_beacons_to_proto",
   ]
+)
+
+cc_library(
+  name = "make_belief_updater",
+  srcs = ["make_belief_updater.cc"],
+  hdrs = ["make_belief_updater.hh"],
+  deps = [
+    "@eigen",
+    ":ekf_slam",
+    ":correlated_beacons",
+    ":robot_belief",
+    "//common/liegroups:se2",
+    "//common/geometry:nearest_point_on_segment",
+    "//common/math:redheffer_star",
+    "//planning:belief_road_map",
+    "//planning:probabilistic_road_map",
+  ]
+)
+
+cc_test(
+  name = "make_belief_updater_test",
+  srcs = ["make_belief_updater_test.cc"],
+  deps = [
+    ":make_belief_updater",
+    ":test_helpers",
+    "@com_google_googletest//:gtest_main",
+  ]
+)
+
+cc_library(
+  name = "robot_belief",
+  hdrs = ["robot_belief.hh"],
+  deps = [
+    "//common/liegroups:se2",
+    "@eigen",
+  ]
+)
+
+cc_library(
+    name = "test_helpers",
+    hdrs = ["test_helpers.hh"],
+    srcs = ["test_helpers.cc"],
+    deps = [
+      ":ekf_slam",
+      "//planning:probabilistic_road_map",
+    ]
 )
