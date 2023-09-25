@@ -9,6 +9,28 @@
 
 namespace robot::experimental::beacon_sim {
 namespace {
+using BeliefUncertaintyBase =
+    Eigen::Matrix<double, liegroups::SE2::DoF, liegroups::SE2::DoF>;
+template <TransformType T>
+struct BeliefUncertainty : BeliefUncertaintyBase {
+    static constexpr TransformType TYPE = T;
+
+    BeliefUncertainty(void) : BeliefUncertainty() {}
+
+    template <typename OtherDerived>
+    BeliefUncertainty(const Eigen::MatrixBase<OtherDerived> &other)
+        : BeliefUncertaintyBase(other) {}
+
+    template <typename OtherDerived>
+    BeliefUncertainty &operator=(const Eigen::MatrixBase<OtherDerived> &other) {
+        this->BeliefUncertaintyBase::operator=(other);
+        return *this;
+    }
+
+    static BeliefUncertainty Identity() {
+        return BeliefUncertainty(BeliefUncertaintyBase::Identity());
+    }
+};
 
 struct DirectedEdge {
     int source;
