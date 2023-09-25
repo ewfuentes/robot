@@ -1,5 +1,6 @@
 
 #include "experimental/beacon_sim/make_belief_updater.hh"
+
 #include <optional>
 #include <variant>
 
@@ -89,17 +90,17 @@ std::vector<LogMarginal> sample_log_marginals(const std::vector<LogMarginal> all
 
 }  // namespace
 
-
 std::optional<TypedTransform> operator*(const TypedTransform &a, const TypedTransform &b) {
     if (a.index() != b.index()) {
         return std::nullopt;
     } else if (std::holds_alternative<ScatteringTransform<TransformType::INFORMATION>>(a)) {
-        return std::make_optional(std::get<ScatteringTransform<TransformType::INFORMATION>>(a) * std::get<ScatteringTransform<TransformType::INFORMATION>>(a));
-        } else {
-        return std::make_optional(std::get<ScatteringTransform<TransformType::COVARIANCE>>(a) * std::get<ScatteringTransform<TransformType::COVARIANCE>>(a));
+        return std::make_optional(std::get<ScatteringTransform<TransformType::INFORMATION>>(a) *
+                                  std::get<ScatteringTransform<TransformType::INFORMATION>>(a));
+    } else {
+        return std::make_optional(std::get<ScatteringTransform<TransformType::COVARIANCE>>(a) *
+                                  std::get<ScatteringTransform<TransformType::COVARIANCE>>(a));
     }
 }
-
 
 Eigen::Matrix3d compute_process_noise(const EkfSlamConfig &config, const double dt_s,
                                       const double arclength_m) {
@@ -225,14 +226,11 @@ TypedTransform compute_measurement_transform(
     }
 }
 
-EdgeTransform compute_edge_belief_transform(const liegroups::SE2 &local_from_robot,
-                                            const Eigen::Vector2d &end_state_in_local,
-                                            const EkfSlamConfig &ekf_config,
-                                            const EkfSlamEstimate &ekf_estimate,
-                                            const BeaconPotential &beacon_potential,
-                                            const double max_sensor_range_m,
-                                            const int max_num_transforms,
-                                            const TransformType type) {
+EdgeTransform compute_edge_belief_transform(
+    const liegroups::SE2 &local_from_robot, const Eigen::Vector2d &end_state_in_local,
+    const EkfSlamConfig &ekf_config, const EkfSlamEstimate &ekf_estimate,
+    const BeaconPotential &beacon_potential, const double max_sensor_range_m,
+    const int max_num_transforms, const TransformType type) {
     // Find all beacons along the path
     const std::vector<int> nearby_beacon_ids = find_beacons_along_path(
         local_from_robot.translation(), end_state_in_local, ekf_estimate, max_sensor_range_m);
@@ -257,8 +255,7 @@ EdgeTransform compute_edge_belief_transform(const liegroups::SE2 &local_from_rob
                                    : all_log_marginals;
 
     std::vector<double> weights;
-    std::vector<ScatteringTransform<TransformType::INFORMATION>> info_transforms;
-    std::vector<ScatteringTransform<TransformType::COVARIANCE>> cov_transforms;
+    TypedTransformVector cov_transforms;
     liegroups::SE2 local_from_end_robot;
     for (const auto &log_marginal : log_marginals) {
         std::vector<int> present_beacons;
@@ -271,33 +268,22 @@ EdgeTransform compute_edge_belief_transform(const liegroups::SE2 &local_from_rob
                                           ekf_estimate, present_beacons, max_sensor_range_m, type);
 
         weights.push_back(std::exp(log_marginal.log_marginal));
-        if (type == TransformType::COVARIANCE) {
-            cov_transforms.push_back(std::get<ScatteringTransform<TransformType::COVARIANCE>>(scattering_transform));
-        } else {
-            info_transforms.push_back(std::get<ScatteringTransform<TransformType::COVARIANCE>>(scattering_transform));
-        }
+        cov_transforms.push_back(scattering_transform);
         local_from_end_robot = local_from_final_robot;
     }
 
-    if (type == TransformType::COVARIANCE) {
     return EdgeTransform{
         .local_from_robot = local_from_end_robot,
         .weight = std::move(weights),
         .transforms = std::move(cov_transforms),
     };
-    } else {
-    return EdgeTransform{
-        .local_from_robot = local_from_end_robot,
-        .weight = std::move(weights),
-        .transforms = std::move(info_transforms),
-    };
-    }
 }
 
 std::tuple<liegroups::SE2, TypedTransform> compute_edge_belief_transform(
     const liegroups::SE2 &local_from_robot, const Eigen::Vector2d &end_state_in_local,
     const EkfSlamConfig &ekf_config, const EkfSlamEstimate &ekf_estimate,
-    const std::optional<std::vector<int>> &available_beacons, const double max_sensor_range_m, const TransformType type) {
+    const std::optional<std::vector<int>> &available_beacons, const double max_sensor_range_m,
+    const TransformType type) {
     constexpr double DT_S = 0.5;
     constexpr double VELOCITY_MPS = 2.0;
     constexpr double ANGULAR_VELOCITY_RADPS = 2.0;
@@ -343,8 +329,9 @@ std::tuple<liegroups::SE2, TypedTransform> compute_edge_belief_transform(
             compute_process_transform(process_noise_in_robot, old_robot_from_new_robot, type);
 
         // Compute the measurement update for the covariance
-        const TypedTransform measurement_transform = compute_measurement_transform(
-            local_from_new_robot, ekf_config, ekf_estimate, available_beacons, max_sensor_range_m, type);
+        const TypedTransform measurement_transform =
+            compute_measurement_transform(local_from_new_robot, ekf_config, ekf_estimate,
+                                          available_beacons, max_sensor_range_m, type);
 
         scattering_transform = (scattering_transform * process_transform).value();
         scattering_transform = (scattering_transform * measurement_transform).value();
@@ -354,18 +341,15 @@ std::tuple<liegroups::SE2, TypedTransform> compute_edge_belief_transform(
                            scattering_transform);
 }
 
-planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap &road_map,
-                                                         const Eigen::Vector2d &goal_state,
-                                                         const double max_sensor_range_m,
-                                                         const int max_num_transforms,
-                                                         const EkfSlam &ekf,
-                                                         const BeaconPotential &beacon_potential,
-                                                         const TransformType type) {
+planning::BeliefUpdater<RobotBelief> make_belief_updater(
+    const planning::RoadMap &road_map, const Eigen::Vector2d &goal_state,
+    const double max_sensor_range_m, const int max_num_transforms, const EkfSlam &ekf,
+    const BeaconPotential &beacon_potential, const TransformType type) {
     std::unordered_map<DirectedEdge, EdgeTransform, DirectedEdgeHash> edge_transform_cache;
     return [&road_map, goal_state, max_sensor_range_m, &ekf,
             edge_transform_cache = std::move(edge_transform_cache), &beacon_potential,
             max_num_transforms, type](const RobotBelief &initial_belief, const int start_idx,
-                                const int end_idx) mutable -> RobotBelief {
+                                      const int end_idx) mutable -> RobotBelief {
         // Get the belief edge transform, optionally updating the cache
         const DirectedEdge edge = {
             .source = start_idx,
@@ -423,9 +407,9 @@ planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap
         edge_transform_cache;
 
     return [&road_map, goal_state, max_sensor_range_m, &ekf,
-            edge_transform_cache = std::move(edge_transform_cache),
-            &present_beacons, type](const RobotBelief &initial_belief, const int start_idx,
-                              const int end_idx) mutable -> RobotBelief {
+            edge_transform_cache = std::move(edge_transform_cache), &present_beacons,
+            type](const RobotBelief &initial_belief, const int start_idx,
+                  const int end_idx) mutable -> RobotBelief {
         // Get the belief edge transform, optionally updating the cache
         const DirectedEdge edge = {
             .source = start_idx,

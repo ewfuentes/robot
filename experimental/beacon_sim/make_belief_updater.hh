@@ -45,8 +45,8 @@ struct ScatteringTransform : ScatteringTransformBase {
 using TypedTransform = std::variant<ScatteringTransform<TransformType::COVARIANCE>,
                                     ScatteringTransform<TransformType::INFORMATION>>;
 using TypedTransformVector =
-    std::variant<std::vector<ScatteringTransform<TransformType::COVARIANCE>>,
-                 std::vector<ScatteringTransform<TransformType::INFORMATION>>>;
+    std::vector<std::variant<ScatteringTransform<TransformType::COVARIANCE>,
+                             ScatteringTransform<TransformType::INFORMATION>>>;
 
 template <TransformType T>
 ScatteringTransform<T> operator*(const ScatteringTransform<T> &a, const ScatteringTransform<T> &b) {
