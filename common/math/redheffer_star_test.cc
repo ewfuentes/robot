@@ -21,7 +21,7 @@ TEST(RedhefferStarTest, simple_test) {
     constexpr double TOL = 1e-6;
     const Eigen::Matrix2d A{{1.0, 2.0}, {3.0, 4.0}};
     const Eigen::Matrix2d B{{5.0, 6.0}, {7.0, 8.0}};
-    const Eigen::Vector2d input{2, 3};
+    const Eigen::Vector2d input{0.2, 0.3};
     const Eigen::Vector2d output = B * A * input;
 
     // Action
