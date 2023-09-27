@@ -48,8 +48,7 @@ Eigen::MatrixXd redheffer_star(const Eigen::MatrixXd &a, const Eigen::MatrixXd &
     const Eigen::MatrixXd W_I_min_BY_inv = W * (I - B * Y).inverse();
     const Eigen::MatrixXd D_I_min_YB_inv = D * (I - Y * B).inverse();
 
-    return (Eigen::MatrixXd(2 * dim, 2 * dim) << W_I_min_BY_inv * A,
-            X + W_I_min_BY_inv * B * Z,
+    return (Eigen::MatrixXd(2 * dim, 2 * dim) << W_I_min_BY_inv * A, X + W_I_min_BY_inv * B * Z,
             C + D_I_min_YB_inv * Y * A, D_I_min_YB_inv * Z)
         .finished();
 }
