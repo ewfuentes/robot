@@ -10,15 +10,14 @@ Eigen::MatrixXd scattering_from_transfer(const Eigen::MatrixXd &a) {
     // a = [[A B]
     //      [C D]]
     const int dim = a.rows() / 2;
-    const Eigen::MatrixXd A_11 = a.topLeftCorner(dim, dim);
-    const Eigen::MatrixXd A_12 = a.topRightCorner(dim, dim);
-    const Eigen::MatrixXd A_21 = a.bottomLeftCorner(dim, dim);
-    const Eigen::MatrixXd A_22 = a.bottomRightCorner(dim, dim);
+    const Eigen::MatrixXd A = a.topLeftCorner(dim, dim);
+    const Eigen::MatrixXd B = a.topRightCorner(dim, dim);
+    const Eigen::MatrixXd C = a.bottomLeftCorner(dim, dim);
+    const Eigen::MatrixXd D = a.bottomRightCorner(dim, dim);
 
-    const Eigen::MatrixXd A_11_inv = A_11.inverse();
+    const Eigen::MatrixXd A_inv = A.inverse();
 
-    return (Eigen::MatrixXd(2 * dim, 2 * dim) << A_11_inv, -A_11_inv * A_12, A_21 * A_11_inv,
-            A_22 - A_21 * A_11_inv * A_12)
+    return (Eigen::MatrixXd(2 * dim, 2 * dim) << A_inv, -A_inv * B, C * A_inv, D - C * A_inv * B)
         .finished();
 }
 
