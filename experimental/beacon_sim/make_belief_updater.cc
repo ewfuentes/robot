@@ -287,8 +287,8 @@ std::tuple<liegroups::SE2, EdgeTransform::Matrix> compute_edge_belief_transform(
         const EdgeTransform::Matrix measurement_transform = compute_measurement_transform(
             local_from_new_robot, ekf_config, ekf_estimate, available_beacons, max_sensor_range_m);
 
-        scattering_transform = math::redheffer_star(measurement_transform, scattering_transform);
-        scattering_transform = math::redheffer_star(process_transform, scattering_transform);
+        scattering_transform = math::redheffer_star(scattering_transform, process_transform);
+        scattering_transform = math::redheffer_star(scattering_transform, measurement_transform);
     }
 
     return std::make_tuple(liegroups::SE2(local_from_new_robot.so2().log(), end_state_in_local),
