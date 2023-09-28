@@ -1,7 +1,9 @@
 
 #pragma once
 
+#include <optional>
 #include <unordered_set>
+#include <variant>
 
 #include "Eigen/Core"
 #include "common/liegroups/se2.hh"

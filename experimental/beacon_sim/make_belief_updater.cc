@@ -1,36 +1,11 @@
 
 #include "experimental/beacon_sim/make_belief_updater.hh"
 
-#include <optional>
-#include <variant>
-
 #include "common/geometry/nearest_point_on_segment.hh"
 #include "common/math/redheffer_star.hh"
 
 namespace robot::experimental::beacon_sim {
 namespace {
-using BeliefUncertaintyBase =
-    Eigen::Matrix<double, liegroups::SE2::DoF, liegroups::SE2::DoF>;
-template <TransformType T>
-struct BeliefUncertainty : BeliefUncertaintyBase {
-    static constexpr TransformType TYPE = T;
-
-    BeliefUncertainty(void) : BeliefUncertainty() {}
-
-    template <typename OtherDerived>
-    BeliefUncertainty(const Eigen::MatrixBase<OtherDerived> &other)
-        : BeliefUncertaintyBase(other) {}
-
-    template <typename OtherDerived>
-    BeliefUncertainty &operator=(const Eigen::MatrixBase<OtherDerived> &other) {
-        this->BeliefUncertaintyBase::operator=(other);
-        return *this;
-    }
-
-    static BeliefUncertainty Identity() {
-        return BeliefUncertainty(BeliefUncertaintyBase::Identity());
-    }
-};
 
 struct DirectedEdge {
     int source;
@@ -117,10 +92,10 @@ std::optional<TypedTransform> operator*(const TypedTransform &a, const TypedTran
         return std::nullopt;
     } else if (std::holds_alternative<ScatteringTransform<TransformType::INFORMATION>>(a)) {
         return std::make_optional(std::get<ScatteringTransform<TransformType::INFORMATION>>(a) *
-                                  std::get<ScatteringTransform<TransformType::INFORMATION>>(a));
+                                  std::get<ScatteringTransform<TransformType::INFORMATION>>(b));
     } else {
         return std::make_optional(std::get<ScatteringTransform<TransformType::COVARIANCE>>(a) *
-                                  std::get<ScatteringTransform<TransformType::COVARIANCE>>(a));
+                                  std::get<ScatteringTransform<TransformType::COVARIANCE>>(b));
     }
 }
 
@@ -400,20 +375,32 @@ planning::BeliefUpdater<RobotBelief> make_belief_updater(
         Eigen::MatrixXd input = Eigen::MatrixXd::Identity(2 * cov_dim, 2 * cov_dim);
         input.topRightCorner(cov_dim, cov_dim) = initial_belief.cov_in_robot;
 
-        Eigen::MatrixXd new_cov_in_robot = Eigen::MatrixXd::Zero(cov_dim, cov_dim);
+        Eigen::MatrixXd new_belief_in_robot = Eigen::MatrixXd::Zero(cov_dim, cov_dim);
+
         const double weight_total =
             std::accumulate(edge_transform.weight.begin(), edge_transform.weight.end(), 0.0);
         for (int i = 0; i < static_cast<int>(edge_transform.weight.size()); i++) {
             const double weight = edge_transform.weight.at(i) / weight_total;
             const auto &cov_transform = edge_transform.transforms.at(i);
-            const EdgeTransform::Matrix result = math::redheffer_star(input, cov_transform);
-            const Eigen::MatrixXd sample_cov_in_robot = result.topRightCorner(cov_dim, cov_dim);
-            new_cov_in_robot += weight * sample_cov_in_robot;
+            if (type == TransformType::COVARIANCE) {
+                const ScatteringTransformBase result = math::redheffer_star(
+                    input, std::get<ScatteringTransform<TransformType::COVARIANCE>>(cov_transform));
+                const Eigen::MatrixXd sample_cov_in_robot = result.topRightCorner(cov_dim, cov_dim);
+                new_belief_in_robot += weight * sample_cov_in_robot;
+            } else {
+                const ScatteringTransformBase result = math::redheffer_star(
+                    input,
+                    std::get<ScatteringTransform<TransformType::INFORMATION>>(cov_transform));
+                const Eigen::MatrixXd sample_info_in_robot =
+                    result.topRightCorner(cov_dim, cov_dim);
+                new_belief_in_robot += weight * sample_info_in_robot;
+            }
         }
 
         return RobotBelief{
             .local_from_robot = edge_transform.local_from_robot,
-            .cov_in_robot = new_cov_in_robot,
+            .cov_in_robot = type == TransformType::COVARIANCE ? new_belief_in_robot
+                                                              : new_belief_in_robot.inverse(),
         };
     };
 }
@@ -424,8 +411,7 @@ planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap
                                                          const EkfSlam &ekf,
                                                          const std::vector<int> &present_beacons,
                                                          const TransformType type) {
-    std::unordered_map<DirectedEdge, std::tuple<liegroups::SE2, EdgeTransform::Matrix>,
-                       DirectedEdgeHash>
+    std::unordered_map<DirectedEdge, std::tuple<liegroups::SE2, TypedTransform>, DirectedEdgeHash>
         edge_transform_cache;
 
     return [&road_map, goal_state, max_sensor_range_m, &ekf,
@@ -459,13 +445,23 @@ planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap
         Eigen::MatrixXd input = Eigen::MatrixXd::Identity(2 * cov_dim, 2 * cov_dim);
         input.topRightCorner(cov_dim, cov_dim) = initial_belief.cov_in_robot;
 
-        const EdgeTransform::Matrix result = math::redheffer_star(input, edge_transform);
-        const Eigen::MatrixXd new_cov_in_robot = result.topRightCorner(cov_dim, cov_dim);
-
-        return RobotBelief{
-            .local_from_robot = local_from_new_robot,
-            .cov_in_robot = new_cov_in_robot,
-        };
+        if (type == TransformType::COVARIANCE) {
+            const ScatteringTransformBase result = math::redheffer_star(
+                input, std::get<ScatteringTransform<TransformType::COVARIANCE>>(edge_transform));
+            const Eigen::MatrixXd cov_in_robot = result.topRightCorner(cov_dim, cov_dim);
+            return RobotBelief{
+                .local_from_robot = local_from_new_robot,
+                .cov_in_robot = cov_in_robot,
+            };
+        } else {
+            const ScatteringTransformBase result = math::redheffer_star(
+                input, std::get<ScatteringTransform<TransformType::INFORMATION>>(edge_transform));
+            const Eigen::MatrixXd info_in_robot = result.topRightCorner(cov_dim, cov_dim);
+            return RobotBelief{
+                .local_from_robot = local_from_new_robot,
+                .cov_in_robot = info_in_robot.inverse(),
+            };
+        }
     };
 }
 
