@@ -144,8 +144,8 @@ std::vector<Eigen::Matrix3d> evaluate_paths_with_configuration(
     const EkfSlam &ekf, const planning::RoadMap &road_map, const double max_sensor_range_m,
     const std::vector<int> &present_beacons) {
     // Make a belief updater that only considers the present beacons
-    const auto updater =
-        make_belief_updater(road_map, goal_in_local, max_sensor_range_m, ekf, present_beacons);
+    const auto updater = make_belief_updater(road_map, goal_in_local, max_sensor_range_m, ekf,
+                                             present_beacons, TransformType::COVARIANCE);
 
     const RobotBelief initial_belief = {
         .local_from_robot = ekf.estimate().local_from_robot(),
@@ -229,9 +229,9 @@ std::optional<planning::BRMPlan<RobotBelief>> compute_belief_road_map_plan(
         .local_from_robot = estimate.local_from_robot(),
         .cov_in_robot = estimate.robot_cov(),
     };
-    const auto belief_updater =
-        make_belief_updater(road_map, goal_state, options.max_sensor_range_m,
-                            options.max_num_edge_transforms, ekf, beacon_potential);
+    const auto belief_updater = make_belief_updater(
+        road_map, goal_state, options.max_sensor_range_m, options.max_num_edge_transforms, ekf,
+        beacon_potential, TransformType::COVARIANCE);
     if (options.uncertainty_tolerance.has_value()) {
         return planning::plan<RobotBelief>(
             road_map, initial_belief, belief_updater, goal_state, options.num_start_connections,
