@@ -1,8 +1,8 @@
 
 #include "experimental/beacon_sim/make_belief_updater.hh"
 
-#include "experimental/beacon_sim/test_helpers.hh"
 #include "common/math/redheffer_star.hh"
+#include "experimental/beacon_sim/test_helpers.hh"
 #include "gtest/gtest.h"
 
 namespace robot::experimental::beacon_sim {
@@ -176,36 +176,34 @@ TEST(MakeBeliefUpdaterTest, stack_covariance_updates_with_observation) {
     constexpr int END_IDX = 0;
     const liegroups::SE2 local_from_start(0.0, road_map.points.at(START_IDX));
 
-
     const auto &[local_from_end, transform] = compute_edge_belief_transform(
-        local_from_start,
-        road_map.points.at(END_IDX),
-        ekf_slam.config(),
-        ekf_slam.estimate(),
-        {{GRID_BEACON_ID}},
-        MAX_SENSOR_RANGE_M
-    );
+        local_from_start, road_map.points.at(END_IDX), ekf_slam.config(), ekf_slam.estimate(),
+        {{GRID_BEACON_ID}}, MAX_SENSOR_RANGE_M, TransformType::COVARIANCE);
     (void)local_from_end;
- 
+
     // Action
-    const std::vector<EdgeTransform::Matrix> stacked_transforms = [&transform = transform](){
-        std::vector<EdgeTransform::Matrix> stacked = {transform};
-        for (int i = 0; i < 20; i++) {
-            stacked.push_back(math::redheffer_star(stacked.back(), stacked.back()));
+    const TypedTransformVector stacked_transforms = [&transform = transform]() {
+        TypedTransformVector stacked = {transform};
+        for (int i = 0; i < 30; i++) {
+            stacked.push_back((stacked.back() * stacked.back()).value());
         }
         return stacked;
     }();
-    
+
     // Verification
-    
+
     std::cout << stacked_transforms.size() << std::endl;
 
     for (int i = 0; i < static_cast<int>(stacked_transforms.size()); i++) {
         std::cout << "===============" << i << " " << (1 << i) << " transforms" << std::endl;
-        std::cout << stacked_transforms.at(i) <<  std::endl;
+        std::cout << std::get<ScatteringTransform<TransformType::COVARIANCE>>(
+                         stacked_transforms.at(i))
+                  << std::endl;
 
-        Eigen::JacobiSVD<EdgeTransform::Matrix> svd(stacked_transforms.at(i));
-        std::cout << "SVD Success? " << (svd.info() == Eigen::ComputationInfo::Success) << std::endl;
+        Eigen::JacobiSVD<ScatteringTransformBase> svd(
+            std::get<ScatteringTransform<TransformType::COVARIANCE>>(stacked_transforms.at(i)));
+        std::cout << "SVD Success? " << (svd.info() == Eigen::ComputationInfo::Success)
+                  << std::endl;
         std::cout << "SV: " << svd.singularValues().transpose() << std::endl;
     }
 }
@@ -235,36 +233,34 @@ TEST(MakeBeliefUpdaterTest, stack_covariance_updates_with_no_observation) {
     constexpr int END_IDX = 0;
     const liegroups::SE2 local_from_start(0.0, road_map.points.at(START_IDX));
 
-
     const auto &[local_from_end, transform] = compute_edge_belief_transform(
-        local_from_start,
-        road_map.points.at(END_IDX),
-        ekf_slam.config(),
-        ekf_slam.estimate(),
-        {{}},
-        MAX_SENSOR_RANGE_M
-    );
+        local_from_start, road_map.points.at(END_IDX), ekf_slam.config(), ekf_slam.estimate(), {{}},
+        MAX_SENSOR_RANGE_M, TransformType::COVARIANCE);
     (void)local_from_end;
- 
+
     // Action
-    const std::vector<EdgeTransform::Matrix> stacked_transforms = [&transform = transform](){
-        std::vector<EdgeTransform::Matrix> stacked = {transform};
-        for (int i = 0; i < 20; i++) {
-            stacked.push_back(math::redheffer_star(stacked.back(), stacked.back()));
+    const TypedTransformVector stacked_transforms = [&transform = transform]() {
+        TypedTransformVector stacked = {transform};
+        for (int i = 0; i < 30; i++) {
+            stacked.push_back((stacked.back() * stacked.back()).value());
         }
         return stacked;
     }();
-    
+
     // Verification
-    
+
     std::cout << stacked_transforms.size() << std::endl;
 
     for (int i = 0; i < static_cast<int>(stacked_transforms.size()); i++) {
         std::cout << "===============" << i << " " << (1 << i) << " transforms" << std::endl;
-        std::cout << stacked_transforms.at(i) <<  std::endl;
+        std::cout << std::get<ScatteringTransform<TransformType::COVARIANCE>>(
+                         stacked_transforms.at(i))
+                  << std::endl;
 
-        Eigen::JacobiSVD<EdgeTransform::Matrix> svd(stacked_transforms.at(i));
-        std::cout << "SVD Success? " << (svd.info() == Eigen::ComputationInfo::Success) << std::endl;
+        Eigen::JacobiSVD<ScatteringTransformBase> svd(
+            std::get<ScatteringTransform<TransformType::COVARIANCE>>(stacked_transforms.at(i)));
+        std::cout << "SVD Success? " << (svd.info() == Eigen::ComputationInfo::Success)
+                  << std::endl;
         std::cout << "SV: " << svd.singularValues().transpose() << std::endl;
     }
 }
