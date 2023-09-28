@@ -151,6 +151,7 @@ TEST(BeliefRoadMapPlannerTest, diamond_road_map_with_uncorrelated_beacons) {
         .max_sensor_range_m = 3.0,
         .num_start_connections = 1,
         .num_goal_connections = 1,
+        .uncertainty_tolerance = std::nullopt,
         .max_num_edge_transforms = 10000,
     };
 
@@ -162,7 +163,6 @@ TEST(BeliefRoadMapPlannerTest, diamond_road_map_with_uncorrelated_beacons) {
     EXPECT_TRUE(maybe_plan.has_value());
     const auto &plan = maybe_plan.value();
     for (const int node_id : plan.nodes) {
-        std::cout << "node id: " << node_id << std::endl;
         EXPECT_NE(node_id, 1);
     }
 }
@@ -193,6 +193,7 @@ TEST(BeliefRoadMapPlannerTest, diamond_road_map_with_correlated_beacons) {
         .max_sensor_range_m = 3.0,
         .num_start_connections = 1,
         .num_goal_connections = 1,
+        .uncertainty_tolerance = std::nullopt,
         .max_num_edge_transforms = 1000,
     };
 
