@@ -151,7 +151,7 @@ TEST(BeliefRoadMapPlannerTest, diamond_road_map_with_uncorrelated_beacons) {
         .max_sensor_range_m = 3.0,
         .num_start_connections = 1,
         .num_goal_connections = 1,
-        .uncertainty_tolerance = 1e-2,
+        .uncertainty_tolerance = std::nullopt,
         .max_num_edge_transforms = 10000,
     };
 
@@ -193,7 +193,7 @@ TEST(BeliefRoadMapPlannerTest, diamond_road_map_with_correlated_beacons) {
         .max_sensor_range_m = 3.0,
         .num_start_connections = 1,
         .num_goal_connections = 1,
-        .uncertainty_tolerance = 1e-2,
+        .uncertainty_tolerance = std::nullopt,
         .max_num_edge_transforms = 1000,
     };
 

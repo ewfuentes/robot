@@ -15,9 +15,9 @@ Eigen::MatrixXd scattering_from_transfer(const Eigen::MatrixXd &a) {
     const Eigen::MatrixXd C = a.bottomLeftCorner(dim, dim);
     const Eigen::MatrixXd D = a.bottomRightCorner(dim, dim);
 
-    const Eigen::MatrixXd D_inv = D.inverse();
+    const Eigen::MatrixXd A_inv = A.inverse();
 
-    return (Eigen::MatrixXd(2 * dim, 2 * dim) << A - B * D_inv * C, B * D_inv, -D_inv * C, D_inv)
+    return (Eigen::MatrixXd(2 * dim, 2 * dim) << A_inv, -A_inv * B, C * A_inv, D - C * A_inv * B)
         .finished();
 }
 
@@ -43,10 +43,9 @@ Eigen::MatrixXd redheffer_star(const Eigen::MatrixXd &a, const Eigen::MatrixXd &
     const Eigen::MatrixXd Y = b.bottomLeftCorner(dim, dim);
     const Eigen::MatrixXd Z = b.bottomRightCorner(dim, dim);
 
-    const Eigen::MatrixXd W_I_min_BY_inv =
-        W * (Eigen::MatrixXd::Identity(dim, dim) - B * Y).inverse();
-    const Eigen::MatrixXd D_I_min_YB_inv =
-        D * (Eigen::MatrixXd::Identity(dim, dim) - Y * B).inverse();
+    const Eigen::MatrixXd I = Eigen::MatrixXd::Identity(dim, dim);
+    const Eigen::MatrixXd W_I_min_BY_inv = W * (I - B * Y).inverse();
+    const Eigen::MatrixXd D_I_min_YB_inv = D * (I - Y * B).inverse();
 
     return (Eigen::MatrixXd(2 * dim, 2 * dim) << W_I_min_BY_inv * A, X + W_I_min_BY_inv * B * Z,
             C + D_I_min_YB_inv * Y * A, D_I_min_YB_inv * Z)

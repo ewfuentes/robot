@@ -12,8 +12,8 @@ TEST(RedhefferStarTest, simple_test) {
     // [c] = B * A [a]
     // [d]         [b]
     // The scattering forms of the equations are:
-    // [c] = B' * A' [a]
-    // [b]           [d]
+    // [a] = B' * A' [c]
+    // [d]           [b]
     // Where A' and B' are the scattering forms of the transfer matrices A and B.
     // We check to see that given [[a], [d]], the scattering form produces [[c], [b]]
 
@@ -27,12 +27,12 @@ TEST(RedhefferStarTest, simple_test) {
     // Action
     const Eigen::Matrix2d A_scatter = scattering_from_transfer(A);
     const Eigen::Matrix2d B_scatter = scattering_from_transfer(B);
-    const Eigen::Matrix2d combined = redheffer_star(A_scatter, B_scatter);
-    const Eigen::Vector2d scatter_input{input.x(), output.y()};
+    const Eigen::Matrix2d combined = redheffer_star(B_scatter, A_scatter);
+    const Eigen::Vector2d scatter_input{output.x(), input.y()};
     const Eigen::Vector2d scatter_output = combined * scatter_input;
 
     // Verification
-    EXPECT_NEAR(output.x(), scatter_output.x(), TOL);
-    EXPECT_NEAR(input.y(), scatter_output.y(), TOL);
+    EXPECT_NEAR(input.x(), scatter_output.x(), TOL);
+    EXPECT_NEAR(output.y(), scatter_output.y(), TOL);
 }
 }  // namespace robot::math
