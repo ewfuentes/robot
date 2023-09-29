@@ -235,7 +235,7 @@ TEST(MakeBeliefUpdaterTest, stack_covariance_updates_with_no_observation) {
 
     const auto &[local_from_end, transform] = compute_edge_belief_transform(
         local_from_start, road_map.points.at(END_IDX), ekf_slam.config(), ekf_slam.estimate(), {{}},
-        MAX_SENSOR_RANGE_M, TransformType::COVARIANCE);
+        MAX_SENSOR_RANGE_M, TransformType::INFORMATION);
     (void)local_from_end;
 
     // Action
@@ -253,12 +253,12 @@ TEST(MakeBeliefUpdaterTest, stack_covariance_updates_with_no_observation) {
 
     for (int i = 0; i < static_cast<int>(stacked_transforms.size()); i++) {
         std::cout << "===============" << i << " " << (1 << i) << " transforms" << std::endl;
-        std::cout << std::get<ScatteringTransform<TransformType::COVARIANCE>>(
+        std::cout << std::get<ScatteringTransform<TransformType::INFORMATION>>(
                          stacked_transforms.at(i))
                   << std::endl;
 
         Eigen::JacobiSVD<ScatteringTransformBase> svd(
-            std::get<ScatteringTransform<TransformType::COVARIANCE>>(stacked_transforms.at(i)));
+            std::get<ScatteringTransform<TransformType::INFORMATION>>(stacked_transforms.at(i)));
         std::cout << "SVD Success? " << (svd.info() == Eigen::ComputationInfo::Success)
                   << std::endl;
         std::cout << "SV: " << svd.singularValues().transpose() << std::endl;
