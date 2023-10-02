@@ -276,9 +276,9 @@ liegroups::SE2 EkfSlamEstimate::local_from_robot() const {
 }
 
 RobotBelief EkfSlamEstimate::robot_belief() const {
-    return  {
-    .local_from_robot = local_from_robot(),
-    .cov_in_robot = robot_cov(),
+    return {
+        .local_from_robot = local_from_robot(),
+        .cov_in_robot = robot_cov(),
     };
 }
 

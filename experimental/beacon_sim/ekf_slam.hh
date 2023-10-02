@@ -6,9 +6,9 @@
 #include "Eigen/Core"
 #include "common/liegroups/se2.hh"
 #include "common/time/robot_time.hh"
-#include "experimental/beacon_sim/robot_belief.hh"
 #include "experimental/beacon_sim/generate_observations.hh"
 #include "experimental/beacon_sim/mapped_landmarks.hh"
+#include "experimental/beacon_sim/robot_belief.hh"
 
 namespace robot::experimental::beacon_sim {
 
