@@ -511,6 +511,7 @@ cc_test(
   deps = [
     ":make_belief_updater",
     ":test_helpers",
+    "//common:drake",
     "//common/math:redheffer_star",
     "@com_google_googletest//:gtest_main",
   ]

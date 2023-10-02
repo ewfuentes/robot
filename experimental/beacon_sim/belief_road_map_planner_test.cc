@@ -225,7 +225,7 @@ TEST(ExpectedBeliefRoadMapPlannerTest, grid_road_map) {
         .on_map_load_heading_uncertainty_rad = 0.1,
     };
 
-    constexpr double P_BEACON = 0.5;
+    constexpr double P_BEACON = 0.01;
     const auto &[road_map, ekf_slam, potential] = create_grid_environment(ekf_config, P_BEACON);
     const Eigen::Vector2d GOAL_STATE = {10, -5};
     constexpr ExpectedBeliefRoadMapOptions OPTIONS = {

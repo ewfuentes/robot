@@ -1,6 +1,9 @@
 
 #include "experimental/beacon_sim/make_belief_updater.hh"
 
+#include <iostream>
+#include <stdexcept>
+
 #include "common/geometry/nearest_point_on_segment.hh"
 #include "common/math/redheffer_star.hh"
 
@@ -295,6 +298,7 @@ std::tuple<liegroups::SE2, TypedTransform> compute_edge_belief_transform(
         scattering_transform = ScatteringTransform<TransformType::INFORMATION>::Identity();
     }
 
+    //int i = 0;
     for (Eigen::Vector2d end_in_robot = local_from_robot.inverse() * end_state_in_local;
          end_in_robot.norm() > TOL;
          end_in_robot = local_from_new_robot.inverse() * end_state_in_local) {
@@ -331,8 +335,19 @@ std::tuple<liegroups::SE2, TypedTransform> compute_edge_belief_transform(
             compute_measurement_transform(local_from_new_robot, ekf_config, ekf_estimate,
                                           available_beacons, max_sensor_range_m, type);
 
+
+//        std::cout << "process transform: " << std::endl << std::get<ScatteringTransform<TransformType::COVARIANCE>>(process_transform) << std::endl;
+//        std::cout << "measurement transform: " << std::endl << std::get<ScatteringTransform<TransformType::COVARIANCE>>(measurement_transform) << std::endl;
+//
         scattering_transform = (scattering_transform * process_transform).value();
         scattering_transform = (scattering_transform * measurement_transform).value();
+
+        // std::cout << "aggregate transform: " << std::endl << std::get<ScatteringTransform<TransformType::COVARIANCE>>(scattering_transform) << std::endl;
+
+        // if (i ==2) {
+        //     throw std::runtime_error("All Done!");
+        // }
+        // i++;
     }
 
     return std::make_tuple(liegroups::SE2(local_from_new_robot.so2().log(), end_state_in_local),
