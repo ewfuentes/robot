@@ -4,16 +4,42 @@
 namespace robot::experimental::beacon_sim {
 
 
+        std::vector<planning::Successor<int>> out;
+        if (node_idx == START_IDX || node_idx == GOAL_IDX) {
+            for (int i = 0; i < static_cast<int>(road_map.points.size()); i++) {
+                const Eigen::Vector2d &pt_in_local = road_map.points.at(i);
+                const double dist_m = (pt_in_local - start_in_local).norm();
+                if (dist_m < start_goal_connection_radius_m) {
+                    out.push_back({.state = i, .edge_cost = dist_m});
+                }
+            }
+        } else {
+            const Eigen::Vector2d &curr_pt_in_local = road_map.points.at(node_idx);
+            for (int i = 0; i < static_cast<int>(road_map.points.size()); i++) {
+                if (road_map.adj(i, node_idx)) {
+                    const Eigen::Vector2d &other_in_local = road_map.points.at(i);
+                    const double dist_m = (curr_pt_in_local - other_in_local).norm();
+                    out.push_back({.state = i, .edge_cost = dist_m});
+                }
+            }
+
+            const double dist_to_goal_m = (curr_pt_in_local - goal_in_local).norm();
+            if (dist_to_goal_m < start_goal_connection_radius_m) {
+                out.push_back({.state = GOAL_IDX, .edge_cost = dist_to_goal_m});
+            }
+        }
+        return out;
 
 std::vector<Candidate> rollout ( [[maybe_unused]] const planning::RoadMap& map, 
                                  std::function<bool(const Candidate&, int)> terminate_rollout,
                                  [[maybe_unused]] const Candidate& candidate, 
+                                 std::funtion<std::vector<planning::Successor<int>>(planning::Successor<int>)> successor_function,
                                  [[maybe_unused]] const planning::BeliefUpdater<RobotBelief>& belief_updater,
                                  [[maybe_unused]] const RollOutArgs& roll_out_args ){
     // what node are we on
 
     std::vector<Candidate> successors;
-    int position = ...;
+    int position = candidate.path_history.back();
 
     for (int rollout_i = 0; rollout_i < roll_out_args.num_roll_outs; rollout_i++) {
         int num_steps = 0;

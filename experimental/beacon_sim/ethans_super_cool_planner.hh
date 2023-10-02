@@ -1,6 +1,7 @@
 
 
 #include "planning/probabilistic_road_map.hh"
+#include "planning/breadth_first_search.hh"
 #include "experimental/beacon_sim/robot_belief.hh"
 #include "experimental/beacon_sim/make_belief_updater.hh"
 
@@ -30,6 +31,7 @@ struct RollOutArgs {
 
 std::vector<Candidate> rollout ( const planning::RoadMap& map, 
                                  const Candidate& candidate, 
+                                 const std::function(std::vector<planning::Successor<int>>(planning::Successor<int>)>& successor_function,
                                  const planning::BeliefUpdater<RobotBelief>& belief_updater,
                                  const RollOutArgs& roll_out_args );
 
