@@ -18,10 +18,14 @@ double step_lower_eigen_bound( // returns a lower bound on min ev of \Omega_{t-1
 );
 
 double compute_backwards_edge_belief_transform(
-    const liegroups::SE2 &local_from_robot, const Eigen::Vector2d &start_state_in_local,
-    const EkfSlamConfig &ekf_config, const EkfSlamEstimate &ekf_estimate,
-    const std::optional<std::vector<int>> &available_beacons, const double max_sensor_range_m,
-    const TransformType transform_type);
+    const double lower_eigen_value_information, // min ev of \Omega_t
+    const liegroups::SE2 &local_from_robot, 
+    const Eigen::Vector2d &start_state_in_local,
+    const EkfSlamConfig &ekf_config, 
+    const EkfSlamEstimate &ekf_estimate,
+    const std::optional<std::vector<int>> &available_beacons, 
+    const double max_sensor_range_m
+);
 
 
 }  // namespace robot::experimental::beacon_sim

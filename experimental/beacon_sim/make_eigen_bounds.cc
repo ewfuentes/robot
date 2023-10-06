@@ -17,27 +17,27 @@ double step_lower_eigen_bound( // returns a lower bound on min ev of \Omega_{t-1
 /// Start state is the end of the edge
 /// End state is the start of the edge (as we move backwards)
 double compute_backwards_edge_belief_transform(
+    const double lower_eigen_value_information, // min ev of \Omega_t
     const liegroups::SE2 &local_from_robot, // end node state transform
     const Eigen::Vector2d &end_state_in_local, // start node state in local
-    const EkfSlamConfig &ekf_config, const EkfSlamEstimate &ekf_estimate,
+    const EkfSlamConfig &ekf_config, 
+    const EkfSlamEstimate &ekf_estimate,
     const std::optional<std::vector<int>> &available_beacons,
-    const double max_sensor_range_m,
-    const TransformType type) {
+    const double max_sensor_range_m) {
     constexpr double DT_S = 0.5;
     constexpr double VELOCITY_MPS = 2.0;
     constexpr double ANGULAR_VELOCITY_RADPS = 2.0;
 
     liegroups::SE2 local_from_new_robot = local_from_robot;
     constexpr double TOL = 1e-6;
+
+    double information_lower_bound = lower_eigen_value_information;
     for (Eigen::Vector2d start_in_robot = local_from_robot.inverse() * end_state_in_local;
          start_in_robot.norm() > TOL;
          start_in_robot = local_from_new_robot.inverse() * end_state_in_local) {
         // Move towards the goal
-        std::cout << "Starting loop in walk along edge" << std::endl;
-        std::cout << "  start in robot is " << std::endl << start_in_robot << std::endl;
         const liegroups::SE2 old_robot_from_new_robot = [&]() {
             const double angle_to_goal_rad = std::atan2(start_in_robot.y(), -1.0 * start_in_robot.x()); //angle is 0 when goal is negative x axis
-            std::cout << "  angle to goal is " << angle_to_goal_rad << std::endl;
 
             if (std::abs(angle_to_goal_rad) > TOL) {
                 // First turn until our back faces the goal
@@ -56,26 +56,41 @@ double compute_backwards_edge_belief_transform(
         // Update the mean
         local_from_new_robot = local_from_new_robot * old_robot_from_new_robot;
 
-        // Compute the process update for the covariance
-        const Eigen::Matrix3d process_noise_in_robot =
-            compute_process_noise(ekf_config, DT_S, old_robot_from_new_robot.arclength());
+        // G_t^{-1}
+        const Eigen::Matrix3d inv_dynamics_jac_wrt_state = old_robot_from_new_robot.Adj();
+        // max_eigen_value(G_t^{-1} G_t^{-T})
+        const double dynamics_upper_eigen_value_bound = (inv_dynamics_jac_wrt_state * inv_dynamics_jac_wrt_state.transpose()).eigenvalues().real().maxCoeff();
+        std::cout << "inv_dynamics_jac_wrt_state: " << std::endl << inv_dynamics_jac_wrt_state << std::endl;
+        std::cout << "dynamics_upper_eigen_value_bound: " << dynamics_upper_eigen_value_bound << std::endl;
+        // R_t
+        const Eigen::Matrix3d process_noise = compute_process_noise(ekf_config, DT_S, old_robot_from_new_robot.arclength());
+        const double process_lower_eigen_value_bound = process_noise.eigenvalues().real().minCoeff();
+        std::cout << "process_noise: " << std::endl << process_noise << std::endl;
+        std::cout << "process_lower_eigen_value_bound: " << process_lower_eigen_value_bound << std::endl;
 
-        std::cout << "produced process noise " << std::endl << process_noise_in_robot << std::endl;
-
-        const TypedTransform process_transform =
-            compute_process_transform(process_noise_in_robot, old_robot_from_new_robot, type);
-
-        std::cout << "produced process transform " << std::endl << std::get<ScatteringTransform<TransformType::INFORMATION>>(process_transform) << std::endl;
-        // Compute the measurement update for the covariance
+        // M_t
+        TransformType type = TransformType::COVARIANCE;
         const TypedTransform measurement_transform =
             compute_measurement_transform(local_from_new_robot, ekf_config, ekf_estimate,
                                           available_beacons, max_sensor_range_m, type);
-        std::cout << "produced measurement transform " << std::endl << std::get<ScatteringTransform<TransformType::INFORMATION>>(measurement_transform) << std::endl;
+        const Eigen::Matrix3d M_t = -1 * std::get<ScatteringTransform<TransformType::COVARIANCE>>(measurement_transform).bottomLeftCorner(3,3);
+        const double measurement_upper_eigen_value_bound = M_t.eigenvalues().real().maxCoeff();
+        std::cout << "M_t: " << std::endl << M_t << std::endl;
+        std::cout << "measurement_upper_eigen_value_bound: " << measurement_upper_eigen_value_bound << std::endl;
+
+        
 
         // scattering_transform = (scattering_transform * process_transform).value();
         // scattering_transform = (scattering_transform * measurement_transform).value();
+        information_lower_bound = step_lower_eigen_bound(
+            information_lower_bound,
+            dynamics_upper_eigen_value_bound,
+            measurement_upper_eigen_value_bound,
+            process_lower_eigen_value_bound
+        );
+        std::cout << "information_lower_bound: " << information_lower_bound << std::endl;
     }
-    return 0.0;
+    return information_lower_bound;
 }
 
 

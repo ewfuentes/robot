@@ -63,12 +63,12 @@ TEST(MakeEigenBoundsTest, compute_edge_transform_no_measurements) {
     std::cout << "Start node position is " << start_pos << std::endl;
 
     // Action
+    const double initial_info_min_eigen_value_bound = 1.0;
     const auto edge_belief_transform = compute_backwards_edge_belief_transform(
-        local_from_robot, start_pos, ekf_slam.config(), ekf_slam.estimate(), {}, MAX_SENSOR_RANGE_M,
-        TransformType::INFORMATION);
+        initial_info_min_eigen_value_bound, local_from_robot, start_pos, ekf_slam.config(), ekf_slam.estimate(), {}, MAX_SENSOR_RANGE_M);
 
     // Verification
-    EXPECT_EQ(edge_belief_transform, 0.0);
+    EXPECT_LT(edge_belief_transform, initial_info_min_eigen_value_bound);
 }
 
 
