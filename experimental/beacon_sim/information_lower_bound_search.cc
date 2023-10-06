@@ -15,7 +15,7 @@ std::ostream &operator<<(std::ostream &out, const detail::InProgressPath &path) 
     out << "] cost: " << path.cost_to_go << " info_lb: " << path.info_lower_bound;
     return out;
 }
-}
+}  // namespace
 namespace detail {
 MergeResult should_merge(const std::vector<InProgressPath> &existing,
                          const InProgressPath &new_path) {
@@ -118,7 +118,6 @@ InformationLowerBoundResult information_lower_bound_search(
             best_paths_at_node.resize(best_paths_at_node.size() - merge_result.to_boot.size());
         }
 
-
         // Create new paths from neighbors and queue.
         for (int other_node_id = 0; other_node_id < static_cast<int>(road_map.points.size());
              other_node_id++) {
@@ -129,13 +128,15 @@ InformationLowerBoundResult information_lower_bound_search(
                 const auto prop_result =
                     rev_propagator(other_node_id, current_node_id, in_progress.info_lower_bound);
 
-                std::cout << "Considering neighbor: " << other_node_id << " info_lb: " << prop_result.info_lower_bound << " edge_cost " << prop_result.edge_cost << std::endl;
+                std::cout << "Considering neighbor: " << other_node_id
+                          << " info_lb: " << prop_result.info_lower_bound << " edge_cost "
+                          << prop_result.edge_cost << std::endl;
                 if (!std::isfinite(prop_result.info_lower_bound)) {
                     continue;
                 }
                 open_list.emplace(detail::InProgressPath{
                     .info_lower_bound = prop_result.info_lower_bound,
-                   .cost_to_go = prop_result.edge_cost + in_progress.cost_to_go,
+                    .cost_to_go = prop_result.edge_cost + in_progress.cost_to_go,
                     .path_to_goal = std::move(new_path),
                 });
             }
