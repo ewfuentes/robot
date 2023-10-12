@@ -6,10 +6,13 @@
 namespace robot::experimental::beacon_sim {
 namespace {
 
-constexpr int GOAL_IDX = 5;
 constexpr int START_IDX = 0;
+constexpr int FORK_IDX = 1;
+constexpr int JOIN_IDX = 2;
 constexpr int MEASUREMENT_IDX = 3;
 constexpr int FAR_NODE_IDX = 4;
+constexpr int GOAL_IDX = 5;
+
 
 struct TestEnvironment {
     int start_idx;
@@ -88,7 +91,13 @@ TEST(InformationLowerBoundSearch, grid_environment_search_with_low_info_start) {
         env.road_map, env.start_idx, env.end_idx, START_INFO, GOAL_INFO_LOWER_BOUND, env.rev_prop);
 
     // Verification
-    EXPECT_TRUE(false);
+    // When starting with low information, it is best to divert toward the landmark.
+    EXPECT_EQ(result.path_to_goal.size() , 5);
+    EXPECT_EQ(result.path_to_goal.at(0), START_IDX);
+    EXPECT_EQ(result.path_to_goal.at(1), FORK_IDX);
+    EXPECT_EQ(result.path_to_goal.at(2), MEASUREMENT_IDX);
+    EXPECT_EQ(result.path_to_goal.at(3), JOIN_IDX);
+    EXPECT_EQ(result.path_to_goal.at(4), GOAL_IDX);
 }
 
 TEST(InformationLowerBoundSearch, grid_environment_search_with_high_info_start) {
@@ -102,7 +111,12 @@ TEST(InformationLowerBoundSearch, grid_environment_search_with_high_info_start) 
         env.road_map, env.start_idx, env.end_idx, START_INFO, GOAL_INFO_LOWER_BOUND, env.rev_prop);
 
     // Verification
-    EXPECT_TRUE(false);
+    // When starting with high information, it is best to go straight to the goal;
+    EXPECT_EQ(result.path_to_goal.size() , 4);
+    EXPECT_EQ(result.path_to_goal.at(0), START_IDX);
+    EXPECT_EQ(result.path_to_goal.at(1), FORK_IDX);
+    EXPECT_EQ(result.path_to_goal.at(2), JOIN_IDX);
+    EXPECT_EQ(result.path_to_goal.at(3), GOAL_IDX);
 }
 
 TEST(InformationLowerBoundSearch, should_merge_with_empty) {
