@@ -2,20 +2,9 @@
 #include "experimental/beacon_sim/information_lower_bound_search.hh"
 
 #include <algorithm>
-#include <iostream>
 #include <queue>
 
 namespace robot::experimental::beacon_sim {
-namespace {
-std::ostream &operator<<(std::ostream &out, const detail::InProgressPath &path) {
-    out << "[";
-    for (const auto id : path.path_to_goal) {
-        out << id << ", ";
-    }
-    out << "] cost: " << path.cost_to_go << " info_lb: " << path.info_lower_bound;
-    return out;
-}
-}  // namespace
 namespace detail {
 MergeResult should_merge(const std::vector<InProgressPath> &existing,
                          const InProgressPath &new_path) {
@@ -58,12 +47,9 @@ InformationLowerBoundResult information_lower_bound_search(
                                           .path_to_goal{end_idx}});
 
     while (!open_list.empty()) {
-        std::cout << "------------------------ Open List Size: " << open_list.size() << std::endl;
         // Note that this creates a copy. It is non-const so we can move it later.
         detail::InProgressPath in_progress = open_list.top();
         open_list.pop();
-
-        std::cout << "Popping: " << in_progress << std::endl;
 
         const int current_node_id = in_progress.path_to_goal.back();
         std::vector<detail::InProgressPath> &best_paths_at_node =
@@ -71,7 +57,6 @@ InformationLowerBoundResult information_lower_bound_search(
 
         if (in_progress.path_to_goal.back() == start_idx &&
             start_information >= in_progress.info_lower_bound) {
-            std::cout << "Found valid path! Terminating" << std::endl;
             std::reverse(in_progress.path_to_goal.begin(), in_progress.path_to_goal.end());
             return {
                 .info_lower_bound = in_progress.info_lower_bound,
@@ -80,19 +65,8 @@ InformationLowerBoundResult information_lower_bound_search(
             };
         }
 
-        std::cout << "Current Node Id: " << current_node_id << std::endl;
-        std::cout << "Candidates: " << std::endl;
-        for (const auto &path : best_paths_at_node) {
-            std::cout << "\t" << path << std::endl;
-        }
-
         // Try to merge the path into the per node queues
         const detail::MergeResult merge_result = should_merge(best_paths_at_node, in_progress);
-        std::cout << "Merge Result: should merge? " << merge_result.should_merge << " to boot: [";
-        for (const auto to_boot : merge_result.to_boot) {
-            std::cout << to_boot << ", ";
-        }
-        std::cout << "]" << std::endl;
 
         // If the path wasn't added, then we continue to the next path
         if (!merge_result.should_merge) {
@@ -128,9 +102,6 @@ InformationLowerBoundResult information_lower_bound_search(
                 const auto prop_result =
                     rev_propagator(other_node_id, current_node_id, in_progress.info_lower_bound);
 
-                std::cout << "Considering neighbor: " << other_node_id
-                          << " info_lb: " << prop_result.info_lower_bound << " edge_cost "
-                          << prop_result.edge_cost << std::endl;
                 if (!std::isfinite(prop_result.info_lower_bound)) {
                     continue;
                 }
