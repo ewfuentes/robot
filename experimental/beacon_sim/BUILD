@@ -533,3 +533,22 @@ cc_library(
       "//planning:probabilistic_road_map",
     ]
 )
+
+cc_library(
+    name = "information_lower_bound_search",
+    hdrs = ["information_lower_bound_search.hh"],
+    srcs = ["information_lower_bound_search.cc"],
+    deps = [
+      "@eigen",
+      "//planning:probabilistic_road_map",
+    ]
+)
+
+cc_test(
+    name = "information_lower_bound_search_test",
+    srcs = ["information_lower_bound_search_test.cc"],
+    deps = [
+      ":information_lower_bound_search",
+      "@com_google_googletest//:gtest_main",
+    ]
+)
