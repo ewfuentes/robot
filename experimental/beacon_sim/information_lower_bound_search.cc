@@ -9,19 +9,32 @@ namespace detail {
 MergeResult should_merge(const std::vector<InProgressPath> &existing,
                          const InProgressPath &new_path) {
     if (existing.empty()) {
-        return {.should_merge = true, .to_boot = {}};
+        return {.should_merge = true, .dominated_paths_idxs = {}};
     }
 
-    std::vector<int> to_boot;
+    // Path A is dominated by Path B if both the info. lower bound and the cost of B is lower than
+    // A. It is assumed that among paths in the existing list, no path is dominated by any other
+    // path. This function then determines if new_path is dominated by any path in `existing`, 
+    // and if not, whether any paths in `existing` are dominated by the new path.
+    //
+    // If `new_path` is not dominated, then it should be merged into the existing list. The
+    // indices of the dominated paths are returned in `dominated_paths_idxs` in increasing order.
+
+    std::vector<int> dominated_paths_idxs;
     bool should_merge = false;
     for (int i = 0; i < static_cast<int>(existing.size()); i++) {
         const InProgressPath &existing_path = existing.at(i);
         if (existing_path.info_lower_bound >= new_path.info_lower_bound &&
             existing_path.cost_to_go >= new_path.cost_to_go) {
-            to_boot.push_back(i);
+            // The existing path is dominated by the new path, add it to the list of dominated
+            // paths and mark the new path for inclusion.
+            dominated_paths_idxs.push_back(i);
             should_merge = true;
         } else if (existing_path.info_lower_bound <= new_path.info_lower_bound &&
                    existing_path.cost_to_go <= new_path.cost_to_go) {
+            // The new path is dominated by an existing path. Since the paths in `existing` are not
+            // mutually dominating, `dominated_paths_idxs` will be empty. Mark the new path for 
+            // exclusion.
             should_merge = false;
             break;
         } else {
@@ -30,7 +43,7 @@ MergeResult should_merge(const std::vector<InProgressPath> &existing,
             should_merge = true;
         }
     }
-    return {.should_merge = should_merge, .to_boot = std::move(to_boot)};
+    return {.should_merge = should_merge, .dominated_paths_idxs = std::move(dominated_paths_idxs)};
 }
 }  // namespace detail
 
@@ -74,12 +87,14 @@ InformationLowerBoundResult information_lower_bound_search(
         }
 
         // remove any paths that have been dominated
-        if (!merge_result.to_boot.empty()) {
+        if (!merge_result.dominated_paths_idxs.empty()) {
+            // Shift any elements that should be kept to the front of the list, overwriting those
+            // that will be removed.
             auto insert_iter = best_paths_at_node.begin();
-            auto should_skip_iter = merge_result.to_boot.begin();
+            auto should_skip_iter = merge_result.dominated_paths_idxs.begin();
             for (auto select_iter = best_paths_at_node.begin();
                  select_iter != best_paths_at_node.end(); select_iter++) {
-                if (should_skip_iter != merge_result.to_boot.end()) {
+                if (should_skip_iter != merge_result.dominated_paths_idxs.end()) {
                     if (*should_skip_iter ==
                         std::distance(best_paths_at_node.begin(), select_iter)) {
                         should_skip_iter++;
@@ -89,13 +104,16 @@ InformationLowerBoundResult information_lower_bound_search(
                 *insert_iter = std::move(*select_iter);
                 insert_iter++;
             }
-            best_paths_at_node.resize(best_paths_at_node.size() - merge_result.to_boot.size());
+            // Resize the vector to the number of expected paths.
+            best_paths_at_node.resize(best_paths_at_node.size() - merge_result.dominated_paths_idxs.size());
         }
 
         // Create new paths from neighbors and queue.
         for (int other_node_id = 0; other_node_id < static_cast<int>(road_map.points.size());
              other_node_id++) {
             if (road_map.adj(current_node_id, other_node_id)) {
+                // For each adjacent node to the current node, create a new in progress path and 
+                // propagate the information lower bound. 
                 std::vector<int> new_path(in_progress.path_to_goal.begin(),
                                           in_progress.path_to_goal.end());
                 new_path.push_back(other_node_id);
@@ -103,6 +121,9 @@ InformationLowerBoundResult information_lower_bound_search(
                     rev_propagator(other_node_id, current_node_id, in_progress.info_lower_bound);
 
                 if (!std::isfinite(prop_result.info_lower_bound)) {
+                    // If infinite information is required, it isn't possible to start at the node
+                    // in question and follow the rest of the current path and satisfy the
+                    // information lower bound at the goal. We choose not to consider this path.
                     continue;
                 }
                 open_list.emplace(detail::InProgressPath{
@@ -113,6 +134,7 @@ InformationLowerBoundResult information_lower_bound_search(
             }
         }
 
+        // Include the new path to the list of paths at the current node.
         best_paths_at_node.emplace_back(std::move(in_progress));
     }
 

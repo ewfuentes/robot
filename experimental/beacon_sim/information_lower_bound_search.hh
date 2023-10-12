@@ -17,8 +17,12 @@ using LowerBoundReversePropagator = std::function<PropagationResult(
     const int start_idx, const int end_idx, const double lower_bound_at_end)>;
 
 struct InformationLowerBoundResult {
+    // A lower bound on the minimum eigenvalue of the information matrix at the goal such that
+    // a the information constraint at the goal is satisfied.
     double info_lower_bound;
+    // The cost from the start to the goal
     double cost_to_go;
+    // The nodes visited by this path
     std::vector<int> path_to_goal;
 };
 
@@ -29,16 +33,21 @@ InformationLowerBoundResult information_lower_bound_search(
 
 namespace detail {
 struct InProgressPath {
+    // A lower bound on the minimum eigenvalue of the information matrix
     double info_lower_bound;
     double cost_to_go;
+    // The path traversed starting at the goal and moving back towards the start.
     std::vector<int> path_to_goal;
 
     bool operator>(const InProgressPath &other) const { return cost_to_go > other.cost_to_go; }
 };
 
 struct MergeResult {
+    // Whether the new path under consideration should be included in the list of paths to the
+    // node in question.
     bool should_merge;
-    std::vector<int> to_boot;
+    // The indices of constraints that are dominated by the new path
+    std::vector<int> dominated_paths_idxs;
 };
 
 MergeResult should_merge(const std::vector<InProgressPath> &existing,

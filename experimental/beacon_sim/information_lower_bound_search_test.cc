@@ -13,7 +13,6 @@ constexpr int MEASUREMENT_IDX = 3;
 constexpr int FAR_NODE_IDX = 4;
 constexpr int GOAL_IDX = 5;
 
-
 struct TestEnvironment {
     int start_idx;
     int end_idx;
@@ -92,7 +91,7 @@ TEST(InformationLowerBoundSearch, grid_environment_search_with_low_info_start) {
 
     // Verification
     // When starting with low information, it is best to divert toward the landmark.
-    EXPECT_EQ(result.path_to_goal.size() , 5);
+    EXPECT_EQ(result.path_to_goal.size(), 5);
     EXPECT_EQ(result.path_to_goal.at(0), START_IDX);
     EXPECT_EQ(result.path_to_goal.at(1), FORK_IDX);
     EXPECT_EQ(result.path_to_goal.at(2), MEASUREMENT_IDX);
@@ -112,7 +111,7 @@ TEST(InformationLowerBoundSearch, grid_environment_search_with_high_info_start) 
 
     // Verification
     // When starting with high information, it is best to go straight to the goal;
-    EXPECT_EQ(result.path_to_goal.size() , 4);
+    EXPECT_EQ(result.path_to_goal.size(), 4);
     EXPECT_EQ(result.path_to_goal.at(0), START_IDX);
     EXPECT_EQ(result.path_to_goal.at(1), FORK_IDX);
     EXPECT_EQ(result.path_to_goal.at(2), JOIN_IDX);
@@ -130,7 +129,7 @@ TEST(InformationLowerBoundSearch, should_merge_with_empty) {
 
     // Verification
     EXPECT_TRUE(result.should_merge);
-    EXPECT_TRUE(result.to_boot.empty());
+    EXPECT_TRUE(result.dominated_paths_idxs.empty());
 }
 
 TEST(InformationLowerBoundSearch, dominated_paths_are_booted) {
@@ -160,9 +159,9 @@ TEST(InformationLowerBoundSearch, dominated_paths_are_booted) {
 
     // Verification
     EXPECT_TRUE(result.should_merge);
-    EXPECT_EQ(result.to_boot.size(), 2);
-    EXPECT_EQ(result.to_boot.at(0), 0);
-    EXPECT_EQ(result.to_boot.at(1), 1);
+    EXPECT_EQ(result.dominated_paths_idxs.size(), 2);
+    EXPECT_EQ(result.dominated_paths_idxs.at(0), 0);
+    EXPECT_EQ(result.dominated_paths_idxs.at(1), 1);
 }
 
 TEST(InformationLowerBoundSearch, dominated_new_path_is_dropped) {
@@ -192,7 +191,7 @@ TEST(InformationLowerBoundSearch, dominated_new_path_is_dropped) {
 
     // Verification
     EXPECT_FALSE(result.should_merge);
-    EXPECT_TRUE(result.to_boot.empty());
+    EXPECT_TRUE(result.dominated_paths_idxs.empty());
 }
 
 TEST(InformationLowerBoundSearch, keep_all_paths_if_different) {
@@ -221,6 +220,6 @@ TEST(InformationLowerBoundSearch, keep_all_paths_if_different) {
 
     // Verification
     EXPECT_TRUE(result.should_merge);
-    EXPECT_TRUE(result.to_boot.empty());
+    EXPECT_TRUE(result.dominated_paths_idxs.empty());
 }
 }  // namespace robot::experimental::beacon_sim
