@@ -14,7 +14,7 @@ MergeResult should_merge(const std::vector<InProgressPath> &existing,
 
     // Path A is dominated by Path B if both the info. lower bound and the cost of B is lower than
     // A. It is assumed that among paths in the existing list, no path is dominated by any other
-    // path. This function then determines if new_path is dominated by any path in `existing`, 
+    // path. This function then determines if new_path is dominated by any path in `existing`,
     // and if not, whether any paths in `existing` are dominated by the new path.
     //
     // If `new_path` is not dominated, then it should be merged into the existing list. The
@@ -33,7 +33,7 @@ MergeResult should_merge(const std::vector<InProgressPath> &existing,
         } else if (existing_path.info_lower_bound <= new_path.info_lower_bound &&
                    existing_path.cost_to_go <= new_path.cost_to_go) {
             // The new path is dominated by an existing path. Since the paths in `existing` are not
-            // mutually dominating, `dominated_paths_idxs` will be empty. Mark the new path for 
+            // mutually dominating, `dominated_paths_idxs` will be empty. Mark the new path for
             // exclusion.
             should_merge = false;
             break;
@@ -105,15 +105,16 @@ InformationLowerBoundResult information_lower_bound_search(
                 insert_iter++;
             }
             // Resize the vector to the number of expected paths.
-            best_paths_at_node.resize(best_paths_at_node.size() - merge_result.dominated_paths_idxs.size());
+            best_paths_at_node.resize(best_paths_at_node.size() -
+                                      merge_result.dominated_paths_idxs.size());
         }
 
         // Create new paths from neighbors and queue.
         for (int other_node_id = 0; other_node_id < static_cast<int>(road_map.points.size());
              other_node_id++) {
             if (road_map.adj(current_node_id, other_node_id)) {
-                // For each adjacent node to the current node, create a new in progress path and 
-                // propagate the information lower bound. 
+                // For each adjacent node to the current node, create a new in progress path and
+                // propagate the information lower bound.
                 std::vector<int> new_path(in_progress.path_to_goal.begin(),
                                           in_progress.path_to_goal.end());
                 new_path.push_back(other_node_id);
