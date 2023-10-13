@@ -170,8 +170,9 @@ TypedTransform compute_process_transform(const Eigen::Matrix3d &process_noise,
         return ScatteringTransform<TransformType::INFORMATION>(
             (ScatteringTransform<TransformType::INFORMATION>()
                  << inv_dynamics_jac_wrt_state.transpose(),
+             Eigen::Matrix3d::Zero(),
              -inv_dynamics_jac_wrt_state * process_noise * inv_dynamics_jac_wrt_state.transpose(),
-             Eigen::Matrix3d::Zero(), inv_dynamics_jac_wrt_state)
+             inv_dynamics_jac_wrt_state)
                 .finished());
     }
 }
@@ -373,7 +374,11 @@ planning::BeliefUpdater<RobotBelief> make_belief_updater(
         // new_cov  = A * B^-1
         const int cov_dim = initial_belief.cov_in_robot.rows();
         Eigen::MatrixXd input = Eigen::MatrixXd::Identity(2 * cov_dim, 2 * cov_dim);
-        input.topRightCorner(cov_dim, cov_dim) = initial_belief.cov_in_robot;
+        if (type == TransformType::COVARIANCE) {
+            input.topRightCorner(cov_dim, cov_dim) = initial_belief.cov_in_robot;
+        } else {
+            input.topRightCorner(cov_dim, cov_dim) = initial_belief.cov_in_robot.inverse();
+        }
 
         Eigen::MatrixXd new_belief_in_robot = Eigen::MatrixXd::Zero(cov_dim, cov_dim);
 
@@ -443,7 +448,11 @@ planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap
         // new_cov  = A * B^-1
         const int cov_dim = initial_belief.cov_in_robot.rows();
         Eigen::MatrixXd input = Eigen::MatrixXd::Identity(2 * cov_dim, 2 * cov_dim);
-        input.topRightCorner(cov_dim, cov_dim) = initial_belief.cov_in_robot;
+        if (type == TransformType::COVARIANCE) {
+            input.topRightCorner(cov_dim, cov_dim) = initial_belief.cov_in_robot;
+        } else {
+            input.topRightCorner(cov_dim, cov_dim) = initial_belief.cov_in_robot.inverse();
+        }
 
         if (type == TransformType::COVARIANCE) {
             const ScatteringTransformBase result = math::redheffer_star(

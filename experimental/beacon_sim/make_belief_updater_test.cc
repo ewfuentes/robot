@@ -6,7 +6,21 @@
 
 namespace robot::experimental::beacon_sim {
 
-TEST(MakeBeliefUpdaterTest, compute_edge_transform_no_measurements) {
+template <TransformType T>
+struct EnumValue {
+    static const TransformType value = T;
+};
+
+template <typename T>
+class MakeBeliefUpdaterTest : public ::testing::Test {
+    static const TransformType value = T::value;
+};
+
+using MyTypes =
+    ::testing::Types<EnumValue<TransformType::INFORMATION>, EnumValue<TransformType::COVARIANCE>>;
+TYPED_TEST_SUITE(MakeBeliefUpdaterTest, MyTypes);
+
+TYPED_TEST(MakeBeliefUpdaterTest, compute_edge_transform_no_measurements) {
     // Setup
     const EkfSlamConfig ekf_config{
         .max_num_beacons = 1,
@@ -35,14 +49,14 @@ TEST(MakeBeliefUpdaterTest, compute_edge_transform_no_measurements) {
     // Action
     const auto edge_belief_transform = compute_edge_belief_transform(
         local_from_robot, end_pos, ekf_slam.config(), ekf_slam.estimate(), {}, MAX_SENSOR_RANGE_M,
-        MAX_NUM_TRANSFORMS, TransformType::COVARIANCE);
+        MAX_NUM_TRANSFORMS, TypeParam::value);
 
     // Verification
     EXPECT_EQ(edge_belief_transform.local_from_robot.translation().x(), end_pos.x());
     EXPECT_EQ(edge_belief_transform.local_from_robot.translation().y(), end_pos.y());
 }
 
-TEST(MakeBeliefUpdaterTest, compute_edge_transform_with_measurement) {
+TYPED_TEST(MakeBeliefUpdaterTest, compute_edge_transform_with_measurement) {
     // Setup
     const EkfSlamConfig ekf_config{
         .max_num_beacons = 1,
@@ -71,14 +85,14 @@ TEST(MakeBeliefUpdaterTest, compute_edge_transform_with_measurement) {
     // Action
     const auto edge_belief_transform = compute_edge_belief_transform(
         local_from_robot, end_pos, ekf_slam.config(), ekf_slam.estimate(), {}, MAX_SENSOR_RANGE_M,
-        MAX_NUM_TRANSFORMS, TransformType::COVARIANCE);
+        MAX_NUM_TRANSFORMS, TypeParam::value);
 
     // Verification
     EXPECT_EQ(edge_belief_transform.local_from_robot.translation().x(), end_pos.x());
     EXPECT_EQ(edge_belief_transform.local_from_robot.translation().y(), end_pos.y());
 }
 
-TEST(MakeBeliefUpdaterTest, compute_edge_transform_no_measurements_information) {
+TYPED_TEST(MakeBeliefUpdaterTest, compute_edge_transform_no_measurements_information) {
     // Setup
     const EkfSlamConfig ekf_config{
         .max_num_beacons = 1,
@@ -107,14 +121,14 @@ TEST(MakeBeliefUpdaterTest, compute_edge_transform_no_measurements_information) 
     // Action
     const auto edge_belief_transform = compute_edge_belief_transform(
         local_from_robot, end_pos, ekf_slam.config(), ekf_slam.estimate(), {}, MAX_SENSOR_RANGE_M,
-        MAX_NUM_TRANSFORMS, TransformType::INFORMATION);
+        MAX_NUM_TRANSFORMS, TypeParam::value);
 
     // Verification
     EXPECT_EQ(edge_belief_transform.local_from_robot.translation().x(), end_pos.x());
     EXPECT_EQ(edge_belief_transform.local_from_robot.translation().y(), end_pos.y());
 }
 
-TEST(MakeBeliefUpdaterTest, compute_edge_transform_with_measurement_information) {
+TYPED_TEST(MakeBeliefUpdaterTest, compute_edge_transform_with_measurement_information) {
     // Setup
     const EkfSlamConfig ekf_config{
         .max_num_beacons = 1,
