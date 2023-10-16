@@ -8,29 +8,29 @@ namespace robot::experimental::beacon_sim {
 TEST(MakeEigenBoundsTest, step_eigen_bound_no_information) {
     const double start_info_eigen_value = 0.5;
     // Action
-    double newbound = step_lower_eigen_bound({
-        .lower_eigen_value_information = start_info_eigen_value,
-        .upper_eigen_value_dynamics = 0.008,
-        .upper_eigen_value_measurement = 0.000001,
-        .lower_eigen_value_process_noise = 0.02
-    });
+    double newbound =
+        step_lower_eigen_bound({.lower_eigen_value_information = start_info_eigen_value,
+                                .upper_eigen_value_dynamics = 0.008,
+                                .upper_eigen_value_measurement = 0.000001,
+                                .lower_eigen_value_process_noise = 0.02});
 
     // Verification
-    // lower bound should increase as more information is required travel the edge (as no info is gained and process noise is added)
+    // lower bound should increase as more information is required travel the edge (as no info is
+    // gained and process noise is added)
     ASSERT_GT(newbound, start_info_eigen_value);
 }
 TEST(MakeEigenBoundsTest, step_eigen_bound_information) {
     const double start_info_eigen_value = 0.5;
     // Action
-    double newbound = step_lower_eigen_bound({
-        .lower_eigen_value_information = start_info_eigen_value,
-        .upper_eigen_value_dynamics = 0.5,
-        .upper_eigen_value_measurement = 1.4,
-        .lower_eigen_value_process_noise = 0.008
-    });
+    double newbound =
+        step_lower_eigen_bound({.lower_eigen_value_information = start_info_eigen_value,
+                                .upper_eigen_value_dynamics = 0.5,
+                                .upper_eigen_value_measurement = 1.4,
+                                .lower_eigen_value_process_noise = 0.008});
 
     // Verification
-    // lower bound should decrease as information is added along the edge that outweighs the process noise 
+    // lower bound should decrease as information is added along the edge that outweighs the process
+    // noise
     ASSERT_LT(newbound, start_info_eigen_value);
 }
 
@@ -55,18 +55,17 @@ TEST(MakeEigenBoundsTest, compute_edge_transform_no_measurements) {
 
     constexpr int START_NODE_IDX = 6;
     constexpr int END_NODE_IDX = 3;
-    const liegroups::SE2 local_from_robot =
-        liegroups::SE2::trans(road_map.points.at(END_NODE_IDX));
+    const liegroups::SE2 local_from_robot = liegroups::SE2::trans(road_map.points.at(END_NODE_IDX));
 
     const Eigen::Vector2d start_pos = road_map.points.at(START_NODE_IDX);
     // Action
     const double initial_info_min_eigen_value_bound = 1.0;
     const auto edge_belief_transform = compute_backwards_eigen_bound_transform(
-        initial_info_min_eigen_value_bound, local_from_robot, start_pos, ekf_slam.config(), ekf_slam.estimate(), {}, MAX_SENSOR_RANGE_M);
+        initial_info_min_eigen_value_bound, local_from_robot, start_pos, ekf_slam.config(),
+        ekf_slam.estimate(), {}, MAX_SENSOR_RANGE_M);
 
     // Verification
     EXPECT_LT(edge_belief_transform, initial_info_min_eigen_value_bound);
 }
-
 
 }  // namespace robot::experimental::beacon_sim

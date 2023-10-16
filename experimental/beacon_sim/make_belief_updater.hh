@@ -62,7 +62,8 @@ struct EdgeTransform {
     std::vector<double> weight;
     TypedTransformVector transforms;
 };
-Eigen::DiagonalMatrix<double, 3> compute_process_noise(const EkfSlamConfig &config, const double dt_s, const double arclength_m);
+Eigen::DiagonalMatrix<double, 3> compute_process_noise(const EkfSlamConfig &config,
+                                                       const double dt_s, const double arclength_m);
 TypedTransform compute_process_transform(const Eigen::Matrix3d &process_noise,
                                          const liegroups::SE2 &old_robot_from_new_robot,
                                          const TransformType type);
