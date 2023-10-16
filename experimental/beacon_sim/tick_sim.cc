@@ -6,6 +6,7 @@
 #include "common/time/robot_time_to_proto.hh"
 #include "experimental/beacon_sim/beacon_observation_to_proto.hh"
 #include "experimental/beacon_sim/ekf_slam_estimate_to_proto.hh"
+#include "experimental/beacon_sim/generate_observations.hh"
 
 namespace robot::experimental::beacon_sim {
 namespace {
@@ -52,6 +53,40 @@ std::optional<RobotCommand> compute_command_from_plan(const time::RobotTimestamp
     }
     return std::nullopt;
 }
+
+std::optional<planning::BRMPlan<RobotBelief>> run_brm_planner(const bool allow_brm_backtracking,
+                                                              const ObservationConfig &obs_config,
+                                                              InOut<BeaconSimState> state) {
+    constexpr double UNCERTAINTY_TOLERANCE = 0.1;
+    std::cout << "Starting to Plan" << std::endl;
+    const BeliefRoadMapOptions options = {
+        .max_sensor_range_m = obs_config.max_sensor_range_m.value(),
+        .uncertainty_tolerance =
+            allow_brm_backtracking ? std::make_optional(UNCERTAINTY_TOLERANCE) : std::nullopt,
+        .max_num_edge_transforms = 1000,
+    };
+    state->road_map.add_start_goal({.start = state->ekf.estimate().local_from_robot().translation(),
+                                    .goal = state->goal->goal_position,
+                                    .connection_radius_m = 5.0});
+    const auto brm_plan = compute_belief_road_map_plan(state->road_map, state->ekf,
+                                                       state->map.beacon_potential(), options);
+    std::cout << "plan complete" << std::endl;
+    for (int idx = 0; idx < static_cast<int>(brm_plan->nodes.size()); idx++) {
+        std::cout << idx << " " << brm_plan->nodes.at(idx) << " "
+                  << brm_plan->beliefs.at(idx).local_from_robot.translation().transpose()
+                  << " cov det: " << brm_plan->beliefs.at(idx).cov_in_robot.determinant()
+                  << std::endl;
+    }
+    return brm_plan;
+}
+
+std::optional<planning::BRMPlan<RobotBelief>> run_info_lower_bound_planner(
+    const BeaconSimState &state, const ObservationConfig &obs_config) {
+    (void)state;
+    (void)obs_config;
+    return {};
+}
+
 }  // namespace
 
 proto::BeaconSimDebug tick_sim(const SimConfig &config, const RobotCommand &command,
@@ -62,7 +97,7 @@ proto::BeaconSimDebug tick_sim(const SimConfig &config, const RobotCommand &comm
     };
 
     RobotCommand next_command = command;
-    if (config.enable_brm_planner) {
+    if (config.enable_brm_planner || config.enable_info_lower_bound_planner) {
         // Plan
         const bool have_plan = state->plan.has_value();
         const bool have_goal = state->goal.has_value();
@@ -70,69 +105,62 @@ proto::BeaconSimDebug tick_sim(const SimConfig &config, const RobotCommand &comm
             have_goal && (!have_plan || (have_plan && state->goal->time_of_validity >
                                                           state->plan->time_of_validity));
         if (should_plan) {
-            constexpr double UNCERTAINTY_TOLERANCE = 0.1;
-            std::cout << "Starting to Plan" << std::endl;
-            const BeliefRoadMapOptions options = {
-                .max_sensor_range_m = OBS_CONFIG.max_sensor_range_m.value(),
-                .uncertainty_tolerance = config.allow_brm_backtracking
-                                             ? std::make_optional(UNCERTAINTY_TOLERANCE)
-                                             : std::nullopt,
-                .max_num_edge_transforms = 1000,
-            };
-            state->road_map.add_start_goal(
-                {.start = state->ekf.estimate().local_from_robot().translation(),
-                 .goal = state->goal->goal_position,
-                 .connection_radius_m = 5.0});
-            const auto brm_plan = compute_belief_road_map_plan(
-                state->road_map, state->ekf, state->map.beacon_potential(), options);
-            std::cout << "plan complete" << std::endl;
-            for (int idx = 0; idx < static_cast<int>(brm_plan->nodes.size()); idx++) {
-                std::cout << idx << " " << brm_plan->nodes.at(idx) << " "
-                          << brm_plan->beliefs.at(idx).local_from_robot.translation().transpose()
-                          << " cov det: " << brm_plan->beliefs.at(idx).cov_in_robot.determinant()
-                          << std::endl;
-            }
-            state->plan = {.time_of_validity = state->time_of_validity,
-                           .brm_plan = brm_plan.value()};
-        }
-        if (state->plan.has_value()) {
-            // Figure out which which node we should be targeting
-            const auto plan_command = compute_command_from_plan(
-                state->time_of_validity, state->ekf.estimate().local_from_robot(),
-                state->plan.value(), config.dt);
-            if (plan_command.has_value()) {
-                next_command.turn_rad = plan_command->turn_rad;
-                next_command.move_m = plan_command->move_m;
-            }
+            if (config.enable_brm_planner) {
+                const auto maybe_plan =
+                    run_brm_planner(config.allow_brm_backtracking, OBS_CONFIG, state);
+                if (maybe_plan.has_value()) {
+                    state->plan = {.time_of_validity = state->time_of_validity,
+                                   .brm_plan = maybe_plan.value()};
+                }
+            } else if (config.enable_info_lower_bound_planner) {
+                const auto maybe_plan = run_info_lower_bound_planner(*state, OBS_CONFIG);
+                if (maybe_plan.has_value()) {
+                    state->plan = {.time_of_validity = state->time_of_validity,
+                                   .brm_plan = maybe_plan.value()};
+                } else {
+                    std::cout << "No Plan!" << std::endl;
+                }
+
         }
     }
-    // simulate robot forward
-    state->robot.turn(next_command.turn_rad);
-    state->robot.move(next_command.move_m);
+    if (state->plan.has_value()) {
+        // Figure out which which node we should be targeting
+        const auto plan_command = compute_command_from_plan(
+            state->time_of_validity, state->ekf.estimate().local_from_robot(), state->plan.value(),
+            config.dt);
+        if (plan_command.has_value()) {
+            next_command.turn_rad = plan_command->turn_rad;
+            next_command.move_m = plan_command->move_m;
+        }
+    }
+}
+// simulate robot forward
+state->robot.turn(next_command.turn_rad);
+state->robot.move(next_command.move_m);
 
-    state->map.update(state->time_of_validity);
+state->map.update(state->time_of_validity);
 
-    proto::BeaconSimDebug debug_msg;
-    pack_into(state->time_of_validity, debug_msg.mutable_time_of_validity());
-    pack_into(state->ekf.estimate(), debug_msg.mutable_prior());
+proto::BeaconSimDebug debug_msg;
+pack_into(state->time_of_validity, debug_msg.mutable_time_of_validity());
+pack_into(state->ekf.estimate(), debug_msg.mutable_prior());
 
-    const liegroups::SE2 old_robot_from_new_robot = liegroups::SE2::rot(next_command.turn_rad) *
-                                                    liegroups::SE2::trans(next_command.move_m, 0.0);
-    pack_into(old_robot_from_new_robot, debug_msg.mutable_old_robot_from_new_robot());
+const liegroups::SE2 old_robot_from_new_robot =
+    liegroups::SE2::rot(next_command.turn_rad) * liegroups::SE2::trans(next_command.move_m, 0.0);
+pack_into(old_robot_from_new_robot, debug_msg.mutable_old_robot_from_new_robot());
 
-    pack_into(state->ekf.predict(state->time_of_validity, old_robot_from_new_robot),
-              debug_msg.mutable_prediction());
+pack_into(state->ekf.predict(state->time_of_validity, old_robot_from_new_robot),
+          debug_msg.mutable_prediction());
 
-    // generate observations
-    state->observations = generate_observations(state->time_of_validity, state->map, state->robot,
-                                                OBS_CONFIG, make_in_out(state->gen));
-    pack_into(state->observations, debug_msg.mutable_observations());
+// generate observations
+state->observations = generate_observations(state->time_of_validity, state->map, state->robot,
+                                            OBS_CONFIG, make_in_out(state->gen));
+pack_into(state->observations, debug_msg.mutable_observations());
 
-    const auto &ekf_estimate = state->ekf.update(state->observations);
-    pack_into(ekf_estimate, debug_msg.mutable_posterior());
-    pack_into(state->robot.local_from_robot(), debug_msg.mutable_local_from_true_robot());
+const auto &ekf_estimate = state->ekf.update(state->observations);
+pack_into(ekf_estimate, debug_msg.mutable_posterior());
+pack_into(state->robot.local_from_robot(), debug_msg.mutable_local_from_true_robot());
 
-    return debug_msg;
+return debug_msg;
 }
 
 }  // namespace robot::experimental::beacon_sim

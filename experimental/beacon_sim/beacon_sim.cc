@@ -515,6 +515,7 @@ int main(int argc, char **argv) {
       ("map_input_path", "Path to load map file from", cxxopts::value<std::string>()->default_value(DEFAULT_MAP_LOAD_LOCATION))
       ("load_off_diagonals", "Whether off diagonal terms should be loaded from map")
       ("enable_brm_planner", "Generate BRM plan after each step")
+      ("enable_info_lower_bound_planner", "Use the information lower bound planner")
       ("autostep", "automatically step the sim")
       ("allow_brm_backtracking", "Allow backtracking in BRM")
       ("correlated_beacons_config", "Desired Beacon Configuration. The ith beacon is present if the ith bit is set",
@@ -539,6 +540,7 @@ int main(int argc, char **argv) {
         .dt = 25ms,
         .load_off_diagonals = args["load_off_diagonals"].as<bool>(),
         .enable_brm_planner = args["enable_brm_planner"].as<bool>(),
+        .enable_info_lower_bound_planner = args["enable_info_lower_bound_planner"].as<bool>(),
         .allow_brm_backtracking = args["allow_brm_backtracking"].as<bool>(),
         .autostep = args["autostep"].as<bool>(),
         .correlated_beacons_configuration =
