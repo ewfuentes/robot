@@ -19,14 +19,6 @@ struct RoadmapCreationConfig {
     int desired_node_degree;
 };
 
-struct RoadMap {
-    // The location of each roadmap point
-    std::vector<Eigen::Vector2d> points;
-
-    // An adjacency matrix where the i'th column contains the connectivity to other nodes
-    Eigen::MatrixXd adj;
-};
-
 struct MapBounds {
     // These bounds are used to define the limits for sampling
     Eigen::Vector2d bottom_left;

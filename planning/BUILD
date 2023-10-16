@@ -69,6 +69,15 @@ cc_test(
   ]
 )
 
+cc_library(
+  name = "road_map",
+  hdrs = ["road_map.hh"],
+  srcs = ["road_map.cc"],
+  deps = [
+    "@eigen",
+  ]
+)
+
 multi_proto_library(
   name = "road_map_proto",
   srcs = ["road_map.proto"],
