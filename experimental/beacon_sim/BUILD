@@ -516,6 +516,26 @@ cc_test(
 )
 
 cc_library(
+  name = "make_eigen_bounds",
+  srcs = ["make_eigen_bounds.cc"],
+  hdrs = ["make_eigen_bounds.hh"],
+  deps = [
+    "@eigen",
+    ":make_belief_updater"
+  ]
+)
+
+cc_test(
+  name = "make_eigen_bounds_test",
+  srcs = ["make_eigen_bounds_test.cc"],
+  deps = [
+    ":make_eigen_bounds",
+    ":test_helpers",
+    "@com_google_googletest//:gtest_main",
+  ]
+)
+
+cc_library(
   name = "robot_belief",
   hdrs = ["robot_belief.hh"],
   deps = [

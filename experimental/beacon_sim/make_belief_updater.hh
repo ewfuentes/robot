@@ -62,6 +62,19 @@ struct EdgeTransform {
     std::vector<double> weight;
     TypedTransformVector transforms;
 };
+Eigen::DiagonalMatrix<double, 3> compute_process_noise(const EkfSlamConfig &config,
+                                                       const double dt_s, const double arclength_m);
+TypedTransform compute_process_transform(const Eigen::Matrix3d &process_noise,
+                                         const liegroups::SE2 &old_robot_from_new_robot,
+                                         const TransformType type);
+TypedTransform compute_measurement_transform(
+    const liegroups::SE2 &local_from_robot, const EkfSlamConfig &ekf_config,
+    const EkfSlamEstimate &ekf_estimate, const std::optional<std::vector<int>> &available_beacons,
+    const double max_sensor_range_m, const TransformType type);
+
+Eigen::MatrixXd build_measurement_noise(const int num_observations,
+                                        const double range_measurement_noise_m,
+                                        const double bearing_measurement_noise_rad);
 
 std::tuple<liegroups::SE2, TypedTransform> compute_edge_belief_transform(
     const liegroups::SE2 &local_from_robot, const Eigen::Vector2d &end_state_in_local,
