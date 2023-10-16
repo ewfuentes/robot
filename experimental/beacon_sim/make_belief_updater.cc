@@ -99,7 +99,7 @@ std::optional<TypedTransform> operator*(const TypedTransform &a, const TypedTran
     }
 }
 
-Eigen::Matrix3d compute_process_noise(const EkfSlamConfig &config, const double dt_s,
+Eigen::DiagonalMatrix<double, 3> compute_process_noise(const EkfSlamConfig &config, const double dt_s,
                                       const double arclength_m) {
     const auto sq = [](const double x) { return x * x; };
 

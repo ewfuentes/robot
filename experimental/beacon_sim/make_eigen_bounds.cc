@@ -1,22 +1,16 @@
 #include "experimental/beacon_sim/make_eigen_bounds.hh"
-#include <iostream>
-
 
 namespace robot::experimental::beacon_sim {
 
 
 double step_lower_eigen_bound( // returns a lower bound on min ev of \Omega_{t-1}
-    const double lower_eigen_value_information, // min ev of \Omega_t
-    const double upper_eigen_value_dynamics, // max ev of G_t^{-1} G_t^{-T}
-    const double upper_eigen_value_measurement, // max ev of M_t
-    const double lower_eigen_value_process_noise // min ev of R_t
-) {
-    return 1. / (upper_eigen_value_dynamics * (1. / (lower_eigen_value_information - upper_eigen_value_measurement) - lower_eigen_value_process_noise));
+    const StepLowerEigenBoundInputs &inputs ) {
+    return 1. / (inputs.upper_eigen_value_dynamics * (1. / (inputs.lower_eigen_value_information - inputs.upper_eigen_value_measurement) - inputs.lower_eigen_value_process_noise));
 }
 
 /// Start state is the end of the edge
 /// End state is the start of the edge (as we move backwards)
-double compute_backwards_edge_belief_transform(
+double compute_backwards_eigen_bound_transform(
     const double lower_eigen_value_information, // min ev of \Omega_t
     const liegroups::SE2 &local_from_robot, // end node state transform
     const Eigen::Vector2d &end_state_in_local, // start node state in local
@@ -60,13 +54,9 @@ double compute_backwards_edge_belief_transform(
         const Eigen::Matrix3d inv_dynamics_jac_wrt_state = old_robot_from_new_robot.Adj();
         // max_eigen_value(G_t^{-1} G_t^{-T})
         const double dynamics_upper_eigen_value_bound = (inv_dynamics_jac_wrt_state * inv_dynamics_jac_wrt_state.transpose()).eigenvalues().real().maxCoeff();
-        std::cout << "inv_dynamics_jac_wrt_state: " << std::endl << inv_dynamics_jac_wrt_state << std::endl;
-        std::cout << "dynamics_upper_eigen_value_bound: " << dynamics_upper_eigen_value_bound << std::endl;
         // R_t
-        const Eigen::Matrix3d process_noise = compute_process_noise(ekf_config, DT_S, old_robot_from_new_robot.arclength());
-        const double process_lower_eigen_value_bound = process_noise.eigenvalues().real().minCoeff();
-        std::cout << "process_noise: " << std::endl << process_noise << std::endl;
-        std::cout << "process_lower_eigen_value_bound: " << process_lower_eigen_value_bound << std::endl;
+        const Eigen::DiagonalMatrix<double, 3> process_noise = compute_process_noise(ekf_config, DT_S, old_robot_from_new_robot.arclength());
+        const double process_lower_eigen_value_bound = process_noise.diagonal().real().minCoeff();
 
         // M_t
         TransformType type = TransformType::COVARIANCE;
@@ -74,21 +64,16 @@ double compute_backwards_edge_belief_transform(
             compute_measurement_transform(local_from_new_robot, ekf_config, ekf_estimate,
                                           available_beacons, max_sensor_range_m, type);
         const Eigen::Matrix3d M_t = -1 * std::get<ScatteringTransform<TransformType::COVARIANCE>>(measurement_transform).bottomLeftCorner(3,3);
-        const double measurement_upper_eigen_value_bound = M_t.eigenvalues().real().maxCoeff();
-        std::cout << "M_t: " << std::endl << M_t << std::endl;
-        std::cout << "measurement_upper_eigen_value_bound: " << measurement_upper_eigen_value_bound << std::endl;
+        const double measurement_upper_eigen_value = M_t.eigenvalues().real().maxCoeff();
 
         
 
-        // scattering_transform = (scattering_transform * process_transform).value();
-        // scattering_transform = (scattering_transform * measurement_transform).value();
-        information_lower_bound = step_lower_eigen_bound(
-            information_lower_bound,
-            dynamics_upper_eigen_value_bound,
-            measurement_upper_eigen_value_bound,
-            process_lower_eigen_value_bound
-        );
-        std::cout << "information_lower_bound: " << information_lower_bound << std::endl;
+        information_lower_bound = step_lower_eigen_bound({
+            .lower_eigen_value_information = information_lower_bound,
+            .upper_eigen_value_dynamics = dynamics_upper_eigen_value_bound,
+            .upper_eigen_value_measurement = measurement_upper_eigen_value,
+            .lower_eigen_value_process_noise = process_lower_eigen_value_bound
+        });
     }
     return information_lower_bound;
 }
