@@ -1,9 +1,16 @@
 
 cc_library(
   name = "dwarf",
-  hdrs = ["bundled/libdwarf/libdwarf.h"],
-  srcs =  ["bundled/libdwarf/config.h", "bundled/libdwarf/libdwarf_private.h"] + 
-  glob(["bundled/libdwarf/dwarf*.h", "bundled/libdwarf/dwarf*.c"]),
+  hdrs = [
+    "bundled/libdwarf/libdwarf.h",
+    "bundled/libdwarf/dwarf.h"
+  ],
+  srcs = [
+    "bundled/libdwarf/config.h",
+    "bundled/libdwarf/libdwarf_private.h"] + 
+    glob([
+      "bundled/libdwarf/dwarf_*.h",
+      "bundled/libdwarf/dwarf_*.c"]),
   strip_include_prefix="bundled/libdwarf",
   deps = [
     "@zlib",
