@@ -83,6 +83,11 @@ proto::BeaconSimDebug tick_sim(const SimConfig &config, const RobotCommand &comm
                                              : std::nullopt,
                 .max_num_edge_transforms = 1000,
             };
+            state->road_map.add_start_goal({
+                .start = state->ekf.estimate().local_from_robot().translation(),
+                .goal = state->goal->goal_position,
+                .connection_radius_m = 5.0}
+            );
             const auto brm_plan = compute_belief_road_map_plan(
                 state->road_map, state->ekf, state->map.beacon_potential(), options);
             std::cout << "plan complete" << std::endl;
