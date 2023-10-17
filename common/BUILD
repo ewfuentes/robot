@@ -39,3 +39,21 @@ cc_library(
   ],
   visibility = ["//visibility:public"],
 )
+
+cc_library(
+  name = "check",
+  hdrs = ["check.hh"],
+  deps = [
+    "@assert",
+  ],
+  visibility = ["//visibility:public"],
+)
+
+cc_test(
+  name = "check_test",
+  srcs = ["check_test.cc"],
+  deps = [
+    ":check",
+    "@com_google_googletest//:gtest_main",
+  ]
+)

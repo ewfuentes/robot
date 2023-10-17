@@ -203,6 +203,10 @@ http_archive(
   url = "https://github.com/jeremy-rifkin/cpptrace/archive/refs/tags/v0.2.1.zip",
   strip_prefix = "cpptrace-0.2.1",
   build_file = "@//third_party:BUILD.cpptrace",
+  patches = [
+    "@//third_party:cpptrace-0001-config.patch",
+  ],
+  patch_args=["-p1"],
   sha256 = "d274b672286825aba5ba11f4a87e3c1995ac43a5c4fd57f319fb77eb574cfcfd"
 )
 
