@@ -13,8 +13,6 @@
 namespace robot::experimental::beacon_sim {
 struct BeliefRoadMapOptions {
     double max_sensor_range_m;
-    int num_start_connections;
-    int num_goal_connections;
     std::optional<double> uncertainty_tolerance;
     // This config controls when we switch from exact to approximate edge transforms.
     // If the number of landmark presence configurations is less than or equal this amount,
@@ -29,10 +27,6 @@ struct ExpectedBeliefRoadMapOptions {
     // the problem tractable, we wil only consider paths that are within a multiplicative factor
     // of the shortest path.
     double max_path_length_ratio;
-
-    // How far we should look to connect the start and goal to the roadmap
-    double start_goal_connection_radius_m;
-
     double max_sensor_range_m;
 };
 

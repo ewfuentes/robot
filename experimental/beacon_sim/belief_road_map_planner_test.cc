@@ -31,8 +31,6 @@ TEST(BeliefRoadMapPlannerTest, grid_road_map_no_backtrack) {
     const auto &[road_map, ekf_slam, _] = create_grid_environment(ekf_config);
     constexpr BeliefRoadMapOptions OPTIONS = {
         .max_sensor_range_m = 3.0,
-        .num_start_connections = 1,
-        .num_goal_connections = 1,
         .uncertainty_tolerance = std::nullopt,
         .max_num_edge_transforms = 1,
     };
@@ -68,8 +66,6 @@ TEST(BeliefRoadMapPlannerTest, grid_road_map) {
     const auto &[road_map, ekf_slam, _] = create_grid_environment(ekf_config);
     constexpr BeliefRoadMapOptions OPTIONS = {
         .max_sensor_range_m = 3.0,
-        .num_start_connections = 1,
-        .num_goal_connections = 1,
         .uncertainty_tolerance = 1e-2,
         .max_num_edge_transforms = 1,
     };
@@ -106,8 +102,6 @@ TEST(BeliefRoadMapPlannerTest, grid_road_map_with_unlikely_beacon) {
     const auto &[road_map, ekf_slam, potential] = create_grid_environment(ekf_config, P_BEACON);
     constexpr BeliefRoadMapOptions OPTIONS = {
         .max_sensor_range_m = 3.0,
-        .num_start_connections = 1,
-        .num_goal_connections = 1,
         .uncertainty_tolerance = 1e-2,
         .max_num_edge_transforms = 1,
     };
@@ -143,8 +137,6 @@ TEST(BeliefRoadMapPlannerTest, diamond_road_map_with_uncorrelated_beacons) {
         ekf_config, P_LONE_BEACON, P_NO_STACKED_BEACON, P_STACKED_BEACON);
     constexpr BeliefRoadMapOptions OPTIONS = {
         .max_sensor_range_m = 3.0,
-        .num_start_connections = 1,
-        .num_goal_connections = 1,
         .uncertainty_tolerance = std::nullopt,
         .max_num_edge_transforms = 10000,
     };
@@ -184,8 +176,6 @@ TEST(BeliefRoadMapPlannerTest, diamond_road_map_with_correlated_beacons) {
         ekf_config, P_LONE_BEACON, P_NO_STACKED_BEACON, P_STACKED_BEACON);
     constexpr BeliefRoadMapOptions OPTIONS = {
         .max_sensor_range_m = 3.0,
-        .num_start_connections = 1,
-        .num_goal_connections = 1,
         .uncertainty_tolerance = std::nullopt,
         .max_num_edge_transforms = 1000,
     };
@@ -222,7 +212,6 @@ TEST(ExpectedBeliefRoadMapPlannerTest, grid_road_map) {
     const auto &[road_map, ekf_slam, potential] = create_grid_environment(ekf_config, P_BEACON);
     constexpr ExpectedBeliefRoadMapOptions OPTIONS = {
         .max_path_length_ratio = 1.4,
-        .start_goal_connection_radius_m = 6.0,
         .max_sensor_range_m = 3.0,
     };
 

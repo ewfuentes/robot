@@ -70,14 +70,10 @@ proto::BeaconSimDebug tick_sim(const SimConfig &config, const RobotCommand &comm
             have_goal && (!have_plan || (have_plan && state->goal->time_of_validity >
                                                           state->plan->time_of_validity));
         if (should_plan) {
-            constexpr int NUM_START_CONNECTIONS = 6;
-            constexpr int NUM_GOAL_CONNECTIONS = 6;
             constexpr double UNCERTAINTY_TOLERANCE = 0.1;
             std::cout << "Starting to Plan" << std::endl;
             const BeliefRoadMapOptions options = {
                 .max_sensor_range_m = OBS_CONFIG.max_sensor_range_m.value(),
-                .num_start_connections = NUM_START_CONNECTIONS,
-                .num_goal_connections = NUM_GOAL_CONNECTIONS,
                 .uncertainty_tolerance = config.allow_brm_backtracking
                                              ? std::make_optional(UNCERTAINTY_TOLERANCE)
                                              : std::nullopt,
