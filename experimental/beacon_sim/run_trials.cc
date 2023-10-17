@@ -225,7 +225,7 @@ void run_trials(const TrialsConfig &config) {
         .max_num_edge_transforms = 1000,
     };
     const auto plan = compute_belief_road_map_plan(
-        road_map, ekf, WorldMap(base_map_config).beacon_potential(), config.goal_position, options);
+        road_map, ekf, WorldMap(base_map_config).beacon_potential(), options);
 
     // Cycle through all possible assignments to beacon presence
     time::RobotTimestamp start = time::current_robot_time();

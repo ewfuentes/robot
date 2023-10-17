@@ -4,6 +4,7 @@
 #include <random>
 
 #include "Eigen/Core"
+#include "planning/road_map.hh"
 
 namespace robot::planning {
 
@@ -95,7 +96,7 @@ RoadMap create_road_map(const Map &map, const RoadmapCreationConfig &config,
             }
         }
     }
-    return RoadMap{.points = std::move(sample_points), .adj = adjacency};
+    return RoadMap(std::move(sample_points), std::move(adjacency));
 }
 
 }  // namespace robot::planning

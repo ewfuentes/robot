@@ -26,10 +26,13 @@ class RoadMap {
 
     const std::vector<Eigen::Vector2d> &points() const { return points_; }
     const Eigen::MatrixXd &adj() const { return adj_; }
+    bool has_start_goal() const { return start_goal_.has_value(); }
 
+    // Throws if the index is invalid
     const Eigen::Vector2d &point(const int idx) const;
 
-    const std::vector<int> neighbors(const int idx) const;
+    // Throws if the index is invalid
+    std::vector<std::tuple<int, Eigen::Vector2d>> neighbors(const int idx) const;
 
    private:
     struct StartGoalBlock {

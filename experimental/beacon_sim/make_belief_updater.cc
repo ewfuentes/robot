@@ -340,12 +340,14 @@ std::tuple<liegroups::SE2, TypedTransform> compute_edge_belief_transform(
                            scattering_transform);
 }
 
-planning::BeliefUpdater<RobotBelief> make_belief_updater(
-    const planning::RoadMap &road_map, const Eigen::Vector2d &goal_state,
-    const double max_sensor_range_m, const int max_num_transforms, const EkfSlam &ekf,
-    const BeaconPotential &beacon_potential, const TransformType type) {
+planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap &road_map,
+                                                         const double max_sensor_range_m,
+                                                         const int max_num_transforms,
+                                                         const EkfSlam &ekf,
+                                                         const BeaconPotential &beacon_potential,
+                                                         const TransformType type) {
     std::unordered_map<DirectedEdge, EdgeTransform, DirectedEdgeHash> edge_transform_cache;
-    return [&road_map, goal_state, max_sensor_range_m, &ekf,
+    return [&road_map, max_sensor_range_m, &ekf,
             edge_transform_cache = std::move(edge_transform_cache), &beacon_potential,
             max_num_transforms, type](const RobotBelief &initial_belief, const int start_idx,
                                       const int end_idx) mutable -> RobotBelief {
@@ -357,7 +359,7 @@ planning::BeliefUpdater<RobotBelief> make_belief_updater(
         };
         const auto cache_iter = edge_transform_cache.find(edge);
         const bool is_in_cache = cache_iter != edge_transform_cache.end();
-        const auto end_pos_in_local = end_idx < 0 ? goal_state : road_map.points.at(end_idx);
+        const auto end_pos_in_local = road_map.point(end_idx);
         const EdgeTransform &edge_transform =
             is_in_cache
                 ? cache_iter->second
@@ -412,7 +414,6 @@ planning::BeliefUpdater<RobotBelief> make_belief_updater(
 }
 
 planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap &road_map,
-                                                         const Eigen::Vector2d &goal_state,
                                                          const double max_sensor_range_m,
                                                          const EkfSlam &ekf,
                                                          const std::vector<int> &present_beacons,
@@ -420,7 +421,7 @@ planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap
     std::unordered_map<DirectedEdge, std::tuple<liegroups::SE2, TypedTransform>, DirectedEdgeHash>
         edge_transform_cache;
 
-    return [&road_map, goal_state, max_sensor_range_m, &ekf,
+    return [&road_map, max_sensor_range_m, &ekf,
             edge_transform_cache = std::move(edge_transform_cache), &present_beacons,
             type](const RobotBelief &initial_belief, const int start_idx,
                   const int end_idx) mutable -> RobotBelief {
@@ -432,7 +433,7 @@ planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap
         };
         const auto cache_iter = edge_transform_cache.find(edge);
         const bool is_in_cache = cache_iter != edge_transform_cache.end();
-        const auto end_pos_in_local = end_idx < 0 ? goal_state : road_map.points.at(end_idx);
+        const auto end_pos_in_local = road_map.point(end_idx);
         const auto &[local_from_new_robot, edge_transform] =
             is_in_cache ? cache_iter->second
                         : compute_edge_belief_transform(

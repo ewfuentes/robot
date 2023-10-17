@@ -43,10 +43,10 @@ struct ExpectedBeliefPlanResult {
 
 std::optional<planning::BRMPlan<RobotBelief>> compute_belief_road_map_plan(
     const planning::RoadMap &road_map, const EkfSlam &ekf, const BeaconPotential &beacon_potential,
-    const Eigen::Vector2d &goal_state, const BeliefRoadMapOptions &options);
+    const BeliefRoadMapOptions &options);
 
 ExpectedBeliefPlanResult compute_expected_belief_road_map_plan(
     const planning::RoadMap &road_map, const EkfSlam &ekf, const BeaconPotential &beacon_potential,
-    const Eigen::Vector2d &goal_state, const ExpectedBeliefRoadMapOptions &options);
+    const ExpectedBeliefRoadMapOptions &options);
 
 }  // namespace robot::experimental::beacon_sim

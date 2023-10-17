@@ -42,9 +42,8 @@ TYPED_TEST(MakeBeliefUpdaterTest, compute_edge_transform_no_measurements) {
 
     constexpr int START_NODE_IDX = 6;
     constexpr int END_NODE_IDX = 3;
-    const liegroups::SE2 local_from_robot =
-        liegroups::SE2::trans(road_map.points.at(START_NODE_IDX));
-    const Eigen::Vector2d end_pos = road_map.points.at(END_NODE_IDX);
+    const liegroups::SE2 local_from_robot = liegroups::SE2::trans(road_map.point(START_NODE_IDX));
+    const Eigen::Vector2d end_pos = road_map.point(END_NODE_IDX);
 
     // Action
     const auto edge_belief_transform = compute_edge_belief_transform(
@@ -78,9 +77,8 @@ TYPED_TEST(MakeBeliefUpdaterTest, compute_edge_transform_with_measurement) {
 
     constexpr int START_NODE_IDX = 3;
     constexpr int END_NODE_IDX = 0;
-    const liegroups::SE2 local_from_robot =
-        liegroups::SE2::trans(road_map.points.at(START_NODE_IDX));
-    const Eigen::Vector2d end_pos = road_map.points.at(END_NODE_IDX);
+    const liegroups::SE2 local_from_robot = liegroups::SE2::trans(road_map.point(START_NODE_IDX));
+    const Eigen::Vector2d end_pos = road_map.point(END_NODE_IDX);
 
     // Action
     const auto edge_belief_transform = compute_edge_belief_transform(
@@ -114,9 +112,8 @@ TYPED_TEST(MakeBeliefUpdaterTest, compute_edge_transform_no_measurements_informa
 
     constexpr int START_NODE_IDX = 6;
     constexpr int END_NODE_IDX = 3;
-    const liegroups::SE2 local_from_robot =
-        liegroups::SE2::trans(road_map.points.at(START_NODE_IDX));
-    const Eigen::Vector2d end_pos = road_map.points.at(END_NODE_IDX);
+    const liegroups::SE2 local_from_robot = liegroups::SE2::trans(road_map.point(START_NODE_IDX));
+    const Eigen::Vector2d end_pos = road_map.point(END_NODE_IDX);
 
     // Action
     const auto edge_belief_transform = compute_edge_belief_transform(
@@ -150,9 +147,8 @@ TYPED_TEST(MakeBeliefUpdaterTest, compute_edge_transform_with_measurement_inform
 
     constexpr int START_NODE_IDX = 3;
     constexpr int END_NODE_IDX = 0;
-    const liegroups::SE2 local_from_robot =
-        liegroups::SE2::trans(road_map.points.at(START_NODE_IDX));
-    const Eigen::Vector2d end_pos = road_map.points.at(END_NODE_IDX);
+    const liegroups::SE2 local_from_robot = liegroups::SE2::trans(road_map.point(START_NODE_IDX));
+    const Eigen::Vector2d end_pos = road_map.point(END_NODE_IDX);
 
     // Action
     const auto edge_belief_transform = compute_edge_belief_transform(
