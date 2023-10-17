@@ -4,5 +4,8 @@
 #include "gtest/gtest.h"
 
 TEST(AssertTest, assert_test) {
-    ASSERT_THROW(VERIFY(false, "Expected true to be false"), libassert::verification_failure);
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wunused-value"
+    EXPECT_DEATH(DEBUG_ASSERT(false), "Debug Assertion failed at .*");
+    #pragma GCC diagnostic pop
 }

@@ -1,0 +1,10 @@
+
+cc_library(
+  name = "cpptrace",
+  hdrs = ["include/cpptrace/cpptrace.hpp"],
+  srcs = glob(["src/**/*"]),
+  strip_include_prefix = "include",
+  visibility = ["//visibility:public"],
+  local_defines=["CPPTRACE_UNWIND_WITH_UNWIND", "CPPTRACE_DEMANGLE_WITH_CXXABI"],
+  deps = [],
+)
