@@ -1,0 +1,34 @@
+
+cc_library(
+  name = "dwarf",
+  hdrs = [
+    "bundled/libdwarf/libdwarf.h",
+    "bundled/libdwarf/dwarf.h"
+  ],
+  srcs = [
+    "bundled/libdwarf/config.h",
+    "bundled/libdwarf/libdwarf_private.h"] + 
+    glob([
+      "bundled/libdwarf/dwarf_*.h",
+      "bundled/libdwarf/dwarf_*.c"]),
+  strip_include_prefix="bundled/libdwarf",
+  deps = [
+    "@zlib",
+  ]
+)
+
+cc_library(
+  name = "cpptrace",
+  hdrs = ["include/cpptrace/cpptrace.hpp"],
+  srcs = glob(["src/**/*"]),
+  strip_include_prefix = "include",
+  visibility = ["//visibility:public"],
+  local_defines=[
+    "CPPTRACE_UNWIND_WITH_UNWIND",
+    "CPPTRACE_DEMANGLE_WITH_CXXABI",
+    "CPPTRACE_GET_SYMBOLS_WITH_LIBDWARF",
+  ],
+  deps = [
+    ":dwarf",
+  ],
+)

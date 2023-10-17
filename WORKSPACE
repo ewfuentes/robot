@@ -1,5 +1,4 @@
 workspace(name = "robot")
-
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 http_archive(
@@ -200,6 +199,26 @@ http_archive(
 )
 
 http_archive(
+  name = "cpptrace",
+  url = "https://github.com/jeremy-rifkin/cpptrace/archive/refs/tags/v0.2.1.zip",
+  strip_prefix = "cpptrace-0.2.1",
+  build_file = "@//third_party:BUILD.cpptrace",
+  patches = [
+    "@//third_party:cpptrace-0001-config.patch",
+  ],
+  patch_args=["-p1"],
+  sha256 = "d274b672286825aba5ba11f4a87e3c1995ac43a5c4fd57f319fb77eb574cfcfd"
+)
+
+http_archive(
+  name = "assert",
+  url = "https://github.com/jeremy-rifkin/libassert/archive/f81df0aae6915fdbf7d5ea2ac24f77cb2e0e7ee1.zip",
+  build_file = "@//third_party:BUILD.assert",
+  strip_prefix = "libassert-f81df0aae6915fdbf7d5ea2ac24f77cb2e0e7ee1",
+  sha256 = "b1da53cbb265b2d943ed9063696567751c62c3e2836b6bfa04d1cf0b8eb5a971",
+)
+
+http_archive(
   name = "sophus_lie",
   urls = ["https://github.com/strasdat/Sophus/archive/refs/tags/1.22.4.zip"],
   strip_prefix= "Sophus-1.22.4",
@@ -268,6 +287,7 @@ http_archive(
   build_file_content="#",
   sha256="bc7259271c058d4ad68a898b9f2aeec44cbaa6e25a45eb0bfd57387905bdfca5",
 )
+
 load("@drake_lib//:share/drake/repo.bzl", "drake_repository")
 drake_repository(name="drake", excludes=["eigen", "fmt"])
 

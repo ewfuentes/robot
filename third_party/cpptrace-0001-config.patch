@@ -1,0 +1,841 @@
+diff --git a/bundled/libdwarf/config.h b/bundled/libdwarf/config.h
+new file mode 100644
+index 0000000..71c1a10
+--- /dev/null
++++ b/bundled/libdwarf/config.h
+@@ -0,0 +1,120 @@
++
++/* Define if building universal (internal helper macro) */
++/* #undef AC_APPLE_UNIVERSAL_BUILD */
++
++/* Define to one of `_getb67', `GETB67', `getb67' for Cray-2 and Cray-YMP
++   systems. This function is required for `alloca.c' support on those systems.
++   */
++/* #undef CRAY_STACKSEG_END */
++
++/* Define to 1 if you have the <dlfcn.h> header file. */
++/* #undef HAVE_DLFCN_H */
++
++/* Define to 1 if you have the <libelf.h> header file. */
++#define HAVE_INTTYPES_H 1
++
++/* Define to 1 if you have the <fcntl.h> header file. */
++#define HAVE_FCNTL_H 1
++
++/* Define to 1 if you have the <malloc.h> header file. */
++/* #undef HAVE_MALLOC_H */
++
++/* Define to 1 if you have the <memory.h> header file. */
++#define HAVE_MEMORY_H 1
++
++/* Set to 1 if big endian . */
++/* #undef WORDS_BIGENDIAN */
++
++/* Define to 1 if you have the <sgidefs.h> header file. */
++/* #undef HAVE_SGIDEFS_H */
++
++/* Define to 1 if you have the <stdint.h> header file. */
++#define HAVE_STDINT_H 1
++
++/* Define to 1 if you have the <strings.h> header file. */
++#define HAVE_STRINGS_H 1
++
++/* Define to 1 if you have the <sys/stat.h> header file. */
++#define HAVE_SYS_STAT_H 1
++
++/* Define to 1 if you have the <sys/types.h> header file. */
++#define HAVE_SYS_TYPES_H 1
++
++/* Define to HAVE_UINTPTR_T 1 if the system has the type `uintptr_t'. */
++#define HAVE_UINTPTR_T 1
++/* Define to 1 if the system has the type `intptr_t'. */
++#define HAVE_INTPTR_T
++
++
++/*  Define to the uintptr_t to the type of an unsigned integer 
++    type wide enough to hold a pointer
++    if the system does not define it. */
++/* #undef uintptr_t */
++/* #undef intptr_t */
++
++/* Define to 1 if you have the <unistd.h> header file. */
++#define HAVE_UNISTD_H 1
++
++/* Set to 1 if __attribute__ ((unused)) is available. */
++#define HAVE_UNUSED_ATTRIBUTE 1
++
++/* Set to 1 if zlib decompression is available. */
++#define HAVE_ZLIB 1
++
++/* Define to 1 if you have the <zlib.h> header file. */
++#define HAVE_ZLIB_H 1
++
++/* Define to the sub-directory where libtool stores uninstalled libraries. */
++/* #undef LT_OBJDIR */
++
++/* Name of package */
++/* #undef PACKAGE */
++
++/* Define to the address where bug reports for this package should be sent. */
++/* #undef PACKAGE_BUGREPORT */
++
++/* Define to the full name of this package. */
++#define PACKAGE_NAME libdwarf
++
++/* Define to the full name and version of this package. */
++#define PACKAGE_STRING "libdwarf  0.7.1"
++
++/* Define to the one symbol short name of this package. */
++#define PACKAGE_TARNAME
++
++/* Define to the home page for this package. */
++/* #undef PACKAGE_URL */
++
++
++/* If using the C implementation of alloca, define if you know the
++   direction of stack growth for your system; otherwise it will be
++   automatically deduced at runtime.
++	STACK_DIRECTION > 0 => grows toward higher addresses
++	STACK_DIRECTION < 0 => grows toward lower addresses
++	STACK_DIRECTION = 0 => direction of growth unknown */
++/* #undef STACK_DIRECTION */
++
++/* Define to 1 if you have the ANSI C header files. */
++/* #undef STDC_HEADERS */
++
++/* Define to the version of this package. */
++#define PACKAGE_VERSION "0.7.1"
++
++/* Version number of package */
++#define VERSION   0.7.1 
++
++/* Define WORDS_BIGENDIAN to 1 if your processor stores words with the most
++   significant byte first (like Motorola and SPARC, unlike Intel). */
++#if defined AC_APPLE_UNIVERSAL_BUILD
++# if defined __BIG_ENDIAN__
++/* #undef WORDS_BIGENDIAN */
++# endif
++#else
++# ifndef WORDS_BIGENDIAN
++#  undef WORDS_BIGENDIAN
++# endif
++#endif
++
++/* Define to `unsigned int' if <sys/types.h> does not define. */
++#undef size_t
++
+diff --git a/bundled/libdwarf/dwarf_abbrev.c b/bundled/libdwarf/dwarf_abbrev.c
+index 360db8b..3777bbb 100644
+--- a/bundled/libdwarf/dwarf_abbrev.c
++++ b/bundled/libdwarf/dwarf_abbrev.c
+@@ -26,7 +26,7 @@
+   Floor, Boston MA 02110-1301, USA.
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stddef.h> /* NULL size_t */
+ 
+diff --git a/bundled/libdwarf/dwarf_alloc.c b/bundled/libdwarf/dwarf_alloc.c
+index cb5642f..243d633 100644
+--- a/bundled/libdwarf/dwarf_alloc.c
++++ b/bundled/libdwarf/dwarf_alloc.c
+@@ -31,7 +31,7 @@
+     grep DW_DLA dwarf_alloc.c | grep 0x
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stdio.h>  /* fclose() */
+ #include <stdlib.h> /* malloc() free() */
+diff --git a/bundled/libdwarf/dwarf_arange.c b/bundled/libdwarf/dwarf_arange.c
+index 5e49ba5..063ca67 100644
+--- a/bundled/libdwarf/dwarf_arange.c
++++ b/bundled/libdwarf/dwarf_arange.c
+@@ -28,7 +28,7 @@
+ 
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stddef.h> /* NULL size_t */
+ #include <stdio.h> /* debug printf */
+diff --git a/bundled/libdwarf/dwarf_crc.c b/bundled/libdwarf/dwarf_crc.c
+index 537f7ed..2b0816d 100644
+--- a/bundled/libdwarf/dwarf_crc.c
++++ b/bundled/libdwarf/dwarf_crc.c
+@@ -25,7 +25,7 @@
+   Floor, Boston MA 02110-1301, USA.
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stddef.h> /* size_t */
+ 
+diff --git a/bundled/libdwarf/dwarf_crc32.c b/bundled/libdwarf/dwarf_crc32.c
+index 9aea05a..a69f234 100644
+--- a/bundled/libdwarf/dwarf_crc32.c
++++ b/bundled/libdwarf/dwarf_crc32.c
+@@ -25,7 +25,7 @@
+    Fifth Floor, Boston MA 02110-1301, USA.
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stddef.h> /* size_t */
+ #include <stdio.h>  /* SEEK_END SEEK_SET */
+diff --git a/bundled/libdwarf/dwarf_debug_sup.c b/bundled/libdwarf/dwarf_debug_sup.c
+index 18086f1..da62ba1 100644
+--- a/bundled/libdwarf/dwarf_debug_sup.c
++++ b/bundled/libdwarf/dwarf_debug_sup.c
+@@ -33,7 +33,7 @@ EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ 
+ /*  This provides access to the DWARF5 .debug_sup section. */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <string.h> /* strlen() */
+ 
+diff --git a/bundled/libdwarf/dwarf_debugaddr.c b/bundled/libdwarf/dwarf_debugaddr.c
+index 0f4c46a..7768168 100644
+--- a/bundled/libdwarf/dwarf_debugaddr.c
++++ b/bundled/libdwarf/dwarf_debugaddr.c
+@@ -30,7 +30,7 @@ EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ 
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stddef.h> /* NULL size_t */
+ #include <stdio.h>  /* debug printf */
+diff --git a/bundled/libdwarf/dwarf_debuglink.c b/bundled/libdwarf/dwarf_debuglink.c
+index 708cd7c..1c8d147 100644
+--- a/bundled/libdwarf/dwarf_debuglink.c
++++ b/bundled/libdwarf/dwarf_debuglink.c
+@@ -30,7 +30,7 @@ CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+ OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
+ EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.  */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stdio.h>  /* printf() */
+ #include <stdlib.h> /* free() malloc() */
+diff --git a/bundled/libdwarf/dwarf_debugnames.c b/bundled/libdwarf/dwarf_debugnames.c
+index 081d3d1..418a530 100644
+--- a/bundled/libdwarf/dwarf_debugnames.c
++++ b/bundled/libdwarf/dwarf_debugnames.c
+@@ -27,7 +27,7 @@
+ 
+ /*  This provides access to the DWARF5 .debug_names section. */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stdlib.h> /* calloc() free() */
+ #include <stdio.h>
+diff --git a/bundled/libdwarf/dwarf_die_deliv.c b/bundled/libdwarf/dwarf_die_deliv.c
+index cba0ae6..3d7312b 100644
+--- a/bundled/libdwarf/dwarf_die_deliv.c
++++ b/bundled/libdwarf/dwarf_die_deliv.c
+@@ -28,7 +28,7 @@
+ 
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ #include <stdio.h> /* debugging */
+ 
+ #include <string.h> /* memcmp() memcpy() memset() strcmp() strlen() */
+diff --git a/bundled/libdwarf/dwarf_dsc.c b/bundled/libdwarf/dwarf_dsc.c
+index 286c77b..f69cd47 100644
+--- a/bundled/libdwarf/dwarf_dsc.c
++++ b/bundled/libdwarf/dwarf_dsc.c
+@@ -26,7 +26,7 @@
+ 
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stdlib.h> /* calloc() free() */
+ #include <string.h> /* memcpy() */
+diff --git a/bundled/libdwarf/dwarf_elf_load_headers.c b/bundled/libdwarf/dwarf_elf_load_headers.c
+index a193305..642d8cb 100644
+--- a/bundled/libdwarf/dwarf_elf_load_headers.c
++++ b/bundled/libdwarf/dwarf_elf_load_headers.c
+@@ -49,7 +49,7 @@ calls
+             or    calls generic_rel_from_rel64(ep,gsh,relp,grel...
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stddef.h> /* size_t */
+ #include <stdlib.h> /* calloc() free() malloc() */
+diff --git a/bundled/libdwarf/dwarf_elf_rel_detector.c b/bundled/libdwarf/dwarf_elf_rel_detector.c
+index 1cfb60d..05d9cc5 100644
+--- a/bundled/libdwarf/dwarf_elf_rel_detector.c
++++ b/bundled/libdwarf/dwarf_elf_rel_detector.c
+@@ -30,7 +30,7 @@ OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
+ EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include "dwarf_elf_defines.h"
+ #include "dwarf_elf_rel_detector.h"
+diff --git a/bundled/libdwarf/dwarf_elfread.c b/bundled/libdwarf/dwarf_elfread.c
+index a5c3101..d0df4de 100644
+--- a/bundled/libdwarf/dwarf_elfread.c
++++ b/bundled/libdwarf/dwarf_elfread.c
+@@ -59,7 +59,7 @@ EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+     internals record.
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stddef.h> /* size_t */
+ #include <stdlib.h> /* free() malloc() */
+diff --git a/bundled/libdwarf/dwarf_error.c b/bundled/libdwarf/dwarf_error.c
+index c961de6..c22cb4b 100644
+--- a/bundled/libdwarf/dwarf_error.c
++++ b/bundled/libdwarf/dwarf_error.c
+@@ -28,7 +28,7 @@
+ 
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stdio.h>  /* stderr fflush() fprintf() */
+ #include <stdlib.h> /* calloc() */
+diff --git a/bundled/libdwarf/dwarf_find_sigref.c b/bundled/libdwarf/dwarf_find_sigref.c
+index 45e5739..0b0b612 100644
+--- a/bundled/libdwarf/dwarf_find_sigref.c
++++ b/bundled/libdwarf/dwarf_find_sigref.c
+@@ -26,7 +26,7 @@ Floor, Boston MA 02110-1301, USA.
+ 
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <string.h> /* memcmp() */
+ #include <stdio.h> /* printf() debugging */
+diff --git a/bundled/libdwarf/dwarf_fission_to_cu.c b/bundled/libdwarf/dwarf_fission_to_cu.c
+index 9404ad2..8a4eadf 100644
+--- a/bundled/libdwarf/dwarf_fission_to_cu.c
++++ b/bundled/libdwarf/dwarf_fission_to_cu.c
+@@ -25,7 +25,7 @@
+     Fifth Floor, Boston MA 02110-1301, USA.
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <string.h> /* memset() */
+ 
+diff --git a/bundled/libdwarf/dwarf_form.c b/bundled/libdwarf/dwarf_form.c
+index 6093147..3e75bc0 100644
+--- a/bundled/libdwarf/dwarf_form.c
++++ b/bundled/libdwarf/dwarf_form.c
+@@ -29,7 +29,7 @@
+ 
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <string.h>  /* memcpy() memset() */
+ #include <stdio.h>  /* printf() */
+diff --git a/bundled/libdwarf/dwarf_form_class_names.c b/bundled/libdwarf/dwarf_form_class_names.c
+index d8f035d..65274ae 100644
+--- a/bundled/libdwarf/dwarf_form_class_names.c
++++ b/bundled/libdwarf/dwarf_form_class_names.c
+@@ -29,7 +29,7 @@ OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
+ EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include "libdwarf.h"
+ 
+diff --git a/bundled/libdwarf/dwarf_frame.c b/bundled/libdwarf/dwarf_frame.c
+index 042b498..f1ac5ca 100644
+--- a/bundled/libdwarf/dwarf_frame.c
++++ b/bundled/libdwarf/dwarf_frame.c
+@@ -28,7 +28,7 @@
+ 
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stdlib.h> /* calloc() free() */
+ #include <string.h> /* memset() */
+diff --git a/bundled/libdwarf/dwarf_frame2.c b/bundled/libdwarf/dwarf_frame2.c
+index df598b2..cfc63a4 100644
+--- a/bundled/libdwarf/dwarf_frame2.c
++++ b/bundled/libdwarf/dwarf_frame2.c
+@@ -31,7 +31,7 @@
+ /*  This  implements _dwarf_get_fde_list_internal()
+     and related helper functions for reading cie/fde data.  */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stdlib.h> /* qsort() */
+ #include <stdio.h> /* printf() */
+diff --git a/bundled/libdwarf/dwarf_gdbindex.c b/bundled/libdwarf/dwarf_gdbindex.c
+index 46b0566..ddfa3c1 100644
+--- a/bundled/libdwarf/dwarf_gdbindex.c
++++ b/bundled/libdwarf/dwarf_gdbindex.c
+@@ -30,7 +30,7 @@ https://sourceware.org/gdb/onlinedocs/gdb/\
+ Index-Section-Format.html#Index-Section-Format
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <string.h>  /* memcpy() */
+ 
+diff --git a/bundled/libdwarf/dwarf_generic_init.c b/bundled/libdwarf/dwarf_generic_init.c
+index 6b905c1..b2fb587 100644
+--- a/bundled/libdwarf/dwarf_generic_init.c
++++ b/bundled/libdwarf/dwarf_generic_init.c
+@@ -61,7 +61,7 @@ dwarf_init_path_dl(path true_path and globals, dbg1
+                                 else return NO_ENTRY
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stddef.h> /* size_t */
+ #include <stdlib.h> /* free() */
+diff --git a/bundled/libdwarf/dwarf_global.c b/bundled/libdwarf/dwarf_global.c
+index 1c1c66f..fa1fd7b 100644
+--- a/bundled/libdwarf/dwarf_global.c
++++ b/bundled/libdwarf/dwarf_global.c
+@@ -28,7 +28,7 @@
+ 
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ #include <stdio.h>
+ 
+ #include <string.h> /* strlen() */
+diff --git a/bundled/libdwarf/dwarf_gnu_index.c b/bundled/libdwarf/dwarf_gnu_index.c
+index 4c29b36..2a6e5e6 100644
+--- a/bundled/libdwarf/dwarf_gnu_index.c
++++ b/bundled/libdwarf/dwarf_gnu_index.c
+@@ -37,7 +37,7 @@
+     Split Dwarf (aka Debug Fission).
+     They are not expected to be in an executable. */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stdlib.h> /* calloc() free() */
+ #include <stdio.h> /* debugging */
+diff --git a/bundled/libdwarf/dwarf_groups.c b/bundled/libdwarf/dwarf_groups.c
+index ff2737c..7a5556c 100644
+--- a/bundled/libdwarf/dwarf_groups.c
++++ b/bundled/libdwarf/dwarf_groups.c
+@@ -26,7 +26,7 @@
+ 
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stdlib.h> /* calloc() free() */
+ #include <string.h>  /* strcmp() */
+diff --git a/bundled/libdwarf/dwarf_harmless.c b/bundled/libdwarf/dwarf_harmless.c
+index 803e9a8..823db7d 100644
+--- a/bundled/libdwarf/dwarf_harmless.c
++++ b/bundled/libdwarf/dwarf_harmless.c
+@@ -51,7 +51,7 @@
+     slot unused (at least).   So a user request for
+     N slots really gives the user N usable slots.  */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stddef.h>  /* size_t */
+ #include <stdlib.h>  /* free() malloc() */
+diff --git a/bundled/libdwarf/dwarf_init_finish.c b/bundled/libdwarf/dwarf_init_finish.c
+index 86ea80a..c70111d 100644
+--- a/bundled/libdwarf/dwarf_init_finish.c
++++ b/bundled/libdwarf/dwarf_init_finish.c
+@@ -29,7 +29,7 @@
+ 
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stdlib.h> /* calloc() free() */
+ #include <string.h> /* memset() strcmp() strncmp() strlen() */
+diff --git a/bundled/libdwarf/dwarf_leb.c b/bundled/libdwarf/dwarf_leb.c
+index 7098d7a..c82eb8e 100644
+--- a/bundled/libdwarf/dwarf_leb.c
++++ b/bundled/libdwarf/dwarf_leb.c
+@@ -27,7 +27,7 @@
+ 
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stddef.h> /* size_t */
+ 
+diff --git a/bundled/libdwarf/dwarf_line.c b/bundled/libdwarf/dwarf_line.c
+index 3d4f6d3..b7ed7a5 100644
+--- a/bundled/libdwarf/dwarf_line.c
++++ b/bundled/libdwarf/dwarf_line.c
+@@ -28,7 +28,7 @@
+ 
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #ifdef HAVE_STDINT_H
+ #include <stdint.h> /* uintptr_t */
+diff --git a/bundled/libdwarf/dwarf_loc.c b/bundled/libdwarf/dwarf_loc.c
+index d2b3201..95499ef 100644
+--- a/bundled/libdwarf/dwarf_loc.c
++++ b/bundled/libdwarf/dwarf_loc.c
+@@ -28,7 +28,7 @@
+ 
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <string.h> /* memset() */
+ 
+diff --git a/bundled/libdwarf/dwarf_locationop_read.c b/bundled/libdwarf/dwarf_locationop_read.c
+index 3fe83f7..3cde20b 100644
+--- a/bundled/libdwarf/dwarf_locationop_read.c
++++ b/bundled/libdwarf/dwarf_locationop_read.c
+@@ -28,7 +28,7 @@
+ 
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <string.h> /* memcpy() memset() */
+ 
+diff --git a/bundled/libdwarf/dwarf_loclists.c b/bundled/libdwarf/dwarf_loclists.c
+index c6061cb..634fd2c 100644
+--- a/bundled/libdwarf/dwarf_loclists.c
++++ b/bundled/libdwarf/dwarf_loclists.c
+@@ -30,7 +30,7 @@ OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
+ EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stdlib.h> /* free() malloc() */
+ #include <string.h> /* memset() */
+diff --git a/bundled/libdwarf/dwarf_machoread.c b/bundled/libdwarf/dwarf_machoread.c
+index ded021e..a552f29 100644
+--- a/bundled/libdwarf/dwarf_machoread.c
++++ b/bundled/libdwarf/dwarf_machoread.c
+@@ -61,7 +61,7 @@ EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ #define _CRT_SECURE_NO_WARNINGS
+ #endif /* _WIN32 */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stdlib.h> /* calloc() free() malloc() */
+ #include <string.h> /* memcpy() memset() strcmp() strdup() */
+diff --git a/bundled/libdwarf/dwarf_macro.c b/bundled/libdwarf/dwarf_macro.c
+index c4ad8c6..b73f9f1 100644
+--- a/bundled/libdwarf/dwarf_macro.c
++++ b/bundled/libdwarf/dwarf_macro.c
+@@ -28,7 +28,7 @@
+ 
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <limits.h> /* ULONG_MAX */
+ #include <string.h> /* memcpy() strlen() */
+diff --git a/bundled/libdwarf/dwarf_macro5.c b/bundled/libdwarf/dwarf_macro5.c
+index 5fb035c..7517aea 100644
+--- a/bundled/libdwarf/dwarf_macro5.c
++++ b/bundled/libdwarf/dwarf_macro5.c
+@@ -26,7 +26,7 @@
+ 
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stdlib.h> /* calloc() free() malloc() */
+ #include <string.h> /* memset() strcat() strlen() */
+diff --git a/bundled/libdwarf/dwarf_memcpy_swap.c b/bundled/libdwarf/dwarf_memcpy_swap.c
+index ad4e6d6..021d340 100644
+--- a/bundled/libdwarf/dwarf_memcpy_swap.c
++++ b/bundled/libdwarf/dwarf_memcpy_swap.c
+@@ -29,7 +29,7 @@
+ 
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stddef.h> /* size_t */
+ #include <string.h> /* memcpy() */
+diff --git a/bundled/libdwarf/dwarf_object_detector.c b/bundled/libdwarf/dwarf_object_detector.c
+index 16dd70d..9592768 100644
+--- a/bundled/libdwarf/dwarf_object_detector.c
++++ b/bundled/libdwarf/dwarf_object_detector.c
+@@ -29,7 +29,7 @@ OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
+ EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stdlib.h> /* free() */
+ #include <stdio.h>  /* SEEK_END SEEK_SET */
+diff --git a/bundled/libdwarf/dwarf_object_read_common.c b/bundled/libdwarf/dwarf_object_read_common.c
+index afc9c92..56a5ab2 100644
+--- a/bundled/libdwarf/dwarf_object_read_common.c
++++ b/bundled/libdwarf/dwarf_object_read_common.c
+@@ -34,7 +34,7 @@ EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ #define _CRT_SECURE_NO_WARNINGS
+ #endif /* _WIN32 */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stddef.h> /* size_t */
+ #include <stdio.h>  /* SEEK_END SEEK_SET */
+diff --git a/bundled/libdwarf/dwarf_peread.c b/bundled/libdwarf/dwarf_peread.c
+index 6b6adec..1c08f16 100644
+--- a/bundled/libdwarf/dwarf_peread.c
++++ b/bundled/libdwarf/dwarf_peread.c
+@@ -37,7 +37,7 @@ EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ #define _CRT_SECURE_NO_WARNINGS
+ #endif /* _WIN32 */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stddef.h> /* size_t */
+ #include <stdlib.h> /* atoi() calloc() free() malloc() */
+diff --git a/bundled/libdwarf/dwarf_print_lines.c b/bundled/libdwarf/dwarf_print_lines.c
+index a8af80e..9ba34c7 100644
+--- a/bundled/libdwarf/dwarf_print_lines.c
++++ b/bundled/libdwarf/dwarf_print_lines.c
+@@ -28,7 +28,7 @@
+ 
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stdlib.h> /* free() malloc() realloc() */
+ #include <string.h> /* memset() strlen() */
+diff --git a/bundled/libdwarf/dwarf_query.c b/bundled/libdwarf/dwarf_query.c
+index cbf2d09..ee7eefd 100644
+--- a/bundled/libdwarf/dwarf_query.c
++++ b/bundled/libdwarf/dwarf_query.c
+@@ -29,7 +29,7 @@
+ 
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stddef.h> /* NULL size_t */
+ #include <stdio.h> /* debugging printf */
+diff --git a/bundled/libdwarf/dwarf_ranges.c b/bundled/libdwarf/dwarf_ranges.c
+index 4c65f73..727b68e 100644
+--- a/bundled/libdwarf/dwarf_ranges.c
++++ b/bundled/libdwarf/dwarf_ranges.c
+@@ -27,7 +27,7 @@
+ 
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stdlib.h> /* calloc() free() */
+ 
+diff --git a/bundled/libdwarf/dwarf_rnglists.c b/bundled/libdwarf/dwarf_rnglists.c
+index 07b367e..907b4a6 100644
+--- a/bundled/libdwarf/dwarf_rnglists.c
++++ b/bundled/libdwarf/dwarf_rnglists.c
+@@ -30,7 +30,7 @@ OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
+ EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stdlib.h> /* free() malloc() */
+ #include <stdio.h> /* printf */
+diff --git a/bundled/libdwarf/dwarf_safe_arithmetic.c b/bundled/libdwarf/dwarf_safe_arithmetic.c
+index 0f0421e..31d0804 100644
+--- a/bundled/libdwarf/dwarf_safe_arithmetic.c
++++ b/bundled/libdwarf/dwarf_safe_arithmetic.c
+@@ -29,7 +29,7 @@ OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
+ EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stdlib.h> /* calloc() free() */
+ #include <string.h> /* memset() */
+diff --git a/bundled/libdwarf/dwarf_safe_strcpy.c b/bundled/libdwarf/dwarf_safe_strcpy.c
+index e3260fd..3de938d 100644
+--- a/bundled/libdwarf/dwarf_safe_strcpy.c
++++ b/bundled/libdwarf/dwarf_safe_strcpy.c
+@@ -30,7 +30,7 @@ OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
+ EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ #include <stddef.h> /* NULL size_t */
+ #include "dwarf_safe_strcpy.h"
+ 
+diff --git a/bundled/libdwarf/dwarf_secname_ck.c b/bundled/libdwarf/dwarf_secname_ck.c
+index 1d42d6c..2577032 100644
+--- a/bundled/libdwarf/dwarf_secname_ck.c
++++ b/bundled/libdwarf/dwarf_secname_ck.c
+@@ -29,7 +29,7 @@ OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
+ EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ 
+ */
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stdlib.h> /* calloc() free() */
+ #include <string.h> /* memset() strcmp() strncmp() strlen() */
+diff --git a/bundled/libdwarf/dwarf_setup_sections.c b/bundled/libdwarf/dwarf_setup_sections.c
+index dd44290..cebbd03 100644
+--- a/bundled/libdwarf/dwarf_setup_sections.c
++++ b/bundled/libdwarf/dwarf_setup_sections.c
+@@ -29,7 +29,7 @@
+ 
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stdlib.h> /* calloc() free() */
+ #include <string.h> /* memset() strcmp() strncmp() strlen() */
+diff --git a/bundled/libdwarf/dwarf_str_offsets.c b/bundled/libdwarf/dwarf_str_offsets.c
+index fafb14f..4472639 100644
+--- a/bundled/libdwarf/dwarf_str_offsets.c
++++ b/bundled/libdwarf/dwarf_str_offsets.c
+@@ -25,7 +25,7 @@
+     Fifth Floor, Boston MA 02110-1301, USA.
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stddef.h> /* NULL size_t */
+ #ifdef HAVE_STDINT_H
+diff --git a/bundled/libdwarf/dwarf_string.c b/bundled/libdwarf/dwarf_string.c
+index 26a34aa..4cc522f 100644
+--- a/bundled/libdwarf/dwarf_string.c
++++ b/bundled/libdwarf/dwarf_string.c
+@@ -44,7 +44,7 @@ EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ 
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stdlib.h> /* free() malloc() strtol() */
+ #include <string.h> /* memcpy() strlen() */
+diff --git a/bundled/libdwarf/dwarf_stringsection.c b/bundled/libdwarf/dwarf_stringsection.c
+index 930690b..b236657 100644
+--- a/bundled/libdwarf/dwarf_stringsection.c
++++ b/bundled/libdwarf/dwarf_stringsection.c
+@@ -27,7 +27,7 @@
+ 
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stddef.h> /* NULL, size_t */
+ #include <string.h> /* strlen() */
+diff --git a/bundled/libdwarf/dwarf_tied.c b/bundled/libdwarf/dwarf_tied.c
+index 1eeb8d1..1be9f01 100644
+--- a/bundled/libdwarf/dwarf_tied.c
++++ b/bundled/libdwarf/dwarf_tied.c
+@@ -27,7 +27,7 @@
+ 
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stdio.h>  /* printf() */
+ #include <stdlib.h> /* calloc() free() */
+diff --git a/bundled/libdwarf/dwarf_tsearchhash.c b/bundled/libdwarf/dwarf_tsearchhash.c
+index 89476ae..6ab35d7 100644
+--- a/bundled/libdwarf/dwarf_tsearchhash.c
++++ b/bundled/libdwarf/dwarf_tsearchhash.c
+@@ -59,7 +59,7 @@ EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ 
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stddef.h> /* NULL */
+ #include <stdio.h>  /* printf() */
+diff --git a/bundled/libdwarf/dwarf_util.c b/bundled/libdwarf/dwarf_util.c
+index 99113ef..45b7d1d 100644
+--- a/bundled/libdwarf/dwarf_util.c
++++ b/bundled/libdwarf/dwarf_util.c
+@@ -29,7 +29,7 @@
+ 
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <stddef.h> /* NULL size_t */
+ #include <stdlib.h> /* free() */
+diff --git a/bundled/libdwarf/dwarf_xu_index.c b/bundled/libdwarf/dwarf_xu_index.c
+index 85a19b8..1209d73 100644
+--- a/bundled/libdwarf/dwarf_xu_index.c
++++ b/bundled/libdwarf/dwarf_xu_index.c
+@@ -64,7 +64,7 @@
+     tables look zero-origin.
+ */
+ 
+-#include <config.h>
++#include "config.h"
+ 
+ #include <string.h>  /* memcmp() memcpy() strcmp() */
+ 
