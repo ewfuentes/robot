@@ -4,6 +4,7 @@
 #include <random>
 
 #include "Eigen/Core"
+#include "planning/road_map.hh"
 
 namespace robot::planning {
 
@@ -17,14 +18,6 @@ struct RoadmapCreationConfig {
     // The desired number of connections between nodes
     // When adding edges, try to have at least this many edges per node
     int desired_node_degree;
-};
-
-struct RoadMap {
-    // The location of each roadmap point
-    std::vector<Eigen::Vector2d> points;
-
-    // An adjacency matrix where the i'th column contains the connectivity to other nodes
-    Eigen::MatrixXd adj;
 };
 
 struct MapBounds {
@@ -103,7 +96,7 @@ RoadMap create_road_map(const Map &map, const RoadmapCreationConfig &config,
             }
         }
     }
-    return RoadMap{.points = std::move(sample_points), .adj = adjacency};
+    return RoadMap(std::move(sample_points), std::move(adjacency));
 }
 
 }  // namespace robot::planning

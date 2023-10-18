@@ -55,9 +55,9 @@ TEST(MakeEigenBoundsTest, compute_edge_transform_no_measurements) {
 
     constexpr int START_NODE_IDX = 6;
     constexpr int END_NODE_IDX = 3;
-    const liegroups::SE2 local_from_robot = liegroups::SE2::trans(road_map.points.at(END_NODE_IDX));
+    const liegroups::SE2 local_from_robot = liegroups::SE2::trans(road_map.point(END_NODE_IDX));
 
-    const Eigen::Vector2d start_pos = road_map.points.at(START_NODE_IDX);
+    const Eigen::Vector2d start_pos = road_map.point(START_NODE_IDX);
     // Action
     const double initial_info_min_eigen_value_bound = 1.0;
     const auto edge_belief_transform = compute_backwards_eigen_bound_transform(

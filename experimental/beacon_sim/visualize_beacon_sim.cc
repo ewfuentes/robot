@@ -151,10 +151,10 @@ void visualize_beacon_sim(const BeaconSimState &state, const double zoom_factor,
     }
 
     // Draw Road map
-    int num_points = state.road_map.points.size();
+    int num_points = state.road_map.points().size();
     for (int i = 0; i < num_points; i++) {
         // Draw the node
-        const Eigen::Vector2d &pt = state.road_map.points.at(i);
+        const Eigen::Vector2d &pt = state.road_map.point(i);
         glPushMatrix();
         const liegroups::SE3 local_from_node = se3_from_se2(liegroups::SE2::trans(pt));
         glMultMatrixd(local_from_node.matrix().data());
@@ -171,9 +171,9 @@ void visualize_beacon_sim(const BeaconSimState &state, const double zoom_factor,
         glPopMatrix();  // Pop from road map node frame to world frame
 
         for (int j = i + 1; j < num_points; j++) {
-            if (state.road_map.adj(i, j)) {
+            if (state.road_map.adj()(i, j)) {
                 // Draw an edge between the two points
-                const Eigen::Vector2d other_pt = state.road_map.points.at(j);
+                const Eigen::Vector2d other_pt = state.road_map.point(j);
                 glColor3f(0.4, 0.4, 0.4);
                 glBegin(GL_LINES);
                 glVertex2d(pt.x(), pt.y());

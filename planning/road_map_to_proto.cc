@@ -5,20 +5,19 @@
 
 namespace robot::planning::proto {
 void pack_into(const planning::RoadMap &in, RoadMap *out) {
-    for (const auto &pt : in.points) {
+    for (const auto &pt : in.points()) {
         pack_into(pt, out->mutable_points()->Add());
     }
 
-    pack_into(in.adj, out->mutable_adj());
+    pack_into(in.adj(), out->mutable_adj());
 }
 
 planning::RoadMap unpack_from(const RoadMap &in) {
-    planning::RoadMap out;
+    std::vector<Eigen::Vector2d> pts;
     for (const auto &pt : in.points()) {
-        out.points.push_back(unpack_from<Eigen::Vector2d>(pt));
+        pts.push_back(unpack_from<Eigen::Vector2d>(pt));
     }
 
-    out.adj = unpack_from<Eigen::MatrixXd>(in.adj());
-    return out;
+    return planning::RoadMap(std::move(pts), unpack_from<Eigen::MatrixXd>(in.adj()));
 }
 }  // namespace robot::planning::proto

@@ -88,13 +88,14 @@ EdgeTransform compute_edge_belief_transform(
     const BeaconPotential &beacon_potential, const double max_sensor_range_m,
     const int max_num_transforms, const TransformType transform_type);
 
-planning::BeliefUpdater<RobotBelief> make_belief_updater(
-    const planning::RoadMap &road_map, const Eigen::Vector2d &goal_state,
-    const double max_sensor_range_m, const int max_num_transforms, const EkfSlam &ekf,
-    const BeaconPotential &beacon_potential, const TransformType transform_type);
+planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap &road_map,
+                                                         const double max_sensor_range_m,
+                                                         const int max_num_transforms,
+                                                         const EkfSlam &ekf,
+                                                         const BeaconPotential &beacon_potential,
+                                                         const TransformType transform_type);
 
 planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap &road_map,
-                                                         const Eigen::Vector2d &goal_state,
                                                          const double max_sensor_range_m,
                                                          const EkfSlam &ekf,
                                                          const std::vector<int> &present_beacons,

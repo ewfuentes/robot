@@ -21,17 +21,16 @@ struct TestEnvironment {
 };
 
 planning::RoadMap create_triangle_road_map() {
-    return {
-        .points = {{0, 0}, {1, 0}, {2, 0}, {1.5, 1}, {1.5, -10}, {3, 0}},
-        // clang-format off
-        .adj = (Eigen::MatrixXd(6, 6) << 0, 1, 0, 0, 0, 0,
+    return planning::RoadMap({{0, 0}, {1, 0}, {2, 0}, {1.5, 1}, {1.5, -10}, {3, 0}},
+                             // clang-format off
+        (Eigen::MatrixXd(6, 6) << 0, 1, 0, 0, 0, 0,
                                          1, 0, 1, 1, 1, 0,
                                          0, 1, 0, 1, 1, 1,
                                          0, 1, 1, 0, 0, 0,
                                          0, 1, 1, 0, 0, 0,
                                          0, 0, 1, 0, 0, 0).finished()
-        // clang-format on
-    };
+                             // clang-format on
+    );
 }
 
 LowerBoundReversePropagator create_triangle_rev_prop() {

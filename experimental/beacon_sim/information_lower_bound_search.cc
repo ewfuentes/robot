@@ -110,29 +110,26 @@ InformationLowerBoundResult information_lower_bound_search(
         }
 
         // Create new paths from neighbors and queue.
-        for (int other_node_id = 0; other_node_id < static_cast<int>(road_map.points.size());
-             other_node_id++) {
-            if (road_map.adj(current_node_id, other_node_id)) {
-                // For each adjacent node to the current node, create a new in progress path and
-                // propagate the information lower bound.
-                std::vector<int> new_path(in_progress.path_to_goal.begin(),
-                                          in_progress.path_to_goal.end());
-                new_path.push_back(other_node_id);
-                const auto prop_result =
-                    rev_propagator(other_node_id, current_node_id, in_progress.info_lower_bound);
+        for (const auto &[other_node_id, other_node_loc] : road_map.neighbors(current_node_id)) {
+            // For each adjacent node to the current node, create a new in progress path and
+            // propagate the information lower bound.
+            std::vector<int> new_path(in_progress.path_to_goal.begin(),
+                                      in_progress.path_to_goal.end());
+            new_path.push_back(other_node_id);
+            const auto prop_result =
+                rev_propagator(other_node_id, current_node_id, in_progress.info_lower_bound);
 
-                if (!std::isfinite(prop_result.info_lower_bound)) {
-                    // If infinite information is required, it isn't possible to start at the node
-                    // in question and follow the rest of the current path and satisfy the
-                    // information lower bound at the goal. We choose not to consider this path.
-                    continue;
-                }
-                open_list.emplace(detail::InProgressPath{
-                    .info_lower_bound = prop_result.info_lower_bound,
-                    .cost_to_go = prop_result.edge_cost + in_progress.cost_to_go,
-                    .path_to_goal = std::move(new_path),
-                });
+            if (!std::isfinite(prop_result.info_lower_bound)) {
+                // If infinite information is required, it isn't possible to start at the node
+                // in question and follow the rest of the current path and satisfy the
+                // information lower bound at the goal. We choose not to consider this path.
+                continue;
             }
+            open_list.emplace(detail::InProgressPath{
+                .info_lower_bound = prop_result.info_lower_bound,
+                .cost_to_go = prop_result.edge_cost + in_progress.cost_to_go,
+                .path_to_goal = std::move(new_path),
+            });
         }
 
         // Include the new path to the list of paths at the current node.

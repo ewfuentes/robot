@@ -362,6 +362,7 @@ cc_test(
   deps = [
     ":belief_road_map_planner",
     ":test_helpers",
+    "//common:check",
     "@com_google_googletest//:gtest_main",
   ],
 )

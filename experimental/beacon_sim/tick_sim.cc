@@ -70,22 +70,21 @@ proto::BeaconSimDebug tick_sim(const SimConfig &config, const RobotCommand &comm
             have_goal && (!have_plan || (have_plan && state->goal->time_of_validity >
                                                           state->plan->time_of_validity));
         if (should_plan) {
-            constexpr int NUM_START_CONNECTIONS = 6;
-            constexpr int NUM_GOAL_CONNECTIONS = 6;
             constexpr double UNCERTAINTY_TOLERANCE = 0.1;
             std::cout << "Starting to Plan" << std::endl;
             const BeliefRoadMapOptions options = {
                 .max_sensor_range_m = OBS_CONFIG.max_sensor_range_m.value(),
-                .num_start_connections = NUM_START_CONNECTIONS,
-                .num_goal_connections = NUM_GOAL_CONNECTIONS,
                 .uncertainty_tolerance = config.allow_brm_backtracking
                                              ? std::make_optional(UNCERTAINTY_TOLERANCE)
                                              : std::nullopt,
                 .max_num_edge_transforms = 1000,
             };
-            const auto brm_plan = compute_belief_road_map_plan(state->road_map, state->ekf,
-                                                               state->map.beacon_potential(),
-                                                               state->goal->goal_position, options);
+            state->road_map.add_start_goal(
+                {.start = state->ekf.estimate().local_from_robot().translation(),
+                 .goal = state->goal->goal_position,
+                 .connection_radius_m = 5.0});
+            const auto brm_plan = compute_belief_road_map_plan(
+                state->road_map, state->ekf, state->map.beacon_potential(), options);
             std::cout << "plan complete" << std::endl;
             for (int idx = 0; idx < static_cast<int>(brm_plan->nodes.size()); idx++) {
                 std::cout << idx << " " << brm_plan->nodes.at(idx) << " "
