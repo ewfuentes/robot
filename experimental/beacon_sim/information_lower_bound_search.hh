@@ -29,9 +29,8 @@ struct InformationLowerBoundResult {
 };
 
 InformationLowerBoundResult information_lower_bound_search(
-    const planning::RoadMap &road_map, const int start_idx, const int end_idx,
-    const double start_information, const double end_information_lower_bound,
-    const LowerBoundReversePropagator &propagator);
+    const planning::RoadMap &road_map, const double start_information,
+    const double end_information_lower_bound, const LowerBoundReversePropagator &propagator);
 
 namespace detail {
 struct InProgressPath {

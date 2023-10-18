@@ -561,6 +561,7 @@ cc_library(
     srcs = ["information_lower_bound_search.cc"],
     deps = [
       "@eigen",
+      "//common:check",
       "//planning:probabilistic_road_map",
     ]
 )

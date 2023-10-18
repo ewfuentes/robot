@@ -4,6 +4,9 @@
 #include <algorithm>
 #include <queue>
 
+#include "common/check.hh"
+#include "planning/road_map.hh"
+
 namespace robot::experimental::beacon_sim {
 namespace detail {
 MergeResult should_merge(const std::vector<InProgressPath> &existing,
@@ -48,16 +51,19 @@ MergeResult should_merge(const std::vector<InProgressPath> &existing,
 }  // namespace detail
 
 InformationLowerBoundResult information_lower_bound_search(
-    const planning::RoadMap &road_map, const int start_idx, const int end_idx,
+    const planning::RoadMap &road_map,
     const double start_information, const double end_information_lower_bound,
     const LowerBoundReversePropagator &rev_propagator) {
+
+    CHECK(road_map.has_start_goal());
+
     std::unordered_map<int, std::vector<detail::InProgressPath>> paths_from_node_id;
     std::priority_queue<detail::InProgressPath, std::vector<detail::InProgressPath>,
                         std::greater<detail::InProgressPath>>
         open_list;
     open_list.push(detail::InProgressPath{.info_lower_bound = end_information_lower_bound,
                                           .cost_to_go = 0.0,
-                                          .path_to_goal{end_idx}});
+                                          .path_to_goal{planning::RoadMap::GOAL_IDX}});
 
     while (!open_list.empty()) {
         // Note that this creates a copy. It is non-const so we can move it later.
@@ -68,7 +74,7 @@ InformationLowerBoundResult information_lower_bound_search(
         std::vector<detail::InProgressPath> &best_paths_at_node =
             paths_from_node_id[current_node_id];
 
-        if (in_progress.path_to_goal.back() == start_idx &&
+        if (in_progress.path_to_goal.back() == planning::RoadMap::START_IDX &&
             start_information >= in_progress.info_lower_bound) {
             std::reverse(in_progress.path_to_goal.begin(), in_progress.path_to_goal.end());
             return {

@@ -2,35 +2,37 @@
 #include "experimental/beacon_sim/information_lower_bound_search.hh"
 
 #include "gtest/gtest.h"
+#include "planning/road_map.hh"
 
 namespace robot::experimental::beacon_sim {
 namespace {
 
-constexpr int START_IDX = 0;
-constexpr int FORK_IDX = 1;
-constexpr int JOIN_IDX = 2;
-constexpr int MEASUREMENT_IDX = 3;
-constexpr int FAR_NODE_IDX = 4;
-constexpr int GOAL_IDX = 5;
+constexpr int START_IDX = planning::RoadMap::START_IDX;
+constexpr int GOAL_IDX = planning::RoadMap::GOAL_IDX;
+constexpr int FORK_IDX = 0;
+constexpr int JOIN_IDX = 1;
+constexpr int MEASUREMENT_IDX = 2;
+constexpr int FAR_NODE_IDX = 3;
 
 struct TestEnvironment {
-    int start_idx;
-    int end_idx;
     planning::RoadMap road_map;
     LowerBoundReversePropagator rev_prop;
 };
 
 planning::RoadMap create_triangle_road_map() {
-    return planning::RoadMap({{0, 0}, {1, 0}, {2, 0}, {1.5, 1}, {1.5, -10}, {3, 0}},
-                             // clang-format off
-        (Eigen::MatrixXd(6, 6) << 0, 1, 0, 0, 0, 0,
-                                         1, 0, 1, 1, 1, 0,
-                                         0, 1, 0, 1, 1, 1,
-                                         0, 1, 1, 0, 0, 0,
-                                         0, 1, 1, 0, 0, 0,
-                                         0, 0, 1, 0, 0, 0).finished()
-                             // clang-format on
-    );
+    return planning::RoadMap(
+        {{1, 0}, {2, 0}, {1.5, 1}, {1.5, -10}},
+        // clang-format off
+        (Eigen::MatrixXd(4, 4) << 0, 1, 1, 1, 
+                                  1, 0, 1, 1, 
+                                  1, 1, 0, 0, 
+                                  1, 1, 0, 0).finished(),
+        // clang-format on
+        {{
+            .start = {0.0, 0.0},
+            .goal = {3.0, 0.0},
+            .connection_radius_m = 1.1,
+        }});
 }
 
 LowerBoundReversePropagator create_triangle_rev_prop() {
@@ -56,22 +58,20 @@ TestEnvironment create_triangle_test_env() {
     //
     //               B
     //
-    //               3
+    //               2
     //           ┌───X───┐
     //           │       │
     //       c=1 │       │ c=1
-    //           │1     2│
+    //           │0     1│
     // Start ────X───────X──── Goal
     //           │  c=1  │
     //           │       │
     //      c=10 │       │ c=10
     //           └───X───┘
-    //               4
+    //               3
     //
 
     return {
-        .start_idx = START_IDX,
-        .end_idx = GOAL_IDX,
         .road_map = create_triangle_road_map(),
         .rev_prop = create_triangle_rev_prop(),
     };
@@ -85,8 +85,8 @@ TEST(InformationLowerBoundSearch, grid_environment_search_with_low_info_start) {
     constexpr double START_INFO = 1;
 
     // Action
-    const auto result = information_lower_bound_search(
-        env.road_map, env.start_idx, env.end_idx, START_INFO, GOAL_INFO_LOWER_BOUND, env.rev_prop);
+    const auto result = information_lower_bound_search(env.road_map, START_INFO,
+                                                       GOAL_INFO_LOWER_BOUND, env.rev_prop);
 
     // Verification
     // When starting with low information, it is best to divert toward the landmark.
@@ -105,8 +105,8 @@ TEST(InformationLowerBoundSearch, grid_environment_search_with_high_info_start) 
     constexpr double START_INFO = 10;
 
     // Action
-    const auto result = information_lower_bound_search(
-        env.road_map, env.start_idx, env.end_idx, START_INFO, GOAL_INFO_LOWER_BOUND, env.rev_prop);
+    const auto result = information_lower_bound_search(env.road_map, START_INFO,
+                                                       GOAL_INFO_LOWER_BOUND, env.rev_prop);
 
     // Verification
     // When starting with high information, it is best to go straight to the goal;
