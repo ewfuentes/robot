@@ -12,8 +12,8 @@ namespace {
 std::vector<RobotBelief> compute_beliefs(const planning::RoadMap &road_map,
                                          const std::vector<int> &path, const EkfSlam &ekf,
                                          const double max_sensor_range_m) {
-    const auto belief_updater =
-        make_belief_updater(road_map, max_sensor_range_m, ekf, ekf.estimate().beacon_ids, TransformType::COVARIANCE);
+    const auto belief_updater = make_belief_updater(
+        road_map, max_sensor_range_m, ekf, ekf.estimate().beacon_ids, TransformType::COVARIANCE);
 
     std::vector<RobotBelief> out = {{.local_from_robot = ekf.estimate().local_from_robot(),
                                      .cov_in_robot = ekf.estimate().robot_cov()}};
@@ -21,7 +21,8 @@ std::vector<RobotBelief> compute_beliefs(const planning::RoadMap &road_map,
         const int start_idx = path.at(i - 1);
         const int end_idx = path.at(i);
         out.push_back(belief_updater(out.back(), start_idx, end_idx));
-        std::cout << "idx: " << i << " " << out.back().cov_in_robot.inverse().eigenvalues().transpose() << std::endl;
+        std::cout << "idx: " << i << " "
+                  << out.back().cov_in_robot.inverse().eigenvalues().transpose() << std::endl;
     }
     return out;
 }
@@ -32,7 +33,8 @@ planning::BRMPlan<RobotBelief> compute_info_lower_bound_plan(
     const Eigen::Matrix3d information = ekf.estimate().robot_cov().inverse();
     const double min_info_eigenvalue = information.eigenvalues().cwiseAbs().minCoeff();
 
-    std::cout << "info_eigen_values: " << ekf.estimate().robot_cov().inverse().eigenvalues().transpose() << std::endl;
+    std::cout << "info_eigen_values: "
+              << ekf.estimate().robot_cov().inverse().eigenvalues().transpose() << std::endl;
     std::cout << "starting info lower bound: " << min_info_eigenvalue << std::endl;
     std::cout << "goal info constraint: " << information_lower_bound_at_goal << std::endl;
 
@@ -47,7 +49,6 @@ planning::BRMPlan<RobotBelief> compute_info_lower_bound_plan(
         const double lower_bound_at_start = compute_backwards_eigen_bound_transform(
             lower_bound_at_end, local_from_end_robot, start_in_local, ekf.config(), ekf.estimate(),
             std::nullopt, max_sensor_range_m);
-
 
         return PropagationResult{.info_lower_bound = lower_bound_at_start,
                                  .edge_cost = start_in_end_robot.norm()};
