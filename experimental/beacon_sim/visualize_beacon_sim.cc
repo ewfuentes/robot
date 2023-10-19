@@ -190,9 +190,8 @@ void visualize_beacon_sim(const BeaconSimState &state, const double zoom_factor,
         glBegin(GL_LINE_STRIP);
         for (int plan_idx = 0; plan_idx < static_cast<int>(plan.brm_plan.nodes.size());
              plan_idx++) {
-            const liegroups::SE2 &local_from_planned_robot =
-                plan.brm_plan.beliefs.at(plan_idx).local_from_robot;
-            const Eigen::Vector2d point_in_local = local_from_planned_robot.translation();
+            const Eigen::Vector2d point_in_local =
+                state.road_map.point(plan.brm_plan.nodes.at(plan_idx));
             glVertex3d(point_in_local.x(), point_in_local.y(), 0.25);
         }
         glEnd();
