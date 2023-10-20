@@ -1,9 +1,8 @@
 #include "experimental/beacon_sim/make_eigen_bounds.hh"
 
 #include "Eigen/Core"
-
 #include "drake/solvers/mathematical_program.h"
-
+#include "drake/solvers/solve.h"
 #include "experimental/beacon_sim/test_helpers.hh"
 #include "gtest/gtest.h"
 
@@ -42,17 +41,36 @@ TEST(MakeEigenBoundsTest, step_eigen_bound_information) {
 
 TEST(MakeEigenBoundsTest, sdp_bound) {
     drake::solvers::MathematicalProgram program;
-    const Eigen::Matrix3d F{1, 0, 0,
-                            0, 1, -1,
-                            0, 0, 1};
+    const Eigen::Matrix3d F{{1, 0, 0}, {0, 1, -1}, {0, 0, 1}};
     const Eigen::Matrix3d Q = Eigen::Matrix3d::Zero();
     const Eigen::Matrix3d M = Eigen::Matrix3d::Zero();
+    const double lower_bound_at_end = 200.0;
 
     auto lower_bound_at_start = program.NewContinuousVariables(1);
     auto cov_at_start = program.NewSymmetricContinuousVariables(3, "cov_at_start");
+    program.AddPositiveSemidefiniteConstraint(cov_at_start);  // PSD on \Sigma_t-1
+    program.AddPositiveSemidefiniteConstraint(lower_bound_at_start(0) * Eigen::Matrix3d::Identity() -
+                                              cov_at_start);  // \Sigma_t-1 - \lambda I \succeq 0
 
+    program.AddPositiveSemidefiniteConstraint(
+        Eigen::Matrix3d::Identity() - ((lower_bound_at_end * Eigen::Matrix3d::Identity() - M) *
+                                          (F * cov_at_start * F.transpose() + Q)));
+
+    program.AddLinearCost(1.0 * lower_bound_at_start(0));
+
+    std::cout << "program " << program << std::endl;
+
+    auto solution = drake::solvers::Solve(program);
+    std::cout << " solve succeeded " << solution.is_success() << std::endl;
+    if (solution.is_success()) {
+        auto result = solution.get_solution_result();
+        std::cout << "result type" << result << std::endl;
+        auto answer = solution.get_x_val();
+        std::cout << "answer: " << answer << std::endl;
+
+
+    }
 }
-
 
 TEST(MakeEigenBoundsTest, compute_edge_transform_no_measurements) {
     // Setup
