@@ -123,6 +123,8 @@ proto::BeaconSimDebug tick_sim(const SimConfig &config, const RobotCommand &comm
                 if (maybe_plan.has_value()) {
                     state->plan = {.time_of_validity = state->time_of_validity,
                                    .brm_plan = maybe_plan.value()};
+                } else {
+                    std::cout << "Infeasible goal lower bound constraint" << std::endl;
                 }
             }
         }

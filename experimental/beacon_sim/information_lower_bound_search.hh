@@ -25,7 +25,7 @@ struct InformationLowerBoundResult {
     // The cost from the start to the goal
     double cost_to_go;
     // The nodes visited by this path
-    std::vector<int> path_to_goal;
+    std::vector<std::tuple<int, double>> path_and_bounds_to_goal;
 };
 
 InformationLowerBoundResult information_lower_bound_search(
@@ -38,7 +38,7 @@ struct InProgressPath {
     double info_lower_bound;
     double cost_to_go;
     // The path traversed starting at the goal and moving back towards the start.
-    std::vector<int> path_to_goal;
+    std::vector<std::tuple<int, double>> path_and_bounds_to_goal;
 
     bool operator>(const InProgressPath &other) const { return cost_to_go > other.cost_to_go; }
 };

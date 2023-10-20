@@ -536,6 +536,7 @@ cc_test(
     ":make_eigen_bounds",
     ":test_helpers",
     "@com_google_googletest//:gtest_main",
+    "//common:drake",
   ]
 )
 

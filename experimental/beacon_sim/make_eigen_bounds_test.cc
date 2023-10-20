@@ -1,9 +1,14 @@
 #include "experimental/beacon_sim/make_eigen_bounds.hh"
 
+#include "Eigen/Core"
+
+#include "drake/solvers/mathematical_program.h"
+
 #include "experimental/beacon_sim/test_helpers.hh"
 #include "gtest/gtest.h"
 
 namespace robot::experimental::beacon_sim {
+bool eigen_debug = false;
 
 TEST(MakeEigenBoundsTest, step_eigen_bound_no_information) {
     const double start_info_eigen_value = 0.5;
@@ -19,6 +24,7 @@ TEST(MakeEigenBoundsTest, step_eigen_bound_no_information) {
     // gained and process noise is added)
     ASSERT_GT(newbound, start_info_eigen_value);
 }
+
 TEST(MakeEigenBoundsTest, step_eigen_bound_information) {
     const double start_info_eigen_value = 0.5;
     // Action
@@ -33,6 +39,20 @@ TEST(MakeEigenBoundsTest, step_eigen_bound_information) {
     // noise
     ASSERT_LT(newbound, start_info_eigen_value);
 }
+
+TEST(MakeEigenBoundsTest, sdp_bound) {
+    drake::solvers::MathematicalProgram program;
+    const Eigen::Matrix3d F{1, 0, 0,
+                            0, 1, -1,
+                            0, 0, 1};
+    const Eigen::Matrix3d Q = Eigen::Matrix3d::Zero();
+    const Eigen::Matrix3d M = Eigen::Matrix3d::Zero();
+
+    auto lower_bound_at_start = program.NewContinuousVariables(1);
+    auto cov_at_start = program.NewSymmetricContinuousVariables(3, "cov_at_start");
+
+}
+
 
 TEST(MakeEigenBoundsTest, compute_edge_transform_no_measurements) {
     // Setup
@@ -59,13 +79,14 @@ TEST(MakeEigenBoundsTest, compute_edge_transform_no_measurements) {
 
     const Eigen::Vector2d start_pos = road_map.point(START_NODE_IDX);
     // Action
-    const double initial_info_min_eigen_value_bound = 1.0;
+    const double initial_info_min_eigen_value_bound = 123.0;
+    eigen_debug = true;
     const auto edge_belief_transform = compute_backwards_eigen_bound_transform(
         initial_info_min_eigen_value_bound, local_from_robot, start_pos, ekf_slam.config(),
-        ekf_slam.estimate(), {}, MAX_SENSOR_RANGE_M);
+        ekf_slam.estimate(), {{}}, MAX_SENSOR_RANGE_M);
 
     // Verification
-    EXPECT_LT(edge_belief_transform, initial_info_min_eigen_value_bound);
+    EXPECT_LT(initial_info_min_eigen_value_bound, edge_belief_transform);
 }
 
 }  // namespace robot::experimental::beacon_sim

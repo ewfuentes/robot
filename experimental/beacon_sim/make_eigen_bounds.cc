@@ -1,12 +1,30 @@
 #include "experimental/beacon_sim/make_eigen_bounds.hh"
 
+#include <iostream>
+#include <limits>
+
 namespace robot::experimental::beacon_sim {
+
+extern bool eigen_debug;
 
 double step_lower_eigen_bound(  // returns a lower bound on min ev of \Omega_{t-1}
     const StepLowerEigenBoundInputs &inputs) {
-    return 1. / (inputs.upper_eigen_value_dynamics * (1. / (inputs.lower_eigen_value_information -
-                                                            inputs.upper_eigen_value_measurement) -
-                                                      inputs.lower_eigen_value_process_noise));
+    const double premeasurement_covariance_upper_bound =
+        1.0 / (inputs.lower_eigen_value_information - inputs.upper_eigen_value_measurement);
+    if (premeasurement_covariance_upper_bound < inputs.lower_eigen_value_process_noise) {
+        return std::numeric_limits<double>::infinity();
+    }
+    const double value =
+        1.0 / (inputs.upper_eigen_value_dynamics *
+               (premeasurement_covariance_upper_bound - inputs.lower_eigen_value_process_noise));
+    if (eigen_debug) {
+        std::cout << "upper_eigen dynamics: " << inputs.upper_eigen_value_dynamics
+                  << " lower_eigen_info: " << inputs.lower_eigen_value_information
+                  << " upper_eigen_measurement: " << inputs.upper_eigen_value_measurement
+                  << " lower_eigen_process_noise: " << inputs.lower_eigen_value_process_noise
+                  << " compute lower_bound: " << value << std::endl;
+    }
+    return value;
 }
 
 /// Start state is the end of the edge
@@ -23,6 +41,11 @@ double compute_backwards_eigen_bound_transform(
 
     liegroups::SE2 local_from_new_robot = local_from_robot;
     constexpr double TOL = 1e-6;
+
+    if (eigen_debug) {
+        std::cout << "================================" << std::endl;
+        std::cout << "end_info_lower_bound: " << lower_eigen_value_information << std::endl;
+    }
 
     double information_lower_bound = lower_eigen_value_information;
     for (Eigen::Vector2d start_in_robot = local_from_robot.inverse() * end_state_in_local;
@@ -61,6 +84,24 @@ double compute_backwards_eigen_bound_transform(
                 .eigenvalues()
                 .real()
                 .maxCoeff();
+        if (eigen_debug) {
+            std::cout << "Dynamics Jacobian: " << std::endl
+                      << old_robot_from_new_robot.inverse().Adj() << std::endl;
+            std::cout << "Dynamics Eigen values: "
+                      << old_robot_from_new_robot.inverse().Adj().eigenvalues().transpose()
+                      << std::endl;
+            std::cout << "Inv Dynamics Jacobian: " << std::endl
+                      << inv_dynamics_jac_wrt_state << std::endl;
+            std::cout << "Inv Dynamics Eigen values: "
+                      << inv_dynamics_jac_wrt_state.eigenvalues().transpose() << std::endl;
+            std::cout << "F^-1 F^-T" << std::endl
+                      << inv_dynamics_jac_wrt_state * inv_dynamics_jac_wrt_state.transpose()
+                      << std::endl
+                      << (inv_dynamics_jac_wrt_state * inv_dynamics_jac_wrt_state.transpose())
+                             .eigenvalues()
+                             .transpose()
+                      << std::endl;
+        }
         // R_t
         const Eigen::DiagonalMatrix<double, 3> process_noise =
             compute_process_noise(ekf_config, DT_S, old_robot_from_new_robot.arclength());
@@ -81,6 +122,9 @@ double compute_backwards_eigen_bound_transform(
              .upper_eigen_value_dynamics = dynamics_upper_eigen_value_bound,
              .upper_eigen_value_measurement = measurement_upper_eigen_value,
              .lower_eigen_value_process_noise = process_lower_eigen_value_bound});
+    }
+    if (eigen_debug) {
+        std::cout << "start_info_lower_bound: " << information_lower_bound << std::endl;
     }
     return information_lower_bound;
 }

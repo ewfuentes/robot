@@ -1,6 +1,8 @@
 
 #include "experimental/beacon_sim/ekf_slam.hh"
 
+#include <iostream>
+
 namespace robot::experimental::beacon_sim {
 namespace {
 
@@ -206,6 +208,7 @@ EkfSlamEstimate prediction_update(const EkfSlamEstimate &est, const time::RobotT
                 dt_s.count());
 
     const Eigen::Matrix3d dynamics_jac_wrt_state = old_robot_from_new_robot.inverse().Adj();
+    std::cout << "Dynamics wrt Jac:" << std::endl << dynamics_jac_wrt_state << std::endl;
     out.cov.block(0, 0, ROBOT_STATE_DIM, ROBOT_STATE_DIM) =
         dynamics_jac_wrt_state * out.cov.block(0, 0, ROBOT_STATE_DIM, ROBOT_STATE_DIM) *
             dynamics_jac_wrt_state.transpose() +

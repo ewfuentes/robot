@@ -59,26 +59,30 @@ InformationLowerBoundResult information_lower_bound_search(
     std::priority_queue<detail::InProgressPath, std::vector<detail::InProgressPath>,
                         std::greater<detail::InProgressPath>>
         open_list;
-    open_list.push(detail::InProgressPath{.info_lower_bound = end_information_lower_bound,
-                                          .cost_to_go = 0.0,
-                                          .path_to_goal{planning::RoadMap::GOAL_IDX}});
+    open_list.push(
+        detail::InProgressPath{.info_lower_bound = end_information_lower_bound,
+                               .cost_to_go = 0.0,
+                               .path_and_bounds_to_goal{std::make_tuple(
+                                   planning::RoadMap::GOAL_IDX, end_information_lower_bound)}});
 
     while (!open_list.empty()) {
         // Note that this creates a copy. It is non-const so we can move it later.
         detail::InProgressPath in_progress = open_list.top();
         open_list.pop();
 
-        const int current_node_id = in_progress.path_to_goal.back();
+        const int current_node_id = std::get<0>(in_progress.path_and_bounds_to_goal.back());
         std::vector<detail::InProgressPath> &best_paths_at_node =
             paths_from_node_id[current_node_id];
 
-        if (in_progress.path_to_goal.back() == planning::RoadMap::START_IDX &&
+        if (std::get<0>(in_progress.path_and_bounds_to_goal.back()) ==
+                planning::RoadMap::START_IDX &&
             start_information >= in_progress.info_lower_bound) {
-            std::reverse(in_progress.path_to_goal.begin(), in_progress.path_to_goal.end());
+            std::reverse(in_progress.path_and_bounds_to_goal.begin(),
+                         in_progress.path_and_bounds_to_goal.end());
             return {
                 .info_lower_bound = in_progress.info_lower_bound,
                 .cost_to_go = in_progress.cost_to_go,
-                .path_to_goal = in_progress.path_to_goal,
+                .path_and_bounds_to_goal = in_progress.path_and_bounds_to_goal,
             };
         }
 
@@ -117,13 +121,15 @@ InformationLowerBoundResult information_lower_bound_search(
         for (const auto &[other_node_id, other_node_loc] : road_map.neighbors(current_node_id)) {
             // For each adjacent node to the current node, create a new in progress path and
             // propagate the information lower bound.
-            std::vector<int> new_path(in_progress.path_to_goal.begin(),
-                                      in_progress.path_to_goal.end());
-            new_path.push_back(other_node_id);
+            std::vector<std::tuple<int, double>> new_path(
+                in_progress.path_and_bounds_to_goal.begin(),
+                in_progress.path_and_bounds_to_goal.end());
             const auto prop_result =
                 rev_propagator(other_node_id, current_node_id, in_progress.info_lower_bound);
 
-            if (!std::isfinite(prop_result.info_lower_bound)) {
+            new_path.push_back(std::make_tuple(other_node_id, prop_result.info_lower_bound));
+
+            if (!std::isfinite(prop_result.info_lower_bound) || prop_result.info_lower_bound < 0) {
                 // If infinite information is required, it isn't possible to start at the node
                 // in question and follow the rest of the current path and satisfy the
                 // information lower bound at the goal. We choose not to consider this path.
@@ -132,7 +138,7 @@ InformationLowerBoundResult information_lower_bound_search(
             open_list.emplace(detail::InProgressPath{
                 .info_lower_bound = prop_result.info_lower_bound,
                 .cost_to_go = prop_result.edge_cost + in_progress.cost_to_go,
-                .path_to_goal = std::move(new_path),
+                .path_and_bounds_to_goal = std::move(new_path),
             });
         }
 
