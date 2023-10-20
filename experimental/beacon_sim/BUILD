@@ -18,11 +18,14 @@ cc_library(
     "//common:argument_wrapper",
     "//common/time:robot_time_to_proto",
     "//common/liegroups:se2_to_proto",
+    ":belief_road_map_planner",
     ":beacon_sim_state",
+    ":information_lower_bound_search",
     ":sim_config",
     ":beacon_sim_debug_proto",
     ":ekf_slam_estimate_to_proto",
     ":beacon_observation_to_proto",
+    ":information_lower_bound_planner",
   ]
 )
 
@@ -573,4 +576,17 @@ cc_test(
       ":information_lower_bound_search",
       "@com_google_googletest//:gtest_main",
     ]
+)
+
+cc_library(
+  name = "information_lower_bound_planner",
+  hdrs = ["information_lower_bound_planner.hh"],
+  srcs = ["information_lower_bound_planner.cc"],
+  deps = [
+    ":ekf_slam",
+    ":information_lower_bound_search",
+    ":make_eigen_bounds",
+    ":robot_belief",
+    "//planning:belief_road_map",
+  ]
 )

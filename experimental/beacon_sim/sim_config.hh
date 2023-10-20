@@ -15,6 +15,8 @@ struct SimConfig {
     bool load_off_diagonals;
     bool enable_brm_planner;
     bool allow_brm_backtracking;
+    bool enable_info_lower_bound_planner;
+    std::optional<double> info_lower_bound_at_goal;
     bool autostep;
     std::optional<int> correlated_beacons_configuration;
 };
