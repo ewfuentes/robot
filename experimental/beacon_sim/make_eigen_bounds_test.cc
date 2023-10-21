@@ -44,7 +44,7 @@ TEST(MakeEigenBoundsTest, sdp_bound) {
     const Eigen::Matrix3d F{{1, 0, 0}, {0, 1, -1}, {0, 0, 1}};
     const Eigen::Matrix3d Q = Eigen::Matrix3d::Zero();
     const Eigen::Matrix3d M = Eigen::Matrix3d::Zero();
-    const double lower_bound_at_end = 200.0;
+    const double lower_bound_at_end = 2000.0;
 
     auto lower_bound_at_start = program.NewContinuousVariables(1);
     auto cov_at_start = program.NewSymmetricContinuousVariables(3, "cov_at_start");
@@ -52,11 +52,12 @@ TEST(MakeEigenBoundsTest, sdp_bound) {
     program.AddPositiveSemidefiniteConstraint(lower_bound_at_start(0) * Eigen::Matrix3d::Identity() -
                                               cov_at_start);  // \Sigma_t-1 - \lambda I \succeq 0
 
+    program.AddLinearConstraint(lower_bound_at_start(0) >= 0);
     program.AddPositiveSemidefiniteConstraint(
-        Eigen::Matrix3d::Identity() - ((lower_bound_at_end * Eigen::Matrix3d::Identity() - M) *
+        Eigen::Matrix3d::Identity() - ((1/lower_bound_at_end * Eigen::Matrix3d::Identity() - M) *
                                           (F * cov_at_start * F.transpose() + Q)));
 
-    program.AddLinearCost(1.0 * lower_bound_at_start(0));
+    program.AddLinearCost(-1.0 * lower_bound_at_start(0));
 
     std::cout << "program " << program << std::endl;
 
