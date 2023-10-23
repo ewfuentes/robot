@@ -82,6 +82,12 @@ std::tuple<liegroups::SE2, TypedTransform> compute_edge_belief_transform(
     const std::optional<std::vector<int>> &available_beacons, const double max_sensor_range_m,
     const TransformType transform_type);
 
+std::tuple<liegroups::SE2, std::vector<std::tuple<std::string, TypedTransform>>> compute_edge_belief_transform(
+    const liegroups::SE2 &local_from_robot, const Eigen::Vector2d &end_state_in_local,
+    const EkfSlamConfig &ekf_config, const EkfSlamEstimate &ekf_estimate,
+    const BeaconPotential &beacon_potential, const double max_sensor_range_m,
+    const TransformType transform_type);
+
 EdgeTransform compute_edge_belief_transform(
     const liegroups::SE2 &local_from_robot, const Eigen::Vector2d &end_state_in_local,
     const EkfSlamConfig &ekf_config, const EkfSlamEstimate &ekf_estimate,
@@ -100,5 +106,9 @@ planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap
                                                          const EkfSlam &ekf,
                                                          const std::vector<int> &present_beacons,
                                                          const TransformType transform_type);
+
+planning::BeliefUpdater<LandmarkRobotBelief> make_landmark_belief_updater(
+    const planning::RoadMap &road_map, const double max_sensor_range_m, const EkfSlam &ekf,
+    const BeaconPotential &beacon_potential, const TransformType transform_type);
 
 }  // namespace robot::experimental::beacon_sim

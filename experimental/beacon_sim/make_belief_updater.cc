@@ -3,6 +3,7 @@
 
 #include "common/geometry/nearest_point_on_segment.hh"
 #include "common/math/redheffer_star.hh"
+#include "experimental/beacon_sim/robot_belief.hh"
 
 namespace robot::experimental::beacon_sim {
 namespace {
@@ -278,6 +279,22 @@ EdgeTransform compute_edge_belief_transform(
     };
 }
 
+std::tuple<liegroups::SE2, std::vector<std::tuple<std::string, TypedTransform>>> compute_edge_belief_transform(
+    const liegroups::SE2 &local_from_robot, const Eigen::Vector2d &end_state_in_local,
+    const EkfSlamConfig &ekf_config, const EkfSlamEstimate &ekf_estimate,
+    const BeaconPotential &beacon_potential, const double max_sensor_range_m,
+    const TransformType transform_type) {
+    (void)local_from_robot;
+    (void)end_state_in_local;
+    (void)ekf_config;
+    (void)ekf_estimate;
+    (void)beacon_potential;
+    (void)max_sensor_range_m;
+    (void)transform_type;
+
+    return {};
+}
+
 std::tuple<liegroups::SE2, TypedTransform> compute_edge_belief_transform(
     const liegroups::SE2 &local_from_robot, const Eigen::Vector2d &end_state_in_local,
     const EkfSlamConfig &ekf_config, const EkfSlamEstimate &ekf_estimate,
@@ -473,6 +490,71 @@ planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap
                 .cov_in_robot = info_in_robot.inverse(),
             };
         }
+    };
+}
+
+planning::BeliefUpdater<LandmarkRobotBelief> make_landmark_belief_updater(
+    const planning::RoadMap &road_map, const double max_sensor_range_m, const EkfSlam &ekf,
+    const BeaconPotential &beacon_potential, const TransformType type) {
+    std::unordered_map<DirectedEdge,
+                       std::tuple<liegroups::SE2, std::vector<std::tuple<std::string, TypedTransform>>>,
+                       DirectedEdgeHash>
+        edge_transform_cache;
+
+    return [&road_map, max_sensor_range_m, &ekf,
+            edge_transform_cache = std::move(edge_transform_cache), &beacon_potential,
+            type](const LandmarkRobotBelief &initial_belief, const int start_idx,
+                  const int end_idx) mutable -> LandmarkRobotBelief {
+        (void)beacon_potential;
+        // Get the belief edge transform, optionally updating the cache
+        const DirectedEdge edge = {
+            .source = start_idx,
+            .destination = end_idx,
+            .initial_heading_in_local = initial_belief.local_from_robot.so2().log(),
+        };
+        const auto cache_iter = edge_transform_cache.find(edge);
+        const bool is_in_cache = cache_iter != edge_transform_cache.end();
+        const auto end_pos_in_local = road_map.point(end_idx);
+        const auto &[local_from_new_robot, edge_transform] =
+            is_in_cache ? cache_iter->second
+                        : compute_edge_belief_transform(
+                              initial_belief.local_from_robot, end_pos_in_local, ekf.config(),
+                              ekf.estimate(), beacon_potential, max_sensor_range_m, type);
+        if (!is_in_cache) {
+            // Add the transform to the cache in case it's missing
+            edge_transform_cache[edge] = std::make_tuple(local_from_new_robot, edge_transform);
+        }
+
+        // Compute the new covariance
+        // [- new_cov] = [I cov] * edge_transform
+        // [-       -]   [0   I]
+        // new_cov  = A * B^-1
+        // const int cov_dim = initial_belief.cov_in_robot.rows();
+        // Eigen::MatrixXd input = Eigen::MatrixXd::Identity(2 * cov_dim, 2 * cov_dim);
+        // if (type == TransformType::COVARIANCE) {
+        //     input.topRightCorner(cov_dim, cov_dim) = initial_belief.cov_in_robot;
+        // } else {
+        //     input.topRightCorner(cov_dim, cov_dim) = initial_belief.cov_in_robot.inverse();
+        // }
+
+        // if (type == TransformType::COVARIANCE) {
+        //     const ScatteringTransformBase result = math::redheffer_star(
+        //         input, std::get<ScatteringTransform<TransformType::COVARIANCE>>(edge_transform));
+        //     const Eigen::MatrixXd cov_in_robot = result.topRightCorner(cov_dim, cov_dim);
+        //     return RobotBelief{
+        //         .local_from_robot = local_from_new_robot,
+        //         .cov_in_robot = cov_in_robot,
+        //     };
+        // } else {
+        //     const ScatteringTransformBase result = math::redheffer_star(
+        //         input, std::get<ScatteringTransform<TransformType::INFORMATION>>(edge_transform));
+        //     const Eigen::MatrixXd info_in_robot = result.topRightCorner(cov_dim, cov_dim);
+        //     return RobotBelief{
+        //         .local_from_robot = local_from_new_robot,
+        //         .cov_in_robot = info_in_robot.inverse(),
+        //     };
+        // }
+        return LandmarkRobotBelief{};
     };
 }
 
