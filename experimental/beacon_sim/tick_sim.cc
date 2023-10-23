@@ -6,6 +6,10 @@
 #include "common/time/robot_time_to_proto.hh"
 #include "experimental/beacon_sim/beacon_observation_to_proto.hh"
 #include "experimental/beacon_sim/ekf_slam_estimate_to_proto.hh"
+#include "experimental/beacon_sim/generate_observations.hh"
+#include "experimental/beacon_sim/information_lower_bound_planner.hh"
+#include "experimental/beacon_sim/information_lower_bound_search.hh"
+#include "experimental/beacon_sim/sim_config.hh"
 
 namespace robot::experimental::beacon_sim {
 namespace {
@@ -52,6 +56,37 @@ std::optional<RobotCommand> compute_command_from_plan(const time::RobotTimestamp
     }
     return std::nullopt;
 }
+
+std::optional<planning::BRMPlan<RobotBelief>> run_brm_planner(const BeaconSimState &state,
+                                                              const bool allow_brm_backtracking,
+                                                              const ObservationConfig &obs_config) {
+    constexpr double UNCERTAINTY_TOLERANCE = 0.1;
+    std::cout << "Starting to Plan" << std::endl;
+    const BeliefRoadMapOptions options = {
+        .max_sensor_range_m = obs_config.max_sensor_range_m.value(),
+        .uncertainty_tolerance =
+            allow_brm_backtracking ? std::make_optional(UNCERTAINTY_TOLERANCE) : std::nullopt,
+        .max_num_edge_transforms = 1000,
+    };
+    const auto brm_plan = compute_belief_road_map_plan(state.road_map, state.ekf,
+                                                       state.map.beacon_potential(), options);
+    std::cout << "plan complete" << std::endl;
+    for (int idx = 0; idx < static_cast<int>(brm_plan->nodes.size()); idx++) {
+        std::cout << idx << " " << brm_plan->nodes.at(idx) << " "
+                  << brm_plan->beliefs.at(idx).local_from_robot.translation().transpose()
+                  << " cov det: " << brm_plan->beliefs.at(idx).cov_in_robot.determinant()
+                  << std::endl;
+    }
+    return brm_plan;
+}
+
+std::optional<planning::BRMPlan<RobotBelief>> run_info_lower_bound_planner(
+    const BeaconSimState &state, const double max_sensor_range_m,
+    const double info_lower_bound_at_goal) {
+    return compute_info_lower_bound_plan(state.road_map, state.ekf, info_lower_bound_at_goal,
+                                         max_sensor_range_m);
+}
+
 }  // namespace
 
 proto::BeaconSimDebug tick_sim(const SimConfig &config, const RobotCommand &command,
@@ -62,7 +97,7 @@ proto::BeaconSimDebug tick_sim(const SimConfig &config, const RobotCommand &comm
     };
 
     RobotCommand next_command = command;
-    if (config.enable_brm_planner) {
+    if (config.enable_brm_planner || config.enable_info_lower_bound_planner) {
         // Plan
         const bool have_plan = state->plan.has_value();
         const bool have_goal = state->goal.has_value();
@@ -70,31 +105,26 @@ proto::BeaconSimDebug tick_sim(const SimConfig &config, const RobotCommand &comm
             have_goal && (!have_plan || (have_plan && state->goal->time_of_validity >
                                                           state->plan->time_of_validity));
         if (should_plan) {
-            constexpr int NUM_START_CONNECTIONS = 6;
-            constexpr int NUM_GOAL_CONNECTIONS = 6;
-            constexpr double UNCERTAINTY_TOLERANCE = 0.1;
-            std::cout << "Starting to Plan" << std::endl;
-            const BeliefRoadMapOptions options = {
-                .max_sensor_range_m = OBS_CONFIG.max_sensor_range_m.value(),
-                .num_start_connections = NUM_START_CONNECTIONS,
-                .num_goal_connections = NUM_GOAL_CONNECTIONS,
-                .uncertainty_tolerance = config.allow_brm_backtracking
-                                             ? std::make_optional(UNCERTAINTY_TOLERANCE)
-                                             : std::nullopt,
-                .max_num_edge_transforms = 1000,
-            };
-            const auto brm_plan = compute_belief_road_map_plan(state->road_map, state->ekf,
-                                                               state->map.beacon_potential(),
-                                                               state->goal->goal_position, options);
-            std::cout << "plan complete" << std::endl;
-            for (int idx = 0; idx < static_cast<int>(brm_plan->nodes.size()); idx++) {
-                std::cout << idx << " " << brm_plan->nodes.at(idx) << " "
-                          << brm_plan->beliefs.at(idx).local_from_robot.translation().transpose()
-                          << " cov det: " << brm_plan->beliefs.at(idx).cov_in_robot.determinant()
-                          << std::endl;
+            state->road_map.add_start_goal(
+                {.start = state->ekf.estimate().local_from_robot().translation(),
+                 .goal = state->goal->goal_position,
+                 .connection_radius_m = 5.0});
+            if (config.enable_brm_planner) {
+                const auto maybe_plan =
+                    run_brm_planner(*state, config.allow_brm_backtracking, OBS_CONFIG);
+                if (maybe_plan.has_value()) {
+                    state->plan = {.time_of_validity = state->time_of_validity,
+                                   .brm_plan = maybe_plan.value()};
+                }
+            } else if (config.enable_info_lower_bound_planner) {
+                const auto maybe_plan =
+                    run_info_lower_bound_planner(*state, OBS_CONFIG.max_sensor_range_m.value(),
+                                                 config.info_lower_bound_at_goal.value());
+                if (maybe_plan.has_value()) {
+                    state->plan = {.time_of_validity = state->time_of_validity,
+                                   .brm_plan = maybe_plan.value()};
+                }
             }
-            state->plan = {.time_of_validity = state->time_of_validity,
-                           .brm_plan = brm_plan.value()};
         }
         if (state->plan.has_value()) {
             // Figure out which which node we should be targeting

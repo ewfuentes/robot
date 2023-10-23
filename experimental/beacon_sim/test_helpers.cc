@@ -18,6 +18,9 @@ MappedLandmarks create_grid_mapped_landmarks() {
 }
 
 planning::RoadMap create_grid_road_map() {
+    const Eigen::Vector2d START_STATE{0.0, 10.0};
+    const Eigen::Vector2d GOAL_STATE{10.0, -5.0};
+    const double CONNECTION_RADIUS_M = 6.0;
     constexpr double NODE_SPACING_M = 5.0;
     constexpr int NUM_ROWS = 3;
     constexpr int NUM_COLS = 3;
@@ -50,10 +53,12 @@ planning::RoadMap create_grid_road_map() {
             }
         }
     }
-    return planning::RoadMap{
-        .points = std::move(points),
-        .adj = std::move(adj),
-    };
+    return planning::RoadMap(std::move(points), std::move(adj),
+                             {{
+                                 .start = START_STATE,
+                                 .goal = GOAL_STATE,
+                                 .connection_radius_m = CONNECTION_RADIUS_M,
+                             }});
 }
 
 std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_grid_environment(
@@ -140,10 +145,10 @@ MappedLandmarks create_diamond_mapped_landmarks() {
 }
 
 planning::RoadMap create_diamond_road_map() {
-    return {
-        .points = {{0.0, 0.0}, {0.0, 5.0}, {5.0, 0.0}, {5.0, 5.0}},
-        .adj = (Eigen::MatrixXd(4, 4) << 0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0).finished(),
-    };
+    return planning::RoadMap(
+        {{0.0, 0.0}, {0.0, 5.0}, {5.0, 0.0}, {5.0, 5.0}},
+        (Eigen::MatrixXd(4, 4) << 0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0).finished(),
+        {{.start = {-2.0, 0.0}, .goal = {7.0, 5.0}, .connection_radius_m = 3.0}});
 }
 
 std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_diamond_environment(

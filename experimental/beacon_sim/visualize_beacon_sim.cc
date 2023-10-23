@@ -151,10 +151,10 @@ void visualize_beacon_sim(const BeaconSimState &state, const double zoom_factor,
     }
 
     // Draw Road map
-    int num_points = state.road_map.points.size();
+    int num_points = state.road_map.points().size();
     for (int i = 0; i < num_points; i++) {
         // Draw the node
-        const Eigen::Vector2d &pt = state.road_map.points.at(i);
+        const Eigen::Vector2d &pt = state.road_map.point(i);
         glPushMatrix();
         const liegroups::SE3 local_from_node = se3_from_se2(liegroups::SE2::trans(pt));
         glMultMatrixd(local_from_node.matrix().data());
@@ -171,9 +171,9 @@ void visualize_beacon_sim(const BeaconSimState &state, const double zoom_factor,
         glPopMatrix();  // Pop from road map node frame to world frame
 
         for (int j = i + 1; j < num_points; j++) {
-            if (state.road_map.adj(i, j)) {
+            if (state.road_map.adj()(i, j)) {
                 // Draw an edge between the two points
-                const Eigen::Vector2d other_pt = state.road_map.points.at(j);
+                const Eigen::Vector2d other_pt = state.road_map.point(j);
                 glColor3f(0.4, 0.4, 0.4);
                 glBegin(GL_LINES);
                 glVertex2d(pt.x(), pt.y());
@@ -190,9 +190,8 @@ void visualize_beacon_sim(const BeaconSimState &state, const double zoom_factor,
         glBegin(GL_LINE_STRIP);
         for (int plan_idx = 0; plan_idx < static_cast<int>(plan.brm_plan.nodes.size());
              plan_idx++) {
-            const liegroups::SE2 &local_from_planned_robot =
-                plan.brm_plan.beliefs.at(plan_idx).local_from_robot;
-            const Eigen::Vector2d point_in_local = local_from_planned_robot.translation();
+            const Eigen::Vector2d point_in_local =
+                state.road_map.point(plan.brm_plan.nodes.at(plan_idx));
             glVertex3d(point_in_local.x(), point_in_local.y(), 0.25);
         }
         glEnd();

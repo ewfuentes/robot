@@ -1,7 +1,7 @@
 
 #pragma once
 
-#include "planning/probabilistic_road_map.hh"
+#include "planning/road_map.hh"
 #include "planning/road_map.pb.h"
 
 namespace robot::planning::proto {

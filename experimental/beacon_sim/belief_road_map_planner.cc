@@ -26,48 +26,24 @@
 #include "planning/belief_road_map.hh"
 #include "planning/breadth_first_search.hh"
 #include "planning/probabilistic_road_map.hh"
+#include "planning/road_map.hh"
 
 namespace robot::experimental::beacon_sim {
 namespace {
 
-std::vector<std::vector<int>> find_paths(const Eigen::Vector2d start_in_local,
-                                         const Eigen::Vector2d goal_in_local,
-                                         const planning::RoadMap &road_map,
-                                         [[maybe_unused]] const double max_path_length_ratio,
-                                         const double start_goal_connection_radius_m) {
-    constexpr int START_IDX = -1;
-    constexpr int GOAL_IDX = -2;
-
+std::vector<std::vector<int>> find_paths(const planning::RoadMap &road_map,
+                                         const double max_path_length_ratio) {
     const planning::SuccessorFunc<int> successors_func =
-        [&road_map, start_goal_connection_radius_m, start_in_local,
-         goal_in_local](const int &node_idx) -> std::vector<planning::Successor<int>> {
-        if (node_idx == GOAL_IDX) {
+        [&road_map](const int &node_idx) -> std::vector<planning::Successor<int>> {
+        if (node_idx == planning::RoadMap::GOAL_IDX) {
             return {};
         }
 
         std::vector<planning::Successor<int>> out;
-        if (node_idx == START_IDX) {
-            for (int i = 0; i < static_cast<int>(road_map.points.size()); i++) {
-                const Eigen::Vector2d &pt_in_local = road_map.points.at(i);
-                const double dist_m = (pt_in_local - start_in_local).norm();
-                if (dist_m < start_goal_connection_radius_m) {
-                    out.push_back({.state = i, .edge_cost = dist_m});
-                }
-            }
-        } else {
-            const Eigen::Vector2d &curr_pt_in_local = road_map.points.at(node_idx);
-            for (int i = 0; i < static_cast<int>(road_map.points.size()); i++) {
-                if (road_map.adj(i, node_idx)) {
-                    const Eigen::Vector2d &other_in_local = road_map.points.at(i);
-                    const double dist_m = (curr_pt_in_local - other_in_local).norm();
-                    out.push_back({.state = i, .edge_cost = dist_m});
-                }
-            }
-
-            const double dist_to_goal_m = (curr_pt_in_local - goal_in_local).norm();
-            if (dist_to_goal_m < start_goal_connection_radius_m) {
-                out.push_back({.state = GOAL_IDX, .edge_cost = dist_to_goal_m});
-            }
+        const Eigen::Vector2d curr_pt_in_local = road_map.point(node_idx);
+        for (const auto &[other_node_id, other_in_local] : road_map.neighbors(node_idx)) {
+            const double dist_m = (curr_pt_in_local - other_in_local).norm();
+            out.push_back({.state = other_node_id, .edge_cost = dist_m});
         }
         return out;
     };
@@ -75,18 +51,18 @@ std::vector<std::vector<int>> find_paths(const Eigen::Vector2d start_in_local,
     std::optional<double> shortest_path_length = std::nullopt;
     std::vector<std::vector<int>> out;
     const planning::ShouldQueueFunc<int> should_queue_func =
-        [&shortest_path_length, max_path_length_ratio, &road_map, &goal_in_local, &out](
+        [&shortest_path_length, max_path_length_ratio, &road_map, &out](
             const planning::Successor<int> &successor, const int parent_idx,
             const std::vector<planning::Node<int>> &node_list) mutable {
             // Compute the cost so far
             const double path_length_m = node_list.at(parent_idx).cost + successor.edge_cost;
             // Compute a lower bound on distance to goal
             const double estimated_dist_to_goal_m = [&]() {
-                if (successor.state == GOAL_IDX) {
+                if (successor.state == planning::RoadMap::GOAL_IDX) {
                     return 0.0;
                 }
-                const Eigen::Vector2d &pt_in_local = road_map.points.at(successor.state);
-                return (goal_in_local - pt_in_local).norm();
+                const Eigen::Vector2d &pt_in_local = road_map.point(successor.state);
+                return (road_map.point(planning::RoadMap::GOAL_IDX) - pt_in_local).norm();
             }();
 
             const double threshold_m = shortest_path_length.has_value()
@@ -96,13 +72,13 @@ std::vector<std::vector<int>> find_paths(const Eigen::Vector2d start_in_local,
                 return planning::ShouldQueueResult::SKIP;
             }
 
-            if (successor.state == GOAL_IDX) {
+            if (successor.state == planning::RoadMap::GOAL_IDX) {
                 if (!shortest_path_length.has_value() ||
                     path_length_m < shortest_path_length.value()) {
                     shortest_path_length = path_length_m;
                 }
                 // collect the path
-                std::vector<int> new_path = {GOAL_IDX};
+                std::vector<int> new_path = {planning::RoadMap::GOAL_IDX};
                 std::optional<int> maybe_idx = parent_idx;
                 while (maybe_idx.has_value()) {
                     const planning::Node<int> &n = node_list.at(maybe_idx.value());
@@ -123,8 +99,8 @@ std::vector<std::vector<int>> find_paths(const Eigen::Vector2d start_in_local,
         return std::nullopt;
     };
 
-    planning::breadth_first_search(START_IDX, successors_func, should_queue_func, goal_check_func,
-                                   identify_end_func);
+    planning::breadth_first_search(planning::RoadMap::START_IDX, successors_func, should_queue_func,
+                                   goal_check_func, identify_end_func);
 
     return out;
 }
@@ -140,12 +116,12 @@ Eigen::Matrix3d evaluate_path(const std::vector<int> &path, const RobotBelief &i
 }
 
 std::vector<Eigen::Matrix3d> evaluate_paths_with_configuration(
-    const std::vector<std::vector<int>> &paths, const Eigen::Vector2d &goal_in_local,
-    const EkfSlam &ekf, const planning::RoadMap &road_map, const double max_sensor_range_m,
+    const std::vector<std::vector<int>> &paths, const EkfSlam &ekf,
+    const planning::RoadMap &road_map, const double max_sensor_range_m,
     const std::vector<int> &present_beacons) {
     // Make a belief updater that only considers the present beacons
-    const auto updater = make_belief_updater(road_map, goal_in_local, max_sensor_range_m, ekf,
-                                             present_beacons, TransformType::COVARIANCE);
+    const auto updater = make_belief_updater(road_map, max_sensor_range_m, ekf, present_beacons,
+                                             TransformType::COVARIANCE);
 
     const RobotBelief initial_belief = {
         .local_from_robot = ekf.estimate().local_from_robot(),
@@ -160,7 +136,6 @@ std::vector<Eigen::Matrix3d> evaluate_paths_with_configuration(
 }
 
 std::vector<Eigen::Matrix3d> evaluate_paths(std::vector<std::vector<int>> &paths,
-                                            const Eigen::Vector2d &goal_in_local,
                                             const EkfSlam &ekf, const planning::RoadMap &road_map,
                                             const double max_sensor_range_m,
                                             const BeaconPotential &potential) {
@@ -184,7 +159,7 @@ std::vector<Eigen::Matrix3d> evaluate_paths(std::vector<std::vector<int>> &paths
 
             // Compute the covariance for each path
             std::vector<Eigen::Matrix3d> covs_for_config = evaluate_paths_with_configuration(
-                paths, goal_in_local, ekf, road_map, max_sensor_range_m, present_beacons);
+                paths, ekf, road_map, max_sensor_range_m, present_beacons);
 
             for (int i = 0; i < static_cast<int>(covs_for_config.size()); i++) {
                 expected_covs.at(i) += p * covs_for_config.at(i);
@@ -222,40 +197,36 @@ bool operator==(const RobotBelief &a, const RobotBelief &b) {
 
 std::optional<planning::BRMPlan<RobotBelief>> compute_belief_road_map_plan(
     const planning::RoadMap &road_map, const EkfSlam &ekf, const BeaconPotential &beacon_potential,
-    const Eigen::Vector2d &goal_state, const BeliefRoadMapOptions &options) {
+    const BeliefRoadMapOptions &options) {
     const auto &estimate = ekf.estimate();
 
     const RobotBelief initial_belief = {
         .local_from_robot = estimate.local_from_robot(),
         .cov_in_robot = estimate.robot_cov(),
     };
-    const auto belief_updater = make_belief_updater(
-        road_map, goal_state, options.max_sensor_range_m, options.max_num_edge_transforms, ekf,
-        beacon_potential, TransformType::COVARIANCE);
+    const auto belief_updater =
+        make_belief_updater(road_map, options.max_sensor_range_m, options.max_num_edge_transforms,
+                            ekf, beacon_potential, TransformType::COVARIANCE);
     if (options.uncertainty_tolerance.has_value()) {
         return planning::plan<RobotBelief>(
-            road_map, initial_belief, belief_updater, goal_state, options.num_start_connections,
-            options.num_goal_connections,
+            road_map, initial_belief, belief_updater,
             planning::MinUncertaintyToleranceOptions{options.uncertainty_tolerance.value()});
     } else {
-        return planning::plan<RobotBelief>(
-            road_map, initial_belief, belief_updater, goal_state, options.num_start_connections,
-            options.num_goal_connections, planning::NoBacktrackingOptions{});
+        return planning::plan<RobotBelief>(road_map, initial_belief, belief_updater,
+                                           planning::NoBacktrackingOptions{});
     }
 }
 
 ExpectedBeliefPlanResult compute_expected_belief_road_map_plan(
     const planning::RoadMap &road_map, const EkfSlam &ekf, const BeaconPotential &beacon_potential,
-    const Eigen::Vector2d &goal_state, const ExpectedBeliefRoadMapOptions &options) {
+    const ExpectedBeliefRoadMapOptions &options) {
     // Find paths that are at most options.max_path_length_ratio times longer than the shortest path
-    std::vector<std::vector<int>> paths =
-        find_paths(ekf.estimate().local_from_robot().translation(), goal_state, road_map,
-                   options.max_path_length_ratio, options.start_goal_connection_radius_m);
+    std::vector<std::vector<int>> paths = find_paths(road_map, options.max_path_length_ratio);
 
     // Now that we have the expected paths, evaluate each path across all configurations
 
-    const std::vector<Eigen::Matrix3d> expected_covs = evaluate_paths(
-        paths, goal_state, ekf, road_map, options.max_sensor_range_m, beacon_potential);
+    const std::vector<Eigen::Matrix3d> expected_covs =
+        evaluate_paths(paths, ekf, road_map, options.max_sensor_range_m, beacon_potential);
 
     for (int i = 0; i < static_cast<int>(paths.size()); i++) {
         std::cout << "[";

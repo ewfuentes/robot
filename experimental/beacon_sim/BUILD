@@ -18,11 +18,14 @@ cc_library(
     "//common:argument_wrapper",
     "//common/time:robot_time_to_proto",
     "//common/liegroups:se2_to_proto",
+    ":belief_road_map_planner",
     ":beacon_sim_state",
+    ":information_lower_bound_search",
     ":sim_config",
     ":beacon_sim_debug_proto",
     ":ekf_slam_estimate_to_proto",
     ":beacon_observation_to_proto",
+    ":information_lower_bound_planner",
   ]
 )
 
@@ -363,6 +366,7 @@ cc_test(
   deps = [
     ":belief_road_map_planner",
     ":test_helpers",
+    "//common:check",
     "@com_google_googletest//:gtest_main",
   ],
 )
@@ -517,6 +521,26 @@ cc_test(
 )
 
 cc_library(
+  name = "make_eigen_bounds",
+  srcs = ["make_eigen_bounds.cc"],
+  hdrs = ["make_eigen_bounds.hh"],
+  deps = [
+    "@eigen",
+    ":make_belief_updater"
+  ]
+)
+
+cc_test(
+  name = "make_eigen_bounds_test",
+  srcs = ["make_eigen_bounds_test.cc"],
+  deps = [
+    ":make_eigen_bounds",
+    ":test_helpers",
+    "@com_google_googletest//:gtest_main",
+  ]
+)
+
+cc_library(
   name = "robot_belief",
   hdrs = ["robot_belief.hh"],
   deps = [
@@ -543,7 +567,6 @@ cc_library(
     deps = [
       ":robot_belief",
       ":make_belief_updater",
-      "//planning:probabilistic_road_map",
     ]
 )
 
@@ -555,4 +578,37 @@ cc_test(
       ":test_helpers",
       "@com_google_googletest//:gtest_main",
     ]
+)
+
+cc_library(
+    name = "information_lower_bound_search",
+    hdrs = ["information_lower_bound_search.hh"],
+    srcs = ["information_lower_bound_search.cc"],
+    deps = [
+      "@eigen",
+      "//common:check",
+      "//planning:probabilistic_road_map",
+    ]
+)
+
+cc_test(
+    name = "information_lower_bound_search_test",
+    srcs = ["information_lower_bound_search_test.cc"],
+    deps = [
+      ":information_lower_bound_search",
+      "@com_google_googletest//:gtest_main",
+    ]
+)
+
+cc_library(
+  name = "information_lower_bound_planner",
+  hdrs = ["information_lower_bound_planner.hh"],
+  srcs = ["information_lower_bound_planner.cc"],
+  deps = [
+    ":ekf_slam",
+    ":information_lower_bound_search",
+    ":make_eigen_bounds",
+    ":robot_belief",
+    "//planning:belief_road_map",
+  ]
 )

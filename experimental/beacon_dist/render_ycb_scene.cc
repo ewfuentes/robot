@@ -266,7 +266,8 @@ SceneData load_ycb_objects(
     drake::multibody::Parser parser(&plant, &scene_graph);
 
     for (const auto &[name, path] : names_and_paths) {
-        parser.AddModelFromFile(path, name);
+        const auto index_list = parser.AddModels(path);
+        plant.RenameModelInstance(index_list.front(), name);
         object_list.push_back(name);
     }
 

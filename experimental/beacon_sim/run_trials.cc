@@ -191,8 +191,6 @@ void run_trials(const TrialsConfig &config) {
     constexpr double BEACON_SPACING_M = MAX_X_M / 3.0;
     constexpr double ROAD_MAP_OFFSET_M = 5.0;
     constexpr double MAX_SENSOR_RANGE_M = 5.0;
-    constexpr int NUM_START_CONNECTIONS = 1;
-    constexpr int NUM_GOAL_CONNECTIONS = 1;
     constexpr double UNCERTAINTY_TOLERANCE = 0.01;
 
     struct Map {
@@ -219,13 +217,11 @@ void run_trials(const TrialsConfig &config) {
     std::cout << "Starting to plan: " << std::endl;
     const BeliefRoadMapOptions options = {
         .max_sensor_range_m = MAX_SENSOR_RANGE_M,
-        .num_start_connections = NUM_START_CONNECTIONS,
-        .num_goal_connections = NUM_GOAL_CONNECTIONS,
         .uncertainty_tolerance = UNCERTAINTY_TOLERANCE,
         .max_num_edge_transforms = 1000,
     };
     const auto plan = compute_belief_road_map_plan(
-        road_map, ekf, WorldMap(base_map_config).beacon_potential(), config.goal_position, options);
+        road_map, ekf, WorldMap(base_map_config).beacon_potential(), options);
 
     // Cycle through all possible assignments to beacon presence
     time::RobotTimestamp start = time::current_robot_time();
@@ -238,6 +234,8 @@ void run_trials(const TrialsConfig &config) {
         .load_off_diagonals = false,
         .enable_brm_planner = true,
         .allow_brm_backtracking = true,
+        .enable_info_lower_bound_planner = false,
+        .info_lower_bound_at_goal = {},
         .autostep = false,
         .correlated_beacons_configuration = {},
     };

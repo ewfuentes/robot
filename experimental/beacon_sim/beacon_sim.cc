@@ -5,6 +5,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <random>
 #include <thread>
 #include <utility>
@@ -503,6 +504,14 @@ void run_simulation(const SimConfig &sim_config) {
 }
 }  // namespace robot::experimental::beacon_sim
 
+namespace {
+template <typename T>
+std::optional<T> arg_or_null(const auto &args, const std::string &field_name) {
+    return args.count(field_name) ? std::make_optional(args[field_name].template as<T>())
+                                  : std::nullopt;
+}
+}  // namespace
+
 int main(int argc, char **argv) {
     const std::string DEFAULT_LOG_LOCATION = "/tmp/beacon_sim.pb";
     const std::string DEFAULT_MAP_SAVE_LOCATION = "/tmp/beacon_sim_map.pb";
@@ -515,8 +524,10 @@ int main(int argc, char **argv) {
       ("map_input_path", "Path to load map file from", cxxopts::value<std::string>()->default_value(DEFAULT_MAP_LOAD_LOCATION))
       ("load_off_diagonals", "Whether off diagonal terms should be loaded from map")
       ("enable_brm_planner", "Generate BRM plan after each step")
-      ("autostep", "automatically step the sim")
       ("allow_brm_backtracking", "Allow backtracking in BRM")
+      ("enable_info_lower_bound_planner", "Use the information lower bound planner")
+      ("info_lower_bound_at_goal", "Acceptable min eigenvalue of information at goal", cxxopts::value<double>())
+      ("autostep", "automatically step the sim")
       ("correlated_beacons_config", "Desired Beacon Configuration. The ith beacon is present if the ith bit is set",
            cxxopts::value<int>())
       ("help", "Print usage");
@@ -527,23 +538,17 @@ int main(int argc, char **argv) {
         std::cout << options.help() << std::endl;
         std::exit(0);
     }
-    robot::experimental::beacon_sim::run_simulation({
-        .log_path = args.count("log_file") ? std::make_optional(args["log_file"].as<std::string>())
-                                           : std::nullopt,
-        .map_input_path = args.count("map_input_path")
-                              ? std::make_optional(args["map_input_path"].as<std::string>())
-                              : std::nullopt,
-        .map_output_path = args.count("map_output_path")
-                               ? std::make_optional(args["map_output_path"].as<std::string>())
-                               : std::nullopt,
-        .dt = 25ms,
-        .load_off_diagonals = args["load_off_diagonals"].as<bool>(),
-        .enable_brm_planner = args["enable_brm_planner"].as<bool>(),
-        .allow_brm_backtracking = args["allow_brm_backtracking"].as<bool>(),
-        .autostep = args["autostep"].as<bool>(),
-        .correlated_beacons_configuration =
-            args.count("correlated_beacons_config")
-                ? std::make_optional(args["correlated_beacons_config"].as<int>())
-                : std::nullopt,
-    });
+
+    robot::experimental::beacon_sim::run_simulation(
+        {.log_path = arg_or_null<std::string>(args, "log_file"),
+         .map_input_path = arg_or_null<std::string>(args, "map_input_path"),
+         .map_output_path = arg_or_null<std::string>(args, "map_output_path"),
+         .dt = 25ms,
+         .load_off_diagonals = args["load_off_diagonals"].as<bool>(),
+         .enable_brm_planner = args["enable_brm_planner"].as<bool>(),
+         .allow_brm_backtracking = args["allow_brm_backtracking"].as<bool>(),
+         .enable_info_lower_bound_planner = args["enable_info_lower_bound_planner"].as<bool>(),
+         .info_lower_bound_at_goal = arg_or_null<double>(args, "info_lower_bound_at_goal"),
+         .autostep = args["autostep"].as<bool>(),
+         .correlated_beacons_configuration = arg_or_null<int>(args, "correlated_beacons_config")});
 }

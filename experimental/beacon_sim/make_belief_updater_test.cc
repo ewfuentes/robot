@@ -6,7 +6,21 @@
 
 namespace robot::experimental::beacon_sim {
 
-TEST(MakeBeliefUpdaterTest, compute_edge_transform_no_measurements) {
+template <TransformType T>
+struct EnumValue {
+    static const TransformType value = T;
+};
+
+template <typename T>
+class MakeBeliefUpdaterTest : public ::testing::Test {
+    static const TransformType value = T::value;
+};
+
+using MyTypes =
+    ::testing::Types<EnumValue<TransformType::INFORMATION>, EnumValue<TransformType::COVARIANCE>>;
+TYPED_TEST_SUITE(MakeBeliefUpdaterTest, MyTypes);
+
+TYPED_TEST(MakeBeliefUpdaterTest, compute_edge_transform_no_measurements) {
     // Setup
     const EkfSlamConfig ekf_config{
         .max_num_beacons = 1,
@@ -28,21 +42,20 @@ TEST(MakeBeliefUpdaterTest, compute_edge_transform_no_measurements) {
 
     constexpr int START_NODE_IDX = 6;
     constexpr int END_NODE_IDX = 3;
-    const liegroups::SE2 local_from_robot =
-        liegroups::SE2::trans(road_map.points.at(START_NODE_IDX));
-    const Eigen::Vector2d end_pos = road_map.points.at(END_NODE_IDX);
+    const liegroups::SE2 local_from_robot = liegroups::SE2::trans(road_map.point(START_NODE_IDX));
+    const Eigen::Vector2d end_pos = road_map.point(END_NODE_IDX);
 
     // Action
     const auto edge_belief_transform = compute_edge_belief_transform(
         local_from_robot, end_pos, ekf_slam.config(), ekf_slam.estimate(), {}, MAX_SENSOR_RANGE_M,
-        MAX_NUM_TRANSFORMS, TransformType::COVARIANCE);
+        MAX_NUM_TRANSFORMS, TypeParam::value);
 
     // Verification
     EXPECT_EQ(edge_belief_transform.local_from_robot.translation().x(), end_pos.x());
     EXPECT_EQ(edge_belief_transform.local_from_robot.translation().y(), end_pos.y());
 }
 
-TEST(MakeBeliefUpdaterTest, compute_edge_transform_with_measurement) {
+TYPED_TEST(MakeBeliefUpdaterTest, compute_edge_transform_with_measurement) {
     // Setup
     const EkfSlamConfig ekf_config{
         .max_num_beacons = 1,
@@ -64,21 +77,20 @@ TEST(MakeBeliefUpdaterTest, compute_edge_transform_with_measurement) {
 
     constexpr int START_NODE_IDX = 3;
     constexpr int END_NODE_IDX = 0;
-    const liegroups::SE2 local_from_robot =
-        liegroups::SE2::trans(road_map.points.at(START_NODE_IDX));
-    const Eigen::Vector2d end_pos = road_map.points.at(END_NODE_IDX);
+    const liegroups::SE2 local_from_robot = liegroups::SE2::trans(road_map.point(START_NODE_IDX));
+    const Eigen::Vector2d end_pos = road_map.point(END_NODE_IDX);
 
     // Action
     const auto edge_belief_transform = compute_edge_belief_transform(
         local_from_robot, end_pos, ekf_slam.config(), ekf_slam.estimate(), {}, MAX_SENSOR_RANGE_M,
-        MAX_NUM_TRANSFORMS, TransformType::COVARIANCE);
+        MAX_NUM_TRANSFORMS, TypeParam::value);
 
     // Verification
     EXPECT_EQ(edge_belief_transform.local_from_robot.translation().x(), end_pos.x());
     EXPECT_EQ(edge_belief_transform.local_from_robot.translation().y(), end_pos.y());
 }
 
-TEST(MakeBeliefUpdaterTest, compute_edge_transform_no_measurements_information) {
+TYPED_TEST(MakeBeliefUpdaterTest, compute_edge_transform_no_measurements_information) {
     // Setup
     const EkfSlamConfig ekf_config{
         .max_num_beacons = 1,
@@ -100,21 +112,20 @@ TEST(MakeBeliefUpdaterTest, compute_edge_transform_no_measurements_information) 
 
     constexpr int START_NODE_IDX = 6;
     constexpr int END_NODE_IDX = 3;
-    const liegroups::SE2 local_from_robot =
-        liegroups::SE2::trans(road_map.points.at(START_NODE_IDX));
-    const Eigen::Vector2d end_pos = road_map.points.at(END_NODE_IDX);
+    const liegroups::SE2 local_from_robot = liegroups::SE2::trans(road_map.point(START_NODE_IDX));
+    const Eigen::Vector2d end_pos = road_map.point(END_NODE_IDX);
 
     // Action
     const auto edge_belief_transform = compute_edge_belief_transform(
         local_from_robot, end_pos, ekf_slam.config(), ekf_slam.estimate(), {}, MAX_SENSOR_RANGE_M,
-        MAX_NUM_TRANSFORMS, TransformType::INFORMATION);
+        MAX_NUM_TRANSFORMS, TypeParam::value);
 
     // Verification
     EXPECT_EQ(edge_belief_transform.local_from_robot.translation().x(), end_pos.x());
     EXPECT_EQ(edge_belief_transform.local_from_robot.translation().y(), end_pos.y());
 }
 
-TEST(MakeBeliefUpdaterTest, compute_edge_transform_with_measurement_information) {
+TYPED_TEST(MakeBeliefUpdaterTest, compute_edge_transform_with_measurement_information) {
     // Setup
     const EkfSlamConfig ekf_config{
         .max_num_beacons = 1,
@@ -136,9 +147,8 @@ TEST(MakeBeliefUpdaterTest, compute_edge_transform_with_measurement_information)
 
     constexpr int START_NODE_IDX = 3;
     constexpr int END_NODE_IDX = 0;
-    const liegroups::SE2 local_from_robot =
-        liegroups::SE2::trans(road_map.points.at(START_NODE_IDX));
-    const Eigen::Vector2d end_pos = road_map.points.at(END_NODE_IDX);
+    const liegroups::SE2 local_from_robot = liegroups::SE2::trans(road_map.point(START_NODE_IDX));
+    const Eigen::Vector2d end_pos = road_map.point(END_NODE_IDX);
 
     // Action
     const auto edge_belief_transform = compute_edge_belief_transform(
