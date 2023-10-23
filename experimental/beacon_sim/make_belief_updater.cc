@@ -279,11 +279,12 @@ EdgeTransform compute_edge_belief_transform(
     };
 }
 
-std::tuple<liegroups::SE2, std::vector<std::tuple<std::string, TypedTransform>>> compute_edge_belief_transform(
-    const liegroups::SE2 &local_from_robot, const Eigen::Vector2d &end_state_in_local,
-    const EkfSlamConfig &ekf_config, const EkfSlamEstimate &ekf_estimate,
-    const BeaconPotential &beacon_potential, const double max_sensor_range_m,
-    const TransformType transform_type) {
+std::tuple<liegroups::SE2, std::vector<std::tuple<std::string, TypedTransform>>>
+compute_edge_belief_transform(const liegroups::SE2 &local_from_robot,
+                              const Eigen::Vector2d &end_state_in_local,
+                              const EkfSlamConfig &ekf_config, const EkfSlamEstimate &ekf_estimate,
+                              const BeaconPotential &beacon_potential,
+                              const double max_sensor_range_m, const TransformType transform_type) {
     (void)local_from_robot;
     (void)end_state_in_local;
     (void)ekf_config;
@@ -496,9 +497,10 @@ planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap
 planning::BeliefUpdater<LandmarkRobotBelief> make_landmark_belief_updater(
     const planning::RoadMap &road_map, const double max_sensor_range_m, const EkfSlam &ekf,
     const BeaconPotential &beacon_potential, const TransformType type) {
-    std::unordered_map<DirectedEdge,
-                       std::tuple<liegroups::SE2, std::vector<std::tuple<std::string, TypedTransform>>>,
-                       DirectedEdgeHash>
+    std::unordered_map<
+        DirectedEdge,
+        std::tuple<liegroups::SE2, std::vector<std::tuple<std::string, TypedTransform>>>,
+        DirectedEdgeHash>
         edge_transform_cache;
 
     return [&road_map, max_sensor_range_m, &ekf,
@@ -547,7 +549,8 @@ planning::BeliefUpdater<LandmarkRobotBelief> make_landmark_belief_updater(
         //     };
         // } else {
         //     const ScatteringTransformBase result = math::redheffer_star(
-        //         input, std::get<ScatteringTransform<TransformType::INFORMATION>>(edge_transform));
+        //         input,
+        //         std::get<ScatteringTransform<TransformType::INFORMATION>>(edge_transform));
         //     const Eigen::MatrixXd info_in_robot = result.topRightCorner(cov_dim, cov_dim);
         //     return RobotBelief{
         //         .local_from_robot = local_from_new_robot,

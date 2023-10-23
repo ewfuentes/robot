@@ -202,12 +202,12 @@ double uncertainty_size(const LandmarkRobotBelief &belief) {
     for (const auto &[_, value] : belief.belief_from_config) {
         elements.push_back(value);
     }
-    std::sort(elements.begin(), elements.end(), [](const auto &a, const auto &b){
+    std::sort(elements.begin(), elements.end(), [](const auto &a, const auto &b) {
         return a.cov_in_robot.determinant() < b.cov_in_robot.determinant();
     });
 
     constexpr double EVALUATION_THRESHOLD = 0.95;
-    
+
     double accumulated_prob = 0.0;
     for (const auto &elem : elements) {
         accumulated_prob += std::exp(elem.log_config_prob);
