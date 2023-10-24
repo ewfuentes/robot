@@ -246,7 +246,7 @@ TEST(LandmarkBeliefRoadMapPlannerTest, grid_road_map) {
         .on_map_load_heading_uncertainty_rad = 0.1,
     };
 
-    constexpr double P_BEACON = 0.5;
+    constexpr double P_BEACON = 0.97;
     const auto &[road_map, ekf_slam, potential] = create_grid_environment(ekf_config, P_BEACON);
     constexpr LandmarkBeliefRoadMapOptions OPTIONS = {
         .max_sensor_range_m = 3.0,

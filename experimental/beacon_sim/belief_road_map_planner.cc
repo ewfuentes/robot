@@ -289,7 +289,7 @@ std::optional<planning::BRMPlan<LandmarkRobotBelief>> compute_landmark_belief_ro
 
     const LandmarkRobotBelief initial_belief = {
         .local_from_robot = estimate.local_from_robot(),
-        .belief_from_config = {{std::string('?', beacon_potential.members().size()),
+        .belief_from_config = {{std::string(beacon_potential.members().size(), '?'),
                                 {.cov_in_robot = estimate.robot_cov(), .log_config_prob = 0}}}};
     const auto belief_updater = make_landmark_belief_updater(
         road_map, options.max_sensor_range_m, ekf, beacon_potential, TransformType::COVARIANCE);

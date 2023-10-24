@@ -96,7 +96,7 @@ std::vector<typename T::const_iterator> find_consistent_configs(const std::strin
         bool is_consistent = true;
         for (int i = 0; i < static_cast<int>(config.size()); i++) {
             if (config.at(i) != transform_config.at(i)) {
-                if (config.at(i) == '?' || transform_config.at('?')) {
+                if (config.at(i) == '?' || transform_config.at(i) == '?') {
                     continue;
                 } else {
                     // Both config and the transform config are observed, but they don't match
