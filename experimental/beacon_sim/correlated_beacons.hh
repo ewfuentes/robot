@@ -32,7 +32,8 @@ class BeaconPotential {
     BeaconPotential(const Eigen::MatrixXd &information, const double log_normalizer,
                     const std::vector<int> &members);
 
-    double log_prob(const std::unordered_map<int, bool> &assignments) const;
+    double log_prob(const std::unordered_map<int, bool> &assignments,
+                    const bool allow_partial_assignment = false) const;
     double log_prob(const std::vector<int> &present_beacons) const;
 
     BeaconPotential operator*(const BeaconPotential &other) const;

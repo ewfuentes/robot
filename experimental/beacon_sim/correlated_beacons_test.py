@@ -159,13 +159,10 @@ class CorrelatedBeaconsTest(unittest.TestCase):
         beacon_pot = cb.create_correlated_beacons(bc)
 
         # Action
-        log_marginals = beacon_pot.compute_log_marginals([1])
+        log_prob = beacon_pot.log_prob({1:True, 2:False}, allow_partial_assignment=True)
 
         # Verification
-        no_beacon, with_beacon = log_marginals if len(log_marginals[0].present_beacons) == 0 else log_marginals[::-1]
-        print(log_marginals)
-        self.assertAlmostEqual(np.exp(with_beacon.log_marginal), p_beacon, places=6)
-        self.assertAlmostEqual(np.exp(no_beacon.log_marginal), 1 - p_beacon, places=6)
+        self.assertAlmostEqual(np.exp(log_prob), p_beacon * (1-p_beacon), places=6)
 
 
 if __name__ == "__main__":
