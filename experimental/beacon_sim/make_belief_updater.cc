@@ -1,10 +1,7 @@
 
 #include "experimental/beacon_sim/make_belief_updater.hh"
 
-#include <bits/chrono_io.h>
-
 #include <algorithm>
-#include <iostream>
 #include <iterator>
 
 #include "common/check.hh"
