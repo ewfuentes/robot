@@ -655,46 +655,63 @@ planning::BeliefUpdater<LandmarkRobotBelief> make_landmark_belief_updater(
         for (const auto &[config, belief] : initial_belief.belief_from_config) {
             const auto consistent_transform_iterators =
                 find_consistent_configs(config, edge_transform);
-            (void)config;
-            (void)belief;
-            (void)consistent_transform_iterators;
 
-            std::cout << "config " << config << std::endl;
             for (const auto iter : consistent_transform_iterators) {
-                const auto &[transform_config, _] = *iter;
-                std::cout << "consistent: " << transform_config << std::endl;
-            }
-            // Compute the new covariance
-            // [- new_cov] = [I cov] * edge_transform
-            // [-       -]   [0   I]
-            // new_cov  = A * B^-1
-            // const int cov_dim = initial_belief.cov_in_robot.rows();
-            // Eigen::MatrixXd input = Eigen::MatrixXd::Identity(2 * cov_dim, 2 * cov_dim);
-            // if (type == TransformType::COVARIANCE) {
-            //     input.topRightCorner(cov_dim, cov_dim) = initial_belief.cov_in_robot;
-            // } else {
-            //     input.topRightCorner(cov_dim, cov_dim) = initial_belief.cov_in_robot.inverse();
-            // }
+                const auto &[transform_config, transform] = *iter;
 
-            // if (type == TransformType::COVARIANCE) {
-            //     const ScatteringTransformBase result = math::redheffer_star(
-            //         input,
-            //         std::get<ScatteringTransform<TransformType::COVARIANCE>>(edge_transform));
-            //     const Eigen::MatrixXd cov_in_robot = result.topRightCorner(cov_dim, cov_dim);
-            //     return RobotBelief{
-            //         .local_from_robot = local_from_new_robot,
-            //         .cov_in_robot = cov_in_robot,
-            //     };
-            // } else {
-            //     const ScatteringTransformBase result = math::redheffer_star(
-            //         input,
-            //         std::get<ScatteringTransform<TransformType::INFORMATION>>(edge_transform));
-            //     const Eigen::MatrixXd info_in_robot = result.topRightCorner(cov_dim, cov_dim);
-            //     return RobotBelief{
-            //         .local_from_robot = local_from_new_robot,
-            //         .cov_in_robot = info_in_robot.inverse(),
-            //     };
-            // }
+                const std::string new_config = merge_configurations(config, transform_config);
+
+                //  Compute the new covariance
+                //  [- new_cov] = [I cov] * edge_transform
+                //  [-       -]   [0   I]
+                //  new_cov  = A * B^-1
+                const int cov_dim = belief.cov_in_robot.rows();
+                Eigen::MatrixXd input = Eigen::MatrixXd::Identity(2 * cov_dim, 2 * cov_dim);
+                if (type == TransformType::COVARIANCE) {
+                    input.topRightCorner(cov_dim, cov_dim) = belief.cov_in_robot;
+                } else {
+                    input.topRightCorner(cov_dim, cov_dim) = belief.cov_in_robot.inverse();
+                }
+
+                // Compute the probability of this config
+                constexpr bool ALLOW_PARTIAL_ASSIGNMENT = true;
+                std::unordered_map<int, bool> assignment;
+
+                for (int i = 0; i < static_cast<int>(new_config.size()); i++) {
+                    if (new_config.at(i) == '?') {
+                        continue;
+                    } else if (new_config.at(i) == '1') {
+                        assignment[beacon_potential.members().at(i)] = true;
+                    } else if (new_config.at(i) == '0') {
+                        assignment[beacon_potential.members().at(i)] = false;
+                    } else {
+                        CHECK(false, "unable to parse config string", new_config, i,
+                              new_config.at(i));
+                    }
+                }
+
+                const double log_config_prob =
+                    beacon_potential.log_prob(assignment, ALLOW_PARTIAL_ASSIGNMENT);
+
+                if (type == TransformType::COVARIANCE) {
+                    const ScatteringTransformBase result = math::redheffer_star(
+                        input, std::get<ScatteringTransform<TransformType::COVARIANCE>>(transform));
+                    const Eigen::MatrixXd cov_in_robot = result.topRightCorner(cov_dim, cov_dim);
+                    belief_from_config[new_config] = {
+                        .cov_in_robot = cov_in_robot,
+                        .log_config_prob = log_config_prob,
+                    };
+                } else {
+                    const ScatteringTransformBase result = math::redheffer_star(
+                        input,
+                        std::get<ScatteringTransform<TransformType::INFORMATION>>(transform));
+                    const Eigen::MatrixXd info_in_robot = result.topRightCorner(cov_dim, cov_dim);
+                    belief_from_config[new_config] = {
+                        .cov_in_robot = info_in_robot.inverse(),
+                        .log_config_prob = log_config_prob,
+                    };
+                }
+            }
         }
 
         return {

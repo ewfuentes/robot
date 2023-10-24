@@ -177,7 +177,9 @@ TYPED_TEST(MakeBeliefUpdaterTest, make_landmark_belief_updater_test) {
         .on_map_load_heading_uncertainty_rad = 0.5,
     };
     constexpr double MAX_SENSOR_RANGE_M = 3.0;
-    const auto &[road_map, ekf_slam, beacon_potential] = create_grid_environment(ekf_config);
+    constexpr double P_BEACON = 0.75;
+    const auto &[road_map, ekf_slam, beacon_potential] =
+        create_grid_environment(ekf_config, P_BEACON);
 
     constexpr int START_NODE_IDX = 3;
     constexpr int END_NODE_IDX = 0;
@@ -198,6 +200,13 @@ TYPED_TEST(MakeBeliefUpdaterTest, make_landmark_belief_updater_test) {
     // Verification
     EXPECT_TRUE(updated_belief.belief_from_config.contains("0"));
     EXPECT_TRUE(updated_belief.belief_from_config.contains("1"));
+
+    EXPECT_NEAR(updated_belief.belief_from_config.at("0").log_config_prob, std::log(1 - P_BEACON),
+                1e-6);
+    EXPECT_NEAR(updated_belief.belief_from_config.at("1").log_config_prob, std::log(P_BEACON),
+                1e-6);
+    EXPECT_GT(updated_belief.belief_from_config.at("0").cov_in_robot.determinant(),
+              updated_belief.belief_from_config.at("1").cov_in_robot.determinant());
 }
 
 }  // namespace robot::experimental::beacon_sim
