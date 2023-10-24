@@ -31,17 +31,6 @@
 
 namespace robot::experimental::beacon_sim {
 namespace {
-std::string configuration_to_key(const std::vector<std::tuple<int, bool>> &beacon_config,
-                                 const std::vector<int> &all_beacons) {
-    std::string out(all_beacons.size(), '?');
-    for (const auto &[beacon_id, is_present] : beacon_config) {
-        const auto iter = std::find(all_beacons.begin(), all_beacons.end(), beacon_id);
-        const int idx = std::distance(all_beacons.begin(), iter);
-        out[idx] = is_present ? '1' : '0';
-    }
-    return out;
-}
-
 std::vector<std::vector<int>> find_paths(const planning::RoadMap &road_map,
                                          const double max_path_length_ratio) {
     const planning::SuccessorFunc<int> successors_func =
@@ -300,7 +289,7 @@ std::optional<planning::BRMPlan<LandmarkRobotBelief>> compute_landmark_belief_ro
 
     const LandmarkRobotBelief initial_belief = {
         .local_from_robot = estimate.local_from_robot(),
-        .belief_from_config = {{configuration_to_key({}, beacon_potential.members()),
+        .belief_from_config = {{std::string('?', beacon_potential.members().size()),
                                 {.cov_in_robot = estimate.robot_cov(), .log_config_prob = 0}}}};
     const auto belief_updater = make_landmark_belief_updater(
         road_map, options.max_sensor_range_m, ekf, beacon_potential, TransformType::COVARIANCE);
