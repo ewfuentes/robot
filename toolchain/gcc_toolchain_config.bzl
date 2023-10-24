@@ -99,6 +99,20 @@ def _impl(ctx):
           ]
       ),
       feature(
+          name="c_compile_flags",
+          enabled=True,
+          flag_sets = [
+            flag_set(
+              actions = [ACTION_NAMES.c_compile],
+              flag_groups = [
+                flag_group(
+                  flags=["-fPIC"],
+                )
+              ]
+            )
+          ]
+      ),
+      feature(
           name="dbg",
           enabled=False,
           flag_sets = [

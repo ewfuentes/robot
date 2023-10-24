@@ -5,11 +5,10 @@
 #include <cmath>
 #include <iterator>
 #include <numeric>
-#include <sstream>
-#include <stdexcept>
 #include <type_traits>
 #include <unordered_map>
 
+#include "common/check.hh"
 #include "common/math/combinations.hh"
 #include "common/math/n_choose_k.hh"
 #include "drake/solvers/mathematical_program.h"
@@ -144,34 +143,56 @@ double BeaconPotential::log_prob(const std::vector<int> &present_beacons) const 
     return log_prob(assignment);
 }
 
-double BeaconPotential::log_prob(const std::unordered_map<int, bool> &assignment) const {
+double BeaconPotential::log_prob(const std::unordered_map<int, bool> &assignment,
+                                 const bool allow_partial_assignment) const {
     const std::vector<int> sorted_members = sorted_vector(members_);
     const std::vector<int> keys = sorted_keys(assignment);
     std::vector<int> missing_keys;
     std::set_difference(sorted_members.begin(), sorted_members.end(), keys.begin(), keys.end(),
                         std::back_inserter(missing_keys));
 
-    if (!missing_keys.empty()) {
-        std::ostringstream out;
-        out << "Missing keys from assignment {";
-        bool is_first = true;
-        for (const auto &key : missing_keys) {
-            if (is_first) {
-                is_first = false;
-            } else {
-                out << ", ";
-            }
-            out << key;
-        }
-        out << "}";
-        throw std::runtime_error(out.str());
+    CHECK(allow_partial_assignment || missing_keys.empty(),
+          "partial assignment specified when not enabled", assignment, missing_keys, members());
+
+    const std::vector<int> to_marginalize = missing_keys;
+
+    std::unordered_map<int, int> index_from_id;
+    for (int i = 0; i < static_cast<int>(members_.size()); i++) {
+        index_from_id[members_.at(i)] = i;
     }
 
-    Eigen::VectorXd x(members_.size());
-    for (int i = 0; i < static_cast<int>(members_.size()); i++) {
-        x(i) = assignment.at(members_.at(i));
+    const auto sum_over_marginalized = [&to_marginalize, &index_from_id,
+                                        this](const Eigen::VectorXd &x) {
+        const int n = to_marginalize.size();
+        std::vector<double> terms;
+        terms.reserve(1 << n);
+        for (int num_present = 0; num_present <= n; num_present++) {
+            // For each number of present beacons
+            for (const auto &config : math::combinations(n, num_present)) {
+                // We have a different way of that many beacons being present
+
+                // Set the element for the current config
+                Eigen::VectorXd curr_config = x;
+                for (const int to_marginalize_idx : config) {
+                    const int marginal_id = to_marginalize.at(to_marginalize_idx);
+                    const int x_idx = index_from_id[marginal_id];
+                    curr_config(x_idx) = 1;
+                }
+
+                // Evaluate the log probability
+                terms.push_back(curr_config.transpose() * precision_ * curr_config -
+                                log_normalizer_);
+            }
+        }
+        return logsumexp(terms);
+    };
+
+    Eigen::VectorXd config = Eigen::VectorXd::Zero(members_.size());
+    for (const auto &[beacon_id, is_present] : assignment) {
+        config(index_from_id.at(beacon_id)) = is_present;
     }
-    return x.transpose() * precision_ * x - log_normalizer_;
+
+    return sum_over_marginalized(config);
 }
 
 std::vector<LogMarginal> BeaconPotential::compute_log_marginals(
