@@ -333,8 +333,8 @@ TEST(LandmarkBeliefRoadMapPlannerTest, diamond_road_map_independent_beacons) {
     constexpr LandmarkBeliefRoadMapOptions OPTIONS = {
         .max_sensor_range_m = 3.0,
     };
-    const std::vector<std::optional<int>> expected_path = {
-        planning::RoadMap::START_IDX, 0, 2, 3, planning::RoadMap::GOAL_IDX};
+    const std::vector<std::optional<int>> expected_path = {planning::RoadMap::START_IDX, 0, 2, 3,
+                                                           planning::RoadMap::GOAL_IDX};
 
     // Action
     const auto plan = compute_landmark_belief_road_map_plan(road_map, ekf_slam, potential, OPTIONS);
@@ -374,8 +374,8 @@ TEST(LandmarkBeliefRoadMapPlannerTest, diamond_road_map_correlated_beacons) {
     constexpr LandmarkBeliefRoadMapOptions OPTIONS = {
         .max_sensor_range_m = 3.0,
     };
-    const std::vector<std::optional<int>> expected_path = {
-        planning::RoadMap::START_IDX, 0, 1, 3, planning::RoadMap::GOAL_IDX};
+    const std::vector<std::optional<int>> expected_path = {planning::RoadMap::START_IDX, 0, 1, 3,
+                                                           planning::RoadMap::GOAL_IDX};
 
     // Action
     const auto plan = compute_landmark_belief_road_map_plan(road_map, ekf_slam, potential, OPTIONS);
