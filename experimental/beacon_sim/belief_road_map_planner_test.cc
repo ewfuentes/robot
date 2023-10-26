@@ -246,8 +246,9 @@ TEST(LandmarkBeliefRoadMapPlannerTest, grid_road_map) {
         .on_map_load_heading_uncertainty_rad = 0.1,
     };
 
-    constexpr double P_BEACON = 0.97;
-    const auto &[road_map, ekf_slam, potential] = create_grid_environment(ekf_config, P_BEACON);
+    constexpr double P_BEACON = 0.99;
+    const auto &[road_map, ekf_slam, potential] =
+        create_grid_environment(ekf_config, P_BEACON);
     constexpr LandmarkBeliefRoadMapOptions OPTIONS = {
         .max_sensor_range_m = 3.0,
     };
@@ -257,6 +258,41 @@ TEST(LandmarkBeliefRoadMapPlannerTest, grid_road_map) {
 
     // Verification
     EXPECT_TRUE(plan.has_value());
+    CHECK(false, plan->nodes);
+}
+
+TEST(LandmarkBeliefRoadMapPlannerTest, diamond_road_map) {
+    // Setup
+    const EkfSlamConfig ekf_config{
+        .max_num_beacons = 11,
+        .initial_beacon_uncertainty_m = 100.0,
+        .along_track_process_noise_m_per_rt_meter = 0.05,
+        .cross_track_process_noise_m_per_rt_meter = 0.05,
+        .pos_process_noise_m_per_rt_s = 0.0,
+        .heading_process_noise_rad_per_rt_meter = 1e-3,
+        .heading_process_noise_rad_per_rt_s = 0.0,
+        .beacon_pos_process_noise_m_per_rt_s = 1e-6,
+        .range_measurement_noise_m = 1e-1,
+        .bearing_measurement_noise_rad = 1e-1,
+        .on_map_load_position_uncertainty_m = 2.0,
+        .on_map_load_heading_uncertainty_rad = 0.1,
+    };
+
+    constexpr double P_LONE_BEACON = 0.5;
+    const double P_NO_STACK_BEACON = 0.8;
+    constexpr double P_STACKED_BEACON = 0.1;
+    const auto &[road_map, ekf_slam, potential] =
+        create_diamond_environment(ekf_config, P_LONE_BEACON, P_NO_STACK_BEACON, P_STACKED_BEACON);
+    constexpr LandmarkBeliefRoadMapOptions OPTIONS = {
+        .max_sensor_range_m = 3.0,
+    };
+
+    // Action
+    const auto plan = compute_landmark_belief_road_map_plan(road_map, ekf_slam, potential, OPTIONS);
+
+    // Verification
+    EXPECT_TRUE(plan.has_value());
+    CHECK(false, plan->nodes);
 }
 
 }  // namespace robot::experimental::beacon_sim

@@ -146,6 +146,7 @@ cc_library(
     ":mapped_landmarks",
     "@eigen//:eigen",
     "//common/liegroups:se2",
+    "//common:check",
   ]
 )
 

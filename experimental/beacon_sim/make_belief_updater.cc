@@ -386,7 +386,7 @@ compute_edge_belief_transform(const liegroups::SE2 &local_from_robot,
             // create a copy of the base config
             auto current_config = config_base;
             for (const int beacon_idx : potential_beacon_idxs) {
-                const int beacon_id = beacon_potential.members().at(beacon_idx);
+                const int beacon_id = beacons_in_potential.at(beacon_idx);
                 present_beacons.push_back(beacon_id);
                 auto iter = std::find_if(current_config.begin(), current_config.end(),
                                          [beacon_id](const auto &config_element) {
@@ -626,8 +626,8 @@ planning::BeliefUpdater<LandmarkRobotBelief> make_landmark_belief_updater(
             edge_transform_cache = std::move(edge_transform_cache), &beacon_potential,
             type](const LandmarkRobotBelief &initial_belief, const int start_idx,
                   const int end_idx) mutable -> LandmarkRobotBelief {
-        (void)beacon_potential;
         // Get the belief edge transform, optionally updating the cache
+
         const DirectedEdge edge = {
             .source = start_idx,
             .destination = end_idx,
