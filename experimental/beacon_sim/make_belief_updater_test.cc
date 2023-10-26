@@ -184,7 +184,6 @@ TYPED_TEST(MakeBeliefUpdaterTest, make_landmark_belief_updater_test) {
     constexpr int START_NODE_IDX = 3;
     constexpr int END_NODE_IDX = 0;
     const liegroups::SE2 local_from_robot = liegroups::SE2::trans(road_map.point(START_NODE_IDX));
-    const Eigen::Vector2d end_pos = road_map.point(END_NODE_IDX);
 
     // Action
     const auto belief_updater = make_landmark_belief_updater(road_map, MAX_SENSOR_RANGE_M, ekf_slam,
