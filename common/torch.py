@@ -45,7 +45,7 @@ def preload_cuda_deps() -> None:
         'cudnn': 'libcudnn.so.*[0-9]',
         'cuda_nvrtc': 'libnvrtc.so.*[0-9]',
         'cuda_runtime': 'libcudart.so.*[0-9]',
-        'cuda_cupti': 'libcupti.so.*[0-9].*[0-9]',
+        'cuda_cupti': 'libcupti.so.*[0-9]',
         'cufft': 'libcufft.so.*[0-9]',
         'curand': 'libcurand.so.*[0-9]',
         'nvjitlink': 'libnvJitLink.so.*[0-9]',
