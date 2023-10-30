@@ -4,39 +4,42 @@
 #include "gtest/gtest.h"
 #include "planning/probabilistic_road_map.hh"
 
+#include <iostream>
+
 namespace robot::experimental::beacon_sim {
 
-auto make_grid_successor(const planning::RoadMap &road_map,
-                         const Eigen::Vector2d &start_in_world,
-                         const Eigen::Vector2d &goal_in_world,
-                         const int start_goal_connection_radius_m) {
-    return [&road_map, start_goal_connection_radius_m, START_IDX, GOAL_IDX](const int node_idx) -> std::vector<planning::Successor<int>> {
-        std::vector<planning::Successor<int>> out;
-        if (node_idx == START_IDX || node_idx == GOAL_IDX) {
-            for (int i = 0; i < static_cast<int>(road_map.points.size()); i++) {
-                const Eigen::Vector2d &pt_in_local = road_map.points.at(i);
-                const double dist_m = (pt_in_local - start_in_local).norm();
-                if (dist_m < start_goal_connection_radius_m) {
-                    out.push_back({.state = i, .edge_cost = dist_m});
-                }
-            }
-        } else {
-            const Eigen::Vector2d &curr_pt_in_local = road_map.points.at(node_idx);
-            for (int i = 0; i < static_cast<int>(road_map.points.size()); i++) {
-                if (road_map.adj(i, node_idx)) {
-                    const Eigen::Vector2d &other_in_local = road_map.points.at(i);
-                    const double dist_m = (curr_pt_in_local - other_in_local).norm();
-                    out.push_back({.state = i, .edge_cost = dist_m});
-                }
-            }
+using SuccessorFunc = std::function<std::vector<planning::Successor<int>>(const int)>;
 
-            const double dist_to_goal_m = (curr_pt_in_local - goal_in_local).norm();
-            if (dist_to_goal_m < start_goal_connection_radius_m) {
-                out.push_back({.state = GOAL_IDX, .edge_cost = dist_to_goal_m});
-            }
+SuccessorFunc make_successor_function(const planning::RoadMap &map) {
+    return [&map](const int parent) {
+        std::vector<planning::Successor<int>> successors;
+        for (const auto &[neighbor_idx, neighbor_pos] : map.neighbors(parent)) {
+            successors.push_back({
+                .state = neighbor_idx,
+                .edge_cost = (neighbor_pos - map.point(parent)).norm(),
+            });
         }
-        return out;
+        return successors;
     };
+}
+
+using TerminateRolloutFunc = std::function<bool(const Candidate &, int)>;
+
+TerminateRolloutFunc make_terminate_func(const int max_steps) {
+    return [max_steps]([[maybe_unused]] const Candidate &candidate, const int num_steps) {
+        return num_steps >= max_steps;
+    };
+}
+
+std::ostream& operator<<(std::ostream& os, const Candidate& candidate) {
+    os << "Candidate{"
+       << "belief_trace=" << candidate.belief.cov_in_robot.trace() 
+       << ", path_history=[";
+    for (const auto& node : candidate.path_history) {
+        os << node << ", ";
+    }
+    os << "]}";
+    return os;
 }
 
 TEST(EthansSuperCoolPlannerTest, RolloutHappyCase) {
@@ -59,26 +62,43 @@ TEST(EthansSuperCoolPlannerTest, RolloutHappyCase) {
 
     const auto &[road_map, ekf_slam, potential] = create_grid_environment(ekf_config, 0.5);
 
+
     Candidate candidate = {
         .belief = ekf_slam.estimate().robot_belief(),
-        .path_history = {START_NODE_INDEX},
+        .path_history = {road_map.START_IDX},
     };
 
     RollOutArgs roll_out_args = {
-
+        .num_roll_outs = 1000,
     };
 
-    const Eigen::Vector2d GOAL_STATE = {10, -5};
+    constexpr double max_sensor_range_m = 3.0;
 
     planning::BeliefUpdater<RobotBelief> belief_updater =
-        make_belief_updater(road_map, GOAL_STATE, 3.0, ekf_slam, {GRID_BEACON_ID}, TransformType::INFORMATION);
+        make_belief_updater(road_map, 
+                            max_sensor_range_m,
+                            ekf_slam,
+                            std::nullopt,
+                            TransformType::INFORMATION);
+
+    const SuccessorFunc successor_func = make_successor_function(road_map);
+    const TerminateRolloutFunc terminate_rollout_func = make_terminate_func(10);
 
     // Action
 
-    auto candidates = rollout(road_map, candidate, , belief_updater, roll_out_args);
+    auto candidates = rollout(road_map, 
+                              terminate_rollout_func, 
+                              candidate,
+                              successor_func, 
+                              belief_updater, 
+                              roll_out_args);
 
+    std::cout << "from initial candidate: " << candidate << std::endl;
+    for (const auto &candidate : candidates) {
+        std::cout << "\t candidate: " << candidate << std::endl;
+    }
     // Verification
-    EXPECT_TRUE(false);
+    EXPECT_TRUE(candidates.size() == roll_out_args.num_roll_outs);
 }
 
 }  // namespace robot::experimental::beacon_sim

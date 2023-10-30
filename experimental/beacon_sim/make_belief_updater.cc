@@ -416,13 +416,13 @@ planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap
 planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap &road_map,
                                                          const double max_sensor_range_m,
                                                          const EkfSlam &ekf,
-                                                         const std::vector<int> &present_beacons,
+                                                         const std::optional<std::vector<int>> &present_beacons,
                                                          const TransformType type) {
     std::unordered_map<DirectedEdge, std::tuple<liegroups::SE2, TypedTransform>, DirectedEdgeHash>
         edge_transform_cache;
 
     return [&road_map, max_sensor_range_m, &ekf,
-            edge_transform_cache = std::move(edge_transform_cache), &present_beacons,
+            edge_transform_cache = std::move(edge_transform_cache), present_beacons,
             type](const RobotBelief &initial_belief, const int start_idx,
                   const int end_idx) mutable -> RobotBelief {
         // Get the belief edge transform, optionally updating the cache

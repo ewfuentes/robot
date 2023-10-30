@@ -98,7 +98,7 @@ planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap
 planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap &road_map,
                                                          const double max_sensor_range_m,
                                                          const EkfSlam &ekf,
-                                                         const std::vector<int> &present_beacons,
+                                                         const std::optional<std::vector<int>> &present_beacons,
                                                          const TransformType transform_type);
 
 }  // namespace robot::experimental::beacon_sim

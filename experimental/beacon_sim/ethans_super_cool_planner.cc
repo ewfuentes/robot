@@ -3,56 +3,39 @@
 
 namespace robot::experimental::beacon_sim {
 
-//        std::vector<planning::Successor<int>> out;
-//        if (node_idx == START_IDX || node_idx == GOAL_IDX) {
-//            for (int i = 0; i < static_cast<int>(road_map.points.size()); i++) {
-//                const Eigen::Vector2d &pt_in_local = road_map.points.at(i);
-//                const double dist_m = (pt_in_local - start_in_local).norm();
-//                if (dist_m < start_goal_connection_radius_m) {
-//                    out.push_back({.state = i, .edge_cost = dist_m});
-//                }
-//            }
-//        } else {
-//            const Eigen::Vector2d &curr_pt_in_local = road_map.points.at(node_idx);
-//            for (int i = 0; i < static_cast<int>(road_map.points.size()); i++) {
-//                if (road_map.adj(i, node_idx)) {
-//                    const Eigen::Vector2d &other_in_local = road_map.points.at(i);
-//                    const double dist_m = (curr_pt_in_local - other_in_local).norm();
-//                    out.push_back({.state = i, .edge_cost = dist_m});
-//                }
-//            }
-//
-//            const double dist_to_goal_m = (curr_pt_in_local - goal_in_local).norm();
-//            if (dist_to_goal_m < start_goal_connection_radius_m) {
-//                out.push_back({.state = GOAL_IDX, .edge_cost = dist_to_goal_m});
-//            }
-//        }
-//        return out;
-
 std::vector<Candidate> rollout(
     [[maybe_unused]] const planning::RoadMap& map,
-    std::function<bool(const Candidate&, int)> terminate_rollout,
-    [[maybe_unused]] const Candidate& candidate,
-    [[maybe_unused]] std::function<std::vector<planning::Successor<int>>(planning::Successor<int>)>
+    const std::function<bool(const Candidate&, const int)>& terminate_rollout,
+    const Candidate& candidate,
+    const std::function<std::vector<planning::Successor<int>>(const int)>&
         successor_function,
-    [[maybe_unused]] const planning::BeliefUpdater<RobotBelief>& belief_updater,
-    [[maybe_unused]] const RollOutArgs& roll_out_args) {
+    const planning::BeliefUpdater<RobotBelief>& belief_updater,
+    const RollOutArgs& roll_out_args) {
     // what node are we on
 
     std::vector<Candidate> successors;
-    [[maybe_unused]] int position = candidate.path_history.back();
 
-    for (int rollout_i = 0; rollout_i < roll_out_args.num_roll_outs; rollout_i++) {
+
+    for (unsigned int rollout_i = 0; rollout_i < roll_out_args.num_roll_outs; rollout_i++) {
         int num_steps = 0;
         Candidate start = candidate;
-        while (not terminate_rollout(start, num_steps)) {
+        int current_index = candidate.path_history.back();
+
+        while (!terminate_rollout(start, num_steps)) {
+            // generate actions
+            auto successors = successor_function(current_index);
+            if (successors.empty()) {
+                std::cout << " no successors " << std::endl;
+                break;
+            }
             // pick an action
-
+            int action_index = rand() % successors.size();
             // traverse the edge
-
+            start.belief = belief_updater(start.belief, current_index, successors[action_index].state);
+            start.path_history.push_back(successors[action_index].state);
+            current_index = successors[action_index].state;
             num_steps++;
         }
-
         successors.push_back(start);
     }
 
@@ -122,4 +105,6 @@ std::vector<Candidate> rollout(
 //    return best_candidate.path_history;
 //}
 
+
 }  // namespace robot::experimental::beacon_sim
+

@@ -5,6 +5,8 @@
 #include "planning/breadth_first_search.hh"
 #include "planning/probabilistic_road_map.hh"
 
+#include <iostream>
+
 /*
 BFS: given graph, search for paths
 BeliefRoadMap:  given graph, beacons, do belief updates
@@ -14,22 +16,21 @@ BeliefRoadMapPlanner: using these belief updates and search, find a nice path
 
 namespace robot::experimental::beacon_sim {
 
-constexpr int START_NODE_INDEX = -1;
-constexpr int GOAL_NODE_INDEX = -2;
-
 struct Candidate {
     RobotBelief belief;             // where the robot thinks it is
     std::vector<int> path_history;  // the path that got it here
 };
 
+
 struct RollOutArgs {
-    int num_roll_outs;
+    unsigned int num_roll_outs;
 };
 
 
 std::vector<Candidate> rollout ( const planning::RoadMap& map, 
+                                 const std::function<bool(const Candidate&, int)>& terminate_rollout,
                                  const Candidate& candidate, 
-                                 const std::function<std::vector<planning::Successor<int>>(const planning::Successor<int> &)>& successor_function,
+                                 const std::function<std::vector<planning::Successor<int>>(const int)>& successor_function,
                                  const planning::BeliefUpdater<RobotBelief>& belief_updater,
                                  const RollOutArgs& roll_out_args );
 
