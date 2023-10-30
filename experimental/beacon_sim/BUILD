@@ -354,9 +354,10 @@ cc_library(
     ":robot",
     ":robot_belief",
     ":make_belief_updater",
+    "//common:check",
+    "//common/math:combinations",
     "//planning:belief_road_map",
     "//planning:probabilistic_road_map",
-    "//common/math:combinations",
   ]
 )
 
