@@ -27,7 +27,7 @@ def _preload_cuda_deps(lib_folder: str, lib_name: str) -> None:
         nvidia_path = os.path.join(path, 'nvidia')
         if not os.path.exists(nvidia_path):
             continue
-        lib_contents = os.listdir(os.path.join(nvidia_path, '**', 'lib'))
+        lib_contents = glob.glob(os.path.join(nvidia_path, '**', 'lib'))
         print('in: ', nvidia_path, ' ', lib_contents)
         candidate_lib_paths = glob.glob(os.path.join(nvidia_path, lib_folder, 'lib', lib_name))
         if candidate_lib_paths and not lib_path:
