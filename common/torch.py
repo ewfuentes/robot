@@ -19,6 +19,7 @@ from typing import Dict
 def _preload_cuda_deps(lib_folder: str, lib_name: str) -> None:
     """Preloads cuda deps if they could not be found otherwise."""
     # Should only be called on Linux if default path resolution have failed
+    print('Trying to find', lib_folder, ' ', lib_name)
     assert platform.system() == 'Linux', 'Should only be called on Linux'
     import glob
     lib_path = None
@@ -26,6 +27,8 @@ def _preload_cuda_deps(lib_folder: str, lib_name: str) -> None:
         nvidia_path = os.path.join(path, 'nvidia')
         if not os.path.exists(nvidia_path):
             continue
+        lib_contents = os.listdir(os.path.join(nvidia_path, lib_folder, 'lib'))
+        print('in: ', nvidia_path, ' ', lib_contents)
         candidate_lib_paths = glob.glob(os.path.join(nvidia_path, lib_folder, 'lib', lib_name))
         if candidate_lib_paths and not lib_path:
             lib_path = candidate_lib_paths[0]
