@@ -35,14 +35,16 @@ std::vector<Candidate> rollout ( const planning::RoadMap& map,
                                  const RollOutArgs& roll_out_args );
 
 
-//struct CullingArgs {
-//    int num_candidates;  // TODO: merge this with plannings args
-//
-//};
-//std::vector<Candidate> cull_the_heard( const std::vector<Candidate>& candidates,
-//                                       const std::function<double(const Candidate&)>& scoring_function,
-//                                       const CullingArgs& cullingArgs );
-//
+struct CullingArgs {
+   unsigned int num_survivors;  // TODO: merge this with plannings args
+   float entropy_proxy; // Number between 0 (only the best survive) and 1 (compleatly random selection of survivors)
+
+};
+std::vector<Candidate> cull_the_heard( const std::vector<Candidate>& candidates,
+                                      const std::function<double(const Candidate&)>& scoring_function,
+                                      const CullingArgs& cullingArgs );
+
+
 //std::function<double(const Candidate&)> make_scoring_function( const planning::RoadMap& map,
 //                                                               const Eigen::Vector2d& goal_state,
 //                                                               const planning::BeliefUpdater<RobotBelief>& belief_updater,
