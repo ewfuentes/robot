@@ -15,7 +15,6 @@
 #include <utility>
 
 #include "Eigen/Core"
-
 #include "common/check.hh"
 #include "common/liegroups/se2.hh"
 #include "common/math/combinations.hh"
@@ -206,7 +205,8 @@ double uncertainty_size(const LandmarkRobotBelief &belief) {
             return elem.cov_in_robot.determinant();
         }
     }
-    CHECK(false, "Landmark Belief has insufficient probability mass to get to threshold", accumulated_prob);
+    CHECK(false, "Landmark Belief has insufficient probability mass to get to threshold",
+          accumulated_prob);
     return elements.back().cov_in_robot.determinant();
 }
 
