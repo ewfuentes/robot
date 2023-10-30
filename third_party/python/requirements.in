@@ -6,8 +6,6 @@
 # min version, this leads to a conflict. Grab this nightly version until 2.0.1
 # is released.
 
---extra-index-url https://download.pytorch.org/whl/nightly/cu121
-
 sympy==1.11
 numpy==1.23.4
 notebook==6.5.2
@@ -19,7 +17,7 @@ requests==2.28.2
 tqdm==4.64.1
 opencv-python==4.7.0.72
 Wand==0.6.11
-torch==2.1.0.dev20230829+cu121
+torch==2.1.0
 setuptools==67.6.1
 ipdb==0.13.13
 beautifulsoup4==4.12.2
