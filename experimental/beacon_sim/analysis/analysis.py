@@ -18,8 +18,11 @@ from experimental.beacon_sim.analysis.star import scattering_from_transfer, tran
 np.set_printoptions(linewidth=200)
 
 
-def add_xy_to_axes(x, y, ax, name='', xlabel='', ylabel='', use_log=False):
-    ax.semilogy(x, y, marker='o', label=name)
+def add_xy_to_axes(x, y, ax, name='', xlabel='', ylabel='', use_log=True):
+    if use_log:
+        ax.semilogy(x, y, marker='o', label=name)
+    else:
+        ax.plot(x, y, marker='o', label=name)
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     ax.grid(True)
@@ -185,6 +188,82 @@ def sens(
     print('||P_ekf - P_tf||           =', diff_ekf_tf)
     print('||P_scatter - P_expected|| =', diff_expected)
 
+@main.command(name="back", help='Test backwards belief update.')
+@click.argument("model", default="si")
+@click.option("--num-props", type=int, default=500)
+@click.option("--dt", type=float, default=0.1)
+@click.option("--info", is_flag=True, type=bool, default=False, help='Use information filter')
+def sens(
+    model,
+    num_props, #968, largest num props before fail for di
+    dt,
+    info
+):
+    #setup model
+    if model=='si':
+        P = np.identity(2)
+        robot = SingleIntegrator(dt=dt)
+    elif model=='di':
+        P = np.identity(4)
+        robot = DoubleIntegrator(dt=dt)
+    else:
+        print('error. invalid model')
+        raise
+
+    filter_type = FilterType.INFORMATION if info else FilterType.COVARIANCE
+    bp = BeliefPropagation(robot, filter_type)
+
+    #print covariance matrices for <num_props>
+    P_forward = bp.prop(P, k=num_props, backward=False)
+    P_backward = bp.prop(P_forward, k=num_props, backward=True)
+    print('\nP:',P)
+    print('\nP_forward from P:',P_forward)
+    print('\nP_backward from P_forward:',P_backward)
+
+    #compute condition number for each num props up to <num_props>
+    print('\ngenerating plot...')
+    data={}
+    data['initial']=defaultdict(list)
+    data['forward']=defaultdict(list)
+    data['backward']=defaultdict(list)
+    data['k']=defaultdict(list)
+    for k in range(num_props):
+        P_forward = bp.prop(P, k=k, backward=False)
+        P_backward = bp.prop(P_forward, k=k, backward=True)
+        data['initial']['cond'].append(LA.cond(P))
+        data['initial']['det'].append(LA.det(P))
+        data['initial']['k'].append(k)
+        data['forward']['cond'].append(LA.cond(P_forward))
+        data['forward']['det'].append(LA.det(P_forward))
+        data['forward']['k'].append(k)
+        data['backward']['cond'].append(LA.cond(P_backward))
+        data['backward']['det'].append(LA.det(P_backward))
+        data['backward']['k'].append(k)
+
+    use_log=True
+    fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(10, 5))
+
+    add_xy_to_axes(data['initial']['k'], data['initial']['cond'],axes[0,0], name='$\kappa(\Sigma_{initial})$', xlabel='number of steps', ylabel='cond',use_log=use_log)
+    add_xy_to_axes(data['forward']['k'], data['forward']['cond'],axes[0,0], name='$\kappa(\Sigma_{forward})$', xlabel='number of steps', ylabel='cond',use_log=use_log)
+    # axes[0,0].set_title('cond num forward',pad=20)
+    axes[0,0].legend(loc='upper left')
+
+    add_xy_to_axes(data['initial']['k'], data['initial']['cond'],axes[0,1], name='$\kappa(\Sigma_{initial})$', xlabel='number of steps', ylabel='cond',use_log=use_log)
+    add_xy_to_axes(data['backward']['k'], data['backward']['cond'],axes[0,1], name='$\kappa(\Sigma_{backward})$', xlabel='number of steps', ylabel='cond',use_log=use_log)
+    # axes[0,1].set_title('cond num backward',pad=20)
+    axes[0,1].legend(loc='upper left')
+
+    add_xy_to_axes(data['initial']['k'], data['initial']['det'],axes[1,0], name='$det(\Sigma_{initial})$', xlabel='number of steps', ylabel='det',use_log=use_log)
+    add_xy_to_axes(data['forward']['k'], data['forward']['det'],axes[1,0], name='$det(\Sigma_{forward})$', xlabel='number of steps', ylabel='det',use_log=use_log)
+    # axes[1,0].set_title('det forward',pad=20)
+    axes[1,0].legend(loc='upper left')
+
+    add_xy_to_axes(data['initial']['k'], data['initial']['det'],axes[1,1], name='$det(\Sigma_{initial})$', xlabel='number of steps', ylabel='det',use_log=use_log)
+    add_xy_to_axes(data['backward']['k'], data['backward']['det'],axes[1,1], name='$det(\Sigma_{backward})$', xlabel='number of steps', ylabel='det',use_log=use_log)
+    # axes[1,1].set_title('det backward',pad=20)
+    axes[1,1].legend(loc='upper left')
+
+    plt.show()
 
 if __name__ == "__main__":
     mpl.use("GTK3Agg")
