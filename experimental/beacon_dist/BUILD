@@ -9,8 +9,8 @@ py_library(
   visibility = ["//common/python:__subpackages__"],
   deps = [
     ":utils",
+    "//common:torch",
     requirement("numpy"),
-    requirement("torch"),
     requirement("tqdm"),
   ]
 )
@@ -55,7 +55,7 @@ py_library(
   srcs = ["model.py"],
   visibility = ["//common/python:__subpackages__"],
   deps = [
-    requirement("torch"),
+    "//common:torch",
   ]
 )
 
@@ -74,7 +74,7 @@ py_library(
   srcs = ["utils.py"],
   visibility = ["//common/python:__subpackages__"],
   deps = [
-    requirement("torch"),
+    "//common:torch",
     requirement("numpy"),
   ]
 )
@@ -106,7 +106,7 @@ py3_image(
   visibility = ["//common/python:__subpackages__"],
   tags=["manual"],
   deps = [
-    requirement("torch"),
+    "//common:torch",
     requirement("IPython"),
     requirement("tqdm"),
     ":model",

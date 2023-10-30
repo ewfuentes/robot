@@ -1,4 +1,4 @@
-import torch
+import common.torch as torch
 import numpy as np
 import numpy.typing as npt
 from typing import NamedTuple, Callable

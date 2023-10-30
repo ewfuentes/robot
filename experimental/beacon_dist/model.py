@@ -1,4 +1,4 @@
-import torch
+import common.torch as torch
 
 from typing import NamedTuple
 

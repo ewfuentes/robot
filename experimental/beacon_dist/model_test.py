@@ -1,5 +1,6 @@
-import torch
 import unittest
+
+import common.torch as torch
 
 from experimental.beacon_dist import model
 from experimental.beacon_dist.test_helpers import get_test_data

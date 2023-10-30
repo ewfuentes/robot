@@ -1,3 +1,5 @@
+load("@pip//:requirements.bzl", "requirement")
+load("@rules_python//python:defs.bzl", "py_library")
 
 cc_library(
   name="argument_wrapper",
@@ -56,4 +58,11 @@ cc_test(
     ":check",
     "@com_google_googletest//:gtest_main",
   ]
+)
+
+py_library(
+  name = "torch",
+  srcs = ["torch.py"],
+  deps = [requirement("torch")],
+  visibility = ["//visibility:public"],
 )
