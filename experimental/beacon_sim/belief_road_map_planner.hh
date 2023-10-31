@@ -27,6 +27,11 @@ struct ExpectedBeliefRoadMapOptions {
     // the problem tractable, we wil only consider paths that are within a multiplicative factor
     // of the shortest path.
     double max_path_length_ratio;
+
+    double max_sensor_range_m;
+};
+
+struct LandmarkBeliefRoadMapOptions {
     double max_sensor_range_m;
 };
 
@@ -34,6 +39,10 @@ struct ExpectedBeliefPlanResult {
     std::vector<int> plan;
     Eigen::Matrix3d expected_cov;
 };
+
+std::optional<planning::BRMPlan<LandmarkRobotBelief>> compute_landmark_belief_road_map_plan(
+    const planning::RoadMap &road_map, const EkfSlam &ekf, const BeaconPotential &beacon_potential,
+    const LandmarkBeliefRoadMapOptions &options);
 
 std::optional<planning::BRMPlan<RobotBelief>> compute_belief_road_map_plan(
     const planning::RoadMap &road_map, const EkfSlam &ekf, const BeaconPotential &beacon_potential,

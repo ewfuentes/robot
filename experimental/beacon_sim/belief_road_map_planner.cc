@@ -15,6 +15,7 @@
 #include <utility>
 
 #include "Eigen/Core"
+#include "common/check.hh"
 #include "common/liegroups/se2.hh"
 #include "common/math/combinations.hh"
 #include "common/math/redheffer_star.hh"
@@ -23,6 +24,7 @@
 #include "experimental/beacon_sim/generate_observations.hh"
 #include "experimental/beacon_sim/make_belief_updater.hh"
 #include "experimental/beacon_sim/robot.hh"
+#include "experimental/beacon_sim/robot_belief.hh"
 #include "planning/belief_road_map.hh"
 #include "planning/breadth_first_search.hh"
 #include "planning/probabilistic_road_map.hh"
@@ -30,7 +32,6 @@
 
 namespace robot::experimental::beacon_sim {
 namespace {
-
 std::vector<std::vector<int>> find_paths(const planning::RoadMap &road_map,
                                          const double max_path_length_ratio) {
     const planning::SuccessorFunc<int> successors_func =
@@ -185,7 +186,41 @@ double uncertainty_size(const RobotBelief &belief) {
     return belief.cov_in_robot.determinant();
 }
 
+double uncertainty_size(const LandmarkRobotBelief &belief) {
+    std::vector<LandmarkRobotBelief::LandmarkConditionedRobotBelief> elements;
+    elements.reserve(belief.belief_from_config.size());
+    for (const auto &[_, value] : belief.belief_from_config) {
+        elements.push_back(value);
+    }
+    std::sort(elements.begin(), elements.end(), [](const auto &a, const auto &b) {
+        return a.cov_in_robot.determinant() < b.cov_in_robot.determinant();
+    });
+
+    constexpr double EVALUATION_THRESHOLD = 0.95;
+
+    double accumulated_prob = 0.0;
+    for (const auto &elem : elements) {
+        accumulated_prob += std::exp(elem.log_config_prob);
+        if (accumulated_prob > EVALUATION_THRESHOLD) {
+            return elem.cov_in_robot.determinant();
+        }
+    }
+    CHECK(false, "Landmark Belief has insufficient probability mass to get to threshold",
+          accumulated_prob);
+    return elements.back().cov_in_robot.determinant();
+}
+
 bool operator==(const RobotBelief &a, const RobotBelief &b) {
+    constexpr double TOL = 1e-3;
+    // Note that we don't consider covariance
+    const auto mean_diff =
+        (a.local_from_robot.translation() - b.local_from_robot.translation()).norm();
+
+    const bool is_mean_near = mean_diff < TOL;
+    return is_mean_near;
+}
+
+bool operator==(const LandmarkRobotBelief &a, const LandmarkRobotBelief &b) {
     constexpr double TOL = 1e-3;
     // Note that we don't consider covariance
     const auto mean_diff =
@@ -250,7 +285,20 @@ ExpectedBeliefPlanResult compute_expected_belief_road_map_plan(
     };
 }
 
-namespace detail {}  // namespace detail
+std::optional<planning::BRMPlan<LandmarkRobotBelief>> compute_landmark_belief_road_map_plan(
+    const planning::RoadMap &road_map, const EkfSlam &ekf, const BeaconPotential &beacon_potential,
+    const LandmarkBeliefRoadMapOptions &options) {
+    const auto &estimate = ekf.estimate();
+
+    const LandmarkRobotBelief initial_belief = {
+        .local_from_robot = estimate.local_from_robot(),
+        .belief_from_config = {{std::string(beacon_potential.members().size(), '?'),
+                                {.cov_in_robot = estimate.robot_cov(), .log_config_prob = 0}}}};
+    const auto belief_updater = make_landmark_belief_updater(
+        road_map, options.max_sensor_range_m, ekf, beacon_potential, TransformType::COVARIANCE);
+    return planning::plan<LandmarkRobotBelief>(road_map, initial_belief, belief_updater,
+                                               planning::NoBacktrackingOptions{});
+}
 }  // namespace robot::experimental::beacon_sim
 
 namespace std {

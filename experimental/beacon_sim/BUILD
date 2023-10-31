@@ -146,6 +146,7 @@ cc_library(
     ":mapped_landmarks",
     "@eigen//:eigen",
     "//common/liegroups:se2",
+    "//common:check",
   ]
 )
 
@@ -353,9 +354,10 @@ cc_library(
     ":robot",
     ":robot_belief",
     ":make_belief_updater",
+    "//common:check",
+    "//common/math:combinations",
     "//planning:belief_road_map",
     "//planning:probabilistic_road_map",
-    "//common/math:combinations",
   ]
 )
 
@@ -502,8 +504,10 @@ cc_library(
     ":ekf_slam",
     ":correlated_beacons",
     ":robot_belief",
+    "//common:check",
     "//common/liegroups:se2",
     "//common/geometry:nearest_point_on_segment",
+    "//common/math:combinations",
     "//common/math:redheffer_star",
     "//planning:belief_road_map",
     "//planning:probabilistic_road_map",

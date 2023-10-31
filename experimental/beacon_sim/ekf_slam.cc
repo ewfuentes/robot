@@ -1,6 +1,8 @@
 
 #include "experimental/beacon_sim/ekf_slam.hh"
 
+#include "common/check.hh"
+
 namespace robot::experimental::beacon_sim {
 namespace {
 
@@ -25,9 +27,8 @@ std::optional<int> find_beacon_matrix_idx_or_add(const int id, InOut<EkfSlamEsti
     }
 
     const int max_num_landmarks = (est->mean.rows() - ROBOT_STATE_DIM) / BEACON_DIM;
-    if (max_num_landmarks <= static_cast<int>(est->beacon_ids.size())) {
-        return std::nullopt;
-    }
+    CHECK(static_cast<int>(est->beacon_ids.size()) < max_num_landmarks,
+          "Not enough capacity to add beacon to EKF, increase max_num_beacons in ekf_config");
 
     est->beacon_ids.push_back(id);
     return find_beacon_matrix_idx(est->beacon_ids, id);
