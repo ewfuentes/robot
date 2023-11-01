@@ -4,39 +4,22 @@
 namespace robot::experimental::beacon_sim {
 
 std::vector<Candidate> rollout(
-    [[maybe_unused]] const planning::RoadMap& map,
+    const std::function<Candidate(const Candidate&)>& step_candidate,
     const std::function<bool(const Candidate&, const int)>& terminate_rollout,
     const Candidate& candidate,
-    const std::function<std::vector<planning::Successor<int>>(const int)>&
-        successor_function,
-    const planning::BeliefUpdater<RobotBelief>& belief_updater,
     const RollOutArgs& roll_out_args) {
-    // what node are we on
 
     std::vector<Candidate> successors;
 
-
     for (unsigned int rollout_i = 0; rollout_i < roll_out_args.num_roll_outs; rollout_i++) {
         int num_steps = 0;
-        Candidate start = candidate;
-        int current_index = candidate.path_history.back();
-
-        while (!terminate_rollout(start, num_steps)) {
-            // generate actions
-            auto successors = successor_function(current_index);
-            if (successors.empty()) {
-                std::cout << " no successors " << std::endl;
-                break;
-            }
-            // pick an action
-            int action_index = rand() % successors.size();
-            // traverse the edge
-            start.belief = belief_updater(start.belief, current_index, successors[action_index].state);
-            start.path_history.push_back(successors[action_index].state);
-            current_index = successors[action_index].state;
+        Candidate current_candidate = candidate;
+        while (!terminate_rollout(current_candidate, num_steps)) {
+            // step the candidate
+            current_candidate = step_candidate(current_candidate);
             num_steps++;
         }
-        successors.push_back(start);
+        successors.push_back(current_candidate);
     }
 
     return successors;

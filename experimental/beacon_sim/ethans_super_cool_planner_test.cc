@@ -3,23 +3,30 @@
 #include "experimental/beacon_sim/test_helpers.hh"
 #include "gtest/gtest.h"
 #include "planning/probabilistic_road_map.hh"
+#include "common/check.hh"
 
 #include <iostream>
 
 namespace robot::experimental::beacon_sim {
 
-using SuccessorFunc = std::function<std::vector<planning::Successor<int>>(const int)>;
+using StepCandidateFunc = std::function<Candidate(const Candidate&)>;
 
-SuccessorFunc make_successor_function(const planning::RoadMap &map) {
-    return [&map](const int parent) {
+StepCandidateFunc make_random_step_candidate_function(const planning::RoadMap &map, const planning::BeliefUpdater<RobotBelief> &belief_updater) {
+    return [&map, &belief_updater](const Candidate& parent)->Candidate {
         std::vector<planning::Successor<int>> successors;
-        for (const auto &[neighbor_idx, neighbor_pos] : map.neighbors(parent)) {
+        for (const auto &[neighbor_idx, neighbor_pos] : map.neighbors(parent.path_history.back())) {
             successors.push_back({
                 .state = neighbor_idx,
-                .edge_cost = (neighbor_pos - map.point(parent)).norm(),
+                .edge_cost = (neighbor_pos - map.point(parent.path_history.back())).norm(),
             });
         }
-        return successors;
+        int action_index = rand() % successors.size();
+        // traverse the edge
+        Candidate child = parent;
+        child.belief = belief_updater(child.belief, child.path_history.back(), successors[action_index].state);
+        child.path_history.push_back(successors[action_index].state);
+
+        return child;
     };
 }
 
@@ -81,16 +88,14 @@ TEST(EthansSuperCoolPlannerTest, RolloutHappyCase) {
                             std::nullopt,
                             TransformType::INFORMATION);
 
-    const SuccessorFunc successor_func = make_successor_function(road_map);
+    const StepCandidateFunc step_func = make_random_step_candidate_function(road_map, belief_updater);
     const TerminateRolloutFunc terminate_rollout_func = make_terminate_func(10);
 
     // Action
 
-    auto candidates = rollout(road_map, 
+    auto candidates = rollout(step_func, 
                               terminate_rollout_func, 
                               candidate,
-                              successor_func, 
-                              belief_updater, 
                               roll_out_args);
 
     std::cout << "from initial candidate: " << candidate << std::endl;

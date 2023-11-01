@@ -27,11 +27,9 @@ struct RollOutArgs {
 };
 
 
-std::vector<Candidate> rollout ( const planning::RoadMap& map, 
+std::vector<Candidate> rollout ( const std::function<Candidate(const Candidate&)>& step_candidate,
                                  const std::function<bool(const Candidate&, int)>& terminate_rollout,
                                  const Candidate& candidate, 
-                                 const std::function<std::vector<planning::Successor<int>>(const int)>& successor_function,
-                                 const planning::BeliefUpdater<RobotBelief>& belief_updater,
                                  const RollOutArgs& roll_out_args );
 
 
