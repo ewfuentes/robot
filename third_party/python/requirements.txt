@@ -4,6 +4,10 @@
 #
 #    bazel run //third_party/python:requirements.update
 #
+ansitable==0.9.7 \
+    --hash=sha256:6689708b537346dec55a7c908763e8f48b64b72e065c2cf8426100762c7d45f3 \
+    --hash=sha256:dc9fc1c926b5db8e4cf9ddf48facd9550292af7ef60ff57aa26cc382505d74a5
+    # via spatialmath-python
 anyio==4.0.0 \
     --hash=sha256:cfdb2b588b9fc25ede96d8db56ed50848b0b649dca3dd1df0b11f683bb9e0b5f \
     --hash=sha256:f7ed51751b2c2add651e5747c891b47e26d2a21be5d32d9311dfe9692f3e5d7a
@@ -217,6 +221,10 @@ click==8.1.7 \
     --hash=sha256:ae74fb96c20a0277a1d615f1e4d73c8414f5a98db8b799a7931d1582f3390c28 \
     --hash=sha256:ca9853ad459e787e2192211578cc907e7594e294c7ccc834310722b41b9ca6de
     # via -r third_party/python/requirements.in
+colored==2.2.3 \
+    --hash=sha256:1318b2fb8e0313d39724b8ab0707af79d1e2c0e60710b608a00e70fe0f84ff5d \
+    --hash=sha256:1905ae45fa2b7fd63a8b4776586e63aeaba4df8db225b72b78fd167408558983
+    # via ansitable
 comm==0.1.4 \
     --hash=sha256:354e40a59c9dd6db50c5cc6b4acc887d82e9603787f83b68c01a80a923984d15 \
     --hash=sha256:6d52794cba11b36ed9860999cd10fd02d6b2eac177068fdd585e1e2f8a96e67a
@@ -710,7 +718,9 @@ matplotlib==3.6.2 \
     --hash=sha256:ec9be0f4826cdb3a3a517509dcc5f87f370251b76362051ab59e42b6b765f8c4 \
     --hash=sha256:f04f97797df35e442ed09f529ad1235d1f1c0f30878e2fe09a2676b71a8801e0 \
     --hash=sha256:f41e57ad63d336fe50d3a67bb8eaa26c09f6dda6a59f76777a99b8ccd8e26aec
-    # via -r third_party/python/requirements.in
+    # via
+    #   -r third_party/python/requirements.in
+    #   spatialmath-python
 matplotlib-inline==0.1.6 \
     --hash=sha256:f1f41aab5328aa5aaea9b16d083b128102f8712542f819fe7e6a420ff581b311 \
     --hash=sha256:f887e5f10ba98e8d2b150ddcf4702c1e5f8b3a20005eb0f74bfdbd360ee6f304
@@ -805,6 +815,7 @@ numpy==1.23.4 \
     #   pandas
     #   scikit-learn
     #   scipy
+    #   spatialmath-python
 nvidia-cublas-cu12==12.1.3.1 \
     --hash=sha256:2b964d60e8cf11b5e1073d179d85fa340c120e99b3067558f3cf98dd69d02906 \
     --hash=sha256:ee53ccca76a6fc08fb9701aa95b6ceb242cdaab118c3bb152af4e579af792728
@@ -1392,7 +1403,9 @@ scipy==1.11.2 \
     --hash=sha256:f28f1f6cfeb48339c192efc6275749b2a25a7e49c4d8369a28b6591da02fbc9a \
     --hash=sha256:f73102f769ee06041a3aa26b5841359b1a93cc364ce45609657751795e8f4a4a \
     --hash=sha256:fa4909c6c20c3d91480533cddbc0e7c6d849e7d9ded692918c76ce5964997898
-    # via scikit-learn
+    # via
+    #   scikit-learn
+    #   spatialmath-python
 send2trash==1.8.2 \
     --hash=sha256:a384719d99c07ce1eefd6905d2decb6f8b7ed054025bb0e618919f945de4f679 \
     --hash=sha256:c132d59fa44b9ca2b1699af5c86f57ce9f4c5eb56629d5d55fbb7a35f84e2312
@@ -1416,6 +1429,10 @@ soupsieve==2.4.1 \
     --hash=sha256:1c1bfee6819544a3447586c889157365a27e10d88cde3ad3da0cf0ddf646feb8 \
     --hash=sha256:89d12b2d5dfcd2c9e8c22326da9d9aa9cb3dfab0a83a024f05704076ee8d35ea
     # via beautifulsoup4
+spatialmath-python==1.1.8 \
+    --hash=sha256:379f4f06ed7559d0757c554227a53b51d36c3a1e5f54a6abe90f37105c8dc96a \
+    --hash=sha256:760000200ead76a8324f2591bc871631dd7af2c1260369cd941ae29436e6aa4e
+    # via -r third_party/python/requirements.in
 stack-data==0.6.2 \
     --hash=sha256:32d2dd0376772d01b6cb9fc996f3c8b57a357089dec328ed4b6553d037eaf815 \
     --hash=sha256:cbb2a53eb64e5785878201a97ed7c7b94883f48b87bfb0bbe8b623c74679e4a8
@@ -1523,6 +1540,7 @@ typing-extensions==4.7.1 \
     --hash=sha256:b75ddc264f0ba5615db7ba217daeb99701ad295353c45f9e95963337ceeeffb2
     # via
     #   filelock
+    #   spatialmath-python
     #   torch
 uri-template==1.3.0 \
     --hash=sha256:0e00f8eb65e18c7de20d595a14336e9f337ead580c70934141624b6d1ffdacc7 \

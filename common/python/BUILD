@@ -16,15 +16,8 @@ py_binary(
     requirement("pandas"),
     requirement("scikit-learn"),
     requirement("tqdm"),
-    "@drake//bindings/pydrake",
+    "//experimental/beacon_sim:environment_builder",
     "//experimental/beacon_sim:plot_trials",
-    "//experimental/beacon_dist:model",
-    "//experimental/beacon_dist:utils",
-    "//experimental/beacon_dist:train.binary",
-    "//experimental/beacon_dist:multiview_dataset",
-    "//experimental/beacon_dist:generate_letter_dataset",
-    "//experimental/beacon_dist:generate_ycb_dataset",
-    "@sophus_lie//:liegroups_python",
   ],
 )
 

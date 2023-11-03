@@ -25,3 +25,4 @@ line_profiler==4.0.3
 PyYAML==6.0
 PyGObject==3.44.1
 click==8.1.7
+spatialmath-python==1.1.8

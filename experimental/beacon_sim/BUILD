@@ -683,3 +683,16 @@ cc_library(
     "//planning:belief_road_map",
   ]
 )
+
+py_library(
+  name = "environment_builder",
+  srcs = ["environment_builder.py"],
+  deps = [
+    ":world_map_config_proto_py",
+    ":mapped_landmarks_proto_py",
+    requirement("matplotlib"),
+    requirement("numpy"),
+    requirement("spatialmath_python"),
+  ],
+  visibility =  ["//visibility:public"]
+)
