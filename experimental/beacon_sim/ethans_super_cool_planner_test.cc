@@ -32,7 +32,7 @@ StepCandidateFunc make_random_step_candidate_function(const planning::RoadMap &m
 
 using TerminateRolloutFunc = std::function<bool(const Candidate &, int)>;
 
-TerminateRolloutFunc make_terminate_func(const int max_steps) {
+TerminateRolloutFunc make_max_steps_terminate_func(const int max_steps) {
     return [max_steps]([[maybe_unused]] const Candidate &candidate, const int num_steps) {
         return num_steps >= max_steps;
     };
@@ -89,7 +89,7 @@ TEST(EthansSuperCoolPlannerTest, RolloutHappyCase) {
                             TransformType::INFORMATION);
 
     const StepCandidateFunc step_func = make_random_step_candidate_function(road_map, belief_updater);
-    const TerminateRolloutFunc terminate_rollout_func = make_terminate_func(10);
+    const TerminateRolloutFunc terminate_rollout_func = make_max_steps_terminate_func(10);
 
     // Action
 
@@ -152,14 +152,12 @@ TEST(EthansSuperCoolPlannerTest, CullingHappyCase) {
                             std::nullopt,
                             TransformType::INFORMATION);
 
-    const SuccessorFunc successor_func = make_successor_function(road_map);
+    const StepCandidateFunc step_func = make_random_step_candidate_function(road_map, belief_updater);
     const TerminateRolloutFunc terminate_rollout_func = make_max_steps_terminate_func(10);
 
-    auto candidates = rollout(road_map, 
+    auto candidates = rollout(step_func,
                               terminate_rollout_func, 
                               candidate,
-                              successor_func, 
-                              belief_updater, 
                               roll_out_args);
 
     const ScoringFunc scoring_func = make_goal_distance_scoring_function(road_map);
@@ -203,8 +201,5 @@ TEST(EthansSuperCoolPlannerTest, CullingHappyCase) {
     }
     EXPECT_TRUE(num_top_candidates_in_culled >= num_top_candidates);
 }
-
-}  // namespace robot::experimental::beacon_sim
-
 
 }  // namespace robot::experimental::beacon_sim
