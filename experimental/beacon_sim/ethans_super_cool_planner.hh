@@ -45,11 +45,12 @@ struct PlanningArgs {
    int num_candidates;
 };
 
-using GoalCheckFunctionType = std::function<bool(const Candidate&)>;
-std::vector<int> plan( const planning::RoadMap& map, 
+// If positive, valid solution found
+using GoalScoreFunctionType = std::function<float(const Candidate&)>;
+std::vector<int> plan( const Candidate& start_candidate,
                       const RolloutFunctionType& rollout_function,
                       const CullingFunctionType& culling_function,
-                      const GoalCheckFunctionType& goal_check_function,
+                      const GoalScoreFunctionType& goal_score_function,
                       const PlanningArgs& planning_args );
 
 }  // namespace robot::experimental::beacon_sim

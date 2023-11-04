@@ -72,33 +72,38 @@ CullingFunctionType make_cull_the_heard_function(
     };
 }
 
-// std::vector<int> plan(
-//     const planning::RoadMap& map, 
-//     const RolloutFunctionType& rollout_function,
-//     const CullingFunctionType& culling_function,
-//     const GoalCheckFunctionType& goal_check_function,
-//     const PlanningArgs& planning_args) {
+std::vector<int> plan(
+    const Candidate& start_candidate,
+    const RolloutFunctionType& rollout_function,
+    const CullingFunctionType& culling_function,
+    const GoalScoreFunctionType& goal_score_function,
+    const PlanningArgs& planning_args) {
 
-//     auto candidates = std::vector<Candidate>(planning_args.num_candidates, start_state);
+    auto candidates = std::vector<Candidate>(planning_args.num_candidates, start_candidate);
+    Candidate the_winning_candidate;
+    float the_winning_score = std::numeric_limits<float>::min();
 
-//     std::vector<Candidate> successful_candidates;  // list of candidates that have reached the goal
+    bool terminate = false;
+    while (!terminate) {
+        std::vector<Candidate> successors;
+        // rollout each of the candidates
+        for (const auto& candidate : candidates) {
+            const auto& new_rollouts = rollout_function( candidate ); // produce more candidates
+            std::copy(new_rollouts.begin(), new_rollouts.end(), std::back_inserter(successors));
+        }
+        // check the goal score of each candidate
+        for (const auto& candidate : successors) {
+            if (goal_score_function(candidate) > the_winning_score) {
+                the_winning_candidate = candidate;
+                the_winning_score = goal_score_function(candidate);
+            }
+        }
+        // reduce the number of candidates
+        candidates = culling_function(candidates);
+    } 
 
-//     bool terminate = false;
-//     while (!terminate) {
-//         std::vector<Candidate> successors;
-//         for (const auto& candidate : candidates) {
-//             const auto& new_rollouts = rollout( ); // produce more candidates
-//             std::copy(new_rollouts.begin(), new_rollouts.end(), std::back_inserter(successors));
-//         }
-//         for (const auto& candidate : successors) {
-//             // TODO
-//         }
-//         candidates = cull_the_heard(candidates, scoring_function, planning_args.culling_args);
-//     }
-
-//     // find the best candidate
-//     const auto& best_candidate = candidates.front();
-//     return best_candidate.path_history;
-// }
+    // find the best candidate
+    return the_winning_candidate.path_history;
+}
 
 }  // namespace robot::experimental::beacon_sim
