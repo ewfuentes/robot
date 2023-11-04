@@ -1,5 +1,5 @@
 #include "experimental/beacon_sim/ethans_super_cool_planner.hh"
-
+#include "common/check.hh"
 #include <iterator>
 
 namespace robot::experimental::beacon_sim {
@@ -28,44 +28,56 @@ RolloutFunctionType make_rollout_function(
 
 CullingFunctionType make_cull_the_heard_function(
     const std::function<double(const Candidate&)>& scoring_function,
+    const Candidate& start_candidate,
     const CullingArgs& cullingArgs) {
 
-    return [&scoring_function, &cullingArgs](const std::vector<Candidate>& candidates) {
+    return [&scoring_function, &cullingArgs, &start_candidate](const std::vector<Candidate>& candidates) {
         std::vector<Candidate> survivors;
-        std::vector<bool> used(candidates.size(), false);
 
-        unsigned int num_random_survivors = cullingArgs.num_survivors * cullingArgs.entropy_proxy;
-        auto num_best_survivors = cullingArgs.num_survivors - num_random_survivors;
-
-        // pick the random survivors
-        for (unsigned int i = 0; i < num_random_survivors; i++) {
-            int index = rand() % candidates.size();
-            while (used[index]) {
-                index = rand() % candidates.size();
+        // score candidates, remove all invalid candidates
+        std::vector<std::pair<double, Candidate>> scored_candidates;
+        for (unsigned int i = 0; i < candidates.size(); i++) {
+            double candidate_score = scoring_function(candidates[i]);
+            if (candidate_score < 0) {
+                continue;
             }
-            used[index] = true;
-            survivors.push_back(candidates[index]);
+            scored_candidates.push_back(
+                std::make_pair(candidate_score, candidates[i]));
         }
 
-        // pick the best survivors
-        if (num_best_survivors > 0) {  // evaluate each candidate's score
-            std::vector<std::pair<double, Candidate>> scored_candidates;
-            for (unsigned int i = 0; i < candidates.size(); i++) {
-                if (used[i]) {
-                    continue;
-                }
-                scored_candidates.push_back(
-                    std::make_pair(scoring_function(candidates[i]), candidates[i]));
+        // sort the candidates by score
+        std::sort(scored_candidates.begin(), scored_candidates.end(),
+                [](const auto& a, const auto& b) {
+                    return a.first > b.first;  // high score is better
+                });
+
+        std::vector<bool> used(scored_candidates.size(), false);
+
+        CHECK(cullingArgs.entropy_proxy + cullingArgs.reseed_percentage <= 1.0); // can't have more than 100% of the population
+        int final_population = std::min(cullingArgs.max_num_survivors, candidates.size());
+        unsigned long num_random_survivors = final_population * cullingArgs.entropy_proxy;
+        unsigned long num_reseed_survivors = final_population * cullingArgs.reseed_percentage;
+        unsigned long num_best_survivors = final_population - num_random_survivors - num_reseed_survivors;
+        CHECK(num_best_survivors >= 0);
+
+        // pick the random survivors without replacement 
+        for (unsigned int i = 0; i < num_random_survivors; i++) {
+            int index = rand() % scored_candidates.size();
+            while (used[index]) {
+                index = rand() % scored_candidates.size();
             }
-            // sort the candidates by score
-            std::sort(scored_candidates.begin(), scored_candidates.end(),
-                    [](const auto& a, const auto& b) {
-                        return a.first > b.first;  // high score is better
-                    });
-            // take the best candidates
-            for (unsigned int i = 0; i < num_best_survivors; i++) {
-                survivors.push_back(scored_candidates[i].second);
-            }
+            used[index] = true;
+            survivors.push_back(scored_candidates[index].second);
+        }
+
+        // pick the best survivors, ignoring if they were picked in random
+        for (unsigned int i = 0; i < std::min(scored_candidates.size(), num_best_survivors); i++) {
+            survivors.push_back(scored_candidates[i].second);
+        }
+
+        // fill the rest of the survivors with reseeds
+        for (unsigned int i = 0; i < final_population - survivors.size(); i++) {
+            survivors.push_back(start_candidate);
         }
 
         return survivors;
@@ -79,11 +91,12 @@ std::vector<int> plan(
     const GoalScoreFunctionType& goal_score_function,
     const PlanningArgs& planning_args) {
 
-    auto candidates = std::vector<Candidate>(planning_args.num_candidates, start_candidate);
+    auto candidates = std::vector<Candidate>({start_candidate});
     Candidate the_winning_candidate;
     float the_winning_score = std::numeric_limits<float>::min();
 
     bool terminate = false;
+    unsigned int num_iterations = 0;
     while (!terminate) {
         std::vector<Candidate> successors;
         // rollout each of the candidates
@@ -100,6 +113,12 @@ std::vector<int> plan(
         }
         // reduce the number of candidates
         candidates = culling_function(candidates);
+
+        num_iterations++;
+        if (num_iterations > planning_args.max_iterations) {
+            terminate = true;
+        }
+
     } 
 
     // find the best candidate

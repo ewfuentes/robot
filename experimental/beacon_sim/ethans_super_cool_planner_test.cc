@@ -32,8 +32,12 @@ StepCandidateFunc make_random_step_candidate_function(const planning::RoadMap &m
 
 using TerminateRolloutFunc = std::function<bool(const Candidate &, int)>;
 
-TerminateRolloutFunc make_max_steps_terminate_func(const int max_steps) {
-    return [max_steps]([[maybe_unused]] const Candidate &candidate, const int num_steps) {
+TerminateRolloutFunc make_max_steps_or_goal_terminate_func(const int max_steps, const planning::RoadMap& map) {
+    return [max_steps, &map](const Candidate &candidate, const int num_steps) {
+        // if at goal, terminate rollout 
+        if (candidate.path_history.back() == map.GOAL_IDX) {
+            return true;
+        }
         return num_steps >= max_steps;
     };
 }
@@ -89,7 +93,7 @@ TEST(EthansSuperCoolPlannerTest, RolloutHappyCase) {
                             TransformType::INFORMATION);
 
     const StepCandidateFunc step_func = make_random_step_candidate_function(road_map, belief_updater);
-    const TerminateRolloutFunc terminate_rollout_func = make_max_steps_terminate_func(10);
+    const TerminateRolloutFunc terminate_rollout_func = make_max_steps_or_goal_terminate_func(10, road_map);
 
     // Action
 
@@ -152,19 +156,19 @@ TEST(EthansSuperCoolPlannerTest, CullingHappyCase) {
                             TransformType::INFORMATION);
 
     const StepCandidateFunc step_func = make_random_step_candidate_function(road_map, belief_updater);
-    const TerminateRolloutFunc terminate_rollout_func = make_max_steps_terminate_func(10);
+    const TerminateRolloutFunc terminate_rollout_func = make_max_steps_or_goal_terminate_func(10, road_map);
     const RolloutFunctionType rollout_function = make_rollout_function(step_func, terminate_rollout_func, roll_out_args);
     auto candidates = rollout_function(candidate);
 
     const ScoringFunc scoring_func = make_goal_distance_scoring_function(road_map);
 
     CullingArgs culling_args = {
-        .num_survivors = 100,
+        .max_num_survivors = 100,
         .entropy_proxy = 0.2,
     };
 
     // Action
-    const CullingFunctionType culling_function = make_cull_the_heard_function(scoring_func, culling_args);
+    const CullingFunctionType culling_function = make_cull_the_heard_function(scoring_func, candidate, culling_args);
     auto culled_candidates = culling_function(candidates);
 
 
@@ -173,7 +177,7 @@ TEST(EthansSuperCoolPlannerTest, CullingHappyCase) {
         std::cout << "\t candidate: " << candidate << " with score " << scoring_func(candidate) << std::endl;
     }
     // Verification
-    EXPECT_TRUE(culled_candidates.size() == culling_args.num_survivors);
+    EXPECT_TRUE(culled_candidates.size() == culling_args.max_num_survivors);
 
     // Check that at least 1 - entropy_proxy % of the survivors have the top scores
     // It's at least because the random sampling happens first and could have picked the best 
@@ -185,7 +189,7 @@ TEST(EthansSuperCoolPlannerTest, CullingHappyCase) {
     std::sort(scored_candidates.begin(), scored_candidates.end(), [](const auto& a, const auto& b) {
         return a.first > b.first;
     });
-    unsigned int num_top_candidates = culling_args.num_survivors * (1.0 - culling_args.entropy_proxy);
+    unsigned int num_top_candidates = culling_args.max_num_survivors * (1.0 - culling_args.entropy_proxy);
     unsigned int num_top_candidates_in_culled = 0;
     double score_to_beat = scored_candidates[num_top_candidates - 1].first;
     for (const auto& candidate : culled_candidates) {
@@ -194,6 +198,84 @@ TEST(EthansSuperCoolPlannerTest, CullingHappyCase) {
         }
     }
     EXPECT_TRUE(num_top_candidates_in_culled >= num_top_candidates);
+}
+
+
+GoalScoreFunctionType make_goal_scoring_function(const planning::RoadMap& map,
+                                                 const int max_path_length
+                                                ) 
+{
+    return [](){
+        // if the candidate is not at the goal, return -inf  
+
+        // if the candidate is at the goal..
+        
+        // if the path length is acceptreturn 1 / trace(covariance)
+
+    };
+
+}
+TEST(EthansSuperCoolPlannerTest, PuttingItAllTogether) {
+    // Setup
+
+    const EkfSlamConfig ekf_config{
+        .max_num_beacons = 1,
+        .initial_beacon_uncertainty_m = 100.0,
+        .along_track_process_noise_m_per_rt_meter = 0.05,
+        .cross_track_process_noise_m_per_rt_meter = 0.05,
+        .pos_process_noise_m_per_rt_s = 0.0,
+        .heading_process_noise_rad_per_rt_meter = 1e-3,
+        .heading_process_noise_rad_per_rt_s = 0.0,
+        .beacon_pos_process_noise_m_per_rt_s = 1e-6,
+        .range_measurement_noise_m = 1e-1,
+        .bearing_measurement_noise_rad = 1e-1,
+        .on_map_load_position_uncertainty_m = 2.0,
+        .on_map_load_heading_uncertainty_rad = 0.5,
+    };
+
+    const auto &[road_map, ekf_slam, potential] = create_grid_environment(ekf_config, 0.5);
+
+
+    Candidate candidate = {
+        .belief = ekf_slam.estimate().robot_belief(),
+        .path_history = {road_map.START_IDX},
+    };
+
+    RollOutArgs roll_out_args = {
+        .num_roll_outs = 1000,
+    };
+
+    constexpr double max_sensor_range_m = 3.0;
+
+    planning::BeliefUpdater<RobotBelief> belief_updater =
+        make_belief_updater(road_map, 
+                            max_sensor_range_m,
+                            ekf_slam,
+                            std::nullopt,
+                            TransformType::INFORMATION);
+
+    const StepCandidateFunc step_func = make_random_step_candidate_function(road_map, belief_updater);
+    const TerminateRolloutFunc terminate_rollout_func = make_max_steps_or_goal_terminate_func(10, road_map);
+    const RolloutFunctionType rollout_function = make_rollout_function(step_func, terminate_rollout_func, roll_out_args);
+
+    const ScoringFunc scoring_func = make_goal_distance_scoring_function(road_map);
+
+    CullingArgs culling_args = {
+        .max_num_survivors = 100,
+        .entropy_proxy = 0.2,
+    };
+
+    const CullingFunctionType culling_function = make_cull_the_heard_function(scoring_func, candidate, culling_args);
+
+    // Action
+
+    const PlanningArgs planning_args = {
+        .max_iterations = 100,
+    };
+
+    std::vector<int> plan = plan(candidate, rollout_function, culling_function, planning_args);
+
+
 }
 
 }  // namespace robot::experimental::beacon_sim

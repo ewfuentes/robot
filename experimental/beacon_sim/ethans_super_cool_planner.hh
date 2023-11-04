@@ -32,21 +32,23 @@ RolloutFunctionType make_rollout_function ( const std::function<Candidate(const 
                                             const RollOutArgs& roll_out_args );
 
 struct CullingArgs {
-   unsigned int num_survivors;  // TODO: merge this with plannings args
+   unsigned long max_num_survivors;
    float entropy_proxy; // Number between 0 (only the best survive) and 1 (compleatly random selection of survivors)
+   float reseed_percentage; // Number between 0 (no reseeding) and 1 (all new candidates from start)
 };
 
 using CullingFunctionType = std::function<std::vector<Candidate>(const std::vector<Candidate>&)>;
-CullingFunctionType make_cull_the_heard_function( const std::function<double(const Candidate&)>& scoring_function,
+CullingFunctionType make_cull_the_heard_function( const std::function<double(const Candidate&)>& scoring_function, // if scoring function negative, kill the candidate
+                                                  const Candidate& start_candidate,
                                                   const CullingArgs& cullingArgs );
 
 
 struct PlanningArgs {
-   int num_candidates;
+   unsigned int max_iterations;
 };
 
 // If positive, valid solution found
-using GoalScoreFunctionType = std::function<float(const Candidate&)>;
+using GoalScoreFunctionType = std::function<double(const Candidate&)>;
 std::vector<int> plan( const Candidate& start_candidate,
                       const RolloutFunctionType& rollout_function,
                       const CullingFunctionType& culling_function,
