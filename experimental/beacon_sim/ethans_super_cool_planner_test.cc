@@ -93,10 +93,9 @@ TEST(EthansSuperCoolPlannerTest, RolloutHappyCase) {
 
     // Action
 
-    auto candidates = rollout(step_func, 
-                              terminate_rollout_func, 
-                              candidate,
-                              roll_out_args);
+    const RolloutFunctionType rollout_function = make_rollout_function(step_func, terminate_rollout_func, roll_out_args);
+
+    auto candidates = rollout_function(candidate);
 
     std::cout << "from initial candidate: " << candidate << std::endl;
     for (const auto &candidate : candidates) {
@@ -154,11 +153,8 @@ TEST(EthansSuperCoolPlannerTest, CullingHappyCase) {
 
     const StepCandidateFunc step_func = make_random_step_candidate_function(road_map, belief_updater);
     const TerminateRolloutFunc terminate_rollout_func = make_max_steps_terminate_func(10);
-
-    auto candidates = rollout(step_func,
-                              terminate_rollout_func, 
-                              candidate,
-                              roll_out_args);
+    const RolloutFunctionType rollout_function = make_rollout_function(step_func, terminate_rollout_func, roll_out_args);
+    auto candidates = rollout_function(candidate);
 
     const ScoringFunc scoring_func = make_goal_distance_scoring_function(road_map);
 
@@ -168,10 +164,8 @@ TEST(EthansSuperCoolPlannerTest, CullingHappyCase) {
     };
 
     // Action
-
-    auto culled_candidates = cull_the_heard(candidates,
-                                            scoring_func, 
-                                            culling_args);
+    const CullingFunctionType culling_function = make_cull_the_heard_function(scoring_func, culling_args);
+    auto culled_candidates = culling_function(candidates);
 
 
     std::cout << "Culled candidates to: " << std::endl;

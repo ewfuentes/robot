@@ -26,41 +26,30 @@ struct RollOutArgs {
     unsigned int num_roll_outs;
 };
 
-
-std::vector<Candidate> rollout ( const std::function<Candidate(const Candidate&)>& step_candidate,
-                                 const std::function<bool(const Candidate&, int)>& terminate_rollout,
-                                 const Candidate& candidate, 
-                                 const RollOutArgs& roll_out_args );
+using RolloutFunctionType = std::function<std::vector<Candidate>(const Candidate&)>;
+RolloutFunctionType make_rollout_function ( const std::function<Candidate(const Candidate&)>& step_candidate,
+                                            const std::function<bool(const Candidate&, int)>& terminate_rollout,
+                                            const RollOutArgs& roll_out_args );
 
 struct CullingArgs {
    unsigned int num_survivors;  // TODO: merge this with plannings args
    float entropy_proxy; // Number between 0 (only the best survive) and 1 (compleatly random selection of survivors)
-
 };
-std::vector<Candidate> cull_the_heard( const std::vector<Candidate>& candidates,
-                                      const std::function<double(const Candidate&)>& scoring_function,
-                                      const CullingArgs& cullingArgs );
+
+using CullingFunctionType = std::function<std::vector<Candidate>(const std::vector<Candidate>&)>;
+CullingFunctionType make_cull_the_heard_function( const std::function<double(const Candidate&)>& scoring_function,
+                                                  const CullingArgs& cullingArgs );
 
 
-//
-//std::function<double(const Candidate&)> make_scoring_function( const planning::RoadMap& map,
-//                                                               const Eigen::Vector2d& goal_state,
-//                                                               const planning::BeliefUpdater<RobotBelief>& belief_updater,
-//                                                               const std::vector<int>& beacons );
-//
-//
-//struct PlanningArgs {
-//    int num_candidates;
-//    RollOutArgs rollout_args;
-//   CullingArgs culling_args;
-//};
-//std::vector<int> plan( const planning::RoadMap& map, 
-//                       const Candidate& start_state,
-//                       const Eigen::Vector2d& goal_state,
-//                       const planning::BeliefUpdater<RobotBelief>& belief_updater,
-//                       const std::function<double(const Candidate&)>& scoring_function,
-//                       const std::function<std::vector<Candidate>(const planning::RoadMap&, const Candidate&, const planning::BeliefUpdater<RobotBelief>&, const RollOutArgs&)>& rollout_function,
-//                       const std::function<std::vector<Candidate>(const std::vector<Candidate>&, const std::function<double(const Candidate&)>&, const CullingArgs&)>& culling_function,
-//                       const PlanningArgs& planning_args );
-//
+struct PlanningArgs {
+   int num_candidates;
+};
+
+using GoalCheckFunctionType = std::function<bool(const Candidate&)>;
+std::vector<int> plan( const planning::RoadMap& map, 
+                      const RolloutFunctionType& rollout_function,
+                      const CullingFunctionType& culling_function,
+                      const GoalCheckFunctionType& goal_check_function,
+                      const PlanningArgs& planning_args );
+
 }  // namespace robot::experimental::beacon_sim
