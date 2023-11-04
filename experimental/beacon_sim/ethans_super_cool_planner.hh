@@ -27,13 +27,10 @@ struct RollOutArgs {
 };
 
 
-std::vector<Candidate> rollout ( const planning::RoadMap& map, 
+std::vector<Candidate> rollout ( const std::function<Candidate(const Candidate&)>& step_candidate,
                                  const std::function<bool(const Candidate&, int)>& terminate_rollout,
                                  const Candidate& candidate, 
-                                 const std::function<std::vector<planning::Successor<int>>(const int)>& successor_function,
-                                 const planning::BeliefUpdater<RobotBelief>& belief_updater,
                                  const RollOutArgs& roll_out_args );
-
 
 struct CullingArgs {
    unsigned int num_survivors;  // TODO: merge this with plannings args
@@ -45,6 +42,7 @@ std::vector<Candidate> cull_the_heard( const std::vector<Candidate>& candidates,
                                       const CullingArgs& cullingArgs );
 
 
+//
 //std::function<double(const Candidate&)> make_scoring_function( const planning::RoadMap& map,
 //                                                               const Eigen::Vector2d& goal_state,
 //                                                               const planning::BeliefUpdater<RobotBelief>& belief_updater,

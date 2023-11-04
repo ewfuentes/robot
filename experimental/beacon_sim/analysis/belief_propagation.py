@@ -25,46 +25,67 @@ class BeliefPropagation:
         M = self.model.H().transpose() @ inv(self.model.R) @ self.model.H()
         return G, R, M
 
-    def predict_covariance(self,P):
-        P = self.model.F() @ P @ self.model.F().transpose() + self.model.L() @ self.model.Q @ self.model.L().transpose()
+    def predict_covariance(self,P,backward=False):
+        if not backward:
+            P = self.model.F() @ P @ self.model.F().transpose() + self.model.L() @ self.model.Q @ self.model.L().transpose()
+        else:
+            P = inv(self.model.F()) @ (P - self.model.L() @ self.model.Q @ self.model.L().transpose()) @ inv(self.model.F().transpose())
         return P
 
-    def update_covariance(self,P):
-        n = P.shape[0]
-        S = self.model.H() @ P @ self.model.H().transpose() + self.model.M() @ self.model.R @ self.model.M().transpose()
-        K= P @ self.model.H().transpose() @ inv(S)
-        return (np.identity(n) - K @ self.model.H()) @ P
+    def update_covariance(self,P,backward=False):
+        if not backward:
+            n = P.shape[0]
+            S = self.model.H() @ P @ self.model.H().transpose() + self.model.M() @ self.model.R @ self.model.M().transpose()
+            K= P @ self.model.H().transpose() @ inv(S)
+            return (np.identity(n) - K @ self.model.H()) @ P
+        else:
+            n = P.shape[0]
+            Sbar = self.model.M() @ self.model.R @ self.model.M().transpose() - self.model.H() @ P @ self.model.H().transpose()
+            Kbar = P @ self.model.H().transpose() @ inv(Sbar)
+            return (np.identity(n) + Kbar @ self.model.H()) @ P
 
-    def predict_information(self, info):
-        return inv(self.predict_covariance(inv(info)))
+    def predict_information(self, info, backward=False):
+        return inv(self.predict_covariance(inv(info), backward=backward))
 
-    def update_information(self, info):
+    def update_information(self, info, backward=False):
         meas_info = self.model.H().transpose() @ inv(self.model.R) @ self.model.H()
-        return info + meas_info
-
-
-    def predict(self, state):
-        if self.filter_type == FilterType.Covariance:
-            return self.predict_covariance(state)
+        if not backward:
+            return info + meas_info
         else:
-            return self.predict_information(state)
+            return info - meas_info
 
-    def update(self, state):
-        if self.filter_type == FilterType.Covariance:
-            return self.update_covariance(state)
+
+    def predict(self, state, backward=False):
+        if self.filter_type == FilterType.COVARIANCE:
+            return self.predict_covariance(state, backward=backward)
         else:
-            return self.update_information(state)
+            return self.predict_information(state, backward=backward)
+
+    def update(self, state, backward=False):
+        if self.filter_type == FilterType.COVARIANCE:
+            return self.update_covariance(state, backward=backward)
+        else:
+            return self.update_information(state, backward=backward)
 
 
 
     #functions for propagating belief
-    def prop(self, P, k=1):
+    def prop(self, P, k=1, backward=False):
         """
         Propagates a belief P through k steps using EKF equations
         """
-        for i in range(k):
-            P = self.predict(P)
-            P = self.update(P)
+        if not backward:
+            for i in range(k):
+                P = self.predict(P, backward=False)
+                P = self.update(P, backward=False)
+        else:
+            #combined equation for backward prop
+            #S_bar = R - HPH'
+            #K_bar = P * H' * S_bat^{-1}
+            #P0 = F^{-1} * [ (I + K_bar*H)*P - Q ] * F'^{-1}'
+            for i in range(k):
+                P = self.update(P, backward=True)
+                P = self.predict(P, backward=True)
         return P
 
     def prop_tf(self, P, k=1, only_predict=False, return_tf=False):
