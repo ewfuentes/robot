@@ -144,6 +144,7 @@ cc_library(
   deps = [
     ":generate_observations",
     ":mapped_landmarks",
+    ":robot_belief",
     "@eigen//:eigen",
     "//common/liegroups:se2",
   ]
@@ -556,6 +557,27 @@ cc_library(
     deps = [
       ":ekf_slam",
       "//planning:probabilistic_road_map",
+    ]
+)
+
+
+cc_library(
+    name = "ethans_super_cool_planner",
+    hdrs = ["ethans_super_cool_planner.hh"],
+    srcs = ["ethans_super_cool_planner.cc"],
+    deps = [
+      ":robot_belief",
+      ":make_belief_updater",
+    ]
+)
+
+cc_test(
+    name = "ethans_super_cool_planner_test",
+    srcs = ["ethans_super_cool_planner_test.cc"],
+    deps = [
+      ":ethans_super_cool_planner",
+      ":test_helpers",
+      "@com_google_googletest//:gtest_main",
     ]
 )
 
