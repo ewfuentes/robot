@@ -55,4 +55,6 @@ std::vector<int> plan( const Candidate& start_candidate,
                       const GoalScoreFunctionType& goal_score_function,
                       const PlanningArgs& planning_args );
 
+std::ostream& operator<<(std::ostream& os, const Candidate& candidate);
+
 }  // namespace robot::experimental::beacon_sim

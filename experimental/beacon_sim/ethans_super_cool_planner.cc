@@ -109,6 +109,8 @@ std::vector<int> plan(
             if (goal_score_function(candidate) > the_winning_score) {
                 the_winning_candidate = candidate;
                 the_winning_score = goal_score_function(candidate);
+                std::cout << " set new winning candidate! Candidate score: " << the_winning_score << "\n";
+                std::cout << candidate << std::endl;
             }
         }
         // reduce the number of candidates
@@ -123,6 +125,17 @@ std::vector<int> plan(
 
     // find the best candidate
     return the_winning_candidate.path_history;
+}
+
+std::ostream& operator<<(std::ostream& os, const Candidate& candidate) {
+    os << "Candidate{"
+       << "belief_trace=" << candidate.belief.cov_in_robot.trace() 
+       << ", path_history=[";
+    for (const auto& node : candidate.path_history) {
+        os << node << ", ";
+    }
+    os << "]}";
+    return os;
 }
 
 }  // namespace robot::experimental::beacon_sim

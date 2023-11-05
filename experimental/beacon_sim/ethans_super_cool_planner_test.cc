@@ -42,16 +42,6 @@ TerminateRolloutFunc make_max_steps_or_goal_terminate_func(const int max_steps, 
     };
 }
 
-std::ostream& operator<<(std::ostream& os, const Candidate& candidate) {
-    os << "Candidate{"
-       << "belief_trace=" << candidate.belief.cov_in_robot.trace() 
-       << ", path_history=[";
-    for (const auto& node : candidate.path_history) {
-        os << node << ", ";
-    }
-    os << "]}";
-    return os;
-}
 
 TEST(EthansSuperCoolPlannerTest, RolloutHappyCase) {
     // Setup
@@ -110,10 +100,44 @@ TEST(EthansSuperCoolPlannerTest, RolloutHappyCase) {
 }
 
 using ScoringFunc = std::function<double(const Candidate&)>;
-ScoringFunc make_goal_distance_scoring_function( const planning::RoadMap& map ) {
-    return [&map](const Candidate& candidate) {
-        return -(map.point(candidate.path_history.back()) - map.point(map.GOAL_IDX)).norm();
+/*
+    If the scoring function is negative, the candidate is killed
+    If the scoring function is positive, the candidate is kept, larger scores are better solutions
+*/
+ScoringFunc make_goal_distance_scoring_function( const planning::RoadMap& map, 
+                                                 const unsigned long max_path_steps, 
+                                                 const double max_dist_from_goal_m ) {
+    return [&map, max_path_steps, max_dist_from_goal_m](const Candidate& candidate) {
+        // if the candidate is over the max path length, return -inf
+        if (candidate.path_history.size() > max_path_steps) {
+            return -std::numeric_limits<double>::infinity();
+        }
+        // 0 <= length_reward <= 1, larger means shorter path
+        double length_reward = (max_path_steps - candidate.path_history.size()) / max_path_steps;
+        // 0 <= goal_distance_reward <= 1, larger means closer to goal. MAP DEPENDENT
+        double goal_distance_reward = 1 - (max_dist_from_goal_m-(map.point(candidate.path_history.back()) - map.point(map.GOAL_IDX)).norm()) / max_dist_from_goal_m;
+        return 0.5 * length_reward + 0.5 * goal_distance_reward;
     };
+}
+/*
+    If the goal scoring function is negative, the path does not satisfy the constraints
+    If the goal scoring function is positive, the path satisfies the constraints, larger scores are better solutions
+*/
+GoalScoreFunctionType make_goal_scoring_function(const planning::RoadMap& map,
+                                                 const double max_trace
+                                                ) 
+{
+    return [&map, max_trace](const Candidate& candidate){
+        // if the candidate is not at the goal, or the covariance is too high, return -inf  
+        if (candidate.path_history.back() != map.GOAL_IDX || candidate.belief.cov_in_robot.trace() > max_trace) {
+            return -std::numeric_limits<double>::infinity();
+        }
+        
+        // if the path length is acceptreturn 1 / trace(covariance)
+        return 1 / candidate.belief.cov_in_robot.trace();
+
+    };
+
 }
 
 TEST(EthansSuperCoolPlannerTest, CullingHappyCase) {
@@ -160,7 +184,7 @@ TEST(EthansSuperCoolPlannerTest, CullingHappyCase) {
     const RolloutFunctionType rollout_function = make_rollout_function(step_func, terminate_rollout_func, roll_out_args);
     auto candidates = rollout_function(candidate);
 
-    const ScoringFunc scoring_func = make_goal_distance_scoring_function(road_map);
+    const ScoringFunc scoring_func = make_goal_distance_scoring_function(road_map, 10, 20);
 
     CullingArgs culling_args = {
         .max_num_survivors = 100,
@@ -201,20 +225,6 @@ TEST(EthansSuperCoolPlannerTest, CullingHappyCase) {
 }
 
 
-GoalScoreFunctionType make_goal_scoring_function(const planning::RoadMap& map,
-                                                 const int max_path_length
-                                                ) 
-{
-    return [](){
-        // if the candidate is not at the goal, return -inf  
-
-        // if the candidate is at the goal..
-        
-        // if the path length is acceptreturn 1 / trace(covariance)
-
-    };
-
-}
 TEST(EthansSuperCoolPlannerTest, PuttingItAllTogether) {
     // Setup
 
@@ -258,7 +268,7 @@ TEST(EthansSuperCoolPlannerTest, PuttingItAllTogether) {
     const TerminateRolloutFunc terminate_rollout_func = make_max_steps_or_goal_terminate_func(10, road_map);
     const RolloutFunctionType rollout_function = make_rollout_function(step_func, terminate_rollout_func, roll_out_args);
 
-    const ScoringFunc scoring_func = make_goal_distance_scoring_function(road_map);
+    const ScoringFunc scoring_func = make_goal_distance_scoring_function(road_map, 10, 20);
 
     CullingArgs culling_args = {
         .max_num_survivors = 100,
@@ -267,13 +277,20 @@ TEST(EthansSuperCoolPlannerTest, PuttingItAllTogether) {
 
     const CullingFunctionType culling_function = make_cull_the_heard_function(scoring_func, candidate, culling_args);
 
+    const GoalScoreFunctionType goal_score_function = make_goal_scoring_function(road_map, 100);
+
     // Action
 
     const PlanningArgs planning_args = {
         .max_iterations = 100,
     };
 
-    std::vector<int> plan = plan(candidate, rollout_function, culling_function, planning_args);
+    std::vector<int> resulting_path = plan(candidate, rollout_function, culling_function, goal_score_function, planning_args);
+
+    std::cout << "Resulting path: " << std::endl;
+    for (const auto &node : resulting_path) {
+        std::cout << "\t node: " << node << std::endl;
+    }
 
 
 }
