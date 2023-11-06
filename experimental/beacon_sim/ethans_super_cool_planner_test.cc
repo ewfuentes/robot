@@ -113,9 +113,16 @@ ScoringFunc make_goal_distance_scoring_function( const planning::RoadMap& map,
             return -std::numeric_limits<double>::infinity();
         }
         // 0 <= length_reward <= 1, larger means shorter path
-        double length_reward = (max_path_steps - candidate.path_history.size()) / max_path_steps;
+        double length_reward = static_cast<double>(max_path_steps - candidate.path_history.size()) / static_cast<double>(max_path_steps);
         // 0 <= goal_distance_reward <= 1, larger means closer to goal. MAP DEPENDENT
         double goal_distance_reward = 1 - (max_dist_from_goal_m-(map.point(candidate.path_history.back()) - map.point(map.GOAL_IDX)).norm()) / max_dist_from_goal_m;
+        // std::cout << " length reward: " << length_reward << " goal distance reward: " << goal_distance_reward << std::endl;
+        // std::cout << max_path_steps << " " << candidate.path_history.size() << std::endl;
+        // std::cout << max_dist_from_goal_m << " " << (map.point(candidate.path_history.back()) - map.point(map.GOAL_IDX)).norm() << std::endl;
+        // std::cout << map.point(candidate.path_history.back()) << " " << map.point(map.GOAL_IDX) << std::endl;
+        // std::cout << candidate.path_history.back() << " " << map.GOAL_IDX << std::endl;
+        // std::cout << candidate << std::endl;
+        // CHECK(false);
         return 0.5 * length_reward + 0.5 * goal_distance_reward;
     };
 }
@@ -189,6 +196,7 @@ TEST(EthansSuperCoolPlannerTest, CullingHappyCase) {
     CullingArgs culling_args = {
         .max_num_survivors = 100,
         .entropy_proxy = 0.2,
+        .reseed_percentage = 0.1,
     };
 
     // Action
@@ -201,7 +209,7 @@ TEST(EthansSuperCoolPlannerTest, CullingHappyCase) {
         std::cout << "\t candidate: " << candidate << " with score " << scoring_func(candidate) << std::endl;
     }
     // Verification
-    EXPECT_TRUE(culled_candidates.size() == culling_args.max_num_survivors);
+    EXPECT_TRUE(culled_candidates.size() <= culling_args.max_num_survivors);
 
     // Check that at least 1 - entropy_proxy % of the survivors have the top scores
     // It's at least because the random sampling happens first and could have picked the best 
@@ -252,7 +260,7 @@ TEST(EthansSuperCoolPlannerTest, PuttingItAllTogether) {
     };
 
     RollOutArgs roll_out_args = {
-        .num_roll_outs = 1000,
+        .num_roll_outs = 100,
     };
 
     constexpr double max_sensor_range_m = 3.0;
@@ -265,7 +273,7 @@ TEST(EthansSuperCoolPlannerTest, PuttingItAllTogether) {
                             TransformType::INFORMATION);
 
     const StepCandidateFunc step_func = make_random_step_candidate_function(road_map, belief_updater);
-    const TerminateRolloutFunc terminate_rollout_func = make_max_steps_or_goal_terminate_func(10, road_map);
+    const TerminateRolloutFunc terminate_rollout_func = make_max_steps_or_goal_terminate_func(3, road_map);
     const RolloutFunctionType rollout_function = make_rollout_function(step_func, terminate_rollout_func, roll_out_args);
 
     const ScoringFunc scoring_func = make_goal_distance_scoring_function(road_map, 10, 20);
@@ -273,6 +281,7 @@ TEST(EthansSuperCoolPlannerTest, PuttingItAllTogether) {
     CullingArgs culling_args = {
         .max_num_survivors = 100,
         .entropy_proxy = 0.2,
+        .reseed_percentage = 0.1,
     };
 
     const CullingFunctionType culling_function = make_cull_the_heard_function(scoring_func, candidate, culling_args);

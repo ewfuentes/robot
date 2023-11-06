@@ -61,13 +61,26 @@ CullingFunctionType make_cull_the_heard_function(
         CHECK(num_best_survivors >= 0);
 
         // pick the random survivors without replacement 
+        int num_unused = scored_candidates.size();
         for (unsigned int i = 0; i < num_random_survivors; i++) {
-            int index = rand() % scored_candidates.size();
-            while (used[index]) {
-                index = rand() % scored_candidates.size();
+            int unused_index = rand() % num_unused;
+            int index = 0;
+            for (unsigned int j = 0; j < scored_candidates.size(); j++) {
+                if (!used[j]) {
+                    if (index == unused_index) {
+                        index = j;
+                        break;
+                    }
+                    index++;
+                }
             }
+
             used[index] = true;
             survivors.push_back(scored_candidates[index].second);
+            num_unused--;
+            if (num_unused == 0) {
+                break;
+            }
         }
 
         // pick the best survivors, ignoring if they were picked in random
@@ -114,7 +127,7 @@ std::vector<int> plan(
             }
         }
         // reduce the number of candidates
-        candidates = culling_function(candidates);
+        candidates = culling_function(successors);
 
         num_iterations++;
         if (num_iterations > planning_args.max_iterations) {
