@@ -1,4 +1,4 @@
-load("@pip//:requirements.bzl", "requirement")
+load("@pip//:requirements.bzl", "requirement", "data_requirement")
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
 load("@rules_python//python:defs.bzl", "py_binary")
 
@@ -7,9 +7,11 @@ py_binary(
   srcs = ["jupyter_notebook.py"],
   data = [
     "//experimental/beacon_sim:correlated_beacons_python.so",
+    data_requirement("jupyterlab"),
   ],
   deps = [
-    requirement("notebook"),
+    requirement("jupyterlab"),
+    requirement("ipympl"),
     requirement("matplotlib"),
     requirement("Pillow"),
     requirement("numpy"),
