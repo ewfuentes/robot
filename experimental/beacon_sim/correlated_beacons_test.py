@@ -1,5 +1,6 @@
 import unittest
 import numpy as np
+import time
 
 from experimental.beacon_sim import correlated_beacons_python as cb
 
@@ -184,6 +185,25 @@ class CorrelatedBeaconsTest(unittest.TestCase):
 
         # Verification
         self.assertAlmostEqual(np.exp(log_prob), p_beacon * (1-p_beacon), places=6)
+
+    def test_large_num_beacons_perf(self):
+        # Setup
+        p_beacon = 0.99
+        p_no_beacons = 0.009
+
+        bc = cb.BeaconClique(
+            p_beacon=p_beacon,
+            p_no_beacons=p_no_beacons,
+            members=list(range(50)),
+        )
+
+        start_time = time.time()
+        _ = cb.create_correlated_beacons(bc)
+        delta_t_s = time.time() - start_time
+
+        # Action
+        self.assertLess(delta_t_s, 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

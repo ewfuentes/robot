@@ -53,7 +53,7 @@ auto logsumexp(const auto &terms) {
 drake::symbolic::Expression compute_marginal_log_prob(const int n,
                                                       const drake::symbolic::Variable &phi,
                                                       const drake::symbolic::Variable &psi,
-                                                      const drake::symbolic::Variable &bias) {
+                                                      const double bias) {
     const auto kth_term = [&phi, &psi, &bias](const int n,
                                               const int k) -> drake::symbolic::Expression {
         return std::log(static_cast<double>(math::n_choose_k(n, k))) +
@@ -71,7 +71,7 @@ drake::symbolic::Expression compute_marginal_log_prob(const int n,
 drake::symbolic::Expression compute_total_log_prob(const int n,
                                                    const drake::symbolic::Variable &phi,
                                                    const drake::symbolic::Variable &psi,
-                                                   const drake::symbolic::Variable &bias) {
+                                                   const double bias) {
     const auto kth_term = [&phi, &psi, &bias](const int n,
                                               const int k) -> drake::symbolic::Expression {
         return std::log(static_cast<double>(math::n_choose_k(n, k))) +
@@ -268,19 +268,16 @@ BeaconPotential create_correlated_beacons(const BeaconClique &clique) {
     const auto precision_matrix_vars = program.NewContinuousVariables(2, "prec");
     const auto &diag = precision_matrix_vars[0];
     const auto &off_diag = precision_matrix_vars[1];
-    const auto log_norm_var = program.NewContinuousVariables(1, "offset");
-    const auto &log_norm = log_norm_var[0];
-    program.AddLinearEqualityConstraint(-log_norm, std::log(clique.p_no_beacons));
+    const double log_norm = -std::log(clique.p_no_beacons);
     program.AddConstraint(compute_total_log_prob(clique.members.size(), diag, off_diag, log_norm) ==
                           0.0);
     program.AddConstraint(compute_marginal_log_prob(clique.members.size(), diag, off_diag,
                                                     log_norm) == std::log(clique.p_beacon));
-    program.AddCost(diag * diag + off_diag * off_diag + log_norm * log_norm);
+    program.AddCost(diag * diag + off_diag * off_diag);
     // Set an initial guess away from 0.0. I'm not sure why, but it seems like the gradient is NaN
     // when all parameters equal 0.0.
     program.SetInitialGuess(diag, 1.0);
     program.SetInitialGuess(off_diag, 1.0);
-    program.SetInitialGuess(log_norm, 1.0);
 
     const auto result = Solve(program);
 
@@ -294,6 +291,6 @@ BeaconPotential create_correlated_beacons(const BeaconClique &clique) {
         }
     }
 
-    return BeaconPotential(precision, result.GetSolution(log_norm), clique.members);
+    return BeaconPotential(precision, log_norm, clique.members);
 }
 }  // namespace robot::experimental::beacon_sim
