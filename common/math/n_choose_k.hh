@@ -1,12 +1,12 @@
 
+#include <cstdint>
+
 namespace robot::math {
-constexpr int n_choose_k(const int n, const int k) {
-    int num = 1;
-    int den = 1;
+constexpr std::uint64_t n_choose_k(const int n, const int k) {
+    std::uint64_t out = 1;
     for (int i = 1; i <= k; i++) {
-        num *= n + 1 - i;
-        den *= i;
+        out = (out * (n - k + i)) / i;
     }
-    return num / den;
+    return out;
 }
 }  // namespace robot::math
