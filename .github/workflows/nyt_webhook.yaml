@@ -23,6 +23,6 @@ jobs:
     steps:
       - name: ping 
         run: |
-          date --utc "+%b %d, %Y" | xargs -I '{}' curl {{ env.webhook_url }} -H "Content-Type: application/json" -d '{"Date": "'{}'" }'
+          date --utc "+%b %d, %Y" | xargs -I '{}' curl ${{ env.webhook_url }} -H "Content-Type: application/json" -d '{"Date": "'{}'" }'
 
 
