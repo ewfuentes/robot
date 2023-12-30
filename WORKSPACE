@@ -246,6 +246,13 @@ http_archive(
   sha256 = "9bd940ecb810aa6af15372436731a8fb898abf170342acf95850e8ce2747eda8",
 )
 
+http_archive(
+  name = "json",
+  urls = ["https://github.com/nlohmann/json/archive/refs/tags/v3.11.3.zip"],
+  strip_prefix = "json-3.11.3",
+  sha256 = "04022b05d806eb5ff73023c280b68697d12b93e1b7267a0b22a1a39ec7578069"
+)
+
 # Hedron's Compile Commands Extractor for Bazel
 # https://github.com/hedronvision/bazel-compile-commands-extractor
 http_archive(
