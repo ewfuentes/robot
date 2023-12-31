@@ -118,3 +118,18 @@ cc_test(
     "@com_google_googletest//:gtest_main",
   ]
 )
+
+cc_library(
+  name = "id_a_star",
+  hdrs = ["id_a_star.hh"],
+  visibility = ["//visibility:public"],
+)
+
+cc_test(
+  name = "id_a_star_test",
+  srcs = ["id_a_star_test.cc"],
+  deps = [
+    ":id_a_star",
+    "@com_google_googletest//:gtest_main",
+  ]
+)
