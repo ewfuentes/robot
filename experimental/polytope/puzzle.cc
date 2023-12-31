@@ -31,19 +31,33 @@ std::string compute_inverse_move(const std::string &move_name) {
         return "-" + move_name;
     }
 }
-}
+}  // namespace
 
-std::optional<std::vector<std::string>> solve(const Puzzle& puzzle, const Puzzle::State& initial_state,
-                       const Puzzle::State& solution_state, const int num_wildcards) {
+std::optional<std::vector<std::string>> solve(const Puzzle &puzzle,
+                                              const Puzzle::State &initial_state,
+                                              const Puzzle::State &solution_state,
+                                              const int num_wildcards) {
     const auto initial_search_state = std::make_tuple(std::string(""), initial_state);
-    const auto successors_for_state = [&puzzle](const auto& search_state) {
-        const auto &[prev_move, prev_state] = search_state;
-        const auto inverse_move = compute_inverse_move(prev_move);
-        std::vector<planning::Successor<std::tuple<std::string, Puzzle::State>>> out;
-        for (const auto& [name, action] : puzzle.actions) {
-            if (name == inverse_move) {
+
+    std::unordered_map<std::string, std::vector<std::pair<std::string, Puzzle::Move>>>
+        valid_moves_from_move;
+    valid_moves_from_move[""] = {};
+    for (const auto &key_and_move : puzzle.actions) {
+        valid_moves_from_move[""].push_back(key_and_move);
+        valid_moves_from_move[key_and_move.first] = {};
+        const auto inverse_move = compute_inverse_move(key_and_move.first);
+        for (const auto &other_key_and_move : puzzle.actions) {
+            if (other_key_and_move.first == inverse_move) {
                 continue;
             }
+            valid_moves_from_move[key_and_move.first].push_back(other_key_and_move);
+        }
+    }
+
+    const auto successors_for_state = [valid_moves_from_move](const auto &search_state) {
+        const auto &[prev_move, prev_state] = search_state;
+        std::vector<planning::Successor<std::tuple<std::string, Puzzle::State>>> out;
+        for (const auto &[name, action] : valid_moves_from_move.at(prev_move)) {
             out.push_back({
                 .state = std::make_tuple(name, action(prev_state)),
                 .edge_cost = 1,
@@ -52,7 +66,17 @@ std::optional<std::vector<std::string>> solve(const Puzzle& puzzle, const Puzzle
         return out;
     };
 
-    const auto heuristic = []([[maybe_unused]] const auto &search_state) {return 0.0;};
+    const auto heuristic = [solution_state](const auto &search_state) {
+        int error_count = 0;
+        const auto &[move, state] = search_state;
+        for (int i = 0; i < static_cast<int>(state.size()); ++i) {
+            if (state[i] != solution_state[i]) {
+                ++error_count;
+            }
+        }
+        // One move can fix up to 8 errors, so we divide by 8
+        return error_count / 8.0;
+    };
 
     const auto termination_check = [&solution_state, num_wildcards](const auto &search_state) {
         int error_count = 0;
@@ -65,8 +89,8 @@ std::optional<std::vector<std::string>> solve(const Puzzle& puzzle, const Puzzle
         return error_count <= num_wildcards;
     };
 
-    const auto maybe_solution = planning::a_star(initial_search_state, successors_for_state,
-                                       heuristic, termination_check);
+    const auto maybe_solution =
+        planning::a_star(initial_search_state, successors_for_state, heuristic, termination_check);
     if (!maybe_solution.has_value()) {
         return std::nullopt;
     }
@@ -79,4 +103,4 @@ std::optional<std::vector<std::string>> solve(const Puzzle& puzzle, const Puzzle
     }
     return out;
 }
-}
+}  // namespace robot::experimental::polytope

@@ -15,6 +15,8 @@ struct Puzzle {
     std::unordered_map<std::string, Move> actions;
 };
 
-std::optional<std::vector<std::string>> solve(const Puzzle& puzzle, const Puzzle::State& initial_state,
-                       const Puzzle::State& solution_state, const int num_wildcards);
+std::optional<std::vector<std::string>> solve(const Puzzle& puzzle,
+                                              const Puzzle::State& initial_state,
+                                              const Puzzle::State& solution_state,
+                                              const int num_wildcards);
 }  // namespace robot::experimental::polytope
