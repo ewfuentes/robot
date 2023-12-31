@@ -41,9 +41,10 @@ struct CostLimitedDFSResult {
 
 template <typename State, typename SuccessorFunc, typename HeuristicFunc, typename GoalCheck>
 CostLimitedDFSResult<State> cost_limited_dfs(const State &initial_state,
-                                      const SuccessorFunc &successors_for_state,
-                                      const HeuristicFunc &heuristic,
-                                      const GoalCheck &termination_check, const double cost_bound);
+                                             const SuccessorFunc &successors_for_state,
+                                             const HeuristicFunc &heuristic,
+                                             const GoalCheck &termination_check,
+                                             const double cost_bound);
 }  // namespace detail
 
 // Implementation of Iterative Deepening A* (IDA*) search.
@@ -54,9 +55,9 @@ CostLimitedDFSResult<State> cost_limited_dfs(const State &initial_state,
 // GoalCheck returns true if the node is a goal state.
 template <typename State, typename SuccessorFunc, typename HeuristicFunc, typename GoalCheck>
 std::optional<IDAStarResult<State>> id_a_star(const State &initial_state,
-                                       const SuccessorFunc &successors_for_state,
-                                       const HeuristicFunc &heuristic,
-                                       const GoalCheck &termination_check) {
+                                              const SuccessorFunc &successors_for_state,
+                                              const HeuristicFunc &heuristic,
+                                              const GoalCheck &termination_check) {
     bool run = true;
     double cost_bound = heuristic(initial_state);
     int num_nodes_visited = 0;
@@ -87,9 +88,10 @@ std::optional<IDAStarResult<State>> id_a_star(const State &initial_state,
 namespace detail {
 template <typename State, typename SuccessorFunc, typename HeuristicFunc, typename GoalCheck>
 CostLimitedDFSResult<State> cost_limited_dfs(const State &initial_state,
-                                 const SuccessorFunc &successors_for_state,
-                                 const HeuristicFunc &heuristic, const GoalCheck &termination_check,
-                                 const double cost_bound) {
+                                             const SuccessorFunc &successors_for_state,
+                                             const HeuristicFunc &heuristic,
+                                             const GoalCheck &termination_check,
+                                             const double cost_bound) {
     struct StackFrame {
         State state;
         double cost_to_come;

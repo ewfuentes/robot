@@ -1,5 +1,6 @@
 
 #include "planning/id_a_star.hh"
+
 #include "gtest/gtest.h"
 
 namespace robot::planning {
@@ -20,24 +21,19 @@ std::vector<Successor<NodeId>> successors_for_node(const NodeId &node_id) {
     }
     return out;
 }
-}
+}  // namespace
 
 TEST(IDAStarTest, simple_test) {
     // Setup
     constexpr int START_NODE = 1;
     constexpr int GOAL_NODE = 4;
 
-    const auto goal_check = [](const NodeId &node) {
-        return node == GOAL_NODE;
-    };
+    const auto goal_check = [](const NodeId &node) { return node == GOAL_NODE; };
 
-    const auto heuristic = [](const NodeId &) {
-        return 0.0;
-    };
+    const auto heuristic = [](const NodeId &) { return 0.0; };
 
     // Action
-    const auto result = id_a_star(START_NODE, successors_for_node,
-                                  heuristic, goal_check);
+    const auto result = id_a_star(START_NODE, successors_for_node, heuristic, goal_check);
 
     // Verification
 
@@ -47,4 +43,4 @@ TEST(IDAStarTest, simple_test) {
     EXPECT_EQ(result->states[1], 2);
     EXPECT_EQ(result->states[2], 4);
 }
-}
+}  // namespace robot::planning
