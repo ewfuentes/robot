@@ -1,17 +1,17 @@
 
 #include "experimental/polytope/puzzle.hh"
 
-#include "planning/a_star.hh"
+#include "planning/id_a_star.hh"
+#include "common/check.hh"
 
 namespace std {
 // Add a std::hash specialization for tuple<string, vector<int>>
 template <>
 struct hash<std::tuple<std::string, std::vector<int>>> {
     size_t operator()(const std::tuple<std::string, std::vector<int>> &item) const {
-        hash<std::string> string_hasher;
         hash<int> int_hasher;
-        const auto &[name, state] = item;
-        size_t out = string_hasher(name);
+        const auto &[_, state] = item;
+        size_t out = 0;
         for (const auto &item : state) {
             out ^= int_hasher(item) << 1;
         }
@@ -66,21 +66,23 @@ std::optional<std::vector<std::string>> solve(const Puzzle &puzzle,
         return out;
     };
 
-    const auto heuristic = [solution_state](const auto &search_state) {
+    const auto heuristic = [&solution_state](const auto &search_state) -> double {
         int error_count = 0;
         const auto &[move, state] = search_state;
+        CHECK(state.size() == solution_state.size());
         for (int i = 0; i < static_cast<int>(state.size()); ++i) {
             if (state[i] != solution_state[i]) {
                 ++error_count;
             }
         }
         // One move can fix up to 8 errors, so we divide by 8
-        return error_count / 8.0;
+        return static_cast<int>(error_count / 8.0 + 0.5);
     };
 
     const auto termination_check = [&solution_state, num_wildcards](const auto &search_state) {
         int error_count = 0;
         const auto &[move, state] = search_state;
+        CHECK(state.size() == solution_state.size());
         for (int i = 0; i < static_cast<int>(state.size()); ++i) {
             if (state[i] != solution_state[i]) {
                 ++error_count;
@@ -90,7 +92,7 @@ std::optional<std::vector<std::string>> solve(const Puzzle &puzzle,
     };
 
     const auto maybe_solution =
-        planning::a_star(initial_search_state, successors_for_state, heuristic, termination_check);
+        planning::id_a_star(initial_search_state, successors_for_state, heuristic, termination_check);
     if (!maybe_solution.has_value()) {
         return std::nullopt;
     }

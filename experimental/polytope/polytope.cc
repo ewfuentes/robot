@@ -6,6 +6,7 @@
 #include "cxxopts.hpp"
 #include "experimental/polytope/puzzle.hh"
 #include "nlohmann/json.hpp"
+#include "common/check.hh"
 
 using json = nlohmann::json;
 
@@ -41,29 +42,37 @@ Puzzle parse_puzzle_line(const std::string& name, const std::string& info_string
 
     for (const auto& [action_name, action_info] : puzzle_info.items()) {
         std::vector<int> permutation(action_info.begin(), action_info.end());
+
+        for (int i = 0; i < static_cast<int>(permutation.size()); ++i) {
+            const auto iter = std::find(permutation.begin(), permutation.end(), i);
+            CHECK(iter != permutation.end());
+        }
         // permutation is vector where each element is the index of the element in the new state
         // compute the inverse permutation
         std::vector<int> inverse_permutation(permutation.size());
         for (int i = 0; i < static_cast<int>(permutation.size()); ++i) {
-            inverse_permutation[permutation[i]] = i;
+            inverse_permutation.at(permutation.at(i)) = i;
         }
 
-        const auto action = [permutation](const Puzzle::State& state) {
-            Puzzle::State new_state = state;
+        const auto action = [permutation = std::move(permutation)](const Puzzle::State& state) {
+            CHECK(state.size() == permutation.size());
+            Puzzle::State new_state;
             new_state.reserve(state.size());
+
             for (int i = 0; i < static_cast<int>(state.size()); ++i) {
-                new_state[i] = state[permutation[i]];
+                new_state.push_back(state.at(permutation.at(i)));
             }
             return new_state;
         };
 
         actions[action_name] = action;
 
-        const auto inverse_action = [inverse_permutation](const Puzzle::State& state) {
-            Puzzle::State new_state = state;
+        const auto inverse_action = [inverse_permutation = std::move(inverse_permutation)](const Puzzle::State& state) {
+            CHECK(state.size() == inverse_permutation.size());
+            Puzzle::State new_state;
             new_state.reserve(state.size());
             for (int i = 0; i < static_cast<int>(state.size()); ++i) {
-                new_state[i] = state[inverse_permutation[i]];
+                new_state.push_back(state.at(inverse_permutation.at(i)));
             }
             return new_state;
         };
@@ -114,13 +123,13 @@ std::tuple<std::vector<int>, std::vector<int>, std::vector<std::string>> parse_s
     std::vector<int> initial_state(initial_parts.size());
 
     for (int i = 0; i < static_cast<int>(solution_parts.size()); ++i) {
-        solution_state[i] = idx_from_name[solution_parts[i]];
-        initial_state[i] = idx_from_name[initial_parts[i]];
+        solution_state.at(i) = idx_from_name.at(solution_parts.at(i));
+        initial_state.at(i) = idx_from_name.at(initial_parts.at(i));
     }
 
     std::vector<std::string> name_from_idx(idx_from_name.size());
     for (const auto& [name, idx] : idx_from_name) {
-        name_from_idx[idx] = name;
+        name_from_idx.at(idx) = name;
     }
 
     return std::make_tuple(solution_state, initial_state, name_from_idx);

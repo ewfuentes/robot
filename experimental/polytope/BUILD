@@ -4,7 +4,8 @@ cc_library(
     hdrs = ["puzzle.hh"],
     srcs = ["puzzle.cc"],
     deps = [
-      "//planning:a_star",
+      "//planning:id_a_star",
+      "//common:check",
     ]
 )
 
@@ -15,5 +16,6 @@ cc_binary(
       ":puzzle",
       "@cxxopts",
       "@json",
+      "//common:check",
     ]
 )
