@@ -667,7 +667,7 @@ planning::BeliefUpdater<LandmarkRobotBelief> make_landmark_belief_updater(
             : std::nullopt;
 
     return [&road_map, max_sensor_range_m, &ekf,
-            edge_transform_cache = std::move(edge_transform_cache), &beacon_potential, &gen,
+            edge_transform_cache = std::move(edge_transform_cache), &beacon_potential, gen,
             max_num_components,
             type](const LandmarkRobotBelief &initial_belief, const int start_idx,
                   const int end_idx) mutable -> LandmarkRobotBelief {
