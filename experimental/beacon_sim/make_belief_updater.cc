@@ -758,7 +758,7 @@ planning::BeliefUpdater<LandmarkRobotBelief> make_landmark_belief_updater(
 
         const bool should_downsize_belief =
             max_num_components.has_value() &&
-            static_cast<int>(belief_from_config.size()) >= max_num_components.value();
+            static_cast<int>(belief_from_config.size()) > max_num_components.value();
 
         const auto &[new_belief_from_config, log_probability_mass_tracked_adjustment] =
             !should_downsize_belief

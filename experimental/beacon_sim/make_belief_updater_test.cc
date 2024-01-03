@@ -209,4 +209,60 @@ TYPED_TEST(MakeBeliefUpdaterTest, make_landmark_belief_updater_test) {
               updated_belief.belief_from_config.at("1").cov_in_robot.determinant());
 }
 
+TYPED_TEST(MakeBeliefUpdaterTest, make_subsampled_landmark_belief_updater_test) {
+    // Setup
+    const EkfSlamConfig ekf_config{
+        .max_num_beacons = 1,
+        .initial_beacon_uncertainty_m = 100.0,
+        .along_track_process_noise_m_per_rt_meter = 0.05,
+        .cross_track_process_noise_m_per_rt_meter = 0.05,
+        .pos_process_noise_m_per_rt_s = 0.0,
+        .heading_process_noise_rad_per_rt_meter = 1e-3,
+        .heading_process_noise_rad_per_rt_s = 0.0,
+        .beacon_pos_process_noise_m_per_rt_s = 1e-6,
+        .range_measurement_noise_m = 1e-1,
+        .bearing_measurement_noise_rad = 1e-1,
+        .on_map_load_position_uncertainty_m = 2.0,
+        .on_map_load_heading_uncertainty_rad = 0.5,
+    };
+    constexpr double MAX_SENSOR_RANGE_M = 3.0;
+    constexpr double P_BEACON = 0.75;
+    const auto &[road_map, ekf_slam, beacon_potential] =
+        create_grid_environment(ekf_config, P_BEACON);
+
+    constexpr int START_NODE_IDX = 3;
+    constexpr int END_NODE_IDX = 0;
+    const liegroups::SE2 local_from_robot = liegroups::SE2::trans(road_map.point(START_NODE_IDX));
+    constexpr SampledLandmarkBeliefOptions sampled_belief_options = {
+        .max_num_components = 1,
+        .seed = 0,
+    };
+
+    // Action
+    const auto belief_updater =
+        make_landmark_belief_updater(road_map, MAX_SENSOR_RANGE_M, sampled_belief_options, ekf_slam,
+                                     beacon_potential, TypeParam::value);
+    const LandmarkRobotBelief initial_belief = {
+        .local_from_robot = local_from_robot,
+        .log_probability_mass_tracked = 0,
+        .belief_from_config = {{"?",
+                                {.cov_in_robot = ekf_slam.estimate().robot_cov(),
+                                 .log_config_prob = 0}}},
+    };
+    const auto updated_belief = belief_updater(initial_belief, START_NODE_IDX, END_NODE_IDX);
+
+    // Verification
+    EXPECT_EQ(updated_belief.belief_from_config.size(), 1);
+    EXPECT_TRUE(updated_belief.belief_from_config.contains("0") ||
+                updated_belief.belief_from_config.contains("1"));
+    if (updated_belief.belief_from_config.contains("0")) {
+        EXPECT_NEAR(updated_belief.belief_from_config.at("0").log_config_prob,
+                    std::log(1 - P_BEACON), 1e-6);
+        EXPECT_NEAR(updated_belief.log_probability_mass_tracked, std::log(1 - P_BEACON), 1e-6);
+    } else if (updated_belief.belief_from_config.contains("1")) {
+        EXPECT_NEAR(updated_belief.belief_from_config.at("1").log_config_prob, std::log(P_BEACON),
+                    1e-6);
+        EXPECT_NEAR(updated_belief.log_probability_mass_tracked, std::log(P_BEACON), 1e-6);
+    }
+}
 }  // namespace robot::experimental::beacon_sim
