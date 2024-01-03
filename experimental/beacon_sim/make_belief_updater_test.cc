@@ -186,10 +186,11 @@ TYPED_TEST(MakeBeliefUpdaterTest, make_landmark_belief_updater_test) {
     const liegroups::SE2 local_from_robot = liegroups::SE2::trans(road_map.point(START_NODE_IDX));
 
     // Action
-    const auto belief_updater = make_landmark_belief_updater(road_map, MAX_SENSOR_RANGE_M, ekf_slam,
-                                                             beacon_potential, TypeParam::value);
+    const auto belief_updater = make_landmark_belief_updater(
+        road_map, MAX_SENSOR_RANGE_M, std::nullopt, ekf_slam, beacon_potential, TypeParam::value);
     const LandmarkRobotBelief initial_belief = {
         .local_from_robot = local_from_robot,
+        .log_probability_mass_tracked = 0,
         .belief_from_config = {{"?",
                                 {.cov_in_robot = ekf_slam.estimate().robot_cov(),
                                  .log_config_prob = 0}}},

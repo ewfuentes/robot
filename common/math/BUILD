@@ -82,6 +82,7 @@ cc_library(
   name = "sample_without_replacement",
   hdrs = ["sample_without_replacement.hh"],
   srcs = ["sample_without_replacement.cc"],
+  visibility = ["//visibility:public"],
   deps = [
     "@absl//absl/container:flat_hash_set",
     "//common:argument_wrapper",
