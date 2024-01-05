@@ -30,23 +30,6 @@ struct MinUncertaintyToleranceOptions {
 
 using BRMSearchOptions = std::variant<NoBacktrackingOptions, MinUncertaintyToleranceOptions>;
 
-// Belief is a type that represents the mean and uncertainty of our current state.
-// It is expected that the following methods are defined:
-// - double distance_to(const Eigen::Vector2d &pt, const Belief &belief)
-//      This computes the expected distance between a roadmap point and the belief.
-//      This is used to to connect the initial belief to the road map
-// - double uncertainty_size(const Belief &belief)
-//      This computes a measure of how large the uncertainty of the belief is. Common choices are
-//      the determinant or the trace of the covariance matrix.
-// A std::hash<Belief> specialization should be available
-// bool operator==(const Belief &a, const Belief &b) computes if the beliefs are equal
-template <typename Belief>
-std::optional<BRMPlan<Belief>> plan(const RoadMap &road_map, const Belief &initial_belief,
-                                    const BeliefUpdater<Belief> &belief_updater,
-                                    const Eigen::Vector2d &goal_state,
-                                    const BRMSearchOptions &options);
-
-// Implementation details follow from here
 namespace detail {
 template <typename Belief>
 struct BRMSearchState {
@@ -88,9 +71,14 @@ BRMPlan<Belief> brm_plan_from_bfs_result(
 }
 }  // namespace detail
 
-template <typename Belief>
+// Belief is a type that represents the mean and uncertainty of our current state.
+// It is expected that the following methods are defined:
+// A std::hash<Belief> specialization should be available
+// bool operator==(const Belief &a, const Belief &b) computes if the beliefs are equal
+template <typename Belief, typename UncertaintySize>
 std::optional<BRMPlan<Belief>> plan(const RoadMap &road_map, const Belief &initial_belief,
                                     const BeliefUpdater<Belief> &belief_updater,
+                                    const UncertaintySize &uncertainty_size,
                                     const BRMSearchOptions &options) {
     using SearchState = detail::BRMSearchState<Belief>;
     // Find nearest node to start and end states
@@ -104,9 +92,10 @@ std::optional<BRMPlan<Belief>> plan(const RoadMap &road_map, const Belief &initi
     };
 
     const IdentifyPathEndFunc<SearchState> identify_end_func =
-        [](const std::vector<Node<SearchState>> &nodes) -> std::optional<int> {
+        [&uncertainty_size](const std::vector<Node<SearchState>> &nodes) -> std::optional<int> {
         const auto iter = std::min_element(
-            nodes.begin(), nodes.end(), [](const Node<SearchState> &a, const Node<SearchState> &b) {
+            nodes.begin(), nodes.end(),
+            [&uncertainty_size](const Node<SearchState> &a, const Node<SearchState> &b) {
                 const bool is_a_goal_node = a.state.node_idx == RoadMap::GOAL_IDX;
                 const bool is_b_goal_node = b.state.node_idx == RoadMap::GOAL_IDX;
 
@@ -129,7 +118,7 @@ std::optional<BRMPlan<Belief>> plan(const RoadMap &road_map, const Belief &initi
         if (std::holds_alternative<MinUncertaintyToleranceOptions>(options)) {
             const auto &min_uncertainty_opts = std::get<MinUncertaintyToleranceOptions>(options);
             return [uncertainty_tolerance = min_uncertainty_opts.uncertainty_tolerance,
-                    &min_uncertainty_from_node](
+                    &min_uncertainty_from_node, &uncertainty_size](
                        const Successor<SearchState> &successor, const int parent_idx,
                        const std::vector<Node<SearchState>> &nodes) -> ShouldQueueResult {
                 const int node_idx = successor.state.node_idx;
@@ -167,7 +156,7 @@ std::optional<BRMPlan<Belief>> plan(const RoadMap &road_map, const Belief &initi
                 return ShouldQueueResult::SKIP;
             };
         } else {
-            return [&min_uncertainty_from_node](
+            return [&min_uncertainty_from_node, &uncertainty_size](
                        const Successor<SearchState> &successor, const int parent_idx,
                        const std::vector<Node<SearchState>> &nodes) -> ShouldQueueResult {
                 // If node was previously on path, skip it
