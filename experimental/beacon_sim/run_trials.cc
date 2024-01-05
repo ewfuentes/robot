@@ -231,11 +231,11 @@ void run_trials(const TrialsConfig &config) {
         .map_input_path = {},
         .map_output_path = {},
         .dt = std::chrono::milliseconds(25),
+        .planner_config =
+            robot::experimental::beacon_sim::BeliefRoadMapPlannerConfig{
+                .allow_brm_backtracking = true,
+            },
         .load_off_diagonals = false,
-        .enable_brm_planner = true,
-        .allow_brm_backtracking = true,
-        .enable_info_lower_bound_planner = false,
-        .info_lower_bound_at_goal = {},
         .autostep = false,
         .correlated_beacons_configuration = {},
     };

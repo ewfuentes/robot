@@ -10,6 +10,14 @@
 
 namespace robot::experimental::beacon_sim {
 namespace {
+
+template <typename... Ts>
+struct overloaded : Ts... {
+    using Ts::operator()...;
+};
+template <class... Ts>
+
+overloaded(Ts...) -> overloaded<Ts...>;
 liegroups::SE3 se3_from_se2(const liegroups::SE2 &a_from_b) {
     Eigen::Matrix4d mat = Eigen::Matrix4d::Identity();
     Eigen::Matrix3d a_from_b_mat = a_from_b.matrix();
@@ -188,12 +196,16 @@ void visualize_beacon_sim(const BeaconSimState &state, const double zoom_factor,
         const auto &plan = state.plan.value();
         glColor3ub(250, 11, 220);
         glBegin(GL_LINE_STRIP);
-        for (int plan_idx = 0; plan_idx < static_cast<int>(plan.brm_plan.nodes.size());
-             plan_idx++) {
-            const Eigen::Vector2d point_in_local =
-                state.road_map.point(plan.brm_plan.nodes.at(plan_idx));
-            glVertex3d(point_in_local.x(), point_in_local.y(), 0.25);
-        }
+
+        std::visit(overloaded{[&state](const auto &brm_plan) {
+                       for (int plan_idx = 0; plan_idx < static_cast<int>(brm_plan.nodes.size());
+                            plan_idx++) {
+                           const Eigen::Vector2d point_in_local =
+                               state.road_map.point(brm_plan.nodes.at(plan_idx));
+                           glVertex3d(point_in_local.x(), point_in_local.y(), 0.25);
+                       }
+                   }},
+                   plan.brm_plan);
         glEnd();
     }
 

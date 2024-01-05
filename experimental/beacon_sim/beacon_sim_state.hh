@@ -17,7 +17,7 @@
 namespace robot::experimental::beacon_sim {
 struct Plan {
     time::RobotTimestamp time_of_validity;
-    planning::BRMPlan<RobotBelief> brm_plan;
+    std::variant<planning::BRMPlan<RobotBelief>, planning::BRMPlan<LandmarkRobotBelief>> brm_plan;
 };
 
 struct Goal {
