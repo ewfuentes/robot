@@ -1,5 +1,6 @@
 bazel-*
 .dazel_run
+.vscode
 
 # Ignore temporary emacs files
 .#*

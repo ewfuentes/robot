@@ -509,6 +509,7 @@ cc_library(
     "//common/geometry:nearest_point_on_segment",
     "//common/math:combinations",
     "//common/math:redheffer_star",
+    "//common/math:sample_without_replacement",
     "//planning:belief_road_map",
     "//planning:probabilistic_road_map",
   ]

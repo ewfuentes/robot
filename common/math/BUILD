@@ -77,3 +77,25 @@ cc_test(
     "@com_google_googletest//:gtest_main",
   ]
 )
+
+cc_library(
+  name = "sample_without_replacement",
+  hdrs = ["sample_without_replacement.hh"],
+  srcs = ["sample_without_replacement.cc"],
+  visibility = ["//visibility:public"],
+  deps = [
+    "@absl//absl/container:flat_hash_set",
+    "//common:argument_wrapper",
+    "//common:check"
+  ]
+)
+
+cc_test(
+  name = "sample_without_replacement_test",
+  srcs = ["sample_without_replacement_test.cc"],
+  deps = [
+    ":sample_without_replacement",
+    "@absl//absl/container:flat_hash_map",
+    "@com_google_googletest//:gtest_main",
+  ]
+)

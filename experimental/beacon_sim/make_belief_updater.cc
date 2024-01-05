@@ -3,11 +3,13 @@
 
 #include <algorithm>
 #include <iterator>
+#include <random>
 
 #include "common/check.hh"
 #include "common/geometry/nearest_point_on_segment.hh"
 #include "common/math/combinations.hh"
 #include "common/math/redheffer_star.hh"
+#include "common/math/sample_without_replacement.hh"
 #include "experimental/beacon_sim/robot_belief.hh"
 
 namespace robot::experimental::beacon_sim {
@@ -84,6 +86,37 @@ std::string merge_configurations(const std::string &a, const std::string &b) {
         }
     }
     return out;
+}
+
+using LandmarkConditionedBeliefMap =
+    std::unordered_map<std::string, LandmarkRobotBelief::LandmarkConditionedRobotBelief>;
+std::tuple<LandmarkConditionedBeliefMap, double> downsize_belief(
+    const LandmarkConditionedBeliefMap &belief, const int max_num_components,
+    InOut<std::mt19937> gen) {
+    CHECK(belief.size() > 0);
+    CHECK(max_num_components > 0);
+
+    std::vector<std::string> keys;
+    std::vector<double> log_prob;
+    for (const auto &[key, belief] : belief) {
+        keys.push_back(key);
+        log_prob.push_back(belief.log_config_prob);
+    }
+
+    constexpr bool LOG_PROB = true;
+    const int num_components = std::min(max_num_components, static_cast<int>(belief.size()));
+    const auto idxs =
+        math::reservoir_sample_without_replacement(log_prob, num_components, LOG_PROB, gen);
+
+    LandmarkConditionedBeliefMap out;
+    const double max_elem = *std::max_element(log_prob.begin(), log_prob.end());
+    double sum = 0;
+    for (const auto idx : idxs) {
+        out[keys.at(idx)] = belief.at(keys.at(idx));
+        sum += std::exp(log_prob.at(idx) - max_elem);
+    }
+    const double log_sum = std::log(sum) + max_elem;
+    return std::make_tuple(out, log_sum);
 }
 
 template <typename T>
@@ -614,7 +647,8 @@ planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap
 }
 
 planning::BeliefUpdater<LandmarkRobotBelief> make_landmark_belief_updater(
-    const planning::RoadMap &road_map, const double max_sensor_range_m, const EkfSlam &ekf,
+    const planning::RoadMap &road_map, const double max_sensor_range_m,
+    const std::optional<SampledLandmarkBeliefOptions> sampled_belief_options, const EkfSlam &ekf,
     const BeaconPotential &beacon_potential, const TransformType type) {
     std::unordered_map<
         DirectedEdge,
@@ -622,8 +656,19 @@ planning::BeliefUpdater<LandmarkRobotBelief> make_landmark_belief_updater(
         DirectedEdgeHash>
         edge_transform_cache;
 
+    std::optional<std::mt19937> gen =
+        sampled_belief_options.has_value()
+            ? std::make_optional(std::mt19937(sampled_belief_options->seed))
+            : std::nullopt;
+
+    const std::optional<int> max_num_components =
+        sampled_belief_options.has_value()
+            ? std::make_optional(sampled_belief_options->max_num_components)
+            : std::nullopt;
+
     return [&road_map, max_sensor_range_m, &ekf,
-            edge_transform_cache = std::move(edge_transform_cache), &beacon_potential,
+            edge_transform_cache = std::move(edge_transform_cache), &beacon_potential, gen,
+            max_num_components,
             type](const LandmarkRobotBelief &initial_belief, const int start_idx,
                   const int end_idx) mutable -> LandmarkRobotBelief {
         // Get the belief edge transform, optionally updating the cache
@@ -711,9 +756,21 @@ planning::BeliefUpdater<LandmarkRobotBelief> make_landmark_belief_updater(
             }
         }
 
+        const bool should_downsize_belief =
+            max_num_components.has_value() &&
+            static_cast<int>(belief_from_config.size()) > max_num_components.value();
+
+        const auto &[new_belief_from_config, log_probability_mass_tracked_adjustment] =
+            !should_downsize_belief
+                ? std::make_tuple(belief_from_config, 0.0)
+                : downsize_belief(belief_from_config, max_num_components.value(),
+                                  make_in_out(gen.value()));
+
         return {
             .local_from_robot = local_from_new_robot,
-            .belief_from_config = std::move(belief_from_config),
+            .log_probability_mass_tracked = initial_belief.log_probability_mass_tracked +
+                                            log_probability_mass_tracked_adjustment,
+            .belief_from_config = std::move(new_belief_from_config),
         };
     };
 }

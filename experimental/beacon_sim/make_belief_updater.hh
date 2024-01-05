@@ -62,6 +62,12 @@ struct EdgeTransform {
     std::vector<double> weight;
     TypedTransformVector transforms;
 };
+
+struct SampledLandmarkBeliefOptions {
+    int max_num_components;
+    int seed;
+};
+
 Eigen::DiagonalMatrix<double, 3> compute_process_noise(const EkfSlamConfig &config,
                                                        const double dt_s, const double arclength_m);
 TypedTransform compute_process_transform(const Eigen::Matrix3d &process_noise,
@@ -109,7 +115,8 @@ planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap
                                                          const TransformType transform_type);
 
 planning::BeliefUpdater<LandmarkRobotBelief> make_landmark_belief_updater(
-    const planning::RoadMap &road_map, const double max_sensor_range_m, const EkfSlam &ekf,
+    const planning::RoadMap &road_map, const double max_sensor_range_m,
+    const std::optional<SampledLandmarkBeliefOptions> sampled_belief_options, const EkfSlam &ekf,
     const BeaconPotential &beacon_potential, const TransformType transform_type);
 
 }  // namespace robot::experimental::beacon_sim

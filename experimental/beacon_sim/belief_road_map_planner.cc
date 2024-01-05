@@ -292,10 +292,18 @@ std::optional<planning::BRMPlan<LandmarkRobotBelief>> compute_landmark_belief_ro
 
     const LandmarkRobotBelief initial_belief = {
         .local_from_robot = estimate.local_from_robot(),
+        .log_probability_mass_tracked = 0,
         .belief_from_config = {{std::string(beacon_potential.members().size(), '?'),
                                 {.cov_in_robot = estimate.robot_cov(), .log_config_prob = 0}}}};
-    const auto belief_updater = make_landmark_belief_updater(
-        road_map, options.max_sensor_range_m, ekf, beacon_potential, TransformType::COVARIANCE);
+    const std::optional<SampledLandmarkBeliefOptions> sampled_belief_options =
+        options.sampled_belief_options.has_value()
+            ? std::make_optional<SampledLandmarkBeliefOptions>(
+                  {.max_num_components = options.sampled_belief_options->max_num_components,
+                   .seed = options.sampled_belief_options->seed})
+            : std::nullopt;
+    const auto belief_updater =
+        make_landmark_belief_updater(road_map, options.max_sensor_range_m, sampled_belief_options,
+                                     ekf, beacon_potential, TransformType::COVARIANCE);
     return planning::plan<LandmarkRobotBelief>(road_map, initial_belief, belief_updater,
                                                planning::NoBacktrackingOptions{});
 }

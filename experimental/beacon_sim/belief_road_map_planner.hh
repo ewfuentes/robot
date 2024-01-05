@@ -32,7 +32,12 @@ struct ExpectedBeliefRoadMapOptions {
 };
 
 struct LandmarkBeliefRoadMapOptions {
+    struct SampledBeliefOptions {
+        int max_num_components;
+        int seed;
+    };
     double max_sensor_range_m;
+    std::optional<SampledBeliefOptions> sampled_belief_options;
 };
 
 struct ExpectedBeliefPlanResult {
