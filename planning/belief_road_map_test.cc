@@ -80,8 +80,9 @@ TEST(BeliefRoadMapTest, linear_graph) {
     const double expected_cov = min_cov + accumulated_noise;
 
     // Action
-    const auto maybe_brm_plan = plan(road_map, initial_belief, make_belief_updater(road_map),
-                                     MinUncertaintyToleranceOptions{UNCERTAINTY_TOLERANCE});
+    const auto maybe_brm_plan =
+        plan(road_map, initial_belief, make_belief_updater(road_map), uncertainty_size,
+             MinUncertaintyToleranceOptions{UNCERTAINTY_TOLERANCE});
 
     // Verification
     EXPECT_TRUE(maybe_brm_plan.has_value());
@@ -120,8 +121,8 @@ TEST(BeliefRoadMapTest, linear_graph_no_backtracking) {
                            }});
 
     // Action
-    const auto maybe_brm_plan =
-        plan(road_map, initial_belief, make_belief_updater(road_map), NoBacktrackingOptions{});
+    const auto maybe_brm_plan = plan(road_map, initial_belief, make_belief_updater(road_map),
+                                     uncertainty_size, NoBacktrackingOptions{});
 
     // Verification
     EXPECT_TRUE(maybe_brm_plan.has_value());
