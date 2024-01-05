@@ -527,6 +527,8 @@ int main(int argc, char **argv) {
       ("allow_brm_backtracking", "Allow backtracking in BRM")
       ("enable_info_lower_bound_planner", "Use the information lower bound planner")
       ("info_lower_bound_at_goal", "Acceptable min eigenvalue of information at goal", cxxopts::value<double>())
+      ("enable_landmark_brm", "Enable Landmark BRM")
+      ("landmark_brm_component_limit", "Maximum number of belief components", cxxopts::value<int>())
       ("autostep", "automatically step the sim")
       ("correlated_beacons_config", "Desired Beacon Configuration. The ith beacon is present if the ith bit is set",
            cxxopts::value<int>())
@@ -539,16 +541,39 @@ int main(int argc, char **argv) {
         std::exit(0);
     }
 
+    using robot::experimental::beacon_sim::BeliefRoadMapPlannerConfig;
+    using robot::experimental::beacon_sim::InfoLowerBoundPlannerConfig;
+    using robot::experimental::beacon_sim::LandmarkBeliefRoadMapPlannerConfig;
+    using robot::experimental::beacon_sim::NoPlannerConfig;
+    using robot::experimental::beacon_sim::PlannerConfig;
+    const PlannerConfig planner_config = [&]() -> PlannerConfig {
+        if (args["enable_brm_planner"].as<bool>()) {
+            std::cout << "Using BRM planner" << std::endl;
+            return BeliefRoadMapPlannerConfig{
+                .allow_brm_backtracking = args["allow_brm_backtracking"].as<bool>(),
+            };
+        } else if (args["enable_info_lower_bound_planner"].as<bool>()) {
+            std::cout << "Using Info Lower Bound planner" << std::endl;
+            return InfoLowerBoundPlannerConfig{
+                .info_lower_bound_at_goal = args["info_lower_bound_at_goal"].as<double>(),
+            };
+        } else if (args["enable_landmark_brm"].as<bool>()) {
+            std::cout << "Using Landmark BRM planner" << std::endl;
+            return LandmarkBeliefRoadMapPlannerConfig{
+                .max_num_components = arg_or_null<int>(args, "landmark_brm_component_limit")};
+        } else {
+            std::cout << "No planner enabled" << std::endl;
+            return NoPlannerConfig{};
+        }
+    }();
+
     robot::experimental::beacon_sim::run_simulation(
         {.log_path = arg_or_null<std::string>(args, "log_file"),
          .map_input_path = arg_or_null<std::string>(args, "map_input_path"),
          .map_output_path = arg_or_null<std::string>(args, "map_output_path"),
          .dt = 25ms,
+         .planner_config = planner_config,
          .load_off_diagonals = args["load_off_diagonals"].as<bool>(),
-         .enable_brm_planner = args["enable_brm_planner"].as<bool>(),
-         .allow_brm_backtracking = args["allow_brm_backtracking"].as<bool>(),
-         .enable_info_lower_bound_planner = args["enable_info_lower_bound_planner"].as<bool>(),
-         .info_lower_bound_at_goal = arg_or_null<double>(args, "info_lower_bound_at_goal"),
          .autostep = args["autostep"].as<bool>(),
          .correlated_beacons_configuration = arg_or_null<int>(args, "correlated_beacons_config")});
 }

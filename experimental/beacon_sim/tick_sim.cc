@@ -1,10 +1,14 @@
 
 #include "experimental/beacon_sim/tick_sim.hh"
 
+#include <optional>
+#include <variant>
+
 #include "common/liegroups/se2_to_proto.hh"
 #include "common/time/robot_time.hh"
 #include "common/time/robot_time_to_proto.hh"
 #include "experimental/beacon_sim/beacon_observation_to_proto.hh"
+#include "experimental/beacon_sim/belief_road_map_planner.hh"
 #include "experimental/beacon_sim/ekf_slam_estimate_to_proto.hh"
 #include "experimental/beacon_sim/generate_observations.hh"
 #include "experimental/beacon_sim/information_lower_bound_planner.hh"
@@ -13,48 +17,68 @@
 
 namespace robot::experimental::beacon_sim {
 namespace {
+
+template <typename... Ts>
+struct overloaded : Ts... {
+    using Ts::operator()...;
+};
+template <class... Ts>
+overloaded(Ts...) -> overloaded<Ts...>;
+
 std::optional<RobotCommand> compute_command_from_plan(const time::RobotTimestamp &time_of_validity,
                                                       const liegroups::SE2 &local_from_est_robot,
                                                       const Plan &plan,
                                                       const time::RobotTimestamp::duration &dt) {
     constexpr double MAX_SPEED_MPS = 5.0;
-    const auto time_since_plan_tov = time_of_validity - plan.time_of_validity;
-    const std::vector<RobotBelief> &beliefs = plan.brm_plan.beliefs;
-    time::RobotTimestamp::duration time_along_plan(0);
-    for (int i = 1; i < static_cast<int>(beliefs.size()); i++) {
-        const Eigen::Vector2d prev_node_in_local = beliefs.at(i - 1).local_from_robot.translation();
-        const Eigen::Vector2d next_node_in_local = beliefs.at(i).local_from_robot.translation();
-        const Eigen::Vector2d next_in_prev = next_node_in_local - prev_node_in_local;
-        const double dist_m = next_in_prev.norm();
-        const time::RobotTimestamp::duration step_dt = time::as_duration(dist_m / MAX_SPEED_MPS);
-        if (time_along_plan + step_dt > time_since_plan_tov) {
-            // Compute expected pose
-            // Construct a pose at the start node facing the next node
-            const double heading_rad = std::atan2(next_in_prev.y(), next_in_prev.x());
+    const auto compute_robot_command =
+        [&time_of_validity, &local_from_est_robot, &dt,
+         plan_tov = plan.time_of_validity](const auto &brm_plan) -> std::optional<RobotCommand> {
+        const auto time_since_plan_tov = time_of_validity - plan_tov;
+        const auto &beliefs = brm_plan.beliefs;
+        time::RobotTimestamp::duration time_along_plan(0);
+        for (int i = 1; i < static_cast<int>(beliefs.size()); i++) {
+            const Eigen::Vector2d prev_node_in_local =
+                beliefs.at(i - 1).local_from_robot.translation();
+            const Eigen::Vector2d next_node_in_local = beliefs.at(i).local_from_robot.translation();
+            const Eigen::Vector2d next_in_prev = next_node_in_local - prev_node_in_local;
+            const double dist_m = next_in_prev.norm();
+            const time::RobotTimestamp::duration step_dt =
+                time::as_duration(dist_m / MAX_SPEED_MPS);
+            if (time_along_plan + step_dt > time_since_plan_tov) {
+                // Compute expected pose
+                // Construct a pose at the start node facing the next node
+                const double heading_rad = std::atan2(next_in_prev.y(), next_in_prev.x());
 
-            const liegroups::SE2 local_from_start_node =
-                liegroups::SE2(liegroups::SO2(heading_rad), prev_node_in_local);
-            const double frac =
-                (time_since_plan_tov - time_along_plan) / std::chrono::duration<double>(step_dt);
-            const liegroups::SE2 start_from_expected = liegroups::SE2::trans(frac * dist_m, 0.0);
-            const liegroups::SE2 local_from_expected = local_from_start_node * start_from_expected;
+                const liegroups::SE2 local_from_start_node =
+                    liegroups::SE2(liegroups::SO2(heading_rad), prev_node_in_local);
+                const double frac = (time_since_plan_tov - time_along_plan) /
+                                    std::chrono::duration<double>(step_dt);
+                const liegroups::SE2 start_from_expected =
+                    liegroups::SE2::trans(frac * dist_m, 0.0);
+                const liegroups::SE2 local_from_expected =
+                    local_from_start_node * start_from_expected;
 
-            // Compute command
-            const Eigen::Vector2d expected_in_estimated =
-                local_from_est_robot.inverse() * local_from_expected.translation();
-            const Eigen::Vector2d target_in_estimated =
-                local_from_est_robot.inverse() * next_node_in_local;
+                // Compute command
+                const Eigen::Vector2d expected_in_estimated =
+                    local_from_est_robot.inverse() * local_from_expected.translation();
+                const Eigen::Vector2d target_in_estimated =
+                    local_from_est_robot.inverse() * next_node_in_local;
 
-            RobotCommand command;
-            command.turn_rad = std::atan2(target_in_estimated.y(), target_in_estimated.x());
-            command.move_m = std::min(MAX_SPEED_MPS * std::chrono::duration<double>(dt).count(),
-                                      expected_in_estimated.norm());
-            return command;
-        } else {
-            time_along_plan += step_dt;
+                RobotCommand command;
+                command.turn_rad = std::atan2(target_in_estimated.y(), target_in_estimated.x());
+                command.move_m = std::min(MAX_SPEED_MPS * std::chrono::duration<double>(dt).count(),
+                                          expected_in_estimated.norm());
+                return command;
+            } else {
+                time_along_plan += step_dt;
+            }
         }
-    }
-    return std::nullopt;
+        return std::nullopt;
+    };
+
+    return std::visit(
+        overloaded{[&](const auto &brm_plan) { return compute_robot_command(brm_plan); }},
+        plan.brm_plan);
 }
 
 std::optional<planning::BRMPlan<RobotBelief>> run_brm_planner(const BeaconSimState &state,
@@ -80,6 +104,18 @@ std::optional<planning::BRMPlan<RobotBelief>> run_brm_planner(const BeaconSimSta
     return brm_plan;
 }
 
+std::optional<planning::BRMPlan<LandmarkRobotBelief>> run_landmark_brm_planner(
+    const BeaconSimState &state, [[maybe_unused]] const std::optional<int> max_num_components,
+    const ObservationConfig &obs_config) {
+    const LandmarkBeliefRoadMapOptions options = {
+        .max_sensor_range_m = obs_config.max_sensor_range_m.value(),
+        .sampled_belief_options = std::nullopt,
+    };
+
+    return compute_landmark_belief_road_map_plan(state.road_map, state.ekf,
+                                                 state.map.beacon_potential(), options);
+}
+
 std::optional<planning::BRMPlan<RobotBelief>> run_info_lower_bound_planner(
     const BeaconSimState &state, const double max_sensor_range_m,
     const double info_lower_bound_at_goal) {
@@ -97,7 +133,7 @@ proto::BeaconSimDebug tick_sim(const SimConfig &config, const RobotCommand &comm
     };
 
     RobotCommand next_command = command;
-    if (config.enable_brm_planner || config.enable_info_lower_bound_planner) {
+    if (!std::holds_alternative<NoPlannerConfig>(config.planner_config)) {
         // Plan
         const bool have_plan = state->plan.has_value();
         const bool have_goal = state->goal.has_value();
@@ -109,22 +145,34 @@ proto::BeaconSimDebug tick_sim(const SimConfig &config, const RobotCommand &comm
                 {.start = state->ekf.estimate().local_from_robot().translation(),
                  .goal = state->goal->goal_position,
                  .connection_radius_m = 5.0});
-            if (config.enable_brm_planner) {
-                const auto maybe_plan =
-                    run_brm_planner(*state, config.allow_brm_backtracking, OBS_CONFIG);
-                if (maybe_plan.has_value()) {
-                    state->plan = {.time_of_validity = state->time_of_validity,
-                                   .brm_plan = maybe_plan.value()};
-                }
-            } else if (config.enable_info_lower_bound_planner) {
-                const auto maybe_plan =
-                    run_info_lower_bound_planner(*state, OBS_CONFIG.max_sensor_range_m.value(),
-                                                 config.info_lower_bound_at_goal.value());
-                if (maybe_plan.has_value()) {
-                    state->plan = {.time_of_validity = state->time_of_validity,
-                                   .brm_plan = maybe_plan.value()};
-                }
-            }
+            std::visit(
+                overloaded{[](const NoPlannerConfig &) {},
+                           [&state, OBS_CONFIG](const BeliefRoadMapPlannerConfig &config) {
+                               const auto maybe_plan = run_brm_planner(
+                                   *state, config.allow_brm_backtracking, OBS_CONFIG);
+                               if (maybe_plan.has_value()) {
+                                   state->plan = {.time_of_validity = state->time_of_validity,
+                                                  .brm_plan = maybe_plan.value()};
+                               }
+                           },
+                           [&state, OBS_CONFIG](const LandmarkBeliefRoadMapPlannerConfig &config) {
+                               const auto maybe_plan = run_landmark_brm_planner(
+                                   *state, config.max_num_components, OBS_CONFIG);
+                               if (maybe_plan.has_value()) {
+                                   state->plan = {.time_of_validity = state->time_of_validity,
+                                                  .brm_plan = maybe_plan.value()};
+                               }
+                           },
+                           [&state, OBS_CONFIG](const InfoLowerBoundPlannerConfig &config) {
+                               const auto maybe_plan = run_info_lower_bound_planner(
+                                   *state, OBS_CONFIG.max_sensor_range_m.value(),
+                                   config.info_lower_bound_at_goal);
+                               if (maybe_plan.has_value()) {
+                                   state->plan = {.time_of_validity = state->time_of_validity,
+                                                  .brm_plan = maybe_plan.value()};
+                               }
+                           }},
+                config.planner_config);
         }
         if (state->plan.has_value()) {
             // Figure out which which node we should be targeting
