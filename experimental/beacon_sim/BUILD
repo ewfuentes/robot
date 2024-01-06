@@ -719,3 +719,19 @@ py_library(
   ],
   visibility =  ["//visibility:public"]
 )
+
+multi_proto_library(
+  name = "experiment_config_proto",
+  srcs = ["experiment_config.proto"],
+)
+
+cc_binary(
+  name = "run_experiment",
+  srcs = ["run_experiment.cc"],
+  deps = [
+    "@cxxopts",
+    "//common:check",
+    "//common/proto:load_from_file",
+    ":experiment_config_proto",
+  ]
+)
