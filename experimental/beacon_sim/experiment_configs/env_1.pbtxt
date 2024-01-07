@@ -1,1 +1,45 @@
-name: "env_1"
+name: "evaluate_approximation_quality"
+
+map_config_path: "data/map_config_path.pb"
+ekf_state_path: "data/ekf_state_path.pb"
+seed: 12345
+
+planner_configs: {
+  name: "Full Distribution"
+  landmark_brm_config: {}
+}
+
+planner_configs: {
+  name: "10 components"
+  landmark_brm_config: {
+    max_num_components: 10
+  }
+}
+
+planner_configs: {
+  name: "100 components"
+  landmark_brm_config: {
+    max_num_components: 100
+  }
+}
+
+planner_configs: {
+  name: "1000 components"
+  landmark_brm_config: {
+    max_num_components: 1000
+  }
+}
+
+planner_configs: {
+  name: "10000 components"
+  landmark_brm_config: {
+    max_num_components: 10000
+  }
+}
+
+planner_configs: {
+  name: "100000 components"
+  landmark_brm_config: {
+    max_num_components: 100000
+  }
+}

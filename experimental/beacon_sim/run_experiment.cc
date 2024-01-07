@@ -1,16 +1,46 @@
 
-#include "cxxopts.hpp"
-
 #include <filesystem>
 
 #include "common/check.hh"
 #include "common/proto/load_from_file.hh"
+#include "cxxopts.hpp"
 #include "experimental/beacon_sim/experiment_config.pb.h"
+#include "experimental/beacon_sim/mapped_landmarks.pb.h"
+#include "experimental/beacon_sim/world_map_config.pb.h"
+#include "planning/road_map.pb.h"
 
 using robot::experimental::beacon_sim::proto::ExperimentConfig;
 
-int main(int argc, const char **argv) {
+namespace robot::experimental::beacon_sim {
 
+void run_experiment(const ExperimentConfig &config, const std::filesystem::path &base_path) {
+    std::cout << config.DebugString() << std::endl;
+
+    // Load Map Config
+    const auto maybe_map_config =
+        robot::proto::load_from_file<proto::WorldMapConfig>(base_path / config.map_config_path());
+    CHECK(maybe_map_config.has_value());
+
+    // Load EKF State
+    const auto maybe_mapped_landmarks =
+        robot::proto::load_from_file<proto::MappedLandmarks>(base_path / config.ekf_state_path());
+    CHECK(maybe_mapped_landmarks.has_value());
+
+    // Create a road map
+    const auto maybe_road_map =
+        robot::proto::load_from_file<planning::proto::RoadMap>(base_path / config.road_map_path());
+    CHECK(maybe_road_map.has_value());
+
+    for (const auto &planner_config : config.planner_configs()) {
+        // Run the planner
+        (void)planner_config;
+    }
+
+    // Write out the results
+}
+}  // namespace robot::experimental::beacon_sim
+
+int main(int argc, const char **argv) {
     // clang-format off
     cxxopts::Options options("run_experiment", "Run experiments for paper");
     options.add_options()
@@ -35,7 +65,6 @@ int main(int argc, const char **argv) {
     const auto maybe_config_file = robot::proto::load_from_file<ExperimentConfig>(config_file_path);
     CHECK(maybe_config_file.has_value());
 
-    const auto &config_file = maybe_config_file.value();
-    std::cout << config_file.DebugString() << std::endl;
-
+    robot::experimental::beacon_sim::run_experiment(maybe_config_file.value(),
+                                                    config_file_path.remove_filename());
 }

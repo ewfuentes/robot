@@ -720,6 +720,11 @@ py_library(
   visibility =  ["//visibility:public"]
 )
 
+filegroup(
+  name = "experiment_configs",
+  srcs = glob(["experiment_configs/**/*.pbtxt"])
+)
+
 multi_proto_library(
   name = "experiment_config_proto",
   srcs = ["experiment_config.proto"],
@@ -728,10 +733,14 @@ multi_proto_library(
 cc_binary(
   name = "run_experiment",
   srcs = ["run_experiment.cc"],
+  data = [":experiment_configs"],
   deps = [
     "@cxxopts",
     "//common:check",
     "//common/proto:load_from_file",
     ":experiment_config_proto",
+    ":world_map_config_proto",
+    ":mapped_landmarks_proto",
+    "//planning:road_map_proto",
   ]
 )

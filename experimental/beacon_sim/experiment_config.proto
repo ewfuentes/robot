@@ -3,6 +3,32 @@ syntax = "proto3";
 
 package robot.experimental.beacon_sim.proto;
 
+message LandmarkBRMPlanner {
+  optional int32 max_num_components = 1;
+}
+
+message BRMPlanner {
+}
+
+message OptimisticBRMPlanner {
+}
+
+message PlannerConfig {
+  string name = 1;
+  oneof planner_config_oneof {
+    LandmarkBRMPlanner landmark_brm_config = 2;
+    BRMPlanner brm_config = 3;
+    OptimisticBRMPlanner optimistic_brm_config = 4;
+  };
+}
+
 message ExperimentConfig {
   string name = 1;
+  // Note that these paths are relative to the current experiment_config
+  string map_config_path = 2;
+  string ekf_state_path = 3;
+  string road_map_path = 4;
+  int32 seed = 5;
+  repeated PlannerConfig planner_configs = 6;
 }
+
