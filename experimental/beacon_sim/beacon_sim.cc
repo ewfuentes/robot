@@ -361,9 +361,11 @@ void run_simulation(const SimConfig &sim_config) {
         .on_map_load_heading_uncertainty_rad = 1.0,
     };
 
-    WorldMap map = [&](){
+    WorldMap map = [&]() {
         if (sim_config.world_map_config.has_value()) {
-            const auto maybe_world_map_config_proto = robot::proto::load_from_file<proto::WorldMapConfig>(sim_config.world_map_config.value());
+            const auto maybe_world_map_config_proto =
+                robot::proto::load_from_file<proto::WorldMapConfig>(
+                    sim_config.world_map_config.value());
             CHECK(maybe_world_map_config_proto.has_value());
             return WorldMap(unpack_from(maybe_world_map_config_proto.value()));
         } else {
