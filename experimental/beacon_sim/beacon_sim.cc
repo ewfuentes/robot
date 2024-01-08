@@ -12,6 +12,7 @@
 
 #include "Eigen/Cholesky"
 #include "common/argument_wrapper.hh"
+#include "common/check.hh"
 #include "common/proto/load_from_file.hh"
 #include "common/time/robot_time.hh"
 #include "common/time/sim_clock.hh"
@@ -29,7 +30,7 @@
 #include "experimental/beacon_sim/sim_log.pb.h"
 #include "experimental/beacon_sim/tick_sim.hh"
 #include "experimental/beacon_sim/visualize_beacon_sim.hh"
-#include "experimental/beacon_sim/world_map.hh"
+#include "experimental/beacon_sim/world_map_config_to_proto.hh"
 #include "planning/probabilistic_road_map.hh"
 #include "visualization/gl_window/gl_window.hh"
 
@@ -360,7 +361,17 @@ void run_simulation(const SimConfig &sim_config) {
         .on_map_load_heading_uncertainty_rad = 1.0,
     };
 
-    WorldMap map = WorldMap(world_map_config(sim_config.correlated_beacons_configuration));
+    WorldMap map = [&]() {
+        if (sim_config.world_map_config.has_value()) {
+            const auto maybe_world_map_config_proto =
+                robot::proto::load_from_file<proto::WorldMapConfig>(
+                    sim_config.world_map_config.value());
+            CHECK(maybe_world_map_config_proto.has_value());
+            return WorldMap(unpack_from(maybe_world_map_config_proto.value()));
+        } else {
+            return WorldMap(world_map_config(sim_config.correlated_beacons_configuration));
+        }
+    }();
     BeaconSimState state = {
         .time_of_validity = time::current_robot_time(),
         .map = map,
@@ -522,6 +533,7 @@ int main(int argc, char **argv) {
       ("log_file", "Path to output file.", cxxopts::value<std::string>()->default_value(DEFAULT_LOG_LOCATION))
       ("map_output_path", "Path to save map file to" , cxxopts::value<std::string>()->default_value(DEFAULT_MAP_SAVE_LOCATION))
       ("map_input_path", "Path to load map file from", cxxopts::value<std::string>()->default_value(DEFAULT_MAP_LOAD_LOCATION))
+      ("world_map_config", "Path to WorldMapConfig", cxxopts::value<std::string>())
       ("load_off_diagonals", "Whether off diagonal terms should be loaded from map")
       ("enable_brm_planner", "Generate BRM plan after each step")
       ("allow_brm_backtracking", "Allow backtracking in BRM")
@@ -571,6 +583,7 @@ int main(int argc, char **argv) {
         {.log_path = arg_or_null<std::string>(args, "log_file"),
          .map_input_path = arg_or_null<std::string>(args, "map_input_path"),
          .map_output_path = arg_or_null<std::string>(args, "map_output_path"),
+         .world_map_config = arg_or_null<std::string>(args, "world_map_config"),
          .dt = 25ms,
          .planner_config = planner_config,
          .load_off_diagonals = args["load_off_diagonals"].as<bool>(),

@@ -40,7 +40,7 @@ cc_binary(
   linkopts = ["-latomic"],
   deps = [
     ":sim_config",
-    ":world_map",
+    ":world_map_config_to_proto",
     ":robot",
     ":sim_log_proto",
     ":generate_observations",
@@ -58,6 +58,7 @@ cc_binary(
     ":visualize_beacon_sim",
     "//visualization/gl_window",
     "//common:argument_wrapper",
+    "//common:check",
     "//common/liegroups:se2",
     "//common/liegroups:se2_to_proto",
     "//common/proto:load_from_file",
