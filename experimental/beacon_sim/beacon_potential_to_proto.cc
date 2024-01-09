@@ -18,6 +18,8 @@ beacon_sim::BeaconPotential unpack_from(const BeaconPotential &in) {
         case BeaconPotential::kCombinedPotential:
             return unpack_from(in.combined_potential());
     }
+    CHECK(false, "Unhandled potential type");
+    return beacon_sim::BeaconPotential();
 }
 
 void pack_into(const beacon_sim::BeaconPotential &in, BeaconPotential *out) {
