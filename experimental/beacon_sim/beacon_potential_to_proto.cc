@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <iterator>
 
+#include "common/check.hh"
 #include "experimental/beacon_sim/precision_matrix_potential_to_proto.hh"
 
 namespace robot::experimental::beacon_sim {

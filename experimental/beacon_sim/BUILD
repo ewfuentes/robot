@@ -451,6 +451,16 @@ cc_library(
   ],
 )
 
+cc_test(
+    name = "beacon_potential_to_proto_test",
+    srcs = ["beacon_potential_to_proto_test.cc"],
+    deps = [
+      "@com_google_googletest//:gtest_main",
+      ":beacon_potential",
+      ":correlated_beacons",
+    ]
+)
+
 cc_library(
   name = "correlated_beacons",
   hdrs = ["correlated_beacons.hh"],
