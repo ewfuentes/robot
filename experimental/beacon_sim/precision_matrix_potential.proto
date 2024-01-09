@@ -5,7 +5,7 @@ import "common/math/matrix.proto";
 
 package robot.experimental.beacon_sim.proto;
 
-message BeaconPotential {
+message PrecisionMatrixPotential {
   repeated int32 members = 1;
   robot.math.proto.Matrix precision = 2;
   double log_normalizer = 3;

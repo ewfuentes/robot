@@ -1,0 +1,17 @@
+
+syntax = "proto3";
+
+import "experimental/beacon_sim/precision_matrix_potential.proto";
+
+package robot.experimental.beacon_sim.proto;
+
+message CombinedPotential {
+  repeated BeaconPotential potentials = 1;
+}
+
+message BeaconPotential {
+  oneof potential_oneof {
+    robot.experimental.beacon_sim.proto.PrecisionMatrixPotential precision_matrix_potential = 1;
+    CombinedPotential combined_potential = 2;
+  }
+}

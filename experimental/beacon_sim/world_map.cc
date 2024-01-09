@@ -38,6 +38,8 @@ std::vector<bool> get_beacon_configuration(const CorrelatedBeaconsConfig &config
                                            InOut<std::mt19937> gen) {
     if (config.configuration.has_value()) {
         return config.configuration.value();
+    } else if (config.beacons.size() == 0) {
+        return {};
     }
     std::vector<bool> out(config.beacons.size());
     double remaining_prob = std::uniform_real_distribution<>()(*gen);

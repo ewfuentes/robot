@@ -9,28 +9,14 @@
 #include <unordered_map>
 
 #include "common/check.hh"
-#include "common/math/combinations.hh"
 #include "common/math/n_choose_k.hh"
 #include "drake/solvers/mathematical_program.h"
 #include "drake/solvers/solve.h"
+#include "experimental/beacon_sim/precision_matrix_potential.hh"
 
 namespace robot::experimental::beacon_sim {
 
 namespace {
-
-std::vector<int> sorted_vector(const std::vector<int> &in) {
-    std::vector<int> sorted_members = in;
-    std::sort(sorted_members.begin(), sorted_members.end());
-    return sorted_members;
-}
-
-std::vector<int> sorted_keys(const std::unordered_map<int, bool> &in) {
-    std::vector<int> items;
-    std::transform(in.begin(), in.end(), std::back_inserter(items),
-                   [](const auto &key_and_value) { return key_and_value.first; });
-    std::sort(items.begin(), items.end());
-    return items;
-}
 
 auto logsumexp(const auto &terms) {
     using drake::symbolic::max;
@@ -57,7 +43,7 @@ drake::symbolic::Expression compute_marginal_log_prob(const int n,
     const auto kth_term = [&phi, &psi, &bias](const int n,
                                               const int k) -> drake::symbolic::Expression {
         return std::log(static_cast<double>(math::n_choose_k(n, k))) +
-               static_cast<double>(k + 1) * phi + static_cast<double>((k + 1) * k / 2) * psi - bias;
+               phi * static_cast<double>(k + 1) + static_cast<double>((k + 1) * k / 2) * psi - bias;
     };
     std::vector<drake::symbolic::Expression> terms;
     terms.reserve(n);
@@ -72,10 +58,11 @@ drake::symbolic::Expression compute_total_log_prob(const int n,
                                                    const drake::symbolic::Variable &phi,
                                                    const drake::symbolic::Variable &psi,
                                                    const double bias) {
+    using drake::symbolic::operator*;
     const auto kth_term = [&phi, &psi, &bias](const int n,
                                               const int k) -> drake::symbolic::Expression {
         return std::log(static_cast<double>(math::n_choose_k(n, k))) +
-               static_cast<double>(k) * phi + static_cast<double>((k - 1) * k / 2) * psi - bias;
+               phi * static_cast<double>(k) + static_cast<double>((k - 1) * k / 2) * psi - bias;
     };
 
     std::vector<drake::symbolic::Expression> terms;
@@ -87,181 +74,6 @@ drake::symbolic::Expression compute_total_log_prob(const int n,
     return logsumexp(terms);
 }
 }  // namespace
-
-BeaconPotential::BeaconPotential(const Eigen::MatrixXd &precision, const double log_norm,
-                                 const std::vector<int> &members)
-    : precision_(precision), log_normalizer_(log_norm), members_(members) {}
-
-BeaconPotential BeaconPotential::operator*(const BeaconPotential &other) const {
-    const std::vector<int> sorted_members = sorted_vector(members_);
-    const std::vector<int> other_sorted_members = sorted_vector(other.members_);
-
-    std::vector<int> common_elements;
-    std::set_intersection(sorted_members.begin(), sorted_members.end(),
-                          other_sorted_members.begin(), other_sorted_members.end(),
-                          std::back_inserter(common_elements));
-
-    if (!common_elements.empty()) {
-        std::ostringstream out;
-        out << "BeaconPotential::operator* cannot accept arguments with members common elements: {";
-        bool is_first = true;
-        for (const auto &key : common_elements) {
-            if (is_first) {
-                is_first = false;
-            } else {
-                out << ", ";
-            }
-            out << key;
-        }
-        out << "}";
-        throw std::runtime_error(out.str());
-    }
-
-    const int my_size = members_.size();
-    const int other_size = other.members_.size();
-    const int new_size = my_size + other_size;
-    // Compute the new precision matrix
-    Eigen::MatrixXd new_precision = Eigen::MatrixXd::Zero(new_size, new_size);
-    new_precision.topLeftCorner(my_size, my_size) = precision_;
-    new_precision.bottomRightCorner(other_size, other_size) = other.precision_;
-
-    // Compute the new log normalizer
-    const double new_log_norm = log_normalizer_ + other.log_normalizer_;
-
-    std::vector<int> new_members(members_.begin(), members_.end());
-    new_members.insert(new_members.end(), other.members_.begin(), other.members_.end());
-    return BeaconPotential(new_precision, new_log_norm, new_members);
-}
-
-double BeaconPotential::log_prob(const std::vector<int> &present_beacons) const {
-    std::unordered_map<int, bool> assignment;
-    for (const int member_id : members_) {
-        const auto iter = std::find(present_beacons.begin(), present_beacons.end(), member_id);
-        assignment[member_id] = iter == present_beacons.end() ? false : true;
-    }
-
-    return log_prob(assignment);
-}
-
-double BeaconPotential::log_prob(const std::unordered_map<int, bool> &assignment,
-                                 const bool allow_partial_assignment) const {
-    const std::vector<int> sorted_members = sorted_vector(members_);
-    const std::vector<int> keys = sorted_keys(assignment);
-    std::vector<int> missing_keys;
-    std::set_difference(sorted_members.begin(), sorted_members.end(), keys.begin(), keys.end(),
-                        std::back_inserter(missing_keys));
-
-    CHECK(allow_partial_assignment || missing_keys.empty(),
-          "partial assignment specified when not enabled", assignment, missing_keys, members());
-
-    const std::vector<int> to_marginalize = missing_keys;
-
-    std::unordered_map<int, int> index_from_id;
-    for (int i = 0; i < static_cast<int>(members_.size()); i++) {
-        index_from_id[members_.at(i)] = i;
-    }
-
-    const auto sum_over_marginalized = [&to_marginalize, &index_from_id,
-                                        this](const Eigen::VectorXd &x) {
-        const int n = to_marginalize.size();
-        std::vector<double> terms;
-        terms.reserve(1 << n);
-        for (int num_present = 0; num_present <= n; num_present++) {
-            // For each number of present beacons
-            for (const auto &config : math::combinations(n, num_present)) {
-                // We have a different way of that many beacons being present
-
-                // Set the element for the current config
-                Eigen::VectorXd curr_config = x;
-                for (const int to_marginalize_idx : config) {
-                    const int marginal_id = to_marginalize.at(to_marginalize_idx);
-                    const int x_idx = index_from_id[marginal_id];
-                    curr_config(x_idx) = 1;
-                }
-
-                // Evaluate the log probability
-                terms.push_back(curr_config.transpose() * precision_ * curr_config -
-                                log_normalizer_);
-            }
-        }
-        return logsumexp(terms);
-    };
-
-    Eigen::VectorXd config = Eigen::VectorXd::Zero(members_.size());
-    for (const auto &[beacon_id, is_present] : assignment) {
-        config(index_from_id.at(beacon_id)) = is_present;
-    }
-
-    return sum_over_marginalized(config);
-}
-
-std::vector<LogMarginal> BeaconPotential::compute_log_marginals(
-    const std::vector<int> &remaining) const {
-    // Find the members that we need to marginalize over
-    const std::vector<int> to_marginalize = [&]() {
-        std::vector<int> out;
-        std::copy_if(members_.begin(), members_.end(), std::back_inserter(out),
-                     [&](const int &member) {
-                         const auto iter = std::find(remaining.begin(), remaining.end(), member);
-                         return iter == remaining.end();
-                     });
-        return out;
-    }();
-
-    std::unordered_map<int, int> index_from_id;
-    for (int i = 0; i < static_cast<int>(members_.size()); i++) {
-        index_from_id[members_.at(i)] = i;
-    }
-
-    const auto sum_over_marginalized = [&to_marginalize, &index_from_id,
-                                        this](const Eigen::VectorXd &x) {
-        const int n = to_marginalize.size();
-        std::vector<double> terms;
-        terms.reserve(1 << n);
-        for (int num_present = 0; num_present <= n; num_present++) {
-            // For each number of present beacons
-            for (const auto &config : math::combinations(n, num_present)) {
-                // We have a different way of that many beacons being present
-
-                // Set the element for the current config
-                Eigen::VectorXd curr_config = x;
-                for (const int to_marginalize_idx : config) {
-                    const int marginal_id = to_marginalize.at(to_marginalize_idx);
-                    const int x_idx = index_from_id[marginal_id];
-                    curr_config(x_idx) = 1;
-                }
-
-                // Evaluate the log probability
-                terms.push_back(curr_config.transpose() * precision_ * curr_config -
-                                log_normalizer_);
-            }
-        }
-        return logsumexp(terms);
-    };
-
-    const int n_remaining = remaining.size();
-    std::vector<LogMarginal> out;
-    out.reserve(1 << n_remaining);
-    for (int num_present = 0; num_present <= n_remaining; num_present++) {
-        for (const auto &config : math::combinations(n_remaining, num_present)) {
-            Eigen::VectorXd x = Eigen::VectorXd::Zero(members_.size());
-            std::vector<int> present_beacons;
-            for (const int remaining_idx : config) {
-                const int present_id = remaining.at(remaining_idx);
-                present_beacons.push_back(present_id);
-                const int x_idx = index_from_id.at(present_id);
-                x(x_idx) = 1;
-            }
-
-            out.emplace_back(LogMarginal{
-                .present_beacons = std::move(present_beacons),
-                .log_marginal = sum_over_marginalized(x),
-            });
-        }
-    }
-
-    return out;
-}
 
 BeaconPotential create_correlated_beacons(const BeaconClique &clique) {
     drake::solvers::MathematicalProgram program;
@@ -291,6 +103,7 @@ BeaconPotential create_correlated_beacons(const BeaconClique &clique) {
         }
     }
 
-    return BeaconPotential(precision, log_norm, clique.members);
+    return PrecisionMatrixPotential{
+        .precision = precision, .log_normalizer = log_norm, .members = clique.members};
 }
 }  // namespace robot::experimental::beacon_sim
