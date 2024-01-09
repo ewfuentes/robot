@@ -1,4 +1,6 @@
 
+#pragma once
+
 #include <vector>
 
 #include "experimental/beacon_sim/beacon_potential.hh"

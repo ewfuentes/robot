@@ -429,23 +429,26 @@ py_binary(
 
 cc_library(
   name = "beacon_potential",
-  hdrs = ["beacon_potential.hh"],
-  srcs = ["beacon_potential.cc"],
+  hdrs = [
+    "beacon_potential.hh",
+    "precision_matrix_potential.hh",
+    "beacon_potential_to_proto.hh",
+    "precision_matrix_potential_to_proto.hh",
+  ],
+  srcs = [
+    "beacon_potential.cc",
+    "precision_matrix_potential.cc",
+    "beacon_potential_to_proto.cc",
+    "precision_matrix_potential_to_proto.cc",
+  ],
   deps = [
     "@eigen",
     "//common:check",
-  ],
-)
-
-cc_library(
-  name = "precision_matrix_potential",
-  hdrs = ["precision_matrix_potential.hh"],
-  srcs = ["precision_matrix_potential.cc"],
-  deps = [
-    ":beacon_potential",
-    "@eigen",
     "//common/math:combinations",
-  ]
+    ":beacon_potential_proto",
+    ":precision_matrix_potential_proto",
+    "//common/math:matrix_to_proto",
+  ],
 )
 
 cc_library(
@@ -453,7 +456,7 @@ cc_library(
   hdrs = ["correlated_beacons.hh"],
   srcs = ["correlated_beacons.cc"],
   deps = [
-    ":precision_matrix_potential",
+    ":beacon_potential",
     "@eigen//:eigen",
     "//common:check",
     "//common:drake",
@@ -468,7 +471,6 @@ pybind_extension(
   visibility=["//common/python:__subpackages__"],
   deps = [
     ":correlated_beacons",
-    ":precision_matrix_potential",
   ]
 )
 
@@ -493,28 +495,27 @@ cc_test(
 )
 
 multi_proto_library(
-  name = "correlated_beacons_proto",
-  srcs = ["correlated_beacons.proto"],
-  deps = ["//common/math:matrix_proto"],
+  name = "beacon_potential_proto",
+  srcs = ["beacon_potential.proto"],
+  deps = [
+    ":precision_matrix_potential_proto",
+  ]
 )
 
-cc_library(
-  name = "correlated_beacons_to_proto",
-  hdrs = ["correlated_beacons_to_proto.hh"],
-  srcs = ["correlated_beacons_to_proto.cc"],
+multi_proto_library(
+  name = "precision_matrix_potential_proto",
+  srcs = ["precision_matrix_potential.proto"],
   deps = [
-    ":correlated_beacons",
-    ":correlated_beacons_proto",
-    "//common/math:matrix_to_proto",
+    "//common/math:matrix_proto",
   ]
 )
 
 cc_test(
-  name = "correlated_beacons_to_proto_test",
-  srcs = ["correlated_beacons_to_proto_test.cc"],
+  name = "precision_matrix_potential_to_proto_test",
+  srcs = ["precision_matrix_potential_to_proto_test.cc"],
   deps = [
     "@com_google_googletest//:gtest_main",
-    ":correlated_beacons_to_proto",
+    ":beacon_potential",
   ]
 )
 
@@ -583,6 +584,7 @@ cc_library(
     srcs = ["test_helpers.cc"],
     deps = [
       ":ekf_slam",
+      ":precision_matrix_potential",
       "//planning:probabilistic_road_map",
     ]
 )

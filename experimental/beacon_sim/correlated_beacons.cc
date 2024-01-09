@@ -43,7 +43,7 @@ drake::symbolic::Expression compute_marginal_log_prob(const int n,
     const auto kth_term = [&phi, &psi, &bias](const int n,
                                               const int k) -> drake::symbolic::Expression {
         return std::log(static_cast<double>(math::n_choose_k(n, k))) +
-               static_cast<double>(k + 1) * phi + static_cast<double>((k + 1) * k / 2) * psi - bias;
+               phi * static_cast<double>(k + 1) + static_cast<double>((k + 1) * k / 2) * psi - bias;
     };
     std::vector<drake::symbolic::Expression> terms;
     terms.reserve(n);
@@ -58,10 +58,11 @@ drake::symbolic::Expression compute_total_log_prob(const int n,
                                                    const drake::symbolic::Variable &phi,
                                                    const drake::symbolic::Variable &psi,
                                                    const double bias) {
+    using drake::symbolic::operator*;
     const auto kth_term = [&phi, &psi, &bias](const int n,
                                               const int k) -> drake::symbolic::Expression {
         return std::log(static_cast<double>(math::n_choose_k(n, k))) +
-               static_cast<double>(k) * phi + static_cast<double>((k - 1) * k / 2) * psi - bias;
+               phi * static_cast<double>(k) + static_cast<double>((k - 1) * k / 2) * psi - bias;
     };
 
     std::vector<drake::symbolic::Expression> terms;

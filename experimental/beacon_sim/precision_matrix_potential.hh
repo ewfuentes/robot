@@ -27,4 +27,9 @@ std::vector<int> get_members(const PrecisionMatrixPotential &pot);
 std::vector<LogMarginal> compute_log_marginals(const PrecisionMatrixPotential &pot,
                                                const std::vector<int> &remaining);
 
+namespace proto {
+class BeaconPotential;
+}
+void pack_into_potential(const PrecisionMatrixPotential &in, proto::BeaconPotential *);
+
 }  // namespace robot::experimental::beacon_sim

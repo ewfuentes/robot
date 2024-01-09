@@ -50,7 +50,8 @@ PYBIND11_MODULE(correlated_beacons_python, m) {
              py::arg("assignment"), py::arg("allow_partial_assignment") = false)
         .def("log_prob",
              py::overload_cast<const std::vector<int> &>(&BeaconPotential::log_prob, py::const_))
-        .def("__mul__", &BeaconPotential::operator*)
+        .def("__mul__",
+             py::overload_cast<const BeaconPotential &, const BeaconPotential &>(operator*))
         .def("log_marginals", &BeaconPotential::log_marginals);
 
     m.def("create_correlated_beacons", create_correlated_beacons);

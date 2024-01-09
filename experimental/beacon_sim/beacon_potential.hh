@@ -13,7 +13,7 @@ class BeaconPotential;
 namespace proto {
 class BeaconPotential;
 beacon_sim::BeaconPotential unpack_from(const BeaconPotential &);
-BeaconPotential pack_into(const beacon_sim::BeaconPotential &);
+void pack_into(const beacon_sim::BeaconPotential &, BeaconPotential *);
 }  // namespace proto
 
 struct LogMarginal {
@@ -21,13 +21,25 @@ struct LogMarginal {
     double log_marginal;
 };
 
+template <typename T>
+concept Potential = requires(T a) {
+                        { get_members(a) } -> std::same_as<std::vector<int>>;
+                    };
+
 // A probability distribution over beacon presences/absences
 class BeaconPotential {
    public:
     BeaconPotential() = default;
     BeaconPotential(const BeaconPotential &other)
         : impl_(other.impl_ ? other.impl_->clone_() : nullptr) {}
-    template <typename T>
+
+    BeaconPotential &operator=(const BeaconPotential &other) {
+        BeaconPotential tmp(other);
+        std::swap(tmp, *this);
+        return *this;
+    }
+
+    template <Potential T>
     BeaconPotential(T other) : impl_(std::make_unique<Model<T>>(other)) {}
 
     double log_prob(const std::unordered_map<int, bool> &assignments,
@@ -40,8 +52,6 @@ class BeaconPotential {
         return impl_->log_prob_(present_beacons);
     }
 
-    BeaconPotential operator*(const BeaconPotential &other) const;
-
     std::vector<LogMarginal> log_marginals(const std::vector<int> &remaining) const {
         CHECK(impl_ != nullptr);
         return impl_->log_marginals_(remaining);
@@ -53,7 +63,7 @@ class BeaconPotential {
     };
 
     friend BeaconPotential proto::unpack_from(const proto::BeaconPotential &);
-    friend proto::BeaconPotential proto::pack_into(const BeaconPotential &);
+    friend void proto::pack_into(const BeaconPotential &, proto::BeaconPotential *);
 
    private:
     struct Concept {
@@ -65,6 +75,7 @@ class BeaconPotential {
         virtual std::vector<int> members_() const = 0;
         virtual std::vector<LogMarginal> log_marginals_(
             const std::vector<int> &remaining) const = 0;
+        virtual void pack_into_(proto::BeaconPotential *out) const = 0;
     };
 
     template <typename T>
@@ -86,10 +97,28 @@ class BeaconPotential {
 
         std::vector<int> members_() const override { return get_members(data_); }
 
+        void pack_into_(proto::BeaconPotential *out) const override {
+            pack_into_potential(data_, out);
+        }
+
         T data_;
     };
 
     std::unique_ptr<Concept> impl_;
 };
+
+struct CombinedPotential {
+    std::vector<BeaconPotential> pots;
+};
+double compute_log_prob(const CombinedPotential &pot,
+                        const std::unordered_map<int, bool> &assignments,
+                        const bool allow_partial_assignments);
+double compute_log_prob(const CombinedPotential &pot, const std::vector<int> &present_beacons);
+std::vector<LogMarginal> compute_log_marginals(const CombinedPotential &pot,
+                                               const std::vector<int> &remaining);
+std::vector<int> get_members(const CombinedPotential &pot);
+void pack_into_potential(const CombinedPotential &in, proto::BeaconPotential *out);
+
+BeaconPotential operator*(const BeaconPotential &a, const BeaconPotential &b);
 
 }  // namespace robot::experimental::beacon_sim

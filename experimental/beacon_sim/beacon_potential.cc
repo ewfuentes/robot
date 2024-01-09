@@ -2,15 +2,9 @@
 #include "experimental/beacon_sim/beacon_potential.hh"
 
 #include <algorithm>
-#include <iterator>
 #include <numeric>
 
 namespace robot::experimental::beacon_sim {
-
-struct CombinedPotential {
-    std::vector<BeaconPotential> pots;
-};
-
 double compute_log_prob(const CombinedPotential &pot,
                         const std::unordered_map<int, bool> &assignments,
                         const bool allow_partial_assignments) {
@@ -51,7 +45,8 @@ std::vector<LogMarginal> compute_log_marginals(const CombinedPotential &pot,
             log_marginal += pot_marginal.log_marginal;
         }
 
-        out.emplace_back(LogMarginal{.present_beacons = std::move(present_beacons), .log_marginal = log_marginal});
+        out.emplace_back(LogMarginal{.present_beacons = std::move(present_beacons),
+                                     .log_marginal = log_marginal});
 
         // Update the state
         for (int pot_idx = 0; pot_idx < static_cast<int>(idxs.size()); pot_idx++) {
@@ -80,22 +75,23 @@ std::vector<int> get_members(const CombinedPotential &pot) {
     return out;
 }
 
-BeaconPotential BeaconPotential::operator*(const BeaconPotential &other) const {
+BeaconPotential operator*(const BeaconPotential &a, const BeaconPotential &b) {
     const auto sorted_vector = [](const std::vector<int> &in) {
         std::vector<int> sorted_members = in;
         std::sort(sorted_members.begin(), sorted_members.end());
         return sorted_members;
     };
 
-    const auto sorted_members = sorted_vector(members());
-    const auto other_sorted_members = sorted_vector(other.members());
+    const auto a_sorted_members = sorted_vector(a.members());
+    const auto b_sorted_members = sorted_vector(b.members());
 
     std::vector<int> common_elements;
-    std::set_intersection(sorted_members.begin(), sorted_members.end(),
-                          other_sorted_members.begin(), other_sorted_members.end(),
+    std::set_intersection(a_sorted_members.begin(), a_sorted_members.end(),
+                          b_sorted_members.begin(), b_sorted_members.end(),
                           std::back_inserter(common_elements));
-    CHECK(common_elements.empty(), "Found overlap in members of potentials", sorted_members, other_sorted_members, common_elements);
+    CHECK(common_elements.empty(), "Found overlap in members of potentials", a_sorted_members,
+          b_sorted_members, common_elements);
 
-    return CombinedPotential{.pots = {*this, other}};
+    return CombinedPotential{.pots = {a, b}};
 }
 }  // namespace robot::experimental::beacon_sim
