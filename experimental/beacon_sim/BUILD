@@ -163,7 +163,7 @@ multi_proto_library(
   name = "world_map_config_proto",
   srcs = ["world_map_config.proto"],
   deps = [
-    ":correlated_beacons_proto",
+    ":beacon_potential_proto",
   ]
 )
 
@@ -174,7 +174,7 @@ cc_library(
   deps = [
     ":world_map_config_proto",
     ":world_map",
-    ":correlated_beacons_to_proto",
+    # ":correlated_beacons_to_proto",
   ]
 )
 
@@ -584,7 +584,7 @@ cc_library(
     srcs = ["test_helpers.cc"],
     deps = [
       ":ekf_slam",
-      ":precision_matrix_potential",
+      ":beacon_potential",
       "//planning:probabilistic_road_map",
     ]
 )

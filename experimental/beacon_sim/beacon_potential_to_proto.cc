@@ -1,5 +1,6 @@
 
 #include "experimental/beacon_sim/beacon_potential_to_proto.hh"
+
 #include <algorithm>
 #include <iterator>
 
@@ -28,10 +29,10 @@ void pack_into(const beacon_sim::BeaconPotential &in, BeaconPotential *out) {
 
 beacon_sim::CombinedPotential unpack_from(const CombinedPotential &in) {
     std::vector<beacon_sim::BeaconPotential> pots;
-    std::transform(in.potentials().begin(),
-                   in.potentials().end(),
-                   std::back_inserter(pots),
-                   [](const BeaconPotential &proto_pot) -> beacon_sim::BeaconPotential {return unpack_from(proto_pot);});
+    std::transform(in.potentials().begin(), in.potentials().end(), std::back_inserter(pots),
+                   [](const BeaconPotential &proto_pot) -> beacon_sim::BeaconPotential {
+                       return unpack_from(proto_pot);
+                   });
     return beacon_sim::CombinedPotential{
         .pots = std::move(pots),
     };
@@ -39,10 +40,9 @@ beacon_sim::CombinedPotential unpack_from(const CombinedPotential &in) {
 
 void pack_into(const beacon_sim::CombinedPotential &in, CombinedPotential *out) {
     for (const auto &pot : in.pots) {
-       pack_into(pot, out->add_potentials());
+        pack_into(pot, out->add_potentials());
     }
 }
-
 
 }  // namespace proto
 

@@ -1,7 +1,7 @@
 
 #include "experimental/beacon_sim/world_map_config_to_proto.hh"
 
-#include "experimental/beacon_sim/correlated_beacons.hh"
+#include "experimental/beacon_sim/precision_matrix_potential.hh"
 #include "experimental/beacon_sim/world_map.hh"
 #include "gtest/gtest.h"
 
@@ -105,7 +105,9 @@ TEST(WorldMapConfigToProtoTest, correlated_beacons_config_without_configuration_
                     .pos_in_local = {4.5, 5.6},
                 },
             },
-        .potential = BeaconPotential(Eigen::Matrix2d::Identity(), 7.8, {1, 2}),
+        .potential =
+            PrecisionMatrixPotential{
+                .precision = Eigen::Matrix2d::Identity(), .log_normalizer = 7.8, .members = {1, 2}},
         .configuration = {},
     };
 
@@ -122,9 +124,6 @@ TEST(WorldMapConfigToProtoTest, correlated_beacons_config_without_configuration_
         EXPECT_EQ(beacon.pos_in_local.x(), other_beacon.pos_in_local.x());
         EXPECT_EQ(beacon.pos_in_local.y(), other_beacon.pos_in_local.y());
     }
-    constexpr double TOL = 1e-6;
-    EXPECT_NEAR((config.potential.precision() - other.potential.precision()).norm(), 0.0, TOL);
-    EXPECT_NEAR(config.potential.log_normalizer(), other.potential.log_normalizer(), TOL);
     EXPECT_EQ(config.potential.members().size(), other.potential.members().size());
     for (int i = 0; i < static_cast<int>(config.potential.members().size()); i++) {
         EXPECT_EQ(config.potential.members().at(i), other.potential.members().at(i));
@@ -146,7 +145,9 @@ TEST(WorldMapConfigToProtoTest, correlated_beacons_config_with_configuration_pac
                     .pos_in_local = {4.5, 5.6},
                 },
             },
-        .potential = BeaconPotential(Eigen::Matrix2d::Identity(), 7.8, {1, 2}),
+        .potential =
+            PrecisionMatrixPotential{
+                .precision = Eigen::Matrix2d::Identity(), .log_normalizer = 7.8, .members = {1, 2}},
         .configuration = {{false, true}},
     };
 
@@ -163,9 +164,6 @@ TEST(WorldMapConfigToProtoTest, correlated_beacons_config_with_configuration_pac
         EXPECT_EQ(beacon.pos_in_local.x(), other_beacon.pos_in_local.x());
         EXPECT_EQ(beacon.pos_in_local.y(), other_beacon.pos_in_local.y());
     }
-    constexpr double TOL = 1e-6;
-    EXPECT_NEAR((config.potential.precision() - other.potential.precision()).norm(), 0.0, TOL);
-    EXPECT_NEAR(config.potential.log_normalizer(), other.potential.log_normalizer(), TOL);
     EXPECT_EQ(config.potential.members().size(), other.potential.members().size());
     for (int i = 0; i < static_cast<int>(config.potential.members().size()); i++) {
         EXPECT_EQ(config.potential.members().at(i), other.potential.members().at(i));
@@ -208,7 +206,9 @@ TEST(WorldMapConfigToProtoTest, world_map_config_pack_unpack) {
                             .pos_in_local = {7.8, 9.0},
                         },
                     },
-                .potential = BeaconPotential(Eigen::MatrixXd::Zero(1, 1), 1.0, {3}),
+                .potential = PrecisionMatrixPotential{.precision = Eigen::MatrixXd::Zero(1, 1),
+                                                      .log_normalizer = 1.0,
+                                                      .members = {3}},
                 .configuration = {},
             },
         // TODO Add obstacles to pack/unpack

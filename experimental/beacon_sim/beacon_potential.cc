@@ -51,7 +51,7 @@ std::vector<LogMarginal> compute_log_marginals(const CombinedPotential &pot,
         // Update the state
         for (int pot_idx = 0; pot_idx < static_cast<int>(idxs.size()); pot_idx++) {
             idxs.at(pot_idx)++;
-            if (idxs.at(pot_idx) == static_cast<int>(log_marginals.size())) {
+            if (idxs.at(pot_idx) == static_cast<int>(log_marginals.at(pot_idx).size())) {
                 idxs.at(pot_idx) = 0;
             } else {
                 break;

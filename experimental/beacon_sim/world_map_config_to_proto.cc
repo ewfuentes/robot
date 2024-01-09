@@ -2,7 +2,7 @@
 
 #include "experimental/beacon_sim/world_map_config_to_proto.hh"
 
-#include "experimental/beacon_sim/correlated_beacons_to_proto.hh"
+#include "experimental/beacon_sim/beacon_potential_to_proto.hh"
 #include "experimental/beacon_sim/world_map.hh"
 
 namespace robot::experimental::beacon_sim::proto {

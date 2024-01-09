@@ -357,7 +357,7 @@ EdgeTransform compute_edge_belief_transform(
     const auto &[nearby_potential_beacons, nearby_forever_beacons] =
         split_beacons_into_groups(nearby_beacon_ids, beacon_potential.members());
 
-    const auto all_log_marginals = beacon_potential.compute_log_marginals(nearby_potential_beacons);
+    const auto all_log_marginals = beacon_potential.log_marginals(nearby_potential_beacons);
     const auto log_marginals = static_cast<int>(all_log_marginals.size()) > max_num_transforms
                                    ? sample_log_marginals(all_log_marginals, max_num_transforms)
                                    : all_log_marginals;

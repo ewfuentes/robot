@@ -2,6 +2,7 @@
 #include "experimental/beacon_sim/precision_matrix_potential.hh"
 
 #include <algorithm>
+#include <iterator>
 #include <numeric>
 
 #include "common/math/combinations.hh"
@@ -114,7 +115,14 @@ double compute_log_prob(const PrecisionMatrixPotential &pot,
 }
 
 std::vector<LogMarginal> compute_log_marginals(const PrecisionMatrixPotential &pot,
-                                               const std::vector<int> &remaining) {
+                                               const std::vector<int> &all_remaining) {
+    const auto sorted_all_remaining = sorted_vector(all_remaining);
+    const auto sorted_pot_members = sorted_vector(pot.members);
+    std::vector<int> remaining;
+    std::set_intersection(sorted_all_remaining.begin(), sorted_all_remaining.end(),
+                          sorted_pot_members.begin(), sorted_pot_members.end(),
+                          std::back_inserter(remaining));
+
     // Find the members that we need to marginalize over
     const std::vector<int> to_marginalize = [&]() {
         std::vector<int> out;

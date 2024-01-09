@@ -2,6 +2,7 @@
 #include "experimental/beacon_sim/test_helpers.hh"
 
 #include "experimental/beacon_sim/mapped_landmarks.hh"
+#include "experimental/beacon_sim/precision_matrix_potential.hh"
 
 namespace robot::experimental::beacon_sim {
 
@@ -106,7 +107,9 @@ std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_grid_environment(
     const double lone_log_norm = -std::log(1 - p_lone_beacon);
     const double lone_param = std::log(p_lone_beacon) + lone_log_norm;
     const auto lone_potential =
-        BeaconPotential(Eigen::Matrix<double, 1, 1>{lone_param}, lone_log_norm, {GRID_BEACON_ID});
+        PrecisionMatrixPotential{.precision = Eigen::Matrix<double, 1, 1>{lone_param},
+                                 .log_normalizer = lone_log_norm,
+                                 .members = {GRID_BEACON_ID}};
 
     // Move the robot to (0, 10) and have it face down
     const liegroups::SE2 old_robot_from_new_robot(-std::numbers::pi / 2.0, {0, 10});
@@ -181,7 +184,9 @@ std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_diamond_environme
     const double lone_log_norm = -std::log(1 - p_lone_beacon);
     const double lone_param = std::log(p_lone_beacon) + lone_log_norm;
     const auto lone_potential =
-        BeaconPotential(Eigen::Matrix<double, 1, 1>{lone_param}, lone_log_norm, {123});
+        PrecisionMatrixPotential{.precision = Eigen::Matrix<double, 1, 1>{lone_param},
+                                 .log_normalizer = lone_log_norm,
+                                 .members = {123}};
 
     // Stacked Potential
     const auto stacked_potential = create_correlated_beacons({

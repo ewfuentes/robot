@@ -1,6 +1,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -34,8 +35,11 @@ class BeaconPotential {
         : impl_(other.impl_ ? other.impl_->clone_() : nullptr) {}
 
     BeaconPotential &operator=(const BeaconPotential &other) {
-        BeaconPotential tmp(other);
-        std::swap(tmp, *this);
+        if (other.impl_) {
+            impl_ = other.impl_->clone_();
+        } else {
+            impl_.reset();
+        }
         return *this;
     }
 
@@ -53,13 +57,12 @@ class BeaconPotential {
     }
 
     std::vector<LogMarginal> log_marginals(const std::vector<int> &remaining) const {
-        CHECK(impl_ != nullptr);
-        return impl_->log_marginals_(remaining);
+        return impl_ ? impl_->log_marginals_(remaining)
+                     : std::vector<LogMarginal>{{.present_beacons = {}, .log_marginal = 0.0}};
     };
 
     const std::vector<int> members() const {
-        CHECK(impl_ != nullptr);
-        return impl_->members_();
+        return impl_ ? impl_->members_() : std::vector<int>{};
     };
 
     friend BeaconPotential proto::unpack_from(const proto::BeaconPotential &);
