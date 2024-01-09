@@ -428,10 +428,32 @@ py_binary(
 )
 
 cc_library(
+  name = "beacon_potential",
+  hdrs = ["beacon_potential.hh"],
+  srcs = ["beacon_potential.cc"],
+  deps = [
+    "@eigen",
+    "//common:check",
+  ],
+)
+
+cc_library(
+  name = "precision_matrix_potential",
+  hdrs = ["precision_matrix_potential.hh"],
+  srcs = ["precision_matrix_potential.cc"],
+  deps = [
+    ":beacon_potential",
+    "@eigen",
+    "//common/math:combinations",
+  ]
+)
+
+cc_library(
   name = "correlated_beacons",
   hdrs = ["correlated_beacons.hh"],
   srcs = ["correlated_beacons.cc"],
   deps = [
+    ":precision_matrix_potential",
     "@eigen//:eigen",
     "//common:check",
     "//common:drake",
@@ -446,6 +468,7 @@ pybind_extension(
   visibility=["//common/python:__subpackages__"],
   deps = [
     ":correlated_beacons",
+    ":precision_matrix_potential",
   ]
 )
 

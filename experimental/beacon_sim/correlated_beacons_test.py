@@ -160,7 +160,7 @@ class CorrelatedBeaconsTest(unittest.TestCase):
         beacon_pot = cb.create_correlated_beacons(bc)
 
         # Action
-        log_marginals = beacon_pot.compute_log_marginals([1])
+        log_marginals = beacon_pot.log_marginals([1])
 
         # Verification
         no_beacon, with_beacon = log_marginals if len(log_marginals[0].present_beacons) == 0 else log_marginals[::-1]

@@ -3,6 +3,7 @@
 #include <sstream>
 
 #include "experimental/beacon_sim/correlated_beacons.hh"
+#include "experimental/beacon_sim/precision_matrix_potential.hh"
 #include "pybind11/eigen.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
@@ -38,7 +39,11 @@ PYBIND11_MODULE(correlated_beacons_python, m) {
         });
 
     py::class_<BeaconPotential>(m, "BeaconPotential")
-        .def(py::init<Eigen::MatrixXd, double, std::vector<int>>())
+        .def(py::init([](const Eigen::MatrixXd &precision, const double &log_normalizer,
+                         const std::vector<int> &members) -> BeaconPotential {
+            return PrecisionMatrixPotential{
+                .precision = precision, .log_normalizer = log_normalizer, .members = members};
+        }))
         .def("log_prob",
              py::overload_cast<const std::unordered_map<int, bool> &, bool>(
                  &BeaconPotential::log_prob, py::const_),
@@ -46,7 +51,7 @@ PYBIND11_MODULE(correlated_beacons_python, m) {
         .def("log_prob",
              py::overload_cast<const std::vector<int> &>(&BeaconPotential::log_prob, py::const_))
         .def("__mul__", &BeaconPotential::operator*)
-        .def("compute_log_marginals", &BeaconPotential::compute_log_marginals);
+        .def("log_marginals", &BeaconPotential::log_marginals);
 
     m.def("create_correlated_beacons", create_correlated_beacons);
 }
