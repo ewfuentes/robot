@@ -9,6 +9,6 @@ namespace robot::experimental::beacon_sim {
 namespace proto {
 beacon_sim::CorrelatedBeaconPotential unpack_from(const CorrelatedBeaconPotential &in);
 void pack_into(const beacon_sim::CorrelatedBeaconPotential &in, CorrelatedBeaconPotential *out);
-}
-void pack_into_potential(const CorrelatedBeaconPotential &in, proto::BeaconPotential * out);
-}
+}  // namespace proto
+void pack_into_potential(const CorrelatedBeaconPotential &in, proto::BeaconPotential *out);
+}  // namespace robot::experimental::beacon_sim
