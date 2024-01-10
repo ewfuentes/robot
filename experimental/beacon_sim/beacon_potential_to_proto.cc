@@ -5,6 +5,7 @@
 #include <iterator>
 
 #include "common/check.hh"
+#include "experimental/beacon_sim/correlated_beacon_potential_to_proto.hh"
 #include "experimental/beacon_sim/precision_matrix_potential_to_proto.hh"
 
 namespace robot::experimental::beacon_sim {
@@ -14,10 +15,12 @@ beacon_sim::BeaconPotential unpack_from(const BeaconPotential &in) {
     switch (in.potential_oneof_case()) {
         case BeaconPotential::POTENTIAL_ONEOF_NOT_SET:
             return beacon_sim::BeaconPotential();
-        case BeaconPotential::kPrecisionMatrixPotential:
-            return unpack_from(in.precision_matrix_potential());
         case BeaconPotential::kCombinedPotential:
             return unpack_from(in.combined_potential());
+        case BeaconPotential::kPrecisionMatrixPotential:
+            return unpack_from(in.precision_matrix_potential());
+        case BeaconPotential::kCorrelatedBeaconPotential:
+            return unpack_from(in.correlated_beacon_potential());
     }
     CHECK(false, "Unhandled potential type");
     return beacon_sim::BeaconPotential();

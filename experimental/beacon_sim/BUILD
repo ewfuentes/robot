@@ -429,6 +429,11 @@ py_binary(
 )
 
 cc_library(
+  name = "log_marginal",
+  hdrs = ["log_marginal.hh"],
+)
+
+cc_library(
   name = "beacon_potential",
   hdrs = [
     "beacon_potential.hh",
@@ -446,8 +451,10 @@ cc_library(
     "@eigen",
     "//common:check",
     "//common/math:combinations",
+    ":log_marginal",
     ":beacon_potential_proto",
     ":precision_matrix_potential_proto",
+    ":correlated_beacon_potential",
     "//common/math:matrix_to_proto",
   ],
 )
@@ -460,6 +467,49 @@ cc_test(
       ":beacon_potential",
       ":correlated_beacons",
     ]
+)
+
+multi_proto_library(
+  name = "correlated_beacon_potential_proto",
+  srcs = ["correlated_beacon_potential.proto"],
+)
+
+cc_library(
+  name = "correlated_beacon_potential",
+  hdrs = [
+    "correlated_beacon_potential.hh",
+    "correlated_beacon_potential_to_proto.hh",
+  ],
+  srcs = [
+    "correlated_beacon_potential.cc",
+    "correlated_beacon_potential_to_proto.cc",
+  ],
+  deps = [
+    ":beacon_potential_proto",
+    ":correlated_beacon_potential_proto",
+    ":log_marginal",
+    "//common:check",
+    "//common/math:combinations",
+    "//common/math:n_choose_k",
+  ]
+)
+
+cc_test(
+  name = "correlated_beacon_potential_test",
+  srcs = ["correlated_beacon_potential_test.cc"],
+  deps = [
+    "@com_google_googletest//:gtest_main",
+    ":correlated_beacon_potential",
+  ]
+)
+
+cc_test(
+  name = "correlated_beacon_potential_to_proto_test",
+  srcs = ["correlated_beacon_potential_to_proto_test.cc"],
+  deps = [
+    "@com_google_googletest//:gtest_main",
+    ":correlated_beacon_potential",
+  ]
 )
 
 cc_library(
@@ -510,6 +560,7 @@ multi_proto_library(
   srcs = ["beacon_potential.proto"],
   deps = [
     ":precision_matrix_potential_proto",
+    ":correlated_beacon_potential_proto",
   ]
 )
 
