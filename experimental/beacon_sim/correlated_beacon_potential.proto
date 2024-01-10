@@ -1,0 +1,10 @@
+
+syntax = "proto3";
+
+package robot.experimental.beacon_sim.proto;
+
+message CorrelatedBeaconPotential {
+  double p_present = 1;
+  double p_beacon_given_present = 2;
+  repeated int32 members = 3;
+}

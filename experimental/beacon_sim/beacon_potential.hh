@@ -8,6 +8,7 @@
 
 #include "Eigen/Dense"
 #include "common/check.hh"
+#include "experimental/beacon_sim/log_marginal.hh"
 
 namespace robot::experimental::beacon_sim {
 class BeaconPotential;
@@ -16,11 +17,6 @@ class BeaconPotential;
 beacon_sim::BeaconPotential unpack_from(const BeaconPotential &);
 void pack_into(const beacon_sim::BeaconPotential &, BeaconPotential *);
 }  // namespace proto
-
-struct LogMarginal {
-    std::vector<int> present_beacons;
-    double log_marginal;
-};
 
 template <typename T>
 concept Potential = requires(T a) {
