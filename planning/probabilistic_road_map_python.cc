@@ -1,9 +1,7 @@
 
 #include "planning/probabilistic_road_map.hh"
-
 #include "planning/road_map.hh"
 #include "planning/road_map_to_proto.hh"
-
 #include "pybind11/eigen.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
@@ -33,40 +31,37 @@ PYBIND11_MODULE(probabilistic_road_map_python, m) {
     py::class_<RoadMap>(m, "RoadMap")
         .def_readonly_static("START_IDX", &RoadMap::START_IDX)
         .def_readonly_static("GOAL_IDX", &RoadMap::GOAL_IDX)
-        .def(py::init<std::vector<Eigen::Vector2d>, Eigen::MatrixXd,
-             std::optional<StartGoalPair>>(), "points"_a, "adj"_a, "start_goal_pair"_a)
+        .def(
+            py::init<std::vector<Eigen::Vector2d>, Eigen::MatrixXd, std::optional<StartGoalPair>>(),
+            "points"_a, "adj"_a, "start_goal_pair"_a)
         .def("add_start_goal", &RoadMap::add_start_goal)
         .def("points", &RoadMap::points)
         .def("adj", &RoadMap::adj)
         .def("has_start_goal", &RoadMap::has_start_goal)
         .def("point", &RoadMap::point)
         .def("neighbors", &RoadMap::neighbors)
-        .def("to_proto_string", [](const RoadMap &self){ 
+        .def("to_proto_string", [](const RoadMap &self) {
             proto::RoadMap proto;
             pack_into(self, &proto);
             std::string out;
             proto.SerializeToString(&out);
             return py::bytes(out);
-        })
-    ;
+        });
 
-    m.def(
-        "create_road_map", [](const MapBounds &bounds, const RoadmapCreationConfig &config){
-            struct Map {
-                MapBounds bounds;
+    m.def("create_road_map", [](const MapBounds &bounds, const RoadmapCreationConfig &config) {
+        struct Map {
+            MapBounds bounds;
 
-                bool in_free_space(const Eigen::Vector2d &) const {return true; }
-                bool in_free_space(const Eigen::Vector2d &, const Eigen::Vector2d &) const {return true; }
-                MapBounds map_bounds() const { return bounds; }
-            };
-            Map map = {
-                .bounds = bounds
-            };
+            bool in_free_space(const Eigen::Vector2d &) const { return true; }
+            bool in_free_space(const Eigen::Vector2d &, const Eigen::Vector2d &) const {
+                return true;
+            }
+            MapBounds map_bounds() const { return bounds; }
+        };
+        Map map = {.bounds = bounds};
 
-            return create_road_map(map, config);
-        }
-    );
+        return create_road_map(map, config);
+    });
 };
 
-}
-
+}  // namespace robot::planning
