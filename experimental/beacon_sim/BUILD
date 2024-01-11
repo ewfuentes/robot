@@ -532,6 +532,8 @@ pybind_extension(
   visibility=["//common/python:__subpackages__"],
   deps = [
     ":correlated_beacons",
+    ":beacon_potential",
+    ":correlated_beacon_potential",
   ]
 )
 
@@ -682,4 +684,18 @@ cc_library(
     ":robot_belief",
     "//planning:belief_road_map",
   ]
+)
+
+py_library(
+  name = "environment_builder",
+  srcs = ["environment_builder.py"],
+  data = ["//planning:probabilistic_road_map_python.so"],
+  deps = [
+    ":world_map_config_proto_py",
+    ":mapped_landmarks_proto_py",
+    requirement("matplotlib"),
+    requirement("numpy"),
+    requirement("spatialmath_python"),
+  ],
+  visibility =  ["//visibility:public"]
 )

@@ -15,15 +15,18 @@ PYBIND11_MODULE(probabilistic_road_map_python, m) {
     m.doc() = "probabilistic road map";
 
     py::class_<RoadmapCreationConfig>(m, "RoadmapCreationConfig")
+        .def(py::init<>())
         .def_readwrite("seed", &RoadmapCreationConfig::seed)
         .def_readwrite("num_valid_points", &RoadmapCreationConfig::num_valid_points)
         .def_readwrite("desired_node_degree", &RoadmapCreationConfig::desired_node_degree);
 
     py::class_<MapBounds>(m, "MapBounds")
+        .def(py::init<>())
         .def_readwrite("bottom_left", &MapBounds::bottom_left)
         .def_readwrite("top_right", &MapBounds::bottom_left);
 
     py::class_<StartGoalPair>(m, "StartGoalPair")
+        .def(py::init<>())
         .def_readwrite("start", &StartGoalPair::start)
         .def_readwrite("goal", &StartGoalPair::goal)
         .def_readwrite("connection_radius_m", &StartGoalPair::connection_radius_m);

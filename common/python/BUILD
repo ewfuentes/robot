@@ -1,4 +1,4 @@
-load("@pip//:requirements.bzl", "requirement")
+load("@pip//:requirements.bzl", "requirement", "data_requirement")
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
 load("@rules_python//python:defs.bzl", "py_binary")
 
@@ -7,24 +7,19 @@ py_binary(
   srcs = ["jupyter_notebook.py"],
   data = [
     "//experimental/beacon_sim:correlated_beacons_python.so",
+    data_requirement("jupyterlab"),
   ],
   deps = [
-    requirement("notebook"),
+    requirement("jupyterlab"),
+    requirement("ipympl"),
     requirement("matplotlib"),
     requirement("Pillow"),
     requirement("numpy"),
     requirement("pandas"),
     requirement("scikit-learn"),
     requirement("tqdm"),
-    "@drake//bindings/pydrake",
+    "//experimental/beacon_sim:environment_builder",
     "//experimental/beacon_sim:plot_trials",
-    "//experimental/beacon_dist:model",
-    "//experimental/beacon_dist:utils",
-    "//experimental/beacon_dist:train.binary",
-    "//experimental/beacon_dist:multiview_dataset",
-    "//experimental/beacon_dist:generate_letter_dataset",
-    "//experimental/beacon_dist:generate_ycb_dataset",
-    "@sophus_lie//:liegroups_python",
   ],
 )
 
