@@ -689,6 +689,7 @@ cc_library(
 py_library(
   name = "environment_builder",
   srcs = ["environment_builder.py"],
+  data = ["//planning:probabilistic_road_map_python.so"],
   deps = [
     ":world_map_config_proto_py",
     ":mapped_landmarks_proto_py",

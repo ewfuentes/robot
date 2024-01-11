@@ -10,6 +10,8 @@ from experimental.beacon_sim.correlated_beacons_python import (
     BeaconClique,
 )
 from common.math.matrix_pb2 import Matrix
+from planning.probabilistic_road_map_python import create_road_map, MapBounds, RoadmapCreationConfig
+from planning.road_map_pb2 import RoadMap
 
 from typing import Protocol, runtime_checkable
 
@@ -47,6 +49,11 @@ class GridLandmark:
         self._num_rows = num_rows
         self._num_cols = num_cols
         self._spacing_m = spacing_m
+        max_x = max(self._spacing_m * (self._num_cols - 1), 1)
+        max_y = max(self._spacing_m * (self._num_rows - 1), 1)
+        self._pts_in_anchor = np.array(
+            [(0.0, 0.0), (max_x, 0.0), (max_x, max_y), (0.0, max_y), (0.0, 0.0)]
+        ).T
 
         clique = BeaconClique(
             p_beacon=p_beacon,
@@ -57,14 +64,7 @@ class GridLandmark:
         self._dist = create_correlated_beacons(clique)
 
     def draw(self, ax: plt.Axes):
-        max_x = max(self._spacing_m * (self._num_cols - 1), 1)
-        max_y = max(self._spacing_m * (self._num_rows - 1), 1)
-
-        pts_in_anchor = np.array(
-            [(0.0, 0.0), (max_x, 0.0), (max_x, max_y), (0.0, max_y), (0.0, 0.0)]
-        ).T
-
-        pts_in_world = self._world_from_anchor * pts_in_anchor
+        pts_in_world = self._world_from_anchor * self._pts_in_anchor
 
         outline = mpl.patches.Polygon(pts_in_world.T, alpha=0.25)
 
@@ -284,6 +284,31 @@ def mapped_landmarks_to_proto(objs: list[DiffuseLandmark | GridLandmark]):
     return out
 
 
+def create_road_map_from_objs(objs: list[DiffuseLandmark | GridLandmark], random_seed: int):
+    pts_in_world = []
+    ids = []
+    for obj in objs:
+        pts_in_world.append(obj._world_from_anchor * obj._pts_in_anchor)
+        ids += obj._dist.members()
+
+    pts_in_world = np.concatenate(pts_in_world, axis=-1)
+
+    map_bounds = MapBounds()
+    map_bounds.bottom_left = np.min(pts_in_world, axis=1)
+    map_bounds.top_right = np.max(pts_in_world, axis=1)
+
+    config = RoadmapCreationConfig()
+    config.seed = random_seed
+    config.num_valid_points = 50
+    config.desired_node_degree = 4
+
+    road_map = create_road_map(map_bounds, config)
+
+    road_map_proto = RoadMap()
+    road_map_proto.ParseFromString(road_map.to_proto_string())
+    return road_map_proto
+
+
 def write_environment_to_file(output_path: Path, objs: list[DiffuseLandmark | GridLandmark]):
     # write out map config
     output_path.mkdir(exist_ok=True)
@@ -297,4 +322,7 @@ def write_environment_to_file(output_path: Path, objs: list[DiffuseLandmark | Gr
         file_out.write(mapped_landmarks_proto.SerializeToString())
 
     # write out road map
-    ...
+    random_seed = sum([ord(c) for c in str(output_path)])
+    road_map_proto = create_road_map_from_objs(objs, random_seed)
+    with open(output_path / 'road_map.pb', 'wb') as file_out:
+        file_out.write(road_map_proto.SerializeToString())

@@ -23,7 +23,7 @@ cc_test(
 pybind_extension(
   name = "probabilistic_road_map_python",
   srcs = ["probabilistic_road_map_python.cc"],
-  visibility=["//common/python:__subpackages__"],
+  visibility=["//visibility:public"],
   deps = [
     ":probabilistic_road_map",
     ":road_map_to_proto",
