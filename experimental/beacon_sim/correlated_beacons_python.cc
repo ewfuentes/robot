@@ -2,10 +2,10 @@
 
 #include <sstream>
 
+#include "experimental/beacon_sim/beacon_potential_to_proto.hh"
+#include "experimental/beacon_sim/correlated_beacon_potential.hh"
 #include "experimental/beacon_sim/correlated_beacons.hh"
 #include "experimental/beacon_sim/precision_matrix_potential.hh"
-#include "experimental/beacon_sim/correlated_beacon_potential.hh"
-#include "experimental/beacon_sim/beacon_potential_to_proto.hh"
 #include "pybind11/eigen.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
@@ -41,11 +41,13 @@ PYBIND11_MODULE(correlated_beacons_python, m) {
         });
 
     py::class_<BeaconPotential>(m, "BeaconPotential")
-        .def("correlated_beacon_potential", 
-             [](const double p_present, const double p_beacon_given_present, const std::vector<int> &members) -> BeaconPotential {
-            return CorrelatedBeaconPotential{
-                .p_present = p_present, .p_beacon_given_present = p_beacon_given_present, .members = members};
-        })
+        .def("correlated_beacon_potential",
+             [](const double p_present, const double p_beacon_given_present,
+                const std::vector<int> &members) -> BeaconPotential {
+                 return CorrelatedBeaconPotential{.p_present = p_present,
+                                                  .p_beacon_given_present = p_beacon_given_present,
+                                                  .members = members};
+             })
         .def("log_prob",
              py::overload_cast<const std::unordered_map<int, bool> &, bool>(
                  &BeaconPotential::log_prob, py::const_),
@@ -56,14 +58,13 @@ PYBIND11_MODULE(correlated_beacons_python, m) {
              py::overload_cast<const BeaconPotential &, const BeaconPotential &>(operator*))
         .def("log_marginals", &BeaconPotential::log_marginals)
         .def("members", &BeaconPotential::members)
-        .def("to_proto_string", [](const BeaconPotential &self){
+        .def("to_proto_string", [](const BeaconPotential &self) {
             proto::BeaconPotential proto;
             pack_into(self, &proto);
             std::string out;
             proto.SerializeToString(&out);
             return py::bytes(out);
-        })
-    ;
+        });
 
     m.def("create_correlated_beacons", create_correlated_beacons);
 }
