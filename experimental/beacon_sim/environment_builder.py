@@ -3,7 +3,7 @@ from experimental.beacon_sim.world_map_config_pb2 import (
     CorrelatedBeaconsConfig,
     Beacon,
 )
-from experimental.beacon_sim.correlated_beacons_pb2 import BeaconPotential
+from experimental.beacon_sim.beacon_potential_pb2 import BeaconPotential
 from experimental.beacon_sim.mapped_landmarks_pb2 import MappedLandmarks
 from experimental.beacon_sim.correlated_beacons_python import (
     create_correlated_beacons,
@@ -241,16 +241,8 @@ def map_config_to_proto(objs: list[DiffuseLandmark | GridLandmark]):
         b.pos_y_m = y
         beacons.append(b)
 
-    
-    precision_matrix = Matrix()
-    precision_matrix.num_rows = len(combined_dist.members())
-    precision_matrix.num_cols = len(combined_dist.members())
-    precision_matrix.data.extend(list(combined_dist.precision().flatten()))
-
     beacon_potential = BeaconPotential()
-    beacon_potential.members.extend(combined_dist.members())
-    beacon_potential.precision.CopyFrom(precision_matrix)
-    beacon_potential.log_normalizer = combined_dist.log_normalizer()
+    beacon_potential.ParseFromString(combined_dist.to_proto_string())
 
     beacon_config = CorrelatedBeaconsConfig()
     beacon_config.beacons.extend(beacons)
@@ -261,14 +253,48 @@ def map_config_to_proto(objs: list[DiffuseLandmark | GridLandmark]):
 
     return map_proto
 
+
+def mapped_landmarks_to_proto(objs: list[DiffuseLandmark | GridLandmark]):
+    pts_in_world = []
+    ids = []
+    for obj in objs:
+        pts_in_world.append(obj._world_from_anchor * obj._pts_in_anchor)
+        ids += obj._dist.members()
+
+    pts_in_world = np.concatenate(pts_in_world, axis=-1)
+
+    def pt_in_world_to_matrix_proto(pt_in_world):
+        out = Matrix()
+        out.num_rows = 2
+        out.num_cols = 1
+        out.data.extend(pt_in_world)
+        return out
+
+    out = MappedLandmarks()
+    out.beacon_ids.extend(ids)
+    out.beacon_in_local.extend(map(pt_in_world_to_matrix_proto, pts_in_world.T))
+
+    cov_in_local = Matrix()
+    num_cols = 2 * len(ids)
+    cov_in_local.num_rows = num_cols
+    cov_in_local.num_cols = num_cols
+    cov_in_local.data.extend((np.identity(num_cols) * 1e-9).flatten().tolist())
+
+    out.cov_in_local.CopyFrom(cov_in_local)
+    return out
+
+
 def write_environment_to_file(output_path: Path, objs: list[DiffuseLandmark | GridLandmark]):
     # write out map config
     output_path.mkdir(exist_ok=True)
     map_config_proto = map_config_to_proto(objs)
-    with open(output_path / 'map_config.pb', 'wb') as file_out:
+    with open(output_path / 'world_map_config.pb', 'wb') as file_out:
         file_out.write(map_config_proto.SerializeToString())
 
-    # write out ekf belief
+    # write out mapped landmarks
+    mapped_landmarks_proto = mapped_landmarks_to_proto(objs)
+    with open(output_path / 'mapped_landmarks.pb', 'wb') as file_out:
+        file_out.write(mapped_landmarks_proto.SerializeToString())
 
     # write out road map
     ...

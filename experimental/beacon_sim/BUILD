@@ -532,6 +532,8 @@ pybind_extension(
   visibility=["//common/python:__subpackages__"],
   deps = [
     ":correlated_beacons",
+    ":beacon_potential",
+    ":correlated_beacon_potential",
   ]
 )
 
