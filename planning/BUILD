@@ -1,4 +1,5 @@
 load("//common/proto:proto.bzl", "multi_proto_library")
+load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
 
 cc_library(
   name = "probabilistic_road_map",
@@ -18,6 +19,17 @@ cc_test(
     "@com_google_googletest//:gtest_main",
   ]
 )
+
+pybind_extension(
+  name = "probabilistic_road_map_python",
+  srcs = ["probabilistic_road_map_python.cc"],
+  visibility=["//common/python:__subpackages__"],
+  deps = [
+    ":probabilistic_road_map",
+    ":road_map_to_proto",
+  ]
+)
+
 
 cc_library(
   name = "road_map",

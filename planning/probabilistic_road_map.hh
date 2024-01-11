@@ -1,6 +1,7 @@
 
 #pragma once
 
+#include <concepts>
 #include <random>
 
 #include "Eigen/Core"
@@ -26,20 +27,18 @@ struct MapBounds {
     Eigen::Vector2d top_right;
 };
 
+template <typename T>
+concept Map = requires (T m, Eigen::Vector2d a, Eigen::Vector2d b) {
+  { m.in_free_space(a) } -> std::same_as<bool>;
+  { m.in_free_space(a, b) } -> std::same_as<bool>;
+  { m.map_bounds() } -> std::same_as<MapBounds>;
+};
+
 // Create a probabilistic road map from a map.
-// The Map type must support the following interface:
-// MapBounds
-// bool in_free_space(const Eigen::Vector2d &point);
-//  - Returns true if a point is in free space. Returns false otherwise.
-// bool in_free_space(const Eigen::Vector2d &point_a, const Eigen::Vector2d &point_b);
-//  - Returns true if a line segment lies entirely in free space, Returns false otherwise.
-// MapBounds map_bounds()
-//  - Returns the limits of where points should be sampled from
-//
 // initial_sample_points contains sample points that the caller would like to include as part of
 // the road map. It may be empty.
-template <typename Map>
-RoadMap create_road_map(const Map &map, const RoadmapCreationConfig &config,
+template <Map M>
+RoadMap create_road_map(const M &map, const RoadmapCreationConfig &config,
                         const std::vector<Eigen::Vector2d> &initial_sample_points = {}) {
     // Copy valid points into point list
     std::vector<Eigen::Vector2d> sample_points;
