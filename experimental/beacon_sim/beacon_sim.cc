@@ -376,16 +376,15 @@ void run_simulation(const SimConfig &sim_config) {
 
     const planning::RoadMap road_map = [&]() {
         if (sim_config.road_map_config.has_value()) {
-            const auto maybe_road_map_config_proto = 
-            robot::proto::load_from_file<planning::proto::RoadMap>(
-                    sim_config.road_map_config.value()
-                );
+            const auto maybe_road_map_config_proto =
+                robot::proto::load_from_file<planning::proto::RoadMap>(
+                    sim_config.road_map_config.value());
             CHECK(maybe_road_map_config_proto);
             return unpack_from(maybe_road_map_config_proto.value());
         } else {
             return create_road_map(map);
         }
-    } ();
+    }();
 
     BeaconSimState state = {
         .time_of_validity = time::current_robot_time(),
