@@ -1,11 +1,13 @@
 
 #pragma once
 
+#include <random>
 #include <unordered_map>
 #include <vector>
 
 #include "Eigen/Core"
-#include "experimental/beacon_sim/beacon_potential.hh"
+#include "common/argument_wrapper.hh"
+#include "experimental/beacon_sim/log_marginal.hh"
 
 namespace robot::experimental::beacon_sim {
 
@@ -26,6 +28,8 @@ std::vector<int> get_members(const PrecisionMatrixPotential &pot);
 
 std::vector<LogMarginal> compute_log_marginals(const PrecisionMatrixPotential &pot,
                                                const std::vector<int> &remaining);
+
+std::vector<int> generate_sample(const PrecisionMatrixPotential &pot, InOut<std::mt19937> gen);
 
 namespace proto {
 class BeaconPotential;

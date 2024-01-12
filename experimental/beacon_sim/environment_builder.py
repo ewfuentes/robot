@@ -3,12 +3,10 @@ from experimental.beacon_sim.world_map_config_pb2 import (
     CorrelatedBeaconsConfig,
     Beacon,
 )
-from experimental.beacon_sim.beacon_potential_pb2 import BeaconPotential
+from experimental.beacon_sim.beacon_potential_pb2 import BeaconPotential as BeaconPotentialProto
 from experimental.beacon_sim.mapped_landmarks_pb2 import MappedLandmarks
-from experimental.beacon_sim.correlated_beacons_python import (
-    create_correlated_beacons,
-    BeaconClique,
-)
+from experimental.beacon_sim.correlated_beacons_python import BeaconPotential
+
 from common.math.matrix_pb2 import Matrix
 from planning.probabilistic_road_map_python import create_road_map, MapBounds, RoadmapCreationConfig
 from planning.road_map_pb2 import RoadMap
@@ -55,13 +53,11 @@ class GridLandmark:
             [(0.0, 0.0), (max_x, 0.0), (max_x, max_y), (0.0, max_y), (0.0, 0.0)]
         ).T
 
-        clique = BeaconClique(
-            p_beacon=p_beacon,
-            p_no_beacons=p_no_beacons,
-            members=[(ord(beacon_ns) << 16) + i for i in range(len(self))],
+        self._dist = BeaconPotential.correlated_beacon_potential(
+            p_present=1 - p_no_beacons,
+            p_beacon_given_present=p_beacon,
+            members=[(ord(beacon_ns) << 16) + i for i in range(len(self))]
         )
-
-        self._dist = create_correlated_beacons(clique)
 
     def draw(self, ax: plt.Axes):
         pts_in_world = self._world_from_anchor * self._pts_in_anchor
@@ -106,13 +102,11 @@ class DiffuseLandmark:
 
         self._pts_in_anchor = np.stack([xs, ys])
 
-        clique = BeaconClique(
-            p_beacon=p_beacon,
-            p_no_beacons=p_no_beacons,
-            members=[(ord(beacon_ns) << 16) + i for i in range(len(self))],
+        self._dist = BeaconPotential.correlated_beacon_potential(
+            p_present=1-p_no_beacons,
+            p_beacon_given_present=p_beacon,
+            members=[(ord(beacon_ns) << 16) + i for i in range(len(self))]
         )
-
-        self._dist = create_correlated_beacons(clique)
 
     def draw(self, ax: plt.Axes):
         pts_in_anchor = np.array(
@@ -241,7 +235,7 @@ def map_config_to_proto(objs: list[DiffuseLandmark | GridLandmark]):
         b.pos_y_m = y
         beacons.append(b)
 
-    beacon_potential = BeaconPotential()
+    beacon_potential = BeaconPotentialProto()
     beacon_potential.ParseFromString(combined_dist.to_proto_string())
 
     beacon_config = CorrelatedBeaconsConfig()

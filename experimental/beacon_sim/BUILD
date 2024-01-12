@@ -437,27 +437,45 @@ cc_library(
   name = "beacon_potential",
   hdrs = [
     "beacon_potential.hh",
-    "precision_matrix_potential.hh",
     "beacon_potential_to_proto.hh",
-    "precision_matrix_potential_to_proto.hh",
   ],
   srcs = [
     "beacon_potential.cc",
-    "precision_matrix_potential.cc",
     "beacon_potential_to_proto.cc",
+  ],
+  deps = [
+    "@eigen",
+    "//common:argument_wrapper",
+    "//common:check",
+    ":log_marginal",
+    ":beacon_potential_proto",
+    ":precision_matrix_potential",
+    ":correlated_beacon_potential",
+  ],
+)
+
+cc_library(
+  name = "precision_matrix_potential",
+  hdrs = [
+    "precision_matrix_potential.hh",
+    "precision_matrix_potential_to_proto.hh",
+  ],
+  srcs = [
+    "precision_matrix_potential.cc",
     "precision_matrix_potential_to_proto.cc",
   ],
   deps = [
     "@eigen",
+    ":log_marginal",
+    ":precision_matrix_potential_proto",
+    ":beacon_potential_proto",
     "//common:check",
     "//common/math:combinations",
-    ":log_marginal",
-    ":beacon_potential_proto",
-    ":precision_matrix_potential_proto",
-    ":correlated_beacon_potential",
+    "//common:argument_wrapper",
     "//common/math:matrix_to_proto",
-  ],
+  ]
 )
+
 
 cc_test(
     name = "beacon_potential_to_proto_test",
@@ -488,6 +506,7 @@ cc_library(
     ":beacon_potential_proto",
     ":correlated_beacon_potential_proto",
     ":log_marginal",
+    "//common:argument_wrapper",
     "//common:check",
     "//common/math:combinations",
     "//common/math:n_choose_k",

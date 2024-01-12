@@ -12,28 +12,6 @@
 namespace robot::experimental::beacon_sim {
 namespace {
 
-std::vector<bool> increment(const std::vector<bool> &in) {
-    std::vector<bool> out = in;
-    for (int i = 0; i < static_cast<int>(out.size()); i++) {
-        // Set the first bit that you can, clearing any set bits along the way
-        if (!out.at(i)) {
-            out.at(i) = true;
-            break;
-        }
-        out.at(i) = false;
-    }
-    return out;
-}
-
-std::unordered_map<int, bool> assignment_from_configuration(const std::vector<bool> &config,
-                                                            const std::vector<int> &members) {
-    std::unordered_map<int, bool> out;
-    for (int i = 0; i < static_cast<int>(members.size()); i++) {
-        out[members.at(i)] = config.at(i);
-    }
-    return out;
-}
-
 std::vector<bool> get_beacon_configuration(const CorrelatedBeaconsConfig &config,
                                            InOut<std::mt19937> gen) {
     if (config.configuration.has_value()) {
@@ -41,15 +19,15 @@ std::vector<bool> get_beacon_configuration(const CorrelatedBeaconsConfig &config
     } else if (config.beacons.size() == 0) {
         return {};
     }
-    std::vector<bool> out(config.beacons.size());
-    double remaining_prob = std::uniform_real_distribution<>()(*gen);
-    while (true) {
-        remaining_prob -= std::exp(config.potential.log_prob(
-            assignment_from_configuration(out, config.potential.members())));
-        if (remaining_prob < 0) {
-            break;
-        }
-        out = increment(out);
+
+    const std::vector<int> present_beacon_ids = config.potential.sample(gen);
+    const std::vector<int> all_members = config.potential.members();
+    std::vector<bool> out(all_members.size(), false);
+    for (const int beacon_id : present_beacon_ids) {
+        const auto iter = std::find(all_members.begin(), all_members.end(), beacon_id);
+        CHECK(iter != all_members.end());
+        const int idx = std::distance(all_members.begin(), iter);
+        out.at(idx) = true;
     }
     return out;
 }
