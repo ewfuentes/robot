@@ -1,17 +1,32 @@
 
 #include <filesystem>
+#include <random>
 
 #include "common/check.hh"
 #include "common/proto/load_from_file.hh"
+#include "common/argument_wrapper.hh"
 #include "cxxopts.hpp"
 #include "experimental/beacon_sim/experiment_config.pb.h"
 #include "experimental/beacon_sim/mapped_landmarks.pb.h"
 #include "experimental/beacon_sim/world_map_config.pb.h"
 #include "planning/road_map.pb.h"
 
+#include "Eigen/Core"
+
 using robot::experimental::beacon_sim::proto::ExperimentConfig;
 
 namespace robot::experimental::beacon_sim {
+namespace {
+
+struct StartGoal {
+    Eigen::Vector2d start;
+    Eigen::Vector2d goal;
+}
+
+std::vector<StartGoal> sample_start_goal(InOut<std::mt19937> gen) {
+}
+
+}
 
 void run_experiment(const ExperimentConfig &config, const std::filesystem::path &base_path) {
     std::cout << config.DebugString() << std::endl;

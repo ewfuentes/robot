@@ -22,13 +22,15 @@ message PlannerConfig {
   };
 }
 
+// NEXTID: 8
 message ExperimentConfig {
   string name = 1;
   // Note that these paths are relative to the current experiment_config
   string map_config_path = 2;
   string ekf_state_path = 3;
   string road_map_path = 4;
-  int32 seed = 5;
-  repeated PlannerConfig planner_configs = 6;
+  int32 start_goal_seed = 5;
+  int32 num_trials = 6;
+  repeated PlannerConfig planner_configs = 7;
 }
 

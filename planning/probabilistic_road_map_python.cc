@@ -63,7 +63,14 @@ PYBIND11_MODULE(probabilistic_road_map_python, m) {
         };
         Map map = {.bounds = bounds};
 
-        return create_road_map(map, config);
+        const std::vector<Eigen::Vector2d> init_pts = {
+            bounds.bottom_left,
+            bounds.top_right,
+            {bounds.bottom_left.x(), bounds.top_right.y()},
+            {bounds.top_right.x(), bounds.bottom_left.y()},
+        };
+
+        return create_road_map(map, config, init_pts);
     });
 };
 

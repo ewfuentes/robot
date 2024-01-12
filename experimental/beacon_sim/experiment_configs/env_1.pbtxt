@@ -2,7 +2,9 @@ name: "evaluate_approximation_quality"
 
 map_config_path: "data/map_config_path.pb"
 ekf_state_path: "data/ekf_state_path.pb"
-seed: 12345
+road_map_path: "data/road_map.pb"
+start_goal_seed: 12345
+num_trials: 1000
 
 planner_configs: {
   name: "Full Distribution"
