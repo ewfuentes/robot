@@ -64,6 +64,7 @@ cc_binary(
     "//common/proto:load_from_file",
     "//common/time:robot_time_to_proto",
     "//planning:probabilistic_road_map",
+    "//planning:road_map_to_proto",
     "@cxxopts//:cxxopts",
   ],
 )

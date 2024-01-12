@@ -28,6 +28,7 @@ struct SimConfig {
     std::optional<std::string> map_input_path;
     std::optional<std::string> map_output_path;
     std::optional<std::string> world_map_config;
+    std::optional<std::string> road_map_config;
     time::RobotTimestamp::duration dt;
     PlannerConfig planner_config;
     bool load_off_diagonals;
