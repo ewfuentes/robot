@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numeric>
+#include <random>
 
 #include "common/check.hh"
 #include "common/math/combinations.hh"
@@ -123,6 +124,23 @@ std::vector<LogMarginal> compute_log_marginals(const CorrelatedBeaconPotential &
                 .present_beacons = std::move(present_beacons),
                 .log_marginal = compute_log_prob(pot, assignment, ALLOW_PARTIAL_ASSIGNMENT),
             });
+        }
+    }
+    return out;
+}
+
+std::vector<int> generate_sample(const CorrelatedBeaconPotential &pot, InOut<std::mt19937> gen) {
+    std::uniform_real_distribution<> dist;
+    const bool are_beacon_present = dist(*gen) < pot.p_present;
+    if (!are_beacon_present) {
+        return {};
+    }
+
+    std::vector<int> out;
+    // Given the flip above is successful, then the landmarks are independent
+    for (const int beacon_id : pot.members) {
+        if (dist(*gen) < pot.p_beacon_given_present) {
+            out.push_back(beacon_id);
         }
     }
     return out;

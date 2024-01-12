@@ -41,13 +41,15 @@ PYBIND11_MODULE(correlated_beacons_python, m) {
         });
 
     py::class_<BeaconPotential>(m, "BeaconPotential")
-        .def("correlated_beacon_potential",
-             [](const double p_present, const double p_beacon_given_present,
-                const std::vector<int> &members) -> BeaconPotential {
-                 return CorrelatedBeaconPotential{.p_present = p_present,
-                                                  .p_beacon_given_present = p_beacon_given_present,
-                                                  .members = members};
-             })
+        .def_static(
+            "correlated_beacon_potential",
+            [](const double p_present, const double p_beacon_given_present,
+               const std::vector<int> &members) -> BeaconPotential {
+                return CorrelatedBeaconPotential{.p_present = p_present,
+                                                 .p_beacon_given_present = p_beacon_given_present,
+                                                 .members = members};
+            },
+            "p_present"_a, "p_beacon_given_present"_a, "members"_a)
         .def("log_prob",
              py::overload_cast<const std::unordered_map<int, bool> &, bool>(
                  &BeaconPotential::log_prob, py::const_),

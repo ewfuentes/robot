@@ -75,6 +75,15 @@ std::vector<int> get_members(const CombinedPotential &pot) {
     return out;
 }
 
+std::vector<int> generate_sample(const CombinedPotential &pot, InOut<std::mt19937> gen) {
+    std::vector<int> out;
+    for (const auto &sub_pot : pot.pots) {
+        const auto subsample = sub_pot.sample(gen);
+        out.insert(out.end(), subsample.begin(), subsample.end());
+    }
+    return out;
+}
+
 BeaconPotential operator*(const BeaconPotential &a, const BeaconPotential &b) {
     const auto sorted_vector = [](const std::vector<int> &in) {
         std::vector<int> sorted_members = in;

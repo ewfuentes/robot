@@ -1,12 +1,14 @@
 
 #pragma once
 
-#include <cstddef>
+#include <concepts>
 #include <memory>
+#include <random>
 #include <unordered_map>
 #include <vector>
 
 #include "Eigen/Dense"
+#include "common/argument_wrapper.hh"
 #include "common/check.hh"
 #include "experimental/beacon_sim/log_marginal.hh"
 
@@ -19,8 +21,18 @@ void pack_into(const beacon_sim::BeaconPotential &, BeaconPotential *);
 }  // namespace proto
 
 template <typename T>
-concept Potential = requires(T a) {
-                        { get_members(a) } -> std::same_as<std::vector<int>>;
+concept Potential = requires(T pot, bool b, std::unordered_map<int, bool> assignment,
+                             std::vector<int> present_beacons, proto::BeaconPotential *bp_proto,
+                             InOut<std::mt19937> gen) {
+                        { get_members(pot) } -> std::same_as<std::vector<int>>;
+                        { compute_log_prob(pot, assignment, b) } -> std::same_as<double>;
+                        { compute_log_prob(pot, present_beacons) } -> std::same_as<double>;
+                        {
+                            compute_log_marginals(pot, present_beacons)
+                            } -> std::same_as<std::vector<LogMarginal>>;
+                        { pack_into_potential(pot, bp_proto) } -> std::same_as<void>;
+                        { pack_into_potential(pot, bp_proto) } -> std::same_as<void>;
+                        { generate_sample(pot, gen) } -> std::same_as<std::vector<int>>;
                     };
 
 // A probability distribution over beacon presences/absences
@@ -57,6 +69,10 @@ class BeaconPotential {
                      : std::vector<LogMarginal>{{.present_beacons = {}, .log_marginal = 0.0}};
     };
 
+    std::vector<int> sample(InOut<std::mt19937> gen) const {
+        return impl_ ? impl_->sample_(gen) : std::vector<int>{};
+    }
+
     const std::vector<int> members() const {
         return impl_ ? impl_->members_() : std::vector<int>{};
     };
@@ -74,6 +90,7 @@ class BeaconPotential {
         virtual std::vector<int> members_() const = 0;
         virtual std::vector<LogMarginal> log_marginals_(
             const std::vector<int> &remaining) const = 0;
+        virtual std::vector<int> sample_(InOut<std::mt19937> gen) const = 0;
         virtual void pack_into_(proto::BeaconPotential *out) const = 0;
     };
 
@@ -92,6 +109,10 @@ class BeaconPotential {
 
         std::vector<LogMarginal> log_marginals_(const std::vector<int> &remaining) const override {
             return compute_log_marginals(data_, remaining);
+        }
+
+        std::vector<int> sample_(InOut<std::mt19937> gen) const override {
+            return generate_sample(data_, gen);
         }
 
         std::vector<int> members_() const override { return get_members(data_); }
@@ -117,6 +138,7 @@ std::vector<LogMarginal> compute_log_marginals(const CombinedPotential &pot,
                                                const std::vector<int> &remaining);
 std::vector<int> get_members(const CombinedPotential &pot);
 void pack_into_potential(const CombinedPotential &in, proto::BeaconPotential *out);
+std::vector<int> generate_sample(const CombinedPotential &pot, InOut<std::mt19937> gen);
 
 BeaconPotential operator*(const BeaconPotential &a, const BeaconPotential &b);
 

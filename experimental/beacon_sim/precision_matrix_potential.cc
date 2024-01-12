@@ -5,6 +5,7 @@
 #include <iterator>
 #include <numeric>
 
+#include "common/check.hh"
 #include "common/math/combinations.hh"
 
 namespace robot::experimental::beacon_sim {
@@ -189,4 +190,24 @@ std::vector<LogMarginal> compute_log_marginals(const PrecisionMatrixPotential &p
     return out;
 }
 
+std::vector<int> generate_sample(const PrecisionMatrixPotential &pot, InOut<std::mt19937> gen) {
+    double remaining_prob = std::uniform_real_distribution<>()(*gen);
+
+    std::vector<int> out;
+    for (int num_present = 0; num_present <= static_cast<int>(pot.members.size()); num_present++) {
+        for (const auto &idxs : math::combinations(pot.members.size(), num_present)) {
+            out.clear();
+            for (const int idx : idxs) {
+                out.push_back(pot.members.at(idx));
+            }
+            const double log_prob = compute_log_prob(pot, out);
+
+            remaining_prob -= std::exp(log_prob);
+            if (remaining_prob < 0) {
+                break;
+            }
+        }
+    }
+    return out;
+}
 }  // namespace robot::experimental::beacon_sim
