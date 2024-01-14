@@ -91,6 +91,7 @@ std::optional<planning::BRMPlan<RobotBelief>> run_brm_planner(const BeaconSimSta
         .uncertainty_tolerance =
             allow_brm_backtracking ? std::make_optional(UNCERTAINTY_TOLERANCE) : std::nullopt,
         .max_num_edge_transforms = 1000,
+        .timeout = std::nullopt,
     };
     const auto brm_plan = compute_belief_road_map_plan(state.road_map, state.ekf,
                                                        state.map.beacon_potential(), options);
@@ -110,6 +111,7 @@ std::optional<planning::BRMPlan<LandmarkRobotBelief>> run_landmark_brm_planner(
     const LandmarkBeliefRoadMapOptions options = {
         .max_sensor_range_m = obs_config.max_sensor_range_m.value(),
         .sampled_belief_options = std::nullopt,
+        .timeout = std::nullopt,
     };
 
     return compute_landmark_belief_road_map_plan(state.road_map, state.ekf,
