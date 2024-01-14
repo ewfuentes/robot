@@ -35,6 +35,7 @@ TEST(BeliefRoadMapPlannerTest, grid_road_map_no_backtrack) {
         .max_sensor_range_m = 3.0,
         .uncertainty_tolerance = std::nullopt,
         .max_num_edge_transforms = 1,
+        .timeout = std::nullopt,
     };
 
     // Action
@@ -70,6 +71,7 @@ TEST(BeliefRoadMapPlannerTest, grid_road_map) {
         .max_sensor_range_m = 3.0,
         .uncertainty_tolerance = 1e-2,
         .max_num_edge_transforms = 1,
+        .timeout = std::nullopt,
     };
 
     // Action
@@ -106,6 +108,7 @@ TEST(BeliefRoadMapPlannerTest, grid_road_map_with_unlikely_beacon) {
         .max_sensor_range_m = 3.0,
         .uncertainty_tolerance = 1e-2,
         .max_num_edge_transforms = 1,
+        .timeout = std::nullopt,
     };
 
     // Action
@@ -141,6 +144,7 @@ TEST(BeliefRoadMapPlannerTest, diamond_road_map_with_uncorrelated_beacons) {
         .max_sensor_range_m = 3.0,
         .uncertainty_tolerance = std::nullopt,
         .max_num_edge_transforms = 10000,
+        .timeout = std::nullopt,
     };
 
     // Action
@@ -180,6 +184,7 @@ TEST(BeliefRoadMapPlannerTest, diamond_road_map_with_correlated_beacons) {
         .max_sensor_range_m = 3.0,
         .uncertainty_tolerance = std::nullopt,
         .max_num_edge_transforms = 1000,
+        .timeout = std::nullopt,
     };
 
     // Action
@@ -253,6 +258,7 @@ TEST(LandmarkBeliefRoadMapPlannerTest, grid_road_map_low_prob_beacon) {
     constexpr LandmarkBeliefRoadMapOptions OPTIONS = {
         .max_sensor_range_m = 3.0,
         .sampled_belief_options = std::nullopt,
+        .timeout = std::nullopt,
     };
     const std::vector<std::optional<int>> expected_path = {
         planning::RoadMap::START_IDX, 7, std::nullopt, std::nullopt, 2,
@@ -293,6 +299,7 @@ TEST(LandmarkBeliefRoadMapPlannerTest, grid_road_map_high_prob_beacon) {
     constexpr LandmarkBeliefRoadMapOptions OPTIONS = {
         .max_sensor_range_m = 3.0,
         .sampled_belief_options = std::nullopt,
+        .timeout = std::nullopt,
     };
     const std::vector<std::optional<int>> expected_path = {
         planning::RoadMap::START_IDX, 7, std::nullopt, 3, 0, 1, 2, planning::RoadMap::GOAL_IDX};
@@ -335,6 +342,7 @@ TEST(LandmarkBeliefRoadMapPlannerTest, diamond_road_map_independent_beacons) {
     constexpr LandmarkBeliefRoadMapOptions OPTIONS = {
         .max_sensor_range_m = 3.0,
         .sampled_belief_options = std::nullopt,
+        .timeout = std::nullopt,
     };
     const std::vector<std::optional<int>> expected_path = {planning::RoadMap::START_IDX, 0, 2, 3,
                                                            planning::RoadMap::GOAL_IDX};
@@ -377,6 +385,7 @@ TEST(LandmarkBeliefRoadMapPlannerTest, diamond_road_map_correlated_beacons) {
     constexpr LandmarkBeliefRoadMapOptions OPTIONS = {
         .max_sensor_range_m = 3.0,
         .sampled_belief_options = std::nullopt,
+        .timeout = std::nullopt,
     };
     const std::vector<std::optional<int>> expected_path = {planning::RoadMap::START_IDX, 0, 1, 3,
                                                            planning::RoadMap::GOAL_IDX};
