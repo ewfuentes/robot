@@ -99,7 +99,8 @@ std::tuple<LandmarkConditionedBeliefMap, double> downsize_and_normalize_belief(
 
     LandmarkConditionedBeliefMap out;
     double log_normalizer = 0;
-    if (max_num_components.has_value() && max_num_components.value() < static_cast<int>(belief.size())) {
+    if (max_num_components.has_value() &&
+        max_num_components.value() < static_cast<int>(belief.size())) {
         std::vector<std::string> keys;
         std::vector<double> log_prob;
         for (const auto &[key, belief] : belief) {
@@ -108,9 +109,10 @@ std::tuple<LandmarkConditionedBeliefMap, double> downsize_and_normalize_belief(
         }
 
         constexpr bool LOG_PROB = true;
-        const int num_components = std::min(max_num_components.value(), static_cast<int>(belief.size()));
-        const auto idxs =
-            math::reservoir_sample_without_replacement(log_prob, num_components, LOG_PROB, make_in_out(**gen));
+        const int num_components =
+            std::min(max_num_components.value(), static_cast<int>(belief.size()));
+        const auto idxs = math::reservoir_sample_without_replacement(log_prob, num_components,
+                                                                     LOG_PROB, make_in_out(**gen));
 
         log_normalizer =
             math::logsumexp(idxs, [&log_prob](const int idx) { return log_prob.at(idx); });
@@ -122,8 +124,9 @@ std::tuple<LandmarkConditionedBeliefMap, double> downsize_and_normalize_belief(
             };
         }
     } else {
-        log_normalizer =
-            math::logsumexp(belief, [](const auto &key_and_belief) { return key_and_belief.second.log_config_prob; });
+        log_normalizer = math::logsumexp(belief, [](const auto &key_and_belief) {
+            return key_and_belief.second.log_config_prob;
+        });
 
         for (const auto &[key, sub_belief] : belief) {
             out[key] = {
@@ -773,14 +776,12 @@ planning::BeliefUpdater<LandmarkRobotBelief> make_landmark_belief_updater(
             }
         }
 
-
         const auto log_prob_accessor = [](const auto key_and_cov) {
             return key_and_cov.second.log_config_prob;
         };
 
         const auto &[new_belief_from_config, log_probability_mass_tracked] =
-                downsize_and_normalize_belief(belief_from_config, max_num_components,
-                                  make_in_out(gen));
+            downsize_and_normalize_belief(belief_from_config, max_num_components, make_in_out(gen));
 
         {
             const double belief_sum = math::logsumexp(new_belief_from_config, log_prob_accessor);

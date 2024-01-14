@@ -192,17 +192,18 @@ double uncertainty_size(const LandmarkRobotBelief &belief) {
         return a.cov_in_robot.determinant() < b.cov_in_robot.determinant();
     });
 
-//     if (belief.log_probability_mass_tracked < -1e-6) {
-//         const double belief_sum = math::logsumexp(
-//             belief.belief_from_config,
-//             [](const auto &key_and_belief) { return key_and_belief.second.log_config_prob; });
-//         std::cout << "=====" << std::endl;
-//         std::cout << "uncertainty size for belief with " << belief.belief_from_config.size()
-//                   << " components." << std::endl;
-//         std::cout << "prob_mass tracked: " << belief.log_probability_mass_tracked
-//                   << " belief sum: " << belief_sum << std::endl;
-//     }
-// 
+    //     if (belief.log_probability_mass_tracked < -1e-6) {
+    //         const double belief_sum = math::logsumexp(
+    //             belief.belief_from_config,
+    //             [](const auto &key_and_belief) { return key_and_belief.second.log_config_prob;
+    //             });
+    //         std::cout << "=====" << std::endl;
+    //         std::cout << "uncertainty size for belief with " << belief.belief_from_config.size()
+    //                   << " components." << std::endl;
+    //         std::cout << "prob_mass tracked: " << belief.log_probability_mass_tracked
+    //                   << " belief sum: " << belief_sum << std::endl;
+    //     }
+    //
     constexpr double EVALUATION_THRESHOLD = 0.95;
 
     double accumulated_prob = 0.0;

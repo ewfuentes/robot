@@ -103,7 +103,8 @@ std::vector<int> run_planner(const planning::RoadMap &road_map, const EkfSlam &e
                  : std::nullopt});
     CHECK(plan.has_value());
 
-    std::cout << "log probability mass tracked: " << plan->beliefs.back().log_probability_mass_tracked << std::endl;
+    std::cout << "log probability mass tracked: "
+              << plan->beliefs.back().log_probability_mass_tracked << std::endl;
     return plan->nodes;
 }
 
