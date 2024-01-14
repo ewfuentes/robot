@@ -7,22 +7,24 @@ message LandmarkBRMPlanner {
   optional int32 max_num_components = 1;
 }
 
-message BRMPlanner {
+message ExpectedBRMPlanner {
 }
 
 message OptimisticBRMPlanner {
 }
 
+// NEXT ID: 6
 message PlannerConfig {
   string name = 1;
+  double max_sensor_range_m = 5;
   oneof planner_config_oneof {
     LandmarkBRMPlanner landmark_brm_config = 2;
-    BRMPlanner brm_config = 3;
+    ExpectedBRMPlanner expected_brm_config = 3;
     OptimisticBRMPlanner optimistic_brm_config = 4;
   };
 }
 
-// NEXTID: 8
+// NEXT ID: 9
 message ExperimentConfig {
   string name = 1;
   // Note that these paths are relative to the current experiment_config
@@ -30,6 +32,7 @@ message ExperimentConfig {
   string ekf_state_path = 3;
   string road_map_path = 4;
   int32 start_goal_seed = 5;
+  double start_goal_connection_radius_m = 8;
   int32 num_trials = 6;
   repeated PlannerConfig planner_configs = 7;
 }

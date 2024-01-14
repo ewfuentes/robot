@@ -1,18 +1,22 @@
 name: "evaluate_approximation_quality"
 
-map_config_path: "data/map_config_path.pb"
-ekf_state_path: "data/ekf_state_path.pb"
-road_map_path: "data/road_map.pb"
+map_config_path: "data/env_0/world_map_config.pb"
+ekf_state_path: "data/env_0/mapped_landmarks.pb"
+road_map_path: "data/env_0/road_map.pb"
 start_goal_seed: 12345
+start_goal_connection_radius_m: 20.0
 num_trials: 1000
+
 
 planner_configs: {
   name: "Full Distribution"
+  max_sensor_range_m: 5.0
   landmark_brm_config: {}
 }
 
 planner_configs: {
   name: "10 components"
+  max_sensor_range_m: 5.0
   landmark_brm_config: {
     max_num_components: 10
   }
@@ -20,6 +24,7 @@ planner_configs: {
 
 planner_configs: {
   name: "100 components"
+  max_sensor_range_m: 5.0
   landmark_brm_config: {
     max_num_components: 100
   }
@@ -27,6 +32,7 @@ planner_configs: {
 
 planner_configs: {
   name: "1000 components"
+  max_sensor_range_m: 5.0
   landmark_brm_config: {
     max_num_components: 1000
   }
@@ -34,6 +40,7 @@ planner_configs: {
 
 planner_configs: {
   name: "10000 components"
+  max_sensor_range_m: 5.0
   landmark_brm_config: {
     max_num_components: 10000
   }
@@ -41,6 +48,7 @@ planner_configs: {
 
 planner_configs: {
   name: "100000 components"
+  max_sensor_range_m: 5.0
   landmark_brm_config: {
     max_num_components: 100000
   }
