@@ -244,9 +244,6 @@ std::optional<planning::BRMPlan<RobotBelief>> compute_belief_road_map_plan(
         const auto elapsed_time = time::current_robot_time() - plan_start_time;
         const bool should_bail =
             options.timeout.has_value() && options.timeout.value() < elapsed_time;
-        if (should_bail) {
-            std::cout << "Timeout reached!" << std::endl;
-        }
         return should_bail;
     };
 
@@ -322,9 +319,6 @@ std::optional<planning::BRMPlan<LandmarkRobotBelief>> compute_landmark_belief_ro
         const auto elapsed_time = time::current_robot_time() - plan_start_time;
         const bool should_bail =
             options.timeout.has_value() && options.timeout.value() < elapsed_time;
-        if (should_bail) {
-            std::cout << "Timeout reached!" << std::endl;
-        }
         return should_bail;
     };
 
