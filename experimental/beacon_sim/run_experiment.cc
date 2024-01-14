@@ -1,5 +1,6 @@
 
 #include <algorithm>
+#include <execution>
 #include <filesystem>
 #include <limits>
 #include <random>
@@ -27,8 +28,9 @@ struct StartGoal {
     Eigen::Vector2d goal;
 };
 
-std::vector<StartGoal> sample_start_goal(const planning::RoadMap &map, const int num_trials,
-                                         InOut<std::mt19937> gen) {
+std::vector<std::tuple<int, StartGoal>> sample_start_goal(const planning::RoadMap &map,
+                                                          const int num_trials,
+                                                          InOut<std::mt19937> gen) {
     Eigen::Vector2d min = {
         std::min_element(
             map.points().begin(), map.points().end(),
@@ -50,12 +52,12 @@ std::vector<StartGoal> sample_start_goal(const planning::RoadMap &map, const int
             ->y(),
     };
 
-    std::vector<StartGoal> out;
+    std::vector<std::tuple<int, StartGoal>> out;
     std::uniform_real_distribution<> x_sampler(min.x(), max.x());
     std::uniform_real_distribution<> y_sampler(min.y(), max.y());
     for (int i = 0; i < num_trials; i++) {
-        out.push_back({.start = {x_sampler(*gen), y_sampler(*gen)},
-                       .goal = {x_sampler(*gen), y_sampler(*gen)}});
+        out.push_back(std::make_tuple(i, StartGoal{.start = {x_sampler(*gen), y_sampler(*gen)},
+                                                   .goal = {x_sampler(*gen), y_sampler(*gen)}}));
     }
     return out;
 }
@@ -88,11 +90,11 @@ std::vector<int> run_planner(const planning::RoadMap &road_map, const EkfSlam &e
                              const BeaconPotential &beacon_potential,
                              const proto::LandmarkBRMPlanner &config,
                              const double max_sensor_range_m) {
-    if (config.has_max_num_components()) {
-        std::cout << "landmark belief components max: " << config.max_num_components() << std::endl;
-    } else {
-        std::cout << "landmark belief with unlimited num components" << std::endl;
-    }
+    // if (config.has_max_num_components()) {
+    //     std::cout << "landmark belief components max: " << config.max_num_components() << std::endl;
+    // } else {
+    //     std::cout << "landmark belief with unlimited num components" << std::endl;
+    // }
     const auto plan = compute_landmark_belief_road_map_plan(
         road_map, ekf, beacon_potential,
         {.max_sensor_range_m = max_sensor_range_m,
@@ -103,8 +105,8 @@ std::vector<int> run_planner(const planning::RoadMap &road_map, const EkfSlam &e
                  : std::nullopt});
     CHECK(plan.has_value());
 
-    std::cout << "log probability mass tracked: "
-              << plan->beliefs.back().log_probability_mass_tracked << std::endl;
+    // std::cout << "log probability mass tracked: "
+    //           << plan->beliefs.back().log_probability_mass_tracked << std::endl;
     return plan->nodes;
 }
 
@@ -165,12 +167,16 @@ void run_experiment(const ExperimentConfig &config, const std::filesystem::path 
     planning::RoadMap road_map = unpack_from(maybe_road_map.value());
 
     std::mt19937 gen(config.start_goal_seed());
-    const std::vector<StartGoal> start_goals =
+    const std::vector<std::tuple<int, StartGoal>> start_goals =
         sample_start_goal(road_map, config.num_trials(), make_in_out(gen));
 
     EkfSlam ekf = load_ekf_slam(mapped_landmarks);
 
-    for (const auto &start_goal : start_goals) {
+    std::atomic<int> remaining = start_goals.size();
+    std::for_each(
+        std::execution::par,
+        start_goals.begin(), start_goals.end(), [=, &remaining](const auto &elem) mutable {
+        const auto &[idx, start_goal] = elem;
         // Add the start goal to the road map
         road_map.add_start_goal({.start = start_goal.start,
                                  .goal = start_goal.goal,
@@ -212,7 +218,8 @@ void run_experiment(const ExperimentConfig &config, const std::filesystem::path 
             }
         }
         // evaluate_results(world_map, road_map, results);
-    }
+        std::cout << "remaining: " << --remaining << std::endl;
+    });
 
     // Write out the results
 }
