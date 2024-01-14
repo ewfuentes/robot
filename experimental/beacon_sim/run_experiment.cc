@@ -91,7 +91,8 @@ std::vector<int> run_planner(const planning::RoadMap &road_map, const EkfSlam &e
                              const proto::LandmarkBRMPlanner &config,
                              const double max_sensor_range_m) {
     // if (config.has_max_num_components()) {
-    //     std::cout << "landmark belief components max: " << config.max_num_components() << std::endl;
+    //     std::cout << "landmark belief components max: " << config.max_num_components() <<
+    //     std::endl;
     // } else {
     //     std::cout << "landmark belief with unlimited num components" << std::endl;
     // }
@@ -173,53 +174,56 @@ void run_experiment(const ExperimentConfig &config, const std::filesystem::path 
     EkfSlam ekf = load_ekf_slam(mapped_landmarks);
 
     std::atomic<int> remaining = start_goals.size();
-    std::for_each(
-        std::execution::par,
-        start_goals.begin(), start_goals.end(), [=, &remaining](const auto &elem) mutable {
-        const auto &[idx, start_goal] = elem;
-        // Add the start goal to the road map
-        road_map.add_start_goal({.start = start_goal.start,
-                                 .goal = start_goal.goal,
-                                 .connection_radius_m = config.start_goal_connection_radius_m()});
+    std::for_each(std::execution::par, start_goals.begin(), start_goals.end(),
+                  [=, &remaining](const auto &elem) mutable {
+                      const auto &[idx, start_goal] = elem;
+                      // Add the start goal to the road map
+                      road_map.add_start_goal(
+                          {.start = start_goal.start,
+                           .goal = start_goal.goal,
+                           .connection_radius_m = config.start_goal_connection_radius_m()});
 
-        // Set the initial pose
-        const liegroups::SE2 local_from_robot = liegroups::SE2::trans(start_goal.start);
-        ekf.estimate().local_from_robot(local_from_robot);
+                      // Set the initial pose
+                      const liegroups::SE2 local_from_robot =
+                          liegroups::SE2::trans(start_goal.start);
+                      ekf.estimate().local_from_robot(local_from_robot);
 
-        std::unordered_map<std::string, std::vector<int>> results;
+                      std::unordered_map<std::string, std::vector<int>> results;
 
-        for (const auto &planner_config : config.planner_configs()) {
-            CHECK(planner_config.planner_config_oneof_case() !=
-                  proto::PlannerConfig::PLANNER_CONFIG_ONEOF_NOT_SET);
-            switch (planner_config.planner_config_oneof_case()) {
-                case proto::PlannerConfig::kLandmarkBrmConfig: {
-                    results[planner_config.name()] = run_planner(
-                        road_map, ekf, world_map.beacon_potential(),
-                        planner_config.landmark_brm_config(), planner_config.max_sensor_range_m());
-                    break;
-                }
-                case proto::PlannerConfig::kOptimisticBrmConfig: {
-                    results[planner_config.name()] =
-                        run_planner(road_map, ekf, world_map.beacon_potential(),
-                                    planner_config.optimistic_brm_config(),
-                                    planner_config.max_sensor_range_m());
-                    break;
-                }
-                case proto::PlannerConfig::kExpectedBrmConfig: {
-                    results[planner_config.name()] = run_planner(
-                        road_map, ekf, world_map.beacon_potential(),
-                        planner_config.expected_brm_config(), planner_config.max_sensor_range_m());
-                    break;
-                }
-                default: {
-                    CHECK(false, "Unhandled Planner Config type",
-                          planner_config.planner_config_oneof_case());
-                }
-            }
-        }
-        // evaluate_results(world_map, road_map, results);
-        std::cout << "remaining: " << --remaining << std::endl;
-    });
+                      for (const auto &planner_config : config.planner_configs()) {
+                          CHECK(planner_config.planner_config_oneof_case() !=
+                                proto::PlannerConfig::PLANNER_CONFIG_ONEOF_NOT_SET);
+                          switch (planner_config.planner_config_oneof_case()) {
+                              case proto::PlannerConfig::kLandmarkBrmConfig: {
+                                  results[planner_config.name()] =
+                                      run_planner(road_map, ekf, world_map.beacon_potential(),
+                                                  planner_config.landmark_brm_config(),
+                                                  planner_config.max_sensor_range_m());
+                                  break;
+                              }
+                              case proto::PlannerConfig::kOptimisticBrmConfig: {
+                                  results[planner_config.name()] =
+                                      run_planner(road_map, ekf, world_map.beacon_potential(),
+                                                  planner_config.optimistic_brm_config(),
+                                                  planner_config.max_sensor_range_m());
+                                  break;
+                              }
+                              case proto::PlannerConfig::kExpectedBrmConfig: {
+                                  results[planner_config.name()] =
+                                      run_planner(road_map, ekf, world_map.beacon_potential(),
+                                                  planner_config.expected_brm_config(),
+                                                  planner_config.max_sensor_range_m());
+                                  break;
+                              }
+                              default: {
+                                  CHECK(false, "Unhandled Planner Config type",
+                                        planner_config.planner_config_oneof_case());
+                              }
+                          }
+                      }
+                      // evaluate_results(world_map, road_map, results);
+                      std::cout << "remaining: " << --remaining << std::endl;
+                  });
 
     // Write out the results
 }
