@@ -8,6 +8,7 @@
 #include "common/check.hh"
 #include "common/geometry/nearest_point_on_segment.hh"
 #include "common/math/combinations.hh"
+#include "common/math/logsumexp.hh"
 #include "common/math/redheffer_star.hh"
 #include "common/math/sample_without_replacement.hh"
 #include "experimental/beacon_sim/robot_belief.hh"
@@ -90,33 +91,52 @@ std::string merge_configurations(const std::string &a, const std::string &b) {
 
 using LandmarkConditionedBeliefMap =
     std::unordered_map<std::string, LandmarkRobotBelief::LandmarkConditionedRobotBelief>;
-std::tuple<LandmarkConditionedBeliefMap, double> downsize_belief(
-    const LandmarkConditionedBeliefMap &belief, const int max_num_components,
-    InOut<std::mt19937> gen) {
+std::tuple<LandmarkConditionedBeliefMap, double> downsize_and_normalize_belief(
+    const LandmarkConditionedBeliefMap &belief, const std::optional<int> max_num_components,
+    InOut<std::optional<std::mt19937>> gen) {
     CHECK(belief.size() > 0);
-    CHECK(max_num_components > 0);
-
-    std::vector<std::string> keys;
-    std::vector<double> log_prob;
-    for (const auto &[key, belief] : belief) {
-        keys.push_back(key);
-        log_prob.push_back(belief.log_config_prob);
-    }
-
-    constexpr bool LOG_PROB = true;
-    const int num_components = std::min(max_num_components, static_cast<int>(belief.size()));
-    const auto idxs =
-        math::reservoir_sample_without_replacement(log_prob, num_components, LOG_PROB, gen);
+    CHECK(!max_num_components.has_value() || max_num_components.value() > 0);
 
     LandmarkConditionedBeliefMap out;
-    const double max_elem = *std::max_element(log_prob.begin(), log_prob.end());
-    double sum = 0;
-    for (const auto idx : idxs) {
-        out[keys.at(idx)] = belief.at(keys.at(idx));
-        sum += std::exp(log_prob.at(idx) - max_elem);
+    double log_normalizer = 0;
+    if (max_num_components.has_value() &&
+        max_num_components.value() < static_cast<int>(belief.size())) {
+        std::vector<std::string> keys;
+        std::vector<double> log_prob;
+        for (const auto &[key, belief] : belief) {
+            keys.push_back(key);
+            log_prob.push_back(belief.log_config_prob);
+        }
+
+        constexpr bool LOG_PROB = true;
+        const int num_components =
+            std::min(max_num_components.value(), static_cast<int>(belief.size()));
+        const auto idxs = math::reservoir_sample_without_replacement(log_prob, num_components,
+                                                                     LOG_PROB, make_in_out(**gen));
+
+        log_normalizer =
+            math::logsumexp(idxs, [&log_prob](const int idx) { return log_prob.at(idx); });
+
+        for (const auto idx : idxs) {
+            out[keys.at(idx)] = {
+                .cov_in_robot = belief.at(keys.at(idx)).cov_in_robot,
+                .log_config_prob = log_prob.at(idx) - log_normalizer,
+            };
+        }
+    } else {
+        log_normalizer = math::logsumexp(belief, [](const auto &key_and_belief) {
+            return key_and_belief.second.log_config_prob;
+        });
+
+        for (const auto &[key, sub_belief] : belief) {
+            out[key] = {
+                .cov_in_robot = sub_belief.cov_in_robot,
+                .log_config_prob = sub_belief.log_config_prob - log_normalizer,
+            };
+        }
     }
-    const double log_sum = std::log(sum) + max_elem;
-    return std::make_tuple(out, log_sum);
+
+    return std::make_tuple(out, log_normalizer);
 }
 
 template <typename T>
@@ -756,20 +776,21 @@ planning::BeliefUpdater<LandmarkRobotBelief> make_landmark_belief_updater(
             }
         }
 
-        const bool should_downsize_belief =
-            max_num_components.has_value() &&
-            static_cast<int>(belief_from_config.size()) > max_num_components.value();
+        const auto log_prob_accessor = [](const auto key_and_cov) {
+            return key_and_cov.second.log_config_prob;
+        };
 
-        const auto &[new_belief_from_config, log_probability_mass_tracked_adjustment] =
-            !should_downsize_belief
-                ? std::make_tuple(belief_from_config, 0.0)
-                : downsize_belief(belief_from_config, max_num_components.value(),
-                                  make_in_out(gen.value()));
+        const auto &[new_belief_from_config, log_probability_mass_tracked] =
+            downsize_and_normalize_belief(belief_from_config, max_num_components, make_in_out(gen));
+
+        {
+            const double belief_sum = math::logsumexp(new_belief_from_config, log_prob_accessor);
+            CHECK(std::abs(belief_sum) < 1e-6);
+        }
 
         return {
             .local_from_robot = local_from_new_robot,
-            .log_probability_mass_tracked = initial_belief.log_probability_mass_tracked +
-                                            log_probability_mass_tracked_adjustment,
+            .log_probability_mass_tracked = log_probability_mass_tracked,
             .belief_from_config = std::move(new_belief_from_config),
         };
     };

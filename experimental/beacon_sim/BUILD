@@ -616,6 +616,7 @@ cc_library(
     "//common/liegroups:se2",
     "//common/geometry:nearest_point_on_segment",
     "//common/math:combinations",
+    "//common/math:logsumexp",
     "//common/math:redheffer_star",
     "//common/math:sample_without_replacement",
     "//planning:belief_road_map",
@@ -718,4 +719,34 @@ py_library(
     requirement("spatialmath_python"),
   ],
   visibility =  ["//visibility:public"]
+)
+
+filegroup(
+  name = "experiment_configs",
+  srcs = glob([
+    "experiment_configs/**/*.pbtxt", 
+    "experiment_configs/**/*.pb"
+  ])
+)
+
+multi_proto_library(
+  name = "experiment_config_proto",
+  srcs = ["experiment_config.proto"],
+)
+
+cc_binary(
+  name = "run_experiment",
+  srcs = ["run_experiment.cc"],
+  data = [":experiment_configs"],
+  deps = [
+    "@cxxopts",
+    "//common:check",
+    "//common/proto:load_from_file",
+    ":belief_road_map_planner",
+    ":ekf_slam",
+    ":experiment_config_proto",
+    ":world_map_config_to_proto",
+    ":mapped_landmarks_to_proto",
+    "//planning:road_map_to_proto",
+  ]
 )

@@ -24,4 +24,5 @@ struct LandmarkRobotBelief {
     double log_probability_mass_tracked;
     std::unordered_map<std::string, LandmarkConditionedRobotBelief> belief_from_config;
 };
+
 }  // namespace robot::experimental::beacon_sim

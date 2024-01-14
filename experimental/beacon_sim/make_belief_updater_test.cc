@@ -256,12 +256,10 @@ TYPED_TEST(MakeBeliefUpdaterTest, make_subsampled_landmark_belief_updater_test) 
     EXPECT_TRUE(updated_belief.belief_from_config.contains("0") ||
                 updated_belief.belief_from_config.contains("1"));
     if (updated_belief.belief_from_config.contains("0")) {
-        EXPECT_NEAR(updated_belief.belief_from_config.at("0").log_config_prob,
-                    std::log(1 - P_BEACON), 1e-6);
+        EXPECT_NEAR(updated_belief.belief_from_config.at("0").log_config_prob, 0.0, 1e-6);
         EXPECT_NEAR(updated_belief.log_probability_mass_tracked, std::log(1 - P_BEACON), 1e-6);
     } else if (updated_belief.belief_from_config.contains("1")) {
-        EXPECT_NEAR(updated_belief.belief_from_config.at("1").log_config_prob, std::log(P_BEACON),
-                    1e-6);
+        EXPECT_NEAR(updated_belief.belief_from_config.at("1").log_config_prob, 0.0, 1e-6);
         EXPECT_NEAR(updated_belief.log_probability_mass_tracked, std::log(P_BEACON), 1e-6);
     }
 }
