@@ -6,6 +6,7 @@ road_map_path: "data/env_0/road_map.pb"
 start_goal_seed: 12345
 start_goal_connection_radius_m: 20.0
 num_trials: 1000
+plan_timeout_s: 15.0
 
 
 planner_configs: {

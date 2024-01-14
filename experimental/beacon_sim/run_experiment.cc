@@ -9,6 +9,7 @@
 #include "common/argument_wrapper.hh"
 #include "common/check.hh"
 #include "common/proto/load_from_file.hh"
+#include "common/time/robot_time.hh"
 #include "cxxopts.hpp"
 #include "experimental/beacon_sim/beacon_potential.hh"
 #include "experimental/beacon_sim/belief_road_map_planner.hh"
@@ -89,7 +90,8 @@ EkfSlam load_ekf_slam(const MappedLandmarks &mapped_landmarks) {
 std::vector<int> run_planner(const planning::RoadMap &road_map, const EkfSlam &ekf,
                              const BeaconPotential &beacon_potential,
                              const proto::LandmarkBRMPlanner &config,
-                             const double max_sensor_range_m) {
+                             const double max_sensor_range_m,
+                             const std::optional<time::RobotTimestamp::duration> &timeout) {
     // if (config.has_max_num_components()) {
     //     std::cout << "landmark belief components max: " << config.max_num_components() <<
     //     std::endl;
@@ -103,7 +105,8 @@ std::vector<int> run_planner(const planning::RoadMap &road_map, const EkfSlam &e
              config.has_max_num_components()
                  ? std::make_optional(LandmarkBeliefRoadMapOptions::SampledBeliefOptions{
                        .max_num_components = config.max_num_components(), .seed = 12345})
-                 : std::nullopt});
+                 : std::nullopt,
+         .timeout = timeout});
     CHECK(plan.has_value());
 
     // std::cout << "log probability mass tracked: "
@@ -111,11 +114,12 @@ std::vector<int> run_planner(const planning::RoadMap &road_map, const EkfSlam &e
     return plan->nodes;
 }
 
-std::vector<int> run_planner([[maybe_unused]] const planning::RoadMap &road_map,
-                             [[maybe_unused]] const EkfSlam &ekf,
-                             [[maybe_unused]] const BeaconPotential &beacon_potential,
-                             [[maybe_unused]] const proto::ExpectedBRMPlanner &config,
-                             [[maybe_unused]] const double max_sensor_range_m) {
+std::vector<int> run_planner(
+    [[maybe_unused]] const planning::RoadMap &road_map, [[maybe_unused]] const EkfSlam &ekf,
+    [[maybe_unused]] const BeaconPotential &beacon_potential,
+    [[maybe_unused]] const proto::ExpectedBRMPlanner &config,
+    [[maybe_unused]] const double max_sensor_range_m,
+    [[maybe_unused]] const std::optional<time::RobotTimestamp::duration> &timeout) {
     // const auto plan = compute_landmark_belief_road_map_plan(
     //     road_map, ekf, beacon_potential,
     //     {.max_sensor_range_m = max_sensor_range_m,
@@ -123,7 +127,9 @@ std::vector<int> run_planner([[maybe_unused]] const planning::RoadMap &road_map,
     //          config.has_max_num_components()
     //              ? std::make_optional(LandmarkBeliefRoadMapOptions::SampledBeliefOptions{
     //                    .max_num_components = config.max_num_components(), .seed = 12345})
-    //              : std::nullopt});
+    //              : std::nullopt,
+    //      .timeout = timeout
+    //              });
     // CHECK(plan.has_value());
     // return plan->nodes;
     return {};
@@ -132,12 +138,13 @@ std::vector<int> run_planner([[maybe_unused]] const planning::RoadMap &road_map,
 std::vector<int> run_planner(const planning::RoadMap &road_map, const EkfSlam &ekf,
                              [[maybe_unused]] const BeaconPotential &beacon_potential,
                              [[maybe_unused]] const proto::OptimisticBRMPlanner &config,
-                             const double max_sensor_range_m) {
-    const BeliefRoadMapOptions options = BeliefRoadMapOptions{
-        .max_sensor_range_m = max_sensor_range_m,
-        .uncertainty_tolerance = std::nullopt,
-        .max_num_edge_transforms = std::numeric_limits<int>::max(),
-    };
+                             const double max_sensor_range_m,
+                             const std::optional<time::RobotTimestamp::duration> &timeout) {
+    const BeliefRoadMapOptions options =
+        BeliefRoadMapOptions{.max_sensor_range_m = max_sensor_range_m,
+                             .uncertainty_tolerance = std::nullopt,
+                             .max_num_edge_transforms = std::numeric_limits<int>::max(),
+                             .timeout = timeout};
     const auto maybe_plan = compute_belief_road_map_plan(road_map, ekf, {}, options);
     CHECK(maybe_plan.has_value());
 
@@ -174,6 +181,9 @@ void run_experiment(const ExperimentConfig &config, const std::filesystem::path 
     EkfSlam ekf = load_ekf_slam(mapped_landmarks);
 
     std::atomic<int> remaining = start_goals.size();
+    const std::optional<time::RobotTimestamp::duration> timeout =
+        config.has_plan_timeout_s() ? std::make_optional(time::as_duration(config.plan_timeout_s()))
+                                    : std::nullopt;
     std::for_each(std::execution::par, start_goals.begin(), start_goals.end(),
                   [=, &remaining](const auto &elem) mutable {
                       const auto &[idx, start_goal] = elem;
@@ -198,21 +208,21 @@ void run_experiment(const ExperimentConfig &config, const std::filesystem::path 
                                   results[planner_config.name()] =
                                       run_planner(road_map, ekf, world_map.beacon_potential(),
                                                   planner_config.landmark_brm_config(),
-                                                  planner_config.max_sensor_range_m());
+                                                  planner_config.max_sensor_range_m(), timeout);
                                   break;
                               }
                               case proto::PlannerConfig::kOptimisticBrmConfig: {
                                   results[planner_config.name()] =
                                       run_planner(road_map, ekf, world_map.beacon_potential(),
                                                   planner_config.optimistic_brm_config(),
-                                                  planner_config.max_sensor_range_m());
+                                                  planner_config.max_sensor_range_m(), timeout);
                                   break;
                               }
                               case proto::PlannerConfig::kExpectedBrmConfig: {
                                   results[planner_config.name()] =
                                       run_planner(road_map, ekf, world_map.beacon_potential(),
                                                   planner_config.expected_brm_config(),
-                                                  planner_config.max_sensor_range_m());
+                                                  planner_config.max_sensor_range_m(), timeout);
                                   break;
                               }
                               default: {

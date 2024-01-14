@@ -71,15 +71,18 @@ BRMPlan<Belief> brm_plan_from_bfs_result(
 }
 }  // namespace detail
 
+using ShouldTerminateCallback = std::function<bool()>;
+
 // Belief is a type that represents the mean and uncertainty of our current state.
 // It is expected that the following methods are defined:
 // A std::hash<Belief> specialization should be available
 // bool operator==(const Belief &a, const Belief &b) computes if the beliefs are equal
 template <typename Belief, typename UncertaintySize>
-std::optional<BRMPlan<Belief>> plan(const RoadMap &road_map, const Belief &initial_belief,
-                                    const BeliefUpdater<Belief> &belief_updater,
-                                    const UncertaintySize &uncertainty_size,
-                                    const BRMSearchOptions &options) {
+std::optional<BRMPlan<Belief>> plan(
+    const RoadMap &road_map, const Belief &initial_belief,
+    const BeliefUpdater<Belief> &belief_updater, const UncertaintySize &uncertainty_size,
+    const BRMSearchOptions &options,
+    ShouldTerminateCallback should_terminate_callback = []() { return false; }) {
     using SearchState = detail::BRMSearchState<Belief>;
     // Find nearest node to start and end states
     const SuccessorFunc<SearchState> successors_func = [&belief_updater,
@@ -87,9 +90,10 @@ std::optional<BRMPlan<Belief>> plan(const RoadMap &road_map, const Belief &initi
         return detail::successors_for_state(state, road_map, belief_updater);
     };
 
-    const GoalCheckFunc<SearchState> goal_check_func = [](const Node<SearchState> &) {
-        return false;
-    };
+    const GoalCheckFunc<SearchState> goal_check_func =
+        [&should_terminate_callback](const Node<SearchState> &) {
+            return should_terminate_callback();
+        };
 
     const IdentifyPathEndFunc<SearchState> identify_end_func =
         [&uncertainty_size](const std::vector<Node<SearchState>> &nodes) -> std::optional<int> {

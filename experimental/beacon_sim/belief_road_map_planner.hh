@@ -4,6 +4,7 @@
 #include <optional>
 
 #include "common/liegroups/se2.hh"
+#include "common/time/robot_time.hh"
 #include "experimental/beacon_sim/correlated_beacons.hh"
 #include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/robot_belief.hh"
@@ -20,6 +21,7 @@ struct BeliefRoadMapOptions {
     // we sample up to this many configurations and compute the sample expectation. Note that once
     // we sample the configurations for an edge, they are reused for all future edge traversals.
     int max_num_edge_transforms;
+    std::optional<time::RobotTimestamp::duration> timeout;
 };
 
 struct ExpectedBeliefRoadMapOptions {
@@ -38,6 +40,7 @@ struct LandmarkBeliefRoadMapOptions {
     };
     double max_sensor_range_m;
     std::optional<SampledBeliefOptions> sampled_belief_options;
+    std::optional<time::RobotTimestamp::duration> timeout;
 };
 
 struct ExpectedBeliefPlanResult {
