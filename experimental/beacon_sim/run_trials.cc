@@ -219,6 +219,7 @@ void run_trials(const TrialsConfig &config) {
         .max_sensor_range_m = MAX_SENSOR_RANGE_M,
         .uncertainty_tolerance = UNCERTAINTY_TOLERANCE,
         .max_num_edge_transforms = 1000,
+        .timeout = std::nullopt,
     };
     const auto plan = compute_belief_road_map_plan(
         road_map, ekf, WorldMap(base_map_config).beacon_potential(), options);

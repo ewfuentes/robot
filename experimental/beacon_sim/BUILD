@@ -358,6 +358,7 @@ cc_library(
     ":make_belief_updater",
     "//common:check",
     "//common/math:combinations",
+    "//common/time:robot_time",
     "//planning:belief_road_map",
     "//planning:probabilistic_road_map",
   ]

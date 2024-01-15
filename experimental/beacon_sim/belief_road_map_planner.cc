@@ -19,6 +19,7 @@
 #include "common/liegroups/se2.hh"
 #include "common/math/combinations.hh"
 #include "common/math/redheffer_star.hh"
+#include "common/time/robot_time.hh"
 #include "experimental/beacon_sim/correlated_beacons.hh"
 #include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/generate_observations.hh"
@@ -237,16 +238,26 @@ std::optional<planning::BRMPlan<RobotBelief>> compute_belief_road_map_plan(
     const auto belief_updater =
         make_belief_updater(road_map, options.max_sensor_range_m, options.max_num_edge_transforms,
                             ekf, beacon_potential, TransformType::COVARIANCE);
+
+    const time::RobotTimestamp plan_start_time = time::current_robot_time();
+    const auto should_terminate_func = [&]() {
+        const auto elapsed_time = time::current_robot_time() - plan_start_time;
+        const bool should_bail =
+            options.timeout.has_value() && options.timeout.value() < elapsed_time;
+        return should_bail;
+    };
+
     if (options.uncertainty_tolerance.has_value()) {
         return planning::plan(
             road_map, initial_belief, belief_updater,
             [](const RobotBelief &b) { return uncertainty_size(b); },
-            planning::MinUncertaintyToleranceOptions{options.uncertainty_tolerance.value()});
+            planning::MinUncertaintyToleranceOptions{options.uncertainty_tolerance.value()},
+            should_terminate_func);
     } else {
         return planning::plan(
             road_map, initial_belief, belief_updater,
             [](const RobotBelief &b) { return uncertainty_size(b); },
-            planning::NoBacktrackingOptions{});
+            planning::NoBacktrackingOptions{}, should_terminate_func);
     }
 }
 
@@ -302,10 +313,19 @@ std::optional<planning::BRMPlan<LandmarkRobotBelief>> compute_landmark_belief_ro
     const auto belief_updater =
         make_landmark_belief_updater(road_map, options.max_sensor_range_m, sampled_belief_options,
                                      ekf, beacon_potential, TransformType::COVARIANCE);
+
+    const time::RobotTimestamp plan_start_time = time::current_robot_time();
+    const auto should_terminate_func = [&]() {
+        const auto elapsed_time = time::current_robot_time() - plan_start_time;
+        const bool should_bail =
+            options.timeout.has_value() && options.timeout.value() < elapsed_time;
+        return should_bail;
+    };
+
     return planning::plan(
         road_map, initial_belief, belief_updater,
         [](const LandmarkRobotBelief &b) { return uncertainty_size(b); },
-        planning::NoBacktrackingOptions{});
+        planning::NoBacktrackingOptions{}, should_terminate_func);
 }
 }  // namespace robot::experimental::beacon_sim
 
