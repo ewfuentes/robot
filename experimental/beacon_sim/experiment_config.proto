@@ -8,6 +8,7 @@ message LandmarkBRMPlanner {
 }
 
 message ExpectedBRMPlanner {
+  int32 num_environment_samples = 1;
 }
 
 message OptimisticBRMPlanner {
@@ -16,7 +17,6 @@ message OptimisticBRMPlanner {
 // NEXT ID: 6
 message PlannerConfig {
   string name = 1;
-  double max_sensor_range_m = 5;
   oneof planner_config_oneof {
     LandmarkBRMPlanner landmark_brm_config = 2;
     ExpectedBRMPlanner expected_brm_config = 3;
@@ -24,7 +24,7 @@ message PlannerConfig {
   };
 }
 
-// NEXT ID: 10
+// NEXT ID: 13
 message ExperimentConfig {
   string name = 1;
   // Note that these paths are relative to the current experiment_config
@@ -33,7 +33,12 @@ message ExperimentConfig {
   string road_map_path = 4;
   int32 start_goal_seed = 5;
   double start_goal_connection_radius_m = 8;
+  // The number of start goal pairs that we will evaluate
   int32 num_trials = 6;
+  int32 evaluation_base_seed = 10;
+  // The number of elements in the sample expectation for each trial
+  int32 num_eval_trials = 11;
+  double max_sensor_range_m = 12;
   optional double plan_timeout_s = 9;
   repeated PlannerConfig planner_configs = 7;
 }
