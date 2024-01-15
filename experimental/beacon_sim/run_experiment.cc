@@ -9,21 +9,20 @@
 #include "Eigen/Core"
 #include "common/argument_wrapper.hh"
 #include "common/check.hh"
+#include "common/math/matrix_to_proto.hh"
 #include "common/proto/load_from_file.hh"
 #include "common/time/robot_time.hh"
 #include "common/time/robot_time_to_proto.hh"
-#include "common/math/matrix_to_proto.hh"
-
 #include "cxxopts.hpp"
 #include "experimental/beacon_sim/beacon_potential.hh"
 #include "experimental/beacon_sim/belief_road_map_planner.hh"
 #include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/experiment_config.pb.h"
+#include "experimental/beacon_sim/experiment_results.pb.h"
 #include "experimental/beacon_sim/make_belief_updater.hh"
 #include "experimental/beacon_sim/mapped_landmarks_to_proto.hh"
 #include "experimental/beacon_sim/robot_belief.hh"
 #include "experimental/beacon_sim/world_map_config_to_proto.hh"
-#include "experimental/beacon_sim/experiment_results.pb.h"
 #include "planning/road_map_to_proto.hh"
 
 using robot::experimental::beacon_sim::proto::ExperimentConfig;
@@ -238,12 +237,13 @@ EvaluationResult evaluate_results(const StartGoal &start_goal, const WorldMap &w
     };
 }
 
-proto::ExperimentResult to_proto(const ExperimentConfig &config, const std::vector<EvaluationResult> &in) {
+proto::ExperimentResult to_proto(const ExperimentConfig &config,
+                                 const std::vector<EvaluationResult> &in) {
     proto::ExperimentResult out;
     out.mutable_experiment_config()->CopyFrom(config);
 
     std::vector<std::string> names;
-    for (const auto &planner_config: config.planner_configs()) {
+    for (const auto &planner_config : config.planner_configs()) {
         out.add_planner_names(planner_config.name());
         names.push_back(planner_config.name());
     }
@@ -256,7 +256,6 @@ proto::ExperimentResult to_proto(const ExperimentConfig &config, const std::vect
         pack_into(result.start_goal.goal, proto_start_goal->mutable_goal());
 
         for (int planner_idx = 0; planner_idx < static_cast<int>(names.size()); planner_idx++) {
-
             std::cout << "Working on planner: " << names.at(planner_idx) << std::endl;
             CHECK(result.results.contains(names.at(planner_idx)), "uh oh!", result.results);
 
@@ -268,7 +267,8 @@ proto::ExperimentResult to_proto(const ExperimentConfig &config, const std::vect
 
             if (trial_result.plan.has_value()) {
                 proto::Plan &plan = *planner_result.mutable_plan();
-                plan.mutable_nodes()->Add(trial_result.plan->nodes.begin(), trial_result.plan->nodes.end());
+                plan.mutable_nodes()->Add(trial_result.plan->nodes.begin(),
+                                          trial_result.plan->nodes.end());
                 plan.set_log_prob_mass(trial_result.plan->log_prob_mass_tracked);
                 plan.set_expected_det(trial_result.plan->expected_covariance_determinant);
             }
@@ -319,7 +319,7 @@ void run_experiment(const proto::ExperimentConfig &config, const std::filesystem
         [=, &remaining, eval_base_seed = config.evaluation_base_seed(),
          num_eval_trials = config.num_eval_trials(),
          max_sensor_range_m = config.max_sensor_range_m(),
-        &all_statistics](const auto &elem) mutable {
+         &all_statistics](const auto &elem) mutable {
             const auto &[idx, start_goal] = elem;
             // Add the start goal to the road map
             road_map.add_start_goal(
@@ -361,7 +361,6 @@ void run_experiment(const proto::ExperimentConfig &config, const std::filesystem
                     }
                 }
             }
-
 
             all_statistics.at(idx) =
                 evaluate_results(start_goal, world_map, road_map, ekf, results,
