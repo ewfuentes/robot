@@ -9,13 +9,16 @@
 #include "Eigen/Core"
 #include "common/argument_wrapper.hh"
 #include "common/check.hh"
+#include "common/math/matrix_to_proto.hh"
 #include "common/proto/load_from_file.hh"
 #include "common/time/robot_time.hh"
+#include "common/time/robot_time_to_proto.hh"
 #include "cxxopts.hpp"
 #include "experimental/beacon_sim/beacon_potential.hh"
 #include "experimental/beacon_sim/belief_road_map_planner.hh"
 #include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/experiment_config.pb.h"
+#include "experimental/beacon_sim/experiment_results.pb.h"
 #include "experimental/beacon_sim/make_belief_updater.hh"
 #include "experimental/beacon_sim/mapped_landmarks_to_proto.hh"
 #include "experimental/beacon_sim/robot_belief.hh"
@@ -172,25 +175,29 @@ PlannerResult run_planner(const planning::RoadMap &road_map, const EkfSlam &ekf,
                                            : std::nullopt};
 }
 
-struct ComparisonResult {
+struct EvaluationResult {
     struct PlanStatistics {
+        struct Plan {
+            std::vector<int> nodes;
+            double log_prob_mass_tracked;
+            double expected_covariance_determinant;
+        };
         time::RobotTimestamp::duration elapsed_time;
-        double expected_covariance_determinant;
-        int num_successful_plans;
+        std::optional<Plan> plan;
     };
     std::unordered_map<std::string, PlanStatistics> results;
     StartGoal start_goal;
 };
 
-ComparisonResult evaluate_results([[maybe_unused]] const StartGoal &start_goal,
-                                  const WorldMap &world_map, const planning::RoadMap &road_map,
-                                  const EkfSlam &ekf,
+EvaluationResult evaluate_results(const StartGoal &start_goal, const WorldMap &world_map,
+                                  const planning::RoadMap &road_map, const EkfSlam &ekf,
                                   const std::unordered_map<std::string, PlannerResult> &results,
                                   const int evaluation_seed, const int num_eval_trials,
                                   const double max_sensor_range_m) {
+    using Plan = EvaluationResult::PlanStatistics::Plan;
     std::mt19937 gen(evaluation_seed);
 
-    std::unordered_map<std::string, ComparisonResult::PlanStatistics> results_map;
+    std::unordered_map<std::string, EvaluationResult::PlanStatistics> results_map;
     for (int i = 0; i < num_eval_trials; i++) {
         const auto present_beacons = world_map.beacon_potential().sample(make_in_out(gen));
         const auto belief_updater = make_belief_updater(road_map, max_sensor_range_m, ekf,
@@ -203,9 +210,12 @@ ComparisonResult evaluate_results([[maybe_unused]] const StartGoal &start_goal,
             if (results_map.find(name) == results_map.end()) {
                 results_map[name] = {
                     .elapsed_time = result.elapsed_time,
-                    .expected_covariance_determinant = 0.0,
-                    .num_successful_plans = 0,
-                };
+                    .plan = result.plan.has_value()
+                                ? std::make_optional(Plan{
+                                      .nodes = result.plan->nodes,
+                                      .log_prob_mass_tracked = result.plan->log_prob_mass_tracked,
+                                      .expected_covariance_determinant = 0})
+                                : std::nullopt};
             }
 
             if (result.plan.has_value()) {
@@ -215,11 +225,8 @@ ComparisonResult evaluate_results([[maybe_unused]] const StartGoal &start_goal,
                     belief = belief_updater(belief, plan.at(i - 1), plan.at(i));
                 }
 
-                results_map[name].num_successful_plans++;
-                const double ratio = 1.0 / results_map[name].num_successful_plans;
-                results_map[name].expected_covariance_determinant =
-                    (1 - ratio) * results_map[name].expected_covariance_determinant +
-                    ratio * belief.cov_in_robot.determinant();
+                results_map[name].plan->expected_covariance_determinant +=
+                    (belief.cov_in_robot.determinant() / num_eval_trials);
             }
         }
     }
@@ -230,9 +237,50 @@ ComparisonResult evaluate_results([[maybe_unused]] const StartGoal &start_goal,
     };
 }
 
+proto::ExperimentResult to_proto(const ExperimentConfig &config,
+                                 const std::vector<EvaluationResult> &in) {
+    proto::ExperimentResult out;
+    out.mutable_experiment_config()->CopyFrom(config);
+
+    std::vector<std::string> names;
+    for (const auto &planner_config : config.planner_configs()) {
+        out.add_planner_names(planner_config.name());
+        names.push_back(planner_config.name());
+    }
+
+    for (int trial_idx = 0; trial_idx < static_cast<int>(in.size()); trial_idx++) {
+        std::cout << "working on trial idx: " << trial_idx << std::endl;
+        const auto &proto_start_goal = out.add_start_goal();
+        const auto &result = in.at(trial_idx);
+        pack_into(result.start_goal.start, proto_start_goal->mutable_start());
+        pack_into(result.start_goal.goal, proto_start_goal->mutable_goal());
+
+        for (int planner_idx = 0; planner_idx < static_cast<int>(names.size()); planner_idx++) {
+            std::cout << "Working on planner: " << names.at(planner_idx) << std::endl;
+            CHECK(result.results.contains(names.at(planner_idx)), "uh oh!", result.results);
+
+            const auto &trial_result = result.results.at(names.at(planner_idx));
+            proto::PlannerResult &planner_result = *out.add_results();
+            planner_result.set_trial_id(trial_idx);
+            planner_result.set_planner_id(planner_idx);
+            pack_into(trial_result.elapsed_time, planner_result.mutable_elapsed_time());
+
+            if (trial_result.plan.has_value()) {
+                proto::Plan &plan = *planner_result.mutable_plan();
+                plan.mutable_nodes()->Add(trial_result.plan->nodes.begin(),
+                                          trial_result.plan->nodes.end());
+                plan.set_log_prob_mass(trial_result.plan->log_prob_mass_tracked);
+                plan.set_expected_det(trial_result.plan->expected_covariance_determinant);
+            }
+        }
+    }
+    return out;
+}
+
 }  // namespace
 
-void run_experiment(const ExperimentConfig &config, const std::filesystem::path &base_path) {
+void run_experiment(const proto::ExperimentConfig &config, const std::filesystem::path &base_path,
+                    const std::filesystem::path &output_path) {
     std::cout << config.DebugString() << std::endl;
 
     // Load Map Config
@@ -264,11 +312,14 @@ void run_experiment(const ExperimentConfig &config, const std::filesystem::path 
         config.has_plan_timeout_s() ? std::make_optional(time::as_duration(config.plan_timeout_s()))
                                     : std::nullopt;
 
+    std::vector<EvaluationResult> all_statistics(start_goals.size());
+
     std::for_each(
         std::execution::par, start_goals.begin(), start_goals.end(),
         [=, &remaining, eval_base_seed = config.evaluation_base_seed(),
          num_eval_trials = config.num_eval_trials(),
-         max_sensor_range_m = config.max_sensor_range_m()](const auto &elem) mutable {
+         max_sensor_range_m = config.max_sensor_range_m(),
+         &all_statistics](const auto &elem) mutable {
             const auto &[idx, start_goal] = elem;
             // Add the start goal to the road map
             road_map.add_start_goal(
@@ -311,12 +362,18 @@ void run_experiment(const ExperimentConfig &config, const std::filesystem::path 
                 }
             }
 
-            evaluate_results(start_goal, world_map, road_map, ekf, results, eval_base_seed + idx,
-                             num_eval_trials, max_sensor_range_m);
+            all_statistics.at(idx) =
+                evaluate_results(start_goal, world_map, road_map, ekf, results,
+                                 eval_base_seed + idx, num_eval_trials, max_sensor_range_m);
             std::cout << "remaining: " << --remaining << std::endl;
         });
 
     // Write out the results
+    const auto experiment_results_proto = to_proto(config, all_statistics);
+
+    std::filesystem::create_directories(output_path.parent_path());
+    std::ofstream file_out(output_path, std::ios::binary | std::ios::out);
+    experiment_results_proto.SerializeToOstream(&file_out);
 }
 }  // namespace robot::experimental::beacon_sim
 
@@ -325,26 +382,33 @@ int main(int argc, const char **argv) {
     cxxopts::Options options("run_experiment", "Run experiments for paper");
     options.add_options()
         ("config_file", "Path to experiment config file", cxxopts::value<std::string>())
+        ("output_path", "Output directory for experiment results", cxxopts::value<std::string>())
         ("help", "Print usage");
     // clang-format on
 
     auto args = options.parse(argc, argv);
+
+    const auto check_required = [&](const std::string &opt) {
+        if (args.count(opt) == 0) {
+            std::cout << "Missing " << opt << " argument" << std::endl;
+            std::cout << options.help() << std::endl;
+            std::exit(1);
+        }
+    };
 
     if (args.count("help")) {
         std::cout << options.help() << std::endl;
         return 0;
     }
 
-    if (args.count("config_file") == 0) {
-        std::cout << "Missing config_file argument" << std::endl;
-        std::cout << options.help() << std::endl;
-        return 1;
-    }
+    check_required("config_file");
+    check_required("output_path");
 
     std::filesystem::path config_file_path = args["config_file"].as<std::string>();
     const auto maybe_config_file = robot::proto::load_from_file<ExperimentConfig>(config_file_path);
     CHECK(maybe_config_file.has_value());
 
     robot::experimental::beacon_sim::run_experiment(maybe_config_file.value(),
-                                                    config_file_path.remove_filename());
+                                                    config_file_path.remove_filename(),
+                                                    args["output_path"].as<std::string>());
 }

@@ -6,3 +6,7 @@ package robot.time.proto;
 message RobotTimestamp {
   int64 ticks_since_epoch = 1;
 }
+
+message RobotTimestampDuration {
+  int64 count = 1;
+}

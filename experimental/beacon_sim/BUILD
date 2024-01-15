@@ -735,6 +735,16 @@ multi_proto_library(
   srcs = ["experiment_config.proto"],
 )
 
+multi_proto_library(
+  name = "experiment_results_proto",
+  srcs = ["experiment_results.proto"],
+  deps = [
+    ":experiment_config_proto",
+    "//common/time:robot_time_proto",
+    "//common/math:matrix_proto",
+  ]
+)
+
 cc_binary(
   name = "run_experiment",
   srcs = ["run_experiment.cc"],
@@ -743,9 +753,12 @@ cc_binary(
     "@cxxopts",
     "//common:check",
     "//common/proto:load_from_file",
+    "//common/math:matrix_to_proto",
+    "//common/time:robot_time_to_proto",
     ":belief_road_map_planner",
     ":ekf_slam",
     ":experiment_config_proto",
+    ":experiment_results_proto",
     ":world_map_config_to_proto",
     ":mapped_landmarks_to_proto",
     "//planning:road_map_to_proto",
