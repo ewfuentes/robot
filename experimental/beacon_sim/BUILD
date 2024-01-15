@@ -735,6 +735,16 @@ multi_proto_library(
   srcs = ["experiment_config.proto"],
 )
 
+multi_proto_library(
+  name = "experiment_results_proto",
+  srcs = ["experiment_results.proto"],
+  deps = [
+    ":experiment_config_proto",
+    "//common/time:robot_time_proto",
+    "//common/math:matrix_proto",
+  ]
+)
+
 cc_binary(
   name = "run_experiment",
   srcs = ["run_experiment.cc"],
