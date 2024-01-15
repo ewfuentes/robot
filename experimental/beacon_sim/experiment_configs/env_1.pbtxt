@@ -4,10 +4,10 @@ map_config_path: "data/env_0/world_map_config.pb"
 ekf_state_path: "data/env_0/mapped_landmarks.pb"
 road_map_path: "data/env_0/road_map.pb"
 evaluation_base_seed: 987654321
-num_eval_trials: 10000
+num_eval_trials: 1000
 start_goal_seed: 12345
 start_goal_connection_radius_m: 20.0
-num_trials: 100
+num_trials: 200
 plan_timeout_s: 15.0
 max_sensor_range_m: 5.0
 
@@ -15,6 +15,13 @@ max_sensor_range_m: 5.0
 planner_configs: {
   name: "Full Distribution"
   landmark_brm_config: {}
+}
+
+planner_configs: {
+  name: "1 components"
+  landmark_brm_config: {
+    max_num_components: 1
+  }
 }
 
 planner_configs: {
