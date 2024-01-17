@@ -17,8 +17,8 @@ TEST(SampleWithoutReplacement, samples_match_dist) {
     absl::flat_hash_map<int, int> counts_by_digit;
     for (int i = 0; i < NUM_EXPERIMENTS; i++) {
         constexpr bool NOT_LOG_WEIGHTS = false;
-        const auto sample = reservoir_sample_without_replacement(weights, NUM_SAMPLES,
-                                                                 NOT_LOG_WEIGHTS, make_in_out(gen));
+        const auto sample =
+            sample_without_replacement(weights, NUM_SAMPLES, NOT_LOG_WEIGHTS, make_in_out(gen));
         for (const int elem : sample) {
             if (counts_by_digit.find(elem) == counts_by_digit.end()) {
                 counts_by_digit[elem] = 0;
@@ -48,8 +48,8 @@ TEST(SampleWithoutReplacement, samples_match_dist_log_weights) {
     absl::flat_hash_map<int, int> counts_by_digit;
     for (int i = 0; i < NUM_EXPERIMENTS; i++) {
         constexpr bool LOG_WEIGHTS = true;
-        const auto sample = reservoir_sample_without_replacement(weights, NUM_SAMPLES, LOG_WEIGHTS,
-                                                                 make_in_out(gen));
+        const auto sample =
+            sample_without_replacement(weights, NUM_SAMPLES, LOG_WEIGHTS, make_in_out(gen));
         for (const int elem : sample) {
             if (counts_by_digit.find(elem) == counts_by_digit.end()) {
                 counts_by_digit[elem] = 0;

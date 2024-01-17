@@ -111,8 +111,8 @@ std::tuple<LandmarkConditionedBeliefMap, double> downsize_and_normalize_belief(
     }
 
     constexpr bool LOG_PROB = true;
-    const auto idxs = math::reservoir_sample_without_replacement(log_prob, num_components, LOG_PROB,
-                                                                 make_in_out(**gen));
+    const auto idxs =
+        math::sample_without_replacement(log_prob, num_components, LOG_PROB, make_in_out(**gen));
 
     log_normalizer = math::logsumexp(idxs, [&log_prob](const int idx) { return log_prob.at(idx); });
 
