@@ -8,14 +8,13 @@
 #include "common/check.hh"
 
 namespace robot::math {
-absl::flat_hash_set<int> reservoir_sample_without_replacement(std::vector<double> weights,
+absl::flat_hash_set<int> reservoir_sample_without_replacement(const std::vector<double> &weights,
                                                               const int num_samples,
                                                               const bool is_log_weights,
                                                               InOut<std::mt19937> gen) {
-    CHECK(num_samples <= weights.size());
     absl::flat_hash_set<int> out;
 
-    if (num_samples == static_cast<int>(weights.size())) {
+    if (num_samples >= static_cast<int>(weights.size())) {
         for (int i = 0; i < num_samples; i++) {
             out.insert(i);
         }

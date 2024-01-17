@@ -20,6 +20,7 @@ py_binary(
     requirement("tqdm"),
     "//experimental/beacon_sim:environment_builder",
     "//experimental/beacon_sim:plot_trials",
+    "//experimental/beacon_sim:experiment_results_proto_py",
   ],
 )
 

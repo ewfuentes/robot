@@ -738,6 +738,7 @@ multi_proto_library(
 multi_proto_library(
   name = "experiment_results_proto",
   srcs = ["experiment_results.proto"],
+  visibility = ["//visibility:public"],
   deps = [
     ":experiment_config_proto",
     "//common/time:robot_time_proto",

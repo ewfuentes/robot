@@ -99,41 +99,28 @@ std::tuple<LandmarkConditionedBeliefMap, double> downsize_and_normalize_belief(
 
     LandmarkConditionedBeliefMap out;
     double log_normalizer = 0;
-    if (max_num_components.has_value() &&
-        max_num_components.value() < static_cast<int>(belief.size())) {
-        std::vector<std::string> keys;
-        std::vector<double> log_prob;
-        for (const auto &[key, belief] : belief) {
-            keys.push_back(key);
-            log_prob.push_back(belief.log_config_prob);
-        }
+    const int num_components =
+        max_num_components.has_value()
+            ? std::min(max_num_components.value(), static_cast<int>(belief.size()))
+            : belief.size();
+    std::vector<std::string> keys;
+    std::vector<double> log_prob;
+    for (const auto &[key, belief] : belief) {
+        keys.push_back(key);
+        log_prob.push_back(belief.log_config_prob);
+    }
 
-        constexpr bool LOG_PROB = true;
-        const int num_components =
-            std::min(max_num_components.value(), static_cast<int>(belief.size()));
-        const auto idxs = math::reservoir_sample_without_replacement(log_prob, num_components,
-                                                                     LOG_PROB, make_in_out(**gen));
+    constexpr bool LOG_PROB = true;
+    const auto idxs = math::reservoir_sample_without_replacement(log_prob, num_components, LOG_PROB,
+                                                                 make_in_out(**gen));
 
-        log_normalizer =
-            math::logsumexp(idxs, [&log_prob](const int idx) { return log_prob.at(idx); });
+    log_normalizer = math::logsumexp(idxs, [&log_prob](const int idx) { return log_prob.at(idx); });
 
-        for (const auto idx : idxs) {
-            out[keys.at(idx)] = {
-                .cov_in_robot = belief.at(keys.at(idx)).cov_in_robot,
-                .log_config_prob = log_prob.at(idx) - log_normalizer,
-            };
-        }
-    } else {
-        log_normalizer = math::logsumexp(belief, [](const auto &key_and_belief) {
-            return key_and_belief.second.log_config_prob;
-        });
-
-        for (const auto &[key, sub_belief] : belief) {
-            out[key] = {
-                .cov_in_robot = sub_belief.cov_in_robot,
-                .log_config_prob = sub_belief.log_config_prob - log_normalizer,
-            };
-        }
+    for (const auto idx : idxs) {
+        out[keys.at(idx)] = {
+            .cov_in_robot = belief.at(keys.at(idx)).cov_in_robot,
+            .log_config_prob = log_prob.at(idx) - log_normalizer,
+        };
     }
 
     return std::make_tuple(out, log_normalizer);
@@ -265,8 +252,8 @@ std::vector<BeaconObservation> generate_observations(
     const std::vector<int> &beacon_list =
         available_beacons.has_value() ? available_beacons.value() : estimate.beacon_ids;
 
+    std::mt19937 gen(0);
     for (const int beacon_id : beacon_list) {
-        std::mt19937 gen(0);
         Beacon beacon = {
             .id = beacon_id,
             .pos_in_local = estimate.beacon_in_local(beacon_id).value(),
