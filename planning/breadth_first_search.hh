@@ -101,6 +101,9 @@ std::optional<BreadthFirstResult<State>> breadth_first_search(
     }
 
     std::optional<int> end_idx = identify_end_func(nodes);
+    if (!end_idx.has_value()) {
+        return std::nullopt;
+    }
     std::vector<State> path;
     while (end_idx.has_value()) {
         path.push_back(nodes.at(end_idx.value()).state);
