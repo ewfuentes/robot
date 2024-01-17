@@ -18,6 +18,8 @@ std::vector<int> sample_without_replacement(const std::vector<double> &weights,
         return out;
     }
 
+    // The one pass method is implemented presented in:
+    // https://www-sciencedirect-com.libproxy.mit.edu/science/article/abs/pii/S002001900500298X
     std::vector<std::tuple<int, double>> idx_and_sample;
     const double max_elem = *std::max_element(weights.begin(), weights.end());
     std::uniform_real_distribution<> dist;
