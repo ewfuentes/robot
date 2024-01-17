@@ -8,14 +8,9 @@ num_eval_trials: 1000
 start_goal_seed: 12345
 start_goal_connection_radius_m: 20.0
 num_trials: 200
-plan_timeout_s: 15.0
+plan_timeout_s: 30.0
 max_sensor_range_m: 5.0
 
-
-planner_configs: {
-  name: "Full Distribution"
-  landmark_brm_config: {}
-}
 
 planner_configs: {
   name: "1 components"
@@ -58,3 +53,9 @@ planner_configs: {
     max_num_components: 100000
   }
 }
+
+planner_configs: {
+  name: "Full Distribution"
+  landmark_brm_config: {}
+}
+
