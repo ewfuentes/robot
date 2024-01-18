@@ -223,7 +223,8 @@ TEST(PathConstrainedBeliefRoadMapPlannerTest, grid_road_map) {
     };
 
     // Action
-    const auto plan = compute_path_constrained_belief_road_map_plan(road_map, ekf_slam, potential, OPTIONS);
+    const auto plan =
+        compute_path_constrained_belief_road_map_plan(road_map, ekf_slam, potential, OPTIONS);
 
     // Verification
     const double pos_uncertainty_m_sq = ekf_config.on_map_load_position_uncertainty_m *

@@ -48,6 +48,16 @@ struct PathConstrainedBeliefPlanResult {
     Eigen::Matrix3d expected_cov;
 };
 
+struct ExpectedBeliefPlanResult {
+    std::vector<int> plan;
+    Eigen::Matrix3d expected_cov;
+};
+
+struct ExpectedBeliefRoadMapOptions {
+    int num_landmark_configuration_samples;
+    int seed;
+};
+
 std::optional<planning::BRMPlan<LandmarkRobotBelief>> compute_landmark_belief_road_map_plan(
     const planning::RoadMap &road_map, const EkfSlam &ekf, const BeaconPotential &beacon_potential,
     const LandmarkBeliefRoadMapOptions &options);
@@ -59,5 +69,9 @@ std::optional<planning::BRMPlan<RobotBelief>> compute_belief_road_map_plan(
 PathConstrainedBeliefPlanResult compute_path_constrained_belief_road_map_plan(
     const planning::RoadMap &road_map, const EkfSlam &ekf, const BeaconPotential &beacon_potential,
     const PathConstrainedBeliefRoadMapOptions &options);
+
+std::optional<ExpectedBeliefPlanResult> compute_expected_belief_road_map_plan(
+    const planning::RoadMap &road_map, const EkfSlam &ekf, const BeaconPotential &beacon_potential,
+    const ExpectedBeliefRoadMapOptions &options);
 
 }  // namespace robot::experimental::beacon_sim

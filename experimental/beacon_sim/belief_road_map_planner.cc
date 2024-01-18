@@ -327,6 +327,11 @@ std::optional<planning::BRMPlan<LandmarkRobotBelief>> compute_landmark_belief_ro
         [](const LandmarkRobotBelief &b) { return uncertainty_size(b); },
         planning::NoBacktrackingOptions{}, should_terminate_func);
 }
+
+std::optional<ExpectedBeliefPlanResult> compute_expected_belief_road_map_plan(
+    const planning::RoadMap &road_map, const EkfSlam &ekf, const BeaconPotential &beacon_potential,
+    const ExpectedBeliefRoadMapOptions &options) {}
+
 }  // namespace robot::experimental::beacon_sim
 
 namespace std {
