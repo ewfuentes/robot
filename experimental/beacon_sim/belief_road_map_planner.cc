@@ -261,9 +261,9 @@ std::optional<planning::BRMPlan<RobotBelief>> compute_belief_road_map_plan(
     }
 }
 
-ExpectedBeliefPlanResult compute_expected_belief_road_map_plan(
+PathConstrainedBeliefPlanResult compute_path_constrained_belief_road_map_plan(
     const planning::RoadMap &road_map, const EkfSlam &ekf, const BeaconPotential &beacon_potential,
-    const ExpectedBeliefRoadMapOptions &options) {
+    const PathConstrainedBeliefRoadMapOptions &options) {
     // Find paths that are at most options.max_path_length_ratio times longer than the shortest path
     std::vector<std::vector<int>> paths = find_paths(road_map, options.max_path_length_ratio);
 
@@ -288,7 +288,7 @@ ExpectedBeliefPlanResult compute_expected_belief_road_map_plan(
                                        });
     const int idx = std::distance(expected_covs.begin(), iter);
 
-    return ExpectedBeliefPlanResult{
+    return PathConstrainedBeliefPlanResult{
         .plan = paths.at(idx),
         .expected_cov = expected_covs.at(idx),
     };

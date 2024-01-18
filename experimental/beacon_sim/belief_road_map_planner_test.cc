@@ -198,7 +198,7 @@ TEST(BeliefRoadMapPlannerTest, diamond_road_map_with_correlated_beacons) {
         EXPECT_NE(node_id, 2);
     }
 }
-TEST(ExpectedBeliefRoadMapPlannerTest, grid_road_map) {
+TEST(PathConstrainedBeliefRoadMapPlannerTest, grid_road_map) {
     // Setup
     const EkfSlamConfig ekf_config{
         .max_num_beacons = 1,
@@ -217,13 +217,13 @@ TEST(ExpectedBeliefRoadMapPlannerTest, grid_road_map) {
 
     constexpr double P_BEACON = 0.5;
     const auto &[road_map, ekf_slam, potential] = create_grid_environment(ekf_config, P_BEACON);
-    constexpr ExpectedBeliefRoadMapOptions OPTIONS = {
+    constexpr PathConstrainedBeliefRoadMapOptions OPTIONS = {
         .max_path_length_ratio = 1.4,
         .max_sensor_range_m = 3.0,
     };
 
     // Action
-    const auto plan = compute_expected_belief_road_map_plan(road_map, ekf_slam, potential, OPTIONS);
+    const auto plan = compute_path_constrained_belief_road_map_plan(road_map, ekf_slam, potential, OPTIONS);
 
     // Verification
     const double pos_uncertainty_m_sq = ekf_config.on_map_load_position_uncertainty_m *
