@@ -4,7 +4,19 @@
 #include <algorithm>
 #include <numeric>
 
+#include "experimental/beacon_sim/conditioned_potential.hh"
+
 namespace robot::experimental::beacon_sim {
+
+BeaconPotential BeaconPotential::condition_on(
+    const std::unordered_map<int, bool> &assignment) const {
+    constexpr bool ALLOW_PARTIAL_ASSIGNMENT = true;
+    std::vector<int> conditioned_members;
+    return ConditionedPotential{.underlying_pot = *this,
+                                .log_normalizer = log_prob(assignment, ALLOW_PARTIAL_ASSIGNMENT),
+                                .conditioned_members = assignment};
+}
+
 double compute_log_prob(const CombinedPotential &pot,
                         const std::unordered_map<int, bool> &assignments,
                         const bool allow_partial_assignments) {
@@ -13,13 +25,6 @@ double compute_log_prob(const CombinedPotential &pot,
         [&assignments, allow_partial_assignments](const double accum, const BeaconPotential &pot) {
             return accum + pot.log_prob(assignments, allow_partial_assignments);
         });
-}
-
-double compute_log_prob(const CombinedPotential &pot, const std::vector<int> &present_beacons) {
-    return std::accumulate(pot.pots.begin(), pot.pots.end(), 0.0,
-                           [&present_beacons](const double accum, const BeaconPotential &pot) {
-                               return accum + pot.log_prob(present_beacons);
-                           });
 }
 
 std::vector<LogMarginal> compute_log_marginals(const CombinedPotential &pot,

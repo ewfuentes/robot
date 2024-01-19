@@ -26,7 +26,6 @@ concept Potential = requires(T pot, bool b, std::unordered_map<int, bool> assign
                              InOut<std::mt19937> gen) {
                         { get_members(pot) } -> std::same_as<std::vector<int>>;
                         { compute_log_prob(pot, assignment, b) } -> std::same_as<double>;
-                        { compute_log_prob(pot, present_beacons) } -> std::same_as<double>;
                         {
                             compute_log_marginals(pot, present_beacons)
                             } -> std::same_as<std::vector<LogMarginal>>;
@@ -77,6 +76,8 @@ class BeaconPotential {
         return impl_ ? impl_->members_() : std::vector<int>{};
     };
 
+    BeaconPotential condition_on(const std::unordered_map<int, bool> &assignments) const;
+
     friend BeaconPotential proto::unpack_from(const proto::BeaconPotential &);
     friend void proto::pack_into(const BeaconPotential &, proto::BeaconPotential *);
 
@@ -104,7 +105,15 @@ class BeaconPotential {
         }
 
         double log_prob_(const std::vector<int> &present_beacons) const override {
-            return compute_log_prob(data_, present_beacons);
+            std::unordered_map<int, bool> assignment;
+            for (const int member_id : members_()) {
+                const auto iter =
+                    std::find(present_beacons.begin(), present_beacons.end(), member_id);
+                assignment[member_id] = iter == present_beacons.end() ? false : true;
+            }
+
+            constexpr bool DONT_ALLOW_PARTIAL_ASSIGNMENTS = false;
+            return log_prob_(assignment, DONT_ALLOW_PARTIAL_ASSIGNMENTS);
         }
 
         std::vector<LogMarginal> log_marginals_(const std::vector<int> &remaining) const override {
@@ -133,7 +142,6 @@ struct CombinedPotential {
 double compute_log_prob(const CombinedPotential &pot,
                         const std::unordered_map<int, bool> &assignments,
                         const bool allow_partial_assignments);
-double compute_log_prob(const CombinedPotential &pot, const std::vector<int> &present_beacons);
 std::vector<LogMarginal> compute_log_marginals(const CombinedPotential &pot,
                                                const std::vector<int> &remaining);
 std::vector<int> get_members(const CombinedPotential &pot);

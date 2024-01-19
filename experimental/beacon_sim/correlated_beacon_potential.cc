@@ -79,19 +79,6 @@ double compute_log_prob(const CorrelatedBeaconPotential &pot,
     return logsumexp(terms);
 }
 
-double compute_log_prob(const CorrelatedBeaconPotential &pot,
-                        const std::vector<int> &present_beacons) {
-    std::unordered_map<int, bool> assignment;
-    for (const int beacon_id : pot.members) {
-        const bool is_beacon_present = std::find(present_beacons.begin(), present_beacons.end(),
-                                                 beacon_id) != present_beacons.end();
-        assignment[beacon_id] = is_beacon_present;
-    }
-
-    constexpr bool DONT_ALLOW_PARTIAL_ASSIGNMENT = false;
-    return compute_log_prob(pot, assignment, DONT_ALLOW_PARTIAL_ASSIGNMENT);
-}
-
 std::vector<int> get_members(const CorrelatedBeaconPotential &pot) { return pot.members; }
 
 std::vector<LogMarginal> compute_log_marginals(const CorrelatedBeaconPotential &pot,

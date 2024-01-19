@@ -5,6 +5,7 @@
 #include <iterator>
 
 #include "common/check.hh"
+#include "experimental/beacon_sim/conditioned_potential_to_proto.hh"
 #include "experimental/beacon_sim/correlated_beacon_potential_to_proto.hh"
 #include "experimental/beacon_sim/precision_matrix_potential_to_proto.hh"
 
@@ -21,6 +22,8 @@ beacon_sim::BeaconPotential unpack_from(const BeaconPotential &in) {
             return unpack_from(in.precision_matrix_potential());
         case BeaconPotential::kCorrelatedBeaconPotential:
             return unpack_from(in.correlated_beacon_potential());
+        case BeaconPotential::kConditionedPotential:
+            return unpack_from(in.conditioned_potential());
     }
     CHECK(false, "Unhandled potential type");
     return beacon_sim::BeaconPotential();
