@@ -47,18 +47,6 @@ auto logsumexp(const auto &terms) {
 std::vector<int> get_members(const PrecisionMatrixPotential &pot) { return pot.members; }
 
 double compute_log_prob(const PrecisionMatrixPotential &pot,
-                        const std::vector<int> &present_beacons) {
-    std::unordered_map<int, bool> assignment;
-    for (const int member_id : pot.members) {
-        const auto iter = std::find(present_beacons.begin(), present_beacons.end(), member_id);
-        assignment[member_id] = iter == present_beacons.end() ? false : true;
-    }
-
-    constexpr bool DONT_ALLOW_PARTIAL_ASSIGNMENTS = false;
-    return compute_log_prob(pot, assignment, DONT_ALLOW_PARTIAL_ASSIGNMENTS);
-}
-
-double compute_log_prob(const PrecisionMatrixPotential &pot,
                         const std::unordered_map<int, bool> &assignment,
                         const bool allow_partial_assignment) {
     const std::vector<int> sorted_members = sorted_vector(pot.members);
@@ -193,14 +181,22 @@ std::vector<LogMarginal> compute_log_marginals(const PrecisionMatrixPotential &p
 std::vector<int> generate_sample(const PrecisionMatrixPotential &pot, InOut<std::mt19937> gen) {
     double remaining_prob = std::uniform_real_distribution<>()(*gen);
 
+    std::unordered_map<int, bool> all_gone;
+    for (const int beacon_id : pot.members) {
+        all_gone[beacon_id] = false;
+    }
+
     std::vector<int> out;
     for (int num_present = 0; num_present <= static_cast<int>(pot.members.size()); num_present++) {
         for (const auto &idxs : math::combinations(pot.members.size(), num_present)) {
             out.clear();
+            std::unordered_map config = all_gone;
             for (const int idx : idxs) {
                 out.push_back(pot.members.at(idx));
+                config.at(pot.members.at(idx)) = true;
             }
-            const double log_prob = compute_log_prob(pot, out);
+            constexpr bool DONT_ALLOW_PARTIAL_ASSIGNMENT = false;
+            const double log_prob = compute_log_prob(pot, config, DONT_ALLOW_PARTIAL_ASSIGNMENT);
 
             remaining_prob -= std::exp(log_prob);
             if (remaining_prob < 0) {

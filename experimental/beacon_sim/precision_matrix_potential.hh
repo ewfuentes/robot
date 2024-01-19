@@ -21,9 +21,6 @@ double compute_log_prob(const PrecisionMatrixPotential &pot,
                         const std::unordered_map<int, bool> &assignments,
                         const bool allow_partial_assignment);
 
-double compute_log_prob(const PrecisionMatrixPotential &pot,
-                        const std::vector<int> &present_beacons);
-
 std::vector<int> get_members(const PrecisionMatrixPotential &pot);
 
 std::vector<LogMarginal> compute_log_marginals(const PrecisionMatrixPotential &pot,

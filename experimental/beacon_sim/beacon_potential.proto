@@ -10,10 +10,17 @@ message CombinedPotential {
   repeated BeaconPotential potentials = 1;
 }
 
+message ConditionedPotential {
+  BeaconPotential underlying_potential = 1;
+  double log_normalizer = 2;
+  map<int32, bool> beacon_presence_from_id = 3;
+}
+
 message BeaconPotential {
   oneof potential_oneof {
     CombinedPotential combined_potential = 1;
     robot.experimental.beacon_sim.proto.PrecisionMatrixPotential precision_matrix_potential = 2;
     robot.experimental.beacon_sim.proto.CorrelatedBeaconPotential correlated_beacon_potential = 3;
+    ConditionedPotential conditioned_potential = 4;
   }
 }

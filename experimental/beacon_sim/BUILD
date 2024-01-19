@@ -440,20 +440,46 @@ cc_library(
   hdrs = [
     "beacon_potential.hh",
     "beacon_potential_to_proto.hh",
+    "conditioned_potential.hh",
+    "conditioned_potential_to_proto.hh",
   ],
   srcs = [
     "beacon_potential.cc",
     "beacon_potential_to_proto.cc",
+    "conditioned_potential.cc",
+    "conditioned_potential_to_proto.cc",
   ],
   deps = [
     "@eigen",
     "//common:argument_wrapper",
     "//common:check",
+    "//common/math:sample_without_replacement",
     ":log_marginal",
     ":beacon_potential_proto",
     ":precision_matrix_potential",
     ":correlated_beacon_potential",
   ],
+)
+
+cc_test(
+  name = "conditioned_potential_test",
+  srcs = ["conditioned_potential_test.cc"],
+  deps = [
+    ":beacon_potential",
+    ":precision_matrix_potential",
+    "@com_google_googletest//:gtest_main",
+    "//common/math:logsumexp",
+  ]
+)
+
+cc_test(
+  name = "conditioned_potential_to_proto_test",
+  srcs = ["conditioned_potential_to_proto_test.cc"],
+  deps = [
+    ":correlated_beacons",
+    ":beacon_potential",
+    "@com_google_googletest//:gtest_main",
+  ]
 )
 
 cc_library(
