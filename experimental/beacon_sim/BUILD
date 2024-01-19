@@ -472,6 +472,16 @@ cc_test(
   ]
 )
 
+cc_test(
+  name = "conditioned_potential_to_proto_test",
+  srcs = ["conditioned_potential_to_proto_test.cc"],
+  deps = [
+    ":correlated_beacons",
+    ":beacon_potential",
+    "@com_google_googletest//:gtest_main",
+  ]
+)
+
 cc_library(
   name = "precision_matrix_potential",
   hdrs = [
