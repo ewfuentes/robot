@@ -3,6 +3,7 @@
 
 #include <limits>
 #include <unordered_set>
+
 #include "common/math/sample_without_replacement.hh"
 
 namespace robot::experimental::beacon_sim {
@@ -65,15 +66,15 @@ std::vector<int> get_members(const ConditionedPotential &pot) {
     return pot.underlying_pot.members();
 }
 
-std::vector<int> generate_sample([[maybe_unused]] const ConditionedPotential &pot,
-                                 [[maybe_unused]] InOut<std::mt19937> gen) {
+std::vector<int> generate_sample(const ConditionedPotential &pot, InOut<std::mt19937> gen) {
     // We sample by computing the log marginals, and then sampling from these. There are
     // other ways (e.g. rejection sampling, MCMC) that may lead to more efficient sampling
     // but this is the easiest to implement at the moment.
-    
+
     const auto marginals = compute_log_marginals(pot, get_members(pot));
     std::vector<double> log_p;
-    std::transform(marginals.begin(), marginals.end(), std::back_inserter(log_p), [](const auto &marginal){ return marginal.log_marginal; });
+    std::transform(marginals.begin(), marginals.end(), std::back_inserter(log_p),
+                   [](const auto &marginal) { return marginal.log_marginal; });
 
     constexpr int NUM_SAMPLES = 1;
     constexpr bool LOG_PROB = true;
