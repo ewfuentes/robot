@@ -340,6 +340,7 @@ std::optional<ExpectedBeliefPlanResult> compute_expected_belief_road_map_plan(
     for (int i = 0; i < options.num_configuration_samples; i++) {
         world_samples.emplace_back(beacon_potential.sample(make_in_out(gen)));
         const auto &sample = world_samples.back();
+
         // Create a potential with only this assignment
         std::unordered_map<int, bool> assignment;
         for (const int beacon_id: beacon_potential.members()) {
