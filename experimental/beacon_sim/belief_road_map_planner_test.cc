@@ -435,8 +435,7 @@ TEST(ExpectedBeliefRoadMapPlannerTest, diamond_road_map_correlated_beacons) {
             .uncertainty_tolerance = std::nullopt,
             .max_num_edge_transforms = std::numeric_limits<int>::max(),
             .timeout = std::nullopt,
-        }
-    };
+        }};
     const std::vector<std::optional<int>> expected_path = {planning::RoadMap::START_IDX, 0, 1, 3,
                                                            planning::RoadMap::GOAL_IDX};
 
@@ -444,7 +443,6 @@ TEST(ExpectedBeliefRoadMapPlannerTest, diamond_road_map_correlated_beacons) {
     const auto plan = compute_expected_belief_road_map_plan(road_map, ekf_slam, potential, OPTIONS);
 
     const auto marginals = potential.log_marginals(potential.members());
-    
 
     // Verification
     EXPECT_TRUE(plan.has_value());

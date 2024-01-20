@@ -343,7 +343,7 @@ std::optional<ExpectedBeliefPlanResult> compute_expected_belief_road_map_plan(
 
         // Create a potential with only this assignment
         std::unordered_map<int, bool> assignment;
-        for (const int beacon_id: beacon_potential.members()) {
+        for (const int beacon_id : beacon_potential.members()) {
             const auto iter = std::find(sample.begin(), sample.end(), beacon_id);
             const bool is_beacon_present_in_sample = iter != sample.end();
             assignment[beacon_id] = is_beacon_present_in_sample;
@@ -351,7 +351,8 @@ std::optional<ExpectedBeliefPlanResult> compute_expected_belief_road_map_plan(
         const BeaconPotential conditioned = beacon_potential.condition_on(assignment);
 
         // Plan assuming the current world
-        const auto maybe_plan = compute_belief_road_map_plan(road_map, ekf, conditioned, options.brm_options);
+        const auto maybe_plan =
+            compute_belief_road_map_plan(road_map, ekf, conditioned, options.brm_options);
         if (maybe_plan.has_value()) {
             plans.push_back(maybe_plan->nodes);
         }
@@ -359,8 +360,9 @@ std::optional<ExpectedBeliefPlanResult> compute_expected_belief_road_map_plan(
 
     // Evaluate the generated plans on each of the samples worlds
     std::vector<double> expected_cov_dets(plans.size(), 0.0);
-    for (const auto &sample: world_samples) {
-        const std::vector<Eigen::Matrix3d> covs = evaluate_paths_with_configuration(plans, ekf, road_map, options.brm_options.max_sensor_range_m, sample);
+    for (const auto &sample : world_samples) {
+        const std::vector<Eigen::Matrix3d> covs = evaluate_paths_with_configuration(
+            plans, ekf, road_map, options.brm_options.max_sensor_range_m, sample);
 
         for (int i = 0; i < static_cast<int>(plans.size()); i++) {
             expected_cov_dets[i] += covs.at(i).determinant() / world_samples.size();
