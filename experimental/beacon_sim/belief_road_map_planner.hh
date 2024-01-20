@@ -49,13 +49,14 @@ struct PathConstrainedBeliefPlanResult {
 };
 
 struct ExpectedBeliefPlanResult {
-    std::vector<int> plan;
-    Eigen::Matrix3d expected_cov;
+    std::vector<int> nodes;
 };
 
 struct ExpectedBeliefRoadMapOptions {
-    int num_landmark_configuration_samples;
+    int num_configuration_samples;
     int seed;
+
+    BeliefRoadMapOptions brm_options;
 };
 
 std::optional<planning::BRMPlan<LandmarkRobotBelief>> compute_landmark_belief_road_map_plan(

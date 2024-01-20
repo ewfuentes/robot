@@ -5,6 +5,7 @@
 #include <stack>
 
 #include "common/check.hh"
+#include "common/math/logsumexp.hh"
 #include "experimental/beacon_sim/correlated_beacons.hh"
 #include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/test_helpers.hh"
@@ -393,6 +394,57 @@ TEST(LandmarkBeliefRoadMapPlannerTest, diamond_road_map_correlated_beacons) {
 
     // Action
     const auto plan = compute_landmark_belief_road_map_plan(road_map, ekf_slam, potential, OPTIONS);
+
+    // Verification
+    EXPECT_TRUE(plan.has_value());
+    EXPECT_EQ(plan->nodes.size(), expected_path.size());
+    for (int i = 0; i < static_cast<int>(plan->nodes.size()); i++) {
+        if (expected_path.at(i).has_value()) {
+            EXPECT_EQ(plan.value().nodes.at(i), expected_path.at(i).value());
+        }
+    }
+}
+
+TEST(ExpectedBeliefRoadMapPlannerTest, diamond_road_map_correlated_beacons) {
+    // Setup
+    const EkfSlamConfig ekf_config{
+        .max_num_beacons = 11,
+        .initial_beacon_uncertainty_m = 100.0,
+        .along_track_process_noise_m_per_rt_meter = 0.05,
+        .cross_track_process_noise_m_per_rt_meter = 0.05,
+        .pos_process_noise_m_per_rt_s = 0.0,
+        .heading_process_noise_rad_per_rt_meter = 1e-3,
+        .heading_process_noise_rad_per_rt_s = 0.0,
+        .beacon_pos_process_noise_m_per_rt_s = 1e-6,
+        .range_measurement_noise_m = 1e-1,
+        .bearing_measurement_noise_rad = 1e-1,
+        .on_map_load_position_uncertainty_m = 2.0,
+        .on_map_load_heading_uncertainty_rad = 0.1,
+    };
+
+    constexpr double P_LONE_BEACON = 0.5;
+    constexpr double P_STACKED_BEACON = 0.1;
+    const double P_NO_STACK_BEACON = 0.6;
+    const auto &[road_map, ekf_slam, potential] =
+        create_diamond_environment(ekf_config, P_LONE_BEACON, P_NO_STACK_BEACON, P_STACKED_BEACON);
+    constexpr ExpectedBeliefRoadMapOptions OPTIONS = {
+        .num_configuration_samples = 100,
+        .seed = 1234,
+        .brm_options = {
+            .max_sensor_range_m = 3.0,
+            .uncertainty_tolerance = std::nullopt,
+            .max_num_edge_transforms = std::numeric_limits<int>::max(),
+            .timeout = std::nullopt,
+        }
+    };
+    const std::vector<std::optional<int>> expected_path = {planning::RoadMap::START_IDX, 0, 1, 3,
+                                                           planning::RoadMap::GOAL_IDX};
+
+    // Action
+    const auto plan = compute_expected_belief_road_map_plan(road_map, ekf_slam, potential, OPTIONS);
+
+    const auto marginals = potential.log_marginals(potential.members());
+    
 
     // Verification
     EXPECT_TRUE(plan.has_value());
