@@ -261,9 +261,9 @@ std::optional<planning::BRMPlan<RobotBelief>> compute_belief_road_map_plan(
     }
 }
 
-ExpectedBeliefPlanResult compute_expected_belief_road_map_plan(
+PathConstrainedBeliefPlanResult compute_path_constrained_belief_road_map_plan(
     const planning::RoadMap &road_map, const EkfSlam &ekf, const BeaconPotential &beacon_potential,
-    const ExpectedBeliefRoadMapOptions &options) {
+    const PathConstrainedBeliefRoadMapOptions &options) {
     // Find paths that are at most options.max_path_length_ratio times longer than the shortest path
     std::vector<std::vector<int>> paths = find_paths(road_map, options.max_path_length_ratio);
 
@@ -288,7 +288,7 @@ ExpectedBeliefPlanResult compute_expected_belief_road_map_plan(
                                        });
     const int idx = std::distance(expected_covs.begin(), iter);
 
-    return ExpectedBeliefPlanResult{
+    return PathConstrainedBeliefPlanResult{
         .plan = paths.at(idx),
         .expected_cov = expected_covs.at(idx),
     };
@@ -327,6 +327,56 @@ std::optional<planning::BRMPlan<LandmarkRobotBelief>> compute_landmark_belief_ro
         [](const LandmarkRobotBelief &b) { return uncertainty_size(b); },
         planning::NoBacktrackingOptions{}, should_terminate_func);
 }
+
+std::optional<ExpectedBeliefPlanResult> compute_expected_belief_road_map_plan(
+    const planning::RoadMap &road_map, const EkfSlam &ekf, const BeaconPotential &beacon_potential,
+    const ExpectedBeliefRoadMapOptions &options) {
+    std::mt19937 gen(options.seed);
+
+    // Sample a number of worlds and run the BRM on it
+    std::vector<std::vector<int>> world_samples;
+    std::vector<std::vector<int>> plans;
+    world_samples.reserve(options.num_configuration_samples);
+    for (int i = 0; i < options.num_configuration_samples; i++) {
+        world_samples.emplace_back(beacon_potential.sample(make_in_out(gen)));
+        const auto &sample = world_samples.back();
+
+        // Create a potential with only this assignment
+        std::unordered_map<int, bool> assignment;
+        for (const int beacon_id : beacon_potential.members()) {
+            const auto iter = std::find(sample.begin(), sample.end(), beacon_id);
+            const bool is_beacon_present_in_sample = iter != sample.end();
+            assignment[beacon_id] = is_beacon_present_in_sample;
+        }
+        const BeaconPotential conditioned = beacon_potential.condition_on(assignment);
+
+        // Plan assuming the current world
+        const auto maybe_plan =
+            compute_belief_road_map_plan(road_map, ekf, conditioned, options.brm_options);
+        if (maybe_plan.has_value()) {
+            plans.push_back(maybe_plan->nodes);
+        }
+    }
+
+    // Evaluate the generated plans on each of the samples worlds
+    std::vector<double> expected_cov_dets(plans.size(), 0.0);
+    for (const auto &sample : world_samples) {
+        const std::vector<Eigen::Matrix3d> covs = evaluate_paths_with_configuration(
+            plans, ekf, road_map, options.brm_options.max_sensor_range_m, sample);
+
+        for (int i = 0; i < static_cast<int>(plans.size()); i++) {
+            expected_cov_dets[i] += covs.at(i).determinant() / world_samples.size();
+        }
+    }
+
+    const auto min_iter = std::min_element(expected_cov_dets.begin(), expected_cov_dets.end());
+    const int min_idx = std::distance(expected_cov_dets.begin(), min_iter);
+
+    return {{
+        .nodes = plans.at(min_idx),
+    }};
+}
+
 }  // namespace robot::experimental::beacon_sim
 
 namespace std {

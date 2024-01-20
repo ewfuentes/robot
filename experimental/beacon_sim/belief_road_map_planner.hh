@@ -24,7 +24,7 @@ struct BeliefRoadMapOptions {
     std::optional<time::RobotTimestamp::duration> timeout;
 };
 
-struct ExpectedBeliefRoadMapOptions {
+struct PathConstrainedBeliefRoadMapOptions {
     // The algorithm requires looking over all possible paths from the start to the goal. To make
     // the problem tractable, we wil only consider paths that are within a multiplicative factor
     // of the shortest path.
@@ -43,9 +43,20 @@ struct LandmarkBeliefRoadMapOptions {
     std::optional<time::RobotTimestamp::duration> timeout;
 };
 
-struct ExpectedBeliefPlanResult {
+struct PathConstrainedBeliefPlanResult {
     std::vector<int> plan;
     Eigen::Matrix3d expected_cov;
+};
+
+struct ExpectedBeliefPlanResult {
+    std::vector<int> nodes;
+};
+
+struct ExpectedBeliefRoadMapOptions {
+    int num_configuration_samples;
+    int seed;
+
+    BeliefRoadMapOptions brm_options;
 };
 
 std::optional<planning::BRMPlan<LandmarkRobotBelief>> compute_landmark_belief_road_map_plan(
@@ -56,7 +67,11 @@ std::optional<planning::BRMPlan<RobotBelief>> compute_belief_road_map_plan(
     const planning::RoadMap &road_map, const EkfSlam &ekf, const BeaconPotential &beacon_potential,
     const BeliefRoadMapOptions &options);
 
-ExpectedBeliefPlanResult compute_expected_belief_road_map_plan(
+PathConstrainedBeliefPlanResult compute_path_constrained_belief_road_map_plan(
+    const planning::RoadMap &road_map, const EkfSlam &ekf, const BeaconPotential &beacon_potential,
+    const PathConstrainedBeliefRoadMapOptions &options);
+
+std::optional<ExpectedBeliefPlanResult> compute_expected_belief_road_map_plan(
     const planning::RoadMap &road_map, const EkfSlam &ekf, const BeaconPotential &beacon_potential,
     const ExpectedBeliefRoadMapOptions &options);
 

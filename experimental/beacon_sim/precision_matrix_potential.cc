@@ -185,7 +185,6 @@ std::vector<int> generate_sample(const PrecisionMatrixPotential &pot, InOut<std:
     for (const int beacon_id : pot.members) {
         all_gone[beacon_id] = false;
     }
-
     std::vector<int> out;
     for (int num_present = 0; num_present <= static_cast<int>(pot.members.size()); num_present++) {
         for (const auto &idxs : math::combinations(pot.members.size(), num_present)) {
@@ -200,7 +199,7 @@ std::vector<int> generate_sample(const PrecisionMatrixPotential &pot, InOut<std:
 
             remaining_prob -= std::exp(log_prob);
             if (remaining_prob < 0) {
-                break;
+                return out;
             }
         }
     }

@@ -131,7 +131,7 @@ TEST(ConditionedPotentialTest, compute_log_marginal_test) {
     }
 }
 
-TEST(ConditionedPotentialTest, compute_log_marginal_with_conditioned_test) {
+TEST(ConditionedPotentialTest, compute_log_marginal_with_conditioned_present_test) {
     // Setup
     const BeaconPotential underlying = PrecisionMatrixPotential{
         .precision = (Eigen::Matrix2d() << 1.0, 0.0, 0.0, 2.0).finished(),
@@ -168,7 +168,7 @@ TEST(ConditionedPotentialTest, compute_log_marginal_with_conditioned_test) {
     }
 }
 
-TEST(ConditionedPotentialTest, compute_log_marginal_with_inconsistent_conditioned_test) {
+TEST(ConditionedPotentialTest, compute_log_marginal_with_missing_conditioned_absent_test) {
     // Setup
     const BeaconPotential underlying = PrecisionMatrixPotential{
         .precision = (Eigen::Matrix2d() << 1.0, 0.0, 0.0, 2.0).finished(),
@@ -177,12 +177,32 @@ TEST(ConditionedPotentialTest, compute_log_marginal_with_inconsistent_conditione
     };
     const auto underlying_members = underlying.members();
     const BeaconPotential conditioned = underlying.condition_on({{20, false}});
+    const BeaconPotential equivalent = PrecisionMatrixPotential{
+        .precision = (Eigen::MatrixXd(1, 1) << 1.0).finished(),
+        .log_normalizer = math::logsumexp(std::vector{0.0, 1.0}),
+        .members = {10},
+    };
+    const auto present_beacon_possibilities = std::vector<std::unordered_set<int>>{
+        {10},
+        {},
+    };
 
     // Action
     const auto log_marginals = conditioned.log_marginals({10, 20});
 
     // Verification
-    EXPECT_TRUE(log_marginals.empty());
+    ASSERT_EQ(log_marginals.size(), present_beacon_possibilities.size());
+    constexpr double TOL = 1e-6;
+    for (const auto &present_beacons : present_beacon_possibilities) {
+        const auto iter =
+            std::find_if(log_marginals.begin(), log_marginals.end(), [&](const auto &marginal) {
+                const std::unordered_set<int> marginal_set(marginal.present_beacons.begin(),
+                                                           marginal.present_beacons.end());
+                return marginal_set == present_beacons;
+            });
+        ASSERT_NE(iter, log_marginals.end());
+        EXPECT_NEAR(iter->log_marginal, equivalent.log_prob(iter->present_beacons), TOL);
+    }
 }
 
 TEST(ConditionedPotentialTest, sampled_from_conditional_distribution) {

@@ -25,17 +25,8 @@ std::vector<LogMarginal> compute_log_marginals(const ConditionedPotential &pot,
                                                const std::vector<int> &remaining) {
     // Check that the remaining members are consistent with the conditioned members
     std::vector<int> all_remaining = remaining;
-    for (const auto &[beacon_id, is_present] : pot.conditioned_members) {
-        if (is_present) {
-            all_remaining.push_back(beacon_id);
-        } else {
-            const auto iter = std::find(remaining.begin(), remaining.end(), beacon_id);
-            if (iter != remaining.end()) {
-                // We found a beacon id present in remaining that should be missing
-                // according to the conditioning. Return an empty set of marginals
-                return {};
-            }
-        }
+    for (const auto &[beacon_id, _] : pot.conditioned_members) {
+        all_remaining.push_back(beacon_id);
     }
 
     // Generate the log marginals from the underlying distribution and filter out the
