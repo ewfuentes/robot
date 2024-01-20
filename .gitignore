@@ -17,5 +17,3 @@ bazel-*
 # python files
 __pycache__
 .ipynb_checkpoints
-
-.virtual_documents/
