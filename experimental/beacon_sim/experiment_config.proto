@@ -29,7 +29,7 @@ message LandmarkBRMPlanner {
 }
 
 message ExpectedBRMPlanner {
-  int32 num_environment_samples = 1;
+  int32 num_configuration_samples = 1;
 }
 
 message OptimisticBRMPlanner {

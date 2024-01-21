@@ -21,6 +21,7 @@
 #include "common/liegroups/se2.hh"
 #include "common/math/combinations.hh"
 #include "common/math/multivariate_normal_cdf.hh"
+#include "common/math/logsumexp.hh"
 #include "common/math/redheffer_star.hh"
 #include "common/time/robot_time.hh"
 #include "experimental/beacon_sim/correlated_beacons.hh"
@@ -436,10 +437,12 @@ std::optional<ExpectedBeliefPlanResult> compute_expected_belief_road_map_plan(
     // Sample a number of worlds and run the BRM on it
     std::vector<std::vector<int>> world_samples;
     std::vector<std::vector<int>> plans;
+    std::vector<double> log_probs;
     world_samples.reserve(options.num_configuration_samples);
     for (int i = 0; i < static_cast<int>(options.num_configuration_samples); i++) {
         world_samples.emplace_back(beacon_potential.sample(make_in_out(gen)));
-        const auto &sample = world_samples.at(i);
+        const auto &sample = world_samples.back();
+        log_probs.push_back(beacon_potential.log_prob(sample));
 
         // Create a potential with only this assignment
         std::unordered_map<int, bool> assignment;
@@ -474,6 +477,7 @@ std::optional<ExpectedBeliefPlanResult> compute_expected_belief_road_map_plan(
 
     return {{
         .nodes = plans.at(min_idx),
+        .log_probability_mass_tracked = math::logsumexp(log_probs),
     }};
 }
 

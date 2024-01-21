@@ -23,6 +23,16 @@ double compute_log_prob(const ConditionedPotential &pot,
 
 std::vector<LogMarginal> compute_log_marginals(const ConditionedPotential &pot,
                                                const std::vector<int> &remaining) {
+    if (pot.conditioned_members.size() == pot.underlying_pot.members().size()) {
+        std::vector<int> present_beacons;
+        for (const auto &[beacon_id, is_present] : pot.conditioned_members) {
+            if (is_present) {
+                present_beacons.push_back(beacon_id);
+            }
+        }
+        return {{.present_beacons = std::move(present_beacons), .log_marginal = 0.0}};
+    }
+
     // Check that the remaining members are consistent with the conditioned members
     std::vector<int> all_remaining = remaining;
     for (const auto &[beacon_id, _] : pot.conditioned_members) {
