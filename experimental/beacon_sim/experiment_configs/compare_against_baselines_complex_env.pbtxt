@@ -1,0 +1,110 @@
+name: "evaluate_approximation_quality_complex_env"
+
+map_config_path: "data/env_3/world_map_config.pb"
+ekf_state_path: "data/env_3/mapped_landmarks.pb"
+road_map_path: "data/env_3/road_map.pb"
+evaluation_base_seed: 987654321
+num_eval_trials: 1000
+start_goal_seed: 12345
+start_goal_connection_radius_m: 20.0
+num_trials: 200
+# plan_timeout_s: 30.0
+max_sensor_range_m: 5.0
+
+# planner_configs: {
+#   name: "Optimistic BRM"
+#   optimistic_brm_config: {}
+# }
+# 
+# 
+planner_configs: {
+  name: "Landmark BRM 1 component"
+  landmark_brm_config: {
+    max_num_components: 1
+  }
+}
+
+# planner_configs: {
+#   name: "Expected BRM 1 sample"
+#   expected_brm_config: {
+#     num_configuration_samples: 1
+#   }
+# }
+# 
+# planner_configs: {
+#   name: "Landmark BRM 10 component"
+#   landmark_brm_config: {
+#     max_num_components: 10
+#   }
+# }
+# 
+# planner_configs: {
+#   name: "Expected BRM 10 sample"
+#   expected_brm_config: {
+#     num_configuration_samples: 10
+#   }
+# }
+# 
+# planner_configs: {
+#   name: "Landmark BRM 100 component"
+#   landmark_brm_config: {
+#     max_num_components: 100
+#   }
+# }
+# 
+# planner_configs: {
+#   name: "Expected BRM 100 sample"
+#   expected_brm_config: {
+#     num_configuration_samples: 100
+#   }
+# }
+# 
+# planner_configs: {
+#   name: "Landmark BRM 1000 component"
+#   landmark_brm_config: {
+#     max_num_components: 1000
+#   }
+# }
+# 
+# planner_configs: {
+#   name: "Expected BRM 1000 sample"
+#   expected_brm_config: {
+#     num_configuration_samples: 1000
+#   }
+# }
+
+# planner_configs: {
+#   name: "Landmark BRM 10000 component"
+#   landmark_brm_config: {
+#     max_num_components: 10000
+#   }
+# }
+# 
+# planner_configs: {
+#   name: "Expected BRM 10000 sample"
+#   expected_brm_config: {
+#     num_configuration_samples: 10000
+#   }
+# }
+
+# planner_configs: {
+#   name: "Landmark BRM 100000 component"
+#   landmark_brm_config: {
+#     max_num_components: 10000
+#   }
+# }
+# 
+# planner_configs: {
+#   name: "Expected BRM 100000 sample"
+#   expected_brm_config: {
+#     num_configuration_samples: 10000
+#   }
+# }
+
+
+# Running the full distribution takes too much RAM
+# planner_configs: {
+#   name: "Full Distribution"
+#   landmark_brm_config: {}
+# }
+
