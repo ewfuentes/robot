@@ -10,6 +10,7 @@
 #include <numeric>
 #include <random>
 #include <ranges>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -95,7 +96,7 @@ std::vector<std::vector<int>> find_paths(const planning::RoadMap &road_map,
             return planning::ShouldQueueResult::QUEUE;
         };
 
-    const planning::GoalCheckFunc<int> goal_check_func = [](const planning::Node<int> &) {
+    const planning::GoalCheckFunc<int> goal_check_func = [](const planning::Node<int> &, const std::vector<planning::Node<int>> &) {
         return false;
     };
 
@@ -435,9 +436,14 @@ std::optional<ExpectedBeliefPlanResult> compute_expected_belief_road_map_plan(
     std::vector<std::vector<int>> world_samples;
     std::vector<std::vector<int>> plans;
     world_samples.reserve(options.num_configuration_samples);
-    for (int i = 0; i < options.num_configuration_samples; i++) {
+    // world_samples = {
+    //     {}, {123},
+    // };
+    std::array<int, 2> counts = {};
+    for (int i = 0; i < static_cast<int>(options.num_configuration_samples); i++) {
         world_samples.emplace_back(beacon_potential.sample(make_in_out(gen)));
-        const auto &sample = world_samples.back();
+        const auto &sample = world_samples.at(i);
+        counts.at(sample.size())++;
 
         // Create a potential with only this assignment
         std::unordered_map<int, bool> assignment;
@@ -453,8 +459,17 @@ std::optional<ExpectedBeliefPlanResult> compute_expected_belief_road_map_plan(
             compute_belief_road_map_plan(road_map, ekf, conditioned, options.brm_options);
         if (maybe_plan.has_value()) {
             plans.push_back(maybe_plan->nodes);
+            plan_cov_det.push_back(maybe_plan->beliefs.back().cov_in_robot.determinant());
         }
+        std::cout << "*****************************************************" << std::endl;
+        std::cout << "[" << (world_samples[i].size() ? std::to_string(world_samples[i][0]) : "") << "]";
+        std::cout << "{";
+        for (const auto id : plans.at(i)) {
+            std::cout << id << ", ";
+        }
+        std::cout << " det: " << maybe_plan->beliefs.back().cov_in_robot.determinant() << std::endl;
     }
+    std::cout << "counts: " << counts.at(0) << " " << counts.at(1) << std::endl;
 
     // Evaluate the generated plans on each of the samples worlds
     std::vector<double> expected_cov_dets(plans.size(), 0.0);
@@ -463,8 +478,18 @@ std::optional<ExpectedBeliefPlanResult> compute_expected_belief_road_map_plan(
             plans, ekf, road_map, options.brm_options.max_sensor_range_m, sample);
 
         for (int i = 0; i < static_cast<int>(plans.size()); i++) {
-            expected_cov_dets[i] += covs.at(i).determinant() / world_samples.size();
+            expected_cov_dets.at(i) += covs.at(i).determinant() / world_samples.size();
         }
+    }
+
+    for (int i = 0; i < static_cast<int>(plans.size()); i++) {
+        std::cout << "[" << (world_samples[i].size() ? std::to_string(world_samples[i][0]) : "") << "]";
+        std::cout << "{";
+        for (const auto id : plans.at(i)) {
+            std::cout << id << ", ";
+        }
+        std::cout << "} true det: " << plan_cov_det.at(i) << " expected det: " << expected_cov_dets.at(i) << std::endl;
+
     }
 
     const auto min_iter = std::min_element(expected_cov_dets.begin(), expected_cov_dets.end());

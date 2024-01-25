@@ -685,6 +685,7 @@ cc_test(
 cc_library(
   name = "robot_belief",
   hdrs = ["robot_belief.hh"],
+  srcs = ["robot_belief.cc"],
   deps = [
     "//common/liegroups:se2",
     "@eigen",

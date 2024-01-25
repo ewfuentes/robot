@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <iostream>
 #include <numeric>
 #include <optional>
 #include <unordered_map>
@@ -91,7 +92,27 @@ std::optional<BRMPlan<Belief>> plan(
         };
 
     const GoalCheckFunc<SearchState> goal_check_func =
-        [&should_terminate_callback](const Node<SearchState> &) {
+        [&should_terminate_callback]([[maybe_unused]] const Node<SearchState> &node, const std::vector<Node<SearchState>> &nodes) {
+
+            std::cout << "-------------------" << std::endl;
+            std::cout << "Popping Path:";
+            std::optional<Node<SearchState>> curr = node;
+            while (curr.has_value()) {
+                std::cout << " " << curr->state.node_idx;
+                curr = curr->maybe_parent_idx.has_value() ?
+                    std::make_optional(nodes.at(curr->maybe_parent_idx.value())) : 
+                    std::nullopt;
+            }
+            std::cout << std::endl;
+
+            if (node.state.node_idx == RoadMap::GOAL_IDX) {
+                std::cout << "at goal: " << std::endl;
+                std::cout << node.state.belief << std::endl;
+            } else {
+                std::cout << "popped node at: " << node.state.node_idx << std::endl;
+                std::cout << node.state.belief << std::endl;
+            }
+            std::cout << "-------------------" << std::endl;
             return should_terminate_callback();
         };
 
@@ -172,22 +193,34 @@ std::optional<BRMPlan<Belief>> plan(
                     }
                     path_node_idx = path_node.maybe_parent_idx;
                 }
+                return ShouldQueueResult::QUEUE;
+                (void) min_uncertainty_from_node;
+                (void) uncertainty_size;
 
-                // If the node has previously been visited with a lower uncertainty, don't queue
-                // this node
-                const auto maybe_prev_uncertainty =
-                    min_uncertainty_from_node.find(successor.state.node_idx);
-                const double successor_uncertainty_size = uncertainty_size(successor.state.belief);
-                const bool should_queue =
-                    (maybe_prev_uncertainty == min_uncertainty_from_node.end()) ||
-                    successor_uncertainty_size < maybe_prev_uncertainty->second;
+                // // If the node has previously been visited with a lower uncertainty, don't queue
+                // // this node
+                // const auto maybe_prev_uncertainty =
+                //     min_uncertainty_from_node.find(successor.state.node_idx);
+                // const double successor_uncertainty_size = uncertainty_size(successor.state.belief);
+                // const bool should_queue =
+                //     (maybe_prev_uncertainty == min_uncertainty_from_node.end()) ||
+                //     successor_uncertainty_size < maybe_prev_uncertainty->second;
 
-                if (should_queue) {
-                    min_uncertainty_from_node[successor.state.node_idx] =
-                        successor_uncertainty_size;
-                    return ShouldQueueResult::QUEUE_AND_CLEAR_MATCHING_IN_OPEN;
-                }
-                return ShouldQueueResult::SKIP;
+                // if (should_queue) {
+                //     std::cout << "Queueing at node: " << successor.state.node_idx
+                //               << " with uncertainty: " << successor_uncertainty_size << std::endl;
+                //     min_uncertainty_from_node[successor.state.node_idx] =
+                //         successor_uncertainty_size;
+                //     return ShouldQueueResult::QUEUE_AND_CLEAR_MATCHING_IN_OPEN;
+                // } else {
+                //     std::cout << "========================================" << std::endl;
+                //     std::cout << "Failed Should Queue Check at node: " << successor.state.node_idx
+                //               << std::endl;
+                //     std::cout << "Prev uncertainty: " << maybe_prev_uncertainty->second
+                //               << " trial uncertainty: " << successor_uncertainty_size << std::endl;
+                //     std::cout << "========================================" << std::endl;
+                // }
+                // return ShouldQueueResult::SKIP;
             };
         }
     }();

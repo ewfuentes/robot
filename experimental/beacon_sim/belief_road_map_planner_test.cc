@@ -1,6 +1,7 @@
 
 #include "experimental/beacon_sim/belief_road_map_planner.hh"
 
+#include <limits>
 #include <optional>
 #include <stack>
 
@@ -461,6 +462,106 @@ TEST(ExpectedBeliefRoadMapPlannerTest, diamond_road_map_correlated_beacons) {
         if (expected_path.at(i).has_value()) {
             EXPECT_EQ(plan.value().nodes.at(i), expected_path.at(i).value());
         }
+    }
+}
+
+TEST(BeliefRoadmapPlannerStressTest, expected_brm_test) {
+    // Setup
+    constexpr double p_no_beacon = 1e-4;
+    const EkfSlamConfig ekf_config{
+        .max_num_beacons = 1,
+        .initial_beacon_uncertainty_m = 100.0,
+        .along_track_process_noise_m_per_rt_meter = 70000,
+        .cross_track_process_noise_m_per_rt_meter = 1e-12,
+        .pos_process_noise_m_per_rt_s = 0.0,
+        .heading_process_noise_rad_per_rt_meter = 1e-12,
+        .heading_process_noise_rad_per_rt_s = 0.0,
+        .beacon_pos_process_noise_m_per_rt_s = 1e-6,
+        .range_measurement_noise_m = 1e-3,
+        .bearing_measurement_noise_rad = 1e-3,
+        .on_map_load_position_uncertainty_m = 1000.0,
+        .on_map_load_heading_uncertainty_rad = 1e-6,
+    };
+    const auto &[road_map, ekf, beacon_potential] =
+        create_stress_test_environment(ekf_config, p_no_beacon);
+
+    const ExpectedBeliefRoadMapOptions options = {
+        .num_configuration_samples = 1000,
+        .seed = 12304,
+        // .seed = 12303,
+        .brm_options =
+            {
+                .max_sensor_range_m = 3.0,
+                .uncertainty_tolerance = std::nullopt,
+                .max_num_edge_transforms = std::numeric_limits<int>::max(),
+                .timeout = std::nullopt,
+            },
+    };
+
+    // Action
+    const auto maybe_plan =
+        compute_expected_belief_road_map_plan(road_map, ekf, beacon_potential, options);
+
+    // Verification
+    ASSERT_TRUE(maybe_plan.has_value());
+
+    std::cout << "Plan: [";
+    for (const auto id : maybe_plan->nodes) {
+        std::cout << id << ", ";
+    }
+    std::cout << "]" << std::endl;
+}
+
+TEST(BeliefRoadmapPlannerStressTest, landmark_brm_test) {
+    // Setup
+    constexpr double p_no_beacon = 1e-4;
+    const EkfSlamConfig ekf_config{
+        .max_num_beacons = 1,
+        .initial_beacon_uncertainty_m = 100.0,
+        .along_track_process_noise_m_per_rt_meter = 70000,
+        .cross_track_process_noise_m_per_rt_meter = 1e-12,
+        .pos_process_noise_m_per_rt_s = 0.0,
+        .heading_process_noise_rad_per_rt_meter = 1e-12,
+        .heading_process_noise_rad_per_rt_s = 0.0,
+        .beacon_pos_process_noise_m_per_rt_s = 1e-6,
+        .range_measurement_noise_m = 1e-3,
+        .bearing_measurement_noise_rad = 1e-3,
+        .on_map_load_position_uncertainty_m = 1000.0,
+        .on_map_load_heading_uncertainty_rad = 1e-6,
+    };
+
+    const auto &[road_map, ekf, beacon_potential] =
+        create_stress_test_environment(ekf_config, p_no_beacon);
+
+    const LandmarkBeliefRoadMapOptions options = {
+        .max_sensor_range_m = 3.0,
+        .sampled_belief_options = std::nullopt,
+        .timeout = std::nullopt,
+    };
+
+    // Action
+    const auto maybe_plan =
+        compute_landmark_belief_road_map_plan(road_map, ekf, beacon_potential, options);
+
+    // Verification
+    ASSERT_TRUE(maybe_plan.has_value());
+
+    std::cout << "Plan: [";
+    for (const auto id : maybe_plan->nodes) {
+        std::cout << id << ", ";
+    }
+    std::cout << "]" << std::endl;
+
+    std::cout << "initial components: " << std::endl;
+    for (const auto &[key, comp] : maybe_plan->beliefs.front().belief_from_config) {
+        std::cout << key << " prob: " << std::exp(comp.log_config_prob)
+                  << " det: " << comp.cov_in_robot.determinant() << std::endl;
+    }
+
+    std::cout << "final components:" << std::endl;
+    for (const auto &[key, comp] : maybe_plan->beliefs.back().belief_from_config) {
+        std::cout << key << " prob: " << std::exp(comp.log_config_prob)
+                  << " det: " << comp.cov_in_robot.determinant() << std::endl;
     }
 }
 

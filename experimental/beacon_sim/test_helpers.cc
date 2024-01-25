@@ -3,6 +3,7 @@
 
 #include "experimental/beacon_sim/mapped_landmarks.hh"
 #include "experimental/beacon_sim/precision_matrix_potential.hh"
+#include "planning/road_map.hh"
 
 namespace robot::experimental::beacon_sim {
 
@@ -204,4 +205,38 @@ std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_diamond_environme
     return {road_map, ekf_slam, beacon_potential};
 }
 
+std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_stress_test_environment(
+    const EkfSlamConfig &ekf_config, const double p_no_beacon) {
+    // Create RoadMap
+    //
+    // -4,0              S 0,0
+    //    b  1───────────0──────────G
+    //       -3,0        0,0        3,0
+    const planning::RoadMap road_map(
+        std::vector<Eigen::Vector2d>{{0, 0}, {-3, 0}}, (Eigen::Matrix2d() << 0, 1, 1, 0).finished(),
+        planning::StartGoalPair{.start = {0, 0}, .goal = {3, 0}, .connection_radius_m = 3.1});
+
+    // Create EkfSlam
+    constexpr int BEACON_ID = 123;
+    EkfSlam ekf_slam(ekf_config, time::RobotTimestamp());
+    const MappedLandmarks mapped_landmarks = {
+        .beacon_ids = {BEACON_ID},
+        .beacon_in_local = {{-4, 0}},
+        .cov_in_local = Eigen::Matrix2d::Identity() * 1e-12,
+    };
+    const bool LOAD_OFF_DIAGONALS = true;
+    ekf_slam.load_map(mapped_landmarks, LOAD_OFF_DIAGONALS);
+    const liegroups::SE2 world_from_robot(-std::numbers::pi / 2.0, {0, 0});
+    ekf_slam.estimate().local_from_robot(world_from_robot);
+
+    // Create BeaconPotential
+    const double log_norm = -std::log(p_no_beacon);
+    const double param = std::log(1 - p_no_beacon) + log_norm;
+    const auto beacon_potential =
+        PrecisionMatrixPotential{.precision = Eigen::Matrix<double, 1, 1>{param},
+                                 .log_normalizer = log_norm,
+                                 .members = {BEACON_ID}};
+
+    return std::make_tuple(road_map, ekf_slam, beacon_potential);
+}
 }  // namespace robot::experimental::beacon_sim
