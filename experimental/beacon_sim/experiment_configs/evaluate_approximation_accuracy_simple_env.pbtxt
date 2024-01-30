@@ -16,6 +16,9 @@ planner_configs: {
   name: "1 components"
   landmark_brm_config: {
     max_num_components: 1
+    uncertainty_size: {
+      expected_determinant: {}
+    }
   }
 }
 
@@ -23,6 +26,9 @@ planner_configs: {
   name: "10 components"
   landmark_brm_config: {
     max_num_components: 10
+    uncertainty_size: {
+      expected_determinant: {}
+    }
   }
 }
 
@@ -30,6 +36,9 @@ planner_configs: {
   name: "100 components"
   landmark_brm_config: {
     max_num_components: 100
+    uncertainty_size: {
+      expected_determinant: {}
+    }
   }
 }
 
@@ -37,6 +46,9 @@ planner_configs: {
   name: "1000 components"
   landmark_brm_config: {
     max_num_components: 1000
+    uncertainty_size: {
+      expected_determinant: {}
+    }
   }
 }
 
@@ -44,6 +56,9 @@ planner_configs: {
   name: "10000 components"
   landmark_brm_config: {
     max_num_components: 10000
+    uncertainty_size: {
+      expected_determinant: {}
+    }
   }
 }
 
@@ -51,11 +66,18 @@ planner_configs: {
   name: "100000 components"
   landmark_brm_config: {
     max_num_components: 100000
+    uncertainty_size: {
+      expected_determinant: {}
+    }
   }
 }
 
 planner_configs: {
   name: "Full Distribution"
-  landmark_brm_config: {}
+  landmark_brm_config: {
+    uncertainty_size: {
+      expected_determinant: {}
+    }
+  }
 }
 
