@@ -3,8 +3,29 @@ syntax = "proto3";
 
 package robot.experimental.beacon_sim.proto;
 
+message ExpectedDeterminant {}
+
+message ValueAtRiskDeterminant {
+  double percentile = 1;
+}
+
+message ProbMassInRegion {
+  double position_x_half_width_m = 1;
+  double position_y_half_width_m = 2;
+  double heading_half_width_rad = 3;
+}
+
+message UncertaintySize {
+  oneof uncertainty_size_oneof {
+    ExpectedDeterminant expected_determinant = 1;
+    ValueAtRiskDeterminant value_at_risk_determinant = 2;
+    ProbMassInRegion prob_mass_in_region = 3;
+  }
+}
+
 message LandmarkBRMPlanner {
   optional int32 max_num_components = 1;
+  UncertaintySize uncertainty_size = 2;
 }
 
 message ExpectedBRMPlanner {

@@ -107,10 +107,39 @@ PlannerResult run_planner(const planning::RoadMap &road_map, const EkfSlam &ekf,
                           const proto::LandmarkBRMPlanner &config, const double max_sensor_range_m,
                           const std::optional<time::RobotTimestamp::duration> &timeout) {
     const time::RobotTimestamp start_time = time::current_robot_time();
+
+    const auto uncertainty_options = [&]() -> LandmarkBeliefRoadMapOptions::UncertaintySizeOptions {
+        switch (config.uncertainty_size().uncertainty_size_oneof_case()) {
+            case proto::UncertaintySize::kExpectedDeterminant: {
+                return LandmarkBeliefRoadMapOptions::ExpectedDeterminant{};
+            }
+            case proto::UncertaintySize::kValueAtRiskDeterminant: {
+                const auto &us_config = config.uncertainty_size().value_at_risk_determinant();
+                return LandmarkBeliefRoadMapOptions::ValueAtRiskDeterminant{
+                    .percentile = us_config.percentile(),
+                };
+            }
+            case proto::UncertaintySize::kProbMassInRegion: {
+                const auto &us_config = config.uncertainty_size().prob_mass_in_region();
+                return LandmarkBeliefRoadMapOptions::ProbMassInRegion{
+                    .position_x_half_width_m = us_config.position_x_half_width_m(),
+                    .position_y_half_width_m = us_config.position_y_half_width_m(),
+                    .heading_half_width_rad = us_config.heading_half_width_rad(),
+                };
+            }
+            case proto::UncertaintySize::UNCERTAINTY_SIZE_ONEOF_NOT_SET: {
+                CHECK(false, "uncertainty size not set");
+                return LandmarkBeliefRoadMapOptions::ExpectedDeterminant{};
+            }
+        }
+        CHECK(false, "uncertainty size not set");
+        return LandmarkBeliefRoadMapOptions::ExpectedDeterminant{};
+    }();
+
     const auto plan = compute_landmark_belief_road_map_plan(
         road_map, ekf, beacon_potential,
         {.max_sensor_range_m = max_sensor_range_m,
-         .uncertainty_size_options = LandmarkBeliefRoadMapOptions::ExpectedDeterminant{},
+         .uncertainty_size_options = uncertainty_options,
          .sampled_belief_options =
              config.has_max_num_components()
                  ? std::make_optional(LandmarkBeliefRoadMapOptions::SampledBeliefOptions{
