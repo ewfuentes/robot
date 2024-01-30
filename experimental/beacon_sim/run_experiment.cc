@@ -115,7 +115,7 @@ PlannerResult run_planner(const planning::RoadMap &road_map, const EkfSlam &ekf,
             }
             case proto::UncertaintySize::kValueAtRiskDeterminant: {
                 const auto &us_config = config.uncertainty_size().value_at_risk_determinant();
-                return LandmarkBeliefRoadMapOptions::ValueAtRiskDeterminant {
+                return LandmarkBeliefRoadMapOptions::ValueAtRiskDeterminant{
                     .percentile = us_config.percentile(),
                 };
             }
