@@ -182,28 +182,30 @@ double uncertainty_size(const RobotBelief &belief) {
     return belief.cov_in_robot.determinant();
 }
 
-double uncertainty_size(const LandmarkRobotBelief &belief) {
-    std::vector<LandmarkRobotBelief::LandmarkConditionedRobotBelief> elements;
-    elements.reserve(belief.belief_from_config.size());
-    for (const auto &[_, value] : belief.belief_from_config) {
-        elements.push_back(value);
-    }
-    std::sort(elements.begin(), elements.end(), [](const auto &a, const auto &b) {
-        return a.cov_in_robot.determinant() < b.cov_in_robot.determinant();
-    });
-
-    constexpr double EVALUATION_THRESHOLD = 0.95;
-
-    double accumulated_prob = 0.0;
-    for (const auto &elem : elements) {
-        accumulated_prob += std::exp(elem.log_config_prob);
-        if (accumulated_prob > EVALUATION_THRESHOLD) {
-            return elem.cov_in_robot.determinant();
+auto make_uncertainty_size() {
+    return [](const LandmarkRobotBelief &belief) -> double {
+        std::vector<LandmarkRobotBelief::LandmarkConditionedRobotBelief> elements;
+        elements.reserve(belief.belief_from_config.size());
+        for (const auto &[_, value] : belief.belief_from_config) {
+            elements.push_back(value);
         }
-    }
-    CHECK(false, "Landmark Belief has insufficient probability mass to get to threshold",
-          accumulated_prob);
-    return elements.back().cov_in_robot.determinant();
+        std::sort(elements.begin(), elements.end(), [](const auto &a, const auto &b) {
+            return a.cov_in_robot.determinant() < b.cov_in_robot.determinant();
+        });
+
+        constexpr double EVALUATION_THRESHOLD = 0.95;
+
+        double accumulated_prob = 0.0;
+        for (const auto &elem : elements) {
+            accumulated_prob += std::exp(elem.log_config_prob);
+            if (accumulated_prob > EVALUATION_THRESHOLD) {
+                return elem.cov_in_robot.determinant();
+            }
+        }
+        CHECK(false, "Landmark Belief has insufficient probability mass to get to threshold",
+              accumulated_prob);
+        return elements.back().cov_in_robot.determinant();
+    };
 }
 
 bool operator==(const RobotBelief &a, const RobotBelief &b) {
@@ -324,7 +326,7 @@ std::optional<planning::BRMPlan<LandmarkRobotBelief>> compute_landmark_belief_ro
 
     return planning::plan(
         road_map, initial_belief, belief_updater,
-        [](const LandmarkRobotBelief &b) { return uncertainty_size(b); },
+        make_uncertainty_size(),
         planning::NoBacktrackingOptions{}, should_terminate_func);
 }
 

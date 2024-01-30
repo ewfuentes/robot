@@ -40,10 +40,11 @@ struct BRMSearchState {
     }
 };
 
-template <typename Belief>
+template <typename Belief, typename UncertaintySize>
 std::vector<Successor<BRMSearchState<Belief>>> successors_for_state(
     const BRMSearchState<Belief> &state, const RoadMap &road_map,
-    const BeliefUpdater<Belief> &belief_updater) {
+    const BeliefUpdater<Belief> &belief_updater,
+    const UncertaintySize &uncertainty_size) {
     std::vector<Successor<BRMSearchState<Belief>>> out;
     for (const auto &[other_node_id, other_node_in_local] : road_map.neighbors(state.node_idx)) {
         const Belief new_belief = belief_updater(state.belief, state.node_idx, other_node_id);
@@ -86,8 +87,8 @@ std::optional<BRMPlan<Belief>> plan(
     using SearchState = detail::BRMSearchState<Belief>;
     // Find nearest node to start and end states
     const SuccessorFunc<SearchState> successors_func = [&belief_updater,
-                                                        &road_map](const SearchState &state) {
-        return detail::successors_for_state(state, road_map, belief_updater);
+                                                        &road_map, &uncertainty_size](const SearchState &state) {
+        return detail::successors_for_state(state, road_map, belief_updater, uncertainty_size);
     };
 
     const GoalCheckFunc<SearchState> goal_check_func =
