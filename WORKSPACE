@@ -339,7 +339,8 @@ http_archive(
     strip_prefix="approxcdf-ec5486c083ad1ca93834a17fd1347657a3181add",
     build_file="//third_party:BUILD.approxcdf",
     sha256 = "bef56ff1eb3e4e2ae2f91fe21a4317a4d7744e7f1930170e2dacc9619438a52d",
-
+    patch_args = ["-p1"],
+    patches = ["//third_party:approxcdf_0001-add-missing-curly.patch"]
 )
 
 

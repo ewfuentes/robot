@@ -104,3 +104,23 @@ cc_library(
   hdrs = ["logsumexp.hh"],
   visibility = ["//visibility:public"]
 )
+
+cc_library(
+  name = "multivariate_normal_cdf",
+  hdrs = ["multivariate_normal_cdf.hh"],
+  srcs = ["multivariate_normal_cdf.cc"],
+  deps = [
+    "@approxcdf",
+    "@eigen",
+    "//common:check",
+  ]
+)
+
+cc_test(
+  name = "multivariate_normal_cdf_test",
+  srcs = ["multivariate_normal_cdf_test.cc"],
+  deps = [
+    ":multivariate_normal_cdf",
+    "@com_google_googletest//:gtest_main",
+  ]
+)

@@ -1,0 +1,13 @@
+diff --git a/include/approxcdf.h b/include/approxcdf.h
+index e338afe..a09b46c 100644
+--- a/include/approxcdf.h
++++ b/include/approxcdf.h
+@@ -5,7 +5,7 @@
+ #endif
+ 
+ #ifdef __cplusplus
+-extern "C"
++extern "C" {
+ #endif
+ 
+ /* Parameters

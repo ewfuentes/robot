@@ -24,6 +24,7 @@ cc_library(
     "src/cblas.h",
   ],
   strip_include_prefix="include/",
+  include_prefix="approxcdf",
   linkopts=["-lblas", "-llapack"],
   deps = [],
 )
