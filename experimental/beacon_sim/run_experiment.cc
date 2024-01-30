@@ -132,6 +132,8 @@ PlannerResult run_planner(const planning::RoadMap &road_map, const EkfSlam &ekf,
                 return LandmarkBeliefRoadMapOptions::ExpectedDeterminant{};
             }
         }
+        CHECK(false, "uncertainty size not set");
+        return LandmarkBeliefRoadMapOptions::ExpectedDeterminant{};
     }();
 
     const auto plan = compute_landmark_belief_road_map_plan(
