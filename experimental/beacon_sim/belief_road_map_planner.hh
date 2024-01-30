@@ -38,7 +38,25 @@ struct LandmarkBeliefRoadMapOptions {
         int max_num_components;
         int seed;
     };
+
+    // Evaluate using expected determinant
+    struct ExpectedDeterminant {};
+    // Use the determinant at the given percentile to evaluate uncertainty
+    struct ValueAtRiskDeterminant {
+        double percentile;
+    };
+    // Compute the probability mass inside of the region as a measure of uncertainty
+    struct ProbMassInRegion {
+        double position_x_half_width_m;
+        double position_y_half_width_m;
+        double heading_half_width_rad;
+    };
+    using UncertaintySizeOptions =
+        std::variant<ExpectedDeterminant, ValueAtRiskDeterminant, ProbMassInRegion>;
+
     double max_sensor_range_m;
+
+    UncertaintySizeOptions uncertainty_size_options;
     std::optional<SampledBeliefOptions> sampled_belief_options;
     std::optional<time::RobotTimestamp::duration> timeout;
 };

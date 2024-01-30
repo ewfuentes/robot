@@ -110,6 +110,7 @@ PlannerResult run_planner(const planning::RoadMap &road_map, const EkfSlam &ekf,
     const auto plan = compute_landmark_belief_road_map_plan(
         road_map, ekf, beacon_potential,
         {.max_sensor_range_m = max_sensor_range_m,
+         .uncertainty_size_options = LandmarkBeliefRoadMapOptions::ExpectedDeterminant{},
          .sampled_belief_options =
              config.has_max_num_components()
                  ? std::make_optional(LandmarkBeliefRoadMapOptions::SampledBeliefOptions{
