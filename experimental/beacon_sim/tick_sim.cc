@@ -110,6 +110,8 @@ std::optional<planning::BRMPlan<LandmarkRobotBelief>> run_landmark_brm_planner(
     const ObservationConfig &obs_config) {
     const LandmarkBeliefRoadMapOptions options = {
         .max_sensor_range_m = obs_config.max_sensor_range_m.value(),
+        .uncertainty_size_options =
+            LandmarkBeliefRoadMapOptions::ValueAtRiskDeterminant{.percentile = 0.95},
         .sampled_belief_options = std::nullopt,
         .timeout = std::nullopt,
     };

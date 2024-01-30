@@ -259,6 +259,8 @@ TEST(LandmarkBeliefRoadMapPlannerTest, grid_road_map_low_prob_beacon) {
     const auto &[road_map, ekf_slam, potential] = create_grid_environment(ekf_config, P_BEACON);
     constexpr LandmarkBeliefRoadMapOptions OPTIONS = {
         .max_sensor_range_m = 3.0,
+        .uncertainty_size_options =
+            LandmarkBeliefRoadMapOptions::ValueAtRiskDeterminant{.percentile = 0.95},
         .sampled_belief_options = std::nullopt,
         .timeout = std::nullopt,
     };
@@ -300,6 +302,8 @@ TEST(LandmarkBeliefRoadMapPlannerTest, grid_road_map_high_prob_beacon) {
     const auto &[road_map, ekf_slam, potential] = create_grid_environment(ekf_config, P_BEACON);
     constexpr LandmarkBeliefRoadMapOptions OPTIONS = {
         .max_sensor_range_m = 3.0,
+        .uncertainty_size_options =
+            LandmarkBeliefRoadMapOptions::ValueAtRiskDeterminant{.percentile = 0.95},
         .sampled_belief_options = std::nullopt,
         .timeout = std::nullopt,
     };
@@ -343,6 +347,8 @@ TEST(LandmarkBeliefRoadMapPlannerTest, diamond_road_map_independent_beacons) {
         create_diamond_environment(ekf_config, P_LONE_BEACON, P_NO_STACK_BEACON, P_STACKED_BEACON);
     constexpr LandmarkBeliefRoadMapOptions OPTIONS = {
         .max_sensor_range_m = 3.0,
+        .uncertainty_size_options =
+            LandmarkBeliefRoadMapOptions::ValueAtRiskDeterminant{.percentile = 0.95},
         .sampled_belief_options = std::nullopt,
         .timeout = std::nullopt,
     };
@@ -386,6 +392,10 @@ TEST(LandmarkBeliefRoadMapPlannerTest, diamond_road_map_correlated_beacons) {
         create_diamond_environment(ekf_config, P_LONE_BEACON, P_NO_STACK_BEACON, P_STACKED_BEACON);
     constexpr LandmarkBeliefRoadMapOptions OPTIONS = {
         .max_sensor_range_m = 3.0,
+        .uncertainty_size_options =
+            LandmarkBeliefRoadMapOptions::ValueAtRiskDeterminant{
+                .percentile = 0.95,
+            },
         .sampled_belief_options = std::nullopt,
         .timeout = std::nullopt,
     };

@@ -13,11 +13,13 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <variant>
 
 #include "Eigen/Core"
 #include "common/check.hh"
 #include "common/liegroups/se2.hh"
 #include "common/math/combinations.hh"
+#include "common/math/multivariate_normal_cdf.hh"
 #include "common/math/redheffer_star.hh"
 #include "common/time/robot_time.hh"
 #include "experimental/beacon_sim/correlated_beacons.hh"
@@ -182,30 +184,125 @@ double uncertainty_size(const RobotBelief &belief) {
     return belief.cov_in_robot.determinant();
 }
 
-auto make_uncertainty_size() {
-    return [](const LandmarkRobotBelief &belief) -> double {
-        std::vector<LandmarkRobotBelief::LandmarkConditionedRobotBelief> elements;
-        elements.reserve(belief.belief_from_config.size());
-        for (const auto &[_, value] : belief.belief_from_config) {
-            elements.push_back(value);
-        }
-        std::sort(elements.begin(), elements.end(), [](const auto &a, const auto &b) {
-            return a.cov_in_robot.determinant() < b.cov_in_robot.determinant();
-        });
+std::function<double(const LandmarkRobotBelief &)> make_uncertainty_size(
+    const LandmarkBeliefRoadMapOptions::UncertaintySizeOptions &options) {
+    using ExpectedDeterminant = LandmarkBeliefRoadMapOptions::ExpectedDeterminant;
+    using ValueAtRiskDeterminant = LandmarkBeliefRoadMapOptions::ValueAtRiskDeterminant;
+    using ProbMassInRegion = LandmarkBeliefRoadMapOptions::ProbMassInRegion;
 
-        constexpr double EVALUATION_THRESHOLD = 0.95;
-
-        double accumulated_prob = 0.0;
-        for (const auto &elem : elements) {
-            accumulated_prob += std::exp(elem.log_config_prob);
-            if (accumulated_prob > EVALUATION_THRESHOLD) {
-                return elem.cov_in_robot.determinant();
+    if (std::holds_alternative<ValueAtRiskDeterminant>(options)) {
+        return [opt = std::get<ValueAtRiskDeterminant>(options)](
+                   const LandmarkRobotBelief &belief) -> double {
+            std::vector<LandmarkRobotBelief::LandmarkConditionedRobotBelief> elements;
+            elements.reserve(belief.belief_from_config.size());
+            for (const auto &[_, value] : belief.belief_from_config) {
+                elements.push_back(value);
             }
-        }
-        CHECK(false, "Landmark Belief has insufficient probability mass to get to threshold",
-              accumulated_prob);
-        return elements.back().cov_in_robot.determinant();
-    };
+            std::sort(elements.begin(), elements.end(), [](const auto &a, const auto &b) {
+                return a.cov_in_robot.determinant() < b.cov_in_robot.determinant();
+            });
+
+            double accumulated_prob = 0.0;
+            for (const auto &elem : elements) {
+                accumulated_prob += std::exp(elem.log_config_prob);
+                if (accumulated_prob > opt.percentile) {
+                    return elem.cov_in_robot.determinant();
+                }
+            }
+            CHECK(false, "Landmark Belief has insufficient probability mass to get to threshold",
+                  accumulated_prob);
+            return elements.back().cov_in_robot.determinant();
+        };
+    } else if (std::holds_alternative<ExpectedDeterminant>(options)) {
+        return [](const LandmarkRobotBelief &belief) -> double {
+            double expected_det = 0.0;
+            for (const auto &[key, component] : belief.belief_from_config) {
+                expected_det +=
+                    std::exp(component.log_config_prob) * component.cov_in_robot.determinant();
+            }
+            return expected_det;
+        };
+    } else if (std::holds_alternative<ProbMassInRegion>(options)) {
+        return [opt = std::get<ProbMassInRegion>(options)](
+                   const LandmarkRobotBelief &belief) -> double {
+            Eigen::Matrix3d equivalent_cov = Eigen::Matrix3d::Zero();
+
+            for (const auto &[_, component] : belief.belief_from_config) {
+                const double prob_squared = std::exp(2 * component.log_config_prob);
+                equivalent_cov += prob_squared * component.cov_in_robot;
+            }
+
+            const Eigen::Vector3d bounds =
+                Eigen::Vector3d{opt.position_x_half_width_m, opt.position_y_half_width_m,
+                                opt.heading_half_width_rad};
+
+            // clang-format off
+            // The quadrants are numbered in the usual way, but the negative Z direction
+            // adds +4 to the index. So the 0th octant is the space spanned by postive
+            // linear combinations of (+x, +y, +z) and the 4th octant is the space 
+            // spanned by (+x, +y, -z). Note that +Z is out of the screen.
+            //
+            //           +y
+            //           ▲
+            //           │
+            //      1/5  │   0/4
+            //           │
+            //           │
+            //   ◄───────0────────► +x
+            //           │ +z
+            //           │
+            //      2/6  │   3/7
+            //           │
+            //           ▼
+            //
+            // Imagine that we shift the origin such it is colocated with the point in the
+            // 6th octant (spanned by (-x, -y, -z)). Computing the probability of the region
+            // of interest requires computing the probability mass that exists in octant 0.
+            //
+            // However, we only have access to the CDF. Let P(x) be the value of the CDF when
+            // evaluated at the xth region point in a manner consistent with the octant 
+            // numbering. Then:
+            // P(0) contains octants 0, 1, 2, 3, 4, 5, 6, 7
+            // P(1) contains octants    1, 2,       5, 6
+            // P(2) contains octants       2,          6
+            // P(3) contains octants       2, 3,       6, 7
+            // P(4) contains octants             4, 5, 6, 7
+            // P(5) contains octants                5, 6
+            // P(6) contains octants                   6
+            // P(7) contains octants                   6, 7
+            //
+            // We want a linear combination of these values such that only 0 remains.
+            // This can be achieved by:
+            // P(0) - P(1) + P(2) - P(3) - P(4)  + P(5) - P(6) + P(7)
+            // 
+            // These are the corner points of a rectangular prism in octant order
+            const std::vector<Eigen::Vector3d> eval_pts = {
+                {bounds.x(), bounds.y(), bounds.z()},
+                {-bounds.x(), bounds.y(), bounds.z()},   
+                {-bounds.x(), -bounds.y(), bounds.z()},  
+                {bounds.x(), -bounds.y(), bounds.z()},
+                {bounds.x(), bounds.y(), -bounds.z()},
+                {-bounds.x(), bounds.y(), -bounds.z()}, 
+                {-bounds.x(), -bounds.y(), -bounds.z()},
+                {bounds.x(), -bounds.y(), -bounds.z()},
+            };
+            // clang-format on
+
+            std::vector<double> probs;
+            for (const auto &eval_pt : eval_pts) {
+                const auto result =
+                    math::multivariate_normal_cdf(Eigen::Vector3d::Zero(), equivalent_cov, eval_pt);
+                CHECK(result.has_value(), "Could not compute cdf at eval pt", eval_pt);
+                probs.push_back(result.value());
+            }
+
+            return probs.at(0) - probs.at(1) + probs.at(2) - probs.at(3) - probs.at(4) +
+                   probs.at(5) - probs.at(6) + probs.at(7);
+        };
+    }
+
+    CHECK(false, "Unknown Uncertainty Size Options", options);
+    return [](const auto &) { return 0.0; };
 }
 
 bool operator==(const RobotBelief &a, const RobotBelief &b) {
@@ -324,10 +421,9 @@ std::optional<planning::BRMPlan<LandmarkRobotBelief>> compute_landmark_belief_ro
         return should_bail;
     };
 
-    return planning::plan(
-        road_map, initial_belief, belief_updater,
-        make_uncertainty_size(),
-        planning::NoBacktrackingOptions{}, should_terminate_func);
+    return planning::plan(road_map, initial_belief, belief_updater,
+                          make_uncertainty_size(options.uncertainty_size_options),
+                          planning::NoBacktrackingOptions{}, should_terminate_func);
 }
 
 std::optional<ExpectedBeliefPlanResult> compute_expected_belief_road_map_plan(

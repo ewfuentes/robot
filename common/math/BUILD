@@ -109,6 +109,7 @@ cc_library(
   name = "multivariate_normal_cdf",
   hdrs = ["multivariate_normal_cdf.hh"],
   srcs = ["multivariate_normal_cdf.cc"],
+  visibility = ["//visibility:public"],
   deps = [
     "@approxcdf",
     "@eigen",

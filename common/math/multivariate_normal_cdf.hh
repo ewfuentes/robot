@@ -15,5 +15,5 @@ namespace robot::math {
 std::optional<double> multivariate_normal_cdf(const Eigen::VectorXd &mu,
                                               const Eigen::MatrixXd &sigma,
                                               const Eigen::VectorXd &upper_bound,
-                                              const bool return_log_p);
+                                              const bool return_log_p = false);
 }  // namespace robot::math
