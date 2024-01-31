@@ -10,6 +10,7 @@
 #include <numeric>
 #include <random>
 #include <ranges>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -225,79 +226,80 @@ std::function<double(const LandmarkRobotBelief &)> make_uncertainty_size(
     } else if (std::holds_alternative<ProbMassInRegion>(options)) {
         return [opt = std::get<ProbMassInRegion>(options)](
                    const LandmarkRobotBelief &belief) -> double {
-            Eigen::Matrix3d equivalent_cov = Eigen::Matrix3d::Zero();
-
-            for (const auto &[_, component] : belief.belief_from_config) {
-                const double prob_squared = std::exp(2 * component.log_config_prob);
-                equivalent_cov += prob_squared * component.cov_in_robot;
-            }
-
             const Eigen::Vector3d bounds =
                 Eigen::Vector3d{opt.position_x_half_width_m, opt.position_y_half_width_m,
                                 opt.heading_half_width_rad};
 
-            // clang-format off
-            // The quadrants are numbered in the usual way, but the negative Z direction
-            // adds +4 to the index. So the 0th octant is the space spanned by postive
-            // linear combinations of (+x, +y, +z) and the 4th octant is the space 
-            // spanned by (+x, +y, -z). Note that +Z is out of the screen.
-            //
-            //           +y
-            //           ▲
-            //           │
-            //      1/5  │   0/4
-            //           │
-            //           │
-            //   ◄───────0────────► +x
-            //           │ +z
-            //           │
-            //      2/6  │   3/7
-            //           │
-            //           ▼
-            //
-            // Imagine that we shift the origin such it is colocated with the point in the
-            // 6th octant (spanned by (-x, -y, -z)). Computing the probability of the region
-            // of interest requires computing the probability mass that exists in octant 0.
-            //
-            // However, we only have access to the CDF. Let P(x) be the value of the CDF when
-            // evaluated at the xth region point in a manner consistent with the octant 
-            // numbering. Then:
-            // P(0) contains octants 0, 1, 2, 3, 4, 5, 6, 7
-            // P(1) contains octants    1, 2,       5, 6
-            // P(2) contains octants       2,          6
-            // P(3) contains octants       2, 3,       6, 7
-            // P(4) contains octants             4, 5, 6, 7
-            // P(5) contains octants                5, 6
-            // P(6) contains octants                   6
-            // P(7) contains octants                   6, 7
-            //
-            // We want a linear combination of these values such that only 0 remains.
-            // This can be achieved by:
-            // P(0) - P(1) + P(2) - P(3) - P(4)  + P(5) - P(6) + P(7)
-            // 
-            // These are the corner points of a rectangular prism in octant order
-            const std::vector<Eigen::Vector3d> eval_pts = {
-                {bounds.x(), bounds.y(), bounds.z()},
-                {-bounds.x(), bounds.y(), bounds.z()},   
-                {-bounds.x(), -bounds.y(), bounds.z()},  
-                {bounds.x(), -bounds.y(), bounds.z()},
-                {bounds.x(), bounds.y(), -bounds.z()},
-                {-bounds.x(), bounds.y(), -bounds.z()}, 
-                {-bounds.x(), -bounds.y(), -bounds.z()},
-                {bounds.x(), -bounds.y(), -bounds.z()},
+            const auto compute_component_mass = [&bounds](const Eigen::Matrix3d &cov) {
+                // clang-format off
+                // The quadrants are numbered in the usual way, but the negative Z direction
+                // adds +4 to the index. So the 0th octant is the space spanned by postive
+                // linear combinations of (+x, +y, +z) and the 4th octant is the space 
+                // spanned by (+x, +y, -z). Note that +Z is out of the screen.
+                //
+                //           +y
+                //           ▲
+                //           │
+                //      1/5  │   0/4
+                //           │
+                //           │
+                //   ◄───────0────────► +x
+                //           │ +z
+                //           │
+                //      2/6  │   3/7
+                //           │
+                //           ▼
+                //
+                // Imagine that we shift the origin such it is colocated with the point in the
+                // 6th octant (spanned by (-x, -y, -z)). Computing the probability of the region
+                // of interest requires computing the probability mass that exists in octant 0.
+                //
+                // However, we only have access to the CDF. Let P(x) be the value of the CDF when
+                // evaluated at the xth region point in a manner consistent with the octant 
+                // numbering. Then:
+                // P(0) contains octants 0, 1, 2, 3, 4, 5, 6, 7
+                // P(1) contains octants    1, 2,       5, 6
+                // P(2) contains octants       2,          6
+                // P(3) contains octants       2, 3,       6, 7
+                // P(4) contains octants             4, 5, 6, 7
+                // P(5) contains octants                5, 6
+                // P(6) contains octants                   6
+                // P(7) contains octants                   6, 7
+                //
+                // We want a linear combination of these values such that only 0 remains.
+                // This can be achieved by:
+                // P(0) - P(1) + P(2) - P(3) - P(4)  + P(5) - P(6) + P(7)
+                // 
+                // These are the corner points of a rectangular prism in octant order
+                const std::vector<Eigen::Vector3d> eval_pts = {
+                    {bounds.x(), bounds.y(), bounds.z()},
+                    {-bounds.x(), bounds.y(), bounds.z()},   
+                    {-bounds.x(), -bounds.y(), bounds.z()},  
+                    {bounds.x(), -bounds.y(), bounds.z()},
+                    {bounds.x(), bounds.y(), -bounds.z()},
+                    {-bounds.x(), bounds.y(), -bounds.z()}, 
+                    {-bounds.x(), -bounds.y(), -bounds.z()},
+                    {bounds.x(), -bounds.y(), -bounds.z()},
+                };
+                // clang-format on
+
+                std::vector<double> probs;
+                for (const auto &eval_pt : eval_pts) {
+                    const auto result =
+                        math::multivariate_normal_cdf(Eigen::Vector3d::Zero(), cov, eval_pt);
+                    CHECK(result.has_value(), "Could not compute cdf at eval pt", eval_pt);
+                    probs.push_back(result.value());
+                }
+                return probs.at(0) - probs.at(1) + probs.at(2) - probs.at(3) - probs.at(4) +
+                       probs.at(5) - probs.at(6) + probs.at(7);
             };
-            // clang-format on
 
-            std::vector<double> probs;
-            for (const auto &eval_pt : eval_pts) {
-                const auto result =
-                    math::multivariate_normal_cdf(Eigen::Vector3d::Zero(), equivalent_cov, eval_pt);
-                CHECK(result.has_value(), "Could not compute cdf at eval pt", eval_pt);
-                probs.push_back(result.value());
+            double prob = 0.0;
+            for (const auto &[_, component] : belief.belief_from_config) {
+                prob += std::exp(component.log_config_prob) *
+                        compute_component_mass(component.cov_in_robot);
             }
-
-            return probs.at(0) - probs.at(1) + probs.at(2) - probs.at(3) - probs.at(4) +
-                   probs.at(5) - probs.at(6) + probs.at(7);
+            return 1 - prob;
         };
     }
 
@@ -435,9 +437,9 @@ std::optional<ExpectedBeliefPlanResult> compute_expected_belief_road_map_plan(
     std::vector<std::vector<int>> world_samples;
     std::vector<std::vector<int>> plans;
     world_samples.reserve(options.num_configuration_samples);
-    for (int i = 0; i < options.num_configuration_samples; i++) {
+    for (int i = 0; i < static_cast<int>(options.num_configuration_samples); i++) {
         world_samples.emplace_back(beacon_potential.sample(make_in_out(gen)));
-        const auto &sample = world_samples.back();
+        const auto &sample = world_samples.at(i);
 
         // Create a potential with only this assignment
         std::unordered_map<int, bool> assignment;
@@ -463,7 +465,7 @@ std::optional<ExpectedBeliefPlanResult> compute_expected_belief_road_map_plan(
             plans, ekf, road_map, options.brm_options.max_sensor_range_m, sample);
 
         for (int i = 0; i < static_cast<int>(plans.size()); i++) {
-            expected_cov_dets[i] += covs.at(i).determinant() / world_samples.size();
+            expected_cov_dets.at(i) += covs.at(i).determinant() / world_samples.size();
         }
     }
 

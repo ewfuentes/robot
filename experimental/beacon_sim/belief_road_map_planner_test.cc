@@ -1,6 +1,7 @@
 
 #include "experimental/beacon_sim/belief_road_map_planner.hh"
 
+#include <limits>
 #include <optional>
 #include <stack>
 
@@ -9,12 +10,12 @@
 #include "experimental/beacon_sim/correlated_beacons.hh"
 #include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/test_helpers.hh"
+#include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "planning/probabilistic_road_map.hh"
 #include "planning/road_map.hh"
 
 namespace robot::experimental::beacon_sim {
-
 TEST(BeliefRoadMapPlannerTest, grid_road_map_no_backtrack) {
     // Setup
     const EkfSlamConfig ekf_config{
@@ -464,4 +465,93 @@ TEST(ExpectedBeliefRoadMapPlannerTest, diamond_road_map_correlated_beacons) {
     }
 }
 
+TEST(BeliefRoadmapPlannerStressTest, expected_brm_test) {
+    // Setup
+    constexpr double along_track_noise_m_per_rt_meter = 0.1;
+    constexpr double cross_track_noise_m_per_rt_meter = 0.1 * along_track_noise_m_per_rt_meter;
+    const EkfSlamConfig ekf_config{
+        .max_num_beacons = 2,
+        .initial_beacon_uncertainty_m = 100.0,
+        .along_track_process_noise_m_per_rt_meter = along_track_noise_m_per_rt_meter,
+        .cross_track_process_noise_m_per_rt_meter = cross_track_noise_m_per_rt_meter,
+        .pos_process_noise_m_per_rt_s = 0.0,
+        .heading_process_noise_rad_per_rt_meter = 1e-3,
+        .heading_process_noise_rad_per_rt_s = 0.0,
+        .beacon_pos_process_noise_m_per_rt_s = 1e-6,
+        .range_measurement_noise_m = 1e-2,
+        .bearing_measurement_noise_rad = 1e-2,
+        .on_map_load_position_uncertainty_m = 1.0,
+        .on_map_load_heading_uncertainty_rad = 1e-1,
+    };
+
+    const auto &[road_map, ekf, beacon_potential] = create_stress_test_environment(ekf_config);
+
+    const ExpectedBeliefRoadMapOptions options = {
+        .num_configuration_samples = 100,
+        .seed = 12304,
+        // .seed = 12303,
+        .brm_options =
+            {
+                .max_sensor_range_m = 3.0,
+                .uncertainty_tolerance = std::nullopt,
+                .max_num_edge_transforms = std::numeric_limits<int>::max(),
+                .timeout = std::nullopt,
+            },
+    };
+
+    // Action
+    const auto maybe_plan =
+        compute_expected_belief_road_map_plan(road_map, ekf, beacon_potential, options);
+
+    // Verification
+    ASSERT_TRUE(maybe_plan.has_value());
+
+    ASSERT_EQ(maybe_plan->nodes.size(), 3);
+    EXPECT_EQ(maybe_plan->nodes.at(0), planning::RoadMap::START_IDX);
+    EXPECT_THAT(maybe_plan->nodes.at(1), testing::AnyOf(0, 2));
+    EXPECT_EQ(maybe_plan->nodes.at(2), planning::RoadMap::GOAL_IDX);
+}
+
+TEST(BeliefRoadmapPlannerStressTest, landmark_brm_test) {
+    // Setup
+    constexpr double along_track_noise_m_per_rt_meter = 0.1;
+    constexpr double cross_track_noise_m_per_rt_meter = 0.1 * along_track_noise_m_per_rt_meter;
+    const EkfSlamConfig ekf_config{
+        .max_num_beacons = 2,
+        .initial_beacon_uncertainty_m = 100.0,
+        .along_track_process_noise_m_per_rt_meter = along_track_noise_m_per_rt_meter,
+        .cross_track_process_noise_m_per_rt_meter = cross_track_noise_m_per_rt_meter,
+        .pos_process_noise_m_per_rt_s = 0.0,
+        .heading_process_noise_rad_per_rt_meter = 1e-3,
+        .heading_process_noise_rad_per_rt_s = 0.0,
+        .beacon_pos_process_noise_m_per_rt_s = 1e-6,
+        .range_measurement_noise_m = 1e-2,
+        .bearing_measurement_noise_rad = 1e-2,
+        .on_map_load_position_uncertainty_m = 1.0,
+        .on_map_load_heading_uncertainty_rad = 1e-1,
+    };
+
+    const auto &[road_map, ekf, beacon_potential] = create_stress_test_environment(ekf_config);
+
+    const LandmarkBeliefRoadMapOptions options = {
+        .max_sensor_range_m = 3.0,
+        .uncertainty_size_options = LandmarkBeliefRoadMapOptions::ExpectedDeterminant{},
+        .sampled_belief_options = std::nullopt,
+        .timeout = std::nullopt,
+    };
+
+    // Action
+    const auto maybe_plan =
+        compute_landmark_belief_road_map_plan(road_map, ekf, beacon_potential, options);
+
+    // Verification
+    ASSERT_TRUE(maybe_plan.has_value());
+
+    ASSERT_EQ(maybe_plan->nodes.size(), 5);
+    EXPECT_EQ(maybe_plan->nodes.at(0), planning::RoadMap::START_IDX);
+    EXPECT_THAT(maybe_plan->nodes.at(1), testing::AnyOf(0, 2));
+    EXPECT_EQ(maybe_plan->nodes.at(2), 1);
+    EXPECT_THAT(maybe_plan->nodes.at(3), testing::AnyOf(0, 2));
+    EXPECT_EQ(maybe_plan->nodes.at(4), planning::RoadMap::GOAL_IDX);
+}
 }  // namespace robot::experimental::beacon_sim
