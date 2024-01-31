@@ -1,6 +1,5 @@
 
 #include "experimental/beacon_sim/make_belief_updater.hh"
-#include <sstream>
 
 #include "experimental/beacon_sim/test_helpers.hh"
 #include "gtest/gtest.h"
@@ -263,52 +262,5 @@ TYPED_TEST(MakeBeliefUpdaterTest, make_subsampled_landmark_belief_updater_test) 
         EXPECT_NEAR(updated_belief.belief_from_config.at("1").log_config_prob, 0.0, 1e-6);
         EXPECT_NEAR(updated_belief.log_probability_mass_tracked, std::log(P_BEACON), 1e-6);
     }
-}
-
-
-TYPED_TEST(MakeBeliefUpdaterTest, start_on_goal) {
-    // Setup
-    constexpr double MAX_SENSOR_RANGE_M = 3.0;
-    const double p_no_beacon = 0.999;
-    const EkfSlamConfig ekf_config{
-        .max_num_beacons = 1,
-        .initial_beacon_uncertainty_m = 100.0,
-        .along_track_process_noise_m_per_rt_meter = 70000,
-        .cross_track_process_noise_m_per_rt_meter = 1e-12,
-        .pos_process_noise_m_per_rt_s = 0.0,
-        .heading_process_noise_rad_per_rt_meter = 1e-12,
-        .heading_process_noise_rad_per_rt_s = 0.0,
-        .beacon_pos_process_noise_m_per_rt_s = 1e-6,
-        .range_measurement_noise_m = 1e-3,
-        .bearing_measurement_noise_rad = 1e-3,
-        .on_map_load_position_uncertainty_m = 1000.0,
-        .on_map_load_heading_uncertainty_rad = 1e-6,
-    };
-    const liegroups::SE2 local_from_robot;
-    const Eigen::Vector2d end_state_in_local;
-
-    const auto &[road_map, ekf_slam, beacon_potential] = create_stress_test_environment(ekf_config, p_no_beacon);
-    
-
-    // Action
-    const auto &[world_from_new_robot, transform] = compute_edge_belief_transform(
-        ekf_slam.estimate().local_from_robot(),
-        road_map.point(0),
-        ekf_config,
-        ekf_slam.estimate(),
-        std::nullopt,
-        MAX_SENSOR_RANGE_M,
-        TypeParam::value
-    );
-
-    const auto to_string = [](const liegroups::SE2 &b_from_a){
-        std::ostringstream oss;
-        oss << "trans: " << b_from_a.translation().transpose() << " rot: " << b_from_a.so2().log();
-        return oss.str();
-    };
-
-    // Verification
-    std::cout << "start: " << to_string(ekf_slam.estimate().local_from_robot()) 
-        << " end: " << to_string(world_from_new_robot) << std::endl;
 }
 }  // namespace robot::experimental::beacon_sim

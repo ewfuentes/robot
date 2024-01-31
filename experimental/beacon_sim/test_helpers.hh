@@ -16,5 +16,5 @@ std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_diamond_environme
     const double p_stacked_beacon);
 
 std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_stress_test_environment(
-    const EkfSlamConfig &ekf_config, const double p_no_beacon);
+    const EkfSlamConfig &ekf_config);
 }  // namespace robot::experimental::beacon_sim

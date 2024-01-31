@@ -1,8 +1,6 @@
 
 #pragma once
 
-#include <iosfwd>
-
 #include "Eigen/Core"
 #include "common/liegroups/se2.hh"
 
@@ -26,8 +24,5 @@ struct LandmarkRobotBelief {
     double log_probability_mass_tracked;
     std::unordered_map<std::string, LandmarkConditionedRobotBelief> belief_from_config;
 };
-
-std::ostream &operator<<(std::ostream &out, const RobotBelief &belief);
-std::ostream &operator<<(std::ostream &out, const LandmarkRobotBelief &belief);
 
 }  // namespace robot::experimental::beacon_sim

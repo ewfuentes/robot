@@ -10,12 +10,12 @@
 #include "experimental/beacon_sim/correlated_beacons.hh"
 #include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/test_helpers.hh"
+#include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "planning/probabilistic_road_map.hh"
 #include "planning/road_map.hh"
 
 namespace robot::experimental::beacon_sim {
-
 TEST(BeliefRoadMapPlannerTest, grid_road_map_no_backtrack) {
     // Setup
     const EkfSlamConfig ekf_config{
@@ -467,26 +467,27 @@ TEST(ExpectedBeliefRoadMapPlannerTest, diamond_road_map_correlated_beacons) {
 
 TEST(BeliefRoadmapPlannerStressTest, expected_brm_test) {
     // Setup
-    constexpr double p_no_beacon = 1e-4;
+    constexpr double along_track_noise_m_per_rt_meter = 0.1;
+    constexpr double cross_track_noise_m_per_rt_meter = 0.1 * along_track_noise_m_per_rt_meter;
     const EkfSlamConfig ekf_config{
-        .max_num_beacons = 1,
+        .max_num_beacons = 2,
         .initial_beacon_uncertainty_m = 100.0,
-        .along_track_process_noise_m_per_rt_meter = 70000,
-        .cross_track_process_noise_m_per_rt_meter = 1e-12,
+        .along_track_process_noise_m_per_rt_meter = along_track_noise_m_per_rt_meter,
+        .cross_track_process_noise_m_per_rt_meter = cross_track_noise_m_per_rt_meter,
         .pos_process_noise_m_per_rt_s = 0.0,
-        .heading_process_noise_rad_per_rt_meter = 1e-12,
+        .heading_process_noise_rad_per_rt_meter = 1e-3,
         .heading_process_noise_rad_per_rt_s = 0.0,
         .beacon_pos_process_noise_m_per_rt_s = 1e-6,
-        .range_measurement_noise_m = 1e-3,
-        .bearing_measurement_noise_rad = 1e-3,
-        .on_map_load_position_uncertainty_m = 1000.0,
-        .on_map_load_heading_uncertainty_rad = 1e-6,
+        .range_measurement_noise_m = 1e-2,
+        .bearing_measurement_noise_rad = 1e-2,
+        .on_map_load_position_uncertainty_m = 1.0,
+        .on_map_load_heading_uncertainty_rad = 1e-1,
     };
-    const auto &[road_map, ekf, beacon_potential] =
-        create_stress_test_environment(ekf_config, p_no_beacon);
+
+    const auto &[road_map, ekf, beacon_potential] = create_stress_test_environment(ekf_config);
 
     const ExpectedBeliefRoadMapOptions options = {
-        .num_configuration_samples = 1000,
+        .num_configuration_samples = 100,
         .seed = 12304,
         // .seed = 12303,
         .brm_options =
@@ -505,36 +506,36 @@ TEST(BeliefRoadmapPlannerStressTest, expected_brm_test) {
     // Verification
     ASSERT_TRUE(maybe_plan.has_value());
 
-    std::cout << "Plan: [";
-    for (const auto id : maybe_plan->nodes) {
-        std::cout << id << ", ";
-    }
-    std::cout << "]" << std::endl;
+    ASSERT_EQ(maybe_plan->nodes.size(), 3);
+    EXPECT_EQ(maybe_plan->nodes.at(0), planning::RoadMap::START_IDX);
+    EXPECT_THAT(maybe_plan->nodes.at(1), testing::AnyOf(0, 2));
+    EXPECT_EQ(maybe_plan->nodes.at(2), planning::RoadMap::GOAL_IDX);
 }
 
 TEST(BeliefRoadmapPlannerStressTest, landmark_brm_test) {
     // Setup
-    constexpr double p_no_beacon = 1e-4;
+    constexpr double along_track_noise_m_per_rt_meter = 0.1;
+    constexpr double cross_track_noise_m_per_rt_meter = 0.1 * along_track_noise_m_per_rt_meter;
     const EkfSlamConfig ekf_config{
-        .max_num_beacons = 1,
+        .max_num_beacons = 2,
         .initial_beacon_uncertainty_m = 100.0,
-        .along_track_process_noise_m_per_rt_meter = 70000,
-        .cross_track_process_noise_m_per_rt_meter = 1e-12,
+        .along_track_process_noise_m_per_rt_meter = along_track_noise_m_per_rt_meter,
+        .cross_track_process_noise_m_per_rt_meter = cross_track_noise_m_per_rt_meter,
         .pos_process_noise_m_per_rt_s = 0.0,
-        .heading_process_noise_rad_per_rt_meter = 1e-12,
+        .heading_process_noise_rad_per_rt_meter = 1e-3,
         .heading_process_noise_rad_per_rt_s = 0.0,
         .beacon_pos_process_noise_m_per_rt_s = 1e-6,
-        .range_measurement_noise_m = 1e-3,
-        .bearing_measurement_noise_rad = 1e-3,
-        .on_map_load_position_uncertainty_m = 1000.0,
-        .on_map_load_heading_uncertainty_rad = 1e-6,
+        .range_measurement_noise_m = 1e-2,
+        .bearing_measurement_noise_rad = 1e-2,
+        .on_map_load_position_uncertainty_m = 1.0,
+        .on_map_load_heading_uncertainty_rad = 1e-1,
     };
 
-    const auto &[road_map, ekf, beacon_potential] =
-        create_stress_test_environment(ekf_config, p_no_beacon);
+    const auto &[road_map, ekf, beacon_potential] = create_stress_test_environment(ekf_config);
 
     const LandmarkBeliefRoadMapOptions options = {
         .max_sensor_range_m = 3.0,
+        .uncertainty_size_options = LandmarkBeliefRoadMapOptions::ExpectedDeterminant{},
         .sampled_belief_options = std::nullopt,
         .timeout = std::nullopt,
     };
@@ -546,23 +547,11 @@ TEST(BeliefRoadmapPlannerStressTest, landmark_brm_test) {
     // Verification
     ASSERT_TRUE(maybe_plan.has_value());
 
-    std::cout << "Plan: [";
-    for (const auto id : maybe_plan->nodes) {
-        std::cout << id << ", ";
-    }
-    std::cout << "]" << std::endl;
-
-    std::cout << "initial components: " << std::endl;
-    for (const auto &[key, comp] : maybe_plan->beliefs.front().belief_from_config) {
-        std::cout << key << " prob: " << std::exp(comp.log_config_prob)
-                  << " det: " << comp.cov_in_robot.determinant() << std::endl;
-    }
-
-    std::cout << "final components:" << std::endl;
-    for (const auto &[key, comp] : maybe_plan->beliefs.back().belief_from_config) {
-        std::cout << key << " prob: " << std::exp(comp.log_config_prob)
-                  << " det: " << comp.cov_in_robot.determinant() << std::endl;
-    }
+    ASSERT_EQ(maybe_plan->nodes.size(), 5);
+    EXPECT_EQ(maybe_plan->nodes.at(0), planning::RoadMap::START_IDX);
+    EXPECT_THAT(maybe_plan->nodes.at(1), testing::AnyOf(0, 2));
+    EXPECT_EQ(maybe_plan->nodes.at(2), 1);
+    EXPECT_THAT(maybe_plan->nodes.at(3), testing::AnyOf(0, 2));
+    EXPECT_EQ(maybe_plan->nodes.at(4), planning::RoadMap::GOAL_IDX);
 }
-
 }  // namespace robot::experimental::beacon_sim

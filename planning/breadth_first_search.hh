@@ -43,7 +43,7 @@ using ShouldQueueFunc = std::function<ShouldQueueResult(
     const Successor<State> &, const int parent_idx, const std::vector<Node<State>> &node_list)>;
 
 template <typename State>
-using GoalCheckFunc = std::function<bool(const Node<State> &, const std::vector<Node<State>> &)>;
+using GoalCheckFunc = std::function<bool(const Node<State> &)>;
 
 template <typename State>
 using IdentifyPathEndFunc = std::function<std::optional<int>(const std::vector<Node<State>> &)>;
@@ -69,7 +69,7 @@ std::optional<BreadthFirstResult<State>> breadth_first_search(
         if (n.should_skip) {
             continue;
         }
-        if (goal_check_func(n, nodes)) {
+        if (goal_check_func(n)) {
             break;
         }
 
