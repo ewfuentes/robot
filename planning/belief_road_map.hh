@@ -3,7 +3,6 @@
 
 #include <algorithm>
 #include <functional>
-#include <iostream>
 #include <numeric>
 #include <optional>
 #include <unordered_map>
@@ -165,21 +164,10 @@ std::optional<BRMPlan<Belief>> plan(
                        const Successor<SearchState> &successor, const int parent_idx,
                        const std::vector<Node<SearchState>> &nodes) -> ShouldQueueResult {
                 // If node was previously on path, skip it
-                std::cout << "Checking if should queue: ";
-                std::cout << successor.state.node_idx << ", ";
-                std::optional<int> curr_node_idx = parent_idx;
-                while (curr_node_idx.has_value()) {
-                    const auto &node = nodes.at(*curr_node_idx);
-                    std::cout << node.state.node_idx << ", ";
-                    curr_node_idx = node.maybe_parent_idx;
-                }
-                std::cout << std::endl;
-
                 std::optional<int> path_node_idx = parent_idx;
                 while (path_node_idx.has_value()) {
                     const auto &path_node = nodes.at(path_node_idx.value());
                     if (path_node.state == successor.state) {
-                        std::cout << "previously visited current node, skipping..." << std::endl;
                         return ShouldQueueResult::SKIP;
                     }
                     path_node_idx = path_node.maybe_parent_idx;
@@ -193,22 +181,11 @@ std::optional<BRMPlan<Belief>> plan(
                 const bool should_queue =
                     (maybe_prev_uncertainty == min_uncertainty_from_node.end()) ||
                     successor_uncertainty_size < maybe_prev_uncertainty->second;
+
                 if (should_queue) {
-                    if (maybe_prev_uncertainty != min_uncertainty_from_node.end()) {
-                        std::cout << "Queuing with improved uncertainty: "
-                                  << successor_uncertainty_size
-                                  << " prev: " << maybe_prev_uncertainty->second << std::endl;
-                    } else {
-                        std::cout << "First visit! Queuing with uncertainty: "
-                                  << successor_uncertainty_size << std::endl;
-                    }
                     min_uncertainty_from_node[successor.state.node_idx] =
                         successor_uncertainty_size;
                     return ShouldQueueResult::QUEUE_AND_CLEAR_MATCHING_IN_OPEN;
-                } else {
-                    std::cout << "Worse than previous visit. Skipping. new: "
-                              << successor_uncertainty_size
-                              << " prev: " << maybe_prev_uncertainty->second << std::endl;
                 }
                 return ShouldQueueResult::SKIP;
             };
