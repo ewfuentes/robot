@@ -1,0 +1,16 @@
+cc_library(
+  name = "annoy",
+  hdrs = [
+    "src/annoylib.h",
+    "src/kissrandom.h",
+  ],
+  srcs = [
+    "src/mman.h",
+  ],
+  strip_include_prefix = "src",
+  include_prefix = "annoy",
+  visibility=["//visibility:public"],
+  defines = [
+    "ANNOYLIB_MULTITHREADED_BUILD",
+  ]
+)

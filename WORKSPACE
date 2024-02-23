@@ -343,5 +343,15 @@ http_archive(
     patches = ["//third_party:approxcdf_0001-add-missing-curly.patch"]
 )
 
+http_archive(
+  name = "annoy",
+  urls = ["https://github.com/spotify/annoy/archive/2be37c9e015544be2cf60c431f0cccc076151a2d.zip"],
+  strip_prefix = "annoy-2be37c9e015544be2cf60c431f0cccc076151a2d",
+  build_file = "//third_party:BUILD.annoy",
+  sha256 = "330e67b9f25173f6b15b44238f3caabebefe927e64c7ed981683924f5db682e7",
+  patch_args = ["-p1"],
+  patches = ["//third_party:annoy_0001-add-maybe-unused-attributes.patch"]
+)
+
 
 

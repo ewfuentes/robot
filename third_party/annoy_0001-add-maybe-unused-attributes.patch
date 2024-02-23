@@ -1,0 +1,105 @@
+diff --git a/src/annoylib.h b/src/annoylib.h
+index 657977c..870aec1 100644
+--- a/src/annoylib.h
++++ b/src/annoylib.h
+@@ -405,19 +405,27 @@ inline void two_means(const vector<Node*>& nodes, int f, Random& random, bool co
+ 
+ struct Base {
+   template<typename T, typename S, typename Node>
+-  static inline void preprocess(void* nodes, size_t _s, const S node_count, const int f) {
++  static inline void preprocess(
++    [[maybe_unused]] void* nodes, 
++    [[maybe_unused]] size_t _s, 
++    [[maybe_unused]] const S node_count,
++    [[maybe_unused]] const int f) {
+     // Override this in specific metric structs below if you need to do any pre-processing
+     // on the entire set of nodes passed into this index.
+   }
+ 
+   template<typename T, typename S, typename Node>
+-  static inline void postprocess(void* nodes, size_t _s, const S node_count, const int f) {
++  static inline void postprocess(
++    [[maybe_unused]] void* nodes, 
++    [[maybe_unused]] size_t _s,
++    [[maybe_unused]] const S node_count,
++    [[maybe_unused]] const int f) {
+     // Override this in specific metric structs below if you need to do any post-processing
+     // on the entire set of nodes passed into this index.
+   }
+ 
+   template<typename Node>
+-  static inline void zero_value(Node* dest) {
++  static inline void zero_value([[maybe_unused]] Node* dest) {
+     // Initialize any fields that require sane defaults within this node.
+   }
+ 
+@@ -694,7 +702,7 @@ struct DotProduct : Angular {
+   }
+ 
+   template<typename T, typename S, typename Node>
+-  static inline void postprocess(void* nodes, size_t _s, const S node_count, const int f) {
++  static inline void postprocess(void* nodes, size_t _s, const S node_count, [[maybe_unused]] const int f) {
+     for (S i = 0; i < node_count; i++) {
+       Node* node = get_node_ptr<S, Node>(nodes, _s, i);
+       // When an index is built, we will remember it in index item nodes to compute distances differently
+@@ -742,13 +750,13 @@ struct Hamming : Base {
+     return dist;
+   }
+   template<typename S, typename T>
+-  static inline bool margin(const Node<S, T>* n, const T* y, int f) {
++  static inline bool margin(const Node<S, T>* n, const T* y, [[maybe_unused]] int f) {
+     static const size_t n_bits = sizeof(T) * 8;
+     T chunk = n->v[0] / n_bits;
+     return (y[chunk] & (static_cast<T>(1) << (n_bits - 1 - (n->v[0] % n_bits)))) != 0;
+   }
+   template<typename S, typename T, typename Random>
+-  static inline bool side(const Node<S, T>* n, const T* y, int f, Random& random) {
++  static inline bool side(const Node<S, T>* n, const T* y, int f, [[maybe_unused]] Random& random) {
+     return margin(n, y, f);
+   }
+   template<typename S, typename T, typename Random>
+@@ -756,7 +764,7 @@ struct Hamming : Base {
+     return side(n, y->v, f, random);
+   }
+   template<typename S, typename T, typename Random>
+-  static inline void create_split(const vector<Node<S, T>*>& nodes, int f, size_t s, Random& random, Node<S, T>* n) {
++  static inline void create_split(const vector<Node<S, T>*>& nodes, int f, [[maybe_unused]] size_t s, Random& random, Node<S, T>* n) {
+     size_t cur_size = 0;
+     size_t i = 0;
+     int dim = f * 8 * sizeof(T);
+@@ -795,7 +803,7 @@ struct Hamming : Base {
+     return distance;
+   }
+   template<typename S, typename T>
+-  static inline void init_node(Node<S, T>* n, int f) {
++  static inline void init_node([[maybe_unused]] Node<S, T>* n, [[maybe_unused]] int f) {
+   }
+   static const char* name() {
+     return "hamming";
+@@ -863,7 +871,7 @@ struct Euclidean : Minkowski {
+     return sqrt(std::max(distance, T(0)));
+   }
+   template<typename S, typename T>
+-  static inline void init_node(Node<S, T>* n, int f) {
++  static inline void init_node([[maybe_unused]]Node<S, T>* n, [[maybe_unused]]int f) {
+   }
+   static const char* name() {
+     return "euclidean";
+@@ -894,7 +902,7 @@ struct Manhattan : Minkowski {
+     return std::max(distance, T(0));
+   }
+   template<typename S, typename T>
+-  static inline void init_node(Node<S, T>* n, int f) {
++  static inline void init_node([[maybe_unused]]Node<S, T>* n, [[maybe_unused]]int f) {
+   }
+   static const char* name() {
+     return "manhattan";
+@@ -1507,7 +1515,7 @@ protected:
+ class AnnoyIndexSingleThreadedBuildPolicy {
+ public:
+   template<typename S, typename T, typename D, typename Random>
+-  static void build(AnnoyIndex<S, T, D, Random, AnnoyIndexSingleThreadedBuildPolicy>* annoy, int q, int n_threads) {
++  static void build(AnnoyIndex<S, T, D, Random, AnnoyIndexSingleThreadedBuildPolicy>* annoy, int q, [[maybe_unused]]int n_threads) {
+     AnnoyIndexSingleThreadedBuildPolicy threaded_build_policy;
+     annoy->thread_build(q, 0, threaded_build_policy);
+   }
