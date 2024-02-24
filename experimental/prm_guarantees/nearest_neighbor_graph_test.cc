@@ -72,5 +72,6 @@ TEST(NearestNeighborGraphTest, dim_20_1m_pts) {
                       << std::flush;
         }
     });
+    std::cout << std::endl;
 }
 }  // namespace robot::experimental::prm_guarantee
