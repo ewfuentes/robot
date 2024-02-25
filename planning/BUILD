@@ -145,3 +145,18 @@ cc_test(
     "@com_google_googletest//:gtest_main",
   ]
 )
+
+cc_library(
+  name = "djikstra",
+  hdrs = ["djikstra.hh"],
+  visibility = ["//visibility:public"],
+)
+
+cc_test(
+  name = "djikstra_test",
+  srcs = ["djikstra_test.cc"],
+  deps = [
+    ":djikstra",
+    "@com_google_googletest//:gtest_main",
+  ]
+)
