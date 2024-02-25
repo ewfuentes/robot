@@ -55,6 +55,5 @@ TEST(DjikstraTest, graph_test) {
     EXPECT_EQ(result.back_pointer.at("B"), "A");
     EXPECT_EQ(result.back_pointer.at("C"), "A");
     EXPECT_EQ(result.back_pointer.at("D"), "B");
-
 }
 }  // namespace robot::planning
