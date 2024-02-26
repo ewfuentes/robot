@@ -97,7 +97,7 @@ cc_test(
   deps = [
     ":deck",
     "@com_google_googletest//:gtest_main",
-    "@absl//absl/container:flat_hash_map",
+    "@com_google_absl//absl/container:flat_hash_map",
   ]
 )
 
@@ -114,7 +114,7 @@ cc_library(
     "@ompeval//:ompeval_lib",
     "@wise_enum//:wise_enum",
     "//common/time:robot_time",
-    "@absl//absl/container:inlined_vector",
+    "@com_google_absl//absl/container:inlined_vector",
   ]
 )
 

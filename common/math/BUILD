@@ -94,7 +94,7 @@ cc_test(
   srcs = ["sample_without_replacement_test.cc"],
   deps = [
     ":sample_without_replacement",
-    "@absl//absl/container:flat_hash_map",
+    "@com_google_absl//absl/container:flat_hash_map",
     "@com_google_googletest//:gtest_main",
   ]
 )
