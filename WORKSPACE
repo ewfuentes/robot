@@ -102,6 +102,21 @@ pip_parse(
 load("@pip//:requirements.bzl", "install_deps")
 install_deps()
 
+python_register_toolchains(
+    name = "python3_8",
+    python_version = "3.8.10",
+)
+load("@python3_8//:defs.bzl", interpreter_3_8 = "interpreter")
+load("@rules_python//python:pip.bzl", "pip_parse")
+pip_parse(
+  name = "pip_3_8",
+  python_interpreter_target = interpreter_3_8,
+  requirements_lock = "@//third_party/python:requirements.txt",
+)
+
+load("@pip_3_8//:requirements.bzl", install_deps_3_8 = "install_deps")
+install_deps_3_8()
+
 http_archive(
   name="embag",
   url="https://github.com/embarktrucks/embag/archive/74c0b5f9d50bd45bcb6ed8e44718cd60924c13d0.zip",

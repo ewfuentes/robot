@@ -1,6 +1,9 @@
 
 import unittest
 
+import sys
+print(sys.version)
+
 from common.python.pybind_example_python import add
 
 class PybindExampleTest(unittest.TestCase):
