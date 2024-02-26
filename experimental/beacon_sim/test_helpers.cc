@@ -20,48 +20,39 @@ MappedLandmarks create_grid_mapped_landmarks() {
     };
 }
 
-planning::RoadMap create_grid_road_map() {
-    const Eigen::Vector2d START_STATE{0.0, 10.0};
-    const Eigen::Vector2d GOAL_STATE{10.0, -5.0};
-    const double CONNECTION_RADIUS_M = 6.0;
-    constexpr double NODE_SPACING_M = 5.0;
-    constexpr int NUM_ROWS = 3;
-    constexpr int NUM_COLS = 3;
-    constexpr int NUM_NODES = NUM_ROWS * NUM_COLS;
+planning::RoadMap create_grid_road_map(const double node_spacing_m, const int num_rows,
+                                       const int num_cols,
+                                       const planning::StartGoalPair &start_goal) {
+    const int num_nodes = num_rows * num_cols;
 
     std::vector<Eigen::Vector2d> points;
-    Eigen::MatrixXd adj = Eigen::MatrixXd::Zero(NUM_NODES, NUM_NODES);
+    Eigen::MatrixXd adj = Eigen::MatrixXd::Zero(num_nodes, num_nodes);
 
-    constexpr double ROW_OFFSET_M = -(NUM_ROWS - (NUM_ROWS % 2)) / 2.0 * NODE_SPACING_M;
-    constexpr double COL_OFFSET_M = -(NUM_COLS - (NUM_COLS % 2)) / 2.0 * NODE_SPACING_M;
+    const double row_offset_m = -(num_rows - (num_rows % 2)) / 2.0 * node_spacing_m;
+    const double col_offset_m = -(num_cols - (num_cols % 2)) / 2.0 * node_spacing_m;
 
-    for (int row = 0; row < NUM_ROWS; row++) {
-        for (int col = 0; col < NUM_COLS; col++) {
-            const double x_pos_m = NODE_SPACING_M * col + COL_OFFSET_M;
-            const double y_pos_m = NODE_SPACING_M * row + ROW_OFFSET_M;
+    for (int row = 0; row < num_rows; row++) {
+        for (int col = 0; col < num_cols; col++) {
+            const double x_pos_m = node_spacing_m * col + col_offset_m;
+            const double y_pos_m = node_spacing_m * row + row_offset_m;
             points.push_back(Eigen::Vector2d{x_pos_m, y_pos_m});
 
             // Add edge to the right if it exists
-            const int node_idx = col + row * NUM_COLS;
-            if (col < (NUM_COLS - 1)) {
-                const int neighbor_idx = (col + 1) + row * NUM_COLS;
+            const int node_idx = col + row * num_cols;
+            if (col < (num_cols - 1)) {
+                const int neighbor_idx = (col + 1) + row * num_cols;
                 adj(node_idx, neighbor_idx) = 1.0;
                 adj(neighbor_idx, node_idx) = 1.0;
             }
-            // Add edge up if it exists
-            if (row < (NUM_ROWS - 1)) {
-                const int neighbor_idx = col + (row + 1) * NUM_COLS;
+            // add edge up if it exists
+            if (row < (num_rows - 1)) {
+                const int neighbor_idx = col + (row + 1) * num_cols;
                 adj(node_idx, neighbor_idx) = 1.0;
                 adj(neighbor_idx, node_idx) = 1.0;
             }
         }
     }
-    return planning::RoadMap(std::move(points), std::move(adj),
-                             {{
-                                 .start = START_STATE,
-                                 .goal = GOAL_STATE,
-                                 .connection_radius_m = CONNECTION_RADIUS_M,
-                             }});
+    return planning::RoadMap(std::move(points), std::move(adj), {start_goal});
 }
 
 std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_grid_environment(
@@ -101,7 +92,15 @@ std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_grid_environment(
     //  - node indices start in the lower left and increase to the right, then increase up
 
     const auto mapped_landmarks = create_grid_mapped_landmarks();
-    const auto road_map = create_grid_road_map();
+    constexpr double NODE_SPACING_M = 5.0;
+    constexpr int NUM_ROWS = 3;
+    constexpr int NUM_COLS = 3;
+    const planning::StartGoalPair START_GOAL = {
+        .start = {0.0, 10.0},
+        .goal = {10.0, -5.0},
+        .connection_radius_m = 5.1,
+    };
+    const auto road_map = create_grid_road_map(NODE_SPACING_M, NUM_ROWS, NUM_COLS, START_GOAL);
     auto ekf_slam = EkfSlam(ekf_config, time::RobotTimestamp());
     constexpr bool LOAD_OFF_DIAGONALS = true;
 
@@ -255,4 +254,34 @@ std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_stress_test_envir
 
     return std::make_tuple(road_map, ekf_slam, beacon_potential);
 }
+
+std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_beacon_grid_environment(
+    const EkfSlamConfig &ekf_config)
+    //
+    //   S,0─────1─────2─────3
+    //     │     │     │     │
+    //     │  A  │  B  │  C  │
+    //     │     │ 0,5 │ 5,5 │
+    //     4─────5─────6─────7
+    //     │     │     │     │
+    //     │  D  │  E  │  F  │
+    //     │     │ 0,0 │ 5,0 │
+    //     8─────9────10────11
+    //     │     │     │     │
+    //     │  G  │  H  │  I  │
+    //     │-5,-5│     │     │
+    //    12────13────14────15,G
+    //   
+
+    // Create Road Map
+
+    const int NUM_ROWS = 4;
+    const int NUM_COLS = 4;
+    const double NODE_SPACING_M = 5.0;
+    const planning::RoadMap road_map = create_beacon_grid_road_map();
+
+    // Create EkfSlam
+    // Create BeaconPotential
+}
+
 }  // namespace robot::experimental::beacon_sim
