@@ -1,0 +1,12 @@
+diff --git a/absl/strings/BUILD.bazel b/absl/strings/BUILD.bazel
+index 942c5324..670c92c2 100644
+--- a/absl/strings/BUILD.bazel
++++ b/absl/strings/BUILD.bazel
+@@ -26,6 +26,7 @@ package(
+         "header_modules",
+         "layering_check",
+         "parse_headers",
++        "-warning_compile_flags",
+     ],
+ )
+ 

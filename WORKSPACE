@@ -13,10 +13,14 @@ load("@rules_pkg//:deps.bzl", "rules_pkg_dependencies")
 rules_pkg_dependencies()
 
 http_archive(
-  name = "absl",
-  urls = ["https://github.com/abseil/abseil-cpp/archive/refs/tags/20230802.0.zip"],
-  strip_prefix = "abseil-cpp-20230802.0",
-  sha256 = "2942db09db29359e0c1982986167167d226e23caac50eea1f07b2eb2181169cf"
+  name = "com_google_absl",
+  urls = ["https://github.com/abseil/abseil-cpp/releases/download/20240116.1/abseil-cpp-20240116.1.tar.gz"],
+  strip_prefix = "abseil-cpp-20240116.1",
+  sha256 = "3c743204df78366ad2eaf236d6631d83f6bc928d1705dd0000b872e53b73dc6a",
+  patches = [
+    "@//third_party:absl-0001-disable-warning-flags.patch",
+  ],
+  patch_args=["-p1"],
 )
 
 http_archive(
@@ -50,18 +54,18 @@ http_archive(
 
 http_archive(
   name = "pybind11_bazel",
-  strip_prefix = "pybind11_bazel-b162c7c88a253e3f6b673df0c621aca27596ce6b",
-  urls = ["https://github.com/pybind/pybind11_bazel/archive/b162c7c88a253e3f6b673df0c621aca27596ce6b.zip"],
-  sha256 = "b72c5b44135b90d1ffaba51e08240be0b91707ac60bea08bb4d84b47316211bb"
+  strip_prefix = "pybind11_bazel-2.11.1.bzl.2",
+  urls = ["https://github.com/pybind/pybind11_bazel/releases/download/v2.11.1.bzl.2/pybind11_bazel-2.11.1.bzl.2.zip"],
+  sha256 = "d911ef169750491c9ddb4e6630bae882b127425627af10e59d499f0f7ff90a48"
 )
 
 # We still require the pybind library.
 http_archive(
   name = "pybind11",
   build_file = "@pybind11_bazel//:pybind11.BUILD",
-  strip_prefix = "pybind11-2.10.2",
-  urls = ["https://github.com/pybind/pybind11/archive/v2.10.2.tar.gz"],
-  sha256 = "93bd1e625e43e03028a3ea7389bba5d3f9f2596abc074b068e70f4ef9b1314ae",
+  strip_prefix = "pybind11-2.11.1",
+  urls = ["https://github.com/pybind/pybind11/archive/v2.11.1.tar.gz"],
+  sha256 = "d475978da0cdc2d43b73f30910786759d593a9d8ee05b1b6846d1eb16c6d2e0c"
 )
 
 http_archive(
@@ -75,36 +79,29 @@ http_archive(
 # Note that rules_python must be loaded before protobuf
 http_archive(
     name = "rules_python",
-    sha256 = "8c8fe44ef0a9afc256d1e75ad5f448bb59b81aba149b8958f02f7b3a98f5d9b4",
-    strip_prefix = "rules_python-0.13.0",
-    url = "https://github.com/bazelbuild/rules_python/archive/refs/tags/0.13.0.tar.gz",
+    sha256 = "c68bdc4fbec25de5b5493b8819cfc877c4ea299c0dcb15c244c5a00208cde311",
+    strip_prefix = "rules_python-0.31.0",
+    url = "https://github.com/bazelbuild/rules_python/releases/download/0.31.0/rules_python-0.31.0.tar.gz",
 )
 
-load("@rules_python//python:repositories.bzl", "python_register_toolchains")
+load("@rules_python//python:repositories.bzl", "py_repositories", "python_register_toolchains")
+py_repositories()
+
 python_register_toolchains(
     name = "python3_10",
     python_version = "3.10",
 )
-
-
 load("@python3_10//:defs.bzl", "interpreter")
-load("@pybind11_bazel//:python_configure.bzl", "python_configure")
-python_configure(name = "local_config_python", python_interpreter_target=interpreter)
-bind(
-  name = "python_headers",
-  actual = "@python3_10//:python_headers",
-)
-
 load("@rules_python//python:pip.bzl", "pip_parse")
-
 pip_parse(
   name = "pip",
   python_interpreter_target = interpreter,
-  requirements = "@//third_party/python:requirements.txt",
+  requirements_lock = "@//third_party/python:requirements.txt",
 )
 
 load("@pip//:requirements.bzl", "install_deps")
 install_deps()
+
 http_archive(
   name="embag",
   url="https://github.com/embarktrucks/embag/archive/74c0b5f9d50bd45bcb6ed8e44718cd60924c13d0.zip",
@@ -163,11 +160,11 @@ rules_proto_toolchains()
 
 http_archive(
   name = "com_google_protobuf",
-  urls = ["https://github.com/protocolbuffers/protobuf/archive/refs/tags/v21.6.tar.gz"],
-  strip_prefix="protobuf-21.6",
-  sha256 = "dbb16fdbca8f277c9a194d9a837395cde408ca136738d94743130dd0de015efd",
+  urls = ["https://github.com/protocolbuffers/protobuf/releases/download/v25.3/protobuf-25.3.zip"],
+  strip_prefix="protobuf-25.3",
   patches = [
     "@//third_party:protobuf-0001-disable-warning-flags.patch",
+    "@//third_party:protobuf-0002-use-rules-python-headers.patch",
   ],
   patch_args=["-p1"],
 )
