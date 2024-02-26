@@ -1,6 +1,7 @@
 load("@pip//:requirements.bzl", "requirement")
 load("//common/proto:proto.bzl", "multi_proto_library")
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
+load("@rules_python//python:packaging.bzl", "py_package", "py_wheel")
 
 multi_proto_library(
   name = "sim_log_proto",
@@ -149,6 +150,14 @@ cc_library(
     "@eigen//:eigen",
     "//common/liegroups:se2",
     "//common:check",
+  ]
+)
+
+pybind_extension(
+  name = "ekf_slam_python",
+  srcs = ["ekf_slam_python.cc"],
+  deps = [
+    ":ekf_slam",
   ]
 )
 
@@ -790,5 +799,22 @@ cc_binary(
     ":world_map_config_to_proto",
     ":mapped_landmarks_to_proto",
     "//planning:road_map_to_proto",
+  ]
+)
+
+py_package(
+  name = "beacon_sim_package",
+  deps = [
+    ":ekf_slam_python.so",
+  ],
+)
+
+py_wheel(
+  name = "beacon_sim_wheel",
+  distribution = "beacon_sim",
+  version = "0.0.1",
+  platform = "manylinux2014_x86_64",
+  deps = [
+    ":beacon_sim_package",
   ]
 )
