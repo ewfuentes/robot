@@ -2,6 +2,7 @@
 build --strip=never
 build --config=gcc-10
 build --crosstool_top=//toolchain:cpp_suite
+build --config=python-3.8
 build:gcc --compiler=gcc-11
 build:gcc-10 --compiler=gcc-10
 
