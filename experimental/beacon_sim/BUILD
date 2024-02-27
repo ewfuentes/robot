@@ -89,7 +89,7 @@ cc_library(
     "//common:argument_wrapper",
     "//common/time:robot_time",
     "@eigen//:eigen",
-    ":correlated_beacons",
+    ":beacon_potential",
     ":obstacle",
   ],
 )
@@ -814,6 +814,14 @@ py_wheel(
   distribution = "beacon_sim",
   version = "0.0.1",
   platform = "manylinux2014_x86_64",
+  python_tag = select({
+    "@rules_python//python/config_settings:is_python_3.10": "cp310",
+    "@rules_python//python/config_settings:is_python_3.8": "cp38",
+  }),
+  abi = select({
+    "@rules_python//python/config_settings:is_python_3.10": "cp310",
+    "@rules_python//python/config_settings:is_python_3.8": "cp38",
+  }),
   deps = [
     ":beacon_sim_package",
   ]

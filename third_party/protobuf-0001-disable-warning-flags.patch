@@ -160,3 +160,16 @@ index f45c4fab2..354f2ec88 100644
  
  licenses(["notice"])
  
+diff --git a/src/google/protobuf/compiler/python/BUILD.bazel b/src/google/protobuf/compiler/python/BUILD.bazel
+index 64b5808cb..2b629e841 100644
+--- a/src/google/protobuf/compiler/python/BUILD.bazel
++++ b/src/google/protobuf/compiler/python/BUILD.bazel
+@@ -2,6 +2,8 @@
+ # Protocol Buffers Compiler - Python code generator
+ ################################################################################
+ 
++package(features=["-warning_compile_flags"])
++
+ load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+ load("@rules_pkg//:mappings.bzl", "pkg_files", "strip_prefix")
+ load("//build_defs:cpp_opts.bzl", "COPTS")

@@ -8,7 +8,7 @@
 
 #include "Eigen/Core"
 #include "common/time/robot_time.hh"
-#include "experimental/beacon_sim/correlated_beacons.hh"
+#include "experimental/beacon_sim/beacon_potential.hh"
 #include "experimental/beacon_sim/obstacle.hh"
 
 namespace robot::experimental::beacon_sim {

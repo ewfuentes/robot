@@ -172,6 +172,7 @@ http_archive(
   name = "com_google_protobuf",
   urls = ["https://github.com/protocolbuffers/protobuf/releases/download/v25.3/protobuf-25.3.zip"],
   strip_prefix="protobuf-25.3",
+  sha256 = "3ae7a8f2181be28e5d694617c2b85c6561ba6a16bfcdc9db8e3a95077cab8815",
   patches = [
     "@//third_party:protobuf-0001-disable-warning-flags.patch",
     "@//third_party:protobuf-0002-use-rules-python-headers.patch",
