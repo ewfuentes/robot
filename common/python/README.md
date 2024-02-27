@@ -3,30 +3,47 @@
 
 ## Adding New Versions of Python
 
-To add new versions of Python, add a new block in the WORKSPACE file like so:
+To add new versions of Python, locate the `python_register_multi_toolchains` invocation in the WORKSPACE file and add it to the list of `python_version`. Additionally, in the following `multi_pip_parse` rule, add an entry for the `requirements.txt`.
+
 ```
-python_register_toolchains(
-    name = "python3_8",
-    python_version = "3.8.10",
-)
-load("@python3_8//:defs.bzl", interpreter_3_8 = "interpreter")
-load("@rules_python//python:pip.bzl", "pip_parse")
-pip_parse(
-  name = "pip_3_8",
-  python_interpreter_target = interpreter_3_8,
-  requirements_lock = "@//third_party/python:requirements.txt",
+DEFAULT_PYTHON_VERSION = "3.10"
+python_register_multi_toolchains(
+  name="python",
+  python_versions = ['3.10', '3.8.10'], # add new entry here
+  default_version = DEFAULT_PYTHON_VERSION
 )
 
-load("@pip_3_8//:requirements.bzl", install_deps_3_8 = "install_deps")
-install_deps_3_8()
+load("@python//:pip.bzl", "multi_pip_parse")
+
+multi_pip_parse(
+  name="pip",
+  default_version = DEFAULT_PYTHON_VERSION,
+  python_interpreter_target = {
+    "3.8.10": "@python_3_8_10_host//:python",
+    "3.10": "@python_3_10_host//:python"
+  },
+  requirements_lock = {
+    "3.8.10": "//third_party/python:requirements_3_8_10.txt",
+    "3.10": "//third_party/python:requirements_3_10.txt"
+    # Add new entry here
+  },
+)
 ```
 
-Note that the toolchain that is registered first will be used by default.
+In `//third_party/python:BUILD`, load the `compile_pip_requirements` from the new version and instantiate a new compile pip requirements rule. To generate the requirements file, run `bazel run //third_party/python:requirements_<new_version>.update`. Note that you may need to create an empty file first before the rule succeeds.
 
 ## Building Against Different Python Versions
 
-If the version has been defined in `.bazelrc`, you can pass in `--config=python-X.Y`.
+If the version has been defined in `.bazelrc`, you can pass in `--config=python-X.Y` to build with that toolchain.
 
-If it hasn't been defined in `.bazelrc`, a different Python version can be used by passing in a `--extra_toolchains` argument to the build or run command. For example, if the name passed to `python_register_toolchains` is `python_3_10`, then the argument to be passed is `--extra_toolchains @python_3_10_toolchains//:x86_64-unknown-linux-gnu`. The list of available toolchains can be seen by running: `bazel query "@python3_10_toolchains//:*"`. To test that the appropriate Python version is getting selected, you can run `bazel build --extra_toolchains=<toolchain_from_above> //common/python:pybind_example_test`.
+If the version hasn't been defined in `.bazelrc`, you can pass in `--@rules_python//python/config_settings:python_version=<version>` to your build command to specify that version. 
 
-Note that if you are building a pybind extension, you must pass in the `.*_py_cc_toolchain`. If you are running a python script, you must pass in the `.*_toolchain`. Passing in both is possible.
+If you wish to define a target that uses a different toolchain by default, you may do the following:
+```
+load("@python_<version>//:defs.bzl", py_binary_<version> = "py_binary")
+
+py_binary_<version>(
+  name = "target_name",
+  ...
+)
+```
