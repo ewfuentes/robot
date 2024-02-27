@@ -10,9 +10,10 @@ PYBIND11_MODULE(ekf_slam_python, m) {
     m.doc() = "EKF Slam";
 
     py::class_<EkfSlamConfig>(m, "EkfSlamConfig")
-        .def(py::init<int, double, double, double, double, double, double, double, double,
-                      double, double, double>(),
-             "max_num_beacons"_a, "initial_beacon_uncertainty_m"_a, "along_track_process_noise_m_per_rt_meter"_a,
+        .def(py::init<int, double, double, double, double, double, double, double, double, double,
+                      double, double>(),
+             "max_num_beacons"_a, "initial_beacon_uncertainty_m"_a,
+             "along_track_process_noise_m_per_rt_meter"_a,
              "cross_track_process_noise_m_per_rt_meter"_a, "pos_process_noise_m_per_rt_s"_a,
              "heading_process_noise_rad_per_rt_meter"_a, "heading_process_noise_rad_per_rt_s"_a,
              "beacon_pos_process_noise_m_per_rt_s"_a, "range_measurement_noise_m"_a,
