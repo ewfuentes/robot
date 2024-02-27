@@ -84,23 +84,33 @@ http_archive(
     url = "https://github.com/bazelbuild/rules_python/releases/download/0.31.0/rules_python-0.31.0.tar.gz",
 )
 
-load("@rules_python//python:repositories.bzl", "py_repositories", "python_register_toolchains")
+load("@rules_python//python:repositories.bzl", "py_repositories", "python_register_multi_toolchains")
 py_repositories()
 
-python_register_toolchains(
-    name = "python3_10",
-    python_version = "3.10",
-)
-load("@python3_10//:defs.bzl", "interpreter")
-load("@rules_python//python:pip.bzl", "pip_parse")
-pip_parse(
-  name = "pip",
-  python_interpreter_target = interpreter,
-  requirements_lock = "@//third_party/python:requirements.txt",
+DEFAULT_PYTHON_VERSION = "3.10"
+python_register_multi_toolchains(
+  name="python",
+  python_versions = ['3.10', '3.8.10'],
+  default_version = DEFAULT_PYTHON_VERSION
 )
 
-load("@pip//:requirements.bzl", "install_deps")
-install_deps()
+load("@python//:pip.bzl", "multi_pip_parse")
+
+multi_pip_parse(
+  name="pip",
+  default_version = DEFAULT_PYTHON_VERSION,
+  python_interpreter_target = {
+    "3.8.10": "@python_3_8_10_host//:python",
+    "3.10": "@python_3_10_host//:python"
+  },
+  requirements_lock = {
+    "3.8.10": "//third_party/python:requirements_3_8_10.txt",
+    "3.10": "//third_party/python:requirements_3_10.txt"
+  },
+)
+
+load("@pip//:requirements.bzl", install_pip_deps = "install_deps")
+install_pip_deps()
 
 http_archive(
   name="embag",
