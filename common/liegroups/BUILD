@@ -1,5 +1,8 @@
 
 load("//common/proto:proto.bzl", "multi_proto_library")
+load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
+load("@rules_python//python:defs.bzl", "py_test")
+load("@pip//:requirements.bzl", "requirement")
 
 package(default_visibility=["//visibility:public"])
 
@@ -11,6 +14,25 @@ cc_library(
   ]
 )
 
+pybind_extension(
+  name = "so2_python",
+  srcs = ["so2_python.cc"],
+  deps = [
+    ":so2",
+  ],
+)
+
+py_test(
+  name = "so2_python_test",
+  srcs = ["so2_python_test.py"],
+  data = [
+    ":so2_python.so",
+  ],
+  deps = [
+    requirement("numpy"),
+  ]
+)
+
 cc_library(
   name = "so3",
   hdrs = ["so3.hh"],
@@ -18,7 +40,6 @@ cc_library(
     "@sophus_lie//:liegroups",
   ]
 )
-
 
 cc_library(
   name = "se2",
@@ -37,6 +58,25 @@ cc_test(
     ":se2",
     "@com_google_googletest//:gtest_main",
   ],
+)
+
+pybind_extension(
+  name = "se2_python",
+  srcs = ["se2_python.cc"],
+  deps = [
+    ":se2",
+  ],
+)
+
+py_test(
+  name = "se2_python_test",
+  srcs = ["se2_python_test.py"],
+  data = [
+    ":se2_python.so",
+  ],
+  deps = [
+    requirement("numpy"),
+  ]
 )
 
 cc_library(
