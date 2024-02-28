@@ -99,6 +99,7 @@ cc_test(
   srcs = ["world_map_test.cc"],
   deps = [
     ":world_map",
+    ":correlated_beacons",
     "@com_google_googletest//:gtest_main",
   ]
 )
@@ -707,6 +708,7 @@ cc_library(
     deps = [
       ":ekf_slam",
       ":beacon_potential",
+      ":correlated_beacons",
       "//planning:probabilistic_road_map",
     ]
 )

@@ -4,6 +4,7 @@
 #include <chrono>
 
 #include "common/time/robot_time.hh"
+#include "experimental/beacon_sim/correlated_beacons.hh"
 #include "gtest/gtest.h"
 
 namespace robot::experimental::beacon_sim {
