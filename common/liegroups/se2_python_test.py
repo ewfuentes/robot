@@ -39,6 +39,18 @@ class SE2PythonTest(unittest.TestCase):
         self.assertAlmostEqual(b_from_a_mat[0, 2], 1.0)
         self.assertAlmostEqual(b_from_a_mat[1, 2], 2.0)
 
+        trans = b_from_a.translation()
+        self.assertAlmostEqual(trans[0], 1.0)
+        self.assertAlmostEqual(trans[1], 2.0)
+
+        b_from_a_rot = b_from_a.so2()
+        b_from_a_rot_mat = b_from_a_rot.matrix()
+        self.assertAlmostEqual(b_from_a_rot_mat[0, 0], 1.0)
+        self.assertAlmostEqual(b_from_a_rot_mat[1, 1], 1.0)
+        self.assertAlmostEqual(b_from_a_rot_mat[0, 1], 0.0)
+        self.assertAlmostEqual(b_from_a_rot_mat[1, 0], 0.0)
+
+
     def test_group_operation(self):
         # Setup
         b_from_a = sep.SE2(math.pi / 3.0)

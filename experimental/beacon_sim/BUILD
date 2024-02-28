@@ -141,6 +141,14 @@ cc_test(
   ]
 )
 
+pybind_extension(
+  name = "generate_observations_python",
+  srcs = ["generate_observations_python.cc"],
+  deps = [
+    ":generate_observations",
+  ]
+)
+
 cc_library(
   name = "ekf_slam",
   hdrs = ["ekf_slam.hh"],
@@ -154,20 +162,36 @@ cc_library(
   ]
 )
 
-pybind_extension(
-  name = "ekf_slam_python",
-  srcs = ["ekf_slam_python.cc"],
-  deps = [
-    ":ekf_slam",
-  ]
-)
-
 cc_test(
   name = "ekf_slam_test",
   srcs = ["ekf_slam_test.cc"],
   deps = [
     ":ekf_slam",
     "@com_google_googletest//:gtest_main",
+  ]
+)
+
+pybind_extension(
+  name = "ekf_slam_python",
+  srcs = ["ekf_slam_python.cc"],
+  data = [
+    "//common/time:robot_time_python.so",
+    "//common/liegroups:se2_python.so",
+    ":generate_observations_python.so",
+  ],
+  deps = [
+    ":ekf_slam",
+  ]
+)
+
+py_test(
+  name = "ekf_slam_python_test",
+  srcs = ["ekf_slam_python_test.py"],
+  data = [
+    ":ekf_slam_python.so"
+  ], 
+  deps = [
+    requirement("numpy"),
   ]
 )
 

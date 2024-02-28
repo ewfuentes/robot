@@ -63,9 +63,8 @@ cc_test(
 pybind_extension(
   name = "se2_python",
   srcs = ["se2_python.cc"],
-  deps = [
-    ":se2",
-  ],
+  data = [":so2_python.so"],
+  deps = [":se2"],
 )
 
 py_test(
