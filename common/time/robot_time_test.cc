@@ -45,6 +45,15 @@ TEST(RobotTimeTest, operate_on_left) {
 
     {
         // Action
+        constexpr RobotTimestamp t1 = RobotTimestamp() + DT;
+        constexpr RobotTimestamp t2 = t1 + DT;
+
+        // Verification
+        EXPECT_EQ(t1.time_since_epoch(), DT);
+        EXPECT_EQ(t2.time_since_epoch(), DT + DT);
+    }
+    {
+        // Action
         constexpr RobotTimestamp t = RobotTimestamp() + DT;
 
         // Verification

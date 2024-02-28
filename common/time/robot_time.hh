@@ -34,9 +34,10 @@ class RobotTimestamp {
         return *this;
     }
 
-    constexpr RobotTimestamp &operator+(const duration &duration) noexcept {
-        *this += duration;
-        return *this;
+    constexpr RobotTimestamp operator+(const duration &duration) const noexcept {
+        RobotTimestamp out = *this;
+        out += duration;
+        return out;
     }
 
     static constexpr RobotTimestamp min() noexcept { return RobotTimestamp() + duration::min(); }
@@ -52,12 +53,6 @@ constexpr RobotTimestamp::duration as_duration(const double time_s) {
     const auto num_ticks =
         static_cast<RobotTimestamp::duration::rep>(time_s * ratio_den / ratio_num);
     return RobotTimestamp::duration(num_ticks);
-}
-
-constexpr RobotTimestamp operator+(const RobotTimestamp &a, const RobotTimestamp::duration &b) {
-    RobotTimestamp out = a;
-    out += b;
-    return out;
 }
 
 constexpr RobotTimestamp operator-(const RobotTimestamp &a, const RobotTimestamp::duration &b) {
