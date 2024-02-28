@@ -1,6 +1,7 @@
 load("@pip//:requirements.bzl", "requirement")
 load("//common/proto:proto.bzl", "multi_proto_library")
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
+load("@rules_python//python:packaging.bzl", "py_package", "py_wheel")
 
 multi_proto_library(
   name = "sim_log_proto",
@@ -88,7 +89,7 @@ cc_library(
     "//common:argument_wrapper",
     "//common/time:robot_time",
     "@eigen//:eigen",
-    ":correlated_beacons",
+    ":beacon_potential",
     ":obstacle",
   ],
 )
@@ -98,6 +99,7 @@ cc_test(
   srcs = ["world_map_test.cc"],
   deps = [
     ":world_map",
+    ":correlated_beacons",
     "@com_google_googletest//:gtest_main",
   ]
 )
@@ -149,6 +151,14 @@ cc_library(
     "@eigen//:eigen",
     "//common/liegroups:se2",
     "//common:check",
+  ]
+)
+
+pybind_extension(
+  name = "ekf_slam_python",
+  srcs = ["ekf_slam_python.cc"],
+  deps = [
+    ":ekf_slam",
   ]
 )
 
@@ -698,6 +708,7 @@ cc_library(
     deps = [
       ":ekf_slam",
       ":beacon_potential",
+      ":correlated_beacons",
       "//planning:probabilistic_road_map",
     ]
 )
@@ -790,5 +801,30 @@ cc_binary(
     ":world_map_config_to_proto",
     ":mapped_landmarks_to_proto",
     "//planning:road_map_to_proto",
+  ]
+)
+
+py_package(
+  name = "beacon_sim_package",
+  deps = [
+    ":ekf_slam_python.so",
+  ],
+)
+
+py_wheel(
+  name = "beacon_sim_wheel",
+  distribution = "beacon_sim",
+  version = "0.0.1",
+  platform = "manylinux2014_x86_64",
+  python_tag = select({
+    "@rules_python//python/config_settings:is_python_3.10": "cp310",
+    "@rules_python//python/config_settings:is_python_3.8": "cp38",
+  }),
+  abi = select({
+    "@rules_python//python/config_settings:is_python_3.10": "cp310",
+    "@rules_python//python/config_settings:is_python_3.8": "cp38",
+  }),
+  deps = [
+    ":beacon_sim_package",
   ]
 )
