@@ -2,6 +2,8 @@
 package(default_visibility=["//visibility:public"])
 
 load("@//common/proto:proto.bzl", "multi_proto_library")
+load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
+load("@rules_python//python:defs.bzl", "py_test")
 
 cc_library(
   name = "sim_clock",
@@ -35,6 +37,18 @@ cc_test(
     "@com_google_googletest//:gtest_main",
    ":sim_clock",
   ]
+)
+
+pybind_extension(
+  name = "robot_time_python",
+  srcs = ["robot_time_python.cc"],
+  deps = [":robot_time"],
+)
+
+py_test(
+  name = "robot_time_python_test",
+  srcs = ["robot_time_python_test.py"],
+  data = [":robot_time_python.so"],
 )
 
 multi_proto_library(
