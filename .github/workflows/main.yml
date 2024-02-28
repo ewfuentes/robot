@@ -51,6 +51,9 @@ jobs:
         run: |
           echo ${{ env.cache_auth }} | base64 --decode > ${{ runner.temp }}/${{ env.cache_secret_file }}
 
+      - name: Delete huge unnecessary tools folder
+        run: rm -rf /opt/hostedtoolcache
+
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - name: Checking out  ${{ github.sha }}
         uses: actions/checkout@v4
