@@ -1,9 +1,8 @@
 
 #include "common/time/robot_time.hh"
-
-#include "pybind11/pybind11.h"
-#include "pybind11/operators.h"
 #include "pybind11/chrono.h"
+#include "pybind11/operators.h"
+#include "pybind11/pybind11.h"
 
 namespace py = pybind11;
 
@@ -30,4 +29,4 @@ PYBIND11_MODULE(robot_time_python, m) {
         .def(py::self <= py::self)
         .def(py::self >= py::self);
 }
-}
+}  // namespace robot::time
