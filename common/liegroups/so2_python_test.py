@@ -3,6 +3,7 @@ import unittest
 
 import common.liegroups.so2_python as sop
 import math
+import numpy as np
 
 
 class SO2PythonTest(unittest.TestCase):
@@ -82,6 +83,18 @@ class SO2PythonTest(unittest.TestCase):
         self.assertAlmostEqual(b_from_a_mat[0, 1], a_from_b_mat[1, 0])
         self.assertAlmostEqual(b_from_a_mat[1, 0], a_from_b_mat[0, 1])
         self.assertAlmostEqual(b_from_a_mat[1, 1], a_from_b_mat[1, 1])
+
+    def test_group_action_on_point(self):
+        # Setup
+        b_from_a = sop.SO2(math.pi / 3.0)
+        pt_in_a = np.array([1.0, 0.0])
+
+        # Action
+        pt_in_b = b_from_a * pt_in_a
+
+        # Verification
+        self.assertAlmostEqual(pt_in_b[0], 0.5)
+        self.assertAlmostEqual(pt_in_b[1], math.sqrt(3) / 2.0)
 
 if __name__ == "__main__":
     unittest.main()

@@ -15,6 +15,7 @@ PYBIND11_MODULE(so2_python, m) {
         .def("log", &SO2::log)
         .def("inverse", [](const SO2 &a) -> SO2 { return a.inverse(); })
         .def("matrix", &SO2::matrix)
+        .def(py::self * Eigen::Vector2d())
         .def(
             "__mul__", [](const SO2 &a, const SO2 &b) -> SO2 { return a * b; }, py::is_operator())
         .def(

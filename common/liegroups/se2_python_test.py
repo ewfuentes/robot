@@ -105,6 +105,18 @@ class SE2PythonTest(unittest.TestCase):
         total_error = np.sum(np.abs(a_from_a_mat - np.identity(3)))
         self.assertAlmostEqual(total_error, 0.0)
 
+    def test_group_action_on_point(self):
+        # Setup
+        b_from_a = sep.SE2(math.pi / 3.0, np.array([2.0, 3.0]))
+        pt_in_a = np.array([1.0, 0.0])
+
+        # Action
+        pt_in_b = b_from_a * pt_in_a
+
+        # Verification
+        self.assertAlmostEqual(pt_in_b[0], 0.5 + 2.0)
+        self.assertAlmostEqual(pt_in_b[1], math.sqrt(3) / 2.0 + 3.0)
+
 
 if __name__ == "__main__":
     unittest.main()
