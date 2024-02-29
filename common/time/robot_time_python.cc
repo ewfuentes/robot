@@ -4,6 +4,9 @@
 #include "pybind11/operators.h"
 #include "pybind11/pybind11.h"
 
+#include <iomanip>
+#include <sstream>
+
 namespace py = pybind11;
 
 namespace robot::time {
@@ -27,6 +30,12 @@ PYBIND11_MODULE(robot_time_python, m) {
         .def(py::self < py::self)
         .def(py::self > py::self)
         .def(py::self <= py::self)
-        .def(py::self >= py::self);
+        .def(py::self >= py::self)
+        .def("__repr__", [](const RobotTimestamp &time)
+             { 
+             std::ostringstream ss;
+             ss << std::fixed << std::setprecision(9) << std::chrono::duration<double>(time.time_since_epoch()).count();
+             return ss.str();
+             });
 }
 }  // namespace robot::time
