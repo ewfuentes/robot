@@ -1,6 +1,8 @@
 
 #include "experimental/beacon_sim/ekf_slam.hh"
+#include "pybind11/eigen.h"
 #include "pybind11/pybind11.h"
+#include "pybind11/stl.h"
 
 namespace py = pybind11;
 using namespace pybind11::literals;
@@ -39,5 +41,27 @@ PYBIND11_MODULE(ekf_slam_python, m) {
                        &EkfSlamConfig::on_map_load_position_uncertainty_m)
         .def_readwrite("on_map_load_heading_uncertainty_rad",
                        &EkfSlamConfig::on_map_load_heading_uncertainty_rad);
+
+    py::class_<EkfSlamEstimate>(m, "EkfSlamEstimate")
+        .def_readwrite("time_of_validity", &EkfSlamEstimate::time_of_validity)
+        .def_readwrite("mean", &EkfSlamEstimate::mean)
+        .def_readwrite("cov", &EkfSlamEstimate::cov)
+        .def_readwrite("beacon_ids", &EkfSlamEstimate::beacon_ids)
+        .def("local_from_robot",
+             py::overload_cast<const liegroups::SE2 &>(&EkfSlamEstimate::local_from_robot))
+        .def("local_from_robot",
+             py::overload_cast<>(&EkfSlamEstimate::local_from_robot, py::const_))
+        .def("robot_cov", &EkfSlamEstimate::robot_cov)
+        .def("beacon_in_local", &EkfSlamEstimate::beacon_in_local)
+        .def("beacon_cov", &EkfSlamEstimate::beacon_cov);
+
+    py::class_<EkfSlam>(m, "EkfSlam")
+        .def(py::init<const EkfSlamConfig &, const time::RobotTimestamp &>())
+        .def("load_map", &EkfSlam::load_map)
+        .def("predict", &EkfSlam::predict)
+        .def("update", &EkfSlam::update)
+        .def("estimate", py::overload_cast<>(&EkfSlam::estimate, py::const_))
+        .def("estimate", py::overload_cast<>(&EkfSlam::estimate))
+        .def("config", &EkfSlam::config);
 }
 }  // namespace robot::experimental::beacon_sim
