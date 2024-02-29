@@ -1,6 +1,5 @@
 
 #include "experimental/beacon_sim/generate_observations.hh"
-
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
 
@@ -14,6 +13,4 @@ PYBIND11_MODULE(generate_observations_python, m) {
         .def_readwrite("maybe_range_m", &BeaconObservation::maybe_range_m)
         .def_readwrite("maybe_bearing_rad", &BeaconObservation::maybe_bearing_rad);
 }
-}
-
-
+}  // namespace robot::experimental::beacon_sim

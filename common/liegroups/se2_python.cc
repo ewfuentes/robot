@@ -4,8 +4,6 @@
 #include "pybind11/operators.h"
 #include "pybind11/pybind11.h"
 
-#include <iostream>
-
 namespace py = pybind11;
 
 namespace robot::liegroups {
