@@ -60,8 +60,7 @@ PYBIND11_MODULE(ekf_slam_python, m) {
         .def("load_map", &EkfSlam::load_map)
         .def("predict", &EkfSlam::predict)
         .def("update", &EkfSlam::update)
-        .def("estimate", py::overload_cast<>(&EkfSlam::estimate, py::const_))
-        .def("estimate", py::overload_cast<>(&EkfSlam::estimate))
+        .def_property("estimate", py::overload_cast<>(&EkfSlam::estimate, py::const_), py::overload_cast<>(&EkfSlam::estimate))
         .def("config", &EkfSlam::config);
 }
 }  // namespace robot::experimental::beacon_sim
