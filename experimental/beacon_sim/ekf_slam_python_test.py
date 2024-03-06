@@ -41,7 +41,7 @@ class EkfSlamPythonTest(unittest.TestCase):
             ekf.predict(current_time, old_robot_from_new_robot)
 
             # Compute the observation
-            beacon_in_robot = ekf.estimate().local_from_robot().inverse() * BEACON_IN_LOCAL
+            beacon_in_robot = ekf.estimate.local_from_robot().inverse() * BEACON_IN_LOCAL
 
             range_m = np.linalg.norm(beacon_in_robot)
             bearing_rad = np.arctan2(beacon_in_robot[1], beacon_in_robot[0])
@@ -51,7 +51,7 @@ class EkfSlamPythonTest(unittest.TestCase):
             ekf.update([obs])
 
         # Verification
-        est_beacon_in_local = ekf.estimate().beacon_in_local(BEACON_ID)
+        est_beacon_in_local = ekf.estimate.beacon_in_local(BEACON_ID)
         self.assertAlmostEqual(est_beacon_in_local[0], BEACON_IN_LOCAL[0])
         self.assertAlmostEqual(est_beacon_in_local[1], BEACON_IN_LOCAL[1])
 
