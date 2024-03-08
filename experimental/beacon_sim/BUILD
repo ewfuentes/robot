@@ -393,6 +393,7 @@ cc_library(
     "//common:check",
     "//common/math:combinations",
     "//common/math:multivariate_normal_cdf",
+    "//common/math:logsumexp",
     "//common/time:robot_time",
     "//planning:belief_road_map",
     "//planning:probabilistic_road_map",

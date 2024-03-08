@@ -160,25 +160,36 @@ PlannerResult run_planner(const planning::RoadMap &road_map, const EkfSlam &ekf,
                                      : std::nullopt};
 }
 
-PlannerResult run_planner(
-    [[maybe_unused]] const planning::RoadMap &road_map, [[maybe_unused]] const EkfSlam &ekf,
-    [[maybe_unused]] const BeaconPotential &beacon_potential,
-    [[maybe_unused]] const proto::ExpectedBRMPlanner &config,
-    [[maybe_unused]] const double max_sensor_range_m,
-    [[maybe_unused]] const std::optional<time::RobotTimestamp::duration> &timeout) {
-    // const auto plan = compute_landmark_belief_road_map_plan(
-    //     road_map, ekf, beacon_potential,
-    //     {.max_sensor_range_m = max_sensor_range_m,
-    //      .sampled_belief_options =
-    //          config.has_max_num_components()
-    //              ? std::make_optional(LandmarkBeliefRoadMapOptions::SampledBeliefOptions{
-    //                    .max_num_components = config.max_num_components(), .seed = 12345})
-    //              : std::nullopt,
-    //      .timeout = timeout
-    //              });
-    // CHECK(plan.has_value());
-    // return plan->nodes;
-    return {};
+PlannerResult run_planner(const planning::RoadMap &road_map, [[maybe_unused]] const EkfSlam &ekf,
+                          const BeaconPotential &beacon_potential,
+                          const proto::ExpectedBRMPlanner &config, const double max_sensor_range_m,
+                          const std::optional<time::RobotTimestamp::duration> &timeout) {
+    const ExpectedBeliefRoadMapOptions options = {
+        .num_configuration_samples = config.num_configuration_samples(),
+        .seed = 12345,
+        .brm_options =
+            {
+                .max_sensor_range_m = max_sensor_range_m,
+                .uncertainty_tolerance = std::nullopt,
+                .max_num_edge_transforms = std::numeric_limits<int>::max(),
+                .timeout = timeout,
+            },
+    };
+
+    const time::RobotTimestamp start_time = time::current_robot_time();
+    const auto maybe_plan =
+        compute_expected_belief_road_map_plan(road_map, ekf, beacon_potential, options);
+    const time::RobotTimestamp::duration elapsed_time = time::current_robot_time() - start_time;
+
+    return {
+        .elapsed_time = elapsed_time,
+        .plan = maybe_plan.has_value()
+                    ? std::make_optional(PlannerResult::Plan{
+                          .nodes = maybe_plan->nodes,
+                          .log_prob_mass_tracked = maybe_plan->log_probability_mass_tracked,
+                      })
+                    : std::nullopt,
+    };
 }
 
 PlannerResult run_planner(const planning::RoadMap &road_map, const EkfSlam &ekf,

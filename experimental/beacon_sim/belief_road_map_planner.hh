@@ -68,6 +68,7 @@ struct PathConstrainedBeliefPlanResult {
 
 struct ExpectedBeliefPlanResult {
     std::vector<int> nodes;
+    double log_probability_mass_tracked;
 };
 
 struct ExpectedBeliefRoadMapOptions {
