@@ -41,6 +41,7 @@ PYBIND11_MODULE(correlated_beacons_python, m) {
         });
 
     py::class_<BeaconPotential>(m, "BeaconPotential")
+        .def(py::init<>())
         .def_static(
             "correlated_beacon_potential",
             [](const double p_present, const double p_beacon_given_present,
