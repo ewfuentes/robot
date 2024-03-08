@@ -878,6 +878,7 @@ py_package(
   name = "beacon_sim_package",
   deps = [
     ":ekf_slam_python.so",
+    ":belief_road_map_planner_python.so",
   ],
 )
 
