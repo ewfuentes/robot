@@ -411,6 +411,31 @@ cc_test(
   ],
 )
 
+pybind_extension(
+  name = "belief_road_map_planner_python",
+  srcs = ["belief_road_map_planner_python.cc"],
+  data = [
+    ":robot_belief_python.so"
+  ],
+  deps = [
+    ":belief_road_map_planner",
+  ]
+)
+
+py_test(
+  name = "belief_road_map_planner_python_test",
+  srcs = ["belief_road_map_planner_python_test.py"],
+  data = [
+    "//planning:probabilistic_road_map_python.so",
+    ":belief_road_map_planner_python.so",
+    ":ekf_slam_python.so",
+    ":test_helpers_python.so",
+  ],
+  deps = [
+  ]
+
+)
+
 cc_binary(
   name = "run_trials",
   srcs = ["run_trials.cc"],
@@ -726,6 +751,14 @@ cc_library(
   ]
 )
 
+pybind_extension(
+  name = "robot_belief_python",
+  srcs = ["robot_belief_python.cc"],
+  deps = [
+    ":robot_belief",
+  ]
+)
+
 cc_library(
     name = "test_helpers",
     hdrs = ["test_helpers.hh"],
@@ -736,6 +769,18 @@ cc_library(
       ":correlated_beacons",
       "//planning:probabilistic_road_map",
     ]
+)
+
+pybind_extension(
+  name = "test_helpers_python",
+  srcs = ["test_helpers_python.cc"],
+  data = [
+    ":correlated_beacons_python.so",
+    "//planning:probabilistic_road_map_python.so",
+  ],
+  deps = [
+    ":test_helpers",
+  ]
 )
 
 cc_library(
@@ -833,6 +878,7 @@ py_package(
   name = "beacon_sim_package",
   deps = [
     ":ekf_slam_python.so",
+    ":belief_road_map_planner_python.so",
   ],
 )
 
