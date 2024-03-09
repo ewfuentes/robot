@@ -1,14 +1,9 @@
 load("@rules_foreign_cc//foreign_cc:defs.bzl", "cmake")
-load("@robot//toolchain:cmake_crosstool.bzl", "cmake_crosstool")
 package(features=["-warning_compile_flags", "-cpp_compile_flags"])
 
 filegroup(
   name = "all",
   srcs = glob(["**"]),
-)
-
-cmake_crosstool(
-  name = "opencv_crosstool",
 )
 
 SHARED_LIBS = [
@@ -20,23 +15,28 @@ SHARED_LIBS = [
   "libopencv_flann.so",
 ]
 
+cc_library(
+  name = "opencv_deps",
+  linkopts = [
+    "-lstdc++",
+  ]
+)
+
 cmake(
     name = "opencv",
     generate_args = [
         "-GNinja",
         "-DBUILD_LIST=core,highgui,imgcodecs,imgproc,python3,features2d,flann",
         "-DCMAKE_CXX_STANDARD=20",
+        "-DCMAKE_CXX_FLAGS=-Wno-deprecated-enum-enum-conversion",
+	"-DCMAKE_CXX_STANDARD_LIBRARIES=-lstdc++"
     ],
-    cache_entries={
-      "CMAKE_TOOLCHAIN_FILE": "${EXT_BUILD_ROOT}/${CROSSTOOL_PATH}",
-    },
-    env = {
-      "CROSSTOOL_PATH": "$(location :opencv_crosstool)"
-    },
-    lib_source = "@opencv//:all",
-    out_include_dir = "include/opencv4",
+    build_args = [
+    ],
     generate_crosstool_file = False,
-    data = [":opencv_crosstool"],
+    lib_source = "@opencv//:all",
+    includes = ["opencv4"],
+    deps = [":opencv_deps"],
     out_shared_libs = SHARED_LIBS + 
     [lib + ".407" for lib in SHARED_LIBS],
     visibility = ["//visibility:public"],

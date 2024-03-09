@@ -2,6 +2,21 @@ workspace(name = "robot")
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 http_archive(
+    name = "platforms",
+    urls = [
+        "https://mirror.bazel.build/github.com/bazelbuild/platforms/releases/download/0.0.8/platforms-0.0.8.tar.gz",
+        "https://github.com/bazelbuild/platforms/releases/download/0.0.8/platforms-0.0.8.tar.gz",
+    ],
+    sha256 = "8150406605389ececb6da07cbcb509d5637a3ab9a24bc69b1101531367d89d74",
+)
+
+register_toolchains(
+  "//toolchain:clang_toolchain_for_linux_x84_64",
+  "//toolchain:gcc_10_toolchain_for_linux_x84_64",
+  "//toolchain:gcc_11_toolchain_for_linux_x84_64",
+)
+
+http_archive(
     name = "rules_pkg",
     urls = [
         "https://mirror.bazel.build/github.com/bazelbuild/rules_pkg/releases/download/0.8.0/rules_pkg-0.8.0.tar.gz",
@@ -147,9 +162,9 @@ http_archive(
 
 http_archive(
     name = "rules_foreign_cc",
-    sha256 = "bdaa954208400a084cb19f8271dd81524a8d1fb341da3e2694e2781244670ed9",
-    strip_prefix = "rules_foreign_cc-62230f8a2123a64b411a3888f75128a10bfe0755",
-    url = "https://github.com/bazelbuild/rules_foreign_cc/archive/62230f8a2123a64b411a3888f75128a10bfe0755.tar.gz",
+    sha256 = "476303bd0f1b04cc311fc258f1708a5f6ef82d3091e53fd1977fa20383425a6a",
+    strip_prefix = "rules_foreign_cc-0.10.1",
+    url = "https://github.com/bazelbuild/rules_foreign_cc/releases/download/0.10.1/rules_foreign_cc-0.10.1.tar.gz",
 )
 
 load("@rules_foreign_cc//foreign_cc:repositories.bzl", "rules_foreign_cc_dependencies")
