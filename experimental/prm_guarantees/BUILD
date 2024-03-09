@@ -26,7 +26,6 @@ py_library(
     requirement("triton"),
     requirement("torch")
   ]
-
 )
 
 py_test(
