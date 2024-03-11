@@ -2,6 +2,16 @@ workspace(name = "robot")
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 http_archive(
+  name = "aarch64-none-linux-gnu",
+  urls = [
+    "https://toolchains.bootlin.com/downloads/releases/toolchains/aarch64/tarballs/aarch64--glibc--stable-2020.08-1.tar.bz2"
+  ],
+  strip_prefix="aarch64--glibc--stable-2020.08-1",
+  build_file="//third_party:BUILD.aarch64-none-linux-gnu",
+  integrity = "sha256-irei8Xy5ZiGwSKsKhyZQ3WL6pUzXTJYbmQK4wEv/fdE="
+)
+
+http_archive(
     name = "platforms",
     urls = [
         "https://mirror.bazel.build/github.com/bazelbuild/platforms/releases/download/0.0.8/platforms-0.0.8.tar.gz",
@@ -14,6 +24,7 @@ register_toolchains(
   "//toolchain:clang_toolchain_for_linux_x84_64",
   "//toolchain:gcc_10_toolchain_for_linux_x84_64",
   "//toolchain:gcc_11_toolchain_for_linux_x84_64",
+  "//toolchain:gcc_toolchain_for_linux_aarch64",
 )
 
 http_archive(
