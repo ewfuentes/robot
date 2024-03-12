@@ -1,5 +1,10 @@
 
+#include <filesystem>
+
+#include "common/proto/load_from_file.hh"
 #include "experimental/beacon_sim/ekf_slam.hh"
+#include "experimental/beacon_sim/extract_mapped_landmarks.hh"
+#include "experimental/beacon_sim/mapped_landmarks_to_proto.hh"
 #include "pybind11/eigen.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
@@ -57,7 +62,36 @@ PYBIND11_MODULE(ekf_slam_python, m) {
 
     py::class_<EkfSlam>(m, "EkfSlam")
         .def(py::init<const EkfSlamConfig &, const time::RobotTimestamp &>())
-        .def("load_map", &EkfSlam::load_map)
+        .def(py::init<const EkfSlam &>())
+        .def("load_map",
+             [](EkfSlam &ekf, const std::string &path) -> bool {
+                 const std::filesystem::path load_path = path;
+                 const auto maybe_mapped_landmarks =
+                     robot::proto::load_from_file<proto::MappedLandmarks>(load_path);
+                 if (!maybe_mapped_landmarks.has_value()) {
+                     return false;
+                 }
+                 const auto mapped_landmarks = unpack_from(maybe_mapped_landmarks.value());
+                 constexpr bool LOAD_OFF_DIAGONALS = true;
+                 ekf.load_map(mapped_landmarks, LOAD_OFF_DIAGONALS);
+                 return true;
+             })
+        .def("save_map",
+             [](const EkfSlam &ekf, const std::string &path) -> bool {
+                 const std::filesystem::path save_path = path;
+                 const auto mapped_landmarks = extract_mapped_landmarks(ekf.estimate());
+
+                 std::filesystem::create_directories(save_path.parent_path());
+                 std::ofstream out(save_path);
+                 if (!out.is_open()) {
+                     return false;
+                 }
+
+                 proto::MappedLandmarks proto;
+                 pack_into(mapped_landmarks, &proto);
+                 proto.SerializeToOstream(&out);
+                 return true;
+             })
         .def("predict", &EkfSlam::predict)
         .def("update", &EkfSlam::update)
         .def_property("estimate", py::overload_cast<>(&EkfSlam::estimate, py::const_),

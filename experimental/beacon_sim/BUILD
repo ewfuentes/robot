@@ -181,6 +181,9 @@ pybind_extension(
   ],
   deps = [
     ":ekf_slam",
+    ":extract_mapped_landmarks",
+    "//common/proto:load_from_file",
+    ":mapped_landmarks_to_proto",
   ]
 )
 
