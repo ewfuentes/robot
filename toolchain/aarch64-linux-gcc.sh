@@ -1,3 +1,4 @@
 #!/bin/bash
-set -euo pipefail
-external/aarch64-none-linux-gnu/bin/aarch64-linux-gcc "$@"
+set -euox pipefail
+echo $PWD
+external/aarch64-none-linux-gnu/bin/aarch64-linux-gcc "$@" 
