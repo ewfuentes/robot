@@ -5,7 +5,7 @@
 
 #include "common/liegroups/se2.hh"
 #include "common/time/robot_time.hh"
-#include "experimental/beacon_sim/correlated_beacons.hh"
+#include "experimental/beacon_sim/beacon_potential.hh"
 #include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/robot_belief.hh"
 #include "planning/belief_road_map.hh"

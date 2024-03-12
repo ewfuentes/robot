@@ -24,7 +24,6 @@
 #include "common/math/multivariate_normal_cdf.hh"
 #include "common/math/redheffer_star.hh"
 #include "common/time/robot_time.hh"
-#include "experimental/beacon_sim/correlated_beacons.hh"
 #include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/generate_observations.hh"
 #include "experimental/beacon_sim/make_belief_updater.hh"
