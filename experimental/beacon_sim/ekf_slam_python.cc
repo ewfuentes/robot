@@ -3,6 +3,7 @@
 
 #include "common/proto/load_from_file.hh"
 #include "experimental/beacon_sim/ekf_slam.hh"
+#include "experimental/beacon_sim/ekf_slam_estimate_to_proto.hh"
 #include "experimental/beacon_sim/extract_mapped_landmarks.hh"
 #include "experimental/beacon_sim/mapped_landmarks_to_proto.hh"
 #include "pybind11/eigen.h"
@@ -58,7 +59,19 @@ PYBIND11_MODULE(ekf_slam_python, m) {
              py::overload_cast<>(&EkfSlamEstimate::local_from_robot, py::const_))
         .def("robot_cov", &EkfSlamEstimate::robot_cov)
         .def("beacon_in_local", &EkfSlamEstimate::beacon_in_local)
-        .def("beacon_cov", &EkfSlamEstimate::beacon_cov);
+        .def("beacon_cov", &EkfSlamEstimate::beacon_cov)
+        .def("to_proto_string", [](const EkfSlamEstimate &est){
+            proto::EkfSlamEstimate proto;
+            pack_into(est, &proto);
+            std::string out;
+            proto.SerializeToString(&out);
+            return py::bytes(out);
+        })
+        .def_static("from_proto_string", [](const std::string &proto_string){
+            proto::EkfSlamEstimate proto;
+            proto.ParseFromString(proto_string);
+            return unpack_from(proto);
+        });
 
     py::class_<EkfSlam>(m, "EkfSlam")
         .def(py::init<const EkfSlamConfig &, const time::RobotTimestamp &>())
