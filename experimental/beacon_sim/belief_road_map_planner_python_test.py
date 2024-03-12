@@ -3,7 +3,7 @@ import unittest
 import experimental.beacon_sim.belief_road_map_planner_python as brm
 import experimental.beacon_sim.test_helpers_python as helpers
 import experimental.beacon_sim.ekf_slam_python as esp
-import experimental.beacon_sim.correlated_beacons_python as cbp
+import experimental.beacon_sim.beacon_potential_python as bpp 
 
 
 class BeliefRoadMapPlannerPythonTest(unittest.TestCase):
@@ -74,7 +74,7 @@ class BeliefRoadMapPlannerPythonTest(unittest.TestCase):
             ekf_config, P_LONE_BEACON
         )
 
-        potential = cbp.BeaconPotential()
+        potential = bpp.BeaconPotential()
 
         # Action
         plan = brm.compute_belief_road_map_plan(road_map, ekf, potential, brm_options)

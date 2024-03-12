@@ -393,6 +393,7 @@ cc_library(
     ":robot",
     ":robot_belief",
     ":make_belief_updater",
+    ":beacon_potential",
     "//common:check",
     "//common/math:combinations",
     "//common/math:multivariate_normal_cdf",
@@ -418,7 +419,8 @@ pybind_extension(
   name = "belief_road_map_planner_python",
   srcs = ["belief_road_map_planner_python.cc"],
   data = [
-    ":robot_belief_python.so"
+    ":robot_belief_python.so",
+    ":beacon_potential_python.so",
   ],
   deps = [
     ":belief_road_map_planner",
@@ -523,6 +525,14 @@ cc_library(
     ":precision_matrix_potential",
     ":correlated_beacon_potential",
   ],
+)
+
+pybind_extension(
+  name = "beacon_potential_python",
+  srcs = ["beacon_potential_python.cc"],
+  deps = [
+    ":beacon_potential",
+  ]
 )
 
 cc_test(
@@ -641,10 +651,12 @@ pybind_extension(
   name = "correlated_beacons_python",
   srcs = ["correlated_beacons_python.cc"],
   visibility=["//common/python:__subpackages__"],
+  data = [
+    ":beacon_potential_python.so",
+  ],
   deps = [
     ":correlated_beacons",
     ":beacon_potential",
-    ":correlated_beacon_potential",
   ]
 )
 
@@ -701,7 +713,7 @@ cc_library(
   deps = [
     "@eigen",
     ":ekf_slam",
-    ":correlated_beacons",
+    ":beacon_potential",
     ":robot_belief",
     "//common:check",
     "//common/liegroups:se2",
@@ -861,6 +873,7 @@ cc_binary(
   name = "run_experiment",
   srcs = ["run_experiment.cc"],
   data = [":experiment_configs"],
+  linkopts = ["-ltbb"],
   deps = [
     "@cxxopts",
     "//common:check",
