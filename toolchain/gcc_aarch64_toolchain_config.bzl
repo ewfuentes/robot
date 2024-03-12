@@ -61,13 +61,13 @@ def _impl(ctx):
                   "-isystem",
                   "external/aarch64-none-linux-gnu/aarch64-buildroot-linux-gnu/include",
                   "-isystem",
-                  "external/aarch64-none-linux-gnu/aarch64-buildroot-linux-gnu/include/c++/9.3.0",
+                  "external/aarch64-none-linux-gnu/aarch64-buildroot-linux-gnu/include/c++/10.2.0",
                   "-isystem",
-                  "external/aarch64-none-linux-gnu/aarch64-buildroot-linux-gnu/include/c++/9.3.0/aarch64-buildroot-linux-gnu",
+                  "external/aarch64-none-linux-gnu/aarch64-buildroot-linux-gnu/include/c++/10.2.0/aarch64-buildroot-linux-gnu",
                   "-isystem",
-                  "external/aarch64-none-linux-gnu/lib/gcc/aarch64-buildroot-linux-gnu/9.3.0/include",
+                  "external/aarch64-none-linux-gnu/lib/gcc/aarch64-buildroot-linux-gnu/10.2.0/include",
                   "-isystem",
-                  "external/aarch64-none-linux-gnu/lib/gcc/aarch64-buildroot-linux-gnu/9.3.0/include-fixed",
+                  "external/aarch64-none-linux-gnu/lib/gcc/aarch64-buildroot-linux-gnu/10.2.0/include-fixed",
                 ]
               )
             ]
@@ -135,7 +135,7 @@ def _impl(ctx):
               actions = [ACTION_NAMES.c_compile],
               flag_groups = [
                 flag_group(
-                  flags=["-fPIC"],
+                  flags=["-fPIC", "-no-canonical-prefixes", "-fno-canonical-system-headers"],
                 )
               ]
             )
