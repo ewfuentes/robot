@@ -122,14 +122,12 @@ def clean_up_tar_file(file_path):
 
 def main():
     # Build the docker container
-    # print('Building Docker Container')
-    # tag = build_docker_container()
+    print('Building Docker Container')
+    tag = build_docker_container()
 
-    # # Export the filesystem as a tar file
-    # print('Exporting Docker Container')
-    # file_path = export_docker_filesystem(tag)
-
-    file_path = "/tmp/jetson.tar"
+    # Export the filesystem as a tar file
+    print('Exporting Docker Container')
+    file_path = export_docker_filesystem(tag)
 
     # Remove unneeded files
     print('Removing Unneeded files')
