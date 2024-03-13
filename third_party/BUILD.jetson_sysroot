@@ -1,0 +1,6 @@
+
+filegroup(
+  name = "jetson_sysroot",
+  srcs = glob(["**/*"]),
+  visibility=["//visibility:public"],
+)
