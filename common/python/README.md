@@ -9,7 +9,7 @@ To add new versions of Python, locate the `python_register_multi_toolchains` inv
 DEFAULT_PYTHON_VERSION = "3.10"
 python_register_multi_toolchains(
   name="python",
-  python_versions = ['3.10', '3.8.10'], # add new entry here
+  python_versions = ['3.10', '3.8'], # add new entry here
   default_version = DEFAULT_PYTHON_VERSION
 )
 
@@ -19,11 +19,11 @@ multi_pip_parse(
   name="pip",
   default_version = DEFAULT_PYTHON_VERSION,
   python_interpreter_target = {
-    "3.8.10": "@python_3_8_10_host//:python",
+    "3.8": "@python_3_8_host//:python",
     "3.10": "@python_3_10_host//:python"
   },
   requirements_lock = {
-    "3.8.10": "//third_party/python:requirements_3_8_10.txt",
+    "3.8": "//third_party/python:requirements_3_8.txt",
     "3.10": "//third_party/python:requirements_3_10.txt"
     # Add new entry here
   },

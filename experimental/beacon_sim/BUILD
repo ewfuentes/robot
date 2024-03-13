@@ -902,7 +902,10 @@ py_wheel(
   name = "beacon_sim_wheel",
   distribution = "beacon_sim",
   version = "0.0.1",
-  platform = "manylinux2014_x86_64",
+  platform = select({
+    "@platforms//cpu:x86_64": "manylinux2014_x86_64",
+    "@platforms//cpu:aarch64": "manylinux2014_aarch64",
+  }),
   python_tag = select({
     "@rules_python//python/config_settings:is_python_3.10": "cp310",
     "@rules_python//python/config_settings:is_python_3.8": "cp38",

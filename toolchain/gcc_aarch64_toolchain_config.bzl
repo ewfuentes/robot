@@ -57,9 +57,11 @@ def _impl(ctx):
               flag_group(
                 flags=[
                   "--sysroot", 
-                  "external/aarch64-none-linux-gnu/aarch64-buildroot-linux-gnu/sysroot",
+                  "external/jetson_sysroot",
                   "-isystem",
-                  "external/aarch64-none-linux-gnu/aarch64-buildroot-linux-gnu/include",
+                  "external/jetson_sysroot/usr/include/aarch64-linux-gnu",
+                  # "-isystem",
+                  # "external/aarch64-none-linux-gnu/aarch64-buildroot-linux-gnu/include",
                   "-isystem",
                   "external/aarch64-none-linux-gnu/aarch64-buildroot-linux-gnu/include/c++/10.2.0",
                   "-isystem",
@@ -85,6 +87,9 @@ def _impl(ctx):
                 flags=[
                   "-lstdc++",
                   "-lm", 
+                  "--sysroot", 
+                  "external/jetson_sysroot",
+                  "-Lexternal/jetson_sysroot/lib/aarch64-linux-gnu",
                 ],
               ),
             ],

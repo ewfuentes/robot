@@ -12,6 +12,13 @@ http_archive(
 )
 
 http_archive(
+  name = "jetson_sysroot",
+  urls = ["https://www.dropbox.com/scl/fi/39qmmgn3mdnhj14sa21zl/cleaned_jetson.tar?rlkey=2fq8ynle042p6ojhprz3vjis3&dl=1"],
+  build_file = "//third_party:BUILD.jetson_sysroot",
+  integrity = "sha256-CVtgQSRXe8o2wMjNcJrxtlUxiHZY9ZQJ0kde8BkrTPw="
+)
+
+http_archive(
     name = "platforms",
     urls = [
         "https://mirror.bazel.build/github.com/bazelbuild/platforms/releases/download/0.0.8/platforms-0.0.8.tar.gz",
@@ -116,7 +123,7 @@ py_repositories()
 DEFAULT_PYTHON_VERSION = "3.10"
 python_register_multi_toolchains(
   name="python",
-  python_versions = ['3.10', '3.8.10'],
+  python_versions = ['3.10', '3.8'],
   default_version = DEFAULT_PYTHON_VERSION
 )
 
@@ -126,11 +133,11 @@ multi_pip_parse(
   name="pip",
   default_version = DEFAULT_PYTHON_VERSION,
   python_interpreter_target = {
-    "3.8.10": "@python_3_8_10_host//:python",
+    "3.8": "@python_3_8_host//:python",
     "3.10": "@python_3_10_host//:python"
   },
   requirements_lock = {
-    "3.8.10": "//third_party/python:requirements_3_8_10.txt",
+    "3.8": "//third_party/python:requirements_3_8.txt",
     "3.10": "//third_party/python:requirements_3_10.txt"
   },
 )

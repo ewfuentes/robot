@@ -1,7 +1,7 @@
 load("@pip//:requirements.bzl", "requirement", "data_requirement")
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
 load("@rules_python//python:defs.bzl", "py_binary")
-load("@python//3.8.10:defs.bzl", py_test_3_8_10 = "py_test")
+load("@python//3.8:defs.bzl", py_test_3_8 = "py_test")
 
 py_binary(
   name = "jupyter_notebook",
@@ -47,8 +47,8 @@ py_test(
   data = [":pybind_example_python.so"],
 )
 
-py_test_3_8_10(
-  name = "pybind_example_3_8_10_test",
+py_test_3_8(
+  name = "pybind_example_3_8_test",
   srcs = ["pybind_example_test.py"],
   main = "pybind_example_test.py",
   data = [":pybind_example_python.so"],

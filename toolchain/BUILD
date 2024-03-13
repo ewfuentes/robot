@@ -113,7 +113,8 @@ filegroup(
     ":aarch64-linux-gcc.sh",
     ":aarch64-linux-ld.sh",
     "@aarch64-none-linux-gnu//:all",
-  ]
+    "@jetson_sysroot"
+  ],
 )
 
 cc_toolchain(
