@@ -60,14 +60,15 @@ PYBIND11_MODULE(ekf_slam_python, m) {
         .def("robot_cov", &EkfSlamEstimate::robot_cov)
         .def("beacon_in_local", &EkfSlamEstimate::beacon_in_local)
         .def("beacon_cov", &EkfSlamEstimate::beacon_cov)
-        .def("to_proto_string", [](const EkfSlamEstimate &est){
-            proto::EkfSlamEstimate proto;
-            pack_into(est, &proto);
-            std::string out;
-            proto.SerializeToString(&out);
-            return py::bytes(out);
-        })
-        .def_static("from_proto_string", [](const std::string &proto_string){
+        .def("to_proto_string",
+             [](const EkfSlamEstimate &est) {
+                 proto::EkfSlamEstimate proto;
+                 pack_into(est, &proto);
+                 std::string out;
+                 proto.SerializeToString(&out);
+                 return py::bytes(out);
+             })
+        .def_static("from_proto_string", [](const std::string &proto_string) {
             proto::EkfSlamEstimate proto;
             proto.ParseFromString(proto_string);
             return unpack_from(proto);
