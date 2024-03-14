@@ -1,0 +1,74 @@
+diff --git a/python/BUILD b/python/BUILD
+deleted file mode 100644
+index 7900245..0000000
+--- a/python/BUILD
++++ /dev/null
+@@ -1,40 +0,0 @@
+-load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
+-load("@rules_python//experimental/python:wheel.bzl", "py_wheel")
+-load("//lib:version.bzl", "EMBAG_VERSION")
+-
+-pybind_extension(
+-    name = "libembag",
+-    srcs = [
+-        "adapters.h",
+-        "embag.cc",
+-        "ros_compat.h",
+-        "schema_builder.cc",
+-        "schema_builder.h",
+-        "utils.h",
+-    ],
+-    visibility = ["//visibility:public"],
+-    deps = [
+-        "//lib:embag",
+-    ],
+-)
+-
+-py_wheel(
+-    name = "wheel",
+-    author = "Jason Snell",
+-    author_email = "jason@embarktrucks.com",
+-    description_file = "README.md",
+-    distribution = "embag",
+-    license = "MIT",
+-    # Only pure python wheels are officially supported for now...
+-    #platform = "linux_x86_64",
+-    strip_path_prefixes = [
+-        "python",
+-    ],
+-    version = EMBAG_VERSION,
+-    deps = [
+-        ":libembag.so",
+-    ],
+-    requires = [
+-        "numpy;python_version<\"3.3\""
+-    ],
+-)
+diff --git a/python/embag.cc b/python/embag.cc
+index a199a02..458bf84 100644
+--- a/python/embag.cc
++++ b/python/embag.cc
+@@ -10,12 +10,12 @@
+ 
+ namespace py = pybind11;
+ 
+-PYBIND11_MODULE(libembag, m) {
++PYBIND11_MODULE(embag_python, m) {
+   m.doc() = "Python bindings for Embag";
+ 
+   py::class_<Embag::Bag, std::shared_ptr<Embag::Bag>>(m, "Bag")
+       .def(py::init<const std::string>())
+-      .def(py::init([](const std::string &bytes, size_t length) {
++      .def(py::init([](const std::string &bytes, [[maybe_unused]]size_t length) {
+         return std::make_shared<Embag::Bag>(std::make_shared<const std::string>(bytes));
+       }))
+       .def("topics", &Embag::Bag::topics)
+@@ -140,7 +140,7 @@ PYBIND11_MODULE(libembag, m) {
+       .def("__len__", [](Embag::RosValue::Pointer &v) {
+         return v->size();
+       })
+-      .def("__str__", [](Embag::RosValue::Pointer &v, const std::string &path) {
++      .def("__str__", [](Embag::RosValue::Pointer &v, [[maybe_unused]]const std::string &path) {
+         return encodeStrLatin1(v->toString());
+       }, py::arg("path") = "")
+       .def(

@@ -157,6 +157,7 @@ http_archive(
     "@//third_party:embag_0003-handle-tabs-in-message-definition-of-constants.patch",
     "@//third_party:embag_0004-fix-build-warnings.patch",
     "@//third_party:embag_0005-display-primitive-arrays.patch",
+    "@//third_party:embag_0006-delete-python-build.patch",
   ],
   patch_args=["-p1"],
 )

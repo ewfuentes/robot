@@ -8,6 +8,11 @@ py_binary(
   srcs = ["jupyter_notebook.py"],
   data = [
     "//experimental/beacon_sim:correlated_beacons_python.so",
+    "//experimental/beacon_sim:ekf_slam_python.so",
+    "@embag//:embag_python.so",
+    "//common/liegroups:se2_python.so",
+    "//common/time:robot_time_python.so",
+    "//planning:probabilistic_road_map_python.so",
     data_requirement("jupyterlab"),
   ],
   deps = [
@@ -17,6 +22,7 @@ py_binary(
     requirement("Pillow"),
     requirement("numpy"),
     requirement("pandas"),
+    requirement("scipy"),
     requirement("scikit-learn"),
     requirement("tqdm"),
     "//experimental/beacon_sim:environment_builder",
