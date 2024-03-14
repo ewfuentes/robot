@@ -37,6 +37,12 @@ PYBIND11_MODULE(probabilistic_road_map_python, m) {
         .def(
             py::init<std::vector<Eigen::Vector2d>, Eigen::MatrixXd, std::optional<StartGoalPair>>(),
             "points"_a, "adj"_a, "start_goal_pair"_a)
+        .def_static("from_proto_string",
+                    [](const std::string &proto_string) -> RoadMap {
+                        proto::RoadMap proto;
+                        proto.ParseFromString(proto_string);
+                        return unpack_from(proto);
+                    })
         .def("add_start_goal", &RoadMap::add_start_goal)
         .def("points", &RoadMap::points)
         .def("adj", &RoadMap::adj)

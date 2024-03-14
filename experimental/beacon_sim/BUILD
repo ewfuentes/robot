@@ -184,6 +184,7 @@ pybind_extension(
     ":extract_mapped_landmarks",
     "//common/proto:load_from_file",
     ":mapped_landmarks_to_proto",
+    ":ekf_slam_estimate_to_proto",
   ]
 )
 
@@ -895,6 +896,7 @@ py_package(
   deps = [
     ":ekf_slam_python.so",
     ":belief_road_map_planner_python.so",
+    "//planning:probabilistic_road_map_python.so",
   ],
 )
 
