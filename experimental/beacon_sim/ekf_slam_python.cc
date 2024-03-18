@@ -15,6 +15,9 @@ using namespace pybind11::literals;
 
 namespace robot::experimental::beacon_sim {
 PYBIND11_MODULE(ekf_slam_python, m) {
+    py::module_::import("common.time.robot_time_python");
+    py::module_::import("common.liegroups.se2_python");
+
     m.doc() = "EKF Slam";
 
     py::class_<EkfSlamConfig>(m, "EkfSlamConfig")
@@ -109,7 +112,7 @@ PYBIND11_MODULE(ekf_slam_python, m) {
         .def("predict", &EkfSlam::predict)
         .def("update", &EkfSlam::update)
         .def_property("estimate", py::overload_cast<>(&EkfSlam::estimate, py::const_),
-                      py::overload_cast<>(&EkfSlam::estimate))
+                      [](EkfSlam &ekf, const EkfSlamEstimate &est){ ekf.estimate() = est; })
         .def("config", &EkfSlam::config);
 }
 }  // namespace robot::experimental::beacon_sim

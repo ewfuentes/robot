@@ -27,6 +27,7 @@ PYBIND11_MODULE(probabilistic_road_map_python, m) {
 
     py::class_<StartGoalPair>(m, "StartGoalPair")
         .def(py::init<>())
+        .def(py::init<Eigen::Vector2d, Eigen::Vector2d, double>(), "start"_a, "goal"_a, "connection_radius"_a)
         .def_readwrite("start", &StartGoalPair::start)
         .def_readwrite("goal", &StartGoalPair::goal)
         .def_readwrite("connection_radius_m", &StartGoalPair::connection_radius_m);
