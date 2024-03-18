@@ -112,7 +112,7 @@ PYBIND11_MODULE(ekf_slam_python, m) {
         .def("predict", &EkfSlam::predict)
         .def("update", &EkfSlam::update)
         .def_property("estimate", py::overload_cast<>(&EkfSlam::estimate, py::const_),
-                      [](EkfSlam &ekf, const EkfSlamEstimate &est){ ekf.estimate() = est; })
+                      [](EkfSlam &ekf, const EkfSlamEstimate &est) { ekf.estimate() = est; })
         .def("config", &EkfSlam::config);
 }
 }  // namespace robot::experimental::beacon_sim

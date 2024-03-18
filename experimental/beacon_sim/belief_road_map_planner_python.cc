@@ -1,9 +1,9 @@
 
 #include "common/time/robot_time.hh"
 #include "experimental/beacon_sim/belief_road_map_planner.hh"
+#include "pybind11/chrono.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
-#include "pybind11/chrono.h"
 
 namespace py = pybind11;
 using namespace pybind11::literals;
