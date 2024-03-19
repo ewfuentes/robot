@@ -13,6 +13,10 @@ cc_library(
     hdrs = [
         "bzlib.h",
     ],
-    copts = ["-Wno-unused-parameter"],
+    copts = [
+        "-Wno-unused-parameter",
+        "-Wno-implicit-fallthrough",
+
+    ],
     visibility = ["//visibility:public"],
 )

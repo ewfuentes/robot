@@ -167,6 +167,10 @@ http_archive(
     urls = ["https://github.com/nelhage/rules_boost/archive/49dc7d0e697c784f207fb1773b5b371c2511bfb8.zip"],
     strip_prefix="rules_boost-49dc7d0e697c784f207fb1773b5b371c2511bfb8",
     sha256 = "2e7138b6900f2be1d1aec6ad06a64aee6cc9d48dd278eb1e9845380284914495",
+    patches = [
+      "@//third_party:boost_0001-disable-warning-flags.patch",
+    ],
+    patch_args=["-p1"],
 )
 load("@com_github_nelhage_rules_boost//:boost/boost.bzl", "boost_deps")
 boost_deps()
