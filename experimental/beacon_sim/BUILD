@@ -174,6 +174,7 @@ cc_test(
 pybind_extension(
   name = "ekf_slam_python",
   srcs = ["ekf_slam_python.cc"],
+  visibility = ["//visibility:public"],
   data = [
     "//common/time:robot_time_python.so",
     "//common/liegroups:se2_python.so",

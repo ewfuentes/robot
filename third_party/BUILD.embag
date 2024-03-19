@@ -1,6 +1,6 @@
 
 load("@rules_cc//cc:defs.bzl", "cc_binary")
-load("@pybind11_bazel//:build_defs.bzl", "pybind_library")
+load("@pybind11_bazel//:build_defs.bzl", "pybind_library", "pybind_extension")
 
 pybind_library(
     name = "embag",
@@ -41,5 +41,21 @@ pybind_library(
         "@boost//:variant",
         "@org_bzip_bzip2//:bz2lib",
         "@liblz4//:lz4_frame",
+    ],
+)
+
+pybind_extension(
+    name = "embag_python",
+    srcs = [
+        "python/adapters.h",
+        "python/embag.cc",
+        "python/ros_compat.h",
+        "python/schema_builder.cc",
+        "python/schema_builder.h",
+        "python/utils.h",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//:embag",
     ],
 )

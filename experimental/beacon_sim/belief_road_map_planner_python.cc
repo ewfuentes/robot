@@ -1,6 +1,7 @@
 
 #include "common/time/robot_time.hh"
 #include "experimental/beacon_sim/belief_road_map_planner.hh"
+#include "pybind11/chrono.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
 
@@ -56,7 +57,7 @@ PYBIND11_MODULE(belief_road_map_planner_python, m) {
             .def_readwrite("timeout", &LandmarkBeliefRoadMapOptions::timeout);
 
     py::class_<LandmarkBeliefRoadMapOptions::SampledBeliefOptions>(landmark_brm_options,
-                                                                   "Sampled_belief_options")
+                                                                   "SampledBeliefOptions")
         .def(py::init<>())
         .def(py::init<int, int>(), "max_num_components"_a, "seed"_a)
         .def_readwrite("max_num_components",
