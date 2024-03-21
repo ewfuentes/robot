@@ -41,6 +41,25 @@ cc_library(
   ]
 )
 
+pybind_extension(
+  name = "so3_python",
+  srcs = ["so3_python.cc"],
+  deps = [
+    ":so3",
+  ]
+)
+
+py_test(
+  name = "so3_python_test",
+  srcs = ["so3_python_test.py"],
+  data = [
+    ":so3_python.so"
+  ],
+  deps = [
+    requirement("numpy")
+  ]
+)
+
 cc_library(
   name = "se2",
   hdrs = ["se2.hh"],
@@ -83,6 +102,7 @@ cc_library(
   hdrs = ["se3.hh"],
   srcs = ["se3.cc"],
   deps = [
+    ":so3",
     "@sophus_lie//:liegroups",
   ]
 )
@@ -95,6 +115,27 @@ cc_test(
     "@com_google_googletest//:gtest_main",
   ],
 )
+
+pybind_extension(
+  name = "se3_python",
+  srcs = ["se3_python.cc"],
+  data = [":so3_python.so"],
+  deps = [
+    ":se3",
+  ]
+)
+
+py_test(
+  name = "se3_python_test",
+  srcs = ["se3_python_test.py"],
+  data = [
+    ":se3_python.so"
+  ],
+  deps = [
+    requirement("numpy")
+  ]
+)
+
 
 multi_proto_library(
   name = "so2_proto",
