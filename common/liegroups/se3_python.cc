@@ -1,8 +1,8 @@
 
 #include <sstream>
 
-#include "common/liegroups/so3.hh"
 #include "common/liegroups/se3.hh"
+#include "common/liegroups/so3.hh"
 #include "pybind11/eigen.h"
 #include "pybind11/operators.h"
 #include "pybind11/pybind11.h"
@@ -54,4 +54,3 @@ PYBIND11_MODULE(se3_python, m) {
         });
 }
 }  // namespace robot::liegroups
-
