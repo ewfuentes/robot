@@ -164,13 +164,13 @@ http_archive(
 
 http_archive(
     name = "com_github_nelhage_rules_boost",
-    urls = ["https://github.com/nelhage/rules_boost/archive/49dc7d0e697c784f207fb1773b5b371c2511bfb8.zip"],
-    strip_prefix="rules_boost-49dc7d0e697c784f207fb1773b5b371c2511bfb8",
-    sha256 = "2e7138b6900f2be1d1aec6ad06a64aee6cc9d48dd278eb1e9845380284914495",
+    urls = ["https://github.com/nelhage/rules_boost/archive/5160325dbdc8c9e499f9d9917d913f35f1785d52.zip"],
+    strip_prefix="rules_boost-5160325dbdc8c9e499f9d9917d913f35f1785d52",
     patches = [
       "@//third_party:boost_0001-disable-warning-flags.patch",
     ],
     patch_args=["-p1"],
+    integrity = "sha256-/rSxKUaEx533weCPGuxdoNpSAh4z21nIjtvoa00aAXo=",
 )
 load("@com_github_nelhage_rules_boost//:boost/boost.bzl", "boost_deps")
 boost_deps()
