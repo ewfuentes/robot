@@ -93,7 +93,7 @@ BeaconPotential condition_on(const CombinedPotential &pot,
         if (pot_assignments.empty()) {
             conditioned_pots.push_back(p);
         } else {
-            conditioned_pots.push_back(ConditionedPotential(p, pot_assignments));
+            conditioned_pots.push_back(p.conditioned_on(pot_assignments));
         }
     }
     return CombinedPotential(conditioned_pots);
