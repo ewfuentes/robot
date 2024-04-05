@@ -508,7 +508,6 @@ cc_library(
   hdrs = [
     "beacon_potential.hh",
     "beacon_potential_to_proto.hh",
-    "conditioned_potential.hh",
     "conditioned_potential_to_proto.hh",
   ],
   srcs = [

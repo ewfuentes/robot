@@ -4,17 +4,13 @@
 #include <algorithm>
 #include <numeric>
 
-#include "experimental/beacon_sim/conditioned_potential.hh"
-
 namespace robot::experimental::beacon_sim {
 
-BeaconPotential BeaconPotential::condition_on(
-    const std::unordered_map<int, bool> &assignment) const {
-    constexpr bool ALLOW_PARTIAL_ASSIGNMENT = true;
-    std::vector<int> conditioned_members;
-    return ConditionedPotential{.underlying_pot = *this,
-                                .log_normalizer = log_prob(assignment, ALLOW_PARTIAL_ASSIGNMENT),
-                                .conditioned_members = assignment};
+CombinedPotential::CombinedPotential(const std::vector<BeaconPotential> &pots_) : pots(pots_) {
+    for (const BeaconPotential &p : pots) {
+        const auto p_members = p.members();
+        members.insert(members.end(), p_members.begin(), p_members.end());
+    }
 }
 
 double compute_log_prob(const CombinedPotential &pot,
@@ -71,14 +67,7 @@ std::vector<LogMarginal> compute_log_marginals(const CombinedPotential &pot,
     return out;
 }
 
-std::vector<int> get_members(const CombinedPotential &pot) {
-    std::vector<int> out;
-    for (const BeaconPotential &p : pot.pots) {
-        const auto members = p.members();
-        out.insert(out.end(), members.begin(), members.end());
-    }
-    return out;
-}
+const std::vector<int> &get_members(const CombinedPotential &pot) { return pot.members; }
 
 std::vector<int> generate_sample(const CombinedPotential &pot, InOut<std::mt19937> gen) {
     std::vector<int> out;
@@ -87,6 +76,27 @@ std::vector<int> generate_sample(const CombinedPotential &pot, InOut<std::mt1993
         out.insert(out.end(), subsample.begin(), subsample.end());
     }
     return out;
+}
+
+BeaconPotential condition_on(const CombinedPotential &pot,
+                             const std::unordered_map<int, bool> &assignments) {
+    std::vector<BeaconPotential> conditioned_pots;
+    for (const BeaconPotential &p : pot.pots) {
+        std::unordered_map<int, bool> pot_assignments;
+        for (const auto member : p.members()) {
+            const auto iter = assignments.find(member);
+            if (iter != assignments.end()) {
+                pot_assignments.insert(*iter);
+            }
+        }
+
+        if (pot_assignments.empty()) {
+            conditioned_pots.push_back(p);
+        } else {
+            conditioned_pots.push_back(ConditionedPotential(p, pot_assignments));
+        }
+    }
+    return CombinedPotential(conditioned_pots);
 }
 
 BeaconPotential operator*(const BeaconPotential &a, const BeaconPotential &b) {
@@ -106,6 +116,6 @@ BeaconPotential operator*(const BeaconPotential &a, const BeaconPotential &b) {
     CHECK(common_elements.empty(), "Found overlap in members of potentials", a_sorted_members,
           b_sorted_members, common_elements);
 
-    return CombinedPotential{.pots = {a, b}};
+    return CombinedPotential({a, b});
 }
 }  // namespace robot::experimental::beacon_sim

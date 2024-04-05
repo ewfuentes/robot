@@ -28,7 +28,7 @@ double compute_log_prob(const CorrelatedBeaconPotential &pot,
                         const std::unordered_map<int, bool> &assignments,
                         const bool allow_partial_assignment);
 
-std::vector<int> get_members(const CorrelatedBeaconPotential &pot);
+const std::vector<int> &get_members(const CorrelatedBeaconPotential &pot);
 
 std::vector<LogMarginal> compute_log_marginals(const CorrelatedBeaconPotential &pot,
                                                const std::vector<int> &remaining);
