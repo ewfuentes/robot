@@ -18,3 +18,4 @@ PyYAML==6.0
 PyGObject==3.44.1
 click==8.1.7
 spatialmath-python==1.1.8
+reportlab==4.1.0
