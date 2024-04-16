@@ -7,12 +7,9 @@ namespace robot::experimental::beacon_sim {
 namespace proto {
 
 beacon_sim::ConditionedPotential unpack_from(const ConditionedPotential &in) {
-    return {
-        .underlying_pot = unpack_from(in.underlying_potential()),
-        .log_normalizer = in.log_normalizer(),
-        .conditioned_members = std::unordered_map(in.beacon_presence_from_id().begin(),
-                                                  in.beacon_presence_from_id().end()),
-    };
+    return beacon_sim::ConditionedPotential(unpack_from(in.underlying_potential()),
+                                            std::unordered_map(in.beacon_presence_from_id().begin(),
+                                                               in.beacon_presence_from_id().end()));
 }
 
 void pack_into(const beacon_sim::ConditionedPotential &in, ConditionedPotential *out) {

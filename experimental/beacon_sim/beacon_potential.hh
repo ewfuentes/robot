@@ -14,6 +14,7 @@
 
 namespace robot::experimental::beacon_sim {
 class BeaconPotential;
+struct ConditionedPotential;
 namespace proto {
 class BeaconPotential;
 beacon_sim::BeaconPotential unpack_from(const BeaconPotential &);
@@ -24,7 +25,7 @@ template <typename T>
 concept Potential = requires(T pot, bool b, std::unordered_map<int, bool> assignment,
                              std::vector<int> present_beacons, proto::BeaconPotential *bp_proto,
                              InOut<std::mt19937> gen) {
-                        { get_members(pot) } -> std::same_as<std::vector<int>>;
+                        { get_members(pot) } -> std::same_as<const std::vector<int> &>;
                         { compute_log_prob(pot, assignment, b) } -> std::same_as<double>;
                         {
                             compute_log_marginals(pot, present_beacons)
@@ -72,11 +73,14 @@ class BeaconPotential {
         return impl_ ? impl_->sample_(gen) : std::vector<int>{};
     }
 
-    const std::vector<int> members() const {
-        return impl_ ? impl_->members_() : std::vector<int>{};
+    const std::vector<int> &members() const {
+        const static std::vector<int> EMPTY_MEMBERS{};
+        return impl_ ? impl_->members_() : EMPTY_MEMBERS;
     };
 
-    BeaconPotential condition_on(const std::unordered_map<int, bool> &assignments) const;
+    BeaconPotential conditioned_on(const std::unordered_map<int, bool> &assignments) const {
+        return impl_ ? impl_->condition_on_(assignments) : *this;
+    };
 
     friend BeaconPotential proto::unpack_from(const proto::BeaconPotential &);
     friend void proto::pack_into(const BeaconPotential &, proto::BeaconPotential *);
@@ -88,11 +92,13 @@ class BeaconPotential {
         virtual double log_prob_(const std::unordered_map<int, bool> &assignments,
                                  const bool allow_partial_assignment = false) const = 0;
         virtual double log_prob_(const std::vector<int> &present_beacons) const = 0;
-        virtual std::vector<int> members_() const = 0;
+        virtual const std::vector<int> &members_() const = 0;
         virtual std::vector<LogMarginal> log_marginals_(
             const std::vector<int> &remaining) const = 0;
         virtual std::vector<int> sample_(InOut<std::mt19937> gen) const = 0;
         virtual void pack_into_(proto::BeaconPotential *out) const = 0;
+        virtual BeaconPotential condition_on_(
+            const std::unordered_map<int, bool> &assignments) const = 0;
     };
 
     template <typename T>
@@ -124,10 +130,23 @@ class BeaconPotential {
             return generate_sample(data_, gen);
         }
 
-        std::vector<int> members_() const override { return get_members(data_); }
+        const std::vector<int> &members_() const override { return get_members(data_); }
 
         void pack_into_(proto::BeaconPotential *out) const override {
             pack_into_potential(data_, out);
+        }
+
+        BeaconPotential condition_on_(
+            const std::unordered_map<int, bool> &assignments) const override {
+            constexpr bool has_conditioning_support =
+                requires(T p, std::unordered_map<int, bool> & a) {
+                    { condition_on(p, a) } -> std::same_as<BeaconPotential>;
+                };
+            if constexpr (has_conditioning_support) {
+                return condition_on(data_, assignments);
+            } else {
+                return BeaconPotential(ConditionedPotential(data_, assignments));
+            }
         }
 
         T data_;
@@ -137,17 +156,45 @@ class BeaconPotential {
 };
 
 struct CombinedPotential {
+    explicit CombinedPotential(const std::vector<BeaconPotential> &pots);
     std::vector<BeaconPotential> pots;
+    std::vector<int> members;
 };
 double compute_log_prob(const CombinedPotential &pot,
                         const std::unordered_map<int, bool> &assignments,
                         const bool allow_partial_assignments);
 std::vector<LogMarginal> compute_log_marginals(const CombinedPotential &pot,
                                                const std::vector<int> &remaining);
-std::vector<int> get_members(const CombinedPotential &pot);
+const std::vector<int> &get_members(const CombinedPotential &pot);
 void pack_into_potential(const CombinedPotential &in, proto::BeaconPotential *out);
 std::vector<int> generate_sample(const CombinedPotential &pot, InOut<std::mt19937> gen);
+BeaconPotential condition_on(const CombinedPotential &pot,
+                             const std::unordered_map<int, bool> &assignments);
 
 BeaconPotential operator*(const BeaconPotential &a, const BeaconPotential &b);
+
+// A ConditionedPotential is meant to represent a BeaconPotential where
+// certain beacons are assumed to take a given value. A conditioned potential
+// maintains the same set of members as the underlying distribution, but
+// if compute_log_prob is queried with a conflicting assignment, a log probability
+// of -infinity is returned. `compute_log_marginals` will contain the unconditioned
+// variables and the conditioned variables with the given assignment.
+struct ConditionedPotential {
+    ConditionedPotential(BeaconPotential pot, std::unordered_map<int, bool> assignments);
+    BeaconPotential underlying_pot;
+    std::unordered_map<int, bool> conditioned_members;
+    // The probability of the conditioned assignment on `underlying_pot`
+    double log_normalizer;
+};
+
+double compute_log_prob(const ConditionedPotential &pot,
+                        const std::unordered_map<int, bool> &assignments,
+                        const bool allow_partial_assignments);
+
+std::vector<LogMarginal> compute_log_marginals(const ConditionedPotential &pot,
+                                               const std::vector<int> &remaining);
+const std::vector<int> &get_members(const ConditionedPotential &pot);
+void pack_into_potential(const ConditionedPotential &in, proto::BeaconPotential *out);
+std::vector<int> generate_sample(const ConditionedPotential &pot, InOut<std::mt19937> gen);
 
 }  // namespace robot::experimental::beacon_sim

@@ -11,7 +11,7 @@ TEST(ConditionedPotentialToProtoTest, pack_unpack) {
     // Setup
     const BeaconClique clique{.p_beacon = 0.5, .p_no_beacons = 0.1, .members = {2, 3, 4, 5}};
     const BeaconPotential underlying = create_correlated_beacons(clique);
-    const BeaconPotential conditioned = underlying.condition_on({{2, true}, {3, false}});
+    const BeaconPotential conditioned = underlying.conditioned_on({{2, true}, {3, false}});
 
     // Action
     proto::BeaconPotential proto;

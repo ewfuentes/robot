@@ -1,10 +1,12 @@
 
 #include "experimental/beacon_sim/beacon_potential.hh"
 #include "experimental/beacon_sim/beacon_potential_to_proto.hh"
+#include "experimental/beacon_sim/correlated_beacon_potential.hh"
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
 
 namespace py = pybind11;
+using namespace py::literals;
 
 namespace robot::experimental::beacon_sim {
 PYBIND11_MODULE(beacon_potential_python, m) {
@@ -32,6 +34,21 @@ PYBIND11_MODULE(beacon_potential_python, m) {
                         proto.ParseFromString(proto_string);
                         return unpack_from(proto);
                     })
+        .def_static(
+            "correlated_beacon_potential",
+            [](const double p_present, const double p_beacon_given_present,
+               std::vector<int> &members) -> BeaconPotential {
+                return CorrelatedBeaconPotential{.p_present = p_present,
+                                                 .p_beacon_given_present = p_beacon_given_present,
+                                                 .members = members};
+            },
+            "p_present"_a, "p_beacon_given_present"_a, "members"_a)
+        .def_static(
+            "combined_potential",
+            [](std::vector<BeaconPotential> &pots) -> BeaconPotential {
+                return CombinedPotential(pots);
+            },
+            "pots"_a)
         .def("log_prob",
              py::overload_cast<const std::unordered_map<int, bool> &, bool>(
                  &BeaconPotential::log_prob, py::const_),
@@ -42,6 +59,7 @@ PYBIND11_MODULE(beacon_potential_python, m) {
              py::overload_cast<const BeaconPotential &, const BeaconPotential &>(operator*))
         .def("log_marginals", &BeaconPotential::log_marginals)
         .def("members", &BeaconPotential::members)
+        .def("conditioned_on", &BeaconPotential::conditioned_on)
         .def("to_proto_string", [](const BeaconPotential &self) {
             proto::BeaconPotential proto;
             pack_into(self, &proto);

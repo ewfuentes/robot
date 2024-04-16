@@ -1,8 +1,8 @@
 
 #pragma once
 
+#include "beacon_potential.hh"
 #include "experimental/beacon_sim/beacon_potential.pb.h"
-#include "experimental/beacon_sim/conditioned_potential.hh"
 
 namespace robot::experimental::beacon_sim {
 namespace proto {

@@ -44,7 +44,7 @@ auto logsumexp(const auto &terms) {
 
 }  // namespace
 
-std::vector<int> get_members(const PrecisionMatrixPotential &pot) { return pot.members; }
+const std::vector<int> &get_members(const PrecisionMatrixPotential &pot) { return pot.members; }
 
 double compute_log_prob(const PrecisionMatrixPotential &pot,
                         const std::unordered_map<int, bool> &assignment,

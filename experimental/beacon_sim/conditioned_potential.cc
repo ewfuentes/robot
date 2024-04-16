@@ -1,12 +1,23 @@
 
-#include "experimental/beacon_sim/conditioned_potential.hh"
-
 #include <limits>
+#include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include "common/math/sample_without_replacement.hh"
+#include "experimental/beacon_sim/beacon_potential.hh"
 
 namespace robot::experimental::beacon_sim {
+namespace {
+constexpr bool ALLOW_PARTIAL_ASSIGNMENT = true;
+}
+
+ConditionedPotential::ConditionedPotential(BeaconPotential pot,
+                                           std::unordered_map<int, bool> assignments)
+    : underlying_pot(std::move(pot)),
+      conditioned_members(std::move(assignments)),
+      log_normalizer(underlying_pot.log_prob(conditioned_members, ALLOW_PARTIAL_ASSIGNMENT)) {}
+
 double compute_log_prob(const ConditionedPotential &pot,
                         const std::unordered_map<int, bool> &assignments,
                         const bool allow_partial_assignments) {
@@ -63,7 +74,7 @@ std::vector<LogMarginal> compute_log_marginals(const ConditionedPotential &pot,
     return log_marginals;
 }
 
-std::vector<int> get_members(const ConditionedPotential &pot) {
+const std::vector<int> &get_members(const ConditionedPotential &pot) {
     return pot.underlying_pot.members();
 }
 

@@ -79,7 +79,7 @@ double compute_log_prob(const CorrelatedBeaconPotential &pot,
     return logsumexp(terms);
 }
 
-std::vector<int> get_members(const CorrelatedBeaconPotential &pot) { return pot.members; }
+const std::vector<int> &get_members(const CorrelatedBeaconPotential &pot) { return pot.members; }
 
 std::vector<LogMarginal> compute_log_marginals(const CorrelatedBeaconPotential &pot,
                                                const std::vector<int> &all_remaining) {

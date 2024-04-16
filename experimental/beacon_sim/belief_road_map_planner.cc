@@ -450,7 +450,7 @@ std::optional<ExpectedBeliefPlanResult> compute_expected_belief_road_map_plan(
             const bool is_beacon_present_in_sample = iter != sample.end();
             assignment[beacon_id] = is_beacon_present_in_sample;
         }
-        const BeaconPotential conditioned = beacon_potential.condition_on(assignment);
+        const BeaconPotential conditioned = beacon_potential.conditioned_on(assignment);
 
         // Plan assuming the current world
         const auto maybe_plan =

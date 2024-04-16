@@ -42,9 +42,7 @@ beacon_sim::CombinedPotential unpack_from(const CombinedPotential &in) {
                    [](const BeaconPotential &proto_pot) -> beacon_sim::BeaconPotential {
                        return unpack_from(proto_pot);
                    });
-    return beacon_sim::CombinedPotential{
-        .pots = std::move(pots),
-    };
+    return beacon_sim::CombinedPotential(std::move(pots));
 }
 
 void pack_into(const beacon_sim::CombinedPotential &in, CombinedPotential *out) {
