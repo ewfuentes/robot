@@ -1,5 +1,5 @@
 
-#include "experimental/beacon_sim/conditioned_potential.hh"
+#include "experimental/beacon_sim/beacon_potential.hh"
 
 #include <filesystem>
 #include <limits>
@@ -7,7 +7,6 @@
 
 #include "Eigen/Dense"
 #include "common/math/logsumexp.hh"
-#include "experimental/beacon_sim/beacon_potential.hh"
 #include "experimental/beacon_sim/precision_matrix_potential.hh"
 #include "gtest/gtest.h"
 
@@ -20,7 +19,7 @@ TEST(ConditionedPotentialTest, get_members_test) {
         .members = {10, 20},
     };
     const auto underlying_members = underlying.members();
-    const BeaconPotential conditioned = underlying.condition_on({{20, true}});
+    const BeaconPotential conditioned = underlying.conditioned_on({{20, true}});
 
     // Action
 
@@ -44,7 +43,7 @@ TEST(ConditionedPotentialTest, compute_log_prob_query_unconditioned_test) {
         .members = {10, 20},
     };
     const auto underlying_members = underlying.members();
-    const BeaconPotential conditioned = underlying.condition_on({{20, true}});
+    const BeaconPotential conditioned = underlying.conditioned_on({{20, true}});
     const BeaconPotential equivalent = PrecisionMatrixPotential{
         .precision = (Eigen::MatrixXd(1, 1) << 1.0).finished(),
         .log_normalizer = math::logsumexp(std::vector{2.0, 3.0}) - 2.0,
@@ -70,7 +69,7 @@ TEST(ConditionedPotentialTest, compute_log_prob_query_with_conditioned_test) {
         .members = {10, 20},
     };
     const auto underlying_members = underlying.members();
-    const BeaconPotential conditioned = underlying.condition_on({{20, true}});
+    const BeaconPotential conditioned = underlying.conditioned_on({{20, true}});
     const BeaconPotential equivalent = PrecisionMatrixPotential{
         .precision = (Eigen::MatrixXd(1, 1) << 1.0).finished(),
         .log_normalizer = math::logsumexp(std::vector{2.0, 3.0}) - 2.0,
@@ -102,7 +101,7 @@ TEST(ConditionedPotentialTest, compute_log_marginal_test) {
         .members = {10, 20},
     };
     const auto underlying_members = underlying.members();
-    const BeaconPotential conditioned = underlying.condition_on({{20, true}});
+    const BeaconPotential conditioned = underlying.conditioned_on({{20, true}});
     const BeaconPotential equivalent = PrecisionMatrixPotential{
         .precision = (Eigen::MatrixXd(1, 1) << 1.0).finished(),
         .log_normalizer = math::logsumexp(std::vector{2.0, 3.0}) - 2.0,
@@ -139,7 +138,7 @@ TEST(ConditionedPotentialTest, compute_log_marginal_with_conditioned_present_tes
         .members = {10, 20},
     };
     const auto underlying_members = underlying.members();
-    const BeaconPotential conditioned = underlying.condition_on({{20, true}});
+    const BeaconPotential conditioned = underlying.conditioned_on({{20, true}});
     const BeaconPotential equivalent = PrecisionMatrixPotential{
         .precision = (Eigen::MatrixXd(1, 1) << 1.0).finished(),
         .log_normalizer = math::logsumexp(std::vector{2.0, 3.0}) - 2.0,
@@ -176,7 +175,7 @@ TEST(ConditionedPotentialTest, compute_log_marginal_with_missing_conditioned_abs
         .members = {10, 20},
     };
     const auto underlying_members = underlying.members();
-    const BeaconPotential conditioned = underlying.condition_on({{20, false}});
+    const BeaconPotential conditioned = underlying.conditioned_on({{20, false}});
     const BeaconPotential equivalent = PrecisionMatrixPotential{
         .precision = (Eigen::MatrixXd(1, 1) << 1.0).finished(),
         .log_normalizer = math::logsumexp(std::vector{0.0, 1.0}),
@@ -213,7 +212,7 @@ TEST(ConditionedPotentialTest, sampled_from_conditional_distribution) {
         .members = {10, 20},
     };
     const auto underlying_members = underlying.members();
-    const BeaconPotential conditioned = underlying.condition_on({{20, true}});
+    const BeaconPotential conditioned = underlying.conditioned_on({{20, true}});
     const BeaconPotential equivalent = PrecisionMatrixPotential{
         .precision = (Eigen::MatrixXd(1, 1) << 1.0).finished(),
         .log_normalizer = math::logsumexp(std::vector{2.0, 3.0}) - 2.0,
