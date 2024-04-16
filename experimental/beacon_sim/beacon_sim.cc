@@ -395,7 +395,7 @@ void run_simulation(const SimConfig &sim_config) {
         .observations = {},
         .goal = {{
             .time_of_validity = time::current_robot_time(),
-            .goal_position = {51.2, 22.9},
+            .goal_position = {-14.0, 0.0},
         }},
         .plan = std::nullopt,
         .gen = std::mt19937(0),
