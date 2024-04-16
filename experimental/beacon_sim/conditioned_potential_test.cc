@@ -1,12 +1,11 @@
 
-#include "experimental/beacon_sim/beacon_potential.hh"
-
 #include <filesystem>
 #include <limits>
 #include <unordered_set>
 
 #include "Eigen/Dense"
 #include "common/math/logsumexp.hh"
+#include "experimental/beacon_sim/beacon_potential.hh"
 #include "experimental/beacon_sim/precision_matrix_potential.hh"
 #include "gtest/gtest.h"
 
