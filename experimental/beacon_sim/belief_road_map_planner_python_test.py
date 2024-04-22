@@ -3,7 +3,7 @@ import unittest
 import experimental.beacon_sim.belief_road_map_planner_python as brm
 import experimental.beacon_sim.test_helpers_python as helpers
 import experimental.beacon_sim.ekf_slam_python as esp
-import experimental.beacon_sim.beacon_potential_python as bpp 
+import experimental.beacon_sim.beacon_potential_python as bpp
 
 
 class BeliefRoadMapPlannerPythonTest(unittest.TestCase):

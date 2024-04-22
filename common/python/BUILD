@@ -9,6 +9,7 @@ py_binary(
   data = [
     "//experimental/beacon_sim:correlated_beacons_python.so",
     "//experimental/beacon_sim:ekf_slam_python.so",
+    "//experimental/beacon_sim:belief_road_map_planner_python.so",
     "@embag//:embag_python.so",
     "//common/liegroups:se2_python.so",
     "//common/time:robot_time_python.so",
