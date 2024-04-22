@@ -420,6 +420,7 @@ cc_test(
 pybind_extension(
   name = "belief_road_map_planner_python",
   srcs = ["belief_road_map_planner_python.cc"],
+  visibility = ["//visibility:public"],
   data = [
     ":robot_belief_python.so",
     ":beacon_potential_python.so",
