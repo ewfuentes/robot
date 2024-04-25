@@ -1,0 +1,8 @@
+
+syntax = "proto3";
+
+package robot.experimental.beacon_sim.proto;
+
+message AnticorrelatedBeaconPotential {
+  repeated int32 members = 1;
+}
