@@ -538,6 +538,14 @@ pybind_extension(
   ]
 )
 
+py_test(
+  name = "beacon_potential_python_test",
+  srcs = ["beacon_potential_python_test.py"],
+  data = [
+    ":beacon_potential_python.so"
+  ]
+)
+
 cc_test(
   name = "conditioned_potential_test",
   srcs = ["conditioned_potential_test.cc"],

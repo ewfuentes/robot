@@ -1,4 +1,6 @@
 
+#include <random>
+
 #include "experimental/beacon_sim/beacon_potential.hh"
 #include "experimental/beacon_sim/beacon_potential_to_proto.hh"
 #include "experimental/beacon_sim/correlated_beacon_potential.hh"
@@ -60,6 +62,19 @@ PYBIND11_MODULE(beacon_potential_python, m) {
         .def("log_marginals", &BeaconPotential::log_marginals)
         .def("members", &BeaconPotential::members)
         .def("conditioned_on", &BeaconPotential::conditioned_on)
+        .def("sample",
+             [](const BeaconPotential &pot, const int seed) {
+                 std::mt19937 gen(seed);
+                 const std::vector<int> present_beacons = pot.sample(make_in_out(gen));
+                 std::unordered_map<int, bool> out;
+                 for (const int beacon_id : pot.members()) {
+                     out[beacon_id] = false;
+                 }
+                 for (const int beacon_id : present_beacons) {
+                     out[beacon_id] = true;
+                 }
+                 return out;
+             })
         .def("to_proto_string", [](const BeaconPotential &self) {
             proto::BeaconPotential proto;
             pack_into(self, &proto);
