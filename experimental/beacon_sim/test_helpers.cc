@@ -3,10 +3,10 @@
 
 #include <numbers>
 
+#include "experimental/beacon_sim/anticorrelated_beacon_potential.hh"
 #include "experimental/beacon_sim/correlated_beacons.hh"
 #include "experimental/beacon_sim/mapped_landmarks.hh"
 #include "experimental/beacon_sim/precision_matrix_potential.hh"
-#include "experimental/beacon_sim/anticorrelated_beacon_potential.hh"
 #include "planning/road_map.hh"
 
 namespace robot::experimental::beacon_sim {

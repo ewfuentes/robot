@@ -654,7 +654,8 @@ TEST(BeliefRoadmapPlannerCircleTest, landmark_brm_test) {
 
     for (const auto &[config, belief] : maybe_plan->beliefs.back().belief_from_config) {
         if (std::exp(belief.log_config_prob) > 1e-6) {
-            std::cout << config << " " << std::exp(belief.log_config_prob) << " " << belief.cov_in_robot.determinant() << std::endl;
+            std::cout << config << " " << std::exp(belief.log_config_prob) << " "
+                      << belief.cov_in_robot.determinant() << std::endl;
         }
     }
 }
