@@ -525,6 +525,7 @@ cc_library(
     ":beacon_potential_proto",
     ":precision_matrix_potential",
     ":correlated_beacon_potential",
+    ":anticorrelated_beacon_potential",
   ],
 )
 
@@ -576,6 +577,39 @@ cc_library(
     "//common/math:combinations",
     "//common:argument_wrapper",
     "//common/math:matrix_to_proto",
+  ]
+)
+
+cc_library(
+  name = "anticorrelated_beacon_potential",
+  hdrs = [
+    "anticorrelated_beacon_potential.hh",
+    "anticorrelated_beacon_potential_to_proto.hh",
+  ],
+  srcs = [
+    "anticorrelated_beacon_potential.cc",
+    "anticorrelated_beacon_potential_to_proto.cc",
+  ],
+  deps = [
+    ":log_marginal",
+    ":anticorrelated_beacon_potential_proto",
+    ":beacon_potential_proto",
+    "//common:argument_wrapper",
+  ]
+)
+
+multi_proto_library(
+  name = "anticorrelated_beacon_potential_proto",
+  srcs = ["anticorrelated_beacon_potential.proto"],
+)
+
+cc_test(
+  name = "anticorrelated_beacon_potential_test",
+  srcs = ["anticorrelated_beacon_potential_test.cc"],
+  deps = [
+    ":anticorrelated_beacon_potential",
+    ":beacon_potential",
+    "@com_google_googletest//:gtest_main",
   ]
 )
 
@@ -687,6 +721,7 @@ multi_proto_library(
   deps = [
     ":precision_matrix_potential_proto",
     ":correlated_beacon_potential_proto",
+    ":anticorrelated_beacon_potential_proto",
   ]
 )
 
@@ -783,6 +818,7 @@ cc_library(
       ":ekf_slam",
       ":beacon_potential",
       ":correlated_beacons",
+      ":anticorrelated_beacon_potential",
       "//planning:probabilistic_road_map",
     ]
 )

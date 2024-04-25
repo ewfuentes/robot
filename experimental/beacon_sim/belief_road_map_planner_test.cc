@@ -554,4 +554,108 @@ TEST(BeliefRoadmapPlannerStressTest, landmark_brm_test) {
     EXPECT_THAT(maybe_plan->nodes.at(3), testing::AnyOf(0, 2));
     EXPECT_EQ(maybe_plan->nodes.at(4), planning::RoadMap::GOAL_IDX);
 }
+
+TEST(BeliefRoadmapPlannerCircleTest, expected_brm_test) {
+    // Setup
+    constexpr double along_track_noise_m_per_rt_meter = 0.1;
+    constexpr double cross_track_noise_m_per_rt_meter = 0.1 * along_track_noise_m_per_rt_meter;
+    constexpr int num_landmarks = 20;
+    constexpr double circle_radius_m = 20;
+    const EkfSlamConfig ekf_config{
+        .max_num_beacons = num_landmarks,
+        .initial_beacon_uncertainty_m = 100.0,
+        .along_track_process_noise_m_per_rt_meter = along_track_noise_m_per_rt_meter,
+        .cross_track_process_noise_m_per_rt_meter = cross_track_noise_m_per_rt_meter,
+        .pos_process_noise_m_per_rt_s = 0.0,
+        .heading_process_noise_rad_per_rt_meter = 1e-3,
+        .heading_process_noise_rad_per_rt_s = 0.0,
+        .beacon_pos_process_noise_m_per_rt_s = 1e-6,
+        .range_measurement_noise_m = 1e-2,
+        .bearing_measurement_noise_rad = 1e-2,
+        .on_map_load_position_uncertainty_m = 20.0,
+        .on_map_load_heading_uncertainty_rad = 1e-1,
+    };
+
+    const auto &[road_map, ekf, beacon_potential] =
+        create_circle_environment(ekf_config, num_landmarks, circle_radius_m);
+
+    const ExpectedBeliefRoadMapOptions options = {
+        .num_configuration_samples = 100,
+        .seed = 12304,
+        .brm_options =
+            {
+                .max_sensor_range_m = 3.0,
+                .uncertainty_tolerance = std::nullopt,
+                .max_num_edge_transforms = std::numeric_limits<int>::max(),
+                .timeout = std::nullopt,
+            },
+    };
+
+    // Action
+    const auto maybe_plan =
+        compute_expected_belief_road_map_plan(road_map, ekf, beacon_potential, options);
+
+    // Verification
+    ASSERT_TRUE(maybe_plan.has_value());
+
+    std::cout << "[";
+    for (const auto node : maybe_plan->nodes) {
+        std::cout << node << ", ";
+    }
+    std::cout << "]" << std::endl;
+}
+
+TEST(BeliefRoadmapPlannerCircleTest, landmark_brm_test) {
+    // Setup
+    constexpr double along_track_noise_m_per_rt_meter = 0.1;
+    constexpr double cross_track_noise_m_per_rt_meter = 0.1 * along_track_noise_m_per_rt_meter;
+    constexpr int num_landmarks = 10;
+    constexpr double circle_radius_m = 412;
+    const EkfSlamConfig ekf_config{
+        .max_num_beacons = num_landmarks,
+        .initial_beacon_uncertainty_m = 100.0,
+        .along_track_process_noise_m_per_rt_meter = along_track_noise_m_per_rt_meter,
+        .cross_track_process_noise_m_per_rt_meter = cross_track_noise_m_per_rt_meter,
+        .pos_process_noise_m_per_rt_s = 0.0,
+        .heading_process_noise_rad_per_rt_meter = 1e-3,
+        .heading_process_noise_rad_per_rt_s = 0.0,
+        .beacon_pos_process_noise_m_per_rt_s = 1e-6,
+        .range_measurement_noise_m = 1e-2,
+        .bearing_measurement_noise_rad = 1e-2,
+        .on_map_load_position_uncertainty_m = 20.0,
+        .on_map_load_heading_uncertainty_rad = 1e-1,
+    };
+
+    const auto &[road_map, ekf, beacon_potential] =
+        create_circle_environment(ekf_config, num_landmarks, circle_radius_m);
+
+    const LandmarkBeliefRoadMapOptions options = {
+        .max_sensor_range_m = 3.0,
+        .uncertainty_size_options = LandmarkBeliefRoadMapOptions::ExpectedDeterminant{},
+        .sampled_belief_options = {{
+            .max_num_components = 128,
+            .seed = 0,
+        }},
+        .timeout = std::nullopt,
+    };
+
+    // Action
+    const auto maybe_plan =
+        compute_landmark_belief_road_map_plan(road_map, ekf, beacon_potential, options);
+
+    // Verification
+    ASSERT_TRUE(maybe_plan.has_value());
+
+    std::cout << "[";
+    for (const auto node : maybe_plan->nodes) {
+        std::cout << node << ", ";
+    }
+    std::cout << "]" << std::endl;
+
+    for (const auto &[config, belief] : maybe_plan->beliefs.back().belief_from_config) {
+        if (std::exp(belief.log_config_prob) > 1e-6) {
+            std::cout << config << " " << std::exp(belief.log_config_prob) << " " << belief.cov_in_robot.determinant() << std::endl;
+        }
+    }
+}
 }  // namespace robot::experimental::beacon_sim

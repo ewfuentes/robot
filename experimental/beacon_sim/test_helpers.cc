@@ -1,9 +1,12 @@
 
 #include "experimental/beacon_sim/test_helpers.hh"
 
+#include <numbers>
+
 #include "experimental/beacon_sim/correlated_beacons.hh"
 #include "experimental/beacon_sim/mapped_landmarks.hh"
 #include "experimental/beacon_sim/precision_matrix_potential.hh"
+#include "experimental/beacon_sim/anticorrelated_beacon_potential.hh"
 #include "planning/road_map.hh"
 
 namespace robot::experimental::beacon_sim {
@@ -253,6 +256,60 @@ std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_stress_test_envir
     };
     const auto beacon_potential = create_correlated_beacons(clique);
 
+    return std::make_tuple(road_map, ekf_slam, beacon_potential);
+}
+
+std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_circle_environment(
+    const EkfSlamConfig &ekf_config, const int num_landmarks, const double circle_radius_m) {
+    // Create an environment where the landmarks are arranged in a circle and the robot starts and
+    // ends in the middle. The road map connects the landmarks to their neighbor and to the center.
+    // The landmarks are numbered with the zeroth landmark at the +x axis and increasing in id
+    // in the counter clockwise direction.
+    // Create the Road Map
+    const Eigen::Vector2d START_GOAL_STATE{0.0, 0.0};
+    const int source_id = num_landmarks;
+    const int sink_id = num_landmarks + 1;
+
+    std::vector<Eigen::Vector2d> points;
+    Eigen::MatrixXd adj(num_landmarks + 2, num_landmarks + 2);
+    for (int i = 0; i < num_landmarks; i++) {
+        const double x_pos_m =
+            circle_radius_m * std::cos(2.0 * std::numbers::pi * i / num_landmarks);
+        const double y_pos_m =
+            circle_radius_m * std::sin(2.0 * std::numbers::pi * i / num_landmarks);
+        points.push_back(Eigen::Vector2d{x_pos_m, y_pos_m});
+
+        // Each landmark connects to the one preceding it and the source/sink ids
+        const int neighbor_id = i == 0 ? (num_landmarks - 1) : i - 1;
+        for (const int neighbor : {source_id, sink_id, neighbor_id}) {
+            adj(i, neighbor) = 1;
+            adj(neighbor, i) = 1;
+        }
+    }
+    // Pushback for the source and sink states
+    points.push_back(START_GOAL_STATE);
+    points.push_back(START_GOAL_STATE);
+
+    const auto road_map = planning::RoadMap(points, std::move(adj),
+                                            {{.start = START_GOAL_STATE,
+                                              .goal = START_GOAL_STATE,
+                                              .connection_radius_m = circle_radius_m / 2.0}});
+
+    // Create the EKF Slam
+    std::vector<Eigen::Vector2d> beacon_in_local(points.begin(), points.end() - 1);
+    std::vector<int> beacon_ids(num_landmarks);
+    std::iota(beacon_ids.begin(), beacon_ids.end(), 0);
+
+    EkfSlam ekf_slam(ekf_config, time::RobotTimestamp());
+    const MappedLandmarks mapped_landmarks = {
+        .beacon_ids = beacon_ids,
+        .beacon_in_local = beacon_in_local,
+        .cov_in_local = Eigen::MatrixXd::Identity(2 * num_landmarks, 2 * num_landmarks) * 1e-12};
+    const bool LOAD_OFF_DIAGONALS = true;
+    ekf_slam.load_map(mapped_landmarks, LOAD_OFF_DIAGONALS);
+
+    // Create the Beacon Potential
+    const auto beacon_potential = AnticorrelatedBeaconPotential{.members = beacon_ids};
     return std::make_tuple(road_map, ekf_slam, beacon_potential);
 }
 }  // namespace robot::experimental::beacon_sim

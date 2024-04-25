@@ -17,4 +17,7 @@ std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_diamond_environme
 
 std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_stress_test_environment(
     const EkfSlamConfig &ekf_config);
+
+std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_circle_environment(
+    const EkfSlamConfig &ekf_config, const int num_landmarks, const double circle_radius_m);
 }  // namespace robot::experimental::beacon_sim

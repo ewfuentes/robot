@@ -3,6 +3,7 @@ syntax = "proto3";
 
 import "experimental/beacon_sim/precision_matrix_potential.proto";
 import "experimental/beacon_sim/correlated_beacon_potential.proto";
+import "experimental/beacon_sim/anticorrelated_beacon_potential.proto";
 
 package robot.experimental.beacon_sim.proto;
 
@@ -22,5 +23,6 @@ message BeaconPotential {
     robot.experimental.beacon_sim.proto.PrecisionMatrixPotential precision_matrix_potential = 2;
     robot.experimental.beacon_sim.proto.CorrelatedBeaconPotential correlated_beacon_potential = 3;
     ConditionedPotential conditioned_potential = 4;
+    robot.experimental.beacon_sim.proto.AnticorrelatedBeaconPotential anticorrelated_potential = 5;
   }
 }
