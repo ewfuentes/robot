@@ -212,10 +212,12 @@ def _impl(ctx):
       ctx=ctx,
       features = features,
       cxx_builtin_include_directories = [
+        "/usr/lib/llvm-15/lib/clang/15.0.6/include",
         "/usr/lib/llvm-15/lib/clang/15.0.7/include",
         "/usr/include",
         "/usr/include/c++/12",
         "/usr/include/x86_64-linux-gnu/c++/12",
+        "/usr/lib/llvm-15/lib/clang/15.0.6/share",
         "/usr/lib/llvm-15/lib/clang/15.0.7/share",
         "/usr/lib/llvm-15/include/c++/v1/",
       ],

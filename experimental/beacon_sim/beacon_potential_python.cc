@@ -1,6 +1,7 @@
 
 #include <random>
 
+#include "experimental/beacon_sim/anticorrelated_beacon_potential.hh"
 #include "experimental/beacon_sim/beacon_potential.hh"
 #include "experimental/beacon_sim/beacon_potential_to_proto.hh"
 #include "experimental/beacon_sim/correlated_beacon_potential.hh"
@@ -45,6 +46,12 @@ PYBIND11_MODULE(beacon_potential_python, m) {
                                                  .members = members};
             },
             "p_present"_a, "p_beacon_given_present"_a, "members"_a)
+        .def_static(
+            "anticorrelated_beacon_potential",
+            [](std::vector<int> &members) -> BeaconPotential {
+                return AnticorrelatedBeaconPotential{.members = members};
+            },
+            "members"_a)
         .def_static(
             "combined_potential",
             [](std::vector<BeaconPotential> &pots) -> BeaconPotential {

@@ -535,6 +535,7 @@ pybind_extension(
   srcs = ["beacon_potential_python.cc"],
   deps = [
     ":beacon_potential",
+    ":anticorrelated_beacon_potential",
   ]
 )
 
