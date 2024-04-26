@@ -1,10 +1,10 @@
 
 #include <random>
 
+#include "experimental/beacon_sim/anticorrelated_beacon_potential.hh"
 #include "experimental/beacon_sim/beacon_potential.hh"
 #include "experimental/beacon_sim/beacon_potential_to_proto.hh"
 #include "experimental/beacon_sim/correlated_beacon_potential.hh"
-#include "experimental/beacon_sim/anticorrelated_beacon_potential.hh"
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
 
