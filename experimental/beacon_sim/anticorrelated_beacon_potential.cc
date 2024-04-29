@@ -73,9 +73,7 @@ std::vector<int> generate_sample(const AnticorrelatedBeaconPotential &pot,
                                  InOut<std::mt19937> gen) {
     std::uniform_int_distribution<> dist(0, pot.members.size() - 1);
     const int selected_idx = dist(*gen);
-    std::vector<int> out(pot.members.size(), 0);
-    out[selected_idx] = 1;
-    return out;
+    return {pot.members.at(selected_idx)};
 }
 
 }  // namespace robot::experimental::beacon_sim
