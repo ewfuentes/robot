@@ -31,6 +31,8 @@ py_binary(
     requirement("tqdm"),
     requirement("seaborn"),
     requirement("reportlab"),
+    requirement("torchvision"),
+    "//common:torch",
     "//experimental/beacon_sim:environment_builder",
     "//experimental/beacon_sim:plot_trials",
     "//experimental/beacon_sim:experiment_results_proto_py",
