@@ -10,6 +10,7 @@ namespace robot::liegroups {
 PYBIND11_MODULE(so2_python, m) {
     py::class_<SO2>(m, "SO2")
         // Construct from rotation angle
+        .def(py::init<>())
         .def(py::init<double>())
         .def_static("exp", [](const double theta) -> SO2 { return SO2::exp(theta); })
         .def("log", &SO2::log)

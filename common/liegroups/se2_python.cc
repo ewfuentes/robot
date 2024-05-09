@@ -13,6 +13,7 @@ namespace robot::liegroups {
 PYBIND11_MODULE(se2_python, m) {
     py::module_::import("common.liegroups.so2_python");
     py::class_<SE2>(m, "SE2")
+        .def(py::init<>())
         // Construct from rotation angle
         .def(py::init(&SE2::rot))
         // Construct from translation
