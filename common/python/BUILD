@@ -26,6 +26,7 @@ py_binary(
     requirement("scipy"),
     requirement("scikit-learn"),
     requirement("tqdm"),
+    requirement("seaborn"),
     requirement("reportlab"),
     "//experimental/beacon_sim:environment_builder",
     "//experimental/beacon_sim:plot_trials",

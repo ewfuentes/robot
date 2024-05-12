@@ -325,6 +325,10 @@ proto::ExperimentResult to_proto(const ExperimentConfig &config,
 void run_experiment(const proto::ExperimentConfig &config, const std::filesystem::path &base_path,
                     const std::filesystem::path &output_path, const int num_threads) {
     std::cout << config.DebugString() << std::endl;
+    if (std::filesystem::exists(output_path)) {
+        std::cout << "Output file already exists. Bailing early" << std::endl;
+        std::exit(0);
+    }
 
     // Load Map Config
     const auto maybe_map_config =
