@@ -29,18 +29,20 @@ def _preload_cuda_deps(lib_folder: str, lib_name: str) -> None:
         candidate_lib_paths = glob.glob(os.path.join(nvidia_path, lib_folder, 'lib', lib_name))
         lib_contents = glob.glob(os.path.join(nvidia_path, lib_folder, 'lib', '*'))
         if candidate_lib_paths and not lib_path:
-            lib_path = candidate_lib_paths[0]
+            lib_path = candidate_lib_paths
         if lib_path:
             break
     if not lib_path:
         raise ValueError(f"{lib_name} not found in the system path {sys.path}")
-    ctypes.CDLL(lib_path)
+
+    for p in lib_path:
+        ctypes.CDLL(p)
 
 
 def preload_cuda_deps() -> None:
     cuda_libs: Dict[str, str] = {
         'cublas': 'libcublas.so.*[0-9]',
-        'cudnn': 'libcudnn.so.*[0-9]',
+        'cudnn': 'libcudnn*.so.*[0-9]',
         'cuda_nvrtc': 'libnvrtc.so.*[0-9]',
         'cuda_runtime': 'libcudart.so.*[0-9]',
         'cuda_cupti': 'libcupti.so.*[0-9]',
