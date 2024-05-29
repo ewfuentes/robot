@@ -377,7 +377,6 @@ void run_experiment(const proto::ExperimentConfig &config, const std::filesystem
             for (const auto &planner_config : config.planner_configs()) {
                 CHECK(planner_config.planner_config_oneof_case() !=
                       proto::PlannerConfig::PLANNER_CONFIG_ONEOF_NOT_SET);
-                std::cout << "Running Planner: " << planner_config.DebugString() << std::endl;
                 switch (planner_config.planner_config_oneof_case()) {
                     case proto::PlannerConfig::kLandmarkBrmConfig: {
                         results[planner_config.name()] = run_planner(
