@@ -5,13 +5,13 @@ from experimental.beacon_sim.world_map_config_pb2 import (
 )
 from experimental.beacon_sim.beacon_potential_pb2 import BeaconPotential as BeaconPotentialProto
 from experimental.beacon_sim.mapped_landmarks_pb2 import MappedLandmarks
-from experimental.beacon_sim.correlated_beacons_python import BeaconPotential
+from experimental.beacon_sim.beacon_potential_python import BeaconPotential
 
 from common.math.matrix_pb2 import Matrix
 from planning.probabilistic_road_map_python import create_road_map, MapBounds, RoadmapCreationConfig
 from planning.road_map_pb2 import RoadMap
 
-from typing import Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable, Callable
 
 import itertools
 import matplotlib.pyplot as plt
@@ -84,8 +84,7 @@ class DiffuseLandmark:
         width_m: float,
         height_m: float,
         density: float,
-        p_beacon: float,
-        p_no_beacons: float,
+        dist_generator: Callable[[list[int]], BeaconPotential],
         beacon_ns: str,
         rng: np.random.Generator,
     ):
@@ -102,11 +101,8 @@ class DiffuseLandmark:
 
         self._pts_in_anchor = np.stack([xs, ys])
 
-        self._dist = BeaconPotential.correlated_beacon_potential(
-            p_present=1-p_no_beacons,
-            p_beacon_given_present=p_beacon,
-            members=[(ord(beacon_ns) << 16) + i for i in range(len(self))]
-        )
+        beacon_ids = [(ord(beacon_ns) << 16) + i for i in range(len(self))] 
+        self._dist = dist_generator(beacon_ids)
 
     def draw(self, ax: plt.Axes):
         pts_in_anchor = np.array(
@@ -119,15 +115,15 @@ class DiffuseLandmark:
             ]
         ).T
 
-        pts_in_world = self._world_from_anchor * pts_in_anchor
+        # pts_in_world = self._world_from_anchor @ pts_in_anchor
 
-        outline = mpl.patches.Polygon(pts_in_world.T, alpha=0.25, facecolor="red")
+        # outline = mpl.patches.Polygon(pts_in_world.T, alpha=0.25, facecolor="red")
 
-        ax.add_patch(outline)
+        # ax.add_patch(outline)
 
         to_plot = []
         for pt in self._pts_in_anchor.T:
-            to_plot.append(self._world_from_anchor * pt)
+            to_plot.append(self._world_from_anchor @ pt)
         to_plot = np.hstack(to_plot)
         ax.scatter(to_plot[0, :], to_plot[1, :])
 
@@ -217,7 +213,7 @@ def map_config_to_proto(objs: list[DiffuseLandmark | GridLandmark]):
     ids = []
     combined_dist = None
     for obj in objs:
-        pts_in_world.append(obj._world_from_anchor * obj._pts_in_anchor)
+        pts_in_world.append(obj._world_from_anchor @ obj._pts_in_anchor)
         ids += obj._dist.members()
 
         if combined_dist is None:
@@ -252,7 +248,7 @@ def mapped_landmarks_to_proto(objs: list[DiffuseLandmark | GridLandmark]):
     pts_in_world = []
     ids = []
     for obj in objs:
-        pts_in_world.append(obj._world_from_anchor * obj._pts_in_anchor)
+        pts_in_world.append(obj._world_from_anchor @ obj._pts_in_anchor)
         ids += obj._dist.members()
 
     pts_in_world = np.concatenate(pts_in_world, axis=-1)
@@ -303,9 +299,9 @@ def create_road_map_from_objs(objs: list[DiffuseLandmark | GridLandmark], random
     return road_map_proto
 
 
-def write_environment_to_file(output_path: Path, objs: list[DiffuseLandmark | GridLandmark]):
+def write_environment_to_file(output_path: Path, objs: list[DiffuseLandmark | GridLandmark],  write_road_map: bool):
     # write out map config
-    output_path.mkdir(exist_ok=True)
+    output_path.mkdir(exist_ok=True, parents=True)
     map_config_proto = map_config_to_proto(objs)
     with open(output_path / 'world_map_config.pb', 'wb') as file_out:
         file_out.write(map_config_proto.SerializeToString())
@@ -315,8 +311,9 @@ def write_environment_to_file(output_path: Path, objs: list[DiffuseLandmark | Gr
     with open(output_path / 'mapped_landmarks.pb', 'wb') as file_out:
         file_out.write(mapped_landmarks_proto.SerializeToString())
 
-    # write out road map
-    random_seed = sum([ord(c) for c in str(output_path)])
-    road_map_proto = create_road_map_from_objs(objs, random_seed)
-    with open(output_path / 'road_map.pb', 'wb') as file_out:
-        file_out.write(road_map_proto.SerializeToString())
+    # maybe write out road map
+    if write_road_map:
+        random_seed = sum([ord(c) for c in str(output_path)])
+        road_map_proto = create_road_map_from_objs(objs, random_seed)
+        with open(output_path / 'road_map.pb', 'wb') as file_out:
+            file_out.write(road_map_proto.SerializeToString())
