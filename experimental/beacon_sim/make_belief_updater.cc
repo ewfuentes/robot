@@ -89,15 +89,22 @@ std::string merge_configurations(const std::string &a, const std::string &b) {
     return out;
 }
 
-using LandmarkConditionedBeliefMap =
+struct UnappliedLandmarkBelief {
+    double log_config_prob;
+    const Eigen::Matrix3d &cov_in_robot;
+    const TypedTransform &transform;
+};
+
+using LandmarkBeliefMap =
     std::unordered_map<std::string, LandmarkRobotBelief::LandmarkConditionedRobotBelief>;
-std::tuple<LandmarkConditionedBeliefMap, double> downsize_and_normalize_belief(
-    const LandmarkConditionedBeliefMap &belief, const std::optional<int> max_num_components,
+using UnappliedLandmarkBeliefMap = std::unordered_map<std::string, UnappliedLandmarkBelief>;
+std::tuple<UnappliedLandmarkBeliefMap, double> downsize_and_normalize_belief(
+    const UnappliedLandmarkBeliefMap &belief, const std::optional<int> max_num_components,
     InOut<std::optional<std::mt19937>> gen) {
     CHECK(belief.size() > 0);
     CHECK(!max_num_components.has_value() || max_num_components.value() > 0);
 
-    LandmarkConditionedBeliefMap out;
+    UnappliedLandmarkBeliefMap out;
     double log_normalizer = 0;
     const int num_components =
         max_num_components.has_value()
@@ -117,10 +124,12 @@ std::tuple<LandmarkConditionedBeliefMap, double> downsize_and_normalize_belief(
     log_normalizer = math::logsumexp(idxs, [&log_prob](const int idx) { return log_prob.at(idx); });
 
     for (const auto idx : idxs) {
-        out[keys.at(idx)] = {
-            .cov_in_robot = belief.at(keys.at(idx)).cov_in_robot,
-            .log_config_prob = log_prob.at(idx) - log_normalizer,
-        };
+        out.insert({keys.at(idx),
+                    {
+                        .log_config_prob = log_prob.at(idx) - log_normalizer,
+                        .cov_in_robot = belief.at(keys.at(idx)).cov_in_robot,
+                        .transform = belief.at(keys.at(idx)).transform,
+                    }});
     }
 
     return std::make_tuple(out, log_normalizer);
@@ -698,9 +707,7 @@ planning::BeliefUpdater<LandmarkRobotBelief> make_landmark_belief_updater(
             edge_transform_cache[edge] = std::make_tuple(local_from_new_robot, edge_transform);
         }
 
-        std::unordered_map<std::string, LandmarkRobotBelief::LandmarkConditionedRobotBelief>
-            belief_from_config;
-
+        UnappliedLandmarkBeliefMap unapplied_belief_from_config;
         for (const auto &[config, belief] : initial_belief.belief_from_config) {
             const auto consistent_transform_iterators =
                 find_consistent_configs(config, edge_transform);
@@ -709,18 +716,6 @@ planning::BeliefUpdater<LandmarkRobotBelief> make_landmark_belief_updater(
                 const auto &[transform_config, transform] = *iter;
 
                 const std::string new_config = merge_configurations(config, transform_config);
-
-                //  Compute the new covariance
-                //  [- new_cov] = [I cov] * edge_transform
-                //  [-       -]   [0   I]
-                //  new_cov  = A * B^-1
-                const int cov_dim = belief.cov_in_robot.rows();
-                Eigen::MatrixXd input = Eigen::MatrixXd::Identity(2 * cov_dim, 2 * cov_dim);
-                if (type == TransformType::COVARIANCE) {
-                    input.topRightCorner(cov_dim, cov_dim) = belief.cov_in_robot;
-                } else {
-                    input.topRightCorner(cov_dim, cov_dim) = belief.cov_in_robot.inverse();
-                }
 
                 // Compute the probability of this config
                 constexpr bool ALLOW_PARTIAL_ASSIGNMENT = true;
@@ -742,37 +737,57 @@ planning::BeliefUpdater<LandmarkRobotBelief> make_landmark_belief_updater(
                 const double log_config_prob =
                     beacon_potential.log_prob(assignment, ALLOW_PARTIAL_ASSIGNMENT);
 
-                if (type == TransformType::COVARIANCE) {
-                    const ScatteringTransformBase result = math::redheffer_star(
-                        input, std::get<ScatteringTransform<TransformType::COVARIANCE>>(transform));
-                    const Eigen::MatrixXd cov_in_robot = result.topRightCorner(cov_dim, cov_dim);
-                    belief_from_config[new_config] = {
-                        .cov_in_robot = cov_in_robot,
-                        .log_config_prob = log_config_prob,
-                    };
-                } else {
-                    const ScatteringTransformBase result = math::redheffer_star(
-                        input,
-                        std::get<ScatteringTransform<TransformType::INFORMATION>>(transform));
-                    const Eigen::MatrixXd info_in_robot = result.topRightCorner(cov_dim, cov_dim);
-                    belief_from_config[new_config] = {
-                        .cov_in_robot = info_in_robot.inverse(),
-                        .log_config_prob = log_config_prob,
-                    };
-                }
+                unapplied_belief_from_config.insert({new_config,
+                                                     {
+                                                         .log_config_prob = log_config_prob,
+                                                         .cov_in_robot = belief.cov_in_robot,
+                                                         .transform = transform,
+                                                     }});
             }
         }
 
-        const auto log_prob_accessor = [](const auto key_and_cov) {
-            return key_and_cov.second.log_config_prob;
-        };
-
-        const auto &[new_belief_from_config, log_probability_mass_tracked] =
-            downsize_and_normalize_belief(belief_from_config, max_num_components, make_in_out(gen));
+        const auto &[downselected_unapplied_belief_from_config, log_probability_mass_tracked] =
+            downsize_and_normalize_belief(unapplied_belief_from_config, max_num_components,
+                                          make_in_out(gen));
 
         {
-            const double belief_sum = math::logsumexp(new_belief_from_config, log_prob_accessor);
+            const auto log_prob_accessor = [](const auto key_and_cov) {
+                return key_and_cov.second.log_config_prob;
+            };
+            const double belief_sum =
+                math::logsumexp(downselected_unapplied_belief_from_config, log_prob_accessor);
             CHECK(std::abs(belief_sum) < 1e-6);
+        }
+
+        LandmarkBeliefMap new_belief_from_config;
+        for (const auto &[config, unapplied_belief] : downselected_unapplied_belief_from_config) {
+            //  Compute the new covariance
+            //  [- new_cov] = [I cov] * edge_transform
+            //  [-       -]   [0   I]
+            //  new_cov  = A * B^-1
+            const int cov_dim = unapplied_belief.cov_in_robot.rows();
+            Eigen::MatrixXd input = Eigen::MatrixXd::Identity(2 * cov_dim, 2 * cov_dim);
+            if (type == TransformType::COVARIANCE) {
+                input.topRightCorner(cov_dim, cov_dim) = unapplied_belief.cov_in_robot;
+                const ScatteringTransformBase result = math::redheffer_star(
+                    input, std::get<ScatteringTransform<TransformType::COVARIANCE>>(
+                               unapplied_belief.transform));
+                const Eigen::MatrixXd cov_in_robot = result.topRightCorner(cov_dim, cov_dim);
+                new_belief_from_config[config] = {
+                    .cov_in_robot = cov_in_robot,
+                    .log_config_prob = unapplied_belief.log_config_prob,
+                };
+            } else {
+                input.topRightCorner(cov_dim, cov_dim) = unapplied_belief.cov_in_robot.inverse();
+                const ScatteringTransformBase result = math::redheffer_star(
+                    input, std::get<ScatteringTransform<TransformType::INFORMATION>>(
+                               unapplied_belief.transform));
+                const Eigen::MatrixXd info_in_robot = result.topRightCorner(cov_dim, cov_dim);
+                new_belief_from_config[config] = {
+                    .cov_in_robot = info_in_robot.inverse(),
+                    .log_config_prob = unapplied_belief.log_config_prob,
+                };
+            }
         }
 
         return {
