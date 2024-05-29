@@ -74,7 +74,7 @@ struct ExpectedBeliefPlanResult {
 struct ExpectedBeliefRoadMapOptions {
     int num_configuration_samples;
     int seed;
-
+    std::optional<time::RobotTimestamp::duration> timeout;
     BeliefRoadMapOptions brm_options;
 };
 

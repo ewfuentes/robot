@@ -140,6 +140,7 @@ class BeliefRoadMapPlannerPythonTest(unittest.TestCase):
         brm_options = brm.ExpectedBeliefRoadMapOptions(
             num_configuration_samples=100,
             seed=0,
+            timeout=None,
             brm_options=brm.BeliefRoadMapOptions(
                 max_sensor_range_m=3.0,
                 uncertainty_tolerance=None,
@@ -183,6 +184,7 @@ class BeliefRoadMapPlannerPythonTest(unittest.TestCase):
         brm_options = brm.ExpectedBeliefRoadMapOptions(
             num_configuration_samples=100,
             seed=0,
+            timeout=None,
             brm_options=brm.BeliefRoadMapOptions(
                 max_sensor_range_m=3.0,
                 uncertainty_tolerance=None,
