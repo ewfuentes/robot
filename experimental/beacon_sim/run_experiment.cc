@@ -167,6 +167,7 @@ PlannerResult run_planner(const planning::RoadMap &road_map, [[maybe_unused]] co
     const ExpectedBeliefRoadMapOptions options = {
         .num_configuration_samples = config.num_configuration_samples(),
         .seed = 12345,
+        .timeout = timeout,
         .brm_options =
             {
                 .max_sensor_range_m = max_sensor_range_m,

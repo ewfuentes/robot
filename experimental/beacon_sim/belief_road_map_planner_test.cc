@@ -441,6 +441,7 @@ TEST(ExpectedBeliefRoadMapPlannerTest, diamond_road_map_correlated_beacons) {
     constexpr ExpectedBeliefRoadMapOptions OPTIONS = {
         .num_configuration_samples = 100,
         .seed = 1234,
+        .timeout = std::nullopt,
         .brm_options = {
             .max_sensor_range_m = 3.0,
             .uncertainty_tolerance = std::nullopt,
@@ -489,7 +490,7 @@ TEST(BeliefRoadmapPlannerStressTest, expected_brm_test) {
     const ExpectedBeliefRoadMapOptions options = {
         .num_configuration_samples = 100,
         .seed = 12304,
-        // .seed = 12303,
+        .timeout = std::nullopt,
         .brm_options =
             {
                 .max_sensor_range_m = 3.0,
@@ -582,6 +583,7 @@ TEST(BeliefRoadmapPlannerCircleTest, expected_brm_test) {
     const ExpectedBeliefRoadMapOptions options = {
         .num_configuration_samples = 100,
         .seed = 12304,
+        .timeout = std::nullopt,
         .brm_options =
             {
                 .max_sensor_range_m = 3.0,

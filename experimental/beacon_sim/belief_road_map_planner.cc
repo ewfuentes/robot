@@ -432,6 +432,7 @@ std::optional<ExpectedBeliefPlanResult> compute_expected_belief_road_map_plan(
     const planning::RoadMap &road_map, const EkfSlam &ekf, const BeaconPotential &beacon_potential,
     const ExpectedBeliefRoadMapOptions &options) {
     std::mt19937 gen(options.seed);
+    const time::RobotTimestamp plan_start_time = time::current_robot_time();
 
     // Sample a number of worlds and run the BRM on it
     std::vector<std::vector<int>> world_samples;
@@ -468,6 +469,11 @@ std::optional<ExpectedBeliefPlanResult> compute_expected_belief_road_map_plan(
 
         for (int i = 0; i < static_cast<int>(plans.size()); i++) {
             expected_cov_dets.at(i) += covs.at(i).determinant() / world_samples.size();
+        }
+
+        if (options.timeout.has_value() &&
+            time::current_robot_time() - plan_start_time > options.timeout.value()) {
+            break;
         }
     }
 
