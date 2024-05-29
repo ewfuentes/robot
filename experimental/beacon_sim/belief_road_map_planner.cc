@@ -471,7 +471,8 @@ std::optional<ExpectedBeliefPlanResult> compute_expected_belief_road_map_plan(
             expected_cov_dets.at(i) += covs.at(i).determinant() / world_samples.size();
         }
 
-        if (options.timeout.has_value() && time::current_robot_time() - plan_start_time > options.timeout.value()) {
+        if (options.timeout.has_value() &&
+            time::current_robot_time() - plan_start_time > options.timeout.value()) {
             break;
         }
     }

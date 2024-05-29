@@ -89,8 +89,9 @@ PYBIND11_MODULE(belief_road_map_planner_python, m) {
 
     py::class_<ExpectedBeliefRoadMapOptions>(m, "ExpectedBeliefRoadMapOptions")
         .def(py::init<>())
-        .def(py::init<int, int, std::optional<time::RobotTimestamp::duration>, BeliefRoadMapOptions>(), "num_configuration_samples"_a, "seed"_a, "timeout"_a,
-             "brm_options"_a)
+        .def(py::init<int, int, std::optional<time::RobotTimestamp::duration>,
+                      BeliefRoadMapOptions>(),
+             "num_configuration_samples"_a, "seed"_a, "timeout"_a, "brm_options"_a)
         .def_readwrite("num_configuration_samples",
                        &ExpectedBeliefRoadMapOptions::num_configuration_samples)
         .def_readwrite("seed", &ExpectedBeliefRoadMapOptions::seed)
