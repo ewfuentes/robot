@@ -399,5 +399,13 @@ http_archive(
   patches = ["//third_party:annoy_0001-add-maybe-unused-attributes.patch"]
 )
 
+http_archive(
+  name = "bs_thread_pool",
+  urls = ["https://github.com/bshoshany/thread-pool/archive/refs/tags/v4.1.0.zip"],
+  strip_prefix = "thread-pool-4.1.0",
+  build_file = "//third_party:BUILD.thread_pool",
+  integrity = "sha256-oYooSRZTByr+J/duGfpRD1gBw4EWCUgPHadAmGHg8P4=",
+)
+
 
 
