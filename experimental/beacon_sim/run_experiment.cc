@@ -6,9 +6,8 @@
 #include <optional>
 #include <random>
 
-#include "Eigen/Core"
 #include "BS_thread_pool.hpp"
-
+#include "Eigen/Core"
 #include "common/argument_wrapper.hh"
 #include "common/check.hh"
 #include "common/math/matrix_to_proto.hh"
@@ -360,11 +359,10 @@ void run_experiment(const proto::ExperimentConfig &config, const std::filesystem
     BS::thread_pool pool(num_threads);
 
     for (const auto &start_goal : start_goals) {
-        pool.detach_task(
-        [=, &remaining, eval_base_seed = config.evaluation_base_seed(),
-         num_eval_trials = config.num_eval_trials(),
-         max_sensor_range_m = config.max_sensor_range_m(),
-         &all_statistics, elem = start_goal, road_map = road_map]() mutable {
+        pool.detach_task([=, &remaining, eval_base_seed = config.evaluation_base_seed(),
+                          num_eval_trials = config.num_eval_trials(),
+                          max_sensor_range_m = config.max_sensor_range_m(), &all_statistics,
+                          elem = start_goal, road_map = road_map]() mutable {
             const auto &[idx, start_goal] = elem;
             // Add the start goal to the road map
             road_map.add_start_goal(
@@ -458,8 +456,7 @@ int main(int argc, const char **argv) {
     const auto maybe_config_file = robot::proto::load_from_file<ExperimentConfig>(config_file_path);
     CHECK(maybe_config_file.has_value());
 
-    robot::experimental::beacon_sim::run_experiment(maybe_config_file.value(),
-                                                    config_file_path.remove_filename(),
-                                                    args["output_path"].as<std::string>(),
-                                                    args["num_threads"].as<int>());
+    robot::experimental::beacon_sim::run_experiment(
+        maybe_config_file.value(), config_file_path.remove_filename(),
+        args["output_path"].as<std::string>(), args["num_threads"].as<int>());
 }
