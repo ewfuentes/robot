@@ -1,0 +1,10 @@
+
+cc_library(
+  name = "bs_thread_pool",
+  hdrs = [
+    "include/BS_thread_pool.hpp",
+    "include/BS_thread_pool_utils.hpp"
+  ],
+  strip_include_prefix="include/",
+  visibility=["//visibility:public"],
+)

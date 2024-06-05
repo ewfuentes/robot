@@ -66,3 +66,12 @@ py_library(
   deps = [requirement("torch")],
   visibility = ["//visibility:public"],
 )
+
+cc_test(
+  name = "thread_pool_test",
+  srcs = ["thread_pool_test.cc"],
+  deps = [
+    "@bs_thread_pool",
+    "@com_google_googletest//:gtest_main",
+  ],
+)
