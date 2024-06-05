@@ -922,6 +922,7 @@ cc_binary(
   data = [":experiment_configs"],
   linkopts = ["-ltbb"],
   deps = [
+    "@bs_thread_pool",
     "@cxxopts",
     "//common:check",
     "//common/proto:load_from_file",
