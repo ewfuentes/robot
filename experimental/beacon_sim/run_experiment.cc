@@ -6,6 +6,7 @@
 #include <optional>
 #include <random>
 
+#include "BS_thread_pool.hpp"
 #include "Eigen/Core"
 #include "common/argument_wrapper.hh"
 #include "common/check.hh"
@@ -322,7 +323,7 @@ proto::ExperimentResult to_proto(const ExperimentConfig &config,
 }  // namespace
 
 void run_experiment(const proto::ExperimentConfig &config, const std::filesystem::path &base_path,
-                    const std::filesystem::path &output_path) {
+                    const std::filesystem::path &output_path, const int num_threads) {
     std::cout << config.DebugString() << std::endl;
 
     // Load Map Config
@@ -341,7 +342,7 @@ void run_experiment(const proto::ExperimentConfig &config, const std::filesystem
     const auto maybe_road_map =
         robot::proto::load_from_file<planning::proto::RoadMap>(base_path / config.road_map_path());
     CHECK(maybe_road_map.has_value());
-    planning::RoadMap road_map = unpack_from(maybe_road_map.value());
+    const planning::RoadMap road_map = unpack_from(maybe_road_map.value());
 
     std::mt19937 gen(config.start_goal_seed());
     const std::vector<std::tuple<int, StartGoal>> start_goals =
@@ -355,13 +356,13 @@ void run_experiment(const proto::ExperimentConfig &config, const std::filesystem
                                     : std::nullopt;
 
     std::vector<EvaluationResult> all_statistics(start_goals.size());
+    BS::thread_pool pool(num_threads);
 
-    std::for_each(
-        std::execution::par, start_goals.begin(), start_goals.end(),
-        [=, &remaining, eval_base_seed = config.evaluation_base_seed(),
-         num_eval_trials = config.num_eval_trials(),
-         max_sensor_range_m = config.max_sensor_range_m(),
-         &all_statistics](const auto &elem) mutable {
+    for (const auto &start_goal : start_goals) {
+        pool.detach_task([=, &remaining, eval_base_seed = config.evaluation_base_seed(),
+                          num_eval_trials = config.num_eval_trials(),
+                          max_sensor_range_m = config.max_sensor_range_m(), &all_statistics,
+                          elem = start_goal, road_map = road_map]() mutable {
             const auto &[idx, start_goal] = elem;
             // Add the start goal to the road map
             road_map.add_start_goal(
@@ -409,6 +410,8 @@ void run_experiment(const proto::ExperimentConfig &config, const std::filesystem
                                  eval_base_seed + idx, num_eval_trials, max_sensor_range_m);
             std::cout << "remaining: " << --remaining << std::endl;
         });
+    }
+    pool.wait();
 
     // Write out the results
     const auto experiment_results_proto = to_proto(config, all_statistics);
@@ -421,10 +424,13 @@ void run_experiment(const proto::ExperimentConfig &config, const std::filesystem
 
 int main(int argc, const char **argv) {
     // clang-format off
+    const std::string DEFAULT_NUM_THREADS = "0";
     cxxopts::Options options("run_experiment", "Run experiments for paper");
     options.add_options()
         ("config_file", "Path to experiment config file", cxxopts::value<std::string>())
         ("output_path", "Output directory for experiment results", cxxopts::value<std::string>())
+        ("num_threads", "number of experiments to run in parallel",
+            cxxopts::value<int>()->default_value(DEFAULT_NUM_THREADS))
         ("help", "Print usage");
     // clang-format on
 
@@ -450,7 +456,7 @@ int main(int argc, const char **argv) {
     const auto maybe_config_file = robot::proto::load_from_file<ExperimentConfig>(config_file_path);
     CHECK(maybe_config_file.has_value());
 
-    robot::experimental::beacon_sim::run_experiment(maybe_config_file.value(),
-                                                    config_file_path.remove_filename(),
-                                                    args["output_path"].as<std::string>());
+    robot::experimental::beacon_sim::run_experiment(
+        maybe_config_file.value(), config_file_path.remove_filename(),
+        args["output_path"].as<std::string>(), args["num_threads"].as<int>());
 }
