@@ -340,7 +340,7 @@ void run_simulation(const SimConfig &sim_config) {
     bool run = true;
     time::set_default_time_provider(time::TimeProvider::SIM);
 
-    visualization::gl_window::GlWindow gl_window(1920, 1440);
+    visualization::gl_window::GlWindow gl_window(1024, 768);
 
     // Initial robot state
     constexpr EkfSlamConfig EKF_CONFIG = {
