@@ -20,4 +20,10 @@ std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_stress_test_envir
 
 std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_circle_environment(
     const EkfSlamConfig &ekf_config, const int num_landmarks, const double circle_radius_m);
+
+std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_david_environment(
+    const EkfSlamConfig &ekf_config, const double p_lone_beacon, const double p_no_stack_beacon,
+    const double p_stacked_beacon);
 }  // namespace robot::experimental::beacon_sim
+
+
