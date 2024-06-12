@@ -662,7 +662,7 @@ TEST(BeliefRoadmapPlannerCircleTest, landmark_brm_test) {
         }
     }
 }
-//david's test
+//david's test with 5x5 grid and multiple beacons (Node Path Error: -1,15,16,11,12,7,8,3,2,-2)
 TEST(ExpectedBeliefRoadMapPlannerTest, david_environment) {
     // Setup
     const EkfSlamConfig ekf_config{
@@ -709,5 +709,45 @@ TEST(ExpectedBeliefRoadMapPlannerTest, david_environment) {
         std::cout << i << " idx: " << plan.nodes.at(i) << std::endl;
     }
 }
+
+/*
+//david's test with 5x5 grid and one beacon(Node Path Error: -1,15,16,11,12,7,8,3,2,-2)
+TEST(BeliefRoadMapPlannerTest, david_environment) {
+    // Setup
+    const EkfSlamConfig ekf_config{
+        .max_num_beacons = 1,
+        .initial_beacon_uncertainty_m = 100.0,
+        .along_track_process_noise_m_per_rt_meter = 0.05,
+        .cross_track_process_noise_m_per_rt_meter = 0.05,
+        .pos_process_noise_m_per_rt_s = 0.0,
+        .heading_process_noise_rad_per_rt_meter = 1e-3,
+        .heading_process_noise_rad_per_rt_s = 0.0,
+        .beacon_pos_process_noise_m_per_rt_s = 1e-6,
+        .range_measurement_noise_m = 1e-1,
+        .bearing_measurement_noise_rad = 1e-1,
+        .on_map_load_position_uncertainty_m = 2.0,
+        .on_map_load_heading_uncertainty_rad = 0.1,
+    };
+    constexpr double P_BEACON = .9;
+    const auto &[road_map, ekf_slam, _] = create_david_environment(ekf_config, P_BEACON);
+    constexpr BeliefRoadMapOptions OPTIONS = {
+        .max_sensor_range_m = 3.0,
+        .uncertainty_tolerance = 1e-2,
+        .max_num_edge_transforms = 1,
+        .timeout = std::nullopt,
+    };
+
+    // Action
+    const auto maybe_plan = compute_belief_road_map_plan(road_map, ekf_slam, {}, OPTIONS);
+
+    // Verification
+    EXPECT_TRUE(maybe_plan.has_value());
+    const auto &plan = maybe_plan.value();
+    std::cout << "Num Nodes: " << plan.nodes.size() << std::endl;
+    for (int i = 0; i < static_cast<int>(plan.nodes.size()); i++) {
+        std::cout << i << " idx: " << plan.nodes.at(i) << std::endl;
+    }
+}
+*/
 }  // namespace robot::experimental::beacon_sim
 
