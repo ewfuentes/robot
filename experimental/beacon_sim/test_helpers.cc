@@ -309,38 +309,36 @@ std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_circle_environmen
 
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-MappedLandmarks create_david_landmarks() {
-    constexpr int LONE_BEACON_ID = 1;
-    const Eigen::Vector2d LONE_BEACON_IN_LOCAL{-12.5, 12.5};
-    constexpr int START_STACKED_BEACON_ID = 2;
-    const Eigen::Vector2d STACKED_BEACON_IN_LOCAL{-12.5, -12.5};
-    constexpr int NUM_STACKED_BEACONS = 3;
+/*
+//David's environment. 5x5 grid with two beacons. Independent probabilities.
+MappedLandmarks create_david_mapped_landmarks_set_one() {
+    constexpr int BEACON_ONE_ID = 1;
+    const Eigen::Vector2d BEACON_ONE_IN_LOCAL{7.5,-7.5};
+    constexpr int BEACON_TWO_ID = 2;
+    const Eigen::Vector2d BEACON_TWO_IN_LOCAL{7.5, 7.5};
     constexpr double POSITION_UNCERTAINTY_M = 0.1;
-    constexpr int NUM_BEACONS = NUM_STACKED_BEACONS + 1;
+    constexpr int NUM_BEACONS = 2;
     const Eigen::Matrix2d cov_in_local{{{POSITION_UNCERTAINTY_M * POSITION_UNCERTAINTY_M, 0.0},
                                         {0.0, POSITION_UNCERTAINTY_M * POSITION_UNCERTAINTY_M}}};
 
     MappedLandmarks out;
     out.cov_in_local = Eigen::MatrixXd::Zero(2 * NUM_BEACONS, 2 * NUM_BEACONS);
-    // Add the lone beacon
-    out.beacon_ids.push_back(LONE_BEACON_ID);
-    out.beacon_in_local.push_back(LONE_BEACON_IN_LOCAL);
+    // Add first beacon
+    out.beacon_ids.push_back(BEACON_ONE_ID);
+    out.beacon_in_local.push_back(BEACON_ONE_IN_LOCAL);
     out.cov_in_local.block<2, 2>(0, 0) = cov_in_local;
 
-    // Add the stacked beacons
-    for (int i = 1; i <= NUM_STACKED_BEACONS; i++) {
-        out.beacon_ids.push_back(START_STACKED_BEACON_ID + i);
-        out.beacon_in_local.push_back(STACKED_BEACON_IN_LOCAL);
-        out.cov_in_local.block<2, 2>(2 * i, 2 * i) = cov_in_local;
-    }
+    // Add second beacon
+    out.beacon_ids.push_back(BEACON_TWO_ID);
+    out.beacon_in_local.push_back(BEACON_TWO_IN_LOCAL);
+    out.cov_in_local.block<2, 2>(2, 2) = cov_in_local;
 
     return out;
 }
-//With multiple landmarks in different places
-std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_david_environment(
-    const EkfSlamConfig &ekf_config, const double p_lone_beacon, const double p_no_stack_beacon,
-    const double p_stacked_beacon) {
+
+
+std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_david_indep_beacons_environment(
+    const EkfSlamConfig &ekf_config, const double p_beacon_one,const double p_beacon_two) {
     // Create the environment depicted below
     //
     //
@@ -348,13 +346,13 @@ std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_david_environment
     //                               
     //                                         +Y▲
     //                                           │
-    //                                           └──►
-    //                  Start  5m               +X
-    //                    X─────────X─────────X─────────X─────────X
-    //                    │         │         │         |         |
-    //                    │         │         │         |         |
-    //                 5m │         │         │         |         |
-    //                    │         │         │         |         |
+    //                                           └──►         
+    //        Start  5m                             +X
+    //          O─────────X─────────X─────────X─────────X─────────X
+    //      (-15,10)      │         │         │         |         |
+    //                    │         │         │         | BEACON 1|
+    //                 5m │         │         │         |    B    |
+    //                    │         │         │         |(7.5,7.5)|
     //                    │         │         │         |         |
     //                    X─────────X─────────X─────────X─────────X
     //                    │         │         │         |         |
@@ -370,69 +368,111 @@ std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_david_environment
     //                    │         │         │         |         |
     //                    X─────────X─────────X─────────X─────────X
     //                   5│        6│        7│        8|        9|
-    //                    │         │         │         |         |
-    //                    │         │         │         |         |
-    //                    │         │         │         |         |
-    //                    │         │         │         |         |
-    //                    X─────────X─────────X─────────X─────────X
-    //                   0         1         2         3         4 END
+    //                    │ BEACON 2│         │         |         |
+    //                    │    B    │         │         |         |
+    //                    (-7.5,-7.5)         │         |         |
+    //                    │         │         │         |         |      (15,-10)
+    //                    X─────────X─────────X─────────X─────────X─────────O
+    //                   0         1         2         3         4     5m  END
     // Note that:
     //  - each X is a PRM node,
     //  - B represents a beacon,
     //  - The world origin exists at the middle prm node,
     //  - The robot starts at (0, 10)
     //  - node indices start in the lower left and increase to the right, then increase up
-        const auto mapped_landmarks = create_david_landmarks();
-        const auto road_map = create_grid_road_map({10,10},{10,-10},5,5);
+
+        const auto mapped_landmarks = create_david_mapped_landmarks();
+        const auto road_map = create_grid_road_map({-15,10},{15,-10},5,5);
         auto ekf_slam = EkfSlam(ekf_config, time::RobotTimestamp());
         constexpr bool LOAD_OFF_DIAGONALS = true;
 
-        // Lone beacon potential
-        const double lone_log_norm = -std::log(1 - p_lone_beacon);
-        const double lone_param = std::log(p_lone_beacon) + lone_log_norm;
-        const auto lone_potential =
-        PrecisionMatrixPotential{.precision = Eigen::Matrix<double, 1, 1>{lone_param},
-                                 .log_normalizer = lone_log_norm,
+        //beacon one potential
+        const double log_one_norm = -std::log(1 - p_beacon_one);
+        const double param_one = std::log(p_beacon_one) + log_one_norm;
+        const auto beacon_one_potential =
+        PrecisionMatrixPotential{.precision = Eigen::Matrix<double, 1, 1>{param_one},
+                                 .log_normalizer = log_one_norm,
                                  .members = {1}};
+        // Lone beacon potential
+        const double log_two_norm = -std::log(1 - p_beacon_two);
+        const double param_two = std::log(p_beacon_two) + log_two_norm;
+        const auto beacon_two_potential =
+        PrecisionMatrixPotential{.precision = Eigen::Matrix<double, 1, 1>{param_two},
+                                 .log_normalizer = log_two_norm,
+                                 .members = {2}};
 
-        // Stacked Potential
-        const auto stacked_potential = create_correlated_beacons({
-            .p_beacon = p_stacked_beacon,
-            .p_no_beacons = p_no_stack_beacon,
-            .members = {3, 4, 5},
-        });
-        const auto beacon_potential = lone_potential * stacked_potential;
+        const auto beacon_potential = beacon_one_potential * beacon_two_potential;
 
         // Move the robot to (-10, 10) and have it face to the right
-        const liegroups::SE2 old_robot_from_new_robot(0, {-10, 10});
+        const liegroups::SE2 old_robot_from_new_robot(0, {15, -10});
         ekf_slam.predict(time::RobotTimestamp(), old_robot_from_new_robot);
         ekf_slam.load_map(mapped_landmarks, LOAD_OFF_DIAGONALS);
 
         return {road_map, ekf_slam, beacon_potential};
     }
-/*
-std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_david_environment(
-    const EkfSlamConfig &ekf_config, const double p_lone_beacon) {
-        const auto mapped_landmarks = create_grid_mapped_landmarks({{12.5,12.5}},{1});
-        const auto road_map = create_grid_road_map({10,-10},{-5,10},5,5);
+*/
+//David's environment. 5x5 grid with two beacon stacks. Independent Probabilities. Skewed number of beacons
+MappedLandmarks create_david_mapped_landmarks_set_two() {
+    constexpr int START_FIRST_STACKED_BEACON_ID = 0;
+    const Eigen::Vector2d FIRST_STACK_IN_LOCAL{-5,-5};
+    constexpr int NUM_FIRST_STACKED_BEACONS = 3;
+    constexpr int START_SECOND_STACKED_BEACON_ID = 49;
+    const Eigen::Vector2d SECOND_STACK_IN_LOCAL{10, 10};
+    constexpr int NUM_SECOND_STACKED_BEACONS = 15;
+    constexpr double POSITION_UNCERTAINTY_M = 0.1;
+    constexpr int NUM_BEACONS = NUM_FIRST_STACKED_BEACONS + NUM_SECOND_STACKED_BEACONS;
+    const Eigen::Matrix2d cov_in_local{{{POSITION_UNCERTAINTY_M * POSITION_UNCERTAINTY_M, 0.0},
+                                        {0.0, POSITION_UNCERTAINTY_M * POSITION_UNCERTAINTY_M}}};
+
+    MappedLandmarks out;
+    out.cov_in_local = Eigen::MatrixXd::Zero(2 * NUM_BEACONS, 2 * NUM_BEACONS);
+
+    // Add first stack
+    for (int i = 1; i <= NUM_FIRST_STACKED_BEACONS; i++) {
+        out.beacon_ids.push_back(START_FIRST_STACKED_BEACON_ID + i);
+        out.beacon_in_local.push_back(FIRST_STACK_IN_LOCAL);
+        out.cov_in_local.block<2, 2>(2 * i, 2 * i) = cov_in_local; //Ask Erick about vector after .block
+    }
+
+    // Add second stack
+    for (int i = 1; i <= NUM_SECOND_STACKED_BEACONS; i++) {
+        out.beacon_ids.push_back(START_SECOND_STACKED_BEACON_ID + i);
+        out.beacon_in_local.push_back(SECOND_STACK_IN_LOCAL);
+        out.cov_in_local.block<2, 2>(2 * i, 2 * i) = cov_in_local;
+    }
+    return out;
+}
+
+std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_david_indep_stacked_environment(
+    const EkfSlamConfig &ekf_config, const double p_stack_one, const double p_no_stack_one, const double p_stack_two,const double p_no_stack_two){
+        const auto mapped_landmarks = create_david_mapped_landmarks_set_two();
+        const auto road_map = create_grid_road_map({-15,10},{15,-10},5,5);
         auto ekf_slam = EkfSlam(ekf_config, time::RobotTimestamp());
         constexpr bool LOAD_OFF_DIAGONALS = true;
 
-        // Lone beacon potential
-        const double lone_log_norm = -std::log(1 - p_lone_beacon);
-        const double lone_param = std::log(p_lone_beacon) + lone_log_norm;
-        const auto lone_potential =
-        PrecisionMatrixPotential{.precision = Eigen::Matrix<double, 1, 1>{lone_param},
-                                 .log_normalizer = lone_log_norm,
-                                 .members = {GRID_BEACON_ID}};
-                     
+        //first stacked beacon potential
+        const auto first_stack_potential = create_correlated_beacons({
+        .p_beacon = p_stack_one,
+        .p_no_beacons = p_no_stack_one,
+        .members = {1, 2, 3},
+        });
+
+        //second stacked beacon potential
+        const auto second_stack_potential = create_correlated_beacons({
+        .p_beacon = p_stack_two,
+        .p_no_beacons = p_no_stack_two,
+        .members = {50, 51, 52, 53, 54, 55, 56, 57, 58, 59,60,61,62,63,64},
+        });
+
+        const auto beacon_potential = first_stack_potential * second_stack_potential;
+
         // Move the robot to (-10, 10) and have it face to the right
-        const liegroups::SE2 old_robot_from_new_robot(0, {-10, 10});
+        const liegroups::SE2 old_robot_from_new_robot(0, {15, -10});
         ekf_slam.predict(time::RobotTimestamp(), old_robot_from_new_robot);
         ekf_slam.load_map(mapped_landmarks, LOAD_OFF_DIAGONALS);
 
-        return {road_map, ekf_slam, lone_potential};
+
+        return {road_map, ekf_slam, beacon_potential};
     }
-*/
 }  // namespace robot::experimental::beacon_sim
 

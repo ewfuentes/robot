@@ -20,16 +20,14 @@ std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_stress_test_envir
 
 std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_circle_environment(
     const EkfSlamConfig &ekf_config, const int num_landmarks, const double circle_radius_m);
-//David's environment. 5x5 grid with multiple beacons in different places
-
-std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_david_environment(
-    const EkfSlamConfig &ekf_config, const double p_lone_beacon, const double p_no_stack_beacon,
-    const double p_stacked_beacon);
-//David's environment. 5x5 grid with one beacon
+//David's environment. 5x5 grid with two beacons. Independent probabilities.
 /*
-std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_david_environment(
-    const EkfSlamConfig &ekf_config, const double p_lone_beacon);
+std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_david_indep_beacon_environment(
+    const EkfSlamConfig &ekf_config, const double p_beacon_one, const double p_beacon_two);
 */
+//David's environment. 5x5 grid with two beacon stacks. Independent Probabilities. Skewed number of beacons
+std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_david_indep_stacked_environment(
+    const EkfSlamConfig &ekf_config, const double p_stack_one, const double p_no_stack_one, const double p_stack_two,const double p_no_stack_two);
 }  // namespace robot::experimental::beacon_sim
 
 

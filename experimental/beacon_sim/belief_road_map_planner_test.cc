@@ -667,60 +667,12 @@ TEST(BeliefRoadmapPlannerCircleTest, landmark_brm_test) {
         }
     }
 }
-//david's test with 5x5 grid and multiple beacons (Node Path Error: -1,15,16,11,12,7,8,3,2,-2)
-TEST(ExpectedBeliefRoadMapPlannerTest, david_environment) {
-    // Setup
-    const EkfSlamConfig ekf_config{
-        .max_num_beacons = 4,
-        .initial_beacon_uncertainty_m = 100.0,
-        .along_track_process_noise_m_per_rt_meter = 0.05,
-        .cross_track_process_noise_m_per_rt_meter = 0.05,
-        .pos_process_noise_m_per_rt_s = 0.0,
-        .heading_process_noise_rad_per_rt_meter = 1e-3,
-        .heading_process_noise_rad_per_rt_s = 0.0,
-        .beacon_pos_process_noise_m_per_rt_s = 1e-6,
-        .range_measurement_noise_m = 1e-1,
-        .bearing_measurement_noise_rad = 1e-1,
-        .on_map_load_position_uncertainty_m = 2.0,
-        .on_map_load_heading_uncertainty_rad = 0.5,
-    };
-    const double P_LONE_BEACON = 0.9;
-    const double P_STACKED_BEACON = 0.3;
-    const double P_NO_STACK_BEACON = std::pow(P_STACKED_BEACON, 3);
-    const auto &[road_map, ekf_slam, beacon_potential] = create_david_environment(
-        ekf_config, P_LONE_BEACON, P_NO_STACK_BEACON, P_STACKED_BEACON);
-        
-    const ExpectedBeliefRoadMapOptions options = {
-        .num_configuration_samples = 100,
-        .seed = 12304,
-        .timeout = std::nullopt,
-        .brm_options =
-            {
-                .max_sensor_range_m = 3.0,
-                .uncertainty_tolerance = std::nullopt,
-                .max_num_edge_transforms = std::numeric_limits<int>::max(),
-                .timeout = std::nullopt,
-            },
-    };
-    // Action
-    const auto maybe_plan =
-        compute_expected_belief_road_map_plan(road_map, ekf_slam, beacon_potential, options);
-
-    // Verification
-    EXPECT_TRUE(maybe_plan.has_value());
-    const auto &plan = maybe_plan.value();
-    std::cout << "Num Nodes: " << plan.nodes.size() << std::endl;
-    for (int i = 0; i < static_cast<int>(plan.nodes.size()); i++) {
-        std::cout << i << " idx: " << plan.nodes.at(i) << std::endl;
-    }
-}
-
+//David's environment. 5x5 grid with two beacons. Independent probabilities.
 /*
-//david's test with 5x5 grid and one beacon(Node Path Error: -1,15,16,11,12,7,8,3,2,-2)
-TEST(BeliefRoadMapPlannerTest, david_environment) {
+TEST(BeliefRoadMapPlannerTest, david_experiment) {
     // Setup
     const EkfSlamConfig ekf_config{
-        .max_num_beacons = 1,
+        .max_num_beacons = 2,
         .initial_beacon_uncertainty_m = 100.0,
         .along_track_process_noise_m_per_rt_meter = 0.05,
         .cross_track_process_noise_m_per_rt_meter = 0.05,
@@ -733,10 +685,11 @@ TEST(BeliefRoadMapPlannerTest, david_environment) {
         .on_map_load_position_uncertainty_m = 2.0,
         .on_map_load_heading_uncertainty_rad = 0.1,
     };
-    constexpr double P_BEACON = .9;
-    const auto &[road_map, ekf_slam, _] = create_david_environment(ekf_config, P_BEACON);
+    const double P_BEACON_ONE = 0.1; //Beacon at (7.5,-7.5)
+    const double P_BEACON_TWO = 0.9; //Beacon at (7.5,7.5)
+    const auto &[road_map, ekf_slam, _] = create_david_environment(ekf_config,P_BEACON_ONE,P_BEACON_TWO);
     constexpr BeliefRoadMapOptions OPTIONS = {
-        .max_sensor_range_m = 3.0,
+        .max_sensor_range_m = 4.0,
         .uncertainty_tolerance = 1e-2,
         .max_num_edge_transforms = 1,
         .timeout = std::nullopt,
@@ -754,5 +707,45 @@ TEST(BeliefRoadMapPlannerTest, david_environment) {
     }
 }
 */
+//David's environment. 5x5 grid with two beacon stacks. Independent Probabilities. Skewed number of beacons
+TEST(BeliefRoadMapPlannerTest, david_experiment) {
+    // Setup
+    const EkfSlamConfig ekf_config{
+        .max_num_beacons = 18,
+        .initial_beacon_uncertainty_m = 100.0,
+        .along_track_process_noise_m_per_rt_meter = 0.05,
+        .cross_track_process_noise_m_per_rt_meter = 0.05,
+        .pos_process_noise_m_per_rt_s = 0.0,
+        .heading_process_noise_rad_per_rt_meter = 1e-3,
+        .heading_process_noise_rad_per_rt_s = 0.0,
+        .beacon_pos_process_noise_m_per_rt_s = 1e-6,
+        .range_measurement_noise_m = 1e-1,
+        .bearing_measurement_noise_rad = 1e-1,
+        .on_map_load_position_uncertainty_m = 2.0,
+        .on_map_load_heading_uncertainty_rad = 0.1,
+    };
+    const double P_STACK_ONE = 0.2; 
+    const double P_NO_STACK_ONE = std::pow(P_STACK_ONE, 3);
+    const double P_STACK_TWO = 0.2; 
+    const double P_NO_STACK_TWO = std::pow(P_STACK_TWO, 15); 
+    const auto &[road_map, ekf_slam, _] = create_david_indep_stacked_environment(ekf_config,P_STACK_ONE,P_NO_STACK_ONE,P_STACK_TWO,P_NO_STACK_TWO);
+    constexpr BeliefRoadMapOptions OPTIONS = {
+        .max_sensor_range_m = 4.0,
+        .uncertainty_tolerance = 1e-2,
+        .max_num_edge_transforms = 1,
+        .timeout = std::nullopt,
+    };
+
+    // Action
+    const auto maybe_plan = compute_belief_road_map_plan(road_map, ekf_slam, {}, OPTIONS);
+
+    // Verification
+    EXPECT_TRUE(maybe_plan.has_value());
+    const auto &plan = maybe_plan.value();
+    std::cout << "Num Nodes: " << plan.nodes.size() << std::endl;
+    for (int i = 0; i < static_cast<int>(plan.nodes.size()); i++) {
+        std::cout << i << " idx: " << plan.nodes.at(i) << std::endl;
+    }
+}
 }  // namespace robot::experimental::beacon_sim
 
