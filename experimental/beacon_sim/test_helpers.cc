@@ -412,6 +412,7 @@ std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_david_indep_beaco
     }
 */
 //David's environment. 5x5 grid with two beacon stacks. Independent Probabilities. Skewed number of beacons
+/*
 MappedLandmarks create_david_mapped_landmarks_set_two() {
     constexpr int START_FIRST_STACKED_BEACON_ID = 0;
     const Eigen::Vector2d FIRST_STACK_IN_LOCAL{-5,-5};
@@ -474,5 +475,94 @@ std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_david_indep_stack
 
         return {road_map, ekf_slam, beacon_potential};
     }
+*/
+MappedLandmarks create_david_mapped_landmarks_set_three() {
+    constexpr int START_FIRST_STACKED_BEACON_ID = 0;
+    const Eigen::Vector2d FIRST_STACK_IN_LOCAL{-12.5,-2.5};
+    constexpr int NUM_FIRST_STACKED_BEACONS = 1;
+    constexpr int START_SECOND_STACKED_BEACON_ID = 20;
+    const Eigen::Vector2d SECOND_STACK_IN_LOCAL{2.5, -17.5};
+    constexpr int NUM_SECOND_STACKED_BEACONS = 1;
+    constexpr int START_THIRD_STACKED_BEACON_ID = 40;
+    const Eigen::Vector2d THIRD_STACK_IN_LOCAL{20, 20};
+    constexpr int NUM_THIRD_STACKED_BEACONS = 30;
+    constexpr double POSITION_UNCERTAINTY_M = 0.25;
+    constexpr int NUM_BEACONS = NUM_FIRST_STACKED_BEACONS + NUM_SECOND_STACKED_BEACONS + NUM_THIRD_STACKED_BEACONS;
+    const Eigen::Matrix2d cov_in_local{{{POSITION_UNCERTAINTY_M * POSITION_UNCERTAINTY_M, 0.0},
+                                        {0.0, POSITION_UNCERTAINTY_M * POSITION_UNCERTAINTY_M}}};
+
+    MappedLandmarks out;
+    out.cov_in_local = Eigen::MatrixXd::Zero(2 * NUM_BEACONS, 2 * NUM_BEACONS);
+
+    // Add first stack
+    for (int i = 1; i <= NUM_FIRST_STACKED_BEACONS; i++) {
+        out.beacon_ids.push_back(START_FIRST_STACKED_BEACON_ID + i);
+        out.beacon_in_local.push_back(FIRST_STACK_IN_LOCAL);
+        out.cov_in_local.block<2, 2>(2 * i, 2 * i) = cov_in_local; //Ask Erick about vector after .block
+    }
+
+    // Add second stack
+    for (int i = 1; i <= NUM_SECOND_STACKED_BEACONS; i++) {
+        out.beacon_ids.push_back(START_SECOND_STACKED_BEACON_ID + i);
+        out.beacon_in_local.push_back(SECOND_STACK_IN_LOCAL);
+        out.cov_in_local.block<2, 2>(2 * i, 2 * i) = cov_in_local;
+    }
+
+    // Add third stack
+    for (int i = 1; i <= NUM_THIRD_STACKED_BEACONS; i++) {
+        out.beacon_ids.push_back(START_THIRD_STACKED_BEACON_ID + i);
+        out.beacon_in_local.push_back(THIRD_STACK_IN_LOCAL);
+        out.cov_in_local.block<2, 2>(2 * i, 2 * i) = cov_in_local;
+    }
+    return out;
+}
+
+std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_david_dep_stacked_environment(
+    const EkfSlamConfig &ekf_config){
+        const auto mapped_landmarks = create_david_mapped_landmarks_set_three();
+        const auto road_map = create_grid_road_map({20,-25},{-20,25},9,9);
+        auto ekf_slam = EkfSlam(ekf_config, time::RobotTimestamp());
+        constexpr bool LOAD_OFF_DIAGONALS = true;
+
+        // Move the robot to (-10, 10) and have it face to the right
+        const liegroups::SE2 old_robot_from_new_robot(std::numbers::pi/2, {-20, 25});
+        ekf_slam.predict(time::RobotTimestamp(), old_robot_from_new_robot);
+        ekf_slam.load_map(mapped_landmarks, LOAD_OFF_DIAGONALS);
+
+        /*
+        //first stacked beacon potential
+        const auto first_stack_potential = create_correlated_beacons({
+        .p_beacon = p_stack_one,
+        .p_no_beacons = p_no_stack_one,
+        .members = {1,2,3,4,5,6,7,8,9,10},
+        });
+
+        //second stacked beacon potential
+        const auto second_stack_potential = create_correlated_beacons({
+        .p_beacon = p_stack_two,
+        .p_no_beacons = p_no_stack_two,
+        .members = {21,22,23,24,25,26,27,28,29,30},
+        });
+
+        //Third stacked beacon potential
+        const auto third_stack_potential = create_correlated_beacons({
+        .p_beacon = p_stack_three,
+        .p_no_beacons = p_no_stack_three,
+        .members = {41,42,43,44,45,46,47,48,49,50},
+        });
+
+        const auto beacon_potential = first_stack_potential * second_stack_potential * third_stack_potential;
+        */
+       // Create BeaconPotential
+        const BeaconClique clique = {
+            .p_beacon = 0.6,
+            .p_no_beacons = 1e-12,
+            .members = {1,2,3,4,5,6,7,8,9,10,21,22,23,24,25,26,27,28,29,30,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70},
+        };
+        const auto beacon_potential = create_correlated_beacons(clique);
+
+        return {road_map, ekf_slam, beacon_potential};
+    }
+
 }  // namespace robot::experimental::beacon_sim
 

@@ -8,7 +8,7 @@
 namespace robot::experimental::beacon_sim {
 // A beacon clique represents a set of beacons that are correlated in their presence/absence.
 struct BeaconClique {
-    // The marginal probabilityof a single beacon within the clique
+    // The marginal probability of a single beacon within the clique
     double p_beacon;
 
     // The probability of no beacons appearing
