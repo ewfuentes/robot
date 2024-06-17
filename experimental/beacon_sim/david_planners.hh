@@ -36,8 +36,41 @@ std::optional<Result<State>> search(
 
 }  // namespace robot::planning
 
+/* Pseudocode for Breadth first search algorithm
+func BFS(environment,goal, source){
+    Q = queue;
+    label root as explored;
+    Q.enqueue(root)
+    while Q != empty{
+        v:= Q.dequeue();
+        if v = goal:
+            return (v);
+        for all eges from v to w in G.adjacentEdges(v) do{
+            if w != labeled as explored then{
+                label w as explored;
+                w.parent := v;
+                Q.enqueue(w);
+            }
+        }
+    }
+}
+*/
 
-
+/* Pseudocode for Depth first search algorithm
+func DFS(environment, goal, source){
+    S = stack;
+    S.push(v);
+    while S != empty{
+        v = S.pop();
+        if v != discovered{
+            v = discovered;
+            for all edges from v to w in G.adjacentEdges(v) do{
+                S.push(w);
+            }
+        }
+    }
+}
+*/
 
 /* Pseudocode for Dijkstra's algorithm
 
@@ -60,5 +93,4 @@ func Dijkstra(environment, source){
     }
     return(dist[u],prev[]);
 }
-
 */
