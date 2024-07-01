@@ -343,10 +343,6 @@ void run_simulation(const SimConfig &sim_config) {
     visualization::gl_window::GlWindow gl_window(1920, 1440);
 
     // Initial robot state
-    constexpr double INIT_POS_X_M = 0.0;
-    constexpr double INIT_POS_Y_M = 0.0;
-    constexpr double INIT_HEADING_RAD = 0.0;
-
     constexpr EkfSlamConfig EKF_CONFIG = {
         .max_num_beacons = 50,
         .initial_beacon_uncertainty_m = 100,
@@ -358,7 +354,7 @@ void run_simulation(const SimConfig &sim_config) {
         .beacon_pos_process_noise_m_per_rt_s = 1e-3,
         .range_measurement_noise_m = 0.1,
         .bearing_measurement_noise_rad = 0.01,
-        .on_map_load_position_uncertainty_m = 5.0,
+        .on_map_load_position_uncertainty_m = 1.0,
         .on_map_load_heading_uncertainty_rad = 1.0,
     };
 
@@ -390,16 +386,19 @@ void run_simulation(const SimConfig &sim_config) {
         .time_of_validity = time::current_robot_time(),
         .map = map,
         .road_map = road_map,
-        .robot = RobotState(INIT_POS_X_M, INIT_POS_Y_M, INIT_HEADING_RAD),
+        .robot = RobotState(sim_config.map_from_initial_robot),
         .ekf = EkfSlam(EKF_CONFIG, time::current_robot_time()),
         .observations = {},
         .goal = {{
             .time_of_validity = time::current_robot_time(),
-            .goal_position = {-14.0, 0.0},
+            .goal_position = sim_config.goal_in_map,
         }},
         .plan = std::nullopt,
         .gen = std::mt19937(0),
     };
+
+    // Set the inital robot pose
+    state.ekf.estimate().local_from_robot(sim_config.map_from_initial_robot);
 
     if (sim_config.map_input_path) {
         load_map(sim_config, make_in_out(state.ekf));
@@ -502,6 +501,7 @@ void run_simulation(const SimConfig &sim_config) {
 
         if (command.should_step || sim_config.autostep) {
             time::SimClock::advance(sim_config.dt);
+
             state.time_of_validity = time::current_robot_time();
             auto debug_msg = tick_sim(sim_config, command.robot_command, make_in_out(state));
             debug_msgs.emplace_back(std::move(debug_msg));
@@ -541,14 +541,23 @@ int main(int argc, char **argv) {
     const std::string DEFAULT_LOG_LOCATION = "/tmp/beacon_sim.pb";
     const std::string DEFAULT_MAP_SAVE_LOCATION = "/tmp/beacon_sim_map.pb";
     const std::string DEFAULT_MAP_LOAD_LOCATION = "/tmp/beacon_sim_map.pb";
+    const std::string DEFAULT_GOAL_LOCATION = "-14.0,0.0";
+    const std::string DEFAULT_INITIAL_POSE_X_Y_THETA = "0.0,0.0,0.0";
     // clang-format off
     cxxopts::Options options("beacon_sim", "Simple Localization Simulator with Beacons");
     options.add_options()
-      ("log_file", "Path to output file.", cxxopts::value<std::string>()->default_value(DEFAULT_LOG_LOCATION))
-      ("map_output_path", "Path to save map file to" , cxxopts::value<std::string>()->default_value(DEFAULT_MAP_SAVE_LOCATION))
-      ("map_input_path", "Path to load map file from", cxxopts::value<std::string>()->default_value(DEFAULT_MAP_LOAD_LOCATION))
+      ("log_file", "Path to output file.",
+            cxxopts::value<std::string>()->default_value(DEFAULT_LOG_LOCATION))
+      ("map_output_path", "Path to save map file to", 
+            cxxopts::value<std::string>()->default_value(DEFAULT_MAP_SAVE_LOCATION))
+      ("map_input_path", "Path to load map file from",
+            cxxopts::value<std::string>()->default_value(DEFAULT_MAP_LOAD_LOCATION))
       ("world_map_config", "Path to WorldMapConfig", cxxopts::value<std::string>())
       ("road_map_config", "Path to RoadMap", cxxopts::value<std::string>())
+      ("goal_in_map", "xy coordinates of goal (csv)", 
+            cxxopts::value<std::vector<double>>()->default_value(DEFAULT_GOAL_LOCATION))
+      ("map_from_initial_robot", "starting_pose in x,y,theta", 
+            cxxopts::value<std::vector<double>>()->default_value(DEFAULT_INITIAL_POSE_X_Y_THETA))
       ("load_off_diagonals", "Whether off diagonal terms should be loaded from map")
       ("enable_brm_planner", "Generate BRM plan after each step")
       ("allow_brm_backtracking", "Allow backtracking in BRM")
@@ -594,12 +603,29 @@ int main(int argc, char **argv) {
         }
     }();
 
+    const Eigen::Vector2d goal_in_map = [&]() {
+        const auto goal_in_map_vec = args["goal_in_map"].as<std::vector<double>>();
+        CHECK(goal_in_map_vec.size() == 2);
+        return Eigen::Vector2d(goal_in_map_vec.data());
+    }();
+
+    const robot::liegroups::SE2 map_from_initial_robot = [&]() {
+        const auto map_from_initial_robot_vec =
+            args["map_from_initial_robot"].as<std::vector<double>>();
+        CHECK(map_from_initial_robot_vec.size() == 3);
+        const Eigen::Vector2d robot_in_map(map_from_initial_robot_vec.data());
+        const double theta_rad = map_from_initial_robot_vec.back();
+        return robot::liegroups::SE2(theta_rad, robot_in_map);
+    }();
+
     robot::experimental::beacon_sim::run_simulation(
         {.log_path = arg_or_null<std::string>(args, "log_file"),
          .map_input_path = arg_or_null<std::string>(args, "map_input_path"),
          .map_output_path = arg_or_null<std::string>(args, "map_output_path"),
          .world_map_config = arg_or_null<std::string>(args, "world_map_config"),
          .road_map_config = arg_or_null<std::string>(args, "road_map_config"),
+         .goal_in_map = goal_in_map,
+         .map_from_initial_robot = map_from_initial_robot,
          .dt = 25ms,
          .planner_config = planner_config,
          .load_off_diagonals = args["load_off_diagonals"].as<bool>(),
