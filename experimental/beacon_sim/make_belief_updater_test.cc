@@ -2,6 +2,7 @@
 #include "experimental/beacon_sim/make_belief_updater.hh"
 
 #include "experimental/beacon_sim/test_helpers.hh"
+#include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
 namespace robot::experimental::beacon_sim {
@@ -263,4 +264,80 @@ TYPED_TEST(MakeBeliefUpdaterTest, make_subsampled_landmark_belief_updater_test) 
         EXPECT_NEAR(updated_belief.log_probability_mass_tracked, std::log(P_BEACON), 1e-6);
     }
 }
+
+TEST(TransformComputerTest, check_key_generation) {
+    // Setup
+    const EkfSlamConfig ekf_config{
+        .max_num_beacons = 15,
+        .initial_beacon_uncertainty_m = 100.0,
+        .along_track_process_noise_m_per_rt_meter = 0.05,
+        .cross_track_process_noise_m_per_rt_meter = 0.05,
+        .pos_process_noise_m_per_rt_s = 0.0,
+        .heading_process_noise_rad_per_rt_meter = 1e-3,
+        .heading_process_noise_rad_per_rt_s = 0.0,
+        .beacon_pos_process_noise_m_per_rt_s = 1e-6,
+        .range_measurement_noise_m = 1e-1,
+        .bearing_measurement_noise_rad = 1e-1,
+        .on_map_load_position_uncertainty_m = 2.0,
+        .on_map_load_heading_uncertainty_rad = 0.5,
+    };
+    constexpr double P_LONE_BEACON = 0.2;
+    constexpr double P_NO_STACKED_BEACON = 0.2;
+    constexpr double P_STACKED_BEACON = 0.2;
+    constexpr double MAX_SENSOR_RANGE_M = 3;
+    const auto &[road_map, ekf_slam, beacon_potential] = create_diamond_environment(
+        ekf_config, P_LONE_BEACON, P_NO_STACKED_BEACON, P_STACKED_BEACON);
+    const liegroups::SE2 local_from_initial_robot(0.0, road_map.point(0));
+    const Eigen::Vector2d goal_in_local(road_map.point(2));
+
+    const TransformComputer computer(local_from_initial_robot, goal_in_local, ekf_config,
+                                     ekf_slam.estimate(), MAX_SENSOR_RANGE_M,
+                                     TransformType::COVARIANCE, {11, 12, 13, 14, 15}, {});
+
+    // Action + Verification
+    EXPECT_EQ(computer.key(0, beacon_potential.members()), "?00000?????");
+    EXPECT_EQ(computer.key(1, beacon_potential.members()), "?10000?????");
+    EXPECT_EQ(computer.key(2, beacon_potential.members()), "?01000?????");
+    EXPECT_EQ(computer.key(31, beacon_potential.members()), "?11111?????");
+}
+
+TEST(TransformComputerTest, check_consistent_configs) {
+    // Setup
+    const EkfSlamConfig ekf_config{
+        .max_num_beacons = 15,
+        .initial_beacon_uncertainty_m = 100.0,
+        .along_track_process_noise_m_per_rt_meter = 0.05,
+        .cross_track_process_noise_m_per_rt_meter = 0.05,
+        .pos_process_noise_m_per_rt_s = 0.0,
+        .heading_process_noise_rad_per_rt_meter = 1e-3,
+        .heading_process_noise_rad_per_rt_s = 0.0,
+        .beacon_pos_process_noise_m_per_rt_s = 1e-6,
+        .range_measurement_noise_m = 1e-1,
+        .bearing_measurement_noise_rad = 1e-1,
+        .on_map_load_position_uncertainty_m = 2.0,
+        .on_map_load_heading_uncertainty_rad = 0.5,
+    };
+    constexpr double P_LONE_BEACON = 0.2;
+    constexpr double P_NO_STACKED_BEACON = 0.2;
+    constexpr double P_STACKED_BEACON = 0.2;
+    constexpr double MAX_SENSOR_RANGE_M = 3;
+    const auto &[road_map, ekf_slam, beacon_potential] = create_diamond_environment(
+        ekf_config, P_LONE_BEACON, P_NO_STACKED_BEACON, P_STACKED_BEACON);
+    const liegroups::SE2 local_from_initial_robot(0.0, road_map.point(0));
+    const Eigen::Vector2d goal_in_local(road_map.point(2));
+
+    const TransformComputer computer(local_from_initial_robot, goal_in_local, ekf_config,
+                                     ekf_slam.estimate(), MAX_SENSOR_RANGE_M,
+                                     TransformType::COVARIANCE, {11, 12, 13, 14, 15}, {});
+
+    // Action
+    const auto configs = computer.consistent_configs("011???01101", beacon_potential.members());
+
+    // Verification
+    EXPECT_EQ(configs.size(), 8);
+    for (int i = 0; i < 8; i++) {
+        EXPECT_THAT(configs, ::testing::Contains((i << 2) + 3));
+    }
+}
+
 }  // namespace robot::experimental::beacon_sim
