@@ -233,6 +233,8 @@ void run_trials(const TrialsConfig &config) {
         .map_output_path = {},
         .world_map_config = {},
         .road_map_config = {},
+        .goal_in_map = {},
+        .map_from_initial_robot = {},
         .dt = std::chrono::milliseconds(25),
         .planner_config =
             robot::experimental::beacon_sim::BeliefRoadMapPlannerConfig{
