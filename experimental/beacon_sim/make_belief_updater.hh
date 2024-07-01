@@ -68,6 +68,39 @@ struct SampledLandmarkBeliefOptions {
     int seed;
 };
 
+class TransformComputer {
+   public:
+    TransformComputer(const liegroups::SE2 &local_from_robot,
+                      const Eigen::Vector2d &end_state_in_local, const EkfSlamConfig &ekf_config,
+                      const EkfSlamEstimate &ekf_estimate, const double max_sensor_range_m,
+                      const TransformType transform_type, std::vector<int> beacons_in_potential,
+                      std::vector<int> always_present_beacons);
+
+    TypedTransform operator()(const int handle) const;
+
+    std::string key(const int handle, const std::vector<int> &members) const;
+
+    std::vector<int> consistent_configs(const std::string &config,
+                                        const std::vector<int> &members) const;
+
+    int size() const;
+
+    const liegroups::SE2 &local_from_start_robot() const { return local_from_start_robot_; };
+    const liegroups::SE2 &local_from_end_robot() const { return local_from_end_robot_; };
+
+   private:
+    liegroups::SE2 local_from_start_robot_;
+    liegroups::SE2 local_from_end_robot_;
+    std::vector<int> beacons_in_potential_;
+    std::vector<int> always_present_beacons_;
+    double max_sensor_range_m_;
+    EkfSlamConfig ekf_config_;
+    EkfSlamEstimate ekf_estimate_;
+    TransformType transform_type_;
+
+    mutable std::unordered_map<int, TypedTransform> transform_cache_;
+};
+
 Eigen::DiagonalMatrix<double, 3> compute_process_noise(const EkfSlamConfig &config,
                                                        const double dt_s, const double arclength_m);
 TypedTransform compute_process_transform(const Eigen::Matrix3d &process_noise,
@@ -88,12 +121,11 @@ std::tuple<liegroups::SE2, TypedTransform> compute_edge_belief_transform(
     const std::optional<std::vector<int>> &available_beacons, const double max_sensor_range_m,
     const TransformType transform_type);
 
-std::tuple<liegroups::SE2, std::vector<std::tuple<std::string, TypedTransform>>>
-compute_edge_belief_transform(const liegroups::SE2 &local_from_robot,
-                              const Eigen::Vector2d &end_state_in_local,
-                              const EkfSlamConfig &ekf_config, const EkfSlamEstimate &ekf_estimate,
-                              const BeaconPotential &beacon_potential,
-                              const double max_sensor_range_m, const TransformType transform_type);
+std::tuple<liegroups::SE2, TransformComputer> compute_edge_belief_transform(
+    const liegroups::SE2 &local_from_robot, const Eigen::Vector2d &end_state_in_local,
+    const EkfSlamConfig &ekf_config, const EkfSlamEstimate &ekf_estimate,
+    const BeaconPotential &beacon_potential, const double max_sensor_range_m,
+    const TransformType transform_type);
 
 EdgeTransform compute_edge_belief_transform(
     const liegroups::SE2 &local_from_robot, const Eigen::Vector2d &end_state_in_local,
