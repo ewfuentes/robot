@@ -1,7 +1,7 @@
 
 #include <fstream>
-#include <sstream>
 #include <regex>
+#include <sstream>
 
 #include "common/check.hh"
 
@@ -18,4 +18,4 @@ int get_memory_usage_kb() {
     CHECK(match_found);
     return std::stoi(match[1]);
 }
-}
+}  // namespace robot::linux
