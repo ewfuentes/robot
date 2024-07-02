@@ -565,18 +565,6 @@ std::tuple<liegroups::SE2, TypedTransform> compute_edge_belief_transform(
                            scattering_transform);
 }
 
-// int get_memory_usage_kb() {
-//     std::ifstream in("/proc/self/smaps_rollup");
-//     std::stringstream stream;
-//     stream << in.rdbuf();
-//     std::regex memory_matcher("Rss:\\s+(\\d+)");
-//     std::smatch match;
-//     std::string contents = stream.str();
-//     const bool match_found = std::regex_search(contents, match, memory_matcher);
-//     CHECK(match_found);
-//     return std::stoi(match[1]);
-// }
-
 planning::BeliefUpdater<RobotBelief> make_belief_updater(const planning::RoadMap &road_map,
                                                          const double max_sensor_range_m,
                                                          const int max_num_transforms,
