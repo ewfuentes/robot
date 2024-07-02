@@ -45,6 +45,11 @@ std::vector<Successor<BRMSearchState<Belief>>> successors_for_state(
     const BRMSearchState<Belief> &state, const RoadMap &road_map,
     const BeliefUpdater<Belief> &belief_updater, const UncertaintySize &uncertainty_size) {
     std::vector<Successor<BRMSearchState<Belief>>> out;
+
+    if (state.node_idx == RoadMap::GOAL_IDX) {
+        return out;
+    }
+
     for (const auto &[other_node_id, other_node_in_local] : road_map.neighbors(state.node_idx)) {
         const Belief new_belief = belief_updater(state.belief, state.node_idx, other_node_id);
         out.push_back(Successor<BRMSearchState<Belief>>{

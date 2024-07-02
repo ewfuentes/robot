@@ -386,9 +386,9 @@ TEST(LandmarkBeliefRoadMapPlannerTest, diamond_road_map_correlated_beacons) {
         .on_map_load_heading_uncertainty_rad = 0.1,
     };
 
-    constexpr double P_LONE_BEACON = 0.5;
+    constexpr double P_LONE_BEACON = 0.97;
     constexpr double P_STACKED_BEACON = 0.1;
-    const double P_NO_STACK_BEACON = 0.6;
+    const double P_NO_STACK_BEACON = 0.9;
     const auto &[road_map, ekf_slam, potential] =
         create_diamond_environment(ekf_config, P_LONE_BEACON, P_NO_STACK_BEACON, P_STACKED_BEACON);
     constexpr LandmarkBeliefRoadMapOptions OPTIONS = {
