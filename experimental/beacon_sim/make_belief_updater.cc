@@ -2,7 +2,6 @@
 #include "experimental/beacon_sim/make_belief_updater.hh"
 
 #include <algorithm>
-#include <iterator>
 #include <random>
 
 #include "common/check.hh"
@@ -92,7 +91,7 @@ std::string merge_configurations(const std::string &a, const std::string &b) {
 struct UnappliedLandmarkBelief {
     double log_config_prob;
     const Eigen::Matrix3d &cov_in_robot;
-    const TypedTransform &transform;
+    const int transform_handle;
 };
 
 using LandmarkBeliefMap =
@@ -128,7 +127,7 @@ std::tuple<UnappliedLandmarkBeliefMap, double> downsize_and_normalize_belief(
                     {
                         .log_config_prob = log_prob.at(idx) - log_normalizer,
                         .cov_in_robot = belief.at(keys.at(idx)).cov_in_robot,
-                        .transform = belief.at(keys.at(idx)).transform,
+                        .transform_handle = belief.at(keys.at(idx)).transform_handle,
                     }});
     }
 
@@ -219,8 +218,89 @@ std::vector<LogMarginal> sample_log_marginals(const std::vector<LogMarginal> all
     }
     return out;
 }
-
 }  // namespace
+
+TransformComputer::TransformComputer(
+    const liegroups::SE2 &local_from_robot, const Eigen::Vector2d &end_state_in_local,
+    const EkfSlamConfig &ekf_config, const EkfSlamEstimate &ekf_estimate,
+    const double max_sensor_range_m, const TransformType transform_type,
+    std::vector<int> beacons_in_potential, std::vector<int> always_present_beacons)
+    : local_from_start_robot_(local_from_robot),
+      beacons_in_potential_(std::move(beacons_in_potential)),
+      always_present_beacons_(std::move(always_present_beacons)),
+      max_sensor_range_m_(max_sensor_range_m),
+      ekf_config_(ekf_config),
+      ekf_estimate_(ekf_estimate),
+      transform_type_(transform_type) {
+    const Eigen::Vector2d &end_state_in_robot = local_from_robot.inverse() * end_state_in_local;
+    const double theta_rad = std::atan2(end_state_in_robot.y(), end_state_in_robot.x());
+    local_from_end_robot_ = liegroups::SE2(theta_rad, end_state_in_local);
+}
+
+std::string TransformComputer::key(const int handle, const std::vector<int> &members) const {
+    std::vector<std::tuple<int, bool>> config;
+    for (int i = 0; i < static_cast<int>(beacons_in_potential_.size()); i++) {
+        const bool is_beacon_present = (handle & (1 << i));
+        config.push_back({beacons_in_potential_.at(i), is_beacon_present});
+    }
+
+    return configuration_to_key(config, members);
+}
+
+TypedTransform TransformComputer::operator()(const int handle) const {
+    const auto iter = transform_cache_.find(handle);
+    if (iter != transform_cache_.end()) {
+        return iter->second;
+    }
+    std::vector<int> present_beacons;
+    for (int i = 0; i < static_cast<int>(beacons_in_potential_.size()); i++) {
+        const bool is_beacon_present = (handle & (1 << i));
+        if (is_beacon_present) {
+            present_beacons.push_back(beacons_in_potential_.at(i));
+        }
+    }
+
+    const auto &[_, transform] = compute_edge_belief_transform(
+        local_from_start_robot_, local_from_end_robot_.translation(), ekf_config_, ekf_estimate_,
+        present_beacons, max_sensor_range_m_, transform_type_);
+    transform_cache_.insert({handle, transform});
+    return transform;
+};
+
+int TransformComputer::size() const { return 1 << beacons_in_potential_.size(); };
+
+std::vector<int> TransformComputer::consistent_configs(const std::string &config,
+                                                       const std::vector<int> &members) const {
+    int base_config = 0;
+    std::vector<int> unassigned_idxs;
+    for (int i = 0; i < static_cast<int>(members.size()); i++) {
+        const auto iter =
+            std::find(beacons_in_potential_.begin(), beacons_in_potential_.end(), members.at(i));
+        if (iter == beacons_in_potential_.end()) {
+            continue;
+        }
+        const int in_potential_idx = std::distance(beacons_in_potential_.begin(), iter);
+        if (config.at(i) == '?') {
+            unassigned_idxs.push_back(in_potential_idx);
+        } else if (config.at(i) == '1') {
+            base_config |= 1 << in_potential_idx;
+        }
+    }
+
+    std::vector<int> out;
+    for (int num_present_beacons = 0;
+         num_present_beacons <= static_cast<int>(unassigned_idxs.size()); num_present_beacons++) {
+        for (const auto &present_idxs :
+             math::combinations(unassigned_idxs.size(), num_present_beacons)) {
+            int config = base_config;
+            for (int idx : present_idxs) {
+                config |= 1 << unassigned_idxs.at(idx);
+            }
+            out.push_back(config);
+        }
+    }
+    return out;
+};
 
 std::optional<TypedTransform> operator*(const TypedTransform &a, const TypedTransform &b) {
     if (a.index() != b.index()) {
@@ -403,12 +483,11 @@ EdgeTransform compute_edge_belief_transform(
     };
 }
 
-std::tuple<liegroups::SE2, std::vector<std::tuple<std::string, TypedTransform>>>
-compute_edge_belief_transform(const liegroups::SE2 &local_from_robot,
-                              const Eigen::Vector2d &end_state_in_local,
-                              const EkfSlamConfig &ekf_config, const EkfSlamEstimate &ekf_estimate,
-                              const BeaconPotential &beacon_potential,
-                              const double max_sensor_range_m, const TransformType transform_type) {
+std::tuple<liegroups::SE2, TransformComputer> compute_edge_belief_transform(
+    const liegroups::SE2 &local_from_robot, const Eigen::Vector2d &end_state_in_local,
+    const EkfSlamConfig &ekf_config, const EkfSlamEstimate &ekf_estimate,
+    const BeaconPotential &beacon_potential, const double max_sensor_range_m,
+    const TransformType transform_type) {
     // Find all beacons that are within range of the straightline path of the start and end
     const std::vector<int> nearby_beacons = find_beacons_along_path(
         local_from_robot.translation(), end_state_in_local, ekf_estimate, max_sensor_range_m);
@@ -417,51 +496,11 @@ compute_edge_belief_transform(const liegroups::SE2 &local_from_robot,
     const auto &[beacons_in_potential, always_present_beacons] =
         split_beacons_into_groups(nearby_beacons, beacon_potential.members());
 
-    // Create a list of which beacons involved in order to create the key for each configuration
-    std::vector<std::tuple<int, bool>> config_base;
-    std::transform(beacons_in_potential.begin(), beacons_in_potential.end(),
-                   std::back_inserter(config_base),
-                   [](const int beacon_id) { return std::make_tuple(beacon_id, false); });
-    std::vector<std::tuple<std::string, TypedTransform>> transform_list;
     liegroups::SE2 local_from_end_robot;
-    // Iterate over combinations of the nearby beacons
-    for (int num_beacons_present = 0;
-         num_beacons_present <= static_cast<int>(beacons_in_potential.size());
-         num_beacons_present++) {
-        for (const auto &potential_beacon_idxs :
-             math::combinations(beacons_in_potential.size(), num_beacons_present)) {
-            std::vector<int> present_beacons(always_present_beacons.begin(),
-                                             always_present_beacons.end());
-            // create a copy of the base config
-            auto current_config = config_base;
-            for (const int beacon_idx : potential_beacon_idxs) {
-                const int beacon_id = beacons_in_potential.at(beacon_idx);
-                present_beacons.push_back(beacon_id);
-                auto iter = std::find_if(current_config.begin(), current_config.end(),
-                                         [beacon_id](const auto &config_element) {
-                                             return std::get<int>(config_element) == beacon_id;
-                                         });
-                CHECK(
-                    iter != current_config.end(),
-                    "Unable to find present beacon idx in list of all nearby beacons in potential",
-                    beacon_id, beacons_in_potential, beacon_potential.members());
-                std::get<bool>(*iter) = true;
-            }
-
-            const auto &[config_local_from_end_robot, config_transform] =
-                compute_edge_belief_transform(local_from_robot, end_state_in_local, ekf_config,
-                                              ekf_estimate, present_beacons, max_sensor_range_m,
-                                              transform_type);
-
-            local_from_end_robot = config_local_from_end_robot;
-
-            // set all beacons that are currently present to true
-            transform_list.push_back(
-                std::make_tuple(configuration_to_key(current_config, beacon_potential.members()),
-                                config_transform));
-        }
-    }
-    return std::make_tuple(local_from_end_robot, std::move(transform_list));
+    TransformComputer computer(local_from_robot, end_state_in_local, ekf_config, ekf_estimate,
+                               max_sensor_range_m, transform_type, std::move(beacons_in_potential),
+                               std::move(always_present_beacons));
+    return std::make_tuple(computer.local_from_end_robot(), std::move(computer));
 }
 
 std::tuple<liegroups::SE2, TypedTransform> compute_edge_belief_transform(
@@ -666,10 +705,8 @@ planning::BeliefUpdater<LandmarkRobotBelief> make_landmark_belief_updater(
     const planning::RoadMap &road_map, const double max_sensor_range_m,
     const std::optional<SampledLandmarkBeliefOptions> sampled_belief_options, const EkfSlam &ekf,
     const BeaconPotential &beacon_potential, const TransformType type) {
-    std::unordered_map<
-        DirectedEdge,
-        std::tuple<liegroups::SE2, std::vector<std::tuple<std::string, TypedTransform>>>,
-        DirectedEdgeHash>
+    std::unordered_map<DirectedEdge, std::tuple<liegroups::SE2, TransformComputer>,
+                       DirectedEdgeHash>
         edge_transform_cache;
 
     std::optional<std::mt19937> gen =
@@ -697,30 +734,29 @@ planning::BeliefUpdater<LandmarkRobotBelief> make_landmark_belief_updater(
         const auto cache_iter = edge_transform_cache.find(edge);
         const bool is_in_cache = cache_iter != edge_transform_cache.end();
         const auto end_pos_in_local = road_map.point(end_idx);
-        const auto &[local_from_new_robot, edge_transform] =
+        const auto &[local_from_new_robot, transform_computer] =
             is_in_cache ? cache_iter->second
                         : compute_edge_belief_transform(
                               initial_belief.local_from_robot, end_pos_in_local, ekf.config(),
                               ekf.estimate(), beacon_potential, max_sensor_range_m, type);
         if (!is_in_cache) {
             // Add the transform to the cache in case it's missing
-            edge_transform_cache[edge] = std::make_tuple(local_from_new_robot, edge_transform);
+            edge_transform_cache.insert(
+                {edge, std::make_tuple(local_from_new_robot, transform_computer)});
         }
 
         UnappliedLandmarkBeliefMap unapplied_belief_from_config;
         for (const auto &[config, belief] : initial_belief.belief_from_config) {
-            const auto consistent_transform_iterators =
-                find_consistent_configs(config, edge_transform);
-
-            for (const auto iter : consistent_transform_iterators) {
-                const auto &[transform_config, transform] = *iter;
+            const auto consistent_configs =
+                transform_computer.consistent_configs(config, beacon_potential.members());
+            for (const int handle : consistent_configs) {
+                const std::string transform_config =
+                    transform_computer.key(handle, beacon_potential.members());
 
                 const std::string new_config = merge_configurations(config, transform_config);
 
-                // Compute the probability of this config
                 constexpr bool ALLOW_PARTIAL_ASSIGNMENT = true;
                 std::unordered_map<int, bool> assignment;
-
                 for (int i = 0; i < static_cast<int>(new_config.size()); i++) {
                     if (new_config.at(i) == '?') {
                         continue;
@@ -734,6 +770,7 @@ planning::BeliefUpdater<LandmarkRobotBelief> make_landmark_belief_updater(
                     }
                 }
 
+                // Compute the probability of this config
                 const double log_config_prob =
                     beacon_potential.log_prob(assignment, ALLOW_PARTIAL_ASSIGNMENT);
 
@@ -741,7 +778,7 @@ planning::BeliefUpdater<LandmarkRobotBelief> make_landmark_belief_updater(
                                                      {
                                                          .log_config_prob = log_config_prob,
                                                          .cov_in_robot = belief.cov_in_robot,
-                                                         .transform = transform,
+                                                         .transform_handle = handle,
                                                      }});
             }
         }
@@ -771,7 +808,7 @@ planning::BeliefUpdater<LandmarkRobotBelief> make_landmark_belief_updater(
                 input.topRightCorner(cov_dim, cov_dim) = unapplied_belief.cov_in_robot;
                 const ScatteringTransformBase result = math::redheffer_star(
                     input, std::get<ScatteringTransform<TransformType::COVARIANCE>>(
-                               unapplied_belief.transform));
+                               transform_computer(unapplied_belief.transform_handle)));
                 const Eigen::MatrixXd cov_in_robot = result.topRightCorner(cov_dim, cov_dim);
                 new_belief_from_config[config] = {
                     .cov_in_robot = cov_in_robot,
@@ -781,7 +818,7 @@ planning::BeliefUpdater<LandmarkRobotBelief> make_landmark_belief_updater(
                 input.topRightCorner(cov_dim, cov_dim) = unapplied_belief.cov_in_robot.inverse();
                 const ScatteringTransformBase result = math::redheffer_star(
                     input, std::get<ScatteringTransform<TransformType::INFORMATION>>(
-                               unapplied_belief.transform));
+                               transform_computer(unapplied_belief.transform_handle)));
                 const Eigen::MatrixXd info_in_robot = result.topRightCorner(cov_dim, cov_dim);
                 new_belief_from_config[config] = {
                     .cov_in_robot = info_in_robot.inverse(),
