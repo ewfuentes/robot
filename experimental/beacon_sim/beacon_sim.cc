@@ -344,7 +344,7 @@ void run_simulation(const SimConfig &sim_config) {
 
     // Initial robot state
     constexpr EkfSlamConfig EKF_CONFIG = {
-        .max_num_beacons = 50,
+        .max_num_beacons = 100,
         .initial_beacon_uncertainty_m = 100,
         .along_track_process_noise_m_per_rt_meter = 5e-2,
         .cross_track_process_noise_m_per_rt_meter = 1e-9,
