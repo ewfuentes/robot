@@ -106,19 +106,17 @@ std::optional<planning::BRMPlan<RobotBelief>> run_brm_planner(const BeaconSimSta
 }
 
 std::optional<planning::BRMPlan<LandmarkRobotBelief>> run_landmark_brm_planner(
-    const BeaconSimState &state, const std::optional<int> max_num_components,
+    const BeaconSimState &state, [[maybe_unused]] const std::optional<int> max_num_components,
     const ObservationConfig &obs_config) {
     const LandmarkBeliefRoadMapOptions options = {
         .max_sensor_range_m = obs_config.max_sensor_range_m.value(),
-        .uncertainty_size_options = LandmarkBeliefRoadMapOptions::ExpectedDeterminant(),
-        .sampled_belief_options =
-            max_num_components.has_value()
-                ? std::optional<LandmarkBeliefRoadMapOptions::SampledBeliefOptions>{{
-                      .max_num_components = max_num_components.value(),
-                      .seed = 12345,
-                  }}
-                : std::nullopt,
-        .timeout = time::as_duration(20.0),
+        .uncertainty_size_options =
+            LandmarkBeliefRoadMapOptions::ValueAtRiskDeterminant{.percentile = 0.95},
+        .sampled_belief_options = {{
+            .max_num_components = 128,
+            .seed = 1024,
+        }},
+        .timeout = std::nullopt,
     };
 
     return compute_landmark_belief_road_map_plan(state.road_map, state.ekf,
@@ -153,7 +151,7 @@ proto::BeaconSimDebug tick_sim(const SimConfig &config, const RobotCommand &comm
             state->road_map.add_start_goal(
                 {.start = state->ekf.estimate().local_from_robot().translation(),
                  .goal = state->goal->goal_position,
-                 .connection_radius_m = 20.0});
+                 .connection_radius_m = 5.0});
             std::visit(
                 overloaded{[](const NoPlannerConfig &) {},
                            [&state, OBS_CONFIG](const BeliefRoadMapPlannerConfig &config) {
