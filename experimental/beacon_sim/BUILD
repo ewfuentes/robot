@@ -153,6 +153,7 @@ cc_library(
   name = "ekf_slam",
   hdrs = ["ekf_slam.hh"],
   srcs = ["ekf_slam.cc"],
+  visibility = ["//visibility:public"],
   deps = [
     ":generate_observations",
     ":mapped_landmarks",
@@ -403,7 +404,8 @@ cc_library(
     "//common/time:robot_time",
     "//planning:belief_road_map",
     "//planning:probabilistic_road_map",
-  ]
+  ],
+  visibility = ["//visibility:public"]
 )
 
 cc_test(
@@ -517,6 +519,7 @@ cc_library(
     "conditioned_potential.cc",
     "conditioned_potential_to_proto.cc",
   ],
+  visibility = ["//visibility:public"],
   deps = [
     "@eigen",
     "//common:argument_wrapper",
@@ -587,7 +590,8 @@ cc_library(
     "//common/math:combinations",
     "//common:argument_wrapper",
     "//common/math:matrix_to_proto",
-  ]
+  ],
+  visibility = ["//visibility:public"]
 )
 
 cc_library(
@@ -830,7 +834,8 @@ cc_library(
       ":correlated_beacons",
       ":anticorrelated_beacon_potential",
       "//planning:probabilistic_road_map",
-    ]
+    ],
+    visibility =  ["//visibility:public"]
 )
 
 pybind_extension(
@@ -966,4 +971,15 @@ py_wheel(
   deps = [
     ":beacon_sim_package",
   ]
+)
+
+cc_library(
+  name = "evaluate_paths",
+  hdrs = ["evaluate_paths.hh"],
+  deps = [
+    ":make_belief_updater",
+    "//planning:road_map",
+    ":robot_belief",
+  ],
+  visibility =  ["//visibility:public"]
 )

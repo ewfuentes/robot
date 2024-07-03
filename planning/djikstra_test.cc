@@ -2,7 +2,7 @@
 #include "planning/djikstra.hh"
 
 #include "gtest/gtest.h"
-
+/*
 namespace std {
 // Add a std::hash specialization for tuple<int, int>
 template <>
@@ -15,6 +15,7 @@ struct hash<tuple<int, int>> {
 };
 
 }  // namespace std
+*/
 
 namespace robot::planning {
 TEST(DjikstraTest, graph_test) {

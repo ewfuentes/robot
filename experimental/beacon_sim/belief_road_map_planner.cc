@@ -39,12 +39,12 @@ namespace {
 std::vector<std::vector<int>> find_paths(const planning::RoadMap &road_map,
                                          const double max_path_length_ratio) {
     const planning::SuccessorFunc<int> successors_func =
-        [&road_map](const int &node_idx) -> std::vector<planning::Successor<int>> {
+        [&road_map](const int &node_idx) -> std::vector<planning::BFSSuccessor<int>> {
         if (node_idx == planning::RoadMap::GOAL_IDX) {
             return {};
         }
 
-        std::vector<planning::Successor<int>> out;
+        std::vector<planning::BFSSuccessor<int>> out;
         const Eigen::Vector2d curr_pt_in_local = road_map.point(node_idx);
         for (const auto &[other_node_id, other_in_local] : road_map.neighbors(node_idx)) {
             const double dist_m = (curr_pt_in_local - other_in_local).norm();
@@ -57,7 +57,7 @@ std::vector<std::vector<int>> find_paths(const planning::RoadMap &road_map,
     std::vector<std::vector<int>> out;
     const planning::ShouldQueueFunc<int> should_queue_func =
         [&shortest_path_length, max_path_length_ratio, &road_map, &out](
-            const planning::Successor<int> &successor, const int parent_idx,
+            const planning::BFSSuccessor<int> &successor, const int parent_idx,
             const std::vector<planning::Node<int>> &node_list) mutable {
             // Compute the cost so far
             const double path_length_m = node_list.at(parent_idx).cost + successor.edge_cost;
@@ -107,36 +107,6 @@ std::vector<std::vector<int>> find_paths(const planning::RoadMap &road_map,
     planning::breadth_first_search(planning::RoadMap::START_IDX, successors_func, should_queue_func,
                                    goal_check_func, identify_end_func);
 
-    return out;
-}
-
-Eigen::Matrix3d evaluate_path(const std::vector<int> &path, const RobotBelief &initial_belief,
-                              const planning::BeliefUpdater<RobotBelief> &updater) {
-    RobotBelief robot_belief = initial_belief;
-    for (int i = 1; i < static_cast<int>(path.size()); i++) {
-        robot_belief = updater(robot_belief, path.at(i - 1), path.at(i));
-    }
-
-    return robot_belief.cov_in_robot;
-}
-
-std::vector<Eigen::Matrix3d> evaluate_paths_with_configuration(
-    const std::vector<std::vector<int>> &paths, const EkfSlam &ekf,
-    const planning::RoadMap &road_map, const double max_sensor_range_m,
-    const std::vector<int> &present_beacons) {
-    // Make a belief updater that only considers the present beacons
-    const auto updater = make_belief_updater(road_map, max_sensor_range_m, ekf, present_beacons,
-                                             TransformType::COVARIANCE);
-
-    const RobotBelief initial_belief = {
-        .local_from_robot = ekf.estimate().local_from_robot(),
-        .cov_in_robot = ekf.estimate().robot_cov(),
-    };
-
-    std::vector<Eigen::Matrix3d> out;
-    std::transform(
-        paths.begin(), paths.end(), std::back_inserter(out),
-        [&](const std::vector<int> &path) { return evaluate_path(path, initial_belief, updater); });
     return out;
 }
 

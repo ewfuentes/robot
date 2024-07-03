@@ -15,7 +15,7 @@ concept State = requires(T t) {
 
 template <State S>
 struct Successor {
-    S state;
+    S state; 
     double edge_cost;
 };
 
@@ -45,7 +45,6 @@ DjikstraResult<S> djikstra(const S &initial_state, const SuccessorFunc &successo
 
     open_list.push({.state = initial_state, .parent = std::nullopt, .cost_to_go = 0.0});
     for (; !open_list.empty() && !termination_check(cost_to_go_from_state); open_list.pop()) {
-        // Make a copy since the vector may reallocate
         const auto elem = open_list.top();
 
         if (cost_to_go_from_state.contains(elem.state)) {
@@ -53,15 +52,15 @@ DjikstraResult<S> djikstra(const S &initial_state, const SuccessorFunc &successo
             continue;
         }
 
-        cost_to_go_from_state[elem.state] = elem.cost_to_go;
-        if (elem.parent.has_value()) {
-            back_pointer[elem.state] = elem.parent.value();
+        cost_to_go_from_state[elem.state] = elem.cost_to_go;//assigning cost to elem.state within the unordered map
+        if (elem.parent.has_value()) {//If elem has parent...
+            back_pointer[elem.state] = elem.parent.value();//initializes the parent of elem in unordered map
         }
 
-        for (const auto &successor : successor_for_state(elem.state)) {
-            open_list.push({.state = successor.state,
-                            .parent = elem.state,
-                            .cost_to_go = elem.cost_to_go + successor.edge_cost});
+        for (const auto &successor : successor_for_state(elem.state)) {//for every successor of elem
+            open_list.push({.state = successor.state,//initialize successor state
+                            .parent = elem.state,//give successor state elem as parent
+                            .cost_to_go = elem.cost_to_go + successor.edge_cost});//compute cost. cost_to_go from init state to elem state and the edge cost of successor
         }
     }
     return {

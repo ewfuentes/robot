@@ -18,7 +18,7 @@ class RoadMap {
     static constexpr int START_IDX = -1;
     static constexpr int GOAL_IDX = -2;
 
-    RoadMap(std::vector<Eigen::Vector2d> points, Eigen::MatrixXd adj,
+    RoadMap(std::vector<Eigen::Vector2d> points ,Eigen::MatrixXd adj,
             std::optional<StartGoalPair> start_goal_pair = std::nullopt);
 
     void add_start_goal(const StartGoalPair &start_goal_pair);
