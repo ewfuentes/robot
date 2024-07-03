@@ -10,7 +10,7 @@ namespace robot::planning {
 namespace {
 using NodeId = int;
 
-std::vector<Successor<NodeId>> successors_for_node(const NodeId &node_id) {
+std::vector<BFSSuccessor<NodeId>> successors_for_node(const NodeId &node_id) {
     // Create the following graph.
     //       1
     //       ▲
@@ -19,7 +19,7 @@ std::vector<Successor<NodeId>> successors_for_node(const NodeId &node_id) {
     const std::unordered_map<NodeId, std::vector<NodeId>> graph = {
         {{1}, {2}}, {{2}, {3, 4}}, {{3}, {2}}, {{4}, {2}}};
     const auto neighbors = graph.at(node_id);
-    std::vector<Successor<NodeId>> out;
+    std::vector<BFSSuccessor<NodeId>> out;
     for (const auto &neighbor : neighbors) {
         out.push_back({.state = neighbor, .edge_cost = 1.0});
     }
@@ -34,7 +34,7 @@ TEST(BreadthFirstSearchTest, acceptable_path_returned_immediately) {
     constexpr int GOAL_NODE = 4;
     std::unordered_set<NodeId> visited_list;
     ShouldQueueFunc<NodeId> have_not_visited_before =
-        [&visited_list](const Successor<NodeId> &to_add, const int &,
+        [&visited_list](const BFSSuccessor<NodeId> &to_add, const int &,
                         const std::vector<Node<NodeId>> &) -> ShouldQueueResult {
         if (visited_list.contains(to_add.state)) {
             return ShouldQueueResult::SKIP;
@@ -75,7 +75,7 @@ TEST(BreadthFirstSearchTest, find_longest_path_visiting_at_most_twice) {
     constexpr int START_NODE = 1;
     constexpr int GOAL_NODE = 4;
     ShouldQueueFunc<NodeId> have_visited_at_most_once_before =
-        [](const Successor<NodeId> &to_add, const int &parent_idx,
+        [](const BFSSuccessor<NodeId> &to_add, const int &parent_idx,
            const std::vector<Node<NodeId>> &nodes) {
             std::optional<int> node_idx = parent_idx;
             int prev_visit_counts = 0;

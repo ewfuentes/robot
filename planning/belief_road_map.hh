@@ -41,18 +41,14 @@ struct BRMSearchState {
 };
 
 template <typename Belief, typename UncertaintySize>
-std::vector<Successor<BRMSearchState<Belief>>> successors_for_state(
+std::vector<BFSSuccessor<BRMSearchState<Belief>>> successors_for_state(
     const BRMSearchState<Belief> &state, const RoadMap &road_map,
     const BeliefUpdater<Belief> &belief_updater, const UncertaintySize &uncertainty_size) {
-    std::vector<Successor<BRMSearchState<Belief>>> out;
 
-    if (state.node_idx == RoadMap::GOAL_IDX) {
-        return out;
-    }
-
+    std::vector<BFSSuccessor<BRMSearchState<Belief>>> out;
     for (const auto &[other_node_id, other_node_in_local] : road_map.neighbors(state.node_idx)) {
         const Belief new_belief = belief_updater(state.belief, state.node_idx, other_node_id);
-        out.push_back(Successor<BRMSearchState<Belief>>{
+        out.push_back(BFSSuccessor<BRMSearchState<Belief>>{
             .state =
                 BRMSearchState<Belief>{
                     .belief = new_belief,
@@ -128,7 +124,7 @@ std::optional<BRMPlan<Belief>> plan(
             const auto &min_uncertainty_opts = std::get<MinUncertaintyToleranceOptions>(options);
             return [uncertainty_tolerance = min_uncertainty_opts.uncertainty_tolerance,
                     &min_uncertainty_from_node, &uncertainty_size](
-                       const Successor<SearchState> &successor, const int parent_idx,
+                       const BFSSuccessor<SearchState> &successor, const int parent_idx,
                        const std::vector<Node<SearchState>> &nodes) -> ShouldQueueResult {
                 const int node_idx = successor.state.node_idx;
                 const double uncertainty = uncertainty_size(successor.state.belief);
@@ -166,7 +162,7 @@ std::optional<BRMPlan<Belief>> plan(
             };
         } else {
             return [&min_uncertainty_from_node, &uncertainty_size](
-                       const Successor<SearchState> &successor, const int parent_idx,
+                       const BFSSuccessor<SearchState> &successor, const int parent_idx,
                        const std::vector<Node<SearchState>> &nodes) -> ShouldQueueResult {
                 // If node was previously on path, skip it
                 std::optional<int> path_node_idx = parent_idx;

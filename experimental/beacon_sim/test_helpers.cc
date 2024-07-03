@@ -304,5 +304,49 @@ std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_circle_environmen
     const auto beacon_potential = AnticorrelatedBeaconPotential{.members = beacon_ids};
     return std::make_tuple(road_map, ekf_slam, beacon_potential);
 }
+
+MappedLandmarks create_grid_mapped_landmarks_beacon_pot(const std::vector<Eigen::Vector2d> &beacon_locs) {
+    constexpr double POSITION_UNCERTAINTY_M = 0.1;
+    const int cove_size = beacon_locs.size()*2;
+    const Eigen::MatrixXd cov_in_local = Eigen::MatrixXd::Identity(cove_size,cove_size)*POSITION_UNCERTAINTY_M*POSITION_UNCERTAINTY_M;
+    return MappedLandmarks{
+        .beacon_ids = {123,456},
+        .beacon_in_local = beacon_locs,
+        .cov_in_local = cov_in_local,
+    };
+}
+
+std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_david_grid_environment(
+    const EkfSlamConfig &ekf_config, const double p_first_beacon, const double p_second_beacon){
+    
+    const auto mapped_landmarks = create_grid_mapped_landmarks_beacon_pot({{-12.5,12.5},{12.5,-12.5}});
+    const auto road_map = create_grid_road_map({-15,-10},{15,10},5,5);
+    auto ekf_slam = experimental::beacon_sim::EkfSlam(ekf_config, time::RobotTimestamp());
+    constexpr bool LOAD_OFF_DIAGONALS = true;
+
+    // First lone beacon potential
+    const double lone_log_norm = -std::log(1 - p_first_beacon);
+    const double lone_param = std::log(p_first_beacon) + lone_log_norm;
+    const auto first_lone_potential =
+        PrecisionMatrixPotential{.precision = Eigen::Matrix<double, 1, 1>{lone_param},
+                                 .log_normalizer = lone_log_norm,
+                                 .members = {123}};
+
+    // Second lone beacon potential
+    const double lone_log_norm_two = -std::log(1 - p_second_beacon);
+    const double lone_param_two = std::log(p_second_beacon) + lone_log_norm_two;
+    const auto second_lone_potential =
+        PrecisionMatrixPotential{.precision = Eigen::Matrix<double, 1, 1>{lone_param_two},
+                                 .log_normalizer = lone_log_norm_two,
+                                 .members = {456}};
+    const auto beacon_potential = first_lone_potential * second_lone_potential;
+
+    // Move the robot to (0, 10) and have it face down
+    const liegroups::SE2 old_robot_from_new_robot(0, {15, 10});
+    ekf_slam.predict(time::RobotTimestamp(), old_robot_from_new_robot);
+    ekf_slam.load_map(mapped_landmarks, LOAD_OFF_DIAGONALS);
+
+    return {road_map, ekf_slam, beacon_potential};
+}
 } // namespace robot::experimental::beacon_sim
 

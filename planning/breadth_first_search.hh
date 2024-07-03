@@ -17,7 +17,7 @@ struct Node {
 };
 
 template <typename State>
-struct Successor {
+struct BFSSuccessor {
     State state;
     double edge_cost;
 };
@@ -30,17 +30,17 @@ struct BreadthFirstResult {
 };
 
 enum class ShouldQueueResult {
-    SKIP,
-    QUEUE,
-    QUEUE_AND_CLEAR_MATCHING_IN_OPEN,
+    SKIP, //init as 0 meaning true or skip
+    QUEUE, //init as 1 meaning false of q
+    QUEUE_AND_CLEAR_MATCHING_IN_OPEN, //
 };
 
 template <typename State>
-using SuccessorFunc = std::function<std::vector<Successor<State>>(const State &start)>;
+using SuccessorFunc = std::function<std::vector<BFSSuccessor<State>>(const State &start)>;
 
 template <typename State>
 using ShouldQueueFunc = std::function<ShouldQueueResult(
-    const Successor<State> &, const int parent_idx, const std::vector<Node<State>> &node_list)>;
+    const BFSSuccessor<State> &, const int parent_idx, const std::vector<Node<State>> &node_list)>;
 
 template <typename State>
 using GoalCheckFunc = std::function<bool(const Node<State> &)>;
@@ -53,23 +53,23 @@ std::optional<BreadthFirstResult<State>> breadth_first_search(
     const State &initial_state, const SuccessorFunc<State> &successors_for_state,
     const ShouldQueueFunc<State> &should_queue_check, const GoalCheckFunc<State> &goal_check_func,
     const IdentifyPathEndFunc<State> &identify_end_func) {
-    int nodes_expanded = 0;
+    int nodes_expanded = 0;//what does this mean?
     int nodes_visited = 0;
 
-    std::vector<Node<State>> nodes = {
+    std::vector<Node<State>> nodes = {//initializes vector and puts just init node in it
         {.state = initial_state, .maybe_parent_idx = {}, .cost = 0.0, .should_skip = false}};
-    std::deque<int> node_idx_queue = {0};
-    while (!node_idx_queue.empty()) {
+    std::deque<int> node_idx_queue = {0};//After initializing first node values, we dequeue it?
+    while (!node_idx_queue.empty()) {//While loop. meat of function that runs through BFS while node_idx_queue is not empty
         // Pop the front of the queue
-        const int node_idx = node_idx_queue.front();
-        node_idx_queue.pop_front();
+        const int node_idx = node_idx_queue.front();//sets current node index to node at front of queue
+        node_idx_queue.pop_front();//removes node_idx current from the front of queue
         // Make a copy to avoid invalidated references when pushing back on nodes
-        const Node<State> n = nodes.at(node_idx);
-        nodes_expanded++;
-        if (n.should_skip) {
+        const Node<State> n = nodes.at(node_idx);//I don't understand
+        nodes_expanded++;//Adds one to expanded because we brought a new node to front
+        if (n.should_skip) {//as in, goal node is not at this idx then we keep searching
             continue;
         }
-        if (goal_check_func(n)) {
+        if (goal_check_func(n)) {//checks if n has goal node if so breaks and returns values
             break;
         }
 
@@ -96,7 +96,7 @@ std::optional<BreadthFirstResult<State>> breadth_first_search(
                     }
                 }
             }
-            node_idx_queue.push_back(nodes.size() - 1);
+            node_idx_queue.push_back(nodes.size() - 1);//reduces size because for loops checks one node and reduces size of queue
         }
     }
 
@@ -110,7 +110,7 @@ std::optional<BreadthFirstResult<State>> breadth_first_search(
         end_idx = nodes.at(end_idx.value()).maybe_parent_idx;
     }
 
-    std::reverse(path.begin(), path.end());
+    std::reverse(path.begin(), path.end());//reverses the vector so that the first value is init state and last is final state
 
     return BreadthFirstResult<State>{
         .path = path,

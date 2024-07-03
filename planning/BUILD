@@ -40,7 +40,8 @@ cc_library(
   deps = [
     "@eigen",
     "//common:check",
-  ]
+  ],
+  visibility = ["//visibility:public"]
 )
 
 cc_test(
@@ -160,5 +161,28 @@ cc_test(
   deps = [
     ":djikstra",
     "@com_google_googletest//:gtest_main",
+  ]
+)
+
+cc_library(
+name = "david_planning",
+hdrs = ["david_planning.hh"],
+deps = [
+  "//experimental/beacon_sim:ekf_slam",
+  "//experimental/beacon_sim:beacon_potential",
+  "//experimental/beacon_sim:belief_road_map_planner",
+  "//common/math:logsumexp",
+  ":djikstra",
+  ":road_map"
+]
+)
+
+cc_test(
+  name = "david_planning_test",
+  srcs = ["david_planning_test.cc"],
+  deps = [
+    "@com_google_googletest//:gtest_main",
+    ":david_planning",
+    "//experimental/beacon_sim:test_helpers"
   ]
 )
