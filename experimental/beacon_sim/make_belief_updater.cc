@@ -3,7 +3,6 @@
 
 #include <algorithm>
 #include <optional>
-#include <iostream>
 #include <random>
 
 #include "common/check.hh"
@@ -308,7 +307,6 @@ std::tuple<UnappliedLandmarkBeliefMap, double> sample_beliefs_with_replacement(
         const auto &config_str = component_iter->first;
         const auto initial_assignment =
             assignment_from_config(config_str, beacon_potential.members());
-        counter += step_size;
 
         // Create a conditioned potential based on the component
         const auto conditioned_potential = beacon_potential.conditioned_on(initial_assignment);
@@ -329,10 +327,15 @@ std::tuple<UnappliedLandmarkBeliefMap, double> sample_beliefs_with_replacement(
                                              {.log_config_prob = log_config_prob,
                                               .cov_in_robot = component_iter->second.cov_in_robot,
                                               .transform_handle = handle}});
+        counter += step_size;
+        if (counter > 0.0) {
+            component_iter++;
+        }
     }
 
     std::optional<std::mt19937> dummy_gen(0);
-    return downsize_and_normalize_belief(unapplied_belief_from_config, std::nullopt, make_in_out(dummy_gen));
+    return downsize_and_normalize_belief(unapplied_belief_from_config, std::nullopt,
+                                         make_in_out(dummy_gen));
 }
 }  // namespace
 
@@ -348,8 +351,6 @@ TransformComputer::TransformComputer(
       ekf_config_(ekf_config),
       ekf_estimate_(ekf_estimate),
       transform_type_(transform_type) {
-    std::cout << "Making transform computer from: " << local_from_robot.translation().transpose()
-        << " to: " << end_state_in_local.transpose() << " num_landmarks: " << beacons_in_potential_.size() << std::endl;
     const Eigen::Vector2d &end_state_in_robot = local_from_robot.inverse() * end_state_in_local;
     const double theta_rad = std::atan2(end_state_in_robot.y(), end_state_in_robot.x());
     local_from_end_robot_ = liegroups::SE2(theta_rad, end_state_in_local);
@@ -881,14 +882,13 @@ planning::BeliefUpdater<LandmarkRobotBelief> make_landmark_belief_updater(
                 // replacement
                 return true;
             }
-            const double approx_num_components =
-                max_num_components.value() * tf_size;
+            const double approx_num_components = max_num_components.value() * tf_size;
 
             // If there are a large number of intermediate worlds, then we choose an alternative
             // method of sampling without replacement by sampling worlds and then deduplicating
             return approx_num_components < 1e7;
         }();
-        std::cout << "Sampling without replacement? " << should_sample_without_replacement << std::endl;
+
         const auto &[unapplied_belief_from_config, log_probability_mass_tracked] =
             should_sample_without_replacement
                 ? sample_beliefs_without_replacement(initial_belief, transform_computer,
