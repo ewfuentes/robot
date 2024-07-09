@@ -2,6 +2,7 @@
 #include "experimental/beacon_sim/make_belief_updater.hh"
 
 #include <algorithm>
+#include <optional>
 #include <random>
 
 #include "common/check.hh"
@@ -10,6 +11,7 @@
 #include "common/math/logsumexp.hh"
 #include "common/math/redheffer_star.hh"
 #include "common/math/sample_without_replacement.hh"
+#include "experimental/beacon_sim/beacon_potential.hh"
 #include "experimental/beacon_sim/robot_belief.hh"
 
 namespace robot::experimental::beacon_sim {
@@ -218,6 +220,123 @@ std::vector<LogMarginal> sample_log_marginals(const std::vector<LogMarginal> all
     }
     return out;
 }
+
+std::unordered_map<int, bool> assignment_from_config(const std::string &config,
+                                                     const std::vector<int> &members) {
+    CHECK(config.size() == members.size());
+    std::unordered_map<int, bool> out;
+    for (int i = 0; i < static_cast<int>(config.size()); i++) {
+        if (config.at(i) == '?') {
+            continue;
+        } else if (config.at(i) == '1') {
+            out[members.at(i)] = true;
+        } else if (config.at(i) == '0') {
+            out[members.at(i)] = false;
+        } else {
+            CHECK(false, "unable to parse config string", config, i, config.at(i));
+        }
+    }
+    return out;
+}
+
+std::tuple<UnappliedLandmarkBeliefMap, double> sample_beliefs_without_replacement(
+    const LandmarkRobotBelief &initial_belief, const TransformComputer &transform_computer,
+    const BeaconPotential &beacon_potential, const std::optional<int> &max_num_components,
+    InOut<std::optional<std::mt19937>> gen) {
+    UnappliedLandmarkBeliefMap unapplied_belief_from_config;
+    for (const auto &[config, belief] : initial_belief.belief_from_config) {
+        const auto consistent_configs =
+            transform_computer.consistent_configs(config, beacon_potential.members());
+        for (const int handle : consistent_configs) {
+            const std::string transform_config =
+                transform_computer.key(handle, beacon_potential.members());
+
+            const std::string new_config = merge_configurations(config, transform_config);
+
+            constexpr bool ALLOW_PARTIAL_ASSIGNMENT = true;
+            std::unordered_map<int, bool> assignment =
+                assignment_from_config(new_config, beacon_potential.members());
+
+            // Compute the probability of this config
+            const double log_config_prob =
+                beacon_potential.log_prob(assignment, ALLOW_PARTIAL_ASSIGNMENT);
+
+            unapplied_belief_from_config.insert({new_config,
+                                                 {
+                                                     .log_config_prob = log_config_prob,
+                                                     .cov_in_robot = belief.cov_in_robot,
+                                                     .transform_handle = handle,
+                                                 }});
+        }
+    }
+
+    const auto &[downselected_unapplied_belief_from_config, log_probability_mass_tracked] =
+        downsize_and_normalize_belief(unapplied_belief_from_config, max_num_components, gen);
+
+    {
+        const auto log_prob_accessor = [](const auto key_and_cov) {
+            return key_and_cov.second.log_config_prob;
+        };
+        const double belief_sum =
+            math::logsumexp(downselected_unapplied_belief_from_config, log_prob_accessor);
+        CHECK(std::abs(belief_sum) < 1e-6);
+    }
+    return {downselected_unapplied_belief_from_config, log_probability_mass_tracked};
+}
+
+std::tuple<UnappliedLandmarkBeliefMap, double> sample_beliefs_with_replacement(
+    const LandmarkRobotBelief &initial_belief, const TransformComputer &transform_computer,
+    const BeaconPotential &beacon_potential, const int max_num_components,
+    InOut<std::mt19937> gen) {
+    UnappliedLandmarkBeliefMap unapplied_belief_from_config;
+
+    // We use a low dispersion method of sampling
+    const double step_size = 1.0 / max_num_components;
+    std::uniform_real_distribution<> dist;
+    double counter = std::fmod(dist(*gen), step_size);
+    auto component_iter = initial_belief.belief_from_config.begin();
+    for (int i = 0; i < max_num_components; i++) {
+        // Sample a component from the belief
+        while (counter > 0.0) {
+            CHECK(component_iter != initial_belief.belief_from_config.end());
+            counter -= std::exp(component_iter->second.log_config_prob);
+            if (counter > 0.0) {
+                component_iter++;
+            }
+        }
+        const auto &config_str = component_iter->first;
+        const auto initial_assignment =
+            assignment_from_config(config_str, beacon_potential.members());
+
+        // Create a conditioned potential based on the component
+        const auto conditioned_potential = beacon_potential.conditioned_on(initial_assignment);
+
+        // Sample from the conditioned potential
+        const auto all_present_landmarks = conditioned_potential.sample(gen);
+        const auto handle = transform_computer.handle_from_present_beacons(all_present_landmarks);
+        const auto transform_config_str =
+            transform_computer.key(handle, beacon_potential.members());
+        const auto new_config = merge_configurations(config_str, transform_config_str);
+
+        constexpr bool ALLOW_PARTIAL_ASSIGNMENT = true;
+        const auto assignment = assignment_from_config(new_config, beacon_potential.members());
+        const double log_config_prob =
+            beacon_potential.log_prob(assignment, ALLOW_PARTIAL_ASSIGNMENT);
+
+        unapplied_belief_from_config.insert({new_config,
+                                             {.log_config_prob = log_config_prob,
+                                              .cov_in_robot = component_iter->second.cov_in_robot,
+                                              .transform_handle = handle}});
+        counter += step_size;
+        if (counter > 0.0) {
+            component_iter++;
+        }
+    }
+
+    std::optional<std::mt19937> dummy_gen(0);
+    return downsize_and_normalize_belief(unapplied_belief_from_config, std::nullopt,
+                                         make_in_out(dummy_gen));
+}
 }  // namespace
 
 TransformComputer::TransformComputer(
@@ -245,6 +364,17 @@ std::string TransformComputer::key(const int handle, const std::vector<int> &mem
     }
 
     return configuration_to_key(config, members);
+}
+
+int TransformComputer::handle_from_present_beacons(const std::vector<int> &present_beacons) const {
+    int out = 0;
+    for (int i = 0; i < static_cast<int>(beacons_in_potential_.size()); i++) {
+        const bool is_beacon_present =
+            std::find(present_beacons.begin(), present_beacons.end(),
+                      beacons_in_potential_.at(i)) != present_beacons.end();
+        out |= (is_beacon_present << i);
+    }
+    return out;
 }
 
 TypedTransform TransformComputer::operator()(const int handle) const {
@@ -725,7 +855,6 @@ planning::BeliefUpdater<LandmarkRobotBelief> make_landmark_belief_updater(
             type](const LandmarkRobotBelief &initial_belief, const int start_idx,
                   const int end_idx) mutable -> LandmarkRobotBelief {
         // Get the belief edge transform, optionally updating the cache
-
         const DirectedEdge edge = {
             .source = start_idx,
             .destination = end_idx,
@@ -745,59 +874,32 @@ planning::BeliefUpdater<LandmarkRobotBelief> make_landmark_belief_updater(
                 {edge, std::make_tuple(local_from_new_robot, transform_computer)});
         }
 
-        UnappliedLandmarkBeliefMap unapplied_belief_from_config;
-        for (const auto &[config, belief] : initial_belief.belief_from_config) {
-            const auto consistent_configs =
-                transform_computer.consistent_configs(config, beacon_potential.members());
-            for (const int handle : consistent_configs) {
-                const std::string transform_config =
-                    transform_computer.key(handle, beacon_potential.members());
+        // Check if we should sample with or without replacement
 
-                const std::string new_config = merge_configurations(config, transform_config);
-
-                constexpr bool ALLOW_PARTIAL_ASSIGNMENT = true;
-                std::unordered_map<int, bool> assignment;
-                for (int i = 0; i < static_cast<int>(new_config.size()); i++) {
-                    if (new_config.at(i) == '?') {
-                        continue;
-                    } else if (new_config.at(i) == '1') {
-                        assignment[beacon_potential.members().at(i)] = true;
-                    } else if (new_config.at(i) == '0') {
-                        assignment[beacon_potential.members().at(i)] = false;
-                    } else {
-                        CHECK(false, "unable to parse config string", new_config, i,
-                              new_config.at(i));
-                    }
-                }
-
-                // Compute the probability of this config
-                const double log_config_prob =
-                    beacon_potential.log_prob(assignment, ALLOW_PARTIAL_ASSIGNMENT);
-
-                unapplied_belief_from_config.insert({new_config,
-                                                     {
-                                                         .log_config_prob = log_config_prob,
-                                                         .cov_in_robot = belief.cov_in_robot,
-                                                         .transform_handle = handle,
-                                                     }});
+        const bool should_sample_without_replacement = [&, tf_size = transform_computer.size()]() {
+            if (!max_num_components.has_value()) {
+                // We want to track all worlds, which is handled naturally by sample without
+                // replacement
+                return true;
             }
-        }
+            const double approx_num_components = max_num_components.value() * tf_size;
 
-        const auto &[downselected_unapplied_belief_from_config, log_probability_mass_tracked] =
-            downsize_and_normalize_belief(unapplied_belief_from_config, max_num_components,
-                                          make_in_out(gen));
+            // If there are a large number of intermediate worlds, then we choose an alternative
+            // method of sampling without replacement by sampling worlds and then deduplicating
+            return approx_num_components < 1e7;
+        }();
 
-        {
-            const auto log_prob_accessor = [](const auto key_and_cov) {
-                return key_and_cov.second.log_config_prob;
-            };
-            const double belief_sum =
-                math::logsumexp(downselected_unapplied_belief_from_config, log_prob_accessor);
-            CHECK(std::abs(belief_sum) < 1e-6);
-        }
+        const auto &[unapplied_belief_from_config, log_probability_mass_tracked] =
+            should_sample_without_replacement
+                ? sample_beliefs_without_replacement(initial_belief, transform_computer,
+                                                     beacon_potential, max_num_components,
+                                                     make_in_out(gen))
+                : sample_beliefs_with_replacement(initial_belief, transform_computer,
+                                                  beacon_potential, max_num_components.value(),
+                                                  make_in_out(gen.value()));
 
         LandmarkBeliefMap new_belief_from_config;
-        for (const auto &[config, unapplied_belief] : downselected_unapplied_belief_from_config) {
+        for (const auto &[config, unapplied_belief] : unapplied_belief_from_config) {
             //  Compute the new covariance
             //  [- new_cov] = [I cov] * edge_transform
             //  [-       -]   [0   I]

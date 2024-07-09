@@ -80,6 +80,8 @@ class TransformComputer {
 
     std::string key(const int handle, const std::vector<int> &members) const;
 
+    int handle_from_present_beacons(const std::vector<int> &present_landmarks) const;
+
     std::vector<int> consistent_configs(const std::string &config,
                                         const std::vector<int> &members) const;
 
