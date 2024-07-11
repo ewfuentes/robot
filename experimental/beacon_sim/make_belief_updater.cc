@@ -2,6 +2,8 @@
 #include "experimental/beacon_sim/make_belief_updater.hh"
 
 #include <algorithm>
+#include <chrono>
+#include <iostream>
 #include <optional>
 #include <random>
 
@@ -295,6 +297,7 @@ std::tuple<UnappliedLandmarkBeliefMap, double> sample_beliefs_with_replacement(
     std::uniform_real_distribution<> dist;
     double counter = std::fmod(dist(*gen), step_size);
     auto component_iter = initial_belief.belief_from_config.begin();
+    auto conditioned_potential = beacon_potential.conditioned_on({});
     for (int i = 0; i < max_num_components; i++) {
         // Sample a component from the belief
         while (counter > 0.0) {
@@ -309,7 +312,7 @@ std::tuple<UnappliedLandmarkBeliefMap, double> sample_beliefs_with_replacement(
             assignment_from_config(config_str, beacon_potential.members());
 
         // Create a conditioned potential based on the component
-        const auto conditioned_potential = beacon_potential.conditioned_on(initial_assignment);
+        conditioned_potential.reconditioned_on(initial_assignment);
 
         // Sample from the conditioned potential
         const auto all_present_landmarks = conditioned_potential.sample(gen);
@@ -877,18 +880,20 @@ planning::BeliefUpdater<LandmarkRobotBelief> make_landmark_belief_updater(
         // Check if we should sample with or without replacement
 
         const bool should_sample_without_replacement = [&, tf_size = transform_computer.size()]() {
-            if (!max_num_components.has_value()) {
-                // We want to track all worlds, which is handled naturally by sample without
-                // replacement
-                return true;
-            }
-            const double approx_num_components = max_num_components.value() * tf_size;
-
-            // If there are a large number of intermediate worlds, then we choose an alternative
-            // method of sampling without replacement by sampling worlds and then deduplicating
-            return approx_num_components < 1e7;
+            return false;
+ //             if (!max_num_components.has_value()) {
+ //                 // We want to track all worlds, which is handled naturally by sample without
+ //                 // replacement
+ //                 return true;
+ //             }
+ //             const double approx_num_components = max_num_components.value() * tf_size;
+ // 
+ //             // If there are a large number of intermediate worlds, then we choose an alternative
+ //             // method of sampling without replacement by sampling worlds and then deduplicating
+ //             return approx_num_components < 1e7;
         }();
 
+        const auto start = std::chrono::high_resolution_clock::now();
         const auto &[unapplied_belief_from_config, log_probability_mass_tracked] =
             should_sample_without_replacement
                 ? sample_beliefs_without_replacement(initial_belief, transform_computer,
@@ -897,6 +902,12 @@ planning::BeliefUpdater<LandmarkRobotBelief> make_landmark_belief_updater(
                 : sample_beliefs_with_replacement(initial_belief, transform_computer,
                                                   beacon_potential, max_num_components.value(),
                                                   make_in_out(gen.value()));
+        const auto end = std::chrono::high_resolution_clock::now();
+        const std::chrono::duration<double, std::milli> dt = end - start;
+        std::cout << "belief size: " << initial_belief.belief_from_config.size()
+            << " num landmarks: " << std::log2(transform_computer.size())
+            << " dt: " << dt
+            << std::endl;
 
         LandmarkBeliefMap new_belief_from_config;
         for (const auto &[config, unapplied_belief] : unapplied_belief_from_config) {
