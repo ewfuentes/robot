@@ -18,8 +18,9 @@ struct ConditionedPotential;
 void recondition_on(ConditionedPotential &pot, const std::unordered_map<int, bool> &assignments);
 
 struct CorrelatedBeaconPotential;
-BeaconPotential condition_on(const CorrelatedBeaconPotential &pot, const std::unordered_map<int, bool>&);
-void recondition_on(const CorrelatedBeaconPotential &pot, const std::unordered_map<int, bool>&);
+CorrelatedBeaconPotential condition_on(const CorrelatedBeaconPotential &pot,
+                                       const std::unordered_map<int, bool> &);
+void recondition_on(const CorrelatedBeaconPotential &pot, const std::unordered_map<int, bool> &);
 
 namespace proto {
 class BeaconPotential;
@@ -111,8 +112,7 @@ class BeaconPotential {
         virtual void pack_into_(proto::BeaconPotential *out) const = 0;
         virtual BeaconPotential condition_on_(
             const std::unordered_map<int, bool> &assignments) const = 0;
-        virtual void recondition_on_(
-            const std::unordered_map<int, bool> &assignments) = 0;
+        virtual void recondition_on_(const std::unordered_map<int, bool> &assignments) = 0;
     };
 
     template <typename T>
@@ -154,20 +154,19 @@ class BeaconPotential {
             const std::unordered_map<int, bool> &assignments) const override {
             constexpr bool has_conditioning_support =
                 requires(T p, std::unordered_map<int, bool> & a) {
-                    { condition_on(p, a) } -> std::same_as<BeaconPotential>;
+                    { condition_on(p, a) } -> std::same_as<T>;
                 };
             if constexpr (has_conditioning_support) {
-                return condition_on(data_, assignments);
+                return BeaconPotential(condition_on(data_, assignments));
             } else {
                 return BeaconPotential(ConditionedPotential(data_, assignments));
             }
         }
 
-        void recondition_on_(
-            const std::unordered_map<int, bool> &assignments) override {
+        void recondition_on_(const std::unordered_map<int, bool> &assignments) override {
             constexpr bool has_reconditioning_support =
                 requires(T p, std::unordered_map<int, bool> & a) {
-                    recondition_on(p, a);
+                    { recondition_on(p, a) } -> std::same_as<void>;
                 };
 
             if constexpr (has_reconditioning_support) {
@@ -194,10 +193,9 @@ std::vector<LogMarginal> compute_log_marginals(const CombinedPotential &pot,
 const std::vector<int> &get_members(const CombinedPotential &pot);
 void pack_into_potential(const CombinedPotential &in, proto::BeaconPotential *out);
 std::vector<int> generate_sample(const CombinedPotential &pot, InOut<std::mt19937> gen);
-BeaconPotential condition_on(const CombinedPotential &pot,
-                             const std::unordered_map<int, bool> &assignments);
-void recondition_on(CombinedPotential &pot,
-                    const std::unordered_map<int, bool> &assignments);
+CombinedPotential condition_on(const CombinedPotential &pot,
+                               const std::unordered_map<int, bool> &assignments);
+void recondition_on(CombinedPotential &pot, const std::unordered_map<int, bool> &assignments);
 
 BeaconPotential operator*(const BeaconPotential &a, const BeaconPotential &b);
 

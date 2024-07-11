@@ -1,4 +1,5 @@
 
+#include <iostream>
 #include <limits>
 #include <unordered_map>
 #include <unordered_set>
@@ -99,7 +100,13 @@ std::vector<int> generate_sample(const ConditionedPotential &pot, InOut<std::mt1
 }
 
 void recondition_on(ConditionedPotential &pot, const std::unordered_map<int, bool> &assignments) {
+    std::cout << "Calling recondition on conditioned potential with members: [";
+    for (const auto &id : pot.underlying_pot.members()) {
+        std::cout << id << ", ";
+    }
+    std::cout << "]" << std::endl;
     pot.conditioned_members = assignments;
-    pot.log_normalizer = pot.underlying_pot.log_prob(pot.conditioned_members, ALLOW_PARTIAL_ASSIGNMENT);
+    pot.log_normalizer =
+        pot.underlying_pot.log_prob(pot.conditioned_members, ALLOW_PARTIAL_ASSIGNMENT);
 }
 }  // namespace robot::experimental::beacon_sim

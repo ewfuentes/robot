@@ -2,8 +2,6 @@
 #include "experimental/beacon_sim/make_belief_updater.hh"
 
 #include <algorithm>
-#include <chrono>
-#include <iostream>
 #include <optional>
 #include <random>
 
@@ -880,20 +878,19 @@ planning::BeliefUpdater<LandmarkRobotBelief> make_landmark_belief_updater(
         // Check if we should sample with or without replacement
 
         const bool should_sample_without_replacement = [&, tf_size = transform_computer.size()]() {
-            return false;
- //             if (!max_num_components.has_value()) {
- //                 // We want to track all worlds, which is handled naturally by sample without
- //                 // replacement
- //                 return true;
- //             }
- //             const double approx_num_components = max_num_components.value() * tf_size;
- // 
- //             // If there are a large number of intermediate worlds, then we choose an alternative
- //             // method of sampling without replacement by sampling worlds and then deduplicating
- //             return approx_num_components < 1e7;
+            if (!max_num_components.has_value()) {
+                // We want to track all worlds, which is handled naturally by sample
+                // without replacement
+                return true;
+            }
+            const double approx_num_components = max_num_components.value() * tf_size;
+
+            // If there are a large number of intermediate worlds, then we choose an
+            // alternative method of sampling without replacement by sampling worlds and then
+            // deduplicating
+            return approx_num_components < 1e5;
         }();
 
-        const auto start = std::chrono::high_resolution_clock::now();
         const auto &[unapplied_belief_from_config, log_probability_mass_tracked] =
             should_sample_without_replacement
                 ? sample_beliefs_without_replacement(initial_belief, transform_computer,
@@ -902,12 +899,6 @@ planning::BeliefUpdater<LandmarkRobotBelief> make_landmark_belief_updater(
                 : sample_beliefs_with_replacement(initial_belief, transform_computer,
                                                   beacon_potential, max_num_components.value(),
                                                   make_in_out(gen.value()));
-        const auto end = std::chrono::high_resolution_clock::now();
-        const std::chrono::duration<double, std::milli> dt = end - start;
-        std::cout << "belief size: " << initial_belief.belief_from_config.size()
-            << " num landmarks: " << std::log2(transform_computer.size())
-            << " dt: " << dt
-            << std::endl;
 
         LandmarkBeliefMap new_belief_from_config;
         for (const auto &[config, unapplied_belief] : unapplied_belief_from_config) {

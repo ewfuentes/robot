@@ -2,6 +2,7 @@
 #include "experimental/beacon_sim/beacon_potential.hh"
 
 #include <algorithm>
+#include <iostream>
 #include <numeric>
 
 namespace robot::experimental::beacon_sim {
@@ -78,8 +79,8 @@ std::vector<int> generate_sample(const CombinedPotential &pot, InOut<std::mt1993
     return out;
 }
 
-BeaconPotential condition_on(const CombinedPotential &pot,
-                             const std::unordered_map<int, bool> &assignments) {
+CombinedPotential condition_on(const CombinedPotential &pot,
+                               const std::unordered_map<int, bool> &assignments) {
     std::vector<BeaconPotential> conditioned_pots;
     for (const BeaconPotential &p : pot.pots) {
         std::unordered_map<int, bool> pot_assignments;
@@ -95,8 +96,7 @@ BeaconPotential condition_on(const CombinedPotential &pot,
     return CombinedPotential(std::move(conditioned_pots));
 }
 
-void recondition_on(CombinedPotential &pot,
-                    const std::unordered_map<int, bool> &assignments) {
+void recondition_on(CombinedPotential &pot, const std::unordered_map<int, bool> &assignments) {
     for (BeaconPotential &p : pot.pots) {
         std::unordered_map<int, bool> pot_assignments;
         for (const auto member : p.members()) {

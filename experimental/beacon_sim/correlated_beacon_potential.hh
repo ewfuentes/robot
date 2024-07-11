@@ -1,6 +1,7 @@
 
 #pragma once
 
+#include <optional>
 #include <random>
 #include <unordered_map>
 #include <vector>
@@ -22,6 +23,12 @@ struct CorrelatedBeaconPotential {
     double p_beacon_given_present;
     // The beacon ids associated with this clique
     std::vector<int> members;
+
+    struct ConditioningBlock {
+        std::unordered_map<int, bool> conditioned_members;
+    };
+
+    std::optional<ConditioningBlock> conditioning = std::nullopt;
 };
 
 double compute_log_prob(const CorrelatedBeaconPotential &pot,
@@ -35,10 +42,10 @@ std::vector<LogMarginal> compute_log_marginals(const CorrelatedBeaconPotential &
 
 std::vector<int> generate_sample(const CorrelatedBeaconPotential &pot, InOut<std::mt19937> gen);
 
-class BeaconPotential;
-BeaconPotential condition_on(const CorrelatedBeaconPotential &pot, const std::unordered_map<int, bool>&);
-void recondition_on(const CorrelatedBeaconPotential &pot, const std::unordered_map<int, bool>&);
-
+CorrelatedBeaconPotential condition_on(const CorrelatedBeaconPotential &pot,
+                                       const std::unordered_map<int, bool> &assignment);
+void recondition_on(CorrelatedBeaconPotential &pot,
+                    const std::unordered_map<int, bool> &assignment);
 
 namespace proto {
 class BeaconPotential;
