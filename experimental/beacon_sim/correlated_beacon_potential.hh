@@ -35,6 +35,11 @@ std::vector<LogMarginal> compute_log_marginals(const CorrelatedBeaconPotential &
 
 std::vector<int> generate_sample(const CorrelatedBeaconPotential &pot, InOut<std::mt19937> gen);
 
+class BeaconPotential;
+BeaconPotential condition_on(const CorrelatedBeaconPotential &pot, const std::unordered_map<int, bool>&);
+void recondition_on(const CorrelatedBeaconPotential &pot, const std::unordered_map<int, bool>&);
+
+
 namespace proto {
 class BeaconPotential;
 }

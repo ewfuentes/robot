@@ -16,6 +16,11 @@ namespace robot::experimental::beacon_sim {
 class BeaconPotential;
 struct ConditionedPotential;
 void recondition_on(ConditionedPotential &pot, const std::unordered_map<int, bool> &assignments);
+
+struct CorrelatedBeaconPotential;
+BeaconPotential condition_on(const CorrelatedBeaconPotential &pot, const std::unordered_map<int, bool>&);
+void recondition_on(const CorrelatedBeaconPotential &pot, const std::unordered_map<int, bool>&);
+
 namespace proto {
 class BeaconPotential;
 beacon_sim::BeaconPotential unpack_from(const BeaconPotential &);
