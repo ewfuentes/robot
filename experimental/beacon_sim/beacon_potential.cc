@@ -2,7 +2,6 @@
 #include "experimental/beacon_sim/beacon_potential.hh"
 
 #include <algorithm>
-#include <iostream>
 #include <numeric>
 
 namespace robot::experimental::beacon_sim {
