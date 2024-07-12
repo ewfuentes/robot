@@ -214,6 +214,8 @@ CorrelatedBeaconPotential condition_on(const CorrelatedBeaconPotential &pot,
 
             new_assignment[id] = value;
         }
+    } else {
+        new_assignment = assignment;
     }
 
     return CorrelatedBeaconPotential{
