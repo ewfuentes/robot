@@ -172,7 +172,8 @@ deps = [
   "//common/math:logsumexp",
   ":djikstra",
   ":road_map"
-]
+],
+visibility = ["//visibility:public"]
 )
 
 cc_test(

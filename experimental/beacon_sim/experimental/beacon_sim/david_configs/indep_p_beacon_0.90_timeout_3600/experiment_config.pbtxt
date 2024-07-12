@@ -1,0 +1,104 @@
+name: "indep_p_beacon_0.90_timeout_3600"
+map_config_path: "world_map_config.pb"
+ekf_state_path: "mapped_landmarks.pb"
+road_map_path: "road_map.pb"
+start_goal_seed: 404551839
+num_trials: 200
+planner_configs {
+  name: "David Planner"
+  david_planner_config {
+    favor_goal: 0.9
+  }
+}
+planner_configs {
+  name: "David Planner"
+  david_planner_config {
+    favor_goal: 0.7
+  }
+}
+planner_configs {
+  name: "David Planner"
+  david_planner_config {
+    favor_goal: 0.5
+  }
+}
+planner_configs {
+  name: "David Planner"
+  david_planner_config {
+    favor_goal: 0.3
+  }
+}
+planner_configs {
+  name: "Optimistic BRM"
+  optimistic_brm_config {
+  }
+}
+planner_configs {
+  name: "Landmark BRM 1 component"
+  landmark_brm_config {
+    max_num_components: 1
+    uncertainty_size {
+      expected_determinant {
+      }
+    }
+  }
+}
+planner_configs {
+  name: "Expected BRM 1 samples"
+  expected_brm_config {
+    num_configuration_samples: 1
+  }
+}
+planner_configs {
+  name: "Landmark BRM 10 component"
+  landmark_brm_config {
+    max_num_components: 10
+    uncertainty_size {
+      expected_determinant {
+      }
+    }
+  }
+}
+planner_configs {
+  name: "Expected BRM 10 samples"
+  expected_brm_config {
+    num_configuration_samples: 10
+  }
+}
+planner_configs {
+  name: "Landmark BRM 100 component"
+  landmark_brm_config {
+    max_num_components: 100
+    uncertainty_size {
+      expected_determinant {
+      }
+    }
+  }
+}
+planner_configs {
+  name: "Expected BRM 100 samples"
+  expected_brm_config {
+    num_configuration_samples: 100
+  }
+}
+planner_configs {
+  name: "Landmark BRM 1000 component"
+  landmark_brm_config {
+    max_num_components: 1000
+    uncertainty_size {
+      expected_determinant {
+      }
+    }
+  }
+}
+planner_configs {
+  name: "Expected BRM 1000 samples"
+  expected_brm_config {
+    num_configuration_samples: 1000
+  }
+}
+start_goal_connection_radius_m: 20.0
+plan_timeout_s: 3600.0
+evaluation_base_seed: 570094565
+num_eval_trials: 1000
+max_sensor_range_m: 5.0
