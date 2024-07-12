@@ -6,7 +6,7 @@
 
 namespace robot::experimental::beacon_sim {
 
-CombinedPotential::CombinedPotential(const std::vector<BeaconPotential> &pots_) : pots(pots_) {
+CombinedPotential::CombinedPotential(std::vector<BeaconPotential> pots_) : pots(std::move(pots_)) {
     for (const BeaconPotential &p : pots) {
         const auto p_members = p.members();
         members.insert(members.end(), p_members.begin(), p_members.end());
@@ -78,8 +78,8 @@ std::vector<int> generate_sample(const CombinedPotential &pot, InOut<std::mt1993
     return out;
 }
 
-BeaconPotential condition_on(const CombinedPotential &pot,
-                             const std::unordered_map<int, bool> &assignments) {
+CombinedPotential condition_on(const CombinedPotential &pot,
+                               const std::unordered_map<int, bool> &assignments) {
     std::vector<BeaconPotential> conditioned_pots;
     for (const BeaconPotential &p : pot.pots) {
         std::unordered_map<int, bool> pot_assignments;
@@ -90,13 +90,22 @@ BeaconPotential condition_on(const CombinedPotential &pot,
             }
         }
 
-        if (pot_assignments.empty()) {
-            conditioned_pots.push_back(p);
-        } else {
-            conditioned_pots.push_back(p.conditioned_on(pot_assignments));
-        }
+        conditioned_pots.emplace_back(p.conditioned_on(pot_assignments));
     }
-    return CombinedPotential(conditioned_pots);
+    return CombinedPotential(std::move(conditioned_pots));
+}
+
+void recondition_on(CombinedPotential &pot, const std::unordered_map<int, bool> &assignments) {
+    for (BeaconPotential &p : pot.pots) {
+        std::unordered_map<int, bool> pot_assignments;
+        for (const auto member : p.members()) {
+            const auto iter = assignments.find(member);
+            if (iter != assignments.end()) {
+                pot_assignments.insert(*iter);
+            }
+        }
+        p.reconditioned_on(pot_assignments);
+    }
 }
 
 BeaconPotential operator*(const BeaconPotential &a, const BeaconPotential &b) {

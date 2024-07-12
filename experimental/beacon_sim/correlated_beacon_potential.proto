@@ -3,8 +3,13 @@ syntax = "proto3";
 
 package robot.experimental.beacon_sim.proto;
 
+message CorrelatedConditioningBlock {
+  map<int32, bool> conditioned_members = 1;
+}
+
 message CorrelatedBeaconPotential {
   double p_present = 1;
   double p_beacon_given_present = 2;
   repeated int32 members = 3;
+  optional CorrelatedConditioningBlock conditioning = 4;
 }

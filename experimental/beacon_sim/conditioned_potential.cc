@@ -82,6 +82,9 @@ std::vector<int> generate_sample(const ConditionedPotential &pot, InOut<std::mt1
     // We sample by computing the log marginals, and then sampling from these. There are
     // other ways (e.g. rejection sampling, MCMC) that may lead to more efficient sampling
     // but this is the easiest to implement at the moment.
+    if (pot.conditioned_members.empty()) {
+        return pot.underlying_pot.sample(gen);
+    }
 
     const auto marginals = compute_log_marginals(pot, get_members(pot));
     std::vector<double> log_p;
@@ -93,5 +96,11 @@ std::vector<int> generate_sample(const ConditionedPotential &pot, InOut<std::mt1
     const auto sample_idx = math::sample_without_replacement(log_p, NUM_SAMPLES, LOG_PROB, gen);
 
     return marginals.at(sample_idx.at(0)).present_beacons;
+}
+
+void recondition_on(ConditionedPotential &pot, const std::unordered_map<int, bool> &assignments) {
+    pot.conditioned_members = assignments;
+    pot.log_normalizer =
+        pot.underlying_pot.log_prob(pot.conditioned_members, ALLOW_PARTIAL_ASSIGNMENT);
 }
 }  // namespace robot::experimental::beacon_sim

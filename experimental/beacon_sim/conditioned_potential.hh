@@ -18,6 +18,7 @@ class BeaconPotential;
 // of -infinity is returned. `compute_log_marginals` will contain the unconditioned
 // variables and the conditioned variables with the given assignment.
 struct ConditionedPotential {
+    ConditionedPotential(BeaconPotential pot, std::unordered_map<int, bool> assignments);
     BeaconPotential underlying_pot;
     // The probability of the conditioned assignment on `underlying_pot`
     double log_normalizer;
@@ -33,4 +34,5 @@ std::vector<LogMarginal> compute_log_marginals(const ConditionedPotential &pot,
 std::vector<int> get_members(const ConditionedPotential &pot);
 void pack_into_potential(const ConditionedPotential &in, proto::BeaconPotential *out);
 std::vector<int> generate_sample(const ConditionedPotential &pot, InOut<std::mt19937> gen);
+void recondition_on(ConditionedPotential &pot, const std::unordered_map<int, bool> &assignments);
 }  // namespace robot::experimental::beacon_sim

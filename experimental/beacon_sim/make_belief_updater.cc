@@ -295,6 +295,7 @@ std::tuple<UnappliedLandmarkBeliefMap, double> sample_beliefs_with_replacement(
     std::uniform_real_distribution<> dist;
     double counter = std::fmod(dist(*gen), step_size);
     auto component_iter = initial_belief.belief_from_config.begin();
+    auto conditioned_potential = beacon_potential.conditioned_on({});
     for (int i = 0; i < max_num_components; i++) {
         // Sample a component from the belief
         while (counter > 0.0) {
@@ -309,7 +310,7 @@ std::tuple<UnappliedLandmarkBeliefMap, double> sample_beliefs_with_replacement(
             assignment_from_config(config_str, beacon_potential.members());
 
         // Create a conditioned potential based on the component
-        const auto conditioned_potential = beacon_potential.conditioned_on(initial_assignment);
+        conditioned_potential.reconditioned_on(initial_assignment);
 
         // Sample from the conditioned potential
         const auto all_present_landmarks = conditioned_potential.sample(gen);
@@ -878,15 +879,16 @@ planning::BeliefUpdater<LandmarkRobotBelief> make_landmark_belief_updater(
 
         const bool should_sample_without_replacement = [&, tf_size = transform_computer.size()]() {
             if (!max_num_components.has_value()) {
-                // We want to track all worlds, which is handled naturally by sample without
-                // replacement
+                // We want to track all worlds, which is handled naturally by sample
+                // without replacement
                 return true;
             }
             const double approx_num_components = max_num_components.value() * tf_size;
 
-            // If there are a large number of intermediate worlds, then we choose an alternative
-            // method of sampling without replacement by sampling worlds and then deduplicating
-            return approx_num_components < 1e7;
+            // If there are a large number of intermediate worlds, then we choose an
+            // alternative method of sampling without replacement by sampling worlds and then
+            // deduplicating
+            return approx_num_components < 1e5;
         }();
 
         const auto &[unapplied_belief_from_config, log_probability_mass_tracked] =
