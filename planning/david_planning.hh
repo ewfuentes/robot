@@ -18,12 +18,8 @@
 namespace robot::planning {
 
 struct DavidPlannerConfig {
+    const int max_visits;
     const int max_plans;
-    const int max_states_per_path;
-    const double favor_goal;
-    const double favor_exploration;
-    const double edge_cost;
-    const int num_configuration_samples;
     int max_num_edge_transforms;
     std::optional<time::RobotTimestamp::duration> timeout;
     const double max_sensor_range_m;
@@ -33,8 +29,8 @@ struct DavidPlannerConfig {
 template <typename State>
 struct Beacon {
         State node;
+        double dist_to_node; // Edit this tmrw
         DjikstraResult<State> djikstra;
-        bool visited;
 };
 
 template <typename State>
@@ -43,11 +39,14 @@ struct DavidPlannerResult {
     double log_probability_mass_tracked;
 };
 
+
+
 template <typename State, typename SuccessorFunc, typename TerminationCheck>
 std::unordered_map<State,Beacon<State>> beacon_mapping(
     const SuccessorFunc &successor_for_state, const TerminationCheck &termination_check,
-    const RoadMap &road_map, const experimental::beacon_sim::EkfSlamEstimate ekf_estimate) {
-    std::vector<State> beacon_ids = ekf_estimate.beacon_ids;
+    const RoadMap &road_map, const experimental::beacon_sim::EkfSlamEstimate ekf_estimate,
+    const DavidPlannerConfig &config) {
+    std::vector<int> beacon_ids = ekf_estimate.beacon_ids;
     std::vector<Eigen::Vector2d> beacon_coords;
 
     for (int i = 0; i < (int)beacon_ids.size(); i++) {
@@ -62,40 +61,105 @@ std::unordered_map<State,Beacon<State>> beacon_mapping(
     std::unordered_map<State,Beacon<State>> beacon_map;
     Beacon<State> beacon_item;
     int j = 0;
-    int pot_beacon_node = -200;
+    State pot_beacon_node;
     for (const auto &beacon : beacon_coords) {
         double dist = 1e10;
         for (int i = 0; i < (int)node_coords.size(); i++) {
             const auto curr_node = node_coords[i];
             double pot_dist = sqrt(pow(curr_node[0] - beacon[0], 2) + pow(curr_node[1] - beacon[1], 2));
-            if (pot_dist < dist) {
-                dist = pot_dist;
-                pot_beacon_node = i;
-            }
+            if (pot_dist < dist) {dist = pot_dist, pot_beacon_node = i;}
         }
-        beacon_item.node = pot_beacon_node;
-        beacon_item.djikstra = djikstra<State>(beacon_item.node, successor_for_state, termination_check);
-        beacon_item.visited = false;
-        beacon_map[beacon_ids[j]] = beacon_item;
+        if(dist <= config.max_sensor_range_m){
+            beacon_item.node = pot_beacon_node;
+            beacon_item.dist_to_node = dist;
+            beacon_item.djikstra = djikstra<State>(beacon_item.node, successor_for_state, termination_check);
+            beacon_map[beacon_ids[j]] = beacon_item;
+        }
         j++;
     }
     return beacon_map;
 }
 
-template <typename State, typename SuccessorFunc>
-std::tuple<State,std::unordered_map<State,Beacon<State>>> pick_successor(const State &curr_state, const SuccessorFunc &successor_for_state,
-                     const DavidPlannerConfig &config, const DjikstraResult<State> &djikstra_goal, InOut<std::mt19937> gen, 
-                     const experimental::beacon_sim::BeaconPotential &beacon_potential, std::unordered_map<State,Beacon<State>> &beacon_map) {
-    std::tuple<State,std::unordered_map<State,Beacon<State>>> out;                    
-    std::unordered_map<State,Beacon<State>> local_beacon_map = beacon_map;
+template <typename State>
+std::vector<std::tuple<State, double>> sort_explore_probabilities(
+                    std::unordered_map<State,Beacon<State>> *beacon_map, 
+                    std::vector<Successor<State>> exploration_successors,
+                    std::vector<Successor<State>> goal_successors,
+                    const double &favor_goal,
+                    const experimental::beacon_sim::BeaconPotential &beacon_potential){
 
+    std::vector<std::tuple<State, double>> local_p_all_successors;
+    auto local_beacon_map = beacon_map;
+    std::tuple<State, double> p_successor;
+
+    // Keep this
+    double total_cost = 0.0;
+    if(local_beacon_map->empty()){
+        for(const auto &successor : exploration_successors){
+            get<0>(p_successor) = successor.state;
+            get<1>(p_successor) = (1.00/(double)exploration_successors.size())*(1-favor_goal);
+            local_p_all_successors.push_back(p_successor);
+        }
+    }else{ // this is where add beacon mapping to successors
+        std::unordered_map<State,bool> p_beacon_pass_in;
+        for(const auto &successor : exploration_successors){
+            double closest_beacon = 1e4;
+            State closest_beacon_id;
+            for(const auto &[key,beacon] : *local_beacon_map){
+                if((beacon.djikstra.cost_to_go_from_state.at(successor.state)+beacon.dist_to_node) < closest_beacon){
+                    closest_beacon = beacon.djikstra.cost_to_go_from_state.at(successor.state)+beacon.dist_to_node;
+                    closest_beacon_id = key;
+                }
+            }
+            //Keep for now
+            // have to clear and redeclare everytime so it doesnt pass in the combined probabilities
+            p_beacon_pass_in.clear();
+            p_beacon_pass_in[closest_beacon_id] = true;
+            //Adding 1e-2 to closest_beacon because value could be zero which would make total cost infinite
+            total_cost += 1/((closest_beacon+1e-2)*(1-exp(beacon_potential.log_prob(p_beacon_pass_in,true))));
+        }
+        // Keep for now
+        // Assigning probabilities to each exploratory successor
+        std::vector<std::tuple<State, double>> p_explore_successors;
+        double closest_beacon;
+        State closest_beacon_id;
+        for(const auto &successor : exploration_successors){
+            closest_beacon = 1e15;
+            for(const auto &[key,beacon] : *local_beacon_map){
+                if((beacon.djikstra.cost_to_go_from_state.at(successor.state)+beacon.dist_to_node) < closest_beacon){
+                    closest_beacon = (beacon.djikstra.cost_to_go_from_state.at(successor.state)+beacon.dist_to_node);
+                    closest_beacon_id = key;
+                }
+            }
+            p_beacon_pass_in.clear();
+            p_beacon_pass_in[closest_beacon_id] = true; 
+            get<0>(p_successor) = successor.state;
+
+            ((int)goal_successors.size()==0) ? 
+            get<1>(p_successor) = 1/((closest_beacon+1e-2)*(1-exp(beacon_potential.log_prob(p_beacon_pass_in,true)))*total_cost) :
+            get<1>(p_successor) = (1-favor_goal)/((closest_beacon+1e-2)*(1-exp(beacon_potential.log_prob(p_beacon_pass_in,true)))*total_cost);
+            p_explore_successors.push_back(p_successor);
+        }
+    for(const auto &successor : p_explore_successors){local_p_all_successors.push_back(successor);}
+    }
+    return local_p_all_successors;
+}
+
+template <typename State, typename SuccessorFunc>
+std::optional<State> pick_successor(const State &curr_state, const SuccessorFunc &successor_for_state,
+                    const DjikstraResult<State> &djikstra_goal, InOut<std::mt19937> gen, 
+                    const experimental::beacon_sim::BeaconPotential &beacon_potential, 
+                    std::unordered_map<State,Beacon<State>> *beacon_map,
+                    const double &favor_goal, std::unordered_map<State,int> *states,
+                    const DavidPlannerConfig config) {
+    State out;                    
     std::vector<Successor<State>> goal_successors;
     std::vector<Successor<State>> exploration_successors;
-    std::vector<std::tuple<State, double>> p_all_successors; // currently there is no check to make sure sum of all probabilities is 1.0
+    std::vector<std::tuple<State, double>> p_all_successors;
     std::tuple<State, double> p_successor;
 
     // Finding the minimum cost to the goal from successors
-    double min_goal_cost = 1e10;
+    double min_goal_cost = 1e10; // Adjust this to include multiple beacon distances
     for(const auto &successor : successor_for_state(curr_state)){
         if(djikstra_goal.cost_to_go_from_state.at(successor.state) < min_goal_cost){
             min_goal_cost = djikstra_goal.cost_to_go_from_state.at(successor.state);
@@ -103,21 +167,14 @@ std::tuple<State,std::unordered_map<State,Beacon<State>>> pick_successor(const S
     }
     // Assigning successors to either goal group or exploratory group
     for (const auto &successor : successor_for_state(curr_state)) {
-        if(djikstra_goal.cost_to_go_from_state.at(successor.state) == min_goal_cost){
-            goal_successors.push_back(successor);
-        }else{
-            exploration_successors.push_back(successor);
-        }
+        if(states->at(successor.state) == config.max_visits){continue;}
+        if(djikstra_goal.cost_to_go_from_state.at(successor.state) == min_goal_cost){goal_successors.push_back(successor);
+        }else{exploration_successors.push_back(successor);}
     }
+    if(((int)exploration_successors.size()==0) && ((int)goal_successors.size()==0)){return std::nullopt;}
 
     // Goal successors normalization
-    bool successor_check = false;
-    for(const auto &successor : exploration_successors){
-        if(successor.state == -1){
-            successor_check = true;
-        }
-    }
-    if(successor_check == true){
+    if(exploration_successors.size()==0){
         for(const auto &successor : goal_successors){
             get<0>(p_successor) = successor.state;
             get<1>(p_successor) = 1.00/(double)goal_successors.size();// can potential be determined by distance to beacon
@@ -126,96 +183,41 @@ std::tuple<State,std::unordered_map<State,Beacon<State>>> pick_successor(const S
     }else{
         for(const auto &successor : goal_successors){
             get<0>(p_successor) = successor.state;
-            get<1>(p_successor) = (1.00/(double)goal_successors.size())*config.favor_goal;// can potential be determined by distance to beacon
+            get<1>(p_successor) = (1.00/(double)goal_successors.size())*favor_goal;// can potential be determined by distance to beacon
             p_all_successors.push_back(p_successor);
         }
     }
-    // up until this point the only improves I see coming are using iterators instead of loops and changing the noralization of the goal successors
-
     // Exploration successors normalization
-    double total_cost = 0.0;
-    // Gathering total cost of all successors
-    std::unordered_map<int,bool> p_beacon_pass_in;
-    for(const auto &successor : exploration_successors){
-        double closest_beacon = 1e15;
-        State closest_beacon_id;
-        for(const auto &[key,beacon] : local_beacon_map){
-            if(beacon.djikstra.cost_to_go_from_state.at(successor.state) < closest_beacon){
-                closest_beacon = beacon.djikstra.cost_to_go_from_state.at(successor.state);
-                closest_beacon_id = key;
-            }
-        }
-        p_beacon_pass_in.clear();
-        p_beacon_pass_in[closest_beacon_id] = true; // have to redclare everytime so it doesnt pass in the combined probabilities 
+    const auto p_explore_successors = sort_explore_probabilities<State>(beacon_map, exploration_successors, goal_successors,favor_goal,beacon_potential);
+    p_all_successors.insert(std::end(p_all_successors), std::begin(p_explore_successors), std::end(p_explore_successors));
 
-        if((closest_beacon == 0) && (local_beacon_map.at(closest_beacon_id).visited == false)){
-            total_cost += 1/(1-exp(beacon_potential.log_prob(p_beacon_pass_in,true)));
-        }else if((closest_beacon == 0) && (local_beacon_map.at(closest_beacon_id).visited == true)){ //could change to remove successor from exploratory list next
-            total_cost += 1/(config.edge_cost*(1-exp(beacon_potential.log_prob(p_beacon_pass_in,true))));
-        }else{
-            total_cost += 1/(closest_beacon*(1-exp(beacon_potential.log_prob(p_beacon_pass_in,true))));
-        }
-    }
-
-
-    // Assigning probabilities to each exploratory successor
-    std::vector<std::tuple<State, double>> p_explore_successors;
-    double closest_beacon = 1e15; 
-    State closest_beacon_id;
-    for(const auto &successor : exploration_successors){
-        closest_beacon = 1e15;
-        for(const auto &[key,beacon] : local_beacon_map){
-            if(beacon.djikstra.cost_to_go_from_state.at(successor.state) < closest_beacon){
-                closest_beacon = beacon.djikstra.cost_to_go_from_state.at(successor.state);
-                closest_beacon_id = key;
-            }
-        }
-        p_beacon_pass_in.clear();
-        p_beacon_pass_in[closest_beacon_id] = true; 
-
-        get<0>(p_successor) = successor.state;
-        if((closest_beacon == 0) && (local_beacon_map.at(closest_beacon_id).visited == false)){
-            get<1>(p_successor) = config.favor_exploration/(1-exp(beacon_potential.log_prob(p_beacon_pass_in,true))*total_cost);
-            local_beacon_map[closest_beacon_id].visited = true;
-            p_explore_successors.push_back(p_successor);
-        }else if((closest_beacon == 0) && (local_beacon_map.at(closest_beacon_id).visited == true)){ //could change to remove successor from exploratory list next
-            get<1>(p_successor) = config.favor_exploration/(config.edge_cost*(1-exp(beacon_potential.log_prob(p_beacon_pass_in,true)))*total_cost);
-            p_explore_successors.push_back(p_successor);
-        }else{
-            get<1>(p_successor) = config.favor_exploration/(closest_beacon*(1-exp(beacon_potential.log_prob(p_beacon_pass_in,true)))*total_cost);
-            p_explore_successors.push_back(p_successor);
-    }}
-    if(successor_check == false){
-        for(const auto &successor : p_explore_successors){
-            p_all_successors.push_back(successor);
-        }
-    }else{
-        for(auto &successor : p_explore_successors){
-            get<1>(successor) = 0.0;
-            p_all_successors.push_back(successor);
-        }
-    }
-
-    std::cout << "At State: "  << curr_state<< std::endl;
-    std::cout << "[";
-    for(auto &successor : p_all_successors){
-        std::cout << get<0>(successor) << ":" << std::setprecision(3) << 100*get<1>(successor) << "%,";
-    }
-    std::cout << "]";
+    //std::cout << "At State: "  << curr_state<< std::endl; // Move this somewhere else???
+    //std::cout << "[";
+    //for(auto &successor : p_all_successors){
+    //    std::cout << get<0>(successor) << ":" << std::setprecision(3) << 100*get<1>(successor) << "%,";
+    //}
+    //std::cout << "]" << std::endl;
     // Picking a successor
     std::uniform_real_distribution<> dist;
-
+    State picked_node;
     double rand_num = dist(*gen);
-    //std::cout << rand_num << std::endl;
+    std::tuple<State,double> val;
     for (int k = 0; k < (int)p_all_successors.size(); k++) {
-        const auto val = p_all_successors.at(k);
-        if (rand_num < get<1>(val)) {
-            get<0>(out) = get<0>(val);
-            get<1>(out) = local_beacon_map;
+        val = p_all_successors.at(k);
+        if(rand_num < get<1>(val)) {
+            out = get<0>(val);
+            picked_node = out;
             break;
         }
         rand_num -= get<1>(val);
     }
+    std::vector<int> keys_to_remove;
+    for (const auto &[key,beacon] : *beacon_map){
+        if(picked_node == beacon.node){keys_to_remove.push_back(key);}
+    }
+    for(int i=0;i<(int)keys_to_remove.size();i++){
+        beacon_map->erase(keys_to_remove[i]);}
+    states->at(out)+=1;
     return out;
 }
 
@@ -225,20 +227,24 @@ std::optional<std::vector<State>> sample_path(
     std::unordered_map<State,Beacon<State>> &beacon_map,
     const SuccessorFunc &successor_for_state, const DavidPlannerConfig &config,
     const RoadMap &road_map,InOut<std::mt19937> gen,
-    const experimental::beacon_sim::BeaconPotential &beacon_potential) {
+    const experimental::beacon_sim::BeaconPotential &beacon_potential, const double &favor_goal) {
     std::vector<State> path;
+    auto beacon_map_local = beacon_map;
     State curr_state = road_map.START_IDX;
     const State GOAL_STATE = road_map.GOAL_IDX;
 
+    std::unordered_map<State,int> states;
+    states[road_map.START_IDX] = config.max_visits;
+    states[road_map.GOAL_IDX] = 0;
+    for(int j=0; j<((int)road_map.points().size());j++){states[j] = 0;}
+
+    path.push_back(curr_state);
     while(curr_state != GOAL_STATE) {
-        if ((int)path.size() > config.max_states_per_path) {
-            return std::nullopt;
-        }
-        const auto next_state = pick_successor<int>(curr_state,successor_for_state,config,djikstra_goal,gen,beacon_potential,beacon_map);
-        beacon_map = get<1>(next_state);
-        int picked_successor = get<0>(next_state);
-        path.push_back(picked_successor);
-        curr_state = picked_successor;
+        const auto next_state = pick_successor<State>(curr_state,successor_for_state,djikstra_goal,gen,beacon_potential,&beacon_map_local,favor_goal,&states,config);
+        if(next_state.has_value()){
+            path.push_back(next_state.value());
+            curr_state = next_state.value();
+        }else{return std::nullopt;}
     }
     return path;
 }
@@ -246,13 +252,13 @@ std::optional<std::vector<State>> sample_path(
 template <typename State, typename SuccessorFunc, typename TerminationCheck>
 std::optional<DavidPlannerResult<State>> david_planner( 
     const SuccessorFunc &successor_for_state, const TerminationCheck &termination_check,
-    const RoadMap &road_map, const DavidPlannerConfig &config,
+    const RoadMap &road_map, const DavidPlannerConfig config,
     const experimental::beacon_sim::EkfSlamEstimate &ekf_estimate,
     const experimental::beacon_sim::BeaconPotential &beacon_potential,
-    const experimental::beacon_sim::EkfSlam &ekf) {
+    const experimental::beacon_sim::EkfSlam &ekf,const double &favor_goal) {
 
     const time::RobotTimestamp plan_start_time = time::current_robot_time();    
-    std::mt19937 gen(111211); //generate with respect to real time?
+    std::mt19937 gen(123242); //generate with respect to real time?
     std::vector<std::vector<State>> world_samples;
     std::vector<double> log_probs;
     // Sampling worlds    
@@ -274,18 +280,17 @@ std::optional<DavidPlannerResult<State>> david_planner(
     // Sampling plans
     std::vector<std::vector<State>> plans;
     const auto djikstra_goal = djikstra<State>(-2, successor_for_state, termination_check);
-    auto beacon_map = beacon_mapping<State>(successor_for_state, termination_check, road_map, ekf_estimate);
+    auto beacon_map = beacon_mapping<State>(successor_for_state, termination_check, road_map, ekf_estimate, config);
     while ((int)plans.size() < config.max_plans) {
-        const auto plan = sample_path<State>(djikstra_goal, beacon_map, successor_for_state, config, road_map,make_in_out(gen),beacon_potential);
+        const auto plan = sample_path<State>(djikstra_goal, beacon_map, successor_for_state, config, road_map,make_in_out(gen),beacon_potential,favor_goal);
         if (plan.has_value()) {
             plans.push_back(plan.value());
         }
-
     }
     // Evaluate plans on worlds
     std::vector<double> expected_cov_dets(plans.size(), 0.0);
     for (const auto &sample : world_samples) {
-        const auto covs = evaluate_paths_with_configuration(plans, ekf, road_map, config.max_sensor_range_m, sample);
+        const auto covs = experimental::beacon_sim::evaluate_paths_with_configuration(plans, ekf, road_map, config.max_sensor_range_m, sample);
 
         for (int i = 0; i < (int)plans.size(); i++) {
             expected_cov_dets.at(i) += covs.at(i).determinant() / world_samples.size();

@@ -26,6 +26,9 @@
 #include "experimental/beacon_sim/world_map_config_to_proto.hh"
 #include "planning/road_map_to_proto.hh"
 
+#include "planning/david_planning.hh"
+#include "planning/djikstra.hh"
+
 using robot::experimental::beacon_sim::proto::ExperimentConfig;
 
 namespace robot::experimental::beacon_sim {
@@ -233,6 +236,55 @@ PlannerResult run_planner(const planning::RoadMap &road_map, const EkfSlam &ekf,
                                              })
                                            : std::nullopt};
 }
+//David's planner config
+PlannerResult run_planner(const planning::RoadMap &road_map, const EkfSlam &ekf,// Need to also pass in ekf estimate
+                          [[maybe_unused]] const BeaconPotential &beacon_potential,
+                          [[maybe_unused]] const proto::DavidPlanner &config,
+                          const double max_sensor_range_m,
+                          const std::optional<time::RobotTimestamp::duration> &timeout) {
+    const planning::DavidPlannerConfig options = 
+        {
+            .max_visits = config.max_visits(),
+            .max_plans = config.max_plans(),
+            .max_num_edge_transforms = std::numeric_limits<int>::max(),
+            .timeout = timeout,
+            .max_sensor_range_m = max_sensor_range_m,
+            .uncertainty_tolerance = std::nullopt,
+        };
+
+    const EkfSlamEstimate &est = ekf.estimate();
+    auto successor_func = [&road_map](const int &node_idx) -> std::vector<planning::Successor<int>> {
+        std::vector<planning::Successor<int>> out;
+        const std::vector<std::tuple<int, Eigen::Vector2d>> &vector = road_map.neighbors(node_idx);
+
+        for(auto tuple : vector){
+            const Eigen::Vector2d a_coords = road_map.point(node_idx);
+            const Eigen::Vector2d b_coords = get<1>(tuple);
+            double d = sqrt(pow((b_coords[0]-a_coords[0]),2)+pow((b_coords[1]-a_coords[1]),2));
+
+            out.push_back({
+                    .state = get<0>(tuple),
+                    .edge_cost = d,
+                    });
+        };
+        return out;
+    };
+    auto termination_check = [](std::unordered_map<int, double>) { return false; };
+
+    const time::RobotTimestamp start_time = time::current_robot_time();
+    const auto maybe_plan = david_planner<int>(successor_func,termination_check,road_map,options,est,beacon_potential,ekf,config.favor_goal());
+    const time::RobotTimestamp::duration elapsed_time = time::current_robot_time() - start_time;
+
+    const double log_prob = beacon_potential.log_prob(beacon_potential.members());
+
+    return {.elapsed_time = elapsed_time,
+            .plan = maybe_plan.has_value() ? std::make_optional(PlannerResult::Plan{
+                                                .nodes = maybe_plan->nodes,
+                                                .log_prob_mass_tracked = log_prob,
+                                            })
+                                        : std::nullopt};
+
+}
 
 struct EvaluationResult {
     struct PlanStatistics {
@@ -421,6 +473,12 @@ void run_experiment(const proto::ExperimentConfig &config, const std::filesystem
                         results[planner_config.name()] = run_planner(
                             road_map, ekf, world_map.beacon_potential(),
                             planner_config.expected_brm_config(), max_sensor_range_m, timeout);
+                        break;
+                    }
+                    case proto::PlannerConfig::kDavidPlannerConfig: {
+                        results[planner_config.name()] = run_planner(
+                            road_map, ekf, world_map.beacon_potential(),
+                            planner_config.david_planner_config(), max_sensor_range_m, timeout);    
                         break;
                     }
                     default: {

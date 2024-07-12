@@ -91,35 +91,13 @@ struct ExpectedBeliefRoadMapOptions {
 };
 
 Eigen::Matrix3d evaluate_path(const std::vector<int> &path, const RobotBelief &initial_belief,
-                              const planning::BeliefUpdater<RobotBelief> &updater) {
-    RobotBelief robot_belief = initial_belief;
-    for (int i = 1; i < static_cast<int>(path.size()); i++) {
-        robot_belief = updater(robot_belief, path.at(i - 1), path.at(i));
-    }
-
-    return robot_belief.cov_in_robot;
-}
+                              const planning::BeliefUpdater<RobotBelief> &updater);
 
 std::vector<Eigen::Matrix3d> evaluate_paths_with_configuration(
     const std::vector<std::vector<int>> &paths, const EkfSlam &ekf,
     const planning::RoadMap &road_map, const double max_sensor_range_m,
-    const std::vector<int> &present_beacons) {
-    // Make a belief updater that only considers the present beacons
-    const auto updater = make_belief_updater(road_map, max_sensor_range_m, ekf, present_beacons,
-                                             TransformType::COVARIANCE);
-
-    const RobotBelief initial_belief = {
-        .local_from_robot = ekf.estimate().local_from_robot(),
-        .cov_in_robot = ekf.estimate().robot_cov(),
-    };
-
-    std::vector<Eigen::Matrix3d> out;
-    std::transform(
-        paths.begin(), paths.end(), std::back_inserter(out),
-        [&](const std::vector<int> &path) { return evaluate_path(path, initial_belief, updater); });
-    return out;
-}
-
+    const std::vector<int> &present_beacons);
+    
 std::optional<planning::BRMPlan<LandmarkRobotBelief>> compute_landmark_belief_road_map_plan(
     const planning::RoadMap &road_map, const EkfSlam &ekf, const BeaconPotential &beacon_potential,
     const LandmarkBeliefRoadMapOptions &options);
