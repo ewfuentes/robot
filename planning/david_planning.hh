@@ -29,7 +29,7 @@ struct DavidPlannerConfig {
 template <typename State>
 struct Beacon {
         State node;
-        double dist_to_node; // Edit this tmrw
+        double dist_to_node;
         DjikstraResult<State> djikstra;
 };
 
@@ -88,17 +88,106 @@ std::vector<std::tuple<State, double>> sort_explore_probabilities(
                     const double &favor_goal,
                     const experimental::beacon_sim::BeaconPotential &beacon_potential){
 
-    std::vector<std::tuple<State, double>> local_p_all_successors;
+    std::vector<std::tuple<State, double>> p_explore_successors;
+    std::tuple<State, double> p_successor;
+
+    if(beacon_map->empty()){
+        for(auto &successor : exploration_successors){
+            get<0>(p_successor) = successor.state;
+            get<1>(p_successor) = (1.00/(double)exploration_successors.size())*(1-favor_goal);
+            p_explore_successors.push_back(p_successor);
+        }
+        return p_explore_successors;
+    }else{
+        //Finds the bottom-line closest beacon to every successor
+        for(auto &successor : exploration_successors){
+            double closest_beacon = 1e4;
+            for(const auto &[key,beacon] : *beacon_map){
+                if((beacon.djikstra.cost_to_go_from_state.at(successor.state)+beacon.dist_to_node) < closest_beacon){
+                    closest_beacon = beacon.djikstra.cost_to_go_from_state.at(successor.state)+beacon.dist_to_node;
+                    successor.nearest_beacon_id = key;
+                }
+            }
+            successor.nearest_beacon_dist = closest_beacon;
+        }
+        for(auto &successor : exploration_successors){
+            std::cout << "Successor: " << successor.state << ", " << successor.nearest_beacon_id.value() << ", " << successor.nearest_beacon_dist << std::endl;
+        }
+        // Makes sure multiple successors aren't mapped to same beacon unless they are equidistant from the beacon and no other equidistance beacon is present
+        
+        bool successors_unique = false; //If still false by end of while loop, reloops
+        while(!successors_unique){
+            successors_unique = true;
+            for(auto &successor : exploration_successors){
+                for(auto &successor_neighbor : exploration_successors){
+                    if(successor.state == successor_neighbor.state || !successor.nearest_beacon_id.has_value() || !successor_neighbor.nearest_beacon_id.has_value()){continue;
+                    }else if(successor.nearest_beacon_id.value() == successor_neighbor.nearest_beacon_id.value()){
+                        if(successor.nearest_beacon_dist > successor_neighbor.nearest_beacon_dist){
+                            if((int)beacon_map->size() == 1){
+                                successor.nearest_beacon_id = std::nullopt; //change to std::optional and pass nullopt if care, cant find log prob of made up id
+                                successor.nearest_beacon_dist = 1e10; //figure out how to assign probability to some aggregiously high number
+                                break;
+                            }else{
+                                double closest_beacon = 1e10;
+                                int curr_beacon_id = successor.nearest_beacon_id.value();
+                                for(const auto &[key,beacon] : *beacon_map){
+                                    if(key == curr_beacon_id){continue;
+                                    }else if(beacon_map->size() == 1){
+                                        successor.nearest_beacon_dist = 1e3; 
+                                        break;
+                                    }else if((beacon.djikstra.cost_to_go_from_state.at(successor.state)+beacon.dist_to_node) < closest_beacon){
+                                        closest_beacon = beacon.djikstra.cost_to_go_from_state.at(successor.state)+beacon.dist_to_node;
+                                        successor.nearest_beacon_id = key;
+                                    }
+                                }
+                                successor.nearest_beacon_dist = closest_beacon;
+                                std::cout << "ran " << std::endl;
+                            }
+                        }else if(successor.nearest_beacon_dist == successor_neighbor.nearest_beacon_dist){continue;
+                        }else{successors_unique = false;}
+                    }
+                }
+            }
+        }
+        double total_cost = 0.0;
+        std::unordered_map<State,bool> p_beacon_pass_in; // A necessary condition for beacon_potential.log_prob(...)
+        for(auto &successor : exploration_successors){
+            p_beacon_pass_in.clear();
+            if(successor.nearest_beacon_id.has_value()){
+                p_beacon_pass_in[successor.nearest_beacon_id.value()] = true;
+                total_cost += 1/((successor.nearest_beacon_dist+1e-2)*(1-exp(beacon_potential.log_prob(p_beacon_pass_in,true))));
+            }else{
+                total_cost += 1/(successor.nearest_beacon_dist+1e-2);
+            }
+        }
+        for(auto &successor : exploration_successors){
+            p_beacon_pass_in.clear();
+            get<0>(p_successor) = successor.state;
+            if((int)goal_successors.size()==0){
+                p_beacon_pass_in[successor.nearest_beacon_id.value()] = true;
+                get<1>(p_successor) = 1/((successor.nearest_beacon_dist+1e-2)*(1-exp(beacon_potential.log_prob(p_beacon_pass_in,true)))*total_cost);
+            }else{
+                if(successor.nearest_beacon_id.has_value()){
+                    p_beacon_pass_in[successor.nearest_beacon_id.value()] = true; 
+                    get<1>(p_successor) = (1-favor_goal)/((successor.nearest_beacon_dist+1e-2)*(1-exp(beacon_potential.log_prob(p_beacon_pass_in,true)))*total_cost);
+                }else{get<1>(p_successor) = (1-favor_goal)/((successor.nearest_beacon_dist+1e-2)*total_cost);}
+                p_explore_successors.push_back(p_successor);
+            }
+        }
+    }
+    return p_explore_successors;
+   /*
+    std::vector<std::tuple<State, double>> p_explore_successors;
+    // Keep this
     auto local_beacon_map = beacon_map;
     std::tuple<State, double> p_successor;
 
-    // Keep this
     double total_cost = 0.0;
     if(local_beacon_map->empty()){
         for(const auto &successor : exploration_successors){
             get<0>(p_successor) = successor.state;
             get<1>(p_successor) = (1.00/(double)exploration_successors.size())*(1-favor_goal);
-            local_p_all_successors.push_back(p_successor);
+            p_explore_successors.push_back(p_successor);
         }
     }else{ // this is where add beacon mapping to successors
         std::unordered_map<State,bool> p_beacon_pass_in;
@@ -120,7 +209,6 @@ std::vector<std::tuple<State, double>> sort_explore_probabilities(
         }
         // Keep for now
         // Assigning probabilities to each exploratory successor
-        std::vector<std::tuple<State, double>> p_explore_successors;
         double closest_beacon;
         State closest_beacon_id;
         for(const auto &successor : exploration_successors){
@@ -140,10 +228,11 @@ std::vector<std::tuple<State, double>> sort_explore_probabilities(
             get<1>(p_successor) = (1-favor_goal)/((closest_beacon+1e-2)*(1-exp(beacon_potential.log_prob(p_beacon_pass_in,true)))*total_cost);
             p_explore_successors.push_back(p_successor);
         }
-    for(const auto &successor : p_explore_successors){local_p_all_successors.push_back(successor);}
     }
-    return local_p_all_successors;
+    return p_explore_successors;
+    */
 }
+
 
 template <typename State, typename SuccessorFunc>
 std::optional<State> pick_successor(const State &curr_state, const SuccessorFunc &successor_for_state,
@@ -191,12 +280,11 @@ std::optional<State> pick_successor(const State &curr_state, const SuccessorFunc
     const auto p_explore_successors = sort_explore_probabilities<State>(beacon_map, exploration_successors, goal_successors,favor_goal,beacon_potential);
     p_all_successors.insert(std::end(p_all_successors), std::begin(p_explore_successors), std::end(p_explore_successors));
 
-    //std::cout << "At State: "  << curr_state<< std::endl; // Move this somewhere else???
-    //std::cout << "[";
-    //for(auto &successor : p_all_successors){
-    //    std::cout << get<0>(successor) << ":" << std::setprecision(3) << 100*get<1>(successor) << "%,";
-    //}
-    //std::cout << "]" << std::endl;
+    std::cout << "[";
+    for(auto &successor : p_all_successors){
+        std::cout << get<0>(successor) << ":" << std::setprecision(5) << 100*get<1>(successor) << "%,";
+    }
+    std::cout << "]" << std::endl;
     // Picking a successor
     std::uniform_real_distribution<> dist;
     State picked_node;
@@ -218,6 +306,7 @@ std::optional<State> pick_successor(const State &curr_state, const SuccessorFunc
     for(int i=0;i<(int)keys_to_remove.size();i++){
         beacon_map->erase(keys_to_remove[i]);}
     states->at(out)+=1;
+    std::cout << "At State: "  << picked_node << std::endl;
     return out;
 }
 
@@ -258,7 +347,7 @@ std::optional<DavidPlannerResult<State>> david_planner(
     const experimental::beacon_sim::EkfSlam &ekf,const double &favor_goal) {
 
     const time::RobotTimestamp plan_start_time = time::current_robot_time();    
-    std::mt19937 gen(123242); //generate with respect to real time?
+    std::mt19937 gen(2); //generate with respect to real time?
     std::vector<std::vector<State>> world_samples;
     std::vector<double> log_probs;
     // Sampling worlds    

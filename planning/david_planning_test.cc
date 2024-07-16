@@ -143,10 +143,7 @@ TEST(DavidPlannerTest, david_planning_test) {
         const DavidPlannerConfig david_config{
             .max_visits = 2,
             .max_plans = 1,
-            .max_num_edge_transforms = std::numeric_limits<int>::max(), // am not using right now
-            .timeout = std::nullopt,
             .max_sensor_range_m = 4,
-            .uncertainty_tolerance = std::nullopt,
         };
 
         auto successor_func = [&road_map](const int &node_idx) -> std::vector<Successor<int>> {
@@ -168,7 +165,7 @@ TEST(DavidPlannerTest, david_planning_test) {
         auto termination_check = [](std::unordered_map<int, double>) { return false; };
 
         // ACTION
-        const double FAVOR_GOAL = 0.3;
+        const double FAVOR_GOAL = 0.7;
         const auto maybe_plan = david_planner<int>(successor_func,termination_check,road_map,david_config,est,beacon_potential,ekf,FAVOR_GOAL);
         //VERIFICATION
 

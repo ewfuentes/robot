@@ -37,8 +37,6 @@ message OptimisticBRMPlanner {
 
 message DavidPlanner {
   double favor_goal = 1;
-  int32 max_visits = 2;
-  int32 max_plans = 3;
 }
 // NEXT ID: 6
 message PlannerConfig {

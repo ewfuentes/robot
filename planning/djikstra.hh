@@ -18,7 +18,7 @@ struct Successor {
     S state; 
     double edge_cost;
     std::optional<int> nearest_beacon_id; //Added by David
-    std::optional<double> nearest_beacon_dist; //Added by David
+    double nearest_beacon_dist; //Added by David
 };
 
 template <State S>
