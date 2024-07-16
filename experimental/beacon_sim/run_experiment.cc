@@ -244,12 +244,10 @@ PlannerResult run_planner(const planning::RoadMap &road_map, const EkfSlam &ekf,
                           const std::optional<time::RobotTimestamp::duration> &timeout) {
     const planning::DavidPlannerConfig options = 
         {
-            .max_visits = config.max_visits(),
-            .max_plans = config.max_plans(),
-            .max_num_edge_transforms = std::numeric_limits<int>::max(),
+            .max_visits = 1,
+            .max_plans = 50,
             .timeout = timeout,
             .max_sensor_range_m = max_sensor_range_m,
-            .uncertainty_tolerance = std::nullopt,
         };
 
     const EkfSlamEstimate &est = ekf.estimate();
