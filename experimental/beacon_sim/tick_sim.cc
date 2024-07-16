@@ -125,9 +125,9 @@ std::optional<planning::BRMPlan<LandmarkRobotBelief>> run_landmark_brm_planner(
         state.road_map, state.ekf, state.map.beacon_potential(), options);
 
     const auto expected_det_metric =
-        make_uncertainty_size<LandmarkRobotBelief>(ExpectedDeterminant{.position_only = false});
+        make_uncertainty_size<LandmarkRobotBelief>(ExpectedDeterminant{.position_only=false});
     const auto expected_pos_det_metric =
-        make_uncertainty_size<LandmarkRobotBelief>(ExpectedDeterminant{.position_only = true});
+        make_uncertainty_size<LandmarkRobotBelief>(ExpectedDeterminant{.position_only=true});
     const auto prob_mass_in_region_metric =
         make_uncertainty_size<LandmarkRobotBelief>(ProbMassInRegion{
             .position_x_half_width_m = 0.5,
@@ -166,7 +166,7 @@ proto::BeaconSimDebug tick_sim(const SimConfig &config, const RobotCommand &comm
             state->road_map.add_start_goal(
                 {.start = state->ekf.estimate().local_from_robot().translation(),
                  .goal = state->goal->goal_position,
-                 .connection_radius_m = 10.0});
+                 .connection_radius_m = 20.0});
             std::visit(
                 overloaded{[](const NoPlannerConfig &) {},
                            [&state, OBS_CONFIG](const BeliefRoadMapPlannerConfig &config) {

@@ -327,14 +327,15 @@ std::function<double(const LandmarkRobotBelief &)> make_uncertainty_size(
             return expected_det;
         };
     } else if (std::holds_alternative<ExpectedTrace>(options)) {
-        return [opt =
-                    std::get<ExpectedTrace>(options)](const LandmarkRobotBelief &belief) -> double {
+        return [opt = std::get<ExpectedTrace>(options)](
+                   const LandmarkRobotBelief &belief) -> double {
             double expected_trace = 0.0;
             for (const auto &[key, component] : belief.belief_from_config) {
                 if (opt.position_only) {
                     const Eigen::Matrix2d &pos_covariance =
                         component.cov_in_robot.topLeftCorner<2, 2>();
-                    expected_trace += std::exp(component.log_config_prob) * pos_covariance.trace();
+                    expected_trace +=
+                        std::exp(component.log_config_prob) * pos_covariance.trace();
                 } else {
                     expected_trace +=
                         std::exp(component.log_config_prob) * component.cov_in_robot.trace();
@@ -342,7 +343,7 @@ std::function<double(const LandmarkRobotBelief &)> make_uncertainty_size(
             }
             return expected_trace;
         };
-    } else if (std::holds_alternative<ProbMassInRegion>(options)) {
+    }else if (std::holds_alternative<ProbMassInRegion>(options)) {
         return [opt = std::get<ProbMassInRegion>(options)](
                    const LandmarkRobotBelief &belief) -> double {
             const Eigen::Vector3d bounds =
