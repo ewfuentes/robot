@@ -22,7 +22,7 @@ std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_circle_environmen
     const EkfSlamConfig &ekf_config, const int num_landmarks, const double circle_radius_m);
 
 std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_david_grid_environment(
-    const EkfSlamConfig &ekf_config, const double p_first_beacon, const double p_second_beacon);
+    const EkfSlamConfig &ekf_config, const double p_first_beacon, const double p_second_beacon, const double p_third_beacon);
     
 }  // namespace robot::experimental::beacon_sim
 

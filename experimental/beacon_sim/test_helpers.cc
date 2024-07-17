@@ -20,7 +20,7 @@ MappedLandmarks create_grid_mapped_landmarks(const std::vector<Eigen::Vector2d> 
     };
 }
 planning::RoadMap create_grid_road_map(const Eigen::Vector2d start,const Eigen::Vector2d goal,const int NUM_ROWS,const int NUM_COLS) {
-    const double CONNECTION_RADIUS_M = 6.0;
+    const double CONNECTION_RADIUS_M = 7.4;
     constexpr double NODE_SPACING_M = 5.0;
     const int NUM_NODES = NUM_ROWS * NUM_COLS;
 
@@ -46,6 +46,18 @@ planning::RoadMap create_grid_road_map(const Eigen::Vector2d start,const Eigen::
             // Add edge up if it exists
             if (row < (NUM_ROWS - 1)) {
                 const int neighbor_idx = col + (row + 1) * NUM_COLS;
+                adj(node_idx, neighbor_idx) = 1.0;
+                adj(neighbor_idx, node_idx) = 1.0;
+            }
+            // Add edge 45 degrees if it exists
+            if(row < (NUM_ROWS -1) && col < (NUM_COLS - 1)) {
+                const int neighbor_idx = (col + 1) + (row + 1) * NUM_COLS;
+                adj(node_idx, neighbor_idx) = 1.0;
+                adj(neighbor_idx, node_idx) = 1.0;
+            }
+            // Add edge 135 degrees if it exists
+            if(col > 0 && row < (NUM_ROWS - 1)) {
+                const int neighbor_idx = (node_idx) + (NUM_COLS - 1);
                 adj(node_idx, neighbor_idx) = 1.0;
                 adj(neighbor_idx, node_idx) = 1.0;
             }
@@ -310,16 +322,16 @@ MappedLandmarks create_grid_mapped_landmarks_beacon_pot(const std::vector<Eigen:
     const int cove_size = beacon_locs.size()*2;
     const Eigen::MatrixXd cov_in_local = Eigen::MatrixXd::Identity(cove_size,cove_size)*POSITION_UNCERTAINTY_M*POSITION_UNCERTAINTY_M;
     return MappedLandmarks{
-        .beacon_ids = {123,456},
+        .beacon_ids = {123,456,789},
         .beacon_in_local = beacon_locs,
         .cov_in_local = cov_in_local,
     };
 }
 
 std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_david_grid_environment(
-    const EkfSlamConfig &ekf_config, const double p_first_beacon, const double p_second_beacon){
+    const EkfSlamConfig &ekf_config, const double p_first_beacon, const double p_second_beacon, const double p_third_beacon){
     
-    const auto mapped_landmarks = create_grid_mapped_landmarks_beacon_pot({{-12.5,12.5},{12.5,-12.5}});
+    const auto mapped_landmarks = create_grid_mapped_landmarks_beacon_pot({{-12.5,12.5},{12.5,-12.5},{2.5,2.5}});
     const auto road_map = create_grid_road_map({-15,-10},{15,10},5,5);
     auto ekf_slam = experimental::beacon_sim::EkfSlam(ekf_config, time::RobotTimestamp());
     constexpr bool LOAD_OFF_DIAGONALS = false;
@@ -339,8 +351,16 @@ std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_david_grid_enviro
         PrecisionMatrixPotential{.precision = Eigen::Matrix<double, 1, 1>{lone_param_two},
                                  .log_normalizer = lone_log_norm_two,
                                  .members = {456}};
-    const auto beacon_potential = first_lone_potential * second_lone_potential;
 
+    // Third lone beacon potential
+    const double lone_log_norm_three = -std::log(1 - p_third_beacon);
+    const double lone_param_three = std::log(p_third_beacon) + lone_log_norm_three;
+    const auto third_lone_potential =
+        PrecisionMatrixPotential{.precision = Eigen::Matrix<double, 1, 1>{lone_param_three},
+                                 .log_normalizer = lone_log_norm_three,
+                                 .members = {789}};
+    
+    const auto beacon_potential = first_lone_potential * second_lone_potential * third_lone_potential;
     // Move the robot to (0, 10) and have it face down
     const liegroups::SE2 old_robot_from_new_robot(0, {15, 10});
     ekf_slam.predict(time::RobotTimestamp(), old_robot_from_new_robot);
