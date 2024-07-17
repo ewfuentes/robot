@@ -118,7 +118,7 @@ TEST(DavidPlannerTest, david_planning_test) {
 
         // SETUP
         const experimental::beacon_sim::EkfSlamConfig ekf_config{
-        .max_num_beacons = 2,
+        .max_num_beacons = 3,
         .initial_beacon_uncertainty_m = 100.0,
         .along_track_process_noise_m_per_rt_meter = 0.05,
         .cross_track_process_noise_m_per_rt_meter = 0.05,
@@ -132,9 +132,10 @@ TEST(DavidPlannerTest, david_planning_test) {
         .on_map_load_heading_uncertainty_rad = 0.1,
         };
 
-        const double P_FIRST_BEACON = 0.9;
-        const double P_SECOND_BEACON = 0.01;
-        const auto &[grid, ekf_slam, potential] = create_david_grid_environment(ekf_config,P_FIRST_BEACON,P_SECOND_BEACON);
+        const double P_FIRST_BEACON = 0.4;
+        const double P_SECOND_BEACON = 0.4;
+        const double P_THIRD_BEACON = 0.9;
+        const auto &[grid, ekf_slam, potential] = create_david_grid_environment(ekf_config,P_FIRST_BEACON,P_SECOND_BEACON,P_THIRD_BEACON);
         const auto road_map = grid;
         const auto beacon_potential = potential;
         const auto ekf = ekf_slam;
@@ -142,7 +143,7 @@ TEST(DavidPlannerTest, david_planning_test) {
         const experimental::beacon_sim::EkfSlamEstimate &est = ekf_slam.estimate();
         const DavidPlannerConfig david_config{
             .max_visits = 2,
-            .max_plans = 1,
+            .max_plans = 25,
             .max_sensor_range_m = 4,
         };
 

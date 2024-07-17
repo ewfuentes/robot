@@ -116,6 +116,7 @@ std::vector<std::tuple<State, double>> sort_explore_probabilities(
         // Makes sure multiple successors aren't mapped to same beacon unless they are equidistant from the beacon and no other equidistance beacon is present
         
         bool successors_unique = false; //If still false by end of while loop, reloops
+        int i = 0;
         while(!successors_unique){
             successors_unique = true;
             for(auto &successor : exploration_successors){
@@ -124,31 +125,47 @@ std::vector<std::tuple<State, double>> sort_explore_probabilities(
                     }else if(successor.nearest_beacon_id.value() == successor_neighbor.nearest_beacon_id.value()){
                         if(successor.nearest_beacon_dist > successor_neighbor.nearest_beacon_dist){
                             if((int)beacon_map->size() == 1){
-                                successor.nearest_beacon_id = std::nullopt; //change to std::optional and pass nullopt if care, cant find log prob of made up id
-                                successor.nearest_beacon_dist = 1e10; //figure out how to assign probability to some aggregiously high number
+                                successor.nearest_beacon_id = std::nullopt; 
+                                successor.nearest_beacon_dist = 1e3; // Adjust depending on how much u want unmapped beacons to affect decisions
                                 break;
                             }else{
                                 double closest_beacon = 1e10;
                                 int curr_beacon_id = successor.nearest_beacon_id.value();
                                 for(const auto &[key,beacon] : *beacon_map){
                                     if(key == curr_beacon_id){continue;
-                                    }else if(beacon_map->size() == 1){
-                                        successor.nearest_beacon_dist = 1e3; 
-                                        break;
                                     }else if((beacon.djikstra.cost_to_go_from_state.at(successor.state)+beacon.dist_to_node) < closest_beacon){
                                         closest_beacon = beacon.djikstra.cost_to_go_from_state.at(successor.state)+beacon.dist_to_node;
-                                        successor.nearest_beacon_id = key;
+                                        bool check = false;
+                                        for(auto &successor_check : exploration_successors){
+                                            if(!successor_check.nearest_beacon_id.has_value()){continue;
+                                            }else if(successor_check.nearest_beacon_id.value() == key && successor_check.state != successor.state){
+                                                check = true;
+                                                if(successor_check.nearest_beacon_dist < closest_beacon){continue;
+                                                }else{successor.nearest_beacon_id = key;}
+                                            }
+                                        }
+                                        if(check == false){successor.nearest_beacon_id = key;}
                                     }
                                 }
-                                successor.nearest_beacon_dist = closest_beacon;
-                                std::cout << "ran " << std::endl;
+                                if(successor.nearest_beacon_id.value() == curr_beacon_id){successor.nearest_beacon_id = std::nullopt, successor.nearest_beacon_dist = 1e3; // doesnt keep track of key change
+                                }else{successor.nearest_beacon_dist = closest_beacon;}
                             }
                         }else if(successor.nearest_beacon_dist == successor_neighbor.nearest_beacon_dist){continue;
                         }else{successors_unique = false;}
                     }
                 }
+                i++;
+                if(i > 1000){std::cout << "Failure!" << std::endl, successors_unique = true;}
             }
         }
+        for(auto &successor : exploration_successors){
+            if(successor.nearest_beacon_id.has_value()){
+                std::cout << "Successor: " << successor.state << ", " << successor.nearest_beacon_id.value() << ", " << successor.nearest_beacon_dist << std::endl;
+            }else{
+                std::cout << "Successor: " << successor.state << ", no mapped beacon, " << successor.nearest_beacon_dist << std::endl;
+            }
+        }
+
         double total_cost = 0.0;
         std::unordered_map<State,bool> p_beacon_pass_in; // A necessary condition for beacon_potential.log_prob(...)
         for(auto &successor : exploration_successors){
@@ -164,8 +181,11 @@ std::vector<std::tuple<State, double>> sort_explore_probabilities(
             p_beacon_pass_in.clear();
             get<0>(p_successor) = successor.state;
             if((int)goal_successors.size()==0){
-                p_beacon_pass_in[successor.nearest_beacon_id.value()] = true;
-                get<1>(p_successor) = 1/((successor.nearest_beacon_dist+1e-2)*(1-exp(beacon_potential.log_prob(p_beacon_pass_in,true)))*total_cost);
+                if(successor.nearest_beacon_id.has_value()){
+                    p_beacon_pass_in[successor.nearest_beacon_id.value()] = true;
+                    get<1>(p_successor) = 1/((successor.nearest_beacon_dist+1e-2)*(1-exp(beacon_potential.log_prob(p_beacon_pass_in,true)))*total_cost);
+                }else{get<1>(p_successor) = (1-favor_goal)/((successor.nearest_beacon_dist+1e-2)*total_cost);}
+                p_explore_successors.push_back(p_successor);
             }else{
                 if(successor.nearest_beacon_id.has_value()){
                     p_beacon_pass_in[successor.nearest_beacon_id.value()] = true; 
@@ -176,61 +196,6 @@ std::vector<std::tuple<State, double>> sort_explore_probabilities(
         }
     }
     return p_explore_successors;
-   /*
-    std::vector<std::tuple<State, double>> p_explore_successors;
-    // Keep this
-    auto local_beacon_map = beacon_map;
-    std::tuple<State, double> p_successor;
-
-    double total_cost = 0.0;
-    if(local_beacon_map->empty()){
-        for(const auto &successor : exploration_successors){
-            get<0>(p_successor) = successor.state;
-            get<1>(p_successor) = (1.00/(double)exploration_successors.size())*(1-favor_goal);
-            p_explore_successors.push_back(p_successor);
-        }
-    }else{ // this is where add beacon mapping to successors
-        std::unordered_map<State,bool> p_beacon_pass_in;
-        for(const auto &successor : exploration_successors){
-            double closest_beacon = 1e4;
-            State closest_beacon_id;
-            for(const auto &[key,beacon] : *local_beacon_map){
-                if((beacon.djikstra.cost_to_go_from_state.at(successor.state)+beacon.dist_to_node) < closest_beacon){
-                    closest_beacon = beacon.djikstra.cost_to_go_from_state.at(successor.state)+beacon.dist_to_node;
-                    closest_beacon_id = key;
-                }
-            }
-            //Keep for now
-            // have to clear and redeclare everytime so it doesnt pass in the combined probabilities
-            p_beacon_pass_in.clear();
-            p_beacon_pass_in[closest_beacon_id] = true;
-            //Adding 1e-2 to closest_beacon because value could be zero which would make total cost infinite
-            total_cost += 1/((closest_beacon+1e-2)*(1-exp(beacon_potential.log_prob(p_beacon_pass_in,true))));
-        }
-        // Keep for now
-        // Assigning probabilities to each exploratory successor
-        double closest_beacon;
-        State closest_beacon_id;
-        for(const auto &successor : exploration_successors){
-            closest_beacon = 1e15;
-            for(const auto &[key,beacon] : *local_beacon_map){
-                if((beacon.djikstra.cost_to_go_from_state.at(successor.state)+beacon.dist_to_node) < closest_beacon){
-                    closest_beacon = (beacon.djikstra.cost_to_go_from_state.at(successor.state)+beacon.dist_to_node);
-                    closest_beacon_id = key;
-                }
-            }
-            p_beacon_pass_in.clear();
-            p_beacon_pass_in[closest_beacon_id] = true; 
-            get<0>(p_successor) = successor.state;
-
-            ((int)goal_successors.size()==0) ? 
-            get<1>(p_successor) = 1/((closest_beacon+1e-2)*(1-exp(beacon_potential.log_prob(p_beacon_pass_in,true)))*total_cost) :
-            get<1>(p_successor) = (1-favor_goal)/((closest_beacon+1e-2)*(1-exp(beacon_potential.log_prob(p_beacon_pass_in,true)))*total_cost);
-            p_explore_successors.push_back(p_successor);
-        }
-    }
-    return p_explore_successors;
-    */
 }
 
 
@@ -347,7 +312,7 @@ std::optional<DavidPlannerResult<State>> david_planner(
     const experimental::beacon_sim::EkfSlam &ekf,const double &favor_goal) {
 
     const time::RobotTimestamp plan_start_time = time::current_robot_time();    
-    std::mt19937 gen(2); //generate with respect to real time?
+    std::mt19937 gen(484); //generate with respect to real time?
     std::vector<std::vector<State>> world_samples;
     std::vector<double> log_probs;
     // Sampling worlds    

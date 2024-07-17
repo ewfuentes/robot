@@ -229,7 +229,7 @@ PlannerResult run_planner(const planning::RoadMap &road_map, const EkfSlam &ekf,
     const planning::DavidPlannerConfig options = 
         {
             .max_visits = 1,
-            .max_plans = 50,
+            .max_plans = 70,
             .timeout = timeout,
             .max_sensor_range_m = max_sensor_range_m,
         };
