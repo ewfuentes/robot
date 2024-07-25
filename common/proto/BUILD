@@ -9,6 +9,7 @@ cc_library(
   name = "load_from_file",
   hdrs = ["load_from_file.hh"],
   visibility = ["//visibility:public"],
+  deps = ["@com_google_protobuf//:protobuf_headers"],
 )
 
 cc_test(
