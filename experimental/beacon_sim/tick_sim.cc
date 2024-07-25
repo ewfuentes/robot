@@ -166,7 +166,7 @@ proto::BeaconSimDebug tick_sim(const SimConfig &config, const RobotCommand &comm
             state->road_map.add_start_goal(
                 {.start = state->ekf.estimate().local_from_robot().translation(),
                  .goal = state->goal->goal_position,
-                 .connection_radius_m = 20.0});
+                 .connection_radius_m = 10.0});
             std::visit(
                 overloaded{[](const NoPlannerConfig &) {},
                            [&state, OBS_CONFIG](const BeliefRoadMapPlannerConfig &config) {
