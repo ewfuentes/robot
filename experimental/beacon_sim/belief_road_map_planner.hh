@@ -12,6 +12,31 @@
 #include "planning/probabilistic_road_map.hh"
 
 namespace robot::experimental::beacon_sim {
+
+// Evaluate using expected determinant
+struct ExpectedDeterminant {
+    bool position_only;
+};
+
+struct ExpectedTrace {
+    bool position_only;
+};
+
+// Use the determinant at the given percentile to evaluate uncertainty
+struct ValueAtRiskDeterminant {
+    double percentile;
+};
+
+// Compute the probability mass inside of the region as a measure of uncertainty
+struct ProbMassInRegion {
+    double position_x_half_width_m;
+    double position_y_half_width_m;
+    double heading_half_width_rad;
+};
+
+using UncertaintySizeOptions =
+    std::variant<ExpectedDeterminant, ExpectedTrace, ValueAtRiskDeterminant, ProbMassInRegion>;
+
 struct BeliefRoadMapOptions {
     double max_sensor_range_m;
     std::optional<double> uncertainty_tolerance;
@@ -22,6 +47,7 @@ struct BeliefRoadMapOptions {
     // we sample the configurations for an edge, they are reused for all future edge traversals.
     int max_num_edge_transforms;
     std::optional<time::RobotTimestamp::duration> timeout;
+    UncertaintySizeOptions uncertainty_size_options;
 };
 
 struct PathConstrainedBeliefRoadMapOptions {
@@ -38,21 +64,6 @@ struct LandmarkBeliefRoadMapOptions {
         int max_num_components;
         int seed;
     };
-
-    // Evaluate using expected determinant
-    struct ExpectedDeterminant {};
-    // Use the determinant at the given percentile to evaluate uncertainty
-    struct ValueAtRiskDeterminant {
-        double percentile;
-    };
-    // Compute the probability mass inside of the region as a measure of uncertainty
-    struct ProbMassInRegion {
-        double position_x_half_width_m;
-        double position_y_half_width_m;
-        double heading_half_width_rad;
-    };
-    using UncertaintySizeOptions =
-        std::variant<ExpectedDeterminant, ValueAtRiskDeterminant, ProbMassInRegion>;
 
     double max_sensor_range_m;
 
@@ -93,5 +104,19 @@ PathConstrainedBeliefPlanResult compute_path_constrained_belief_road_map_plan(
 std::optional<ExpectedBeliefPlanResult> compute_expected_belief_road_map_plan(
     const planning::RoadMap &road_map, const EkfSlam &ekf, const BeaconPotential &beacon_potential,
     const ExpectedBeliefRoadMapOptions &options);
+
+template <typename T>
+std::function<double(const T &)> make_uncertainty_size(const UncertaintySizeOptions &);
+
+template <>
+std::function<double(const RobotBelief &)> make_uncertainty_size(const UncertaintySizeOptions &);
+template <>
+std::function<double(const LandmarkRobotBelief &)> make_uncertainty_size(
+    const UncertaintySizeOptions &);
+
+std::vector<RobotBelief> evaluate_paths_with_configuration(
+    const std::vector<std::vector<int>> &paths, const EkfSlam &ekf,
+    const planning::RoadMap &road_map, const double max_sensor_range_m,
+    const std::vector<int> &present_beacons);
 
 }  // namespace robot::experimental::beacon_sim

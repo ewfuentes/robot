@@ -7,10 +7,22 @@ import "common/math/matrix.proto";
 
 package robot.experimental.beacon_sim.proto;
 
+message PlanMetrics {
+  double expected_determinant = 1;
+  double expected_position_determinant = 2;
+  double value_at_risk_determinant = 3;
+  double prob_mass_in_region = 4;
+  double expected_trace = 5;
+  double expected_position_trace = 6;
+}
+
+// NEXTID: 8
 message Plan {
   repeated int32 nodes = 1;
   double log_prob_mass = 2;
-  double expected_det = 3;
+  double expected_size = 3;
+  PlanMetrics average_plan_metrics = 4;
+  repeated PlanMetrics sampled_plan_metrics = 5;
 }
 
 message PlannerResult {
@@ -30,5 +42,6 @@ message ExperimentResult {
   repeated StartGoal start_goal = 2;
   repeated string planner_names = 3;
   repeated PlannerResult results = 4;
+  repeated string landmark_eval_samples = 5;
 }
 
