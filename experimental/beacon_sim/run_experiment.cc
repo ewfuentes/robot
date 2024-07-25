@@ -139,7 +139,7 @@ UncertaintySizeOptions from_proto(const proto::UncertaintySize &config) {
         }
     }
     CHECK(false, "uncertainty size not set");
-    return ExpectedDeterminant{.position_only=false};
+    return ExpectedDeterminant{.position_only = false};
 }
 
 PlannerResult run_planner(const planning::RoadMap &road_map, const EkfSlam &ekf,

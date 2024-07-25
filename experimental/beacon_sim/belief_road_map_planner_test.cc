@@ -38,7 +38,7 @@ TEST(BeliefRoadMapPlannerTest, grid_road_map_no_backtrack) {
         .uncertainty_tolerance = std::nullopt,
         .max_num_edge_transforms = 1,
         .timeout = std::nullopt,
-        .uncertainty_size_options = ExpectedDeterminant{.position_only=false},
+        .uncertainty_size_options = ExpectedDeterminant{.position_only = false},
     };
 
     // Action
@@ -75,7 +75,7 @@ TEST(BeliefRoadMapPlannerTest, grid_road_map) {
         .uncertainty_tolerance = 1e-2,
         .max_num_edge_transforms = 1,
         .timeout = std::nullopt,
-        .uncertainty_size_options = ExpectedDeterminant{.position_only=false},
+        .uncertainty_size_options = ExpectedDeterminant{.position_only = false},
     };
 
     // Action
@@ -113,7 +113,7 @@ TEST(BeliefRoadMapPlannerTest, grid_road_map_with_unlikely_beacon) {
         .uncertainty_tolerance = 1e-2,
         .max_num_edge_transforms = 1,
         .timeout = std::nullopt,
-        .uncertainty_size_options = ExpectedDeterminant{.position_only=false},
+        .uncertainty_size_options = ExpectedDeterminant{.position_only = false},
     };
 
     // Action
@@ -150,7 +150,7 @@ TEST(BeliefRoadMapPlannerTest, diamond_road_map_with_uncorrelated_beacons) {
         .uncertainty_tolerance = std::nullopt,
         .max_num_edge_transforms = 10000,
         .timeout = std::nullopt,
-        .uncertainty_size_options = ExpectedDeterminant{.position_only=false},
+        .uncertainty_size_options = ExpectedDeterminant{.position_only = false},
     };
 
     // Action
@@ -191,7 +191,7 @@ TEST(BeliefRoadMapPlannerTest, diamond_road_map_with_correlated_beacons) {
         .uncertainty_tolerance = std::nullopt,
         .max_num_edge_transforms = 1000,
         .timeout = std::nullopt,
-        .uncertainty_size_options = ExpectedDeterminant{.position_only=false},
+        .uncertainty_size_options = ExpectedDeterminant{.position_only = false},
     };
 
     // Action
@@ -449,7 +449,7 @@ TEST(ExpectedBeliefRoadMapPlannerTest, diamond_road_map_correlated_beacons) {
             .uncertainty_tolerance = std::nullopt,
             .max_num_edge_transforms = std::numeric_limits<int>::max(),
             .timeout = std::nullopt,
-            .uncertainty_size_options = ExpectedDeterminant{.position_only=false},
+            .uncertainty_size_options = ExpectedDeterminant{.position_only = false},
         }};
     const std::vector<std::optional<int>> expected_path = {planning::RoadMap::START_IDX, 0, 1, 3,
                                                            planning::RoadMap::GOAL_IDX};
@@ -500,7 +500,7 @@ TEST(BeliefRoadmapPlannerStressTest, expected_brm_test) {
                 .uncertainty_tolerance = std::nullopt,
                 .max_num_edge_transforms = std::numeric_limits<int>::max(),
                 .timeout = std::nullopt,
-                .uncertainty_size_options = ExpectedDeterminant{.position_only=false},
+                .uncertainty_size_options = ExpectedDeterminant{.position_only = false},
             },
     };
 
@@ -540,7 +540,7 @@ TEST(BeliefRoadmapPlannerStressTest, landmark_brm_test) {
 
     const LandmarkBeliefRoadMapOptions options = {
         .max_sensor_range_m = 3.0,
-        .uncertainty_size_options = ExpectedDeterminant{.position_only=false},
+        .uncertainty_size_options = ExpectedDeterminant{.position_only = false},
         .sampled_belief_options = std::nullopt,
         .timeout = std::nullopt,
     };
@@ -594,7 +594,7 @@ TEST(BeliefRoadmapPlannerCircleTest, expected_brm_test) {
                 .uncertainty_tolerance = std::nullopt,
                 .max_num_edge_transforms = std::numeric_limits<int>::max(),
                 .timeout = std::nullopt,
-                .uncertainty_size_options = ExpectedDeterminant{.position_only=false},
+                .uncertainty_size_options = ExpectedDeterminant{.position_only = false},
             },
     };
 
@@ -638,7 +638,7 @@ TEST(BeliefRoadmapPlannerCircleTest, landmark_brm_test) {
 
     const LandmarkBeliefRoadMapOptions options = {
         .max_sensor_range_m = 3.0,
-        .uncertainty_size_options = ExpectedDeterminant{.position_only=false},
+        .uncertainty_size_options = ExpectedDeterminant{.position_only = false},
         .sampled_belief_options = {{
             .max_num_components = 128,
             .seed = 0,
