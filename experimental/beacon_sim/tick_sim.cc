@@ -125,9 +125,9 @@ std::optional<planning::BRMPlan<LandmarkRobotBelief>> run_landmark_brm_planner(
         state.road_map, state.ekf, state.map.beacon_potential(), options);
 
     const auto expected_det_metric =
-        make_uncertainty_size<LandmarkRobotBelief>(ExpectedDeterminant{.position_only=false});
+        make_uncertainty_size<LandmarkRobotBelief>(ExpectedDeterminant{.position_only = false});
     const auto expected_pos_det_metric =
-        make_uncertainty_size<LandmarkRobotBelief>(ExpectedDeterminant{.position_only=true});
+        make_uncertainty_size<LandmarkRobotBelief>(ExpectedDeterminant{.position_only = true});
     const auto prob_mass_in_region_metric =
         make_uncertainty_size<LandmarkRobotBelief>(ProbMassInRegion{
             .position_x_half_width_m = 0.5,
