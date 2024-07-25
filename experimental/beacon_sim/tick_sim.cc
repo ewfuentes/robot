@@ -92,7 +92,7 @@ std::optional<planning::BRMPlan<RobotBelief>> run_brm_planner(const BeaconSimSta
             allow_brm_backtracking ? std::make_optional(UNCERTAINTY_TOLERANCE) : std::nullopt,
         .max_num_edge_transforms = 1000,
         .timeout = std::nullopt,
-        .uncertainty_size_options = ExpectedDeterminant{position_only = false},
+        .uncertainty_size_options = ExpectedDeterminant{.position_only = false},
     };
     const auto brm_plan = compute_belief_road_map_plan(state.road_map, state.ekf, {}, options);
     std::cout << "plan complete" << std::endl;
@@ -110,7 +110,7 @@ std::optional<planning::BRMPlan<LandmarkRobotBelief>> run_landmark_brm_planner(
     const ObservationConfig &obs_config) {
     const LandmarkBeliefRoadMapOptions options = {
         .max_sensor_range_m = obs_config.max_sensor_range_m.value(),
-        .uncertainty_size_options = LandmarkBeliefRoadMapOptions::ExpectedDeterminant{},
+        .uncertainty_size_options = ExpectedDeterminant{.position_only = false},
         .sampled_belief_options =
             max_num_components.has_value()
                 ? std::optional<LandmarkBeliefRoadMapOptions::SampledBeliefOptions>{{
