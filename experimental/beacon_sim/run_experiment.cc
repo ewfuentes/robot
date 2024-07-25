@@ -103,39 +103,52 @@ EkfSlam load_ekf_slam(const MappedLandmarks &mapped_landmarks) {
     return ekf;
 }
 
+UncertaintySizeOptions from_proto(const proto::UncertaintySize &config) {
+    switch (config.uncertainty_size_oneof_case()) {
+        case proto::UncertaintySize::kExpectedDeterminant: {
+            const auto &us_config = config.expected_determinant();
+            return ExpectedDeterminant{
+                .position_only = us_config.position_only(),
+            };
+        }
+        case proto::UncertaintySize::kExpectedTrace: {
+            const auto &us_config = config.expected_trace();
+            return ExpectedTrace{
+                .position_only = us_config.position_only(),
+            };
+        }
+        case proto::UncertaintySize::kValueAtRiskDeterminant: {
+            const auto &us_config = config.value_at_risk_determinant();
+            return ValueAtRiskDeterminant{
+                .percentile = us_config.percentile(),
+            };
+        }
+        case proto::UncertaintySize::kProbMassInRegion: {
+            const auto &us_config = config.prob_mass_in_region();
+            return ProbMassInRegion{
+                .position_x_half_width_m = us_config.position_x_half_width_m(),
+                .position_y_half_width_m = us_config.position_y_half_width_m(),
+                .heading_half_width_rad = us_config.heading_half_width_rad(),
+            };
+        }
+        case proto::UncertaintySize::UNCERTAINTY_SIZE_ONEOF_NOT_SET: {
+            CHECK(false, "uncertainty size not set");
+            return ExpectedDeterminant{
+                .position_only = false,
+            };
+        }
+    }
+    CHECK(false, "uncertainty size not set");
+    return ExpectedDeterminant{.position_only = false};
+}
+
 PlannerResult run_planner(const planning::RoadMap &road_map, const EkfSlam &ekf,
                           const BeaconPotential &beacon_potential,
                           const proto::LandmarkBRMPlanner &config, const double max_sensor_range_m,
                           const std::optional<time::RobotTimestamp::duration> &timeout) {
     const time::RobotTimestamp start_time = time::current_robot_time();
 
-    const auto uncertainty_options = [&]() -> LandmarkBeliefRoadMapOptions::UncertaintySizeOptions {
-        switch (config.uncertainty_size().uncertainty_size_oneof_case()) {
-            case proto::UncertaintySize::kExpectedDeterminant: {
-                return LandmarkBeliefRoadMapOptions::ExpectedDeterminant{};
-            }
-            case proto::UncertaintySize::kValueAtRiskDeterminant: {
-                const auto &us_config = config.uncertainty_size().value_at_risk_determinant();
-                return LandmarkBeliefRoadMapOptions::ValueAtRiskDeterminant{
-                    .percentile = us_config.percentile(),
-                };
-            }
-            case proto::UncertaintySize::kProbMassInRegion: {
-                const auto &us_config = config.uncertainty_size().prob_mass_in_region();
-                return LandmarkBeliefRoadMapOptions::ProbMassInRegion{
-                    .position_x_half_width_m = us_config.position_x_half_width_m(),
-                    .position_y_half_width_m = us_config.position_y_half_width_m(),
-                    .heading_half_width_rad = us_config.heading_half_width_rad(),
-                };
-            }
-            case proto::UncertaintySize::UNCERTAINTY_SIZE_ONEOF_NOT_SET: {
-                CHECK(false, "uncertainty size not set");
-                return LandmarkBeliefRoadMapOptions::ExpectedDeterminant{};
-            }
-        }
-        CHECK(false, "uncertainty size not set");
-        return LandmarkBeliefRoadMapOptions::ExpectedDeterminant{};
-    }();
+    const auto uncertainty_options = from_proto(config.uncertainty_size());
 
     const auto plan = compute_landmark_belief_road_map_plan(
         road_map, ekf, beacon_potential,
@@ -161,7 +174,7 @@ PlannerResult run_planner(const planning::RoadMap &road_map, const EkfSlam &ekf,
                                      : std::nullopt};
 }
 
-PlannerResult run_planner(const planning::RoadMap &road_map, [[maybe_unused]] const EkfSlam &ekf,
+PlannerResult run_planner(const planning::RoadMap &road_map, const EkfSlam &ekf,
                           const BeaconPotential &beacon_potential,
                           const proto::ExpectedBRMPlanner &config, const double max_sensor_range_m,
                           const std::optional<time::RobotTimestamp::duration> &timeout) {
@@ -175,6 +188,7 @@ PlannerResult run_planner(const planning::RoadMap &road_map, [[maybe_unused]] co
                 .uncertainty_tolerance = std::nullopt,
                 .max_num_edge_transforms = std::numeric_limits<int>::max(),
                 .timeout = timeout,
+                .uncertainty_size_options = from_proto(config.uncertainty_size()),
             },
     };
 
@@ -195,15 +209,17 @@ PlannerResult run_planner(const planning::RoadMap &road_map, [[maybe_unused]] co
 }
 
 PlannerResult run_planner(const planning::RoadMap &road_map, const EkfSlam &ekf,
-                          [[maybe_unused]] const BeaconPotential &beacon_potential,
-                          [[maybe_unused]] const proto::OptimisticBRMPlanner &config,
+                          const BeaconPotential &beacon_potential,
+                          const proto::OptimisticBRMPlanner &config,
                           const double max_sensor_range_m,
                           const std::optional<time::RobotTimestamp::duration> &timeout) {
-    const BeliefRoadMapOptions options =
-        BeliefRoadMapOptions{.max_sensor_range_m = max_sensor_range_m,
-                             .uncertainty_tolerance = std::nullopt,
-                             .max_num_edge_transforms = std::numeric_limits<int>::max(),
-                             .timeout = timeout};
+    const BeliefRoadMapOptions options = BeliefRoadMapOptions{
+        .max_sensor_range_m = max_sensor_range_m,
+        .uncertainty_tolerance = std::nullopt,
+        .max_num_edge_transforms = std::numeric_limits<int>::max(),
+        .timeout = timeout,
+        .uncertainty_size_options = from_proto(config.uncertainty_size()),
+    };
     const time::RobotTimestamp start_time = time::current_robot_time();
     const auto maybe_plan = compute_belief_road_map_plan(road_map, ekf, {}, options);
     const time::RobotTimestamp::duration elapsed_time = time::current_robot_time() - start_time;
@@ -223,7 +239,7 @@ struct EvaluationResult {
         struct Plan {
             std::vector<int> nodes;
             double log_prob_mass_tracked;
-            double expected_covariance_determinant;
+            double expected_size;
         };
         time::RobotTimestamp::duration elapsed_time;
         std::optional<Plan> plan;
@@ -232,11 +248,13 @@ struct EvaluationResult {
     StartGoal start_goal;
 };
 
+template <typename UncertaintySize>
 EvaluationResult evaluate_results(const StartGoal &start_goal, const WorldMap &world_map,
                                   const planning::RoadMap &road_map, const EkfSlam &ekf,
                                   const std::unordered_map<std::string, PlannerResult> &results,
                                   const int evaluation_seed, const int num_eval_trials,
-                                  const double max_sensor_range_m) {
+                                  const double max_sensor_range_m,
+                                  const UncertaintySize &uncertainty_size) {
     using Plan = EvaluationResult::PlanStatistics::Plan;
     std::mt19937 gen(evaluation_seed);
 
@@ -249,6 +267,7 @@ EvaluationResult evaluate_results(const StartGoal &start_goal, const WorldMap &w
             .local_from_robot = ekf.estimate().local_from_robot(),
             .cov_in_robot = ekf.estimate().robot_cov(),
         };
+
         for (const auto &[name, result] : results) {
             if (results_map.find(name) == results_map.end()) {
                 results_map[name] = {
@@ -257,7 +276,7 @@ EvaluationResult evaluate_results(const StartGoal &start_goal, const WorldMap &w
                                 ? std::make_optional(Plan{
                                       .nodes = result.plan->nodes,
                                       .log_prob_mass_tracked = result.plan->log_prob_mass_tracked,
-                                      .expected_covariance_determinant = 0})
+                                      .expected_size = 0})
                                 : std::nullopt};
             }
 
@@ -268,8 +287,7 @@ EvaluationResult evaluate_results(const StartGoal &start_goal, const WorldMap &w
                     belief = belief_updater(belief, plan.at(i - 1), plan.at(i));
                 }
 
-                results_map[name].plan->expected_covariance_determinant +=
-                    (belief.cov_in_robot.determinant() / num_eval_trials);
+                results_map[name].plan->expected_size += uncertainty_size(belief) / num_eval_trials;
             }
         }
     }
@@ -313,7 +331,7 @@ proto::ExperimentResult to_proto(const ExperimentConfig &config,
                 plan.mutable_nodes()->Add(trial_result.plan->nodes.begin(),
                                           trial_result.plan->nodes.end());
                 plan.set_log_prob_mass(trial_result.plan->log_prob_mass_tracked);
-                plan.set_expected_det(trial_result.plan->expected_covariance_determinant);
+                plan.set_expected_size(trial_result.plan->expected_size);
             }
         }
     }
@@ -362,6 +380,9 @@ void run_experiment(const proto::ExperimentConfig &config, const std::filesystem
     std::vector<EvaluationResult> all_statistics(start_goals.size());
     BS::thread_pool pool(num_threads);
 
+    const auto uncertainty_size =
+        make_uncertainty_size<RobotBelief>(from_proto(config.uncertainty_metric()));
+
     for (const auto &start_goal : start_goals) {
         pool.detach_task([=, &remaining, eval_base_seed = config.evaluation_base_seed(),
                           num_eval_trials = config.num_eval_trials(),
@@ -409,9 +430,9 @@ void run_experiment(const proto::ExperimentConfig &config, const std::filesystem
                 }
             }
 
-            all_statistics.at(idx) =
-                evaluate_results(start_goal, world_map, road_map, ekf, results,
-                                 eval_base_seed + idx, num_eval_trials, max_sensor_range_m);
+            all_statistics.at(idx) = evaluate_results(start_goal, world_map, road_map, ekf, results,
+                                                      eval_base_seed + idx, num_eval_trials,
+                                                      max_sensor_range_m, uncertainty_size);
             std::cout << "remaining: " << --remaining << std::endl;
         });
     }

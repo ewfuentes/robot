@@ -92,9 +92,9 @@ std::optional<planning::BRMPlan<RobotBelief>> run_brm_planner(const BeaconSimSta
             allow_brm_backtracking ? std::make_optional(UNCERTAINTY_TOLERANCE) : std::nullopt,
         .max_num_edge_transforms = 1000,
         .timeout = std::nullopt,
+        .uncertainty_size_options = ExpectedDeterminant{.position_only = false},
     };
-    const auto brm_plan = compute_belief_road_map_plan(state.road_map, state.ekf,
-                                                       state.map.beacon_potential(), options);
+    const auto brm_plan = compute_belief_road_map_plan(state.road_map, state.ekf, {}, options);
     std::cout << "plan complete" << std::endl;
     for (int idx = 0; idx < static_cast<int>(brm_plan->nodes.size()); idx++) {
         std::cout << idx << " " << brm_plan->nodes.at(idx) << " "
@@ -110,7 +110,7 @@ std::optional<planning::BRMPlan<LandmarkRobotBelief>> run_landmark_brm_planner(
     const ObservationConfig &obs_config) {
     const LandmarkBeliefRoadMapOptions options = {
         .max_sensor_range_m = obs_config.max_sensor_range_m.value(),
-        .uncertainty_size_options = LandmarkBeliefRoadMapOptions::ExpectedDeterminant{},
+        .uncertainty_size_options = ExpectedDeterminant{.position_only = false},
         .sampled_belief_options =
             max_num_components.has_value()
                 ? std::optional<LandmarkBeliefRoadMapOptions::SampledBeliefOptions>{{
@@ -121,8 +121,21 @@ std::optional<planning::BRMPlan<LandmarkRobotBelief>> run_landmark_brm_planner(
         .timeout = std::nullopt,
     };
 
-    return compute_landmark_belief_road_map_plan(state.road_map, state.ekf,
-                                                 state.map.beacon_potential(), options);
+    const auto maybe_plan = compute_landmark_belief_road_map_plan(
+        state.road_map, state.ekf, state.map.beacon_potential(), options);
+
+    const auto expected_det_metric =
+        make_uncertainty_size<LandmarkRobotBelief>(ExpectedDeterminant{.position_only = false});
+    const auto expected_pos_det_metric =
+        make_uncertainty_size<LandmarkRobotBelief>(ExpectedDeterminant{.position_only = true});
+    const auto prob_mass_in_region_metric =
+        make_uncertainty_size<LandmarkRobotBelief>(ProbMassInRegion{
+            .position_x_half_width_m = 0.5,
+            .position_y_half_width_m = 0.5,
+            .heading_half_width_rad = 6.0,
+        });
+
+    return maybe_plan;
 }
 
 std::optional<planning::BRMPlan<RobotBelief>> run_info_lower_bound_planner(

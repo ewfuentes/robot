@@ -220,6 +220,7 @@ void run_trials(const TrialsConfig &config) {
         .uncertainty_tolerance = UNCERTAINTY_TOLERANCE,
         .max_num_edge_transforms = 1000,
         .timeout = std::nullopt,
+        .uncertainty_size_options = ExpectedDeterminant{.position_only = false},
     };
     const auto plan = compute_belief_road_map_plan(
         road_map, ekf, WorldMap(base_map_config).beacon_potential(), options);

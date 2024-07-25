@@ -33,18 +33,19 @@ PYBIND11_MODULE(belief_road_map_planner_python, m) {
     py::class_<BeliefRoadMapOptions>(m, "BeliefRoadMapOptions")
         .def(py::init<>())
         .def(py::init<double, std::optional<double>, int,
-                      std::optional<time::RobotTimestamp::duration>>(),
+                      std::optional<time::RobotTimestamp::duration>, UncertaintySizeOptions>(),
              "max_sensor_range_m"_a, "uncertainty_tolerance"_a, "max_num_edge_transforms"_a,
-             "timeout"_a)
+             "timeout"_a, "uncertainty_size_options"_a)
         .def_readwrite("max_sensor_range_m", &BeliefRoadMapOptions::max_sensor_range_m)
         .def_readwrite("uncertainty_tolerance", &BeliefRoadMapOptions::uncertainty_tolerance)
         .def_readwrite("max_num_edge_transforms", &BeliefRoadMapOptions::max_num_edge_transforms)
-        .def_readwrite("timeout", &BeliefRoadMapOptions::timeout);
+        .def_readwrite("timeout", &BeliefRoadMapOptions::timeout)
+        .def_readwrite("uncertainty_size_options", &BeliefRoadMapOptions::uncertainty_size_options);
 
     auto landmark_brm_options =
         py::class_<LandmarkBeliefRoadMapOptions>(m, "LandmarkBeliefRoadMapOptions")
             .def(py::init<>())
-            .def(py::init<double, LandmarkBeliefRoadMapOptions::UncertaintySizeOptions,
+            .def(py::init<double, UncertaintySizeOptions,
                           std::optional<LandmarkBeliefRoadMapOptions::SampledBeliefOptions>,
                           std::optional<time::RobotTimestamp::duration>>(),
                  "max_sensor_range_m"_a, "uncertainty_size_options"_a, "sampled_belief_options"_a,
@@ -64,28 +65,22 @@ PYBIND11_MODULE(belief_road_map_planner_python, m) {
                        &LandmarkBeliefRoadMapOptions::SampledBeliefOptions::max_num_components)
         .def_readwrite("seed", &LandmarkBeliefRoadMapOptions::SampledBeliefOptions::seed);
 
-    py::class_<LandmarkBeliefRoadMapOptions::ExpectedDeterminant>(landmark_brm_options,
-                                                                  "ExpectedDeterminant")
-        .def(py::init<>());
+    py::class_<ExpectedDeterminant>(m, "ExpectedDeterminant")
+        .def(py::init<bool>(), "position_only"_a)
+        .def_readwrite("position_only", &ExpectedDeterminant::position_only);
 
-    py::class_<LandmarkBeliefRoadMapOptions::ValueAtRiskDeterminant>(landmark_brm_options,
-                                                                     "ValueAtRiskDeterminant")
+    py::class_<ValueAtRiskDeterminant>(m, "ValueAtRiskDeterminant")
         .def(py::init<>())
         .def(py::init<double>(), "percentile"_a)
-        .def_readwrite("percentile",
-                       &LandmarkBeliefRoadMapOptions::ValueAtRiskDeterminant::percentile);
+        .def_readwrite("percentile", &ValueAtRiskDeterminant::percentile);
 
-    py::class_<LandmarkBeliefRoadMapOptions::ProbMassInRegion>(landmark_brm_options,
-                                                               "ProbMassInRegion")
+    py::class_<ProbMassInRegion>(m, "ProbMassInRegion")
         .def(py::init<>())
         .def(py::init<double, double, double>(), "position_x_half_width_m"_a,
              "position_y_half_width_m"_a, "heading_half_width_rad"_a)
-        .def_readwrite("position_x_half_width_m",
-                       &LandmarkBeliefRoadMapOptions::ProbMassInRegion::position_x_half_width_m)
-        .def_readwrite("position_y_half_width_m",
-                       &LandmarkBeliefRoadMapOptions::ProbMassInRegion::position_y_half_width_m)
-        .def_readwrite("heading_half_width_rad",
-                       &LandmarkBeliefRoadMapOptions::ProbMassInRegion::heading_half_width_rad);
+        .def_readwrite("position_x_half_width_m", &ProbMassInRegion::position_x_half_width_m)
+        .def_readwrite("position_y_half_width_m", &ProbMassInRegion::position_y_half_width_m)
+        .def_readwrite("heading_half_width_rad", &ProbMassInRegion::heading_half_width_rad);
 
     py::class_<ExpectedBeliefRoadMapOptions>(m, "ExpectedBeliefRoadMapOptions")
         .def(py::init<>())
@@ -101,5 +96,7 @@ PYBIND11_MODULE(belief_road_map_planner_python, m) {
     m.def("compute_belief_road_map_plan", &compute_belief_road_map_plan);
     m.def("compute_landmark_belief_road_map_plan", &compute_landmark_belief_road_map_plan);
     m.def("compute_expected_belief_road_map_plan", &compute_expected_belief_road_map_plan);
+
+    m.def("evaluate_paths_with_configuration", &evaluate_paths_with_configuration);
 }
 }  // namespace robot::experimental::beacon_sim

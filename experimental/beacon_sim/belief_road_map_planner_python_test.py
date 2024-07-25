@@ -29,6 +29,7 @@ class BeliefRoadMapPlannerPythonTest(unittest.TestCase):
             uncertainty_tolerance=None,
             max_num_edge_transforms=1000,
             timeout=None,
+            uncertainty_size_options=brm.ExpectedDeterminant(position_only=False),
         )
 
         P_LONE_BEACON = 0.5
@@ -67,6 +68,7 @@ class BeliefRoadMapPlannerPythonTest(unittest.TestCase):
             uncertainty_tolerance=None,
             max_num_edge_transforms=1000,
             timeout=None,
+            uncertainty_size_options=brm.ExpectedDeterminant(position_only=False),
         )
 
         P_LONE_BEACON = 0.5
@@ -103,7 +105,7 @@ class BeliefRoadMapPlannerPythonTest(unittest.TestCase):
 
         brm_options = brm.LandmarkBeliefRoadMapOptions(
             max_sensor_range_m=3.0,
-            uncertainty_size_options=brm.LandmarkBeliefRoadMapOptions.ExpectedDeterminant(),
+            uncertainty_size_options=brm.ExpectedDeterminant(position_only=False),
             sampled_belief_options=None,
             timeout=None,
         )
@@ -146,6 +148,7 @@ class BeliefRoadMapPlannerPythonTest(unittest.TestCase):
                 uncertainty_tolerance=None,
                 max_num_edge_transforms=1000,
                 timeout=None,
+                uncertainty_size_options=brm.ExpectedDeterminant(position_only=False),
             ),
         )
 
@@ -190,6 +193,7 @@ class BeliefRoadMapPlannerPythonTest(unittest.TestCase):
                 uncertainty_tolerance=None,
                 max_num_edge_transforms=1000,
                 timeout=None,
+                uncertainty_size_options=brm.ExpectedDeterminant(position_only=False),
             ),
         )
 

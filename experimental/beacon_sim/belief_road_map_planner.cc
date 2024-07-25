@@ -110,34 +110,14 @@ std::vector<std::vector<int>> find_paths(const planning::RoadMap &road_map,
     return out;
 }
 
-Eigen::Matrix3d evaluate_path(const std::vector<int> &path, const RobotBelief &initial_belief,
-                              const planning::BeliefUpdater<RobotBelief> &updater) {
+RobotBelief evaluate_path(const std::vector<int> &path, const RobotBelief &initial_belief,
+                          const planning::BeliefUpdater<RobotBelief> &updater) {
     RobotBelief robot_belief = initial_belief;
     for (int i = 1; i < static_cast<int>(path.size()); i++) {
         robot_belief = updater(robot_belief, path.at(i - 1), path.at(i));
     }
 
-    return robot_belief.cov_in_robot;
-}
-
-std::vector<Eigen::Matrix3d> evaluate_paths_with_configuration(
-    const std::vector<std::vector<int>> &paths, const EkfSlam &ekf,
-    const planning::RoadMap &road_map, const double max_sensor_range_m,
-    const std::vector<int> &present_beacons) {
-    // Make a belief updater that only considers the present beacons
-    const auto updater = make_belief_updater(road_map, max_sensor_range_m, ekf, present_beacons,
-                                             TransformType::COVARIANCE);
-
-    const RobotBelief initial_belief = {
-        .local_from_robot = ekf.estimate().local_from_robot(),
-        .cov_in_robot = ekf.estimate().robot_cov(),
-    };
-
-    std::vector<Eigen::Matrix3d> out;
-    std::transform(
-        paths.begin(), paths.end(), std::back_inserter(out),
-        [&](const std::vector<int> &path) { return evaluate_path(path, initial_belief, updater); });
-    return out;
+    return robot_belief;
 }
 
 std::vector<Eigen::Matrix3d> evaluate_paths(std::vector<std::vector<int>> &paths,
@@ -163,11 +143,11 @@ std::vector<Eigen::Matrix3d> evaluate_paths(std::vector<std::vector<int>> &paths
             weight_sum += p;
 
             // Compute the covariance for each path
-            std::vector<Eigen::Matrix3d> covs_for_config = evaluate_paths_with_configuration(
+            std::vector<RobotBelief> beliefs_for_config = evaluate_paths_with_configuration(
                 paths, ekf, road_map, max_sensor_range_m, present_beacons);
 
-            for (int i = 0; i < static_cast<int>(covs_for_config.size()); i++) {
-                expected_covs.at(i) += p * covs_for_config.at(i);
+            for (int i = 0; i < static_cast<int>(beliefs_for_config.size()); i++) {
+                expected_covs.at(i) += p * beliefs_for_config.at(i).cov_in_robot;
             }
         }
     }
@@ -180,17 +160,132 @@ std::vector<Eigen::Matrix3d> evaluate_paths(std::vector<std::vector<int>> &paths
 }
 }  // namespace
 
-double uncertainty_size(const RobotBelief &belief) {
-    // Should this be the covariance about the map frame
-    return belief.cov_in_robot.determinant();
+std::vector<RobotBelief> evaluate_paths_with_configuration(
+    const std::vector<std::vector<int>> &paths, const EkfSlam &ekf,
+    const planning::RoadMap &road_map, const double max_sensor_range_m,
+    const std::vector<int> &present_beacons) {
+    // Make a belief updater that only considers the present beacons
+    const auto updater = make_belief_updater(road_map, max_sensor_range_m, ekf, present_beacons,
+                                             TransformType::COVARIANCE);
+
+    const RobotBelief initial_belief = {
+        .local_from_robot = ekf.estimate().local_from_robot(),
+        .cov_in_robot = ekf.estimate().robot_cov(),
+    };
+
+    std::vector<RobotBelief> out;
+    std::transform(
+        paths.begin(), paths.end(), std::back_inserter(out),
+        [&](const std::vector<int> &path) { return evaluate_path(path, initial_belief, updater); });
+    return out;
 }
 
-std::function<double(const LandmarkRobotBelief &)> make_uncertainty_size(
-    const LandmarkBeliefRoadMapOptions::UncertaintySizeOptions &options) {
-    using ExpectedDeterminant = LandmarkBeliefRoadMapOptions::ExpectedDeterminant;
-    using ValueAtRiskDeterminant = LandmarkBeliefRoadMapOptions::ValueAtRiskDeterminant;
-    using ProbMassInRegion = LandmarkBeliefRoadMapOptions::ProbMassInRegion;
+template <typename T>
+std::function<double(const T &)> make_uncertainty_size(const UncertaintySizeOptions &);
 
+template <>
+std::function<double(const RobotBelief &)> make_uncertainty_size(
+    const UncertaintySizeOptions &options) {
+    if (std::holds_alternative<ValueAtRiskDeterminant>(options)) {
+        CHECK(false, "ValueAtRiskDeterminant is not supported for unimodal beliefs", options);
+    } else if (std::holds_alternative<ExpectedDeterminant>(options)) {
+        return [opt = std::get<ExpectedDeterminant>(options)](const RobotBelief &belief) -> double {
+            if (opt.position_only) {
+                return belief.cov_in_robot.topLeftCorner<2, 2>().determinant();
+            } else {
+                return belief.cov_in_robot.determinant();
+            };
+        };
+    } else if (std::holds_alternative<ExpectedTrace>(options)) {
+        return [opt = std::get<ExpectedTrace>(options)](const RobotBelief &belief) -> double {
+            if (opt.position_only) {
+                return belief.cov_in_robot.topLeftCorner<2, 2>().trace();
+            } else {
+                return belief.cov_in_robot.trace();
+            };
+        };
+    } else if (std::holds_alternative<ProbMassInRegion>(options)) {
+        return [opt = std::get<ProbMassInRegion>(options)](const RobotBelief &belief) -> double {
+            const Eigen::Vector3d bounds =
+                Eigen::Vector3d{opt.position_x_half_width_m, opt.position_y_half_width_m,
+                                opt.heading_half_width_rad};
+
+            const auto compute_component_mass = [&bounds](const Eigen::Matrix3d &cov) {
+                // clang-format off
+                // The quadrants are numbered in the usual way, but the negative Z direction
+                // adds +4 to the index. So the 0th octant is the space spanned by postive
+                // linear combinations of (+x, +y, +z) and the 4th octant is the space 
+                // spanned by (+x, +y, -z). Note that +Z is out of the screen.
+                //
+                //           +y
+                //           ▲
+                //           │
+                //      1/5  │   0/4
+                //           │
+                //           │
+                //   ◄───────0────────► +x
+                //           │ +z
+                //           │
+                //      2/6  │   3/7
+                //           │
+                //           ▼
+                //
+                // Imagine that we shift the origin such it is colocated with the point in the
+                // 6th octant (spanned by (-x, -y, -z)). Computing the probability of the region
+                // of interest requires computing the probability mass that exists in octant 0.
+                //
+                // However, we only have access to the CDF. Let P(x) be the value of the CDF when
+                // evaluated at the xth region point in a manner consistent with the octant 
+                // numbering. Then:
+                // P(0) contains octants 0, 1, 2, 3, 4, 5, 6, 7
+                // P(1) contains octants    1, 2,       5, 6
+                // P(2) contains octants       2,          6
+                // P(3) contains octants       2, 3,       6, 7
+                // P(4) contains octants             4, 5, 6, 7
+                // P(5) contains octants                5, 6
+                // P(6) contains octants                   6
+                // P(7) contains octants                   6, 7
+                //
+                // We want a linear combination of these values such that only 0 remains.
+                // This can be achieved by:
+                // P(0) - P(1) + P(2) - P(3) - P(4)  + P(5) - P(6) + P(7)
+                // 
+                // These are the corner points of a rectangular prism in octant order
+                const std::vector<Eigen::Vector3d> eval_pts = {
+                    {bounds.x(), bounds.y(), bounds.z()},
+                    {-bounds.x(), bounds.y(), bounds.z()},   
+                    {-bounds.x(), -bounds.y(), bounds.z()},  
+                    {bounds.x(), -bounds.y(), bounds.z()},
+                    {bounds.x(), bounds.y(), -bounds.z()},
+                    {-bounds.x(), bounds.y(), -bounds.z()}, 
+                    {-bounds.x(), -bounds.y(), -bounds.z()},
+                    {bounds.x(), -bounds.y(), -bounds.z()},
+                };
+                // clang-format on
+
+                std::vector<double> probs;
+                for (const auto &eval_pt : eval_pts) {
+                    const auto result =
+                        math::multivariate_normal_cdf(Eigen::Vector3d::Zero(), cov, eval_pt);
+                    CHECK(result.has_value(), "Could not compute cdf at eval pt", eval_pt);
+                    probs.push_back(result.value());
+                }
+                return probs.at(0) - probs.at(1) + probs.at(2) - probs.at(3) - probs.at(4) +
+                       probs.at(5) - probs.at(6) + probs.at(7);
+            };
+
+            double prob = compute_component_mass(belief.cov_in_robot);
+            return 1 - prob;
+        };
+    }
+
+    CHECK(false, "Unknown Uncertainty Size Options", options);
+    return [](const auto &) { return 0.0; };
+}
+
+template <>
+std::function<double(const LandmarkRobotBelief &)> make_uncertainty_size(
+    const UncertaintySizeOptions &options) {
     if (std::holds_alternative<ValueAtRiskDeterminant>(options)) {
         return [opt = std::get<ValueAtRiskDeterminant>(options)](
                    const LandmarkRobotBelief &belief) -> double {
@@ -215,13 +310,37 @@ std::function<double(const LandmarkRobotBelief &)> make_uncertainty_size(
             return elements.back().cov_in_robot.determinant();
         };
     } else if (std::holds_alternative<ExpectedDeterminant>(options)) {
-        return [](const LandmarkRobotBelief &belief) -> double {
+        return [opt = std::get<ExpectedDeterminant>(options)](
+                   const LandmarkRobotBelief &belief) -> double {
             double expected_det = 0.0;
             for (const auto &[key, component] : belief.belief_from_config) {
-                expected_det +=
-                    std::exp(component.log_config_prob) * component.cov_in_robot.determinant();
+                if (opt.position_only) {
+                    const Eigen::Matrix2d &pos_covariance =
+                        component.cov_in_robot.topLeftCorner<2, 2>();
+                    expected_det +=
+                        std::exp(component.log_config_prob) * pos_covariance.determinant();
+                } else {
+                    expected_det +=
+                        std::exp(component.log_config_prob) * component.cov_in_robot.determinant();
+                }
             }
             return expected_det;
+        };
+    } else if (std::holds_alternative<ExpectedTrace>(options)) {
+        return [opt =
+                    std::get<ExpectedTrace>(options)](const LandmarkRobotBelief &belief) -> double {
+            double expected_trace = 0.0;
+            for (const auto &[key, component] : belief.belief_from_config) {
+                if (opt.position_only) {
+                    const Eigen::Matrix2d &pos_covariance =
+                        component.cov_in_robot.topLeftCorner<2, 2>();
+                    expected_trace += std::exp(component.log_config_prob) * pos_covariance.trace();
+                } else {
+                    expected_trace +=
+                        std::exp(component.log_config_prob) * component.cov_in_robot.trace();
+                }
+            }
+            return expected_trace;
         };
     } else if (std::holds_alternative<ProbMassInRegion>(options)) {
         return [opt = std::get<ProbMassInRegion>(options)](
@@ -348,17 +467,17 @@ std::optional<planning::BRMPlan<RobotBelief>> compute_belief_road_map_plan(
         return should_bail;
     };
 
+    const auto uncertainty_size =
+        make_uncertainty_size<RobotBelief>(options.uncertainty_size_options);
+
     if (options.uncertainty_tolerance.has_value()) {
         return planning::plan(
-            road_map, initial_belief, belief_updater,
-            [](const RobotBelief &b) { return uncertainty_size(b); },
+            road_map, initial_belief, belief_updater, uncertainty_size,
             planning::MinUncertaintyToleranceOptions{options.uncertainty_tolerance.value()},
             should_terminate_func);
     } else {
-        return planning::plan(
-            road_map, initial_belief, belief_updater,
-            [](const RobotBelief &b) { return uncertainty_size(b); },
-            planning::NoBacktrackingOptions{}, should_terminate_func);
+        return planning::plan(road_map, initial_belief, belief_updater, uncertainty_size,
+                              planning::NoBacktrackingOptions{}, should_terminate_func);
     }
 }
 
@@ -423,9 +542,10 @@ std::optional<planning::BRMPlan<LandmarkRobotBelief>> compute_landmark_belief_ro
         return should_bail;
     };
 
-    return planning::plan(road_map, initial_belief, belief_updater,
-                          make_uncertainty_size(options.uncertainty_size_options),
-                          planning::NoBacktrackingOptions{}, should_terminate_func);
+    return planning::plan(
+        road_map, initial_belief, belief_updater,
+        make_uncertainty_size<LandmarkRobotBelief>(options.uncertainty_size_options),
+        planning::NoBacktrackingOptions{}, should_terminate_func);
 }
 
 std::optional<ExpectedBeliefPlanResult> compute_expected_belief_road_map_plan(
@@ -461,14 +581,17 @@ std::optional<ExpectedBeliefPlanResult> compute_expected_belief_road_map_plan(
         }
     }
 
+    const auto uncertainty_size =
+        make_uncertainty_size<RobotBelief>(options.brm_options.uncertainty_size_options);
+
     // Evaluate the generated plans on each of the samples worlds
-    std::vector<double> expected_cov_dets(plans.size(), 0.0);
+    std::vector<double> expected_size(plans.size(), 0.0);
     for (const auto &sample : world_samples) {
-        const std::vector<Eigen::Matrix3d> covs = evaluate_paths_with_configuration(
+        const std::vector<RobotBelief> beliefs = evaluate_paths_with_configuration(
             plans, ekf, road_map, options.brm_options.max_sensor_range_m, sample);
 
         for (int i = 0; i < static_cast<int>(plans.size()); i++) {
-            expected_cov_dets.at(i) += covs.at(i).determinant() / world_samples.size();
+            expected_size.at(i) += uncertainty_size(beliefs.at(i)) / world_samples.size();
         }
 
         if (options.timeout.has_value() &&
@@ -477,8 +600,8 @@ std::optional<ExpectedBeliefPlanResult> compute_expected_belief_road_map_plan(
         }
     }
 
-    const auto min_iter = std::min_element(expected_cov_dets.begin(), expected_cov_dets.end());
-    const int min_idx = std::distance(expected_cov_dets.begin(), min_iter);
+    const auto min_iter = std::min_element(expected_size.begin(), expected_size.end());
+    const int min_idx = std::distance(expected_size.begin(), min_iter);
 
     return {{
         .nodes = plans.at(min_idx),

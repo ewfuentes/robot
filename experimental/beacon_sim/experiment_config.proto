@@ -3,7 +3,13 @@ syntax = "proto3";
 
 package robot.experimental.beacon_sim.proto;
 
-message ExpectedDeterminant {}
+message ExpectedDeterminant {
+  bool position_only = 1;
+}
+
+message ExpectedTrace {
+  bool position_only = 1;
+}
 
 message ValueAtRiskDeterminant {
   double percentile = 1;
@@ -20,6 +26,7 @@ message UncertaintySize {
     ExpectedDeterminant expected_determinant = 1;
     ValueAtRiskDeterminant value_at_risk_determinant = 2;
     ProbMassInRegion prob_mass_in_region = 3;
+    ExpectedTrace expected_trace = 4;
   }
 }
 
@@ -30,9 +37,11 @@ message LandmarkBRMPlanner {
 
 message ExpectedBRMPlanner {
   int32 num_configuration_samples = 1;
+  UncertaintySize uncertainty_size = 2;
 }
 
 message OptimisticBRMPlanner {
+  UncertaintySize uncertainty_size = 1;
 }
 
 // NEXT ID: 6
@@ -45,7 +54,7 @@ message PlannerConfig {
   };
 }
 
-// NEXT ID: 13
+// NEXT ID: 14
 message ExperimentConfig {
   string name = 1;
   // Note that these paths are relative to the current experiment_config
@@ -62,5 +71,6 @@ message ExperimentConfig {
   double max_sensor_range_m = 12;
   optional double plan_timeout_s = 9;
   repeated PlannerConfig planner_configs = 7;
+  UncertaintySize uncertainty_metric = 13;
 }
 
