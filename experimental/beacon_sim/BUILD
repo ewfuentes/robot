@@ -917,6 +917,26 @@ multi_proto_library(
 )
 
 cc_binary(
+  name = "reprocess_result",
+  srcs = ["reprocess_result.cc"],
+  linkopts = ["-ltbb"],
+  deps = [
+    "@bs_thread_pool",
+    "@cxxopts",
+    "//common/proto:load_from_file",
+    "//common/math:matrix_to_proto",
+    "//common:check",
+    ":experiment_results_proto",
+    ":ekf_slam",
+    ":world_map_config_to_proto",
+    ":world_map",
+    ":belief_road_map_planner",
+    ":mapped_landmarks_to_proto",
+    "//planning:road_map_to_proto",
+  ]
+)
+
+cc_binary(
   name = "run_experiment",
   srcs = ["run_experiment.cc"],
   data = [":experiment_configs"],
