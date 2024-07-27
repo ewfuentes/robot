@@ -126,7 +126,11 @@ std::vector<std::vector<proto::PlanMetrics>> compute_oracle_metrics(
                      .uncertainty_tolerance = std::nullopt,
                      .max_num_edge_transforms = std::numeric_limits<int>::max(),
                      .timeout = std::nullopt,
-                     .uncertainty_size_options = ExpectedDeterminant{.position_only = true}});
+                     .uncertainty_size_options = ProbMassInRegion{
+                         .position_x_half_width_m = 0.5,
+                         .position_y_half_width_m = 0.5,
+                         .heading_half_width_rad = 6.0,
+                     }});
 
                 proto::PlanMetrics metrics;
                 metrics.set_expected_trace(expected_trace_metric(brm_plan.value().beliefs.back()));
