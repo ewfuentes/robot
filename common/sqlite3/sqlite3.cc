@@ -22,12 +22,12 @@ struct Database::Impl {
 
     Database::Statement prepare(const std::string &statement) {
         sqlite3_stmt *stmt;
-        sqlite3_prepare_v2(db_, statement.c_str(), statement.size(), &stmt, nullptr);
-        return Statement{.impl_ =
-                             std::make_unique<Database::Statement::Impl>(Database::Statement::Impl{
-                                 .stmt = std::shared_ptr<sqlite3_stmt>(
-                                     stmt, [](sqlite3_stmt *stmt) { sqlite3_finalize(stmt); }),
-                             })};
+        check_result(sqlite3_prepare_v2(db_, statement.c_str(), statement.size(), &stmt, nullptr));
+        return Statement{
+            .impl_ = std::make_unique<Database::Statement::Impl>(Database::Statement::Impl{
+                .stmt = std::shared_ptr<sqlite3_stmt>(
+                    stmt, [this](sqlite3_stmt *stmt) { check_result(sqlite3_finalize(stmt)); }),
+            })};
     }
 
     void bind(const Statement &stmt, const std::unordered_map<std::string, Database::Value> &args) {
@@ -37,21 +37,21 @@ struct Database::Impl {
         for (const auto &[key, value] : args) {
             const int param_idx = sqlite3_bind_parameter_index(stmt_ptr, key.c_str());
             std::visit(
-                [param_idx, stmt_ptr](const auto &arg) {
+                [param_idx, stmt_ptr, this](const auto &arg) {
                     using T = std::decay_t<decltype(arg)>;
                     if constexpr (std::is_same_v<T, std::nullopt_t>) {
-                        sqlite3_bind_null(stmt_ptr, param_idx);
+                        check_result(sqlite3_bind_null(stmt_ptr, param_idx));
                     } else if constexpr (std::is_same_v<T, int>) {
-                        sqlite3_bind_int(stmt_ptr, param_idx, arg);
+                        check_result(sqlite3_bind_int(stmt_ptr, param_idx, arg));
                     } else if constexpr (std::is_same_v<T, double>) {
-                        sqlite3_bind_double(stmt_ptr, param_idx, arg);
+                        check_result(sqlite3_bind_double(stmt_ptr, param_idx, arg));
                     } else if constexpr (std::is_same_v<T, std::vector<unsigned char>>) {
-                        sqlite3_bind_blob(stmt_ptr, param_idx, arg.data(), arg.size(),
-                                          SQLITE_TRANSIENT);
+                        check_result(sqlite3_bind_blob(stmt_ptr, param_idx, arg.data(), arg.size(),
+                                                       SQLITE_TRANSIENT));
                     } else if constexpr (std::is_same_v<T, std::string>) {
                         constexpr int TO_FIRST_TERMINATOR = -1;
-                        sqlite3_bind_text(stmt_ptr, param_idx, arg.c_str(), TO_FIRST_TERMINATOR,
-                                          SQLITE_TRANSIENT);
+                        check_result(sqlite3_bind_text(stmt_ptr, param_idx, arg.c_str(),
+                                                       TO_FIRST_TERMINATOR, SQLITE_TRANSIENT));
                     }
                 },
                 value);
