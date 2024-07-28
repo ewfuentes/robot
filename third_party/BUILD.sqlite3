@@ -1,0 +1,8 @@
+
+cc_library(
+  name = "sqlite3",
+  hdrs = ["sqlite3.h"],
+  srcs = ["sqlite3.c"],
+  visibility = ["//visibility:public"],
+  include_prefix = "sqlite3",
+)

@@ -407,5 +407,13 @@ http_archive(
   integrity = "sha256-oYooSRZTByr+J/duGfpRD1gBw4EWCUgPHadAmGHg8P4=",
 )
 
+http_archive(
+  name = "sqlite3",
+  urls = ["https://www.sqlite.org/2024/sqlite-amalgamation-3460000.zip"],
+  strip_prefix = "sqlite-amalgamation-3460000",
+  build_file = "//third_party:BUILD.sqlite3",
+  integrity = "sha256-cSp9CdKiJlL7BqSa9RbgUZeaOYStsGfahnYOYO1Rp/U="
+)
+
 
 
