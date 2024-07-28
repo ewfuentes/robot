@@ -27,6 +27,7 @@ struct Database::Impl {
             .impl_ = std::make_unique<Database::Statement::Impl>(Database::Statement::Impl{
                 .stmt = std::shared_ptr<sqlite3_stmt>(
                     stmt, [this](sqlite3_stmt *stmt) { check_result(sqlite3_finalize(stmt)); }),
+                .column_names = nullptr,
             })};
     }
 
