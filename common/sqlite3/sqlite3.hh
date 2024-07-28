@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -13,20 +14,25 @@ class Database;
 class Database {
    public:
     class Row;
+    struct Statement;
+    using Value =
+        std::variant<std::nullopt_t, int, double, std::string, std::vector<unsigned char>>;
 
     Database(const std::filesystem::path &path);
     ~Database();
 
     std::vector<Database::Row> query(const std::string &statement);
 
+    Statement prepare(const std::string &statement);
+    void bind(const Statement &stmt, const std::unordered_map<std::string, Value> &args);
+    void reset(const Statement &stmt);
+    std::optional<Row> step(const Statement &stmt);
+
    private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 
    public:
-    using Value =
-        std::variant<std::nullopt_t, int, double, std::string, std::vector<unsigned char>>;
-
     class Row {
        public:
         Row(std::vector<Value> values, std::shared_ptr<std::vector<std::string>> column_names)
@@ -39,6 +45,13 @@ class Database {
        private:
         std::vector<Value> values_;
         std::shared_ptr<std::vector<std::string>> column_names_;
+    };
+
+    struct Statement {
+        ~Statement();
+
+        struct Impl;
+        std::unique_ptr<Impl> impl_;
     };
 };
 
