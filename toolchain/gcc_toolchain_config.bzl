@@ -64,7 +64,7 @@ def _impl(ctx):
       ),
       feature(
           name="warning_compile_flags",
-          enabled=True,
+          enabled=False,
           flag_sets = [
             flag_set(
               actions = all_compile_actions,

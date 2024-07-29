@@ -1,3 +1,4 @@
+package(features=["warning_compile_flags"])
 
 cc_library(
   name = "tiger",

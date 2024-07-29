@@ -3,7 +3,7 @@ load(":clang_toolchain_config.bzl", "clang_toolchain_config")
 load(":gcc_toolchain_config.bzl", "gcc_toolchain_config")
 load(":gcc_aarch64_toolchain_config.bzl", "gcc_aarch64_toolchain_config")
 
-package(default_visibility = ["//visibility:public"])
+package(default_visibility = ["//visibility:public"], features=["warning_compile_flags"])
 
 filegroup(name="empty")
 

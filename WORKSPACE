@@ -50,10 +50,6 @@ http_archive(
   urls = ["https://github.com/abseil/abseil-cpp/releases/download/20240116.1/abseil-cpp-20240116.1.tar.gz"],
   strip_prefix = "abseil-cpp-20240116.1",
   sha256 = "3c743204df78366ad2eaf236d6631d83f6bc928d1705dd0000b872e53b73dc6a",
-  patches = [
-    "@//third_party:absl-0001-disable-warning-flags.patch",
-  ],
-  patch_args=["-p1"],
 )
 
 http_archive(
@@ -166,10 +162,6 @@ http_archive(
     name = "com_github_nelhage_rules_boost",
     urls = ["https://github.com/nelhage/rules_boost/archive/5160325dbdc8c9e499f9d9917d913f35f1785d52.zip"],
     strip_prefix="rules_boost-5160325dbdc8c9e499f9d9917d913f35f1785d52",
-    patches = [
-      "@//third_party:boost_0001-disable-warning-flags.patch",
-    ],
-    patch_args=["-p1"],
     integrity = "sha256-/rSxKUaEx533weCPGuxdoNpSAh4z21nIjtvoa00aAXo=",
 )
 load("@com_github_nelhage_rules_boost//:boost/boost.bzl", "boost_deps")
@@ -212,7 +204,6 @@ http_archive(
   strip_prefix="protobuf-25.3",
   sha256 = "3ae7a8f2181be28e5d694617c2b85c6561ba6a16bfcdc9db8e3a95077cab8815",
   patches = [
-    "@//third_party:protobuf-0001-disable-warning-flags.patch",
     "@//third_party:protobuf-0002-use-rules-python-headers.patch",
   ],
   patch_args=["-p1"],
@@ -414,6 +405,4 @@ http_archive(
   build_file = "//third_party:BUILD.sqlite3",
   integrity = "sha256-cSp9CdKiJlL7BqSa9RbgUZeaOYStsGfahnYOYO1Rp/U="
 )
-
-
 

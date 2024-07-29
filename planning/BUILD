@@ -1,3 +1,5 @@
+package(features=["warning_compile_flags"])
+
 load("//common/proto:proto.bzl", "multi_proto_library")
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
 

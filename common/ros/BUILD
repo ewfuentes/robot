@@ -1,4 +1,6 @@
 
+package(features=["warning_compile_flags"])
+
 cc_test(
   name="rosbag_reader_test",
   srcs=["rosbag_reader_test.cc"],

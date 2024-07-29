@@ -1,3 +1,6 @@
+
+package(features=["warning_compile_flags"])
+
 load("@pip//:requirements.bzl", "requirement")
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
 load("@io_bazel_rules_docker//python3:image.bzl", "py3_image")

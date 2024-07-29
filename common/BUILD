@@ -1,3 +1,6 @@
+
+package(features=["warning_compile_flags"])
+
 load("@pip//:requirements.bzl", "requirement")
 load("@rules_python//python:defs.bzl", "py_library")
 

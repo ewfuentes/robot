@@ -1,3 +1,6 @@
+
+package(features=["warning_compile_flags"])
+
 load("@pip//:requirements.bzl", "requirement", "data_requirement")
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
 load("@rules_python//python:defs.bzl", "py_binary")
