@@ -35,9 +35,18 @@ message ExpectedBRMPlanner {
 message OptimisticBRMPlanner {
 }
 
-message DavidPlanner {
+message DavidPlannerOne{
   double favor_goal = 1;
 }
+
+message DavidPlannerTwo{
+  double favor_goal = 1;
+}
+
+message DavidPlannerThree{
+  double favor_goal = 1;
+}
+
 // NEXT ID: 6
 message PlannerConfig {
   string name = 1;
@@ -45,7 +54,9 @@ message PlannerConfig {
     LandmarkBRMPlanner landmark_brm_config = 2;
     ExpectedBRMPlanner expected_brm_config = 3;
     OptimisticBRMPlanner optimistic_brm_config = 4;
-    DavidPlanner david_planner_config = 5;
+    DavidPlannerOne david_planner_one_config = 5;
+    DavidPlannerTwo david_planner_two_config = 6;
+    DavidPlannerThree david_planner_three_config = 7;
   };
 }
 

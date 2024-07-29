@@ -1,4 +1,4 @@
-#include "planning/david_planning.hh"
+#include "planning/david_planning_three.hh"
 #include "experimental/beacon_sim/test_helpers.hh"
 #include "gtest/gtest.h"
 
@@ -31,14 +31,14 @@ namespace robot::planning {
         const auto ekf = ekf_slam;
 
         const experimental::beacon_sim::EkfSlamEstimate &est = ekf_slam.estimate();
-        const DavidPlannerConfig david_config{
-            .max_visits = 2,
+        const DavidPlannerConfigThree david_config{
+            .max_visits = 1,
             .max_plans = 1,
             .max_sensor_range_m = 4,
         };
 
-        auto successor_func = [&road_map](const int &node_idx) -> std::vector<Successor<int>> {
-            std::vector<Successor<int>> out;
+        auto successor_func = [&road_map](const int &node_idx) -> std::vector<SuccessorThree<int>> {
+            std::vector<SuccessorThree<int>> out;
             const std::vector<std::tuple<int, Eigen::Vector2d>> &vector = road_map.neighbors(node_idx);
 
             for(auto tuple : vector){
@@ -55,8 +55,8 @@ namespace robot::planning {
         };
 
         // ACTION
-        const double FAVOR_GOAL = 0.5;
-        const auto maybe_plan = david_planner<int>(successor_func, road_map,david_config,est,beacon_potential,ekf,FAVOR_GOAL);
+        const double FAVOR_GOAL = .5;
+        const auto maybe_plan = david_planner_three<int>(successor_func, road_map,david_config,est,beacon_potential,ekf,FAVOR_GOAL);
         //VERIFICATION
 
         // Printing config
