@@ -165,8 +165,8 @@ cc_test(
 )
 
 cc_library(
-name = "david_planning",
-hdrs = ["david_planning.hh"],
+name = "david_planning_one",
+hdrs = ["david_planning_one.hh"],
 deps = [
   "//experimental/beacon_sim:ekf_slam",
   "//experimental/beacon_sim:beacon_potential",
@@ -178,12 +178,40 @@ deps = [
 visibility = ["//visibility:public"]
 )
 
+cc_library(
+name = "david_planning_two",
+hdrs = ["david_planning_two.hh"],
+deps = [
+  "//experimental/beacon_sim:ekf_slam",
+  "//experimental/beacon_sim:beacon_potential",
+  "//experimental/beacon_sim:belief_road_map_planner",
+  "//common/math:logsumexp",
+  ":djikstra",
+  ":road_map",
+  "//common:check"
+],
+visibility = ["//visibility:public"]
+)
+
+cc_library(
+name = "david_planning_three",
+hdrs = ["david_planning_three.hh"],
+deps = [
+  "//experimental/beacon_sim:ekf_slam",
+  "//experimental/beacon_sim:beacon_potential",
+  "//experimental/beacon_sim:belief_road_map_planner",
+  "//common/math:logsumexp",
+  ":road_map"
+],
+visibility = ["//visibility:public"]
+)
+
 cc_test(
   name = "david_planning_test",
   srcs = ["david_planning_test.cc"],
   deps = [
     "@com_google_googletest//:gtest_main",
-    ":david_planning",
+    ":david_planning_three",
     "//experimental/beacon_sim:test_helpers"
   ]
 )

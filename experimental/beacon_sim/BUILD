@@ -966,7 +966,9 @@ cc_binary(
     ":world_map_config_to_proto",
     ":mapped_landmarks_to_proto",
     "//planning:road_map_to_proto",
-    "//planning:david_planning",
+    "//planning:david_planning_one",
+    "//planning:david_planning_two",
+    "//planning:david_planning_three",
   ]
 )
 

@@ -332,7 +332,7 @@ std::tuple<planning::RoadMap, EkfSlam, BeaconPotential> create_david_grid_enviro
     const EkfSlamConfig &ekf_config, const double p_first_beacon, const double p_second_beacon, const double p_third_beacon){
     
     const auto mapped_landmarks = create_grid_mapped_landmarks_beacon_pot({{-12.5,12.5},{12.5,-12.5},{2.5,2.5}});
-    const auto road_map = create_grid_road_map({-15,-10},{15,10},5,5);
+    const auto road_map = create_grid_road_map({-15,10},{15,10},5,5);
     auto ekf_slam = experimental::beacon_sim::EkfSlam(ekf_config, time::RobotTimestamp());
     constexpr bool LOAD_OFF_DIAGONALS = false;
 

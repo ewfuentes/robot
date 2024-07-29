@@ -16,7 +16,7 @@
 
 namespace robot::planning {
 
-struct DavidPlannerConfig {
+struct DavidPlannerConfigThree {
     const int max_visits;
     const int max_plans;
     const double max_sensor_range_m;
@@ -25,64 +25,66 @@ struct DavidPlannerConfig {
 };
 
 template <typename State>
-struct Successor {
+struct SuccessorThree {
     State state; 
     double edge_cost;
     double weight;
 };
 
 template <typename State>
-struct DavidPlannerResult {
+struct DavidPlannerResultThree {
     std::vector<State> nodes;
     double log_probability_mass_tracked;
 };
 
 template <typename State, typename SuccessorFunc>
-std::optional<State> pick_successor(const State &curr_state, const SuccessorFunc &successor_for_state,
+std::optional<State> pick_successor_three(const State &curr_state, const SuccessorFunc &successor_for_state,
                     InOut<std::mt19937> gen, const double &favor_goal, std::unordered_map<State,int> *states,
-                    const DavidPlannerConfig config, std::unordered_map<int,Eigen::Vector2d> *local_beacon_coords,
-                    const std::vector<Eigen::Vector2d> &node_coords) {                   
+                    const DavidPlannerConfigThree config, std::unordered_map<int,Eigen::Vector2d> *local_beacon_coords,
+                    const std::vector<Eigen::Vector2d> &node_coords,
+                    const RoadMap &road_map) {
     
-    std::vector<Successor<State>> scsrs;
+    std::vector<SuccessorThree<State>> scsrs;
     Eigen::Vector2d scsr_coords;
-    std::cout << " At State: " << curr_state << std::endl;
+    //std::cout << " At State: " << curr_state << std::endl;
     // Making sure there is a traversable path
     // Finding weight of each successor based on beacons in map
     // Only adding to potential scsr picks if the max_visits hasn't been reached
     bool check = false;
     double total_weight = 0;
     for(auto &scsr : successor_for_state(curr_state)){
-        if(states->at(scsr.state) == config.max_visits){continue;
-        }else{
-            check = true;
-            scsr_coords = node_coords[scsr.state];
-            for(auto &bcn : *local_beacon_coords){scsr.weight += pow(sqrt(pow((bcn.second[0] - scsr_coords[0]),2)+pow((bcn.second[1]-scsr_coords[1]),2)),-2);} // Add beacon_potential??
-            scsrs.push_back(scsr);
-        }
+        if(states->at(scsr.state) == config.max_visits){continue;}
+        check = true;
+        scsr_coords = node_coords[scsr.state];
+        for(auto &bcn : *local_beacon_coords){scsr.weight += pow(sqrt(pow((bcn.second[0] - scsr_coords[0]),2)+pow((bcn.second[1]-scsr_coords[1]),2)),-2);} // Add beacon_potential??
+        scsrs.push_back(scsr);
         total_weight+=scsr.weight;
-    }if(check == false){return std::nullopt;}
+    }
+    if(check == false){return std::nullopt;}
 
     // Adding weight to the closest scsr(s) to the goal
     // Finding which successor is closest to goal
     double dist_to_goal = 1e4;
     double maybe_dist_to_goal = 1e5;
     State closest_scsr;
-    Eigen::Vector2d goal = node_coords[-2];
+    //Eigen::Vector2d goal = node_coords[-2];
+    //Eigen::Vector2d goal = road_map.point;
+    Eigen::Vector2d goal = road_map.point(RoadMap::GOAL_IDX);
     for(auto &scsr : scsrs){
         scsr_coords = node_coords[scsr.state];
-        maybe_dist_to_goal = sqrt(pow((goal[0] - scsr_coords[0]),2)+pow((goal[1]-scsr_coords[1]),2));
+        if(scsr.state == -2){maybe_dist_to_goal = 0;
+        }else{maybe_dist_to_goal = sqrt(pow((goal[0] - scsr_coords[0]),2)+pow((goal[1]-scsr_coords[1]),2));}
         if(maybe_dist_to_goal < dist_to_goal){dist_to_goal = maybe_dist_to_goal, closest_scsr = scsr.state;}
     }
-
     // Adding weight to closest scsr to goal based on favor_goal desire.
     //Calculating new total with favor goal weight added
     for(auto &scsr : scsrs){
         if(scsr.state == closest_scsr){
-            double goal_weight = (total_weight/(1-favor_goal)) - total_weight;
+            double goal_weight = (total_weight/(1-favor_goal+1e-12)) - total_weight; // "1e-12" so that its never 1/0
             scsr.weight += goal_weight;
         }
     }
-    total_weight = total_weight/(1-favor_goal);
+    total_weight = total_weight/(1-favor_goal+1e-12);
 
     // Normalizing scsrs
     std::tuple<State,double> p_scsr;
@@ -94,11 +96,12 @@ std::optional<State> pick_successor(const State &curr_state, const SuccessorFunc
     }
 
     // Printing scsrs for testing purposes
-    std::cout << "[";
-    for(auto &scsr : p_scsrs){
-        std::cout << get<0>(scsr) << ":" << std::setprecision(5) << 100*get<1>(scsr) << "%,";
-    }
-    std::cout << "]" << std::endl;
+    //std::cout << "[";
+    //for(auto &scsr : p_scsrs){
+    //    if(scsr == p_scsrs[-1]){std::cout << get<0>(scsr) << ":" << std::setprecision(5) << 100*get<1>(scsr);
+    //    }else{std::cout << get<0>(scsr) << ":" << std::setprecision(5) << 100*get<1>(scsr) << "%,";}
+    //}
+    //std::cout << "]" << std::endl;
 
     // Picking a successor
     std::uniform_real_distribution<> dist;
@@ -124,12 +127,11 @@ std::optional<State> pick_successor(const State &curr_state, const SuccessorFunc
     }
     states->at(picked_scsr)+=1;
     return picked_scsr;
-    }
-
+}
 
 template <typename State, typename SuccessorFunc>
-std::optional<std::vector<State>> sample_path(
-    const DavidPlannerConfig &config,
+std::optional<std::vector<State>> sample_path_three(
+    const DavidPlannerConfigThree &config,
     const RoadMap &road_map, InOut<std::mt19937> gen,
     const double &favor_goal, const SuccessorFunc &successor_for_state,
     const std::unordered_map<int,Eigen::Vector2d> &beacon_coords,
@@ -146,7 +148,7 @@ std::optional<std::vector<State>> sample_path(
 
     plan.push_back(curr_state);
     while(curr_state != GOAL_STATE) {
-        auto next_state = pick_successor<State>(curr_state,successor_for_state,gen,favor_goal,&states,config,&local_beacon_coords, node_coords);
+        auto next_state = pick_successor_three<State>(curr_state,successor_for_state,gen,favor_goal,&states,config,&local_beacon_coords, node_coords, road_map);
         if(next_state.has_value()){
             plan.push_back(next_state.value());
             curr_state = next_state.value();
@@ -156,9 +158,9 @@ std::optional<std::vector<State>> sample_path(
 }
 
 template <typename State, typename SuccessorFunc>
-std::optional<DavidPlannerResult<State>> david_planner( 
+std::optional<DavidPlannerResultThree<State>> david_planner_three( 
     const SuccessorFunc &successor_for_state,
-    const RoadMap &road_map, const DavidPlannerConfig config,
+    const RoadMap &road_map, const DavidPlannerConfigThree config,
     const experimental::beacon_sim::EkfSlamEstimate &ekf_estimate,
     const experimental::beacon_sim::BeaconPotential &beacon_potential,
     const experimental::beacon_sim::EkfSlam &ekf,const double &favor_goal) {
@@ -198,7 +200,7 @@ std::optional<DavidPlannerResult<State>> david_planner(
 
     std::vector<std::vector<State>> plans;
     while ((int)plans.size() < config.max_plans) {
-        auto plan = sample_path<State>(config,road_map,make_in_out(gen),favor_goal,successor_for_state,beacon_coords,node_coords);
+        auto plan = sample_path_three<State>(config,road_map,make_in_out(gen),favor_goal,successor_for_state,beacon_coords,node_coords);
         if(plan.has_value()) {
             plans.push_back(plan.value());
         }
