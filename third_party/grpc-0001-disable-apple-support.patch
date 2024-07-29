@@ -1,0 +1,216 @@
+diff --git a/bazel/grpc_build_system.bzl b/bazel/grpc_build_system.bzl
+index 2b6f16a55a..71bf66f494 100644
+--- a/bazel/grpc_build_system.bzl
++++ b/bazel/grpc_build_system.bzl
+@@ -27,8 +27,8 @@
+ Contains macros used throughout the repo.
+ """
+ 
+-load("@build_bazel_rules_apple//apple:ios.bzl", "ios_unit_test")
+-load("@build_bazel_rules_apple//apple/testing/default_runner:ios_test_runner.bzl", "ios_test_runner")
++# load("@build_bazel_rules_apple//apple:ios.bzl", "ios_unit_test")
++# load("@build_bazel_rules_apple//apple/testing/default_runner:ios_test_runner.bzl", "ios_test_runner")
+ load("@com_google_protobuf//bazel:upb_proto_library.bzl", "upb_proto_library", "upb_proto_reflection_library")
+ load("//bazel:cc_grpc_library.bzl", "cc_grpc_library")
+ load("//bazel:copts.bzl", "GRPC_DEFAULT_COPTS")
+@@ -253,45 +253,45 @@ def grpc_proto_library(
+         generate_mocks = generate_mocks,
+     )
+ 
+-def ios_cc_test(
+-        name,
+-        tags = [],
+-        **kwargs):
+-    """An ios C++ test target.
+-
+-    Args:
+-      name: The name of the test.
+-      tags: The tags to apply to the test.
+-      **kwargs: All other arguments to apply.
+-    """
+-    test_lib_ios = name + "_test_lib_ios"
+-    ios_tags = tags + ["manual", "ios_cc_test"]
+-    test_runner = "ios_x86_64_sim_runner_" + name
+-    ios_test_runner(
+-        name = test_runner,
+-        device_type = "iPhone X",
+-    )
+-    if not any([t for t in tags if t.startswith("no_test_ios")]):
+-        native.objc_library(
+-            name = test_lib_ios,
+-            srcs = kwargs.get("srcs"),
+-            deps = kwargs.get("deps"),
+-            copts = kwargs.get("copts"),
+-            data = kwargs.get("data"),
+-            tags = ios_tags,
+-            alwayslink = 1,
+-            testonly = 1,
+-        )
+-        ios_test_deps = [":" + test_lib_ios]
+-        ios_unit_test(
+-            name = name + "_on_ios",
+-            size = kwargs.get("size"),
+-            data = kwargs.get("data"),
+-            tags = ios_tags,
+-            minimum_os_version = "9.0",
+-            runner = test_runner,
+-            deps = ios_test_deps,
+-        )
++# def ios_cc_test(
++#         name,
++#         tags = [],
++#         **kwargs):
++#     """An ios C++ test target.
++# 
++#     Args:
++#       name: The name of the test.
++#       tags: The tags to apply to the test.
++#       **kwargs: All other arguments to apply.
++#     """
++#     test_lib_ios = name + "_test_lib_ios"
++#     ios_tags = tags + ["manual", "ios_cc_test"]
++#     test_runner = "ios_x86_64_sim_runner_" + name
++#     ios_test_runner(
++#         name = test_runner,
++#         device_type = "iPhone X",
++#     )
++#     if not any([t for t in tags if t.startswith("no_test_ios")]):
++#         native.objc_library(
++#             name = test_lib_ios,
++#             srcs = kwargs.get("srcs"),
++#             deps = kwargs.get("deps"),
++#             copts = kwargs.get("copts"),
++#             data = kwargs.get("data"),
++#             tags = ios_tags,
++#             alwayslink = 1,
++#             testonly = 1,
++#         )
++#         ios_test_deps = [":" + test_lib_ios]
++#         ios_unit_test(
++#             name = name + "_on_ios",
++#             size = kwargs.get("size"),
++#             data = kwargs.get("data"),
++#             tags = ios_tags,
++#             minimum_os_version = "9.0",
++#             runner = test_runner,
++#             deps = ios_test_deps,
++#         )
+ 
+ def expand_poller_config(name, srcs, deps, tags, args, exclude_pollers, uses_polling, uses_event_engine, flaky):
+     """Common logic used to parameterize tests for every poller and EventEngine.
+@@ -454,9 +454,9 @@ def expand_tests(name, srcs, deps, tags, args, exclude_pollers, uses_polling, us
+         if "windows" not in platforms:
+             if "no_windows" not in tags:
+                 tags.append("no_windows")
+-        if "ios" not in platforms:
+-            if "no_test_ios" not in tags:
+-                tags.append("no_test_ios")
++        # if "ios" not in platforms:
++        #     if "no_test_ios" not in tags:
++        #         tags.append("no_test_ios")
+         return tags
+ 
+     base_params = {
+@@ -558,16 +558,16 @@ def grpc_cc_test(name, srcs = [], deps = [], external_deps = [], args = [], data
+         "linkstatic": linkstatic,
+     }
+ 
+-    if "grpc-fuzzer" not in tags and "no_test_ios" not in tags:
+-        ios_cc_test(
+-            name = name,
+-            srcs = srcs,
+-            tags = tags,
+-            deps = core_deps,
+-            args = args,
+-            flaky = True,
+-            **test_args
+-        )
++    # if "grpc-fuzzer" not in tags and "no_test_ios" not in tags:
++    #     ios_cc_test(
++    #         name = name,
++    #         srcs = srcs,
++    #         tags = tags,
++    #         deps = core_deps,
++    #         args = args,
++    #         flaky = True,
++    #         **test_args
++    #     )
+ 
+     native.cc_library(
+         name = "%s_TEST_LIBRARY" % name,
+diff --git a/bazel/grpc_deps.bzl b/bazel/grpc_deps.bzl
+index 8156d3997a..30adfef87a 100644
+--- a/bazel/grpc_deps.bzl
++++ b/bazel/grpc_deps.bzl
+@@ -217,25 +217,25 @@ def grpc_deps():
+             ],
+         )
+ 
+-    if "build_bazel_rules_apple" not in native.existing_rules():
+-        http_archive(
+-            name = "build_bazel_rules_apple",
+-            sha256 = "34c41bfb59cdaea29ac2df5a2fa79e5add609c71bb303b2ebb10985f93fa20e7",
+-            urls = [
+-                "https://storage.googleapis.com/grpc-bazel-mirror/github.com/bazelbuild/rules_apple/releases/download/3.1.1/rules_apple.3.1.1.tar.gz",
+-                "https://github.com/bazelbuild/rules_apple/releases/download/3.1.1/rules_apple.3.1.1.tar.gz",
+-            ],
+-        )
+-
+-    if "build_bazel_apple_support" not in native.existing_rules():
+-        http_archive(
+-            name = "build_bazel_apple_support",
+-            sha256 = "cf4d63f39c7ba9059f70e995bf5fe1019267d3f77379c2028561a5d7645ef67c",
+-            urls = [
+-                "https://storage.googleapis.com/grpc-bazel-mirror/github.com/bazelbuild/apple_support/releases/download/1.11.1/apple_support.1.11.1.tar.gz",
+-                "https://github.com/bazelbuild/apple_support/releases/download/1.11.1/apple_support.1.11.1.tar.gz",
+-            ],
+-        )
++    # if "build_bazel_rules_apple" not in native.existing_rules():
++    #     http_archive(
++    #         name = "build_bazel_rules_apple",
++    #         sha256 = "34c41bfb59cdaea29ac2df5a2fa79e5add609c71bb303b2ebb10985f93fa20e7",
++    #         urls = [
++    #             "https://storage.googleapis.com/grpc-bazel-mirror/github.com/bazelbuild/rules_apple/releases/download/3.1.1/rules_apple.3.1.1.tar.gz",
++    #             "https://github.com/bazelbuild/rules_apple/releases/download/3.1.1/rules_apple.3.1.1.tar.gz",
++    #         ],
++    #     )
++
++    # if "build_bazel_apple_support" not in native.existing_rules():
++    #     http_archive(
++    #         name = "build_bazel_apple_support",
++    #         sha256 = "cf4d63f39c7ba9059f70e995bf5fe1019267d3f77379c2028561a5d7645ef67c",
++    #         urls = [
++    #             "https://storage.googleapis.com/grpc-bazel-mirror/github.com/bazelbuild/apple_support/releases/download/1.11.1/apple_support.1.11.1.tar.gz",
++    #             "https://github.com/bazelbuild/apple_support/releases/download/1.11.1/apple_support.1.11.1.tar.gz",
++    #         ],
++    #     )
+ 
+     if "com_google_googleapis" not in native.existing_rules():
+         http_archive(
+diff --git a/bazel/grpc_extra_deps.bzl b/bazel/grpc_extra_deps.bzl
+index a370fe4496..2d53bbe270 100644
+--- a/bazel/grpc_extra_deps.bzl
++++ b/bazel/grpc_extra_deps.bzl
+@@ -14,8 +14,8 @@
+ """Loads the dependencies necessary for the external repositories defined in grpc_deps.bzl."""
+ 
+ load("@bazel_gazelle//:deps.bzl", "gazelle_dependencies")
+-load("@build_bazel_apple_support//lib:repositories.bzl", "apple_support_dependencies")
+-load("@build_bazel_rules_apple//apple:repositories.bzl", "apple_rules_dependencies")
++# load("@build_bazel_apple_support//lib:repositories.bzl", "apple_support_dependencies")
++# load("@build_bazel_rules_apple//apple:repositories.bzl", "apple_rules_dependencies")
+ load("@com_envoyproxy_protoc_gen_validate//:dependencies.bzl", "go_third_party")
+ load("@com_google_googleapis//:repository_rules.bzl", "switched_rules_by_language")
+ load("@com_google_protobuf//:protobuf_deps.bzl", "protobuf_deps")
+@@ -59,9 +59,9 @@ def grpc_extra_deps(ignore_version_differences = False):
+     # needed for building C++ xDS protos
+     go_third_party()
+ 
+-    apple_rules_dependencies(ignore_version_differences = ignore_version_differences)
++    # apple_rules_dependencies(ignore_version_differences = ignore_version_differences)
+ 
+-    apple_support_dependencies()
++    # apple_support_dependencies()
+ 
+     # Initialize Google APIs with only C++ and Python targets
+     switched_rules_by_language(

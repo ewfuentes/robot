@@ -220,6 +220,22 @@ http_archive(
 ) 
 
 http_archive(
+  name = "com_github_grpc_grpc",
+  urls = ["https://github.com/grpc/grpc/archive/refs/tags/v1.65.2.zip"],
+  strip_prefix = "grpc-1.65.2",
+  patches = [
+    "@//third_party:grpc-0001-disable-apple-support.patch"
+  ],
+  patch_args=["-p1"],
+  integrity = "sha256-sRdeHMvwBhaL64iCSGLCYFlt/pgVQZf24l05HuGT3W4="
+)
+
+load("@com_github_grpc_grpc//bazel:grpc_deps.bzl", "grpc_deps", "grpc_test_only_deps")
+grpc_deps()
+load("@com_github_grpc_grpc//bazel:grpc_extra_deps.bzl", "grpc_extra_deps")
+grpc_extra_deps()
+
+http_archive(
   name = "glfw",
   urls = ["https://github.com/glfw/glfw/releases/download/3.3.8/glfw-3.3.8.zip"],
   strip_prefix = "glfw-3.3.8",
