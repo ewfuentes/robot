@@ -157,8 +157,6 @@ std::optional<Database::Row> Database::step(const Database::Statement &stmt) {
     return impl_->step(stmt);
 }
 
-void Database::reset(const Database::Statement &stmt) {
-    return impl_->reset(stmt);
-}
+void Database::reset(const Database::Statement &stmt) { return impl_->reset(stmt); }
 
 }  // namespace robot::sqlite3
