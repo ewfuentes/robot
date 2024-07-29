@@ -80,7 +80,8 @@ std::vector<std::vector<proto::PlanMetrics>> compute_oracle_metrics(
     const planning::RoadMap &road_map, const std::vector<std::vector<int>> &present_beacon_samples,
     const BeaconPotential &beacon_potential, const std::vector<StartGoal> &start_goals,
     const EkfSlam &ekf, const double max_sensor_range_m,
-    const double start_goal_connection_radius_m) {
+    const double start_goal_connection_radius_m,
+    const int num_threads) {
     std::vector<std::vector<proto::PlanMetrics>> oracle_plan_metrics_by_eval_trial_id(
         present_beacon_samples.size());
 
@@ -100,7 +101,7 @@ std::vector<std::vector<proto::PlanMetrics>> compute_oracle_metrics(
         make_uncertainty_size<RobotBelief>(ExpectedTrace{.position_only = true});
 
     std::atomic<int> remaining(present_beacon_samples.size() * start_goals.size());
-    BS::thread_pool pool(0);
+    BS::thread_pool pool(num_threads);
     for (int i = 0; i < static_cast<int>(present_beacon_samples.size()); i++) {
         pool.detach_task([=, &present_beacons = present_beacon_samples.at(i), &start_goals,
                           &plan_metrics = oracle_plan_metrics_by_eval_trial_id.at(i),
@@ -147,7 +148,7 @@ std::vector<std::vector<proto::PlanMetrics>> compute_oracle_metrics(
 
                 const int plans_remaining = --remaining;
 
-                if (plans_remaining % 1000 == 0) {
+                if (plans_remaining % 1 == 0) {
                     std::cout << "Oracle metrics remaining: " << plans_remaining << std::endl;
                 }
             }
@@ -160,7 +161,8 @@ std::vector<std::vector<proto::PlanMetrics>> compute_oracle_metrics(
 
 void reprocess_result(const proto::ExperimentResult &result,
                       const std::filesystem::path &experiment_config_path,
-                      const std::filesystem::path &output_path) {
+                      const std::filesystem::path &output_path,
+                      const int num_threads) {
     proto::ExperimentResult out = result;
     const auto &experiment_config = result.experiment_config();
     // Load the beacon potential, road map and ekf from the config file
@@ -214,9 +216,9 @@ void reprocess_result(const proto::ExperimentResult &result,
 
     const auto &oracle_metrics_by_eval_trial_id = compute_oracle_metrics(
         road_map, samples, beacon_potential, start_goals, ekf,
-        experiment_config.max_sensor_range_m(), experiment_config.start_goal_connection_radius_m());
+        experiment_config.max_sensor_range_m(), experiment_config.start_goal_connection_radius_m(), num_threads);
 
-    BS::thread_pool pool(0);
+    BS::thread_pool pool(num_threads);
     std::vector<proto::PlannerResult> new_results(out.results_size());
     for (int i = 0; i < out.results_size(); i++) {
         new_results.at(i).CopyFrom(result.results(i));
@@ -319,12 +321,15 @@ void reprocess_result(const proto::ExperimentResult &result,
 
 int main(int argc, const char **argv) {
     // clang-format off
+    const std::string DEFAULT_NUM_THREADS = "0";
     cxxopts::Options options("reprocess_result",
                              "Add additional uncertainty metrics to ExperimentResult protos");
     options.add_options()
         ("results_file", "Path to results file", cxxopts::value<std::string>())
         ("experiment_config_path", "Path to Experiment Config file", cxxopts::value<std::string>())
         ("output_path", "Output path", cxxopts::value<std::string>())
+        ("num_threads", "Number of threads to use",
+            cxxopts::value<int>()->default_value(DEFAULT_NUM_THREADS))
         ("help", "Print usage");
     // clang-format on
 
@@ -356,5 +361,6 @@ int main(int argc, const char **argv) {
     robot::experimental::beacon_sim::reprocess_result(
         maybe_results_file.value(),
         std::filesystem::path(args["experiment_config_path"].as<std::string>()),
-        std::filesystem::path(args["output_path"].as<std::string>()));
+        std::filesystem::path(args["output_path"].as<std::string>()),
+        args["num_threads"].as<int>());
 }
