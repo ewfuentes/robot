@@ -77,30 +77,36 @@ WorkServer::WorkServer(const std::filesystem::path &db_path,
               "BLOB) STRICT;");
 
 
-    std::ostringstream oss;
-    std::unordered_map<std::string, sqlite3::Database::Value> to_bind;
-    oss << "INSERT INTO " + JOB_TABLE_NAME + " (rowid, job_inputs) VALUES ";
-    for (int i = 0; i < static_cast<int>(inputs.size()); i++) {
-        std::cout << "Inserting " << i << " / " << inputs.size() << "\r";
-        auto &job_input = inputs.at(i+1);
-        job_input.set_job_id(i+1);
-        std::string blob;
-        job_input.SerializeToString(&blob);
-        std::vector<unsigned char> blob_vec(blob.begin(), blob.end());
-
-        if (i > 0) {
-            oss << ",";
+    const int num_chunks = inputs.size();
+    constexpr int MAX_INSERTION_SIZE = 1000;
+    for (int i = 0; i < num_chunks; i+= MAX_INSERTION_SIZE) {
+        std::ostringstream oss;
+        std::unordered_map<std::string, sqlite3::Database::Value> to_bind;
+        oss << "INSERT INTO " + JOB_TABLE_NAME + " (rowid, job_inputs) VALUES ";
+        for (int j = 0; j < std::min(MAX_INSERTION_SIZE, num_chunks - i); j++) {
+            const int idx = i + j;
+            if (idx % 100 == 0) {
+                std::cout << "Inserting " << i+j << " / " << inputs.size() << "\r";
+            }
+            auto &job_input = inputs.at(idx);
+            job_input.set_job_id(idx+1);
+            std::string blob;
+            job_input.SerializeToString(&blob);
+            std::vector<unsigned char> blob_vec(blob.begin(), blob.end());
+            if (j > 0) {
+                oss << ",";
+            }
+            const std::string row_id = ":row_id" + std::to_string(j);
+            const std::string blob_id = ":inputs" + std::to_string(j);
+            oss << "(" << row_id << "," << blob_id << ")";
+            to_bind.insert({row_id, sqlite3::Database::Value(idx+1)});
+            to_bind.insert({blob_id, sqlite3::Database::Value(blob_vec)});
         }
-        const std::string row_id = ":row_id" + std::to_string(i);
-        const std::string blob_id = ":inputs" + std::to_string(i);
-        oss << "(" << row_id << "," << blob_id << ")";
-        to_bind[row_id] = sqlite3::Database::Value(i+1);
-        to_bind[blob_id] = sqlite3::Database::Value(blob_vec);
+        const auto statement = db_.prepare(oss.str());
+        db_.bind(statement, to_bind);
+        db_.step(statement);
     }
     std::cout << std::endl;
-    const auto statement = db_.prepare(oss.str());
-    db_.bind(statement, to_bind);
-    db_.step(statement);
 }
 
 }  // namespace robot::experimental::beacon_sim
