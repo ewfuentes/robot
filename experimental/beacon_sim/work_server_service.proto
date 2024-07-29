@@ -1,0 +1,53 @@
+
+syntax = "proto3";
+
+import "experimental/beacon_sim/experiment_results.proto";
+import "common/time/robot_time.proto";
+
+package robot.experimental.beacon_sim.proto;
+
+message Worker {
+  string name = 1;
+}
+
+message JobInputs {
+  int32 job_id = 1;
+  string results_file = 2;
+  string experiment_config_path = 3;
+  // Inclusive
+  int32 start_idx = 4;
+  // Exclusive
+  int32 end_idx = 5;
+}
+
+message JobStatusUpdate {
+  int32 job_id = 1;
+  Worker worker = 2;
+  float progress = 3;
+  robot.time.proto.RobotTimestamp start_time = 4;
+  robot.time.proto.RobotTimestamp current_time = 5;
+
+}
+
+message JobStatusUpdateResponse {}
+
+message JobResult {
+  int32 job_id = 1;
+  repeated robot.experimental.beacon_sim.proto.Plan plan = 2;
+}
+
+message JobResultResponse {
+}
+
+message ProgressRequest {}
+
+message ProgressResponse {
+  repeated JobStatusUpdate jobs = 1;
+}
+
+service WorkServer {
+  rpc get_job(Worker) returns (JobInputs) {}
+  rpc update_job_status(JobStatusUpdate) returns (JobStatusUpdateResponse) {}
+  rpc submit_job_result(JobResult) returns (JobResultResponse) {}
+  rpc get_progress(ProgressRequest) returns (ProgressResponse) {}
+}

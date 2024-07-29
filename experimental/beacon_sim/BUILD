@@ -5,6 +5,7 @@ load("@pip//:requirements.bzl", "requirement")
 load("//common/proto:proto.bzl", "multi_proto_library")
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
 load("@rules_python//python:packaging.bzl", "py_package", "py_wheel")
+load("@com_github_grpc_grpc//bazel:cc_grpc_library.bzl", "cc_grpc_library")
 
 multi_proto_library(
   name = "sim_log_proto",
@@ -958,6 +959,46 @@ cc_binary(
     ":world_map_config_to_proto",
     ":mapped_landmarks_to_proto",
     "//planning:road_map_to_proto",
+  ]
+)
+
+multi_proto_library(
+  name = "work_server_service_proto",
+  srcs = ["work_server_service.proto"],
+  deps = [
+    ":experiment_results_proto",
+  ]
+)
+
+cc_grpc_library(
+  name = "work_server_service_grpc",
+  grpc_only = True,
+  srcs = [":__work_server_service_proto"],
+  deps = [
+    ":work_server_service_proto",
+  ]
+)
+
+cc_library(
+  name = "work_server",
+  hdrs = ["work_server.hh"],
+  srcs = ["work_server.cc"],
+  deps = [
+    ":work_server_service_grpc",
+    "//common/sqlite3",
+    "//common:check",
+    "//common/proto:load_from_file",
+    "@com_github_grpc_grpc//:grpc++",
+  ]
+)
+
+cc_test(
+  name = "work_server_test",
+  srcs = ["work_server_test.cc"],
+  data = [":experiment_configs"],
+  deps = [
+    ":work_server",
+    "@com_google_googletest//:gtest_main",
   ]
 )
 
