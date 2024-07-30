@@ -15,8 +15,7 @@ const std::string JOB_TABLE_NAME = "job_table";
 constexpr int CHUNK_SIZE = 1;
 
 std::vector<proto::JobInputs> create_inputs_from_result(
-    const std::filesystem::path &result_path,
-    const std::filesystem::path &experiment_config_path) {
+    const std::filesystem::path &result_path, const std::filesystem::path &experiment_config_path) {
     const auto maybe_proto = robot::proto::load_from_file<proto::ExperimentResult>(result_path);
     CHECK(maybe_proto.has_value(), "Failed to load proto", result_path);
 
