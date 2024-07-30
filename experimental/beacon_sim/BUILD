@@ -967,6 +967,7 @@ multi_proto_library(
   srcs = ["work_server_service.proto"],
   deps = [
     ":experiment_results_proto",
+    "//common/time:robot_time_proto",
   ]
 )
 

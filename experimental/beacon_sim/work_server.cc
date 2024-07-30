@@ -147,18 +147,17 @@ grpc::Status WorkServer::get_job(grpc::ServerContext *, const proto::GetJobReque
     return grpc::Status::OK;
 }
 
-grpc::Status WorkServer::update_job_status(
-    grpc::ServerContext *, const proto::JobStatusUpdateRequest *request,
-    proto::JobStatusUpdateResponse *response) {
-
+grpc::Status WorkServer::update_job_status(grpc::ServerContext *,
+                                           const proto::JobStatusUpdateRequest *request,
+                                           proto::JobStatusUpdateResponse *response) {
     std::cout << "updating job status for row" << std::endl;
     const int job_id = request->job_id();
     const proto::JobStatusUpdate &update = request->update();
     std::vector<unsigned char> blob(update.ByteSizeLong());
     update.SerializeToArray(blob.data(), blob.size());
 
-    const auto statement = db_.prepare("UPDATE " + JOB_TABLE_NAME +
-                                       " SET job_status = :job_status WHERE id = :id;");
+    const auto statement =
+        db_.prepare("UPDATE " + JOB_TABLE_NAME + " SET job_status = :job_status WHERE id = :id;");
     db_.bind(statement, {{":id", job_id}, {":job_status", blob}});
     db_.step(statement);
 
@@ -175,8 +174,8 @@ grpc::Status WorkServer::submit_job_result(grpc::ServerContext *,
     std::vector<unsigned char> blob(result.ByteSizeLong());
     result.SerializeToArray(blob.data(), blob.size());
 
-    const auto statement = db_.prepare("UPDATE " + JOB_TABLE_NAME +
-                                       " SET job_result = :job_result WHERE id = :id;");
+    const auto statement =
+        db_.prepare("UPDATE " + JOB_TABLE_NAME + " SET job_result = :job_result WHERE id = :id;");
     db_.bind(statement, {{":id", job_id}, {":job_result", blob}});
     db_.step(statement);
 
@@ -185,25 +184,27 @@ grpc::Status WorkServer::submit_job_result(grpc::ServerContext *,
     return grpc::Status::OK;
 }
 
-grpc::Status WorkServer::get_progress(grpc::ServerContext *,
-                                      const proto::ProgressRequest *,
+grpc::Status WorkServer::get_progress(grpc::ServerContext *, const proto::ProgressRequest *,
                                       proto::ProgressResponse *response) {
     int jobs_completed;
     int jobs_remaining;
     int jobs_in_progress;
 
     {
-        const auto rows = db_.query("SELECT count(*) FROM " + JOB_TABLE_NAME + " WHERE job_result IS NOT NULL;");
+        const auto rows =
+            db_.query("SELECT count(*) FROM " + JOB_TABLE_NAME + " WHERE job_result IS NOT NULL;");
         CHECK(!rows.empty());
         jobs_completed = std::get<int>(rows.at(0).value(0));
     }
     {
-        const auto rows = db_.query("SELECT count(*) FROM " + JOB_TABLE_NAME + " WHERE job_status IS NULL;");
+        const auto rows =
+            db_.query("SELECT count(*) FROM " + JOB_TABLE_NAME + " WHERE job_status IS NULL;");
         CHECK(!rows.empty());
         jobs_remaining = std::get<int>(rows.at(0).value(0));
     }
     {
-        const auto rows = db_.query("SELECT count(*) FROM " + JOB_TABLE_NAME + " WHERE job_status IS NOT NULL AND job_result IS NULL;");
+        const auto rows = db_.query("SELECT count(*) FROM " + JOB_TABLE_NAME +
+                                    " WHERE job_status IS NOT NULL AND job_result IS NULL;");
         CHECK(!rows.empty());
         jobs_in_progress = std::get<int>(rows.at(0).value(0));
     }

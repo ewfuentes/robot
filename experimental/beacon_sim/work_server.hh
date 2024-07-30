@@ -22,7 +22,8 @@ class WorkServer : public proto::WorkServer::Service {
                                    const proto::JobStatusUpdateRequest *request,
                                    proto::JobStatusUpdateResponse *response) override;
 
-    grpc::Status submit_job_result(grpc::ServerContext *context, const proto::JobResultRequest *request,
+    grpc::Status submit_job_result(grpc::ServerContext *context,
+                                   const proto::JobResultRequest *request,
                                    proto::JobResultResponse *response) override;
 
     grpc::Status get_progress(grpc::ServerContext *context, const proto::ProgressRequest *request,
