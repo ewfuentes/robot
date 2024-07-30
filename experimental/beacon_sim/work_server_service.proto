@@ -10,30 +10,46 @@ message Worker {
   string name = 1;
 }
 
+message GetJobRequest {
+  Worker worker = 1;
+}
+
+message GetJobResponse {
+  optional int32 job_id = 1;
+  optional JobInputs job_inputs = 2;
+}
+
 message JobInputs {
-  int32 job_id = 1;
-  string results_file = 2;
-  string experiment_config_path = 3;
+  string results_file = 1;
+  string experiment_config_path = 2;
   // Inclusive
-  int32 start_idx = 4;
+  int32 start_idx = 3;
   // Exclusive
-  int32 end_idx = 5;
+  int32 end_idx = 4;
+}
+
+message JobStatusUpdateRequest {
+  int32 job_id = 1;
+  JobStatusUpdate update = 2;
 }
 
 message JobStatusUpdate {
-  int32 job_id = 1;
-  Worker worker = 2;
-  float progress = 3;
-  robot.time.proto.RobotTimestamp start_time = 4;
-  robot.time.proto.RobotTimestamp current_time = 5;
+  Worker worker = 1;
+  float progress = 2;
+  robot.time.proto.RobotTimestamp start_time = 3;
+  robot.time.proto.RobotTimestamp current_time = 4;
 
 }
 
 message JobStatusUpdateResponse {}
 
 message JobResult {
-  int32 job_id = 1;
   repeated robot.experimental.beacon_sim.proto.Plan plan = 2;
+}
+
+message JobResultRequest {
+  int32 job_id = 1;
+  JobResult job_result = 2;
 }
 
 message JobResultResponse {
@@ -42,12 +58,14 @@ message JobResultResponse {
 message ProgressRequest {}
 
 message ProgressResponse {
-  repeated JobStatusUpdate jobs = 1;
+  int32 jobs_completed = 1;
+  int32 jobs_remaining = 2;
+  int32 jobs_in_progress = 3;
 }
 
 service WorkServer {
-  rpc get_job(Worker) returns (JobInputs) {}
-  rpc update_job_status(JobStatusUpdate) returns (JobStatusUpdateResponse) {}
-  rpc submit_job_result(JobResult) returns (JobResultResponse) {}
+  rpc get_job(GetJobRequest) returns (GetJobResponse) {}
+  rpc update_job_status(JobStatusUpdateRequest) returns (JobStatusUpdateResponse) {}
+  rpc submit_job_result(JobResultRequest) returns (JobResultResponse) {}
   rpc get_progress(ProgressRequest) returns (ProgressResponse) {}
 }

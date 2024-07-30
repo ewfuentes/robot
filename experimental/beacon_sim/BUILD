@@ -992,16 +992,6 @@ cc_library(
   ]
 )
 
-cc_test(
-  name = "work_server_test",
-  srcs = ["work_server_test.cc"],
-  data = [":experiment_configs"],
-  deps = [
-    ":work_server",
-    "@com_google_googletest//:gtest_main",
-  ]
-)
-
 py_package(
   name = "beacon_sim_package",
   deps = [

@@ -2,7 +2,7 @@
 #include "experimental/beacon_sim/work_server.hh"
 
 #include <filesystem>
-#include <iterator>
+#include <iostream>
 #include <sstream>
 
 #include "common/check.hh"
@@ -73,7 +73,7 @@ WorkServer::WorkServer(const std::filesystem::path &db_path,
     // Insert them into the table
     std::cout << "table does not exist" << std::endl;
     db_.query("CREATE TABLE " + JOB_TABLE_NAME +
-              " (id INTEGER PRIMARY KEY ASC, job_inputs BLOB NOT NULL, job_status BLOB, result "
+              " (id INTEGER PRIMARY KEY ASC, job_inputs BLOB NOT NULL, job_status BLOB, job_result "
               "BLOB) STRICT;");
 
     const int num_chunks = inputs.size();
@@ -88,10 +88,9 @@ WorkServer::WorkServer(const std::filesystem::path &db_path,
                 std::cout << "Inserting " << i + j << " / " << inputs.size() << "\r";
             }
             auto &job_input = inputs.at(idx);
-            job_input.set_job_id(idx + 1);
-            std::string blob;
-            job_input.SerializeToString(&blob);
-            std::vector<unsigned char> blob_vec(blob.begin(), blob.end());
+            std::vector<unsigned char> blob(job_input.ByteSizeLong());
+            job_input.SerializeToArray(blob.data(), blob.size());
+
             if (j > 0) {
                 oss << ",";
             }
@@ -99,7 +98,7 @@ WorkServer::WorkServer(const std::filesystem::path &db_path,
             const std::string blob_id = ":inputs" + std::to_string(j);
             oss << "(" << row_id << "," << blob_id << ")";
             to_bind.insert({row_id, sqlite3::Database::Value(idx + 1)});
-            to_bind.insert({blob_id, sqlite3::Database::Value(blob_vec)});
+            to_bind.insert({blob_id, sqlite3::Database::Value(blob)});
         }
         const auto statement = db_.prepare(oss.str());
         db_.bind(statement, to_bind);
@@ -108,28 +107,110 @@ WorkServer::WorkServer(const std::filesystem::path &db_path,
     std::cout << std::endl;
 }
 
-grpc::Status WorkServer::get_job(grpc::ServerContext *,
-                                 [[maybe_unused]]const proto::Worker *request,
-                                 [[maybe_unused]]proto::JobInputs *response) {
+grpc::Status WorkServer::get_job(grpc::ServerContext *, const proto::GetJobRequest *request,
+                                 proto::GetJobResponse *response) {
     // Find the first job
+    const auto rows = db_.query("SELECT id, job_inputs FROM " + JOB_TABLE_NAME +
+                                " WHERE job_status IS NULL LIMIT 1;");
+    if (rows.empty()) {
+        std::cout << "No rows returned" << std::endl;
+        response->Clear();
+        return grpc::Status::OK;
+    }
+
+    const int job_id = std::get<int>(rows.at(0).value(0));
+    std::cout << "allocating job id " << job_id << std::endl;
+    {
+        const std::vector<unsigned char> &blob =
+            std::get<std::vector<unsigned char>>(rows.at(0).value(1));
+        proto::JobInputs job_inputs;
+        job_inputs.ParseFromArray(blob.data(), blob.size());
+
+        response->set_job_id(job_id);
+        response->mutable_job_inputs()->CopyFrom(job_inputs);
+    }
+
+    // Set an initial job status so it doesn't get requested again
+    {
+        std::cout << "updating job status for row" << std::endl;
+        proto::JobStatusUpdate update;
+        update.mutable_worker()->CopyFrom(request->worker());
+        std::vector<unsigned char> blob(update.ByteSizeLong());
+        update.SerializeToArray(blob.data(), blob.size());
+
+        const auto statement = db_.prepare("UPDATE " + JOB_TABLE_NAME +
+                                           " SET job_status = :job_status WHERE id = :id;");
+        db_.bind(statement, {{":id", job_id}, {":job_status", blob}});
+        db_.step(statement);
+    }
+
     return grpc::Status::OK;
 }
 
-grpc::Status WorkServer::update_job_status(grpc::ServerContext *,
-                                 [[maybe_unused]]const proto::JobStatusUpdate *request,
-                                 [[maybe_unused]]proto::JobStatusUpdateResponse *response) {
+grpc::Status WorkServer::update_job_status(
+    grpc::ServerContext *, const proto::JobStatusUpdateRequest *request,
+    proto::JobStatusUpdateResponse *response) {
+
+    std::cout << "updating job status for row" << std::endl;
+    const int job_id = request->job_id();
+    const proto::JobStatusUpdate &update = request->update();
+    std::vector<unsigned char> blob(update.ByteSizeLong());
+    update.SerializeToArray(blob.data(), blob.size());
+
+    const auto statement = db_.prepare("UPDATE " + JOB_TABLE_NAME +
+                                       " SET job_status = :job_status WHERE id = :id;");
+    db_.bind(statement, {{":id", job_id}, {":job_status", blob}});
+    db_.step(statement);
+
+    response->Clear();
     return grpc::Status::OK;
 }
 
 grpc::Status WorkServer::submit_job_result(grpc::ServerContext *,
-                                 [[maybe_unused]]const proto::JobResult *request,
-                                 [[maybe_unused]]proto::JobResultResponse *response) {
+                                           const proto::JobResultRequest *request,
+                                           proto::JobResultResponse *response) {
+    std::cout << "updating job result for row" << std::endl;
+    const int job_id = request->job_id();
+    const proto::JobResult &result = request->job_result();
+    std::vector<unsigned char> blob(result.ByteSizeLong());
+    result.SerializeToArray(blob.data(), blob.size());
+
+    const auto statement = db_.prepare("UPDATE " + JOB_TABLE_NAME +
+                                       " SET job_result = :job_result WHERE id = :id;");
+    db_.bind(statement, {{":id", job_id}, {":job_result", blob}});
+    db_.step(statement);
+
+    response->Clear();
+
     return grpc::Status::OK;
 }
 
 grpc::Status WorkServer::get_progress(grpc::ServerContext *,
-                                 [[maybe_unused]]const proto::ProgressRequest*request,
-                                 [[maybe_unused]]proto::ProgressResponse *response) {
+                                      const proto::ProgressRequest *,
+                                      proto::ProgressResponse *response) {
+    int jobs_completed;
+    int jobs_remaining;
+    int jobs_in_progress;
+
+    {
+        const auto rows = db_.query("SELECT count(*) FROM " + JOB_TABLE_NAME + " WHERE job_result IS NOT NULL;");
+        CHECK(!rows.empty());
+        jobs_completed = std::get<int>(rows.at(0).value(0));
+    }
+    {
+        const auto rows = db_.query("SELECT count(*) FROM " + JOB_TABLE_NAME + " WHERE job_status IS NULL;");
+        CHECK(!rows.empty());
+        jobs_remaining = std::get<int>(rows.at(0).value(0));
+    }
+    {
+        const auto rows = db_.query("SELECT count(*) FROM " + JOB_TABLE_NAME + " WHERE job_status IS NOT NULL AND job_result IS NULL;");
+        CHECK(!rows.empty());
+        jobs_in_progress = std::get<int>(rows.at(0).value(0));
+    }
+    response->set_jobs_completed(jobs_completed);
+    response->set_jobs_remaining(jobs_remaining);
+    response->set_jobs_in_progress(jobs_in_progress);
+
     return grpc::Status::OK;
 }
 }  // namespace robot::experimental::beacon_sim
