@@ -107,6 +107,11 @@ struct Database::Impl {
         return Row(std::move(values), stmt.impl_->column_names);
     }
 
+    void reset(const Statement &stmt) {
+        sqlite3_stmt *stmt_ptr = stmt.impl_->stmt.get();
+        sqlite3_reset(stmt_ptr);
+    }
+
     std::vector<Row> query(const std::string &statement) {
         Statement stmt = prepare(statement);
 
@@ -151,5 +156,7 @@ void Database::bind(const Database::Statement &stmt,
 std::optional<Database::Row> Database::step(const Database::Statement &stmt) {
     return impl_->step(stmt);
 }
+
+void Database::reset(const Database::Statement &stmt) { return impl_->reset(stmt); }
 
 }  // namespace robot::sqlite3

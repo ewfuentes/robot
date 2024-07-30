@@ -25,8 +25,8 @@ class Database {
 
     Statement prepare(const std::string &statement);
     void bind(const Statement &stmt, const std::unordered_map<std::string, Value> &args);
-    void reset(const Statement &stmt);
     std::optional<Row> step(const Statement &stmt);
+    void reset(const Statement &stmt);
 
    private:
     struct Impl;

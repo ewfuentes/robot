@@ -1,0 +1,71 @@
+
+syntax = "proto3";
+
+import "experimental/beacon_sim/experiment_results.proto";
+import "common/time/robot_time.proto";
+
+package robot.experimental.beacon_sim.proto;
+
+message Worker {
+  string name = 1;
+}
+
+message GetJobRequest {
+  Worker worker = 1;
+}
+
+message GetJobResponse {
+  optional int32 job_id = 1;
+  optional JobInputs job_inputs = 2;
+}
+
+message JobInputs {
+  string results_file = 1;
+  string experiment_config_path = 2;
+  // Inclusive
+  int32 start_idx = 3;
+  // Exclusive
+  int32 end_idx = 4;
+}
+
+message JobStatusUpdateRequest {
+  int32 job_id = 1;
+  JobStatusUpdate update = 2;
+}
+
+message JobStatusUpdate {
+  Worker worker = 1;
+  float progress = 2;
+  robot.time.proto.RobotTimestamp start_time = 3;
+  robot.time.proto.RobotTimestamp current_time = 4;
+
+}
+
+message JobStatusUpdateResponse {}
+
+message JobResult {
+  repeated robot.experimental.beacon_sim.proto.Plan plan = 2;
+}
+
+message JobResultRequest {
+  int32 job_id = 1;
+  JobResult job_result = 2;
+}
+
+message JobResultResponse {
+}
+
+message ProgressRequest {}
+
+message ProgressResponse {
+  int32 jobs_completed = 1;
+  int32 jobs_remaining = 2;
+  int32 jobs_in_progress = 3;
+}
+
+service WorkServer {
+  rpc get_job(GetJobRequest) returns (GetJobResponse) {}
+  rpc update_job_status(JobStatusUpdateRequest) returns (JobStatusUpdateResponse) {}
+  rpc submit_job_result(JobResultRequest) returns (JobResultResponse) {}
+  rpc get_progress(ProgressRequest) returns (ProgressResponse) {}
+}
