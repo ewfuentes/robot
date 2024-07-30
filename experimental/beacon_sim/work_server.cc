@@ -15,8 +15,8 @@ const std::string JOB_TABLE_NAME = "job_table";
 constexpr int CHUNK_SIZE = 1;
 
 std::vector<proto::JobInputs> create_inputs_from_result(
-    [[maybe_unused]] const std::filesystem::path &result_path,
-    [[maybe_unused]] const std::filesystem::path &experiment_config_path) {
+    const std::filesystem::path &result_path,
+    const std::filesystem::path &experiment_config_path) {
     const auto maybe_proto = robot::proto::load_from_file<proto::ExperimentResult>(result_path);
     CHECK(maybe_proto.has_value(), "Failed to load proto", result_path);
 
@@ -62,16 +62,13 @@ WorkServer::WorkServer(const std::filesystem::path &db_path,
     const bool does_table_exist = std::get<int>(rows.at(0).value(0));
     if (does_table_exist) {
         // Table exists
-        std::cout << "table exists" << std::endl;
         return;
     }
 
     // Get the chunks
     std::vector<proto::JobInputs> inputs = create_inputs(results_dir, experiment_configs_dir);
-    std::cout << "num inputs: " << inputs.size() << std::endl;
 
     // Insert them into the table
-    std::cout << "table does not exist" << std::endl;
     db_.query("CREATE TABLE " + JOB_TABLE_NAME +
               " (id INTEGER PRIMARY KEY ASC, job_inputs BLOB NOT NULL, job_status BLOB, job_result "
               "BLOB) STRICT;");
@@ -84,9 +81,6 @@ WorkServer::WorkServer(const std::filesystem::path &db_path,
         oss << "INSERT INTO " + JOB_TABLE_NAME + " (rowid, job_inputs) VALUES ";
         for (int j = 0; j < std::min(MAX_INSERTION_SIZE, num_chunks - i); j++) {
             const int idx = i + j;
-            if (idx % 100 == 0) {
-                std::cout << "Inserting " << i + j << " / " << inputs.size() << "\r";
-            }
             auto &job_input = inputs.at(idx);
             std::vector<unsigned char> blob(job_input.ByteSizeLong());
             job_input.SerializeToArray(blob.data(), blob.size());
@@ -104,7 +98,6 @@ WorkServer::WorkServer(const std::filesystem::path &db_path,
         db_.bind(statement, to_bind);
         db_.step(statement);
     }
-    std::cout << std::endl;
 }
 
 grpc::Status WorkServer::get_job(grpc::ServerContext *, const proto::GetJobRequest *request,
@@ -113,7 +106,6 @@ grpc::Status WorkServer::get_job(grpc::ServerContext *, const proto::GetJobReque
     const auto rows = db_.query("SELECT id, job_inputs FROM " + JOB_TABLE_NAME +
                                 " WHERE job_status IS NULL LIMIT 1;");
     if (rows.empty()) {
-        std::cout << "No rows returned" << std::endl;
         response->Clear();
         return grpc::Status::OK;
     }
@@ -132,7 +124,6 @@ grpc::Status WorkServer::get_job(grpc::ServerContext *, const proto::GetJobReque
 
     // Set an initial job status so it doesn't get requested again
     {
-        std::cout << "updating job status for row" << std::endl;
         proto::JobStatusUpdate update;
         update.mutable_worker()->CopyFrom(request->worker());
         std::vector<unsigned char> blob(update.ByteSizeLong());
@@ -150,7 +141,7 @@ grpc::Status WorkServer::get_job(grpc::ServerContext *, const proto::GetJobReque
 grpc::Status WorkServer::update_job_status(grpc::ServerContext *,
                                            const proto::JobStatusUpdateRequest *request,
                                            proto::JobStatusUpdateResponse *response) {
-    std::cout << "updating job status for row" << std::endl;
+    std::cout << "updating job status for row: " << request->DebugString() << std::endl;
     const int job_id = request->job_id();
     const proto::JobStatusUpdate &update = request->update();
     std::vector<unsigned char> blob(update.ByteSizeLong());
@@ -168,8 +159,8 @@ grpc::Status WorkServer::update_job_status(grpc::ServerContext *,
 grpc::Status WorkServer::submit_job_result(grpc::ServerContext *,
                                            const proto::JobResultRequest *request,
                                            proto::JobResultResponse *response) {
-    std::cout << "updating job result for row" << std::endl;
     const int job_id = request->job_id();
+    std::cout << "updating job result for row " << job_id << std::endl;
     const proto::JobResult &result = request->job_result();
     std::vector<unsigned char> blob(result.ByteSizeLong());
     result.SerializeToArray(blob.data(), blob.size());
