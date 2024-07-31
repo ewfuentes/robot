@@ -993,6 +993,16 @@ cc_library(
   ]
 )
 
+cc_binary(
+  name = "compute_oracle_results",
+  srcs = ["compute_oracle_results.cc"],
+  deps = [
+    "@cxxopts",
+    ":work_server",
+    "@com_github_grpc_grpc//:grpc++",
+  ]
+)
+
 py_package(
   name = "beacon_sim_package",
   deps = [
