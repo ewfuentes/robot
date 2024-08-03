@@ -280,7 +280,6 @@ std::vector<proto::Plan> compute_plans(
 
                 const int num_trials_completed = ++trials_completed;
                 progress_function(num_trials_completed, num_total_trials);
-                std::cout << num_trials_completed << std::endl;
             });
         }
     }
