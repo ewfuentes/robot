@@ -5,13 +5,15 @@
 #include <chrono>
 #include <csignal>
 #include <filesystem>
+#include <limits>
 #include <thread>
 
 #include "BS_thread_pool.hpp"
 #include "common/check.hh"
-#include "common/time/robot_time_to_proto.hh"
 #include "common/proto/load_from_file.hh"
+#include "common/time/robot_time_to_proto.hh"
 #include "cxxopts.hpp"
+#include "experimental/beacon_sim/beacon_potential.hh"
 #include "experimental/beacon_sim/belief_road_map_planner.hh"
 #include "experimental/beacon_sim/ekf_slam.hh"
 #include "experimental/beacon_sim/experiment_results.pb.h"
@@ -19,16 +21,21 @@
 #include "experimental/beacon_sim/robot_belief.hh"
 #include "experimental/beacon_sim/work_server.hh"
 #include "experimental/beacon_sim/world_map_config_to_proto.hh"
+#include "grpc++/grpc++.h"
 #include "planning/belief_road_map.hh"
 #include "planning/road_map.hh"
 #include "planning/road_map_to_proto.hh"
-#include "grpc++/grpc++.h"
 
 namespace fs = std::filesystem;
 
 namespace robot::experimental::beacon_sim {
 volatile std::sig_atomic_t stop_requested = 0;
 void signal_handler(int) { stop_requested = 1; }
+
+struct StartGoal {
+    Eigen::Vector2d start;
+    Eigen::Vector2d goal;
+};
 
 void run_server(const fs::path &database_path, const fs::path &results_dir,
                 const fs::path &experiment_config_path, const int server_port) {
@@ -111,14 +118,14 @@ EkfSlam load_ekf_slam(const MappedLandmarks &mapped_landmarks) {
 std::tuple<BeaconPotential, planning::RoadMap, EkfSlam> load_environment(
     const proto::ExperimentConfig &config, const std::filesystem::path &config_path) {
     // Load Map Config
-    const auto maybe_map_config = robot::proto::load_from_file<proto::WorldMapConfig>(
-        config_path / config.map_config_path());
+    const auto maybe_map_config =
+        robot::proto::load_from_file<proto::WorldMapConfig>(config_path / config.map_config_path());
     CHECK(maybe_map_config.has_value(), config_path / config.map_config_path());
     const WorldMap world_map(unpack_from(maybe_map_config.value()));
 
     // Load EKF State
-    const auto maybe_mapped_landmarks = robot::proto::load_from_file<proto::MappedLandmarks>(
-        config_path / config.ekf_state_path());
+    const auto maybe_mapped_landmarks =
+        robot::proto::load_from_file<proto::MappedLandmarks>(config_path / config.ekf_state_path());
     CHECK(maybe_mapped_landmarks.has_value());
     const auto mapped_landmarks = unpack_from(maybe_mapped_landmarks.value());
 
@@ -131,9 +138,59 @@ std::tuple<BeaconPotential, planning::RoadMap, EkfSlam> load_environment(
     return {world_map.beacon_potential(), road_map, load_ekf_slam(mapped_landmarks)};
 }
 
+std::vector<std::tuple<int, StartGoal>> sample_start_goal(const planning::RoadMap &map,
+                                                          const int num_trials,
+                                                          InOut<std::mt19937> gen) {
+    Eigen::Vector2d min = {
+        std::min_element(
+            map.points().begin(), map.points().end(),
+            [](const Eigen::Vector2d &a, const Eigen::Vector2d &b) { return a.x() < b.x(); })
+            ->x(),
+        std::min_element(
+            map.points().begin(), map.points().end(),
+            [](const Eigen::Vector2d &a, const Eigen::Vector2d &b) { return a.y() < b.y(); })
+            ->y(),
+    };
+    Eigen::Vector2d max = {
+        std::max_element(
+            map.points().begin(), map.points().end(),
+            [](const Eigen::Vector2d &a, const Eigen::Vector2d &b) { return a.x() < b.x(); })
+            ->x(),
+        std::max_element(
+            map.points().begin(), map.points().end(),
+            [](const Eigen::Vector2d &a, const Eigen::Vector2d &b) { return a.y() < b.y(); })
+            ->y(),
+    };
+
+    std::vector<std::tuple<int, StartGoal>> out;
+    std::uniform_real_distribution<> x_sampler(min.x(), max.x());
+    std::uniform_real_distribution<> y_sampler(min.y(), max.y());
+    for (int i = 0; i < num_trials; i++) {
+        out.push_back(std::make_tuple(i, StartGoal{.start = {x_sampler(*gen), y_sampler(*gen)},
+                                                   .goal = {x_sampler(*gen), y_sampler(*gen)}}));
+    }
+    return out;
+}
+
+std::vector<std::unordered_map<int, bool>> compute_configuration_samples(
+    const int num_eval_trials, const BeaconPotential &beacon_potential, InOut<std::mt19937> gen) {
+    std::vector<std::unordered_map<int, bool>> out;
+    for (int i = 0; i < num_eval_trials; i++) {
+        const std::vector<int> present_beacons = beacon_potential.sample(gen);
+
+        std::unordered_map<int, bool> assignment;
+        for (const int beacon_id : beacon_potential.members()) {
+            const auto iter = std::find(present_beacons.begin(), present_beacons.end(), beacon_id);
+            assignment[beacon_id] = iter != present_beacons.end();
+        }
+        out.emplace_back(std::move(assignment));
+    }
+    return out;
+}
+
 std::vector<proto::Plan> compute_plans(
-    const fs::path &results_file_path, [[maybe_unused]] const fs::path &experiment_config_path,
-    [[maybe_unused]] const int start_idx, [[maybe_unused]] const int end_idx, const int num_threads,
+    const fs::path &results_file_path, const fs::path &experiment_config_path, const int start_idx,
+    const int end_idx, const int num_threads,
     [[maybe_unused]] const std::function<void(const int, const int)> &progress_function) {
     const auto maybe_results_file =
         robot::proto::load_from_file<proto::ExperimentResult>(results_file_path);
@@ -142,13 +199,68 @@ std::vector<proto::Plan> compute_plans(
 
     const auto &experiment_config = results_file.experiment_config();
     // Load the beacon potential, road map and ekf from the config file
-    const auto &[beacon_potential, road_map_, ekf_] =
+    const auto &[beacon_potential_, road_map_, ekf_] =
         load_environment(experiment_config, experiment_config_path);
+    const BeaconPotential &beacon_potential = beacon_potential_;
+    const planning::RoadMap &road_map = road_map_;
+    EkfSlam ekf = ekf_;
 
-    // Load the beacon potential
     // compute the configuration samples
+    std::mt19937 eval_gen(experiment_config.evaluation_base_seed());
+    const std::vector<std::unordered_map<int, bool>> configuration_samples =
+        compute_configuration_samples(experiment_config.num_eval_trials(), beacon_potential,
+                                      make_in_out(eval_gen));
+
+    // compute the start goals
+    std::mt19937 gen(experiment_config.start_goal_seed());
+    const auto start_goals =
+        sample_start_goal(road_map_, experiment_config.num_trials(), make_in_out(gen));
+
     // Fan out over samples
+    const int num_start_goals = end_idx - start_idx;
+    const int num_total_trials = num_start_goals * experiment_config.num_eval_trials();
     BS::thread_pool pool(num_threads);
+    std::atomic<int> trials_completed(0);
+    std::vector<planning::RoadMap> trial_road_maps;
+    for (int start_goal_idx = start_idx; start_goal_idx < end_idx; start_goal_idx++) {
+        trial_road_maps.push_back(road_map);
+        auto &trial_road_map = trial_road_maps.back();
+        const auto &start_goal = std::get<1>(start_goals.at(start_goal_idx));
+        trial_road_map.add_start_goal({
+            .start = start_goal.start,
+            .goal = start_goal.goal,
+            .connection_radius_m = experiment_config.start_goal_connection_radius_m(),
+        });
+        const liegroups::SE2 local_from_robot = liegroups::SE2::trans(start_goal.start);
+        ekf.estimate().local_from_robot(local_from_robot);
+
+        for (int eval_trial_idx = 0; eval_trial_idx < experiment_config.num_eval_trials();
+             eval_trial_idx++) {
+            pool.detach_task(
+                [=, &trials_completed, road_map = trial_road_map, ekf = ekf,
+                 max_sensor_range_m = experiment_config.max_sensor_range_m()]() mutable {
+                    const BeliefRoadMapOptions options = {
+                        .max_sensor_range_m = max_sensor_range_m,
+                        .uncertainty_tolerance = std::nullopt,
+                        .max_num_edge_transforms = std::numeric_limits<int>::max(),
+                        .timeout = std::nullopt,
+                        .uncertainty_size_options = ProbMassInRegion{
+                            .position_x_half_width_m = 0.5,
+                            .position_y_half_width_m = 0.5,
+                            .heading_half_width_rad = 6.0,
+                        }};
+                    const auto maybe_plan =
+                        compute_belief_road_map_plan(road_map, ekf, beacon_potential, options);
+                    CHECK(maybe_plan.has_value());
+
+                    const int num_trials_completed = ++trials_completed;
+                    progress_function(num_trials_completed, num_total_trials);
+                    std::cout << num_trials_completed << std::endl;
+                });
+        }
+    }
+    pool.wait();
+
     return {};
 }
 
