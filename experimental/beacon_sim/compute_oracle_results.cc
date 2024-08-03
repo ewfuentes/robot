@@ -216,12 +216,25 @@ std::vector<proto::Plan> compute_plans(
     const auto start_goals =
         sample_start_goal(road_map_, experiment_config.num_trials(), make_in_out(gen));
 
+    const auto prob_mass_in_region_metric = make_uncertainty_size<RobotBelief>(ProbMassInRegion{
+        .position_x_half_width_m = 0.5,
+        .position_y_half_width_m = 0.5,
+        .heading_half_width_rad = 6.0,
+    });
+
+    const auto expected_det_metric =
+        make_uncertainty_size<RobotBelief>(ExpectedDeterminant{.position_only = false});
+    const auto expected_pos_det_metric =
+        make_uncertainty_size<RobotBelief>(ExpectedDeterminant{.position_only = false});
+
     // Fan out over samples
     const int num_start_goals = end_idx - start_idx;
     const int num_total_trials = num_start_goals * experiment_config.num_eval_trials();
     BS::thread_pool pool(num_threads);
     std::atomic<int> trials_completed(0);
     std::vector<planning::RoadMap> trial_road_maps;
+    std::vector<proto::Plan> out;
+    out.reserve(num_total_trials);
     for (int start_goal_idx = start_idx; start_goal_idx < end_idx; start_goal_idx++) {
         trial_road_maps.push_back(road_map);
         auto &trial_road_map = trial_road_maps.back();
@@ -236,32 +249,44 @@ std::vector<proto::Plan> compute_plans(
 
         for (int eval_trial_idx = 0; eval_trial_idx < experiment_config.num_eval_trials();
              eval_trial_idx++) {
-            pool.detach_task(
-                [=, &trials_completed, road_map = trial_road_map, ekf = ekf,
-                 max_sensor_range_m = experiment_config.max_sensor_range_m()]() mutable {
-                    const BeliefRoadMapOptions options = {
-                        .max_sensor_range_m = max_sensor_range_m,
-                        .uncertainty_tolerance = std::nullopt,
-                        .max_num_edge_transforms = std::numeric_limits<int>::max(),
-                        .timeout = std::nullopt,
-                        .uncertainty_size_options = ProbMassInRegion{
-                            .position_x_half_width_m = 0.5,
-                            .position_y_half_width_m = 0.5,
-                            .heading_half_width_rad = 6.0,
-                        }};
-                    const auto maybe_plan =
-                        compute_belief_road_map_plan(road_map, ekf, beacon_potential, options);
-                    CHECK(maybe_plan.has_value());
+            out.push_back({});
+            pool.detach_task([=, &trials_completed, &road_map = trial_road_map, ekf = ekf,
+                                beacon_potential = beacon_potential,
+                                &assignment = configuration_samples.at(eval_trial_idx),
+                              max_sensor_range_m = experiment_config.max_sensor_range_m(),
+                              &plan_out = out.back()]() mutable {
+                const BeliefRoadMapOptions options = {
+                    .max_sensor_range_m = max_sensor_range_m,
+                    .uncertainty_tolerance = std::nullopt,
+                    .max_num_edge_transforms = std::numeric_limits<int>::max(),
+                    .timeout = std::nullopt,
+                    .uncertainty_size_options = ProbMassInRegion{
+                        .position_x_half_width_m = 0.5,
+                        .position_y_half_width_m = 0.5,
+                        .heading_half_width_rad = 6.0,
+                    }};
+                const auto conditioned_potential = beacon_potential.conditioned_on(assignment);
+                const auto maybe_plan =
+                    compute_belief_road_map_plan(road_map, ekf, conditioned_potential, options);
+                CHECK(maybe_plan.has_value());
 
-                    const int num_trials_completed = ++trials_completed;
-                    progress_function(num_trials_completed, num_total_trials);
-                    std::cout << num_trials_completed << std::endl;
-                });
+                plan_out.mutable_nodes()->Add(maybe_plan->nodes.begin(), maybe_plan->nodes.end());
+                plan_out.mutable_average_plan_metrics()->set_expected_determinant(
+                    expected_det_metric(maybe_plan->beliefs.back()));
+                plan_out.mutable_average_plan_metrics()->set_expected_position_determinant(
+                    expected_pos_det_metric(maybe_plan->beliefs.back()));
+                plan_out.mutable_average_plan_metrics()->set_prob_mass_in_region(
+                    prob_mass_in_region_metric(maybe_plan->beliefs.back()));
+
+                const int num_trials_completed = ++trials_completed;
+                progress_function(num_trials_completed, num_total_trials);
+                std::cout << num_trials_completed << std::endl;
+            });
         }
     }
     pool.wait();
 
-    return {};
+    return out;
 }
 
 void compute_oracle_results(const std::string server_address, const int server_port,
@@ -281,7 +306,7 @@ void compute_oracle_results(const std::string server_address, const int server_p
         const auto progress_callback = [&client, &hostname, &job_start_time,
                                         job_id = maybe_job_response->job_id()](
                                            const int plans_completed, const int total_plans) {
-            if (plans_completed % 10 != 0) {
+            if (plans_completed % 100 != 0) {
                 return;
             }
             grpc::ClientContext client_context;
@@ -300,7 +325,17 @@ void compute_oracle_results(const std::string server_address, const int server_p
         const auto plans = compute_plans(
             fs::path(inputs.results_file()), fs::path(inputs.experiment_config_path()),
             inputs.start_idx(), inputs.end_idx(), num_threads, progress_callback);
+
         // Send completed results
+        {
+            
+            grpc::ClientContext client_context;
+            proto::JobResultRequest result_request;
+            result_request.mutable_job_result()->mutable_plan()->Add(plans.begin(), plans.end());
+            result_request.set_job_id(maybe_job_response->job_id());
+            proto::JobResultResponse result_response;
+            CHECK(client.submit_job_result(&client_context, result_request, &result_response).ok());
+        }
     }
 }
 }  // namespace robot::experimental::beacon_sim
