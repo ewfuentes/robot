@@ -12,17 +12,18 @@ struct Database::Statement::Impl {
 };
 
 struct Database::Impl {
-    Impl(const std::filesystem::path &path) { check_result(sqlite3_open(path.c_str(), &db_)); }
+    Impl(const std::filesystem::path &path) { check_result(sqlite3_open(path.c_str(), &db_), path); }
     ~Impl() { check_result(sqlite3_close(db_)); }
     struct sqlite3 *db() { return db_; }
 
-    void check_result(const int error_code) {
-        CHECK(error_code == SQLITE_OK, sqlite3_errmsg(db_));
+    template <typename...Ts>
+    void check_result(const int error_code, Ts... args) {
+        CHECK(error_code == SQLITE_OK, sqlite3_errmsg(db_), args...);
     };
 
     Database::Statement prepare(const std::string &statement) {
         sqlite3_stmt *stmt;
-        check_result(sqlite3_prepare_v2(db_, statement.c_str(), statement.size(), &stmt, nullptr));
+        check_result(sqlite3_prepare_v2(db_, statement.c_str(), statement.size(), &stmt, nullptr), statement);
         return Statement{
             .impl_ = std::make_unique<Database::Statement::Impl>(Database::Statement::Impl{
                 .stmt = std::shared_ptr<sqlite3_stmt>(
