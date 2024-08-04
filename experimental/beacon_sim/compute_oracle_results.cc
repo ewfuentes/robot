@@ -138,9 +138,8 @@ std::tuple<BeaconPotential, planning::RoadMap, EkfSlam> load_environment(
     return {world_map.beacon_potential(), road_map, load_ekf_slam(mapped_landmarks)};
 }
 
-std::vector<std::tuple<int, StartGoal>> sample_start_goal(const planning::RoadMap &map,
-                                                          const int num_trials,
-                                                          InOut<std::mt19937> gen) {
+std::vector<StartGoal> sample_start_goal(const planning::RoadMap &map, const int num_trials,
+                                         InOut<std::mt19937> gen) {
     Eigen::Vector2d min = {
         std::min_element(
             map.points().begin(), map.points().end(),
@@ -162,12 +161,12 @@ std::vector<std::tuple<int, StartGoal>> sample_start_goal(const planning::RoadMa
             ->y(),
     };
 
-    std::vector<std::tuple<int, StartGoal>> out;
+    std::vector<StartGoal> out;
     std::uniform_real_distribution<> x_sampler(min.x(), max.x());
     std::uniform_real_distribution<> y_sampler(min.y(), max.y());
     for (int i = 0; i < num_trials; i++) {
-        out.push_back(std::make_tuple(i, StartGoal{.start = {x_sampler(*gen), y_sampler(*gen)},
-                                                   .goal = {x_sampler(*gen), y_sampler(*gen)}}));
+        out.push_back(StartGoal{.start = {x_sampler(*gen), y_sampler(*gen)},
+                                .goal = {x_sampler(*gen), y_sampler(*gen)}});
     }
     return out;
 }
@@ -188,10 +187,10 @@ std::vector<std::unordered_map<int, bool>> compute_configuration_samples(
     return out;
 }
 
-std::vector<proto::Plan> compute_plans(
-    const fs::path &results_file_path, const fs::path &experiment_config_path, const int start_idx,
-    const int end_idx, const int num_threads,
-    [[maybe_unused]] const std::function<void(const int, const int)> &progress_function) {
+std::vector<proto::OraclePlan> compute_plans(
+    const fs::path &results_file_path, const fs::path &experiment_config_path,
+    const int eval_start_idx, const int eval_end_idx, const int num_threads,
+    const std::function<void(const int, const int)> &progress_function) {
     const auto maybe_results_file =
         robot::proto::load_from_file<proto::ExperimentResult>(results_file_path);
     CHECK(maybe_results_file.has_value());
@@ -202,7 +201,7 @@ std::vector<proto::Plan> compute_plans(
     const auto &[beacon_potential_, road_map_, ekf_] =
         load_environment(experiment_config, experiment_config_path);
     const BeaconPotential &beacon_potential = beacon_potential_;
-    const planning::RoadMap &road_map = road_map_;
+    planning::RoadMap road_map = road_map_;
     EkfSlam ekf = ekf_;
 
     // compute the configuration samples
@@ -227,34 +226,34 @@ std::vector<proto::Plan> compute_plans(
     const auto expected_pos_det_metric =
         make_uncertainty_size<RobotBelief>(ExpectedDeterminant{.position_only = false});
 
-    // Fan out over samples
-    const int num_start_goals = end_idx - start_idx;
-    const int num_total_trials = num_start_goals * experiment_config.num_eval_trials();
+    //    // Fan out over samples
+    const int num_configurations = eval_end_idx - eval_start_idx;
+    const int num_total_trials = num_configurations * experiment_config.num_trials();
+    std::vector<std::vector<proto::OraclePlan>> returns;
+    returns.reserve(num_configurations);
     BS::thread_pool pool(num_threads);
     std::atomic<int> trials_completed(0);
-    std::vector<planning::RoadMap> trial_road_maps;
-    std::vector<proto::Plan> out;
-    out.reserve(num_total_trials);
-    for (int start_goal_idx = start_idx; start_goal_idx < end_idx; start_goal_idx++) {
-        trial_road_maps.push_back(road_map);
-        auto &trial_road_map = trial_road_maps.back();
-        const auto &start_goal = std::get<1>(start_goals.at(start_goal_idx));
-        trial_road_map.add_start_goal({
-            .start = start_goal.start,
-            .goal = start_goal.goal,
-            .connection_radius_m = experiment_config.start_goal_connection_radius_m(),
-        });
-        const liegroups::SE2 local_from_robot = liegroups::SE2::trans(start_goal.start);
-        ekf.estimate().local_from_robot(local_from_robot);
-
-        for (int eval_trial_idx = 0; eval_trial_idx < experiment_config.num_eval_trials();
-             eval_trial_idx++) {
-            out.push_back({});
-            pool.detach_task([=, &trials_completed, &road_map = trial_road_map, ekf = ekf,
-                                beacon_potential = beacon_potential,
-                                &assignment = configuration_samples.at(eval_trial_idx),
-                              max_sensor_range_m = experiment_config.max_sensor_range_m(),
-                              &plan_out = out.back()]() mutable {
+    for (int eval_trial_idx = eval_start_idx; eval_trial_idx < eval_end_idx; eval_trial_idx++) {
+        returns.push_back({});
+        pool.detach_task([&out_vec = returns.back(), num_trials = experiment_config.num_trials(),
+                          &assignment = configuration_samples.at(eval_trial_idx), &start_goals,
+                          beacon_potential, road_map,
+                          connection_radius_m = experiment_config.start_goal_connection_radius_m(),
+                          ekf, max_sensor_range_m = experiment_config.max_sensor_range_m(),
+                          eval_trial_idx, expected_det_metric, expected_pos_det_metric,
+                          prob_mass_in_region_metric, &trials_completed,
+                          num_total_trials, &progress_function]() mutable {
+            out_vec.reserve(num_trials);
+            const auto conditioned_potential = beacon_potential.conditioned_on(assignment);
+            for (int trial_idx = 0; trial_idx < num_trials; trial_idx++) {
+                road_map.add_start_goal({
+                    .start = start_goals.at(trial_idx).start,
+                    .goal = start_goals.at(trial_idx).goal,
+                    .connection_radius_m = connection_radius_m,
+                });
+                const liegroups::SE2 local_from_robot =
+                    liegroups::SE2::trans(start_goals.at(trial_idx).start);
+                ekf.estimate().local_from_robot(local_from_robot);
                 const BeliefRoadMapOptions options = {
                     .max_sensor_range_m = max_sensor_range_m,
                     .uncertainty_tolerance = std::nullopt,
@@ -265,26 +264,29 @@ std::vector<proto::Plan> compute_plans(
                         .position_y_half_width_m = 0.5,
                         .heading_half_width_rad = 6.0,
                     }};
-                const auto conditioned_potential = beacon_potential.conditioned_on(assignment);
                 const auto maybe_plan =
                     compute_belief_road_map_plan(road_map, ekf, conditioned_potential, options);
                 CHECK(maybe_plan.has_value());
-
+                proto::OraclePlan plan_out;
+                plan_out.set_trial_id(trial_idx);
+                plan_out.set_eval_trial_id(eval_trial_idx);
                 plan_out.mutable_nodes()->Add(maybe_plan->nodes.begin(), maybe_plan->nodes.end());
-                plan_out.mutable_average_plan_metrics()->set_expected_determinant(
-                    expected_det_metric(maybe_plan->beliefs.back()));
-                plan_out.mutable_average_plan_metrics()->set_expected_position_determinant(
+                plan_out.set_expected_determinant(expected_det_metric(maybe_plan->beliefs.back()));
+                plan_out.set_expected_position_determinant(
                     expected_pos_det_metric(maybe_plan->beliefs.back()));
-                plan_out.mutable_average_plan_metrics()->set_prob_mass_in_region(
+                plan_out.set_prob_mass_in_region(
                     prob_mass_in_region_metric(maybe_plan->beliefs.back()));
-
-                const int num_trials_completed = ++trials_completed;
-                progress_function(num_trials_completed, num_total_trials);
-            });
-        }
+                out_vec.emplace_back(std::move(plan_out));
+                progress_function(++trials_completed, num_total_trials);
+            }
+        });
     }
     pool.wait();
+    std::vector<proto::OraclePlan> out;
 
+    for (const auto &vec : returns) {
+        out.insert(out.end(), vec.begin(), vec.end());
+    }
     return out;
 }
 
@@ -323,11 +325,10 @@ void compute_oracle_results(const std::string server_address, const int server_p
         // Compute the results
         const auto plans = compute_plans(
             fs::path(inputs.results_file()), fs::path(inputs.experiment_config_path()),
-            inputs.start_idx(), inputs.end_idx(), num_threads, progress_callback);
+            inputs.eval_start_idx(), inputs.eval_end_idx(), num_threads, progress_callback);
 
         // Send completed results
         {
-            
             grpc::ClientContext client_context;
             proto::JobResultRequest result_request;
             result_request.mutable_job_result()->mutable_plan()->Add(plans.begin(), plans.end());
