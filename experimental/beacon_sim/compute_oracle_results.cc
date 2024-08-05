@@ -244,8 +244,8 @@ std::vector<proto::OraclePlan> compute_plans(
                           connection_radius_m = experiment_config.start_goal_connection_radius_m(),
                           ekf, max_sensor_range_m = experiment_config.max_sensor_range_m(),
                           eval_trial_idx, expected_det_metric, expected_pos_det_metric,
-                          prob_mass_in_region_metric, &trials_completed,
-                          num_total_trials, &progress_function]() mutable {
+                          prob_mass_in_region_metric, &trials_completed, num_total_trials,
+                          &progress_function]() mutable {
             out_vec.reserve(num_trials);
             const auto conditioned_potential = beacon_potential.conditioned_on(assignment);
             for (int trial_idx = 0; trial_idx < num_trials; trial_idx++) {
