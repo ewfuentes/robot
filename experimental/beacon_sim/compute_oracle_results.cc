@@ -88,6 +88,9 @@ std::optional<proto::GetJobResponse> get_job(const std::string &worker_name,
     job_request.mutable_worker()->set_name(worker_name);
     proto::GetJobResponse job_response;
     CHECK(client.get_job(&context, job_request, &job_response).ok());
+    if (!job_response.has_job_id()) {
+        return std::nullopt;
+    }
     return job_response;
 }
 
