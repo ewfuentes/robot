@@ -80,8 +80,7 @@ std::vector<std::vector<proto::PlanMetrics>> compute_oracle_metrics(
     const planning::RoadMap &road_map, const std::vector<std::vector<int>> &present_beacon_samples,
     const BeaconPotential &beacon_potential, const std::vector<StartGoal> &start_goals,
     const EkfSlam &ekf, const double max_sensor_range_m,
-    const double start_goal_connection_radius_m,
-    const int num_threads) {
+    const double start_goal_connection_radius_m, const int num_threads) {
     std::vector<std::vector<proto::PlanMetrics>> oracle_plan_metrics_by_eval_trial_id(
         present_beacon_samples.size());
 
@@ -161,8 +160,7 @@ std::vector<std::vector<proto::PlanMetrics>> compute_oracle_metrics(
 
 void reprocess_result(const proto::ExperimentResult &result,
                       const std::filesystem::path &experiment_config_path,
-                      const std::filesystem::path &output_path,
-                      const int num_threads) {
+                      const std::filesystem::path &output_path, const int num_threads) {
     proto::ExperimentResult out = result;
     const auto &experiment_config = result.experiment_config();
     // Load the beacon potential, road map and ekf from the config file
@@ -214,9 +212,10 @@ void reprocess_result(const proto::ExperimentResult &result,
         });
     }
 
-    const auto &oracle_metrics_by_eval_trial_id = compute_oracle_metrics(
-        road_map, samples, beacon_potential, start_goals, ekf,
-        experiment_config.max_sensor_range_m(), experiment_config.start_goal_connection_radius_m(), num_threads);
+    const auto &oracle_metrics_by_eval_trial_id =
+        compute_oracle_metrics(road_map, samples, beacon_potential, start_goals, ekf,
+                               experiment_config.max_sensor_range_m(),
+                               experiment_config.start_goal_connection_radius_m(), num_threads);
 
     BS::thread_pool pool(num_threads);
     std::vector<proto::PlannerResult> new_results(out.results_size());
