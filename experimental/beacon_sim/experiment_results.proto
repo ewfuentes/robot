@@ -14,6 +14,7 @@ message PlanMetrics {
   double prob_mass_in_region = 4;
   double expected_trace = 5;
   double expected_position_trace = 6;
+  double prob_mass_in_region_regret = 7;
 }
 
 // NEXTID: 8
