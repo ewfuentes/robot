@@ -993,6 +993,23 @@ cc_library(
   ]
 )
 
+cc_binary(
+  name = "compute_oracle_results",
+  srcs = ["compute_oracle_results.cc"],
+  deps = [
+    "@cxxopts",
+    ":work_server",
+    ":belief_road_map_planner",
+    ":mapped_landmarks_to_proto",
+    "//common:check",
+    "//common/proto:load_from_file",
+    "//common/time:robot_time_to_proto",
+    "//planning:road_map_to_proto",
+    "@bs_thread_pool",
+    "@com_github_grpc_grpc//:grpc++",
+  ]
+)
+
 py_package(
   name = "beacon_sim_package",
   deps = [

@@ -23,9 +23,9 @@ message JobInputs {
   string results_file = 1;
   string experiment_config_path = 2;
   // Inclusive
-  int32 start_idx = 3;
+  int32 eval_start_idx = 3;
   // Exclusive
-  int32 end_idx = 4;
+  int32 eval_end_idx = 4;
 }
 
 message JobStatusUpdateRequest {
@@ -43,8 +43,17 @@ message JobStatusUpdate {
 
 message JobStatusUpdateResponse {}
 
+message OraclePlan {
+  int32 trial_id = 1;
+  int32 eval_trial_id = 2;
+  repeated int32 nodes = 3;
+  float expected_determinant = 4;
+  float expected_position_determinant = 5;
+  float prob_mass_in_region = 6;
+}
+
 message JobResult {
-  repeated robot.experimental.beacon_sim.proto.Plan plan = 2;
+  repeated OraclePlan plan = 2;
 }
 
 message JobResultRequest {

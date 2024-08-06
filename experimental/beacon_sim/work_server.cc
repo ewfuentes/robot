@@ -12,7 +12,7 @@
 namespace robot::experimental::beacon_sim {
 namespace {
 const std::string JOB_TABLE_NAME = "job_table";
-constexpr int CHUNK_SIZE = 1;
+constexpr int CHUNK_SIZE = 200;
 
 std::vector<proto::JobInputs> create_inputs_from_result(
     const std::filesystem::path &result_path, const std::filesystem::path &experiment_config_path) {
@@ -26,8 +26,8 @@ std::vector<proto::JobInputs> create_inputs_from_result(
         proto::JobInputs inputs;
         inputs.set_results_file(result_path.string());
         inputs.set_experiment_config_path(experiment_config_path.string());
-        inputs.set_start_idx(i);
-        inputs.set_end_idx(std::min(num_eval_trials, i + CHUNK_SIZE));
+        inputs.set_eval_start_idx(i);
+        inputs.set_eval_end_idx(std::min(num_eval_trials, i + CHUNK_SIZE));
         out.emplace_back(std::move(inputs));
     }
     return out;
