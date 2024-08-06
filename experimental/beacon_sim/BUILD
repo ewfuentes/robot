@@ -929,6 +929,7 @@ cc_binary(
     "@cxxopts",
     "//common/proto:load_from_file",
     "//common/math:matrix_to_proto",
+    "//common/sqlite3",
     "//common:check",
     ":experiment_results_proto",
     ":ekf_slam",
@@ -1007,6 +1008,14 @@ cc_binary(
     "//planning:road_map_to_proto",
     "@bs_thread_pool",
     "@com_github_grpc_grpc//:grpc++",
+  ]
+)
+
+py_binary(
+  name = "post_process_oracle_db",
+  srcs = ["post_process_oracle_db.py"],
+  deps = [
+    ":work_server_service_proto_py",
   ]
 )
 
