@@ -102,8 +102,8 @@ std::vector<std::vector<proto::PlanMetrics>> load_oracle_metrics(
         if (trial_id == 0) {
             out.push_back({});
         }
-        CHECK(out.size() == eval_trial_id +1);
-        
+        CHECK(out.size() == eval_trial_id + 1);
+
         out.back().push_back({});
         auto &to_fill = out.back().back();
         to_fill.set_prob_mass_in_region(prob_mass_in_region);
