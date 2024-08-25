@@ -9,6 +9,7 @@
 #include "common/check.hh"
 #include "common/math/matrix_to_proto.hh"
 #include "common/proto/load_from_file.hh"
+#include "common/sqlite3/sqlite3.hh"
 #include "cxxopts.hpp"
 #include "experimental/beacon_sim/beacon_potential.hh"
 #include "experimental/beacon_sim/belief_road_map_planner.hh"
@@ -76,91 +77,45 @@ std::tuple<BeaconPotential, planning::RoadMap, EkfSlam> load_environment(
     return {world_map.beacon_potential(), road_map, load_ekf_slam(mapped_landmarks)};
 }
 
-std::vector<std::vector<proto::PlanMetrics>> compute_oracle_metrics(
-    const planning::RoadMap &road_map, const std::vector<std::vector<int>> &present_beacon_samples,
-    const BeaconPotential &beacon_potential, const std::vector<StartGoal> &start_goals,
-    const EkfSlam &ekf, const double max_sensor_range_m,
-    const double start_goal_connection_radius_m, const int num_threads) {
-    std::vector<std::vector<proto::PlanMetrics>> oracle_plan_metrics_by_eval_trial_id(
-        present_beacon_samples.size());
+std::vector<std::vector<proto::PlanMetrics>> load_oracle_metrics(
+    const std::filesystem::path &oracle_db_path, const std::string &experiment_name) {
+    sqlite3::Database oracle_db(oracle_db_path);
 
-    const auto expected_det_metric =
-        make_uncertainty_size<RobotBelief>(ExpectedDeterminant{.position_only = false});
-    const auto expected_pos_det_metric =
-        make_uncertainty_size<RobotBelief>(ExpectedDeterminant{.position_only = true});
-    const auto prob_mass_in_region_metric = make_uncertainty_size<RobotBelief>(ProbMassInRegion{
-        .position_x_half_width_m = 0.5,
-        .position_y_half_width_m = 0.5,
-        .heading_half_width_rad = 6.0,
-    });
+    const int exp_id = [&oracle_db, &experiment_name]() -> int {
+        const auto statement =
+            oracle_db.prepare("SELECT rowid FROM experiment_names WHERE exp_name = :exp_name");
+        oracle_db.bind(statement, {{":exp_name", experiment_name}});
+        return std::get<int>(oracle_db.step(statement).value().value(0));
+    }();
 
-    const auto expected_trace_metric =
-        make_uncertainty_size<RobotBelief>(ExpectedTrace{.position_only = false});
-    const auto expected_position_trace_metric =
-        make_uncertainty_size<RobotBelief>(ExpectedTrace{.position_only = true});
+    const sqlite3::Database::Statement stmt = oracle_db.prepare(
+        "SELECT trial_id, eval_id, prob_mass_in_region FROM oracle_results WHERE exp_type = "
+        ":exp_id ORDER BY eval_id ASC, trial_id ASC;");
+    oracle_db.bind(stmt, {{":exp_id", exp_id}});
+    std::optional<sqlite3::Database::Row> maybe_row;
+    std::vector<std::vector<proto::PlanMetrics>> out;
+    while ((maybe_row = oracle_db.step(stmt)).has_value()) {
+        const auto &row = maybe_row.value();
+        const int &trial_id = std::get<int>(row.value(0));
+        const int &eval_trial_id = std::get<int>(row.value(1));
+        const double &prob_mass_in_region = std::get<double>(row.value(2));
+        if (trial_id == 0) {
+            out.push_back({});
+        }
+        CHECK(out.size() == eval_trial_id + 1);
 
-    std::atomic<int> remaining(present_beacon_samples.size() * start_goals.size());
-    BS::thread_pool pool(num_threads);
-    for (int i = 0; i < static_cast<int>(present_beacon_samples.size()); i++) {
-        pool.detach_task([=, &present_beacons = present_beacon_samples.at(i), &start_goals,
-                          &plan_metrics = oracle_plan_metrics_by_eval_trial_id.at(i),
-                          &beacon_potential, road_map = road_map, ekf = ekf, &remaining]() mutable {
-            std::unordered_map<int, bool> assignment;
-            for (const int beacon_id : present_beacons) {
-                const auto iter = std::find(beacon_potential.members().begin(),
-                                            beacon_potential.members().end(), beacon_id);
-                assignment[beacon_id] = iter != beacon_potential.members().end();
-            }
-            BeaconPotential conditioned_potential = beacon_potential.conditioned_on(assignment);
-            for (int start_goal_idx = 0; start_goal_idx < static_cast<int>(start_goals.size());
-                 start_goal_idx++) {
-                const auto &start_goal = start_goals.at(start_goal_idx);
-                road_map.add_start_goal({.start = start_goal.start,
-                                         .goal = start_goal.goal,
-                                         .connection_radius_m = start_goal_connection_radius_m});
-                const liegroups::SE2 map_from_robot = liegroups::SE2::trans(start_goal.start);
-                ekf.estimate().local_from_robot(map_from_robot);
-                const auto brm_plan = compute_belief_road_map_plan(
-                    road_map, ekf, conditioned_potential,
-                    {.max_sensor_range_m = max_sensor_range_m,
-                     .uncertainty_tolerance = std::nullopt,
-                     .max_num_edge_transforms = std::numeric_limits<int>::max(),
-                     .timeout = std::nullopt,
-                     .uncertainty_size_options = ProbMassInRegion{
-                         .position_x_half_width_m = 0.5,
-                         .position_y_half_width_m = 0.5,
-                         .heading_half_width_rad = 6.0,
-                     }});
-
-                proto::PlanMetrics metrics;
-                metrics.set_expected_trace(expected_trace_metric(brm_plan.value().beliefs.back()));
-                metrics.set_expected_position_trace(
-                    expected_position_trace_metric(brm_plan.value().beliefs.back()));
-                metrics.set_expected_determinant(
-                    expected_det_metric(brm_plan.value().beliefs.back()));
-                metrics.set_expected_position_determinant(
-                    expected_pos_det_metric(brm_plan.value().beliefs.back()));
-                metrics.set_prob_mass_in_region(
-                    prob_mass_in_region_metric(brm_plan.value().beliefs.back()));
-
-                plan_metrics.push_back(metrics);
-
-                const int plans_remaining = --remaining;
-
-                if (plans_remaining % 1 == 0) {
-                    std::cout << "Oracle metrics remaining: " << plans_remaining << std::endl;
-                }
-            }
-        });
+        out.back().push_back({});
+        auto &to_fill = out.back().back();
+        to_fill.set_prob_mass_in_region(prob_mass_in_region);
     }
-    pool.wait();
-    return oracle_plan_metrics_by_eval_trial_id;
+    return out;
 }
 }  // namespace
 
 void reprocess_result(const proto::ExperimentResult &result,
                       const std::filesystem::path &experiment_config_path,
-                      const std::filesystem::path &output_path, const int num_threads) {
+                      const std::filesystem::path &output_path,
+                      const std::filesystem::path &oracle_db_path, const int num_threads) {
     proto::ExperimentResult out = result;
     const auto &experiment_config = result.experiment_config();
     // Load the beacon potential, road map and ekf from the config file
@@ -213,9 +168,7 @@ void reprocess_result(const proto::ExperimentResult &result,
     }
 
     const auto &oracle_metrics_by_eval_trial_id =
-        compute_oracle_metrics(road_map, samples, beacon_potential, start_goals, ekf,
-                               experiment_config.max_sensor_range_m(),
-                               experiment_config.start_goal_connection_radius_m(), num_threads);
+        load_oracle_metrics(oracle_db_path, experiment_config.name());
 
     BS::thread_pool pool(num_threads);
     std::vector<proto::PlannerResult> new_results(out.results_size());
@@ -327,6 +280,7 @@ int main(int argc, const char **argv) {
         ("results_file", "Path to results file", cxxopts::value<std::string>())
         ("experiment_config_path", "Path to Experiment Config file", cxxopts::value<std::string>())
         ("output_path", "Output path", cxxopts::value<std::string>())
+        ("oracle_db", "Path to Oracle DB", cxxopts::value<std::string>())
         ("num_threads", "Number of threads to use",
             cxxopts::value<int>()->default_value(DEFAULT_NUM_THREADS))
         ("help", "Print usage");
@@ -350,6 +304,7 @@ int main(int argc, const char **argv) {
     check_required("results_file");
     check_required("experiment_config_path");
     check_required("output_path");
+    check_required("oracle_db");
 
     const std::filesystem::path results_file_path = args["results_file"].as<std::string>();
     const auto maybe_results_file =
@@ -361,5 +316,5 @@ int main(int argc, const char **argv) {
         maybe_results_file.value(),
         std::filesystem::path(args["experiment_config_path"].as<std::string>()),
         std::filesystem::path(args["output_path"].as<std::string>()),
-        args["num_threads"].as<int>());
+        std::filesystem::path(args["oracle_db"].as<std::string>()), args["num_threads"].as<int>());
 }
