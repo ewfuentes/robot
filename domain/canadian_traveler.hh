@@ -30,8 +30,6 @@ class CanadianTravelerGraph {
 
     const std::vector<Node> &nodes() const { return nodes_; }
 
-    const std::vector<Edge> &edges() const { return edges_; }
-
     const std::span<Edge> &neighbors(const NodeId id) const { return neighbors_.at(id); }
 
    private:
