@@ -1,6 +1,22 @@
 package(features=["warning_compile_flags"])
 
 cc_library(
+  name = "canadian_traveler",
+  hdrs = ["canadian_traveler.hh"],
+  srcs = ["canadian_traveler.cc"],
+  deps = ["@eigen"],
+)
+
+cc_test(
+  name = "canadian_traveler_test",
+  srcs = ["canadian_traveler_test.cc"],
+  deps = [
+    ":canadian_traveler",
+    "@com_google_googletest//:gtest_main",
+  ],
+)
+
+cc_library(
   name = "tiger",
   hdrs = ["tiger.hh"],
   srcs = ["tiger.cc"],
