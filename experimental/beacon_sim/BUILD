@@ -3,6 +3,7 @@ package(features=["warning_compile_flags"])
 
 load("@pip//:requirements.bzl", "requirement")
 load("//common/proto:proto.bzl", "multi_proto_library")
+load("//common/tools:package.bzl", "cc_package_library")
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
 load("@rules_python//python:packaging.bzl", "py_package", "py_wheel")
 load("@com_github_grpc_grpc//bazel:cc_grpc_library.bzl", "cc_grpc_library")
@@ -1048,3 +1049,14 @@ py_wheel(
     ":beacon_sim_package",
   ]
 )
+
+# This produces a zip file in bazel-bin/experimental/beacon_sim/lib_belief_road_planner.zip
+# that contains a static library and all headers that are required to build it. Not all headers
+# are required to use it.
+cc_package_library(
+  name = "libbelief_road_map_planner",
+  libs = [
+    "//experimental/beacon_sim:belief_road_map_planner",
+  ],
+)
+
