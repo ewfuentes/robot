@@ -31,18 +31,6 @@ _do_cc_library_static_libs = rule(
   },
 )
 
-def _debug_rule_impl(ctx):
-  for target in ctx.attr.srcs:
-    print(target)
-    print(target[OutputGroupInfo])
-
-_debug_rule = rule(
-  implementation = _debug_rule_impl,
-  attrs = {
-    'srcs': attr.label_list()
-  }
-)
-
 def cc_package_library(name, libs):
   _do_cc_library_static_libs(
     name = name + '__static_libs',
