@@ -2,6 +2,7 @@
 package(features=["warning_compile_flags"])
 
 load("@//common/proto:proto.bzl", "multi_proto_library")
+load("@//common/tools:package.bzl", "cc_package_library")
 
 
 multi_proto_library(
@@ -99,6 +100,11 @@ cc_test(
     "@com_google_absl//absl/container:flat_hash_map",
     "@com_google_googletest//:gtest_main",
   ]
+)
+
+cc_package_library(
+  name = "libsample_without_replacement",
+  libs = [":sample_without_replacement"]
 )
 
 cc_library(

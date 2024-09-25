@@ -6,7 +6,6 @@ load("@rules_pkg//pkg:providers.bzl", "PackageFilesInfo")
 def _cc_library_static_libs_impl(ctx):
   files = []
   dest_src_map = {}
-  print(ctx.workspace_name)
   for lib in ctx.attr.libs:
     for f in lib[DefaultInfo].files.to_list():
       dest_src_map['lib/' + f.short_path] = f
