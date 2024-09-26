@@ -47,9 +47,11 @@ TEST(ComputeOptimisticRolloutTest, rollout_in_traversable_weather) {
     const auto graph_ptr = create_test_graph();
     const auto weather = graph_ptr->create_weather(
         {{.id_a = A_IDX, .id_b = B_IDX, .traversability = CTG::EdgeState::Traversable}});
+    const auto uninformed_belief = graph_ptr->create_weather();
 
     // Action
-    const auto rollout = compute_optimistic_rollout(*graph_ptr, START_IDX, GOAL_IDX, weather);
+    const auto rollout =
+        compute_optimistic_rollout(*graph_ptr, START_IDX, GOAL_IDX, weather, uninformed_belief);
 
     // Verification
     constexpr double TOL = 1e-6;
@@ -62,9 +64,11 @@ TEST(ComputeOptimisticRolloutTest, rollout_in_untraversable_weather) {
     const auto graph_ptr = create_test_graph();
     const auto weather = graph_ptr->create_weather(
         {{.id_a = A_IDX, .id_b = B_IDX, .traversability = CTG::EdgeState::Untraversable}});
+    const auto uninformed_belief = graph_ptr->create_weather();
 
     // Action
-    const auto rollout = compute_optimistic_rollout(*graph_ptr, START_IDX, GOAL_IDX, weather);
+    const auto rollout =
+        compute_optimistic_rollout(*graph_ptr, START_IDX, GOAL_IDX, weather, uninformed_belief);
 
     // Verification
     constexpr double TOL = 1e-6;
