@@ -36,8 +36,9 @@ jobs:
     strategy:
       matrix:
         build-config: [gcc, clang]
+        os: [ubuntu-22.04, ubuntu-24.04]
     # The type of runner that the job will run on
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
 
     env:
       cache_secret_file: cache_auth.json
