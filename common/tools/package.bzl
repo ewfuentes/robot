@@ -1,4 +1,3 @@
-
 load("@rules_pkg//pkg:zip.bzl", "pkg_zip")
 load("@rules_pkg//pkg:mappings.bzl", "pkg_files", "pkg_filegroup")
 load("@rules_pkg//pkg:providers.bzl", "PackageFilesInfo")

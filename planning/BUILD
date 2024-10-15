@@ -2,6 +2,7 @@ package(features=["warning_compile_flags"])
 
 load("//common/proto:proto.bzl", "multi_proto_library")
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
+load("@//common:tools/package.bzl", "cc_package_library")
 
 cc_library(
   name = "probabilistic_road_map",
@@ -201,7 +202,9 @@ deps = [
   "//experimental/beacon_sim:beacon_potential",
   "//experimental/beacon_sim:belief_road_map_planner",
   "//common/math:logsumexp",
-  ":road_map"
+  ":road_map",
+  "//common:argument_wrapper",
+  "//common:check"
 ],
 visibility = ["//visibility:public"]
 )
