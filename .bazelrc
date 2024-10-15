@@ -11,7 +11,7 @@ build:python-3.8 --@rules_python//python/config_settings:python_version=3.8.10
 build:python-3.10 --@rules_python//python/config_settings:python_version=3.10
 
 # These flags are here while bugs in Bazel 7 get figured out
-# https://github.com/bazelbuild/rules_foreign_cc/issues/1129
+# https://github.com/bazelbuild/rules_foreign_cc/issues/1129 
 build --noincompatible_sandbox_hermetic_tmp 
 # https://github.com/bazelbuild/rules_python/issues/1675
 build --noenable_bzlmod
