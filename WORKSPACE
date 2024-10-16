@@ -335,10 +335,10 @@ http_archive(
 
 http_archive(
   name = "drake",
-  url = "https://github.com/RobotLocomotion/drake/releases/download/v1.33.0/drake-1.33.0-noble.tar.gz",
+  url = "https://github.com/RobotLocomotion/drake/releases/download/v1.34.0/drake-1.34.0-noble.tar.gz",
   strip_prefix="drake",
   build_file="@//third_party:BUILD.drake",
-  integrity = "sha256-hJR04q0MmYfVbEV5mFyP6kDAP4HXpRfd/3yUNSjV+lw="
+  integrity = "sha256-OT7ajG4k6DY1uW+LilQeLKams7WN6xFb8elqAm3Tsm4="
 )
 
 # load("@drake_lib//:share/drake/repo.bzl", "drake_repository")
