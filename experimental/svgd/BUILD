@@ -7,5 +7,7 @@ py_binary(
   deps = [
     "//common:torch",
     requirement('matplotlib'),
+    requirement('tqdm'),
+    requirement('IPython'),
   ]
 )
