@@ -34,13 +34,20 @@ class CanadianTravelerGraph : public std::enable_shared_from_this<CanadianTravel
         CanadianTravelerGraph::NodeId id_a;
         CanadianTravelerGraph::NodeId id_b;
         EdgeState traversability;
+
+        bool operator==(const EdgeBelief &other) const;
     };
 
     // A weather represents a (possibly incomplete) traversability assignment to the unknown
     // edges of a CanadianTravelerGraph
     class Weather {
        public:
+        using EdgeObservation = EdgeBelief;
         const std::span<Edge> &neighbors(const NodeId id) const { return neighbors_.at(id); }
+
+        std::vector<EdgeObservation> observe(const NodeId id) const;
+
+        void update_belief(const std::vector<EdgeObservation> &observations);
 
        private:
         friend CanadianTravelerGraph;

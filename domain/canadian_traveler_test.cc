@@ -79,4 +79,16 @@ TEST(CanadianTravelerTest, untraversable_edge_is_not_neighbor) {
     EXPECT_THAT(weather.neighbors(3), testing::Contains(CTG::Edge{3, 1, 8.0, {}}));
 }
 
+TEST(CanadianTravelerTest, edge_traversability_observed) {
+    // Setup
+    const auto graph = create_test_graph();
+    const CTG::Weather weather = graph->create_weather(
+        {{.id_a = 4, .id_b = 3, .traversability = CTG::EdgeState::Untraversable}});
+    // Action
+    const auto observations = weather.observe(3);
+
+    // Verification
+    EXPECT_THAT(observations, testing::Contains(CTG::Weather::EdgeObservation{3, 4, CTG::EdgeState::Untraversable}));
+}
+
 }  // namespace robot::domain

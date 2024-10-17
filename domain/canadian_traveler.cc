@@ -116,4 +116,14 @@ bool CTG::Edge::operator==(const CTG::Edge &other) const {
     return node_a == other.node_a && node_b == other.node_b && cost == other.cost &&
            traversal_prob == other.traversal_prob;
 }
+
+bool CTG::EdgeBelief::operator==(const CTG::EdgeBelief &other) const {
+    return id_a == other.id_a && id_b == other.id_b  &&
+           traversability == other.traversability;
+}
+
+std::vector<CTG::Weather::EdgeObservation> CTG::Weather::observe(const CTG::NodeId node_id) const {
+    return {};
+}
+
 }  // namespace robot::domain
