@@ -36,35 +36,15 @@
 
 namespace robot::experimental::beacon_sim {
 
-std::vector<Eigen::Matrix3d> evaluate_paths_with_configuration(
-    const std::vector<std::vector<int>> &paths, const EkfSlam &ekf,
-    const planning::RoadMap &road_map, const double max_sensor_range_m,
-    const std::vector<int> &present_beacons) {
-    // Make a belief updater that only considers the present beacons
-    const auto updater = make_belief_updater(road_map, max_sensor_range_m, ekf, present_beacons,
-                                             TransformType::COVARIANCE);
-
-    const RobotBelief initial_belief = {
-        .local_from_robot = ekf.estimate().local_from_robot(),
-        .cov_in_robot = ekf.estimate().robot_cov(),
-    };
-
-    std::vector<Eigen::Matrix3d> out;
-    std::transform(
-        paths.begin(), paths.end(), std::back_inserter(out),
-        [&](const std::vector<int> &path) { return evaluate_path(path, initial_belief, updater); });
-    return out;
-}
-
-Eigen::Matrix3d evaluate_path(const std::vector<int> &path, const RobotBelief &initial_belief,
-                              const planning::BeliefUpdater<RobotBelief> &updater) {
+RobotBelief evaluate_path(const std::vector<int> &path, const RobotBelief &initial_belief,
+                          const planning::BeliefUpdater<RobotBelief> &updater) {
     RobotBelief robot_belief = initial_belief;
     for (int i = 1; i < static_cast<int>(path.size()); i++) {
         robot_belief = updater(robot_belief, path.at(i - 1), path.at(i));
     }
-
-    return robot_belief.cov_in_robot;
+    return robot_belief;  // Return the full RobotBelief, not just the covariance matrix
 }
+
 namespace {
 std::vector<std::vector<int>> find_paths(const planning::RoadMap &road_map,
                                          const double max_path_length_ratio) {
@@ -140,11 +120,11 @@ std::vector<std::vector<int>> find_paths(const planning::RoadMap &road_map,
     return out;
 }
 
-std::vector<Eigen::Matrix3d> evaluate_paths(std::vector<std::vector<int>> &paths,
+std::vector<RobotBelief> evaluate_paths(std::vector<std::vector<int>> &paths,
                                             const EkfSlam &ekf, const planning::RoadMap &road_map,
                                             const double max_sensor_range_m,
                                             const BeaconPotential &potential) {
-    std::vector<Eigen::Matrix3d> expected_covs(paths.size(), Eigen::Matrix3d::Zero());
+    std::vector<RobotBelief> expected_covs(paths.size(), RobotBelief{});
 
     double weight_sum = 0;
     for (int i = 0; i <= static_cast<int>(potential.members().size()); i++) {
@@ -167,26 +147,34 @@ std::vector<Eigen::Matrix3d> evaluate_paths(std::vector<std::vector<int>> &paths
                 paths, ekf, road_map, max_sensor_range_m, present_beacons);
 
             for (int i = 0; i < static_cast<int>(beliefs_for_config.size()); i++) {
-                expected_covs.at(i) += p * beliefs_for_config.at(i).cov_in_robot;
+                Eigen::Matrix3d cov = expected_covs.at(i).cov_in_robot;
+                cov += p * beliefs_for_config.at(i).cov_in_robot;
+                expected_covs.at(i).cov_in_robot = cov;
             }
         }
     }
 
     for (int i = 0; i < static_cast<int>(expected_covs.size()); i++) {
-        expected_covs.at(i) /= weight_sum;
+        Eigen::Matrix3d cov = expected_covs.at(i).cov_in_robot;
+        cov /= weight_sum;
+        expected_covs.at(i).cov_in_robot = cov;
     }
 
     return expected_covs;
 }
 }  // namespace
 
+double uncertainty_size(const RobotBelief &belief) {
+    // Should this be the covariance about the map frame
+    return belief.cov_in_robot.determinant();
+}
+
 std::vector<RobotBelief> evaluate_paths_with_configuration(
     const std::vector<std::vector<int>> &paths, const EkfSlam &ekf,
     const planning::RoadMap &road_map, const double max_sensor_range_m,
     const std::vector<int> &present_beacons) {
-    // Make a belief updater that only considers the present beacons
-    const auto updater = make_belief_updater(road_map, max_sensor_range_m, ekf, present_beacons,
-                                             TransformType::COVARIANCE);
+    // Create a belief updater
+    const auto updater = make_belief_updater(road_map, max_sensor_range_m, ekf, present_beacons, TransformType::COVARIANCE);
 
     const RobotBelief initial_belief = {
         .local_from_robot = ekf.estimate().local_from_robot(),
@@ -194,10 +182,10 @@ std::vector<RobotBelief> evaluate_paths_with_configuration(
     };
 
     std::vector<RobotBelief> out;
-    std::transform(
-        paths.begin(), paths.end(), std::back_inserter(out),
-        [&](const std::vector<int> &path) { return evaluate_path(path, initial_belief, updater); });
-    return out;
+    std::transform(paths.begin(), paths.end(), std::back_inserter(out), [&](const std::vector<int> &path) {
+        return evaluate_path(path, initial_belief, updater);  // Return RobotBelief objects
+    });
+    return out; 
 }
 
 template <typename T>
@@ -509,7 +497,7 @@ PathConstrainedBeliefPlanResult compute_path_constrained_belief_road_map_plan(
 
     // Now that we have the expected paths, evaluate each path across all configurations
 
-    const std::vector<Eigen::Matrix3d> expected_covs =
+    const std::vector<RobotBelief> expected_covs =
         evaluate_paths(paths, ekf, road_map, options.max_sensor_range_m, beacon_potential);
 
     for (int i = 0; i < static_cast<int>(paths.size()); i++) {
@@ -517,20 +505,21 @@ PathConstrainedBeliefPlanResult compute_path_constrained_belief_road_map_plan(
         for (const int node : paths.at(i)) {
             std::cout << node << " ";
         }
-        [[maybe_unused]] const double det = expected_covs.at(i).determinant();
+        [[maybe_unused]] const double det = expected_covs.at(i).cov_in_robot.determinant();
         std::cout << "] " << det << std::endl;
     }
 
     std::cout << "Found " << paths.size() << " paths to goal" << std::endl;
     const auto iter = std::min_element(expected_covs.begin(), expected_covs.end(),
-                                       [](const Eigen::Matrix3d &a, const Eigen::Matrix3d &b) {
-                                           return a.determinant() < b.determinant();
-                                       });
+        [](const RobotBelief &a, const RobotBelief &b) {
+            return a.cov_in_robot.determinant() < b.cov_in_robot.determinant();
+        });
+
     const int idx = std::distance(expected_covs.begin(), iter);
 
     return PathConstrainedBeliefPlanResult{
         .plan = paths.at(idx),
-        .expected_cov = expected_covs.at(idx),
+        .expected_cov = expected_covs.at(idx).cov_in_robot,
     };
 }
 

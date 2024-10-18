@@ -90,14 +90,14 @@ struct ExpectedBeliefRoadMapOptions {
     BeliefRoadMapOptions brm_options;
 };
 
-Eigen::Matrix3d evaluate_path(const std::vector<int> &path, const RobotBelief &initial_belief,
+RobotBelief evaluate_path(const std::vector<int> &path, const RobotBelief &initial_belief,
                               const planning::BeliefUpdater<RobotBelief> &updater);
 
-std::vector<Eigen::Matrix3d> evaluate_paths_with_configuration(
+std::vector<RobotBelief> evaluate_paths_with_configuration(
     const std::vector<std::vector<int>> &paths, const EkfSlam &ekf,
     const planning::RoadMap &road_map, const double max_sensor_range_m,
     const std::vector<int> &present_beacons);
-    
+
 std::optional<planning::BRMPlan<LandmarkRobotBelief>> compute_landmark_belief_road_map_plan(
     const planning::RoadMap &road_map, const EkfSlam &ekf, const BeaconPotential &beacon_potential,
     const LandmarkBeliefRoadMapOptions &options);
@@ -122,10 +122,5 @@ std::function<double(const RobotBelief &)> make_uncertainty_size(const Uncertain
 template <>
 std::function<double(const LandmarkRobotBelief &)> make_uncertainty_size(
     const UncertaintySizeOptions &);
-
-std::vector<RobotBelief> evaluate_paths_with_configuration(
-    const std::vector<std::vector<int>> &paths, const EkfSlam &ekf,
-    const planning::RoadMap &road_map, const double max_sensor_range_m,
-    const std::vector<int> &present_beacons);
 
 }  // namespace robot::experimental::beacon_sim

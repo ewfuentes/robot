@@ -2,7 +2,7 @@ package(features=["warning_compile_flags"])
 
 load("//common/proto:proto.bzl", "multi_proto_library")
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
-load("@//common:tools/package.bzl", "cc_package_library")
+load("@//common/tools:package.bzl", "cc_package_library")
 
 cc_library(
   name = "probabilistic_road_map",
@@ -214,7 +214,13 @@ cc_test(
   srcs = ["david_planning_test.cc"],
   deps = [
     "@com_google_googletest//:gtest_main",
+    "@com_google_absl//absl/container:flat_hash_map",
     ":david_planning_three",
     "//experimental/beacon_sim:test_helpers"
   ]
+)
+
+cc_package_library(
+  name = "libdavid_planning_three",
+  libs = [":david_planning_three"]
 )

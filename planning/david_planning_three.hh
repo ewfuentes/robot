@@ -211,7 +211,7 @@ std::optional<DavidPlannerResultThree<State>> david_planner_three(
         const auto covs = experimental::beacon_sim::evaluate_paths_with_configuration(plans, ekf, road_map, config.max_sensor_range_m, sample);
 
         for (int i = 0; i < (int)plans.size(); i++) {
-            expected_cov_dets.at(i) += covs.at(i).determinant() / world_samples.size();
+            expected_cov_dets.at(i) += covs.at(i).cov_in_robot.determinant() / world_samples.size();
         }
         if (config.timeout.has_value() &&
             time::current_robot_time() - plan_start_time > config.timeout.value()) {
