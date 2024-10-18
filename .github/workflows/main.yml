@@ -42,7 +42,7 @@ jobs:
 
     env:
       cache_secret_file: cache_auth.json
-      cache_url: https://storage.googleapis.com/robot-research-bazel-cache
+      cache_url: ${{ matrix.os == 'ubuntu-22.04' && 'https://storage.googleapis.com/robot-research-bazel-cache' || 'https://storage.googleapis.com/robot-research-noble-bazel-cache' }}
       cache_auth: ${{ secrets.BAZEL_CACHE_BASE64 }}
 
     # Steps represent a sequence of tasks that will be executed as part of the job
