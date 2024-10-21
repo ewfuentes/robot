@@ -1034,7 +1034,7 @@ py_wheel(
   distribution = "beacon_sim",
   version = "0.0.1",
   platform = select({
-    "//conditions:default": "manylinux2014_x86_64",
+    "@platforms//cpu:x86_64": "manylinux2014_x86_64",
     "@platforms//cpu:aarch64": "manylinux2014_aarch64",
   }),
   python_tag = select({
