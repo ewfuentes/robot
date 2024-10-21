@@ -334,15 +334,20 @@ http_archive(
 )
 
 http_archive(
-  name = "drake_lib",
-  url = "https://github.com/RobotLocomotion/drake/releases/download/v1.21.0/drake-20230914-jammy.tar.gz",
+  name = "drake_lib_jammy",
+  url = "https://github.com/RobotLocomotion/drake/releases/download/v1.34.0/drake-1.34.0-jammy.tar.gz",
   strip_prefix="drake",
-  build_file_content="#",
+  build_file="@//third_party:BUILD.drake",
   sha256="bc7259271c058d4ad68a898b9f2aeec44cbaa6e25a45eb0bfd57387905bdfca5",
 )
 
-load("@drake_lib//:share/drake/repo.bzl", "drake_repository")
-drake_repository(name="drake", excludes=["eigen", "fmt"])
+http_archive(
+  name = "drake_lib_noble",
+  url = "https://github.com/RobotLocomotion/drake/releases/download/v1.34.0/drake-1.34.0-noble.tar.gz",
+  strip_prefix="drake",
+  build_file="@//third_party:BUILD.drake",
+  sha256="bc7259271c058d4ad68a898b9f2aeec44cbaa6e25a45eb0bfd57387905bdfca5",
+)
 
 http_archive(
   name = "opencv",

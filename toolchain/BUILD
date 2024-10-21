@@ -195,3 +195,31 @@ platform(
     "@platforms//os:linux",
   ]
 )
+
+constraint_setting(name="ubuntu_version")
+constraint_value(
+  name = "noble-24.04",
+  constraint_setting= ":ubuntu_version"
+)
+
+constraint_value(
+  name = "jammy-22.04",
+  constraint_setting= ":ubuntu_version"
+)
+
+platform(
+  name="jammy",
+  constraint_values = [
+    "@platforms//os:linux",
+    ":jammy-22.04",
+  ]
+)
+
+platform(
+  name="noble",
+  constraint_values = [
+    "@platforms//os:linux",
+    ":noble-24.04",
+  ]
+)
+
