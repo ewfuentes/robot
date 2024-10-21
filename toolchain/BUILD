@@ -198,28 +198,53 @@ platform(
 
 constraint_setting(name="ubuntu_version")
 constraint_value(
-  name = "noble-24.04",
+  name = "noble_24.04",
   constraint_setting= ":ubuntu_version"
 )
 
 constraint_value(
-  name = "jammy-22.04",
+  name = "jammy_22.04",
   constraint_setting= ":ubuntu_version"
 )
 
 platform(
-  name="jammy",
+  name="jammy_clang",
   constraint_values = [
+    "@platforms//cpu:x86_64",
     "@platforms//os:linux",
-    ":jammy-22.04",
+    ":jammy_22.04",
+    ":clang",
   ]
 )
 
 platform(
-  name="noble",
+  name="jammy_gcc",
   constraint_values = [
+    "@platforms//cpu:x86_64",
     "@platforms//os:linux",
-    ":noble-24.04",
+    ":jammy_22.04",
+    ":gcc11",
+  ]
+)
+
+
+platform(
+  name="noble_clang",
+  constraint_values = [
+    "@platforms//cpu:x86_64",
+    "@platforms//os:linux",
+    ":noble_24.04",
+    ":clang",
+  ]
+)
+
+platform(
+  name="noble_gcc",
+  constraint_values = [
+    "@platforms//cpu:x86_64",
+    "@platforms//os:linux",
+    ":noble_24.04",
+    ":gcc11",
   ]
 )
 

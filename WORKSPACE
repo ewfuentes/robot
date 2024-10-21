@@ -338,7 +338,7 @@ http_archive(
   url = "https://github.com/RobotLocomotion/drake/releases/download/v1.34.0/drake-1.34.0-jammy.tar.gz",
   strip_prefix="drake",
   build_file="@//third_party:BUILD.drake",
-  sha256="bc7259271c058d4ad68a898b9f2aeec44cbaa6e25a45eb0bfd57387905bdfca5",
+  sha256="aec27c1e65d5ec587a325dc0a4a462e0a0464fcdc17ca47c64dc2cf49ccb51a3",
 )
 
 http_archive(
@@ -346,7 +346,7 @@ http_archive(
   url = "https://github.com/RobotLocomotion/drake/releases/download/v1.34.0/drake-1.34.0-noble.tar.gz",
   strip_prefix="drake",
   build_file="@//third_party:BUILD.drake",
-  sha256="bc7259271c058d4ad68a898b9f2aeec44cbaa6e25a45eb0bfd57387905bdfca5",
+  sha256="393eda8c6e24e83635b96f8b8a541e2ca6a6b3b58deb115bf1e96a026dd3b26e",
 )
 
 http_archive(

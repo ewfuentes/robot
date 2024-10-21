@@ -43,7 +43,7 @@ jobs:
     env:
       cache_secret_file: cache_auth.json
       cache_url: ${{ matrix.os == 'ubuntu-22.04' && 'https://storage.googleapis.com/robot-research-bazel-cache' || 'https://storage.googleapis.com/robot-research-noble-bazel-cache' }}
-      platform: ${{ matrix.os == 'ubuntu-22.04' && 'jammy' || 'noble' }}
+      platform: //toolchain:${{ matrix.os == 'ubuntu-22.04' && 'jammy' || 'noble' }}_${{ matrix.build-config }}
       cache_auth: ${{ secrets.BAZEL_CACHE_BASE64 }}
 
     # Steps represent a sequence of tasks that will be executed as part of the job
@@ -69,4 +69,4 @@ jobs:
 
       - name: Run Unit Tests
         run: |
-          bazel test --config=${{ matrix.build-config }} --remote_cache=${{ env.cache_url }} --google_credentials=${{ runner.temp }}/${{ env.cache_secret_file }} //... --test_output=errors --test_timeout_filters=-eternal --platforms=//toolchain:${{ env.platform }}
+          bazel test --config=${{ matrix.build-config }} --remote_cache=${{ env.cache_url }} --google_credentials=${{ runner.temp }}/${{ env.cache_secret_file }} //... --test_output=errors --test_timeout_filters=-eternal --platforms=${{ env.platform }}
