@@ -1,6 +1,7 @@
 
 #include "experimental/beacon_sim/correlated_beacon_potential.hh"
 
+#include <algorithm>
 #include <cmath>
 #include <iterator>
 #include <limits>

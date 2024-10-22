@@ -28,7 +28,8 @@ http_archive(
 )
 
 register_toolchains(
-  "//toolchain:clang_toolchain_for_linux_x84_64",
+  "//toolchain:clang_15_toolchain_for_linux_x84_64",
+  "//toolchain:clang_18_toolchain_for_linux_x84_64",
   "//toolchain:gcc_10_toolchain_for_linux_x84_64",
   "//toolchain:gcc_11_toolchain_for_linux_x84_64",
   "//toolchain:gcc_toolchain_for_linux_aarch64",

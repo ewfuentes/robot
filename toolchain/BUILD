@@ -8,7 +8,17 @@ package(default_visibility = ["//visibility:public"], features=["warning_compile
 filegroup(name="empty")
 
 clang_toolchain_config(
-  name="k8_clang_toolchain_config",
+  name="k8_clang_15_toolchain_config",
+  clang_version="15",
+  clang_full_versions=["15.0.6", "15.0.7"],
+  gcc_version="12",
+)
+
+clang_toolchain_config(
+  name="k8_clang_18_toolchain_config",
+  clang_version="18",
+  clang_full_versions=["18"],
+  gcc_version="14",
 )
 
 gcc_toolchain_config(
@@ -26,20 +36,32 @@ gcc_aarch64_toolchain_config(
 )
 
 cc_toolchain(
-  name="k8_clang_toolchain",
+  name="k8_clang_15_toolchain",
   all_files = ":empty",
   compiler_files = ":empty",
   strip_files = ":empty",
   objcopy_files = ":empty",
   linker_files = ":empty",
   dwp_files = ":empty",
-  toolchain_config = ":k8_clang_toolchain_config",
+  toolchain_config = ":k8_clang_15_toolchain_config",
+  supports_param_files=0,
+)
+
+cc_toolchain(
+  name="k8_clang_18_toolchain",
+  all_files = ":empty",
+  compiler_files = ":empty",
+  strip_files = ":empty",
+  objcopy_files = ":empty",
+  linker_files = ":empty",
+  dwp_files = ":empty",
+  toolchain_config = ":k8_clang_18_toolchain_config",
   supports_param_files=0,
 )
 
 toolchain(
-  name = "clang_toolchain_for_linux_x84_64",
-  toolchain = ":k8_clang_toolchain",
+  name = "clang_15_toolchain_for_linux_x84_64",
+  toolchain = ":k8_clang_15_toolchain",
   toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
   exec_compatible_with = [
     "@platforms//cpu:x86_64",
@@ -48,9 +70,27 @@ toolchain(
   target_compatible_with = [
     "@platforms//cpu:x86_64",
     "@platforms//os:linux",
-    ":clang",
+    ":jammy_22.04",
+    ":clang15",
   ],
 )
+
+toolchain(
+  name = "clang_18_toolchain_for_linux_x84_64",
+  toolchain = ":k8_clang_18_toolchain",
+  toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
+  exec_compatible_with = [
+    "@platforms//cpu:x86_64",
+    "@platforms//os:linux",
+  ],
+  target_compatible_with = [
+    "@platforms//cpu:x86_64",
+    "@platforms//os:linux",
+    ":noble_24.04",
+    ":clang18",
+  ],
+)
+
 
 cc_toolchain(
   name="k8_gcc_10_toolchain",
@@ -71,11 +111,11 @@ toolchain(
   exec_compatible_with = [
     "@platforms//cpu:x86_64",
     "@platforms//os:linux",
+    ":gcc10",
   ],
   target_compatible_with = [
     "@platforms//cpu:x86_64",
     "@platforms//os:linux",
-    ":gcc10",
   ],
 )
 
@@ -98,11 +138,11 @@ toolchain(
   exec_compatible_with = [
     "@platforms//cpu:x86_64",
     "@platforms//os:linux",
+    ":gcc11",
   ],
   target_compatible_with = [
     "@platforms//cpu:x86_64",
     "@platforms//os:linux",
-    ":gcc11",
   ],
 )
 
@@ -147,7 +187,12 @@ toolchain(
 
 constraint_setting(name = "compiler")
 constraint_value(
-  name="clang",
+  name="clang15",
+  constraint_setting=":compiler"
+)
+
+constraint_value(
+  name="clang18",
   constraint_setting=":compiler"
 )
 
@@ -161,40 +206,40 @@ constraint_value(
   constraint_setting=":compiler"
 )
 
-platform(
-  name = "clang_x86_64",
-  constraint_values = [
-    ":clang",
-    "@platforms//cpu:x86_64",
-    "@platforms//os:linux",
-  ]
-)
-
-platform(
-  name = "gcc10_x86_64",
-  constraint_values = [
-    ":gcc10",
-    "@platforms//cpu:x86_64",
-    "@platforms//os:linux",
-  ]
-)
-
-platform(
-  name = "gcc11_x86_64",
-  constraint_values = [
-    ":gcc11",
-    "@platforms//cpu:x86_64",
-    "@platforms//os:linux",
-  ]
-)
-
-platform(
-  name = "gcc_aarch64",
-  constraint_values = [
-    "@platforms//cpu:aarch64",
-    "@platforms//os:linux",
-  ]
-)
+# platform(
+#   name = "clang_x86_64",
+#   constraint_values = [
+#     ":clang",
+#     "@platforms//cpu:x86_64",
+#     "@platforms//os:linux",
+#   ]
+# )
+# 
+# platform(
+#   name = "gcc10_x86_64",
+#   constraint_values = [
+#     ":gcc10",
+#     "@platforms//cpu:x86_64",
+#     "@platforms//os:linux",
+#   ]
+# )
+# 
+# platform(
+#   name = "gcc11_x86_64",
+#   constraint_values = [
+#     ":gcc11",
+#     "@platforms//cpu:x86_64",
+#     "@platforms//os:linux",
+#   ]
+# )
+# 
+# platform(
+#   name = "gcc_aarch64",
+#   constraint_values = [
+#     "@platforms//cpu:aarch64",
+#     "@platforms//os:linux",
+#   ]
+# )
 
 constraint_setting(name="ubuntu_version")
 constraint_value(
@@ -213,7 +258,7 @@ platform(
     "@platforms//cpu:x86_64",
     "@platforms//os:linux",
     ":jammy_22.04",
-    ":clang",
+    ":clang15",
   ]
 )
 
@@ -234,7 +279,7 @@ platform(
     "@platforms//cpu:x86_64",
     "@platforms//os:linux",
     ":noble_24.04",
-    ":clang",
+    ":clang18",
   ]
 )
 
