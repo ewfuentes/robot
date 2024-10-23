@@ -5,7 +5,7 @@ set -x # enable echo
 CODENAME=`lsb_release --codename --short`
 if [ "${CODENAME}" = "noble" ]; then
     ln -s .bazelrc_noble .bazelrc_ubuntu
-elif [ "${CODENAME}" = "jammy"]; then
+elif [ "${CODENAME}" = "jammy" ]; then
     ln -s .bazelrc_jammy .bazelrc_ubuntu
 fi
 
