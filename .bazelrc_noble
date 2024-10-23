@@ -1,0 +1,3 @@
+build --config=clang
+build:clang --platforms=//toolchain:noble_clang
+build:gcc --platforms=//toolchain:noble_gcc

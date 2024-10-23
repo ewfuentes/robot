@@ -18,3 +18,5 @@ bazel-*
 __pycache__
 .ipynb_checkpoints
 .virtual_documents/
+
+.bazelrc_ubuntu
