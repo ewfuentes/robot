@@ -142,17 +142,17 @@ def main():
     svgd_particles = 0.1 * torch.randn(NUM_SVGD_PARTICLES, 2)
     svgd_steps = run_svgd(svgd_particles, obs_model, NUM_STEPS, sigma, step_size)
 
-    # for i in tqdm.tqdm(range(particle_steps.shape[0])):
-    #     fig = plt.figure()
-    #     plt.contour(xs, ys, torch.exp(log_probs))
-    #     plt.colorbar()
-    #     plt.title(f'Step {i} Rev KL: {reverse_kl(particle_steps[i], obs_model)}')
-    #     plt.scatter(particle_steps[i, :, 0], particle_steps[i, :, 1])
-    #     plt.xlim(0, 10)
-    #     plt.ylim(0, 10)
-    #     plt.savefig(f'/tmp/particle_filter_{i:05d}.png')
+    for i in tqdm.tqdm(range(particle_steps.shape[0])):
+        fig = plt.figure()
+        plt.contour(xs, ys, torch.exp(log_probs))
+        plt.colorbar()
+        plt.title(f'Step {i} Rev KL: {reverse_kl(particle_steps[i], obs_model)}')
+        plt.scatter(particle_steps[i, :, 0], particle_steps[i, :, 1])
+        plt.xlim(0, 10)
+        plt.ylim(0, 10)
+        plt.savefig(f'/tmp/particle_filter_{i:05d}.png')
 
-    #     plt.close()
+        plt.close()
 
     for i in tqdm.tqdm(range(svgd_steps.shape[0])):
         fig = plt.figure()
