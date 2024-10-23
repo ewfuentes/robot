@@ -138,11 +138,11 @@ toolchain(
   exec_compatible_with = [
     "@platforms//cpu:x86_64",
     "@platforms//os:linux",
-    ":gcc11",
   ],
   target_compatible_with = [
     "@platforms//cpu:x86_64",
     "@platforms//os:linux",
+    ":gcc11",
   ],
 )
 
@@ -205,41 +205,6 @@ constraint_value(
   name="gcc11",
   constraint_setting=":compiler"
 )
-
-# platform(
-#   name = "clang_x86_64",
-#   constraint_values = [
-#     ":clang",
-#     "@platforms//cpu:x86_64",
-#     "@platforms//os:linux",
-#   ]
-# )
-# 
-# platform(
-#   name = "gcc10_x86_64",
-#   constraint_values = [
-#     ":gcc10",
-#     "@platforms//cpu:x86_64",
-#     "@platforms//os:linux",
-#   ]
-# )
-# 
-# platform(
-#   name = "gcc11_x86_64",
-#   constraint_values = [
-#     ":gcc11",
-#     "@platforms//cpu:x86_64",
-#     "@platforms//os:linux",
-#   ]
-# )
-# 
-# platform(
-#   name = "gcc_aarch64",
-#   constraint_values = [
-#     "@platforms//cpu:aarch64",
-#     "@platforms//os:linux",
-#   ]
-# )
 
 constraint_setting(name="ubuntu_version")
 constraint_value(
