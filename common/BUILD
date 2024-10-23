@@ -38,10 +38,10 @@ cc_test(
 
 cc_library(
   name = "drake",
-  deps = [
-    "@drake//:drake_shared_library",
-    "@spdlog",
-  ],
+  deps = select({
+    "@//toolchain:jammy_22.04": ["@drake_lib_jammy//:drake_shared_library"],
+    "@//toolchain:noble_24.04": ["@drake_lib_noble//:drake_shared_library"],
+  }) +  ["@spdlog"],
   visibility = ["//visibility:public"],
 )
 

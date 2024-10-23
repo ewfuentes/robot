@@ -2,10 +2,8 @@
 build --strip=never
 build --define use_fast_cpp_protos=true
 build --config=python-3.10
-build --config=clang
-build:clang --platforms=//toolchain:clang_x86_64
-build:gcc --platforms=//toolchain:gcc11_x86_64
-build:gcc-10 --platforms=//toolchain:gcc10_x86_64
+
+try-import .bazelrc_ubuntu
 
 build:python-3.8 --@rules_python//python/config_settings:python_version=3.8.10
 build:python-3.10 --@rules_python//python/config_settings:python_version=3.10

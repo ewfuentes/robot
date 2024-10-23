@@ -2,11 +2,25 @@
 load("@bazel_tools//tools/build_defs/cc:action_names.bzl", "ACTION_NAMES")
 load("@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl", "feature", "flag_group", "flag_set", "tool_path")
 
+def flatten(items):
+    result = []
+    
+    for x in items:
+        if type(x) == "list":
+            result.extend(x)
+        else:
+            result.append(x)
+    
+    return result
+
 def _impl(ctx):
+    clang_version = ctx.attr.clang_version
+    clang_full_versions = ctx.attr.clang_full_versions
+    gcc_version = ctx.attr.gcc_version
     tool_paths = [
       tool_path(
         name = "gcc",
-        path = "/usr/bin/clang-15",
+        path = "/usr/bin/clang-{}".format(clang_version),
       ),
       tool_path(
         name = "ar",
@@ -14,11 +28,11 @@ def _impl(ctx):
       ),
       tool_path(
         name = "ld",
-        path = "/usr/bin/ld.lld-15",
+        path = "/usr/bin/ld.lld-{}".format(clang_version),
       ),
       tool_path(
         name = "cpp",
-        path = "/usr/bin/clang++-15",
+        path = "/usr/bin/clang++-{}".format(clang_version),
       ),
       tool_path(
         name = "gcov",
@@ -208,19 +222,20 @@ def _impl(ctx):
       ),
     ]
 
+    include_dirs = [
+        "/usr/include",
+        "/usr/include/c++/{}".format(gcc_version),
+        "/usr/include/x86_64-linux-gnu/c++/{}".format(gcc_version),
+      ] + flatten([
+        ["/usr/lib/llvm-{}/lib/clang/{}/include".format(clang_version, x),
+         "/usr/lib/llvm-{}/lib/clang/{}/share".format(clang_version, x)
+        ] for x in clang_full_versions
+      ])
+
     return cc_common.create_cc_toolchain_config_info(
       ctx=ctx,
       features = features,
-      cxx_builtin_include_directories = [
-        "/usr/lib/llvm-15/lib/clang/15.0.6/include",
-        "/usr/lib/llvm-15/lib/clang/15.0.7/include",
-        "/usr/include",
-        "/usr/include/c++/12",
-        "/usr/include/x86_64-linux-gnu/c++/12",
-        "/usr/lib/llvm-15/lib/clang/15.0.6/share",
-        "/usr/lib/llvm-15/lib/clang/15.0.7/share",
-        "/usr/lib/llvm-15/include/c++/v1/",
-      ],
+      cxx_builtin_include_directories = include_dirs,
       toolchain_identifier="k8-clang-toolchain",
       host_system_name="local",
       target_system_name="local",
@@ -234,6 +249,10 @@ def _impl(ctx):
 
 clang_toolchain_config = rule(
     implementation = _impl,
-    attrs = {},
+    attrs = {
+      "clang_version": attr.string(),
+      "clang_full_versions": attr.string_list(),
+      "gcc_version": attr.string(),
+    },
     provides = [CcToolchainConfigInfo]
 )
