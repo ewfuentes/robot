@@ -6,9 +6,6 @@ cc_library(
   hdrs = ["learn_descriptors.hh"],
   visibility = ["//visibility:public"],
   srcs = ["learn_descriptors.cc"],
-#   deps = [
-#     "@eigen",
-#   ]
 )
 
 cc_test(

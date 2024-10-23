@@ -2,6 +2,6 @@
 
 #include "gtest/gtest.h"
 
-TEST(LearnDescriptorsTest, hello_world) {
-    robot::experimental::learn_descriptors::hello_world("sup");
-}
+namespace robot::experimental::learn_descriptors {
+TEST(LearnDescriptorsTest, hello_world) { hello_world("sup"); }
+}  // namespace robot::experimental::learn_descriptors

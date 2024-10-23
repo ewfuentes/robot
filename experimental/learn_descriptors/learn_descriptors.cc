@@ -1,7 +1,7 @@
-#include "learn_descriptors.hh"
+#include "experimental/learn_descriptors/learn_descriptors.hh"
 
 #include <iostream>
 
-void robot::experimental::learn_descriptors::hello_world(const std::string &in) {
-    std::cout << in << std::endl;
-}
+namespace robot::experimental::learn_descriptors {
+void hello_world(const std::string &in) { std::cout << in << std::endl; }
+}  // namespace robot::experimental::learn_descriptors
