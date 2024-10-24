@@ -197,6 +197,7 @@ visibility = ["//visibility:public"]
 cc_library(
 name = "david_planning_three",
 hdrs = ["david_planning_three.hh"],
+srcs = ["david_planning_three.cc"],
 deps = [
   "//experimental/beacon_sim:ekf_slam",
   "//experimental/beacon_sim:beacon_potential",
