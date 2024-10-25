@@ -205,12 +205,8 @@ http_archive(
   strip_prefix="protobuf-25.3",
   sha256 = "3ae7a8f2181be28e5d694617c2b85c6561ba6a16bfcdc9db8e3a95077cab8815",
   patches = [
-    "@//third_party:protobuf-0002-use-rules-python-headers.patch",
-  ],
-  patch_args=["-p1"],
-)
-
-load("@com_google_protobuf//:protobuf_deps.bzl", "protobuf_deps")
+    "@//third_party:protobuf-0002-
+)buf_deps.bzl", "protobuf_deps")
 protobuf_deps()
 
 http_archive(
@@ -426,5 +422,11 @@ http_archive(
   strip_prefix = "sqlite-amalgamation-3460000",
   build_file = "//third_party:BUILD.sqlite3",
   integrity = "sha256-cSp9CdKiJlL7BqSa9RbgUZeaOYStsGfahnYOYO1Rp/U="
+)
+
+http_archive(
+  name="fast-cpp-csv-parser",
+  urls = ["https://github.com/ben-strasser/fast-cpp-csv-parser/archive/refs/heads/master.zip"],
+  strip_prefix = "fast-cpp-csv-parser-master",
 )
 
