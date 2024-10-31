@@ -73,9 +73,9 @@ def main():
                 #       [gyro.sequence, gyro.x, gyro.y, gyro.z], gyro_t)
 
             if cam_data:
-                print(cam_data.getMessageNames(), [(name, data.getSequenceNum())for name, data in cam_data], cam_data.getTimestamp(), cam_data.getIntervalNs())
-
-    ...
+                print(cam_data.getMessageNames(), 
+                      [(name, data.getSequenceNum())for name, data in cam_data],
+                      cam_data.getTimestamp(), cam_data.getIntervalNs())
 
 if __name__ == "__main__":
     main()
