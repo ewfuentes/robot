@@ -432,9 +432,9 @@ load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 http_archive(
     name = "symphony_lake_parser",
-    urls = ["https://github.com/cedricpradalier/SymphonyLakeDataset/archive/5366560263b660b0151844a297effa517480991a.zip"],
-    strip_prefix = "SymphonyLakeDataset-5366560263b660b0151844a297effa517480991a",
+    urls = ["https://github.com/pizzaroll04/SymphonyLakeDataset/archive/4b38c2519270a43f76858e6c97c1f1de1735e5d0.zip"],
+    strip_prefix = "SymphonyLakeDataset-4b38c2519270a43f76858e6c97c1f1de1735e5d0",
     build_file = "//third_party:BUILD.symphony_lake_parser",
-    sha256 = "ab80544a4a7d8554e92c49e9b43e5bdbce0d84654798262c36134cd1224070be",
+    sha256 = "d203e486507c7950ae9a346406fe2c42f8b2d204e8d25ba07a47c834f4ae8ede",
 )
 
