@@ -15,3 +15,24 @@ cc_test(
     ":learn_descriptors",
   ]
 )
+<<<<<<< HEAD
+=======
+cc_library(
+  name = "vo",
+  hdrs = ["vo.hh"],
+  visibility = ["//visibility:public"],
+  srcs = ["vo.cc"],
+  deps = [
+    "@opencv//:opencv",
+  ]
+)
+
+cc_test(
+  name = "vo_test",
+  srcs = ["vo_test.cc"],  
+  deps = [
+    "@com_google_googletest//:gtest_main",
+    ":vo"
+  ]
+)
+>>>>>>> 6b172b3 (Frontend with various algorithms (SIFT, ORB, different matching algorithms) done)
