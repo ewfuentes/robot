@@ -15,8 +15,7 @@ cc_test(
     ":learn_descriptors",
   ]
 )
-<<<<<<< HEAD
-=======
+
 cc_library(
   name = "vo",
   hdrs = ["vo.hh"],
@@ -35,4 +34,3 @@ cc_test(
     ":vo"
   ]
 )
->>>>>>> 6b172b3 (Frontend with various algorithms (SIFT, ORB, different matching algorithms) done)
