@@ -428,3 +428,13 @@ http_archive(
   integrity = "sha256-cSp9CdKiJlL7BqSa9RbgUZeaOYStsGfahnYOYO1Rp/U="
 )
 
+http_archive(
+  name = "rules_gtsam",
+  urls = ["https://github.com/pizzaroll04/rules_gtsam/archive/c554d4f1dcd86cf191067094549c57d70030ba97.zip"],
+  sha256 = "1f7a36b162adb0d6ff737543cdbc7d560339934aa64948224b4c8980112604ac",
+  strip_prefix = "rules_gtsam-c554d4f1dcd86cf191067094549c57d70030ba97",
+)
+load("@rules_gtsam//bzl:init_deps.bzl", "gtsam_init_deps")
+gtsam_init_deps()
+load("@rules_gtsam//bzl:repositories.bzl", "gtsam_repositories")
+gtsam_repositories()
