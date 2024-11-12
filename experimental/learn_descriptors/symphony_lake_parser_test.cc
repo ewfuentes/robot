@@ -14,8 +14,8 @@ TEST(SymphonyLakeParserTest, hello_world) {
 }
 
 TEST(SymphonyLakeParserTest, database_query) {
-    std::string image_root_dir = "/home/pizzaroll04/Documents/datasets/symphony_lake_full";
-    std::string surveys = "140106";
+    std::string image_root_dir = "external/symphony_lake_snippet/symphony_lake";
+    std::string surveys = "140106_snippet";
     std::vector<std::string> survey_list;
     std::cout << "\nEnter root image directory: ";
     // std::cin >> image_root_dir;

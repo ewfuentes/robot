@@ -31,6 +31,7 @@ cc_test(
   name = "symphony_lake_parser_test",
   srcs = ["symphony_lake_parser_test.cc"],
   copts = ["-Wno-unused-parameter"],
+  data = ["@symphony_lake_snippet"],
   deps = [
     "@com_google_googletest//:gtest_main",
     ":symphony_lake_parser"
