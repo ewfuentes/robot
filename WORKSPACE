@@ -205,8 +205,11 @@ http_archive(
   strip_prefix="protobuf-25.3",
   sha256 = "3ae7a8f2181be28e5d694617c2b85c6561ba6a16bfcdc9db8e3a95077cab8815",
   patches = [
-    "@//third_party:protobuf-0002-
-)buf_deps.bzl", "protobuf_deps")
+    "@//third_party:protobuf-0002-use-rules-python-headers.patch",
+  ],
+  patch_args=["-p1"],
+)
+load("@com_google_protobuf//:protobuf_deps.bzl", "protobuf_deps")
 protobuf_deps()
 
 http_archive(
