@@ -18,3 +18,21 @@ cc_test(
     "@com_google_googletest//:gtest_main",
   ]
 )
+
+cc_library(
+  name = "camera_geometry",
+  hdrs = ["camera_geometry.hh"],
+  visibility = ["//visibility:public"],
+  deps = [
+    "@eigen",
+  ]
+)
+
+cc_test(
+  name = "camera_geometry_test",
+  srcs = ["camera_geometry_test.cc"],
+  deps = [
+    ":camera_geometry",
+    "@com_google_googletest//:gtest_main",
+  ]
+)

@@ -16,3 +16,14 @@ cc_test(
     ":learn_descriptors",
   ]
 )
+
+cc_test(
+  name = "gtsam_test",
+  srcs = ["gtsam_test.cc"],
+  deps = [
+    "@com_google_googletest//:gtest_main",
+    "@gtsam//:gtsam",
+    ":learn_descriptors",
+    "//common/geometry:camera_geometry"
+  ]
+)
