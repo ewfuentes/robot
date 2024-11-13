@@ -52,41 +52,31 @@ TEST(GtsamTesting, gtsam_simple_cube) {
     
     gtsam::Cal3_S2::shared_ptr K(new gtsam::Cal3_S2(fx, fy, 0, cx, cy));    
     initial.insert(gtsam::Symbol('K', 0), *K);
-    if (initial.exists(gtsam::Symbol('K', 0)))
-        std::cout << "Inserted landmark with key K0" << std::endl;
-    else
-        std::cout << "Landmark insertion with key K0 failed" << std::endl;   
 
     auto poseNoise = gtsam::noiseModel::Diagonal::Sigmas(gtsam::Vector6::Constant(0.1));
-    // auto landmarkNoise = gtsam::noiseModel::Isotropic::Sigma(3, 0.1);  // For 3D points
     auto measurementNoise = gtsam::noiseModel::Isotropic::Sigma(2, 1.0);  // For 2D measurements
 
     std::vector<gtsam::Pose3> poses;
 
-    gtsam::Pose3 pose0(gtsam::Rot3(Eigen::AngleAxis(M_PI, Eigen::Vector3d(0,0,1)).toRotationMatrix()), gtsam::Point3(2, 0, 0));
+    Eigen::Matrix3d rotation0(Eigen::AngleAxis(M_PI/2, Eigen::Vector3d(1,0,0)).toRotationMatrix() * Eigen::AngleAxis(M_PI/2, Eigen::Vector3d(0,-1,0)).toRotationMatrix());
+    gtsam::Pose3 pose0(gtsam::Rot3(rotation0), gtsam::Point3(4, 0, 0));
     graph.emplace_shared<gtsam::PriorFactor<gtsam::Pose3>>(gtsam::Symbol('x', 0), pose0, poseNoise);
-    poses.push_back(pose0);
+    poses.push_back(pose0); 
 
-    gtsam::Pose3 pose1(gtsam::Rot3(Eigen::AngleAxis(-M_PI/2, Eigen::Vector3d(0,0,1)).toRotationMatrix()), gtsam::Point3(0,2,0));
+    gtsam::Rot3 rotation1(Eigen::AngleAxis(M_PI/6, Eigen::Vector3d(0,0,1)).toRotationMatrix());
+    gtsam::Pose3 pose1(rotation1 * pose0.rotation(), rotation1 * pose0.translation());
     poses.push_back(pose1);
+
+    gtsam::Pose3 pose2(gtsam::Rot3(rotation0*Eigen::AngleAxis(M_PI/2, Eigen::Vector3d(0,0,1)).toRotationMatrix()), gtsam::Point3(0,4,0));
+    poses.push_back(pose2);
 
     for (size_t i = 0; i < poses.size(); i++) {
         initial.insert(gtsam::Symbol('x', i), poses[i]);
-        if (initial.exists(gtsam::Symbol('x', i)))
-            std::cout << "Inserted pose with key x" << i << std::endl;
-        else
-            std::cout << "Pose insertion with key x" << i << " failed" << std::endl;
         if (i < poses.size()-1)
             graph.emplace_shared<gtsam::BetweenFactor<gtsam::Pose3>>(gtsam::Symbol('x',i), gtsam::Symbol('x',i+1), poses[i].between(poses[i+1]), poseNoise);
     }
-    // Add landmark observation factors
     for (size_t i = 0; i < cube_W.size(); i++) {
         initial.insert(gtsam::Symbol('L', i), cube_W[i]);
-        if (initial.exists(gtsam::Symbol('L', i)))
-            std::cout << "Inserted landmark with key L" << i << std::endl;
-        else
-            std::cout << "Landmark insertion with key L" << i << " failed" << std::endl;        
-        // std::cout <<  "Inserted pose with key L" << i << std::endl;
         for (size_t j = 0; j < poses.size(); j++) {
             gtsam::Point3 p_cube_C(poses[i].transformFrom(cube_W[j]));
             gtsam::Point2 pixel_p_cube_C(robot::geometry::project_point_to_camera_pixel(p_cube_C, fx, fy, cx, cy));
@@ -97,16 +87,24 @@ TEST(GtsamTesting, gtsam_simple_cube) {
         }
     }
 
-    // Run the optimizer to optimize poses, landmark positions, and calibration parameters
     gtsam::LevenbergMarquardtOptimizer optimizer(graph, initial);
     gtsam::Values result = optimizer.optimize();
-
-    // Print the optimized calibration parameters
-    std::cout << "Optimized Calibration Parameters:\n";
-    result.at<gtsam::Cal3_S2>(gtsam::Symbol('K', 0)).print("Calibration:");
     
-
-    // Print the optimized landmark position and poses
-    result.print("Optimized Results:\n");
+    // result.print("Optimized Results:\n");
+    
+    constexpr double TOL = 1e-6;
+    for (size_t i = 0; i < poses.size(); i++) {
+        gtsam::Pose3 result_pose = result.at<gtsam::Pose3>(gtsam::Symbol('x',i));
+        EXPECT_NEAR(poses[i].translation()[0], result_pose.translation()[0], TOL);
+        EXPECT_NEAR(poses[i].translation()[1], result_pose.translation()[1], TOL);
+        EXPECT_NEAR(poses[i].translation()[2], result_pose.translation()[2], TOL);
+        EXPECT_TRUE(poses[i].rotation().matrix().isApprox(result_pose.rotation().matrix(), TOL));
+    }
+    for (size_t i = 0; i < cube_W.size(); i++) {
+        gtsam::Point3 result_point = result.at<gtsam::Point3>(gtsam::Symbol('L',i));
+        EXPECT_NEAR(cube_W[i][0], result_point[0], TOL);
+        EXPECT_NEAR(cube_W[i][1], result_point[1], TOL);
+        EXPECT_NEAR(cube_W[i][2], result_point[2], TOL);              
+    }
 }
 }  // namespace robot::experimental::gtsam
