@@ -458,3 +458,9 @@ http_archive(
   patches = ["//third_party:opengv_0001-prefix-unsupported-eigen-include-paths.patch"],
   integrity = "sha256-gIK3IvE6rGDpxvN3BA+EPFKPvZ7Zi7Ix33IIcm2RULA="
 )
+
+http_archive(
+  name = "kimera_vio",
+  urls = ["https://github.com/MIT-SPARK/Kimera-VIO/archive/2c7dff1941088e9fe9028f623afb2897451ff2ef.zip"],
+  strip_prefix="Kimera-VIO-2c7dff1941088e9fe9028f623afb2897451ff2ef",
+)
