@@ -1,0 +1,30 @@
+
+cc_library(
+    name="kimera_rpgo",
+    hdrs = [
+        "include/KimeraRPGO/RobustSolver.h",
+        "include/KimeraRPGO/GenericSolver.h",
+        "include/KimeraRPGO/Logger.h",
+        "include/KimeraRPGO/SolverParams.h",
+	"include/KimeraRPGO/outlier/OutlierRemoval.h",
+	"include/KimeraRPGO/outlier/Pcm.h",
+        "include/KimeraRPGO/utils/TypeUtils.h",
+        "include/KimeraRPGO/utils/GeometryUtils.h",
+        "include/KimeraRPGO/utils/GraphUtils.h",
+        "include/KimeraRPGO/max_clique_finder/findClique.h",
+        "include/KimeraRPGO/max_clique_finder/graphIO.h",
+    ],
+    strip_include_prefix="include",
+    srcs = [
+        "src/GenericSolver.cpp",
+        "src/Logger.cpp",
+        "src/RobustSolver.cpp",
+	"src/utils/GraphUtils.cpp",
+        "include/KimeraRPGO/max_clique_finder/findClique.cpp",
+        "include/KimeraRPGO/max_clique_finder/findCliqueHeu.cpp",
+        "include/KimeraRPGO/max_clique_finder/graphIO.cpp",
+        "include/KimeraRPGO/max_clique_finder/utils.cpp",
+    ],
+    deps = ["@gtsam"],
+    visibility = ["//visibility:public"],
+)
