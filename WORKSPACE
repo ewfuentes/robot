@@ -502,3 +502,16 @@ http_archive(
   build_file="//third_party:BUILD.kimera_rpgo",
   integrity = "sha256-IkZM58CdITLhDNf7bYcgPFli2NSr/yfIUnWSHAP3hkM="
 )
+
+http_archive(
+  name = "kimera_vio",
+  urls = ["https://github.com/MIT-SPARK/Kimera-VIO/archive/2c7dff1941088e9fe9028f623afb2897451ff2ef.zip"],
+  strip_prefix = "Kimera-VIO-2c7dff1941088e9fe9028f623afb2897451ff2ef",
+  build_file = "//third_party:BUILD.kimera_vio",
+  integrity = "sha256-ttWirKIjJgcw263HExRibS3M9FlqyQz2nbnxcFQlMtc=",
+  patch_args = ["-p1"],
+  patches = [
+    "//third_party:kimera_vio_0001-add-missing-includes.patch",
+    "//third_party:kimera_vio_0002-add-override-markers.patch",
+  ]
+)
