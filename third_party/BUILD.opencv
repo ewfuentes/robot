@@ -13,6 +13,10 @@ SHARED_LIBS = [
   "libopencv_imgproc.so",
   "libopencv_features2d.so",
   "libopencv_flann.so",
+  "libopencv_calib3d.so",
+  "libopencv_video.so",
+  "libopencv_viz.so",
+  "libopencv_rgbd.so",
 ]
 
 cc_library(
@@ -26,13 +30,13 @@ cmake(
     name = "opencv",
     generate_args = [
         "-GNinja",
-        "-DBUILD_LIST=core,highgui,imgcodecs,imgproc,python3,features2d,flann",
+        "-DBUILD_LIST=core,highgui,imgcodecs,imgproc,python3,features2d,flann,calib3d,video,viz,rgbd",
         "-DCMAKE_CXX_STANDARD=20",
         "-DCMAKE_CXX_FLAGS=-Wno-deprecated-enum-enum-conversion",
-	"-DCMAKE_CXX_STANDARD_LIBRARIES=-lstdc++"
+	"-DCMAKE_CXX_STANDARD_LIBRARIES=-lstdc++",
+        "-DOPENCV_EXTRA_MODULES_PATH=$$EXT_BUILD_ROOT$$/external/opencv_contrib/modules"
     ],
-    build_args = [
-    ],
+    build_data=["@opencv_contrib//:modules"],
     generate_crosstool_file = False,
     lib_source = "@opencv//:all",
     includes = ["opencv4"],

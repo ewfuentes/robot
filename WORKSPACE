@@ -358,6 +358,15 @@ http_archive(
   sha256 = "db6fb5e7dc76829d738fdbcdba11a810c66ca0a4752e531eaf3d793361e96de8",
 )
 
+http_archive(
+  name = "opencv_contrib",
+  url = "https://github.com/opencv/opencv_contrib/archive/refs/tags/4.7.0.zip",
+  strip_prefix="opencv_contrib-4.7.0",
+  build_file="//third_party:BUILD.opencv_contrib",
+  integrity = "sha256-7wAYE+w5IVWTzp3rOuxwqFJ49XoO2IsY9vYVJlhVQ2w="
+)
+
+
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 http_archive(
