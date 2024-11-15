@@ -438,3 +438,14 @@ load("@rules_gtsam//bzl:init_deps.bzl", "gtsam_init_deps")
 gtsam_init_deps()
 load("@rules_gtsam//bzl:repositories.bzl", "gtsam_repositories")
 gtsam_repositories()
+
+http_archive(
+  name = "dbow2",
+  urls = ["https://github.com/dorian3d/DBoW2/archive/3924753db6145f12618e7de09b7e6b258db93c6e.zip"],
+  strip_prefix = "DBoW2-3924753db6145f12618e7de09b7e6b258db93c6e",
+  build_file = "//third_party:BUILD.dbow2",
+  integrity = "sha256-yrI1lbG5RfEh8ubiEtUCP9ToKNbJrmMGX+AMsJVABvg=",
+  patch_args = ["-p1"],
+  patches = ["//third_party:dbow2_0001-prefix-include-paths.patch"]
+)
+
