@@ -449,3 +449,12 @@ http_archive(
   patches = ["//third_party:dbow2_0001-prefix-include-paths.patch"]
 )
 
+http_archive(
+  name = "opengv",
+  urls = ["https://github.com/laurentkneip/opengv/archive/91f4b19c73450833a40e463ad3648aae80b3a7f3.zip"],
+  strip_prefix="opengv-91f4b19c73450833a40e463ad3648aae80b3a7f3",
+  build_file="//third_party:BUILD.opengv",
+  patch_args = ["-p1"],
+  patches = ["//third_party:opengv_0001-prefix-unsupported-eigen-include-paths.patch"],
+  integrity = "sha256-gIK3IvE6rGDpxvN3BA+EPFKPvZ7Zi7Ix33IIcm2RULA="
+)

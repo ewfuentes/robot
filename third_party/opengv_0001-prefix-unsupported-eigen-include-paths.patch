@@ -1,0 +1,165 @@
+diff --git a/src/absolute_pose/methods.cpp b/src/absolute_pose/methods.cpp
+index b1f0889..84c3ef4 100644
+--- a/src/absolute_pose/methods.cpp
++++ b/src/absolute_pose/methods.cpp
+@@ -32,8 +32,8 @@
+ #include <opengv/absolute_pose/methods.hpp>
+ #include <opengv/Indices.hpp>
+ 
+-#include <Eigen/NonLinearOptimization>
+-#include <Eigen/NumericalDiff>
++#include <unsupported/Eigen/NonLinearOptimization>
++#include <unsupported/Eigen/NumericalDiff>
+ 
+ #include <opengv/absolute_pose/modules/main.hpp>
+ #include <opengv/absolute_pose/modules/Epnp.hpp>
+diff --git a/src/absolute_pose/modules/main.cpp b/src/absolute_pose/modules/main.cpp
+index ed0c271..a179aaf 100644
+--- a/src/absolute_pose/modules/main.cpp
++++ b/src/absolute_pose/modules/main.cpp
+@@ -29,8 +29,8 @@
+  ******************************************************************************/
+ 
+ 
+-#include <Eigen/NonLinearOptimization>
+-#include <Eigen/NumericalDiff>
++#include <unsupported/Eigen/NonLinearOptimization>
++#include <unsupported/Eigen/NumericalDiff>
+ 
+ #include <opengv/absolute_pose/modules/main.hpp>
+ #include <opengv/absolute_pose/modules/gp3p/modules.hpp>
+diff --git a/src/point_cloud/methods.cpp b/src/point_cloud/methods.cpp
+index 5409eeb..ed69488 100644
+--- a/src/point_cloud/methods.cpp
++++ b/src/point_cloud/methods.cpp
+@@ -32,8 +32,8 @@
+ #include <opengv/point_cloud/methods.hpp>
+ #include <opengv/Indices.hpp>
+ 
+-#include <Eigen/NonLinearOptimization>
+-#include <Eigen/NumericalDiff>
++#include <unsupported/Eigen/NonLinearOptimization>
++#include <unsupported/Eigen/NumericalDiff>
+ 
+ #include <opengv/OptimizationFunctor.hpp>
+ #include <opengv/math/arun.hpp>
+diff --git a/src/relative_pose/methods.cpp b/src/relative_pose/methods.cpp
+index 0027dae..939ad6e 100644
+--- a/src/relative_pose/methods.cpp
++++ b/src/relative_pose/methods.cpp
+@@ -32,8 +32,8 @@
+ #include <opengv/relative_pose/methods.hpp>
+ #include <opengv/Indices.hpp>
+ 
+-#include <Eigen/NonLinearOptimization>
+-#include <Eigen/NumericalDiff>
++#include <unsupported/Eigen/NonLinearOptimization>
++#include <unsupported/Eigen/NumericalDiff>
+ 
+ #include <opengv/OptimizationFunctor.hpp>
+ #include <opengv/math/arun.hpp>
+diff --git a/src/relative_pose/modules/fivept_nister/modules.cpp b/src/relative_pose/modules/fivept_nister/modules.cpp
+index 4b134c5..b4f8d7d 100644
+--- a/src/relative_pose/modules/fivept_nister/modules.cpp
++++ b/src/relative_pose/modules/fivept_nister/modules.cpp
+@@ -30,8 +30,8 @@
+ 
+ 
+ #include <opengv/relative_pose/modules/fivept_nister/modules.hpp>
+-#include <Eigen/NonLinearOptimization>
+-#include <Eigen/NumericalDiff>
++#include <unsupported/Eigen/NonLinearOptimization>
++#include <unsupported/Eigen/NumericalDiff>
+ 
+ #include <opengv/OptimizationFunctor.hpp>
+ 
+diff --git a/src/relative_pose/modules/main.cpp b/src/relative_pose/modules/main.cpp
+index 674c36b..a8c6ed4 100644
+--- a/src/relative_pose/modules/main.cpp
++++ b/src/relative_pose/modules/main.cpp
+@@ -31,8 +31,8 @@
+ 
+ #include <math.h>
+ #include <vector>
+-#include <Eigen/NonLinearOptimization>
+-#include <Eigen/NumericalDiff>
++#include <unsupported/Eigen/NonLinearOptimization>
++#include <unsupported/Eigen/NumericalDiff>
+ 
+ #include <opengv/relative_pose/modules/main.hpp>
+ #include <opengv/relative_pose/modules/fivept_nister/modules.hpp>
+diff --git a/src/sac_problems/relative_pose/CentralRelativePoseSacProblem.cpp b/src/sac_problems/relative_pose/CentralRelativePoseSacProblem.cpp
+index cc48dfb..2c231eb 100644
+--- a/src/sac_problems/relative_pose/CentralRelativePoseSacProblem.cpp
++++ b/src/sac_problems/relative_pose/CentralRelativePoseSacProblem.cpp
+@@ -32,8 +32,8 @@
+ #include <opengv/sac_problems/relative_pose/CentralRelativePoseSacProblem.hpp>
+ #include <opengv/relative_pose/methods.hpp>
+ #include <opengv/triangulation/methods.hpp>
+-#include <Eigen/NonLinearOptimization>
+-#include <Eigen/NumericalDiff>
++#include <unsupported/Eigen/NonLinearOptimization>
++#include <unsupported/Eigen/NumericalDiff>
+ 
+ bool
+ opengv::sac_problems::
+diff --git a/src/sac_problems/relative_pose/MultiCentralRelativePoseSacProblem.cpp b/src/sac_problems/relative_pose/MultiCentralRelativePoseSacProblem.cpp
+index 25f446a..7a44d30 100644
+--- a/src/sac_problems/relative_pose/MultiCentralRelativePoseSacProblem.cpp
++++ b/src/sac_problems/relative_pose/MultiCentralRelativePoseSacProblem.cpp
+@@ -33,8 +33,8 @@
+ 
+ #include <opengv/relative_pose/methods.hpp>
+ #include <opengv/triangulation/methods.hpp>
+-#include <Eigen/NonLinearOptimization>
+-#include <Eigen/NumericalDiff>
++#include <unsupported/Eigen/NonLinearOptimization>
++#include <unsupported/Eigen/NumericalDiff>
+ 
+ bool
+ opengv::sac_problems::
+diff --git a/src/sac_problems/relative_pose/MultiNoncentralRelativePoseSacProblem.cpp b/src/sac_problems/relative_pose/MultiNoncentralRelativePoseSacProblem.cpp
+index cd9596e..0c35cc9 100644
+--- a/src/sac_problems/relative_pose/MultiNoncentralRelativePoseSacProblem.cpp
++++ b/src/sac_problems/relative_pose/MultiNoncentralRelativePoseSacProblem.cpp
+@@ -33,8 +33,8 @@
+ 
+ #include <opengv/relative_pose/methods.hpp>
+ #include <opengv/triangulation/methods.hpp>
+-#include <Eigen/NonLinearOptimization>
+-#include <Eigen/NumericalDiff>
++#include <unsupported/Eigen/NonLinearOptimization>
++#include <unsupported/Eigen/NumericalDiff>
+ 
+ #include <opengv/sac_problems/relative_pose/CentralRelativePoseSacProblem.hpp>
+ 
+diff --git a/src/sac_problems/relative_pose/NoncentralRelativePoseSacProblem.cpp b/src/sac_problems/relative_pose/NoncentralRelativePoseSacProblem.cpp
+index df58181..6ad47af 100644
+--- a/src/sac_problems/relative_pose/NoncentralRelativePoseSacProblem.cpp
++++ b/src/sac_problems/relative_pose/NoncentralRelativePoseSacProblem.cpp
+@@ -32,8 +32,8 @@
+ #include <opengv/sac_problems/relative_pose/NoncentralRelativePoseSacProblem.hpp>
+ #include <opengv/relative_pose/methods.hpp>
+ #include <opengv/triangulation/methods.hpp>
+-#include <Eigen/NonLinearOptimization>
+-#include <Eigen/NumericalDiff>
++#include <unsupported/Eigen/NonLinearOptimization>
++#include <unsupported/Eigen/NumericalDiff>
+ 
+ #include <opengv/sac_problems/relative_pose/CentralRelativePoseSacProblem.hpp>
+ 
+diff --git a/src/sac_problems/relative_pose/RotationOnlySacProblem.cpp b/src/sac_problems/relative_pose/RotationOnlySacProblem.cpp
+index af04c3c..c11cf10 100644
+--- a/src/sac_problems/relative_pose/RotationOnlySacProblem.cpp
++++ b/src/sac_problems/relative_pose/RotationOnlySacProblem.cpp
+@@ -32,8 +32,8 @@
+ #include <opengv/sac_problems/relative_pose/RotationOnlySacProblem.hpp>
+ #include <opengv/relative_pose/methods.hpp>
+ #include <opengv/triangulation/methods.hpp>
+-#include <Eigen/NonLinearOptimization>
+-#include <Eigen/NumericalDiff>
++#include <unsupported/Eigen/NonLinearOptimization>
++#include <unsupported/Eigen/NumericalDiff>
+ 
+ bool
+ opengv::sac_problems::
