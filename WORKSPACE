@@ -500,4 +500,5 @@ http_archive(
   urls = ["https://github.com/MIT-SPARK/Kimera-RPGO/archive/ab3fe8c30dd587f5b2ba4ca276bf92cbd593dcf5.zip"],
   strip_prefix="Kimera-RPGO-ab3fe8c30dd587f5b2ba4ca276bf92cbd593dcf5",
   build_file="//third_party:BUILD.kimera_rpgo",
+  integrity = "sha256-IkZM58CdITLhDNf7bYcgPFli2NSr/yfIUnWSHAP3hkM="
 )
