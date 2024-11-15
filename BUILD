@@ -16,3 +16,9 @@ refresh_compile_commands(
     # And if you're working on a header-only library, specify a test or binary target that compiles it.
 )
 
+load("@rules_gtsam//bzl:gtsam.bzl", "gtsam_config")
+load("@rules_gtsam//bzl:gtsam.bzl", "gtsam_dllexport")
+
+gtsam_config()
+gtsam_dllexport(library_name="gtsam")
+gtsam_dllexport(library_name="gtsam_unstable")
