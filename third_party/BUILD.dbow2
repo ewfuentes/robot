@@ -1,0 +1,49 @@
+
+cc_library(
+    name = "dbow2",
+    hdrs = [
+        "include/DBoW2/BowVector.h",
+        "include/DBoW2/DBoW2.h",
+        "include/DBoW2/FBrief.h",
+        "include/DBoW2/FClass.h",
+        "include/DBoW2/FeatureVector.h",
+        "include/DBoW2/FORB.h",
+        "include/DBoW2/FSurf64.h",
+        "include/DBoW2/QueryResults.h",
+        "include/DBoW2/ScoringObject.h",
+        "include/DBoW2/TemplatedDatabase.h",
+        "include/DBoW2/TemplatedVocabulary.h",
+
+    ],
+    srcs = [
+        "src/BowVector.cpp",
+        "src/FBrief.cpp",
+        "src/FeatureVector.cpp",
+        "src/FORB.cpp",
+        "src/FSurf64.cpp",
+        "src/QueryResults.cpp",
+        "src/ScoringObject.cpp",
+    ],
+    strip_include_prefix="include",
+    deps = ["@opencv"]
+)
+
+filegroup(
+  name = "test_images",
+  srcs = [
+    "demo/images/image0.png",
+    "demo/images/image1.png",
+    "demo/images/image2.png",
+    "demo/images/image3.png",
+  ]
+)
+
+cc_binary(
+    name = "dbow2_demo",
+    srcs = ["demo/demo.cpp"],
+    data = [":test_images"],
+    deps = [
+        ":dbow2",
+        "@opencv",
+    ]
+)

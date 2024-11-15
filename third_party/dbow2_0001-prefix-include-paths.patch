@@ -1,0 +1,142 @@
+diff --git a/demo/demo.cpp b/demo/demo.cpp
+index 8ac6036..a228925 100644
+--- a/demo/demo.cpp
++++ b/demo/demo.cpp
+@@ -10,7 +10,7 @@
+ #include <vector>
+ 
+ // DBoW2
+-#include "DBoW2.h" // defines OrbVocabulary and OrbDatabase
++#include "DBoW2/DBoW2.h" // defines OrbVocabulary and OrbDatabase
+ 
+ // OpenCV
+ #include <opencv2/core.hpp>
+@@ -71,7 +71,7 @@ void loadFeatures(vector<vector<cv::Mat > > &features)
+   for(int i = 0; i < NIMAGES; ++i)
+   {
+     stringstream ss;
+-    ss << "images/image" << i << ".png";
++    ss << "external/dbow2/demo/images/image" << i << ".png";
+ 
+     cv::Mat image = cv::imread(ss.str(), 0);
+     cv::Mat mask;
+diff --git a/include/DBoW2/DBoW2.h b/include/DBoW2/DBoW2.h
+index 6cd5f49..13df010 100644
+--- a/include/DBoW2/DBoW2.h
++++ b/include/DBoW2/DBoW2.h
+@@ -49,13 +49,13 @@ namespace DBoW2
+ {
+ }
+ 
+-#include "TemplatedVocabulary.h"
+-#include "TemplatedDatabase.h"
+-#include "BowVector.h"
+-#include "FeatureVector.h"
+-#include "QueryResults.h"
+-#include "FBrief.h"
+-#include "FORB.h"
++#include "DBoW2/TemplatedVocabulary.h"
++#include "DBoW2/TemplatedDatabase.h"
++#include "DBoW2/BowVector.h"
++#include "DBoW2/FeatureVector.h"
++#include "DBoW2/QueryResults.h"
++#include "DBoW2/FBrief.h"
++#include "DBoW2/FORB.h"
+ 
+ /// ORB Vocabulary
+ typedef DBoW2::TemplatedVocabulary<DBoW2::FORB::TDescriptor, DBoW2::FORB> 
+diff --git a/src/BowVector.cpp b/src/BowVector.cpp
+index a555d10..941ac6f 100644
+--- a/src/BowVector.cpp
++++ b/src/BowVector.cpp
+@@ -13,7 +13,7 @@
+ #include <algorithm>
+ #include <cmath>
+ 
+-#include "BowVector.h"
++#include "DBoW2/BowVector.h"
+ 
+ namespace DBoW2 {
+ 
+diff --git a/src/FBrief.cpp b/src/FBrief.cpp
+index caab113..2b218a3 100644
+--- a/src/FBrief.cpp
++++ b/src/FBrief.cpp
+@@ -11,7 +11,7 @@
+ #include <string>
+ #include <sstream>
+ 
+-#include "FBrief.h"
++#include "DBoW2/FBrief.h"
+ 
+ using namespace std;
+ 
+diff --git a/src/FORB.cpp b/src/FORB.cpp
+index b7e480d..bceb0a0 100644
+--- a/src/FORB.cpp
++++ b/src/FORB.cpp
+@@ -13,7 +13,7 @@
+ #include <stdint.h>
+ #include <limits.h>
+ 
+-#include "FORB.h"
++#include "DBoW2/FORB.h"
+ 
+ using namespace std;
+ 
+diff --git a/src/FSurf64.cpp b/src/FSurf64.cpp
+index df5d886..0f64e62 100644
+--- a/src/FSurf64.cpp
++++ b/src/FSurf64.cpp
+@@ -11,8 +11,8 @@
+ #include <string>
+ #include <sstream>
+ 
+-#include "FClass.h"
+-#include "FSurf64.h"
++#include "DBoW2/FClass.h"
++#include "DBoW2/FSurf64.h"
+ 
+ using namespace std;
+ 
+diff --git a/src/FeatureVector.cpp b/src/FeatureVector.cpp
+index c055a15..450d3fa 100644
+--- a/src/FeatureVector.cpp
++++ b/src/FeatureVector.cpp
+@@ -7,7 +7,7 @@
+  *
+  */
+ 
+-#include "FeatureVector.h"
++#include "DBoW2/FeatureVector.h"
+ #include <map>
+ #include <vector>
+ #include <iostream>
+diff --git a/src/QueryResults.cpp b/src/QueryResults.cpp
+index 01897ca..59cda8b 100644
+--- a/src/QueryResults.cpp
++++ b/src/QueryResults.cpp
+@@ -9,7 +9,7 @@
+ 
+ #include <iostream>
+ #include <fstream>
+-#include "QueryResults.h"
++#include "DBoW2/QueryResults.h"
+ 
+ using namespace std;
+ 
+diff --git a/src/ScoringObject.cpp b/src/ScoringObject.cpp
+index 063a96e..095473f 100644
+--- a/src/ScoringObject.cpp
++++ b/src/ScoringObject.cpp
+@@ -8,8 +8,8 @@
+  */
+ 
+ #include <cfloat>
+-#include "TemplatedVocabulary.h"
+-#include "BowVector.h"
++#include "DBoW2/TemplatedVocabulary.h"
++#include "DBoW2/BowVector.h"
+ 
+ using namespace DBoW2;
+ 
