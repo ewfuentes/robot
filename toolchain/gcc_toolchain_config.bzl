@@ -1,43 +1,10 @@
 
 load("@bazel_tools//tools/build_defs/cc:action_names.bzl", "ACTION_NAMES")
-load("@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl", "feature", "flag_group", "flag_set", "tool_path")
+load("@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl",
+    "action_config", "feature", "flag_group", "flag_set", "tool_path", "tool", "variable_with_value")
 
 def _impl(ctx):
     gcc_version = ctx.attr.gcc_version
-    tool_paths = [
-      tool_path(
-        name = "gcc",
-        path = "/usr/bin/gcc-{}".format(gcc_version),
-      ),
-      tool_path(
-        name = "ar",
-        path = "/usr/bin/ar",
-      ),
-      tool_path(
-        name = "ld",
-        path = "/usr/bin/ld.gold",
-      ),
-      tool_path(
-        name = "cpp",
-        path = "/usr/bin/g++-{}".format(gcc_version),
-      ),
-      tool_path(
-        name = "gcov",
-        path = "/bin/false",
-      ),
-      tool_path(
-        name = "nm",
-        path = "/bin/false",
-      ),
-      tool_path(
-        name = "objdump",
-        path = "/bin/false",
-      ),
-      tool_path(
-        name = "strip",
-        path = "/bin/false",
-      ),
-    ]
     all_link_actions = [
         ACTION_NAMES.cpp_link_executable,
         ACTION_NAMES.cpp_link_dynamic_library,
@@ -47,6 +14,52 @@ def _impl(ctx):
         ACTION_NAMES.c_compile,
         ACTION_NAMES.cpp_compile,
     ]
+    action_configs = [
+      action_config(
+        action_name = ACTION_NAMES.preprocess_assemble,
+        tools = [tool(path="/usr/bin/gcc-{}".format(gcc_version))],
+      ),
+      action_config(
+        action_name = ACTION_NAMES.assemble,
+        tools = [tool(path="/usr/bin/gcc-{}".format(gcc_version))],
+      ),
+      action_config(
+        action_name = ACTION_NAMES.c_compile,
+        tools = [tool(path="/usr/bin/gcc-{}".format(gcc_version))],
+        implies = [
+          "c_compile_flags"
+        ],
+      ),
+      action_config(
+        action_name = ACTION_NAMES.cpp_compile,
+        tools = [tool(path="/usr/bin/g++-{}".format(gcc_version))],
+        # implies = [
+        #   "cpp_compile_flags"
+        # ],
+      ),
+      action_config(
+        action_name = ACTION_NAMES.cpp_link_executable,
+        tools = [tool(path="/usr/bin/g++-{}".format(gcc_version))],
+        # implies = [
+        #   "default_linker_flags"
+        # ],
+      ),
+      action_config(
+        action_name = ACTION_NAMES.cpp_link_dynamic_library,
+        tools = [tool(path="/usr/bin/g++-{}".format(gcc_version))],
+        # implies = [
+        #   "default_linker_flags"
+        # ],
+      ),
+      action_config(
+        action_name = ACTION_NAMES.cpp_link_static_library,
+        tools = [tool(path="/usr/bin/ar")],
+        implies = [
+          "archiver_flags"
+        ],
+      ),
+    ]
+
     features = [
       feature(
         name = "default_linker_flags",
@@ -154,11 +167,65 @@ def _impl(ctx):
             )
           ]
       ),
+      feature(
+          name = "archiver_flags",
+          flag_sets = [
+            flag_set(
+                actions = [ACTION_NAMES.cpp_link_static_library],
+                flag_groups = [
+                    flag_group(
+                        flags = [
+                            "rcsD",
+                            "%{output_execpath}",
+                        ],
+                        expand_if_available = "output_execpath",
+                    ),
+                ],
+            ),
+            flag_set(
+                actions = [ACTION_NAMES.cpp_link_static_library],
+                flag_groups = [
+                    flag_group(
+                        iterate_over = "libraries_to_link",
+                        flag_groups = [
+                            flag_group(
+                                flags = ["%{libraries_to_link.name}"],
+                                expand_if_equal = variable_with_value(
+                                    name = "libraries_to_link.type",
+                                    value = "object_file",
+                                ),
+                            ),
+                            flag_group(
+                                flags = ["%{libraries_to_link.object_files}"],
+                                iterate_over = "libraries_to_link.object_files",
+                                expand_if_equal = variable_with_value(
+                                    name = "libraries_to_link.type",
+                                    value = "object_file_group",
+                                ),
+                            ),
+                        ],
+                        expand_if_available = "libraries_to_link",
+                    ),
+                ],
+            ),
+            flag_set(
+                actions = [ACTION_NAMES.cpp_link_static_library],
+                flag_groups = [
+                    flag_group(
+                        flags = ["%{user_archiver_flags}"],
+                        iterate_over = "user_archiver_flags",
+                        expand_if_available = "user_archiver_flags",
+                    ),
+                ],
+            ),
+        ],
+      )
     ]
 
     return cc_common.create_cc_toolchain_config_info(
       ctx=ctx,
       features = features,
+      action_configs = action_configs,
       cxx_builtin_include_directories = [
         "/usr/include",
         "/usr/include/c++/{}".format(gcc_version),
@@ -172,7 +239,6 @@ def _impl(ctx):
       compiler="gcc",
       abi_version="unknown",
       abi_libc_version="unknown",
-      tool_paths = tool_paths
     )
 
 gcc_toolchain_config = rule(

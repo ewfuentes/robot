@@ -19,6 +19,19 @@ http_archive(
 )
 
 http_archive(
+    name = "bazel_skylib",
+    sha256 = "bc283cdfcd526a52c3201279cda4bc298652efa898b10b4db0837dc51652756f",
+    urls = [
+        "https://mirror.bazel.build/github.com/bazelbuild/bazel-skylib/releases/download/1.7.1/bazel-skylib-1.7.1.tar.gz",
+        "https://github.com/bazelbuild/bazel-skylib/releases/download/1.7.1/bazel-skylib-1.7.1.tar.gz",
+    ],
+)
+
+load("@bazel_skylib//:workspace.bzl", "bazel_skylib_workspace")
+
+bazel_skylib_workspace()
+
+http_archive(
     name = "platforms",
     urls = [
         "https://mirror.bazel.build/github.com/bazelbuild/platforms/releases/download/0.0.8/platforms-0.0.8.tar.gz",
@@ -201,11 +214,11 @@ rules_proto_toolchains()
 
 http_archive(
   name = "com_google_protobuf",
-  urls = ["https://github.com/protocolbuffers/protobuf/releases/download/v25.3/protobuf-25.3.zip"],
-  strip_prefix="protobuf-25.3",
-  sha256 = "3ae7a8f2181be28e5d694617c2b85c6561ba6a16bfcdc9db8e3a95077cab8815",
+  urls = ["https://github.com/protocolbuffers/protobuf/releases/download/v28.3/protobuf-28.3.zip"],
+  strip_prefix="protobuf-28.3",
+  integrity = "sha256-s7TDts/nS3eurpkJ/DwTAwknF/cbwhVNfBlhrNr1/kw=",
   patches = [
-    "@//third_party:protobuf-0002-use-rules-python-headers.patch",
+    "@//third_party:protobuf_0001-use-rules-python-headers.patch",
   ],
   patch_args=["-p1"],
 )
@@ -358,6 +371,15 @@ http_archive(
   sha256 = "db6fb5e7dc76829d738fdbcdba11a810c66ca0a4752e531eaf3d793361e96de8",
 )
 
+http_archive(
+  name = "opencv_contrib",
+  url = "https://github.com/opencv/opencv_contrib/archive/refs/tags/4.7.0.zip",
+  strip_prefix="opencv_contrib-4.7.0",
+  build_file="//third_party:BUILD.opencv_contrib",
+  integrity = "sha256-7wAYE+w5IVWTzp3rOuxwqFJ49XoO2IsY9vYVJlhVQ2w="
+)
+
+
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 http_archive(
@@ -458,3 +480,4 @@ http_archive(
   patches = ["//third_party:opengv_0001-prefix-unsupported-eigen-include-paths.patch"],
   integrity = "sha256-gIK3IvE6rGDpxvN3BA+EPFKPvZ7Zi7Ix33IIcm2RULA="
 )
+
