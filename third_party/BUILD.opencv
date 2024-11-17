@@ -19,13 +19,6 @@ SHARED_LIBS = [
   "libopencv_rgbd.so",
 ]
 
-cc_library(
-  name = "opencv_deps",
-  linkopts = [
-    "-lstdc++",
-  ]
-)
-
 cmake(
     name = "opencv",
     generate_args = [
@@ -40,7 +33,6 @@ cmake(
     generate_crosstool_file = False,
     lib_source = "@opencv//:all",
     includes = ["opencv4"],
-    deps = [":opencv_deps"],
     out_shared_libs = SHARED_LIBS + 
     [lib + ".407" for lib in SHARED_LIBS],
     visibility = ["//visibility:public"],
