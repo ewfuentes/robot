@@ -201,11 +201,11 @@ rules_proto_toolchains()
 
 http_archive(
   name = "com_google_protobuf",
-  urls = ["https://github.com/protocolbuffers/protobuf/releases/download/v25.3/protobuf-25.3.zip"],
-  strip_prefix="protobuf-25.3",
-  sha256 = "3ae7a8f2181be28e5d694617c2b85c6561ba6a16bfcdc9db8e3a95077cab8815",
+  urls = ["https://github.com/protocolbuffers/protobuf/releases/download/v28.3/protobuf-28.3.zip"],
+  strip_prefix="protobuf-28.3",
+  integrity = "sha256-s7TDts/nS3eurpkJ/DwTAwknF/cbwhVNfBlhrNr1/kw=",
   patches = [
-    "@//third_party:protobuf-0002-use-rules-python-headers.patch",
+    "@//third_party:protobuf_0001-use-rules-python-headers.patch",
   ],
   patch_args=["-p1"],
 )
