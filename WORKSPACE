@@ -515,10 +515,10 @@ http_archive(
 
 http_archive(
   name = "kimera_vio",
-  urls = ["https://github.com/MIT-SPARK/Kimera-VIO/archive/2c7dff1941088e9fe9028f623afb2897451ff2ef.zip"],
-  strip_prefix = "Kimera-VIO-2c7dff1941088e9fe9028f623afb2897451ff2ef",
+  urls = ["https://github.com/ewfuentes/Kimera-VIO/archive/master.zip"],
+  strip_prefix = "Kimera-VIO-master",
   build_file = "//third_party:BUILD.kimera_vio",
-  integrity = "sha256-ttWirKIjJgcw263HExRibS3M9FlqyQz2nbnxcFQlMtc=",
+  integrity = "sha256-8fLHPn8JPWffnnXEA0gJbZrBhoGpK0Gw80I3oWXpgZg=",
   patch_args = ["-p1"],
   patches = [
     "//third_party:kimera_vio_0001-add-missing-includes.patch",
