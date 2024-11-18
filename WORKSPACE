@@ -465,6 +465,16 @@ http_archive(
 )
 
 http_archive(
+    name = "gtsam",
+    build_file = "@rules_gtsam//third_party:gtsam.BUILD",
+    sha256 = "8b44d6b98a3b608664d1c9a7c1383a406550499d894533bb0183e6cf487e6457",
+    strip_prefix = "gtsam-4.2.0",
+    urls = ["https://github.com/borglab/gtsam/archive/4.2.0.tar.gz"],
+    patch_args=["-p1"],
+    patches = ["//third_party:gtsam_0001-remove-redundant-template-params.patch"],
+)
+
+http_archive(
   name = "rules_gtsam",
   urls = ["https://github.com/pizzaroll04/rules_gtsam/archive/c554d4f1dcd86cf191067094549c57d70030ba97.zip"],
   sha256 = "1f7a36b162adb0d6ff737543cdbc7d560339934aa64948224b4c8980112604ac",
@@ -501,4 +511,17 @@ http_archive(
   strip_prefix="Kimera-RPGO-ab3fe8c30dd587f5b2ba4ca276bf92cbd593dcf5",
   build_file="//third_party:BUILD.kimera_rpgo",
   integrity = "sha256-IkZM58CdITLhDNf7bYcgPFli2NSr/yfIUnWSHAP3hkM="
+)
+
+http_archive(
+  name = "kimera_vio",
+  urls = ["https://github.com/MIT-SPARK/Kimera-VIO/archive/2c7dff1941088e9fe9028f623afb2897451ff2ef.zip"],
+  strip_prefix = "Kimera-VIO-2c7dff1941088e9fe9028f623afb2897451ff2ef",
+  build_file = "//third_party:BUILD.kimera_vio",
+  integrity = "sha256-ttWirKIjJgcw263HExRibS3M9FlqyQz2nbnxcFQlMtc=",
+  patch_args = ["-p1"],
+  patches = [
+    "//third_party:kimera_vio_0001-add-missing-includes.patch",
+    "//third_party:kimera_vio_0002-add-override-markers.patch",
+  ]
 )
