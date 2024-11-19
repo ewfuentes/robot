@@ -127,3 +127,22 @@ cc_test(
     "@com_google_googletest//:gtest_main",
   ]
 )
+
+cc_library(
+  name = "cubic_hermite_spline",
+  hdrs = ["cubic_hermite_spline.hh"],
+  srcs = ["cubic_hermite_spline.cc"],
+  visibility = ["//visibility:public"],
+  deps = [
+    "//common:check",
+  ]
+)
+
+cc_test(
+  name = "cubic_hermite_spline_test",
+  srcs = ["cubic_hermite_spline_test.cc"],
+  deps = [
+    ":cubic_hermite_spline",
+    "@com_google_googletest//:gtest_main",
+  ]
+)
