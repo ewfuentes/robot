@@ -131,7 +131,6 @@ cc_test(
 cc_library(
   name = "cubic_hermite_spline",
   hdrs = ["cubic_hermite_spline.hh"],
-  srcs = ["cubic_hermite_spline.cc"],
   visibility = ["//visibility:public"],
   deps = [
     "//common:check",
