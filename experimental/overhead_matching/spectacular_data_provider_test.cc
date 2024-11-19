@@ -1,7 +1,7 @@
 
-#include "gtest/gtest.h"
-
 #include "experimental/overhead_matching/spectacular_data_provider.hh"
+
+#include "gtest/gtest.h"
 
 namespace robot::experimental::overhead_matching {
 
@@ -12,4 +12,4 @@ TEST(SpectacularDataProviderTest, happy_case) {
     // Verification
     EXPECT_TRUE(false);
 }
-}
+}  // namespace robot::experimental::overhead_matching
