@@ -38,7 +38,6 @@ class CubicHermiteSpline {
 
         const X segment_slope = (end_val - start_val) / segment_length;
 
-
         const X start_slope = [&]() {
             if (iter - 1 == ts_.begin()) {
                 return segment_slope;
