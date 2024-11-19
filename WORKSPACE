@@ -525,3 +525,10 @@ http_archive(
     "//third_party:kimera_vio_0002-add-override-markers.patch",
   ]
 )
+
+http_archive(
+  name = "nlohmann_json",
+  urls = ["https://github.com/nlohmann/json/archive/refs/tags/v3.11.3.zip"],
+  strip_prefix = "json-3.11.3",
+  integrity = "sha256-BAIrBdgG61/3MCPCgLaGl9Erk+G3JnoLIqGjnsdXgGk=",
+)
