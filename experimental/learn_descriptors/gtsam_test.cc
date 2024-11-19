@@ -1,20 +1,16 @@
 #include <iostream>
 #include <vector>
 
-#include "gtsam/slam/PriorFactor.h"
-#include "gtsam/slam/ProjectionFactor.h"
-#include "gtsam/slam/GeneralSFMFactor.h"
-#include "gtsam/nonlinear/LevenbergMarquardtOptimizer.h"
-#include "gtsam/geometry/Pose3.h"
-#include "gtsam/geometry/Point3.h"
-#include "gtsam/nonlinear/Values.h"
-#include "gtsam/inference/Symbol.h"
 #include "Eigen/Core"
 #include "gtest/gtest.h"
-
-#include <iostream>
-
-#include "common/geometry/camera_geometry.hh"
+#include "gtsam/geometry/Point3.h"
+#include "gtsam/geometry/Pose3.h"
+#include "gtsam/inference/Symbol.h"
+#include "gtsam/nonlinear/LevenbergMarquardtOptimizer.h"
+#include "gtsam/nonlinear/Values.h"
+#include "gtsam/slam/GeneralSFMFactor.h"
+#include "gtsam/slam/PriorFactor.h"
+#include "gtsam/slam/ProjectionFactor.h"
 
 class GtsamTestHelper {
    public:
@@ -48,15 +44,15 @@ TEST(GtsamTesting, gtsam_simple_cube) {
     gtsam::NonlinearFactorGraph graph;
 
     gtsam::Cal3_S2::shared_ptr K(new gtsam::Cal3_S2(fx, fy, 0, cx, cy));
-    initial.insert(gtsam::Symbol('K', 0), *K);    
+    initial.insert(gtsam::Symbol('K', 0), *K);
 
     auto poseNoise = gtsam::noiseModel::Diagonal::Sigmas(gtsam::Vector6::Constant(0.1));
-    auto measurementNoise = gtsam::noiseModel::Isotropic::Sigma(2, 1.0); 
-    std::vector<gtsam::Pose3> poses;    
+    auto measurementNoise = gtsam::noiseModel::Isotropic::Sigma(2, 1.0);
+    std::vector<gtsam::Pose3> poses;
     std::vector<gtsam::PinholeCamera<gtsam::Cal3_S2>> cameras;
 
     Eigen::Matrix3d rotation0(
-        Eigen::AngleAxis(M_PI / 2, Eigen::Vector3d(0, 0, 1)).toRotationMatrix() * 
+        Eigen::AngleAxis(M_PI / 2, Eigen::Vector3d(0, 0, 1)).toRotationMatrix() *
         Eigen::AngleAxis(-M_PI / 2, Eigen::Vector3d(1, 0, 0)).toRotationMatrix());
     gtsam::Pose3 pose0(gtsam::Rot3(rotation0), gtsam::Point3(4, 0, 0));
     gtsam::PinholeCamera<gtsam::Cal3_S2> camera0(pose0, *K);
@@ -65,19 +61,19 @@ TEST(GtsamTesting, gtsam_simple_cube) {
     cameras.push_back(camera0);
 
     gtsam::Pose3 pose1(
-        gtsam::Rot3(Eigen::AngleAxis(M_PI / 2, Eigen::Vector3d(0, 0, 1)).toRotationMatrix() * 
-            rotation0),
+        gtsam::Rot3(Eigen::AngleAxis(M_PI / 2, Eigen::Vector3d(0, 0, 1)).toRotationMatrix() *
+                    rotation0),
         gtsam::Point3(0, 4, 0));
-    gtsam::PinholeCamera<gtsam::Cal3_S2> camera1(pose1, *K);      
+    gtsam::PinholeCamera<gtsam::Cal3_S2> camera1(pose1, *K);
     graph.emplace_shared<gtsam::PriorFactor<gtsam::Pose3>>(gtsam::Symbol('x', 1), pose1, poseNoise);
     poses.push_back(pose1);
     cameras.push_back(camera1);
 
     for (size_t i = 0; i < poses.size(); i++) {
-        initial.insert(gtsam::Symbol('x', i), poses[i]);        
+        initial.insert(gtsam::Symbol('x', i), poses[i]);
     }
     for (size_t i = 0; i < cube_W.size(); i++) {
-        initial.insert(gtsam::Symbol('L', i), gtsam::Point3(0,0,0));
+        initial.insert(gtsam::Symbol('L', i), gtsam::Point3(0, 0, 0));
         for (size_t j = 0; j < poses.size(); j++) {
             gtsam::Point2 pixel_p_cube_C = cameras[j].project(cube_W[i]);
             if (GtsamTestHelper::pixel_in_range(pixel_p_cube_C, img_width, img_height)) {
