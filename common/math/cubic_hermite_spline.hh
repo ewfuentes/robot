@@ -3,7 +3,6 @@
 
 #include <algorithm>
 #include <array>
-#include <functional>
 #include <vector>
 
 #include "common/check.hh"
