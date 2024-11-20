@@ -6,6 +6,8 @@
 #include <fstream>
 #include <string>
 
+#include "Eigen/Core"
+
 #include "common/check.hh"
 #include "common/time/robot_time.hh"
 #include "nlohmann/json.hpp"
@@ -18,12 +20,12 @@ using json = nlohmann::json;
 namespace {
 
 struct AccelMeasurement {
-    time::RobotTimestamp time_of_validity;
+    double time_of_validity_s;
     Eigen::Vector3d accel_mpss;
 };
 
 struct GyroMeasurement {
-    time::RobotTimestamp time_of_validity;
+    double time_of_validity_s;
     Eigen::Vector3d angular_vel_radps;
 };
 
@@ -31,12 +33,12 @@ struct FrameCalibration {
     Eigen::Vector2d focal_length;
     Eigen::Vector2d principle_point;
 
-    std::optional<time::RobotTimestamp::duration> exposure_time;
+    std::optional<double> exposure_time_s;
     std::optional<double> depth_scale;
 };
 
 struct FrameGroup {
-    time::RobotTimestamp time_of_validity;
+    double time_of_validity_s;
     int frame_number;
     std::array<FrameCalibration, 2> calibration;
 };
@@ -55,19 +57,19 @@ LogData read_jsonl(const fs::path &file_path) {
     LogData out;
     for (std::string line; std::getline(in_file, line);) {
         const auto j = json::parse(line);
-        const auto time_of_validity = time::as_duration(j["time"]) + time::RobotTimestamp();
+        const double time_of_validity_s = j["time"].get<double>();
         if (j.contains("sensor")) {
             const auto &sensor_data = j["sensor"];
             const auto &v = sensor_data["values"];
             if (sensor_data["type"] == "accelerometer") {
                 out.accel.emplace_back(AccelMeasurement{
-                    .time_of_validity = time_of_validity,
+                    .time_of_validity_s = time_of_validity_s,
                     .accel_mpss = Eigen::Vector3d{v.at(0).get<double>(), v.at(1).get<double>(),
                                                   v.at(2).get<double>()},
                 });
             } else if (sensor_data["type"] == "gyroscope") {
                 out.gyro.emplace_back(GyroMeasurement{
-                    .time_of_validity = time_of_validity,
+                    .time_of_validity_s = time_of_validity_s,
                     .angular_vel_radps =
                         Eigen::Vector3d{v.at(0).get<double>(), v.at(1).get<double>(),
                                         v.at(2).get<double>()},
@@ -85,8 +87,7 @@ LogData read_jsonl(const fs::path &file_path) {
                                                calib_info["focalLengthY"].get<double>()};
                 calibration[0].principle_point = {calib_info["principalPointX"].get<double>(),
                                                   calib_info["principalPointY"].get<double>()};
-                calibration[0].exposure_time =
-                    time::as_duration(frame["exposureTimeSeconds"].get<double>());
+                calibration[0].exposure_time_s = frame["exposureTimeSeconds"].get<double>();
             }
             {
                 const auto &frame = j["frames"].at(1);
@@ -99,6 +100,14 @@ LogData read_jsonl(const fs::path &file_path) {
                                                   calib_info["principalPointY"].get<double>()};
                 calibration[1].depth_scale = frame["depthScale"].get<double>();
             }
+
+            out.frames.push_back(
+                FrameGroup{
+                    .time_of_validity_s = time_of_validity_s,
+                    .frame_number = frame_number,
+                    .calibration = calibration,
+                }
+            );
         }
     }
     return out;
@@ -107,7 +116,8 @@ LogData read_jsonl(const fs::path &file_path) {
 
 SDP::SpectacularDataProvider(const fs::path &path) {
     const auto data_path = path / "data.jsonl";
-    const auto log_data = read_jsonl(data_path);
+    const LogData log_data = read_jsonl(data_path);
+
 }
 
 bool SDP::spin() { return false; }
