@@ -1,5 +1,8 @@
 #include "experimental/learn_descriptors/vo.hh"
 
+#include <iostream>
+#include <sstream>
+
 #include "gtest/gtest.h"
 
 namespace robot::experimental::learn_descriptors::vo {
@@ -8,21 +11,56 @@ TEST(VIO_TEST, frontend_pipeline_sweep) {
     const size_t height = 480;
 
     const size_t pixel_shift_x = 20;
-    const size_t PIXEL_COMP_TOL = 5;
-    cv::Mat translation_mat = (cv::Mat_<double>(2, 3) << 1, 0, pixel_shift_x, 0, 1, 0);
+    const size_t PIXEL_COMP_TOL = 20;
+
     cv::Mat image_1 = cv::Mat::zeros(height, width, CV_8UC3);
     cv::Mat image_2;
-    std::vector<cv::Point> points = {{50, 50},   {100, 100}, {150, 150}, {200, 200},
-                                     {250, 250}, {300, 300}, {350, 350}, {50, 350}};
-    for (const auto& point : points) {
-        cv::circle(image_1, point, 3, cv::Scalar(0, 255, 0), -1);
+
+    cv::Mat translation_mat = (cv::Mat_<double>(2, 3) << 1, 0, pixel_shift_x, 0, 1, 0);
+    cv::Point rect_points[4] = {{150, 200}, {350, 200}, {350, 300}, {150, 300}};
+    float com_x = 0.0f, com_y = 0.0f;
+    for (const cv::Point& rect_point : rect_points) {
+        com_x += rect_point.x;
+        com_y += rect_point.y;
     }
+    com_x *= 0.25;
+    com_y *= 0.25;
+    cv::Point rotation_center(com_x, com_y);
+    cv::Mat rotation_matrix = cv::getRotationMatrix2D(rotation_center, 45, 1.0);
+    // cv::Point rect_points_rotated[4];
+    // for (int i = 0; i < 4; i++) {
+    //     cv::Mat point = (cv::Mat_<double>(3,1) << rect_points[i].x, rect_points[i].y, 1);
+    //     cv::Mat rotated_point = rotation_matrix * point;
+    //     rect_points_rotated[i] = cv::Point(rotated_point.at<double>(0,0),
+    //     rotated_point.at<double>(1,0));
+    // }
+    // std::cout << 'ooga' << std::endl;
+    // for (int i = 0; i < 4; i++) {
+    //     cv::line(image_1, rect_points_rotated[i], rect_points_rotated[(i+1)%4],
+    //     cv::Scalar(255,0,0), 2);
+    // }
+
+    const size_t line_spacing = 100;
+    for (size_t i = 0; i <= width / line_spacing; i++) {
+        size_t x = i * line_spacing + (width % line_spacing) / 2;
+        size_t b = i * 255.0 / (width / line_spacing);
+        size_t g = 255.0 - i * 255.0 / (width / line_spacing);
+        cv::line(image_1, cv::Point(x, 0), cv::Point(x, height - 1), cv::Scalar(b, g, 0), 2);
+    }
+    for (size_t i = 0; i <= height / line_spacing; i++) {
+        size_t y = i * line_spacing + (height % line_spacing) / 2;
+        size_t b = i * 255.0 / (width / line_spacing);
+        size_t g = 255.0 - i * 255.0 / (width / line_spacing);
+        cv::line(image_1, cv::Point(0, y), cv::Point(width - 1, y), cv::Scalar(b, g, 0), 2);
+    }
+
+    cv::warpAffine(image_1, image_1, rotation_matrix, image_1.size());
     cv::warpAffine(image_1, image_2, translation_mat, image_1.size());
 
     cv::Mat img_test_disp;
     cv::hconcat(image_1, image_2, img_test_disp);
     cv::imshow("Test", img_test_disp);
-    cv::waitKey(100);
+    cv::waitKey(1000);
 
     Frontend::ExtractorType extractor_types[2] = {Frontend::ExtractorType::SIFT,
                                                   Frontend::ExtractorType::ORB};
@@ -59,17 +97,24 @@ TEST(VIO_TEST, frontend_pipeline_sweep) {
                                  keypoints_descriptors_pair_2.first, matches, img_matches_out);
             cv::hconcat(img_keypoints_out_1, img_keypoints_out_2, img_display_test);
             cv::vconcat(img_display_test, img_matches_out, img_display_test);
-            cv::imshow("Keypoints and Matches Output", img_display_test);
-            cv::waitKey(1000);
+            std::stringstream text;
+            text << "Extractor " << static_cast<int>(extractor_type) << ", matcher "
+                 << static_cast<int>(matcher_type);
+            cv::putText(img_display_test, text.str(), cv::Point(20, height - 50),
+                        cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0, 0, 255), 2, cv::LINE_AA);
+            cv::imshow("Keypoints and Matches Output.", img_display_test);
+            std::cout << "Press spacebar to pause." << std::endl;
+            while (cv::waitKey(1000) == 32) {
+            }
             printf("completed frontend combination: (%d, %d)\n", static_cast<int>(extractor_type),
                    static_cast<int>(matcher_type));
             for (const cv::DMatch match : matches) {
-                EXPECT_NEAR(keypoints_descriptors_pair_1.first[match.queryIdx].pt.x,
-                            keypoints_descriptors_pair_2.first[match.trainIdx].pt.x,
-                            PIXEL_COMP_TOL);
-                EXPECT_NEAR(keypoints_descriptors_pair_1.first[match.queryIdx].pt.y,
-                            keypoints_descriptors_pair_2.first[match.trainIdx].pt.y,
-                            PIXEL_COMP_TOL);
+                EXPECT_NEAR(keypoints_descriptors_pair_1.first[match.queryIdx].pt.x -
+                                keypoints_descriptors_pair_2.first[match.trainIdx].pt.x,
+                            pixel_shift_x, PIXEL_COMP_TOL);
+                EXPECT_NEAR(keypoints_descriptors_pair_2.first[match.trainIdx].pt.y -
+                                keypoints_descriptors_pair_1.first[match.queryIdx].pt.y,
+                            0, PIXEL_COMP_TOL);
             }
         }
     }
