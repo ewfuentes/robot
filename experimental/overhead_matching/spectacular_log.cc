@@ -6,7 +6,6 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
-#include <iostream>
 
 #include "Eigen/Core"
 #include "common/check.hh"
