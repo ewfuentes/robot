@@ -9,18 +9,10 @@
 #include "opencv2/opencv.hpp"
 
 namespace robot::experimental::learn_descriptors::symphony_lake_parser {
-TEST(SymphonyLakeParserTest, hello_world) {
-    hello_world("hello from symphony lake dataset. includes working well.");
-}
-
 TEST(SymphonyLakeParserTest, database_query) {
     std::string image_root_dir = "external/symphony_lake_snippet/symphony_lake";
     std::string surveys = "140106_snippet";
     std::vector<std::string> survey_list;
-    std::cout << "\nEnter root image directory: ";
-    // std::cin >> image_root_dir;
-    std::cout << "\nEnter surveys separated by spaces: ";
-    // std::getline(std::cin, surveys);
 
     std::string token;
     std::stringstream ss(surveys);
