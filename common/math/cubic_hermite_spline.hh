@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <functional>
 #include <vector>
 
 #include "common/check.hh"
@@ -19,11 +20,21 @@ class CubicHermiteSpline {
     }
 
     X operator()(const T &query_time) const {
+        CHECK(query_time >= ts_.front() && query_time <= ts_.back(), "query_time is out of bounds",
+              ts_.front(), ts_.back(), query_time);
+
         const auto iter = std::lower_bound(ts_.begin(), ts_.end(), query_time);
-        CHECK(iter != ts_.end(), "query_time is out of bounds", ts_.front(), ts_.back(),
-              query_time);
-        CHECK(iter != ts_.begin(), "query_time is out of bounds", ts_.front(), ts_.back(),
-              query_time);
+        if (iter == ts_.end()) {
+            // Since we know that query time is less than or equal to the max time and
+            // there is no element t \in ts_ for which query_time < t evaluates to true,
+            // then query_time must equal ts_.back(). Therefore, query_time == ts_.back()
+            return xs_.back();
+        } else if (iter == ts_.begin()) {
+            // Similarly, since we know that query time is greater than or equal to the min time and
+            // there is no element t \in ts_ for which query_time < t evaluates to false,
+            // then query_time must equal ts_.front(). Therefore, query_time == ts_.front()
+            return xs_.front();
+        }
 
         // A cubic polynomial has 4 degrees of freedom. To constrain the cubic polynomial
         // between t_i and t_{i+1}, we require that f(t_i) = x_i, f(t_{i+1}) = x_{i+1} and
@@ -76,6 +87,9 @@ class CubicHermiteSpline {
         return coeffs[0] * start_val + coeffs[1] * segment_length * start_slope +
                coeffs[2] * end_val + coeffs[3] * segment_length * end_slope;
     }
+
+    const std::vector<T> &ts() const { return ts_; }
+    const std::vector<X> &xs() const { return xs_; }
 
    private:
     std::vector<T> ts_;

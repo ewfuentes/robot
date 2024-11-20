@@ -42,9 +42,11 @@ TEST(CubicHermiteSplineTest, linear_points_produce_linear_result) {
 
     // Action + Verification
     constexpr double TOL = 1e-6;
+    EXPECT_NEAR(spline(0.0), 10.0, TOL);
     EXPECT_NEAR(spline(0.5), 15.0, TOL);
     EXPECT_NEAR(spline(1.5), 25.0, TOL);
     EXPECT_NEAR(spline(2.5), 35.0, TOL);
+    EXPECT_NEAR(spline(3.0), 40.0, TOL);
 }
 
 TEST(CubicHermiteSplineTest, nonuniform_linear_points_produce_linear_result) {
