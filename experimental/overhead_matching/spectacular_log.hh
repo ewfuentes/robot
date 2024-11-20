@@ -10,10 +10,21 @@
 
 namespace robot::experimental::overhead_matching {
 
+struct FrameCalibration {
+    Eigen::Vector2d focal_length;
+    Eigen::Vector2d principal_point;
+
+    std::optional<double> exposure_time_s;
+    std::optional<double> depth_scale;
+};
+
 struct FrameGroup {
     time::RobotTimestamp time_of_validity;
     cv::Mat rgb_frame;
     cv::Mat depth_frame;
+
+    FrameCalibration rgb_calibration;
+    FrameCalibration depth_calibration;
 };
 
 struct ImuSample {
@@ -21,6 +32,14 @@ struct ImuSample {
     Eigen::Vector3d accel_mpss;
     Eigen::Vector3d gyro_radps;
 };
+
+namespace detail {
+struct FrameInfo {
+    double time_of_validity_s;
+    int frame_number;
+    std::array<FrameCalibration, 2> calibration;
+};
+}  // namespace detail
 
 class SpectacularLog {
    public:
@@ -32,8 +51,17 @@ class SpectacularLog {
     const math::CubicHermiteSpline<Eigen::Vector3d> &gyro_spline() const { return gyro_spline_; }
     const math::CubicHermiteSpline<Eigen::Vector3d> &accel_spline() const { return accel_spline_; }
 
+    time::RobotTimestamp min_imu_time() const;
+    time::RobotTimestamp max_imu_time() const;
+
+    time::RobotTimestamp min_frame_time() const;
+    time::RobotTimestamp max_frame_time() const;
+
+    int num_frames() const;
+
    private:
     math::CubicHermiteSpline<Eigen::Vector3d> gyro_spline_;
     math::CubicHermiteSpline<Eigen::Vector3d> accel_spline_;
+    std::vector<detail::FrameInfo> frame_info_;
 };
 }  // namespace robot::experimental::overhead_matching

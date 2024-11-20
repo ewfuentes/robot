@@ -2,9 +2,11 @@
 #include "experimental/overhead_matching/spectacular_log.hh"
 
 #include <array>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <iostream>
 
 #include "Eigen/Core"
 #include "common/check.hh"
@@ -29,24 +31,10 @@ struct GyroMeasurement {
     Eigen::Vector3d angular_vel_radps;
 };
 
-struct FrameCalibration {
-    Eigen::Vector2d focal_length;
-    Eigen::Vector2d principal_point;
-
-    std::optional<double> exposure_time_s;
-    std::optional<double> depth_scale;
-};
-
-struct FrameGroup {
-    double time_of_validity_s;
-    int frame_number;
-    std::array<FrameCalibration, 2> calibration;
-};
-
 struct LogData {
     std::vector<AccelMeasurement> accel;
     std::vector<GyroMeasurement> gyro;
-    std::vector<FrameGroup> frames;
+    std::vector<detail::FrameInfo> frames;
 };
 
 LogData read_jsonl(const fs::path &file_path) {
@@ -101,7 +89,7 @@ LogData read_jsonl(const fs::path &file_path) {
                 calibration[1].depth_scale = frame["depthScale"].get<double>();
             }
 
-            out.frames.push_back(FrameGroup{
+            out.frames.push_back(detail::FrameInfo{
                 .time_of_validity_s = time_of_validity_s,
                 .frame_number = frame_number,
                 .calibration = calibration,
@@ -130,9 +118,63 @@ math::CubicHermiteSpline<Eigen::Vector3d> make_spline(const std::vector<T> &fram
 
 SpectacularLog::SpectacularLog(const fs::path &path) {
     const auto data_path = path / "data.jsonl";
-    const LogData log_data = read_jsonl(data_path);
+    LogData log_data = read_jsonl(data_path);
     gyro_spline_ =
         make_spline(log_data.gyro, [](const auto &frame) { return frame.angular_vel_radps; });
     accel_spline_ = make_spline(log_data.accel, [](const auto &frame) { return frame.accel_mpss; });
+    frame_info_ = std::move(log_data.frames);
+}
+
+std::optional<ImuSample> SpectacularLog::get_imu_sample(const time::RobotTimestamp &t) const {
+    if (t < min_imu_time() || t > max_imu_time()) {
+        return std::nullopt;
+    }
+
+    return {{
+        .time_of_validity = t,
+        .accel_mpss = accel_spline_(std::chrono::duration<double>(t.time_since_epoch()).count()),
+        .gyro_radps = gyro_spline_(std::chrono::duration<double>(t.time_since_epoch()).count()),
+    }};
+}
+
+std::optional<FrameGroup> SpectacularLog::get_frame(const int frame_id) const {
+    if (frame_id < 0 || frame_id >= frame_info_.size()) {
+        return std::nullopt;
+    }
+
+    // Read the desired rgb frame
+    // Read the desired depth frame
+
+    const auto &frame_info = frame_info_.at(frame_id);
+    
+    return {{
+        .time_of_validity = time::as_duration(frame_info.time_of_validity_s) + time::RobotTimestamp(),
+        .rgb_frame = {},
+        .depth_frame = {},
+        .rgb_calibration = frame_info.calibration.at(0),
+        .depth_calibration = frame_info.calibration.at(1),
+    }};
+}
+
+time::RobotTimestamp SpectacularLog::min_imu_time() const {
+    const double later_time_s = std::max(gyro_spline_.min_time(), accel_spline_.min_time());
+    return time::as_duration(later_time_s + 1e-6) + time::RobotTimestamp();
+}
+
+time::RobotTimestamp SpectacularLog::max_imu_time() const {
+    const double earlier_time_s = std::min(gyro_spline_.max_time(), accel_spline_.max_time());
+    return time::as_duration(earlier_time_s - 1e-6) + time::RobotTimestamp();
+}
+
+time::RobotTimestamp SpectacularLog::min_frame_time() const {
+    return time::as_duration(frame_info_.front().time_of_validity_s) + time::RobotTimestamp();
+}
+
+time::RobotTimestamp SpectacularLog::max_frame_time() const {
+    return time::as_duration(frame_info_.back().time_of_validity_s) + time::RobotTimestamp();
+}
+
+int SpectacularLog::num_frames() const {
+    return frame_info_.size();
 }
 }  // namespace robot::experimental::overhead_matching
