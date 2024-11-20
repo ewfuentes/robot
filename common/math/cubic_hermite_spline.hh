@@ -10,9 +10,11 @@
 namespace robot::math {
 
 // Interpolate between data points using piecewise cubic polynomials
-template <typename T = double, typename X = double>
+template <typename X = double, typename T = double>
 class CubicHermiteSpline {
    public:
+    CubicHermiteSpline() {}
+
     CubicHermiteSpline(std::vector<T> ts, std::vector<X> xs)
         : ts_(std::move(ts)), xs_(std::move(xs)) {
         CHECK(std::is_sorted(ts_.begin(), ts_.end()), "Input times must be sorted!", ts_);
