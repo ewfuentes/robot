@@ -2,11 +2,15 @@
 
 #include <iostream>
 
-namespace robot::experimental::learn_descriptors::symphony_lake_parser {
-void hello_world(const std::string &msg) { std::cout << msg << std::endl; }
-DataParser::DataParser(const std::string &image_root_dir,
+namespace robot::experimental::learn_descriptors {
+DataParser::DataParser(const std::filesystem::path &image_root_dir,
                        const std::vector<std::string> &survey_list) {
-    _surveys.load(image_root_dir, survey_list);
+    if (std::filesystem::exists(image_root_dir)) {
+        surveys_.load(image_root_dir.string(), survey_list);
+    } else {
+        throw std::runtime_error("Error: The path '" + image_root_dir.string() +
+                                 "' does not exist.");
+    }
 }
 DataParser::~DataParser() {}
-}  // namespace robot::experimental::learn_descriptors::symphony_lake_parser
+}  // namespace robot::experimental::learn_descriptors

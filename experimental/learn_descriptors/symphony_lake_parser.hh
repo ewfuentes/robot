@@ -2,18 +2,20 @@
 
 #include <string.h>
 
+#include <filesystem>
+
 #include "symphony_lake_dataset/SurveyVector.h"
 
-namespace robot::experimental::learn_descriptors::symphony_lake_parser {
-void hello_world(const std::string &msg);
+namespace robot::experimental::learn_descriptors {
 class DataParser {
    public:
-    DataParser(const std::string &image_root_dir, const std::vector<std::string> &survey_list);
+    DataParser(const std::filesystem::path &image_root_dir,
+               const std::vector<std::string> &survey_list);
     ~DataParser();
 
-    const symphony_lake_dataset::SurveyVector &getSurveys() const { return _surveys; };
+    const symphony_lake_dataset::SurveyVector &get_surveys() const { return surveys_; };
 
    private:
-    symphony_lake_dataset::SurveyVector _surveys;
+    symphony_lake_dataset::SurveyVector surveys_;
 };
-}  // namespace robot::experimental::learn_descriptors::symphony_lake_parser
+}  // namespace robot::experimental::learn_descriptors
