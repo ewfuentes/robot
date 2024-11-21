@@ -1,0 +1,45 @@
+
+cc_library(
+    name = "opengv",
+    hdrs = glob(["include/**/*.hpp", "include/*.hpp"]),
+    srcs = glob(["src/**/*.cpp"]),
+    strip_include_prefix="include",
+    deps = ["@eigen"],
+    visibility=["//visibility:public"],
+)
+
+cc_library(
+    name = "random_generators",
+    hdrs = [
+        "test/random_generators.hpp",
+        "test/experiment_helpers.hpp",
+        "test/time_measurement.hpp",
+    ],
+    srcs = [
+        "test/random_generators.cpp",
+        "test/experiment_helpers.cpp",
+        "test/time_measurement.cpp",
+    ],
+    strip_include_prefix="test",
+    deps = [":opengv"],
+)
+
+cc_test(
+    name = "test_absolute_pose",
+    srcs = ["test/test_absolute_pose.cpp"],
+    deps = [
+        ":opengv",
+        ":random_generators",
+    ],
+)
+
+cc_test(
+    name = "test_absolute_pose_sac",
+    srcs = ["test/test_absolute_pose_sac.cpp"],
+    deps = [
+        ":opengv",
+        ":random_generators",
+    ],
+)
+
+# TODO: additional tests and python bindings
