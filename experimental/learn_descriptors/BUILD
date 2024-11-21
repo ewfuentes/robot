@@ -22,8 +22,7 @@ cc_library(
   visibility = ["//visibility:public"],
   srcs = ["visual_odometry.cc"],
   deps = [
-    "@opencv//:opencv",
-    "//common:check"
+    "@opencv//:opencv"
   ]
 )
 
