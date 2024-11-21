@@ -17,7 +17,7 @@ cc_library(
 cc_test(
     name = "spectacular_log_test",
     srcs = ["spectacular_log_test.cc"],
-    tags = ["manual"],
+    # tags = ["manual"],
     deps = [
 	":spectacular_log",
 	"@com_google_googletest//:gtest_main",
