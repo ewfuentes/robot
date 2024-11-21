@@ -29,7 +29,8 @@ std::ostream &operator<<(std::ostream &out, const time::RobotTimestamp &t) {
 
 TEST(SpectacularLogTest, happy_case) {
     // Setup
-    SpectacularLog log("/tmp/recording/recording_2024-11-12_11-56-54");
+    const std::filesystem::path log_path("external/spectacular_log_snippet/recording_2024-11-21_13-36-30");
+    SpectacularLog log(log_path);
     // Action
 
     std::cout << "imu time: (" << log.min_imu_time() << ", " << log.max_imu_time() << ")"
@@ -48,32 +49,18 @@ TEST(SpectacularLogTest, happy_case) {
         }
     }
 
-    std::cout << "Frame Samples (num frames: " << log.num_frames() << ")" << std::endl;
-    // cv::namedWindow("TEST DEPTH Window", cv::WINDOW_AUTOSIZE);
-    // cv::namedWindow("TEST RGB Window", cv::WINDOW_AUTOSIZE);
-    // cv::namedWindow("TEST Expected Window", cv::WINDOW_AUTOSIZE);
-    cv::VideoCapture video("/tmp/recording/recording_2024-11-12_11-56-54/data.mov", cv::CAP_FFMPEG);
-    constexpr int FRAME_SKIP = 100;
+    cv::VideoCapture video(log_path / "data.mov", cv::CAP_FFMPEG);
+    constexpr int FRAME_SKIP = 50;
     cv::Mat expected_frame;
     for (int frame_id = 0; frame_id < log.num_frames(); frame_id += FRAME_SKIP) {
         video.read(expected_frame);
 
         const auto frame = log.get_frame(frame_id).value();
-        std::cout << "frame id: " << frame_id << " t: " << frame.time_of_validity
-                  << " depth image dims: (" << frame.depth_frame.size[0] << ", "
-                  << frame.depth_frame.size[1] << ", " << frame.depth_frame.channels() << ")"
-                  << " rgb image dims: (" << frame.rgb_frame.size.dims() << ", "
-                  << frame.rgb_frame.size[0] << ", " << frame.rgb_frame.size[1] << ", "
-                  << frame.rgb_frame.channels() << ")" << std::endl;
-
-        // cv::imshow("TEST DEPTH Window", frame.depth_frame);
-        // cv::imshow("TEST RGB Window", frame.rgb_frame);
-        // cv::imshow("TEST Expected Window", expected_frame);
 
         EXPECT_TRUE(images_equal(expected_frame, frame.rgb_frame));
 
         for (int i = 0; i < FRAME_SKIP - 1; i++) {
-            video.read(expected_frame);
+            video.grab();
         }
     }
 }

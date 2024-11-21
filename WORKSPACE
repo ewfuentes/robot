@@ -532,3 +532,10 @@ http_archive(
   strip_prefix = "json-3.11.3",
   integrity = "sha256-BAIrBdgG61/3MCPCgLaGl9Erk+G3JnoLIqGjnsdXgGk=",
 )
+
+http_archive(
+  name = "spectacular_log_snippet",
+  urls = ["https://www.dropbox.com/scl/fi/2u4ec000kx24980t7ifjz/recording_2024-11-21_13-36-30.zip?rlkey=ojw96yykmw9crtqs15kbxwnvp&st=gjcrawhw&dl=1"],
+  build_file = "//third_party:BUILD.zip_file",
+  integrity = "sha256-K+KFNzufwccL4vEJLErEtNKNVjnWStClXVF2mKpI6lI="
+)

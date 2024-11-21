@@ -8,6 +8,7 @@ cc_library(
 	"@nlohmann_json//:json",
 	"@opencv",
 	"@fmt",
+	"//common:argument_wrapper",
 	"//common:check",
 	"//common/time:robot_time",
 	"//common/math:cubic_hermite_spline",
@@ -17,7 +18,7 @@ cc_library(
 cc_test(
     name = "spectacular_log_test",
     srcs = ["spectacular_log_test.cc"],
-    # tags = ["manual"],
+    data = ["@spectacular_log_snippet//:files"],
     deps = [
 	":spectacular_log",
 	"@com_google_googletest//:gtest_main",

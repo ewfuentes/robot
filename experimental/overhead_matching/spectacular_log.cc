@@ -7,9 +7,11 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <iostream>
 
 #include "Eigen/Core"
 #include "common/check.hh"
+#include "common/argument_wrapper.hh"
 #include "common/math/cubic_hermite_spline.hh"
 #include "common/time/robot_time.hh"
 #include "fmt/format.h"
@@ -116,6 +118,18 @@ math::CubicHermiteSpline<Eigen::Vector3d> make_spline(const std::vector<T> &fram
     return math::CubicHermiteSpline(ts, xs);
 }
 
+void seek_to_frame(const int frame_id, InOut<cv::VideoCapture> video) {
+    const int current_frame_id = video->get(cv::CAP_PROP_POS_FRAMES);
+
+    if (current_frame_id > frame_id) {
+        video->set(cv::CAP_PROP_POS_FRAMES, 0);
+    }
+
+    while(video->get(cv::CAP_PROP_POS_FRAMES) != frame_id) {
+        video->grab();
+    }
+}
+
 }  // namespace
 
 SpectacularLog::SpectacularLog(const fs::path &path) : log_path_(path) {
@@ -152,7 +166,7 @@ std::optional<FrameGroup> SpectacularLog::get_frame(const int frame_id) const {
         video_ = std::make_unique<cv::VideoCapture>(rgb_path.string(), cv::CAP_FFMPEG);
     }
     cv::Mat rgb_frame;
-    video_->set(cv::CAP_PROP_POS_FRAMES, frame_info.frame_number);
+    seek_to_frame(frame_info.frame_number, make_in_out(*video_));
     video_->read(rgb_frame);
 
     // Read the desired depth frame
