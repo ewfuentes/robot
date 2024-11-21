@@ -1,30 +1,30 @@
 diff --git a/python/build_targets.bzl b/python/build_targets.bzl
-index fff32b4a5..08e0212cf 100644
+index ee765ab4c..28e43c8b5 100644
 --- a/python/build_targets.bzl
 +++ b/python/build_targets.bzl
-@@ -84,7 +84,7 @@ def build_targets(name):
+@@ -87,7 +87,7 @@ def build_targets(name):
          ],
          deps = select({
              "//conditions:default": [],
--            ":use_fast_cpp_protos": ["//external:python_headers"],
+-            ":use_fast_cpp_protos": ["@system_python//:python_headers"],
 +            ":use_fast_cpp_protos": ["@rules_python//python/cc:current_py_cc_headers"],
          }),
      )
  
-@@ -123,7 +123,7 @@ def build_targets(name):
-             "//src/google/protobuf:descriptor_legacy",
+@@ -136,7 +136,7 @@ def build_targets(name):
+             "@com_google_absl//absl/strings",
          ] + select({
              "//conditions:default": [],
--            ":use_fast_cpp_protos": ["//external:python_headers"],
+-            ":use_fast_cpp_protos": ["@system_python//:python_headers"],
 +            ":use_fast_cpp_protos": ["@rules_python//python/cc:current_py_cc_headers"],
          }),
      )
  
-@@ -386,7 +386,7 @@ def build_targets(name):
+@@ -436,7 +436,7 @@ def build_targets(name):
          hdrs = ["google/protobuf/proto_api.h"],
          visibility = ["//visibility:public"],
          deps = [
--            "//external:python_headers",
+-            "@system_python//:python_headers",
 +            "@rules_python//python/cc:current_py_cc_headers",
          ],
      )

@@ -19,6 +19,19 @@ http_archive(
 )
 
 http_archive(
+    name = "bazel_skylib",
+    sha256 = "bc283cdfcd526a52c3201279cda4bc298652efa898b10b4db0837dc51652756f",
+    urls = [
+        "https://mirror.bazel.build/github.com/bazelbuild/bazel-skylib/releases/download/1.7.1/bazel-skylib-1.7.1.tar.gz",
+        "https://github.com/bazelbuild/bazel-skylib/releases/download/1.7.1/bazel-skylib-1.7.1.tar.gz",
+    ],
+)
+
+load("@bazel_skylib//:workspace.bzl", "bazel_skylib_workspace")
+
+bazel_skylib_workspace()
+
+http_archive(
     name = "platforms",
     urls = [
         "https://mirror.bazel.build/github.com/bazelbuild/platforms/releases/download/0.0.8/platforms-0.0.8.tar.gz",
@@ -45,6 +58,20 @@ http_archive(
 )
 load("@rules_pkg//:deps.bzl", "rules_pkg_dependencies")
 rules_pkg_dependencies()
+
+http_archive(
+    name = "com_github_gflags_gflags",
+    sha256 = "34af2f15cf7367513b352bdcd2493ab14ce43692d2dcd9dfc499492966c64dcf",
+    strip_prefix = "gflags-2.2.2",
+    urls = ["https://github.com/gflags/gflags/archive/v2.2.2.tar.gz"],
+)
+
+http_archive(
+    name = "com_github_google_glog",
+    sha256 = "c17d85c03ad9630006ef32c7be7c65656aba2e7e2fbfc82226b7e680c771fc88",
+    strip_prefix = "glog-0.7.1",
+    urls = ["https://github.com/google/glog/archive/v0.7.1.zip"],
+)
 
 http_archive(
   name = "com_google_absl",
@@ -201,11 +228,11 @@ rules_proto_toolchains()
 
 http_archive(
   name = "com_google_protobuf",
-  urls = ["https://github.com/protocolbuffers/protobuf/releases/download/v25.3/protobuf-25.3.zip"],
-  strip_prefix="protobuf-25.3",
-  sha256 = "3ae7a8f2181be28e5d694617c2b85c6561ba6a16bfcdc9db8e3a95077cab8815",
+  urls = ["https://github.com/protocolbuffers/protobuf/releases/download/v28.3/protobuf-28.3.zip"],
+  strip_prefix="protobuf-28.3",
+  integrity = "sha256-s7TDts/nS3eurpkJ/DwTAwknF/cbwhVNfBlhrNr1/kw=",
   patches = [
-    "@//third_party:protobuf-0002-use-rules-python-headers.patch",
+    "@//third_party:protobuf_0001-use-rules-python-headers.patch",
   ],
   patch_args=["-p1"],
 )
@@ -358,6 +385,15 @@ http_archive(
   sha256 = "db6fb5e7dc76829d738fdbcdba11a810c66ca0a4752e531eaf3d793361e96de8",
 )
 
+http_archive(
+  name = "opencv_contrib",
+  url = "https://github.com/opencv/opencv_contrib/archive/refs/tags/4.7.0.zip",
+  strip_prefix="opencv_contrib-4.7.0",
+  build_file="//third_party:BUILD.opencv_contrib",
+  integrity = "sha256-7wAYE+w5IVWTzp3rOuxwqFJ49XoO2IsY9vYVJlhVQ2w="
+)
+
+
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 http_archive(
@@ -438,3 +474,44 @@ load("@rules_gtsam//bzl:init_deps.bzl", "gtsam_init_deps")
 gtsam_init_deps()
 load("@rules_gtsam//bzl:repositories.bzl", "gtsam_repositories")
 gtsam_repositories()
+
+http_archive(
+  name = "dbow2",
+  urls = ["https://github.com/dorian3d/DBoW2/archive/3924753db6145f12618e7de09b7e6b258db93c6e.zip"],
+  strip_prefix = "DBoW2-3924753db6145f12618e7de09b7e6b258db93c6e",
+  build_file = "//third_party:BUILD.dbow2",
+  integrity = "sha256-yrI1lbG5RfEh8ubiEtUCP9ToKNbJrmMGX+AMsJVABvg=",
+  patch_args = ["-p1"],
+  patches = ["//third_party:dbow2_0001-prefix-include-paths.patch"]
+)
+
+http_archive(
+  name = "opengv",
+  urls = ["https://github.com/laurentkneip/opengv/archive/91f4b19c73450833a40e463ad3648aae80b3a7f3.zip"],
+  strip_prefix="opengv-91f4b19c73450833a40e463ad3648aae80b3a7f3",
+  build_file="//third_party:BUILD.opengv",
+  patch_args = ["-p1"],
+  patches = ["//third_party:opengv_0001-prefix-unsupported-eigen-include-paths.patch"],
+  integrity = "sha256-gIK3IvE6rGDpxvN3BA+EPFKPvZ7Zi7Ix33IIcm2RULA="
+)
+
+http_archive(
+  name = "kimera_rpgo",
+  urls = ["https://github.com/MIT-SPARK/Kimera-RPGO/archive/ab3fe8c30dd587f5b2ba4ca276bf92cbd593dcf5.zip"],
+  strip_prefix="Kimera-RPGO-ab3fe8c30dd587f5b2ba4ca276bf92cbd593dcf5",
+  build_file="//third_party:BUILD.kimera_rpgo",
+  integrity = "sha256-IkZM58CdITLhDNf7bYcgPFli2NSr/yfIUnWSHAP3hkM="
+)
+
+http_archive(
+  name = "kimera_vio",
+  urls = ["https://github.com/ewfuentes/Kimera-VIO/archive/master.zip"],
+  strip_prefix = "Kimera-VIO-master",
+  build_file = "//third_party:BUILD.kimera_vio",
+  integrity = "sha256-8fLHPn8JPWffnnXEA0gJbZrBhoGpK0Gw80I3oWXpgZg=",
+  patch_args = ["-p1"],
+  patches = [
+    "//third_party:kimera_vio_0001-add-missing-includes.patch",
+    "//third_party:kimera_vio_0002-add-override-markers.patch",
+  ]
+)
