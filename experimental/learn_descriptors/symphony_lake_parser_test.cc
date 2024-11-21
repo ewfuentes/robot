@@ -1,5 +1,6 @@
 #include "experimental/learn_descriptors/symphony_lake_parser.hh"
 
+#include <cstdlib>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -10,6 +11,12 @@
 #include "opencv2/opencv.hpp"
 
 namespace robot::experimental::learn_descriptors {
+namespace {
+bool is_test() {
+    return std::getenv("BAZEL_TEST") != nullptr;
+}
+}
+
 class SymphonyLakeDatasetTestHelper {
    public:
     static bool images_equal(cv::Mat img1, cv::Mat img2) {
@@ -32,7 +39,9 @@ TEST(SymphonyLakeParserTest, snippet_140106) {
 
     cv::Mat image;
     cv::Mat target_img;
-    cv::namedWindow("Symphony Dataset Image", cv::WINDOW_AUTOSIZE);
+    if (!is_test()) {
+        cv::namedWindow("Symphony Dataset Image", cv::WINDOW_AUTOSIZE);
+    }
     printf("Press 'q' in graphic window to quit\n");
     for (int i = 0; i < static_cast<int>(survey_vector.getNumSurveys()); i++) {
         const symphony_lake_dataset::Survey &survey = survey_vector.get(i);
@@ -50,8 +59,10 @@ TEST(SymphonyLakeParserTest, snippet_140106) {
             target_img = cv::imread(target_img_dir.string());
 
             EXPECT_TRUE(SymphonyLakeDatasetTestHelper::images_equal(image, target_img));
-            cv::imshow("Symphony Dataset Image", image);
-            cv::waitKey(2);
+            if (!is_test()) {
+                cv::imshow("Symphony Dataset Image", image);
+                cv::waitKey(2);
+            }
         }
     }
 }
