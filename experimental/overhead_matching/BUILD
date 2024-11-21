@@ -5,9 +5,9 @@ cc_library(
     srcs = ["spectacular_log.cc"],
     deps = [
 	"@eigen",
-	"@kimera_vio",
 	"@nlohmann_json//:json",
 	"@opencv",
+	"@fmt",
 	"//common:check",
 	"//common/time:robot_time",
 	"//common/math:cubic_hermite_spline",

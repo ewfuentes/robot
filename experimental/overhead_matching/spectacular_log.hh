@@ -7,6 +7,7 @@
 #include "common/math/cubic_hermite_spline.hh"
 #include "common/time/robot_time.hh"
 #include "opencv2/core/mat.hpp"
+#include "opencv2/videoio.hpp"
 
 namespace robot::experimental::overhead_matching {
 
@@ -60,8 +61,10 @@ class SpectacularLog {
     int num_frames() const;
 
    private:
+    std::filesystem::path log_path_;
     math::CubicHermiteSpline<Eigen::Vector3d> gyro_spline_;
     math::CubicHermiteSpline<Eigen::Vector3d> accel_spline_;
     std::vector<detail::FrameInfo> frame_info_;
+    mutable std::unique_ptr<cv::VideoCapture> video_;
 };
 }  // namespace robot::experimental::overhead_matching

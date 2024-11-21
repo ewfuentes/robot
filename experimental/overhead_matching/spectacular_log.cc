@@ -5,13 +5,16 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <string>
 
 #include "Eigen/Core"
 #include "common/check.hh"
 #include "common/math/cubic_hermite_spline.hh"
 #include "common/time/robot_time.hh"
+#include "fmt/format.h"
 #include "nlohmann/json.hpp"
+#include "opencv2/imgcodecs.hpp"
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
@@ -115,8 +118,8 @@ math::CubicHermiteSpline<Eigen::Vector3d> make_spline(const std::vector<T> &fram
 
 }  // namespace
 
-SpectacularLog::SpectacularLog(const fs::path &path) {
-    const auto data_path = path / "data.jsonl";
+SpectacularLog::SpectacularLog(const fs::path &path) : log_path_(path) {
+    const auto data_path = log_path_ / "data.jsonl";
     LogData log_data = read_jsonl(data_path);
     gyro_spline_ =
         make_spline(log_data.gyro, [](const auto &frame) { return frame.angular_vel_radps; });
@@ -141,15 +144,27 @@ std::optional<FrameGroup> SpectacularLog::get_frame(const int frame_id) const {
         return std::nullopt;
     }
 
-    // Read the desired rgb frame
-    // Read the desired depth frame
-
     const auto &frame_info = frame_info_.at(frame_id);
-    
+
+    // Read the desired rgb frame
+    if (video_ == nullptr) {
+        const fs::path rgb_path = log_path_ / "data.mov";
+        video_ = std::make_unique<cv::VideoCapture>(rgb_path.string(), cv::CAP_FFMPEG);
+    }
+    cv::Mat rgb_frame;
+    video_->set(cv::CAP_PROP_POS_FRAMES, frame_info.frame_number);
+    video_->read(rgb_frame);
+
+    // Read the desired depth frame
+    const fs::path depth_frame_path =
+        log_path_ / "frames2" / fmt::format("{:08d}.png", frame_info.frame_number);
+    cv::Mat depth_frame = cv::imread(depth_frame_path.string(), cv::IMREAD_GRAYSCALE);
+
     return {{
-        .time_of_validity = time::as_duration(frame_info.time_of_validity_s) + time::RobotTimestamp(),
-        .rgb_frame = {},
-        .depth_frame = {},
+        .time_of_validity =
+            time::as_duration(frame_info.time_of_validity_s) + time::RobotTimestamp(),
+        .rgb_frame = std::move(rgb_frame),
+        .depth_frame = std::move(depth_frame),
         .rgb_calibration = frame_info.calibration.at(0),
         .depth_calibration = frame_info.calibration.at(1),
     }};
@@ -173,7 +188,5 @@ time::RobotTimestamp SpectacularLog::max_frame_time() const {
     return time::as_duration(frame_info_.back().time_of_validity_s) + time::RobotTimestamp();
 }
 
-int SpectacularLog::num_frames() const {
-    return frame_info_.size();
-}
+int SpectacularLog::num_frames() const { return frame_info_.size(); }
 }  // namespace robot::experimental::overhead_matching
