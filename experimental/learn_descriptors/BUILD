@@ -23,7 +23,6 @@ cc_test(
   deps = [
     "@com_google_googletest//:gtest_main",
     "@gtsam//:gtsam",
-    ":learn_descriptors",
-    "//common/geometry:camera_geometry"
+    ":learn_descriptors"  
   ]
 )
