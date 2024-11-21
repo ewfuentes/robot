@@ -5,13 +5,13 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <memory>
 #include <string>
-#include <iostream>
 
 #include "Eigen/Core"
-#include "common/check.hh"
 #include "common/argument_wrapper.hh"
+#include "common/check.hh"
 #include "common/math/cubic_hermite_spline.hh"
 #include "common/time/robot_time.hh"
 #include "fmt/format.h"
@@ -125,7 +125,7 @@ void seek_to_frame(const int frame_id, InOut<cv::VideoCapture> video) {
         video->set(cv::CAP_PROP_POS_FRAMES, 0);
     }
 
-    while(video->get(cv::CAP_PROP_POS_FRAMES) != frame_id) {
+    while (video->get(cv::CAP_PROP_POS_FRAMES) != frame_id) {
         video->grab();
     }
 }
