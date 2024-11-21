@@ -2,6 +2,7 @@
 #pragma once
 
 #include <filesystem>
+#include <optional>
 
 #include "Eigen/Core"
 #include "common/math/cubic_hermite_spline.hh"
