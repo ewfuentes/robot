@@ -1,0 +1,13 @@
+diff --git a/gtsam/3rdparty/Spectra/MatOp/internal/ArnoldiOp.h b/gtsam/3rdparty/Spectra/MatOp/internal/ArnoldiOp.h
+index 68654aafd..cbcb77c89 100644
+--- a/gtsam/3rdparty/Spectra/MatOp/internal/ArnoldiOp.h
++++ b/gtsam/3rdparty/Spectra/MatOp/internal/ArnoldiOp.h
+@@ -105,7 +105,7 @@ private:
+     OpType& m_op;
+ 
+ public:
+-    ArnoldiOp<Scalar, OpType, IdentityBOp>(OpType* op, IdentityBOp* /*Bop*/) :
++    ArnoldiOp(OpType* op, IdentityBOp* /*Bop*/) :
+         m_op(*op)
+     {}
+ 
