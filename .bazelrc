@@ -2,7 +2,6 @@
 build --strip=never
 build --define use_fast_cpp_protos=true
 build --config=python-3.10
-build --cxxopt='-std=c++17'
 
 try-import .bazelrc_ubuntu
 
