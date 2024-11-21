@@ -17,20 +17,21 @@ cc_test(
 )
 
 cc_library(
-  name = "vo",
-  hdrs = ["vo.hh"],
+  name = "visual_odometry",
+  hdrs = ["visual_odometry.hh"],
   visibility = ["//visibility:public"],
-  srcs = ["vo.cc"],
+  srcs = ["visual_odometry.cc"],
   deps = [
     "@opencv//:opencv",
+    "//common:check"
   ]
 )
 
 cc_test(
-  name = "vo_test",
-  srcs = ["vo_test.cc"],  
+  name = "visual_odometry_test",
+  srcs = ["visual_odometry_test.cc"],  
   deps = [
     "@com_google_googletest//:gtest_main",
-    ":vo"
+    ":visual_odometry"
   ]
 )
