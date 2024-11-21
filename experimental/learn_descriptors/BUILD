@@ -24,6 +24,7 @@ cc_library(
   srcs = ["symphony_lake_parser.cc"],
   deps = [
     "@symphony_lake_parser",
+    "//common:check"
   ]
 )
 
@@ -34,6 +35,7 @@ cc_test(
   data = ["@symphony_lake_snippet"],
   deps = [
     "@com_google_googletest//:gtest_main",
-    ":symphony_lake_parser"
+    ":symphony_lake_parser",
+    "//common:check"
   ]
 )
