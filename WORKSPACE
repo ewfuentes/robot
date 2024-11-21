@@ -426,10 +426,3 @@ http_archive(
   build_file = "//third_party:BUILD.sqlite3",
   integrity = "sha256-cSp9CdKiJlL7BqSa9RbgUZeaOYStsGfahnYOYO1Rp/U="
 )
-
-http_archive(
-  name="fast-cpp-csv-parser",
-  urls = ["https://github.com/ben-strasser/fast-cpp-csv-parser/archive/refs/heads/master.zip"],
-  strip_prefix = "fast-cpp-csv-parser-master",
-)
-
