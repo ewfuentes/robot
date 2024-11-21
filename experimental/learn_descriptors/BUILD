@@ -16,6 +16,7 @@ cc_test(
   ]
 )
 
+
 cc_library(
   name = "symphony_lake_parser",
   hdrs = ["symphony_lake_parser.hh"],
@@ -37,5 +38,15 @@ cc_test(
     "@com_google_googletest//:gtest_main",
     ":symphony_lake_parser",
     "//common:check"
+  ]
+)
+
+cc_test(
+  name = "gtsam_test",
+  srcs = ["gtsam_test.cc"],
+  deps = [
+    "@com_google_googletest//:gtest_main",
+    "@gtsam//:gtsam",
+    ":learn_descriptors"  
   ]
 )

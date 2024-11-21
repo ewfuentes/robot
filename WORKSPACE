@@ -488,7 +488,10 @@ http_archive(
     strip_prefix = "gtsam-4.2.0",
     urls = ["https://github.com/borglab/gtsam/archive/4.2.0.tar.gz"],
     patch_args=["-p1"],
-    patches = ["//third_party:gtsam_0001-remove-redundant-template-params.patch"],
+    patches = [
+        "//third_party:gtsam_0001-remove-redundant-template-params.patch",
+        "//third_party:gtsam_0002-remove-trivial-copy-constructor.patch",
+    ],
 )
 
 http_archive(

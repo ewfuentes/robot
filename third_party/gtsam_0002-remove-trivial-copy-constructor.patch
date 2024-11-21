@@ -1,0 +1,16 @@
+diff --git a/gtsam/geometry/Pose3.h b/gtsam/geometry/Pose3.h
+index 678df8376..b840ed488 100644
+--- a/gtsam/geometry/Pose3.h
++++ b/gtsam/geometry/Pose3.h
+@@ -54,11 +54,6 @@ public:
+   /** Default constructor is origin */
+  Pose3() : R_(traits<Rot3>::Identity()), t_(traits<Point3>::Identity()) {}
+ 
+-  /** Copy constructor */
+-  Pose3(const Pose3& pose) :
+-      R_(pose.R_), t_(pose.t_) {
+-  }
+-
+   /** Construct from R,t */
+   Pose3(const Rot3& R, const Point3& t) :
+       R_(R), t_(t) {
