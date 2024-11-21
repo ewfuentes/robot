@@ -12,10 +12,8 @@
 
 namespace robot::experimental::learn_descriptors {
 namespace {
-bool is_test() {
-    return std::getenv("BAZEL_TEST") != nullptr;
-}
-}
+bool is_test() { return std::getenv("BAZEL_TEST") != nullptr; }
+}  // namespace
 
 class SymphonyLakeDatasetTestHelper {
    public:
