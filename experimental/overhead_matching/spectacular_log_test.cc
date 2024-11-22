@@ -4,6 +4,7 @@
 #include <iostream>
 #include <sstream>
 
+#include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "opencv2/opencv.hpp"
 
@@ -58,7 +59,12 @@ TEST(SpectacularLogTest, happy_case) {
 
         const auto frame = log.get_frame(frame_id).value();
 
+        const std::filesystem::path depth_path(log_path /
+                                               fmt::format("frames2/{:08d}.png", frame_id));
+        const cv::Mat depth_frame = cv::imread(depth_path, cv::IMREAD_GRAYSCALE);
+
         EXPECT_TRUE(images_equal(expected_frame, frame.rgb_frame));
+        EXPECT_TRUE(images_equal(depth_frame, frame.depth_frame));
 
         for (int i = 0; i < FRAME_SKIP - 1; i++) {
             video.grab();

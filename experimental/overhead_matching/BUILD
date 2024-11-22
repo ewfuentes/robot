@@ -22,5 +22,6 @@ cc_test(
     deps = [
 	":spectacular_log",
 	"@com_google_googletest//:gtest_main",
+	"@fmt",
     ]
 )
