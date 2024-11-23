@@ -65,3 +65,8 @@ py_test_3_8(
   main = "pybind_example_test.py",
   data = [":pybind_example_python.so"],
 )
+
+py_test(
+  name = "hermeticity_test",
+  srcs = ["hermeticity_test.py"],
+)
