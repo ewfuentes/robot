@@ -136,9 +136,11 @@ http_archive(
 # Note that rules_python must be loaded before protobuf
 http_archive(
     name = "rules_python",
-    sha256 = "c68bdc4fbec25de5b5493b8819cfc877c4ea299c0dcb15c244c5a00208cde311",
-    strip_prefix = "rules_python-0.31.0",
-    url = "https://github.com/bazelbuild/rules_python/releases/download/0.31.0/rules_python-0.31.0.tar.gz",
+    sha256 = "690e0141724abb568267e003c7b6d9a54925df40c275a870a4d934161dc9dd53",
+    strip_prefix = "rules_python-0.40.0",
+    url = "https://github.com/bazelbuild/rules_python/releases/download/0.40.0/rules_python-0.40.0.tar.gz",
+    patch_args = ["-p1"],
+    patches = ["//third_party:rules_python_0001-disable-user-site-package.patch"],
 )
 
 load("@rules_python//python:repositories.bzl", "py_repositories", "python_register_multi_toolchains")
@@ -470,7 +472,10 @@ http_archive(
     strip_prefix = "gtsam-4.2.0",
     urls = ["https://github.com/borglab/gtsam/archive/4.2.0.tar.gz"],
     patch_args=["-p1"],
-    patches = ["//third_party:gtsam_0001-remove-redundant-template-params.patch"],
+    patches = [
+        "//third_party:gtsam_0001-remove-redundant-template-params.patch",
+        "//third_party:gtsam_0002-remove-trivial-copy-constructor.patch",
+    ],
 )
 
 http_archive(
@@ -523,4 +528,18 @@ http_archive(
     "//third_party:kimera_vio_0001-add-missing-includes.patch",
     "//third_party:kimera_vio_0002-add-override-markers.patch",
   ]
+)
+
+http_archive(
+  name = "nlohmann_json",
+  urls = ["https://github.com/nlohmann/json/archive/refs/tags/v3.11.3.zip"],
+  strip_prefix = "json-3.11.3",
+  integrity = "sha256-BAIrBdgG61/3MCPCgLaGl9Erk+G3JnoLIqGjnsdXgGk=",
+)
+
+http_archive(
+  name = "spectacular_log_snippet",
+  urls = ["https://www.dropbox.com/scl/fi/2u4ec000kx24980t7ifjz/recording_2024-11-21_13-36-30.zip?rlkey=ojw96yykmw9crtqs15kbxwnvp&st=gjcrawhw&dl=1"],
+  build_file = "//third_party:BUILD.zip_file",
+  integrity = "sha256-K+KFNzufwccL4vEJLErEtNKNVjnWStClXVF2mKpI6lI="
 )

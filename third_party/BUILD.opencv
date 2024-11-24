@@ -15,6 +15,7 @@ SHARED_LIBS = [
   "libopencv_flann.so",
   "libopencv_calib3d.so",
   "libopencv_video.so",
+  "libopencv_videoio.so",
   "libopencv_viz.so",
   "libopencv_rgbd.so",
 ]
@@ -23,7 +24,7 @@ cmake(
     name = "opencv",
     generate_args = [
         "-GNinja",
-        "-DBUILD_LIST=core,highgui,imgcodecs,imgproc,python3,features2d,flann,calib3d,video,viz,rgbd",
+        "-DBUILD_LIST=core,highgui,imgcodecs,imgproc,python3,features2d,flann,calib3d,video,videoio,viz,rgbd",
         "-DCMAKE_CXX_STANDARD=20",
         "-DCMAKE_CXX_FLAGS=-Wno-deprecated-enum-enum-conversion",
 	"-DCMAKE_CXX_STANDARD_LIBRARIES=-lstdc++",
