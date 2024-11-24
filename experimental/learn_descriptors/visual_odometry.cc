@@ -24,6 +24,7 @@ Frontend::Frontend(ExtractorType frontend_algorithm, MatcherType frontend_matche
     switch (matcher_type_) {
         case MatcherType::BRUTE_FORCE:
             descriptor_matcher_ = cv::BFMatcher::create(cv::NORM_L2);
+            break;
         case MatcherType::KNN:
             descriptor_matcher_ = cv::BFMatcher::create(cv::NORM_L2);
             break;
@@ -32,6 +33,7 @@ Frontend::Frontend(ExtractorType frontend_algorithm, MatcherType frontend_matche
                 throw std::invalid_argument("FLANN can not be used with ORB.");
             }
             descriptor_matcher_ = cv::FlannBasedMatcher::create();
+            break;
         default:
             // Error handling needed?
             break;
@@ -62,6 +64,7 @@ std::vector<cv::DMatch> Frontend::get_matches(const cv::Mat &descriptors1,
             break;
         case MatcherType::FLANN:
             get_FLANN_matches(descriptors1, descriptors2, matches);
+            break;
         default:
             break;
     }
