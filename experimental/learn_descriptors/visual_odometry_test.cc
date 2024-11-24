@@ -81,7 +81,7 @@ TEST(VIO_TEST, frontend_pipeline_sweep) {
                                     img_keypoints_out_1);
             frontend.draw_keypoints(image_2, keypoints_descriptors_pair_2.first,
                                     img_keypoints_out_2);
-            frontend.drawMatches(image_1, keypoints_descriptors_pair_1.first, image_2,
+            frontend.draw_matches(image_1, keypoints_descriptors_pair_1.first, image_2,
                                  keypoints_descriptors_pair_2.first, matches, img_matches_out);
             cv::hconcat(img_keypoints_out_1, img_keypoints_out_2, img_display_test);
             cv::vconcat(img_display_test, img_matches_out, img_display_test);
