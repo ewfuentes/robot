@@ -10,9 +10,11 @@
 namespace robot::math {
 
 // Interpolate between data points using piecewise cubic polynomials
-template <typename T = double, typename X = double>
+template <typename X = double, typename T = double>
 class CubicHermiteSpline {
    public:
+    CubicHermiteSpline() {}
+
     CubicHermiteSpline(std::vector<T> ts, std::vector<X> xs)
         : ts_(std::move(ts)), xs_(std::move(xs)) {
         CHECK(std::is_sorted(ts_.begin(), ts_.end()), "Input times must be sorted!", ts_);
@@ -48,7 +50,7 @@ class CubicHermiteSpline {
 
         const X segment_slope = (end_val - start_val) / segment_length;
 
-        const X start_slope = [&]() {
+        const X start_slope = [&]() -> X {
             if (iter - 1 == ts_.begin()) {
                 return segment_slope;
             }
@@ -60,7 +62,7 @@ class CubicHermiteSpline {
             return 0.5 * (pre_slope + segment_slope);
         }();
 
-        const X end_slope = [&]() {
+        const X end_slope = [&]() -> X {
             if (iter + 1 == ts_.end()) {
                 return segment_slope;
             }
@@ -86,6 +88,9 @@ class CubicHermiteSpline {
         return coeffs[0] * start_val + coeffs[1] * segment_length * start_slope +
                coeffs[2] * end_val + coeffs[3] * segment_length * end_slope;
     }
+
+    const T &min_time() const { return ts_.front(); };
+    const T &max_time() const { return ts_.back(); };
 
     const std::vector<T> &ts() const { return ts_; }
     const std::vector<X> &xs() const { return xs_; }
