@@ -154,7 +154,7 @@ std::optional<ImuSample> SpectacularLog::get_imu_sample(const time::RobotTimesta
 }
 
 std::optional<FrameGroup> SpectacularLog::get_frame(const int frame_id) const {
-    if (frame_id < 0 || frame_id >= frame_info_.size()) {
+    if (frame_id < 0 || frame_id >= static_cast<int>(frame_info_.size())) {
         return std::nullopt;
     }
 
