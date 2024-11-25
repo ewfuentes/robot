@@ -25,7 +25,7 @@ wchar_t *to_wchar(const char *str) {
 }
 }  // namespace
 
-void plot(const std::vector<double> &x, const std::vector<double> &y) {
+void plot(const std::vector<PlotSignal> &signals, const bool block) {
     PyConfig config;
     PyConfig_InitPythonConfig(&config);
     config.home = to_wchar(CPP_PYTHON_HOME);
@@ -35,10 +35,15 @@ void plot(const std::vector<double> &x, const std::vector<double> &y) {
     config.user_site_directory = 0;
     py::scoped_interpreter guard{&config};
 
+    py::module_ mpl = py::module_::import("matplotlib");
+    mpl.attr("use")("GTK3Agg");
     py::module_ plt = py::module_::import("matplotlib.pyplot");
 
     plt.attr("figure")();
-    plt.attr("plot")(x, y);
-    plt.attr("show")("block"_a = false);
+    for (const auto &signal : signals) {
+        plt.attr("plot")(signal.x, signal.y, signal.marker, "label"_a = signal.label);
+    }
+    plt.attr("legend")();
+    plt.attr("show")("block"_a = block);
 }
 }  // namespace robot
