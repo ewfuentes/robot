@@ -47,8 +47,8 @@ TEST(VIO_TEST, frontend_pipeline_sweep) {
 
     cv::Mat img_test_disp;
     cv::hconcat(image_1, image_2, img_test_disp);
-    cv::imshow("Test", img_test_disp);
-    cv::waitKey(1000);
+    // cv::imshow("Test", img_test_disp);
+    // cv::waitKey(1000);
 
     Frontend::ExtractorType extractor_types[2] = {Frontend::ExtractorType::SIFT,
                                                   Frontend::ExtractorType::ORB};
@@ -90,7 +90,7 @@ TEST(VIO_TEST, frontend_pipeline_sweep) {
                  << static_cast<int>(matcher_type);
             cv::putText(img_display_test, text.str(), cv::Point(20, height - 50),
                         cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0, 0, 255), 2, cv::LINE_AA);
-            cv::imshow("Keypoints and Matches Output.", img_display_test);
+            // cv::imshow("Keypoints and Matches Output.", img_display_test);
             std::cout << "Press spacebar to pause." << std::endl;
             while (cv::waitKey(1000) == 32) {
             }
