@@ -1,16 +1,14 @@
 
-#include "experimental/overhead_matching/spectacular_log.hh"
-
 #include <iostream>
 
-#include "unsupported/Eigen/CXX11/Tensor"
-
+#include "experimental/overhead_matching/spectacular_log.hh"
 #include "opencv2/core/eigen.hpp"
+#include "pybind11/eigen.h"
+#include "pybind11/eigen/tensor.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
 #include "pybind11/stl/filesystem.h"
-#include "pybind11/eigen.h"
-#include "pybind11/eigen/tensor.h"
+#include "unsupported/Eigen/CXX11/Tensor"
 
 namespace py = pybind11;
 using namespace pybind11::literals;
@@ -22,7 +20,7 @@ Eigen::Tensor<uint8_t, 3> tensor_map_from_cv_mat(const cv::Mat &mat) {
     cv::cv2eigen(mat, tensor);
     return tensor;
 }
-}
+}  // namespace
 PYBIND11_MODULE(spectacular_log_python, m) {
     m.doc() = "spectacular log";
 
@@ -38,8 +36,10 @@ PYBIND11_MODULE(spectacular_log_python, m) {
     py::class_<FrameGroup>(m, "FrameGroup")
         .def(py::init<>())
         .def_readwrite("time_of_validity", &FrameGroup::time_of_validity)
-        .def("rgb_frame", [](const FrameGroup &self){ return tensor_map_from_cv_mat(self.rgb_frame); })
-        .def("depth_frame", [](const FrameGroup &self){ return tensor_map_from_cv_mat(self.depth_frame); })
+        .def("rgb_frame",
+             [](const FrameGroup &self) { return tensor_map_from_cv_mat(self.rgb_frame); })
+        .def("depth_frame",
+             [](const FrameGroup &self) { return tensor_map_from_cv_mat(self.depth_frame); })
         .def_readwrite("rgb_calibration", &FrameGroup::rgb_calibration)
         .def_readwrite("depth_calibration", &FrameGroup::depth_calibration);
 
@@ -59,4 +59,4 @@ PYBIND11_MODULE(spectacular_log_python, m) {
         .def("max_frame_time", &SpectacularLog::max_frame_time)
         .def("num_frames", &SpectacularLog::num_frames);
 }
-}
+}  // namespace robot::experimental::overhead_matching
