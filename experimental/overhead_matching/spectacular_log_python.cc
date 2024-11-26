@@ -56,6 +56,7 @@ PYBIND11_MODULE(spectacular_log_python, m) {
         .def("min_imu_time", &SpectacularLog::min_imu_time)
         .def("max_imu_time", &SpectacularLog::max_imu_time)
         .def("min_frame_time", &SpectacularLog::min_frame_time)
-        .def("max_frame_time", &SpectacularLog::max_frame_time);
+        .def("max_frame_time", &SpectacularLog::max_frame_time)
+        .def("num_frames", &SpectacularLog::num_frames);
 }
 }
