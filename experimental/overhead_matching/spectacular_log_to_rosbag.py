@@ -23,7 +23,7 @@ def main(spectacular_log_path: Path, rosbag_out: Path):
 
     with Writer(rosbag_out) as writer:
         imu_conn = writer.add_connection('/imu0', Imu.__msgtype__, typestore=typestore)
-        rgb_conn = writer.add_connection(
+        bgr_conn = writer.add_connection(
             '/cam0/image_raw', Image.__msgtype__, typestore=typestore)
         depth_conn = writer.add_connection(
             '/cam0/depth_raw', Image.__msgtype__, typestore=typestore)
@@ -50,17 +50,20 @@ def main(spectacular_log_path: Path, rosbag_out: Path):
                     frame_id='cam0'
                 )
 
-                rgb_frame = frame.rgb_frame()
+                bgr_frame = frame.bgr_frame()
+                # Foxglove expects mono images to have 16 bit depth, we we convert
+                # to np.uint16 here. Note that this doubles the size of the images
                 depth_frame = frame.depth_frame().astype(np.uint16)
 
-                rgb_ros = Image(
+                bgr_ros = Image(
                     header=header,
-                    height=rgb_frame.shape[0],
-                    width=rgb_frame.shape[1],
+                    height=bgr_frame.shape[0],
+                    width=bgr_frame.shape[1],
                     encoding='bgr8',
                     is_bigendian=False,
-                    step=rgb_frame.shape[1] * 3,
-                    data=rgb_frame.flatten()
+                    # This is the size of each row in bytes
+                    step=bgr_frame.shape[1] * 3,
+                    data=bgr_frame.flatten()
                 )
 
                 depth_ros = Image(
@@ -69,7 +72,9 @@ def main(spectacular_log_path: Path, rosbag_out: Path):
                     width=depth_frame.shape[1],
                     encoding='mono16',
                     is_bigendian=False,
+                    # This is the size of each row in bytes
                     step=depth_frame.shape[1] * 2,
+                    # the rosbags library wants a flat buffer, so we view the 16 bit pixels as uint8
                     data=depth_frame.flatten().view(np.uint8)
                 )
 
@@ -77,7 +82,7 @@ def main(spectacular_log_path: Path, rosbag_out: Path):
                                 + frame_time_since_epoch.microseconds * 1000)
 
                 writer.write(
-                    rgb_conn, timestamp_ns, typestore.serialize_ros1(rgb_ros, Image.__msgtype__))
+                    bgr_conn, timestamp_ns, typestore.serialize_ros1(bgr_ros, Image.__msgtype__))
                 writer.write(
                     depth_conn, timestamp_ns, typestore.serialize_ros1(depth_ros, Image.__msgtype__))
 

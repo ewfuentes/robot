@@ -36,11 +36,11 @@ PYBIND11_MODULE(spectacular_log_python, m) {
     py::class_<FrameGroup>(m, "FrameGroup")
         .def(py::init<>())
         .def_readwrite("time_of_validity", &FrameGroup::time_of_validity)
-        .def("rgb_frame",
-             [](const FrameGroup &self) { return tensor_map_from_cv_mat(self.rgb_frame); })
+        .def("bgr_frame",
+             [](const FrameGroup &self) { return tensor_map_from_cv_mat(self.bgr_frame); })
         .def("depth_frame",
              [](const FrameGroup &self) { return tensor_map_from_cv_mat(self.depth_frame); })
-        .def_readwrite("rgb_calibration", &FrameGroup::rgb_calibration)
+        .def_readwrite("color_calibration", &FrameGroup::color_calibration)
         .def_readwrite("depth_calibration", &FrameGroup::depth_calibration);
 
     py::class_<ImuSample>(m, "ImuSample")

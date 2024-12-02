@@ -162,12 +162,12 @@ std::optional<FrameGroup> SpectacularLog::get_frame(const int frame_id) const {
 
     // Read the desired rgb frame
     if (video_ == nullptr) {
-        const fs::path rgb_path = log_path_ / "data.mov";
-        video_ = std::make_unique<cv::VideoCapture>(rgb_path.string(), cv::CAP_FFMPEG);
+        const fs::path color_path = log_path_ / "data.mov";
+        video_ = std::make_unique<cv::VideoCapture>(color_path.string(), cv::CAP_FFMPEG);
     }
-    cv::Mat rgb_frame;
+    cv::Mat bgr_frame;
     seek_to_frame(frame_info.frame_number, make_in_out(*video_));
-    video_->read(rgb_frame);
+    video_->read(bgr_frame);
 
     // Read the desired depth frame
     const fs::path depth_frame_path =
@@ -177,9 +177,9 @@ std::optional<FrameGroup> SpectacularLog::get_frame(const int frame_id) const {
     return {{
         .time_of_validity =
             time::as_duration(frame_info.time_of_validity_s) + time::RobotTimestamp(),
-        .rgb_frame = std::move(rgb_frame),
+        .bgr_frame = std::move(bgr_frame),
         .depth_frame = std::move(depth_frame),
-        .rgb_calibration = frame_info.calibration.at(0),
+        .color_calibration = frame_info.calibration.at(0),
         .depth_calibration = frame_info.calibration.at(1),
     }};
 }
