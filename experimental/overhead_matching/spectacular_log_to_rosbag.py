@@ -22,24 +22,74 @@ def main(spectacular_log_path: Path, rosbag_out: Path):
     Time = typestore.types["builtin_interfaces/msg/Time"]
 
     with Writer(rosbag_out) as writer:
-        topic = '/imu0'
-        msgtype = Imu.__msgtype__
-        connection = writer.add_connection(topic, msgtype, typestore=typestore)
+        imu_conn = writer.add_connection('/imu0', Imu.__msgtype__, typestore=typestore)
+        rgb_conn = writer.add_connection(
+            '/cam0/image_raw', Image.__msgtype__, typestore=typestore)
+        depth_conn = writer.add_connection(
+            '/cam0/depth_raw', Image.__msgtype__, typestore=typestore)
 
-        # Write out the IMU Data
+        # Write out the IMU Data and Camera Data
         t = log.min_imu_time()
         i = 0
+
+        curr_frame_id = 0
+        frame = log.get_frame(curr_frame_id)
+
         while t < log.max_imu_time():
 
             sample = log.get_imu_sample(t)
-            time_since_epoch = t.time_since_epoch()
+            imu_time_since_epoch = t.time_since_epoch()
 
+            while (frame is not None) and (frame.time_of_validity < t):
+                frame_time_since_epoch = frame.time_of_validity.time_since_epoch()
+                header = Header(
+                    seq=curr_frame_id,
+                    stamp=Time(
+                        sec=int(frame_time_since_epoch.total_seconds()),
+                        nanosec=1000 * frame_time_since_epoch.microseconds),
+                    frame_id='cam0'
+                )
+
+                rgb_frame = frame.rgb_frame()
+                depth_frame = frame.depth_frame().astype(np.uint16)
+
+                rgb_ros = Image(
+                    header=header,
+                    height=rgb_frame.shape[0],
+                    width=rgb_frame.shape[1],
+                    encoding='bgr8',
+                    is_bigendian=False,
+                    step=rgb_frame.shape[1] * 3,
+                    data=rgb_frame.flatten()
+                )
+
+                depth_ros = Image(
+                    header=header,
+                    height=depth_frame.shape[0],
+                    width=depth_frame.shape[1],
+                    encoding='mono16',
+                    is_bigendian=False,
+                    step=depth_frame.shape[1] * 2,
+                    data=depth_frame.flatten().view(np.uint8)
+                )
+
+                timestamp_ns = (int(frame_time_since_epoch.total_seconds()) * 1_000_000_000
+                                + frame_time_since_epoch.microseconds * 1000)
+
+                writer.write(
+                    rgb_conn, timestamp_ns, typestore.serialize_ros1(rgb_ros, Image.__msgtype__))
+                writer.write(
+                    depth_conn, timestamp_ns, typestore.serialize_ros1(depth_ros, Image.__msgtype__))
+
+                curr_frame_id += 1
+                frame = log.get_frame(curr_frame_id)
+                
             imu_ros = Imu(
                 header=Header(
                     seq=i,
                     stamp=Time(
-                        sec=int(time_since_epoch.total_seconds()),
-                        nanosec=1000 * time_since_epoch.microseconds),
+                        sec=int(imu_time_since_epoch.total_seconds()),
+                        nanosec=1000 * imu_time_since_epoch.microseconds),
                     frame_id='imu0'),
                 orientation=Quaternion(x=0, y=0, z=0, w=1),
                 orientation_covariance=-np.ones((3, 3)).flatten(),
@@ -51,62 +101,13 @@ def main(spectacular_log_path: Path, rosbag_out: Path):
                 linear_acceleration_covariance=np.eye(3).flatten()
             )
 
-            timestamp_ns = (int(time_since_epoch.total_seconds()) * 1_000_000_000
-                            + time_since_epoch.microseconds * 1000)
+            timestamp_ns = (int(imu_time_since_epoch.total_seconds()) * 1_000_000_000
+                            + imu_time_since_epoch.microseconds * 1000)
 
-            writer.write(connection, timestamp_ns, typestore.serialize_ros1(imu_ros, msgtype))
+            writer.write(imu_conn, timestamp_ns, typestore.serialize_ros1(imu_ros, Imu.__msgtype__))
 
             t += rtp.as_duration(0.01)
             i += 1
-
-        # Write out the image and depth data
-        rgb_conn = writer.add_connection(
-            '/cam0/image_raw', Image.__msgtype__, typestore=typestore)
-        depth_conn = writer.add_connection(
-            '/cam0/depth_raw', Image.__msgtype__, typestore=typestore)
-
-        for i in range(log.num_frames()):
-            frames = log.get_frame(i)
-            time_since_epoch = frames.time_of_validity.time_since_epoch()
-
-            header = Header(
-                seq=i,
-                stamp=Time(
-                    sec=int(time_since_epoch.total_seconds()),
-                    nanosec=1000 * time_since_epoch.microseconds),
-                frame_id='cam0'
-            )
-
-            rgb_frame = frames.rgb_frame()
-            depth_frame = frames.depth_frame().astype(np.uint16)
-
-            rgb_ros = Image(
-                header=header,
-                height=rgb_frame.shape[0],
-                width=rgb_frame.shape[1],
-                encoding='bgr8',
-                is_bigendian=False,
-                step=rgb_frame.shape[1] * 3,
-                data=rgb_frame.flatten()
-            )
-
-            depth_ros = Image(
-                header=header,
-                height=depth_frame.shape[0],
-                width=depth_frame.shape[1],
-                encoding='mono16',
-                is_bigendian=False,
-                step=depth_frame.shape[1] * 2,
-                data=depth_frame.flatten().view(np.uint8)
-            )
-
-            timestamp_ns = (int(time_since_epoch.total_seconds()) * 1_000_000_000
-                            + time_since_epoch.microseconds * 1000)
-
-            writer.write(
-                rgb_conn, timestamp_ns, typestore.serialize_ros1(rgb_ros, Image.__msgtype__))
-            writer.write(
-                depth_conn, timestamp_ns, typestore.serialize_ros1(depth_ros, Image.__msgtype__))
 
 
 if __name__ == "__main__":
