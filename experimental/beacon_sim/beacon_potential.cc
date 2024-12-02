@@ -123,7 +123,7 @@ BeaconPotential operator*(const BeaconPotential &a, const BeaconPotential &b) {
                           b_sorted_members.begin(), b_sorted_members.end(),
                           std::back_inserter(common_elements));
     ROBOT_CHECK(common_elements.empty(), "Found overlap in members of potentials", a_sorted_members,
-          b_sorted_members, common_elements);
+                b_sorted_members, common_elements);
 
     return CombinedPotential({a, b});
 }

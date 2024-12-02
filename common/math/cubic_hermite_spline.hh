@@ -21,8 +21,8 @@ class CubicHermiteSpline {
     }
 
     X operator()(const T &query_time) const {
-        ROBOT_CHECK(query_time >= ts_.front() && query_time <= ts_.back(), "query_time is out of bounds",
-              ts_.front(), ts_.back(), query_time);
+        ROBOT_CHECK(query_time >= ts_.front() && query_time <= ts_.back(),
+                    "query_time is out of bounds", ts_.front(), ts_.back(), query_time);
 
         const auto iter = std::lower_bound(ts_.begin(), ts_.end(), query_time);
         if (iter == ts_.end()) {

@@ -305,8 +305,9 @@ std::function<double(const LandmarkRobotBelief &)> make_uncertainty_size(
                     return elem.cov_in_robot.determinant();
                 }
             }
-            ROBOT_CHECK(false, "Landmark Belief has insufficient probability mass to get to threshold",
-                  accumulated_prob);
+            ROBOT_CHECK(false,
+                        "Landmark Belief has insufficient probability mass to get to threshold",
+                        accumulated_prob);
             return elements.back().cov_in_robot.determinant();
         };
     } else if (std::holds_alternative<ExpectedDeterminant>(options)) {

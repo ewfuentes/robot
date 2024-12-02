@@ -403,7 +403,7 @@ void run_experiment(const proto::ExperimentConfig &config, const std::filesystem
 
             for (const auto &planner_config : config.planner_configs()) {
                 ROBOT_CHECK(planner_config.planner_config_oneof_case() !=
-                      proto::PlannerConfig::PLANNER_CONFIG_ONEOF_NOT_SET);
+                            proto::PlannerConfig::PLANNER_CONFIG_ONEOF_NOT_SET);
                 switch (planner_config.planner_config_oneof_case()) {
                     case proto::PlannerConfig::kLandmarkBrmConfig: {
                         results[planner_config.name()] = run_planner(
@@ -425,7 +425,7 @@ void run_experiment(const proto::ExperimentConfig &config, const std::filesystem
                     }
                     default: {
                         ROBOT_CHECK(false, "Unhandled Planner Config type",
-                              planner_config.planner_config_oneof_case());
+                                    planner_config.planner_config_oneof_case());
                     }
                 }
             }

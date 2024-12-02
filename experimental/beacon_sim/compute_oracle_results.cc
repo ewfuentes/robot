@@ -322,7 +322,8 @@ void compute_oracle_results(const std::string server_address, const int server_p
             update.set_progress(static_cast<double>(plans_completed) / total_plans);
             pack_into(job_start_time, update.mutable_start_time());
             pack_into(time::current_robot_time(), update.mutable_current_time());
-            ROBOT_CHECK(client.update_job_status(&client_context, update_request, &update_response).ok());
+            ROBOT_CHECK(
+                client.update_job_status(&client_context, update_request, &update_response).ok());
         };
 
         // Compute the results
@@ -337,7 +338,8 @@ void compute_oracle_results(const std::string server_address, const int server_p
             result_request.mutable_job_result()->mutable_plan()->Add(plans.begin(), plans.end());
             result_request.set_job_id(maybe_job_response->job_id());
             proto::JobResultResponse result_response;
-            ROBOT_CHECK(client.submit_job_result(&client_context, result_request, &result_response).ok());
+            ROBOT_CHECK(
+                client.submit_job_result(&client_context, result_request, &result_response).ok());
         }
     }
 }

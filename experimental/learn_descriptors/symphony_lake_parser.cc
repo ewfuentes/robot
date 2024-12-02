@@ -8,7 +8,7 @@ namespace robot::experimental::learn_descriptors {
 DataParser::DataParser(const std::filesystem::path &image_root_dir,
                        const std::vector<std::string> &survey_list) {
     ROBOT_CHECK(std::filesystem::exists(image_root_dir), "Image root dir does not exist!",
-          image_root_dir);
+                image_root_dir);
     surveys_.load(image_root_dir.string(), survey_list);
 }
 DataParser::~DataParser() {}

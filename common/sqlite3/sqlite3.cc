@@ -38,7 +38,7 @@ struct Database::Impl {
     void bind(const Statement &stmt, const std::unordered_map<std::string, Database::Value> &args) {
         sqlite3_stmt *stmt_ptr = stmt.impl_->stmt.get();
         ROBOT_CHECK(args.size() == sqlite3_bind_parameter_count(stmt_ptr),
-              "insufficient number of arguments", sqlite3_sql(stmt_ptr), args);
+                    "insufficient number of arguments", sqlite3_sql(stmt_ptr), args);
         for (const auto &[key, value] : args) {
             const int param_idx = sqlite3_bind_parameter_index(stmt_ptr, key.c_str());
             std::visit(
