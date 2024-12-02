@@ -11,9 +11,9 @@ std::optional<double> multivariate_normal_cdf(const Eigen::VectorXd &mu,
                                               const Eigen::MatrixXd &sigma,
                                               const Eigen::VectorXd &upper_bound,
                                               const bool return_log_p) {
-    CHECK(sigma.rows() == sigma.cols());
-    CHECK(sigma.rows() == mu.rows());
-    CHECK(sigma.rows() == upper_bound.rows());
+    ROBOT_CHECK(sigma.rows() == sigma.cols());
+    ROBOT_CHECK(sigma.rows() == mu.rows());
+    ROBOT_CHECK(sigma.rows() == upper_bound.rows());
 
     const int dim = mu.rows();
     constexpr bool NONSTANDARD = false;

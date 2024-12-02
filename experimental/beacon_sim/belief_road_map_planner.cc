@@ -187,7 +187,7 @@ template <>
 std::function<double(const RobotBelief &)> make_uncertainty_size(
     const UncertaintySizeOptions &options) {
     if (std::holds_alternative<ValueAtRiskDeterminant>(options)) {
-        CHECK(false, "ValueAtRiskDeterminant is not supported for unimodal beliefs", options);
+        ROBOT_CHECK(false, "ValueAtRiskDeterminant is not supported for unimodal beliefs", options);
     } else if (std::holds_alternative<ExpectedDeterminant>(options)) {
         return [opt = std::get<ExpectedDeterminant>(options)](const RobotBelief &belief) -> double {
             if (opt.position_only) {
@@ -267,7 +267,7 @@ std::function<double(const RobotBelief &)> make_uncertainty_size(
                 for (const auto &eval_pt : eval_pts) {
                     const auto result =
                         math::multivariate_normal_cdf(Eigen::Vector3d::Zero(), cov, eval_pt);
-                    CHECK(result.has_value(), "Could not compute cdf at eval pt", eval_pt);
+                    ROBOT_CHECK(result.has_value(), "Could not compute cdf at eval pt", eval_pt);
                     probs.push_back(result.value());
                 }
                 return probs.at(0) - probs.at(1) + probs.at(2) - probs.at(3) - probs.at(4) +
@@ -279,7 +279,7 @@ std::function<double(const RobotBelief &)> make_uncertainty_size(
         };
     }
 
-    CHECK(false, "Unknown Uncertainty Size Options", options);
+    ROBOT_CHECK(false, "Unknown Uncertainty Size Options", options);
     return [](const auto &) { return 0.0; };
 }
 
@@ -305,8 +305,9 @@ std::function<double(const LandmarkRobotBelief &)> make_uncertainty_size(
                     return elem.cov_in_robot.determinant();
                 }
             }
-            CHECK(false, "Landmark Belief has insufficient probability mass to get to threshold",
-                  accumulated_prob);
+            ROBOT_CHECK(false,
+                        "Landmark Belief has insufficient probability mass to get to threshold",
+                        accumulated_prob);
             return elements.back().cov_in_robot.determinant();
         };
     } else if (std::holds_alternative<ExpectedDeterminant>(options)) {
@@ -406,7 +407,7 @@ std::function<double(const LandmarkRobotBelief &)> make_uncertainty_size(
                 for (const auto &eval_pt : eval_pts) {
                     const auto result =
                         math::multivariate_normal_cdf(Eigen::Vector3d::Zero(), cov, eval_pt);
-                    CHECK(result.has_value(), "Could not compute cdf at eval pt", eval_pt);
+                    ROBOT_CHECK(result.has_value(), "Could not compute cdf at eval pt", eval_pt);
                     probs.push_back(result.value());
                 }
                 return probs.at(0) - probs.at(1) + probs.at(2) - probs.at(3) - probs.at(4) +
@@ -422,7 +423,7 @@ std::function<double(const LandmarkRobotBelief &)> make_uncertainty_size(
         };
     }
 
-    CHECK(false, "Unknown Uncertainty Size Options", options);
+    ROBOT_CHECK(false, "Unknown Uncertainty Size Options", options);
     return [](const auto &) { return 0.0; };
 }
 

@@ -42,9 +42,9 @@ struct LogData {
 };
 
 LogData read_jsonl(const fs::path &file_path) {
-    CHECK(fs::exists(file_path), "jsonl path does not exist", file_path);
+    ROBOT_CHECK(fs::exists(file_path), "jsonl path does not exist", file_path);
     std::ifstream in_file(file_path);
-    CHECK(in_file.is_open(), "Could not open file", file_path);
+    ROBOT_CHECK(in_file.is_open(), "Could not open file", file_path);
 
     LogData out;
     for (std::string line; std::getline(in_file, line);) {
@@ -73,7 +73,7 @@ LogData read_jsonl(const fs::path &file_path) {
             {
                 const auto &frame = j["frames"].at(0);
                 const auto &calib_info = frame["calibration"];
-                CHECK(frame["colorFormat"] == "rgb");
+                ROBOT_CHECK(frame["colorFormat"] == "rgb");
 
                 calibration[0].focal_length = {calib_info["focalLengthX"].get<double>(),
                                                calib_info["focalLengthY"].get<double>()};
@@ -84,7 +84,7 @@ LogData read_jsonl(const fs::path &file_path) {
             {
                 const auto &frame = j["frames"].at(1);
                 const auto &calib_info = frame["calibration"];
-                CHECK(frame["colorFormat"] == "gray");
+                ROBOT_CHECK(frame["colorFormat"] == "gray");
 
                 calibration[1].focal_length = {calib_info["focalLengthX"].get<double>(),
                                                calib_info["focalLengthY"].get<double>()};

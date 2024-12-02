@@ -33,10 +33,10 @@ void RoadMap::add_start_goal(const StartGoalPair &start_goal_pair) {
         }
     }
 
-    CHECK(!start_neighbors.empty(), "No roadmap points near start",
-          start_goal_pair.start.transpose(), start_goal_pair.connection_radius_m);
-    CHECK(!goal_neighbors.empty(), "No roadmap points near goal", start_goal_pair.goal.transpose(),
-          start_goal_pair.connection_radius_m);
+    ROBOT_CHECK(!start_neighbors.empty(), "No roadmap points near start",
+                start_goal_pair.start.transpose(), start_goal_pair.connection_radius_m);
+    ROBOT_CHECK(!goal_neighbors.empty(), "No roadmap points near goal",
+                start_goal_pair.goal.transpose(), start_goal_pair.connection_radius_m);
 
     start_goal_ = {
         .start = start_goal_pair.start,
@@ -47,7 +47,7 @@ void RoadMap::add_start_goal(const StartGoalPair &start_goal_pair) {
 }
 
 const Eigen::Vector2d &RoadMap::point(const int idx) const {
-    CHECK(idx >= RoadMap::GOAL_IDX, "Invalid index");
+    ROBOT_CHECK(idx >= RoadMap::GOAL_IDX, "Invalid index");
     if (idx >= 0) {
         return points_.at(idx);
     } else if (idx == RoadMap::START_IDX) {
@@ -58,7 +58,7 @@ const Eigen::Vector2d &RoadMap::point(const int idx) const {
 }
 
 std::vector<std::tuple<int, Eigen::Vector2d>> RoadMap::neighbors(const int idx) const {
-    CHECK(idx >= RoadMap::GOAL_IDX, "Invalid index");
+    ROBOT_CHECK(idx >= RoadMap::GOAL_IDX, "Invalid index");
     std::vector<std::tuple<int, Eigen::Vector2d>> out;
     if (idx >= 0) {
         for (int other_idx = 0; other_idx < static_cast<int>(points_.size()); other_idx++) {

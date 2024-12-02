@@ -28,7 +28,7 @@ beacon_sim::BeaconPotential unpack_from(const BeaconPotential &in) {
         case BeaconPotential::kAnticorrelatedPotential:
             return unpack_from(in.anticorrelated_potential());
     }
-    CHECK(false, "Unhandled potential type");
+    ROBOT_CHECK(false, "Unhandled potential type");
     return beacon_sim::BeaconPotential();
 }
 
