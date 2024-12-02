@@ -34,9 +34,9 @@ void RoadMap::add_start_goal(const StartGoalPair &start_goal_pair) {
     }
 
     ROBOT_CHECK(!start_neighbors.empty(), "No roadmap points near start",
-          start_goal_pair.start.transpose(), start_goal_pair.connection_radius_m);
-    ROBOT_CHECK(!goal_neighbors.empty(), "No roadmap points near goal", start_goal_pair.goal.transpose(),
-          start_goal_pair.connection_radius_m);
+                start_goal_pair.start.transpose(), start_goal_pair.connection_radius_m);
+    ROBOT_CHECK(!goal_neighbors.empty(), "No roadmap points near goal",
+                start_goal_pair.goal.transpose(), start_goal_pair.connection_radius_m);
 
     start_goal_ = {
         .start = start_goal_pair.start,
