@@ -63,7 +63,7 @@ TEST(SpectacularLogTest, happy_case) {
                                                fmt::format("frames2/{:08d}.png", frame_id));
         const cv::Mat depth_frame = cv::imread(depth_path, cv::IMREAD_GRAYSCALE);
 
-        EXPECT_TRUE(images_equal(expected_frame, frame.rgb_frame));
+        EXPECT_TRUE(images_equal(expected_frame, frame.bgr_frame));
         EXPECT_TRUE(images_equal(depth_frame, frame.depth_frame));
 
         for (int i = 0; i < FRAME_SKIP - 1; i++) {

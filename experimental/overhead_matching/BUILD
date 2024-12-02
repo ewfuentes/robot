@@ -1,4 +1,11 @@
 
+
+package(features=["warning_compile_flags"])
+
+load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
+load("@rules_python//python:defs.bzl", "py_binary")
+load("@pip//:requirements.bzl", "requirement")
+
 cc_library(
     name = "spectacular_log",
     hdrs = ["spectacular_log.hh"],
@@ -24,4 +31,21 @@ cc_test(
 	"@com_google_googletest//:gtest_main",
 	"@fmt",
     ]
+)
+
+pybind_extension(
+    name = "spectacular_log_python",
+    srcs = ["spectacular_log_python.cc"],
+    data = ["//common/time:robot_time_python.so"],
+    deps = [":spectacular_log"],
+)
+
+py_binary(
+    name = "spectacular_log_to_rosbag",
+    srcs = ["spectacular_log_to_rosbag.py"],
+    data = [":spectacular_log_python.so"],
+    deps = [
+	requirement("rosbags"),
+	requirement("numpy"),
+    ],
 )
