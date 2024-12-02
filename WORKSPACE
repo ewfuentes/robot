@@ -561,3 +561,26 @@ http_archive(
   build_file = "//third_party:BUILD.zip_file",
   integrity = "sha256-K+KFNzufwccL4vEJLErEtNKNVjnWStClXVF2mKpI6lI="
 )
+
+http_archive(
+  name = "libosmium",
+  urls = ["https://github.com/osmcode/libosmium/archive/refs/tags/v2.20.0.zip"],
+  build_file = "//third_party:BUILD.libosmium",
+  strip_prefix = "libosmium-2.20.0",
+  integrity = "sha256-cS7BoPRNtinhyvatqlM2kV9CPLD2ZJFC14I5i1p1x3k=",
+)
+
+http_archive(
+  name = "protozero",
+  urls = ["https://github.com/mapbox/protozero/archive/refs/tags/v1.7.1.zip"],
+  build_file = "//third_party:BUILD.protozero",
+  strip_prefix = "protozero-1.7.1",
+
+)
+
+http_archive(
+  name = "openstreetmap_snippet",
+  urls = ["https://www.dropbox.com/scl/fi/ku5dwktiul0wzx9ocelwc/us-virgin-islands-latest.osm.zip?rlkey=ggo7dnskexdqxvira6m6y32f3&dl=1"],
+  build_file = "//third_party:BUILD.zip_file",
+  integrity = "sha256-miPvL6co2035EGlkvbcksmTO6HwB/AknVLQK+/YDet0="
+)
