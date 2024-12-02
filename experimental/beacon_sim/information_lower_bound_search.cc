@@ -53,7 +53,7 @@ MergeResult should_merge(const std::vector<InProgressPath> &existing,
 InformationLowerBoundResult information_lower_bound_search(
     const planning::RoadMap &road_map, const double start_information,
     const double end_information_lower_bound, const LowerBoundReversePropagator &rev_propagator) {
-    CHECK(road_map.has_start_goal());
+    ROBOT_CHECK(road_map.has_start_goal());
 
     std::unordered_map<int, std::vector<detail::InProgressPath>> paths_from_node_id;
     std::priority_queue<detail::InProgressPath, std::vector<detail::InProgressPath>,

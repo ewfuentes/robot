@@ -76,13 +76,13 @@ std::string configuration_to_key(const std::vector<std::tuple<int, bool>> &beaco
 
 std::string merge_configurations(const std::string &a, const std::string &b) {
     std::string out = a;
-    CHECK(a.size() == b.size());
+    ROBOT_CHECK(a.size() == b.size());
 
     for (int i = 0; i < static_cast<int>(a.size()); i++) {
         const bool a_is_set = a.at(i) != '?';
         const bool b_is_set = b.at(i) != '?';
 
-        CHECK(a_is_set ^ b_is_set || a.at(i) == b.at(i), "a and b are not mergable", i, a, b);
+        ROBOT_CHECK(a_is_set ^ b_is_set || a.at(i) == b.at(i), "a and b are not mergable", i, a, b);
         if (b_is_set) {
             out.at(i) = b.at(i);
         }
@@ -102,8 +102,8 @@ using UnappliedLandmarkBeliefMap = std::unordered_map<std::string, UnappliedLand
 std::tuple<UnappliedLandmarkBeliefMap, double> downsize_and_normalize_belief(
     const UnappliedLandmarkBeliefMap &belief, const std::optional<int> max_num_components,
     InOut<std::optional<std::mt19937>> gen) {
-    CHECK(belief.size() > 0);
-    CHECK(!max_num_components.has_value() || max_num_components.value() > 0);
+    ROBOT_CHECK(belief.size() > 0);
+    ROBOT_CHECK(!max_num_components.has_value() || max_num_components.value() > 0);
 
     UnappliedLandmarkBeliefMap out;
     double log_normalizer = 0;
@@ -223,7 +223,7 @@ std::vector<LogMarginal> sample_log_marginals(const std::vector<LogMarginal> all
 
 std::unordered_map<int, bool> assignment_from_config(const std::string &config,
                                                      const std::vector<int> &members) {
-    CHECK(config.size() == members.size());
+    ROBOT_CHECK(config.size() == members.size());
     std::unordered_map<int, bool> out;
     for (int i = 0; i < static_cast<int>(config.size()); i++) {
         if (config.at(i) == '?') {
@@ -233,7 +233,7 @@ std::unordered_map<int, bool> assignment_from_config(const std::string &config,
         } else if (config.at(i) == '0') {
             out[members.at(i)] = false;
         } else {
-            CHECK(false, "unable to parse config string", config, i, config.at(i));
+            ROBOT_CHECK(false, "unable to parse config string", config, i, config.at(i));
         }
     }
     return out;
@@ -279,7 +279,7 @@ std::tuple<UnappliedLandmarkBeliefMap, double> sample_beliefs_without_replacemen
         };
         const double belief_sum =
             math::logsumexp(downselected_unapplied_belief_from_config, log_prob_accessor);
-        CHECK(std::abs(belief_sum) < 1e-6);
+        ROBOT_CHECK(std::abs(belief_sum) < 1e-6);
     }
     return {downselected_unapplied_belief_from_config, log_probability_mass_tracked};
 }
@@ -299,7 +299,7 @@ std::tuple<UnappliedLandmarkBeliefMap, double> sample_beliefs_with_replacement(
     for (int i = 0; i < max_num_components; i++) {
         // Sample a component from the belief
         while (counter > 0.0) {
-            CHECK(component_iter != initial_belief.belief_from_config.end());
+            ROBOT_CHECK(component_iter != initial_belief.belief_from_config.end());
             counter -= std::exp(component_iter->second.log_config_prob);
             if (counter > 0.0) {
                 component_iter++;

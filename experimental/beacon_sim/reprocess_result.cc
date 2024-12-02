@@ -59,19 +59,19 @@ std::tuple<BeaconPotential, planning::RoadMap, EkfSlam> load_environment(
     // Load Map Config
     const auto maybe_map_config = robot::proto::load_from_file<proto::WorldMapConfig>(
         config_path.parent_path() / config.map_config_path());
-    CHECK(maybe_map_config.has_value());
+    ROBOT_CHECK(maybe_map_config.has_value());
     const WorldMap world_map(unpack_from(maybe_map_config.value()));
 
     // Load EKF State
     const auto maybe_mapped_landmarks = robot::proto::load_from_file<proto::MappedLandmarks>(
         config_path.parent_path() / config.ekf_state_path());
-    CHECK(maybe_mapped_landmarks.has_value());
+    ROBOT_CHECK(maybe_mapped_landmarks.has_value());
     const auto mapped_landmarks = unpack_from(maybe_mapped_landmarks.value());
 
     // Create a road map
     const auto maybe_road_map = robot::proto::load_from_file<planning::proto::RoadMap>(
         config_path.parent_path() / config.road_map_path());
-    CHECK(maybe_road_map.has_value());
+    ROBOT_CHECK(maybe_road_map.has_value());
     const planning::RoadMap road_map = unpack_from(maybe_road_map.value());
 
     return {world_map.beacon_potential(), road_map, load_ekf_slam(mapped_landmarks)};
@@ -102,7 +102,7 @@ std::vector<std::vector<proto::PlanMetrics>> load_oracle_metrics(
         if (trial_id == 0) {
             out.push_back({});
         }
-        CHECK(out.size() == eval_trial_id + 1);
+        ROBOT_CHECK(out.size() == eval_trial_id + 1);
 
         out.back().push_back({});
         auto &to_fill = out.back().back();
@@ -265,7 +265,7 @@ void reprocess_result(const proto::ExperimentResult &result,
     std::filesystem::create_directories(output_path.parent_path());
     {
         std::ofstream os(output_path);
-        CHECK(os.good());
+        ROBOT_CHECK(os.good());
         out.SerializeToOstream(&os);
     }
 }
@@ -310,7 +310,7 @@ int main(int argc, const char **argv) {
     const auto maybe_results_file =
         robot::proto::load_from_file<robot::experimental::beacon_sim::proto::ExperimentResult>(
             results_file_path);
-    CHECK(maybe_results_file.has_value());
+    ROBOT_CHECK(maybe_results_file.has_value());
 
     robot::experimental::beacon_sim::reprocess_result(
         maybe_results_file.value(),

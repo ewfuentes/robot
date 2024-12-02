@@ -72,7 +72,7 @@ double compute_log_prob(const CorrelatedBeaconPotential &pot,
     std::set_intersection(sorted_members.begin(), sorted_members.end(), keys.begin(), keys.end(),
                           std::back_inserter(keys_to_keep));
 
-    CHECK(allow_partial_assignment || missing_keys.empty(),
+    ROBOT_CHECK(allow_partial_assignment || missing_keys.empty(),
           "partial assignment specified when not enabled", assignment, missing_keys, pot.members);
 
     const int num_beacons_present =
@@ -209,7 +209,7 @@ CorrelatedBeaconPotential condition_on(const CorrelatedBeaconPotential &pot,
         new_assignment = pot.conditioning->conditioned_members;
         for (const auto &[id, value] : assignment) {
             const auto &existing_conditioned = pot.conditioning->conditioned_members;
-            CHECK(!existing_conditioned.contains(id) || (existing_conditioned.at(id) == value),
+            ROBOT_CHECK(!existing_conditioned.contains(id) || (existing_conditioned.at(id) == value),
                   "Inconsistent conditioning", existing_conditioned, assignment);
 
             new_assignment[id] = value;

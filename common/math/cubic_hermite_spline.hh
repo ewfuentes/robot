@@ -17,11 +17,11 @@ class CubicHermiteSpline {
 
     CubicHermiteSpline(std::vector<T> ts, std::vector<X> xs)
         : ts_(std::move(ts)), xs_(std::move(xs)) {
-        CHECK(std::is_sorted(ts_.begin(), ts_.end()), "Input times must be sorted!", ts_);
+        ROBOT_CHECK(std::is_sorted(ts_.begin(), ts_.end()), "Input times must be sorted!", ts_);
     }
 
     X operator()(const T &query_time) const {
-        CHECK(query_time >= ts_.front() && query_time <= ts_.back(), "query_time is out of bounds",
+        ROBOT_CHECK(query_time >= ts_.front() && query_time <= ts_.back(), "query_time is out of bounds",
               ts_.front(), ts_.back(), query_time);
 
         const auto iter = std::lower_bound(ts_.begin(), ts_.end(), query_time);

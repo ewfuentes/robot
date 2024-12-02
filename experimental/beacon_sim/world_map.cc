@@ -25,7 +25,7 @@ std::vector<bool> get_beacon_configuration(const CorrelatedBeaconsConfig &config
     std::vector<bool> out(all_members.size(), false);
     for (const int beacon_id : present_beacon_ids) {
         const auto iter = std::find(all_members.begin(), all_members.end(), beacon_id);
-        CHECK(iter != all_members.end());
+        ROBOT_CHECK(iter != all_members.end());
         const int idx = std::distance(all_members.begin(), iter);
         out.at(idx) = true;
     }

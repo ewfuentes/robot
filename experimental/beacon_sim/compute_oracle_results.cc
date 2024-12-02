@@ -87,7 +87,7 @@ std::optional<proto::GetJobResponse> get_job(const std::string &worker_name,
     proto::GetJobRequest job_request;
     job_request.mutable_worker()->set_name(worker_name);
     proto::GetJobResponse job_response;
-    CHECK(client.get_job(&context, job_request, &job_response).ok());
+    ROBOT_CHECK(client.get_job(&context, job_request, &job_response).ok());
     if (!job_response.has_job_id()) {
         return std::nullopt;
     }
@@ -123,19 +123,19 @@ std::tuple<BeaconPotential, planning::RoadMap, EkfSlam> load_environment(
     // Load Map Config
     const auto maybe_map_config =
         robot::proto::load_from_file<proto::WorldMapConfig>(config_path / config.map_config_path());
-    CHECK(maybe_map_config.has_value(), config_path / config.map_config_path());
+    ROBOT_CHECK(maybe_map_config.has_value(), config_path / config.map_config_path());
     const WorldMap world_map(unpack_from(maybe_map_config.value()));
 
     // Load EKF State
     const auto maybe_mapped_landmarks =
         robot::proto::load_from_file<proto::MappedLandmarks>(config_path / config.ekf_state_path());
-    CHECK(maybe_mapped_landmarks.has_value());
+    ROBOT_CHECK(maybe_mapped_landmarks.has_value());
     const auto mapped_landmarks = unpack_from(maybe_mapped_landmarks.value());
 
     // Create a road map
     const auto maybe_road_map = robot::proto::load_from_file<planning::proto::RoadMap>(
         config_path / config.road_map_path());
-    CHECK(maybe_road_map.has_value());
+    ROBOT_CHECK(maybe_road_map.has_value());
     const planning::RoadMap road_map = unpack_from(maybe_road_map.value());
 
     return {world_map.beacon_potential(), road_map, load_ekf_slam(mapped_landmarks)};
@@ -196,7 +196,7 @@ std::vector<proto::OraclePlan> compute_plans(
     const std::function<void(const int, const int)> &progress_function) {
     const auto maybe_results_file =
         robot::proto::load_from_file<proto::ExperimentResult>(results_file_path);
-    CHECK(maybe_results_file.has_value());
+    ROBOT_CHECK(maybe_results_file.has_value());
     const auto &results_file = maybe_results_file.value();
 
     const auto &experiment_config = results_file.experiment_config();
@@ -269,7 +269,7 @@ std::vector<proto::OraclePlan> compute_plans(
                     }};
                 const auto maybe_plan =
                     compute_belief_road_map_plan(road_map, ekf, conditioned_potential, options);
-                CHECK(maybe_plan.has_value());
+                ROBOT_CHECK(maybe_plan.has_value());
                 proto::OraclePlan plan_out;
                 plan_out.set_trial_id(trial_idx);
                 plan_out.set_eval_trial_id(eval_trial_idx);
@@ -322,7 +322,7 @@ void compute_oracle_results(const std::string server_address, const int server_p
             update.set_progress(static_cast<double>(plans_completed) / total_plans);
             pack_into(job_start_time, update.mutable_start_time());
             pack_into(time::current_robot_time(), update.mutable_current_time());
-            CHECK(client.update_job_status(&client_context, update_request, &update_response).ok());
+            ROBOT_CHECK(client.update_job_status(&client_context, update_request, &update_response).ok());
         };
 
         // Compute the results
@@ -337,7 +337,7 @@ void compute_oracle_results(const std::string server_address, const int server_p
             result_request.mutable_job_result()->mutable_plan()->Add(plans.begin(), plans.end());
             result_request.set_job_id(maybe_job_response->job_id());
             proto::JobResultResponse result_response;
-            CHECK(client.submit_job_result(&client_context, result_request, &result_response).ok());
+            ROBOT_CHECK(client.submit_job_result(&client_context, result_request, &result_response).ok());
         }
     }
 }

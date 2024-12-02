@@ -59,7 +59,7 @@ double compute_log_prob(const PrecisionMatrixPotential &pot,
     std::set_intersection(sorted_members.begin(), sorted_members.end(), keys.begin(), keys.end(),
                           std::back_inserter(keys_to_keep));
 
-    CHECK(allow_partial_assignment || missing_keys.empty(),
+    ROBOT_CHECK(allow_partial_assignment || missing_keys.empty(),
           "partial assignment specified when not enabled", assignment, missing_keys, pot.members);
 
     const std::vector<int> to_marginalize = missing_keys;

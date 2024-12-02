@@ -20,7 +20,7 @@ struct Database::Impl {
 
     template <typename... Ts>
     void check_result(const int error_code, Ts... args) {
-        CHECK(error_code == SQLITE_OK, sqlite3_errmsg(db_), args...);
+        ROBOT_CHECK(error_code == SQLITE_OK, sqlite3_errmsg(db_), args...);
     };
 
     Database::Statement prepare(const std::string &statement) {
@@ -37,7 +37,7 @@ struct Database::Impl {
 
     void bind(const Statement &stmt, const std::unordered_map<std::string, Database::Value> &args) {
         sqlite3_stmt *stmt_ptr = stmt.impl_->stmt.get();
-        CHECK(args.size() == sqlite3_bind_parameter_count(stmt_ptr),
+        ROBOT_CHECK(args.size() == sqlite3_bind_parameter_count(stmt_ptr),
               "insufficient number of arguments", sqlite3_sql(stmt_ptr), args);
         for (const auto &[key, value] : args) {
             const int param_idx = sqlite3_bind_parameter_index(stmt_ptr, key.c_str());
@@ -69,7 +69,7 @@ struct Database::Impl {
         if (result == SQLITE_DONE) {
             return std::nullopt;
         }
-        CHECK(result == SQLITE_ROW, sqlite3_errmsg(db_));
+        ROBOT_CHECK(result == SQLITE_ROW, sqlite3_errmsg(db_));
         const int num_columns = sqlite3_column_count(stmt_ptr);
         if (stmt.impl_->column_names == nullptr) {
             std::vector<std::string> column_names;
