@@ -47,6 +47,5 @@ py_binary(
     deps = [
 	requirement("rosbags"),
 	requirement("numpy"),
-	requirement("ipdb"),
     ],
 )

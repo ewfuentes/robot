@@ -117,6 +117,4 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    import ipdb
-    with ipdb.launch_ipdb_on_exception():
-        main(Path(args.input), Path(args.output))
+    main(Path(args.input), Path(args.output))
