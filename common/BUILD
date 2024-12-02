@@ -70,6 +70,7 @@ cc_py_library(
   hdrs = ["matplotlib.hh"],
   srcs = ["matplotlib.cc"],
   visibility= ["//visibility:public"],
+  tags = ["manual"],
   py_deps = [
     requirement("matplotlib"),
     requirement("PyGObject"),
