@@ -1,4 +1,3 @@
-
 #pragma once
 
 #include <gtsam/base/Vector.h>
@@ -23,19 +22,22 @@
 
 namespace robot::experimental::overhead_matching {
 
-class SpectacularLogDataProvider : public DataProviderInterface {
+/*
+ * Parse all images and camera calibration for an ETH dataset.
+ */
+class SpectacularDataProviderInterface : public VIO::DataProviderInterface {
    public:
-    KIMERA_DELETE_COPY_CONSTRUCTORS(SpectacularLogDataProvider);
-    KIMERA_POINTER_TYPEDEFS(SpectacularLogDataProvider);
+    KIMERA_DELETE_COPY_CONSTRUCTORS(SpectacularDataProviderInterface);
+    KIMERA_POINTER_TYPEDEFS(SpectacularDataProviderInterface);
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
     //! Ctor with params.
-    SpectacularLogDataProvider(const std::string& dataset_path, const int& initial_k,
-                               const int& final_k, const VioParams& vio_params);
+    SpectacularDataProviderInterface(const std::string& dataset_path, const int& initial_k,
+                                     const int& final_k, const VIO::VioParams& vio_params);
     //! Ctor from gflags
-    explicit SpectacularLogDataProvider(const VioParams& vio_params);
+    explicit SpectacularDataProviderInterface(const VIO::VioParams& vio_params);
 
-    virtual ~SpectacularLogDataProvider();
+    virtual ~SpectacularDataProviderInterface();
 
    public:
     /**
@@ -65,30 +67,11 @@ class SpectacularLogDataProvider : public DataProviderInterface {
     virtual bool spinOnce();
 
     /**
-     * @brief parse Parses Euroc dataset. This is done already in spin() and
-     * does not need to be called by the user. Left in public for experimentation.
-     */
-    void parse();
-
-    /**
      * @brief sendImuData We send IMU data first (before frames) so that the VIO
      * pipeline can query all IMU data between frames.
      */
     void sendImuData() const;
 
-    /**
-     * @brief parseDataset Parse camera, gt, and imu data if using
-     * different Euroc format.
-     * @return
-     */
-    bool parseDataset();
-
-    //! Parsers
-    bool parseImuData(const std::string& input_dataset_path, const std::string& imu_name);
-
-    bool parseGtData(const std::string& input_dataset_path, const std::string& gtSensorName);
-
-    bool parseCameraData(const std::string& cam_name, CameraImageLists* cam_list_i);
 
     //! Getters.
     /**
@@ -100,7 +83,6 @@ class SpectacularLogDataProvider : public DataProviderInterface {
     inline bool getLeftImgName(const size_t& k, std::string* img_name) const {
         return getImgName("cam0", k, img_name);
     }
-
     size_t getNumImages() const;
     size_t getNumImagesForCamera(const std::string& camera_name) const;
     /**
@@ -113,20 +95,30 @@ class SpectacularLogDataProvider : public DataProviderInterface {
     bool getImgName(const std::string& camera_name, const size_t& k,
                     std::string* img_filename) const;
 
-   protected:
+    // Get timestamp of a given pair of stereo images (synchronized).
+    VIO::Timestamp timestampAtFrame(const VIO::FrameId& frame_number);
 
-    VioParams vio_params_;
-    SpectacularLog dataset_;
-    
+    // Clip final frame to the number of images in the dataset.
+    void clipFinalFrame();
+
+   protected:
+    VIO::VioParams vio_params_;
+
+    /// Images data.
+    // TODO(Toni): remove camera_names_ and camera_image_lists_...
+    // This matches the names of the folders in the dataset
+    std::vector<std::string> camera_names_;
+    // Map from camera name to its images
+    std::map<std::string, VIO::CameraImageLists> camera_image_lists_;
+
+    bool is_gt_available_;
     std::string dataset_name_;
     std::string dataset_path_;
 
-    FrameId current_k_;
-    FrameId initial_k_;  // start frame
-    FrameId final_k_;    // end frame
+    VIO::FrameId current_k_;
+    VIO::FrameId initial_k_;  // start frame
+    VIO::FrameId final_k_;    // end frame
 
-    //! Flag to signal when the dataset has been parsed.
-    bool dataset_parsed_ = false;
     //! Flag to signal if the IMU data has been sent to the VIO pipeline
     bool is_imu_data_sent_ = false;
 
@@ -134,9 +126,9 @@ class SpectacularLogDataProvider : public DataProviderInterface {
     const std::string kImuName = "imu0";
 
     //! Pre-stored imu-measurements
-    std::vector<ImuMeasurement> imu_measurements_;
+    std::vector<VIO::ImuMeasurement> imu_measurements_;
 
-    // EurocGtLogger::UniquePtr logger_;
+    SpectacularLog spec_log_;
 };
 
-}  // namespace 
+}  // namespace robot::experimental::overhead_matching
