@@ -63,11 +63,11 @@ class BeaconPotential {
 
     double log_prob(const std::unordered_map<int, bool> &assignments,
                     const bool allow_partial_assignment = false) const {
-        CHECK(impl_ != nullptr);
+        ROBOT_CHECK(impl_ != nullptr);
         return impl_->log_prob_(assignments, allow_partial_assignment);
     };
     double log_prob(const std::vector<int> &present_beacons) const {
-        CHECK(impl_ != nullptr);
+        ROBOT_CHECK(impl_ != nullptr);
         return impl_->log_prob_(present_beacons);
     }
 

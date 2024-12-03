@@ -23,6 +23,17 @@ cc_library(
   srcs = ["visual_odometry.cc"],
   deps = [
     "@opencv//:opencv"
+)
+
+cc_library(
+  name = "symphony_lake_parser",
+  hdrs = ["symphony_lake_parser.hh"],
+  copts = ["-Wno-unused-parameter"],
+  visibility = ["//visibility:public"],
+  srcs = ["symphony_lake_parser.cc"],
+  deps = [
+    "@symphony_lake_parser",
+    "//common:check"
   ]
 )
 
@@ -32,6 +43,18 @@ cc_test(
   deps = [
     "@com_google_googletest//:gtest_main",
     ":visual_odometry"
+  ]
+)
+
+cc_test(
+  name = "symphony_lake_parser_test",
+  srcs = ["symphony_lake_parser_test.cc"],
+  copts = ["-Wno-unused-parameter"],
+  data = ["@symphony_lake_snippet"],
+  deps = [
+    "@com_google_googletest//:gtest_main",
+    ":symphony_lake_parser",
+    "//common:check"
   ]
 )
 

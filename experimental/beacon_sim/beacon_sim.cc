@@ -363,7 +363,7 @@ void run_simulation(const SimConfig &sim_config) {
             const auto maybe_world_map_config_proto =
                 robot::proto::load_from_file<proto::WorldMapConfig>(
                     sim_config.world_map_config.value());
-            CHECK(maybe_world_map_config_proto.has_value());
+            ROBOT_CHECK(maybe_world_map_config_proto.has_value());
             return WorldMap(unpack_from(maybe_world_map_config_proto.value()));
         } else {
             return WorldMap(world_map_config(sim_config.correlated_beacons_configuration));
@@ -375,7 +375,7 @@ void run_simulation(const SimConfig &sim_config) {
             const auto maybe_road_map_config_proto =
                 robot::proto::load_from_file<planning::proto::RoadMap>(
                     sim_config.road_map_config.value());
-            CHECK(maybe_road_map_config_proto);
+            ROBOT_CHECK(maybe_road_map_config_proto);
             return unpack_from(maybe_road_map_config_proto.value());
         } else {
             return create_road_map(map);
@@ -605,14 +605,14 @@ int main(int argc, char **argv) {
 
     const Eigen::Vector2d goal_in_map = [&]() {
         const auto goal_in_map_vec = args["goal_in_map"].as<std::vector<double>>();
-        CHECK(goal_in_map_vec.size() == 2);
+        ROBOT_CHECK(goal_in_map_vec.size() == 2);
         return Eigen::Vector2d(goal_in_map_vec.data());
     }();
 
     const robot::liegroups::SE2 map_from_initial_robot = [&]() {
         const auto map_from_initial_robot_vec =
             args["map_from_initial_robot"].as<std::vector<double>>();
-        CHECK(map_from_initial_robot_vec.size() == 3);
+        ROBOT_CHECK(map_from_initial_robot_vec.size() == 3);
         const Eigen::Vector2d robot_in_map(map_from_initial_robot_vec.data());
         const double theta_rad = map_from_initial_robot_vec.back();
         return robot::liegroups::SE2(theta_rad, robot_in_map);

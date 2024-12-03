@@ -19,6 +19,13 @@ http_archive(
 )
 
 http_archive(
+  name = "symphony_lake_snippet",
+  urls = ["https://www.dropbox.com/scl/fi/gh7855qdos5mspinst77k/symphony_lake_snippet.zip?rlkey=mg7qe0gq51r446dwhr9g2wiut&st=774393fx&dl=1"],
+  build_file = "//third_party:BUILD.symphony_lake_snippet",
+  sha256 = "f16211fb370c9471153c9ed4a345b9fb848d292dbb8b7dc26fea24cb30ba5c15",
+)
+
+http_archive(
     name = "bazel_skylib",
     sha256 = "bc283cdfcd526a52c3201279cda4bc298652efa898b10b4db0837dc51652756f",
     urls = [
@@ -463,6 +470,16 @@ http_archive(
   strip_prefix = "sqlite-amalgamation-3460000",
   build_file = "//third_party:BUILD.sqlite3",
   integrity = "sha256-cSp9CdKiJlL7BqSa9RbgUZeaOYStsGfahnYOYO1Rp/U="
+)
+
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+http_archive(
+    name = "symphony_lake_parser",
+    urls = ["https://github.com/pizzaroll04/SymphonyLakeDataset/archive/4b38c2519270a43f76858e6c97c1f1de1735e5d0.zip"],
+    strip_prefix = "SymphonyLakeDataset-4b38c2519270a43f76858e6c97c1f1de1735e5d0",
+    build_file = "//third_party:BUILD.symphony_lake_parser",
+    sha256 = "d203e486507c7950ae9a346406fe2c42f8b2d204e8d25ba07a47c834f4ae8ede",
 )
 
 http_archive(

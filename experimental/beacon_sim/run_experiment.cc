@@ -132,13 +132,13 @@ UncertaintySizeOptions from_proto(const proto::UncertaintySize &config) {
             };
         }
         case proto::UncertaintySize::UNCERTAINTY_SIZE_ONEOF_NOT_SET: {
-            CHECK(false, "uncertainty size not set");
+            ROBOT_CHECK(false, "uncertainty size not set");
             return ExpectedDeterminant{
                 .position_only = false,
             };
         }
     }
-    CHECK(false, "uncertainty size not set");
+    ROBOT_CHECK(false, "uncertainty size not set");
     return ExpectedDeterminant{.position_only = false};
 }
 
@@ -318,7 +318,7 @@ proto::ExperimentResult to_proto(const ExperimentConfig &config,
 
         for (int planner_idx = 0; planner_idx < static_cast<int>(names.size()); planner_idx++) {
             std::cout << "Working on planner: " << names.at(planner_idx) << std::endl;
-            CHECK(result.results.contains(names.at(planner_idx)), "uh oh!", result.results);
+            ROBOT_CHECK(result.results.contains(names.at(planner_idx)), "uh oh!", result.results);
 
             const auto &trial_result = result.results.at(names.at(planner_idx));
             proto::PlannerResult &planner_result = *out.add_results();
@@ -351,19 +351,19 @@ void run_experiment(const proto::ExperimentConfig &config, const std::filesystem
     // Load Map Config
     const auto maybe_map_config =
         robot::proto::load_from_file<proto::WorldMapConfig>(base_path / config.map_config_path());
-    CHECK(maybe_map_config.has_value());
+    ROBOT_CHECK(maybe_map_config.has_value());
     const WorldMap world_map(unpack_from(maybe_map_config.value()));
 
     // Load EKF State
     const auto maybe_mapped_landmarks =
         robot::proto::load_from_file<proto::MappedLandmarks>(base_path / config.ekf_state_path());
-    CHECK(maybe_mapped_landmarks.has_value());
+    ROBOT_CHECK(maybe_mapped_landmarks.has_value());
     const auto mapped_landmarks = unpack_from(maybe_mapped_landmarks.value());
 
     // Create a road map
     const auto maybe_road_map =
         robot::proto::load_from_file<planning::proto::RoadMap>(base_path / config.road_map_path());
-    CHECK(maybe_road_map.has_value());
+    ROBOT_CHECK(maybe_road_map.has_value());
     const planning::RoadMap road_map = unpack_from(maybe_road_map.value());
 
     std::mt19937 gen(config.start_goal_seed());
@@ -402,8 +402,8 @@ void run_experiment(const proto::ExperimentConfig &config, const std::filesystem
             std::unordered_map<std::string, PlannerResult> results;
 
             for (const auto &planner_config : config.planner_configs()) {
-                CHECK(planner_config.planner_config_oneof_case() !=
-                      proto::PlannerConfig::PLANNER_CONFIG_ONEOF_NOT_SET);
+                ROBOT_CHECK(planner_config.planner_config_oneof_case() !=
+                            proto::PlannerConfig::PLANNER_CONFIG_ONEOF_NOT_SET);
                 switch (planner_config.planner_config_oneof_case()) {
                     case proto::PlannerConfig::kLandmarkBrmConfig: {
                         results[planner_config.name()] = run_planner(
@@ -424,8 +424,8 @@ void run_experiment(const proto::ExperimentConfig &config, const std::filesystem
                         break;
                     }
                     default: {
-                        CHECK(false, "Unhandled Planner Config type",
-                              planner_config.planner_config_oneof_case());
+                        ROBOT_CHECK(false, "Unhandled Planner Config type",
+                                    planner_config.planner_config_oneof_case());
                     }
                 }
             }
@@ -479,7 +479,7 @@ int main(int argc, const char **argv) {
 
     std::filesystem::path config_file_path = args["config_file"].as<std::string>();
     const auto maybe_config_file = robot::proto::load_from_file<ExperimentConfig>(config_file_path);
-    CHECK(maybe_config_file.has_value());
+    ROBOT_CHECK(maybe_config_file.has_value());
 
     robot::experimental::beacon_sim::run_experiment(
         maybe_config_file.value(), config_file_path.remove_filename(),

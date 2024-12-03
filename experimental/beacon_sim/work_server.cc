@@ -17,7 +17,7 @@ constexpr int CHUNK_SIZE = 200;
 std::vector<proto::JobInputs> create_inputs_from_result(
     const std::filesystem::path &result_path, const std::filesystem::path &experiment_config_path) {
     const auto maybe_proto = robot::proto::load_from_file<proto::ExperimentResult>(result_path);
-    CHECK(maybe_proto.has_value(), "Failed to load proto", result_path);
+    ROBOT_CHECK(maybe_proto.has_value(), "Failed to load proto", result_path);
 
     const int num_eval_trials = maybe_proto.value().experiment_config().num_eval_trials();
     std::vector<proto::JobInputs> out;
@@ -57,7 +57,7 @@ WorkServer::WorkServer(const std::filesystem::path &db_path,
     // Check if the table exists
     const auto rows = db_.query("SELECT count(*) FROM sqlite_master WHERE type='table' and name='" +
                                 JOB_TABLE_NAME + "'");
-    CHECK(rows.size() == 1);
+    ROBOT_CHECK(rows.size() == 1);
     const bool does_table_exist = std::get<int>(rows.at(0).value(0));
     if (does_table_exist) {
         // Table exists
@@ -183,19 +183,19 @@ grpc::Status WorkServer::get_progress(grpc::ServerContext *, const proto::Progre
     {
         const auto rows =
             db_.query("SELECT count(*) FROM " + JOB_TABLE_NAME + " WHERE job_result IS NOT NULL;");
-        CHECK(!rows.empty());
+        ROBOT_CHECK(!rows.empty());
         jobs_completed = std::get<int>(rows.at(0).value(0));
     }
     {
         const auto rows =
             db_.query("SELECT count(*) FROM " + JOB_TABLE_NAME + " WHERE job_status IS NULL;");
-        CHECK(!rows.empty());
+        ROBOT_CHECK(!rows.empty());
         jobs_remaining = std::get<int>(rows.at(0).value(0));
     }
     {
         const auto rows = db_.query("SELECT count(*) FROM " + JOB_TABLE_NAME +
                                     " WHERE job_status IS NOT NULL AND job_result IS NULL;");
-        CHECK(!rows.empty());
+        ROBOT_CHECK(!rows.empty());
         jobs_in_progress = std::get<int>(rows.at(0).value(0));
     }
     response->set_jobs_completed(jobs_completed);

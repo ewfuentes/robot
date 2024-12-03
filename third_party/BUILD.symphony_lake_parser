@@ -1,0 +1,26 @@
+package(features=["-warning_compile_flags"])
+
+cc_library(
+  name = "symphony_lake_parser",
+  hdrs = [
+    "include/symphony_lake_dataset/SurveyVector.h",
+    "include/symphony_lake_dataset/csv_functions.h",
+    "include/symphony_lake_dataset/Function.h",
+    "include/symphony_lake_dataset/ImagePoint.h",
+    "include/symphony_lake_dataset/ParseSurvey.h",
+    "include/symphony_lake_dataset/Pose.h",
+    "include/symphony_lake_dataset/Survey.h",
+  ],
+  copts = ["-Wno-unused-parameter"],
+  visibility = ["//visibility:public"],
+  srcs = [
+    "src/Function.cpp",
+    "src/ParseSurvey.cpp",
+    "src/Survey.cpp",
+    "src/SurveyVector.cpp"
+  ],
+  strip_include_prefix="include/",
+  deps = [
+    "@opencv//:opencv",
+  ],
+)
