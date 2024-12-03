@@ -8,11 +8,10 @@
 
 #include "experimental/overhead_matching/kimera_spectacular_data_provider.hh"
 
-#include "kimera-vio/frontend/StereoImuSyncPacket.h"
 #include "kimera-vio/logging/Logger.h"
-#include "kimera-vio/pipeline/MonoImuPipeline.h"
+#include "kimera-vio/pipeline/RgbdImuPipeline.h"
 #include "kimera-vio/pipeline/Pipeline.h"
-#include "kimera-vio/pipeline/StereoImuPipeline.h"
+#include "kimera-vio/dataprovider/DataProviderInterface.h"
 #include "kimera-vio/utils/Statistics.h"
 #include "kimera-vio/utils/Timer.h"
 
@@ -20,6 +19,9 @@ DEFINE_string(
     params_folder_path,
     "../params/Euroc",
     "Path to the folder containing the yaml files with the VIO parameters.");
+DEFINE_string(dataset_path,
+              "/Users/Luca/data/MH_01_easy",
+              "Path of dataset (i.e. Euroc, /Users/Luca/data/MH_01_easy).");
 
 int main(int argc, char* argv[]) {
   // Initialize Google's flags library.
@@ -37,21 +39,12 @@ int main(int argc, char* argv[]) {
 
   VIO::Pipeline::Ptr vio_pipeline;
 
-  switch (vio_params.frontend_type_) {
-    case VIO::FrontendType::kMonoImu: {
-      vio_pipeline = std::make_unique<VIO::MonoImuPipeline>(vio_params);
-    } break;
-    default: {
-      LOG(FATAL) << "Unrecognized Frontend type: "
-                 << VIO::to_underlying(vio_params.frontend_type_)
-                 << ". 0: Mono, 1: Stereo.";
-    } break;
-  }
+  vio_pipeline = std::make_unique<VIO::RgbdImuPipeline>(vio_params);
 
   // Register callback to shutdown data provider in case VIO pipeline
   // shutsdown.
   vio_pipeline->registerShutdownCallback(
-      std::bind(&VIO::DataProviderInterface::shutdown, dataset_parser));
+      std::bind(&VIO::DataProviderModule::shutdown, dataset_parser));
 
   // Register callback to vio pipeline.
   dataset_parser->registerImuSingleCallback(std::bind(
@@ -60,6 +53,9 @@ int main(int argc, char* argv[]) {
   // the non-blocking versions with real sensor streams)
   dataset_parser->registerLeftFrameCallback(std::bind(
       &VIO::Pipeline::fillLeftFrameQueue, vio_pipeline, std::placeholders::_1));
+
+  dataset_parser->registerDepthFrameCallback(std::bind(
+    &VIO::RgbdImuPipeline::fillDepthFrameQueue, vio_pipeline, std::placeholders::_1));
 
 
   // Spin dataset.
