@@ -245,7 +245,6 @@ http_archive(
   ],
   patch_args=["-p1"],
 )
-
 load("@com_google_protobuf//:protobuf_deps.bzl", "protobuf_deps")
 protobuf_deps()
 

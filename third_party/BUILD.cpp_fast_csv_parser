@@ -1,0 +1,6 @@
+cc_library(
+    name = "cpp_fast_csv_parser",
+    srcs = ["csv.h"],
+    hdrs = ["csh.h"],
+    visibility = ["//visibility:public"],
+)

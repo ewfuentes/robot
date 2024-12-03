@@ -16,6 +16,15 @@ cc_test(
   ]
 )
 
+cc_library(
+  name = "visual_odometry",
+  hdrs = ["visual_odometry.hh"],
+  visibility = ["//visibility:public"],
+  srcs = ["visual_odometry.cc"],
+  deps = [
+    "@opencv//:opencv"
+  ]
+)
 
 cc_library(
   name = "symphony_lake_parser",
@@ -26,6 +35,15 @@ cc_library(
   deps = [
     "@symphony_lake_parser",
     "//common:check"
+  ]
+)
+
+cc_test(
+  name = "visual_odometry_test",
+  srcs = ["visual_odometry_test.cc"],  
+  deps = [
+    "@com_google_googletest//:gtest_main",
+    ":visual_odometry"
   ]
 )
 
