@@ -45,8 +45,8 @@ TEST(VIO_TEST, frontend_pipeline_sweep) {
     cv::warpAffine(image_1, image_1, rotation_matrix, image_1.size());
     cv::warpAffine(image_1, image_2, translation_mat, image_1.size());
 
-    cv::Mat img_test_disp;
-    cv::hconcat(image_1, image_2, img_test_disp);
+    // cv::Mat img_test_disp;
+    // cv::hconcat(image_1, image_2, img_test_disp);
     // cv::imshow("Test", img_test_disp);
     // cv::waitKey(1000);
 
