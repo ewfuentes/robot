@@ -23,6 +23,7 @@ cc_library(
   srcs = ["visual_odometry.cc"],
   deps = [
     "@opencv//:opencv"
+  ]
 )
 
 cc_library(
