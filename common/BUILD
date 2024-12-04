@@ -70,7 +70,6 @@ cc_py_library(
   hdrs = ["matplotlib.hh"],
   srcs = ["matplotlib.cc"],
   visibility= ["//visibility:public"],
-  tags = ["manual"],
   py_deps = [
     requirement("matplotlib"),
     requirement("PyGObject"),
@@ -85,6 +84,7 @@ cc_py_library(
 cc_test(
   name = "matplotlib_test",
   srcs = ["matplotlib_test.cc"],
+  tags = ["manual"],
   deps = [
     ":matplotlib",
     "@com_google_googletest//:gtest_main",
