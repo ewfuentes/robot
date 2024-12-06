@@ -33,7 +33,7 @@ int main(int argc, char* argv[]) {
   VIO::VioParams vio_params(FLAGS_params_folder_path);
 
   // Build dataset parser.
-  VIO::DataProviderInterface::Ptr dataset_parser = std::make_unique<robot::experimental::overhead_matching::SpectacularLogDataProvider>(vio_params);
+  VIO::DataProviderInterface::Ptr dataset_parser = std::make_unique<robot::experimental::overhead_matching::SpectacularDataProviderInterface>(vio_params);
 
   CHECK(dataset_parser);
 
