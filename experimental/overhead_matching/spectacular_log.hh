@@ -22,10 +22,10 @@ struct FrameCalibration {
 
 struct FrameGroup {
     time::RobotTimestamp time_of_validity;
-    cv::Mat rgb_frame;
+    cv::Mat bgr_frame;
     cv::Mat depth_frame;
 
-    FrameCalibration rgb_calibration;
+    FrameCalibration color_calibration;
     FrameCalibration depth_calibration;
 };
 
