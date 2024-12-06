@@ -27,6 +27,7 @@ cc_test(
     srcs = ["spectacular_log_test.cc"],
     data = ["@spectacular_log_snippet//:files"],
     deps = [
+	"//common:matplotlib",
 	":spectacular_log",
 	"@com_google_googletest//:gtest_main",
 	"@fmt",

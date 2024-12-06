@@ -3,6 +3,8 @@ package(features=["warning_compile_flags"])
 
 load("@pip//:requirements.bzl", "requirement")
 load("@rules_python//python:defs.bzl", "py_library")
+load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
+load("@//common/python:embedded_py.bzl", "cc_py_library", "cc_py_test")
 
 cc_library(
   name="argument_wrapper",
@@ -61,6 +63,32 @@ cc_test(
     ":check",
     "@com_google_googletest//:gtest_main",
   ]
+)
+
+cc_py_library(
+  name = "matplotlib",
+  hdrs = ["matplotlib.hh"],
+  srcs = ["matplotlib.cc"],
+  visibility= ["//visibility:public"],
+  py_deps = [
+    requirement("matplotlib"),
+    requirement("PyGObject"),
+  ],
+  deps = [
+    "@pybind11",
+    "@rules_python//python/cc:current_py_cc_headers",
+    "@rules_python//python/cc:current_py_cc_libs",
+  ],
+)
+
+cc_test(
+  name = "matplotlib_test",
+  srcs = ["matplotlib_test.cc"],
+  tags = ["manual"],
+  deps = [
+    ":matplotlib",
+    "@com_google_googletest//:gtest_main",
+  ],
 )
 
 py_library(
