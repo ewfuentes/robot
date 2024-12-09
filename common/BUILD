@@ -106,3 +106,14 @@ cc_test(
     "@com_google_googletest//:gtest_main",
   ],
 )
+
+cc_library(
+    name = "video",
+    hdrs = ["video.hh"],
+    srcs = ["video.cc"],
+    deps = [
+        "@eigen",
+        "@opencv",
+    ],
+    visibility = ["//visibility:public"]
+)
