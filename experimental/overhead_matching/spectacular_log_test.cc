@@ -4,10 +4,10 @@
 #include <iostream>
 #include <sstream>
 
+#include "common/video.hh"
 #include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "opencv2/opencv.hpp"
-#include "common/video.hh"
 
 namespace robot::experimental::overhead_matching {
 
