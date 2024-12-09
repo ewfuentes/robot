@@ -7,18 +7,9 @@
 #include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "opencv2/opencv.hpp"
+#include "common/video.hh"
 
 namespace robot::experimental::overhead_matching {
-
-bool images_equal(cv::Mat img1, cv::Mat img2) {
-    if (img1.size() != img2.size() || img1.type() != img2.type()) {
-        return false;
-    }
-    cv::Mat diff;
-    cv::absdiff(img1, img2, diff);
-    diff = diff.reshape(1);
-    return cv::countNonZero(diff) == 0;
-}
 
 std::ostream &operator<<(std::ostream &out, const time::RobotTimestamp &t) {
     std::ostringstream ss;
@@ -63,8 +54,8 @@ TEST(SpectacularLogTest, happy_case) {
                                                fmt::format("frames2/{:08d}.png", frame_id));
         const cv::Mat depth_frame = cv::imread(depth_path, cv::IMREAD_GRAYSCALE);
 
-        EXPECT_TRUE(images_equal(expected_frame, frame.bgr_frame));
-        EXPECT_TRUE(images_equal(depth_frame, frame.depth_frame));
+        EXPECT_TRUE(common::images_equal(expected_frame, frame.bgr_frame));
+        EXPECT_TRUE(common::images_equal(depth_frame, frame.depth_frame));
 
         for (int i = 0; i < FRAME_SKIP - 1; i++) {
             video.grab();
