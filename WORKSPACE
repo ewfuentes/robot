@@ -522,7 +522,8 @@ http_archive(
   strip_prefix="opengv-91f4b19c73450833a40e463ad3648aae80b3a7f3",
   build_file="//third_party:BUILD.opengv",
   patch_args = ["-p1"],
-  patches = ["//third_party:opengv_0001-prefix-unsupported-eigen-include-paths.patch"],
+  patches = ["//third_party:opengv_0001-prefix-unsupported-eigen-include-paths.patch",
+             "//third_party:opengv_0002-unused-parameter.patch"],
   integrity = "sha256-gIK3IvE6rGDpxvN3BA+EPFKPvZ7Zi7Ix33IIcm2RULA="
 )
 
@@ -539,12 +540,7 @@ http_archive(
   urls = ["https://github.com/ewfuentes/Kimera-VIO/archive/master.zip"],
   strip_prefix = "Kimera-VIO-master",
   build_file = "//third_party:BUILD.kimera_vio",
-  integrity = "sha256-8fLHPn8JPWffnnXEA0gJbZrBhoGpK0Gw80I3oWXpgZg=",
-  patch_args = ["-p1"],
-  patches = [
-    "//third_party:kimera_vio_0001-add-missing-includes.patch",
-    "//third_party:kimera_vio_0002-add-override-markers.patch",
-  ]
+  integrity = "sha256-+hQBAPv4bDRbYnH1iXeuHTNsWnfXgqZ0FoUTv6usQ/k=",
 )
 
 http_archive(

@@ -1,0 +1,13 @@
+diff --git a/include/opengv/sac/implementation/SampleConsensusProblem.hpp b/include/opengv/sac/implementation/SampleConsensusProblem.hpp
+index 7ae8ab2..896bb72 100644
+--- a/include/opengv/sac/implementation/SampleConsensusProblem.hpp
++++ b/include/opengv/sac/implementation/SampleConsensusProblem.hpp
+@@ -54,7 +54,7 @@ opengv::sac::SampleConsensusProblem<M>::~SampleConsensusProblem()
+ 
+ template<typename M>
+ bool opengv::sac::SampleConsensusProblem<M>::isSampleGood(
+-    const std::vector<int> & sample) const
++    [[maybe_unused]] const std::vector<int> & sample) const
+ {
+   // Default implementation
+   return true;

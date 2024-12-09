@@ -172,7 +172,11 @@ std::optional<FrameGroup> SpectacularLog::get_frame(const int frame_id) const {
     // Read the desired depth frame
     const fs::path depth_frame_path =
         log_path_ / "frames2" / fmt::format("{:08d}.png", frame_info.frame_number);
+
+    // TODO: change to 32FC1 depth in meters
     cv::Mat depth_frame = cv::imread(depth_frame_path.string(), cv::IMREAD_GRAYSCALE);
+    // temp solution:
+    depth_frame.convertTo(depth_frame, CV_32FC1);
 
     return {{
         .time_of_validity =
