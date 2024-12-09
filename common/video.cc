@@ -12,4 +12,4 @@ bool images_equal(const cv::Mat& img1, const cv::Mat& img2) {
     return cv::countNonZero(diff) == 0;
 }
 
-}
+}  // namespace robot::common
