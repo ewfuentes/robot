@@ -540,12 +540,7 @@ http_archive(
   urls = ["https://github.com/ewfuentes/Kimera-VIO/archive/master.zip"],
   strip_prefix = "Kimera-VIO-master",
   build_file = "//third_party:BUILD.kimera_vio",
-  integrity = "sha256-8fLHPn8JPWffnnXEA0gJbZrBhoGpK0Gw80I3oWXpgZg=",
-  patch_args = ["-p1"],
-  patches = [
-    "//third_party:kimera_vio_0001-add-missing-includes.patch",
-    "//third_party:kimera_vio_0002-add-override-markers.patch",
-  ]
+  integrity = "sha256-+hQBAPv4bDRbYnH1iXeuHTNsWnfXgqZ0FoUTv6usQ/k=",
 )
 
 http_archive(
