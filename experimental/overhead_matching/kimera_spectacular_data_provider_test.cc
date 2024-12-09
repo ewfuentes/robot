@@ -1,21 +1,19 @@
 
-#include "experimental/overhead_matching/spectacular_log.hh"
 #include "experimental/overhead_matching/kimera_spectacular_data_provider.hh"
 
 #include <iostream>
 #include <sstream>
 
+#include "common/video.hh"
+#include "experimental/overhead_matching/spectacular_log.hh"
 #include "fmt/format.h"
 #include "gtest/gtest.h"
-#include "opencv2/opencv.hpp"
-
-#include "common/video.hh"
-
 #include "kimera-vio/pipeline/Pipeline-definitions.h"
+#include "opencv2/opencv.hpp"
 
 namespace robot::experimental::overhead_matching {
 
-std::ostream &operator<<(std::ostream &out, const time::RobotTimestamp &t) {
+std::ostream& operator<<(std::ostream& out, const time::RobotTimestamp& t) {
     std::ostringstream ss;
     ss << std::fixed << std::setprecision(9)
        << std::chrono::duration<double>(t.time_since_epoch()).count();
@@ -25,40 +23,40 @@ std::ostream &operator<<(std::ostream &out, const time::RobotTimestamp &t) {
 
 bool compare_imu_samples(const robot::experimental::overhead_matching::ImuSample& robot_imu,
                          const VIO::ImuMeasurement& kimera_imu) {
-                            // timestamp
-                            if (kimera_imu.timestamp_ != robot_imu.time_of_validity.time_since_epoch().count()) {
-                                std::cout << "kimera timestamp " << kimera_imu.timestamp_ << std::endl;
-                                std::cout << "robot timestamp " << robot_imu.time_of_validity.time_since_epoch().count() << std::endl;
-                                std::cout << "diff " << robot_imu.time_of_validity.time_since_epoch().count() - kimera_imu.timestamp_ << std::endl;
-                                std::cout << "timestamp" << std::endl;
-                                return false;
-                            }
-                            // accel and gyro values
-                            if (kimera_imu.acc_gyr_.rows() != 6 || kimera_imu.acc_gyr_.cols() != 1) {
-                                std::cout << "shapes" << std::endl;
-                                return false;
-                            }
-                            for (int i = 0; i<6; i++) {
-                                Eigen::Vector3d active_vec;
-                                if (i < 3) {
-                                    active_vec = robot_imu.accel_mpss;
-                                } else {
-                                    active_vec = robot_imu.gyro_radps;
-                                }
+    // timestamp
+    if (kimera_imu.timestamp_ != robot_imu.time_of_validity.time_since_epoch().count()) {
+        std::cout << "kimera timestamp " << kimera_imu.timestamp_ << std::endl;
+        std::cout << "robot timestamp " << robot_imu.time_of_validity.time_since_epoch().count()
+                  << std::endl;
+        std::cout << "diff "
+                  << robot_imu.time_of_validity.time_since_epoch().count() - kimera_imu.timestamp_
+                  << std::endl;
+        std::cout << "timestamp" << std::endl;
+        return false;
+    }
+    // accel and gyro values
+    if (kimera_imu.acc_gyr_.rows() != 6 || kimera_imu.acc_gyr_.cols() != 1) {
+        std::cout << "shapes" << std::endl;
+        return false;
+    }
+    for (int i = 0; i < 6; i++) {
+        Eigen::Vector3d active_vec;
+        if (i < 3) {
+            active_vec = robot_imu.accel_mpss;
+        } else {
+            active_vec = robot_imu.gyro_radps;
+        }
 
-                                if (std::abs(active_vec(i % 3) - kimera_imu.acc_gyr_(i, 0)) > 1e-9)  {
-                                    std::cout << "imu " << i << std::endl;
-                                    return false;
-                                }
-                            }
-                            return true;
-                         }
+        if (std::abs(active_vec(i % 3) - kimera_imu.acc_gyr_(i, 0)) > 1e-9) {
+            std::cout << "imu " << i << std::endl;
+            return false;
+        }
+    }
+    return true;
+}
 
-bool compare_bgr_frame(const std::unique_ptr<VIO::Frame>& kimera_frame, 
-                       const cv::Mat& spec_bgr,
-                       const time::RobotTimestamp& spec_time,
-                       const int& sequence_index) {
-
+bool compare_bgr_frame(const std::unique_ptr<VIO::Frame>& kimera_frame, const cv::Mat& spec_bgr,
+                       const time::RobotTimestamp& spec_time, const int& sequence_index) {
     // check image
     cv::Mat grey_image;
     if (spec_bgr.channels() > 1) {
@@ -79,18 +77,17 @@ bool compare_bgr_frame(const std::unique_ptr<VIO::Frame>& kimera_frame,
     }
     return true;
 }
-bool compare_depth_frame(const std::unique_ptr<VIO::DepthFrame>& kimera_depth, 
-                         const cv::Mat& spec_depth,
-                         const time::RobotTimestamp& spec_time,
+bool compare_depth_frame(const std::unique_ptr<VIO::DepthFrame>& kimera_depth,
+                         const cv::Mat& spec_depth, const time::RobotTimestamp& spec_time,
                          const int& sequence_index) {
-
     // check image
     if (!common::images_equal(kimera_depth->depth_img_, spec_depth)) {
         return false;
     }
     // check timestamps
     if (kimera_depth->timestamp_ != spec_time.time_since_epoch().count()) {
-        std::cout << "ID mismatch! " << kimera_depth->id_ << " " << spec_time.time_since_epoch().count() << std::endl;
+        std::cout << "ID mismatch! " << kimera_depth->id_ << " "
+                  << spec_time.time_since_epoch().count() << std::endl;
         return false;
     }
     // check index number
@@ -120,18 +117,15 @@ TEST(KimeraSpectacularDataProviderTest, happy_case) {
         original_imu_samples.push_back(maybe_sample.value());
     }
 
-
-
-    const std::filesystem::path vio_config_path(""); // loads default params
+    const std::filesystem::path vio_config_path("");  // loads default params
     VIO::VioParams vio_params(vio_config_path);
     vio_params.parallel_run_ = false;
 
-    std::cout << "VIO params:" << std::endl; 
+    std::cout << "VIO params:" << std::endl;
     vio_params.print();
 
-    SpectacularDataProviderInterface s_interface(
-        log_path, 0, std::numeric_limits<int>::max(), vio_params
-    );
+    SpectacularDataProviderInterface s_interface(log_path, 0, std::numeric_limits<int>::max(),
+                                                 vio_params);
 
     std::vector<VIO::ImuMeasurement> imu_queue;
     std::vector<std::unique_ptr<VIO::Frame>> bgr_queue;
@@ -147,7 +141,8 @@ TEST(KimeraSpectacularDataProviderTest, happy_case) {
         return;
     };
 
-    auto depth_camera_callback = [&depth_queue](std::unique_ptr<VIO::DepthFrame>&& depth_frame) -> void {
+    auto depth_camera_callback =
+        [&depth_queue](std::unique_ptr<VIO::DepthFrame>&& depth_frame) -> void {
         depth_queue.push_back(std::move(depth_frame));
         return;
     };
@@ -161,15 +156,14 @@ TEST(KimeraSpectacularDataProviderTest, happy_case) {
 
     // Action
     while (s_interface.spin()) {
-
     }
 
     // Verification
     EXPECT_TRUE(imu_queue.size() == times.size());
     // for (auto [imu_true, imu_kimera] : std::views::zip(original_imu_samples, imu_queue)) {
-        // EXPECT_TRUE(compare_imu_samples(imu_true, imu_kimera));
+    // EXPECT_TRUE(compare_imu_samples(imu_true, imu_kimera));
     for (size_t i = 0; i < imu_queue.size(); i++) {
-        EXPECT_TRUE(compare_imu_samples(original_imu_samples[ i ], imu_queue[ i ]));
+        EXPECT_TRUE(compare_imu_samples(original_imu_samples[i], imu_queue[i]));
         break;
     }
 
@@ -179,10 +173,9 @@ TEST(KimeraSpectacularDataProviderTest, happy_case) {
         std::optional<FrameGroup> fg = log.get_frame(i);
         EXPECT_TRUE(fg.has_value());
 
-        EXPECT_TRUE(compare_bgr_frame(bgr_queue[ i ], fg->bgr_frame, fg->time_of_validity, i));
-        EXPECT_TRUE(compare_depth_frame(depth_queue[ i ], fg->depth_frame, fg->time_of_validity, i));
+        EXPECT_TRUE(compare_bgr_frame(bgr_queue[i], fg->bgr_frame, fg->time_of_validity, i));
+        EXPECT_TRUE(compare_depth_frame(depth_queue[i], fg->depth_frame, fg->time_of_validity, i));
     }
-
 }
 
 }  // namespace robot::experimental::overhead_matching

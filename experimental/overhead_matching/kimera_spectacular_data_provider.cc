@@ -58,7 +58,8 @@ SpectacularDataProviderInterface::SpectacularDataProviderInterface(const std::st
     // skip last frames.
 
     if (final_k_ > spec_log_.num_frames()) {
-        LOG(WARNING) << "Provided final frame for KimeraSpectacularDataProvider was above the number of frames. Reducing to match size of dataset";
+        LOG(WARNING) << "Provided final frame for KimeraSpectacularDataProvider was above the "
+                        "number of frames. Reducing to match size of dataset";
         final_k_ = spec_log_.num_frames();
     }
 
@@ -119,57 +120,50 @@ bool SpectacularDataProviderInterface::spinOnce() {
         LOG(INFO) << "Finished spinning dataset.";
         return false;
     }
-    //TODO: How do we want to handle camera parameters? 
-    // const VIO::CameraParams& left_cam_info = vio_params_.camera_params_.at(0);
+    // TODO: How do we want to handle camera parameters?
+    //  const VIO::CameraParams& left_cam_info = vio_params_.camera_params_.at(0);
     const VIO::CameraParams left_cam_FAKE_PARAMS;
     const bool& equalize_image = false;
-        // vio_params_.frontend_params_.stereo_matching_params_.equalize_image_;
+    // vio_params_.frontend_params_.stereo_matching_params_.equalize_image_;
 
-    std::optional<robot::experimental::overhead_matching::FrameGroup> maybe_frame = spec_log_.get_frame(current_k_);
+    std::optional<robot::experimental::overhead_matching::FrameGroup> maybe_frame =
+        spec_log_.get_frame(current_k_);
     // CHECK(maybe_frame.has_value());
-    
 
-    const VIO::Timestamp& timestamp_frame_k = vio_time_from_robot_time(maybe_frame->time_of_validity);
-    // LOG(INFO) << "Sending left frames k= " << current_k_ << " with timestamp: " << timestamp_frame_k;
+    const VIO::Timestamp& timestamp_frame_k =
+        vio_time_from_robot_time(maybe_frame->time_of_validity);
+    // LOG(INFO) << "Sending left frames k= " << current_k_ << " with timestamp: " <<
+    // timestamp_frame_k;
 
     cv::Mat bgr = maybe_frame->bgr_frame;
     if (bgr.channels() > 1) {
-    //   LOG(INFO) << "Converting img from BGR to GRAY...";
-      cv::cvtColor(bgr, bgr, cv::COLOR_BGR2GRAY);
+        //   LOG(INFO) << "Converting img from BGR to GRAY...";
+        cv::cvtColor(bgr, bgr, cv::COLOR_BGR2GRAY);
     }
     if (equalize_image) {
         LOG(WARNING) << "- Histogram Equalization for image";
         cv::equalizeHist(bgr, bgr);
     }
-       
+
     cv::Mat depth_meters = maybe_frame->depth_frame;
-    CHECK(depth_meters.type() == CV_32FC1); // type assumed if depth is distance in meters
+    CHECK(depth_meters.type() == CV_32FC1);  // type assumed if depth is distance in meters
 
     // CHECK(left_frame_callback_);
-    left_frame_callback_(std::make_unique<VIO::Frame>(
-        current_k_, 
-        timestamp_frame_k,
-        left_cam_FAKE_PARAMS,
-        bgr
-    ));
+    left_frame_callback_(
+        std::make_unique<VIO::Frame>(current_k_, timestamp_frame_k, left_cam_FAKE_PARAMS, bgr));
 
-    depth_frame_callback_(std::make_unique<VIO::DepthFrame>(
-            current_k_,
-            timestamp_frame_k,
-            depth_meters
-    ));
+    depth_frame_callback_(
+        std::make_unique<VIO::DepthFrame>(current_k_, timestamp_frame_k, depth_meters));
 
     // LOG(INFO) << "Finished VIO processing for frame k = " << current_k_;
     current_k_++;
     return true;
 }
 
-
 VIO::ImuMeasurement vio_imu_from_robot_imu(const ImuSample& robot_imu) {
     Eigen::Matrix<double, 6, 1> imu_acc_gyro;
     imu_acc_gyro << robot_imu.accel_mpss, robot_imu.gyro_radps;
-    VIO::ImuMeasurement vio_imu(vio_time_from_robot_time(robot_imu.time_of_validity),
-                                imu_acc_gyro);
+    VIO::ImuMeasurement vio_imu(vio_time_from_robot_time(robot_imu.time_of_validity), imu_acc_gyro);
 
     return vio_imu;
 }
@@ -198,7 +192,6 @@ void SpectacularDataProviderInterface::sendImuData() const {
         imu_single_callback_(vio_imu);
     }
 }
-
 
 std::string SpectacularDataProviderInterface::getDatasetName() {
     if (dataset_name_.empty()) {

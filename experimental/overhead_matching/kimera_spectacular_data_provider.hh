@@ -71,7 +71,6 @@ class SpectacularDataProviderInterface : public VIO::DataProviderInterface {
      */
     void sendImuData() const;
 
-
     //! Getters.
     /**
      * @brief getLeftImgName returns the img filename given the frame number
