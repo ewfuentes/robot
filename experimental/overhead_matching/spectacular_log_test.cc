@@ -5,6 +5,7 @@
 #include <sstream>
 
 #include "common/video.hh"
+#include "common/matplotlib.hh"
 #include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "opencv2/opencv.hpp"
@@ -30,16 +31,44 @@ TEST(SpectacularLogTest, happy_case) {
               << " frame time: (" << log.min_frame_time() << ", " << log.max_frame_time() << ")"
               << std::endl;
 
+    std::vector<double> ts;
+    std::vector<double> axs;
+    std::vector<double> ays;
+    std::vector<double> azs;
+    std::vector<double> gxs;
+    std::vector<double> gys;
+    std::vector<double> gzs;
     std::cout << "IMU Samples" << std::endl;
     for (time::RobotTimestamp t = log.min_imu_time();
-         t < std::min(log.min_imu_time() + time::as_duration(5.0), log.max_imu_time());
+         t < std::min(log.min_imu_time() + time::as_duration(20.0), log.max_imu_time());
          t += time::as_duration(0.1)) {
         const auto sample = log.get_imu_sample(t);
         if (sample.has_value()) {
+            ts.push_back(std::chrono::duration<double>(t.time_since_epoch()).count());
+            axs.push_back(sample->accel_mpss.x());
+            ays.push_back(sample->accel_mpss.y());
+            azs.push_back(sample->accel_mpss.z());
+            gxs.push_back(sample->gyro_radps.x());
+            gys.push_back(sample->gyro_radps.y());
+            gzs.push_back(sample->gyro_radps.z());
             std::cout << "t: " << sample->time_of_validity
                       << " accel: " << sample->accel_mpss.transpose()
                       << " gyro: " << sample->gyro_radps.transpose() << std::endl;
         }
+    }
+
+    if (false) {
+        const bool should_block = false;
+        plot(
+            {
+                {ts, axs, "ax"},
+                {ts, ays, "ay"},
+                {ts, azs, "az"},
+                {ts, gxs, "gx"},
+                {ts, gys, "gy"},
+                {ts, gzs, "gz"},
+            },
+            should_block);
     }
 
     cv::VideoCapture video(log_path / "data.mov", cv::CAP_FFMPEG);
