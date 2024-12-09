@@ -4,8 +4,8 @@
 #include <iostream>
 #include <sstream>
 
-#include "common/video.hh"
 #include "common/matplotlib.hh"
+#include "common/video.hh"
 #include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "opencv2/opencv.hpp"
