@@ -11,7 +11,6 @@
 #include <vector>
 
 #include "experimental/overhead_matching/spectacular_log.hh"
-#include "kimera-vio/common/VioNavState.h"
 #include "kimera-vio/dataprovider/DataProviderInterface-definitions.h"
 #include "kimera-vio/dataprovider/DataProviderInterface.h"
 #include "kimera-vio/frontend/Frame.h"
