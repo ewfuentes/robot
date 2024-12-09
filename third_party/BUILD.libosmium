@@ -1,0 +1,19 @@
+
+cc_library(
+  name = "libosmium",
+  visibility = ["//visibility:public"],
+  hdrs = glob(["include/**/*.hpp"],
+    exclude = [
+      "include/io/any_input.hpp",
+      "include/io/any_output.hpp",
+      "include/io/xml_input.hpp",
+      "include/io/xml_output.hpp"
+    ]
+  ),
+  strip_include_prefix="include",
+  deps = [
+    "@protozero",
+    "@org_bzip_bzip2//:bz2lib",
+    "@zlib",
+  ]
+)
