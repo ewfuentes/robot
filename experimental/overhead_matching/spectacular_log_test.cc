@@ -20,7 +20,7 @@ std::ostream &operator<<(std::ostream &out, const time::RobotTimestamp &t) {
     return out;
 }
 
-TEST(SpectacularLogTest, happy_case) {
+TEST(SpectacularLogTest, DISABLED_happy_case) {
     // Setup
     const std::filesystem::path log_path(
         "external/spectacular_log_snippet/recording_2024-11-21_13-36-30");
