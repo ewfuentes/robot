@@ -1,6 +1,6 @@
 #include "opencv2/opencv.hpp"
 
-namespace robot::common {
+namespace robot::common::video {
 
 bool images_equal(const cv::Mat& img1, const cv::Mat& img2) {
     if (img1.size() != img2.size() || img1.type() != img2.type()) {
@@ -12,4 +12,4 @@ bool images_equal(const cv::Mat& img1, const cv::Mat& img2) {
     return cv::countNonZero(diff) == 0;
 }
 
-}  // namespace robot::common
+}  // namespace robot::common::video
