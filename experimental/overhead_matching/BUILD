@@ -50,26 +50,6 @@ py_binary(
     ],
 )
 
-cc_library(
-    name = "kimera_spectacular_data_provider",
-    hdrs = ["kimera_spectacular_data_provider.hh"],
-    srcs = ["kimera_spectacular_data_provider.cc"],
-    deps = [
-        "@kimera_vio",
-        ":spectacular_log",
-    ]
-)
-cc_test(
-    name = "kimera_spectacular_data_provider_test",
-    srcs = ["kimera_spectacular_data_provider_test.cc"],
-    data = ["@spectacular_log_snippet//:files"],
-    deps = [
-        ":kimera_spectacular_data_provider",
-        "@com_google_googletest//:gtest_main",
-    ]
-)
-
-)
 
 cc_library(
     name = "kimera_spectacular_data_provider",

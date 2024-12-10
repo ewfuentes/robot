@@ -95,7 +95,6 @@ bool SpectacularDataProviderInterface::spin() {
     }
 
     // Spin.
-    CHECK_EQ(vio_params_.camera_params_.size(), 2u);
     CHECK_GT(final_k_, initial_k_);
     // We log only the first one, because we may be running in sequential mode.
     LOG_FIRST_N(INFO, 1) << "Running dataset between frame " << initial_k_ << " and frame "
@@ -115,7 +114,7 @@ bool SpectacularDataProviderInterface::hasData() const { return current_k_ < fin
 /* -------------------------------------------------------------------------- */
 bool SpectacularDataProviderInterface::spinOnce() {
     CHECK_LT(current_k_, std::numeric_limits<VIO::FrameId>::max())
-    //     << "Are you sure you've initialized current_k_?";
+        << "Are you sure you've initialized current_k_?";
     if (current_k_ >= final_k_) {
         LOG(INFO) << "Finished spinning dataset.";
         return false;
