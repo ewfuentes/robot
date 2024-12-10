@@ -5,7 +5,7 @@
 #include <sstream>
 
 #include "common/matplotlib.hh"
-#include "common/video.hh"
+#include "common/video/image_compare.hh"
 #include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "opencv2/opencv.hpp"
@@ -83,8 +83,8 @@ TEST(SpectacularLogTest, happy_case) {
                                                fmt::format("frames2/{:08d}.png", frame_id));
         const cv::Mat depth_frame = cv::imread(depth_path, cv::IMREAD_GRAYSCALE);
 
-        EXPECT_TRUE(common::images_equal(expected_frame, frame.bgr_frame));
-        EXPECT_TRUE(common::images_equal(depth_frame, frame.depth_frame));
+        EXPECT_TRUE(common::video::images_equal(expected_frame, frame.bgr_frame));
+        EXPECT_TRUE(common::video::images_equal(depth_frame, frame.depth_frame));
 
         for (int i = 0; i < FRAME_SKIP - 1; i++) {
             video.grab();

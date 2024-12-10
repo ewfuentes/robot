@@ -4,7 +4,7 @@
 #include <iostream>
 #include <sstream>
 
-#include "common/video.hh"
+#include "common/video/image_compare.hh"
 #include "experimental/overhead_matching/spectacular_log.hh"
 #include "fmt/format.h"
 #include "gtest/gtest.h"
@@ -64,7 +64,7 @@ bool compare_bgr_frame(const std::unique_ptr<VIO::Frame>& kimera_frame, const cv
     } else {
         grey_image = spec_bgr;
     }
-    if (!common::images_equal(kimera_frame->img_, grey_image)) {
+    if (!common::video::images_equal(kimera_frame->img_, grey_image)) {
         return false;
     }
     // check timestamps
@@ -81,7 +81,7 @@ bool compare_depth_frame(const std::unique_ptr<VIO::DepthFrame>& kimera_depth,
                          const cv::Mat& spec_depth, const time::RobotTimestamp& spec_time,
                          const int& sequence_index) {
     // check image
-    if (!common::images_equal(kimera_depth->depth_img_, spec_depth)) {
+    if (!common::video::images_equal(kimera_depth->depth_img_, spec_depth)) {
         return false;
     }
     // check timestamps

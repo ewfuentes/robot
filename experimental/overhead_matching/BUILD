@@ -29,7 +29,7 @@ cc_test(
 	":spectacular_log",
 	"@com_google_googletest//:gtest_main",
 	"@fmt",
-    "//common:video",
+    "//common/video:image_compare",
     ]
 )
 
@@ -69,7 +69,7 @@ cc_test(
     deps = [
         ":kimera_spectacular_data_provider",
         "@com_google_googletest//:gtest_main",
-        "//common:video",
+        "//common/video:image_compare",
     ]
 )
 cc_test(
