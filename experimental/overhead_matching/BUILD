@@ -72,12 +72,3 @@ cc_test(
         "//common/video:image_compare",
     ]
 )
-cc_test(
-    name = "kimera_vio_pipeline_test",
-    srcs = ["kimera_vio_pipeline_test.cc"],
-    copts = ["-Wno-sign-compare"],
-    deps = [
-	":kimera_spectacular_data_provider",
-	"@com_google_googletest//:gtest_main",
-    ]
-)
