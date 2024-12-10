@@ -65,7 +65,7 @@ cc_test(
     name = "kimera_spectacular_data_provider_test",
     srcs = ["kimera_spectacular_data_provider_test.cc"],
     data = ["@spectacular_log_snippet//:files"],
-    copts = ["-Wno-sign-compare", "Wno-vla"],
+    copts = ["-Wno-sign-compare", "-Wno-vla"],
     deps = [
         ":kimera_spectacular_data_provider",
         "@com_google_googletest//:gtest_main",
