@@ -1,6 +1,8 @@
 #include "common/video/image_compare.hh"
-#include "opencv2/opencv.hpp"
+
 #include <gtest/gtest.h>
+
+#include "opencv2/opencv.hpp"
 
 namespace robot::common::video {
 
