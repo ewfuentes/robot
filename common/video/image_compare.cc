@@ -1,4 +1,4 @@
-#include "opencv2/opencv.hpp"
+#include "common/video/image_compare.hh"
 
 namespace robot::common::video {
 
