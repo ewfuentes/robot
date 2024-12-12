@@ -1,5 +1,6 @@
 #include "common/video/image_compare.hh"
 
+
 namespace robot::common::video {
 
 bool images_equal(const cv::Mat& img1, const cv::Mat& img2) {
