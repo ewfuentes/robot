@@ -41,26 +41,25 @@ class SpectacularDataProviderInterface : public VIO::DataProviderInterface {
     void print() const;
 
    public:
-    inline std::string getDatasetPath() const { return dataset_path_; }
-    std::string getDatasetName();
+    inline std::string get_dataset_path() const { return dataset_path_; }
 
    protected:
     /**
-     * @brief spinOnce Send data to VIO pipeline on a per-frame basis
+     * @brief spin_once Send data to VIO pipeline on a per-frame basis
      * @return if the dataset finished or not
      */
-    bool spinOnce();
+    bool spin_once();
 
     /**
      * @brief sendImuData We send IMU data first (before frames) so that the VIO
      * pipeline can query all IMU data between frames.
      */
-    void sendImuData() const;
+    void send_imu_data() const;
 
-    size_t getNumImages() const;
+    size_t get_num_images() const;
 
     // Clip final frame to the number of images in the dataset.
-    void clipFinalFrame();
+    void clip_final_frame();
 
    protected:
     VIO::VioParams vio_params_;

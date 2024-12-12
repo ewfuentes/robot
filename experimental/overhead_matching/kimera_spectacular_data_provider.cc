@@ -61,7 +61,7 @@ bool SpectacularDataProviderInterface::spin() {
         // First, send all the IMU data. The flag is to avoid sending it several
         // times if we are running in sequential mode.
         if (imu_single_callback_) {
-            sendImuData();
+            send_imu_data();
         } else {
             LOG(ERROR) << "Imu callback not registered! Not sending IMU data.";
         }
@@ -73,7 +73,7 @@ bool SpectacularDataProviderInterface::spin() {
     // We log only the first one, because we may be running in sequential mode.
     LOG_FIRST_N(INFO, 1) << "Running dataset between frame " << initial_k_ << " and frame "
                          << final_k_;
-    while (!shutdown_ && spinOnce()) {
+    while (!shutdown_ && spin_once()) {
         if (!vio_params_.parallel_run_) {
             // Return, instead of blocking, when running in sequential mode.
             return true;
@@ -86,7 +86,7 @@ bool SpectacularDataProviderInterface::spin() {
 bool SpectacularDataProviderInterface::hasData() const { return current_k_ < final_k_; }
 
 /* -------------------------------------------------------------------------- */
-bool SpectacularDataProviderInterface::spinOnce() {
+bool SpectacularDataProviderInterface::spin_once() {
     ROBOT_CHECK(current_k_ < std::numeric_limits<VIO::FrameId>::max(),
                 "Are you sure you've initialized current_k_?");
     if (current_k_ >= final_k_) {
@@ -138,7 +138,7 @@ VIO::ImuMeasurement vio_imu_from_robot_imu(const ImuSample& robot_imu) {
     return vio_imu;
 }
 
-void SpectacularDataProviderInterface::sendImuData() const {
+void SpectacularDataProviderInterface::send_imu_data() const {
     ROBOT_CHECK(imu_single_callback_, "Did you forget to register the IMU callback?");
     // for each imu measurement..
 
@@ -163,32 +163,12 @@ void SpectacularDataProviderInterface::sendImuData() const {
     }
 }
 
-std::string SpectacularDataProviderInterface::getDatasetName() {
-    if (dataset_name_.empty()) {
-        // Find and store actual name (rather than path) of the dataset.
-        size_t found_last_slash = dataset_path_.find_last_of("/\\");
-        std::string dataset_path_tmp = dataset_path_;
-        dataset_name_ = dataset_path_tmp.substr(found_last_slash + 1);
-        // The dataset name has a slash at the very end
-        if (found_last_slash >= dataset_path_tmp.size() - 1) {
-            // Cut the last slash.
-            dataset_path_tmp = dataset_path_tmp.substr(0, found_last_slash);
-            // Repeat the search.
-            found_last_slash = dataset_path_tmp.find_last_of("/\\");
-            // Try to pick right name.
-            dataset_name_ = dataset_path_tmp.substr(found_last_slash + 1);
-        }
-        LOG(INFO) << "Dataset name: " << dataset_name_;
-    }
-    return dataset_name_;
-}
-
 /* -------------------------------------------------------------------------- */
-size_t SpectacularDataProviderInterface::getNumImages() const { return spec_log_.num_frames(); }
+size_t SpectacularDataProviderInterface::get_num_images() const { return spec_log_.num_frames(); }
 
-void SpectacularDataProviderInterface::clipFinalFrame() {
+void SpectacularDataProviderInterface::clip_final_frame() {
     // Clip final_k_ to the total number of images.
-    const size_t& nr_images = getNumImages();
+    const size_t& nr_images = get_num_images();
     if (final_k_ > nr_images) {
         LOG(WARNING) << "Value for final_k, " << final_k_ << " is larger than total"
                      << " number of frames in dataset " << nr_images;

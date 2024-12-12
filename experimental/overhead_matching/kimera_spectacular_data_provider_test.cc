@@ -121,9 +121,6 @@ TEST(KimeraSpectacularDataProviderTest, happy_case) {
     VIO::VioParams vio_params(vio_config_path);
     vio_params.parallel_run_ = false;
 
-    std::cout << "VIO params:" << std::endl;
-    vio_params.print();
-
     SpectacularDataProviderInterface s_interface(log_path, 0, std::numeric_limits<int>::max(),
                                                  vio_params);
 
