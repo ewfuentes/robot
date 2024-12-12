@@ -3,7 +3,6 @@
 namespace robot::common::video {
 
 bool images_equal(const cv::Mat& img1, const cv::Mat& img2) {
-
     if (img1.size() != img2.size() || img1.type() != img2.type()) {
         return false;
     }

@@ -99,8 +99,7 @@ bool compare_depth_frame(const std::unique_ptr<VIO::DepthFrame>& kimera_depth,
 
 TEST(KimeraSpectacularDataProviderTest, happy_case) {
     // Setup
-    const std::filesystem::path log_path(
-        "external/spectacular_log_snippet/20241212_150605");
+    const std::filesystem::path log_path("external/spectacular_log_snippet/20241212_150605");
     SpectacularLog log(log_path);
 
     // get initial IMU information
