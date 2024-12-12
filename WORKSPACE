@@ -552,9 +552,9 @@ http_archive(
 
 http_archive(
   name = "spectacular_log_snippet",
-  urls = ["https://www.dropbox.com/scl/fi/2u4ec000kx24980t7ifjz/recording_2024-11-21_13-36-30.zip?rlkey=ojw96yykmw9crtqs15kbxwnvp&st=gjcrawhw&dl=1"],
+  urls = ["https://www.dropbox.com/scl/fi/6y2x4nstw7h3xx6jvbzzg/20241212_150605.zip?rlkey=rwktg7egzki7vqeq9qpfaml1l&dl=1"],
   build_file = "//third_party:BUILD.zip_file",
-  integrity = "sha256-K+KFNzufwccL4vEJLErEtNKNVjnWStClXVF2mKpI6lI="
+  integrity = "sha256-7WD3AyKE+v7fA6ohAqk1UXBU+i2n9uH/6HcovNhORhA="
 )
 
 http_archive(
