@@ -122,7 +122,7 @@ TEST(SFM_TEST, structure_from_motion) {
 
     StructureFromMotion sfm(Frontend::ExtractorType::SIFT, K);     
     DataParser data_parser = SymphonyLakeDatasetTestHelper::get_test_parser();
-    DataParser::Generator<cv::Mat> generator = data_parser.create_img_generator();
+    // DataParser::Generator<cv::Mat> generator = data_parser.create_img_generator();
     const symphony_lake_dataset::SurveyVector &survey_vector = data_parser.get_surveys();
 
     cv::Mat image;
@@ -146,6 +146,10 @@ TEST(SFM_TEST, structure_from_motion) {
     //     ++img_itr;
     // }
     sfm.solve_structure();
-    gtsam::Values output = sfm.get_structure_result();    
+    // gtsam::Values output = sfm.get_structure_result();    
+    // output.print("result values: ");
+    // for (size_t i = 0; i < sfm.get_num_images_added(); i++) {
+        
+    // }
 }
 }  // namespace robot::experimental::learn_descriptors

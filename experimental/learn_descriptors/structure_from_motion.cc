@@ -4,8 +4,10 @@ namespace robot::experimental::learn_descriptors {
 StructureFromMotion::StructureFromMotion(Frontend::ExtractorType frontend_extractor, gtsam::Cal3_S2 K, gtsam::Pose3 initial_pose,
                                Frontend::MatcherType frontend_matcher) {
     frontend_ = Frontend(frontend_extractor, frontend_matcher);
-    set_initial_pose(initial_pose);    
     backend_ = Backend(K);
+
+    set_initial_pose(initial_pose);   
+    // backend_.get_current_initial_values().print("Ooga: ");
 }
 
 void StructureFromMotion::set_initial_pose(gtsam::Pose3 initial_pose) {
@@ -27,7 +29,7 @@ void StructureFromMotion::add_image(const cv::Mat &img) {
         for (const cv::DMatch match : matches) {
             Backend::Landmark landmark_cam_1(
                 gtsam::Symbol(Backend::landmark_symbol_char, landmark_count_),
-                gtsam::Symbol(Backend::camera_symbol_char, get_num_images_added()-1),
+                gtsam::Symbol(Backend::pose_symbol_char, get_num_images_added()-1),
                 gtsam::Point2(
                     static_cast<double>(img_keypoints_and_descriptors_.back().first[match.queryIdx].pt.x),
                     static_cast<double>(img_keypoints_and_descriptors_.back().first[match.queryIdx].pt.y) 
@@ -35,7 +37,7 @@ void StructureFromMotion::add_image(const cv::Mat &img) {
             );
             Backend::Landmark landmark_cam_2(
                 gtsam::Symbol(Backend::landmark_symbol_char, landmark_count_),
-                gtsam::Symbol(Backend::camera_symbol_char, get_num_images_added()),
+                gtsam::Symbol(Backend::pose_symbol_char, get_num_images_added()),
                 gtsam::Point2(
                     static_cast<double>(keypoints_and_descriptors.first[match.trainIdx].pt.x),
                     static_cast<double>(keypoints_and_descriptors.first[match.trainIdx].pt.y)
@@ -223,11 +225,15 @@ Backend::Backend(gtsam::Cal3_S2 K) {
 void Backend::add_prior_factor(const gtsam::Symbol &symbol, const gtsam::Pose3 &value) {
     graph_.emplace_shared<gtsam::PriorFactor<gtsam::Pose3>>(symbol, value, pose_noise_);
     initial_estimate_.insert(symbol, value);
+    // std::cout << "adding a prior factor! with symbol: " << symbol << std::endl;
+    // initial_estimate_.print("values after adding prior: ");
 }
 
 void Backend::add_between_factor(const gtsam::Symbol &symbol_1, const gtsam::Symbol &symbol_2, const gtsam::Pose3 &value) {
     graph_.emplace_shared<gtsam::BetweenFactor<gtsam::Pose3>>(symbol_1, symbol_2, value, pose_noise_);
-    initial_estimate_.insert(symbol_2, initial_estimate_.at<gtsam::Pose3>(symbol_2).compose(value));
+    // std::cout << "adding between factor. symbol_1: " << symbol_1 << ". symbol_2: " << symbol_2 << std::endl;
+    // initial_estimate_.print("values when adding between factor: ");
+    initial_estimate_.insert(symbol_2, initial_estimate_.at<gtsam::Pose3>(symbol_1).compose(value));
 }
 
 void Backend::add_landmarks(const std::vector<Landmark> &landmarks) {
@@ -240,7 +246,11 @@ void Backend::add_landmark(const Landmark &landmark) {
     graph_.emplace_shared<gtsam::GeneralSFMFactor2<gtsam::Cal3_S2>>(
         landmark.projection, measurement_noise_, landmark.cam_pose_symbol, landmark.lmk_factor_symbol, gtsam::Symbol(camera_symbol_char, 0) 
     );
-    initial_estimate_.insert(landmark.lmk_factor_symbol, landmark.initial_guess);
+    if (!initial_estimate_.exists(landmark.lmk_factor_symbol)) {
+        initial_estimate_.insert(landmark.lmk_factor_symbol, landmark.initial_guess);
+    } else {
+        initial_estimate_.update(landmark.lmk_factor_symbol, landmark.initial_guess);
+    }
 }
 
 void Backend::solve_graph() {
