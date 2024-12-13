@@ -17,19 +17,25 @@ cc_test(
 )
 
 cc_library(
-  name = "visual_odometry",
-  hdrs = ["visual_odometry.hh"],
+  name = "structure_from_motion",
+  hdrs = ["structure_from_motion.hh"],
   visibility = ["//visibility:public"],
-  srcs = ["visual_odometry.cc"],
+  srcs = ["structure_from_motion.cc"],
   deps = [
-    "@opencv//:opencv"
+    "@opencv//:opencv",
+    "@gtsam//:gtsam",
+    "@eigen"
   ]
 )
 
 cc_library(
   name = "symphony_lake_parser",
   hdrs = ["symphony_lake_parser.hh"],
-  copts = ["-Wno-unused-parameter"],
+  copts = [
+    "-Wno-unused-parameter",
+    "-std=c++20",
+  ],
+  data = ["@symphony_lake_snippet"],
   visibility = ["//visibility:public"],
   srcs = ["symphony_lake_parser.cc"],
   deps = [
@@ -39,11 +45,15 @@ cc_library(
 )
 
 cc_test(
-  name = "visual_odometry_test",
-  srcs = ["visual_odometry_test.cc"],  
+  name = "structure_from_motion_test",
+  srcs = ["structure_from_motion_test.cc"],  
+  copts = [
+    "-Wno-unused-parameter",
+  ],
   deps = [
     "@com_google_googletest//:gtest_main",
-    ":visual_odometry"
+    ":symphony_lake_parser",
+    ":structure_from_motion"
   ]
 )
 
@@ -51,7 +61,7 @@ cc_test(
   name = "symphony_lake_parser_test",
   srcs = ["symphony_lake_parser_test.cc"],
   copts = ["-Wno-unused-parameter"],
-  data = ["@symphony_lake_snippet"],
+  # data = ["@symphony_lake_snippet"],
   deps = [
     "@com_google_googletest//:gtest_main",
     ":symphony_lake_parser",
