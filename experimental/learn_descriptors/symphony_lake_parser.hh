@@ -1,21 +1,88 @@
 #pragma once
-#pragma once
-#include <string.h>
-
 #include <filesystem>
+#include <string>
+#include <iostream>
+#include <coroutine>
+#include <vector>
 
 #include "symphony_lake_dataset/SurveyVector.h"
 
 namespace robot::experimental::learn_descriptors {
 class DataParser {
    public:
+   template <typename T>
+    struct Generator {
+        struct promise_type {
+            T value;
+            std::suspend_always yield_value(T v) {
+                value = v;
+                return {};
+            }
+            std::suspend_always initial_suspend() { return {}; }
+            std::suspend_always final_suspend() noexcept { return {}; }
+            Generator get_return_object() { return Generator{handle_type::from_promise(*this)}; }
+            void return_void() {}
+            void unhandled_exception() { std::terminate(); }
+        };
+
+        using handle_type = std::coroutine_handle<promise_type>;
+
+        Generator(handle_type h) : handle(h) {}
+        ~Generator() { if (handle) handle.destroy(); }
+
+        struct iterator {
+            handle_type handle;
+            bool operator!=(std::default_sentinel_t) const { return !handle.done(); }
+            iterator& operator++() { handle.resume(); return *this; }
+            T operator*() const { return handle.promise().value; }
+        };
+
+        iterator begin() { return iterator{handle}; }
+        std::default_sentinel_t end() { return {}; }
+
+    private:
+        handle_type handle;
+    };
+
+    Generator<cv::Mat> image_generator(
+        const symphony_lake_dataset::SurveyVector& survey_vector) {
+
+        for (int i = 0; i < static_cast<int>(survey_vector.getNumSurveys()); i++) {
+            const symphony_lake_dataset::Survey &survey = survey_vector.get(i);
+            for (int j = 0; j < static_cast<int>(survey.getNumImages()); j++) {                
+                co_yield survey.loadImageByImageIndex(j);
+            }
+        }
+    }
+
     DataParser(const std::filesystem::path &image_root_dir,
                const std::vector<std::string> &survey_list);
     ~DataParser();
 
     const symphony_lake_dataset::SurveyVector &get_surveys() const { return surveys_; };
-
+    Generator<cv::Mat> create_img_generator() { return image_generator(surveys_); };
    private:
+    std::filesystem::path image_root_dir_;
+    std::vector<std::string> survey_list_;
     symphony_lake_dataset::SurveyVector surveys_;
+};
+class SymphonyLakeDatasetTestHelper {
+   public:
+    static constexpr const char* test_image_root_dir = "external/symphony_lake_snippet/symphony_lake";
+    static constexpr std::array<const char*, 1> test_survey_list = {"140106_snippet"};
+    static bool images_equal(cv::Mat img1, cv::Mat img2) {
+        if (img1.size() != img2.size() || img1.type() != img2.type()) {
+            return false;
+        }
+        cv::Mat diff;
+        cv::absdiff(img1, img2, diff);
+        diff = diff.reshape(1);
+        return cv::countNonZero(diff) == 0;
+    }
+    static DataParser get_test_parser() { return DataParser(get_test_iamge_root_dir(), get_test_survey_list()); };
+    static std::filesystem::path get_test_iamge_root_dir() { return std::filesystem::path(test_image_root_dir); };
+    static std::vector<std::string> get_test_survey_list() {
+        return std::vector<std::string>(test_survey_list.begin(), test_survey_list.end());
+    };
 };
 }  // namespace robot::experimental::learn_descriptors

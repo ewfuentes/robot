@@ -1,4 +1,5 @@
-#include "experimental/learn_descriptors/visual_odometry.hh"
+#include "experimental/learn_descriptors/structure_from_motion.hh"
+#include "experimental/learn_descriptors/symphony_lake_parser.hh"
 
 #include <iostream>
 #include <sstream>
@@ -6,7 +7,7 @@
 #include "gtest/gtest.h"
 
 namespace robot::experimental::learn_descriptors {
-TEST(VIO_TEST, frontend_pipeline_sweep) {
+TEST(SFM_TEST, frontend_pipeline_sweep) {
     const size_t width = 640;
     const size_t height = 480;
 
@@ -108,5 +109,43 @@ TEST(VIO_TEST, frontend_pipeline_sweep) {
             }
         }
     }
+}
+TEST(SFM_TEST, structure_from_motion) {
+    const size_t img_width = 640;
+    const size_t img_height = 480;
+    const double fx = 500.0;
+    const double fy = fx;
+    const double cx = img_width / 2.0;
+    const double cy = img_height / 2.0;
+
+    gtsam::Cal3_S2 K(fx, fy, 0, cx, cy);
+
+    StructureFromMotion sfm(Frontend::ExtractorType::SIFT, K);     
+    DataParser data_parser = SymphonyLakeDatasetTestHelper::get_test_parser();
+    DataParser::Generator<cv::Mat> generator = data_parser.create_img_generator();
+    const symphony_lake_dataset::SurveyVector &survey_vector = data_parser.get_surveys();
+
+    cv::Mat image;
+    for (int i = 0; i < static_cast<int>(survey_vector.getNumSurveys()); i++) {
+        const symphony_lake_dataset::Survey &survey = survey_vector.get(i);
+        for (int j = 0; j < static_cast<int>(survey.getNumImages()); j++) {
+            image = survey.loadImageByImageIndex(j);
+            sfm.add_image(image);
+        }
+    }
+    // DataParser::Generator<cv::Mat>::iterator img_itr = generator.begin();
+    // while (img_itr != generator.end()) {
+    //     if ((*img_itr).empty()) {
+    //         continue;
+    //     }
+    //     std::cout << "ooga booga" << std::endl;
+    //     std::cout << "image is empty: " << (*img_itr).empty() << std::endl;
+    //     cv::imshow("ooga", *img_itr);
+    //     cv::waitKey(1000);
+    //     sfm.add_image(*img_itr);
+    //     ++img_itr;
+    // }
+    sfm.solve_structure();
+    gtsam::Values output = sfm.get_structure_result();    
 }
 }  // namespace robot::experimental::learn_descriptors
