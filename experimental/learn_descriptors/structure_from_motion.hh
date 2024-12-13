@@ -87,6 +87,7 @@ class Backend {
         void add_landmark(const Landmark &landmark);
 
         void solve_graph();
+        const gtsam::Values& get_current_initial_values() const { return initial_estimate_; };
         const gtsam::Values& get_result() const {
             return result_;
         };
@@ -106,7 +107,7 @@ class StructureFromMotion {
     
     void set_initial_pose(gtsam::Pose3 initial_pose);
     void add_image(const cv::Mat &img);
-    void solve_structure() { backend_.get_result(); };
+    void solve_structure() { backend_.solve_graph(); };
     const gtsam::Values& get_structure_result() { return backend_.get_result(); };
 
     Frontend get_frontend() { return frontend_; };
