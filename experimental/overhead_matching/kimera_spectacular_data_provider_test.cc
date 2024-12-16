@@ -6,7 +6,7 @@
 
 #include "common/video/image_compare.hh"
 #include "experimental/overhead_matching/spectacular_log.hh"
-#include "fmt/format.h"
+#include "fmt/core.h"
 #include "gtest/gtest.h"
 #include "kimera-vio/pipeline/Pipeline-definitions.h"
 #include "opencv2/opencv.hpp"
@@ -25,18 +25,13 @@ bool compare_imu_samples(const robot::experimental::overhead_matching::ImuSample
                          const VIO::ImuMeasurement& kimera_imu) {
     // timestamp
     if (kimera_imu.timestamp_ != robot_imu.time_of_validity.time_since_epoch().count()) {
-        std::cout << "kimera timestamp " << kimera_imu.timestamp_ << std::endl;
-        std::cout << "robot timestamp " << robot_imu.time_of_validity.time_since_epoch().count()
-                  << std::endl;
-        std::cout << "diff "
-                  << robot_imu.time_of_validity.time_since_epoch().count() - kimera_imu.timestamp_
-                  << std::endl;
-        std::cout << "timestamp" << std::endl;
+        fmt::print("Kimera timestamp: {} | robot timestamp: {}", kimera_imu.timestamp_, robot_imu.time_of_validity.time_since_epoch().count());
+        fmt::print("diff {}", robot_imu.time_of_validity.time_since_epoch().count() - kimera_imu.timestamp_);
         return false;
     }
     // accel and gyro values
     if (kimera_imu.acc_gyr_.rows() != 6 || kimera_imu.acc_gyr_.cols() != 1) {
-        std::cout << "shapes" << std::endl;
+        fmt::print("shapes");
         return false;
     }
     for (int i = 0; i < 6; i++) {
@@ -48,7 +43,7 @@ bool compare_imu_samples(const robot::experimental::overhead_matching::ImuSample
         }
 
         if (std::abs(active_vec(i % 3) - kimera_imu.acc_gyr_(i, 0)) > 1e-9) {
-            std::cout << "imu " << i << std::endl;
+            fmt::print("imu ", i);
             return false;
         }
     }
@@ -133,13 +128,13 @@ TEST(KimeraSpectacularDataProviderTest, happy_case) {
         return;
     };
 
-    auto color_camera_callback = [&bgr_queue](std::unique_ptr<VIO::Frame>&& bgr_frame) -> void {
+    auto color_camera_callback = [&bgr_queue](std::unique_ptr<VIO::Frame> bgr_frame) -> void {
         bgr_queue.push_back(std::move(bgr_frame));
         return;
     };
 
     auto depth_camera_callback =
-        [&depth_queue](std::unique_ptr<VIO::DepthFrame>&& depth_frame) -> void {
+        [&depth_queue](std::unique_ptr<VIO::DepthFrame> depth_frame) -> void {
         depth_queue.push_back(std::move(depth_frame));
         return;
     };

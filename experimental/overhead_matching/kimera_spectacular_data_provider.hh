@@ -19,8 +19,8 @@ class SpectacularDataProviderInterface : public VIO::DataProviderInterface {
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
     //! Ctor with params.
-    SpectacularDataProviderInterface(const std::string& dataset_path, const int& initial_k,
-                                     const int& final_k, const VIO::VioParams& vio_params);
+    SpectacularDataProviderInterface(const std::string& dataset_path, const int initial_k,
+                                     const int final_k, const VIO::VioParams& vio_params);
 
     virtual ~SpectacularDataProviderInterface();
 
@@ -41,7 +41,7 @@ class SpectacularDataProviderInterface : public VIO::DataProviderInterface {
     void print() const;
 
    public:
-    inline std::string get_dataset_path() const { return dataset_path_; }
+    inline const std::string& get_dataset_path() const { return dataset_path_; }
 
    protected:
     /**
@@ -58,9 +58,6 @@ class SpectacularDataProviderInterface : public VIO::DataProviderInterface {
 
     size_t get_num_images() const;
 
-    // Clip final frame to the number of images in the dataset.
-    void clip_final_frame();
-
    protected:
     VIO::VioParams vio_params_;
 
@@ -68,7 +65,6 @@ class SpectacularDataProviderInterface : public VIO::DataProviderInterface {
     std::string dataset_path_;
 
     VIO::FrameId current_k_;
-    VIO::FrameId initial_k_;  // start frame
     VIO::FrameId final_k_;    // end frame
 
     //! Flag to signal if the IMU data has been sent to the VIO pipeline

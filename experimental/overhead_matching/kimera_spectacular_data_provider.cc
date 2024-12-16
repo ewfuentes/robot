@@ -1,8 +1,5 @@
 #include "experimental/overhead_matching/kimera_spectacular_data_provider.hh"
 
-#include <algorithm>  // for max
-#include <fstream>
-#include <opencv2/calib3d/calib3d.hpp>
 #include <opencv2/core/core.hpp>
 #include <string>
 #include <vector>
@@ -19,21 +16,20 @@ VIO::Timestamp vio_time_from_robot_time(const time::RobotTimestamp& robot_time) 
 
 /* -------------------------------------------------------------------------- */
 SpectacularDataProviderInterface::SpectacularDataProviderInterface(const std::string& dataset_path,
-                                                                   const int& initial_k,
-                                                                   const int& final_k,
+                                                                   const int initial_k,
+                                                                   const int final_k,
                                                                    const VIO::VioParams& vio_params)
     : DataProviderInterface(),
       vio_params_(vio_params),
       dataset_path_(dataset_path),
-      current_k_(std::numeric_limits<VIO::FrameId>::max()),
-      initial_k_(initial_k),
+      current_k_(initial_k),
       final_k_(final_k),
       spec_log_(dataset_path) {
     ROBOT_CHECK(!dataset_path_.empty(), "Dataset path for SpectacularDataProvider is empty.");
 
     // Start processing dataset from frame initial_k.
     // Useful to skip a bunch of images at the beginning (imu calibration).
-    ROBOT_CHECK(initial_k_ >= 0);
+    ROBOT_CHECK(current_k_ >= 0);
 
     // Finish processing dataset at frame final_k.
     // Last frame to process (to avoid processing the entire dataset),
@@ -44,12 +40,10 @@ SpectacularDataProviderInterface::SpectacularDataProviderInterface(const std::st
                         "number of frames. Reducing to match size of dataset";
         final_k_ = spec_log_.num_frames();
     }
+    ROBOT_CHECK(final_k_ <= spec_log_.num_frames());
 
-    ROBOT_CHECK(final_k_ > 0);
-
-    ROBOT_CHECK(final_k_ > initial_k_, "Value for final_k is smaller than value for initial_k",
-                final_k_, initial_k_);
-    current_k_ = initial_k_;
+    ROBOT_CHECK(final_k_ > current_k_, "Value for final_k is smaller than value for current_k (initial value)",
+                final_k_, current_k_);
 }
 
 SpectacularDataProviderInterface::~SpectacularDataProviderInterface() {
@@ -69,9 +63,8 @@ bool SpectacularDataProviderInterface::spin() {
     }
 
     // Spin.
-    ROBOT_CHECK(final_k_ > initial_k_);
     // We log only the first one, because we may be running in sequential mode.
-    LOG_FIRST_N(INFO, 1) << "Running dataset between frame " << initial_k_ << " and frame "
+    LOG_FIRST_N(INFO, 1) << "Running dataset between frame " << current_k_ << " and frame "
                          << final_k_;
     while (!shutdown_ && spin_once()) {
         if (!vio_params_.parallel_run_) {
@@ -87,8 +80,6 @@ bool SpectacularDataProviderInterface::hasData() const { return current_k_ < fin
 
 /* -------------------------------------------------------------------------- */
 bool SpectacularDataProviderInterface::spin_once() {
-    ROBOT_CHECK(current_k_ < std::numeric_limits<VIO::FrameId>::max(),
-                "Are you sure you've initialized current_k_?");
     if (current_k_ >= final_k_) {
         LOG(INFO) << "Finished spinning dataset.";
         return false;
@@ -96,17 +87,17 @@ bool SpectacularDataProviderInterface::spin_once() {
     // TODO: How do we want to handle camera parameters?
     //  const VIO::CameraParams& left_cam_info = vio_params_.camera_params_.at(0);
     const VIO::CameraParams left_cam_FAKE_PARAMS;
-    const bool& equalize_image = false;
+    const bool equalize_image = false;
     // vio_params_.frontend_params_.stereo_matching_params_.equalize_image_;
 
     std::optional<FrameGroup> maybe_frame = spec_log_.get_frame(current_k_);
 
-    const VIO::Timestamp& timestamp_frame_k =
+    const VIO::Timestamp timestamp_frame_k =
         vio_time_from_robot_time(maybe_frame->time_of_validity);
     // LOG(INFO) << "Sending left frames k= " << current_k_ << " with timestamp: " <<
     // timestamp_frame_k;
 
-    cv::Mat bgr = maybe_frame->bgr_frame;
+    cv::Mat& bgr = maybe_frame->bgr_frame;
     if (bgr.channels() > 1) {
         //   LOG(INFO) << "Converting img from BGR to GRAY...";
         cv::cvtColor(bgr, bgr, cv::COLOR_BGR2GRAY);
@@ -116,7 +107,7 @@ bool SpectacularDataProviderInterface::spin_once() {
         cv::equalizeHist(bgr, bgr);
     }
 
-    cv::Mat depth_meters = maybe_frame->depth_frame;
+    cv::Mat& depth_meters = maybe_frame->depth_frame;
     ROBOT_CHECK(depth_meters.type() == CV_32FC1);  // type assumed if depth is distance in meters
 
     left_frame_callback_(
@@ -166,18 +157,6 @@ void SpectacularDataProviderInterface::send_imu_data() const {
 /* -------------------------------------------------------------------------- */
 size_t SpectacularDataProviderInterface::get_num_images() const { return spec_log_.num_frames(); }
 
-void SpectacularDataProviderInterface::clip_final_frame() {
-    // Clip final_k_ to the total number of images.
-    const size_t& nr_images = get_num_images();
-    if (final_k_ > nr_images) {
-        LOG(WARNING) << "Value for final_k, " << final_k_ << " is larger than total"
-                     << " number of frames in dataset " << nr_images;
-        final_k_ = nr_images;
-        LOG(WARNING) << "Using final_k = " << final_k_;
-    }
-    ROBOT_CHECK(final_k_ <= nr_images);
-}
-/* -------------------------------------------------------------------------- */
 void SpectacularDataProviderInterface::print() const {
     LOG(INFO) << "------------------ SpectacularDataProviderInterface::print ------------------\n"
               << "Displaying info for dataset: " << dataset_path_;
