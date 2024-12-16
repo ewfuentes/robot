@@ -42,8 +42,9 @@ SpectacularDataProviderInterface::SpectacularDataProviderInterface(const std::st
     }
     ROBOT_CHECK(final_k_ <= spec_log_.num_frames());
 
-    ROBOT_CHECK(final_k_ > current_k_, "Value for final_k is smaller than value for current_k (initial value)",
-                final_k_, current_k_);
+    ROBOT_CHECK(final_k_ > current_k_,
+                "Value for final_k is smaller than value for current_k (initial value)", final_k_,
+                current_k_);
 }
 
 SpectacularDataProviderInterface::~SpectacularDataProviderInterface() {

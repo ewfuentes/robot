@@ -25,8 +25,10 @@ bool compare_imu_samples(const robot::experimental::overhead_matching::ImuSample
                          const VIO::ImuMeasurement& kimera_imu) {
     // timestamp
     if (kimera_imu.timestamp_ != robot_imu.time_of_validity.time_since_epoch().count()) {
-        fmt::print("Kimera timestamp: {} | robot timestamp: {}", kimera_imu.timestamp_, robot_imu.time_of_validity.time_since_epoch().count());
-        fmt::print("diff {}", robot_imu.time_of_validity.time_since_epoch().count() - kimera_imu.timestamp_);
+        fmt::print("Kimera timestamp: {} | robot timestamp: {}", kimera_imu.timestamp_,
+                   robot_imu.time_of_validity.time_since_epoch().count());
+        fmt::print("diff {}",
+                   robot_imu.time_of_validity.time_since_epoch().count() - kimera_imu.timestamp_);
         return false;
     }
     // accel and gyro values

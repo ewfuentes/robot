@@ -65,7 +65,7 @@ class SpectacularDataProviderInterface : public VIO::DataProviderInterface {
     std::string dataset_path_;
 
     VIO::FrameId current_k_;
-    VIO::FrameId final_k_;    // end frame
+    VIO::FrameId final_k_;  // end frame
 
     //! Flag to signal if the IMU data has been sent to the VIO pipeline
     bool is_imu_data_sent_ = false;
