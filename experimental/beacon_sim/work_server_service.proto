@@ -1,7 +1,6 @@
 
 syntax = "proto3";
 
-import "experimental/beacon_sim/experiment_results.proto";
 import "common/time/robot_time.proto";
 
 package robot.experimental.beacon_sim.proto;

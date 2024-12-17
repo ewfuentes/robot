@@ -1,0 +1,115 @@
+diff --git a/src/google/protobuf/compiler/java/full/enum.cc b/src/google/protobuf/compiler/java/full/enum.cc
+index c321c08f3..724902f35 100644
+--- a/src/google/protobuf/compiler/java/full/enum.cc
++++ b/src/google/protobuf/compiler/java/full/enum.cc
+@@ -78,7 +78,7 @@ void EnumNonLiteGenerator::Generate(io::Printer* printer) {
+ 
+   bool ordinal_is_index = true;
+   std::string index_text = "ordinal()";
+-  for (int i = 0; i < canonical_values_.size(); i++) {
++  for (int i = 0; i < static_cast<int>(canonical_values_.size()); i++) {
+     if (canonical_values_[i]->index() != i) {
+       ordinal_is_index = false;
+       index_text = "index";
+@@ -86,7 +86,7 @@ void EnumNonLiteGenerator::Generate(io::Printer* printer) {
+     }
+   }
+ 
+-  for (int i = 0; i < canonical_values_.size(); i++) {
++  for (int i = 0; i < static_cast<int>(canonical_values_.size()); i++) {
+     absl::flat_hash_map<absl::string_view, std::string> vars;
+     vars["name"] = canonical_values_[i]->name();
+     vars["index"] = absl::StrCat(canonical_values_[i]->index());
+@@ -126,7 +126,7 @@ void EnumNonLiteGenerator::Generate(io::Printer* printer) {
+   printer->Outdent();
+   printer->Print("}\n");
+ 
+-  for (int i = 0; i < aliases_.size(); i++) {
++  for (int i = 0; i < static_cast<int>(aliases_.size()); i++) {
+     absl::flat_hash_map<absl::string_view, std::string> vars;
+     vars["classname"] = descriptor_->name();
+     vars["name"] = aliases_[i].value->name();
+@@ -210,7 +210,7 @@ void EnumNonLiteGenerator::Generate(io::Printer* printer) {
+   printer->Indent();
+   printer->Indent();
+ 
+-  for (int i = 0; i < canonical_values_.size(); i++) {
++  for (int i = 0; i < static_cast<int>(canonical_values_.size()); i++) {
+     printer->Print("case $number$: return $name$;\n", "name",
+                    canonical_values_[i]->name(), "number",
+                    absl::StrCat(canonical_values_[i]->number()));
+@@ -385,7 +385,7 @@ void EnumNonLiteGenerator::Generate(io::Printer* printer) {
+ 
+ 
+ bool EnumNonLiteGenerator::CanUseEnumValues() {
+-  if (canonical_values_.size() != descriptor_->value_count()) {
++  if (static_cast<int>(canonical_values_.size()) != descriptor_->value_count()) {
+     return false;
+   }
+   for (int i = 0; i < descriptor_->value_count(); i++) {
+diff --git a/src/google/protobuf/compiler/java/lite/enum.cc b/src/google/protobuf/compiler/java/lite/enum.cc
+index 3b42a12d6..1e1450b70 100644
+--- a/src/google/protobuf/compiler/java/lite/enum.cc
++++ b/src/google/protobuf/compiler/java/lite/enum.cc
+@@ -62,7 +62,7 @@ void EnumLiteGenerator::Generate(io::Printer* printer) {
+   printer->Annotate("classname", descriptor_);
+   printer->Indent();
+ 
+-  for (int i = 0; i < canonical_values_.size(); i++) {
++  for (int i = 0; i < static_cast<int>(canonical_values_.size()); i++) {
+     absl::flat_hash_map<absl::string_view, std::string> vars;
+     vars["name"] = canonical_values_[i]->name();
+     vars["number"] = absl::StrCat(canonical_values_[i]->number());
+@@ -86,7 +86,7 @@ void EnumLiteGenerator::Generate(io::Printer* printer) {
+ 
+   // -----------------------------------------------------------------
+ 
+-  for (int i = 0; i < aliases_.size(); i++) {
++  for (int i = 0; i < static_cast<int>(aliases_.size()); i++) {
+     absl::flat_hash_map<absl::string_view, std::string> vars;
+     vars["classname"] = descriptor_->name();
+     vars["name"] = aliases_[i].value->name();
+@@ -157,7 +157,7 @@ void EnumLiteGenerator::Generate(io::Printer* printer) {
+   printer->Indent();
+   printer->Indent();
+ 
+-  for (int i = 0; i < canonical_values_.size(); i++) {
++  for (int i = 0; i < static_cast<int>(canonical_values_.size()); i++) {
+     printer->Print("case $number$: return $name$;\n", "name",
+                    canonical_values_[i]->name(), "number",
+                    absl::StrCat(canonical_values_[i]->number()));
+diff --git a/src/google/protobuf/compiler/rust/relative_path.cc b/src/google/protobuf/compiler/rust/relative_path.cc
+index 7c083f554..c94747b68 100644
+--- a/src/google/protobuf/compiler/rust/relative_path.cc
++++ b/src/google/protobuf/compiler/rust/relative_path.cc
+@@ -63,7 +63,7 @@ std::string RelativePath::Relative(const RelativePath& dest) const {
+     result.push_back(segment);
+   }
+   // Push `..` from the common ancestor to the current path.
+-  for (int i = 0; i < current_segments.size(); ++i) {
++  for (int i = 0; i < static_cast<int>(current_segments.size()); ++i) {
+     result.push_back("..");
+   }
+   absl::c_reverse(result);
+diff --git a/upb/message/internal/compare_unknown.c b/upb/message/internal/compare_unknown.c
+index a7a60f2ef..600517828 100644
+--- a/upb/message/internal/compare_unknown.c
++++ b/upb/message/internal/compare_unknown.c
+@@ -127,7 +127,7 @@ static upb_UnknownFields* upb_UnknownFields_DoBuild(
+   uint32_t last_tag = 0;
+   bool sorted = true;
+   while (!upb_EpsCopyInputStream_IsDone(&ctx->stream, &ptr)) {
+-    uint32_t tag;
++    uint32_t tag = 0;
+     ptr = upb_WireReader_ReadTag(ptr, &tag);
+     UPB_ASSERT(tag <= UINT32_MAX);
+     int wire_type = upb_WireReader_GetWireType(tag);
+@@ -153,7 +153,7 @@ static upb_UnknownFields* upb_UnknownFields_DoBuild(
+         ptr = upb_WireReader_ReadFixed32(ptr, &field->data.uint32);
+         break;
+       case kUpb_WireType_Delimited: {
+-        int size;
++        int size = 0;
+         ptr = upb_WireReader_ReadSize(ptr, &size);
+         const char* s_ptr = ptr;
+         ptr = upb_EpsCopyInputStream_ReadStringAliased(&ctx->stream, &s_ptr,

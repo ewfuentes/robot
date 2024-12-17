@@ -242,6 +242,7 @@ http_archive(
   integrity = "sha256-s7TDts/nS3eurpkJ/DwTAwknF/cbwhVNfBlhrNr1/kw=",
   patches = [
     "@//third_party:protobuf_0001-use-rules-python-headers.patch",
+    "@//third_party:protobuf_0002-fix-warnings.patch",
   ],
   patch_args=["-p1"],
 )
@@ -540,7 +541,7 @@ http_archive(
   urls = ["https://github.com/ewfuentes/Kimera-VIO/archive/master.zip"],
   strip_prefix = "Kimera-VIO-master",
   build_file = "//third_party:BUILD.kimera_vio",
-  integrity = "sha256-+hQBAPv4bDRbYnH1iXeuHTNsWnfXgqZ0FoUTv6usQ/k=",
+  integrity = "sha256-lzSnNvkHXLhMx+vv0QJ2eBNS7DA27zj+Tc9s0tgNA7E="
 )
 
 http_archive(
@@ -570,7 +571,7 @@ http_archive(
   urls = ["https://github.com/mapbox/protozero/archive/refs/tags/v1.7.1.zip"],
   build_file = "//third_party:BUILD.protozero",
   strip_prefix = "protozero-1.7.1",
-
+  integrity = "sha256-60W7rUxeiB5V8NLFF1zEpQaOn/9hOnw3R5sLlPlKc5I="
 )
 
 http_archive(
