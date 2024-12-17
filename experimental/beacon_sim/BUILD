@@ -988,6 +988,7 @@ cc_library(
   srcs = ["work_server.cc"],
   deps = [
     ":work_server_service_grpc",
+    ":experiment_results_proto",
     "//common/sqlite3",
     "//common:check",
     "//common/proto:load_from_file",
