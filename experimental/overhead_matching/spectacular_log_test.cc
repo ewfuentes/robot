@@ -5,21 +5,12 @@
 #include <sstream>
 
 #include "common/matplotlib.hh"
+#include "common/video/image_compare.hh"
 #include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "opencv2/opencv.hpp"
 
 namespace robot::experimental::overhead_matching {
-
-bool images_equal(cv::Mat img1, cv::Mat img2) {
-    if (img1.size() != img2.size() || img1.type() != img2.type()) {
-        return false;
-    }
-    cv::Mat diff;
-    cv::absdiff(img1, img2, diff);
-    diff = diff.reshape(1);
-    return cv::countNonZero(diff) == 0;
-}
 
 std::ostream &operator<<(std::ostream &out, const time::RobotTimestamp &t) {
     std::ostringstream ss;
@@ -31,8 +22,7 @@ std::ostream &operator<<(std::ostream &out, const time::RobotTimestamp &t) {
 
 TEST(SpectacularLogTest, happy_case) {
     // Setup
-    const std::filesystem::path log_path(
-        "external/spectacular_log_snippet/recording_2024-11-21_13-36-30");
+    const std::filesystem::path log_path("external/spectacular_log_snippet/20241212_150605");
     SpectacularLog log(log_path);
     // Action
 
@@ -89,11 +79,11 @@ TEST(SpectacularLogTest, happy_case) {
         const auto frame = log.get_frame(frame_id).value();
 
         const std::filesystem::path depth_path(log_path /
-                                               fmt::format("frames2/{:08d}.png", frame_id));
-        const cv::Mat depth_frame = cv::imread(depth_path, cv::IMREAD_GRAYSCALE);
+                                               fmt::format("frames2/{:08d}.tiff", frame_id));
+        const cv::Mat depth_frame = cv::imread(depth_path, cv::IMREAD_UNCHANGED);
 
-        EXPECT_TRUE(images_equal(expected_frame, frame.bgr_frame));
-        EXPECT_TRUE(images_equal(depth_frame, frame.depth_frame));
+        EXPECT_TRUE(common::video::images_equal(expected_frame, frame.bgr_frame));
+        EXPECT_TRUE(common::video::images_equal(depth_frame, frame.depth_frame));
 
         for (int i = 0; i < FRAME_SKIP - 1; i++) {
             video.grab();

@@ -97,23 +97,13 @@ http_archive(
 
 http_archive(
   name = "fmt",
-  urls = ["https://github.com/fmtlib/fmt/releases/download/8.1.1/fmt-8.1.1.zip"],
-  strip_prefix="fmt-8.1.1",
+  urls = ["https://github.com/fmtlib/fmt/releases/download/11.0.2/fmt-11.0.2.zip"],
+  strip_prefix="fmt-11.0.2",
   patch_cmds=[
-    "mv support/bazel/.bazelrc .bazelrc",
-    "mv support/bazel/.bazelversion .bazelversion",
     "mv support/bazel/BUILD.bazel BUILD.bazel",
     "mv support/bazel/WORKSPACE.bazel WORKSPACE.bazel",
   ],
-  sha256 = "23778bad8edba12d76e4075da06db591f3b0e3c6c04928ced4a7282ca3400e5d",
-)
-
-http_archive(
-    name = "spdlog",
-    urls = ["https://github.com/gabime/spdlog/archive/refs/tags/v1.10.0.zip"],
-    strip_prefix="spdlog-1.10.0",
-    build_file = "@//third_party:BUILD.spdlog",
-    sha256 = "7be28ff05d32a8a11cfba94381e820dd2842835f7f319f843993101bcab44b66",
+  integrity = "sha256-QPxYvrzzjHWeEae9j9wWNQfSQj71BYu6fyYoDFucVGU=",
 )
 
 http_archive(
@@ -522,7 +512,8 @@ http_archive(
   strip_prefix="opengv-91f4b19c73450833a40e463ad3648aae80b3a7f3",
   build_file="//third_party:BUILD.opengv",
   patch_args = ["-p1"],
-  patches = ["//third_party:opengv_0001-prefix-unsupported-eigen-include-paths.patch"],
+  patches = ["//third_party:opengv_0001-prefix-unsupported-eigen-include-paths.patch",
+             "//third_party:opengv_0002-unused-parameter.patch"],
   integrity = "sha256-gIK3IvE6rGDpxvN3BA+EPFKPvZ7Zi7Ix33IIcm2RULA="
 )
 
@@ -539,12 +530,7 @@ http_archive(
   urls = ["https://github.com/ewfuentes/Kimera-VIO/archive/master.zip"],
   strip_prefix = "Kimera-VIO-master",
   build_file = "//third_party:BUILD.kimera_vio",
-  integrity = "sha256-8fLHPn8JPWffnnXEA0gJbZrBhoGpK0Gw80I3oWXpgZg=",
-  patch_args = ["-p1"],
-  patches = [
-    "//third_party:kimera_vio_0001-add-missing-includes.patch",
-    "//third_party:kimera_vio_0002-add-override-markers.patch",
-  ]
+  integrity = "sha256-+hQBAPv4bDRbYnH1iXeuHTNsWnfXgqZ0FoUTv6usQ/k=",
 )
 
 http_archive(
@@ -556,9 +542,9 @@ http_archive(
 
 http_archive(
   name = "spectacular_log_snippet",
-  urls = ["https://www.dropbox.com/scl/fi/2u4ec000kx24980t7ifjz/recording_2024-11-21_13-36-30.zip?rlkey=ojw96yykmw9crtqs15kbxwnvp&st=gjcrawhw&dl=1"],
+  urls = ["https://www.dropbox.com/scl/fi/6y2x4nstw7h3xx6jvbzzg/20241212_150605.zip?rlkey=rwktg7egzki7vqeq9qpfaml1l&dl=1"],
   build_file = "//third_party:BUILD.zip_file",
-  integrity = "sha256-K+KFNzufwccL4vEJLErEtNKNVjnWStClXVF2mKpI6lI="
+  integrity = "sha256-7WD3AyKE+v7fA6ohAqk1UXBU+i2n9uH/6HcovNhORhA="
 )
 
 http_archive(

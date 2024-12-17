@@ -171,8 +171,9 @@ std::optional<FrameGroup> SpectacularLog::get_frame(const int frame_id) const {
 
     // Read the desired depth frame
     const fs::path depth_frame_path =
-        log_path_ / "frames2" / fmt::format("{:08d}.png", frame_info.frame_number);
-    cv::Mat depth_frame = cv::imread(depth_frame_path.string(), cv::IMREAD_GRAYSCALE);
+        log_path_ / "frames2" / fmt::format("{:08d}.tiff", frame_info.frame_number);
+
+    cv::Mat depth_frame = cv::imread(depth_frame_path.string(), cv::IMREAD_UNCHANGED);
 
     return {{
         .time_of_validity =
