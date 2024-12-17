@@ -184,7 +184,7 @@ index 97cf262ea..7136cf5e7 100644
        for (map_index_t b = index_of_first_non_null_, end = num_buckets_;
             b < end; ++b) {
 diff --git a/upb/json/decode.c b/upb/json/decode.c
-index 9275bcb1a..29ad9a0ce 100644
+index 9275bcb1a..e6d618e98 100644
 --- a/upb/json/decode.c
 +++ b/upb/json/decode.c
 @@ -674,7 +674,7 @@ static int64_t jsondec_strtoint64(jsondec* d, upb_StringView str) {
@@ -192,7 +192,7 @@ index 9275bcb1a..29ad9a0ce 100644
  /* Parse INT32 or INT64 value. */
  static upb_MessageValue jsondec_int(jsondec* d, const upb_FieldDef* f) {
 -  upb_MessageValue val;
-+  upb_MessageValue val = 0;
++  upb_MessageValue val = {.msg_val = nullptr};
  
    switch (jsondec_peek(d)) {
      case JD_NUMBER: {
@@ -201,7 +201,7 @@ index 9275bcb1a..29ad9a0ce 100644
  /* Parse UINT32 or UINT64 value. */
  static upb_MessageValue jsondec_uint(jsondec* d, const upb_FieldDef* f) {
 -  upb_MessageValue val;
-+  upb_MessageValue val = 0;
++  upb_MessageValue val = {.msg_val = nullptr};
  
    switch (jsondec_peek(d)) {
      case JD_NUMBER: {
@@ -210,7 +210,7 @@ index 9275bcb1a..29ad9a0ce 100644
  static upb_MessageValue jsondec_double(jsondec* d, const upb_FieldDef* f) {
    upb_StringView str;
 -  upb_MessageValue val;
-+  upb_MessageValue val = 0;
++  upb_MessageValue val = {.msg_val = nullptr};
  
    switch (jsondec_peek(d)) {
      case JD_NUMBER:
@@ -219,7 +219,7 @@ index 9275bcb1a..29ad9a0ce 100644
  /* Parse STRING or BYTES value. */
  static upb_MessageValue jsondec_strfield(jsondec* d, const upb_FieldDef* f) {
 -  upb_MessageValue val;
-+  upb_MessageValue val = 0;
++  upb_MessageValue val = {.msg_val = nullptr};
    val.str_val = jsondec_string(d);
    if (upb_FieldDef_CType(f) == kUpb_CType_Bytes) {
      val.str_val.size = jsondec_base64(d, val.str_val);
@@ -228,7 +228,7 @@ index 9275bcb1a..29ad9a0ce 100644
    bool is_map_key = upb_FieldDef_Number(f) == 1 &&
                      upb_MessageDef_IsMapEntry(upb_FieldDef_ContainingType(f));
 -  upb_MessageValue val;
-+  upb_MessageValue val = 0;
++  upb_MessageValue val = {.msg_val = nullptr};
  
    if (is_map_key) {
      upb_StringView str = jsondec_string(d);
@@ -237,7 +237,7 @@ index 9275bcb1a..29ad9a0ce 100644
    const upb_MiniTable* layout = upb_MessageDef_MiniTable(m);
    upb_Message* msg = upb_Message_New(layout, d->arena);
 -  upb_MessageValue val;
-+  upb_MessageValue val = 0;
++  upb_MessageValue val = {.msg_val = nullptr};
  
    jsondec_tomsg(d, msg, m);
    val.msg_val = msg;
@@ -246,7 +246,7 @@ index 9275bcb1a..29ad9a0ce 100644
    while (jsondec_arrnext(d)) {
      upb_Message* value_msg = upb_Message_New(value_layout, d->arena);
 -    upb_MessageValue value;
-+    upb_MessageValue value = 0;
++    upb_MessageValue value = {.msg_val = nullptr};
      value.msg_val = value_msg;
      upb_Array_Append(values, value, d->arena);
      jsondec_wellknownvalue(d, value_msg, value_m);
@@ -255,7 +255,7 @@ index 9275bcb1a..29ad9a0ce 100644
                                     const upb_MessageDef* m) {
    UPB_ASSERT(!upb_Message_IsFrozen(msg));
 -  upb_MessageValue val;
-+  upb_MessageValue val = 0;
++  upb_MessageValue val = {.msg_val = nullptr};
    const upb_FieldDef* f;
    upb_Message* submsg;
  
@@ -264,7 +264,7 @@ index 9275bcb1a..29ad9a0ce 100644
    const char* ptr = str.data;
    const char* end = ptr + str.size;
 -  upb_MessageValue val;
-+  upb_MessageValue val = 0;
++  upb_MessageValue val = {.msg_val = nullptr};
  
    while (ptr < end) {
      const char* elem_end = memchr(ptr, ',', end - ptr);
@@ -273,7 +273,7 @@ index 9275bcb1a..29ad9a0ce 100644
    const char* end = type_url.data + type_url.size;
    const char* ptr = end;
 -  upb_MessageValue val;
-+  upb_MessageValue val = 0;
++  upb_MessageValue val = {.msg_val = nullptr};
  
    val.str_val = type_url;
    upb_Message_SetFieldByDef(msg, type_url_f, val, d->arena);
