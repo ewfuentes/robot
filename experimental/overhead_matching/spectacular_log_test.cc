@@ -20,7 +20,7 @@ std::ostream &operator<<(std::ostream &out, const time::RobotTimestamp &t) {
     return out;
 }
 
-TEST(SpectacularLogTest, DISABLED_happy_case) {
+TEST(SpectacularLogTest, happy_case) {
     // Setup
     const std::filesystem::path log_path("external/spectacular_log_snippet/20241212_150605");
     SpectacularLog log(log_path);
@@ -79,8 +79,8 @@ TEST(SpectacularLogTest, DISABLED_happy_case) {
         const auto frame = log.get_frame(frame_id).value();
 
         const std::filesystem::path depth_path(log_path /
-                                               fmt::format("frames2/{:08d}.png", frame_id));
-        const cv::Mat depth_frame = cv::imread(depth_path, cv::IMREAD_GRAYSCALE);
+                                               fmt::format("frames2/{:08d}.tiff", frame_id));
+        const cv::Mat depth_frame = cv::imread(depth_path, cv::IMREAD_UNCHANGED);
 
         EXPECT_TRUE(common::video::images_equal(expected_frame, frame.bgr_frame));
         EXPECT_TRUE(common::video::images_equal(depth_frame, frame.depth_frame));
