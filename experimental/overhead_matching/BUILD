@@ -1,5 +1,3 @@
-
-
 package(features=["warning_compile_flags"])
 
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
@@ -31,6 +29,7 @@ cc_test(
 	":spectacular_log",
 	"@com_google_googletest//:gtest_main",
 	"@fmt",
+    "//common/video:image_compare",
     ]
 )
 
@@ -49,4 +48,28 @@ py_binary(
 	requirement("rosbags"),
 	requirement("numpy"),
     ],
+)
+
+
+cc_library(
+    name = "kimera_spectacular_data_provider",
+    hdrs = ["kimera_spectacular_data_provider.hh"],
+    srcs = ["kimera_spectacular_data_provider.cc"],
+    copts = ["-Wno-sign-compare", "-Wno-vla"],
+    deps = [
+        "@kimera_vio",
+        ":spectacular_log",
+    ]
+)
+cc_test(
+    name = "kimera_spectacular_data_provider_test",
+    srcs = ["kimera_spectacular_data_provider_test.cc"],
+    data = ["@spectacular_log_snippet//:files"],
+    copts = ["-Wno-sign-compare", "-Wno-vla"],
+    deps = [
+        ":kimera_spectacular_data_provider",
+        "@com_google_googletest//:gtest_main",
+        "@fmt",
+        "//common/video:image_compare",
+    ]
 )
