@@ -97,23 +97,13 @@ http_archive(
 
 http_archive(
   name = "fmt",
-  urls = ["https://github.com/fmtlib/fmt/releases/download/8.1.1/fmt-8.1.1.zip"],
-  strip_prefix="fmt-8.1.1",
+  urls = ["https://github.com/fmtlib/fmt/releases/download/11.0.2/fmt-11.0.2.zip"],
+  strip_prefix="fmt-11.0.2",
   patch_cmds=[
-    "mv support/bazel/.bazelrc .bazelrc",
-    "mv support/bazel/.bazelversion .bazelversion",
     "mv support/bazel/BUILD.bazel BUILD.bazel",
     "mv support/bazel/WORKSPACE.bazel WORKSPACE.bazel",
   ],
-  sha256 = "23778bad8edba12d76e4075da06db591f3b0e3c6c04928ced4a7282ca3400e5d",
-)
-
-http_archive(
-    name = "spdlog",
-    urls = ["https://github.com/gabime/spdlog/archive/refs/tags/v1.10.0.zip"],
-    strip_prefix="spdlog-1.10.0",
-    build_file = "@//third_party:BUILD.spdlog",
-    sha256 = "7be28ff05d32a8a11cfba94381e820dd2842835f7f319f843993101bcab44b66",
+  integrity = "sha256-QPxYvrzzjHWeEae9j9wWNQfSQj71BYu6fyYoDFucVGU=",
 )
 
 http_archive(
