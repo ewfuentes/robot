@@ -47,6 +47,41 @@ index c321c08f3..724902f35 100644
      return false;
    }
    for (int i = 0; i < descriptor_->value_count(); i++) {
+diff --git a/src/google/protobuf/compiler/java/full/message.cc b/src/google/protobuf/compiler/java/full/message.cc
+index 433177312..333bcc653 100644
+--- a/src/google/protobuf/compiler/java/full/message.cc
++++ b/src/google/protobuf/compiler/java/full/message.cc
+@@ -800,7 +800,7 @@ void ImmutableMessageGenerator::GenerateDescriptorMethods(
+         "  switch (number) {\n");
+     printer->Indent();
+     printer->Indent();
+-    for (int i = 0; i < map_fields.size(); ++i) {
++    for (int i = 0; i < static_cast<int>(map_fields.size()); ++i) {
+       const FieldDescriptor* field = map_fields[i];
+       const FieldGeneratorInfo* info = context_->GetFieldGeneratorInfo(field);
+       printer->Print(
+diff --git a/src/google/protobuf/compiler/java/full/message_builder.cc b/src/google/protobuf/compiler/java/full/message_builder.cc
+index 53de5d324..06f708852 100644
+--- a/src/google/protobuf/compiler/java/full/message_builder.cc
++++ b/src/google/protobuf/compiler/java/full/message_builder.cc
+@@ -211,7 +211,7 @@ void MessageBuilderGenerator::GenerateDescriptorMethods(io::Printer* printer) {
+         "  switch (number) {\n");
+     printer->Indent();
+     printer->Indent();
+-    for (int i = 0; i < map_fields.size(); ++i) {
++    for (int i = 0; i < static_cast<int>(map_fields.size()); ++i) {
+       const FieldDescriptor* field = map_fields[i];
+       const FieldGeneratorInfo* info = context_->GetFieldGeneratorInfo(field);
+       printer->Print(
+@@ -237,7 +237,7 @@ void MessageBuilderGenerator::GenerateDescriptorMethods(io::Printer* printer) {
+         "  switch (number) {\n");
+     printer->Indent();
+     printer->Indent();
+-    for (int i = 0; i < map_fields.size(); ++i) {
++    for (int i = 0; i < static_cast<int>(map_fields.size()); ++i) {
+       const FieldDescriptor* field = map_fields[i];
+       const FieldGeneratorInfo* info = context_->GetFieldGeneratorInfo(field);
+       printer->Print(
 diff --git a/src/google/protobuf/compiler/java/lite/enum.cc b/src/google/protobuf/compiler/java/lite/enum.cc
 index 3b42a12d6..1e1450b70 100644
 --- a/src/google/protobuf/compiler/java/lite/enum.cc
@@ -91,6 +126,157 @@ index 7c083f554..c94747b68 100644
      result.push_back("..");
    }
    absl::c_reverse(result);
+diff --git a/src/google/protobuf/generated_message_tctable_lite.cc b/src/google/protobuf/generated_message_tctable_lite.cc
+index 155efbbbc..09038b86b 100644
+--- a/src/google/protobuf/generated_message_tctable_lite.cc
++++ b/src/google/protobuf/generated_message_tctable_lite.cc
+@@ -714,7 +714,7 @@ inline int64_t ZigZagDecodeHelper<int64_t, true>(int64_t value) {
+ 
+ // Prefetch the enum data, if necessary.
+ // We can issue the prefetch before we start parsing the ints.
+-PROTOBUF_ALWAYS_INLINE void PrefetchEnumData(uint16_t xform_val,
++PROTOBUF_ALWAYS_INLINE inline void PrefetchEnumData(uint16_t xform_val,
+                                              TcParseTableBase::FieldAux aux) {
+ }
+ 
+@@ -726,7 +726,7 @@ PROTOBUF_ALWAYS_INLINE void PrefetchEnumData(uint16_t xform_val,
+ // way more common than the kTvEnum cases. It is also called from places that
+ // already have out-of-line functions (like MpVarint) so an extra out-of-line
+ // call to `ValidateEnum` does not affect much.
+-PROTOBUF_ALWAYS_INLINE bool EnumIsValidAux(int32_t val, uint16_t xform_val,
++PROTOBUF_ALWAYS_INLINE inline bool EnumIsValidAux(int32_t val, uint16_t xform_val,
+                                            TcParseTableBase::FieldAux aux) {
+   if (xform_val == field_layout::kTvRange) {
+     auto lo = aux.enum_range.start;
+@@ -803,7 +803,7 @@ PROTOBUF_NOINLINE const char* TcParser::SingularVarBigint(
+ }
+ 
+ template <typename FieldType>
+-PROTOBUF_ALWAYS_INLINE const char* TcParser::FastVarintS1(
++PROTOBUF_ALWAYS_INLINE inline const char* TcParser::FastVarintS1(
+     PROTOBUF_TC_PARAM_DECL) {
+   using TagType = uint8_t;
+   if (PROTOBUF_PREDICT_FALSE(data.coded_tag<TagType>() != 0)) {
+diff --git a/src/google/protobuf/io/printer.h b/src/google/protobuf/io/printer.h
+index 323dbb8b5..d1b5304a7 100644
+--- a/src/google/protobuf/io/printer.h
++++ b/src/google/protobuf/io/printer.h
+@@ -124,7 +124,7 @@ class AnnotationProtoCollector : public AnnotationCollector {
+                      const std::string& file_path, const std::vector<int>& path,
+                      absl::optional<Semantic> semantic) override {
+     auto* annotation = annotation_proto_->add_annotation();
+-    for (int i = 0; i < path.size(); ++i) {
++    for (int i = 0; i < static_cast<int>(path.size()); ++i) {
+       annotation->add_path(path[i]);
+     }
+     annotation->set_source_file(file_path);
+diff --git a/src/google/protobuf/map.cc b/src/google/protobuf/map.cc
+index 97cf262ea..7136cf5e7 100644
+--- a/src/google/protobuf/map.cc
++++ b/src/google/protobuf/map.cc
+@@ -120,7 +120,7 @@ void UntypedMapBase::ClearTable(const ClearInput input) {
+   ABSL_DCHECK_NE(num_buckets_, kGlobalEmptyTableSize);
+ 
+   if (alloc_.arena() == nullptr) {
+-    const auto loop = [=](auto destroy_node) {
++    const auto loop = [=, this](auto destroy_node) {
+       const TableEntryPtr* table = table_;
+       for (map_index_t b = index_of_first_non_null_, end = num_buckets_;
+            b < end; ++b) {
+diff --git a/upb/json/decode.c b/upb/json/decode.c
+index 9275bcb1a..29ad9a0ce 100644
+--- a/upb/json/decode.c
++++ b/upb/json/decode.c
+@@ -674,7 +674,7 @@ static int64_t jsondec_strtoint64(jsondec* d, upb_StringView str) {
+ 
+ /* Parse INT32 or INT64 value. */
+ static upb_MessageValue jsondec_int(jsondec* d, const upb_FieldDef* f) {
+-  upb_MessageValue val;
++  upb_MessageValue val = 0;
+ 
+   switch (jsondec_peek(d)) {
+     case JD_NUMBER: {
+@@ -711,7 +711,7 @@ static upb_MessageValue jsondec_int(jsondec* d, const upb_FieldDef* f) {
+ 
+ /* Parse UINT32 or UINT64 value. */
+ static upb_MessageValue jsondec_uint(jsondec* d, const upb_FieldDef* f) {
+-  upb_MessageValue val;
++  upb_MessageValue val = 0;
+ 
+   switch (jsondec_peek(d)) {
+     case JD_NUMBER: {
+@@ -748,7 +748,7 @@ static upb_MessageValue jsondec_uint(jsondec* d, const upb_FieldDef* f) {
+ /* Parse DOUBLE or FLOAT value. */
+ static upb_MessageValue jsondec_double(jsondec* d, const upb_FieldDef* f) {
+   upb_StringView str;
+-  upb_MessageValue val;
++  upb_MessageValue val = 0;
+ 
+   switch (jsondec_peek(d)) {
+     case JD_NUMBER:
+@@ -783,7 +783,7 @@ static upb_MessageValue jsondec_double(jsondec* d, const upb_FieldDef* f) {
+ 
+ /* Parse STRING or BYTES value. */
+ static upb_MessageValue jsondec_strfield(jsondec* d, const upb_FieldDef* f) {
+-  upb_MessageValue val;
++  upb_MessageValue val = 0;
+   val.str_val = jsondec_string(d);
+   if (upb_FieldDef_CType(f) == kUpb_CType_Bytes) {
+     val.str_val.size = jsondec_base64(d, val.str_val);
+@@ -829,7 +829,7 @@ static upb_JsonMessageValue jsondec_enum(jsondec* d, const upb_FieldDef* f) {
+ static upb_MessageValue jsondec_bool(jsondec* d, const upb_FieldDef* f) {
+   bool is_map_key = upb_FieldDef_Number(f) == 1 &&
+                     upb_MessageDef_IsMapEntry(upb_FieldDef_ContainingType(f));
+-  upb_MessageValue val;
++  upb_MessageValue val = 0;
+ 
+   if (is_map_key) {
+     upb_StringView str = jsondec_string(d);
+@@ -909,7 +909,7 @@ static upb_MessageValue jsondec_msg(jsondec* d, const upb_FieldDef* f) {
+   const upb_MessageDef* m = upb_FieldDef_MessageSubDef(f);
+   const upb_MiniTable* layout = upb_MessageDef_MiniTable(m);
+   upb_Message* msg = upb_Message_New(layout, d->arena);
+-  upb_MessageValue val;
++  upb_MessageValue val = 0;
+ 
+   jsondec_tomsg(d, msg, m);
+   val.msg_val = msg;
+@@ -1193,7 +1193,7 @@ static void jsondec_listvalue(jsondec* d, upb_Message* msg,
+   jsondec_arrstart(d);
+   while (jsondec_arrnext(d)) {
+     upb_Message* value_msg = upb_Message_New(value_layout, d->arena);
+-    upb_MessageValue value;
++    upb_MessageValue value = 0;
+     value.msg_val = value_msg;
+     upb_Array_Append(values, value, d->arena);
+     jsondec_wellknownvalue(d, value_msg, value_m);
+@@ -1227,7 +1227,7 @@ static void jsondec_struct(jsondec* d, upb_Message* msg,
+ static void jsondec_wellknownvalue(jsondec* d, upb_Message* msg,
+                                    const upb_MessageDef* m) {
+   UPB_ASSERT(!upb_Message_IsFrozen(msg));
+-  upb_MessageValue val;
++  upb_MessageValue val = 0;
+   const upb_FieldDef* f;
+   upb_Message* submsg;
+ 
+@@ -1322,7 +1322,7 @@ static void jsondec_fieldmask(jsondec* d, upb_Message* msg,
+   upb_StringView str = jsondec_string(d);
+   const char* ptr = str.data;
+   const char* end = ptr + str.size;
+-  upb_MessageValue val;
++  upb_MessageValue val = 0;
+ 
+   while (ptr < end) {
+     const char* elem_end = memchr(ptr, ',', end - ptr);
+@@ -1364,7 +1364,7 @@ static const upb_MessageDef* jsondec_typeurl(jsondec* d, upb_Message* msg,
+   upb_StringView type_url = jsondec_string(d);
+   const char* end = type_url.data + type_url.size;
+   const char* ptr = end;
+-  upb_MessageValue val;
++  upb_MessageValue val = 0;
+ 
+   val.str_val = type_url;
+   upb_Message_SetFieldByDef(msg, type_url_f, val, d->arena);
 diff --git a/upb/message/internal/compare_unknown.c b/upb/message/internal/compare_unknown.c
 index a7a60f2ef..600517828 100644
 --- a/upb/message/internal/compare_unknown.c

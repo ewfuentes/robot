@@ -7,8 +7,8 @@
 
 #include "common/check.hh"
 #include "common/proto/load_from_file.hh"
-#include "experimental/beacon_sim/work_server_service.pb.h"
 #include "experimental/beacon_sim/experiment_results.pb.h"
+#include "experimental/beacon_sim/work_server_service.pb.h"
 
 namespace robot::experimental::beacon_sim {
 namespace {
