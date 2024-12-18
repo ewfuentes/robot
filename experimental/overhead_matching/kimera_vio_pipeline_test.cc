@@ -31,6 +31,9 @@ int main(int argc, char* argv[]) {
     // Build dataset parser.
     VIO::DataProviderInterface::Ptr dataset_parser =
         std::make_unique<robot::experimental::overhead_matching::SpectacularDataProviderInterface>(
+            FLAGS_dataset_path,
+            0,
+            std::numeric_limits<int>::max(),
             vio_params);
 
     CHECK(dataset_parser);
@@ -42,18 +45,22 @@ int main(int argc, char* argv[]) {
     // Register callback to shutdown data provider in case VIO pipeline
     // shutsdown.
     vio_pipeline->registerShutdownCallback(
-        std::bind(&VIO::DataProviderModule::shutdown, dataset_parser));
+        [&dataset_parser](){ dataset_parser->shutdown();});
 
     // Register callback to vio pipeline.
     dataset_parser->registerImuSingleCallback(
-        std::bind(&VIO::Pipeline::fillSingleImuQueue, vio_pipeline, std::placeholders::_1));
+        [&vio_pipeline](const auto& arg){ vio_pipeline->fillSingleImuQueue(arg); });
     // We use blocking variants to avoid overgrowing the input queues (use
     // the non-blocking versions with real sensor streams)
     dataset_parser->registerLeftFrameCallback(
-        std::bind(&VIO::Pipeline::fillLeftFrameQueue, vio_pipeline, std::placeholders::_1));
+        [&vio_pipeline](auto arg){ vio_pipeline->fillLeftFrameQueue(std::move(arg)); });
 
     dataset_parser->registerDepthFrameCallback(
-        std::bind(&VIO::RgbdImuPipeline::fillDepthFrameQueue, vio_pipeline, std::placeholders::_1));
+        [&vio_pipeline](auto arg){ 
+            auto rgbd_pipeline = std::dynamic_pointer_cast<VIO::RgbdImuPipeline>(vio_pipeline);
+            ROBOT_CHECK(rgbd_pipeline);
+            rgbd_pipeline->fillDepthFrameQueue(std::move(arg)); 
+        });
 
     // Spin dataset.
     auto tic = VIO::utils::Timer::tic();
