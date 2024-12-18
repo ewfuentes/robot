@@ -6,7 +6,7 @@ load("@pip//:requirements.bzl", "requirement")
 
 compile_pip_requirements_3_8(
   name = "requirements_3_8",
-  requirements_in=":requirements.in",
+  requirements_in=":requirements_3_8.in",
   requirements_txt=":requirements_3_8.txt",
   extra_args=["--allow-unsafe"],
   timeout="eternal",
@@ -14,7 +14,7 @@ compile_pip_requirements_3_8(
 
 compile_pip_requirements_3_10(
   name = "requirements_3_10",
-  requirements_in=":requirements.in",
+  requirements_in=":requirements_3_10.in",
   requirements_txt=":requirements_3_10.txt",
   extra_args=["--allow-unsafe"],
   timeout="eternal",
