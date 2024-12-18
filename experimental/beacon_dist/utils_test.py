@@ -123,7 +123,7 @@ class UtilsTest(unittest.TestCase):
         loss = valid_configuration_loss(batch.class_label, query, model_output)
 
         # Verification
-        self.assertGreater(loss, 0.0)
+        self.assertGreater(loss.item(), 0.0)
 
     def test_valid_configuration_loss_missing_exclusive_keypoints_are_valid(self):
         # Setup
@@ -136,7 +136,7 @@ class UtilsTest(unittest.TestCase):
         loss = valid_configuration_loss(batch.class_label, query, model_output)
 
         # Verification
-        self.assertAlmostEqual(loss, 0.0)
+        self.assertAlmostEqual(loss.item(), 0.0)
 
     def test_query_from_class_samples(self):
         # Setup
