@@ -5,7 +5,10 @@
 #include <coroutine>
 #include <vector>
 
+#include "symphony_lake_dataset/ImagePoint.h"
 #include "symphony_lake_dataset/SurveyVector.h"
+
+#include "Eigen/Dense"
 
 namespace robot::experimental::learn_descriptors {
 class DataParser {
@@ -53,11 +56,13 @@ class DataParser {
                 co_yield survey.loadImageByImageIndex(j);
             }
         }
-    }
+    }    
 
     DataParser(const std::filesystem::path &image_root_dir,
                const std::vector<std::string> &survey_list);
     ~DataParser();
+
+    Eigen::Affine3d get_T_world_camera(size_t survey_idx, size_t image_idx, bool use_gps = false, bool use_compass = false);    
 
     const symphony_lake_dataset::SurveyVector &get_surveys() const { return surveys_; };
     Generator<cv::Mat> create_img_generator() { return image_generator(surveys_); };
@@ -78,7 +83,7 @@ class SymphonyLakeDatasetTestHelper {
         cv::absdiff(img1, img2, diff);
         diff = diff.reshape(1);
         return cv::countNonZero(diff) == 0;
-    }
+    };
     static DataParser get_test_parser() { return DataParser(get_test_iamge_root_dir(), get_test_survey_list()); };
     static std::filesystem::path get_test_iamge_root_dir() { return std::filesystem::path(test_image_root_dir); };
     static std::vector<std::string> get_test_survey_list() {

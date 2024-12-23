@@ -27,7 +27,10 @@ TEST(SymphonyLakeParserTest, snippet_140106) {
     printf("Press 'q' in graphic window to quit\n");
     for (int i = 0; i < static_cast<int>(survey_vector.getNumSurveys()); i++) {
         const symphony_lake_dataset::Survey &survey = survey_vector.get(i);
-        for (int j = 0; j < static_cast<int>(survey.getNumImages()); j++) {
+        for (int j = 0; j < static_cast<int>(survey.getNumImages()); j++) {     
+            // img_point contains all the csv data entries       
+            const symphony_lake_dataset::ImagePoint img_point = survey.getImagePoint(j);
+            (void)img_point; // suppress unused variable
             image = survey.loadImageByImageIndex(j);
 
             // get the target image

@@ -40,7 +40,8 @@ cc_library(
   srcs = ["symphony_lake_parser.cc"],
   deps = [
     "@symphony_lake_parser",
-    "//common:check"
+    "//common:check",
+    "@eigen"
   ]
 )
 
