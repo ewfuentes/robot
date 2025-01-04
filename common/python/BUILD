@@ -28,12 +28,16 @@ py_binary(
     requirement("pandas"),
     requirement("scipy"),
     requirement("scikit-learn"),
+    requirement("opencv-python"),
+    requirement("supervision"),
     requirement("tqdm"),
     requirement("seaborn"),
     requirement("reportlab"),
+    "//experimental/overhead_matching:grounding_sam",
     "//experimental/beacon_sim:environment_builder",
     "//experimental/beacon_sim:plot_trials",
     "//experimental/beacon_sim:experiment_results_proto_py",
+    "//common:torch",
   ],
 )
 

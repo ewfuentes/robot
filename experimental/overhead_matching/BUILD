@@ -84,3 +84,42 @@ cc_binary(
         "@fmt",
     ]
 )
+
+py_library(
+    name = "grounding_sam",
+    srcs = ["grounding_sam.py"],
+    visibility = ["//common/python:__pkg__"],
+    deps = [
+	"//common:torch",
+	requirement("sam-2"),
+	requirement("transformers"),
+	requirement("numpy"),
+    ]
+)
+
+py_library(
+    name = "verde",
+    srcs = ["verde.py"],
+    deps = [
+	":grounding_sam",
+	requirement("numpy"),
+	requirement("matplotlib"),
+	requirement("PyGObject"),
+	requirement("pandas"),
+	requirement("supervision"),
+	requirement("IPython"),
+	requirement("seaborn"),
+	requirement("networkx"),
+    ]
+)
+
+py_test(
+    name = "verde_test",
+    srcs = ["verde_test.py"],
+    data = ["@cvusa_minisubset//:files"],
+    deps = [
+	":verde",
+	"//common/testing:is_test_python",
+	requirement("Pillow"),
+    ],
+)
