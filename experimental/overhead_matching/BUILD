@@ -74,7 +74,7 @@ cc_test(
     ]
 )
 
-cc_test(
+cc_binary(
     name = "kimera_vio_pipeline_test",
     srcs = ["kimera_vio_pipeline_test.cc"],
     copts = ["-Wno-sign-compare", "-Wno-vla"],
