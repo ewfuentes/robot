@@ -87,7 +87,8 @@ bool SpectacularDataProviderInterface::spin_once() {
     }
 
     const VIO::CameraParams& left_cam_info = vio_params_.camera_params_.at(0);
-    const bool equalize_image = vio_params_.frontend_params_.stereo_matching_params_.equalize_image_;
+    const bool equalize_image =
+        vio_params_.frontend_params_.stereo_matching_params_.equalize_image_;
 
     std::optional<FrameGroup> maybe_frame = spec_log_.get_frame(current_k_);
 

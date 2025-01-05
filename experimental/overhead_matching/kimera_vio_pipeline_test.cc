@@ -6,9 +6,8 @@
 #include <memory>
 #include <utility>
 
-#include "fmt/core.h"
-
 #include "experimental/overhead_matching/kimera_spectacular_data_provider.hh"
+#include "fmt/core.h"
 #include "kimera-vio/dataprovider/DataProviderInterface.h"
 #include "kimera-vio/logging/Logger.h"
 #include "kimera-vio/pipeline/Pipeline.h"
@@ -19,7 +18,7 @@
 DEFINE_string(params_folder_path, "/home/ekf/software/robot/data/iphoneSpectacularParams",
               "Path to the folder containing the yaml files with the VIO parameters.");
 DEFINE_string(dataset_path, "/home/ekf/software/robot/data/Walk-to-work",
-// DEFINE_string(dataset_path, "/home/ekf/software/robot/data/20241212_090634",
+              // DEFINE_string(dataset_path, "/home/ekf/software/robot/data/20241212_090634",
               "Path of dataset");
 
 int main(int argc, char* argv[]) {
@@ -38,10 +37,7 @@ int main(int argc, char* argv[]) {
     // Build dataset parser.
     VIO::DataProviderInterface::Ptr dataset_parser =
         std::make_unique<robot::experimental::overhead_matching::SpectacularDataProviderInterface>(
-            FLAGS_dataset_path,
-            0,
-            std::numeric_limits<int>::max(),
-            vio_params);
+            FLAGS_dataset_path, 0, std::numeric_limits<int>::max(), vio_params);
 
     CHECK(dataset_parser);
 
@@ -51,23 +47,21 @@ int main(int argc, char* argv[]) {
 
     // Register callback to shutdown data provider in case VIO pipeline
     // shutsdown.
-    vio_pipeline->registerShutdownCallback(
-        [&dataset_parser](){ dataset_parser->shutdown();});
+    vio_pipeline->registerShutdownCallback([&dataset_parser]() { dataset_parser->shutdown(); });
 
     // Register callback to vio pipeline.
     dataset_parser->registerImuSingleCallback(
-        [&vio_pipeline](const auto& arg){ vio_pipeline->fillSingleImuQueue(arg); });
+        [&vio_pipeline](const auto& arg) { vio_pipeline->fillSingleImuQueue(arg); });
     // We use blocking variants to avoid overgrowing the input queues (use
     // the non-blocking versions with real sensor streams)
     dataset_parser->registerLeftFrameCallback(
-        [&vio_pipeline](auto arg){ vio_pipeline->fillLeftFrameQueue(std::move(arg)); });
+        [&vio_pipeline](auto arg) { vio_pipeline->fillLeftFrameQueue(std::move(arg)); });
 
-    dataset_parser->registerDepthFrameCallback(
-        [&vio_pipeline](auto arg){ 
-            auto rgbd_pipeline = std::dynamic_pointer_cast<VIO::RgbdImuPipeline>(vio_pipeline);
-            ROBOT_CHECK(rgbd_pipeline);
-            rgbd_pipeline->fillDepthFrameQueue(std::move(arg)); 
-        });
+    dataset_parser->registerDepthFrameCallback([&vio_pipeline](auto arg) {
+        auto rgbd_pipeline = std::dynamic_pointer_cast<VIO::RgbdImuPipeline>(vio_pipeline);
+        ROBOT_CHECK(rgbd_pipeline);
+        rgbd_pipeline->fillDepthFrameQueue(std::move(arg));
+    });
 
     // Spin dataset.
     auto tic = VIO::utils::Timer::tic();
