@@ -1,0 +1,44 @@
+diff --git a/modules/viz/src/vizimpl.cpp b/modules/viz/src/vizimpl.cpp
+index 2c7ce997..5942eb68 100644
+--- a/modules/viz/src/vizimpl.cpp
++++ b/modules/viz/src/vizimpl.cpp
+@@ -44,6 +44,7 @@
+ //M*/
+ 
+ #include "precomp.hpp"
++#include <thread>
+ 
+ 
+ /////////////////////////////////////////////////////////////////////////////////////////////
+@@ -176,6 +177,7 @@ void cv::viz::Viz3d::VizImpl::spinOnce(int time, bool force_redraw)
+ #endif
+         interactor_->SetRenderWindow(window_);
+         interactor_->SetInteractorStyle(style_);
++	interactor_->Initialize();
+         interactor_->AddObserver(vtkCommand::TimerEvent, timer_callback_);
+         interactor_->AddObserver(vtkCommand::ExitEvent, exit_callback_);
+         window_->AlphaBitPlanesOff();
+@@ -193,9 +195,20 @@ void cv::viz::Viz3d::VizImpl::spinOnce(int time, bool force_redraw)
+     if (force_redraw)
+         local->Render();
+ 
+-    timer_callback_->timer_id = local->CreateRepeatingTimer(std::max(1, time));
+-    local->Start();
+-    local->DestroyTimer(timer_callback_->timer_id);
++#if VTK_MAJOR_VERSION >= 9 && (VTK_MINOR_VERSION != 0 || VTK_BUILD_VERSION != 0) && (VTK_MINOR_VERSION != 0 || VTK_BUILD_VERSION != 1)
++    // All VTK 9 versions, except 9.0.0 and 9.0.1
++    // see https://github.com/PointCloudLibrary/pcl/blob/master/visualization/src/pcl_visualizer.cpp
++    if(local->IsA("vtkXRenderWindowInteractor")) {
++        local->ProcessEvents ();
++        std::this_thread::sleep_for (std::chrono::milliseconds (time));
++    }
++    else
++#endif
++    {
++        timer_callback_->timer_id = local->CreateRepeatingTimer(std::max(1, time));
++        local->Start();
++        local->DestroyTimer(timer_callback_->timer_id);
++    }
+ }
+ 
+ /////////////////////////////////////////////////////////////////////////////////////////////
