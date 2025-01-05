@@ -534,7 +534,7 @@ http_archive(
   urls = ["https://github.com/ewfuentes/Kimera-VIO/archive/master.zip"],
   strip_prefix = "Kimera-VIO-master",
   build_file = "//third_party:BUILD.kimera_vio",
-  integrity = "sha256-+hQBAPv4bDRbYnH1iXeuHTNsWnfXgqZ0FoUTv6usQ/k=",
+  integrity = "sha256-dWzux1ioSB8LfovhQFAcbmlotNo19x++7ptw9S64UGM=",
 )
 
 http_archive(
