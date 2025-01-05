@@ -388,7 +388,11 @@ http_archive(
   url = "https://github.com/opencv/opencv_contrib/archive/refs/tags/4.7.0.zip",
   strip_prefix="opencv_contrib-4.7.0",
   build_file="//third_party:BUILD.opencv_contrib",
-  integrity = "sha256-7wAYE+w5IVWTzp3rOuxwqFJ49XoO2IsY9vYVJlhVQ2w="
+  integrity = "sha256-7wAYE+w5IVWTzp3rOuxwqFJ49XoO2IsY9vYVJlhVQ2w=",
+  patch_args=["-p1"],
+  patches = [
+        "//third_party:opencv_contrib_0001-vtk9-breaks-spin-once.patch"
+  ]
 )
 
 
@@ -530,7 +534,7 @@ http_archive(
   urls = ["https://github.com/ewfuentes/Kimera-VIO/archive/master.zip"],
   strip_prefix = "Kimera-VIO-master",
   build_file = "//third_party:BUILD.kimera_vio",
-  integrity = "sha256-+hQBAPv4bDRbYnH1iXeuHTNsWnfXgqZ0FoUTv6usQ/k=",
+  integrity = "sha256-dWzux1ioSB8LfovhQFAcbmlotNo19x++7ptw9S64UGM=",
 )
 
 http_archive(
