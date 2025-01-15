@@ -110,6 +110,7 @@ py_library(
 	requirement("IPython"),
 	requirement("seaborn"),
 	requirement("networkx"),
+    ]
 )
 
 py_test(
