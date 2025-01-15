@@ -110,7 +110,6 @@ py_library(
 	requirement("IPython"),
 	requirement("seaborn"),
 	requirement("networkx"),
-    ]
 )
 
 py_test(
@@ -122,4 +121,23 @@ py_test(
 	"//common/testing:is_test_python",
 	requirement("Pillow"),
     ],
+)
+
+py_library(
+    name = "cvusa_evaluation_pipeline",
+    srcs = ["cvusa_evaluation_pipeline.py"],
+    deps = [
+	requirement('numpy')
+    ]
+)
+
+py_test(
+    name = "cvusa_evaluation_pipeline_test",
+    srcs = ["cvusa_evaluation_pipeline_test.py"],
+    data = ["@cvusa_minisubset//:files"],
+    deps = [
+	requirement("numpy"),
+	requirement("Pillow"),
+	":cvusa_evaluation_pipeline",
+    ]
 )
