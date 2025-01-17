@@ -7,19 +7,9 @@ import seaborn as sns
 import numpy as np
 import networkx as nx
 import itertools
-from typing import Optional, Tuple
-
-import warnings
-
-warnings.filterwarnings("error", category=RuntimeWarning)
+from typing import Tuple
 
 import experimental.overhead_matching.grounding_sam as gs
-import common.testing.is_test_python as itp
-
-pd.options.mode.chained_assignment = 'raise'
-
-if not itp.is_test():
-    mpl.use("GTK3Agg")
 
 
 @dataclass
@@ -40,7 +30,7 @@ def _node_x_distance(node_x: float, others: pd.Series, wrap_around_width: None |
 
 
 def _compute_nodes(
-    image: np.ndarray, model: gs.GroundingSam, classes: list[str], debug=True
+    image: np.ndarray, model: gs.GroundingSam, classes: list[str], debug=False
 ) -> pd.DataFrame:
     result = model.detect_queries(image, classes)
 
@@ -257,7 +247,9 @@ def _visualize_matches(image, nodes, cliques, clique_probabilities):
     plt.colorbar()
 
 
-def estimate_overhead_transform(inputs: OverheadMatchingInput, model: gs.GroundingSam, debug=False) -> Tuple[float, float] | str:
+def estimate_overhead_transform(
+        inputs: OverheadMatchingInput, model: gs.GroundingSam, debug=False
+        ) -> Tuple[float, float] | str:
     classes = ["tree", "house"]
     ego_width = inputs.ego.shape[1]
 
@@ -276,7 +268,7 @@ def estimate_overhead_transform(inputs: OverheadMatchingInput, model: gs.Groundi
     if overhead_cliques.shape[1] == 0:
         return f'Invalid overhead cliques shape: {overhead_cliques.shape}'
 
-    if not itp.is_test() and debug:
+    if debug:
         _visualize_graph(inputs.overhead, overhead_nodes, overhead_cliques)
 
     # detect nodes in ego
@@ -294,25 +286,21 @@ def estimate_overhead_transform(inputs: OverheadMatchingInput, model: gs.Groundi
     if ego_cliques.shape[1] == 0:
         return f'Invalid ego cliques shape: {ego_cliques.shape}'
 
-    if not itp.is_test() and debug:
+    if debug:
         _visualize_graph(inputs.ego, ego_nodes, ego_cliques)
-
 
     # perform matching
     overhead_clique_probabilities = _match_graphs(
         overhead_nodes, overhead_cliques, ego_nodes, ego_cliques, classes
     )
 
-    if not itp.is_test() and debug:
+    if debug:
         _visualize_matches(
             inputs.overhead,
             overhead_nodes,
             overhead_cliques,
             overhead_clique_probabilities,
         )
-
-    if not itp.is_test() and debug:
-        plt.show(block=True)
 
     argmax_idx = np.argmax(overhead_clique_probabilities)
     argmax_clique = overhead_cliques[:, argmax_idx].astype(bool)

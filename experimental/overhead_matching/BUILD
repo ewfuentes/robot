@@ -102,13 +102,10 @@ py_library(
     srcs = ["verde.py"],
     deps = [
 	":grounding_sam",
-	"//common/testing:is_test_python",
 	requirement("numpy"),
 	requirement("matplotlib"),
-	requirement("PyGObject"),
 	requirement("pandas"),
 	requirement("supervision"),
-	requirement("IPython"),
 	requirement("seaborn"),
 	requirement("networkx"),
     ]
