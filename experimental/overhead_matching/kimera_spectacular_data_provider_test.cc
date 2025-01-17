@@ -115,6 +115,7 @@ TEST(KimeraSpectacularDataProviderTest, happy_case) {
 
     const std::filesystem::path vio_config_path("");  // loads default params
     VIO::VioParams vio_params(vio_config_path);
+    vio_params.camera_params_.push_back(VIO::CameraParams());
     vio_params.parallel_run_ = false;
 
     SpectacularDataProviderInterface s_interface(log_path, 0, std::numeric_limits<int>::max(),
@@ -153,8 +154,6 @@ TEST(KimeraSpectacularDataProviderTest, happy_case) {
 
     // Verification
     EXPECT_TRUE(imu_queue.size() == times.size());
-    // for (auto [imu_true, imu_kimera] : std::views::zip(original_imu_samples, imu_queue)) {
-    // EXPECT_TRUE(compare_imu_samples(imu_true, imu_kimera));
     for (size_t i = 0; i < imu_queue.size(); i++) {
         EXPECT_TRUE(compare_imu_samples(original_imu_samples[i], imu_queue[i]));
         break;
@@ -166,8 +165,10 @@ TEST(KimeraSpectacularDataProviderTest, happy_case) {
         std::optional<FrameGroup> fg = log.get_frame(i);
         EXPECT_TRUE(fg.has_value());
 
+        auto rescaled_depth = fg->depth_frame;
+        cv::resize(rescaled_depth, rescaled_depth, fg->bgr_frame.size());
         EXPECT_TRUE(compare_bgr_frame(bgr_queue[i], fg->bgr_frame, fg->time_of_validity, i));
-        EXPECT_TRUE(compare_depth_frame(depth_queue[i], fg->depth_frame, fg->time_of_validity, i));
+        EXPECT_TRUE(compare_depth_frame(depth_queue[i], rescaled_depth, fg->time_of_validity, i));
     }
 }
 

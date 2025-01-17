@@ -85,11 +85,10 @@ bool SpectacularDataProviderInterface::spin_once() {
         LOG(INFO) << "Finished spinning dataset.";
         return false;
     }
-    // TODO: How do we want to handle camera parameters?
-    //  const VIO::CameraParams& left_cam_info = vio_params_.camera_params_.at(0);
-    const VIO::CameraParams left_cam_FAKE_PARAMS;
-    const bool equalize_image = false;
-    // vio_params_.frontend_params_.stereo_matching_params_.equalize_image_;
+
+    const VIO::CameraParams& left_cam_info = vio_params_.camera_params_.at(0);
+    const bool equalize_image =
+        vio_params_.frontend_params_.stereo_matching_params_.equalize_image_;
 
     std::optional<FrameGroup> maybe_frame = spec_log_.get_frame(current_k_);
 
@@ -111,8 +110,11 @@ bool SpectacularDataProviderInterface::spin_once() {
     cv::Mat& depth_meters = maybe_frame->depth_frame;
     ROBOT_CHECK(depth_meters.type() == CV_32FC1);  // type assumed if depth is distance in meters
 
+    // scale depth image to match rgb image size
+    cv::resize(depth_meters, depth_meters, bgr.size());
+
     left_frame_callback_(
-        std::make_unique<VIO::Frame>(current_k_, timestamp_frame_k, left_cam_FAKE_PARAMS, bgr));
+        std::make_unique<VIO::Frame>(current_k_, timestamp_frame_k, left_cam_info, bgr));
 
     depth_frame_callback_(
         std::make_unique<VIO::DepthFrame>(current_k_, timestamp_frame_k, depth_meters));

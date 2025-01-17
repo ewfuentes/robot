@@ -253,6 +253,9 @@ cc_library(
       "@kimera_rpgo",
       ":triangle",
   ],
+  copts = [
+    "-DNDEBUG",  # Disable DCHECK
+  ],
   strip_include_prefix = "include",
   visibility = ["//visibility:public"],
 )
