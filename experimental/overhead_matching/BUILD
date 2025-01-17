@@ -117,6 +117,7 @@ py_test(
     data = ["@cvusa_minisubset//:files"],
     deps = [
 	":verde",
+	"//common/testing:is_test_python",
 	requirement("Pillow"),
     ],
 )
