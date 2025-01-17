@@ -46,10 +46,18 @@ class GroundingSam:
         bounding_boxes = dino_results["boxes"].cpu().numpy()
 
         # Run SAM2
-        self._sam2_predictor.set_image(image)
-        masks, scores, logits = self._sam2_predictor.predict(
-            box=bounding_boxes, multimask_output=False
-        )
+        if bounding_boxes.shape[0] > 0:
+            self._sam2_predictor.set_image(image)
+            masks, scores, logits = self._sam2_predictor.predict(
+                box=bounding_boxes, multimask_output=False
+            )
+
+            if len(masks.shape) == 4:
+                masks = masks.squeeze(1)
+        else:
+            masks = np.zeros((0, *image.shape[:2]))
+            scores = np.zeros((0))
+            logits = np.zeros((0))
 
         return {
             "dino_results": {
@@ -58,7 +66,7 @@ class GroundingSam:
                 "boxes": dino_results["boxes"].cpu().numpy(),
             },
             "sam_results": {
-                "masks": masks.squeeze(1),
+                "masks": masks,
                 "scores": scores,
                 "logits": logits,
             },

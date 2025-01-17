@@ -104,10 +104,8 @@ py_library(
 	":grounding_sam",
 	requirement("numpy"),
 	requirement("matplotlib"),
-	requirement("PyGObject"),
 	requirement("pandas"),
 	requirement("supervision"),
-	requirement("IPython"),
 	requirement("seaborn"),
 	requirement("networkx"),
     ]
@@ -122,4 +120,33 @@ py_test(
 	"//common/testing:is_test_python",
 	requirement("Pillow"),
     ],
+)
+
+py_library(
+    name = "cvusa_evaluation_pipeline",
+    srcs = ["cvusa_evaluation_pipeline.py"],
+    deps = [
+	requirement('numpy'),
+	requirement('tqdm'),
+    ]
+)
+
+py_test(
+    name = "cvusa_evaluation_pipeline_test",
+    srcs = ["cvusa_evaluation_pipeline_test.py"],
+    data = ["@cvusa_minisubset//:files"],
+    deps = [
+	requirement("numpy"),
+	requirement("Pillow"),
+	":cvusa_evaluation_pipeline",
+    ]
+)
+
+py_binary(
+    name = "evaluate_verde",
+    srcs = ["evaluate_verde.py"],
+    deps = [
+	":cvusa_evaluation_pipeline",
+	":verde",
+    ]
 )

@@ -7,12 +7,9 @@ import seaborn as sns
 import numpy as np
 import networkx as nx
 import itertools
+from typing import Tuple
 
 import experimental.overhead_matching.grounding_sam as gs
-import common.testing.is_test_python as itp
-
-if not itp.is_test():
-    mpl.use("GTK3Agg")
 
 
 @dataclass
@@ -33,7 +30,7 @@ def _node_x_distance(node_x: float, others: pd.Series, wrap_around_width: None |
 
 
 def _compute_nodes(
-    image: np.ndarray, model: gs.GroundingSam, classes: list[str], debug=True
+    image: np.ndarray, model: gs.GroundingSam, classes: list[str], debug=False
 ) -> pd.DataFrame:
     result = model.detect_queries(image, classes)
 
@@ -67,7 +64,7 @@ def _compute_nodes(
     return out
 
 
-def _compute_ego_nodes(image, model: gs.GroundingSam, classes: list[str]):
+def _compute_ego_nodes(image, model: gs.GroundingSam, classes: list[str], debug: bool):
     doubled_image = np.concatenate(
         [
             image,
@@ -77,7 +74,7 @@ def _compute_ego_nodes(image, model: gs.GroundingSam, classes: list[str]):
     )
 
     # Compute nodes from the first panorama
-    nodes_in_image = _compute_nodes(doubled_image, model, classes)
+    nodes_in_image = _compute_nodes(doubled_image, model, classes, debug)
 
     image_half_width = image.shape[1] // 2
     center_x = nodes_in_image["center_x"]
@@ -85,8 +82,8 @@ def _compute_ego_nodes(image, model: gs.GroundingSam, classes: list[str]):
         center_x >= image_half_width, center_x < 2 * image.shape[1] - image_half_width
     )
 
-    center_nodes_in_image = nodes_in_image[mask]
-    center_nodes_in_image.loc[:, "center_x"] %= image.shape[1]
+    center_nodes_in_image = nodes_in_image[mask].copy()
+    center_nodes_in_image["center_x"] %= image.shape[1]
 
     return center_nodes_in_image.reset_index(drop=True)
 
@@ -109,7 +106,6 @@ def _compute_covisibility_window_size(
 def _get_cliques(
     nodes: pd.DataFrame, ego_width: None | int, window_size: float
 ) -> np.ndarray:
-    print(ego_width, window_size)
     G = nx.Graph()
     for t in nodes.itertuples():
         other_nodes = nodes.loc[nodes.index > t.Index, :]
@@ -204,11 +200,8 @@ def _compute_class_graph(
     return out
 
 
-def _match_graphs(overhead_nodes, overhead_cliques, ego_nodes, ego_cliques):
+def _match_graphs(overhead_nodes, overhead_cliques, ego_nodes, ego_cliques, classes):
     overhead_cliques = _preprocess_overhead_cliques(overhead_cliques)
-
-    classes = np.unique(overhead_nodes["class"]).tolist()
-    print(classes)
 
     ego_class_graphs = _compute_class_graph(
         ego_nodes, ego_cliques, classes, compute_per_clique=False
@@ -216,9 +209,6 @@ def _match_graphs(overhead_nodes, overhead_cliques, ego_nodes, ego_cliques):
     overhead_class_graphs = _compute_class_graph(
         overhead_nodes, overhead_cliques, classes, compute_per_clique=True
     )
-
-    print("ego class graph:", ego_class_graphs.shape)
-    print("overhead class graph:", overhead_class_graphs.shape)
 
     # The observation likelihood P(Z | L) is the probability of making the ego
     # observation at a given location, where a location is represented as a
@@ -235,7 +225,11 @@ def _match_graphs(overhead_nodes, overhead_cliques, ego_nodes, ego_cliques):
     )
     observation_likelihood = observation_likelihood_num / observation_likelihood_den
 
-    return observation_likelihood / np.sum(observation_likelihood)
+    normalizer = np.sum(observation_likelihood)
+    if normalizer == 0:
+        return observation_likelihood
+
+    return observation_likelihood / normalizer
 
 
 def _visualize_matches(image, nodes, cliques, clique_probabilities):
@@ -253,40 +247,54 @@ def _visualize_matches(image, nodes, cliques, clique_probabilities):
     plt.colorbar()
 
 
-def estimate_overhead_transform(inputs: OverheadMatchingInput, model: gs.GroundingSam):
+def estimate_overhead_transform(
+        inputs: OverheadMatchingInput, model: gs.GroundingSam, debug=False
+        ) -> Tuple[float, float] | str:
     classes = ["tree", "house"]
-    print(f"overhead_size: {inputs.overhead.shape}")
-    print(f"ego_size: {inputs.ego.shape}")
-
     ego_width = inputs.ego.shape[1]
-    ego_half_width = ego_width // 2
 
     # Detect nodes in overhead
-    print("computing overhead nodes")
-    overhead_nodes = _compute_nodes(inputs.overhead, model, classes)
+    overhead_nodes = _compute_nodes(inputs.overhead, model, classes, debug)
+
+    if len(overhead_nodes) == 0:
+        return 'No nodes detected in overhead'
+
+    if len(overhead_nodes) == 1:
+        return 'Cannot find cliques with a single node in overhead'
+
     # compute edge in overhead
     overhead_cliques = _compute_edges(overhead_nodes, ego_width=None)
 
-    if not itp.is_test():
+    if overhead_cliques.shape[1] == 0:
+        return f'Invalid overhead cliques shape: {overhead_cliques.shape}'
+
+    if debug:
         _visualize_graph(inputs.overhead, overhead_nodes, overhead_cliques)
 
     # detect nodes in ego
-    print("computing ego nodes")
-    ego_nodes = _compute_ego_nodes(inputs.ego, model, classes)
+    ego_nodes = _compute_ego_nodes(inputs.ego, model, classes, debug)
+
+    if len(ego_nodes) == 0:
+        return 'No nodes detected in ego'
+
+    if len(ego_nodes) == 1:
+        return 'Cannot find cliques with a single node in ego'
 
     # detect edges in ego
-    ego_cliques = _compute_edges(ego_nodes, ego_width=inputs.ego.shape[1])
+    ego_cliques = _compute_edges(ego_nodes, ego_width=ego_width)
 
-    if not itp.is_test():
+    if ego_cliques.shape[1] == 0:
+        return f'Invalid ego cliques shape: {ego_cliques.shape}'
+
+    if debug:
         _visualize_graph(inputs.ego, ego_nodes, ego_cliques)
 
     # perform matching
     overhead_clique_probabilities = _match_graphs(
-        overhead_nodes, overhead_cliques, ego_nodes, ego_cliques
+        overhead_nodes, overhead_cliques, ego_nodes, ego_cliques, classes
     )
-    print(overhead_clique_probabilities)
 
-    if not itp.is_test():
+    if debug:
         _visualize_matches(
             inputs.overhead,
             overhead_nodes,
@@ -294,5 +302,9 @@ def estimate_overhead_transform(inputs: OverheadMatchingInput, model: gs.Groundi
             overhead_clique_probabilities,
         )
 
-    if not itp.is_test():
-        plt.show(block=True)
+    argmax_idx = np.argmax(overhead_clique_probabilities)
+    argmax_clique = overhead_cliques[:, argmax_idx].astype(bool)
+    clique_center = overhead_nodes.loc[
+        argmax_clique, ["center_x", "center_y"]].mean().values.tolist()
+
+    return tuple(clique_center)
