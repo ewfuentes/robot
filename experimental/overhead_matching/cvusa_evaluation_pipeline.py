@@ -1,14 +1,17 @@
-from pathlib import Path
-
-import numpy as np
-from dataclasses import dataclass
 
 from collections.abc import Callable
+from dataclasses import dataclass
+import numpy as np
+from pathlib import Path
 from PIL import Image
+import tqdm
+from typing import Tuple
+
 
 @dataclass
 class TrialResult:
-    prediction: (float, float)
+    prediction: Tuple[float, float] | str
+
 
 @dataclass
 class EvaluationResult:
@@ -36,22 +39,24 @@ def cvusa_evaluation(
     per_image_results = {}
     accumulated_error = 0.0
     count = 0
-    for pano_path in pano_dir.iterdir():
-        file_name = pano_path.name
-        overhead_path = overhead_dir / file_name
-        assert overhead_path.exists()
+    for overhead_path in (pbar := tqdm.tqdm(sorted(list(overhead_dir.iterdir())))):
+        file_name = overhead_path.name
+        pano_path = pano_dir / file_name
+        assert pano_path.exists()
+        pbar.set_description(f'processing {file_name}')
 
         result = method_under_test(
             overhead=np.asarray(Image.open(overhead_path).convert("RGB")),
             ego=np.asarray(Image.open(pano_path).convert("RGB")),
         )
 
-        error_x = result[0] - 0.5
-        error_y = result[1] - 0.5
-        error = (error_x * error_x + error_y * error_y) ** 0.5
+        if not isinstance(result, str):
+            error_x = result[0] - 0.5
+            error_y = result[1] - 0.5
+            error = (error_x * error_x + error_y * error_y) ** 0.5
 
-        accumulated_error += error
-        count += 1
+            accumulated_error += error
+            count += 1
 
         per_image_results[file_name] = TrialResult(prediction=result)
 

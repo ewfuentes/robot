@@ -102,6 +102,7 @@ py_library(
     srcs = ["verde.py"],
     deps = [
 	":grounding_sam",
+	"//common/testing:is_test_python",
 	requirement("numpy"),
 	requirement("matplotlib"),
 	requirement("PyGObject"),
@@ -119,7 +120,6 @@ py_test(
     data = ["@cvusa_minisubset//:files"],
     deps = [
 	":verde",
-	"//common/testing:is_test_python",
 	requirement("Pillow"),
     ],
 )
@@ -128,7 +128,8 @@ py_library(
     name = "cvusa_evaluation_pipeline",
     srcs = ["cvusa_evaluation_pipeline.py"],
     deps = [
-	requirement('numpy')
+	requirement('numpy'),
+	requirement('tqdm'),
     ]
 )
 
@@ -140,5 +141,14 @@ py_test(
 	requirement("numpy"),
 	requirement("Pillow"),
 	":cvusa_evaluation_pipeline",
+    ]
+)
+
+py_binary(
+    name = "evaluate_verde",
+    srcs = ["evaluate_verde.py"],
+    deps = [
+	":cvusa_evaluation_pipeline",
+	":verde",
     ]
 )
