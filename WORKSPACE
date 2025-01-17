@@ -573,3 +573,12 @@ http_archive(
   build_file = "//third_party:BUILD.zip_file",
   integrity = "sha256-miPvL6co2035EGlkvbcksmTO6HwB/AknVLQK+/YDet0="
 )
+
+
+http_archive(
+  name = "cvusa_minisubset",
+  urls = ["https://www.dropbox.com/scl/fi/0rhtyh2mie2ok2r1rpp2q/cvusa_minisubset.zip?rlkey=t8nv7qmc50ttsqscot3dpq1ws&st=qsggwian&dl=1"],
+  build_file = "//third_party:BUILD.zip_file",
+  integrity = "sha256-1um7pJeTSgJbiDK6JfjeDwYE1XPlF3vv0xurc5rBVz0="
+)
+
