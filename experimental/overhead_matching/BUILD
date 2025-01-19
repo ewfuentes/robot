@@ -84,3 +84,69 @@ cc_binary(
         "@fmt",
     ]
 )
+
+py_library(
+    name = "grounding_sam",
+    srcs = ["grounding_sam.py"],
+    visibility = ["//common/python:__pkg__"],
+    deps = [
+	"//common:torch",
+	requirement("sam-2"),
+	requirement("transformers"),
+	requirement("numpy"),
+    ]
+)
+
+py_library(
+    name = "verde",
+    srcs = ["verde.py"],
+    deps = [
+	":grounding_sam",
+	requirement("numpy"),
+	requirement("matplotlib"),
+	requirement("pandas"),
+	requirement("supervision"),
+	requirement("seaborn"),
+	requirement("networkx"),
+    ]
+)
+
+py_test(
+    name = "verde_test",
+    srcs = ["verde_test.py"],
+    data = ["@cvusa_minisubset//:files"],
+    deps = [
+	":verde",
+	"//common/testing:is_test_python",
+	requirement("Pillow"),
+    ],
+)
+
+py_library(
+    name = "cvusa_evaluation_pipeline",
+    srcs = ["cvusa_evaluation_pipeline.py"],
+    deps = [
+	requirement('numpy'),
+	requirement('tqdm'),
+    ]
+)
+
+py_test(
+    name = "cvusa_evaluation_pipeline_test",
+    srcs = ["cvusa_evaluation_pipeline_test.py"],
+    data = ["@cvusa_minisubset//:files"],
+    deps = [
+	requirement("numpy"),
+	requirement("Pillow"),
+	":cvusa_evaluation_pipeline",
+    ]
+)
+
+py_binary(
+    name = "evaluate_verde",
+    srcs = ["evaluate_verde.py"],
+    deps = [
+	":cvusa_evaluation_pipeline",
+	":verde",
+    ]
+)
