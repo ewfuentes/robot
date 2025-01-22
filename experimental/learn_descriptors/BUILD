@@ -68,3 +68,11 @@ cc_test(
     ":learn_descriptors"  
   ]
 )
+
+cc_binary(
+  name = "opencv_viz_example",
+  srcs = ["opencv_viz_example.cc"],
+  deps = [
+    "@opencv//:opencv"
+  ]
+)
