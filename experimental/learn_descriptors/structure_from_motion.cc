@@ -1,6 +1,54 @@
 #include "experimental/learn_descriptors/structure_from_motion.hh"
+#include <filesystem>
+#include <sstream>
+
+namespace fs = std::filesystem;
 
 namespace robot::experimental::learn_descriptors {
+
+const Eigen::Affine3d StructureFromMotion::T_symlake_boat_cam = []() {
+    Eigen::Affine3d transform = Eigen::Affine3d::Identity();
+    transform.translate(Eigen::Vector3d::Zero());
+    transform.rotate(Eigen::Matrix3d(
+        Eigen::AngleAxisd(M_PI_2, Eigen::Vector3d(1,0,0)) *
+        Eigen::AngleAxisd(M_PI_2, Eigen::Vector3d(0,1,0)))
+    );
+
+    // std::stringstream ss;
+    // ss << gtsam::Pose3(gtsam::Rot3(transform.rotation()), gtsam::Point3(transform.translation()));
+    // json json_obj;
+    // json_obj["T_symlake_boat_cam"] = ss.str();
+    // fs::path output_dir = "output";
+    // fs::path output_file = output_dir / "output_sfm.json";
+    // if (!fs::exists(output_dir)) {
+    //     fs::create_directory(output_dir);
+    // }
+    // std::ofstream file(output_file);
+    // if (file.is_open()) {
+    //     file << json_obj.dump(4);
+    //     file.close();
+    // }
+
+    return transform;
+}();
+
+std::string pose_to_string(gtsam::Pose3 pose) {
+    std::stringstream ss;
+    ss << pose;
+    return ss.str();
+}
+
+const gtsam::Pose3 StructureFromMotion::default_initial_pose = gtsam::Pose3(
+    gtsam::Rot3(T_symlake_boat_cam.rotation()), 
+    T_symlake_boat_cam.translation());
+// gtsam::Pose3(
+//     gtsam::Rot3(Eigen::Matrix3d(
+//         Eigen::AngleAxis(M_PI / 2, Eigen::Vector3d(1, 0, 0)).toRotationMatrix() *
+//         Eigen::AngleAxis(M_PI / 2, Eigen::Vector3d(0, 1, 0)).toRotationMatrix()
+//     )),
+//     gtsam::Point3::Identity()
+// );
+
 StructureFromMotion::StructureFromMotion(Frontend::ExtractorType frontend_extractor, gtsam::Cal3_S2 K, gtsam::Pose3 initial_pose,
                                Frontend::MatcherType frontend_matcher) {
     frontend_ = Frontend(frontend_extractor, frontend_matcher);
@@ -22,18 +70,46 @@ void StructureFromMotion::add_image(const cv::Mat &img) {
         Frontend::enforce_bijective_matches(matches);
 
         matches_.push_back(matches);
+        gtsam::Pose3 between_value = gtsam::Pose3::Identity();
         backend_.add_between_factor(
             gtsam::Symbol(Backend::pose_symbol_char, get_num_images_added()-1),
             gtsam::Symbol(Backend::pose_symbol_char, get_num_images_added()),
-            gtsam::Pose3::Identity());
+            between_value);        
+        gtsam::Pose3 T_cam_landmark(gtsam::Rot3::Identity(), gtsam::Point3(0,0,1));
+        gtsam::Pose3 T_world_cam1 = backend_.get_current_initial_values().at<gtsam::Pose3>(gtsam::Symbol(Backend::pose_symbol_char, get_num_images_added()-1));      
+        gtsam::Pose3 T_world_cam2 = backend_.get_current_initial_values().at<gtsam::Pose3>(gtsam::Symbol(Backend::pose_symbol_char, get_num_images_added()));      
+        int count = 0;
         for (const cv::DMatch match : matches) {
+            if (count < 1) {
+                std::cout << "hello???" << std::endl;
+                json json_obj;
+                json_obj["add_image_1"] = {
+                    {"T_world_cam1", pose_to_string(T_world_cam1)},
+                    {"T_world_cam2", pose_to_string(T_world_cam1)},
+                    {"T_world_lmkcam1", pose_to_string(T_world_cam1 * T_cam_landmark)},
+                    {"T_world_lmkcam2", pose_to_string(T_world_cam2 * T_cam_landmark)}
+                };
+                fs::path output_dir = "output";
+                fs::path output_file = output_dir / "output_sfm.json";
+                if (!fs::exists(output_dir)) {
+                    fs::create_directory(output_dir);
+                }
+                std::ofstream file(output_file);
+                if (file.is_open()) {
+                    file << json_obj.dump(4);
+                    file.close();
+                }
+            }
+            count++;
+            std::cout << "T_world_landmark" <<  T_world_cam1 * T_cam_landmark << std::endl;
             Backend::Landmark landmark_cam_1(
                 gtsam::Symbol(Backend::landmark_symbol_char, landmark_count_),
                 gtsam::Symbol(Backend::pose_symbol_char, get_num_images_added()-1),
                 gtsam::Point2(
                     static_cast<double>(img_keypoints_and_descriptors_.back().first[match.queryIdx].pt.x),
                     static_cast<double>(img_keypoints_and_descriptors_.back().first[match.queryIdx].pt.y) 
-                )
+                ),
+                (T_world_cam1 * T_cam_landmark).translation()
             );
             Backend::Landmark landmark_cam_2(
                 gtsam::Symbol(Backend::landmark_symbol_char, landmark_count_),
@@ -41,14 +117,19 @@ void StructureFromMotion::add_image(const cv::Mat &img) {
                 gtsam::Point2(
                     static_cast<double>(keypoints_and_descriptors.first[match.trainIdx].pt.x),
                     static_cast<double>(keypoints_and_descriptors.first[match.trainIdx].pt.y)
-                )
+                ),
+                (T_world_cam2 * T_cam_landmark).translation()
             );
-            landmark_count_++;
             landmarks_[get_num_images_added()-1].push_back(landmark_cam_1);
             landmarks_[get_num_images_added()].push_back(landmark_cam_2);
             backend_.add_landmark(landmark_cam_1);
             backend_.add_landmark(landmark_cam_2);
-        }        
+            landmark_count_++;
+        }      
+        std::cout << "number of landmarks: " << count << std::endl;  
+        std::cout << "number of landmarks added to graph: " << [this](){int count = 0; for (const auto &landmark : landmarks_){count += landmark.size();} return count; }() << std::endl;
+        backend_.get_current_initial_values().print("Current initial values: ");
+        std::cout << "landmark_count_: " << landmark_count_ << std::endl;
     }
     img_keypoints_and_descriptors_.push_back(keypoints_and_descriptors);
 }
@@ -257,4 +338,33 @@ void Backend::solve_graph() {
     gtsam::LevenbergMarquardtOptimizer optimizer(graph_, initial_estimate_);
     result_ = optimizer.optimize();
 }
+
+// json SFM_Logger::gtsam_pose3_to_json(const gtsam::Pose3 &pose) {
+//     json json_obj;  
+//     json_obj = {
+//         {},
+
+//     };
+
+//     return json_obj;
+// }
+
+// void SFM_Logger::values_to_json(const gtsam::Values &values, const std::filesystem::path &output_path) {
+//     json json_obj;
+//     json_obj["add_image_1"] = {
+//         {"T_world_cam1", pose_to_string(T_world_cam1)},
+//         {"T_world_cam2", pose_to_string(T_world_cam1)},
+//         {"T_world_lmkcam1", pose_to_string(T_world_cam1 * T_cam_landmark)},
+//         {"T_world_lmkcam2", pose_to_string(T_world_cam2 * T_cam_landmark)}
+//     };
+//     if (!fs::exists(output_path)) {
+//         fs::create_directory(output_path);
+//     }
+//     std::ofstream file(output_file);
+//     if (file.is_open()) {
+//         file << json_obj.dump(4);
+//         file.close();
+//     }
+// }
+
 }  // namespace robot::experimental::learn_descriptors

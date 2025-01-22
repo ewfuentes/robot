@@ -18,6 +18,10 @@
 #include <unordered_map>
 #include <utility>
 
+#include "nlohmann/json.hpp"
+
+using json = nlohmann::json;
+
 namespace robot::experimental::learn_descriptors {
 class Frontend {
    public:
@@ -63,9 +67,9 @@ class Frontend {
 };
 class Backend {
     public:
-        static const char pose_symbol_char = 'x';
-        static const char landmark_symbol_char = 'l';
-        static const char camera_symbol_char = 'k';
+        static constexpr char pose_symbol_char = 'x';
+        static constexpr char landmark_symbol_char = 'l';
+        static constexpr char camera_symbol_char = 'k';
 
         struct Landmark {
             Landmark(const gtsam::Symbol &lmk_factor_symbol, const gtsam::Symbol &cam_pose_symbol, const gtsam::Point2 &projection, const gtsam::Point3 &initial_guess=gtsam::Point3::Identity()) 
@@ -101,7 +105,9 @@ class Backend {
 };
 class StructureFromMotion {
    public:
-    StructureFromMotion(Frontend::ExtractorType frontend_extractor, gtsam::Cal3_S2 K, gtsam::Pose3 initial_pose= gtsam::Pose3::Identity(),
+    static const Eigen::Affine3d T_symlake_boat_cam;
+    static const gtsam::Pose3 default_initial_pose; 
+    StructureFromMotion(Frontend::ExtractorType frontend_extractor, gtsam::Cal3_S2 K, gtsam::Pose3 initial_pose= default_initial_pose,
                    Frontend::MatcherType frontend_matcher = Frontend::MatcherType::KNN);
     ~StructureFromMotion(){};
     
@@ -113,13 +119,21 @@ class StructureFromMotion {
     Frontend get_frontend() { return frontend_; };
     Backend get_backend() { return backend_; }
     size_t get_num_images_added() { return img_keypoints_and_descriptors_.size(); };
+    size_t get_landmark_count() { return landmark_count_; };
    private:
     std::vector<std::pair<std::vector<cv::KeyPoint>, cv::Mat>> img_keypoints_and_descriptors_;
     std::vector<std::vector<cv::DMatch>> matches_;
     std::vector<std::vector<Backend::Landmark>> landmarks_;
-    size_t landmark_count_;
+    size_t landmark_count_ = 0;
 
     Frontend frontend_;
     Backend backend_;
 };
+// class SFM_Logger {
+//     public:
+//         // static const json gtsam_pose3_to_json(const gtsam::Pose3 &pose);
+//         static const json eigen_mat_to_json(const Eigen::Matrix &mat);
+//         static const json gtsam_pose3_to_json(const gtsam::Pose3 &pose);
+//         static const void values_to_json(const gtsam::Values &values, const std::filesystem::path &file);
+// };
 }  // namespace robot::experimental::learn_descriptors

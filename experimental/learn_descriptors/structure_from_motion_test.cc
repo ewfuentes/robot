@@ -110,6 +110,85 @@ TEST(SFM_TEST, frontend_pipeline_sweep) {
         }
     }
 }
+
+TEST(SFM_TEST, frontend_snippet_two) {
+    DataParser data_parser = SymphonyLakeDatasetTestHelper::get_test_parser();
+    const symphony_lake_dataset::SurveyVector &survey_vector = data_parser.get_surveys();
+    const symphony_lake_dataset::Survey &survey = survey_vector.get(0);
+    const symphony_lake_dataset::ImagePoint image_point = survey.getImagePoint(180);
+    const cv::Mat image_1 = survey.loadImageByImageIndex(180);
+    const cv::Mat image_2 = survey.loadImageByImageIndex(185);
+
+    const size_t img_width = image_point.width, img_height = image_point.height;
+    const double fx = image_point.fx, fy = image_point.fy;        
+    const double cx = image_point.cx, cy = image_point.cy;    
+    gtsam::Cal3_S2 K(fx, fy, 0, cx, cy);
+
+    StructureFromMotion sfm(Frontend::ExtractorType::SIFT, K);  
+    Frontend frontend = sfm.get_frontend();
+
+    cv::Mat img_keypoints_out_1(img_height, img_width, CV_8UC3),
+        img_keypoints_out_2(img_height, img_width, CV_8UC3), img_matches_out(img_height, 2 * img_width, CV_8UC3);
+    cv::Mat img_display_test;
+
+    std::pair<std::vector<cv::KeyPoint>, cv::Mat>keypts_descriptors_1 = frontend.get_keypoints_and_descriptors(image_1);
+    std::pair<std::vector<cv::KeyPoint>, cv::Mat>keypts_descriptors_2 = frontend.get_keypoints_and_descriptors(image_2);
+    std::cout << "num of keypoints " << keypts_descriptors_1.first.size() << std::endl;
+    frontend.draw_keypoints(image_1, keypts_descriptors_1.first,
+                            img_keypoints_out_1);
+    frontend.draw_keypoints(image_2, keypts_descriptors_2.first,
+                            img_keypoints_out_2);
+    std::vector<cv::DMatch> matches = frontend.get_matches(keypts_descriptors_1.second, keypts_descriptors_2.second);
+    frontend.draw_matches(image_1, keypts_descriptors_1.first, image_2,
+                            keypts_descriptors_2.first, matches, img_matches_out);
+
+    cv::hconcat(img_keypoints_out_1, img_keypoints_out_2, img_display_test);
+    cv::vconcat(img_display_test, img_matches_out, img_display_test);
+    cv::Mat og_images;
+    cv::hconcat(image_1, image_2, og_images);
+    cv::vconcat(og_images, img_display_test, img_display_test);
+    std::cout << "og_images.cols: " << og_images.cols << ". img_display_test.cols" << img_display_test.cols << std::endl;
+    cv::imshow("Keypoints and Matches Output.", img_display_test);
+    std::cout << "Press spacebar to pause." << std::endl;
+    while (cv::waitKey(1000) != 32) {}
+}
+
+TEST(SFM_TEST, sfm_snippet_two) {
+    DataParser data_parser = SymphonyLakeDatasetTestHelper::get_test_parser();
+    const symphony_lake_dataset::SurveyVector &survey_vector = data_parser.get_surveys();
+    const symphony_lake_dataset::Survey &survey = survey_vector.get(0);
+    const symphony_lake_dataset::ImagePoint image_point = survey.getImagePoint(180);
+    const std::vector<cv::Mat> images = {
+        survey.loadImageByImageIndex(180),
+        survey.loadImageByImageIndex(185)
+    };
+
+    // const size_t img_width = image_point.width, img_height = image_point.height;
+    const double fx = image_point.fx, fy = image_point.fy;        
+    const double cx = image_point.cx, cy = image_point.cy;    
+    gtsam::Cal3_S2 K(fx, fy, 0, cx, cy);
+
+    StructureFromMotion sfm(Frontend::ExtractorType::SIFT, K);  
+
+    std::cout << "sfm.landmark_count_: " << sfm.get_landmark_count() << std::endl;
+
+    for (const cv::Mat &image : images) {
+        sfm.add_image(image);
+    }
+
+    // sfm.solve_structure();
+
+    // cv::hconcat(img_keypoints_out_1, img_keypoints_out_2, img_display_test);
+    // cv::vconcat(img_display_test, img_matches_out, img_display_test);
+    // cv::Mat og_images;
+    // cv::hconcat(image_1, image_2, og_images);
+    // cv::vconcat(og_images, img_display_test, img_display_test);
+    // std::cout << "og_images.cols: " << og_images.cols << ". img_display_test.cols" << img_display_test.cols << std::endl;
+    // cv::imshow("Keypoints and Matches Output.", img_display_test);
+    // std::cout << "Press spacebar to pause." << std::endl;
+    // while (cv::waitKey(1000) != 32) {}    
+}
+
 TEST(SFM_TEST, structure_from_motion) {
     const size_t img_width = 640;
     const size_t img_height = 480;
@@ -128,7 +207,11 @@ TEST(SFM_TEST, structure_from_motion) {
     cv::Mat image;
     for (int i = 0; i < static_cast<int>(survey_vector.getNumSurveys()); i++) {
         const symphony_lake_dataset::Survey &survey = survey_vector.get(i);
-        for (int j = 0; j < static_cast<int>(survey.getNumImages()); j++) {
+        // for (int j = 0; j < static_cast<int>(survey.getNumImages()); j++) {
+        //     image = survey.loadImageByImageIndex(j);
+            // sfm.add_image(image);
+        // }
+        for (int j = 0; j < 2; j++) {
             image = survey.loadImageByImageIndex(j);
             sfm.add_image(image);
         }
