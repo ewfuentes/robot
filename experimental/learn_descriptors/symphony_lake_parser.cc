@@ -28,8 +28,9 @@ Eigen::Affine3d DataParser::get_T_world_camera(size_t survey_idx, size_t img_idx
     Eigen::Matrix3d R_y(Eigen::AngleAxisd(img_point.tilt, Eigen::Vector3d::UnitY()));
     Eigen::Matrix3d R_x = Eigen::Matrix3d::Identity();
     Eigen::Matrix3d R_z(Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ()));
-    R = R_x * R_y * R_z;
-    T_world_camera = t * R;
+    R = R_x * R_y * R_z;    
+    T_world_camera.translate(t);
+    T_world_camera.rotate(R);    
     return T_world_camera;
 }
 }  // namespace robot::experimental::learn_descriptors

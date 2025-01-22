@@ -24,7 +24,8 @@ cc_library(
   deps = [
     "@opencv//:opencv",
     "@gtsam//:gtsam",
-    "@eigen"
+    "@eigen",
+    "@nlohmann_json//:json",
   ]
 )
 
