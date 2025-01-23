@@ -81,7 +81,7 @@ void StructureFromMotion::add_image(const cv::Mat &img) {
         int count = 0;
         for (const cv::DMatch match : matches) {
             if (count < 1) {
-                std::cout << "hello???" << std::endl;
+                // std::cout << "hello???" << std::endl;
                 json json_obj;
                 json_obj["add_image_1"] = {
                     {"T_world_cam1", pose_to_string(T_world_cam1)},
@@ -101,7 +101,7 @@ void StructureFromMotion::add_image(const cv::Mat &img) {
                 }
             }
             count++;
-            std::cout << "T_world_landmark" <<  T_world_cam1 * T_cam_landmark << std::endl;
+            // std::cout << "T_world_landmark" <<  T_world_cam1 * T_cam_landmark << std::endl;
             Backend::Landmark landmark_cam_1(
                 gtsam::Symbol(Backend::landmark_symbol_char, landmark_count_),
                 gtsam::Symbol(Backend::pose_symbol_char, get_num_images_added()-1),
@@ -126,10 +126,10 @@ void StructureFromMotion::add_image(const cv::Mat &img) {
             backend_.add_landmark(landmark_cam_2);
             landmark_count_++;
         }      
-        std::cout << "number of landmarks: " << count << std::endl;  
-        std::cout << "number of landmarks added to graph: " << [this](){int count = 0; for (const auto &landmark : landmarks_){count += landmark.size();} return count; }() << std::endl;
-        backend_.get_current_initial_values().print("Current initial values: ");
-        std::cout << "landmark_count_: " << landmark_count_ << std::endl;
+        // std::cout << "number of landmarks: " << count << std::endl;  
+        // std::cout << "number of landmarks added to graph: " << [this](){int count = 0; for (const auto &landmark : landmarks_){count += landmark.size();} return count; }() << std::endl;
+        // backend_.get_current_initial_values().print("Current initial values: ");
+        // std::cout << "landmark_count_: " << landmark_count_ << std::endl;
     }
     img_keypoints_and_descriptors_.push_back(keypoints_and_descriptors);
 }

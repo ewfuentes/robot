@@ -55,7 +55,8 @@ cc_test(
   deps = [
     "@com_google_googletest//:gtest_main",
     ":symphony_lake_parser",
-    ":structure_from_motion"
+    ":structure_from_motion",
+    "//common/math:matrix_to_proto"
   ]
 )
 
@@ -78,5 +79,13 @@ cc_test(
     "@com_google_googletest//:gtest_main",
     "@gtsam//:gtsam",
     ":learn_descriptors"  
+  ]
+)
+
+cc_binary(
+  name = "opencv_viz_example",
+  srcs = ["opencv_viz_example.cc"],
+  deps = [
+    "@opencv//:opencv"
   ]
 )
