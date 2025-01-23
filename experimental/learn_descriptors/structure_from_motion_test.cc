@@ -1,5 +1,6 @@
 #include "experimental/learn_descriptors/structure_from_motion.hh"
 #include "experimental/learn_descriptors/symphony_lake_parser.hh"
+#include "common/math/matrix_to_proto.hh"
 
 #include <iostream>
 #include <sstream>
@@ -142,15 +143,15 @@ TEST(SFM_TEST, frontend_snippet_two) {
     frontend.draw_matches(image_1, keypts_descriptors_1.first, image_2,
                             keypts_descriptors_2.first, matches, img_matches_out);
 
-    cv::hconcat(img_keypoints_out_1, img_keypoints_out_2, img_display_test);
-    cv::vconcat(img_display_test, img_matches_out, img_display_test);
-    cv::Mat og_images;
-    cv::hconcat(image_1, image_2, og_images);
-    cv::vconcat(og_images, img_display_test, img_display_test);
-    std::cout << "og_images.cols: " << og_images.cols << ". img_display_test.cols" << img_display_test.cols << std::endl;
-    cv::imshow("Keypoints and Matches Output.", img_display_test);
-    std::cout << "Press spacebar to pause." << std::endl;
-    while (cv::waitKey(1000) != 32) {}
+    // cv::hconcat(img_keypoints_out_1, img_keypoints_out_2, img_display_test);
+    // cv::vconcat(img_display_test, img_matches_out, img_display_test);
+    // cv::Mat og_images;
+    // cv::hconcat(image_1, image_2, og_images);
+    // cv::vconcat(og_images, img_display_test, img_display_test);
+    // std::cout << "og_images.cols: " << og_images.cols << ". img_display_test.cols" << img_display_test.cols << std::endl;
+    // cv::imshow("Keypoints and Matches Output.", img_display_test);
+    // std::cout << "Press spacebar to pause." << std::endl;
+    // while (cv::waitKey(1000) != 32) {}
 }
 
 TEST(SFM_TEST, sfm_snippet_two) {
@@ -176,6 +177,42 @@ TEST(SFM_TEST, sfm_snippet_two) {
         sfm.add_image(image);
     }
 
+    gtsam::Values initial_values = sfm.get_backend().get_current_initial_values();
+    std::vector<Eigen::MatrixXd> poses;
+    std::vector<proto::Matrix> protos;
+    for (size_t i = 0; i < images.size(); i++) {
+        gtsam::Pose3 pose = initial_values.at<gtsam::Pose3>(gtsam::Symbol(sfm.get_backend().pose_symbol_char, i));
+        Eigen::MatrixXd eigen_affine(4,4);
+        gtsam::Matrix3 rot_mat = pose.rotation().matrix();
+        gtsam::Point3 translation = pose.translation();
+        for (int j = 0; j < 3; j++) {
+            for (int k = 0; k < 3; k++) {
+                eigen_affine(j,k) = rot_mat(j,k);
+            }
+            eigen_affine(3,j) = translation(j);
+        }
+        eigen_affine(3,3) = 1;
+        poses.push_back(eigen_affine);
+        protos.emplace_shared(proto::Matrix());
+        pack_into(eigen_affine, &protos.back());
+    }
+    std::cout << poses.front() << std::endl;
+    
+
+    // const Eigen::Vector3d in(1.0, 2.0, 3.0);
+    // // Action
+
+    // // proto::Matrix proto;
+    // // pack_into(in, &proto);
+    // // const Eigen::Vector3d out = unpack_from<Eigen::Vector3d>(proto);
+
+    // // const Eigen::VectorXd in{{1.0, 2.0, 3.0}};
+
+    // // // Action
+    // // proto::Matrix proto;
+    // // pack_into(in, &proto);
+    // // const Eigen::VectorXd out = unpack_from<Eigen::VectorXd>(proto);
+
     // sfm.solve_structure();
 
     // cv::hconcat(img_keypoints_out_1, img_keypoints_out_2, img_display_test);
@@ -189,50 +226,50 @@ TEST(SFM_TEST, sfm_snippet_two) {
     // while (cv::waitKey(1000) != 32) {}    
 }
 
-TEST(SFM_TEST, structure_from_motion) {
-    const size_t img_width = 640;
-    const size_t img_height = 480;
-    const double fx = 500.0;
-    const double fy = fx;
-    const double cx = img_width / 2.0;
-    const double cy = img_height / 2.0;
+// TEST(SFM_TEST, structure_from_motion) {
+//     const size_t img_width = 640;
+//     const size_t img_height = 480;
+//     const double fx = 500.0;
+//     const double fy = fx;
+//     const double cx = img_width / 2.0;
+//     const double cy = img_height / 2.0;
 
-    gtsam::Cal3_S2 K(fx, fy, 0, cx, cy);
+//     gtsam::Cal3_S2 K(fx, fy, 0, cx, cy);
 
-    StructureFromMotion sfm(Frontend::ExtractorType::SIFT, K);     
-    DataParser data_parser = SymphonyLakeDatasetTestHelper::get_test_parser();
-    // DataParser::Generator<cv::Mat> generator = data_parser.create_img_generator();
-    const symphony_lake_dataset::SurveyVector &survey_vector = data_parser.get_surveys();
+//     StructureFromMotion sfm(Frontend::ExtractorType::SIFT, K);     
+//     DataParser data_parser = SymphonyLakeDatasetTestHelper::get_test_parser();
+//     // DataParser::Generator<cv::Mat> generator = data_parser.create_img_generator();
+//     const symphony_lake_dataset::SurveyVector &survey_vector = data_parser.get_surveys();
 
-    cv::Mat image;
-    for (int i = 0; i < static_cast<int>(survey_vector.getNumSurveys()); i++) {
-        const symphony_lake_dataset::Survey &survey = survey_vector.get(i);
-        // for (int j = 0; j < static_cast<int>(survey.getNumImages()); j++) {
-        //     image = survey.loadImageByImageIndex(j);
-            // sfm.add_image(image);
-        // }
-        for (int j = 0; j < 2; j++) {
-            image = survey.loadImageByImageIndex(j);
-            sfm.add_image(image);
-        }
-    }
-    // DataParser::Generator<cv::Mat>::iterator img_itr = generator.begin();
-    // while (img_itr != generator.end()) {
-    //     if ((*img_itr).empty()) {
-    //         continue;
-    //     }
-    //     std::cout << "ooga booga" << std::endl;
-    //     std::cout << "image is empty: " << (*img_itr).empty() << std::endl;
-    //     cv::imshow("ooga", *img_itr);
-    //     cv::waitKey(1000);
-    //     sfm.add_image(*img_itr);
-    //     ++img_itr;
-    // }
-    sfm.solve_structure();
-    // gtsam::Values output = sfm.get_structure_result();    
-    // output.print("result values: ");
-    // for (size_t i = 0; i < sfm.get_num_images_added(); i++) {
+//     cv::Mat image;
+//     for (int i = 0; i < static_cast<int>(survey_vector.getNumSurveys()); i++) {
+//         const symphony_lake_dataset::Survey &survey = survey_vector.get(i);
+//         // for (int j = 0; j < static_cast<int>(survey.getNumImages()); j++) {
+//         //     image = survey.loadImageByImageIndex(j);
+//             // sfm.add_image(image);
+//         // }
+//         for (int j = 0; j < 2; j++) {
+//             image = survey.loadImageByImageIndex(j);
+//             sfm.add_image(image);
+//         }
+//     }
+//     // DataParser::Generator<cv::Mat>::iterator img_itr = generator.begin();
+//     // while (img_itr != generator.end()) {
+//     //     if ((*img_itr).empty()) {
+//     //         continue;
+//     //     }
+//     //     std::cout << "ooga booga" << std::endl;
+//     //     std::cout << "image is empty: " << (*img_itr).empty() << std::endl;
+//     //     cv::imshow("ooga", *img_itr);
+//     //     cv::waitKey(1000);
+//     //     sfm.add_image(*img_itr);
+//     //     ++img_itr;
+//     // }
+//     sfm.solve_structure();
+//     // gtsam::Values output = sfm.get_structure_result();    
+//     // output.print("result values: ");
+//     // for (size_t i = 0; i < sfm.get_num_images_added(); i++) {
         
-    // }
-}
+//     // }
+// }
 }  // namespace robot::experimental::learn_descriptors

@@ -87,7 +87,7 @@ TEST(GtsamTesting, gtsam_simple_cube) {
     gtsam::LevenbergMarquardtOptimizer optimizer(graph, initial);
     gtsam::Values result = optimizer.optimize();
 
-    // result.print("Optimized Results:\n");
+    result.print("Optimized Results:\n");
 
     constexpr double TOL = 1e-3;
     for (size_t i = 0; i < poses.size(); i++) {
@@ -103,5 +103,20 @@ TEST(GtsamTesting, gtsam_simple_cube) {
         EXPECT_NEAR(cube_W[i][1], result_point[1], TOL);
         EXPECT_NEAR(cube_W[i][2], result_point[2], TOL);
     }
+
+    // // Setup
+    // const Eigen::Matrix3d in{{1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}, {7.0, 8.0, 9.0}};
+
+    // // Action
+    // proto::Matrix proto;
+    // pack_into(in, &proto);
+    // const Eigen::Matrix3d out = unpack_from<Eigen::Matrix3d>(proto);
+
+    // // Verification
+    // EXPECT_EQ(in.rows(), out.rows());
+    // EXPECT_EQ(in.cols(), out.cols());
+    // for (int i = 0; i < in.rows(); i++) {
+    //     EXPECT_EQ(in(i), out(i));
+    // }
 }
 }  // namespace robot::experimental::gtsam_testing
