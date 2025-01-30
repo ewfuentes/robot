@@ -4,6 +4,7 @@ load("@pip//:requirements.bzl", "requirement")
 py_library(
   name="clevr_dataset",
   srcs=["clevr_dataset.py"],
+  visibility=["//experimental/overhead_matching/learned:__subpackages__"],
   deps=[
     "//common:torch",
   ]
