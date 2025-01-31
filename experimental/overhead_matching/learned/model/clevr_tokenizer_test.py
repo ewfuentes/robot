@@ -1,6 +1,5 @@
 import unittest
 import itertools
-from collections import defaultdict
 import numpy as np
 from pathlib import Path
 

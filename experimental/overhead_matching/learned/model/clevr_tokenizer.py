@@ -1,5 +1,3 @@
-from functools import reduce
-
 import common.torch as torch
 
 
@@ -20,7 +18,7 @@ def create_tokens(batch, vocabulary):
 
     vocab_keys = sorted(vocabulary)
     num_scenes = len(batch)
-    max_tokens_per_scene = reduce(max, [len(x) for x in batch])
+    max_tokens_per_scene = max([len(x) for x in batch])
     tokens = -torch.ones((num_scenes, max_tokens_per_scene), dtype=torch.int32)
     mask = torch.ones((num_scenes, max_tokens_per_scene), dtype=torch.bool)
 
@@ -42,7 +40,7 @@ def create_position_embeddings(
 ):
     assert embedding_size % 4 == 0
     num_scenes = len(batch)
-    max_tokens_per_scene = reduce(max, [len(x) for x in batch])
+    max_tokens_per_scene = max([len(x) for x in batch])
     xy_pos = torch.zeros((num_scenes, max_tokens_per_scene, 2), dtype=torch.float32)
     for i, scene in enumerate(batch):
         for j, item in enumerate(scene):
