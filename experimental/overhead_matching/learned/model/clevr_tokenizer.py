@@ -19,7 +19,7 @@ def create_tokens(batch, vocabulary):
     vocab_keys = sorted(vocabulary)
     num_scenes = len(batch)
     max_tokens_per_scene = max([len(x) for x in batch])
-    tokens = -torch.ones((num_scenes, max_tokens_per_scene), dtype=torch.int32)
+    tokens = torch.zeros((num_scenes, max_tokens_per_scene), dtype=torch.int32)
     mask = torch.ones((num_scenes, max_tokens_per_scene), dtype=torch.bool)
 
     for i, scene in enumerate(batch):
@@ -36,7 +36,7 @@ def create_tokens(batch, vocabulary):
 
 
 def create_position_embeddings(
-    batch, *, max_scale: float = 2.0, scale_step: float = 0.5, embedding_size: int
+    batch, *, min_scale: float = 1e-3, scale_step: float = 2.0, embedding_size: int
 ):
     assert embedding_size % 4 == 0
     num_scenes = len(batch)
@@ -53,7 +53,7 @@ def create_position_embeddings(
     num_scales = embedding_size // 4
     for scale_idx in range(num_scales):
         embedding_idx_start = 4 * scale_idx
-        scale = max_scale * scale_step**scale_idx / (2 * torch.pi)
+        scale = min_scale * scale_step**scale_idx / (2 * torch.pi)
 
         out[:, :, embedding_idx_start + 0] = torch.sin(xy_pos[:, :, 0] / scale)
         out[:, :, embedding_idx_start + 1] = torch.cos(xy_pos[:, :, 0] / scale)
