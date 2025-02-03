@@ -37,6 +37,7 @@ class ClevrTransformer(torch.nn.Module):
         decoder_layer = torch.nn.TransformerDecoderLayer(
             d_model=config.token_dim,
             nhead=config.num_decoder_heads,
+            batch_first=True
         )
         self._decoder = torch.nn.TransformerDecoder(
             decoder_layer, num_layers=config.num_decoder_layers)
@@ -64,12 +65,14 @@ class ClevrTransformer(torch.nn.Module):
         input_tokens = torch.cat([overhead_tokens, ego_tokens], dim=1)
         input_mask = torch.cat([input.overhead_mask, input.ego_mask], dim=1)
 
-        embedded_tokens = self._encoder(input_tokens, input_mask)
+        embedded_tokens = self._encoder(input_tokens, src_key_padding_mask=input_mask, is_causal=False)
 
         output_tokens = self._decoder(
             tgt=query_tokens,
-            tgt_mask=query_mask,
+            tgt_key_padding_mask=query_mask,
             memory=embedded_tokens,
-            memory_mask=input_mask)
+            memory_key_padding_mask=input_mask,
+            tgt_is_causal=False,
+            memory_is_causal=False)
 
-        
+        return output_tokens

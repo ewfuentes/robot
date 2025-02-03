@@ -23,13 +23,13 @@ class ClevrTransformerTest(unittest.TestCase):
         vocab = dataset.vocabulary()
         vocab_size = reduce(operator.mul, [len(v) for v in vocab.values()])
 
-        MODEL_SIZE = 128
+        MODEL_SIZE = 256
         config = clevr_transformer.ClevrTransformerConfig(
             token_dim=MODEL_SIZE,
             vocabulary_size=vocab_size,
-            num_encoder_heads=8,
+            num_encoder_heads=4,
             num_encoder_layers=4,
-            num_decoder_heads=8,
+            num_decoder_heads=4,
             num_decoder_layers=4)
 
         model = clevr_transformer.ClevrTransformer(config)
@@ -56,10 +56,10 @@ class ClevrTransformerTest(unittest.TestCase):
         NUM_QUERY_TOKENS = 100
         query_tokens = torch.randn((len(batch), NUM_QUERY_TOKENS, MODEL_SIZE))
         query_mask = torch.zeros((len(batch), NUM_QUERY_TOKENS), dtype=torch.bool)
-        model(input, query_tokens, query_mask)
+        output_tokens = model(input, query_tokens, query_mask)
 
         # Verification
-        self.assertTrue(False)
+        self.assertEqual(output_tokens.shape, (4, NUM_QUERY_TOKENS, MODEL_SIZE))
 
 
 if __name__ == "__main__":
