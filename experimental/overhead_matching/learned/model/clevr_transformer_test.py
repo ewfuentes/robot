@@ -24,13 +24,15 @@ class ClevrTransformerTest(unittest.TestCase):
         vocab_size = reduce(operator.mul, [len(v) for v in vocab.values()])
 
         MODEL_SIZE = 256
+        OUTPUT_DIM = 384
         config = clevr_transformer.ClevrTransformerConfig(
             token_dim=MODEL_SIZE,
             vocabulary_size=vocab_size,
             num_encoder_heads=4,
             num_encoder_layers=4,
             num_decoder_heads=4,
-            num_decoder_layers=4)
+            num_decoder_layers=4,
+            output_dim=OUTPUT_DIM)
 
         model = clevr_transformer.ClevrTransformer(config)
         batch = next(iter(loader))
@@ -59,7 +61,7 @@ class ClevrTransformerTest(unittest.TestCase):
         output_tokens = model(input, query_tokens, query_mask)
 
         # Verification
-        self.assertEqual(output_tokens.shape, (4, NUM_QUERY_TOKENS, MODEL_SIZE))
+        self.assertEqual(output_tokens.shape, (4, NUM_QUERY_TOKENS, OUTPUT_DIM))
 
 
 if __name__ == "__main__":

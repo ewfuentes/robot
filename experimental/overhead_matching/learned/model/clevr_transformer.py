@@ -11,6 +11,7 @@ class ClevrTransformerConfig:
     num_encoder_layers: int
     num_decoder_heads: int
     num_decoder_layers: int
+    output_dim: int
 
 @dataclass
 class ClevrInputTokens:
@@ -53,6 +54,8 @@ class ClevrTransformer(torch.nn.Module):
             num_embeddings=config.vocabulary_size,
             embedding_dim=config.token_dim)
 
+        self._output_layer = torch.nn.Linear(config.token_dim, config.output_dim)
+
 
     def forward(self,
                 input: ClevrInputTokens,
@@ -75,4 +78,4 @@ class ClevrTransformer(torch.nn.Module):
             tgt_is_causal=False,
             memory_is_causal=False)
 
-        return output_tokens
+        return self._output_layer(output_tokens)
