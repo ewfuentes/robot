@@ -123,6 +123,30 @@ py_test(
 )
 
 py_library(
+    name = "from_sat_to_ground",
+    srcs = ["from_sat_to_ground.py"],
+    deps = [
+	requirement("numpy"),
+	requirement("matplotlib"),
+	requirement("pandas"),
+	requirement("seaborn"),
+    requirement("scipy"),
+	requirement("Pillow"),
+    ]
+)
+
+py_test(
+    name = "from_sat_to_ground_test",
+    srcs = ["from_sat_to_ground_test.py"],
+    data = ["@cvusa_minisubset//:files"],
+    deps = [
+	":from_sat_to_ground",
+	"//common/testing:is_test_python",
+    ],
+)
+
+
+py_library(
     name = "cvusa_evaluation_pipeline",
     srcs = ["cvusa_evaluation_pipeline.py"],
     deps = [
