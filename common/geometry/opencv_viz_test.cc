@@ -1,9 +1,14 @@
-#include "opencv2/viz.hpp"
-#include "opencv_viz.cc"
-#include "eigen/Eigen/Geometry"
+#include "common/geometry/opencv_viz.hh"
+#include "gtest/gtest.h"
 
-void demo() {
- cv::viz::Viz3d window("My Window");
+namespace robot::geometry::opencv_viz {
+namespace {
+bool is_test() { return std::getenv("BAZEL_TEST") != nullptr &&
+                std::getenv("BUILD_WORKSPACE_DIRECTORY") == nullptr; }
+}  // namespace
+
+TEST(OpencvVizTest, demo) {
+    cv::viz::Viz3d window("My Window");
 
     window.showWidget("world_frame", cv::viz::WCoordinateSystem());
 
@@ -45,11 +50,12 @@ void demo() {
         cv::viz::WCircle(CIRCLE_RADIUS_M),
         world_from_circle
     );
-
-    window.spin();
+    if (!is_test()) {
+        window.spin();         
+    } 
 }
 
-void demo_cube() {
+TEST(OpencvVizTest, cube_test) {
     std::vector<Eigen::Vector3d> cube_W;
     float cube_size = 1.0f;
     cube_W.push_back(Eigen::Vector3d(0, 0, 0));
@@ -61,23 +67,23 @@ void demo_cube() {
     cube_W.push_back(Eigen::Vector3d(cube_size, cube_size, cube_size));
     cube_W.push_back(Eigen::Vector3d(0, cube_size, cube_size));
 
-    std::vector<cv::Affine3d> poses;
+    std::vector<Eigen::Isometry3d> poses;
 
     Eigen::Matrix3d rotation0(
         Eigen::AngleAxis(M_PI / 2, Eigen::Vector3d(0, 0, 1)).toRotationMatrix() *
         Eigen::AngleAxis(-M_PI / 2, Eigen::Vector3d(1, 0, 0)).toRotationMatrix());
-    cv::Affine3d pose0(opencv_viz::eigen_to_cv_mat(rotation0), cv::Affine3d::Vec3{4, 0, 0});
+    Eigen::Isometry3d pose0;
+    pose0.translation() = Eigen::Vector3d(4,0,0);
+    pose0.linear() = rotation0;
+    poses.push_back(pose0);
+    
+    Eigen::Isometry3d pose1;
+    pose1.linear() = Eigen::AngleAxis(M_PI / 2, Eigen::Vector3d(0, 0, 1)).toRotationMatrix() * rotation0;    
+    pose1.translation() = Eigen::Vector3d(0,4,0);
+    poses.push_back(pose1);
 
-    // Eigen::Matrix3d
-    // cv::Affine3d pose1(
-    //     opencv_viz::eigen_to_cv_mat(Eigen::AngleAxis(M_PI / 2, Eigen::Vector3d(0, 0, 1)).toRotationMatrix() * rotation0),
-    //     Eigen::Vector3d(0, 4, 0));
-    // gtsam::PinholeCamera<gtsam::Cal3_S2> camera1(pose1, *K);
-    // graph.emplace_shared<gtsam::PriorFactor<cv::Affine3d>>(gtsam::Symbol('x', 1), pose1, poseNoise);
-    // poses.push_back(pose1);
-    // cameras.push_back(camera1);
+    if (!is_test()) {
+        viz_scene(poses, cube_W);
+    }
 }
-
-int main() {
-    demo();
 }

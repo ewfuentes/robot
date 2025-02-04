@@ -76,3 +76,11 @@ cc_binary(
     "@opencv//:opencv"
   ]
 )
+
+cc_binary(
+  name = "opencv_viz_test",
+  srcs = ["opencv_viz_example.cc"],
+  deps = [
+    "@opencv//:opencv"
+  ]
+)
