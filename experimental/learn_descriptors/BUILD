@@ -56,7 +56,8 @@ cc_test(
     "@com_google_googletest//:gtest_main",
     ":symphony_lake_parser",
     ":structure_from_motion",
-    "//common/math:matrix_to_proto"
+    "//common/math:matrix_to_proto",
+    "//common/geometry:opencv_viz"
   ]
 )
 

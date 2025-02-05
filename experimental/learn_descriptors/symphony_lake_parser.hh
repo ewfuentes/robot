@@ -1,19 +1,18 @@
 #pragma once
-#include <filesystem>
-#include <string>
-#include <iostream>
 #include <coroutine>
+#include <filesystem>
+#include <iostream>
+#include <string>
 #include <vector>
 
+#include "Eigen/Dense"
 #include "symphony_lake_dataset/ImagePoint.h"
 #include "symphony_lake_dataset/SurveyVector.h"
-
-#include "Eigen/Dense"
 
 namespace robot::experimental::learn_descriptors {
 class DataParser {
    public:
-   template <typename T>
+    template <typename T>
     struct Generator {
         struct promise_type {
             T value;
@@ -31,41 +30,46 @@ class DataParser {
         using handle_type = std::coroutine_handle<promise_type>;
 
         Generator(handle_type h) : handle(h) {}
-        ~Generator() { if (handle) handle.destroy(); }
+        ~Generator() {
+            if (handle) handle.destroy();
+        }
 
         struct iterator {
             handle_type handle;
             bool operator!=(std::default_sentinel_t) const { return !handle.done(); }
-            iterator& operator++() { handle.resume(); return *this; }
+            iterator &operator++() {
+                handle.resume();
+                return *this;
+            }
             T operator*() const { return handle.promise().value; }
         };
 
         iterator begin() { return iterator{handle}; }
         std::default_sentinel_t end() { return {}; }
 
-    private:
+       private:
         handle_type handle;
     };
 
-    Generator<cv::Mat> image_generator(
-        const symphony_lake_dataset::SurveyVector& survey_vector) {
-
+    Generator<cv::Mat> image_generator(const symphony_lake_dataset::SurveyVector &survey_vector) {
         for (int i = 0; i < static_cast<int>(survey_vector.getNumSurveys()); i++) {
             const symphony_lake_dataset::Survey &survey = survey_vector.get(i);
-            for (int j = 0; j < static_cast<int>(survey.getNumImages()); j++) {                
+            for (int j = 0; j < static_cast<int>(survey.getNumImages()); j++) {
                 co_yield survey.loadImageByImageIndex(j);
             }
         }
-    }    
+    }
 
     DataParser(const std::filesystem::path &image_root_dir,
                const std::vector<std::string> &survey_list);
     ~DataParser();
 
-    Eigen::Affine3d get_T_world_camera(size_t survey_idx, size_t image_idx, bool use_gps = false, bool use_compass = false);    
+    Eigen::Affine3d get_T_world_camera(size_t survey_idx, size_t image_idx, bool use_gps = false,
+                                       bool use_compass = false);
 
     const symphony_lake_dataset::SurveyVector &get_surveys() const { return surveys_; };
     Generator<cv::Mat> create_img_generator() { return image_generator(surveys_); };
+
    private:
     std::filesystem::path image_root_dir_;
     std::vector<std::string> survey_list_;
@@ -73,8 +77,9 @@ class DataParser {
 };
 class SymphonyLakeDatasetTestHelper {
    public:
-    static constexpr const char* test_image_root_dir = "external/symphony_lake_snippet/symphony_lake";
-    static constexpr std::array<const char*, 1> test_survey_list = {"140106_snippet"};
+    static constexpr const char *test_image_root_dir =
+        "external/symphony_lake_snippet/symphony_lake";
+    static constexpr std::array<const char *, 1> test_survey_list = {"140106_snippet"};
     static bool images_equal(cv::Mat img1, cv::Mat img2) {
         if (img1.size() != img2.size() || img1.type() != img2.type()) {
             return false;
@@ -84,8 +89,12 @@ class SymphonyLakeDatasetTestHelper {
         diff = diff.reshape(1);
         return cv::countNonZero(diff) == 0;
     };
-    static DataParser get_test_parser() { return DataParser(get_test_iamge_root_dir(), get_test_survey_list()); };
-    static std::filesystem::path get_test_iamge_root_dir() { return std::filesystem::path(test_image_root_dir); };
+    static DataParser get_test_parser() {
+        return DataParser(get_test_iamge_root_dir(), get_test_survey_list());
+    };
+    static std::filesystem::path get_test_iamge_root_dir() {
+        return std::filesystem::path(test_image_root_dir);
+    };
     static std::vector<std::string> get_test_survey_list() {
         return std::vector<std::string>(test_survey_list.begin(), test_survey_list.end());
     };
