@@ -1,6 +1,9 @@
 #pragma once
 
-#include <opencv2/opencv.hpp>
+#include <map>
+#include <set>
+#include <unordered_map>
+#include <utility>
 
 #include "Eigen/Core"
 #include "gtsam/geometry/Point3.h"
@@ -8,17 +11,12 @@
 #include "gtsam/inference/Symbol.h"
 #include "gtsam/nonlinear/LevenbergMarquardtOptimizer.h"
 #include "gtsam/nonlinear/Values.h"
+#include "gtsam/slam/BetweenFactor.h"
 #include "gtsam/slam/GeneralSFMFactor.h"
 #include "gtsam/slam/PriorFactor.h"
-#include "gtsam/slam/BetweenFactor.h"
 #include "gtsam/slam/ProjectionFactor.h"
-
-#include <set>
-#include <map>
-#include <unordered_map>
-#include <utility>
-
 #include "nlohmann/json.hpp"
+#include "opencv2/opencv.hpp"
 
 using json = nlohmann::json;
 
@@ -32,8 +30,8 @@ class Frontend {
     Frontend(ExtractorType frontend_extractor, MatcherType frontend_matcher);
     ~Frontend(){};
 
-    const ExtractorType& get_extractor_type() const { return extractor_type_; };
-    const MatcherType& get_matcher_type() const { return matcher_type_; };
+    const ExtractorType &get_extractor_type() const { return extractor_type_; };
+    const MatcherType &get_matcher_type() const { return matcher_type_; };
 
     std::pair<std::vector<cv::KeyPoint>, cv::Mat> get_keypoints_and_descriptors(
         const cv::Mat &img) const;
@@ -50,7 +48,7 @@ class Frontend {
                              const cv::Mat &img2, std::vector<cv::KeyPoint> keypoints2,
                              std::vector<cv::DMatch> matches, cv::Mat img_matches_out) {
         cv::drawMatches(img1, keypoints1, img2, keypoints2, matches, img_matches_out);
-    }    
+    }
 
    private:
     bool get_brute_matches(const cv::Mat &descriptors1, const cv::Mat &descriptors2,
@@ -66,60 +64,75 @@ class Frontend {
     cv::Ptr<cv::DescriptorMatcher> descriptor_matcher_;
 };
 class Backend {
-    public:
-        static constexpr char pose_symbol_char = 'x';
-        static constexpr char landmark_symbol_char = 'l';
-        static constexpr char camera_symbol_char = 'k';
+   public:
+    static constexpr char pose_symbol_char = 'x';
+    static constexpr char landmark_symbol_char = 'l';
+    static constexpr char camera_symbol_char = 'k';
 
-        struct Landmark {
-            Landmark(const gtsam::Symbol &lmk_factor_symbol, const gtsam::Symbol &cam_pose_symbol, const gtsam::Point2 &projection, const gtsam::Point3 &initial_guess=gtsam::Point3::Identity()) 
-                : lmk_factor_symbol(lmk_factor_symbol), cam_pose_symbol(cam_pose_symbol), projection(projection), initial_guess(initial_guess) {};
-            const gtsam::Symbol lmk_factor_symbol; 
-            const gtsam::Symbol cam_pose_symbol;
-            const gtsam::Point2 projection;
-            const gtsam::Point3 initial_guess;
-        };
+    struct Landmark {
+        Landmark(const gtsam::Symbol &lmk_factor_symbol, const gtsam::Symbol &cam_pose_symbol,
+                 const gtsam::Point2 &projection,
+                 const gtsam::Point3 &initial_guess = gtsam::Point3::Identity())
+            : lmk_factor_symbol(lmk_factor_symbol),
+              cam_pose_symbol(cam_pose_symbol),
+              projection(projection),
+              initial_guess(initial_guess){};
+        const gtsam::Symbol lmk_factor_symbol;
+        const gtsam::Symbol cam_pose_symbol;
+        const gtsam::Point2 projection;
+        const gtsam::Point3 initial_guess;
+    };
 
-        Backend();
-        Backend(gtsam::Cal3_S2 K);
-        ~Backend(){};
-    
-        void add_prior_factor(const gtsam::Symbol &symbol, const gtsam::Pose3 &value);
-        void add_between_factor(const gtsam::Symbol &symbol_1, const gtsam::Symbol &symbol_2, const gtsam::Pose3 &value);
+    Backend();
+    Backend(gtsam::Cal3_S2 K);
+    ~Backend(){};
 
-        void add_landmarks(const std::vector<Landmark> &landmarks);
-        void add_landmark(const Landmark &landmark);
+    void add_prior_factor(const gtsam::Symbol &symbol, const gtsam::Pose3 &value);
+    void add_between_factor(const gtsam::Symbol &symbol_1, const gtsam::Symbol &symbol_2,
+                            const gtsam::Pose3 &value);
 
-        void solve_graph();
-        const gtsam::Values& get_current_initial_values() const { return initial_estimate_; };
-        const gtsam::Values& get_result() const {
-            return result_;
-        };
-    private:                
-        gtsam::Values initial_estimate_;
-        gtsam::Values result_;
-        gtsam::NonlinearFactorGraph graph_;
+    void add_landmarks(const std::vector<Landmark> &landmarks);
+    void add_landmark(const Landmark &landmark);
+    gtsam::Pose3 estimate_pose(const std::vector<cv::KeyPoint> &kpts1,
+                               const std::vector<cv::KeyPoint> &kpts2,
+                               const std::vector<cv::DMatch> &matches, const gtsam::Cal3_S2 &K);
 
-        gtsam::noiseModel::Isotropic::shared_ptr measurement_noise_ = gtsam::noiseModel::Isotropic::Sigma(2, 1.0);        
-        gtsam::noiseModel::Diagonal::shared_ptr pose_noise_ = gtsam::noiseModel::Diagonal::Sigmas(gtsam::Vector6::Constant(0.1));
+    void solve_graph();
+    const gtsam::Values &get_current_initial_values() const { return initial_estimate_; };
+    const gtsam::Values &get_result() const { return result_; };
+    const gtsam::Cal3_S2 &get_K() const { return K_; };
+
+   private:
+    gtsam::Cal3_S2 K_;
+
+    gtsam::Values initial_estimate_;
+    gtsam::Values result_;
+    gtsam::NonlinearFactorGraph graph_;
+
+    gtsam::noiseModel::Isotropic::shared_ptr measurement_noise_ =
+        gtsam::noiseModel::Isotropic::Sigma(2, 1.0);
+    gtsam::noiseModel::Diagonal::shared_ptr pose_noise_ =
+        gtsam::noiseModel::Diagonal::Sigmas(gtsam::Vector6::Constant(0.1));
 };
 class StructureFromMotion {
    public:
     static const Eigen::Affine3d T_symlake_boat_cam;
-    static const gtsam::Pose3 default_initial_pose; 
-    StructureFromMotion(Frontend::ExtractorType frontend_extractor, gtsam::Cal3_S2 K, gtsam::Pose3 initial_pose= default_initial_pose,
-                   Frontend::MatcherType frontend_matcher = Frontend::MatcherType::KNN);
+    static const gtsam::Pose3 default_initial_pose;
+    StructureFromMotion(Frontend::ExtractorType frontend_extractor, gtsam::Cal3_S2 K,
+                        gtsam::Pose3 initial_pose = default_initial_pose,
+                        Frontend::MatcherType frontend_matcher = Frontend::MatcherType::KNN);
     ~StructureFromMotion(){};
-    
+
     void set_initial_pose(gtsam::Pose3 initial_pose);
     void add_image(const cv::Mat &img);
     void solve_structure() { backend_.solve_graph(); };
-    const gtsam::Values& get_structure_result() { return backend_.get_result(); };
+    const gtsam::Values &get_structure_result() { return backend_.get_result(); };
 
     Frontend get_frontend() { return frontend_; };
     Backend get_backend() { return backend_; }
     size_t get_num_images_added() { return img_keypoints_and_descriptors_.size(); };
     size_t get_landmark_count() { return landmark_count_; };
+
    private:
     std::vector<std::pair<std::vector<cv::KeyPoint>, cv::Mat>> img_keypoints_and_descriptors_;
     std::vector<std::vector<cv::DMatch>> matches_;
@@ -134,6 +147,7 @@ class StructureFromMotion {
 //         // static const json gtsam_pose3_to_json(const gtsam::Pose3 &pose);
 //         static const json eigen_mat_to_json(const Eigen::Matrix &mat);
 //         static const json gtsam_pose3_to_json(const gtsam::Pose3 &pose);
-//         static const void values_to_json(const gtsam::Values &values, const std::filesystem::path &file);
+//         static const void values_to_json(const gtsam::Values &values, const std::filesystem::path
+//         &file);
 // };
 }  // namespace robot::experimental::learn_descriptors

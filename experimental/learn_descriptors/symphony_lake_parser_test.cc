@@ -27,10 +27,10 @@ TEST(SymphonyLakeParserTest, snippet_140106) {
     printf("Press 'q' in graphic window to quit\n");
     for (int i = 0; i < static_cast<int>(survey_vector.getNumSurveys()); i++) {
         const symphony_lake_dataset::Survey &survey = survey_vector.get(i);
-        for (int j = 0; j < static_cast<int>(survey.getNumImages()); j++) {     
-            // img_point contains all the csv data entries       
+        for (int j = 0; j < static_cast<int>(survey.getNumImages()); j++) {
+            // img_point contains all the csv data entries
             const symphony_lake_dataset::ImagePoint img_point = survey.getImagePoint(j);
-            (void)img_point; // suppress unused variable
+            (void)img_point;  // suppress unused variable
             image = survey.loadImageByImageIndex(j);
 
             // get the target image
@@ -40,7 +40,9 @@ TEST(SymphonyLakeParserTest, snippet_140106) {
             std::string target_img_name_str = target_img_name.str();
             target_img_name_str.replace(0, target_img_name_str.size() - target_img_name_length, "");
             std::filesystem::path target_img_dir =
-                SymphonyLakeDatasetTestHelper::get_test_iamge_root_dir() / SymphonyLakeDatasetTestHelper::get_test_survey_list()[i] / "0027" / target_img_name_str;
+                SymphonyLakeDatasetTestHelper::get_test_iamge_root_dir() /
+                SymphonyLakeDatasetTestHelper::get_test_survey_list()[i] / "0027" /
+                target_img_name_str;
             target_img = cv::imread(target_img_dir.string());
 
             EXPECT_TRUE(SymphonyLakeDatasetTestHelper::images_equal(image, target_img));
@@ -55,7 +57,8 @@ TEST(SymphonyLakeParserTest, snippet_140106) {
 }
 TEST(SymphonyLakeParserTest, snippet_140106_generator_test) {
     DataParser data_parser = SymphonyLakeDatasetTestHelper::get_test_parser();
-    DataParser::Generator<cv::Mat> generator = (SymphonyLakeDatasetTestHelper::get_test_parser()).create_img_generator();
+    DataParser::Generator<cv::Mat> generator =
+        (SymphonyLakeDatasetTestHelper::get_test_parser()).create_img_generator();
     DataParser::Generator<cv::Mat>::iterator img_iter = generator.begin();
     while (img_iter != generator.end()) {
         cv::Mat img = *img_iter;

@@ -1,4 +1,5 @@
 #include "experimental/learn_descriptors/structure_from_motion.hh"
+
 #include <filesystem>
 #include <sstream>
 
@@ -9,18 +10,14 @@ namespace robot::experimental::learn_descriptors {
 const Eigen::Affine3d StructureFromMotion::T_symlake_boat_cam = []() {
     Eigen::Affine3d transform = Eigen::Affine3d::Identity();
     transform.translate(Eigen::Vector3d::Zero());
-    transform.rotate(Eigen::Matrix3d(
-        Eigen::AngleAxisd(M_PI_2, Eigen::Vector3d(1,0,0)) *
-        Eigen::AngleAxisd(M_PI_2, Eigen::Vector3d(0,1,0)))
-    );
+    transform.rotate(Eigen::Matrix3d(Eigen::AngleAxisd(M_PI_2, Eigen::Vector3d(1, 0, 0)) *
+                                     Eigen::AngleAxisd(M_PI_2, Eigen::Vector3d(0, 1, 0))));
 
     // std::stringstream ss;
-    // ss << gtsam::Pose3(gtsam::Rot3(transform.rotation()), gtsam::Point3(transform.translation()));
-    // json json_obj;
-    // json_obj["T_symlake_boat_cam"] = ss.str();
-    // fs::path output_dir = "output";
-    // fs::path output_file = output_dir / "output_sfm.json";
-    // if (!fs::exists(output_dir)) {
+    // ss << gtsam::Pose3(gtsam::Rot3(transform.rotation()),
+    // gtsam::Point3(transform.translation())); json json_obj; json_obj["T_symlake_boat_cam"] =
+    // ss.str(); fs::path output_dir = "output"; fs::path output_file = output_dir /
+    // "output_sfm.json"; if (!fs::exists(output_dir)) {
     //     fs::create_directory(output_dir);
     // }
     // std::ofstream file(output_file);
@@ -38,9 +35,8 @@ std::string pose_to_string(gtsam::Pose3 pose) {
     return ss.str();
 }
 
-const gtsam::Pose3 StructureFromMotion::default_initial_pose = gtsam::Pose3(
-    gtsam::Rot3(T_symlake_boat_cam.rotation()), 
-    T_symlake_boat_cam.translation());
+const gtsam::Pose3 StructureFromMotion::default_initial_pose =
+    gtsam::Pose3(gtsam::Rot3(T_symlake_boat_cam.rotation()), T_symlake_boat_cam.translation());
 // gtsam::Pose3(
 //     gtsam::Rot3(Eigen::Matrix3d(
 //         Eigen::AngleAxis(M_PI / 2, Eigen::Vector3d(1, 0, 0)).toRotationMatrix() *
@@ -49,12 +45,13 @@ const gtsam::Pose3 StructureFromMotion::default_initial_pose = gtsam::Pose3(
 //     gtsam::Point3::Identity()
 // );
 
-StructureFromMotion::StructureFromMotion(Frontend::ExtractorType frontend_extractor, gtsam::Cal3_S2 K, gtsam::Pose3 initial_pose,
-                               Frontend::MatcherType frontend_matcher) {
+StructureFromMotion::StructureFromMotion(Frontend::ExtractorType frontend_extractor,
+                                         gtsam::Cal3_S2 K, gtsam::Pose3 initial_pose,
+                                         Frontend::MatcherType frontend_matcher) {
     frontend_ = Frontend(frontend_extractor, frontend_matcher);
     backend_ = Backend(K);
 
-    set_initial_pose(initial_pose);   
+    set_initial_pose(initial_pose);
     // backend_.get_current_initial_values().print("Ooga: ");
 }
 
@@ -63,21 +60,26 @@ void StructureFromMotion::set_initial_pose(gtsam::Pose3 initial_pose) {
 }
 
 void StructureFromMotion::add_image(const cv::Mat &img) {
-    std::pair<std::vector<cv::KeyPoint>, cv::Mat> keypoints_and_descriptors = frontend_.get_keypoints_and_descriptors(img);   
+    std::pair<std::vector<cv::KeyPoint>, cv::Mat> keypoints_and_descriptors =
+        frontend_.get_keypoints_and_descriptors(img);
     landmarks_.push_back(std::vector<Backend::Landmark>());
     if (get_num_images_added() > 0) {
-        std::vector<cv::DMatch> matches = frontend_.get_matches(img_keypoints_and_descriptors_.back().second, keypoints_and_descriptors.second);        
+        std::vector<cv::DMatch> matches = frontend_.get_matches(
+            img_keypoints_and_descriptors_.back().second, keypoints_and_descriptors.second);
         Frontend::enforce_bijective_matches(matches);
 
         matches_.push_back(matches);
-        gtsam::Pose3 between_value = gtsam::Pose3::Identity();
+        gtsam::Pose3 between_value = get_backend().estimate_pose(
+            img_keypoints_and_descriptors_.back().first, keypoints_and_descriptors.first, matches,
+            get_backend().get_K());
         backend_.add_between_factor(
-            gtsam::Symbol(Backend::pose_symbol_char, get_num_images_added()-1),
-            gtsam::Symbol(Backend::pose_symbol_char, get_num_images_added()),
-            between_value);        
-        gtsam::Pose3 T_cam_landmark(gtsam::Rot3::Identity(), gtsam::Point3(0,0,1));
-        gtsam::Pose3 T_world_cam1 = backend_.get_current_initial_values().at<gtsam::Pose3>(gtsam::Symbol(Backend::pose_symbol_char, get_num_images_added()-1));      
-        gtsam::Pose3 T_world_cam2 = backend_.get_current_initial_values().at<gtsam::Pose3>(gtsam::Symbol(Backend::pose_symbol_char, get_num_images_added()));      
+            gtsam::Symbol(Backend::pose_symbol_char, get_num_images_added() - 1),
+            gtsam::Symbol(Backend::pose_symbol_char, get_num_images_added()), between_value);
+        gtsam::Pose3 T_cam_landmark(gtsam::Rot3::Identity(), gtsam::Point3(0, 0, 1));
+        gtsam::Pose3 T_world_cam1 = backend_.get_current_initial_values().at<gtsam::Pose3>(
+            gtsam::Symbol(Backend::pose_symbol_char, get_num_images_added() - 1));
+        gtsam::Pose3 T_world_cam2 = backend_.get_current_initial_values().at<gtsam::Pose3>(
+            gtsam::Symbol(Backend::pose_symbol_char, get_num_images_added()));
         int count = 0;
         for (const cv::DMatch match : matches) {
             if (count < 1) {
@@ -87,8 +89,7 @@ void StructureFromMotion::add_image(const cv::Mat &img) {
                     {"T_world_cam1", pose_to_string(T_world_cam1)},
                     {"T_world_cam2", pose_to_string(T_world_cam1)},
                     {"T_world_lmkcam1", pose_to_string(T_world_cam1 * T_cam_landmark)},
-                    {"T_world_lmkcam2", pose_to_string(T_world_cam2 * T_cam_landmark)}
-                };
+                    {"T_world_lmkcam2", pose_to_string(T_world_cam2 * T_cam_landmark)}};
                 fs::path output_dir = "output";
                 fs::path output_file = output_dir / "output_sfm.json";
                 if (!fs::exists(output_dir)) {
@@ -104,30 +105,29 @@ void StructureFromMotion::add_image(const cv::Mat &img) {
             // std::cout << "T_world_landmark" <<  T_world_cam1 * T_cam_landmark << std::endl;
             Backend::Landmark landmark_cam_1(
                 gtsam::Symbol(Backend::landmark_symbol_char, landmark_count_),
-                gtsam::Symbol(Backend::pose_symbol_char, get_num_images_added()-1),
+                gtsam::Symbol(Backend::pose_symbol_char, get_num_images_added() - 1),
                 gtsam::Point2(
-                    static_cast<double>(img_keypoints_and_descriptors_.back().first[match.queryIdx].pt.x),
-                    static_cast<double>(img_keypoints_and_descriptors_.back().first[match.queryIdx].pt.y) 
-                ),
-                (T_world_cam1 * T_cam_landmark).translation()
-            );
+                    static_cast<double>(
+                        img_keypoints_and_descriptors_.back().first[match.queryIdx].pt.x),
+                    static_cast<double>(
+                        img_keypoints_and_descriptors_.back().first[match.queryIdx].pt.y)),
+                (T_world_cam1 * T_cam_landmark).translation());
             Backend::Landmark landmark_cam_2(
                 gtsam::Symbol(Backend::landmark_symbol_char, landmark_count_),
                 gtsam::Symbol(Backend::pose_symbol_char, get_num_images_added()),
                 gtsam::Point2(
                     static_cast<double>(keypoints_and_descriptors.first[match.trainIdx].pt.x),
-                    static_cast<double>(keypoints_and_descriptors.first[match.trainIdx].pt.y)
-                ),
-                (T_world_cam2 * T_cam_landmark).translation()
-            );
-            landmarks_[get_num_images_added()-1].push_back(landmark_cam_1);
+                    static_cast<double>(keypoints_and_descriptors.first[match.trainIdx].pt.y)),
+                (T_world_cam2 * T_cam_landmark).translation());
+            landmarks_[get_num_images_added() - 1].push_back(landmark_cam_1);
             landmarks_[get_num_images_added()].push_back(landmark_cam_2);
             backend_.add_landmark(landmark_cam_1);
             backend_.add_landmark(landmark_cam_2);
             landmark_count_++;
-        }      
-        // std::cout << "number of landmarks: " << count << std::endl;  
-        // std::cout << "number of landmarks added to graph: " << [this](){int count = 0; for (const auto &landmark : landmarks_){count += landmark.size();} return count; }() << std::endl;
+        }
+        // std::cout << "number of landmarks: " << count << std::endl;
+        // std::cout << "number of landmarks added to graph: " << [this](){int count = 0; for (const
+        // auto &landmark : landmarks_){count += landmark.size();} return count; }() << std::endl;
         // backend_.get_current_initial_values().print("Current initial values: ");
         // std::cout << "landmark_count_: " << landmark_count_ << std::endl;
     }
@@ -201,45 +201,42 @@ std::vector<cv::DMatch> Frontend::get_matches(const cv::Mat &descriptors1,
 }
 
 void Frontend::threshold_matches(std::vector<cv::DMatch> &matches, float dist_threshhold) {
-    matches.erase(
-        std::remove_if(matches.begin(), matches.end(), [dist_threshhold](const cv::DMatch& match) {
-            return match.distance > dist_threshhold;
-        }),
-        matches.end());
+    matches.erase(std::remove_if(matches.begin(), matches.end(),
+                                 [dist_threshhold](const cv::DMatch &match) {
+                                     return match.distance > dist_threshhold;
+                                 }),
+                  matches.end());
 }
 
-void Frontend::enforce_bijective_matches(std::vector<cv::DMatch>& matches) {    
+void Frontend::enforce_bijective_matches(std::vector<cv::DMatch> &matches) {
     std::unordered_map<int, cv::DMatch> bestQueryMatch;
     std::unordered_map<int, cv::DMatch> bestTrainMatch;
-    
-    for (const auto& match : matches) {
+
+    for (const auto &match : matches) {
         int queryIdx = match.queryIdx;
         int trainIdx = match.trainIdx;
-        
-        if (bestQueryMatch.find(queryIdx) == bestQueryMatch.end() || 
+
+        if (bestQueryMatch.find(queryIdx) == bestQueryMatch.end() ||
             match.distance < bestQueryMatch[queryIdx].distance) {
             bestQueryMatch[queryIdx] = match;
         }
-        
-        if (bestTrainMatch.find(trainIdx) == bestTrainMatch.end() || 
+
+        if (bestTrainMatch.find(trainIdx) == bestTrainMatch.end() ||
             match.distance < bestTrainMatch[trainIdx].distance) {
             bestTrainMatch[trainIdx] = match;
         }
     }
-    
-    matches.erase(
-        std::remove_if(
-            matches.begin(), matches.end(),
-            [&bestQueryMatch, &bestTrainMatch](const cv::DMatch& match) {
-                int queryIdx = match.queryIdx;
-                int trainIdx = match.trainIdx;
 
-                return bestQueryMatch[queryIdx].trainIdx != trainIdx ||
-                       bestTrainMatch[trainIdx].queryIdx != queryIdx;
-            }),
-        matches.end());
+    matches.erase(std::remove_if(matches.begin(), matches.end(),
+                                 [&bestQueryMatch, &bestTrainMatch](const cv::DMatch &match) {
+                                     int queryIdx = match.queryIdx;
+                                     int trainIdx = match.trainIdx;
+
+                                     return bestQueryMatch[queryIdx].trainIdx != trainIdx ||
+                                            bestTrainMatch[trainIdx].queryIdx != queryIdx;
+                                 }),
+                  matches.end());
 }
-
 
 bool Frontend::get_brute_matches(const cv::Mat &descriptors1, const cv::Mat &descriptors2,
                                  std::vector<cv::DMatch> &matches_out) const {
@@ -295,7 +292,7 @@ Backend::Backend() {
     const double cy = img_height / 2.0;
 
     gtsam::Cal3_S2 K(fx, fy, 0, cx, cy);
-    
+
     initial_estimate_.insert(gtsam::Symbol(camera_symbol_char, 0), K);
 }
 
@@ -310,10 +307,12 @@ void Backend::add_prior_factor(const gtsam::Symbol &symbol, const gtsam::Pose3 &
     // initial_estimate_.print("values after adding prior: ");
 }
 
-void Backend::add_between_factor(const gtsam::Symbol &symbol_1, const gtsam::Symbol &symbol_2, const gtsam::Pose3 &value) {
-    graph_.emplace_shared<gtsam::BetweenFactor<gtsam::Pose3>>(symbol_1, symbol_2, value, pose_noise_);
-    // std::cout << "adding between factor. symbol_1: " << symbol_1 << ". symbol_2: " << symbol_2 << std::endl;
-    // initial_estimate_.print("values when adding between factor: ");
+void Backend::add_between_factor(const gtsam::Symbol &symbol_1, const gtsam::Symbol &symbol_2,
+                                 const gtsam::Pose3 &value) {
+    graph_.emplace_shared<gtsam::BetweenFactor<gtsam::Pose3>>(symbol_1, symbol_2, value,
+                                                              pose_noise_);
+    // std::cout << "adding between factor. symbol_1: " << symbol_1 << ". symbol_2: " << symbol_2 <<
+    // std::endl; initial_estimate_.print("values when adding between factor: ");
     initial_estimate_.insert(symbol_2, initial_estimate_.at<gtsam::Pose3>(symbol_1).compose(value));
 }
 
@@ -325,13 +324,39 @@ void Backend::add_landmarks(const std::vector<Landmark> &landmarks) {
 
 void Backend::add_landmark(const Landmark &landmark) {
     graph_.emplace_shared<gtsam::GeneralSFMFactor2<gtsam::Cal3_S2>>(
-        landmark.projection, measurement_noise_, landmark.cam_pose_symbol, landmark.lmk_factor_symbol, gtsam::Symbol(camera_symbol_char, 0) 
-    );
+        landmark.projection, measurement_noise_, landmark.cam_pose_symbol,
+        landmark.lmk_factor_symbol, gtsam::Symbol(camera_symbol_char, 0));
     if (!initial_estimate_.exists(landmark.lmk_factor_symbol)) {
         initial_estimate_.insert(landmark.lmk_factor_symbol, landmark.initial_guess);
     } else {
         initial_estimate_.update(landmark.lmk_factor_symbol, landmark.initial_guess);
     }
+}
+
+gtsam::Pose3 Backend::estimate_pose(const std::vector<cv::KeyPoint> &kpts1,
+                                    const std::vector<cv::KeyPoint> &kpts2,
+                                    const std::vector<cv::DMatch> &matches,
+                                    const gtsam::Cal3_S2 &K) {
+    std::vector<cv::Point2f> pts1;
+    std::vector<cv::Point2f> pts2;
+    for (const cv::DMatch &match : matches) {
+        std::cout << "query point: " << kpts1[match.queryIdx].pt << std::endl;
+        std::cout << "trian point: " << kpts2[match.trainIdx].pt << std::endl;
+        pts1.push_back(kpts1[match.queryIdx].pt);
+        pts2.push_back(kpts2[match.trainIdx].pt);
+    }
+    cv::Mat cv_K = (cv::Mat_<double>(3, 3) << K.fx(), K.skew(), K.px(), 0, K.fy(), K.py(), 0, 0, 1);
+    cv::Mat E = cv::findEssentialMat(pts1, pts2, cv_K, cv::RANSAC, 0.999, 1.0);
+    cv::Mat R, t;
+    cv::recoverPose(E, pts1, pts2, cv_K, R, t);
+    gtsam::Point3 translation(t.at<double>(0, 0), t.at<double>(1, 0), t.at<double>(2, 0));
+    gtsam::Matrix3 mat_rot;
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            mat_rot(i, j) = R.at<double>(i, j);
+        }
+    }
+    return gtsam::Pose3(gtsam::Rot3(mat_rot), translation);
 }
 
 void Backend::solve_graph() {
@@ -340,7 +365,7 @@ void Backend::solve_graph() {
 }
 
 // json SFM_Logger::gtsam_pose3_to_json(const gtsam::Pose3 &pose) {
-//     json json_obj;  
+//     json json_obj;
 //     json_obj = {
 //         {},
 
@@ -349,7 +374,8 @@ void Backend::solve_graph() {
 //     return json_obj;
 // }
 
-// void SFM_Logger::values_to_json(const gtsam::Values &values, const std::filesystem::path &output_path) {
+// void SFM_Logger::values_to_json(const gtsam::Values &values, const std::filesystem::path
+// &output_path) {
 //     json json_obj;
 //     json_obj["add_image_1"] = {
 //         {"T_world_cam1", pose_to_string(T_world_cam1)},
