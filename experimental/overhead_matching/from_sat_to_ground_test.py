@@ -72,19 +72,30 @@ class TestFromSatToGround(unittest.TestCase):
         # projected_points: N x 3, format: i, j, class
         projected_points = np.array([
             [1.2, 2.3, 0],
+            [1.4, 2.1, 0],
             [1.5, 2.6, 0],
+            [1.9, 2.8, 0],
             [7.9, 3.0, 1],
             [2.0, 8.0, 2]
         ])
         num_classes = 3
         bev = _calculate_bev_from_projected_points(projected_points, num_classes)
 
-        # Check shape: (num_classes, height, width)
+
+        # min i is 1.2
+        # min j is 2.1
+
         self.assertEqual(bev.ndim, 3)
         self.assertEqual(bev.shape[0], num_classes)
         self.assertGreaterEqual(bev.shape[1], 8)  # from data
         self.assertGreaterEqual(bev.shape[2], 2)  # from data
         self.assertTrue(np.all(bev >= 0))
+        self.assertEqual(bev[0, 0, 0], 3)
+        self.assertEqual(bev[0, 1, 1], 1)
+        self.assertEqual(bev[1, 0, 3], 0)
+        self.assertEqual(bev[1, 7, 1], 1)
+        self.assertEqual(bev[2, 1, 6], 1)
+        self.assertEqual(bev[2, 0, 3], 0)
 
 
 if __name__ == "__main__":
