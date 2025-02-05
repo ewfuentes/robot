@@ -127,6 +127,8 @@ py_library(
     srcs = ["from_sat_to_ground.py"],
     deps = [
 	requirement("numpy"),
+    requirement("torch"),
+    requirement("torchvision"),
 	requirement("matplotlib"),
 	requirement("pandas"),
 	requirement("seaborn"),
@@ -142,6 +144,13 @@ py_test(
     deps = [
 	":from_sat_to_ground",
 	"//common/testing:is_test_python",
+    ],
+)
+py_binary(
+    name = "from_sat_to_ground_cli",
+    srcs = ["from_sat_to_ground_cli.py"],
+    deps = [
+    ":from_sat_to_ground",
     ],
 )
 

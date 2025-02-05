@@ -75,10 +75,8 @@ def _add_orientation_filters(semantic_bev: torch.LongTensor, n_heading_bins: int
         candidate = rotate(semantic_bev, angle.item(),
                            interpolation=InterpolationMode.NEAREST, expand=True, fill=0).shape[1:]
         max_shape = (max(max_shape[0], candidate[0]), max(max_shape[1], candidate[1]))
-    print("max shape is ", max_shape)
     i_delta = max_shape[0] - semantic_bev.shape[1]
     j_delta = max_shape[1] - semantic_bev.shape[2]
-    print("deltas are ", i_delta, j_delta)
     padded_input = torch.zeros((n_classes, max_shape[0], max_shape[1]), dtype=torch.long)
 
     padded_input[:,
@@ -107,6 +105,7 @@ def _convolve_point_cloud_bev_with_reward_maps(reward_map: np.ndarray,
     tensor_reward = torch.from_numpy(reward_map).to(device)
     tensor_penalty = torch.from_numpy(penalty_map).to(device)
 
+
     with torch.no_grad():
         reward_map = torch.nn.functional.conv2d(
             tensor_reward, orientation_expanded_bev, bias=None, padding="same")
@@ -118,22 +117,30 @@ def _convolve_point_cloud_bev_with_reward_maps(reward_map: np.ndarray,
     return unnormalized_probaility_map.cpu().numpy()
 
 
-def _compute_final_fused_probability(semantic_probability, prior_probability) -> np.ndarray:
-    ...
-
-
 def from_sat_to_ground(
-    image_sequence: ...,
-    satellite_image: np.ndarray,
+    semantic_pointcloud: np.ndarray,  # N x (x y z class) -> building (0) vegetation (1) road (2)
+    semantic_satellite: np.ndarray,  # h x w -> unclassified (0) building(1) vegetation (2) road(3)
+    sigma: float,
+    gamma: float = 0.5,
+    num_orientation_bins: int = 128,
+    num_classes: int = 3,
+    # meters per pixel in i and j directions
+    meters_per_pixel_satellite: tuple = (0.309186, 0.309186),
+    device = "cpu"
 ) -> np.ndarray:
-    # image sequence branch
-    semantic_sequence = ...
-    point_cloud = ...
 
-    # satellite image branch
-    semantic_sattelite_image = ...
-    reward_maps = _calculate_reward_maps_from_semantic_sattelite(
-        semantic_sattelite_image
+    shifted_semantic_satellite = semantic_satellite - 1  # function checks for classes 0, 1, 2
+    rew_map, penalty_map = _calculate_reward_penalty_maps_from_semantic_satellite(
+        shifted_semantic_satellite,
+        sigma,
+        num_classes,
     )
 
-    ...
+    projected_points = _project_pointcloud_into_bev(
+        semantic_pointcloud, semantic_satellite.shape, meters_per_pixel_satellite)
+    semantic_bev = _calculate_bev_from_projected_points(projected_points, num_classes)
+    unnormalized_distribution = _convolve_point_cloud_bev_with_reward_maps(
+        rew_map, penalty_map, semantic_bev, gamma, num_orientation_bins, device)
+
+    return unnormalized_distribution
+
