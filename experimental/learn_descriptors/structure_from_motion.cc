@@ -69,7 +69,7 @@ void StructureFromMotion::add_image(const cv::Mat &img) {
         Frontend::enforce_bijective_matches(matches);
 
         matches_.push_back(matches);
-        gtsam::Pose3 between_value = get_backend().estimate_pose(
+        gtsam::Pose3 between_value = get_backend().estimate_c0_c1(
             img_keypoints_and_descriptors_.back().first, keypoints_and_descriptors.first, matches,
             get_backend().get_K());
         backend_.add_between_factor(
@@ -307,13 +307,21 @@ void Backend::add_prior_factor(const gtsam::Symbol &symbol, const gtsam::Pose3 &
     // initial_estimate_.print("values after adding prior: ");
 }
 
+template <>
 void Backend::add_between_factor(const gtsam::Symbol &symbol_1, const gtsam::Symbol &symbol_2,
-                                 const gtsam::Pose3 &value) {
+                                 const gtsam::Pose3 &value, const gtsam::SharedNoiseModel model) {
     graph_.emplace_shared<gtsam::BetweenFactor<gtsam::Pose3>>(symbol_1, symbol_2, value,
-                                                              pose_noise_);
+                                                              model);
     // std::cout << "adding between factor. symbol_1: " << symbol_1 << ". symbol_2: " << symbol_2 <<
     // std::endl; initial_estimate_.print("values when adding between factor: ");
     initial_estimate_.insert(symbol_2, initial_estimate_.at<gtsam::Pose3>(symbol_1).compose(value));
+}
+
+template <>
+void Backend::add_between_factor(const gtsam::Symbol &symbol_1, const gtsam::Symbol &symbol_2,
+                                 const gtsam::Rot3 &value, const gtsam::SharedNoiseModel &model) {
+    graph_.empalce_shared<gtsam::BetweenFactor<gtsam::Rot3>>(symbol_1, symbol_2, value, model);
+    initial_estimate_.insert()
 }
 
 void Backend::add_landmarks(const std::vector<Landmark> &landmarks) {
@@ -324,7 +332,7 @@ void Backend::add_landmarks(const std::vector<Landmark> &landmarks) {
 
 void Backend::add_landmark(const Landmark &landmark) {
     graph_.emplace_shared<gtsam::GeneralSFMFactor2<gtsam::Cal3_S2>>(
-        landmark.projection, measurement_noise_, landmark.cam_pose_symbol,
+        landmark.projection, landmark_noise_, landmark.cam_pose_symbol,
         landmark.lmk_factor_symbol, gtsam::Symbol(camera_symbol_char, 0));
     if (!initial_estimate_.exists(landmark.lmk_factor_symbol)) {
         initial_estimate_.insert(landmark.lmk_factor_symbol, landmark.initial_guess);
@@ -333,7 +341,7 @@ void Backend::add_landmark(const Landmark &landmark) {
     }
 }
 
-gtsam::Pose3 Backend::estimate_pose(const std::vector<cv::KeyPoint> &kpts1,
+gtsam::Pose3 Backend::estimate_c0_c1(const std::vector<cv::KeyPoint> &kpts1,
                                     const std::vector<cv::KeyPoint> &kpts2,
                                     const std::vector<cv::DMatch> &matches,
                                     const gtsam::Cal3_S2 &K) {
@@ -347,16 +355,16 @@ gtsam::Pose3 Backend::estimate_pose(const std::vector<cv::KeyPoint> &kpts1,
     }
     cv::Mat cv_K = (cv::Mat_<double>(3, 3) << K.fx(), K.skew(), K.px(), 0, K.fy(), K.py(), 0, 0, 1);
     cv::Mat E = cv::findEssentialMat(pts1, pts2, cv_K, cv::RANSAC, 0.999, 1.0);
-    cv::Mat R, t;
-    cv::recoverPose(E, pts1, pts2, cv_K, R, t);
-    gtsam::Point3 translation(t.at<double>(0, 0), t.at<double>(1, 0), t.at<double>(2, 0));
-    gtsam::Matrix3 mat_rot;
+    cv::Mat R_c1_c0, t_c1_c0;
+    cv::recoverPose(E, pts1, pts2, cv_K, R_c1_c0, t_c1_c0);
+    gtsam::Point3 t_c1_c0_eigen(t_c1_c0.at<double>(0, 0), t_c1_c0.at<double>(1, 0), t_c1_c0.at<double>(2, 0));
+    gtsam::Matrix3 R_c1_c0_eigen;
     for (int i = 0; i < 3; i++) {
         for (int j = 0; j < 3; j++) {
-            mat_rot(i, j) = R.at<double>(i, j);
+            R_c1_c0_eigen(i, j) = R_c1_c0.at<double>(i, j);
         }
     }
-    return gtsam::Pose3(gtsam::Rot3(mat_rot), translation);
+    return gtsam::Pose3(gtsam::Rot3(R_c1_c0_eigen), t_c1_c0_eigen).inverse();
 }
 
 void Backend::solve_graph() {

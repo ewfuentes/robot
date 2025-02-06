@@ -199,18 +199,14 @@ TEST(GtsamTesting, sfm_test_estimate_pose) {
     std::cout << "kpts1.size(): " << kpts1.size() << std::endl;
     std::cout << "kpts2.size(): " << kpts2.size() << std::endl;
 
-    gtsam::Pose3 pose_diff_estimate = sfm.get_backend().estimate_pose(kpts1, kpts2, matches, *K);
-    gtsam::Pose3 pose_diff_groundtruth = T_world_pose0.between(T_world_pose1);
-    std::vector<gtsam::Pose3> result_poses = {T_world_pose0, T_world_pose0 * pose_diff_estimate};
-    std::cout << "pose_diff_estimate: " << pose_diff_estimate << std::endl;
-    std::cout << "pose_diff_ground_truth: " << pose_diff_groundtruth << std::endl;
+    gtsam::Pose3 T_pose0_pose1_estimate = sfm.get_backend().estimate_c0_c1(kpts1, kpts2, matches, *K);
+    gtsam::Pose3 T_pose0_pose1 = T_world_pose0.between(T_world_pose1);
+    std::vector<gtsam::Pose3> result_poses = {T_world_pose0, T_world_pose0 * T_pose0_pose1_estimate};
+    std::cout << "pose_diff_estimate: " << T_pose0_pose1_estimate << std::endl;
+    std::cout << "pose_diff_ground_truth: " << T_pose0_pose1 << std::endl;
 
     isometries.emplace_back(result_poses.back().matrix());
     robot::geometry::opencv_viz::viz_scene(isometries, cube_W);
-
-    // std::cout << result_poses[1] << std::endl;
-    // std::cout << pose1 << std::endl;
-    // std::cout << pose0 << std::endl;
 
     constexpr double TOL = 1e-3;
     for (size_t i = 0; i < poses.size(); i++) {

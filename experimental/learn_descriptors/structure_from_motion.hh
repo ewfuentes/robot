@@ -66,6 +66,8 @@ class Frontend {
 class Backend {
    public:
     static constexpr char pose_symbol_char = 'x';
+    static constexpr char pose_rot_symbol_char = 'r';
+    static constexpr char pose_bearing_symbol_char = 'b';
     static constexpr char landmark_symbol_char = 'l';
     static constexpr char camera_symbol_char = 'k';
 
@@ -88,16 +90,20 @@ class Backend {
     ~Backend(){};
 
     void add_prior_factor(const gtsam::Symbol &symbol, const gtsam::Pose3 &value);
+
+    template <typename T>
     void add_between_factor(const gtsam::Symbol &symbol_1, const gtsam::Symbol &symbol_2,
-                            const gtsam::Pose3 &value);
+                            const T &value, const gtsam::SharedNoiseModel &model);
+
 
     void add_landmarks(const std::vector<Landmark> &landmarks);
     void add_landmark(const Landmark &landmark);
-    gtsam::Pose3 estimate_pose(const std::vector<cv::KeyPoint> &kpts1,
+    gtsam::Pose3 estimate_c0_c1(const std::vector<cv::KeyPoint> &kpts1,
                                const std::vector<cv::KeyPoint> &kpts2,
                                const std::vector<cv::DMatch> &matches, const gtsam::Cal3_S2 &K);
 
-    void solve_graph();
+    void solve_graph();    
+
     const gtsam::Values &get_current_initial_values() const { return initial_estimate_; };
     const gtsam::Values &get_result() const { return result_; };
     const gtsam::Cal3_S2 &get_K() const { return K_; };
@@ -109,10 +115,14 @@ class Backend {
     gtsam::Values result_;
     gtsam::NonlinearFactorGraph graph_;
 
-    gtsam::noiseModel::Isotropic::shared_ptr measurement_noise_ =
+    gtsam::noiseModel::Isotropic::shared_ptr landmark_noise_ =
         gtsam::noiseModel::Isotropic::Sigma(2, 1.0);
     gtsam::noiseModel::Diagonal::shared_ptr pose_noise_ =
         gtsam::noiseModel::Diagonal::Sigmas(gtsam::Vector6::Constant(0.1));
+    gtsam::noiseModel::Isotropic::shared_ptr rotation_noise_ = 
+        gtsam::noiseModel::Isotropic::Sigma(3, 0.1);
+    gtsam::noiseModel::Isotropic::shared_ptr pose_bearing_noise_ = 
+        gtsam::noiseModel::Isotropic::Sigma(2, 0.1);
 };
 class StructureFromMotion {
    public:
