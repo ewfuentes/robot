@@ -73,7 +73,7 @@ class ClevrTransformer(torch.nn.Module):
             + self._overhead_marker
         )
         ego_tokens = (
-            self._ego_vector_embedding(input.ego_tokens)
+            self._overhead_vector_embedding(input.ego_tokens)
             + input.ego_position
             + self._ego_marker
         )

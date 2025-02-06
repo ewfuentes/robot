@@ -17,9 +17,8 @@ def sample_ego_from_world(rng, batch_size):
     xy = rng.uniform(-2, 2, size=(batch_size, 2))
     theta = rng.uniform(0, 2 * np.pi, size=(batch_size))
 
-    theta = theta * 0.0
+    # theta = theta * 0.0
     # xy = 0.0 * xy
-    xy[:, 1] = 0
 
     out = np.zeros((batch_size, 3, 3))
     # x axis
@@ -56,13 +55,13 @@ def project_batch_to_ego(batch, ego_from_world):
 def clevr_input_from_batch(batch, vocabulary, embedding_size, ego_from_world):
     result = clevr_tokenizer.create_tokens(batch, vocabulary)
     position_embeddings = clevr_tokenizer.create_position_embeddings(
-        batch, embedding_size=embedding_size
+        batch, embedding_size=embedding_size, min_scale=1e-6
     )
 
     ego_batch = project_batch_to_ego(batch, ego_from_world)
     ego_result = clevr_tokenizer.create_tokens(ego_batch, vocabulary)
     ego_position_embeddings = clevr_tokenizer.create_position_embeddings(
-        ego_batch, embedding_size=embedding_size
+        ego_batch, embedding_size=embedding_size, min_scale=1e-6
     )
 
     return clevr_transformer.ClevrInputTokens(
@@ -95,13 +94,13 @@ def compute_mse_loss(output, ego_from_world):
     dtheta = torch.fmod(pred_theta - gt_theta, torch.pi)
 
     error = torch.mean(dx * dx + dy * dy
-                       # + dtheta * dtheta
+                       + dtheta * dtheta
                        )
 
     THETA_CONSTRAINT_FACTOR = 1000
-    theta_constraint = THETA_CONSTRAINT_FACTOR * torch.nn.functional.relu(torch.abs(pred_theta) - torch.pi)
+    theta_constraint = torch.sum(THETA_CONSTRAINT_FACTOR * torch.nn.functional.relu(torch.abs(pred_theta) - torch.pi))
 
-    print(f'x: {pred_x.item():+0.3f} y: {pred_y.item():+0.3f} t: {pred_theta.item():+0.3f} dx: {dx.item():+0.3f} dy: {dy.item():+0.3f} dtheta: {dtheta.item():+0.3f} theta constraint: {theta_constraint.item():+0.3f} ', end=' ')
+    # print(f'x: {pred_x.item():+0.3f} y: {pred_y.item():+0.3f} t: {pred_theta.item():+0.3f} dx: {dx.item():+0.3f} dy: {dy.item():+0.3f} dtheta: {dtheta.item():+0.3f} theta constraint: {theta_constraint.item():+0.3f} ', end=' ')
 
 
     return error + theta_constraint
@@ -112,7 +111,8 @@ def main(dataset_path: Path, output_path: Path):
     dataset = clevr_dataset.ClevrDataset(dataset_path)
     vocabulary = dataset.vocabulary()
     dataset = torch.utils.data.Subset(dataset, range(1))
-    loader = clevr_dataset.get_dataloader(dataset, batch_size=1)
+    dataset = torch.utils.data.ConcatDataset([dataset] * 64)
+    loader = clevr_dataset.get_dataloader(dataset, batch_size=64)
 
     vocabulary_size = np.prod([len(x) for x in vocabulary.values()])
 
@@ -137,7 +137,24 @@ def main(dataset_path: Path, output_path: Path):
     NUM_EPOCHS = 10000
     rng = np.random.default_rng(1024)
     for epoch_idx in range(NUM_EPOCHS):
-        print(f"***** Epoch: {epoch_idx}", end=' ')
+        if epoch_idx % 100 == 0:
+            print(f"***** Epoch: {epoch_idx}", end=' ')
+            model.eval()
+            eval_rng = np.random.default_rng(1024)
+            batch = next(iter(loader))
+            ego_from_world = sample_ego_from_world(eval_rng, len(batch["objects"]))
+            input = clevr_input_from_batch(batch["objects"], vocabulary, TOKEN_SIZE, ego_from_world)
+
+            output = model(input, None, None)
+
+            x_pred = output[:, :2].cpu()
+            x_gt = torch.from_numpy(ego_from_world[:, :2, 2])
+            error = x_pred - x_gt
+            error = torch.sqrt(torch.sum(error * error, axis=1))
+            print('mae:', torch.mean(error).item())
+
+            model.train()
+
         for batch_idx, batch in enumerate(loader):
             # print(batch["objects"])
             optim.zero_grad()
@@ -154,7 +171,8 @@ def main(dataset_path: Path, output_path: Path):
 
             loss = compute_mse_loss(output, ego_from_world)
             loss.backward()
-            print(f'Loss: {loss.item(): 0.6f}')
+            if epoch_idx % 100 == 0:
+                print(f'Loss: {loss.item(): 0.6f}')
             optim.step()
 
 
