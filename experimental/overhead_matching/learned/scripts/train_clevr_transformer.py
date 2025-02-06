@@ -81,43 +81,39 @@ def create_query_tokens(batch_size: int):
 def compute_mse_loss(output, ego_from_world):
     gt_x = torch.from_numpy(ego_from_world[:, 0, 2]).cuda()
     gt_y = torch.from_numpy(ego_from_world[:, 1, 2]).cuda()
-    gt_theta = torch.from_numpy(
-        np.arctan2(ego_from_world[:, 1, 0], ego_from_world[:, 0, 0])
-    ).cuda()
+    gt_cos_theta = torch.from_numpy(ego_from_world[:, 0, 0]).cuda()
+    gt_sin_theta = torch.from_numpy(ego_from_world[:, 1, 0]).cuda()
 
     pred_x = output[:, 0]
     pred_y = output[:, 1]
-    pred_theta = output[:, 2]
+    pred_cos_theta = output[:, 2]
+    pred_sin_theta = output[:, 2]
 
     dx = pred_x - gt_x
     dy = pred_y - gt_y
-    dtheta = torch.fmod(pred_theta - gt_theta, torch.pi)
+    d_cos_theta = pred_cos_theta - gt_cos_theta
+    d_sin_theta = pred_sin_theta - gt_sin_theta
 
-    error = torch.mean(dx * dx + dy * dy
-                       + dtheta * dtheta
-                       )
+    error = torch.mean(
+        dx * dx
+        + dy * dy
+        + d_cos_theta * d_cos_theta
+        + d_sin_theta * d_sin_theta
+    )
 
-    THETA_CONSTRAINT_FACTOR = 1000
-    theta_constraint = torch.sum(THETA_CONSTRAINT_FACTOR * torch.nn.functional.relu(torch.abs(pred_theta) - torch.pi))
-
-    # print(f'x: {pred_x.item():+0.3f} y: {pred_y.item():+0.3f} t: {pred_theta.item():+0.3f} dx: {dx.item():+0.3f} dy: {dy.item():+0.3f} dtheta: {dtheta.item():+0.3f} theta constraint: {theta_constraint.item():+0.3f} ', end=' ')
-
-
-    return error + theta_constraint
+    return error
 
 
 def main(dataset_path: Path, output_path: Path):
     torch.manual_seed(2048)
     dataset = clevr_dataset.ClevrDataset(dataset_path)
     vocabulary = dataset.vocabulary()
-    dataset = torch.utils.data.Subset(dataset, range(1))
-    dataset = torch.utils.data.ConcatDataset([dataset] * 64)
     loader = clevr_dataset.get_dataloader(dataset, batch_size=64)
 
-    vocabulary_size = np.prod([len(x) for x in vocabulary.values()])
+    vocabulary_size = int(np.prod([len(x) for x in vocabulary.values()]))
 
     TOKEN_SIZE = 128
-    OUTPUT_DIM = 3
+    OUTPUT_DIM = 4
     model_config = clevr_transformer.ClevrTransformerConfig(
         token_dim=TOKEN_SIZE,
         vocabulary_size=vocabulary_size,
@@ -134,27 +130,9 @@ def main(dataset_path: Path, output_path: Path):
 
     optim = torch.optim.Adam(model.parameters(), lr=1e-5)
 
-    NUM_EPOCHS = 10000
+    NUM_EPOCHS = 1001
     rng = np.random.default_rng(1024)
     for epoch_idx in range(NUM_EPOCHS):
-        if epoch_idx % 100 == 0:
-            print(f"***** Epoch: {epoch_idx}", end=' ')
-            model.eval()
-            eval_rng = np.random.default_rng(1024)
-            batch = next(iter(loader))
-            ego_from_world = sample_ego_from_world(eval_rng, len(batch["objects"]))
-            input = clevr_input_from_batch(batch["objects"], vocabulary, TOKEN_SIZE, ego_from_world)
-
-            output = model(input, None, None)
-
-            x_pred = output[:, :2].cpu()
-            x_gt = torch.from_numpy(ego_from_world[:, :2, 2])
-            error = x_pred - x_gt
-            error = torch.sqrt(torch.sum(error * error, axis=1))
-            print('mae:', torch.mean(error).item())
-
-            model.train()
-
         for batch_idx, batch in enumerate(loader):
             # print(batch["objects"])
             optim.zero_grad()
@@ -171,9 +149,33 @@ def main(dataset_path: Path, output_path: Path):
 
             loss = compute_mse_loss(output, ego_from_world)
             loss.backward()
-            if epoch_idx % 100 == 0:
-                print(f'Loss: {loss.item(): 0.6f}')
             optim.step()
+
+        print(f"***** Epoch: {epoch_idx}", end=' ')
+        model.eval()
+        eval_rng = np.random.default_rng(1024)
+        batch = next(iter(loader))
+        ego_from_world = sample_ego_from_world(eval_rng, len(batch["objects"]))
+        input = clevr_input_from_batch(batch["objects"], vocabulary, TOKEN_SIZE, ego_from_world)
+
+        output = model(input, None, None)
+
+        x_pred = output[:, :2].cpu()
+        x_gt = torch.from_numpy(ego_from_world[:, :2, 2])
+        error = x_pred - x_gt
+        error = torch.sqrt(torch.sum(error * error, axis=1))
+        print('mae:', torch.mean(error).item())
+
+        model.train()
+
+        if epoch_idx % 10 == 0:
+            output_path.mkdir(parents=True, exist_ok=True)
+
+            checkpoint_path = output_path / f'{epoch_idx:06d}.pt'
+            torch.save(model.state_dict(), checkpoint_path)
+            print('model saved to:', checkpoint_path)
+
+
 
 
 if __name__ == "__main__":
