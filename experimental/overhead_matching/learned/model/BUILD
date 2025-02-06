@@ -5,6 +5,7 @@ load("@pip//:requirements.bzl", "requirement")
 py_library(
   name="clevr_tokenizer",
   srcs=["clevr_tokenizer.py"],
+  visibility=["//experimental/overhead_matching/learned:__subpackages__"],
   deps=[
     "//common:torch"
   ]
@@ -24,6 +25,7 @@ py_test(
 py_library(
   name="clevr_transformer",
   srcs=["clevr_transformer.py"],
+  visibility=["//experimental/overhead_matching/learned:__subpackages__"],
   deps=[
     "//common:torch",
   ]

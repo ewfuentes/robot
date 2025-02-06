@@ -6,18 +6,24 @@ from functools import reduce
 import operator
 
 import common.torch as torch
-from experimental.overhead_matching.learned.model import clevr_transformer, clevr_tokenizer
+from experimental.overhead_matching.learned.model import (
+    clevr_transformer,
+    clevr_tokenizer,
+)
 from experimental.overhead_matching.learned.data import clevr_dataset
 
-def project_to_ego(batch, world_from_ego):
-    ...
+
+def project_to_ego(batch):
     return batch
+
 
 class ClevrTransformerTest(unittest.TestCase):
     def test_happy_case(self):
         # Setup
 
-        dataset = clevr_dataset.ClevrDataset(Path('external/clevr_test_set/clevr_test_set'))
+        dataset = clevr_dataset.ClevrDataset(
+            Path("external/clevr_test_set/clevr_test_set")
+        )
         loader = clevr_dataset.get_dataloader(dataset, batch_size=4)
 
         vocab = dataset.vocabulary()
@@ -32,19 +38,23 @@ class ClevrTransformerTest(unittest.TestCase):
             num_encoder_layers=4,
             num_decoder_heads=4,
             num_decoder_layers=4,
-            output_dim=OUTPUT_DIM)
+            output_dim=OUTPUT_DIM,
+        )
 
         model = clevr_transformer.ClevrTransformer(config)
         batch = next(iter(loader))
         batch = batch["objects"]
 
         overhead_result = clevr_tokenizer.create_tokens(batch, vocab)
-        overhead_position = clevr_tokenizer.create_position_embeddings(batch, embedding_size=MODEL_SIZE)
+        overhead_position = clevr_tokenizer.create_position_embeddings(
+            batch, embedding_size=MODEL_SIZE
+        )
 
-        world_from_ego = None
-        ego_batch = project_to_ego(batch, world_from_ego)
+        ego_batch = project_to_ego(batch)
         ego_result = clevr_tokenizer.create_tokens(batch, vocab)
-        ego_position = clevr_tokenizer.create_position_embeddings(ego_batch, embedding_size=MODEL_SIZE)
+        ego_position = clevr_tokenizer.create_position_embeddings(
+            ego_batch, embedding_size=MODEL_SIZE
+        )
 
         input = clevr_transformer.ClevrInputTokens(
             overhead_tokens=overhead_result["tokens"],
@@ -52,7 +62,8 @@ class ClevrTransformerTest(unittest.TestCase):
             overhead_mask=overhead_result["mask"],
             ego_tokens=ego_result["tokens"],
             ego_position=ego_position,
-            ego_mask=ego_result["mask"])
+            ego_mask=ego_result["mask"],
+        )
 
         # Action
         NUM_QUERY_TOKENS = 100
