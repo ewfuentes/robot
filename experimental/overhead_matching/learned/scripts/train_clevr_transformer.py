@@ -95,10 +95,7 @@ def compute_mse_loss(output, ego_from_world):
     d_sin_theta = pred_sin_theta - gt_sin_theta
 
     error = torch.mean(
-        dx * dx
-        + dy * dy
-        + d_cos_theta * d_cos_theta
-        + d_sin_theta * d_sin_theta
+        dx * dx + dy * dy + d_cos_theta * d_cos_theta + d_sin_theta * d_sin_theta
     )
 
     return error
@@ -151,12 +148,14 @@ def main(dataset_path: Path, output_path: Path):
             loss.backward()
             optim.step()
 
-        print(f"***** Epoch: {epoch_idx}", end=' ')
+        print(f"***** Epoch: {epoch_idx}", end=" ")
         model.eval()
         eval_rng = np.random.default_rng(1024)
         batch = next(iter(loader))
         ego_from_world = sample_ego_from_world(eval_rng, len(batch["objects"]))
-        input = clevr_input_from_batch(batch["objects"], vocabulary, TOKEN_SIZE, ego_from_world)
+        input = clevr_input_from_batch(
+            batch["objects"], vocabulary, TOKEN_SIZE, ego_from_world
+        )
 
         output = model(input, None, None)
 
@@ -164,18 +163,16 @@ def main(dataset_path: Path, output_path: Path):
         x_gt = torch.from_numpy(ego_from_world[:, :2, 2])
         error = x_pred - x_gt
         error = torch.sqrt(torch.sum(error * error, axis=1))
-        print('mae:', torch.mean(error).item())
+        print("mae:", torch.mean(error).item())
 
         model.train()
 
         if epoch_idx % 10 == 0:
             output_path.mkdir(parents=True, exist_ok=True)
 
-            checkpoint_path = output_path / f'{epoch_idx:06d}.pt'
+            checkpoint_path = output_path / f"{epoch_idx:06d}.pt"
             torch.save(model.state_dict(), checkpoint_path)
-            print('model saved to:', checkpoint_path)
-
-
+            print("model saved to:", checkpoint_path)
 
 
 if __name__ == "__main__":

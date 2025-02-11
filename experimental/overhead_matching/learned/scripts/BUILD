@@ -18,8 +18,10 @@ py_binary(
   srcs=["evaluate_clevr_transformer.py"],
   deps=[
     ":train_clevr_transformer",
+    requirement("pandas"),
     requirement("numpy"),
     requirement("matplotlib"),
+    requirement("seaborn"),
     requirement("PyGObject"),
     "//common:torch",
     "//experimental/overhead_matching/learned/data:clevr_dataset",

@@ -30,14 +30,20 @@ class ClevrTransformer(torch.nn.Module):
         super().__init__()
 
         encoder_layer = torch.nn.TransformerEncoderLayer(
-            d_model=config.token_dim, nhead=config.num_encoder_heads, batch_first=True, dropout=0.0
+            d_model=config.token_dim,
+            nhead=config.num_encoder_heads,
+            batch_first=True,
+            dropout=0.0,
         )
         self._encoder = torch.nn.TransformerEncoder(
             encoder_layer, num_layers=config.num_encoder_layers
         )
 
         decoder_layer = torch.nn.TransformerDecoderLayer(
-            d_model=config.token_dim, nhead=config.num_decoder_heads, batch_first=True, dropout = 0.0
+            d_model=config.token_dim,
+            nhead=config.num_decoder_heads,
+            batch_first=True,
+            dropout=0.0,
         )
         self._decoder = torch.nn.TransformerDecoder(
             decoder_layer, num_layers=config.num_decoder_layers
