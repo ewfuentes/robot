@@ -38,10 +38,6 @@ py_test(
     requirement("asrl-pylgmath"),
     requirement("theseus-ai"),
     requirement("scipy"),
-    requirement("matplotlib"),
-    requirement("PyGObject"),
-    requirement("IPython"),
-    requirement("torchviz"),
     "//common:torch",
   ]
 )

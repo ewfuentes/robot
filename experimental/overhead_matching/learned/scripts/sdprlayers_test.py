@@ -2,13 +2,10 @@
 import unittest
 import numpy as np
 
-import matplotlib.pyplot as plt
 import common.torch as torch
 import scipy.optimize as opt
 
 from sdprlayers.layers.sdprlayer import SDPRLayer
-
-plt.style.use('ggplot')
 
 
 def eval_poly(x, params):
