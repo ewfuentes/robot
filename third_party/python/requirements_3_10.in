@@ -32,3 +32,4 @@ poly_matrix @ git+https://github.com/utiasASRL/poly_matrix.git@671d6b7704fcc8281
 cert_tools @ git+https://github.com/utiasASRL/certifiable-tools.git@afcd203bb4623ea60b339f00f8da802f776de1d4
 asrl-pylgmath==1.0.3
 theseus-ai==0.2.3
+torchviz==0.0.3

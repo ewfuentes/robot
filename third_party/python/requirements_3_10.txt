@@ -690,6 +690,10 @@ fsspec==2024.10.0 \
     # via
     #   huggingface-hub
     #   torch
+graphviz==0.20.3 \
+    --hash=sha256:09d6bc81e6a9fa392e7ba52135a9d49f1ed62526f96499325930e87ca1b5925d \
+    --hash=sha256:81f848f2904515d8cd359cc611faba817598d2feaac4027b266aa3eda7b3dde5
+    # via torchviz
 huggingface-hub==0.27.0 \
     --hash=sha256:8f2e834517f1f1ddf1ecc716f91b120d7333011b7485f665a9a412eacb1a2a81 \
     --hash=sha256:902cce1a1be5739f5589e560198a65a8edcfd3b830b1666f36e4b961f0454fac
@@ -3056,6 +3060,7 @@ torch==2.5.1 \
     #   kornia
     #   sam-2
     #   torchvision
+    #   torchviz
 torchkin==0.1.1 \
     --hash=sha256:1f05babc4c9b578754417fa28ad1f0f2520f4ad6c0215d0865be46ee457093f5 \
     --hash=sha256:7827345ff787469a461aaf453bb33da968107886536fa4f2b00d1c0f006b6450
@@ -3086,6 +3091,10 @@ torchvision==0.20.1 \
     # via
     #   easyocr
     #   sam-2
+torchviz==0.0.3 \
+    --hash=sha256:2e95f2fea7a31ec9549f2d6bbf446d75aeb6a9880fcf13e7dd843fdcdb4a3725 \
+    --hash=sha256:5eab98d17cbe8a54727cfa6a527681cff613430fff8fc68f52302ca5fa26cdf1
+    # via -r third_party/python/requirements_3_10.in
 tornado==6.4.2 \
     --hash=sha256:072ce12ada169c5b00b7d92a99ba089447ccc993ea2143c9ede887e0937aa803 \
     --hash=sha256:1a017d239bd1bb0919f72af256a970624241f070496635784d9bf0db640d3fec \

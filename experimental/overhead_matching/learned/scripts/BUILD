@@ -41,6 +41,7 @@ py_test(
     requirement("matplotlib"),
     requirement("PyGObject"),
     requirement("IPython"),
+    requirement("torchviz"),
     "//common:torch",
   ]
 )
