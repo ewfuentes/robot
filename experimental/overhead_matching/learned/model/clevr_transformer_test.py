@@ -39,6 +39,7 @@ class ClevrTransformerTest(unittest.TestCase):
             num_decoder_heads=4,
             num_decoder_layers=4,
             output_dim=OUTPUT_DIM,
+            predict_gaussian=False,
         )
 
         model = clevr_transformer.ClevrTransformer(config)
