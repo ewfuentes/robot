@@ -29,3 +29,15 @@ py_binary(
     "//experimental/overhead_matching/learned/model:clevr_transformer",
   ]
 )
+
+py_test(
+  name="sdprlayers_test",
+  srcs=["sdprlayers_test.py"],
+  deps=[
+    requirement("sdprlayers"),
+    requirement("asrl-pylgmath"),
+    requirement("theseus-ai"),
+    requirement("scipy"),
+    "//common:torch",
+  ]
+)
