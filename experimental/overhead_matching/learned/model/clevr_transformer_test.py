@@ -17,6 +17,16 @@ def project_to_ego(batch):
     return batch
 
 
+def positions_from_batch(batch):
+    batch_size = len(batch)
+    max_num_objects = max([len(x) for x in batch])
+    out = torch.zeros((batch_size, max_num_objects, 2))
+    for scene_idx, scene in enumerate(batch):
+        for obj_idx, obj in enumerate(scene):
+            out[scene_idx, obj_idx, :] = torch.tensor(obj["3d_coords"][:2])
+    return out
+
+
 class ClevrTransformerTest(unittest.TestCase):
     def test_happy_case(self):
         # Setup
@@ -61,10 +71,12 @@ class ClevrTransformerTest(unittest.TestCase):
 
         input = clevr_transformer.ClevrInputTokens(
             overhead_tokens=overhead_result["tokens"],
-            overhead_position=overhead_position,
+            overhead_position=positions_from_batch(batch),
+            overhead_position_embeddings=overhead_position,
             overhead_mask=overhead_result["mask"],
             ego_tokens=ego_result["tokens"],
-            ego_position=ego_position,
+            ego_position=positions_from_batch(ego_batch),
+            ego_position_embeddings=ego_position,
             ego_mask=ego_result["mask"],
         )
 
