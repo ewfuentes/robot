@@ -30,5 +30,3 @@ sdprlayers @ git+https://github.com/ewfuentes/sdprlayer.git@3a9f941e21c2e917e2b1
 cvxpylayers @ git+https://github.com/holmesco/cvxpylayers.git@728b8f208875d0ad913167ae2c9b4220730ab4cd
 poly_matrix @ git+https://github.com/utiasASRL/poly_matrix.git@671d6b7704fcc82817189dbbc87814c429b2e15d
 cert_tools @ git+https://github.com/utiasASRL/certifiable-tools.git@afcd203bb4623ea60b339f00f8da802f776de1d4
-# asrl-pylgmath==1.0.3
-# theseus-ai==0.2.3
