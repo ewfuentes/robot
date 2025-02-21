@@ -1,6 +1,24 @@
 
 load("@pip//:requirements.bzl", "requirement")
 
+py_library(
+  name="pose_optimizer",
+  srcs=["pose_optimizer.py"],
+  deps=[
+    "//common:torch",
+    requirement("sdprlayers"),
+    requirement("numpy"),
+    requirement("sympy"),
+  ]
+)
+
+py_test(
+  name="pose_optimizer_test",
+  srcs=["pose_optimizer_test.py"],
+  deps=[
+    ":pose_optimizer",
+  ]
+)
 
 py_library(
   name="clevr_tokenizer",

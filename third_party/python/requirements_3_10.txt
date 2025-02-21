@@ -51,7 +51,7 @@ arrow==1.3.0 \
 asrl-pylgmath==1.0.3 \
     --hash=sha256:3ce7897484fe8983678ea9487cbcfc11a3b489df2aa15bcd4d48d6460b547c59 \
     --hash=sha256:4636eb73d9ed87828a511676371ddeb7460f0ee420103ddeab91ce9f9267bba3
-    # via -r third_party/python/requirements_3_10.in
+    # via sdprlayers
 asttokens==3.0.0 \
     --hash=sha256:0dcd8baa8d62b0c1d118b399b2ddba3c4aff271d0d7a9e0d4c1681c79035bbc7 \
     --hash=sha256:e3078351a059199dd5138cb1c706e6430c05eff2ff136af5eb4790f9d28932e2
@@ -2853,7 +2853,7 @@ scs==3.2.7.post2 \
     # via cvxpy
 # WARNING: pip install will require the following package to be hashed.
 # Consider using a hashable URL like https://github.com/jazzband/pip-tools/archive/SOMECOMMIT.zip
-sdprlayers @ git+https://github.com/ewfuentes/sdprlayer.git@ab18b83299523b1ac904b40b5a4a4e2f05cc8e02
+sdprlayers @ git+https://github.com/ewfuentes/sdprlayer.git@3a9f941e21c2e917e2b1f04772bf13e1a0707c6d
     # via -r third_party/python/requirements_3_10.in
 seaborn==0.13.2 \
     --hash=sha256:636f8336facf092165e27924f223d3c62ca560b1f2bb5dff7ab7fad265361987 \
@@ -2963,7 +2963,7 @@ theseus-ai==0.2.3 \
     --hash=sha256:45ed9d078f0cd38e63a7c7b9d288a59ccb300c4c3d4e2fff23e2a2b7ee3ef481 \
     --hash=sha256:745a38bbbda1c22faf73e78b7400b1e2fa0397d85dc61c65e1bfe19b1380e8a9 \
     --hash=sha256:91449d9afffad856dce23c52489ed809f3307a4190c0cb54f6797da4a7514339
-    # via -r third_party/python/requirements_3_10.in
+    # via sdprlayers
 threadpoolctl==3.5.0 \
     --hash=sha256:082433502dd922bf738de0d8bcc4fdcbf0979ff44c42bd40f5af8a282f6fa107 \
     --hash=sha256:56c1e26c150397e58c4926da8eeee87533b1e32bef131bd4bf6a2f45f3185467
