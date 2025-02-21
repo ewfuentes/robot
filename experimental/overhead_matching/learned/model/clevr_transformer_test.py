@@ -17,6 +17,16 @@ def project_to_ego(batch):
     return batch
 
 
+def positions_from_batch(batch):
+    batch_size = len(batch)
+    max_num_objects = max([len(x) for x in batch])
+    out = torch.zeros((batch_size, max_num_objects, 2))
+    for scene_idx, scene in enumerate(batch):
+        for obj_idx, obj in enumerate(scene):
+            out[scene_idx, obj_idx, :] = torch.tensor(obj["3d_coords"][:2])
+    return out
+
+
 class ClevrTransformerTest(unittest.TestCase):
     def test_happy_case(self):
         # Setup
@@ -24,7 +34,8 @@ class ClevrTransformerTest(unittest.TestCase):
         dataset = clevr_dataset.ClevrDataset(
             Path("external/clevr_test_set/clevr_test_set")
         )
-        loader = clevr_dataset.get_dataloader(dataset, batch_size=4)
+        BATCH_SIZE = 4
+        loader = clevr_dataset.get_dataloader(dataset, batch_size=BATCH_SIZE)
 
         vocab = dataset.vocabulary()
         vocab_size = reduce(operator.mul, [len(v) for v in vocab.values()])
@@ -56,13 +67,16 @@ class ClevrTransformerTest(unittest.TestCase):
         ego_position = clevr_tokenizer.create_position_embeddings(
             ego_batch, embedding_size=MODEL_SIZE
         )
+        torch.set_printoptions(linewidth=200, precision=3)
 
         input = clevr_transformer.ClevrInputTokens(
             overhead_tokens=overhead_result["tokens"],
-            overhead_position=overhead_position,
+            overhead_position=positions_from_batch(batch),
+            overhead_position_embeddings=overhead_position,
             overhead_mask=overhead_result["mask"],
             ego_tokens=ego_result["tokens"],
-            ego_position=ego_position,
+            ego_position=positions_from_batch(ego_batch),
+            ego_position_embeddings=ego_position,
             ego_mask=ego_result["mask"],
         )
 
@@ -70,10 +84,19 @@ class ClevrTransformerTest(unittest.TestCase):
         NUM_QUERY_TOKENS = 100
         query_tokens = torch.randn((len(batch), NUM_QUERY_TOKENS, MODEL_SIZE))
         query_mask = torch.zeros((len(batch), NUM_QUERY_TOKENS), dtype=torch.bool)
-        output_tokens = model(input, query_tokens, query_mask)
+        output = model(input, query_tokens, query_mask)
 
         # Verification
-        self.assertEqual(output_tokens.shape, (4, NUM_QUERY_TOKENS, OUTPUT_DIM))
+        output_tokens = output["decoder_output"]
+        correspondences = output["learned_correspondence"]
+        self.assertEqual(output_tokens.shape, (BATCH_SIZE, NUM_QUERY_TOKENS, OUTPUT_DIM))
+
+        NUM_OVERHEAD_TOKENS = input.overhead_tokens.shape[1]
+        NUM_EGO_TOKENS = input.ego_tokens.shape[1]
+        self.assertEqual(correspondences.shape,
+                         (BATCH_SIZE, NUM_OVERHEAD_TOKENS, NUM_EGO_TOKENS + 1))
+
+        # TODO Check that the no match correspondence is appropriately handled.
 
 
 if __name__ == "__main__":

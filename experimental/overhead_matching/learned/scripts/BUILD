@@ -6,6 +6,7 @@ py_binary(
   srcs=["train_clevr_transformer.py"],
   deps=[
     requirement("numpy"),
+    requirement("torchvision"),
     "//common:torch",
     "//experimental/overhead_matching/learned/data:clevr_dataset",
     "//experimental/overhead_matching/learned/model:clevr_tokenizer",
