@@ -99,7 +99,7 @@ def compute_mse_loss(output, ego_from_world):
     pred_x = output[:, 0]
     pred_y = output[:, 1]
     pred_cos_theta = output[:, 2]
-    pred_sin_theta = output[:, 2]
+    pred_sin_theta = output[:, 3]
 
     dx = pred_x - gt_x
     dy = pred_y - gt_y
