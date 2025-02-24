@@ -94,7 +94,10 @@ cc_test(
 py_library(
   name = "torch",
   srcs = ["torch.py"],
-  deps = [requirement("torch")],
+  deps = [
+    requirement("torch"),
+    requirement("numpy"),
+  ],
   visibility = ["//visibility:public"],
 )
 
