@@ -46,6 +46,7 @@ py_library(
   visibility=["//experimental/overhead_matching/learned:__subpackages__"],
   deps=[
     "//common:torch",
+    ":pose_optimizer",
   ]
 )
 
