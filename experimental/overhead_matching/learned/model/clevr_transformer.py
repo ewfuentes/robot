@@ -2,6 +2,8 @@ import common.torch as torch
 
 from dataclasses import dataclass
 
+from experimental.overhead_matching.learned.model.pose_optimizer import PoseOptimizerLayer
+
 
 @dataclass
 class ClevrTransformerConfig:
@@ -70,6 +72,8 @@ class ClevrTransformer(torch.nn.Module):
 
         self._correspondence_no_match_token = torch.nn.Parameter(torch.randn(config.token_dim))
 
+        self._pose_optimizer = PoseOptimizerLayer()
+
     def compute_learned_correspondence(self, embedded_tokens, overhead_mask, ego_mask):
         # the embedded tokens are a batch x (n_oh + n_ego) x feature dim
         # Split the token dimension so we end up with the overhead and ego tokens
@@ -133,6 +137,9 @@ class ClevrTransformer(torch.nn.Module):
         learned_correspondence = self.compute_learned_correspondence(
                 embedded_tokens, input.overhead_mask, input.ego_mask)
 
+        optimal_pose = self._pose_optimizer(
+                learned_correspondence, input.overhead_position, input.ego_position)
+
         if self._predict_gaussian is not None:
             query_tokens = self._predict_gaussian.expand(batch_size, 1, -1)
             query_mask = None
@@ -152,5 +159,6 @@ class ClevrTransformer(torch.nn.Module):
 
         return {
             'decoder_output': output,
-            'learned_correspondence': learned_correspondence
+            'learned_correspondence': learned_correspondence,
+            'optimized_pose': optimal_pose
         }
