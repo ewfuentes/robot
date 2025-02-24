@@ -52,6 +52,7 @@ py_library(
   ],
   deps=[
     "//common/torch:load_torch_deps",
+    ":pose_optimizer",
   ]
 )
 

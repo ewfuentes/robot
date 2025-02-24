@@ -113,6 +113,7 @@ class PoseOptimizerLayer(torch.nn.Module):
          - a_{ij} is `associations[i, j]`
         """
 
-        Q = build_q_matrix(associations, pt_in_a, pt_in_b, self._loss_coeffs)
+        cpu_associations = associations.cpu()
+        Q = build_q_matrix(cpu_associations, pt_in_a, pt_in_b, self._loss_coeffs)
         sol, _ = self._optimizer(Q, solver_args={"eps": 1e-10})
-        return sol[:, 1:, 0]
+        return sol[:, 1:, 0].to(associations.device)
