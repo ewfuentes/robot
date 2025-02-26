@@ -7,6 +7,23 @@ load("@rules_python//python:defs.bzl", "py_binary")
 load("@python//3.8:defs.bzl", py_test_3_8 = "py_test")
 
 py_binary(
+  name = "marimo_server",
+  srcs = ["marimo_server.py"],
+  data = ["//:.marimo.toml"],
+  deps = [
+    requirement("marimo"),
+    requirement("numpy"),
+    requirement("altair"),
+    requirement("pandas"),
+    "//common:torch",
+    "//experimental/overhead_matching/learned/model:clevr_transformer",
+    "//experimental/overhead_matching/learned/model:clevr_tokenizer",
+    "//experimental/overhead_matching/learned/data:clevr_dataset",
+    "//experimental/overhead_matching/learned/scripts:train_clevr_transformer",
+  ]
+)
+
+py_binary(
   name = "jupyter_notebook",
   srcs = ["jupyter_notebook.py"],
   data = [

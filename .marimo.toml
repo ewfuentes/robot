@@ -1,0 +1,47 @@
+[keymap]
+preset = "default"
+
+[keymap.overrides]
+
+[experimental]
+
+[runtime]
+std_stream_max_bytes = 1000000
+auto_reload = "off"
+watcher_on_save = "lazy"
+auto_instantiate = false
+on_cell_change = "autorun"
+output_max_bytes = 8000000
+
+[server]
+browser = "default"
+follow_symlink = true
+
+[package_management]
+manager = "pip"
+
+[formatting]
+line_length = 79
+
+[display]
+default_width = "medium"
+cell_output = "below"
+dataframes = "rich"
+code_editor_font_size = 14
+theme = "light"
+
+[snippets]
+include_default_snippets = true
+custom_paths = []
+
+[completion]
+copilot = false
+activate_on_typing = true
+
+[ai]
+rules = ""
+
+[save]
+format_on_save = false
+autosave_delay = 1000
+autosave = "after_delay"

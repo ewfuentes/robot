@@ -4,6 +4,7 @@ load("@pip//:requirements.bzl", "requirement")
 py_binary(
   name="train_clevr_transformer",
   srcs=["train_clevr_transformer.py"],
+  visibility=["//common/python:__subpackages__"],
   deps=[
     requirement("numpy"),
     requirement("torchvision"),
