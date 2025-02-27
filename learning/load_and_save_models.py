@@ -3,7 +3,7 @@ import copy
 from pathlib import Path
 from datetime import datetime
 import subprocess
-import torch
+import common.torch as torch
 from dataclasses import is_dataclass
 from collections import namedtuple
 from typing import Any, Union
