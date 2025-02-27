@@ -13,6 +13,16 @@ import numpy as np
 
 def get_git_commit_hash():
     try:
+        current_directory = subprocess.check_output(
+            ["pwd"],
+            stderr=subprocess.STDOUT
+        ).decode("utf-8").strip()
+        print('current_directory:', current_directory)
+        repo_root = subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"],
+            stderr=subprocess.STDOUT
+        ).decode("utf-8").strip()
+        print('repo root:', repo_root)
         commit_hash = subprocess.check_output(
             ["git", "rev-parse", "HEAD"],
             stderr=subprocess.STDOUT

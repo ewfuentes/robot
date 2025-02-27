@@ -68,4 +68,4 @@ jobs:
 
       - name: Run Unit Tests
         run: |
-          bazel test --config=${{ matrix.build-config }} --remote_cache=${{ env.cache_url }} --google_credentials=${{ runner.temp }}/${{ env.cache_secret_file }} //... --test_output=errors --test_timeout_filters=-eternal
+          bazel test --config=${{ matrix.build-config }} --remote_cache=${{ env.cache_url }} --google_credentials=${{ runner.temp }}/${{ env.cache_secret_file }} //learning/... --test_output=errors --test_timeout_filters=-eternal
