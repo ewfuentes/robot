@@ -18,6 +18,13 @@ def get_git_commit_hash():
             stderr=subprocess.STDOUT
         ).decode("utf-8").strip()
         print('current_directory:', current_directory)
+        root_directory = current_directory + "/.." * 6
+        root_contents = subprocess.check_output(
+            ["ls", "-lah", root_directory],
+            stderr=subprocess.STDOUT
+        ).decode("utf-8").strip()
+        print('root_directory:', root_directory)
+        print(root_contents)
         repo_root = subprocess.check_output(
             ["git", "rev-parse", "--show-toplevel"],
             stderr=subprocess.STDOUT
