@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import NamedTuple, Callable
 
-import common.torch as torch
+import common.torch.torch as torch
 import numpy as np
 import tqdm
 import itertools
