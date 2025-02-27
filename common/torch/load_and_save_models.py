@@ -202,5 +202,5 @@ def load_model(
     # verify model
     input_output = torch.load(load_path / 'input_output.tar', map_location=device, weights_only=False)
     new_output = model(*input_output['input'])
-    assert deep_equal(new_output, input_output['output'])
+    assert deep_equal(new_output, input_output['output'], atol=1e-6)  # observed 1e-7 differences when comparing cpu tensors to gpu tensors
     return model
