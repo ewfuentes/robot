@@ -61,10 +61,6 @@ jobs:
         with:
           lfs: true
 
-      - name: Test git command
-        run: |
-          git rev-parse HEAD
-
       # Runs a set of commands using the runners shell
       - name: Setup Dependencies
         run: |
