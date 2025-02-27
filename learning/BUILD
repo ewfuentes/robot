@@ -1,6 +1,7 @@
 package(features=["warning_compile_flags"])
 
 load("//common/proto:proto.bzl", "multi_proto_library")
+load("@pip//:requirements.bzl", "requirement")
 
 cc_library(
   name = "cfr",
@@ -48,5 +49,24 @@ cc_test(
       ":min_regret_strategy_to_proto",
       "//domain:rock_paper_scissors",
       "@com_google_googletest//:gtest_main",
+  ]
+)
+
+
+py_library(
+  name="load_and_save_models",
+  srcs=["load_and_save_models.py"],
+  visibility=["//visibility:public"],
+  deps=[
+    "//common:torch",
+    requirement("numpy"),
+  ]
+)
+
+py_test(
+  name="load_and_save_models_test",
+  srcs=["load_and_save_models_test.py"],
+  deps=[
+    ":load_and_save_models",
   ]
 )
