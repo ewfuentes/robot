@@ -91,16 +91,6 @@ cc_test(
   ],
 )
 
-py_library(
-  name = "torch",
-  srcs = ["torch.py"],
-  deps = [
-    requirement("torch"),
-    requirement("numpy"),
-  ],
-  visibility = ["//visibility:public"],
-)
-
 cc_test(
   name = "thread_pool_test",
   srcs = ["thread_pool_test.cc"],

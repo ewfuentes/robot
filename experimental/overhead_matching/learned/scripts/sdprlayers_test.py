@@ -2,7 +2,7 @@
 import unittest
 import numpy as np
 
-import common.torch as torch
+import common.torch.torch as torch
 import scipy.optimize as opt
 
 from sdprlayers.layers.sdprlayer import SDPRLayer

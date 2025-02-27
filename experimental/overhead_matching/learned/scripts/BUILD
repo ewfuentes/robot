@@ -7,7 +7,7 @@ py_binary(
   deps=[
     requirement("numpy"),
     requirement("torchvision"),
-    "//common:torch",
+    "//common/torch",
     "//experimental/overhead_matching/learned/data:clevr_dataset",
     "//experimental/overhead_matching/learned/model:clevr_tokenizer",
     "//experimental/overhead_matching/learned/model:clevr_transformer",
@@ -24,7 +24,7 @@ py_binary(
     requirement("matplotlib"),
     requirement("seaborn"),
     requirement("PyGObject"),
-    "//common:torch",
+    "//common/torch",
     "//experimental/overhead_matching/learned/data:clevr_dataset",
     "//experimental/overhead_matching/learned/model:clevr_tokenizer",
     "//experimental/overhead_matching/learned/model:clevr_transformer",
@@ -39,6 +39,6 @@ py_test(
     requirement("asrl-pylgmath"),
     requirement("theseus-ai"),
     requirement("scipy"),
-    "//common:torch",
+    "//common/torch",
   ]
 )

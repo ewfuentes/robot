@@ -1,6 +1,6 @@
 import unittest
 
-import common.torch as torch
+import common.torch.torch as torch
 from experimental.overhead_matching.learned.data import clevr_dataset
 from pathlib import Path
 
