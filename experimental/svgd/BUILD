@@ -5,7 +5,7 @@ py_binary(
   name = "svgd_sandbox",
   srcs = ["svgd_sandbox.py"],
   deps = [
-    "//common:torch",
+    "//common/torch",
     requirement('matplotlib'),
     requirement('tqdm'),
     requirement('IPython'),

@@ -1,7 +1,7 @@
 import argparse
 import os
 
-import common.torch as torch
+import common.torch.torch as torch
 
 from typing import NamedTuple, Callable
 import time
