@@ -1,5 +1,5 @@
 
-import common.torch as torch
+import common.torch.torch as torch
 import numpy as np
 import sympy
 import itertools

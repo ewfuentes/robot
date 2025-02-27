@@ -1,4 +1,4 @@
-import common.torch as torch
+import common.torch.torch as torch
 
 
 def create_tokens(batch, vocabulary):

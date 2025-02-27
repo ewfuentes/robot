@@ -6,7 +6,7 @@ py_library(
   srcs=["clevr_dataset.py"],
   visibility=["//experimental/overhead_matching/learned:__subpackages__"],
   deps=[
-    "//common:torch",
+    "//common/torch",
   ]
 )
 

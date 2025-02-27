@@ -1,7 +1,7 @@
 
 import unittest
 
-import common.torch as torch
+import common.torch.torch as torch
 
 import experimental.overhead_matching.learned.model.pose_optimizer as po
 
