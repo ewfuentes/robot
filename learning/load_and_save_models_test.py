@@ -1,6 +1,6 @@
 import unittest
-import torch
-import torch.nn as nn
+import common.torch as torch
+import common.torch.nn as nn
 from pathlib import Path
 import tempfile
 import shutil
