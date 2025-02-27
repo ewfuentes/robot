@@ -10,6 +10,15 @@ from typing import Tuple
 
 from learning.load_and_save_models import save_model, load_model
 
+# Simple model for basic tests
+class SimpleModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.linear = nn.Linear(10, 5)
+    
+    def forward(self, x):
+        return self.linear(x)
+
 # Define structured types for testing
 @dataclass
 class ModelInputs:
@@ -23,6 +32,7 @@ class ModelOutputs:
 
 ModelState = namedtuple('ModelState', ['hidden', 'cell'])
 
+# Models with structured I/O
 class StructuredInputModel(nn.Module):
     def __init__(self):
         super().__init__()
@@ -45,13 +55,75 @@ class StatefulModel(nn.Module):
         output, (h, c) = self.lstm(x, (state.hidden, state.cell))
         return output, ModelState(hidden=h, cell=c)
 
-class TestStructuredModels(unittest.TestCase):
+class TestLoadAndSaveModels(unittest.TestCase):
     def setUp(self):
         self.test_dir = Path(tempfile.mkdtemp())
+        self.simple_model = SimpleModel()
+        self.simple_input = (torch.randn(3, 10),)
         
     def tearDown(self):
         shutil.rmtree(self.test_dir)
         
+    def test_save_and_load_simple_model(self):
+        save_path = self.test_dir / "test_model"
+        save_model(
+            model=self.simple_model,
+            save_path=save_path,
+            example_model_inputs=self.simple_input,
+            aux_information={"test_info": "test"}
+        )
+        
+        # Verify files exist
+        self.assertTrue((save_path / "model_weights.pt").exists())
+        self.assertTrue((save_path / "model.pt").exists())
+        self.assertTrue((save_path / "aux.json").exists())
+        self.assertTrue((save_path / "commit_hash.txt").exists())
+        self.assertTrue((save_path / "diff.txt").exists())
+        self.assertTrue((save_path / "input_output.tar").exists())
+        
+        loaded_model = load_model(save_path)
+        original_output = self.simple_model(*self.simple_input)
+        loaded_output = loaded_model(*self.simple_input)
+        self.assertTrue(torch.allclose(original_output, loaded_output))
+        
+    def test_load_model_different_device(self):
+        if not torch.cuda.is_available():
+            self.skipTest("CUDA not available")
+            
+        save_path = self.test_dir / "test_model_gpu"
+        save_model(
+            model=self.simple_model,
+            save_path=save_path,
+            example_model_inputs=self.simple_input
+        )
+        
+        loaded_model = load_model(save_path, device="cuda")
+        self.assertEqual(next(loaded_model.parameters()).device.type, "cuda")
+        
+    def test_save_model_with_aux_info(self):
+        save_path = self.test_dir / "test_model_aux"
+        aux_info = {
+            "learning_rate": 0.001,
+            "epochs": 100,
+            "batch_size": 32
+        }
+        
+        save_model(
+            model=self.simple_model,
+            save_path=save_path,
+            example_model_inputs=self.simple_input,
+            aux_information=aux_info
+        )
+        
+        import json
+        with open(save_path / "aux.json", "r") as f:
+            loaded_aux = json.load(f)
+            
+        self.assertEqual(loaded_aux["learning_rate"], aux_info["learning_rate"])
+        self.assertEqual(loaded_aux["epochs"], aux_info["epochs"])
+        self.assertEqual(loaded_aux["batch_size"], aux_info["batch_size"])
+        self.assertIn("current_time", loaded_aux)
+
     def test_dataclass_io_model(self):
         model = StructuredInputModel()
         example_inputs = (ModelInputs(
@@ -59,7 +131,6 @@ class TestStructuredModels(unittest.TestCase):
             mask=torch.ones(3, 5)
         ),)
         
-        # Save model
         save_path = self.test_dir / "structured_model"
         save_model(
             model=model,
@@ -67,7 +138,6 @@ class TestStructuredModels(unittest.TestCase):
             example_model_inputs=example_inputs
         )
         
-        # Load and verify
         loaded_model = load_model(save_path)
         original_output = model(*example_inputs)
         loaded_output = loaded_model(*example_inputs)
@@ -82,11 +152,10 @@ class TestStructuredModels(unittest.TestCase):
             cell=torch.randn(1, 3, 5)
         )
         example_inputs = (
-            torch.randn(3, 4, 10),  # batch_size=3, seq_len=4, features=10
+            torch.randn(3, 4, 10),
             initial_state
         )
         
-        # Save model
         save_path = self.test_dir / "stateful_model"
         save_model(
             model=model,
@@ -94,7 +163,6 @@ class TestStructuredModels(unittest.TestCase):
             example_model_inputs=example_inputs
         )
         
-        # Load and verify
         loaded_model = load_model(save_path)
         original_output, original_state = model(*example_inputs)
         loaded_output, loaded_state = loaded_model(*example_inputs)
