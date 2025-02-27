@@ -1,6 +1,6 @@
 import unittest
-import common.torch as torch
-import common.torch.nn as nn
+import common.torch.load_torch_deps
+import torch
 from pathlib import Path
 import tempfile
 import shutil
@@ -8,13 +8,13 @@ from dataclasses import dataclass
 from collections import namedtuple
 from typing import Tuple
 
-from learning.load_and_save_models import save_model, load_model
+from common.torch.load_and_save_models import save_model, load_model
 
 # Simple model for basic tests
-class SimpleModel(nn.Module):
+class SimpleModel(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        self.linear = nn.Linear(10, 5)
+        self.linear = torch.nn.Linear(10, 5)
     
     def forward(self, x):
         return self.linear(x)
@@ -33,11 +33,11 @@ class ModelOutputs:
 ModelState = namedtuple('ModelState', ['hidden', 'cell'])
 
 # Models with structured I/O
-class StructuredInputModel(nn.Module):
+class StructuredInputModel(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        self.linear1 = nn.Linear(10, 5)
-        self.linear2 = nn.Linear(5, 3)
+        self.linear1 = torch.nn.Linear(10, 5)
+        self.linear2 = torch.nn.Linear(5, 3)
     
     def forward(self, inputs: ModelInputs) -> ModelOutputs:
         x = self.linear1(inputs.features)
@@ -46,10 +46,10 @@ class StructuredInputModel(nn.Module):
         logits = self.linear2(x)
         return ModelOutputs(logits=logits, attention=attention)
 
-class StatefulModel(nn.Module):
+class StatefulModel(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        self.lstm = nn.LSTM(10, 5, batch_first=True)
+        self.lstm = torch.nn.LSTM(10, 5, batch_first=True)
         
     def forward(self, x: torch.Tensor, state: ModelState) -> Tuple[torch.Tensor, ModelState]:
         output, (h, c) = self.lstm(x, (state.hidden, state.cell))

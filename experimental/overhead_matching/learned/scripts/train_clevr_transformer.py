@@ -2,7 +2,8 @@ import argparse
 
 from pathlib import Path
 
-import common.torch.torch as torch
+import common.torch.load_torch_deps
+import torch
 import torchvision as tv
 import numpy as np
 import copy

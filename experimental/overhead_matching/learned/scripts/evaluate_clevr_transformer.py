@@ -9,7 +9,8 @@ import pandas as pd
 from pathlib import Path
 import numpy as np
 
-import common.torch.torch as torch
+import common.torch.load_torch_deps
+import torch
 
 from experimental.overhead_matching.learned.model import (
     clevr_transformer,

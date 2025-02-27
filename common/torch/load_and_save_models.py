@@ -3,7 +3,10 @@ import copy
 from pathlib import Path
 from datetime import datetime
 import subprocess
-import common.torch as torch
+import common.torch.load_torch_deps
+import torch
+
+
 from dataclasses import is_dataclass
 from collections import namedtuple
 from typing import Any, Union
@@ -12,6 +15,7 @@ import numpy as np
 
 
 def get_git_commit_hash():
+    """Returns None if fails to get commit hash (e.g. not in a git repo)"""
     try:
         commit_hash = subprocess.check_output(
             ["git", "rev-parse", "HEAD"],
@@ -31,7 +35,8 @@ def get_git_diff():
         ).decode("utf-8").strip()
     except subprocess.CalledProcessError as e:
         diff = None
-        print("Error retrieving git diff:", e.output.decode("utf-8"))
+        print("Error retrieving git diff:")
+        # print("Error retrieving git diff:", e.output.decode("utf-8"))
     return diff
 
 
@@ -168,9 +173,15 @@ def save_model(
 
     # dump commit information
     with (save_path / "commit_hash.txt").open("w") as f:
-        f.write(get_git_commit_hash())
+        commit_hash = get_git_commit_hash()
+        if commit_hash is None:
+            print("WARNING: Could not get git commit hash when saving model")
+        f.write(commit_hash if commit_hash is not None else "Could not get git commit hash")
     with (save_path / "diff.txt").open("w") as f:
-        f.write(get_git_diff())
+        git_diff = get_git_diff()
+        if git_diff is None:
+            print("WARNING: Could not get git diff when saving model")
+        f.write(git_diff if git_diff is not None else "Could not get git diff")
 
     # dump expected behavior:
     torch.save({"input": example_model_inputs, "output": model_out}, save_path / "input_output.tar")

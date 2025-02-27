@@ -1,5 +1,6 @@
 
-import common.torch.torch as torch
+import common.torch.load_torch_deps
+import torch
 import numpy as np
 import sympy
 import itertools

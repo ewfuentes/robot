@@ -1,4 +1,5 @@
-import common.torch.torch as torch
+import common.torch.load_torch_deps
+import torch
 
 from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
 from sam2.build_sam import build_sam2_hf

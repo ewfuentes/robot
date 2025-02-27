@@ -90,7 +90,7 @@ py_library(
     srcs = ["grounding_sam.py"],
     visibility = ["//common/python:__pkg__"],
     deps = [
-	"//common/torch",
+	"//common/torch:load_torch_deps",
 	requirement("sam-2"),
 	requirement("transformers"),
 	requirement("numpy"),
