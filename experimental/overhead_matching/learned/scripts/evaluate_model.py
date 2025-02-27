@@ -180,8 +180,8 @@ def _(eval_dataset_path, mo, pformat):
         return mo.vstack([
             chart,
             chart.value,
-            mo.plain_text(pformat(first_row["scene"] if first_row is not None else "")),
-            mo.image(image_path) if image_path is not None and image_path.exists() else ""])    
+            mo.hstack([mo.image(image_path) if image_path is not None and image_path.exists() else "",
+                      mo.plain_text(pformat(first_row["scene"] if first_row is not None else "")),])])
     return (make_views,)
 
 
