@@ -12,12 +12,10 @@ from typing import Callable, NamedTuple
 DEFAULT_CLEVR_OVERHEAD_TRANSFORM = torch.nn.Sequential(
     tf.ToImage(),
     tf.ToDtype(torch.float32, scale=True),
-    tf.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
 )
 DEFAULT_CLEVR_EGO_TRANSFORM = torch.nn.Sequential(
     tf.ToImage(),
     tf.ToDtype(torch.float32, scale=True),
-    tf.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
 )
 
 
