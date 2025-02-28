@@ -20,3 +20,5 @@ __pycache__
 .virtual_documents/
 
 .bazelrc_ubuntu
+
+__marimo__
