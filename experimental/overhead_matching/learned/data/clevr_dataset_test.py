@@ -22,6 +22,7 @@ class ClevrDatasetTest(unittest.TestCase):
         self.assertEqual(len(batch.scene_description["objects"]), BATCH_SIZE)
         self.assertEqual(batch.overhead_image, None)
         self.assertEqual(batch.ego_image, None)
+        self.assertEqual(len(batch), BATCH_SIZE)
 
 
     def test_overhead_dataloader(self):
@@ -41,6 +42,7 @@ class ClevrDatasetTest(unittest.TestCase):
         self.assertEqual(batch.overhead_image.shape, (BATCH_SIZE, 3, 240, 320))
         self.assertEqual(batch.overhead_image.dtype, torch.float32)
         self.assertEqual(batch.ego_image, None)
+        self.assertEqual(len(batch), BATCH_SIZE)
 
     def test_ego_dataloader(self):
 
@@ -59,6 +61,7 @@ class ClevrDatasetTest(unittest.TestCase):
         self.assertEqual(batch.ego_image.shape, (BATCH_SIZE, 3, 240, 320))
         self.assertEqual(batch.ego_image.dtype, torch.float32)
         self.assertEqual(batch.overhead_image, None)
+        self.assertEqual(len(batch), BATCH_SIZE)
 
     def test_ego_not_overhead(self):
 
@@ -78,6 +81,7 @@ class ClevrDatasetTest(unittest.TestCase):
         self.assertTrue(torch.is_tensor(batch.overhead_image))
         self.assertTrue(torch.is_tensor(batch.ego_image))
         self.assertFalse(torch.allclose(batch.ego_image, batch.overhead_image))
+        self.assertEqual(len(batch), BATCH_SIZE)
 
 
 

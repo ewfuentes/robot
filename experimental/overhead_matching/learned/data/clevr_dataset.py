@@ -20,13 +20,47 @@ DEFAULT_CLEVR_EGO_TRANSFORM = torch.nn.Sequential(
 
 
 class CleverDatasetItem(NamedTuple):
-    scene_description: dict | None = None
+    scene_description: dict | list | None = None
     overhead_image: torch.Tensor | None = None
     ego_image: torch.Tensor | None = None
 
     def __repr__(self):
-        return f"ClevrDatasetItem(scene_description: {self.scene_description}, overhead_image: {self.overhead_image}, ego_image: {self.ego_image})"
+        return f'ClevrDatasetItem(scene_description: {str(len(self.scene_description)) + " items" if self.scene_description is not None else "None"}, overhead_image: {self.overhead_image.shape if torch.is_tensor(self.overhead_image) else "None"}, ego_image: {self.ego_image.shape if torch.is_tensor(self.ego_image) else "None"})'
 
+    def __len__(self):
+        length = 0
+        if self.scene_description is not None:
+            if isinstance(self.scene_description['objects'][0], list):  # it is a list of lists of objects
+                length = len(self.scene_description['objects'])
+            elif isinstance(self.scene_description['objects'][0], dict): # it is a list of objects, we have one scene
+                length = 1
+            else:
+                raise RuntimeError(f"Got a scene description with an unrecognized type: {type(self.scene_description)}")
+        if self.overhead_image is not None:
+            if len(self.overhead_image.shape) == 4:
+                overhead_length = self.overhead_image.shape[0]
+            elif len(self.overhead_image.shape) == 3:
+                overhead_length = 1
+            else:
+                raise RuntimeError(f"Got unexpected shape for overhead image: {self.overhead_image.shape}")
+
+            if length != 0:
+                assert length == overhead_length, "Got different lengths for overhead and scene length"
+            else:
+                length = overhead_length
+        if self.ego_image is not None:
+            if len(self.ego_image.shape) == 4:
+                ego_length = self.ego_image.shape[0]
+            elif len(self.ego_image.shape) == 3:
+                ego_length = 1
+            else:
+                raise RuntimeError(f"Got unexpected shape for ego image: {self.ego_image.shape}")
+
+            if length != 0:
+                assert length == ego_length, "Got different lengths for ego and scene or overhead length"
+            else:
+                length = ego_length
+        return length
 
 def clevr_dataset_collator(objs: list[CleverDatasetItem]):
     out = {}
@@ -36,10 +70,10 @@ def clevr_dataset_collator(objs: list[CleverDatasetItem]):
         for key in first_obj.scene_description:
             collated_scene_descriptions[key] = []
             for obj in objs:
-                collated_scene_descriptions[key].append(obj.scene_description[key])
-                if collated_scene_descriptions[key][-1] is None:
+                if obj.scene_description is None:
                     raise RuntimeError(
                         "Encountered some scene descriptions batch items with None and some with values while collating")
+                collated_scene_descriptions[key].append(obj.scene_description[key])
         out['scene_description'] = collated_scene_descriptions
 
     if first_obj.overhead_image is not None:

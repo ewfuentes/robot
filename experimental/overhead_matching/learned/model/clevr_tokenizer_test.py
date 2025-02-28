@@ -21,7 +21,7 @@ class ClevrTokenizerTest(unittest.TestCase):
         batch = [[{"color": c, "shape": sh, "size": si} for c, sh, si in items]]
 
         # Action
-        result = clevr_tokenizer.create_tokens(batch, vocabulary)
+        result = clevr_tokenizer.create_scene_tokens(batch, vocabulary)
 
         # Verification
         self.assertEqual(result["tokens"].unique().numel(), result["tokens"].numel())
@@ -43,7 +43,7 @@ class ClevrTokenizerTest(unittest.TestCase):
         ]
 
         # Action
-        result = clevr_tokenizer.create_tokens(batch, vocabulary)
+        result = clevr_tokenizer.create_scene_tokens(batch, vocabulary)
 
         tokens = result["tokens"]
         mask = result["mask"]
@@ -88,9 +88,9 @@ class ClevrTokenizerTest(unittest.TestCase):
         batch = next(iter(loader))
         vocabulary = dataset.vocabulary()
 
-        token_result = clevr_tokenizer.create_tokens(batch["objects"], vocabulary)
+        token_result = clevr_tokenizer.create_scene_tokens(batch.scene_description["objects"], vocabulary)
         position_embedding = clevr_tokenizer.create_position_embeddings(
-            batch["objects"], embedding_size=32
+            batch.scene_description["objects"], embedding_size=32
         )
 
         self.assertEqual(token_result["tokens"].shape, token_result["mask"].shape)

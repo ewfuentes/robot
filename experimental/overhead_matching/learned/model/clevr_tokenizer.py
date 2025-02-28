@@ -2,7 +2,7 @@ import common.torch.load_torch_deps
 import torch
 
 
-def create_tokens(batch, vocabulary):
+def create_scene_tokens(scene_list_batch, vocabulary):
     """
     A batch is a list of scenes
     A scene is a list of items
@@ -18,12 +18,12 @@ def create_tokens(batch, vocabulary):
     """
 
     vocab_keys = sorted(vocabulary)
-    num_scenes = len(batch)
-    max_tokens_per_scene = max([len(x) for x in batch])
+    num_scenes = len(scene_list_batch)
+    max_tokens_per_scene = max([len(x) for x in scene_list_batch])
     tokens = torch.zeros((num_scenes, max_tokens_per_scene), dtype=torch.int32)
     mask = torch.ones((num_scenes, max_tokens_per_scene), dtype=torch.bool)
 
-    for i, scene in enumerate(batch):
+    for i, scene in enumerate(scene_list_batch):
         for j, item in enumerate(scene):
             embedding = 0
             for key in vocab_keys:
@@ -37,13 +37,13 @@ def create_tokens(batch, vocabulary):
 
 
 def create_position_embeddings(
-    batch, *, min_scale: float = 1e-3, scale_step: float = 2.0, embedding_size: int
+    scene_list_batch, *, min_scale: float = 1e-3, scale_step: float = 2.0, embedding_size: int
 ):
     assert embedding_size % 4 == 0
-    num_scenes = len(batch)
-    max_tokens_per_scene = max([len(x) for x in batch])
+    num_scenes = len(scene_list_batch)
+    max_tokens_per_scene = max([len(x) for x in scene_list_batch])
     xy_pos = torch.zeros((num_scenes, max_tokens_per_scene, 2), dtype=torch.float32)
-    for i, scene in enumerate(batch):
+    for i, scene in enumerate(scene_list_batch):
         for j, item in enumerate(scene):
             xy_pos[i, j, 0] = item["3d_coords"][0]
             xy_pos[i, j, 1] = item["3d_coords"][1]

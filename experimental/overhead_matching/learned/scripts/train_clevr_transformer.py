@@ -34,13 +34,13 @@ def sample_ego_from_world(rng, batch_size):
     return out
 
 
-def project_batch_to_ego(batch, ego_from_world):
+def project_scene_description_to_ego(scene_descriptions, ego_from_world):
     """
     This function returns a batch that has the objects in the ego frame
     It does not currently perform the projective geometry
     """
     out = []
-    for idx, scene in enumerate(batch):
+    for idx, scene in enumerate(scene_descriptions):
         out.append(copy.deepcopy(scene))
         for obj in out[-1]:
             old_z = obj["3d_coords"][-1]
@@ -51,29 +51,30 @@ def project_batch_to_ego(batch, ego_from_world):
     return out
 
 
-def positions_from_batch(batch):
-    batch_size = len(batch)
-    max_num_objects = max([len(x) for x in batch])
+def positions_from_scene_descriptions(scene_descriptions):
+    batch_size = len(scene_descriptions)
+    max_num_objects = max([len(x) for x in scene_descriptions])
     out = torch.zeros((batch_size, max_num_objects, 2))
-    for scene_idx, scene in enumerate(batch):
+    for scene_idx, scene in enumerate(scene_descriptions):
         for obj_idx, obj in enumerate(scene):
             out[scene_idx, obj_idx, :] = torch.tensor(obj["3d_coords"][:2])
     return out
 
 
 def clevr_input_from_batch(batch, vocabulary, embedding_size, ego_from_world):
-    result = clevr_tokenizer.create_tokens(batch, vocabulary)
+    result = clevr_tokenizer.create_scene_tokens(batch.scene_description, vocabulary)
     position_embeddings = clevr_tokenizer.create_position_embeddings(
-        batch, embedding_size=embedding_size, min_scale=1e-6
+        batch.scene_description, embedding_size=embedding_size, min_scale=1e-6
     )
-    positions = positions_from_batch(batch)
+    positions = positions_from_scene_descriptions(batch)
 
-    ego_batch = project_batch_to_ego(batch, ego_from_world)
-    ego_result = clevr_tokenizer.create_tokens(ego_batch, vocabulary)
+    ego_scene_descriptions = project_scene_description_to_ego(
+        batch.scene_description, ego_from_world)
+    ego_result = clevr_tokenizer.create_scene_tokens(ego_scene_descriptions, vocabulary)
     ego_position_embeddings = clevr_tokenizer.create_position_embeddings(
-        ego_batch, embedding_size=embedding_size, min_scale=1e-6
+        ego_scene_descriptions, embedding_size=embedding_size, min_scale=1e-6
     )
-    ego_positions = positions_from_batch(ego_batch)
+    ego_positions = positions_from_scene_descriptions(ego_scene_descriptions)
 
     return clevr_transformer.ClevrInputTokens(
         overhead_tokens=result["tokens"].cuda(),
@@ -120,12 +121,14 @@ def compute_correspondence_loss(correspondence, obj_in_overhead, obj_in_ego, ego
     using the ground truth pose
     """
     batch_size, num_objects, _ = obj_in_overhead.shape
-    ego_from_world = torch.tensor(ego_from_world, device=obj_in_overhead.device, dtype=torch.float32)
+    ego_from_world = torch.tensor(
+        ego_from_world, device=obj_in_overhead.device, dtype=torch.float32)
 
     ones = torch.ones((batch_size, num_objects, 1), device=obj_in_overhead.device)
     obj_in_overhead = torch.concatenate([obj_in_overhead, ones], dim=-1)
     obj_in_ego = torch.concatenate([obj_in_ego, ones], dim=-1)
-    projected_obj_in_ego = torch.bmm(ego_from_world, obj_in_overhead.transpose(-1, -2)).transpose(-1, -2)
+    projected_obj_in_ego = torch.bmm(
+        ego_from_world, obj_in_overhead.transpose(-1, -2)).transpose(-1, -2)
 
     projected_obj_in_ego = projected_obj_in_ego.unsqueeze(-2)
     obj_in_ego = obj_in_ego.unsqueeze(-3)
@@ -171,10 +174,10 @@ def main(dataset_path: Path, output_path: Path):
             # print(batch["objects"])
             optim.zero_grad()
             # sample an ego pose
-            ego_from_world = sample_ego_from_world(rng, len(batch["objects"]))
+            ego_from_world = sample_ego_from_world(rng, len(batch.scene_description["objects"]))
             # print(ego_from_world)
             input = clevr_input_from_batch(
-                batch["objects"], vocabulary, TOKEN_SIZE, ego_from_world
+                batch.scene_description["objects"], vocabulary, TOKEN_SIZE, ego_from_world
             )
             query_tokens = create_query_tokens(len(batch))
             query_mask = None
@@ -211,7 +214,6 @@ def main(dataset_path: Path, output_path: Path):
         # correspondence_loss = compute_correspondence_loss(
         #         correspondences, input.overhead_position, input.ego_position, ego_from_world)
         # print("mae:", torch.mean(error).item(), "correspondence_loss:", correspondence_loss.item())
-
 
         # correspondences_output_path = output_path / "intermediates" / "correspondences" / f"{epoch_idx:06d}.png"
         # correspondences_output_path.parent.mkdir(parents=True, exist_ok=True)
