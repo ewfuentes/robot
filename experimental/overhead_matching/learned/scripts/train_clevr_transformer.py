@@ -181,9 +181,8 @@ def main(dataset_path: Path, output_path: Path):
 
             output = model(input, query_tokens, query_mask)
 
-            loss = 0.0
-            # loss = compute_mse_loss(output["decoder_output"], ego_from_world)
-            loss += compute_mse_loss(output["optimized_pose"], ego_from_world)
+            loss = compute_mse_loss(output["prediction"], ego_from_world)
+            # TODO add a flag to select what kind of loss we need
             # loss += compute_correspondence_loss(
             #         output["learned_correspondence"],
             #         input.overhead_position, input.ego_position, ego_from_world)
@@ -201,33 +200,22 @@ def main(dataset_path: Path, output_path: Path):
 
         output = model(input, None, None)
 
-        decoder_output = output["decoder_output"]
-        correspondences = output["learned_correspondence"]
-        optimized_pose = output["optimized_pose"]
+        decoder_output = output["prediction"]
+        # correspondences = output["learned_correspondence"]
 
-        # Compute gaussian loss
         x_pred = decoder_output[:, :2].cpu()
         x_gt = torch.from_numpy(ego_from_world[:, :2, 2])
-        gaussian_error = x_pred - x_gt
-        guassian_error = torch.sqrt(torch.sum(gaussian_error * gaussian_error, axis=1))
+        error = x_pred - x_gt
+        error = torch.sqrt(torch.sum(error * error, axis=1))
 
-        # compute optimized pose loss
-        x_pred = optimized_pose[:, :2].cpu()
-        x_gt = torch.from_numpy(ego_from_world[:, :2, 2])
-        opt_error = x_pred - x_gt
-        opt_error = torch.sqrt(torch.sum(opt_error * opt_error, axis=1))
-
-        correspondence_loss = compute_correspondence_loss(
-                correspondences, input.overhead_position, input.ego_position, ego_from_world)
-        print("gaussian mae:", torch.mean(gaussian_error).item(),
-              "opt mae:", torch.mean(opt_error).item(),
-              "correspondence_loss:", correspondence_loss.item())
+        # correspondence_loss = compute_correspondence_loss(
+        #         correspondences, input.overhead_position, input.ego_position, ego_from_world)
+        # print("mae:", torch.mean(error).item(), "correspondence_loss:", correspondence_loss.item())
 
 
-        correspondences_output_path = output_path / "intermediates" / "correspondences" / f"{epoch_idx:06d}.png"
-        correspondences_output_path.parent.mkdir(parents=True, exist_ok=True)
-        tv.utils.save_image(correspondences.unsqueeze(1), correspondences_output_path)
-
+        # correspondences_output_path = output_path / "intermediates" / "correspondences" / f"{epoch_idx:06d}.png"
+        # correspondences_output_path.parent.mkdir(parents=True, exist_ok=True)
+        # tv.utils.save_image(correspondences.unsqueeze(1), correspondences_output_path)
 
         model.train()
 
