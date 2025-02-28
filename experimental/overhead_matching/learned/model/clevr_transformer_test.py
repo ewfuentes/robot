@@ -5,7 +5,8 @@ from pathlib import Path
 from functools import reduce
 import operator
 
-import common.torch.torch as torch
+import common.torch.load_torch_deps
+import torch
 from experimental.overhead_matching.learned.model import (
     clevr_transformer,
     clevr_tokenizer,

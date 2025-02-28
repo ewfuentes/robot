@@ -56,8 +56,3 @@ def preload_cuda_deps() -> None:
         _preload_cuda_deps(lib_folder, lib_name)
 
 preload_cuda_deps()
-import torch
-
-
-for k, v in vars(torch).items():
-    locals()[k] = v

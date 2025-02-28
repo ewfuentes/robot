@@ -5,7 +5,7 @@ py_library(
   name="pose_optimizer",
   srcs=["pose_optimizer.py"],
   deps=[
-    "//common/torch",
+    "//common/torch:load_torch_deps",
     requirement("sdprlayers"),
     requirement("numpy"),
     requirement("sympy"),
@@ -25,7 +25,7 @@ py_library(
   srcs=["clevr_tokenizer.py"],
   visibility=["//experimental/overhead_matching/learned:__subpackages__"],
   deps=[
-    "//common/torch"
+    "//common/torch:load_torch_deps"
   ]
 )
 
@@ -45,7 +45,7 @@ py_library(
   srcs=["clevr_transformer.py"],
   visibility=["//experimental/overhead_matching/learned:__subpackages__"],
   deps=[
-    "//common/torch",
+    "//common/torch:load_torch_deps",
   ]
 )
 

@@ -1,7 +1,8 @@
 
 from __future__ import annotations
 
-import common.torch.torch as torch
+import common.torch.load_torch_deps
+import torch
 import numpy as np
 import numpy.typing as npt
 from typing import NamedTuple, Callable

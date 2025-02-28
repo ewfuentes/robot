@@ -1,4 +1,5 @@
-import common.torch.torch as torch
+import common.torch.load_torch_deps
+import torch
 
 from dataclasses import dataclass
 
