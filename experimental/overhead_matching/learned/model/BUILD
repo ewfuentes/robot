@@ -66,3 +66,20 @@ py_test(
     ":clevr_transformer",
   ]
 )
+
+py_library(
+  name="perspective_projection",
+  srcs=["perspective_projection.py"],
+  deps=[
+    "//common/torch:load_torch_deps"
+  ]
+)
+
+
+py_test(
+  name="perspective_projection_test",
+  srcs=["perspective_projection_test.py"],
+  deps=[
+    ":perspective_projection",
+  ]
+)
