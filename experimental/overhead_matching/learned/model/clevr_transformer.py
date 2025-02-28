@@ -1,9 +1,17 @@
 import common.torch.load_torch_deps
 import torch
+import enum
 
 from dataclasses import dataclass
 
 from experimental.overhead_matching.learned.model.pose_optimizer import PoseOptimizerLayer
+
+
+class InferenceMethod(enum.Enum):
+    MEAN = enum.auto()
+    HISTOGRAM = enum.auto()
+    LEARNED_CORRESPONDENCE = enum.auto()
+    OPTIMIZED_POSE = enum.auto()
 
 
 @dataclass
@@ -15,7 +23,7 @@ class ClevrTransformerConfig:
     num_decoder_heads: int
     num_decoder_layers: int
     output_dim: int
-    predict_gaussian: bool
+    inference_method: InferenceMethod
 
 
 @dataclass
@@ -34,6 +42,8 @@ class ClevrTransformer(torch.nn.Module):
     def __init__(self, config: ClevrTransformerConfig):
         super().__init__()
 
+        self._inference_method = config.inference_method
+
         encoder_layer = torch.nn.TransformerEncoderLayer(
             d_model=config.token_dim,
             nhead=config.num_encoder_heads,
@@ -50,6 +60,7 @@ class ClevrTransformer(torch.nn.Module):
             batch_first=True,
             dropout=0.0,
         )
+
         self._decoder = torch.nn.TransformerDecoder(
             decoder_layer, num_layers=config.num_decoder_layers
         )
@@ -57,9 +68,8 @@ class ClevrTransformer(torch.nn.Module):
         self._overhead_marker = torch.nn.Parameter(torch.randn(config.token_dim))
         self._ego_marker = torch.nn.Parameter(torch.randn(config.token_dim))
 
-        self._predict_gaussian = None
-        if config.predict_gaussian:
-            self._predict_gaussian = torch.nn.Parameter(torch.randn(config.token_dim))
+        if self._inference_method == InferenceMethod.MEAN:
+            self._mean_token = torch.nn.Parameter(torch.randn(config.token_dim))
 
         self._ego_vector_embedding = torch.nn.Embedding(
             num_embeddings=config.vocabulary_size, embedding_dim=config.token_dim
@@ -108,6 +118,48 @@ class ClevrTransformer(torch.nn.Module):
 
         return torch.softmax(attention_logits + softmax_mask, dim=-1)
 
+    def inference_mean(self, embedded_tokens, mask):
+        batch_size = embedded_tokens.shape[0]
+        query_tokens = self._mean_token.expand(batch_size, 1, -1)
+        query_mask = None
+
+        output_tokens = self._decoder(
+            tgt=query_tokens,
+            tgt_key_padding_mask=query_mask,
+            memory=embedded_tokens,
+            memory_key_padding_mask=mask,
+            tgt_is_causal=False,
+            memory_is_causal=False,
+        )
+        predicted_pose = self._output_layer(output_tokens)
+        return predicted_pose.squeeze(1)
+
+    def inference_histogram(self, embedded_tokens, mask, query_tokens, query_mask):
+        output_tokens = self._decoder(
+            tgt=query_tokens,
+            tgt_key_padding_mask=query_mask,
+            memory=embedded_tokens,
+            memory_key_padding_mask=mask,
+            tgt_is_causal=False,
+            memory_is_causal=False,
+        )
+        return self._output_layer(output_tokens)
+
+    def inference_learned_correspondence(self, embedded_tokens, overhead_mask, ego_mask, obj_in_overhead, obj_in_ego):
+        learned_correspondence = self.compute_learned_correspondence(
+                embedded_tokens, overhead_mask, ego_mask)
+
+        optimal_pose = (None if self.training else
+                        self._pose_optimizer(learned_correspondence, obj_in_overhead, obj_in_ego))
+        return learned_correspondence, optimal_pose
+
+    def inference_optimized_pose(self, embedded_tokens, overhead_mask, ego_mask, obj_in_overhead, obj_in_ego):
+        learned_correspondence = self.compute_learned_correspondence(
+                embedded_tokens, overhead_mask, ego_mask)
+
+        optimal_pose = self._pose_optimizer(learned_correspondence, obj_in_overhead, obj_in_ego)
+        return learned_correspondence, optimal_pose
+
     def forward(
         self,
         input: ClevrInputTokens,
@@ -129,37 +181,44 @@ class ClevrTransformer(torch.nn.Module):
         input_tokens = torch.cat([overhead_tokens, ego_tokens], dim=1)
         input_mask = torch.cat([input.overhead_mask, input.ego_mask], dim=1)
 
-        batch_size = input_tokens.shape[0]
-
         embedded_tokens = self._encoder(
             input_tokens, src_key_padding_mask=input_mask, is_causal=False
         )
 
-        learned_correspondence = self.compute_learned_correspondence(
-                embedded_tokens, input.overhead_mask, input.ego_mask)
+        out = {}
+        match self._inference_method:
+            case InferenceMethod.MEAN:
+                out['mean'] = self.inference_mean(embedded_tokens, mask=input_mask)
+                out['prediction'] = out["mean"]
 
-        optimal_pose = self._pose_optimizer(
-                learned_correspondence, input.overhead_position, input.ego_position)
+            case InferenceMethod.HISTOGRAM:
+                out['histogram'] = self.inference_histogram(
+                        embedded_tokens,
+                        mask=input_mask,
+                        query_tokens=query_tokens,
+                        query_mask=query_mask)
 
-        if self._predict_gaussian is not None:
-            query_tokens = self._predict_gaussian.expand(batch_size, 1, -1)
-            query_mask = None
+            case InferenceMethod.LEARNED_CORRESPONDENCE:
+                learned_correspondence, optimal_pose = self.inference_learned_correspondence(
+                        embedded_tokens,
+                        overhead_mask=input.overhead_mask,
+                        ego_mask=input.ego_mask,
+                        obj_in_overhead=input.overhead_position,
+                        obj_in_ego=input.ego_position)
+                out["learned_correspondence"] = learned_correspondence
+                if optimal_pose is not None:
+                    out["prediction"] = optimal_pose
 
-        output_tokens = self._decoder(
-            tgt=query_tokens,
-            tgt_key_padding_mask=query_mask,
-            memory=embedded_tokens,
-            memory_key_padding_mask=input_mask,
-            tgt_is_causal=False,
-            memory_is_causal=False,
-        )
+            case InferenceMethod.OPTIMIZED_POSE:
+                learned_correspondence, optimal_pose = self.inference_learned_correspondence(
+                        embedded_tokens,
+                        overhead_mask=input.overhead_mask,
+                        ego_mask=input.ego_mask,
+                        obj_in_overhead=input.overhead_position,
+                        obj_in_ego=input.ego_position)
+                out["learned_correspondence"] = learned_correspondence
+                out["prediction"] = optimal_pose
+            case _:
+                raise NotImplementedError(f"Unimplemented inference method: {self._inference_method}")
 
-        output = self._output_layer(output_tokens)
-        if self._predict_gaussian is not None:
-            output = output.squeeze(1)
-
-        return {
-            'decoder_output': output,
-            'learned_correspondence': learned_correspondence,
-            'optimized_pose': optimal_pose
-        }
+        return out

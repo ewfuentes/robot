@@ -29,9 +29,66 @@ def positions_from_batch(batch):
 
 
 class ClevrTransformerTest(unittest.TestCase):
-    def test_happy_case(self):
+    def test_predict_gaussian(self):
         # Setup
+        dataset = clevr_dataset.ClevrDataset(
+            Path("external/clevr_test_set/clevr_test_set")
+        )
+        BATCH_SIZE = 4
+        loader = clevr_dataset.get_dataloader(dataset, batch_size=BATCH_SIZE)
 
+        vocab = dataset.vocabulary()
+        vocab_size = reduce(operator.mul, [len(v) for v in vocab.values()])
+
+        MODEL_SIZE = 256
+        OUTPUT_DIM = 4
+        config = clevr_transformer.ClevrTransformerConfig(
+            token_dim=MODEL_SIZE,
+            vocabulary_size=vocab_size,
+            num_encoder_heads=4,
+            num_encoder_layers=4,
+            num_decoder_heads=4,
+            num_decoder_layers=4,
+            output_dim=OUTPUT_DIM,
+            inference_method=clevr_transformer.InferenceMethod.MEAN,
+        )
+
+        model = clevr_transformer.ClevrTransformer(config)
+        batch = next(iter(loader))
+        batch = batch["objects"]
+
+        overhead_result = clevr_tokenizer.create_tokens(batch, vocab)
+        overhead_position = clevr_tokenizer.create_position_embeddings(
+            batch, embedding_size=MODEL_SIZE
+        )
+
+        ego_batch = project_to_ego(batch)
+        ego_result = clevr_tokenizer.create_tokens(batch, vocab)
+        ego_position = clevr_tokenizer.create_position_embeddings(
+            ego_batch, embedding_size=MODEL_SIZE
+        )
+
+        input = clevr_transformer.ClevrInputTokens(
+            overhead_tokens=overhead_result["tokens"],
+            overhead_position=positions_from_batch(batch),
+            overhead_position_embeddings=overhead_position,
+            overhead_mask=overhead_result["mask"],
+            ego_tokens=ego_result["tokens"],
+            ego_position=positions_from_batch(ego_batch),
+            ego_position_embeddings=ego_position,
+            ego_mask=ego_result["mask"],
+        )
+
+        # Action
+        output = model(input, None, None)
+
+        self.assertIn('prediction', output)
+        self.assertIn('mean', output)
+
+        self.assertEqual(output["mean"].shape, (BATCH_SIZE, OUTPUT_DIM))
+
+    def test_predict_histogram(self):
+        # Setup
         dataset = clevr_dataset.ClevrDataset(
             Path("external/clevr_test_set/clevr_test_set")
         )
@@ -51,7 +108,7 @@ class ClevrTransformerTest(unittest.TestCase):
             num_decoder_heads=4,
             num_decoder_layers=4,
             output_dim=OUTPUT_DIM,
-            predict_gaussian=False,
+            inference_method=clevr_transformer.InferenceMethod.HISTOGRAM,
         )
 
         model = clevr_transformer.ClevrTransformer(config)
@@ -68,7 +125,6 @@ class ClevrTransformerTest(unittest.TestCase):
         ego_position = clevr_tokenizer.create_position_embeddings(
             ego_batch, embedding_size=MODEL_SIZE
         )
-        torch.set_printoptions(linewidth=200, precision=3)
 
         input = clevr_transformer.ClevrInputTokens(
             overhead_tokens=overhead_result["tokens"],
@@ -87,18 +143,125 @@ class ClevrTransformerTest(unittest.TestCase):
         query_mask = torch.zeros((len(batch), NUM_QUERY_TOKENS), dtype=torch.bool)
         output = model(input, query_tokens, query_mask)
 
-        # Verification
-        output_tokens = output["decoder_output"]
-        correspondences = output["learned_correspondence"]
-        self.assertEqual(output_tokens.shape, (BATCH_SIZE, NUM_QUERY_TOKENS, OUTPUT_DIM))
+        self.assertIn('histogram', output)
+        self.assertEqual(output["histogram"].shape, (BATCH_SIZE, NUM_QUERY_TOKENS, OUTPUT_DIM))
 
-        NUM_OVERHEAD_TOKENS = input.overhead_tokens.shape[1]
-        NUM_EGO_TOKENS = input.ego_tokens.shape[1]
-        self.assertEqual(correspondences.shape,
-                         (BATCH_SIZE, NUM_OVERHEAD_TOKENS, NUM_EGO_TOKENS + 1))
+    def test_predict_correspondence(self):
+        # Setup
+        dataset = clevr_dataset.ClevrDataset(
+            Path("external/clevr_test_set/clevr_test_set")
+        )
+        BATCH_SIZE = 4
+        loader = clevr_dataset.get_dataloader(dataset, batch_size=BATCH_SIZE)
 
-        # TODO Check that the no match correspondence is appropriately handled.
+        vocab = dataset.vocabulary()
+        vocab_size = reduce(operator.mul, [len(v) for v in vocab.values()])
 
+        MODEL_SIZE = 256
+        OUTPUT_DIM = 384
+        config = clevr_transformer.ClevrTransformerConfig(
+            token_dim=MODEL_SIZE,
+            vocabulary_size=vocab_size,
+            num_encoder_heads=4,
+            num_encoder_layers=4,
+            num_decoder_heads=4,
+            num_decoder_layers=4,
+            output_dim=OUTPUT_DIM,
+            inference_method=clevr_transformer.InferenceMethod.LEARNED_CORRESPONDENCE,
+        )
+
+        model = clevr_transformer.ClevrTransformer(config)
+        batch = next(iter(loader))
+        batch = batch["objects"]
+
+        overhead_result = clevr_tokenizer.create_tokens(batch, vocab)
+        overhead_position = clevr_tokenizer.create_position_embeddings(
+            batch, embedding_size=MODEL_SIZE
+        )
+
+        ego_batch = project_to_ego(batch)
+        ego_result = clevr_tokenizer.create_tokens(batch, vocab)
+        ego_position = clevr_tokenizer.create_position_embeddings(
+            ego_batch, embedding_size=MODEL_SIZE
+        )
+
+        input = clevr_transformer.ClevrInputTokens(
+            overhead_tokens=overhead_result["tokens"],
+            overhead_position=positions_from_batch(batch),
+            overhead_position_embeddings=overhead_position,
+            overhead_mask=overhead_result["mask"],
+            ego_tokens=ego_result["tokens"],
+            ego_position=positions_from_batch(ego_batch),
+            ego_position_embeddings=ego_position,
+            ego_mask=ego_result["mask"],
+        )
+
+        # Action
+        model.train()
+        train_output = model(input, None, None)
+        model.eval()
+        eval_output = model(input, None, None)
+
+        self.assertIn('learned_correspondence', train_output)
+        self.assertIn('learned_correspondence', eval_output)
+        self.assertNotIn('prediction', train_output)
+        self.assertIn('prediction', eval_output)
+
+    def test_optimized_pose(self):
+        # Setup
+        dataset = clevr_dataset.ClevrDataset(
+            Path("external/clevr_test_set/clevr_test_set")
+        )
+        BATCH_SIZE = 4
+        loader = clevr_dataset.get_dataloader(dataset, batch_size=BATCH_SIZE)
+
+        vocab = dataset.vocabulary()
+        vocab_size = reduce(operator.mul, [len(v) for v in vocab.values()])
+
+        MODEL_SIZE = 256
+        OUTPUT_DIM = 384
+        config = clevr_transformer.ClevrTransformerConfig(
+            token_dim=MODEL_SIZE,
+            vocabulary_size=vocab_size,
+            num_encoder_heads=4,
+            num_encoder_layers=4,
+            num_decoder_heads=4,
+            num_decoder_layers=4,
+            output_dim=OUTPUT_DIM,
+            inference_method=clevr_transformer.InferenceMethod.OPTIMIZED_POSE,
+        )
+
+        model = clevr_transformer.ClevrTransformer(config)
+        batch = next(iter(loader))
+        batch = batch["objects"]
+
+        overhead_result = clevr_tokenizer.create_tokens(batch, vocab)
+        overhead_position = clevr_tokenizer.create_position_embeddings(
+            batch, embedding_size=MODEL_SIZE
+        )
+
+        ego_batch = project_to_ego(batch)
+        ego_result = clevr_tokenizer.create_tokens(batch, vocab)
+        ego_position = clevr_tokenizer.create_position_embeddings(
+            ego_batch, embedding_size=MODEL_SIZE
+        )
+
+        input = clevr_transformer.ClevrInputTokens(
+            overhead_tokens=overhead_result["tokens"],
+            overhead_position=positions_from_batch(batch),
+            overhead_position_embeddings=overhead_position,
+            overhead_mask=overhead_result["mask"],
+            ego_tokens=ego_result["tokens"],
+            ego_position=positions_from_batch(ego_batch),
+            ego_position_embeddings=ego_position,
+            ego_mask=ego_result["mask"],
+        )
+
+        # Action
+        output = model(input, None, None)
+
+        self.assertIn('learned_correspondence', output)
+        self.assertIn('prediction', output)
 
 if __name__ == "__main__":
     unittest.main()
