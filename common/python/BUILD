@@ -15,7 +15,7 @@ py_binary(
     requirement("numpy"),
     requirement("altair"),
     requirement("pandas"),
-    "//common:torch",
+    "//common/torch:load_torch_deps",
     "//experimental/overhead_matching/learned/model:clevr_transformer",
     "//experimental/overhead_matching/learned/model:clevr_tokenizer",
     "//experimental/overhead_matching/learned/data:clevr_dataset",

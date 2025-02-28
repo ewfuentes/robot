@@ -61,9 +61,9 @@ def main(model_path: Path, training_dataset: Path, dataset_path: Path):
             query_tokens = None
             query_mask = None
 
-            results.append(model(inputs, query_tokens, query_mask).cpu())
+            results.append({k: v.cpu() for k, v in model(inputs, query_tokens, query_mask).items()})
 
-    results = torch.cat(results, dim=0).numpy()
+    results = torch.cat([x['prediction'] for x in results], dim=0).numpy()
     ego_from_worlds = np.concatenate(ego_from_worlds)
 
     pred_x = results[:, 0]

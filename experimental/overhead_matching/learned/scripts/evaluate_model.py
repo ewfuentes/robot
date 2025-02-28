@@ -7,7 +7,8 @@ app = marimo.App(width="full")
 @app.cell
 def _():
     import marimo as mo
-    import common.torch as torch
+    import common.torch.load_torch_deps
+    import torch
     from pathlib import Path
     from functools import reduce
     import operator
