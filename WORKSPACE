@@ -584,7 +584,7 @@ http_archive(
 
 http_archive(
   name="clevr_test_set",
-  urls=["https://www.dropbox.com/scl/fi/y3bi7kg9huqy98ycjyfm2/clevr_test_set.zip?rlkey=8uqvvbk9piw7o380a1qsauo2c&st=zm7rvh8h&dl=1"],
+  urls=["https://www.dropbox.com/scl/fi/0x9w166t29nhd9epfiq1x/clevr_test_set.zip?rlkey=88fm5wj4kegju5sqsggoe7soi&st=sgqnjadd&dl=1"],
   build_file="//third_party:BUILD.zip_file",
-  integrity = "sha256-NPY2soc30az6TM4bf188d5osj20BY5H1r1Qk0dYylhU="
+  integrity = "sha256-hx3NXil91qH/gS2rVFQhDcTWRfOC2HLSjSi50NFLU/w=",
 )
