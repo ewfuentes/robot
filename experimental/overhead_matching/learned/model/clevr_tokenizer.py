@@ -1,6 +1,10 @@
 import common.torch.load_torch_deps
 import torch
 
+from torchvision.ops.misc import Conv2dNormActivation
+from typing import Callable
+from dataclasses import dataclass
+
 
 def create_scene_tokens(scene_list_batch, vocabulary):
     """
@@ -62,3 +66,67 @@ def create_position_embeddings(
         out[:, :, embedding_idx_start + 3] = torch.cos(xy_pos[:, :, 1] / scale)
 
     return out
+
+
+@dataclass 
+class ConvStemConfig:
+    num_conv_layers: int  # conv dim will be [3, 32, 64, ...]
+    kernel_size: int
+    stride: int
+    norm_layer: Callable[..., torch.nn.Module] = torch.nn.BatchNorm2d
+    activation_layer: Callable[..., torch.nn.Module] = torch.nn.ReLU
+
+@dataclass
+class ImageToTokensConfig:
+    embedding_dim: int
+    image_shape: tuple[int, int]  # (h, w)
+    patch_size_or_conv_stem_config: int | ConvStemConfig
+
+
+class ImageToTokens(torch.nn.Module):
+    # Based in part on https://github.com/pytorch/vision/blob/main/torchvision/models/vision_transformer.py
+    def __init__(self, config: ImageToTokensConfig):
+        super().__init__()
+        # As per https://arxiv.org/abs/2106.14881
+        self.config = config
+
+        if isinstance(self.config.patch_size_or_conv_stem_config, ConvStemConfig):
+            seq_proj = torch.nn.Sequential()
+            prev_channels = 3
+            for i in range(config.patch_size_or_conv_stem_config.num_conv_layers):
+                out_channels = 32 if prev_channels == 3 else 2 * prev_channels
+                seq_proj.add_module(
+                    f"conv_bn_act_{i}",
+                    Conv2dNormActivation(
+                        in_channels=prev_channels,
+                        out_channels=out_channels,
+                        kernel_size=self.config.patch_size_or_conv_stem_config.kernel_size,
+                        stride=self.config.patch_size_or_conv_stem_config.stride,
+                        norm_layer=self.config.patch_size_or_conv_stem_config.norm_layer,
+                        activation_layer=self.config.patch_size_or_conv_stem_config.activation_layer,
+                    ),
+                )
+                prev_channels = out_channels
+            seq_proj.add_module(
+                "conv_last", torch.nn.Conv2d(in_channels=prev_channels,
+                                            out_channels=self.config.embedding_dim, kernel_size=1)
+            )
+            self.conv_proj = seq_proj
+        else:
+            self.conv_proj = torch.nn.Conv2d(in_channels=3, out_channels=self.config.embedding_dim, kernel_size=self.config.patch_size_or_conv_stem_config, stride=self.config.patch_size_or_conv_stem_config)
+
+        with torch.no_grad():
+            dummy_input = torch.zeros((5, 3, *self.config.image_shape))
+            output_shape = self.conv_proj(dummy_input).shape
+            sequence_length = output_shape[2] * output_shape[3]
+
+        self.position_encoding = torch.nn.Parameter(torch.empty(1, sequence_length, self.config.embedding_dim).normal_(0.2))
+
+    def forward(self, image):
+        assert image.shape[2] == self.config.image_shape[0] and image.shape[3] == self.config.image_shape[
+            1], f"Image shape received {image.shape}, expected {self.config.image_shape} for last two dims"
+        x = self.conv_proj(image)
+        x = x.reshape(image.shape[0], self.config.embedding_dim, -1)  # flatten image dimension
+        x = x.permute(0, 2, 1)  # batch x seq_length x hidden dim
+        x = x + self.position_encoding
+        return x
