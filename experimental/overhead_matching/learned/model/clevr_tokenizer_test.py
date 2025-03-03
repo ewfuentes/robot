@@ -88,13 +88,56 @@ class ClevrTokenizerTest(unittest.TestCase):
         batch = next(iter(loader))
         vocabulary = dataset.vocabulary()
 
-        token_result = clevr_tokenizer.create_scene_tokens(batch.scene_description["objects"], vocabulary)
+        token_result = clevr_tokenizer.create_scene_tokens(
+            batch.scene_description["objects"], vocabulary)
         position_embedding = clevr_tokenizer.create_position_embeddings(
             batch.scene_description["objects"], embedding_size=32
         )
 
         self.assertEqual(token_result["tokens"].shape, token_result["mask"].shape)
         self.assertEqual(token_result["tokens"].shape, position_embedding.shape[:-1])
+
+    def test_image_tokenizer(self):
+
+        # setup
+        BATCH_SIZE = 4
+        EMBEDDING_DIM = 128
+        IMAGE_SIZE = (240, 320)
+        PATCH_SIZE = 16
+        conv_config = clevr_tokenizer.ImageToTokensConfig(
+            embedding_dim=EMBEDDING_DIM,
+            image_shape=IMAGE_SIZE,
+            patch_size_or_conv_stem_config=clevr_tokenizer.ConvStemConfig(
+                num_conv_layers=5,
+                kernel_size=3,
+                stride=2,
+            )
+        )
+        patch_config = clevr_tokenizer.ImageToTokensConfig(
+            embedding_dim=EMBEDDING_DIM,
+            image_shape=IMAGE_SIZE,
+            patch_size_or_conv_stem_config=PATCH_SIZE
+        )
+        conv_stem_image_tokenizer = clevr_tokenizer.ImageToTokens(conv_config)
+        patch_image_tokenizer = clevr_tokenizer.ImageToTokens(patch_config)
+
+        dataset = clevr_dataset.ClevrDataset(
+            Path("external/clevr_test_set/clevr_test_set"),
+            load_overhead=True,
+        )
+        loader = clevr_dataset.get_dataloader(dataset, batch_size=BATCH_SIZE)
+        batch = next(iter(loader))
+
+        # action
+        conv_image_tokens = conv_stem_image_tokenizer(batch.overhead_image)
+        patch_image_tokens = patch_image_tokenizer(batch.overhead_image)
+
+        # verification
+
+        self.assertEqual(patch_image_tokens.shape, (BATCH_SIZE, 240 *
+                         320 / PATCH_SIZE / PATCH_SIZE, EMBEDDING_DIM))
+        self.assertEqual(conv_image_tokens.shape, (BATCH_SIZE,
+                         conv_image_tokens.shape[1], EMBEDDING_DIM))
 
 
 if __name__ == "__main__":
