@@ -9,6 +9,7 @@ py_library(
     requirement("sdprlayers"),
     requirement("numpy"),
     requirement("sympy"),
+    requirement("ipdb"),
   ]
 )
 
@@ -64,5 +65,22 @@ py_test(
     "//experimental/overhead_matching/learned/data:clevr_dataset",
     ":clevr_transformer",
     ":clevr_tokenizer",
+  ]
+)
+
+py_library(
+  name="perspective_projection",
+  srcs=["perspective_projection.py"],
+  deps=[
+    "//common/torch:load_torch_deps"
+  ]
+)
+
+
+py_test(
+  name="perspective_projection_test",
+  srcs=["perspective_projection_test.py"],
+  deps=[
+    ":perspective_projection",
   ]
 )
