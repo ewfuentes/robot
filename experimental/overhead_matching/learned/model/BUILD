@@ -9,6 +9,7 @@ py_library(
     requirement("sdprlayers"),
     requirement("numpy"),
     requirement("sympy"),
+    requirement("ipdb"),
   ]
 )
 
