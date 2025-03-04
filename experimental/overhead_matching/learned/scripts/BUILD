@@ -8,7 +8,9 @@ py_binary(
   deps=[
     requirement("numpy"),
     requirement("torchvision"),
+    requirement("tensorboard"),
     "//common/torch:load_torch_deps",
+    "//common/torch:load_and_save_models",
     "//experimental/overhead_matching/learned/data:clevr_dataset",
     "//experimental/overhead_matching/learned/model:clevr_tokenizer",
     "//experimental/overhead_matching/learned/model:clevr_transformer",
@@ -26,6 +28,7 @@ py_binary(
     requirement("seaborn"),
     requirement("PyGObject"),
     "//common/torch:load_torch_deps",
+    "//common/torch:load_and_save_models",
     "//experimental/overhead_matching/learned/data:clevr_dataset",
     "//experimental/overhead_matching/learned/model:clevr_tokenizer",
     "//experimental/overhead_matching/learned/model:clevr_transformer",

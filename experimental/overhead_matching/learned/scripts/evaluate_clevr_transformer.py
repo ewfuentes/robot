@@ -11,6 +11,7 @@ import numpy as np
 
 import common.torch.load_torch_deps
 import torch
+from common.torch.load_and_save_models import load_model
 
 from experimental.overhead_matching.learned.model import (
     clevr_transformer,
@@ -21,43 +22,32 @@ from experimental.overhead_matching.learned.scripts import (
     train_clevr_transformer as tct,
 )
 
-EMBEDDING_SIZE = 128
 
 
-def load_model(model_path: Path):
-    config = clevr_transformer.ClevrTransformerConfig(
-        token_dim=EMBEDDING_SIZE,
-        vocabulary_size=96,
-        num_encoder_heads=4,
-        num_encoder_layers=8,
-        num_decoder_heads=4,
-        num_decoder_layers=8,
-        output_dim=4,
-        predict_gaussian=True,
-    )
+def main(model_path: Path, dataset_path: Path):
 
-    model = clevr_transformer.ClevrTransformer(config)
-    model.load_state_dict(torch.load(model_path, weights_only=True))
-    return model
+    eval = clevr_dataset.ClevrDataset(dataset_path, load_overhead=True)
+    loader = clevr_dataset.get_dataloader(eval, batch_size=64)
 
-
-def main(model_path: Path, training_dataset: Path, dataset_path: Path):
     model = load_model(model_path).cuda().eval()
-
-    vocabulary = clevr_dataset.ClevrDataset(training_dataset).vocabulary()
-    eval = clevr_dataset.ClevrDataset(dataset_path)
-    loader = clevr_dataset.get_dataloader(eval, batch_size=128)
 
     rng = np.random.default_rng(1024)
     ego_from_worlds = []
     results = []
     with torch.no_grad():
         for batch in loader:
-            batch = batch["objects"]
             ego_from_worlds.append(tct.sample_ego_from_world(rng, len(batch)))
-            inputs = tct.clevr_input_from_batch(
-                batch, vocabulary, EMBEDDING_SIZE, ego_from_worlds[-1]
+
+            ego_scene_descriptions = tct.project_scene_description_to_ego(
+                batch.scene_description['objects'], ego_from_worlds[-1])
+
+            inputs = clevr_transformer.SceneDescription(
+                overhead_image=None,
+                ego_image=None,
+                ego_scene_description=ego_scene_descriptions,
+                overhead_scene_description=None,
             )
+
             query_tokens = None
             query_mask = None
 
@@ -93,7 +83,6 @@ def main(model_path: Path, training_dataset: Path, dataset_path: Path):
             "dtheta (rad)": dtheta,
         }
     )
-
     g1 = sns.JointGrid(data=df, x="dx (m)", y="dy (m)")
     g1.plot(sns.histplot, sns.histplot)
     plt.suptitle(
@@ -113,9 +102,8 @@ def main(model_path: Path, training_dataset: Path, dataset_path: Path):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
-    parser.add_argument("--training_dataset", required=True)
     parser.add_argument("--dataset", required=True)
 
     args = parser.parse_args()
 
-    main(Path(args.model), Path(args.training_dataset), Path(args.dataset))
+    main(Path(args.model), Path(args.dataset))

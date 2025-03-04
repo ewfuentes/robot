@@ -21,6 +21,14 @@ py_library(
   ]
 )
 
+py_binary(
+    name="run_tensorboard",
+    srcs=["run_tensorboard.py"],
+    deps=[
+        requirement("tensorboard"),
+    ]
+)
+
 py_test(
   name="load_and_save_models_test",
   srcs=["load_and_save_models_test.py"],

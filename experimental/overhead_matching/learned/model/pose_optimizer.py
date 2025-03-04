@@ -7,7 +7,9 @@ import itertools
 
 from sdprlayers.layers.sdprlayer import SDPRLayer
 
+
 def compute_loss_coeffs():
+    # NOTE: if changing this, double check seralization below
     x_a, y_a, x_b, y_b = sympy.symbols("x_a y_a x_b y_b")
     s, c, t_x, t_y = sympy.symbols("s c t_x t_y")
     b_from_a_rot = sympy.Matrix([[c, -s], [s, c]])
@@ -57,8 +59,7 @@ def build_q_matrix(associations, pt_in_a, pt_in_b, loss_coeffs):
             q_per_pair[..., i, j] = 0.5 * value
             q_per_pair[..., j, i] = 0.5 * value
 
-
-    # The output tensor is formed by multiplying elementwise with the 
+    # The output tensor is formed by multiplying elementwise with the
     # batch x num_obj_in_a x num_obj_in_b attention matrix and then summing out
     # that dimension
     # batch x num_obj_in_a x num_obj_in_b x 5 x 5
@@ -73,7 +74,6 @@ def build_q_matrix(associations, pt_in_a, pt_in_b, loss_coeffs):
     return q
 
 
-
 class PoseOptimizerLayer(torch.nn.Module):
     def __init__(self):
         """
@@ -83,6 +83,8 @@ class PoseOptimizerLayer(torch.nn.Module):
         under the constraint that cos(theta)**2 + sin(theta)**2 = 1
         """
         super().__init__()
+
+        # NOTE: if changing this, double check seralization below
         self._optimizer = SDPRLayer(
             n_vars=5,
             use_dual=False,
@@ -90,13 +92,30 @@ class PoseOptimizerLayer(torch.nn.Module):
                 # sin**2 + cos**2 - 1 = 0
                 np.array([
                     [-1.0, 0.0, 0.0, 0.0, 0.0],
-                    [ 0.0, 0.0, 0.0, 0.0, 0.0],
-                    [ 0.0, 0.0, 0.0, 0.0, 0.0],
-                    [ 0.0, 0.0, 0.0, 1.0, 0.0],
-                    [ 0.0, 0.0, 0.0, 0.0, 1.0]])
+                    [0.0, 0.0, 0.0, 0.0, 0.0],
+                    [0.0, 0.0, 0.0, 0.0, 0.0],
+                    [0.0, 0.0, 0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0, 0.0, 1.0]])
             ]
         )
+        # NOTE: if changing this, double check seralization below
         self._loss_coeffs = compute_loss_coeffs()
+
+    def __getstate__(self):
+        return (
+            self._optimizer.n_vars,
+            self._optimizer.use_dual,
+            self._optimizer.constr_list
+        )
+
+    def __setstate__(self, state):
+        super().__init__()
+        self._loss_coeffs = compute_loss_coeffs()
+        self._optimizer = SDPRLayer(
+            n_vars=state[0],
+            use_dual=state[1],
+            constraints=state[2]
+        )
 
     def forward(self, associations, pt_in_a, pt_in_b):
         r"""
