@@ -53,6 +53,7 @@ py_library(
   deps=[
     "//common/torch:load_torch_deps",
     ":pose_optimizer",
+    ":clevr_tokenizer",
   ]
 )
 
@@ -63,6 +64,5 @@ py_test(
   deps=[
     "//experimental/overhead_matching/learned/data:clevr_dataset",
     ":clevr_transformer",
-    ":clevr_tokenizer",
   ]
 )
