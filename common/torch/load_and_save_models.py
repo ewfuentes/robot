@@ -71,8 +71,8 @@ def deep_equal(a, b, rtol=1e-5, atol=1e-8, print_reason: bool = False):
     if isinstance(a, torch.Tensor):
         if not torch.allclose(a, b, rtol=rtol, atol=atol):
             if print_reason:
-                print("Not all values are close torch", a[~torch.isclose(a, b, rtol, atol)], b[~torch.isclose(
-                    a, b, rtol, atol)], a[~torch.isclose(a, b, rtol, atol)] - b[~torch.isclose(a, b, rtol, atol)])
+                print("Not all values are close torch", a[~torch.isclose(
+                    a, b, rtol, atol)] - b[~torch.isclose(a, b, rtol, atol)])
             return False
         return True
 
@@ -94,7 +94,7 @@ def deep_equal(a, b, rtol=1e-5, atol=1e-8, print_reason: bool = False):
         out = all(deep_equal(a[k], b[k], rtol=rtol, atol=atol) for k in a)
         if not out and print_reason:
             print("Values don't match for a key in a dict", [
-                  (k, a[k], b[k]) for k in a if not deep_equal(a[k], b[k], rtol=rtol, atol=atol, print_reason=True)])
+                  k for k in a if not deep_equal(a[k], b[k], rtol=rtol, atol=atol, print_reason=True)])
         return out
 
     # Handle lists and tuples
@@ -183,7 +183,8 @@ def save_model(
     # serialize model
     model_copy = copy.deepcopy(model)
     model_copy.eval()
-    model_out = model_copy(*example_model_inputs)
+    with torch.no_grad():
+        model_out = model_copy(*example_model_inputs)
 
     # save weights alone
     torch.save(model_copy.state_dict(), save_path / "model_weights.pt")
@@ -217,7 +218,9 @@ def save_model(
 
 def load_model(
     load_path: Path,  # folder where model is saved
-    device: str = "cpu"
+    device: str = "cpu",
+    *,
+    skip_constient_output_check: bool = False
 ):
 
     if not isinstance(load_path, Path):
@@ -228,9 +231,11 @@ def load_model(
     model.eval()
 
     # verify model
-    input_output = torch.load(load_path / 'input_output.tar',
-                              map_location=device, weights_only=False)
-    new_output = model(*input_output['input'])
-    # observed 1e-6 differences when comparing cpu tensors to gpu tensors
-    assert deep_equal(new_output, input_output['output'], atol=1e-5, print_reason=False)
+    if not skip_constient_output_check:
+        input_output = torch.load(load_path / 'input_output.tar',
+                                  map_location=device, weights_only=False)
+        with torch.no_grad():
+            new_output = model(*input_output['input'])
+        # observed 1e-6 differences when comparing cpu tensors to gpu tensors
+        assert deep_equal(new_output, input_output['output'], atol=1e-5, print_reason=False)
     return model

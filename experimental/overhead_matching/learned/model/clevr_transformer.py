@@ -58,7 +58,7 @@ class ClevrTransformer(torch.nn.Module):
             d_model=config.token_dim,
             nhead=config.num_encoder_heads,
             batch_first=True,
-            dropout=0.0,
+            dropout=0.1,
         )
         self._encoder = torch.nn.TransformerEncoder(
             encoder_layer, num_layers=config.num_encoder_layers
@@ -68,7 +68,7 @@ class ClevrTransformer(torch.nn.Module):
             d_model=config.token_dim,
             nhead=config.num_decoder_heads,
             batch_first=True,
-            dropout=0.0,
+            dropout=0.1,
         )
 
         self._decoder = torch.nn.TransformerDecoder(
@@ -216,7 +216,7 @@ class ClevrTransformer(torch.nn.Module):
             overhead_image_tokens = self._overhead_image_tokenizer(input.overhead_image)
             overhead_image_tokens = overhead_image_tokens + self._overhead_marker
             overhead_tokens.append(overhead_image_tokens)
-            overhead_masks.append(torch.ones(
+            overhead_masks.append(torch.zeros(
                 overhead_image_tokens.shape[0], overhead_image_tokens.shape[1], device=self.device))
 
         # tokenize ego information
@@ -240,7 +240,7 @@ class ClevrTransformer(torch.nn.Module):
             ego_image_tokens = self._ego_image_tokenizer(input.ego_image)
             ego_image_tokens = ego_image_tokens + self._ego_marker
             ego_tokens.append(ego_image_tokens)
-            ego_masks.append(torch.ones(
+            ego_masks.append(torch.zeros(
                 ego_image_tokens.shape[0], ego_image_tokens.shape[1], device=self.device))
 
         input_tokens = torch.cat(overhead_tokens + ego_tokens, dim=1)
