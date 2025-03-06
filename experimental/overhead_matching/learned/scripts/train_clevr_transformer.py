@@ -3,15 +3,25 @@ import argparse
 from pathlib import Path
 
 import common.torch.load_torch_deps
+import shutil
+from common.torch.load_and_save_models import save_model, load_model
 import torch
 import torchvision as tv
+import torchvision.transforms.v2 as tf
 import numpy as np
 import copy
+from torch.utils.tensorboard import SummaryWriter
 
 from experimental.overhead_matching.learned.data import clevr_dataset
 from experimental.overhead_matching.learned.model import (
     clevr_tokenizer,
     clevr_transformer,
+)
+
+IMAGE_NORMALIZATION = torch.nn.Sequential(
+    tf.ToImage(),
+    tf.ToDtype(torch.float32, scale=True),
+    tf.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 )
 
 
@@ -49,43 +59,6 @@ def project_scene_description_to_ego(scene_descriptions, ego_from_world):
             obj["3d_coords"][-1] = old_z
 
     return out
-
-
-def positions_from_scene_descriptions(scene_descriptions):
-    batch_size = len(scene_descriptions)
-    max_num_objects = max([len(x) for x in scene_descriptions])
-    out = torch.zeros((batch_size, max_num_objects, 2))
-    for scene_idx, scene in enumerate(scene_descriptions):
-        for obj_idx, obj in enumerate(scene):
-            out[scene_idx, obj_idx, :] = torch.tensor(obj["3d_coords"][:2])
-    return out
-
-
-def clevr_input_from_batch(batch, vocabulary, embedding_size, ego_from_world):
-    result = clevr_tokenizer.create_scene_tokens(batch.scene_description, vocabulary)
-    position_embeddings = clevr_tokenizer.create_position_embeddings(
-        batch.scene_description, embedding_size=embedding_size, min_scale=1e-6
-    )
-    positions = positions_from_scene_descriptions(batch)
-
-    ego_scene_descriptions = project_scene_description_to_ego(
-        batch.scene_description, ego_from_world)
-    ego_result = clevr_tokenizer.create_scene_tokens(ego_scene_descriptions, vocabulary)
-    ego_position_embeddings = clevr_tokenizer.create_position_embeddings(
-        ego_scene_descriptions, embedding_size=embedding_size, min_scale=1e-6
-    )
-    ego_positions = positions_from_scene_descriptions(ego_scene_descriptions)
-
-    return clevr_transformer.ClevrInputTokens(
-        overhead_tokens=result["tokens"].cuda(),
-        overhead_position=positions.cuda(),
-        overhead_position_embeddings=position_embeddings.cuda(),
-        overhead_mask=result["mask"].cuda(),
-        ego_tokens=ego_result["tokens"].cuda(),
-        ego_position=ego_positions.cuda(),
-        ego_position_embeddings=ego_position_embeddings.cuda(),
-        ego_mask=ego_result["mask"].cuda(),
-    )
 
 
 def create_query_tokens(batch_size: int):
@@ -141,99 +114,177 @@ def compute_correspondence_loss(correspondence, obj_in_overhead, obj_in_ego, ego
     return torch.mean(mean_scene_errors)
 
 
-def main(dataset_path: Path, output_path: Path):
-    torch.manual_seed(2048)
-    dataset = clevr_dataset.ClevrDataset(dataset_path)
-    vocabulary = dataset.vocabulary()
-    loader = clevr_dataset.get_dataloader(dataset, batch_size=64)
+def main(dataset_path: Path, output_path: Path, load_model_path: Path | None, train_config: dict):
 
-    vocabulary_size = int(np.prod([len(x) for x in vocabulary.values()]))
+    if output_path.exists():
+        del_output_path = input(f"Output directory {output_path} exists. Delete (y/n): ")
+        if del_output_path == "y":
+            shutil.rmtree(output_path)
 
-    TOKEN_SIZE = 128
-    OUTPUT_DIM = 4
-    model_config = clevr_transformer.ClevrTransformerConfig(
-        token_dim=TOKEN_SIZE,
-        vocabulary_size=vocabulary_size,
-        num_encoder_heads=4,
-        num_encoder_layers=8,
-        num_decoder_heads=4,
-        num_decoder_layers=8,
-        output_dim=OUTPUT_DIM,
-        predict_gaussian=True,
+    output_path.mkdir(exist_ok=True, parents=True)
+    writer = SummaryWriter(
+        log_dir=output_path
     )
+    torch.manual_seed(2048)
+    dataset = clevr_dataset.ClevrDataset(dataset_path,
+                                         load_overhead=train_config['overhead_image'],
+                                         load_ego_images=train_config['ego_image'],
+                                         overhead_transform=IMAGE_NORMALIZATION,
+                                         ego_transform=IMAGE_NORMALIZATION)
+    vocabulary = dataset.vocabulary()
+    train_dataset, val_dataset = torch.utils.data.random_split(dataset, [0.8, 0.2], generator=torch.Generator().manual_seed(1023))
+    loader = clevr_dataset.get_dataloader(train_dataset, batch_size=64, num_workers=12)
+    val_loader = clevr_dataset.get_dataloader(val_dataset, batch_size=64, num_workers=12)
 
-    model = clevr_transformer.ClevrTransformer(model_config)
-    model = model.cuda()
+    best_model_weights = None
+    best_val_mae = np.inf
+    best_model_epoch = None
 
-    optim = torch.optim.Adam(model.parameters(), lr=1e-5)
-
-    NUM_EPOCHS = 1001
-    rng = np.random.default_rng(1024)
-    for epoch_idx in range(NUM_EPOCHS):
-        for batch_idx, batch in enumerate(loader):
-            # print(batch["objects"])
-            optim.zero_grad()
-            # sample an ego pose
-            ego_from_world = sample_ego_from_world(rng, len(batch.scene_description["objects"]))
-            # print(ego_from_world)
-            input = clevr_input_from_batch(
-                batch.scene_description["objects"], vocabulary, TOKEN_SIZE, ego_from_world
-            )
-            query_tokens = create_query_tokens(len(batch))
-            query_mask = None
-
-            output = model(input, query_tokens, query_mask)
-
-            loss = compute_mse_loss(output["prediction"], ego_from_world)
-            # TODO add a flag to select what kind of loss we need
-            # loss += compute_correspondence_loss(
-            #         output["learned_correspondence"],
-            #         input.overhead_position, input.ego_position, ego_from_world)
-            loss.backward()
-            optim.step()
-
-        print(f"***** Epoch: {epoch_idx}", end=" ")
-        model.eval()
-        eval_rng = np.random.default_rng(1024)
-        batch = next(iter(loader))
-        ego_from_world = sample_ego_from_world(eval_rng, len(batch["objects"]))
-        input = clevr_input_from_batch(
-            batch["objects"], vocabulary, TOKEN_SIZE, ego_from_world
+    if load_model_path is not None:
+        model = load_model(load_model_path)
+    else:
+        TOKEN_SIZE = 128
+        OUTPUT_DIM = 4
+        model_config = clevr_transformer.ClevrTransformerConfig(
+            token_dim=TOKEN_SIZE,
+            num_encoder_heads=4,
+            num_encoder_layers=8,
+            num_decoder_heads=4,
+            num_decoder_layers=8,
+            output_dim=OUTPUT_DIM,
+            inference_method=clevr_transformer.InferenceMethod.MEAN,
+            ego_image_tokenizer_config=None,
+            overhead_image_tokenizer_config=clevr_tokenizer.ImageToTokensConfig(
+                TOKEN_SIZE, (240, 320), 16),
         )
 
-        output = model(input, None, None)
+        model = clevr_transformer.ClevrTransformer(model_config, vocabulary)
 
-        decoder_output = output["prediction"]
-        # correspondences = output["learned_correspondence"]
+    model = model.cuda()
+    optim = torch.optim.Adam(model.parameters(), lr=1e-5)
 
-        x_pred = decoder_output[:, :2].cpu()
-        x_gt = torch.from_numpy(ego_from_world[:, :2, 2])
-        error = x_pred - x_gt
-        error = torch.sqrt(torch.sum(error * error, axis=1))
+    NUM_EPOCHS = 4001
+    rng = np.random.default_rng(1024)
+    try:
+        for epoch_idx in range(NUM_EPOCHS):
+            all_losses = []
+            for batch_idx, batch in enumerate(loader):
+                # print(batch["objects"])
+                optim.zero_grad()
+                # sample an ego pose
+                ego_from_world = sample_ego_from_world(rng, len(batch.scene_description["objects"]))
 
-        # correspondence_loss = compute_correspondence_loss(
-        #         correspondences, input.overhead_position, input.ego_position, ego_from_world)
-        # print("mae:", torch.mean(error).item(), "correspondence_loss:", correspondence_loss.item())
+                ego_scene_descriptions = project_scene_description_to_ego(
+                    batch.scene_description["objects"], ego_from_world)
+                model_input = clevr_transformer.SceneDescription(
+                    overhead_image=batch.overhead_image.cuda() if batch.overhead_image is not None else None,
+                    ego_image=batch.ego_image if batch.ego_image is not None else None,
+                    ego_scene_description=ego_scene_descriptions,
+                    overhead_scene_description=None,
+                )
+                query_tokens = create_query_tokens(len(batch))
+                query_mask = None
 
-        # correspondences_output_path = output_path / "intermediates" / "correspondences" / f"{epoch_idx:06d}.png"
-        # correspondences_output_path.parent.mkdir(parents=True, exist_ok=True)
-        # tv.utils.save_image(correspondences.unsqueeze(1), correspondences_output_path)
+                # print("input", model_input.ego_scene_description[0], model_input.overhead_image[0].sum())
+                output = model(model_input, query_tokens, query_mask)
 
-        model.train()
+                # torch.save({'in': model_input, 'out': output}, "/tmp/inout.tar")
+                # print("model", output['prediction'][0])
+                # assert False
 
-        if epoch_idx % 10 == 0:
-            output_path.mkdir(parents=True, exist_ok=True)
+                loss = compute_mse_loss(output["prediction"], ego_from_world)
+                all_losses.append(loss.item())
 
-            checkpoint_path = output_path / f"{epoch_idx:06d}.pt"
-            torch.save(model.state_dict(), checkpoint_path)
-            print("model saved to:", checkpoint_path)
+                # TODO add a flag to select what kind of loss we need
+                # loss += compute_correspondence_loss(
+                #         output["learned_correspondence"],
+                #         input.overhead_position, input.ego_position, ego_from_world)
+                loss.backward()
+                optim.step()
+
+            writer.add_scalar("loss/train", np.mean(all_losses), epoch_idx)
+
+            print(f"***** Epoch: {epoch_idx}", end=" ")
+            print(f"train loss: {np.mean(all_losses)}", end=" ")
+
+            model.eval()
+            eval_rng = np.random.default_rng(1024)
+            val_mae = []
+            for batch in val_loader:
+                ego_from_world = sample_ego_from_world(
+                    eval_rng, len(batch.scene_description["objects"]))
+                ego_scene_descriptions = project_scene_description_to_ego(
+                    batch.scene_description["objects"], ego_from_world)
+
+                model_input = clevr_transformer.SceneDescription(
+                    overhead_image=batch.overhead_image.cuda() if batch.overhead_image is not None else None,
+                    ego_image=batch.ego_image.cuda() if batch.ego_image is not None else None,
+                    ego_scene_description=ego_scene_descriptions,
+                    overhead_scene_description=None,
+                )
+
+                output = model(model_input, None, None)
+
+                decoder_output = output["prediction"]
+                # correspondences = output["learned_correspondence"]
+
+                x_pred = decoder_output[:, :2].cpu()
+                x_gt = torch.from_numpy(ego_from_world[:, :2, 2])
+                error = x_pred - x_gt
+                error = torch.sqrt(torch.sum(error * error, axis=1))
+
+                val_mae.append(torch.mean(error).item())
+
+                # correspondence_loss = compute_correspondence_loss(
+                #         correspondences, input.overhead_position, input.ego_position, ego_from_world)
+                # , "correspondence_loss:", correspondence_loss.item())
+
+            writer.add_scalar("loss/val_mae", np.mean(val_mae), epoch_idx)
+            print(f"val mae: {np.mean(val_mae)}")
+            if np.mean(val_mae) < best_val_mae:
+                best_model_weights = copy.deepcopy(model.state_dict())
+                best_model_epoch = epoch_idx
+
+            # correspondences_output_path = output_path / "intermediates" / "correspondences" / f"{epoch_idx:06d}.png"
+            # correspondences_output_path.parent.mkdir(parents=True, exist_ok=True)
+            # tv.utils.save_image(correspondences.unsqueeze(1), correspondences_output_path)
+
+            model.train()
+
+            if epoch_idx % 10 == 0:
+                output_path.mkdir(parents=True, exist_ok=True)
+                save_model(model, output_path / f"epoch_{epoch_idx:06d}", (model_input, None, None))
+                print("model saved to:", output_path / f"epoch_{epoch_idx:06d}")
+
+    except KeyboardInterrupt:
+        print("Exiting (got keyboard interrupt)")
+
+    model.load_state_dict(best_model_weights)
+    save_model(model, output_path / 'best', (model_input, None, None), {'epoch': best_model_epoch})
+    print("saved best model captured on epoch", best_model_epoch)
+    writer.close()
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", required=True)
+    parser.add_argument("--load_model_path", required=False, default=None,
+                        type=Path, help="Path to load initial model from")
     parser.add_argument("--output_path", required=True)
+    parser.add_argument("--delete_output_if_exists", action='store_true')
+    parser.add_argument("--provide_overhead_image", action='store_true')
 
     args = parser.parse_args()
 
-    main(Path(args.dataset), Path(args.output_path))
+    if args.delete_output_if_exists:
+        if Path(args.output_path).exists():
+            shutil.rmtree(args.output_path)
+
+    args.load_model_path = None if args.load_model_path is None else Path(args.load_model_path)
+
+    train_config = {
+        'overhead_image': args.provide_overhead_image,
+        'ego_image': False,
+    }
+
+    main(Path(args.dataset), Path(args.output_path), args.load_model_path, train_config)

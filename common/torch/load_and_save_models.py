@@ -40,7 +40,7 @@ def get_git_diff():
     return diff
 
 
-def deep_equal(a, b, rtol=1e-5, atol=1e-8):
+def deep_equal(a, b, rtol=1e-5, atol=1e-8, print_reason: bool = False):
     """
     Compare two values for equality, handling nested structures and tensor types.
 
@@ -58,45 +58,73 @@ def deep_equal(a, b, rtol=1e-5, atol=1e-8):
     if a is None and b is None:
         return True
     if a is None or b is None:
+        if print_reason:
+            print("A or B is None but not both")
         return False
-
     # Handle different types
     if type(a) != type(b):
+        if print_reason:
+            print("Types do not match", type(a), type(b))
         return False
 
     # Handle tensors
     if isinstance(a, torch.Tensor):
         if not torch.allclose(a, b, rtol=rtol, atol=atol):
+            if print_reason:
+                print("Not all values are close torch", a[~torch.isclose(
+                    a, b, rtol, atol)] - b[~torch.isclose(a, b, rtol, atol)])
             return False
         return True
 
     # Handle numpy arrays
     if isinstance(a, np.ndarray):
         if not np.allclose(a, b, rtol=rtol, atol=atol):
+            if print_reason:
+                print("Not all values are close numpy", a[~np.isclose(
+                    a, b, rtol, atol)], b[~np.isclose(a, b, rtol, atol)])
             return False
         return True
 
     # Handle dictionaries
     if isinstance(a, dict):
         if set(a.keys()) != set(b.keys()):
+            if print_reason:
+                print("Keys do not match in a dict")
             return False
-        return all(deep_equal(a[k], b[k], rtol=rtol, atol=atol) for k in a)
+        out = all(deep_equal(a[k], b[k], rtol=rtol, atol=atol) for k in a)
+        if not out and print_reason:
+            print("Values don't match for a key in a dict", [
+                  k for k in a if not deep_equal(a[k], b[k], rtol=rtol, atol=atol, print_reason=True)])
+        return out
 
     # Handle lists and tuples
     if isinstance(a, (list, tuple)):
         if len(a) != len(b):
+            if print_reason:
+                print("a and b are list/tuple and have different length")
             return False
-        return all(deep_equal(x, y, rtol=rtol, atol=atol) for x, y in zip(a, b))
+        out = all(deep_equal(x, y, rtol=rtol, atol=atol, print_reason=print_reason)
+                  for x, y in zip(a, b))
+        if not out and print_reason:
+            print("All members of list/tuple did not match")
+        return out
 
     # Handle dataclasses
     if hasattr(a, '__dataclass_fields__'):
-        return all(
-            deep_equal(getattr(a, f.name), getattr(b, f.name), rtol=rtol, atol=atol)
+        out = all(
+            deep_equal(getattr(a, f.name), getattr(b, f.name),
+                       rtol=rtol, atol=atol, print_reason=print_reason)
             for f in dataclasses.fields(a)
         )
+        if not out and print_reason:
+            print("All values of dataclass did not match")
+        return out
 
     # Default comparison for other types
-    return a == b
+    out = a == b
+    if not out and print_reason:
+        print("a didn't equal b. Plain and simple")
+    return out
 
 
 def to_device(obj: Any, device: Union[str, torch.device]) -> Any:
@@ -155,7 +183,8 @@ def save_model(
     # serialize model
     model_copy = copy.deepcopy(model)
     model_copy.eval()
-    model_out = model_copy(*example_model_inputs)
+    with torch.no_grad():
+        model_out = model_copy(*example_model_inputs)
 
     # save weights alone
     torch.save(model_copy.state_dict(), save_path / "model_weights.pt")
@@ -189,7 +218,9 @@ def save_model(
 
 def load_model(
     load_path: Path,  # folder where model is saved
-    device: str = "cpu"
+    device: str = "cpu",
+    *,
+    skip_constient_output_check: bool = False
 ):
 
     if not isinstance(load_path, Path):
@@ -200,7 +231,11 @@ def load_model(
     model.eval()
 
     # verify model
-    input_output = torch.load(load_path / 'input_output.tar', map_location=device, weights_only=False)
-    new_output = model(*input_output['input'])
-    assert deep_equal(new_output, input_output['output'], atol=1e-6)  # observed 1e-7 differences when comparing cpu tensors to gpu tensors
+    if not skip_constient_output_check:
+        input_output = torch.load(load_path / 'input_output.tar',
+                                  map_location=device, weights_only=False)
+        with torch.no_grad():
+            new_output = model(*input_output['input'])
+        # observed 1e-6 differences when comparing cpu tensors to gpu tensors
+        assert deep_equal(new_output, input_output['output'], atol=1e-5, print_reason=False)
     return model

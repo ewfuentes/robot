@@ -38,45 +38,31 @@ class ClevrTransformerTest(unittest.TestCase):
         loader = clevr_dataset.get_dataloader(dataset, batch_size=BATCH_SIZE)
 
         vocab = dataset.vocabulary()
-        vocab_size = reduce(operator.mul, [len(v) for v in vocab.values()])
 
         MODEL_SIZE = 256
         OUTPUT_DIM = 4
         config = clevr_transformer.ClevrTransformerConfig(
             token_dim=MODEL_SIZE,
-            vocabulary_size=vocab_size,
             num_encoder_heads=4,
             num_encoder_layers=4,
             num_decoder_heads=4,
             num_decoder_layers=4,
             output_dim=OUTPUT_DIM,
             inference_method=clevr_transformer.InferenceMethod.MEAN,
+            overhead_image_tokenizer_config=None,
+            ego_image_tokenizer_config=None,
         )
 
-        model = clevr_transformer.ClevrTransformer(config)
+        model = clevr_transformer.ClevrTransformer(config, vocab)
         batch = next(iter(loader))
         scene_objects = batch.scene_description["objects"]
+        ego_scene_objects = project_to_ego(scene_objects)
 
-        overhead_result = clevr_tokenizer.create_scene_tokens(scene_objects, vocab)
-        overhead_position = clevr_tokenizer.create_position_embeddings(
-            scene_objects, embedding_size=MODEL_SIZE
-        )
-
-        ego_batch = project_to_ego(scene_objects)
-        ego_result = clevr_tokenizer.create_scene_tokens(scene_objects, vocab)
-        ego_position = clevr_tokenizer.create_position_embeddings(
-            ego_batch, embedding_size=MODEL_SIZE
-        )
-
-        input = clevr_transformer.ClevrInputTokens(
-            overhead_tokens=overhead_result["tokens"],
-            overhead_position=positions_from_scene_objects(scene_objects),
-            overhead_position_embeddings=overhead_position,
-            overhead_mask=overhead_result["mask"],
-            ego_tokens=ego_result["tokens"],
-            ego_position=positions_from_scene_objects(ego_batch),
-            ego_position_embeddings=ego_position,
-            ego_mask=ego_result["mask"],
+        input = clevr_transformer.SceneDescription(
+            ego_image=None,
+            ego_scene_description=ego_scene_objects,
+            overhead_image=None,
+            overhead_scene_description=scene_objects
         )
 
         # Action
@@ -102,39 +88,27 @@ class ClevrTransformerTest(unittest.TestCase):
         OUTPUT_DIM = 384
         config = clevr_transformer.ClevrTransformerConfig(
             token_dim=MODEL_SIZE,
-            vocabulary_size=vocab_size,
             num_encoder_heads=4,
             num_encoder_layers=4,
             num_decoder_heads=4,
             num_decoder_layers=4,
             output_dim=OUTPUT_DIM,
             inference_method=clevr_transformer.InferenceMethod.HISTOGRAM,
+            ego_image_tokenizer_config=None,
+            overhead_image_tokenizer_config=None,
         )
 
-        model = clevr_transformer.ClevrTransformer(config)
+        model = clevr_transformer.ClevrTransformer(config, vocab)
         batch = next(iter(loader))
         scene_objects = batch.scene_description["objects"]
 
-        overhead_result = clevr_tokenizer.create_scene_tokens(scene_objects, vocab)
-        overhead_position = clevr_tokenizer.create_position_embeddings(
-            scene_objects, embedding_size=MODEL_SIZE
-        )
-
         ego_scene_objects = project_to_ego(scene_objects)
-        ego_result = clevr_tokenizer.create_scene_tokens(ego_scene_objects, vocab)
-        ego_position = clevr_tokenizer.create_position_embeddings(
-            ego_scene_objects, embedding_size=MODEL_SIZE
-        )
 
-        input = clevr_transformer.ClevrInputTokens(
-            overhead_tokens=overhead_result["tokens"],
-            overhead_position=positions_from_scene_objects(scene_objects),
-            overhead_position_embeddings=overhead_position,
-            overhead_mask=overhead_result["mask"],
-            ego_tokens=ego_result["tokens"],
-            ego_position=positions_from_scene_objects(ego_scene_objects),
-            ego_position_embeddings=ego_position,
-            ego_mask=ego_result["mask"],
+        input = clevr_transformer.SceneDescription(
+            ego_image=None,
+            ego_scene_description=ego_scene_objects,
+            overhead_image=None,
+            overhead_scene_description=scene_objects,
         )
 
         # Action
@@ -155,45 +129,31 @@ class ClevrTransformerTest(unittest.TestCase):
         loader = clevr_dataset.get_dataloader(dataset, batch_size=BATCH_SIZE)
 
         vocab = dataset.vocabulary()
-        vocab_size = reduce(operator.mul, [len(v) for v in vocab.values()])
 
         MODEL_SIZE = 256
         OUTPUT_DIM = 384
         config = clevr_transformer.ClevrTransformerConfig(
             token_dim=MODEL_SIZE,
-            vocabulary_size=vocab_size,
             num_encoder_heads=4,
             num_encoder_layers=4,
             num_decoder_heads=4,
             num_decoder_layers=4,
             output_dim=OUTPUT_DIM,
             inference_method=clevr_transformer.InferenceMethod.LEARNED_CORRESPONDENCE,
+            ego_image_tokenizer_config=None,
+            overhead_image_tokenizer_config=None,
         )
 
-        model = clevr_transformer.ClevrTransformer(config)
+        model = clevr_transformer.ClevrTransformer(config, vocab)
         batch = next(iter(loader))
         scene_objects = batch.scene_description["objects"]
-
-        overhead_result = clevr_tokenizer.create_scene_tokens(scene_objects, vocab)
-        overhead_position = clevr_tokenizer.create_position_embeddings(
-            scene_objects, embedding_size=MODEL_SIZE
-        )
-
         ego_scene_objects = project_to_ego(scene_objects)
-        ego_result = clevr_tokenizer.create_scene_tokens(ego_scene_objects, vocab)
-        ego_position = clevr_tokenizer.create_position_embeddings(
-            ego_scene_objects, embedding_size=MODEL_SIZE
-        )
 
-        input = clevr_transformer.ClevrInputTokens(
-            overhead_tokens=overhead_result["tokens"],
-            overhead_position=positions_from_scene_objects(scene_objects),
-            overhead_position_embeddings=overhead_position,
-            overhead_mask=overhead_result["mask"],
-            ego_tokens=ego_result["tokens"],
-            ego_position=positions_from_scene_objects(ego_scene_objects),
-            ego_position_embeddings=ego_position,
-            ego_mask=ego_result["mask"],
+        input = clevr_transformer.SceneDescription(
+            ego_image=None,
+            ego_scene_description=ego_scene_objects,
+            overhead_image=None,
+            overhead_scene_description=scene_objects,
         )
 
         # Action
@@ -216,45 +176,31 @@ class ClevrTransformerTest(unittest.TestCase):
         loader = clevr_dataset.get_dataloader(dataset, batch_size=BATCH_SIZE)
 
         vocab = dataset.vocabulary()
-        vocab_size = reduce(operator.mul, [len(v) for v in vocab.values()])
 
         MODEL_SIZE = 256
         OUTPUT_DIM = 384
         config = clevr_transformer.ClevrTransformerConfig(
             token_dim=MODEL_SIZE,
-            vocabulary_size=vocab_size,
             num_encoder_heads=4,
             num_encoder_layers=4,
             num_decoder_heads=4,
             num_decoder_layers=4,
             output_dim=OUTPUT_DIM,
             inference_method=clevr_transformer.InferenceMethod.OPTIMIZED_POSE,
+            ego_image_tokenizer_config=None,
+            overhead_image_tokenizer_config=None,
         )
 
-        model = clevr_transformer.ClevrTransformer(config)
+        model = clevr_transformer.ClevrTransformer(config, vocab)
         batch = next(iter(loader))
         scene_objects = batch.scene_description["objects"]
-
-        overhead_result = clevr_tokenizer.create_scene_tokens(scene_objects, vocab)
-        overhead_position = clevr_tokenizer.create_position_embeddings(
-            scene_objects, embedding_size=MODEL_SIZE
-        )
-
         ego_scene_objects = project_to_ego(scene_objects)
-        ego_result = clevr_tokenizer.create_scene_tokens(ego_scene_objects, vocab)
-        ego_position = clevr_tokenizer.create_position_embeddings(
-            ego_scene_objects, embedding_size=MODEL_SIZE
-        )
 
-        input = clevr_transformer.ClevrInputTokens(
-            overhead_tokens=overhead_result["tokens"],
-            overhead_position=positions_from_scene_objects(scene_objects),
-            overhead_position_embeddings=overhead_position,
-            overhead_mask=overhead_result["mask"],
-            ego_tokens=ego_result["tokens"],
-            ego_position=positions_from_scene_objects(ego_scene_objects),
-            ego_position_embeddings=ego_position,
-            ego_mask=ego_result["mask"],
+        input = clevr_transformer.SceneDescription(
+            ego_image=None,
+            ego_scene_description=ego_scene_objects,
+            overhead_image=None,
+            overhead_scene_description=scene_objects,
         )
 
         # Action

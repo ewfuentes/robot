@@ -21,6 +21,7 @@ def _():
         ChartSelection,
         Path,
         alt,
+        common,
         mo,
         np,
         operator,
@@ -37,58 +38,50 @@ def _():
     from experimental.overhead_matching.learned.model import clevr_transformer, clevr_tokenizer
     from experimental.overhead_matching.learned.data import clevr_dataset
     from experimental.overhead_matching.learned.scripts import train_clevr_transformer as tct
-    return clevr_dataset, clevr_tokenizer, clevr_transformer, tct
+    from common.torch.load_and_save_models import load_model
+    return clevr_dataset, clevr_tokenizer, clevr_transformer, load_model, tct
 
 
 @app.cell
 def _(Path):
-    model_path = Path('~/scratch/overhead_matching/models/direct_prediction/001000.pt').expanduser()
-    training_dataset_path = Path('~/scratch/overhead_matching/clevr/').expanduser()
-    eval_dataset_path = Path('~/scratch/overhead_matching/clevr_validation/').expanduser()
+    model_path = Path('/tmp/ego_vec_overhead_16patch/epoch_000220/').expanduser()
+    training_dataset_path = Path('~/scratch/clevr/overhead_image_ego_vectorized').expanduser()
+    eval_dataset_path = Path('~/scratch/clevr/overhead_image_ego_vectorized_val/').expanduser()
     return eval_dataset_path, model_path, training_dataset_path
 
 
 @app.cell
-def _(clevr_dataset, eval_dataset_path, training_dataset_path):
-    vocabulary = clevr_dataset.ClevrDataset(training_dataset_path).vocabulary()
-    eval_dataset = clevr_dataset.ClevrDataset(eval_dataset_path)
-    loader = clevr_dataset.get_dataloader(eval_dataset, batch_size=128)
-    return eval_dataset, loader, vocabulary
+def _(clevr_dataset, eval_dataset_path):
+    eval_dataset = clevr_dataset.ClevrDataset(eval_dataset_path, load_overhead=True)
+    loader = clevr_dataset.get_dataloader(eval_dataset, batch_size=64)
+    return eval_dataset, loader
 
 
 @app.cell
-def _(clevr_transformer, model_path, operator, reduce, torch, vocabulary):
-    EMBEDDING_SIZE=128
-    vocabulary_size = reduce(operator.mul, [len(x) for x in vocabulary.values()])
-    config = clevr_transformer.ClevrTransformerConfig(
-        token_dim=EMBEDDING_SIZE,
-        vocabulary_size=vocabulary_size,
-        num_encoder_heads=4,
-        num_encoder_layers=8,
-        num_decoder_heads=4,
-        num_decoder_layers=8,
-        output_dim=4,
-        predict_gaussian=True
-    )
-    model = clevr_transformer.ClevrTransformer(config)
-    model.load_state_dict(torch.load(model_path, weights_only=True))
+def _(load_model, model_path):
+    model = load_model(model_path)
     model = model.cuda()
-    return EMBEDDING_SIZE, config, model, vocabulary_size
+    model = model.eval()
+    return (model,)
 
 
 @app.cell
-def _(EMBEDDING_SIZE, loader, model, np, tct, torch, vocabulary):
+def _(clevr_transformer, loader, model, np, tct, torch):
     # Collect the predictions
-
     rng = np.random.default_rng(1024)
     ego_from_worlds = []
     results = []
     with torch.no_grad():
         for i, batch in enumerate(loader):
-            batch = batch["objects"]
             ego_from_worlds.append(tct.sample_ego_from_world(rng, len(batch)))
-            inputs = tct.clevr_input_from_batch(
-                batch, vocabulary, embedding_size=EMBEDDING_SIZE, ego_from_world=ego_from_worlds[-1])
+            ego_scene_descriptions = tct.project_scene_description_to_ego(
+                batch.scene_description["objects"], ego_from_worlds[-1])
+            inputs = clevr_transformer.SceneDescription(
+                overhead_image=None,
+                ego_image=None,
+                ego_scene_description=ego_scene_descriptions,
+                overhead_scene_description=None
+            )
             query_tokens = None
             query_mask = None
             results.append(model(inputs, query_tokens, query_mask))
@@ -101,6 +94,7 @@ def _(EMBEDDING_SIZE, loader, model, np, tct, torch, vocabulary):
     return (
         batch,
         ego_from_worlds,
+        ego_scene_descriptions,
         i,
         inputs,
         query_mask,
@@ -112,7 +106,7 @@ def _(EMBEDDING_SIZE, loader, model, np, tct, torch, vocabulary):
 
 @app.cell
 def _(ego_from_worlds, eval_dataset, np, pd, results):
-    pose_source = 'decoder_output'
+    pose_source = 'prediction'
 
     # compute the errors
     pred_x = results[pose_source][:, 0]
@@ -131,6 +125,10 @@ def _(ego_from_worlds, eval_dataset, np, pd, results):
     dtheta[dtheta > np.pi] -= 2 * np.pi
     dtheta[dtheta < -np.pi] += 2 * np.pi
 
+    error = results[pose_source][:, :2] - ego_from_worlds[:, :2, 2]
+    error = np.sqrt(np.sum(error * error, axis=1)).mean()
+    print(error)
+
     df = pd.DataFrame({
         'pred_x': pred_x,
         'pred_y': pred_y,
@@ -145,13 +143,15 @@ def _(ego_from_worlds, eval_dataset, np, pd, results):
         'dx': pred_x - gt_x,
         'dy': pred_y - gt_y,
         'dtheta': dtheta,
-        'scene': [x["objects"] for x in eval_dataset],
-        'num_objects': [len(x["objects"]) for x in eval_dataset],
-        'image_filename': [x["image_filename"] for x in eval_dataset],
+        'scene': [x.scene_description["objects"] for x in eval_dataset],
+        'num_objects': [len(x.scene_description["objects"]) for x in eval_dataset],
+        'image_filename': eval_dataset.overhead_file_paths,
+
     })
     return (
         df,
         dtheta,
+        error,
         gt_cos,
         gt_sin,
         gt_theta,
