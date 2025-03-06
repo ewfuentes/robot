@@ -10,6 +10,8 @@ py_library(
     requirement("numpy"),
     requirement("sympy"),
     requirement("ipdb"),
+    requirement("matplotlib"),
+    requirement("PyGObject"),
   ]
 )
 
@@ -82,5 +84,14 @@ py_test(
   srcs=["perspective_projection_test.py"],
   deps=[
     ":perspective_projection",
+  ]
+)
+
+cc_test(
+  name="pose_optimizer_drake_test",
+  srcs=["pose_optimizer_drake_test.cc"],
+  deps=[
+    "//common:drake",
+    "@com_google_googletest//:gtest_main",
   ]
 )

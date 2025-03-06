@@ -5,6 +5,7 @@ import numpy as np
 import sympy
 import itertools
 import enum
+import matplotlib.pyplot as plt
 
 from sdprlayers.layers.sdprlayer import SDPRLayer
 
@@ -33,7 +34,7 @@ def compute_pnp_loss_coeffs():
     proj_p_in_b = b_from_a_rot @ p_in_a + b_from_a_trans
     proj_p_in_b_along_u = (u.T @ proj_p_in_b)[0, 0] * u
     error = proj_p_in_b - proj_p_in_b_along_u
-    loss = (proj_p_in_b.T @ error)[0, 0]
+    loss = (error.T @ error)[0, 0]
     loss = sympy.expand(loss)
     loss_coeffs = loss.collect([c, s, c*s, t_x, t_y, c*t_x, c*t_y, s*t_x, s*t_y, t_x * t_y], evaluate=False)
 
@@ -234,7 +235,55 @@ class PoseOptimizerLayer(torch.nn.Module):
 
         cpu_associations = associations.cpu()
         Q = self._build_q_matrix(cpu_associations, pt_in_a, x_in_b, self._loss_coeffs)
-        print('q:\n', Q)
-        sol, _ = self._optimizer(Q, solver_args={"eps": 1e-8, "verbose": True, 'solve_method': 'SCS'})
+        print('q:\n', Q, Q.shape)
+        # solver_args = {
+        #         "solve_method": "SCS",
+        #         "eps": 1e-8,
+        #         "verbose": True
+        # }
+        plt.figure()
+        X, Y, T = np.meshgrid(
+                np.linspace(-3, 3, 100), np.linspace(-3, 3, 100), np.linspace(-np.pi, np.pi, 100), indexing='ij')
+        print(f'{X.shape=}, {Y.shape=}, {T.shape=}')
+        x = X.reshape(1, -1)
+        y = Y.reshape(1, -1)
+        t = T.reshape(1, -1)
+        eval_t = np.concatenate([np.ones_like(x), x, y, np.cos(t), np.sin(t)], axis=0)
+
+        print(f'{eval_t.shape=}')
+        intermediate = Q.numpy()[0] @ eval_t
+
+        print(f'{intermediate.shape=}')
+        result = np.empty_like(x)
+        for idx in range(eval_t.shape[1]):
+            result[:, idx] = eval_t[:, idx].T @ intermediate[:, idx]
+        R = result.reshape(X.shape)
+
+        print(f'{R.shape=}')
+        plt.subplot(131)
+        plt.contourf(X[..., 50], Y[..., 50], np.log10(R[..., 50]))
+        plt.xlabel('X')
+        plt.ylabel('Y')
+        plt.title(f'{T[0, 0, 50]=}')
+        plt.colorbar()
+        plt.axis('equal')
+        plt.subplot(132)
+        plt.contourf(X[:, 50, :], T[:, 50, :], np.log10(R[:, 50, :]))
+        plt.xlabel('X')
+        plt.ylabel('T')
+        plt.title(f'{Y[0, 50, 0]=}')
+        plt.colorbar()
+        plt.subplot(133)
+        plt.contourf(T[82, ...], Y[82, ...], np.log10(R[82, ...]))
+        plt.xlabel('T')
+        plt.ylabel('Y')
+        plt.title(f'{X[82, 0, 0]=}')
+        plt.colorbar()
+        plt.show()
+        solver_args = {
+                "solve_method": "Clarabel",
+                "verbose": False
+        }
+        sol, _ = self._optimizer(Q, solver_args=solver_args)
         print('solution:\n', sol)
         return sol[:, 1:, 0].to(associations.device)
