@@ -15,7 +15,12 @@ using VarMatrix = Eigen::Matrix<drake::symbolic::Expression, rows, cols>;
 template <int rows>
 using VarVector = Eigen::Vector<drake::symbolic::Expression, rows>;
 
-drake::symbolic::Expression build_q_matrix(
+struct ProblemComponent {
+    drake::symbolic::Expression cost;
+    drake::symbolic::Expression dot_product;
+};
+
+ProblemComponent build_q_matrix(
 	const drake::solvers::VectorXDecisionVariable &vars,
 	const Eigen::Vector2d point_in_world,
 	const double bearing_in_robot) {
@@ -33,10 +38,14 @@ drake::symbolic::Expression build_q_matrix(
 
 	std::cout << "u in robot: " << u_in_robot.transpose() << std::endl;
 
-	const VarVector<2> error = point_in_robot - u_in_robot * (u_in_robot.transpose() * point_in_robot);
-	const drake::symbolic::Expression out = (error.transpose() * error)(0);
+	const drake::symbolic::Expression dot_product = u_in_robot.transpose() * point_in_robot;
+	const VarVector<2> error = point_in_robot - u_in_robot * dot_product;
+	const drake::symbolic::Expression cost = (error.transpose() * error)(0);
 
-	return out;
+	return {
+	    .cost = cost,
+	    .dot_product = dot_product,
+	};
 }
 }
 
@@ -49,10 +58,19 @@ TEST(PoseOptimizerDrakeTest, points_and_bearings) {
     const auto &cos = x(2);
     const auto &sin = x(3);
 
-    drake::symbolic::Expression exp = build_q_matrix(x, Eigen::Vector2d{0, -3}, std::atan2(-3, 2));
-    exp += build_q_matrix(x, Eigen::Vector2d{0, 4}, std::atan2(4, 2));
+    drake::symbolic::Expression total_cost;
+    {
+        const auto &[cost_comp, dot_prod] = build_q_matrix(x, Eigen::Vector2d{0, -3}, std::atan2(-3, 2));
+	total_cost += cost_comp;
+	prog.AddConstraint(dot_prod >= 0);
+    }
+    {
+        const auto &[cost_comp, dot_prod] = build_q_matrix(x, Eigen::Vector2d{0, 4}, std::atan2(4, 2));
+	total_cost += cost_comp;
+	prog.AddConstraint(dot_prod >= 0);
+    }
 
-    prog.AddCost(exp);
+    prog.AddCost(total_cost);
     prog.AddConstraint(sin * sin + cos * cos == 1);
     auto sdp_options = drake::solvers::SemidefiniteRelaxationOptions();
     sdp_options.set_to_strongest();
@@ -70,7 +88,8 @@ TEST(PoseOptimizerDrakeTest, points_and_bearings) {
     if (result.is_success()) {
 	int idx = 0;
 	const auto psd_constraint_vars = sdp_prog->positive_semidefinite_constraints().front().variables();
-	std::cout << "psd constraint vars:" << psd_constraint_vars << std::endl;
+	std::cout << "psd constraint vars:" << std::endl 
+		<< psd_constraint_vars.reshaped(5, 5) << std::endl;
 	Eigen::MatrixXd psd_result = result.GetSolution(psd_constraint_vars).reshaped(5, 5);
 	std::cout << psd_result << std::endl;
     }
