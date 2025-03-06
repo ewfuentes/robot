@@ -20,6 +20,17 @@ struct ProblemComponent {
     drake::symbolic::Expression dot_product;
 };
 
+void SetRelaxationInitialGuess(const Eigen::Ref<const Eigen::VectorXd>& y_expected,
+			       drake::solvers::MathematicalProgram* relaxation) {
+  const int N = y_expected.size() + 1;
+  Eigen::MatrixX<drake::symbolic::Variable> X = Eigen::Map<const Eigen::MatrixX<drake::symbolic::Variable>>(
+      relaxation->positive_semidefinite_constraints()[0].variables().data(), N, N);
+  Eigen::VectorXd x_expected(N);
+  x_expected << y_expected, 1;
+  const Eigen::MatrixXd X_expected = x_expected * x_expected.transpose();
+  relaxation->SetInitialGuess(X, X_expected);
+}
+
 ProblemComponent build_q_matrix(
 	const drake::solvers::VectorXDecisionVariable &vars,
 	const Eigen::Vector2d point_in_world,
@@ -76,6 +87,16 @@ TEST(PoseOptimizerDrakeTest, points_and_bearings) {
     sdp_options.set_to_strongest();
     const auto sdp_prog = drake::solvers::MakeSemidefiniteRelaxation(prog, sdp_options);
 
+    SetRelaxationInitialGuess(Eigen::Vector4d{2.0, 0, 1.0, 0.0}, &*sdp_prog);
+
+    for (const auto &constraint: sdp_prog->GetAllConstraints()) {
+	const bool is_satisfied = sdp_prog->CheckSatisfiedAtInitialGuess(constraint);
+	std::cout << "is satisfied: " << is_satisfied << "\t" << constraint << std::endl;
+    }
+    for (const auto &cost: sdp_prog->GetAllCosts()) {
+	std::cout << "cost value: " << sdp_prog->EvalBindingAtInitialGuess(cost) << "\t" << cost << std::endl;
+    }
+
     const auto solver = drake::solvers::ClarabelSolver();
     const auto result = solver.Solve(*sdp_prog);
 
@@ -86,12 +107,19 @@ TEST(PoseOptimizerDrakeTest, points_and_bearings) {
     std::cout << *sdp_prog << std::endl;
     std::cout << "is success: " << result.is_success() << std::endl;
     if (result.is_success()) {
-	int idx = 0;
+		std::cout << "Optimal cost: " << result.get_optimal_cost() << std::endl;
 	const auto psd_constraint_vars = sdp_prog->positive_semidefinite_constraints().front().variables();
 	std::cout << "psd constraint vars:" << std::endl 
 		<< psd_constraint_vars.reshaped(5, 5) << std::endl;
 	Eigen::MatrixXd psd_result = result.GetSolution(psd_constraint_vars).reshaped(5, 5);
 	std::cout << psd_result << std::endl;
+
+	std::cout << "Eigenvalues: " << psd_result.eigenvalues().transpose() << std::endl;
+
+	const auto svd_result = psd_result.jacobiSvd(Eigen::ComputeThinU | Eigen::ComputeThinV);
+	std::cout << "Singular values: " << svd_result.singularValues() << std::endl;
+	std::cout << "left singular vectors: " << std::endl << svd_result.matrixU() << std::endl;
+	std::cout << "right singular vectors: " << std::endl << svd_result.matrixV() << std::endl;
     }
     
     // Verification
