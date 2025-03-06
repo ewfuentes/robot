@@ -31,6 +31,7 @@ py_library(
     "//common/python:__subpackages__",
   ],
   deps=[
+    ":perspective_projection",
     "//common/torch:load_torch_deps"
   ]
 )
