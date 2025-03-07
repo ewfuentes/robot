@@ -10,6 +10,14 @@
 #include "symphony_lake_dataset/SurveyVector.h"
 
 namespace robot::experimental::learn_descriptors {
+class SymphonyLakeCamParams {
+   public:
+    constexpr static double fx = 759.308, fy = 690.44;
+    constexpr static double px = 370.915, py = 250.909;
+
+    constexpr static double k1 = -0.302805, k2 = 0.171088, k3 = 0.0;
+    constexpr static double p1 = 0.001151, p2 = -0.00038;
+};
 class DataParser {
    public:
     template <typename T>

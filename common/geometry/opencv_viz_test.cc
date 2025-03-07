@@ -2,7 +2,7 @@
 
 #include "gtest/gtest.h"
 
-namespace robot::geometry::opencv_viz {
+namespace robot::geometry {
 namespace {
 bool is_test() {
     return std::getenv("BAZEL_TEST") != nullptr &&
@@ -68,22 +68,22 @@ TEST(OpencvVizTest, cube_test) {
 
     std::vector<Eigen::Isometry3d> poses;
 
-    Eigen::Matrix3d rotation0(
-        Eigen::AngleAxis(M_PI / 2, Eigen::Vector3d(0, 0, 1)).toRotationMatrix() *
-        Eigen::AngleAxis(-M_PI / 2, Eigen::Vector3d(1, 0, 0)).toRotationMatrix());
-    Eigen::Isometry3d pose0;
-    pose0.translation() = Eigen::Vector3d(4, 0, 0);
-    pose0.linear() = rotation0;
-    poses.push_back(pose0);
+    Eigen::Matrix3d R_W_cam0(
+        Eigen::AngleAxisd(M_PI / 2, Eigen::Vector3d(0, 0, 1)).toRotationMatrix() *
+        Eigen::AngleAxisd(-M_PI / 2, Eigen::Vector3d(1, 0, 0)).toRotationMatrix());
+    Eigen::Isometry3d T_W_cam0;
+    T_W_cam0.translation() = Eigen::Vector3d(4, 0, 0);
+    T_W_cam0.linear() = R_W_cam0;
+    poses.push_back(T_W_cam0);
 
-    Eigen::Isometry3d pose1;
-    pose1.linear() =
-        Eigen::AngleAxis(M_PI / 2, Eigen::Vector3d(0, 0, 1)).toRotationMatrix() * rotation0;
-    pose1.translation() = Eigen::Vector3d(0, 4, 0);
-    poses.push_back(pose1);
+    Eigen::Isometry3d T_W_cam1;
+    T_W_cam1.linear() =
+        Eigen::AngleAxisd(M_PI / 2, Eigen::Vector3d(0, 0, 1)).toRotationMatrix() * R_W_cam0;
+    T_W_cam1.translation() = Eigen::Vector3d(0, 4, 0);
+    poses.push_back(T_W_cam1);
 
     if (!is_test()) {
         viz_scene(poses, cube_W);
     }
 }
-}  // namespace robot::geometry::opencv_viz
+}  // namespace robot::geometry

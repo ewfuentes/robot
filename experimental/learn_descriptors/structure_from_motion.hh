@@ -6,19 +6,14 @@
 #include <utility>
 
 #include "Eigen/Core"
+#include "common/geometry/camera.hh"
 #include "gtsam/geometry/Point3.h"
 #include "gtsam/geometry/Pose3.h"
 #include "gtsam/inference/Symbol.h"
-#include "gtsam/nonlinear/LevenbergMarquardtOptimizer.h"
+#include "gtsam/linear/NoiseModel.h"
+#include "gtsam/nonlinear/NonlinearFactorGraph.h"
 #include "gtsam/nonlinear/Values.h"
-#include "gtsam/slam/BetweenFactor.h"
-#include "gtsam/slam/GeneralSFMFactor.h"
-#include "gtsam/slam/PriorFactor.h"
-#include "gtsam/slam/ProjectionFactor.h"
-#include "nlohmann/json.hpp"
 #include "opencv2/opencv.hpp"
-
-using json = nlohmann::json;
 
 namespace robot::experimental::learn_descriptors {
 class Frontend {
@@ -73,16 +68,17 @@ class Backend {
 
     struct Landmark {
         Landmark(const gtsam::Symbol &lmk_factor_symbol, const gtsam::Symbol &cam_pose_symbol,
-                 const gtsam::Point2 &projection,
-                 const gtsam::Point3 &initial_guess = gtsam::Point3::Identity())
+                 const gtsam::Point2 &projection, const gtsam::Cal3_S2 K,
+                 float initial_depth_guess = 5.0)
             : lmk_factor_symbol(lmk_factor_symbol),
               cam_pose_symbol(cam_pose_symbol),
               projection(projection),
-              initial_guess(initial_guess){};
+              p_cam_lmk_guess(robot::geometry::deproject(robot::geometry::get_intrinsic_matrix(K),
+                                                         projection, initial_depth_guess)){};
         const gtsam::Symbol lmk_factor_symbol;
         const gtsam::Symbol cam_pose_symbol;
         const gtsam::Point2 projection;
-        const gtsam::Point3 initial_guess;
+        const gtsam::Point3 p_cam_lmk_guess;
     };
 
     Backend();
@@ -95,21 +91,17 @@ class Backend {
     void add_between_factor(const gtsam::Symbol &symbol_1, const gtsam::Symbol &symbol_2,
                             const T &value, const gtsam::SharedNoiseModel &model);
 
-
     void add_landmarks(const std::vector<Landmark> &landmarks);
     void add_landmark(const Landmark &landmark);
-    gtsam::Pose3 estimate_c0_c1(const std::vector<cv::KeyPoint> &kpts1,
-                               const std::vector<cv::KeyPoint> &kpts2,
-                               const std::vector<cv::DMatch> &matches, const gtsam::Cal3_S2 &K);
 
-    void solve_graph();    
+    void solve_graph();
 
     const gtsam::Values &get_current_initial_values() const { return initial_estimate_; };
     const gtsam::Values &get_result() const { return result_; };
-    const gtsam::Cal3_S2 &get_K() const { return K_; };
+    const gtsam::Cal3_S2 &get_K() const { return *K_; };
 
    private:
-    gtsam::Cal3_S2 K_;
+    gtsam::Cal3_S2::shared_ptr K_;
 
     gtsam::Values initial_estimate_;
     gtsam::Values result_;
@@ -118,17 +110,26 @@ class Backend {
     gtsam::noiseModel::Isotropic::shared_ptr landmark_noise_ =
         gtsam::noiseModel::Isotropic::Sigma(2, 1.0);
     gtsam::noiseModel::Diagonal::shared_ptr pose_noise_ =
-        gtsam::noiseModel::Diagonal::Sigmas(gtsam::Vector6::Constant(0.1));
-    gtsam::noiseModel::Isotropic::shared_ptr rotation_noise_ = 
-        gtsam::noiseModel::Isotropic::Sigma(3, 0.1);
-    gtsam::noiseModel::Isotropic::shared_ptr pose_bearing_noise_ = 
-        gtsam::noiseModel::Isotropic::Sigma(2, 0.1);
+        gtsam::noiseModel::Diagonal::Sigmas(gtsam::Vector6(0.1, 0.1, 0.1, 0.01, 0.01, 0.01));
 };
+
+template <>
+void Backend::add_between_factor<gtsam::Pose3>(const gtsam::Symbol &, const gtsam::Symbol &,
+                                               const gtsam::Pose3 &,
+                                               const gtsam::SharedNoiseModel &);
+template <>
+void Backend::add_between_factor<gtsam::Rot3>(const gtsam::Symbol &, const gtsam::Symbol &,
+                                              const gtsam::Rot3 &, const gtsam::SharedNoiseModel &);
+
 class StructureFromMotion {
    public:
     static const Eigen::Affine3d T_symlake_boat_cam;
     static const gtsam::Pose3 default_initial_pose;
+    /**
+     * @param D is vector (5x1) of the distortion coefficients (k1, k2, p1, p2, k3)
+     */
     StructureFromMotion(Frontend::ExtractorType frontend_extractor, gtsam::Cal3_S2 K,
+                        Eigen::Matrix<double, 5, 1> D,
                         gtsam::Pose3 initial_pose = default_initial_pose,
                         Frontend::MatcherType frontend_matcher = Frontend::MatcherType::KNN);
     ~StructureFromMotion(){};
@@ -137,11 +138,16 @@ class StructureFromMotion {
     void add_image(const cv::Mat &img);
     void solve_structure() { backend_.solve_graph(); };
     const gtsam::Values &get_structure_result() { return backend_.get_result(); };
+    using MatchFunction = std::function<void(std::vector<cv::DMatch> &)>;
+    std::vector<cv::DMatch> get_matches(
+        const cv::Mat &descriptors_1, const cv::Mat &descriptors_2,
+        std::optional<MatchFunction> post_process_func = std::nullopt);
 
     Frontend get_frontend() { return frontend_; };
     Backend get_backend() { return backend_; }
     size_t get_num_images_added() { return img_keypoints_and_descriptors_.size(); };
     size_t get_landmark_count() { return landmark_count_; };
+    const std::vector<std::vector<cv::DMatch>> get_matches() { return matches_; };
 
    private:
     std::vector<std::pair<std::vector<cv::KeyPoint>, cv::Mat>> img_keypoints_and_descriptors_;
@@ -149,15 +155,10 @@ class StructureFromMotion {
     std::vector<std::vector<Backend::Landmark>> landmarks_;
     size_t landmark_count_ = 0;
 
+    cv::Mat K_;
+    cv::Mat D_;
+
     Frontend frontend_;
     Backend backend_;
 };
-// class SFM_Logger {
-//     public:
-//         // static const json gtsam_pose3_to_json(const gtsam::Pose3 &pose);
-//         static const json eigen_mat_to_json(const Eigen::Matrix &mat);
-//         static const json gtsam_pose3_to_json(const gtsam::Pose3 &pose);
-//         static const void values_to_json(const gtsam::Values &values, const std::filesystem::path
-//         &file);
-// };
 }  // namespace robot::experimental::learn_descriptors
