@@ -28,6 +28,7 @@ py_library(
     "//common/python:__subpackages__",
   ],
   deps=[
+    ":perspective_projection",
     "//common/torch:load_torch_deps"
   ]
 )
@@ -64,5 +65,31 @@ py_test(
   deps=[
     "//experimental/overhead_matching/learned/data:clevr_dataset",
     ":clevr_transformer",
+  ]
+)
+
+py_library(
+  name="perspective_projection",
+  srcs=["perspective_projection.py"],
+  deps=[
+    "//common/torch:load_torch_deps"
+  ]
+)
+
+
+py_test(
+  name="perspective_projection_test",
+  srcs=["perspective_projection_test.py"],
+  deps=[
+    ":perspective_projection",
+  ]
+)
+
+cc_test(
+  name="pose_optimizer_drake_test",
+  srcs=["pose_optimizer_drake_test.cc"],
+  deps=[
+    "//common:drake",
+    "@com_google_googletest//:gtest_main",
   ]
 )
