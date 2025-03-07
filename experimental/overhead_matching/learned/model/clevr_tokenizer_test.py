@@ -78,6 +78,20 @@ class ClevrTokenizerTest(unittest.TestCase):
         self.assertAlmostEqual(result[0, 0, 0::2].abs().sum().item(), 0.0, places=3)
         self.assertAlmostEqual(result[0, 0, 1::2].abs().sum().item(), 16.0, places=3)
 
+    def test_spherical_encoder(self):
+        # Setup
+        batch = [
+            [(0.0, 0.0, 0.0)],
+            [(np.cos(t), np.sin(t), np.cos(t)) for t in np.linspace(0, 2 * np.pi, 9)],
+        ]
+        batch = [[{"3d_coords": v} for v in scene] for scene in batch]
+
+        # Action
+        result = clevr_tokenizer.create_spherical_embeddings(batch, embedding_size=32)
+
+        # Verification
+        self.assertEqual(result.shape, (2, 9, 32))
+
     def test_with_dataset(self):
         # Setup
         BATCH_SIZE = 4

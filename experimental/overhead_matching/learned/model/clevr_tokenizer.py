@@ -4,6 +4,7 @@ import torch
 from torchvision.ops.misc import Conv2dNormActivation
 from typing import Callable
 from dataclasses import dataclass
+from experimental.overhead_matching.learned.model import perspective_projection
 
 
 def create_scene_tokens(scene_list_batch, vocabulary):
@@ -68,13 +69,45 @@ def create_position_embeddings(
     return out
 
 
-@dataclass 
+def create_spherical_embeddings(
+        scene_list_batch, *, scale_step: float = 2.0, embedding_size: int
+):
+    assert embedding_size % 4 == 0
+    num_scenes = len(scene_list_batch)
+    max_tokens_per_scene = max([len(x) for x in scene_list_batch])
+    xyz_pos = torch.zeros((num_scenes, max_tokens_per_scene, 3), dtype=torch.float32)
+    for i, scene in enumerate(scene_list_batch):
+        for j, item in enumerate(scene):
+            xyz_pos[i, j, 0] = item["3d_coords"][0]
+            xyz_pos[i, j, 1] = item["3d_coords"][1]
+            xyz_pos[i, j, 2] = item["3d_coords"][2]
+
+    spherical_coords = perspective_projection.spherical_projection(xyz_pos)
+    inclination_azimuth = spherical_coords[..., 1:]
+
+    out = torch.zeros(
+        (num_scenes, max_tokens_per_scene, embedding_size), dtype=torch.float32
+    )
+    num_scales = embedding_size // 4
+    for scale_idx in range(num_scales):
+        embedding_idx_start = 4 * scale_idx
+        scale = scale_step ** scale_idx
+
+        out[:, :, embedding_idx_start + 0] = torch.sin(inclination_azimuth[:, :, 0] * scale)
+        out[:, :, embedding_idx_start + 1] = torch.cos(inclination_azimuth[:, :, 0] * scale)
+        out[:, :, embedding_idx_start + 2] = torch.sin(inclination_azimuth[:, :, 1] * scale)
+        out[:, :, embedding_idx_start + 3] = torch.cos(inclination_azimuth[:, :, 1] * scale)
+    return out
+
+
+@dataclass
 class ConvStemConfig:
     num_conv_layers: int  # conv dim will be [3, 32, 64, ...]
     kernel_size: int
     stride: int
     norm_layer: Callable[..., torch.nn.Module] = torch.nn.BatchNorm2d
     activation_layer: Callable[..., torch.nn.Module] = torch.nn.ReLU
+
 
 @dataclass
 class ImageToTokensConfig:
