@@ -25,7 +25,22 @@ cc_library(
     "@opencv//:opencv",
     "@gtsam//:gtsam",
     "@eigen",
-    "@nlohmann_json//:json",
+    "//common/geometry:camera",
+    "//common/geometry:translate_types"
+  ]
+)
+
+cc_test(
+  name = "structure_from_motion_test",
+  srcs = ["structure_from_motion_test.cc"],  
+  copts = [
+    "-Wno-unused-parameter",
+  ],
+  deps = [
+    "@com_google_googletest//:gtest_main",
+    ":symphony_lake_parser",
+    ":structure_from_motion",
+    "//common/geometry:opencv_viz"
   ]
 )
 
@@ -47,25 +62,9 @@ cc_library(
 )
 
 cc_test(
-  name = "structure_from_motion_test",
-  srcs = ["structure_from_motion_test.cc"],  
-  copts = [
-    "-Wno-unused-parameter",
-  ],
-  deps = [
-    "@com_google_googletest//:gtest_main",
-    ":symphony_lake_parser",
-    ":structure_from_motion",
-    "//common/math:matrix_to_proto",
-    "//common/geometry:opencv_viz"
-  ]
-)
-
-cc_test(
   name = "symphony_lake_parser_test",
   srcs = ["symphony_lake_parser_test.cc"],
   copts = ["-Wno-unused-parameter"],
-  # data = ["@symphony_lake_snippet"],
   deps = [
     "@com_google_googletest//:gtest_main",
     ":symphony_lake_parser",

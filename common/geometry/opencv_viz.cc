@@ -2,23 +2,9 @@
 
 #include <iostream>
 
-namespace robot::geometry::opencv_viz {
-template <typename Derived>
-cv::Mat eigen_to_cv_mat(const Eigen::MatrixBase<Derived> &eigenMatrix) {
-    int cvType;
-    if constexpr (std::is_same_v<typename Derived::Scalar, double>) {
-        cvType = CV_64F;
-    } else if constexpr (std::is_same_v<typename Derived::Scalar, float>) {
-        cvType = CV_32F;
-    } else if constexpr (std::is_same_v<typename Derived::Scalar, int>) {
-        cvType = CV_32S;
-    } else {
-        static_assert(!std::is_same_v<Derived, Derived>, "Unsupported data type in Eigen matrix");
-    }
-    return cv::Mat(eigenMatrix.rows(), eigenMatrix.cols(), cvType,
-                   const_cast<void *>(static_cast<const void *>(eigenMatrix.derived().data())))
-        .clone();
-}
+#include "common/geometry/translate_types.hh"
+
+namespace robot::geometry {
 cv::Vec3d rotation_matrix_to_axis_angle(const cv::Matx33d &R) {
     // Ensure R is a valid rotation matrix
     CV_Assert(cv::determinant(R) > 0.999 && cv::determinant(R) < 1.001);
@@ -37,27 +23,30 @@ cv::Vec3d rotation_matrix_to_axis_angle(const cv::Matx33d &R) {
     return axis * theta;
 }
 
-void viz_scene(const std::vector<Eigen::Isometry3d> &poses,
-               const std::vector<Eigen::Vector3d> &points, const bool show_grid) {
+void viz_scene(const std::vector<Eigen::Isometry3d> &poses_world,
+               const std::vector<Eigen::Vector3d> &points_world, const bool show_grid,
+               const bool show_origin) {
     cv::viz::Viz3d window("Viz Scene");
 
     constexpr double pose_size = .5;
-    for (unsigned int i = 0; i < poses.size(); i++) {
-        cv::Affine3d cv_pose(eigen_to_cv_mat(Eigen::Matrix4d(poses[i].matrix().transpose())));
+    for (unsigned int i = 0; i < poses_world.size(); i++) {
+        cv::Affine3d cv_pose(eigen_mat_to_cv(Eigen::Matrix4d(poses_world[i].matrix())));
         window.showWidget("rigid_transform_" + std::to_string(i),
                           cv::viz::WCoordinateSystem(pose_size), cv_pose);
     }
     constexpr double point_radius = 0.08;
     constexpr int sphere_res = 10;
     const cv::viz::Color point_color = cv::viz::Color::celestial_blue();
-    for (unsigned int i = 0; i < points.size(); i++) {
-        const Eigen::Vector3d &point = points[i];
+    for (unsigned int i = 0; i < points_world.size(); i++) {
+        const Eigen::Vector3d &point = points_world[i];
         window.showWidget("point_" + std::to_string(i),
                           cv::viz::WSphere(cv::Point3d(point[0], point[1], point[2]), point_radius,
                                            sphere_res, point_color));
     }
 
-    window.showWidget("world_frame", cv::viz::WCoordinateSystem());
+    if (show_origin) {
+        window.showWidget("world_frame", cv::viz::WCoordinateSystem());
+    }
 
     if (show_grid) {
         constexpr unsigned int num_cells = 6;
@@ -76,4 +65,4 @@ void viz_scene(const std::vector<Eigen::Isometry3d> &poses,
 
     window.spin();
 }
-}  // namespace robot::geometry::opencv_viz
+}  // namespace robot::geometry
