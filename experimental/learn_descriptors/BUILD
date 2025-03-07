@@ -21,6 +21,9 @@ cc_library(
   hdrs = ["structure_from_motion.hh"],
   visibility = ["//visibility:public"],
   srcs = ["structure_from_motion.cc"],
+  copts = [
+    "-Wno-error=unused-parameter",
+  ],
   deps = [
     "@opencv//:opencv",
     "@gtsam//:gtsam",
@@ -34,7 +37,7 @@ cc_test(
   name = "structure_from_motion_test",
   srcs = ["structure_from_motion_test.cc"],  
   copts = [
-    "-Wno-unused-parameter",
+    "-Wno-error=unused-parameter",
   ],
   deps = [
     "@com_google_googletest//:gtest_main",
