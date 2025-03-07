@@ -91,6 +91,7 @@ class Backend {
     void add_between_factor(const gtsam::Symbol &symbol_1, const gtsam::Symbol &symbol_2,
                             const T &value, const gtsam::SharedNoiseModel &model);
 
+    std::pair<std::vector<gtsam::Pose3>, std::vector<gtsam::Point2>> get_obs_for_lmk(const gtsam::Symbol &lmk_symbol);
     void add_landmarks(const std::vector<Landmark> &landmarks);
     void add_landmark(const Landmark &landmark);
 
@@ -123,7 +124,7 @@ void Backend::add_between_factor<gtsam::Rot3>(const gtsam::Symbol &, const gtsam
 
 class StructureFromMotion {
    public:
-    static const Eigen::Affine3d T_symlake_boat_cam;
+    static const Eigen::Isometry3d T_symlake_boat_cam;    
     static const gtsam::Pose3 default_initial_pose;
     /**
      * @param D is vector (5x1) of the distortion coefficients (k1, k2, p1, p2, k3)

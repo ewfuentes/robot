@@ -121,13 +121,27 @@ TEST(SFM_TEST, frontend_pipeline_sweep) {
     }
 }
 
-TEST(SFM_TEST, sfm_snippet_two) {
+// TEST(SFM_TEST, boat_and_cam_frames) {    
+//     // world is boat frame. +x is boat "forward", +y is the right side, +z is "down" into the water/hull
+//     Eigen::Isometry3d T_boat_cam = StructureFromMotion::T_symlake_boat_cam;
+//     T_boat_cam.translation() = Eigen::Vector3d::Ones();
+//     geometry::viz_scene(std::vector<Eigen::Isometry3d>{T_boat_cam}, std::vector<Eigen::Vector3d>());
+// }
+
+TEST(SFM_TEST, sfm_snippet_small) {
+    const std::vector<int> indices {120, 190}; // 0-199
     DataParser data_parser = SymphonyLakeDatasetTestHelper::get_test_parser();
     const symphony_lake_dataset::SurveyVector &survey_vector = data_parser.get_surveys();
     const symphony_lake_dataset::Survey &survey = survey_vector.get(0);
-    const symphony_lake_dataset::ImagePoint image_point = survey.getImagePoint(180);
-    const std::vector<cv::Mat> images = {survey.loadImageByImageIndex(180),
-                                         survey.loadImageByImageIndex(185)};
+    const symphony_lake_dataset::ImagePoint image_point = survey.getImagePoint(indices.front());
+    std::vector<cv::Mat> images;
+
+    for (const int &idx : indices) {
+        images.push_back(survey.loadImageByImageIndex(idx));
+    }
+    
+    // = {survey.loadImageByImageIndex(idx_1),
+    //                                      survey.loadImageByImageIndex(idx_2)};
 
     // const size_t img_width = image_point.width, img_height = image_point.height;
     const double fx = image_point.fx, fy = image_point.fy;
@@ -165,55 +179,95 @@ TEST(SFM_TEST, sfm_snippet_two) {
     }
     // std::cout << poses_world.front() << std::endl;
 
-    robot::geometry::viz_scene(poses_world, points_world, true, true);
+    geometry::viz_scene(poses_world, points_world, true, false);
 
-    // sfm.solve_structure();
+    sfm.solve_structure();
+
+    const gtsam::Values result_values = sfm.get_structure_result();
+    std::vector<Eigen::Isometry3d> final_poses;
+    std::vector<Eigen::Vector3d> final_lmks;
+    for (size_t i = 0; i < images.size(); i++) {
+        final_poses.emplace_back(result_values.at<gtsam::Pose3>(gtsam::Symbol(sfm.get_backend().pose_symbol_char, i)).matrix());
+    }
+    for (int i = 0; i < static_cast<int>(sfm.get_matches().size()); i++) {
+        // NOTE: this j for lmk_symbol is wrong.
+        for (int j = 0; j < static_cast<int>(sfm.get_matches()[i].size()); j++) {
+            gtsam::Symbol lmk_symbol = gtsam::Symbol(Backend::landmark_symbol_char, j);
+            if (initial_values.exists(lmk_symbol)) {
+                final_lmks.emplace_back(initial_values.at<gtsam::Point3>(lmk_symbol));
+            } else {
+                std::cout << "lmk symbol doesn't exist in initial_values!" << std::endl;
+            }
+        }
+    }
+    geometry::viz_scene(final_poses, final_lmks, true, false);
 }
 
-// TEST(SFM_TEST, structure_from_motion) {
-//     const size_t img_width = 640;
-//     const size_t img_height = 480;
-//     const double fx = 500.0;
-//     const double fy = fx;
-//     const double cx = img_width / 2.0;
-//     const double cy = img_height / 2.0;
-
-//     gtsam::Cal3_S2 K(fx, fy, 0, cx, cy);
-
-//     StructureFromMotion sfm(Frontend::ExtractorType::SIFT, K);
+// TEST(SFM_TEST, sfm_building) {
+//     const int idx_start = 50, idx_end = 120, idx_skip = 2;
 //     DataParser data_parser = SymphonyLakeDatasetTestHelper::get_test_parser();
-//     // DataParser::Generator<cv::Mat> generator = data_parser.create_img_generator();
 //     const symphony_lake_dataset::SurveyVector &survey_vector = data_parser.get_surveys();
+//     const symphony_lake_dataset::Survey &survey = survey_vector.get(0);
+//     const symphony_lake_dataset::ImagePoint image_point = survey.getImagePoint(idx_start);
 
-//     cv::Mat image;
-//     for (int i = 0; i < static_cast<int>(survey_vector.getNumSurveys()); i++) {
-//         const symphony_lake_dataset::Survey &survey = survey_vector.get(i);
-//         // for (int j = 0; j < static_cast<int>(survey.getNumImages()); j++) {
-//         //     image = survey.loadImageByImageIndex(j);
-//             // sfm.add_image(image);
-//         // }
-//         for (int j = 0; j < 2; j++) {
-//             image = survey.loadImageByImageIndex(j);
-//             sfm.add_image(image);
+//     // const size_t img_width = image_point.width, img_height = image_point.height;
+//     const double fx = image_point.fx, fy = image_point.fy;
+//     const double cx = image_point.cx, cy = image_point.cy;
+//     gtsam::Cal3_S2 K(fx, fy, 0, cx, cy);
+//     Eigen::Matrix<double, 5, 1> D =
+//         (Eigen::Matrix<double, 5, 1>() << SymphonyLakeCamParams::k1, SymphonyLakeCamParams::k2,
+//             SymphonyLakeCamParams::p1, SymphonyLakeCamParams::p2, SymphonyLakeCamParams::k3)
+//             .finished();
+
+//     StructureFromMotion sfm(Frontend::ExtractorType::SIFT, K, D);
+//     cv::Mat image;    
+//     for (int j = idx_start; j < idx_end; j+=idx_skip) {
+//         image = survey.loadImageByImageIndex(j);
+//         sfm.add_image(image);
+//     }
+
+//     const gtsam::Values initial_values = sfm.get_backend().get_current_initial_values();
+//     std::vector<Eigen::Isometry3d> poses_world;
+//     for (size_t i = 0; i < (idx_end - idx_start)/idx_skip; i++) {
+//         gtsam::Pose3 pose =
+//             initial_values.at<gtsam::Pose3>(gtsam::Symbol(sfm.get_backend().pose_symbol_char, i));
+//         poses_world.emplace_back(pose.matrix());
+//     }
+//     std::vector<Eigen::Vector3d> points_world;
+//     for (int i = 0; i < static_cast<int>(sfm.get_matches().size()); i++) {
+//         // NOTE: this j for lmk_symbol is wrong.
+//         for (int j = 0; j < static_cast<int>(sfm.get_matches()[i].size()); j++) {
+//             gtsam::Symbol lmk_symbol = gtsam::Symbol(Backend::landmark_symbol_char, j);
+//             if (initial_values.exists(lmk_symbol)) {
+//                 points_world.emplace_back(initial_values.at<gtsam::Point3>(lmk_symbol));
+//             } else {
+//                 std::cout << "lmk symbol doesn't exist in initial_values!" << std::endl;
+//             }
 //         }
 //     }
-//     // DataParser::Generator<cv::Mat>::iterator img_itr = generator.begin();
-//     // while (img_itr != generator.end()) {
-//     //     if ((*img_itr).empty()) {
-//     //         continue;
-//     //     }
-//     //     std::cout << "ooga booga" << std::endl;
-//     //     std::cout << "image is empty: " << (*img_itr).empty() << std::endl;
-//     //     cv::imshow("ooga", *img_itr);
-//     //     cv::waitKey(1000);
-//     //     sfm.add_image(*img_itr);
-//     //     ++img_itr;
-//     // }
-//     sfm.solve_structure();
-//     // gtsam::Values output = sfm.get_structure_result();
-//     // output.print("result values: ");
-//     // for (size_t i = 0; i < sfm.get_num_images_added(); i++) {
+//     // std::cout << poses_world.front() << std::endl;
 
-//     // }
+//     geometry::viz_scene(poses_world, points_world, true, false);
+
+//     sfm.solve_structure();
+
+//     const gtsam::Values result_values = sfm.get_structure_result();
+//     std::vector<Eigen::Isometry3d> final_poses;
+//     std::vector<Eigen::Vector3d> final_lmks;
+//     for (size_t i = 0; i < (idx_end - idx_start)/idx_skip; i++) {
+//         final_poses.emplace_back(result_values.at<gtsam::Pose3>(gtsam::Symbol(sfm.get_backend().pose_symbol_char, i)).matrix());
+//     }
+//     for (int i = 0; i < static_cast<int>(sfm.get_matches().size()); i++) {
+//         // NOTE: this j for lmk_symbol is wrong.
+//         for (int j = 0; j < static_cast<int>(sfm.get_matches()[i].size()); j++) {
+//             gtsam::Symbol lmk_symbol = gtsam::Symbol(Backend::landmark_symbol_char, j);
+//             if (initial_values.exists(lmk_symbol)) {
+//                 final_lmks.emplace_back(initial_values.at<gtsam::Point3>(lmk_symbol));
+//             } else {
+//                 std::cout << "lmk symbol doesn't exist in initial_values!" << std::endl;
+//             }
+//         }
+//     }
+//     geometry::viz_scene(final_poses, final_lmks, true, false);
 // }
 }  // namespace robot::experimental::learn_descriptors
