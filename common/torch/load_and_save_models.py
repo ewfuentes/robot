@@ -76,7 +76,7 @@ def deep_equal(a, b, rtol=1e-5, atol=1e-8, print_reason: bool = False):
     if isinstance(a, dict):
         if set(a.keys()) != set(b.keys()):
             if print_reason:
-                print("Keys do not match in a dict")
+                print("Keys do not match in a dict", a.keys(), b.keys())
             return False
         out = all(deep_equal(a[k], b[k], rtol=rtol, atol=atol) for k in a)
         if not out and print_reason:
@@ -224,5 +224,5 @@ def load_model(
         with torch.no_grad():
             new_output = model(*input_output['input'])
         # observed 1e-6 differences when comparing cpu tensors to gpu tensors
-        assert deep_equal(new_output, input_output['output'], atol=1e-5, print_reason=False)
+        assert deep_equal(new_output, input_output['output'], atol=1e-5, print_reason=True)
     return model
