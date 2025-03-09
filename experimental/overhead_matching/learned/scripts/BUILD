@@ -1,6 +1,25 @@
 
 load("@pip//:requirements.bzl", "requirement")
 
+py_library(
+    name="learning_utils",
+    srcs=["learning_utils.py"],
+    visibility=["//common/python:__subpackages__"],
+    deps=[
+        requirement("pandas"),
+        requirement("tqdm"),
+        requirement("numpy"),
+        requirement("matplotlib"),
+        requirement("seaborn"),
+        requirement("PyGObject"),
+        "//common/torch:load_torch_deps",
+        "//common/torch:load_and_save_models",
+        "//experimental/overhead_matching/learned/data:clevr_dataset",
+        "//experimental/overhead_matching/learned/model:clevr_tokenizer",
+        "//experimental/overhead_matching/learned/model:clevr_transformer",
+    ]
+)
+
 py_binary(
   name="train_clevr_transformer",
   srcs=["train_clevr_transformer.py"],
@@ -9,6 +28,7 @@ py_binary(
     requirement("numpy"),
     requirement("torchvision"),
     requirement("tensorboard"),
+    ":learning_utils",
     "//common/torch:load_torch_deps",
     "//common/torch:load_and_save_models",
     "//experimental/overhead_matching/learned/data:clevr_dataset",
@@ -17,11 +37,13 @@ py_binary(
   ]
 )
 
+
 py_binary(
   name="evaluate_clevr_transformer",
   srcs=["evaluate_clevr_transformer.py"],
   deps=[
     ":train_clevr_transformer",
+    ":learning_utils",
     requirement("pandas"),
     requirement("numpy"),
     requirement("matplotlib"),

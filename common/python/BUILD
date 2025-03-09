@@ -20,6 +20,7 @@ py_binary(
     "//experimental/overhead_matching/learned/model:clevr_tokenizer",
     "//experimental/overhead_matching/learned/data:clevr_dataset",
     "//experimental/overhead_matching/learned/scripts:train_clevr_transformer",
+    "//experimental/overhead_matching/learned/scripts:learning_utils",
   ]
 )
 
