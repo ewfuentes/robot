@@ -75,9 +75,9 @@ def main(dataset_path: Path, output_path: Path, load_model_path: Path | None, tr
                                          overhead_transform=IMAGE_NORMALIZATION,
                                          ego_transform=IMAGE_NORMALIZATION)
 
-    vocabulary = dataset.vocabulary()
     train_dataset, val_dataset = torch.utils.data.random_split(dataset, [0.8, 0.2], generator=torch.Generator().manual_seed(1023))
     train_performance_subset = torch.utils.data.Subset(train_dataset, torch.arange(0, len(train_dataset) // 10))
+
     loader = clevr_dataset.get_dataloader(train_dataset, batch_size=128, num_workers=12, persistent_workers=True)
     val_loader = clevr_dataset.get_dataloader(val_dataset, batch_size=128, num_workers=12)
     train_performance_subset_loader = clevr_dataset.get_dataloader(train_performance_subset, batch_size=128, num_workers=12)
@@ -87,8 +87,9 @@ def main(dataset_path: Path, output_path: Path, load_model_path: Path | None, tr
     best_model_epoch = None
 
     if load_model_path is not None:
-        model = load_model(load_model_path, skip_constient_output_check=True)
+        model = load_model(load_model_path, skip_constient_output_check=False)
     else:
+        vocabulary = dataset.vocabulary()
         TOKEN_SIZE = 128
         OUTPUT_DIM = 4
         model_config = clevr_transformer.ClevrTransformerConfig(
@@ -149,7 +150,6 @@ def main(dataset_path: Path, output_path: Path, load_model_path: Path | None, tr
 
             model.eval()
             eval_rng = np.random.default_rng(2048)
-
 
             val_df = lu.gather_clevr_model_performance(model, val_loader, eval_rng, disable_tqdm=True)
 
