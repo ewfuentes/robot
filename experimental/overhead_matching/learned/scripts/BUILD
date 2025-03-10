@@ -35,6 +35,14 @@ py_binary(
   ]
 )
 
+py_binary(
+  name="tmp_diff",
+  srcs=["tmp_diff.py"],
+  deps=[
+    "//toolchain:git_status",
+  ]
+)
+
 py_test(
   name="sdprlayers_test",
   srcs=["sdprlayers_test.py"],

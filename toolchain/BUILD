@@ -2,6 +2,7 @@
 load(":clang_toolchain_config.bzl", "clang_toolchain_config")
 load(":gcc_toolchain_config.bzl", "gcc_toolchain_config")
 load(":gcc_aarch64_toolchain_config.bzl", "gcc_aarch64_toolchain_config")
+load(":git_info.bzl", "git_info")
 
 package(default_visibility = ["//visibility:public"], features=["warning_compile_flags"])
 
@@ -258,3 +259,15 @@ platform(
   ]
 )
 
+
+git_info(
+    name = "git_info",
+    visibility = ["//visibility:public"],
+    # stamp=1,
+)
+
+py_library(
+    name = "git_status",
+    srcs = [":git_info"],
+    visibility = ["//visibility:public"],
+)

@@ -13,3 +13,4 @@ build:python-3.10 --@rules_python//python/config_settings:python_version=3.10
 build --noincompatible_sandbox_hermetic_tmp 
 # https://github.com/bazelbuild/rules_python/issues/1675
 build --noenable_bzlmod
+build --workspace_status_command=toolchain/workspace_status.sh
