@@ -15,6 +15,7 @@ def _():
     import numpy as np
     import altair as alt
     import pandas as pd
+    import seaborn as sns
     from pprint import pprint, pformat
     from marimo._plugins.ui._impl.altair_chart import ChartSelection
     return (
@@ -29,6 +30,7 @@ def _():
         pformat,
         pprint,
         reduce,
+        sns,
         torch,
     )
 
@@ -37,133 +39,47 @@ def _():
 def _():
     from experimental.overhead_matching.learned.model import clevr_transformer, clevr_tokenizer
     from experimental.overhead_matching.learned.data import clevr_dataset
-    from experimental.overhead_matching.learned.scripts import train_clevr_transformer as tct
+    from experimental.overhead_matching.learned.scripts import (train_clevr_transformer as tct, learning_utils as lu)
     from common.torch.load_and_save_models import load_model
-    return clevr_dataset, clevr_tokenizer, clevr_transformer, load_model, tct
+    return (
+        clevr_dataset,
+        clevr_tokenizer,
+        clevr_transformer,
+        load_model,
+        lu,
+        tct,
+    )
 
 
 @app.cell
 def _(Path):
-    model_path = Path('/tmp/ego_vec_overhead_16patch/epoch_000220/').expanduser()
-    training_dataset_path = Path('~/scratch/clevr/overhead_image_ego_vectorized').expanduser()
+    model_path = Path('~/scratch/clevr/clevr_models/use_patch_size_16/best').expanduser()
+    # model_path = Path('~/scratch/clevr/clevr_models/use_conv_stem_model/best').expanduser()
+    # model_path = Path('~/scratch/clevr/clevr_models/gaussian_output_image_overhead_ego_vec_identical_dataset/best').expanduser()
     eval_dataset_path = Path('~/scratch/clevr/overhead_image_ego_vectorized_val/').expanduser()
-    return eval_dataset_path, model_path, training_dataset_path
+    # eval_dataset_path = Path('~/scratch/clevr/more_than_four_objects_val_all_objects_identical/').expanduser()
+    return eval_dataset_path, model_path
 
 
 @app.cell
-def _(clevr_dataset, eval_dataset_path):
-    eval_dataset = clevr_dataset.ClevrDataset(eval_dataset_path, load_overhead=True)
-    loader = clevr_dataset.get_dataloader(eval_dataset, batch_size=64)
-    return eval_dataset, loader
+def _(clevr_dataset, eval_dataset_path, load_model, model_path, tct):
+    eval_dataset = clevr_dataset.ClevrDataset(eval_dataset_path, load_overhead=True, overhead_transform=tct.IMAGE_NORMALIZATION)
+    loader = clevr_dataset.get_dataloader(eval_dataset, batch_size=128)
+    model = load_model(model_path, skip_constient_output_check=True).cuda().eval()
+    return eval_dataset, loader, model
 
 
 @app.cell
-def _(load_model, model_path):
-    model = load_model(model_path)
-    model = model.cuda()
-    model = model.eval()
-    return (model,)
+def _(eval_dataset, loader, lu, model, np):
+    df = lu.gather_clevr_model_performance(model, loader, np.random.default_rng(123))
+    df['image_filename'] = eval_dataset.overhead_file_paths
+    return (df,)
 
 
 @app.cell
-def _(clevr_transformer, loader, model, np, tct, torch):
-    # Collect the predictions
-    rng = np.random.default_rng(1024)
-    ego_from_worlds = []
-    results = []
-    with torch.no_grad():
-        for i, batch in enumerate(loader):
-            ego_from_worlds.append(tct.sample_ego_from_world(rng, len(batch)))
-            ego_scene_descriptions = tct.project_scene_description_to_ego(
-                batch.scene_description["objects"], ego_from_worlds[-1])
-            inputs = clevr_transformer.SceneDescription(
-                overhead_image=None,
-                ego_image=None,
-                ego_scene_description=ego_scene_descriptions,
-                overhead_scene_description=None
-            )
-            query_tokens = None
-            query_mask = None
-            results.append(model(inputs, query_tokens, query_mask))
-
-    results = {
-        k: torch.cat([x[k] for x in results]).cpu().numpy()
-        for k in results[0]
-    }
-    ego_from_worlds = np.concatenate(ego_from_worlds)
-    return (
-        batch,
-        ego_from_worlds,
-        ego_scene_descriptions,
-        i,
-        inputs,
-        query_mask,
-        query_tokens,
-        results,
-        rng,
-    )
-
-
-@app.cell
-def _(ego_from_worlds, eval_dataset, np, pd, results):
-    pose_source = 'prediction'
-
-    # compute the errors
-    pred_x = results[pose_source][:, 0]
-    pred_y = results[pose_source][:, 1]
-    pred_cos = results[pose_source][:, 2]
-    pred_sin = results[pose_source][:, 3]
-    pred_theta = np.arctan2(pred_sin, pred_cos)
-
-    gt_x = ego_from_worlds[:, 0, 2]
-    gt_y = ego_from_worlds[:, 1, 2]
-    gt_cos = ego_from_worlds[:, 0, 0]
-    gt_sin = ego_from_worlds[:, 1, 0]
-    gt_theta = np.arctan2(gt_sin, gt_cos)
-
-    dtheta = pred_theta - gt_theta
-    dtheta[dtheta > np.pi] -= 2 * np.pi
-    dtheta[dtheta < -np.pi] += 2 * np.pi
-
-    error = results[pose_source][:, :2] - ego_from_worlds[:, :2, 2]
-    error = np.sqrt(np.sum(error * error, axis=1)).mean()
-    print(error)
-
-    df = pd.DataFrame({
-        'pred_x': pred_x,
-        'pred_y': pred_y,
-        'pred_cos': pred_cos,
-        'pred_sin': pred_sin,
-        'pred_theta': pred_theta,
-        'gt_x': gt_x,
-        'gt_y': gt_y,
-        'gt_cos': gt_cos,
-        'gt_sin': gt_sin,
-        'gt_theta': gt_theta,
-        'dx': pred_x - gt_x,
-        'dy': pred_y - gt_y,
-        'dtheta': dtheta,
-        'scene': [x.scene_description["objects"] for x in eval_dataset],
-        'num_objects': [len(x.scene_description["objects"]) for x in eval_dataset],
-        'image_filename': eval_dataset.overhead_file_paths,
-
-    })
-    return (
-        df,
-        dtheta,
-        error,
-        gt_cos,
-        gt_sin,
-        gt_theta,
-        gt_x,
-        gt_y,
-        pose_source,
-        pred_cos,
-        pred_sin,
-        pred_theta,
-        pred_x,
-        pred_y,
-    )
+def _(df):
+    df['mse'].mean()
+    return
 
 
 @app.cell
@@ -199,7 +115,15 @@ def _(angle_chart, make_views):
 
 
 @app.cell
-def _():
+def _(df):
+    df.head()
+    return
+
+
+@app.cell
+def _(df, sns):
+    ## error vs number of objects
+    sns.boxplot(df, x='num_objects', y='mse')
     return
 
 

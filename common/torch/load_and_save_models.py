@@ -218,11 +218,12 @@ def load_model(
     model.eval()
 
     # verify model
-    if not skip_constient_output_check:
-        input_output = torch.load(load_path / 'input_output.tar',
-                                  map_location=device, weights_only=False)
-        with torch.no_grad():
-            new_output = model(*input_output['input'])
+    input_output = torch.load(load_path / 'input_output.tar',
+                                map_location=device, weights_only=False)
+    with torch.no_grad():
+        new_output = model(*input_output['input'])
         # observed 1e-6 differences when comparing cpu tensors to gpu tensors
-        assert deep_equal(new_output, input_output['output'], atol=1e-5, print_reason=True)
+    equal_in_out = deep_equal(new_output, input_output['output'], atol=1e-5, print_reason=True)
+    if not skip_constient_output_check:
+        assert equal_in_out
     return model
