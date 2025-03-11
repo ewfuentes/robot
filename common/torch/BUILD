@@ -17,6 +17,7 @@ py_library(
   visibility=["//visibility:public"],
   deps=[
     ":load_torch_deps",
+    "//toolchain:git_info",
     requirement("numpy"),
   ]
 )

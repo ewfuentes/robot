@@ -6,8 +6,6 @@ import common.torch.load_torch_deps
 import shutil
 from common.torch.load_and_save_models import save_model, load_model
 import torch
-import torchvision as tv
-import torchvision.transforms.v2 as tf
 import numpy as np
 import copy
 from torch.utils.tensorboard import SummaryWriter
@@ -16,12 +14,6 @@ from experimental.overhead_matching.learned.data import clevr_dataset
 from experimental.overhead_matching.learned.model import (
     clevr_tokenizer,
     clevr_transformer,
-)
-
-IMAGE_NORMALIZATION = torch.nn.Sequential(
-    tf.ToImage(),
-    tf.ToDtype(torch.float32, scale=True),
-    tf.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 )
 
 
@@ -129,8 +121,7 @@ def main(dataset_path: Path, output_path: Path, load_model_path: Path | None, tr
     dataset = clevr_dataset.ClevrDataset(dataset_path,
                                          load_overhead=train_config['overhead_image'],
                                          load_ego_images=train_config['ego_image'],
-                                         overhead_transform=IMAGE_NORMALIZATION,
-                                         ego_transform=IMAGE_NORMALIZATION)
+                                         )
     vocabulary = dataset.vocabulary()
     train_dataset, val_dataset = torch.utils.data.random_split(dataset, [0.8, 0.2], generator=torch.Generator().manual_seed(1023))
     loader = clevr_dataset.get_dataloader(train_dataset, batch_size=64, num_workers=12)

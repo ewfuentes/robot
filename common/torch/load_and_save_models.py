@@ -2,10 +2,10 @@ import json
 import copy
 from pathlib import Path
 from datetime import datetime
-import subprocess
 import common.torch.load_torch_deps
 import torch
-
+from toolchain import git_info
+import base64
 
 from dataclasses import is_dataclass
 from collections import namedtuple
@@ -16,28 +16,15 @@ import numpy as np
 
 def get_git_commit_hash():
     """Returns None if fails to get commit hash (e.g. not in a git repo)"""
-    try:
-        commit_hash = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"],
-            stderr=subprocess.STDOUT
-        ).decode("utf-8").strip()
-    except subprocess.CalledProcessError as e:
-        commit_hash = None
-        print("Error retrieving commit hash:", e.output.decode("utf-8"))
-    return commit_hash
+    return git_info.STABLE_GIT_COMMIT
 
 
 def get_git_diff():
-    try:
-        diff = subprocess.check_output(
-            ["git", "diff"],
-            stderr=subprocess.STDOUT
-        ).decode("utf-8").strip()
-    except subprocess.CalledProcessError as e:
-        diff = None
-        print("Error retrieving git diff:")
-        # print("Error retrieving git diff:", e.output.decode("utf-8"))
-    return diff
+    """Returns None if fails to get diff (either not in repo or no active changes)"""
+    if hasattr(git_info, "STABLE_GIT_DIFF"):
+        return base64.b64decode(git_info.STABLE_GIT_DIFF).decode('utf-8')
+    else:
+        return None
 
 
 def deep_equal(a, b, rtol=1e-5, atol=1e-8, print_reason: bool = False):
