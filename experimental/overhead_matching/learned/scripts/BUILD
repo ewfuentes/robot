@@ -39,7 +39,7 @@ py_binary(
   name="tmp_diff",
   srcs=["tmp_diff.py"],
   deps=[
-    "//toolchain:git_status",
+    "//toolchain:git_info",
   ]
 )
 

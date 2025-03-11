@@ -1,7 +1,6 @@
 from toolchain import git_info
-
+import base64
 # Usage example:
-print(git_info.STABLE_GIT_COMMIT)
 
-# import sys
-# print(sys.argv)
+with open("/tmp/diff.txt", 'w') as f:
+    f.write(base64.b64decode(git_info.STABLE_GIT_DIFF).decode())

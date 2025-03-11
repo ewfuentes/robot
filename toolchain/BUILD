@@ -261,13 +261,12 @@ platform(
 
 
 git_info(
-    name = "git_info",
+    name = "git_info_gen",
     visibility = ["//visibility:public"],
-    # stamp=1,
 )
 
 py_library(
-    name = "git_status",
-    srcs = [":git_info"],
+    name = "git_info",
+    srcs = [":git_info_gen"],
     visibility = ["//visibility:public"],
 )
