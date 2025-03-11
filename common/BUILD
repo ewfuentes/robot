@@ -75,6 +75,7 @@ cc_py_library(
     requirement("PyGObject"),
   ],
   deps = [
+    "@eigen",
     "@pybind11",
     "@rules_python//python/cc:current_py_cc_headers",
     "@rules_python//python/cc:current_py_cc_libs",

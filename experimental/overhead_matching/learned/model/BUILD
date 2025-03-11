@@ -92,7 +92,10 @@ cc_test(
   name="pose_optimizer_drake_test",
   srcs=["pose_optimizer_drake_test.cc"],
   deps=[
+    "//common/liegroups:se2",
     "//common:drake",
+    "//common:matplotlib",
     "@com_google_googletest//:gtest_main",
+    "@fmt",
   ]
 )

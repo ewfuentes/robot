@@ -9,7 +9,10 @@ load("@python//3.8:defs.bzl", py_test_3_8 = "py_test")
 py_binary(
   name = "marimo_server",
   srcs = ["marimo_server.py"],
-  data = ["//:.marimo.toml"],
+  data = [
+    "//:.marimo.toml",
+    "//common/liegroups:se2_python.so",
+  ],
   deps = [
     requirement("marimo"),
     requirement("numpy"),

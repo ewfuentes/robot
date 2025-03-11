@@ -241,7 +241,7 @@ class PoseOptimizerLayer(torch.nn.Module):
         #         "eps": 1e-8,
         #         "verbose": True
         # }
-        plt.figure()
+        plt.figure(figsize=(12, 6))
         X, Y, T = np.meshgrid(
                 np.linspace(-3, 3, 100), np.linspace(-3, 3, 100), np.linspace(-np.pi, np.pi, 100), indexing='ij')
         print(f'{X.shape=}, {Y.shape=}, {T.shape=}')
@@ -261,24 +261,31 @@ class PoseOptimizerLayer(torch.nn.Module):
 
         print(f'{R.shape=}')
         plt.subplot(131)
-        plt.contourf(X[..., 50], Y[..., 50], np.log10(R[..., 50]))
+        plt.contourf(X[..., 50], Y[..., 50], np.log10(R[..., 50]), levels=np.arange(-4, 2.5, 0.8))
         plt.xlabel('X')
         plt.ylabel('Y')
         plt.title(f'{T[0, 0, 50]=}')
+        plt.xlim(-3, 3)
+        plt.ylim(-3, 3)
         plt.colorbar()
+        plt.clim(-4.0, 2.4)
         plt.axis('equal')
         plt.subplot(132)
-        plt.contourf(X[:, 50, :], T[:, 50, :], np.log10(R[:, 50, :]))
+        plt.contourf(X[:, 50, :], T[:, 50, :], np.log10(R[:, 50, :]), levels=np.arange(-4, 2.5, 0.8))
         plt.xlabel('X')
         plt.ylabel('T')
         plt.title(f'{Y[0, 50, 0]=}')
         plt.colorbar()
+        plt.clim(-4.0, 2.4)
         plt.subplot(133)
-        plt.contourf(T[82, ...], Y[82, ...], np.log10(R[82, ...]))
+        plt.contourf(T[82, ...], Y[82, ...], np.log10(R[82, ...]), levels=np.arange(-4, 2.5, 0.8))
         plt.xlabel('T')
         plt.ylabel('Y')
         plt.title(f'{X[82, 0, 0]=}')
         plt.colorbar()
+        plt.clim(-4.0, 2.4)
+        plt.tight_layout()
+        plt.savefig('/tmp/plot.png')
         plt.show()
         solver_args = {
                 "solve_method": "Clarabel",

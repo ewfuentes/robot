@@ -85,17 +85,23 @@ class PoseOptimizerTest(unittest.TestCase):
 
         obj_in_world = torch.tensor([[
             [0.0, -3.0],  # A in world
-            [0.0, 4.0]]   # B in world
+            [0.0, 4.0],   # B in world
+            [-2.0, -4.0],
+            ]   # C in world
         ])
 
         bearings_in_robot = torch.tensor([
             [math.atan2(obj_in_world[0, 0, 1], 2.0),  # A in robot
-             math.atan2(obj_in_world[0, 1, 1], 2.0)]  # B in robot
+             math.atan2(obj_in_world[0, 1, 1], 2.0),
+             math.atan2(obj_in_world[0, 2, 1], 0.0),
+             ]  # B in robot
         ])
 
         association = torch.tensor([[
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0]]
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0]
+            ]
         ])
 
         pose_optimizer = po.PoseOptimizerLayer(po.OptimizationType.POSE_ESTIMATION)
