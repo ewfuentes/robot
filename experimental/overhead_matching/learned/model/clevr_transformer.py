@@ -7,6 +7,8 @@ from dataclasses import dataclass
 
 from experimental.overhead_matching.learned.model.pose_optimizer import PoseOptimizerLayer
 from experimental.overhead_matching.learned.model import clevr_tokenizer
+import torchvision.transforms.v2 as tf
+
 
 
 class InferenceMethod(enum.Enum):
@@ -76,6 +78,12 @@ class ClevrTransformer(torch.nn.Module):
         )
         self._overhead_marker = torch.nn.Parameter(torch.randn(config.token_dim))
         self._ego_marker = torch.nn.Parameter(torch.randn(config.token_dim))
+
+        self.image_preprocessing_transform = torch.nn.Sequential(
+            tf.ToImage(),
+            tf.ToDtype(torch.float32, scale=True),
+            tf.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        )
 
         if config.ego_image_tokenizer_config is not None:
             self._ego_image_tokenizer = clevr_tokenizer.ImageToTokens(
@@ -213,7 +221,8 @@ class ClevrTransformer(torch.nn.Module):
             overhead_tokens.append(overhead_scene_tokens)
             overhead_masks.append(overhead_scene_mask)
         if input.overhead_image is not None:
-            overhead_image_tokens = self._overhead_image_tokenizer(input.overhead_image)
+            overhead_image = self.image_preprocessing_transform(input.overhead_image)
+            overhead_image_tokens = self._overhead_image_tokenizer(overhead_image)
             overhead_image_tokens = overhead_image_tokens + self._overhead_marker
             overhead_tokens.append(overhead_image_tokens)
             overhead_masks.append(torch.zeros(
@@ -237,7 +246,8 @@ class ClevrTransformer(torch.nn.Module):
             ego_tokens.append(ego_scene_tokens)
             ego_masks.append(ego_scene_mask)
         if input.ego_image is not None:
-            ego_image_tokens = self._ego_image_tokenizer(input.ego_image)
+            ego_image = self.image_preprocessing_transform(input.ego_image)
+            ego_image_tokens = self._ego_image_tokenizer(ego_image)
             ego_image_tokens = ego_image_tokens + self._ego_marker
             ego_tokens.append(ego_image_tokens)
             ego_masks.append(torch.zeros(
