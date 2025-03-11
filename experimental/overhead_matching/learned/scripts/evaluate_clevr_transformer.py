@@ -27,7 +27,7 @@ from experimental.overhead_matching.learned.scripts import (
 
 def main(model_path: Path, dataset_path: Path):
 
-    dataset = clevr_dataset.ClevrDataset(dataset_path, load_overhead=True, overhead_transform=tct.IMAGE_NORMALIZATION, ego_transform=tct.IMAGE_NORMALIZATION)
+    dataset = clevr_dataset.ClevrDataset(dataset_path, load_overhead=True)
     loader = clevr_dataset.get_dataloader(dataset, batch_size=128, num_workers=12)
 
     # _, dataset = torch.utils.data.random_split(dataset, [0.8, 0.2], generator=torch.Generator().manual_seed(1023))

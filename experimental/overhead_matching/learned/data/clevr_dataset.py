@@ -5,6 +5,7 @@ from torchvision.io import read_image, ImageReadMode
 
 from pathlib import Path
 import json
+import numpy as np
 from collections import defaultdict
 
 from typing import Callable, NamedTuple
@@ -18,6 +19,23 @@ DEFAULT_CLEVR_EGO_TRANSFORM = torch.nn.Sequential(
     tf.ToDtype(torch.float32, scale=True),
 )
 
+CLEVR_CAMERA_INTRINSICS = np.asarray([(350.0000,   0.0000, 160.0000),
+                                      (0.0000, 350.0000, 120.0000),
+                                      (0.0000,   0.0000,  1.0000)])
+CLEVR_OVERHEAD_Z_METERS = 14
+
+
+def project_overhead_pixels_to_ground_plane(overhead_pixels_uv: np.ndarray):
+    ## overhead_pixels_uv is shape 2 x N
+    assert overhead_pixels_uv.shape[0] == 2 and len(overhead_pixels_uv.shape) == 2
+    n_points = overhead_pixels_uv.shape[1]
+    overhead_pixels_uv = np.concatenate([overhead_pixels_uv, np.ones((1, n_points))], axis=0)
+    points_in_world = np.linalg.inv(
+        CLEVR_CAMERA_INTRINSICS) @ overhead_pixels_uv * CLEVR_OVERHEAD_Z_METERS
+    points_in_world[1, :] *= -1  # flip Y value to match reference frame
+    points_in_world[2, :] = 0  # zero out z values
+    return points_in_world
+
 
 class CleverDatasetItem(NamedTuple):
     scene_description: dict | list | None = None
@@ -30,19 +48,23 @@ class CleverDatasetItem(NamedTuple):
     def __len__(self):
         length = 0
         if self.scene_description is not None:
-            if isinstance(self.scene_description['objects'][0], list):  # it is a list of lists of objects
+            # it is a list of lists of objects
+            if isinstance(self.scene_description['objects'][0], list):
                 length = len(self.scene_description['objects'])
-            elif isinstance(self.scene_description['objects'][0], dict): # it is a list of objects, we have one scene
+            # it is a list of objects, we have one scene
+            elif isinstance(self.scene_description['objects'][0], dict):
                 length = 1
             else:
-                raise RuntimeError(f"Got a scene description with an unrecognized type: {type(self.scene_description)}")
+                raise RuntimeError(
+                    f"Got a scene description with an unrecognized type: {type(self.scene_description)}")
         if self.overhead_image is not None:
             if len(self.overhead_image.shape) == 4:
                 overhead_length = self.overhead_image.shape[0]
             elif len(self.overhead_image.shape) == 3:
                 overhead_length = 1
             else:
-                raise RuntimeError(f"Got unexpected shape for overhead image: {self.overhead_image.shape}")
+                raise RuntimeError(
+                    f"Got unexpected shape for overhead image: {self.overhead_image.shape}")
 
             if length != 0:
                 assert length == overhead_length, "Got different lengths for overhead and scene length"
@@ -61,6 +83,7 @@ class CleverDatasetItem(NamedTuple):
             else:
                 length = ego_length
         return length
+
 
 def clevr_dataset_collator(objs: list[CleverDatasetItem]):
     out = {}
@@ -109,7 +132,7 @@ class ClevrDataset(torch.utils.data.Dataset):
         dataset_path: Path,
         transform: None | Callable[[dict], dict] = None,
         load_overhead: bool = False,
-        overhead_transform: None | tf.Transform = None,  
+        overhead_transform: None | tf.Transform = None,
         load_ego_images: bool = False,
         ego_transform: None | tf.Transform = None
     ):
@@ -149,7 +172,7 @@ class ClevrDataset(torch.utils.data.Dataset):
             if self.overhead_transform:
                 overhead_image = self.overhead_transform(overhead_image)
             output['overhead_image'] = overhead_image
-        
+
         if self.load_ego_images:
             ego_image = read_image(self.ego_filepaths[idx], mode=ImageReadMode.RGB)
             if self.ego_transform:

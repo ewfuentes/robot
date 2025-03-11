@@ -2,6 +2,7 @@ import unittest
 
 import common.torch.load_torch_deps
 import torch
+import numpy as np
 from experimental.overhead_matching.learned.data import clevr_dataset
 from pathlib import Path
 
@@ -82,6 +83,24 @@ class ClevrDatasetTest(unittest.TestCase):
         self.assertTrue(torch.is_tensor(batch.ego_image))
         self.assertFalse(torch.allclose(batch.ego_image, batch.overhead_image))
         self.assertEqual(len(batch), BATCH_SIZE)
+
+    def test_overhead_pixel_projection(self):
+
+        overhead_pixels = np.asarray([[0, 0],
+                                     [320 / 2, 240 / 2],
+                                     [320, 0],
+                                     [320, 240]]).T
+        
+        # action 
+        locations_on_plane = clevr_dataset.project_overhead_pixels_to_ground_plane(overhead_pixels)
+
+        # verification 
+        self.assertEqual(locations_on_plane.shape, (3, overhead_pixels.shape[1]))
+        self.assertTrue(np.allclose(locations_on_plane[2, :], 0))
+        self.assertTrue(np.allclose(locations_on_plane[:, 0], (-6.4, 4.8, 0)))
+        self.assertTrue(np.allclose(locations_on_plane[:, 1], (0, 0, 0)))
+        self.assertTrue(np.allclose(locations_on_plane[:, 2], (6.4, 4.8, 0)))
+        self.assertTrue(np.allclose(locations_on_plane[:, 3], (6.4, -4.8, 0)))
 
 
 

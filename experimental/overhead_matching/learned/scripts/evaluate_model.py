@@ -63,7 +63,7 @@ def _(Path):
 
 @app.cell
 def _(clevr_dataset, eval_dataset_path, load_model, model_path, tct):
-    eval_dataset = clevr_dataset.ClevrDataset(eval_dataset_path, load_overhead=True, overhead_transform=tct.IMAGE_NORMALIZATION)
+    eval_dataset = clevr_dataset.ClevrDataset(eval_dataset_path, load_overhead=True)
     loader = clevr_dataset.get_dataloader(eval_dataset, batch_size=128)
     model = load_model(model_path, skip_constient_output_check=True).cuda().eval()
     return eval_dataset, loader, model
