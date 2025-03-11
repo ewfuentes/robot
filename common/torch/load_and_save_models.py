@@ -20,7 +20,11 @@ def get_git_commit_hash():
 
 
 def get_git_diff():
-    return base64.b64decode(git_info.STABLE_GIT_DIFF).decode('utf-8')
+    """Returns None if fails to get diff (either not in repo or no active changes)"""
+    if hasattr(git_info, "STABLE_GIT_DIFF"):
+        return base64.b64decode(git_info.STABLE_GIT_DIFF).decode('utf-8')
+    else:
+        return None
 
 
 def deep_equal(a, b, rtol=1e-5, atol=1e-8, print_reason: bool = False):
