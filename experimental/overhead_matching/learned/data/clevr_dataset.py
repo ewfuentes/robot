@@ -26,15 +26,18 @@ CLEVR_OVERHEAD_Z_METERS = 14
 
 
 def project_overhead_pixels_to_ground_plane(overhead_pixels_uv: np.ndarray | torch.TensorType):
-    library = np
     if torch.is_tensor(overhead_pixels_uv):
         library = torch
+        cam_intrinsics = torch.from_numpy(CLEVR_CAMERA_INTRINSICS).to(torch.float32)
+    else:
+        library = np
+        cam_intrinsics = CLEVR_CAMERA_INTRINSICS
     ## overhead_pixels_uv is shape 2 x N
     assert overhead_pixels_uv.shape[0] == 2 and len(overhead_pixels_uv.shape) == 2
     n_points = overhead_pixels_uv.shape[1]
     overhead_pixels_uv = library.concatenate([overhead_pixels_uv, library.ones((1, n_points))], axis=0)
     points_in_world = library.linalg.inv(
-        CLEVR_CAMERA_INTRINSICS) @ overhead_pixels_uv * CLEVR_OVERHEAD_Z_METERS
+        cam_intrinsics) @ overhead_pixels_uv * CLEVR_OVERHEAD_Z_METERS
     points_in_world[1, :] *= -1  # flip Y value to match reference frame
     points_in_world[2, :] = 0  # zero out z values
     return points_in_world
