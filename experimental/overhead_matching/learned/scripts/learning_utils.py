@@ -9,7 +9,13 @@ import pandas as pd
 from experimental.overhead_matching.learned.model import clevr_transformer, clevr_tokenizer
 from experimental.overhead_matching.learned.data import clevr_dataset
 from common.torch.load_and_save_models import load_model
+import enum
 
+class ModelInputs(str, enum.Enum):
+    OVERHEAD_IMAGE = "overhead_image"
+    EGO_IMAGE = "ego_image"
+    OVERHEAD_VECTORIZED = "overhead_vectorized"
+    EGO_VECTORIZED = "ego_vectorized"
 
 def sample_ego_from_world(rng, batch_size):
     xy = rng.uniform(-2, 2, size=(batch_size, 2))
@@ -76,16 +82,17 @@ def gather_clevr_model_performance_from_path(model_checkpoint_path: Path, datase
 
 
 def construct_clevr_tokens_from_batch(batch: clevr_dataset.CleverDatasetItem,
+                                      active_model_inputs: list[ModelInputs],
                                       rng: np.random.Generator):
     ego_from_world = sample_ego_from_world(rng, len(batch.scene_description["objects"]))
 
     ego_scene_descriptions = project_scene_description_to_ego(
         batch.scene_description["objects"], ego_from_world)
     model_input = clevr_transformer.SceneDescription(
-        overhead_image=batch.overhead_image.cuda() if batch.overhead_image is not None else None,
-        ego_image=batch.ego_image.cuda() if batch.ego_image is not None else None,
-        ego_scene_description=ego_scene_descriptions,
-        overhead_scene_description=None,
+        overhead_image=batch.overhead_image.cuda() if ModelInputs.OVERHEAD_IMAGE in active_model_inputs else None,
+        ego_image=batch.ego_image.cuda() if ModelInputs.EGO_IMAGE in active_model_inputs else None,
+        ego_scene_description=ego_scene_descriptions if ModelInputs.EGO_VECTORIZED in active_model_inputs else None,
+        overhead_scene_description=batch.scene_description["objects"] if ModelInputs.OVERHEAD_VECTORIZED in active_model_inputs else None,
     )
 
     return model_input, ego_from_world
@@ -93,6 +100,7 @@ def construct_clevr_tokens_from_batch(batch: clevr_dataset.CleverDatasetItem,
 
 def gather_clevr_model_performance(model: nn.Module,
                                    loader: torch.utils.data.DataLoader,
+                                   active_model_inputs: list[ModelInputs],
                                    rng: np.random.Generator,
                                    disable_tqdm: bool = False) -> pd.DataFrame:
 
@@ -107,7 +115,7 @@ def gather_clevr_model_performance(model: nn.Module,
     num_objects = []
     with torch.no_grad():
         for batch in tqdm.tqdm(loader, total=len(loader), disable=disable_tqdm):
-            input_tokens, ego_from_world = construct_clevr_tokens_from_batch(batch, rng)
+            input_tokens, ego_from_world = construct_clevr_tokens_from_batch(batch, active_model_inputs, rng)
             ego_from_worlds.append(ego_from_world)
             query_tokens = None
             query_mask = None

@@ -5,6 +5,7 @@ from torchvision.ops.misc import Conv2dNormActivation
 from typing import Callable
 from dataclasses import dataclass
 from experimental.overhead_matching.learned.model import perspective_projection
+import experimental.overhead_matching.learned.data.clevr_dataset as cd
 
 
 def create_scene_tokens(scene_list_batch, vocabulary):
@@ -41,10 +42,7 @@ def create_scene_tokens(scene_list_batch, vocabulary):
     return {"tokens": tokens, "mask": mask}
 
 
-def create_position_embeddings(
-    scene_list_batch, *, min_scale: float = 1e-3, scale_step: float = 2.0, embedding_size: int
-):
-    assert embedding_size % 4 == 0
+def get_xy_from_batch(scene_list_batch):
     num_scenes = len(scene_list_batch)
     max_tokens_per_scene = max([len(x) for x in scene_list_batch])
     xy_pos = torch.zeros((num_scenes, max_tokens_per_scene, 2), dtype=torch.float32)
@@ -52,9 +50,16 @@ def create_position_embeddings(
         for j, item in enumerate(scene):
             xy_pos[i, j, 0] = item["3d_coords"][0]
             xy_pos[i, j, 1] = item["3d_coords"][1]
+    return xy_pos
+
+def create_position_embeddings(
+    scene_list_batch, *, min_scale: float = 1e-3, scale_step: float = 2.0, embedding_size: int
+):
+    assert embedding_size % 4 == 0
+    xy_pos = get_xy_from_batch(scene_list_batch)
 
     out = torch.zeros(
-        (num_scenes, max_tokens_per_scene, embedding_size), dtype=torch.float32
+        (xy_pos.shape[0], xy_pos.shape[1], embedding_size), dtype=torch.float32
     )
     num_scales = embedding_size // 4
     for scale_idx in range(num_scales):
@@ -123,6 +128,8 @@ class ImageToTokens(torch.nn.Module):
         # As per https://arxiv.org/abs/2106.14881
         self.config = config
 
+        self.overhead_token_positions = None
+
         if isinstance(self.config.patch_size_or_conv_stem_config, ConvStemConfig):
             seq_proj = torch.nn.Sequential()
             prev_channels = 3
@@ -142,18 +149,28 @@ class ImageToTokens(torch.nn.Module):
                 prev_channels = out_channels
             seq_proj.add_module(
                 "conv_last", torch.nn.Conv2d(in_channels=prev_channels,
-                                            out_channels=self.config.embedding_dim, kernel_size=1)
+                                             out_channels=self.config.embedding_dim, kernel_size=1)
             )
             self.conv_proj = seq_proj
         else:
-            self.conv_proj = torch.nn.Conv2d(in_channels=3, out_channels=self.config.embedding_dim, kernel_size=self.config.patch_size_or_conv_stem_config, stride=self.config.patch_size_or_conv_stem_config)
+            self.conv_proj = torch.nn.Conv2d(in_channels=3, out_channels=self.config.embedding_dim,
+                                             kernel_size=self.config.patch_size_or_conv_stem_config, stride=self.config.patch_size_or_conv_stem_config)
+            uu, vv = torch.meshgrid(torch.arange(0, self.config.image_shape[0] // self.config.patch_size_or_conv_stem_config), torch.arange(0, self.config.image_shape[1] // self.config.patch_size_or_conv_stem_config), indexing="xy")
+            all_patch_centers_pixels = torch.stack([uu, vv]).reshape(2, -1)
+            all_patch_centers_pixels = all_patch_centers_pixels * (torch.tensor([self.config.image_shape[1], self.config.image_shape[0]]) - self.config.patch_size_or_conv_stem_config)  # flipped as u->j v->i
+            all_patch_centers_pixels += self.config.patch_size_or_conv_stem_config / 2
+            all_patch_centers_m = cd.project_overhead_pixels_to_ground_plane(all_patch_centers_pixels)
+            self.overhead_token_positions = all_patch_centers_m
+            
+
 
         with torch.no_grad():
             dummy_input = torch.zeros((5, 3, *self.config.image_shape))
             output_shape = self.conv_proj(dummy_input).shape
             sequence_length = output_shape[2] * output_shape[3]
 
-        self.position_encoding = torch.nn.Parameter(torch.empty(1, sequence_length, self.config.embedding_dim).normal_(0.2))
+        self.position_encoding = torch.nn.Parameter(torch.empty(
+            1, sequence_length, self.config.embedding_dim).normal_(0.2))
 
     def forward(self, image):
         assert image.shape[2] == self.config.image_shape[0] and image.shape[3] == self.config.image_shape[

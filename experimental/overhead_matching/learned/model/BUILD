@@ -29,6 +29,7 @@ py_library(
   ],
   deps=[
     ":perspective_projection",
+    "//experimental/overhead_matching/learned/data:clevr_dataset",
     "//common/torch:load_torch_deps"
   ]
 )
@@ -39,7 +40,6 @@ py_test(
   data=["@clevr_test_set//:files"],
   deps=[
     requirement("numpy"),
-    "//experimental/overhead_matching/learned/data:clevr_dataset",
     ":clevr_tokenizer",
   ]
 )

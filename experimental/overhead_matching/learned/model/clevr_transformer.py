@@ -10,12 +10,11 @@ from experimental.overhead_matching.learned.model import clevr_tokenizer
 import torchvision.transforms.v2 as tf
 
 
-
-class InferenceMethod(enum.Enum):
-    MEAN = enum.auto()
-    HISTOGRAM = enum.auto()
-    LEARNED_CORRESPONDENCE = enum.auto()
-    OPTIMIZED_POSE = enum.auto()
+class InferenceMethod(str, enum.Enum):  # subclass str so it is json serializable
+    MEAN = "mean"
+    HISTOGRAM = "histogram"
+    LEARNED_CORRESPONDENCE = "learned_correspondence"
+    OPTIMIZED_POSE = "optimized_pose"
 
 
 @dataclass
@@ -27,6 +26,7 @@ class ClevrTransformerConfig:
     num_decoder_layers: int
     output_dim: int
     inference_method: InferenceMethod
+    use_spherical_projection_for_ego_vectorized: bool
     ego_image_tokenizer_config: clevr_tokenizer.ImageToTokensConfig | None
     overhead_image_tokenizer_config: clevr_tokenizer.ImageToTokensConfig | None
 
@@ -55,6 +55,7 @@ class ClevrTransformer(torch.nn.Module):
 
         self._inference_method = config.inference_method
         self.vocabulary = vocabulary
+        self.use_spherical_projection_for_ego_vectorized = config.use_spherical_projection_for_ego_vectorized
 
         encoder_layer = torch.nn.TransformerEncoderLayer(
             d_model=config.token_dim,
@@ -113,6 +114,7 @@ class ClevrTransformer(torch.nn.Module):
     @property
     def _vocabulary_size(self):
         return int(np.prod([len(x) for x in self.vocabulary.values()]))
+
     @property
     def token_dim(self):
         return self._overhead_marker.shape[0]
@@ -207,6 +209,7 @@ class ClevrTransformer(torch.nn.Module):
         # tokenize overhead information
         overhead_tokens = []
         overhead_masks = []
+        overhead_positions = []
         if input.overhead_scene_description is not None:
             overhead_result = clevr_tokenizer.create_scene_tokens(
                 input.overhead_scene_description, self.vocabulary)
@@ -218,8 +221,10 @@ class ClevrTransformer(torch.nn.Module):
                 + self._overhead_marker
             )
             overhead_scene_mask = overhead_result['mask'].to(self.device)
+            overhead_xy = clevr_tokenizer.get_xy_from_batch(input.overhead_scene_description)
             overhead_tokens.append(overhead_scene_tokens)
             overhead_masks.append(overhead_scene_mask)
+            overhead_positions.append(overhead_xy)
         if input.overhead_image is not None:
             overhead_image = self.image_preprocessing_transform(input.overhead_image)
             overhead_image_tokens = self._overhead_image_tokenizer(overhead_image)
@@ -227,16 +232,23 @@ class ClevrTransformer(torch.nn.Module):
             overhead_tokens.append(overhead_image_tokens)
             overhead_masks.append(torch.zeros(
                 overhead_image_tokens.shape[0], overhead_image_tokens.shape[1], device=self.device))
+            overhead_positions.append(self._overhead_image_tokenizer.overhead_token_positions)
 
         # tokenize ego information
         ego_tokens = []
         ego_masks = []
+        ego_positions = []
         if input.ego_scene_description is not None:
             ego_result = clevr_tokenizer.create_scene_tokens(
                 input.ego_scene_description, self.vocabulary)
-            ego_pos_embeddings = clevr_tokenizer.create_position_embeddings(
-                input.ego_scene_description, embedding_size=self.token_dim, min_scale=1e-6).to(self.device)
+            if self.use_spherical_projection_for_ego_vectorized:
+                ego_pos_embeddings = clevr_tokenizer.create_spherical_embeddings(
+                    input.ego_scene_description, embedding_size=self.token_dim).to(self.device)
+            else:
+                ego_pos_embeddings = clevr_tokenizer.create_position_embeddings(
+                    input.ego_scene_description, embedding_size=self.token_dim, min_scale=1e-6).to(self.device)
 
+            ego_xy = clevr_tokenizer.get_xy_from_batch(input.ego_scene_description)
             ego_scene_tokens = (
                 self._ego_vector_embedding(ego_result['tokens'].to(self.device))
                 + ego_pos_embeddings
@@ -245,13 +257,16 @@ class ClevrTransformer(torch.nn.Module):
             ego_scene_mask = ego_result['mask'].to(self.device)
             ego_tokens.append(ego_scene_tokens)
             ego_masks.append(ego_scene_mask)
+            ego_positions.append(ego_xy)
         if input.ego_image is not None:
+            raise NotImplementedError("ego image positions are not supported")
             ego_image = self.image_preprocessing_transform(input.ego_image)
             ego_image_tokens = self._ego_image_tokenizer(ego_image)
             ego_image_tokens = ego_image_tokens + self._ego_marker
             ego_tokens.append(ego_image_tokens)
             ego_masks.append(torch.zeros(
                 ego_image_tokens.shape[0], ego_image_tokens.shape[1], device=self.device))
+            ego_positions.append("?????????")
 
         input_tokens = torch.cat(overhead_tokens + ego_tokens, dim=1)
         input_mask = torch.cat(overhead_masks + ego_masks, dim=1)
