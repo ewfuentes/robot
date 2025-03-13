@@ -1,6 +1,5 @@
 import common.torch.load_torch_deps
 import torch
-
 from torchvision.ops.misc import Conv2dNormActivation
 from typing import Callable
 from dataclasses import dataclass
@@ -155,9 +154,9 @@ class ImageToTokens(torch.nn.Module):
         else:
             self.conv_proj = torch.nn.Conv2d(in_channels=3, out_channels=self.config.embedding_dim,
                                              kernel_size=self.config.patch_size_or_conv_stem_config, stride=self.config.patch_size_or_conv_stem_config)
-            uu, vv = torch.meshgrid(torch.arange(0, self.config.image_shape[0] // self.config.patch_size_or_conv_stem_config, dtype=torch.float32), torch.arange(0, self.config.image_shape[1] // self.config.patch_size_or_conv_stem_config, dtype=torch.float32), indexing="xy")
+            uu, vv = torch.meshgrid(torch.arange(0, self.config.image_shape[1] // self.config.patch_size_or_conv_stem_config, dtype=torch.float32), torch.arange(0, self.config.image_shape[0] // self.config.patch_size_or_conv_stem_config, dtype=torch.float32), indexing="xy")
             all_patch_centers_pixels = torch.stack([uu, vv]).reshape(2, -1)
-            all_patch_centers_pixels = all_patch_centers_pixels * (torch.tensor([self.config.image_shape[1], self.config.image_shape[0]]).unsqueeze(1) - self.config.patch_size_or_conv_stem_config)  # flipped as u->j v->i
+            all_patch_centers_pixels = all_patch_centers_pixels * self.config.patch_size_or_conv_stem_config
             all_patch_centers_pixels += self.config.patch_size_or_conv_stem_config / 2
             all_patch_centers_m = cd.project_overhead_pixels_to_ground_plane(all_patch_centers_pixels)
             all_patch_centers_m = all_patch_centers_m[:2, :].T  # drop z values, transpose to be num_tokens, (x,y)

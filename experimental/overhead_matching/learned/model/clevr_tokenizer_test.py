@@ -1,6 +1,8 @@
 import unittest
 import itertools
+from common.torch import load_torch_deps
 import numpy as np
+import torch
 from pathlib import Path
 
 from experimental.overhead_matching.learned.model import clevr_tokenizer
@@ -152,6 +154,9 @@ class ClevrTokenizerTest(unittest.TestCase):
                          320 / PATCH_SIZE / PATCH_SIZE, EMBEDDING_DIM))
         self.assertEqual(conv_image_tokens.shape, (BATCH_SIZE,
                          conv_image_tokens.shape[1], EMBEDDING_DIM))
+        self.assertEqual(patch_image_tokens.shape[1], patch_image_tokenizer.overhead_token_positions.shape[0])
+        self.assertTrue(np.isclose(torch.max(torch.abs(patch_image_tokenizer.overhead_token_positions[:, 0])).item(), 6.08))
+        self.assertTrue(np.isclose(torch.max(torch.abs(patch_image_tokenizer.overhead_token_positions[:, 1])).item(), 4.48))
 
 
 if __name__ == "__main__":
