@@ -75,12 +75,6 @@ def compute_mse_loss(output, ego_from_world, reduce=True):
 
     return error
 
-
-def gather_clevr_model_performance_from_path(model_checkpoint_path: Path, dataset, rng):
-    model = load_model(model_checkpoint_path, skip_constient_output_check=False, device="cpu")
-    return gather_clevr_model_performance(model, dataset, rng)
-
-
 def construct_clevr_tokens_from_batch(batch: clevr_dataset.CleverDatasetItem,
                                       active_model_inputs: list[ModelInputs],
                                       rng: np.random.Generator):

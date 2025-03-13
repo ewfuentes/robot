@@ -39,14 +39,6 @@ class SceneDescription:
     overhead_scene_description: list | None
 
 
-def positions_from_scene_descriptions(scene_descriptions):
-    batch_size = len(scene_descriptions)
-    max_num_objects = max([len(x) for x in scene_descriptions])
-    out = torch.zeros((batch_size, max_num_objects, 2))
-    for scene_idx, scene in enumerate(scene_descriptions):
-        for obj_idx, obj in enumerate(scene):
-            out[scene_idx, obj_idx, :] = torch.tensor(obj["3d_coords"][:2])
-    return out
 
 
 class ClevrTransformer(torch.nn.Module):
@@ -123,7 +115,7 @@ class ClevrTransformer(torch.nn.Module):
     def device(self):
         return next(self.parameters()).device
 
-    def compute_learned_correspondence(self, embedded_tokens, overhead_mask, ego_mask):
+    def compute_learned_correspondence(self, overhead_tokens, overhead_mask, ego_tokens, ego_mask):
         # the embedded tokens are a batch x (n_oh + n_ego) x feature dim
         # Split the token dimension so we end up with the overhead and ego tokens
         # so we end up with a batch x  n_oh x feature dim and batch x n_ego x feature_dim
@@ -132,8 +124,6 @@ class ClevrTransformer(torch.nn.Module):
         batch_size = overhead_mask.shape[0]
         num_overhead_tokens = overhead_mask.shape[1]
         num_ego_tokens = ego_mask.shape[1]
-        overhead_tokens = embedded_tokens[:, :num_overhead_tokens, :]
-        ego_tokens = embedded_tokens[:, num_overhead_tokens:, :]
 
         # Add the no match token to the ego tensor so we end up with a
         # batch x (n_ego + 1) x feature_dim tensor.
@@ -150,7 +140,7 @@ class ClevrTransformer(torch.nn.Module):
         valid_ego_mask = ego_mask.to(torch.float32).unsqueeze(-2)
 
         softmax_mask = torch.zeros((batch_size, num_overhead_tokens,
-                                   num_ego_tokens+1), device=embedded_tokens.device)
+                                   num_ego_tokens+1), device=overhead_tokens.device)
         softmax_mask[..., :-1] = torch.logical_or(softmax_mask[..., :-1], valid_overhead_mask)
         softmax_mask[..., :-1] = torch.logical_or(softmax_mask[..., :-1], valid_ego_mask)
         softmax_mask[softmax_mask == True] = -torch.inf
@@ -184,17 +174,17 @@ class ClevrTransformer(torch.nn.Module):
         )
         return self._output_layer(output_tokens)
 
-    def inference_learned_correspondence(self, embedded_tokens, overhead_mask, ego_mask, obj_in_overhead, obj_in_ego):
+    def inference_learned_correspondence(self, overhead_tokens, overhead_mask, ego_tokens, ego_mask, obj_in_overhead, obj_in_ego):
         learned_correspondence = self.compute_learned_correspondence(
-            embedded_tokens, overhead_mask, ego_mask)
+            overhead_tokens, overhead_mask, ego_tokens, ego_mask)
 
         optimal_pose = (None if self.training else
                         self._pose_optimizer(learned_correspondence, obj_in_overhead, obj_in_ego))
         return learned_correspondence, optimal_pose
 
-    def inference_optimized_pose(self, embedded_tokens, overhead_mask, ego_mask, obj_in_overhead, obj_in_ego):
+    def inference_optimized_pose(self, overhead_tokens, overhead_mask, ego_tokens, ego_mask, obj_in_overhead, obj_in_ego):
         learned_correspondence = self.compute_learned_correspondence(
-            embedded_tokens, overhead_mask, ego_mask)
+            overhead_tokens, overhead_mask, ego_tokens, ego_mask)
 
         optimal_pose = self._pose_optimizer(learned_correspondence, obj_in_overhead, obj_in_ego)
         return learned_correspondence, optimal_pose
@@ -232,7 +222,7 @@ class ClevrTransformer(torch.nn.Module):
             overhead_tokens.append(overhead_image_tokens)
             overhead_masks.append(torch.zeros(
                 overhead_image_tokens.shape[0], overhead_image_tokens.shape[1], device=self.device))
-            overhead_positions.append(self._overhead_image_tokenizer.overhead_token_positions)
+            overhead_positions.append(self._overhead_image_tokenizer.overhead_token_positions.unsqueeze(0).expand(input.overhead_image.shape[0], overhead_image_tokens.shape[1], 2))
 
         # tokenize ego information
         ego_tokens = []
@@ -268,6 +258,8 @@ class ClevrTransformer(torch.nn.Module):
                 ego_image_tokens.shape[0], ego_image_tokens.shape[1], device=self.device))
             ego_positions.append("?????????")
 
+        overhead_num_tokens = sum([x.shape[1] for x in overhead_tokens])
+        ego_num_tokens = sum([x.shape[1] for x in ego_tokens])
         input_tokens = torch.cat(overhead_tokens + ego_tokens, dim=1)
         input_mask = torch.cat(overhead_masks + ego_masks, dim=1)
 
@@ -289,33 +281,45 @@ class ClevrTransformer(torch.nn.Module):
                     query_mask=query_mask)
 
             case InferenceMethod.LEARNED_CORRESPONDENCE:
-                assert input.ego_image is None and input.overhead_image is None, "Cannot do learned correspondences with image inputs"
+                processed_overhead_tokens, processed_ego_tokens = torch.split(embedded_tokens, [overhead_num_tokens, ego_num_tokens], dim=1)
+                processed_overhead_mask, processed_ego_mask = torch.split(input_mask, [overhead_num_tokens, ego_num_tokens], dim=1)
+                obj_in_overhead = torch.cat(overhead_positions).to(self.device)
+                obj_in_ego = torch.cat(ego_positions).to(self.device)
                 learned_correspondence, optimal_pose = self.inference_learned_correspondence(
-                    embedded_tokens,
-                    overhead_mask=overhead_masks[0],
-                    ego_mask=ego_masks[0],
-                    obj_in_overhead=positions_from_scene_descriptions(
-                        input.overhead_scene_description).to(self.device),
-                    obj_in_ego=positions_from_scene_descriptions(
-                        input.ego_scene_description).to(self.device)
+                    overhead_tokens=processed_overhead_tokens,
+                    overhead_mask=processed_overhead_mask,
+                    ego_tokens=processed_ego_tokens,
+                    ego_mask=processed_ego_mask,
+                    obj_in_overhead=obj_in_overhead,
+                    obj_in_ego=obj_in_ego
                 )
                 out["learned_correspondence"] = learned_correspondence
                 if optimal_pose is not None:
                     out["prediction"] = optimal_pose
 
+                out["positions"] = {
+                    "ego": obj_in_ego,
+                    "overhead": obj_in_overhead
+                }
+
             case InferenceMethod.OPTIMIZED_POSE:
-                assert input.ego_image is None and input.overhead_image is None, "Cannot do optimized pose with image inputs"
+                processed_overhead_tokens, processed_ego_tokens = torch.split(embedded_tokens, [overhead_num_tokens, ego_num_tokens], dim=1)
+                processed_overhead_mask, processed_ego_mask = torch.split(input_mask, [overhead_num_tokens, ego_num_tokens], dim=1)
                 learned_correspondence, optimal_pose = self.inference_learned_correspondence(
-                    embedded_tokens,
-                    overhead_mask=overhead_masks[0],
-                    ego_mask=ego_masks[0],
-                    obj_in_overhead=positions_from_scene_descriptions(
-                        input.overhead_scene_description).to(self.device),
-                    obj_in_ego=positions_from_scene_descriptions(
-                        input.ego_scene_description).to(self.device)
+                    overhead_tokens=processed_overhead_tokens,
+                    overhead_mask=processed_overhead_mask,
+                    ego_tokens=processed_ego_tokens,
+                    ego_mask=processed_ego_mask,
+                    obj_in_overhead=torch.cat(overhead_positions).to(self.device),
+                    obj_in_ego=torch.cat(ego_positions).to(self.device)
                 )
                 out["learned_correspondence"] = learned_correspondence
                 out["prediction"] = optimal_pose
+
+                out["positions"] = {
+                    "ego": torch.cat(ego_positions, dim=0),
+                    "overhead": torch.cat(overhead_positions, dim=0)
+                }
             case _:
                 raise NotImplementedError(
                     f"Unimplemented inference method: {self._inference_method}")

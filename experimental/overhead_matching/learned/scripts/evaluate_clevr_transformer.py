@@ -25,9 +25,14 @@ from experimental.overhead_matching.learned.scripts import (
 
 
 
-def main(model_path: Path, dataset_path: Path):
+def main(model_path: Path, train_config_path: Path, dataset_path: Path):
 
-    dataset = clevr_dataset.ClevrDataset(dataset_path, load_overhead=True)
+    train_config = tct.TrainConfig.from_file(train_config_path)
+
+    dataset = clevr_dataset.ClevrDataset(dataset_path,
+                                         load_overhead=lu.ModelInputs.OVERHEAD_IMAGE in train_config.model_inputs,
+                                         load_ego_images=lu.ModelInputs.EGO_IMAGE in train_config.model_inputs,
+                                         )
     loader = clevr_dataset.get_dataloader(dataset, batch_size=128, num_workers=12)
 
     # _, dataset = torch.utils.data.random_split(dataset, [0.8, 0.2], generator=torch.Generator().manual_seed(1023))
@@ -37,7 +42,7 @@ def main(model_path: Path, dataset_path: Path):
 
 
     rng = np.random.default_rng(2048)
-    df = lu.gather_clevr_model_performance(model, loader, rng)
+    df = lu.gather_clevr_model_performance(model, loader, train_config.model_inputs, rng)
     print(df['mse'].mean())
 
     g1 = sns.JointGrid(data=df, x="dx", y="dy")
@@ -56,8 +61,9 @@ def main(model_path: Path, dataset_path: Path):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
+    parser.add_argument("--train_config", required=True)
     parser.add_argument("--dataset", required=True)
 
     args = parser.parse_args()
 
-    main(Path(args.model), Path(args.dataset))
+    main(Path(args.model), Path(args.train_config), Path(args.dataset))

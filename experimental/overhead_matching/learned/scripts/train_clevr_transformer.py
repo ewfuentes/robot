@@ -53,7 +53,15 @@ class TrainConfig:
         with open(file_path, 'r') as f:
             config_dict = json.load(f)
 
+        ##TODO: This is suboptimal. jsonpickle or some other way of serializing these to json? 
+        ##TODO: does not handle ConvStemConfig inside of ImageToTokensConfig
         # Reconstruct the model_config from the dict
+        if config_dict['model_config']['ego_image_tokenizer_config'] is not None:
+            config_dict['model_config']['ego_image_tokenizer_config'] = clevr_tokenizer.ImageToTokensConfig(
+                **config_dict['model_config']['ego_image_tokenizer_config'])
+        if config_dict['model_config']['overhead_image_tokenizer_config'] is not None:
+            config_dict['model_config']['overhead_image_tokenizer_config'] = clevr_tokenizer.ImageToTokensConfig(
+                **config_dict['model_config']['overhead_image_tokenizer_config'])
         model_config = clevr_transformer.ClevrTransformerConfig(**config_dict['model_config'])
 
         # Create and return the TrainConfig
@@ -105,18 +113,18 @@ def create_query_tokens(batch_size: int):
     return None
 
 
-def compute_correspondence_loss(correspondence, obj_in_overhead, obj_in_ego, ego_from_world):
+def compute_correspondence_loss(correspondence, obj_in_overhead, obj_in_ego, ego_from_world, reduce=False):
     """
     provide signal on the learned correspondences by computing the reprojection error
     using the ground truth pose
     """
-    batch_size, num_objects, _ = obj_in_overhead.shape
+    batch_size, num_overhead_objects, _ = obj_in_overhead.shape
+    _, num_ego_objects, _ = obj_in_ego.shape
     ego_from_world = torch.tensor(
         ego_from_world, device=obj_in_overhead.device, dtype=torch.float32)
 
-    ones = torch.ones((batch_size, num_objects, 1), device=obj_in_overhead.device)
-    obj_in_overhead = torch.concatenate([obj_in_overhead, ones], dim=-1)
-    obj_in_ego = torch.concatenate([obj_in_ego, ones], dim=-1)
+    obj_in_overhead = torch.concatenate([obj_in_overhead, torch.ones((batch_size, num_overhead_objects, 1), device=obj_in_overhead.device)], dim=-1)
+    obj_in_ego = torch.concatenate([obj_in_ego, torch.ones((batch_size, num_ego_objects, 1), device=obj_in_ego.device)], dim=-1)
     projected_obj_in_ego = torch.bmm(
         ego_from_world, obj_in_overhead.transpose(-1, -2)).transpose(-1, -2)
 
@@ -127,8 +135,13 @@ def compute_correspondence_loss(correspondence, obj_in_overhead, obj_in_ego, ego
     weighted_projection_errors = correspondence[..., :-1] * projection_errors
     # Note that this reduces the losses on scenes with fewer objects more heavily since
     # the invalid/unused pairings are included in the mean count
-    mean_scene_errors = torch.mean(weighted_projection_errors, dim=-1)
-    return torch.mean(mean_scene_errors)
+    mean_scene_errors = torch.mean(weighted_projection_errors, dim=-1).mean(dim=-1)
+    unknown_column_weights = torch.sum(correspondence[..., -1], dim=-1) / num_overhead_objects
+    unknown_weighted_loss = mean_scene_errors * (5 * unknown_column_weights + 1)
+    if not reduce:
+        return unknown_weighted_loss
+    else:
+        return torch.mean(unknown_weighted_loss)
 
 
 def main(dataset_path: Path, output_path: Path, load_model_path: Path | None, train_config: TrainConfig):
@@ -150,8 +163,8 @@ def main(dataset_path: Path, output_path: Path, load_model_path: Path | None, tr
     )
     torch.manual_seed(2048)
     dataset = clevr_dataset.ClevrDataset(dataset_path,
-                                         load_overhead='overhead_image' in train_config.model_inputs,
-                                         load_ego_images='ego_image' in train_config.model_inputs,
+                                         load_overhead=lu.ModelInputs.OVERHEAD_IMAGE in train_config.model_inputs,
+                                         load_ego_images=lu.ModelInputs.EGO_IMAGE in train_config.model_inputs,
                                          )
     train_dataset, val_dataset = torch.utils.data.random_split(
         dataset, [0.8, 0.2], generator=torch.Generator().manual_seed(1023))
@@ -204,7 +217,10 @@ def main(dataset_path: Path, output_path: Path, load_model_path: Path | None, tr
                 if LossFunctions.CORRESPONDENCE_LOSS in train_config.loss_functions:
                     loss += compute_correspondence_loss(
                         output["learned_correspondence"],
-                        input.overhead_position, input.ego_position, ego_from_world)
+                        output["positions"]["overhead"],
+                        output["positions"]["ego"],
+                        ego_from_world,
+                        reduce=False)
 
                 all_losses.append(loss.detach().cpu().numpy())
                 loss = torch.mean(loss)
@@ -216,21 +232,22 @@ def main(dataset_path: Path, output_path: Path, load_model_path: Path | None, tr
 
             print(f"***** Epoch: {epoch_idx}", end=" ")
             print(f"train loss: {np.mean(all_losses)}", end=" ")
+            print()
 
-            model.eval()
-            eval_rng = np.random.default_rng(2048)
+            # model.eval()
+            # eval_rng = np.random.default_rng(2048)
 
-            val_df = lu.gather_clevr_model_performance(
-                model, val_loader, train_config.model_inputs, eval_rng, disable_tqdm=True)
+            # val_df = lu.gather_clevr_model_performance(
+            #     model, val_loader, train_config.model_inputs, eval_rng, disable_tqdm=true)
 
-            writer.add_scalar("loss/val_mae", val_df['pos_absolute_error'].mean(), epoch_idx)
-            writer.add_scalar("loss/val_mse", val_df['mse'].mean(), epoch_idx)
-            val_mse = val_df['mse'].mean()
-            print(f"val mse: {val_mse}")
-            if np.mean(val_mse) < best_val_mse:
-                best_model_weights = copy.deepcopy(model.state_dict())
-                best_model_epoch = epoch_idx
-                best_val_mse = val_mse
+            # writer.add_scalar("loss/val_mae", val_df['pos_absolute_error'].mean(), epoch_idx)
+            # writer.add_scalar("loss/val_mse", val_df['mse'].mean(), epoch_idx)
+            # val_mse = val_df['mse'].mean()
+            # print(f"val mse: {val_mse}")
+            # if np.mean(val_mse) < best_val_mse:
+            #     best_model_weights = copy.deepcopy(model.state_dict())
+            #     best_model_epoch = epoch_idx
+            #     best_val_mse = val_mse
 
             # correspondences_output_path = output_path / "intermediates" / "correspondences" / f"{epoch_idx:06d}.png"
             # correspondences_output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -241,12 +258,12 @@ def main(dataset_path: Path, output_path: Path, load_model_path: Path | None, tr
                 output_path.mkdir(parents=True, exist_ok=True)
                 save_model(model, model_save_path, (input_tokens, None, None))
                 print("model saved to:", output_path / f"epoch_{epoch_idx:06d}")
-                eval_rng = np.random.default_rng(2048)
-                train_performance = lu.gather_clevr_model_performance(
-                    model, train_performance_subset_loader, train_config.model_inputs, eval_rng, disable_tqdm=True
-                )
-                train_performance.to_csv(model_save_path / "train_performance.csv")
-                val_df.to_csv(model_save_path / "val_performance.csv")
+                # eval_rng = np.random.default_rng(2048)
+                # train_performance = lu.gather_clevr_model_performance(
+                #     model, train_performance_subset_loader, train_config.model_inputs, eval_rng, disable_tqdm=True
+                # )
+                # train_performance.to_csv(model_save_path / "train_performance.csv")
+                # val_df.to_csv(model_save_path / "val_performance.csv")
 
     except KeyboardInterrupt:
         print("Exiting (got keyboard interrupt)")
