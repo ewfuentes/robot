@@ -82,6 +82,7 @@ TEST(PoseOptimizerDrakeTest, points_and_bearings) {
     const std::vector<Eigen::Vector2d> pts_in_world = {
         Eigen::Vector2d{0, -3},
         Eigen::Vector2d{0, 4},
+        Eigen::Vector2d{5, 0},
     };
 
     constexpr double ego_from_world_rot = 0.0;
@@ -97,6 +98,9 @@ TEST(PoseOptimizerDrakeTest, points_and_bearings) {
         total_cost += cost_comp;
         prog.AddConstraint(dot_prod >= 0);
     }
+
+    prog.AddLinearConstraint(sin, -1.0, 1.0);
+    prog.AddLinearConstraint(cos, -1.0, 1.0);
 
     prog.AddCost(total_cost);
     prog.AddConstraint(sin * sin + cos * cos == 1);
@@ -119,8 +123,8 @@ TEST(PoseOptimizerDrakeTest, points_and_bearings) {
     const auto result = solver.Solve(*sdp_prog);
 
     // Action
-    std::cout << "original program:" << std::endl;
-    std::cout << prog << std::endl;
+    // std::cout << "original program:" << std::endl;
+    // std::cout << prog << std::endl;
     std::cout << "sdp relaxed program:" << std::endl;
     std::cout << *sdp_prog << std::endl;
     std::cout << "is success: " << result.is_success() << std::endl;
@@ -133,86 +137,39 @@ TEST(PoseOptimizerDrakeTest, points_and_bearings) {
         Eigen::MatrixXd psd_result = result.GetSolution(psd_constraint_vars).reshaped(5, 5);
         std::cout << psd_result << std::endl;
 
-        std::cout << "Eigenvalues: " << psd_result.eigenvalues().transpose() << std::endl;
-
         const auto svd_result = psd_result.jacobiSvd(Eigen::ComputeThinU | Eigen::ComputeThinV);
-        std::cout << "Singular values: " << svd_result.singularValues() << std::endl;
+        std::cout << "Singular values: " << svd_result.singularValues().transpose() << std::endl;
         std::cout << "left singular vectors: " << std::endl << svd_result.matrixU() << std::endl;
-        std::cout << "right singular vectors: " << std::endl << svd_result.matrixV() << std::endl;
+
+        if (svd_result.singularValues()(1) < 0.1) {
+
+            std::cout << "Found rank 1 solution! " << std::endl;
+            Eigen::VectorXd solution = svd_result.matrixU().col(0).transpose();
+            solution = solution / solution(4);
+
+            std::cout << solution.transpose() << std::endl;
+        }
+       // else {
+       //     const Eigen::VectorXd expected_vector = (Eigen::VectorXd(5) << 2.0, 0.0, 1.0, 0.0, 1.0).finished();
+       //     const Eigen::MatrixXd expected_solution = expected_vector * expected_vector.transpose();
+
+       //     std::cout << "expected solution: " << std::endl << expected_solution << std::endl;
+
+       //     std::cout << "expected solution trace: " << expected_solution.trace() << std::endl;
+       //     const Eigen::MatrixXd normed_expected_solution = expected_solution / expected_solution.trace();
+       //     const double projection_along_expected = (psd_result * normed_expected_solution).trace();
+       //     std::cout << "projection_along_expected: " << projection_along_expected << std::endl;
+
+       //     const Eigen::MatrixXd remainder = psd_result - projection_along_expected * normed_expected_solution;
+
+       //     std::cout << "remainder: " << std::endl << remainder << std::endl;
+       //     const auto remainder_svd = remainder.jacobiSvd(Eigen::ComputeThinU | Eigen::ComputeThinV);
+       //     std::cout << "remainder singular values: " << remainder_svd.singularValues().transpose() << std::endl;
+       //     std::cout << "remainder singular vectors: " << std::endl << remainder_svd.matrixU() << std::endl;
+
+       // }
     }
 
-
-    const double length_a = (pts_in_world[0] - pts_in_world[1]).norm();
-    const Eigen::Vector2d a_in_robot = (ego_from_world * pts_in_world[0]).normalized();
-    const Eigen::Vector2d b_in_robot = (ego_from_world * pts_in_world[1]).normalized();
-    const double sin_alpha = std::abs(crossProduct2D(a_in_robot, b_in_robot));
-    const double alpha = std::asin(sin_alpha);
-
-    const double ratio = sin_alpha / length_a;
-
-    const Eigen::VectorXd b_length = Eigen::VectorXd::LinSpaced(100, 0, length_a);
-    const Eigen::VectorXd sin_beta = ratio * b_length;
-    const Eigen::VectorXd beta = Eigen::asin(sin_beta.array());
-    const Eigen::VectorXd gamma = -std::numbers::pi / 2.0 - (std::numbers::pi - alpha - beta.array());
-
-    const Eigen::ArrayXd cos_gamma = Eigen::cos(gamma.array());
-    const Eigen::ArrayXd sin_gamma = Eigen::sin(gamma.array());
-    const Eigen::VectorXd x_locs = pts_in_world[1].x() + (b_length.array() * cos_gamma).array();
-    const Eigen::VectorXd y_locs = pts_in_world[1].y() + (b_length.array() * sin_gamma).array();
-
-    plot<Eigen::VectorXd>({PlotSignal{
-        .x = x_locs,
-        .y = y_locs,
-    }});
-
-
-
-
-
-    std::cout << "a in robot: " << a_in_robot.transpose() << " b in robot: " << b_in_robot.transpose() << std::endl;
-    fmt::println("a: {} sin_alpha: {}", length_a, alpha);
-
-     if (false) {
-        const Eigen::VectorXd Xs = Eigen::VectorXd::LinSpaced(601, -6.0, 6.0);
-        const Eigen::VectorXd Ys = Eigen::VectorXd::LinSpaced(601, -6.0, 6.0);
-        const Eigen::VectorXd Ts = Eigen::VectorXd::LinSpaced(601, -std::numbers::pi, std::numbers::pi);
-        Eigen::MatrixXd data(Xs.rows(), Ys.rows());
-        drake::symbolic::Environment env;
-
-        const int target_pt_idx = 0;
-
-        for (int i = 0; i < Ys.rows(); i++) {
-            for (int j = 0; j < Xs.rows(); j++) {
-                env[t_x] = Xs(j);
-                env[t_y] = Ys(i);
-
-                const Eigen::Vector2d pt_in_world = pts_in_world.at(target_pt_idx);
-                const Eigen::Vector2d pt_in_robot = ego_from_world * pt_in_world; 
-                const double observed_bearing_rad = std::atan2(pt_in_robot.y(), pt_in_robot.x());
-                const liegroups::SE2 test_ego_from_world(0.0, Eigen::Vector2d{Xs(j), Ys(i)});
-                const Eigen::Vector2d test_pt_in_robot = test_ego_from_world * pt_in_world;
-                const double bearing_in_unrotated_rad = std::atan2(test_pt_in_robot.y(), test_pt_in_robot.x());
-                const double delta_bearing_rad = bearing_in_unrotated_rad - observed_bearing_rad;
-
-                env[cos] = std::cos(delta_bearing_rad);
-                env[sin] = std::sin(delta_bearing_rad);
-                const double value = total_cost.Evaluate(env);
-                data(i, j) = std::log10(value);
-
-                if ((i == 0 && j == 0) || (Xs(j) == 2.0 && Ys(i) == 0.0)) {
-                    fmt::println("x: {} y: {} pt_in_world: ({}, {}) pt_in_robot: ({}, {}) observed_bearing_rad: {} "
-                                 "unrotated bearing: {} delta_bearing: {} value: {}", 
-                                 Xs(j), Ys(i),
-                                 pt_in_world.x(), pt_in_world.y(),
-                                 pt_in_robot.x(), pt_in_robot.y(),
-                                 observed_bearing_rad, bearing_in_unrotated_rad,
-                                 delta_bearing_rad, value);
-                }
-            }
-        }
-        std::cout << std::endl;
-        contourf(Xs, Ys, data, true);
-     }
     // Verification
 }
 }  // namespace robot::experimental::overhead_matching

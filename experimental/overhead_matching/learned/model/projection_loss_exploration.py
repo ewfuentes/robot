@@ -23,11 +23,10 @@ def _(SE2, np):
         [0, -3],
         [3, 0],
         [0, 4],
-        [-5, 0],
+        # [-5, 0],
         # [-3, 3],
     ])
     robot_from_world = SE2(np.array([2, 0]))
-
     return pts_in_world, robot_from_world
 
 
@@ -45,21 +44,21 @@ def _(SO2, itertools, np, pd, pts_in_world, robot_from_world):
                        np.abs(bearing_in_robot[a_idxs[1]] - bearing_in_robot[a_idxs[0]]))
         sin_alpha = np.sin(alpha_rad)
         ratio = sin_alpha / length_a
-    
+
         beta_rad = np.linspace(0, np.pi - alpha_rad, 100)
         gamma_rad = np.pi - alpha_rad - beta_rad
-    
+
         length_b = np.sin(beta_rad) / ratio
         length_c = np.sin(gamma_rad) / ratio
-    
+
         b_in_a = pts_in_world[a_idxs[1]] - pts_in_world[a_idxs[0]]
         b_in_a_dir = b_in_a / length_a
-    
+
         robots_in_world = []
 
         for i in range(beta_rad.shape[0]):
             robots_in_world.append(SO2(beta_rad[i]) * b_in_a_dir * length_c[i] + pts_in_world[a_idxs[0]])
-    
+
         return np.stack(robots_in_world)
 
     dfs = []
@@ -71,9 +70,6 @@ def _(SO2, itertools, np, pd, pts_in_world, robot_from_world):
             'pair': [a_idxs] * robot_in_world.shape[0],
             'index': list(range(robot_in_world.shape[0]))}))
     robots_in_world = pd.concat(dfs)
-    
-    
-
     return (
         a_idxs,
         compute_zero_error_contour,
@@ -84,15 +80,13 @@ def _(SO2, itertools, np, pd, pts_in_world, robot_from_world):
 
 
 @app.cell
-def _(a_idxs, alt, mo, robots_in_world):
-    a_idxs
-    
+def _(alt, mo, robots_in_world):
     chart = mo.ui.altair_chart(
         alt.Chart(robots_in_world)
             .mark_line()
             .encode(
-                x=alt.X('x', sort=None, scale=alt.Scale(domain=[-4, 4])),
-                y=alt.Y('y', scale=alt.Scale(domain=[-4, 4])),
+                x=alt.X('x', sort=None, scale=alt.Scale(domain=[-4, 5])),
+                y=alt.Y('y', scale=alt.Scale(domain=[-4, 5])),
                 color='pair',
                 order='index')
             .properties(
@@ -101,7 +95,6 @@ def _(a_idxs, alt, mo, robots_in_world):
             ))
 
     mo.vstack([chart])
-
     return (chart,)
 
 
