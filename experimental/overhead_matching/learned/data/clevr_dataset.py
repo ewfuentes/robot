@@ -163,6 +163,16 @@ class ClevrDataset(torch.utils.data.Dataset):
             assert len(self.ego_filepaths) == len(
                 self._json), "Number of ego images and number of scenes do not match"
 
+        # make sure things are in the correct order 
+        for i, scene in enumerate(self._json):
+            def get_scene_number(path):
+                return path.stem.split("_")[-1]
+            scene_number = get_scene_number(Path(scene["image_filename"]))
+            if self.load_overhead:
+                assert get_scene_number(self.overhead_file_paths[i]) == scene_number
+            if self.load_ego_images:
+                assert get_scene_number(self.ego_filepaths[i]) == scene_number
+
     def __len__(self) -> int:
         return len(self._json)
 

@@ -249,14 +249,13 @@ class ClevrTransformer(torch.nn.Module):
             ego_masks.append(ego_scene_mask)
             ego_positions.append(ego_xy)
         if input.ego_image is not None:
-            raise NotImplementedError("ego image positions are not supported")
             ego_image = self.image_preprocessing_transform(input.ego_image)
             ego_image_tokens = self._ego_image_tokenizer(ego_image)
             ego_image_tokens = ego_image_tokens + self._ego_marker
             ego_tokens.append(ego_image_tokens)
             ego_masks.append(torch.zeros(
                 ego_image_tokens.shape[0], ego_image_tokens.shape[1], device=self.device))
-            ego_positions.append("?????????")
+            ego_positions.append("CLEVR ego positions are not implemented")
 
         overhead_num_tokens = sum([x.shape[1] for x in overhead_tokens])
         ego_num_tokens = sum([x.shape[1] for x in ego_tokens])
@@ -305,7 +304,7 @@ class ClevrTransformer(torch.nn.Module):
             case InferenceMethod.OPTIMIZED_POSE:
                 processed_overhead_tokens, processed_ego_tokens = torch.split(embedded_tokens, [overhead_num_tokens, ego_num_tokens], dim=1)
                 processed_overhead_mask, processed_ego_mask = torch.split(input_mask, [overhead_num_tokens, ego_num_tokens], dim=1)
-                learned_correspondence, optimal_pose = self.inference_learned_correspondence(
+                learned_correspondence, optimal_pose = self.inference_optimized_pose(
                     overhead_tokens=processed_overhead_tokens,
                     overhead_mask=processed_overhead_mask,
                     ego_tokens=processed_ego_tokens,

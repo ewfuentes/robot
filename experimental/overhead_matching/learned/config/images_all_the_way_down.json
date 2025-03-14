@@ -1,0 +1,36 @@
+{
+  "model_config": {
+    "token_dim": 128,
+    "num_encoder_heads": 4,
+    "num_encoder_layers": 8,
+    "num_decoder_heads": 4,
+    "num_decoder_layers": 8,
+    "use_spherical_projection_for_ego_vectorized": false,
+    "output_dim": 4,
+    "inference_method": "mean",
+    "ego_image_tokenizer_config": {
+      "embedding_dim": 128,
+      "image_shape": [
+        100,
+        200
+      ],
+      "patch_size_or_conv_stem_config": 10
+    },
+    "overhead_image_tokenizer_config": {
+      "embedding_dim": 128,
+      "image_shape": [
+        240,
+        320
+      ],
+      "patch_size_or_conv_stem_config": 16
+    }
+  },
+  "model_inputs": [
+    "ego_image",
+    "overhead_image"
+  ],
+  "loss_functions": [
+    "pose_mse"
+  ],
+  "num_epochs": 5000
+}

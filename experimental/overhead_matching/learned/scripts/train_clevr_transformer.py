@@ -232,22 +232,21 @@ def main(dataset_path: Path, output_path: Path, load_model_path: Path | None, tr
 
             print(f"***** Epoch: {epoch_idx}", end=" ")
             print(f"train loss: {np.mean(all_losses)}", end=" ")
-            print()
 
-            # model.eval()
-            # eval_rng = np.random.default_rng(2048)
+            model.eval()
+            eval_rng = np.random.default_rng(2048)
 
-            # val_df = lu.gather_clevr_model_performance(
-            #     model, val_loader, train_config.model_inputs, eval_rng, disable_tqdm=true)
+            val_df = lu.gather_clevr_model_performance(
+                model, val_loader, train_config.model_inputs, eval_rng, disable_tqdm=True)
 
-            # writer.add_scalar("loss/val_mae", val_df['pos_absolute_error'].mean(), epoch_idx)
-            # writer.add_scalar("loss/val_mse", val_df['mse'].mean(), epoch_idx)
-            # val_mse = val_df['mse'].mean()
-            # print(f"val mse: {val_mse}")
-            # if np.mean(val_mse) < best_val_mse:
-            #     best_model_weights = copy.deepcopy(model.state_dict())
-            #     best_model_epoch = epoch_idx
-            #     best_val_mse = val_mse
+            writer.add_scalar("loss/val_mae", val_df['pos_absolute_error'].mean(), epoch_idx)
+            writer.add_scalar("loss/val_mse", val_df['mse'].mean(), epoch_idx)
+            val_mse = val_df['mse'].mean()
+            print(f"val mse: {val_mse}")
+            if np.mean(val_mse) < best_val_mse:
+                best_model_weights = copy.deepcopy(model.state_dict())
+                best_model_epoch = epoch_idx
+                best_val_mse = val_mse
 
             # correspondences_output_path = output_path / "intermediates" / "correspondences" / f"{epoch_idx:06d}.png"
             # correspondences_output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -258,12 +257,12 @@ def main(dataset_path: Path, output_path: Path, load_model_path: Path | None, tr
                 output_path.mkdir(parents=True, exist_ok=True)
                 save_model(model, model_save_path, (input_tokens, None, None))
                 print("model saved to:", output_path / f"epoch_{epoch_idx:06d}")
-                # eval_rng = np.random.default_rng(2048)
-                # train_performance = lu.gather_clevr_model_performance(
-                #     model, train_performance_subset_loader, train_config.model_inputs, eval_rng, disable_tqdm=True
-                # )
-                # train_performance.to_csv(model_save_path / "train_performance.csv")
-                # val_df.to_csv(model_save_path / "val_performance.csv")
+                eval_rng = np.random.default_rng(2048)
+                train_performance = lu.gather_clevr_model_performance(
+                    model, train_performance_subset_loader, train_config.model_inputs, eval_rng, disable_tqdm=True
+                )
+                train_performance.to_csv(model_save_path / "train_performance.csv")
+                val_df.to_csv(model_save_path / "val_performance.csv")
 
     except KeyboardInterrupt:
         print("Exiting (got keyboard interrupt)")

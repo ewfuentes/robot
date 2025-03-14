@@ -78,14 +78,22 @@ def compute_mse_loss(output, ego_from_world, reduce=True):
 def construct_clevr_tokens_from_batch(batch: clevr_dataset.CleverDatasetItem,
                                       active_model_inputs: list[ModelInputs],
                                       rng: np.random.Generator):
-    ego_from_world = sample_ego_from_world(rng, len(batch.scene_description["objects"]))
+    batch_size = len(batch)
+    if 'ego_position' in batch.scene_description:
+        ego_from_world = np.zeros((batch_size, 3, 3))
+        ego_translations = np.asarray(batch.scene_description['ego_position'])
+        ego_from_world[:, :2, 2] = ego_translations[:, :2]
+        ego_from_world[:, 2, 2] = 1
+        # for now, zero rotations
+        ego_from_world[:, 1, 1] = 1
+        ego_from_world[:, 0, 0] = 1
+    else:
+        ego_from_world = sample_ego_from_world(rng, batch_size)
 
-    ego_scene_descriptions = project_scene_description_to_ego(
-        batch.scene_description["objects"], ego_from_world)
     model_input = clevr_transformer.SceneDescription(
         overhead_image=batch.overhead_image.cuda() if ModelInputs.OVERHEAD_IMAGE in active_model_inputs else None,
         ego_image=batch.ego_image.cuda() if ModelInputs.EGO_IMAGE in active_model_inputs else None,
-        ego_scene_description=ego_scene_descriptions if ModelInputs.EGO_VECTORIZED in active_model_inputs else None,
+        ego_scene_description=project_scene_description_to_ego(batch.scene_description["objects"], ego_from_world) if ModelInputs.EGO_VECTORIZED in active_model_inputs else None,
         overhead_scene_description=batch.scene_description["objects"] if ModelInputs.OVERHEAD_VECTORIZED in active_model_inputs else None,
     )
 
