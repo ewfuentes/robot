@@ -176,7 +176,6 @@ class PoseOptimizerLayer(torch.nn.Module):
         # NOTE: if changing this, double check seralization below
         self._optimizer = SDPRLayer(
             n_vars=5,
-            use_dual=False,
             constraints=[
                 # sin**2 + cos**2 - 1 = 0
                 np.array([
@@ -235,62 +234,10 @@ class PoseOptimizerLayer(torch.nn.Module):
 
         cpu_associations = associations.cpu()
         Q = self._build_q_matrix(cpu_associations, pt_in_a, x_in_b, self._loss_coeffs)
-        print('q:\n', Q, Q.shape)
-        # solver_args = {
-        #         "solve_method": "SCS",
-        #         "eps": 1e-8,
-        #         "verbose": True
-        # }
-        plt.figure(figsize=(12, 6))
-        X, Y, T = np.meshgrid(
-                np.linspace(-3, 3, 100), np.linspace(-3, 3, 100), np.linspace(-np.pi, np.pi, 100), indexing='ij')
-        print(f'{X.shape=}, {Y.shape=}, {T.shape=}')
-        x = X.reshape(1, -1)
-        y = Y.reshape(1, -1)
-        t = T.reshape(1, -1)
-        eval_t = np.concatenate([np.ones_like(x), x, y, np.cos(t), np.sin(t)], axis=0)
-
-        print(f'{eval_t.shape=}')
-        intermediate = Q.numpy()[0] @ eval_t
-
-        print(f'{intermediate.shape=}')
-        result = np.empty_like(x)
-        for idx in range(eval_t.shape[1]):
-            result[:, idx] = eval_t[:, idx].T @ intermediate[:, idx]
-        R = result.reshape(X.shape)
-
-        print(f'{R.shape=}')
-        plt.subplot(131)
-        plt.contourf(X[..., 50], Y[..., 50], np.log10(R[..., 50]), levels=np.arange(-4, 2.5, 0.8))
-        plt.xlabel('X')
-        plt.ylabel('Y')
-        plt.title(f'{T[0, 0, 50]=}')
-        plt.xlim(-3, 3)
-        plt.ylim(-3, 3)
-        plt.colorbar()
-        plt.clim(-4.0, 2.4)
-        plt.axis('equal')
-        plt.subplot(132)
-        plt.contourf(X[:, 50, :], T[:, 50, :], np.log10(R[:, 50, :]), levels=np.arange(-4, 2.5, 0.8))
-        plt.xlabel('X')
-        plt.ylabel('T')
-        plt.title(f'{Y[0, 50, 0]=}')
-        plt.colorbar()
-        plt.clim(-4.0, 2.4)
-        plt.subplot(133)
-        plt.contourf(T[82, ...], Y[82, ...], np.log10(R[82, ...]), levels=np.arange(-4, 2.5, 0.8))
-        plt.xlabel('T')
-        plt.ylabel('Y')
-        plt.title(f'{X[82, 0, 0]=}')
-        plt.colorbar()
-        plt.clim(-4.0, 2.4)
-        plt.tight_layout()
-        plt.savefig('/tmp/plot.png')
-        plt.show()
+        print(Q)
         solver_args = {
-                "solve_method": "Clarabel",
-                "verbose": False
+                # "solve_method": "Clarabel",
+                "verbose": True
         }
         sol, _ = self._optimizer(Q, solver_args=solver_args)
-        print('solution:\n', sol)
         return sol[:, 1:, 0].to(associations.device)
