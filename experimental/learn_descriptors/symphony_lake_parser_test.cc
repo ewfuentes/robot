@@ -1,4 +1,5 @@
 #include "experimental/learn_descriptors/symphony_lake_parser.hh"
+#include "common/geometry/opencv_viz.hh"
 
 #include <cstdlib>
 #include <iostream>
@@ -55,20 +56,37 @@ TEST(SymphonyLakeParserTest, snippet_140106) {
         }
     }
 }
-TEST(SymphonyLakeParserTest, snippet_140106_generator_test) {
+// TEST(SymphonyLakeParserTest, snippet_140106_generator_test) {
+//     DataParser data_parser = SymphonyLakeDatasetTestHelper::get_test_parser();
+//     DataParser::Generator<cv::Mat> generator =
+//         (SymphonyLakeDatasetTestHelper::get_test_parser()).create_img_generator();
+//     DataParser::Generator<cv::Mat>::iterator img_iter = generator.begin();
+//     while (img_iter != generator.end()) {
+//         cv::Mat img = *img_iter;
+//         // if (!is_test()) {
+//         //     cv::imshow("Symphony Dataset Image", img);
+//         //     cv::waitKey(200);
+//         // }
+//         // cv::imshow("Symphony Dataset Image", img);
+//         // cv::waitKey(200);
+//         ++img_iter;
+//     }
+// }
+
+TEST(SymphonyLakeParserTest, test_frames) {
+    const std::vector<int> indices {120, 190}; // 0-199
     DataParser data_parser = SymphonyLakeDatasetTestHelper::get_test_parser();
-    DataParser::Generator<cv::Mat> generator =
-        (SymphonyLakeDatasetTestHelper::get_test_parser()).create_img_generator();
-    DataParser::Generator<cv::Mat>::iterator img_iter = generator.begin();
-    while (img_iter != generator.end()) {
-        cv::Mat img = *img_iter;
-        // if (!is_test()) {
-        //     cv::imshow("Symphony Dataset Image", img);
-        //     cv::waitKey(200);
-        // }
-        // cv::imshow("Symphony Dataset Image", img);
-        // cv::waitKey(200);
-        ++img_iter;
-    }
+    const symphony_lake_dataset::SurveyVector &survey_vector = data_parser.get_surveys();
+    const symphony_lake_dataset::Survey &survey = survey_vector.get(0);
+    const symphony_lake_dataset::ImagePoint image_point_first = survey.getImagePoint(indices.front());
+
+    std::vector<Eigen::Isometry3d> poses_viz;
+    poses_viz.push_back(DataParser::get_T_boat_camera(image_point_first));
+    poses_viz.push_back(DataParser::T_boat_gps);
+    poses_viz.push_back(DataParser::T_boat_imu);    
+
+    std::cout << "pan: " << image_point_first.pan << "\ntilt: " << image_point_first.tilt << std::endl;
+
+    geometry::viz_scene(poses_viz, std::vector<Eigen::Vector3d>(), true, true);
 }
 }  // namespace robot::experimental::learn_descriptors

@@ -43,7 +43,8 @@ cc_test(
     "@com_google_googletest//:gtest_main",
     ":symphony_lake_parser",
     ":structure_from_motion",
-    "//common/geometry:opencv_viz"
+    "//common/geometry:opencv_viz",
+    "//common/geometry:translate_types"
   ]
 )
 
@@ -71,7 +72,8 @@ cc_test(
   deps = [
     "@com_google_googletest//:gtest_main",
     ":symphony_lake_parser",
-    "//common:check"
+    "//common:check",
+    "//common/geometry:opencv_viz"
   ]
 )
 

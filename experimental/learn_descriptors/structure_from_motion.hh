@@ -13,6 +13,7 @@
 #include "gtsam/linear/NoiseModel.h"
 #include "gtsam/nonlinear/NonlinearFactorGraph.h"
 #include "gtsam/nonlinear/Values.h"
+#include "gtsam/navigation/GPSFactor.h"
 #include "opencv2/opencv.hpp"
 
 namespace robot::experimental::learn_descriptors {
@@ -62,6 +63,7 @@ class Backend {
    public:
     static constexpr char pose_symbol_char = 'x';
     static constexpr char pose_rot_symbol_char = 'r';
+    static constexpr char pose_translation_symbol_char = 't';
     static constexpr char pose_bearing_symbol_char = 'b';
     static constexpr char landmark_symbol_char = 'l';
     static constexpr char camera_symbol_char = 'k';
@@ -85,11 +87,16 @@ class Backend {
     Backend(gtsam::Cal3_S2 K);
     ~Backend(){};
 
-    void add_prior_factor(const gtsam::Symbol &symbol, const gtsam::Pose3 &value);
+    template <typename T>
+    void add_prior_factor(const gtsam::Symbol &symbol, const T &value, const gtsam::SharedNoiseModel & model);
 
     template <typename T>
     void add_between_factor(const gtsam::Symbol &symbol_1, const gtsam::Symbol &symbol_2,
                             const T &value, const gtsam::SharedNoiseModel &model);
+    
+
+    void add_factor_GPS(const gtsam::Symbol &symbol, const gtsam::Point3 &p_world_gps, const gtsam::SharedNoiseModel& model, 
+        const gtsam::Rot3 &R_world_cam = gtsam::Rot3::Identity());
 
     std::pair<std::vector<gtsam::Pose3>, std::vector<gtsam::Point2>> get_obs_for_lmk(const gtsam::Symbol &lmk_symbol);
     void add_landmarks(const std::vector<Landmark> &landmarks);
@@ -100,6 +107,11 @@ class Backend {
     const gtsam::Values &get_current_initial_values() const { return initial_estimate_; };
     const gtsam::Values &get_result() const { return result_; };
     const gtsam::Cal3_S2 &get_K() const { return *K_; };
+
+    const gtsam::SharedNoiseModel get_lmk_noise() { return landmark_noise_; };
+    const gtsam::SharedNoiseModel get_pose_noise() { return pose_noise_; };
+    const gtsam::SharedNoiseModel get_translation_noise() { return translation_noise_; };
+    const gtsam::SharedNoiseModel get_gps_noise() { return gps_noise_; };
 
    private:
     gtsam::Cal3_S2::shared_ptr K_;
@@ -112,7 +124,16 @@ class Backend {
         gtsam::noiseModel::Isotropic::Sigma(2, 1.0);
     gtsam::noiseModel::Diagonal::shared_ptr pose_noise_ =
         gtsam::noiseModel::Diagonal::Sigmas(gtsam::Vector6(0.1, 0.1, 0.1, 0.01, 0.01, 0.01));
+    gtsam::noiseModel::Isotropic::shared_ptr translation_noise_ =
+        gtsam::noiseModel::Isotropic::Sigma(2, 0.1);
+    gtsam::noiseModel::Isotropic::shared_ptr gps_noise_ = gtsam::noiseModel::Isotropic::Sigma(3, 2.);
 };
+
+template<>
+void Backend::add_prior_factor<gtsam::Pose3>(const gtsam::Symbol &, const gtsam::Pose3 &, const gtsam::SharedNoiseModel &);
+
+template <>
+void Backend::add_prior_factor<gtsam::Point3>(const gtsam::Symbol &, const gtsam::Point3 &, const gtsam::SharedNoiseModel &);
 
 template <>
 void Backend::add_between_factor<gtsam::Pose3>(const gtsam::Symbol &, const gtsam::Symbol &,
@@ -136,7 +157,7 @@ class StructureFromMotion {
     ~StructureFromMotion(){};
 
     void set_initial_pose(gtsam::Pose3 initial_pose);
-    void add_image(const cv::Mat &img);
+    void add_image(const cv::Mat &img, const gtsam::Pose3 &T_world_cam);
     void solve_structure() { backend_.solve_graph(); };
     const gtsam::Values &get_structure_result() { return backend_.get_result(); };
     using MatchFunction = std::function<void(std::vector<cv::DMatch> &)>;
@@ -151,6 +172,7 @@ class StructureFromMotion {
     const std::vector<std::vector<cv::DMatch>> get_matches() { return matches_; };
 
    private:
+    gtsam::Pose3 initial_pose_;
     std::vector<std::pair<std::vector<cv::KeyPoint>, cv::Mat>> img_keypoints_and_descriptors_;
     std::vector<std::vector<cv::DMatch>> matches_;
     std::vector<std::vector<Backend::Landmark>> landmarks_;

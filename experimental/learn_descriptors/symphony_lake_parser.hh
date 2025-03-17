@@ -68,12 +68,26 @@ class DataParser {
         }
     }
 
+    static const Eigen::Vector3d t_boat_cam;
+    static const Eigen::Isometry3d T_boat_gps;    
+    static const Eigen::Isometry3d T_boat_imu;
+
     DataParser(const std::filesystem::path &image_root_dir,
                const std::vector<std::string> &survey_list);
     ~DataParser();
 
     Eigen::Affine3d get_T_world_camera(size_t survey_idx, size_t image_idx, bool use_gps = false,
                                        bool use_compass = false);
+    static const Eigen::Isometry3d get_T_boat_camera(const symphony_lake_dataset::ImagePoint &img_pt);
+    static const Eigen::Isometry3d get_T_boat_camera(double theta_pan, double theta_tilt);
+    /// @brief get_R_world_boat assuming z_axis_boat dot z_axis_world ~ -1
+    /// @param theta_compass in radians
+    /// @return R_world_boat
+    static const Eigen::Matrix3d get_R_world_boat(double theta_compass);
+    /// @brief get_T_world_boat assuming z_axis_boat dot z_axis_world ~ -1
+    /// @param img_pt 
+    /// @return T_world_boat
+    static const Eigen::Isometry3d get_T_world_boat(const symphony_lake_dataset::ImagePoint &img_pt);
 
     const symphony_lake_dataset::SurveyVector &get_surveys() const { return surveys_; };
     Generator<cv::Mat> create_img_generator() { return image_generator(surveys_); };
