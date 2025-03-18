@@ -16,6 +16,28 @@
 #include "gtsam/navigation/GPSFactor.h"
 #include "opencv2/opencv.hpp"
 
+namespace std {
+    template <>
+    struct hash<cv::KeyPoint> {
+        size_t operator()(const cv::KeyPoint& kp) const {
+            size_t h1 = hash<float>()(kp.pt.x);
+            size_t h2 = hash<float>()(kp.pt.y);
+            size_t h3 = hash<float>()(kp.size);
+            size_t h4 = hash<float>()(kp.angle);
+            size_t h5 = hash<float>()(kp.response);
+            size_t h6 = hash<int>()(kp.octave);
+            size_t h7 = hash<int>()(kp.class_id);
+ 
+            return (h1 ^ (h2 << 1)) ^ (h3 << 2) ^ (h4 << 3) ^ (h5 << 4) ^ (h6 << 5) ^ (h7 << 6);
+        }
+    };
+}
+namespace cv{
+    inline bool operator==(const cv::KeyPoint& kp1, const cv::KeyPoint& kp2) {
+        return kp1.pt == kp2.pt && kp1.size == kp2.size && kp1.angle == kp2.angle &&
+                kp1.response == kp2.response && kp1.octave == kp2.octave && kp1.class_id == kp2.class_id;
+    }
+}
 namespace robot::experimental::learn_descriptors {
 class Frontend {
    public:
@@ -146,7 +168,7 @@ void Backend::add_between_factor<gtsam::Rot3>(const gtsam::Symbol &, const gtsam
 class StructureFromMotion {
    public:
     static const Eigen::Isometry3d T_symlake_boat_cam;    
-    static const gtsam::Pose3 default_initial_pose;
+    static const gtsam::Pose3 default_initial_pose;    
     /**
      * @param D is vector (5x1) of the distortion coefficients (k1, k2, p1, p2, k3)
      */
@@ -176,6 +198,7 @@ class StructureFromMotion {
     std::vector<std::pair<std::vector<cv::KeyPoint>, cv::Mat>> img_keypoints_and_descriptors_;
     std::vector<std::vector<cv::DMatch>> matches_;
     std::vector<std::vector<Backend::Landmark>> landmarks_;
+    std::vector<std::unordered_map<cv::KeyPoint, Backend::Landmark>> keypoint_to_landmarks_;
     size_t landmark_count_ = 0;
 
     cv::Mat K_;

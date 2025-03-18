@@ -151,8 +151,10 @@ TEST(SFM_TEST, sfm_snippet_small) {
     Eigen::Isometry3d T_world_camera0 = DataParser::get_T_boat_camera(img_pt_first);
     StructureFromMotion sfm(Frontend::ExtractorType::SIFT, K, D, gtsam::Pose3(T_world_camera0.matrix()));  
 
+    std::vector<cv::Mat> img_vector;
     for (const int &idx : indices) {    
         const cv::Mat img = survey.loadImageByImageIndex(idx);
+        img_vector.push_back(img);
         const symphony_lake_dataset::ImagePoint img_pt = survey.getImagePoint(idx);        
         Eigen::Isometry3d T_earth_boat = DataParser::get_T_world_boat(img_pt);
         Eigen::Isometry3d T_world_boat = T_earth_world.inverse() * T_earth_boat;
@@ -213,71 +215,94 @@ TEST(SFM_TEST, sfm_snippet_small) {
     geometry::viz_scene(final_poses, final_lmks, true, true);
 }
 
-// TEST(SFM_TEST, sfm_building) {
-//     const int idx_start = 50, idx_end = 120, idx_skip = 2;
-//     DataParser data_parser = SymphonyLakeDatasetTestHelper::get_test_parser();
-//     const symphony_lake_dataset::SurveyVector &survey_vector = data_parser.get_surveys();
-//     const symphony_lake_dataset::Survey &survey = survey_vector.get(0);
-//     const symphony_lake_dataset::ImagePoint img_pt_first = survey.getImagePoint(idx_start);
+TEST(SFM_TEST, sfm_building) {
+    // indices 0-199
+    const std::vector<int> indices = []() {
+        std::vector<int> tmp;
+        for (int i = 0; i < 200; i += 10) {
+            tmp.push_back(i);
+        }
+        return tmp;
+    }();
+    DataParser data_parser = SymphonyLakeDatasetTestHelper::get_test_parser();
+    const symphony_lake_dataset::SurveyVector &survey_vector = data_parser.get_surveys();
+    const symphony_lake_dataset::Survey &survey = survey_vector.get(0);
+    const symphony_lake_dataset::ImagePoint img_pt_first = survey.getImagePoint(indices.front());
 
-//     // const size_t img_width = img_pt_first.width, img_height = img_pt_first.height;
-//     const double fx = img_pt_first.fx, fy = img_pt_first.fy;
-//     const double cx = img_pt_first.cx, cy = img_pt_first.cy;
-//     gtsam::Cal3_S2 K(fx, fy, 0, cx, cy);
-//     Eigen::Matrix<double, 5, 1> D =
-//         (Eigen::Matrix<double, 5, 1>() << SymphonyLakeCamParams::k1, SymphonyLakeCamParams::k2,
-//             SymphonyLakeCamParams::p1, SymphonyLakeCamParams::p2, SymphonyLakeCamParams::k3)
-//             .finished();
+    // const size_t img_width = img_pt_first.width, img_height = img_pt_first.height;
+    const double fx = img_pt_first.fx, fy = img_pt_first.fy;
+    const double cx = img_pt_first.cx, cy = img_pt_first.cy;
+    gtsam::Cal3_S2 K(fx, fy, 0, cx, cy);
+    Eigen::Matrix<double, 5, 1> D =
+        (Eigen::Matrix<double, 5, 1>() << SymphonyLakeCamParams::k1, SymphonyLakeCamParams::k2,
+         SymphonyLakeCamParams::p1, SymphonyLakeCamParams::p2, SymphonyLakeCamParams::k3)
+            .finished();
+    
+    // let world be the first boat base recorded. T_world_camera0 = T_earth_boat0 * T_boat_camera
+    Eigen::Isometry3d T_earth_world = DataParser::get_T_world_boat(img_pt_first);
+    Eigen::Isometry3d T_world_camera0 = DataParser::get_T_boat_camera(img_pt_first);
+    StructureFromMotion sfm(Frontend::ExtractorType::SIFT, K, D, gtsam::Pose3(T_world_camera0.matrix()));  
 
-//     StructureFromMotion sfm(Frontend::ExtractorType::SIFT, K, D);
-//     cv::Mat image;    
-//     for (int j = idx_start; j < idx_end; j+=idx_skip) {
-//         image = survey.loadImageByImageIndex(j);
-//         sfm.add_image(image);
-//     }
+    for (const int &idx : indices) {    
+        const cv::Mat img = survey.loadImageByImageIndex(idx);
+        const symphony_lake_dataset::ImagePoint img_pt = survey.getImagePoint(idx);  
 
-//     const gtsam::Values initial_values = sfm.get_backend().get_current_initial_values();
-//     std::vector<Eigen::Isometry3d> poses_world;
-//     for (size_t i = 0; i < (idx_end - idx_start)/idx_skip; i++) {
-//         gtsam::Pose3 pose =
-//             initial_values.at<gtsam::Pose3>(gtsam::Symbol(sfm.get_backend().pose_symbol_char, i));
-//         poses_world.emplace_back(pose.matrix());
-//     }
-//     std::vector<Eigen::Vector3d> points_world;
-//     for (int i = 0; i < static_cast<int>(sfm.get_matches().size()); i++) {
-//         // NOTE: this j for lmk_symbol is wrong.
-//         for (int j = 0; j < static_cast<int>(sfm.get_matches()[i].size()); j++) {
-//             gtsam::Symbol lmk_symbol = gtsam::Symbol(Backend::landmark_symbol_char, j);
-//             if (initial_values.exists(lmk_symbol)) {
-//                 points_world.emplace_back(initial_values.at<gtsam::Point3>(lmk_symbol));
-//             } else {
-//                 std::cout << "lmk symbol doesn't exist in initial_values!" << std::endl;
-//             }
-//         }
-//     }
-//     // std::cout << poses_world.front() << std::endl;
+        Eigen::Isometry3d T_earth_boat = DataParser::get_T_world_boat(img_pt);
+        Eigen::Isometry3d T_world_boat = T_earth_world.inverse() * T_earth_boat;
+        Eigen::Isometry3d T_world_cam = T_world_boat * DataParser::get_T_boat_camera(img_pt);
+        
+        sfm.add_image(img, gtsam::Pose3(T_world_cam.matrix()));
+    }
+    // for (const cv::Mat &image : images) {
+    //     sfm.add_image(image);
+    // }
 
-//     geometry::viz_scene(poses_world, points_world, true, false);
+    const gtsam::Values initial_values = sfm.get_backend().get_current_initial_values();
+    std::vector<Eigen::Isometry3d> poses_world;
+    for (size_t i = 0; i < indices.size(); i++) {
+        gtsam::Pose3 pose =
+            initial_values.at<gtsam::Pose3>(gtsam::Symbol(sfm.get_backend().pose_symbol_char, i));
+        poses_world.emplace_back(pose.matrix());
+    }
+    std::vector<Eigen::Vector3d> points_world;
+    for (int i = 0; i < static_cast<int>(sfm.get_matches().size()); i++) {
+        // NOTE: this j for lmk_symbol is wrong.
+        for (int j = 0; j < static_cast<int>(sfm.get_matches()[i].size()); j++) {
+            gtsam::Symbol lmk_symbol = gtsam::Symbol(Backend::landmark_symbol_char, j);
+            if (initial_values.exists(lmk_symbol)) {
+                points_world.emplace_back(initial_values.at<gtsam::Point3>(lmk_symbol));
+            } else {
+                std::cout << "lmk symbol doesn't exist in initial_values!" << std::endl;
+            }
+        }
+    }
+    // std::cout << poses_world.front() << std::endl;
 
-//     sfm.solve_structure();
+    geometry::viz_scene(poses_world, points_world, true, true);
 
-//     const gtsam::Values result_values = sfm.get_structure_result();
-//     std::vector<Eigen::Isometry3d> final_poses;
-//     std::vector<Eigen::Vector3d> final_lmks;
-//     for (size_t i = 0; i < (idx_end - idx_start)/idx_skip; i++) {
-//         final_poses.emplace_back(result_values.at<gtsam::Pose3>(gtsam::Symbol(sfm.get_backend().pose_symbol_char, i)).matrix());
-//     }
-//     for (int i = 0; i < static_cast<int>(sfm.get_matches().size()); i++) {
-//         // NOTE: this j for lmk_symbol is wrong.
-//         for (int j = 0; j < static_cast<int>(sfm.get_matches()[i].size()); j++) {
-//             gtsam::Symbol lmk_symbol = gtsam::Symbol(Backend::landmark_symbol_char, j);
-//             if (initial_values.exists(lmk_symbol)) {
-//                 final_lmks.emplace_back(initial_values.at<gtsam::Point3>(lmk_symbol));
-//             } else {
-//                 std::cout << "lmk symbol doesn't exist in initial_values!" << std::endl;
-//             }
-//         }
-//     }
-//     geometry::viz_scene(final_poses, final_lmks, true, false);
-// }
+    std::cout << "Solving for structure!" << std::endl;
+
+    sfm.solve_structure();
+
+    std::cout << "Solution complete." << std::endl;
+
+    const gtsam::Values result_values = sfm.get_structure_result();
+    std::vector<Eigen::Isometry3d> final_poses;
+    std::vector<Eigen::Vector3d> final_lmks;
+    for (size_t i = 0; i < indices.size(); i++) {
+        final_poses.emplace_back(result_values.at<gtsam::Pose3>(gtsam::Symbol(sfm.get_backend().pose_symbol_char, i)).matrix());
+    }
+    for (int i = 0; i < static_cast<int>(sfm.get_matches().size()); i++) {
+        // NOTE: this j for lmk_symbol is wrong.
+        for (int j = 0; j < static_cast<int>(sfm.get_matches()[i].size()); j++) {
+            gtsam::Symbol lmk_symbol = gtsam::Symbol(Backend::landmark_symbol_char, j);
+            if (initial_values.exists(lmk_symbol)) {
+                final_lmks.emplace_back(initial_values.at<gtsam::Point3>(lmk_symbol));
+            } else {
+                std::cout << "lmk symbol doesn't exist in initial_values!" << std::endl;
+            }
+        }
+    }
+    geometry::viz_scene(final_poses, final_lmks, true, true);
+}
 }  // namespace robot::experimental::learn_descriptors

@@ -67,8 +67,9 @@ void StructureFromMotion::add_image(const cv::Mat &img, const gtsam::Pose3 &T_wo
     cv::undistort(img, img_undistorted, K_, D_);
     std::pair<std::vector<cv::KeyPoint>, cv::Mat> keypoints_and_descriptors =
         frontend_.get_keypoints_and_descriptors(img);
-    landmarks_.push_back(std::vector<Backend::Landmark>());
-    if (get_num_images_added() > 0) {
+    keypoint_to_landmarks_.push_back(std::unordered_map<cv::KeyPoint, Backend::Landmark>());
+    const size_t idx_img_current = get_num_images_added();
+    if (idx_img_current > 0) {
         std::vector<cv::DMatch> matches =
             get_matches(img_keypoints_and_descriptors_.back().second,
                         keypoints_and_descriptors.second, Frontend::enforce_bijective_matches);
@@ -81,8 +82,8 @@ void StructureFromMotion::add_image(const cv::Mat &img, const gtsam::Pose3 &T_wo
         //         img_keypoints_and_descriptors_.back().first, keypoints_and_descriptors.first,
         //         matches, geom::eigen_mat_to_cv(geom::get_intrinsic_matrix(get_backend().get_K()))).linear());
 
-        const gtsam::Symbol sym_T_w_c0(Backend::pose_symbol_char, get_num_images_added() - 1);
-        const gtsam::Symbol sym_T_w_c1(Backend::pose_symbol_char, get_num_images_added());
+        const gtsam::Symbol sym_T_w_c0(Backend::pose_symbol_char, idx_img_current - 1);
+        const gtsam::Symbol sym_T_w_c1(Backend::pose_symbol_char, idx_img_current);
         // backend_.add_prior_factor(gtsam::Symbol(Backend::pose_symbol_char, get_num_images_added()), gps_prior, backend_.get_translation_noise());
         // gtsam::Pose3 T_w_c0 = backend_.get_current_initial_values().at<gtsam::Pose3>(sym_T_w_c0);
         // gtsam::Pose3 T_c0_c1(
@@ -96,36 +97,43 @@ void StructureFromMotion::add_image(const cv::Mat &img, const gtsam::Pose3 &T_wo
         backend_.add_factor_GPS(sym_T_w_c1, T_world_cam.translation(), backend_.get_gps_noise(), T_world_cam.rotation());
 
         for (const cv::DMatch match : matches) {
-            // indexing each landmark symbol with landmark_count_ could create issues later on.
-            // lmks indices will be duplicated with greater than 2 images
-            // make map from lmk to idx?
-            Backend::Landmark landmark_cam_0(
-                gtsam::Symbol(Backend::landmark_symbol_char, landmark_count_),
-                sym_T_w_c0,
-                gtsam::Point2(
-                    static_cast<double>(
-                        img_keypoints_and_descriptors_.back().first[match.queryIdx].pt.x),
-                    static_cast<double>(
-                        img_keypoints_and_descriptors_.back().first[match.queryIdx].pt.y)),
-                backend_.get_K(), 3.0);
-            Backend::Landmark landmark_cam_1(
-                gtsam::Symbol(Backend::landmark_symbol_char, landmark_count_),
-                sym_T_w_c1,
-                gtsam::Point2(
-                    static_cast<double>(keypoints_and_descriptors.first[match.trainIdx].pt.x),
-                    static_cast<double>(keypoints_and_descriptors.first[match.trainIdx].pt.y)),
-                backend_.get_K(), 3.0);
-            landmarks_[get_num_images_added() - 1].push_back(landmark_cam_0);
-            landmarks_[get_num_images_added()].push_back(landmark_cam_1);
+            const cv::KeyPoint kpt_cam0 = img_keypoints_and_descriptors_.back().first[match.queryIdx];
+            const cv::KeyPoint kpt_cam1 = keypoints_and_descriptors.first[match.trainIdx];
+
+            if (keypoint_to_landmarks_[idx_img_current - 1].find(kpt_cam0) == keypoint_to_landmarks_[idx_img_current - 1].end()) {
+                const Backend::Landmark landmark_cam_0(
+                    gtsam::Symbol(Backend::landmark_symbol_char, landmark_count_),
+                    sym_T_w_c0,
+                    gtsam::Point2(
+                        static_cast<double>(
+                            img_keypoints_and_descriptors_.back().first[match.queryIdx].pt.x),
+                        static_cast<double>(
+                            img_keypoints_and_descriptors_.back().first[match.queryIdx].pt.y)),
+                    backend_.get_K(), 3.0);
+                keypoint_to_landmarks_[idx_img_current - 1].emplace(kpt_cam0, landmark_cam_0);
+                landmark_count_++;
+            } 
+            // std::cout << "kpt_cam0 in keypoint_to_landmarks_: " << 
+            //     (keypoint_to_landmarks_[idx_img_current - 1].find(kpt_cam0) == keypoint_to_landmarks_[idx_img_current - 1].end()) 
+            //     << std::endl;                        
+            const Backend::Landmark landmark_cam_0 = keypoint_to_landmarks_[idx_img_current - 1].at(kpt_cam0);
+
+            // technically don't need this conditional when enforcing bijectivity
+            if (keypoint_to_landmarks_[idx_img_current].find(kpt_cam1) == keypoint_to_landmarks_[idx_img_current].end()) {
+                const Backend::Landmark landmark_cam_1(
+                    landmark_cam_0.lmk_factor_symbol,
+                    sym_T_w_c1,
+                    gtsam::Point2(
+                        static_cast<double>(keypoints_and_descriptors.first[match.trainIdx].pt.x),
+                        static_cast<double>(keypoints_and_descriptors.first[match.trainIdx].pt.y)),
+                    backend_.get_K(), 3.0);
+                keypoint_to_landmarks_[idx_img_current].emplace(kpt_cam1, landmark_cam_1);                
+            }             
+            const Backend::Landmark landmark_cam_1 = keypoint_to_landmarks_[idx_img_current].at(kpt_cam1);
+
             backend_.add_landmark(landmark_cam_0);
             backend_.add_landmark(landmark_cam_1);
-            landmark_count_++;
         }
-        // std::cout << "number of landmarks: " << count << std::endl;
-        // std::cout << "number of landmarks added to graph: " << [this](){int count = 0; for (const
-        // auto &landmark : landmarks_){count += landmark.size();} return count; }() << std::endl;
-        // backend_.get_current_initial_values().print("Current initial values: ");
-        // std::cout << "landmark_count_: " << landmark_count_ << std::endl;
     }
     img_keypoints_and_descriptors_.push_back(keypoints_and_descriptors);
 }
