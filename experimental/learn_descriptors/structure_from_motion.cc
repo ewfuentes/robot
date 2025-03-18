@@ -95,6 +95,7 @@ void StructureFromMotion::add_image(const cv::Mat &img, const gtsam::Pose3 &T_wo
         //     T_c0_c1,
         //     backend_.get_pose_noise());        
         backend_.add_factor_GPS(sym_T_w_c1, T_world_cam.translation(), backend_.get_gps_noise(), T_world_cam.rotation());
+        // backend_.add_factor_GPS(sym_T_w_c1, T_world_cam.translation(), backend_.get_gps_noise());
 
         for (const cv::DMatch match : matches) {
             const cv::KeyPoint kpt_cam0 = img_keypoints_and_descriptors_.back().first[match.queryIdx];
