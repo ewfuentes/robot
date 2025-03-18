@@ -101,8 +101,6 @@ TEST(PoseOptimizerDrakeTest, points_and_points_dual) {
             drake::symbolic::Variable("s")
     ).finished();
 
-    std::cout << indets << std::endl;
-
     const std::vector<Eigen::Vector2d> pts_in_world = {
         Eigen::Vector2d{0, -3},
         Eigen::Vector2d{0, 4},
@@ -120,7 +118,6 @@ TEST(PoseOptimizerDrakeTest, points_and_points_dual) {
     }
     const drake::symbolic::Polynomial cost_poly(total_cost, drake::symbolic::Variables(indets));
 
-    std::cout << cost_poly << std::endl;
     auto monomial_map = cost_poly.monomial_to_coefficient_map();
 
     Eigen::MatrixXd Q(5, 5);
@@ -129,13 +126,11 @@ TEST(PoseOptimizerDrakeTest, points_and_points_dual) {
         for (int j = i; j < 5; j++) {
             const auto mono_2 = j == 0 ? drake::symbolic::Monomial() : drake::symbolic::Monomial(indets(j - 1));
             const double value = get_constant_value(monomial_map[mono_1 * mono_2]);
-            std::cout << "term: " << mono_1 * mono_2 << " " << value << std::endl;
             const double factor = i == j ? 1.0 : 0.5;
             Q(i, j) = factor * value;
             Q(j, i) = factor * value;
         }
     }
-    std::cout << Q << std::endl;
 
     Eigen::MatrixXd homogenizing = Eigen::MatrixXd::Zero(5, 5);
     homogenizing(0, 0) = 1.0;
@@ -146,53 +141,38 @@ TEST(PoseOptimizerDrakeTest, points_and_points_dual) {
     det_is_one(4, 4) = -1.0;
 
     const auto dual_vars = prog.NewContinuousVariables(2);
-    // const auto H = Q - dual_vars[0] * homogenizing - dual_vars[1] * det_is_one;
-    prog.AddLinearMatrixInequalityConstraint({Q, homogenizing, det_is_one}, dual_vars);
-    // prog.AddPositiveSemidefiniteConstraint(-H);
-    prog.AddCost(dual_vars[0]);
-
-    // std::cout << "H: " << std::endl << H << std::endl;
-
-    std::cout << "dual program: " << prog << std::endl;
+    prog.AddLinearMatrixInequalityConstraint({Q, -det_is_one, -homogenizing}, dual_vars);
+    prog.AddCost(-dual_vars[1]);
 
     const auto solver = drake::solvers::ClarabelSolver();
-    // const auto solver = drake::solvers::ScsSolver();
     drake::solvers::SolverOptions options;
-    options.SetOption(drake::solvers::CommonSolverOption::kPrintToConsole, true);
-    options.SetOption(drake::solvers::CommonSolverOption::kStandaloneReproductionFileName, "/tmp/scs_repro.py");
     const auto result = solver.Solve(prog, std::nullopt, options);
+    
+    ASSERT_TRUE(result.is_success());
 
-    std::cout << "is success: " << result.is_success() << std::endl;
-    if (result.is_success()) {
-        std::cout << "Optimal cost: " << result.get_optimal_cost() << std::endl;
-        const Eigen::VectorXd dual_solution = result.GetDualSolution(prog.linear_matrix_inequality_constraints().front());
-        std::cout << "Dual Solution: " << dual_solution.transpose() << std::endl;
+    EXPECT_NEAR(result.get_optimal_cost(), 0.0, 1e-6);
+    const Eigen::VectorXd dual_solution = result.GetDualSolution(prog.linear_matrix_inequality_constraints().front());
 
-        Eigen::MatrixXd psd_result(5, 5);
-        int sol_idx = 0;
-        for (int i = 0; i < 5; i++) {
-            for (int j = i; j < 5; j++) {
-                psd_result(i, j) = dual_solution(sol_idx);
-                psd_result(j, i) = dual_solution(sol_idx);
-                sol_idx++;
-            }
-        }
-
-        std::cout << psd_result << std::endl;
-
-        const auto svd_result = psd_result.jacobiSvd(Eigen::ComputeThinU | Eigen::ComputeThinV);
-        std::cout << "Singular values: " << svd_result.singularValues().transpose() << std::endl;
-        std::cout << "left singular vectors: " << std::endl << svd_result.matrixU() << std::endl;
-
-        if (svd_result.singularValues()(1) < 0.1) {
-
-            std::cout << "Found rank 1 solution! " << std::endl;
-            Eigen::VectorXd solution = svd_result.matrixU().col(0).transpose();
-            solution = solution / solution(0);
-
-            std::cout << solution.transpose() << std::endl;
+    Eigen::MatrixXd psd_result(5, 5);
+    int sol_idx = 0;
+    for (int i = 0; i < 5; i++) {
+        for (int j = i; j < 5; j++) {
+            psd_result(i, j) = dual_solution(sol_idx);
+            psd_result(j, i) = dual_solution(sol_idx);
+            sol_idx++;
         }
     }
+
+    const auto svd_result = psd_result.jacobiSvd(Eigen::ComputeThinU | Eigen::ComputeThinV);
+    ASSERT_GT(svd_result.singularValues()(0) / svd_result.singularValues()(1), 1e3);
+    Eigen::VectorXd solution = svd_result.matrixU().col(0).transpose();
+    solution = solution / solution(0);
+
+    EXPECT_NEAR(solution(0), 1.0, 1e-5);
+    EXPECT_NEAR(solution(1), 2.0, 1e-5);
+    EXPECT_NEAR(solution(2), 0.0, 1e-5);
+    EXPECT_NEAR(solution(3), 1.0, 1e-5);
+    EXPECT_NEAR(solution(4), 0.0, 1e-5);
 }
 
 TEST(PoseOptimizerDrakeTest, points_and_points) {

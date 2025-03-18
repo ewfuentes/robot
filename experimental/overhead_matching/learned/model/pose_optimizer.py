@@ -234,10 +234,10 @@ class PoseOptimizerLayer(torch.nn.Module):
 
         cpu_associations = associations.cpu()
         Q = self._build_q_matrix(cpu_associations, pt_in_a, x_in_b, self._loss_coeffs)
-        print(Q)
         solver_args = {
-                # "solve_method": "Clarabel",
-                "verbose": True
+             "solve_method": "Clarabel",
         }
         sol, _ = self._optimizer(Q, solver_args=solver_args)
+        print(sol)
+        print(np.linalg.eigvals(sol))
         return sol[:, 1:, 0].to(associations.device)

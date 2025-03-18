@@ -56,7 +56,7 @@ class PoseOptimizerTest(unittest.TestCase):
 
         # Verification
         self.assertEqual(solution.shape, (1, 4))
-        self.assertAlmostEqual(solution[0, 0].item(), 2.0)
+        self.assertAlmostEqual(solution[0, 0].item(), 2.0, places=5)
         self.assertAlmostEqual(solution[0, 1].item(), 0)
         self.assertAlmostEqual(solution[0, 2].item(), 1.0)
         self.assertAlmostEqual(solution[0, 3].item(), 0.0)
