@@ -76,8 +76,8 @@ class DataParser {
                const std::vector<std::string> &survey_list);
     ~DataParser();
 
-    Eigen::Affine3d get_T_world_camera(size_t survey_idx, size_t image_idx, bool use_gps = false,
-                                       bool use_compass = false);
+    // Eigen::Affine3d get_T_world_camera(size_t survey_idx, size_t image_idx, bool use_gps = false,
+    //                                    bool use_compass = false);
     static const Eigen::Isometry3d get_T_boat_camera(const symphony_lake_dataset::ImagePoint &img_pt);
     static const Eigen::Isometry3d get_T_boat_camera(double theta_pan, double theta_tilt);
     /// @brief get_R_world_boat assuming z_axis_boat dot z_axis_world ~ -1

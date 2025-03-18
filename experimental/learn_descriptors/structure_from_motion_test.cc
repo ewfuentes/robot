@@ -159,6 +159,8 @@ TEST(SFM_TEST, sfm_snippet_small) {
         Eigen::Isometry3d T_earth_boat = DataParser::get_T_world_boat(img_pt);
         Eigen::Isometry3d T_world_boat = T_earth_world.inverse() * T_earth_boat;
         Eigen::Isometry3d T_world_cam = T_world_boat * DataParser::get_T_boat_camera(img_pt);
+
+        // T_world_cam.linear() = T_world_camera0.linear().matrix();
         
         sfm.add_image(img, gtsam::Pose3(T_world_cam.matrix()));
     }
