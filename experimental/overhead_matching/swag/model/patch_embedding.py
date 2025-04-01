@@ -19,6 +19,7 @@ def feature_extraction(backbone, x):
     max_pooled = F.max_pool2d(features, kernel_size=2, stride=2, padding=0, ceil_mode=True)
     return max_pooled
 
+
 def compute_safa_input_dims(backbone: torch.nn.Module, patch_dims: Tuple[int, int]):
     with torch.no_grad():
         test_input = torch.empty(1, 3, *patch_dims)
@@ -31,14 +32,19 @@ class WagPatchEmbedding(torch.nn.Module):
         super().__init__()
         self.backbone = torchvision.models.vgg19()
 
-        safa_dim = compute_safa_input_dims(self.backbone, config.patch_dims)
+        input_safa_dim = compute_safa_input_dims(self.backbone, config.patch_dims)
+        safa_dims = [input_safa_dim // 2, input_safa_dim]
         n_heads = config.num_aggregation_heads
-        self._safa_params = [
-            (torch.nn.Parameter(torch.randn((n_heads, safa_dim, safa_dim // 2)) * 0.005),
-             torch.nn.Parameter(torch.ones((1, n_heads, safa_dim // 2)) * 0.1)),
-            (torch.nn.Parameter(torch.randn((n_heads, safa_dim // 2, safa_dim)) * 0.005),
-             torch.nn.Parameter(torch.ones((1, n_heads, safa_dim)) * 0.1)),
-        ]
+        self._safa_params = []
+        for layer_idx, output_safa_dim in enumerate(safa_dims):
+            safa_weight = torch.nn.Parameter(
+                    torch.randn((n_heads, input_safa_dim, output_safa_dim)) * 0.005)
+            safa_bias = torch.nn.Parameter(torch.ones((1, n_heads, output_safa_dim)) * 0.1)
+            self.register_parameter(f"safa_{layer_idx}_weight", safa_weight)
+            self.register_parameter(f"safa_{layer_idx}_bias", safa_bias)
+            self._safa_params.append((safa_weight, safa_bias))
+
+            input_safa_dim = output_safa_dim
 
     def safa(self, x):
         batch_size = x.shape[0]
