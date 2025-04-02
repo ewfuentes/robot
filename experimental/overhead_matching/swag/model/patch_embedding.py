@@ -15,9 +15,7 @@ class WagPatchEmbeddingConfig:
 
 def feature_extraction(backbone, x):
     features = backbone.features(x)
-    # If the dimension size is odd, then ceil_mode=True will pad by one on the right/bottom
-    max_pooled = F.max_pool2d(features, kernel_size=2, stride=2, padding=0, ceil_mode=True)
-    return max_pooled
+    return features
 
 
 def compute_safa_input_dims(backbone: torch.nn.Module, patch_dims: Tuple[int, int]):
@@ -30,7 +28,7 @@ def compute_safa_input_dims(backbone: torch.nn.Module, patch_dims: Tuple[int, in
 class WagPatchEmbedding(torch.nn.Module):
     def __init__(self, config: WagPatchEmbeddingConfig):
         super().__init__()
-        self.backbone = torchvision.models.vgg19()
+        self.backbone = torchvision.models.vgg16()
 
         input_safa_dim = compute_safa_input_dims(self.backbone, config.patch_dims)
         safa_dims = [input_safa_dim // 2, input_safa_dim]
