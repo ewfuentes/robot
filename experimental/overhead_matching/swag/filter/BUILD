@@ -14,6 +14,8 @@ py_test(
   srcs = ["particle_filter_test.py"],
   deps = [
     requirement("torch"),
+    requirement("numpy"),
+    requirement("matplotlib"),
     "//common/torch:load_torch_deps",
     ":particle_filter",
   ],

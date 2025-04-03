@@ -41,7 +41,7 @@ class TestParticleFilter(unittest.TestCase):
         self.assertTrue(torch.all(new_particles[:, 0] != 0))
 
         # Check that noise is applied
-        std_dev = torch.std(new_particles[:, 1])
+        std_dev = torch.std(new_particles[:, 0])
         self.assertTrue(std_dev > 0)
 
     def test_wag_observation_liklihood_from_similarity_matrix(self):
@@ -124,8 +124,8 @@ class TestParticleFilter(unittest.TestCase):
         )
 
         # Create a map with ground truth at (100, 0)
-        map_size = 200
-        grid_size = 20
+        map_size = 400
+        grid_size = 200
         x_grid = torch.linspace(0, map_size, grid_size)
         y_grid = torch.linspace(-map_size//2, map_size//2, grid_size)
 
@@ -139,11 +139,10 @@ class TestParticleFilter(unittest.TestCase):
         # Create a path going straight right
         n_steps = 10
         position = torch.tensor([0.0, 0.0])
-        motion_steps = torch.tensor([10.0, 0.0])
+        motion_steps = torch.tensor([20.0, 0.0])
 
         # Parameters
         noise_percent = 0.2
-        sigma = 5.0
 
         # Save positions for plotting
         all_particle_positions = [particles.clone()]
@@ -161,24 +160,22 @@ class TestParticleFilter(unittest.TestCase):
 
             # Generate similarity matrix (higher value = more similar)
             # Simulating similarity based on distance from ground truth
-            similarity_matrix = torch.zeros((grid_size, grid_size))
+            obs_likelihood = torch.zeros((grid_size, grid_size))
             for i in range(grid_size):
                 for j in range(grid_size):
                     patch_pos = patch_positions[i, j]
                     dist = torch.norm(patch_pos - position)
                     # Inverse relationship - closer patches have higher similarity
-                    similarity_matrix[i, j] = torch.exp(-dist/50.0)
+                    obs_likelihood[i, j] = torch.exp(-dist/1.0)
 
-            # Convert similarity to observation likelihood
-            obs_likelihood = wag_observation_liklihood_from_similarity_matrix(
-                similarity_matrix, sigma
-            )
+            # fig, ax = plt.subplots()
+            # ax.imshow(obs_likelihood)
+            # plt.savefig(f"/tmp/sim_matrix_{_}.png")
 
             # Update particle weights
             weights = wag_update_particle_weights(
                 obs_likelihood, patch_positions, particles
             )
-
             # Resample particles
             particles = wag_multinomial_resampling(
                 particles, weights, self.generator
