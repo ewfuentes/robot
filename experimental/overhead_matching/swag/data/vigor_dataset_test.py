@@ -135,6 +135,9 @@ class VigorDatasetTest(unittest.TestCase):
         pano_lon_sign = -1 if item.panorama[0, 0, 1] == 1 else 1
         pano_embedded_lon = pano_lon_sign * (item.panorama[1, 0, 1] + 0.01 * item.panorama[2, 0, 1]).item()
 
+        print(item.panorama_metadata)
+        print(item.panorama[:, 0, 0])
+        print(item.panorama[:, 0, 1])
         self.assertAlmostEqual(item.panorama_metadata["lat"], pano_embedded_lat, places=1)
         self.assertAlmostEqual(item.panorama_metadata["lon"], pano_embedded_lon, places=1)
 
@@ -144,6 +147,9 @@ class VigorDatasetTest(unittest.TestCase):
         sat_lon_sign = -1 if item.satellite[0, 0, 1] == 1 else 1
         sat_embedded_lon = sat_lon_sign * (item.satellite[1, 0, 1] + 0.01 * item.satellite[2, 0, 1]).item()
 
+        print(item.satellite_metadata)
+        print(item.satellite[:, 0, 0])
+        print(item.satellite[:, 0, 1])
         self.assertAlmostEqual(item.satellite_metadata["lat"], sat_embedded_lat, places=1)
         self.assertAlmostEqual(item.satellite_metadata["lon"], sat_embedded_lon, places=1)
 
