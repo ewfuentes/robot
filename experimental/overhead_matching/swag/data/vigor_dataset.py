@@ -17,7 +17,7 @@ class VigorDatasetItem(NamedTuple):
 
 def load_satellite_metadata(path: Path):
     out = []
-    for p in path.iterdir():
+    for p in sorted(list(path.iterdir())):
         _, lat, lon = p.stem.split("_")
         out.append((float(lat), float(lon), p))
     return pd.DataFrame(out, columns=["lat", "lon", "path"])
@@ -25,7 +25,7 @@ def load_satellite_metadata(path: Path):
 
 def load_panorama_metadata(path: Path):
     out = []
-    for p in path.iterdir():
+    for p in sorted(list(path.iterdir())):
         pano_id, lat, lon, _ = p.stem.split(",")
         out.append((pano_id, float(lat), float(lon), p))
     return pd.DataFrame(out, columns=["pano_id", "lat", "lon", "path"])
