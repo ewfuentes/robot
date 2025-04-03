@@ -1,5 +1,8 @@
 import unittest
 
+import common.torch.load_torch_deps
+import torch
+
 from pathlib import Path
 import tempfile
 import numpy as np
@@ -112,14 +115,53 @@ class VigorDatasetTest(unittest.TestCase):
         cls._temp_dir.cleanup()
         del cls._temp_dir
 
-    def test_happy_case(self):
+    def test_get_single_item(self):
         # Setup
-        dataset = vigor_dataset.VigorDataset(Path(self._temp_dir.name))
+        NEIGHBOR_PANO_RADIUS = 0.2
+        dataset = vigor_dataset.VigorDataset(Path(self._temp_dir.name), NEIGHBOR_PANO_RADIUS)
 
         # Action
-        print(dataset)
+        item = dataset[100]
 
         # Verification
+        # Check that the panorama has neighbors and the associated satellite patch has at least 1 child panorama
+        self.assertGreater(len(item.panorama_metadata["neighbor_panorama_idxs"]), 0)
+        self.assertGreater(len(item.satellite_metadata["panorama_idxs"]), 0)
+
+        # Check that the location embedded in the images matches the metadata
+        pano_lat_sign = -1 if item.panorama[0, 0, 0] == 1 else 1
+        pano_embedded_lat = pano_lat_sign * (item.panorama[1, 0, 0] + 0.01 * item.panorama[2, 0, 0]).item()
+
+        pano_lon_sign = -1 if item.panorama[0, 0, 1] == 1 else 1
+        pano_embedded_lon = pano_lon_sign * (item.panorama[1, 0, 1] + 0.01 * item.panorama[2, 0, 1]).item()
+
+        self.assertAlmostEqual(item.panorama_metadata["lat"], pano_embedded_lat, places=1)
+        self.assertAlmostEqual(item.panorama_metadata["lon"], pano_embedded_lon, places=1)
+
+        sat_lat_sign = -1 if item.satellite[0, 0, 0] == 1 else 1
+        sat_embedded_lat = sat_lat_sign * (item.satellite[1, 0, 0] + 0.01 * item.satellite[2, 0, 0]).item()
+
+        sat_lon_sign = -1 if item.satellite[0, 0, 1] == 1 else 1
+        sat_embedded_lon = sat_lon_sign * (item.satellite[1, 0, 1] + 0.01 * item.satellite[2, 0, 1]).item()
+
+        self.assertAlmostEqual(item.satellite_metadata["lat"], sat_embedded_lat, places=1)
+        self.assertAlmostEqual(item.satellite_metadata["lon"], sat_embedded_lon, places=1)
+
+    def test_get_batch(self):
+        # Setup
+        NEIGHBOR_PANO_RADIUS = 0.2
+        BATCH_SIZE = 32
+        dataset = vigor_dataset.VigorDataset(Path(self._temp_dir.name), NEIGHBOR_PANO_RADIUS)
+        dataloader = vigor_dataset.get_dataloader(dataset, batch_size=BATCH_SIZE)
+
+        # Action
+        batch = next(iter(dataloader))
+
+        # Verification
+        self.assertEqual(len(batch.panorama_metadata), BATCH_SIZE)
+        self.assertEqual(len(batch.satellite_metadata), BATCH_SIZE)
+        self.assertEqual(batch.panorama.shape[0], BATCH_SIZE)
+        self.assertEqual(batch.satellite.shape[0], BATCH_SIZE)
 
 
 if __name__ == "__main__":

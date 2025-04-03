@@ -6,7 +6,9 @@ py_library(
   srcs = ["vigor_dataset.py"],
   deps = [
     requirement("torch"),
+    requirement("torchvision"),
     requirement("pandas"),
+    requirement("scipy"),
     requirement("matplotlib"),
     requirement("PyGObject"),
     "//common/torch:load_torch_deps",
@@ -19,6 +21,8 @@ py_test(
   deps = [
     requirement("numpy"),
     requirement("Pillow"),
+    requirement("torch"),
+    "//common/torch:load_torch_deps",
     ":vigor_dataset",
   ]
 )
