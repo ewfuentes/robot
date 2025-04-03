@@ -1,4 +1,3 @@
-
 import common.torch.load_torch_deps
 import torch
 
@@ -11,7 +10,7 @@ import matplotlib.pyplot as plt
 def load_satellite_metadata(path: Path):
     out = []
     for p in path.iterdir():
-        _, lat, lon = p.stem.split('_')
+        _, lat, lon = p.stem.split("_")
         out.append((float(lat), float(lon), p))
     return pd.DataFrame(out, columns=["lat", "lon", "path"])
 
@@ -19,7 +18,7 @@ def load_satellite_metadata(path: Path):
 def load_panorama_metadata(path: Path):
     out = []
     for p in path.iterdir():
-        pano_id, lat, lon, _ = p.stem.split(',')
+        pano_id, lat, lon, _ = p.stem.split(",")
         out.append((pano_id, float(lat), float(lon), p))
     return pd.DataFrame(out, columns=["pano_id", "lat", "lon", "path"])
 
@@ -31,5 +30,10 @@ class VigorDataset(torch.utils.data.Dataset):
 
         satellite_metadata = load_satellite_metadata(dataset_path / "satellite")
         panorama_metadata = load_panorama_metadata(dataset_path / "panorama")
+        plt.figure()
+        ax = plt.subplot(111)
+        satellite_metadata.plot(x="lon", y="lat", ax=ax, kind="scatter", color="r")
+        panorama_metadata.plot(x="lon", y="lat", ax=ax, kind="scatter", color="g")
+        plt.axis("equal")
 
-        
+        plt.show(block=True)
