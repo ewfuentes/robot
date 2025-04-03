@@ -44,10 +44,10 @@ class VigorDatasetTest(unittest.TestCase):
             draw = ImageDraw.Draw(image)
             draw.text((5, 5), f"({lat}, {lon})")
             image.putpixel(
-                (0, 0), (0 if lat >= 0 else 1, int(lat), int((lat % 1) * 100))
+                (0, 0), (0 if lat >= 0 else 1, int(abs(lat)), int((abs(lat) % 1) * 100))
             )
             image.putpixel(
-                (1, 0), (0 if lon >= 0 else 1, int(lon), int((lon % 1) * 100))
+                (1, 0), (0 if lon >= 0 else 1, int(abs(lon)), int((abs(lon) % 1) * 100))
             )
             image.save(file_path)
 
