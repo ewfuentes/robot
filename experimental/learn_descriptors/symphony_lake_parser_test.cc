@@ -1,5 +1,4 @@
 #include "experimental/learn_descriptors/symphony_lake_parser.hh"
-#include "common/geometry/opencv_viz.hh"
 
 #include <cstdlib>
 #include <iostream>
@@ -8,6 +7,7 @@
 #include <vector>
 
 #include "common/check.hh"
+#include "common/geometry/opencv_viz.hh"
 #include "gtest/gtest.h"
 #include "opencv2/opencv.hpp"
 
@@ -56,37 +56,67 @@ TEST(SymphonyLakeParserTest, snippet_140106) {
         }
     }
 }
-// TEST(SymphonyLakeParserTest, snippet_140106_generator_test) {
-//     DataParser data_parser = SymphonyLakeDatasetTestHelper::get_test_parser();
-//     DataParser::Generator<cv::Mat> generator =
-//         (SymphonyLakeDatasetTestHelper::get_test_parser()).create_img_generator();
-//     DataParser::Generator<cv::Mat>::iterator img_iter = generator.begin();
-//     while (img_iter != generator.end()) {
-//         cv::Mat img = *img_iter;
-//         // if (!is_test()) {
-//         //     cv::imshow("Symphony Dataset Image", img);
-//         //     cv::waitKey(200);
-//         // }
-//         // cv::imshow("Symphony Dataset Image", img);
-//         // cv::waitKey(200);
-//         ++img_iter;
-//     }
-// }
 
-TEST(SymphonyLakeParserTest, test_frames) {
-    const std::vector<int> indices {120, 190}; // 0-199
+TEST(SymphonyLakeParserTest, test_cam_frames) {
+    const std::vector<int> indices = []() {
+        std::vector<int> tmp;
+        for (int i = 0; i < 200; i += 10) {
+            tmp.push_back(i);
+        }
+        return tmp;
+    }();
     DataParser data_parser = SymphonyLakeDatasetTestHelper::get_test_parser();
     const symphony_lake_dataset::SurveyVector &survey_vector = data_parser.get_surveys();
     const symphony_lake_dataset::Survey &survey = survey_vector.get(0);
-    const symphony_lake_dataset::ImagePoint image_point_first = survey.getImagePoint(indices.front());
+    const symphony_lake_dataset::ImagePoint image_point_first =
+        survey.getImagePoint(indices.front());
 
-    std::vector<Eigen::Isometry3d> poses_viz;
-    poses_viz.push_back(DataParser::get_T_boat_camera(image_point_first));
-    poses_viz.push_back(DataParser::T_boat_gps);
-    poses_viz.push_back(DataParser::T_boat_imu);    
+    std::vector<Eigen::Isometry3d> cam_frames;
 
-    std::cout << "pan: " << image_point_first.pan << "\ntilt: " << image_point_first.tilt << std::endl;
+    // NOTE: the world in these images is east, north, up centered at boat0 translation
+    Eigen::Vector3d t_world_boat0 = DataParser::get_T_world_boat(image_point_first).translation();
 
-    geometry::viz_scene(poses_viz, std::vector<Eigen::Vector3d>(), true, true);
+    for (size_t i = 0; i < indices.size(); i++) {
+        const symphony_lake_dataset::ImagePoint img_pt = survey.getImagePoint(indices[i]);
+        Eigen::Isometry3d T_world_boatidx = DataParser::get_T_world_boat(img_pt);
+        Eigen::Isometry3d T_boatidx_camidx =
+            DataParser::get_T_boat_camera(img_pt);  // current boat to current camera
+
+        Eigen::Isometry3d T_world_camidx = T_world_boatidx * T_boatidx_camidx;
+        T_world_camidx.translation() -= t_world_boat0;
+
+        cam_frames.push_back(T_world_camidx);
+    }
+
+    geometry::viz_scene(cam_frames, std::vector<Eigen::Vector3d>(), true, true, "test_cam_frames");
+}
+
+TEST(SymphonyLakeParserTest, test_gps_frames) {
+    const std::vector<int> indices = []() {
+        std::vector<int> tmp;
+        for (int i = 0; i < 200; i += 10) {
+            tmp.push_back(i);
+        }
+        return tmp;
+    }();
+    DataParser data_parser = SymphonyLakeDatasetTestHelper::get_test_parser();
+    const symphony_lake_dataset::SurveyVector &survey_vector = data_parser.get_surveys();
+    const symphony_lake_dataset::Survey &survey = survey_vector.get(0);
+    const symphony_lake_dataset::ImagePoint image_point_first =
+        survey.getImagePoint(indices.front());
+
+    std::vector<Eigen::Isometry3d> gps_frames;
+
+    // NOTE: the world in these images is east, north, up centered at boat0 translation
+    Eigen::Vector3d t_world_gps0(image_point_first.x, image_point_first.y, 0);
+
+    for (size_t i = 0; i < indices.size(); i++) {
+        const symphony_lake_dataset::ImagePoint img_pt = survey.getImagePoint(indices[i]);
+        Eigen::Isometry3d T_world_gpsidx = DataParser::get_T_world_gps(img_pt);
+        T_world_gpsidx.translation() -= t_world_gps0;
+        gps_frames.push_back(T_world_gpsidx);
+    }
+
+    geometry::viz_scene(gps_frames, std::vector<Eigen::Vector3d>(), true, true, "test_gps_frames");
 }
 }  // namespace robot::experimental::learn_descriptors

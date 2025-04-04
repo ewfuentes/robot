@@ -29,7 +29,8 @@ cc_library(
     "@gtsam//:gtsam",
     "@eigen",
     "//common/geometry:camera",
-    "//common/geometry:translate_types"
+    "//common/geometry:translate_types",
+    "//common/geometry:opencv_viz"
   ]
 )
 

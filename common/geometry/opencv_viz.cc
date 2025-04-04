@@ -25,8 +25,8 @@ cv::Vec3d rotation_matrix_to_axis_angle(const cv::Matx33d &R) {
 
 void viz_scene(const std::vector<Eigen::Isometry3d> &poses_world,
                const std::vector<Eigen::Vector3d> &points_world, const bool show_grid,
-               const bool show_origin) {
-    cv::viz::Viz3d window("Viz Scene");
+               const bool show_origin, const std::string &window_name) {
+    cv::viz::Viz3d window(window_name);
 
     constexpr double pose_size = .5;
     for (unsigned int i = 0; i < poses_world.size(); i++) {

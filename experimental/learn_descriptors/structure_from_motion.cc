@@ -5,6 +5,7 @@
 #include <stdexcept>
 
 #include "common/geometry/camera.hh"
+#include "common/geometry/opencv_viz.hh"
 #include "common/geometry/translate_types.hh"
 #include "gtsam/geometry/triangulation.h"
 #include "gtsam/nonlinear/LevenbergMarquardtOptimizer.h"
@@ -19,9 +20,10 @@ namespace geom = robot::geometry;
 namespace robot::experimental::learn_descriptors {
 
 const Eigen::Isometry3d StructureFromMotion::T_symlake_boat_cam = []() {
-    Eigen::Isometry3d transform = Eigen::Isometry3d::Identity();    
+    Eigen::Isometry3d transform = Eigen::Isometry3d::Identity();
     transform.linear() = (Eigen::AngleAxisd(M_PI_2, Eigen::Vector3d(0, 1, 0)) *
-                                     Eigen::AngleAxisd(-M_PI_2, Eigen::Vector3d(0, 0, 1))).toRotationMatrix();
+                          Eigen::AngleAxisd(-M_PI_2, Eigen::Vector3d(0, 0, 1)))
+                             .toRotationMatrix();
     return transform;
 }();
 
@@ -34,7 +36,8 @@ std::string pose_to_string(gtsam::Pose3 pose) {
 // const gtsam::Pose3 StructureFromMotion::default_initial_pose = []() {
 //     Eigen::Isometry3d
 // }();
-const gtsam::Pose3 StructureFromMotion::default_initial_pose(StructureFromMotion::T_symlake_boat_cam.matrix());
+const gtsam::Pose3 StructureFromMotion::default_initial_pose(
+    StructureFromMotion::T_symlake_boat_cam.matrix());
 // const gtsam::Pose3 StructureFromMotion::default_initial_pose =
 //     gtsam::Pose3(gtsam::Rot3(T_symlake_boat_cam.rotation()), T_symlake_boat_cam.translation());
 // gtsam::Pose3(
@@ -48,7 +51,8 @@ const gtsam::Pose3 StructureFromMotion::default_initial_pose(StructureFromMotion
 StructureFromMotion::StructureFromMotion(Frontend::ExtractorType frontend_extractor,
                                          gtsam::Cal3_S2 K, Eigen::Matrix<double, 5, 1> D,
                                          gtsam::Pose3 initial_pose,
-                                         Frontend::MatcherType frontend_matcher) : initial_pose_(initial_pose) {
+                                         Frontend::MatcherType frontend_matcher)
+    : initial_pose_(initial_pose) {
     frontend_ = Frontend(frontend_extractor, frontend_matcher);
     backend_ = Backend(K);
 
@@ -59,7 +63,8 @@ StructureFromMotion::StructureFromMotion(Frontend::ExtractorType frontend_extrac
 }
 
 void StructureFromMotion::set_initial_pose(gtsam::Pose3 initial_pose) {
-    backend_.add_prior_factor(gtsam::Symbol(Backend::pose_symbol_char, 0), initial_pose, gtsam::noiseModel::Isotropic::Sigma(6, 0));
+    backend_.add_prior_factor(gtsam::Symbol(Backend::pose_symbol_char, 0), initial_pose,
+                              gtsam::noiseModel::Isotropic::Sigma(6, 0));
 }
 
 void StructureFromMotion::add_image(const cv::Mat &img, const gtsam::Pose3 &T_world_cam) {
@@ -80,31 +85,35 @@ void StructureFromMotion::add_image(const cv::Mat &img, const gtsam::Pose3 &T_wo
         // gtsam::Rot3 R_c0_c1(
         //     geom::estimate_c0_c1(
         //         img_keypoints_and_descriptors_.back().first, keypoints_and_descriptors.first,
-        //         matches, geom::eigen_mat_to_cv(geom::get_intrinsic_matrix(get_backend().get_K()))).linear());
+        //         matches,
+        //         geom::eigen_mat_to_cv(geom::get_intrinsic_matrix(get_backend().get_K()))).linear());
 
         const gtsam::Symbol sym_T_w_c0(Backend::pose_symbol_char, idx_img_current - 1);
         const gtsam::Symbol sym_T_w_c1(Backend::pose_symbol_char, idx_img_current);
-        // backend_.add_prior_factor(gtsam::Symbol(Backend::pose_symbol_char, get_num_images_added()), gps_prior, backend_.get_translation_noise());
-        // gtsam::Pose3 T_w_c0 = backend_.get_current_initial_values().at<gtsam::Pose3>(sym_T_w_c0);
-        // gtsam::Pose3 T_c0_c1(
-        //     R_c0_c1, 
+        // backend_.add_prior_factor(gtsam::Symbol(Backend::pose_symbol_char,
+        // get_num_images_added()), gps_prior, backend_.get_translation_noise()); gtsam::Pose3
+        // T_w_c0 = backend_.get_current_initial_values().at<gtsam::Pose3>(sym_T_w_c0); gtsam::Pose3
+        // T_c0_c1(
+        //     R_c0_c1,
         //     t_world_gps - T_w_c0.translation());
         // backend_.add_between_factor(
         //     sym_T_w_c0,
-        //     sym_T_w_c1, 
+        //     sym_T_w_c1,
         //     T_c0_c1,
-        //     backend_.get_pose_noise());        
-        backend_.add_factor_GPS(sym_T_w_c1, T_world_cam.translation(), backend_.get_gps_noise(), T_world_cam.rotation());
+        //     backend_.get_pose_noise());
+        backend_.add_factor_GPS(sym_T_w_c1, T_world_cam.translation(), backend_.get_gps_noise(),
+                                T_world_cam.rotation());
         // backend_.add_factor_GPS(sym_T_w_c1, T_world_cam.translation(), backend_.get_gps_noise());
 
         for (const cv::DMatch match : matches) {
-            const cv::KeyPoint kpt_cam0 = img_keypoints_and_descriptors_.back().first[match.queryIdx];
+            const cv::KeyPoint kpt_cam0 =
+                img_keypoints_and_descriptors_.back().first[match.queryIdx];
             const cv::KeyPoint kpt_cam1 = keypoints_and_descriptors.first[match.trainIdx];
 
-            if (keypoint_to_landmarks_[idx_img_current - 1].find(kpt_cam0) == keypoint_to_landmarks_[idx_img_current - 1].end()) {
+            if (keypoint_to_landmarks_[idx_img_current - 1].find(kpt_cam0) ==
+                keypoint_to_landmarks_[idx_img_current - 1].end()) {
                 const Backend::Landmark landmark_cam_0(
-                    gtsam::Symbol(Backend::landmark_symbol_char, landmark_count_),
-                    sym_T_w_c0,
+                    gtsam::Symbol(Backend::landmark_symbol_char, landmark_count_), sym_T_w_c0,
                     gtsam::Point2(
                         static_cast<double>(
                             img_keypoints_and_descriptors_.back().first[match.queryIdx].pt.x),
@@ -113,24 +122,27 @@ void StructureFromMotion::add_image(const cv::Mat &img, const gtsam::Pose3 &T_wo
                     backend_.get_K(), 3.0);
                 keypoint_to_landmarks_[idx_img_current - 1].emplace(kpt_cam0, landmark_cam_0);
                 landmark_count_++;
-            } 
-            // std::cout << "kpt_cam0 in keypoint_to_landmarks_: " << 
-            //     (keypoint_to_landmarks_[idx_img_current - 1].find(kpt_cam0) == keypoint_to_landmarks_[idx_img_current - 1].end()) 
-            //     << std::endl;                        
-            const Backend::Landmark landmark_cam_0 = keypoint_to_landmarks_[idx_img_current - 1].at(kpt_cam0);
+            }
+            // std::cout << "kpt_cam0 in keypoint_to_landmarks_: " <<
+            //     (keypoint_to_landmarks_[idx_img_current - 1].find(kpt_cam0) ==
+            //     keypoint_to_landmarks_[idx_img_current - 1].end())
+            //     << std::endl;
+            const Backend::Landmark landmark_cam_0 =
+                keypoint_to_landmarks_[idx_img_current - 1].at(kpt_cam0);
 
             // technically don't need this conditional when enforcing bijectivity
-            if (keypoint_to_landmarks_[idx_img_current].find(kpt_cam1) == keypoint_to_landmarks_[idx_img_current].end()) {
+            if (keypoint_to_landmarks_[idx_img_current].find(kpt_cam1) ==
+                keypoint_to_landmarks_[idx_img_current].end()) {
                 const Backend::Landmark landmark_cam_1(
-                    landmark_cam_0.lmk_factor_symbol,
-                    sym_T_w_c1,
+                    landmark_cam_0.lmk_factor_symbol, sym_T_w_c1,
                     gtsam::Point2(
                         static_cast<double>(keypoints_and_descriptors.first[match.trainIdx].pt.x),
                         static_cast<double>(keypoints_and_descriptors.first[match.trainIdx].pt.y)),
                     backend_.get_K(), 3.0);
-                keypoint_to_landmarks_[idx_img_current].emplace(kpt_cam1, landmark_cam_1);                
-            }             
-            const Backend::Landmark landmark_cam_1 = keypoint_to_landmarks_[idx_img_current].at(kpt_cam1);
+                keypoint_to_landmarks_[idx_img_current].emplace(kpt_cam1, landmark_cam_1);
+            }
+            const Backend::Landmark landmark_cam_1 =
+                keypoint_to_landmarks_[idx_img_current].at(kpt_cam1);
 
             backend_.add_landmark(landmark_cam_0);
             backend_.add_landmark(landmark_cam_1);
@@ -141,7 +153,7 @@ void StructureFromMotion::add_image(const cv::Mat &img, const gtsam::Pose3 &T_wo
 
 std::vector<cv::DMatch> StructureFromMotion::get_matches(
     const cv::Mat &descriptors_1, const cv::Mat &descriptors_2,
-    std::optional<StructureFromMotion::MatchFunction> post_process_func) {
+    std::optional<StructureFromMotion::match_function> post_process_func) {
     std::vector<cv::DMatch> matches = frontend_.get_matches(descriptors_1, descriptors_2);
     if (post_process_func) {
         (*post_process_func)(matches);
@@ -318,7 +330,8 @@ Backend::Backend(gtsam::Cal3_S2 K) {
 }
 
 template <>
-void Backend::add_prior_factor(const gtsam::Symbol &symbol, const gtsam::Pose3 &value, const gtsam::SharedNoiseModel &noise) {
+void Backend::add_prior_factor(const gtsam::Symbol &symbol, const gtsam::Pose3 &value,
+                               const gtsam::SharedNoiseModel &noise) {
     graph_.emplace_shared<gtsam::PriorFactor<gtsam::Pose3>>(symbol, value, noise);
     initial_estimate_.insert_or_assign(symbol, value);
     // std::cout << "adding a prior factor! with symbol: " << symbol << std::endl;
@@ -326,12 +339,13 @@ void Backend::add_prior_factor(const gtsam::Symbol &symbol, const gtsam::Pose3 &
 }
 
 template <>
-void Backend::add_prior_factor(const gtsam::Symbol &symbol, const gtsam::Point3 &value, const gtsam::SharedNoiseModel &noise) {
+void Backend::add_prior_factor(const gtsam::Symbol &symbol, const gtsam::Point3 &value,
+                               const gtsam::SharedNoiseModel &noise) {
     graph_.emplace_shared<gtsam::PriorFactor<gtsam::Point3>>(symbol, value, noise);
     gtsam::Rot3 R;
-    if (initial_estimate_.exists(symbol)) {        
-        R = initial_estimate_.at<gtsam::Pose3>(symbol).rotation();                
-    }     
+    if (initial_estimate_.exists(symbol)) {
+        R = initial_estimate_.at<gtsam::Pose3>(symbol).rotation();
+    }
     initial_estimate_.insert_or_assign(symbol, gtsam::Pose3(R, value));
 }
 
@@ -352,27 +366,28 @@ void Backend::add_between_factor<gtsam::Rot3>(const gtsam::Symbol &symbol_1,
                                               const gtsam::Symbol &symbol_2,
                                               const gtsam::Rot3 &value,
                                               const gtsam::SharedNoiseModel &model) {
-    graph_.emplace_shared<gtsam::BetweenFactor<gtsam::Rot3>>(symbol_1, symbol_2, value, model);    
+    graph_.emplace_shared<gtsam::BetweenFactor<gtsam::Rot3>>(symbol_1, symbol_2, value, model);
     initial_estimate_.insert_or_assign(symbol_2,
-                                       initial_estimate_.at<gtsam::Pose3>(symbol_1).compose(gtsam::Pose3(value, gtsam::Point3::Zero())));
+                                       initial_estimate_.at<gtsam::Pose3>(symbol_1).compose(
+                                           gtsam::Pose3(value, gtsam::Point3::Zero())));
 }
 
-void Backend::add_factor_GPS(const gtsam::Symbol &symbol, const gtsam::Point3 &t_world_cam, const gtsam::SharedNoiseModel &model,
-        const gtsam::Rot3 & R_world_cam) {
-    
+void Backend::add_factor_GPS(const gtsam::Symbol &symbol, const gtsam::Point3 &t_world_cam,
+                             const gtsam::SharedNoiseModel &model, const gtsam::Rot3 &R_world_cam) {
     graph_.emplace_shared<gtsam::GPSFactor>(symbol, t_world_cam, model);
     initial_estimate_.insert_or_assign(symbol, gtsam::Pose3(R_world_cam, t_world_cam));
 }
 
-std::pair<std::vector<gtsam::Pose3>, std::vector<gtsam::Point2>> Backend::get_obs_for_lmk(const gtsam::Symbol &lmk_symbol) {
+std::pair<std::vector<gtsam::Pose3>, std::vector<gtsam::Point2>> Backend::get_obs_for_lmk(
+    const gtsam::Symbol &lmk_symbol) {
     std::vector<gtsam::Pose3> cam_poses;
     std::vector<gtsam::Point2> observations;
 
     // Iterate over all factors in the graph
-    for (const auto& factor : graph_) {
+    for (const auto &factor : graph_) {
         auto projFactor = boost::dynamic_pointer_cast<
             gtsam::GenericProjectionFactor<gtsam::Pose3, gtsam::Point3>>(factor);
-        
+
         if (projFactor && projFactor->keys().at(1) == lmk_symbol) {
             // Get the camera pose symbol
             gtsam::Symbol cameraSymbol = projFactor->keys().at(0);
@@ -389,9 +404,9 @@ std::pair<std::vector<gtsam::Pose3>, std::vector<gtsam::Point2>> Backend::get_ob
             cam_poses.push_back(cameraPose);
         }
     }
-    return std::pair<std::vector<gtsam::Pose3>, std::vector<gtsam::Point2>>(cam_poses, observations);
+    return std::pair<std::vector<gtsam::Pose3>, std::vector<gtsam::Point2>>(cam_poses,
+                                                                            observations);
 }
-
 
 void Backend::add_landmarks(const std::vector<Landmark> &landmarks) {
     for (const Landmark &landmark : landmarks) {
@@ -400,7 +415,8 @@ void Backend::add_landmarks(const std::vector<Landmark> &landmarks) {
 }
 
 void Backend::add_landmark(const Landmark &landmark) {
-    graph_.emplace_shared<gtsam::GenericProjectionFactor<gtsam::Pose3, gtsam::Point3>>(landmark.projection, landmark_noise_, landmark.cam_pose_symbol, landmark.lmk_factor_symbol,
+    graph_.emplace_shared<gtsam::GenericProjectionFactor<gtsam::Pose3, gtsam::Point3>>(
+        landmark.projection, landmark_noise_, landmark.cam_pose_symbol, landmark.lmk_factor_symbol,
         K_);
     if (!initial_estimate_.exists(landmark.cam_pose_symbol)) {
         throw std::runtime_error(
@@ -408,18 +424,18 @@ void Backend::add_landmark(const Landmark &landmark) {
             "add_landmark is called.");
     }
     gtsam::Point3 p_world_lmk_estimate =
-        initial_estimate_.at<gtsam::Pose3>(landmark.cam_pose_symbol)
-            * landmark.p_cam_lmk_guess;
+        initial_estimate_.at<gtsam::Pose3>(landmark.cam_pose_symbol) * landmark.p_cam_lmk_guess;
     initial_estimate_.insert_or_assign(landmark.lmk_factor_symbol, p_world_lmk_estimate);
 
-    std::pair<std::vector<gtsam::Pose3>, std::vector<gtsam::Point2>> lmk_obs = get_obs_for_lmk(landmark.lmk_factor_symbol);
+    std::pair<std::vector<gtsam::Pose3>, std::vector<gtsam::Point2>> lmk_obs =
+        get_obs_for_lmk(landmark.lmk_factor_symbol);
     if (lmk_obs.first.size() >= 2) {
         try {
             // Attempt triangulation using DLT (or the GTSAM provided method)
             p_world_lmk_estimate = gtsam::triangulatePoint3(
-                lmk_obs.first, K_, 
+                lmk_obs.first, K_,
                 gtsam::Point2Vector(lmk_obs.second.begin(), lmk_obs.second.end()));
-            
+
             // Optional: perform an explicit cheirality check
             bool valid = true;
             for (const auto &pose : lmk_obs.first) {
@@ -431,15 +447,16 @@ void Backend::add_landmark(const Landmark &landmark) {
                     break;
                 }
             }
-            
+
             if (valid) {
                 initial_estimate_.update(landmark.lmk_factor_symbol, p_world_lmk_estimate);
             } else {
-                std::cerr << "Triangulated landmark failed cheirality check; keeping initial guess." << std::endl;
+                std::cerr << "Triangulated landmark failed cheirality check; keeping initial guess."
+                          << std::endl;
             }
         } catch (const gtsam::TriangulationCheiralityException &e) {
             // Handle the exception gracefully by logging and retaining the previous estimate.
-            std::cerr << "Triangulation Cheirality Exception: " << e.what() 
+            std::cerr << "Triangulation Cheirality Exception: " << e.what()
                       << ". Keeping initial landmark estimate." << std::endl;
         }
     }
@@ -450,4 +467,53 @@ void Backend::solve_graph() {
     result_ = optimizer.optimize();
 }
 
+void Backend::solve_graph(const int num_steps,
+                          std::optional<Backend::graph_step_debug_func> inter_debug_func) {
+    gtsam::LevenbergMarquardtParams params;
+    params.setVerbosityLM("SUMMARY");  // or "TERMINATION", "TRYLAMBDA", etc.
+    params.maxIterations = 1;          // We'll manually step it
+    gtsam::LevenbergMarquardtOptimizer optimizer(graph_, initial_estimate_, params);
+
+    double prev_error = optimizer.error();
+    for (int i = 0; i < num_steps; i++) {
+        optimizer.iterate();
+        double curr_error = optimizer.error();
+
+        if (inter_debug_func) {
+            (*inter_debug_func)(optimizer.values(), i);
+        }
+        if (std::abs(prev_error - curr_error) < 1e-6) {
+            std::cout << "Converged at iteration " << i << "\n";
+            break;
+        }
+    }
+    result_ = optimizer.values();
+}
+
+void StructureFromMotion::graph_values(const gtsam::Values &values,
+                                       const std::string &window_name) {
+    std::vector<Eigen::Isometry3d> final_poses;
+    std::vector<Eigen::Vector3d> final_lmks;
+    for (size_t i = 0; i < img_keypoints_and_descriptors_.size(); i++) {
+        final_poses.emplace_back(
+            values.at<gtsam::Pose3>(gtsam::Symbol(get_backend().pose_symbol_char, i)).matrix());
+    }
+    for (int i = 0; i < static_cast<int>(get_matches().size()); i++) {
+        // NOTE: this j for lmk_symbol is wrong.
+        for (int j = 0; j < static_cast<int>(get_matches()[i].size()); j++) {
+            gtsam::Symbol lmk_symbol = gtsam::Symbol(Backend::landmark_symbol_char, j);
+            if (values.exists(lmk_symbol)) {
+                final_lmks.emplace_back(values.at<gtsam::Point3>(lmk_symbol));
+            } else {
+                std::cout << "lmk symbol doesn't exist in initial_values!" << std::endl;
+            }
+        }
+    }
+    geometry::viz_scene(final_poses, final_lmks, true, true, window_name);
+}
+
+void StructureFromMotion::solve_structure(
+    const int num_steps, std::optional<Backend::graph_step_debug_func> inter_debug_func) {
+    backend_.solve_graph(num_steps, inter_debug_func);
+}
 }  // namespace robot::experimental::learn_descriptors
