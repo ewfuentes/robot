@@ -4,6 +4,7 @@ load("@pip//:requirements.bzl", "requirement")
 py_library(
   name = "vigor_dataset",
   srcs = ["vigor_dataset.py"],
+  visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
   deps = [
     requirement("torch"),
     requirement("torchvision"),
