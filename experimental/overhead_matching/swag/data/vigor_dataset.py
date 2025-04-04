@@ -10,8 +10,8 @@ from typing import NamedTuple
 
 class VigorDatasetConfig(NamedTuple):
     panorama_neighbor_radius: float
-    satellite_patch_size: tuple[int, int]
-    panorama_size: tuple[int, int]
+    satellite_patch_size: None | tuple[int, int]
+    panorama_size: None | tuple[int, int]
 
 
 class VigorDatasetItem(NamedTuple):
@@ -98,10 +98,10 @@ class VigorDataset(torch.utils.data.Dataset):
         pano = tv.io.read_image(pano_metadata.path)
         sat = tv.io.read_image(sat_metadata.path)
 
-        if pano.shape[1:] != self._panorama_size:
+        if self._panorama_size is not None and pano.shape[1:] != self._panorama_size:
             pano = tv.transforms.functional.resize(pano, self._panorama_size)
 
-        if sat.shape[1:] != self._satellite_patch_size:
+        if self._satellite_patch_size is not None and sat.shape[1:] != self._satellite_patch_size:
             sat = tv.transforms.functional.resize(sat, self._satellite_patch_size)
 
         return VigorDatasetItem(
