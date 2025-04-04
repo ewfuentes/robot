@@ -119,8 +119,8 @@ class VigorDatasetTest(unittest.TestCase):
         # Setup
         config = vigor_dataset.VigorDatasetConfig(
             panorama_neighbor_radius=0.4,
-            satellite_patch_size=(200, 200),
-            panorama_size=(200, 200),
+            satellite_patch_size=None,
+            panorama_size=None,
         )
         dataset = vigor_dataset.VigorDataset(Path(self._temp_dir.name), config)
 
