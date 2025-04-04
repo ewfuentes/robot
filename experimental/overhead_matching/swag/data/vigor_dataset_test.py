@@ -27,11 +27,11 @@ class VigorDatasetTest(unittest.TestCase):
         # Create satellite overhead
         MIN_LAT = -10.0
         MAX_LAT = 10.0
-        LAT_STEP = 0.5
+        LAT_STEP = 1.0
 
         MIN_LON = 20.0
         MAX_LON = 40.0
-        LON_STEP = 0.5
+        LON_STEP = 1.0
 
         lats = np.arange(MIN_LAT, MAX_LAT + LAT_STEP / 2.0, LAT_STEP)
         lons = np.arange(MIN_LON, MAX_LON + LON_STEP / 2.0, LON_STEP)
@@ -117,8 +117,12 @@ class VigorDatasetTest(unittest.TestCase):
 
     def test_get_single_item(self):
         # Setup
-        NEIGHBOR_PANO_RADIUS = 0.2
-        dataset = vigor_dataset.VigorDataset(Path(self._temp_dir.name), NEIGHBOR_PANO_RADIUS)
+        config = vigor_dataset.VigorDatasetConfig(
+            panorama_neighbor_radius=0.4,
+            satellite_patch_size=(200, 200),
+            panorama_size=(200, 200),
+        )
+        dataset = vigor_dataset.VigorDataset(Path(self._temp_dir.name), config)
 
         # Action
         item = dataset[100]
@@ -147,11 +151,17 @@ class VigorDatasetTest(unittest.TestCase):
         self.assertAlmostEqual(item.satellite_metadata["lat"], sat_embedded_lat, places=1)
         self.assertAlmostEqual(item.satellite_metadata["lon"], sat_embedded_lon, places=1)
 
+        dataset.visualize(include_text_labels=True)
+
     def test_get_batch(self):
         # Setup
-        NEIGHBOR_PANO_RADIUS = 0.2
         BATCH_SIZE = 32
-        dataset = vigor_dataset.VigorDataset(Path(self._temp_dir.name), NEIGHBOR_PANO_RADIUS)
+        config = vigor_dataset.VigorDatasetConfig(
+            panorama_neighbor_radius = 0.4,
+            satellite_patch_size = (50, 50),
+            panorama_size = (100, 100),
+        )
+        dataset = vigor_dataset.VigorDataset(Path(self._temp_dir.name), config)
         dataloader = vigor_dataset.get_dataloader(dataset, batch_size=BATCH_SIZE)
 
         # Action
@@ -160,8 +170,8 @@ class VigorDatasetTest(unittest.TestCase):
         # Verification
         self.assertEqual(len(batch.panorama_metadata), BATCH_SIZE)
         self.assertEqual(len(batch.satellite_metadata), BATCH_SIZE)
-        self.assertEqual(batch.panorama.shape[0], BATCH_SIZE)
-        self.assertEqual(batch.satellite.shape[0], BATCH_SIZE)
+        self.assertEqual(batch.panorama.shape, (BATCH_SIZE, 3, *config.panorama_size))
+        self.assertEqual(batch.satellite.shape, (BATCH_SIZE, 3, *config.satellite_patch_size))
 
     def test_iterate_overhead_dataset(self):
         NEIGHBOR_PANO_RADIUS = 0.2
