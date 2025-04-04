@@ -8,6 +8,12 @@ from scipy.spatial import cKDTree
 from typing import NamedTuple
 
 
+class VigorDatasetConfig(NamedTuple):
+    panorama_neighbor_radius: float
+    satellite_patch_size: tuple[int, int]
+    panorama_size: tuple[int, int]
+
+
 class VigorDatasetItem(NamedTuple):
     panorama_metadata: dict
     satellite_metadata: dict
@@ -45,6 +51,7 @@ def compute_satellite_from_panorama(sat_kdtree, pano_metadata):
 
     return sat_idx_from_pano_idx, pano_idxs_from_sat_idx
 
+
 def compute_neighboring_panoramas(pano_kdtree, max_dist):
     pairs = pano_kdtree.query_pairs(max_dist)
     neighbors_by_pano_idx = [[] for i in range(pano_kdtree.n)]
@@ -55,7 +62,7 @@ def compute_neighboring_panoramas(pano_kdtree, max_dist):
 
 
 class VigorDataset(torch.utils.data.Dataset):
-    def __init__(self, dataset_path: Path, panorama_neighbor_radius: float):
+    def __init__(self, dataset_path: Path, config: VigorDatasetConfig):
         super().__init__()
         self._dataset_path = dataset_path
 
@@ -72,8 +79,11 @@ class VigorDataset(torch.utils.data.Dataset):
         self._panorama_metadata["satellite_idx"] = sat_idx_from_pano_idx
 
         self._panorama_metadata["neighbor_panorama_idxs"] = compute_neighboring_panoramas(
-                self._panorama_kdtree, panorama_neighbor_radius)
-        
+                self._panorama_kdtree, config.panorama_neighbor_radius)
+
+        self._satellite_patch_size = config.satellite_patch_size
+        self._panorama_size = config.panorama_size
+
     @property
     def num_satellite_patches(self):
         return len(self._satellite_metadata)
@@ -87,6 +97,12 @@ class VigorDataset(torch.utils.data.Dataset):
 
         pano = tv.io.read_image(pano_metadata.path)
         sat = tv.io.read_image(sat_metadata.path)
+
+        if pano.shape[1:] != self._panorama_size:
+            pano = tv.transforms.functional.resize(pano, self._panorama_size)
+
+        if sat.shape[1:] != self._satellite_patch_size:
+            sat = tv.transforms.functional.resize(sat, self._satellite_patch_size)
 
         return VigorDatasetItem(
             panorama_metadata=series_to_dict_with_index(pano_metadata),
