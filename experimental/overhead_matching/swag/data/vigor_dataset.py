@@ -94,9 +94,10 @@ class VigorDataset(torch.utils.data.Dataset):
 
         pano_metadata = self._panorama_metadata.loc[idx]
         sat_metadata = self._satellite_metadata.loc[pano_metadata.satellite_idx]
-
-        pano = tv.io.read_image(pano_metadata.path)
-        sat = tv.io.read_image(sat_metadata.path)
+        pano = tv.io.read_image(pano_metadata.path, mode=tv.io.ImageReadMode.RGB)
+        sat = tv.io.read_image(sat_metadata.path, mode=tv.io.ImageReadMode.RGB)
+        pano = tv.transforms.functional.convert_image_dtype(pano)
+        sat = tv.transforms.functional.convert_image_dtype(sat)
 
         if self._panorama_size is not None and pano.shape[1:] != self._panorama_size:
             pano = tv.transforms.functional.resize(pano, self._panorama_size)
