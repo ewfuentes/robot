@@ -163,6 +163,24 @@ class VigorDatasetTest(unittest.TestCase):
         self.assertEqual(batch.panorama.shape[0], BATCH_SIZE)
         self.assertEqual(batch.satellite.shape[0], BATCH_SIZE)
 
+    def test_get_overhead_batch(self):
+        NEIGHBOR_PANO_RADIUS = 0.2
+        BATCH_SIZE = 32
+        dataset = vigor_dataset.VigorDataset(Path(self._temp_dir.name), NEIGHBOR_PANO_RADIUS)
+        dataloader = vigor_dataset.get_overhead_dataloader(dataset, batch_size=BATCH_SIZE)
+
+        # Action
+        idx, batch = next(iter(dataloader))
+        print(idx)
+
+        # Verification
+        self.assertEqual(len(idx), BATCH_SIZE)
+        self.assertIsNone(batch.panorama_metadata)
+        self.assertEqual(len(batch.satellite_metadata), BATCH_SIZE)
+        self.assertIsNone(batch.panorama)
+        self.assertEqual(batch.satellite.shape[0], BATCH_SIZE)
+
+
 
 if __name__ == "__main__":
     unittest.main()
