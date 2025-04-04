@@ -108,12 +108,13 @@ TEST(SymphonyLakeParserTest, test_gps_frames) {
     std::vector<Eigen::Isometry3d> gps_frames;
 
     // NOTE: the world in these images is east, north, up centered at boat0 translation
-    Eigen::Vector3d t_world_gps0(image_point_first.x, image_point_first.y, 0);
+    Eigen::Vector3d t_world_boat0 = DataParser::get_T_world_boat(image_point_first).translation();
+    // Eigen::Vector3d t_world_gps0(image_point_first.x, image_point_first.y, 0);
 
     for (size_t i = 0; i < indices.size(); i++) {
         const symphony_lake_dataset::ImagePoint img_pt = survey.getImagePoint(indices[i]);
         Eigen::Isometry3d T_world_gpsidx = DataParser::get_T_world_gps(img_pt);
-        T_world_gpsidx.translation() -= t_world_gps0;
+        T_world_gpsidx.translation() -= t_world_boat0;
         gps_frames.push_back(T_world_gpsidx);
     }
 
