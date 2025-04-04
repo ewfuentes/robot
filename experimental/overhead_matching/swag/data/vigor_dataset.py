@@ -68,6 +68,10 @@ class VigorDataset(torch.utils.data.Dataset):
 
         self._panorama_metadata["neighbor_panorama_idxs"] = compute_neighboring_panoramas(
                 self._panorama_kdtree, panorama_neighbor_radius)
+        
+    @property
+    def num_satellite_patches(self):
+        return len(self._satellite_metadata)
 
     def __getitem__(self, idx):
         pano_metadata = self._panorama_metadata.loc[idx]
@@ -136,3 +140,29 @@ def get_dataloader(dataset: VigorDataset, **kwargs):
 
     return torch.utils.data.DataLoader(dataset, collate_fn=_collate_fn, **kwargs)
 
+def get_overhead_dataloader(dataset: VigorDataset, **kwargs):
+    def _collate_fn(samples: list[tuple[int, VigorDatasetItem]]):
+        return [x[0] for x in samples], VigorDatasetItem(
+            panorama_metadata=None,
+            satellite_metadata=[x[1].satellite_metadata for x in samples],
+            panorama=None,
+            satellite=torch.stack([x[1].satellite for x in samples]),
+        )
+    
+    class OverheadVigorDataset(torch.utils.data.Dataset):
+        def __init__(self, dataset: VigorDataset):
+            super().__init__()
+            self.dataset = dataset 
+        def __len__(self):
+            return len(self.dataset._satellite_metadata)
+        def __getitem__(self, idx):
+            sat_metadata = self.dataset._satellite_metadata.loc[idx]
+            sat = tv.io.read_image(sat_metadata.path)
+            return idx, VigorDatasetItem(
+                None, 
+                sat_metadata,
+                None, 
+                sat
+            )
+    overhead_dataset = OverheadVigorDataset(dataset)
+    return torch.utils.data.DataLoader(overhead_dataset, collate_fn=_collate_fn, **kwargs)
