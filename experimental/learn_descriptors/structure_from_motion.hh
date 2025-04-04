@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <map>
 #include <set>
 #include <unordered_map>
@@ -11,33 +12,33 @@
 #include "gtsam/geometry/Pose3.h"
 #include "gtsam/inference/Symbol.h"
 #include "gtsam/linear/NoiseModel.h"
+#include "gtsam/navigation/GPSFactor.h"
 #include "gtsam/nonlinear/NonlinearFactorGraph.h"
 #include "gtsam/nonlinear/Values.h"
-#include "gtsam/navigation/GPSFactor.h"
 #include "opencv2/opencv.hpp"
 
 namespace std {
-    template <>
-    struct hash<cv::KeyPoint> {
-        size_t operator()(const cv::KeyPoint& kp) const {
-            size_t h1 = hash<float>()(kp.pt.x);
-            size_t h2 = hash<float>()(kp.pt.y);
-            size_t h3 = hash<float>()(kp.size);
-            size_t h4 = hash<float>()(kp.angle);
-            size_t h5 = hash<float>()(kp.response);
-            size_t h6 = hash<int>()(kp.octave);
-            size_t h7 = hash<int>()(kp.class_id);
- 
-            return (h1 ^ (h2 << 1)) ^ (h3 << 2) ^ (h4 << 3) ^ (h5 << 4) ^ (h6 << 5) ^ (h7 << 6);
-        }
-    };
-}
-namespace cv{
-    inline bool operator==(const cv::KeyPoint& kp1, const cv::KeyPoint& kp2) {
-        return kp1.pt == kp2.pt && kp1.size == kp2.size && kp1.angle == kp2.angle &&
-                kp1.response == kp2.response && kp1.octave == kp2.octave && kp1.class_id == kp2.class_id;
+template <>
+struct hash<cv::KeyPoint> {
+    size_t operator()(const cv::KeyPoint &kp) const {
+        size_t h1 = hash<float>()(kp.pt.x);
+        size_t h2 = hash<float>()(kp.pt.y);
+        size_t h3 = hash<float>()(kp.size);
+        size_t h4 = hash<float>()(kp.angle);
+        size_t h5 = hash<float>()(kp.response);
+        size_t h6 = hash<int>()(kp.octave);
+        size_t h7 = hash<int>()(kp.class_id);
+
+        return (h1 ^ (h2 << 1)) ^ (h3 << 2) ^ (h4 << 3) ^ (h5 << 4) ^ (h6 << 5) ^ (h7 << 6);
     }
+};
+}  // namespace std
+namespace cv {
+inline bool operator==(const cv::KeyPoint &kp1, const cv::KeyPoint &kp2) {
+    return kp1.pt == kp2.pt && kp1.size == kp2.size && kp1.angle == kp2.angle &&
+           kp1.response == kp2.response && kp1.octave == kp2.octave && kp1.class_id == kp2.class_id;
 }
+}  // namespace cv
 namespace robot::experimental::learn_descriptors {
 class Frontend {
    public:
@@ -110,21 +111,27 @@ class Backend {
     ~Backend(){};
 
     template <typename T>
-    void add_prior_factor(const gtsam::Symbol &symbol, const T &value, const gtsam::SharedNoiseModel & model);
+    void add_prior_factor(const gtsam::Symbol &symbol, const T &value,
+                          const gtsam::SharedNoiseModel &model);
 
     template <typename T>
     void add_between_factor(const gtsam::Symbol &symbol_1, const gtsam::Symbol &symbol_2,
                             const T &value, const gtsam::SharedNoiseModel &model);
-    
 
-    void add_factor_GPS(const gtsam::Symbol &symbol, const gtsam::Point3 &p_world_gps, const gtsam::SharedNoiseModel& model, 
-        const gtsam::Rot3 &R_world_cam = gtsam::Rot3::Identity());
+    void add_factor_GPS(const gtsam::Symbol &symbol, const gtsam::Point3 &p_world_gps,
+                        const gtsam::SharedNoiseModel &model,
+                        const gtsam::Rot3 &R_world_cam = gtsam::Rot3::Identity());
 
-    std::pair<std::vector<gtsam::Pose3>, std::vector<gtsam::Point2>> get_obs_for_lmk(const gtsam::Symbol &lmk_symbol);
+    std::pair<std::vector<gtsam::Pose3>, std::vector<gtsam::Point2>> get_obs_for_lmk(
+        const gtsam::Symbol &lmk_symbol);
     void add_landmarks(const std::vector<Landmark> &landmarks);
     void add_landmark(const Landmark &landmark);
 
     void solve_graph();
+    typedef int epoch;
+    using graph_step_debug_func = std::function<void(const gtsam::Values &, const epoch)>;
+    void solve_graph(const int num_steps,
+                     std::optional<graph_step_debug_func> inter_debug_func = std::nullopt);
 
     const gtsam::Values &get_current_initial_values() const { return initial_estimate_; };
     const gtsam::Values &get_result() const { return result_; };
@@ -148,14 +155,17 @@ class Backend {
         gtsam::noiseModel::Diagonal::Sigmas(gtsam::Vector6(0.1, 0.1, 0.1, 0.01, 0.01, 0.01));
     gtsam::noiseModel::Isotropic::shared_ptr translation_noise_ =
         gtsam::noiseModel::Isotropic::Sigma(2, 0.1);
-    gtsam::noiseModel::Isotropic::shared_ptr gps_noise_ = gtsam::noiseModel::Isotropic::Sigma(3, 2.);
+    gtsam::noiseModel::Isotropic::shared_ptr gps_noise_ =
+        gtsam::noiseModel::Isotropic::Sigma(3, 2.);
 };
 
-template<>
-void Backend::add_prior_factor<gtsam::Pose3>(const gtsam::Symbol &, const gtsam::Pose3 &, const gtsam::SharedNoiseModel &);
+template <>
+void Backend::add_prior_factor<gtsam::Pose3>(const gtsam::Symbol &, const gtsam::Pose3 &,
+                                             const gtsam::SharedNoiseModel &);
 
 template <>
-void Backend::add_prior_factor<gtsam::Point3>(const gtsam::Symbol &, const gtsam::Point3 &, const gtsam::SharedNoiseModel &);
+void Backend::add_prior_factor<gtsam::Point3>(const gtsam::Symbol &, const gtsam::Point3 &,
+                                              const gtsam::SharedNoiseModel &);
 
 template <>
 void Backend::add_between_factor<gtsam::Pose3>(const gtsam::Symbol &, const gtsam::Symbol &,
@@ -167,8 +177,8 @@ void Backend::add_between_factor<gtsam::Rot3>(const gtsam::Symbol &, const gtsam
 
 class StructureFromMotion {
    public:
-    static const Eigen::Isometry3d T_symlake_boat_cam;    
-    static const gtsam::Pose3 default_initial_pose;    
+    static const Eigen::Isometry3d T_symlake_boat_cam;
+    static const gtsam::Pose3 default_initial_pose;
     /**
      * @param D is vector (5x1) of the distortion coefficients (k1, k2, p1, p2, k3)
      */
@@ -181,11 +191,15 @@ class StructureFromMotion {
     void set_initial_pose(gtsam::Pose3 initial_pose);
     void add_image(const cv::Mat &img, const gtsam::Pose3 &T_world_cam);
     void solve_structure() { backend_.solve_graph(); };
+    void solve_structure(
+        const int num_steps,
+        std::optional<Backend::graph_step_debug_func> inter_debug_func = std::nullopt);
     const gtsam::Values &get_structure_result() { return backend_.get_result(); };
-    using MatchFunction = std::function<void(std::vector<cv::DMatch> &)>;
+    using match_function = std::function<void(std::vector<cv::DMatch> &)>;
     std::vector<cv::DMatch> get_matches(
         const cv::Mat &descriptors_1, const cv::Mat &descriptors_2,
-        std::optional<MatchFunction> post_process_func = std::nullopt);
+        std::optional<match_function> post_process_func = std::nullopt);
+    void graph_values(const gtsam::Values &values, const std::string &window_name = "graph values");
 
     Frontend get_frontend() { return frontend_; };
     Backend get_backend() { return backend_; }

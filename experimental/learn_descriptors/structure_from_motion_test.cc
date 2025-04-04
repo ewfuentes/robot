@@ -2,6 +2,7 @@
 
 #include <iostream>
 #include <sstream>
+#include <thread>
 
 #include "Eigen/Geometry"
 #include "common/geometry/opencv_viz.hh"
@@ -122,15 +123,16 @@ TEST(SFM_TEST, frontend_pipeline_sweep) {
     }
 }
 
-// TEST(SFM_TEST, boat_and_cam_frames) {    
-//     // world is boat frame. +x is boat "forward", +y is the right side, +z is "down" into the water/hull
-//     Eigen::Isometry3d T_boat_cam = StructureFromMotion::T_symlake_boat_cam;
+// TEST(SFM_TEST, boat_and_cam_frames) {
+//     // world is boat frame. +x is boat "forward", +y is the right side, +z is "down" into the
+//     water/hull Eigen::Isometry3d T_boat_cam = StructureFromMotion::T_symlake_boat_cam;
 //     T_boat_cam.translation() = Eigen::Vector3d::Ones();
-//     geometry::viz_scene(std::vector<Eigen::Isometry3d>{T_boat_cam}, std::vector<Eigen::Vector3d>());
+//     geometry::viz_scene(std::vector<Eigen::Isometry3d>{T_boat_cam},
+//     std::vector<Eigen::Vector3d>());
 // }
 
 TEST(SFM_TEST, sfm_snippet_small) {
-    const std::vector<int> indices {120, 130}; // 0-199
+    const std::vector<int> indices{120, 130};  // 0-199
     DataParser data_parser = SymphonyLakeDatasetTestHelper::get_test_parser();
     const symphony_lake_dataset::SurveyVector &survey_vector = data_parser.get_surveys();
     const symphony_lake_dataset::Survey &survey = survey_vector.get(0);
@@ -144,24 +146,25 @@ TEST(SFM_TEST, sfm_snippet_small) {
         (Eigen::Matrix<double, 5, 1>() << SymphonyLakeCamParams::k1, SymphonyLakeCamParams::k2,
          SymphonyLakeCamParams::p1, SymphonyLakeCamParams::p2, SymphonyLakeCamParams::k3)
             .finished();
-    
+
     // let world be the first boat base recorded. T_world_camera0 = T_earth_boat0 * T_boat_camera
-    // T_earth_boat0 = 
+    // T_earth_boat0 =
     Eigen::Isometry3d T_earth_world = DataParser::get_T_world_boat(img_pt_first);
     Eigen::Isometry3d T_world_camera0 = DataParser::get_T_boat_camera(img_pt_first);
-    StructureFromMotion sfm(Frontend::ExtractorType::SIFT, K, D, gtsam::Pose3(T_world_camera0.matrix()));  
+    StructureFromMotion sfm(Frontend::ExtractorType::SIFT, K, D,
+                            gtsam::Pose3(T_world_camera0.matrix()));
 
     std::vector<cv::Mat> img_vector;
-    for (const int &idx : indices) {    
+    for (const int &idx : indices) {
         const cv::Mat img = survey.loadImageByImageIndex(idx);
         img_vector.push_back(img);
-        const symphony_lake_dataset::ImagePoint img_pt = survey.getImagePoint(idx);        
+        const symphony_lake_dataset::ImagePoint img_pt = survey.getImagePoint(idx);
         Eigen::Isometry3d T_earth_boat = DataParser::get_T_world_boat(img_pt);
         Eigen::Isometry3d T_world_boat = T_earth_world.inverse() * T_earth_boat;
         Eigen::Isometry3d T_world_cam = T_world_boat * DataParser::get_T_boat_camera(img_pt);
 
         // T_world_cam.linear() = T_world_camera0.linear().matrix();
-        
+
         sfm.add_image(img, gtsam::Pose3(T_world_cam.matrix()));
     }
     // for (const cv::Mat &image : images) {
@@ -201,7 +204,9 @@ TEST(SFM_TEST, sfm_snippet_small) {
     std::vector<Eigen::Isometry3d> final_poses;
     std::vector<Eigen::Vector3d> final_lmks;
     for (size_t i = 0; i < indices.size(); i++) {
-        final_poses.emplace_back(result_values.at<gtsam::Pose3>(gtsam::Symbol(sfm.get_backend().pose_symbol_char, i)).matrix());
+        final_poses.emplace_back(
+            result_values.at<gtsam::Pose3>(gtsam::Symbol(sfm.get_backend().pose_symbol_char, i))
+                .matrix());
     }
     for (int i = 0; i < static_cast<int>(sfm.get_matches().size()); i++) {
         // NOTE: this j for lmk_symbol is wrong.
@@ -239,72 +244,50 @@ TEST(SFM_TEST, sfm_building) {
         (Eigen::Matrix<double, 5, 1>() << SymphonyLakeCamParams::k1, SymphonyLakeCamParams::k2,
          SymphonyLakeCamParams::p1, SymphonyLakeCamParams::p2, SymphonyLakeCamParams::k3)
             .finished();
-    
+
     // let world be the first boat base recorded. T_world_camera0 = T_earth_boat0 * T_boat_camera
-    Eigen::Isometry3d T_earth_world = DataParser::get_T_world_boat(img_pt_first);
-    Eigen::Isometry3d T_world_camera0 = DataParser::get_T_boat_camera(img_pt_first);
-    StructureFromMotion sfm(Frontend::ExtractorType::SIFT, K, D, gtsam::Pose3(T_world_camera0.matrix()));  
+    Eigen::Isometry3d T_earth_boat0 = DataParser::get_T_world_boat(img_pt_first);
+    Eigen::Isometry3d T_world_boat0;
+    T_world_boat0.linear() = T_earth_boat0.linear();
+    Eigen::Isometry3d T_world_camera0 = T_world_boat0 * DataParser::get_T_boat_camera(img_pt_first);
+    StructureFromMotion sfm(Frontend::ExtractorType::SIFT, K, D,
+                            gtsam::Pose3(T_world_camera0.matrix()));
 
-    for (const int &idx : indices) {    
+    for (const int &idx : indices) {
         const cv::Mat img = survey.loadImageByImageIndex(idx);
-        const symphony_lake_dataset::ImagePoint img_pt = survey.getImagePoint(idx);  
+        const symphony_lake_dataset::ImagePoint img_pt = survey.getImagePoint(idx);
 
-        Eigen::Isometry3d T_earth_boat = DataParser::get_T_world_boat(img_pt);
-        Eigen::Isometry3d T_world_boat = T_earth_world.inverse() * T_earth_boat;
+        Eigen::Isometry3d T_world_boat = DataParser::get_T_world_boat(img_pt);
+        T_world_boat.translation() -= T_earth_boat0.translation();
+
         Eigen::Isometry3d T_world_cam = T_world_boat * DataParser::get_T_boat_camera(img_pt);
-        
+
         sfm.add_image(img, gtsam::Pose3(T_world_cam.matrix()));
     }
-    // for (const cv::Mat &image : images) {
-    //     sfm.add_image(image);
-    // }
 
     const gtsam::Values initial_values = sfm.get_backend().get_current_initial_values();
-    std::vector<Eigen::Isometry3d> poses_world;
-    for (size_t i = 0; i < indices.size(); i++) {
-        gtsam::Pose3 pose =
-            initial_values.at<gtsam::Pose3>(gtsam::Symbol(sfm.get_backend().pose_symbol_char, i));
-        poses_world.emplace_back(pose.matrix());
-    }
-    std::vector<Eigen::Vector3d> points_world;
-    for (int i = 0; i < static_cast<int>(sfm.get_matches().size()); i++) {
-        // NOTE: this j for lmk_symbol is wrong.
-        for (int j = 0; j < static_cast<int>(sfm.get_matches()[i].size()); j++) {
-            gtsam::Symbol lmk_symbol = gtsam::Symbol(Backend::landmark_symbol_char, j);
-            if (initial_values.exists(lmk_symbol)) {
-                points_world.emplace_back(initial_values.at<gtsam::Point3>(lmk_symbol));
-            } else {
-                std::cout << "lmk symbol doesn't exist in initial_values!" << std::endl;
-            }
-        }
-    }
-    // std::cout << poses_world.front() << std::endl;
-
-    geometry::viz_scene(poses_world, points_world, true, true);
+    sfm.graph_values(initial_values, "initial values");
 
     std::cout << "Solving for structure!" << std::endl;
 
-    sfm.solve_structure();
+    Backend::graph_step_debug_func solve_iter_debug_func = [&sfm](const gtsam::Values &vals,
+                                                                  const Backend::epoch iter) {
+        std::cout << "iteration " << iter << " complete!";
+        std::string window_name = "Iteration_" + std::to_string(iter);
+        sfm.graph_values(vals, window_name);
+    };
+    sfm.solve_structure(5, solve_iter_debug_func);
 
     std::cout << "Solution complete." << std::endl;
 
     const gtsam::Values result_values = sfm.get_structure_result();
-    std::vector<Eigen::Isometry3d> final_poses;
-    std::vector<Eigen::Vector3d> final_lmks;
-    for (size_t i = 0; i < indices.size(); i++) {
-        final_poses.emplace_back(result_values.at<gtsam::Pose3>(gtsam::Symbol(sfm.get_backend().pose_symbol_char, i)).matrix());
-    }
-    for (int i = 0; i < static_cast<int>(sfm.get_matches().size()); i++) {
-        // NOTE: this j for lmk_symbol is wrong.
-        for (int j = 0; j < static_cast<int>(sfm.get_matches()[i].size()); j++) {
-            gtsam::Symbol lmk_symbol = gtsam::Symbol(Backend::landmark_symbol_char, j);
-            if (initial_values.exists(lmk_symbol)) {
-                final_lmks.emplace_back(initial_values.at<gtsam::Point3>(lmk_symbol));
-            } else {
-                std::cout << "lmk symbol doesn't exist in initial_values!" << std::endl;
-            }
-        }
-    }
-    geometry::viz_scene(final_poses, final_lmks, true, true);
+    sfm.graph_values(result_values, "optimized values");
+}
+
+TEST(SFM_TEST, random_test) {
+    std::cout << DataParser::T_boat_gps.matrix() << std::endl;
+    geometry::viz_scene(
+        std::vector<Eigen::Isometry3d>{DataParser::T_boat_imu, DataParser::T_boat_gps},
+        std::vector<Eigen::Vector3d>{DataParser::t_boat_cam});
 }
 }  // namespace robot::experimental::learn_descriptors
