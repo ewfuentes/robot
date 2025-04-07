@@ -79,6 +79,9 @@ class VigorDataset(torch.utils.data.Dataset):
         return len(self._satellite_metadata)
 
     def __getitem__(self, idx):
+        if idx > len(self) - 1:
+            raise IndexError  # if we don't raise index error the iterator won't terminate
+
         pano_metadata = self._panorama_metadata.loc[idx]
         sat_metadata = self._satellite_metadata.loc[pano_metadata.satellite_idx]
 
