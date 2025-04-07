@@ -4,23 +4,20 @@ import torch
 import experimental.overhead_matching.swag.data.vigor_dataset as vig_dataset
 
 def build_satellite_embedding_database(model: torch.nn.Module,
-                                       dataset: vig_dataset.VigorDataset, 
-                                       dataloader_kwards: dict | None = None,
+                                       dataloader: torch.utils.data.DataLoader,
                                        device: torch.device = "cuda:0",
                                        )->torch.Tensor:
-    if dataloader_kwards is None:
-        dataloader_kwards = {} 
-    overhead_iter = vig_dataset.get_overhead_dataloader(dataset, **dataloader_kwards)
-    num_overhead_patches = dataset.num_satellite_patches
-    sat_embedding_db = None
-
     model.to(device)
     model.eval()
+    inf_results = []
+    all_indexes = []
     with torch.no_grad():
-        for indexes, patch_dataset_item in overhead_iter:
-            indexes = torch.tensor(indexes, device=device)
+        for patch_dataset_item in dataloader:
+            assert patch_dataset_item.panorama is None, "Are you sure you want to be buliding the embedding database over a dataset that isn't just overhead patches?"
             embeddings = model(patch_dataset_item.satellite.to(device))
-            if sat_embedding_db is None:
-                sat_embedding_db = torch.zeros((num_overhead_patches, embeddings.shape[1]))
-            sat_embedding_db[indexes] = embeddings
-    return sat_embedding_db
+            all_indexes.extend([x['index'] for x in patch_dataset_item.satellite_metadata])
+            inf_results.append(embeddings)
+    unsorted_embeddings = torch.concatenate(inf_results, dim=0)
+    sorted_embeddings = torch.zeros_like(unsorted_embeddings)
+    sorted_embeddings[torch.tensor(all_indexes, dtype=torch.long)] = unsorted_embeddings
+    return sorted_embeddings
