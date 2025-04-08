@@ -4,7 +4,7 @@ ARG USERNAME=runner
 ARG USER_UID=1001
 ARG USER_GID=$USER_UID
 
-RUN apt-get update && apt-get -y install curl vim libicu-dev git sudo lsb-release
+RUN apt-get update && apt-get -y install curl vim libicu-dev git sudo lsb-release git-lfs python3 python-is-python3
 
 RUN mkdir actions-runner && \
         cd actions-runner && \
@@ -13,7 +13,9 @@ RUN mkdir actions-runner && \
         tar -xzf ./actions-runner-linux-x64-2.323.0.tar.gz && \
         groupadd --gid $USER_GID $USERNAME && \
         useradd --uid $USER_UID --gid $USER_GID -m $USERNAME && \
-        usermod -aG sudo $USERNAME
+        usermod -aG sudo $USERNAME && \
+        curl -o /usr/bin/bazel -L https://github.com/bazelbuild/bazelisk/releases/download/v1.25.0/bazelisk-linux-amd64 && \
+        chmod a+x /usr/bin/bazel
 RUN echo "$USERNAME ALL=(ALL:ALL) NOPASSWD: ALL" > /etc/sudoers.d/$USERNAME
         
 
