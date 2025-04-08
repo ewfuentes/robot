@@ -47,7 +47,7 @@ class EvaluateSwagTest(unittest.TestCase):
         m = MockModule() 
         
         # action 
-        result_df = evaluate_prediction_top_k(embedding_database, mock_dataloader, m)
+        result_df = evaluate_prediction_top_k(embedding_database, mock_dataloader, m, device='cpu')
 
         # verification
         self.assertEqual(result_df.loc[0, 'k_value'], 1)

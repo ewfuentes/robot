@@ -50,15 +50,16 @@ class SatelliteEmbeddingDatabaseTest(unittest.TestCase):
         embedding_database = torch.rand((DATABASE_SIZE, EMBEDDING_DIM))
 
         # Create a mock embedding vector
-        embedding = torch.rand((EMBEDDING_DIM,))
+        embedding = torch.rand((1, EMBEDDING_DIM))
 
         # Calculate cosine similarity using the function
         similarity = sed.calculate_cos_similarity_against_database(embedding, embedding_database)
 
         # Verification
-        self.assertEqual(similarity.shape, (DATABASE_SIZE,))
+        self.assertEqual(similarity.shape, (1,DATABASE_SIZE))
+        similarity = similarity.squeeze(0)
         for i in range(DATABASE_SIZE):
-            expected_similarity = torch.dot(embedding, embedding_database[i]) / (
+            expected_similarity = torch.dot(embedding.squeeze(0), embedding_database[i]) / (
             torch.norm(embedding) * torch.norm(embedding_database[i])
             )
             self.assertAlmostEqual(similarity[i].item(), expected_similarity.item(), places=6)
