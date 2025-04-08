@@ -7,6 +7,7 @@ import pandas as pd
 import numpy as np
 from scipy.spatial import cKDTree
 from typing import NamedTuple
+from common.math.haversine import find_d_on_unit_circle
 
 
 class VigorDatasetConfig(NamedTuple):
@@ -115,6 +116,9 @@ class VigorDataset(torch.utils.data.Dataset):
         if idx > len(self) - 1:
             raise IndexError  # if we don't raise index error the iterator won't terminate
 
+        if torch.is_tensor(idx):
+            idx = idx.item()  # if idx is tensor, .loc[tensor] returns DataFrame instead of Series which breaks the following lines
+
         pano_metadata = self._panorama_metadata.loc[idx]
         sat_metadata = self._satellite_metadata.loc[pano_metadata.satellite_idx]
         pano = load_image(pano_metadata.path, self._panorama_size)
@@ -129,8 +133,52 @@ class VigorDataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return len(self._panorama_metadata)
+    
+    def generate_random_path(self,
+                             generator: torch.Generator,
+                             max_length_m: float,
+                             turn_temperature: float)->list[int]:
+        path = [] 
+        distance_traveled_m = 0.0
+        last_direction = torch.zeros(2)
+        # select start panorama
+        last_index = torch.randint(0, len(self), (1,), generator=generator)
 
-    def get_sat_patch_view(self) -> torch.utils.data.Dataset:
+        def softmax_w_temp(x: torch.Tensor, t: float)-> torch.tensor:
+            ex = torch.exp(x / t)
+            return ex / torch.sum(ex)
+
+        while distance_traveled_m < max_length_m:
+            path.append(last_index)
+            last_item = self[last_index]
+            last_coord = torch.tensor([last_item.panorama_metadata['lon'], last_item.panorama_metadata['lat']])
+            last_neighbors = last_item.panorama_metadata['neighbor_panorama_idxs']
+
+            # calculate distribution over neighbors
+            neighbor_probs = torch.zeros(len(last_neighbors))
+            neighbor_coords = torch.zeros(len(last_neighbors), 2)
+            neighbor_directions = torch.zeros(len(last_neighbors), 2)
+            for i, neighbor_pano_idx in enumerate(last_neighbors):
+                neighbor_item = self[neighbor_pano_idx]
+                neighbor_coords[i] = torch.tensor([neighbor_item.panorama_metadata['lon'], neighbor_item.panorama_metadata['lat']])
+                neighbor_directions[i] = neighbor_coords[i] - last_coord
+                similarity = torch.dot(neighbor_directions[i], last_direction) / torch.norm(neighbor_directions[i]) 
+                if torch.is_nonzero(torch.norm(last_direction)):
+                    similarity = similarity / torch.norm(last_direction)
+                neighbor_probs[i] = similarity
+
+            neighbor_probs = softmax_w_temp(neighbor_probs, turn_temperature) 
+            winning_neighbor = torch.multinomial(neighbor_probs, 1, generator=generator).item()
+            
+            # update current location
+            last_index = last_neighbors[winning_neighbor]
+            last_direction = neighbor_directions[winning_neighbor]
+            distance_traveled_m += 6378137.0 * find_d_on_unit_circle(last_coord.numpy(), neighbor_coords[winning_neighbor].numpy())
+
+        return path
+
+    
+    def get_sat_patch_view(self)->torch.utils.data.Dataset:
         class OverheadVigorDataset(torch.utils.data.Dataset):
             def __init__(self, dataset: VigorDataset):
                 super().__init__()

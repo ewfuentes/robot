@@ -1,5 +1,6 @@
 import unittest
 from haversine import find_d_on_unit_circle
+import numpy as np
 
 class TestHaversine(unittest.TestCase):
     def test_same_point(self):
@@ -28,6 +29,11 @@ class TestHaversine(unittest.TestCase):
         # Expected value is approximate since it's on a unit circle
         expected_distance = 0.6178
         self.assertAlmostEqual(find_d_on_unit_circle(point_one, point_two), expected_distance, places=4)
+
+    def test_two_close_points(self):
+        point_one = np.asarray([-87.62416, 41.874264], dtype=np.float32)
+        point_two = np.asarray([-87.62418, 41.874657], dtype=np.float32)
+        self.assertAlmostEqual(find_d_on_unit_circle(point_one, point_two), 4.502798234598695e-07, places=7)
 
 if __name__ == "__main__":
     unittest.main()
