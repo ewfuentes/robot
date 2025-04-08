@@ -1,7 +1,9 @@
 import argparse
 
 import common.torch.load_torch_deps
+from common.torch.load_and_save_models import save_model
 import torch
+import torch.nn.functional as F
 import itertools
 from pathlib import Path
 from experimental.overhead_matching.swag.data import vigor_dataset
@@ -64,15 +66,33 @@ def create_triplets(
     return out
 
 
-def compute_loss(anchor_embedding, positive_embeddings, negative_embeddings):
-    return torch.nn.functional.triplet_margin_loss(
-        anchor_embedding, positive_embeddings, negative_embeddings
-    )
+def compute_loss(anchor_embeddings, positive_embeddings, negative_embeddings):
+    AVG_POS_SIMILARITY = 0.0
+    AVG_NEG_SIMILARITY = 0.7
+    AVG_SEMI_POS_SIMILARITY = 0.3
+
+    POS_WEIGHT = 5
+    NEG_WEIGHT = 20
+    SEMI_POS_WEIGHT = 6
+
+    pos_similarity = F.cosine_similarity(anchor_embeddings, positive_embeddings)
+    neg_similarity = F.cosine_similarity(anchor_embeddings, negative_embeddings)
+
+    pos_loss = torch.log(1 + torch.exp(-POS_WEIGHT * (pos_similarity - AVG_POS_SIMILARITY)))
+    neg_loss = torch.log(1 + torch.exp(-NEG_WEIGHT * (pos_similarity - AVG_NEG_SIMILARITY)))
+    pos_loss = torch.mean(pos_loss) / POS_WEIGHT
+    neg_loss = torch.mean(neg_loss) / NEG_WEIGHT
+    return pos_loss, neg_loss
 
 
 def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
     panorama_model = panorama_model.cuda()
     satellite_model = satellite_model.cuda()
+    panorama_model.train()
+    satellite_model.train()
+
+    print(dataset._satellite_metadata) 
+    print(dataset._panorama_metadata) 
 
     opt_config = config.opt_config
 
@@ -80,11 +100,12 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
         opt_config.embedding_pool_batch_size * opt_config.num_embedding_pool_batches
     )
     dataloader = vigor_dataset.get_dataloader(
-        dataset, batch_size=overall_batch_size, num_workers=1
+        dataset, batch_size=overall_batch_size, num_workers=2, shuffle=True
     )
 
     opt = torch.optim.Adam(
-        list(panorama_model.parameters()) + list(satellite_model.parameters())
+        list(panorama_model.parameters()) + list(satellite_model.parameters()),
+        lr = 1e-3
     )
 
     for epoch_idx in tqdm.tqdm(range(config.opt_config.num_epochs),  desc="Epoch"):
@@ -97,6 +118,8 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
                 with torch.no_grad():
                     panos = batch.panorama[start_idx:end_idx].cuda()
                     satellite_patches = batch.satellite[start_idx:end_idx].cuda()
+                    if panos.shape[0] == 0:
+                        continue
                     panorama_embeddings.append(panorama_model(panos).cpu())
                     satellite_embeddings.append(
                         satellite_model(satellite_patches).cpu()
@@ -111,14 +134,15 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
                 panorama_embeddings,
                 satellite_embeddings,
             )
-
-            print(f"{epoch_idx=} {batch_idx=} {len(triplets)=}")
+            if len(triplets) == 0:
+                continue
 
             # Iterate through the triplets
-            batch_loss = 0
-            for start_idx in tqdm.tqdm(range(0, len(triplets), opt_config.opt_batch_size), desc="triplets"):
-                end_idx = start_idx + opt_config.opt_batch_size
+            batch_pos_loss = 0
+            batch_neg_loss = 0
+            for start_idx in range(0, len(triplets), opt_config.opt_batch_size):
                 opt.zero_grad()
+                end_idx = start_idx + opt_config.opt_batch_size
                 batch_triplets = triplets[start_idx:end_idx]
                 anchor_panorama_idxs = [x.anchor_panorama_idx for x in batch_triplets]
                 pos_satellite_idxs = [x.positive_satellite_idx for x in batch_triplets]
@@ -132,15 +156,25 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
                 pos_satellite_embeddings = satellite_model(pos_satellite)
                 neg_satellite_embeddings = satellite_model(neg_satellite)
 
-                loss = compute_loss(
+                pos_loss, neg_loss = compute_loss(
                     anchor_embeddings,
                     pos_satellite_embeddings,
                     neg_satellite_embeddings,
                 )
-                batch_loss += loss.item()
+                batch_pos_loss += pos_loss.item()
+                batch_neg_loss += neg_loss.item()
+                loss = pos_loss + neg_loss
                 loss.backward()
                 opt.step()
-            print(f"total loss: {batch_loss}")
+            print(f"{epoch_idx=} {batch_idx=} num_pairs: {len(triplets)} {batch_pos_loss=} {batch_neg_loss=}")
+
+        config.output_dir.mkdir(parents=True, exist_ok=True)
+        panorama_model_path = config.output_dir / f"panorama_{epoch_idx}.pt"
+        satellite_model_path = config.output_dir / f"satellite_{epoch_idx}.pt"
+
+        batch = next(iter(dataloader))
+        save_model(panorama_model, panorama_model_path, batch.panorama[:opt_config.opt_batch_size])
+        save_model(satellite_model, satellite_model_path, batch.satellite[:opt_config.opt_batch_size])
 
 
 def main(dataset_path: Path, output_dir: Path):
@@ -172,7 +206,7 @@ def main(dataset_path: Path, output_dir: Path):
             num_epochs=100,
             num_embedding_pool_batches=2,
             embedding_pool_batch_size=8,
-            opt_batch_size=4,
+            opt_batch_size=10,
         ),
         output_dir=output_dir,
     )
