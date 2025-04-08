@@ -4,6 +4,7 @@ import torchvision as tv
 
 from pathlib import Path
 import pandas as pd
+import numpy as np
 from scipy.spatial import cKDTree
 from typing import NamedTuple
 
@@ -68,6 +69,22 @@ class VigorDataset(torch.utils.data.Dataset):
 
         self._satellite_metadata = load_satellite_metadata(dataset_path / "satellite")
         self._panorama_metadata = load_panorama_metadata(dataset_path / "panorama")
+
+        min_lat = np.min(self._satellite_metadata.lat)
+        max_lat = np.max(self._satellite_metadata.lat)
+        delta_lat = max_lat - min_lat
+        min_lon = np.min(self._satellite_metadata.lon)
+        max_lon = np.max(self._satellite_metadata.lon)
+        delta_lon = max_lon - min_lon
+
+        FACTOR = 0.02
+
+        sat_mask = np.logical_and(self._satellite_metadata.lat < min_lat + FACTOR * delta_lat,
+                                  self._satellite_metadata.lon < min_lon + FACTOR * delta_lon)
+        pano_mask = np.logical_and(self._panorama_metadata.lat < min_lat + FACTOR * delta_lat,
+                                  self._panorama_metadata.lon < min_lon + FACTOR * delta_lon)
+        self._satellite_metadata = self._satellite_metadata[sat_mask].reset_index(drop=True)
+        self._panorama_metadata = self._panorama_metadata[pano_mask].reset_index(drop=True)
 
         self._satellite_kdtree = cKDTree(self._satellite_metadata.loc[:, ["lat", "lon"]].values)
         self._panorama_kdtree = cKDTree(self._panorama_metadata.loc[:, ["lat", "lon"]].values)
