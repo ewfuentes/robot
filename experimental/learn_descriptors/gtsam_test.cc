@@ -1,10 +1,14 @@
+
 #include <iostream>
 #include <vector>
 
 #include "Eigen/Core"
 #include "gtest/gtest.h"
+#include "gtsam/geometry/Cal3_S2.h"
+#include "gtsam/geometry/PinholeCamera.h"
 #include "gtsam/geometry/Point3.h"
 #include "gtsam/geometry/Pose3.h"
+#include "gtsam/geometry/Rot3.h"
 #include "gtsam/inference/Symbol.h"
 #include "gtsam/nonlinear/LevenbergMarquardtOptimizer.h"
 #include "gtsam/nonlinear/Values.h"

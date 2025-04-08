@@ -7,6 +7,7 @@
 #include "common/geometry/camera.hh"
 #include "common/geometry/opencv_viz.hh"
 #include "common/geometry/translate_types.hh"
+#include "gtsam/geometry/Point2.h"
 #include "gtsam/geometry/triangulation.h"
 #include "gtsam/nonlinear/LevenbergMarquardtOptimizer.h"
 #include "gtsam/slam/BetweenFactor.h"
@@ -33,20 +34,8 @@ std::string pose_to_string(gtsam::Pose3 pose) {
     return ss.str();
 };
 
-// const gtsam::Pose3 StructureFromMotion::default_initial_pose = []() {
-//     Eigen::Isometry3d
-// }();
 const gtsam::Pose3 StructureFromMotion::default_initial_pose(
     StructureFromMotion::T_symlake_boat_cam.matrix());
-// const gtsam::Pose3 StructureFromMotion::default_initial_pose =
-//     gtsam::Pose3(gtsam::Rot3(T_symlake_boat_cam.rotation()), T_symlake_boat_cam.translation());
-// gtsam::Pose3(
-//     gtsam::Rot3(Eigen::Matrix3d(
-//         Eigen::AngleAxis(M_PI / 2, Eigen::Vector3d(1, 0, 0)).toRotationMatrix() *
-//         Eigen::AngleAxis(M_PI / 2, Eigen::Vector3d(0, 1, 0)).toRotationMatrix()
-//     )),
-//     gtsam::Point3::Identity()
-// );
 
 StructureFromMotion::StructureFromMotion(Frontend::ExtractorType frontend_extractor,
                                          gtsam::Cal3_S2 K, Eigen::Matrix<double, 5, 1> D,
@@ -72,77 +61,92 @@ void StructureFromMotion::add_image(const cv::Mat &img, const gtsam::Pose3 &T_wo
     cv::undistort(img, img_undistorted, K_, D_);
     std::pair<std::vector<cv::KeyPoint>, cv::Mat> keypoints_and_descriptors =
         frontend_.get_keypoints_and_descriptors(img);
-    keypoint_to_landmarks_.push_back(std::unordered_map<cv::KeyPoint, Backend::Landmark>());
-    const size_t idx_img_current = get_num_images_added();
+    feature_manager_.append_img_data(keypoints_and_descriptors.first,
+                                     keypoints_and_descriptors.second);
+    // keypoint_to_landmarks_.push_back(std::unordered_map<cv::KeyPoint, Backend::Landmark>());
+    // const size_t idx_img_current = get_num_images_added();
+    const size_t idx_img_current = feature_manager_.get_num_images_added() - 1;
+    std::cout << "current index " << idx_img_current << std::endl;
     if (idx_img_current > 0) {
         std::vector<cv::DMatch> matches =
             get_matches(img_keypoints_and_descriptors_.back().second,
                         keypoints_and_descriptors.second, Frontend::enforce_bijective_matches);
-        // std::vector<cv::DMatch> matches = frontend_.get_matches(
-        //     img_keypoints_and_descriptors_.back().second, keypoints_and_descriptors.second);
-        // Frontend::enforce_bijective_matches(matches);
-        // matches_.push_back(matches);
-        // gtsam::Rot3 R_c0_c1(
-        //     geom::estimate_c0_c1(
-        //         img_keypoints_and_descriptors_.back().first, keypoints_and_descriptors.first,
-        //         matches,
-        //         geom::eigen_mat_to_cv(geom::get_intrinsic_matrix(get_backend().get_K()))).linear());
 
         const gtsam::Symbol sym_T_w_c0(Backend::pose_symbol_char, idx_img_current - 1);
         const gtsam::Symbol sym_T_w_c1(Backend::pose_symbol_char, idx_img_current);
-        // backend_.add_prior_factor(gtsam::Symbol(Backend::pose_symbol_char,
-        // get_num_images_added()), gps_prior, backend_.get_translation_noise()); gtsam::Pose3
-        // T_w_c0 = backend_.get_current_initial_values().at<gtsam::Pose3>(sym_T_w_c0); gtsam::Pose3
-        // T_c0_c1(
-        //     R_c0_c1,
-        //     t_world_gps - T_w_c0.translation());
-        // backend_.add_between_factor(
-        //     sym_T_w_c0,
-        //     sym_T_w_c1,
-        //     T_c0_c1,
-        //     backend_.get_pose_noise());
+
         backend_.add_factor_GPS(sym_T_w_c1, T_world_cam.translation(), backend_.get_gps_noise(),
                                 T_world_cam.rotation());
-        // backend_.add_factor_GPS(sym_T_w_c1, T_world_cam.translation(), backend_.get_gps_noise());
 
         for (const cv::DMatch match : matches) {
             const cv::KeyPoint kpt_cam0 =
                 img_keypoints_and_descriptors_.back().first[match.queryIdx];
             const cv::KeyPoint kpt_cam1 = keypoints_and_descriptors.first[match.trainIdx];
 
-            if (keypoint_to_landmarks_[idx_img_current - 1].find(kpt_cam0) ==
-                keypoint_to_landmarks_[idx_img_current - 1].end()) {
-                const Backend::Landmark landmark_cam_0(
-                    gtsam::Symbol(Backend::landmark_symbol_char, landmark_count_), sym_T_w_c0,
-                    gtsam::Point2(
-                        static_cast<double>(
-                            img_keypoints_and_descriptors_.back().first[match.queryIdx].pt.x),
-                        static_cast<double>(
-                            img_keypoints_and_descriptors_.back().first[match.queryIdx].pt.y)),
-                    backend_.get_K(), 3.0);
-                keypoint_to_landmarks_[idx_img_current - 1].emplace(kpt_cam0, landmark_cam_0);
-                landmark_count_++;
-            }
-            // std::cout << "kpt_cam0 in keypoint_to_landmarks_: " <<
-            //     (keypoint_to_landmarks_[idx_img_current - 1].find(kpt_cam0) ==
-            //     keypoint_to_landmarks_[idx_img_current - 1].end())
-            //     << std::endl;
-            const Backend::Landmark landmark_cam_0 =
-                keypoint_to_landmarks_[idx_img_current - 1].at(kpt_cam0);
+            size_t key;
+            unsigned char chr;
 
-            // technically don't need this conditional when enforcing bijectivity
-            if (keypoint_to_landmarks_[idx_img_current].find(kpt_cam1) ==
-                keypoint_to_landmarks_[idx_img_current].end()) {
-                const Backend::Landmark landmark_cam_1(
-                    landmark_cam_0.lmk_factor_symbol, sym_T_w_c1,
-                    gtsam::Point2(
-                        static_cast<double>(keypoints_and_descriptors.first[match.trainIdx].pt.x),
-                        static_cast<double>(keypoints_and_descriptors.first[match.trainIdx].pt.y)),
-                    backend_.get_K(), 3.0);
-                keypoint_to_landmarks_[idx_img_current].emplace(kpt_cam1, landmark_cam_1);
+            auto maybe_symbol0 = feature_manager_.get_symbol(idx_img_current - 1, kpt_cam0);
+            if (maybe_symbol0) {
+                key = (*maybe_symbol0).key();
+                chr = (*maybe_symbol0).chr();
+            } else {
+                gtsam::Symbol symbol_temp =
+                    gtsam::Symbol(Backend::landmark_symbol_char, landmark_count_);
+                key = symbol_temp.key();
+                chr = symbol_temp.chr();
+                landmark_count_++;
+                feature_manager_.insert_symbol(idx_img_current - 1, kpt_cam0, symbol_temp);
             }
-            const Backend::Landmark landmark_cam_1 =
-                keypoint_to_landmarks_[idx_img_current].at(kpt_cam1);
+            gtsam::Symbol symbol = gtsam::Symbol(key, chr);
+            feature_manager_.insert_symbol(idx_img_current, kpt_cam1, symbol);
+
+            const Backend::Landmark landmark_cam_0(
+                symbol, sym_T_w_c0,
+                gtsam::Point2(
+                    static_cast<double>(
+                        img_keypoints_and_descriptors_.back().first[match.queryIdx].pt.x),
+                    static_cast<double>(
+                        img_keypoints_and_descriptors_.back().first[match.queryIdx].pt.y)),
+                backend_.get_K(), 3.0);
+
+            const Backend::Landmark landmark_cam_1(
+                symbol, sym_T_w_c1,
+                gtsam::Point2(
+                    static_cast<double>(keypoints_and_descriptors.first[match.trainIdx].pt.x),
+                    static_cast<double>(keypoints_and_descriptors.first[match.trainIdx].pt.y)),
+                backend_.get_K(), 3.0);
+
+            // if (keypoint_to_landmarks_[idx_img_current - 1].find(kpt_cam0) ==
+            //     keypoint_to_landmarks_[idx_img_current - 1].end()) {
+            //     const Backend::Landmark landmark_cam_0(
+            // gtsam::Symbol(Backend::landmark_symbol_char, landmark_count_), sym_T_w_c0,
+            // gtsam::Point2(
+            //     static_cast<double>(
+            //         img_keypoints_and_descriptors_.back().first[match.queryIdx].pt.x),
+            //     static_cast<double>(
+            //         img_keypoints_and_descriptors_.back().first[match.queryIdx].pt.y)),
+            // backend_.get_K(), 3.0);
+            //     keypoint_to_landmarks_[idx_img_current - 1].emplace(kpt_cam0, landmark_cam_0);
+            //     landmark_count_++;
+            // }
+
+            // const Backend::Landmark landmark_cam_0 =
+            //     keypoint_to_landmarks_[idx_img_current - 1].at(kpt_cam0);
+
+            // // technically don't need this conditional when enforcing bijectivity
+            // if (keypoint_to_landmarks_[idx_img_current].find(kpt_cam1) ==
+            //     keypoint_to_landmarks_[idx_img_current].end()) {
+            //     const Backend::Landmark landmark_cam_1(
+            //         landmark_cam_0.lmk_factor_symbol, sym_T_w_c1,
+            //         gtsam::Point2(
+            //             static_cast<double>(keypoints_and_descriptors.first[match.trainIdx].pt.x),
+            //             static_cast<double>(keypoints_and_descriptors.first[match.trainIdx].pt.y)),
+            //         backend_.get_K(), 3.0);
+            //     keypoint_to_landmarks_[idx_img_current].emplace(kpt_cam1, landmark_cam_1);
+            // }
+            // const Backend::Landmark landmark_cam_1 =
+            //     keypoint_to_landmarks_[idx_img_current].at(kpt_cam1);
 
             backend_.add_landmark(landmark_cam_0);
             backend_.add_landmark(landmark_cam_1);
