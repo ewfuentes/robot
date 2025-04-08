@@ -25,3 +25,26 @@ def build_satellite_embedding_database(model: torch.nn.Module,
     sorted_embeddings = torch.ones_like(unsorted_embeddings) * torch.nan
     sorted_embeddings[torch.tensor(all_indexes, dtype=torch.long)] = unsorted_embeddings
     return sorted_embeddings
+
+
+def calculate_cos_similarity_against_database(embedding, embedding_database):
+    """
+    Compute cosine similarity between query embeddings and an embedding database.
+    
+    Args:
+        embedding: (B x D_emb) vector (probably ego vector)
+        embedding_database: N x D_emb matrix of database embeddings
+        
+    Returns:
+        Tensor of shape (B, N) with similarities for each query-database pair
+    """
+    assert embedding.ndim == 2 and embedding_database.ndim == 2 and embedding.shape[1] == embedding_database.shape[1]
+    
+    # b: batch dimension of embeddings, n: database entries, d: embedding dimension
+    # For single embedding case, b=1 and the result will be (1,N)
+    similarity = torch.einsum('bd,nd->bn', embedding, embedding_database)
+    similarity = similarity / (torch.norm(embedding, dim=1, keepdim=True) * torch.norm(embedding_database, dim=1, keepdim=False).unsqueeze(0))
+    similarity = torch.clamp(similarity, -1.0, 1.0)  # some floating points are just over/under
+        
+    return similarity
+

@@ -4,7 +4,8 @@ load("@pip//:requirements.bzl", "requirement")
 py_library(
   name = "vigor_dataset",
   srcs = ["vigor_dataset.py"],
-  visibility=["//common/python:__subpackages__"],
+  visibility = ["//experimental/overhead_matching/swag:__subpackages__",
+                "//common/python:__subpackages__"],
   deps = [
     requirement("torch"),
     requirement("torchvision"),
@@ -31,7 +32,8 @@ py_test(
 py_library(
   name = "satellite_embedding_database",
   srcs = ["satellite_embedding_database.py"],
-  visibility=["//common/python:__subpackages__"],
+  visibility = ["//experimental/overhead_matching/swag:__subpackages__",
+                "//common/python:__subpackages__"],
   deps = [
     requirement("torch"),
     requirement("torchvision"),
