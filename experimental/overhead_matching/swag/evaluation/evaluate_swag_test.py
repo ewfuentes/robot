@@ -4,7 +4,7 @@ import torch
 from pathlib import Path
 import pandas as pd
 import numpy as np
-from experimental.overhead_matching.swag.data.vigor_dataset import VigorDataset, get_dataloader
+from experimental.overhead_matching.swag.data.vigor_dataset import VigorDataset, get_dataloader, VigorDatasetItem
 from experimental.overhead_matching.swag.evaluation.evaluate_swag import evaluate_prediction_top_k
 
 import torch.nn as nn
@@ -25,6 +25,30 @@ class MockEmbeddingModel(nn.Module):
 
 
 class EvaluateSwagTest(unittest.TestCase):
+
+    def test_evaluate_prediction_top_k_manual(self):
+        embedding_database = torch.tensor([
+            [0.1, 0.2, 0.3],
+            [0.5, 0.5, 0.5],  # correct match
+            [-0.1, -0.2, -0.3],
+            [0.77, 0.63, 0.99],
+        ])
+        mock_dataloader = [VigorDatasetItem(
+            panorama=torch.tensor([[1,2,3]]),
+            panorama_metadata = [{"satellite_idx": 1, "index": 0}]
+        )]
+        class MockModule(nn.Module):
+            def __init__(self):
+                super().__init__()
+            def forward(self, x):
+                return torch.tensor([0.8, 0.8, 0.8])
+        m = MockModule() 
+        
+        # action 
+        result_df = evaluate_prediction_top_k(embedding_database, mock_dataloader, m)
+        print(result_df)
+        # verification
+
     
     def test_evaluate_prediction_top_k(self):
         # Setup
