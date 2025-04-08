@@ -20,7 +20,7 @@ class MockEmbeddingModel(nn.Module):
 class SatelliteEmbeddingDatabaseTest(unittest.TestCase):
 
     def test_build_satellite_embedding_database(self):
-        PANO_NEIGHBOR_RADIUS = 0.2
+        PANO_NEIGHBOR_RADIUS = 0.0005
         EMBEDDING_DIM = 16
         BATCH_SIZE = 32
         SEED = 32
