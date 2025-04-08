@@ -133,25 +133,25 @@ class VigorDatasetTest(unittest.TestCase):
         self.assertGreater(len(item.satellite_metadata["panorama_idxs"]), 0)
 
         # Check that the location embedded in the images matches the metadata
-        pano_lat_sign = -1 if item.panorama[0, 0, 0] == 1 else 1
-        pano_embedded_lat = pano_lat_sign * (item.panorama[1, 0, 0] + 0.01 * item.panorama[2, 0, 0]).item()
+        pano_lat_sign = -1 if item.panorama[0, 0, 0] > 0 else 1
+        pano_embedded_lat = pano_lat_sign * 255 * (item.panorama[1, 0, 0] + 0.01 * item.panorama[2, 0, 0]).item()
 
-        pano_lon_sign = -1 if item.panorama[0, 0, 1] == 1 else 1
-        pano_embedded_lon = pano_lon_sign * (item.panorama[1, 0, 1] + 0.01 * item.panorama[2, 0, 1]).item()
+        pano_lon_sign = -1 if item.panorama[0, 0, 1] > 0 else 1
+        pano_embedded_lon = pano_lon_sign * 255 * (item.panorama[1, 0, 1] + 0.01 * item.panorama[2, 0, 1]).item()
 
         self.assertAlmostEqual(item.panorama_metadata["lat"], pano_embedded_lat, places=1)
         self.assertAlmostEqual(item.panorama_metadata["lon"], pano_embedded_lon, places=1)
 
-        sat_lat_sign = -1 if item.satellite[0, 0, 0] == 1 else 1
-        sat_embedded_lat = sat_lat_sign * (item.satellite[1, 0, 0] + 0.01 * item.satellite[2, 0, 0]).item()
+        sat_lat_sign = -1 if item.satellite[0, 0, 0] > 0 else 1
+        sat_embedded_lat = sat_lat_sign * 255 * (item.satellite[1, 0, 0] + 0.01 * item.satellite[2, 0, 0]).item()
 
-        sat_lon_sign = -1 if item.satellite[0, 0, 1] == 1 else 1
-        sat_embedded_lon = sat_lon_sign * (item.satellite[1, 0, 1] + 0.01 * item.satellite[2, 0, 1]).item()
+        sat_lon_sign = -1 if item.satellite[0, 0, 1] > 0 else 1
+        sat_embedded_lon = sat_lon_sign * 255 * (item.satellite[1, 0, 1] + 0.01 * item.satellite[2, 0, 1]).item()
 
         self.assertAlmostEqual(item.satellite_metadata["lat"], sat_embedded_lat, places=1)
         self.assertAlmostEqual(item.satellite_metadata["lon"], sat_embedded_lon, places=1)
 
-        dataset.visualize(include_text_labels=True)
+        # dataset.visualize(include_text_labels=True)
 
     def test_get_batch(self):
         # Setup
