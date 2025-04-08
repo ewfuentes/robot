@@ -14,6 +14,11 @@ class VigorDatasetItem(NamedTuple):
     panorama: torch.Tensor
     satellite: torch.Tensor
 
+def series_to_dict_with_index(series: pd.Series, index_key: str = "index"):
+    d = series.to_dict()
+    assert index_key not in d 
+    d[index_key] = series.name
+    return d
 
 def load_satellite_metadata(path: Path):
     out = []
@@ -68,8 +73,15 @@ class VigorDataset(torch.utils.data.Dataset):
 
         self._panorama_metadata["neighbor_panorama_idxs"] = compute_neighboring_panoramas(
                 self._panorama_kdtree, panorama_neighbor_radius)
+        
+    @property
+    def num_satellite_patches(self):
+        return len(self._satellite_metadata)
 
     def __getitem__(self, idx):
+        if idx > len(self) - 1:
+            raise IndexError  # if we don't raise index error the iterator won't terminate
+
         pano_metadata = self._panorama_metadata.loc[idx]
         sat_metadata = self._satellite_metadata.loc[pano_metadata.satellite_idx]
 
@@ -77,14 +89,35 @@ class VigorDataset(torch.utils.data.Dataset):
         sat = tv.io.read_image(sat_metadata.path)
 
         return VigorDatasetItem(
-            panorama_metadata=pano_metadata.to_dict(),
-            satellite_metadata=sat_metadata.to_dict(),
+            panorama_metadata=series_to_dict_with_index(pano_metadata),
+            satellite_metadata=series_to_dict_with_index(sat_metadata),
             panorama=pano,
             satellite=sat
         )
 
     def __len__(self):
         return len(self._panorama_metadata)
+    
+    def get_sat_patch_view(self)->torch.utils.data.Dataset:
+        class OverheadVigorDataset(torch.utils.data.Dataset):
+            def __init__(self, dataset: VigorDataset):
+                super().__init__()
+                self.dataset = dataset 
+            def __len__(self):
+                return len(self.dataset._satellite_metadata)
+            def __getitem__(self, idx):
+                if idx > len(self) - 1:
+                    raise IndexError  # if we don't raise index error the iterator won't terminate
+                sat_metadata = self.dataset._satellite_metadata.loc[idx]  # as this will throw a KeyError
+                sat = tv.io.read_image(sat_metadata.path)
+                return VigorDatasetItem(
+                    None, 
+                    series_to_dict_with_index(sat_metadata),
+                    None, 
+                    sat
+                )
+        return OverheadVigorDataset(self)
+
 
     def visualize(self, include_text_labels=False):
         import matplotlib.pyplot as plt
@@ -127,12 +160,12 @@ class VigorDataset(torch.utils.data.Dataset):
 
 def get_dataloader(dataset: VigorDataset, **kwargs):
     def _collate_fn(samples: list[VigorDatasetItem]):
+        first_item = samples[0]
         return VigorDatasetItem(
-            panorama_metadata=[x.panorama_metadata for x in samples],
-            satellite_metadata=[x.satellite_metadata for x in samples],
-            panorama=torch.stack([x.panorama for x in samples]),
-            satellite=torch.stack([x.satellite for x in samples]),
+            panorama_metadata=None if first_item.panorama_metadata is None else [x.panorama_metadata for x in samples],
+            satellite_metadata=None if first_item.satellite_metadata is None else [x.satellite_metadata for x in samples],
+            panorama=None if first_item.panorama is None else torch.stack([x.panorama for x in samples]),
+            satellite=None if first_item.satellite is None else torch.stack([x.satellite for x in samples]),
         )
 
     return torch.utils.data.DataLoader(dataset, collate_fn=_collate_fn, **kwargs)
-

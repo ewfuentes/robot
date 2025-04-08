@@ -163,6 +163,47 @@ class VigorDatasetTest(unittest.TestCase):
         self.assertEqual(batch.panorama.shape[0], BATCH_SIZE)
         self.assertEqual(batch.satellite.shape[0], BATCH_SIZE)
 
+    def test_iterate_overhead_dataset(self):
+        NEIGHBOR_PANO_RADIUS = 0.2
+        dataset = vigor_dataset.VigorDataset(Path(self._temp_dir.name), NEIGHBOR_PANO_RADIUS)
+        overhead_view = dataset.get_sat_patch_view()
+        # Action and verification
+        for item in overhead_view:
+            pass
+
+    def test_get_overhead_batch(self):
+        NEIGHBOR_PANO_RADIUS = 0.2
+        BATCH_SIZE = 32
+        dataset = vigor_dataset.VigorDataset(Path(self._temp_dir.name), NEIGHBOR_PANO_RADIUS)
+        overhead_view = dataset.get_sat_patch_view()
+        dataloader = vigor_dataset.get_dataloader(overhead_view, batch_size=BATCH_SIZE)
+
+        # Action
+        batch = next(iter(dataloader))
+
+        # Verification
+        self.assertIsNone(batch.panorama_metadata)
+        self.assertEqual(len(batch.satellite_metadata), BATCH_SIZE)
+        self.assertIsNone(batch.panorama)
+        self.assertEqual(batch.satellite.shape[0], BATCH_SIZE)
+
+    def test_overhead_and_main_dataset_are_consistient(self):
+        NEIGHBOR_PANO_RADIUS = 0.2
+        CHECK_INDEX = 25
+        dataset = vigor_dataset.VigorDataset(Path(self._temp_dir.name), NEIGHBOR_PANO_RADIUS)
+        overhead_view = dataset.get_sat_patch_view()
+
+        # Action
+        dataset_item = dataset[CHECK_INDEX]
+        sat_index = dataset_item.satellite_metadata['index']
+        overhead_view_item = overhead_view[sat_index]
+
+        # Verification
+        self.assertIsNone(overhead_view_item.panorama_metadata)
+        self.assertIsNone(overhead_view_item.panorama)
+        self.assertTrue(torch.allclose(overhead_view_item.satellite, dataset_item.satellite))
+        self.assertEqual(dataset_item.satellite_metadata, overhead_view_item.satellite_metadata)
+
 
 if __name__ == "__main__":
     unittest.main()
