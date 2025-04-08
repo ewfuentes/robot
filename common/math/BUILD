@@ -150,6 +150,7 @@ cc_test(
 py_library(
     name = "haversine",
     srcs = ["haversine.py"],
+    visibility = ["//visibility:public"],
     deps = [
         requirement("numpy")
     ]
