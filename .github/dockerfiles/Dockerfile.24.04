@@ -14,6 +14,7 @@ RUN mkdir actions-runner && \
         groupadd --gid $USER_GID $USERNAME && \
         useradd --uid $USER_UID --gid $USER_GID -m $USERNAME && \
         usermod -aG sudo $USERNAME
+RUN echo "$USERNAME ALL=(ALL:ALL) NOPASSWD: ALL" > /etc/sudoers.d/$USERNAME
         
 
 WORKDIR actions-runner
