@@ -30,7 +30,8 @@ cc_library(
     "@eigen",
     "//common/geometry:camera",
     "//common/geometry:translate_types",
-    "//common/geometry:opencv_viz"
+    "//common/geometry:opencv_viz",
+    ":feature_manager"
   ]
 )
 
@@ -54,7 +55,6 @@ cc_library(
   hdrs = ["symphony_lake_parser.hh"],
   copts = [
     "-Wno-unused-parameter",
-    "-std=c++20",
   ],
   data = ["@symphony_lake_snippet"],
   visibility = ["//visibility:public"],
@@ -93,5 +93,61 @@ cc_binary(
   srcs = ["opencv_viz_example.cc"],
   deps = [
     "@opencv//:opencv"
+  ]
+)
+
+cc_library(
+  name = "feature_set",
+  hdrs = ["feature_set.hh"],
+  visibility = ["//visibility:public"],
+  deps = [        
+    "@gtsam//:gtsam",
+    "@opencv//:opencv"
+  ]
+)
+
+cc_library(
+  name = "feature_manager",
+  hdrs = ["feature_manager.hh"],
+  visibility = ["//visibility:public"],
+  deps = [        
+    "@gtsam//:gtsam",
+    "@opencv//:opencv",
+    ":feature_set",
+  ]
+)
+
+cc_test(
+  name = "feature_manager_test",
+  srcs = ["feature_manager_test.cc"],
+  deps = [
+    ":feature_manager",
+    "@com_google_googletest//:gtest_main",
+    "@gtsam//:gtsam",
+    "@opencv//:opencv",
+    "@eigen",
+    ":spatial_scene_test_cube"
+  ]
+)
+
+
+cc_library(
+  name = "spatial_scene_test",
+  hdrs = ["spatial_scene_test.hh"],
+  visibility = ["//visibility:public"],
+  deps = [        
+    "@gtsam//:gtsam",
+    "@opencv//:opencv",    
+    "@eigen"
+  ]
+)
+
+cc_library(
+  name = "spatial_scene_test_cube",
+  hdrs = ["spatial_scene_test_cube.hh"],
+  visibility = ["//visibility:public"],
+  deps = [        
+    "@eigen",
+    ":spatial_scene_test"
   ]
 )
