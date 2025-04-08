@@ -2,6 +2,7 @@
 package(features=["warning_compile_flags"])
 
 load("@//common/proto:proto.bzl", "multi_proto_library")
+load("@pip//:requirements.bzl", "requirement")
 
 
 multi_proto_library(
@@ -144,4 +145,19 @@ cc_test(
     ":cubic_hermite_spline",
     "@com_google_googletest//:gtest_main",
   ]
+)
+
+py_library(
+    name = "haversine",
+    srcs = ["haversine.py"],
+    deps = [
+        requirement("numpy")
+    ]
+)
+py_test(
+    name = "haversine_test",
+    srcs = ["haversine_test.py"],
+    deps = [
+        ":haversine",
+    ]
 )
