@@ -32,15 +32,12 @@ def calculate_cos_similarity_against_database(embedding, embedding_database):
     Compute cosine similarity between query embeddings and an embedding database.
     
     Args:
-        embedding: (D_emb,) or (B x D_emb) vector (probably ego vector)
+        embedding: (B x D_emb) vector (probably ego vector)
         embedding_database: N x D_emb matrix of database embeddings
         
     Returns:
-        If embedding is 1D: Tensor of shape (N,) with similarity to each database entry
-        If embedding is 2D: Tensor of shape (B, N) with similarities for each query-database pair
+        Tensor of shape (B, N) with similarities for each query-database pair
     """
-    if embedding.ndim == 1:
-        embedding = embedding.unsqueeze(0)
     assert embedding.ndim == 2 and embedding_database.ndim == 2 and embedding.shape[1] == embedding_database.shape[1]
     
     # b: batch dimension of embeddings, n: database entries, d: embedding dimension
@@ -48,10 +45,6 @@ def calculate_cos_similarity_against_database(embedding, embedding_database):
     similarity = torch.einsum('bd,nd->bn', embedding, embedding_database)
     similarity = similarity / (torch.norm(embedding, dim=1, keepdim=True) * torch.norm(embedding_database, dim=1, keepdim=False).unsqueeze(0))
     similarity = torch.clamp(similarity, -1.0, 1.0)  # some floating points are just over/under
-    
-    # If input was a single vector, return a 1D result
-    if similarity.shape[0] == 1:
-        similarity = similarity.squeeze(0)
         
     return similarity
 

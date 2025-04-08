@@ -35,7 +35,7 @@ def evaluate_prediction_top_k(
 
             rankings = torch.argsort(patch_cosine_distance, dim=1, descending=True)
             for i in range(len(batch.panorama_metadata)):
-                out_df['k_value'].append(rankings[i, correct_overhead_patch_indices[i]].item())
+                out_df['k_value'].append(torch.argwhere(rankings[i] == correct_overhead_patch_indices[i]).item())
             out_df['panorama_index'].extend(panorama_indices)
             out_df['patch_cosine_similarity'].extend(patch_cosine_distance.tolist())
 

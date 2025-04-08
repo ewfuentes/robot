@@ -29,25 +29,29 @@ class EvaluateSwagTest(unittest.TestCase):
     def test_evaluate_prediction_top_k_manual(self):
         embedding_database = torch.tensor([
             [0.1, 0.2, 0.3],
-            [0.5, 0.5, 0.5],  # correct match
+            [0.5, 0.5, 0.5],  
             [-0.1, -0.2, -0.3],
-            [0.77, 0.63, 0.99],
+            [0.77, 0.63, 0.99], # correct match
         ])
         mock_dataloader = [VigorDatasetItem(
             panorama=torch.tensor([[1,2,3]]),
-            panorama_metadata = [{"satellite_idx": 1, "index": 0}]
+            panorama_metadata = [{"satellite_idx": 3, "index": 0}],
+            satellite=None,
+            satellite_metadata=None
         )]
         class MockModule(nn.Module):
             def __init__(self):
                 super().__init__()
             def forward(self, x):
-                return torch.tensor([0.8, 0.8, 0.8])
+                return torch.tensor([[0.8, 0.8, 0.8]])
         m = MockModule() 
         
         # action 
         result_df = evaluate_prediction_top_k(embedding_database, mock_dataloader, m)
-        print(result_df)
+
         # verification
+        self.assertEqual(result_df.loc[0, 'k_value'], 1)
+        self.assertTrue(np.allclose(result_df.loc[0, 'patch_cosine_similarity'], [0.9258200997725513, 1.0, -0.9258200997725513, 0.9831395864967746]))
 
     
     def test_evaluate_prediction_top_k(self):
@@ -108,7 +112,7 @@ class EvaluateSwagTest(unittest.TestCase):
                 # Find where the correct patches are in the rankings
                 for i, correct_idx in enumerate(correct_overhead_patch_indices):
                     # Find position (k value) of correct patch in rankings
-                    expected_k_values.append(rankings[i, correct_idx].item())
+                    expected_k_values.append(torch.argwhere(rankings[i] == correct_idx).item())
                     
                 expected_panorama_indices.extend(panorama_indices)
                 expected_patch_similarities.extend(patch_cosine_similarity.tolist())
