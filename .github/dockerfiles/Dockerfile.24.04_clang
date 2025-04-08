@@ -4,7 +4,7 @@ ARG USERNAME=runner
 ARG USER_UID=1001
 ARG USER_GID=$USER_UID
 
-RUN apt-get update && apt-get -y install curl vim libicu-dev
+RUN apt-get update && apt-get -y install curl vim libicu-dev git sudo lsb-release
 
 RUN mkdir actions-runner && \
         cd actions-runner && \
@@ -12,7 +12,9 @@ RUN mkdir actions-runner && \
         echo "0dbc9bf5a58620fc52cb6cc0448abcca964a8d74b5f39773b7afcad9ab691e19  actions-runner-linux-x64-2.323.0.tar.gz" | shasum -a 256 -c && \
         tar -xzf ./actions-runner-linux-x64-2.323.0.tar.gz && \
         groupadd --gid $USER_GID $USERNAME && \
-        useradd --uid $USER_UID --gid $USER_GID -m $USERNAME
+        useradd --uid $USER_UID --gid $USER_GID -m $USERNAME && \
+        usermod -aG sudo $USERNAME
+        
 
 WORKDIR actions-runner
 USER $USERNAME

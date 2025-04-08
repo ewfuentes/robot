@@ -17,7 +17,7 @@ on:
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
   lint:
-    runs-on: 24.04_clang
+    runs-on: self-hosted
     steps:
       - name: Checking out  ${{ github.sha }}
         uses: actions/checkout@v4
