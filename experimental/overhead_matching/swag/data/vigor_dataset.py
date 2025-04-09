@@ -84,7 +84,7 @@ class VigorDataset(torch.utils.data.Dataset):
         max_lon = np.max(self._satellite_metadata.lon)
         delta_lon = max_lon - min_lon
 
-        FACTOR = 0.02
+        FACTOR = 0.01
 
         sat_mask = np.logical_and(self._satellite_metadata.lat < min_lat + FACTOR * delta_lat,
                                   self._satellite_metadata.lon < min_lon + FACTOR * delta_lon)
