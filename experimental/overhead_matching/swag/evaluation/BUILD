@@ -2,8 +2,9 @@
 load("@pip//:requirements.bzl", "requirement")
 
 py_library(
-  name = "evaulate_swag",
+  name = "evaluate_swag",
   srcs = ["evaluate_swag.py"],
+  visibility = ["//common/python:__subpackages__"],
   deps = [
     requirement("torch"),
     requirement("pandas"),
@@ -22,6 +23,6 @@ py_test(
   deps = [
     requirement("torch"),
     "//common/torch:load_torch_deps",
-    ":evaulate_swag",
+    ":evaluate_swag",
   ],
 )

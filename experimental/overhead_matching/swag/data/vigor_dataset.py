@@ -61,6 +61,13 @@ def compute_neighboring_panoramas(pano_kdtree, max_dist):
         neighbors_by_pano_idx[b].append(a)
     return neighbors_by_pano_idx
 
+def load_image(path: Path, resize_shape: None | tuple[int, int]):
+    img = tv.io.read_image(path, mode=tv.io.ImageReadMode.RGB)
+    img = tv.transforms.functional.convert_image_dtype(img)
+    if resize_shape is not None and img.shape[1:] != resize_shape:
+        img = tv.transforms.functional.resize(img, resize_shape)
+    return img
+
 
 class VigorDataset(torch.utils.data.Dataset):
     def __init__(self, dataset_path: Path, config: VigorDatasetConfig):
@@ -111,16 +118,8 @@ class VigorDataset(torch.utils.data.Dataset):
 
         pano_metadata = self._panorama_metadata.loc[idx]
         sat_metadata = self._satellite_metadata.loc[pano_metadata.satellite_idx]
-        pano = tv.io.read_image(pano_metadata.path, mode=tv.io.ImageReadMode.RGB)
-        sat = tv.io.read_image(sat_metadata.path, mode=tv.io.ImageReadMode.RGB)
-        pano = tv.transforms.functional.convert_image_dtype(pano)
-        sat = tv.transforms.functional.convert_image_dtype(sat)
-
-        if self._panorama_size is not None and pano.shape[1:] != self._panorama_size:
-            pano = tv.transforms.functional.resize(pano, self._panorama_size)
-
-        if self._satellite_patch_size is not None and sat.shape[1:] != self._satellite_patch_size:
-            sat = tv.transforms.functional.resize(sat, self._satellite_patch_size)
+        pano = load_image(pano_metadata.path, self._panorama_size)
+        sat = load_image(sat_metadata.path, self._satellite_patch_size)
 
         return VigorDatasetItem(
             panorama_metadata=series_to_dict_with_index(pano_metadata),
@@ -131,27 +130,28 @@ class VigorDataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return len(self._panorama_metadata)
-    
-    def get_sat_patch_view(self)->torch.utils.data.Dataset:
+
+    def get_sat_patch_view(self) -> torch.utils.data.Dataset:
         class OverheadVigorDataset(torch.utils.data.Dataset):
             def __init__(self, dataset: VigorDataset):
                 super().__init__()
-                self.dataset = dataset 
+                self.dataset = dataset
+
             def __len__(self):
                 return len(self.dataset._satellite_metadata)
+
             def __getitem__(self, idx):
                 if idx > len(self) - 1:
                     raise IndexError  # if we don't raise index error the iterator won't terminate
                 sat_metadata = self.dataset._satellite_metadata.loc[idx]  # as this will throw a KeyError
-                sat = tv.io.read_image(sat_metadata.path)
+                sat = load_image(sat_metadata.path, self.dataset._satellite_patch_size)
                 return VigorDatasetItem(
-                    None, 
+                    None,
                     series_to_dict_with_index(sat_metadata),
-                    None, 
+                    None,
                     sat
                 )
         return OverheadVigorDataset(self)
-
 
     def visualize(self, include_text_labels=False):
         import matplotlib.pyplot as plt

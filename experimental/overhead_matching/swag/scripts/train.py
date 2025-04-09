@@ -72,14 +72,14 @@ def compute_loss(anchor_embeddings, positive_embeddings, negative_embeddings):
     AVG_SEMI_POS_SIMILARITY = 0.3
 
     POS_WEIGHT = 5
-    NEG_WEIGHT = 20
+    NEG_WEIGHT = -20
     SEMI_POS_WEIGHT = 6
 
     pos_similarity = F.cosine_similarity(anchor_embeddings, positive_embeddings)
     neg_similarity = F.cosine_similarity(anchor_embeddings, negative_embeddings)
 
     pos_loss = torch.log(1 + torch.exp(-POS_WEIGHT * (pos_similarity - AVG_POS_SIMILARITY)))
-    neg_loss = torch.log(1 + torch.exp(-NEG_WEIGHT * (pos_similarity - AVG_NEG_SIMILARITY)))
+    neg_loss = torch.log(1 + torch.exp(-NEG_WEIGHT * (neg_similarity - AVG_NEG_SIMILARITY)))
     pos_loss = torch.mean(pos_loss) / POS_WEIGHT
     neg_loss = torch.mean(neg_loss) / NEG_WEIGHT
     return pos_loss, neg_loss
