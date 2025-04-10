@@ -36,33 +36,26 @@ class TrainConfig:
 
 
 @dataclass
-class Triplet:
-    anchor_panorama_idx: int
-    positive_satellite_idx: int
-    negative_satellite_idx: int
+class Pairs:
+    positive_pairs: list[tuple[int, int]]
+    negative_pairs: list[tuple[int, int]]
+    semipositive_pairs: list[tuple[int, int]]
 
 
-def create_triplets(
-    panorama_metadata, satellite_metadata, panorama_embeddings, satellite_embeddings
-):
+def create_pairs(panorama_metadata, satellite_metadata) -> Pairs:
     # Generate an exhaustive set of triplets where the anchor is a panorama
     # TODO consider creating triplets where a satellite patch is the anchor
-    out = []
-    for batch_pano_idx in range(panorama_embeddings.shape[0]):
+    out = Pairs(positive_pairs=[], negative_pairs=[], semipositive_pairs=[])
+    for batch_pano_idx in range(len(panorama_metadata)):
         anchor_sat_idx = panorama_metadata[batch_pano_idx]["satellite_idx"]
+        out.positive_pairs.append((batch_pano_idx, batch_pano_idx))
         # For now, we assume that the panorama and satellite metadata are paired since
         # the satellite metadata does not currently contain the satellite index
-        for batch_sat_idx in range(panorama_embeddings.shape[0]):
+        for batch_sat_idx in range(len(panorama_metadata)):
             neg_sat_idx = panorama_metadata[batch_sat_idx]["satellite_idx"]
             if anchor_sat_idx == neg_sat_idx:
                 continue
-            out.append(
-                Triplet(
-                    anchor_panorama_idx=batch_pano_idx,
-                    positive_satellite_idx=batch_pano_idx,
-                    negative_satellite_idx=batch_sat_idx,
-                )
-            )
+            out.negative_pairs.append((batch_pano_idx, batch_sat_idx))
     return out
 
 
@@ -100,7 +93,7 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
         opt_config.embedding_pool_batch_size * opt_config.num_embedding_pool_batches
     )
     dataloader = vigor_dataset.get_dataloader(
-        dataset, batch_size=overall_batch_size, num_workers=2, shuffle=True
+        dataset, batch_size=overall_batch_size, num_workers=2
     )
 
     opt = torch.optim.Adam(
@@ -110,72 +103,110 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
 
     for epoch_idx in tqdm.tqdm(range(config.opt_config.num_epochs),  desc="Epoch"):
         for batch_idx, batch in enumerate(dataloader):
-            panorama_embeddings = []
-            satellite_embeddings = []
-            for i in range(opt_config.num_embedding_pool_batches):
-                start_idx = i * opt_config.embedding_pool_batch_size
-                end_idx = start_idx + opt_config.embedding_pool_batch_size
-                with torch.no_grad():
-                    panos = batch.panorama[start_idx:end_idx].cuda()
-                    satellite_patches = batch.satellite[start_idx:end_idx].cuda()
-                    if panos.shape[0] == 0:
-                        continue
-                    panorama_embeddings.append(panorama_model(panos).cpu())
-                    satellite_embeddings.append(
-                        satellite_model(satellite_patches).cpu()
-                    )
-
-            panorama_embeddings = torch.cat(panorama_embeddings)
-            satellite_embeddings = torch.cat(satellite_embeddings)
-
-            triplets = create_triplets(
+            pairs = create_pairs(
                 batch.panorama_metadata,
-                batch.satellite_metadata,
-                panorama_embeddings,
-                satellite_embeddings,
+                batch.satellite_metadata
             )
-            if len(triplets) == 0:
-                continue
 
-            # Iterate through the triplets
-            batch_pos_loss = 0
-            batch_neg_loss = 0
             opt.zero_grad()
-            for start_idx in range(0, len(triplets), opt_config.opt_batch_size):
-                end_idx = start_idx + opt_config.opt_batch_size
-                batch_triplets = triplets[start_idx:end_idx]
-                anchor_panorama_idxs = [x.anchor_panorama_idx for x in batch_triplets]
-                pos_satellite_idxs = [x.positive_satellite_idx for x in batch_triplets]
-                neg_satellite_idxs = [x.negative_satellite_idx for x in batch_triplets]
 
-                panos = batch.panorama[anchor_panorama_idxs].cuda()
-                pos_satellite = batch.satellite[pos_satellite_idxs].cuda()
-                neg_satellite = batch.satellite[neg_satellite_idxs].cuda()
+            panorama_embeddings = panorama_model(batch.panorama.cuda())
+            sat_embeddings = satellite_model(batch.satellite.cuda())
 
-                anchor_embeddings = panorama_model(panos)
-                pos_satellite_embeddings = satellite_model(pos_satellite)
-                neg_satellite_embeddings = satellite_model(neg_satellite)
+            similarity = torch.einsum("ad,bd->ab", panorama_embeddings, sat_embeddings)
+            print(dataset._panorama_metadata)
+            print(pairs)
+            print(similarity)
 
-                pos_loss, neg_loss = compute_loss(
-                    anchor_embeddings,
-                    pos_satellite_embeddings,
-                    neg_satellite_embeddings,
-                )
-                batch_pos_loss += pos_loss.item()
-                batch_neg_loss += neg_loss.item()
-                loss = pos_loss + neg_loss
-                loss.backward()
+            loss = 0
+            pos_rows = [x[0] for x in pairs.positive_pairs]
+            pos_cols = [x[1] for x in pairs.positive_pairs]
+            pos_similarities = similarity[pos_rows, pos_cols]
+
+            neg_rows = [x[0] for x in pairs.negative_pairs]
+            neg_cols = [x[1] for x in pairs.negative_pairs]
+            neg_similarities = similarity[neg_rows, neg_cols]
+
+            POS_WEIGHT = 5
+            AVG_POS_SIMILARITY = 0.0
+            pos_loss = torch.log(1 + torch.exp(-POS_WEIGHT * (pos_similarities - AVG_POS_SIMILARITY)))
+            pos_loss = torch.mean(pos_loss) / POS_WEIGHT
+
+            NEG_WEIGHT = 20
+            AVG_NEG_SIMILARITY = 0.7
+            neg_loss = torch.log(1 + torch.exp(NEG_WEIGHT * (neg_similarities - AVG_NEG_SIMILARITY)))
+            neg_loss = torch.mean(neg_loss) / NEG_WEIGHT
+
+            loss = pos_loss + neg_loss
+            loss.backward()
             opt.step()
-            print(f"{epoch_idx=} {batch_idx=} num_pairs: {len(triplets)} {batch_pos_loss=} {batch_neg_loss=}")
 
-        if epoch_idx % 100 == 0:
-            config.output_dir.mkdir(parents=True, exist_ok=True)
-            panorama_model_path = config.output_dir / f"{epoch_idx:04d}_panorama"
-            satellite_model_path = config.output_dir / f"{epoch_idx:04d}_satellite"
 
-            batch = next(iter(dataloader))
-            save_model(panorama_model, panorama_model_path, (batch.panorama[:opt_config.opt_batch_size].cuda(),))
-            save_model(satellite_model, satellite_model_path, (batch.satellite[:opt_config.opt_batch_size].cuda(),))
+            # panorama_embeddings = []
+            # satellite_embeddings = []
+            # for i in range(opt_config.num_embedding_pool_batches):
+            #     start_idx = i * opt_config.embedding_pool_batch_size
+            #     end_idx = start_idx + opt_config.embedding_pool_batch_size
+            #     with torch.no_grad():
+            #         panos = batch.panorama[start_idx:end_idx].cuda()
+            #         satellite_patches = batch.satellite[start_idx:end_idx].cuda()
+            #         if panos.shape[0] == 0:
+            #             continue
+            #         panorama_embeddings.append(panorama_model(panos).cpu())
+            #         satellite_embeddings.append(
+            #             satellite_model(satellite_patches).cpu()
+            #         )
+
+            # panorama_embeddings = torch.cat(panorama_embeddings)
+            # satellite_embeddings = torch.cat(satellite_embeddings)
+
+            
+#             if len(triplets) == 0:
+#                 continue
+# 
+#             # Iterate through the triplets
+#             print(triplets)
+#             batch_pos_loss = 0
+#             batch_neg_loss = 0
+#             opt.zero_grad()
+#             for start_idx in range(0, len(triplets), opt_config.opt_batch_size):
+#                 end_idx = start_idx + opt_config.opt_batch_size
+#                 batch_triplets = triplets[start_idx:end_idx]
+#                 anchor_panorama_idxs = [x.anchor_panorama_idx for x in batch_triplets]
+#                 pos_satellite_idxs = [x.positive_satellite_idx for x in batch_triplets]
+#                 neg_satellite_idxs = [x.negative_satellite_idx for x in batch_triplets]
+# 
+#                 panos = batch.panorama[anchor_panorama_idxs].cuda()
+#                 pos_satellite = batch.satellite[pos_satellite_idxs].cuda()
+#                 neg_satellite = batch.satellite[neg_satellite_idxs].cuda()
+# 
+#                 anchor_embeddings = panorama_model(panos)
+#                 pos_satellite_embeddings = satellite_model(pos_satellite)
+#                 neg_satellite_embeddings = satellite_model(neg_satellite)
+# 
+#                 print(anchor_embeddings.shape)
+#                 print('pano similarity:\n', F.cosine_similarity(anchor_embeddings, anchor_embeddings))
+# 
+#                 pos_loss, neg_loss = compute_loss(
+#                     anchor_embeddings,
+#                     pos_satellite_embeddings,
+#                     neg_satellite_embeddings,
+#                 )
+#                 batch_pos_loss += pos_loss.item()
+#                 batch_neg_loss += neg_loss.item()
+#                 loss = pos_loss + neg_loss
+#                 loss.backward()
+#             opt.step()
+            # print(f"{epoch_idx=} {batch_idx=} num_pairs: {len(triplets)} {batch_pos_loss=} {batch_neg_loss=}")
+
+        # if epoch_idx % 100 == 0:
+        #     config.output_dir.mkdir(parents=True, exist_ok=True)
+        #     panorama_model_path = config.output_dir / f"{epoch_idx:04d}_panorama"
+        #     satellite_model_path = config.output_dir / f"{epoch_idx:04d}_satellite"
+
+        #     batch = next(iter(dataloader))
+            # save_model(panorama_model, panorama_model_path, (batch.panorama[:opt_config.opt_batch_size].cuda(),))
+            # save_model(satellite_model, satellite_model_path, (batch.satellite[:opt_config.opt_batch_size].cuda(),))
 
 
 def main(dataset_path: Path, output_dir: Path):
@@ -185,6 +216,7 @@ def main(dataset_path: Path, output_dir: Path):
         panorama_neighbor_radius=PANORAMA_NEIGHBOR_RADIUS_DEG,
         satellite_patch_size=(320, 320),
         panorama_size=(320, 640),
+        factor=0.01
     )
     dataset = vigor_dataset.VigorDataset(dataset_path, dataset_config)
 
