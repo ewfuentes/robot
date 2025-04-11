@@ -28,10 +28,10 @@ cc_library(
     "@opencv//:opencv",
     "@gtsam//:gtsam",
     "@eigen",
-    "//common/geometry:camera",
-    "//common/geometry:translate_types",
     "//common/geometry:opencv_viz",
-    ":feature_manager"
+    ":feature_manager",
+    ":frontend",
+    ":backend"
   ]
 )
 
@@ -126,15 +126,16 @@ cc_test(
     "@gtsam//:gtsam",
     "@opencv//:opencv",
     "@eigen",
-    ":spatial_scene_test_cube"
+    ":spatial_test_scene_cube"
   ]
 )
 
 
 cc_library(
-  name = "spatial_scene_test",
-  hdrs = ["spatial_scene_test.hh"],
+  name = "spatial_test_scene",
+  hdrs = ["spatial_test_scene.hh"],
   visibility = ["//visibility:public"],
+  srcs = ["spatial_test_scene.cc"],
   deps = [        
     "@gtsam//:gtsam",
     "@opencv//:opencv",    
@@ -143,11 +144,74 @@ cc_library(
 )
 
 cc_library(
-  name = "spatial_scene_test_cube",
-  hdrs = ["spatial_scene_test_cube.hh"],
+  name = "spatial_test_scene_cube",
+  hdrs = ["spatial_test_scene_cube.hh"],
   visibility = ["//visibility:public"],
   deps = [        
     "@eigen",
-    ":spatial_scene_test"
+    ":spatial_test_scene"
+  ]
+)
+
+cc_test(
+  name = "spatial_test_scene_cube_test",
+  srcs = ["spatial_test_scene_cube_test.cc"],
+  deps = [    
+    "@com_google_googletest//:gtest_main",    
+    ":spatial_test_scene_cube",
+    "//common/geometry:opencv_viz",
+    "@eigen"
+  ]
+)
+
+cc_library(
+  name = "frontend",
+  hdrs = ["frontend.hh"],
+  visibility = ["//visibility:public"],
+  srcs = ["frontend.cc"],
+  copts = [
+    "-Wno-error=unused-parameter",
+  ],
+  deps = [
+    "@opencv//:opencv",    
+  ]
+)
+
+
+cc_test(
+  name = "frontend_test",
+  srcs = ["frontend_test.cc"],
+  deps = [    
+    "@com_google_googletest//:gtest_main",    
+    ":frontend"
+  ]
+)
+
+cc_library(
+  name = "backend",
+  hdrs = ["backend.hh"],
+  visibility = ["//visibility:public"],
+  srcs = ["backend.cc"],
+  copts = [
+    "-Wno-error=unused-parameter",
+  ],
+  deps = [
+    "@opencv//:opencv",    
+    "@gtsam//:gtsam",
+    "//common/geometry:camera",
+    ":feature_manager"
+  ]
+)
+
+
+cc_test(
+  name = "backend_test",
+  srcs = ["backend_test.cc"],
+  deps = [    
+    "@com_google_googletest//:gtest_main",    
+    "@opencv//:opencv",
+    ":backend",
+    ":spatial_scene_test_cube",
+    ":feature_manager"
   ]
 )

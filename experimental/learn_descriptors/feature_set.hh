@@ -64,5 +64,6 @@ class FeatureSet {
    private:
     keypoints_descriptors kpts_descriptors_;
     std::unordered_map<cv::KeyPoint, gtsam::Symbol> kpt_to_symbol_;
+    std::unordered_map<gtsam::Symbol, cv::KeyPoint> symbol_to_kpt_;
 };
 }  // namespace robot::experimental::learn_descriptors
