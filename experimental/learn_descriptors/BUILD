@@ -29,7 +29,7 @@ cc_library(
     "@gtsam//:gtsam",
     "@eigen",
     "//common/geometry:opencv_viz",
-    ":feature_manager",
+    # ":feature_manager",
     ":frontend",
     ":backend"
   ]
@@ -46,7 +46,8 @@ cc_test(
     ":symphony_lake_parser",
     ":structure_from_motion",
     "//common/geometry:opencv_viz",
-    "//common/geometry:translate_types"
+    "//common/geometry:translate_types",
+    ":frame"
   ]
 )
 
@@ -95,6 +96,59 @@ cc_binary(
     "@opencv//:opencv"
   ]
 )
+
+cc_library(
+  name = "frontend_definitions",
+  hdrs = ["frontend_definitions.hh"],
+  visibility = ["//visibility:public"],
+  deps = [        
+    "@gtsam//:gtsam",    
+    ":structure_from_motion_types"
+  ]
+)
+
+cc_library(
+  name = "structure_from_motion_types",
+  hdrs = ["structure_from_motion_types.hh"],
+  visibility = ["//visibility:public"],
+  deps = [        
+    "@gtsam//:gtsam",    
+    "@opencv//:opencv"
+  ]
+)
+
+cc_library(
+  name = "frame",
+  hdrs = ["frame.hh"],
+  srcs = ["frame.cc"],
+  visibility = ["//visibility:public"],
+  deps = [             
+    "@opencv//:opencv",
+    ":frontend_definitions",
+    "@gtsam//:gtsam"
+  ]
+)
+
+cc_test(
+  name = "sfm_mvp",
+  srcs = ["sfm_mvp.cc"],
+    copts = [
+    "-Wno-error=unused-parameter",
+    "-Wno-error=unused-variable",
+  ],
+  deps = [
+    ":frontend",
+    "@com_google_googletest//:gtest_main",
+    "@gtsam//:gtsam",
+    "@opencv//:opencv",
+    "@eigen",
+    ":spatial_test_scene_cube",
+    ":symphony_lake_parser",
+    ":frame", 
+    ":structure_from_motion_types"
+  ]
+)
+
 
 cc_library(
   name = "feature_set",
@@ -199,7 +253,7 @@ cc_library(
     "@opencv//:opencv",    
     "@gtsam//:gtsam",
     "//common/geometry:camera",
-    ":feature_manager"
+    # ":feature_manager"
   ]
 )
 
