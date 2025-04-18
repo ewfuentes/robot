@@ -11,7 +11,7 @@
 #include "Eigen/Dense"
 #include "common/geometry/camera.hh"
 #include "experimental/learn_descriptors/backend.hh"
-#include "experimental/learn_descriptors/feature_manager.hh"
+// #include "experimental/learn_descriptors/feature_manager.hh"
 #include "experimental/learn_descriptors/frontend.hh"
 #include "gtsam/geometry/Pose3.h"
 #include "gtsam/inference/Symbol.h"
@@ -52,7 +52,7 @@ class StructureFromMotion {
     const std::vector<std::vector<cv::DMatch>> get_matches() { return matches_; };
 
    private:
-    std::shared_ptr<FeatureManager> feature_manager_;
+    // std::shared_ptr<FeatureManager> feature_manager_;
 
     gtsam::Pose3 initial_pose_;
     std::vector<std::pair<std::vector<cv::KeyPoint>, cv::Mat>> img_keypoints_and_descriptors_;

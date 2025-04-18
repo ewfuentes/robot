@@ -7,6 +7,7 @@
 #include "Eigen/Geometry"
 #include "common/geometry/opencv_viz.hh"
 #include "common/geometry/translate_types.hh"
+#include "experimental/learn_descriptors/frame.hh"
 #include "experimental/learn_descriptors/symphony_lake_parser.hh"
 #include "gtest/gtest.h"
 
