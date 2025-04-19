@@ -145,7 +145,8 @@ cc_test(
     ":spatial_test_scene_cube",
     ":symphony_lake_parser",
     ":frame", 
-    ":structure_from_motion_types"
+    ":structure_from_motion_types",
+    "//common/geometry:opencv_viz"
   ]
 )
 
