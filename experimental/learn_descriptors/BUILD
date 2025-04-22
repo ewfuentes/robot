@@ -270,3 +270,14 @@ cc_test(
     ":feature_manager"
   ]
 )
+
+cc_binary(
+  name = "get_colmap_groundtruth",
+  srcs = ["get_colmap_groundtruth.cc"],
+  copts = [
+    "-Wno-error=unused-parameter",
+  ],
+  deps = [
+    "symphony_lake_parser"
+  ]
+)
