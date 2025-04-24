@@ -7,6 +7,7 @@ py_binary(
   deps=[
     requirement("torch"),
     requirement("tqdm"),
+    requirement("IPython"),
     "//common/torch:load_torch_deps",
     "//common/torch:load_and_save_models",
     "//experimental/overhead_matching/swag/data:vigor_dataset",

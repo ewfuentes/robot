@@ -93,13 +93,15 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
         opt_config.embedding_pool_batch_size * opt_config.num_embedding_pool_batches
     )
     dataloader = vigor_dataset.get_dataloader(
-        dataset, batch_size=overall_batch_size, num_workers=2
+        dataset, batch_size=overall_batch_size, num_workers=2, shuffle=True, persistent_workers=True
     )
 
     opt = torch.optim.Adam(
         list(panorama_model.parameters()) + list(satellite_model.parameters()),
-        lr = 1e-3
+        lr = 1e-4
     )
+
+    torch.set_printoptions(linewidth=200)
 
     for epoch_idx in tqdm.tqdm(range(config.opt_config.num_epochs),  desc="Epoch"):
         for batch_idx, batch in enumerate(dataloader):
@@ -114,9 +116,6 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
             sat_embeddings = satellite_model(batch.satellite.cuda())
 
             similarity = torch.einsum("ad,bd->ab", panorama_embeddings, sat_embeddings)
-            print(dataset._panorama_metadata)
-            print(pairs)
-            print(similarity)
 
             loss = 0
             pos_rows = [x[0] for x in pairs.positive_pairs]
@@ -139,8 +138,8 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
 
             loss = pos_loss + neg_loss
             loss.backward()
+            print(f"{epoch_idx=} {batch_idx=} {pos_loss.item()=} {neg_loss.item()=} {loss.item()=}")
             opt.step()
-
 
             # panorama_embeddings = []
             # satellite_embeddings = []
@@ -199,14 +198,14 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
 #             opt.step()
             # print(f"{epoch_idx=} {batch_idx=} num_pairs: {len(triplets)} {batch_pos_loss=} {batch_neg_loss=}")
 
-        # if epoch_idx % 100 == 0:
-        #     config.output_dir.mkdir(parents=True, exist_ok=True)
-        #     panorama_model_path = config.output_dir / f"{epoch_idx:04d}_panorama"
-        #     satellite_model_path = config.output_dir / f"{epoch_idx:04d}_satellite"
+        if epoch_idx % 20 == 0:
+            config.output_dir.mkdir(parents=True, exist_ok=True)
+            panorama_model_path = config.output_dir / f"{epoch_idx:04d}_panorama"
+            satellite_model_path = config.output_dir / f"{epoch_idx:04d}_satellite"
 
-        #     batch = next(iter(dataloader))
-            # save_model(panorama_model, panorama_model_path, (batch.panorama[:opt_config.opt_batch_size].cuda(),))
-            # save_model(satellite_model, satellite_model_path, (batch.satellite[:opt_config.opt_batch_size].cuda(),))
+            batch = next(iter(dataloader))
+            save_model(panorama_model, panorama_model_path, (batch.panorama[:opt_config.opt_batch_size].cuda(),))
+            save_model(satellite_model, satellite_model_path, (batch.satellite[:opt_config.opt_batch_size].cuda(),))
 
 
 def main(dataset_path: Path, output_dir: Path):
@@ -216,7 +215,7 @@ def main(dataset_path: Path, output_dir: Path):
         panorama_neighbor_radius=PANORAMA_NEIGHBOR_RADIUS_DEG,
         satellite_patch_size=(320, 320),
         panorama_size=(320, 640),
-        factor=0.01
+        factor=0.10
     )
     dataset = vigor_dataset.VigorDataset(dataset_path, dataset_config)
 
