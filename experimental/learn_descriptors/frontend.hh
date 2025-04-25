@@ -24,6 +24,7 @@ class Frontend {
                                         const cv::Mat &descriptors2) const;
     static void threshold_matches(std::vector<cv::DMatch> &matches, float dist_threshhold);
     static void enforce_bijective_matches(std::vector<cv::DMatch> &matches);
+    static void enforce_bijective_buffer_matches(std::vector<cv::DMatch> &matches);
     static void draw_keypoints(const cv::Mat &img, std::vector<cv::KeyPoint> keypoints,
                                cv::Mat img_keypoints_out) {
         cv::drawKeypoints(img, keypoints, img_keypoints_out, cv::Scalar::all(-1),

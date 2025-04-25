@@ -157,6 +157,15 @@ class SFMMvpHelper {
         for (const auto &pt : points) sum += pt;
         return sum / points.size();
     }
+
+    static gtsam::Point3 get_variance(const std::vector<gtsam::Point3> &points) {
+        const gtsam::Point3 mean = SFMMvpHelper::averagePoints(points);
+        gtsam::Point3 var(0, 0, 0);
+        for (const gtsam::Point3 &pt : points) {
+            var += (mean - pt).array().square().matrix();
+        }
+        return var / points.size();
+    }
 };
 
 TEST(SFMMvp, sfm_building_manual_global) {
@@ -248,7 +257,8 @@ TEST(SFMMvp, sfm_building_manual_global) {
     for (size_t i = 0; i < indices.size() - 1; i++) {
         std::vector<cv::DMatch> matches =
             frontend.get_matches(frames[i].get_descriptors(), frames[i + 1].get_descriptors());
-        frontend.enforce_bijective_matches(matches);
+        // frontend.enforce_bijective_matches(matches);
+        frontend.enforce_bijective_buffer_matches(matches);
         for (const cv::DMatch match : matches) {
             const KeypointCV kpt_cam0 = frames[i].get_keypoints()[match.queryIdx];
             const KeypointCV kpt_cam1 = frames[i + 1].get_keypoints()[match.trainIdx];
@@ -350,6 +360,13 @@ TEST(SFMMvp, sfm_building_manual_global) {
 
 TEST(SFMMvp, sfm_building_manual_incremental) {
     const std::vector<int> indices{60, 80, 100, 120, 140};
+    // const std::vector<int> indices = []() {
+    //     std::vector<int> tmp;
+    //     for (int i = 0; i < 200; i += 10) {
+    //         tmp.push_back(i);
+    //     }
+    //     return tmp;
+    // }();
     DataParser data_parser = SymphonyLakeDatasetTestHelper::get_test_parser();
     const symphony_lake_dataset::SurveyVector &survey_vector = data_parser.get_surveys();
     const symphony_lake_dataset::Survey &survey = survey_vector.get(0);
@@ -409,9 +426,6 @@ TEST(SFMMvp, sfm_building_manual_incremental) {
         cam_pose.emplace(id, T_world_cam_gtsam);
         cam_isometries.push_back(T_world_cam);
 
-        // graph_.emplace_shared<gtsam::PriorFactor<gtsam::Pose3>>(gtsam::Symbol('x', id),
-        //                                                         T_world_cam_gtsam, pose_noise);
-
         Frame frame(id, img_undistorted, K, gtsam::Pose3(T_world_cam.matrix()));
 
         std::pair<std::vector<cv::KeyPoint>, cv::Mat> kpts_descs =
@@ -437,7 +451,7 @@ TEST(SFMMvp, sfm_building_manual_incremental) {
     for (size_t i = 0; i < indices.size() - 1; i++) {
         std::vector<cv::DMatch> matches =
             frontend.get_matches(frames[i].get_descriptors(), frames[i + 1].get_descriptors());
-        frontend.enforce_bijective_matches(matches);
+        frontend.enforce_bijective_buffer_matches(matches);
         for (const cv::DMatch match : matches) {
             const KeypointCV kpt_cam0 = frames[i].get_keypoints()[match.queryIdx];
             const KeypointCV kpt_cam1 = frames[i + 1].get_keypoints()[match.trainIdx];
@@ -457,40 +471,66 @@ TEST(SFMMvp, sfm_building_manual_incremental) {
         }
     }
 
-    // populate graph
-    std::unordered_map<gtsam::Symbol, std::vector<gtsam::Pose3>> symbols_poses_values_iter;
-    std::unordered_map<gtsam::Symbol, std::vector<gtsam::Point3>> symbols_landmarks_values_iter;
-    std::vector<gtsam::Symbol> symbols_pose;
-    std::vector<gtsam::Symbol> symbols_landmarks;
+    // triangulate all of the points
+
+    std::unordered_map<LandmarkId, gtsam::Point3> lmk_triangulated_map;
+    std::vector<gtsam::Point3> triangulated_lmks;
     for (const std::pair<LandmarkId, FeatureTrack> lmk_feat : feature_tracks) {
         std::vector<gtsam::Pose3> feat_cam_poses;
         std::vector<gtsam::Point2> feat_kpts;
         LandmarkId lmk_id = lmk_feat.first;
         FeatureTrack feature_track = lmk_feat.second;
-        const gtsam::Symbol symbol_lmk('l', lmk_id);
-        symbols_landmarks.push_back(symbol_lmk);
         gtsam::Point3 p_wrld_kpt(0, 0, 0);
         for (const std::pair<FrameId, KeypointCV> &feat_track : feature_track.obs_) {
-            initial_estimate_.insert_or_assign(symbol_lmk, gtsam::Point3(0, 0, 0));
-            symbols_landmarks_values_iter.emplace(
-                symbol_lmk, std::vector<gtsam::Point3>{gtsam::Point3(0, 0, 0)});
-            graph_.emplace_shared<gtsam::GenericProjectionFactor<gtsam::Pose3, gtsam::Point3>>(
-                gtsam::Point2(feat_track.second.x, feat_track.second.y), landmark_noise,
-                gtsam::Symbol('x', feat_track.first), symbol_lmk, K);
-
             feat_cam_poses.push_back(cam_pose[feat_track.first]);
             feat_kpts.push_back(gtsam::Point2(feat_track.second.x, feat_track.second.y));
         }
         bool triangulate_success =
             SFMMvpHelper::attempt_triangulate(feat_cam_poses, feat_kpts, K, p_wrld_kpt);
         if (triangulate_success) {
-            initial_estimate_.insert_or_assign(symbol_lmk, p_wrld_kpt);
-        }
-        if (symbols_landmarks_values_iter.find(symbol_lmk) != symbols_landmarks_values_iter.end()) {
-            symbols_landmarks_values_iter[symbol_lmk].push_back(p_wrld_kpt);
+            lmk_triangulated_map.emplace(lmk_id, p_wrld_kpt);
+            triangulated_lmks.push_back(p_wrld_kpt);
         } else {
+            continue;
+        }
+    }
+    // filter points
+    geometry::viz_scene(std::vector<Eigen::Isometry3d>(), triangulated_lmks, true, true,
+                        "Unfiltered points");
+    const gtsam::Point3 variance_pts = SFMMvpHelper::get_variance(triangulated_lmks);
+    const gtsam::Point3 std_dev_pts = variance_pts.array().sqrt().matrix();
+    const gtsam::Point3 mean_pts = SFMMvpHelper::averagePoints(triangulated_lmks);
+    std::unordered_map<LandmarkId, gtsam::Point3> lmk_triangulated_map_filtered;
+    std::vector<gtsam::Point3> filtered_points;
+    std::cout << "original var " << variance_pts << std::endl;
+    for (const std::pair<LandmarkId, gtsam::Point3> lmk_id_pt : lmk_triangulated_map) {
+        const gtsam::Point3 dist_mean = (lmk_id_pt.second - mean_pts).array().abs().matrix();
+        if ((dist_mean.array() <= (3 * std_dev_pts).array()).all()) {
+            lmk_triangulated_map_filtered.emplace(lmk_id_pt);
+            filtered_points.push_back(lmk_id_pt.second);
+        }
+    }
+    std::cout << "filtered variance " << SFMMvpHelper::get_variance(filtered_points) << std::endl;
+    geometry::viz_scene(std::vector<Eigen::Isometry3d>(), filtered_points, true, true,
+                        "Unfiltered points");
+
+    // add filtered points to graph
+    std::unordered_map<gtsam::Symbol, std::vector<gtsam::Pose3>> symbols_poses_values_iter;
+    std::unordered_map<gtsam::Symbol, std::vector<gtsam::Point3>> symbols_landmarks_values_iter;
+    std::vector<gtsam::Symbol> symbols_pose;
+    std::vector<gtsam::Symbol> symbols_landmarks;
+    for (const std::pair<LandmarkId, gtsam::Point3> lmk_id_pt : lmk_triangulated_map_filtered) {
+        LandmarkId lmk_id = lmk_id_pt.first;
+        const gtsam::Point3 p_wrld_kpt = lmk_id_pt.second;
+        FeatureTrack feature_track = feature_tracks.at(lmk_id);
+        const gtsam::Symbol symbol_lmk('l', lmk_id);
+        for (const std::pair<FrameId, KeypointCV> &feat_track : feature_track.obs_) {
+            initial_estimate_.insert_or_assign(symbol_lmk, p_wrld_kpt);
             symbols_landmarks_values_iter.emplace(symbol_lmk,
                                                   std::vector<gtsam::Point3>{p_wrld_kpt});
+            graph_.emplace_shared<gtsam::GenericProjectionFactor<gtsam::Pose3, gtsam::Point3>>(
+                gtsam::Point2(feat_track.second.x, feat_track.second.y), landmark_noise,
+                gtsam::Symbol('x', feat_track.first), symbol_lmk, K);
         }
     }
     graph_.emplace_shared<gtsam::PriorFactor<gtsam::Pose3>>(gtsam::Symbol('x', 0), cam_pose.at(0),
@@ -512,7 +552,8 @@ TEST(SFMMvp, sfm_building_manual_incremental) {
         // initial_estimate_.insert_or_assign(key_cam, gtsam::Pose3(gtsam::Rot3(), p_wrld_cam));
     }
 
-    SFMMvpHelper::graph_values(initial_estimate_, "Confirmation", symbols_pose, symbols_landmarks);
+    // SFMMvpHelper::graph_values(initial_estimate_, "Confirmation", symbols_pose,
+    // symbols_landmarks);
 
     // do local optimizations and add to iter cache
     // const int window = 2;
@@ -555,6 +596,9 @@ TEST(SFMMvp, sfm_building_manual_incremental) {
             auto key = std::make_pair(frames[i].id_, kpt_cam0);
             if (lmk_id_map.find(key) != lmk_id_map.end()) {
                 auto id = lmk_id_map.at(key);
+                if (lmk_triangulated_map_filtered.find(id) == lmk_triangulated_map_filtered.end()) {
+                    continue;
+                }
                 std::cout << "good" << std::endl;
                 // do nothing
                 // feature_tracks.at(id).obs_.emplace_back(i, kpt_cam0);
@@ -600,8 +644,8 @@ TEST(SFMMvp, sfm_building_manual_incremental) {
             }
         }
         std::cout << "setup complete!" << std::endl;
-        geometry::viz_scene(viz_poses, viz_lmks, true, true,
-                            "Local Optimization " + std::to_string(i));
+        // geometry::viz_scene(viz_poses, viz_lmks, true, true,
+        //                     "Local Optimization " + std::to_string(i));
 
         const gtsam::Values symbols_result_local = SFMMvpHelper::optimize_graph(
             local_graph_, local_estimate_, symbols_pose, symbols_landmarks, false);
@@ -616,7 +660,7 @@ TEST(SFMMvp, sfm_building_manual_incremental) {
         }
     }
 
-    std::cout << "\nLocal Optimizations Complete!" << std::endl;
+    std::cout << "\nLocal Optimizations Complete!\n" << std::endl;
 
     for (std::pair<gtsam::Symbol, std::vector<gtsam::Pose3>> sym_pose : symbols_poses_values_iter) {
         initial_estimate_.insert_or_assign(sym_pose.first,
