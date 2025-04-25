@@ -266,8 +266,8 @@ cc_test(
     "@com_google_googletest//:gtest_main",    
     "@opencv//:opencv",
     ":backend",
-    ":spatial_scene_test_cube",
-    ":feature_manager"
+    ":feature_manager",
+    ":spatial_test_scene_cube"
   ]
 )
 

@@ -108,6 +108,51 @@ void Frontend::enforce_bijective_matches(std::vector<cv::DMatch> &matches) {
                   matches.end());
 }
 
+void Frontend::enforce_bijective_buffer_matches(std::vector<cv::DMatch> &matches) {
+    // Store best and second-best matches per query_idx
+    std::unordered_map<int, std::pair<cv::DMatch, float>> best_two_query_matches;
+    for (const auto &match : matches) {
+        int query_idx = match.queryIdx;
+        float dist = match.distance;
+
+        if (!best_two_query_matches.count(query_idx)) {
+            best_two_query_matches[query_idx] = {match, std::numeric_limits<float>::max()};
+        } else {
+            auto &[best_match, second_best_dist] = best_two_query_matches[query_idx];
+            if (dist < best_match.distance) {
+                second_best_dist = best_match.distance;
+                best_match = match;
+            } else if (dist < second_best_dist) {
+                second_best_dist = dist;
+            }
+        }
+    }
+
+    // Keep matches where best < 0.5 * second_best
+    std::vector<cv::DMatch> filtered;
+    for (const auto &[query_idx, pair] : best_two_query_matches) {
+        const auto &[best_match, second_best_dist] = pair;
+        if (best_match.distance < 0.5f * second_best_dist) {
+            filtered.push_back(best_match);
+        }
+    }
+
+    // Enforce bijection: each train_idx should also be best for only one query_idx
+    std::unordered_map<int, cv::DMatch> best_train_match;
+    for (const auto &match : filtered) {
+        int train_idx = match.trainIdx;
+        if (!best_train_match.count(train_idx) ||
+            match.distance < best_train_match[train_idx].distance) {
+            best_train_match[train_idx] = match;
+        }
+    }
+
+    matches.clear();
+    for (const auto &[train_idx, match] : best_train_match) {
+        matches.push_back(match);
+    }
+}
+
 bool Frontend::get_brute_matches(const cv::Mat &descriptors1, const cv::Mat &descriptors2,
                                  std::vector<cv::DMatch> &matches_out) const {
     if (matcher_type_ != MatcherType::BRUTE_FORCE) {

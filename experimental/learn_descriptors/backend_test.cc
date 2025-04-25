@@ -2,7 +2,7 @@
 
 #include "experimental/learn_descriptors/feature_manager.hh"
 #include "gtest/gtest.h"
-#include "spatial_scene_test_cube.hh"
+#include "experimental/learn_descriptors/spatial_test_scene_cube.hh"
 
 namespace robot::experimental::learn_descriptors {
 TEST(BackendTest, cube) {
