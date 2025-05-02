@@ -15,7 +15,8 @@ RUN mkdir actions-runner && \
         useradd --uid $USER_UID --gid $USER_GID -m $USERNAME && \
         usermod -aG sudo $USERNAME && \
         curl -o /usr/bin/bazel -L https://github.com/bazelbuild/bazelisk/releases/download/v1.25.0/bazelisk-linux-amd64 && \
-        chmod a+x /usr/bin/bazel
+        chmod a+x /usr/bin/bazel && \
+        git lfs install
 RUN echo "$USERNAME ALL=(ALL:ALL) NOPASSWD: ALL" > /etc/sudoers.d/$USERNAME
         
 

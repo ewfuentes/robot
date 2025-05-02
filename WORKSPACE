@@ -274,7 +274,7 @@ http_archive(
   urls = ["https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.zip"],
   strip_prefix = "eigen-3.4.0",
   build_file="@//third_party:BUILD.eigen",
-  sha256 = "1ccaabbfe870f60af3d6a519c53e09f3dcf630207321dffa553564a8e75c4fc8",
+  sha256 = "eba3f3d414d2f8cba2919c78ec6daab08fc71ba2ba4ae502b7e5d4d99fc02cda",
 )
 
 http_archive(
