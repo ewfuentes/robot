@@ -59,25 +59,6 @@ def create_pairs(panorama_metadata, satellite_metadata) -> Pairs:
     return out
 
 
-def compute_loss(anchor_embeddings, positive_embeddings, negative_embeddings):
-    AVG_POS_SIMILARITY = 0.0
-    AVG_NEG_SIMILARITY = 0.7
-    AVG_SEMI_POS_SIMILARITY = 0.3
-
-    POS_WEIGHT = 5
-    NEG_WEIGHT = 20
-    SEMI_POS_WEIGHT = 6
-
-    pos_similarity = F.cosine_similarity(anchor_embeddings, positive_embeddings)
-    neg_similarity = F.cosine_similarity(anchor_embeddings, negative_embeddings)
-
-    pos_loss = torch.log(1 + torch.exp(-POS_WEIGHT * (pos_similarity - AVG_POS_SIMILARITY)))
-    neg_loss = torch.log(1 + torch.exp(NEG_WEIGHT * (neg_similarity - AVG_NEG_SIMILARITY)))
-    pos_loss = torch.mean(pos_loss) / POS_WEIGHT
-    neg_loss = torch.mean(neg_loss) / NEG_WEIGHT
-    return pos_loss, neg_loss
-
-
 def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
     panorama_model = panorama_model.cuda()
     satellite_model = satellite_model.cuda()
@@ -98,7 +79,7 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
 
     opt = torch.optim.Adam(
         list(panorama_model.parameters()) + list(satellite_model.parameters()),
-        lr = 1e-4
+        lr=1e-4
     )
 
     torch.set_printoptions(linewidth=200)
@@ -140,63 +121,6 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
             loss.backward()
             print(f"{epoch_idx=} {batch_idx=} {pos_loss.item()=} {neg_loss.item()=} {loss.item()=}")
             opt.step()
-
-            # panorama_embeddings = []
-            # satellite_embeddings = []
-            # for i in range(opt_config.num_embedding_pool_batches):
-            #     start_idx = i * opt_config.embedding_pool_batch_size
-            #     end_idx = start_idx + opt_config.embedding_pool_batch_size
-            #     with torch.no_grad():
-            #         panos = batch.panorama[start_idx:end_idx].cuda()
-            #         satellite_patches = batch.satellite[start_idx:end_idx].cuda()
-            #         if panos.shape[0] == 0:
-            #             continue
-            #         panorama_embeddings.append(panorama_model(panos).cpu())
-            #         satellite_embeddings.append(
-            #             satellite_model(satellite_patches).cpu()
-            #         )
-
-            # panorama_embeddings = torch.cat(panorama_embeddings)
-            # satellite_embeddings = torch.cat(satellite_embeddings)
-
-            
-#             if len(triplets) == 0:
-#                 continue
-# 
-#             # Iterate through the triplets
-#             print(triplets)
-#             batch_pos_loss = 0
-#             batch_neg_loss = 0
-#             opt.zero_grad()
-#             for start_idx in range(0, len(triplets), opt_config.opt_batch_size):
-#                 end_idx = start_idx + opt_config.opt_batch_size
-#                 batch_triplets = triplets[start_idx:end_idx]
-#                 anchor_panorama_idxs = [x.anchor_panorama_idx for x in batch_triplets]
-#                 pos_satellite_idxs = [x.positive_satellite_idx for x in batch_triplets]
-#                 neg_satellite_idxs = [x.negative_satellite_idx for x in batch_triplets]
-# 
-#                 panos = batch.panorama[anchor_panorama_idxs].cuda()
-#                 pos_satellite = batch.satellite[pos_satellite_idxs].cuda()
-#                 neg_satellite = batch.satellite[neg_satellite_idxs].cuda()
-# 
-#                 anchor_embeddings = panorama_model(panos)
-#                 pos_satellite_embeddings = satellite_model(pos_satellite)
-#                 neg_satellite_embeddings = satellite_model(neg_satellite)
-# 
-#                 print(anchor_embeddings.shape)
-#                 print('pano similarity:\n', F.cosine_similarity(anchor_embeddings, anchor_embeddings))
-# 
-#                 pos_loss, neg_loss = compute_loss(
-#                     anchor_embeddings,
-#                     pos_satellite_embeddings,
-#                     neg_satellite_embeddings,
-#                 )
-#                 batch_pos_loss += pos_loss.item()
-#                 batch_neg_loss += neg_loss.item()
-#                 loss = pos_loss + neg_loss
-#                 loss.backward()
-#             opt.step()
-            # print(f"{epoch_idx=} {batch_idx=} num_pairs: {len(triplets)} {batch_pos_loss=} {batch_neg_loss=}")
 
         if epoch_idx % 20 == 0:
             config.output_dir.mkdir(parents=True, exist_ok=True)
