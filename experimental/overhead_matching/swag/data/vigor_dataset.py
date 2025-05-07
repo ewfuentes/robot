@@ -138,11 +138,14 @@ class VigorDataset(torch.utils.data.Dataset):
                              generator: torch.Generator,
                              max_length_m: float,
                              turn_temperature: float)->list[int]:
+        """Returns a list of indices into the dataset's panoramas to define a path through the graph"""
         path = [] 
         distance_traveled_m = 0.0
-        last_direction = torch.zeros(2)
+        last_direction = torch.rand((2,), generator=generator)*0.5 - 1  # random initial direction
+        if torch.norm(last_direction) == 0.0:  # if we somehow sampled 0, add some small offset
+            last_direction += 1e-6
         # select start panorama
-        last_index = torch.randint(0, len(self), (1,), generator=generator)
+        last_index = torch.randint(0, len(self), (1,), generator=generator).item()
 
         def softmax_w_temp(x: torch.Tensor, t: float)-> torch.tensor:
             ex = torch.exp(x / t)
@@ -150,21 +153,19 @@ class VigorDataset(torch.utils.data.Dataset):
 
         while distance_traveled_m < max_length_m:
             path.append(last_index)
-            last_item = self[last_index]
-            last_coord = torch.tensor([last_item.panorama_metadata['lon'], last_item.panorama_metadata['lat']])
-            last_neighbors = last_item.panorama_metadata['neighbor_panorama_idxs']
+            last_item = self._panorama_metadata.loc[last_index]
+            last_coord = torch.tensor([last_item['lon'], last_item['lat']])
+            last_neighbors = last_item['neighbor_panorama_idxs']
 
             # calculate distribution over neighbors
             neighbor_probs = torch.zeros(len(last_neighbors))
             neighbor_coords = torch.zeros(len(last_neighbors), 2)
             neighbor_directions = torch.zeros(len(last_neighbors), 2)
             for i, neighbor_pano_idx in enumerate(last_neighbors):
-                neighbor_item = self[neighbor_pano_idx]
-                neighbor_coords[i] = torch.tensor([neighbor_item.panorama_metadata['lon'], neighbor_item.panorama_metadata['lat']])
+                neighbor_item = self._panorama_metadata.loc[neighbor_pano_idx]
+                neighbor_coords[i] = torch.tensor([neighbor_item['lon'], neighbor_item['lat']])
                 neighbor_directions[i] = neighbor_coords[i] - last_coord
-                similarity = torch.dot(neighbor_directions[i], last_direction) / torch.norm(neighbor_directions[i]) 
-                if torch.is_nonzero(torch.norm(last_direction)):
-                    similarity = similarity / torch.norm(last_direction)
+                similarity = torch.dot(neighbor_directions[i], last_direction) / torch.norm(neighbor_directions[i]) / torch.norm(last_direction)
                 neighbor_probs[i] = similarity
 
             neighbor_probs = softmax_w_temp(neighbor_probs, turn_temperature) 
@@ -173,7 +174,8 @@ class VigorDataset(torch.utils.data.Dataset):
             # update current location
             last_index = last_neighbors[winning_neighbor]
             last_direction = neighbor_directions[winning_neighbor]
-            distance_traveled_m += 6378137.0 * find_d_on_unit_circle(last_coord.numpy(), neighbor_coords[winning_neighbor].numpy())
+            EARTH_RADIUS_M = 6378137.0
+            distance_traveled_m +=  EARTH_RADIUS_M * find_d_on_unit_circle(last_coord.numpy(), neighbor_coords[winning_neighbor].numpy())
 
         return path
 
@@ -200,11 +202,11 @@ class VigorDataset(torch.utils.data.Dataset):
                 )
         return OverheadVigorDataset(self)
 
-    def visualize(self, include_text_labels=False):
+    def visualize(self, include_text_labels=False, path=None) -> "plt.Figure":
         import matplotlib.pyplot as plt
         from matplotlib.collections import LineCollection
 
-        plt.figure()
+        fig = plt.figure()
         ax = plt.subplot(111)
         sat_segments = []
         neighbor_segments = []
@@ -225,6 +227,17 @@ class VigorDataset(torch.utils.data.Dataset):
         ax.add_collection(sat_collection)
         ax.add_collection(neighbor_collection)
 
+        if path is not None and len(path) > 2:
+            path_segments = []
+            get_long_lat_from_idx = lambda idx: (self._panorama_metadata.loc[idx].lon, self._panorama_metadata.loc[idx].lat)
+            last_pos = get_long_lat_from_idx(path[0])
+            for pano_idx in path[1:]:
+                path_segments.append([last_pos, get_long_lat_from_idx(pano_idx)])
+                last_pos = path_segments[-1][-1]
+            path_collection = LineCollection(path_segments, colors=[(0.25, 0.25, 0.9) for x in range(len(neighbor_segments))]) 
+            ax.add_collection(path_collection)
+
+
         self._satellite_metadata.plot(x="lon", y="lat", ax=ax, kind="scatter", color="r")
         self._panorama_metadata.plot(x="lon", y="lat", ax=ax, kind="scatter", color="g")
 
@@ -236,7 +249,8 @@ class VigorDataset(torch.utils.data.Dataset):
                 plt.text(pano_meta.lon, pano_meta.lat, f"{pano_idx}").set_clip_on(True)
 
         plt.axis("equal")
-        plt.show(block=True)
+
+        return fig
 
 
 def get_dataloader(dataset: VigorDataset, **kwargs):

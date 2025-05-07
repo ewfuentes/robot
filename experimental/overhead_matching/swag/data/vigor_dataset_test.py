@@ -248,9 +248,27 @@ class VigorDatasetTest(unittest.TestCase):
         path1 = dataset.generate_random_path(torch.manual_seed(SEED), PATH_LENGTH_M, 1.0)
         path2 = dataset.generate_random_path(torch.manual_seed(SEED), PATH_LENGTH_M, 1.0)
         path3 = dataset.generate_random_path(torch.manual_seed(SEED-3), PATH_LENGTH_M, 1.0)
-
+    
+        for item in path1:
+            self.assertTrue(type(item) == int)
         self.assertListEqual(path1, path2)
         self.assertNotEqual(path1, path3)
+
+    @unittest.skip("Visualization only")
+    def test_visualize_path(self):
+        import matplotlib.pyplot as plt
+        PANO_NEIGHBOR_RADIUS = 0.0005
+        PATH_LENGTH_M = 10000
+        SEED = 532
+        dataset = vigor_dataset.VigorDataset(Path("external/vigor_snippet/vigor_snippet"), PANO_NEIGHBOR_RADIUS)
+        # action 
+        path1 = dataset.generate_random_path(torch.manual_seed(SEED), PATH_LENGTH_M, 0.1)
+
+        fig = dataset.visualize(path=path1)
+        #plt.show()
+        plt.savefig("/tmp/path_visual.png")
+        plt.close(fig)
+
 
 
 
