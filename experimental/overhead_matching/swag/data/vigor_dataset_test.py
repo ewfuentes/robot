@@ -133,24 +133,20 @@ class VigorDatasetTest(unittest.TestCase):
         self.assertGreater(len(item.satellite_metadata["panorama_idxs"]), 0)
 
         # Check that the location embedded in the images matches the metadata
-        pano_lat_sign = -1 if item.panorama[0, 0, 0] == 1 else 1
-        pano_embedded_lat = pano_lat_sign * \
-            (item.panorama[1, 0, 0] + 0.01 * item.panorama[2, 0, 0]).item()
+        pano_lat_sign = -1 if item.panorama[0, 0, 0] > 0 else 1
+        pano_embedded_lat = pano_lat_sign * 255 * (item.panorama[1, 0, 0] + 0.01 * item.panorama[2, 0, 0]).item()
 
-        pano_lon_sign = -1 if item.panorama[0, 0, 1] == 1 else 1
-        pano_embedded_lon = pano_lon_sign * \
-            (item.panorama[1, 0, 1] + 0.01 * item.panorama[2, 0, 1]).item()
+        pano_lon_sign = -1 if item.panorama[0, 0, 1] > 0 else 1
+        pano_embedded_lon = pano_lon_sign * 255 * (item.panorama[1, 0, 1] + 0.01 * item.panorama[2, 0, 1]).item()
 
         self.assertAlmostEqual(item.panorama_metadata["lat"], pano_embedded_lat, places=1)
         self.assertAlmostEqual(item.panorama_metadata["lon"], pano_embedded_lon, places=1)
 
-        sat_lat_sign = -1 if item.satellite[0, 0, 0] == 1 else 1
-        sat_embedded_lat = sat_lat_sign * \
-            (item.satellite[1, 0, 0] + 0.01 * item.satellite[2, 0, 0]).item()
+        sat_lat_sign = -1 if item.satellite[0, 0, 0] > 0 else 1
+        sat_embedded_lat = sat_lat_sign * 255 * (item.satellite[1, 0, 0] + 0.01 * item.satellite[2, 0, 0]).item()
 
-        sat_lon_sign = -1 if item.satellite[0, 0, 1] == 1 else 1
-        sat_embedded_lon = sat_lon_sign * \
-            (item.satellite[1, 0, 1] + 0.01 * item.satellite[2, 0, 1]).item()
+        sat_lon_sign = -1 if item.satellite[0, 0, 1] > 0 else 1
+        sat_embedded_lon = sat_lon_sign * 255 * (item.satellite[1, 0, 1] + 0.01 * item.satellite[2, 0, 1]).item()
 
         self.assertAlmostEqual(item.satellite_metadata["lat"], sat_embedded_lat, places=1)
         self.assertAlmostEqual(item.satellite_metadata["lon"], sat_embedded_lon, places=1)
@@ -231,19 +227,29 @@ class VigorDatasetTest(unittest.TestCase):
         self.assertEqual(dataset_item.satellite_metadata, overhead_view_item.satellite_metadata)
 
     def test_index_by_tensor(self):
-        PANO_NEIGHBOR_RADIUS = 0.0005
+        config = vigor_dataset.VigorDatasetConfig(
+            panorama_neighbor_radius=0.0005,
+            satellite_patch_size=None,
+            panorama_size=None,
+        )
 
         dataset = vigor_dataset.VigorDataset(
-            Path("external/vigor_snippet/vigor_snippet"), PANO_NEIGHBOR_RADIUS)
+            Path("external/vigor_snippet/vigor_snippet"), config)
 
         # action and verification
         item = dataset[torch.tensor([7])]
 
     def test_path_generation_is_reproducable(self):
-        PANO_NEIGHBOR_RADIUS = 0.0005
+        config = vigor_dataset.VigorDatasetConfig(
+            panorama_neighbor_radius=0.0005,
+            satellite_patch_size=None,
+            panorama_size=None,
+        )
+        dataset = vigor_dataset.VigorDataset(
+            Path("external/vigor_snippet/vigor_snippet"), config)
+
         PATH_LENGTH_M = 100
         SEED = 532
-        dataset = vigor_dataset.VigorDataset(Path("external/vigor_snippet/vigor_snippet"), PANO_NEIGHBOR_RADIUS)
         # action 
         path1 = dataset.generate_random_path(torch.manual_seed(SEED), PATH_LENGTH_M, 1.0)
         path2 = dataset.generate_random_path(torch.manual_seed(SEED), PATH_LENGTH_M, 1.0)
@@ -257,10 +263,15 @@ class VigorDatasetTest(unittest.TestCase):
     @unittest.skip("Visualization only")
     def test_visualize_path(self):
         import matplotlib.pyplot as plt
-        PANO_NEIGHBOR_RADIUS = 0.0005
         PATH_LENGTH_M = 10000
         SEED = 532
-        dataset = vigor_dataset.VigorDataset(Path("external/vigor_snippet/vigor_snippet"), PANO_NEIGHBOR_RADIUS)
+        config = vigor_dataset.VigorDatasetConfig(
+            panorama_neighbor_radius=0.0005,
+            satellite_patch_size=None,
+            panorama_size=None,
+        )
+        dataset = vigor_dataset.VigorDataset(
+            Path("external/vigor_snippet/vigor_snippet"), config)
         # action 
         path1 = dataset.generate_random_path(torch.manual_seed(SEED), PATH_LENGTH_M, 0.1)
 
