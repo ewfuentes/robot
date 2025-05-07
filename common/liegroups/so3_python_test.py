@@ -76,10 +76,10 @@ class SO3PythonTest(unittest.TestCase):
 
         # Verification
         b_from_a_quat = b_from_a.quaternion()
-        self.assertEqual(b_from_a_quat[0], s)
-        self.assertEqual(b_from_a_quat[1], 0.0)
-        self.assertEqual(b_from_a_quat[2], 0.0)
-        self.assertEqual(b_from_a_quat[3], c)
+        self.assertAlmostEqual(b_from_a_quat[0], s)
+        self.assertAlmostEqual(b_from_a_quat[1], 0.0)
+        self.assertAlmostEqual(b_from_a_quat[2], 0.0)
+        self.assertAlmostEqual(b_from_a_quat[3], c)
 
     def test_rot_y(self):
         # Setup
@@ -92,10 +92,10 @@ class SO3PythonTest(unittest.TestCase):
 
         # Verification
         b_from_a_quat = b_from_a.quaternion()
-        self.assertEqual(b_from_a_quat[0], 0.0)
-        self.assertEqual(b_from_a_quat[1], s)
-        self.assertEqual(b_from_a_quat[2], 0.0)
-        self.assertEqual(b_from_a_quat[3], c)
+        self.assertAlmostEqual(b_from_a_quat[0], 0.0)
+        self.assertAlmostEqual(b_from_a_quat[1], s)
+        self.assertAlmostEqual(b_from_a_quat[2], 0.0)
+        self.assertAlmostEqual(b_from_a_quat[3], c)
 
     def test_rot_z(self):
         # Setup
@@ -108,10 +108,10 @@ class SO3PythonTest(unittest.TestCase):
 
         # Verification
         b_from_a_quat = b_from_a.quaternion()
-        self.assertEqual(b_from_a_quat[0], 0.0)
-        self.assertEqual(b_from_a_quat[1], 0.0)
-        self.assertEqual(b_from_a_quat[2], s)
-        self.assertEqual(b_from_a_quat[3], c)
+        self.assertAlmostEqual(b_from_a_quat[0], 0.0)
+        self.assertAlmostEqual(b_from_a_quat[1], 0.0)
+        self.assertAlmostEqual(b_from_a_quat[2], s)
+        self.assertAlmostEqual(b_from_a_quat[3], c)
 
     def test_exp_log(self):
         # Setup

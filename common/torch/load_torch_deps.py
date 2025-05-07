@@ -24,16 +24,23 @@ def _preload_cuda_deps(lib_folder: str, lib_name: str) -> None:
     lib_path = None
     for path in sys.path:
         nvidia_path = os.path.join(path, 'nvidia')
-        if not os.path.exists(nvidia_path):
+
+        if os.path.exists(nvidia_path):
+            path_to_search = nvidia_path
+        elif os.path.exists(os.path.join(path, lib_folder)):
+            path_to_search = path
+        else:
             continue
-        candidate_lib_paths = glob.glob(os.path.join(nvidia_path, lib_folder, 'lib', lib_name))
+        candidate_lib_paths = glob.glob(os.path.join(path_to_search, lib_folder, 'lib', lib_name))
         lib_contents = glob.glob(os.path.join(nvidia_path, lib_folder, 'lib', '*'))
         if candidate_lib_paths and not lib_path:
             lib_path = candidate_lib_paths[0]
         if lib_path:
             break
     if not lib_path:
-        raise ValueError(f"{lib_name} not found in the system path {sys.path}")
+        for p in sys.path:
+            print(p)
+        raise ValueError(f"{lib_name} not found in the system path")
     ctypes.CDLL(lib_path)
 
 
@@ -45,9 +52,11 @@ def preload_cuda_deps() -> None:
         'cuda_runtime': 'libcudart.so.*[0-9]',
         'cuda_cupti': 'libcupti.so.*[0-9]',
         'cufft': 'libcufft.so.*[0-9]',
+        'cufile': 'libcufile.so.*[0-9]',
         'curand': 'libcurand.so.*[0-9]',
         'nvjitlink': 'libnvJitLink.so.*[0-9]',
         'cusparse': 'libcusparse.so.*[0-9]',
+        'cusparselt': 'libcusparseLt.so.*[0-9]',
         'cusolver': 'libcusolver.so.*[0-9]',
         'nccl': 'libnccl.so.*[0-9]',
         'nvtx': 'libnvToolsExt.so.*[0-9]',
