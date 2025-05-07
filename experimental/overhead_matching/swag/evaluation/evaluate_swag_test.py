@@ -4,7 +4,7 @@ import torch
 from pathlib import Path
 import pandas as pd
 import numpy as np
-from experimental.overhead_matching.swag.data.vigor_dataset import VigorDataset, get_dataloader, VigorDatasetItem
+from experimental.overhead_matching.swag.data import vigor_dataset as vd
 from experimental.overhead_matching.swag.evaluation.evaluate_swag import evaluate_prediction_top_k
 
 import torch.nn as nn
@@ -19,7 +19,7 @@ class MockEmbeddingModel(nn.Module):
     
     def forward(self, data: torch.Tensor):
         batch_size = data.shape[0]
-        out = self.embedding_network(data[:, :, :100, :100].float().view(batch_size, -1))
+        out = self.embedding_network(data[:, :, :100, :100].float().reshape(batch_size, -1))
         out[1,:] = 0.5  # make sure some vectors are identical/linearly dependent 
         return out
 
@@ -29,11 +29,11 @@ class EvaluateSwagTest(unittest.TestCase):
     def test_evaluate_prediction_top_k_manual(self):
         embedding_database = torch.tensor([
             [0.1, 0.2, 0.3],
-            [0.5, 0.5, 0.5],  
+            [0.5, 0.5, 0.5],
             [-0.1, -0.2, -0.3],
             [0.77, 0.63, 0.99], # correct match
         ])
-        mock_dataloader = [VigorDatasetItem(
+        mock_dataloader = [vd.VigorDatasetItem(
             panorama=torch.tensor([[1,2,3]]),
             panorama_metadata = [{"satellite_idx": 3, "index": 0}],
             satellite=None,
@@ -44,7 +44,7 @@ class EvaluateSwagTest(unittest.TestCase):
                 super().__init__()
             def forward(self, x):
                 return torch.tensor([[0.8, 0.8, 0.8]])
-        m = MockModule() 
+        m = MockModule()
         
         # action 
         result_df = evaluate_prediction_top_k(embedding_database, mock_dataloader, m, device='cpu')
@@ -59,24 +59,24 @@ class EvaluateSwagTest(unittest.TestCase):
         EMBEDDING_DIM = 16
         BATCH_SIZE = 4
         SEED = 42
-        PANO_NEIGHBOR_RADIUS = 0.2
+        config = vd.VigorDatasetConfig(panorama_neighbor_radius=0.2)
         
         # Use same random seed for reproducibility
         torch.manual_seed(SEED)
         
         # Create dataset, model, and embedding database
-        dataset = VigorDataset(Path("external/vigor_snippet/vigor_snippet"), PANO_NEIGHBOR_RADIUS)
+        dataset = vd.VigorDataset(Path("external/vigor_snippet/vigor_snippet"), config)
         overhead_view = dataset.get_sat_patch_view()
         
         sat_model = MockEmbeddingModel(EMBEDDING_DIM)
         ego_model = MockEmbeddingModel(EMBEDDING_DIM)
         
         # Create satellite embedding database
-        sat_dataloader = get_dataloader(overhead_view, batch_size=BATCH_SIZE, shuffle=False)
+        sat_dataloader = vd.get_dataloader(overhead_view, batch_size=BATCH_SIZE, shuffle=False)
         satellite_embedding_database = sed.build_satellite_embedding_database(sat_model, sat_dataloader, device="cpu")
         
         # Create panorama dataloader for testing
-        pano_dataloader = get_dataloader(dataset, batch_size=BATCH_SIZE, shuffle=False)
+        pano_dataloader = vd.get_dataloader(dataset, batch_size=BATCH_SIZE, shuffle=False)
         
         # Call the function to test
         result_df = evaluate_prediction_top_k(

@@ -7,6 +7,7 @@ py_library(
   visibility = ["//experimental/overhead_matching/swag:__subpackages__",
                 "//common/python:__subpackages__"],
   deps = [
+    requirement("numpy"),
     requirement("torch"),
     requirement("torchvision"),
     requirement("pandas"),
