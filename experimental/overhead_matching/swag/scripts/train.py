@@ -139,7 +139,7 @@ def main(dataset_path: Path, output_dir: Path):
         panorama_neighbor_radius=PANORAMA_NEIGHBOR_RADIUS_DEG,
         satellite_patch_size=(320, 320),
         panorama_size=(320, 640),
-        factor=0.10
+        factor=1.0
     )
     dataset = vigor_dataset.VigorDataset(dataset_path, dataset_config)
 
@@ -161,7 +161,7 @@ def main(dataset_path: Path, output_dir: Path):
         opt_config=OptimizationConfig(
             num_epochs=1000,
             num_embedding_pool_batches=1,
-            embedding_pool_batch_size=20,
+            embedding_pool_batch_size=40,
             opt_batch_size=40,
         ),
         output_dir=output_dir,
