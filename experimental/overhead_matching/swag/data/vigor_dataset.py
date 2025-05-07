@@ -11,9 +11,9 @@ from typing import NamedTuple
 
 class VigorDatasetConfig(NamedTuple):
     panorama_neighbor_radius: float
-    satellite_patch_size: None | tuple[int, int]
-    panorama_size: None | tuple[int, int]
-    factor: None | float
+    satellite_patch_size: None | tuple[int, int] = None
+    panorama_size: None | tuple[int, int] = None
+    factor: None | float = 1.0
 
 
 class VigorDatasetItem(NamedTuple):
@@ -85,12 +85,10 @@ class VigorDataset(torch.utils.data.Dataset):
         max_lon = np.max(self._satellite_metadata.lon)
         delta_lon = max_lon - min_lon
 
-        FACTOR = config.factor
-
-        sat_mask = np.logical_and(self._satellite_metadata.lat < min_lat + FACTOR * delta_lat,
-                                  self._satellite_metadata.lon < min_lon + FACTOR * delta_lon)
-        pano_mask = np.logical_and(self._panorama_metadata.lat < min_lat + FACTOR * delta_lat,
-                                  self._panorama_metadata.lon < min_lon + FACTOR * delta_lon)
+        sat_mask = np.logical_and(self._satellite_metadata.lat < min_lat + config.factor * delta_lat,
+                                  self._satellite_metadata.lon < min_lon + config.factor * delta_lon)
+        pano_mask = np.logical_and(self._panorama_metadata.lat < min_lat + config.factor * delta_lat,
+                                  self._panorama_metadata.lon < min_lon + config.factor * delta_lon)
         self._satellite_metadata = self._satellite_metadata[sat_mask].reset_index(drop=True)
         self._panorama_metadata = self._panorama_metadata[pano_mask].reset_index(drop=True)
 

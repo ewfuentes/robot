@@ -174,17 +174,25 @@ class VigorDatasetTest(unittest.TestCase):
         self.assertEqual(batch.satellite.shape, (BATCH_SIZE, 3, *config.satellite_patch_size))
 
     def test_iterate_overhead_dataset(self):
-        NEIGHBOR_PANO_RADIUS = 0.2
-        dataset = vigor_dataset.VigorDataset(Path(self._temp_dir.name), NEIGHBOR_PANO_RADIUS)
+        config = vigor_dataset.VigorDatasetConfig(
+            panorama_neighbor_radius = 0.2,
+            satellite_patch_size = (50, 50),
+            panorama_size = (100, 100),
+        )
+        dataset = vigor_dataset.VigorDataset(Path(self._temp_dir.name), config)
         overhead_view = dataset.get_sat_patch_view()
         # Action and verification
         for item in overhead_view:
             pass
 
     def test_get_overhead_batch(self):
-        NEIGHBOR_PANO_RADIUS = 0.2
+        config = vigor_dataset.VigorDatasetConfig(
+            panorama_neighbor_radius = 0.2,
+            satellite_patch_size = (50, 50),
+            panorama_size = (100, 100),
+        )
         BATCH_SIZE = 32
-        dataset = vigor_dataset.VigorDataset(Path(self._temp_dir.name), NEIGHBOR_PANO_RADIUS)
+        dataset = vigor_dataset.VigorDataset(Path(self._temp_dir.name), config)
         overhead_view = dataset.get_sat_patch_view()
         dataloader = vigor_dataset.get_dataloader(overhead_view, batch_size=BATCH_SIZE)
 
@@ -198,9 +206,13 @@ class VigorDatasetTest(unittest.TestCase):
         self.assertEqual(batch.satellite.shape[0], BATCH_SIZE)
 
     def test_overhead_and_main_dataset_are_consistient(self):
-        NEIGHBOR_PANO_RADIUS = 0.2
+        config = vigor_dataset.VigorDatasetConfig(
+            panorama_neighbor_radius = 0.2,
+            satellite_patch_size = (50, 50),
+            panorama_size = (100, 100),
+        )
         CHECK_INDEX = 25
-        dataset = vigor_dataset.VigorDataset(Path(self._temp_dir.name), NEIGHBOR_PANO_RADIUS)
+        dataset = vigor_dataset.VigorDataset(Path(self._temp_dir.name), config)
         overhead_view = dataset.get_sat_patch_view()
 
         # Action

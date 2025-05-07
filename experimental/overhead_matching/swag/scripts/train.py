@@ -236,9 +236,9 @@ def main(dataset_path: Path, output_dir: Path):
     config = TrainConfig(
         opt_config=OptimizationConfig(
             num_epochs=1000,
-            num_embedding_pool_batches=2,
-            embedding_pool_batch_size=8,
-            opt_batch_size=10,
+            num_embedding_pool_batches=1,
+            embedding_pool_batch_size=20,
+            opt_batch_size=40,
         ),
         output_dir=output_dir,
     )
