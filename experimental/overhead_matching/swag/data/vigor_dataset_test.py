@@ -226,6 +226,63 @@ class VigorDatasetTest(unittest.TestCase):
         self.assertTrue(torch.allclose(overhead_view_item.satellite, dataset_item.satellite))
         self.assertEqual(dataset_item.satellite_metadata, overhead_view_item.satellite_metadata)
 
+    def test_index_by_tensor(self):
+        config = vigor_dataset.VigorDatasetConfig(
+            panorama_neighbor_radius=0.0005,
+            satellite_patch_size=None,
+            panorama_size=None,
+        )
+
+        dataset = vigor_dataset.VigorDataset(
+            Path("external/vigor_snippet/vigor_snippet"), config)
+
+        # action and verification
+        item = dataset[torch.tensor([7])]
+
+    def test_path_generation_is_reproducable(self):
+        config = vigor_dataset.VigorDatasetConfig(
+            panorama_neighbor_radius=0.0005,
+            satellite_patch_size=None,
+            panorama_size=None,
+        )
+        dataset = vigor_dataset.VigorDataset(
+            Path("external/vigor_snippet/vigor_snippet"), config)
+
+        PATH_LENGTH_M = 100
+        SEED = 532
+        # action 
+        path1 = dataset.generate_random_path(torch.manual_seed(SEED), PATH_LENGTH_M, 1.0)
+        path2 = dataset.generate_random_path(torch.manual_seed(SEED), PATH_LENGTH_M, 1.0)
+        path3 = dataset.generate_random_path(torch.manual_seed(SEED-3), PATH_LENGTH_M, 1.0)
+    
+        for item in path1:
+            self.assertTrue(type(item) == int)
+        self.assertListEqual(path1, path2)
+        self.assertNotEqual(path1, path3)
+
+    @unittest.skip("Visualization only")
+    def test_visualize_path(self):
+        import matplotlib.pyplot as plt
+        PATH_LENGTH_M = 10000
+        SEED = 532
+        config = vigor_dataset.VigorDatasetConfig(
+            panorama_neighbor_radius=0.0005,
+            satellite_patch_size=None,
+            panorama_size=None,
+        )
+        dataset = vigor_dataset.VigorDataset(
+            Path("external/vigor_snippet/vigor_snippet"), config)
+        # action 
+        path1 = dataset.generate_random_path(torch.manual_seed(SEED), PATH_LENGTH_M, 0.1)
+
+        fig = dataset.visualize(path=path1)
+        #plt.show()
+        plt.savefig("/tmp/path_visual.png")
+        plt.close(fig)
+
+
+
+
 
 if __name__ == "__main__":
     unittest.main()

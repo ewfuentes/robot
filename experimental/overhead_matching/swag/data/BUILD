@@ -15,12 +15,14 @@ py_library(
     requirement("matplotlib"),
     requirement("PyGObject"),
     "//common/torch:load_torch_deps",
+    "//common/math:haversine",
   ]
 )
 
 py_test(
   name = "vigor_dataset_test",
   srcs = ["vigor_dataset_test.py"],
+  data=["@vigor_snippet//:files"],
   deps = [
     requirement("numpy"),
     requirement("Pillow"),
