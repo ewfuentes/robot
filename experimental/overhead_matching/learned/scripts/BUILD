@@ -41,7 +41,6 @@ py_test(
   deps=[
     requirement("sdprlayers"),
     requirement("asrl-pylgmath"),
-    requirement("theseus-ai"),
     requirement("scipy"),
     "//common/torch:load_torch_deps",
   ]

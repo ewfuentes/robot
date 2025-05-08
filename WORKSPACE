@@ -67,6 +67,13 @@ load("@rules_pkg//:deps.bzl", "rules_pkg_dependencies")
 rules_pkg_dependencies()
 
 http_archive(
+    name = "rules_cc",
+    urls = ["https://github.com/bazelbuild/rules_cc/releases/download/0.0.15/rules_cc-0.0.15.tar.gz"],
+    sha256 = "f4aadd8387f381033a9ad0500443a52a0cea5f8ad1ede4369d3c614eb7b2682e",
+    strip_prefix = "rules_cc-0.0.15",
+)
+
+http_archive(
     name = "com_github_gflags_gflags",
     sha256 = "34af2f15cf7367513b352bdcd2493ab14ce43692d2dcd9dfc499492966c64dcf",
     strip_prefix = "gflags-2.2.2",
@@ -133,20 +140,23 @@ http_archive(
 # Note that rules_python must be loaded before protobuf
 http_archive(
     name = "rules_python",
-    sha256 = "690e0141724abb568267e003c7b6d9a54925df40c275a870a4d934161dc9dd53",
-    strip_prefix = "rules_python-0.40.0",
-    url = "https://github.com/bazelbuild/rules_python/releases/download/0.40.0/rules_python-0.40.0.tar.gz",
+    sha256 = "2ef40fdcd797e07f0b6abda446d1d84e2d9570d234fddf8fcd2aa262da852d1c",
+    strip_prefix = "rules_python-1.2.0",
+    url = "https://github.com/bazelbuild/rules_python/releases/download/1.2.0/rules_python-1.2.0.tar.gz",
     patch_args = ["-p1"],
     patches = ["//third_party:rules_python_0001-disable-user-site-package.patch"],
+
 )
 
+load("@rules_python//python:repositories.bzl", "py_repositories")
 load("@rules_python//python:repositories.bzl", "py_repositories", "python_register_multi_toolchains")
+
 py_repositories()
 
-DEFAULT_PYTHON_VERSION = "3.10"
+DEFAULT_PYTHON_VERSION = "3.12"
 python_register_multi_toolchains(
   name="python",
-  python_versions = ['3.10', '3.8'],
+  python_versions = ['3.12', '3.10', '3.8'],
   default_version = DEFAULT_PYTHON_VERSION
 )
 
@@ -157,16 +167,30 @@ multi_pip_parse(
   default_version = DEFAULT_PYTHON_VERSION,
   python_interpreter_target = {
     "3.8": "@python_3_8_host//:python",
-    "3.10": "@python_3_10_host//:python"
+    "3.10": "@python_3_10_host//:python",
+    "3.12": "@python_3_12_host//:python"
   },
   requirements_lock = {
     "3.8": "//third_party/python:requirements_3_8.txt",
-    "3.10": "//third_party/python:requirements_3_10.txt"
+    "3.10": "//third_party/python:requirements_3_10.txt",
+    "3.12": "//third_party/python:requirements_3_12.txt"
   },
 )
 
 load("@pip//:requirements.bzl", install_pip_deps = "install_deps")
 install_pip_deps()
+
+http_archive(
+    name = "rules_java",
+    urls = [
+        "https://github.com/bazelbuild/rules_java/releases/download/7.12.4/rules_java-7.12.4.tar.gz",
+    ],
+    sha256 = "302bcd9592377bf9befc8e41aa97ec02df12813d47af9979e4764f3ffdcc5da8",
+)
+load("@rules_java//java:repositories.bzl", "rules_java_dependencies", "rules_java_toolchains")
+rules_java_dependencies()
+rules_java_toolchains()
+
 
 http_archive(
   name="embag",

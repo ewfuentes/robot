@@ -7,6 +7,7 @@ try-import .bazelrc_ubuntu
 
 build:python-3.8 --@rules_python//python/config_settings:python_version=3.8.10
 build:python-3.10 --@rules_python//python/config_settings:python_version=3.10
+build:python-3.12 --@rules_python//python/config_settings:python_version=3.12
 
 # These flags are here while bugs in Bazel 7 get figured out
 # https://github.com/bazelbuild/rules_foreign_cc/issues/1129

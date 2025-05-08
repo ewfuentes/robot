@@ -2,7 +2,7 @@ import unittest
 import common.torch.load_torch_deps
 import torch
 import numpy as np
-from particle_filter import (
+from experimental.overhead_matching.swag.filter.particle_filter import (
     wag_motion_model,
     wag_observation_log_likelihood_from_similarity_matrix,
     wag_calculate_log_particle_weights,
