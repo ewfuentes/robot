@@ -1,7 +1,7 @@
 
 build --strip=never
 build --define use_fast_cpp_protos=true
-build --config=python-3.10
+build --config=python-3.12
 
 try-import .bazelrc_ubuntu
 
