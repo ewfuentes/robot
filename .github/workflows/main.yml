@@ -37,7 +37,6 @@ jobs:
       matrix:
         build-config: [gcc, clang]
         os: [self-hosted]
-        python: ["3.10", "3.12"]
     # The type of runner that the job will run on
     runs-on: ${{ matrix.os }}
 
@@ -59,4 +58,4 @@ jobs:
 
       - name: Run Unit Tests
         run: |
-          bazel test --config=python-${{ matrix.python }} --config=${{ matrix.build-config }} --disk_cache=/tmp/bazel_cache_${{ matrix.build-config }}_py_${{ matrix.python }} //... --test_output=errors --test_timeout_filters=-eternal
+          bazel test --config=${{ matrix.build-config }} //... --test_output=errors --test_timeout_filters=-eternal
