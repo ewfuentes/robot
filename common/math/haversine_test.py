@@ -1,5 +1,6 @@
 import unittest
-from haversine import find_d_on_unit_circle
+
+from common.math.haversine import find_d_on_unit_circle
 import numpy as np
 
 class TestHaversine(unittest.TestCase):
