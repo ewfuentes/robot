@@ -29,12 +29,9 @@ def _():
         load_model,
         mo,
         pd,
-<<<<<<< Updated upstream
-=======
         plt,
         profile,
         record_function,
->>>>>>> Stashed changes
         satellite_embedding_database,
         torch,
         vigor_dataset,
@@ -42,50 +39,6 @@ def _():
 
 
 @app.cell
-<<<<<<< Updated upstream
-def _(Path, load_model, satellite_embedding_database, torch, vigor_dataset):
-    sat_model = load_model(Path("/home/erick/scratch/overhead_matching/models/wag_model_minidataset/satellite_0090/"), device='cuda')
-    pano_model = load_model(Path("/home/erick/scratch/overhead_matching/models/wag_model_minidataset/panorama_0090/"), device='cuda')
-
-    dataset_config = vigor_dataset.VigorDatasetConfig(
-        panorama_neighbor_radius=1e-6,
-        satellite_patch_size=(320, 320),
-        panorama_size=(320,640)
-    )
-
-    dataset = vigor_dataset.VigorDataset(Path("/home/erick/scratch/overhead_matching/VIGOR/Chicago"), dataset_config)
-    dataset_loader = vigor_dataset.get_dataloader(dataset, batch_size=8)
-
-    pano_embeddings = []
-    for batch in dataset_loader:
-        with torch.no_grad():
-            pano_embeddings.append(pano_model(batch.panorama.cuda()))
-    pano_embeddings = torch.cat(pano_embeddings)
-
-    sat_dataset = dataset.get_sat_patch_view()
-    sat_loader = vigor_dataset.get_dataloader(sat_dataset, batch_size=8)
-
-
-    sat_db = satellite_embedding_database.build_satellite_embedding_database(sat_model, sat_loader)
-    return (
-        batch,
-        dataset,
-        dataset_config,
-        dataset_loader,
-        pano_embeddings,
-        pano_model,
-        sat_dataset,
-        sat_db,
-        sat_loader,
-        sat_model,
-    )
-
-
-@app.cell
-def _(pano_embeddings):
-    pano_embeddings.shape
-    return
-=======
 def _(
     Path,
     evaluate_swag,
@@ -137,7 +90,6 @@ def _(get_top_k_results):
         "/data/overhead_matching/datasets/VIGOR/SanFrancisco",
     )
     return chicago_top_k_results, sanfrancisco_top_k_results
->>>>>>> Stashed changes
 
 
 @app.cell

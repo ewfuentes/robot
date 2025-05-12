@@ -6,8 +6,7 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 from scipy.spatial import cKDTree
-from typing import NamedTuple
-from common.math.haversine import find_d_on_unit_circle
+from typing import NamedTuple from common.math.haversine import find_d_on_unit_circle
 
 
 class VigorDatasetConfig(NamedTuple):
@@ -202,9 +201,7 @@ class VigorDataset(torch.utils.data.Dataset):
                 )
         return OverheadVigorDataset(self)
 
-<<<<<<< Updated upstream
-    def visualize(self, include_text_labels=False, path=None) -> "plt.Figure":
-=======
+
     def get_panorama_view(self) -> torch.utils.data.Dataset:
         class OverheadVigorDataset(torch.utils.data.Dataset):
             def __init__(self, dataset: VigorDataset):
@@ -227,8 +224,8 @@ class VigorDataset(torch.utils.data.Dataset):
                 )
         return OverheadVigorDataset(self)
 
+
     def visualize(self, include_text_labels=False):
->>>>>>> Stashed changes
         import matplotlib.pyplot as plt
         from matplotlib.collections import LineCollection
 
