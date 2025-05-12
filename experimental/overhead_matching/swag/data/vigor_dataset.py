@@ -202,7 +202,33 @@ class VigorDataset(torch.utils.data.Dataset):
                 )
         return OverheadVigorDataset(self)
 
+<<<<<<< Updated upstream
     def visualize(self, include_text_labels=False, path=None) -> "plt.Figure":
+=======
+    def get_panorama_view(self) -> torch.utils.data.Dataset:
+        class OverheadVigorDataset(torch.utils.data.Dataset):
+            def __init__(self, dataset: VigorDataset):
+                super().__init__()
+                self.dataset = dataset
+
+            def __len__(self):
+                return len(self.dataset._panorama_metadata)
+
+            def __getitem__(self, idx):
+                if idx > len(self) - 1:
+                    raise IndexError  # if we don't raise index error the iterator won't terminate
+                pano_metadata = self.dataset._panorama_metadata.loc[idx]  # as this will throw a KeyError
+                pano = load_image(pano_metadata.path, self.dataset._panorama_size)
+                return VigorDatasetItem(
+                    panorama_metadata=series_to_dict_with_index(pano_metadata),
+                    satellite_metadata=None,
+                    panorama=pano,
+                    satellite=None,
+                )
+        return OverheadVigorDataset(self)
+
+    def visualize(self, include_text_labels=False):
+>>>>>>> Stashed changes
         import matplotlib.pyplot as plt
         from matplotlib.collections import LineCollection
 
