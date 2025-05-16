@@ -56,7 +56,7 @@ def save_all_similarity_plots(
     particle_history: list[torch.Tensor] = None,
 ):
     output_path.mkdir(exist_ok=True, parents=True)
-    path_positions = vigor_dataset.get_positions_from_path(path)
+    path_positions = vigor_dataset.get_panorama_positions(path)
     assert similarity_for_path.shape[0] == len(path), "Similarity shape does not match path length"
     path_colors = [[1, 0, 0]] * len(path_positions)
     path_sizes = [2] * len(path_positions)

@@ -48,7 +48,7 @@ def evaluate_prediction_top_k(
 
 
 def get_motion_deltas_from_path(vigor_dataset: vd.VigorDataset, path: list[int]):
-    latlong = vigor_dataset.get_positions_from_path(path)
+    latlong = vigor_dataset.get_panorama_positions(path)
     motion_deltas = torch.diff(latlong, dim=0)
 
     return motion_deltas
@@ -64,11 +64,8 @@ def get_pano_embeddings_for_indices(vigor_dataset: vd.VigorDataset,
     pano_view = vigor_dataset.get_pano_view()
     subset = torch.utils.data.Subset(pano_view, pano_indices)
     dataloader = vd.get_dataloader(subset, batch_size=batch_size, shuffle=False)
-    pano_embeddings = []
-    with torch.no_grad():
-        for batch in dataloader:
-            pano_embeddings.append(model(batch.panorama.to(device)))
-    return torch.concatenate(pano_embeddings, dim=0)
+    pano_embeddings = sed.build_panorama_db(model, dataloader, device=device)
+    return pano_embeddings
 
 
 def pano_embeddings_and_motion_deltas_from_path(
@@ -97,11 +94,11 @@ def run_inference_on_path(
     particle_state = initial_particle_state.clone()
     # TODO: return history of similarities for visualization
     particle_history = []
-    for liklihood_value, motion_delta in zip(patch_similarity_for_path[:-1], motion_deltas):
+    for likelihood_value, motion_delta in zip(patch_similarity_for_path[:-1], motion_deltas):
         particle_history.append(particle_state.cpu().clone())
         # observe
         particle_state = sa.observe_wag(particle_state,
-                                        liklihood_value,
+                                        likelihood_value,
                                         satellite_patch_kdtree,
                                         wag_config,
                                         generator)
@@ -141,14 +138,14 @@ def evaluate_model_on_paths(
         # sat_patch_kdtree = vigor_dataset._satellite_kdtree
         if Path("/tmp/similarity_db.pt").exists():
             all_similarity = torch.load("/tmp/similarity_db.pt").to(device)
-            print("loaded similarity db")
+            print("USING CACHED similarity db found at /tmp/similarity_db.pt")
         else:
-            sat_embeddings = sed.build_embeddings_from_model(
-                sat_model, sat_data_view_loader, lambda x: x.satellite, device=device)
+            sat_embeddings = sed.build_satellite_db(
+                sat_model, sat_data_view_loader, device=device)
             print("building satellite embedding database done")
             print("building panorama embedding database")
-            pano_embeddings = sed.build_embeddings_from_model(
-                pano_model, pano_data_view_loader, lambda x: x.panorama, device=device)
+            pano_embeddings = sed.build_panorama_db(
+                pano_model, pano_data_view_loader, device=device)
             print("building all similarity")
             all_similarity = sed.calculate_cos_similarity_against_database(
                 pano_embeddings, sat_embeddings)  # pano_embeddings x sat_patches
@@ -162,6 +159,7 @@ def evaluate_model_on_paths(
             gt_initial_position_lat_lon = vigor_dataset._panorama_metadata.loc[path[0]]
             gt_initial_position_lat_lon = torch.tensor(
                 (gt_initial_position_lat_lon['lat'], gt_initial_position_lat_lon['lon']), device=device)
+            generator.manual_seed(seed * i)
             initial_particle_state = sa.initialize_wag_particles(
                 gt_initial_position_lat_lon, wag_config, generator).to(device)
             particle_history = run_inference_on_path(sat_patch_kdtree,

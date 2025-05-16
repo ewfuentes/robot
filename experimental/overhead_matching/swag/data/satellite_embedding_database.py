@@ -20,6 +20,12 @@ def build_embeddings_from_model(model: torch.nn.Module,
     embeddings = torch.concatenate(inf_results, dim=0)
     return embeddings
 
+def build_satellite_db(model, dataloader, **kwargs):
+    return build_embeddings_from_model(model, dataloader, lambda x: x.satellite, **kwargs)
+
+def build_panorama_db(model, dataloader, **kwargs):
+    return build_embeddings_from_model(model, dataloader, lambda x: x.panorama, **kwargs)
+
 
 def calculate_cos_similarity_against_database(normalized_pano_embedding, normalized_sat_embedding_db):
     """

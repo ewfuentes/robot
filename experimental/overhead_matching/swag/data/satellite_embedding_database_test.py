@@ -32,7 +32,7 @@ class SatelliteEmbeddingDatabaseTest(unittest.TestCase):
         model = MockEmbeddingModel(EMBEDDING_DIM)
 
         # action
-        database = sed.build_embeddings_from_model(model, dataloader, lambda x: x.satellite, device="cpu")
+        database = sed.build_satellite_db(model, dataloader, device="cpu")
 
         pixels_in_order = []
         for item in overhead_view:

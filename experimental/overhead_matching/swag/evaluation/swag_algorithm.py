@@ -36,17 +36,15 @@ def observe_wag(
         generator: torch.Generator
 ) -> torch.Tensor:  # particles
 
-    # calculate observation liklihoods
-    observation_log_liklihoods = pf.wag_observation_log_likelihood_from_similarity_matrix(
+    # calculate observation likelihoods
+    observation_log_likelihoods = pf.wag_observation_log_likelihood_from_similarity_matrix(
         similarity_matrix, wag_config.sigma_obs_prob_from_sim)
-    log_particle_weights = pf.wag_calculate_log_particle_weights(observation_log_liklihoods,
+    log_particle_weights = pf.wag_calculate_log_particle_weights(observation_log_likelihoods,
                                                                  satellite_patch_kdtree,
                                                                  particles)
     # resample particles
     resampled_particles = pf.wag_multinomial_resampling(particles, log_particle_weights, generator)
     return resampled_particles
-
-    # move particles
 
 
 def move_wag(

@@ -165,14 +165,14 @@ class TestParticleFilter(unittest.TestCase):
 
             # Generate similarity matrix (higher value = more similar)
             # Simulating similarity based on distance from ground truth
-            obs_log_liklihood = torch.zeros((grid_size * grid_size))
+            obs_log_likelihood = torch.zeros((grid_size * grid_size))
             for i in range(grid_size**2):
                     patch_pos = patch_positions[i]
                     dist = torch.norm(patch_pos - position)
                     # Inverse relationship - closer patches have higher similarity
-                    obs_log_liklihood[i] = -dist
+                    obs_log_likelihood[i] = -dist
 
-            obs_log_liklihood = obs_log_liklihood.view(-1)
+            obs_log_likelihood = obs_log_likelihood.view(-1)
 
             # fig, ax = plt.subplots()
             # ax.imshow(obs_likelihood)
@@ -180,7 +180,7 @@ class TestParticleFilter(unittest.TestCase):
 
             # Update particle weights
             log_weights = wag_calculate_log_particle_weights(
-                obs_log_liklihood, kd_tree, particles
+                obs_log_likelihood, kd_tree, particles
             )
             # Resample particles
             particles = wag_multinomial_resampling(

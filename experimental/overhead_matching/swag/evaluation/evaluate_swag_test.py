@@ -76,7 +76,7 @@ class EvaluateSwagTest(unittest.TestCase):
         
         # Create satellite embedding database
         sat_dataloader = vd.get_dataloader(overhead_view, batch_size=BATCH_SIZE, shuffle=False)
-        satellite_embedding_database = sed.build_embeddings_from_model(sat_model, sat_dataloader, lambda x: x.satellite, device="cpu")
+        satellite_embedding_database = sed.build_satellite_db(sat_model, sat_dataloader, device="cpu")
         
         # Create panorama dataloader for testing
         pano_dataloader = vd.get_dataloader(dataset, batch_size=BATCH_SIZE, shuffle=False)
