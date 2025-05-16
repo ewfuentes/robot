@@ -1456,6 +1456,7 @@ numpy==1.26.4 \
     #   supervision
     #   tensorboard
     #   tifffile
+    #   torch-kdtree
     #   torchvision
     #   transformers
 nvidia-cublas-cu12==12.8.3.14 \
@@ -2924,7 +2925,12 @@ torch==2.7.0+cu128 \
     #   easyocr
     #   kornia
     #   sam-2
+    #   torch-kdtree
     #   torchvision
+# WARNING: pip install will require the following package to be hashed.
+# Consider using a hashable URL like https://github.com/jazzband/pip-tools/archive/SOMECOMMIT.zip
+torch-kdtree @ git+https://github.com/thomgrand/torch_kdtree.git@86961f7def35a2d818916e343807f1867d0622c0
+    # via -r third_party/python/requirements_3_12.in
 torchvision==0.22.0+cu128 \
     --hash=sha256:03b454b867f7a0aa9861a463042141448c4f15bec784def19eed39a57fac217b \
     --hash=sha256:06c101f40e1ff94869be14487c91fd5352e376f202fdeafb8f53c58cee2fbeb5 \

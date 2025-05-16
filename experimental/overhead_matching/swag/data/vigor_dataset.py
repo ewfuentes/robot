@@ -137,7 +137,8 @@ class VigorDataset(torch.utils.data.Dataset):
     def generate_random_path(self,
                              generator: torch.Generator,
                              max_length_m: float,
-                             turn_temperature: float)->list[int]:
+                             turn_temperature: float,
+                             avoid_double_back: bool = True)->list[int]:
         """Returns a list of indices into the dataset's panoramas to define a path through the graph"""
         path = [] 
         distance_traveled_m = 0.0
@@ -167,6 +168,8 @@ class VigorDataset(torch.utils.data.Dataset):
                 neighbor_directions[i] = neighbor_coords[i] - last_coord
                 similarity = torch.dot(neighbor_directions[i], last_direction) / torch.norm(neighbor_directions[i]) / torch.norm(last_direction)
                 neighbor_probs[i] = similarity
+                if avoid_double_back and neighbor_pano_idx in path:
+                    neighbor_probs[i] = -1
 
             neighbor_probs = softmax_w_temp(neighbor_probs, turn_temperature) 
             winning_neighbor = torch.multinomial(neighbor_probs, 1, generator=generator).item()
@@ -202,7 +205,39 @@ class VigorDataset(torch.utils.data.Dataset):
                 )
         return OverheadVigorDataset(self)
 
-    def visualize(self, include_text_labels=False, path=None) -> "plt.Figure":
+    def get_pano_view(self)->torch.utils.data.Dataset:
+        class EgoVigorDataset(torch.utils.data.Dataset):
+            def __init__(self, dataset: VigorDataset):
+                super().__init__()
+                self.dataset = dataset
+
+            def __len__(self):
+                return len(self.dataset._panorama_metadata)
+
+            def __getitem__(self, idx):
+                if idx > len(self) - 1:
+                    raise IndexError  # if we don't raise index error the iterator won't terminate
+                pano_metadata = self.dataset._panorama_metadata.loc[idx]  # as this will throw a KeyError
+                pano = load_image(pano_metadata.path, self.dataset._panorama_size)
+                return VigorDatasetItem(
+                    series_to_dict_with_index(pano_metadata),
+                    None,
+                    pano,
+                    None
+                )
+        return EgoVigorDataset(self)
+    
+    def get_patch_positions(self)->torch.Tensor:
+        """Returns a tensor of shape (N, 2) where N is the number of satellite patches and the columns are lat, lon"""
+        return torch.tensor(self._satellite_metadata.loc[:, ["lat", "lon"]].values, dtype=torch.float32)
+    
+    def get_positions_from_path(self, path: list[int])->torch.Tensor:
+        """Returns a tensor of shape (N, 2) where N is the number of panoramas in the path and the columns are lat, lon
+        """
+        return torch.tensor(self._panorama_metadata.loc[path, ["lat", "lon"]].values, dtype=torch.float32)
+
+
+    def visualize(self, include_text_labels=False, path=None) -> tuple["plt.Figure", "plt.Axes"]:
         import matplotlib.pyplot as plt
         from matplotlib.collections import LineCollection
 
@@ -250,7 +285,7 @@ class VigorDataset(torch.utils.data.Dataset):
 
         plt.axis("equal")
 
-        return fig
+        return fig, ax
 
 
 def get_dataloader(dataset: VigorDataset, **kwargs):

@@ -1,5 +1,6 @@
 import unittest
 import common.torch.load_torch_deps
+from torch_kdtree import build_kd_tree
 import torch
 import numpy as np
 from experimental.overhead_matching.swag.filter.particle_filter import (
@@ -61,13 +62,14 @@ class TestParticleFilter(unittest.TestCase):
         self.assertEqual(max_sim_idx, max_lik_idx)
 
     def test_wag_update_particle_weights(self):
-        observation_log_likelihood_matrix = torch.log(torch.tensor([[0.1, 0.2], [0.3, 0.4]]))
-        patch_positions = torch.zeros((2, 2, 2))
+        observation_log_likelihood_matrix = torch.log(torch.tensor([0.1, 0.2, 0.3, 0.4]))
+        patch_positions = torch.zeros((4, 2))
         # Set patch positions at (0,0), (1,0), (0,1), (1,1)
-        patch_positions[0, 0] = torch.tensor([0.0, 0.0])
-        patch_positions[0, 1] = torch.tensor([1.0, 0.0])
-        patch_positions[1, 0] = torch.tensor([0.0, 1.0])
-        patch_positions[1, 1] = torch.tensor([1.0, 1.0])
+        patch_positions[0] = torch.tensor([0.0, 0.0])
+        patch_positions[1] = torch.tensor([1.0, 0.0])
+        patch_positions[2] = torch.tensor([0.0, 1.0])
+        patch_positions[3] = torch.tensor([1.0, 1.0])
+
 
         # Particles at various positions
         particles = torch.tensor([
@@ -77,8 +79,10 @@ class TestParticleFilter(unittest.TestCase):
             [0.9, 0.9]   # Close to (1,1)
         ])
 
+        kd_tree = build_kd_tree(patch_positions)
+
         log_weights = wag_calculate_log_particle_weights(
-            observation_log_likelihood_matrix, patch_positions, particles
+            observation_log_likelihood_matrix, kd_tree, particles
         )
 
         # Check shape
@@ -133,6 +137,10 @@ class TestParticleFilter(unittest.TestCase):
                 patch_positions[i, j, 0] = x
                 patch_positions[i, j, 1] = y
 
+        # Reshape to (grid_size^2, 2)
+        patch_positions = patch_positions.view(-1, 2)
+        kd_tree = build_kd_tree(patch_positions)
+
         # Create a path going straight right
         n_steps = 10
         position = torch.tensor([0.0, 0.0])
@@ -157,13 +165,14 @@ class TestParticleFilter(unittest.TestCase):
 
             # Generate similarity matrix (higher value = more similar)
             # Simulating similarity based on distance from ground truth
-            obs_log_liklihood = torch.zeros((grid_size, grid_size))
-            for i in range(grid_size):
-                for j in range(grid_size):
-                    patch_pos = patch_positions[i, j]
+            obs_log_liklihood = torch.zeros((grid_size * grid_size))
+            for i in range(grid_size**2):
+                    patch_pos = patch_positions[i]
                     dist = torch.norm(patch_pos - position)
                     # Inverse relationship - closer patches have higher similarity
-                    obs_log_liklihood[i, j] = -dist
+                    obs_log_liklihood[i] = -dist
+
+            obs_log_liklihood = obs_log_liklihood.view(-1)
 
             # fig, ax = plt.subplots()
             # ax.imshow(obs_likelihood)
@@ -171,7 +180,7 @@ class TestParticleFilter(unittest.TestCase):
 
             # Update particle weights
             log_weights = wag_calculate_log_particle_weights(
-                obs_log_liklihood, patch_positions, particles
+                obs_log_liklihood, kd_tree, particles
             )
             # Resample particles
             particles = wag_multinomial_resampling(
