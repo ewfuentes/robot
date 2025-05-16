@@ -15,7 +15,7 @@ class WagConfig(NamedTuple):
     sigma_obs_prob_from_sim: float = 0.1
 
 
-def initialze_wag_particles(gt_start_position_lat_lon: torch.Tensor,
+def initialize_wag_particles(gt_start_position_lat_lon: torch.Tensor,
                             wag_config: WagConfig,
                             generator: torch.Generator):
     # TODO: compensate for non-uniformity of latitude radius (who defined these reference frames)

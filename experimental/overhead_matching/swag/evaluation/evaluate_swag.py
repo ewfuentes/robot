@@ -162,7 +162,7 @@ def evaluate_model_on_paths(
             gt_initial_position_lat_lon = vigor_dataset._panorama_metadata.loc[path[0]]
             gt_initial_position_lat_lon = torch.tensor(
                 (gt_initial_position_lat_lon['lat'], gt_initial_position_lat_lon['lon']), device=device)
-            initial_particle_state = sa.initialze_wag_particles(
+            initial_particle_state = sa.initialize_wag_particles(
                 gt_initial_position_lat_lon, wag_config, generator).to(device)
             particle_history = run_inference_on_path(sat_patch_kdtree,
                                                      initial_particle_state,
