@@ -21,6 +21,7 @@ class MockEmbeddingModel(nn.Module):
         batch_size = data.shape[0]
         out = self.embedding_network(data[:, :, :100, :100].float().reshape(batch_size, -1))
         out[1,:] = 0.5  # make sure some vectors are identical/linearly dependent 
+        out = nn.functional.normalize(out, dim=1)
         return out
 
 
@@ -33,6 +34,8 @@ class EvaluateSwagTest(unittest.TestCase):
             [-0.1, -0.2, -0.3],
             [0.77, 0.63, 0.99], # correct match
         ])
+        # normalize 
+        embedding_database = nn.functional.normalize(embedding_database, dim=1)
         mock_dataloader = [vd.VigorDatasetItem(
             panorama=torch.tensor([[1,2,3]]),
             panorama_metadata = [{"satellite_idx": 3, "index": 0}],
@@ -43,7 +46,7 @@ class EvaluateSwagTest(unittest.TestCase):
             def __init__(self):
                 super().__init__()
             def forward(self, x):
-                return torch.tensor([[0.8, 0.8, 0.8]])
+                return nn.functional.normalize(torch.tensor([[0.8, 0.8, 0.8]]))
         m = MockModule()
         
         # action 
@@ -73,7 +76,7 @@ class EvaluateSwagTest(unittest.TestCase):
         
         # Create satellite embedding database
         sat_dataloader = vd.get_dataloader(overhead_view, batch_size=BATCH_SIZE, shuffle=False)
-        satellite_embedding_database = sed.build_satellite_embedding_database(sat_model, sat_dataloader, device="cpu")
+        satellite_embedding_database = sed.build_satellite_db(sat_model, sat_dataloader, device="cpu")
         
         # Create panorama dataloader for testing
         pano_dataloader = vd.get_dataloader(dataset, batch_size=BATCH_SIZE, shuffle=False)

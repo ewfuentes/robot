@@ -23,11 +23,13 @@ class VigorDatasetItem(NamedTuple):
     panorama: torch.Tensor
     satellite: torch.Tensor
 
+
 def series_to_dict_with_index(series: pd.Series, index_key: str = "index"):
     d = series.to_dict()
-    assert index_key not in d 
+    assert index_key not in d
     d[index_key] = series.name
     return d
+
 
 def load_satellite_metadata(path: Path):
     out = []
@@ -63,6 +65,7 @@ def compute_neighboring_panoramas(pano_kdtree, max_dist):
         neighbors_by_pano_idx[b].append(a)
     return neighbors_by_pano_idx
 
+
 def load_image(path: Path, resize_shape: None | tuple[int, int]):
     img = tv.io.read_image(path, mode=tv.io.ImageReadMode.RGB)
     img = tv.transforms.functional.convert_image_dtype(img)
@@ -89,7 +92,7 @@ class VigorDataset(torch.utils.data.Dataset):
         sat_mask = np.logical_and(self._satellite_metadata.lat < min_lat + config.factor * delta_lat,
                                   self._satellite_metadata.lon < min_lon + config.factor * delta_lon)
         pano_mask = np.logical_and(self._panorama_metadata.lat < min_lat + config.factor * delta_lat,
-                                  self._panorama_metadata.lon < min_lon + config.factor * delta_lon)
+                                   self._panorama_metadata.lon < min_lon + config.factor * delta_lon)
         self._satellite_metadata = self._satellite_metadata[sat_mask].reset_index(drop=True)
         self._panorama_metadata = self._panorama_metadata[pano_mask].reset_index(drop=True)
 
@@ -97,13 +100,13 @@ class VigorDataset(torch.utils.data.Dataset):
         self._panorama_kdtree = cKDTree(self._panorama_metadata.loc[:, ["lat", "lon"]].values)
 
         sat_idx_from_pano_idx, pano_idxs_from_sat_idx = compute_satellite_from_panorama(
-                self._satellite_kdtree, self._panorama_metadata)
+            self._satellite_kdtree, self._panorama_metadata)
 
         self._satellite_metadata["panorama_idxs"] = pano_idxs_from_sat_idx
         self._panorama_metadata["satellite_idx"] = sat_idx_from_pano_idx
 
         self._panorama_metadata["neighbor_panorama_idxs"] = compute_neighboring_panoramas(
-                self._panorama_kdtree, config.panorama_neighbor_radius)
+            self._panorama_kdtree, config.panorama_neighbor_radius)
 
         self._satellite_patch_size = config.satellite_patch_size
         self._panorama_size = config.panorama_size
@@ -117,7 +120,8 @@ class VigorDataset(torch.utils.data.Dataset):
             raise IndexError  # if we don't raise index error the iterator won't terminate
 
         if torch.is_tensor(idx):
-            idx = idx.item()  # if idx is tensor, .loc[tensor] returns DataFrame instead of Series which breaks the following lines
+            # if idx is tensor, .loc[tensor] returns DataFrame instead of Series which breaks the following lines
+            idx = idx.item()
 
         pano_metadata = self._panorama_metadata.loc[idx]
         sat_metadata = self._satellite_metadata.loc[pano_metadata.satellite_idx]
@@ -133,13 +137,14 @@ class VigorDataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return len(self._panorama_metadata)
-    
+
     def generate_random_path(self,
                              generator: torch.Generator,
                              max_length_m: float,
-                             turn_temperature: float)->list[int]:
+                             turn_temperature: float,
+                             avoid_retrace_steps: bool = True) -> list[int]:
         """Returns a list of indices into the dataset's panoramas to define a path through the graph"""
-        path = [] 
+        path = []
         distance_traveled_m = 0.0
         last_direction = torch.rand((2,), generator=generator)*0.5 - 1  # random initial direction
         if torch.norm(last_direction) == 0.0:  # if we somehow sampled 0, add some small offset
@@ -147,7 +152,7 @@ class VigorDataset(torch.utils.data.Dataset):
         # select start panorama
         last_index = torch.randint(0, len(self), (1,), generator=generator).item()
 
-        def softmax_w_temp(x: torch.Tensor, t: float)-> torch.tensor:
+        def softmax_w_temp(x: torch.Tensor, t: float) -> torch.tensor:
             ex = torch.exp(x / t)
             return ex / torch.sum(ex)
 
@@ -165,22 +170,25 @@ class VigorDataset(torch.utils.data.Dataset):
                 neighbor_item = self._panorama_metadata.loc[neighbor_pano_idx]
                 neighbor_coords[i] = torch.tensor([neighbor_item['lon'], neighbor_item['lat']])
                 neighbor_directions[i] = neighbor_coords[i] - last_coord
-                similarity = torch.dot(neighbor_directions[i], last_direction) / torch.norm(neighbor_directions[i]) / torch.norm(last_direction)
+                similarity = torch.dot(
+                    neighbor_directions[i], last_direction) / torch.norm(neighbor_directions[i]) / torch.norm(last_direction)
                 neighbor_probs[i] = similarity
+                if avoid_retrace_steps and neighbor_pano_idx in path:
+                    neighbor_probs[i] = -1
 
-            neighbor_probs = softmax_w_temp(neighbor_probs, turn_temperature) 
+            neighbor_probs = softmax_w_temp(neighbor_probs, turn_temperature)
             winning_neighbor = torch.multinomial(neighbor_probs, 1, generator=generator).item()
-            
+
             # update current location
             last_index = last_neighbors[winning_neighbor]
             last_direction = neighbor_directions[winning_neighbor]
             EARTH_RADIUS_M = 6378137.0
-            distance_traveled_m +=  EARTH_RADIUS_M * find_d_on_unit_circle(last_coord.numpy(), neighbor_coords[winning_neighbor].numpy())
+            distance_traveled_m += EARTH_RADIUS_M * \
+                find_d_on_unit_circle(last_coord.numpy(), neighbor_coords[winning_neighbor].numpy())
 
         return path
 
-    
-    def get_sat_patch_view(self)->torch.utils.data.Dataset:
+    def get_sat_patch_view(self) -> torch.utils.data.Dataset:
         class OverheadVigorDataset(torch.utils.data.Dataset):
             def __init__(self, dataset: VigorDataset):
                 super().__init__()
@@ -192,17 +200,52 @@ class VigorDataset(torch.utils.data.Dataset):
             def __getitem__(self, idx):
                 if idx > len(self) - 1:
                     raise IndexError  # if we don't raise index error the iterator won't terminate
-                sat_metadata = self.dataset._satellite_metadata.loc[idx]  # as this will throw a KeyError
+                # as this will throw a KeyError
+                sat_metadata = self.dataset._satellite_metadata.loc[idx]
                 sat = load_image(sat_metadata.path, self.dataset._satellite_patch_size)
                 return VigorDatasetItem(
-                    None,
-                    series_to_dict_with_index(sat_metadata),
-                    None,
-                    sat
+                    panorama_metadata=None,
+                    satellite_metadata=series_to_dict_with_index(sat_metadata),
+                    panorama=None,
+                    satellite=sat
                 )
         return OverheadVigorDataset(self)
 
-    def visualize(self, include_text_labels=False, path=None) -> "plt.Figure":
+    def get_pano_view(self) -> torch.utils.data.Dataset:
+        class EgoVigorDataset(torch.utils.data.Dataset):
+            def __init__(self, dataset: VigorDataset):
+                super().__init__()
+                self.dataset = dataset
+
+            def __len__(self):
+                return len(self.dataset._panorama_metadata)
+
+            def __getitem__(self, idx):
+                if idx > len(self) - 1:
+                    raise IndexError  # if we don't raise index error the iterator won't terminate
+                # as this will throw a KeyError
+                pano_metadata = self.dataset._panorama_metadata.loc[idx]
+                pano = load_image(pano_metadata.path, self.dataset._panorama_size)
+                return VigorDatasetItem(
+                    panorama_metadata=series_to_dict_with_index(pano_metadata),
+                    satellite_metadata=None,
+                    panorama=pano,
+                    satellite=None
+                )
+        return EgoVigorDataset(self)
+
+    def get_patch_positions(self) -> torch.Tensor:
+        """Returns a tensor of shape (N, 2) where N is the number of satellite patches and the columns are lat, lon"""
+        return torch.tensor(self._satellite_metadata.loc[:, ["lat", "lon"]].values, dtype=torch.float32)
+
+    def get_panorama_positions(self, path: list[int] = None) -> torch.Tensor:
+        """Returns a tensor of shape (N, 2) where N is the number of panoramas
+        """
+        if path is None:
+            path = np.arange(len(self._panorama_metadata))
+        return torch.tensor(self._panorama_metadata.loc[path, ["lat", "lon"]].values, dtype=torch.float32)
+
+    def visualize(self, include_text_labels=False, path=None) -> tuple["plt.Figure", "plt.Axes"]:
         import matplotlib.pyplot as plt
         from matplotlib.collections import LineCollection
 
@@ -229,14 +272,15 @@ class VigorDataset(torch.utils.data.Dataset):
 
         if path is not None and len(path) > 2:
             path_segments = []
-            get_long_lat_from_idx = lambda idx: (self._panorama_metadata.loc[idx].lon, self._panorama_metadata.loc[idx].lat)
+            def get_long_lat_from_idx(idx): return (
+                self._panorama_metadata.loc[idx].lon, self._panorama_metadata.loc[idx].lat)
             last_pos = get_long_lat_from_idx(path[0])
             for pano_idx in path[1:]:
                 path_segments.append([last_pos, get_long_lat_from_idx(pano_idx)])
                 last_pos = path_segments[-1][-1]
-            path_collection = LineCollection(path_segments, colors=[(0.25, 0.25, 0.9) for x in range(len(neighbor_segments))]) 
+            path_collection = LineCollection(path_segments, colors=[(
+                0.25, 0.25, 0.9) for x in range(len(neighbor_segments))])
             ax.add_collection(path_collection)
-
 
         self._satellite_metadata.plot(x="lon", y="lat", ax=ax, kind="scatter", color="r")
         self._panorama_metadata.plot(x="lon", y="lat", ax=ax, kind="scatter", color="g")
@@ -250,17 +294,21 @@ class VigorDataset(torch.utils.data.Dataset):
 
         plt.axis("equal")
 
-        return fig
+        return fig, ax
 
 
 def get_dataloader(dataset: VigorDataset, **kwargs):
     def _collate_fn(samples: list[VigorDatasetItem]):
         first_item = samples[0]
         return VigorDatasetItem(
-            panorama_metadata=None if first_item.panorama_metadata is None else [x.panorama_metadata for x in samples],
-            satellite_metadata=None if first_item.satellite_metadata is None else [x.satellite_metadata for x in samples],
-            panorama=None if first_item.panorama is None else torch.stack([x.panorama for x in samples]),
-            satellite=None if first_item.satellite is None else torch.stack([x.satellite for x in samples]),
+            panorama_metadata=None if first_item.panorama_metadata is None else [
+                x.panorama_metadata for x in samples],
+            satellite_metadata=None if first_item.satellite_metadata is None else [
+                x.satellite_metadata for x in samples],
+            panorama=None if first_item.panorama is None else torch.stack(
+                [x.panorama for x in samples]),
+            satellite=None if first_item.satellite is None else torch.stack(
+                [x.satellite for x in samples]),
         )
 
     return torch.utils.data.DataLoader(dataset, collate_fn=_collate_fn, **kwargs)

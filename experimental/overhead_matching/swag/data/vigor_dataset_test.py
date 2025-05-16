@@ -205,6 +205,26 @@ class VigorDatasetTest(unittest.TestCase):
         self.assertIsNone(batch.panorama)
         self.assertEqual(batch.satellite.shape[0], BATCH_SIZE)
 
+    def test_get_panorama_batch(self):
+        config = vigor_dataset.VigorDatasetConfig(
+            panorama_neighbor_radius = 0.2,
+            satellite_patch_size = (50, 50),
+            panorama_size = (100, 100),
+        )
+        BATCH_SIZE = 32
+        dataset = vigor_dataset.VigorDataset(Path(self._temp_dir.name), config)
+        panorama_view = dataset.get_pano_view()
+        dataloader = vigor_dataset.get_dataloader(panorama_view, batch_size=BATCH_SIZE)
+
+        # Action
+        batch = next(iter(dataloader))
+
+        # Verification
+        self.assertIsNone(batch.satellite_metadata)
+        self.assertEqual(len(batch.panorama_metadata), BATCH_SIZE)
+        self.assertEqual(batch.panorama.shape[0], BATCH_SIZE)
+        self.assertIsNone(batch.satellite)
+
     def test_overhead_and_main_dataset_are_consistient(self):
         config = vigor_dataset.VigorDatasetConfig(
             panorama_neighbor_radius = 0.2,
@@ -275,13 +295,10 @@ class VigorDatasetTest(unittest.TestCase):
         # action 
         path1 = dataset.generate_random_path(torch.manual_seed(SEED), PATH_LENGTH_M, 0.1)
 
-        fig = dataset.visualize(path=path1)
+        fig, ax = dataset.visualize(path=path1)
         #plt.show()
         plt.savefig("/tmp/path_visual.png")
         plt.close(fig)
-
-
-
 
 
 if __name__ == "__main__":

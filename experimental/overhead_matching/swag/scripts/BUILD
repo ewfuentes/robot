@@ -14,3 +14,38 @@ py_binary(
     "//experimental/overhead_matching/swag/model:patch_embedding",
   ]
 )
+py_binary(
+  name="create_evaluation_paths",
+  srcs=["create_evaluation_paths.py"],
+  deps=[
+    requirement("torch"),
+    requirement("tqdm"),
+    requirement("matplotlib"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+  ]
+)
+py_binary(
+  name="evaluate_model_on_paths",
+  srcs=["evaluate_model_on_paths.py"],
+  deps=[
+    requirement("torch"),
+    requirement("tqdm"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/evaluation:swag_algorithm",
+    "//experimental/overhead_matching/swag/evaluation:evaluate_swag",
+    "//experimental/overhead_matching/swag/model:patch_embedding",
+  ]
+)
+
+py_binary(
+  name="plot_path_evaluations",
+  srcs=["plot_path_evaluations.py"],
+  deps=[
+    ":evaluate_model_on_paths",
+    requirement("torch"),
+    requirement("tqdm"),
+    "//common/torch:load_torch_deps",
+  ]
+)

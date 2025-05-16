@@ -28,11 +28,11 @@ class SatelliteEmbeddingDatabaseTest(unittest.TestCase):
         )
         dataset = vigor_dataset.VigorDataset(Path("external/vigor_snippet/vigor_snippet"), config)
         overhead_view = dataset.get_sat_patch_view()
-        shuffle_dataloader = vigor_dataset.get_dataloader(overhead_view, batch_size=BATCH_SIZE, shuffle=True, generator=torch.manual_seed(SEED))
+        dataloader = vigor_dataset.get_dataloader(overhead_view, batch_size=BATCH_SIZE, shuffle=False, generator=torch.manual_seed(SEED))
         model = MockEmbeddingModel(EMBEDDING_DIM)
 
         # action
-        database = sed.build_satellite_embedding_database(model, shuffle_dataloader, device="cpu")
+        database = sed.build_satellite_db(model, dataloader, device="cpu")
 
         pixels_in_order = []
         for item in overhead_view:
@@ -50,9 +50,11 @@ class SatelliteEmbeddingDatabaseTest(unittest.TestCase):
 
         # Create a mock embedding database
         embedding_database = torch.rand((DATABASE_SIZE, EMBEDDING_DIM))
+        embedding_database = embedding_database / torch.norm(embedding_database, dim=1, keepdim=True)
 
         # Create a mock embedding vector
         embedding = torch.rand((1, EMBEDDING_DIM))
+        embedding = embedding / torch.norm(embedding)
 
         # Calculate cosine similarity using the function
         similarity = sed.calculate_cos_similarity_against_database(embedding, embedding_database)

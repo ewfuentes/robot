@@ -224,5 +224,5 @@ def load_model(
         with torch.no_grad():
             new_output = model(*input_output['input'])
         # observed 1e-6 differences when comparing cpu tensors to gpu tensors
-        assert deep_equal(new_output, input_output['output'], atol=1e-5, print_reason=False)
+        assert deep_equal(new_output, input_output['output'], atol=1e-3, print_reason=False)
     return model

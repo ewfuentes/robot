@@ -3,8 +3,10 @@ load("@pip//:requirements.bzl", "requirement")
 py_library(
   name = "particle_filter",
   srcs = ["particle_filter.py"],
+  visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
   deps = [
     requirement("torch"),
+    requirement("torch_kdtree"),
     "//common/torch:load_torch_deps",
   ]
 )

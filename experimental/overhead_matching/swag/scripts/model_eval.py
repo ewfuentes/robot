@@ -56,7 +56,7 @@ def _(Path, load_model, satellite_embedding_database, torch, vigor_dataset):
     sat_loader = vigor_dataset.get_dataloader(sat_dataset, batch_size=8)
 
 
-    sat_db = satellite_embedding_database.build_satellite_embedding_database(sat_model, sat_loader)
+    sat_db, _ = satellite_embedding_database.build_satellite_embedding_database_and_patch_positions(sat_model, sat_loader)
     return (
         batch,
         dataset,
