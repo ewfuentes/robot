@@ -7,4 +7,5 @@ message WagConfig {
   float initial_particle_distribution_std_deg = 3; // std of the initial distribution of particles
   int32 num_particles = 4;
   float sigma_obs_prob_from_sim = 5; // default is 0.1
+  float max_distance_to_patch_deg = 6;
 }

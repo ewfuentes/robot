@@ -76,13 +76,14 @@ class TestParticleFilter(unittest.TestCase):
             [0.1, 0.1],  # Close to (0,0)
             [0.9, 0.1],  # Close to (1,0)
             [0.1, 0.9],  # Close to (0,1)
-            [0.9, 0.9]   # Close to (1,1)
+            [0.9, 0.9],   # Close to (1,1)
+            [1.9, 1.9]   # Close to nothing
         ])
 
         kd_tree = build_kd_tree(patch_positions)
-
+        NO_PATCH_VALUE = 1e-9
         log_weights = wag_calculate_log_particle_weights(
-            observation_log_likelihood_matrix, kd_tree, particles
+            observation_log_likelihood_matrix, kd_tree, particles, 0.5, np.log(NO_PATCH_VALUE)
         )
 
         # Check shape
@@ -90,6 +91,10 @@ class TestParticleFilter(unittest.TestCase):
 
         # Check that weights sum to 1
         self.assertTrue(torch.isclose(torch.sum(torch.exp(log_weights)), torch.tensor(1.0)))
+        # Check individual values
+        correct_values = torch.log(torch.tensor([0.1, 0.2, 0.3, 0.4, NO_PATCH_VALUE]))
+        correct_values = correct_values - torch.logsumexp(correct_values, dim=0)
+        self.assertTrue(torch.allclose(log_weights, correct_values))
 
     def test_wag_multinomial_resampling(self):
         particles = torch.tensor([
@@ -180,7 +185,7 @@ class TestParticleFilter(unittest.TestCase):
 
             # Update particle weights
             log_weights = wag_calculate_log_particle_weights(
-                obs_log_likelihood, kd_tree, particles
+                obs_log_likelihood, kd_tree, particles, 5
             )
             # Resample particles
             particles = wag_multinomial_resampling(
