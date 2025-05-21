@@ -3,16 +3,8 @@ import torch
 from typing import NamedTuple
 import experimental.overhead_matching.swag.filter.particle_filter as pf
 import experimental.overhead_matching.swag.data.satellite_embedding_database as sed
+from experimental.overhead_matching.swag.evaluation.wag_config_pb2 import WagConfig
 from torch_kdtree.nn_distance import TorchKDTree
-
-
-class WagConfig(NamedTuple):
-    noise_percent_motion_model: float
-    # sample an offset from the gt to be the mean of the initial dist
-    initial_particle_distribution_offset_std_deg: float
-    initial_particle_distribution_std_deg: float  # std of the initial distribution of particles
-    num_particles: int
-    sigma_obs_prob_from_sim: float = 0.1
 
 
 def initialize_wag_particles(gt_start_position_lat_lon: torch.Tensor,

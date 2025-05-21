@@ -1,5 +1,11 @@
-
+load("//common/proto:proto.bzl", "multi_proto_library")
 load("@pip//:requirements.bzl", "requirement")
+
+multi_proto_library(
+  name = "wag_config_proto",
+  srcs = ["wag_config.proto"],
+  visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+)
 
 py_library(
   name = "swag_algorithm",
@@ -9,6 +15,7 @@ py_library(
     requirement("torch"),
     requirement("pandas"),
     requirement("torchvision"),
+    ":wag_config_proto_py",
     "//common/torch:load_torch_deps",
     "//common/torch:load_and_save_models",
     "//experimental/overhead_matching/swag/filter:particle_filter",
@@ -26,6 +33,7 @@ py_library(
     requirement("tqdm"),
     requirement("torchvision"),
     requirement("torch_kdtree"),
+    ":wag_config_proto_py",
     "//common/torch:load_torch_deps",
     "//common/torch:load_and_save_models",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
