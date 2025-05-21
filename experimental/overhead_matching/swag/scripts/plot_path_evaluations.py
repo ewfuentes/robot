@@ -4,7 +4,9 @@ import json
 import numpy as np
 import tqdm
 from pathlib import Path
-import matplotlib.pyplot as plt 
+import matplotlib.pyplot as plt
+from google.protobuf import text_format
+from experimental.overhead_matching.swag.evaluation.wag_config_pb2 import WagConfig
 from experimental.overhead_matching.swag.scripts.evaluate_model_on_paths import construct_path_eval_inputs_from_args
 from experimental.overhead_matching.swag.data.vigor_dataset import VigorDataset
 
@@ -97,13 +99,18 @@ if __name__ == "__main__":
     with open(Path(args.eval_path) / 'args.json', 'r') as f:
         eval_args = json.load(f)
 
-    vigor_dataset, sat_model, pano_model, wag_config, paths_data = construct_path_eval_inputs_from_args(
+    vigor_dataset, sat_model, pano_model, paths_data = construct_path_eval_inputs_from_args(
             sat_model_path=eval_args['sat_path'],
             pano_model_path=eval_args['pano_path'],
             dataset_path=eval_args['dataset_path'],
             paths_path=eval_args['paths_path'],
             panorama_neighbor_radius_deg=eval_args['panorama_neighbor_radius_deg'],
     )
+
+    with open(Path(args.eval_path) / "wag_config.pb", 'r') as f:
+        wag_config = text_format.Parse(f.read(), WagConfig())
+
+     
 
     for path_eval_path in sorted(Path(args.eval_path).glob("*/")):
         print(f"Plotting path evaluation for {path_eval_path}")
