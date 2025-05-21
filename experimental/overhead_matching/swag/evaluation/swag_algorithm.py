@@ -33,7 +33,8 @@ def observe_wag(
         similarity_matrix, wag_config.sigma_obs_prob_from_sim)
     log_particle_weights = pf.wag_calculate_log_particle_weights(observation_log_likelihoods,
                                                                  satellite_patch_kdtree,
-                                                                 particles)
+                                                                 particles,
+                                                                 wag_config.max_distance_to_patch_deg)
     # resample particles
     resampled_particles = pf.wag_multinomial_resampling(particles, log_particle_weights, generator)
     return resampled_particles
