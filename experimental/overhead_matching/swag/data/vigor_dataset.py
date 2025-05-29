@@ -201,9 +201,6 @@ class VigorDataset(torch.utils.data.Dataset):
         self._panorama_metadata["semipos_satellite_idx"] = correspondences.semipositive_sat_idxs_from_pano_idx
         self._panorama_metadata["satellite_idx"] = correspondences.closest_sat_idx_from_pano_idx
 
-        bad_pano_mask = self._panorama_metadata["satellite_idx"] == sys.maxsize
-        bad_panos = self._panorama_metadata[bad_pano_mask]
-
         self._panorama_metadata["neighbor_panorama_idxs"] = compute_neighboring_panoramas(
             self._panorama_kdtree, config.panorama_neighbor_radius)
 
