@@ -92,7 +92,6 @@ def compute_satellite_from_panorama(sat_kdtree, sat_metadata, pano_metadata) -> 
     valid_mask = sat_idx_from_pano_idx != sat_kdtree.n
     valid_idxs = sat_idx_from_pano_idx[valid_mask]
 
-    idxs = sat_idx_from_pano_idx.reshape(-1)
     sat_x = np.full(sat_idx_from_pano_idx.shape, np.inf)
     sat_y = np.full(sat_idx_from_pano_idx.shape, np.inf)
     sat_x[valid_mask] = sat_metadata.iloc[valid_idxs]['web_mercator_x'].values
