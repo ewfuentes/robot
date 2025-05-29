@@ -33,54 +33,84 @@ def _():
 
 
 @app.cell
-def _(Path, load_model, satellite_embedding_database, torch, vigor_dataset):
-    sat_model = load_model(Path("/home/erick/scratch/overhead_matching/models/wag_model_minidataset/satellite_0090/"), device='cuda')
-    pano_model = load_model(Path("/home/erick/scratch/overhead_matching/models/wag_model_minidataset/panorama_0090/"), device='cuda')
+def _(
+    Path,
+    evaluate_swag,
+    load_model,
+    satellite_embedding_database,
+    vigor_dataset,
+):
+    def get_top_k_results(model_partial_path, dataset_path):
+        sat_model = load_model(Path(f"{model_partial_path}_satellite"), device='cuda')
+        pano_model = load_model(Path(f"{model_partial_path}_panorama"), device='cuda')
 
-    dataset_config = vigor_dataset.VigorDatasetConfig(
-        panorama_neighbor_radius=1e-6,
-        satellite_patch_size=(320, 320),
-        panorama_size=(320,640)
+        dataset_config = vigor_dataset.VigorDatasetConfig(
+            panorama_neighbor_radius=1e-6,
+            satellite_patch_size=(320, 320),
+            panorama_size=(320,640),
+            factor=1.0
+        )
+
+        dataset = vigor_dataset.VigorDataset(Path(dataset_path), dataset_config)
+        dataset_loader = vigor_dataset.get_dataloader(dataset, batch_size=128)
+
+        sat_dataset = dataset.get_sat_patch_view()
+        sat_loader = vigor_dataset.get_dataloader(sat_dataset, batch_size=128)
+        sat_db = satellite_embedding_database.build_satellite_embedding_database(sat_model, sat_loader)
+
+        return evaluate_swag.evaluate_prediction_top_k(sat_db, dataset_loader, pano_model)
+    return (get_top_k_results,)
+
+
+@app.cell
+def _(get_top_k_results):
+    print('computing chicago top k')
+    chicago_top_k_results = get_top_k_results(
+        "/data/overhead_matching/models/all_chicago_model/0240",
+        "/data/overhead_matching/datasets/VIGOR/Chicago",
     )
-
-    dataset = vigor_dataset.VigorDataset(Path("/home/erick/scratch/overhead_matching/VIGOR/Chicago"), dataset_config)
-    dataset_loader = vigor_dataset.get_dataloader(dataset, batch_size=8)
-
-    pano_embeddings = []
-    for batch in dataset_loader:
-        with torch.no_grad():
-            pano_embeddings.append(pano_model(batch.panorama.cuda()))
-    pano_embeddings = torch.cat(pano_embeddings)
-
-    sat_dataset = dataset.get_sat_patch_view()
-    sat_loader = vigor_dataset.get_dataloader(sat_dataset, batch_size=8)
-
-
-    sat_db, _ = satellite_embedding_database.build_satellite_embedding_database_and_patch_positions(sat_model, sat_loader)
+    print('computing sf top k')
+    sanfrancisco_top_k_results = get_top_k_results(
+        "/data/overhead_matching/models/all_chicago_model/0240",
+        "/data/overhead_matching/datasets/VIGOR/SanFrancisco/",
+    )
+    print('computing new york top k')
+    newyork_top_k_results = get_top_k_results(
+        "/data/overhead_matching/models/all_chicago_model/0240",
+        "/data/overhead_matching/datasets/VIGOR/NewYork/",
+    )
     return (
-        batch,
-        dataset,
-        dataset_config,
-        dataset_loader,
-        pano_embeddings,
-        pano_model,
-        sat_dataset,
-        sat_db,
-        sat_loader,
-        sat_model,
+        chicago_top_k_results,
+        newyork_top_k_results,
+        sanfrancisco_top_k_results,
     )
 
 
 @app.cell
-def _(pano_embeddings):
-    pano_embeddings.shape
-    return
-
-
-@app.cell
-def _(sat_db):
-    sat_db.shape
-    return
+def _(
+    chicago_top_k_results,
+    newyork_top_k_results,
+    plt,
+    sanfrancisco_top_k_results,
+):
+    fig = plt.figure()
+    ax = plt.subplot(311)
+    plt.hist(chicago_top_k_results["k_value"], bins=50)
+    plt.title('Chicago')
+    plt.ylabel('Count')
+    plt.subplot(312)
+    plt.hist(newyork_top_k_results["k_value"], bins=50)
+    plt.title('New York')
+    plt.ylabel('Count')
+    plt.subplot(313)
+    plt.hist(sanfrancisco_top_k_results["k_value"], bins=50)
+    plt.title("San Francisco")
+    plt.ylabel('Count')
+    plt.xlabel("K Value")
+    plt.suptitle("K Value Distribution")
+    plt.tight_layout()
+    fig
+    return ax, fig
 
 
 @app.cell
