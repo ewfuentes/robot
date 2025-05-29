@@ -46,7 +46,7 @@ def wag_calculate_log_particle_weights(observation_log_likelihood: torch.Tensor,
     patch_kdtree: KDTree of the patch centers
     particles: N_particles x state dimension: the particles
     max_patch_distance_deg: particles that are not closer to any patch than this distance are assigned..
-    no_patch_log_likleihood: ...this likleihood value
+    no_patch_log_likelihood: ...this likelihood value
 
     Returns log weights of each particle
     """
