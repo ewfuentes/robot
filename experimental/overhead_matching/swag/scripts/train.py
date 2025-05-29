@@ -65,8 +65,8 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
     panorama_model.train()
     satellite_model.train()
 
-    print(dataset._satellite_metadata) 
-    print(dataset._panorama_metadata) 
+    print(dataset._satellite_metadata)
+    print(dataset._panorama_metadata)
 
     opt_config = config.opt_config
 
@@ -139,7 +139,6 @@ def main(dataset_path: Path, output_dir: Path):
         panorama_neighbor_radius=PANORAMA_NEIGHBOR_RADIUS_DEG,
         satellite_patch_size=(320, 320),
         panorama_size=(320, 640),
-        factor=0.10
     )
     dataset = vigor_dataset.VigorDataset(dataset_path, dataset_config)
 

@@ -121,6 +121,7 @@ class VigorDatasetTest(unittest.TestCase):
             panorama_neighbor_radius=0.4,
             satellite_patch_size=None,
             panorama_size=None,
+            satellite_zoom_level=7,
         )
         dataset = vigor_dataset.VigorDataset(Path(self._temp_dir.name), config)
 
@@ -160,6 +161,7 @@ class VigorDatasetTest(unittest.TestCase):
             panorama_neighbor_radius = 0.4,
             satellite_patch_size = (50, 50),
             panorama_size = (100, 100),
+            satellite_zoom_level=7,
         )
         dataset = vigor_dataset.VigorDataset(Path(self._temp_dir.name), config)
         dataloader = vigor_dataset.get_dataloader(dataset, batch_size=BATCH_SIZE)
@@ -178,6 +180,7 @@ class VigorDatasetTest(unittest.TestCase):
             panorama_neighbor_radius = 0.2,
             satellite_patch_size = (50, 50),
             panorama_size = (100, 100),
+            satellite_zoom_level=7,
         )
         dataset = vigor_dataset.VigorDataset(Path(self._temp_dir.name), config)
         overhead_view = dataset.get_sat_patch_view()
@@ -190,6 +193,7 @@ class VigorDatasetTest(unittest.TestCase):
             panorama_neighbor_radius = 0.2,
             satellite_patch_size = (50, 50),
             panorama_size = (100, 100),
+            satellite_zoom_level=7,
         )
         BATCH_SIZE = 32
         dataset = vigor_dataset.VigorDataset(Path(self._temp_dir.name), config)
@@ -210,6 +214,7 @@ class VigorDatasetTest(unittest.TestCase):
             panorama_neighbor_radius = 0.2,
             satellite_patch_size = (50, 50),
             panorama_size = (100, 100),
+            satellite_zoom_level=7,
         )
         BATCH_SIZE = 32
         dataset = vigor_dataset.VigorDataset(Path(self._temp_dir.name), config)
@@ -230,6 +235,7 @@ class VigorDatasetTest(unittest.TestCase):
             panorama_neighbor_radius = 0.2,
             satellite_patch_size = (50, 50),
             panorama_size = (100, 100),
+            satellite_zoom_level=7,
         )
         CHECK_INDEX = 25
         dataset = vigor_dataset.VigorDataset(Path(self._temp_dir.name), config)

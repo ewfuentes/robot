@@ -1,6 +1,7 @@
 import common.torch.load_torch_deps
 import torch
 import torchvision as tv
+import sys
 
 from pathlib import Path
 import pandas as pd
@@ -15,6 +16,7 @@ class VigorDatasetConfig(NamedTuple):
     satellite_patch_size: None | tuple[int, int] = None
     panorama_size: None | tuple[int, int] = None
     factor: None | float = 1.0
+    satellite_zoom_level: int = 20
 
 
 class VigorDatasetItem(NamedTuple):
@@ -24,6 +26,14 @@ class VigorDatasetItem(NamedTuple):
     satellite: torch.Tensor
 
 
+class SatelliteFromPanoramaResult(NamedTuple):
+    closest_sat_idx_from_pano_idx: list[list[int]]
+    positive_sat_idxs_from_pano_idx: list[list[int]]
+    semipositive_sat_idxs_from_pano_idx: list[list[int]]
+    positive_pano_idxs_from_sat_idx: list[list[int]]
+    semipositive_pano_idxs_from_sat_idx: list[list[int]]
+
+
 def series_to_dict_with_index(series: pd.Series, index_key: str = "index"):
     d = series.to_dict()
     assert index_key not in d
@@ -31,30 +41,112 @@ def series_to_dict_with_index(series: pd.Series, index_key: str = "index"):
     return d
 
 
-def load_satellite_metadata(path: Path):
+def latlon_to_pixel_coords(lat, lon, zoom):
+    """
+    Converts lat/lon to pixel coordinates in global Web Mercator space.
+    """
+    siny = np.sin(np.radians(lat))
+    siny = min(max(siny, -0.9999), 0.9999)
+
+    map_size = 256 * 2**zoom
+    x = (lon + 180.0) / 360.0 * map_size
+    y = (0.5 - np.log((1 + siny) / (1 - siny)) / (4 * np.pi)) * map_size
+    return x, y
+
+
+def load_satellite_metadata(path: Path, zoom_level: int):
     out = []
     for p in sorted(list(path.iterdir())):
         _, lat, lon = p.stem.split("_")
-        out.append((float(lat), float(lon), p))
-    return pd.DataFrame(out, columns=["lat", "lon", "path"])
+        lat = float(lat)
+        lon = float(lon)
+        web_mercator_px = latlon_to_pixel_coords(lat, lon, zoom_level)
+        out.append((lat, lon, *web_mercator_px, p))
+    return pd.DataFrame(out, columns=["lat", "lon", "web_mercator_x", "web_mercator_y", "path"])
 
 
-def load_panorama_metadata(path: Path):
+def load_panorama_metadata(path: Path, zoom_level: int):
     out = []
     for p in sorted(list(path.iterdir())):
         pano_id, lat, lon, _ = p.stem.split(",")
-        out.append((pano_id, float(lat), float(lon), p))
-    return pd.DataFrame(out, columns=["pano_id", "lat", "lon", "path"])
+        lat = float(lat)
+        lon = float(lon)
+        web_mercator_px = latlon_to_pixel_coords(lat, lon, zoom_level)
+        out.append((pano_id, lat, lon, *web_mercator_px, p))
+    return pd.DataFrame(out, columns=["pano_id", "lat", "lon", "web_mercator_x", "web_mercator_y", "path"])
 
 
-def compute_satellite_from_panorama(sat_kdtree, pano_metadata):
-    _, sat_idx_from_pano_idx = sat_kdtree.query(pano_metadata.loc[:, ["lat", "lon"]].values)
+def compute_satellite_from_panorama(sat_kdtree, sat_metadata, pano_metadata) -> SatelliteFromPanoramaResult:
+    # Get the satellite patch size:
+    sat_patch = load_image(sat_metadata.iloc[0]["path"], resize_shape=None)
+    sat_patch_size = sat_patch.shape[1:]
+    half_width = sat_patch_size[1] / 2.0
+    half_height = sat_patch_size[0] / 2.0
+    max_dist = np.sqrt(half_width ** 2 + half_height ** 2)
 
-    pano_idxs_from_sat_idx = [[] for i in range(sat_kdtree.n)]
-    for pano_idx, sat_idx in enumerate(sat_idx_from_pano_idx):
-        pano_idxs_from_sat_idx[sat_idx].append(pano_idx)
+    MAX_K = 10
+    _, sat_idx_from_pano_idx = sat_kdtree.query(
+            pano_metadata.loc[:, ["web_mercator_x", "web_mercator_y"]].values, k=MAX_K,
+            distance_upper_bound=max_dist)
 
-    return sat_idx_from_pano_idx, pano_idxs_from_sat_idx
+    valid_mask = sat_idx_from_pano_idx != sat_kdtree.n
+    valid_idxs = sat_idx_from_pano_idx[valid_mask]
+
+    idxs = sat_idx_from_pano_idx.reshape(-1)
+    sat_x = np.full(sat_idx_from_pano_idx.shape, np.inf)
+    sat_y = np.full(sat_idx_from_pano_idx.shape, np.inf)
+    sat_x[valid_mask] = sat_metadata.iloc[valid_idxs]['web_mercator_x'].values
+    sat_y[valid_mask] = sat_metadata.iloc[valid_idxs]['web_mercator_y'].values
+
+    x_semipos_lb = -half_width * np.ones_like(sat_idx_from_pano_idx) + sat_x
+    x_semipos_ub = half_width * np.ones_like(sat_idx_from_pano_idx) + sat_x
+    y_semipos_lb = -half_height * np.ones_like(sat_idx_from_pano_idx) + sat_y
+    y_semipos_ub = half_height * np.ones_like(sat_idx_from_pano_idx) + sat_y
+
+    x_pos_lb = -half_width/2.0 * np.ones_like(sat_idx_from_pano_idx) + sat_x
+    x_pos_ub = half_width/2.0 * np.ones_like(sat_idx_from_pano_idx) + sat_x
+    y_pos_lb = -half_height/2.0 * np.ones_like(sat_idx_from_pano_idx) + sat_y
+    y_pos_ub = half_height/2.0 * np.ones_like(sat_idx_from_pano_idx) + sat_y
+
+    pano_x = np.expand_dims(pano_metadata["web_mercator_x"].values, -1)
+    pano_y = np.expand_dims(pano_metadata["web_mercator_y"].values, -1)
+
+    is_semipos = np.logical_and(
+        np.logical_and(pano_x >= x_semipos_lb, pano_x <= x_semipos_ub),
+        np.logical_and(pano_y >= y_semipos_lb, pano_y <= y_semipos_ub))
+
+    is_pos = np.logical_and(
+        np.logical_and(pano_x >= x_pos_lb, pano_x <= x_pos_ub),
+        np.logical_and(pano_y >= y_pos_lb, pano_y <= y_pos_ub))
+
+    closest_sat_idx_from_pano_idx = [sys.maxsize for _ in range(len(pano_metadata))]
+    pos_sat_idxs_from_pano_idx = [[] for _ in range(len(pano_metadata))]
+    semipos_sat_idxs_from_pano_idx = [[] for _ in range(len(pano_metadata))]
+    pos_pano_idxs_from_sat_idx = [[] for _ in range(len(sat_metadata))]
+    semipos_pano_idxs_from_sat_idx = [[] for _ in range(len(sat_metadata))]
+
+    for pano_idx in range(len(pano_metadata)):
+        for idx in range(MAX_K):
+            sat_idx = sat_idx_from_pano_idx[pano_idx, idx]
+            if idx == 0:
+                closest_sat_idx_from_pano_idx[pano_idx] = sat_idx
+
+            if is_pos[pano_idx, idx] and idx == 0:
+                pos_sat_idxs_from_pano_idx[pano_idx].append(sat_idx)
+                pos_pano_idxs_from_sat_idx[sat_idx].append(pano_idx)
+            elif is_semipos[pano_idx, idx]:
+                semipos_sat_idxs_from_pano_idx[pano_idx].append(sat_idx)
+                semipos_pano_idxs_from_sat_idx[sat_idx].append(pano_idx)
+            else:
+                break
+
+    return SatelliteFromPanoramaResult(
+        closest_sat_idx_from_pano_idx=closest_sat_idx_from_pano_idx,
+        positive_sat_idxs_from_pano_idx=pos_sat_idxs_from_pano_idx,
+        semipositive_sat_idxs_from_pano_idx=semipos_sat_idxs_from_pano_idx,
+        positive_pano_idxs_from_sat_idx=pos_pano_idxs_from_sat_idx,
+        semipositive_pano_idxs_from_sat_idx=semipos_pano_idxs_from_sat_idx,
+    )
 
 
 def compute_neighboring_panoramas(pano_kdtree, max_dist):
@@ -79,8 +171,8 @@ class VigorDataset(torch.utils.data.Dataset):
         super().__init__()
         self._dataset_path = dataset_path
 
-        self._satellite_metadata = load_satellite_metadata(dataset_path / "satellite")
-        self._panorama_metadata = load_panorama_metadata(dataset_path / "panorama")
+        self._satellite_metadata = load_satellite_metadata(dataset_path / "satellite", config.satellite_zoom_level)
+        self._panorama_metadata = load_panorama_metadata(dataset_path / "panorama", config.satellite_zoom_level)
 
         min_lat = np.min(self._satellite_metadata.lat)
         max_lat = np.max(self._satellite_metadata.lat)
@@ -96,14 +188,21 @@ class VigorDataset(torch.utils.data.Dataset):
         self._satellite_metadata = self._satellite_metadata[sat_mask].reset_index(drop=True)
         self._panorama_metadata = self._panorama_metadata[pano_mask].reset_index(drop=True)
 
-        self._satellite_kdtree = cKDTree(self._satellite_metadata.loc[:, ["lat", "lon"]].values)
+        self._satellite_kdtree = cKDTree(self._satellite_metadata.loc[:, ["web_mercator_x", "web_mercator_y"]].values)
         self._panorama_kdtree = cKDTree(self._panorama_metadata.loc[:, ["lat", "lon"]].values)
 
-        sat_idx_from_pano_idx, pano_idxs_from_sat_idx = compute_satellite_from_panorama(
-            self._satellite_kdtree, self._panorama_metadata)
+        # drop rows that don't have a positive match
+        correspondences = compute_satellite_from_panorama(
+            self._satellite_kdtree, self._satellite_metadata, self._panorama_metadata)
 
-        self._satellite_metadata["panorama_idxs"] = pano_idxs_from_sat_idx
-        self._panorama_metadata["satellite_idx"] = sat_idx_from_pano_idx
+        self._satellite_metadata["panorama_idxs"] = correspondences.positive_pano_idxs_from_sat_idx
+        self._satellite_metadata["semipos_panorama_idxs"] = correspondences.semipositive_pano_idxs_from_sat_idx
+        self._panorama_metadata["positive_satellite_idx"] = correspondences.positive_sat_idxs_from_pano_idx
+        self._panorama_metadata["semipos_satellite_idx"] = correspondences.semipositive_sat_idxs_from_pano_idx
+        self._panorama_metadata["satellite_idx"] = correspondences.closest_sat_idx_from_pano_idx
+
+        bad_pano_mask = self._panorama_metadata["satellite_idx"] == sys.maxsize
+        bad_panos = self._panorama_metadata[bad_pano_mask]
 
         self._panorama_metadata["neighbor_panorama_idxs"] = compute_neighboring_panoramas(
             self._panorama_kdtree, config.panorama_neighbor_radius)
