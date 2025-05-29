@@ -82,7 +82,7 @@ if __name__ == "__main__":
                            sigma_obs_prob_from_sim=0.1,
                            max_distance_to_patch_deg=200.0 / EARTH_RADIUS_M * 180.0 / math.pi)
 
-    with open(Path(args.output_path) / "wag_config.pb", "w") as f:
+    with open(Path(args.output_path) / "wag_config.pbtxt", "w") as f:
         f.write(text_format.MessageToString(wag_config))
 
     es.evaluate_model_on_paths(

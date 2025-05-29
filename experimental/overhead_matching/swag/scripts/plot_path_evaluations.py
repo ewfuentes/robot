@@ -107,7 +107,8 @@ if __name__ == "__main__":
             panorama_neighbor_radius_deg=eval_args['panorama_neighbor_radius_deg'],
     )
 
-    with open(Path(args.eval_path) / "wag_config.pb", 'r') as f:
+
+    with open(Path(args.eval_path) / "wag_config.pbtxt", 'r') as f:
         wag_config = text_format.Parse(f.read(), WagConfig())
 
      
