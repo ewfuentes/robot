@@ -1,5 +1,6 @@
 import common.torch.load_torch_deps
 import torch
+import numpy as np
 import torch_kdtree.nn_distance
 
 
@@ -37,20 +38,28 @@ def wag_observation_log_likelihood_from_similarity_matrix(
 
 def wag_calculate_log_particle_weights(observation_log_likelihood: torch.Tensor,
                                        patch_kdtree: torch_kdtree.nn_distance.TorchKDTree,
-                                       particles: torch.Tensor) -> torch.Tensor:
+                                       particles: torch.Tensor,
+                                       max_patch_distance_deg: float,
+                                       no_patch_log_likelihood: float = np.log(1e-6)) -> torch.Tensor:
     """
     observation_likelihood_matrix: Matrix of length M, each cell contains log(p(z_t | x_t^j))
     patch_kdtree: KDTree of the patch centers
     particles: N_particles x state dimension: the particles
+    max_patch_distance_deg: particles that are not closer to any patch than this distance are assigned..
+    no_patch_log_likelihood: ...this likelihood value
 
     Returns log weights of each particle
     """
     assert observation_log_likelihood.ndim == 1 and particles.ndim == 2
 
     # find which patches are closest to each particle
-    particle_patch_indices = patch_kdtree.query(particles, nr_nns_searches=1)[1].squeeze(1)  # N_particles x 1
+    distances_to_patch, particle_patch_indices = patch_kdtree.query(particles, nr_nns_searches=1)
+    distances_to_patch = distances_to_patch.squeeze(1)
+    particle_patch_indices = particle_patch_indices.squeeze(1)  # N_particles x 1 -> N_particles
 
     particle_log_likelihood = observation_log_likelihood[particle_patch_indices]
+    lost_particles = distances_to_patch > max_patch_distance_deg
+    particle_log_likelihood[lost_particles] = no_patch_log_likelihood
     # normalize
     particle_log_likelihood = particle_log_likelihood - particle_log_likelihood.logsumexp(dim=0)
     return particle_log_likelihood
