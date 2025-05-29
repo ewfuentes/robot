@@ -6,6 +6,7 @@ import pandas as pd
 import experimental.overhead_matching.swag.data.satellite_embedding_database as sed
 import experimental.overhead_matching.swag.data.vigor_dataset as vd
 import experimental.overhead_matching.swag.evaluation.swag_algorithm as sa
+from experimental.overhead_matching.swag.evaluation.wag_config_pb2 import WagConfig
 from torch_kdtree import build_kd_tree
 from torch_kdtree.nn_distance import TorchKDTree
 
@@ -87,7 +88,7 @@ def run_inference_on_path(
     initial_particle_state: torch.Tensor,  # N x state dim
     motion_deltas: torch.Tensor,  # path_length - 1 x state dim
     patch_similarity_for_path: torch.Tensor,  # path_length x W
-    wag_config: sa.WagConfig,
+    wag_config: WagConfig,
     generator: torch.Generator,
 ) -> torch.Tensor:  # path_length x N x state dim
 
@@ -120,7 +121,7 @@ def evaluate_model_on_paths(
     sat_model: torch.nn.Module,
     pano_model: torch.nn.Module,
     paths: list[list[int]],
-    wag_config: sa.WagConfig,
+    wag_config: WagConfig,
     seed: int,
     output_path: Path,
     device: torch.device = "cuda:0",
@@ -171,6 +172,8 @@ def evaluate_model_on_paths(
             # save particle history
             save_path = output_path / f"{i:07d}"
             save_path.mkdir(parents=True, exist_ok=True)
+            particle_history = torch.stack(particle_history)
+            particle_history = particle_history[:, ::10].contiguous()  # downsample particles
             torch.save(particle_history, save_path / "particle_history.pt")
             torch.save(path, save_path / "path.pt")
             torch.save(path_similarity_values, save_path / "similarity.pt")
