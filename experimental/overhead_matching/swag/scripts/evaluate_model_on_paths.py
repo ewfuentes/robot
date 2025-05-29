@@ -81,7 +81,7 @@ if __name__ == "__main__":
                            num_particles=100_000,
                            sigma_obs_prob_from_sim=0.1)
 
-    with open(Path(args.output_path) / "wag_config.pb", "w") as f:
+    with open(Path(args.output_path) / "wag_config.pbtxt", "w") as f:
         f.write(text_format.MessageToString(wag_config))
 
     es.evaluate_model_on_paths(
