@@ -44,6 +44,7 @@ def series_to_dict_with_index(series: pd.Series, index_key: str = "index"):
 def latlon_to_pixel_coords(lat, lon, zoom):
     """
     Converts lat/lon to pixel coordinates in global Web Mercator space.
+    For reference, see: https://en.wikipedia.org/wiki/Web_Mercator_projection
     """
     siny = np.sin(np.radians(lat))
     siny = min(max(siny, -0.9999), 0.9999)
