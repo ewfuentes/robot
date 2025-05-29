@@ -59,7 +59,7 @@ def wag_calculate_log_particle_weights(observation_log_likelihood: torch.Tensor,
 
     particle_log_likelihood = observation_log_likelihood[particle_patch_indices]
     lost_particles = distances_to_patch > max_patch_distance_deg
-    particle_log_likelihood[lost_particles] = no_patch_log_likleihood
+    particle_log_likelihood[lost_particles] = no_patch_log_likelihood
     # normalize
     particle_log_likelihood = particle_log_likelihood - particle_log_likelihood.logsumexp(dim=0)
     return particle_log_likelihood
