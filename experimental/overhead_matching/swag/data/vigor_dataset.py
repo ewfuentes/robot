@@ -195,10 +195,10 @@ class VigorDataset(torch.utils.data.Dataset):
         correspondences = compute_satellite_from_panorama(
             self._satellite_kdtree, self._satellite_metadata, self._panorama_metadata)
 
-        self._satellite_metadata["panorama_idxs"] = correspondences.positive_pano_idxs_from_sat_idx
-        self._satellite_metadata["semipos_panorama_idxs"] = correspondences.semipositive_pano_idxs_from_sat_idx
-        self._panorama_metadata["positive_satellite_idx"] = correspondences.positive_sat_idxs_from_pano_idx
-        self._panorama_metadata["semipos_satellite_idx"] = correspondences.semipositive_sat_idxs_from_pano_idx
+        self._satellite_metadata["positive_panorama_idxs"] = correspondences.positive_pano_idxs_from_sat_idx
+        self._satellite_metadata["semipositive_panorama_idxs"] = correspondences.semipositive_pano_idxs_from_sat_idx
+        self._panorama_metadata["positive_satellite_idxs"] = correspondences.positive_sat_idxs_from_pano_idx
+        self._panorama_metadata["semipositive_satellite_idxs"] = correspondences.semipositive_sat_idxs_from_pano_idx
         self._panorama_metadata["satellite_idx"] = correspondences.closest_sat_idx_from_pano_idx
 
         self._panorama_metadata["neighbor_panorama_idxs"] = compute_neighboring_panoramas(

@@ -47,15 +47,19 @@ def create_pairs(panorama_metadata, satellite_metadata) -> Pairs:
     # TODO consider creating triplets where a satellite patch is the anchor
     out = Pairs(positive_pairs=[], negative_pairs=[], semipositive_pairs=[])
     for batch_pano_idx in range(len(panorama_metadata)):
-        anchor_sat_idx = panorama_metadata[batch_pano_idx]["satellite_idx"]
-        out.positive_pairs.append((batch_pano_idx, batch_pano_idx))
-        # For now, we assume that the panorama and satellite metadata are paired since
-        # the satellite metadata does not currently contain the satellite index
-        for batch_sat_idx in range(len(panorama_metadata)):
-            neg_sat_idx = panorama_metadata[batch_sat_idx]["satellite_idx"]
-            if anchor_sat_idx == neg_sat_idx:
-                continue
-            out.negative_pairs.append((batch_pano_idx, batch_sat_idx))
+        # batch_pano_idx is the index of the panorama in the batch
+        # pano_idx is the index of the panorama in the dataset
+        pano_idx = panorama_metadata[batch_pano_idx]['index']
+
+        for batch_sat_idx in range(len(satellite_metadata)):
+            # batch_sat_idx is the index of the satellite image in the batch
+            curr_sat_metadata = satellite_metadata[batch_sat_idx]
+            if pano_idx in curr_sat_metadata["positive_panorama_idxs"]:
+                out.positive_pairs.append((batch_pano_idx, batch_sat_idx))
+            elif pano_idx in curr_sat_metadata["semipositive_panorama_idxs"]:
+                out.semipositive_pairs.append((batch_pano_idx, batch_sat_idx))
+            else:
+                out.negative_pairs.append((batch_pano_idx, batch_sat_idx))
     return out
 
 
@@ -103,6 +107,10 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
             pos_cols = [x[1] for x in pairs.positive_pairs]
             pos_similarities = similarity[pos_rows, pos_cols]
 
+            semipos_rows = [x[0] for x in pairs.semipositive_pairs]
+            semipos_cols = [x[1] for x in pairs.semipositive_pairs]
+            semipos_similarities = similarity[semipos_rows, semipos_cols]
+
             neg_rows = [x[0] for x in pairs.negative_pairs]
             neg_cols = [x[1] for x in pairs.negative_pairs]
             neg_similarities = similarity[neg_rows, neg_cols]
@@ -112,12 +120,17 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
             pos_loss = torch.log(1 + torch.exp(-POS_WEIGHT * (pos_similarities - AVG_POS_SIMILARITY)))
             pos_loss = torch.mean(pos_loss) / POS_WEIGHT
 
+            SEMIPOS_WEIGHT = 6
+            AVG_SEMIPOS_SIMILARITY = 0.3
+            semipos_loss = torch.log(1 + torch.exp(-SEMIPOS_WEIGHT * (semipos_similarities - AVG_SEMIPOS_SIMILARITY)))
+            semipos_loss = torch.mean(semipos_loss) / SEMIPOS_WEIGHT
+
             NEG_WEIGHT = 20
             AVG_NEG_SIMILARITY = 0.7
             neg_loss = torch.log(1 + torch.exp(NEG_WEIGHT * (neg_similarities - AVG_NEG_SIMILARITY)))
             neg_loss = torch.mean(neg_loss) / NEG_WEIGHT
 
-            loss = pos_loss + neg_loss
+            loss = pos_loss + neg_loss + semipos_loss
             loss.backward()
             print(f"{epoch_idx=} {batch_idx=} {pos_loss.item()=} {neg_loss.item()=} {loss.item()=}")
             opt.step()
