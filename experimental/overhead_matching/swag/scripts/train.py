@@ -117,32 +117,50 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
 
             POS_WEIGHT = 5
             AVG_POS_SIMILARITY = 0.0
-            pos_loss = torch.log(1 + torch.exp(-POS_WEIGHT * (pos_similarities - AVG_POS_SIMILARITY)))
-            pos_loss = torch.mean(pos_loss) / POS_WEIGHT
+            if len(pairs.positive_pairs):
+                pos_loss = torch.log(
+                        1 + torch.exp(-POS_WEIGHT * (pos_similarities - AVG_POS_SIMILARITY)))
+                pos_loss = torch.mean(pos_loss) / POS_WEIGHT
+            else:
+                pos_loss = torch.tensor(0)
 
             SEMIPOS_WEIGHT = 6
             AVG_SEMIPOS_SIMILARITY = 0.3
-            semipos_loss = torch.log(1 + torch.exp(-SEMIPOS_WEIGHT * (semipos_similarities - AVG_SEMIPOS_SIMILARITY)))
-            semipos_loss = torch.mean(semipos_loss) / SEMIPOS_WEIGHT
+            if len(pairs.semipositive_pairs):
+                semipos_loss = torch.log(
+                        1 + torch.exp(-SEMIPOS_WEIGHT * (
+                            semipos_similarities - AVG_SEMIPOS_SIMILARITY)))
+                semipos_loss = torch.mean(semipos_loss) / SEMIPOS_WEIGHT
+            else:
+                semipos_loss = torch.tensor(0)
 
             NEG_WEIGHT = 20
             AVG_NEG_SIMILARITY = 0.7
-            neg_loss = torch.log(1 + torch.exp(NEG_WEIGHT * (neg_similarities - AVG_NEG_SIMILARITY)))
-            neg_loss = torch.mean(neg_loss) / NEG_WEIGHT
+            if len(pairs.negative_pairs):
+                neg_loss = torch.log(
+                        1 + torch.exp(NEG_WEIGHT * (neg_similarities - AVG_NEG_SIMILARITY)))
+                neg_loss = torch.mean(neg_loss) / NEG_WEIGHT
+            else:
+                neg_loss = torch.tensor(0)
 
             loss = pos_loss + neg_loss + semipos_loss
             loss.backward()
-            print(f"{epoch_idx=} {batch_idx=} {pos_loss.item()=} {neg_loss.item()=} {loss.item()=}")
+            print(f"{epoch_idx=} {batch_idx=} num_pos_pairs: {len(pairs.positive_pairs)}" +
+                  f" num_semipos_pairs: {len(pairs.semipositive_pairs)}" +
+                  f"  num_neg_pairs: {len(pairs.negative_pairs)} {pos_loss.item()=:0.6f}" +
+                  f" {semipos_loss.item()=:0.6f} {neg_loss.item()=:0.6f} {loss.item()=:0.6f}")
             opt.step()
 
-        if epoch_idx % 20 == 0:
+        if epoch_idx % 10 == 0:
             config.output_dir.mkdir(parents=True, exist_ok=True)
             panorama_model_path = config.output_dir / f"{epoch_idx:04d}_panorama"
             satellite_model_path = config.output_dir / f"{epoch_idx:04d}_satellite"
 
             batch = next(iter(dataloader))
-            save_model(panorama_model, panorama_model_path, (batch.panorama[:opt_config.opt_batch_size].cuda(),))
-            save_model(satellite_model, satellite_model_path, (batch.satellite[:opt_config.opt_batch_size].cuda(),))
+            save_model(panorama_model, panorama_model_path,
+                       (batch.panorama[:opt_config.opt_batch_size].cuda(),))
+            save_model(satellite_model, satellite_model_path,
+                       (batch.satellite[:opt_config.opt_batch_size].cuda(),))
 
 
 def main(dataset_path: Path, output_dir: Path):
