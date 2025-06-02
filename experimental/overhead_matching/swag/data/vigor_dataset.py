@@ -9,7 +9,20 @@ import numpy as np
 from scipy.spatial import cKDTree
 from typing import NamedTuple
 from common.math.haversine import find_d_on_unit_circle
+from enum import StrEnum, auto
 
+
+class SampleMode(StrEnum):
+    # In nearest mode, when indexing into the dataset, return the nearest satellite patch
+    # for the selected panorama
+    NEAREST = auto()
+    # In pos/semipos mode, it is possible to sample all positive and semipositive pairs
+    POS_SEMIPOS = auto()
+
+
+class SamplePair(NamedTuple):
+    panorama_idx: int
+    satellite_idx: int
 
 class VigorDatasetConfig(NamedTuple):
     panorama_neighbor_radius: float
@@ -17,6 +30,7 @@ class VigorDatasetConfig(NamedTuple):
     panorama_size: None | tuple[int, int] = None
     factor: None | float = 1.0
     satellite_zoom_level: int = 20
+    sample_mode: SampleMode = SampleMode.NEAREST
 
 
 class VigorDatasetItem(NamedTuple):
@@ -166,6 +180,20 @@ def load_image(path: Path, resize_shape: None | tuple[int, int]):
     return img
 
 
+def populate_pairs(pano_metadata, sat_metadata, sample_mode):
+    out = []
+    for i, d in pano_metadata.iterrows():
+        if sample_mode == SampleMode.NEAREST:
+            out.append(SamplePair(panorama_idx=i, satellite_idx=d["satellite_idx"]))
+            continue
+        # Otherwise we are in POS_SEMIPOS
+        for sat_idx in d["positive_satellite_idxs"]:
+            out.append(SamplePair(panorama_idx=i, satellite_idx=sat_idx))
+        for sat_idx in d["semipositive_satellite_idxs"]:
+            out.append(SamplePair(panorama_idx=i, satellite_idx=sat_idx))
+    return out
+
+
 class VigorDataset(torch.utils.data.Dataset):
     def __init__(self, dataset_path: Path, config: VigorDatasetConfig):
         super().__init__()
@@ -207,6 +235,8 @@ class VigorDataset(torch.utils.data.Dataset):
         self._satellite_patch_size = config.satellite_patch_size
         self._panorama_size = config.panorama_size
 
+        self._pairs = populate_pairs(self._panorama_metadata, self._satellite_metadata, config.sample_mode)
+
     @property
     def num_satellite_patches(self):
         return len(self._satellite_metadata)
@@ -219,8 +249,9 @@ class VigorDataset(torch.utils.data.Dataset):
             # if idx is tensor, .loc[tensor] returns DataFrame instead of Series which breaks the following lines
             idx = idx.item()
 
-        pano_metadata = self._panorama_metadata.loc[idx]
-        sat_metadata = self._satellite_metadata.loc[pano_metadata.satellite_idx]
+        pano_idx, sat_idx = self._pairs[idx]
+        pano_metadata = self._panorama_metadata.loc[pano_idx]
+        sat_metadata = self._satellite_metadata.loc[sat_idx]
         pano = load_image(pano_metadata.path, self._panorama_size)
         sat = load_image(sat_metadata.path, self._satellite_patch_size)
 
@@ -232,7 +263,7 @@ class VigorDataset(torch.utils.data.Dataset):
         )
 
     def __len__(self):
-        return len(self._panorama_metadata)
+        return len(self._pairs)
 
     def generate_random_path(self,
                              generator: torch.Generator,

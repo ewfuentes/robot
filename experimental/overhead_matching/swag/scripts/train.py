@@ -145,11 +145,14 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
 
             loss = pos_loss + neg_loss + semipos_loss
             loss.backward()
-            print(f"{epoch_idx=} {batch_idx=} num_pos_pairs: {len(pairs.positive_pairs)}" +
-                  f" num_semipos_pairs: {len(pairs.semipositive_pairs)}" +
-                  f"  num_neg_pairs: {len(pairs.negative_pairs)} {pos_loss.item()=:0.6f}" +
-                  f" {semipos_loss.item()=:0.6f} {neg_loss.item()=:0.6f} {loss.item()=:0.6f}")
+            print(f"{epoch_idx=:4d} {batch_idx=:4d} num_pos_pairs: {len(pairs.positive_pairs):3d}" +
+                  f" num_semipos_pairs: {len(pairs.semipositive_pairs):3d}" +
+                  f"  num_neg_pairs: {len(pairs.negative_pairs):3d} {pos_loss.item()=:0.6f}" +
+                  f" {semipos_loss.item()=:0.6f} {neg_loss.item()=:0.6f} {loss.item()=:0.6f}", end='\r')
+            if batch_idx % 50 == 0:
+                print()
             opt.step()
+        print()
 
         if epoch_idx % 10 == 0:
             config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -170,6 +173,7 @@ def main(dataset_path: Path, output_dir: Path):
         panorama_neighbor_radius=PANORAMA_NEIGHBOR_RADIUS_DEG,
         satellite_patch_size=(320, 320),
         panorama_size=(320, 640),
+        sample_mode=vigor_dataset.SampleMode.POS_SEMIPOS,
     )
     dataset = vigor_dataset.VigorDataset(dataset_path, dataset_config)
 
@@ -191,7 +195,7 @@ def main(dataset_path: Path, output_dir: Path):
         opt_config=OptimizationConfig(
             num_epochs=1000,
             num_embedding_pool_batches=1,
-            embedding_pool_batch_size=20,
+            embedding_pool_batch_size=40,
             opt_batch_size=40,
         ),
         output_dir=output_dir,
