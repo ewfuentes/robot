@@ -231,8 +231,6 @@ def evaluate_model_on_paths(
             with open(save_path / "other_info.json", "w") as f:
                 f.write(json.dumps({
                     "seed": generator_seed,
-                    "particle_history_hash": 
-
                 }, indent=2))
         average_final_error_meters = torch.tensor(all_final_particle_error_meters).mean().item()
         with open(output_path / "summary_statistics.json", 'w') as f:
