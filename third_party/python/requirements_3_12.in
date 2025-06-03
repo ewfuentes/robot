@@ -28,6 +28,7 @@ supervision==0.25.1
 marimo==0.11.9
 altair==5.5.0
 tensorboard==2.19.0
+protobuf==5.29.0rc2
 torch-kdtree @ git+https://github.com/thomgrand/torch_kdtree.git@86961f7def35a2d818916e343807f1867d0622c0
 sam-2 @ git+https://github.com/IDEA-Research/Grounded-SAM-2.git@dd4c5141b75e4838dd486c64f773c43b4db3a07b
 sdprlayers @ git+https://github.com/ewfuentes/sdprlayer.git@0d0663f96c106db549fa9bc5653af71620bc2861
