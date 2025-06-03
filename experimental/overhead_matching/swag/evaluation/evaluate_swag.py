@@ -16,6 +16,7 @@ def evaluate_prediction_top_k(
     dataloader: torch.utils.data.DataLoader,
     model: torch.nn.Module,
     device: torch.device | str = "cuda:0",
+    verbose: bool = False
 ) -> pd.DataFrame:
     model.eval()
     satellite_embedding_database = satellite_embedding_database.to(device)
@@ -28,7 +29,7 @@ def evaluate_prediction_top_k(
     )
 
     with torch.no_grad():
-        for batch in dataloader:
+        for batch in tqdm.tqdm(dataloader, disable=not verbose):
             batch_embedding = model(batch.panorama.to(device))
             patch_cosine_distance = sed.calculate_cos_similarity_against_database(
                 batch_embedding, satellite_embedding_database)  # B x sat_db_size

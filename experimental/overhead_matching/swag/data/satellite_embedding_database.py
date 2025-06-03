@@ -1,5 +1,6 @@
 import common.torch.load_torch_deps
 import torch
+import tqdm
 
 import experimental.overhead_matching.swag.data.vigor_dataset as vig_dataset
 
@@ -7,6 +8,7 @@ def build_embeddings_from_model(model: torch.nn.Module,
                                 dataloader: torch.utils.data.DataLoader,
                                 model_input_from_dataloader: callable,
                                 device: torch.device = "cuda:0",
+                                verbose: bool = False,
 )-> torch.Tensor:
     """Embeddings will match the order of the dataloader"""
 
@@ -14,7 +16,7 @@ def build_embeddings_from_model(model: torch.nn.Module,
     model.eval()
     inf_results = []
     with torch.no_grad():
-        for data in dataloader:
+        for data in tqdm.tqdm(dataloader, disable=not verbose):
             embeddings = model(model_input_from_dataloader(data).to(device))
             inf_results.append(embeddings)
     embeddings = torch.concatenate(inf_results, dim=0)

@@ -131,7 +131,7 @@ class VigorDatasetTest(unittest.TestCase):
         # Verification
         # Check that the panorama has neighbors and the associated satellite patch has at least 1 child panorama
         self.assertGreater(len(item.panorama_metadata["neighbor_panorama_idxs"]), 0)
-        self.assertGreater(len(item.satellite_metadata["panorama_idxs"]), 0)
+        self.assertGreater(len(item.satellite_metadata["positive_panorama_idxs"]), 0)
 
         # Check that the location embedded in the images matches the metadata
         pano_lat_sign = -1 if item.panorama[0, 0, 0] > 0 else 1

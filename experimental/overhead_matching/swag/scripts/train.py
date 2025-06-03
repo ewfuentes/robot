@@ -47,15 +47,19 @@ def create_pairs(panorama_metadata, satellite_metadata) -> Pairs:
     # TODO consider creating triplets where a satellite patch is the anchor
     out = Pairs(positive_pairs=[], negative_pairs=[], semipositive_pairs=[])
     for batch_pano_idx in range(len(panorama_metadata)):
-        anchor_sat_idx = panorama_metadata[batch_pano_idx]["satellite_idx"]
-        out.positive_pairs.append((batch_pano_idx, batch_pano_idx))
-        # For now, we assume that the panorama and satellite metadata are paired since
-        # the satellite metadata does not currently contain the satellite index
-        for batch_sat_idx in range(len(panorama_metadata)):
-            neg_sat_idx = panorama_metadata[batch_sat_idx]["satellite_idx"]
-            if anchor_sat_idx == neg_sat_idx:
-                continue
-            out.negative_pairs.append((batch_pano_idx, batch_sat_idx))
+        # batch_pano_idx is the index of the panorama in the batch
+        # pano_idx is the index of the panorama in the dataset
+        pano_idx = panorama_metadata[batch_pano_idx]['index']
+
+        for batch_sat_idx in range(len(satellite_metadata)):
+            # batch_sat_idx is the index of the satellite image in the batch
+            curr_sat_metadata = satellite_metadata[batch_sat_idx]
+            if pano_idx in curr_sat_metadata["positive_panorama_idxs"]:
+                out.positive_pairs.append((batch_pano_idx, batch_sat_idx))
+            elif pano_idx in curr_sat_metadata["semipositive_panorama_idxs"]:
+                out.semipositive_pairs.append((batch_pano_idx, batch_sat_idx))
+            else:
+                out.negative_pairs.append((batch_pano_idx, batch_sat_idx))
     return out
 
 
@@ -103,33 +107,63 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
             pos_cols = [x[1] for x in pairs.positive_pairs]
             pos_similarities = similarity[pos_rows, pos_cols]
 
+            semipos_rows = [x[0] for x in pairs.semipositive_pairs]
+            semipos_cols = [x[1] for x in pairs.semipositive_pairs]
+            semipos_similarities = similarity[semipos_rows, semipos_cols]
+
             neg_rows = [x[0] for x in pairs.negative_pairs]
             neg_cols = [x[1] for x in pairs.negative_pairs]
             neg_similarities = similarity[neg_rows, neg_cols]
 
             POS_WEIGHT = 5
             AVG_POS_SIMILARITY = 0.0
-            pos_loss = torch.log(1 + torch.exp(-POS_WEIGHT * (pos_similarities - AVG_POS_SIMILARITY)))
-            pos_loss = torch.mean(pos_loss) / POS_WEIGHT
+            if len(pairs.positive_pairs):
+                pos_loss = torch.log(
+                        1 + torch.exp(-POS_WEIGHT * (pos_similarities - AVG_POS_SIMILARITY)))
+                pos_loss = torch.mean(pos_loss) / POS_WEIGHT
+            else:
+                pos_loss = torch.tensor(0)
+
+            SEMIPOS_WEIGHT = 6
+            AVG_SEMIPOS_SIMILARITY = 0.3
+            if len(pairs.semipositive_pairs):
+                semipos_loss = torch.log(
+                        1 + torch.exp(-SEMIPOS_WEIGHT * (
+                            semipos_similarities - AVG_SEMIPOS_SIMILARITY)))
+                semipos_loss = torch.mean(semipos_loss) / SEMIPOS_WEIGHT
+            else:
+                semipos_loss = torch.tensor(0)
 
             NEG_WEIGHT = 20
             AVG_NEG_SIMILARITY = 0.7
-            neg_loss = torch.log(1 + torch.exp(NEG_WEIGHT * (neg_similarities - AVG_NEG_SIMILARITY)))
-            neg_loss = torch.mean(neg_loss) / NEG_WEIGHT
+            if len(pairs.negative_pairs):
+                neg_loss = torch.log(
+                        1 + torch.exp(NEG_WEIGHT * (neg_similarities - AVG_NEG_SIMILARITY)))
+                neg_loss = torch.mean(neg_loss) / NEG_WEIGHT
+            else:
+                neg_loss = torch.tensor(0)
 
-            loss = pos_loss + neg_loss
+            loss = pos_loss + neg_loss + semipos_loss
             loss.backward()
-            print(f"{epoch_idx=} {batch_idx=} {pos_loss.item()=} {neg_loss.item()=} {loss.item()=}")
+            print(f"{epoch_idx=:4d} {batch_idx=:4d} num_pos_pairs: {len(pairs.positive_pairs):3d}" +
+                  f" num_semipos_pairs: {len(pairs.semipositive_pairs):3d}" +
+                  f"  num_neg_pairs: {len(pairs.negative_pairs):3d} {pos_loss.item()=:0.6f}" +
+                  f" {semipos_loss.item()=:0.6f} {neg_loss.item()=:0.6f} {loss.item()=:0.6f}", end='\r')
+            if batch_idx % 50 == 0:
+                print()
             opt.step()
+        print()
 
-        if epoch_idx % 20 == 0:
+        if epoch_idx % 10 == 0:
             config.output_dir.mkdir(parents=True, exist_ok=True)
             panorama_model_path = config.output_dir / f"{epoch_idx:04d}_panorama"
             satellite_model_path = config.output_dir / f"{epoch_idx:04d}_satellite"
 
             batch = next(iter(dataloader))
-            save_model(panorama_model, panorama_model_path, (batch.panorama[:opt_config.opt_batch_size].cuda(),))
-            save_model(satellite_model, satellite_model_path, (batch.satellite[:opt_config.opt_batch_size].cuda(),))
+            save_model(panorama_model, panorama_model_path,
+                       (batch.panorama[:opt_config.opt_batch_size].cuda(),))
+            save_model(satellite_model, satellite_model_path,
+                       (batch.satellite[:opt_config.opt_batch_size].cuda(),))
 
 
 def main(dataset_path: Path, output_dir: Path):
@@ -139,6 +173,7 @@ def main(dataset_path: Path, output_dir: Path):
         panorama_neighbor_radius=PANORAMA_NEIGHBOR_RADIUS_DEG,
         satellite_patch_size=(320, 320),
         panorama_size=(320, 640),
+        sample_mode=vigor_dataset.SampleMode.POS_SEMIPOS,
     )
     dataset = vigor_dataset.VigorDataset(dataset_path, dataset_config)
 
@@ -160,7 +195,7 @@ def main(dataset_path: Path, output_dir: Path):
         opt_config=OptimizationConfig(
             num_epochs=1000,
             num_embedding_pool_batches=1,
-            embedding_pool_batch_size=20,
+            embedding_pool_batch_size=40,
             opt_batch_size=40,
         ),
         output_dir=output_dir,
