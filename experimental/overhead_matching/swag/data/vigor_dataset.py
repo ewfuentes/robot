@@ -406,7 +406,7 @@ class VigorDataset(torch.utils.data.Dataset):
                 path_segments.append([last_pos, get_long_lat_from_idx(pano_idx)])
                 last_pos = path_segments[-1][-1]
             path_collection = LineCollection(path_segments, colors=[(
-                0.25, 0.25, 0.9) for x in range(len(neighbor_segments))])
+                0.25, 0.25, 0.9) for x in range(len(neighbor_segments))])R
             ax.add_collection(path_collection)
 
         self._satellite_metadata.plot(x="lon", y="lat", ax=ax, kind="scatter", color="r")
@@ -439,3 +439,52 @@ def get_dataloader(dataset: VigorDataset, **kwargs):
         )
 
     return torch.utils.data.DataLoader(dataset, collate_fn=_collate_fn, **kwargs)
+
+
+class HardNegativeMiner:
+    '''
+    This class consumes the computed embeddings and tracks the most difficult examples. The
+    expected use is:
+
+    dataset = VigorDataset(...)
+    miner = HardNegativeMiner(embedding_dim, dataset, batch_size=32)
+
+    dataloader = get_dataloader(dataset, batch_sampler=miner)
+
+    for epoch_idx in range(num_epochs):
+        if epoch_idx > hard_negative_start_idx:
+            miner.set_sample_mode(HARD_NEGATIVE)
+
+        for batch in dataloader:
+            sat_embeddings = sat_model(batch.satellite)
+            pano_embeddings = sat_model(batch.panorama)
+            miner.consume(batch, pano_embeddings, sat_embeddings)
+    '''
+
+    def __init__(self,
+            embedding_dimension: int
+            num_panoramas: int | None = None,
+            num_satellite_patches: int | None = None,
+            dataset: VigorDataset | None = None,
+            device='cuda'):
+
+        if dataset is not None:
+            num_panoramas = len(dataset._panorama_metadata)
+            num_satellite_patches = len(dataset._satellite_metadata)
+
+        assert num_panoramas is not None and num_satellite_patches is not None
+
+        self._panorama_embeddings = torch.full(
+                (num_panoramas, embedding_dimension), float('nan'), device=device)
+        self._satellite_embeddings = torch.full(
+                (num_satellite_patches, embedding_dimension), float('nan'), device=device)
+        ...
+
+    def __iter__(self):
+        ...
+
+    def consume(self, batch, panorama_embeddings, satellite_embeddings):
+        ...
+
+    def set_sample_mode(self):
+        ...
