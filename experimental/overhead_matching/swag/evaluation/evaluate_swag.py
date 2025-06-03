@@ -1,11 +1,13 @@
 import common.torch.load_torch_deps
 import torch
+import json
 import tqdm
 from pathlib import Path
 import pandas as pd
 import experimental.overhead_matching.swag.data.satellite_embedding_database as sed
 import experimental.overhead_matching.swag.data.vigor_dataset as vd
 import experimental.overhead_matching.swag.evaluation.swag_algorithm as sa
+from common.math.haversine import find_d_on_unit_circle
 from experimental.overhead_matching.swag.evaluation.wag_config_pb2 import WagConfig
 from torch_kdtree import build_kd_tree
 from torch_kdtree.nn_distance import TorchKDTree
@@ -48,6 +50,33 @@ def evaluate_prediction_top_k(
     df = df.set_index("panorama_index", drop=True)
     return df
 
+def get_distance_error_meters(
+    vigor_dataset: vd.VigorDataset,
+    panorama_index: int | list[int], 
+    particles: torch.Tensor,
+)->float | list[float]:
+    """
+    Calculate the distance in meters between the mean particle position (in lat-lon deg)
+    and the panorama at index panorama_index
+
+    If panorama_index is a list of length N, then particles should be of shape (N, num_particles, num_state_dim)
+
+    """
+    if isinstance(panorama_index, int):
+        panorama_index = [panorama_index]
+        assert particles.ndim == 2
+        particles = particles.unsqueeze(0)
+    
+    true_latlong = vigor_dataset.get_panorama_positions(panorama_index)
+    particle_latlong_estimate = particles.mean(dim=1)
+    out = []
+    for i in range(len(panorama_index)):
+        distance_error_meters = vd.EARTH_RADIUS_M * find_d_on_unit_circle(true_latlong[i], particle_latlong_estimate[i])
+        out.append(distance_error_meters)
+
+    if len(out) == 1:
+        out = out[0]
+    return out
 
 def get_motion_deltas_from_path(vigor_dataset: vd.VigorDataset, path: list[int]):
     latlong = vigor_dataset.get_panorama_positions(path)
@@ -116,6 +145,29 @@ def run_inference_on_path(
     particle_history.append(particle_state.cpu().clone())
     return particle_history
 
+def construct_inputs_and_evalulate_path(
+    sat_patch_kdtree,
+    vigor_dataset: vd.VigorDataset,
+    path: list[int],
+    path_similarity_values: torch.Tensor,
+    generator_seed: int,
+    device: str,
+    wag_config: WagConfig,
+):
+    generator = torch.Generator(device=device).manual_seed(generator_seed)
+    motion_deltas = get_motion_deltas_from_path(vigor_dataset, path).to(device)
+    gt_initial_position_lat_lon = vigor_dataset._panorama_metadata.loc[path[0]]
+    gt_initial_position_lat_lon = torch.tensor(
+        (gt_initial_position_lat_lon['lat'], gt_initial_position_lat_lon['lon']), device=device)
+    initial_particle_state = sa.initialize_wag_particles(
+        gt_initial_position_lat_lon, wag_config, generator).to(device)
+
+    return run_inference_on_path(sat_patch_kdtree,
+                                 initial_particle_state,
+                                 motion_deltas,
+                                 path_similarity_values,
+                                 wag_config,
+                                 generator)
 
 def evaluate_model_on_paths(
     vigor_dataset: vd.VigorDataset,
@@ -127,8 +179,7 @@ def evaluate_model_on_paths(
     output_path: Path,
     device: torch.device = "cuda:0",
 ) -> None:
-
-    generator = torch.Generator(device=device).manual_seed(seed)
+    all_final_particle_error_meters = []
     sat_data_view = vigor_dataset.get_sat_patch_view()
     sat_data_view_loader = vd.get_dataloader(sat_data_view, batch_size=64, num_workers=16)
     pano_data_view = vigor_dataset.get_pano_view()
@@ -157,24 +208,36 @@ def evaluate_model_on_paths(
         print("starting iter over paths")
         for i, path in enumerate(tqdm.tqdm(paths)):
             path_similarity_values = all_similarity[path]
-            motion_deltas = get_motion_deltas_from_path(vigor_dataset, path).to(device)
-            gt_initial_position_lat_lon = vigor_dataset._panorama_metadata.loc[path[0]]
-            gt_initial_position_lat_lon = torch.tensor(
-                (gt_initial_position_lat_lon['lat'], gt_initial_position_lat_lon['lon']), device=device)
-            generator.manual_seed(seed * i)
-            initial_particle_state = sa.initialize_wag_particles(
-                gt_initial_position_lat_lon, wag_config, generator).to(device)
-            particle_history = run_inference_on_path(sat_patch_kdtree,
-                                                     initial_particle_state,
-                                                     motion_deltas,
-                                                     path_similarity_values,
-                                                     wag_config,
-                                                     generator)
-            # save particle history
+            generator_seed = seed * i
+
+            particle_history = construct_inputs_and_evalulate_path(
+                sat_patch_kdtree=sat_patch_kdtree,
+                vigor_dataset=vigor_dataset,
+                path=path,
+                path_similarity_values=path_similarity_values,
+                generator_seed=generator_seed,
+                device=device,
+                wag_config=wag_config
+            )
+
             save_path = output_path / f"{i:07d}"
             save_path.mkdir(parents=True, exist_ok=True)
             particle_history = torch.stack(particle_history)
-            particle_history = particle_history[:, ::10].contiguous()  # downsample particles
-            torch.save(particle_history, save_path / "particle_history.pt")
+            error_meters_at_each_step = torch.tensor(get_distance_error_meters(vigor_dataset, path, particle_history))
+            all_final_particle_error_meters.append(error_meters_at_each_step[-1])
+            torch.save(error_meters_at_each_step, "error.pt")
             torch.save(path, save_path / "path.pt")
             torch.save(path_similarity_values, save_path / "similarity.pt")
+            with open(save_path / "other_info.json", "w") as f:
+                f.write(json.dumps({
+                    "seed": generator_seed,
+                    "particle_history_hash": 
+
+                }, indent=2))
+        average_final_error_meters = torch.tensor(all_final_particle_error_meters).mean().item()
+        with open(output_path / "summary_statistics.json", 'w') as f:
+            f.write(json.dumps({
+                "average_final_error": average_final_error_meters
+            }, indent=2))
+
+        print(f"Average final error meters is {average_final_error_meters}")
