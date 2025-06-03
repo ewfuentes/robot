@@ -225,7 +225,7 @@ def evaluate_model_on_paths(
             particle_history = torch.stack(particle_history)
             error_meters_at_each_step = torch.tensor(get_distance_error_meters(vigor_dataset, path, particle_history))
             all_final_particle_error_meters.append(error_meters_at_each_step[-1])
-            torch.save(error_meters_at_each_step, "error.pt")
+            torch.save(error_meters_at_each_step, save_path / "error.pt")
             torch.save(path, save_path / "path.pt")
             torch.save(path_similarity_values, save_path / "similarity.pt")
             with open(save_path / "other_info.json", "w") as f:
