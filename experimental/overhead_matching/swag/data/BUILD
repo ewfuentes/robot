@@ -40,6 +40,7 @@ py_library(
   deps = [
     requirement("torch"),
     requirement("torchvision"),
+    requirement("tqdm"),
     "//common/torch:load_torch_deps",
   ]
 )
