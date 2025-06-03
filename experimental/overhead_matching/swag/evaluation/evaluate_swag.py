@@ -29,25 +29,20 @@ def evaluate_prediction_top_k(
     )
 
     with torch.no_grad():
-        pano_embeddings = []
-        pano_indices = []
-        correct_overhead_patch_indices = []
         for batch in tqdm.tqdm(dataloader, disable=not verbose):
-            pano_embeddings.append(model(batch.panorama.to(device)))
-            pano_indices.extend([x["index"] for x in batch.panorama_metadata])
-            correct_overhead_patch_indices.extend([x["satellite_idx"] for x in batch.panorama_metadata])
+            batch_embedding = model(batch.panorama.to(device))
+            patch_cosine_distance = sed.calculate_cos_similarity_against_database(
+                batch_embedding, satellite_embedding_database)  # B x sat_db_size
 
-        pano_embeddings = torch.cat(pano_embeddings)
+            panorama_indices = [x['index'] for x in batch.panorama_metadata]
+            correct_overhead_patch_indices = [x['satellite_idx'] for x in batch.panorama_metadata]
 
-        patch_cosine_distance = sed.calculate_cos_similarity_against_database(
-            pano_embeddings, satellite_embedding_database)  # B x sat_db_size
-
-        rankings = torch.argsort(patch_cosine_distance, dim=1, descending=True)
-        for i in range(len(correct_overhead_patch_indices)):
-            out_df['k_value'].append(torch.argwhere(
-                rankings[i] == correct_overhead_patch_indices[i]).item())
-        out_df['panorama_index'].extend(pano_indices)
-        out_df['patch_cosine_similarity'].extend(patch_cosine_distance.tolist())
+            rankings = torch.argsort(patch_cosine_distance, dim=1, descending=True)
+            for i in range(len(batch.panorama_metadata)):
+                out_df['k_value'].append(torch.argwhere(
+                    rankings[i] == correct_overhead_patch_indices[i]).item())
+            out_df['panorama_index'].extend(panorama_indices)
+            out_df['patch_cosine_similarity'].extend(patch_cosine_distance.tolist())
 
     df = pd.DataFrame.from_dict(out_df)
     df = df.set_index("panorama_index", drop=True)
