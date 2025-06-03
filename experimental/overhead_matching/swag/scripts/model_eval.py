@@ -13,10 +13,6 @@ def _():
     import torch
     import itertools
 
-    import google.protobuf
-    print(google.protobuf.__version__)
-    print(google.protobuf.__file__)
-
     from experimental.overhead_matching.swag.data import vigor_dataset, satellite_embedding_database
     from experimental.overhead_matching.swag.evaluation import evaluate_swag
     import experimental.overhead_matching.swag.model.patch_embedding
@@ -28,7 +24,6 @@ def _():
         common,
         evaluate_swag,
         experimental,
-        google,
         itertools,
         load_model,
         mo,
