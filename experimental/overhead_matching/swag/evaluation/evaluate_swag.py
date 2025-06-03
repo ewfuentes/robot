@@ -16,6 +16,7 @@ def evaluate_prediction_top_k(
     dataloader: torch.utils.data.DataLoader,
     model: torch.nn.Module,
     device: torch.device | str = "cuda:0",
+    verbose: bool = False
 ) -> pd.DataFrame:
     model.eval()
     satellite_embedding_database = satellite_embedding_database.to(device)
@@ -31,7 +32,7 @@ def evaluate_prediction_top_k(
         pano_embeddings = []
         pano_indices = []
         correct_overhead_patch_indices = []
-        for batch in tqdm.tqdm(dataloader):
+        for batch in tqdm.tqdm(dataloader, disable=not verbose):
             pano_embeddings.append(model(batch.panorama.to(device)))
             pano_indices.extend([x["index"] for x in batch.panorama_metadata])
             correct_overhead_patch_indices.extend([x["satellite_idx"] for x in batch.panorama_metadata])

@@ -58,9 +58,9 @@ def _(
 
         sat_dataset = dataset.get_sat_patch_view()
         sat_loader = vigor_dataset.get_dataloader(sat_dataset, batch_size=128)
-        sat_db = satellite_embedding_database.build_satellite_db(sat_model, sat_loader)
+        sat_db = satellite_embedding_database.build_satellite_db(sat_model, sat_loader, verbose=True)
 
-        return evaluate_swag.evaluate_prediction_top_k(sat_db, dataset_loader, pano_model)
+        return evaluate_swag.evaluate_prediction_top_k(sat_db, dataset_loader, pano_model, verbose=True)
     return (get_top_k_results,)
 
 
