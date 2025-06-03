@@ -5,8 +5,8 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 from experimental.overhead_matching.swag.data import vigor_dataset as vd
-from experimental.overhead_matching.swag.evaluation.evaluate_swag import evaluate_prediction_top_k
-
+from experimental.overhead_matching.swag.evaluation.evaluate_swag import evaluate_prediction_top_k, get_distance_error_between_pano_and_particles_meters
+from common.math.haversine import find_d_on_unit_circle
 import torch.nn as nn
 import experimental.overhead_matching.swag.data.satellite_embedding_database as sed
 
@@ -131,61 +131,44 @@ class EvaluateSwagTest(unittest.TestCase):
         # Check k_values - the position of the correct patch in rankings
         self.assertListEqual(result_df['k_value'].tolist(), expected_k_values)
 
-def test_get_distance_error_meters(self):
-    # Setup
-    config = vd.VigorDatasetConfig(panorama_neighbor_radius=0.2)
-    dataset = vd.VigorDataset(Path("external/vigor_snippet/vigor_snippet"), config)
-    
-    # 1. Test single panorama index case
-    panorama_index = 0
-    
-    particle_mean = torch.tensor([37.7749, -122.4194])  # San Francisco coordinates
-    particles = torch.zeros((10, 2)) + particle_mean.unsqueeze(0)
-    
-    # Mock the dataset's get_panorama_positions method
-    true_latlong = torch.tensor([37.7739, -122.4312])  # Another San Francisco location
-    original_get_positions = dataset.get_panorama_positions
-    
-    try:
-        # Create a mock method for a single panorama
-        def mock_get_panorama_positions(indices):
-            if len(indices) == 1:
-                return true_latlong.unsqueeze(0)
-            else:
-                # For multiple indices
-                return torch.stack([
-                    torch.tensor([37.7739, -122.4312]),  # San Francisco
-                    torch.tensor([34.0522, -118.2437])   # Los Angeles
-                ])
+    def test_get_distance_error_meters(self):
+        # Setup
+        config = vd.VigorDatasetConfig(panorama_neighbor_radius=0.2)
+        dataset = vd.VigorDataset(Path("external/vigor_snippet/vigor_snippet"), config)
         
-        dataset.get_panorama_positions = mock_get_panorama_positions
         
-        # Test single panorama case
-        expected_distance = vd.EARTH_RADIUS_M * find_d_on_unit_circle(true_latlong, particle_mean)
-        actual_distance = get_distance_error_meters(dataset, panorama_index, particles)
-        self.assertAlmostEqual(actual_distance, expected_distance, places=3)
-        
-        # 2. Test multiple panorama indices case
-        panorama_indices = [0, 1]
-        particle_means = torch.tensor([
-            [37.7749, -122.4194],  # SF estimate
-            [34.0522, -118.2437]   # LA estimate (exact match to demonstrate issue)
+        true_latlong_multiple = torch.stack([
+            torch.tensor([37.7739, -122.4312]),  # San Francisco
+            torch.tensor([34.0522, -118.2437])   # Los Angeles
         ])
-        multi_particles = torch.zeros((2, 10, 2))
-        for i in range(2):
-            multi_particles[i] = particle_means[i].unsqueeze(0) + torch.randn(10, 2) * 0.0001
+        original_get_positions = dataset.get_panorama_positions
+        
+        try:
+            # Create a mock method for a single panorama
+            def mock_get_panorama_positions(indices):
+                return true_latlong_multiple
             
-        # ISSUE: The current implementation will calculate incorrect distances
-        # when multiple panorama indices are provided because it doesn't index
-        # true_latlong and particle_latlong_estimate by i in the loop.
-        distances = get_distance_error_meters(dataset, panorama_indices, multi_particles)
-        
-        # This test will pass with the current implementation, but the result is incorrect
-        self.assertEqual(len(distances), 2)
-        
-    finally:
-        # Restore the original method
-        dataset.get_panorama_positions = original_get_positions
+            dataset.get_panorama_positions = mock_get_panorama_positions
+            
+            
+            # 2. Test multiple panorama indices case
+            panorama_indices = [0, 1]
+            particle_means = torch.tensor([
+                [37.7749, -122.4194],  # SF estimate
+                [34.0522, -118.2437]   # LA estimate
+            ])
+            multi_particles = particle_means.unsqueeze(1) + torch.zeros((2, 100, 2))
+            particle_means = multi_particles.mean(dim=1) # to avoid floating point errors (mean of particles does not exactly match, leading to differences)
+            expected_distances = torch.tensor(
+                [vd.EARTH_RADIUS_M * find_d_on_unit_circle(particle_means[0], true_latlong_multiple[0]),
+                 vd.EARTH_RADIUS_M * find_d_on_unit_circle(particle_means[1], true_latlong_multiple[1])]
+            )
+            distances = get_distance_error_between_pano_and_particles_meters(dataset, panorama_indices, multi_particles)
+            self.assertTrue(torch.allclose(distances, expected_distances))
+            
+        finally:
+            # Restore the original method
+            dataset.get_panorama_positions = original_get_positions
 
 
 if __name__ == "__main__":

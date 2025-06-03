@@ -50,11 +50,11 @@ def evaluate_prediction_top_k(
     df = df.set_index("panorama_index", drop=True)
     return df
 
-def get_distance_error_meters(
+def get_distance_error_between_pano_and_particles_meters(
     vigor_dataset: vd.VigorDataset,
     panorama_index: int | list[int], 
     particles: torch.Tensor,
-)->float | list[float]:
+)->torch.Tensor:
     """
     Calculate the distance in meters between the mean particle position (in lat-lon deg)
     and the panorama at index panorama_index
@@ -74,6 +74,7 @@ def get_distance_error_meters(
         distance_error_meters = vd.EARTH_RADIUS_M * find_d_on_unit_circle(true_latlong[i], particle_latlong_estimate[i])
         out.append(distance_error_meters)
 
+    out = torch.tensor(out)
     if len(out) == 1:
         out = out[0]
     return out
