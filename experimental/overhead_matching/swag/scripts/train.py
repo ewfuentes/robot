@@ -1,8 +1,9 @@
 import argparse
-
+import json
 import common.torch.load_torch_deps
 from common.torch.load_and_save_models import save_model
 import torch
+from torch.utils.tensorboard import SummaryWriter
 import torch.nn.functional as F
 import itertools
 from pathlib import Path
@@ -41,6 +42,45 @@ class Pairs:
     negative_pairs: list[tuple[int, int]]
     semipositive_pairs: list[tuple[int, int]]
 
+def dataclass_to_dict(input_object)->dict:
+    """Convert a dataclass instance (and any nested dataclasses) to a dictionary.
+    
+    Args:
+        input_object: A dataclass instance or a structure containing dataclasses
+        
+    Returns:
+        A dictionary representation of the dataclass with nested dataclasses also converted
+    """
+    from dataclasses import is_dataclass, fields
+    from pathlib import Path
+    
+    # Base case: None
+    if input_object is None:
+        return None
+        
+    # Recursive case: dataclass instance
+    if is_dataclass(input_object):
+        result = {}
+        for field in fields(input_object):
+            field_value = getattr(input_object, field.name)
+            result[field.name] = dataclass_to_dict(field_value)
+        return result
+        
+    # Recursive case: list/tuple containing possibly nested dataclasses
+    if isinstance(input_object, (list, tuple)):
+        return type(input_object)(dataclass_to_dict(item) for item in input_object)
+        
+    # Recursive case: dictionary containing possibly nested dataclasses
+    if isinstance(input_object, dict):
+        return {key: dataclass_to_dict(value) for key, value in input_object.items()}
+        
+    # Special case: Path objects
+    if isinstance(input_object, Path):
+        return str(input_object)
+        
+    # Base case: return the object itself (int, float, str, etc.)
+    return input_object
+
 
 def create_pairs(panorama_metadata, satellite_metadata) -> Pairs:
     # Generate an exhaustive set of triplets where the anchor is a panorama
@@ -64,6 +104,18 @@ def create_pairs(panorama_metadata, satellite_metadata) -> Pairs:
 
 
 def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
+    config.output_dir.mkdir(parents=True, exist_ok=True)
+    # save config:
+    config_dict = dataclass_to_dict(config)
+    with open(config.output_dir / "config.json", 'w') as f:
+        json.dump(config_dict, f)
+    writer = SummaryWriter(
+        log_dir=config.output_dir / "logs"
+    )
+    # write hyperparameters
+    writer.add_hparams(
+        config_dict['opt_config'], {}
+    )
     panorama_model = panorama_model.cuda()
     satellite_model = satellite_model.cuda()
     panorama_model.train()
@@ -87,6 +139,8 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
     )
 
     torch.set_printoptions(linewidth=200)
+
+    total_batches = 0
 
     for epoch_idx in tqdm.tqdm(range(config.opt_config.num_epochs),  desc="Epoch"):
         for batch_idx, batch in enumerate(dataloader):
@@ -145,6 +199,13 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
 
             loss = pos_loss + neg_loss + semipos_loss
             loss.backward()
+            writer.add_scalar("train/num_positive_pairs", len(pairs.positive_pairs), global_step=total_batches)
+            writer.add_scalar("train/num_sempipos_pairs", len(pairs.semipositive_pairs), global_step=total_batches)
+            writer.add_scalar("train/num_neg_pairs", len(pairs.negative_pairs), global_step=total_batches)
+            writer.add_scalar("train/loss_pos", pos_loss.item(), global_step=total_batches)
+            writer.add_scalar("train/loss_semipos", semipos_loss.item(), global_step=total_batches)
+            writer.add_scalar("train/loss_neg", neg_loss.item(), global_step=total_batches)
+            writer.add_scalar("train/loss", loss.item(), global_step=total_batches)
             print(f"{epoch_idx=:4d} {batch_idx=:4d} num_pos_pairs: {len(pairs.positive_pairs):3d}" +
                   f" num_semipos_pairs: {len(pairs.semipositive_pairs):3d}" +
                   f"  num_neg_pairs: {len(pairs.negative_pairs):3d} {pos_loss.item()=:0.6f}" +
@@ -152,6 +213,8 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
             if batch_idx % 50 == 0:
                 print()
             opt.step()
+
+            total_batches += 1
         print()
 
         if epoch_idx % 10 == 0:

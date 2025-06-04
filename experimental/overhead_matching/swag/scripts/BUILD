@@ -6,6 +6,7 @@ py_binary(
   srcs=["train.py"],
   deps=[
     requirement("torch"),
+    requirement("tensorboard"),
     requirement("tqdm"),
     requirement("IPython"),
     "//common/torch:load_torch_deps",

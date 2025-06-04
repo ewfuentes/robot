@@ -10,6 +10,7 @@ tqdm==4.67.1
 opencv-python==4.7.0.72
 Wand==0.6.11
 torch==2.7.0+cu128
+tensorboard==2.19.0
 setuptools==80.3.1
 ipdb==0.13.13
 ipympl==0.9.3
