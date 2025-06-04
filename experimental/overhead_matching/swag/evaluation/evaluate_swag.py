@@ -224,7 +224,7 @@ def evaluate_model_on_paths(
             save_path = output_path / f"{i:07d}"
             save_path.mkdir(parents=True, exist_ok=True)
             particle_history = torch.stack(particle_history)
-            error_meters_at_each_step = torch.tensor(get_distance_error_meters(vigor_dataset, path, particle_history))
+            error_meters_at_each_step = get_distance_error_between_pano_and_particles_meters(vigor_dataset, path, particle_history)
             all_final_particle_error_meters.append(error_meters_at_each_step[-1])
             torch.save(error_meters_at_each_step, save_path / "error.pt")
             torch.save(path, save_path / "path.pt")
