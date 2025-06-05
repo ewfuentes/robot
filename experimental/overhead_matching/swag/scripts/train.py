@@ -165,6 +165,7 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
 
             loss = pos_loss + neg_loss + semipos_loss
             loss.backward()
+            writer.add_scaler("trail/learning_rate", lr_scheduler.get_last_lr()[0], global_step=total_batches)
             writer.add_scalar("train/num_positive_pairs", len(pairs.positive_pairs), global_step=total_batches)
             writer.add_scalar("train/num_sempipos_pairs", len(pairs.semipositive_pairs), global_step=total_batches)
             writer.add_scalar("train/num_neg_pairs", len(pairs.negative_pairs), global_step=total_batches)
