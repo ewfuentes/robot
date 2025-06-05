@@ -490,6 +490,7 @@ class HardNegativeMiner:
                  panorama_info_from_pano_idx: dict[int, PanoramaIndexInfo] | None = None,
                  dataset: VigorDataset | None = None,
                  hard_negative_fraction: float = 0.5,
+                 hard_negative_pool_size: int = 100,
                  generator: torch.Generator | None = None,
                  device='cuda'):
 
@@ -519,6 +520,7 @@ class HardNegativeMiner:
         self._sample_mode = self.SampleMode.RANDOM
 
         self._hard_negative_fraction = hard_negative_fraction
+        self._hard_negative_pool_size = hard_negative_pool_size
         self._batch_size = batch_size
 
     def __iter__(self):
@@ -534,7 +536,7 @@ class HardNegativeMiner:
         # We then assign satellite patch to each panorama. The satellite image will either be
         # a positive/semipositive satellite patch or a mined hard negative example
         permuted_panoramas = torch.randperm(self._panorama_embeddings.shape[0], generator=self._generator).tolist()
-        num_hard_negatives = min(self._satellite_embeddings.shape[0], 100)
+        num_hard_negatives = min(self._satellite_embeddings.shape[0], self._hard_negative_pool_size)
 
         if self._sample_mode == HardNegativeMiner.SampleMode.HARD_NEGATIVE:
             num_hard_negatives_per_batch = min(

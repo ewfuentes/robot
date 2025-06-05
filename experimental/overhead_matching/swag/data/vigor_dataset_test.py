@@ -334,6 +334,7 @@ class HardNegativeMinerTest(unittest.TestCase):
             embedding_dimension=EMBEDDING_DIMENSION,
             num_panoramas=NUM_PANORAMAS,
             num_satellite_patches=NUM_SATELLITE,
+            hard_negative_pool_size=1,
             panorama_info_from_pano_idx={
                 0: vigor_dataset.PanoramaIndexInfo(
                     panorama_idx=0, positive_satellite_idxs=[0],
