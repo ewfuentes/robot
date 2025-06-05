@@ -11,6 +11,7 @@ from typing import NamedTuple
 from common.math.haversine import find_d_on_unit_circle
 from enum import StrEnum, auto
 
+EARTH_RADIUS_M = 6378137.0
 
 class SampleMode(StrEnum):
     # In nearest mode, when indexing into the dataset, return the nearest satellite patch
@@ -309,7 +310,6 @@ class VigorDataset(torch.utils.data.Dataset):
             # update current location
             last_index = last_neighbors[winning_neighbor]
             last_direction = neighbor_directions[winning_neighbor]
-            EARTH_RADIUS_M = 6378137.0
             distance_traveled_m += EARTH_RADIUS_M * \
                 find_d_on_unit_circle(last_coord.numpy(), neighbor_coords[winning_neighbor].numpy())
 
