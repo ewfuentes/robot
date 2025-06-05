@@ -9,6 +9,7 @@ py_binary(
     requirement("tensorboard"),
     requirement("tqdm"),
     requirement("IPython"),
+    "//common/python:serialization",
     "//common/torch:load_torch_deps",
     "//common/torch:load_and_save_models",
     "//experimental/overhead_matching/swag/data:vigor_dataset",

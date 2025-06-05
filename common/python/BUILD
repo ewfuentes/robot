@@ -94,3 +94,16 @@ py_test(
   name = "hermeticity_test",
   srcs = ["hermeticity_test.py"],
 )
+
+py_library(
+  name = "serialization",
+  srcs = ["serialization.py"],
+  visibility = ["//visibility:public"],
+)
+py_test(
+    name = "serialization_test",
+    srcs = ["serialization_test.py"],
+    deps = [
+        ":serialization"
+    ]
+)

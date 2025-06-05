@@ -7,6 +7,7 @@ from torch.utils.tensorboard import SummaryWriter
 import torch.nn.functional as F
 import itertools
 from pathlib import Path
+from common.python.serialization import dataclass_to_dict
 from experimental.overhead_matching.swag.data import vigor_dataset
 from experimental.overhead_matching.swag.model import patch_embedding
 from dataclasses import dataclass
@@ -41,45 +42,6 @@ class Pairs:
     positive_pairs: list[tuple[int, int]]
     negative_pairs: list[tuple[int, int]]
     semipositive_pairs: list[tuple[int, int]]
-
-def dataclass_to_dict(input_object)->dict:
-    """Convert a dataclass instance (and any nested dataclasses) to a dictionary.
-    
-    Args:
-        input_object: A dataclass instance or a structure containing dataclasses
-        
-    Returns:
-        A dictionary representation of the dataclass with nested dataclasses also converted
-    """
-    from dataclasses import is_dataclass, fields
-    from pathlib import Path
-    
-    # Base case: None
-    if input_object is None:
-        return None
-        
-    # Recursive case: dataclass instance
-    if is_dataclass(input_object):
-        result = {}
-        for field in fields(input_object):
-            field_value = getattr(input_object, field.name)
-            result[field.name] = dataclass_to_dict(field_value)
-        return result
-        
-    # Recursive case: list/tuple containing possibly nested dataclasses
-    if isinstance(input_object, (list, tuple)):
-        return type(input_object)(dataclass_to_dict(item) for item in input_object)
-        
-    # Recursive case: dictionary containing possibly nested dataclasses
-    if isinstance(input_object, dict):
-        return {key: dataclass_to_dict(value) for key, value in input_object.items()}
-        
-    # Special case: Path objects
-    if isinstance(input_object, Path):
-        return str(input_object)
-        
-    # Base case: return the object itself (int, float, str, etc.)
-    return input_object
 
 
 def create_pairs(panorama_metadata, satellite_metadata) -> Pairs:
