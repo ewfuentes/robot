@@ -29,10 +29,10 @@ struct MapBounds {
 
 template <typename T>
 concept Map = requires(T m, Eigen::Vector2d a, Eigen::Vector2d b) {
-                  { m.in_free_space(a) } -> std::same_as<bool>;
-                  { m.in_free_space(a, b) } -> std::same_as<bool>;
-                  { m.map_bounds() } -> std::same_as<MapBounds>;
-              };
+    { m.in_free_space(a) } -> std::same_as<bool>;
+    { m.in_free_space(a, b) } -> std::same_as<bool>;
+    { m.map_bounds() } -> std::same_as<MapBounds>;
+};
 
 // Create a probabilistic road map from a map.
 // initial_sample_points contains sample points that the caller would like to include as part of

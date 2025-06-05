@@ -10,8 +10,8 @@ namespace robot::planning {
 
 template <typename T>
 concept State = requires(T t) {
-                    { std::hash<T>{}(t) } -> std::convertible_to<std::size_t>;
-                };
+    { std::hash<T>{}(t) } -> std::convertible_to<std::size_t>;
+};
 
 template <State S>
 struct Successor {

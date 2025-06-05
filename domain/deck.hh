@@ -39,9 +39,9 @@ struct CardT {
 
 template <typename T>
 concept CardLike = requires(T a) {
-                       a.rank;
-                       a.suit;
-                   };
+    a.rank;
+    a.suit;
+};
 
 template <CardLike T>
 struct CardHash {
