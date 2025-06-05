@@ -29,7 +29,7 @@ jobs:
       - name: Lint C++ Files
         run: |
           shopt -s globstar
-          clang-format-15 --dry-run --Werror **/*.cc **/*.hh
+          clang-format-18 --dry-run --Werror **/*.cc **/*.hh
 
   unit-test:
     continue-on-error: true
