@@ -99,12 +99,16 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
         list(panorama_model.parameters()) + list(satellite_model.parameters()),
         lr=1e-4
     )
+    num_epochs_per_step = 5
+    lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            opt, step_size=num_epochs_per_step, gamma=0.25)
 
     torch.set_printoptions(linewidth=200)
 
     total_batches = 0
 
     for epoch_idx in tqdm.tqdm(range(config.opt_config.num_epochs),  desc="Epoch"):
+        print(f"{lr_scheduler.get_last_lr()=}")
         for batch_idx, batch in enumerate(dataloader):
             pairs = create_pairs(
                 batch.panorama_metadata,
@@ -168,9 +172,10 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
             writer.add_scalar("train/loss_semipos", semipos_loss.item(), global_step=total_batches)
             writer.add_scalar("train/loss_neg", neg_loss.item(), global_step=total_batches)
             writer.add_scalar("train/loss", loss.item(), global_step=total_batches)
-            print(f"{epoch_idx=:4d} {batch_idx=:4d} num_pos_pairs: {len(pairs.positive_pairs):3d}" +
+            print(f"{epoch_idx=:4d} {batch_idx=:4d} lr: {lr_scheduler.get_last_lr()[0]:.2e} " +
+                  f" num_pos_pairs: {len(pairs.positive_pairs):3d}" +
                   f" num_semipos_pairs: {len(pairs.semipositive_pairs):3d}" +
-                  f"  num_neg_pairs: {len(pairs.negative_pairs):3d} {pos_loss.item()=:0.6f}" +
+                  f" num_neg_pairs: {len(pairs.negative_pairs):3d} {pos_loss.item()=:0.6f}" +
                   f" {semipos_loss.item()=:0.6f} {neg_loss.item()=:0.6f} {loss.item()=:0.6f}", end='\r')
             if batch_idx % 50 == 0:
                 print()
@@ -178,6 +183,7 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
 
             total_batches += 1
         print()
+        lr_scheduler.step()
 
         if epoch_idx % 10 == 0:
             config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -220,7 +226,7 @@ def main(dataset_path: Path, output_dir: Path):
         opt_config=OptimizationConfig(
             num_epochs=1000,
             num_embedding_pool_batches=1,
-            embedding_pool_batch_size=40,
+            embedding_pool_batch_size=20,
             opt_batch_size=40,
         ),
         output_dir=output_dir,
