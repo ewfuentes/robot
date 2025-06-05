@@ -32,15 +32,13 @@ template <typename T>
 concept Potential = requires(T pot, bool b, std::unordered_map<int, bool> assignment,
                              std::vector<int> present_beacons, proto::BeaconPotential *bp_proto,
                              InOut<std::mt19937> gen) {
-                        { get_members(pot) } -> std::same_as<const std::vector<int> &>;
-                        { compute_log_prob(pot, assignment, b) } -> std::same_as<double>;
-                        {
-                            compute_log_marginals(pot, present_beacons)
-                            } -> std::same_as<std::vector<LogMarginal>>;
-                        { pack_into_potential(pot, bp_proto) } -> std::same_as<void>;
-                        { pack_into_potential(pot, bp_proto) } -> std::same_as<void>;
-                        { generate_sample(pot, gen) } -> std::same_as<std::vector<int>>;
-                    };
+    { get_members(pot) } -> std::same_as<const std::vector<int> &>;
+    { compute_log_prob(pot, assignment, b) } -> std::same_as<double>;
+    { compute_log_marginals(pot, present_beacons) } -> std::same_as<std::vector<LogMarginal>>;
+    { pack_into_potential(pot, bp_proto) } -> std::same_as<void>;
+    { pack_into_potential(pot, bp_proto) } -> std::same_as<void>;
+    { generate_sample(pot, gen) } -> std::same_as<std::vector<int>>;
+};
 
 // A probability distribution over beacon presences/absences
 class BeaconPotential {
@@ -153,7 +151,7 @@ class BeaconPotential {
         BeaconPotential condition_on_(
             const std::unordered_map<int, bool> &assignments) const override {
             constexpr bool has_conditioning_support =
-                requires(T p, std::unordered_map<int, bool> & a) {
+                requires(T p, std::unordered_map<int, bool> &a) {
                     { condition_on(p, a) } -> std::same_as<T>;
                 };
             if constexpr (has_conditioning_support) {
@@ -165,7 +163,7 @@ class BeaconPotential {
 
         void recondition_on_(const std::unordered_map<int, bool> &assignments) override {
             constexpr bool has_reconditioning_support =
-                requires(T p, std::unordered_map<int, bool> & a) {
+                requires(T p, std::unordered_map<int, bool> &a) {
                     { recondition_on(p, a) } -> std::same_as<void>;
                 };
 

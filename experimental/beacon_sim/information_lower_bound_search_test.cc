@@ -20,19 +20,18 @@ struct TestEnvironment {
 };
 
 planning::RoadMap create_triangle_road_map() {
-    return planning::RoadMap(
-        {{1, 0}, {2, 0}, {1.5, 1}, {1.5, -10}},
-        // clang-format off
+    return planning::RoadMap({{1, 0}, {2, 0}, {1.5, 1}, {1.5, -10}},
+                             // clang-format off
         (Eigen::MatrixXd(4, 4) << 0, 1, 1, 1, 
                                   1, 0, 1, 1, 
                                   1, 1, 0, 0, 
                                   1, 1, 0, 0).finished(),
-        // clang-format on
-        {{
-            .start = {0.0, 0.0},
-            .goal = {3.0, 0.0},
-            .connection_radius_m = 1.1,
-        }});
+                             // clang-format on
+                             {{
+                                 .start = {0.0, 0.0},
+                                 .goal = {3.0, 0.0},
+                                 .connection_radius_m = 1.1,
+                             }});
 }
 
 LowerBoundReversePropagator create_triangle_rev_prop() {
