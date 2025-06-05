@@ -490,6 +490,7 @@ class HardNegativeMiner:
                  panorama_info_from_pano_idx: dict[int, PanoramaIndexInfo] | None = None,
                  dataset: VigorDataset | None = None,
                  hard_negative_fraction: float = 0.5,
+                 generator: torch.Generator | None = None,
                  device='cuda'):
 
         if dataset is not None:
@@ -505,6 +506,8 @@ class HardNegativeMiner:
         assert (num_panoramas is not None and
                 num_satellite_patches is not None and
                 panorama_info_from_pano_idx is not None)
+
+        self._generator = generator if generator is not None else torch.Generator()
 
         self._panorama_embeddings = torch.full(
                 (num_panoramas, embedding_dimension), float('nan'), device=device)
@@ -526,12 +529,11 @@ class HardNegativeMiner:
         # present the true positives and semipositives (since there are so few of them) and
         # the most similar negative matches.
         sorted_sat_idxs_from_pano_idx = torch.argsort(similarities)
-        print(f"{sorted_sat_idxs_from_pano_idx=}")
 
         # To sample batches, we create a random permutation of all panoramas
         # We then assign satellite patch to each panorama. The satellite image will either be
         # a positive/semipositive satellite patch or a mined hard negative example
-        permuted_panoramas = torch.randperm(self._panorama_embeddings.shape[0]).tolist()
+        permuted_panoramas = torch.randperm(self._panorama_embeddings.shape[0], generator=self._generator).tolist()
         num_hard_negatives = min(self._satellite_embeddings.shape[0], 100)
 
         if self._sample_mode == HardNegativeMiner.SampleMode.HARD_NEGATIVE:
@@ -542,7 +544,6 @@ class HardNegativeMiner:
 
         batches = []
         for pano_batches in itertools.batched(permuted_panoramas, self._batch_size):
-            print(f"{pano_batches=}")
             batch = []
             for i, pano_idx in enumerate(pano_batches):
                 if i < num_hard_negatives_per_batch:
@@ -555,7 +556,7 @@ class HardNegativeMiner:
                     # Sample uniformly
                     pano_info = self._panorama_info_from_pano_idx[pano_idx]
                     num_options = len(pano_info.positive_satellite_idxs) + len(pano_info.semipositive_satellite_idxs)
-                    matching_idx = torch.randint(num_options, (1,))
+                    matching_idx = torch.randint(num_options, (1,), generator=self._generator)
                     if matching_idx < len(pano_info.positive_satellite_idxs):
                         satellite_idx = pano_info.positive_satellite_idxs[matching_idx]
                     else:
