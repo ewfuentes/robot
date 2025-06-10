@@ -495,6 +495,9 @@ class HardNegativeMiner:
                  device='cuda'):
 
         if dataset is not None:
+            assert (num_panoramas is None and
+                    num_satellite_patches is None and
+                    panorama_info_from_pano_idx is None)
             num_panoramas = len(dataset._panorama_metadata)
             num_satellite_patches = len(dataset._satellite_metadata)
             panorama_info_from_pano_idx = {}
