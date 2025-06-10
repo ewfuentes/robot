@@ -2,6 +2,8 @@ import common.torch.load_torch_deps
 import torch
 import torchvision as tv
 import sys
+import itertools
+import math
 
 from pathlib import Path
 import pandas as pd
@@ -24,6 +26,13 @@ class SampleMode(StrEnum):
 class SamplePair(NamedTuple):
     panorama_idx: int
     satellite_idx: int
+
+
+class PanoramaIndexInfo(NamedTuple):
+    panorama_idx: int
+    positive_satellite_idxs: list[int]
+    semipositive_satellite_idxs: list[int]
+
 
 class VigorDatasetConfig(NamedTuple):
     panorama_neighbor_radius: float
@@ -242,15 +251,23 @@ class VigorDataset(torch.utils.data.Dataset):
     def num_satellite_patches(self):
         return len(self._satellite_metadata)
 
-    def __getitem__(self, idx):
-        if idx > len(self) - 1:
-            raise IndexError  # if we don't raise index error the iterator won't terminate
+    def __getitem__(self, idx_or_pair: int | SamplePair):
 
-        if torch.is_tensor(idx):
-            # if idx is tensor, .loc[tensor] returns DataFrame instead of Series which breaks the following lines
-            idx = idx.item()
+        if isinstance(idx_or_pair, SamplePair):
+            pair = idx_or_pair
+            pano_idx, sat_idx = pair.panorama_idx, pair.satellite_idx
+            if pano_idx >= len(self._panorama_metadata) or sat_idx >= len(self._satellite_metadata):
+                raise IndexError
+        else:
+            idx = idx_or_pair
+            if idx > len(self) - 1:
+                raise IndexError  # if we don't raise index error the iterator won't terminate
 
-        pano_idx, sat_idx = self._pairs[idx]
+            if torch.is_tensor(idx):
+                # if idx is tensor, .loc[tensor] returns DataFrame instead of Series which breaks the following lines
+                idx = idx.item()
+            pano_idx, sat_idx = self._pairs[idx]
+
         pano_metadata = self._panorama_metadata.loc[pano_idx]
         sat_metadata = self._satellite_metadata.loc[sat_idx]
         pano = load_image(pano_metadata.path, self._panorama_size)
@@ -439,3 +456,137 @@ def get_dataloader(dataset: VigorDataset, **kwargs):
         )
 
     return torch.utils.data.DataLoader(dataset, collate_fn=_collate_fn, **kwargs)
+
+
+class HardNegativeMiner:
+    '''
+    This class consumes the computed embeddings and tracks the most difficult examples. The
+    expected use is:
+
+    dataset = VigorDataset(...)
+    miner = HardNegativeMiner(embedding_dim, dataset, batch_size=32)
+
+    dataloader = get_dataloader(dataset, batch_sampler=miner)
+
+    for epoch_idx in range(num_epochs):
+        if epoch_idx > hard_negative_start_idx:
+            miner.set_sample_mode(HARD_NEGATIVE)
+
+        for batch in dataloader:
+            sat_embeddings = sat_model(batch.satellite)
+            pano_embeddings = sat_model(batch.panorama)
+            miner.consume(pano_embeddings, sat_embeddings, batch)
+    '''
+
+    class SampleMode(StrEnum):
+        RANDOM = auto()
+        HARD_NEGATIVE = auto()
+
+    def __init__(self,
+                 batch_size: int,
+                 embedding_dimension: int,
+                 num_panoramas: int | None = None,
+                 num_satellite_patches: int | None = None,
+                 panorama_info_from_pano_idx: dict[int, PanoramaIndexInfo] | None = None,
+                 dataset: VigorDataset | None = None,
+                 hard_negative_fraction: float = 0.5,
+                 hard_negative_pool_size: int = 100,
+                 generator: torch.Generator | None = None,
+                 device='cuda'):
+
+        if dataset is not None:
+            assert (num_panoramas is None and
+                    num_satellite_patches is None and
+                    panorama_info_from_pano_idx is None)
+            num_panoramas = len(dataset._panorama_metadata)
+            num_satellite_patches = len(dataset._satellite_metadata)
+            panorama_info_from_pano_idx = {}
+            for _, row in dataset._panorama_metadata.iterrows():
+                panorama_info_from_pano_idx[row["index"]] = PanoramaIndexInfo(
+                    panorama_index=row["index"],
+                    positive_satellite_idxs=row["positive_satellite_idxs"],
+                    semipositive_satellite_idxs=row["semipositive_satellite_idxs"])
+
+        assert (num_panoramas is not None and
+                num_satellite_patches is not None and
+                panorama_info_from_pano_idx is not None)
+
+        self._generator = generator if generator is not None else torch.Generator()
+
+        self._panorama_embeddings = torch.full(
+                (num_panoramas, embedding_dimension), float('nan'), device=device)
+
+        self._satellite_embeddings = torch.full(
+                (num_satellite_patches, embedding_dimension), float('nan'), device=device)
+        self._panorama_info_from_pano_idx = panorama_info_from_pano_idx
+
+        self._sample_mode = self.SampleMode.RANDOM
+
+        self._hard_negative_fraction = hard_negative_fraction
+        self._hard_negative_pool_size = hard_negative_pool_size
+        self._batch_size = batch_size
+
+    def __iter__(self):
+        similarities = torch.einsum(
+                "nd,md->nm", self._panorama_embeddings, self._satellite_embeddings)
+        # A row of this matrix contains the satellite patch similarities for a given panorama
+        # sorted from least similar to most similar. When mining hard negatives, we want to
+        # present the true positives and semipositives (since there are so few of them) and
+        # the most similar negative matches.
+        sorted_sat_idxs_from_pano_idx = torch.argsort(similarities)
+
+        # To sample batches, we create a random permutation of all panoramas
+        # We then assign satellite patch to each panorama. The satellite image will either be
+        # a positive/semipositive satellite patch or a mined hard negative example
+        permuted_panoramas = torch.randperm(self._panorama_embeddings.shape[0], generator=self._generator).tolist()
+        num_hard_negatives = min(self._satellite_embeddings.shape[0], self._hard_negative_pool_size)
+
+        if self._sample_mode == HardNegativeMiner.SampleMode.HARD_NEGATIVE:
+            num_hard_negatives_per_batch = min(
+                    math.ceil(self._batch_size * self._hard_negative_fraction), self._batch_size)
+        else:
+            num_hard_negatives_per_batch = 0
+
+        batches = []
+        for pano_batches in itertools.batched(permuted_panoramas, self._batch_size):
+            batch = []
+            for i, pano_idx in enumerate(pano_batches):
+                if i < num_hard_negatives_per_batch:
+                    # Sample hard negatives
+                    hard_negative_idx = torch.randint(num_hard_negatives, (1,))
+                    sat_idx = sorted_sat_idxs_from_pano_idx[pano_idx, -(hard_negative_idx+1)].item()
+
+                    batch.append(SamplePair(panorama_idx=pano_idx, satellite_idx=sat_idx))
+                else:
+                    # Sample uniformly
+                    pano_info = self._panorama_info_from_pano_idx[pano_idx]
+                    num_options = len(pano_info.positive_satellite_idxs) + len(pano_info.semipositive_satellite_idxs)
+                    matching_idx = torch.randint(num_options, (1,), generator=self._generator)
+                    if matching_idx < len(pano_info.positive_satellite_idxs):
+                        satellite_idx = pano_info.positive_satellite_idxs[matching_idx]
+                    else:
+                        matching_idx -= len(pano_info.positive_satellite_idxs)
+                        satellite_idx = pano_info.semipositive_satellite_idxs[matching_idx]
+
+                    batch.append(SamplePair(panorama_idx=pano_idx, satellite_idx=satellite_idx))
+            batches.append(batch)
+
+        for b in batches:
+            yield b
+
+    def consume(self,
+                panorama_embeddings: torch.Tensor,
+                satellite_embeddings: torch.Tensor,
+                batch: VigorDatasetItem | None = None,
+                panorama_idxs: list[int] | None = None,
+                satellite_patch_idxs: list[int] | None = None):
+        if batch is not None:
+            panorama_idxs = [x["index"] for x in batch.panorama_metadata]
+            satellite_patch_idxs = [x["index"] for x in batch.satellite_metadata]
+        assert panorama_idxs is not None and satellite_patch_idxs is not None
+
+        self._panorama_embeddings[panorama_idxs] = panorama_embeddings
+        self._satellite_embeddings[satellite_patch_idxs] = satellite_embeddings
+
+    def set_sample_mode(self, mode: SampleMode):
+        self._sample_mode = mode
