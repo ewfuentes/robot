@@ -34,6 +34,7 @@ cc_library(
 cc_test(
   name = "opencv_viz_test",
   srcs = ["opencv_viz_test.cc"],
+  tags = ["manual"],
   deps = [
     ":opencv_viz",
     "@com_google_googletest//:gtest_main",
@@ -45,5 +46,26 @@ cc_binary(
   srcs = ["opencv_viz_example.cc"],
   deps = [
     "@opencv//:opencv"
+  ]
+)
+
+cc_library(
+  name = "translate_types",
+  hdrs = ["translate_types.hh"],
+  srcs = ["translate_types.cc"],
+  visibility = ["//visibility:public"],
+  deps = [
+    "@eigen",     
+    "@opencv//:opencv"
+  ]
+)
+
+cc_test(
+  name = "translate_types_test", 
+  srcs = ["translate_types_test.cc"],
+  visibility = ["//visibility:public"],
+  deps = [
+    ":translate_types",
+    "@com_google_googletest//:gtest_main"
   ]
 )
