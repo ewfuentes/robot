@@ -30,6 +30,7 @@ class SamplePair(NamedTuple):
 
 class PanoramaIndexInfo(NamedTuple):
     panorama_idx: int
+    nearest_satellite_idx: int
     positive_satellite_idxs: list[int]
     semipositive_satellite_idxs: list[int]
 
@@ -219,10 +220,10 @@ class VigorDataset(torch.utils.data.Dataset):
         max_lon = np.max(self._satellite_metadata.lon)
         delta_lon = max_lon - min_lon
 
-        sat_mask = np.logical_and(self._satellite_metadata.lat < min_lat + config.factor * delta_lat,
-                                  self._satellite_metadata.lon < min_lon + config.factor * delta_lon)
-        pano_mask = np.logical_and(self._panorama_metadata.lat < min_lat + config.factor * delta_lat,
-                                   self._panorama_metadata.lon < min_lon + config.factor * delta_lon)
+        sat_mask = np.logical_and(self._satellite_metadata.lat <= min_lat + config.factor * delta_lat,
+                                  self._satellite_metadata.lon <= min_lon + config.factor * delta_lon)
+        pano_mask = np.logical_and(self._panorama_metadata.lat <= min_lat + config.factor * delta_lat,
+                                   self._panorama_metadata.lon <= min_lon + config.factor * delta_lon)
         self._satellite_metadata = self._satellite_metadata[sat_mask].reset_index(drop=True)
         self._panorama_metadata = self._panorama_metadata[pano_mask].reset_index(drop=True)
 
@@ -482,9 +483,14 @@ class HardNegativeMiner:
         RANDOM = auto()
         HARD_NEGATIVE = auto()
 
+    class RandomSampleType(StrEnum):
+        NEAREST = auto()
+        POS_SEMIPOS = auto()
+
     def __init__(self,
                  batch_size: int,
                  embedding_dimension: int,
+                 random_sample_type: RandomSampleType,
                  num_panoramas: int | None = None,
                  num_satellite_patches: int | None = None,
                  panorama_info_from_pano_idx: dict[int, PanoramaIndexInfo] | None = None,
@@ -501,9 +507,10 @@ class HardNegativeMiner:
             num_panoramas = len(dataset._panorama_metadata)
             num_satellite_patches = len(dataset._satellite_metadata)
             panorama_info_from_pano_idx = {}
-            for _, row in dataset._panorama_metadata.iterrows():
-                panorama_info_from_pano_idx[row["index"]] = PanoramaIndexInfo(
-                    panorama_index=row["index"],
+            for pano_idx, row in dataset._panorama_metadata.iterrows():
+                panorama_info_from_pano_idx[pano_idx] = PanoramaIndexInfo(
+                    panorama_idx=pano_idx,
+                    nearest_satellite_idx=row["satellite_idx"],
                     positive_satellite_idxs=row["positive_satellite_idxs"],
                     semipositive_satellite_idxs=row["semipositive_satellite_idxs"])
 
@@ -525,6 +532,7 @@ class HardNegativeMiner:
         self._hard_negative_fraction = hard_negative_fraction
         self._hard_negative_pool_size = hard_negative_pool_size
         self._batch_size = batch_size
+        self._random_sample_type = random_sample_type
 
     def __iter__(self):
         similarities = torch.einsum(
@@ -558,15 +566,19 @@ class HardNegativeMiner:
 
                     batch.append(SamplePair(panorama_idx=pano_idx, satellite_idx=sat_idx))
                 else:
-                    # Sample uniformly
+                    # Sample uniformly among positive and semipositive satellite patches
                     pano_info = self._panorama_info_from_pano_idx[pano_idx]
-                    num_options = len(pano_info.positive_satellite_idxs) + len(pano_info.semipositive_satellite_idxs)
-                    matching_idx = torch.randint(num_options, (1,), generator=self._generator)
-                    if matching_idx < len(pano_info.positive_satellite_idxs):
-                        satellite_idx = pano_info.positive_satellite_idxs[matching_idx]
-                    else:
-                        matching_idx -= len(pano_info.positive_satellite_idxs)
-                        satellite_idx = pano_info.semipositive_satellite_idxs[matching_idx]
+                    if self._random_sample_type == self.RandomSampleType.POS_SEMIPOS:
+                        num_options = len(pano_info.positive_satellite_idxs) + len(pano_info.semipositive_satellite_idxs)
+                        matching_idx = torch.randint(num_options, (1,), generator=self._generator)
+                        if matching_idx < len(pano_info.positive_satellite_idxs):
+                            satellite_idx = pano_info.positive_satellite_idxs[matching_idx]
+                        else:
+                            matching_idx -= len(pano_info.positive_satellite_idxs)
+                            satellite_idx = pano_info.semipositive_satellite_idxs[matching_idx]
+                    elif self._random_sample_type == self.RandomSampleType.NEAREST:
+                        # Sample the nearest satellite
+                        satellite_idx = pano_info.nearest_satellite_idx
 
                     batch.append(SamplePair(panorama_idx=pano_idx, satellite_idx=satellite_idx))
             batches.append(batch)

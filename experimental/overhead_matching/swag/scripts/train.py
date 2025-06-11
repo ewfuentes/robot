@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 import common.torch.load_torch_deps
 from common.torch.load_and_save_models import save_model
 import torch
@@ -7,7 +8,7 @@ from torch.utils.tensorboard import SummaryWriter
 import torch.nn.functional as F
 import itertools
 from pathlib import Path
-from common.python.serialization import dataclass_to_dict
+from common.python.serialization import dataclass_to_dict, flatten_dict
 from experimental.overhead_matching.swag.data import vigor_dataset
 from experimental.overhead_matching.swag.model import patch_embedding
 from dataclasses import dataclass
@@ -15,20 +16,27 @@ import tqdm
 
 
 @dataclass
+class LearningRateSchedule:
+    initial_lr: float
+    lr_step_factor: float
+    num_epochs_at_lr: int
+
+
+@dataclass
 class OptimizationConfig:
     num_epochs: int
-
-    # The number of batches that are used to create the embedding pool
-    num_embedding_pool_batches: int
 
     # This is the number of examples from which we build triplets
     # This is computed with torch.no_grad, so more examples can
     # be processed in a batch than is possible when we are taking a
     # gradient step.
-    embedding_pool_batch_size: int
+    batch_size: int
 
-    # This is the number of triplets that are processed in a batch.
-    opt_batch_size: int
+    lr_schedule: LearningRateSchedule
+
+    # Switch from random sampling to hard negative mining after
+    # this many epochs
+    enable_hard_negative_sampling_after_epoch_idx: int
 
 
 @dataclass
@@ -76,7 +84,7 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
     )
     # write hyperparameters
     writer.add_hparams(
-        config_dict['opt_config'], {}
+        flatten_dict(config_dict['opt_config']), {}
     )
     panorama_model = panorama_model.cuda()
     satellite_model = satellite_model.cuda()
@@ -88,27 +96,26 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
 
     opt_config = config.opt_config
 
-    overall_batch_size = (
-        opt_config.embedding_pool_batch_size * opt_config.num_embedding_pool_batches
-    )
+    miner = vigor_dataset.HardNegativeMiner(
+            batch_size=opt_config.batch_size,
+            embedding_dimension=panorama_model.output_dim,
+            dataset=dataset)
     dataloader = vigor_dataset.get_dataloader(
-        dataset, batch_size=overall_batch_size, num_workers=2, shuffle=True, persistent_workers=True
-    )
+        dataset, batch_sampler=miner, num_workers=2, persistent_workers=True)
 
     opt = torch.optim.Adam(
         list(panorama_model.parameters()) + list(satellite_model.parameters()),
-        lr=1e-4
+        lr=opt_config.lr_schedule.initial_lr
     )
-    num_epochs_per_step = 5
+
     lr_scheduler = torch.optim.lr_scheduler.StepLR(
-            opt, step_size=num_epochs_per_step, gamma=0.25)
+            opt, step_size=opt_config.lr_schedule.num_epochs_at_lr,
+            gamma=opt_config.lr_schedule.lr_step_factor)
 
     torch.set_printoptions(linewidth=200)
 
     total_batches = 0
-
     for epoch_idx in tqdm.tqdm(range(config.opt_config.num_epochs),  desc="Epoch"):
-        print(f"{lr_scheduler.get_last_lr()=}")
         for batch_idx, batch in enumerate(dataloader):
             pairs = create_pairs(
                 batch.panorama_metadata,
@@ -135,6 +142,7 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
             neg_cols = [x[1] for x in pairs.negative_pairs]
             neg_similarities = similarity[neg_rows, neg_cols]
 
+            # Compute Loss
             POS_WEIGHT = 5
             AVG_POS_SIMILARITY = 0.0
             if len(pairs.positive_pairs):
@@ -165,6 +173,15 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
 
             loss = pos_loss + neg_loss + semipos_loss
             loss.backward()
+            opt.step()
+
+            # Hard Negative Mining
+            miner.consume(
+                    panorama_embeddings=panorama_embeddings.detach(),
+                    satellite_embeddings=sat_embeddings.detach(),
+                    batch=batch)
+
+            # Logging
             writer.add_scalar("train/learning_rate", lr_scheduler.get_last_lr()[0], global_step=total_batches)
             writer.add_scalar("train/num_positive_pairs", len(pairs.positive_pairs), global_step=total_batches)
             writer.add_scalar("train/num_semipos_pairs", len(pairs.semipositive_pairs), global_step=total_batches)
@@ -180,22 +197,25 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
                   f" {semipos_loss.item()=:0.6f} {neg_loss.item()=:0.6f} {loss.item()=:0.6f}", end='\r')
             if batch_idx % 50 == 0:
                 print()
-            opt.step()
 
             total_batches += 1
         print()
         lr_scheduler.step()
 
+        if epoch_idx > opt_config.enable_hard_negative_sampling_after_epoch_idx:
+            miner.set_sample_mode(vigor_dataset.HardNegativeMiner.SampleMode.HARD_NEGATIVE)
+
         if epoch_idx % 10 == 0:
+            # Periodically save the model
             config.output_dir.mkdir(parents=True, exist_ok=True)
             panorama_model_path = config.output_dir / f"{epoch_idx:04d}_panorama"
             satellite_model_path = config.output_dir / f"{epoch_idx:04d}_satellite"
 
             batch = next(iter(dataloader))
             save_model(panorama_model, panorama_model_path,
-                       (batch.panorama[:opt_config.opt_batch_size].cuda(),))
+                       (batch.panorama[:opt_config.batch_size].cuda(),))
             save_model(satellite_model, satellite_model_path,
-                       (batch.satellite[:opt_config.opt_batch_size].cuda(),))
+                       (batch.satellite[:opt_config.batch_size].cuda(),))
 
 
 def main(dataset_path: Path, output_dir: Path):
@@ -224,14 +244,16 @@ def main(dataset_path: Path, output_dir: Path):
     )
 
     config = TrainConfig(
+        output_dir=output_dir,
         opt_config=OptimizationConfig(
             num_epochs=1000,
-            num_embedding_pool_batches=1,
-            embedding_pool_batch_size=20,
-            opt_batch_size=40,
-        ),
-        output_dir=output_dir,
-    )
+            batch_size=20,
+            enable_hard_negative_sampling_after_epoch_idx=0,
+            lr_schedule=LearningRateSchedule(
+                initial_lr=1e-4,
+                lr_step_factor=0.25,
+                # This is 5 epochs of the Chicago dataset with a batch size of 20
+                num_epochs_at_lr=20)))
 
     train(
         config,
