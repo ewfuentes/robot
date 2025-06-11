@@ -22,7 +22,7 @@ TEST(TranslateTypesTest, eigen_mat_and_cv) {
 
 TEST(TranslateTypesTest, eigen_vec_and_cv) {
     int cols = 5;
-    Eigen::VectorXd vec_eig = Eigen::VectorXd::Random(cols);
+    Eigen::VectorXd vec_eig{{3.54, 6.87, 2.5436, 345, 34}};
     cv::Mat mat_cv_from_eig = eigen_vec_to_cv(vec_eig);
     Eigen::VectorXd vec_eig_from_cv = Eigen::VectorXd(cv_to_eigen_mat(mat_cv_from_eig));
     EXPECT_TRUE(static_cast<int>(vec_eig.rows()) == mat_cv_from_eig.rows);
