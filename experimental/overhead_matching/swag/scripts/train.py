@@ -38,6 +38,8 @@ class OptimizationConfig:
     # this many epochs
     enable_hard_negative_sampling_after_epoch_idx: int
 
+    random_sample_type: vigor_dataset.HardNegativeMiner.RandomSampleType
+
 
 @dataclass
 class TrainConfig:
@@ -99,6 +101,7 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
     miner = vigor_dataset.HardNegativeMiner(
             batch_size=opt_config.batch_size,
             embedding_dimension=panorama_model.output_dim,
+            random_sample_type=opt_config.random_sample_type,
             dataset=dataset)
     dataloader = vigor_dataset.get_dataloader(
         dataset, batch_sampler=miner, num_workers=2, persistent_workers=True)
@@ -121,6 +124,12 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
                 batch.panorama_metadata,
                 batch.satellite_metadata
             )
+
+            if opt_config.random_sample_type == vigor_dataset.HardNegativeMiner.RandomSampleType.NEAREST:
+                pairs = Pairs(
+                    positive_pairs=pairs.positive_pairs + pairs.semipositive_pairs,
+                    semipositive_pairs=[],
+                    negative_pairs=pairs.negative_pairs)
 
             opt.zero_grad()
 
@@ -249,6 +258,7 @@ def main(dataset_path: Path, output_dir: Path):
             num_epochs=1000,
             batch_size=20,
             enable_hard_negative_sampling_after_epoch_idx=0,
+            random_sample_type=vigor_dataset.HardNegativeMiner.RandomSampleType.NEAREST,
             lr_schedule=LearningRateSchedule(
                 initial_lr=1e-4,
                 lr_step_factor=0.25,
