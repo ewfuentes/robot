@@ -1,7 +1,7 @@
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
-from common.python.serialization import dataclass_to_dict
+from common.python.serialization import dataclass_to_dict, flatten_dict
 
 @dataclass
 class Inner:
@@ -59,6 +59,50 @@ class TestDataclassToDict(unittest.TestCase):
         self.assertEqual(dataclass_to_dict(123), 123)
         self.assertEqual(dataclass_to_dict("abc"), "abc")
         self.assertEqual(dataclass_to_dict(3.14), 3.14)
+
+
+class FlattenDictTest(unittest.TestCase):
+    def test_flat_dict_is_unchanged(self):
+        # Setup
+        test_input = {"a": 1, "b": "2", "c": 3.14}
+        expected = test_input
+
+        # Action
+        out = flatten_dict(test_input)
+
+        # Verification
+        self.assertEqual(len(expected), len(out))
+        for key in expected:
+            self.assertIn(key, out)
+            self.assertEqual(expected[key], out[key])
+
+    def test_nested_dict(self):
+        # Setup
+        test_input = {"a": 1, "b": "2", "c": 3.14, "d": {"nested": "Hello World!"}}
+        expected = {"a": 1, "b": "2", "c": 3.14, "d*nested": "Hello World!"}
+
+        # Action
+        out = flatten_dict(test_input, sep="*")
+
+        # Verification
+        self.assertEqual(len(expected), len(out))
+        for key in expected:
+            self.assertIn(key, out)
+            self.assertEqual(expected[key], out[key])
+
+    def test_doubly_nested_dict(self):
+        # Setup
+        test_input = {"a": 1, "b": "2", "c": 3.14, "d": {"nested": "Hello World!", "again": {"key": "foo"}}}
+        expected = {"a": 1, "b": "2", "c": 3.14, "d*nested": "Hello World!", "d*again*key": "foo"}
+
+        # Action
+        out = flatten_dict(test_input, sep="*")
+
+        # Verification
+        self.assertEqual(len(expected), len(out))
+        for key in expected:
+            self.assertIn(key, out)
+            self.assertEqual(expected[key], out[key])
 
 if __name__ == "__main__":
     unittest.main()
