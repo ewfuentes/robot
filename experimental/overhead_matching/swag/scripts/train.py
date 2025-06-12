@@ -13,6 +13,7 @@ from experimental.overhead_matching.swag.data import vigor_dataset
 from experimental.overhead_matching.swag.model import patch_embedding
 from dataclasses import dataclass
 import tqdm
+import msgspec
 
 
 @dataclass
@@ -227,7 +228,7 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
                        (batch.satellite[:opt_config.batch_size].cuda(),))
 
 
-def main(dataset_path: Path, output_dir: Path):
+def main(dataset_path: Path, opt_config_path: Path, output_dir: Path):
     PANORAMA_NEIGHBOR_RADIUS_DEG = 1e-6
     NUM_SAFA_HEADS = 4
     dataset_config = vigor_dataset.VigorDatasetConfig(
@@ -252,18 +253,12 @@ def main(dataset_path: Path, output_dir: Path):
         )
     )
 
+    with open(opt_config_path, 'r') as file_in:
+        opt_config = msgspec.yaml.decode(file_in.read(), type=OptimizationConfig)
+
     config = TrainConfig(
         output_dir=output_dir,
-        opt_config=OptimizationConfig(
-            num_epochs=100,
-            batch_size=20,
-            enable_hard_negative_sampling_after_epoch_idx=0,
-            random_sample_type=vigor_dataset.HardNegativeMiner.RandomSampleType.NEAREST,
-            lr_schedule=LearningRateSchedule(
-                initial_lr=1e-4,
-                lr_step_factor=0.25,
-                # This is 5 epochs of the Chicago dataset with a batch size of 20
-                num_epochs_at_lr=20)))
+        opt_config=opt_config)
 
     train(
         config,
@@ -278,6 +273,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", help="path to dataset", required=True)
     parser.add_argument("--output_dir", help="path to output", required=True)
+    parser.add_argument("--opt_config", help="path to optimization config", required=True)
     args = parser.parse_args()
 
-    main(Path(args.dataset), Path(args.output_dir))
+    main(Path(args.dataset), Path(args.opt_config), Path(args.output_dir))
