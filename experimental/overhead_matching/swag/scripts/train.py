@@ -255,7 +255,7 @@ def main(dataset_path: Path, output_dir: Path):
     config = TrainConfig(
         output_dir=output_dir,
         opt_config=OptimizationConfig(
-            num_epochs=1000,
+            num_epochs=100,
             batch_size=20,
             enable_hard_negative_sampling_after_epoch_idx=0,
             random_sample_type=vigor_dataset.HardNegativeMiner.RandomSampleType.NEAREST,
