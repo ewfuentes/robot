@@ -51,7 +51,7 @@ cc_test(
   name = "symphony_lake_parser_test",
   srcs = ["symphony_lake_parser_test.cc"],
   copts = ["-Wno-unused-parameter"],
-  data = ["@symphony_lake_snippet"],
+  data = ["@symphony_lake_snippet//:files"],
   deps = [
     "@com_google_googletest//:gtest_main",
     ":symphony_lake_parser",
@@ -65,6 +65,44 @@ cc_test(
   deps = [
     "@com_google_googletest//:gtest_main",
     "@gtsam//:gtsam",
-    ":learn_descriptors"  
+  ]
+)
+
+cc_library(
+    name = "image_point", 
+    hdrs = ["image_point.hh"],
+    srcs = ["image_point.cc"],
+    deps = [
+      "@eigen",
+      "@opencv//:opencv"
+    ]
+)
+
+cc_library(
+    name = "four_seasons_parser", 
+    hdrs = ["four_seasons_parser.hh"],
+    srcs = ["four_seasons_parser.cc"],
+    deps = [
+      "@eigen",
+      "@opencv//:opencv",
+      ":image_point"
+    ]
+)
+
+cc_binary(
+  name = "four_seasons_parser_example",
+  srcs = ["four_seasons_parser_example.cc"],
+  deps = [
+    ":four_seasons_parser"
+  ]
+)
+
+cc_test(
+  name = "four_seasons_parser_test",
+  srcs = ["four_seasons_parser_test.cc"],
+  data = ["@four_seasons_snippet//:files"],
+  deps = [
+    "@com_google_googletest//:gtest_main",
+    ":four_seasons_parser"
   ]
 )
