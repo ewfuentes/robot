@@ -9,6 +9,8 @@ py_binary(
     requirement("tensorboard"),
     requirement("tqdm"),
     requirement("IPython"),
+    requirement("msgspec"),
+    requirement("pyyaml"),
     "//common/python:serialization",
     "//common/torch:load_torch_deps",
     "//common/torch:load_and_save_models",
