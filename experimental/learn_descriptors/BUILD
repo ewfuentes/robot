@@ -71,10 +71,10 @@ cc_test(
 cc_library(
     name = "image_point", 
     hdrs = ["image_point.hh"],
-    srcs = ["image_point.cc"],
     deps = [
-      "@eigen",
-      "@opencv//:opencv"
+      "//common/liegroups:se3",
+      "@opencv//:opencv",
+      "@eigen"
     ]
 )
 
@@ -85,6 +85,8 @@ cc_library(
     deps = [
       "@eigen",
       "@opencv//:opencv",
+      "//common/liegroups:se3",
+      "@com_google_absl//absl/strings:str_format",
       ":image_point"
     ]
 )
@@ -103,6 +105,9 @@ cc_test(
   data = ["@four_seasons_snippet//:files"],
   deps = [
     "@com_google_googletest//:gtest_main",
+    "//common/liegroups:se3",
+    "@com_google_absl//absl/strings:str_format",
+    "@eigen",
     ":four_seasons_parser"
   ]
 )

@@ -1,6 +1,0 @@
-
-filegroup(
-  name = "four_seasons_snippet",
-  srcs = glob(["**/*"]),
-  visibility=["//visibility:public"],
-)

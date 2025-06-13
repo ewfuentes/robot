@@ -7,9 +7,14 @@
 #include <fstream>
 #include <iostream>
 #include <string>
-#include <typeinfo>
 #include <unordered_map>
 #include <utility>
+
+#include "Eigen/Core"
+#include "Eigen/Geometry"
+#include "absl/strings/str_split.h"
+#include "absl/strings/strip.h"
+#include "common/liegroups/se3.hh"
 
 enum class GPSIdx {
     TIME_NS = 0,
@@ -39,30 +44,11 @@ enum class ResultIdx {
 enum class CalibIdx { FX = 1, FY = 2, CX = 3, CY = 4, K1 = 5, K2 = 6, K3 = 7, K4 = 8 };
 
 std::vector<std::string> parse_line_adv(const std::string& line, const std::string& delim = " ") {
-    std::vector<std::string> parsedline;
-    if (delim != " ") {
-        size_t start = 0;
-        size_t end;
-        while ((end = line.find(delim, start)) != std::string::npos) {
-            parsedline.push_back(line.substr(start, end - start));
-            start = end + delim.length();
-        }
-        parsedline.push_back(line.substr(start));
-        return parsedline;
+    if (delim == " ") {
+        return std::vector<std::string>(
+            absl::StrSplit(line, absl::ByAnyChar(" \t\n\r"), absl::SkipWhitespace()));
     }
-
-    size_t i = 0;
-    while (i < line.size()) {
-        while (i < line.size() && std::isspace(line[i])) i++;
-
-        if (i == line.size()) break;
-
-        size_t start = i;
-        while (i < line.size() && !std::isspace(line[i])) i++;
-
-        parsedline.push_back(line.substr(start, i - start));
-    }
-    return parsedline;
+    return std::vector<std::string>(absl::StrSplit(line, delim, absl::SkipWhitespace()));
 }
 
 namespace lrn_descs = robot::experimental::learn_descriptors;
@@ -85,7 +71,7 @@ lrn_descs::FourSeasonsParser::CameraCalibrationFisheye load_camera_calibration(
 }
 
 template <typename T>
-T round_to_sig_figures(T val, int n) {
+T round_to_sig_figs(T val, int n) {
     if (val == 0) return 0;
     double d = static_cast<double>(val);
     int exponent = static_cast<int>(std::floor(std::log10(std::abs(d))));
@@ -121,7 +107,7 @@ const TimeDataList create_img_time_data_list(const std::filesystem::path& path_i
         std::vector<std::string> parsed_line = parse_line_adv(line, " ");
         size_t time_ns = std::stoul(parsed_line[static_cast<size_t>(ImgIdx::TIME_NS)]);
         time_map_img.push_back(
-            std::make_pair(round_to_sig_figures(time_ns, time_sig_figs), parsed_line));
+            std::make_pair(round_to_sig_figs(time_ns, time_sig_figs), parsed_line));
     }
     return time_map_img;
 }
@@ -135,7 +121,7 @@ const TimeDataMap create_gps_time_data_map(const std::filesystem::path& path_gps
     while (std::getline(file_gps, line)) {
         std::vector<std::string> parsed_line = parse_line_adv(line, ",");
         size_t time_ns = std::stoul(parsed_line[static_cast<size_t>(GPSIdx::TIME_NS)]);
-        time_map_gps.insert({round_to_sig_figures(time_ns, time_sig_figs), parsed_line});
+        time_map_gps.insert({round_to_sig_figs(time_ns, time_sig_figs), parsed_line});
     }
     return time_map_gps;
 }
@@ -149,7 +135,7 @@ const TimeDataMap create_result_time_data_map(const std::filesystem::path& path_
         std::vector<std::string> parsed_line = parse_line_adv(line, " ");
         double time_seconds = std::stod(parsed_line[static_cast<size_t>(ResultIdx::TIME_SEC)]);
         size_t time_ns = time_seconds * 1e9;
-        time_map_result.insert({round_to_sig_figures(time_ns, time_sig_figs), parsed_line});
+        time_map_result.insert({round_to_sig_figs(time_ns, time_sig_figs), parsed_line});
     }
     return time_map_result;
 }
@@ -181,24 +167,22 @@ FourSeasonsParser::FourSeasonsParser(const std::filesystem::path& root_dir,
         if (gps_time_map.find(time_key) != gps_time_map.end()) {
             const std::vector<std::string>& parsed_line_gps = gps_time_map.at(time_key);
 
-            img_pt.gps.translation() =
-                Eigen::Vector3d(std::stod(parsed_line_gps[static_cast<size_t>(GPSIdx::TRAN_X)]),
-                                std::stod(parsed_line_gps[static_cast<size_t>(GPSIdx::TRAN_Y)]),
-                                std::stod(parsed_line_gps[static_cast<size_t>(GPSIdx::TRAN_Z)]));
+            Eigen::Vector3d gps_translation(
+                std::stod(parsed_line_gps[static_cast<size_t>(GPSIdx::TRAN_X)]),
+                std::stod(parsed_line_gps[static_cast<size_t>(GPSIdx::TRAN_Y)]),
+                std::stod(parsed_line_gps[static_cast<size_t>(GPSIdx::TRAN_Z)]));
             Eigen::Quaterniond gps_quat(
                 std::stod(parsed_line_gps[static_cast<size_t>(GPSIdx::QUAT_W)]),
                 std::stod(parsed_line_gps[static_cast<size_t>(GPSIdx::QUAT_X)]),
                 std::stod(parsed_line_gps[static_cast<size_t>(GPSIdx::QUAT_Y)]),
                 std::stod(parsed_line_gps[static_cast<size_t>(GPSIdx::QUAT_Z)]));
-            img_pt.gps.linear() = gps_quat.toRotationMatrix();
-            img_pt.has_gps = true;
+            img_pt.gps = liegroups::SE3(gps_quat, gps_translation);
         } else {
-            img_pt.has_gps = false;
             std::clog << "There is no gps data at img_pt with id: " << id << std::endl;
         }
         if (result_time_map.find(time_key) != result_time_map.end()) {
             const std::vector<std::string>& parsed_line_ground_truth = result_time_map.at(time_key);
-            img_pt.ground_truth.translation() = Eigen::Vector3d(
+            Eigen::Vector3d ground_truth_translation(
                 std::stod(parsed_line_ground_truth[static_cast<size_t>(ResultIdx::TRAN_X)]),
                 std::stod(parsed_line_ground_truth[static_cast<size_t>(ResultIdx::TRAN_Y)]),
                 std::stod(parsed_line_ground_truth[static_cast<size_t>(ResultIdx::TRAN_Z)]));
@@ -207,10 +191,8 @@ FourSeasonsParser::FourSeasonsParser(const std::filesystem::path& root_dir,
                 std::stod(parsed_line_ground_truth[static_cast<size_t>(ResultIdx::QUAT_X)]),
                 std::stod(parsed_line_ground_truth[static_cast<size_t>(ResultIdx::QUAT_Y)]),
                 std::stod(parsed_line_ground_truth[static_cast<size_t>(ResultIdx::QUAT_Z)]));
-            img_pt.ground_truth.linear() = ground_truth_quat.toRotationMatrix();
-            img_pt.has_ground_truth = true;
+            img_pt.ground_truth = liegroups::SE3(ground_truth_quat, ground_truth_translation);
         } else {
-            img_pt.has_ground_truth = false;
             std::clog << "There is no ground truth data at img_pt with id: " << id << std::endl;
         }
         img_pt_vector_.push_back(img_pt);
@@ -249,7 +231,7 @@ FourSeasonsParser::FourSeasonsTransforms::FourSeasonsTransforms(
     }
 }
 
-Eigen::Isometry3d FourSeasonsParser::FourSeasonsTransforms::get_transform_from_line(
+liegroups::SE3 FourSeasonsParser::FourSeasonsTransforms::get_transform_from_line(
     const std::string& line) {
     enum TransformEntry { T_X, T_Y, T_Z, Q_X, Q_Y, Q_Z, Q_W };
     std::vector<std::string> parsed_transform_line = parse_line_adv(line, ",");
@@ -264,14 +246,12 @@ Eigen::Isometry3d FourSeasonsParser::FourSeasonsTransforms::get_transform_from_l
     for (const std::string& num : parsed_transform_line) {
         transform_nums.push_back(static_cast<double>(std::stod(num)));
     }
-    Eigen::Isometry3d transform;
-    transform.translation() =
-        Eigen::Vector3d(transform_nums[TransformEntry::T_X], transform_nums[TransformEntry::T_Y],
-                        transform_nums[TransformEntry::T_Z]);
-    Eigen::Quaterniond quat(
+    Eigen::Vector3d translation(transform_nums[TransformEntry::T_X],
+                                transform_nums[TransformEntry::T_Y],
+                                transform_nums[TransformEntry::T_Z]);
+    Eigen::Quaterniond rotation(
         transform_nums[TransformEntry::Q_W], transform_nums[TransformEntry::Q_X],
         transform_nums[TransformEntry::Q_Y], transform_nums[TransformEntry::Q_Z]);
-    transform.linear() = quat.toRotationMatrix();
-    return transform;
+    return liegroups::SE3(rotation, translation);
 }
 }  // namespace robot::experimental::learn_descriptors

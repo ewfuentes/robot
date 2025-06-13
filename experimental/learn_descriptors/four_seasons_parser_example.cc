@@ -53,9 +53,21 @@ int main(int argc, char* argv[]) {
                     cv::Scalar(0, 255, 0), 2);
         const lrn_desc::ImagePoint img_pt = parser.get_image_point(i);
         std::stringstream ss_gps;
-        ss_gps << "GPS: " << img_pt.gps.translation();
+        ss_gps << "GPS: ";
+        if (img_pt.gps) {
+            const Eigen::Vector3d& t = img_pt.gps->translation();
+            ss_gps << t.x() << ", " << t.y() << ", " << t.z();
+        } else {
+            ss_gps << "N/A";
+        }
         std::stringstream ss_ground_truth;
-        ss_ground_truth << "Ground Truth: " << img_pt.ground_truth.translation();
+        ss_ground_truth << "Ground Truth: ";
+        if (img_pt.ground_truth) {
+            const Eigen::Vector3d& t = img_pt.ground_truth->translation();
+            ss_ground_truth << t.x() << ", " << t.y() << ", " << t.z();
+        } else {
+            ss_ground_truth << "N/A";
+        }
         cv::putText(img, ss_gps.str(), cv::Point(10, 40), cv::FONT_HERSHEY_SIMPLEX, 0.5,
                     cv::Scalar(0, 255, 0), 2);
         cv::putText(img, ss_ground_truth.str(), cv::Point(10, 60), cv::FONT_HERSHEY_SIMPLEX, 0.5,
