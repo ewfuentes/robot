@@ -1,0 +1,11 @@
+[project]
+name = "aws"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "boto3>=1.38.35",
+    "pip>=25.1.1",
+    "sagemaker>=2.246.0",
+]

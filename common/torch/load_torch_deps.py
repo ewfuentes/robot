@@ -25,10 +25,10 @@ def _preload_cuda_deps(lib_folder: str, lib_name: str) -> None:
     for path in sys.path:
         nvidia_path = os.path.join(path, 'nvidia')
 
-        if os.path.exists(nvidia_path):
-            path_to_search = nvidia_path
-        elif os.path.exists(os.path.join(path, lib_folder)):
+        if os.path.exists(os.path.join(path, lib_folder)):
             path_to_search = path
+        elif os.path.exists(nvidia_path):
+            path_to_search = nvidia_path
         else:
             continue
         candidate_lib_paths = glob.glob(os.path.join(path_to_search, lib_folder, 'lib', lib_name))
