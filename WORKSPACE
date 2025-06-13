@@ -21,7 +21,7 @@ http_archive(
 http_archive(
   name = "symphony_lake_snippet",
   urls = ["https://www.dropbox.com/scl/fi/gh7855qdos5mspinst77k/symphony_lake_snippet.zip?rlkey=mg7qe0gq51r446dwhr9g2wiut&st=774393fx&dl=1"],
-  build_file = "//third_party:BUILD.symphony_lake_snippet",
+  build_file = "//third_party:BUILD.zip_file",
   sha256 = "f16211fb370c9471153c9ed4a345b9fb848d292dbb8b7dc26fea24cb30ba5c15",
 )
 
@@ -618,4 +618,11 @@ http_archive(
   urls=["https://www.dropbox.com/scl/fi/6breqzx8dwawzoouxu4w3/vigor_snippet.zip?rlkey=104sa118w76lbudmngd6wnc4i&st=972uxtcd&dl=1"],
   build_file="//third_party:BUILD.zip_file",
   integrity = "sha256-0+V3fJARho+tRPXaRtzXMyhu/ueFzFdD3AIVf4OKm6w=",
+)
+
+http_archive(
+  name = "four_seasons_snippet",
+  urls = ["https://www.dropbox.com/scl/fi/7tlt6cp1l441cml4s8jmr/four_seasons_snippet.zip?rlkey=ltyj7s03blj1ywh7eqlqoi70q&st=yv7ckm4m&dl=1"],
+  build_file = "//third_party:BUILD.zip_file",
+  sha256 = "f7b6b41d14785bcfc0bf75c4f95e9faad1a80377c0d818a8c5aaf814c0a0aa01",
 )
