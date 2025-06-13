@@ -17,6 +17,13 @@ TEST(FourSeasonsParserTest, parser_test) {
 
     FourSeasonsParser parser(snippet_dir, calibration_dir);
 
+    std::cout << "T_S_AS: \n"
+              << parser.get_T_S_AS().matrix() << "\nT_cam_imu : \n"
+              << parser.get_T_cam_imu().matrix() << "\nT_gps_imu: \n"
+              << parser.get_T_gps_imu().matrix() << "\nT_e_gpsw: \n"
+              << parser.get_T_e_gpsw().matrix() << "\ngnss scale: \n"
+              << parser.get_gnss_scale() << std::endl;
+
     EXPECT_NE(parser.num_images(), 0);
 
     cv::Mat img_first_and_last;
@@ -26,8 +33,8 @@ TEST(FourSeasonsParserTest, parser_test) {
     for (size_t i = 0; i < parser.num_images(); i++) {
         cv::Mat img = parser.load_image(i);
         const ImagePoint img_pt = parser.get_image_point(i);
-        std::cout << "\rGPS: " << img_pt.gps.translation()
-                  << "\tGround Truth: " << img_pt.ground_truth.matrix() << std::flush;
+        std::cout << "\nImage Point " << i << ":\nGPS: " << img_pt.gps.translation()
+                  << "\t\nGround Truth: " << img_pt.ground_truth.matrix() << "\n";
     }
 }
 }  // namespace robot::experimental::learn_descriptors

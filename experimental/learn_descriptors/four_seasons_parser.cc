@@ -6,7 +6,6 @@
 #include <exception>
 #include <fstream>
 #include <iostream>
-#include <sstream>
 #include <string>
 #include <typeinfo>
 #include <unordered_map>
@@ -39,8 +38,6 @@ enum class ResultIdx {
 };
 enum class CalibIdx { FX = 1, FY = 2, CX = 3, CY = 4, K1 = 5, K2 = 6, K3 = 7, K4 = 8 };
 
-namespace lrn_descs = robot::experimental::learn_descriptors;
-
 std::vector<std::string> parse_line_adv(const std::string& line, const std::string& delim = " ") {
     std::vector<std::string> parsedline;
     if (delim != " ") {
@@ -67,6 +64,8 @@ std::vector<std::string> parse_line_adv(const std::string& line, const std::stri
     }
     return parsedline;
 }
+
+namespace lrn_descs = robot::experimental::learn_descriptors;
 
 lrn_descs::FourSeasonsParser::CameraCalibrationFisheye load_camera_calibration(
     const std::filesystem::path& calibration_dir) {
@@ -110,8 +109,8 @@ size_t min_sig_figs_result_time(const std::filesystem::path& path_result) {
     return min_figs;
 }
 
-typedef std::unordered_map<size_t, std::vector<std::string>> TimeDataMap;
-typedef std::vector<std::pair<size_t, std::vector<std::string>>> TimeDataList;
+using TimeDataMap = std::unordered_map<size_t, std::vector<std::string>>;
+using TimeDataList = std::vector<std::pair<size_t, std::vector<std::string>>>;
 
 const TimeDataList create_img_time_data_list(const std::filesystem::path& path_img,
                                              const size_t time_sig_figs) {
@@ -161,7 +160,8 @@ FourSeasonsParser::FourSeasonsParser(const std::filesystem::path& root_dir,
                                      const std::filesystem::path& calibration_dir)
     : root_dir_(root_dir),
       img_dir_(root_dir / "distorted_images" / "cam0"),
-      cal_(load_camera_calibration(calibration_dir)) {
+      cal_(load_camera_calibration(calibration_dir)),
+      transforms_(root_dir / "Transformations.txt") {
     std::cout << "oooga" << std::endl;
     const std::filesystem::path path_img = root_dir_ / "times.txt";
     const std::filesystem::path path_gps = root_dir_ / "GNSSPoses.txt";
@@ -218,11 +218,60 @@ FourSeasonsParser::FourSeasonsParser(const std::filesystem::path& root_dir,
     }
 }
 
-cv::Mat FourSeasonsParser::load_image(const size_t idx) {
-    return img_pt_vector_[idx].load_image(img_dir_);
+cv::Mat FourSeasonsParser::load_image(const size_t idx) const {
+    return get_image_point(idx).load_image(img_dir_);
 }
 
-const ImagePoint& FourSeasonsParser::get_image_point(const size_t idx) {
-    return img_pt_vector_[idx];
+FourSeasonsParser::FourSeasonsTransforms::FourSeasonsTransforms(
+    const std::filesystem::path& path_transforms) {
+    std::ifstream file_transforms(path_transforms);
+    std::string line;
+    while (std::getline(file_transforms, line)) {
+        if (line.find("transform_S_AS") != std::string::npos) {
+            std::getline(file_transforms, line);
+            T_S_AS = get_transform_from_line(line);
+        } else if (line.find("TS_cam_imu") != std::string::npos) {
+            std::getline(file_transforms, line);
+            T_cam_imu = get_transform_from_line(line);
+        } else if (line.find("transform_w_gpsw") != std::string::npos) {
+            std::getline(file_transforms, line);
+            T_w_gpsw = get_transform_from_line(line);
+        } else if (line.find("transform_gps_imu") != std::string::npos) {
+            std::getline(file_transforms, line);
+            T_gps_imu = get_transform_from_line(line);
+        } else if (line.find("transform_e_gpsw") != std::string::npos) {
+            std::getline(file_transforms, line);
+            T_e_gpsw = get_transform_from_line(line);
+        } else if (line.find("GNSS scale") != std::string::npos) {
+            std::getline(file_transforms, line);
+            gnss_scale = std::stod(line);
+        }
+    }
+}
+
+Eigen::Isometry3d FourSeasonsParser::FourSeasonsTransforms::get_transform_from_line(
+    const std::string& line) {
+    enum TransformEntry { T_X, T_Y, T_Z, Q_X, Q_Y, Q_Z, Q_W };
+    std::vector<std::string> parsed_transform_line = parse_line_adv(line, ",");
+    if (parsed_transform_line.size() < 7) {
+        std::stringstream error_stream;
+        error_stream << "parsed_transform_line doesn't have sufficient entries for "
+                        "transform! parsed_transform_line.size(): "
+                     << parsed_transform_line.size() << std::endl;
+        throw std::runtime_error(error_stream.str());
+    }
+    std::vector<double> transform_nums;
+    for (const std::string& num : parsed_transform_line) {
+        transform_nums.push_back(static_cast<double>(std::stod(num)));
+    }
+    Eigen::Isometry3d transform;
+    transform.translation() =
+        Eigen::Vector3d(transform_nums[TransformEntry::T_X], transform_nums[TransformEntry::T_Y],
+                        transform_nums[TransformEntry::T_Z]);
+    Eigen::Quaterniond quat(
+        transform_nums[TransformEntry::Q_W], transform_nums[TransformEntry::Q_X],
+        transform_nums[TransformEntry::Q_Y], transform_nums[TransformEntry::Q_Z]);
+    transform.linear() = quat.toRotationMatrix();
+    return transform;
 }
 }  // namespace robot::experimental::learn_descriptors
