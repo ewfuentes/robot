@@ -11,7 +11,6 @@ py_binary(
     requirement("tqdm"),
     requirement("IPython"),
     requirement("msgspec"),
-    requirement("pytorch_memlab"),
     requirement("pyyaml"),
     "//common/python:serialization",
     "//common/torch:load_torch_deps",
