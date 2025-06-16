@@ -21,3 +21,19 @@ Tooling Setup
 
 Launching a  Job
 ----------------
+To launch a training job, run `uv run launch_training_job.py --train_config <Path to Train Config>`.
+
+The training job will be visible on the Sagemaker AI Dashboard.
+
+Implementation Details
+----------------------
+
+When you launch a training job, all sources in the `src` directory are uploaded to the
+`s3://sagemaker-us-east-2-390402551597/source/<job_name>` folder on S3. In addition,
+the `//experimental/overhead_matching/swag/scripts:train_wheel` target is built and uploaded to
+`s3://sagemaker-us-east-2-390402551597/wheels/<sha256 hash>/` folder on S3. Finally, the train config is uploaded to
+`s3://sagemaker-us-east-2-390402551597/train_configs/<train_config>_<job_name>.yaml`.
+
+The VIGOR dataset lives at `s3://rrg-overhead-matching/datasets/VIGOR`. The model output for a training job is at
+`s3://rrg-overhead-matching/models/<job_name>/output/model.tar.gz`.
+
