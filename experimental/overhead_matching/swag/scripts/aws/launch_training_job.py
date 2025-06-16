@@ -91,8 +91,7 @@ def main(train_config_path):
         framework_version='2.6.0',
         py_version="py312",
         instance_count=1,
-        # instance_type='ml.g4dn.xlarge',
-        instance_type='ml.g5.xlarge',
+        instance_type='ml.g5.2xlarge',
         output_path="s3://rrg-overhead-matching/models",
         code_location=f"s3://{bucket}/source",
         role=role_arn,
@@ -106,7 +105,6 @@ def main(train_config_path):
         }
     )
 
-    print("starting training job:", job_name)
     estimator.fit({
         "train": "s3://rrg-overhead-matching/datasets/VIGOR/Chicago",
         "config_file": config_s3_uri},
