@@ -14,6 +14,7 @@ py_library(
     requirement("scipy"),
     requirement("matplotlib"),
     requirement("PyGObject"),
+    requirement("pytorch_memlab"),
     "//common/torch:load_torch_deps",
     "//common/math:haversine",
   ]

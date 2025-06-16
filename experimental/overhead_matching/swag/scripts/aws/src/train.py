@@ -41,7 +41,8 @@ install_s3_wheel(wheel_s3_uri)
 import experimental.overhead_matching.swag.scripts.train as t
 
 train_config_path = glob.glob("/opt/ml/input/data/config_file/*.yaml")[0]
-print(t.main)
 t.main(dataset_path=Path("/opt/ml/input/data/train"),
-       opt_config=Path(train_config_path),
-       output_dir=Path("/opt/ml/model"))
+       opt_config_path=Path(train_config_path),
+       output_dir=Path("/opt/ml/model"),
+       tensorboard_output=Path("/opt/ml/output/tensorboard"),
+       quiet=True)

@@ -76,8 +76,7 @@ def main(train_config_path):
     wheel_s3_uri = upload_wheel_with_sha256(str(wheel_path), bucket)
 
     tensorboard_config = TensorBoardOutputConfig(
-        s3_output_path="s3://tensorboard_logs/",
-        container_local_output_path="/opt/ml/model/logs"
+        s3_output_path="s3://rrg-overhead-matching/tensorboard_logs/",
     )
 
     iam = boto3.client("iam")
@@ -85,7 +84,7 @@ def main(train_config_path):
     role_arn = iam.get_role(RoleName=role_name)["Role"]["Arn"]
     estimator = PyTorch(
         dependencies=[],
-        source_dir='.',
+        source_dir='src',
         entry_point="train.py",
         # The wheel already contains the version of pytorch that is used in the robot repo,
         # so this option is just used to select a docker container
@@ -95,13 +94,15 @@ def main(train_config_path):
         # instance_type='ml.g4dn.xlarge',
         instance_type='ml.g5.xlarge',
         output_path="s3://rrg-overhead-matching/models",
+        code_location=f"s3://{bucket}/source",
         role=role_arn,
         tensorboard_output_config=tensorboard_config,
         tags={
             "config": train_config_path.stem
         },
         environment={
-            "CUSTOM_WHEEL_S3_URI": wheel_s3_uri
+            "CUSTOM_WHEEL_S3_URI": wheel_s3_uri,
+            "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"
         }
     )
 
@@ -110,10 +111,7 @@ def main(train_config_path):
         "train": "s3://rrg-overhead-matching/datasets/VIGOR/Chicago",
         "config_file": config_s3_uri},
         job_name=job_name,
-        experiment_config={
-            "ExperimentName": "all_chicago",
-            "TrialName": train_config_path.stem
-        })
+        wait=False)
 
     print("Started Training Job:", estimator.latest_training_job.name)
     print("Model artifacts will be saved to:", estimator.output_path)

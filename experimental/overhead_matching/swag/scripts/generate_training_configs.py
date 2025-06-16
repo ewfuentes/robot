@@ -9,7 +9,7 @@ if __name__ == "__main__":
     for (has_lr_schedule, has_hard_negative_mining, has_pos_semipos) in itertools.product(*[[False, True]]*3):
         print(f"{has_lr_schedule=} {has_hard_negative_mining=} {has_pos_semipos=}")
 
-        NUM_EPOCHS = 100
+        NUM_EPOCHS = 60
         random_sample_type = (
                 HardNegativeMiner.RandomSampleType.POS_SEMIPOS
                 if has_pos_semipos else
@@ -19,7 +19,7 @@ if __name__ == "__main__":
 
         out = OptimizationConfig(
             num_epochs=NUM_EPOCHS,
-            batch_size=20,
+            batch_size=18,
             lr_schedule=LearningRateSchedule(
                     initial_lr=1e-4,
                     lr_step_factor=0.25 if has_lr_schedule else 1.0,

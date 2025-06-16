@@ -498,7 +498,7 @@ class HardNegativeMiner:
                  hard_negative_fraction: float = 0.5,
                  hard_negative_pool_size: int = 100,
                  generator: torch.Generator | None = None,
-                 device='cuda'):
+                 device='cpu'):
 
         if dataset is not None:
             assert (num_panoramas is None and
@@ -597,8 +597,10 @@ class HardNegativeMiner:
             satellite_patch_idxs = [x["index"] for x in batch.satellite_metadata]
         assert panorama_idxs is not None and satellite_patch_idxs is not None
 
-        self._panorama_embeddings[panorama_idxs] = panorama_embeddings
-        self._satellite_embeddings[satellite_patch_idxs] = satellite_embeddings
+        device = self._panorama_embeddings.device
+
+        self._panorama_embeddings[panorama_idxs] = panorama_embeddings.to(device)
+        self._satellite_embeddings[satellite_patch_idxs] = satellite_embeddings.to(device)
 
     def set_sample_mode(self, mode: SampleMode):
         self._sample_mode = mode

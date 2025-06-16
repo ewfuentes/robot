@@ -46,6 +46,7 @@ class OptimizationConfig:
 class TrainConfig:
     opt_config: OptimizationConfig
     output_dir: Path
+    tensorboard_output: Path
 
 
 @dataclass
@@ -76,14 +77,14 @@ def create_pairs(panorama_metadata, satellite_metadata) -> Pairs:
     return out
 
 
-def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
+def train(config: TrainConfig, *, dataset, panorama_model, satellite_model, quiet):
     config.output_dir.mkdir(parents=True, exist_ok=True)
     # save config:
     config_dict = dataclass_to_dict(config)
     with open(config.output_dir / "config.json", 'w') as f:
         json.dump(config_dict, f)
     writer = SummaryWriter(
-        log_dir=config.output_dir / "logs"
+        log_dir=config.tensorboard_output
     )
     # write hyperparameters
     writer.add_hparams(
@@ -119,7 +120,7 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
     torch.set_printoptions(linewidth=200)
 
     total_batches = 0
-    for epoch_idx in tqdm.tqdm(range(config.opt_config.num_epochs),  desc="Epoch"):
+    for epoch_idx in tqdm.tqdm(range(opt_config.num_epochs),  desc="Epoch"):
         for batch_idx, batch in enumerate(dataloader):
             pairs = create_pairs(
                 batch.panorama_metadata,
@@ -200,22 +201,24 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
             writer.add_scalar("train/loss_semipos", semipos_loss.item(), global_step=total_batches)
             writer.add_scalar("train/loss_neg", neg_loss.item(), global_step=total_batches)
             writer.add_scalar("train/loss", loss.item(), global_step=total_batches)
-            print(f"{epoch_idx=:4d} {batch_idx=:4d} lr: {lr_scheduler.get_last_lr()[0]:.2e} " +
-                  f" num_pos_pairs: {len(pairs.positive_pairs):3d}" +
-                  f" num_semipos_pairs: {len(pairs.semipositive_pairs):3d}" +
-                  f" num_neg_pairs: {len(pairs.negative_pairs):3d} {pos_loss.item()=:0.6f}" +
-                  f" {semipos_loss.item()=:0.6f} {neg_loss.item()=:0.6f} {loss.item()=:0.6f}", end='\r')
-            if batch_idx % 50 == 0:
-                print()
+            if not quiet:
+                print(f"{epoch_idx=:4d} {batch_idx=:4d} lr: {lr_scheduler.get_last_lr()[0]:.2e} " +
+                      f" num_pos_pairs: {len(pairs.positive_pairs):3d}" +
+                      f" num_semipos_pairs: {len(pairs.semipositive_pairs):3d}" +
+                      f" num_neg_pairs: {len(pairs.negative_pairs):3d} {pos_loss.item()=:0.6f}" +
+                      f" {semipos_loss.item()=:0.6f} {neg_loss.item()=:0.6f} {loss.item()=:0.6f}", end='\r')
+                if batch_idx % 50 == 0:
+                    print()
 
             total_batches += 1
-        print()
+        if not quiet:
+            print()
         lr_scheduler.step()
 
-        if epoch_idx > opt_config.enable_hard_negative_sampling_after_epoch_idx:
+        if epoch_idx >= opt_config.enable_hard_negative_sampling_after_epoch_idx:
             miner.set_sample_mode(vigor_dataset.HardNegativeMiner.SampleMode.HARD_NEGATIVE)
 
-        if epoch_idx % 10 == 0:
+        if (epoch_idx % 10 == 0) or (epoch_idx == opt_config.num_epochs - 1):
             # Periodically save the model
             config.output_dir.mkdir(parents=True, exist_ok=True)
             panorama_model_path = config.output_dir / f"{epoch_idx:04d}_panorama"
@@ -228,7 +231,7 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model):
                        (batch.satellite[:opt_config.batch_size].cuda(),))
 
 
-def main(dataset_path: Path, opt_config_path: Path, output_dir: Path):
+def main(dataset_path: Path, opt_config_path: Path, output_dir: Path, tensorboard_output: Path, quiet: bool):
     PANORAMA_NEIGHBOR_RADIUS_DEG = 1e-6
     NUM_SAFA_HEADS = 4
     dataset_config = vigor_dataset.VigorDatasetConfig(
@@ -258,6 +261,7 @@ def main(dataset_path: Path, opt_config_path: Path, output_dir: Path):
 
     config = TrainConfig(
         output_dir=output_dir,
+        tensorboard_output=tensorboard_output,
         opt_config=opt_config)
 
     train(
@@ -265,6 +269,7 @@ def main(dataset_path: Path, opt_config_path: Path, output_dir: Path):
         dataset=dataset,
         panorama_model=panorama_model,
         satellite_model=satellite_model,
+        quiet=quiet
     )
 
 
@@ -274,6 +279,10 @@ if __name__ == "__main__":
     parser.add_argument("--dataset", help="path to dataset", required=True)
     parser.add_argument("--output_dir", help="path to output", required=True)
     parser.add_argument("--opt_config", help="path to optimization config", required=True)
+    parser.add_argument("--tensorboard_output")
+    parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 
-    main(Path(args.dataset), Path(args.opt_config), Path(args.output_dir))
+    if args.tensorboard_output is None:
+        args.tensorboard_output = Path(args.output_dir) / "logs"
+    main(Path(args.dataset), Path(args.opt_config), Path(args.output_dir), Path(args.tensorboard_output), quiet=args.quiet)
