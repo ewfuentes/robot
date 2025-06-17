@@ -176,21 +176,21 @@ def hash_model(model: torch.nn.Module):
     m = hashlib.sha256()
     state_dict = model.state_dict()
     for k in sorted(model.state_dict()):
-        m.update(k)
+        m.update(k.encode())
         m.update(state_dict[k].cpu().numpy().tobytes())
     return m.digest()
 
 def hash_dataset(dataset: vd.VigorDataset):
+    import struct
     m = hashlib.sha256()
 
     for i, row in dataset._panorama_metadata.iterrows():
-        m.update(i)
-        m.update(row.pano_id)
+        m.update(i.to_bytes(length=4, byteorder='little', signed=True))
+        m.update(row.pano_id.encode())
 
-    for i, row in dataset._sat_metadata.iterrows():
-        m.update(i)
-        m.update(row.lat)
-        m.update(row.lon)
+    for i, row in dataset._satellite_metadata.iterrows():
+        m.update(i.to_bytes(length=4, byteorder='little', signed=True))
+        m.update(struct.pack('<dd', row.lat, row.lon))
 
     return m.digest()
 
@@ -207,28 +207,29 @@ def compute_similarity_matrix(
         sat_model: torch.nn.Module,
         pano_model: torch.nn.Module,
         dataset: vd.VigorDataset,
-        device: torch.Device):
+        device: torch.device):
     sat_data_view = dataset.get_sat_patch_view()
     sat_data_view_loader = vd.get_dataloader(sat_data_view, batch_size=64, num_workers=16)
     pano_data_view = dataset.get_pano_view()
     pano_data_view_loader = vd.get_dataloader(pano_data_view, batch_size=64, num_workers=16)
 
+    print("building satellite embedding database")
     sat_embeddings = sed.build_satellite_db(
         sat_model, sat_data_view_loader, device=device)
-    print("building satellite embedding database done")
     print("building panorama embedding database")
     pano_embeddings = sed.build_panorama_db(
         pano_model, pano_data_view_loader, device=device)
     print("building all similarity")
-    return sed.calculate_cos_similarity_against_database(
+    out = sed.calculate_cos_similarity_against_database(
         pano_embeddings, sat_embeddings)  # pano_embeddings x sat_patches
+    return out
 
 
 def compute_cached_similarity_matrix(
         sat_model: torch.nn.Module,
         pano_model: torch.nn.Module,
         dataset: vd.VigorDataset,
-        device: torch.Device):
+        device: torch.device):
     combined_hash = compute_combined_hash(sat_model, pano_model, dataset)
     file_path = Path(f"~/.cache/robot/overhead_matching/similarity_matrix/{combined_hash}.pt").expanduser()
     if file_path.exists():
@@ -256,7 +257,6 @@ def evaluate_model_on_paths(
     device: torch.device = "cuda:0",
 ) -> None:
     all_final_particle_error_meters = []
-    print("building satellite embedding database")
     with torch.no_grad():
         sat_patch_positions = vigor_dataset.get_patch_positions().to(device)
         sat_patch_kdtree = build_kd_tree(sat_patch_positions)
