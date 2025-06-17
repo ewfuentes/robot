@@ -12,13 +12,16 @@
 #include "common/liegroups/se3.hh"
 #include "common/time/robot_time.hh"
 
+using Vector6d = Eigen::Matrix<double, 6, 1>;
+
 namespace robot::experimental::learn_descriptors {
 struct ImagePoint {
-    size_t id;                          // idx for DB
-    size_t seq;                         // time in nanoseconds (also the name of image)
-    std::optional<liegroups::SE3> gps;  // UTM. Not sure why the dataset has transforms for GPS, not
-                                        // sure if rotation or trans_z is reliable
-    std::optional<liegroups::SE3> ground_truth;
+    size_t id;                                // idx for DB
+    size_t seq;                               // time in nanoseconds (also the name of image)
+    std::optional<liegroups::SE3> reference;  // UTM. Not sure why the dataset has transforms for
+                                              // GPS, not sure if rotation or trans_z is reliable
+    std::optional<liegroups::SE3> vio_solution;
+    std::optional<Vector6d> gps;
 
     const std::string to_string() const {
         auto se3_to_str = [](const liegroups::SE3& se3) {
@@ -32,15 +35,15 @@ struct ImagePoint {
         std::stringstream ss;
         ss << "Image Point " << id << ":\n";
         ss << "\tseq: " << seq << "\n";
-        ss << "\tgps: ";
-        if (gps) {
-            ss << "\n" << se3_to_str(*gps);
+        ss << "\reference: ";
+        if (reference) {
+            ss << "\n" << se3_to_str(*reference);
         } else {
             ss << "N/A";
         }
-        ss << "\n\tground_truth: ";
-        if (ground_truth) {
-            ss << "\n" << se3_to_str(*ground_truth);
+        ss << "\n\tvio_solution: ";
+        if (vio_solution) {
+            ss << "\n" << se3_to_str(*vio_solution);
         } else {
             ss << "N/A";
         }
@@ -49,9 +52,6 @@ struct ImagePoint {
 
     cv::Mat load_image(const std::filesystem::path& img_dir) const {
         const std::filesystem::path path(img_dir / (std::to_string(seq) + ".png"));
-        if (std::getenv("DEBUG")) {
-            std::cout << "getting image at " << path << std::endl;
-        }
         return cv::imread(path);
     }
 };

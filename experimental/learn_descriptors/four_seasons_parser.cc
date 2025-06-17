@@ -81,11 +81,11 @@ T round_to_sig_figs(T val, int n) {
 }
 
 // minimum sig figs of time in seconds (of type double) for all entries of results.txt
-size_t min_sig_figs_result_time(const std::filesystem::path& path_result) {
-    std::ifstream file_result(path_result);
+size_t min_sig_figs_result_time(const std::filesystem::path& path_vio) {
+    std::ifstream file_vio(path_vio);
     std::string line;
     int min_figs = INT_MAX;
-    while (std::getline(file_result, line)) {
+    while (std::getline(file_vio, line)) {
         const std::vector<std::string> parsed_line = parse_line_adv(line, " ");
         const std::string str_time_seconds = parsed_line[static_cast<size_t>(ResultIdx::TIME_SEC)];
         const int figs =
@@ -113,32 +113,33 @@ const TimeDataList create_img_time_data_list(const std::filesystem::path& path_i
     return time_map_img;
 }
 
-const TimeDataMap create_gps_time_data_map(const std::filesystem::path& path_gps,
-                                           const size_t time_sig_figs) {
-    TimeDataMap time_map_gps;
-    std::ifstream file_gps(path_gps);
+const TimeDataMap create_reference_time_data_map(const std::filesystem::path& path_reference,
+                                                 const size_t time_sig_figs) {
+    TimeDataMap time_map_reference;
+    std::ifstream file_reference(path_reference);
     std::string line;
-    std::getline(file_gps, line);  // advance a line to get past the top comment in GNSSPoses.txt
-    while (std::getline(file_gps, line)) {
+    std::getline(file_reference,
+                 line);  // advance a line to get past the top comment in GNSSPoses.txt
+    while (std::getline(file_reference, line)) {
         std::vector<std::string> parsed_line = parse_line_adv(line, ",");
         size_t time_ns = std::stoull(parsed_line[static_cast<size_t>(GPSIdx::TIME_NS)]);
-        time_map_gps.insert({round_to_sig_figs(time_ns, time_sig_figs), parsed_line});
+        time_map_reference.insert({round_to_sig_figs(time_ns, time_sig_figs), parsed_line});
     }
-    return time_map_gps;
+    return time_map_reference;
 }
 
-const TimeDataMap create_result_time_data_map(const std::filesystem::path& path_result,
-                                              const size_t time_sig_figs) {
-    TimeDataMap time_map_result;
-    std::ifstream file_result(path_result);
+const TimeDataMap create_vio_time_data_map(const std::filesystem::path& path_vio,
+                                           const size_t time_sig_figs) {
+    TimeDataMap time_map_vio;
+    std::ifstream file_vio(path_vio);
     std::string line;
-    while (std::getline(file_result, line)) {
+    while (std::getline(file_vio, line)) {
         std::vector<std::string> parsed_line = parse_line_adv(line, " ");
         double time_seconds = std::stod(parsed_line[static_cast<size_t>(ResultIdx::TIME_SEC)]);
         size_t time_ns = time_seconds * 1e9;
-        time_map_result.insert({round_to_sig_figs(time_ns, time_sig_figs), parsed_line});
+        time_map_vio.insert({round_to_sig_figs(time_ns, time_sig_figs), parsed_line});
     }
-    return time_map_result;
+    return time_map_vio;
 }
 
 namespace robot::experimental::learn_descriptors {
@@ -150,14 +151,15 @@ FourSeasonsParser::FourSeasonsParser(const std::filesystem::path& root_dir,
       cal_(load_camera_calibration(calibration_dir)),
       transforms_(root_dir / "Transformations.txt") {
     const std::filesystem::path path_img = root_dir_ / "times.txt";
-    const std::filesystem::path path_gps = root_dir_ / "GNSSPoses.txt";
-    const std::filesystem::path path_result = root_dir_ / "result.txt";
+    const std::filesystem::path path_reference = root_dir_ / "GNSSPoses.txt";
+    const std::filesystem::path path_vio = root_dir_ / "result.txt";
     size_t id = 0;
 
-    const size_t min_time_sig_figs = min_sig_figs_result_time(path_result);
+    const size_t min_time_sig_figs = min_sig_figs_result_time(path_vio);
     TimeDataList img_time_list = create_img_time_data_list(path_img, min_time_sig_figs);
-    TimeDataMap gps_time_map = create_gps_time_data_map(path_gps, min_time_sig_figs);
-    TimeDataMap result_time_map = create_result_time_data_map(path_result, min_time_sig_figs);
+    TimeDataMap reference_time_map =
+        create_reference_time_data_map(path_reference, min_time_sig_figs);
+    TimeDataMap vio_time_map = create_vio_time_data_map(path_vio, min_time_sig_figs);
 
     for (const std::pair<size_t, std::vector<std::string>>& pair_time_data : img_time_list) {
         const size_t time_key = pair_time_data.first;
@@ -166,36 +168,36 @@ FourSeasonsParser::FourSeasonsParser(const std::filesystem::path& root_dir,
         img_pt.seq = std::stoull(pair_time_data.second[static_cast<size_t>(ImgIdx::TIME_NS)]);
         // img_pt.seq += time::RobotTimestamp::duration(
         // std::stoull(pair_time_data.second[static_cast<size_t>(ImgIdx::TIME_NS)]));
-        if (gps_time_map.find(time_key) != gps_time_map.end()) {
-            const std::vector<std::string>& parsed_line_gps = gps_time_map.at(time_key);
+        if (reference_time_map.find(time_key) != reference_time_map.end()) {
+            const std::vector<std::string>& parsed_line_reference = reference_time_map.at(time_key);
 
             Eigen::Vector3d gps_translation(
-                std::stod(parsed_line_gps[static_cast<size_t>(GPSIdx::TRAN_X)]),
-                std::stod(parsed_line_gps[static_cast<size_t>(GPSIdx::TRAN_Y)]),
-                std::stod(parsed_line_gps[static_cast<size_t>(GPSIdx::TRAN_Z)]));
+                std::stod(parsed_line_reference[static_cast<size_t>(GPSIdx::TRAN_X)]),
+                std::stod(parsed_line_reference[static_cast<size_t>(GPSIdx::TRAN_Y)]),
+                std::stod(parsed_line_reference[static_cast<size_t>(GPSIdx::TRAN_Z)]));
             Eigen::Quaterniond gps_quat(
-                std::stod(parsed_line_gps[static_cast<size_t>(GPSIdx::QUAT_W)]),
-                std::stod(parsed_line_gps[static_cast<size_t>(GPSIdx::QUAT_X)]),
-                std::stod(parsed_line_gps[static_cast<size_t>(GPSIdx::QUAT_Y)]),
-                std::stod(parsed_line_gps[static_cast<size_t>(GPSIdx::QUAT_Z)]));
-            img_pt.gps = liegroups::SE3(gps_quat, gps_translation);
+                std::stod(parsed_line_reference[static_cast<size_t>(GPSIdx::QUAT_W)]),
+                std::stod(parsed_line_reference[static_cast<size_t>(GPSIdx::QUAT_X)]),
+                std::stod(parsed_line_reference[static_cast<size_t>(GPSIdx::QUAT_Y)]),
+                std::stod(parsed_line_reference[static_cast<size_t>(GPSIdx::QUAT_Z)]));
+            img_pt.reference = liegroups::SE3(gps_quat, gps_translation);
         } else {
-            std::clog << "There is no gps data at img_pt with id: " << id << std::endl;
+            std::clog << "There is no reference data at img_pt with id: " << id << std::endl;
         }
-        if (result_time_map.find(time_key) != result_time_map.end()) {
-            const std::vector<std::string>& parsed_line_ground_truth = result_time_map.at(time_key);
+        if (vio_time_map.find(time_key) != vio_time_map.end()) {
+            const std::vector<std::string>& parsed_line_gps = vio_time_map.at(time_key);
             Eigen::Vector3d ground_truth_translation(
-                std::stod(parsed_line_ground_truth[static_cast<size_t>(ResultIdx::TRAN_X)]),
-                std::stod(parsed_line_ground_truth[static_cast<size_t>(ResultIdx::TRAN_Y)]),
-                std::stod(parsed_line_ground_truth[static_cast<size_t>(ResultIdx::TRAN_Z)]));
+                std::stod(parsed_line_gps[static_cast<size_t>(ResultIdx::TRAN_X)]),
+                std::stod(parsed_line_gps[static_cast<size_t>(ResultIdx::TRAN_Y)]),
+                std::stod(parsed_line_gps[static_cast<size_t>(ResultIdx::TRAN_Z)]));
             Eigen::Quaterniond ground_truth_quat(
-                std::stod(parsed_line_ground_truth[static_cast<size_t>(ResultIdx::QUAT_W)]),
-                std::stod(parsed_line_ground_truth[static_cast<size_t>(ResultIdx::QUAT_X)]),
-                std::stod(parsed_line_ground_truth[static_cast<size_t>(ResultIdx::QUAT_Y)]),
-                std::stod(parsed_line_ground_truth[static_cast<size_t>(ResultIdx::QUAT_Z)]));
-            img_pt.ground_truth = liegroups::SE3(ground_truth_quat, ground_truth_translation);
+                std::stod(parsed_line_gps[static_cast<size_t>(ResultIdx::QUAT_W)]),
+                std::stod(parsed_line_gps[static_cast<size_t>(ResultIdx::QUAT_X)]),
+                std::stod(parsed_line_gps[static_cast<size_t>(ResultIdx::QUAT_Y)]),
+                std::stod(parsed_line_gps[static_cast<size_t>(ResultIdx::QUAT_Z)]));
+            img_pt.vio_solution = liegroups::SE3(ground_truth_quat, ground_truth_translation);
         } else {
-            std::clog << "There is no ground truth data at img_pt with id: " << id << std::endl;
+            std::clog << "There is no vio solution data at img_pt with id: " << id << std::endl;
         }
         img_pt_vector_.push_back(img_pt);
         id++;
@@ -213,19 +215,19 @@ FourSeasonsParser::FourSeasonsTransforms::FourSeasonsTransforms(
     while (std::getline(file_transforms, line)) {
         if (line.find("transform_S_AS") != std::string::npos) {
             std::getline(file_transforms, line);
-            AS_from_S = get_transform_from_line(line);
+            S_from_AS = get_transform_from_line(line);
         } else if (line.find("TS_cam_imu") != std::string::npos) {
             std::getline(file_transforms, line);
-            imu_from_cam = get_transform_from_line(line);
+            cam_from_imu = get_transform_from_line(line);
         } else if (line.find("transform_w_gpsw") != std::string::npos) {
             std::getline(file_transforms, line);
-            gpsw_from_w = get_transform_from_line(line);
+            w_from_gpsw = get_transform_from_line(line);
         } else if (line.find("transform_gps_imu") != std::string::npos) {
             std::getline(file_transforms, line);
-            imu_from_gps = get_transform_from_line(line);
+            gps_from_imu = get_transform_from_line(line);
         } else if (line.find("transform_e_gpsw") != std::string::npos) {
             std::getline(file_transforms, line);
-            gpsw_from_e = get_transform_from_line(line);
+            e_from_gpsw = get_transform_from_line(line);
         } else if (line.find("GNSS scale") != std::string::npos) {
             std::getline(file_transforms, line);
             gnss_scale = std::stod(line);

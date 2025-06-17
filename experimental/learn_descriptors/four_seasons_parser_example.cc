@@ -46,12 +46,12 @@ int main(int argc, const char** argv) {
 
     ROBOT_CHECK(parser.num_images() != 0);
 
-    std::cout << "AS_from_S: \n"
-              << parser.get_AS_from_S().matrix() << "\n\nimu_from_cam : \n\n"
-              << parser.get_imu_from_cam().matrix() << "\n\nimu_from_gps: \n\n"
-              << parser.get_gpsw_from_w().matrix() << "\n\ngpsw_from_w : \n\n"
-              << parser.get_imu_from_gps().matrix() << "\n\ngpsw_from_e: \n\n"
-              << parser.get_gpsw_from_e().matrix() << "\n\ngnss scale: \n\n"
+    std::cout << "S_from_AS: \n"
+              << parser.get_S_from_AS().matrix() << "\n\ncam_from_imu : \n\n"
+              << parser.get_cam_from_imu().matrix() << "\n\ngps_from_imu: \n\n"
+              << parser.get_w_from_gpsw().matrix() << "\n\nw_from_gpsw : \n\n"
+              << parser.get_gps_from_imu().matrix() << "\n\ne_from_gpsw: \n\n"
+              << parser.get_e_from_gpsw().matrix() << "\n\ngnss scale: \n\n"
               << parser.get_gnss_scale() << std::endl;
 
     cv::Mat img_first_and_last;
@@ -67,16 +67,16 @@ int main(int argc, const char** argv) {
         const lrn_desc::ImagePoint img_pt = parser.get_image_point(i);
         std::stringstream ss_gps;
         ss_gps << "GPS: ";
-        if (img_pt.gps) {
-            const Eigen::Vector3d& t = img_pt.gps->translation();
+        if (img_pt.reference) {
+            const Eigen::Vector3d& t = img_pt.reference->translation();
             ss_gps << t.x() << ", " << t.y() << ", " << t.z();
         } else {
             ss_gps << "N/A";
         }
         std::stringstream ss_ground_truth;
         ss_ground_truth << "Ground Truth: ";
-        if (img_pt.ground_truth) {
-            const Eigen::Vector3d& t = img_pt.ground_truth->translation();
+        if (img_pt.vio_solution) {
+            const Eigen::Vector3d& t = img_pt.vio_solution->translation();
             ss_ground_truth << t.x() << ", " << t.y() << ", " << t.z();
         } else {
             ss_ground_truth << "N/A";

@@ -110,6 +110,16 @@ cc_test(
     "//common/liegroups:se3",
     "@com_google_absl//absl/strings:str_format",
     "@eigen",
-    ":four_seasons_parser"
+    ":four_seasons_parser",
+    "@nmea"
+  ]
+)
+
+cc_test(
+  name = "nmea_test",
+  srcs = ["nmea_test.cc"],
+  deps = [
+    "@com_google_googletest//:gtest_main",
+    "@nmea",
   ]
 )
