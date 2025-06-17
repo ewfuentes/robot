@@ -2,6 +2,8 @@
 
 #include <iostream>
 
+#include "common/check.hh"
+
 namespace robot::experimental::learn_descriptors {
 DataParser::DataParser(const std::filesystem::path &image_root_dir,
                        const std::vector<std::string> &survey_list) {

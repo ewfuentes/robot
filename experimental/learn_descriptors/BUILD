@@ -33,7 +33,8 @@ cc_library(
   visibility = ["//visibility:public"],
   srcs = ["symphony_lake_parser.cc"],
   deps = [
-    "@symphony_lake_parser"
+    "@symphony_lake_parser",
+    "//common:check"
   ]
 )
 
