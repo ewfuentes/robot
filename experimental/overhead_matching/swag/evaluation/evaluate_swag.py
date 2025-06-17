@@ -11,6 +11,7 @@ from common.math.haversine import find_d_on_unit_circle
 from experimental.overhead_matching.swag.evaluation.wag_config_pb2 import WagConfig
 from torch_kdtree import build_kd_tree
 from torch_kdtree.nn_distance import TorchKDTree
+import hashlib
 
 
 def evaluate_prediction_top_k(
@@ -170,6 +171,80 @@ def construct_inputs_and_evalulate_path(
                                  wag_config,
                                  generator)
 
+
+def hash_model(model: torch.nn.Module):
+    m = hashlib.sha256()
+    state_dict = model.state_dict()
+    for k in sorted(model.state_dict()):
+        m.update(k)
+        m.update(state_dict[k].cpu().numpy().tobytes())
+    return m.digest()
+
+def hash_dataset(dataset: vd.VigorDataset):
+    m = hashlib.sha256()
+
+    for i, row in dataset._panorama_metadata.iterrows():
+        m.update(i)
+        m.update(row.pano_id)
+
+    for i, row in dataset._sat_metadata.iterrows():
+        m.update(i)
+        m.update(row.lat)
+        m.update(row.lon)
+
+    return m.digest()
+
+
+def compute_combined_hash(sat_model, pano_model, dataset):
+    m = hashlib.sha256()
+    m.update(hash_model(sat_model))
+    m.update(hash_model(pano_model))
+    m.update(hash_dataset(dataset))
+    return m.hexdigest()
+
+
+def compute_similarity_matrix(
+        sat_model: torch.nn.Module,
+        pano_model: torch.nn.Module,
+        dataset: vd.VigorDataset,
+        device: torch.Device):
+    sat_data_view = dataset.get_sat_patch_view()
+    sat_data_view_loader = vd.get_dataloader(sat_data_view, batch_size=64, num_workers=16)
+    pano_data_view = dataset.get_pano_view()
+    pano_data_view_loader = vd.get_dataloader(pano_data_view, batch_size=64, num_workers=16)
+
+    sat_embeddings = sed.build_satellite_db(
+        sat_model, sat_data_view_loader, device=device)
+    print("building satellite embedding database done")
+    print("building panorama embedding database")
+    pano_embeddings = sed.build_panorama_db(
+        pano_model, pano_data_view_loader, device=device)
+    print("building all similarity")
+    return sed.calculate_cos_similarity_against_database(
+        pano_embeddings, sat_embeddings)  # pano_embeddings x sat_patches
+
+
+def compute_cached_similarity_matrix(
+        sat_model: torch.nn.Module,
+        pano_model: torch.nn.Module,
+        dataset: vd.VigorDataset,
+        device: torch.Device):
+    combined_hash = compute_combined_hash(sat_model, pano_model, dataset)
+    file_path = Path(f"~/.cache/robot/overhead_matching/similarity_matrix/{combined_hash}.pt").expanduser()
+    if file_path.exists():
+        all_similarity = torch.load(file_path).to(device)
+        print(f"USING CACHED similarity db found at {file_path}")
+    else:
+        all_similarity = compute_similarity_matrix(
+                sat_model=sat_model,
+                pano_model=pano_model,
+                dataset=dataset,
+                device=device)
+
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(all_similarity.cpu(), file_path)
+    return all_similarity
+
 def evaluate_model_on_paths(
     vigor_dataset: vd.VigorDataset,
     sat_model: torch.nn.Module,
@@ -181,30 +256,13 @@ def evaluate_model_on_paths(
     device: torch.device = "cuda:0",
 ) -> None:
     all_final_particle_error_meters = []
-    sat_data_view = vigor_dataset.get_sat_patch_view()
-    sat_data_view_loader = vd.get_dataloader(sat_data_view, batch_size=64, num_workers=16)
-    pano_data_view = vigor_dataset.get_pano_view()
-    pano_data_view_loader = vd.get_dataloader(pano_data_view, batch_size=64, num_workers=16)
     print("building satellite embedding database")
     with torch.no_grad():
         sat_patch_positions = vigor_dataset.get_patch_positions().to(device)
         sat_patch_kdtree = build_kd_tree(sat_patch_positions)
-        # sat_patch_kdtree = vigor_dataset._satellite_kdtree
-        if Path("/tmp/similarity_db.pt").exists():
-            all_similarity = torch.load("/tmp/similarity_db.pt").to(device)
-            print("USING CACHED similarity db found at /tmp/similarity_db.pt")
-        else:
-            sat_embeddings = sed.build_satellite_db(
-                sat_model, sat_data_view_loader, device=device)
-            print("building satellite embedding database done")
-            print("building panorama embedding database")
-            pano_embeddings = sed.build_panorama_db(
-                pano_model, pano_data_view_loader, device=device)
-            print("building all similarity")
-            all_similarity = sed.calculate_cos_similarity_against_database(
-                pano_embeddings, sat_embeddings)  # pano_embeddings x sat_patches
 
-            torch.save(all_similarity.cpu(), "/tmp/similarity_db.pt")
+        all_similarity = compute_cached_similarity_matrix(
+                sat_model=sat_model, pano_model=pano_model, dataset=vigor_dataset, device=device)
 
         print("starting iter over paths")
         for i, path in enumerate(tqdm.tqdm(paths)):
