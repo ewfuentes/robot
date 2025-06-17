@@ -10,6 +10,7 @@
 #include "Eigen/Core"
 #include "Eigen/Geometry"
 #include "common/liegroups/se3.hh"
+#include "common/time/robot_time.hh"
 
 namespace robot::experimental::learn_descriptors {
 struct ImagePoint {
@@ -18,9 +19,6 @@ struct ImagePoint {
     std::optional<liegroups::SE3> gps;  // UTM. Not sure why the dataset has transforms for GPS, not
                                         // sure if rotation or trans_z is reliable
     std::optional<liegroups::SE3> ground_truth;
-
-    bool has_gps = false;
-    bool has_ground_truth = false;
 
     const std::string to_string() const {
         auto se3_to_str = [](const liegroups::SE3& se3) {
@@ -49,8 +47,8 @@ struct ImagePoint {
         return ss.str();
     }
 
-    cv::Mat load_image(const std::filesystem::path& img_dir_) const {
-        const std::filesystem::path path(img_dir_ / (std::to_string(seq) + ".png"));
+    cv::Mat load_image(const std::filesystem::path& img_dir) const {
+        const std::filesystem::path path(img_dir / (std::to_string(seq) + ".png"));
         if (std::getenv("DEBUG")) {
             std::cout << "getting image at " << path << std::endl;
         }

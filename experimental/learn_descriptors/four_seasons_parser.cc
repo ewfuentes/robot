@@ -15,6 +15,7 @@
 #include "absl/strings/str_split.h"
 #include "absl/strings/strip.h"
 #include "common/liegroups/se3.hh"
+#include "common/time/robot_time.hh"
 
 enum class GPSIdx {
     TIME_NS = 0,
@@ -105,7 +106,7 @@ const TimeDataList create_img_time_data_list(const std::filesystem::path& path_i
     std::string line;
     while (std::getline(file_img, line)) {
         std::vector<std::string> parsed_line = parse_line_adv(line, " ");
-        size_t time_ns = std::stoul(parsed_line[static_cast<size_t>(ImgIdx::TIME_NS)]);
+        size_t time_ns = std::stoull(parsed_line[static_cast<size_t>(ImgIdx::TIME_NS)]);
         time_map_img.push_back(
             std::make_pair(round_to_sig_figs(time_ns, time_sig_figs), parsed_line));
     }
@@ -120,7 +121,7 @@ const TimeDataMap create_gps_time_data_map(const std::filesystem::path& path_gps
     std::getline(file_gps, line);  // advance a line to get past the top comment in GNSSPoses.txt
     while (std::getline(file_gps, line)) {
         std::vector<std::string> parsed_line = parse_line_adv(line, ",");
-        size_t time_ns = std::stoul(parsed_line[static_cast<size_t>(GPSIdx::TIME_NS)]);
+        size_t time_ns = std::stoull(parsed_line[static_cast<size_t>(GPSIdx::TIME_NS)]);
         time_map_gps.insert({round_to_sig_figs(time_ns, time_sig_figs), parsed_line});
     }
     return time_map_gps;
@@ -148,7 +149,6 @@ FourSeasonsParser::FourSeasonsParser(const std::filesystem::path& root_dir,
       img_dir_(root_dir / "distorted_images" / "cam0"),
       cal_(load_camera_calibration(calibration_dir)),
       transforms_(root_dir / "Transformations.txt") {
-    std::cout << "oooga" << std::endl;
     const std::filesystem::path path_img = root_dir_ / "times.txt";
     const std::filesystem::path path_gps = root_dir_ / "GNSSPoses.txt";
     const std::filesystem::path path_result = root_dir_ / "result.txt";
@@ -163,7 +163,9 @@ FourSeasonsParser::FourSeasonsParser(const std::filesystem::path& root_dir,
         const size_t time_key = pair_time_data.first;
         ImagePoint img_pt;
         img_pt.id = id;
-        img_pt.seq = std::stoul(pair_time_data.second[static_cast<size_t>(ImgIdx::TIME_NS)]);
+        img_pt.seq = std::stoull(pair_time_data.second[static_cast<size_t>(ImgIdx::TIME_NS)]);
+        // img_pt.seq += time::RobotTimestamp::duration(
+        // std::stoull(pair_time_data.second[static_cast<size_t>(ImgIdx::TIME_NS)]));
         if (gps_time_map.find(time_key) != gps_time_map.end()) {
             const std::vector<std::string>& parsed_line_gps = gps_time_map.at(time_key);
 
@@ -211,19 +213,19 @@ FourSeasonsParser::FourSeasonsTransforms::FourSeasonsTransforms(
     while (std::getline(file_transforms, line)) {
         if (line.find("transform_S_AS") != std::string::npos) {
             std::getline(file_transforms, line);
-            T_S_AS = get_transform_from_line(line);
+            AS_from_S = get_transform_from_line(line);
         } else if (line.find("TS_cam_imu") != std::string::npos) {
             std::getline(file_transforms, line);
-            T_cam_imu = get_transform_from_line(line);
+            imu_from_cam = get_transform_from_line(line);
         } else if (line.find("transform_w_gpsw") != std::string::npos) {
             std::getline(file_transforms, line);
-            T_w_gpsw = get_transform_from_line(line);
+            gpsw_from_w = get_transform_from_line(line);
         } else if (line.find("transform_gps_imu") != std::string::npos) {
             std::getline(file_transforms, line);
-            T_gps_imu = get_transform_from_line(line);
+            imu_from_gps = get_transform_from_line(line);
         } else if (line.find("transform_e_gpsw") != std::string::npos) {
             std::getline(file_transforms, line);
-            T_e_gpsw = get_transform_from_line(line);
+            gpsw_from_e = get_transform_from_line(line);
         } else if (line.find("GNSS scale") != std::string::npos) {
             std::getline(file_transforms, line);
             gnss_scale = std::stod(line);

@@ -6,39 +6,52 @@
 #include <string>
 #include <vector>
 
+#include "common/check.hh"
+#include "cxxopts.hpp"
 #include "experimental/learn_descriptors/four_seasons_parser.hh"
 
 namespace lrn_desc = robot::experimental::learn_descriptors;
 
-int main(int argc, char* argv[]) {
-    std::vector<std::string> args(argv, argv + argc);
-    std::filesystem::path path_data, path_calibration;
+int main(int argc, const char** argv) {
+    // clang-format off
+    cxxopts::Options options("four_seasons_parser_example", "Demonstrate usage of four_seasons_parser");
+    options.add_options()
+        ("data_dir", "Path to dataset root directory", cxxopts::value<std::string>())
+        ("calibration_dir", "Path to dataset calibration directory", cxxopts::value<std::string>())
+        ("help", "Print usage");
+    // clang-format on
 
-    for (int i = 0; i < argc; i++) {
-        std::string arg = argv[i];
-        std::cout << arg << std::endl;
-        if (arg == "--data_dir") {
-            std::cout << "DATA DIR PROVIDED!" << std::endl;
-            path_data = std::filesystem::path(std::string(argv[++i]));
-        } else if (arg == "--calibration_dir") {
-            std::cout << "CONFIG DIR PROVIDED!" << std::endl;
-            path_calibration = std::filesystem::path(std::string(argv[++i]));
+    auto args = options.parse(argc, argv);
+
+    const auto check_required = [&](const std::string& opt) {
+        if (args.count(opt) == 0) {
+            std::cout << "Missing " << opt << " argument" << std::endl;
+            std::cout << options.help() << std::endl;
+            std::exit(1);
         }
+    };
+
+    if (args.count("help")) {
+        std::cout << options.help() << std::endl;
+        return 0;
     }
+
+    check_required("data_dir");
+    check_required("calibration_dir");
+
+    const std::filesystem::path path_data = args["config_dir"].as<std::string>();
+    const std::filesystem::path path_calibration = args["calibration_dir"].as<std::string>();
 
     lrn_desc::FourSeasonsParser parser(path_data, path_calibration);
 
-    if (parser.num_images() == 0) {
-        std::clog << "Warning: parser.num_images is 0! Terminating..." << std::endl;
-    } else {
-        std::cout << "\nParser has " << parser.num_images() << " images!" << std::endl;
-    }
+    ROBOT_CHECK(parser.num_images() != 0);
 
-    std::cout << "T_S_AS: \n"
-              << parser.get_T_S_AS().matrix() << "\n\nT_cam_imu : \n\n"
-              << parser.get_T_cam_imu().matrix() << "\n\nT_gps_imu: \n\n"
-              << parser.get_T_gps_imu().matrix() << "\n\nT_e_gpsw: \n\n"
-              << parser.get_T_e_gpsw().matrix() << "\n\ngnss scale: \n\n"
+    std::cout << "AS_from_S: \n"
+              << parser.get_AS_from_S().matrix() << "\n\nimu_from_cam : \n\n"
+              << parser.get_imu_from_cam().matrix() << "\n\nimu_from_gps: \n\n"
+              << parser.get_gpsw_from_w().matrix() << "\n\ngpsw_from_w : \n\n"
+              << parser.get_imu_from_gps().matrix() << "\n\ngpsw_from_e: \n\n"
+              << parser.get_gpsw_from_e().matrix() << "\n\ngnss scale: \n\n"
               << parser.get_gnss_scale() << std::endl;
 
     cv::Mat img_first_and_last;

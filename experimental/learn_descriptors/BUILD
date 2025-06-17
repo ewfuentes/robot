@@ -33,8 +33,7 @@ cc_library(
   visibility = ["//visibility:public"],
   srcs = ["symphony_lake_parser.cc"],
   deps = [
-    "@symphony_lake_parser",
-    "//common:check"
+    "@symphony_lake_parser"
   ]
 )
 
@@ -86,6 +85,7 @@ cc_library(
       "@eigen",
       "@opencv//:opencv",
       "//common/liegroups:se3",
+      "//common/time:robot_time",
       "@com_google_absl//absl/strings:str_format",
       ":image_point"
     ]
@@ -95,7 +95,9 @@ cc_binary(
   name = "four_seasons_parser_example",
   srcs = ["four_seasons_parser_example.cc"],
   deps = [
-    ":four_seasons_parser"
+    ":four_seasons_parser",
+    "@cxxopts//:cxxopts",
+    "//common:check"
   ]
 )
 

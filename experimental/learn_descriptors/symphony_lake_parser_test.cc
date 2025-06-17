@@ -6,7 +6,6 @@
 #include <string>
 #include <vector>
 
-#include "common/check.hh"
 #include "gtest/gtest.h"
 #include "opencv2/opencv.hpp"
 

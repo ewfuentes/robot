@@ -25,20 +25,20 @@ class FourSeasonsParser {
     const ImagePoint& get_image_point(const size_t idx) const { return img_pt_vector_[idx]; };
     size_t num_images() const { return img_pt_vector_.size(); };
     const CameraCalibrationFisheye& get_camera_calibration() const { return cal_; };
-    const liegroups::SE3& get_T_S_AS() const { return transforms_.T_S_AS; };
-    const liegroups::SE3& get_T_cam_imu() const { return transforms_.T_cam_imu; };
-    const liegroups::SE3& get_T_w_gpsw() const { return transforms_.T_w_gpsw; };
-    const liegroups::SE3& get_T_gps_imu() const { return transforms_.T_gps_imu; };
-    const liegroups::SE3& get_T_e_gpsw() const { return transforms_.T_e_gpsw; };
+    const liegroups::SE3& get_AS_from_S() const { return transforms_.AS_from_S; };
+    const liegroups::SE3& get_imu_from_cam() const { return transforms_.imu_from_cam; };
+    const liegroups::SE3& get_gpsw_from_w() const { return transforms_.gpsw_from_w; };
+    const liegroups::SE3& get_imu_from_gps() const { return transforms_.imu_from_gps; };
+    const liegroups::SE3& get_gpsw_from_e() const { return transforms_.gpsw_from_e; };
     double get_gnss_scale() const { return transforms_.gnss_scale; };
 
    protected:
     struct FourSeasonsTransforms {
-        liegroups::SE3 T_S_AS;
-        liegroups::SE3 T_cam_imu;
-        liegroups::SE3 T_w_gpsw;
-        liegroups::SE3 T_gps_imu;
-        liegroups::SE3 T_e_gpsw;
+        liegroups::SE3 AS_from_S;
+        liegroups::SE3 imu_from_cam;
+        liegroups::SE3 gpsw_from_w;
+        liegroups::SE3 imu_from_gps;
+        liegroups::SE3 gpsw_from_e;
         double gnss_scale;
 
         FourSeasonsTransforms(const std::filesystem::path& path_transforms);
