@@ -246,6 +246,7 @@ def compute_cached_similarity_matrix(
         torch.save(all_similarity.cpu(), file_path)
     return all_similarity
 
+
 def evaluate_model_on_paths(
     vigor_dataset: vd.VigorDataset,
     sat_model: torch.nn.Module,
