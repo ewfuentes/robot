@@ -114,12 +114,3 @@ cc_test(
     "@nmea"
   ]
 )
-
-cc_test(
-  name = "nmea_test",
-  srcs = ["nmea_test.cc"],
-  deps = [
-    "@com_google_googletest//:gtest_main",
-    "@nmea",
-  ]
-)

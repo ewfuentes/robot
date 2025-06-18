@@ -1,0 +1,20 @@
+load("@rules_foreign_cc//foreign_cc:defs.bzl", "cmake")
+package(features=["-warning_compile_flags", "-cpp_compile_flags"])
+
+filegroup(
+  name = "all",
+  srcs = glob(["**"]),
+)
+
+cmake(
+    name = "geographiclib",
+    lib_source = ":all",  # or a relative path
+    cache_entries = {
+        "BUILD_SHARED_LIBS": "ON",
+    },
+    out_binaries = [],  # no binaries
+    out_shared_libs = ["libGeographicLib.so.26.1.1", "libGeographicLib.so.26", "libGeographicLib.so"],  # don't expect static libs
+    out_include_dir = "include",
+    visibility = ["//visibility:public"],
+)
+

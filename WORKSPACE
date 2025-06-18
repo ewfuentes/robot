@@ -634,3 +634,11 @@ http_archive(
     build_file = "//third_party:BUILD.nmea",
     sha256 = "3069da17f99ca689701f83e2a9dcd366053cb170757aa5d75cf2b46e59ea1910",
 )
+
+http_archive(
+    name = "geographiclib",
+    urls = ["https://github.com/geographiclib/geographiclib/archive/refs/tags/v2.5.zip"],
+    strip_prefix = "geographiclib-2.5",
+    build_file = "//third_party:BUILD.geographiclib",
+    sha256 = "d41e90b3009307fd96474fe21ccae824d981c7335ce8ddd3618c1f6084793011",
+)
