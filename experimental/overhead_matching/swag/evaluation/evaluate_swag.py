@@ -56,15 +56,16 @@ def compute_similarity_matrix(
     pano_data_view = dataset.get_pano_view()
     pano_data_view_loader = vd.get_dataloader(pano_data_view, batch_size=64, num_workers=16)
 
-    print("building satellite embedding database")
-    sat_embeddings = sed.build_satellite_db(
-        sat_model, sat_data_view_loader, device=device)
-    print("building panorama embedding database")
-    pano_embeddings = sed.build_panorama_db(
-        pano_model, pano_data_view_loader, device=device)
-    print("building all similarity")
-    out = sed.calculate_cos_similarity_against_database(
-        pano_embeddings, sat_embeddings)  # pano_embeddings x sat_patches
+    with torch.no_grad():
+        print("building satellite embedding database")
+        sat_embeddings = sed.build_satellite_db(
+            sat_model, sat_data_view_loader, device=device)
+        print("building panorama embedding database")
+        pano_embeddings = sed.build_panorama_db(
+            pano_model, pano_data_view_loader, device=device)
+        print("building all similarity")
+        out = sed.calculate_cos_similarity_against_database(
+            pano_embeddings, sat_embeddings)  # pano_embeddings x sat_patches
     return out
 
 
