@@ -73,10 +73,16 @@ def compute_cached_similarity_matrix(
         sat_model: torch.nn.Module,
         pano_model: torch.nn.Module,
         dataset: vd.VigorDataset,
-        device: torch.device):
-    combined_hash = compute_combined_hash(sat_model, pano_model, dataset)
-    file_path = Path(f"~/.cache/robot/overhead_matching/similarity_matrix/{combined_hash}.pt").expanduser()
-    if file_path.exists():
+        device: torch.device,
+        use_cached_similarity: bool):
+
+    cache_exists = False
+    if use_cached_similarity:
+        combined_hash = compute_combined_hash(sat_model, pano_model, dataset)
+        file_path = Path(f"~/.cache/robot/overhead_matching/similarity_matrix/{combined_hash}.pt").expanduser()
+        cache_exists = file_path.exists()
+
+    if cache_exists:
         all_similarity = torch.load(file_path).to(device)
         print(f"USING CACHED similarity db found at {file_path}")
     else:
@@ -86,6 +92,7 @@ def compute_cached_similarity_matrix(
                 dataset=dataset,
                 device=device)
 
+    if use_cached_similarity:
         file_path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(all_similarity.cpu(), file_path)
     return all_similarity
@@ -95,13 +102,15 @@ def evaluate_prediction_top_k(
         sat_model: torch.nn.Module,
         pano_model: torch.nn.Module,
         dataset: vd.VigorDataset,
-        device: torch.device = "cuda"):
+        device: torch.device = "cuda",
+        use_cached_similarity: bool = True):
 
     all_similarity = compute_cached_similarity_matrix(
         sat_model=sat_model,
         pano_model=pano_model,
         dataset=dataset,
-        device=device)
+        device=device,
+        use_cached_similarity=use_cached_similarity)
 
     rankings = torch.argsort(all_similarity, dim=1, descending=True)
 
@@ -248,8 +257,6 @@ def construct_inputs_and_evalulate_path(
                                  generator)
 
 
-
-
 def evaluate_model_on_paths(
     vigor_dataset: vd.VigorDataset,
     sat_model: torch.nn.Module,
@@ -259,6 +266,7 @@ def evaluate_model_on_paths(
     seed: int,
     output_path: Path,
     device: torch.device = "cuda:0",
+    use_cached_similarity: bool = True,
 ) -> None:
     all_final_particle_error_meters = []
     with torch.no_grad():
@@ -266,7 +274,11 @@ def evaluate_model_on_paths(
         sat_patch_kdtree = build_kd_tree(sat_patch_positions)
 
         all_similarity = compute_cached_similarity_matrix(
-                sat_model=sat_model, pano_model=pano_model, dataset=vigor_dataset, device=device)
+                sat_model=sat_model,
+                pano_model=pano_model,
+                dataset=vigor_dataset,
+                device=device,
+                use_cached_similarity=use_cached_similarity)
 
         print("starting iter over paths")
         for i, path in enumerate(tqdm.tqdm(paths)):
@@ -286,7 +298,8 @@ def evaluate_model_on_paths(
             save_path = output_path / f"{i:07d}"
             save_path.mkdir(parents=True, exist_ok=True)
             particle_history = torch.stack(particle_history)
-            error_meters_at_each_step = get_distance_error_between_pano_and_particles_meters(vigor_dataset, path, particle_history)
+            error_meters_at_each_step = get_distance_error_between_pano_and_particles_meters(
+                    vigor_dataset, path, particle_history)
             all_final_particle_error_meters.append(error_meters_at_each_step[-1])
             torch.save(error_meters_at_each_step, save_path / "error.pt")
             torch.save(path, save_path / "path.pt")
