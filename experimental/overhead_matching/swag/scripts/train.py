@@ -238,7 +238,7 @@ def main(
         tensorboard_output: Path,
         quiet: bool):
     PANORAMA_NEIGHBOR_RADIUS_DEG = 1e-6
-    NUM_SAFA_HEADS = 8
+    NUM_SAFA_HEADS = 4
     dataset_config = vigor_dataset.VigorDatasetConfig(
         panorama_neighbor_radius=PANORAMA_NEIGHBOR_RADIUS_DEG,
         satellite_patch_size=(320, 320),
