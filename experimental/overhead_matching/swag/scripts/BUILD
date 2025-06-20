@@ -32,6 +32,7 @@ py_wheel(
   distribution="overhead_matching_train",
   version = "0.0.1",
   platform = "manylinux2014_x86_64",
+  tags = ["manual"],
   python_tag = select({
     "@rules_python//python/config_settings:is_python_3.12": "cp312"
   }),
