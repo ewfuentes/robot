@@ -231,7 +231,12 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model, quie
                        (batch.satellite[:opt_config.batch_size].cuda(),))
 
 
-def main(dataset_path: Path, opt_config_path: Path, output_dir: Path, tensorboard_output: Path, quiet: bool):
+def main(
+        dataset_paths: list[Path],
+        opt_config_path: Path,
+        output_dir: Path,
+        tensorboard_output: Path,
+        quiet: bool):
     PANORAMA_NEIGHBOR_RADIUS_DEG = 1e-6
     NUM_SAFA_HEADS = 4
     dataset_config = vigor_dataset.VigorDatasetConfig(
@@ -240,7 +245,7 @@ def main(dataset_path: Path, opt_config_path: Path, output_dir: Path, tensorboar
         panorama_size=(320, 640),
         sample_mode=vigor_dataset.SampleMode.POS_SEMIPOS,
     )
-    dataset = vigor_dataset.VigorDataset(dataset_path, dataset_config)
+    dataset = vigor_dataset.VigorDataset(dataset_paths, dataset_config)
 
     satellite_model = patch_embedding.WagPatchEmbedding(
         patch_embedding.WagPatchEmbeddingConfig(
@@ -276,7 +281,7 @@ def main(dataset_path: Path, opt_config_path: Path, output_dir: Path, tensorboar
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", help="path to dataset", required=True)
+    parser.add_argument("--dataset", help="path to dataset", action='append', required=True)
     parser.add_argument("--output_dir", help="path to output", required=True)
     parser.add_argument("--opt_config", help="path to optimization config", required=True)
     parser.add_argument("--tensorboard_output")
@@ -285,4 +290,9 @@ if __name__ == "__main__":
 
     if args.tensorboard_output is None:
         args.tensorboard_output = Path(args.output_dir) / "logs"
-    main(Path(args.dataset), Path(args.opt_config), Path(args.output_dir), Path(args.tensorboard_output), quiet=args.quiet)
+    main(
+        [Path(x) for x in args.dataset],
+        Path(args.opt_config),
+        Path(args.output_dir),
+        Path(args.tensorboard_output),
+        quiet=args.quiet)

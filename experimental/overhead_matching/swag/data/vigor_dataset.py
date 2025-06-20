@@ -206,26 +206,34 @@ def populate_pairs(pano_metadata, sat_metadata, sample_mode):
 
 
 class VigorDataset(torch.utils.data.Dataset):
-    def __init__(self, dataset_path: Path, config: VigorDatasetConfig):
+    def __init__(self, dataset_path: Path | list[Path], config: VigorDatasetConfig):
         super().__init__()
-        self._dataset_path = dataset_path
+        if isinstance(dataset_path, Path):
+            dataset_path = [dataset_path]
+        elif isinstance(dataset_path, str):
+            dataset_path = [Path(dataset_path)]
 
-        self._satellite_metadata = load_satellite_metadata(dataset_path / "satellite", config.satellite_zoom_level)
-        self._panorama_metadata = load_panorama_metadata(dataset_path / "panorama", config.satellite_zoom_level)
+        sat_metadatas = []
+        pano_metadatas = []
+        for p in dataset_path:
+            sat_metadata = load_satellite_metadata(p / "satellite", config.satellite_zoom_level)
+            pano_metadata = load_panorama_metadata(p / "panorama", config.satellite_zoom_level)
 
-        min_lat = np.min(self._satellite_metadata.lat)
-        max_lat = np.max(self._satellite_metadata.lat)
-        delta_lat = max_lat - min_lat
-        min_lon = np.min(self._satellite_metadata.lon)
-        max_lon = np.max(self._satellite_metadata.lon)
-        delta_lon = max_lon - min_lon
+            min_lat = np.min(sat_metadata.lat)
+            max_lat = np.max(sat_metadata.lat)
+            delta_lat = max_lat - min_lat
+            min_lon = np.min(sat_metadata.lon)
+            max_lon = np.max(sat_metadata.lon)
+            delta_lon = max_lon - min_lon
 
-        sat_mask = np.logical_and(self._satellite_metadata.lat <= min_lat + config.factor * delta_lat,
-                                  self._satellite_metadata.lon <= min_lon + config.factor * delta_lon)
-        pano_mask = np.logical_and(self._panorama_metadata.lat <= min_lat + config.factor * delta_lat,
-                                   self._panorama_metadata.lon <= min_lon + config.factor * delta_lon)
-        self._satellite_metadata = self._satellite_metadata[sat_mask].reset_index(drop=True)
-        self._panorama_metadata = self._panorama_metadata[pano_mask].reset_index(drop=True)
+            sat_mask = np.logical_and(sat_metadata.lat <= min_lat + config.factor * delta_lat,
+                                      sat_metadata.lon <= min_lon + config.factor * delta_lon)
+            pano_mask = np.logical_and(pano_metadata.lat <= min_lat + config.factor * delta_lat,
+                                       pano_metadata.lon <= min_lon + config.factor * delta_lon)
+            sat_metadatas.append(sat_metadata[sat_mask])
+            pano_metadatas.append(pano_metadata[pano_mask])
+        self._satellite_metadata = pd.concat(sat_metadatas).reset_index(drop=True)
+        self._panorama_metadata = pd.concat(pano_metadatas).reset_index(drop=True)
 
         self._satellite_kdtree = cKDTree(self._satellite_metadata.loc[:, ["web_mercator_x", "web_mercator_y"]].values)
         self._panorama_kdtree = cKDTree(self._panorama_metadata.loc[:, ["lat", "lon"]].values)
