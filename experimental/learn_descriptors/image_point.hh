@@ -12,16 +12,18 @@
 #include "common/liegroups/se3.hh"
 #include "common/time/robot_time.hh"
 
-using Vector6d = Eigen::Matrix<double, 6, 1>;
-
 namespace robot::experimental::learn_descriptors {
 struct ImagePoint {
-    size_t id;                                // idx for DB
-    size_t seq;                               // time in nanoseconds (also the name of image)
-    std::optional<liegroups::SE3> reference;  // UTM. Not sure why the dataset has transforms for
-                                              // GPS, not sure if rotation or trans_z is reliable
+    struct GPSData {
+        double longitude;
+        double latitude;
+        std::optional<double> altitude;  // meters above sea level
+    };
+    size_t id;   // idx for DB
+    size_t seq;  // time in nanoseconds (also the name of image)
+    std::optional<liegroups::SE3> reference;
     std::optional<liegroups::SE3> vio_solution;
-    std::optional<Vector6d> gps;
+    std::optional<GPSData> gps_gcs;
 
     const std::string to_string() const {
         auto se3_to_str = [](const liegroups::SE3& se3) {

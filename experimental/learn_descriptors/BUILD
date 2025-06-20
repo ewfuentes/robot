@@ -87,7 +87,8 @@ cc_library(
       "//common/liegroups:se3",
       "//common/time:robot_time",
       "@com_google_absl//absl/strings:str_format",
-      ":image_point"
+      ":image_point",
+      "@nmea"
     ]
 )
 
@@ -101,6 +102,18 @@ cc_binary(
   ]
 )
 
+cc_binary(
+  name = "four_seasons_parser_example_viz",
+  srcs = ["four_seasons_parser_example_viz.cc"],
+  deps = [
+    ":four_seasons_parser",
+    "@cxxopts//:cxxopts",
+    "//common:check",
+    "//visualization/opencv:opencv_viz",
+    "@eigen"
+  ]
+)
+
 cc_test(
   name = "four_seasons_parser_test",
   srcs = ["four_seasons_parser_test.cc"],
@@ -111,6 +124,7 @@ cc_test(
     "@com_google_absl//absl/strings:str_format",
     "@eigen",
     ":four_seasons_parser",
-    "@nmea"
+    "@nmea",
+    "@geographiclib//:geographiclib"
   ]
 )

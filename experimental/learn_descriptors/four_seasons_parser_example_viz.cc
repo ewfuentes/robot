@@ -6,9 +6,12 @@
 #include <string>
 #include <vector>
 
+#include "Eigen/Core"
+#include "Eigen/Geometry"
 #include "common/check.hh"
 #include "cxxopts.hpp"
 #include "experimental/learn_descriptors/four_seasons_parser.hh"
+#include "visualization/opencv/opencv_viz.hh"
 
 namespace lrn_desc = robot::experimental::learn_descriptors;
 
@@ -61,50 +64,8 @@ int main(int argc, const char** argv) {
                 img_first_and_last);
     cv::imshow("First + Last Images", img_first_and_last);
 
+    std::vector<Eigen::Isometry3d> poses_gps_from_;
     for (size_t i = 0; i < parser.num_images(); i++) {
-        cv::Mat img = parser.load_image(i);
-        const std::string img_str = "img " + std::to_string(i);
-        cv::putText(img, img_str, cv::Point(10, 20), cv::FONT_HERSHEY_SIMPLEX, 0.5,
-                    cv::Scalar(0, 255, 0), 2);
         const lrn_desc::ImagePoint img_pt = parser.get_image_point(i);
-        std::stringstream ss_reference;
-        ss_reference << "Reference: ";
-        if (img_pt.reference) {
-            const Eigen::Vector3d& t = img_pt.reference->translation();
-            ss_reference << t.x() << ", " << t.y() << ", " << t.z();
-        } else {
-            ss_reference << "N/A";
-        }
-        std::stringstream ss_vio_solution;
-        ss_vio_solution << "VIO Solution: ";
-        if (img_pt.vio_solution) {
-            const Eigen::Vector3d& t = img_pt.vio_solution->translation();
-            ss_vio_solution << t.x() << ", " << t.y() << ", " << t.z();
-        } else {
-            ss_vio_solution << "N/A";
-        }
-        std::stringstream ss_gps;
-        ss_gps << "GPS: ";
-        if (img_pt.gps_gcs) {
-            const lrn_desc::ImagePoint::GPSData& gps_data = *img_pt.gps_gcs;
-            ss_gps << "long: " << gps_data.longitude << ", lat: " << gps_data.latitude;
-            if (gps_data.altitude) {
-                ss_gps << ", alt: " << *gps_data.altitude;
-            }
-        } else {
-            ss_gps << "N/A";
-        }
-        cv::putText(img, ss_reference.str(), cv::Point(10, 40), cv::FONT_HERSHEY_SIMPLEX, 0.5,
-                    cv::Scalar(0, 255, 0), 2);
-        cv::putText(img, ss_vio_solution.str(), cv::Point(10, 60), cv::FONT_HERSHEY_SIMPLEX, 0.5,
-                    cv::Scalar(0, 255, 0), 2);
-        cv::putText(img, ss_gps.str(), cv::Point(10, 80), cv::FONT_HERSHEY_SIMPLEX, 0.5,
-                    cv::Scalar(0, 255, 0), 2);
-        cv::imshow("FourSeasonsParserExample", img);
-        int key = cv::waitKey(5);
-
-        if (key == 'q' || key == 'Q') {
-            break;
-        }
     }
 }

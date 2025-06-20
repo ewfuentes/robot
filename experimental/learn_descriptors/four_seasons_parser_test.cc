@@ -10,6 +10,10 @@
 
 #include "Eigen/Core"
 #include "Eigen/Geometry"
+#include "GeographicLib/Constants.hpp"
+#include "GeographicLib/Geocentric.hpp"
+#include "GeographicLib/Geodesic.hpp"
+#include "GeographicLib/LocalCartesian.hpp"
 #include "absl/strings/str_split.h"
 #include "absl/strings/strip.h"
 #include "common/liegroups/se3.hh"
@@ -223,6 +227,13 @@ TEST(FourSeasonsParserTest, parser_test) {
         Helper::create_reference_time_data_map(path_reference, min_sig_figs_time);
     const Helper::TimeDataMap vio_time_map =
         Helper::create_vio_time_data_map(path_vio, min_sig_figs_time);
+    const GeographicLib::Geocentric& earth = GeographicLib::Geocentric::WGS84();
+
+    Eigen::Matrix4d scale_mat = Eigen::Matrix4d::Identity();
+    scale_mat.diagonal().head<3>() *= parser.get_gnss_scale();
+    const liegroups::SE3 ECEF_from_metric_local_SLAM_world =
+        parser.get_e_from_gpsw() * parser.get_w_from_gpsw().inverse() * parser.get_S_from_AS();
+
     for (size_t i = 0; i < parser.num_images(); i++) {
         const ImagePoint& img_pt = parser.get_image_point(i);
         const cv::Mat img = parser.load_image(i);
@@ -252,7 +263,7 @@ TEST(FourSeasonsParserTest, parser_test) {
             EXPECT_TRUE(liegroups::SE3(gps_quat, gps_translation)
                             .matrix()
                             .isApprox(img_pt.reference->matrix()));
-        } else if (img_pt.reference.has_value()) {
+        } else if (img_pt.reference) {
             throw std::runtime_error("img_pt has reference point but files do not!");
         }
         if (vio_time_map.find(img_time_list[i].first) != vio_time_map.end()) {
@@ -270,68 +281,32 @@ TEST(FourSeasonsParserTest, parser_test) {
             EXPECT_TRUE(liegroups::SE3(ground_truth_quat, ground_truth_translation)
                             .matrix()
                             .isApprox(img_pt.vio_solution->matrix()));
-        } else if (img_pt.vio_solution.has_value()) {
+        } else if (img_pt.vio_solution) {
             throw std::runtime_error("img_pt has vio_solution point but files do not!");
         }
-    }
-}
-
-TEST(FourSeasonsParserTest, gps_testing) {
-    size_t gps_utc_to_unix_time(const nmea::date& gps_utc_date, const size_t gps_utc_time_day_ns) {
-        std::chrono::year_month_day ymd(gps_utc_date.year, gps_utc_date.month, gps_utc_date.day);
-        std::chrono::sys_days date = ymd;
-        std::chrono::sys_time<std::chrono::nanoseconds> timestamp =
-            date + std::chrono::nanoseconds{gps_utc_time_day_ns};
-        return timestamp.time_since_epoch().count();
-    }
-    const std::filesystem::path path_gps =
-        "external/four_seasons_snippet/recording_2020-04-07_11-33-45/septentrio.nmea";
-    std::ifstream file_gps(path_gps);
-    std::string line;
-    bool update_count = false;
-    size_t i = 0;
-    std::getline(file_gps, line);
-    while (std::getline(file_gps, line)) {
-        std::unique_ptr<nmea::sentence> nmea_sentence;
-        try {
-            nmea_sentence = std::make_unique<nmea::sentence>(line);
-        } catch (...) {
-            std::cerr << "Line " << i << "is not in nmea format!" << std::endl;
-            i++;
-            continue;
-        }
-
-        const std::string type = nmea_sentence->type();
-        if (type == "GGA") {
-            nmea::gga gga(*nmea_sentence);
-            std::cout << "longitude: " << gga.longitude.get()
-                      << "\tlattitude: " << gga.latitude.get() << std::endl;
-
-        } else if (type == "RMC") {
-            nmea::rmc rmc(*nmea_sentence);
-            const nmea::date date = rmc.date.get();
-            const double time_ns_utc_time_of_day = rmc.utc.get() * 1e9;
-            if (time_ns_utc_time_of_day > 1586252025637390080) {
-                std::cout << "Discard after idx " << i << "!";
-                update_count = false;
-                break;
+        if (img_pt.reference && img_pt.gps_gcs) {
+            std::cout << "comparing reference and gps!" << std::endl;
+            liegroups::SE3 cam_from_ECEF =
+                ECEF_from_metric_local_SLAM_world * liegroups::SE3(scale_mat) * *img_pt.reference;
+            const Eigen::Vector3d& t_cam_from_ECEF = cam_from_ECEF.translation();
+            double latitude = img_pt.gps_gcs->latitude, longitude = img_pt.gps_gcs->longitude,
+                   altitude = 0;
+            bool has_altitude = false;
+            if (img_pt.gps_gcs->altitude) {
+                has_altitude = true;
+                altitude = *(img_pt.gps_gcs->altitude);
             }
-            std::cout << "UTC Time: " << rmc.utc.get() << std::endl;
+            double raw_gps_x_ECEF, raw_gps_y_ECEF, raw_gps_z_ECEF;
+            earth.Forward(latitude, longitude, altitude, raw_gps_x_ECEF, raw_gps_y_ECEF,
+                          raw_gps_z_ECEF);
+            EXPECT_NEAR(raw_gps_x_ECEF, t_cam_from_ECEF.x(), 0.001);
+            EXPECT_NEAR(raw_gps_y_ECEF, t_cam_from_ECEF.y(), 0.001);
+            if (has_altitude) EXPECT_NEAR(raw_gps_z_ECEF, t_cam_from_ECEF.z(), 2);
+        } else {
+            std::cout << "no comparison :( " << i << std::endl;
+            if (img_pt.gps_gcs) std::cout << "gps present." << std::endl;
+            if (img_pt.reference) std::cout << "reference present" << std::endl;
         }
-        if (update_count) i++;
     }
-
-    // using namespace date;
-    // using namespace std::chrono;
-
-    // std::string gps_date = "2020-04-07";   // from $GPRMC (ddmmyy → yyyy-mm-dd)
-    // std::string gps_time = "09:42:07.10";  // from $GPRMC (hhmmss.ss)
-
-    // auto tp = sys_seconds{};
-    // std::istringstream ss(gps_date + " " + gps_time);
-    // ss >> parse("%Y-%m-%d %H:%M:%S", tp);
-
-    // std::time_t unix_time = system_clock::to_time_t(tp);
-    // std::cout << "Unix time: " << unix_time << "\n";
 }
 }  // namespace robot::experimental::learn_descriptors

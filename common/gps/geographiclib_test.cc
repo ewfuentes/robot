@@ -20,8 +20,8 @@ TEST(GeographiclibTest, airport_dist) {
 }
 
 TEST(GeographiclibTest, local_cartestian) {
-    GeographicLib::Geocentric earth(GeographicLib::Constants::WGS84_a(),
-                                    GeographicLib::Constants::WGS84_f());
+    const GeographicLib::Geocentric earth(GeographicLib::Constants::WGS84_a(),
+                                          GeographicLib::Constants::WGS84_f());
     // Alternatively: const Geocentric& earth = Geocentric::WGS84();
     const double lat0 = 48 + 50 / 60.0, lon0 = 2 + 20 / 60.0;  // Paris
     GeographicLib::LocalCartesian proj(lat0, lon0, 0, earth);
