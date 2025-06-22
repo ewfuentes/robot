@@ -334,7 +334,6 @@ def construct_inputs_and_evalulate_path(
                                  generator,
                                  return_intermediates)
 
-
 def evaluate_model_on_paths(
     vigor_dataset: vd.VigorDataset,
     sat_model: torch.nn.Module,

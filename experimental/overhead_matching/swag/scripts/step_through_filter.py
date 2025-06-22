@@ -13,6 +13,16 @@ Questions to answer:
     - why do they get the liklihoods they do (based on the patches)
     - why do they move the way they do
 
+
+First version:
+Understand why the particles do what they do.
+Workflow: 
+- See generally how the particles move across the map. Find a transition that we want to focus on
+- For that transition, activiate a particular feature we want to look at
+    - particle liklihood
+    - Particle motion
+    - 
+
 Step 1: visualize dataset
     - 
 Step 2: visualize particles during observation step
@@ -41,6 +51,8 @@ from torch_kdtree import build_kd_tree
 
 DEVICE="cuda:0"
 
+SHOW_LIKLIHOOD_WITH_OPACITY = False
+
 
 # CLI args
 parser = argparse.ArgumentParser(description='Dataset visualizer for radial bins on costmap')
@@ -53,7 +65,7 @@ with open(args.path_eval_path.parent / "args.json", 'r') as f:
 with open(args.path_eval_path / "other_info.json", 'r') as f:
     aux_info = json.load(f)
 
-path = torch.load(args.path_eval_path / 'path.pt', weights_only=True)
+gt_path_pano_indices = torch.load(args.path_eval_path / 'path.pt', weights_only=True)
 
 vigor_dataset, sat_model, pano_model, paths_data = construct_path_eval_inputs_from_args(
     sat_model_path=path_eval_args['sat_path'],
@@ -75,16 +87,23 @@ sat_patch_positions = vigor_dataset.get_patch_positions().to(DEVICE)
 sat_patch_kdtree = build_kd_tree(sat_patch_positions)
 
 path_similarity_values = torch.load(args.path_eval_path / "similarity.pt", weights_only=True)
-
-particle_histories = construct_inputs_and_evalulate_path(
+print("starting constructing particle histories")
+particle_histories, log_particle_weights, particle_histories_pre_move = construct_inputs_and_evalulate_path(
     device=DEVICE,
     generator_seed=aux_info['seed'],
-    path=path,
+    path=gt_path_pano_indices,
     sat_patch_kdtree=sat_patch_kdtree,
     vigor_dataset=vigor_dataset,
     path_similarity_values=path_similarity_values,
-    wag_config=wag_config
+    wag_config=wag_config,
+    return_intermediates=True
 )
+print("finished calculating particle histories")
+gt_path_latlong = vigor_dataset.get_panorama_positions(gt_path_pano_indices).cpu().numpy()
+particle_histories = particle_histories.numpy()
+log_particle_weights = log_particle_weights.numpy()
+particle_histories_pre_move = particle_histories_pre_move.numpy()
+print(f"Calculated histories with shapes: {particle_histories.shape=}, {log_particle_weights.shape}, {particle_histories_pre_move.shape}")
 
 # # Crop to valid region (data>=0)
 # data = grid.data
@@ -124,350 +143,268 @@ particle_histories = construct_inputs_and_evalulate_path(
 # b64 = base64.b64encode(png).decode('ascii')
 # data_uri = f"data:image/png;base64,{b64}"
 
-# # Build figure
-# from plotly.graph_objects import Figure, Image, Scattergl, Scatter
+# Build figure
+from plotly.graph_objects import Figure, Image, Scattergl, Scatter
 
-# # Setup Dash
-# dd_options = [{'label':t, 'value':t} for t in topics]
-# app = Dash(__name__)
-# app.layout = html.Div([
-#     html.Div([
-#         html.Div(
-#             dcc.Dropdown(id='topic-dropdown', options=dd_options, value=topics[0], clearable=False),
-#             style={'width':'20%', 'display':'inline-block'}
-#         ),
-#         html.Div([
-#             html.Button('Play', id='play-button', n_clicks=0, style={'margin': '5px'}),
-#             html.Div(id='animation-status', children='Paused', style={'display': 'inline-block', 'margin': '10px'}),
-#             dcc.Slider(
-#                 id='frame-slider',
-#                 min=0,
-#                 max=100,  # Will be updated dynamically
-#                 step=1,
-#                 value=0,
-#                 marks=None,
-#                 tooltip={"placement": "bottom", "always_visible": True}
-#             ),
-#             dcc.Input(
-#                 id='step-size',
-#                 type='number',
-#                 min=1,
-#                 max=20,
-#                 step=1,
-#                 value=5,
-#                 style={'width': '60px', 'margin': '10px'}
-#             ),
-#             html.Label('Step Size', style={'margin-left': '5px'})
-#         ], style={'width': '70%', 'margin': '10px'}),
-#         dcc.Graph(id='graph', style={'height':'80vh', 'width': '70%', 'display': 'inline-block'}),
-#         html.Div(id='image-panel', style={'width': '28%', 'display': 'inline-block', 'vertical-align': 'top', 'padding': '10px'}),
-#         # Interval component for animation
-#         dcc.Interval(
-#             id='animation-interval',
-#             interval=500,  # in milliseconds
-#             n_intervals=0,
-#             disabled=True
-#         ),
-#         # Store components to maintain state
-#         dcc.Store(id='animation-state', data={'playing': False, 'current_index': 0}),
-#         dcc.Store(id='topic-data', data={'current_topic': topics[0], 'num_points': 0})
-#     ])
-# ])
+# Setup Dash
+app = Dash(__name__)
+app.layout = html.Div([
+    html.Div([
+        html.Div(
+            dcc.Dropdown(
+                id='view-mode-dropdown',
+                options=[
+                    {'label': 'View particles', 'value': 'particles'},
+                    {'label': 'View resampling', 'value': 'resampling'},
+                    {'label': 'View motion', 'value': 'motion'}
+                ],
+                value='particles',
+                clearable=False
+            ),
+            style={'width':'20%', 'display':'inline-block'}
+        ),
+        html.Div(
+            [
+                html.Div([
+                    dcc.Checklist(
+                        id='weight-opacity-toggle',
+                        options=[{'label': 'View particle weight as opacity', 'value': 'enabled'}],
+                        value=[]
+                    )
+                ], id='weight-opacity-container', style={'margin-top': '10px'})
+            ],
+            style={'width':'20%', 'display':'inline-block'}
+        ),
+        html.Div([
+            html.Button('Play', id='play-button', n_clicks=0, style={'margin': '5px'}),
+            html.Div(id='animation-status', children='Paused', style={'display': 'inline-block', 'margin': '10px'}),
+            dcc.Slider(
+                id='frame-slider',
+                min=0,
+                max=100,  # Will be updated dynamically
+                step=1,
+                value=0,
+                marks=None,
+                tooltip={"placement": "bottom", "always_visible": True}
+            ),
+            dcc.Input(
+                id='step-size',
+                type='number',
+                min=1,
+                max=20,
+                step=1,
+                value=1,
+                style={'width': '60px', 'margin': '10px'}
+            ),
+            html.Label('Step Size', style={'margin-left': '5px'})
+        ], style={'width': '70%', 'margin': '10px'}),
+        dcc.Graph(id='graph', style={'height':'80vh', 'width': '70%', 'display': 'inline-block'}),
+        html.Div(id='image-panel', style={'width': '28%', 'display': 'inline-block', 'vertical-align': 'top', 'padding': '10px'}),
+        # Interval component for animation
+        dcc.Interval(
+            id='animation-interval',
+            interval=500,  # in milliseconds
+            n_intervals=0,
+            disabled=True
+        ),
+        # Store components to maintain state
+        dcc.Store(id='animation-state', data={'playing': False, 'current_index': 0}),
+        dcc.Store(id='view-mode-data', data={'current_view_mode': "particles", 'num_points': 0})
+    ])
+])
 
-# # Callback to update topic data when dropdown changes
-# @app.callback(
-#     Output('topic-data', 'data'),
-#     Output('frame-slider', 'max'),
-#     Output('frame-slider', 'value'),
-#     Input('topic-dropdown', 'value'),
-# )
-# def update_topic_data(topic):
-#     # Reset animation when topic changes
-#     sub_image_df = tbl[tbl['camera_name']==topic]
-#     num_points = len(sub_image_df)
-#     return {'current_topic': topic, 'num_points': num_points}, num_points-1, 0
+# Callback to update topic data when dropdown changes
+@app.callback(
+    Output('view-mode-data', 'data'),
+    Output('frame-slider', 'max'),
+    Output('frame-slider', 'value'),
+    Input('view-mode-dropdown', 'value'),
+)
+def update_view_mode_data(view_mode):
+    # Reset animation when view mode changes
+    return {'current_view_mode': view_mode, 'num_points': particle_histories.shape[0]}, particle_histories.shape[0], 0
 
-# # Callback for play/pause button
-# @app.callback(
-#     Output('animation-interval', 'disabled'),
-#     Output('animation-status', 'children'),
-#     Output('play-button', 'children'),
-#     Output('animation-state', 'data'),
-#     Input('play-button', 'n_clicks'),
-#     State('animation-state', 'data'),
-#     State('frame-slider', 'value'),
-# )
-# def toggle_animation(n_clicks, animation_state, current_slider_value):
-#     if n_clicks == 0:
-#         return True, 'Paused', 'Play', {'playing': False, 'current_index': current_slider_value}
+# Callback for play/pause button
+@app.callback(
+    Output('animation-interval', 'disabled'),
+    Output('animation-status', 'children'),
+    Output('play-button', 'children'),
+    Output('animation-state', 'data'),
+    Input('play-button', 'n_clicks'),
+    State('animation-state', 'data'),
+    State('frame-slider', 'value'),
+)
+def toggle_animation(n_clicks, animation_state, current_slider_value):
+    if n_clicks == 0:
+        return True, 'Paused', 'Play', {'playing': False, 'current_index': current_slider_value}
+   
+    # Toggle playing state
+    playing = not animation_state['playing']
     
-#     # Toggle playing state
-#     playing = not animation_state['playing']
-    
-#     if playing:
-#         return False, 'Playing', 'Pause', {'playing': True, 'current_index': current_slider_value}
-#     else:
-#         return True, 'Paused', 'Play', {'playing': False, 'current_index': current_slider_value}
+    if playing:
+        return False, 'Playing', 'Pause', {'playing': True, 'current_index': current_slider_value}
+    else:
+        return True, 'Paused', 'Play', {'playing': False, 'current_index': current_slider_value}
 
-# # Callback for animation interval
-# @app.callback(
-#     Output('frame-slider', 'value', allow_duplicate=True),
-#     Input('animation-interval', 'n_intervals'),
-#     State('animation-state', 'data'),
-#     State('frame-slider', 'value'),
-#     State('frame-slider', 'max'),
-#     State('step-size', 'value'),
-#     prevent_initial_call=True
-# )
-# def update_frame_on_interval(n_intervals, animation_state, current_value, max_value, step_size):
-#     if not animation_state['playing']:
-#         return current_value
+# Callback for animation interval
+@app.callback(
+    Output('frame-slider', 'value', allow_duplicate=True),
+    Input('animation-interval', 'n_intervals'),
+    State('animation-state', 'data'),
+    State('frame-slider', 'value'),
+    State('frame-slider', 'max'),
+    State('step-size', 'value'),
+    prevent_initial_call=True
+)
+def update_frame_on_interval(n_intervals, animation_state, current_value, max_value, step_size):
+    if not animation_state['playing']:
+        return current_value
     
-#     # Calculate next frame value
-#     next_value = current_value + step_size
+    # Calculate next frame value
+    next_value = current_value + step_size
     
-#     # Loop back to the beginning if we reach the end
-#     if next_value > max_value:
-#         next_value = 0
+    # Loop back to the beginning if we reach the end
+    if next_value > max_value:
+        next_value = 0
     
-#     return next_value
+    return next_value
 
-# # Single callback to update figure based on topic, click, and slider
-# @app.callback(
-#     Output('graph', 'figure'),
-#     Input('topic-dropdown', 'value'),
-#     Input('graph', 'clickData'),
-#     Input('frame-slider', 'value'),
-#     State('graph', 'figure'),
-#     State('topic-data', 'data')
-# )
-# def update_graph(topic, clickData, slider_value, current_fig, topic_data):
-#     # Create global variables to track the selected point and its bins
-#     global selected_point_idx, current_topic
+# Add a callback to toggle the opacity checkbox visibility
+@app.callback(
+    Output('weight-opacity-container', 'style'),
+    Input('view-mode-dropdown', 'value')
+)
+def toggle_opacity_checkbox(view_mode):
+    if view_mode == 'particles':
+        return {'margin-top': '10px', 'display': 'block'}
+    else:
+        return {'margin-top': '10px', 'display': 'none'}
+
+# Add a callback to update the SHOW_LIKLIHOOD_WITH_OPACITY variable
+@app.callback(
+    Output('graph', 'figure', allow_duplicate=True),
+    Input('weight-opacity-toggle', 'value'),
+    State('view-mode-dropdown', 'value'),
+    State('frame-slider', 'value'),
+    prevent_initial_call=True
+)
+def update_opacity_setting(toggle_value, view_mode, slider_value):
+    global SHOW_LIKLIHOOD_WITH_OPACITY
+    SHOW_LIKLIHOOD_WITH_OPACITY = 'enabled' in toggle_value
     
-#     # Determine what triggered the callback
-#     ctx = callback_context
-#     trigger_id = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else None
+    # Trigger a redraw of the graph
+    return update_graph(view_mode, None, slider_value, None, {'current_view_mode': view_mode, 'num_points': particle_histories.shape[0]})
+
+# Single callback to update figure based on topic, click, and slider
+@app.callback(
+    Output('graph', 'figure'),
+    Input('view-mode-dropdown', 'value'),
+    Input('graph', 'clickData'),
+    Input('frame-slider', 'value'),
+    State('graph', 'figure'),
+    State('view-mode-data', 'data')
+)
+def update_graph(view_mode, clickData, slider_value, current_fig, view_mode_data):
+    # Create global variables to track the selected point and its bins
+    global selected_point_idx, current_view_mode
     
-#     # If topic changed, reset selection
-#     if current_topic != topic:
-#         current_topic = topic
-#         if 'selected_point_idx' in globals():
-#             del selected_point_idx
+    # Determine what triggered the callback
+    ctx = callback_context
+    trigger_id = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else None
     
-#     # Base figure
-#     fig = Figure()
-#     fig.add_trace(Image(source=data_uri, x0=x0+grid.resolution/2, y0=y0+grid.resolution/2,
-#                         dx=grid.resolution, dy=grid.resolution))
-    
-#     # Filter points by camera topic
-#     sub_image_df = tbl[tbl['camera_name']==current_topic]
-#     fig.add_trace(Scattergl(
-#         x=sub_image_df['x'], y=sub_image_df['y'], mode='markers', marker=dict(color='red', size=6),
-#         customdata=sub_image_df.index,
-#         name='pos', hovertemplate='idx:%{customdata}<br>(%{x:.2f},%{y:.2f})'
-#     ))
-    
-#     # Handle point selection from different sources
-#     if trigger_id == 'graph' and clickData and clickData['points'][0]['curveNumber'] == 1:
-#         # Selection via click
-#         idx = clickData['points'][0]['pointIndex']
-#         selected_point_idx = sub_image_df.index[idx]
-#         print(f"Selected via click: index {selected_point_idx}")
-#     elif trigger_id == 'frame-slider' and len(sub_image_df) > 0:
-#         # Selection via slider
-#         if slider_value < len(sub_image_df):
-#             selected_point_idx = sub_image_df.index[slider_value]
-#             print(f"Selected via slider: index {selected_point_idx}, slider value {slider_value}")
-    
-#     # Add bins if a point is selected
-#     if 'selected_point_idx' in globals():
-#         subset = df[df['location_idx'] == selected_point_idx]
-#         print(f"Selected point: {selected_point_idx}, subset size: {len(subset)}")
-#         for idx, row in subset.iterrows():
-#             x0r, y0r = row['x'], row['y']
-#             yl, yr = row['yaw_left'], row['yaw_right']
-#             if yl < yr:
-#                 yl += 2*math.pi
-#             thetas = np.linspace(yl, yr, 30)
+    # If view mode changed, reset selection
+    # if current_view_mode != view_mode:
+    #     current_view_mode = view_mode
+    #     if 'selected_point_idx' in globals():
+    #         del selected_point_idx
+    # All points except current: grey and semi-transparent
+    # Base figure
+    fig = Figure()
+    num_points = gt_path_latlong.shape[0]
+    fig.add_trace(Scattergl(
+        x=gt_path_latlong[:, 1],
+        y=gt_path_latlong[:, 0],
+        mode='markers+lines',
+        marker=dict(color='rgba(150,150,150,0.5)', size=8, line=dict(width=0)),
+        line=dict(color='rgba(180,180,180,0.3)', width=2),
+        name='True Path',
+        hoverinfo='skip',
+        showlegend=True
+    ))
+
+    if view_mode_data["current_view_mode"] == "particles":
+
+        if SHOW_LIKLIHOOD_WITH_OPACITY:
+            # Get particle positions and weights for current frame
+            particles_x = particle_histories[slider_value, :, 1]
+            particles_y = particle_histories[slider_value, :, 0]
             
-#             for j in range(len(ranges)-1):
-#                 cov = row[f'coverage_{j}']
-#                 lbl = row[f'label_{j}']
-#                 r0, r1 = ranges[j], ranges[j+1]
-#                 xs_out = x0r + r1*np.cos(thetas)
-#                 ys_out = y0r + r1*np.sin(thetas)
-#                 xs_in  = x0r + r0*np.cos(thetas[::-1])
-#                 ys_in  = y0r + r0*np.sin(thetas[::-1])
-#                 xv = np.concatenate([xs_out, xs_in])
-#                 yv = np.concatenate([ys_out, ys_in])
+            # Process log weights to get opacity values
+            weights = log_particle_weights[slider_value, :]
+            # Convert log weights to opacity (exp of log weights gives original probability)
+            # Normalize to ensure visibility
+            opacities = np.exp(weights - np.max(weights))
+            # Add a minimum opacity to ensure all particles are at least somewhat visible
+            min_opacity = 0.1
+            opacities = min_opacity + (1-min_opacity) * opacities
+            
+            # Add weight information to hover data
+            hover_data = [f"{w:.4f}" for w in weights]
+            
+            # Plot particles with opacity based on weights
+            fig.add_trace(Scattergl(
+                x=particles_x, 
+                y=particles_y, 
+                mode='markers', 
+                marker=dict(
+                    color='red', 
+                    size=6,
+                    opacity=opacities
+                ),
+                customdata=hover_data,
+                name='Particles', 
+                hovertemplate='Weight: %{customdata}<br>(%{x:.4f}, %{y:.4f})'
+            ))
 
-#                 # Style zero-coverage differently
-#                 if cov <= 0:
-#                     fillcol = 'lightgray'
-#                     opacity = 0.2
-#                     line_style = dict(color='gray', width=1, dash='dash')
-#                 elif "output_0" in row: # if there are model predictions present, color based on them
-#                     correct = row[f'output_{j}'] == lbl
-#                     fillcol = 'rgba(100, 255, 0, 0.3)' if correct else 'rgba(255, 100, 0, 0.3)'
-#                     opacity = 0.5
-#                     line_style = dict(width=1, color='green' if correct else 'red')
-#                 else:
-#                     if lbl == 0:
-#                         fillcol = 'rgba(255, 0, 0, 0.3)'
-#                         opacity = 0.5
-#                         line_style = dict(width=1, color='red')
-#                     elif lbl == 1:
-#                         fillcol = 'rgba(0, 255, 0, 0.3)'
-#                         opacity = 0.5
-#                         line_style = dict(width=1, color='green')
-#                     else:
-#                         raise ValueError(f"Unknown label {lbl} for bin {j} at index {idx}")
-#                 name = f'cov {cov:.2f} l{lbl}'
-#                 if "output_0" in row:
-#                     name += f' o{row[f"output_{j}"]}'
-#                 fig.add_trace(Scatter(
-#                     x=xv, y=yv,
-#                     fill='toself',
-#                     fillcolor=fillcol,
-#                     opacity=opacity,
-#                     line=line_style,
-#                     name=name,
-#                     customdata=[[selected_point_idx, j, lbl, cov, idx] for _ in range(len(xv))],
-#                     mode='lines',
-#                     hoverinfo='text',
-#                     hoveron='fills',
-#                     hovertemplate=(
-#                         'bin: %{customdata[1]}<br>'
-#                         'parent: %{customdata[0]}<br>'
-#                         'label: %{customdata[2]}<br>'
-#                         'coverage: %{customdata[3]}<extra></extra>'
-#                     )
-#                 ))
+        else:
+            fig.add_trace(Scattergl(
+                x=particle_histories[slider_value, :, 1], y=particle_histories[slider_value, :, 0], mode='markers', marker=dict(color='red', size=6),
+                # customdata=sub_image_df.index,
+                name='pos', hovertemplate='idx:%{customdata}<br>(%{x:.2f},%{y:.2f})'
+            ))
 
-#     # Highlight the currently selected point
-#     if 'selected_point_idx' in globals():
-#         # Find the position of the selected point
-#         selected_row = sub_image_df[sub_image_df.index == selected_point_idx]
-#         if not selected_row.empty:
-#             # Add a highlight circle
-#             fig.add_trace(Scatter(
-#                 x=[selected_row['x'].values[0]],
-#                 y=[selected_row['y'].values[0]],
-#                 mode='markers',
-#                 marker=dict(color='yellow', size=12, symbol='circle-open', line=dict(width=3)),
-#                 name='Selected',
-#                 hoverinfo='none'
-#             ))
+    else:
+        raise NotImplementedError()
+    
+    # Handle point selection from different sources
+    if trigger_id == 'graph' and clickData and clickData['points'][0]['curveNumber'] == 1:
+        # Selection via click
+        idx = clickData['points'][0]['pointIndex']
+        selected_point_idx = sub_image_df.index[idx]
+        print(f"Selected via click: index {selected_point_idx}")
+    
+    # Highlight current point: bright color, larger
+    if 0 <= slider_value < num_points:
+        fig.add_trace(Scattergl(
+            x=[gt_path_latlong[slider_value, 1]],
+            y=[gt_path_latlong[slider_value, 0]],
+            mode='markers',
+            marker=dict(color='orange', size=18, line=dict(color='black', width=3)),
+            name='Current True Position',
+            hovertemplate='True Path<br>(%{x:.2f}, %{y:.2f})',
+            showlegend=True
+        ))
 
-#     fig.update_layout(
-#         uirevision='constant',  # Keep view state consistent
-#         title=f'Topic: {topic} - Frame: {slider_value + 1}/{topic_data["num_points"]}', 
-#         clickmode='event+select',
-#         xaxis=dict(title='X (m)'),
-#         yaxis=dict(title='Y (m)', scaleanchor='x', autorange=True)
-#     )
+    fig.update_layout(
+        uirevision='constant',  # Keep view state consistent
+        title=f'Topic: {view_mode} - Frame: {slider_value + 1}/{view_mode_data["num_points"]}', 
+        clickmode='event+select',
+        xaxis=dict(title='X (m)'),
+        yaxis=dict(title='Y (m)', scaleanchor='x', autorange=True)
+    )
     
-#     return fig
+    return fig
 
-# # Update the image panel callback to also work with slider selection
-# @app.callback(
-#     Output('image-panel', 'children'),
-#     Input('graph', 'clickData'),
-#     Input('frame-slider', 'value'),
-#     State('topic-data', 'data')
-# )
-# def display_images(clickData, slider_value, topic_data):
-#     ctx = callback_context
-#     trigger_id = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else None
-    
-#     # For slider selection, just show info about the point
-#     if trigger_id == 'frame-slider' and 'selected_point_idx' in globals():
-#         return [html.Div([
-#             html.H3(f"Point Information:"),
-#             html.P(f"Point Index: {selected_point_idx}"),
-#             html.P(f"Frame: {slider_value + 1} of {topic_data['num_points']}"),
-#             html.P("Click on a radial bin to view images")
-#         ])]
-    
-#     # Original behavior for bin clicks
-#     if not clickData:
-#         return [html.Div("Click on a position point then a radial bin to view images")]
-    
-#     pt = clickData['points'][0]
-    
-#     # For bin clicks (curve numbers > 1)
-#     if pt['curveNumber'] > 1:
-#         try:
-#             # Extract data from the clicked bin
-#             parent_idx, bin_idx, lbl, cov, dataset_idx = pt['customdata'][0]
-
-#             # Get dataset image and full image
-#             row = df.loc[dataset_idx]
-#             location_idx = row['location_idx']
-            
-#             # Create a header with bin information
-#             header = html.Div([
-#                 html.H3(f"Bin {bin_idx} Info:"),
-#                 html.P(f"Parent Point: {parent_idx}"),
-#                 html.P(f"Label: {lbl}"),
-#                 html.P(f"Coverage: {cov}")
-#             ])
-            
-#             # Get the dataset_image path
-#             if 'img_path' not in row:
-#                 return [header, html.Div("Dataset image path not available in data")]
-#             dataset_image_path = Path(args.dataset_csv).parent / row['img_path']
-#             if not dataset_image_path or pd.isna(dataset_image_path):
-#                 return [header, html.Div("Dataset image path not available")]
-            
-#             # Get the full image from tbl
-#             full_image_row = tbl.loc[location_idx] if location_idx < len(tbl) else None
-#             if full_image_row is None:
-#                 return [header, html.Div(f"Full image not found for location index {location_idx}")]
-            
-#             full_image_path = image_df_path.parent / full_image_row['img_path']
-#             if not full_image_path or pd.isna(full_image_path):
-#                 return [header, html.Div("Full image path not available")]
-            
-#             # Create image elements
-#             image_elements = [header]
-            
-#             # Add dataset image
-#             try:
-#                 with open(dataset_image_path, 'rb') as f:
-#                     dataset_img_data = base64.b64encode(f.read()).decode('utf-8')
-#                 image_elements.append(html.Div([
-#                     html.H4("Dataset Image"),
-#                     html.Img(src=f'data:image/png;base64,{dataset_img_data}', 
-#                              style={'max-width': '100%', 'margin': '5px'})
-#                 ]))
-#             except Exception as e:
-#                 image_elements.append(html.Div(f"Error loading dataset image: {str(e)}"))
-            
-#             # Add full image
-#             try:
-#                 with open(full_image_path, 'rb') as f:
-#                     full_img_data = base64.b64encode(f.read()).decode('utf-8')
-#                 image_elements.append(html.Div([
-#                     html.H4("Full Image"),
-#                     html.Img(src=f'data:image/png;base64,{full_img_data}', 
-#                              style={'max-width': '100%', 'margin': '5px'})
-#                 ]))
-#             except Exception as e:
-#                 image_elements.append(html.Div(f"Error loading full image: {str(e)}"))
-            
-#             return image_elements
-            
-#         except Exception as e:
-#             return [html.Div(f"Error processing bin click: {str(e)}")]
-    
-#     # For clicks on position points
-#     elif pt['curveNumber'] == 1:
-#         return [html.Div("Position point selected. Now click on a radial bin to view images.")]
-    
-#     return [html.Div("Click on a position point then a radial bin to view images")]
-
-# if __name__=='__main__':
-#     print("Starting server...")
-#     app.run(debug=True, port=8050)
+if __name__=='__main__':
+    print("Starting server...")
+    app.run(debug=True, port=8050)
