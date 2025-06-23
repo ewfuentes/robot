@@ -25,7 +25,8 @@ def observe_wag(
         similarity_matrix: torch.Tensor,  # W
         satellite_patch_kdtree: TorchKDTree,
         wag_config: WagConfig,
-        generator: torch.Generator
+        generator: torch.Generator,
+        return_past_particle_weights: bool = False
 ) -> torch.Tensor:  # particles
 
     # calculate observation likelihoods
@@ -37,6 +38,8 @@ def observe_wag(
                                                                  wag_config.max_distance_to_patch_deg)
     # resample particles
     resampled_particles = pf.wag_multinomial_resampling(particles, log_particle_weights, generator)
+    if return_past_particle_weights:
+        return resampled_particles, log_particle_weights
     return resampled_particles
 
 

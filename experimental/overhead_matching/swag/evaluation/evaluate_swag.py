@@ -207,11 +207,15 @@ def run_inference_on_path(
     patch_similarity_for_path: torch.Tensor,  # path_length x W
     wag_config: WagConfig,
     generator: torch.Generator,
+    return_intermediates: bool = False
 ) -> torch.Tensor:  # path_length x N x state dim
 
     particle_state = initial_particle_state.clone()
-    # TODO: return history of similarities for visualization
+
+    # sequence is start -> particle_history[0] = log_particle_weights[0] -> observe_wag -> particle_history_pre_move[0] -> move_wag -> particle_history[1]
     particle_history = []
+    log_particle_weights = []
+    particle_history_pre_move = []  # the particle state history before move_wag but after observe_wag
     for likelihood_value, motion_delta in zip(patch_similarity_for_path[:-1], motion_deltas):
         particle_history.append(particle_state.cpu().clone())
         # observe
@@ -219,7 +223,12 @@ def run_inference_on_path(
                                         likelihood_value,
                                         satellite_patch_kdtree,
                                         wag_config,
-                                        generator)
+                                        generator,
+                                        return_past_particle_weights = return_intermediates)
+        if return_intermediates:
+            log_particle_weights.append(particle_state[1].cpu().clone())
+            particle_state = particle_state[0]
+            particle_history_pre_move.append(particle_state.cpu().clone())
         # move
         particle_state = sa.move_wag(particle_state, motion_delta, wag_config, generator)
 
@@ -230,7 +239,16 @@ def run_inference_on_path(
                                     wag_config,
                                     generator)
     particle_history.append(particle_state.cpu().clone())
-    return particle_history
+
+    if return_intermediates:
+        return (
+            torch.stack(particle_history), # N+1, +1 from final particle state
+            torch.stack(log_particle_weights), # N
+            torch.stack(particle_history_pre_move) # N
+        )
+    else:
+        return torch.stack(particle_history)
+
 
 def construct_inputs_and_evalulate_path(
     sat_patch_kdtree,
@@ -240,6 +258,7 @@ def construct_inputs_and_evalulate_path(
     generator_seed: int,
     device: str,
     wag_config: WagConfig,
+    return_intermediates: bool = False,
 ):
     generator = torch.Generator(device=device).manual_seed(generator_seed)
     motion_deltas = get_motion_deltas_from_path(vigor_dataset, path).to(device)
@@ -254,8 +273,8 @@ def construct_inputs_and_evalulate_path(
                                  motion_deltas,
                                  path_similarity_values,
                                  wag_config,
-                                 generator)
-
+                                 generator,
+                                 return_intermediates)
 
 def evaluate_model_on_paths(
     vigor_dataset: vd.VigorDataset,
