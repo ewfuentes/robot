@@ -1,6 +1,0 @@
-
-filegroup(
-  name = "symphony_lake_snippet",
-  srcs = glob(["**/*"]),
-  visibility=["//visibility:public"],
-)

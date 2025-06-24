@@ -51,11 +51,10 @@ cc_test(
   name = "symphony_lake_parser_test",
   srcs = ["symphony_lake_parser_test.cc"],
   copts = ["-Wno-unused-parameter"],
-  data = ["@symphony_lake_snippet"],
+  data = ["@symphony_lake_snippet//:files"],
   deps = [
     "@com_google_googletest//:gtest_main",
     ":symphony_lake_parser",
-    "//common:check"
   ]
 )
 
@@ -65,6 +64,69 @@ cc_test(
   deps = [
     "@com_google_googletest//:gtest_main",
     "@gtsam//:gtsam",
-    ":learn_descriptors"  
+  ]
+)
+
+cc_library(
+    name = "image_point", 
+    hdrs = ["image_point.hh"],
+    deps = [
+      "//common/liegroups:se3",
+      "@opencv//:opencv",
+      "@eigen"
+    ]
+)
+
+cc_library(
+    name = "four_seasons_parser", 
+    hdrs = ["four_seasons_parser.hh"],
+    srcs = ["four_seasons_parser.cc"],
+    deps = [
+      "@eigen",
+      "@opencv//:opencv",
+      "//common/liegroups:se3",
+      "//common/time:robot_time",
+      "@com_google_absl//absl/strings:str_format",
+      ":image_point",
+      "@nmea",
+      "@geographiclib"
+    ]
+)
+
+cc_binary(
+  name = "four_seasons_parser_example",
+  srcs = ["four_seasons_parser_example.cc"],
+  deps = [
+    ":four_seasons_parser",
+    "@cxxopts//:cxxopts",
+    "//common:check",
+    "@geographiclib"
+  ]
+)
+
+cc_binary(
+  name = "four_seasons_parser_example_viz",
+  srcs = ["four_seasons_parser_example_viz.cc"],
+  deps = [
+    ":four_seasons_parser",
+    "@cxxopts//:cxxopts",
+    "//common:check",
+    "//visualization/opencv:opencv_viz",
+    "@eigen",    
+  ]
+)
+
+cc_test(
+  name = "four_seasons_parser_test",
+  srcs = ["four_seasons_parser_test.cc"],
+  data = ["@four_seasons_snippet//:files"],
+  deps = [
+    "@com_google_googletest//:gtest_main",
+    "//common/liegroups:se3",
+    "@com_google_absl//absl/strings:str_format",
+    "@eigen",
+    ":four_seasons_parser",
+    "@nmea",
+    "@geographiclib",
   ]
 )
