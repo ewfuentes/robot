@@ -89,7 +89,7 @@ cc_library(
       "@com_google_absl//absl/strings:str_format",
       ":image_point",
       "@nmea",
-      "@geographiclib//:geographiclib"
+      "@geographiclib"
     ]
 )
 
@@ -100,7 +100,7 @@ cc_binary(
     ":four_seasons_parser",
     "@cxxopts//:cxxopts",
     "//common:check",
-    "@geographiclib//:geographiclib"
+    "@geographiclib"
   ]
 )
 
@@ -127,6 +127,6 @@ cc_test(
     "@eigen",
     ":four_seasons_parser",
     "@nmea",
-    "@geographiclib//:geographiclib",
+    "@geographiclib",
   ]
 )
