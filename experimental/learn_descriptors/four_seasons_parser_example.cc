@@ -39,19 +39,19 @@ int main(int argc, const char** argv) {
     check_required("data_dir");
     check_required("calibration_dir");
 
-    const std::filesystem::path path_data = args["config_dir"].as<std::string>();
+    const std::filesystem::path path_data = args["data_dir"].as<std::string>();
     const std::filesystem::path path_calibration = args["calibration_dir"].as<std::string>();
 
     lrn_desc::FourSeasonsParser parser(path_data, path_calibration);
 
     ROBOT_CHECK(parser.num_images() != 0);
 
-    std::cout << "AS_from_S: \n"
-              << parser.get_AS_from_S().matrix() << "\n\nimu_from_cam : \n\n"
-              << parser.get_imu_from_cam().matrix() << "\n\nimu_from_gps: \n\n"
-              << parser.get_gpsw_from_w().matrix() << "\n\ngpsw_from_w : \n\n"
-              << parser.get_imu_from_gps().matrix() << "\n\ngpsw_from_e: \n\n"
-              << parser.get_gpsw_from_e().matrix() << "\n\ngnss scale: \n\n"
+    std::cout << "S_from_AS: \n"
+              << parser.get_S_from_AS().matrix() << "\n\ncam_from_imu : \n\n"
+              << parser.get_cam_from_imu().matrix() << "\n\ngps_from_imu: \n\n"
+              << parser.get_w_from_gpsw().matrix() << "\n\nw_from_gpsw : \n\n"
+              << parser.get_gps_from_imu().matrix() << "\n\ne_from_gpsw: \n\n"
+              << parser.get_e_from_gpsw().matrix() << "\n\ngnss scale: \n\n"
               << parser.get_gnss_scale() << std::endl;
 
     cv::Mat img_first_and_last;
@@ -59,34 +59,49 @@ int main(int argc, const char** argv) {
                 img_first_and_last);
     cv::imshow("First + Last Images", img_first_and_last);
 
-    for (size_t i = 0; i < parser.num_images(); i++) {
+    for (size_t i = 0; i < parser.num_images(); i += 99) {
         cv::Mat img = parser.load_image(i);
         const std::string img_str = "img " + std::to_string(i);
         cv::putText(img, img_str, cv::Point(10, 20), cv::FONT_HERSHEY_SIMPLEX, 0.5,
                     cv::Scalar(0, 255, 0), 2);
         const lrn_desc::ImagePoint img_pt = parser.get_image_point(i);
+        std::stringstream ss_AS_w_from_gnss_cam;
+        ss_AS_w_from_gnss_cam << "AS_w_from_gnss_cam: ";
+        if (img_pt.AS_w_from_gnss_cam) {
+            const Eigen::Vector3d& t = img_pt.AS_w_from_gnss_cam->translation();
+            ss_AS_w_from_gnss_cam << t.x() << ", " << t.y() << ", " << t.z();
+        } else {
+            ss_AS_w_from_gnss_cam << "N/A";
+        }
+        std::stringstream ss_AS_w_from_vio_cam;
+        ss_AS_w_from_vio_cam << "AS_w_from_vio_cam: ";
+        if (img_pt.AS_w_from_vio_cam) {
+            const Eigen::Vector3d& t = img_pt.AS_w_from_vio_cam->translation();
+            ss_AS_w_from_vio_cam << t.x() << ", " << t.y() << ", " << t.z();
+        } else {
+            ss_AS_w_from_vio_cam << "N/A";
+        }
         std::stringstream ss_gps;
-        ss_gps << "GPS: ";
-        if (img_pt.gps) {
-            const Eigen::Vector3d& t = img_pt.gps->translation();
-            ss_gps << t.x() << ", " << t.y() << ", " << t.z();
+        ss_gps << "gps_gcs: ";
+        if (img_pt.gps_gcs) {
+            const lrn_desc::ImagePoint::GPSData& gps_data = *img_pt.gps_gcs;
+            ss_gps << "long: " << gps_data.longitude << ", lat: " << gps_data.latitude;
+            if (gps_data.altitude) {
+                ss_gps << ", alt: " << *gps_data.altitude;
+            }
         } else {
             ss_gps << "N/A";
         }
-        std::stringstream ss_ground_truth;
-        ss_ground_truth << "Ground Truth: ";
-        if (img_pt.ground_truth) {
-            const Eigen::Vector3d& t = img_pt.ground_truth->translation();
-            ss_ground_truth << t.x() << ", " << t.y() << ", " << t.z();
-        } else {
-            ss_ground_truth << "N/A";
-        }
-        cv::putText(img, ss_gps.str(), cv::Point(10, 40), cv::FONT_HERSHEY_SIMPLEX, 0.5,
+        cv::putText(img, ss_AS_w_from_gnss_cam.str(), cv::Point(10, 40), cv::FONT_HERSHEY_SIMPLEX,
+                    0.5, cv::Scalar(0, 255, 0), 2);
+        cv::putText(img, ss_AS_w_from_vio_cam.str(), cv::Point(10, 60), cv::FONT_HERSHEY_SIMPLEX,
+                    0.5, cv::Scalar(0, 255, 0), 2);
+        cv::putText(img, ss_gps.str(), cv::Point(10, 80), cv::FONT_HERSHEY_SIMPLEX, 0.5,
                     cv::Scalar(0, 255, 0), 2);
-        cv::putText(img, ss_ground_truth.str(), cv::Point(10, 60), cv::FONT_HERSHEY_SIMPLEX, 0.5,
-                    cv::Scalar(0, 255, 0), 2);
+        std::cout << "img_pt " << i << "\n\t" << ss_AS_w_from_gnss_cam.str() << "\n\t"
+                  << ss_AS_w_from_vio_cam.str() << "\n\t" << ss_gps.str() << std::endl;
         cv::imshow("FourSeasonsParserExample", img);
-        int key = cv::waitKey(10);
+        int key = cv::waitKey(0);
 
         if (key == 'q' || key == 'Q') {
             break;

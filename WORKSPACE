@@ -622,7 +622,23 @@ http_archive(
 
 http_archive(
   name = "four_seasons_snippet",
-  urls = ["https://www.dropbox.com/scl/fi/7tlt6cp1l441cml4s8jmr/four_seasons_snippet.zip?rlkey=ltyj7s03blj1ywh7eqlqoi70q&st=yv7ckm4m&dl=1"],
+  urls = ["https://www.dropbox.com/scl/fi/34am0vcrbnyz2sh7irv9y/four_seasons_snippet.zip?rlkey=h4jjgz2xohx1xgmq4wzuczkbg&st=9fjc5566&dl=1"],
   build_file = "//third_party:BUILD.zip_file",
-  sha256 = "f7b6b41d14785bcfc0bf75c4f95e9faad1a80377c0d818a8c5aaf814c0a0aa01",
+  sha256 = "007894242b3fa9c351e58159bc3a7d8ec6f6a1d6163b129f26d872cd2df56e36",
+)
+
+http_archive(
+    name = "nmea",
+    urls = ["https://github.com/pcdangio/nmea/archive/1d6e507dd08f3a646513dfdc5eea71470f366d59.zip"],
+    strip_prefix = "nmea-1d6e507dd08f3a646513dfdc5eea71470f366d59",
+    build_file = "//third_party:BUILD.nmea",
+    sha256 = "3069da17f99ca689701f83e2a9dcd366053cb170757aa5d75cf2b46e59ea1910",
+)
+
+http_archive(
+    name = "geographiclib",
+    urls = ["https://github.com/geographiclib/geographiclib/archive/refs/tags/v2.5.zip"],
+    strip_prefix = "geographiclib-2.5",
+    build_file = "//third_party:BUILD.geographiclib",
+    sha256 = "d41e90b3009307fd96474fe21ccae824d981c7335ce8ddd3618c1f6084793011",
 )

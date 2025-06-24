@@ -14,11 +14,18 @@
 
 namespace robot::experimental::learn_descriptors {
 struct ImagePoint {
-    size_t id;                          // idx for DB
-    size_t seq;                         // time in nanoseconds (also the name of image)
-    std::optional<liegroups::SE3> gps;  // UTM. Not sure why the dataset has transforms for GPS, not
-                                        // sure if rotation or trans_z is reliable
-    std::optional<liegroups::SE3> ground_truth;
+    struct GPSData {
+        double latitude;
+        double longitude;
+        std::optional<double> altitude;  // meters above sea level
+    };
+    size_t id;   // idx for DB
+    size_t seq;  // time in nanoseconds (also the name of image)
+    std::optional<liegroups::SE3>
+        AS_w_from_gnss_cam;  // globally opimized arbitrary scale visual world (gnss + VIO + loop
+                             // closure + etc.) from cam
+    std::optional<liegroups::SE3> AS_w_from_vio_cam;  // arbitrary scale world from vio result cam
+    std::optional<GPSData> gps_gcs;  // raw gps measurement in gcs (global cordinate system)
 
     const std::string to_string() const {
         auto se3_to_str = [](const liegroups::SE3& se3) {
@@ -32,15 +39,27 @@ struct ImagePoint {
         std::stringstream ss;
         ss << "Image Point " << id << ":\n";
         ss << "\tseq: " << seq << "\n";
-        ss << "\tgps: ";
-        if (gps) {
-            ss << "\n" << se3_to_str(*gps);
+        ss << "\tAS_w_from_gnss_cam: ";
+        if (AS_w_from_gnss_cam) {
+            ss << "\n" << se3_to_str(*AS_w_from_gnss_cam);
         } else {
             ss << "N/A";
         }
-        ss << "\n\tground_truth: ";
-        if (ground_truth) {
-            ss << "\n" << se3_to_str(*ground_truth);
+        ss << "\n\tAS_w_from_vio_cam: ";
+        if (AS_w_from_vio_cam) {
+            ss << "\n" << se3_to_str(*AS_w_from_vio_cam);
+        } else {
+            ss << "N/A";
+        }
+        ss << "\n\tgps_gcs: ";
+        if (gps_gcs) {
+            ss << "\n\t\t" << gps_gcs->latitude << "\t" << gps_gcs->longitude << "\t";
+            if (gps_gcs->altitude) {
+                ss << *(gps_gcs->altitude);
+            } else {
+                ss << "alt N/A";
+            }
+
         } else {
             ss << "N/A";
         }
@@ -49,9 +68,6 @@ struct ImagePoint {
 
     cv::Mat load_image(const std::filesystem::path& img_dir) const {
         const std::filesystem::path path(img_dir / (std::to_string(seq) + ".png"));
-        if (std::getenv("DEBUG")) {
-            std::cout << "getting image at " << path << std::endl;
-        }
         return cv::imread(path);
     }
 };
