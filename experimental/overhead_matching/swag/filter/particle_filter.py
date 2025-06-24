@@ -40,7 +40,7 @@ def wag_calculate_log_particle_weights(observation_log_likelihood: torch.Tensor,
                                        patch_kdtree: torch_kdtree.nn_distance.TorchKDTree,
                                        particles: torch.Tensor,
                                        max_patch_distance_deg: float,
-                                       no_patch_log_likelihood: float = np.log(1e-6)) -> torch.Tensor:
+                                       no_patch_log_likelihood: float = -100) -> torch.Tensor:
     """
     observation_likelihood_matrix: Matrix of length M, each cell contains log(p(z_t | x_t^j))
     patch_kdtree: KDTree of the patch centers
