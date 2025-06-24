@@ -25,7 +25,7 @@ class FourSeasonsParser {
     cv::Mat load_image(const size_t idx) const;
     const ImagePoint& get_image_point(const size_t idx) const { return img_pt_vector_[idx]; };
     size_t num_images() const { return img_pt_vector_.size(); };
-    const CameraCalibrationFisheye& get_camera_calibration() const { return cal_; };
+    const CameraCalibrationFisheye& camera_calibration() const { return cal_; };
     const liegroups::SE3& S_from_AS() const {
         return transforms_.S_from_AS;
     };  // metric scale from arbitrary (internal slam) scale
@@ -39,7 +39,7 @@ class FourSeasonsParser {
     const liegroups::SE3& e_from_gpsw() const {
         return transforms_.e_from_gpsw;
     };  // ECEF from local gps (ENU)
-    double get_gnss_scale() const {
+    double gnss_scale() const {
         return transforms_.gnss_scale;
     };  // scale from vio frame to gnss frame. WARNING: will require retooling if the scales per
         // keyframe (pose) are not all one value. See more here:

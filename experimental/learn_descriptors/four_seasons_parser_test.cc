@@ -61,12 +61,12 @@ TEST(FourSeasonsParserTest, parser_test) {
     EXPECT_TRUE(w_from_gpsw.matrix().isApprox(parser.w_from_gpsw().matrix()));
     EXPECT_TRUE(gps_from_imu.matrix().isApprox(parser.gps_from_imu().matrix()));
     EXPECT_TRUE(e_from_gpsw.matrix().isApprox(parser.e_from_gpsw().matrix()));
-    EXPECT_DOUBLE_EQ(gnss_scale, parser.get_gnss_scale());
+    EXPECT_DOUBLE_EQ(gnss_scale, parser.gnss_scale());
 
     // calibration test
     const FourSeasonsParser::CameraCalibrationFisheye calibration_target =
         detail::txt_parser_help::load_camera_calibration(dir_calibration);
-    const FourSeasonsParser::CameraCalibrationFisheye calibration = parser.get_camera_calibration();
+    const FourSeasonsParser::CameraCalibrationFisheye calibration = parser.camera_calibration();
     EXPECT_DOUBLE_EQ(calibration_target.cx, calibration.cx);
     EXPECT_DOUBLE_EQ(calibration_target.cy, calibration.cy);
     EXPECT_DOUBLE_EQ(calibration_target.fx, calibration.fx);
@@ -99,7 +99,7 @@ TEST(FourSeasonsParserTest, parser_test) {
         detail::txt_parser_help::create_vio_time_data_map(path_vio, min_sig_figs_time);
 
     Eigen::Matrix4d scale_mat = Eigen::Matrix4d::Identity();
-    scale_mat(0, 0) = scale_mat(1, 1) = scale_mat(2, 2) = parser.get_gnss_scale();
+    scale_mat(0, 0) = scale_mat(1, 1) = scale_mat(2, 2) = parser.gnss_scale();
     const Eigen::Isometry3d ECEF_from_AS_w = Eigen::Isometry3d(
         (parser.e_from_gpsw() * parser.w_from_gpsw().inverse() * parser.S_from_AS()).matrix() *
         scale_mat);

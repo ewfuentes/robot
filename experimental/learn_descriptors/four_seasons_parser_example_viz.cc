@@ -50,16 +50,16 @@ int main(int argc, const char** argv) {
 
     std::vector<Eigen::Isometry3d> w_from_gnss_cams;  // camera frames from visual world frame
     Eigen::Isometry3d scale_mat = Eigen::Isometry3d::Identity();
-    std::cout << "gnss scale: " << parser.get_gnss_scale() << std::endl;
-    scale_mat.linear() *= parser.get_gnss_scale();
+    std::cout << "gnss scale: " << parser.gnss_scale() << std::endl;
+    scale_mat.linear() *= parser.gnss_scale();
     std::cout << "scale mat: " << scale_mat.matrix() << std::endl;
     for (size_t i = 100; i < std::min(static_cast<size_t>(800), parser.num_images()); i += 49) {
         const lrn_desc::ImagePoint img_pt = parser.get_image_point(i);
         Eigen::Isometry3d AS_w_from_gnss_cam =
             scale_mat * Eigen::Isometry3d(img_pt.AS_w_from_gnss_cam->matrix());
         Eigen::Isometry3d w_from_gnss_cam =
-            Eigen::Isometry3d(parser.get_S_from_AS().matrix()) * AS_w_from_gnss_cam;
-        Eigen::Isometry3d w_from_vio_cam = Eigen::Isometry3d(parser.get_S_from_AS().matrix()) *
+            Eigen::Isometry3d(parser.S_from_AS().matrix()) * AS_w_from_gnss_cam;
+        Eigen::Isometry3d w_from_vio_cam = Eigen::Isometry3d(parser.S_from_AS().matrix()) *
                                            Eigen::Isometry3d(img_pt.AS_w_from_vio_cam->matrix());
         w_from_gnss_cams.push_back(w_from_gnss_cam);
         std::cout << "\npose gnss metric " << i << w_from_gnss_cam.matrix() << std::endl;

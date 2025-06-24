@@ -47,12 +47,12 @@ int main(int argc, const char** argv) {
     ROBOT_CHECK(parser.num_images() != 0);
 
     std::cout << "S_from_AS: \n"
-              << parser.get_S_from_AS().matrix() << "\n\ncam_from_imu : \n\n"
-              << parser.get_cam_from_imu().matrix() << "\n\ngps_from_imu: \n\n"
-              << parser.get_w_from_gpsw().matrix() << "\n\nw_from_gpsw : \n\n"
-              << parser.get_gps_from_imu().matrix() << "\n\ne_from_gpsw: \n\n"
-              << parser.get_e_from_gpsw().matrix() << "\n\ngnss scale: \n\n"
-              << parser.get_gnss_scale() << std::endl;
+              << parser.S_from_AS().matrix() << "\n\ncam_from_imu : \n\n"
+              << parser.cam_from_imu().matrix() << "\n\ngps_from_imu: \n\n"
+              << parser.w_from_gpsw().matrix() << "\n\nw_from_gpsw : \n\n"
+              << parser.gps_from_imu().matrix() << "\n\ne_from_gpsw: \n\n"
+              << parser.e_from_gpsw().matrix() << "\n\ngnss scale: \n\n"
+              << parser.gnss_scale() << std::endl;
 
     cv::Mat img_first_and_last;
     cv::hconcat(parser.load_image(0), parser.load_image(parser.num_images() - 1),
