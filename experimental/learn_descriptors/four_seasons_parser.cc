@@ -188,7 +188,7 @@ class GPSParserHelper {
                     lrn_descs::ImagePoint::GPSData gps_data;
                     gps_data.latitude = gga.latitude.get();
                     gps_data.longitude = gga.longitude.get();
-                    j if (gga.altitude.exists()) gps_data.altitude = gga.altitude.get();
+                    if (gga.altitude.exists()) gps_data.altitude = gga.altitude.get();
                     if (gga.utc.get() == time_of_day_last) {  // GGA messages for this dataset come
                                                               // after RMC messages
                         time_map_gps.push_back(std::make_pair(
