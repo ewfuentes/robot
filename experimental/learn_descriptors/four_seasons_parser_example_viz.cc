@@ -33,7 +33,7 @@ int main(int argc, const char** argv) {
         }
     };
 
-        if (args.count("help")) {
+    if (args.count("help")) {
         std::cout << options.help() << std::endl;
         return 0;
     }
