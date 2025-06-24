@@ -170,6 +170,9 @@ class GPSParserHelper {
         std::string line;
         std::optional<nmea::sentence> nmea_sentence;
         nmea::date date_last;
+        date_last.day = 255;
+        date_last.month = 255;
+        date_last.year = 255;
         double time_of_day_last = 0;
         while (std::getline(file_gps, line) && !line.empty()) {
             try {
@@ -185,7 +188,7 @@ class GPSParserHelper {
                     lrn_descs::ImagePoint::GPSData gps_data;
                     gps_data.latitude = gga.latitude.get();
                     gps_data.longitude = gga.longitude.get();
-                    if (gga.altitude.exists()) gps_data.altitude = gga.altitude.get();
+                    j if (gga.altitude.exists()) gps_data.altitude = gga.altitude.get();
                     if (gga.utc.get() == time_of_day_last) {  // GGA messages for this dataset come
                                                               // after RMC messages
                         time_map_gps.push_back(std::make_pair(
