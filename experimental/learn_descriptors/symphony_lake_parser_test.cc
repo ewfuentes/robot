@@ -74,13 +74,14 @@ TEST(SymphonyLakeParserTest, test_cam_frames) {
     std::vector<Eigen::Isometry3d> cam_frames;
 
     // NOTE: the world in these images is east, north, up centered at boat0 translation
-    Eigen::Vector3d t_world_boat0 = DataParser::get_T_world_boat(image_point_first).translation();
+    Eigen::Vector3d t_world_boat0 =
+        DataParser::get_world_from_boat(image_point_first).translation();
 
     for (size_t i = 0; i < indices.size(); i++) {
         const symphony_lake_dataset::ImagePoint img_pt = survey.getImagePoint(indices[i]);
-        Eigen::Isometry3d T_world_boatidx = DataParser::get_T_world_boat(img_pt);
+        Eigen::Isometry3d T_world_boatidx = DataParser::get_world_from_boat(img_pt);
         Eigen::Isometry3d T_boatidx_camidx =
-            DataParser::get_T_boat_camera(img_pt);  // current boat to current camera
+            DataParser::get_boat_from_camera(img_pt);  // current boat to current camera
 
         Eigen::Isometry3d T_world_camidx = T_world_boatidx * T_boatidx_camidx;
         T_world_camidx.translation() -= t_world_boat0;
@@ -108,12 +109,13 @@ TEST(SymphonyLakeParserTest, test_gps_frames) {
     std::vector<Eigen::Isometry3d> gps_frames;
 
     // NOTE: the world in these images is east, north, up centered at boat0 translation
-    Eigen::Vector3d t_world_boat0 = DataParser::get_T_world_boat(image_point_first).translation();
+    Eigen::Vector3d t_world_boat0 =
+        DataParser::get_world_from_boat(image_point_first).translation();
     // Eigen::Vector3d t_world_gps0(image_point_first.x, image_point_first.y, 0);
 
     for (size_t i = 0; i < indices.size(); i++) {
         const symphony_lake_dataset::ImagePoint img_pt = survey.getImagePoint(indices[i]);
-        Eigen::Isometry3d T_world_gpsidx = DataParser::get_T_world_gps(img_pt);
+        Eigen::Isometry3d T_world_gpsidx = DataParser::get_world_from_gps(img_pt);
         T_world_gpsidx.translation() -= t_world_boat0;
         gps_frames.push_back(T_world_gpsidx);
     }

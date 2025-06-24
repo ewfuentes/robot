@@ -37,8 +37,8 @@ TEST(StructureFromMotiontest, sfm_snippet_small) {
 
     // let world be the first boat base recorded. T_world_camera0 = T_earth_boat0 * T_boat_camera
     // T_earth_boat0 =
-    Eigen::Isometry3d T_earth_world = DataParser::get_T_world_boat(img_pt_first);
-    Eigen::Isometry3d T_world_camera0 = DataParser::get_T_boat_camera(img_pt_first);
+    Eigen::Isometry3d T_earth_world = DataParser::get_world_from_boat(img_pt_first);
+    Eigen::Isometry3d T_world_camera0 = DataParser::get_boat_from_camera(img_pt_first);
     StructureFromMotion sfm(Frontend::ExtractorType::SIFT, K, D,
                             gtsam::Pose3(T_world_camera0.matrix()));
 
@@ -47,9 +47,9 @@ TEST(StructureFromMotiontest, sfm_snippet_small) {
         const cv::Mat img = survey.loadImageByImageIndex(idx);
         img_vector.push_back(img);
         const symphony_lake_dataset::ImagePoint img_pt = survey.getImagePoint(idx);
-        Eigen::Isometry3d T_earth_boat = DataParser::get_T_world_boat(img_pt);
+        Eigen::Isometry3d T_earth_boat = DataParser::get_world_from_boat(img_pt);
         Eigen::Isometry3d T_world_boat = T_earth_world.inverse() * T_earth_boat;
-        Eigen::Isometry3d T_world_cam = T_world_boat * DataParser::get_T_boat_camera(img_pt);
+        Eigen::Isometry3d T_world_cam = T_world_boat * DataParser::get_boat_from_camera(img_pt);
 
         sfm.add_image(img, gtsam::Pose3(T_world_cam.matrix()));
     }
@@ -92,10 +92,11 @@ TEST(StructureFromMotiontest, sfm_building) {
             .finished();
 
     // let world be the first boat base recorded. T_world_camera0 = T_earth_boat0 * T_boat_camera
-    Eigen::Isometry3d T_earth_boat0 = DataParser::get_T_world_boat(img_pt_first);
+    Eigen::Isometry3d T_earth_boat0 = DataParser::get_world_from_boat(img_pt_first);
     Eigen::Isometry3d T_world_boat0;
     T_world_boat0.linear() = T_earth_boat0.linear();
-    Eigen::Isometry3d T_world_camera0 = T_world_boat0 * DataParser::get_T_boat_camera(img_pt_first);
+    Eigen::Isometry3d T_world_camera0 =
+        T_world_boat0 * DataParser::get_boat_from_camera(img_pt_first);
     StructureFromMotion sfm(Frontend::ExtractorType::SIFT, K, D,
                             gtsam::Pose3(T_world_camera0.matrix()));
 
@@ -103,10 +104,10 @@ TEST(StructureFromMotiontest, sfm_building) {
         const cv::Mat img = survey.loadImageByImageIndex(idx);
         const symphony_lake_dataset::ImagePoint img_pt = survey.getImagePoint(idx);
 
-        Eigen::Isometry3d T_world_boat = DataParser::get_T_world_boat(img_pt);
+        Eigen::Isometry3d T_world_boat = DataParser::get_world_from_boat(img_pt);
         T_world_boat.translation() -= T_earth_boat0.translation();
 
-        Eigen::Isometry3d T_world_cam = T_world_boat * DataParser::get_T_boat_camera(img_pt);
+        Eigen::Isometry3d T_world_cam = T_world_boat * DataParser::get_boat_from_camera(img_pt);
 
         sfm.add_image(img, gtsam::Pose3(T_world_cam.matrix()));
     }

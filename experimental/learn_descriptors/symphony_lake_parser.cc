@@ -26,11 +26,11 @@ DataParser::DataParser(const std::filesystem::path &image_root_dir,
 }
 DataParser::~DataParser() {}
 
-const Eigen::Isometry3d DataParser::get_T_boat_camera(
+const Eigen::Isometry3d DataParser::get_boat_from_camera(
     const symphony_lake_dataset::ImagePoint &img_pt) {
-    return get_T_boat_camera(img_pt.pan, img_pt.tilt);
+    return get_boat_from_camera(img_pt.pan, img_pt.tilt);
 }
-const Eigen::Isometry3d DataParser::get_T_boat_camera(double theta_pan, double theta_tilt) {
+const Eigen::Isometry3d DataParser::get_boat_from_camera(double theta_pan, double theta_tilt) {
     Eigen::AngleAxisd R_z(-theta_pan, Eigen::Vector3d::UnitZ());   // pan
     Eigen::AngleAxisd R_y(-theta_tilt, Eigen::Vector3d::UnitY());  // tilt
     Eigen::Matrix3d R_boat_gimbal(R_z * R_y);
@@ -46,31 +46,31 @@ const Eigen::Isometry3d DataParser::get_T_boat_camera(double theta_pan, double t
     return T_boat_cam;
 }
 
-const Eigen::Isometry3d DataParser::get_T_world_gps(
+const Eigen::Isometry3d DataParser::get_world_from_gps(
     const symphony_lake_dataset::ImagePoint &img_pt) {
-    Eigen::Isometry3d T_world_gps;
+    Eigen::Isometry3d world_from_gps;
     // img_pt.theta is in the North East Down frame, not lattitude longitude coords. However,
     // because of the alignment of the imu and gps, this rotation math holds.
-    T_world_gps.linear() = Eigen::AngleAxisd(img_pt.theta, Eigen::Vector3d::UnitZ()).matrix();
-    T_world_gps.translation() = Eigen::Vector3d(img_pt.x, img_pt.y, 0);
-    return T_world_gps;
+    world_from_gps.linear() = Eigen::AngleAxisd(img_pt.theta, Eigen::Vector3d::UnitZ()).matrix();
+    world_from_gps.translation() = Eigen::Vector3d(img_pt.x, img_pt.y, 0);
+    return world_from_gps;
 }
 
-const Eigen::Isometry3d DataParser::get_T_world_boat(
+const Eigen::Isometry3d DataParser::get_world_from_boat(
     const symphony_lake_dataset::ImagePoint &img_pt) {
-    // Eigen::Isometry3d T_world_gps;
+    // Eigen::Isometry3d world_from_gps;
 
     // Eigen::Matrix3d R_world_imu = get_R_world_imu(img_pt.theta);
     // Eigen::Isometry3d T_imu_gps = T_boat_imu.inverse() * T_boat_gps;
     // Eigen::Matrix3d R_world_gps = R_world_imu * T_imu_gps.linear();
 
-    // T_world_gps.linear() = R_world_gps;
-    // T_world_gps.translation() = Eigen::Vector3d(img_pt.x, img_pt.y, 0);
+    // world_from_gps.linear() = R_world_gps;
+    // world_from_gps.translation() = Eigen::Vector3d(img_pt.x, img_pt.y, 0);
 
-    // Eigen::Isometry3d T_world_boat = T_world_gps * T_boat_gps.inverse();
+    // Eigen::Isometry3d world_from_boat = world_from_gps * T_boat_gps.inverse();
 
-    Eigen::Isometry3d T_world_gps = get_T_world_gps(img_pt);
-    Eigen::Isometry3d T_world_boat = T_world_gps * T_boat_gps.inverse();
-    return T_world_boat;
+    Eigen::Isometry3d world_from_gps = get_world_from_gps(img_pt);
+    Eigen::Isometry3d world_from_boat = world_from_gps * T_boat_gps.inverse();
+    return world_from_boat;
 }
 }  // namespace robot::experimental::learn_descriptors

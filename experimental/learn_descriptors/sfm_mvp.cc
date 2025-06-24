@@ -187,12 +187,13 @@ TEST(SFMMvp, sfm_building_manual_global) {
     cv::Mat K_mat = (cv::Mat_<double>(3, 3) << K->fx(), 0, K->px(), 0, K->fy(), K->py(), 0, 0, 1);
     cv::Mat D_mat = (cv::Mat_<double>(5, 1) << D(0, 0), D(1, 0), D(2, 0), D(3, 0), D(4, 0));
 
-    // let world be the first boat base recorded. T_world_camera0 = T_earth_boat0
-    // * T_boat_camera
-    Eigen::Isometry3d T_earth_boat0 = DataParser::get_T_world_boat(img_pt_first);
-    Eigen::Isometry3d T_world_boat0;
-    T_world_boat0.linear() = T_earth_boat0.linear();
-    Eigen::Isometry3d T_world_camera0 = T_world_boat0 * DataParser::get_T_boat_camera(img_pt_first);
+    // let world be the first boat base recorded. T_world_camera0 = earth_from_boat0
+    // * boat_from_camera
+    Eigen::Isometry3d earth_from_boat0 = DataParser::get_world_from_boat(img_pt_first);
+    Eigen::Isometry3d world_from_boat0;
+    world_from_boat0.linear() = earth_from_boat0.linear();
+    Eigen::Isometry3d T_world_camera0 =
+        world_from_boat0 * DataParser::get_boat_from_camera(img_pt_first);
     // StructureFromMotion sfm(Frontend::ExtractorType::SIFT, K, D,
     //                         gtsam::Pose3(T_world_camera0.matrix()));
     Frontend frontend(Frontend::ExtractorType::SIFT, Frontend::MatcherType::KNN);
@@ -222,9 +223,9 @@ TEST(SFMMvp, sfm_building_manual_global) {
         cv::undistort(img, img_undistorted, K_mat, D_mat);
         const symphony_lake_dataset::ImagePoint img_pt = survey.getImagePoint(idx);
 
-        Eigen::Isometry3d T_world_boat = DataParser::get_T_world_boat(img_pt);
-        T_world_boat.translation() -= T_earth_boat0.translation();
-        Eigen::Isometry3d T_world_cam = T_world_boat * DataParser::get_T_boat_camera(img_pt);
+        Eigen::Isometry3d world_from_boat = DataParser::get_world_from_boat(img_pt);
+        world_from_boat.translation() -= earth_from_boat0.translation();
+        Eigen::Isometry3d T_world_cam = world_from_boat * DataParser::get_boat_from_camera(img_pt);
         gtsam::Pose3 T_world_cam_gtsam(T_world_cam.matrix());
         cam_pose.emplace(id, T_world_cam_gtsam);
         cam_isometries.push_back(T_world_cam);
@@ -384,12 +385,12 @@ TEST(SFMMvp, sfm_building_manual_incremental) {
     cv::Mat K_mat = (cv::Mat_<double>(3, 3) << K->fx(), 0, K->px(), 0, K->fy(), K->py(), 0, 0, 1);
     cv::Mat D_mat = (cv::Mat_<double>(5, 1) << D(0, 0), D(1, 0), D(2, 0), D(3, 0), D(4, 0));
 
-    // let world be the first boat base recorded. T_world_camera0 = T_earth_boat0
-    // * T_boat_camera
-    Eigen::Isometry3d T_earth_boat0 = DataParser::get_T_world_boat(img_pt_first);
-    Eigen::Isometry3d T_world_boat0;
-    T_world_boat0.linear() = T_earth_boat0.linear();
-    Eigen::Isometry3d T_world_camera0 = T_world_boat0 * DataParser::get_T_boat_camera(img_pt_first);
+    // let world be the first boat base recorded. T_world_camera0 = earth_from_boat0
+    Eigen::Isometry3d earth_from_boat0 = DataParser::get_world_from_boat(img_pt_first);
+    Eigen::Isometry3d world_from_boat0;
+    world_from_boat0.linear() = earth_from_boat0.linear();
+    Eigen::Isometry3d T_world_camera0 =
+        world_from_boat0 * DataParser::get_boat_from_camera(img_pt_first);
     // StructureFromMotion sfm(Frontend::ExtractorType::SIFT, K, D,
     //                         gtsam::Pose3(T_world_camera0.matrix()));
     Frontend frontend(Frontend::ExtractorType::SIFT, Frontend::MatcherType::KNN);
@@ -419,9 +420,9 @@ TEST(SFMMvp, sfm_building_manual_incremental) {
         cv::undistort(img, img_undistorted, K_mat, D_mat);
         const symphony_lake_dataset::ImagePoint img_pt = survey.getImagePoint(idx);
 
-        Eigen::Isometry3d T_world_boat = DataParser::get_T_world_boat(img_pt);
-        T_world_boat.translation() -= T_earth_boat0.translation();
-        Eigen::Isometry3d T_world_cam = T_world_boat * DataParser::get_T_boat_camera(img_pt);
+        Eigen::Isometry3d world_from_boat = DataParser::get_world_from_boat(img_pt);
+        world_from_boat.translation() -= earth_from_boat0.translation();
+        Eigen::Isometry3d T_world_cam = world_from_boat * DataParser::get_boat_from_camera(img_pt);
         gtsam::Pose3 T_world_cam_gtsam(T_world_cam.matrix());
         cam_pose.emplace(id, T_world_cam_gtsam);
         cam_isometries.push_back(T_world_cam);
@@ -672,6 +673,7 @@ TEST(SFMMvp, sfm_building_manual_incremental) {
                                            SFMMvpHelper::averagePoints(sym_lmk.second));
     }
 
+    // do global optimization
     const gtsam::Values result =
         SFMMvpHelper::optimize_graph(graph_, initial_estimate_, symbols_pose, symbols_landmarks);
     std::cout << "about to visualize result" << std::endl;

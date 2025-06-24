@@ -30,14 +30,15 @@ class DataParser {
 
     // Eigen::Affine3d get_T_world_camera(size_t survey_idx, size_t image_idx, bool use_gps = false,
     //                                    bool use_compass = false);
-    static const Eigen::Isometry3d get_T_boat_camera(
+    static const Eigen::Isometry3d get_boat_from_camera(
         const symphony_lake_dataset::ImagePoint &img_pt);
-    static const Eigen::Isometry3d get_T_boat_camera(double theta_pan, double theta_tilt);
-    static const Eigen::Isometry3d get_T_world_gps(const symphony_lake_dataset::ImagePoint &img_pt);
-    /// @brief get_T_world_boat assuming z_axis_boat dot z_axis_world ~ -1
+    static const Eigen::Isometry3d get_boat_from_camera(double theta_pan, double theta_tilt);
+    static const Eigen::Isometry3d get_world_from_gps(
+        const symphony_lake_dataset::ImagePoint &img_pt);
+    /// @brief get_world_from_boat assuming z_axis_boat dot z_axis_world ~ -1
     /// @param img_pt
-    /// @return T_world_boat
-    static const Eigen::Isometry3d get_T_world_boat(
+    /// @return world_from_boat
+    static const Eigen::Isometry3d get_world_from_boat(
         const symphony_lake_dataset::ImagePoint &img_pt);
 
     const symphony_lake_dataset::SurveyVector &get_surveys() const { return surveys_; };

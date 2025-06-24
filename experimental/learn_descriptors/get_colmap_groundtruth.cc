@@ -54,7 +54,7 @@ int main() {
     for (int i = 0; i < 718; i++) {
         symphony_lake_dataset::ImagePoint img_pt = survey.getImagePoint(i);
         const Eigen::Isometry3d T_wrld_cam =
-            data_parser.get_T_world_boat(img_pt) * data_parser.get_T_boat_camera(img_pt);
+            data_parser.get_world_from_boat(img_pt) * data_parser.get_boat_from_camera(img_pt);
         ImagePose img_pose;
 
         std::ostringstream oss;
