@@ -543,21 +543,22 @@ class HardNegativeMiner:
         self._random_sample_type = random_sample_type
 
     def __iter__(self):
-        similarities = torch.einsum(
-                "nd,md->nm", self._panorama_embeddings, self._satellite_embeddings)
-        # A row of this matrix contains the satellite patch similarities for a given panorama
-        # sorted from least similar to most similar. When mining hard negatives, we want to
-        # present the true positives and semipositives (since there are so few of them) and
-        # the most similar negative matches.
-        sorted_sat_idxs_from_pano_idx = torch.argsort(similarities)
-
         # To sample batches, we create a random permutation of all panoramas
         # We then assign satellite patch to each panorama. The satellite image will either be
         # a positive/semipositive satellite patch or a mined hard negative example
         permuted_panoramas = torch.randperm(self._panorama_embeddings.shape[0], generator=self._generator).tolist()
-        num_hard_negatives = min(self._satellite_embeddings.shape[0], self._hard_negative_pool_size)
 
         if self._sample_mode == HardNegativeMiner.SampleMode.HARD_NEGATIVE:
+            similarities = torch.einsum(
+                    "nd,md->nm", self._panorama_embeddings, self._satellite_embeddings)
+            # A row of this matrix contains the satellite patch similarities for a given panorama
+            # sorted from least similar to most similar. When mining hard negatives, we want to
+            # present the true positives and semipositives (since there are so few of them) and
+            # the most similar negative matches.
+            sorted_sat_idxs_from_pano_idx = torch.argsort(similarities)
+
+            num_hard_negatives = min(self._satellite_embeddings.shape[0], self._hard_negative_pool_size)
+
             num_hard_negatives_per_batch = min(
                     math.ceil(self._batch_size * self._hard_negative_fraction), self._batch_size)
         else:
