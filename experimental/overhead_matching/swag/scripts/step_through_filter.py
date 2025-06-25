@@ -51,7 +51,9 @@ from torch_kdtree import build_kd_tree
 
 DEVICE="cuda:0"
 
+# Add this near the top of the file with other global variables
 SHOW_LIKLIHOOD_WITH_OPACITY = False
+SHOW_SATELLITE_PATCHES = False
 
 
 # CLI args
@@ -170,13 +172,20 @@ app.layout = html.Div([
                         id='weight-opacity-toggle',
                         options=[{'label': 'View particle weight as opacity', 'value': 'enabled'}],
                         value=[]
+                    ),
+                    dcc.Checklist(
+                        id='satellite-patches-toggle',
+                        options=[{'label': 'Show satellite patches', 'value': 'enabled'}],
+                        value=[]
                     )
                 ], id='weight-opacity-container', style={'margin-top': '10px'})
             ],
             style={'width':'20%', 'display':'inline-block'}
         ),
         html.Div([
+            html.Button('Step -1', id='step-back-button', n_clicks=0, style={'margin': '5px'}),
             html.Button('Play', id='play-button', n_clicks=0, style={'margin': '5px'}),
+            html.Button('Step +1', id='step-forward-button', n_clicks=0, style={'margin': '5px'}),
             html.Div(id='animation-status', children='Paused', style={'display': 'inline-block', 'margin': '10px'}),
             dcc.Slider(
                 id='frame-slider',
@@ -199,7 +208,10 @@ app.layout = html.Div([
             html.Label('Step Size', style={'margin-left': '5px'})
         ], style={'width': '70%', 'margin': '10px'}),
         dcc.Graph(id='graph', style={'height':'80vh', 'width': '70%', 'display': 'inline-block'}),
-        html.Div(id='image-panel', style={'width': '28%', 'display': 'inline-block', 'vertical-align': 'top', 'padding': '10px'}),
+        html.Div([
+            html.Div(id='image-panel', style={'padding': '10px'}),
+            html.Div(id='satellite-image-container', style={'padding': '10px'})
+        ], style={'width': '28%', 'display': 'inline-block', 'vertical-align': 'top'}),
         # Interval component for animation
         dcc.Interval(
             id='animation-interval',
@@ -295,6 +307,63 @@ def update_opacity_setting(toggle_value, view_mode, slider_value):
     # Trigger a redraw of the graph
     return update_graph(view_mode, None, slider_value, None, {'current_view_mode': view_mode, 'num_points': particle_histories.shape[0]})
 
+# Add a callback for the satellite patches toggle
+@app.callback(
+    Output('graph', 'figure', allow_duplicate=True),
+    Input('satellite-patches-toggle', 'value'),
+    State('view-mode-dropdown', 'value'),
+    State('frame-slider', 'value'),
+    prevent_initial_call=True
+)
+def update_satellite_patches_setting(toggle_value, view_mode, slider_value):
+    global SHOW_SATELLITE_PATCHES
+    SHOW_SATELLITE_PATCHES = 'enabled' in toggle_value
+    
+    # Trigger a redraw of the graph
+    return update_graph(view_mode, None, slider_value, None, {'current_view_mode': view_mode, 'num_points': particle_histories.shape[0]})
+
+# Update the callback to display satellite image when a patch is clicked
+@app.callback(
+    Output('satellite-image-container', 'children'),
+    Input('graph', 'clickData'),
+    State('view-mode-dropdown', 'value')
+)
+def display_satellite_image(clickData, view_mode):
+    if not clickData or not SHOW_SATELLITE_PATCHES:
+        return html.Div("Click on a satellite patch to view the image")
+    
+    # The debug output shows that satellite patches are in curveNumber 1, not 2
+    curve_number = clickData['points'][0]['curveNumber']
+    point_index = clickData['points'][0]['pointIndex']
+    
+    # Check if this is a satellite patch click (curveNumber 1)
+    if curve_number == 1:
+        try:
+            # Get the satellite index from the point index
+            sat_idx = point_index
+            
+            # Load satellite image
+            sat_metadata = vigor_dataset._satellite_metadata.iloc[sat_idx]
+            sat_img = vd.load_image(sat_metadata.path, vigor_dataset._satellite_patch_size).permute(1, 2, 0).cpu().numpy()
+            
+            # Convert to base64 for display
+            _, buffer = cv2.imencode('.png', (sat_img * 255).astype(np.uint8)[..., ::-1])  # BGR to RGB for display
+            img_str = base64.b64encode(buffer).decode('utf-8')
+            
+            return html.Div([
+                html.H4(f"Satellite Patch #{sat_idx}"),
+                html.Img(src=f'data:image/png;base64,{img_str}', style={'width': '100%'}),
+                html.P(f"Lat: {sat_metadata.lat:.6f}, Lon: {sat_metadata.lon:.6f}")
+            ])
+        except Exception as e:
+            return html.Div([
+                html.H4("Error Loading Image"),
+                html.P(f"Error: {str(e)}"),
+                html.P(f"Satellite index: {point_index}, Curve number: {curve_number}")
+            ])
+    
+    return html.Div("Click on a satellite patch to view the image")
+
 # Single callback to update figure based on topic, click, and slider
 @app.callback(
     Output('graph', 'figure'),
@@ -312,15 +381,12 @@ def update_graph(view_mode, clickData, slider_value, current_fig, view_mode_data
     ctx = callback_context
     trigger_id = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else None
     
-    # If view mode changed, reset selection
-    # if current_view_mode != view_mode:
-    #     current_view_mode = view_mode
-    #     if 'selected_point_idx' in globals():
-    #         del selected_point_idx
-    # All points except current: grey and semi-transparent
     # Base figure
     fig = Figure()
+    # Plot true path: most points grey, current point highlighted
     num_points = gt_path_latlong.shape[0]
+
+    # All points except current: grey and semi-transparent
     fig.add_trace(Scattergl(
         x=gt_path_latlong[:, 1],
         y=gt_path_latlong[:, 0],
@@ -332,56 +398,84 @@ def update_graph(view_mode, clickData, slider_value, current_fig, view_mode_data
         showlegend=True
     ))
 
-    if view_mode_data["current_view_mode"] == "particles":
+    # Add satellite patches if enabled
+    if SHOW_SATELLITE_PATCHES:
+        # Get satellite patch positions
+        sat_positions = vigor_dataset.get_patch_positions().cpu().numpy()
+        
+        # Create all satellite patches with a single Scattergl trace
+        fig.add_trace(Scattergl(
+            x=sat_positions[:, 1],  # Longitude
+            y=sat_positions[:, 0],  # Latitude
+            mode='markers',
+            marker=dict(
+                symbol='square',
+                size=2.56,
+                color='rgba(100,100,255,0.2)',
+                line=dict(color='rgba(100,100,255,0.5)', width=1)
+            ),
+            name='Satellite Patches',
+            hovertemplate='Satellite #%{pointIndex}<br>(%{x:.6f}, %{y:.6f})',
+            showlegend=True
+        ))
 
-        if SHOW_LIKLIHOOD_WITH_OPACITY:
-            # Get particle positions and weights for current frame
-            particles_x = particle_histories[slider_value, :, 1]
-            particles_y = particle_histories[slider_value, :, 0]
-            
-            # Process log weights to get opacity values
-            weights = log_particle_weights[slider_value, :]
-            # Convert log weights to opacity (exp of log weights gives original probability)
-            # Normalize to ensure visibility
-            opacities = np.exp(weights - np.max(weights))
-            # Add a minimum opacity to ensure all particles are at least somewhat visible
-            min_opacity = 0.1
-            opacities = min_opacity + (1-min_opacity) * opacities
-            
-            # Add weight information to hover data
-            hover_data = [f"{w:.4f}" for w in weights]
-            
-            # Plot particles with opacity based on weights
-            fig.add_trace(Scattergl(
-                x=particles_x, 
-                y=particles_y, 
-                mode='markers', 
-                marker=dict(
-                    color='red', 
-                    size=6,
-                    opacity=opacities
+    if SHOW_LIKLIHOOD_WITH_OPACITY:
+        # Get particle positions and weights for current frame
+        particles_x = particle_histories[slider_value, :, 1]
+        particles_y = particle_histories[slider_value, :, 0]
+        
+        # Process log weights to get opacity values
+        weights = log_particle_weights[slider_value, :]
+        
+        # Normalize log weights for colorscale and opacity
+        # Get min/max for scaling
+        min_log_weight = np.min(weights)
+        max_log_weight = np.max(weights)
+        weight_range = max_log_weight - min_log_weight if max_log_weight > min_log_weight else 1.0
+        
+        # Normalize to [0,1] for colorscale
+        normalized_weights = (weights - min_log_weight) / weight_range if weight_range > 0 else np.zeros_like(weights)
+        
+        # Compute opacities directly from log weights (normalized)
+        min_opacity = 0.1
+        opacities = min_opacity + (1-min_opacity) * normalized_weights
+        
+        # Add weight information to hover data
+        hover_data = [f"{w:.4f}" for w in weights]
+        
+        # Plot particles with both color and opacity based on log weights
+        fig.add_trace(Scattergl(
+            x=particles_x, 
+            y=particles_y, 
+            mode='markers', 
+            marker=dict(
+                color=weights,  # Use log weights directly 
+                colorscale='Viridis',  # Use a colorscale
+                colorbar=dict(
+                    title='Log Weight',
+                    x=1.05,  # Position colorbar further to the right
+                    xpad=20,  # Add padding
+                    len=0.8,  # Make it slightly shorter
+                    y=0.5,   # Center it vertically
+                    yanchor='middle'
                 ),
-                customdata=hover_data,
-                name='Particles', 
-                hovertemplate='Weight: %{customdata}<br>(%{x:.4f}, %{y:.4f})'
-            ))
-
-        else:
-            fig.add_trace(Scattergl(
-                x=particle_histories[slider_value, :, 1], y=particle_histories[slider_value, :, 0], mode='markers', marker=dict(color='red', size=6),
-                # customdata=sub_image_df.index,
-                name='pos', hovertemplate='idx:%{customdata}<br>(%{x:.2f},%{y:.2f})'
-            ))
-
+                size=6,
+                opacity=opacities
+            ),
+            customdata=hover_data,
+            name='Particles', 
+            hovertemplate='Log Weight: %{customdata}<br>(%{x:.4f}, %{y:.4f})'
+        ))
     else:
-        raise NotImplementedError()
+        fig.add_trace(Scattergl(
+            x=particle_histories[slider_value, :, 1], 
+            y=particle_histories[slider_value, :, 0], 
+            mode='markers', 
+            marker=dict(color='red', size=6),
+            name='Particles',
+            hovertemplate='(%{x:.2f},%{y:.2f})'
+        ))
     
-    # Handle point selection from different sources
-    if trigger_id == 'graph' and clickData and clickData['points'][0]['curveNumber'] == 1:
-        # Selection via click
-        idx = clickData['points'][0]['pointIndex']
-        selected_point_idx = sub_image_df.index[idx]
-        print(f"Selected via click: index {selected_point_idx}")
     
     # Highlight current point: bright color, larger
     if 0 <= slider_value < num_points:
@@ -391,19 +485,55 @@ def update_graph(view_mode, clickData, slider_value, current_fig, view_mode_data
             mode='markers',
             marker=dict(color='orange', size=18, line=dict(color='black', width=3)),
             name='Current True Position',
-            hovertemplate='True Path<br>(%{x:.2f}, %{y:.2f})',
+            hovertemplate='True Path<br>(%{x:.2f},%{y:.2f})',
             showlegend=True
         ))
 
     fig.update_layout(
         uirevision='constant',  # Keep view state consistent
-        title=f'Topic: {view_mode} - Frame: {slider_value + 1}/{view_mode_data["num_points"]}', 
+        title=f'View Mode: {view_mode} - Frame: {slider_value + 1}/{view_mode_data["num_points"]}', 
         clickmode='event+select',
-        xaxis=dict(title='X (m)'),
-        yaxis=dict(title='Y (m)', scaleanchor='x', autorange=True)
+        xaxis=dict(title='Longitude'),
+        yaxis=dict(title='Latitude', scaleanchor='x', autorange=True),
+        # Position legend to avoid overlap with colorbar
+        legend=dict(
+            x=0,        # Place legend on the left side
+            y=1,        # Place at the top
+            xanchor='left',
+            yanchor='top',
+            bgcolor='rgba(255,255,255,0.7)'  # Semi-transparent background
+        ),
+        # Ensure enough margin on the right for colorbar
+        margin=dict(r=80)
     )
     
     return fig
+
+# Add a callback for the step buttons
+@app.callback(
+    Output('frame-slider', 'value', allow_duplicate=True),
+    [Input('step-back-button', 'n_clicks'),
+     Input('step-forward-button', 'n_clicks')],
+    [State('frame-slider', 'value'),
+     State('frame-slider', 'min'),
+     State('frame-slider', 'max')],
+    prevent_initial_call=True
+)
+def step_frame(back_clicks, forward_clicks, current_value, min_value, max_value):
+    ctx = callback_context
+    if not ctx.triggered:
+        return current_value
+    
+    button_id = ctx.triggered[0]['prop_id'].split('.')[0]
+    
+    if button_id == 'step-back-button':
+        new_value = max(min_value, current_value - 1)
+        return new_value
+    elif button_id == 'step-forward-button':
+        new_value = min(max_value, current_value + 1)
+        return new_value
+    
+    return current_value
 
 if __name__=='__main__':
     print("Starting server...")
