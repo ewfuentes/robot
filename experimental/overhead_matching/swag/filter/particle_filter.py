@@ -39,7 +39,7 @@ def wag_observation_log_likelihood_from_similarity_matrix(
 def wag_calculate_log_particle_weights(observation_log_likelihood: torch.Tensor,
                                        particles: torch.Tensor,
                                        patch_index_from_pos: Callable[[torch.Tensor], torch.Tensor],
-                                       no_patch_log_likelihood: float = np.log(1e-6)) -> torch.Tensor:
+                                       no_patch_log_likelihood: float = np.log(1e-50)) -> torch.Tensor:
     """
     observation_likelihood_matrix: Matrix of length M, each cell contains log(p(z_t | x_t^j))
     particles: N_particles x state dimension: the particles

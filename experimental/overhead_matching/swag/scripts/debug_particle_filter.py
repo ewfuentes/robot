@@ -21,7 +21,7 @@ def _():
 
 @app.cell
 def _(Path, torch):
-    _path_path = Path('/data/overhead_matching/evaluation/results/all_chicago_lr_schedule_False_negative_mining_False_pos_semipos_False/0000000/')
+    _path_path = Path('/data/overhead_matching/evaluation/results/20250616_8_way_experiment/all_chicago_lr_schedule_False_negative_mining_False_pos_semipos_False/0000000/')
     _particle_history_path = _path_path / 'particle_history.pt'
     _log_particle_weights_path = _path_path / 'log_particle_weights.pt'
     _particle_history_pre_move_path = _path_path / 'particle_history_pre_move.pt'
@@ -68,11 +68,18 @@ def _(log_particle_weights, mo, plt, sns):
 @app.cell
 def _(log_particle_weights, mo, particle_history, plt, sns):
     plt.figure(figsize=(12, 8))
-    plt.subplot(1,2,1)
-    sns.scatterplot(
+    plt.subplot(1,2, 1)
+    norm = plt.Normalize(-25, log_particle_weights[0, :].max())
+    sm = plt.cm.ScalarMappable(cmap='viridis', norm=norm)
+    ax = sns.scatterplot(
         x=particle_history[0, :, 1],
         y=particle_history[0, :, 0],
-        hue=log_particle_weights[0, :])
+        hue=log_particle_weights[0, :],
+        palette='viridis',
+        hue_norm=norm)
+    # ax.get_legend().remove()
+    # ax.figure.colorbar(sm, ax=ax)
+    # plt.clim(-25, -5)
     plt.xlabel('Longitude')
     plt.ylabel('Latitude')
     plt.axis('equal')
@@ -84,12 +91,11 @@ def _(log_particle_weights, mo, particle_history, plt, sns):
     plt.ylabel('Latitude')
     plt.axis('equal')
     mo.mpl.interactive(plt.gcf())
-    return
+    return ax, norm, sm
 
 
 @app.cell
 def _():
-
     import numpy as  np
     50 / 6_371_000 * 180 / np.pi
     return (np,)

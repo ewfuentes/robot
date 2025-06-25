@@ -13,6 +13,7 @@ from torch_kdtree import build_kd_tree
 from torch_kdtree.nn_distance import TorchKDTree
 import hashlib
 import dataclasses
+from typing import Callable
 
 
 @dataclasses.dataclass
@@ -183,6 +184,29 @@ def get_motion_deltas_from_path(vigor_dataset: vd.VigorDataset, path: list[int])
     return motion_deltas
 
 
+def build_patch_index_from_particle(dataset: vd.VigorDataset, device: torch.device):
+    sat_patch_positions = dataset.get_patch_positions().to(device)
+    sat_patch_kdtree = build_kd_tree(sat_patch_positions)
+    num_patches = sat_patch_positions.shape[0]
+
+    def __inner__(particles: torch.Tensor):
+        # Search for up to 5 nearest neighbors.
+        MAX_DIST_DEG = 5e-4
+        k = 5
+        _, idxs = sat_patch_kdtree.query(particles, nr_nns_searches=k)
+        selected_patch_positions = sat_patch_positions[idxs, :]
+        deltas = particles[:, None, :] - selected_patch_positions
+        max_abs_dist = torch.max(torch.abs(deltas), dim=-1).values
+        min_result = torch.min(max_abs_dist, -1)
+
+        rows = torch.arange(idxs.shape[0])
+        out_idxs = idxs[rows, min_result.indices]
+        too_far_mask = min_result.values > MAX_DIST_DEG
+        out_idxs[too_far_mask] = num_patches
+        return out_idxs
+    return __inner__
+
+
 def get_pano_embeddings_for_indices(vigor_dataset: vd.VigorDataset,
                                     pano_indices: list[int],
                                     model: torch.nn.Module,
@@ -212,7 +236,7 @@ def pano_embeddings_and_motion_deltas_from_path(
 
 
 def run_inference_on_path(
-        satellite_patch_kdtree: TorchKDTree,
+        patch_index_from_particle: Callable[[torch.Tensor], torch.Tensor],
         initial_particle_state: torch.Tensor,  # N x state dim
         motion_deltas: torch.Tensor,  # path_length - 1 x state dim
         patch_similarity_for_path: torch.Tensor,  # path_length x W
@@ -230,7 +254,7 @@ def run_inference_on_path(
         # observe
         wag_observation_result = sa.observe_wag(particle_state,
             likelihood_value,
-            satellite_patch_kdtree,
+            patch_index_from_particle,
             wag_config,
             generator,
             return_past_particle_weights=return_intermediates)
@@ -245,9 +269,13 @@ def run_inference_on_path(
     # apply final observation
     wag_observation_result = sa.observe_wag(particle_state,
                                     patch_similarity_for_path[-1],
-                                    satellite_patch_kdtree,
+                                    patch_index_from_particle,
                                     wag_config,
-                                    generator)
+                                    generator,
+                                    return_past_particle_weights=return_intermediates)
+    if return_intermediates:
+        log_particle_weights.append(wag_observation_result.log_particle_weights.cpu().clone())
+        particle_history_pre_move.append(particle_state.cpu().clone())
     particle_history.append(wag_observation_result.resampled_particles.cpu().clone())
 
     if return_intermediates:
@@ -263,7 +291,6 @@ def run_inference_on_path(
 
 
 def construct_inputs_and_evalulate_path(
-    sat_patch_kdtree,
     vigor_dataset: vd.VigorDataset,
     path: list[int],
     path_similarity_values: torch.Tensor,
@@ -274,13 +301,14 @@ def construct_inputs_and_evalulate_path(
 ) -> PathInferenceResult:
     generator = torch.Generator(device=device).manual_seed(generator_seed)
     motion_deltas = get_motion_deltas_from_path(vigor_dataset, path).to(device)
+    patch_index_from_particle = build_patch_index_from_particle(vigor_dataset, device)
     gt_initial_position_lat_lon = vigor_dataset._panorama_metadata.loc[path[0]]
     gt_initial_position_lat_lon = torch.tensor(
         (gt_initial_position_lat_lon['lat'], gt_initial_position_lat_lon['lon']), device=device)
     initial_particle_state = sa.initialize_wag_particles(
         gt_initial_position_lat_lon, wag_config, generator).to(device)
 
-    return run_inference_on_path(sat_patch_kdtree,
+    return run_inference_on_path(patch_index_from_particle,
                                  initial_particle_state,
                                  motion_deltas,
                                  path_similarity_values,
@@ -303,9 +331,6 @@ def evaluate_model_on_paths(
 ) -> None:
     all_final_particle_error_meters = []
     with torch.no_grad():
-        sat_patch_positions = vigor_dataset.get_patch_positions().to(device)
-        sat_patch_kdtree = build_kd_tree(sat_patch_positions)
-
         all_similarity = compute_cached_similarity_matrix(
                 sat_model=sat_model,
                 pano_model=pano_model,
@@ -319,7 +344,6 @@ def evaluate_model_on_paths(
             generator_seed = seed * i
 
             path_inference_result = construct_inputs_and_evalulate_path(
-                sat_patch_kdtree=sat_patch_kdtree,
                 vigor_dataset=vigor_dataset,
                 path=path,
                 path_similarity_values=path_similarity_values,

@@ -1,6 +1,6 @@
 import experimental.overhead_matching.swag.data.vigor_dataset as vd
 import experimental.overhead_matching.swag.evaluation.evaluate_swag as es
-from experimental.overhead_matching.swag.evaluation.wag_config_pb2 import WagConfig
+from experimental.overhead_matching.swag.evaluation.wag_config_pb2 import WagConfig, SatellitePatchConfig
 import common.torch.load_and_save_models as lsm
 from pathlib import Path
 import json
@@ -87,7 +87,10 @@ if __name__ == "__main__":
                            initial_particle_distribution_std_deg=degrees_from_meters(2970.0),
                            num_particles=100_000,
                            sigma_obs_prob_from_sim=0.1,
-                           max_distance_to_patch_deg=degrees_from_meters(50.0))
+                           satellite_patch_config=SatellitePatchConfig(
+                               zoom_level=20,
+                               patch_height_px=640,
+                               patch_width_px=640))
 
     with open(Path(args.output_path) / "wag_config.pbtxt", "w") as f:
         f.write(text_format.MessageToString(wag_config))
