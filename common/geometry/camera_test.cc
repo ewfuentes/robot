@@ -57,7 +57,7 @@ TEST(CameraTest, test_estimate_pose) {
         Eigen::AngleAxisd(M_PI / 4, Eigen::Vector3d(0, 0, 1)).toRotationMatrix() *
         Eigen::AngleAxisd(M_PI / 4, Eigen::Vector3d(1, 0, 0)).toRotationMatrix());
 
-    const int initial_size = p_W_cube.size();
+    // const int initial_size = p_W_cube.size();
     const Eigen::Vector3d p_world_cube_center(cube_size / 2, cube_size / 2, cube_size / 2);
     for (const Eigen::Vector3d &point_W_cube : p_W_cube) {
         p_W_cube.emplace_back(R_new_points * (point_W_cube - p_world_cube_center) +
@@ -76,38 +76,37 @@ TEST(CameraTest, test_estimate_pose) {
     Eigen::Matrix3d K_eig = cv_to_eigen_mat(K);
     std::vector<Eigen::Isometry3d> poses;
 
-    Eigen::Matrix3d R_world_cam0(
+    Eigen::Matrix3d R_world_from_cam0(
         Eigen::AngleAxisd(M_PI / 2, Eigen::Vector3d(0, 0, 1)).toRotationMatrix() *
         Eigen::AngleAxisd(-M_PI / 2, Eigen::Vector3d(1, 0, 0)).toRotationMatrix());
-    Eigen::Isometry3d T_world_cam0 = Eigen::Isometry3d::Identity();
-    T_world_cam0.linear() = R_world_cam0;
-    T_world_cam0.translation() = Eigen::Vector3d(4, cube_size / 2, cube_size / 2);
-    poses.push_back(T_world_cam0);
+    Eigen::Isometry3d world_from_cam0 = Eigen::Isometry3d::Identity();
+    world_from_cam0.linear() = R_world_from_cam0;
+    world_from_cam0.translation() = Eigen::Vector3d(4, cube_size / 2, cube_size / 2);
+    poses.push_back(world_from_cam0);
 
-    Eigen::Matrix3d R_world_cam0_to_cam1(
+    Eigen::Matrix3d R_world_45deg(
         Eigen::AngleAxisd(M_PI / 4, Eigen::Vector3d(0, 0, 1)).toRotationMatrix());
-    Eigen::Isometry3d T_world_cam1;
-    T_world_cam1.linear() = R_world_cam0_to_cam1 * T_world_cam0.linear();
-    T_world_cam1.translation() =
-        R_world_cam0_to_cam1 * (T_world_cam0.translation() - p_world_cube_center) +
-        p_world_cube_center;
-    poses.push_back(T_world_cam1);
+    Eigen::Isometry3d world_from_cam1;
+    world_from_cam1.linear() = R_world_45deg * world_from_cam0.linear();
+    world_from_cam1.translation() =
+        R_world_45deg * (world_from_cam0.translation() - p_world_cube_center) + p_world_cube_center;
+    poses.push_back(world_from_cam1);
 
     std::vector<cv::KeyPoint> kpts0;
     std::vector<cv::KeyPoint> kpts1;
     std::vector<cv::DMatch> matches;
 
     for (const Eigen::Vector3d &point_W_cube : p_W_cube) {
-        Eigen::Vector3d p_cam0_cubep =
-            (T_world_cam0.inverse() *
+        Eigen::Vector3d p_cube_points_in_cam0 =
+            (world_from_cam0.inverse() *
              Eigen::Vector4d(point_W_cube(0), point_W_cube(1), point_W_cube(2), 1.))
                 .head<3>();
-        Eigen::Vector3d p_cam1_cubep =
-            (T_world_cam1.inverse() *
+        Eigen::Vector3d p_cube_points_in_cam1 =
+            (world_from_cam1.inverse() *
              Eigen::Vector4d(point_W_cube(0), point_W_cube(1), point_W_cube(2), 1.))
                 .head<3>();
-        Eigen::Vector3d pxl_c0_pcube_homog = K_eig * p_cam0_cubep;
-        Eigen::Vector3d pxl_c1_pcube_homog = K_eig * p_cam1_cubep;
+        Eigen::Vector3d pxl_c0_pcube_homog = K_eig * p_cube_points_in_cam0;
+        Eigen::Vector3d pxl_c1_pcube_homog = K_eig * p_cube_points_in_cam1;
         Eigen::Vector2d pxl_c0_pcube = pxl_c0_pcube_homog.head<2>() / pxl_c0_pcube_homog(2);
         Eigen::Vector2d pxl_c1_pcube = pxl_c1_pcube_homog.head<2>() / pxl_c1_pcube_homog(2);
         if (CameraTestHelper::pixel_in_range(pxl_c0_pcube, img_width, img_height) &&
@@ -118,14 +117,14 @@ TEST(CameraTest, test_estimate_pose) {
         }
     }
 
-    Eigen::Isometry3d T_cam0_cam1_estimate = estimate_c0_c1(kpts0, kpts1, matches, K);
-    Eigen::Isometry3d T_cam0_cam1_scale = T_world_cam0.inverse() * T_world_cam1;
-    T_cam0_cam1_scale.translation() /= T_cam0_cam1_scale.translation().norm();
+    Eigen::Isometry3d cam0_from_cam1_estimate = estimate_c0_from_cam1(kpts0, kpts1, matches, K);
+    Eigen::Isometry3d cam0_from_cam1 = world_from_cam0.inverse() * world_from_cam1;
+    cam0_from_cam1.translation() /= cam0_from_cam1.translation().norm();
     EXPECT_TRUE(
-        T_cam0_cam1_estimate.translation().isApprox(T_cam0_cam1_scale.translation(), 0.000001));
-    EXPECT_TRUE(T_cam0_cam1_estimate.linear().isApprox(T_cam0_cam1_scale.linear(), 0.001));
+        cam0_from_cam1_estimate.translation().isApprox(cam0_from_cam1.translation(), 0.000001));
+    EXPECT_TRUE(cam0_from_cam1_estimate.linear().isApprox(cam0_from_cam1.linear(), 0.001));
 
-    poses.emplace_back(T_world_cam0 * T_cam0_cam1_estimate);
-    // viz_scene(poses, p_W_cube);
+    poses.emplace_back(world_from_cam0 * cam0_from_cam1_estimate);
+    viz_scene(poses, p_W_cube);
 }
 }  // namespace robot::geometry

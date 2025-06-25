@@ -360,6 +360,25 @@ cc_binary(
     ":frame", 
     ":structure_from_motion_types",
     ":frontend",
-    "@boost//:smart_ptr"
+    "@boost//:smart_ptr",
+  ]
+)
+
+cc_binary(
+  name = "incrememtal_sfm_mvp",
+  srcs = ["incrememtal_sfm_mvp.cc"],
+  copts = [
+    "-Wno-error=unused-parameter",
+  ],
+  deps = [
+    "@opencv//:opencv",    
+    "@gtsam//:gtsam",  
+    ":frontend_definitions",
+    ":frontend",
+    ":four_seasons_parser",
+    "@eigen",
+    "//visualization/opencv:opencv_viz",
+    ":frame",
+    ":structure_from_motion_types"
   ]
 )

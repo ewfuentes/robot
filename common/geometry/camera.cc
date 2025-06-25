@@ -24,9 +24,9 @@ Eigen::Vector3d deproject(const Eigen::Matrix3d &K, const Eigen::Vector2d &pixel
     return depth * K.inverse() * Eigen::Vector3d(pixel_inhomog(0), pixel_inhomog(1), 1.);
 }
 
-Eigen::Isometry3d estimate_c0_c1(const std::vector<cv::KeyPoint> &kpts0,
-                                 const std::vector<cv::KeyPoint> &kpts1,
-                                 const std::vector<cv::DMatch> &matches, const cv::Mat &K) {
+Eigen::Isometry3d estimate_c0_from_cam1(const std::vector<cv::KeyPoint> &kpts0,
+                                        const std::vector<cv::KeyPoint> &kpts1,
+                                        const std::vector<cv::DMatch> &matches, const cv::Mat &K) {
     Eigen::Isometry3d result;
     std::vector<cv::Point2f> pts1;
     std::vector<cv::Point2f> pts2;
