@@ -21,7 +21,7 @@ std::vector<SpatialTestScene::ProjectedPoint> SpatialTestScene::get_projected_pi
 template <typename T>
 std::vector<std::pair<SpatialTestScene::ProjectedPoint, SpatialTestScene::ProjectedPoint>>
 SpatialTestScene::get_corresponding_pixels(
-    const std::pair<gtsam::PinholeCamera<T>, cv::Size> (&cam_and_img_size)[2]) {
+    const std::vector<std::pair<gtsam::PinholeCamera<T>, cv::Size>> &cam_and_img_size) {
     std::vector<std::pair<ProjectedPoint, ProjectedPoint>> corresponding_pixels;
     for (size_t i = 0; i < points_.size(); i++) {
         const Eigen::Vector3d pt = points_[i];

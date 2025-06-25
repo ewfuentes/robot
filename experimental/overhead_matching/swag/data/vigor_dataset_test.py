@@ -319,25 +319,27 @@ class HardNegativeMinerTest(unittest.TestCase):
         '''
         # Setup
         EMBEDDING_DIMENSION = 4
-        NUM_PANORAMAS = 1
-        NUM_SATELLITE = 2
         BATCH_SIZE = 1
         panorama_embeddings = torch.tensor(
             [[1.0, 0.0, 0.0, 0.0]])
         satellite_embeddings = torch.tensor([
              [0.0, 1.0, 0.0, 0.0],
-             [math.sqrt(2)/2, math.sqrt(2), 0.0, 0.0]])
+             [math.sqrt(2)/2, math.sqrt(2), 0.0, 0.0],
+             [-1.0, 0.0, 0.0, 0.0]])
         generator = torch.Generator().manual_seed(42)
 
         miner = vigor_dataset.HardNegativeMiner(
             batch_size=BATCH_SIZE,
             embedding_dimension=EMBEDDING_DIMENSION,
-            num_panoramas=NUM_PANORAMAS,
-            num_satellite_patches=NUM_SATELLITE,
+            random_sample_type=vigor_dataset.HardNegativeMiner.RandomSampleType.POS_SEMIPOS,
+            num_panoramas=len(panorama_embeddings),
+            num_satellite_patches=len(satellite_embeddings),
             hard_negative_pool_size=1,
             panorama_info_from_pano_idx={
                 0: vigor_dataset.PanoramaIndexInfo(
-                    panorama_idx=0, positive_satellite_idxs=[0],
+                    panorama_idx=0,
+                    nearest_satellite_idx=2,
+                    positive_satellite_idxs=[0],
                     semipositive_satellite_idxs=[1])},
             device='cpu',
             generator=generator)
@@ -348,7 +350,7 @@ class HardNegativeMinerTest(unittest.TestCase):
             panorama_embeddings=panorama_embeddings,
             satellite_embeddings=satellite_embeddings,
             panorama_idxs=[0],
-            satellite_patch_idxs=[0, 1])
+            satellite_patch_idxs=[0, 1, 2])
 
         # Verification
         for i in range(100):
@@ -359,31 +361,33 @@ class HardNegativeMinerTest(unittest.TestCase):
             self.assertEqual(batch_idxs[0].panorama_idx, 0)
             self.assertEqual(batch_idxs[0].satellite_idx, 1)
 
-    def test_negative_miner_returns_random_samples_in_random_mode(self):
+    def test_negative_miner_returns_random_pos_semipos_samples_in_pos_semipos_mode(self):
         '''
         When the hard negative miner is configured to produce random samples, we expect that
         the two satellite patches are sampled about evenly.
         '''
         # Setup
         EMBEDDING_DIMENSION = 4
-        NUM_PANORAMAS = 1
-        NUM_SATELLITE = 2
         BATCH_SIZE = 1
         panorama_embeddings = torch.tensor(
             [[1.0, 0.0, 0.0, 0.0]])
         satellite_embeddings = torch.tensor([
              [0.0, 1.0, 0.0, 0.0],
-             [math.sqrt(2)/2, math.sqrt(2), 0.0, 0.0]])
+             [math.sqrt(2)/2, math.sqrt(2), 0.0, 0.0],
+             [-1.0, 0.0, 0.0, 0.0]])
         generator = torch.Generator().manual_seed(42)
 
         miner = vigor_dataset.HardNegativeMiner(
             batch_size=BATCH_SIZE,
             embedding_dimension=EMBEDDING_DIMENSION,
-            num_panoramas=NUM_PANORAMAS,
-            num_satellite_patches=NUM_SATELLITE,
+            random_sample_type=vigor_dataset.HardNegativeMiner.RandomSampleType.POS_SEMIPOS,
+            num_panoramas=len(panorama_embeddings),
+            num_satellite_patches=len(satellite_embeddings),
             panorama_info_from_pano_idx={
                 0: vigor_dataset.PanoramaIndexInfo(
-                    panorama_idx=0, positive_satellite_idxs=[0],
+                    panorama_idx=0,
+                    nearest_satellite_idx=2,
+                    positive_satellite_idxs=[0],
                     semipositive_satellite_idxs=[1])},
             device='cpu',
             generator=generator)
@@ -394,10 +398,10 @@ class HardNegativeMinerTest(unittest.TestCase):
             panorama_embeddings=panorama_embeddings,
             satellite_embeddings=satellite_embeddings,
             panorama_idxs=[0],
-            satellite_patch_idxs=[0, 1])
+            satellite_patch_idxs=[0, 1, 2])
 
         # Verification
-        satellite_patch_count = [0, 0]
+        satellite_patch_count = [0, 0, 0]
         for i in range(100):
             batch_idxs = next(iter(miner))
             self.assertEqual(len(batch_idxs), BATCH_SIZE)
@@ -406,6 +410,53 @@ class HardNegativeMinerTest(unittest.TestCase):
 
         self.assertGreater(satellite_patch_count[0], 25)
         self.assertGreater(satellite_patch_count[1], 25)
+        self.assertEqual(satellite_patch_count[2], 0)
+
+    def test_negative_miner_returns_random_nearest_samples_in_nearest_mode(self):
+        '''
+        When the hard negative miner is configured to produce random samples, we expect that
+        the two satellite patches are sampled about evenly.
+        '''
+        # Setup
+        EMBEDDING_DIMENSION = 4
+        BATCH_SIZE = 1
+        panorama_embeddings = torch.tensor(
+            [[1.0, 0.0, 0.0, 0.0]])
+        satellite_embeddings = torch.tensor([
+             [0.0, 1.0, 0.0, 0.0],
+             [math.sqrt(2)/2, math.sqrt(2), 0.0, 0.0],
+             [-1.0, 0.0, 0.0, 0.0]])
+        generator = torch.Generator().manual_seed(42)
+
+        miner = vigor_dataset.HardNegativeMiner(
+            batch_size=BATCH_SIZE,
+            embedding_dimension=EMBEDDING_DIMENSION,
+            random_sample_type=vigor_dataset.HardNegativeMiner.RandomSampleType.NEAREST,
+            num_panoramas=len(panorama_embeddings),
+            num_satellite_patches=len(satellite_embeddings),
+            panorama_info_from_pano_idx={
+                0: vigor_dataset.PanoramaIndexInfo(
+                    panorama_idx=0,
+                    nearest_satellite_idx=2,
+                    positive_satellite_idxs=[0],
+                    semipositive_satellite_idxs=[1])},
+            device='cpu',
+            generator=generator)
+
+        # Action
+        miner.set_sample_mode(vigor_dataset.HardNegativeMiner.SampleMode.RANDOM)
+        miner.consume(
+            panorama_embeddings=panorama_embeddings,
+            satellite_embeddings=satellite_embeddings,
+            panorama_idxs=[0],
+            satellite_patch_idxs=[0, 1, 2])
+
+        # Verification
+        for i in range(100):
+            batch_idxs = next(iter(miner))
+            self.assertEqual(len(batch_idxs), BATCH_SIZE)
+            self.assertEqual(batch_idxs[0].panorama_idx, 0)
+            self.assertEqual(batch_idxs[0].satellite_idx, 2)
 
 
 if __name__ == "__main__":

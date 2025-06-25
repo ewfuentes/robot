@@ -15,6 +15,7 @@ py_binary(
     requirement("numpy"),
     requirement("altair"),
     requirement("pandas"),
+    requirement("seaborn"),
     "//common/torch:load_torch_deps",
     "//experimental/overhead_matching/learned/model:clevr_transformer",
     "//experimental/overhead_matching/learned/model:clevr_tokenizer",

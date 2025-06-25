@@ -31,8 +31,9 @@ void demo() {
         cv::viz::WText3D("hello world fixed!", cv::Point3d(0.0, 0.0, 0.0), TEXT_SCALE, FIXED_TEXT),
         world_from_fixed_text);
     constexpr double COORD_SCALE = 0.2;
-    window.showWidget("text_3d_fixed_frame", cv::viz::WCoordinateSystem(COORD_SCALE),
-                      world_from_fixed_text);
+    window.showWidget("text_3d_fixed_frame",
+
+                      cv::viz::WCoordinateSystem(COORD_SCALE), world_from_fixed_text);
 
     constexpr double CIRCLE_RADIUS_M = 0.5;
     cv::Affine3d world_from_circle(cv::Affine3d::Vec3{0.0, 0.0, 0.0},  // rotation

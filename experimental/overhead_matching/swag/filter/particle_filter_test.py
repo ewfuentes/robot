@@ -198,10 +198,10 @@ class TestParticleFilter(unittest.TestCase):
         # Test convergence - check if particles are clustered near ground truth
         final_positions = all_particle_positions[-1]
         mean_position = torch.mean(final_positions, dim=0)
-        ground_truth = ground_truth_positions[-1]
+        vio_solution = ground_truth_positions[-1]
 
         # Verify that the mean of the particles is close to ground truth
-        dist_to_truth = torch.norm(mean_position - ground_truth)
+        dist_to_truth = torch.norm(mean_position - vio_solution)
         self.assertLess(dist_to_truth, 20.0)
 
         # Plot if requested

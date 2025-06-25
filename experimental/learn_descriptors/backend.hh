@@ -6,7 +6,7 @@
 #include <vector>
 
 #include "common/geometry/camera.hh"
-// #include "experimental/learn_descriptors/feature_manager.hh"
+#include "experimental/learn_descriptors/feature_manager.hh"
 #include "gtsam/geometry/Cal3_S2.h"
 #include "gtsam/geometry/Point2.h"
 #include "gtsam/geometry/Point3.h"
@@ -42,8 +42,8 @@ class Backend {
         const gtsam::Point3 p_cam_lmk_guess;
     };
 
-    // Backend(std::shared_ptr<FeatureManager> feature_manager = nullptr);
-    // Backend(std::shared_ptr<FeatureManager> feature_manager, gtsam::Cal3_S2 K);
+    Backend(std::shared_ptr<FeatureManager> feature_manager = nullptr);
+    Backend(std::shared_ptr<FeatureManager> feature_manager, gtsam::Cal3_S2 K);
     Backend(gtsam::Cal3_S2::shared_ptr K) : K_(K){};
     ~Backend(){};
 
@@ -80,7 +80,7 @@ class Backend {
     const gtsam::SharedNoiseModel get_gps_noise() { return gps_noise_; };
 
    private:
-    // std::shared_ptr<FeatureManager> feature_manager_;
+    std::shared_ptr<FeatureManager> feature_manager_;
     gtsam::Cal3_S2::shared_ptr K_;
 
     gtsam::Values initial_estimate_;

@@ -11,48 +11,145 @@ from common.math.haversine import find_d_on_unit_circle
 from experimental.overhead_matching.swag.evaluation.wag_config_pb2 import WagConfig
 from torch_kdtree import build_kd_tree
 from torch_kdtree.nn_distance import TorchKDTree
+import hashlib
+import dataclasses
+
+
+@dataclasses.dataclass
+class PathInferenceResult:
+    # sequence is start -> particle_history[0] = log_particle_weights[0] ->
+    #  observe_wag -> particle_history_pre_move[0] -> move_wag -> particle_history[1]
+    # path_length x N x state_dim
+    particle_history: torch.Tensor
+    log_particle_weights: torch.Tensor | None
+    particle_history_pre_move: torch.Tensor | None
+
+
+def hash_model(model: torch.nn.Module):
+    m = hashlib.sha256()
+    state_dict = model.state_dict()
+    for k in sorted(model.state_dict()):
+        m.update(k.encode())
+        m.update(state_dict[k].cpu().numpy().tobytes())
+    return m.digest()
+
+
+def hash_dataset(dataset: vd.VigorDataset):
+    import struct
+    m = hashlib.sha256()
+
+    for i, row in dataset._panorama_metadata.iterrows():
+        m.update(i.to_bytes(length=4, byteorder='little', signed=True))
+        m.update(row.pano_id.encode())
+
+    for i, row in dataset._satellite_metadata.iterrows():
+        m.update(i.to_bytes(length=4, byteorder='little', signed=True))
+        m.update(struct.pack('<dd', row.lat, row.lon))
+
+    return m.digest()
+
+
+def compute_combined_hash(sat_model, pano_model, dataset):
+    m = hashlib.sha256()
+    m.update(hash_model(sat_model))
+    m.update(hash_model(pano_model))
+    m.update(hash_dataset(dataset))
+    return m.hexdigest()
+
+
+def compute_similarity_matrix(
+        sat_model: torch.nn.Module,
+        pano_model: torch.nn.Module,
+        dataset: vd.VigorDataset,
+        device: torch.device):
+    sat_data_view = dataset.get_sat_patch_view()
+    sat_data_view_loader = vd.get_dataloader(sat_data_view, batch_size=64, num_workers=4)
+    pano_data_view = dataset.get_pano_view()
+    pano_data_view_loader = vd.get_dataloader(pano_data_view, batch_size=64, num_workers=4)
+
+    with torch.no_grad():
+        print("building satellite embedding database")
+        sat_embeddings = sed.build_satellite_db(
+            sat_model, sat_data_view_loader, device=device)
+        print("building panorama embedding database")
+        pano_embeddings = sed.build_panorama_db(
+            pano_model, pano_data_view_loader, device=device)
+        print("building all similarity")
+        out = sed.calculate_cos_similarity_against_database(
+            pano_embeddings, sat_embeddings)  # pano_embeddings x sat_patches
+    return out
+
+
+def compute_cached_similarity_matrix(
+        sat_model: torch.nn.Module,
+        pano_model: torch.nn.Module,
+        dataset: vd.VigorDataset,
+        device: torch.device,
+        use_cached_similarity: bool):
+
+    cache_exists = False
+    if use_cached_similarity:
+        combined_hash = compute_combined_hash(sat_model, pano_model, dataset)
+        file_path = Path(f"~/.cache/robot/overhead_matching/similarity_matrix/{combined_hash}.pt").expanduser()
+        cache_exists = file_path.exists()
+
+    if cache_exists:
+        all_similarity = torch.load(file_path).to(device)
+        print(f"USING CACHED similarity db found at {file_path}")
+    else:
+        all_similarity = compute_similarity_matrix(
+                sat_model=sat_model,
+                pano_model=pano_model,
+                dataset=dataset,
+                device=device)
+
+    if use_cached_similarity:
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(all_similarity.cpu(), file_path)
+    return all_similarity
 
 
 def evaluate_prediction_top_k(
-    satellite_embedding_database: torch.Tensor,
-    dataloader: torch.utils.data.DataLoader,
-    model: torch.nn.Module,
-    device: torch.device | str = "cuda:0",
-    verbose: bool = False
-) -> pd.DataFrame:
-    model.eval()
-    satellite_embedding_database = satellite_embedding_database.to(device)
+        sat_model: torch.nn.Module,
+        pano_model: torch.nn.Module,
+        dataset: vd.VigorDataset,
+        device: torch.device = "cuda",
+        use_cached_similarity: bool = True):
 
-    out_df = dict(
-        panorama_index=[],  # index of the ego image
-        # cosine similarity with every overhead patch, where index in the list is the patch index (db row)
-        patch_cosine_similarity=[],
-        k_value=[],  # the correct patch is the k'th highest similarity
-    )
+    all_similarity = compute_cached_similarity_matrix(
+        sat_model=sat_model,
+        pano_model=pano_model,
+        dataset=dataset,
+        device=device,
+        use_cached_similarity=use_cached_similarity)
 
-    with torch.no_grad():
-        for batch in tqdm.tqdm(dataloader, disable=not verbose):
-            batch_embedding = model(batch.panorama.to(device))
-            patch_cosine_distance = sed.calculate_cos_similarity_against_database(
-                batch_embedding, satellite_embedding_database)  # B x sat_db_size
+    rankings = torch.argsort(all_similarity, dim=1, descending=True)
 
-            panorama_indices = [x['index'] for x in batch.panorama_metadata]
-            correct_overhead_patch_indices = [x['satellite_idx'] for x in batch.panorama_metadata]
+    out = []
+    for i, row in dataset._panorama_metadata.iterrows():
+        for sat_idx in row.positive_satellite_idxs:
+            k_value = torch.argwhere(rankings[i] == sat_idx)
+            out.append({
+                "pano_idx": i,
+                "sat_idx": sat_idx,
+                "match_type": 'positive',
+                "k_value": k_value.item()})
 
-            rankings = torch.argsort(patch_cosine_distance, dim=1, descending=True)
-            for i in range(len(batch.panorama_metadata)):
-                out_df['k_value'].append(torch.argwhere(
-                    rankings[i] == correct_overhead_patch_indices[i]).item())
-            out_df['panorama_index'].extend(panorama_indices)
-            out_df['patch_cosine_similarity'].extend(patch_cosine_distance.tolist())
+        for sat_idx in row.semipositive_satellite_idxs:
+            k_value = torch.argwhere(rankings[i] == sat_idx)
+            out.append({
+                "pano_idx": i,
+                "sat_idx": sat_idx,
+                "match_type": 'semipositive',
+                "k_value": k_value.item()})
+    out = pd.DataFrame.from_records(out)
 
-    df = pd.DataFrame.from_dict(out_df)
-    df = df.set_index("panorama_index", drop=True)
-    return df
+    return out, all_similarity
+
 
 def get_distance_error_between_pano_and_particles_meters(
     vigor_dataset: vd.VigorDataset,
-    panorama_index: int | list[int], 
+    panorama_index: int | list[int],
     particles: torch.Tensor,
 )->torch.Tensor:
     """
@@ -115,36 +212,55 @@ def pano_embeddings_and_motion_deltas_from_path(
 
 
 def run_inference_on_path(
-    satellite_patch_kdtree: TorchKDTree,
-    initial_particle_state: torch.Tensor,  # N x state dim
-    motion_deltas: torch.Tensor,  # path_length - 1 x state dim
-    patch_similarity_for_path: torch.Tensor,  # path_length x W
-    wag_config: WagConfig,
-    generator: torch.Generator,
-) -> torch.Tensor:  # path_length x N x state dim
+        satellite_patch_kdtree: TorchKDTree,
+        initial_particle_state: torch.Tensor,  # N x state dim
+        motion_deltas: torch.Tensor,  # path_length - 1 x state dim
+        patch_similarity_for_path: torch.Tensor,  # path_length x W
+        wag_config: WagConfig,
+        generator: torch.Generator,
+        return_intermediates: bool = False) -> PathInferenceResult:
 
     particle_state = initial_particle_state.clone()
-    # TODO: return history of similarities for visualization
+
     particle_history = []
+    log_particle_weights = []
+    particle_history_pre_move = []  # the particle state history before move_wag but after observe_wag
     for likelihood_value, motion_delta in zip(patch_similarity_for_path[:-1], motion_deltas):
         particle_history.append(particle_state.cpu().clone())
         # observe
-        particle_state = sa.observe_wag(particle_state,
-                                        likelihood_value,
-                                        satellite_patch_kdtree,
-                                        wag_config,
-                                        generator)
+        wag_observation_result = sa.observe_wag(particle_state,
+            likelihood_value,
+            satellite_patch_kdtree,
+            wag_config,
+            generator,
+            return_past_particle_weights=return_intermediates)
+
+        particle_state = wag_observation_result.resampled_particles
+        if return_intermediates:
+            log_particle_weights.append(wag_observation_result.log_particle_weights.cpu().clone())
+            particle_history_pre_move.append(particle_state.cpu().clone())
         # move
         particle_state = sa.move_wag(particle_state, motion_delta, wag_config, generator)
 
     # apply final observation
-    particle_state = sa.observe_wag(particle_state,
+    wag_observation_result = sa.observe_wag(particle_state,
                                     patch_similarity_for_path[-1],
                                     satellite_patch_kdtree,
                                     wag_config,
                                     generator)
-    particle_history.append(particle_state.cpu().clone())
-    return particle_history
+    particle_history.append(wag_observation_result.resampled_particles.cpu().clone())
+
+    if return_intermediates:
+        return PathInferenceResult(
+            particle_history=torch.stack(particle_history),  # N+1, +1 from final particle state
+            log_particle_weights=torch.stack(log_particle_weights),  # N
+            particle_history_pre_move=torch.stack(particle_history_pre_move))  # N
+    else:
+        return PathInferenceResult(
+            particle_history=torch.stack(particle_history),
+            log_particle_weights=None,
+            particle_history_pre_move=None)
+
 
 def construct_inputs_and_evalulate_path(
     sat_patch_kdtree,
@@ -154,7 +270,8 @@ def construct_inputs_and_evalulate_path(
     generator_seed: int,
     device: str,
     wag_config: WagConfig,
-):
+    return_intermediates: bool = False,
+) -> PathInferenceResult:
     generator = torch.Generator(device=device).manual_seed(generator_seed)
     motion_deltas = get_motion_deltas_from_path(vigor_dataset, path).to(device)
     gt_initial_position_lat_lon = vigor_dataset._panorama_metadata.loc[path[0]]
@@ -168,7 +285,9 @@ def construct_inputs_and_evalulate_path(
                                  motion_deltas,
                                  path_similarity_values,
                                  wag_config,
-                                 generator)
+                                 generator,
+                                 return_intermediates)
+
 
 def evaluate_model_on_paths(
     vigor_dataset: vd.VigorDataset,
@@ -179,56 +298,49 @@ def evaluate_model_on_paths(
     seed: int,
     output_path: Path,
     device: torch.device = "cuda:0",
+    use_cached_similarity: bool = True,
+    save_intermediate_filter_states=False,
 ) -> None:
     all_final_particle_error_meters = []
-    sat_data_view = vigor_dataset.get_sat_patch_view()
-    sat_data_view_loader = vd.get_dataloader(sat_data_view, batch_size=64, num_workers=16)
-    pano_data_view = vigor_dataset.get_pano_view()
-    pano_data_view_loader = vd.get_dataloader(pano_data_view, batch_size=64, num_workers=16)
-    print("building satellite embedding database")
     with torch.no_grad():
         sat_patch_positions = vigor_dataset.get_patch_positions().to(device)
         sat_patch_kdtree = build_kd_tree(sat_patch_positions)
-        # sat_patch_kdtree = vigor_dataset._satellite_kdtree
-        if Path("/tmp/similarity_db.pt").exists():
-            all_similarity = torch.load("/tmp/similarity_db.pt").to(device)
-            print("USING CACHED similarity db found at /tmp/similarity_db.pt")
-        else:
-            sat_embeddings = sed.build_satellite_db(
-                sat_model, sat_data_view_loader, device=device)
-            print("building satellite embedding database done")
-            print("building panorama embedding database")
-            pano_embeddings = sed.build_panorama_db(
-                pano_model, pano_data_view_loader, device=device)
-            print("building all similarity")
-            all_similarity = sed.calculate_cos_similarity_against_database(
-                pano_embeddings, sat_embeddings)  # pano_embeddings x sat_patches
 
-            torch.save(all_similarity.cpu(), "/tmp/similarity_db.pt")
+        all_similarity = compute_cached_similarity_matrix(
+                sat_model=sat_model,
+                pano_model=pano_model,
+                dataset=vigor_dataset,
+                device=device,
+                use_cached_similarity=use_cached_similarity)
 
         print("starting iter over paths")
         for i, path in enumerate(tqdm.tqdm(paths)):
             path_similarity_values = all_similarity[path]
             generator_seed = seed * i
 
-            particle_history = construct_inputs_and_evalulate_path(
+            path_inference_result = construct_inputs_and_evalulate_path(
                 sat_patch_kdtree=sat_patch_kdtree,
                 vigor_dataset=vigor_dataset,
                 path=path,
                 path_similarity_values=path_similarity_values,
                 generator_seed=generator_seed,
                 device=device,
-                wag_config=wag_config
-            )
+                wag_config=wag_config,
+                return_intermediates=save_intermediate_filter_states)
 
+            particle_history = path_inference_result.particle_history
             save_path = output_path / f"{i:07d}"
             save_path.mkdir(parents=True, exist_ok=True)
-            particle_history = torch.stack(particle_history)
-            error_meters_at_each_step = get_distance_error_between_pano_and_particles_meters(vigor_dataset, path, particle_history)
+            error_meters_at_each_step = get_distance_error_between_pano_and_particles_meters(
+                    vigor_dataset, path, particle_history)
             all_final_particle_error_meters.append(error_meters_at_each_step[-1])
             torch.save(error_meters_at_each_step, save_path / "error.pt")
             torch.save(path, save_path / "path.pt")
             torch.save(path_similarity_values, save_path / "similarity.pt")
+            if save_intermediate_filter_states:
+                torch.save(path_inference_result.particle_history, save_path / "particle_history.pt")
+                torch.save(path_inference_result.log_particle_weights, save_path / "log_particle_weights.pt")
+                torch.save(path_inference_result.particle_history_pre_move, save_path / "particle_history_pre_move.pt")
             with open(save_path / "other_info.json", "w") as f:
                 f.write(json.dumps({
                     "seed": generator_seed,

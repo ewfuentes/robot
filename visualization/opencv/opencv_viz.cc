@@ -1,8 +1,9 @@
-#include "common/geometry/opencv_viz.hh"
+#include "visualization/opencv/opencv_viz.hh"
 
 #include <iostream>
 
 #include "common/geometry/translate_types.hh"
+#include "opencv2/viz.hpp"
 
 namespace robot::geometry {
 cv::Vec3d rotation_matrix_to_axis_angle(const cv::Matx33d &R) {

@@ -7,9 +7,9 @@
 #include <vector>
 
 #include "common/check.hh"
-#include "common/geometry/opencv_viz.hh"
 #include "gtest/gtest.h"
 #include "opencv2/opencv.hpp"
+#include "visualization/opencv/opencv_viz.hh"
 
 namespace robot::experimental::learn_descriptors {
 namespace {
@@ -89,7 +89,8 @@ TEST(SymphonyLakeParserTest, test_cam_frames) {
         cam_frames.push_back(T_world_camidx);
     }
 
-    geometry::viz_scene(cam_frames, std::vector<Eigen::Vector3d>(), true, true, "test_cam_frames");
+    // geometry::viz_scene(cam_frames, std::vector<Eigen::Vector3d>(), true, true,
+    // "test_cam_frames");
 }
 
 TEST(SymphonyLakeParserTest, test_gps_frames) {
@@ -120,6 +121,7 @@ TEST(SymphonyLakeParserTest, test_gps_frames) {
         gps_frames.push_back(T_world_gpsidx);
     }
 
-    geometry::viz_scene(gps_frames, std::vector<Eigen::Vector3d>(), true, true, "test_gps_frames");
+    // geometry::viz_scene(gps_frames, std::vector<Eigen::Vector3d>(), true, true,
+    // "test_gps_frames");
 }
 }  // namespace robot::experimental::learn_descriptors

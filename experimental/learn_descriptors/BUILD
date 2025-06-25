@@ -28,8 +28,8 @@ cc_library(
     "@opencv//:opencv",
     "@gtsam//:gtsam",
     "@eigen",
-    "//common/geometry:opencv_viz",
-    # ":feature_manager",
+    "//visualization/opencv:opencv_viz",
+    ":feature_manager",
     ":frontend",
     ":backend"
   ]
@@ -45,7 +45,7 @@ cc_test(
     "@com_google_googletest//:gtest_main",
     ":symphony_lake_parser",
     ":structure_from_motion",
-    "//common/geometry:opencv_viz",
+    "//visualization/opencv:opencv_viz",
     "//common/geometry:translate_types",
     ":frame"
   ]
@@ -57,7 +57,7 @@ cc_library(
   copts = [
     "-Wno-unused-parameter",
   ],
-  data = ["@symphony_lake_snippet"],
+  data = ["@symphony_lake_snippet//:files"],
   visibility = ["//visibility:public"],
   srcs = ["symphony_lake_parser.cc"],
   deps = [
@@ -71,11 +71,12 @@ cc_test(
   name = "symphony_lake_parser_test",
   srcs = ["symphony_lake_parser_test.cc"],
   copts = ["-Wno-unused-parameter"],
+  data = ["@symphony_lake_snippet//:files"],
   deps = [
     "@com_google_googletest//:gtest_main",
     ":symphony_lake_parser",
     "//common:check",
-    "//common/geometry:opencv_viz"
+    "//visualization/opencv:opencv_viz"
   ]
 )
 
@@ -85,15 +86,70 @@ cc_test(
   deps = [
     "@com_google_googletest//:gtest_main",
     "@gtsam//:gtsam",
-    ":learn_descriptors"  
+  ]
+)
+
+cc_library(
+    name = "image_point", 
+    hdrs = ["image_point.hh"],
+    deps = [
+      "//common/liegroups:se3",
+      "@opencv//:opencv",
+      "@eigen"
+    ]
+)
+
+cc_library(
+    name = "four_seasons_parser", 
+    hdrs = ["four_seasons_parser.hh"],
+    srcs = ["four_seasons_parser.cc"],
+    deps = [
+      "@eigen",
+      "@opencv//:opencv",
+      "//common/liegroups:se3",
+      "//common/time:robot_time",
+      "@com_google_absl//absl/strings:str_format",
+      ":image_point",
+      "@nmea",
+      "@geographiclib"
+    ]
+)
+
+cc_binary(
+  name = "four_seasons_parser_example",
+  srcs = ["four_seasons_parser_example.cc"],
+  deps = [
+    ":four_seasons_parser",
+    "@cxxopts//:cxxopts",
+    "//common:check",
+    "@geographiclib"
   ]
 )
 
 cc_binary(
-  name = "opencv_viz_example",
-  srcs = ["opencv_viz_example.cc"],
+  name = "four_seasons_parser_example_viz",
+  srcs = ["four_seasons_parser_example_viz.cc"],
   deps = [
-    "@opencv//:opencv"
+    ":four_seasons_parser",
+    "@cxxopts//:cxxopts",
+    "//common:check",
+    "//visualization/opencv:opencv_viz",
+    "@eigen",    
+  ]
+)
+
+cc_test(
+  name = "four_seasons_parser_test",
+  srcs = ["four_seasons_parser_test.cc"],
+  data = ["@four_seasons_snippet//:files"],
+  deps = [
+    "@com_google_googletest//:gtest_main",
+    "//common/liegroups:se3",
+    "@com_google_absl//absl/strings:str_format",
+    "@eigen",
+    ":four_seasons_parser",
+    "@nmea",
+    "@geographiclib",
   ]
 )
 
@@ -146,7 +202,7 @@ cc_test(
     ":symphony_lake_parser",
     ":frame", 
     ":structure_from_motion_types",
-    "//common/geometry:opencv_viz"
+    "//visualization/opencv:opencv_viz"
   ]
 )
 
@@ -214,7 +270,7 @@ cc_test(
   deps = [    
     "@com_google_googletest//:gtest_main",    
     ":spatial_test_scene_cube",
-    "//common/geometry:opencv_viz",
+    "//visualization/opencv:opencv_viz",
     "@eigen"
   ]
 )
@@ -254,7 +310,8 @@ cc_library(
     "@opencv//:opencv",    
     "@gtsam//:gtsam",
     "//common/geometry:camera",
-    # ":feature_manager"
+    "@boost//:smart_ptr",
+    ":feature_manager"
   ]
 )
 
@@ -262,12 +319,16 @@ cc_library(
 cc_test(
   name = "backend_test",
   srcs = ["backend_test.cc"],
+    copts = [
+    "-Wno-error=unused-parameter",
+  ],
   deps = [    
     "@com_google_googletest//:gtest_main",    
     "@opencv//:opencv",
     ":backend",
     ":feature_manager",
-    ":spatial_test_scene_cube"
+    ":spatial_test_scene_cube",
+    "//visualization/opencv:opencv_viz"
   ]
 )
 
@@ -278,6 +339,27 @@ cc_binary(
     "-Wno-error=unused-parameter",
   ],
   deps = [
-    "symphony_lake_parser"
+    ":symphony_lake_parser"
+  ]
+)
+
+cc_binary(
+  name = "incremental_sfm_mvp",
+  srcs = ["incremental_sfm_mvp.cc"],
+  copts = [
+    "-Wno-error=unused-parameter",
+    "-Wno-error=unused-function",
+  ],
+  deps = [
+    ":four_seasons_parser",
+    "@eigen",
+    "@opencv//:opencv",    
+    "@gtsam//:gtsam",
+    "//visualization/opencv:opencv_viz",
+    ":spatial_test_scene_cube",
+    ":frame", 
+    ":structure_from_motion_types",
+    ":frontend",
+    "@boost//:smart_ptr"
   ]
 )

@@ -1,7 +1,7 @@
 #include "experimental/learn_descriptors/feature_manager.hh"
 
 #include "Eigen/Dense"
-#include "experimental/learn_descriptors/spatial_scene_test_cube.hh"
+#include "experimental/learn_descriptors/spatial_test_scene_cube.hh"
 #include "gtest/gtest.h"
 #include "gtsam/geometry/Cal3_S2.h"
 #include "gtsam/geometry/PinholeCamera.h"
@@ -13,7 +13,7 @@
 namespace robot::experimental::learn_descriptors {
 TEST(feature_manager_test, test) {
     FeatureManager feature_manager;
-    SpatialSceneTestCube test_cube(1.f);
+    SpatialTestSceneCube test_cube(1.f);
 
     const size_t img_width = 640;
     const size_t img_height = 480;
@@ -44,22 +44,25 @@ TEST(feature_manager_test, test) {
 
     std::vector<gtsam::PinholeCamera<gtsam::Cal3_S2>> cameras{camera0, camera1};
 
-    std::vector<Eigen::Vector2d> projected_pixels =
-        test_cube.get_projected_pixels(camera0, cv::Size(img_width, img_height));
-    cv::Mat image(480, 640, CV_8UC3, cv::Scalar(255, 255, 255));
-    for (const Eigen::Vector2d &pt : projected_pixels) {
-        cv::circle(image, cv::Point2i(static_cast<int>(pt[0]), static_cast<int>(pt[1])), 4,
-                   cv::Scalar(0, 0, 0));
-    }
-    cv::imshow("projected cubes", image);
-    cv::waitKey(0);
+    // std::vector<SpatialTestScene::ProjectedPoint> projected_pixels =
+    //     test_cube.get_projected_pixels(camera0, cv::Size(img_width, img_height));
+    // cv::Mat image(480, 640, CV_8UC3, cv::Scalar(255, 255, 255));
+    // for (const SpatialTestScene::ProjectedPoint &projected_pt : projected_pixels) {
+    //     const Eigen::Vector2d &pt = projected_pt.pixel;
+    //     cv::circle(image, cv::Point2i(static_cast<int>(pt[0]), static_cast<int>(pt[1])), 4,
+    //                cv::Scalar(0, 0, 0));
+    // }
+    // cv::imshow("projected cubes", image);
+    // cv::waitKey(0);
 
-    std::vector<std::pair<gtsam::PinholeCamera<gtsam::Cal3_S2>, cv::Size>> cams{
-        std::pair<gtsam::PinholeCamera<gtsam::Cal3_S2>, cv::Size>(camera0,
-                                                                  cv::Size(img_width, img_height)),
-        std::pair<gtsam::PinholeCamera<gtsam::Cal3_S2>, cv::Size>(camera1,
-                                                                  cv::Size(img_width, img_height))};
-    std::vector<std::pair<Eigen::Vector2d, Eigen::Vector2d>> correspondences =
-        test_cube.get_corresponding_pixels(cams);
+    // std::vector<std::pair<gtsam::PinholeCamera<gtsam::Cal3_S2>, cv::Size>> cams{
+    //     std::pair<gtsam::PinholeCamera<gtsam::Cal3_S2>, cv::Size>(camera0,
+    //                                                               cv::Size(img_width,
+    //                                                               img_height)),
+    //     std::pair<gtsam::PinholeCamera<gtsam::Cal3_S2>, cv::Size>(camera1,
+    //                                                               cv::Size(img_width,
+    //                                                               img_height))};
+    // std::vector<std::pair<SpatialTestScene::ProjectedPoint, SpatialTestScene::ProjectedPoint>>
+    //     correspondences = test_cube.get_corresponding_pixels(cams);
 }
 }  // namespace robot::experimental::learn_descriptors

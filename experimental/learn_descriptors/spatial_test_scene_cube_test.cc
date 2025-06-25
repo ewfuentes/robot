@@ -3,13 +3,13 @@
 #include <vector>
 
 #include "Eigen/Dense"
-#include "common/geometry/opencv_viz.hh"
 #include "gtest/gtest.h"
+#include "visualization/opencv/opencv_viz.hh"
 
 namespace robot::experimental::learn_descriptors {
 TEST(SpatialTestSceneCubeTest, viz_cube) {
     SpatialTestSceneCube test_scene(1.0f);
-    geometry::viz_scene(std::vector<Eigen::Isometry3d>(), test_scene.get_points());
+    // geometry::viz_scene(std::vector<Eigen::Isometry3d>(), test_scene.get_points());
 }
 
 TEST(SpatialTestSceneCubeTest, viz_cube_with_cameras) {
@@ -32,6 +32,6 @@ TEST(SpatialTestSceneCubeTest, viz_cube_with_cameras) {
         camera_poses.emplace_back(T_world_cam.pose().matrix());
     }
 
-    geometry::viz_scene(camera_poses, test_scene.get_points());
+    // geometry::viz_scene(camera_poses, test_scene.get_points());
 }
 }  // namespace robot::experimental::learn_descriptors

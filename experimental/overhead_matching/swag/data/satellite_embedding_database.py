@@ -4,12 +4,12 @@ import tqdm
 
 import experimental.overhead_matching.swag.data.vigor_dataset as vig_dataset
 
+
 def build_embeddings_from_model(model: torch.nn.Module,
                                 dataloader: torch.utils.data.DataLoader,
                                 model_input_from_dataloader: callable,
                                 device: torch.device = "cuda:0",
-                                verbose: bool = False,
-)-> torch.Tensor:
+                                verbose: bool = False) -> torch.Tensor:
     """Embeddings will match the order of the dataloader"""
 
     model.to(device)
@@ -22,8 +22,10 @@ def build_embeddings_from_model(model: torch.nn.Module,
     embeddings = torch.concatenate(inf_results, dim=0)
     return embeddings
 
+
 def build_satellite_db(model, dataloader, **kwargs):
     return build_embeddings_from_model(model, dataloader, lambda x: x.satellite, **kwargs)
+
 
 def build_panorama_db(model, dataloader, **kwargs):
     return build_embeddings_from_model(model, dataloader, lambda x: x.panorama, **kwargs)

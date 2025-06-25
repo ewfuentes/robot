@@ -2,7 +2,7 @@
 #include <utility>
 
 #include "Eigen/Dense"
-#include "common/geometry/opencv_viz.hh"
+#include "boost/make_shared.hpp"
 #include "experimental/learn_descriptors/frame.hh"
 #include "experimental/learn_descriptors/frontend.hh"
 #include "experimental/learn_descriptors/frontend_definitions.hh"
@@ -25,6 +25,7 @@
 #include "gtsam/slam/PriorFactor.h"
 #include "gtsam/slam/ProjectionFactor.h"
 #include "opencv2/opencv.hpp"
+#include "visualization/opencv/opencv_viz.hh"
 
 namespace std {
 template <>

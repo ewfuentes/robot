@@ -23,13 +23,21 @@ struct hash<cv::KeyPoint> {
         return (h1 ^ (h2 << 1)) ^ (h3 << 2) ^ (h4 << 3) ^ (h5 << 4) ^ (h6 << 5) ^ (h7 << 6);
     }
 };
+template <>
+struct hash<gtsam::Symbol> {
+    size_t operator()(const gtsam::Symbol &s) const noexcept {
+        return std::hash<size_t>()(s.key());
+    }
+};
 }  // namespace std
-namespace cv {
-inline bool operator==(const cv::KeyPoint &kp1, const cv::KeyPoint &kp2) {
-    return kp1.pt == kp2.pt && kp1.size == kp2.size && kp1.angle == kp2.angle &&
-           kp1.response == kp2.response && kp1.octave == kp2.octave && kp1.class_id == kp2.class_id;
-}
-}  // namespace cv
+struct KeyPointEqual {
+    bool operator()(const cv::KeyPoint &kp1, const cv::KeyPoint &kp2) const {
+        return kp1.pt == kp2.pt && kp1.size == kp2.size && kp1.angle == kp2.angle &&
+               kp1.response == kp2.response && kp1.octave == kp2.octave &&
+               kp1.class_id == kp2.class_id;
+    }
+};
+
 namespace robot::experimental::learn_descriptors {
 class FeatureSet {
    public:
@@ -63,7 +71,8 @@ class FeatureSet {
 
    private:
     keypoints_descriptors kpts_descriptors_;
-    std::unordered_map<cv::KeyPoint, gtsam::Symbol> kpt_to_symbol_;
+    std::unordered_map<cv::KeyPoint, gtsam::Symbol, std::hash<cv::KeyPoint>, KeyPointEqual>
+        kpt_to_symbol_;
     std::unordered_map<gtsam::Symbol, cv::KeyPoint> symbol_to_kpt_;
 };
 }  // namespace robot::experimental::learn_descriptors

@@ -37,3 +37,15 @@ def dataclass_to_dict(input_object: dataclass)->dict:
         
     # Base case: return the object itself (int, float, str, etc.)
     return input_object
+
+
+def flatten_dict(d, parent_key='', sep='.'):
+    out = {}
+    for k in d:
+        v = d[k]
+        if isinstance(v, dict):
+            new_parent_key = f"{parent_key}{sep if parent_key else ''}{k}"
+            out.update(flatten_dict(v, parent_key=new_parent_key, sep=sep))
+        else:
+            out[f"{parent_key}{sep if parent_key else ''}{k}"] = d[k]
+    return out

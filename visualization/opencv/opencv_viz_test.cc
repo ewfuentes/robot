@@ -1,18 +1,12 @@
-#include "common/geometry/opencv_viz.hh"
+#include "visualization/opencv/opencv_viz.hh"
 
 #include "gtest/gtest.h"
+#include "opencv2/viz.hpp"
 
 namespace robot::geometry {
-namespace {
-bool is_test() {
-    return std::getenv("BAZEL_TEST") != nullptr &&
-           std::getenv("BUILD_WORKSPACE_DIRECTORY") == nullptr;
-}
-}  // namespace
 
 TEST(OpencvVizTest, demo) {
     cv::viz::Viz3d window("My Window");
-
     window.showWidget("world_frame", cv::viz::WCoordinateSystem());
 
     constexpr unsigned int num_cells = 6;
@@ -49,9 +43,8 @@ TEST(OpencvVizTest, demo) {
                                  {0.0, 0.0, 1.5}                     // translation
     );
     window.showWidget("circle", cv::viz::WCircle(CIRCLE_RADIUS_M), world_to_circle);
-    if (!is_test()) {
-        window.spin();
-    }
+
+    window.spin();
 }
 
 TEST(OpencvVizTest, cube_test) {
@@ -82,8 +75,6 @@ TEST(OpencvVizTest, cube_test) {
     T_W_cam1.translation() = Eigen::Vector3d(0, 4, 0);
     poses.push_back(T_W_cam1);
 
-    if (!is_test()) {
-        viz_scene(poses, cube_W);
-    }
+    viz_scene(poses, cube_W);
 }
 }  // namespace robot::geometry

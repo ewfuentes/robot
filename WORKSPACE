@@ -21,7 +21,7 @@ http_archive(
 http_archive(
   name = "symphony_lake_snippet",
   urls = ["https://www.dropbox.com/scl/fi/gh7855qdos5mspinst77k/symphony_lake_snippet.zip?rlkey=mg7qe0gq51r446dwhr9g2wiut&st=774393fx&dl=1"],
-  build_file = "//third_party:BUILD.symphony_lake_snippet",
+  build_file = "//third_party:BUILD.zip_file",
   sha256 = "f16211fb370c9471153c9ed4a345b9fb848d292dbb8b7dc26fea24cb30ba5c15",
 )
 
@@ -618,4 +618,27 @@ http_archive(
   urls=["https://www.dropbox.com/scl/fi/6breqzx8dwawzoouxu4w3/vigor_snippet.zip?rlkey=104sa118w76lbudmngd6wnc4i&st=972uxtcd&dl=1"],
   build_file="//third_party:BUILD.zip_file",
   integrity = "sha256-0+V3fJARho+tRPXaRtzXMyhu/ueFzFdD3AIVf4OKm6w=",
+)
+
+http_archive(
+  name = "four_seasons_snippet",
+  urls = ["https://www.dropbox.com/scl/fi/34am0vcrbnyz2sh7irv9y/four_seasons_snippet.zip?rlkey=h4jjgz2xohx1xgmq4wzuczkbg&st=9fjc5566&dl=1"],
+  build_file = "//third_party:BUILD.zip_file",
+  sha256 = "007894242b3fa9c351e58159bc3a7d8ec6f6a1d6163b129f26d872cd2df56e36",
+)
+
+http_archive(
+    name = "nmea",
+    urls = ["https://github.com/pcdangio/nmea/archive/1d6e507dd08f3a646513dfdc5eea71470f366d59.zip"],
+    strip_prefix = "nmea-1d6e507dd08f3a646513dfdc5eea71470f366d59",
+    build_file = "//third_party:BUILD.nmea",
+    sha256 = "3069da17f99ca689701f83e2a9dcd366053cb170757aa5d75cf2b46e59ea1910",
+)
+
+http_archive(
+    name = "geographiclib",
+    urls = ["https://github.com/geographiclib/geographiclib/archive/refs/tags/v2.5.zip"],
+    strip_prefix = "geographiclib-2.5",
+    build_file = "//third_party:BUILD.geographiclib",
+    sha256 = "d41e90b3009307fd96474fe21ccae824d981c7335ce8ddd3618c1f6084793011",
 )

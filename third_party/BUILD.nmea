@@ -1,0 +1,34 @@
+package(features=["-warning_compile_flags"])
+
+cc_library(
+  name = "nmea",
+  hdrs = [
+    "include/nmea/message/gga.hpp",
+    "include/nmea/message/gll.hpp",
+    "include/nmea/message/gsa.hpp",
+    "include/nmea/message/gsv.hpp",
+    "include/nmea/message/rmc.hpp",
+    "include/nmea/message/vtg.hpp",
+    "include/nmea/message/zda.hpp",
+    "include/nmea/object/date.hpp",
+    "include/nmea/object/mode.hpp",
+    "include/nmea/object/status.hpp",
+    "include/nmea/field.hpp",
+    "include/nmea/sentence.hpp",
+  ],
+  copts = ["-include", "cstdint"],
+  visibility = ["//visibility:public"],
+  srcs = [
+    "src/gga.cpp",
+    "src/gll.cpp",
+    "src/gsa.cpp",
+    "src/gsv.cpp",
+    "src/parse.cpp",
+    "src/parse.hpp",
+    "src/rmc.cpp",
+    "src/sentence.cpp",
+    "src/vtg.cpp",
+    "src/zda.cpp",
+  ],
+  strip_include_prefix="include/",
+)

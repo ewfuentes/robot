@@ -1,5 +1,6 @@
 
 load("@pip//:requirements.bzl", "requirement")
+load("@rules_python//python:packaging.bzl", "py_wheel", "py_package")
 
 py_binary(
   name="train",
@@ -9,6 +10,8 @@ py_binary(
     requirement("tensorboard"),
     requirement("tqdm"),
     requirement("IPython"),
+    requirement("msgspec"),
+    requirement("pyyaml"),
     "//common/python:serialization",
     "//common/torch:load_torch_deps",
     "//common/torch:load_and_save_models",
@@ -16,6 +19,29 @@ py_binary(
     "//experimental/overhead_matching/swag/model:patch_embedding",
   ]
 )
+
+py_package(
+  name="train_package",
+  deps = [
+    ":train",
+  ]
+)
+
+py_wheel(
+  name="train_wheel",
+  distribution="overhead_matching_train",
+  version = "0.0.1",
+  platform = "manylinux2014_x86_64",
+  tags = ["manual"],
+  python_tag = select({
+    "@rules_python//python/config_settings:is_python_3.12": "cp312"
+  }),
+  abi = select({
+    "@rules_python//python/config_settings:is_python_3.12": "cp312"
+  }),
+  deps=[":train_package"],
+)
+
 py_binary(
   name="create_evaluation_paths",
   srcs=["create_evaluation_paths.py"],
@@ -50,5 +76,14 @@ py_binary(
     requirement("torch"),
     requirement("tqdm"),
     "//common/torch:load_torch_deps",
+  ]
+)
+
+py_binary(
+  name = "generate_training_configs",
+  srcs = ["generate_training_configs.py"],
+  deps = [
+    requirement("msgspec"),
+    ":train",
   ]
 )

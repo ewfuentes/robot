@@ -32,6 +32,7 @@ def construct_path_eval_inputs_from_args(
 
     return vigor_dataset, sat_model, pano_model, paths_data
 
+
 if __name__ == "__main__":
     import argparse
 
@@ -47,6 +48,8 @@ if __name__ == "__main__":
     # parser.add_argument("--wag-config-path", type=str, required=True, help="Path to WAG config file")
     parser.add_argument("--seed", type=int, default=42, help="random seed")
     parser.add_argument("--dataset-path", type=str, required=True, help="Dataset path")
+    parser.add_argument("--save-intermediate-filter-states", action='store_true',
+                        help="If intermediate filter states should be saved")
     parser.add_argument("--panorama-neighbor-radius-deg", type=float,
                         default=0.0005, help="Panorama neighbor radius deg")
 
@@ -94,4 +97,5 @@ if __name__ == "__main__":
         seed=args.seed,
         output_path=args.output_path,
         device=DEVICE,
+        save_intermediate_filter_states=args.save_intermediate_filter_states
     )

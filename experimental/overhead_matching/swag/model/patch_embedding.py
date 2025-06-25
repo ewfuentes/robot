@@ -22,7 +22,7 @@ def compute_safa_input_dims(backbone: torch.nn.Module, patch_dims: Tuple[int, in
     with torch.no_grad():
         test_input = torch.empty(1, 3, *patch_dims)
         result = feature_extraction(backbone, test_input)
-        return result.shape[-2] * result.shape[-1]
+        return result.shape[-3], result.shape[-2] * result.shape[-1]
 
 
 class WagPatchEmbedding(torch.nn.Module):
@@ -30,9 +30,11 @@ class WagPatchEmbedding(torch.nn.Module):
         super().__init__()
         self.backbone = torchvision.models.vgg16()
 
-        input_safa_dim = compute_safa_input_dims(self.backbone, config.patch_dims)
+        n_channels, input_safa_dim = compute_safa_input_dims(self.backbone, config.patch_dims)
         safa_dims = [input_safa_dim // 2, input_safa_dim]
         n_heads = config.num_aggregation_heads
+        self._output_dim = n_channels * n_heads
+
         self._safa_params = []
         for layer_idx, output_safa_dim in enumerate(safa_dims):
             safa_weight = torch.nn.Parameter(
@@ -41,8 +43,11 @@ class WagPatchEmbedding(torch.nn.Module):
             self.register_parameter(f"safa_{layer_idx}_weight", safa_weight)
             self.register_parameter(f"safa_{layer_idx}_bias", safa_bias)
             self._safa_params.append((safa_weight, safa_bias))
-
             input_safa_dim = output_safa_dim
+
+    @property
+    def output_dim(self):
+        return self._output_dim
 
     def safa(self, x):
         batch_size = x.shape[0]

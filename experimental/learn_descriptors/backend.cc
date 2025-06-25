@@ -1,5 +1,7 @@
 #include "experimental/learn_descriptors/backend.hh"
 
+#include "boost/make_shared.hpp"
+#include "experimental/learn_descriptors/feature_manager.hh"
 #include "gtsam/geometry/triangulation.h"
 #include "gtsam/navigation/GPSFactor.h"
 #include "gtsam/nonlinear/LevenbergMarquardtOptimizer.h"

@@ -5,6 +5,15 @@ import experimental.overhead_matching.swag.filter.particle_filter as pf
 import experimental.overhead_matching.swag.data.satellite_embedding_database as sed
 from experimental.overhead_matching.swag.evaluation.wag_config_pb2 import WagConfig
 from torch_kdtree.nn_distance import TorchKDTree
+import dataclasses
+
+
+@dataclasses.dataclass
+class WagObservationResult:
+    # In a WAG observation step, the particles are weighted according to the observation likelihood
+    # and then resampled according to this likelihood.
+    log_particle_weights: torch.Tensor | None
+    resampled_particles: torch.Tensor
 
 
 def initialize_wag_particles(gt_start_position_lat_lon: torch.Tensor,
@@ -25,19 +34,25 @@ def observe_wag(
         similarity_matrix: torch.Tensor,  # W
         satellite_patch_kdtree: TorchKDTree,
         wag_config: WagConfig,
-        generator: torch.Generator
+        generator: torch.Generator,
+        return_past_particle_weights: bool = False
 ) -> torch.Tensor:  # particles
 
     # calculate observation likelihoods
     observation_log_likelihoods = pf.wag_observation_log_likelihood_from_similarity_matrix(
         similarity_matrix, wag_config.sigma_obs_prob_from_sim)
-    log_particle_weights = pf.wag_calculate_log_particle_weights(observation_log_likelihoods,
-                                                                 satellite_patch_kdtree,
-                                                                 particles,
-                                                                 wag_config.max_distance_to_patch_deg)
+    log_particle_weights = pf.wag_calculate_log_particle_weights(
+        observation_log_likelihoods,
+        satellite_patch_kdtree,
+        particles,
+        wag_config.max_distance_to_patch_deg)
+
     # resample particles
     resampled_particles = pf.wag_multinomial_resampling(particles, log_particle_weights, generator)
-    return resampled_particles
+    if return_past_particle_weights:
+        return WagObservationResult(
+                resampled_particles=resampled_particles, log_particle_weights=log_particle_weights)
+    return WagObservationResult(resampled_particles=resampled_particles, log_particle_weights=None)
 
 
 def move_wag(

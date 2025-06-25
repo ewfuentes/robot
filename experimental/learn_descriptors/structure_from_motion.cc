@@ -5,9 +5,9 @@
 #include <stdexcept>
 
 #include "common/geometry/camera.hh"
-#include "common/geometry/opencv_viz.hh"
 #include "common/geometry/translate_types.hh"
 #include "gtsam/geometry/Point2.h"
+#include "visualization/opencv/opencv_viz.hh"
 
 namespace fs = std::filesystem;
 
@@ -35,10 +35,13 @@ const gtsam::Pose3 StructureFromMotion::default_initial_pose(
 StructureFromMotion::StructureFromMotion(Frontend::ExtractorType frontend_extractor,
                                          gtsam::Cal3_S2 K, Eigen::Matrix<double, 5, 1> D,
                                          gtsam::Pose3 initial_pose,
-                                         Frontend::MatcherType frontend_matcher) {
-    // : feature_manager_(std::make_shared<FeatureManager>()), initial_pose_(initial_pose) {
-    frontend_ = Frontend(frontend_extractor, frontend_matcher);
-    backend_ = Backend(K);
+                                         Frontend::MatcherType frontend_matcher)
+    : feature_manager_(std::make_shared<FeatureManager>()),
+      initial_pose_(initial_pose),
+      frontend_(frontend_extractor, frontend_matcher),
+      backend_(boost::make_shared<gtsam::Cal3_S2>(K)) {
+    // frontend_ = Frontend(frontend_extractor, frontend_matcher);
+    // backend_ = Backend(K);
     // backend_ = Backend(feature_manager_, K);
 
     K_ = (cv::Mat_<double>(3, 3) << K.fx(), 0, K.px(), 0, K.fy(), K.py(), 0, 0, 1);
@@ -57,10 +60,10 @@ void StructureFromMotion::add_image(const cv::Mat &img, const gtsam::Pose3 &T_wo
     cv::undistort(img, img_undistorted, K_, D_);
     std::pair<std::vector<cv::KeyPoint>, cv::Mat> keypoints_and_descriptors =
         frontend_.get_keypoints_and_descriptors(img);
-    // feature_manager_->append_img_data(keypoints_and_descriptors.first,
-    //                                   keypoints_and_descriptors.second);
-    // keypoint_to_landmarks_.push_back(std::unordered_map<cv::KeyPoint, Backend::Landmark>());
-    // const size_t idx_img_current = get_num_images_added();
+    feature_manager_->append_img_data(keypoints_and_descriptors.first,
+                                      keypoints_and_descriptors.second);
+    keypoint_to_landmarks_.push_back(std::unordered_map<cv::KeyPoint, Backend::Landmark>());
+    const size_t idx_img_current = get_num_images_added();
     // const size_t idx_img_current = feature_manager_->get_num_images_added() - 1;
     std::cout << "current index " << idx_img_current << std::endl;
     if (idx_img_current > 0) {
@@ -82,7 +85,7 @@ void StructureFromMotion::add_image(const cv::Mat &img, const gtsam::Pose3 &T_wo
             size_t idx;
             unsigned char chr;
 
-            // auto maybe_symbol0 = feature_manager_->get_symbol(idx_img_current - 1, kpt_cam0);
+            auto maybe_symbol0 = feature_manager_->get_symbol(idx_img_current - 1, kpt_cam0);
             if (maybe_symbol0) {
                 idx = (*maybe_symbol0).index();
                 chr = (*maybe_symbol0).chr();
@@ -92,12 +95,12 @@ void StructureFromMotion::add_image(const cv::Mat &img, const gtsam::Pose3 &T_wo
                 idx = symbol_temp.index();
                 chr = symbol_temp.chr();
                 landmark_count_++;
-                // feature_manager_->insert_symbol(idx_img_current - 1, kpt_cam0, symbol_temp);
+                feature_manager_->insert_symbol(idx_img_current - 1, kpt_cam0, symbol_temp);
             }
             gtsam::Symbol symbol_lmk = gtsam::Symbol(chr, idx);
             std::cout << "value: char: " << chr << " , idx: " << idx << ". " << symbol_lmk
                       << std::endl;
-            // feature_manager_->insert_symbol(idx_img_current, kpt_cam1, symbol_lmk);
+            feature_manager_->insert_symbol(idx_img_current, kpt_cam1, symbol_lmk);
 
             const Backend::Landmark landmark_cam_0(
                 symbol_lmk, sym_T_w_c0,
@@ -137,10 +140,10 @@ void StructureFromMotion::graph_values(const gtsam::Values &values,
                                        const std::string &window_name) {
     std::vector<Eigen::Isometry3d> final_poses;
     std::vector<Eigen::Vector3d> final_lmks;
-    // for (size_t i = 0; i < feature_manager_->get_num_images_added(); i++) {
-    //     final_poses.emplace_back(
-    //         values.at<gtsam::Pose3>(gtsam::Symbol(get_backend().pose_symbol_char, i)).matrix());
-    // }
+    for (size_t i = 0; i < feature_manager_->get_num_images_added(); i++) {
+        final_poses.emplace_back(
+            values.at<gtsam::Pose3>(gtsam::Symbol(get_backend().pose_symbol_char, i)).matrix());
+    }
     // for (const gtsam::Symbol &lmk_symbol : feature_manager_->get_added_symbols()) {
     //     if (!values.exists(lmk_symbol)) {
     //         std::cout << "WTF " << lmk_symbol << std::endl;

@@ -1,8 +1,8 @@
 #include "common/geometry/camera.hh"
 
-#include "common/geometry/opencv_viz.hh"
 #include "common/geometry/translate_types.hh"
 #include "gtest/gtest.h"
+#include "visualization/opencv/opencv_viz.hh"
 
 class CameraTestHelper {
    public:

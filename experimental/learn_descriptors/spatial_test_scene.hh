@@ -31,7 +31,8 @@ class SpatialTestScene {
                                                      const cv::Size &img_size);
     template <typename T>
     std::vector<std::pair<ProjectedPoint, ProjectedPoint>> get_corresponding_pixels(
-        const std::pair<gtsam::PinholeCamera<T>, cv::Size> (&cam_and_img_size)[2]);
+        const std::vector<std::pair<gtsam::PinholeCamera<T>, cv::Size>>
+            &cam_and_img_size);  // make this parameter of size 2
 
     void add_point(Eigen::Vector3d point);
     void add_points(std::vector<Eigen::Vector3d> points);

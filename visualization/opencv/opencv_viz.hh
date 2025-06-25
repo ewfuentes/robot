@@ -4,7 +4,6 @@
 
 #include "Eigen/Core"
 #include "Eigen/Geometry"
-#include "opencv2/viz.hpp"
 
 namespace robot::geometry {
 void viz_scene(const std::vector<Eigen::Isometry3d> &poses_world,
