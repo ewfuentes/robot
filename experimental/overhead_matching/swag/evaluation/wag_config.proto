@@ -1,11 +1,19 @@
 syntax = "proto3";
 package robot.wag.proto;
 
+message SatellitePatchConfig {
+  uint32 zoom_level = 1;
+  uint32 patch_height_px = 2;
+  uint32 patch_width_px = 3;
+}
+
 message WagConfig {
+  reserved 6;
   float noise_percent_motion_model = 1;
   float initial_particle_distribution_offset_std_deg = 2; // sample an offset from the gt to be the mean of the initial dist
   float initial_particle_distribution_std_deg = 3; // std of the initial distribution of particles
   int32 num_particles = 4;
   float sigma_obs_prob_from_sim = 5; // default is 0.1
-  float max_distance_to_patch_deg = 6;
+
+  SatellitePatchConfig satellite_patch_config = 7;
 }

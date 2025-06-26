@@ -4,8 +4,8 @@ from typing import NamedTuple
 import experimental.overhead_matching.swag.filter.particle_filter as pf
 import experimental.overhead_matching.swag.data.satellite_embedding_database as sed
 from experimental.overhead_matching.swag.evaluation.wag_config_pb2 import WagConfig
-from torch_kdtree.nn_distance import TorchKDTree
 import dataclasses
+from typing import Callable
 
 
 @dataclasses.dataclass
@@ -32,7 +32,7 @@ def initialize_wag_particles(gt_start_position_lat_lon: torch.Tensor,
 def observe_wag(
         particles: torch.Tensor,  # N x state dimension
         similarity_matrix: torch.Tensor,  # W
-        satellite_patch_kdtree: TorchKDTree,
+        patch_index_from_particle: Callable[[torch.Tensor], torch.Tensor],
         wag_config: WagConfig,
         generator: torch.Generator,
         return_past_particle_weights: bool = False
@@ -43,9 +43,8 @@ def observe_wag(
         similarity_matrix, wag_config.sigma_obs_prob_from_sim)
     log_particle_weights = pf.wag_calculate_log_particle_weights(
         observation_log_likelihoods,
-        satellite_patch_kdtree,
         particles,
-        wag_config.max_distance_to_patch_deg)
+        patch_index_from_particle)
 
     # resample particles
     resampled_particles = pf.wag_multinomial_resampling(particles, log_particle_weights, generator)

@@ -1,6 +1,6 @@
 import experimental.overhead_matching.swag.data.vigor_dataset as vd
 import experimental.overhead_matching.swag.evaluation.evaluate_swag as es
-from experimental.overhead_matching.swag.evaluation.wag_config_pb2 import WagConfig
+from experimental.overhead_matching.swag.evaluation.wag_config_pb2 import WagConfig, SatellitePatchConfig
 import common.torch.load_and_save_models as lsm
 from pathlib import Path
 import json
@@ -76,14 +76,21 @@ if __name__ == "__main__":
         panorama_neighbor_radius_deg=args.panorama_neighbor_radius_deg,
     )
 
-    EARTH_RADIUS_M = 6_371_000.0
+    def degrees_from_meters(dist_m):
+        EARTH_RADIUS_M = 6_371_000.0
+        return math.degrees(dist_m / EARTH_RADIUS_M)
+
     wag_config = WagConfig(noise_percent_motion_model=0.02,  # page 71 thesis
                            # offset was fixed at 1.3km in thesis (page 71)
-                           initial_particle_distribution_offset_std_deg=1300.0 / EARTH_RADIUS_M * 180.0 / math.pi,  # 1300m to deg
-                           initial_particle_distribution_std_deg=2970.0 / EARTH_RADIUS_M * 180.0 / math.pi,  # page 73 of thesis, 2970m to deg
+                           initial_particle_distribution_offset_std_deg=degrees_from_meters(1300.0),
+                           # page 73 of thesis
+                           initial_particle_distribution_std_deg=degrees_from_meters(2970.0),
                            num_particles=100_000,
                            sigma_obs_prob_from_sim=0.1,
-                           max_distance_to_patch_deg=200.0 / EARTH_RADIUS_M * 180.0 / math.pi)
+                           satellite_patch_config=SatellitePatchConfig(
+                               zoom_level=20,
+                               patch_height_px=640,
+                               patch_width_px=640))
 
     with open(Path(args.output_path) / "wag_config.pbtxt", "w") as f:
         f.write(text_format.MessageToString(wag_config))

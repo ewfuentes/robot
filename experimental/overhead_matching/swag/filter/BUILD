@@ -6,7 +6,6 @@ py_library(
   visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
   deps = [
     requirement("torch"),
-    requirement("torch_kdtree"),
     "//common/torch:load_torch_deps",
   ]
 )

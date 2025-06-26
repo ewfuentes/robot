@@ -16,6 +16,7 @@ py_library(
     requirement("PyGObject"),
     "//common/torch:load_torch_deps",
     "//common/math:haversine",
+    "//common/gps:web_mercator",
   ]
 )
 

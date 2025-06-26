@@ -1,6 +1,5 @@
 import unittest
 import common.torch.load_torch_deps
-from torch_kdtree import build_kd_tree
 import torch
 import numpy as np
 from experimental.overhead_matching.swag.filter.particle_filter import (
@@ -11,6 +10,17 @@ from experimental.overhead_matching.swag.filter.particle_filter import (
 )
 
 import matplotlib.pyplot as plt
+
+
+def build_index_from_particle(patch_positions, max_dist=0.5):
+    def __inner__(particles):
+        deltas = particles[:, None, :] - patch_positions[None, :, :]
+        dists = torch.sum(deltas ** 2, dim=2)
+        sq_max_dist = torch.full((particles.shape[0], 1), max_dist ** 2)
+        dists = torch.cat([dists, sq_max_dist], dim=1)
+        out = torch.argmin(dists, dim=1)
+        return out
+    return __inner__
 
 
 class TestParticleFilter(unittest.TestCase):
@@ -80,10 +90,10 @@ class TestParticleFilter(unittest.TestCase):
             [1.9, 1.9]   # Close to nothing
         ])
 
-        kd_tree = build_kd_tree(patch_positions)
+        index_from_particle = build_index_from_particle(patch_positions)
         NO_PATCH_VALUE = 1e-9
         log_weights = wag_calculate_log_particle_weights(
-            observation_log_likelihood_matrix, kd_tree, particles, 0.5, np.log(NO_PATCH_VALUE)
+            observation_log_likelihood_matrix, particles, index_from_particle, np.log(NO_PATCH_VALUE)
         )
 
         # Check shape
@@ -144,7 +154,7 @@ class TestParticleFilter(unittest.TestCase):
 
         # Reshape to (grid_size^2, 2)
         patch_positions = patch_positions.view(-1, 2)
-        kd_tree = build_kd_tree(patch_positions)
+        index_from_particle = build_index_from_particle(patch_positions)
 
         # Create a path going straight right
         n_steps = 10
@@ -172,10 +182,10 @@ class TestParticleFilter(unittest.TestCase):
             # Simulating similarity based on distance from ground truth
             obs_log_likelihood = torch.zeros((grid_size * grid_size))
             for i in range(grid_size**2):
-                    patch_pos = patch_positions[i]
-                    dist = torch.norm(patch_pos - position)
-                    # Inverse relationship - closer patches have higher similarity
-                    obs_log_likelihood[i] = -dist
+                patch_pos = patch_positions[i]
+                dist = torch.norm(patch_pos - position)
+                # Inverse relationship - closer patches have higher similarity
+                obs_log_likelihood[i] = -dist
 
             obs_log_likelihood = obs_log_likelihood.view(-1)
 
@@ -185,7 +195,7 @@ class TestParticleFilter(unittest.TestCase):
 
             # Update particle weights
             log_weights = wag_calculate_log_particle_weights(
-                obs_log_likelihood, kd_tree, particles, 5
+                obs_log_likelihood, particles, index_from_particle
             )
             # Resample particles
             particles = wag_multinomial_resampling(
