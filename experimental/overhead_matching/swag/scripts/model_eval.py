@@ -16,6 +16,10 @@ def _():
     import numpy as np
     import seaborn
 
+    import matplotlib.pyplot as plt
+    import matplotlib
+    matplotlib.style.use("ggplot")
+
     from experimental.overhead_matching.swag.data import vigor_dataset, satellite_embedding_database
     from experimental.overhead_matching.swag.evaluation import evaluate_swag
     import experimental.overhead_matching.swag.model.patch_embedding
@@ -36,9 +40,11 @@ def _():
         importlib,
         itertools,
         load_model,
+        matplotlib,
         mo,
         np,
         pd,
+        plt,
         pprint,
         satellite_embedding_database,
         seaborn,
@@ -60,15 +66,15 @@ def _(Path, evaluate_swag, load_model):
 
 
 @app.cell
-def _(NamedTuple, Path, get_top_k_results, itertools, pd, vigor_dataset):
+def _(NamedTuple, Path, itertools, vigor_dataset):
     class ModelConfig(NamedTuple):
         lr_schedule: bool
         negative_mining: bool
         pos_semipos: bool
 
-    checkpoint_idx = [59, 59, 59, 59, 59, 59, 60, 60]
     model_paths = {}
-    for idx, (lr_schedule, negative_mining, pos_semipos) in zip(checkpoint_idx, itertools.product(*[[False, True]]*3)):
+    idx=59
+    for lr_schedule, negative_mining, pos_semipos in itertools.product(*[[False, True]]*3):
         model_paths[ModelConfig(lr_schedule, negative_mining, pos_semipos)] = f"/data/overhead_matching/models/20250616_8_way_experiment/all_chicago_lr_schedule_{lr_schedule}_negative_mining_{negative_mining}_pos_semipos_{pos_semipos}/{idx:04d}"
 
     # model_paths = {
@@ -90,9 +96,21 @@ def _(NamedTuple, Path, get_top_k_results, itertools, pd, vigor_dataset):
     )
 
     datasets = {k: vigor_dataset.VigorDataset(Path(v), dataset_config) for k, v in dataset_paths.items()}
+    return (
+        ModelConfig,
+        dataset_config,
+        dataset_paths,
+        datasets,
+        idx,
+        lr_schedule,
+        model_paths,
+        negative_mining,
+        pos_semipos,
+    )
 
-    results = {}
 
+@app.cell
+def _(datasets, get_top_k_results, itertools, model_paths, pd):
     dfs = []
     for (model_name, model_path), (data_name, dataset) in itertools.product(model_paths.items(), datasets.items()):
         print(model_name, data_name)
@@ -101,38 +119,18 @@ def _(NamedTuple, Path, get_top_k_results, itertools, pd, vigor_dataset):
         df["model"] = [model_name]*len(df)
         dfs.append(df)
     df = pd.concat(dfs)
-    return (
-        ModelConfig,
-        checkpoint_idx,
-        data_name,
-        dataset,
-        dataset_config,
-        dataset_paths,
-        datasets,
-        df,
-        dfs,
-        idx,
-        lr_schedule,
-        model_name,
-        model_path,
-        model_paths,
-        negative_mining,
-        pos_semipos,
-        results,
-    )
+    return data_name, dataset, df, dfs, model_name, model_path
 
 
 @app.cell
-def _(df, mo, seaborn):
+def _(df, mo, plt, seaborn):
     df["plot_label"] = [str(x) for x in df["model"]]
-    import matplotlib.pyplot as plt
-    import matplotlib
-    matplotlib.style.use("ggplot")
+
     seaborn.displot(data=df, kind='ecdf', x='k_value', col='dataset', hue='plot_label')
     plt.suptitle("top K CDF by model")
     plt.tight_layout()
     mo.mpl.interactive(plt.gcf())
-    return matplotlib, plt
+    return
 
 
 @app.cell
@@ -141,17 +139,24 @@ def _(Path, itertools, pd, torch):
 
     def process_path(path: Path):
         error_path = path / 'error.pt'
+        var_path = path / 'var.pt'
         error_data = torch.load(error_path)
-        return error_data[-1].item()
+        var_data = torch.load(var_path)
+        return error_data[-1].item(), var_data[-1].item()
 
     def process_eval_results(path: Path):
         out = []
         for p in sorted(path.glob("[0-9]*")):
-            out.append({
-                'path_idx': int(p.stem),
-                'final_error': process_path(p),
-                'model': path.stem,
-            })
+            try:
+                final_error_m, var_sq_m = process_path(p)
+                out.append({
+                    'path_idx': int(p.stem),
+                    'final_error_m': final_error_m,
+                    'var_sq_m': var_sq_m,
+                    'model': path.stem,
+                })
+            except:
+                ...
         return pd.DataFrame.from_records(out)
 
     base_path = Path('/data/overhead_matching/evaluation/results/20250616_8_way_experiment')
@@ -167,9 +172,16 @@ def _(Path, itertools, pd, torch):
 
 @app.cell
 def _(mo, path_df, plt, seaborn):
-    seaborn.displot(data=path_df, x='final_error', kind='ecdf', hue='model')
+    seaborn.displot(data=path_df, x='final_error_m', kind='ecdf', hue='model')
     plt.title("Final Error CDF across 100 paths in New York")
     plt.tight_layout()
+    mo.mpl.interactive(plt.gcf())
+    return
+
+
+@app.cell
+def _(mo, path_df, plt, seaborn):
+    seaborn.scatterplot(data=path_df, x="final_error_m", y="var_sq_m", hue="model")
     mo.mpl.interactive(plt.gcf())
     return
 

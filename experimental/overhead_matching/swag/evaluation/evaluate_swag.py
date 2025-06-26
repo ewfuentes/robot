@@ -168,15 +168,21 @@ def get_distance_error_between_pano_and_particles_meters(
     
     true_latlong = vigor_dataset.get_panorama_positions(panorama_index)
     particle_latlong_estimate = particles.mean(dim=1)
-    out = []
-    for i in range(len(panorama_index)):
-        distance_error_meters = vd.EARTH_RADIUS_M * find_d_on_unit_circle(true_latlong[i], particle_latlong_estimate[i])
-        out.append(distance_error_meters)
 
-    out = torch.tensor(out)
-    if len(out) == 1:
-        out = out[0]
-    return out
+    mean_deviation_m = vd.EARTH_RADIUS_M * find_d_on_unit_circle(
+            particles, particle_latlong_estimate[:, None, :])
+    var_sq_m = torch.mean(torch.from_numpy(mean_deviation_m) ** 2, -1)
+
+    mean_error_m = []
+    for i in range(len(panorama_index)):
+        distance_error_meters = vd.EARTH_RADIUS_M * find_d_on_unit_circle(
+                true_latlong[i], particle_latlong_estimate[i])
+        mean_error_m.append(distance_error_meters)
+
+    mean_error_m = torch.tensor(mean_error_m)
+    if len(mean_error_m) == 1:
+        mean_error_m = mean_error_m[0]
+    return mean_error_m, var_sq_m
 
 
 def get_motion_deltas_from_path(vigor_dataset: vd.VigorDataset, path: list[int]):
@@ -367,10 +373,13 @@ def evaluate_model_on_paths(
             particle_history = path_inference_result.particle_history
             save_path = output_path / f"{i:07d}"
             save_path.mkdir(parents=True, exist_ok=True)
-            error_meters_at_each_step = get_distance_error_between_pano_and_particles_meters(
-                    vigor_dataset, path, particle_history)
+            error_meters_at_each_step, var_sq_m_at_each_step = (
+                    get_distance_error_between_pano_and_particles_meters(
+                        vigor_dataset, path, particle_history)
+                )
             all_final_particle_error_meters.append(error_meters_at_each_step[-1])
             torch.save(error_meters_at_each_step, save_path / "error.pt")
+            torch.save(var_sq_m_at_each_step, save_path / "var.pt")
             torch.save(path, save_path / "path.pt")
             torch.save(path_similarity_values, save_path / "similarity.pt")
             if save_intermediate_filter_states:
