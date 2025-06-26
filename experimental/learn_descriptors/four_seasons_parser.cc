@@ -6,6 +6,7 @@
 #include <exception>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -21,6 +22,8 @@
 #include "nmea/message/gga.hpp"
 #include "nmea/message/rmc.hpp"
 #include "nmea/sentence.hpp"
+
+#define IMU_HZ 30.0
 
 namespace robot::experimental::learn_descriptors {
 using namespace detail;
@@ -44,7 +47,8 @@ FourSeasonsParser::FourSeasonsParser(const std::filesystem::path& root_dir,
     gps_parser_help::TimeGPSList gps_time_list =
         gps_parser_help::create_gps_time_data_map(path_gps);
 
-    const double imu_hz = 30.0;
+    // std::cout << "imu dt in nanoseconds: " << std::to_string((1.0 / IMU_HZ) * 1e9) << std::endl;
+
     size_t id = 0;
     size_t gps_idx = 0;
     for (const std::pair<size_t, std::vector<std::string>>& pair_time_data : img_time_list) {
@@ -97,12 +101,25 @@ FourSeasonsParser::FourSeasonsParser(const std::filesystem::path& root_dir,
                       << std::endl;
         }
         while (gps_idx < gps_time_list.size() && time_key > gps_time_list[gps_idx].first &&
-               time_key - gps_time_list[gps_idx].first > (1.0 / imu_hz) * 1e9) {
+               time_key - gps_time_list[gps_idx].first > (1.0 / IMU_HZ) * 1e9) {
             gps_idx++;
+            // if (gps_idx < 200) {
+            //     std::stringstream ss;
+            //     ss << "uh oh: " << gps_idx;
+            //     if (time_key > gps_time_list[gps_idx].first) {
+            //         ss << "\ttime_key - gps_time: " << (time_key - gps_time_list[gps_idx].first);
+            //     } else {
+            //         ss << "\tgps_time - time_key: " << (gps_time_list[gps_idx].first - time_key);
+            //     }
+            //     std::cout << ss.str() << std::endl;
+            // }
         }  // find the closest gps point whose time is before the current image capture time
         if (gps_idx < gps_time_list.size() &&
-            time_key - gps_time_list[gps_idx].first <= (1.0 / imu_hz) * 1e9) {
+            time_key - gps_time_list[gps_idx].first <= (1.0 / IMU_HZ) * 1e9) {
             img_pt.gps_gcs = gps_time_list[gps_idx].second;
+            // std::cout << "adding gps data at img_pt: " << img_pt.id << " with gps_idx: " <<
+            // gps_idx
+            //           << std::endl;
             gps_idx++;
         }
         img_pt_vector_.push_back(img_pt);
@@ -313,7 +330,10 @@ TimeGPSList create_gps_time_data_map(const std::filesystem::path& path_gps) {
                 gps_data.longitude = gga.longitude.get();
                 if (gga.altitude.exists()) gps_data.altitude = gga.altitude.get();
                 if (gga.utc.get() == time_of_day_last) {  // GGA messages for this dataset come
-                                                          // after RMC messages
+                    // after RMC messages
+                    // std::cout << "adding gps data with time of day: " << gga.utc.get()
+                    //           << " and unix time: "
+                    //           << gps_utc_to_unix_time(date_last, gga.utc.get()) << std::endl;
                     time_map_gps.push_back(
                         std::make_pair(gps_utc_to_unix_time(date_last, gga.utc.get()), gps_data));
                 }

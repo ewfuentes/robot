@@ -47,10 +47,10 @@ TEST(FrontendTest, pipeline_sweep) {
     cv::warpAffine(image_1, image_1, rotation_matrix, image_1.size());
     cv::warpAffine(image_1, image_2, translation_mat, image_1.size());
 
-    // cv::Mat img_test_disp;
-    // cv::hconcat(image_1, image_2, img_test_disp);
-    // cv::imshow("Test", img_test_disp);
-    // cv::waitKey(1000);
+    cv::Mat img_test_disp;
+    cv::hconcat(image_1, image_2, img_test_disp);
+    cv::imshow("Test", img_test_disp);
+    cv::waitKey(1000);
 
     Frontend::ExtractorType extractor_types[2] = {Frontend::ExtractorType::SIFT,
                                                   Frontend::ExtractorType::ORB};
@@ -64,11 +64,11 @@ TEST(FrontendTest, pipeline_sweep) {
     std::vector<cv::DMatch> matches;
     cv::Mat img_keypoints_out_1(height, width, CV_8UC3),
         img_keypoints_out_2(height, width, CV_8UC3), img_matches_out(height, 2 * width, CV_8UC3);
-    // cv::Mat img_display_test;
+    cv::Mat img_display_test;
     for (Frontend::ExtractorType extractor_type : extractor_types) {
         for (Frontend::MatcherType matcher_type : matcher_types) {
-            // printf("started frontend combination: (%d, %d)\n", static_cast<int>(extractor_type),
-            //        static_cast<int>(matcher_type));
+            printf("started frontend combination: (%d, %d)\n", static_cast<int>(extractor_type),
+                   static_cast<int>(matcher_type));
             try {
                 frontend = Frontend(extractor_type, matcher_type);
             } catch (const std::invalid_argument &e) {
@@ -85,20 +85,19 @@ TEST(FrontendTest, pipeline_sweep) {
                                     img_keypoints_out_2);
             frontend.draw_matches(image_1, keypoints_descriptors_pair_1.first, image_2,
                                   keypoints_descriptors_pair_2.first, matches, img_matches_out);
-            // cv::hconcat(img_keypoints_out_1, img_keypoints_out_2, img_display_test);
-            // cv::vconcat(img_display_test, img_matches_out, img_display_test);
-            // std::stringstream text;
-            // text << "Extractor " << static_cast<int>(extractor_type) << ", matcher "
-            //      << static_cast<int>(matcher_type);
-            // cv::putText(img_display_test, text.str(), cv::Point(20, height - 50),
-            //             cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0, 0, 255), 2, cv::LINE_AA);
-            // cv::imshow("Keypoints and Matches Output.", img_display_test);
-            // std::cout << "Hold spacebar to pause." << std::endl;
-            // while (cv::waitKey(1000) == 32) {
-            // }
-            // printf("completed frontend combination: (%d, %d)\n",
-            // static_cast<int>(extractor_type),
-            //        static_cast<int>(matcher_type));
+            cv::hconcat(img_keypoints_out_1, img_keypoints_out_2, img_display_test);
+            cv::vconcat(img_display_test, img_matches_out, img_display_test);
+            std::stringstream text;
+            text << "Extractor " << static_cast<int>(extractor_type) << ", matcher "
+                 << static_cast<int>(matcher_type);
+            cv::putText(img_display_test, text.str(), cv::Point(20, height - 50),
+                        cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0, 0, 255), 2, cv::LINE_AA);
+            cv::imshow("Keypoints and Matches Output.", img_display_test);
+            std::cout << "Hold spacebar to pause." << std::endl;
+            while (cv::waitKey(1000) == 32) {
+            }
+            printf("completed frontend combination: (%d, %d)\n", static_cast<int>(extractor_type),
+                   static_cast<int>(matcher_type));
             if (extractor_type != Frontend::ExtractorType::ORB) {  // don't check ORB for now
                 for (const cv::DMatch match : matches) {
                     EXPECT_NEAR(keypoints_descriptors_pair_1.first[match.queryIdx].pt.x -

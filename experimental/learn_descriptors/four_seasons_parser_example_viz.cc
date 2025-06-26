@@ -2,7 +2,6 @@
 #include <cstddef>
 #include <filesystem>
 #include <iostream>
-#include <opencv2/opencv.hpp>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -10,6 +9,7 @@
 #include "common/check.hh"
 #include "cxxopts.hpp"
 #include "experimental/learn_descriptors/four_seasons_parser.hh"
+#include "opencv2/opencv.hpp"
 #include "visualization/opencv/opencv_viz.hh"
 
 namespace lrn_desc = robot::experimental::learn_descriptors;
