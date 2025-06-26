@@ -65,17 +65,16 @@ def _(NamedTuple, Path, get_top_k_results, itertools, pd, vigor_dataset):
         lr_schedule: bool
         negative_mining: bool
         pos_semipos: bool
-        large_dataset: bool
 
     checkpoint_idx = [59, 59, 59, 59, 59, 59, 60, 60]
     model_paths = {}
-    _base_path = Path('/data/overhead_matching/models/20250616_8_way_experiment')
-    _model_name = 'all_chicago_lr_schedule_{}_negative_mining_{}_pos_semipos_{}/{:04d}'
     for idx, (lr_schedule, negative_mining, pos_semipos) in zip(checkpoint_idx, itertools.product(*[[False, True]]*3)):
-        model_paths[ModelConfig(lr_schedule, negative_mining, pos_semipos, False)] = (
-            _base_path / _model_name.format(lr_schedule, negative_mining, pos_semipos, idx))
+        model_paths[ModelConfig(lr_schedule, negative_mining, pos_semipos)] = f"/data/overhead_matching/models/20250616_8_way_experiment/all_chicago_lr_schedule_{lr_schedule}_negative_mining_{negative_mining}_pos_semipos_{pos_semipos}/{idx:04d}"
 
-    model_paths[ModelConfig(False, False, False, True)] = _base_path / "all_chicago_seattle_sanfrancisco_lr_schedule_False_negative_mining_False_pos_semipos_False" / "0059"
+    # model_paths = {
+    #     ModelConfig(False, False, False): "/data/overhead_matching/models/all_chicago_model/0240",
+    #     'w_semi_pos': "/data/overhead_matching/models/all_chicago_model_w_semipos/0080",
+    # }
 
     dataset_paths = {
         'chicago': '/data/overhead_matching/datasets/VIGOR/Chicago',
@@ -155,17 +154,15 @@ def _(Path, itertools, pd, torch):
             })
         return pd.DataFrame.from_records(out)
 
-    _base_path = Path('/data/overhead_matching/evaluation/results/20250616_8_way_experiment')
+    base_path = Path('/data/overhead_matching/evaluation/results/20250616_8_way_experiment')
 
     path_dfs = []
-    for  _pos_semipos, _lr_schedule, _negative_mining in itertools.product(*[[False, True]]*3):
+    for _lr_schedule, _negative_mining, _pos_semipos in itertools.product(*[[False, True]]*3):
         _model_name = f"all_chicago_lr_schedule_{_lr_schedule}_negative_mining_{_negative_mining}_pos_semipos_{_pos_semipos}"
-        path_dfs.append(process_eval_results(_base_path / _model_name))
+        path_dfs.append(process_eval_results(base_path / _model_name))
 
-    _model_name = 'all_chicago_seattle_sanfrancisco_lr_schedule_False_negative_mining_False_pos_semipos_False'
-    path_dfs.append(process_eval_results(_base_path / '..' / _model_name))
     path_df = pd.concat(path_dfs)
-    return path_df, path_dfs, process_eval_results, process_path
+    return base_path, path_df, path_dfs, process_eval_results, process_path
 
 
 @app.cell
