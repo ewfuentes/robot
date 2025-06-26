@@ -11,6 +11,7 @@ import numpy as np
 from scipy.spatial import cKDTree
 from typing import NamedTuple
 from common.math.haversine import find_d_on_unit_circle
+from common.gps import web_mercator
 from enum import StrEnum, auto
 
 EARTH_RADIUS_M = 6378137.0
@@ -66,29 +67,15 @@ def series_to_dict_with_index(series: pd.Series, index_key: str = "index"):
     return d
 
 
-def latlon_to_pixel_coords(lat, lon, zoom):
-    """
-    Converts lat/lon to pixel coordinates in global Web Mercator space.
-    For reference, see: https://en.wikipedia.org/wiki/Web_Mercator_projection
-    """
-    siny = np.sin(np.radians(lat))
-    siny = min(max(siny, -0.9999), 0.9999)
-
-    map_size = 256 * 2**zoom
-    x = (lon + 180.0) / 360.0 * map_size
-    y = (0.5 - np.log((1 + siny) / (1 - siny)) / (4 * np.pi)) * map_size
-    return x, y
-
-
 def load_satellite_metadata(path: Path, zoom_level: int):
     out = []
     for p in sorted(list(path.iterdir())):
         _, lat, lon = p.stem.split("_")
         lat = float(lat)
         lon = float(lon)
-        web_mercator_px = latlon_to_pixel_coords(lat, lon, zoom_level)
+        web_mercator_px = web_mercator.latlon_to_pixel_coords(lat, lon, zoom_level)
         out.append((lat, lon, *web_mercator_px, p))
-    return pd.DataFrame(out, columns=["lat", "lon", "web_mercator_x", "web_mercator_y", "path"])
+    return pd.DataFrame(out, columns=["lat", "lon", "web_mercator_y", "web_mercator_x", "path"])
 
 
 def load_panorama_metadata(path: Path, zoom_level: int):
@@ -97,9 +84,9 @@ def load_panorama_metadata(path: Path, zoom_level: int):
         pano_id, lat, lon, _ = p.stem.split(",")
         lat = float(lat)
         lon = float(lon)
-        web_mercator_px = latlon_to_pixel_coords(lat, lon, zoom_level)
+        web_mercator_px = web_mercator.latlon_to_pixel_coords(lat, lon, zoom_level)
         out.append((pano_id, lat, lon, *web_mercator_px, p))
-    return pd.DataFrame(out, columns=["pano_id", "lat", "lon", "web_mercator_x", "web_mercator_y", "path"])
+    return pd.DataFrame(out, columns=["pano_id", "lat", "lon", "web_mercator_y", "web_mercator_x", "path"])
 
 
 def compute_satellite_from_panorama(sat_kdtree, sat_metadata, pano_metadata) -> SatelliteFromPanoramaResult:

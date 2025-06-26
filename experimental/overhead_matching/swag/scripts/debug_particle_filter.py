@@ -21,7 +21,7 @@ def _():
 
 @app.cell
 def _(Path, torch):
-    _path_path = Path('/data/overhead_matching/evaluation/results/20250616_8_way_experiment/all_chicago_lr_schedule_False_negative_mining_False_pos_semipos_False/0000000/')
+    _path_path = Path('/tmp/output_path/0000000')
     _particle_history_path = _path_path / 'particle_history.pt'
     _log_particle_weights_path = _path_path / 'log_particle_weights.pt'
     _particle_history_pre_move_path = _path_path / 'particle_history_pre_move.pt'

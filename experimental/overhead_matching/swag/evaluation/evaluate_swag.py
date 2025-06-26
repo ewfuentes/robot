@@ -8,9 +8,10 @@ import experimental.overhead_matching.swag.data.satellite_embedding_database as 
 import experimental.overhead_matching.swag.data.vigor_dataset as vd
 import experimental.overhead_matching.swag.evaluation.swag_algorithm as sa
 from common.math.haversine import find_d_on_unit_circle
-from experimental.overhead_matching.swag.evaluation.wag_config_pb2 import WagConfig
+from common.gps import web_mercator
+from experimental.overhead_matching.swag.evaluation.wag_config_pb2 import (
+        WagConfig, SatellitePatchConfig)
 from torch_kdtree import build_kd_tree
-from torch_kdtree.nn_distance import TorchKDTree
 import hashlib
 import dataclasses
 from typing import Callable
@@ -177,6 +178,7 @@ def get_distance_error_between_pano_and_particles_meters(
         out = out[0]
     return out
 
+
 def get_motion_deltas_from_path(vigor_dataset: vd.VigorDataset, path: list[int]):
     latlong = vigor_dataset.get_panorama_positions(path)
     motion_deltas = torch.diff(latlong, dim=0)
@@ -184,26 +186,35 @@ def get_motion_deltas_from_path(vigor_dataset: vd.VigorDataset, path: list[int])
     return motion_deltas
 
 
-def build_patch_index_from_particle(dataset: vd.VigorDataset, device: torch.device):
-    sat_patch_positions = dataset.get_patch_positions().to(device)
-    sat_patch_kdtree = build_kd_tree(sat_patch_positions)
-    num_patches = sat_patch_positions.shape[0]
+def build_patch_index_from_particle(
+        dataset: vd.VigorDataset,
+        satellite_patch_config: SatellitePatchConfig,
+        device: torch.device):
+    patch_positions_px = torch.tensor(
+            dataset._satellite_metadata[["web_mercator_y", "web_mercator_x"]].values,
+            device=device, dtype=torch.float32)
+    sat_patch_kdtree = build_kd_tree(patch_positions_px)
+    num_patches = patch_positions_px.shape[0]
 
     def __inner__(particles: torch.Tensor):
-        # Search for up to 5 nearest neighbors.
-        MAX_DIST_DEG = 5e-4
-        k = 5
-        _, idxs = sat_patch_kdtree.query(particles, nr_nns_searches=k)
-        selected_patch_positions = sat_patch_positions[idxs, :]
-        deltas = particles[:, None, :] - selected_patch_positions
-        max_abs_dist = torch.max(torch.abs(deltas), dim=-1).values
-        min_result = torch.min(max_abs_dist, -1)
+        K = 1
+        particles_px = web_mercator.latlon_to_pixel_coords(
+                particles[..., 0], particles[..., 1], satellite_patch_config.zoom_level)
 
-        rows = torch.arange(idxs.shape[0])
-        out_idxs = idxs[rows, min_result.indices]
-        too_far_mask = min_result.values > MAX_DIST_DEG
-        out_idxs[too_far_mask] = num_patches
-        return out_idxs
+        # particles_px is num_particles x 2
+        particles_px = torch.stack(particles_px, dim=-1)
+        # px_dist_sq and idxs are num_particles x 1
+        px_dist_sq, idxs = sat_patch_kdtree.query(particles_px, nr_nns_searches=K)
+        # selected_patch_positions is num_particles x 2
+        selected_patch_positions = patch_positions_px[idxs, :].squeeze()
+        # abs_deltas is num_particles x 2
+        abs_deltas = torch.abs(particles_px - selected_patch_positions)
+        is_row_out_of_bounds = abs_deltas[:, 0] > satellite_patch_config.patch_height_px / 2.0
+        is_col_out_of_bounds = abs_deltas[:, 1] > satellite_patch_config.patch_width_px / 2.0
+        is_too_far = torch.logical_or(is_row_out_of_bounds, is_col_out_of_bounds)
+
+        idxs[is_too_far] = num_patches
+        return idxs.squeeze()
     return __inner__
 
 
@@ -301,7 +312,8 @@ def construct_inputs_and_evalulate_path(
 ) -> PathInferenceResult:
     generator = torch.Generator(device=device).manual_seed(generator_seed)
     motion_deltas = get_motion_deltas_from_path(vigor_dataset, path).to(device)
-    patch_index_from_particle = build_patch_index_from_particle(vigor_dataset, device)
+    patch_index_from_particle = build_patch_index_from_particle(
+            vigor_dataset, wag_config.satellite_patch_config, device)
     gt_initial_position_lat_lon = vigor_dataset._panorama_metadata.loc[path[0]]
     gt_initial_position_lat_lon = torch.tensor(
         (gt_initial_position_lat_lon['lat'], gt_initial_position_lat_lon['lon']), device=device)

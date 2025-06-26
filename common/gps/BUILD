@@ -22,8 +22,11 @@ cc_test(
 py_library(
   name = "web_mercator",
   srcs = ["web_mercator.py"],
+  visibility = ["//visibility:public"],
   deps = [
-    requirement("numpy")
+    requirement("numpy"),
+    requirement("torch"),
+    "//common/torch:load_torch_deps",
   ]
 )
 
