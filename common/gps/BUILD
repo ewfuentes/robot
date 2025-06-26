@@ -1,4 +1,5 @@
 package(features=["warning_compile_flags"])
+load("@pip//:requirements.bzl", "requirement")
 
 cc_test(
   name = "nmea_test",
@@ -16,4 +17,18 @@ cc_test(
     "@com_google_googletest//:gtest_main",
     "@geographiclib//:geographiclib",
   ]
+)
+
+py_library(
+  name = "web_mercator",
+  srcs = ["web_mercator.py"],
+  deps = [
+    requirement("numpy")
+  ]
+)
+
+py_test(
+  name = "web_mercator_test",
+  srcs = ["web_mercator_test.py"],
+  deps = [":web_mercator"],
 )
