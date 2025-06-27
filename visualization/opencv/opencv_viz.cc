@@ -25,7 +25,7 @@ cv::Vec3d rotation_matrix_to_axis_angle(const cv::Matx33d &R) {
 }
 
 void viz_scene(const std::vector<Eigen::Isometry3d> &world_from_poses,
-               const std::vector<Eigen::Vector3d> &t_points_in_world,
+               const std::vector<Eigen::Vector3d> &points_in_world,
                const cv::viz ::Color color_background, const bool show_grid, const bool show_origin,
                const std::string &window_name, const double text_scale) {
     std::vector<VizPose> viz_poses;
@@ -33,7 +33,7 @@ void viz_scene(const std::vector<Eigen::Isometry3d> &world_from_poses,
     for (const Eigen::Isometry3d &world_from_pose : world_from_poses) {
         viz_poses.emplace_back(world_from_pose);
     }
-    for (const Eigen::Vector3d &t_point_in_world : t_points_in_world) {
+    for (const Eigen::Vector3d &t_point_in_world : points_in_world) {
         viz_points.emplace_back(t_point_in_world);
     }
     viz_scene(viz_poses, viz_points, color_background, show_grid, show_origin, window_name,
@@ -41,9 +41,9 @@ void viz_scene(const std::vector<Eigen::Isometry3d> &world_from_poses,
 }
 
 void viz_scene(const std::vector<VizPose> &world_from_poses,
-               const std::vector<VizPoint> &t_points_in_world,
-               const cv::viz ::Color color_background, const bool show_grid, const bool show_origin,
-               const std::string &window_name, const double text_scale) {
+               const std::vector<VizPoint> &points_in_world, const cv::viz ::Color color_background,
+               const bool show_grid, const bool show_origin, const std::string &window_name,
+               const double text_scale) {
     cv::viz::Viz3d window(window_name);
 
     window.setBackgroundColor(color_background);
@@ -70,18 +70,18 @@ void viz_scene(const std::vector<VizPose> &world_from_poses,
     constexpr double point_radius = 0.08;
     constexpr int sphere_res = 10;
     const cv::viz::Color point_color = cv::viz::Color::celestial_blue();
-    for (unsigned int i = 0; i < t_points_in_world.size(); i++) {
-        const Eigen::Vector3d &point = t_points_in_world[i].t_point_in_world;
+    for (unsigned int i = 0; i < points_in_world.size(); i++) {
+        const Eigen::Vector3d &point = points_in_world[i].t_point_in_world;
         window.showWidget("point_" + std::to_string(i),
                           cv::viz::WSphere(cv::Point3d(point[0], point[1], point[2]), point_radius,
                                            sphere_res, point_color));
-        if (t_points_in_world[i].label) {
+        if (points_in_world[i].label) {
             window.showWidget(
                 "text_point_" + std::to_string(i),
                 cv::viz::WText3D(
-                    *(t_points_in_world[i].label),
+                    *(points_in_world[i].label),
                     cv::Point3d(eigen_vec_to_cv(
-                        t_points_in_world[i].t_point_in_world +
+                        points_in_world[i].t_point_in_world +
                         Eigen::Vector3d(0, 0,
                                         0.001))),  // small offset is for occasional rendering bug
                     text_scale, ALWAYS_FACE_CAMERA));
