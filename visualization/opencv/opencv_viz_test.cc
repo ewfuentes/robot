@@ -59,22 +59,56 @@ TEST(OpencvVizTest, cube_test) {
     cube_W.push_back(Eigen::Vector3d(cube_size, cube_size, cube_size));
     cube_W.push_back(Eigen::Vector3d(0, cube_size, cube_size));
 
-    std::vector<Eigen::Isometry3d> poses;
+    std::vector<Eigen::Isometry3d> world_from_cams;
 
-    Eigen::Matrix3d R_W_cam0(
+    Eigen::Matrix3d R_world_from_cam0(
         Eigen::AngleAxisd(M_PI / 2, Eigen::Vector3d(0, 0, 1)).toRotationMatrix() *
         Eigen::AngleAxisd(-M_PI / 2, Eigen::Vector3d(1, 0, 0)).toRotationMatrix());
-    Eigen::Isometry3d T_W_cam0;
-    T_W_cam0.translation() = Eigen::Vector3d(4, 0, 0);
-    T_W_cam0.linear() = R_W_cam0;
-    poses.push_back(T_W_cam0);
+    Eigen::Isometry3d world_from_cam0;
+    world_from_cam0.translation() = Eigen::Vector3d(4, 0, 0);
+    world_from_cam0.linear() = R_world_from_cam0;
+    world_from_cams.push_back(world_from_cam0);
 
-    Eigen::Isometry3d T_W_cam1;
-    T_W_cam1.linear() =
-        Eigen::AngleAxisd(M_PI / 2, Eigen::Vector3d(0, 0, 1)).toRotationMatrix() * R_W_cam0;
-    T_W_cam1.translation() = Eigen::Vector3d(0, 4, 0);
-    poses.push_back(T_W_cam1);
+    Eigen::Isometry3d world_from_cam1;
+    world_from_cam1.linear() =
+        Eigen::AngleAxisd(M_PI / 2, Eigen::Vector3d(0, 0, 1)).toRotationMatrix() *
+        R_world_from_cam0;
+    world_from_cam1.translation() = Eigen::Vector3d(0, 4, 0);
+    world_from_cams.push_back(world_from_cam1);
 
-    viz_scene(poses, cube_W);
+    viz_scene(world_from_cams, cube_W);
+}
+
+TEST(OpencvVizTest, cube_test_labeled) {
+    std::vector<VizPoint> t_cube_points_in_world;
+    float cube_size = 1.0f;
+    t_cube_points_in_world.emplace_back(Eigen::Vector3d(0, 0, 0), "cube_point_1");
+    t_cube_points_in_world.emplace_back(Eigen::Vector3d(cube_size, 0, 0), "cube_point_2");
+    t_cube_points_in_world.emplace_back(Eigen::Vector3d(cube_size, cube_size, 0), "cube_point_3");
+    t_cube_points_in_world.emplace_back(Eigen::Vector3d(0, cube_size, 0), "cube_point_4");
+    t_cube_points_in_world.emplace_back(Eigen::Vector3d(0, 0, cube_size), "cube_point_5");
+    t_cube_points_in_world.emplace_back(Eigen::Vector3d(cube_size, 0, cube_size), "cube_point_6");
+    t_cube_points_in_world.emplace_back(Eigen::Vector3d(cube_size, cube_size, cube_size),
+                                        "cube_point_7");
+    t_cube_points_in_world.emplace_back(Eigen::Vector3d(0, cube_size, cube_size), "cube_point_8");
+
+    std::vector<VizPose> world_from_cams;
+
+    Eigen::Matrix3d R_world_from_cam0(
+        Eigen::AngleAxisd(M_PI / 2, Eigen::Vector3d(0, 0, 1)).toRotationMatrix() *
+        Eigen::AngleAxisd(-M_PI / 2, Eigen::Vector3d(1, 0, 0)).toRotationMatrix());
+    Eigen::Isometry3d world_from_cam0;
+    world_from_cam0.translation() = Eigen::Vector3d(4, 0, 0);
+    world_from_cam0.linear() = R_world_from_cam0;
+    world_from_cams.emplace_back(world_from_cam0, "world_from_cam0");
+
+    Eigen::Isometry3d world_from_cam1;
+    world_from_cam1.linear() =
+        Eigen::AngleAxisd(M_PI / 2, Eigen::Vector3d(0, 0, 1)).toRotationMatrix() *
+        R_world_from_cam0;
+    world_from_cam1.translation() = Eigen::Vector3d(0, 4, 0);
+    world_from_cams.emplace_back(world_from_cam1, "world_from_cam1");
+
+    viz_scene(world_from_cams, t_cube_points_in_world);
 }
 }  // namespace robot::geometry
