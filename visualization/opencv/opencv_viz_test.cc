@@ -1,7 +1,8 @@
 #include "visualization/opencv/opencv_viz.hh"
 
-#include "gtest/gtest.h"
-#include "opencv2/viz.hpp"
+#include <gtest/gtest.h>
+
+#include <opencv2/viz.hpp>
 
 namespace robot::geometry {
 
