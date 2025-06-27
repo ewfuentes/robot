@@ -150,7 +150,7 @@ void StructureFromMotion::graph_values(const gtsam::Values &values,
     //     }
     //     final_lmks.emplace_back(values.at<gtsam::Point3>(lmk_symbol));
     // }
-    geometry::viz_scene(final_poses, final_lmks, true, true, window_name);
+    geometry::viz_scene(final_poses, final_lmks, cv::viz::Color::black(), true, true, window_name);
 }
 
 void StructureFromMotion::solve_structure(

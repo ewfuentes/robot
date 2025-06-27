@@ -26,13 +26,13 @@ class Frontend {
     static void enforce_bijective_matches(std::vector<cv::DMatch> &matches);
     static void enforce_bijective_buffer_matches(std::vector<cv::DMatch> &matches);
     static void draw_keypoints(const cv::Mat &img, std::vector<cv::KeyPoint> keypoints,
-                               cv::Mat img_keypoints_out) {
+                               cv::Mat &img_keypoints_out) {
         cv::drawKeypoints(img, keypoints, img_keypoints_out, cv::Scalar::all(-1),
                           cv::DrawMatchesFlags::DRAW_RICH_KEYPOINTS);
     }
     static void draw_matches(const cv::Mat &img1, std::vector<cv::KeyPoint> keypoints1,
                              const cv::Mat &img2, std::vector<cv::KeyPoint> keypoints2,
-                             std::vector<cv::DMatch> matches, cv::Mat img_matches_out) {
+                             std::vector<cv::DMatch> matches, cv::Mat &img_matches_out) {
         cv::drawMatches(img1, keypoints1, img2, keypoints2, matches, img_matches_out);
     }
 

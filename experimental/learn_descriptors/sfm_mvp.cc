@@ -91,7 +91,8 @@ class SFMMvpHelper {
             }
             final_lmks.emplace_back(values.at<gtsam::Point3>(symbol_lmk));
         }
-        geometry::viz_scene(final_poses, final_lmks, true, true, window_name);
+        geometry::viz_scene(final_poses, final_lmks, cv::viz::Color::black(), true, true,
+                            window_name);
     }
 
     static gtsam::Values optimize_graph(const gtsam::NonlinearFactorGraph &graph,
@@ -497,8 +498,8 @@ TEST(SFMMvp, sfm_building_manual_incremental) {
         }
     }
     // filter points
-    geometry::viz_scene(std::vector<Eigen::Isometry3d>(), triangulated_lmks, true, true,
-                        "Unfiltered points");
+    geometry::viz_scene(std::vector<Eigen::Isometry3d>(), triangulated_lmks,
+                        cv::viz::Color::black(), true, true, "Unfiltered points");
     const gtsam::Point3 variance_pts = SFMMvpHelper::get_variance(triangulated_lmks);
     const gtsam::Point3 std_dev_pts = variance_pts.array().sqrt().matrix();
     const gtsam::Point3 mean_pts = SFMMvpHelper::averagePoints(triangulated_lmks);
@@ -513,8 +514,8 @@ TEST(SFMMvp, sfm_building_manual_incremental) {
         }
     }
     std::cout << "filtered variance " << SFMMvpHelper::get_variance(filtered_points) << std::endl;
-    geometry::viz_scene(std::vector<Eigen::Isometry3d>(), filtered_points, true, true,
-                        "Unfiltered points");
+    geometry::viz_scene(std::vector<Eigen::Isometry3d>(), filtered_points, cv::viz::Color::black(),
+                        true, true, "Unfiltered points");
 
     // add filtered points to graph
     std::unordered_map<gtsam::Symbol, std::vector<gtsam::Pose3>> symbols_poses_values_iter;
