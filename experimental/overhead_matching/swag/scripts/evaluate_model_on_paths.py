@@ -90,7 +90,9 @@ if __name__ == "__main__":
                            satellite_patch_config=SatellitePatchConfig(
                                zoom_level=20,
                                patch_height_px=640,
-                               patch_width_px=640))
+                               patch_width_px=640),
+                           dual_mcl_frac=0.1,
+                           dual_mcl_belief_phantom_counts_frac=0.25)
 
     with open(Path(args.output_path) / "wag_config.pbtxt", "w") as f:
         f.write(text_format.MessageToString(wag_config))

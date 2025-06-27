@@ -134,7 +134,7 @@ def _(df, mo, plt, seaborn):
 
 
 @app.cell
-def _(Path, itertools, pd, torch):
+def _(Path, pd, torch):
     # Plot statistics about path evaluation
 
     def process_path(path: Path):
@@ -162,9 +162,11 @@ def _(Path, itertools, pd, torch):
     base_path = Path('/data/overhead_matching/evaluation/results/20250616_8_way_experiment')
 
     path_dfs = []
-    for _lr_schedule, _negative_mining, _pos_semipos in itertools.product(*[[False, True]]*3):
-        _model_name = f"all_chicago_lr_schedule_{_lr_schedule}_negative_mining_{_negative_mining}_pos_semipos_{_pos_semipos}"
-        path_dfs.append(process_eval_results(base_path / _model_name))
+    # for _lr_schedule, _negative_mining, _pos_semipos in itertools.product(*[[False, True]]*3):
+    #     _model_name = f"all_chicago_lr_schedule_{_lr_schedule}_negative_mining_{_negative_mining}_pos_semipos_{_pos_semipos}"
+        # path_dfs.append(process_eval_results(base_path / _model_name))
+    path_dfs.append(process_eval_results(base_path / 'all_chicago_lr_schedule_False_negative_mining_False_pos_semipos_False'))
+    path_dfs.append(process_eval_results(Path('/tmp/output_path')))
 
     path_df = pd.concat(path_dfs)
     return base_path, path_df, path_dfs, process_eval_results, process_path
@@ -212,6 +214,11 @@ def _(Path, mo, model_selector, path_slider, plt, torch):
     plt.title(f'{_v}\n Path {path_slider.value}')
     plt.tight_layout()
     mo.mpl.interactive(plt.gcf())
+    return
+
+
+@app.cell
+def _():
     return
 
 
