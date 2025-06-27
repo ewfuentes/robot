@@ -10,10 +10,15 @@ message SatellitePatchConfig {
 message WagConfig {
   reserved 6;
   float noise_percent_motion_model = 1;
-  float initial_particle_distribution_offset_std_deg = 2; // sample an offset from the gt to be the mean of the initial dist
-  float initial_particle_distribution_std_deg = 3; // std of the initial distribution of particles
+  // sample an offset from the gt to be the mean of the initial dist
+  float initial_particle_distribution_offset_std_deg = 2;
+  // std of the initial distribution of particles
+  float initial_particle_distribution_std_deg = 3;
   int32 num_particles = 4;
   float sigma_obs_prob_from_sim = 5; // default is 0.1
-
   SatellitePatchConfig satellite_patch_config = 7;
+  // When running the particle filter, this fraction of particles should be sampled from
+  // the state likelihood. The balance of particles should be sampled the existing belief
+  float dual_mcl_frac = 8;
+  float dual_mcl_belief_phantom_counts_frac = 9;
 }

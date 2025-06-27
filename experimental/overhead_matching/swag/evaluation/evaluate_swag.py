@@ -25,6 +25,9 @@ class PathInferenceResult:
     particle_history: torch.Tensor
     log_particle_weights: torch.Tensor | None
     particle_history_pre_move: torch.Tensor | None
+    dual_mcl_particles: torch.Tensor | None
+    dual_log_particle_weights: torch.Tensor | None
+    num_dual_particles: torch.Tensor | None
 
 
 def hash_model(model: torch.nn.Module):
@@ -257,6 +260,7 @@ def run_inference_on_path(
         initial_particle_state: torch.Tensor,  # N x state dim
         motion_deltas: torch.Tensor,  # path_length - 1 x state dim
         patch_similarity_for_path: torch.Tensor,  # path_length x W
+        satellite_patch_locations: torch.Tensor,  # num_patches x 2
         wag_config: WagConfig,
         generator: torch.Generator,
         return_intermediates: bool = False) -> PathInferenceResult:
@@ -266,45 +270,68 @@ def run_inference_on_path(
     particle_history = []
     log_particle_weights = []
     particle_history_pre_move = []  # the particle state history before move_wag but after observe_wag
+    dual_mcl_particles = []
+    dual_log_particle_weights = []
+    num_dual_particles = []
     for likelihood_value, motion_delta in zip(patch_similarity_for_path[:-1], motion_deltas):
         particle_history.append(particle_state.cpu().clone())
-        # observe
-        wag_observation_result = sa.observe_wag(particle_state,
-            likelihood_value,
-            patch_index_from_particle,
-            wag_config,
-            generator,
-            return_past_particle_weights=return_intermediates)
+
+        # Generate new particles based on the observation
+        wag_observation_result = sa.measurement_wag(
+                particle_state,
+                likelihood_value,
+                patch_index_from_particle,
+                satellite_patch_locations,
+                wag_config,
+                generator,
+                return_past_particle_weights=return_intermediates)
 
         particle_state = wag_observation_result.resampled_particles
         if return_intermediates:
             log_particle_weights.append(wag_observation_result.log_particle_weights.cpu().clone())
             particle_history_pre_move.append(particle_state.cpu().clone())
+            dual_mcl_particles.append(wag_observation_result.dual_mcl_particles.cpu().clone())
+            dual_log_particle_weights.append(wag_observation_result.dual_log_particle_weights.cpu().clone())
+            num_dual_particles.append(wag_observation_result.num_dual_particles)
+
         # move
         particle_state = sa.move_wag(particle_state, motion_delta, wag_config, generator)
 
     # apply final observation
-    wag_observation_result = sa.observe_wag(particle_state,
-                                    patch_similarity_for_path[-1],
-                                    patch_index_from_particle,
-                                    wag_config,
-                                    generator,
-                                    return_past_particle_weights=return_intermediates)
+    wag_observation_result = sa.measurement_wag(
+            particle_state,
+            patch_similarity_for_path[-1],
+            patch_index_from_particle,
+            satellite_patch_locations,
+            wag_config,
+            generator,
+            return_past_particle_weights=return_intermediates)
+
     if return_intermediates:
         log_particle_weights.append(wag_observation_result.log_particle_weights.cpu().clone())
         particle_history_pre_move.append(particle_state.cpu().clone())
+        dual_mcl_particles.append(wag_observation_result.dual_mcl_particles.cpu().clone())
+        dual_log_particle_weights.append(wag_observation_result.dual_log_particle_weights.cpu().clone())
+        num_dual_particles.append(wag_observation_result.num_dual_particles)
+
     particle_history.append(wag_observation_result.resampled_particles.cpu().clone())
 
     if return_intermediates:
         return PathInferenceResult(
             particle_history=torch.stack(particle_history),  # N+1, +1 from final particle state
             log_particle_weights=torch.stack(log_particle_weights),  # N
-            particle_history_pre_move=torch.stack(particle_history_pre_move))  # N
+            particle_history_pre_move=torch.stack(particle_history_pre_move),
+            dual_mcl_particles=torch.stack(dual_mcl_particles),
+            dual_log_particle_weights=torch.stack(dual_log_particle_weights),
+            num_dual_particles=torch.tensor(num_dual_particles))
     else:
         return PathInferenceResult(
             particle_history=torch.stack(particle_history),
             log_particle_weights=None,
-            particle_history_pre_move=None)
+            particle_history_pre_move=None,
+            dual_mcl_particles=None,
+            dual_log_particle_weights=None,
+            num_dual_particles=None)
 
 
 def construct_inputs_and_evalulate_path(
@@ -320,6 +347,7 @@ def construct_inputs_and_evalulate_path(
     motion_deltas = get_motion_deltas_from_path(vigor_dataset, path).to(device)
     patch_index_from_particle = build_patch_index_from_particle(
             vigor_dataset, wag_config.satellite_patch_config, device)
+    satellite_patch_locations = vigor_dataset.get_patch_positions()
     gt_initial_position_lat_lon = vigor_dataset._panorama_metadata.loc[path[0]]
     gt_initial_position_lat_lon = torch.tensor(
         (gt_initial_position_lat_lon['lat'], gt_initial_position_lat_lon['lon']), device=device)
@@ -330,6 +358,7 @@ def construct_inputs_and_evalulate_path(
                                  initial_particle_state,
                                  motion_deltas,
                                  path_similarity_values,
+                                 satellite_patch_locations,
                                  wag_config,
                                  generator,
                                  return_intermediates)
@@ -383,9 +412,13 @@ def evaluate_model_on_paths(
             torch.save(path, save_path / "path.pt")
             torch.save(path_similarity_values, save_path / "similarity.pt")
             if save_intermediate_filter_states:
-                torch.save(path_inference_result.particle_history, save_path / "particle_history.pt")
-                torch.save(path_inference_result.log_particle_weights, save_path / "log_particle_weights.pt")
-                torch.save(path_inference_result.particle_history_pre_move, save_path / "particle_history_pre_move.pt")
+                pir = path_inference_result
+                torch.save(pir.particle_history, save_path / "particle_history.pt")
+                torch.save(pir.log_particle_weights, save_path / "log_particle_weights.pt")
+                torch.save(pir.particle_history_pre_move, save_path / "particle_history_pre_move.pt")
+                torch.save(pir.dual_mcl_particles, save_path / "dual_mcl_particles.pt")
+                torch.save(pir.dual_log_particle_weights, save_path / "dual_log_particle_weights.pt")
+                torch.save(pir.num_dual_particles, save_path / "num_dual_particles.pt")
             with open(save_path / "other_info.json", "w") as f:
                 f.write(json.dumps({
                     "seed": generator_seed,
