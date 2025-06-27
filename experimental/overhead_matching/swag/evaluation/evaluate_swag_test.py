@@ -126,7 +126,8 @@ class EvaluateSwagTest(unittest.TestCase):
                 [vd.EARTH_RADIUS_M * find_d_on_unit_circle(particle_means[0], true_latlong_multiple[0]),
                  vd.EARTH_RADIUS_M * find_d_on_unit_circle(particle_means[1], true_latlong_multiple[1])]
             )
-            distances = get_distance_error_between_pano_and_particles_meters(dataset, panorama_indices, multi_particles)
+            distances, _ = get_distance_error_between_pano_and_particles_meters(
+                    dataset, panorama_indices, multi_particles)
             self.assertTrue(torch.allclose(distances, expected_distances))
 
         finally:
