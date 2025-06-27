@@ -166,12 +166,12 @@ def get_distance_error_between_pano_and_particles_meters(
         assert particles.ndim == 2
         particles = particles.unsqueeze(0)
     
-    true_latlong = vigor_dataset.get_panorama_positions(panorama_index)
+    true_latlong = vigor_dataset.get_panorama_positions(panorama_index).to(device=particles.device)
     particle_latlong_estimate = particles.mean(dim=1)
 
     mean_deviation_m = vd.EARTH_RADIUS_M * find_d_on_unit_circle(
             particles, particle_latlong_estimate[:, None, :])
-    var_sq_m = torch.mean(torch.from_numpy(mean_deviation_m) ** 2, -1)
+    var_sq_m = torch.mean(mean_deviation_m ** 2, -1)
 
     mean_error_m = []
     for i in range(len(panorama_index)):
@@ -375,7 +375,7 @@ def evaluate_model_on_paths(
             save_path.mkdir(parents=True, exist_ok=True)
             error_meters_at_each_step, var_sq_m_at_each_step = (
                     get_distance_error_between_pano_and_particles_meters(
-                        vigor_dataset, path, particle_history)
+                        vigor_dataset, path, particle_history.to(device))
                 )
             all_final_particle_error_meters.append(error_meters_at_each_step[-1])
             torch.save(error_meters_at_each_step, save_path / "error.pt")
