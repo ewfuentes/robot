@@ -1,0 +1,22 @@
+load("@rules_foreign_cc//foreign_cc:defs.bzl", "cmake")
+package(features=["-warning_compile_flags", "-cpp_compile_flags"])
+
+filegroup(
+  name = "all",
+  srcs = glob(["**"]),
+)
+
+cmake(
+    name = "open3d",
+    lib_source = ":all",  # or a relative path
+    # out_shared_libs = True,
+    cache_entries = {
+        "BUILD_SHARED_LIBS": "ON",
+        "BUILD_GUI": "ON",
+        "BUILD_PYTHON_MODULE": "OFF",
+        "BUILD_EXAMPLES": "OFF",
+        "USE_ISPC": "OFF",
+    },
+    out_include_dir = "include",
+    visibility = ["//visibility:public"],
+)

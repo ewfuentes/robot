@@ -234,7 +234,7 @@ http_archive(
 )
 
 load("@rules_foreign_cc//foreign_cc:repositories.bzl", "rules_foreign_cc_dependencies")
-rules_foreign_cc_dependencies()
+rules_foreign_cc_dependencies(cmake_version="3.24.0")
 
 
 http_archive(
@@ -641,4 +641,12 @@ http_archive(
     strip_prefix = "geographiclib-2.5",
     build_file = "//third_party:BUILD.geographiclib",
     sha256 = "d41e90b3009307fd96474fe21ccae824d981c7335ce8ddd3618c1f6084793011",
+)
+
+http_archive(
+    name = "open3d",
+    urls = ["https://github.com/isl-org/Open3D/archive/refs/tags/v0.19.0.zip"],
+    strip_prefix = "Open3D-0.19.0",
+    build_file = "//third_party:BUILD.open3d",
+    sha256 = "a7744e3900fbf93c7f3d5828c93a489f2c7b90deb1eb30d94c2b591f0ed38b69",
 )
