@@ -152,7 +152,9 @@ py_library(
     srcs = ["haversine.py"],
     visibility = ["//visibility:public"],
     deps = [
-        requirement("numpy")
+        requirement("numpy"),
+        requirement("torch"),
+        "//common/torch:load_torch_deps",
     ]
 )
 py_test(

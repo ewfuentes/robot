@@ -24,7 +24,7 @@ def find_d_on_unit_circle(point_one_lat_long_deg: tuple[float, float],
         deg2rad = np.deg2rad
         cos = np.cos
         sqrt = np.sqrt
-        arcsin = np.arcsic
+        arcsin = np.arcsin
 
     p1_rad = deg2rad(point_one_lat_long_deg)
     p2_rad = deg2rad(point_two_lat_long_deg)
