@@ -2971,7 +2971,7 @@ torch==2.7.0+cu128 \
     #   torchvision
 # WARNING: pip install will require the following package to be hashed.
 # Consider using a hashable URL like https://github.com/jazzband/pip-tools/archive/SOMECOMMIT.zip
-torch-kdtree @ git+https://github.com/ewfuentes/torch_kdtree.git@401ab16d41afa9795be907b5265f368876a0e2b8
+torch-kdtree @ git+https://github.com/ewfuentes/torch_kdtree.git@583b92b105fcc7aefdc0020136229f9ed32566b7
     # via -r third_party/python/requirements_3_12.in
 torchvision==0.22.0+cu128 \
     --hash=sha256:03b454b867f7a0aa9861a463042141448c4f15bec784def19eed39a57fac217b \
