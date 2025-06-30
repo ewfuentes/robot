@@ -32,6 +32,6 @@ TEST(SpatialTestSceneCubeTest, viz_cube_with_cameras) {
         camera_poses.emplace_back(T_world_cam.pose().matrix());
     }
 
-    // geometry::viz_scene(camera_poses, test_scene.get_points());
+    geometry::viz_scene(camera_poses, test_scene.get_points());
 }
 }  // namespace robot::experimental::learn_descriptors

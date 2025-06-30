@@ -5,6 +5,7 @@
 
 #include "Eigen/Core"
 #include "Eigen/Geometry"
+#include "common/geometry/camera.hh"
 #include "cxxopts.hpp"
 #include "experimental/learn_descriptors/four_seasons_parser.hh"
 #include "experimental/learn_descriptors/frame.hh"
@@ -37,17 +38,18 @@ struct hash<gtsam::Symbol> {
 
 namespace detail_sfm {
 
-bool attempt_triangulate(const std::vector<gtsam::Pose3> &cam_poses,
-                         const std::vector<gtsam::Point2> &cam_obs, gtsam::Cal3_S2::shared_ptr K,
-                         gtsam::Point3 &out_p_world_landmark, const bool verbose = true) {
-    bool valid = true;
+std::optional<gtsam::Point3> attempt_triangulate(const std::vector<gtsam::Pose3> &cam_poses,
+                                                 const std::vector<gtsam::Point2> &cam_obs,
+                                                 gtsam::Cal3_S2::shared_ptr K,
+                                                 const bool verbose = true) {
+    std::optional<gtsam::Point3> result;
     if (cam_poses.size() >= 2) {
         try {
             // Attempt triangulation using DLT (or the GTSAM provided method)
             gtsam::Point3 p_world_lmk = gtsam::triangulatePoint3(
                 cam_poses, K, gtsam::Point2Vector(cam_obs.begin(), cam_obs.end()));
 
-            out_p_world_landmark = p_world_lmk;
+            result = p_world_lmk;
 
             // Optional: perform an explicit cheirality check
             for (const auto &pose : cam_poses) {
@@ -55,7 +57,6 @@ bool attempt_triangulate(const std::vector<gtsam::Pose3> &cam_poses,
                 // transformTo() converts a world point to the camera frame.
                 gtsam::Point3 p_cam_lmk = pose.transformTo(p_world_lmk);
                 if (p_cam_lmk.z() <= 0) {  // Check that the depth is positive
-                    valid = false;
                     break;
                 }
             }
@@ -66,35 +67,69 @@ bool attempt_triangulate(const std::vector<gtsam::Pose3> &cam_poses,
                 std::cerr << "attempt_triangulation failed. Likely cheirality exception: "
                           << e.what() << ". Keeping initial landmark estimate." << std::endl;
         }
-    } else {
-        valid = false;
     }
-    return valid;
+    return result;
 }
 
-static void graph_values(const gtsam::Values &values, const std::string &window_name,
-                         const std::vector<gtsam::Symbol> &symbols_pose,
-                         const std::vector<gtsam::Symbol> &symbols_landmarks) {
-    std::vector<Eigen::Isometry3d> final_poses;
-    std::vector<Eigen::Vector3d> final_lmks;
+// bool attempt_triangulate(const std::vector<gtsam::Pose3> &cam_poses,
+//                          const std::vector<gtsam::Point2> &cam_obs, gtsam::Cal3_S2::shared_ptr K,
+//                          gtsam::Point3 &out_p_world_landmark, const bool verbose = true) {
+//     bool valid = true;
+//     if (cam_poses.size() >= 2) {
+//         try {
+//             // Attempt triangulation using DLT (or the GTSAM provided method)
+//             gtsam::Point3 p_world_lmk = gtsam::triangulatePoint3(
+//                 cam_poses, K, gtsam::Point2Vector(cam_obs.begin(), cam_obs.end()));
+
+//             out_p_world_landmark = p_world_lmk;
+
+//             // Optional: perform an explicit cheirality check
+//             for (const auto &pose : cam_poses) {
+//                 // Transform point to the camera coordinate system.
+//                 // transformTo() converts a world point to the camera frame.
+//                 gtsam::Point3 p_cam_lmk = pose.transformTo(p_world_lmk);
+//                 if (p_cam_lmk.z() <= 0) {  // Check that the depth is positive
+//                     valid = false;
+//                     break;
+//                 }
+//             }
+//         } catch (const gtsam::TriangulationCheiralityException &e) {
+//             // Handle the exception gracefully by logging and retaining the previous
+//             // estimate.
+//             if (verbose)
+//                 std::cerr << "attempt_triangulation failed. Likely cheirality exception: "
+//                           << e.what() << ". Keeping initial landmark estimate." << std::endl;
+//         }
+//     } else {
+//         valid = false;
+//     }
+//     return valid;
+// }
+
+void graph_values(const gtsam::Values &values, const std::string &window_name,
+                  const std::vector<gtsam::Symbol> &symbols_pose,
+                  const std::vector<gtsam::Symbol> &symbols_landmarks) {
+    std::vector<robot::geometry::VizPose> final_poses;
+    std::vector<robot::geometry::VizPoint> final_lmks;
     for (const gtsam::Symbol &symbol_pose : symbols_pose) {
-        final_poses.emplace_back(values.at<gtsam::Pose3>(symbol_pose).matrix());
+        final_poses.emplace_back(Eigen::Isometry3d(values.at<gtsam::Pose3>(symbol_pose).matrix()),
+                                 symbol_pose.string());
     }
     for (const gtsam::Symbol &symbol_lmk : symbols_landmarks) {
         if (!values.exists(symbol_lmk)) {
             std::cout << "WTF " << symbol_lmk << std::endl;
         }
-        final_lmks.emplace_back(values.at<gtsam::Point3>(symbol_lmk));
+        final_lmks.emplace_back(values.at<gtsam::Point3>(symbol_lmk), symbol_lmk.string());
     }
-    robot::geometry::viz_scene(final_poses, final_lmks, cv::viz::Color::black(), true, true,
+    std::cout << "About to viz gtsam::Values with " << values.size() << " variables." << std::endl;
+    robot::geometry::viz_scene(final_poses, final_lmks, cv::viz::Color::brown(), true, true,
                                window_name);
 }
 
-static gtsam::Values optimize_graph(const gtsam::NonlinearFactorGraph &graph,
-                                    const gtsam::Values &values,
-                                    const std::vector<gtsam::Symbol> &symbols_pose,
-                                    const std::vector<gtsam::Symbol> &symbols_landmarks,
-                                    bool viz_itr = false) {
+gtsam::Values optimize_graph(const gtsam::NonlinearFactorGraph &graph, const gtsam::Values &values,
+                             const std::vector<gtsam::Symbol> &symbols_pose,
+                             const std::vector<gtsam::Symbol> &symbols_landmarks,
+                             bool viz_itr = false) {
     gtsam::LevenbergMarquardtParams params;
     params.setVerbosityLM("SUMMARY");  // or "TERMINATION", "TRYLAMBDA", etc.
     params.maxIterations = 1;
@@ -128,7 +163,7 @@ static gtsam::Values optimize_graph(const gtsam::NonlinearFactorGraph &graph,
     return optimizer.values();
 }
 
-static gtsam::Pose3 averagePoses(const std::vector<gtsam::Pose3> &poses, int maxIter = 10) {
+gtsam::Pose3 averagePoses(const std::vector<gtsam::Pose3> &poses, int maxIter = 10) {
     if (poses.empty()) throw std::runtime_error("Empty pose vector");
 
     gtsam::Pose3 mean = poses[0];
@@ -148,14 +183,14 @@ static gtsam::Pose3 averagePoses(const std::vector<gtsam::Pose3> &poses, int max
     return mean;
 }
 
-static gtsam::Point3 averagePoints(const std::vector<gtsam::Point3> &points) {
+gtsam::Point3 averagePoints(const std::vector<gtsam::Point3> &points) {
     if (points.empty()) throw std::runtime_error("Empty point vector");
     gtsam::Point3 sum(0, 0, 0);
     for (const auto &pt : points) sum += pt;
     return sum / points.size();
 }
 
-static gtsam::Point3 get_variance(const std::vector<gtsam::Point3> &points) {
+gtsam::Point3 get_variance(const std::vector<gtsam::Point3> &points) {
     const gtsam::Point3 mean = averagePoints(points);
     gtsam::Point3 var(0, 0, 0);
     for (const gtsam::Point3 &pt : points) {
@@ -163,6 +198,8 @@ static gtsam::Point3 get_variance(const std::vector<gtsam::Point3> &points) {
     }
     return var / points.size();
 }
+
+// const std::vector<double> get_absolute_trajectory_error(const std::vector<Eigen::Vector3d> &) {}
 };  // namespace detail_sfm
 
 int main(int argc, const char **argv) {
@@ -198,8 +235,10 @@ int main(int argc, const char **argv) {
     FourSeasonsParser parser(path_data, path_calibration);
 
     std::cout << "incremental_sfm_mvp!" << std::endl;
-    const std::vector<int> indices{380, 387, 393};
-    // const std::vector<int> indices = []() {
+    const std::vector<int> indices{581, 609,
+                                   633};  // indices with all data fields on neighborhood_5_train
+    // const std::vector<int> indices{581, 593, 609, 621, 633, 636, 639, 642};    // indices with
+    // all data fields on neighborhood_5_train const std::vector<int> indices = []() {
     //     std::vector<int> tmp;
     //     for (int i = 660; i < 681; i += 10) {
     //         tmp.push_back(i);
@@ -240,7 +279,7 @@ int main(int argc, const char **argv) {
     std::vector<Frame> frames;
     FrameId id = 0;
     std::unordered_map<FrameId, gtsam::Pose3>
-        id_to_initial_world_from_cam;      // these are for initial guesses
+        id_to_initial_world_from_cam;      // these are for initial guesses!!
     Eigen::Vector3d t_first_cam_in_world;  // to create our own world
     std::vector<Eigen::Isometry3d> references_world_from_cam;
     std::vector<robot::geometry::VizPose> viz_references_world_from_cam;
@@ -266,10 +305,14 @@ int main(int argc, const char **argv) {
             const Eigen::Vector3d p_gps_in_ECEF = parser.ECEF_from_gcs(gps_gcs);
             const Eigen::Vector4d p_gps_in_ECEF_hom(p_gps_in_ECEF.x(), p_gps_in_ECEF.y(),
                                                     p_gps_in_ECEF.z(), 1.0);
-            world_from_cam.translation() =
-                ((parser.w_from_gpsw() * parser.e_from_gpsw().inverse()).matrix() *
-                 p_gps_in_ECEF_hom)
-                    .head<3>();
+            world_from_cam = Eigen::Isometry3d((parser.S_from_AS().matrix() * scale_mat_reference *
+                                                img_pt.AS_w_from_gnss_cam->matrix())
+                                                   .matrix());
+            std::cout << "ok" << std::endl;
+            // world_from_cam.translation() =
+            //     ((parser.w_from_gpsw() * parser.e_from_gpsw().inverse()).matrix() *
+            //      p_gps_in_ECEF_hom)
+            //         .head<3>();
 
             // Eigen::
         }
@@ -320,9 +363,9 @@ int main(int argc, const char **argv) {
         id++;
     }
 
-    // robot::geometry::viz_scene(viz_references_world_from_cam,
-    //                            std::vector<robot::geometry::VizPoint>(), true, true,
-    //                            "References");
+    robot::geometry::viz_scene(viz_references_world_from_cam,
+                               std::vector<robot::geometry::VizPoint>(), cv::viz::Color::brown(),
+                               true, true, "References");
 
     // populate feature_tracks and lmk_id_map
     // TODO: "smart" matching, using initial poses to filter which pairs make sense to compute
@@ -330,7 +373,7 @@ int main(int argc, const char **argv) {
     FeatureTracks feature_tracks;
     FrameLandmarkIdMap lmk_id_map;
     LandmarkId lmk_id = 0;
-    bool exhaustive = true;
+    constexpr bool exhaustive = true;
     if (exhaustive) {
         for (size_t i = 0; i < indices.size() - 1; i++) {
             std::cout << "i: " << i << std::endl;
@@ -340,6 +383,7 @@ int main(int argc, const char **argv) {
                     frontend.get_matches(frames[i].get_descriptors(), frames[j].get_descriptors());
                 // DIAL TO MESS WITH
                 frontend.enforce_bijective_buffer_matches(matches);
+
                 // std::cout << "matching heartbeat" << std::endl;
                 // cv::Mat viz_matches;
                 // Frontend::draw_matches(parser.load_image(i), kpt_list[i], parser.load_image(j),
@@ -349,6 +393,24 @@ int main(int argc, const char **argv) {
                 //           << std::endl;
                 // cv::imshow("viz_matches", viz_matches);
                 // cv::waitKey(0);
+                std::vector<cv::KeyPoint> cv_kpts_1;
+                std::vector<cv::KeyPoint> cv_kpts_2;
+                for (const KeypointCV &kpt : frames[i].get_keypoints()) {
+                    cv::KeyPoint cv_kpt;
+                    cv_kpt.pt = kpt;
+                    cv_kpts_1.push_back(cv_kpt);
+                }
+                for (const KeypointCV &kpt : frames[j].get_keypoints()) {
+                    cv::KeyPoint cv_kpt;
+                    cv_kpt.pt = kpt;
+                    cv_kpts_2.push_back(cv_kpt);
+                }
+                Eigen::Isometry3d world_from_camj(id_to_initial_world_from_cam.at(j).matrix());
+                world_from_camj.linear() =
+                    (Eigen::Isometry3d(id_to_initial_world_from_cam.at(i).matrix()) *
+                     robot::geometry::estimate_cam0_from_cam1(cv_kpts_1, cv_kpts_2, matches, K_mat))
+                        .linear();
+                id_to_initial_world_from_cam.at(j) = gtsam::Pose3(world_from_camj.matrix());
                 std::cout << "still alive with: " << matches.size() << " matches" << std::endl;
                 for (const cv::DMatch match : matches) {
                     const KeypointCV kpt_cam0 = frames[i].get_keypoints()[match.queryIdx];
@@ -394,9 +456,17 @@ int main(int argc, const char **argv) {
             }
         }
     }
+    std::vector<robot::geometry::VizPose> viz_world_from_cam_init;
+    for (const auto &[id, world_from_cam] : id_to_initial_world_from_cam) {
+        viz_world_from_cam_init.emplace_back(Eigen::Isometry3d(world_from_cam.matrix()),
+                                             std::to_string(id));
+    }
+
+    robot::geometry::viz_scene(viz_world_from_cam_init, std::vector<robot::geometry::VizPoint>(),
+                               cv::viz::Color::brown(), true, true, "world_from_cam_estimates");
     std::cout << "heartbeat" << std::endl;
 
-    // triangulate all of the points
+    // TRIANGULATE all of the points (for initial guess)
     std::unordered_map<LandmarkId, gtsam::Point3> lmk_triangulated_map;  // points are kpt_in_world
     std::vector<robot::geometry::VizPoint> triangulated_lmks_viz;
     std::vector<gtsam::Point3> triangulated_lmks;
@@ -405,24 +475,28 @@ int main(int argc, const char **argv) {
         std::vector<gtsam::Point2> feat_kpts;
         const LandmarkId lmk_id = lmk_feat.first;
         const FeatureTrack feature_track = lmk_feat.second;
-        gtsam::Point3 kpt_in_world(0, 0, 0);
+        // gtsam::Point3 kpt_in_world(0, 0, 0);
         for (const std::pair<FrameId, KeypointCV> &feat_track : feature_track.obs_) {
             world_from_cams.push_back(id_to_initial_world_from_cam[feat_track.first]);
             feat_kpts.push_back(gtsam::Point2(feat_track.second.x, feat_track.second.y));
         }
-        bool triangulate_success =
-            detail_sfm::attempt_triangulate(world_from_cams, feat_kpts, K, kpt_in_world, false);
-        if (triangulate_success) {
-            lmk_triangulated_map.emplace(lmk_id, kpt_in_world);
-            triangulated_lmks.push_back(kpt_in_world);
-            triangulated_lmks_viz.emplace_back(kpt_in_world, "lmk " + std::to_string(lmk_id));
+        std::optional<gtsam::Point3> kpt_in_world =
+            detail_sfm::attempt_triangulate(world_from_cams, feat_kpts, K, false);
+        // bool triangulate_success =
+        // detail_sfm::attempt_triangulate(world_from_cams, feat_kpts, K, kpt_in_world, false);
+        if (kpt_in_world) {
+            std::cout << "triangulation success: " << *kpt_in_world << std::endl;
+            lmk_triangulated_map.emplace(lmk_id, *kpt_in_world);
+            triangulated_lmks.push_back(*kpt_in_world);
+            triangulated_lmks_viz.emplace_back(*kpt_in_world, "lmk " + std::to_string(lmk_id));
         } else {
+            std::cout << "triangulation not success, leaving it out." << std::endl;
             continue;
         }
     }
     std::cout << "there are " << triangulated_lmks.size() << " triangulated lmks" << std::endl;
     robot::geometry::viz_scene(viz_references_world_from_cam, triangulated_lmks_viz,
-                               cv::viz::Color::black(), true, true,
+                               cv::viz::Color::brown(), true, true,
                                "Unfiltered, triangulated points");
 
     // filter points via variance
@@ -443,8 +517,9 @@ int main(int argc, const char **argv) {
         }
     }
     std::cout << "filtered variance " << detail_sfm::get_variance(filtered_points) << std::endl;
+    std::cout << "number of filtered points: " << lmk_triangulated_map_filtered.size() << std::endl;
     robot::geometry::viz_scene(std::vector<Eigen::Isometry3d>(), filtered_points,
-                               cv::viz::Color::black(), true, true,
+                               cv::viz::Color::brown(), true, true,
                                "Filtered, triangulated points");
 
     // ############# BACKEND ###############
@@ -461,6 +536,7 @@ int main(int argc, const char **argv) {
         const gtsam::Symbol symbol_lmk('l', lmk_id);
         for (const auto &[frame_id, obs] : feature_track.obs_) {
             initial_estimate_.insert_or_assign(symbol_lmk, kpt_in_world);
+            symbols_landmarks.push_back(symbol_lmk);
             symbols_landmarks_values_iter.emplace(symbol_lmk,
                                                   std::vector<gtsam::Point3>{kpt_in_world});
             graph_.emplace_shared<gtsam::GenericProjectionFactor<gtsam::Pose3, gtsam::Point3>>(
@@ -490,11 +566,10 @@ int main(int argc, const char **argv) {
         // initial_estimate_.insert_or_assign(key_cam, gtsam::Pose3(gtsam::Rot3(), p_cam_in_world));
     }
 
-    // detail_sfm::graph_values(initial_estimate_, "Confirmation", symbols_pose,
-    // symbols_landmarks);
+    detail_sfm::graph_values(initial_estimate_, "Confirmation", symbols_pose, symbols_landmarks);
     std::cout << "heart beat 3" << std::endl;
 
-    bool local_optimizations = false;
+    constexpr bool local_optimizations = false;
     if (local_optimizations) {
         // TODO: do local optimizations between groups of any n nubmer of cameras with >= x number
         // of matches
@@ -579,23 +654,25 @@ int main(int argc, const char **argv) {
                     .emplace_shared<gtsam::GenericProjectionFactor<gtsam::Pose3, gtsam::Point3>>(
                         feat_kpts[1], landmark_noise, symbols_poses[1], symbol_lmk, K);
 
-                gtsam::Point3 kpt_in_world;
-                bool triangulate_success =
-                    detail_sfm::attempt_triangulate(world_from_cams, feat_kpts, K, kpt_in_world);
-                if (triangulate_success) {
-                    local_estimate_.insert_or_assign(symbol_lmk, kpt_in_world);
-                    viz_lmks.emplace_back(kpt_in_world);
-                }
-                if (symbols_landmarks_values_iter.find(symbol_lmk) !=
-                    symbols_landmarks_values_iter.end()) {
-                    symbols_landmarks_values_iter[symbol_lmk].push_back(kpt_in_world);
-                } else {
-                    symbols_landmarks_values_iter.emplace(symbol_lmk,
-                                                          std::vector<gtsam::Point3>{kpt_in_world});
+                std::optional<gtsam::Point3> kpt_in_world =
+                    detail_sfm::attempt_triangulate(world_from_cams, feat_kpts, K);
+                // gtsam::Point3 kpt_in_world;
+                // bool triangulate_success =
+                //     detail_sfm::attempt_triangulate(world_from_cams, feat_kpts, K, kpt_in_world);
+                if (kpt_in_world) {
+                    local_estimate_.insert_or_assign(symbol_lmk, *kpt_in_world);
+                    viz_lmks.emplace_back(*kpt_in_world);
+                    if (symbols_landmarks_values_iter.find(symbol_lmk) !=
+                        symbols_landmarks_values_iter.end()) {
+                        symbols_landmarks_values_iter[symbol_lmk].push_back(*kpt_in_world);
+                    } else {
+                        symbols_landmarks_values_iter.emplace(
+                            symbol_lmk, std::vector<gtsam::Point3>{*kpt_in_world});
+                    }
                 }
             }
             std::cout << "setup complete!" << std::endl;
-            robot::geometry::viz_scene(viz_world_from_cams, viz_lmks, cv::viz::Color::black(), true,
+            robot::geometry::viz_scene(viz_world_from_cams, viz_lmks, cv::viz::Color::brown(), true,
                                        true, "Local Optimization " + std::to_string(i));
 
             const gtsam::Values symbols_result_local = detail_sfm::optimize_graph(
@@ -629,5 +706,6 @@ int main(int argc, const char **argv) {
     const gtsam::Values result =
         detail_sfm::optimize_graph(graph_, initial_estimate_, symbols_pose, symbols_landmarks);
     std::cout << "about to visualize result" << std::endl;
+    result.print();
     detail_sfm::graph_values(result, "Result", symbols_pose, symbols_landmarks);
 }

@@ -117,7 +117,7 @@ TEST(CameraTest, test_estimate_pose) {
         }
     }
 
-    Eigen::Isometry3d cam0_from_cam1_estimate = estimate_c0_from_cam1(kpts0, kpts1, matches, K);
+    Eigen::Isometry3d cam0_from_cam1_estimate = estimate_cam0_from_cam1(kpts0, kpts1, matches, K);
     Eigen::Isometry3d cam0_from_cam1 = world_from_cam0.inverse() * world_from_cam1;
     cam0_from_cam1.translation() /= cam0_from_cam1.translation().norm();
     EXPECT_TRUE(

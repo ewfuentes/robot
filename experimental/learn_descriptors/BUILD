@@ -264,9 +264,9 @@ cc_library(
   ]
 )
 
-cc_test(
-  name = "spatial_test_scene_cube_test",
-  srcs = ["spatial_test_scene_cube_test.cc"],
+cc_binary(
+  name = "spatial_test_scene_cube_example",
+  srcs = ["spatial_test_scene_cube_example.cc"],
   deps = [    
     "@com_google_googletest//:gtest_main",    
     ":spatial_test_scene_cube",
@@ -362,5 +362,6 @@ cc_binary(
     ":frontend",
     "@boost//:smart_ptr",    
     "@cxxopts",
+    "//common/geometry:camera"
   ]
 )
