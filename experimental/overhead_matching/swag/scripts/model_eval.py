@@ -145,7 +145,7 @@ def _(df, mo, plt, seaborn):
 
 
 @app.cell
-def _(Path, pd, torch):
+def _(Path, itertools, pd, torch):
     # Plot statistics about path evaluation
 
     def process_path(path: Path):
@@ -170,14 +170,12 @@ def _(Path, pd, torch):
                 ...
         return pd.DataFrame.from_records(out)
 
-    base_path = Path('/data/overhead_matching/evaluation/results/20250616_8_way_experiment')
+    base_path = Path('/data/overhead_matching/evaluation/results/20250616_8_way_experiment_fixed/')
 
     path_dfs = []
-    # for _lr_schedule, _negative_mining, _pos_semipos in itertools.product(*[[False, True]]*3):
-    #     _model_name = f"all_chicago_lr_schedule_{_lr_schedule}_negative_mining_{_negative_mining}_pos_semipos_{_pos_semipos}"
-        # path_dfs.append(process_eval_results(base_path / _model_name))
-    path_dfs.append(process_eval_results(base_path / 'all_chicago_lr_schedule_False_negative_mining_False_pos_semipos_False'))
-    path_dfs.append(process_eval_results(Path('/tmp/output_path')))
+    for _lr_schedule, _negative_mining, _pos_semipos in itertools.product(*[[False, True]]*3):
+        _model_name = f"all_chicago_lr_schedule_{_lr_schedule}_negative_mining_{_negative_mining}_pos_semipos_{_pos_semipos}"
+        path_dfs.append(process_eval_results(base_path / _model_name))
 
     path_df = pd.concat(path_dfs)
     return base_path, path_df, path_dfs, process_eval_results, process_path
@@ -260,7 +258,7 @@ def _(NamedTuple, Path, pd, re, torch):
 
 
 
-    _experiment_folder = Path('/data/overhead_matching/evaluation/results/mixture_mcl_sweep/')
+    _experiment_folder = Path('/data/overhead_matching/evaluation/results/mixture_mcl_sweep_fixed/')
     _dfs = []
     for p in _experiment_folder.glob("mcl_frac*"):
         _dfs.append(extract_mixture_info(p))
@@ -276,44 +274,16 @@ def _(mixture_mcl_df):
 
 
 @app.cell
-def _(p, torch):
-    error = torch.load(p / "0000099" / 'error.pt')
-    error.shape
-    return (error,)
-
-
-@app.cell
-def _(p):
-    print(p)
+def _(mixture_mcl_df, mo, plt, seaborn):
+    plt.figure()
+    seaborn.boxenplot(data=mixture_mcl_df, x="dual_mcl_frac", y="final_error_m", hue="phantom_counts", legend="full", palette='tab10')
+    mo.mpl.interactive(plt.gcf())
     return
 
 
 @app.cell
-def _(error, mo, plt):
-    plt.figure()
-    fig = plt.plot(error)
-    mo.mpl.interactive(plt.gcf())
-    return (fig,)
-
-
-@app.cell
-def _(evaluate_swag, load_model, vigor_dataset):
-    dataset = vigor_dataset.VigorDataset('/data/overhead_matching/datasets/VIGOR/NewYork/',
-                                        vigor_dataset.VigorDatasetConfig(
-                                            panorama_neighbor_radius=1e-6,
-                                            satellite_patch_size=(320, 320),
-                                            panorama_size=(320, 640),
-                                            factor=1))
-    sat_model = load_model('/data/overhead_matching/models/20250616_8_way_experiment/all_chicago_lr_schedule_False_negative_mining_False_pos_semipos_False/0059_satellite/')
-    pano_model = load_model('/data/overhead_matching/models/20250616_8_way_experiment/all_chicago_lr_schedule_False_negative_mining_False_pos_semipos_False/0059_panorama/')
-
-    all_similarity = evaluate_swag.compute_cached_similarity_matrix(
-        sat_model=sat_model,
-        pano_model=pano_model,
-        dataset=dataset,
-        device='cuda:0',
-        use_cached_similarity=True)
-    return all_similarity, dataset, pano_model, sat_model
+def _():
+    return
 
 
 if __name__ == "__main__":
