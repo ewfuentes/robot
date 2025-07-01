@@ -75,8 +75,8 @@ TEST(FrontendTest, pipeline_sweep) {
                 assert(std::string(e.what()) == "FLANN can not be used with ORB.");  // very jank...
                 continue;
             }
-            keypoints_descriptors_pair_1 = frontend.get_keypoints_and_descriptors(image_1);
-            keypoints_descriptors_pair_2 = frontend.get_keypoints_and_descriptors(image_2);
+            keypoints_descriptors_pair_1 = frontend.extract_features(image_1);
+            keypoints_descriptors_pair_2 = frontend.extract_features(image_2);
             matches = frontend.get_matches(keypoints_descriptors_pair_1.second,
                                            keypoints_descriptors_pair_2.second);
             frontend.draw_keypoints(image_1, keypoints_descriptors_pair_1.first,

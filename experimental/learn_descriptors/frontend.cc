@@ -38,8 +38,7 @@ Frontend::Frontend(ExtractorType frontend_algorithm, MatcherType frontend_matche
     }
 }
 
-std::pair<std::vector<cv::KeyPoint>, cv::Mat> Frontend::get_keypoints_and_descriptors(
-    const cv::Mat &img) const {
+std::pair<std::vector<cv::KeyPoint>, cv::Mat> Frontend::extract_features(const cv::Mat &img) const {
     std::vector<cv::KeyPoint> keypoints;
     cv::Mat descriptors;
     switch (extractor_type_) {

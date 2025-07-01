@@ -28,6 +28,7 @@ Eigen::Isometry3d estimate_cam0_from_cam1(const std::vector<cv::KeyPoint> &kpts0
                                           const std::vector<cv::KeyPoint> &kpts1,
                                           const std::vector<cv::DMatch> &matches,
                                           const cv::Mat &K) {
+    assert(kpts1.size() != 0 && kpts0.size() != 0);
     Eigen::Isometry3d result;
     std::vector<cv::Point2f> pts1;
     std::vector<cv::Point2f> pts2;

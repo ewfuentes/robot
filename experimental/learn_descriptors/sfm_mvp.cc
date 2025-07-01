@@ -238,7 +238,7 @@ TEST(SFMMvp, sfm_building_manual_global) {
         Frame frame(id, img_undistorted, K, gtsam::Pose3(T_world_cam.matrix()));
 
         std::pair<std::vector<cv::KeyPoint>, cv::Mat> kpts_descs =
-            frontend.get_keypoints_and_descriptors(img_undistorted);
+            frontend.extract_features(img_undistorted);
         KeypointsCV kpts;
         for (const cv::KeyPoint &kpt : kpts_descs.first) {
             kpts.push_back(kpt.pt);
@@ -432,7 +432,7 @@ TEST(SFMMvp, sfm_building_manual_incremental) {
         Frame frame(id, img_undistorted, K, gtsam::Pose3(T_world_cam.matrix()));
 
         std::pair<std::vector<cv::KeyPoint>, cv::Mat> kpts_descs =
-            frontend.get_keypoints_and_descriptors(img_undistorted);
+            frontend.extract_features(img_undistorted);
         KeypointsCV kpts;
         for (const cv::KeyPoint &kpt : kpts_descs.first) {
             kpts.push_back(kpt.pt);

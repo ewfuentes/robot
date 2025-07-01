@@ -72,7 +72,6 @@ void viz_scene(const std::vector<VizPose> &world_from_poses,
     const cv::viz::Color point_color = cv::viz::Color::celestial_blue();
     for (unsigned int i = 0; i < points_in_world.size(); i++) {
         const Eigen::Vector3d &point = points_in_world[i].t_point_in_world;
-        std::cout << "pt to viz: " << point << std::endl;
         window.showWidget("point_" + std::to_string(i),
                           cv::viz::WSphere(cv::Point3d(point[0], point[1], point[2]), point_radius,
                                            sphere_res, point_color));

@@ -59,7 +59,7 @@ void StructureFromMotion::add_image(const cv::Mat &img, const gtsam::Pose3 &T_wo
     cv::Mat img_undistorted;
     cv::undistort(img, img_undistorted, K_, D_);
     std::pair<std::vector<cv::KeyPoint>, cv::Mat> keypoints_and_descriptors =
-        frontend_.get_keypoints_and_descriptors(img);
+        frontend_.extract_features(img);
     feature_manager_->append_img_data(keypoints_and_descriptors.first,
                                       keypoints_and_descriptors.second);
     keypoint_to_landmarks_.push_back(std::unordered_map<cv::KeyPoint, Backend::Landmark>());

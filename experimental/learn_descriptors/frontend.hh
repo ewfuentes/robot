@@ -18,8 +18,7 @@ class Frontend {
     const ExtractorType &get_extractor_type() const { return extractor_type_; };
     const MatcherType &get_matcher_type() const { return matcher_type_; };
 
-    std::pair<std::vector<cv::KeyPoint>, cv::Mat> get_keypoints_and_descriptors(
-        const cv::Mat &img) const;
+    std::pair<std::vector<cv::KeyPoint>, cv::Mat> extract_features(const cv::Mat &img) const;
     std::vector<cv::DMatch> get_matches(const cv::Mat &descriptors1,
                                         const cv::Mat &descriptors2) const;
     static void threshold_matches(std::vector<cv::DMatch> &matches, float dist_threshhold);

@@ -48,23 +48,53 @@ int main(int argc, const char** argv) {
 
     ROBOT_CHECK(parser.num_images() != 0);
 
-    std::vector<Eigen::Isometry3d> w_from_gnss_cams;  // camera frames from visual world frame
+    // std::vector<robot::geometry::VizPose>
+    //     w_from_gnss_cams;                                   // camera frames from visual world
+    //     frame
+    // std::vector<robot::geometry::VizPose> w_from_gcs_cams;  // camera frames from visual world
+    // frame
+    std::vector<robot::geometry::VizPose> viz_frames;  // camera frames from visual world frame
+
     Eigen::Isometry3d scale_mat = Eigen::Isometry3d::Identity();
     std::cout << "gnss scale: " << parser.gnss_scale() << std::endl;
     scale_mat.linear() *= parser.gnss_scale();
     std::cout << "scale mat: " << scale_mat.matrix() << std::endl;
-    for (size_t i = 100; i < std::min(static_cast<size_t>(800), parser.num_images()); i += 49) {
+    constexpr size_t START = 100;
+    const size_t END = std::min(static_cast<size_t>(800), parser.num_images());
+    for (size_t i = START; i < END; i += 49) {
         const lrn_desc::ImagePoint img_pt = parser.get_image_point(i);
         Eigen::Isometry3d AS_w_from_gnss_cam =
             scale_mat * Eigen::Isometry3d(img_pt.AS_w_from_gnss_cam->matrix());
         Eigen::Isometry3d w_from_gnss_cam =
             Eigen::Isometry3d(parser.S_from_AS().matrix()) * AS_w_from_gnss_cam;
-        Eigen::Isometry3d w_from_vio_cam = Eigen::Isometry3d(parser.S_from_AS().matrix()) *
-                                           Eigen::Isometry3d(img_pt.AS_w_from_vio_cam->matrix());
-        w_from_gnss_cams.push_back(w_from_gnss_cam);
-        std::cout << "\npose gnss metric " << i << w_from_gnss_cam.matrix() << std::endl;
-        std::cout << "pose vio" << i << w_from_vio_cam.matrix() << std::endl;
+        Eigen::Vector3d
+            // Eigen::Isometry3d w_from_vio_cam = Eigen::Isometry3d(parser.S_from_AS().matrix()) *
+            //                                    Eigen::Isometry3d(img_pt.AS_w_from_vio_cam->matrix());
+            viz_frames.emplace_back(w_from_gnss_cam, "x_ref_" + std::to_string(i));
+        if (i == START) {
+            viz_frames.emplace_back(w_from_gnss_cam, "x_gps_" + std::to_string(i));
+        } else if (img_pt.gps_gcs) {
+            const Eigen::Vector3d gcs_coordinate(
+                img_pt.gps_gcs->latitude, img_pt.gps_gcs->longitude,
+                img_pt.gps_gcs->altitude ? *(img_pt.gps_gcs->altitude) : 0);
+            const Eigen::Vector3d ECEF_from_gps = parser.ECEF_from_gcs(gcs_coordinate);
+            const Eigen::Vector4d ECEF_from_gps_hom(ECEF_from_gps.x(), ECEF_from_gps.y(),
+                                                    ECEF_from_gps.z(), 1);
+            // Eigen::Isometry3d w_from_gcs_gps =
+            Eigen::Vector4d gps_in_w =
+                Eigen::Matrix4d((parser.w_from_gpsw() * parser.e_from_gpsw().inverse()).matrix()) *
+                ECEF_from_gps_hom;
+            Eigen::Isometry3d w_from_gcs_gps;
+            w_from_gcs_gps.translation() = gps_in_w.head<3>();
+            viz_frames.emplace_back(w_from_gcs_gps, "x_gps_" + std::to_string(i));
+            const Eigen::Vector3d ref_to_gps_in_world =
+                w_from_gcs_gps.translation() - w_from_gnss_cam.translation();
+            std::cout << "ref_" << i << "_to_gps_in_world: " << ref_to_gps_in_world << std::endl;
+        }
+        // std::cout << "\npose gnss metric " << i << w_from_gnss_cam.matrix() << std::endl;
+        // std::cout << "pose vio" << i << w_from_vio_cam.matrix() << std::endl;
     }
-    std::cout << "got " << w_from_gnss_cams.size() << " poses" << std::endl;
-    robot::geometry::viz_scene(w_from_gnss_cams, std::vector<Eigen::Vector3d>());
+    std::cout << "got " << viz_frames.size() << " poses" << std::endl;
+    robot::geometry::viz_scene(viz_frames, std::vector<robot::geometry::VizPoint>(),
+                               cv::viz::Color::brown());
 }
