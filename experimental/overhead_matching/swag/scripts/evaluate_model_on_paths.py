@@ -52,6 +52,8 @@ if __name__ == "__main__":
                         help="If intermediate filter states should be saved")
     parser.add_argument("--panorama-neighbor-radius-deg", type=float,
                         default=0.0005, help="Panorama neighbor radius deg")
+    parser.add_argument("--dual_mcl_frac", type=float, default=0.0)
+    parser.add_argument("--dual_mcl_phantom_counts_frac", type=float, default=1e-4)
 
     args = parser.parse_args()
 
@@ -90,7 +92,9 @@ if __name__ == "__main__":
                            satellite_patch_config=SatellitePatchConfig(
                                zoom_level=20,
                                patch_height_px=640,
-                               patch_width_px=640))
+                               patch_width_px=640),
+                           dual_mcl_frac=args.dual_mcl_frac,
+                           dual_mcl_belief_phantom_counts_frac=args.dual_mcl_phantom_counts_frac)
 
     with open(Path(args.output_path) / "wag_config.pbtxt", "w") as f:
         f.write(text_format.MessageToString(wag_config))

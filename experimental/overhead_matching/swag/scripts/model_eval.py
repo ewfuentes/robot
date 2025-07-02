@@ -15,6 +15,9 @@ def _():
     from pprint import pprint
     import numpy as np
     import seaborn
+    import math
+
+    import re
 
     import matplotlib.pyplot as plt
     import matplotlib
@@ -24,28 +27,36 @@ def _():
     from experimental.overhead_matching.swag.evaluation import evaluate_swag
     import experimental.overhead_matching.swag.model.patch_embedding
     from common.torch.load_and_save_models import load_model
+    from experimental.overhead_matching.swag.evaluation.wag_config_pb2 import WagConfig, SatellitePatchConfig
+    from common.math import haversine
     from pathlib import Path
     from typing import NamedTuple
     import seaborn
 
     import importlib
     importlib.reload(evaluate_swag)
+    importlib.reload(haversine)
     return (
         NamedTuple,
         Path,
+        SatellitePatchConfig,
+        WagConfig,
         alt,
         common,
         evaluate_swag,
         experimental,
+        haversine,
         importlib,
         itertools,
         load_model,
+        math,
         matplotlib,
         mo,
         np,
         pd,
         plt,
         pprint,
+        re,
         satellite_embedding_database,
         seaborn,
         torch,
@@ -112,14 +123,14 @@ def _(NamedTuple, Path, itertools, vigor_dataset):
 @app.cell
 def _(datasets, get_top_k_results, itertools, model_paths, pd):
     dfs = []
-    for (model_name, model_path), (data_name, dataset) in itertools.product(model_paths.items(), datasets.items()):
+    for (model_name, model_path), (data_name, _dataset) in itertools.product(model_paths.items(), datasets.items()):
         print(model_name, data_name)
-        df = get_top_k_results(model_path, dataset)
+        df = get_top_k_results(model_path, _dataset)
         df["dataset"] = data_name
         df["model"] = [model_name]*len(df)
         dfs.append(df)
     df = pd.concat(dfs)
-    return data_name, dataset, df, dfs, model_name, model_path
+    return data_name, df, dfs, model_name, model_path
 
 
 @app.cell
@@ -159,7 +170,7 @@ def _(Path, itertools, pd, torch):
                 ...
         return pd.DataFrame.from_records(out)
 
-    base_path = Path('/data/overhead_matching/evaluation/results/20250616_8_way_experiment')
+    base_path = Path('/data/overhead_matching/evaluation/results/20250616_8_way_experiment_fixed/')
 
     path_dfs = []
     for _lr_schedule, _negative_mining, _pos_semipos in itertools.product(*[[False, True]]*3):
@@ -212,6 +223,66 @@ def _(Path, mo, model_selector, path_slider, plt, torch):
     plt.title(f'{_v}\n Path {path_slider.value}')
     plt.tight_layout()
     mo.mpl.interactive(plt.gcf())
+    return
+
+
+@app.cell
+def _(NamedTuple, Path, pd, re, torch):
+    # Mixture MCL Evaluation
+
+    class MixtureSettings(NamedTuple):
+        frac: float
+        phantom_counts: float
+
+    def extract_mixture_info(p):
+        m = re.match(r"mcl_frac_([0-9.]+)_phantom_counts_([0-9.]+)", p.name)
+        if not m:
+            print(f"Could not parse settings from: {p}")
+            return
+
+        out = []
+
+        settings = MixtureSettings(frac=float(m.group(1)), phantom_counts=float(m.group(2)))
+        for eval_path in sorted(p.glob("[0-9]*")):
+            error = torch.load(eval_path / "error.pt")
+            var = torch.load(eval_path / "var.pt")
+            out.append({
+                "path_id": int(eval_path.name),
+                "dual_mcl_frac": settings.frac,
+                "phantom_counts": settings.phantom_counts,
+                "final_error_m": error[-1].item(),
+                "final_var_sq_m": var[-1].item(),
+                "settings": settings})
+
+        return pd.DataFrame.from_records(out)
+
+
+
+    _experiment_folder = Path('/data/overhead_matching/evaluation/results/mixture_mcl_sweep_fixed/')
+    _dfs = []
+    for p in _experiment_folder.glob("mcl_frac*"):
+        _dfs.append(extract_mixture_info(p))
+
+    mixture_mcl_df = pd.concat(_dfs).reset_index(drop=True)
+    return MixtureSettings, extract_mixture_info, mixture_mcl_df, p
+
+
+@app.cell
+def _(mixture_mcl_df):
+    mixture_mcl_df
+    return
+
+
+@app.cell
+def _(mixture_mcl_df, mo, plt, seaborn):
+    plt.figure()
+    seaborn.boxenplot(data=mixture_mcl_df, x="dual_mcl_frac", y="final_error_m", hue="phantom_counts", legend="full", palette='tab10')
+    mo.mpl.interactive(plt.gcf())
+    return
+
+
+@app.cell
+def _():
     return
 
 
