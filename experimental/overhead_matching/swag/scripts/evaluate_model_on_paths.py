@@ -33,6 +33,77 @@ def construct_path_eval_inputs_from_args(
     return vigor_dataset, sat_model, pano_model, paths_data
 
 
+def main(
+        output_path: Path,
+        sat_model_path: Path,
+        pano_model_path: Path,
+        dataset_path: Path,
+        paths_path: Path,
+        panorama_neighbor_radius_deg: float,
+        dual_mcl_frac: float,
+        dual_mcl_phantom_counts_frac: float,
+        save_intermediate_filter_states: float,
+        seed: int,
+        ):
+    DEVICE = "cuda:0"
+    torch.set_deterministic_debug_mode('error')
+
+    output_path.mkdir(parents=True, exist_ok=True)
+    with open(Path(output_path) / "args.json", "w") as f:
+        json.dump({
+            "output_path": str(output_path),
+            "sat_model_path": str(sat_model_path),
+            "pano_model_path": str(pano_model_path),
+            "dataset_path": str(dataset_path),
+            "paths_path": str(paths_path),
+            "panorama_neighbor_radius_deg": panorama_neighbor_radius_deg,
+            "dual_mcl_frac": dual_mcl_frac,
+            "dual_mcl_phantom_counts_frac": dual_mcl_phantom_counts_frac,
+            "save_intermediate_filter_states": save_intermediate_filter_states,
+            "seed": seed}, f, indent=4)
+
+    vigor_dataset, sat_model, pano_model, paths_data = construct_path_eval_inputs_from_args(
+        sat_model_path=sat_model_path,
+        pano_model_path=pano_model_path,
+        dataset_path=dataset_path,
+        paths_path=paths_path,
+        panorama_neighbor_radius_deg=panorama_neighbor_radius_deg,
+    )
+
+    def degrees_from_meters(dist_m):
+        EARTH_RADIUS_M = 6_371_000.0
+        return math.degrees(dist_m / EARTH_RADIUS_M)
+
+    wag_config = WagConfig(noise_percent_motion_model=0.02,  # page 71 thesis
+                           # offset was fixed at 1.3km in thesis (page 71)
+                           initial_particle_distribution_offset_std_deg=degrees_from_meters(1300.0),
+                           # page 73 of thesis
+                           initial_particle_distribution_std_deg=degrees_from_meters(2970.0),
+                           num_particles=100_000,
+                           sigma_obs_prob_from_sim=0.1,
+                           satellite_patch_config=SatellitePatchConfig(
+                               zoom_level=20,
+                               patch_height_px=640,
+                               patch_width_px=640),
+                           dual_mcl_frac=dual_mcl_frac,
+                           dual_mcl_belief_phantom_counts_frac=dual_mcl_phantom_counts_frac)
+
+    with open(Path(output_path) / "wag_config.pbtxt", "w") as f:
+        f.write(text_format.MessageToString(wag_config))
+
+    es.evaluate_model_on_paths(
+        vigor_dataset=vigor_dataset,
+        sat_model=sat_model,
+        pano_model=pano_model,
+        paths=paths_data['paths'],
+        wag_config=wag_config,
+        seed=seed,
+        output_path=output_path,
+        device=DEVICE,
+        save_intermediate_filter_states=save_intermediate_filter_states
+    )
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -57,6 +128,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+<<<<<<< Updated upstream
     # torch.cuda.memory._record_memory_history(max_entries=100_000)
 
     DEVICE = "cuda:0"
@@ -75,38 +147,19 @@ if __name__ == "__main__":
         pano_model_path=args.pano_model_path,
         dataset_path=args.dataset_path,
         paths_path=args.paths_path,
+=======
+    main(
+        output_path=Path(args.output_path),
+        sat_model_path=Path(args.sat_path),
+        pano_model_path=Path(args.pano_path),
+        dataset_path=Path(args.dataset_path),
+        paths_path=Path(args.paths_path),
+>>>>>>> Stashed changes
         panorama_neighbor_radius_deg=args.panorama_neighbor_radius_deg,
+        dual_mcl_frac=args.dual_mcl_frac,
+        dual_mcl_phantom_counts_frac=args.dual_mcl_phantom_counts_frac,
+        save_intermediate_filter_states=args.save_intermediate_filter_states,
+        seed=args.seed
     )
 
-    def degrees_from_meters(dist_m):
-        EARTH_RADIUS_M = 6_371_000.0
-        return math.degrees(dist_m / EARTH_RADIUS_M)
 
-    wag_config = WagConfig(noise_percent_motion_model=0.02,  # page 71 thesis
-                           # offset was fixed at 1.3km in thesis (page 71)
-                           initial_particle_distribution_offset_std_deg=degrees_from_meters(1300.0),
-                           # page 73 of thesis
-                           initial_particle_distribution_std_deg=degrees_from_meters(2970.0),
-                           num_particles=100_000,
-                           sigma_obs_prob_from_sim=0.1,
-                           satellite_patch_config=SatellitePatchConfig(
-                               zoom_level=20,
-                               patch_height_px=640,
-                               patch_width_px=640),
-                           dual_mcl_frac=args.dual_mcl_frac,
-                           dual_mcl_belief_phantom_counts_frac=args.dual_mcl_phantom_counts_frac)
-
-    with open(Path(args.output_path) / "wag_config.pbtxt", "w") as f:
-        f.write(text_format.MessageToString(wag_config))
-
-    es.evaluate_model_on_paths(
-        vigor_dataset=vigor_dataset,
-        sat_model=sat_model,
-        pano_model=pano_model,
-        paths=paths_data['paths'],
-        wag_config=wag_config,
-        seed=args.seed,
-        output_path=args.output_path,
-        device=DEVICE,
-        save_intermediate_filter_states=args.save_intermediate_filter_states
-    )

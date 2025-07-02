@@ -68,6 +68,26 @@ py_binary(
   ]
 )
 
+py_package(
+  name = "evaluate_model_on_paths_package",
+  deps = [":evaluate_model_on_paths"],
+)
+
+py_wheel(
+  name = "evaluate_model_on_paths_wheel",
+  distribution="overhead_matching_evaluate_model_on_paths",
+  version = "0.0.1",
+  platform = "manylinux2014_x86_64",
+  tags = ["manual"],
+  python_tag = select({
+    "@rules_python//python/config_settings:is_python_3.12": "cp312"
+  }),
+  abi = select({
+    "@rules_python//python/config_settings:is_python_3.12": "cp312"
+  }),
+  deps = [":evaluate_model_on_paths_package"],
+)
+
 py_binary(
   name="plot_path_evaluations",
   srcs=["plot_path_evaluations.py"],
