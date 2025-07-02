@@ -53,7 +53,8 @@ int main(int argc, const char** argv) {
     //     frame
     // std::vector<robot::geometry::VizPose> w_from_gcs_cams;  // camera frames from visual world
     // frame
-    std::vector<robot::geometry::VizPose> viz_frames;  // camera frames from visual world frame
+    std::vector<robot::geometry::VizPose> viz_frames;   // camera frames from visual world frame
+    std::vector<robot::geometry::VizPoint> viz_points;  // camera frames from visual world frame
 
     Eigen::Isometry3d scale_mat = Eigen::Isometry3d::Identity();
     std::cout << "gnss scale: " << parser.gnss_scale() << std::endl;
@@ -61,22 +62,58 @@ int main(int argc, const char** argv) {
     std::cout << "scale mat: " << scale_mat.matrix() << std::endl;
     constexpr size_t START = 100;
     const size_t END = std::min(static_cast<size_t>(800), parser.num_images());
+    std::optional<double> altitude_gps_from_gnss_cam;
     for (size_t i = START; i < END; i += 49) {
+        std::cout << "\nImage point " << i << std::endl;
         const lrn_desc::ImagePoint img_pt = parser.get_image_point(i);
+        std::cout << "Image point seq: " << img_pt.seq << std::endl;
+        if (!img_pt.AS_w_from_gnss_cam) {
+            continue;
+        }
         Eigen::Isometry3d AS_w_from_gnss_cam =
             scale_mat * Eigen::Isometry3d(img_pt.AS_w_from_gnss_cam->matrix());
+        // Eigen::Isometry3d(img_pt.AS_w_from_gnss_cam->matrix());
+        std::cout << "img_pt.AS_w_from_gnss_cam->matrix()" << img_pt.AS_w_from_gnss_cam->matrix()
+                  << std::endl;
+        std::cout << "AS_w_from_gnss_cam: " << AS_w_from_gnss_cam.matrix() << std::endl;
         Eigen::Isometry3d w_from_gnss_cam =
             Eigen::Isometry3d(parser.S_from_AS().matrix()) * AS_w_from_gnss_cam;
-        Eigen::Vector3d
-            // Eigen::Isometry3d w_from_vio_cam = Eigen::Isometry3d(parser.S_from_AS().matrix()) *
-            //                                    Eigen::Isometry3d(img_pt.AS_w_from_vio_cam->matrix());
-            viz_frames.emplace_back(w_from_gnss_cam, "x_ref_" + std::to_string(i));
+        w_from_gnss_cam.translation().x() += 1.2;
+        w_from_gnss_cam.translation().y() += 1.2;
+        // Eigen::Isometry3d w_from_vio_cam = Eigen::Isometry3d(parser.S_from_AS().matrix()) *
+        //                                    Eigen::Isometry3d(img_pt.AS_w_from_vio_cam->matrix());
+        std::cout << "w_from_gnss_cam: " << w_from_gnss_cam.matrix() << std::endl;
+        viz_frames.emplace_back(w_from_gnss_cam, "x_ref_" + std::to_string(i));
+        viz_frames.emplace_back(w_from_gnss_cam, "x_ref_" + std::to_string(i));
         if (i == START) {
-            viz_frames.emplace_back(w_from_gnss_cam, "x_gps_" + std::to_string(i));
+            break;
+            viz_points.emplace_back(w_from_gnss_cam.translation(), "x_gps_" + std::to_string(i));
         } else if (img_pt.gps_gcs) {
-            const Eigen::Vector3d gcs_coordinate(
+            std::cout << "gps time: " << img_pt.gps_gcs->seq << std::endl;
+            Eigen::Vector3d gcs_coordinate(
                 img_pt.gps_gcs->latitude, img_pt.gps_gcs->longitude,
                 img_pt.gps_gcs->altitude ? *(img_pt.gps_gcs->altitude) : 0);
+
+            std::cout << "gcs_coordinate altitude: "
+                      << (img_pt.gps_gcs->altitude ? *(img_pt.gps_gcs->altitude) : 0) << std::endl;
+
+            // compare the reference in gcs to the gps in gcs
+            Eigen::Isometry3d ECEF_from_gnss_cam =
+                Eigen::Isometry3d(
+                    (parser.e_from_gpsw() * parser.w_from_gpsw().inverse()).matrix()) *
+                w_from_gnss_cam;
+            const Eigen::Vector3d gnss_cam_in_gcs =
+                parser.gcs_from_ECEF(ECEF_from_gnss_cam.translation());
+
+            if (!altitude_gps_from_gnss_cam) {
+                altitude_gps_from_gnss_cam = gnss_cam_in_gcs.z() - *(img_pt.gps_gcs->altitude);
+            }
+            gcs_coordinate.z() += *altitude_gps_from_gnss_cam;
+
+            std::cout << std::setprecision(20) << "gnss_cam_in_gcs: " << gnss_cam_in_gcs
+                      << "\ngps_gcs: " << gcs_coordinate
+                      << "\ngps-gnss_cam: " << (gcs_coordinate - gnss_cam_in_gcs) << std::endl;
+
             const Eigen::Vector3d ECEF_from_gps = parser.ECEF_from_gcs(gcs_coordinate);
             const Eigen::Vector4d ECEF_from_gps_hom(ECEF_from_gps.x(), ECEF_from_gps.y(),
                                                     ECEF_from_gps.z(), 1);
@@ -84,17 +121,15 @@ int main(int argc, const char** argv) {
             Eigen::Vector4d gps_in_w =
                 Eigen::Matrix4d((parser.w_from_gpsw() * parser.e_from_gpsw().inverse()).matrix()) *
                 ECEF_from_gps_hom;
-            Eigen::Isometry3d w_from_gcs_gps;
-            w_from_gcs_gps.translation() = gps_in_w.head<3>();
-            viz_frames.emplace_back(w_from_gcs_gps, "x_gps_" + std::to_string(i));
-            const Eigen::Vector3d ref_to_gps_in_world =
-                w_from_gcs_gps.translation() - w_from_gnss_cam.translation();
-            std::cout << "ref_" << i << "_to_gps_in_world: " << ref_to_gps_in_world << std::endl;
+            viz_points.emplace_back(gps_in_w.head<3>(), "x_gps_" + std::to_string(i));
+            const Eigen::Vector3d gps_from_ref_in_world =
+                gps_in_w.head<3>() - w_from_gnss_cam.translation();
+            std::cout << "gps_from_ref_in_world: " << gps_from_ref_in_world << std::endl;
         }
         // std::cout << "\npose gnss metric " << i << w_from_gnss_cam.matrix() << std::endl;
         // std::cout << "pose vio" << i << w_from_vio_cam.matrix() << std::endl;
     }
-    std::cout << "got " << viz_frames.size() << " poses" << std::endl;
-    robot::geometry::viz_scene(viz_frames, std::vector<robot::geometry::VizPoint>(),
-                               cv::viz::Color::brown());
+    std::cout << "\ngot " << viz_frames.size() << " poses" << std::endl;
+    std::cout << "got " << viz_points.size() << " points" << std::endl;
+    robot::geometry::viz_scene(viz_frames, viz_points, cv::viz::Color::brown());
 }

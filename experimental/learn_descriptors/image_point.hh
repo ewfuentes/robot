@@ -15,6 +15,7 @@
 namespace robot::experimental::learn_descriptors {
 struct ImagePoint {
     struct GPSData {
+        size_t seq;  // time in nanoseconds, may differ from shutter time
         double latitude;
         double longitude;
         std::optional<double> altitude;  // meters above sea level

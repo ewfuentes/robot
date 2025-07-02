@@ -103,23 +103,10 @@ FourSeasonsParser::FourSeasonsParser(const std::filesystem::path& root_dir,
         while (gps_idx < gps_time_list.size() && time_key > gps_time_list[gps_idx].first &&
                time_key - gps_time_list[gps_idx].first > (1.0 / IMU_HZ) * 1e9) {
             gps_idx++;
-            // if (gps_idx < 200) {
-            //     std::stringstream ss;
-            //     ss << "uh oh: " << gps_idx;
-            //     if (time_key > gps_time_list[gps_idx].first) {
-            //         ss << "\ttime_key - gps_time: " << (time_key - gps_time_list[gps_idx].first);
-            //     } else {
-            //         ss << "\tgps_time - time_key: " << (gps_time_list[gps_idx].first - time_key);
-            //     }
-            //     std::cout << ss.str() << std::endl;
-            // }
         }  // find the closest gps point whose time is before the current image capture time
         if (gps_idx < gps_time_list.size() &&
             time_key - gps_time_list[gps_idx].first <= (1.0 / IMU_HZ) * 1e9) {
             img_pt.gps_gcs = gps_time_list[gps_idx].second;
-            // std::cout << "adding gps data at img_pt: " << img_pt.id << " with gps_idx: " <<
-            // gps_idx
-            //           << std::endl;
             gps_idx++;
         }
         img_pt_vector_.push_back(img_pt);
@@ -325,11 +312,12 @@ TimeGPSList create_gps_time_data_map(const std::filesystem::path& path_gps) {
         if (nmea_sentence->type() == "GGA") {
             nmea::gga gga(*nmea_sentence);
             if (gga.utc.exists() && gga.latitude.exists() && gga.longitude.exists()) {
-                ImagePoint::GPSData gps_data;
-                gps_data.latitude = gga.latitude.get();
-                gps_data.longitude = gga.longitude.get();
-                if (gga.altitude.exists()) gps_data.altitude = gga.altitude.get();
                 if (gga.utc.get() == time_of_day_last) {  // GGA messages for this dataset come
+                    ImagePoint::GPSData gps_data;
+                    gps_data.seq = gps_utc_to_unix_time(date_last, gga.utc.get());
+                    gps_data.latitude = gga.latitude.get();
+                    gps_data.longitude = gga.longitude.get();
+                    if (gga.altitude.exists()) gps_data.altitude = gga.altitude.get();
                     // after RMC messages
                     // std::cout << "adding gps data with time of day: " << gga.utc.get()
                     //           << " and unix time: "
