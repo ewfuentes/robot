@@ -66,6 +66,7 @@ def wag_calculate_log_particle_weights(observation_log_likelihood: torch.Tensor,
     particle_log_likelihood = particle_log_likelihood - particle_log_likelihood.logsumexp(dim=0)
     return particle_log_likelihood
 
+
 def wag_multinomial_resampling(particles: torch.Tensor,
                                log_weights: torch.Tensor,
                                generator: torch.Generator,

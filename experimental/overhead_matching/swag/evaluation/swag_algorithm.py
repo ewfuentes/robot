@@ -29,8 +29,10 @@ def initialize_wag_particles(gt_start_position_lat_lon: torch.Tensor,
     sampled_mean = torch.normal(mean=gt_start_position_lat_lon,
                                 std=wag_config.initial_particle_distribution_offset_std_deg,
                                 generator=generator).to(gt_start_position_lat_lon.device)
-    particles = torch.normal(mean=0, std=wag_config.initial_particle_distribution_std_deg,
-                             size=(wag_config.num_particles, 2)).to(gt_start_position_lat_lon.device)
+    particles = torch.normal(mean=torch.zeros((wag_config.num_particles, 2),
+                                device=gt_start_position_lat_lon.device),
+                             std=wag_config.initial_particle_distribution_std_deg,
+                             generator=generator).to(gt_start_position_lat_lon.device)
     particles += sampled_mean
     return particles
 

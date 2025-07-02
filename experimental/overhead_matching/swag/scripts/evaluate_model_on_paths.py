@@ -61,11 +61,11 @@ if __name__ == "__main__":
     # torch.cuda.memory._record_memory_history(max_entries=100_000)
 
     DEVICE = "cuda:0"
+    torch.set_deterministic_debug_mode('error')
 
     Path(args.output_path).mkdir(parents=True, exist_ok=True)
     with open(Path(args.output_path) / "args.json", "w") as f:
         json.dump(vars(args), f, indent=4)
-
 
     args.sat_model_path = Path(args.sat_path).expanduser()
     args.pano_model_path = Path(args.pano_path).expanduser()
