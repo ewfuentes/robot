@@ -1,11 +1,11 @@
 #include "experimental/learn_descriptors/four_seasons_parser.hh"
 
-#include <limits.h>
-
 #include <cmath>
 #include <exception>
 #include <fstream>
 #include <iostream>
+#include <limits>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -21,6 +21,8 @@
 #include "nmea/message/gga.hpp"
 #include "nmea/message/rmc.hpp"
 #include "nmea/sentence.hpp"
+
+#define IMU_HZ 30.0
 
 namespace robot::experimental::learn_descriptors {
 using namespace detail;
@@ -42,17 +44,20 @@ FourSeasonsParser::FourSeasonsParser(const std::filesystem::path& root_dir,
     txt_parser_help::TimeDataMap vio_poses_time_map =
         txt_parser_help::create_vio_time_data_map(path_vio, min_time_sig_figs);
     gps_parser_help::TimeGPSList gps_time_list =
-        gps_parser_help::create_gps_time_data_map(path_gps);
+        gps_parser_help::create_gps_time_data_list(path_gps);
 
-    const double imu_hz = 30.0;
+    // std::cout << "imu dt in nanoseconds: " << std::to_string((1.0 / IMU_HZ) * 1e9) << std::endl;
+
     size_t id = 0;
-    size_t gps_idx = 0;
+    // size_t gps_idx = 0;
+    std::vector<size_t> img_times;
     for (const std::pair<size_t, std::vector<std::string>>& pair_time_data : img_time_list) {
-        const size_t time_key = pair_time_data.first;
+        img_times = const size_t time_key = pair_time_data.first;
         ImagePoint img_pt;
         img_pt.id = id;
         img_pt.seq = std::stoull(
             pair_time_data.second[static_cast<size_t>(txt_parser_help::ImgIdx::TIME_NS)]);
+        img_times.push_back(img_pt.seq);
         if (gnss_poses_time_map.find(time_key) != gnss_poses_time_map.end()) {
             const std::vector<std::string>& parsed_line_gnss_poses =
                 gnss_poses_time_map.at(time_key);
@@ -96,17 +101,23 @@ FourSeasonsParser::FourSeasonsParser(const std::filesystem::path& root_dir,
             std::clog << "There is no AS_w_from_vio_cam data at img_pt with id: " << id
                       << std::endl;
         }
-        while (gps_idx < gps_time_list.size() && time_key > gps_time_list[gps_idx].first &&
-               time_key - gps_time_list[gps_idx].first > (1.0 / imu_hz) * 1e9) {
-            gps_idx++;
-        }  // find the closest gps point whose time is before the current image capture time
-        if (gps_idx < gps_time_list.size() &&
-            time_key - gps_time_list[gps_idx].first <= (1.0 / imu_hz) * 1e9) {
-            img_pt.gps_gcs = gps_time_list[gps_idx].second;
-            gps_idx++;
-        }
+        // while (gps_idx < gps_time_list.size() && time_key > gps_time_list[gps_idx].first &&
+        //        time_key - gps_time_list[gps_idx].first > (1.0 / IMU_HZ) * 1e9) {
+        //     gps_idx++;
+        // }  // find the closest gps point whose time is before the current image capture time
+        // if (gps_idx < gps_time_list.size() &&
+        //     time_key - gps_time_list[gps_idx].first <= (1.0 / IMU_HZ) * 1e9) {
+        //     img_pt.gps_gcs = gps_time_list[gps_idx].second;
+        //     gps_idx++;
+        // }
         img_pt_vector_.push_back(img_pt);
         id++;
+    }
+
+    // popoulate gps to nearest img time
+    size_t l = 0;
+    size_t r = img_times.size() - 1;
+    for (const auto& [gps_seq, gps_data] : gps_time_list) {
     }
 }
 
@@ -287,8 +298,8 @@ size_t gps_utc_to_unix_time(const nmea::date& utc_date, const double utc_time_da
     std::chrono::sys_time<std::chrono::nanoseconds> timestamp = date + utc_time_day_ns;
     return timestamp.time_since_epoch().count();
 }
-TimeGPSList create_gps_time_data_map(const std::filesystem::path& path_gps) {
-    TimeGPSList time_map_gps;
+TimeGPSList create_gps_time_data_list(const std::filesystem::path& path_gps) {
+    TimeGPSList time_list_gps;
     std::ifstream file_gps(path_gps);
     std::string line;
     std::optional<nmea::sentence> nmea_sentence;
@@ -296,7 +307,7 @@ TimeGPSList create_gps_time_data_map(const std::filesystem::path& path_gps) {
     date_last.day = 255;
     date_last.month = 255;
     date_last.year = 255;
-    double time_of_day_last = 0;
+    double time_of_day_last = -1.0;
     while (std::getline(file_gps, line) && !line.empty()) {
         try {
             nmea_sentence = nmea::sentence(line);
@@ -308,13 +319,17 @@ TimeGPSList create_gps_time_data_map(const std::filesystem::path& path_gps) {
         if (nmea_sentence->type() == "GGA") {
             nmea::gga gga(*nmea_sentence);
             if (gga.utc.exists() && gga.latitude.exists() && gga.longitude.exists()) {
-                ImagePoint::GPSData gps_data;
-                gps_data.latitude = gga.latitude.get();
-                gps_data.longitude = gga.longitude.get();
-                if (gga.altitude.exists()) gps_data.altitude = gga.altitude.get();
                 if (gga.utc.get() == time_of_day_last) {  // GGA messages for this dataset come
-                                                          // after RMC messages
-                    time_map_gps.push_back(
+                    ImagePoint::GPSData gps_data;
+                    gps_data.seq = gps_utc_to_unix_time(date_last, gga.utc.get());
+                    gps_data.latitude = gga.latitude.get();
+                    gps_data.longitude = gga.longitude.get();
+                    if (gga.altitude.exists()) gps_data.altitude = gga.altitude.get();
+                    // after RMC messages
+                    // std::cout << "adding gps data with time of day: " << gga.utc.get()
+                    //           << " and unix time: "
+                    //           << gps_utc_to_unix_time(date_last, gga.utc.get()) << std::endl;
+                    time_list_gps.push_back(
                         std::make_pair(gps_utc_to_unix_time(date_last, gga.utc.get()), gps_data));
                 }
             }
@@ -326,8 +341,27 @@ TimeGPSList create_gps_time_data_map(const std::filesystem::path& path_gps) {
             }
         }
     }
-    return time_map_gps;
+    return time_list_gps;
 }
 }  // namespace gps_parser_help
+size_t closest_time_idx(const size_t query_unix_ns, const std::vector<size_t>& list_unix_ns) {
+    size_t l = 0;
+    size_t r = list_unix_ns.size() - 1;
+    size_t idx = (r - l) / 2;
+    std::function<size_t(size_t)> difference = [query_unix_ns](size_t idx_time) {
+        return query_unix_ns > idx_time ? query_unix_ns - idx_time : idx_time - query_unix_ns;
+    };
+    size_t min_diff = difference(list_unix_ns[idx]);
+    size_t min_idx = idx;
+    while (l < r) {
+        size_t diff = difference(list_unix_ns[idx]);
+        if (diff < min_diff) {
+            min_diff = diff;
+            min_idx = idx;
+        }
+        if (list_unix_ns) }
+    return idx;
+}
+
 }  // namespace detail
 }  // namespace robot::experimental::learn_descriptors

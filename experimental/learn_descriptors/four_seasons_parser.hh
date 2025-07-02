@@ -70,6 +70,7 @@ class FourSeasonsParser {
 };
 
 namespace detail {
+size_t closest_time_idx(const size_t query_unix_ns, const std::vector<size_t>& list_unix_ns);
 namespace txt_parser_help {
 using TimeDataMap = std::unordered_map<size_t, std::vector<std::string>>;
 using TimeDataList = std::vector<std::pair<size_t, std::vector<std::string>>>;
@@ -121,7 +122,7 @@ const TimeDataMap create_vio_time_data_map(const std::filesystem::path& path_vio
 namespace gps_parser_help {
 using TimeGPSList = std::vector<std::pair<size_t, ImagePoint::GPSData>>;
 size_t gps_utc_to_unix_time(const nmea::date& utc_date, const double utc_time_day_seconds);
-TimeGPSList create_gps_time_data_map(const std::filesystem::path& path_gps);
+TimeGPSList create_gps_time_data_list(const std::filesystem::path& path_gps);
 }  // namespace gps_parser_help
 }  // namespace detail
 }  // namespace robot::experimental::learn_descriptors

@@ -59,7 +59,7 @@ int main(int argc, const char** argv) {
                 img_first_and_last);
     cv::imshow("First + Last Images", img_first_and_last);
 
-    for (size_t i = 0; i < parser.num_images(); i += 99) {
+    for (size_t i = 0; i < parser.num_images(); i += 1) {
         cv::Mat img = parser.load_image(i);
         const std::string img_str = "img " + std::to_string(i);
         cv::putText(img, img_str, cv::Point(10, 20), cv::FONT_HERSHEY_SIMPLEX, 0.5,
