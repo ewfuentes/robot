@@ -47,7 +47,8 @@ def dino_feature_extraction(backbone, x):
             mean=[0.485, 0.456, 0.406],
             std=[0.229, 0.224, 0.225])
 
-    patch_tokens = backbone.forward_features(x)["x_norm_patchtokens"]
+    with torch.no_grad():
+        patch_tokens = backbone.forward_features(x)["x_norm_patchtokens"]
     # Swap the embedding dim and the token dim and reshape to have the same
     # aspect ratio as the original image
     out = patch_tokens.transpose(-1, -2).reshape(
