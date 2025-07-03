@@ -26,8 +26,6 @@
 #include "nmea/message/rmc.hpp"
 #include "nmea/sentence.hpp"
 
-#define CAM_HZ 30.0
-
 namespace robot::experimental::learn_descriptors {
 using namespace detail;
 FourSeasonsParser::FourSeasonsParser(const std::filesystem::path& root_dir,
@@ -51,14 +49,12 @@ FourSeasonsParser::FourSeasonsParser(const std::filesystem::path& root_dir,
         gps_parser_help::create_gps_time_data_list(path_gps);
 
     size_t id = 0;
-    std::vector<size_t> img_times;
     for (const std::pair<size_t, std::vector<std::string>>& pair_time_data : img_time_list) {
         const size_t time_key = pair_time_data.first;
         ImagePoint img_pt;
         img_pt.id = id;
         img_pt.seq = std::stoull(
             pair_time_data.second[static_cast<size_t>(txt_parser_help::ImgIdx::TIME_NS)]);
-        img_times.push_back(img_pt.seq);
         if (gnss_poses_time_map.find(time_key) != gnss_poses_time_map.end()) {
             const std::vector<std::string>& parsed_line_gnss_poses =
                 gnss_poses_time_map.at(time_key);
@@ -80,10 +76,10 @@ FourSeasonsParser::FourSeasonsParser(const std::filesystem::path& root_dir,
                 std::stod(
                     parsed_line_gnss_poses[static_cast<size_t>(txt_parser_help::GPSIdx::QUAT_Z)]));
             img_pt.AS_w_from_gnss_cam = liegroups::SE3(R_gps_cam_from_AS_w, t_gps_cam_from_AS_w);
-        } else {
-            std::clog << "There is no AS_w_from_gnss_cam data at img_pt with id: " << id
-                      << std::endl;
-        }
+        }  // else {
+        //     std::clog << "There is no AS_w_from_gnss_cam data at img_pt with id: " << id
+        //               << std::endl;
+        // }
         if (vio_poses_time_map.find(time_key) != vio_poses_time_map.end()) {
             const std::vector<std::string>& parsed_line_vio = vio_poses_time_map.at(time_key);
             Eigen::Vector3d t_AS_w_from_vio_cam(
@@ -98,20 +94,26 @@ FourSeasonsParser::FourSeasonsParser(const std::filesystem::path& root_dir,
                 std::stod(
                     parsed_line_vio[static_cast<size_t>(txt_parser_help::ResultIdx::QUAT_Z)]));
             img_pt.AS_w_from_vio_cam = liegroups::SE3(R_AS_w_from_vio_cam, t_AS_w_from_vio_cam);
-        } else {
-            std::clog << "There is no AS_w_from_vio_cam data at img_pt with id: " << id
-                      << std::endl;
-        }
+        }  // else {
+        //     std::clog << "There is no AS_w_from_vio_cam data at img_pt with id: " << id
+        //               << std::endl;
+        // }
         img_pt_vector_.push_back(img_pt);
         id++;
     }
     // popoulate gps to nearest img time
     // TODO: could be linear time... but good enough
     for (const auto& [time_unix_ns, gps_data] : gps_time_list) {
-        size_t insert_idx = detail::find_closest_idx(time_unix_ns, img_times);
+        size_t insert_idx = std::distance(
+            img_pt_vector_.begin(),
+            std::lower_bound(img_pt_vector_.begin(), img_pt_vector_.end(), time_unix_ns,
+                             [](const ImagePoint& img_pt, const size_t query_unix_time) {
+                                 return img_pt.seq < query_unix_time;
+                             }));
         // NOTE: in future, could perhaps use gps data that isn't associated with an img_pt in some
         // way. maybe to help with interpolation, estimate velocity
-        if (detail::abs_diff(img_pt_vector_[insert_idx].seq, time_unix_ns) < 1.0 / CAM_HZ * 1e9) {
+        if (detail::abs_diff(img_pt_vector_[insert_idx].seq, time_unix_ns) <
+            1.0 / FourSeasonsParser::CAM_HZ * 1e9) {
             img_pt_vector_[insert_idx].gps_gcs = gps_data;
         }
     }
@@ -331,38 +333,80 @@ TimeGPSList create_gps_time_data_list(const std::filesystem::path& path_gps) {
                 date_last = rmc.date.get();
                 time_of_day_last = rmc.utc.get();
             }
+        } else if (nmea_sentence->type() == "GST") {
+            std::optional<GSTData> gst_data = parse_gpgst(nmea_sentence->nmea_string());
+            ;
+            // try {
+            //     gst_data = parse_gpgst(nmea_sentence->nmea_string());
+            // } catch (const std::exception& e) {
+            //     std::cerr << "failed to parse GST line: " << e.what() << ".\tContinuing...\n";
+            //     continue;
+            // }
+            if (gst_data && std::abs(gst_data->utc_time - time_of_day_last) <
+                                1e-3) {  // GST message for this dataset come third
+                size_t unix_time_ns = gps_utc_to_unix_time(date_last, gst_data->utc_time);
+                if (time_list_gps.back().first == unix_time_ns) {
+                    time_list_gps.back().second.uncertainty.emplace(
+                        gst_data->sigma_lat, gst_data->sigma_lon, gst_data->sigma_alt,
+                        gst_data->error_orientation, gst_data->rms_range_error);
+                }
+            }
         }
     }
     return time_list_gps;
 }
+
+std::vector<std::string> split_nmea_sentence(const std::string& sentence) {
+    std::vector<std::string> fields;
+    std::string field;
+    std::stringstream ss(sentence);
+
+    while (std::getline(ss, field, ',')) {
+        // remove checksum from the last field if present
+        auto asterisk = field.find('*');
+        if (asterisk != std::string::npos) field = field.substr(0, asterisk);
+        fields.push_back(field);
+    }
+
+    return fields;
+}
+double time_of_day_seconds(const double utc_time_hhmmss) {
+    int hours = static_cast<int>(utc_time_hhmmss / 10000);
+    int minutes = static_cast<int>((utc_time_hhmmss - hours * 10000) / 100);
+    double seconds = utc_time_hhmmss - hours * 10000 - minutes * 100;
+    return hours * 3600 + minutes * 60 + seconds;
+}
+std::optional<GSTData> parse_gpgst(const std::string& sentence) {
+    if (sentence.substr(0, 6) != "$GPGST") {
+        return std::nullopt;
+    }
+
+    std::vector<std::string> fields = split_nmea_sentence(sentence);
+    if (fields.size() != 9) {
+        return std::nullopt;
+    }
+    for (size_t i = 0; i < fields.size(); i++) {
+        if (fields[i].empty()) return std::nullopt;
+    }
+
+    GSTData gst;
+    gst.utc_time = time_of_day_seconds(std::stod(fields[1]));
+    gst.rms_range_error = std::stod(fields[2]);
+    gst.error_semi_major = std::stod(fields[3]);
+    gst.error_semi_minor = std::stod(fields[4]);
+    gst.error_orientation = std::stod(fields[5]);
+    gst.sigma_lat = std::stod(fields[6]);
+    gst.sigma_lon = std::stod(fields[7]);
+    gst.sigma_alt = std::stod(fields[8]);
+
+    return gst;
+}
+
 }  // namespace gps_parser_help
 
 template <typename T>
 std::size_t abs_diff(const T& a, const T& b) {
     return a > b ? a - b : b - a;
 }
-template <typename T>
-size_t find_closest_idx(const T& query, const std::vector<T>& data) {
-    ROBOT_CHECK(std::is_arithmetic<T>::value, "find_closest_idx requires a numeric type");
-    ROBOT_CHECK(!data.empty());
-
-    if (query <= data.front()) return 0;
-    if (query >= data.back()) return data.size() - 1;
-
-    size_t l = 0;
-    size_t r = data.size() - 1;
-
-    while (l + 1 < r) {
-        size_t m = l + (r - l) / 2;
-        if (data[m] < query) {
-            l = m;
-        } else {
-            r = m;
-        }
-    }
-
-    return (abs_diff(data[l], query) <= abs_diff(data[r], query)) ? l : r;
-}
-
 }  // namespace detail
 }  // namespace robot::experimental::learn_descriptors

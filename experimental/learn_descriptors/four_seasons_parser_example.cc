@@ -98,8 +98,9 @@ int main(int argc, const char** argv) {
                     0.5, cv::Scalar(0, 255, 0), 2);
         cv::putText(img, ss_gps.str(), cv::Point(10, 80), cv::FONT_HERSHEY_SIMPLEX, 0.5,
                     cv::Scalar(0, 255, 0), 2);
-        std::cout << "img_pt " << i << "\n\t" << ss_AS_w_from_gnss_cam.str() << "\n\t"
-                  << ss_AS_w_from_vio_cam.str() << "\n\t" << ss_gps.str() << std::endl;
+        // std::cout << "img_pt " << i << "\n\t" << ss_AS_w_from_gnss_cam.str() << "\n\t"
+        //           << ss_AS_w_from_vio_cam.str() << "\n\t" << ss_gps.str() << std::endl;
+        std::cout << img_pt.to_string() << std::endl;
         cv::imshow("FourSeasonsParserExample", img);
         int key = cv::waitKey(0);
 

@@ -17,6 +17,7 @@
 namespace robot::experimental::learn_descriptors {
 class FourSeasonsParser {
    public:
+    static constexpr double CAM_HZ = 30.0;
     struct CameraCalibrationFisheye {
         double fx, fy, cx, cy, k1, k2, k3, k4;
     };
@@ -70,9 +71,6 @@ class FourSeasonsParser {
 };
 
 namespace detail {
-// returns the index whose element is nearest to query
-template <typename T>
-std::size_t find_closest_idx(const T& query, const std::vector<T>& data);
 template <typename T>
 std::size_t abs_diff(const T& a, const T& b);
 namespace txt_parser_help {
@@ -125,6 +123,19 @@ const TimeDataMap create_vio_time_data_map(const std::filesystem::path& path_vio
 }  // namespace txt_parser_help
 namespace gps_parser_help {
 using TimeGPSList = std::vector<std::pair<size_t, ImagePoint::GPSData>>;
+struct GSTData {
+    double utc_time;
+    double rms_range_error;
+    double error_semi_major;
+    double error_semi_minor;
+    double error_orientation;
+    double sigma_lat;
+    double sigma_lon;
+    double sigma_alt;
+};
+std::vector<std::string> split_nmea_sentence(const std::string& nmea_sentence);
+double time_of_day_seconds(const double utc_time_hhmmss);
+std::optional<GSTData> parse_gpgst(const std::string& nmea_sentence);
 size_t gps_utc_to_unix_time(const nmea::date& utc_date, const double utc_time_day_seconds);
 TimeGPSList create_gps_time_data_list(const std::filesystem::path& path_gps);
 }  // namespace gps_parser_help

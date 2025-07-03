@@ -24,8 +24,6 @@
 #include "nmea/object/date.hpp"
 #include "nmea/sentence.hpp"
 
-#define CAM_HZ 30.0
-
 static bool images_equal(cv::Mat img1, cv::Mat img2) {
     if (img1.size() != img2.size() || img1.type() != img2.type()) {
         return false;
@@ -203,6 +201,6 @@ TEST(FourSeasonsParserTest, parser_test) {
 
     double max_delta =
         *std::max_element(gps_ns_delta_from_shutter.begin(), gps_ns_delta_from_shutter.end());
-    ROBOT_CHECK(max_delta < 1.0 / CAM_HZ * 1e9);
+    ROBOT_CHECK(max_delta < 1.0 / FourSeasonsParser::CAM_HZ * 1e9);
 }
 }  // namespace robot::experimental::learn_descriptors
