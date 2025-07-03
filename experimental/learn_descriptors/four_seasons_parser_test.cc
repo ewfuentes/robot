@@ -201,6 +201,6 @@ TEST(FourSeasonsParserTest, parser_test) {
 
     double max_delta =
         *std::max_element(gps_ns_delta_from_shutter.begin(), gps_ns_delta_from_shutter.end());
-    ROBOT_CHECK(max_delta < FourSeasonsParser::CAM_CAP_DELTA);
+    ROBOT_CHECK(max_delta < FourSeasonsParser::CAM_CAP_DELTA_NS);
 }
 }  // namespace robot::experimental::learn_descriptors

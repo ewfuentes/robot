@@ -117,7 +117,7 @@ FourSeasonsParser::FourSeasonsParser(const std::filesystem::path& root_dir,
         // NOTE: in future, could perhaps use gps data that isn't associated with an img_pt in some
         // way. maybe to help with interpolation, estimate velocity
         if (detail::abs_diff(img_pt_vector_[insert_idx].seq, time_unix_ns) <
-            FourSeasonsParser::CAM_CAP_DELTA) {
+            FourSeasonsParser::CAM_CAP_DELTA_NS) {
             img_pt_vector_[insert_idx].gps_gcs = gps_data;
         }
     }
