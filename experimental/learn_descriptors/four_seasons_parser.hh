@@ -70,7 +70,11 @@ class FourSeasonsParser {
 };
 
 namespace detail {
-size_t closest_time_idx(const size_t query_unix_ns, const std::vector<size_t>& list_unix_ns);
+// returns the index whose element is nearest to query
+template <typename T>
+std::size_t find_closest_idx(const T& query, const std::vector<T>& data);
+template <typename T>
+std::size_t abs_diff(const T& a, const T& b);
 namespace txt_parser_help {
 using TimeDataMap = std::unordered_map<size_t, std::vector<std::string>>;
 using TimeDataList = std::vector<std::pair<size_t, std::vector<std::string>>>;

@@ -54,6 +54,7 @@ struct ImagePoint {
         }
         ss << "\n\tgps_gcs: ";
         if (gps_gcs) {
+            ss << "\n\t\tseq: " << gps_gcs->seq;
             ss << "\n\t\t" << gps_gcs->latitude << "\t" << gps_gcs->longitude << "\t";
             if (gps_gcs->altitude) {
                 ss << *(gps_gcs->altitude);

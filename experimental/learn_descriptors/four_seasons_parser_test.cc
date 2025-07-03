@@ -16,12 +16,15 @@
 #include "GeographicLib/LocalCartesian.hpp"
 #include "absl/strings/str_split.h"
 #include "absl/strings/strip.h"
+#include "common/check.hh"
 #include "common/liegroups/se3.hh"
 #include "gtest/gtest.h"
 #include "nmea/message/gga.hpp"
 #include "nmea/message/rmc.hpp"
 #include "nmea/object/date.hpp"
 #include "nmea/sentence.hpp"
+
+#define CAM_HZ 30.0
 
 static bool images_equal(cv::Mat img1, cv::Mat img2) {
     if (img1.size() != img2.size() || img1.type() != img2.type()) {
@@ -104,6 +107,8 @@ TEST(FourSeasonsParserTest, parser_test) {
         (parser.e_from_gpsw() * parser.w_from_gpsw().inverse() * parser.S_from_AS()).matrix() *
         scale_mat);
 
+    std::vector<double> gps_ns_delta_from_shutter;
+
     for (size_t i = 0; i < parser.num_images(); i++) {
         const ImagePoint& img_pt = parser.get_image_point(i);
         const cv::Mat img = parser.load_image(i);
@@ -181,10 +186,23 @@ TEST(FourSeasonsParserTest, parser_test) {
                 img_pt.gps_gcs->latitude, img_pt.gps_gcs->longitude,
                 img_pt.gps_gcs->altitude ? *(img_pt.gps_gcs->altitude) : 0);
 
-            EXPECT_NEAR(raw_gps_gcs.x(), gnss_gps_gcs.x(), 1e-4);  // lattitude
+            EXPECT_NEAR(raw_gps_gcs.x(), gnss_gps_gcs.x(), 1e-4);  // latitude
             EXPECT_NEAR(raw_gps_gcs.y(), gnss_gps_gcs.y(), 1e-4);  // longitude
             EXPECT_NEAR(raw_gps_gcs.z(), gnss_gps_gcs.z(), 60);    // height above sea level
         }
+        if (img_pt.gps_gcs) {
+            if (img_pt.gps_gcs->seq > img_pt.seq) {
+                gps_ns_delta_from_shutter.push_back(
+                    static_cast<double>(img_pt.gps_gcs->seq - img_pt.seq));
+            } else {
+                gps_ns_delta_from_shutter.push_back(
+                    -static_cast<double>(img_pt.seq - img_pt.gps_gcs->seq));
+            }
+        }
     }
+
+    double max_delta =
+        *std::max_element(gps_ns_delta_from_shutter.begin(), gps_ns_delta_from_shutter.end());
+    ROBOT_CHECK(max_delta < 1.0 / CAM_HZ * 1e9);
 }
 }  // namespace robot::experimental::learn_descriptors
