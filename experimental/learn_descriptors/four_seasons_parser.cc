@@ -76,10 +76,10 @@ FourSeasonsParser::FourSeasonsParser(const std::filesystem::path& root_dir,
                 std::stod(
                     parsed_line_gnss_poses[static_cast<size_t>(txt_parser_help::GPSIdx::QUAT_Z)]));
             img_pt.AS_w_from_gnss_cam = liegroups::SE3(R_gps_cam_from_AS_w, t_gps_cam_from_AS_w);
-        }  // else {
-        //     std::clog << "There is no AS_w_from_gnss_cam data at img_pt with id: " << id
-        //               << std::endl;
-        // }
+        } else {
+            std::clog << "There is no AS_w_from_gnss_cam data at img_pt with id: " << id
+                      << std::endl;
+        }
         if (vio_poses_time_map.find(time_key) != vio_poses_time_map.end()) {
             const std::vector<std::string>& parsed_line_vio = vio_poses_time_map.at(time_key);
             Eigen::Vector3d t_AS_w_from_vio_cam(
@@ -94,26 +94,30 @@ FourSeasonsParser::FourSeasonsParser(const std::filesystem::path& root_dir,
                 std::stod(
                     parsed_line_vio[static_cast<size_t>(txt_parser_help::ResultIdx::QUAT_Z)]));
             img_pt.AS_w_from_vio_cam = liegroups::SE3(R_AS_w_from_vio_cam, t_AS_w_from_vio_cam);
-        }  // else {
-        //     std::clog << "There is no AS_w_from_vio_cam data at img_pt with id: " << id
-        //               << std::endl;
-        // }
+        } else {
+            std::clog << "There is no AS_w_from_vio_cam data at img_pt with id: " << id
+                      << std::endl;
+        }
         img_pt_vector_.push_back(img_pt);
         id++;
     }
     // popoulate gps to nearest img time
     // TODO: could be linear time... but good enough
     for (const auto& [time_unix_ns, gps_data] : gps_time_list) {
-        size_t insert_idx = std::distance(
-            img_pt_vector_.begin(),
-            std::lower_bound(img_pt_vector_.begin(), img_pt_vector_.end(), time_unix_ns,
-                             [](const ImagePoint& img_pt, const size_t query_unix_time) {
-                                 return img_pt.seq < query_unix_time;
-                             }));
+        auto it = std::lower_bound(img_pt_vector_.begin(), img_pt_vector_.end(), time_unix_ns,
+                                   [](const ImagePoint& img_pt, const size_t query_unix_time) {
+                                       return img_pt.seq < query_unix_time;
+                                   });
+        size_t insert_idx = std::distance(img_pt_vector_.begin(), it);
+        if (it != img_pt_vector_.begin() &&
+            detail::abs_diff(it->seq, time_unix_ns) >
+                detail::abs_diff(std::prev(it)->seq, time_unix_ns)) {
+            insert_idx--;
+        }
         // NOTE: in future, could perhaps use gps data that isn't associated with an img_pt in some
         // way. maybe to help with interpolation, estimate velocity
         if (detail::abs_diff(img_pt_vector_[insert_idx].seq, time_unix_ns) <
-            1.0 / FourSeasonsParser::CAM_HZ * 1e9) {
+            FourSeasonsParser::CAM_CAP_DELTA) {
             img_pt_vector_[insert_idx].gps_gcs = gps_data;
         }
     }
@@ -335,13 +339,6 @@ TimeGPSList create_gps_time_data_list(const std::filesystem::path& path_gps) {
             }
         } else if (nmea_sentence->type() == "GST") {
             std::optional<GSTData> gst_data = parse_gpgst(nmea_sentence->nmea_string());
-            ;
-            // try {
-            //     gst_data = parse_gpgst(nmea_sentence->nmea_string());
-            // } catch (const std::exception& e) {
-            //     std::cerr << "failed to parse GST line: " << e.what() << ".\tContinuing...\n";
-            //     continue;
-            // }
             if (gst_data && std::abs(gst_data->utc_time - time_of_day_last) <
                                 1e-3) {  // GST message for this dataset come third
                 size_t unix_time_ns = gps_utc_to_unix_time(date_last, gst_data->utc_time);
@@ -405,7 +402,7 @@ std::optional<GSTData> parse_gpgst(const std::string& sentence) {
 }  // namespace gps_parser_help
 
 template <typename T>
-std::size_t abs_diff(const T& a, const T& b) {
+size_t abs_diff(const T& a, const T& b) {
     return a > b ? a - b : b - a;
 }
 }  // namespace detail

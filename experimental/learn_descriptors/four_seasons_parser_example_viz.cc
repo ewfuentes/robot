@@ -119,14 +119,14 @@ int main(int argc, const char** argv) {
 
     for (const double delta : gps_ns_delta_from_shutter) {
         var_sum += std::pow(delta - avg_ns_gps_delta, 2);
-        if (delta > 1.0 / lrn_desc::FourSeasonsParser::CAM_HZ * 1e9) {
+        if (delta > lrn_desc::FourSeasonsParser::CAM_CAP_DELTA) {
             num_greater_cam_hz++;
         }
     }
     var_ns_gps_delta = var_sum / gps_ns_delta_from_shutter.size();
     double max_delta =
         *std::max_element(gps_ns_delta_from_shutter.begin(), gps_ns_delta_from_shutter.end());
-    ROBOT_CHECK(max_delta < 1.0 / lrn_desc::FourSeasonsParser::CAM_HZ * 1e9);
+    ROBOT_CHECK(max_delta < lrn_desc::FourSeasonsParser::CAM_CAP_DELTA);
     std::cout << "\nGPS Analysis: " << std::endl;
     std::cout << "\tavg delta time ns img_pt_seq from gps_gcs_seq: " << avg_ns_gps_delta
               << std::endl;

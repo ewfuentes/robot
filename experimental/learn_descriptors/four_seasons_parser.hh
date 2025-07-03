@@ -18,6 +18,7 @@ namespace robot::experimental::learn_descriptors {
 class FourSeasonsParser {
    public:
     static constexpr double CAM_HZ = 30.0;
+    static constexpr double CAM_CAP_DELTA = 1e9 / CAM_HZ;
     struct CameraCalibrationFisheye {
         double fx, fy, cx, cy, k1, k2, k3, k4;
     };
