@@ -251,6 +251,7 @@ def main(
         patch_embedding.WagPatchEmbeddingConfig(
             patch_dims=dataset_config.satellite_patch_size,
             num_aggregation_heads=NUM_SAFA_HEADS,
+            backbone_type=patch_embedding.BackboneType.DINOV2_B14,
         )
     )
 
@@ -258,6 +259,7 @@ def main(
         patch_embedding.WagPatchEmbeddingConfig(
             patch_dims=dataset_config.panorama_size,
             num_aggregation_heads=NUM_SAFA_HEADS,
+            backbone_type=patch_embedding.BackboneType.DINOV2_B14,
         )
     )
 
