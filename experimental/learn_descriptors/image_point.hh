@@ -16,16 +16,16 @@ namespace robot::experimental::learn_descriptors {
 struct ImagePoint {
     struct GPSData {
         struct Uncertainty {
-            double sigma_latitude;
+            double sigma_lat_mitude;
             double sigma_longitude;
             double sigma_altitude;
             double orientation_deg;
-            double rms_range_error;
+            double rms_range_error_m;
 
             // diagonal latitude, longitude, altitude covariance in meters squared
             Eigen::Matrix3d to_LLA_covariance() const {
                 Eigen::Matrix3d cov = Eigen::Matrix3d::Zero();
-                cov(0, 0) = sigma_latitude * sigma_latitude;
+                cov(0, 0) = sigma_lat_mitude * sigma_lat_mitude;
                 cov(1, 1) = sigma_longitude * sigma_longitude;
                 cov(2, 2) = sigma_altitude * sigma_altitude;
                 return cov;
@@ -112,7 +112,7 @@ struct ImagePoint {
             }
             ss << "\n\t\tsigma: ";
             if (gps_gcs->uncertainty) {
-                ss << gps_gcs->uncertainty->sigma_latitude << "\t"
+                ss << gps_gcs->uncertainty->sigma_lat_mitude << "\t"
                    << gps_gcs->uncertainty->sigma_longitude << "\t"
                    << gps_gcs->uncertainty->sigma_altitude;
             } else {

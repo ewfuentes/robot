@@ -339,13 +339,13 @@ TimeGPSList create_gps_time_data_list(const std::filesystem::path& path_gps) {
             }
         } else if (nmea_sentence->type() == "GST") {
             std::optional<GSTData> gst_data = parse_gpgst(nmea_sentence->nmea_string());
-            if (gst_data && std::abs(gst_data->utc_time - time_of_day_last) <
+            if (gst_data && std::abs(gst_data->utc_time_ns - time_of_day_last) <
                                 1e-3) {  // GST message for this dataset come third
-                size_t unix_time_ns = gps_utc_to_unix_time(date_last, gst_data->utc_time);
+                size_t unix_time_ns = gps_utc_to_unix_time(date_last, gst_data->utc_time_ns);
                 if (time_list_gps.back().first == unix_time_ns) {
                     time_list_gps.back().second.uncertainty.emplace(
-                        gst_data->sigma_lat, gst_data->sigma_lon, gst_data->sigma_alt,
-                        gst_data->error_orientation, gst_data->rms_range_error);
+                        gst_data->sigma_lat_m, gst_data->sigma_lon_m, gst_data->sigma_alt_m,
+                        gst_data->error_orientation_deg, gst_data->rms_range_error_m);
                 }
             }
         }
@@ -387,14 +387,14 @@ std::optional<GSTData> parse_gpgst(const std::string& sentence) {
     }
 
     GSTData gst;
-    gst.utc_time = time_of_day_seconds(std::stod(fields[1]));
-    gst.rms_range_error = std::stod(fields[2]);
-    gst.error_semi_major = std::stod(fields[3]);
-    gst.error_semi_minor = std::stod(fields[4]);
-    gst.error_orientation = std::stod(fields[5]);
-    gst.sigma_lat = std::stod(fields[6]);
-    gst.sigma_lon = std::stod(fields[7]);
-    gst.sigma_alt = std::stod(fields[8]);
+    gst.utc_time_ns = time_of_day_seconds(std::stod(fields[1]));
+    gst.rms_range_error_m = std::stod(fields[2]);
+    gst.error_semi_major_m = std::stod(fields[3]);
+    gst.error_semi_minor_m = std::stod(fields[4]);
+    gst.error_orientation_deg = std::stod(fields[5]);
+    gst.sigma_lat_m = std::stod(fields[6]);
+    gst.sigma_lon_m = std::stod(fields[7]);
+    gst.sigma_alt_m = std::stod(fields[8]);
 
     return gst;
 }

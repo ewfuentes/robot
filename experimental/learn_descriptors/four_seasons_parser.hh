@@ -125,14 +125,14 @@ const TimeDataMap create_vio_time_data_map(const std::filesystem::path& path_vio
 namespace gps_parser_help {
 using TimeGPSList = std::vector<std::pair<size_t, ImagePoint::GPSData>>;
 struct GSTData {
-    double utc_time;
-    double rms_range_error;
-    double error_semi_major;
-    double error_semi_minor;
-    double error_orientation;
-    double sigma_lat;
-    double sigma_lon;
-    double sigma_alt;
+    double utc_time_ns;
+    double rms_range_error_m;
+    double error_semi_major_m;
+    double error_semi_minor_m;
+    double error_orientation_deg;
+    double sigma_lat_m;
+    double sigma_lon_m;
+    double sigma_alt_m;
 };
 std::vector<std::string> split_nmea_sentence(const std::string& nmea_sentence);
 double time_of_day_seconds(const double utc_time_hhmmss);
