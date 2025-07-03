@@ -17,6 +17,8 @@
 namespace robot::experimental::learn_descriptors {
 class FourSeasonsParser {
    public:
+    static constexpr double CAM_HZ = 30.0;
+    static constexpr double CAM_CAP_DELTA_NS = 1e9 / CAM_HZ;
     struct CameraCalibrationFisheye {
         double fx, fy, cx, cy, k1, k2, k3, k4;
     };
@@ -70,6 +72,8 @@ class FourSeasonsParser {
 };
 
 namespace detail {
+template <typename T>
+std::size_t abs_diff(const T& a, const T& b);
 namespace txt_parser_help {
 using TimeDataMap = std::unordered_map<size_t, std::vector<std::string>>;
 using TimeDataList = std::vector<std::pair<size_t, std::vector<std::string>>>;
@@ -120,8 +124,21 @@ const TimeDataMap create_vio_time_data_map(const std::filesystem::path& path_vio
 }  // namespace txt_parser_help
 namespace gps_parser_help {
 using TimeGPSList = std::vector<std::pair<size_t, ImagePoint::GPSData>>;
+struct GSTData {
+    double utc_time_ns;
+    double rms_range_error_m;
+    double error_semi_major_m;
+    double error_semi_minor_m;
+    double error_orientation_deg;
+    double sigma_lat_m;
+    double sigma_lon_m;
+    double sigma_alt_m;
+};
+std::vector<std::string> split_nmea_sentence(const std::string& nmea_sentence);
+double time_of_day_seconds(const double utc_time_hhmmss);
+std::optional<GSTData> parse_gpgst(const std::string& nmea_sentence);
 size_t gps_utc_to_unix_time(const nmea::date& utc_date, const double utc_time_day_seconds);
-TimeGPSList create_gps_time_data_map(const std::filesystem::path& path_gps);
+TimeGPSList create_gps_time_data_list(const std::filesystem::path& path_gps);
 }  // namespace gps_parser_help
 }  // namespace detail
 }  // namespace robot::experimental::learn_descriptors
