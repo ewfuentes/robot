@@ -241,8 +241,8 @@ def main(
     NUM_SAFA_HEADS = 4
     dataset_config = vigor_dataset.VigorDatasetConfig(
         panorama_neighbor_radius=PANORAMA_NEIGHBOR_RADIUS_DEG,
-        satellite_patch_size=(320, 320),
-        panorama_size=(320, 640),
+        satellite_patch_size=(322, 322),
+        panorama_size=(322, 644),
         sample_mode=vigor_dataset.SampleMode.POS_SEMIPOS,
     )
     dataset = vigor_dataset.VigorDataset(dataset_paths, dataset_config)

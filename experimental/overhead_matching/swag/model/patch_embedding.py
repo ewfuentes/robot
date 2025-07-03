@@ -26,6 +26,7 @@ def load_backbone(backbone_type: BackboneType):
     elif backbone_type == BackboneType.DINOV2_B14:
         model = torch.hub.load("facebookresearch/dinov2", "dinov2_vitb14")
         model.eval()
+    model.backbone_type = backbone_type
     return model
 
 
@@ -56,11 +57,18 @@ def dino_feature_extraction(backbone, x):
     return out
 
 
-def compute_safa_input_dims(feature_extractor: Callable, patch_dims: Tuple[int, int]):
+def compute_safa_input_dims(backbone: torch.nn.Module, patch_dims: Tuple[int, int]):
     with torch.no_grad():
         test_input = torch.empty(1, 3, *patch_dims)
-        result = feature_extractor(test_input)
+        result = extract_features(backbone, test_input)
         return result.shape[-3], result.shape[-2] * result.shape[-1]
+
+
+def extract_features(backbone, x):
+    if backbone.backbone_type == BackboneType.VGG16:
+        return vgg16_feature_extraction(backbone, x)
+    elif backbone.backbone_type == BackboneType.DINOV2_B14:
+        return dino_feature_extraction(backbone, x)
 
 
 class WagPatchEmbedding(torch.nn.Module):
@@ -68,12 +76,7 @@ class WagPatchEmbedding(torch.nn.Module):
         super().__init__()
         self.backbone = load_backbone(config.backbone_type)
 
-        if config.backbone_type == BackboneType.VGG16:
-            self._feature_extractor = lambda x: vgg16_feature_extraction(self.backbone, x)
-        elif config.backbone_type == BackboneType.DINOV2_B14:
-            self._feature_extractor = lambda x: dino_feature_extraction(self.backbone, x)
-
-        n_channels, input_safa_dim = compute_safa_input_dims(self._feature_extractor, config.patch_dims)
+        n_channels, input_safa_dim = compute_safa_input_dims(self.backbone, config.patch_dims)
         safa_dims = [input_safa_dim // 2, input_safa_dim]
         n_heads = config.num_aggregation_heads
         self._output_dim = n_channels * n_heads
@@ -102,7 +105,7 @@ class WagPatchEmbedding(torch.nn.Module):
         return out
 
     def forward(self, x):
-        features = self._feature_extractor(x)
+        features = extract_features(self.backbone, x)
         batch_size, num_channels, _, _ = features.shape
         attention = self.safa(features)
         vectorized_features = torch.reshape(features, (batch_size, num_channels, -1))
