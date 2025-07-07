@@ -100,6 +100,7 @@ py_library(
   name = "serialization",
   srcs = ["serialization.py"],
   visibility = ["//visibility:public"],
+  deps = [requirement("msgspec")]
 )
 py_test(
     name = "serialization_test",

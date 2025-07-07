@@ -15,17 +15,18 @@ def construct_path_eval_inputs_from_args(
         dataset_path: str,
         paths_path: str,
         panorama_neighbor_radius_deg: float,
+        device: torch.device
 ):
     with open(paths_path, 'r') as f:
         paths_data = json.load(f)
-    pano_model = lsm.load_model(pano_model_path)
-    sat_model = lsm.load_model(sat_model_path)
+    pano_model = lsm.load_model(pano_model_path, device=device)
+    sat_model = lsm.load_model(sat_model_path, device=device)
 
     dataset_path = Path(dataset_path).expanduser()
     dataset_config = vd.VigorDatasetConfig(
         panorama_neighbor_radius=panorama_neighbor_radius_deg,
-        satellite_patch_size=(320, 320),
-        panorama_size=(320, 640),
+        satellite_patch_size=(322, 322),
+        panorama_size=(322, 644),
         factor=1,
     )
     vigor_dataset = vd.VigorDataset(dataset_path, dataset_config)
@@ -76,6 +77,7 @@ if __name__ == "__main__":
         dataset_path=args.dataset_path,
         paths_path=args.paths_path,
         panorama_neighbor_radius_deg=args.panorama_neighbor_radius_deg,
+        device=DEVICE
     )
 
     def degrees_from_meters(dist_m):

@@ -11,6 +11,7 @@ py_library(
   deps = [
     requirement("torch"),
     requirement("torchvision"),
+    requirement("msgspec"),
     "//common/torch:load_torch_deps",
   ]
 )

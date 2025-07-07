@@ -4,31 +4,49 @@ import torch
 import torch.nn.functional as F
 import torchvision
 from dataclasses import dataclass
-from typing import Tuple, Callable
+from typing import Union
 from enum import StrEnum, auto
+import msgspec
 
 
 class BackboneType(StrEnum):
     VGG16 = auto()
-    DINOV2_B14 = auto()
+    DINOV2 = auto()
+
+
+class VGGConfig(msgspec.Struct, tag=True, tag_field='kind'):
+    type: BackboneType = BackboneType.VGG16
+
+
+class DinoConfig(msgspec.Struct, tag=True, tag_field='kind'):
+    project: int | None
+    model: str = "dinov2_vitb14"
+    type: BackboneType = BackboneType.DINOV2
+
+
+BackboneConfig = Union[VGGConfig, DinoConfig]
 
 
 @dataclass
 class WagPatchEmbeddingConfig:
-    patch_dims: Tuple[int, int]
+    patch_dims: tuple[int, int]
     num_aggregation_heads: int
-    backbone_type: BackboneType
+    backbone_config: BackboneConfig
+
 
 class DinoFeatureExtractor(torch.nn.Module):
-    def __init__(self):
+    def __init__(self, model_str: str, project: int | None):
         super().__init__()
-        self.dino = torch.hub.load("facebookresearch/dinov2", "dinov2_vitb14")
+        self.dino = torch.hub.load("facebookresearch/dinov2", model_str)
         self.dino.eval()
 
-        self.project = torch.nn.Conv2d(
-            in_channels=self.dino.num_features,
-            out_channels=512,
-            kernel_size=1)
+        if project is None:
+            self.project = torch.nn.Identity()
+        else:
+            self.project = torch.nn.Conv2d(
+                in_channels=self.dino.num_features,
+                out_channels=project,
+                kernel_size=1)
 
     def forward(self, x):
         # Patch tokens are batch x n_tokens x embedding_dim
@@ -53,12 +71,13 @@ class DinoFeatureExtractor(torch.nn.Module):
         return out
 
 
-def load_backbone(backbone_type: BackboneType):
-    if backbone_type == BackboneType.VGG16:
-        model = torchvision.models.vgg16()
-    elif backbone_type == BackboneType.DINOV2_B14:
-        model = DinoFeatureExtractor()
-    model.backbone_type = backbone_type
+def load_backbone(backbone_config: BackboneConfig):
+    match backbone_config:
+        case VGGConfig():
+            model = torchvision.models.vgg16()
+        case DinoConfig(project, model_str):
+            model = DinoFeatureExtractor(model_str, project)
+    model.backbone_type = backbone_config.type
     return model
 
 
@@ -71,7 +90,7 @@ def dino_feature_extraction(backbone, x):
     return backbone(x)
 
 
-def compute_safa_input_dims(backbone: torch.nn.Module, patch_dims: Tuple[int, int]):
+def compute_safa_input_dims(backbone: torch.nn.Module, patch_dims: tuple[int, int]):
     with torch.no_grad():
         test_input = torch.empty(1, 3, *patch_dims)
         result = extract_features(backbone, test_input)
@@ -81,16 +100,17 @@ def compute_safa_input_dims(backbone: torch.nn.Module, patch_dims: Tuple[int, in
 def extract_features(backbone, x):
     if backbone.backbone_type == BackboneType.VGG16:
         return vgg16_feature_extraction(backbone, x)
-    elif backbone.backbone_type == BackboneType.DINOV2_B14:
+    elif backbone.backbone_type == BackboneType.DINOV2:
         return dino_feature_extraction(backbone, x)
 
 
 class WagPatchEmbedding(torch.nn.Module):
     def __init__(self, config: WagPatchEmbeddingConfig):
         super().__init__()
-        self.backbone = load_backbone(config.backbone_type)
+        self._backbone = load_backbone(config.backbone_config)
+        self._patch_dims = config.patch_dims
 
-        n_channels, input_safa_dim = compute_safa_input_dims(self.backbone, config.patch_dims)
+        n_channels, input_safa_dim = compute_safa_input_dims(self._backbone, config.patch_dims)
         safa_dims = [input_safa_dim // 2, input_safa_dim]
         n_heads = config.num_aggregation_heads
         self._output_dim = n_channels * n_heads
@@ -109,6 +129,10 @@ class WagPatchEmbedding(torch.nn.Module):
     def output_dim(self):
         return self._output_dim
 
+    @property
+    def patch_dims(self):
+        return self._patch_dims
+
     def safa(self, x):
         batch_size = x.shape[0]
         (out, _) = torch.max(x, dim=-3)
@@ -119,7 +143,7 @@ class WagPatchEmbedding(torch.nn.Module):
         return out
 
     def forward(self, x):
-        features = extract_features(self.backbone, x)
+        features = extract_features(self._backbone, x)
         batch_size, num_channels, _, _ = features.shape
         attention = self.safa(features)
         vectorized_features = torch.reshape(features, (batch_size, num_channels, -1))

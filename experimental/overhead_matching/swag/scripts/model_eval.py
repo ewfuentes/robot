@@ -77,7 +77,7 @@ def _(Path, evaluate_swag, load_model):
 
 
 @app.cell
-def _(NamedTuple, Path, itertools, vigor_dataset):
+def _(NamedTuple, Path, vigor_dataset):
     class ModelConfig(NamedTuple):
         lr_schedule: bool
         negative_mining: bool
@@ -85,13 +85,13 @@ def _(NamedTuple, Path, itertools, vigor_dataset):
 
     model_paths = {}
     idx=59
-    for lr_schedule, negative_mining, pos_semipos in itertools.product(*[[False, True]]*3):
-        model_paths[ModelConfig(lr_schedule, negative_mining, pos_semipos)] = f"/data/overhead_matching/models/20250616_8_way_experiment/all_chicago_lr_schedule_{lr_schedule}_negative_mining_{negative_mining}_pos_semipos_{pos_semipos}/{idx:04d}"
+    # for lr_schedule, negative_mining, pos_semipos in itertools.product(*[[False, True]]*3):
+    #     model_paths[ModelConfig(lr_schedule, negative_mining, pos_semipos)] = f"/data/overhead_matching/models/20250616_8_way_experiment/all_chicago_lr_schedule_{lr_schedule}_negative_mining_{negative_mining}_pos_semipos_{pos_semipos}/{idx:04d}"
 
-    # model_paths = {
-    #     ModelConfig(False, False, False): "/data/overhead_matching/models/all_chicago_model/0240",
-    #     'w_semi_pos': "/data/overhead_matching/models/all_chicago_model_w_semipos/0080",
-    # }
+    # # model_paths = {
+    # #     ModelConfig(False, False, False): "/data/overhead_matching/models/all_chicago_model/0240",
+    # #     'w_semi_pos': "/data/overhead_matching/models/all_chicago_model_w_semipos/0080",
+    # # }
 
     dataset_paths = {
         'chicago': '/data/overhead_matching/datasets/VIGOR/Chicago',
@@ -113,10 +113,7 @@ def _(NamedTuple, Path, itertools, vigor_dataset):
         dataset_paths,
         datasets,
         idx,
-        lr_schedule,
         model_paths,
-        negative_mining,
-        pos_semipos,
     )
 
 
@@ -145,7 +142,7 @@ def _(df, mo, plt, seaborn):
 
 
 @app.cell
-def _(Path, itertools, pd, torch):
+def _(Path, pd, torch):
     # Plot statistics about path evaluation
 
     def process_path(path: Path):
@@ -170,12 +167,20 @@ def _(Path, itertools, pd, torch):
                 ...
         return pd.DataFrame.from_records(out)
 
-    base_path = Path('/data/overhead_matching/evaluation/results/20250616_8_way_experiment_fixed/')
+    base_path = Path('/data/overhead_matching/evaluation/results/')
+
+    _results_paths = [
+        Path("/data/overhead_matching/evaluation/results/20250616_8_way_experiment_fixed/all_chicago_lr_schedule_False_negative_mining_False_pos_semipos_False"),
+        Path("/data/overhead_matching/evaluation/results/20250703_dino_feature_extraction/all_chicago_direct_dino_features"),
+        Path("/data/overhead_matching/evaluation/results/20250703_dino_feature_extraction/all_chicago_dino_conv1x1_512"),
+    ]
 
     path_dfs = []
-    for _lr_schedule, _negative_mining, _pos_semipos in itertools.product(*[[False, True]]*3):
-        _model_name = f"all_chicago_lr_schedule_{_lr_schedule}_negative_mining_{_negative_mining}_pos_semipos_{_pos_semipos}"
-        path_dfs.append(process_eval_results(base_path / _model_name))
+    for _p in _results_paths:
+        path_dfs.append(process_eval_results(_p))
+    # for _lr_schedule, _negative_mining, _pos_semipos in itertools.product(*[[False, True]]*3):
+    #     _model_name = f"all_chicago_lr_schedule_{_lr_schedule}_negative_mining_{_negative_mining}_pos_semipos_{_pos_semipos}"
+    #     path_dfs.append(process_eval_results(base_path / _model_name))
 
     path_df = pd.concat(path_dfs)
     return base_path, path_df, path_dfs, process_eval_results, process_path

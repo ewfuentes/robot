@@ -14,6 +14,7 @@ from experimental.overhead_matching.swag.model import patch_embedding
 from dataclasses import dataclass
 import tqdm
 import msgspec
+from pprint import pprint
 
 
 @dataclass
@@ -45,8 +46,11 @@ class OptimizationConfig:
 @dataclass
 class TrainConfig:
     opt_config: OptimizationConfig
+    sat_model_config: patch_embedding.WagPatchEmbeddingConfig
+    pano_model_config: patch_embedding.WagPatchEmbeddingConfig
     output_dir: Path
-    tensorboard_output: Path
+    tensorboard_output: Path | None
+    dataset_path: list[Path]
 
 
 @dataclass
@@ -232,69 +236,59 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model, quie
 
 
 def main(
-        dataset_paths: list[Path],
-        opt_config_path: Path,
-        output_dir: Path,
-        tensorboard_output: Path,
+        dataset_base_path: Path,
+        output_base_path: Path,
+        train_config_path: Path,
         quiet: bool):
+    def dec_hook(type, obj):
+        if type is Path:
+            return Path(obj)
+        raise ValueError(f"Unhandled type: {type=} {obj=}")
+
+    with open(train_config_path, 'r') as file_in:
+        train_config = msgspec.yaml.decode(file_in.read(), type=TrainConfig, dec_hook=dec_hook)
+    pprint(train_config)
+
     PANORAMA_NEIGHBOR_RADIUS_DEG = 1e-6
-    NUM_SAFA_HEADS = 4
     dataset_config = vigor_dataset.VigorDatasetConfig(
         panorama_neighbor_radius=PANORAMA_NEIGHBOR_RADIUS_DEG,
-        satellite_patch_size=(322, 322),
-        panorama_size=(322, 644),
+        satellite_patch_size=train_config.sat_model_config.patch_dims,
+        panorama_size=train_config.pano_model_config.patch_dims,
         sample_mode=vigor_dataset.SampleMode.POS_SEMIPOS,
     )
+    dataset_paths = [dataset_base_path / p for p in train_config.dataset_path]
     dataset = vigor_dataset.VigorDataset(dataset_paths, dataset_config)
 
-    satellite_model = patch_embedding.WagPatchEmbedding(
-        patch_embedding.WagPatchEmbeddingConfig(
-            patch_dims=dataset_config.satellite_patch_size,
-            num_aggregation_heads=NUM_SAFA_HEADS,
-            backbone_type=patch_embedding.BackboneType.DINOV2_B14,
-        )
-    )
+    satellite_model = patch_embedding.WagPatchEmbedding(train_config.sat_model_config)
 
-    panorama_model = patch_embedding.WagPatchEmbedding(
-        patch_embedding.WagPatchEmbeddingConfig(
-            patch_dims=dataset_config.panorama_size,
-            num_aggregation_heads=NUM_SAFA_HEADS,
-            backbone_type=patch_embedding.BackboneType.DINOV2_B14,
-        )
-    )
+    panorama_model = patch_embedding.WagPatchEmbedding(train_config.pano_model_config)
 
-    with open(opt_config_path, 'r') as file_in:
-        opt_config = msgspec.yaml.decode(file_in.read(), type=OptimizationConfig)
+    output_dir = output_base_path / train_config.output_dir
+    tensorboard_output = train_config.tensorboard_output
+    tensorboard_output = tensorboard_output if tensorboard_output is not None else output_dir / "logs"
 
-    config = TrainConfig(
-        output_dir=output_dir,
-        tensorboard_output=tensorboard_output,
-        opt_config=opt_config)
+    train_config.output_dir = output_dir
+    train_config.tensorboard_output = tensorboard_output
 
     train(
-        config,
+        train_config,
         dataset=dataset,
         panorama_model=panorama_model,
         satellite_model=satellite_model,
-        quiet=quiet
-    )
+        quiet=quiet)
 
 
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", help="path to dataset", action='append', required=True)
-    parser.add_argument("--output_dir", help="path to output", required=True)
-    parser.add_argument("--opt_config", help="path to optimization config", required=True)
-    parser.add_argument("--tensorboard_output")
+    parser.add_argument("--dataset_base", help="path to dataset", required=True)
+    parser.add_argument("--output_base", help="path to output", required=True)
+    parser.add_argument("--train_config", help="path to train_config", required=True)
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 
-    if args.tensorboard_output is None:
-        args.tensorboard_output = Path(args.output_dir) / "logs"
     main(
-        [Path(x) for x in args.dataset],
-        Path(args.opt_config),
-        Path(args.output_dir),
-        Path(args.tensorboard_output),
+        Path(args.dataset_base),
+        Path(args.output_base),
+        Path(args.train_config),
         quiet=args.quiet)
