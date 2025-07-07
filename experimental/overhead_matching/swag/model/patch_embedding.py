@@ -19,13 +19,45 @@ class WagPatchEmbeddingConfig:
     num_aggregation_heads: int
     backbone_type: BackboneType
 
+class DinoFeatureExtractor(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.dino = torch.hub.load("facebookresearch/dinov2", "dinov2_vitb14")
+        self.dino.eval()
+
+        self.project = torch.nn.Conv2d(
+            in_channels=self.dino.num_features,
+            out_channels=512,
+            kernel_size=1)
+
+    def forward(self, x):
+        # Patch tokens are batch x n_tokens x embedding_dim
+        # the tokens go from left to right, then top to bottom
+        batch_size, n_channels, img_height, img_width = x.shape
+        patch_height, patch_width = self.dino.patch_embed.patch_size
+        num_patch_cols = int((img_width + patch_width / 2) // patch_width)
+        num_patch_rows = int((img_height + patch_height / 2) // patch_height)
+
+        x = torchvision.transforms.functional.normalize(
+                x,
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225])
+
+        with torch.no_grad():
+            patch_tokens = self.dino.forward_features(x)["x_norm_patchtokens"]
+        # Swap the embedding dim and the token dim and reshape to have the same
+        # aspect ratio as the original image
+        out = patch_tokens.transpose(-1, -2).reshape(
+                batch_size, -1, num_patch_rows, num_patch_cols)
+        out = self.project(out)
+        return out
+
 
 def load_backbone(backbone_type: BackboneType):
     if backbone_type == BackboneType.VGG16:
         model = torchvision.models.vgg16()
     elif backbone_type == BackboneType.DINOV2_B14:
-        model = torch.hub.load("facebookresearch/dinov2", "dinov2_vitb14")
-        model.eval()
+        model = DinoFeatureExtractor()
     model.backbone_type = backbone_type
     return model
 
@@ -36,25 +68,7 @@ def vgg16_feature_extraction(backbone, x):
 
 
 def dino_feature_extraction(backbone, x):
-    # Patch tokens are batch x n_tokens x embedding_dim
-    # the tokens go from left to right, then top to bottom
-    batch_size, n_channels, img_height, img_width = x.shape
-    patch_height, patch_width = backbone.patch_embed.patch_size
-    num_patch_cols = int((img_width + patch_width / 2) // patch_width)
-    num_patch_rows = int((img_height + patch_height / 2) // patch_height)
-
-    x = torchvision.transforms.functional.normalize(
-            x,
-            mean=[0.485, 0.456, 0.406],
-            std=[0.229, 0.224, 0.225])
-
-    with torch.no_grad():
-        patch_tokens = backbone.forward_features(x)["x_norm_patchtokens"]
-    # Swap the embedding dim and the token dim and reshape to have the same
-    # aspect ratio as the original image
-    out = patch_tokens.transpose(-1, -2).reshape(
-            batch_size, -1, num_patch_rows, num_patch_cols)
-    return out
+    return backbone(x)
 
 
 def compute_safa_input_dims(backbone: torch.nn.Module, patch_dims: Tuple[int, int]):
