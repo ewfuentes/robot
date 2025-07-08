@@ -15,7 +15,33 @@ class PatchEmbeddingTest(unittest.TestCase):
         CHANNEL_DIM = 512
         BATCH = 25
         CHANNELS = 3
-        config = pe.WagPatchEmbeddingConfig(patch_dims=PATCH_DIMS, num_aggregation_heads=NUM_HEADS)
+        config = pe.WagPatchEmbeddingConfig(
+                patch_dims=PATCH_DIMS,
+                num_aggregation_heads=NUM_HEADS,
+                backbone_config=pe.VGGConfig())
+        model = pe.WagPatchEmbedding(config)
+        input = torch.rand((BATCH, CHANNELS, *PATCH_DIMS))
+
+        # Action
+        embedding = model(input)
+
+        # Verification
+        self.assertEqual(embedding.shape[0], BATCH)
+        self.assertEqual(embedding.shape[1], NUM_HEADS * CHANNEL_DIM)
+
+    def test_dino_patch_embedding(self):
+        # Setup
+        BATCH = 25
+        PATCH_DIMS = (112, 616)
+        CHANNELS = 3
+        NUM_HEADS = 4
+
+        CHANNEL_DIM = 1024
+        # DINOv2 produces feature maps with 768 dimensions
+        config = pe.WagPatchEmbeddingConfig(
+                patch_dims=PATCH_DIMS,
+                num_aggregation_heads=NUM_HEADS,
+                backbone_config=pe.DinoConfig(project=CHANNEL_DIM))
         model = pe.WagPatchEmbedding(config)
         input = torch.rand((BATCH, CHANNELS, *PATCH_DIMS))
 

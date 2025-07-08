@@ -1,5 +1,6 @@
 from dataclasses import is_dataclass, fields, dataclass
 from pathlib import Path
+import msgspec
 
 def dataclass_to_dict(input_object: dataclass)->dict:
     """Convert a dataclass instance (and any nested dataclasses) to a dictionary.
@@ -35,6 +36,9 @@ def dataclass_to_dict(input_object: dataclass)->dict:
     if isinstance(input_object, Path):
         return str(input_object)
         
+    if isinstance(input_object, msgspec.Struct):
+        return {f: getattr(input_object, f) for f in input_object.__struct_fields__}
+
     # Base case: return the object itself (int, float, str, etc.)
     return input_object
 
