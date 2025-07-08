@@ -1,4 +1,6 @@
 #pragma once
+#include <optional>
+
 #include "Eigen/Core"
 #include "Eigen/Geometry"
 #include "gtsam/geometry/Cal3_S2.h"
@@ -21,7 +23,8 @@ Eigen::Vector3d deproject(const Eigen::Matrix3d &K, const Eigen::Vector3d &pixel
 Eigen::Vector3d deproject(const Eigen::Matrix3d &K, const Eigen::Vector2d &pixel_inhomog,
                           const double depth);
 
-Eigen::Isometry3d estimate_cam0_from_cam1(const std::vector<cv::KeyPoint> &kpts0,
-                                          const std::vector<cv::KeyPoint> &kpts1,
-                                          const std::vector<cv::DMatch> &matches, const cv::Mat &K);
+std::optional<Eigen::Isometry3d> estimate_cam0_from_cam1(const std::vector<cv::KeyPoint> &kpts0,
+                                                         const std::vector<cv::KeyPoint> &kpts1,
+                                                         const std::vector<cv::DMatch> &matches,
+                                                         const cv::Mat &K);
 }  // namespace robot::geometry

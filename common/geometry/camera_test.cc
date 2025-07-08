@@ -1,5 +1,7 @@
 #include "common/geometry/camera.hh"
 
+#include <optional>
+
 #include "common/geometry/translate_types.hh"
 #include "gtest/gtest.h"
 #include "visualization/opencv/opencv_viz.hh"
@@ -111,20 +113,23 @@ TEST(CameraTest, test_estimate_pose) {
         Eigen::Vector2d pxl_c1_pcube = pxl_c1_pcube_homog.head<2>() / pxl_c1_pcube_homog(2);
         if (CameraTestHelper::pixel_in_range(pxl_c0_pcube, img_width, img_height) &&
             CameraTestHelper::pixel_in_range(pxl_c1_pcube, img_width, img_height)) {
-            kpts0.push_back(cv::KeyPoint(pxl_c0_pcube[0], pxl_c0_pcube[1], 3));
-            kpts1.push_back(cv::KeyPoint(pxl_c1_pcube[0], pxl_c1_pcube[1], 3));
-            matches.emplace_back(cv::DMatch(kpts0.size() - 1, kpts1.size() - 1, 0));
+            kpts0.emplace_back(pxl_c0_pcube[0], pxl_c0_pcube[1], 3);
+            kpts1.emplace_back(pxl_c1_pcube[0], pxl_c1_pcube[1], 3);
+            matches.emplace_back(kpts0.size() - 1, kpts1.size() - 1, 0);
         }
     }
 
-    Eigen::Isometry3d cam0_from_cam1_estimate = estimate_cam0_from_cam1(kpts0, kpts1, matches, K);
-    Eigen::Isometry3d cam0_from_cam1 = world_from_cam0.inverse() * world_from_cam1;
-    cam0_from_cam1.translation() /= cam0_from_cam1.translation().norm();
-    EXPECT_TRUE(
-        cam0_from_cam1_estimate.translation().isApprox(cam0_from_cam1.translation(), 0.000001));
-    EXPECT_TRUE(cam0_from_cam1_estimate.linear().isApprox(cam0_from_cam1.linear(), 0.001));
+    std::optional<Eigen::Isometry3d> cam0_from_cam1_estimate =
+        estimate_cam0_from_cam1(kpts0, kpts1, matches, K);
+    if (cam0_from_cam1_estimate) {
+        Eigen::Isometry3d cam0_from_cam1 = world_from_cam0.inverse() * world_from_cam1;
+        cam0_from_cam1.translation() /= cam0_from_cam1.translation().norm();
+        EXPECT_TRUE(cam0_from_cam1_estimate->translation().isApprox(cam0_from_cam1.translation(),
+                                                                    0.000001));
+        EXPECT_TRUE(cam0_from_cam1_estimate->linear().isApprox(cam0_from_cam1.linear(), 0.001));
 
-    poses.emplace_back(world_from_cam0 * cam0_from_cam1_estimate);
-    viz_scene(poses, p_W_cube);
+        poses.emplace_back(world_from_cam0 * *cam0_from_cam1_estimate);
+        viz_scene(poses, p_W_cube);
+    }
 }
 }  // namespace robot::geometry

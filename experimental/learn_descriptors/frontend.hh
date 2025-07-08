@@ -3,24 +3,43 @@
 #include <utility>
 #include <vector>
 
+#include "experimental/learn_descriptors/frame.hh"
+#include "experimental/learn_descriptors/frontend_definitions.hh"
+#include "experimental/learn_descriptors/structure_from_motion_types.hh"
 #include "opencv2/opencv.hpp"
 
 namespace robot::experimental::learn_descriptors {
-class Frontend {
-   public:
+struct FrontendParams {
     enum class ExtractorType { SIFT, ORB };
     enum class MatcherType { BRUTE_FORCE, KNN, FLANN };
-
-    Frontend(){};
-    Frontend(ExtractorType frontend_extractor, MatcherType frontend_matcher);
+    ExtractorType extractor_type = ExtractorType::SIFT;
+    MatcherType matcher_type = MatcherType::KNN;
+    bool exhaustive = true;
+    bool incremental = false;  // a.k.a. images are successive
+};
+class Frontend {
+   public:
+    static constexpr char symbol_pose_char = 'x';
+    static constexpr char symbol_lmk_char = 'l';
+    explicit Frontend(FrontendParams params);
     ~Frontend(){};
 
-    const ExtractorType &get_extractor_type() const { return extractor_type_; };
-    const MatcherType &get_matcher_type() const { return matcher_type_; };
+    void populate_frames();
+    void match_frames_and_build_tracks();
+
+    void add_image(const cv::Mat &img) { images_.push_back(img); };
+    void add_images(const std::vector<cv::Mat> &imgs) {
+        for (const cv::Mat &img : imgs) {
+            images_.push_back(img);
+        }
+    };
+
+    const FrontendParams::ExtractorType &extractor_type() const { return params_.extractor_type; };
+    const FrontendParams::MatcherType &matcher_type() const { return params_.matcher_type; };
 
     std::pair<std::vector<cv::KeyPoint>, cv::Mat> extract_features(const cv::Mat &img) const;
-    std::vector<cv::DMatch> get_matches(const cv::Mat &descriptors1,
-                                        const cv::Mat &descriptors2) const;
+    std::vector<cv::DMatch> compute_matches(const cv::Mat &descriptors1,
+                                            const cv::Mat &descriptors2) const;
     static void threshold_matches(std::vector<cv::DMatch> &matches, float dist_threshhold);
     static void enforce_bijective_matches(std::vector<cv::DMatch> &matches);
     static void enforce_bijective_buffer_matches(std::vector<cv::DMatch> &matches);
@@ -36,16 +55,20 @@ class Frontend {
     }
 
    private:
-    bool get_brute_matches(const cv::Mat &descriptors1, const cv::Mat &descriptors2,
-                           std::vector<cv::DMatch> &matches_out) const;
-    bool get_KNN_matches(const cv::Mat &descriptors1, const cv::Mat &descriptors2,
-                         std::vector<cv::DMatch> &matches_out) const;
-    bool get_FLANN_matches(const cv::Mat &descriptors1, const cv::Mat &descriptors2,
-                           std::vector<cv::DMatch> &matches_out) const;
-    ExtractorType extractor_type_;
-    MatcherType matcher_type_;
+    bool compute_brute_matches(const cv::Mat &descriptors1, const cv::Mat &descriptors2,
+                               std::vector<cv::DMatch> &matches_out) const;
+    bool compute_KNN_matches(const cv::Mat &descriptors1, const cv::Mat &descriptors2,
+                             std::vector<cv::DMatch> &matches_out) const;
+    bool compute_FLANN_matches(const cv::Mat &descriptors1, const cv::Mat &descriptors2,
+                               std::vector<cv::DMatch> &matches_out) const;
+    FrontendParams params_;
 
     cv::Ptr<cv::Feature2D> feature_extractor_;
     cv::Ptr<cv::DescriptorMatcher> descriptor_matcher_;
+
+    std::vector<cv::Mat> images_;
+    FeatureTracks feature_tracks_;
+    FrameLandmarkIdMap lmk_id_map_;
+    std::vector<Frame> frames_;
 };
 }  // namespace robot::experimental::learn_descriptors

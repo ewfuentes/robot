@@ -1,6 +1,7 @@
 #include <cmath>
 #include <functional>
 #include <opencv2/calib3d.hpp>
+#include <optional>
 #include <sstream>
 #include <vector>
 
@@ -277,7 +278,18 @@ int main(int argc, const char **argv) {
     std::cout << "incremental_sfm_mvp!" << std::endl;
     // const std::vector<int> indices{581, 609,
     //                                633};  // indices with all data fields on neighborhood_5_train
-    const std::vector<int> indices{581, 593, 609, 621, 633, 636, 639, 642};  // indices with
+    // const std::vector<int> indices{581, 593, 609, 621, 633, 636, 639, 642};  // indices with
+    // get indices with fully populated img_pt containing full gps data and reference
+    const std::vector<int> indices = [&parser]() -> std::vector<int> {
+        std::vector<int> tmp;
+        for (size_t i = 0; i < parser.num_images(); i++) {
+            const ImagePoint img_pt = parser.get_image_point(i);
+            if (img_pt.AS_w_from_gnss_cam && img_pt.gps_gcs && img_pt.gps_gcs &&
+                img_pt.gps_gcs->uncertainty && img_pt.gps_gcs->altitude)
+                tmp.push_back(i);
+        }
+        return tmp;
+    }();
     constexpr bool visualize = false;
     // all data fields on neighborhood_5_train const std::vector<int> indices = []() {
     //     std::vector<int> tmp;
@@ -300,7 +312,9 @@ int main(int argc, const char **argv) {
 
     // StructureFromMotion sfm(Frontend::ExtractorType::SIFT, K, D,
     //                         gtsam::Pose3(T_world_camera0.matrix()));
-    Frontend frontend(Frontend::ExtractorType::SIFT, Frontend::MatcherType::KNN);
+    FrontendParams params{FrontendParams::ExtractorType::SIFT, FrontendParams::MatcherType::KNN,
+                          true, false};
+    Frontend frontend(params);
 
     gtsam::Values initial_estimate_;
     gtsam::NonlinearFactorGraph graph_;
@@ -349,7 +363,7 @@ int main(int argc, const char **argv) {
             world_from_cam = Eigen::Isometry3d((parser.S_from_AS().matrix() * scale_mat_reference *
                                                 img_pt.AS_w_from_gnss_cam->matrix())
                                                    .matrix());
-            std::cout << "ok" << std::endl;
+            // std::cout << "ok" << std::endl;
             // world_from_cam.translation() =
             //     ((parser.w_from_gpsw() * parser.e_from_gpsw().inverse()).matrix() *
             //      p_gps_in_ECEF_hom)
@@ -417,14 +431,18 @@ int main(int argc, const char **argv) {
     LandmarkId lmk_id = 0;
     constexpr bool exhaustive = true;
     if (exhaustive) {
-        for (size_t i = 0; i < indices.size() - 1; i++) {
-            std::cout << "i: " << i << std::endl;
+        for (size_t i = 0; i < indices.size() - 1; i += 4) {
+            // std::cout << "i: " << i << std::endl;
             for (size_t j = i + 1; j < indices.size(); j++) {
-                std::cout << "j: " << j << std::endl;
-                std::vector<cv::DMatch> matches =
-                    frontend.get_matches(frames[i].get_descriptors(), frames[j].get_descriptors());
+                // std::cout << "j: " << j << std::endl;
+                std::vector<cv::DMatch> matches = frontend.compute_matches(
+                    frames[i].get_descriptors(), frames[j].get_descriptors());
                 // DIAL TO MESS WITH
                 frontend.enforce_bijective_buffer_matches(matches);
+
+                if (matches.size() < 5) {
+                    continue;
+                }
 
                 std::vector<cv::KeyPoint> cv_kpts_1;
                 std::vector<cv::KeyPoint> cv_kpts_2;
@@ -439,10 +457,17 @@ int main(int argc, const char **argv) {
                     cv_kpts_2.push_back(cv_kpt);
                 }
                 Eigen::Isometry3d world_from_camj(id_to_initial_world_from_cam.at(j).matrix());
+                // std::cout << "heartbeat" << std::endl;
+                std::optional<Eigen::Isometry3d> scale_cam0_from_cam1 =
+                    robot::geometry::estimate_cam0_from_cam1(cv_kpts_1, cv_kpts_2, matches, K_mat);
+                if (!scale_cam0_from_cam1) {
+                    continue;
+                }
                 world_from_camj.linear() =
                     (Eigen::Isometry3d(id_to_initial_world_from_cam.at(i).matrix()) *
-                     robot::geometry::estimate_cam0_from_cam1(cv_kpts_1, cv_kpts_2, matches, K_mat))
+                     *scale_cam0_from_cam1)
                         .linear();
+                // std::cout << "heartbeat 2" << std::endl;
                 id_to_initial_world_from_cam.at(j) = gtsam::Pose3(world_from_camj.matrix());
                 for (const cv::DMatch match : matches) {
                     const KeypointCV kpt_cam0 = frames[i].get_keypoints()[match.queryIdx];
@@ -466,8 +491,8 @@ int main(int argc, const char **argv) {
         std::cout << "done processing matches" << std::endl;
     } else {  // successive only
         for (size_t i = 0; i < indices.size() - 1; i++) {
-            std::vector<cv::DMatch> matches =
-                frontend.get_matches(frames[i].get_descriptors(), frames[i + 1].get_descriptors());
+            std::vector<cv::DMatch> matches = frontend.compute_matches(
+                frames[i].get_descriptors(), frames[i + 1].get_descriptors());
             frontend.enforce_bijective_buffer_matches(matches);
             for (const cv::DMatch match : matches) {
                 const KeypointCV kpt_cam0 = frames[i].get_keypoints()[match.queryIdx];
@@ -494,12 +519,12 @@ int main(int argc, const char **argv) {
                                              std::to_string(id));
     }
 
-    std::cout << "pre heartbeat" << std::endl;
+    // std::cout << "pre heartbeat" << std::endl;
     if (visualize)
         robot::geometry::viz_scene(viz_world_from_cam_init,
                                    std::vector<robot::geometry::VizPoint>(),
                                    cv::viz::Color::brown(), true, true, "world_from_cam_estimates");
-    std::cout << "heartbeat" << std::endl;
+    // std::cout << "heartbeat" << std::endl;
 
     // TRIANGULATE all of the points (for initial guess)
     std::unordered_map<LandmarkId, gtsam::Point3> lmk_triangulated_map;  // points are kpt_in_world
@@ -636,8 +661,8 @@ int main(int argc, const char **argv) {
             local_estimate_.insert_or_assign(symbols_poses[1],
                                              id_to_initial_world_from_cam.at(i + 1));
 
-            std::vector<cv::DMatch> matches =
-                frontend.get_matches(frames[i].get_descriptors(), frames[i + 1].get_descriptors());
+            std::vector<cv::DMatch> matches = frontend.compute_matches(
+                frames[i].get_descriptors(), frames[i + 1].get_descriptors());
             // DIAL TO MESS WITH
             frontend.enforce_bijective_matches(matches);
             std::vector<gtsam::Pose3> world_from_cams{id_to_initial_world_from_cam.at(i),
@@ -743,12 +768,6 @@ int main(int argc, const char **argv) {
     const gtsam::Values result =
         detail_sfm::optimize_graph(graph_, initial_estimate_, symbols_pose, symbols_landmarks, 0);
 
-    if (visualize) {
-        std::cout << "about to visualize result" << std::endl;
-        result.print();
-        detail_sfm::graph_values(result, "Result", symbols_pose, symbols_landmarks);
-    }
-
     // calculate ATE (Absolute Trajectory Error) average (RMSE) to reference
     double sum_traj_error = 0;
     double sum_rot_error = 0;
@@ -763,4 +782,9 @@ int main(int argc, const char **argv) {
     double rmse_ate = std::sqrt(sum_traj_error / symbols_pose.size());
     double rmse_rot = std::sqrt(sum_rot_error / symbols_pose.size());
     std::cout << "\n\nRMSE_ATE:\t" << rmse_ate << "\nRMSE_ROT:\t" << rmse_rot << std::endl;
+
+    std::cout << "about to visualize result" << std::endl;
+    result.print();
+    detail_sfm::graph_values(result, "Result", symbols_pose, std::vector<gtsam::Symbol>());
+    // detail_sfm::graph_values(result, "Result", symbols_pose, symbols_landmarks);
 }

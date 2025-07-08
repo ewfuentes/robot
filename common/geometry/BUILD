@@ -48,9 +48,10 @@ cc_library(
   visibility = ["//visibility:public"],
   deps = [
     "@eigen",     
-    "@opencv//:opencv",
+    "@opencv",
     ":translate_types",
-    "@gtsam"
+    "@gtsam",
+    "//common:check"
   ]
 )
 

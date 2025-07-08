@@ -68,8 +68,8 @@ void StructureFromMotion::add_image(const cv::Mat &img, const gtsam::Pose3 &T_wo
     std::cout << "current index " << idx_img_current << std::endl;
     if (idx_img_current > 0) {
         std::vector<cv::DMatch> matches =
-            get_matches(img_keypoints_and_descriptors_.back().second,
-                        keypoints_and_descriptors.second, Frontend::enforce_bijective_matches);
+            compute_matches(img_keypoints_and_descriptors_.back().second,
+                            keypoints_and_descriptors.second, Frontend::enforce_bijective_matches);
 
         const gtsam::Symbol sym_T_w_c0(Backend::pose_symbol_char, idx_img_current - 1);
         const gtsam::Symbol sym_T_w_c1(Backend::pose_symbol_char, idx_img_current);
@@ -125,10 +125,10 @@ void StructureFromMotion::add_image(const cv::Mat &img, const gtsam::Pose3 &T_wo
     img_keypoints_and_descriptors_.push_back(keypoints_and_descriptors);
 }
 
-std::vector<cv::DMatch> StructureFromMotion::get_matches(
+std::vector<cv::DMatch> StructureFromMotion::compute_matches(
     const cv::Mat &descriptors_1, const cv::Mat &descriptors_2,
     std::optional<StructureFromMotion::match_function> post_process_func) {
-    std::vector<cv::DMatch> matches = frontend_.get_matches(descriptors_1, descriptors_2);
+    std::vector<cv::DMatch> matches = frontend_.compute_matches(descriptors_1, descriptors_2);
     if (post_process_func) {
         (*post_process_func)(matches);
     }

@@ -40,7 +40,7 @@ class StructureFromMotion {
         std::optional<Backend::graph_step_debug_func> inter_debug_func = std::nullopt);
     const gtsam::Values &get_structure_result() { return backend_.get_result(); };
     using match_function = std::function<void(std::vector<cv::DMatch> &)>;
-    std::vector<cv::DMatch> get_matches(
+    std::vector<cv::DMatch> compute_matches(
         const cv::Mat &descriptors_1, const cv::Mat &descriptors_2,
         std::optional<match_function> post_process_func = std::nullopt);
     void graph_values(const gtsam::Values &values, const std::string &window_name = "graph values");
@@ -49,7 +49,7 @@ class StructureFromMotion {
     Backend get_backend() { return backend_; }
     size_t get_num_images_added() { return img_keypoints_and_descriptors_.size(); };
     size_t get_landmark_count() { return landmark_count_; };
-    const std::vector<std::vector<cv::DMatch>> get_matches() { return matches_; };
+    const std::vector<std::vector<cv::DMatch>> compute_matches() { return matches_; };
 
    private:
     std::shared_ptr<FeatureManager> feature_manager_;
