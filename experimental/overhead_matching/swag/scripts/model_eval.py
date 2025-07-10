@@ -65,10 +65,18 @@ def _():
 
 
 @app.cell
-def _(Path, evaluate_swag, load_model):
-    def get_top_k_results(model_partial_path, dataset):
+def _(Path, evaluate_swag, load_model, vigor_dataset):
+    def get_top_k_results(model_partial_path, dataset_path):
         sat_model = load_model(Path(f"{model_partial_path}_satellite"), device='cuda')
         pano_model = load_model(Path(f"{model_partial_path}_panorama"), device='cuda')
+
+        dataset_config = vigor_dataset.VigorDatasetConfig(
+            panorama_neighbor_radius=1e-6,
+            satellite_patch_size=sat_model.patch_dims,
+            panorama_size=pano_model.patch_dims,
+            factor=1.0
+        )
+        dataset = vigor_dataset.VigorDataset(dataset_path, dataset_config)
 
         df, all_similarity = evaluate_swag.evaluate_prediction_top_k(sat_model=sat_model, pano_model=pano_model, dataset=dataset)
         del sat_model, pano_model, all_similarity
@@ -77,52 +85,30 @@ def _(Path, evaluate_swag, load_model):
 
 
 @app.cell
-def _(NamedTuple, Path, vigor_dataset):
-    class ModelConfig(NamedTuple):
-        lr_schedule: bool
-        negative_mining: bool
-        pos_semipos: bool
-
+def _(Path, pprint):
     model_paths = {}
     idx=59
-    # for lr_schedule, negative_mining, pos_semipos in itertools.product(*[[False, True]]*3):
-    #     model_paths[ModelConfig(lr_schedule, negative_mining, pos_semipos)] = f"/data/overhead_matching/models/20250616_8_way_experiment/all_chicago_lr_schedule_{lr_schedule}_negative_mining_{negative_mining}_pos_semipos_{pos_semipos}/{idx:04d}"
+    _base_path = Path("/data/overhead_matching/models/20250707_dino_features")
+    for _p in sorted(_base_path.iterdir()):
+        model_paths[_p.name] = _p / f"{idx:04d}"
 
-    # # model_paths = {
-    # #     ModelConfig(False, False, False): "/data/overhead_matching/models/all_chicago_model/0240",
-    # #     'w_semi_pos': "/data/overhead_matching/models/all_chicago_model_w_semipos/0080",
-    # # }
+    pprint(model_paths)
 
     dataset_paths = {
         'chicago': '/data/overhead_matching/datasets/VIGOR/Chicago',
         # 'sanfrancisco': '/data/overhead_matching/datasets/VIGOR/SanFrancisco'
         "newyork": '/data/overhead_matching/datasets/VIGOR/NewYork'
     }
-
-    dataset_config = vigor_dataset.VigorDatasetConfig(
-        panorama_neighbor_radius=1e-6,
-        satellite_patch_size=(320, 320),
-        panorama_size=(320,640),
-        factor=1.0
-    )
-
-    datasets = {k: vigor_dataset.VigorDataset(Path(v), dataset_config) for k, v in dataset_paths.items()}
-    return (
-        ModelConfig,
-        dataset_config,
-        dataset_paths,
-        datasets,
-        idx,
-        model_paths,
-    )
+    return dataset_paths, idx, model_paths
 
 
 @app.cell
-def _(datasets, get_top_k_results, itertools, model_paths, pd):
+def _(dataset_paths, get_top_k_results, itertools, model_paths, pd):
     dfs = []
-    for (model_name, model_path), (data_name, _dataset) in itertools.product(model_paths.items(), datasets.items()):
+    for (model_name, model_path), (data_name, _dataset_path) in itertools.product(
+            model_paths.items(), dataset_paths.items()):
         print(model_name, data_name)
-        df = get_top_k_results(model_path, _dataset)
+        df = get_top_k_results(model_path, _dataset_path)
         df["dataset"] = data_name
         df["model"] = [model_name]*len(df)
         dfs.append(df)
@@ -167,13 +153,9 @@ def _(Path, pd, torch):
                 ...
         return pd.DataFrame.from_records(out)
 
-    base_path = Path('/data/overhead_matching/evaluation/results/')
+    _base_path = Path('/data/overhead_matching/evaluation/results/20250707_dino_features')
 
-    _results_paths = [
-        Path("/data/overhead_matching/evaluation/results/20250616_8_way_experiment_fixed/all_chicago_lr_schedule_False_negative_mining_False_pos_semipos_False"),
-        Path("/data/overhead_matching/evaluation/results/20250703_dino_feature_extraction/all_chicago_direct_dino_features"),
-        Path("/data/overhead_matching/evaluation/results/20250703_dino_feature_extraction/all_chicago_dino_conv1x1_512"),
-    ]
+    _results_paths = sorted(_base_path.iterdir())
 
     path_dfs = []
     for _p in _results_paths:
@@ -183,12 +165,12 @@ def _(Path, pd, torch):
     #     path_dfs.append(process_eval_results(base_path / _model_name))
 
     path_df = pd.concat(path_dfs)
-    return base_path, path_df, path_dfs, process_eval_results, process_path
+    return path_df, path_dfs, process_eval_results, process_path
 
 
 @app.cell
 def _(mo, path_df, plt, seaborn):
-    seaborn.displot(data=path_df, x='final_error_m', kind='ecdf', hue='model')
+    seaborn.displot(data=path_df, x='final_error_m', kind='ecdf', hue='model', palette="Paired")
     plt.title("Final Error CDF across 100 paths in New York")
     plt.tight_layout()
     mo.mpl.interactive(plt.gcf())
@@ -197,7 +179,7 @@ def _(mo, path_df, plt, seaborn):
 
 @app.cell
 def _(mo, path_df, plt, seaborn):
-    seaborn.scatterplot(data=path_df, x="final_error_m", y="var_sq_m", hue="model")
+    seaborn.scatterplot(data=path_df, x="final_error_m", y="var_sq_m", hue="model", palette="Paired")
     mo.mpl.interactive(plt.gcf())
     return
 
@@ -232,58 +214,61 @@ def _(Path, mo, model_selector, path_slider, plt, torch):
 
 
 @app.cell
-def _(NamedTuple, Path, pd, re, torch):
-    # Mixture MCL Evaluation
-
-    class MixtureSettings(NamedTuple):
-        frac: float
-        phantom_counts: float
-
-    def extract_mixture_info(p):
-        m = re.match(r"mcl_frac_([0-9.]+)_phantom_counts_([0-9.]+)", p.name)
-        if not m:
-            print(f"Could not parse settings from: {p}")
-            return
-
-        out = []
-
-        settings = MixtureSettings(frac=float(m.group(1)), phantom_counts=float(m.group(2)))
-        for eval_path in sorted(p.glob("[0-9]*")):
-            error = torch.load(eval_path / "error.pt")
-            var = torch.load(eval_path / "var.pt")
-            out.append({
-                "path_id": int(eval_path.name),
-                "dual_mcl_frac": settings.frac,
-                "phantom_counts": settings.phantom_counts,
-                "final_error_m": error[-1].item(),
-                "final_var_sq_m": var[-1].item(),
-                "settings": settings})
-
-        return pd.DataFrame.from_records(out)
-
-
-
-    _experiment_folder = Path('/data/overhead_matching/evaluation/results/mixture_mcl_sweep_fixed/')
-    _dfs = []
-    for p in _experiment_folder.glob("mcl_frac*"):
-        _dfs.append(extract_mixture_info(p))
-
-    mixture_mcl_df = pd.concat(_dfs).reset_index(drop=True)
-    return MixtureSettings, extract_mixture_info, mixture_mcl_df, p
+def _(Path, evaluate_swag, load_model, vigor_dataset):
+    def get_similarity_matrix(model_path: Path, dataset_path: Path):
+        sat_model = load_model(f"{model_path}_satellite")
+        pano_model = load_model(f"{model_path}_panorama")
+        dataset_config = vigor_dataset.VigorDatasetConfig(
+            panorama_neighbor_radius=1e-6,
+            satellite_patch_size=sat_model.patch_dims,
+            panorama_size=pano_model.patch_dims,
+            factor=1.0
+        )
+        dataset = vigor_dataset.VigorDataset(dataset_path, dataset_config)
+        return dataset, evaluate_swag.compute_cached_similarity_matrix(sat_model, pano_model, dataset, device='cuda', use_cached_similarity=True)
+    return (get_similarity_matrix,)
 
 
 @app.cell
-def _(mixture_mcl_df):
-    mixture_mcl_df
-    return
+def _(dataset_paths, get_similarity_matrix, model_paths, pd, torch):
+    _sim_dfs = []
+    for _model_name, _model_path in model_paths.items():
+        print(_model_name)
+        dataset, all_similarity = get_similarity_matrix(
+            model_paths[_model_name],
+            dataset_paths["newyork"])
+        _max_sims = torch.max(all_similarity, dim=1).values.cpu()
+        _positive_sims = all_similarity[torch.arange(len(dataset._panorama_metadata)), dataset._panorama_metadata["satellite_idx"]]
+        _sim_df = pd.DataFrame(_max_sims.cpu() - _positive_sims.cpu(), columns=["sim_diff_from_max"])
+        _sim_df["model_name"] = _model_name
+        _sim_dfs.append(_sim_df)
+    sim_df = pd.concat(_sim_dfs)
+    return all_similarity, dataset, sim_df
 
 
 @app.cell
-def _(mixture_mcl_df, mo, plt, seaborn):
+def _(mo, np, plt, seaborn, sim_df):
+    def compute_approx(sigma):
+        _x = np.linspace(0, 1.5, 1000)
+        _dx = _x[1]
+        _sigma = 0.1
+        _y =  np.exp(-_x**2 / (2.0 * sigma**2)) / (np.sqrt(2 * np.pi) * sigma)
+        _y_sum = np.cumsum(_y) * _dx * 2.0
+        return _x, _y_sum
+
+
+
     plt.figure()
-    seaborn.boxenplot(data=mixture_mcl_df, x="dual_mcl_frac", y="final_error_m", hue="phantom_counts", legend="full", palette='tab10')
+
+    seaborn.displot(data=sim_df, kind='ecdf', x='sim_diff_from_max', hue='model_name', palette='Paired')
+    for _sigma in [0.03, 0.1, 0.2, 0.3, 0.4, 0.5]:
+        _x, _approx = compute_approx(_sigma)
+        plt.plot(_x, _approx, label=rf'$\sigma$={_sigma}', linestyle='--')
+
+    plt.legend(loc='upper right')
+    plt.tight_layout()
     mo.mpl.interactive(plt.gcf())
-    return
+    return (compute_approx,)
 
 
 @app.cell
