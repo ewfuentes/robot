@@ -3,6 +3,9 @@ import unittest
 import common.torch.load_torch_deps
 import torch
 import math
+import pandas as pd
+import geopandas as gpd
+import matplotlib.pyplot as plt
 
 from pathlib import Path
 import tempfile
@@ -11,7 +14,6 @@ import itertools
 from PIL import Image, ImageDraw
 
 from experimental.overhead_matching.swag.data import vigor_dataset
-
 
 class VigorDatasetTest(unittest.TestCase):
 
@@ -37,10 +39,22 @@ class VigorDatasetTest(unittest.TestCase):
         lats = np.arange(MIN_LAT, MAX_LAT + LAT_STEP / 2.0, LAT_STEP)
         lons = np.arange(MIN_LON, MAX_LON + LON_STEP / 2.0, LON_STEP)
 
+        LANDMARK_LON_OFFSET_DEG = 0.025
+        LANDMARK_LAT_OFFSET_DEG = 0.05
+        landmark_info = []
         sat_dir = temp_dir / "satellite"
         sat_dir.mkdir()
-        for lat, lon in itertools.product(lats, lons):
+        for (lat_idx, lat), (lon_idx, lon) in itertools.product(enumerate(lats), enumerate(lons)):
             file_path = sat_dir / f"satellite_{lat}_{lon}.png"
+            # We place landmarks at a fixed offset relative to each satellite patch.
+            # The landmarks are placed such that they are present in multiple satellite patches
+            # There is no structure enforced on a landmark, other than it must have a location
+            landmark_info.append({
+                "lat": lat + LANDMARK_LAT_OFFSET_DEG,
+                "lon": lon + LANDMARK_LON_OFFSET_DEG,
+                "lat_idx": lat_idx,
+                "lon_idx": lon_idx,
+                "landmark_type": f"LAT{lat_idx}LON{lon_idx}"})
             image = Image.new("RGB", size=(200, 200))
             draw = ImageDraw.Draw(image)
             draw.text((5, 5), f"({lat}, {lon})")
@@ -111,6 +125,11 @@ class VigorDatasetTest(unittest.TestCase):
                 )
                 image.save(file_path)
 
+        landmark_info_df = pd.DataFrame.from_records(landmark_info)
+        landmark_geometry = gpd.points_from_xy(landmark_info_df["lon"], landmark_info_df["lat"])
+        landmark_info_df = gpd.GeoDataFrame(landmark_info_df, geometry=landmark_geometry)
+        landmark_info_df.to_file(temp_dir / "test.geojson", driver="GeoJSON")
+
     @classmethod
     def tearDownClass(cls):
         cls._temp_dir.cleanup()
@@ -154,6 +173,41 @@ class VigorDatasetTest(unittest.TestCase):
         self.assertAlmostEqual(item.satellite_metadata["lon"], sat_embedded_lon, places=1)
 
         # dataset.visualize(include_text_labels=True)
+        # plt.show(block=True)
+
+    def test_landmarks_are_correct(self):
+        # Setup
+        config = vigor_dataset.VigorDatasetConfig(
+            panorama_neighbor_radius=0.4,
+            satellite_patch_size=None,
+            panorama_size=None,
+            satellite_zoom_level=7,
+        )
+
+        # Action
+        dataset = vigor_dataset.VigorDataset(
+                Path(self._temp_dir.name),
+                config,
+                landmark_path=[Path(self._temp_dir.name) / "test.geojson"])
+
+        item = dataset[25]
+
+        # Verification
+        max_lat_idx = dataset._landmark_metadata["lat_idx"].max()
+        max_lon_idx = dataset._landmark_metadata["lon_idx"].max()
+        for _, landmark_meta in dataset._landmark_metadata.iterrows():
+            num_expected_neighbors = 9
+            lat_idx = landmark_meta["lat_idx"]
+            lon_idx = landmark_meta["lon_idx"]
+            if lat_idx == 0 or lat_idx == max_lat_idx:
+                num_expected_neighbors -= 3
+            if lon_idx == 0 or lon_idx == max_lon_idx:
+                num_expected_neighbors -= 3
+            num_expected_neighbors = max(num_expected_neighbors, 4)
+            self.assertEqual(len(landmark_meta["satellite_idxs"]), num_expected_neighbors)
+
+        # This item is in the interior of the region, so we expect 9 landmarks to be nearby
+        self.assertEqual(len(item.landmark_metadata), 9)
 
     def test_get_batch(self):
         # Setup
@@ -164,7 +218,8 @@ class VigorDatasetTest(unittest.TestCase):
             panorama_size = (100, 100),
             satellite_zoom_level=7,
         )
-        dataset = vigor_dataset.VigorDataset(Path(self._temp_dir.name), config)
+        dataset = vigor_dataset.VigorDataset(
+                Path(self._temp_dir.name), config, Path(self._temp_dir.name) / "test.geojson")
         dataloader = vigor_dataset.get_dataloader(dataset, batch_size=BATCH_SIZE)
 
         # Action
@@ -173,6 +228,7 @@ class VigorDatasetTest(unittest.TestCase):
         # Verification
         self.assertEqual(len(batch.panorama_metadata), BATCH_SIZE)
         self.assertEqual(len(batch.satellite_metadata), BATCH_SIZE)
+        self.assertEqual(len(batch.landmark_metadata), BATCH_SIZE)
         self.assertEqual(batch.panorama.shape, (BATCH_SIZE, 3, *config.panorama_size))
         self.assertEqual(batch.satellite.shape, (BATCH_SIZE, 3, *config.satellite_patch_size))
 
@@ -231,7 +287,7 @@ class VigorDatasetTest(unittest.TestCase):
         self.assertEqual(batch.panorama.shape[0], BATCH_SIZE)
         self.assertIsNone(batch.satellite)
 
-    def test_overhead_and_main_dataset_are_consistient(self):
+    def test_overhead_and_main_dataset_are_consistent(self):
         config = vigor_dataset.VigorDatasetConfig(
             panorama_neighbor_radius = 0.2,
             satellite_patch_size = (50, 50),
