@@ -55,9 +55,3 @@ py_test(
     ":vigor_dataset",
   ]
 )
-
-sh_binary(
-  name="run_overpass_server",
-  srcs=["run_overpass_server.sh"],
-  tags=["no-sandbox"],
-)
