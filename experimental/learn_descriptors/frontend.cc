@@ -1,6 +1,188 @@
 #include "experimental/learn_descriptors/frontend.hh"
 
+#include <cstddef>
+#include <optional>
 #include <unordered_map>
+#include <utility>
+#include <vector>
+
+#include "Eigen/Core"
+#include "Eigen/Geometry"
+#include "common/check.hh"
+#include "experimental/learn_descriptors/frame.hh"
+#include "experimental/learn_descriptors/image_point.hh"
+#include "experimental/learn_descriptors/structure_from_motion_types.hh"
+#include "gtsam/geometry/Cal3_S2.h"
+#include "opencv2/opencv.hpp"
+
+namespace detail_sfm {
+
+std::optional<gtsam::Point3> attempt_triangulate(const std::vector<gtsam::Pose3> &cam_poses,
+                                                 const std::vector<gtsam::Point2> &cam_obs,
+                                                 gtsam::Cal3_S2::shared_ptr K,
+                                                 const double max_reproj_error = 2.0,
+                                                 const bool verbose = true) {
+    gtsam::Point3 p_lmk_in_world;
+    if (cam_poses.size() >= 2) {
+        try {
+            // Attempt triangulation using DLT (or the GTSAM provided method)
+            p_lmk_in_world = gtsam::triangulatePoint3(
+                cam_poses, K, gtsam::Point2Vector(cam_obs.begin(), cam_obs.end()));
+
+        } catch (const gtsam::TriangulationCheiralityException &e) {
+            // Handle the exception gracefully by logging and retaining the previous
+            // estimate.
+            if (verbose)
+                std::cerr << "attempt_triangulation failed. Likely cheirality exception: "
+                          << e.what() << ". Discarding involved keypoints." << std::endl;
+        }
+    }
+    // Optional: perform an explicit cheirality check
+    for (const auto &pose : cam_poses) {
+        // Transform point to the camera coordinate system.
+        // transformTo() converts a world point to the camera frame.
+        gtsam::Point3 p_cam_lmk = pose.transformTo(p_lmk_in_world);
+        if (p_cam_lmk.z() <= 0) {  // Check that the depth is positive
+            return std::nullopt;
+        }
+    }
+
+    // Cheirality & reprojection checks
+    for (size_t i = 0; i < cam_poses.size(); ++i) {
+        const auto &pose = cam_poses[i];
+        // Cheirality
+        gtsam::Point3 p_cam = pose.transformTo(p_lmk_in_world);
+        if (p_cam.z() <= 0) {
+            if (verbose) {
+                std::cerr << "[triangulate] point behind camera " << i << " (z=" << p_cam.z()
+                          << ")\n";
+            }
+            return std::nullopt;
+        }
+        // Reprojection error
+        if (max_reproj_error > 0) {
+            gtsam::PinholeCamera<gtsam::Cal3_S2> cam(pose, *K);
+            const auto reproj = cam.project(p_lmk_in_world);
+            const double err = (reproj - cam_obs[i]).norm();
+            if (err > max_reproj_error) {
+                if (verbose) {
+                    std::cerr << "[triangulate] reprojection error too large on view " << i << " ("
+                              << err << " px)\n";
+                }
+                return std::nullopt;
+            }
+        }
+    }
+
+    return p_lmk_in_world;
+}
+
+void graph_values(const gtsam::Values &values, const std::string &window_name,
+                  const std::vector<gtsam::Symbol> &symbols_pose,
+                  const std::vector<gtsam::Symbol> &symbols_landmarks) {
+    std::vector<robot::geometry::VizPose> final_poses;
+    std::vector<robot::geometry::VizPoint> final_lmks;
+    for (const gtsam::Symbol &symbol_pose : symbols_pose) {
+        final_poses.emplace_back(Eigen::Isometry3d(values.at<gtsam::Pose3>(symbol_pose).matrix()),
+                                 symbol_pose.string());
+    }
+    for (const gtsam::Symbol &symbol_lmk : symbols_landmarks) {
+        if (!values.exists(symbol_lmk)) {
+            std::cout << "WTF " << symbol_lmk << std::endl;
+        }
+        final_lmks.emplace_back(values.at<gtsam::Point3>(symbol_lmk), symbol_lmk.string());
+    }
+    std::cout << "About to viz gtsam::Values with " << values.size() << " variables." << std::endl;
+    robot::geometry::viz_scene(final_poses, final_lmks, cv::viz::Color::brown(), true, true,
+                               window_name);
+}
+
+gtsam::Values optimize_graph(const gtsam::NonlinearFactorGraph &graph, const gtsam::Values &values,
+                             const std::vector<gtsam::Symbol> &symbols_pose,
+                             const std::vector<gtsam::Symbol> &symbols_landmarks,
+                             const int num_epochs = 5, bool viz_itr = false) {
+    gtsam::LevenbergMarquardtParams params;
+    params.setVerbosityLM("SUMMARY");  // or "TERMINATION", "TRYLAMBDA", etc.
+    params.maxIterations = 1;
+    gtsam::LevenbergMarquardtOptimizer optimizer(graph, values, params);
+
+    double prev_error = optimizer.error();
+    typedef int epoch;
+    std::function<void(const gtsam::Values &, const epoch, const std::vector<gtsam::Symbol> &,
+                       const std::vector<gtsam::Symbol> &)>
+        graph_itr_debug_func = [&](const gtsam::Values &vals, const epoch iter,
+                                   const std::vector<gtsam::Symbol> &symbols_pose,
+                                   const std::vector<gtsam::Symbol> &symbols_landmarks) {
+            std::cout << "iteration " << iter << " complete!";
+            std::string window_name = "Iteration_" + std::to_string(iter);
+            graph_values(vals, window_name, symbols_pose, symbols_landmarks);
+        };
+
+    for (int i = 0; i < num_epochs; i++) {
+        optimizer.iterate();
+        double curr_error = optimizer.error();
+
+        if (viz_itr) {
+            graph_itr_debug_func(optimizer.values(), i, symbols_pose, symbols_landmarks);
+        }
+        if (std::abs(prev_error - curr_error) < 1e-6) {
+            std::cout << "Converged at iteration " << i << "\n";
+            break;
+        }
+    }
+    return optimizer.values();
+}
+
+gtsam::Pose3 averagePoses(const std::vector<gtsam::Pose3> &poses, int maxIter = 10) {
+    if (poses.empty()) throw std::runtime_error("Empty pose vector");
+
+    gtsam::Pose3 mean = poses[0];
+
+    for (int iter = 0; iter < maxIter; ++iter) {
+        gtsam::Vector6 total = gtsam::Vector6::Zero();
+
+        for (const auto &pose : poses) {
+            gtsam::Pose3 delta = mean.between(pose);
+            total += gtsam::Pose3::Logmap(delta);
+        }
+
+        total /= poses.size();
+        mean = mean.compose(gtsam::Pose3::Expmap(total));
+    }
+
+    return mean;
+}
+
+gtsam::Point3 averagePoints(const std::vector<gtsam::Point3> &points) {
+    if (points.empty()) throw std::runtime_error("Empty point vector");
+    gtsam::Point3 sum(0, 0, 0);
+    for (const auto &pt : points) sum += pt;
+    return sum / points.size();
+}
+
+gtsam::Point3 get_variance(const std::vector<gtsam::Point3> &points) {
+    const gtsam::Point3 mean = averagePoints(points);
+    gtsam::Point3 var(0, 0, 0);
+    for (const gtsam::Point3 &pt : points) {
+        var += (mean - pt).array().square().matrix();
+    }
+    return var / points.size();
+}
+
+double rotation_error(const Eigen::Isometry3d &T_est, const Eigen::Isometry3d &T_gt) {
+    Eigen::Matrix3d R_err = T_gt.rotation().transpose() * T_est.rotation();
+
+    // 2. Compute trace and clamp to [-1,1] for numerical safety
+    double tr = R_err.trace();
+    double cos_theta = std::min(1.0, std::max(-1.0, (tr - 1.0) / 2.0));
+
+    // 3. Recover angle (in radians)
+    return std::acos(cos_theta);
+}
+
+// const std::vector<double> get_absolute_trajectory_error(const std::vector<Eigen::Vector3d> &)
+// {}
+}  // namespace detail_sfm
 
 namespace robot::experimental::learn_descriptors {
 
@@ -36,94 +218,152 @@ Frontend::Frontend(FrontendParams params_) : params_(params_) {
 }
 
 void Frontend::populate_frames() {
-    for (const cv::Mat &img : images_) {
+    FrameId id = frames_.size();
+    for (const ImageAndPoint &img_and_pt : image_and_points_) {
+        const ImagePoint &img_pt = img_and_pt.img_pt;
+        cv::Mat &img_undistorted;
+        cv::fisheye::undistortImage(img_and_pt.image_distorted, img_undistorted, img_pt.K->K_mat(),
+                                    img_pt.K->D_mat(), img_pt.K->K_mat(), img.size());
+        auto [kpts, features] = extract_feaures(img_undistorted);
+
+        gtsam::Cal3_S2::shared_ptr K = boost::make_shared<gtsam::Cal3_S2>(
+            img_pt.K->fx, img_pt.K->fy, 0, img_pt.K->cx, img_pt.K->cy);
+
+        Frame frame{id, img_undistorted, K, kpts, features};
+        const std::optional<Eigen::Isometry3d> maybe_world_from_cam_grnd_trth =
+            img_pt.world_from_cam_ground_truth();
+        if (maybe_world_from_cam_grnd_trth) {
+            frame.world_from_cam_ground_truth =
+                gtsam::Pose3(maybe_world_from_cam_grnd_trth->matrix());
+        }
+        const std::optional<Eigen::Vector3d> maybe_cam_in_world = img_pt.cam_in_world();
+        if (maybe_cam_in_world) {
+            frame.cam_in_world_initial_guess = *maybe_cam_in_world;
+        }
+        const std::optional<gtsam::Matrix3> maybe_translation_covariance_in_cam =
+            img_pt.translation_covariance_in_cam();
+        if (maybe_translation_covariance_in_cam) {
+            frame.translation_covariance_in_cam = *maybe_translation_covariance_in_cam;
+        }
+        frames_.push_back(frame);
+        id++;
     }
 }
 
 void Frontend::match_frames_and_build_tracks() {
     if (params_.exhaustive) {
-        for (size_t i = 0; i < indices.size() - 1; i += 4) {
-            // std::cout << "i: " << i << std::endl;
-            for (size_t j = i + 1; j < indices.size(); j++) {
-                // std::cout << "j: " << j << std::endl;
+        for (size_t i = 0; i < frames_.size() - 1; i++) {
+            for (size_t j = i + 1; j < frames_.size(); j++) {
                 std::vector<cv::DMatch> matches = frontend.compute_matches(
-                    frames[i].get_descriptors(), frames[j].get_descriptors());
-                // DIAL TO MESS WITH
+                    frames_[i].get_descriptors(), frames_[j].get_descriptors());
                 frontend.enforce_bijective_buffer_matches(matches);
-
                 if (matches.size() < 5) {
                     continue;
                 }
 
                 std::vector<cv::KeyPoint> cv_kpts_1;
                 std::vector<cv::KeyPoint> cv_kpts_2;
-                for (const KeypointCV &kpt : frames[i].get_keypoints()) {
+                for (const KeypointCV &kpt : frames_[i].get_keypoints()) {
                     cv::KeyPoint cv_kpt;
                     cv_kpt.pt = kpt;
                     cv_kpts_1.push_back(cv_kpt);
                 }
-                for (const KeypointCV &kpt : frames[j].get_keypoints()) {
+                for (const KeypointCV &kpt : frames_[j].get_keypoints()) {
                     cv::KeyPoint cv_kpt;
                     cv_kpt.pt = kpt;
                     cv_kpts_2.push_back(cv_kpt);
                 }
-                Eigen::Isometry3d world_from_camj(id_to_initial_world_from_cam.at(j).matrix());
-                // std::cout << "heartbeat" << std::endl;
                 std::optional<Eigen::Isometry3d> scale_cam0_from_cam1 =
                     robot::geometry::estimate_cam0_from_cam1(cv_kpts_1, cv_kpts_2, matches, K_mat);
                 if (!scale_cam0_from_cam1) {
                     continue;
                 }
-                world_from_camj.linear() =
-                    (Eigen::Isometry3d(id_to_initial_world_from_cam.at(i).matrix()) *
-                     *scale_cam0_from_cam1)
-                        .linear();
-                // std::cout << "heartbeat 2" << std::endl;
-                id_to_initial_world_from_cam.at(j) = gtsam::Pose3(world_from_camj.matrix());
-                for (const cv::DMatch match : matches) {
-                    const KeypointCV kpt_cam0 = frames[i].get_keypoints()[match.queryIdx];
-                    const KeypointCV kpt_cam1 = frames[j].get_keypoints()[match.trainIdx];
+                ROBOT_CHECK(frames_[i].world_from_cam_initial_guess_,
+                            "This rotation should be populated.");
+                // this could use some work to verify the quality of the output, particularly inside
+                // of estiamte_cam0_from_cam1
+                // also, at the moment I am not accounting for any covariance between the gps
+                // measurement and the unit translation vector from estimate_cam0_from_cam1
 
-                    auto key = std::make_pair(frames[i].id_, kpt_cam0);
-                    if (lmk_id_map.find(key) != lmk_id_map.end()) {
-                        auto id = lmk_id_map.at(key);
-                        feature_tracks.at(id).obs_.emplace_back(frames[i].id_, kpt_cam0);
-                        feature_tracks.at(id).obs_.emplace_back(frames[j].id_, kpt_cam1);
+                // can try averaging poses here as well
+                frames[j].world_from_cam_initial_guess_.emplace(
+                    frames_[i].world_from_cam_initial_guess_->matrix() *
+                    scale_cam0_from_cam1->matrix());
+                for (const cv::DMatch match : matches) {
+                    const KeypointCV kpt_cam0 = frames_[i].get_keypoints()[match.queryIdx];
+                    const KeypointCV kpt_cam1 = frames_[j].get_keypoints()[match.trainIdx];
+
+                    auto key = std::make_pair(frames_[i].id_, kpt_cam0);
+                    if (lmk_id_map_.find(key) != lmk_id_map_.end()) {
+                        const size_t id = lmk_id_map_.at(key);
+                        ROBOT_CHECK(id < feature_tracks_.size(),
+                                    "lmk_id_map_ id's shuold not exceed feature_tracks_ size!");
+                        feature_tracks_[id].obs_.emplace_back(frames_[i].id_, kpt_cam0);
+                        feature_tracks_[id].obs_.emplace_back(frames_[j].id_, kpt_cam1);
                     } else {
                         FeatureTrack feature_track(i, kpt_cam0);
-                        feature_track.obs_.emplace_back(frames[j].id_, kpt_cam1);
-                        feature_tracks.emplace(lmk_id, feature_track);
-                        lmk_id_map.emplace(std::make_pair(frames[i].id_, kpt_cam0), lmk_id);
-                        lmk_id++;
+                        feature_track.obs_.emplace_back(frames_[j].id_, kpt_cam1);
+                        feature_tracks_.push_back(feature_track);
+                        lmk_id_map_.emplace(std::make_pair(frames_[i].id_, kpt_cam0),
+                                            feature_tracks_.size() - 1);
                     }
                 }
             }
         }
-        std::cout << "done processing matches" << std::endl;
     } else {  // successive only
         for (size_t i = 0; i < indices.size() - 1; i++) {
             std::vector<cv::DMatch> matches = frontend.compute_matches(
-                frames[i].get_descriptors(), frames[i + 1].get_descriptors());
+                frames_[i].get_descriptors(), frames_[i + 1].get_descriptors());
             frontend.enforce_bijective_buffer_matches(matches);
-            for (const cv::DMatch match : matches) {
-                const KeypointCV kpt_cam0 = frames[i].get_keypoints()[match.queryIdx];
-                const KeypointCV kpt_cam1 = frames[i + 1].get_keypoints()[match.trainIdx];
+            if (matches.size() < 5) {
+                continue;
+            }
 
-                auto key = std::make_pair(frames[i].id_, kpt_cam0);
-                if (lmk_id_map.find(key) != lmk_id_map.end()) {
-                    auto id = lmk_id_map.at(key);
-                    feature_tracks.at(id).obs_.emplace_back(frames[i].id_, kpt_cam0);
-                    feature_tracks.at(id).obs_.emplace_back(frames[i + 1].id_, kpt_cam1);
+            std::vector<cv::KeyPoint> cv_kpts_1;
+            std::vector<cv::KeyPoint> cv_kpts_2;
+            for (const KeypointCV &kpt : frames_[i].get_keypoints()) {
+                cv::KeyPoint cv_kpt;
+                cv_kpt.pt = kpt;
+                cv_kpts_1.push_back(cv_kpt);
+            }
+            for (const KeypointCV &kpt : frames_[i + 1].get_keypoints()) {
+                cv::KeyPoint cv_kpt;
+                cv_kpt.pt = kpt;
+                cv_kpts_2.push_back(cv_kpt);
+            }
+            std::optional<Eigen::Isometry3d> scale_cam0_from_cam1 =
+                robot::geometry::estimate_cam0_from_cam1(cv_kpts_1, cv_kpts_2, matches, K_mat);
+            if (!scale_cam0_from_cam1) {
+                continue;
+            }
+            ROBOT_CHECK(frames_[i].world_from_cam_initial_guess_,
+                        "This rotation should be populated.");
+            frames_[i + 1].world_from_cam_initial_guess_.emplace(
+                frames_[i].world_from_cam_initial_guess_->matrix() *
+                scale_cam0_from_cam1->matrix());
+
+            for (const cv::DMatch match : matches) {
+                const KeypointCV kpt_cam0 = frames_[i].get_keypoints()[match.queryIdx];
+                const KeypointCV kpt_cam1 = frames_[i + 1].get_keypoints()[match.trainIdx];
+
+                auto key = std::make_pair(frames_[i].id_, kpt_cam0);
+                if (lmk_id_map_.find(key) != lmk_id_map_.end()) {
+                    const size_t id = lmk_id_map_.at(key);
+                    ROBOT_CHECK(id < feature_tracks_.size(),
+                                "lmk_id_map_ id's shuold not exceed feature_tracks_ size!");
+                    feature_tracks_[id].obs_.emplace_back(frames_[i].id_, kpt_cam0);
+                    feature_tracks_[id].obs_.emplace_back(frames_[i + 1].id_, kpt_cam1);
                 } else {
                     FeatureTrack feature_track(i, kpt_cam0);
-                    feature_track.obs_.emplace_back(frames[i + 1].id_, kpt_cam1);
-                    feature_tracks.emplace(lmk_id, feature_track);
-                    lmk_id_map.emplace(std::make_pair(frames[i].id_, kpt_cam0), lmk_id);
-                    lmk_id++;
+                    feature_track.obs_.emplace_back(frames_[i + 1].id_, kpt_cam1);
+                    feature_tracks_.emplace(lmk_id, feature_track);
+                    lmk_id_map_.emplace(std::make_pair(frames_[i].id_, kpt_cam0),
+                                        feature_tracks_.size() - 1);
                 }
             }
         }
     }
+    std::cout << "done processing matches" << std::endl;
 }
 
 std::pair<std::vector<cv::KeyPoint>, cv::Mat> Frontend::extract_features(const cv::Mat &img) const {

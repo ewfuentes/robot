@@ -5,6 +5,7 @@
 
 #include "experimental/learn_descriptors/frame.hh"
 #include "experimental/learn_descriptors/frontend_definitions.hh"
+#include "experimental/learn_descriptors/image_point.hh"
 #include "experimental/learn_descriptors/structure_from_motion_types.hh"
 #include "opencv2/opencv.hpp"
 
@@ -17,6 +18,10 @@ struct FrontendParams {
     bool exhaustive = true;
     bool incremental = false;  // a.k.a. images are successive
 };
+struct ImageAndPoint {
+    cv::Mat image_distorted;
+    ImagePoint img_pt;
+};
 class Frontend {
    public:
     static constexpr char symbol_pose_char = 'x';
@@ -27,15 +32,18 @@ class Frontend {
     void populate_frames();
     void match_frames_and_build_tracks();
 
-    void add_image(const cv::Mat &img) { images_.push_back(img); };
-    void add_images(const std::vector<cv::Mat> &imgs) {
-        for (const cv::Mat &img : imgs) {
-            images_.push_back(img);
+    void add_image(const ImageAndPoint &img_and_pt) { images_and_points_.push_back(img_and_pt); };
+    void add_images(const std::vector<ImageAndPoint> &img_and_pts) {
+        for (const ImageAndPoint &img_and_pt : img_and_pts) {
+            images_and_points_.push_back(img_and_pt);
         }
     };
 
     const FrontendParams::ExtractorType &extractor_type() const { return params_.extractor_type; };
     const FrontendParams::MatcherType &matcher_type() const { return params_.matcher_type; };
+    const FeatureTracks &feature_tracks() const { return feature_tracks_; };
+    const FrameLandmarkIdMap &frame_landmark_id_map() const { return lmk_id_map_; };
+    const std::vector<Frame> &frames() const { return frames_; };
 
     std::pair<std::vector<cv::KeyPoint>, cv::Mat> extract_features(const cv::Mat &img) const;
     std::vector<cv::DMatch> compute_matches(const cv::Mat &descriptors1,
@@ -66,7 +74,7 @@ class Frontend {
     cv::Ptr<cv::Feature2D> feature_extractor_;
     cv::Ptr<cv::DescriptorMatcher> descriptor_matcher_;
 
-    std::vector<cv::Mat> images_;
+    std::vector<ImageAndPoint> images_and_points_;
     FeatureTracks feature_tracks_;
     FrameLandmarkIdMap lmk_id_map_;
     std::vector<Frame> frames_;

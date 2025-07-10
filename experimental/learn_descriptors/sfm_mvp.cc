@@ -235,7 +235,7 @@ TEST(SFMMvp, sfm_building_manual_global) {
         // graph_.emplace_shared<gtsam::PriorFactor<gtsam::Pose3>>(gtsam::Symbol('x', id),
         //                                                         T_world_cam_gtsam, pose_noise);
 
-        Frame frame(id, img_undistorted, K, gtsam::Pose3(T_world_cam.matrix()));
+        Frame frame{id, img_undistorted, K, gtsam::Pose3(T_world_cam.matrix())};
 
         std::pair<std::vector<cv::KeyPoint>, cv::Mat> kpts_descs =
             frontend.extract_features(img_undistorted);

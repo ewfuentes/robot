@@ -1,8 +1,7 @@
-#include "experimental/learn_descriptors/spatial_test_scene_cube.hh"
-
 #include <vector>
 
 #include "Eigen/Dense"
+#include "experimental/learn_descriptors/spatial_test_scene_cube.hh"
 #include "gtest/gtest.h"
 #include "visualization/opencv/opencv_viz.hh"
 

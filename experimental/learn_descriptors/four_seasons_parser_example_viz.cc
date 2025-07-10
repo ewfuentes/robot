@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "common/check.hh"
+#include "common/gps/frame_translation.hh"
 #include "cxxopts.hpp"
 #include "experimental/learn_descriptors/four_seasons_parser.hh"
 #include "opencv2/opencv.hpp"
@@ -59,7 +60,7 @@ int main(int argc, const char** argv) {
     std::optional<double> altitude_gps_from_gnss_cam;
     std::vector<double> gps_ns_delta_from_shutter;
     for (size_t i = 0; i < parser.num_images(); i += 1) {
-        const lrn_desc::ImagePoint img_pt = parser.get_image_point(i);
+        const lrn_desc::ImagePointFourSeasons img_pt = parser.get_image_point(i);
         std::cout << img_pt.to_string() << std::endl;
         if (!img_pt.AS_w_from_gnss_cam) {
             continue;
@@ -88,7 +89,7 @@ int main(int argc, const char** argv) {
                     (parser.e_from_gpsw() * parser.w_from_gpsw().inverse()).matrix()) *
                 w_from_gnss_cam;
             const Eigen::Vector3d gnss_cam_in_gcs =
-                parser.gcs_from_ECEF(ECEF_from_gnss_cam.translation());
+                robot::gps::lla_from_ecef(ECEF_from_gnss_cam.translation());
 
             if (!altitude_gps_from_gnss_cam) {
                 altitude_gps_from_gnss_cam = gnss_cam_in_gcs.z() - *(img_pt.gps_gcs->altitude);
@@ -98,7 +99,7 @@ int main(int argc, const char** argv) {
                       << "\ngps_gcs: " << gcs_coordinate
                       << "\ngps-gnss_cam: " << (gcs_coordinate - gnss_cam_in_gcs) << std::endl;
 
-            const Eigen::Vector3d ECEF_from_gps = parser.ECEF_from_gcs(gcs_coordinate);
+            const Eigen::Vector3d ECEF_from_gps = robot::gps::ecef_from_lla(gcs_coordinate);
             const Eigen::Vector4d ECEF_from_gps_hom(ECEF_from_gps.x(), ECEF_from_gps.y(),
                                                     ECEF_from_gps.z(), 1);
             Eigen::Vector4d gps_in_w =

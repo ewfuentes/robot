@@ -36,6 +36,6 @@ class FeatureTrack {
     }
 };
 
-using FeatureTracks = std::unordered_map<LandmarkId, FeatureTrack>;
+using FeatureTracks = std::vector<FeatureTrack>;  // each idx is the FeatureTracks's LandmarkId
 using FrameLandmarkIdMap = std::unordered_map<std::pair<FrameId, KeypointCV>, LandmarkId>;
 }  // namespace robot::experimental::learn_descriptors

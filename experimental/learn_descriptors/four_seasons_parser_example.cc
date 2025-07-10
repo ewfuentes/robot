@@ -64,7 +64,7 @@ int main(int argc, const char** argv) {
         const std::string img_str = "img " + std::to_string(i);
         cv::putText(img, img_str, cv::Point(10, 20), cv::FONT_HERSHEY_SIMPLEX, 0.5,
                     cv::Scalar(0, 255, 0), 2);
-        const lrn_desc::ImagePoint img_pt = parser.get_image_point(i);
+        const lrn_desc::ImagePointFourSeasons img_pt = parser.get_image_point(i);
         std::stringstream ss_AS_w_from_gnss_cam;
         ss_AS_w_from_gnss_cam << "AS_w_from_gnss_cam: ";
         if (img_pt.AS_w_from_gnss_cam) {
@@ -84,7 +84,7 @@ int main(int argc, const char** argv) {
         std::stringstream ss_gps;
         ss_gps << "gps_gcs: ";
         if (img_pt.gps_gcs) {
-            const lrn_desc::ImagePoint::GPSData& gps_data = *img_pt.gps_gcs;
+            const lrn_desc::GPSData& gps_data = *img_pt.gps_gcs;
             ss_gps << "long: " << gps_data.longitude << ", lat: " << gps_data.latitude;
             if (gps_data.altitude) {
                 ss_gps << ", alt: " << *gps_data.altitude;

@@ -9,6 +9,7 @@
 #include "Eigen/Geometry"
 #include "common/geometry/camera.hh"
 #include "cxxopts.hpp"
+#include "experimental/learn_descriptors/camera_calibration.hh"
 #include "experimental/learn_descriptors/four_seasons_parser.hh"
 #include "experimental/learn_descriptors/frame.hh"
 #include "experimental/learn_descriptors/frontend.hh"
@@ -283,7 +284,7 @@ int main(int argc, const char **argv) {
     const std::vector<int> indices = [&parser]() -> std::vector<int> {
         std::vector<int> tmp;
         for (size_t i = 0; i < parser.num_images(); i++) {
-            const ImagePoint img_pt = parser.get_image_point(i);
+            const ImagePointFourSeasons img_pt = parser.get_image_point(i);
             if (img_pt.AS_w_from_gnss_cam && img_pt.gps_gcs && img_pt.gps_gcs &&
                 img_pt.gps_gcs->uncertainty && img_pt.gps_gcs->altitude)
                 tmp.push_back(i);
@@ -301,8 +302,7 @@ int main(int argc, const char **argv) {
     // FourSeasonsParser parser()
     // const size_t img_width = img_pt_first.width, img_height =
     // img_pt_first.height;
-    const FourSeasonsParser::CameraCalibrationFisheye cal_parser_left_cam =
-        parser.camera_calibration();
+    const CameraCalibrationFisheye cal_parser_left_cam = parser.camera_calibration();
     gtsam::Cal3_S2::shared_ptr K =
         boost::make_shared<gtsam::Cal3_S2>(cal_parser_left_cam.fx, cal_parser_left_cam.fy, 0,
                                            cal_parser_left_cam.cx, cal_parser_left_cam.cy);
@@ -343,7 +343,7 @@ int main(int argc, const char **argv) {
         parser.gnss_scale();
     std::vector<std::vector<cv::KeyPoint>> kpt_list;
     for (const int &idx : indices) {
-        const ImagePoint img_pt = parser.get_image_point(idx);
+        const ImagePointFourSeasons img_pt = parser.get_image_point(idx);
         std::cout << img_pt.to_string() << std::endl;
         //
         Eigen::Isometry3d world_from_cam;
@@ -357,7 +357,7 @@ int main(int argc, const char **argv) {
             const Eigen::Vector3d gps_gcs(
                 img_pt.gps_gcs->latitude, img_pt.gps_gcs->longitude,
                 img_pt.gps_gcs->altitude ? *(img_pt.gps_gcs->altitude) : 0);
-            const Eigen::Vector3d p_gps_in_ECEF = parser.ECEF_from_gcs(gps_gcs);
+            const Eigen::Vector3d p_gps_in_ECEF = parser.ecef_from_lla(gps_gcs);
             const Eigen::Vector4d p_gps_in_ECEF_hom(p_gps_in_ECEF.x(), p_gps_in_ECEF.y(),
                                                     p_gps_in_ECEF.z(), 1.0);
             world_from_cam = Eigen::Isometry3d((parser.S_from_AS().matrix() * scale_mat_reference *
