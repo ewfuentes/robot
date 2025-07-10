@@ -11,6 +11,7 @@ py_library(
     requirement("torch"),
     requirement("torchvision"),
     requirement("pandas"),
+    requirement("geopandas"),
     requirement("scipy"),
     requirement("matplotlib"),
     requirement("PyGObject"),
@@ -28,6 +29,8 @@ py_test(
     requirement("numpy"),
     requirement("Pillow"),
     requirement("torch"),
+    requirement("pandas"),
+    requirement("geopandas"),
     "//common/torch:load_torch_deps",
     ":vigor_dataset",
   ]
