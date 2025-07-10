@@ -49,6 +49,7 @@ class VigorDatasetConfig(NamedTuple):
 class VigorDatasetItem(NamedTuple):
     panorama_metadata: dict
     satellite_metadata: dict
+    landmark_metadata: list[dict]
     panorama: torch.Tensor
     satellite: torch.Tensor
 
@@ -328,9 +329,15 @@ class VigorDataset(torch.utils.data.Dataset):
         pano = load_image(pano_metadata.path, self._panorama_size)
         sat = load_image(sat_metadata.path, self._satellite_patch_size)
 
+        landmark_metadata = None
+        if self._landmark_metadata is not None:
+            landmarks = self._landmark_metadata.iloc[sat_metadata["landmark_idxs"]]
+            landmark_metadata = [series_to_dict_with_index(x) for _, x in landmarks.iterrows()]
+
         return VigorDatasetItem(
             panorama_metadata=series_to_dict_with_index(pano_metadata),
             satellite_metadata=series_to_dict_with_index(sat_metadata),
+            landmark_metadata=landmark_metadata,
             panorama=pano,
             satellite=sat
         )
@@ -405,6 +412,7 @@ class VigorDataset(torch.utils.data.Dataset):
                 return VigorDatasetItem(
                     panorama_metadata=None,
                     satellite_metadata=series_to_dict_with_index(sat_metadata),
+                    landmark_metadata=None,
                     panorama=None,
                     satellite=sat
                 )
@@ -428,6 +436,7 @@ class VigorDataset(torch.utils.data.Dataset):
                 return VigorDatasetItem(
                     panorama_metadata=series_to_dict_with_index(pano_metadata),
                     satellite_metadata=None,
+                    landmark_metadata=None,
                     panorama=pano,
                     satellite=None
                 )
@@ -543,6 +552,8 @@ def get_dataloader(dataset: VigorDataset, **kwargs):
                 x.panorama_metadata for x in samples],
             satellite_metadata=None if first_item.satellite_metadata is None else [
                 x.satellite_metadata for x in samples],
+            landmark_metadata=None if first_item.landmark_metadata is None else [
+                x.landmark_metadata for x in samples],
             panorama=None if first_item.panorama is None else torch.stack(
                 [x.panorama for x in samples]),
             satellite=None if first_item.satellite is None else torch.stack(

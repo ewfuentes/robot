@@ -172,8 +172,8 @@ class VigorDatasetTest(unittest.TestCase):
         self.assertAlmostEqual(item.satellite_metadata["lat"], sat_embedded_lat, places=1)
         self.assertAlmostEqual(item.satellite_metadata["lon"], sat_embedded_lon, places=1)
 
-        dataset.visualize(include_text_labels=True)
-        plt.show(block=True)
+        # dataset.visualize(include_text_labels=True)
+        # plt.show(block=True)
 
     def test_landmarks_are_correct(self):
         # Setup
@@ -190,6 +190,8 @@ class VigorDatasetTest(unittest.TestCase):
                 config,
                 landmark_path=[Path(self._temp_dir.name) / "test.geojson"])
 
+        item = dataset[25]
+
         # Verification
         max_lat_idx = dataset._landmark_metadata["lat_idx"].max()
         max_lon_idx = dataset._landmark_metadata["lon_idx"].max()
@@ -204,6 +206,9 @@ class VigorDatasetTest(unittest.TestCase):
             num_expected_neighbors = max(num_expected_neighbors, 4)
             self.assertEqual(len(landmark_meta["satellite_idxs"]), num_expected_neighbors)
 
+        # This item is in the interior of the region, so we expect 9 landmarks to be nearby
+        self.assertEqual(len(item.landmark_metadata), 9)
+
     def test_get_batch(self):
         # Setup
         BATCH_SIZE = 32
@@ -213,7 +218,8 @@ class VigorDatasetTest(unittest.TestCase):
             panorama_size = (100, 100),
             satellite_zoom_level=7,
         )
-        dataset = vigor_dataset.VigorDataset(Path(self._temp_dir.name), config)
+        dataset = vigor_dataset.VigorDataset(
+                Path(self._temp_dir.name), config, Path(self._temp_dir.name) / "test.geojson")
         dataloader = vigor_dataset.get_dataloader(dataset, batch_size=BATCH_SIZE)
 
         # Action
@@ -222,6 +228,7 @@ class VigorDatasetTest(unittest.TestCase):
         # Verification
         self.assertEqual(len(batch.panorama_metadata), BATCH_SIZE)
         self.assertEqual(len(batch.satellite_metadata), BATCH_SIZE)
+        self.assertEqual(len(batch.landmark_metadata), BATCH_SIZE)
         self.assertEqual(batch.panorama.shape, (BATCH_SIZE, 3, *config.panorama_size))
         self.assertEqual(batch.satellite.shape, (BATCH_SIZE, 3, *config.satellite_patch_size))
 
@@ -280,7 +287,7 @@ class VigorDatasetTest(unittest.TestCase):
         self.assertEqual(batch.panorama.shape[0], BATCH_SIZE)
         self.assertIsNone(batch.satellite)
 
-    def test_overhead_and_main_dataset_are_consistient(self):
+    def test_overhead_and_main_dataset_are_consistent(self):
         config = vigor_dataset.VigorDatasetConfig(
             panorama_neighbor_radius = 0.2,
             satellite_patch_size = (50, 50),
