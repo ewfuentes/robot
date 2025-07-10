@@ -87,3 +87,14 @@ py_binary(
     ":train",
   ]
 )
+
+py_binary(
+  name = "extract_landmarks_for_vigor_dataset",
+  srcs = ["extract_landmarks_for_vigor_dataset.py"],
+  deps = [
+    requirement("osmnx"),
+    requirement("pandas"),
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//common/gps:web_mercator",
+  ]
+)
