@@ -25,8 +25,8 @@ def construct_path_eval_inputs_from_args(
     dataset_path = Path(dataset_path).expanduser()
     dataset_config = vd.VigorDatasetConfig(
         panorama_neighbor_radius=panorama_neighbor_radius_deg,
-        satellite_patch_size=(322, 322),
-        panorama_size=(322, 644),
+        satellite_patch_size=sat_model.patch_dims,
+        panorama_size=pano_model.patch_dims,
         factor=1,
     )
     vigor_dataset = vd.VigorDataset(dataset_path, dataset_config)
@@ -53,6 +53,7 @@ if __name__ == "__main__":
                         help="If intermediate filter states should be saved")
     parser.add_argument("--panorama-neighbor-radius-deg", type=float,
                         default=0.0005, help="Panorama neighbor radius deg")
+    parser.add_argument("--sigma_obs_prob_from_sim", type=float, default=0.1)
     parser.add_argument("--dual_mcl_frac", type=float, default=0.0)
     parser.add_argument("--dual_mcl_phantom_counts_frac", type=float, default=1e-4)
 
@@ -90,7 +91,7 @@ if __name__ == "__main__":
                            # page 73 of thesis
                            initial_particle_distribution_std_deg=degrees_from_meters(2970.0),
                            num_particles=100_000,
-                           sigma_obs_prob_from_sim=0.1,
+                           sigma_obs_prob_from_sim=args.sigma_obs_prob_from_sim,
                            satellite_patch_config=SatellitePatchConfig(
                                zoom_level=20,
                                patch_height_px=640,
