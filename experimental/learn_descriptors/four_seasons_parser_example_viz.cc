@@ -70,7 +70,6 @@ int main(int argc, const char** argv) {
                                           Eigen::Isometry3d(img_pt.AS_w_from_gnss_cam->matrix()));
 
         viz_frames.emplace_back(w_from_gnss_cam, "x_ref_" + std::to_string(i));
-        viz_frames.emplace_back(w_from_gnss_cam, "x_ref_" + std::to_string(i));
         if (img_pt.gps_gcs) {
             if (img_pt.gps_gcs->seq > img_pt.seq) {
                 gps_ns_delta_from_shutter.push_back(
@@ -105,7 +104,11 @@ int main(int argc, const char** argv) {
             Eigen::Vector4d gps_in_w =
                 Eigen::Matrix4d((parser.w_from_gpsw() * parser.e_from_gpsw().inverse()).matrix()) *
                 ECEF_from_gps_hom;
-            viz_points.emplace_back(gps_in_w.head<3>(), "x_gps_" + std::to_string(i));
+            const Eigen::Isometry3d cam_from_gps(
+                (parser.cam_from_imu() * parser.gps_from_imu().inverse()).matrix());
+            Eigen::Vector3d cam_gps_in_w = gps_in_w.head<3>() + cam_from_gps.translation();
+            viz_points.emplace_back(cam_gps_in_w, "x_cam_gps" + std::to_string(i));
+            viz_points.emplace_back(gps_in_w.head<3>(), "x_gps" + std::to_string(i));
             const Eigen::Vector3d gps_from_ref_in_world =
                 gps_in_w.head<3>() - w_from_gnss_cam.translation();
             std::cout << "gps_from_ref_in_world: " << gps_from_ref_in_world << std::endl;

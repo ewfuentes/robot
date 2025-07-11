@@ -7,7 +7,7 @@ struct CameraCalibrationFisheye {
     double fx, fy, cx, cy, k1, k2, k3, k4;
 
     cv::Mat k_mat() {
-        cv::Mat K_mat = (cv::Mat_<double>(3, 3) << fx, 0, cx, 0, fy, py, 0, 0, 1);
+        cv::Mat K_mat = (cv::Mat_<double>(3, 3) << fx, 0, cx, 0, fy, cy, 0, 0, 1);
         return K_mat;
     }
 

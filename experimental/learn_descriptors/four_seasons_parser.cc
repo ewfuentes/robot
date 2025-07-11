@@ -52,7 +52,6 @@ FourSeasonsParser::FourSeasonsParser(const std::filesystem::path& root_dir,
         ImagePointFourSeasons img_pt;
         img_pt.id = id;
         img_pt.K = cal_;
-        std::cout << "heartbeat 5" << std::endl;
         img_pt.shared_static_transforms = shared_transforms_;
         img_pt.seq = std::stoull(
             pair_time_data.second[static_cast<size_t>(txt_parser_help::ImgIdx::TIME_NS)]);
@@ -77,10 +76,10 @@ FourSeasonsParser::FourSeasonsParser(const std::filesystem::path& root_dir,
                 std::stod(
                     parsed_line_gnss_poses[static_cast<size_t>(txt_parser_help::GPSIdx::QUAT_Z)]));
             img_pt.AS_w_from_gnss_cam = liegroups::SE3(R_gps_cam_from_AS_w, t_gps_cam_from_AS_w);
-        } else {
-            std::clog << "There is no AS_w_from_gnss_cam data at img_pt with id: " << id
-                      << std::endl;
-        }
+        }  // else {
+        //     std::clog << "There is no AS_w_from_gnss_cam data at img_pt with id: " << id
+        //               << std::endl;
+        // }
         if (vio_poses_time_map.find(time_key) != vio_poses_time_map.end()) {
             const std::vector<std::string>& parsed_line_vio = vio_poses_time_map.at(time_key);
             Eigen::Vector3d t_AS_w_from_vio_cam(
@@ -95,10 +94,10 @@ FourSeasonsParser::FourSeasonsParser(const std::filesystem::path& root_dir,
                 std::stod(
                     parsed_line_vio[static_cast<size_t>(txt_parser_help::ResultIdx::QUAT_Z)]));
             img_pt.AS_w_from_vio_cam = liegroups::SE3(R_AS_w_from_vio_cam, t_AS_w_from_vio_cam);
-        } else {
-            std::clog << "There is no AS_w_from_vio_cam data at img_pt with id: " << id
-                      << std::endl;
-        }
+        }  // else {
+        //     std::clog << "There is no AS_w_from_vio_cam data at img_pt with id: " << id
+        //               << std::endl;
+        // }
         img_pt_vector_.push_back(img_pt);
         id++;
     }

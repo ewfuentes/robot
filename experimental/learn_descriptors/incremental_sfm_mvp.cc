@@ -302,13 +302,14 @@ int main(int argc, const char **argv) {
     // FourSeasonsParser parser()
     // const size_t img_width = img_pt_first.width, img_height =
     // img_pt_first.height;
-    const CameraCalibrationFisheye cal_parser_left_cam = parser.camera_calibration();
+    const std::shared_ptr<CameraCalibrationFisheye> cal_parser_left_cam =
+        parser.camera_calibration();
     gtsam::Cal3_S2::shared_ptr K =
-        boost::make_shared<gtsam::Cal3_S2>(cal_parser_left_cam.fx, cal_parser_left_cam.fy, 0,
-                                           cal_parser_left_cam.cx, cal_parser_left_cam.cy);
+        boost::make_shared<gtsam::Cal3_S2>(cal_parser_left_cam->fx, cal_parser_left_cam->fy, 0,
+                                           cal_parser_left_cam->cx, cal_parser_left_cam->cy);
     cv::Mat K_mat = (cv::Mat_<double>(3, 3) << K->fx(), 0, K->px(), 0, K->fy(), K->py(), 0, 0, 1);
-    cv::Mat D_mat = (cv::Mat_<double>(4, 1) << cal_parser_left_cam.k1, cal_parser_left_cam.k2,
-                     cal_parser_left_cam.k3, cal_parser_left_cam.k4);
+    cv::Mat D_mat = (cv::Mat_<double>(4, 1) << cal_parser_left_cam->k1, cal_parser_left_cam->k2,
+                     cal_parser_left_cam->k3, cal_parser_left_cam->k4);
 
     // StructureFromMotion sfm(Frontend::ExtractorType::SIFT, K, D,
     //                         gtsam::Pose3(T_world_camera0.matrix()));
@@ -435,8 +436,8 @@ int main(int argc, const char **argv) {
             // std::cout << "i: " << i << std::endl;
             for (size_t j = i + 1; j < indices.size(); j++) {
                 // std::cout << "j: " << j << std::endl;
-                std::vector<cv::DMatch> matches = frontend.compute_matches(
-                    frames[i].get_descriptors(), frames[j].get_descriptors());
+                std::vector<cv::DMatch> matches =
+                    frontend.compute_matches(frames[i].descriptors(), frames[j].descriptors());
                 // DIAL TO MESS WITH
                 frontend.enforce_bijective_buffer_matches(matches);
 
@@ -446,12 +447,12 @@ int main(int argc, const char **argv) {
 
                 std::vector<cv::KeyPoint> cv_kpts_1;
                 std::vector<cv::KeyPoint> cv_kpts_2;
-                for (const KeypointCV &kpt : frames[i].get_keypoints()) {
+                for (const KeypointCV &kpt : frames[i].keypoint()) {
                     cv::KeyPoint cv_kpt;
                     cv_kpt.pt = kpt;
                     cv_kpts_1.push_back(cv_kpt);
                 }
-                for (const KeypointCV &kpt : frames[j].get_keypoints()) {
+                for (const KeypointCV &kpt : frames[j].keypoint()) {
                     cv::KeyPoint cv_kpt;
                     cv_kpt.pt = kpt;
                     cv_kpts_2.push_back(cv_kpt);
@@ -470,8 +471,8 @@ int main(int argc, const char **argv) {
                 // std::cout << "heartbeat 2" << std::endl;
                 id_to_initial_world_from_cam.at(j) = gtsam::Pose3(world_from_camj.matrix());
                 for (const cv::DMatch match : matches) {
-                    const KeypointCV kpt_cam0 = frames[i].get_keypoints()[match.queryIdx];
-                    const KeypointCV kpt_cam1 = frames[j].get_keypoints()[match.trainIdx];
+                    const KeypointCV kpt_cam0 = frames[i].keypoint()[match.queryIdx];
+                    const KeypointCV kpt_cam1 = frames[j].keypoint()[match.trainIdx];
 
                     auto key = std::make_pair(frames[i].id_, kpt_cam0);
                     if (lmk_id_map.find(key) != lmk_id_map.end()) {
@@ -491,12 +492,12 @@ int main(int argc, const char **argv) {
         std::cout << "done processing matches" << std::endl;
     } else {  // successive only
         for (size_t i = 0; i < indices.size() - 1; i++) {
-            std::vector<cv::DMatch> matches = frontend.compute_matches(
-                frames[i].get_descriptors(), frames[i + 1].get_descriptors());
+            std::vector<cv::DMatch> matches =
+                frontend.compute_matches(frames[i].descriptors(), frames[i + 1].descriptors());
             frontend.enforce_bijective_buffer_matches(matches);
             for (const cv::DMatch match : matches) {
-                const KeypointCV kpt_cam0 = frames[i].get_keypoints()[match.queryIdx];
-                const KeypointCV kpt_cam1 = frames[i + 1].get_keypoints()[match.trainIdx];
+                const KeypointCV kpt_cam0 = frames[i].keypoint()[match.queryIdx];
+                const KeypointCV kpt_cam1 = frames[i + 1].keypoint()[match.trainIdx];
 
                 auto key = std::make_pair(frames[i].id_, kpt_cam0);
                 if (lmk_id_map.find(key) != lmk_id_map.end()) {
@@ -661,8 +662,8 @@ int main(int argc, const char **argv) {
             local_estimate_.insert_or_assign(symbols_poses[1],
                                              id_to_initial_world_from_cam.at(i + 1));
 
-            std::vector<cv::DMatch> matches = frontend.compute_matches(
-                frames[i].get_descriptors(), frames[i + 1].get_descriptors());
+            std::vector<cv::DMatch> matches =
+                frontend.compute_matches(frames[i].descriptors(), frames[i + 1].descriptors());
             // DIAL TO MESS WITH
             frontend.enforce_bijective_matches(matches);
             std::vector<gtsam::Pose3> world_from_cams{id_to_initial_world_from_cam.at(i),
@@ -674,8 +675,8 @@ int main(int argc, const char **argv) {
             std::vector<robot::geometry::VizPoint> viz_lmks;
             for (const cv::DMatch match : matches) {
                 std::vector<gtsam::Point2> feat_kpts;
-                const KeypointCV kpt_cam0 = frames[i].get_keypoints()[match.queryIdx];
-                const KeypointCV kpt_cam1 = frames[i + 1].get_keypoints()[match.trainIdx];
+                const KeypointCV kpt_cam0 = frames[i].keypoint()[match.queryIdx];
+                const KeypointCV kpt_cam1 = frames[i + 1].keypoint()[match.trainIdx];
                 feat_kpts.emplace_back(kpt_cam0.x, kpt_cam0.y);
                 feat_kpts.emplace_back(kpt_cam1.x, kpt_cam1.y);
 
@@ -695,7 +696,7 @@ int main(int argc, const char **argv) {
                     std::cerr << "ERROR: this shouldn't happen right?" << std::endl;
                     FeatureTrack feature_track(frames[i].id_, kpt_cam0);
                     feature_track.obs_.emplace_back(frames[i + 1].id_, kpt_cam1);
-                    feature_tracks.emplace(lmk_id, feature_track);
+                    feature_tracks.push_back(feature_track);
                     lmk_id_map.emplace(key_lmk_id, lmk_id);
                     lmk_id++;
                 }

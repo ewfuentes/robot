@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "experimental/learn_descriptors/structure_from_motion_types.hh"
+#include "gtsam/geometry/Point3.h"
 #include "opencv2/opencv.hpp"
 
 namespace std {
@@ -29,7 +30,7 @@ class FeatureTrack {
 
     void print() const {
         std::cout << "Feature track with cameras: ";
-        for (size_t i = 0u; i < obs_.size(); i++) {
+        for (size_t i = 0; i < obs_.size(); i++) {
             std::cout << " " << obs_[i].first << " ";
         }
         std::cout << std::endl;

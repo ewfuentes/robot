@@ -27,10 +27,13 @@ std::optional<Eigen::Vector3d> ImagePointFourSeasons::cam_in_world() const {
     if (!gps_gcs) return std::nullopt;
     const Eigen::Vector3d gps_in_ECEF(gps::ecef_from_lla(
         Eigen::Vector3d(gps_gcs->latitude, gps_gcs->longitude, *gps_gcs->altitude)));
-    Eigen::Vector3d cam_in_world(shared_static_transforms->cam_from_imu *
-                                 shared_static_transforms->gps_from_imu.inverse() *
-                                 shared_static_transforms->w_from_gpsw *
-                                 shared_static_transforms->e_from_gpsw.inverse() * gps_in_ECEF);
+    const Eigen::Vector3d gps_in_world(shared_static_transforms->w_from_gpsw *
+                                       shared_static_transforms->e_from_gpsw.inverse() *
+                                       gps_in_ECEF);
+    const Eigen::Isometry3d cam_from_gps(
+        (shared_static_transforms->cam_from_imu * shared_static_transforms->gps_from_imu.inverse())
+            .matrix());
+    const Eigen::Vector3d cam_in_world(gps_in_world + cam_from_gps.translation());
     return cam_in_world;
 }
 

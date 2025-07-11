@@ -1,5 +1,6 @@
 #include "experimental/learn_descriptors/frontend.hh"
 
+#include <cmath>
 #include <cstddef>
 #include <optional>
 #include <unordered_map>
@@ -9,10 +10,13 @@
 #include "Eigen/Core"
 #include "Eigen/Geometry"
 #include "common/check.hh"
+#include "common/geometry/camera.hh"
 #include "experimental/learn_descriptors/frame.hh"
 #include "experimental/learn_descriptors/image_point.hh"
 #include "experimental/learn_descriptors/structure_from_motion_types.hh"
 #include "gtsam/geometry/Cal3_S2.h"
+#include "gtsam/geometry/Pose3.h"
+#include "gtsam/geometry/triangulation.h"
 #include "opencv2/opencv.hpp"
 
 namespace detail_sfm {
@@ -75,62 +79,6 @@ std::optional<gtsam::Point3> attempt_triangulate(const std::vector<gtsam::Pose3>
     }
 
     return p_lmk_in_world;
-}
-
-void graph_values(const gtsam::Values &values, const std::string &window_name,
-                  const std::vector<gtsam::Symbol> &symbols_pose,
-                  const std::vector<gtsam::Symbol> &symbols_landmarks) {
-    std::vector<robot::geometry::VizPose> final_poses;
-    std::vector<robot::geometry::VizPoint> final_lmks;
-    for (const gtsam::Symbol &symbol_pose : symbols_pose) {
-        final_poses.emplace_back(Eigen::Isometry3d(values.at<gtsam::Pose3>(symbol_pose).matrix()),
-                                 symbol_pose.string());
-    }
-    for (const gtsam::Symbol &symbol_lmk : symbols_landmarks) {
-        if (!values.exists(symbol_lmk)) {
-            std::cout << "WTF " << symbol_lmk << std::endl;
-        }
-        final_lmks.emplace_back(values.at<gtsam::Point3>(symbol_lmk), symbol_lmk.string());
-    }
-    std::cout << "About to viz gtsam::Values with " << values.size() << " variables." << std::endl;
-    robot::geometry::viz_scene(final_poses, final_lmks, cv::viz::Color::brown(), true, true,
-                               window_name);
-}
-
-gtsam::Values optimize_graph(const gtsam::NonlinearFactorGraph &graph, const gtsam::Values &values,
-                             const std::vector<gtsam::Symbol> &symbols_pose,
-                             const std::vector<gtsam::Symbol> &symbols_landmarks,
-                             const int num_epochs = 5, bool viz_itr = false) {
-    gtsam::LevenbergMarquardtParams params;
-    params.setVerbosityLM("SUMMARY");  // or "TERMINATION", "TRYLAMBDA", etc.
-    params.maxIterations = 1;
-    gtsam::LevenbergMarquardtOptimizer optimizer(graph, values, params);
-
-    double prev_error = optimizer.error();
-    typedef int epoch;
-    std::function<void(const gtsam::Values &, const epoch, const std::vector<gtsam::Symbol> &,
-                       const std::vector<gtsam::Symbol> &)>
-        graph_itr_debug_func = [&](const gtsam::Values &vals, const epoch iter,
-                                   const std::vector<gtsam::Symbol> &symbols_pose,
-                                   const std::vector<gtsam::Symbol> &symbols_landmarks) {
-            std::cout << "iteration " << iter << " complete!";
-            std::string window_name = "Iteration_" + std::to_string(iter);
-            graph_values(vals, window_name, symbols_pose, symbols_landmarks);
-        };
-
-    for (int i = 0; i < num_epochs; i++) {
-        optimizer.iterate();
-        double curr_error = optimizer.error();
-
-        if (viz_itr) {
-            graph_itr_debug_func(optimizer.values(), i, symbols_pose, symbols_landmarks);
-        }
-        if (std::abs(prev_error - curr_error) < 1e-6) {
-            std::cout << "Converged at iteration " << i << "\n";
-            break;
-        }
-    }
-    return optimizer.values();
 }
 
 gtsam::Pose3 averagePoses(const std::vector<gtsam::Pose3> &poses, int maxIter = 10) {
@@ -219,31 +167,39 @@ Frontend::Frontend(FrontendParams params_) : params_(params_) {
 
 void Frontend::populate_frames() {
     FrameId id = frames_.size();
-    for (const ImageAndPoint &img_and_pt : image_and_points_) {
+    for (const ImageAndPoint &img_and_pt : images_and_points_) {
         const ImagePoint &img_pt = img_and_pt.img_pt;
-        cv::Mat &img_undistorted;
-        cv::fisheye::undistortImage(img_and_pt.image_distorted, img_undistorted, img_pt.K->K_mat(),
-                                    img_pt.K->D_mat(), img_pt.K->K_mat(), img.size());
-        auto [kpts, features] = extract_feaures(img_undistorted);
+        cv::Mat img_undistorted;
+        cv::fisheye::undistortImage(img_and_pt.image_distorted, img_undistorted, img_pt.K->k_mat(),
+                                    img_pt.K->d_mat(), img_pt.K->k_mat(),
+                                    img_and_pt.image_distorted.size());
+        auto [kpts, descriptors] = extract_features(img_undistorted);
+        KeypointsCV kpts_cv;
+        for (const cv::KeyPoint &kpt : kpts) {
+            kpts_cv.push_back(kpt.pt);
+        }
 
         gtsam::Cal3_S2::shared_ptr K = boost::make_shared<gtsam::Cal3_S2>(
             img_pt.K->fx, img_pt.K->fy, 0, img_pt.K->cx, img_pt.K->cy);
 
-        Frame frame{id, img_undistorted, K, kpts, features};
+        if (!K) std::cout << "UH OH" << std::endl;
+
+        Frame frame(id, img_undistorted, K, kpts_cv, descriptors);
         const std::optional<Eigen::Isometry3d> maybe_world_from_cam_grnd_trth =
             img_pt.world_from_cam_ground_truth();
         if (maybe_world_from_cam_grnd_trth) {
-            frame.world_from_cam_ground_truth =
+            frame.world_from_cam_groundtruth_ =
                 gtsam::Pose3(maybe_world_from_cam_grnd_trth->matrix());
         }
         const std::optional<Eigen::Vector3d> maybe_cam_in_world = img_pt.cam_in_world();
         if (maybe_cam_in_world) {
-            frame.cam_in_world_initial_guess = *maybe_cam_in_world;
+            frame.cam_in_world_initial_guess_ = *maybe_cam_in_world;
         }
+        if (id == 0) frame.world_from_cam_initial_guess_ = gtsam::Rot3::Identity();
         const std::optional<gtsam::Matrix3> maybe_translation_covariance_in_cam =
             img_pt.translation_covariance_in_cam();
         if (maybe_translation_covariance_in_cam) {
-            frame.translation_covariance_in_cam = *maybe_translation_covariance_in_cam;
+            frame.translation_covariance_in_cam_ = *maybe_translation_covariance_in_cam;
         }
         frames_.push_back(frame);
         id++;
@@ -254,27 +210,32 @@ void Frontend::match_frames_and_build_tracks() {
     if (params_.exhaustive) {
         for (size_t i = 0; i < frames_.size() - 1; i++) {
             for (size_t j = i + 1; j < frames_.size(); j++) {
-                std::vector<cv::DMatch> matches = frontend.compute_matches(
-                    frames_[i].get_descriptors(), frames_[j].get_descriptors());
-                frontend.enforce_bijective_buffer_matches(matches);
+                std::vector<cv::DMatch> matches =
+                    compute_matches(frames_[i].descriptors(), frames_[j].descriptors());
+                enforce_bijective_buffer_matches(matches);
                 if (matches.size() < 5) {
                     continue;
                 }
 
                 std::vector<cv::KeyPoint> cv_kpts_1;
                 std::vector<cv::KeyPoint> cv_kpts_2;
-                for (const KeypointCV &kpt : frames_[i].get_keypoints()) {
+                for (const KeypointCV &kpt : frames_[i].keypoint()) {
                     cv::KeyPoint cv_kpt;
                     cv_kpt.pt = kpt;
                     cv_kpts_1.push_back(cv_kpt);
                 }
-                for (const KeypointCV &kpt : frames_[j].get_keypoints()) {
+                for (const KeypointCV &kpt : frames_[j].keypoint()) {
                     cv::KeyPoint cv_kpt;
                     cv_kpt.pt = kpt;
                     cv_kpts_2.push_back(cv_kpt);
                 }
                 std::optional<Eigen::Isometry3d> scale_cam0_from_cam1 =
-                    robot::geometry::estimate_cam0_from_cam1(cv_kpts_1, cv_kpts_2, matches, K_mat);
+                    robot::geometry::estimate_cam0_from_cam1(
+                        cv_kpts_1, cv_kpts_2, matches,
+                        images_and_points_[i]
+                            .img_pt.K->k_mat());  // fine for now since all cameras have the same K,
+                                                  // how to reconcile later though...?
+
                 if (!scale_cam0_from_cam1) {
                     continue;
                 }
@@ -286,12 +247,12 @@ void Frontend::match_frames_and_build_tracks() {
                 // measurement and the unit translation vector from estimate_cam0_from_cam1
 
                 // can try averaging poses here as well
-                frames[j].world_from_cam_initial_guess_.emplace(
+                frames_[j].world_from_cam_initial_guess_.emplace(
                     frames_[i].world_from_cam_initial_guess_->matrix() *
-                    scale_cam0_from_cam1->matrix());
+                    scale_cam0_from_cam1->linear().matrix());
                 for (const cv::DMatch match : matches) {
-                    const KeypointCV kpt_cam0 = frames_[i].get_keypoints()[match.queryIdx];
-                    const KeypointCV kpt_cam1 = frames_[j].get_keypoints()[match.trainIdx];
+                    const KeypointCV kpt_cam0 = frames_[i].keypoint()[match.queryIdx];
+                    const KeypointCV kpt_cam1 = frames_[j].keypoint()[match.trainIdx];
 
                     auto key = std::make_pair(frames_[i].id_, kpt_cam0);
                     if (lmk_id_map_.find(key) != lmk_id_map_.end()) {
@@ -311,28 +272,29 @@ void Frontend::match_frames_and_build_tracks() {
             }
         }
     } else {  // successive only
-        for (size_t i = 0; i < indices.size() - 1; i++) {
-            std::vector<cv::DMatch> matches = frontend.compute_matches(
-                frames_[i].get_descriptors(), frames_[i + 1].get_descriptors());
-            frontend.enforce_bijective_buffer_matches(matches);
+        for (size_t i = 0; i < frames_.size() - 1; i++) {
+            std::vector<cv::DMatch> matches =
+                compute_matches(frames_[i].descriptors(), frames_[i + 1].descriptors());
+            enforce_bijective_buffer_matches(matches);
             if (matches.size() < 5) {
                 continue;
             }
 
             std::vector<cv::KeyPoint> cv_kpts_1;
             std::vector<cv::KeyPoint> cv_kpts_2;
-            for (const KeypointCV &kpt : frames_[i].get_keypoints()) {
+            for (const KeypointCV &kpt : frames_[i].keypoint()) {
                 cv::KeyPoint cv_kpt;
                 cv_kpt.pt = kpt;
                 cv_kpts_1.push_back(cv_kpt);
             }
-            for (const KeypointCV &kpt : frames_[i + 1].get_keypoints()) {
+            for (const KeypointCV &kpt : frames_[i + 1].keypoint()) {
                 cv::KeyPoint cv_kpt;
                 cv_kpt.pt = kpt;
                 cv_kpts_2.push_back(cv_kpt);
             }
             std::optional<Eigen::Isometry3d> scale_cam0_from_cam1 =
-                robot::geometry::estimate_cam0_from_cam1(cv_kpts_1, cv_kpts_2, matches, K_mat);
+                robot::geometry::estimate_cam0_from_cam1(cv_kpts_1, cv_kpts_2, matches,
+                                                         images_and_points_[i].img_pt.K->k_mat());
             if (!scale_cam0_from_cam1) {
                 continue;
             }
@@ -340,11 +302,11 @@ void Frontend::match_frames_and_build_tracks() {
                         "This rotation should be populated.");
             frames_[i + 1].world_from_cam_initial_guess_.emplace(
                 frames_[i].world_from_cam_initial_guess_->matrix() *
-                scale_cam0_from_cam1->matrix());
+                scale_cam0_from_cam1->linear().matrix());
 
             for (const cv::DMatch match : matches) {
-                const KeypointCV kpt_cam0 = frames_[i].get_keypoints()[match.queryIdx];
-                const KeypointCV kpt_cam1 = frames_[i + 1].get_keypoints()[match.trainIdx];
+                const KeypointCV kpt_cam0 = frames_[i].keypoint()[match.queryIdx];
+                const KeypointCV kpt_cam1 = frames_[i + 1].keypoint()[match.trainIdx];
 
                 auto key = std::make_pair(frames_[i].id_, kpt_cam0);
                 if (lmk_id_map_.find(key) != lmk_id_map_.end()) {
@@ -356,7 +318,7 @@ void Frontend::match_frames_and_build_tracks() {
                 } else {
                     FeatureTrack feature_track(i, kpt_cam0);
                     feature_track.obs_.emplace_back(frames_[i + 1].id_, kpt_cam1);
-                    feature_tracks_.emplace(lmk_id, feature_track);
+                    feature_tracks_.push_back(feature_track);
                     lmk_id_map_.emplace(std::make_pair(frames_[i].id_, kpt_cam0),
                                         feature_tracks_.size() - 1);
                 }

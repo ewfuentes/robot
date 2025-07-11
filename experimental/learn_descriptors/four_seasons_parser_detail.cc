@@ -111,6 +111,7 @@ const TimeDataMap create_vio_time_data_map(const std::filesystem::path& path_vio
 }  // namespace txt_parser_help
 
 namespace gps_parser_help {
+
 size_t gps_utc_to_unix_time(const nmea::date& utc_date, const double utc_time_day_seconds) {
     std::chrono::sys_days date = std::chrono::year_month_day{
         std::chrono::year{utc_date.year + 2000}, std::chrono::month{utc_date.month},
@@ -120,6 +121,7 @@ size_t gps_utc_to_unix_time(const nmea::date& utc_date, const double utc_time_da
     std::chrono::sys_time<std::chrono::nanoseconds> timestamp = date + utc_time_day_ns;
     return timestamp.time_since_epoch().count();
 }
+
 TimeGPSList create_gps_time_data_list(const std::filesystem::path& path_gps) {
     TimeGPSList time_list_gps;
     std::ifstream file_gps(path_gps);
@@ -187,12 +189,14 @@ std::vector<std::string> split_nmea_sentence(const std::string& sentence) {
 
     return fields;
 }
+
 double time_of_day_seconds(const double utc_time_hhmmss) {
     int hours = static_cast<int>(utc_time_hhmmss / 10000);
     int minutes = static_cast<int>((utc_time_hhmmss - hours * 10000) / 100);
     double seconds = utc_time_hhmmss - hours * 10000 - minutes * 100;
     return hours * 3600 + minutes * 60 + seconds;
 }
+
 std::optional<GSTData> parse_gpgst(const std::string& sentence) {
     if (sentence.substr(0, 6) != "$GPGST") {
         return std::nullopt;
@@ -218,6 +222,5 @@ std::optional<GSTData> parse_gpgst(const std::string& sentence) {
 
     return gst;
 }
-
 }  // namespace gps_parser_help
 }  // namespace robot::experimental::learn_descriptors::detail::four_seasons_parser

@@ -11,11 +11,19 @@
 namespace robot::experimental::learn_descriptors {
 class Frame {
    public:
+    Frame(FrameId id, const cv::Mat img, gtsam::Cal3_S2::shared_ptr K, const KeypointsCV kpts,
+          const cv::Mat descriptors)
+        : id_(id),
+          undistorted_img_(img),
+          K_(std::move(K)),
+          kpts_(kpts),
+          descriptors_(descriptors) {}
+
     void add_keypoints(const KeypointsCV& kpts);
     void assign_descriptors(const cv::Mat& descriptors);
 
-    const KeypointsCV get_keypoints() { return kpts_; };
-    const cv::Mat get_descriptors() { return descriptors_; };
+    const KeypointsCV& keypoint() { return kpts_; };
+    const cv::Mat& descriptors() { return descriptors_; };
 
     const FrameId id_;
     const cv::Mat undistorted_img_;
@@ -24,7 +32,7 @@ class Frame {
     cv::Mat descriptors_;
     std::optional<gtsam::Pose3> world_from_cam_groundtruth_;
     std::optional<gtsam::Point3> cam_in_world_initial_guess_;
-    std::optional<gtsam::Matrix3> translation_covariance_in_cam_;
     std::optional<gtsam::Rot3> world_from_cam_initial_guess_;
+    std::optional<gtsam::Matrix3> translation_covariance_in_cam_;
 };
 }  // namespace robot::experimental::learn_descriptors

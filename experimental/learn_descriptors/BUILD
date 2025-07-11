@@ -347,6 +347,7 @@ cc_library(
         ":image_point_four_seasons",
         ":structure_from_motion_types",
         "//common:check",
+        "//common/geometry:camera",
         "@opencv",
         "@gtsam",
         "@eigen",
@@ -437,4 +438,28 @@ cc_library(
     deps = [
         "@opencv"
     ]
+)
+
+cc_binary(
+    name = "refactor_sfm_mvp",
+    srcs = ["refactor_sfm_mvp.cc"],
+    copts = [
+        "-Wno-error=unused-parameter",
+        "-Wno-error=unused-function",
+    ],
+    deps = [
+        ":four_seasons_parser",
+        ":frame",
+        ":frontend",
+        ":spatial_test_scene_cube",
+        ":structure_from_motion_types",
+        "//common/geometry:camera",
+        "//visualization/opencv:opencv_viz",
+        "@boost//:smart_ptr",
+        "@cxxopts",
+        "@eigen",
+        "@gtsam",
+        "@opencv",
+        ":camera_calibration"
+    ],
 )

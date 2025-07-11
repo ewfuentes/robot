@@ -259,12 +259,12 @@ TEST(SFMMvp, sfm_building_manual_global) {
     LandmarkId lmk_id = 0;
     for (size_t i = 0; i < indices.size() - 1; i++) {
         std::vector<cv::DMatch> matches =
-            frontend.compute_matches(frames[i].get_descriptors(), frames[i + 1].get_descriptors());
+            frontend.compute_matches(frames[i].descriptors(), frames[i + 1].descriptors());
         // frontend.enforce_bijective_matches(matches);
         frontend.enforce_bijective_buffer_matches(matches);
         for (const cv::DMatch match : matches) {
-            const KeypointCV kpt_cam0 = frames[i].get_keypoints()[match.queryIdx];
-            const KeypointCV kpt_cam1 = frames[i + 1].get_keypoints()[match.trainIdx];
+            const KeypointCV kpt_cam0 = frames[i].keypoint()[match.queryIdx];
+            const KeypointCV kpt_cam1 = frames[i + 1].keypoint()[match.trainIdx];
 
             auto key = std::make_pair(i, kpt_cam0);
             if (lmk_id_map.find(key) != lmk_id_map.end()) {
@@ -453,11 +453,11 @@ TEST(SFMMvp, sfm_building_manual_incremental) {
     LandmarkId lmk_id = 0;
     for (size_t i = 0; i < indices.size() - 1; i++) {
         std::vector<cv::DMatch> matches =
-            frontend.compute_matches(frames[i].get_descriptors(), frames[i + 1].get_descriptors());
+            frontend.compute_matches(frames[i].descriptors(), frames[i + 1].descriptors());
         frontend.enforce_bijective_buffer_matches(matches);
         for (const cv::DMatch match : matches) {
-            const KeypointCV kpt_cam0 = frames[i].get_keypoints()[match.queryIdx];
-            const KeypointCV kpt_cam1 = frames[i + 1].get_keypoints()[match.trainIdx];
+            const KeypointCV kpt_cam0 = frames[i].keypoint()[match.queryIdx];
+            const KeypointCV kpt_cam1 = frames[i + 1].keypoint()[match.trainIdx];
 
             auto key = std::make_pair(frames[i].id_, kpt_cam0);
             if (lmk_id_map.find(key) != lmk_id_map.end()) {
@@ -582,7 +582,7 @@ TEST(SFMMvp, sfm_building_manual_incremental) {
         local_estimate_.insert_or_assign(poses[1], cam_pose.at(i + 1));
 
         std::vector<cv::DMatch> matches =
-            frontend.compute_matches(frames[i].get_descriptors(), frames[i + 1].get_descriptors());
+            frontend.compute_matches(frames[i].descriptors(), frames[i + 1].descriptors());
         frontend.enforce_bijective_matches(matches);
         std::vector<gtsam::Pose3> feat_cam_poses{cam_pose.at(i), cam_pose.at(i + 1)};
 
@@ -591,8 +591,8 @@ TEST(SFMMvp, sfm_building_manual_incremental) {
         std::vector<Eigen::Vector3d> viz_lmks;
         for (const cv::DMatch match : matches) {
             std::vector<gtsam::Point2> feat_kpts;
-            const KeypointCV kpt_cam0 = frames[i].get_keypoints()[match.queryIdx];
-            const KeypointCV kpt_cam1 = frames[i + 1].get_keypoints()[match.trainIdx];
+            const KeypointCV kpt_cam0 = frames[i].keypoint()[match.queryIdx];
+            const KeypointCV kpt_cam1 = frames[i + 1].keypoint()[match.trainIdx];
             feat_kpts.emplace_back(kpt_cam0.x, kpt_cam0.y);
             feat_kpts.emplace_back(kpt_cam1.x, kpt_cam1.y);
 
