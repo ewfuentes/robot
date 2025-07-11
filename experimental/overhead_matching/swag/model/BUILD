@@ -35,6 +35,7 @@ py_library(
   ],
   deps=[
     requirement("torch"),
+    requirement("torchvision"),
     requirement("msgspec"),
     "//common/torch:load_torch_deps",
   ]
@@ -46,6 +47,6 @@ py_test(
   deps = [
     requirement("torch"),
     "//common/torch:load_torch_deps",
-    ":swag_patch_embedding_test",
+    ":swag_patch_embedding",
   ]
 )
