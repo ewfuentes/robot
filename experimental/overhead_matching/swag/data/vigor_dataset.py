@@ -409,12 +409,13 @@ class VigorDataset(torch.utils.data.Dataset):
                 if idx > len(self) - 1:
                     raise IndexError  # if we don't raise index error the iterator won't terminate
                 # as this will throw a KeyError
-                sat_metadata = series_to_dict_with_index(self.dataset._satellite_metadata.loc[idx])
+                sat_metadata = self.dataset._satellite_metadata.iloc[idx]
                 sat, sat_original_shape = load_image(sat_metadata.path, self.dataset._satellite_patch_size)
                 landmarks = []
                 if self.dataset._landmark_metadata is not None:
                     landmarks = self._landmark_metadata.iloc[sat_metadata["landmark_idxs"]]
                     landmarks = [series_to_dict_with_index(x) for _, x in landmarks.iterrows()]
+                sat_metadata = series_to_dict_with_index(sat_metadata)
                 sat_metadata["landmarks"] = landmarks
                 sat_metadata["original_shape"] = sat_original_shape
 
