@@ -1,6 +1,7 @@
 
 import common.torch.load_torch_deps
 import torch
+import torch.nn.functional as F
 import torchvision as tv
 import msgspec
 from typing import Union
@@ -61,14 +62,13 @@ PositionEmbeddingConfig = Union[PlanarPositionEmbeddingConfig, SphericalEmbeddin
 AggregationConfig = Union[TransformerAggregatorConfig]
 
 
-@dataclass
-class SwagPatchEmbeddingConfig:
+class SwagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
     feature_map_extractor_config: FeatureMapExtractorConfig
     semantic_token_extractor_config: SemanticTokenExtractorConfig
     position_embedding_config: PositionEmbeddingConfig
     aggregation_config: AggregationConfig
 
-    image_input_dim: tuple[int, int]
+    patch_dims: tuple[int, int]
     output_dim: int
 
 
@@ -141,6 +141,13 @@ class SemanticEmbeddingMatrix(torch.nn.Module):
         output_idxs = torch.full((batch_size, max_num_landmarks), 0, dtype=torch.int)
         positions_in_patch = torch.zeros((batch_size, max_num_landmarks, 2), dtype=torch.float32)
 
+        dev = self._embedding_matrix.weight.device
+
+        if max_num_landmarks == 0:
+            return (torch.empty((batch_size, 0, 2), device=dev),
+                    torch.empty((batch_size, 0, self._embedding_matrix.embedding_dim), device=dev),
+                    torch.empty((batch_size, 0), device=dev))
+
         for batch_idx in range(len(model_input.metadata)):
             sat_metadata = model_input.metadata[batch_idx]
 
@@ -152,6 +159,9 @@ class SemanticEmbeddingMatrix(torch.nn.Module):
                 positions_in_patch[batch_idx, landmark_idx, 1] = (
                         landmark["web_mercator_x"] - sat_metadata["web_mercator_x"])
         mask = output_idxs == 0
+
+        mask = mask.to(dev)
+        output_idxs = output_idxs.to(dev)
 
         return positions_in_patch, self._embedding_matrix(output_idxs), mask
 
@@ -178,13 +188,13 @@ class PlanarPositionEmbedding(torch.nn.Module):
         # relative patch locations
         if model_input is not None and patch_size is not None:
             batch_size = len(model_input.metadata)
-            original_size = model_input.metadata[0]["original_size"]
+            original_shape = model_input.image.shape[2:]
 
-            num_row_tokens = original_size[0] // patch_size[0]
-            num_col_tokens = original_size[1] // patch_size[1]
+            num_row_tokens = original_shape[0] // patch_size[0]
+            num_col_tokens = original_shape[1] // patch_size[1]
             num_tokens = num_row_tokens * num_col_tokens
 
-            center_location = (original_size[0] // 2, original_size[1] // 2)
+            center_location = (original_shape[0] // 2, original_shape[1] // 2)
 
             relative_positions = torch.zeros((batch_size, num_row_tokens, num_col_tokens, 2))
             for row_idx in range(num_row_tokens):
@@ -261,6 +271,7 @@ class SwagPatchEmbedding(torch.nn.Module):
                 config.output_dim)
 
     def forward(self, model_input: ModelInput):
+        dev = model_input.image.device
         # feature positions is batch x n_tokens x 2
         # feature amp is batch x n_tokens x feature_dim
         # The positions are where each token comes from in pixel space in the original image
@@ -276,9 +287,9 @@ class SwagPatchEmbedding(torch.nn.Module):
         # semantic_position_embeddings is batch x n_sematic_tokens x pos_embedding_dim
         feature_position_embeddings = self._position_embedding(
                 model_input=model_input,
-                patch_size=self._feature_map_extractor.patch_size)
+                patch_size=self._feature_map_extractor.patch_size).to(dev)
         semantic_position_embeddings = self._position_embedding(
-                relative_positions=semantic_positions)
+                relative_positions=semantic_positions).to(dev)
 
         pos_feature_tokens = torch.cat([feature_map, feature_position_embeddings], dim=-1)
         pos_semantic_tokens = torch.cat([semantic_tokens, semantic_position_embeddings], dim=-1)
@@ -294,10 +305,11 @@ class SwagPatchEmbedding(torch.nn.Module):
         cls_token = self._cls_token.expand(batch_size, -1, -1)
         input_tokens = torch.cat([cls_token, input_feature_tokens, input_semantic_tokens], dim=1)
 
-        feature_and_cls_mask = torch.zeros((batch_size, input_feature_tokens.shape[1] + 1))
+        feature_and_cls_mask = torch.zeros(
+                (batch_size, input_feature_tokens.shape[1] + 1), device=dev)
         input_mask = torch.cat([feature_and_cls_mask, semantic_mask], dim=1)
 
         output_tokens = self._aggregator_model(input_tokens, input_mask)
 
         # output is batch x feature_dim
-        return output_tokens[:, 0, :]
+        return F.normalize(output_tokens[:, 0, :])

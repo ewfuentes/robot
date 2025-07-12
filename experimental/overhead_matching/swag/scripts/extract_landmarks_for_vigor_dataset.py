@@ -17,7 +17,7 @@ class Options:
 to_retreive = {
     "bus_stop": Options({"highway": "bus_stop"}),
     "t_stop": Options({"railway": "station"}),
-    "restuarants": Options({"amenity": ["restaurant", "cafe", "bar", "fast_food", "pub"]}),
+    "restaurants": Options({"amenity": ["restaurant", "cafe", "bar", "fast_food", "pub"]}),
     "grocery_store": Options({"shop": ["supermarket", "convenience", "greengrocer", "deli"]}),
     "places_of_worship": Options({"amenity": "place_of_worship"}),
     "school": Options({"amenity": ["school", "college", "university"]}),
