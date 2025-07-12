@@ -48,6 +48,10 @@ class AggregationType(StrEnum):
 
 
 class TransformerAggregatorConfig(msgspec.Struct, tag=True, tag_field="kind"):
+    num_transformer_layers: int
+    num_attention_heads: int
+    hidden_dim: int
+    dropout_frac: float
     type: AggregationType = AggregationType.TRANSFORMER
 
 
@@ -89,9 +93,9 @@ def create_position_embedding(config: PositionEmbeddingConfig):
     return PlanarPositionEmbedding(config)
 
 
-def create_aggregator_model(config: AggregationConfig):
+def create_aggregator_model(output_dim: int, config: AggregationConfig):
     assert config.type == AggregationType.TRANSFORMER
-    return TransformerAggregator(config)
+    return TransformerAggregator(output_dim, config)
     ...
 
 
@@ -147,7 +151,7 @@ class SemanticEmbeddingMatrix(torch.nn.Module):
                         landmark["web_mercator_y"] - sat_metadata["web_mercator_y"])
                 positions_in_patch[batch_idx, landmark_idx, 1] = (
                         landmark["web_mercator_x"] - sat_metadata["web_mercator_x"])
-        mask = output_idxs > 0
+        mask = output_idxs == 0
 
         return positions_in_patch, self._embedding_matrix(output_idxs), mask
 
@@ -216,11 +220,21 @@ class PlanarPositionEmbedding(torch.nn.Module):
 
 
 class TransformerAggregator(torch.nn.Module):
-    def __init__(self, config: TransformerAggregatorConfig):
-        ...
+    def __init__(self, output_dim: int, config: TransformerAggregatorConfig):
+        super().__init__()
+        transformer_layer = torch.nn.TransformerEncoderLayer(
+                d_model=output_dim,
+                nhead=config.num_attention_heads,
+                dim_feedforward=config.hidden_dim,
+                dropout=config.dropout_frac,
+                batch_first=True)
+
+        self._encoder = torch.nn.TransformerEncoder(
+                transformer_layer,
+                num_layers=config.num_transformer_layers)
 
     def forward(self, tokens, token_mask):
-        ...
+        return self._encoder(tokens, src_key_padding_mask=token_mask, is_causal=False)
 
 
 class SwagPatchEmbedding(torch.nn.Module):
@@ -233,7 +247,7 @@ class SwagPatchEmbedding(torch.nn.Module):
         self._position_embedding = create_position_embedding(
                 config.position_embedding_config)
         self._aggregator_model = create_aggregator_model(
-                config.aggregation_config)
+                config.output_dim, config.aggregation_config)
 
         self._feature_token_marker = torch.nn.Parameter(torch.randn((1, 1, config.output_dim)))
         self._semantic_token_marker = torch.nn.Parameter(torch.randn((1, 1, config.output_dim)))
@@ -254,6 +268,7 @@ class SwagPatchEmbedding(torch.nn.Module):
         # semantic positions is batch x n_semantic_tokens x 2
         # semantic tokens is batch x n_semantic_tokens x semantic_feature_dim
         # The positions are where each token comes from in pixel space in the original image
+        # The semantic_mask is true if the corresponding token is a padding token
         semantic_positions, semantic_tokens, semantic_mask = (
                 self._semantic_token_extractor(model_input))
 
@@ -275,12 +290,14 @@ class SwagPatchEmbedding(torch.nn.Module):
         input_semantic_tokens += self._semantic_token_marker
 
         # input tokens is batch x (n_semantic_tokens + n_feature_tokens + 1) x aggregation_dim
-        print(f"{self._cls_token.shape=} {input_feature_tokens.shape=} {input_semantic_tokens.shape=}")
         batch_size = input_feature_tokens.shape[0]
         cls_token = self._cls_token.expand(batch_size, -1, -1)
         input_tokens = torch.cat([cls_token, input_feature_tokens, input_semantic_tokens], dim=1)
 
-        output_tokens = self._aggregator_model(input_tokens)
+        feature_and_cls_mask = torch.zeros((batch_size, input_feature_tokens.shape[1] + 1))
+        input_mask = torch.cat([feature_and_cls_mask, semantic_mask], dim=1)
+
+        output_tokens = self._aggregator_model(input_tokens, input_mask)
 
         # output is batch x feature_dim
         return output_tokens[:, 0, :]
