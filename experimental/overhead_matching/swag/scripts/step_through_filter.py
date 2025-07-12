@@ -35,13 +35,10 @@ import torch
 import pandas as pd
 from pathlib import Path
 import numpy as np
-import pickle
-import math
 import base64
 import argparse
 import cv2
 import json
-import enum
 from experimental.overhead_matching.swag.scripts.evaluate_model_on_paths import construct_path_eval_inputs_from_args
 from experimental.overhead_matching.swag.evaluation.evaluate_swag import construct_inputs_and_evaluate_path
 import experimental.overhead_matching.swag.data.vigor_dataset as vd
@@ -107,43 +104,6 @@ log_particle_weights = inference_result.log_particle_weights.numpy()
 particle_histories_pre_move = inference_result.particle_history_pre_move.numpy()
 print(f"Calculated histories with shapes: {particle_histories.shape=}, {log_particle_weights.shape}, {particle_histories_pre_move.shape}")
 
-# # Crop to valid region (data>=0)
-# data = grid.data
-# # flip data upside down
-# data = np.flipud(data)
-# mask = data >= 0
-# rows = np.any(mask,axis=1)
-# cols = np.any(mask,axis=0)
-# min_r, max_r = np.where(rows)[0][[0,-1]]
-# min_c, max_c = np.where(cols)[0][[0,-1]]
-# buf_px = int(np.ceil(args.buffer / grid.resolution))
-# min_r = max(min_r-buf_px,0)
-# max_r = min(max_r+buf_px,data.shape[0]-1)
-# min_c = max(min_c-buf_px,0)
-# max_c = min(max_c+buf_px,data.shape[1]-1)
-# cropped = data[min_r:max_r+1, min_c:max_c+1]
-# h,w = cropped.shape
-# # compute spatial origin
-# x0 = grid.x_lim_meters[0] + min_c*grid.resolution
-# y0 = grid.y_lim_meters[0] + min_r*grid.resolution
-# print(f"Cropped region: shape={cropped.shape}, x0={x0}, y1={y0}")
-
-# # Scale speeds to max_speed
-# speed_map = 1 / cropped
-# actual_max = np.nanmax(speed_map) + 0.5
-# scale = min(1.0, args.max_speed/actual_max) if actual_max>0 else 1.0
-# if actual_max>args.max_speed:
-#     print(f"Warning: actual_max {actual_max:.2f} > max_speed {args.max_speed:.2f}, scaling by {scale:.3f}")
-# speed_map = (speed_map + 0.5) * scale
-# speed_map[speed_map < 0] = 0
-
-# # Build greyscale image
-# grey = np.clip(speed_map/args.max_speed,0,1)
-# img = (255*(1-grey)).astype(np.uint8)
-# # convert single channel to BGR for PNG
-# png = cv2.imencode('.png', img)[1].tobytes()
-# b64 = base64.b64encode(png).decode('ascii')
-# data_uri = f"data:image/png;base64,{b64}"
 
 # Build figure
 from plotly.graph_objects import Figure, Image, Scattergl, Scatter
@@ -157,8 +117,8 @@ app.layout = html.Div([
                 id='view-mode-dropdown',
                 options=[
                     {'label': 'View particles', 'value': 'particles'},
-                    {'label': 'View resampling', 'value': 'resampling'},
-                    {'label': 'View motion', 'value': 'motion'}
+                    {'label': 'View resampling (TODO)', 'value': 'resampling'},
+                    {'label': 'View motion (TODO)', 'value': 'motion'}
                 ],
                 value='particles',
                 clearable=False
