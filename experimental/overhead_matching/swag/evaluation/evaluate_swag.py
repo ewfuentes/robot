@@ -334,7 +334,7 @@ def run_inference_on_path(
             num_dual_particles=None)
 
 
-def construct_inputs_and_evalulate_path(
+def construct_inputs_and_evaluate_path(
     vigor_dataset: vd.VigorDataset,
     path: list[int],
     path_similarity_values: torch.Tensor,
@@ -389,7 +389,7 @@ def evaluate_model_on_paths(
             path_similarity_values = all_similarity[path]
             generator_seed = seed * i
 
-            path_inference_result = construct_inputs_and_evalulate_path(
+            path_inference_result = construct_inputs_and_evaluate_path(
                 vigor_dataset=vigor_dataset,
                 path=path,
                 path_similarity_values=path_similarity_values,

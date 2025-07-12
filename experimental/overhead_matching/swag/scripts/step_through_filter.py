@@ -43,7 +43,7 @@ import cv2
 import json
 import enum
 from experimental.overhead_matching.swag.scripts.evaluate_model_on_paths import construct_path_eval_inputs_from_args
-from experimental.overhead_matching.swag.evaluation.evaluate_swag import construct_inputs_and_evalulate_path
+from experimental.overhead_matching.swag.evaluation.evaluate_swag import construct_inputs_and_evaluate_path
 import experimental.overhead_matching.swag.data.vigor_dataset as vd
 from experimental.overhead_matching.swag.evaluation.wag_config_pb2 import WagConfig
 from google.protobuf import text_format
@@ -90,7 +90,7 @@ sat_patch_kdtree = build_kd_tree(sat_patch_positions)
 
 path_similarity_values = torch.load(args.path_eval_path / "similarity.pt", weights_only=True)
 print("starting constructing particle histories")
-particle_histories, log_particle_weights, particle_histories_pre_move = construct_inputs_and_evalulate_path(
+particle_histories, log_particle_weights, particle_histories_pre_move = construct_inputs_and_evaluate_path(
     device=DEVICE,
     generator_seed=aux_info['seed'],
     path=gt_path_pano_indices,
