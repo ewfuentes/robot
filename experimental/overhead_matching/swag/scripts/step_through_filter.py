@@ -3,14 +3,14 @@ Given a single path evaluation, we want to be able to see...
 -What is the observation?
 -What areas of the satellite image are marked as likly (laid over rgb)
 -Where are the particles, and how likely are they? (e.g., be able to filter by a minimum/maximum likleihood)
-    - They get their liklihood from the closest patch. Hovering over a patch should give its liklihood, same with hovering over a particle
+    - They get their likelihood from the closest patch. Hovering over a patch should give its likelihood, same with hovering over a particle
     - Need to be able to turn on/off patches/particels
--Need to be able to step through liklihood calculation, movement, and resampling
+-Need to be able to step through likelihood calculation, movement, and resampling
 
 Questions to answer:
 - Why do the similarity patterns update as they do? Can we tell what the model is latching onto, or not 
 - Why do the particles act as they do. Why were they creating a line? 
-    - why do they get the liklihoods they do (based on the patches)
+    - why do they get the likelihoods they do (based on the patches)
     - why do they move the way they do
 
 
@@ -19,7 +19,7 @@ Understand why the particles do what they do.
 Workflow: 
 - See generally how the particles move across the map. Find a transition that we want to focus on
 - For that transition, activiate a particular feature we want to look at
-    - particle liklihood
+    - particle likelihood
     - Particle motion
     - 
 
@@ -49,7 +49,7 @@ from torch_kdtree import build_kd_tree
 DEVICE="cuda:0"
 
 # Add this near the top of the file with other global variables
-SHOW_LIKLIHOOD_WITH_OPACITY = False
+SHOW_LIKELIHOOD_WITH_OPACITY = False
 SHOW_SATELLITE_PATCHES = False
 
 
@@ -252,7 +252,7 @@ def toggle_opacity_checkbox(view_mode):
     else:
         return {'margin-top': '10px', 'display': 'none'}
 
-# Add a callback to update the SHOW_LIKLIHOOD_WITH_OPACITY variable
+# Add a callback to update the SHOW_LIKELIHOOD_WITH_OPACITY variable
 @app.callback(
     Output('graph', 'figure', allow_duplicate=True),
     Input('weight-opacity-toggle', 'value'),
@@ -261,8 +261,8 @@ def toggle_opacity_checkbox(view_mode):
     prevent_initial_call=True
 )
 def update_opacity_setting(toggle_value, view_mode, slider_value):
-    global SHOW_LIKLIHOOD_WITH_OPACITY
-    SHOW_LIKLIHOOD_WITH_OPACITY = 'enabled' in toggle_value
+    global SHOW_LIKELIHOOD_WITH_OPACITY
+    SHOW_LIKELIHOOD_WITH_OPACITY = 'enabled' in toggle_value
     
     # Trigger a redraw of the graph
     return update_graph(view_mode, None, slider_value, None, {'current_view_mode': view_mode, 'num_points': particle_histories.shape[0]})
@@ -379,7 +379,7 @@ def update_graph(view_mode, clickData, slider_value, current_fig, view_mode_data
             showlegend=True
         ))
 
-    if SHOW_LIKLIHOOD_WITH_OPACITY:
+    if SHOW_LIKELIHOOD_WITH_OPACITY:
         # Get particle positions and weights for current frame
         particles_x = particle_histories[slider_value, :, 1]
         particles_y = particle_histories[slider_value, :, 0]

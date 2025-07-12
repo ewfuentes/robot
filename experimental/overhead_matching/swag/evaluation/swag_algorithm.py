@@ -14,9 +14,6 @@ class WagMeasurementResult:
     # and then resampled according to this likelihood.
     log_particle_weights: torch.Tensor | None
 
-    dual_mcl_particles: torch.Tensor | None
-    dual_log_particle_weights: torch.Tensor | None
-
     # The last `num_dual_particles` of `resampled_particles` are the dual particles
     resampled_particles: torch.Tensor
     num_dual_particles: int
@@ -54,16 +51,17 @@ def measurement_wag(
     if num_mcl_samples:
         observation_log_likelihoods = pf.wag_observation_log_likelihood_from_similarity_matrix(
             similarity_matrix, wag_config.sigma_obs_prob_from_sim)
-        log_particle_weights = pf.wag_calculate_log_particle_weights(
+        primal_log_particle_weights = pf.wag_calculate_log_particle_weights(
             observation_log_likelihoods,
             particles,
             patch_index_from_particle)
 
         # resample particles
         resampled_primal_particles = pf.wag_multinomial_resampling(
-                particles, log_particle_weights, generator, num_samples=num_mcl_samples)
+                particles, primal_log_particle_weights, generator, num_samples=num_mcl_samples)
     else:
         resampled_primal_particles = torch.zeros((0, particles.shape[1]), device=particles.device)
+        primal_log_particle_weights = torch.zeros((0), device=particles.device)
 
     # Create new Dual MCL samples
     # compute the state likelihood by normalizing the observation likelihoods
@@ -100,21 +98,21 @@ def measurement_wag(
                 num_samples=num_dual_mcl_samples)
     else:
         resampled_dual_particles = torch.zeros((0, particles.shape[1]), device=particles.device)
+        dual_log_particle_weights = torch.zeros((0), device=particles.device)
 
     resampled_particles = torch.cat([resampled_primal_particles, resampled_dual_particles])
+    log_particle_weights = torch.cat([primal_log_particle_weights, dual_log_particle_weights])
     if return_past_particle_weights:
         return WagMeasurementResult(
                 resampled_particles=resampled_particles,
                 num_dual_particles=num_dual_mcl_samples,
-                log_particle_weights=log_particle_weights,
-                dual_mcl_particles=dual_mcl_particles if num_dual_mcl_samples else None,
-                dual_log_particle_weights=dual_log_particle_weights if num_dual_mcl_samples else None)
+                log_particle_weights=log_particle_weights
+        )
     return WagMeasurementResult(
             resampled_particles=resampled_particles,
             num_dual_particles=num_dual_mcl_samples,
-            log_particle_weights=None,
-            dual_mcl_particles=None,
-            dual_log_particle_weights=None)
+            log_particle_weights=None
+    )
 
 
 def move_wag(

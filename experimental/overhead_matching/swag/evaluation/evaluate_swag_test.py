@@ -5,7 +5,8 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 from experimental.overhead_matching.swag.data import vigor_dataset as vd
-from experimental.overhead_matching.swag.evaluation.evaluate_swag import evaluate_prediction_top_k, get_distance_error_between_pano_and_particles_meters
+from experimental.overhead_matching.swag.evaluation.evaluate_swag import evaluate_prediction_top_k, get_distance_error_between_pano_and_particles_meters, PathInferenceResult
+
 from common.math.haversine import find_d_on_unit_circle
 import torch.nn as nn
 import experimental.overhead_matching.swag.data.satellite_embedding_database as sed
@@ -134,6 +135,50 @@ class EvaluateSwagTest(unittest.TestCase):
             # Restore the original method
             dataset.get_panorama_positions = original_get_positions
 
+    def test_path_inference_result(self):
+        # setup
+        PATH_LENGTH = 101
+        STATE_DIM = 3
+        NUM_PARTICLES = 75
+        inf_result_none = PathInferenceResult(
+            particle_history=torch.rand(PATH_LENGTH, NUM_PARTICLES, STATE_DIM),
+            particle_history_pre_move=torch.rand(PATH_LENGTH, NUM_PARTICLES, STATE_DIM),
+            log_particle_weights=torch.rand(PATH_LENGTH, NUM_PARTICLES),
+            num_dual_particles=None
+        )
+        inf_result_0 = PathInferenceResult(
+            particle_history=torch.rand(PATH_LENGTH, NUM_PARTICLES, STATE_DIM),
+            particle_history_pre_move=torch.rand(PATH_LENGTH, NUM_PARTICLES, STATE_DIM),
+            log_particle_weights=torch.rand(PATH_LENGTH, NUM_PARTICLES),
+            num_dual_particles=0
+        )
+        inf_result_8 = PathInferenceResult(
+            particle_history=torch.rand(PATH_LENGTH, NUM_PARTICLES, STATE_DIM),
+            particle_history_pre_move=torch.rand(PATH_LENGTH, NUM_PARTICLES, STATE_DIM),
+            log_particle_weights=torch.rand(PATH_LENGTH, NUM_PARTICLES),
+            num_dual_particles=8
+        )
+        inf_result_way_too_many = PathInferenceResult(
+            particle_history=torch.rand(PATH_LENGTH, NUM_PARTICLES, STATE_DIM),
+            particle_history_pre_move=torch.rand(PATH_LENGTH, NUM_PARTICLES, STATE_DIM),
+            log_particle_weights=torch.rand(PATH_LENGTH, NUM_PARTICLES),
+            num_dual_particles=10 * NUM_PARTICLES
+        )
 
+        # action + verification
+        self.assertEqual(inf_result_0.get_dual_particle_history(), None)
+        self.assertEqual(inf_result_none.get_dual_particle_history(), None)
+        self.assertEqual(inf_result_0.get_dual_log_particle_weights(), None)
+        self.assertEqual(inf_result_none.get_dual_log_particle_weights(), None)
+        self.assertEqual(inf_result_0.get_dual_particle_history_pre_move(), None)
+        self.assertEqual(inf_result_none.get_dual_particle_history_pre_move(), None)
+
+        self.assertTrue(torch.equal(inf_result_8.get_dual_particle_history(), inf_result_8.particle_history[:, -8:]))
+        self.assertTrue(torch.equal(inf_result_8.get_dual_particle_history_pre_move(), inf_result_8.particle_history_pre_move[:, -8:]))
+        self.assertTrue(torch.equal(inf_result_8.get_dual_log_particle_weights(), inf_result_8.log_particle_weights[:, -8:]))
+
+        self.assertRaises(AssertionError, inf_result_way_too_many.get_dual_log_particle_weights)
+        self.assertRaises(AssertionError, inf_result_way_too_many.get_dual_particle_history)
+        self.assertRaises(AssertionError, inf_result_way_too_many.get_dual_particle_history_pre_move)
 if __name__ == "__main__":
     unittest.main()
