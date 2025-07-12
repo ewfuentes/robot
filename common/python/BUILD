@@ -16,6 +16,7 @@ py_binary(
     requirement("altair"),
     requirement("pandas"),
     requirement("seaborn"),
+    requirement("osmnx"),
     "//common/torch:load_torch_deps",
     "//experimental/overhead_matching/learned/model:clevr_transformer",
     "//experimental/overhead_matching/learned/model:clevr_tokenizer",
@@ -100,6 +101,7 @@ py_library(
   name = "serialization",
   srcs = ["serialization.py"],
   visibility = ["//visibility:public"],
+  deps = [requirement("msgspec")]
 )
 py_test(
     name = "serialization_test",

@@ -66,6 +66,7 @@ def wag_calculate_log_particle_weights(observation_log_likelihood: torch.Tensor,
     particle_log_likelihood = particle_log_likelihood - particle_log_likelihood.logsumexp(dim=0)
     return particle_log_likelihood
 
+
 def wag_multinomial_resampling(particles: torch.Tensor,
                                log_weights: torch.Tensor,
                                generator: torch.Generator,
@@ -82,3 +83,18 @@ def wag_multinomial_resampling(particles: torch.Tensor,
     indices = torch.multinomial(torch.exp(log_weights), num_samples, replacement=True, generator=generator)
     resampled_particles = particles[indices]
     return resampled_particles
+
+def wag_belief_log_likelihood_from_particles(particles: torch.Tensor,
+                                             satellite_patch_locations: torch.Tensor,
+                                             phantom_counts_frac: float,
+                                             patch_index_from_pos):
+    particle_patch_indices = patch_index_from_pos(particles)
+
+    num_phantom_counts = int(phantom_counts_frac * particles.shape[0])
+    out_counts = torch.full((particles.shape[0],), num_phantom_counts, device=particle_patch_indices.device)
+
+    patch_idxs, counts = torch.unique(particle_patch_indices, sorted=False, return_counts=True)
+    out_counts[patch_idxs] += counts
+
+    return torch.log(out_counts)
+

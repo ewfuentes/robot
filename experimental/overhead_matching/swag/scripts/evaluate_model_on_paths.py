@@ -15,17 +15,18 @@ def construct_path_eval_inputs_from_args(
         dataset_path: str,
         paths_path: str,
         panorama_neighbor_radius_deg: float,
+        device: torch.device
 ):
     with open(paths_path, 'r') as f:
         paths_data = json.load(f)
-    pano_model = lsm.load_model(pano_model_path)
-    sat_model = lsm.load_model(sat_model_path)
+    pano_model = lsm.load_model(pano_model_path, device=device)
+    sat_model = lsm.load_model(sat_model_path, device=device)
 
     dataset_path = Path(dataset_path).expanduser()
     dataset_config = vd.VigorDatasetConfig(
         panorama_neighbor_radius=panorama_neighbor_radius_deg,
-        satellite_patch_size=(320, 320),
-        panorama_size=(320, 640),
+        satellite_patch_size=sat_model.patch_dims,
+        panorama_size=pano_model.patch_dims,
         factor=1,
     )
     vigor_dataset = vd.VigorDataset(dataset_path, dataset_config)
@@ -52,17 +53,20 @@ if __name__ == "__main__":
                         help="If intermediate filter states should be saved")
     parser.add_argument("--panorama-neighbor-radius-deg", type=float,
                         default=0.0005, help="Panorama neighbor radius deg")
+    parser.add_argument("--sigma_obs_prob_from_sim", type=float, default=0.1)
+    parser.add_argument("--dual_mcl_frac", type=float, default=0.0)
+    parser.add_argument("--dual_mcl_phantom_counts_frac", type=float, default=1e-4)
 
     args = parser.parse_args()
 
     # torch.cuda.memory._record_memory_history(max_entries=100_000)
 
     DEVICE = "cuda:0"
+    torch.set_deterministic_debug_mode('error')
 
     Path(args.output_path).mkdir(parents=True, exist_ok=True)
     with open(Path(args.output_path) / "args.json", "w") as f:
         json.dump(vars(args), f, indent=4)
-
 
     args.sat_model_path = Path(args.sat_path).expanduser()
     args.pano_model_path = Path(args.pano_path).expanduser()
@@ -74,6 +78,7 @@ if __name__ == "__main__":
         dataset_path=args.dataset_path,
         paths_path=args.paths_path,
         panorama_neighbor_radius_deg=args.panorama_neighbor_radius_deg,
+        device=DEVICE
     )
 
     def degrees_from_meters(dist_m):
@@ -86,11 +91,13 @@ if __name__ == "__main__":
                            # page 73 of thesis
                            initial_particle_distribution_std_deg=degrees_from_meters(2970.0),
                            num_particles=100_000,
-                           sigma_obs_prob_from_sim=0.1,
+                           sigma_obs_prob_from_sim=args.sigma_obs_prob_from_sim,
                            satellite_patch_config=SatellitePatchConfig(
                                zoom_level=20,
                                patch_height_px=640,
-                               patch_width_px=640))
+                               patch_width_px=640),
+                           dual_mcl_frac=args.dual_mcl_frac,
+                           dual_mcl_belief_phantom_counts_frac=args.dual_mcl_phantom_counts_frac)
 
     with open(Path(args.output_path) / "wag_config.pbtxt", "w") as f:
         f.write(text_format.MessageToString(wag_config))

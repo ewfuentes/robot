@@ -19,6 +19,7 @@ py_library(
     ":load_torch_deps",
     "//toolchain:git_info",
     requirement("numpy"),
+    requirement("dinov2"),
   ]
 )
 

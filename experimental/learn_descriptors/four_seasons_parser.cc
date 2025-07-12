@@ -1,12 +1,15 @@
 #include "experimental/learn_descriptors/four_seasons_parser.hh"
 
-#include <limits.h>
-
 #include <cmath>
+#include <cstddef>
+#include <cstdlib>
 #include <exception>
 #include <fstream>
 #include <iostream>
+#include <limits>
+#include <sstream>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 
@@ -16,6 +19,7 @@
 #include "GeographicLib/LocalCartesian.hpp"
 #include "absl/strings/str_split.h"
 #include "absl/strings/strip.h"
+#include "common/check.hh"
 #include "common/liegroups/se3.hh"
 #include "common/time/robot_time.hh"
 #include "nmea/message/gga.hpp"
@@ -42,11 +46,9 @@ FourSeasonsParser::FourSeasonsParser(const std::filesystem::path& root_dir,
     txt_parser_help::TimeDataMap vio_poses_time_map =
         txt_parser_help::create_vio_time_data_map(path_vio, min_time_sig_figs);
     gps_parser_help::TimeGPSList gps_time_list =
-        gps_parser_help::create_gps_time_data_map(path_gps);
+        gps_parser_help::create_gps_time_data_list(path_gps);
 
-    const double imu_hz = 30.0;
     size_t id = 0;
-    size_t gps_idx = 0;
     for (const std::pair<size_t, std::vector<std::string>>& pair_time_data : img_time_list) {
         const size_t time_key = pair_time_data.first;
         ImagePoint img_pt;
@@ -96,22 +98,33 @@ FourSeasonsParser::FourSeasonsParser(const std::filesystem::path& root_dir,
             std::clog << "There is no AS_w_from_vio_cam data at img_pt with id: " << id
                       << std::endl;
         }
-        while (gps_idx < gps_time_list.size() && time_key > gps_time_list[gps_idx].first &&
-               time_key - gps_time_list[gps_idx].first > (1.0 / imu_hz) * 1e9) {
-            gps_idx++;
-        }  // find the closest gps point whose time is before the current image capture time
-        if (gps_idx < gps_time_list.size() &&
-            time_key - gps_time_list[gps_idx].first <= (1.0 / imu_hz) * 1e9) {
-            img_pt.gps_gcs = gps_time_list[gps_idx].second;
-            gps_idx++;
-        }
         img_pt_vector_.push_back(img_pt);
         id++;
     }
+    // popoulate gps to nearest img time
+    // TODO: could be linear time... but good enough
+    for (const auto& [time_unix_ns, gps_data] : gps_time_list) {
+        auto it = std::lower_bound(img_pt_vector_.begin(), img_pt_vector_.end(), time_unix_ns,
+                                   [](const ImagePoint& img_pt, const size_t query_unix_time) {
+                                       return img_pt.seq < query_unix_time;
+                                   });
+        size_t insert_idx = std::distance(img_pt_vector_.begin(), it);
+        if (it != img_pt_vector_.begin() &&
+            detail::abs_diff(it->seq, time_unix_ns) >
+                detail::abs_diff(std::prev(it)->seq, time_unix_ns)) {
+            insert_idx--;
+        }
+        // NOTE: in future, could perhaps use gps data that isn't associated with an img_pt in some
+        // way. maybe to help with interpolation, estimate velocity
+        if (detail::abs_diff(img_pt_vector_[insert_idx].seq, time_unix_ns) <
+            FourSeasonsParser::CAM_CAP_DELTA_NS) {
+            img_pt_vector_[insert_idx].gps_gcs = gps_data;
+        }
+    }
 }
 
-cv::Mat FourSeasonsParser::load_image(const size_t idx) const {
-    return get_image_point(idx).load_image(img_dir_);
+cv::Mat FourSeasonsParser::load_image(const size_t m) const {
+    return get_image_point(m).load_image(img_dir_);
 }
 
 FourSeasonsParser::FourSeasonsTransforms::FourSeasonsTransforms(
@@ -287,8 +300,8 @@ size_t gps_utc_to_unix_time(const nmea::date& utc_date, const double utc_time_da
     std::chrono::sys_time<std::chrono::nanoseconds> timestamp = date + utc_time_day_ns;
     return timestamp.time_since_epoch().count();
 }
-TimeGPSList create_gps_time_data_map(const std::filesystem::path& path_gps) {
-    TimeGPSList time_map_gps;
+TimeGPSList create_gps_time_data_list(const std::filesystem::path& path_gps) {
+    TimeGPSList time_list_gps;
     std::ifstream file_gps(path_gps);
     std::string line;
     std::optional<nmea::sentence> nmea_sentence;
@@ -296,7 +309,7 @@ TimeGPSList create_gps_time_data_map(const std::filesystem::path& path_gps) {
     date_last.day = 255;
     date_last.month = 255;
     date_last.year = 255;
-    double time_of_day_last = 0;
+    double time_of_day_last = -1.0;
     while (std::getline(file_gps, line) && !line.empty()) {
         try {
             nmea_sentence = nmea::sentence(line);
@@ -308,14 +321,14 @@ TimeGPSList create_gps_time_data_map(const std::filesystem::path& path_gps) {
         if (nmea_sentence->type() == "GGA") {
             nmea::gga gga(*nmea_sentence);
             if (gga.utc.exists() && gga.latitude.exists() && gga.longitude.exists()) {
-                ImagePoint::GPSData gps_data;
-                gps_data.latitude = gga.latitude.get();
-                gps_data.longitude = gga.longitude.get();
-                if (gga.altitude.exists()) gps_data.altitude = gga.altitude.get();
-                if (gga.utc.get() == time_of_day_last) {  // GGA messages for this dataset come
-                                                          // after RMC messages
-                    time_map_gps.push_back(
-                        std::make_pair(gps_utc_to_unix_time(date_last, gga.utc.get()), gps_data));
+                if (std::abs(gga.utc.get() - time_of_day_last) <
+                    1e-3) {  // GGA messages for this dataset come second
+                    ImagePoint::GPSData gps_data;
+                    gps_data.seq = gps_utc_to_unix_time(date_last, gga.utc.get());
+                    gps_data.latitude = gga.latitude.get();
+                    gps_data.longitude = gga.longitude.get();
+                    if (gga.altitude.exists()) gps_data.altitude = gga.altitude.get();
+                    time_list_gps.push_back(std::make_pair(gps_data.seq, gps_data));
                 }
             }
         } else if (nmea_sentence->type() == "RMC") {
@@ -324,10 +337,73 @@ TimeGPSList create_gps_time_data_map(const std::filesystem::path& path_gps) {
                 date_last = rmc.date.get();
                 time_of_day_last = rmc.utc.get();
             }
+        } else if (nmea_sentence->type() == "GST") {
+            std::optional<GSTData> gst_data = parse_gpgst(nmea_sentence->nmea_string());
+            if (gst_data && std::abs(gst_data->utc_time_ns - time_of_day_last) <
+                                1e-3) {  // GST message for this dataset come third
+                size_t unix_time_ns = gps_utc_to_unix_time(date_last, gst_data->utc_time_ns);
+                if (time_list_gps.back().first == unix_time_ns) {
+                    time_list_gps.back().second.uncertainty.emplace(
+                        gst_data->sigma_lat_m, gst_data->sigma_lon_m, gst_data->sigma_alt_m,
+                        gst_data->error_orientation_deg, gst_data->rms_range_error_m);
+                }
+            }
         }
     }
-    return time_map_gps;
+    return time_list_gps;
 }
+
+std::vector<std::string> split_nmea_sentence(const std::string& sentence) {
+    std::vector<std::string> fields;
+    std::string field;
+    std::stringstream ss(sentence);
+
+    while (std::getline(ss, field, ',')) {
+        // remove checksum from the last field if present
+        auto asterisk = field.find('*');
+        if (asterisk != std::string::npos) field = field.substr(0, asterisk);
+        fields.push_back(field);
+    }
+
+    return fields;
+}
+double time_of_day_seconds(const double utc_time_hhmmss) {
+    int hours = static_cast<int>(utc_time_hhmmss / 10000);
+    int minutes = static_cast<int>((utc_time_hhmmss - hours * 10000) / 100);
+    double seconds = utc_time_hhmmss - hours * 10000 - minutes * 100;
+    return hours * 3600 + minutes * 60 + seconds;
+}
+std::optional<GSTData> parse_gpgst(const std::string& sentence) {
+    if (sentence.substr(0, 6) != "$GPGST") {
+        return std::nullopt;
+    }
+
+    std::vector<std::string> fields = split_nmea_sentence(sentence);
+    if (fields.size() != 9) {
+        return std::nullopt;
+    }
+    for (size_t i = 0; i < fields.size(); i++) {
+        if (fields[i].empty()) return std::nullopt;
+    }
+
+    GSTData gst;
+    gst.utc_time_ns = time_of_day_seconds(std::stod(fields[1]));
+    gst.rms_range_error_m = std::stod(fields[2]);
+    gst.error_semi_major_m = std::stod(fields[3]);
+    gst.error_semi_minor_m = std::stod(fields[4]);
+    gst.error_orientation_deg = std::stod(fields[5]);
+    gst.sigma_lat_m = std::stod(fields[6]);
+    gst.sigma_lon_m = std::stod(fields[7]);
+    gst.sigma_alt_m = std::stod(fields[8]);
+
+    return gst;
+}
+
 }  // namespace gps_parser_help
+
+template <typename T>
+size_t abs_diff(const T& a, const T& b) {
+    return a > b ? a - b : b - a;
+}
 }  // namespace detail
 }  // namespace robot::experimental::learn_descriptors
