@@ -5,7 +5,7 @@ from pathlib import Path
 import experimental.overhead_matching.swag.scripts.train as T
 import experimental.overhead_matching.swag.model.patch_embedding as pe
 from experimental.overhead_matching.swag.data.vigor_dataset import HardNegativeMiner
-import experimental.overhead_matching.swag.model.patch_embedding as pe
+import experimental.overhead_matching.swag.model.swag_patch_embedding as spe
 
 
 def enc_hook(obj):
@@ -90,3 +90,44 @@ if __name__ == "__main__":
         yaml_config = msgspec.yaml.encode(out, enc_hook=enc_hook)
         file_name.write_bytes(yaml_config)
 
+    NUM_EPOCHS = 60
+    random_sample_type = (HardNegativeMiner.RandomSampleType.NEAREST)
+    hard_mining_after_epoch = NUM_EPOCHS
+    exp_name = "all_chicago_sat_embedding_pano_wag"
+    out = T.TrainConfig(
+            opt_config=T.OptimizationConfig(
+                num_epochs=NUM_EPOCHS,
+                batch_size=18,
+                lr_schedule=T.LearningRateSchedule(
+                        initial_lr=1e-4,
+                        lr_step_factor=1.0,
+                        num_epochs_at_lr=20),
+                enable_hard_negative_sampling_after_epoch_idx=hard_mining_after_epoch,
+                random_sample_type=random_sample_type),
+            sat_model_config=spe.SwagPatchEmbeddingConfig(
+                feature_map_extractor_config=spe.DinoFeatureMapExtractorConfig(),
+                semantic_token_extractor_config=spe.SemanticEmbeddingMatrixConfig(
+                        vocabulary=["bus_stop", "t_stop", "restaurants", "grocery_store", "places_of_worship", "school"],
+                        embedding_dim=256),
+                position_embedding_config=spe.PlanarPositionEmbeddingConfig(
+                    min_scale=0.1,
+                    scale_step=2.0,
+                    embedding_dim=64),
+                aggregation_config=spe.TransformerAggregatorConfig(
+                    num_transformer_layers=4,
+                    num_attention_heads=4,
+                    hidden_dim=8192,
+                    dropout_frac=0.1),
+                patch_dims=(322, 322),
+                output_dim=2048),
+            pano_model_config=pe.WagPatchEmbeddingConfig(
+                patch_dims=(322, 644),
+                num_aggregation_heads=4,
+                backbone_config=pe.DinoConfig(project=512)),
+            output_dir=Path(exp_name),
+            tensorboard_output=None,
+            dataset_path=[Path("Chicago")])
+
+    file_name = Path(f"/tmp/{exp_name}.yaml")
+    yaml_config = msgspec.yaml.encode(out, enc_hook=enc_hook)
+    file_name.write_bytes(yaml_config)

@@ -17,6 +17,7 @@ py_binary(
     "//common/torch:load_and_save_models",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
     "//experimental/overhead_matching/swag/model:patch_embedding",
+    "//experimental/overhead_matching/swag/model:swag_patch_embedding",
   ]
 )
 

@@ -27,8 +27,7 @@ class DinoConfig(msgspec.Struct, tag=True, tag_field='kind'):
 BackboneConfig = Union[VGGConfig, DinoConfig]
 
 
-@dataclass
-class WagPatchEmbeddingConfig:
+class WagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field='kind'):
     patch_dims: tuple[int, int]
     num_aggregation_heads: int
     backbone_config: BackboneConfig
