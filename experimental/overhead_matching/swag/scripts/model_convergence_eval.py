@@ -214,8 +214,67 @@ def _(path_df, pd, plt, shortest_last_index):
 
 
 @app.cell
-def _():
-    return
+def _(np, path_df, pd):
+    def flattened_df_to_ndarray(
+        dataframe: pd.DataFrame,
+        data_key: str,
+        index_key: str = "datapoint_index",
+        path_key: str = "path_idx",
+        model_key: str = "model",
+    ) -> dict[str, np.ndarray]:
+        out_arrays = {}
+        path_lengths = path_df.groupby(path_key)[index_key].max()
+        shortest_last_index = path_lengths.min()
+
+        for model_name in dataframe[model_key].unique():
+            model_df = dataframe[dataframe[model_key] == model_name]
+            num_paths = len(model_df[path_key].unique())
+            out_arr = np.ones((num_paths, shortest_last_index)) * np.nan
+            for _, row in model_df.iterrows():
+                if row[index_key] < shortest_last_index:
+                    out_arr[row[path_key], row[index_key]] = row[data_key]
+            assert not np.any(np.isnan(out_arr))
+            out_arrays[model_name] = out_arr
+        return out_arrays
+
+    error_m_np_arrays = flattened_df_to_ndarray(path_df, "error_m")
+
+
+    return error_m_np_arrays, flattened_df_to_ndarray
+
+
+@app.cell
+def _(error_m_np_arrays, matplotlib, np, plt):
+    percentile_cutoff = np.asarray([5, 50, 95])
+    line_styles = ['-', '--', '-.']
+
+    cmap = matplotlib.colormaps.get_cmap('hsv')
+    error_percentiles = {k: np.percentile(v, percentile_cutoff, axis=0) for k, v in error_m_np_arrays.items()}
+    fig, ax = plt.subplots()
+    for model_i, (model, percentiles) in enumerate(error_percentiles.items()):
+        for i, (ls, percentile) in enumerate(zip(line_styles, percentile_cutoff)):
+            ax.plot(percentiles[i], c=cmap(model_i), ls=ls, label=f"{model} {percentile}%")
+    plt.xlabel("Timestep")
+    plt.ylabel("Error (m)")
+    plt.title("Error Percentiles over Timesteps")
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+    return (
+        ax,
+        cmap,
+        error_percentiles,
+        fig,
+        i,
+        line_styles,
+        ls,
+        model,
+        model_i,
+        percentile,
+        percentile_cutoff,
+        percentiles,
+    )
 
 
 if __name__ == "__main__":
