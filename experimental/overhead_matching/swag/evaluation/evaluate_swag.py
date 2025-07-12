@@ -328,14 +328,18 @@ def run_inference_on_path(
     particle_history.append(wag_observation_result.resampled_particles.cpu().clone())
 
     if return_intermediates:
-        num_dual_particles = torch.tensor(num_dual_particles)
         if len(num_dual_particles) > 0:
+            num_dual_particles = torch.tensor(num_dual_particles)
             assert torch.all(num_dual_particles[0] == num_dual_particles) 
+            num_dual_particles = num_dual_particles[0]
+        else:
+            num_dual_particles=None
+
         return PathInferenceResult(
             particle_history=torch.stack(particle_history),  # N+1, +1 from final particle state
             log_particle_weights=torch.stack(log_particle_weights),  # N
             particle_history_pre_move=torch.stack(particle_history_pre_move),
-            num_dual_particles=num_dual_particles[0],
+            num_dual_particles=num_dual_particles,
         )
     else:
         return PathInferenceResult(
