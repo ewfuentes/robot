@@ -207,15 +207,15 @@ class VigorDatasetTest(unittest.TestCase):
             self.assertEqual(len(landmark_meta["satellite_idxs"]), num_expected_neighbors)
 
         # This item is in the interior of the region, so we expect 9 landmarks to be nearby
-        self.assertEqual(len(item.landmark_metadata), 9)
+        self.assertEqual(len(item.satellite_metadata["landmarks"]), 9)
 
     def test_get_batch(self):
         # Setup
         BATCH_SIZE = 32
         config = vigor_dataset.VigorDatasetConfig(
-            panorama_neighbor_radius = 0.4,
-            satellite_patch_size = (50, 50),
-            panorama_size = (100, 100),
+            panorama_neighbor_radius=0.4,
+            satellite_patch_size=(50, 50),
+            panorama_size=(100, 100),
             satellite_zoom_level=7,
         )
         dataset = vigor_dataset.VigorDataset(
@@ -225,10 +225,11 @@ class VigorDatasetTest(unittest.TestCase):
         # Action
         batch = next(iter(dataloader))
 
+        print(batch.satellite_metadata)
+
         # Verification
         self.assertEqual(len(batch.panorama_metadata), BATCH_SIZE)
         self.assertEqual(len(batch.satellite_metadata), BATCH_SIZE)
-        self.assertEqual(len(batch.landmark_metadata), BATCH_SIZE)
         self.assertEqual(batch.panorama.shape, (BATCH_SIZE, 3, *config.panorama_size))
         self.assertEqual(batch.satellite.shape, (BATCH_SIZE, 3, *config.satellite_patch_size))
 

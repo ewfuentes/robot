@@ -49,7 +49,6 @@ class VigorDatasetConfig(NamedTuple):
 class VigorDatasetItem(NamedTuple):
     panorama_metadata: dict
     satellite_metadata: dict
-    landmark_metadata: list[dict]
     panorama: torch.Tensor
     satellite: torch.Tensor
 
@@ -125,10 +124,9 @@ def compute_satellite_from_landmarks(sat_kd_tree, sat_metadata, landmark_metadat
 
 def compute_satellite_from_panorama(sat_kdtree, sat_metadata, pano_metadata) -> SatelliteFromPanoramaResult:
     # Get the satellite patch size:
-    sat_patch = load_image(sat_metadata.iloc[0]["path"], resize_shape=None)
-    sat_patch_size = sat_patch.shape[1:]
-    half_width = sat_patch_size[1] / 2.0
-    half_height = sat_patch_size[0] / 2.0
+    sat_patch, sat_original_size = load_image(sat_metadata.iloc[0]["path"], resize_shape=None)
+    half_width = sat_original_size[1] / 2.0
+    half_height = sat_original_size[0] / 2.0
     max_dist = np.sqrt(half_width ** 2 + half_height ** 2)
 
     MAX_K = 10
@@ -206,10 +204,11 @@ def compute_neighboring_panoramas(pano_kdtree, max_dist):
 
 def load_image(path: Path, resize_shape: None | tuple[int, int]):
     img = tv.io.read_image(path, mode=tv.io.ImageReadMode.RGB)
+    original_shape = img.shape[1:]
     img = tv.transforms.functional.convert_image_dtype(img)
     if resize_shape is not None and img.shape[1:] != resize_shape:
         img = tv.transforms.functional.resize(img, resize_shape)
-    return img
+    return img, original_shape
 
 
 def populate_pairs(pano_metadata, sat_metadata, sample_mode):
@@ -326,18 +325,21 @@ class VigorDataset(torch.utils.data.Dataset):
 
         pano_metadata = self._panorama_metadata.loc[pano_idx]
         sat_metadata = self._satellite_metadata.loc[sat_idx]
-        pano = load_image(pano_metadata.path, self._panorama_size)
-        sat = load_image(sat_metadata.path, self._satellite_patch_size)
+        pano, pano_original_shape = load_image(pano_metadata.path, self._panorama_size)
+        sat, sat_original_shape = load_image(sat_metadata.path, self._satellite_patch_size)
 
-        landmark_metadata = None
+        pano_metadata = series_to_dict_with_index(pano_metadata)
+        sat_metadata = series_to_dict_with_index(sat_metadata)
+        landmarks = []
         if self._landmark_metadata is not None:
             landmarks = self._landmark_metadata.iloc[sat_metadata["landmark_idxs"]]
-            landmark_metadata = [series_to_dict_with_index(x) for _, x in landmarks.iterrows()]
+            landmarks = [series_to_dict_with_index(x) for _, x in landmarks.iterrows()]
+        sat_metadata["landmarks"] = landmarks
+        sat_metadata["original_shape"] = sat_original_shape
 
         return VigorDatasetItem(
-            panorama_metadata=series_to_dict_with_index(pano_metadata),
-            satellite_metadata=series_to_dict_with_index(sat_metadata),
-            landmark_metadata=landmark_metadata,
+            panorama_metadata=pano_metadata,
+            satellite_metadata=sat_metadata,
             panorama=pano,
             satellite=sat
         )
@@ -407,12 +409,19 @@ class VigorDataset(torch.utils.data.Dataset):
                 if idx > len(self) - 1:
                     raise IndexError  # if we don't raise index error the iterator won't terminate
                 # as this will throw a KeyError
-                sat_metadata = self.dataset._satellite_metadata.loc[idx]
-                sat = load_image(sat_metadata.path, self.dataset._satellite_patch_size)
+                sat_metadata = self.dataset._satellite_metadata.iloc[idx]
+                sat, sat_original_shape = load_image(sat_metadata.path, self.dataset._satellite_patch_size)
+                landmarks = []
+                if self.dataset._landmark_metadata is not None:
+                    landmarks = self._landmark_metadata.iloc[sat_metadata["landmark_idxs"]]
+                    landmarks = [series_to_dict_with_index(x) for _, x in landmarks.iterrows()]
+                sat_metadata = series_to_dict_with_index(sat_metadata)
+                sat_metadata["landmarks"] = landmarks
+                sat_metadata["original_shape"] = sat_original_shape
+
                 return VigorDatasetItem(
                     panorama_metadata=None,
-                    satellite_metadata=series_to_dict_with_index(sat_metadata),
-                    landmark_metadata=None,
+                    satellite_metadata=sat_metadata,
                     panorama=None,
                     satellite=sat
                 )
@@ -432,11 +441,10 @@ class VigorDataset(torch.utils.data.Dataset):
                     raise IndexError  # if we don't raise index error the iterator won't terminate
                 # as this will throw a KeyError
                 pano_metadata = self.dataset._panorama_metadata.loc[idx]
-                pano = load_image(pano_metadata.path, self.dataset._panorama_size)
+                pano, pano_original_shape = load_image(pano_metadata.path, self.dataset._panorama_size)
                 return VigorDatasetItem(
                     panorama_metadata=series_to_dict_with_index(pano_metadata),
                     satellite_metadata=None,
-                    landmark_metadata=None,
                     panorama=pano,
                     satellite=None
                 )
@@ -492,7 +500,7 @@ class VigorDataset(torch.utils.data.Dataset):
                 0.25, 0.25, 0.9) for x in range(len(neighbor_segments))])
             ax.add_collection(path_collection)
 
-        sat_patch_size = load_image(self._satellite_metadata.iloc[0]["path"], resize_shape=None).shape
+        _, sat_patch_size = load_image(self._satellite_metadata.iloc[0]["path"], resize_shape=None)
         patch_height_px, patch_width_px = sat_patch_size[1:]
         left_x = (self._satellite_metadata["web_mercator_x"] - (patch_width_px / 2.0)).to_numpy()
         right_x = (self._satellite_metadata["web_mercator_x"] + (patch_width_px / 2.0)).to_numpy()
@@ -552,8 +560,6 @@ def get_dataloader(dataset: VigorDataset, **kwargs):
                 x.panorama_metadata for x in samples],
             satellite_metadata=None if first_item.satellite_metadata is None else [
                 x.satellite_metadata for x in samples],
-            landmark_metadata=None if first_item.landmark_metadata is None else [
-                x.landmark_metadata for x in samples],
             panorama=None if first_item.panorama is None else torch.stack(
                 [x.panorama for x in samples]),
             satellite=None if first_item.satellite is None else torch.stack(
