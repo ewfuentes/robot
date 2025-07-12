@@ -75,6 +75,7 @@ vigor_dataset, sat_model, pano_model, paths_data = construct_path_eval_inputs_fr
     dataset_path=path_eval_args['dataset_path'],
     paths_path=path_eval_args['paths_path'],
     panorama_neighbor_radius_deg=path_eval_args['panorama_neighbor_radius_deg'],
+    device="cuda:0"
 )
 with open(args.path_eval_path.parent / "wag_config.pbtxt", 'r') as f:
     wag_config = WagConfig()
@@ -90,11 +91,10 @@ sat_patch_kdtree = build_kd_tree(sat_patch_positions)
 
 path_similarity_values = torch.load(args.path_eval_path / "similarity.pt", weights_only=True)
 print("starting constructing particle histories")
-particle_histories, log_particle_weights, particle_histories_pre_move = construct_inputs_and_evaluate_path(
+inference_result = construct_inputs_and_evaluate_path(
     device=DEVICE,
     generator_seed=aux_info['seed'],
     path=gt_path_pano_indices,
-    sat_patch_kdtree=sat_patch_kdtree,
     vigor_dataset=vigor_dataset,
     path_similarity_values=path_similarity_values,
     wag_config=wag_config,
@@ -102,9 +102,9 @@ particle_histories, log_particle_weights, particle_histories_pre_move = construc
 )
 print("finished calculating particle histories")
 gt_path_latlong = vigor_dataset.get_panorama_positions(gt_path_pano_indices).cpu().numpy()
-particle_histories = particle_histories.numpy()
-log_particle_weights = log_particle_weights.numpy()
-particle_histories_pre_move = particle_histories_pre_move.numpy()
+particle_histories = inference_result.particle_history.numpy()
+log_particle_weights = inference_result.log_particle_weights.numpy()
+particle_histories_pre_move = inference_result.particle_history_pre_move.numpy()
 print(f"Calculated histories with shapes: {particle_histories.shape=}, {log_particle_weights.shape}, {particle_histories_pre_move.shape}")
 
 # # Crop to valid region (data>=0)

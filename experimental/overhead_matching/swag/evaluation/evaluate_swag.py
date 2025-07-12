@@ -290,8 +290,8 @@ def run_inference_on_path(
         if return_intermediates:
             log_particle_weights.append(wag_observation_result.log_particle_weights.cpu().clone())
             particle_history_pre_move.append(particle_state.cpu().clone())
-            dual_mcl_particles.append(wag_observation_result.dual_mcl_particles.cpu().clone())
-            dual_log_particle_weights.append(wag_observation_result.dual_log_particle_weights.cpu().clone())
+            dual_mcl_particles.append(wag_observation_result.dual_mcl_particles.cpu().clone() if wag_observation_result.dual_mcl_particles is not None else None)
+            dual_log_particle_weights.append(wag_observation_result.dual_log_particle_weights.cpu().clone() if wag_observation_result.dual_log_particle_weights is not None else None)
             num_dual_particles.append(wag_observation_result.num_dual_particles)
 
         # move
@@ -310,8 +310,8 @@ def run_inference_on_path(
     if return_intermediates:
         log_particle_weights.append(wag_observation_result.log_particle_weights.cpu().clone())
         particle_history_pre_move.append(particle_state.cpu().clone())
-        dual_mcl_particles.append(wag_observation_result.dual_mcl_particles.cpu().clone())
-        dual_log_particle_weights.append(wag_observation_result.dual_log_particle_weights.cpu().clone())
+        dual_mcl_particles.append(wag_observation_result.dual_mcl_particles.cpu().clone() if wag_observation_result.dual_mcl_particles is not None else None)
+        dual_log_particle_weights.append(wag_observation_result.dual_log_particle_weights.cpu().clone() if wag_observation_result.dual_log_particle_weights is not None else None)
         num_dual_particles.append(wag_observation_result.num_dual_particles)
 
     particle_history.append(wag_observation_result.resampled_particles.cpu().clone())
@@ -321,8 +321,8 @@ def run_inference_on_path(
             particle_history=torch.stack(particle_history),  # N+1, +1 from final particle state
             log_particle_weights=torch.stack(log_particle_weights),  # N
             particle_history_pre_move=torch.stack(particle_history_pre_move),
-            dual_mcl_particles=torch.stack(dual_mcl_particles),
-            dual_log_particle_weights=torch.stack(dual_log_particle_weights),
+            dual_mcl_particles=torch.stack(dual_mcl_particles) if dual_mcl_particles[0] is not None else None,
+            dual_log_particle_weights=torch.stack(dual_log_particle_weights) if dual_log_particle_weights[0] is not None else None,
             num_dual_particles=torch.tensor(num_dual_particles))
     else:
         return PathInferenceResult(

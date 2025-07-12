@@ -107,8 +107,8 @@ def measurement_wag(
                 resampled_particles=resampled_particles,
                 num_dual_particles=num_dual_mcl_samples,
                 log_particle_weights=log_particle_weights,
-                dual_mcl_particles=dual_mcl_particles,
-                dual_log_particle_weights=dual_log_particle_weights)
+                dual_mcl_particles=dual_mcl_particles if num_dual_mcl_samples else None,
+                dual_log_particle_weights=dual_log_particle_weights if num_dual_mcl_samples else None)
     return WagMeasurementResult(
             resampled_particles=resampled_particles,
             num_dual_particles=num_dual_mcl_samples,
