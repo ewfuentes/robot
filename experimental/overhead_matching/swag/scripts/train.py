@@ -11,6 +11,8 @@ from pathlib import Path
 from common.python.serialization import dataclass_to_dict, flatten_dict
 from experimental.overhead_matching.swag.data import vigor_dataset
 from experimental.overhead_matching.swag.model import patch_embedding
+from experimental.overhead_matching.swag.model import swag_patch_embedding
+from typing import Union
 from dataclasses import dataclass
 import tqdm
 import msgspec
@@ -43,11 +45,15 @@ class OptimizationConfig:
     random_sample_type: vigor_dataset.HardNegativeMiner.RandomSampleType
 
 
+ModelConfig = Union[patch_embedding.WagPatchEmbeddingConfig,
+                    swag_patch_embedding.SwagPatchEmbeddingConfig]
+
+
 @dataclass
 class TrainConfig:
     opt_config: OptimizationConfig
-    sat_model_config: patch_embedding.WagPatchEmbeddingConfig
-    pano_model_config: patch_embedding.WagPatchEmbeddingConfig
+    sat_model_config: ModelConfig
+    pano_model_config: ModelConfig
     output_dir: Path
     tensorboard_output: Path | None
     dataset_path: list[Path]
@@ -58,6 +64,19 @@ class Pairs:
     positive_pairs: list[tuple[int, int]]
     negative_pairs: list[tuple[int, int]]
     semipositive_pairs: list[tuple[int, int]]
+
+
+def enc_hook(obj):
+    if isinstance(obj, Path):
+        return str(obj)
+    else:
+        raise ValueError(f"Unhandled Value: {obj}")
+
+
+def dec_hook(type, obj):
+    if type is Path:
+        return Path(obj)
+    raise ValueError(f"Unhandled type: {type=} {obj=}")
 
 
 def create_pairs(panorama_metadata, satellite_metadata) -> Pairs:
@@ -84,9 +103,10 @@ def create_pairs(panorama_metadata, satellite_metadata) -> Pairs:
 def train(config: TrainConfig, *, dataset, panorama_model, satellite_model, quiet):
     config.output_dir.mkdir(parents=True, exist_ok=True)
     # save config:
-    config_dict = dataclass_to_dict(config)
-    with open(config.output_dir / "config.json", 'w') as f:
-        json.dump(config_dict, f)
+    config_json = msgspec.json.encode(config, enc_hook=enc_hook)
+    config_dict = json.loads(config_json)
+    with open(config.output_dir / "config.json", 'wb') as f:
+        f.write(config_json)
     writer = SummaryWriter(
         log_dir=config.tensorboard_output
     )
@@ -101,6 +121,7 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model, quie
 
     print(dataset._satellite_metadata)
     print(dataset._panorama_metadata)
+    print(dataset._landmark_metadata)
 
     opt_config = config.opt_config
 
@@ -140,7 +161,10 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model, quie
             opt.zero_grad()
 
             panorama_embeddings = panorama_model(batch.panorama.cuda())
-            sat_embeddings = satellite_model(batch.satellite.cuda())
+            sat_embeddings = satellite_model(
+                swag_patch_embedding.ModelInput(
+                    image=batch.satellite.cuda(),
+                    metadata=batch.satellite_metadata))
 
             similarity = torch.einsum("ad,bd->ab", panorama_embeddings, sat_embeddings)
 
@@ -232,7 +256,8 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model, quie
             save_model(panorama_model, panorama_model_path,
                        (batch.panorama[:opt_config.batch_size].cuda(),))
             save_model(satellite_model, satellite_model_path,
-                       (batch.satellite[:opt_config.batch_size].cuda(),))
+                       (swag_patch_embedding.ModelInput(image=batch.satellite[:opt_config.batch_size].cuda(),
+                                                       metadata=batch.satellite_metadata),))
 
 
 def main(
@@ -240,11 +265,6 @@ def main(
         output_base_path: Path,
         train_config_path: Path,
         quiet: bool):
-    def dec_hook(type, obj):
-        if type is Path:
-            return Path(obj)
-        raise ValueError(f"Unhandled type: {type=} {obj=}")
-
     with open(train_config_path, 'r') as file_in:
         train_config = msgspec.yaml.decode(file_in.read(), type=TrainConfig, dec_hook=dec_hook)
     pprint(train_config)
@@ -257,11 +277,18 @@ def main(
         sample_mode=vigor_dataset.SampleMode.POS_SEMIPOS,
     )
     dataset_paths = [dataset_base_path / p for p in train_config.dataset_path]
-    dataset = vigor_dataset.VigorDataset(dataset_paths, dataset_config)
+    landmark_paths = [dataset_base_path / "landmarks" / (str(p) + ".geojson") for p in train_config.dataset_path]
+    dataset = vigor_dataset.VigorDataset(dataset_paths, dataset_config, landmark_paths)
 
-    satellite_model = patch_embedding.WagPatchEmbedding(train_config.sat_model_config)
+    if isinstance(train_config.sat_model_config, patch_embedding.WagPatchEmbeddingConfig):
+        satellite_model = patch_embedding.WagPatchEmbedding(train_config.sat_model_config)
+    elif isinstance(train_config.sat_model_config, swag_patch_embedding.SwagPatchEmbeddingConfig):
+        satellite_model = swag_patch_embedding.SwagPatchEmbedding(train_config.sat_model_config)
 
-    panorama_model = patch_embedding.WagPatchEmbedding(train_config.pano_model_config)
+    if isinstance(train_config.pano_model_config, patch_embedding.WagPatchEmbeddingConfig):
+        panorama_model = patch_embedding.WagPatchEmbedding(train_config.pano_model_config)
+    elif isinstance(train_config.pano_model_config, swag_patch_embedding.SwagPatchEmbeddingConfig):
+        panorama_model = swag_patch_embedding.SwagPatchEmbedding(train_config.pano_model_config)
 
     output_dir = output_base_path / train_config.output_dir
     tensorboard_output = train_config.tensorboard_output

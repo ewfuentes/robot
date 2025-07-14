@@ -9,14 +9,27 @@ from experimental.overhead_matching.swag.evaluation.evaluate_swag import evaluat
 from common.math.haversine import find_d_on_unit_circle
 import torch.nn as nn
 import experimental.overhead_matching.swag.data.satellite_embedding_database as sed
+import enum
+
+
+class ModelType(enum.Enum):
+    SATELLITE = enum.auto()
+    PANORAMA = enum.auto()
 
 
 class MockEmbeddingModel(nn.Module):
-    def __init__(self, embedding_dim):
+    def __init__(self, embedding_dim, model_type):
         super().__init__()
         self.embedding_dim = embedding_dim
         self.embedding_network = nn.LazyLinear(self.embedding_dim)
-    
+        self.model_type = model_type
+
+    def model_input_from_batch(self, x):
+        if self.model_type == ModelType.SATELLITE:
+            return x.satellite
+        else:
+            return x.panorama
+
     def forward(self, data: torch.Tensor):
         batch_size = data.shape[0]
         out = self.embedding_network(data[:, :, :100, :100].float().reshape(batch_size, -1))
@@ -39,8 +52,8 @@ class EvaluateSwagTest(unittest.TestCase):
         # Create dataset, model, and embedding database
         dataset = vd.VigorDataset(Path("external/vigor_snippet/vigor_snippet"), config)
 
-        sat_model = MockEmbeddingModel(EMBEDDING_DIM)
-        ego_model = MockEmbeddingModel(EMBEDDING_DIM)
+        sat_model = MockEmbeddingModel(EMBEDDING_DIM, ModelType.SATELLITE)
+        ego_model = MockEmbeddingModel(EMBEDDING_DIM, ModelType.PANORAMA)
 
         # Call the function to test
         result_df, all_similarities = evaluate_prediction_top_k(

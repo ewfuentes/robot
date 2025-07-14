@@ -27,8 +27,7 @@ class DinoConfig(msgspec.Struct, tag=True, tag_field='kind'):
 BackboneConfig = Union[VGGConfig, DinoConfig]
 
 
-@dataclass
-class WagPatchEmbeddingConfig:
+class WagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field='kind'):
     patch_dims: tuple[int, int]
     num_aggregation_heads: int
     backbone_config: BackboneConfig
@@ -141,6 +140,12 @@ class WagPatchEmbedding(torch.nn.Module):
         for (weight, bias) in self._safa_params:
             out = torch.einsum('bdi, dij->bdj', out, weight) + bias
         return out
+
+    def model_input_from_batch(self, batch_item):
+        if self._patch_dims[0] != self._patch_dims[1]:
+            return batch_item.panorama
+        else:
+            return batch_item.satellite
 
     def forward(self, x):
         features = extract_features(self._backbone, x)

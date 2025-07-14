@@ -25,7 +25,7 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
                 num_attention_heads=4,
                 hidden_dim=64,
                 dropout_frac=0.1),
-            image_input_dim=(NUM_IMAGE_ROWS, NUM_IMAGE_COLS),
+            patch_dims=(NUM_IMAGE_ROWS, NUM_IMAGE_COLS),
             output_dim=16)
 
         model = spe.SwagPatchEmbedding(config)
@@ -33,14 +33,14 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
         metadata = [
                 {"web_mercator_y": 100.0,
                  "web_mercator_x": 200.0,
-                 "original_size": (NUM_IMAGE_ROWS, NUM_IMAGE_COLS),
+                 "original_shape": (NUM_IMAGE_ROWS, NUM_IMAGE_COLS),
                  "landmarks": [
                     {"web_mercator_y": 95.0, "web_mercator_x": 210.0, "landmark_type": "a"},
                     {"web_mercator_y": 90.0, "web_mercator_x": 190.0, "landmark_type": "b"},
                     {"web_mercator_y": 105.0, "web_mercator_x": 195.0, "landmark_type": "a"}]},
                 {"web_mercator_y": 300.0,
                  "web_mercator_x": 400.0,
-                 "original_size": (NUM_IMAGE_ROWS, NUM_IMAGE_COLS),
+                 "original_shape": (NUM_IMAGE_ROWS, NUM_IMAGE_COLS),
                  "landmarks": [
                     {"web_mercator_y": 275.0, "web_mercator_x": 425.0, "landmark_type": "c"},
                     {"web_mercator_y": 350.0, "web_mercator_x": 390.0, "landmark_type": "b"}]}]
