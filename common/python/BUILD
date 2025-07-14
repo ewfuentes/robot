@@ -25,6 +25,7 @@ py_binary(
     "//experimental/overhead_matching/swag/evaluation:evaluate_swag",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
     "//experimental/overhead_matching/swag/model:patch_embedding",
+    "//experimental/overhead_matching/swag/model:swag_patch_embedding",
   ]
 )
 

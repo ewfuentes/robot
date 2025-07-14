@@ -2,12 +2,38 @@ import experimental.overhead_matching.swag.data.vigor_dataset as vd
 import experimental.overhead_matching.swag.evaluation.evaluate_swag as es
 from experimental.overhead_matching.swag.evaluation.wag_config_pb2 import WagConfig, SatellitePatchConfig
 import common.torch.load_and_save_models as lsm
+from experimental.overhead_matching.swag.model import patch_embedding, swag_patch_embedding
 from pathlib import Path
+import msgspec
 import json
 import math
 import common.torch.load_torch_deps
 from google.protobuf import text_format
 import torch
+
+
+def load_model(path, device='cuda'):
+    print(path)
+    try:
+        model = lsm.load_model(path, device=device)
+        model.patch_dims
+        model.model_input_from_batch
+    except Exception as e:
+        print("Failed to load model", e)
+        training_config_path = path.parent / "config.json"
+        training_config_json = json.loads(training_config_path.read_text())
+        model_config_json = training_config_json["sat_model_config"] if 'satellite' in path.name else training_config_json["pano_model_config"]
+        config = msgspec.json.decode(
+                json.dumps(model_config_json), 
+                type=patch_embedding.WagPatchEmbeddingConfig | swag_patch_embedding.SwagPatchEmbeddingConfig)
+
+        model_weights = torch.load(path / 'model_weights.pt', weights_only=True)
+        model_type = patch_embedding.WagPatchEmbedding if isinstance(config, patch_embedding.WagPatchEmbeddingConfig) else swag_patch_embedding.SwagPatchEmbedding
+        model = model_type(config)
+        model.load_state_dict(model_weights)
+        model = model.to(device)
+    return model
+
 
 def construct_path_eval_inputs_from_args(
         sat_model_path: str,
@@ -19,8 +45,8 @@ def construct_path_eval_inputs_from_args(
 ):
     with open(paths_path, 'r') as f:
         paths_data = json.load(f)
-    pano_model = lsm.load_model(pano_model_path, device=device)
-    sat_model = lsm.load_model(sat_model_path, device=device)
+    pano_model = load_model(pano_model_path, device=device)
+    sat_model = load_model(sat_model_path, device=device)
 
     dataset_path = Path(dataset_path).expanduser()
     dataset_config = vd.VigorDatasetConfig(

@@ -141,6 +141,12 @@ class WagPatchEmbedding(torch.nn.Module):
             out = torch.einsum('bdi, dij->bdj', out, weight) + bias
         return out
 
+    def model_input_from_batch(self, batch_item):
+        if self._patch_dims[0] != self._patch_dims[1]:
+            return batch_item.panorama
+        else:
+            return batch_item.satellite
+
     def forward(self, x):
         features = extract_features(self._backbone, x)
         batch_size, num_channels, _, _ = features.shape

@@ -256,7 +256,8 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model, quie
             save_model(panorama_model, panorama_model_path,
                        (batch.panorama[:opt_config.batch_size].cuda(),))
             save_model(satellite_model, satellite_model_path,
-                       (batch.satellite[:opt_config.batch_size].cuda(),))
+                       (swag_patch_embedding.ModelInput(image=batch.satellite[:opt_config.batch_size].cuda(),
+                                                       metadata=batch.satellite_metadata),))
 
 
 def main(

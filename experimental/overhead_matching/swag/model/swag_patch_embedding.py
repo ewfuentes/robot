@@ -19,7 +19,12 @@ class DinoFeatureMapExtractorConfig(msgspec.Struct, tag=True, tag_field="kind"):
 
 
 class SemanticTokenExtractorType(StrEnum):
+    NULL_EXTRACTOR = auto()
     EMBEDDING_MAT = auto()
+
+
+class SemanticNullExtractorConfig(msgspec.Struct, tag=True, tag_field="kind"):
+    type: SemanticTokenExtractorType = SemanticTokenExtractorType.NULL_EXTRACTOR
 
 
 class SemanticEmbeddingMatrixConfig(msgspec.Struct, tag=True, tag_field="kind"):
@@ -57,7 +62,7 @@ class TransformerAggregatorConfig(msgspec.Struct, tag=True, tag_field="kind"):
 
 
 FeatureMapExtractorConfig = Union[DinoFeatureMapExtractorConfig]
-SemanticTokenExtractorConfig = Union[SemanticEmbeddingMatrixConfig]
+SemanticTokenExtractorConfig = Union[SemanticNullExtractorConfig, SemanticEmbeddingMatrixConfig]
 PositionEmbeddingConfig = Union[PlanarPositionEmbeddingConfig, SphericalEmbeddingConfig]
 AggregationConfig = Union[TransformerAggregatorConfig]
 
@@ -77,6 +82,11 @@ class ModelInput:
     image: torch.Tensor
     metadata: list[dict]
 
+    def to(self, *args, **kwargs):
+        return ModelInput(
+            image=self.image.to(*args, **kwargs),
+            metadata=self.metadata)
+
 
 def create_feature_map_extractor(config: FeatureMapExtractorConfig):
     assert config.type == FeatureMapExtractorType.DINOV2
@@ -84,8 +94,10 @@ def create_feature_map_extractor(config: FeatureMapExtractorConfig):
 
 
 def create_semantic_token_extractor(config: SemanticTokenExtractorConfig):
-    assert config.type == SemanticTokenExtractorType.EMBEDDING_MAT
-    return SemanticEmbeddingMatrix(config)
+    if config.type == SemanticTokenExtractorType.EMBEDDING_MAT:
+        return SemanticEmbeddingMatrix(config)
+    elif config.type == SemanticTokenExtractorType.NULL_EXTRACTOR:
+        return SemanticNullExtractor(config)
 
 
 def create_position_embedding(config: PositionEmbeddingConfig):
@@ -170,6 +182,23 @@ class SemanticEmbeddingMatrix(torch.nn.Module):
         return self._embedding_matrix.embedding_dim
 
 
+class SemanticNullExtractor(torch.nn.Module):
+    def __init__(self, config: SemanticNullExtractorConfig):
+        super().__init__()
+
+    def forward(self, model_input: ModelInput):
+        batch_size = len(model_input.metadata)
+        dev = model_input.image.device
+        positions_in_patch = torch.empty((batch_size, 0, 2), device=dev)
+        semantic_tokens = torch.empty((batch_size, 0, 0), device=dev)
+        mask = torch.empty(batch_size, 0, device=dev)
+        return positions_in_patch, semantic_tokens, mask
+
+    @property
+    def output_dim(self):
+        return 0
+
+
 class PlanarPositionEmbedding(torch.nn.Module):
     def __init__(self, config: PlanarPositionEmbeddingConfig):
         super().__init__()
@@ -241,6 +270,7 @@ class TransformerAggregator(torch.nn.Module):
 
         self._encoder = torch.nn.TransformerEncoder(
                 transformer_layer,
+                enable_nested_tensor=False,
                 num_layers=config.num_transformer_layers)
 
     def forward(self, tokens, token_mask):
@@ -269,6 +299,18 @@ class SwagPatchEmbedding(torch.nn.Module):
         self._semantic_token_projection = torch.nn.Linear(
                 self._semantic_token_extractor.output_dim + self._position_embedding.output_dim,
                 config.output_dim)
+
+        self._patch_dims = config.patch_dims
+
+    def model_input_from_batch(self, batch_item):
+        if self._patch_dims[0] != self._patch_dims[1]:
+            return ModelInput(
+                image=batch_item.panorama,
+                metadata=batch_item.panorama_metadata)
+        else:
+            return ModelInput(
+                image=batch_item.satellite,
+                metadata=batch_item.satellite_metadata)
 
     def forward(self, model_input: ModelInput):
         dev = model_input.image.device
@@ -313,3 +355,7 @@ class SwagPatchEmbedding(torch.nn.Module):
 
         # output is batch x feature_dim
         return F.normalize(output_tokens[:, 0, :])
+
+    @property
+    def patch_dims(self):
+        return self._patch_dims

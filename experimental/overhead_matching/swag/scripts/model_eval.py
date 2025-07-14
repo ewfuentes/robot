@@ -16,6 +16,8 @@ def _():
     import numpy as np
     import seaborn
     import math
+    import json
+    import msgspec
 
     import re
 
@@ -25,8 +27,9 @@ def _():
 
     from experimental.overhead_matching.swag.data import vigor_dataset, satellite_embedding_database
     from experimental.overhead_matching.swag.evaluation import evaluate_swag
-    import experimental.overhead_matching.swag.model.patch_embedding
-    from common.torch.load_and_save_models import load_model
+    from experimental.overhead_matching.swag.model import patch_embedding, swag_patch_embedding
+
+    from common.torch import load_and_save_models
     from experimental.overhead_matching.swag.evaluation.wag_config_pb2 import WagConfig, SatellitePatchConfig
     from common.math import haversine
     from pathlib import Path
@@ -44,28 +47,61 @@ def _():
         alt,
         common,
         evaluate_swag,
-        experimental,
         haversine,
         importlib,
         itertools,
-        load_model,
+        json,
+        load_and_save_models,
         math,
         matplotlib,
         mo,
+        msgspec,
         np,
+        patch_embedding,
         pd,
         plt,
         pprint,
         re,
         satellite_embedding_database,
         seaborn,
+        swag_patch_embedding,
         torch,
         vigor_dataset,
     )
 
 
 @app.cell
-def _(Path, evaluate_swag, load_model, vigor_dataset):
+def _(
+    Path,
+    evaluate_swag,
+    json,
+    load_and_save_models,
+    msgspec,
+    patch_embedding,
+    swag_patch_embedding,
+    torch,
+    vigor_dataset,
+):
+    def load_model(path, device='cuda'):
+        print(path)
+        try:
+            model = load_and_save_models.load_model(path, device=device)
+            model.patch_dims
+            model.model_input_from_batch
+        except Exception as e:
+            print("Failed to load model", e)
+            training_config_path = path.parent / "config.json"
+            training_config_json = json.loads(training_config_path.read_text())
+            model_config_json = training_config_json["sat_model_config"] if 'satellite' in path.name else training_config_json["pano_model_config"]
+            config = msgspec.json.decode(json.dumps(model_config_json), type=patch_embedding.WagPatchEmbeddingConfig | swag_patch_embedding.SwagPatchEmbeddingConfig)
+
+            model_weights = torch.load(path / 'model_weights.pt', weights_only=True)
+            model_type = patch_embedding.WagPatchEmbedding if isinstance(config, patch_embedding.WagPatchEmbeddingConfig) else swag_patch_embedding.SwagPatchEmbedding
+            model = model_type(config)
+            model.load_state_dict(model_weights)
+            model = model.to(device)
+        return model
+
     def get_top_k_results(model_partial_path, dataset_path):
         sat_model = load_model(Path(f"{model_partial_path}_satellite"), device='cuda')
         pano_model = load_model(Path(f"{model_partial_path}_panorama"), device='cuda')
@@ -81,16 +117,21 @@ def _(Path, evaluate_swag, load_model, vigor_dataset):
         df, all_similarity = evaluate_swag.evaluate_prediction_top_k(sat_model=sat_model, pano_model=pano_model, dataset=dataset)
         del sat_model, pano_model, all_similarity
         return df
-    return (get_top_k_results,)
+    return get_top_k_results, load_model
 
 
 @app.cell
 def _(Path, pprint):
     model_paths = {}
     idx=59
-    _base_path = Path("/data/overhead_matching/models/20250707_dino_features")
-    for _p in sorted(_base_path.iterdir()):
-        model_paths[_p.name] = _p / f"{idx:04d}"
+    # _base_path = Path("/data/overhead_matching/models/all_chicago_sat_embedding_pano_wag")
+    # for _p in sorted(_base_path.iterdir()):
+    #     model_paths[_p.name] = _p / f"{idx:04d}"
+
+    model_paths = {
+        "all_chicago_sat_embedding_pano_wag": Path("/data/overhead_matching/models/all_chicago_sat_embedding_pano_wag/0059"),
+        "all_chicago_dino_project_1024": Path("/data/overhead_matching/models/20250707_dino_features/all_chicago_dino_project_1024/0059"),
+    }
 
     pprint(model_paths)
 
@@ -153,9 +194,13 @@ def _(Path, pd, torch):
                 ...
         return pd.DataFrame.from_records(out)
 
-    _base_path = Path('/data/overhead_matching/evaluation/results/20250707_dino_features')
+    # _base_path = Path('/data/overhead_matching/evaluation/results/20250707_dino_features')
 
-    _results_paths = sorted(_base_path.iterdir())
+    # _results_paths = sorted(_base_path.iterdir())
+    _results_paths = [
+        Path('/data/overhead_matching/evaluation/results/all_chicago_sat_embedding_pano_wag'),
+        Path('/data/overhead_matching/evaluation/results/20250707_dino_features/all_chicago_dino_project_512'),
+    ]
 
     path_dfs = []
     for _p in _results_paths:
@@ -173,6 +218,8 @@ def _(mo, path_df, plt, seaborn):
     seaborn.displot(data=path_df, x='final_error_m', kind='ecdf', hue='model', palette="Paired")
     plt.title("Final Error CDF across 100 paths in New York")
     plt.tight_layout()
+    plt.xlim(-1, 50)
+    plt.ylim(-0.05, 1.05)
     mo.mpl.interactive(plt.gcf())
     return
 
@@ -216,8 +263,8 @@ def _(Path, mo, model_selector, path_slider, plt, torch):
 @app.cell
 def _(Path, evaluate_swag, load_model, vigor_dataset):
     def get_similarity_matrix(model_path: Path, dataset_path: Path):
-        sat_model = load_model(f"{model_path}_satellite")
-        pano_model = load_model(f"{model_path}_panorama")
+        sat_model = load_model(Path(f"{model_path}_satellite"))
+        pano_model = load_model(Path(f"{model_path}_panorama"))
         dataset_config = vigor_dataset.VigorDatasetConfig(
             panorama_neighbor_radius=1e-6,
             satellite_patch_size=sat_model.patch_dims,
