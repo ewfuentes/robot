@@ -1,5 +1,6 @@
 #pragma once
 
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -20,7 +21,7 @@ struct FrontendParams {
 };
 struct ImageAndPoint {
     cv::Mat image_distorted;
-    ImagePoint img_pt;
+    std::shared_ptr<ImagePoint> shared_img_pt;
 };
 class Frontend {
    public:

@@ -26,7 +26,7 @@ struct ImagePoint {
     virtual std::optional<Eigen::Matrix3d> translation_covariance_in_cam() const {
         return std::nullopt;
     };
-    std::string to_string() const {
+    virtual std::string to_string() const {
         auto vec3d_to_str = [](const Eigen::Vector3d& vec3d) {
             std::stringstream ss;
             ss << "[" << vec3d.x() << ", " << vec3d.y() << ", " << vec3d.z() << "]";

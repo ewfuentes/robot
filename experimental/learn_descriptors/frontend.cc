@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <memory>
 #include <optional>
 #include <unordered_map>
 #include <utility>
@@ -168,36 +169,36 @@ Frontend::Frontend(FrontendParams params_) : params_(params_) {
 void Frontend::populate_frames() {
     FrameId id = frames_.size();
     for (const ImageAndPoint &img_and_pt : images_and_points_) {
-        const ImagePoint &img_pt = img_and_pt.img_pt;
+        const std::shared_ptr<ImagePoint> shared_img_pt = img_and_pt.shared_img_pt;
+        std::cout << shared_img_pt->to_string() << std::endl;
         cv::Mat img_undistorted;
-        cv::fisheye::undistortImage(img_and_pt.image_distorted, img_undistorted, img_pt.K->k_mat(),
-                                    img_pt.K->d_mat(), img_pt.K->k_mat(),
-                                    img_and_pt.image_distorted.size());
+        cv::fisheye::undistortImage(img_and_pt.image_distorted, img_undistorted,
+                                    shared_img_pt->K->k_mat(), shared_img_pt->K->d_mat(),
+                                    shared_img_pt->K->k_mat(), img_and_pt.image_distorted.size());
         auto [kpts, descriptors] = extract_features(img_undistorted);
         KeypointsCV kpts_cv;
         for (const cv::KeyPoint &kpt : kpts) {
             kpts_cv.push_back(kpt.pt);
         }
 
-        gtsam::Cal3_S2::shared_ptr K = boost::make_shared<gtsam::Cal3_S2>(
-            img_pt.K->fx, img_pt.K->fy, 0, img_pt.K->cx, img_pt.K->cy);
-
-        if (!K) std::cout << "UH OH" << std::endl;
+        gtsam::Cal3_S2::shared_ptr K =
+            boost::make_shared<gtsam::Cal3_S2>(shared_img_pt->K->fx, shared_img_pt->K->fy, 0,
+                                               shared_img_pt->K->cx, shared_img_pt->K->cy);
 
         Frame frame(id, img_undistorted, K, kpts_cv, descriptors);
         const std::optional<Eigen::Isometry3d> maybe_world_from_cam_grnd_trth =
-            img_pt.world_from_cam_ground_truth();
+            shared_img_pt->world_from_cam_ground_truth();
         if (maybe_world_from_cam_grnd_trth) {
             frame.world_from_cam_groundtruth_ =
                 gtsam::Pose3(maybe_world_from_cam_grnd_trth->matrix());
         }
-        const std::optional<Eigen::Vector3d> maybe_cam_in_world = img_pt.cam_in_world();
+        const std::optional<Eigen::Vector3d> maybe_cam_in_world = shared_img_pt->cam_in_world();
         if (maybe_cam_in_world) {
             frame.cam_in_world_initial_guess_ = *maybe_cam_in_world;
         }
         if (id == 0) frame.world_from_cam_initial_guess_ = gtsam::Rot3::Identity();
         const std::optional<gtsam::Matrix3> maybe_translation_covariance_in_cam =
-            img_pt.translation_covariance_in_cam();
+            shared_img_pt->translation_covariance_in_cam();
         if (maybe_translation_covariance_in_cam) {
             frame.translation_covariance_in_cam_ = *maybe_translation_covariance_in_cam;
         }
@@ -233,8 +234,9 @@ void Frontend::match_frames_and_build_tracks() {
                     robot::geometry::estimate_cam0_from_cam1(
                         cv_kpts_1, cv_kpts_2, matches,
                         images_and_points_[i]
-                            .img_pt.K->k_mat());  // fine for now since all cameras have the same K,
-                                                  // how to reconcile later though...?
+                            .shared_img_pt->K
+                            ->k_mat());  // fine for now since all cameras have the same K,
+                                         // how to reconcile later though...?
 
                 if (!scale_cam0_from_cam1) {
                     continue;
@@ -293,8 +295,8 @@ void Frontend::match_frames_and_build_tracks() {
                 cv_kpts_2.push_back(cv_kpt);
             }
             std::optional<Eigen::Isometry3d> scale_cam0_from_cam1 =
-                robot::geometry::estimate_cam0_from_cam1(cv_kpts_1, cv_kpts_2, matches,
-                                                         images_and_points_[i].img_pt.K->k_mat());
+                robot::geometry::estimate_cam0_from_cam1(
+                    cv_kpts_1, cv_kpts_2, matches, images_and_points_[i].shared_img_pt->K->k_mat());
             if (!scale_cam0_from_cam1) {
                 continue;
             }

@@ -12,7 +12,9 @@ namespace robot::experimental::learn_descriptors {
 ImagePointFourSeasons::~ImagePointFourSeasons() = default;
 
 std::optional<Eigen::Isometry3d> ImagePointFourSeasons::world_from_cam_ground_truth() const {
-    if (!AS_w_from_gnss_cam) return std::nullopt;
+    if (!AS_w_from_gnss_cam) {
+        return std::nullopt;
+    }
     Eigen::Matrix4d scale_mat_reference = Eigen::Matrix4d::Identity();
     scale_mat_reference(0, 0) = scale_mat_reference(1, 1) = scale_mat_reference(2, 2) =
         shared_static_transforms->gnss_scale;

@@ -34,7 +34,7 @@ struct ImagePointFourSeasons : ImagePoint {
     std::optional<Eigen::Matrix3d> translation_covariance_in_cam() const override;
     std::optional<Eigen::Matrix3d> gps_covariance_in_world() const;
 
-    std::string to_string() const {
+    std::string to_string() const override {
         auto se3_to_str = [](const liegroups::SE3& se3) {
             const Eigen::Vector3d& t = se3.translation();
             const Eigen::Quaterniond& r = se3.so3().unit_quaternion();

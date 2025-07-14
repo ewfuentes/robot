@@ -32,19 +32,14 @@ FourSeasonsParser::FourSeasonsParser(const std::filesystem::path& root_dir,
     const std::filesystem::path path_vio = root_dir_ / "result.txt";
     const std::filesystem::path path_gps = root_dir_ / "septentrio.nmea";
     const size_t min_time_sig_figs = txt_parser_help::min_sig_figs_result_time(path_vio);
-    std::cout << "heartbeat 0" << std::endl;
     txt_parser_help::TimeDataList img_time_list =
         txt_parser_help::create_img_time_data_list(path_img, min_time_sig_figs);
-    std::cout << "heartbeat 1" << std::endl;
     txt_parser_help::TimeDataMap gnss_poses_time_map =
         txt_parser_help::create_gnss_poses_time_data_map(path_gnss, min_time_sig_figs);
-    std::cout << "heartbeat 2" << std::endl;
     txt_parser_help::TimeDataMap vio_poses_time_map =
         txt_parser_help::create_vio_time_data_map(path_vio, min_time_sig_figs);
-    std::cout << "heartbeat 3" << std::endl;
     gps_parser_help::TimeGPSList gps_time_list =
         gps_parser_help::create_gps_time_data_list(path_gps);
-    std::cout << "heartbeat 4" << std::endl;
 
     size_t id = 0;
     for (const std::pair<size_t, std::vector<std::string>>& pair_time_data : img_time_list) {

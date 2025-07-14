@@ -1,9 +1,11 @@
 #include <cmath>
 #include <functional>
 #include <iostream>
+#include <memory>
 #include <opencv2/calib3d.hpp>
 #include <optional>
 #include <sstream>
+#include <unordered_map>
 #include <vector>
 
 #include "Eigen/Core"
@@ -15,6 +17,7 @@
 #include "experimental/learn_descriptors/frame.hh"
 #include "experimental/learn_descriptors/frontend.hh"
 #include "experimental/learn_descriptors/frontend_definitions.hh"
+#include "experimental/learn_descriptors/image_point_four_seasons.hh"
 #include "experimental/learn_descriptors/structure_from_motion_types.hh"
 #include "gtsam/geometry/Cal3_S2.h"
 #include "gtsam/geometry/Point2.h"
@@ -201,9 +204,11 @@ int main(int argc, const char **argv) {
                           true, false};
     Frontend frontend(params);
 
-    for (size_t i = 660; i < 1000; i += 5) {
+    for (size_t i = 660; i < 750; i += 5) {
         // if (!parser.get_image_point(i).K) std::cout << "UH OH" << std::endl;
-        frontend.add_image(ImageAndPoint{parser.load_image(i), parser.get_image_point(i)});
+        frontend.add_image(
+            ImageAndPoint{parser.load_image(i),
+                          std::make_shared<ImagePointFourSeasons>(parser.get_image_point(i))});
     }
     frontend.populate_frames();
     frontend.match_frames_and_build_tracks();
@@ -214,13 +219,29 @@ int main(int argc, const char **argv) {
               << frontend.frames()[0].world_from_cam_groundtruth_->translation() << std::endl;
 
     std::vector<robot::geometry::VizPose> viz_poses_init;
+    std::optional<Eigen::Vector3d> first_point;
+    std::optional<Eigen::Isometry3d> first_grnd_trth;
+    (void)first_point;
     for (const Frame &frame : frontend.frames()) {
-        Eigen::Isometry3d world_from_cam_init;
-        world_from_cam_init.linear() = frame.world_from_cam_initial_guess_->matrix();
-        world_from_cam_init.translation() = *frame.cam_in_world_initial_guess_;
-        viz_poses_init.emplace_back(world_from_cam_init,
-                                    gtsam::Symbol(Frontend::symbol_pose_char, frame.id_).string());
+        if (frame.cam_in_world_initial_guess_) {
+            Eigen::Isometry3d world_from_cam_init;
+            world_from_cam_init.linear() = frame.world_from_cam_initial_guess_->matrix();
+            if (!first_point) first_point = *frame.cam_in_world_initial_guess_;
+            world_from_cam_init.translation() = *frame.cam_in_world_initial_guess_ - *first_point;
+            std::cout << "world_from_cam_init: " << world_from_cam_init.matrix() << std::endl;
+            viz_poses_init.emplace_back(
+                world_from_cam_init, gtsam::Symbol(Frontend::symbol_pose_char, frame.id_).string());
+        }
+        if (frame.world_from_cam_groundtruth_) {
+            std::cout << "adding a ground truth frame to viz!" << std::endl;
+            Eigen::Isometry3d w_from_cam_grnd_trth(frame.world_from_cam_groundtruth_->matrix());
+            if (!first_grnd_trth) first_grnd_trth = w_from_cam_grnd_trth;
+            w_from_cam_grnd_trth.translation() -= first_grnd_trth->translation();
+            viz_poses_init.emplace_back(w_from_cam_grnd_trth,
+                                        "x_grnd_" + std::to_string(frame.id_));
+        }
     }
+    std::cout << "visualizing " << viz_poses_init.size() << " poses" << std::endl;
     robot::geometry::viz_scene(viz_poses_init, std::vector<robot::geometry::VizPoint>(),
                                cv::viz::Color::brown(), true, true, "Frontend initial guesses");
 
@@ -242,34 +263,35 @@ int main(int argc, const char **argv) {
 
     // add gps factors
     const std::vector<Frame> &frames = frontend.frames();
-    graph_.add(gtsam::PriorFactor<gtsam::Pose3>(
-        gtsam::Symbol('x', 0), gtsam::Pose3::Identity(),
-        gtsam::noiseModel::Constrained::All(6)  // effectively fixes the pose
-        ));
-    initial_estimate_.insert(gtsam::Symbol('x', 0), gtsam::Pose3::Identity());
-    std::vector<gtsam::Symbol> symbols_pose{gtsam::Symbol('x', 0)};
-    std::vector<gtsam::Pose3> world_from_cam_initial_guess;
-    for (size_t i = 1; i < frames.size(); i++) {
+    std::vector<gtsam::Symbol> symbols_pose;
+    std::unordered_map<size_t, gtsam::Pose3> world_from_cam_initial_guess;
+    std::optional<gtsam::Point3> cam0_in_w;
+    for (const Frame &frame : frames) {
+        if (!frame.cam_in_world_initial_guess_) continue;
+        if (!cam0_in_w) cam0_in_w = *frame.cam_in_world_initial_guess_;
         // should do some interpolation here most likely
-        const gtsam::Pose3 world_from_cam_estimate(
-            frames[i].world_from_cam_initial_guess_ ? *frames[i].world_from_cam_initial_guess_
-                                                    : gtsam::Rot3::Identity(),
-            frames[i].cam_in_world_initial_guess_ ? *frames[i].cam_in_world_initial_guess_
-                                                  : gtsam::Point3());
-        world_from_cam_initial_guess.push_back(world_from_cam_estimate);
+        const gtsam::Pose3 world_from_cam_estimate(frame.world_from_cam_initial_guess_
+                                                       ? *frame.world_from_cam_initial_guess_
+                                                       : gtsam::Rot3::Identity(),
+                                                   *frame.cam_in_world_initial_guess_ - *cam0_in_w);
+        world_from_cam_initial_guess[frame.id_] = world_from_cam_estimate;
         gtsam::noiseModel::Diagonal::shared_ptr gps_noise = gtsam::noiseModel::Diagonal::Sigmas(
-            frames[i].translation_covariance_in_cam_
-                ? gtsam::Vector3((*frames[i].translation_covariance_in_cam_)(0, 0),
-                                 (*frames[i].translation_covariance_in_cam_)(1, 1),
-                                 (*frames[i].translation_covariance_in_cam_)(2, 2))
+            frame.translation_covariance_in_cam_
+                ? gtsam::Vector3((*frame.translation_covariance_in_cam_)(0, 0),
+                                 (*frame.translation_covariance_in_cam_)(1, 1),
+                                 (*frame.translation_covariance_in_cam_)(2, 2))
                 : gps_sigmas_fallback);
-        const gtsam::Symbol cam_symbol('x', i);
-        if (frames[i].cam_in_world_initial_guess_)
-            graph_.add(
-                gtsam::GPSFactor(cam_symbol, *frames[i].cam_in_world_initial_guess_, gps_noise));
+        const gtsam::Symbol cam_symbol('x', frame.id_);
+        graph_.add(gtsam::GPSFactor(cam_symbol, *frame.cam_in_world_initial_guess_, gps_noise));
         initial_estimate_.insert(cam_symbol, world_from_cam_estimate);
         symbols_pose.push_back(cam_symbol);
     }
+    std::vector<robot::geometry::VizPose> viz_pose;
+    for (const auto &[id, pose] : world_from_cam_initial_guess) {
+        viz_pose.emplace_back(Eigen::Isometry3d(pose.matrix()), "x_" + std::to_string(id));
+    }
+    robot::geometry::viz_scene(viz_pose, std::vector<robot::geometry::VizPoint>(),
+                               cv::viz::Color::brown(), true, true, "Initial guesses in backend");
 
     std::cout << "heartbeat pre lmks in graph" << std::endl;
 
@@ -287,7 +309,6 @@ int main(int argc, const char **argv) {
             world_from_lmk_cams, lmk_observations, frames[0].K_);  // all K are the same for now...
         if (landmark_estimate) {
             const gtsam::Symbol lmk_symbol(Frontend::symbol_lmk_char, i);
-            // if (!frames[i].K_) std::cout << "UH OH" << std::endl;
             for (const auto &[frame_id, keypoint_cv] : feature_tracks[i].obs_) {
                 graph_.add(gtsam::GenericProjectionFactor(
                     gtsam::Point2(keypoint_cv.x, keypoint_cv.y), landmark_noise,

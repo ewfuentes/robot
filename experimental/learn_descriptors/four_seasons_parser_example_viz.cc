@@ -1,5 +1,7 @@
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <numeric>
@@ -11,6 +13,7 @@
 #include "common/gps/frame_translation.hh"
 #include "cxxopts.hpp"
 #include "experimental/learn_descriptors/four_seasons_parser.hh"
+#include "experimental/learn_descriptors/frontend.hh"
 #include "opencv2/opencv.hpp"
 #include "visualization/opencv/opencv_viz.hh"
 
@@ -48,6 +51,35 @@ int main(int argc, const char** argv) {
 
     lrn_desc::FourSeasonsParser parser(path_data, path_calibration);
 
+    lrn_desc::FrontendParams params{lrn_desc::FrontendParams::ExtractorType::SIFT,
+                                    lrn_desc::FrontendParams::MatcherType::KNN, true, false};
+    lrn_desc::Frontend frontend(params);
+    constexpr size_t NUM_IMAGES = 100;
+    (void)NUM_IMAGES;
+    auto start = std::chrono::high_resolution_clock::now();
+    for (size_t i = 0; i < NUM_IMAGES; i += 1) {
+        // for (const size_t i : std::vector<size_t>{74, 82, 92}) {
+        const lrn_desc::ImagePointFourSeasons img_pt = parser.get_image_point(i);
+        frontend.add_image(lrn_desc::ImageAndPoint{
+            parser.load_image(i), std::make_shared<lrn_desc::ImagePointFourSeasons>(img_pt)});
+    }
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::high_resolution_clock::now() - start);
+    std::cout << "done adding! took " << duration.count() << " milliseconds" << std::endl;
+    frontend.populate_frames();
+    start = std::chrono::high_resolution_clock::now();
+    duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::high_resolution_clock::now() - start);
+    std::cout << "done populating frames! took " << duration.count() << " milliseconds"
+              << std::endl;
+    // frontend.match_frames_and_build_tracks();
+    // start = std::chrono::high_resolution_clock::now();
+    // duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+    //     std::chrono::high_resolution_clock::now() - start);
+    // std::cout << "done matching and building tracks! took " << duration.count() << "
+    // milliseconds"
+    //           << std::endl;
+
     ROBOT_CHECK(parser.num_images() != 0);
 
     std::vector<robot::geometry::VizPose> viz_frames;   // camera frames from visual world frame
@@ -57,9 +89,12 @@ int main(int argc, const char** argv) {
     std::cout << "gnss scale: " << parser.gnss_scale() << std::endl;
     scale_mat.linear() *= parser.gnss_scale();
     std::cout << "scale mat: " << scale_mat.matrix() << std::endl;
+    std::optional<Eigen::Vector3d> first_gps_to_cam;
     std::optional<double> altitude_gps_from_gnss_cam;
     std::vector<double> gps_ns_delta_from_shutter;
-    for (size_t i = 0; i < parser.num_images(); i += 1) {
+    // double ate_cam = 0.0, ate_gps = 0.0;
+    for (size_t i = 0; i < NUM_IMAGES; i += 1) {
+        // for (const size_t i : std::vector<size_t>{74, 82, 92}) {
         const lrn_desc::ImagePointFourSeasons img_pt = parser.get_image_point(i);
         std::cout << img_pt.to_string() << std::endl;
         if (!img_pt.AS_w_from_gnss_cam) {
@@ -68,8 +103,18 @@ int main(int argc, const char** argv) {
         Eigen::Isometry3d w_from_gnss_cam(Eigen::Isometry3d(parser.S_from_AS().matrix()) *
                                           scale_mat *
                                           Eigen::Isometry3d(img_pt.AS_w_from_gnss_cam->matrix()));
-
         viz_frames.emplace_back(w_from_gnss_cam, "x_ref_" + std::to_string(i));
+        Eigen::Isometry3d frontend_w_from_cam_groundtruth(
+            frontend.frames()[i].world_from_cam_groundtruth_->matrix());
+        ROBOT_CHECK(frontend_w_from_cam_groundtruth.matrix().isApprox(w_from_gnss_cam.matrix()),
+                    frontend_w_from_cam_groundtruth.matrix(), w_from_gnss_cam.matrix());
+        // Eigen::Isometry3d frontend_w_from_cam_groundtruth(*img_pt.world_from_cam_ground_truth());
+        viz_frames.emplace_back(frontend_w_from_cam_groundtruth,
+                                "x_frontend_ref_" + std::to_string(i));
+        // std::cout << "frontend_w_from_cam_groundtruth: " <<
+        // frontend_w_from_cam_groundtruth.matrix()
+        //           << std::endl;
+
         if (img_pt.gps_gcs) {
             if (img_pt.gps_gcs->seq > img_pt.seq) {
                 gps_ns_delta_from_shutter.push_back(
@@ -93,6 +138,10 @@ int main(int argc, const char** argv) {
             if (!altitude_gps_from_gnss_cam) {
                 altitude_gps_from_gnss_cam = gnss_cam_in_gcs.z() - *(img_pt.gps_gcs->altitude);
             }
+            if (!first_gps_to_cam) {
+                first_gps_to_cam = frontend.frames()[i].world_from_cam_groundtruth_->translation() -
+                                   *frontend.frames()[i].cam_in_world_initial_guess_;
+            }
             gcs_coordinate.z() += *altitude_gps_from_gnss_cam;
             std::cout << std::setprecision(20) << "gnss_cam_in_gcs: " << gnss_cam_in_gcs
                       << "\ngps_gcs: " << gcs_coordinate
@@ -106,14 +155,17 @@ int main(int argc, const char** argv) {
                 ECEF_from_gps_hom;
             const Eigen::Isometry3d cam_from_gps(
                 (parser.cam_from_imu() * parser.gps_from_imu().inverse()).matrix());
-            Eigen::Vector3d cam_gps_in_w = gps_in_w.head<3>() + cam_from_gps.translation();
+            Eigen::Vector3d cam_gps_in_w = gps_in_w.head<3>() - cam_from_gps.translation();
             viz_points.emplace_back(cam_gps_in_w, "x_cam_gps" + std::to_string(i));
-            viz_points.emplace_back(gps_in_w.head<3>(), "x_gps" + std::to_string(i));
+            viz_points.emplace_back(
+                *frontend.frames()[i].cam_in_world_initial_guess_ + *first_gps_to_cam,
+                "x_frontend_cam_gps" + std::to_string(i));
             const Eigen::Vector3d gps_from_ref_in_world =
                 gps_in_w.head<3>() - w_from_gnss_cam.translation();
             std::cout << "gps_from_ref_in_world: " << gps_from_ref_in_world << std::endl;
         }
     }
+    // std::cout << "ate_cam: " << ate_cam << "\tate_gps: " << ate_gps << std::endl;
     const double sum =
         std::accumulate(gps_ns_delta_from_shutter.begin(), gps_ns_delta_from_shutter.end(), 0.0);
     double avg_ns_gps_delta = sum / gps_ns_delta_from_shutter.size();

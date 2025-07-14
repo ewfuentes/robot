@@ -185,6 +185,7 @@ cc_binary(
     srcs = ["four_seasons_parser_example_viz.cc"],
     deps = [
         ":four_seasons_parser",
+        ":frontend",
         "//common:check",
         "//common/gps:frame_translation",
         "//visualization/opencv:opencv_viz",
@@ -453,6 +454,8 @@ cc_binary(
         ":frontend",
         ":spatial_test_scene_cube",
         ":structure_from_motion_types",
+        ":image_point",
+        ":image_point_four_seasons",
         "//common/geometry:camera",
         "//visualization/opencv:opencv_viz",
         "@boost//:smart_ptr",
