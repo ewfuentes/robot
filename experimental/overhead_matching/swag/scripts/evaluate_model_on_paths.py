@@ -13,7 +13,6 @@ import torch
 
 
 def load_model(path, device='cuda'):
-    print(path)
     try:
         model = lsm.load_model(path, device=device)
         model.patch_dims
@@ -24,7 +23,7 @@ def load_model(path, device='cuda'):
         training_config_json = json.loads(training_config_path.read_text())
         model_config_json = training_config_json["sat_model_config"] if 'satellite' in path.name else training_config_json["pano_model_config"]
         config = msgspec.json.decode(
-                json.dumps(model_config_json), 
+                json.dumps(model_config_json),
                 type=patch_embedding.WagPatchEmbeddingConfig | swag_patch_embedding.SwagPatchEmbeddingConfig)
 
         model_weights = torch.load(path / 'model_weights.pt', weights_only=True)

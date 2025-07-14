@@ -25,7 +25,7 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
                 num_attention_heads=4,
                 hidden_dim=64,
                 dropout_frac=0.1),
-            image_input_dim=(NUM_IMAGE_ROWS, NUM_IMAGE_COLS),
+            patch_dims=(NUM_IMAGE_ROWS, NUM_IMAGE_COLS),
             output_dim=16)
 
         model = spe.SwagPatchEmbedding(config)

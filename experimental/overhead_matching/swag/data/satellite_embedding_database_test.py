@@ -10,6 +10,10 @@ class MockEmbeddingModel(nn.Module):
     def __init__(self, embedding_dim):
         super().__init__()
         self.embedding_dim = embedding_dim
+
+    def model_input_from_batch(self, x):
+        return x.satellite
+
     def forward(self, data: torch.Tensor):
         batch_size = data.shape[0]
         out = torch.rand((batch_size, self.embedding_dim))
