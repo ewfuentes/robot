@@ -91,13 +91,17 @@ def _(Path, pd, torch, tqdm):
                         "datapoint_index": i,
                         'model': path.stem,
                     })
-            except:
-                ...
+            except Exception as e:
+                print(e)
         return pd.DataFrame.from_records(out)
 
-    _base_path = Path('/home/ekf/scratch/crossview/evaluations/')
+    # _base_path = Path('/home/ekf/scratch/crossview/evaluations/')
 
-    _results_paths = sorted(_base_path.iterdir())
+    # _results_paths = sorted(_base_path.iterdir())
+    _results_paths = [
+        Path("/data/overhead_matching/evaluation/results/all_chicago_sat_embedding_pano_wag"),
+        Path("/data/overhead_matching/evaluation/results/20250707_dino_features/all_chicago_dino_project_512")
+    ]
 
     path_dfs = []
     for _p in _results_paths:
@@ -238,17 +242,15 @@ def _(np, path_df, pd):
         return out_arrays
 
     error_m_np_arrays = flattened_df_to_ndarray(path_df, "error_m")
-
-
     return error_m_np_arrays, flattened_df_to_ndarray
 
 
 @app.cell
-def _(error_m_np_arrays, matplotlib, np, plt):
+def _(error_m_np_arrays, matplotlib, mo, np, plt):
     percentile_cutoff = np.asarray([5, 50, 95])
     line_styles = ['-', '--', '-.']
 
-    cmap = matplotlib.colormaps.get_cmap('hsv')
+    cmap = matplotlib.colormaps.get_cmap('tab10')
     error_percentiles = {k: np.percentile(v, percentile_cutoff, axis=0) for k, v in error_m_np_arrays.items()}
     fig, ax = plt.subplots()
     for model_i, (model, percentiles) in enumerate(error_percentiles.items()):
@@ -260,7 +262,7 @@ def _(error_m_np_arrays, matplotlib, np, plt):
     plt.grid(True)
     plt.legend()
     plt.tight_layout()
-    plt.show()
+    mo.mpl.interactive(plt.gcf())
     return (
         ax,
         cmap,
@@ -275,6 +277,11 @@ def _(error_m_np_arrays, matplotlib, np, plt):
         percentile_cutoff,
         percentiles,
     )
+
+
+@app.cell
+def _():
+    return
 
 
 if __name__ == "__main__":

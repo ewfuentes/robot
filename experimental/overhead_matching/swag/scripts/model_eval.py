@@ -215,7 +215,7 @@ def _(Path, pd, torch):
 
 @app.cell
 def _(mo, path_df, plt, seaborn):
-    seaborn.displot(data=path_df, x='final_error_m', kind='ecdf', hue='model', palette="Paired")
+    seaborn.displot(data=path_df, x='final_error_m', kind='ecdf', hue='model', palette="tab10")
     plt.title("Final Error CDF across 100 paths in New York")
     plt.tight_layout()
     plt.xlim(-1, 50)
