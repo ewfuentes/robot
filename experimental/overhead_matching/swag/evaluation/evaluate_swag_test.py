@@ -30,8 +30,6 @@ class MockEmbeddingModel(nn.Module):
         else:
             return x.panorama
 
-        ...
-
     def forward(self, data: torch.Tensor):
         batch_size = data.shape[0]
         out = self.embedding_network(data[:, :, :100, :100].float().reshape(batch_size, -1))

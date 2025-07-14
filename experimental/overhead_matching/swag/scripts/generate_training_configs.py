@@ -99,7 +99,7 @@ if __name__ == "__main__":
                 num_epochs=NUM_EPOCHS,
                 batch_size=18,
                 lr_schedule=T.LearningRateSchedule(
-                        initial_lr=1e-4,
+                        initial_lr=1e-5,
                         lr_step_factor=1.0,
                         num_epochs_at_lr=20),
                 enable_hard_negative_sampling_after_epoch_idx=hard_mining_after_epoch,
