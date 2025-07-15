@@ -11,7 +11,7 @@ class GroundingSam:
     def __init__(
         self,
         grounding_dino_model_id="IDEA-Research/grounding-dino-base",
-        sam2_model_id="facebook/sam2-hiera-tiny",
+        sam2_model_id="facebook/sam2.1-hiera-tiny",
     ):
 
         self._device = "cuda" if torch.cuda.is_available() else "cpu"

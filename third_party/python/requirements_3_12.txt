@@ -770,20 +770,22 @@ h11==0.16.0 \
     --hash=sha256:4e35b956cf45792e4caa5885e69fba00bdbc6ffafbfa020300e549b208ee5ff1 \
     --hash=sha256:63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86
     # via uvicorn
-hf-xet==1.1.0 \
-    --hash=sha256:0322c42551e275fcb7949c083a54a81b2898e50787c9aa74284fcb8d2c58c12c \
-    --hash=sha256:3aee847da362393331f515c4010d0aaa1c2669acfcca1f4b28946d6949cc0086 \
-    --hash=sha256:4ee9222bf9274b1c198b88a929de0b5a49349c4962d89c5b3b2f0f7f47d9761c \
-    --hash=sha256:667153a0304ac2debf2af95a8ff7687186f885b493f4cd16344869af270cd110 \
-    --hash=sha256:68c5813a6074aa36e12ef5983230e3b03148cce61e0fcdd294096493795565b4 \
-    --hash=sha256:73153eab9abf3d6973b21e94a67ccba5d595c3e12feb8c0bf50be02964e7f126 \
-    --hash=sha256:995eeffb119636ea617b96c7d7bf3c3f5ea8727fa57974574e25d700b8532d48 \
-    --hash=sha256:a7c2a4c2b6eee9ce0a1a367a82b60d95ba634420ef1c250addad7aa4af419cf4
+hf-xet==1.1.5 \
+    --hash=sha256:69ebbcfd9ec44fdc2af73441619eeb06b94ee34511bbcf57cd423820090f5694 \
+    --hash=sha256:73e167d9807d166596b4b2f0b585c6d5bd84a26dea32843665a8b58f6edba245 \
+    --hash=sha256:83088ecea236d5113de478acb2339f92c95b4fb0462acaa30621fac02f5a534a \
+    --hash=sha256:9fa6e3ee5d61912c4a113e0708eaaef987047616465ac7aa30f7121a48fc1af8 \
+    --hash=sha256:ab34c4c3104133c495785d5d8bba3b1efc99de52c02e759cf711a91fd39d3a14 \
+    --hash=sha256:dbba1660e5d810bd0ea77c511a99e9242d920790d0e63c0e4673ed36c4022d18 \
+    --hash=sha256:f52c2fa3635b8c37c7764d8796dfa72706cc4eded19d638331161e82b0792e23 \
+    --hash=sha256:fc874b5c843e642f45fd85cda1ce599e123308ad2901ead23d3510a47ff506d1
     # via huggingface-hub
-huggingface-hub==0.31.1 \
-    --hash=sha256:43f73124819b48b42d140cbc0d7a2e6bd15b2853b1b9d728d4d55ad1750cac5b \
-    --hash=sha256:492bb5f545337aa9e2f59b75ef4c5f535a371e8958a6ce90af056387e67f1180
+huggingface-hub==0.33.4 \
+    --hash=sha256:09f9f4e7ca62547c70f8b82767eefadd2667f4e116acba2e3e62a5a81815a7bb \
+    --hash=sha256:6af13478deae120e765bfd92adad0ae1aec1ad8c439b46f23058ad5956cbca0a
     # via
+    #   -r third_party/python/requirements_3_12.in
+    #   timm
     #   tokenizers
     #   transformers
 hydra-core==1.3.2 \
@@ -1528,6 +1530,7 @@ numpy==1.26.4 \
     #   torchmetrics
     #   torchvision
     #   transformers
+    #   x-segment-anything
 nvidia-cublas-cu12==12.8.3.14 \
     --hash=sha256:3f0e05e7293598cf61933258b73e66a160c27d59c4422670bf0b79348c04be44 \
     --hash=sha256:93a4e0e386cc7f6e56c822531396de8170ed17068a1e18f987574895044cd8c3 \
@@ -2308,6 +2311,7 @@ pyyaml==6.0.2 \
     #   omegaconf
     #   pymdown-extensions
     #   supervision
+    #   timm
     #   transformers
     #   yacs
 pyzmq==26.4.0 \
@@ -2746,7 +2750,9 @@ safetensors==0.5.3 \
     --hash=sha256:cead1fa41fc54b1e61089fa57452e8834f798cb1dc7a09ba3524f1eb08e0317a \
     --hash=sha256:cfc0ec0846dcf6763b0ed3d1846ff36008c6e7290683b61616c4b040f6a54ace \
     --hash=sha256:df26da01aaac504334644e1b7642fa000bfec820e7cef83aeac4e355e03195ff
-    # via transformers
+    # via
+    #   timm
+    #   transformers
 # WARNING: pip install will require the following package to be hashed.
 # Consider using a hashable URL like https://github.com/jazzband/pip-tools/archive/SOMECOMMIT.zip
 sam-2 @ git+https://github.com/IDEA-Research/Grounded-SAM-2.git@dd4c5141b75e4838dd486c64f773c43b4db3a07b
@@ -3048,6 +3054,10 @@ tifffile==2025.3.30 \
     --hash=sha256:0ed6eee7b66771db2d1bfc42262a51b01887505d35539daef118f4ff8c0f629c \
     --hash=sha256:3cdee47fe06cd75367c16bc3ff34523713156dae6cd498e3a392e5b39a51b789
     # via scikit-image
+timm==1.0.17 \
+    --hash=sha256:90ccf07894d6ae38259b7aa7c94d683002f5e360fd43471c84f9da6c3afb8a0d \
+    --hash=sha256:a84c73a9ec560a6e347dba2716ea1acccf71987aefade02b882cc89dc0a0ee21
+    # via x-segment-anything
 tinycss2==1.4.0 \
     --hash=sha256:10c0972f6fc0fbee87c3edb76549357415e94548c1ae10ebccdea16fb404a9b7 \
     --hash=sha256:3a49cf47b7675da0b15d0c6e1df8df4ebd96e9394bb905a5775adb0d884c5289
@@ -3098,9 +3108,11 @@ torch==2.7.0+cu128 \
     #   easyocr
     #   kornia
     #   sam-2
+    #   timm
     #   torch-kdtree
     #   torchmetrics
     #   torchvision
+    #   x-segment-anything
 # WARNING: pip install will require the following package to be hashed.
 # Consider using a hashable URL like https://github.com/jazzband/pip-tools/archive/SOMECOMMIT.zip
 torch-kdtree @ git+https://github.com/ewfuentes/torch_kdtree.git@583b92b105fcc7aefdc0020136229f9ed32566b7
@@ -3126,6 +3138,8 @@ torchvision==0.22.0+cu128 \
     #   dinov2
     #   easyocr
     #   sam-2
+    #   timm
+    #   x-segment-anything
 tornado==6.4.2 \
     --hash=sha256:072ce12ada169c5b00b7d92a99ba089447ccc993ea2143c9ede887e0937aa803 \
     --hash=sha256:1a017d239bd1bb0919f72af256a970624241f070496635784d9bf0db640d3fec \
@@ -3327,6 +3341,10 @@ widgetsnbextension==4.0.14 \
     --hash=sha256:4875a9eaf72fbf5079dc372a51a9f268fc38d46f767cbf85c43a36da5cb9b575 \
     --hash=sha256:a3629b04e3edb893212df862038c7232f62973373869db5084aed739b437b5af
     # via ipywidgets
+x-segment-anything==0.0.8 \
+    --hash=sha256:43404ecba0d7afa8b20ea88406745418249ab6956ffdd37f9e25880d1fca435f \
+    --hash=sha256:bbc36527ccd385f42c4e164323ff3c747c9700951d0412c1fa2aa79de00603ad
+    # via -r third_party/python/requirements_3_12.in
 yacs==0.1.8 \
     --hash=sha256:99f893e30497a4b66842821bac316386f7bd5c4f47ad35c9073ef089aa33af32 \
     --hash=sha256:d43d1854c1ffc4634c5b349d1c1120f86f05c3a294c9d141134f282961ab5d94 \

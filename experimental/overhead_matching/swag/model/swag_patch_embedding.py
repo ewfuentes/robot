@@ -4,67 +4,27 @@ import torch
 import torch.nn.functional as F
 import torchvision as tv
 import msgspec
-from typing import Union
-from enum import StrEnum, auto
-from dataclasses import dataclass
+from experimental.overhead_matching.swag.model.swag_model_input import ModelInput
+from experimental.overhead_matching.swag.model.swag_config_types import (
+    FeatureMapExtractorConfig,
+    FeatureMapExtractorType,
+    DinoFeatureMapExtractorConfig,
 
+    SemanticTokenExtractorConfig,
+    SemanticTokenExtractorType,
+    SemanticNullExtractorConfig,
+    SemanticEmbeddingMatrixConfig,
+    SemanticSegmentExtractorConfig,
 
-class FeatureMapExtractorType(StrEnum):
-    DINOV2 = auto()
+    PositionEmbeddingConfig,
+    PositionEmbeddingType,
+    PlanarPositionEmbeddingConfig,
+    SphericalEmbeddingConfig,
 
-
-class DinoFeatureMapExtractorConfig(msgspec.Struct, tag=True, tag_field="kind"):
-    model_str: str = "dinov2_vitb14"
-    type: FeatureMapExtractorType = FeatureMapExtractorType.DINOV2
-
-
-class SemanticTokenExtractorType(StrEnum):
-    NULL_EXTRACTOR = auto()
-    EMBEDDING_MAT = auto()
-
-
-class SemanticNullExtractorConfig(msgspec.Struct, tag=True, tag_field="kind"):
-    type: SemanticTokenExtractorType = SemanticTokenExtractorType.NULL_EXTRACTOR
-
-
-class SemanticEmbeddingMatrixConfig(msgspec.Struct, tag=True, tag_field="kind"):
-    vocabulary: list[str]
-    embedding_dim: int
-    type: SemanticTokenExtractorType = SemanticTokenExtractorType.EMBEDDING_MAT
-
-
-class PositionEmbeddingType(StrEnum):
-    PLANAR = auto()
-    SPHERICAL = auto()
-
-
-class PlanarPositionEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
-    min_scale: float
-    scale_step: float
-    embedding_dim: int
-    type: PositionEmbeddingType = PositionEmbeddingType.PLANAR
-
-
-class SphericalEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
-    type: PositionEmbeddingType = PositionEmbeddingType.SPHERICAL
-
-
-class AggregationType(StrEnum):
-    TRANSFORMER = auto()
-
-
-class TransformerAggregatorConfig(msgspec.Struct, tag=True, tag_field="kind"):
-    num_transformer_layers: int
-    num_attention_heads: int
-    hidden_dim: int
-    dropout_frac: float
-    type: AggregationType = AggregationType.TRANSFORMER
-
-
-FeatureMapExtractorConfig = Union[DinoFeatureMapExtractorConfig]
-SemanticTokenExtractorConfig = Union[SemanticNullExtractorConfig, SemanticEmbeddingMatrixConfig]
-PositionEmbeddingConfig = Union[PlanarPositionEmbeddingConfig, SphericalEmbeddingConfig]
-AggregationConfig = Union[TransformerAggregatorConfig]
+    AggregationConfig,
+    AggregationType,
+    TransformerAggregatorConfig
+)
 
 
 class SwagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
@@ -75,17 +35,6 @@ class SwagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
 
     patch_dims: tuple[int, int]
     output_dim: int
-
-
-@dataclass
-class ModelInput:
-    image: torch.Tensor
-    metadata: list[dict]
-
-    def to(self, *args, **kwargs):
-        return ModelInput(
-            image=self.image.to(*args, **kwargs),
-            metadata=self.metadata)
 
 
 def create_feature_map_extractor(config: FeatureMapExtractorConfig):
