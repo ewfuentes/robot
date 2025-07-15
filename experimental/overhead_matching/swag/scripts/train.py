@@ -17,6 +17,7 @@ from dataclasses import dataclass
 import tqdm
 import msgspec
 from pprint import pprint
+import ipdb
 
 
 @dataclass
@@ -107,6 +108,13 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model, quie
     config_dict = json.loads(config_json)
     with open(config.output_dir / "config.json", 'wb') as f:
         f.write(config_json)
+
+    with open(config.output_dir / "satellite_model.yaml", 'wb') as f:
+        f.write(msgspec.yaml.encode(config.sat_model_config, enc_hook=enc_hook))
+
+    with open(config.output_dir / "panorama_model.yaml", 'wb') as f:
+        f.write(msgspec.yaml.encode(config.pano_model_config, enc_hook=enc_hook))
+
     writer = SummaryWriter(
         log_dir=config.tensorboard_output
     )
@@ -160,11 +168,10 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model, quie
 
             opt.zero_grad()
 
-            panorama_embeddings = panorama_model(batch.panorama.cuda())
+            panorama_embeddings = panorama_model(
+                    panorama_model.model_input_from_batch(batch).to("cuda"))
             sat_embeddings = satellite_model(
-                swag_patch_embedding.ModelInput(
-                    image=batch.satellite.cuda(),
-                    metadata=batch.satellite_metadata))
+                    satellite_model.model_input_from_batch(batch).to("cuda"))
 
             similarity = torch.einsum("ad,bd->ab", panorama_embeddings, sat_embeddings)
 
@@ -254,10 +261,10 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model, quie
 
             batch = next(iter(dataloader))
             save_model(panorama_model, panorama_model_path,
-                       (batch.panorama[:opt_config.batch_size].cuda(),))
+                       (panorama_model.model_input_from_batch(batch).to("cuda"),))
+
             save_model(satellite_model, satellite_model_path,
-                       (swag_patch_embedding.ModelInput(image=batch.satellite[:opt_config.batch_size].cuda(),
-                                                       metadata=batch.satellite_metadata),))
+                       (satellite_model.model_input_from_batch(batch).to("cuda"),))
 
 
 def main(
@@ -297,12 +304,13 @@ def main(
     train_config.output_dir = output_dir
     train_config.tensorboard_output = tensorboard_output
 
-    train(
-        train_config,
-        dataset=dataset,
-        panorama_model=panorama_model,
-        satellite_model=satellite_model,
-        quiet=quiet)
+    with ipdb.launch_ipdb_on_exception():
+        train(
+            train_config,
+            dataset=dataset,
+            panorama_model=panorama_model,
+            satellite_model=satellite_model,
+            quiet=quiet)
 
 
 if __name__ == "__main__":

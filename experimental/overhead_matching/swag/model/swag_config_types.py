@@ -48,7 +48,9 @@ class PlanarPositionEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
     type: PositionEmbeddingType = PositionEmbeddingType.PLANAR
 
 
-class SphericalEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
+class SphericalPositionEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
+    scale_step: float
+    embedding_dim: int
     type: PositionEmbeddingType = PositionEmbeddingType.SPHERICAL
 
 
@@ -67,5 +69,5 @@ class TransformerAggregatorConfig(msgspec.Struct, tag=True, tag_field="kind"):
 FeatureMapExtractorConfig = Union[DinoFeatureMapExtractorConfig]
 SemanticTokenExtractorConfig = Union[
         SemanticNullExtractorConfig, SemanticEmbeddingMatrixConfig, SemanticSegmentExtractorConfig]
-PositionEmbeddingConfig = Union[PlanarPositionEmbeddingConfig, SphericalEmbeddingConfig]
+PositionEmbeddingConfig = Union[PlanarPositionEmbeddingConfig, SphericalPositionEmbeddingConfig]
 AggregationConfig = Union[TransformerAggregatorConfig]
