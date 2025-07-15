@@ -248,10 +248,8 @@ void Frontend::match_frames_and_build_tracks() {
                 // also, at the moment I am not accounting for any covariance between the gps
                 // measurement and the unit translation vector from estimate_cam0_from_cam1
 
-                // can try averaging poses here as well
-                frames_[j].world_from_cam_initial_guess_.emplace(
-                    frames_[i].world_from_cam_initial_guess_->matrix() *
-                    scale_cam0_from_cam1->linear().matrix());
+                frames_[i].frame_from_other_frames_.emplace(
+                    j, gtsam::Rot3(scale_cam0_from_cam1->linear().matrix()));
                 for (const cv::DMatch match : matches) {
                     const KeypointCV kpt_cam0 = frames_[i].keypoint()[match.queryIdx];
                     const KeypointCV kpt_cam1 = frames_[j].keypoint()[match.trainIdx];

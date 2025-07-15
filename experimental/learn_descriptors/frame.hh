@@ -1,5 +1,6 @@
 #pragma once
 #include <optional>
+#include <unordered_map>
 
 #include "experimental/learn_descriptors/frontend_definitions.hh"
 #include "gtsam/base/Matrix.h"
@@ -30,6 +31,8 @@ class Frame {
     gtsam::Cal3_S2::shared_ptr K_;
     KeypointsCV kpts_;
     cv::Mat descriptors_;
+    std::unordered_map<FrameId, gtsam::Rot3>
+        frame_from_other_frames_;  // map of relative rotation for this_frame_from_frame_[FrameId]
     std::optional<gtsam::Pose3> world_from_cam_groundtruth_;
     std::optional<gtsam::Point3> cam_in_world_initial_guess_;
     std::optional<gtsam::Rot3> world_from_cam_initial_guess_;

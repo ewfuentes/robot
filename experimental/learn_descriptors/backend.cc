@@ -1,7 +1,11 @@
 #include "experimental/learn_descriptors/backend.hh"
 
+#include <unordered_set>
+
 #include "boost/make_shared.hpp"
 #include "experimental/learn_descriptors/feature_manager.hh"
+#include "experimental/learn_descriptors/frame.hh"
+#include "experimental/learn_descriptors/structure_from_motion_types.hh"
 #include "gtsam/geometry/triangulation.h"
 #include "gtsam/navigation/GPSFactor.h"
 #include "gtsam/nonlinear/LevenbergMarquardtOptimizer.h"
@@ -10,159 +14,6 @@
 #include "gtsam/slam/ProjectionFactor.h"
 
 namespace robot::experimental::learn_descriptors {
-
-Backend::Backend(std::shared_ptr<FeatureManager> feature_manager)
-    : feature_manager_(feature_manager) {
-    const size_t img_width = 640;
-    const size_t img_height = 480;
-    const double fx = 500.0;
-    const double fy = fx;
-    const double cx = img_width / 2.0;
-    const double cy = img_height / 2.0;
-
-    gtsam::Cal3_S2 K(fx, fy, 0, cx, cy);
-    K_ = boost::make_shared<gtsam::Cal3_S2>(K);
-    // initial_estimate_.insert(gtsam::Symbol(camera_symbol_char, 0), K);
-}
-
-Backend::Backend(std::shared_ptr<FeatureManager> feature_manager, gtsam::Cal3_S2 K)
-    : feature_manager_(feature_manager) {
-    K_ = boost::make_shared<gtsam::Cal3_S2>(K);
-    // initial_estimate_.insert(gtsam::Symbol(camera_symbol_char, 0), K);
-}
-
-template <>
-void Backend::add_prior_factor(const gtsam::Symbol &symbol, const gtsam::Pose3 &value,
-                               const gtsam::SharedNoiseModel &noise) {
-    graph_.emplace_shared<gtsam::PriorFactor<gtsam::Pose3>>(symbol, value, noise);
-    initial_estimate_.insert_or_assign(symbol, value);
-    // std::cout << "adding a prior factor! with symbol: " << symbol << std::endl;
-    // initial_estimate_.print("values after adding prior: ");
-}
-
-template <>
-void Backend::add_prior_factor(const gtsam::Symbol &symbol, const gtsam::Point3 &value,
-                               const gtsam::SharedNoiseModel &noise) {
-    graph_.emplace_shared<gtsam::PriorFactor<gtsam::Point3>>(symbol, value, noise);
-    gtsam::Rot3 R;
-    if (initial_estimate_.exists(symbol)) {
-        R = initial_estimate_.at<gtsam::Pose3>(symbol).rotation();
-    }
-    initial_estimate_.insert_or_assign(symbol, gtsam::Pose3(R, value));
-}
-
-template <>
-void Backend::add_between_factor<gtsam::Pose3>(const gtsam::Symbol &symbol_1,
-                                               const gtsam::Symbol &symbol_2,
-                                               const gtsam::Pose3 &value,
-                                               const gtsam::SharedNoiseModel &model) {
-    graph_.emplace_shared<gtsam::BetweenFactor<gtsam::Pose3>>(symbol_1, symbol_2, value, model);
-    // std::cout << "adding between factor. symbol_1: " << symbol_1 << ". symbol_2: " << symbol_2 <<
-    // std::endl; initial_estimate_.print("values when adding between factor: ");
-    initial_estimate_.insert_or_assign(symbol_2,
-                                       initial_estimate_.at<gtsam::Pose3>(symbol_1).compose(value));
-}
-
-template <>
-void Backend::add_between_factor<gtsam::Rot3>(const gtsam::Symbol &symbol_1,
-                                              const gtsam::Symbol &symbol_2,
-                                              const gtsam::Rot3 &value,
-                                              const gtsam::SharedNoiseModel &model) {
-    graph_.emplace_shared<gtsam::BetweenFactor<gtsam::Rot3>>(symbol_1, symbol_2, value, model);
-    initial_estimate_.insert_or_assign(symbol_2,
-                                       initial_estimate_.at<gtsam::Pose3>(symbol_1).compose(
-                                           gtsam::Pose3(value, gtsam::Point3::Zero())));
-}
-
-void Backend::add_factor_GPS(const gtsam::Symbol &symbol, const gtsam::Point3 &t_world_cam,
-                             const gtsam::SharedNoiseModel &model, const gtsam::Rot3 &R_world_cam) {
-    graph_.emplace_shared<gtsam::GPSFactor>(symbol, t_world_cam, model);
-    initial_estimate_.insert_or_assign(symbol, gtsam::Pose3(R_world_cam, t_world_cam));
-}
-
-std::pair<std::vector<gtsam::Pose3>, std::vector<gtsam::Point2>> Backend::get_obs_for_lmk(
-    const gtsam::Symbol &lmk_symbol) {
-    std::vector<gtsam::Pose3> cam_poses;
-    std::vector<gtsam::Point2> observations;
-
-    // Iterate over all factors in the graph
-    for (const auto &factor : graph_) {
-        auto projFactor = boost::dynamic_pointer_cast<
-            gtsam::GenericProjectionFactor<gtsam::Pose3, gtsam::Point3>>(factor);
-
-        if (projFactor && projFactor->keys().at(1) == lmk_symbol) {
-            // Get the camera pose symbol
-            gtsam::Symbol cameraSymbol = projFactor->keys().at(0);
-
-            // Retrieve the camera pose from values
-            if (!initial_estimate_.exists(cameraSymbol)) continue;
-            gtsam::Pose3 cameraPose = initial_estimate_.at<gtsam::Pose3>(cameraSymbol);
-
-            // Get the 2D observation (keypoint measurement)
-            gtsam::Point2 observation = projFactor->measured();
-
-            // Store the pose and corresponding observation
-            observations.push_back(observation);
-            cam_poses.push_back(cameraPose);
-        }
-    }
-    return std::pair<std::vector<gtsam::Pose3>, std::vector<gtsam::Point2>>(cam_poses,
-                                                                            observations);
-}
-
-void Backend::add_landmarks(const std::vector<Landmark> &landmarks) {
-    for (const Landmark &landmark : landmarks) {
-        add_landmark(landmark);
-    }
-}
-
-void Backend::add_landmark(const Landmark &landmark) {
-    graph_.emplace_shared<gtsam::GenericProjectionFactor<gtsam::Pose3, gtsam::Point3>>(
-        landmark.projection, landmark_noise_, landmark.cam_pose_symbol, landmark.lmk_factor_symbol,
-        K_);
-    if (!initial_estimate_.exists(landmark.cam_pose_symbol)) {
-        throw std::runtime_error(
-            "landmark.cam_pose_symbol must already exist in Backend.initial_estimate_ before "
-            "add_landmark is called.");
-    }
-    gtsam::Point3 p_world_lmk_estimate =
-        initial_estimate_.at<gtsam::Pose3>(landmark.cam_pose_symbol) * landmark.p_cam_lmk_guess;
-    initial_estimate_.insert_or_assign(landmark.lmk_factor_symbol, p_world_lmk_estimate);
-
-    std::pair<std::vector<gtsam::Pose3>, std::vector<gtsam::Point2>> lmk_obs =
-        get_obs_for_lmk(landmark.lmk_factor_symbol);
-    if (lmk_obs.first.size() >= 2) {
-        try {
-            // Attempt triangulation using DLT (or the GTSAM provided method)
-            p_world_lmk_estimate = gtsam::triangulatePoint3(
-                lmk_obs.first, K_,
-                gtsam::Point2Vector(lmk_obs.second.begin(), lmk_obs.second.end()));
-
-            // Optional: perform an explicit cheirality check
-            bool valid = true;
-            for (const auto &pose : lmk_obs.first) {
-                // Transform point to the camera coordinate system.
-                // transformTo() converts a world point to the camera frame.
-                gtsam::Point3 p_cam = pose.transformTo(p_world_lmk_estimate);
-                if (p_cam.z() <= 0) {  // Check that the depth is positive
-                    valid = false;
-                    break;
-                }
-            }
-
-            if (valid) {
-                initial_estimate_.update(landmark.lmk_factor_symbol, p_world_lmk_estimate);
-            } else {
-                std::cerr << "Triangulated landmark failed cheirality check; keeping initial guess."
-                          << std::endl;
-            }
-        } catch (const gtsam::TriangulationCheiralityException &e) {
-            // Handle the exception gracefully by logging and retaining the previous estimate.
-            std::cerr << "Triangulation Cheirality Exception: " << e.what()
-                      << ". Keeping initial landmark estimate." << std::endl;
-        }
-    }
-}
 
 void Backend::solve_graph() {
     gtsam::LevenbergMarquardtOptimizer optimizer(graph_, initial_estimate_);
@@ -190,5 +41,106 @@ void Backend::solve_graph(const int num_steps,
         }
     }
     result_ = optimizer.values();
+}
+
+gtsam::Rot3 average_rotations(const std::vector<gtsam::Rot3>& rotations, int max_iter = 10) {
+    if (rotations.empty()) throw std::runtime_error("No rotations to average");
+    if (rotations.size() == 1) return rotations.front();
+
+    gtsam::Rot3 mean = rotations[0];
+
+    for (int iter = 0; iter < max_iter; ++iter) {
+        Eigen::Vector3d total = Eigen::Vector3d::Zero();
+        for (const gtsam::Rot3& R : rotations) {
+            gtsam::Rot3 delta = mean.between(R);  // R_mean^T * R
+            total += gtsam::Rot3::Logmap(delta);  // Lie algebra element in R³
+        }
+        total /= static_cast<double>(rotations.size());
+        mean = mean.compose(gtsam::Rot3::Expmap(total));  // update estimate
+    }
+
+    return mean;
+}
+
+void Backend::populate_rotation_estimate(std::vector<Frame>& frames) {
+    struct FrameVertex {
+        Frame& frame;
+        std::unordered_map<FrameId, gtsam::Rot3>
+            neighbor_id_to_rot;  // rot is frame_from_neighbor_frame
+    };
+    std::unordered_map<FrameId, FrameVertex> frame_tree;
+    // populate all frames and add children to neighbors
+    for (Frame& frame : frames) {
+        FrameVertex frame_vertex{frame};
+        for (const auto [other_frame_id, frame_from_other_frame] : frame.frame_from_other_frames_) {
+            frame_vertex.neighbor_id_to_rot.emplace(other_frame_id, frame_from_other_frame);
+        }
+        frame_tree.emplace(frame.id_, frame_vertex);
+    }
+    // add parents to neighbors
+    for (const Frame& frame : frames) {
+        for (const) }
+    gtsam::NonlinearFactorGraph graph;
+    gtsam::Values initial;
+    // TODO: somehow get more informative/more robust noise values
+    // maybe: monte carlo sampling + reprojection, use essential matrix to guide covariance strength
+    gtsam::noiseModel::Diagonal::shared_ptr noise =
+        gtsam::noiseModel::Isotropic::Sigma(3, 0.1);  // radians
+
+    std::unordered_set<FrameId> frames_seen;
+    for (size_t i = 0; i < frames.size(); i++) {
+        const Frame& frame = frames[i];
+        if (i == 0) {
+            initial.insert(gtsam::Symbol(symbol_char_rotation, i),
+                           frame.world_from_cam_initial_guess_
+                               ? *frame.world_from_cam_initial_guess_
+                               : gtsam::Rot3::Identity());
+        }
+        std::vector<gtsam::Rot3> candidates_world_from_frame;
+        for (const auto& [other_frame_id, frame_from_other_frame] :
+             frame.frame_from_other_frames_) {
+            if (frames_seen.find(other_frame_id) == frames_seen.end()) {
+                candidates_world_from_frame.push_back(frame_from_other_frame);
+            }
+        }
+        initial.insert(gtsam::Symbol(symbol_char_rotation, frame.id_),
+                       average_rotations(candidates_world_from_frame));
+        frames_seen.insert(frame.id_);
+    }
+
+    // Assume we have relative rotations Rij between node i and j
+    std::vector<std::pair<size_t, size_t>> edges = {{0, 1}, {1, 2}, {2, 3}, {3, 4}};
+    std::vector<gtsam::Rot3> relativeRotations = {
+        Rot3::RzRyRx(0.25, 0.0, 0.0), Rot3::RzRyRx(0.25, 0.0, 0.0), Rot3::RzRyRx(0.3, 0.0, 0.0),
+        Rot3::RzRyRx(0.2, 0.0, 0.0)};
+
+    // Add BetweenFactors for relative rotations
+    for (size_t k = 0; k < edges.size(); ++k) {
+        size_t i = edges[k].first;
+        size_t j = edges[k].second;
+        graph.emplace_shared<gtsam::BetweenFactor<gtsam::Rot3>>(
+            gtsam::Symbol(Backend::symbol_char_rotation, i),
+            gtsam::Symbol(Backend::symbol_char_rotation, j), relativeRotations[k], noise);
+    }
+
+    // Fix the first rotation
+    initial.insert(gtsam::Symbol(Backend::symbol_char_rotation, 0), gtsam::Rot3::Identity());
+
+    // Initialize other rotations naively
+    for (size_t i = 1; i <= 4; ++i) {
+        initial.insert(gtsam::Symbol(Backend::symbol_char_rotation, i),
+                       gtsam::Rot3::RzRyRx(0.0, 0.0, 0.0));
+    }
+
+    // Optimize
+    gtsam::LevenbergMarquardtOptimizer optimizer(graph, initial);
+    gtsam::Values result = optimizer.optimize();
+
+    // Output results
+    for (size_t i = 0; i <= 4; ++i) {
+        gtsam::Rot3 Ri = result.at<gtsam::Rot3>(gtsam::Symbol(Backend::symbol_char_rotation, i));
+        std::cout << "Rotation " << i << ": " << Ri.rpy().transpose() << " (roll pitch yaw radians)"
+                  << std::endl;
+    }
 }
 }  // namespace robot::experimental::learn_descriptors

@@ -373,7 +373,8 @@ cc_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
-        ":feature_manager",
+        ":structure_from_motion_types",
+        ":frame",
         "//common/geometry:camera",
         "@boost//:smart_ptr",
         "@gtsam",

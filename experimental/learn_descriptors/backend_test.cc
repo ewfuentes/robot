@@ -31,10 +31,10 @@ TEST(BackendTest, cube) {
     //     camera_poses.emplace_back(T_world_cam.pose().matrix());
     // }
 
-    // backend.add_prior_factor(gtsam::Symbol(backend.camera_symbol_char, 0), camera_poses.front(),
+    // backend.add_prior_factor(gtsam::Symbol(backend.symbol_char_cam_cal, 0), camera_poses.front(),
     //                          backend.get_pose_noise());
     // for (size_t i = 1; i < camera_poses.size(); i++) {
-    //     backend.add_factor_GPS(gtsam::Symbol(backend.camera_symbol_char, i),
+    //     backend.add_factor_GPS(gtsam::Symbol(backend.symbol_char_cam_cal, i),
     //                            camera_poses[i].translation(), backend.get_gps_noise());
 
     //     std::pair<gtsam::PinholeCamera<gtsam::Cal3_S2>, cv::Size> cam_and_img_sizes[2] = {

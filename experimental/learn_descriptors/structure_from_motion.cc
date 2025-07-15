@@ -51,7 +51,7 @@ StructureFromMotion::StructureFromMotion(Frontend::ExtractorType frontend_extrac
 }
 
 void StructureFromMotion::set_initial_pose(gtsam::Pose3 initial_pose) {
-    backend_.add_prior_factor(gtsam::Symbol(Backend::pose_symbol_char, 0), initial_pose,
+    backend_.add_prior_factor(gtsam::Symbol(Backend::symbol_char_pose, 0), initial_pose,
                               gtsam::noiseModel::Isotropic::Sigma(6, 0));
 }
 
@@ -71,8 +71,8 @@ void StructureFromMotion::add_image(const cv::Mat &img, const gtsam::Pose3 &T_wo
             compute_matches(img_keypoints_and_descriptors_.back().second,
                             keypoints_and_descriptors.second, Frontend::enforce_bijective_matches);
 
-        const gtsam::Symbol sym_T_w_c0(Backend::pose_symbol_char, idx_img_current - 1);
-        const gtsam::Symbol sym_T_w_c1(Backend::pose_symbol_char, idx_img_current);
+        const gtsam::Symbol sym_T_w_c0(Backend::symbol_char_pose, idx_img_current - 1);
+        const gtsam::Symbol sym_T_w_c1(Backend::symbol_char_pose, idx_img_current);
 
         backend_.add_factor_GPS(sym_T_w_c1, T_world_cam.translation(), backend_.get_gps_noise(),
                                 T_world_cam.rotation());
@@ -91,7 +91,7 @@ void StructureFromMotion::add_image(const cv::Mat &img, const gtsam::Pose3 &T_wo
                 chr = (*maybe_symbol0).chr();
             } else {
                 gtsam::Symbol symbol_temp =
-                    gtsam::Symbol(Backend::landmark_symbol_char, landmark_count_);
+                    gtsam::Symbol(Backend::symbol_char_landmark, landmark_count_);
                 idx = symbol_temp.index();
                 chr = symbol_temp.chr();
                 landmark_count_++;
@@ -142,7 +142,7 @@ void StructureFromMotion::graph_values(const gtsam::Values &values,
     std::vector<Eigen::Vector3d> final_lmks;
     for (size_t i = 0; i < feature_manager_->get_num_images_added(); i++) {
         final_poses.emplace_back(
-            values.at<gtsam::Pose3>(gtsam::Symbol(get_backend().pose_symbol_char, i)).matrix());
+            values.at<gtsam::Pose3>(gtsam::Symbol(get_backend().symbol_char_pose, i)).matrix());
     }
     // for (const gtsam::Symbol &lmk_symbol : feature_manager_->get_added_symbols()) {
     //     if (!values.exists(lmk_symbol)) {
