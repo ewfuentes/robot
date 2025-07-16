@@ -39,6 +39,7 @@ py_library(
     requirement("msgspec"),
     ":swag_model_input",
     ":swag_config_types",
+    ":semantic_segment_extractor",
     "//common/torch:load_torch_deps",
   ]
 )

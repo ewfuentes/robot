@@ -66,7 +66,7 @@ def create_aggregator_model(output_dim: int, config: AggregationConfig):
     types = {
         AggregationType.TRANSFORMER: TransformerAggregator,
     }
-    return types[config.type](config)
+    return types[config.type](output_dim, config)
 
 
 class DinoFeatureExtractor(torch.nn.Module):
