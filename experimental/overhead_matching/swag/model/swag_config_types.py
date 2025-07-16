@@ -65,6 +65,7 @@ class TransformerAggregatorConfig(msgspec.Struct, tag=True, tag_field="kind"):
 
 
 FeatureMapExtractorConfig = Union[DinoFeatureMapExtractorConfig]
-SemanticTokenExtractorConfig = Union[SemanticNullExtractorConfig, SemanticEmbeddingMatrixConfig]
+SemanticTokenExtractorConfig = Union[
+        SemanticNullExtractorConfig, SemanticEmbeddingMatrixConfig, SemanticSegmentExtractorConfig]
 PositionEmbeddingConfig = Union[PlanarPositionEmbeddingConfig, SphericalEmbeddingConfig]
 AggregationConfig = Union[TransformerAggregatorConfig]
