@@ -5,6 +5,7 @@ import torch.nn.functional as F
 import torchvision as tv
 import msgspec
 from experimental.overhead_matching.swag.model.swag_model_input import ModelInput
+from experimental.overhead_matching.swag.model.semantic_segment_extractor import SemanticSegmentExtractor
 from experimental.overhead_matching.swag.model.swag_config_types import (
     FeatureMapExtractorConfig,
     FeatureMapExtractorType,
@@ -38,26 +39,34 @@ class SwagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
 
 
 def create_feature_map_extractor(config: FeatureMapExtractorConfig):
+    types = {
+        FeatureMapExtractorType.DINOV2: DinoFeatureExtractor
+    }
     assert config.type == FeatureMapExtractorType.DINOV2
-    return DinoFeatureExtractor(config)
+    return types[config.type](config)
 
 
 def create_semantic_token_extractor(config: SemanticTokenExtractorConfig):
-    if config.type == SemanticTokenExtractorType.EMBEDDING_MAT:
-        return SemanticEmbeddingMatrix(config)
-    elif config.type == SemanticTokenExtractorType.NULL_EXTRACTOR:
-        return SemanticNullExtractor(config)
+    types = {
+        SemanticTokenExtractorType.NULL_EXTRACTOR: SemanticNullExtractor,
+        SemanticTokenExtractorType.EMBEDDING_MAT:  SemanticEmbeddingMatrix,
+        SemanticTokenExtractorType.SEGMENT_EXTRACTOR: SemanticSegmentExtractor,
+    }
+    return types[config.type](config)
 
 
 def create_position_embedding(config: PositionEmbeddingConfig):
-    assert config.type == PositionEmbeddingType.PLANAR
-    return PlanarPositionEmbedding(config)
+    types = {
+        PositionEmbeddingType.PLANAR: PlanarPositionEmbedding,
+    }
+    return types[config.type](config)
 
 
 def create_aggregator_model(output_dim: int, config: AggregationConfig):
-    assert config.type == AggregationType.TRANSFORMER
-    return TransformerAggregator(output_dim, config)
-    ...
+    types = {
+        AggregationType.TRANSFORMER: TransformerAggregator,
+    }
+    return types[config.type](config)
 
 
 class DinoFeatureExtractor(torch.nn.Module):

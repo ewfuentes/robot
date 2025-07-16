@@ -68,8 +68,11 @@ py_library(
   deps = [
     requirement("torch"),
     requirement("msgspec"),
-    requirement("x-segment-anything"),
-    requirement("requests"),
+    requirement("sam-2"),
+    requirement("huggingface_hub"),
+    requirement("open-clip-torch"),
+    requirement("ipdb"),
+    requirement("pillow"),
     "//common/torch:load_torch_deps",
     ":swag_model_input",
     ":swag_config_types",
@@ -82,8 +85,8 @@ py_test(
   data = ["@vigor_snippet//:files"],
   deps = [
     requirement("PyGObject"),
-    requirement("matplotlib"),
     requirement("supervision"),
+    requirement("matplotlib"),
     "//experimental/overhead_matching/swag/data:vigor_dataset",
     ":semantic_segment_extractor",
   ]

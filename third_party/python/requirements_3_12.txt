@@ -706,6 +706,10 @@ fsspec==2025.3.2 \
     # via
     #   huggingface-hub
     #   torch
+ftfy==6.3.1 \
+    --hash=sha256:7c70eb532015cd2f9adb53f101fb6c7945988d023a085d127d1573dc49dd0083 \
+    --hash=sha256:9b3c3d90f84fb267fe64d375a07b7f8912d817cf86009ae134aa03e1819506ec
+    # via open-clip-torch
 fvcore==0.1.5.post20221221 \
     --hash=sha256:f2fb0bb90572ae651c11c78e20493ed19b2240550a7e4bbb2d6de87bdd037860
     # via dinov2
@@ -785,6 +789,7 @@ huggingface-hub==0.33.4 \
     --hash=sha256:6af13478deae120e765bfd92adad0ae1aec1ad8c439b46f23058ad5956cbca0a
     # via
     #   -r third_party/python/requirements_3_12.in
+    #   open-clip-torch
     #   timm
     #   tokenizers
     #   transformers
@@ -1530,7 +1535,6 @@ numpy==1.26.4 \
     #   torchmetrics
     #   torchvision
     #   transformers
-    #   x-segment-anything
 nvidia-cublas-cu12==12.8.3.14 \
     --hash=sha256:3f0e05e7293598cf61933258b73e66a160c27d59c4422670bf0b79348c04be44 \
     --hash=sha256:93a4e0e386cc7f6e56c822531396de8170ed17068a1e18f987574895044cd8c3 \
@@ -1614,6 +1618,10 @@ omegaconf==2.3.0 \
     # via
     #   dinov2
     #   hydra-core
+open-clip-torch==2.32.0 \
+    --hash=sha256:0220bc111162527eb738c1fe20dbfd6ea45dfe44726b54a4de18d3945d8f2f00 \
+    --hash=sha256:80b35b43e37afc2b6173aa5ab0ad68744ab3a3211e624f72dfe743a162707637
+    # via -r third_party/python/requirements_3_12.in
 opencv-python==4.7.0.72 \
     --hash=sha256:3424794a711f33284581f3c1e4b071cfc827d02b99d6fd9a35391f517c453306 \
     --hash=sha256:7a297e7651e22eb17c265ddbbc80e2ba2a8ff4f4a1696a67c45e5f5798245842 \
@@ -2514,7 +2522,9 @@ regex==2024.11.6 \
     --hash=sha256:fdabbfc59f2c6edba2a6622c647b716e34e8e3867e0ab975412c5c2f79b82da2 \
     --hash=sha256:fdd6028445d2460f33136c55eeb1f601ab06d74cb3347132e1c24250187500d9 \
     --hash=sha256:ff590880083d60acc0433f9c3f713c51f7ac6ebb9adf889c79a261ecf541aa91
-    # via transformers
+    # via
+    #   open-clip-torch
+    #   transformers
 reportlab==4.1.0 \
     --hash=sha256:28a40d5000afbd8ccae15a47f7abe2841768461354bede1a9d42841132997c98 \
     --hash=sha256:3a99faf412691159c068b3ff01c15307ce2fd2cf6b860199434874e002040a84
@@ -2751,6 +2761,7 @@ safetensors==0.5.3 \
     --hash=sha256:cfc0ec0846dcf6763b0ed3d1846ff36008c6e7290683b61616c4b040f6a54ace \
     --hash=sha256:df26da01aaac504334644e1b7642fa000bfec820e7cef83aeac4e355e03195ff
     # via
+    #   open-clip-torch
     #   timm
     #   transformers
 # WARNING: pip install will require the following package to be hashed.
@@ -3057,7 +3068,7 @@ tifffile==2025.3.30 \
 timm==1.0.17 \
     --hash=sha256:90ccf07894d6ae38259b7aa7c94d683002f5e360fd43471c84f9da6c3afb8a0d \
     --hash=sha256:a84c73a9ec560a6e347dba2716ea1acccf71987aefade02b882cc89dc0a0ee21
-    # via x-segment-anything
+    # via open-clip-torch
 tinycss2==1.4.0 \
     --hash=sha256:10c0972f6fc0fbee87c3edb76549357415e94548c1ae10ebccdea16fb404a9b7 \
     --hash=sha256:3a49cf47b7675da0b15d0c6e1df8df4ebd96e9394bb905a5775adb0d884c5289
@@ -3107,12 +3118,12 @@ torch==2.7.0+cu128 \
     #   dinov2
     #   easyocr
     #   kornia
+    #   open-clip-torch
     #   sam-2
     #   timm
     #   torch-kdtree
     #   torchmetrics
     #   torchvision
-    #   x-segment-anything
 # WARNING: pip install will require the following package to be hashed.
 # Consider using a hashable URL like https://github.com/jazzband/pip-tools/archive/SOMECOMMIT.zip
 torch-kdtree @ git+https://github.com/ewfuentes/torch_kdtree.git@583b92b105fcc7aefdc0020136229f9ed32566b7
@@ -3137,9 +3148,9 @@ torchvision==0.22.0+cu128 \
     # via
     #   dinov2
     #   easyocr
+    #   open-clip-torch
     #   sam-2
     #   timm
-    #   x-segment-anything
 tornado==6.4.2 \
     --hash=sha256:072ce12ada169c5b00b7d92a99ba089447ccc993ea2143c9ede887e0937aa803 \
     --hash=sha256:1a017d239bd1bb0919f72af256a970624241f070496635784d9bf0db640d3fec \
@@ -3166,6 +3177,7 @@ tqdm==4.67.1 \
     #   fvcore
     #   huggingface-hub
     #   iopath
+    #   open-clip-torch
     #   sam-2
     #   supervision
     #   transformers
@@ -3247,7 +3259,9 @@ wand==0.6.11 \
 wcwidth==0.2.13 \
     --hash=sha256:3da69048e4540d84af32131829ff948f1e022c1c6bdb8d6102117aac784f6859 \
     --hash=sha256:72ea0c06399eb286d978fdedb6923a9eb47e1c486ce63e9b4e64fc18303972b5
-    # via prompt-toolkit
+    # via
+    #   ftfy
+    #   prompt-toolkit
 webcolors==24.11.1 \
     --hash=sha256:515291393b4cdf0eb19c155749a096f779f7d909f7cceea072791cb9095b92e9 \
     --hash=sha256:ecb3d768f32202af770477b8b65f318fa4f566c22948673a977b00d589dd80f6
@@ -3341,10 +3355,6 @@ widgetsnbextension==4.0.14 \
     --hash=sha256:4875a9eaf72fbf5079dc372a51a9f268fc38d46f767cbf85c43a36da5cb9b575 \
     --hash=sha256:a3629b04e3edb893212df862038c7232f62973373869db5084aed739b437b5af
     # via ipywidgets
-x-segment-anything==0.0.8 \
-    --hash=sha256:43404ecba0d7afa8b20ea88406745418249ab6956ffdd37f9e25880d1fca435f \
-    --hash=sha256:bbc36527ccd385f42c4e164323ff3c747c9700951d0412c1fa2aa79de00603ad
-    # via -r third_party/python/requirements_3_12.in
 yacs==0.1.8 \
     --hash=sha256:99f893e30497a4b66842821bac316386f7bd5c4f47ad35c9073ef089aa33af32 \
     --hash=sha256:d43d1854c1ffc4634c5b349d1c1120f86f05c3a294c9d141134f282961ab5d94 \

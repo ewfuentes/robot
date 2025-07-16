@@ -14,31 +14,29 @@ import tqdm
 class SAM2SegmentExtractorTest(unittest.TestCase):
     def test_sample_image(self):
         # Setup
+        BATCH_SIZE = 30
+        CLIP_FEATURE_DIM = 512
         dataset = vd.VigorDataset(
             Path("external/vigor_snippet/vigor_snippet"),
             vd.VigorDatasetConfig(panorama_neighbor_radius=1e-6))
+        dataloader = vd.get_dataloader(dataset.get_pano_view(), batch_size=BATCH_SIZE)
 
         model = sse.SemanticSegmentExtractor(
             sse.SemanticSegmentExtractorConfig()
         )
 
         # Action
-        for i in tqdm.tqdm(range(20)):
-            item = dataset.get_pano_view()[i]
+        batch = next(iter(dataloader))
+        positions, tokens, mask = model(sse.ModelInput(
+            image=batch.panorama, metadata=batch.panorama_metadata))
 
-            image = item.panorama.permute(1, 2, 0).numpy()
-            image = (image * 255).astype(np.uint8)
-            result = model(image)
-            # detections = sv.Detections.from_sam(sam_result=result)
-
-            # annotated = sv.MaskAnnotator(color_lookup=sv.ColorLookup.INDEX).annotate(image.copy(), detections)
-            # plt.figure()
-            # plt.subplot(211)
-            # plt.imshow(image)
-            # plt.subplot(212)
-            # plt.imshow(annotated)
-
-            # plt.show(block=True)
+        self.assertEqual(positions.shape[0], BATCH_SIZE)
+        self.assertEqual(positions.shape[2], 2)
+        self.assertEqual(tokens.shape[0], BATCH_SIZE)
+        self.assertEqual(tokens.shape[2], CLIP_FEATURE_DIM)
+        self.assertEqual(mask.shape[0], BATCH_SIZE)
+        self.assertEqual(mask.shape[1], tokens.shape[1])
+        self.assertEqual(mask.shape[1], positions.shape[1])
 
 
 if __name__ == "__main__":

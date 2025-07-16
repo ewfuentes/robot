@@ -30,7 +30,9 @@ class SemanticEmbeddingMatrixConfig(msgspec.Struct, tag=True, tag_field="kind"):
 
 
 class SemanticSegmentExtractorConfig(msgspec.Struct, tag=True, tag_field='kind'):
-    sam_model_str: str = "vit_t"
+    sam_model_str: str = "facebook/sam2.1-hiera-large"
+    num_query_pts: int = 256
+    clip_model_str: str = "hf-hub:laion/CLIP-ViT-B-32-laion2B-s34B-b79K"
     type: SemanticTokenExtractorType = SemanticTokenExtractorType.SEGMENT_EXTRACTOR
 
 
