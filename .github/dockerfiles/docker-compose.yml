@@ -8,5 +8,5 @@ services:
     image: github_runner:24.04
     shm_size: 2gb
     runtime: nvidia
-    command: bash -c "./config.sh --url https://github.com/ewfuentes/robot --name mars --replace --token ${GITHUB_RUNNER_TOKEN} --unattended && ./run.sh"
+    command: bash -c "./config.sh --url https://github.com/ewfuentes/robot --token ${GITHUB_RUNNER_TOKEN} --unattended && ./run.sh"
     restart: always
