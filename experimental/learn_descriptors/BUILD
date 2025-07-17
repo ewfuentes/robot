@@ -122,6 +122,7 @@ cc_library(
         ":four_seasons_transforms",
         "//common/liegroups:se3",
         "//common/gps:frame_translation",
+        "//common:check",
         "@eigen",
         "@opencv",
         "@geographiclib",
@@ -310,6 +311,7 @@ cc_library(
         "@eigen",
         "@gtsam",
         "@opencv",
+        "//common:check"
     ],
 )
 
@@ -329,8 +331,9 @@ cc_binary(
     deps = [
         ":spatial_test_scene_cube",
         "//visualization/opencv:opencv_viz",
-        "@com_google_googletest//:gtest_main",
+        "//common:check",
         "@eigen",
+        "@gtsam"
     ],
 )
 
@@ -450,13 +453,14 @@ cc_binary(
         "-Wno-error=unused-function",
     ],
     deps = [
+        ":backend",
         ":four_seasons_parser",
         ":frame",
         ":frontend",
-        ":spatial_test_scene_cube",
-        ":structure_from_motion_types",
         ":image_point",
         ":image_point_four_seasons",
+        ":spatial_test_scene_cube",
+        ":structure_from_motion_types",
         "//common/geometry:camera",
         "//visualization/opencv:opencv_viz",
         "@boost//:smart_ptr",

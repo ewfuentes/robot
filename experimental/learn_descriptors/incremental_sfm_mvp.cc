@@ -140,8 +140,8 @@ std::optional<gtsam::Point3> attempt_triangulate(const std::vector<gtsam::Pose3>
 void graph_values(const gtsam::Values &values, const std::string &window_name,
                   const std::vector<gtsam::Symbol> &symbols_pose,
                   const std::vector<gtsam::Symbol> &symbols_landmarks) {
-    std::vector<robot::geometry::VizPose> final_poses;
-    std::vector<robot::geometry::VizPoint> final_lmks;
+    std::vector<robot::visualization::VizPose> final_poses;
+    std::vector<robot::visualization::VizPoint> final_lmks;
     for (const gtsam::Symbol &symbol_pose : symbols_pose) {
         final_poses.emplace_back(Eigen::Isometry3d(values.at<gtsam::Pose3>(symbol_pose).matrix()),
                                  symbol_pose.string());
@@ -153,8 +153,8 @@ void graph_values(const gtsam::Values &values, const std::string &window_name,
         final_lmks.emplace_back(values.at<gtsam::Point3>(symbol_lmk), symbol_lmk.string());
     }
     std::cout << "About to viz gtsam::Values with " << values.size() << " variables." << std::endl;
-    robot::geometry::viz_scene(final_poses, final_lmks, cv::viz::Color::brown(), true, true,
-                               window_name);
+    robot::visualization::viz_scene(final_poses, final_lmks, cv::viz::Color::brown(), true, true,
+                                    window_name);
 }
 
 gtsam::Values optimize_graph(const gtsam::NonlinearFactorGraph &graph, const gtsam::Values &values,
@@ -338,7 +338,7 @@ int main(int argc, const char **argv) {
         id_to_initial_world_from_cam;      // these are for initial guesses!!
     Eigen::Vector3d t_first_cam_in_world;  // to create our own world
     std::vector<Eigen::Isometry3d> references_world_from_cam;
-    std::vector<robot::geometry::VizPose> viz_references_world_from_cam;
+    std::vector<robot::visualization::VizPose> viz_references_world_from_cam;
     Eigen::Matrix4d scale_mat_reference = Eigen::Matrix4d::Identity();
     scale_mat_reference(0, 0) = scale_mat_reference(1, 1) = scale_mat_reference(2, 2) =
         parser.gnss_scale();
@@ -420,9 +420,9 @@ int main(int argc, const char **argv) {
         id++;
     }
     if (visualize)
-        robot::geometry::viz_scene(viz_references_world_from_cam,
-                                   std::vector<robot::geometry::VizPoint>(),
-                                   cv::viz::Color::brown(), true, true, "References");
+        robot::visualization::viz_scene(viz_references_world_from_cam,
+                                        std::vector<robot::visualization::VizPoint>(),
+                                        cv::viz::Color::brown(), true, true, "References");
 
     // populate feature_tracks and lmk_id_map
     // TODO: "smart" matching, using initial poses to filter which pairs make sense to compute
@@ -514,7 +514,7 @@ int main(int argc, const char **argv) {
             }
         }
     }
-    std::vector<robot::geometry::VizPose> viz_world_from_cam_init;
+    std::vector<robot::visualization::VizPose> viz_world_from_cam_init;
     for (const auto &[id, world_from_cam] : id_to_initial_world_from_cam) {
         viz_world_from_cam_init.emplace_back(Eigen::Isometry3d(world_from_cam.matrix()),
                                              std::to_string(id));
@@ -522,14 +522,14 @@ int main(int argc, const char **argv) {
 
     // std::cout << "pre heartbeat" << std::endl;
     if (visualize)
-        robot::geometry::viz_scene(viz_world_from_cam_init,
-                                   std::vector<robot::geometry::VizPoint>(),
-                                   cv::viz::Color::brown(), true, true, "world_from_cam_estimates");
+        robot::visualization::viz_scene(
+            viz_world_from_cam_init, std::vector<robot::visualization::VizPoint>(),
+            cv::viz::Color::brown(), true, true, "world_from_cam_estimates");
     // std::cout << "heartbeat" << std::endl;
 
     // TRIANGULATE all of the points (for initial guess)
     std::unordered_map<LandmarkId, gtsam::Point3> lmk_triangulated_map;  // points are kpt_in_world
-    std::vector<robot::geometry::VizPoint> triangulated_lmks_viz;
+    std::vector<robot::visualization::VizPoint> triangulated_lmks_viz;
     std::vector<gtsam::Point3> triangulated_lmks;
     for (const std::pair<LandmarkId, FeatureTrack> lmk_feat : feature_tracks) {
         std::vector<gtsam::Pose3> world_from_cams;
@@ -556,9 +556,9 @@ int main(int argc, const char **argv) {
     }
     std::cout << "there are " << triangulated_lmks.size() << " triangulated lmks" << std::endl;
     if (visualize)
-        robot::geometry::viz_scene(viz_references_world_from_cam, triangulated_lmks_viz,
-                                   cv::viz::Color::brown(), true, true,
-                                   "Unfiltered, triangulated points");
+        robot::visualization::viz_scene(viz_references_world_from_cam, triangulated_lmks_viz,
+                                        cv::viz::Color::brown(), true, true,
+                                        "Unfiltered, triangulated points");
 
     // filter points via variance
     // TODO: filter based on quality and/or quantity of matches
@@ -580,9 +580,9 @@ int main(int argc, const char **argv) {
     std::cout << "filtered variance " << detail_sfm::get_variance(filtered_points) << std::endl;
     std::cout << "number of filtered points: " << lmk_triangulated_map_filtered.size() << std::endl;
     if (visualize)
-        robot::geometry::viz_scene(std::vector<Eigen::Isometry3d>(), filtered_points,
-                                   cv::viz::Color::brown(), true, true,
-                                   "Filtered, triangulated points");
+        robot::visualization::viz_scene(std::vector<Eigen::Isometry3d>(), filtered_points,
+                                        cv::viz::Color::brown(), true, true,
+                                        "Filtered, triangulated points");
 
     // ############# BACKEND ###############
 
@@ -669,10 +669,10 @@ int main(int argc, const char **argv) {
             std::vector<gtsam::Pose3> world_from_cams{id_to_initial_world_from_cam.at(i),
                                                       id_to_initial_world_from_cam.at(i + 1)};
 
-            std::vector<robot::geometry::VizPose> viz_world_from_cams{
+            std::vector<robot::visualization::VizPose> viz_world_from_cams{
                 {Eigen::Isometry3d(world_from_cams[0].matrix()), "cam 0"},
                 {Eigen::Isometry3d(world_from_cams[1].matrix()), "cam 1"}};
-            std::vector<robot::geometry::VizPoint> viz_lmks;
+            std::vector<robot::visualization::VizPoint> viz_lmks;
             for (const cv::DMatch match : matches) {
                 std::vector<gtsam::Point2> feat_kpts;
                 const KeypointCV kpt_cam0 = frames[i].keypoint()[match.queryIdx];
@@ -735,8 +735,9 @@ int main(int argc, const char **argv) {
             }
             std::cout << "setup complete!" << std::endl;
             if (visualize)
-                robot::geometry::viz_scene(viz_world_from_cams, viz_lmks, cv::viz::Color::brown(),
-                                           true, true, "Local Optimization " + std::to_string(i));
+                robot::visualization::viz_scene(viz_world_from_cams, viz_lmks,
+                                                cv::viz::Color::brown(), true, true,
+                                                "Local Optimization " + std::to_string(i));
 
             const gtsam::Values symbols_result_local = detail_sfm::optimize_graph(
                 local_graph_, local_estimate_, symbols_pose, symbols_landmarks, false);

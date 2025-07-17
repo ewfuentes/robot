@@ -9,6 +9,7 @@
 
 #include "Eigen/Core"
 #include "Eigen/Geometry"
+#include "common/check.hh"
 #include "common/liegroups/se3.hh"
 #include "experimental/learn_descriptors/four_seasons_transforms.hh"
 #include "experimental/learn_descriptors/gps_data.hh"
@@ -28,6 +29,19 @@ struct ImagePointFourSeasons : ImagePoint {
     std::optional<liegroups::SE3> AS_w_from_vio_cam;  // arbitrary scale world from vio result cam
     std::optional<GPSData> gps_gcs;  // raw gps measurement in gcs (global cordinate system)
     std::shared_ptr<FourSeasonsTransforms::StaticTransforms> shared_static_transforms;
+
+    std::optional<Eigen::Vector3d> velocity_to(const ImagePointFourSeasons& other_img_pt) const {
+        ROBOT_CHECK(other_img_pt.seq >= seq);
+        if (!other_img_pt.cam_in_world() || !cam_in_world()) return std::nullopt;
+        double dt_seconds = static_cast<double>(other_img_pt.seq - seq) * 1e-9;
+        return (*other_img_pt.cam_in_world() - *cam_in_world()) / dt_seconds;
+    };
+    std::optional<Eigen::Vector3d> velocity_from(const ImagePointFourSeasons& other_img_pt) const {
+        ROBOT_CHECK(seq >= other_img_pt.seq);
+        if (!other_img_pt.cam_in_world() || !cam_in_world()) return std::nullopt;
+        double dt_seconds = static_cast<double>(seq - other_img_pt.seq) * 1e-9;
+        return (*cam_in_world() - *other_img_pt.cam_in_world()) / dt_seconds;
+    };
 
     std::optional<Eigen::Isometry3d> world_from_cam_ground_truth() const override;
     std::optional<Eigen::Vector3d> cam_in_world() const override;

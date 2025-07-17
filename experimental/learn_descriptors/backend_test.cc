@@ -24,7 +24,7 @@ TEST(BackendTest, cube) {
     // Backend backend(K);
     // test_scene.add_rand_cameras_face_origin(7, 2.0, 6.0, *K);
 
-    // std::vector<gtsam::PinholeCamera<gtsam::Cal3_S2>> cameras = test_scene.get_cameras();
+    // std::vector<gtsam::PinholeCamera<gtsam::Cal3_S2>> cameras = test_scene.cameras()();
     // std::vector<Eigen::Isometry3d> camera_poses;
     // camera_poses.reserve(cameras.size());
     // for (const gtsam::PinholeCamera<gtsam::Cal3_S2> &T_world_cam : cameras) {
@@ -49,6 +49,8 @@ TEST(BackendTest, cube) {
     // }
     // }
 
-    // geometry::viz_scene(camera_poses, test_scene.get_points());
+    // geometry::viz_scene(camera_poses, test_scene.points());
 }
+
+TEST(BackendTest, test_rotation_estimation) {}
 }  // namespace robot::experimental::learn_descriptors

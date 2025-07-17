@@ -44,7 +44,7 @@ class Frontend {
     const FrontendParams::MatcherType &matcher_type() const { return params_.matcher_type; };
     const FeatureTracks &feature_tracks() const { return feature_tracks_; };
     const FrameLandmarkIdMap &frame_landmark_id_map() const { return lmk_id_map_; };
-    const std::vector<Frame> &frames() const { return frames_; };
+    std::vector<Frame> &frames() { return frames_; };
 
     std::pair<std::vector<cv::KeyPoint>, cv::Mat> extract_features(const cv::Mat &img) const;
     std::vector<cv::DMatch> compute_matches(const cv::Mat &descriptors1,

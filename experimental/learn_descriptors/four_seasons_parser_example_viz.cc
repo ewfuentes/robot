@@ -82,8 +82,9 @@ int main(int argc, const char** argv) {
 
     ROBOT_CHECK(parser.num_images() != 0);
 
-    std::vector<robot::geometry::VizPose> viz_frames;   // camera frames from visual world frame
-    std::vector<robot::geometry::VizPoint> viz_points;  // camera frames from visual world frame
+    std::vector<robot::visualization::VizPose> viz_frames;  // camera frames from visual world frame
+    std::vector<robot::visualization::VizPoint>
+        viz_points;  // camera frames from visual world frame
 
     Eigen::Isometry3d scale_mat = Eigen::Isometry3d::Identity();
     std::cout << "gnss scale: " << parser.gnss_scale() << std::endl;
@@ -192,6 +193,6 @@ int main(int argc, const char** argv) {
     std::cout << "max delta: " << max_delta << std::endl;
     std::cout << "\ngot " << viz_frames.size() << " poses" << std::endl;
     std::cout << "got " << viz_points.size() << " points" << std::endl;
-    robot::geometry::viz_scene(viz_frames, viz_points, cv::viz::Color::brown(), true, true,
-                               "Viz Trajectory + GPS Points");
+    robot::visualization::viz_scene(viz_frames, viz_points, cv::viz::Color::brown(), true, true,
+                                    "Viz Trajectory + GPS Points");
 }

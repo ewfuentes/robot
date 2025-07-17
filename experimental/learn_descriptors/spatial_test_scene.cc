@@ -2,6 +2,24 @@
 
 #include <random>
 
+#include "Eigen/Core"
+#include "Eigen/Geometry"
+#include "common/check.hh"
+#include "gtsam/geometry/Cal3_S2.h"
+#include "gtsam/geometry/PinholeCamera.h"
+#include "opencv2/opencv.hpp"
+
+Eigen::Isometry3d isometry_from_vector(const Eigen::VectorXd &pose_vector) {
+    ROBOT_CHECK(pose_vector.size() == 6);
+    Eigen::Isometry3d T = Eigen::Isometry3d::Identity();
+    if (pose_vector.tail<3>().norm() > 1e-6) {
+        T.linear() = Eigen::AngleAxisd(pose_vector.tail<3>().norm(), pose_vector.tail<3>())
+                         .toRotationMatrix();
+    }
+    T.translation() = pose_vector.head<3>();
+    return T;
+}
+
 namespace robot::experimental::learn_descriptors {
 template <typename T>
 std::vector<SpatialTestScene::ProjectedPoint> SpatialTestScene::get_projected_pixels(
@@ -38,22 +56,58 @@ SpatialTestScene::get_corresponding_pixels(
     return corresponding_pixels;
 };
 
-void SpatialTestScene::add_point(Eigen::Vector3d point) { points_.push_back(point); };
+void SpatialTestScene::add_point(Eigen::Vector3d point, std::optional<Noise> point_noise) {
+    points_groundtruth_.push_back(point);
+    if (point_noise) {
+        ROBOT_CHECK(point_noise->dim() == 3);
+        points_.push_back(point + point_noise->sample());
+    } else {
+        points_.push_back(point);
+    }
+};
 
-void SpatialTestScene::add_points(std::vector<Eigen::Vector3d> points) {
-    points_.insert(points_.end(), points.begin(), points.end());
+void SpatialTestScene::add_points(std::vector<Eigen::Vector3d> points,
+                                  std::optional<Noise> point_noise) {
+    for (const Eigen::Vector3d &point : points) {
+        points_groundtruth_.push_back(point);
+        if (point_noise) {
+            ROBOT_CHECK(point_noise->dim() == 3);
+            points_.push_back(point + point_noise->sample());
+        } else {
+            points_.push_back(point);
+        }
+    }
 }
 
-void SpatialTestScene::add_camera(gtsam::PinholeCamera<gtsam::Cal3_S2> camera) {
-    cameras_.push_back(camera);
+void SpatialTestScene::add_camera(gtsam::PinholeCamera<gtsam::Cal3_S2> camera,
+                                  std::optional<Noise> pose_noise) {
+    cameras_groundtruth_.push_back(camera);
+    if (pose_noise) {
+        cameras_.push_back(gtsam::PinholeCamera<gtsam::Cal3_S2>(
+            camera.pose() * gtsam::Pose3(isometry_from_vector(pose_noise->sample()).matrix()),
+            camera.calibration()));
+    } else {
+        cameras_.push_back(camera);
+    }
 }
 
-void SpatialTestScene::add_cameras(std::vector<gtsam::PinholeCamera<gtsam::Cal3_S2>> cameras) {
-    cameras_.insert(cameras_.end(), cameras.begin(), cameras.end());
+void SpatialTestScene::add_cameras(std::vector<gtsam::PinholeCamera<gtsam::Cal3_S2>> cameras,
+                                   std::optional<Noise> pose_noise) {
+    for (const gtsam::PinholeCamera<gtsam::Cal3_S2> &cam : cameras) {
+        cameras_groundtruth_.push_back(cam);
+        if (pose_noise) {
+            cameras_.push_back(gtsam::PinholeCamera<gtsam::Cal3_S2>(
+                cam.pose() * gtsam::Pose3(isometry_from_vector(pose_noise->sample()).matrix()),
+                cam.calibration()));
+        } else {
+            cameras_.push_back(cam);
+        }
+    }
 }
 
 void SpatialTestScene::add_rand_cameras_face_origin(int num_cameras, double min_radius_origin,
                                                     double max_radius_origin,
+                                                    std::optional<Noise> pose_noise,
                                                     const gtsam::Cal3_S2 &K) {
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -61,22 +115,33 @@ void SpatialTestScene::add_rand_cameras_face_origin(int num_cameras, double min_
     std::uniform_real_distribution<double> dist_radius(min_radius_origin, max_radius_origin);
     std::uniform_real_distribution<double> dist_omega(0.0, 2 * M_PI);
 
+    const Eigen::Isometry3d world_from_cam_default =
+        Eigen::Translation3d(1.0, 0, 0) * Eigen::AngleAxisd(-M_PI_2, Eigen::Vector3d::UnitY()) *
+        Eigen::AngleAxisd(M_PI_2, Eigen::Vector3d::UnitZ());
     for (int i = 0; i < num_cameras; i++) {
-        double angle_z = dist_radius(gen);
-        Eigen::Isometry3d R_z;
-        R_z.linear() = Eigen::AngleAxisd(angle_z, Eigen::Vector3d::UnitZ()).matrix();
-        double angle_x = dist_radius(gen);
-        Eigen::Isometry3d R_y;
-        R_y.linear() = Eigen::AngleAxisd(angle_x, Eigen::Vector3d::UnitY()).matrix();
+        double angle_z = dist_omega(gen);
+        Eigen::Isometry3d longitude_from_world = Eigen::Isometry3d::Identity();
+        longitude_from_world.linear() =
+            Eigen::AngleAxisd(angle_z, Eigen::Vector3d::UnitZ()).matrix();
+        double angle_x = dist_omega(gen);
+        Eigen::Isometry3d latitude_from_world = Eigen::Isometry3d::Identity();
+        latitude_from_world.linear() =
+            Eigen::AngleAxisd(angle_x, Eigen::Vector3d::UnitY()).matrix();
 
         double radius = dist_radius(gen);
-        Eigen::Isometry3d T_world_cam;
-        T_world_cam.translation() = Eigen::Vector3d(radius, 0, 0);
-        T_world_cam.linear() = (Eigen::AngleAxisd(-M_PI_2, Eigen::Vector3d::UnitY()) *
-                                Eigen::AngleAxisd(M_PI_2, Eigen::Vector3d::UnitZ()))
-                                   .matrix();
-        T_world_cam = R_z * R_y * T_world_cam;
-        cameras_.push_back(gtsam::PinholeCamera(gtsam::Pose3(T_world_cam.matrix()), K));
+        Eigen::Isometry3d world_from_cam(world_from_cam_default);
+        world_from_cam.translation() *= radius;
+        world_from_cam = longitude_from_world * latitude_from_world * world_from_cam;
+        cameras_groundtruth_.push_back(
+            gtsam::PinholeCamera(gtsam::Pose3(world_from_cam.matrix()), K));
+        if (pose_noise) {
+            cameras_.push_back(gtsam::PinholeCamera(
+                gtsam::Pose3(
+                    (world_from_cam * isometry_from_vector(pose_noise->sample())).matrix()),
+                K));
+        } else {
+            cameras_.push_back(gtsam::PinholeCamera(gtsam::Pose3(world_from_cam.matrix()), K));
+        }
     }
 }
 }  // namespace robot::experimental::learn_descriptors

@@ -12,6 +12,7 @@
 #include "Eigen/Geometry"
 #include "common/geometry/camera.hh"
 #include "cxxopts.hpp"
+#include "experimental/learn_descriptors/backend.hh"
 #include "experimental/learn_descriptors/camera_calibration.hh"
 #include "experimental/learn_descriptors/four_seasons_parser.hh"
 #include "experimental/learn_descriptors/frame.hh"
@@ -102,8 +103,8 @@ std::optional<gtsam::Point3> attempt_triangulate(const std::vector<gtsam::Pose3>
 void graph_values(const gtsam::Values &values, const std::string &window_name,
                   const std::vector<gtsam::Symbol> &symbols_pose,
                   const std::vector<gtsam::Symbol> &symbols_landmarks) {
-    std::vector<robot::geometry::VizPose> final_poses;
-    std::vector<robot::geometry::VizPoint> final_lmks;
+    std::vector<robot::visualization::VizPose> final_poses;
+    std::vector<robot::visualization::VizPoint> final_lmks;
     for (const gtsam::Symbol &symbol_pose : symbols_pose) {
         final_poses.emplace_back(Eigen::Isometry3d(values.at<gtsam::Pose3>(symbol_pose).matrix()),
                                  symbol_pose.string());
@@ -115,8 +116,8 @@ void graph_values(const gtsam::Values &values, const std::string &window_name,
         final_lmks.emplace_back(values.at<gtsam::Point3>(symbol_lmk), symbol_lmk.string());
     }
     std::cout << "About to viz gtsam::Values with " << values.size() << " variables." << std::endl;
-    robot::geometry::viz_scene(final_poses, final_lmks, cv::viz::Color::brown(), true, true,
-                               window_name);
+    robot::visualization::viz_scene(final_poses, final_lmks, cv::viz::Color::brown(), true, true,
+                                    window_name);
 }
 
 gtsam::Values optimize_graph(const gtsam::NonlinearFactorGraph &graph, const gtsam::Values &values,
@@ -204,7 +205,7 @@ int main(int argc, const char **argv) {
                           true, false};
     Frontend frontend(params);
 
-    for (size_t i = 660; i < 750; i += 5) {
+    for (size_t i = 581; i < 750; i += 5) {
         // if (!parser.get_image_point(i).K) std::cout << "UH OH" << std::endl;
         frontend.add_image(
             ImageAndPoint{parser.load_image(i),
@@ -218,7 +219,7 @@ int main(int argc, const char **argv) {
     std::cout << "ground truth translation: "
               << frontend.frames()[0].world_from_cam_groundtruth_->translation() << std::endl;
 
-    std::vector<robot::geometry::VizPose> viz_poses_init;
+    std::vector<robot::visualization::VizPose> viz_poses_init;
     std::optional<Eigen::Vector3d> first_point;
     std::optional<Eigen::Isometry3d> first_grnd_trth;
     (void)first_point;
@@ -242,8 +243,9 @@ int main(int argc, const char **argv) {
         }
     }
     std::cout << "visualizing " << viz_poses_init.size() << " poses" << std::endl;
-    robot::geometry::viz_scene(viz_poses_init, std::vector<robot::geometry::VizPoint>(),
-                               cv::viz::Color::brown(), true, true, "Frontend initial guesses");
+    robot::visualization::viz_scene(viz_poses_init, std::vector<robot::visualization::VizPoint>(),
+                                    cv::viz::Color::brown(), true, true,
+                                    "Frontend initial guesses");
 
     // ############# BACKEND ###############
     gtsam::Values initial_estimate_;
@@ -262,14 +264,16 @@ int main(int argc, const char **argv) {
         gtsam::noiseModel::Diagonal::Sigmas(gps_sigmas_fallback);
 
     // add gps factors
-    const std::vector<Frame> &frames = frontend.frames();
+    std::vector<Frame> &frames = frontend.frames();
+    frames[0].world_from_cam_initial_guess_ =
+        frames[0].world_from_cam_groundtruth_->rotation();  // make sure first idx has grnd trth
+    Backend::populate_rotation_estimate(frames);
     std::vector<gtsam::Symbol> symbols_pose;
     std::unordered_map<size_t, gtsam::Pose3> world_from_cam_initial_guess;
     std::optional<gtsam::Point3> cam0_in_w;
     for (const Frame &frame : frames) {
         if (!frame.cam_in_world_initial_guess_) continue;
         if (!cam0_in_w) cam0_in_w = *frame.cam_in_world_initial_guess_;
-        // should do some interpolation here most likely
         const gtsam::Pose3 world_from_cam_estimate(frame.world_from_cam_initial_guess_
                                                        ? *frame.world_from_cam_initial_guess_
                                                        : gtsam::Rot3::Identity(),
@@ -286,12 +290,13 @@ int main(int argc, const char **argv) {
         initial_estimate_.insert(cam_symbol, world_from_cam_estimate);
         symbols_pose.push_back(cam_symbol);
     }
-    std::vector<robot::geometry::VizPose> viz_pose;
+    std::vector<robot::visualization::VizPose> viz_pose;
     for (const auto &[id, pose] : world_from_cam_initial_guess) {
         viz_pose.emplace_back(Eigen::Isometry3d(pose.matrix()), "x_" + std::to_string(id));
     }
-    robot::geometry::viz_scene(viz_pose, std::vector<robot::geometry::VizPoint>(),
-                               cv::viz::Color::brown(), true, true, "Initial guesses in backend");
+    robot::visualization::viz_scene(viz_pose, std::vector<robot::visualization::VizPoint>(),
+                                    cv::viz::Color::brown(), true, true,
+                                    "Initial guesses in backend");
 
     std::cout << "heartbeat pre lmks in graph" << std::endl;
 
@@ -324,7 +329,7 @@ int main(int argc, const char **argv) {
 
     // do global optimization
     const gtsam::Values result =
-        optimize_graph(graph_, initial_estimate_, symbols_pose, symbols_lmks, 0);
+        optimize_graph(graph_, initial_estimate_, symbols_pose, symbols_lmks, 10);
 
     // // calculate ATE (Absolute Trajectory Error) average (RMSE) to reference
     // double sum_traj_error = 0;

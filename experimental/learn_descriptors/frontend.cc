@@ -241,8 +241,8 @@ void Frontend::match_frames_and_build_tracks() {
                 if (!scale_cam0_from_cam1) {
                     continue;
                 }
-                ROBOT_CHECK(frames_[i].world_from_cam_initial_guess_,
-                            "This rotation should be populated.");
+                // ROBOT_CHECK(frames_[i].world_from_cam_initial_guess_,
+                //             "This rotation should be populated.");
                 // this could use some work to verify the quality of the output, particularly inside
                 // of estiamte_cam0_from_cam1
                 // also, at the moment I am not accounting for any covariance between the gps
