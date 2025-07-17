@@ -21,13 +21,30 @@ from typing import Callable
 class PathInferenceResult:
     # sequence is start -> particle_history[0] = log_particle_weights[0] ->
     #  observe_wag -> particle_history_pre_move[0] -> move_wag -> particle_history[1]
-    # path_length x N x state_dim
-    particle_history: torch.Tensor
-    log_particle_weights: torch.Tensor | None
-    particle_history_pre_move: torch.Tensor | None
-    dual_mcl_particles: torch.Tensor | None
-    dual_log_particle_weights: torch.Tensor | None
-    num_dual_particles: torch.Tensor | None
+    particle_history: torch.Tensor  # path_length x num_particles x state_dim
+    log_particle_weights: torch.Tensor | None   # path_length x num_particles
+    particle_history_pre_move: torch.Tensor | None # path_length x num_particles x state_dim
+    num_dual_particles: int | None # 
+
+    def get_dual_particle_history(self)->torch.Tensor | None:
+        if self.num_dual_particles is None or self.num_dual_particles == 0:
+            return None
+        assert self.num_dual_particles <= self.particle_history.shape[1]
+        return self.particle_history[:, -self.num_dual_particles:, :]
+    def get_dual_log_particle_weights(self)->torch.Tensor | None:
+        if self.num_dual_particles is None or self.log_particle_weights is None or self.num_dual_particles == 0:
+            return None
+        assert self.num_dual_particles <= self.log_particle_weights.shape[1]
+        return self.log_particle_weights[:, -self.num_dual_particles:]
+    def get_dual_particle_history_pre_move(self)->torch.Tensor | None:
+        if self.num_dual_particles is None or self.particle_history_pre_move is None or self.num_dual_particles == 0:
+            return None
+        assert self.num_dual_particles <= self.particle_history_pre_move.shape[1]
+        return self.particle_history_pre_move[:, -self.num_dual_particles:]
+
+
+        
+
 
 
 def hash_model(model: torch.nn.Module):
@@ -270,8 +287,6 @@ def run_inference_on_path(
     particle_history = []
     log_particle_weights = []
     particle_history_pre_move = []  # the particle state history before move_wag but after observe_wag
-    dual_mcl_particles = []
-    dual_log_particle_weights = []
     num_dual_particles = []
     for likelihood_value, motion_delta in zip(patch_similarity_for_path[:-1], motion_deltas):
         particle_history.append(particle_state.cpu().clone())
@@ -290,8 +305,6 @@ def run_inference_on_path(
         if return_intermediates:
             log_particle_weights.append(wag_observation_result.log_particle_weights.cpu().clone())
             particle_history_pre_move.append(particle_state.cpu().clone())
-            dual_mcl_particles.append(wag_observation_result.dual_mcl_particles.cpu().clone())
-            dual_log_particle_weights.append(wag_observation_result.dual_log_particle_weights.cpu().clone())
             num_dual_particles.append(wag_observation_result.num_dual_particles)
 
         # move
@@ -310,31 +323,33 @@ def run_inference_on_path(
     if return_intermediates:
         log_particle_weights.append(wag_observation_result.log_particle_weights.cpu().clone())
         particle_history_pre_move.append(particle_state.cpu().clone())
-        dual_mcl_particles.append(wag_observation_result.dual_mcl_particles.cpu().clone())
-        dual_log_particle_weights.append(wag_observation_result.dual_log_particle_weights.cpu().clone())
         num_dual_particles.append(wag_observation_result.num_dual_particles)
 
     particle_history.append(wag_observation_result.resampled_particles.cpu().clone())
 
     if return_intermediates:
+        if len(num_dual_particles) > 0:
+            num_dual_particles = torch.tensor(num_dual_particles)
+            assert torch.all(num_dual_particles[0] == num_dual_particles) 
+            num_dual_particles = num_dual_particles[0]
+        else:
+            num_dual_particles=None
+
         return PathInferenceResult(
             particle_history=torch.stack(particle_history),  # N+1, +1 from final particle state
             log_particle_weights=torch.stack(log_particle_weights),  # N
             particle_history_pre_move=torch.stack(particle_history_pre_move),
-            dual_mcl_particles=torch.stack(dual_mcl_particles),
-            dual_log_particle_weights=torch.stack(dual_log_particle_weights),
-            num_dual_particles=torch.tensor(num_dual_particles))
+            num_dual_particles=num_dual_particles,
+        )
     else:
         return PathInferenceResult(
             particle_history=torch.stack(particle_history),
             log_particle_weights=None,
             particle_history_pre_move=None,
-            dual_mcl_particles=None,
-            dual_log_particle_weights=None,
             num_dual_particles=None)
 
 
-def construct_inputs_and_evalulate_path(
+def construct_inputs_and_evaluate_path(
     vigor_dataset: vd.VigorDataset,
     path: list[int],
     path_similarity_values: torch.Tensor,
@@ -363,7 +378,6 @@ def construct_inputs_and_evalulate_path(
                                  generator,
                                  return_intermediates)
 
-
 def evaluate_model_on_paths(
     vigor_dataset: vd.VigorDataset,
     sat_model: torch.nn.Module,
@@ -390,7 +404,7 @@ def evaluate_model_on_paths(
             path_similarity_values = all_similarity[path]
             generator_seed = seed * i
 
-            path_inference_result = construct_inputs_and_evalulate_path(
+            path_inference_result = construct_inputs_and_evaluate_path(
                 vigor_dataset=vigor_dataset,
                 path=path,
                 path_similarity_values=path_similarity_values,
