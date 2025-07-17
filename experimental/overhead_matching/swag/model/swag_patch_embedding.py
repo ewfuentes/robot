@@ -4,67 +4,28 @@ import torch
 import torch.nn.functional as F
 import torchvision as tv
 import msgspec
-from typing import Union
-from enum import StrEnum, auto
-from dataclasses import dataclass
+from experimental.overhead_matching.swag.model.swag_model_input import ModelInput
+from experimental.overhead_matching.swag.model.semantic_segment_extractor import SemanticSegmentExtractor
+from experimental.overhead_matching.swag.model.swag_config_types import (
+    FeatureMapExtractorConfig,
+    FeatureMapExtractorType,
+    DinoFeatureMapExtractorConfig,
 
+    SemanticTokenExtractorConfig,
+    SemanticTokenExtractorType,
+    SemanticNullExtractorConfig,
+    SemanticEmbeddingMatrixConfig,
+    SemanticSegmentExtractorConfig,
 
-class FeatureMapExtractorType(StrEnum):
-    DINOV2 = auto()
+    PositionEmbeddingConfig,
+    PositionEmbeddingType,
+    PlanarPositionEmbeddingConfig,
+    SphericalEmbeddingConfig,
 
-
-class DinoFeatureMapExtractorConfig(msgspec.Struct, tag=True, tag_field="kind"):
-    model_str: str = "dinov2_vitb14"
-    type: FeatureMapExtractorType = FeatureMapExtractorType.DINOV2
-
-
-class SemanticTokenExtractorType(StrEnum):
-    NULL_EXTRACTOR = auto()
-    EMBEDDING_MAT = auto()
-
-
-class SemanticNullExtractorConfig(msgspec.Struct, tag=True, tag_field="kind"):
-    type: SemanticTokenExtractorType = SemanticTokenExtractorType.NULL_EXTRACTOR
-
-
-class SemanticEmbeddingMatrixConfig(msgspec.Struct, tag=True, tag_field="kind"):
-    vocabulary: list[str]
-    embedding_dim: int
-    type: SemanticTokenExtractorType = SemanticTokenExtractorType.EMBEDDING_MAT
-
-
-class PositionEmbeddingType(StrEnum):
-    PLANAR = auto()
-    SPHERICAL = auto()
-
-
-class PlanarPositionEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
-    min_scale: float
-    scale_step: float
-    embedding_dim: int
-    type: PositionEmbeddingType = PositionEmbeddingType.PLANAR
-
-
-class SphericalEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
-    type: PositionEmbeddingType = PositionEmbeddingType.SPHERICAL
-
-
-class AggregationType(StrEnum):
-    TRANSFORMER = auto()
-
-
-class TransformerAggregatorConfig(msgspec.Struct, tag=True, tag_field="kind"):
-    num_transformer_layers: int
-    num_attention_heads: int
-    hidden_dim: int
-    dropout_frac: float
-    type: AggregationType = AggregationType.TRANSFORMER
-
-
-FeatureMapExtractorConfig = Union[DinoFeatureMapExtractorConfig]
-SemanticTokenExtractorConfig = Union[SemanticNullExtractorConfig, SemanticEmbeddingMatrixConfig]
-PositionEmbeddingConfig = Union[PlanarPositionEmbeddingConfig, SphericalEmbeddingConfig]
-AggregationConfig = Union[TransformerAggregatorConfig]
+    AggregationConfig,
+    AggregationType,
+    TransformerAggregatorConfig
+)
 
 
 class SwagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
@@ -77,38 +38,35 @@ class SwagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
     output_dim: int
 
 
-@dataclass
-class ModelInput:
-    image: torch.Tensor
-    metadata: list[dict]
-
-    def to(self, *args, **kwargs):
-        return ModelInput(
-            image=self.image.to(*args, **kwargs),
-            metadata=self.metadata)
-
-
 def create_feature_map_extractor(config: FeatureMapExtractorConfig):
+    types = {
+        FeatureMapExtractorType.DINOV2: DinoFeatureExtractor
+    }
     assert config.type == FeatureMapExtractorType.DINOV2
-    return DinoFeatureExtractor(config)
+    return types[config.type](config)
 
 
 def create_semantic_token_extractor(config: SemanticTokenExtractorConfig):
-    if config.type == SemanticTokenExtractorType.EMBEDDING_MAT:
-        return SemanticEmbeddingMatrix(config)
-    elif config.type == SemanticTokenExtractorType.NULL_EXTRACTOR:
-        return SemanticNullExtractor(config)
+    types = {
+        SemanticTokenExtractorType.NULL_EXTRACTOR: SemanticNullExtractor,
+        SemanticTokenExtractorType.EMBEDDING_MAT:  SemanticEmbeddingMatrix,
+        SemanticTokenExtractorType.SEGMENT_EXTRACTOR: SemanticSegmentExtractor,
+    }
+    return types[config.type](config)
 
 
 def create_position_embedding(config: PositionEmbeddingConfig):
-    assert config.type == PositionEmbeddingType.PLANAR
-    return PlanarPositionEmbedding(config)
+    types = {
+        PositionEmbeddingType.PLANAR: PlanarPositionEmbedding,
+    }
+    return types[config.type](config)
 
 
 def create_aggregator_model(output_dim: int, config: AggregationConfig):
-    assert config.type == AggregationType.TRANSFORMER
-    return TransformerAggregator(output_dim, config)
-    ...
+    types = {
+        AggregationType.TRANSFORMER: TransformerAggregator,
+    }
+    return types[config.type](output_dim, config)
 
 
 class DinoFeatureExtractor(torch.nn.Module):
