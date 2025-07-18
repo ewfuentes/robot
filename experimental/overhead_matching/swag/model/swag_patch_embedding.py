@@ -20,7 +20,7 @@ from experimental.overhead_matching.swag.model.swag_config_types import (
     PositionEmbeddingConfig,
     PositionEmbeddingType,
     PlanarPositionEmbeddingConfig,
-    SphericalEmbeddingConfig,
+    SphericalPositionEmbeddingConfig,
 
     AggregationConfig,
     AggregationType,
@@ -58,6 +58,7 @@ def create_semantic_token_extractor(config: SemanticTokenExtractorConfig):
 def create_position_embedding(config: PositionEmbeddingConfig):
     types = {
         PositionEmbeddingType.PLANAR: PlanarPositionEmbedding,
+        PositionEmbeddingType.SPHERICAL: SphericalPositionEmbedding,
     }
     return types[config.type](config)
 
@@ -114,9 +115,9 @@ class SemanticEmbeddingMatrix(torch.nn.Module):
         dev = self._embedding_matrix.weight.device
 
         if max_num_landmarks == 0:
-            return (torch.empty((batch_size, 0, 2), device=dev),
-                    torch.empty((batch_size, 0, self._embedding_matrix.embedding_dim), device=dev),
-                    torch.empty((batch_size, 0), device=dev))
+            return (torch.zeros((batch_size, 0, 2), device=dev),
+                    torch.zeros((batch_size, 0, self._embedding_matrix.embedding_dim), device=dev),
+                    torch.zeros((batch_size, 0), device=dev))
 
         for batch_idx in range(len(model_input.metadata)):
             sat_metadata = model_input.metadata[batch_idx]
@@ -147,14 +148,79 @@ class SemanticNullExtractor(torch.nn.Module):
     def forward(self, model_input: ModelInput):
         batch_size = len(model_input.metadata)
         dev = model_input.image.device
-        positions_in_patch = torch.empty((batch_size, 0, 2), device=dev)
-        semantic_tokens = torch.empty((batch_size, 0, 0), device=dev)
-        mask = torch.empty(batch_size, 0, device=dev)
+        positions_in_patch = torch.zeros((batch_size, 0, 2), device=dev)
+        semantic_tokens = torch.zeros((batch_size, 0, 0), device=dev)
+        mask = torch.zeros(batch_size, 0, device=dev)
         return positions_in_patch, semantic_tokens, mask
 
     @property
     def output_dim(self):
         return 0
+
+
+class SphericalPositionEmbedding(torch.nn.Module):
+    def __init__(self, config: SphericalPositionEmbeddingConfig):
+        super().__init__()
+        self._embedding_dim = config.embedding_dim
+        self._scale_step = config.scale_step
+
+        assert self._embedding_dim % 4 == 0
+
+    def forward(self, *,
+                model_input: ModelInput,
+                relative_positions: None | torch.Tensor = None,
+                patch_size: None | tuple[int, int] = None):
+        # If we're being given the patch size, we're being asked to compute the
+        # pixel coordinates of a feature map that has the given patch size, assuming
+        # no overlap
+        original_shape = model_input.image.shape[-2:]
+        if patch_size is not None:
+            batch_size = len(model_input.metadata)
+
+            num_row_tokens = original_shape[0] // patch_size[0]
+            num_col_tokens = original_shape[1] // patch_size[1]
+            num_tokens = num_row_tokens * num_col_tokens
+
+            center_location = (original_shape[0] // 2, original_shape[1] // 2)
+
+            relative_positions = torch.zeros((batch_size, num_row_tokens, num_col_tokens, 2))
+            for row_idx in range(num_row_tokens):
+                for col_idx in range(num_col_tokens):
+                    patch_center_row_px = patch_size[0] // 2 + row_idx * patch_size[0]
+                    patch_center_col_px = patch_size[1] // 2 + col_idx * patch_size[1]
+
+                    relative_positions[:, row_idx, col_idx, 0] = (
+                            patch_center_row_px - center_location[0])
+                    relative_positions[:, row_idx, col_idx, 1] = (
+                            patch_center_col_px - center_location[1])
+
+            relative_positions = relative_positions.reshape(batch_size, num_tokens, 2)
+
+        # We need to convert the pixel positions into an elevation and azimuth angles
+        # The azimuth angle increases in the clockwise direction
+        # We assume that zero degrees is on the left edge of the panorama and increases
+        # as we move from left to right.
+        # The elevation angle is zero at the top of the image and increases as you move
+        # from top to bottom. Note that these are not standard definitions of these angles
+        # but it does simplify implementation, and ultimately shouldn't matter
+        elevation_rad = relative_positions[..., 0] / original_shape[0] * torch.pi
+        azimuth_rad = relative_positions[..., 1] / original_shape[1] * 2 * torch.pi
+        out = torch.zeros((*relative_positions.shape[:-1], self._embedding_dim), dtype=torch.float32)
+
+        num_scales = self._embedding_dim // 4
+        for scale_idx in range(num_scales):
+            embedding_idx_start = 4 * scale_idx
+            scale = (self._scale_step ** -scale_idx) / (2 * torch.pi)
+
+            out[..., embedding_idx_start + 0] = torch.sin(elevation_rad / scale)
+            out[..., embedding_idx_start + 1] = torch.cos(elevation_rad / scale)
+            out[..., embedding_idx_start + 2] = torch.sin(azimuth_rad / scale)
+            out[..., embedding_idx_start + 3] = torch.cos(azimuth_rad / scale)
+        return out
+
+    @property
+    def output_dim(self):
+        return self._embedding_dim
 
 
 class PlanarPositionEmbedding(torch.nn.Module):
@@ -167,13 +233,13 @@ class PlanarPositionEmbedding(torch.nn.Module):
         assert self._embedding_dim % 4 == 0
 
     def forward(self, *,
+                model_input: ModelInput,
                 relative_positions: None | torch.Tensor = None,
-                model_input: None | ModelInput = None,
                 patch_size: None | tuple[int, int] = None):
 
         # If we're being given the model input and the patch size, we have to compute the
         # relative patch locations
-        if model_input is not None and patch_size is not None:
+        if patch_size is not None:
             batch_size = len(model_input.metadata)
             original_shape = model_input.image.shape[2:]
 
@@ -203,7 +269,7 @@ class PlanarPositionEmbedding(torch.nn.Module):
         num_scales = self._embedding_dim // 4
         for scale_idx in range(num_scales):
             embedding_idx_start = 4 * scale_idx
-            scale = self._min_scale * self._scale_step ** scale_idx / (2 * torch.pi)
+            scale = (self._min_scale * self._scale_step ** scale_idx) / (2 * torch.pi)
 
             out[..., embedding_idx_start + 0] = torch.sin(relative_positions[..., 0] / scale)
             out[..., embedding_idx_start + 1] = torch.cos(relative_positions[..., 0] / scale)
@@ -259,6 +325,7 @@ class SwagPatchEmbedding(torch.nn.Module):
                 config.output_dim)
 
         self._patch_dims = config.patch_dims
+        self._output_dim = config.output_dim
 
     def model_input_from_batch(self, batch_item):
         if self._patch_dims[0] != self._patch_dims[1]:
@@ -289,6 +356,7 @@ class SwagPatchEmbedding(torch.nn.Module):
                 model_input=model_input,
                 patch_size=self._feature_map_extractor.patch_size).to(dev)
         semantic_position_embeddings = self._position_embedding(
+                model_input=model_input,
                 relative_positions=semantic_positions).to(dev)
 
         pos_feature_tokens = torch.cat([feature_map, feature_position_embeddings], dim=-1)
@@ -304,6 +372,7 @@ class SwagPatchEmbedding(torch.nn.Module):
         batch_size = input_feature_tokens.shape[0]
         cls_token = self._cls_token.expand(batch_size, -1, -1)
         input_tokens = torch.cat([cls_token, input_feature_tokens, input_semantic_tokens], dim=1)
+        input_tokens = F.normalize(input_tokens)
 
         feature_and_cls_mask = torch.zeros(
                 (batch_size, input_feature_tokens.shape[1] + 1), device=dev)
@@ -317,3 +386,7 @@ class SwagPatchEmbedding(torch.nn.Module):
     @property
     def patch_dims(self):
         return self._patch_dims
+
+    @property
+    def output_dim(self):
+        return self._output_dim

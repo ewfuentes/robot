@@ -30,8 +30,8 @@ class SemanticEmbeddingMatrixConfig(msgspec.Struct, tag=True, tag_field="kind"):
 
 
 class SemanticSegmentExtractorConfig(msgspec.Struct, tag=True, tag_field='kind'):
+    points_per_batch: int = 128
     sam_model_str: str = "facebook/sam2.1-hiera-large"
-    num_query_pts: int = 256
     clip_model_str: str = "hf-hub:laion/CLIP-ViT-B-32-laion2B-s34B-b79K"
     type: SemanticTokenExtractorType = SemanticTokenExtractorType.SEGMENT_EXTRACTOR
 
@@ -48,7 +48,9 @@ class PlanarPositionEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
     type: PositionEmbeddingType = PositionEmbeddingType.PLANAR
 
 
-class SphericalEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
+class SphericalPositionEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
+    scale_step: float
+    embedding_dim: int
     type: PositionEmbeddingType = PositionEmbeddingType.SPHERICAL
 
 
@@ -67,5 +69,5 @@ class TransformerAggregatorConfig(msgspec.Struct, tag=True, tag_field="kind"):
 FeatureMapExtractorConfig = Union[DinoFeatureMapExtractorConfig]
 SemanticTokenExtractorConfig = Union[
         SemanticNullExtractorConfig, SemanticEmbeddingMatrixConfig, SemanticSegmentExtractorConfig]
-PositionEmbeddingConfig = Union[PlanarPositionEmbeddingConfig, SphericalEmbeddingConfig]
+PositionEmbeddingConfig = Union[PlanarPositionEmbeddingConfig, SphericalPositionEmbeddingConfig]
 AggregationConfig = Union[TransformerAggregatorConfig]
