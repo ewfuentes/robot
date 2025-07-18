@@ -242,8 +242,10 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":frontend_definitions",
+        "//common:check",
         "@gtsam",
         "@opencv",
+        "@eigen"
     ],
 )
 
@@ -363,7 +365,10 @@ cc_test(
     srcs = ["frontend_test.cc"],
     deps = [
         ":frontend",
+        ":image_point",
         "@com_google_googletest//:gtest_main",
+        "@opencv",
+        "@eigen"
     ],
 )
 

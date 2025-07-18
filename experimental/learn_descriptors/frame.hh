@@ -2,6 +2,8 @@
 #include <optional>
 #include <unordered_map>
 
+#include "Eigen/Core"
+#include "common/check.hh"
 #include "experimental/learn_descriptors/frontend_definitions.hh"
 #include "gtsam/base/Matrix.h"
 #include "gtsam/geometry/Cal3_S2.h"
@@ -12,13 +14,31 @@
 namespace robot::experimental::learn_descriptors {
 class Frame {
    public:
-    Frame(FrameId id, const cv::Mat img, gtsam::Cal3_S2::shared_ptr K, const KeypointsCV kpts,
-          const cv::Mat descriptors)
+    Frame(FrameId id, size_t seq, const cv::Mat img, gtsam::Cal3_S2::shared_ptr K,
+          const KeypointsCV kpts, const cv::Mat descriptors)
         : id_(id),
+          seq_(seq),
           undistorted_img_(img),
           K_(std::move(K)),
           kpts_(kpts),
           descriptors_(descriptors) {}
+
+    std::optional<Eigen::Vector3d> velocity_to(const Frame& other_frame) const {
+        ROBOT_CHECK(other_frame.seq_ >= seq_);
+        if (!other_frame.cam_in_world_initial_guess_ || !cam_in_world_initial_guess_)
+            return std::nullopt;
+        double dt_seconds = static_cast<double>(other_frame.seq_ - seq_) * 1e-9;
+        return (*other_frame.cam_in_world_initial_guess_ - *cam_in_world_initial_guess_) /
+               dt_seconds;
+    };
+    std::optional<Eigen::Vector3d> velocity_from(const Frame& other_frame) const {
+        ROBOT_CHECK(seq_ >= other_frame.seq_);
+        if (!other_frame.cam_in_world_initial_guess_ || !cam_in_world_initial_guess_)
+            return std::nullopt;
+        double dt_seconds = static_cast<double>(seq_ - other_frame.seq_) * 1e-9;
+        return (*cam_in_world_initial_guess_ - *other_frame.cam_in_world_initial_guess_) /
+               dt_seconds;
+    };
 
     void add_keypoints(const KeypointsCV& kpts);
     void assign_descriptors(const cv::Mat& descriptors);
@@ -26,8 +46,9 @@ class Frame {
     const KeypointsCV& keypoint() { return kpts_; };
     const cv::Mat& descriptors() { return descriptors_; };
 
-    const FrameId id_;
-    const cv::Mat undistorted_img_;
+    FrameId id_;
+    size_t seq_;
+    cv::Mat undistorted_img_;
     gtsam::Cal3_S2::shared_ptr K_;
     KeypointsCV kpts_;
     cv::Mat descriptors_;

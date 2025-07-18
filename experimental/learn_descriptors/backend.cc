@@ -103,6 +103,9 @@ void Backend::populate_rotation_estimate(std::vector<Frame>& frames) {
             frame_vertex->w_from_this = frame_vertex->frame.world_from_cam_initial_guess_
                                             ? *frame_vertex->frame.world_from_cam_initial_guess_
                                             : gtsam::Rot3::Identity();
+            graph.add(gtsam::PriorFactor<gtsam::Rot3>(
+                gtsam::Symbol(symbol_char_rotation, frame_vertex->frame.id_),
+                *frame_vertex->w_from_this, gtsam::noiseModel::Constrained::All(3)));
         }
         frame_vertex->frame.world_from_cam_initial_guess_ = frame_vertex->w_from_this;
         const gtsam::Symbol symbol_frame(symbol_char_rotation, frame.id_);
@@ -123,6 +126,8 @@ void Backend::populate_rotation_estimate(std::vector<Frame>& frames) {
             if (!other_frame_vertex->w_from_this) {
                 other_frame_vertex->w_from_this =
                     *frame_vertex->w_from_this * frame_from_other_frame;
+                other_frame_vertex->frame.world_from_cam_initial_guess_ =
+                    *frame_vertex->w_from_this * frame_from_other_frame;
             }
 
             graph.add(gtsam::BetweenFactor<gtsam::Rot3>(
@@ -132,15 +137,17 @@ void Backend::populate_rotation_estimate(std::vector<Frame>& frames) {
         frame_tree.emplace(frame.id_, frame_vertex);
     }
 
-    gtsam::LevenbergMarquardtOptimizer optimizer(graph, initial);
-    gtsam::Values result = optimizer.optimize();
+    // gtsam::LevenbergMarquardtOptimizer optimizer(graph, initial);
+    // gtsam::Values result = optimizer.optimize();
 
-    // Output results and assign results to frames
-    for (const gtsam::Symbol& symbol_rotation : symbols_frames) {
-        gtsam::Rot3 w_from_frame = result.at<gtsam::Rot3>(symbol_rotation);
-        frame_tree.at(symbol_rotation.index())->frame.world_from_cam_initial_guess_ = w_from_frame;
-        // std::cout << "Rotation " << symbol_rotation.string() << ": "
-        //           << w_from_frame.rpy().transpose() << " (roll pitch yaw radians)" << std::endl;
-    }
+    // // Output results and assign results to frames
+    // for (const gtsam::Symbol& symbol_rotation : symbols_frames) {
+    //     gtsam::Rot3 w_from_frame = result.at<gtsam::Rot3>(symbol_rotation);
+    //     frame_tree.at(symbol_rotation.index())->frame.world_from_cam_initial_guess_ =
+    //     w_from_frame;
+    //     // std::cout << "Rotation " << symbol_rotation.string() << ": "
+    //     //           << w_from_frame.rpy().transpose() << " (roll pitch yaw radians)" <<
+    //     std::endl;
+    // }
 }
 }  // namespace robot::experimental::learn_descriptors

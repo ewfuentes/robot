@@ -1,4 +1,5 @@
 #include <cmath>
+#include <exception>
 #include <functional>
 #include <iostream>
 #include <memory>
@@ -42,14 +43,15 @@ std::optional<gtsam::Point3> attempt_triangulate(const std::vector<gtsam::Pose3>
                                                  gtsam::Cal3_S2::shared_ptr K,
                                                  const double max_reproj_error = 2.0,
                                                  const bool verbose = true) {
+    std::cout << "attmepting to triangulate!" << std::endl;
     gtsam::Point3 p_lmk_in_world;
-    if (cam_poses.size() >= 2) {
+    if (cam_poses.size() > 2) {
         try {
             // Attempt triangulation using DLT (or the GTSAM provided method)
             p_lmk_in_world = gtsam::triangulatePoint3(
                 cam_poses, K, gtsam::Point2Vector(cam_obs.begin(), cam_obs.end()));
 
-        } catch (const gtsam::TriangulationCheiralityException &e) {
+        } catch (const std::exception &e) {
             // Handle the exception gracefully by logging and retaining the previous
             // estimate or discard
             if (verbose) {
@@ -84,6 +86,7 @@ std::optional<gtsam::Point3> attempt_triangulate(const std::vector<gtsam::Pose3>
             return std::nullopt;
         }
         // Reprojection error
+        std::cout << "heartbeat cheirality and reprojection checks" << std::endl;
         if (max_reproj_error > 0) {
             gtsam::PinholeCamera<gtsam::Cal3_S2> cam(pose, *K);
             const auto reproj = cam.project(p_lmk_in_world);
@@ -205,11 +208,12 @@ int main(int argc, const char **argv) {
                           true, false};
     Frontend frontend(params);
 
+    std::vector<size_t> idx_img_pts;
     for (size_t i = 581; i < 750; i += 5) {
-        // if (!parser.get_image_point(i).K) std::cout << "UH OH" << std::endl;
         frontend.add_image(
             ImageAndPoint{parser.load_image(i),
                           std::make_shared<ImagePointFourSeasons>(parser.get_image_point(i))});
+        idx_img_pts.push_back(i);
     }
     frontend.populate_frames();
     frontend.match_frames_and_build_tracks();
@@ -224,15 +228,16 @@ int main(int argc, const char **argv) {
     std::optional<Eigen::Isometry3d> first_grnd_trth;
     (void)first_point;
     for (const Frame &frame : frontend.frames()) {
-        if (frame.cam_in_world_initial_guess_) {
-            Eigen::Isometry3d world_from_cam_init;
-            world_from_cam_init.linear() = frame.world_from_cam_initial_guess_->matrix();
-            if (!first_point) first_point = *frame.cam_in_world_initial_guess_;
-            world_from_cam_init.translation() = *frame.cam_in_world_initial_guess_ - *first_point;
-            std::cout << "world_from_cam_init: " << world_from_cam_init.matrix() << std::endl;
-            viz_poses_init.emplace_back(
-                world_from_cam_init, gtsam::Symbol(Frontend::symbol_pose_char, frame.id_).string());
-        }
+        // if (frame.cam_in_world_initial_guess_) {
+        //     Eigen::Isometry3d world_from_cam_init;
+        //     world_from_cam_init.linear() = frame.world_from_cam_initial_guess_->matrix();
+        //     if (!first_point) first_point = *frame.cam_in_world_initial_guess_;
+        //     world_from_cam_init.translation() = *frame.cam_in_world_initial_guess_ -
+        //     *first_point; std::cout << "world_from_cam_init: " << world_from_cam_init.matrix() <<
+        //     std::endl; viz_poses_init.emplace_back(
+        //         world_from_cam_init, gtsam::Symbol(Frontend::symbol_pose_char,
+        //         frame.id_).string());
+        // }
         if (frame.world_from_cam_groundtruth_) {
             std::cout << "adding a ground truth frame to viz!" << std::endl;
             Eigen::Isometry3d w_from_cam_grnd_trth(frame.world_from_cam_groundtruth_->matrix());
@@ -270,24 +275,31 @@ int main(int argc, const char **argv) {
     Backend::populate_rotation_estimate(frames);
     std::vector<gtsam::Symbol> symbols_pose;
     std::unordered_map<size_t, gtsam::Pose3> world_from_cam_initial_guess;
-    std::optional<gtsam::Point3> cam0_in_w;
-    for (const Frame &frame : frames) {
-        if (!frame.cam_in_world_initial_guess_) continue;
-        if (!cam0_in_w) cam0_in_w = *frame.cam_in_world_initial_guess_;
+    std::optional<std::vector<Eigen::Vector3d>> interpolated_cam_in_w =
+        frontend.interpolated_initial_translations();
+    std::cout << "heartbeat" << std::endl;
+    ROBOT_CHECK(interpolated_cam_in_w, interpolated_cam_in_w);
+    Eigen::Vector3d cam0_in_w = interpolated_cam_in_w->front();
+    for (size_t i = 0; i < frames.size(); i++) {
+        // std::cout << "interpolated translation " << i << ": " << (*interpolated_cam_in_w)[i]
+        //           << std::endl;
+        const Frame &frame = frames[i];
+        const gtsam::Symbol cam_symbol(Backend::symbol_char_pose, frame.id_);
         const gtsam::Pose3 world_from_cam_estimate(frame.world_from_cam_initial_guess_
                                                        ? *frame.world_from_cam_initial_guess_
                                                        : gtsam::Rot3::Identity(),
-                                                   *frame.cam_in_world_initial_guess_ - *cam0_in_w);
+                                                   (*interpolated_cam_in_w)[i] - cam0_in_w);
         world_from_cam_initial_guess[frame.id_] = world_from_cam_estimate;
-        gtsam::noiseModel::Diagonal::shared_ptr gps_noise = gtsam::noiseModel::Diagonal::Sigmas(
-            frame.translation_covariance_in_cam_
-                ? gtsam::Vector3((*frame.translation_covariance_in_cam_)(0, 0),
-                                 (*frame.translation_covariance_in_cam_)(1, 1),
-                                 (*frame.translation_covariance_in_cam_)(2, 2))
-                : gps_sigmas_fallback);
-        const gtsam::Symbol cam_symbol('x', frame.id_);
-        graph_.add(gtsam::GPSFactor(cam_symbol, *frame.cam_in_world_initial_guess_, gps_noise));
         initial_estimate_.insert(cam_symbol, world_from_cam_estimate);
+        if (frame.world_from_cam_initial_guess_) {
+            gtsam::noiseModel::Diagonal::shared_ptr gps_noise = gtsam::noiseModel::Diagonal::Sigmas(
+                frame.translation_covariance_in_cam_
+                    ? gtsam::Vector3((*frame.translation_covariance_in_cam_)(0, 0),
+                                     (*frame.translation_covariance_in_cam_)(1, 1),
+                                     (*frame.translation_covariance_in_cam_)(2, 2))
+                    : gps_sigmas_fallback);
+            graph_.add(gtsam::GPSFactor(cam_symbol, *frame.cam_in_world_initial_guess_, gps_noise));
+        }
         symbols_pose.push_back(cam_symbol);
     }
     std::vector<robot::visualization::VizPose> viz_pose;
@@ -313,11 +325,11 @@ int main(int argc, const char **argv) {
         std::optional<gtsam::Point3> landmark_estimate = attempt_triangulate(
             world_from_lmk_cams, lmk_observations, frames[0].K_);  // all K are the same for now...
         if (landmark_estimate) {
-            const gtsam::Symbol lmk_symbol(Frontend::symbol_lmk_char, i);
+            const gtsam::Symbol lmk_symbol(Backend::symbol_char_landmark, i);
             for (const auto &[frame_id, keypoint_cv] : feature_tracks[i].obs_) {
                 graph_.add(gtsam::GenericProjectionFactor(
                     gtsam::Point2(keypoint_cv.x, keypoint_cv.y), landmark_noise,
-                    gtsam::Symbol(Frontend::symbol_pose_char, frame_id), lmk_symbol, frames[0].K_));
+                    gtsam::Symbol(Backend::symbol_char_pose, frame_id), lmk_symbol, frames[0].K_));
             }
             initial_estimate_.insert(lmk_symbol, *landmark_estimate);
             symbols_lmks.push_back(lmk_symbol);

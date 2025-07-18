@@ -1,9 +1,13 @@
 #include "experimental/learn_descriptors/frontend.hh"
 
+#include <cstddef>
+#include <memory>
 #include <stdexcept>
 #include <utility>
 #include <vector>
 
+#include "Eigen/Core"
+#include "experimental/learn_descriptors/image_point.hh"
 #include "gtest/gtest.h"
 #include "opencv2/opencv.hpp"
 
@@ -52,27 +56,31 @@ TEST(FrontendTest, pipeline_sweep) {
     cv::imshow("Test", img_test_disp);
     cv::waitKey(1000);
 
-    Frontend::ExtractorType extractor_types[2] = {Frontend::ExtractorType::SIFT,
-                                                  Frontend::ExtractorType::ORB};
-    Frontend::MatcherType matcher_types[3] = {Frontend::MatcherType::BRUTE_FORCE,
-                                              Frontend::MatcherType::FLANN,
-                                              Frontend::MatcherType::KNN};
+    FrontendParams::ExtractorType extractor_types[2] = {FrontendParams::ExtractorType::SIFT,
+                                                        FrontendParams::ExtractorType::ORB};
+    FrontendParams::MatcherType matcher_types[3] = {FrontendParams::MatcherType::BRUTE_FORCE,
+                                                    FrontendParams::MatcherType::FLANN,
+                                                    FrontendParams::MatcherType::KNN};
 
-    Frontend frontend;
+    FrontendParams params{FrontendParams::ExtractorType::SIFT, FrontendParams::MatcherType::KNN,
+                          true, false};
+    Frontend frontend(params);
     std::pair<std::vector<cv::KeyPoint>, cv::Mat> keypoints_descriptors_pair_1;
     std::pair<std::vector<cv::KeyPoint>, cv::Mat> keypoints_descriptors_pair_2;
     std::vector<cv::DMatch> matches;
     cv::Mat img_keypoints_out_1(height, width, CV_8UC3),
         img_keypoints_out_2(height, width, CV_8UC3), img_matches_out(height, 2 * width, CV_8UC3);
     cv::Mat img_display_test;
-    for (Frontend::ExtractorType extractor_type : extractor_types) {
-        for (Frontend::MatcherType matcher_type : matcher_types) {
+    for (FrontendParams::ExtractorType extractor_type : extractor_types) {
+        for (FrontendParams::MatcherType matcher_type : matcher_types) {
             printf("started frontend combination: (%d, %d)\n", static_cast<int>(extractor_type),
                    static_cast<int>(matcher_type));
+            FrontendParams params{extractor_type, matcher_type, true, false};
             try {
-                frontend = Frontend(extractor_type, matcher_type);
+                frontend = Frontend(params);
             } catch (const std::invalid_argument &e) {
-                assert(std::string(e.what()) == "FLANN can not be used with ORB.");  // very jank...
+                ROBOT_CHECK(std::string(e.what()) ==
+                            "FLANN can not be used with ORB.");  // very jank...
                 continue;
             }
             keypoints_descriptors_pair_1 = frontend.extract_features(image_1);
@@ -98,7 +106,7 @@ TEST(FrontendTest, pipeline_sweep) {
             }
             printf("completed frontend combination: (%d, %d)\n", static_cast<int>(extractor_type),
                    static_cast<int>(matcher_type));
-            if (extractor_type != Frontend::ExtractorType::ORB) {  // don't check ORB for now
+            if (extractor_type != FrontendParams::ExtractorType::ORB) {  // don't check ORB for now
                 for (const cv::DMatch match : matches) {
                     EXPECT_NEAR(keypoints_descriptors_pair_1.first[match.queryIdx].pt.x -
                                     keypoints_descriptors_pair_2.first[match.trainIdx].pt.x,
@@ -109,6 +117,79 @@ TEST(FrontendTest, pipeline_sweep) {
                 }
             }
         }
+    }
+}
+
+TEST(FrontendTest, interpolate_frames) {
+    constexpr size_t width = 800;
+    constexpr size_t height = 400;
+    constexpr double fx = 500.0;
+    constexpr double fy = fx;
+    constexpr double cx = static_cast<double>(width) / 2.0;
+    constexpr double cy = static_cast<double>(height) / 2.0;
+    // gtsam::Cal3_S2::shared_ptr K(new gtsam::Cal3_S2(fx, fy, 0, cx, cy));
+    std::shared_ptr<CameraCalibrationFisheye> shared_K =
+        std::make_shared<CameraCalibrationFisheye>(fx, fy, cx, cy, 1, 1, 1, 1);
+    cv::Mat white_image(height, width, CV_8UC3, cv::Scalar(255, 255, 255));
+
+    FrontendParams params{FrontendParams::ExtractorType::SIFT, FrontendParams::MatcherType::KNN,
+                          true, false};
+    Frontend frontend(params);
+
+    struct VelocityPoint {
+        double time;               // time in seconds
+        Eigen::Vector3d velocity;  // m/s
+    };
+    std::vector<VelocityPoint> velocity_points{
+        // basically a piecewise constant function
+        VelocityPoint{1.0, Eigen::Vector3d(1, 0, 0)},  // go in x dir from seconds 0 - 1
+        VelocityPoint{2.0, Eigen::Vector3d(0, 1, 0)},  // go in y dir from seconds 1 - 2
+        VelocityPoint{
+            3.0, Eigen::Vector3d(1, 1, 0)},  // go diagonal in first quadrant from seconds 2 - 3
+    };
+    size_t idx_vel_pt = 0;
+    const Eigen::Vector3d pt0_in_world = Eigen::Vector3d::Zero();
+    std::vector<Eigen::Vector3d> pts_in_world{pt0_in_world};
+    double time = 0.0;
+    std::vector<std::shared_ptr<ImagePoint>> img_pts;
+    ImagePoint img_pt_first;
+    img_pt_first.id = 0;
+    img_pt_first.seq = static_cast<size_t>(time * 1e9);
+    img_pt_first.K = shared_K;
+    img_pt_first.set_cam_in_world(pt0_in_world);
+    img_pts.push_back(std::make_shared<ImagePoint>(img_pt_first));
+    frontend.add_image(ImageAndPoint{white_image, img_pts.back()});
+    constexpr double sample_hz = 6.0;
+    constexpr size_t num_samples_skip = 2;
+    ROBOT_CHECK(static_cast<size_t>(sample_hz) % (num_samples_skip + 1) ==
+                0);  // needed so that the interpolation isn't lossy
+    constexpr double dt = 1 / sample_hz;
+    time += dt;
+    while (time < velocity_points.back().time) {
+        while (idx_vel_pt < velocity_points.size() && time > velocity_points[idx_vel_pt].time) {
+            idx_vel_pt++;
+        }
+        pts_in_world.emplace_back(pts_in_world.back() + dt * velocity_points[idx_vel_pt].velocity);
+        ImagePoint img_pt;
+        img_pt.id = img_pts.size();
+        img_pt.seq = static_cast<size_t>(time * 1e9);
+        img_pt.K = shared_K;
+        if (img_pts.size() % (num_samples_skip + 1) == 0) {
+            img_pt.set_cam_in_world(pts_in_world.back());
+        }
+        img_pts.emplace_back(std::make_shared<ImagePoint>(img_pt));
+        frontend.add_image(ImageAndPoint{white_image, img_pts.back()});
+        time += dt;
+    }
+    frontend.populate_frames();
+    std::optional<std::vector<Eigen::Vector3d>> interpolated_pts =
+        frontend.interpolated_initial_translations();
+    ROBOT_CHECK(interpolated_pts);
+    ROBOT_CHECK(interpolated_pts->size() == img_pts.size());
+    constexpr double TOL = 1e-5;
+    for (size_t i = 0; i < pts_in_world.size(); i++) {
+        ROBOT_CHECK(pts_in_world[i].isApprox((*interpolated_pts)[i], TOL), i, pts_in_world[i],
+                    (*interpolated_pts)[i]);
     }
 }
 }  // namespace robot::experimental::learn_descriptors

@@ -1,9 +1,11 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
+#include "Eigen/Core"
 #include "experimental/learn_descriptors/frame.hh"
 #include "experimental/learn_descriptors/frontend_definitions.hh"
 #include "experimental/learn_descriptors/image_point.hh"
@@ -30,8 +32,9 @@ class Frontend {
     explicit Frontend(FrontendParams params);
     ~Frontend(){};
 
-    void populate_frames();
+    void populate_frames(bool verbose = false);
     void match_frames_and_build_tracks();
+    std::optional<std::vector<Eigen::Vector3d>> interpolated_initial_translations();
 
     void add_image(const ImageAndPoint &img_and_pt) { images_and_points_.push_back(img_and_pt); };
     void add_images(const std::vector<ImageAndPoint> &img_and_pts) {

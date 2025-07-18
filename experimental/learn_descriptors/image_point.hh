@@ -18,11 +18,13 @@ struct ImagePoint {
     virtual ~ImagePoint() = default;
 
     size_t id;
+    size_t seq;  // for time. TODO: make a time struct
     std::shared_ptr<CameraCalibrationFisheye> K;
+    void set_cam_in_world(const Eigen::Vector3d& cam_in_world) { cam_in_world_ = cam_in_world; };
     virtual std::optional<Eigen::Isometry3d> world_from_cam_ground_truth() const {
         return std::nullopt;
     };
-    virtual std::optional<Eigen::Vector3d> cam_in_world() const { return std::nullopt; };
+    virtual std::optional<Eigen::Vector3d> cam_in_world() const { return cam_in_world_; };
     virtual std::optional<Eigen::Matrix3d> translation_covariance_in_cam() const {
         return std::nullopt;
     };
@@ -62,5 +64,8 @@ struct ImagePoint {
         }
         return ss.str();
     }
+
+   private:
+    std::optional<Eigen::Vector3d> cam_in_world_;
 };
 }  // namespace robot::experimental::learn_descriptors

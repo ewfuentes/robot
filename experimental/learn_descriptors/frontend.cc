@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <iostream>
 #include <memory>
 #include <optional>
 #include <unordered_map>
@@ -166,11 +167,13 @@ Frontend::Frontend(FrontendParams params_) : params_(params_) {
     }
 }
 
-void Frontend::populate_frames() {
+void Frontend::populate_frames(bool verbose) {
     FrameId id = frames_.size();
     for (const ImageAndPoint &img_and_pt : images_and_points_) {
         const std::shared_ptr<ImagePoint> shared_img_pt = img_and_pt.shared_img_pt;
-        std::cout << shared_img_pt->to_string() << std::endl;
+        if (verbose) {
+            std::cout << shared_img_pt->to_string() << std::endl;
+        }
         cv::Mat img_undistorted;
         cv::fisheye::undistortImage(img_and_pt.image_distorted, img_undistorted,
                                     shared_img_pt->K->k_mat(), shared_img_pt->K->d_mat(),
@@ -185,7 +188,7 @@ void Frontend::populate_frames() {
             boost::make_shared<gtsam::Cal3_S2>(shared_img_pt->K->fx, shared_img_pt->K->fy, 0,
                                                shared_img_pt->K->cx, shared_img_pt->K->cy);
 
-        Frame frame(id, img_undistorted, K, kpts_cv, descriptors);
+        Frame frame(id, shared_img_pt->seq, img_undistorted, K, kpts_cv, descriptors);
         const std::optional<Eigen::Isometry3d> maybe_world_from_cam_grnd_trth =
             shared_img_pt->world_from_cam_ground_truth();
         if (maybe_world_from_cam_grnd_trth) {
@@ -326,6 +329,56 @@ void Frontend::match_frames_and_build_tracks() {
         }
     }
     std::cout << "done processing matches" << std::endl;
+}
+
+std::optional<std::vector<Eigen::Vector3d>> Frontend::interpolated_initial_translations() {
+    std::vector<Frame *> frames_with_guess;
+    for (Frame &frame :
+         frames_) {  // this assumes that frames are ordered by seq (time), later on may have to
+                     // think about this more if trying to run pipeline on unordered images or sets
+                     // whose capture times are on different days
+        if (frame.cam_in_world_initial_guess_) {
+            frames_with_guess.push_back(&frame);
+        }
+    }
+    if (frames_with_guess.size() <= 2) return std::nullopt;
+    std::vector<Eigen::Vector3d> interpolated_init_guesses;
+    interpolated_init_guesses.reserve(frames_.size());
+    size_t idx_guess = 0;
+
+    for (const Frame &frame : frames_) {
+        Eigen::Vector3d interpolated;
+
+        // advance to next guess window if needed
+        while (idx_guess + 1 < frames_with_guess.size() - 1 &&
+               frame.seq_ > frames_with_guess[idx_guess + 1]->seq_) {
+            idx_guess++;
+        }
+
+        if (frame.cam_in_world_initial_guess_) {
+            interpolated = *frame.cam_in_world_initial_guess_;
+        } else if (frame.seq_ < frames_with_guess[idx_guess]->seq_) {
+            Eigen::Vector3d v_b_to_a =
+                *frames_with_guess[idx_guess]->velocity_from(*frames_with_guess[idx_guess + 1]);
+            double dt = 1e-9 * (frames_with_guess[idx_guess]->seq_ - frame.seq_);
+            interpolated =
+                *frames_with_guess[idx_guess]->cam_in_world_initial_guess_ + v_b_to_a * dt;
+            std::cout << "interpolated frame " << frame.id_ << ": " << interpolated << std::endl;
+            std::cout << "\tdt: " << dt << std::endl;
+            std::cout << "\tv_a_to_b: " << v_b_to_a << std::endl;
+        } else {
+            Eigen::Vector3d v_a_to_b =
+                *frames_with_guess[idx_guess]->velocity_to(*frames_with_guess[idx_guess + 1]);
+            double dt = 1e-9 * (frame.seq_ - frames_with_guess[idx_guess]->seq_);
+            interpolated =
+                *frames_with_guess[idx_guess]->cam_in_world_initial_guess_ + v_a_to_b * dt;
+            std::cout << "interpolated frame " << frame.id_ << ": " << interpolated << std::endl;
+            std::cout << "\tdt: " << dt << std::endl;
+            std::cout << "\tv_a_to_b: " << v_a_to_b << std::endl;
+        }
+        interpolated_init_guesses.push_back(interpolated);
+    }
+    return interpolated_init_guesses;
 }
 
 std::pair<std::vector<cv::KeyPoint>, cv::Mat> Frontend::extract_features(const cv::Mat &img) const {
