@@ -21,7 +21,7 @@ class SemanticSegmentExtractor(torch.nn.Module):
         self._mask_generator = SAM2AutomaticMaskGenerator.from_pretrained(
             config.sam_model_str,
             points_per_side=32,
-            points_per_batch=128,
+            points_per_batch=config.points_per_batch,
             pred_iou_thresh=0.88,
             stability_score_thresh=0.85,
             stability_score_offset=1.0,

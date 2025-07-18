@@ -22,7 +22,7 @@ class SAM2SegmentExtractorTest(unittest.TestCase):
         dataloader = vd.get_dataloader(dataset.get_pano_view(), batch_size=BATCH_SIZE)
 
         model = sse.SemanticSegmentExtractor(
-            sse.SemanticSegmentExtractorConfig()
+            sse.SemanticSegmentExtractorConfig(points_per_batch=32)
         )
 
         # Action
