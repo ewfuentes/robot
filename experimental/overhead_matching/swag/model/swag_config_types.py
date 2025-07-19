@@ -8,7 +8,7 @@ class FeatureMapExtractorType(StrEnum):
     DINOV2 = auto()
 
 
-class DinoFeatureMapExtractorConfig(msgspec.Struct, tag=True, tag_field="kind"):
+class DinoFeatureMapExtractorConfig(msgspec.Struct, tag=True, tag_field="kind", frozen=True):
     model_str: str = "dinov2_vitb14"
     type: FeatureMapExtractorType = FeatureMapExtractorType.DINOV2
 
@@ -19,17 +19,17 @@ class SemanticTokenExtractorType(StrEnum):
     SEGMENT_EXTRACTOR = auto()
 
 
-class SemanticNullExtractorConfig(msgspec.Struct, tag=True, tag_field="kind"):
+class SemanticNullExtractorConfig(msgspec.Struct, tag=True, tag_field="kind", frozen=True):
     type: SemanticTokenExtractorType = SemanticTokenExtractorType.NULL_EXTRACTOR
 
 
-class SemanticEmbeddingMatrixConfig(msgspec.Struct, tag=True, tag_field="kind"):
+class SemanticEmbeddingMatrixConfig(msgspec.Struct, tag=True, tag_field="kind", frozen=True):
     vocabulary: list[str]
     embedding_dim: int
     type: SemanticTokenExtractorType = SemanticTokenExtractorType.EMBEDDING_MAT
 
 
-class SemanticSegmentExtractorConfig(msgspec.Struct, tag=True, tag_field='kind'):
+class SemanticSegmentExtractorConfig(msgspec.Struct, tag=True, tag_field='kind', frozen=True):
     points_per_batch: int = 128
     sam_model_str: str = "facebook/sam2.1-hiera-large"
     clip_model_str: str = "hf-hub:laion/CLIP-ViT-B-32-laion2B-s34B-b79K"
@@ -41,14 +41,14 @@ class PositionEmbeddingType(StrEnum):
     SPHERICAL = auto()
 
 
-class PlanarPositionEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
+class PlanarPositionEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind", frozen=True):
     min_scale: float
     scale_step: float
     embedding_dim: int
     type: PositionEmbeddingType = PositionEmbeddingType.PLANAR
 
 
-class SphericalPositionEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
+class SphericalPositionEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind", frozen=True):
     scale_step: float
     embedding_dim: int
     type: PositionEmbeddingType = PositionEmbeddingType.SPHERICAL
@@ -58,7 +58,7 @@ class AggregationType(StrEnum):
     TRANSFORMER = auto()
 
 
-class TransformerAggregatorConfig(msgspec.Struct, tag=True, tag_field="kind"):
+class TransformerAggregatorConfig(msgspec.Struct, tag=True, tag_field="kind", frozen=True):
     num_transformer_layers: int
     num_attention_heads: int
     hidden_dim: int

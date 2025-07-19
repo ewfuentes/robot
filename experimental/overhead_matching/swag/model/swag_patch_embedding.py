@@ -4,7 +4,9 @@ import torch
 import torch.nn.functional as F
 import torchvision as tv
 import msgspec
-from experimental.overhead_matching.swag.model.swag_model_input import ModelInput
+from dataclasses import dataclass
+from experimental.overhead_matching.swag.model.swag_model_input_output import (
+    ModelInput, SemanticTokenExtractorOutput, FeatureMapExtractorOutput)
 from experimental.overhead_matching.swag.model.semantic_segment_extractor import SemanticSegmentExtractor
 from experimental.overhead_matching.swag.model.swag_config_types import (
     FeatureMapExtractorConfig,
@@ -76,7 +78,7 @@ class DinoFeatureExtractor(torch.nn.Module):
         self._dino = torch.hub.load("facebookresearch/dinov2", config.model_str)
         self._dino.eval()
 
-    def forward(self, model_input: ModelInput):
+    def forward(self, model_input: ModelInput) -> FeatureMapExtractorOutput:
         input_image = model_input.image
         x = tv.transforms.functional.normalize(
             input_image,
@@ -85,7 +87,7 @@ class DinoFeatureExtractor(torch.nn.Module):
 
         with torch.no_grad():
             patch_tokens = self._dino.forward_features(x)["x_norm_patchtokens"]
-        return patch_tokens
+        return FeatureMapExtractorOutput(features=patch_tokens)
 
     @property
     def patch_size(self):
@@ -106,7 +108,7 @@ class SemanticEmbeddingMatrix(torch.nn.Module):
                                                     padding_idx=0,
                                                     max_norm=1.0)
 
-    def forward(self, model_input: ModelInput):
+    def forward(self, model_input: ModelInput) -> SemanticTokenExtractorOutput:
         batch_size = len(model_input.metadata)
         max_num_landmarks = max([len(x["landmarks"]) for x in model_input.metadata])
         output_idxs = torch.full((batch_size, max_num_landmarks), 0, dtype=torch.int)
@@ -134,7 +136,10 @@ class SemanticEmbeddingMatrix(torch.nn.Module):
         mask = mask.to(dev)
         output_idxs = output_idxs.to(dev)
 
-        return positions_in_patch, self._embedding_matrix(output_idxs), mask
+        return SemanticTokenExtractorOutput(
+            positions=positions_in_patch,
+            features=self._embedding_matrix(output_idxs),
+            mask=mask)
 
     @property
     def output_dim(self):
@@ -151,7 +156,10 @@ class SemanticNullExtractor(torch.nn.Module):
         positions_in_patch = torch.zeros((batch_size, 0, 2), device=dev)
         semantic_tokens = torch.zeros((batch_size, 0, 0), device=dev)
         mask = torch.zeros(batch_size, 0, device=dev)
-        return positions_in_patch, semantic_tokens, mask
+        return SemanticTokenExtractorOutput(
+            positions=positions_in_patch,
+            features=semantic_tokens,
+            mask=mask)
 
     @property
     def output_dim(self):
@@ -342,13 +350,12 @@ class SwagPatchEmbedding(torch.nn.Module):
         # feature positions is batch x n_tokens x 2
         # feature amp is batch x n_tokens x feature_dim
         # The positions are where each token comes from in pixel space in the original image
-        feature_map = self._feature_map_extractor(model_input)
+        feature_map_output = self._feature_map_extractor(model_input)
         # semantic positions is batch x n_semantic_tokens x 2
         # semantic tokens is batch x n_semantic_tokens x semantic_feature_dim
         # The positions are where each token comes from in pixel space in the original image
         # The semantic_mask is true if the corresponding token is a padding token
-        semantic_positions, semantic_tokens, semantic_mask = (
-                self._semantic_token_extractor(model_input))
+        semantic_tokens_output = self._semantic_token_extractor(model_input)
 
         # feature_position embeddings is batch x n_tokens x pos_embedding_dim
         # semantic_position_embeddings is batch x n_sematic_tokens x pos_embedding_dim
@@ -357,10 +364,10 @@ class SwagPatchEmbedding(torch.nn.Module):
                 patch_size=self._feature_map_extractor.patch_size).to(dev)
         semantic_position_embeddings = self._position_embedding(
                 model_input=model_input,
-                relative_positions=semantic_positions).to(dev)
+                relative_positions=semantic_tokens_output.positions).to(dev)
 
-        pos_feature_tokens = torch.cat([feature_map, feature_position_embeddings], dim=-1)
-        pos_semantic_tokens = torch.cat([semantic_tokens, semantic_position_embeddings], dim=-1)
+        pos_feature_tokens = torch.cat([feature_map_output.features, feature_position_embeddings], dim=-1)
+        pos_semantic_tokens = torch.cat([semantic_tokens_output.features, semantic_position_embeddings], dim=-1)
 
         input_feature_tokens = self._feature_token_projection(pos_feature_tokens)
         input_semantic_tokens = self._semantic_token_projection(pos_semantic_tokens)
@@ -376,7 +383,7 @@ class SwagPatchEmbedding(torch.nn.Module):
 
         feature_and_cls_mask = torch.zeros(
                 (batch_size, input_feature_tokens.shape[1] + 1), device=dev)
-        input_mask = torch.cat([feature_and_cls_mask, semantic_mask], dim=1)
+        input_mask = torch.cat([feature_and_cls_mask, semantic_tokens_output.mask], dim=1)
 
         output_tokens = self._aggregator_model(input_tokens, input_mask)
 

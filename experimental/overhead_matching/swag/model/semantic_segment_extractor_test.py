@@ -11,7 +11,7 @@ import numpy as np
 import tqdm
 
 
-class SAM2SegmentExtractorTest(unittest.TestCase):
+class SemanticSegmentExtractorTest(unittest.TestCase):
     def test_sample_image(self):
         # Setup
         BATCH_SIZE = 30
@@ -27,16 +27,16 @@ class SAM2SegmentExtractorTest(unittest.TestCase):
 
         # Action
         batch = next(iter(dataloader))
-        positions, tokens, mask = model(sse.ModelInput(
+        out = model(sse.ModelInput(
             image=batch.panorama, metadata=batch.panorama_metadata))
 
-        self.assertEqual(positions.shape[0], BATCH_SIZE)
-        self.assertEqual(positions.shape[2], 2)
-        self.assertEqual(tokens.shape[0], BATCH_SIZE)
-        self.assertEqual(tokens.shape[2], CLIP_FEATURE_DIM)
-        self.assertEqual(mask.shape[0], BATCH_SIZE)
-        self.assertEqual(mask.shape[1], tokens.shape[1])
-        self.assertEqual(mask.shape[1], positions.shape[1])
+        self.assertEqual(out.positions.shape[0], BATCH_SIZE)
+        self.assertEqual(out.positions.shape[2], 2)
+        self.assertEqual(out.features.shape[0], BATCH_SIZE)
+        self.assertEqual(out.features.shape[2], CLIP_FEATURE_DIM)
+        self.assertEqual(out.mask.shape[0], BATCH_SIZE)
+        self.assertEqual(out.mask.shape[1], out.features.shape[1])
+        self.assertEqual(out.mask.shape[1], out.positions.shape[1])
 
 
 if __name__ == "__main__":

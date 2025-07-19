@@ -118,3 +118,17 @@ py_binary(
     "//common/torch:load_torch_deps",
   ]
 )
+
+py_binary(
+  name="populate_tensor_cache",
+  srcs=["populate_tensor_cache.py"],
+  deps=[
+    requirement("lmdb"),
+    requirement("msgspec"),
+    requirement("torch"),
+    requirement("tqdm"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    ":train",
+  ]
+)
