@@ -37,7 +37,7 @@ py_library(
     requirement("torch"),
     requirement("torchvision"),
     requirement("msgspec"),
-    ":swag_model_input",
+    ":swag_model_input_output",
     ":swag_config_types",
     ":semantic_segment_extractor",
     "//common/torch:load_torch_deps",
@@ -55,8 +55,8 @@ py_test(
 )
 
 py_library(
-  name = "swag_model_input",
-  srcs = ["swag_model_input.py"],
+  name = "swag_model_input_output",
+  srcs = ["swag_model_input_output.py"],
   deps = [
     requirement("torch"),
     "//common/torch:load_torch_deps",
@@ -75,7 +75,7 @@ py_library(
     requirement("ipdb"),
     requirement("pillow"),
     "//common/torch:load_torch_deps",
-    ":swag_model_input",
+    ":swag_model_input_output",
     ":swag_config_types",
   ]
 )
