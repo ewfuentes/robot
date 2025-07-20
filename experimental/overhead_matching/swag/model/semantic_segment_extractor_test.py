@@ -27,7 +27,7 @@ class SemanticSegmentExtractorTest(unittest.TestCase):
         # Action
         batch = next(iter(dataloader))
         out = model(sse.ModelInput(
-            image=batch.panorama, metadata=batch.panorama_metadata))
+            image=batch.panorama, metadata=batch.panorama_metadata).to("cuda"))
 
         self.assertEqual(out.positions.shape[0], BATCH_SIZE)
         self.assertEqual(out.positions.shape[2], 2)
