@@ -4,6 +4,8 @@ import torch
 import torch.nn.functional as F
 import torchvision as tv
 import msgspec
+import hashlib
+from typing import Any
 from dataclasses import dataclass
 from experimental.overhead_matching.swag.model.swag_model_input_output import (
     ModelInput, SemanticTokenExtractorOutput, FeatureMapExtractorOutput)
@@ -30,6 +32,16 @@ from experimental.overhead_matching.swag.model.swag_config_types import (
 )
 
 
+class HashStruct(msgspec.Struct, frozen=True):
+    model_config: Any
+    patch_dims: tuple[int, int]
+
+
+def compute_config_hash(obj):
+    yaml_str = msgspec.yaml.encode(obj, order='deterministic')
+    return hashlib.sha256(yaml_str).hexdigest()
+
+
 class SwagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
     feature_map_extractor_config: FeatureMapExtractorConfig
     semantic_token_extractor_config: SemanticTokenExtractorConfig
@@ -38,6 +50,8 @@ class SwagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
 
     patch_dims: tuple[int, int]
     output_dim: int
+    use_cached_feature_maps: bool
+    use_cached_semantic_tokens: bool
 
 
 def create_feature_map_extractor(config: FeatureMapExtractorConfig):
@@ -51,7 +65,7 @@ def create_feature_map_extractor(config: FeatureMapExtractorConfig):
 def create_semantic_token_extractor(config: SemanticTokenExtractorConfig):
     types = {
         SemanticTokenExtractorType.NULL_EXTRACTOR: SemanticNullExtractor,
-        SemanticTokenExtractorType.EMBEDDING_MAT:  SemanticEmbeddingMatrix,
+        SemanticTokenExtractorType.EMBEDDING_MAT: SemanticEmbeddingMatrix,
         SemanticTokenExtractorType.SEGMENT_EXTRACTOR: SemanticSegmentExtractor,
     }
     return types[config.type](config)
@@ -117,9 +131,10 @@ class SemanticEmbeddingMatrix(torch.nn.Module):
         dev = self._embedding_matrix.weight.device
 
         if max_num_landmarks == 0:
-            return (torch.zeros((batch_size, 0, 2), device=dev),
-                    torch.zeros((batch_size, 0, self._embedding_matrix.embedding_dim), device=dev),
-                    torch.zeros((batch_size, 0), device=dev))
+            return SemanticTokenExtractorOutput(
+                positions=torch.zeros((batch_size, 0, 2), device=dev),
+                features=torch.zeros((batch_size, 0, self._embedding_matrix.embedding_dim), device=dev),
+                mask=torch.zeros((batch_size, 0), device=dev))
 
         for batch_idx in range(len(model_input.metadata)):
             sat_metadata = model_input.metadata[batch_idx]
@@ -335,27 +350,43 @@ class SwagPatchEmbedding(torch.nn.Module):
         self._patch_dims = config.patch_dims
         self._output_dim = config.output_dim
 
+        self._cache_info = {}
+        if config.use_cached_feature_maps:
+            config_hash = compute_config_hash(HashStruct(
+                model_config=config.feature_map_extractor_config, patch_dims=config.patch_dims))
+            self._cache_info[config_hash] = ("feature_maps", FeatureMapExtractorOutput)
+        if config.use_cached_semantic_tokens:
+            config_hash = compute_config_hash(HashStruct(
+                model_config=config.semantic_token_extractor_config, patch_dims=config.patch_dims))
+            self._cache_info[config_hash] = ("semantic_tokens", SemanticTokenExtractorOutput)
+
     def model_input_from_batch(self, batch_item):
         if self._patch_dims[0] != self._patch_dims[1]:
             return ModelInput(
                 image=batch_item.panorama,
-                metadata=batch_item.panorama_metadata)
+                metadata=batch_item.panorama_metadata,
+                cached_tensors=batch_item.cached_panorama_tensors)
         else:
             return ModelInput(
                 image=batch_item.satellite,
-                metadata=batch_item.satellite_metadata)
+                metadata=batch_item.satellite_metadata,
+                cached_tensors=batch_item.cached_satellite_tensors)
 
     def forward(self, model_input: ModelInput):
         dev = model_input.image.device
         # feature positions is batch x n_tokens x 2
         # feature amp is batch x n_tokens x feature_dim
         # The positions are where each token comes from in pixel space in the original image
-        feature_map_output = self._feature_map_extractor(model_input)
+        feature_map_output = model_input.cached_tensors.get('feature_maps')
+        if feature_map_output is None:
+            feature_map_output = self._feature_map_extractor(model_input)
         # semantic positions is batch x n_semantic_tokens x 2
         # semantic tokens is batch x n_semantic_tokens x semantic_feature_dim
         # The positions are where each token comes from in pixel space in the original image
         # The semantic_mask is true if the corresponding token is a padding token
-        semantic_tokens_output = self._semantic_token_extractor(model_input)
+        semantic_tokens_output = model_input.cached_tensors.get("semantic_tokens")
+        if semantic_tokens_output is None:
+            semantic_tokens_output = self._semantic_token_extractor(model_input)
 
         # feature_position embeddings is batch x n_tokens x pos_embedding_dim
         # semantic_position_embeddings is batch x n_sematic_tokens x pos_embedding_dim
@@ -389,6 +420,9 @@ class SwagPatchEmbedding(torch.nn.Module):
 
         # output is batch x feature_dim
         return F.normalize(output_tokens[:, 0, :])
+
+    def cache_info(self):
+        return self._cache_info
 
     @property
     def patch_dims(self):

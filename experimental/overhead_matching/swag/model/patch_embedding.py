@@ -132,6 +132,9 @@ class WagPatchEmbedding(torch.nn.Module):
     def patch_dims(self):
         return self._patch_dims
 
+    def cache_info(self):
+        return None
+
     def safa(self, x):
         batch_size = x.shape[0]
         (out, _) = torch.max(x, dim=-3)
