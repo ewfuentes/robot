@@ -13,3 +13,17 @@ class ModelInput:
         return ModelInput(
             image=self.image.to(*args, **kwargs),
             metadata=self.metadata)
+
+
+@dataclass
+class FeatureMapExtractorOutput:
+    features: torch.Tensor
+
+
+@dataclass
+class SemanticTokenExtractorOutput:
+    features: torch.Tensor
+    positions: torch.Tensor
+    mask: torch.Tensor
+
+

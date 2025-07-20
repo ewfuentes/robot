@@ -38,7 +38,7 @@ class PanoramaIndexInfo(NamedTuple):
 
 
 class VigorDatasetConfig(NamedTuple):
-    panorama_neighbor_radius: float
+    panorama_neighbor_radius: float = 1e-9
     satellite_patch_size: None | tuple[int, int] = None
     panorama_size: None | tuple[int, int] = None
     factor: None | float = 1.0

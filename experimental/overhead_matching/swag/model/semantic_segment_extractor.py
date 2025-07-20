@@ -2,7 +2,7 @@
 import common.torch.load_torch_deps
 import torch
 
-from experimental.overhead_matching.swag.model.swag_model_input import ModelInput
+from experimental.overhead_matching.swag.model.swag_model_input_output import ModelInput, SemanticTokenExtractorOutput
 from experimental.overhead_matching.swag.model.swag_config_types import (
         SemanticSegmentExtractorConfig)
 from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
@@ -33,7 +33,7 @@ class SemanticSegmentExtractor(torch.nn.Module):
             point_grids=None,
             min_mask_region_area=200)
 
-    def forward(self, model_input: ModelInput):
+    def forward(self, model_input: ModelInput) -> SemanticTokenExtractorOutput:
         images = model_input.image.permute(0, 2, 3, 1).cpu().numpy()
         batch_features = []
         for batch_idx in range(model_input.image.shape[0]):
@@ -67,15 +67,18 @@ class SemanticSegmentExtractor(torch.nn.Module):
 
         semantic_positions = torch.zeros((batch_size, max_num_segments, 2))
         semantic_tokens = torch.zeros((batch_size, max_num_segments, self.output_dim))
-        semantic_mask = torch.ones((batch_size, max_num_segments))
+        semantic_mask = torch.ones((batch_size, max_num_segments), dtype=torch.bool)
         for batch_idx, image_features in enumerate(batch_features):
-            semantic_mask[batch_idx, :len(image_features)] = 0
+            semantic_mask[batch_idx, :len(image_features)] = False
             for segment_idx, segment_feature in enumerate(image_features):
                 start_col, start_row, width, height = segment_feature["bbox"]
                 semantic_positions[batch_idx, segment_idx, 0] = start_row + height / 2.0
                 semantic_positions[batch_idx, segment_idx, 1] = start_col + width / 2.0
                 semantic_tokens[batch_idx, segment_idx, :] = segment_feature["clip_feature"]
-        return semantic_positions.to(dev), semantic_tokens.to(dev), semantic_mask.to(dev)
+        return SemanticTokenExtractorOutput(
+            positions=semantic_positions.to(dev),
+            features=semantic_tokens.to(dev),
+            mask=semantic_mask.to(dev))
 
     @property
     def output_dim(self):
