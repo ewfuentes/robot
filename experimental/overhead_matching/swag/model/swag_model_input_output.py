@@ -2,7 +2,7 @@
 import common.torch.load_torch_deps
 import torch
 from torch.nn.utils.rnn import pad_sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -10,13 +10,15 @@ from typing import Any
 class ModelInput:
     image: torch.Tensor
     metadata: list[dict]
-    cached_tensors: dict[str, Any]
+    cached_tensors: dict[str, Any] = field(default_factory=dict)
 
     def to(self, *args, **kwargs):
         return ModelInput(
             image=self.image.to(*args, **kwargs),
             metadata=self.metadata,
-            cached_tensors={k: v.to(*args, **kwargs) for k, v in self.cached_tensors.items()})
+            cached_tensors=(
+                None if self.cached_tensors is None
+                else {k: v.to(*args, **kwargs) for k, v in self.cached_tensors.items()}))
 
 
 @dataclass
