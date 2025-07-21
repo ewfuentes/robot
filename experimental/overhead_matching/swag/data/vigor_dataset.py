@@ -248,6 +248,9 @@ def populate_pairs(pano_metadata, sat_metadata, sample_mode):
 
 
 def load_tensor_caches(info: TensorCacheInfo):
+    if info is None or info.hash_and_key is None:
+        return []
+
     base_path = Path("~/.cache/robot/overhead_matching/tensor_cache").expanduser()
     base_path = base_path / info.dataset_key / info.model_type
 
@@ -468,17 +471,21 @@ class VigorDataset(torch.utils.data.Dataset):
                 sat, sat_original_shape = load_image(sat_metadata.path, self.dataset._satellite_patch_size)
                 landmarks = []
                 if self.dataset._landmark_metadata is not None:
-                    landmarks = self._landmark_metadata.iloc[sat_metadata["landmark_idxs"]]
+                    landmarks = self.dataset._landmark_metadata.iloc[sat_metadata["landmark_idxs"]]
                     landmarks = [series_to_dict_with_index(x) for _, x in landmarks.iterrows()]
                 sat_metadata = series_to_dict_with_index(sat_metadata)
                 sat_metadata["landmarks"] = landmarks
                 sat_metadata["original_shape"] = sat_original_shape
 
+                cached_sat_tensors = get_cached_tensors(idx, self.dataset._satellite_tensor_caches)
+
                 return VigorDatasetItem(
                     panorama_metadata=None,
                     satellite_metadata=sat_metadata,
                     panorama=None,
-                    satellite=sat
+                    satellite=sat,
+                    cached_panorama_tensors=None,
+                    cached_satellite_tensors=cached_sat_tensors
                 )
         return OverheadVigorDataset(self)
 
@@ -497,11 +504,16 @@ class VigorDataset(torch.utils.data.Dataset):
                 # as this will throw a KeyError
                 pano_metadata = self.dataset._panorama_metadata.loc[idx]
                 pano, pano_original_shape = load_image(pano_metadata.path, self.dataset._panorama_size)
+
+                cached_pano_tensors = get_cached_tensors(idx, self.dataset._panorama_tensor_caches)
+
                 return VigorDatasetItem(
                     panorama_metadata=series_to_dict_with_index(pano_metadata),
                     satellite_metadata=None,
                     panorama=pano,
-                    satellite=None
+                    satellite=None,
+                    cached_panorama_tensors=cached_pano_tensors,
+                    cached_satellite_tensors=None
                 )
         return EgoVigorDataset(self)
 
@@ -608,10 +620,15 @@ class VigorDataset(torch.utils.data.Dataset):
 
 
 def worker_init_fn(worker_id):
-    worker_info =torch.utils.data.get_worker_info()
+    worker_info = torch.utils.data.get_worker_info()
     dataset = worker_info.dataset
-    dataset._panorama_tensor_caches = load_tensor_caches(dataset._config.panorama_tensor_cache_info)
-    dataset._satellite_tensor_caches = load_tensor_caches(dataset._config.satellite_tensor_cache_info)
+    while hasattr(dataset, 'dataset'):
+        # This dataset is an instance of the pano_view or sat_patch_view datasets
+        dataset = dataset.dataset
+    dataset._panorama_tensor_caches = load_tensor_caches(
+        dataset._config.panorama_tensor_cache_info)
+    dataset._satellite_tensor_caches = load_tensor_caches(
+        dataset._config.satellite_tensor_cache_info)
 
 
 def get_dataloader(dataset: VigorDataset, **kwargs):

@@ -50,8 +50,8 @@ class SwagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
 
     patch_dims: tuple[int, int]
     output_dim: int
-    use_cached_feature_maps: bool
-    use_cached_semantic_tokens: bool
+    use_cached_feature_maps: bool = False
+    use_cached_semantic_tokens: bool = False
 
 
 def create_feature_map_extractor(config: FeatureMapExtractorConfig):

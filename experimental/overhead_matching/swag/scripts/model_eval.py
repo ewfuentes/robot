@@ -131,14 +131,15 @@ def _(Path, pprint):
     model_paths = {
         "all_chicago_sat_embedding_pano_wag": Path("/data/overhead_matching/models/all_chicago_sat_embedding_pano_wag/0059"),
         "all_chicago_dino_project_1024": Path("/data/overhead_matching/models/20250707_dino_features/all_chicago_dino_project_1024/0059"),
+        "all_chicago_sat_dino_embedding_mat_pano_dino_sam": Path("/data/overhead_matching/models/20250719_swag_model/all_chicago_sat_dino_embedding_mat_pano_dino_sam/0059")
     }
 
     pprint(model_paths)
 
     dataset_paths = {
-        'chicago': '/data/overhead_matching/datasets/VIGOR/Chicago',
+        'chicago': Path('/data/overhead_matching/datasets/VIGOR/Chicago'),
         # 'sanfrancisco': '/data/overhead_matching/datasets/VIGOR/SanFrancisco'
-        "newyork": '/data/overhead_matching/datasets/VIGOR/NewYork'
+        "newyork": Path('/data/overhead_matching/datasets/VIGOR/NewYork')
     }
     return dataset_paths, idx, model_paths
 
@@ -200,6 +201,7 @@ def _(Path, pd, torch):
     _results_paths = [
         Path('/data/overhead_matching/evaluation/results/all_chicago_sat_embedding_pano_wag'),
         Path('/data/overhead_matching/evaluation/results/20250707_dino_features/all_chicago_dino_project_512'),
+        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/all_chicago_sat_dino_embedding_mat_pano_dino_sam'),
     ]
 
     path_dfs = []
@@ -269,9 +271,17 @@ def _(Path, evaluate_swag, load_model, vigor_dataset):
             panorama_neighbor_radius=1e-6,
             satellite_patch_size=sat_model.patch_dims,
             panorama_size=pano_model.patch_dims,
-            factor=1.0
+            factor=1.0,
+            panorama_tensor_cache_info=vigor_dataset.TensorCacheInfo(
+                dataset_key=dataset_path.name,
+                model_type="panorama",
+                hash_and_key=pano_model.cache_info()),
+            satellite_tensor_cache_info=vigor_dataset.TensorCacheInfo(
+                dataset_key=dataset_path.name,
+                model_type="satellite",
+                hash_and_key=sat_model.cache_info())
         )
-        dataset = vigor_dataset.VigorDataset(dataset_path, dataset_config)
+        dataset = vigor_dataset.VigorDataset(dataset_path, dataset_config, Path('/data/overhead_matching/datasets/VIGOR/landmarks/NewYork.geojson'))
         return dataset, evaluate_swag.compute_cached_similarity_matrix(sat_model, pano_model, dataset, device='cuda', use_cached_similarity=True)
     return (get_similarity_matrix,)
 
@@ -301,16 +311,16 @@ def _(mo, np, plt, seaborn, sim_df):
         _sigma = 0.1
         _y =  np.exp(-_x**2 / (2.0 * sigma**2)) / (np.sqrt(2 * np.pi) * sigma)
         _y_sum = np.cumsum(_y) * _dx * 2.0
-        return _x, _y_sum
+        return _x, _y_sum, _y
 
 
 
     plt.figure()
 
-    seaborn.displot(data=sim_df, kind='ecdf', x='sim_diff_from_max', hue='model_name', palette='Paired')
+    seaborn.displot(data=sim_df, kind='ecdf', x='sim_diff_from_max', hue='model_name', palette='tab10')
     for _sigma in [0.03, 0.1, 0.2, 0.3, 0.4, 0.5]:
-        _x, _approx = compute_approx(_sigma)
-        plt.plot(_x, _approx, label=rf'$\sigma$={_sigma}', linestyle='--')
+        _x, _approx_sum, _approx = compute_approx(_sigma)
+        plt.plot(_x, _approx_sum, label=rf'$\sigma$={_sigma}', linestyle='--')
 
     plt.legend(loc='upper right')
     plt.tight_layout()

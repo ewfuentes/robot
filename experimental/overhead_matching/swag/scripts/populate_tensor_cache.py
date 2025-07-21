@@ -97,11 +97,13 @@ def main(train_config_path: Path,
             if parts[0] == "sat_model_config":
                 model_input = spe.ModelInput(
                     image=batch.satellite,
-                    metadata=batch.satellite_metadata).to("cuda")
+                    metadata=batch.satellite_metadata,
+                    cached_tensors=batch.cached_satellite_tensors).to("cuda")
             elif parts[0] == "pano_model_config":
                 model_input = spe.ModelInput(
                     image=batch.panorama,
-                    metadata=batch.panorama_metadata).to("cuda")
+                    metadata=batch.panorama_metadata,
+                    cached_tensors=batch.cached_panorama_tensors).to("cuda")
             else:
                 raise NotImplementedError
             # Run it through the model
