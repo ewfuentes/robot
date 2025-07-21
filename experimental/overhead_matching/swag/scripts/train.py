@@ -302,8 +302,7 @@ def main(
     )
 
     dataset_paths = [dataset_base_path / p for p in train_config.dataset_path]
-    landmark_paths = [dataset_base_path / "landmarks" / (str(p) + ".geojson") for p in train_config.dataset_path]
-    dataset = vigor_dataset.VigorDataset(dataset_paths, dataset_config, landmark_paths)
+    dataset = vigor_dataset.VigorDataset(dataset_paths, dataset_config)
 
     output_dir = output_base_path / train_config.output_dir
     tensorboard_output = train_config.tensorboard_output

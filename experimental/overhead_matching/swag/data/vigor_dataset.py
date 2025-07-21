@@ -279,8 +279,7 @@ def get_cached_tensors(idx: int, caches: list[TensorCache]):
 class VigorDataset(torch.utils.data.Dataset):
     def __init__(self,
                  dataset_path: Path | list[Path],
-                 config: VigorDatasetConfig,
-                 landmark_path: None | Path | list[Path] = None):
+                 config: VigorDatasetConfig):
         super().__init__()
         self._config = config
 
@@ -289,18 +288,14 @@ class VigorDataset(torch.utils.data.Dataset):
         elif isinstance(dataset_path, str):
             dataset_path = [Path(dataset_path)]
 
-        if landmark_path is None:
-            landmark_path = []
-        elif isinstance(landmark_path, Path):
-            landmark_path = [landmark_path]
-        elif isinstance(landmark_path, str):
-            landmark_path = [Path(landmark_path)]
-
         sat_metadatas = []
         pano_metadatas = []
+        landmark_metadatas = []
         for p in dataset_path:
             sat_metadata = load_satellite_metadata(p / "satellite", config.satellite_zoom_level)
             pano_metadata = load_panorama_metadata(p / "panorama", config.satellite_zoom_level)
+            landmark_metadata = load_landmark_geojson(
+                p / "landmarks.geojson", config.satellite_zoom_level)
 
             min_lat = np.min(sat_metadata.lat)
             max_lat = np.max(sat_metadata.lat)
@@ -315,17 +310,10 @@ class VigorDataset(torch.utils.data.Dataset):
                                        pano_metadata.lon <= min_lon + config.factor * delta_lon)
             sat_metadatas.append(sat_metadata[sat_mask])
             pano_metadatas.append(pano_metadata[pano_mask])
+            landmark_metadatas.append(landmark_metadata)
         self._satellite_metadata = pd.concat(sat_metadatas).reset_index(drop=True)
         self._panorama_metadata = pd.concat(pano_metadatas).reset_index(drop=True)
-
-        landmark_metadatas = []
-        for p in landmark_path:
-            landmark_metadatas.append(load_landmark_geojson(p, self._config.satellite_zoom_level))
-        if landmark_metadatas:
-            self._landmark_metadata = pd.concat(landmark_metadatas).reset_index(drop=True)
-        else:
-            self._landmark_metadata = None
-
+        self._landmark_metadata = pd.concat(landmark_metadatas).reset_index(drop=True)
 
         self._satellite_kdtree = cKDTree(self._satellite_metadata.loc[:, ["web_mercator_x", "web_mercator_y"]].values)
         self._panorama_kdtree = cKDTree(self._panorama_metadata.loc[:, ["lat", "lon"]].values)
@@ -339,11 +327,10 @@ class VigorDataset(torch.utils.data.Dataset):
         self._panorama_metadata["semipositive_satellite_idxs"] = correspondences.semipositive_sat_idxs_from_pano_idx
         self._panorama_metadata["satellite_idx"] = correspondences.closest_sat_idx_from_pano_idx
 
-        if self._landmark_metadata is not None:
-            landmark_correspondences = compute_satellite_from_landmarks(
-                    self._satellite_kdtree, self._satellite_metadata, self._landmark_metadata)
-            self._satellite_metadata["landmark_idxs"] = landmark_correspondences.landmark_idxs_from_sat_idx
-            self._landmark_metadata["satellite_idxs"] = landmark_correspondences.sat_idxs_from_landmark_idx
+        landmark_correspondences = compute_satellite_from_landmarks(
+                self._satellite_kdtree, self._satellite_metadata, self._landmark_metadata)
+        self._satellite_metadata["landmark_idxs"] = landmark_correspondences.landmark_idxs_from_sat_idx
+        self._landmark_metadata["satellite_idxs"] = landmark_correspondences.sat_idxs_from_landmark_idx
 
         self._panorama_metadata["neighbor_panorama_idxs"] = compute_neighboring_panoramas(
             self._panorama_kdtree, config.panorama_neighbor_radius)
@@ -384,10 +371,8 @@ class VigorDataset(torch.utils.data.Dataset):
 
         pano_metadata = series_to_dict_with_index(pano_metadata)
         sat_metadata = series_to_dict_with_index(sat_metadata)
-        landmarks = []
-        if self._landmark_metadata is not None:
-            landmarks = self._landmark_metadata.iloc[sat_metadata["landmark_idxs"]]
-            landmarks = [series_to_dict_with_index(x) for _, x in landmarks.iterrows()]
+        landmarks = self._landmark_metadata.iloc[sat_metadata["landmark_idxs"]]
+        landmarks = [series_to_dict_with_index(x) for _, x in landmarks.iterrows()]
         sat_metadata["landmarks"] = landmarks
         sat_metadata["original_shape"] = sat_original_shape
 
@@ -469,10 +454,8 @@ class VigorDataset(torch.utils.data.Dataset):
                 # as this will throw a KeyError
                 sat_metadata = self.dataset._satellite_metadata.iloc[idx]
                 sat, sat_original_shape = load_image(sat_metadata.path, self.dataset._satellite_patch_size)
-                landmarks = []
-                if self.dataset._landmark_metadata is not None:
-                    landmarks = self.dataset._landmark_metadata.iloc[sat_metadata["landmark_idxs"]]
-                    landmarks = [series_to_dict_with_index(x) for _, x in landmarks.iterrows()]
+                landmarks = self.dataset._landmark_metadata.iloc[sat_metadata["landmark_idxs"]]
+                landmarks = [series_to_dict_with_index(x) for _, x in landmarks.iterrows()]
                 sat_metadata = series_to_dict_with_index(sat_metadata)
                 sat_metadata["landmarks"] = landmarks
                 sat_metadata["original_shape"] = sat_original_shape
@@ -600,8 +583,7 @@ class VigorDataset(torch.utils.data.Dataset):
 
         self._satellite_metadata.plot(x="lon", y="lat", ax=ax, kind="scatter", color="r")
         self._panorama_metadata.plot(x="lon", y="lat", ax=ax, kind="scatter", color="g")
-        if self._landmark_metadata is not None:
-            self._landmark_metadata.plot(x="lon", y="lat", kind="scatter", ax=plt.gca())
+        self._landmark_metadata.plot(x="lon", y="lat", kind="scatter", ax=plt.gca())
 
         if include_text_labels:
             for sat_idx, sat_meta in self._satellite_metadata.iterrows():
@@ -610,9 +592,8 @@ class VigorDataset(torch.utils.data.Dataset):
             for pano_idx, pano_meta in self._panorama_metadata.iterrows():
                 plt.text(pano_meta.lon, pano_meta.lat, f"{pano_idx}").set_clip_on(True)
 
-            if self._landmark_metadata is not None:
-                for _, landmark_meta in self._landmark_metadata.iterrows():
-                    plt.text(landmark_meta.geometry.x, landmark_meta.geometry.y, f"{landmark_meta["landmark_type"]}").set_clip_on(True)
+            for _, landmark_meta in self._landmark_metadata.iterrows():
+                plt.text(landmark_meta.geometry.x, landmark_meta.geometry.y, f"{landmark_meta["landmark_type"]}").set_clip_on(True)
 
         plt.axis("equal")
 
