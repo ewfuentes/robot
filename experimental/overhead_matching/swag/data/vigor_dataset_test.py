@@ -138,6 +138,8 @@ class VigorDatasetTest(unittest.TestCase):
     def test_get_single_item(self):
         # Setup
         config = vigor_dataset.VigorDatasetConfig(
+            satellite_tensor_cache_info=None,
+            panorama_tensor_cache_info=None,
             panorama_neighbor_radius=0.4,
             satellite_patch_size=None,
             panorama_size=None,
@@ -178,6 +180,8 @@ class VigorDatasetTest(unittest.TestCase):
     def test_landmarks_are_correct(self):
         # Setup
         config = vigor_dataset.VigorDatasetConfig(
+            satellite_tensor_cache_info=None,
+            panorama_tensor_cache_info=None,
             panorama_neighbor_radius=0.4,
             satellite_patch_size=None,
             panorama_size=None,
@@ -212,6 +216,8 @@ class VigorDatasetTest(unittest.TestCase):
         # Setup
         BATCH_SIZE = 32
         config = vigor_dataset.VigorDatasetConfig(
+            satellite_tensor_cache_info=None,
+            panorama_tensor_cache_info=None,
             panorama_neighbor_radius=0.4,
             satellite_patch_size=(50, 50),
             panorama_size=(100, 100),
@@ -232,6 +238,8 @@ class VigorDatasetTest(unittest.TestCase):
 
     def test_iterate_overhead_dataset(self):
         config = vigor_dataset.VigorDatasetConfig(
+            satellite_tensor_cache_info=None,
+            panorama_tensor_cache_info=None,
             panorama_neighbor_radius = 0.2,
             satellite_patch_size = (50, 50),
             panorama_size = (100, 100),
@@ -245,6 +253,8 @@ class VigorDatasetTest(unittest.TestCase):
 
     def test_get_overhead_batch(self):
         config = vigor_dataset.VigorDatasetConfig(
+            satellite_tensor_cache_info=None,
+            panorama_tensor_cache_info=None,
             panorama_neighbor_radius = 0.2,
             satellite_patch_size = (50, 50),
             panorama_size = (100, 100),
@@ -266,6 +276,8 @@ class VigorDatasetTest(unittest.TestCase):
 
     def test_get_panorama_batch(self):
         config = vigor_dataset.VigorDatasetConfig(
+            satellite_tensor_cache_info=None,
+            panorama_tensor_cache_info=None,
             panorama_neighbor_radius = 0.2,
             satellite_patch_size = (50, 50),
             panorama_size = (100, 100),
@@ -287,6 +299,8 @@ class VigorDatasetTest(unittest.TestCase):
 
     def test_overhead_and_main_dataset_are_consistent(self):
         config = vigor_dataset.VigorDatasetConfig(
+            satellite_tensor_cache_info=None,
+            panorama_tensor_cache_info=None,
             panorama_neighbor_radius = 0.2,
             satellite_patch_size = (50, 50),
             panorama_size = (100, 100),
@@ -309,6 +323,8 @@ class VigorDatasetTest(unittest.TestCase):
 
     def test_index_by_tensor(self):
         config = vigor_dataset.VigorDatasetConfig(
+            satellite_tensor_cache_info=None,
+            panorama_tensor_cache_info=None,
             panorama_neighbor_radius=0.0005,
             satellite_patch_size=None,
             panorama_size=None,
@@ -322,6 +338,8 @@ class VigorDatasetTest(unittest.TestCase):
 
     def test_path_generation_is_reproducible(self):
         config = vigor_dataset.VigorDatasetConfig(
+            satellite_tensor_cache_info=None,
+            panorama_tensor_cache_info=None,
             panorama_neighbor_radius=0.0005,
             satellite_patch_size=None,
             panorama_size=None,
@@ -347,6 +365,8 @@ class VigorDatasetTest(unittest.TestCase):
         PATH_LENGTH_M = 10000
         SEED = 532
         config = vigor_dataset.VigorDatasetConfig(
+            satellite_tensor_cache_info=None,
+            panorama_tensor_cache_info=None,
             panorama_neighbor_radius=0.0005,
             satellite_patch_size=None,
             panorama_size=None,

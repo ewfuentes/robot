@@ -56,14 +56,14 @@ class TensorCache(NamedTuple):
 
 
 class VigorDatasetConfig(NamedTuple):
+    satellite_tensor_cache_info: None | TensorCacheInfo
+    panorama_tensor_cache_info: None | TensorCacheInfo
     panorama_neighbor_radius: float = 1e-9
     satellite_patch_size: None | tuple[int, int] = None
     panorama_size: None | tuple[int, int] = None
     factor: None | float = 1.0
     satellite_zoom_level: int = 20
     sample_mode: SampleMode = SampleMode.NEAREST
-    satellite_tensor_cache_info: None | TensorCacheInfo = None
-    panorama_tensor_cache_info: None | TensorCacheInfo = None
 
 
 class VigorDatasetItem(NamedTuple):

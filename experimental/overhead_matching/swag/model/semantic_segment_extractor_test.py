@@ -17,7 +17,8 @@ class SemanticSegmentExtractorTest(unittest.TestCase):
         BATCH_SIZE = 5
         dataset = vd.VigorDataset(
             Path("external/vigor_snippet/vigor_snippet"),
-            vd.VigorDatasetConfig(panorama_neighbor_radius=1e-6))
+            vd.VigorDatasetConfig(
+                satellite_tensor_cache_info=None, panorama_tensor_cache_info=None))
         dataloader = vd.get_dataloader(dataset.get_pano_view(), batch_size=BATCH_SIZE)
 
         model = sse.SemanticSegmentExtractor(

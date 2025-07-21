@@ -75,7 +75,9 @@ def main(train_config_path: Path,
         dataset_path,
         vd.VigorDatasetConfig(
             satellite_patch_size=train_config.sat_model_config.patch_dims,
-            panorama_size=train_config.pano_model_config.patch_dims))
+            panorama_size=train_config.pano_model_config.patch_dims,
+            satellite_tensor_cache_info=None,
+            panorama_tensor_cache_info=None))
     dataset = (dataset.get_sat_patch_view() if 'sat_model_config' == parts[0]
                else dataset.get_pano_view())
     if idx_start is None:
