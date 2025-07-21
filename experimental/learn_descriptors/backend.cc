@@ -99,7 +99,8 @@ void Backend::populate_rotation_estimate(std::vector<Frame>& frames) {
         q.pop();
         seen_frame_id.insert(frame.id_);
         SharedFrameVertex frame_vertex = frame_tree.at(frame.id_);
-        if (seen_frame_id.size() == 1) {  // make the first frame rotation identity
+        if (seen_frame_id.size() == 1) {  // make the first frame rotation identity unless the
+                                          // initial guess is set otherwise
             frame_vertex->w_from_this = frame_vertex->frame.world_from_cam_initial_guess_
                                             ? *frame_vertex->frame.world_from_cam_initial_guess_
                                             : gtsam::Rot3::Identity();
@@ -108,6 +109,8 @@ void Backend::populate_rotation_estimate(std::vector<Frame>& frames) {
                 *frame_vertex->w_from_this, gtsam::noiseModel::Constrained::All(3)));
         }
         frame_vertex->frame.world_from_cam_initial_guess_ = frame_vertex->w_from_this;
+        std::cout << frame.to_string() << std::endl;
+
         const gtsam::Symbol symbol_frame(symbol_char_rotation, frame.id_);
         symbols_frames.push_back(symbol_frame);
         initial.insert(symbol_frame, *frame.world_from_cam_initial_guess_);
@@ -127,7 +130,7 @@ void Backend::populate_rotation_estimate(std::vector<Frame>& frames) {
                 other_frame_vertex->w_from_this =
                     *frame_vertex->w_from_this * frame_from_other_frame;
                 other_frame_vertex->frame.world_from_cam_initial_guess_ =
-                    *frame_vertex->w_from_this * frame_from_other_frame;
+                    other_frame_vertex->w_from_this;
             }
 
             graph.add(gtsam::BetweenFactor<gtsam::Rot3>(

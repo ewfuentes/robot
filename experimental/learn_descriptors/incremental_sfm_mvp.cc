@@ -8,6 +8,7 @@
 #include "Eigen/Core"
 #include "Eigen/Geometry"
 #include "common/geometry/camera.hh"
+#include "common/gps/frame_translation.hh"
 #include "cxxopts.hpp"
 #include "experimental/learn_descriptors/camera_calibration.hh"
 #include "experimental/learn_descriptors/four_seasons_parser.hh"
@@ -358,7 +359,7 @@ int main(int argc, const char **argv) {
             const Eigen::Vector3d gps_gcs(
                 img_pt.gps_gcs->latitude, img_pt.gps_gcs->longitude,
                 img_pt.gps_gcs->altitude ? *(img_pt.gps_gcs->altitude) : 0);
-            const Eigen::Vector3d p_gps_in_ECEF = parser.ecef_from_lla(gps_gcs);
+            const Eigen::Vector3d p_gps_in_ECEF = robot::gps::ecef_from_lla(gps_gcs);
             const Eigen::Vector4d p_gps_in_ECEF_hom(p_gps_in_ECEF.x(), p_gps_in_ECEF.y(),
                                                     p_gps_in_ECEF.z(), 1.0);
             world_from_cam = Eigen::Isometry3d((parser.S_from_AS().matrix() * scale_mat_reference *

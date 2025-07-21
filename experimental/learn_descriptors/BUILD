@@ -431,6 +431,7 @@ cc_binary(
         ":spatial_test_scene_cube",
         ":structure_from_motion_types",
         "//common/geometry:camera",
+        "//common/gps:frame_translation",
         "//visualization/opencv:opencv_viz",
         "@boost//:smart_ptr",
         "@cxxopts",

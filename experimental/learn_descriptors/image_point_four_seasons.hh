@@ -83,9 +83,9 @@ struct ImagePointFourSeasons : ImagePoint {
             }
             ss << "\n\t\tsigma: ";
             if (gps_gcs->uncertainty) {
-                ss << gps_gcs->uncertainty->sigma_lat_mitude << "\t"
-                   << gps_gcs->uncertainty->sigma_longitude << "\t"
-                   << gps_gcs->uncertainty->sigma_altitude;
+                ss << gps_gcs->uncertainty->sigma_latitude_deg << "\t"
+                   << gps_gcs->uncertainty->sigma_longitude_deg << "\t"
+                   << gps_gcs->uncertainty->sigma_altitude_m;
             } else {
                 ss << "N/A";
             }

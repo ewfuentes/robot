@@ -1,5 +1,7 @@
 #pragma once
 #include <optional>
+#include <sstream>
+#include <string>
 #include <unordered_map>
 
 #include "Eigen/Core"
@@ -45,6 +47,46 @@ class Frame {
 
     const KeypointsCV& keypoint() { return kpts_; };
     const cv::Mat& descriptors() { return descriptors_; };
+
+    std::string to_string() const {
+        std::stringstream ss;
+        ss << "Frame " << id_ << ":\n";
+        ss << "\tseq: " << seq_ << "\n";
+        ss << "\tK: ";
+        if (K_) {
+            ss << "fx: " << K_->fx() << ", fy: " << K_->fy() << ", s: " << K_->skew()
+               << ", px: " << K_->px() << ", py: " << K_->py();
+        } else {
+            ss << "N/A";
+        }
+        ss << "\n\tkpts_.size(): " << kpts_.size();
+        ss << "\n\tframe_from_other_frames_.size(): " << frame_from_other_frames_.size();
+        ss << "\n\tworld_from_cam_groundtruth_: ";
+        if (world_from_cam_groundtruth_) {
+            ss << "\n" << world_from_cam_groundtruth_->matrix();
+        } else {
+            ss << "N/A";
+        }
+        ss << "\n\tcam_in_world_initial_guess_: ";
+        if (cam_in_world_initial_guess_) {
+            ss << "\n" << cam_in_world_initial_guess_->matrix();
+        } else {
+            ss << "N/A";
+        }
+        ss << "\n\tworld_from_cam_initial_guess_: ";
+        if (world_from_cam_initial_guess_) {
+            ss << "\n" << world_from_cam_initial_guess_->matrix();
+        } else {
+            ss << "N/A";
+        }
+        ss << "\n\ttranslation_covariance_in_cam_: ";
+        if (translation_covariance_in_cam_) {
+            ss << "\n" << translation_covariance_in_cam_->matrix();
+        } else {
+            ss << "N/A";
+        }
+        return ss.str();
+    }
 
     FrameId id_;
     size_t seq_;

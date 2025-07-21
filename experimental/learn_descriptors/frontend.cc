@@ -341,7 +341,7 @@ std::optional<std::vector<Eigen::Vector3d>> Frontend::interpolated_initial_trans
             frames_with_guess.push_back(&frame);
         }
     }
-    if (frames_with_guess.size() <= 2) return std::nullopt;
+    if (frames_with_guess.size() < 2) return std::nullopt;
     std::vector<Eigen::Vector3d> interpolated_init_guesses;
     interpolated_init_guesses.reserve(frames_.size());
     size_t idx_guess = 0;
@@ -357,21 +357,15 @@ std::optional<std::vector<Eigen::Vector3d>> Frontend::interpolated_initial_trans
 
         if (frame.cam_in_world_initial_guess_) {
             interpolated = *frame.cam_in_world_initial_guess_;
-        } else if (frame.seq_ < frames_with_guess[idx_guess]->seq_) {
-            Eigen::Vector3d v_b_to_a =
-                *frames_with_guess[idx_guess]->velocity_from(*frames_with_guess[idx_guess + 1]);
-            double dt = 1e-9 * (frames_with_guess[idx_guess]->seq_ - frame.seq_);
-            interpolated =
-                *frames_with_guess[idx_guess]->cam_in_world_initial_guess_ + v_b_to_a * dt;
-            std::cout << "interpolated frame " << frame.id_ << ": " << interpolated << std::endl;
-            std::cout << "\tdt: " << dt << std::endl;
-            std::cout << "\tv_a_to_b: " << v_b_to_a << std::endl;
         } else {
             Eigen::Vector3d v_a_to_b =
                 *frames_with_guess[idx_guess]->velocity_to(*frames_with_guess[idx_guess + 1]);
-            double dt = 1e-9 * (frame.seq_ - frames_with_guess[idx_guess]->seq_);
-            interpolated =
-                *frames_with_guess[idx_guess]->cam_in_world_initial_guess_ + v_a_to_b * dt;
+            double dt = (frame.seq_ < frames_with_guess[idx_guess]->seq_ ? -1.0 : 1.0) * 1e-9 *
+                        (frames_with_guess[idx_guess]->seq_ > frame.seq_
+                             ? frames_with_guess[idx_guess]->seq_ - frame.seq_
+                             : frame.seq_ - frames_with_guess[idx_guess]->seq_);
+            interpolated = *frames_with_guess[idx_guess]->cam_in_world_initial_guess_ +
+                           v_a_to_b * dt;  // add sign back to dt
             std::cout << "interpolated frame " << frame.id_ << ": " << interpolated << std::endl;
             std::cout << "\tdt: " << dt << std::endl;
             std::cout << "\tv_a_to_b: " << v_a_to_b << std::endl;
