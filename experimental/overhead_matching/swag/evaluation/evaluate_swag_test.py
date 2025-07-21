@@ -45,7 +45,9 @@ class EvaluateSwagTest(unittest.TestCase):
         EMBEDDING_DIM = 16
         SEED = 42
         config = vd.VigorDatasetConfig(
-                panorama_neighbor_radius=0.2, sample_mode=vd.SampleMode.POS_SEMIPOS)
+            satellite_tensor_cache_info=None,
+            panorama_tensor_cache_info=None,
+            sample_mode=vd.SampleMode.POS_SEMIPOS)
 
         # Use same random seed for reproducibility
         torch.manual_seed(SEED)
@@ -107,10 +109,10 @@ class EvaluateSwagTest(unittest.TestCase):
             item = result_df[mask]
             self.assertEqual(item.iloc[0]["k_value"], expected_k_value)
 
-
     def test_get_distance_error_meters(self):
         # Setup
-        config = vd.VigorDatasetConfig(panorama_neighbor_radius=0.2)
+        config = vd.VigorDatasetConfig(
+            satellite_tensor_cache_info=None, panorama_tensor_cache_info=None)
         dataset = vd.VigorDataset(Path("external/vigor_snippet/vigor_snippet"), config)
 
 

@@ -107,10 +107,16 @@ def _(
         pano_model = load_model(Path(f"{model_partial_path}_panorama"), device='cuda')
 
         dataset_config = vigor_dataset.VigorDatasetConfig(
-            panorama_neighbor_radius=1e-6,
             satellite_patch_size=sat_model.patch_dims,
             panorama_size=pano_model.patch_dims,
-            factor=1.0
+            panorama_tensor_cache_info=vigor_dataset.TensorCacheInfo(
+                dataset_key=dataset_path.name,
+                model_type="panorama",
+                hash_and_key=pano_model.cache_info()),
+            satellite_tensor_cache_info=vigor_dataset.TensorCacheInfo(
+                dataset_key=dataset_path.name,
+                model_type="satellite",
+                hash_and_key=sat_model.cache_info())
         )
         dataset = vigor_dataset.VigorDataset(dataset_path, dataset_config)
 
@@ -268,10 +274,8 @@ def _(Path, evaluate_swag, load_model, vigor_dataset):
         sat_model = load_model(Path(f"{model_path}_satellite"))
         pano_model = load_model(Path(f"{model_path}_panorama"))
         dataset_config = vigor_dataset.VigorDatasetConfig(
-            panorama_neighbor_radius=1e-6,
             satellite_patch_size=sat_model.patch_dims,
             panorama_size=pano_model.patch_dims,
-            factor=1.0,
             panorama_tensor_cache_info=vigor_dataset.TensorCacheInfo(
                 dataset_key=dataset_path.name,
                 model_type="panorama",

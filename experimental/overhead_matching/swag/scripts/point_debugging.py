@@ -41,7 +41,8 @@ def _():
 def _(Path, vd):
     _dataset_path = Path('/data/overhead_matching/datasets/VIGOR/Chicago')
     _dataset_config = vd.VigorDatasetConfig(
-        panorama_neighbor_radius=1e-6, 
+        satellite_tensor_cache_info=None,
+        panorama_tensor_cache_info=None,
         satellite_patch_size=(320, 320),
         panorama_size=(320, 640)
     )
@@ -50,109 +51,59 @@ def _(Path, vd):
 
 
 @app.cell
-def _():
-    pano_ids = [
-        'eGAGP4_z5WqSKUCduBnTTQ',
-        'DFV4rWr6uNXyRXADxw-drA',
-        'i4wmqIoYC4MpwHwtX1Ne_Q',
-        'FCIaFY85O35KFBHiSvNDrw',
-        'px9glW7aHgTjo_DqD3WHlg',
-        'IxT7VPmcIclFC0EUS-pX5Q',
-        'tbW7AKK6CZ8FiTujoomT8Q',
-        'T4hFoaVPzZFqZ9n58TjOwA',
-        'C9zFejx1IIzjS_0aOqj03Q',
-        'o65m4lSocxg8q1iDgKeeKA',
-        'XCqGpT7YETzc4tcx_kHTVA',
-        'T4l-wzDwORCSRcooL_Ds6w',
-        'unNrTGdRYM-uWDecK2Lduw',
-        'oCyAJcIFVbvR3_ntDjdECg',
-        'LQtcBwmGf95sorQtsNCqQA',
-        '8j_7Og8Ij8WisYjeatIv2w',
-        '4gjTma9fOnICZNNPV7odJA',
-        '6Ky7G-T1w1qgwRSP1MUIwg',
-    ]
-    return (pano_ids,)
-
-
-@app.cell
-def _(np):
-    def sample_pts():
-        gen = np.random.default_rng(0)
-        rvs = gen.random((256, 2))
-        elevation_rad = np.arcsin(2 * rvs[:, 0] - 1)
-
-        row_frac = 1.0/2.0 - elevation_rad / np.pi
-        col_frac =  rvs[:, 1]
-        return np.stack((col_frac, row_frac), axis=1)
-    return (sample_pts,)
-
-
-@app.cell
 def _(SAM2AutomaticMaskGenerator):
     # Run SAM2
     sam_model = SAM2AutomaticMaskGenerator.from_pretrained(
         "facebook/sam2.1-hiera-large",
-        # points_per_side=None,
         points_per_batch=128,
-        # point_grids=[sample_pts()],
         stability_score_thresh=0.85
     )
     return (sam_model,)
 
 
 @app.cell
-def _(dataset, sam_model, tqdm, vd):
-    # for _p in pano_ids:
-    #     print(_p)
-    #     idx = dataset._panorama_metadata[dataset._panorama_metadata.pano_id == _p].index[0]
-    #     _item = dataset[idx]
-    #     results = sam_model.generate(_item.panorama.permute(1, 2, 0).numpy())
-    #     for _i, _r in enumerate(results):
-    #         if _r["bbox"][2] == 0.0 or _r["bbox"][3] == 0.0:
-    #             print(_item)
-    #             print(_i, _r)
-    #             print(results)
-    #             break
+def _():
+    # dataloader = vd.get_dataloader(dataset.get_pano_view(), num_workers=8, batch_size=18)
 
-
-    dataloader = vd.get_dataloader(dataset.get_pano_view(), num_workers=8, batch_size=18)
-
-    for batch in tqdm.tqdm(dataloader):
-        for batch_idx in range(len(batch.panorama_metadata)):
-            _results = sam_model.generate(batch.panorama[batch_idx].permute(1, 2, 0).numpy())
-            for _i, _r in enumerate(_results):
-                if _r["bbox"][2] == 0.0 or _r["bbox"][3] == 0.0:
-                    print(batch.panorama_metadata[batch_idx])
-                    print(_results)
-    return batch, batch_idx, dataloader
+    # for batch in tqdm.tqdm(dataloader):
+    #     for batch_idx in range(len(batch.panorama_metadata)):
+    #         _results = sam_model.generate(batch.panorama[batch_idx].permute(1, 2, 0).numpy())
+    #         for _i, _r in enumerate(_results):
+    #             if _r["bbox"][2] == 0.0 or _r["bbox"][3] == 0.0:
+    #                 print(batch.panorama_metadata[batch_idx])
+    #                 print(_results)
+    return
 
 
 @app.cell
-def _(dataset, mo, plt, sample_pts):
-    item = dataset[123]
-    pts = sample_pts()
+def _(dataset, mo, plt):
+    item = dataset[20]
     plt.figure(figsize=(12, 6))
     image = item.panorama.permute(1, 2, 0).numpy()
     plt.imshow(item.panorama.permute(1, 2, 0))
-    plt.plot(pts[:, 0] * item.panorama.shape[2], pts[:, 1] * item.panorama.shape[1], 'o')
     mo.mpl.interactive(plt.gcf())
-    return image, item, pts
+    return image, item
+
+
+@app.cell
+def _(dataset):
+    dataset._panorama_metadata
+    return
 
 
 @app.cell
 def _(item, mo, np, plt, sam_model, sv):
-    results = sam_model.generate(item.panorama.permute(1, 2, 0).numpy())
-    detections = sv.Detections.from_sam(sam_result=results)
-
-    img = np.ascontiguousarray(np.uint8(item.panorama.permute(1, 2, 0).numpy() * 255.0))
-    print(img.shape)
-    sv.MaskAnnotator(color_lookup=sv.ColorLookup.INDEX).annotate(img, detections)
+    def mask_annotate_image(img):
+        results = sam_model.generate(img)
+        detections = sv.Detections.from_sam(sam_result=results)
+        img = np.ascontiguousarray(np.uint8(img * 255.0))
+        sv.MaskAnnotator(color_lookup=sv.ColorLookup.INDEX).annotate(img, detections)
+        return img
 
     plt.figure(figsize=(12, 6))
-    plt.imshow(img)
+    plt.imshow(mask_annotate_image(item.panorama.permute(1, 2, 0).numpy()))
     mo.mpl.interactive(plt.gcf())
-
-    return detections, img, results
+    return (mask_annotate_image,)
 
 
 @app.cell
@@ -281,21 +232,36 @@ def _(
 
 @app.cell
 def _(mo, plt, reproj):
-    plt.figure(figsize=(22,6))
+    plt.figure(figsize=(22,10))
 
-    for i, (yaw, img) in enumerate(reproj.items()):
-        print(i, yaw)
-        plt.subplot(2, 4, i+1)
-        plt.imshow(img)
-        plt.title(f"{yaw=:0.3f}")
+    for _i, (_yaw, _img) in enumerate(reproj.items()):
+        print(_i, _yaw)
+        plt.subplot(2, 4, _i+1)
+        plt.imshow(_img)
+        plt.title(f"{_yaw=:0.3f}")
     plt.tight_layout()
     mo.mpl.interactive(plt.gcf())
-    return i, img, yaw
+    return
+
+
+@app.cell
+def _(mask_annotate_image, mo, plt, reproj):
+    plt.figure(figsize=(22,10))
+
+    for _i, (_yaw, _img) in enumerate(reproj.items()):
+        print(_i, _yaw)
+        plt.subplot(2, 4, _i+1)
+        plt.imshow(mask_annotate_image(_img))
+        plt.title(f"{_yaw=:0.3f}")
+
+    plt.tight_layout()
+    mo.mpl.interactive(plt.gcf())
+    return
 
 
 @app.cell
 def _(reproj):
-    print(len(reproj))
+    reproj[0.0].shape
     return
 
 
