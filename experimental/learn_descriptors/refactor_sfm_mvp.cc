@@ -280,6 +280,7 @@ int main(int argc, const char **argv) {
     std::cout << "heartbeat" << std::endl;
     ROBOT_CHECK(interpolated_cam_in_w, interpolated_cam_in_w);
     Eigen::Vector3d cam0_in_w = interpolated_cam_in_w->front();
+    std::vector<robot::visualization::VizPose> viz_pose;
     for (size_t i = 0; i < frames.size(); i++) {
         // std::cout << "interpolated translation " << i << ": " << (*interpolated_cam_in_w)[i]
         //           << std::endl;
@@ -300,11 +301,10 @@ int main(int argc, const char **argv) {
                     : gps_sigmas_fallback);
             graph_.add(gtsam::GPSFactor(cam_symbol, *frame.cam_in_world_initial_guess_, gps_noise));
         }
+        viz_pose.emplace_back(
+            Eigen::Isometry3d(world_from_cam_estimate.matrix()),
+            (frame.cam_in_world_initial_guess_ ? "xg_" : "x_") + std::to_string(frame.id_));
         symbols_pose.push_back(cam_symbol);
-    }
-    std::vector<robot::visualization::VizPose> viz_pose;
-    for (const auto &[id, pose] : world_from_cam_initial_guess) {
-        viz_pose.emplace_back(Eigen::Isometry3d(pose.matrix()), "x_" + std::to_string(id));
     }
     robot::visualization::viz_scene(viz_pose, std::vector<robot::visualization::VizPoint>(),
                                     cv::viz::Color::brown(), true, true,
