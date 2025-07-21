@@ -281,7 +281,7 @@ def _(Path, evaluate_swag, load_model, vigor_dataset):
                 model_type="satellite",
                 hash_and_key=sat_model.cache_info())
         )
-        dataset = vigor_dataset.VigorDataset(dataset_path, dataset_config, Path('/data/overhead_matching/datasets/VIGOR/landmarks/NewYork.geojson'))
+        dataset = vigor_dataset.VigorDataset(dataset_path, dataset_config)
         return dataset, evaluate_swag.compute_cached_similarity_matrix(sat_model, pano_model, dataset, device='cuda', use_cached_similarity=True)
     return (get_similarity_matrix,)
 

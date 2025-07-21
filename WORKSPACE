@@ -615,9 +615,9 @@ http_archive(
 
 http_archive(
   name="vigor_snippet",
-  urls=["https://www.dropbox.com/scl/fi/6breqzx8dwawzoouxu4w3/vigor_snippet.zip?rlkey=104sa118w76lbudmngd6wnc4i&st=972uxtcd&dl=1"],
+  urls=["https://www.dropbox.com/scl/fi/6breqzx8dwawzoouxu4w3/vigor_snippet.zip?rlkey=104sa118w76lbudmngd6wnc4i&st=ohxhjjcz&dl=1"],
   build_file="//third_party:BUILD.zip_file",
-  integrity = "sha256-0+V3fJARho+tRPXaRtzXMyhu/ueFzFdD3AIVf4OKm6w=",
+  integrity = "sha256-F21gVWldfgjnSlReJj1OQIoLTM9QrKBNH0wo8wfhSM0=",
 )
 
 http_archive(

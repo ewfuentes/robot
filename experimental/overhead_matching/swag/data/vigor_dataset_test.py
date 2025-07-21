@@ -128,7 +128,7 @@ class VigorDatasetTest(unittest.TestCase):
         landmark_info_df = pd.DataFrame.from_records(landmark_info)
         landmark_geometry = gpd.points_from_xy(landmark_info_df["lon"], landmark_info_df["lat"])
         landmark_info_df = gpd.GeoDataFrame(landmark_info_df, geometry=landmark_geometry)
-        landmark_info_df.to_file(temp_dir / "test.geojson", driver="GeoJSON")
+        landmark_info_df.to_file(temp_dir / "landmarks.geojson", driver="GeoJSON")
 
     @classmethod
     def tearDownClass(cls):
@@ -187,8 +187,7 @@ class VigorDatasetTest(unittest.TestCase):
         # Action
         dataset = vigor_dataset.VigorDataset(
                 Path(self._temp_dir.name),
-                config,
-                landmark_path=[Path(self._temp_dir.name) / "test.geojson"])
+                config)
 
         item = dataset[25]
 
@@ -219,13 +218,11 @@ class VigorDatasetTest(unittest.TestCase):
             satellite_zoom_level=7,
         )
         dataset = vigor_dataset.VigorDataset(
-                Path(self._temp_dir.name), config, Path(self._temp_dir.name) / "test.geojson")
+                Path(self._temp_dir.name), config)
         dataloader = vigor_dataset.get_dataloader(dataset, batch_size=BATCH_SIZE)
 
         # Action
         batch = next(iter(dataloader))
-
-        print(batch.satellite_metadata)
 
         # Verification
         self.assertEqual(len(batch.panorama_metadata), BATCH_SIZE)
