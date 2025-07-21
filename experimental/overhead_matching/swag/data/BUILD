@@ -15,6 +15,7 @@ py_library(
     requirement("scipy"),
     requirement("matplotlib"),
     requirement("PyGObject"),
+    requirement("lmdb"),
     "//common/torch:load_torch_deps",
     "//common/math:haversine",
     "//common/gps:web_mercator",

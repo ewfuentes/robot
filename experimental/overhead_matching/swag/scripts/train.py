@@ -139,7 +139,7 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model, quie
             random_sample_type=opt_config.random_sample_type,
             dataset=dataset)
     dataloader = vigor_dataset.get_dataloader(
-        dataset, batch_sampler=miner, num_workers=2, persistent_workers=True)
+        dataset, batch_sampler=miner, num_workers=8, persistent_workers=False)
 
     opt = torch.optim.Adam(
         list(panorama_model.parameters()) + list(satellite_model.parameters()),
@@ -276,17 +276,6 @@ def main(
         train_config = msgspec.yaml.decode(file_in.read(), type=TrainConfig, dec_hook=dec_hook)
     pprint(train_config)
 
-    PANORAMA_NEIGHBOR_RADIUS_DEG = 1e-6
-    dataset_config = vigor_dataset.VigorDatasetConfig(
-        panorama_neighbor_radius=PANORAMA_NEIGHBOR_RADIUS_DEG,
-        satellite_patch_size=train_config.sat_model_config.patch_dims,
-        panorama_size=train_config.pano_model_config.patch_dims,
-        sample_mode=vigor_dataset.SampleMode.POS_SEMIPOS,
-    )
-    dataset_paths = [dataset_base_path / p for p in train_config.dataset_path]
-    landmark_paths = [dataset_base_path / "landmarks" / (str(p) + ".geojson") for p in train_config.dataset_path]
-    dataset = vigor_dataset.VigorDataset(dataset_paths, dataset_config, landmark_paths)
-
     if isinstance(train_config.sat_model_config, patch_embedding.WagPatchEmbeddingConfig):
         satellite_model = patch_embedding.WagPatchEmbedding(train_config.sat_model_config)
     elif isinstance(train_config.sat_model_config, swag_patch_embedding.SwagPatchEmbeddingConfig):
@@ -296,6 +285,25 @@ def main(
         panorama_model = patch_embedding.WagPatchEmbedding(train_config.pano_model_config)
     elif isinstance(train_config.pano_model_config, swag_patch_embedding.SwagPatchEmbeddingConfig):
         panorama_model = swag_patch_embedding.SwagPatchEmbedding(train_config.pano_model_config)
+
+    assert len(train_config.dataset_path) == 1
+    dataset_config = vigor_dataset.VigorDatasetConfig(
+        satellite_patch_size=train_config.sat_model_config.patch_dims,
+        panorama_size=train_config.pano_model_config.patch_dims,
+        satellite_tensor_cache_info=vigor_dataset.TensorCacheInfo(
+            dataset_key=train_config.dataset_path[0],
+            model_type="satellite",
+            hash_and_key=satellite_model.cache_info()),
+        panorama_tensor_cache_info=vigor_dataset.TensorCacheInfo(
+            dataset_key=train_config.dataset_path[0],
+            model_type="panorama",
+            hash_and_key=panorama_model.cache_info()),
+        sample_mode=vigor_dataset.SampleMode.POS_SEMIPOS,
+    )
+
+    dataset_paths = [dataset_base_path / p for p in train_config.dataset_path]
+    landmark_paths = [dataset_base_path / "landmarks" / (str(p) + ".geojson") for p in train_config.dataset_path]
+    dataset = vigor_dataset.VigorDataset(dataset_paths, dataset_config, landmark_paths)
 
     output_dir = output_base_path / train_config.output_dir
     tensorboard_output = train_config.tensorboard_output
