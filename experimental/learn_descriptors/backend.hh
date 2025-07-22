@@ -1,7 +1,9 @@
 #pragma once
 
+#include <cstddef>
 #include <memory>
 #include <optional>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -27,26 +29,56 @@ class Backend {
     static constexpr char symbol_char_landmark = 'l';
     static constexpr char symbol_char_cam_cal = 'k';
 
-    void solve_graph();
-    typedef int epoch;
-    using graph_step_debug_func = std::function<void(const gtsam::Values &, const epoch)>;
-    void solve_graph(const int num_steps,
-                     std::optional<graph_step_debug_func> inter_debug_func = std::nullopt);
-
+    static std::optional<gtsam::Point3> attempt_triangulate(
+        const std::vector<gtsam::Pose3> &cam_poses, const std::vector<gtsam::Point2> &cam_obs,
+        gtsam::Cal3_S2::shared_ptr K, const double max_reproj_error = 2.0,
+        const bool verbose = true);
     static gtsam::Rot3 average_rotations(const std::vector<gtsam::Rot3> &rotations,
                                          int max_iter = 10);
     // use rotation averaging to set the rotation initial guess for each frame in the world frame.
     // the world frame will be the first frame in the vector. deadreckon_incrementally won't
     // optimize if true
     static void populate_rotation_estimate(std::vector<Frame> &frames);
+    // use rotation averaging to set the rotation initial guess for each frame in the world frame.
+    // the world frame will be the first frame in the vector. deadreckon_incrementally won't
+    // optimize if true
+    static void populate_rotation_estimate(std::vector<SharedFrame> &shared_frames);
 
+    void add_frames(std::vector<SharedFrame> &shared_frames) {
+        shared_frames_.reserve(shared_frames_.size() + shared_frames.size());
+        shared_frames_.insert(shared_frames_.end(), shared_frames.begin(), shared_frames.end());
+    };
+    void calculate_initial_values();
+    void populate_graph(const FeatureTracks &feature_tracks);
+    void solve_graph();
+    typedef int epoch;
+    using graph_step_debug_func = std::function<void(const gtsam::Values &, const epoch)>;
+    void solve_graph(const int num_epochs,
+                     std::optional<graph_step_debug_func> iter_debug_func = std::nullopt);
+    // void imshow_keypoints(const size_t img_id, bool viz = true, bool viz_all = false);
+
+    const std::vector<SharedFrame> &shared_frames() const { return shared_frames_; };
     const gtsam::Values &current_initial_values() const { return initial_estimate_; };
     const gtsam::Values &result() const { return result_; };
 
    private:
+    std::vector<SharedFrame> shared_frames_;
+
     gtsam::Values initial_estimate_;
     gtsam::Values result_;
     gtsam::NonlinearFactorGraph graph_;
+
+    std::unordered_map<size_t, gtsam::Pose3> world_from_cam_initial_estimates_;
+    std::unordered_map<size_t, gtsam::Point3> lmk_initial_estimates_;
+
+    gtsam::noiseModel::Diagonal::shared_ptr noise_tight_prior = gtsam::noiseModel::Diagonal::Sigmas(
+        (gtsam::Vector(6) << 0, 0, 0,  // rotation stdev in radians
+         1e-6, 1e-6, 1e-6              // translation stdev in meters
+         )
+            .finished());
+    gtsam::Vector3 gps_sigmas_fallback{0.5, 0.5, 0.5};
+    gtsam::noiseModel::Isotropic::shared_ptr landmark_noise_ =
+        gtsam::noiseModel::Isotropic::Sigma(2, 1.0);
 };
 using Landmark = gtsam::Point3;
 }  // namespace robot::experimental::learn_descriptors

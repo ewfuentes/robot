@@ -207,42 +207,20 @@ int main(int argc, const char **argv) {
                           true, false};
     Frontend frontend(params);
 
-    std::vector<size_t> idx_img_pts;
     for (size_t i = 633; i < 646; i += 2) {
         frontend.add_image(
             ImageAndPoint{parser.load_image(i),
                           std::make_shared<ImagePointFourSeasons>(parser.get_image_point(i))});
-        idx_img_pts.push_back(i);
+        const ImagePointFourSeasons img_pt = parser.get_image_point(i);
+        std::cout << img_pt.to_string() << std::endl;
     }
-    // for (size_t i = 581; i < 750; i += 5) {
-    //     frontend.add_image(
-    //         ImageAndPoint{parser.load_image(i),
-    //                       std::make_shared<ImagePointFourSeasons>(parser.get_image_point(i))});
-    //     idx_img_pts.push_back(i);
-    // }
     frontend.populate_frames();
     frontend.match_frames_and_build_tracks();
 
-    std::cout << "first frame translation: " << *frontend.frames()[0].cam_in_world_initial_guess_
-              << std::endl;
-    std::cout << "ground truth translation: "
-              << frontend.frames()[0].world_from_cam_groundtruth_->translation() << std::endl;
-
+    // visualization
     std::vector<robot::visualization::VizPose> viz_poses_init;
-    std::optional<Eigen::Vector3d> first_point;
     std::optional<Eigen::Isometry3d> first_grnd_trth;
-    (void)first_point;
     for (const Frame &frame : frontend.frames()) {
-        // if (frame.cam_in_world_initial_guess_) {
-        //     Eigen::Isometry3d world_from_cam_init;
-        //     world_from_cam_init.linear() = frame.world_from_cam_initial_guess_->matrix();
-        //     if (!first_point) first_point = *frame.cam_in_world_initial_guess_;
-        //     world_from_cam_init.translation() = *frame.cam_in_world_initial_guess_ -
-        //     *first_point; std::cout << "world_from_cam_init: " <<
-        //     world_from_cam_init.matrix() << std::endl; viz_poses_init.emplace_back(
-        //         world_from_cam_init, gtsam::Symbol(Frontend::symbol_pose_char,
-        //         frame.id_).string());
-        // }
         if (frame.world_from_cam_groundtruth_) {
             std::cout << "adding a ground truth frame to viz!" << std::endl;
             Eigen::Isometry3d w_from_cam_grnd_trth(frame.world_from_cam_groundtruth_->matrix());
@@ -280,34 +258,13 @@ int main(int argc, const char **argv) {
     frames[0].world_from_cam_initial_guess_ =
         frames[0].world_from_cam_groundtruth_->rotation();  // make sure first idx has grnd trth
 
-    // // let's examine the rotations to the first thingy
-    // std::vector<robot::visualization::VizPose> viz_5_pt_rot;
-    // for (const auto &[frame_id, rotation] : frames[0].frame_from_other_frames_) {
-    //     viz_5_pt_rot.emplace_back(
-    //         Eigen::Isometry3d(gtsam::Pose3(rotation, gtsam::Point3()).matrix()),
-    //         "rot_to_" + std::to_string(frame_id));
-    // }
-    // robot::visualization::viz_scene(viz_5_pt_rot, std::vector<robot::visualization::VizPoint>(),
-    //                                 cv::viz::Color::brown(), true, true,
-    //                                 "Frontend initial guesses");
-
     Backend::populate_rotation_estimate(frames);
     std::vector<gtsam::Symbol> symbols_pose;
     std::unordered_map<size_t, gtsam::Pose3> world_from_cam_initial_guess;
     std::optional<std::vector<Eigen::Vector3d>> interpolated_cam_in_w =
         frontend.interpolated_initial_translations();
     ROBOT_CHECK(interpolated_cam_in_w, interpolated_cam_in_w);
-    // std::vector<robot::visualization::VizPoint> viz_pts_interpolated;
-    // for (size_t i = 0; i < interpolated_cam_in_w->size(); i++) {
-    //     viz_pts_interpolated.emplace_back(
-    //         (*interpolated_cam_in_w)[i] - interpolated_cam_in_w->front(),
-    //         "pt_" + std::to_string(i));
-    //     std::cout << "pt_" + std::to_string(i) << ": " << (*interpolated_cam_in_w)[i] <<
-    //     std::endl;
-    // }
-    // robot::visualization::viz_scene(std::vector<robot::visualization::VizPose>(),
-    //                                 viz_pts_interpolated, cv::viz::Color::brown(), true, true,
-    //                                 "Initial guesses in backend");
+
     Eigen::Vector3d cam0_in_w = interpolated_cam_in_w->front();
     std::optional<Eigen::Vector3d> grndtrth_cam0_in_w;
     std::vector<size_t> idx_grndtrth_frame;
@@ -361,11 +318,11 @@ int main(int argc, const char **argv) {
                           << std::endl;
             }
             gtsam::noiseModel::Diagonal::shared_ptr gps_noise = gtsam::noiseModel::Diagonal::Sigmas(
-                // frame.translation_covariance_in_cam_
-                false ? gtsam::Vector3(std::sqrt((*frame.translation_covariance_in_cam_)(0, 0)),
-                                       std::sqrt((*frame.translation_covariance_in_cam_)(1, 1)),
-                                       std::sqrt((*frame.translation_covariance_in_cam_)(2, 2)))
-                      : gps_sigmas_fallback);
+                frame.translation_covariance_in_cam_
+                    ? gtsam::Vector3(std::sqrt((*frame.translation_covariance_in_cam_)(0, 0)),
+                                     std::sqrt((*frame.translation_covariance_in_cam_)(1, 1)),
+                                     std::sqrt((*frame.translation_covariance_in_cam_)(2, 2)))
+                    : gps_sigmas_fallback);
             graph_.add(gtsam::GPSFactor(cam_symbol, *frame.cam_in_world_initial_guess_, gps_noise));
             std::cout << "adding gps factor!" << std::endl;
         }
@@ -412,7 +369,6 @@ int main(int argc, const char **argv) {
     // calculate ATE (Absolute Trajectory Error) average (RMSE) to reference
     double sum_traj_error = 0;
     double sum_rot_error = 0;
-    // for (size_t i = 0; i < idx_grndtrth_frame.size(); i++) {
     for (const size_t i_grndtrth_frame : idx_grndtrth_frame) {
         const Frame &frame = frames[i_grndtrth_frame];
         const gtsam::Pose3 traj_pose =
@@ -429,6 +385,5 @@ int main(int argc, const char **argv) {
     std::cout << "\n\nRMSE_ATE:\t" << rmse_ate << "\nRMSE_ROT:\t" << rmse_rot << std::endl;
 
     std::cout << "about to visualize result" << std::endl;
-    // result.print();
     graph_values(result, "Result", symbols_pose, symbols_lmks);
 }

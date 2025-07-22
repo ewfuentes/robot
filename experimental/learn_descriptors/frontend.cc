@@ -168,9 +168,9 @@ Frontend::Frontend(FrontendParams params_) : params_(params_) {
 }
 
 void Frontend::populate_frames(bool verbose) {
-    FrameId id = frames_.size();
+    FrameId id = shared_frames_.size();
     for (const ImageAndPoint &img_and_pt : images_and_points_) {
-        const std::shared_ptr<ImagePoint> shared_img_pt = img_and_pt.shared_img_pt;
+        const std::shared_ptr<ImagePoint> &shared_img_pt = img_and_pt.shared_img_pt;
         if (verbose) {
             std::cout << shared_img_pt->to_string() << std::endl;
         }
@@ -205,17 +205,23 @@ void Frontend::populate_frames(bool verbose) {
         if (maybe_translation_covariance_in_cam) {
             frame.translation_covariance_in_cam_ = *maybe_translation_covariance_in_cam;
         }
-        frames_.push_back(frame);
+        if (id == 0) {
+            std::cout << (frame.world_from_cam_groundtruth_ ? "first frame has grnd"
+                                                            : "first frame doesn't have grnd")
+                      << std::endl;
+        }
+        shared_frames_.push_back(std::make_shared<Frame>(frame));
         id++;
     }
+    interpolate_frames();
 }
 
 void Frontend::match_frames_and_build_tracks() {
     if (params_.exhaustive) {
-        for (size_t i = 0; i < frames_.size() - 1; i++) {
-            for (size_t j = i + 1; j < frames_.size(); j++) {
-                std::vector<cv::DMatch> matches =
-                    compute_matches(frames_[i].descriptors(), frames_[j].descriptors());
+        for (size_t i = 0; i < shared_frames_.size() - 1; i++) {
+            for (size_t j = i + 1; j < shared_frames_.size(); j++) {
+                std::vector<cv::DMatch> matches = compute_matches(shared_frames_[i]->descriptors(),
+                                                                  shared_frames_[j]->descriptors());
                 enforce_bijective_buffer_matches(matches);
                 if (matches.size() < 5) {
                     continue;
@@ -223,12 +229,12 @@ void Frontend::match_frames_and_build_tracks() {
 
                 std::vector<cv::KeyPoint> cv_kpts_1;
                 std::vector<cv::KeyPoint> cv_kpts_2;
-                for (const KeypointCV &kpt : frames_[i].keypoint()) {
+                for (const KeypointCV &kpt : shared_frames_[i]->keypoint()) {
                     cv::KeyPoint cv_kpt;
                     cv_kpt.pt = kpt;
                     cv_kpts_1.push_back(cv_kpt);
                 }
-                for (const KeypointCV &kpt : frames_[j].keypoint()) {
+                for (const KeypointCV &kpt : shared_frames_[j]->keypoint()) {
                     cv::KeyPoint cv_kpt;
                     cv_kpt.pt = kpt;
                     cv_kpts_2.push_back(cv_kpt);
@@ -244,40 +250,34 @@ void Frontend::match_frames_and_build_tracks() {
                 if (!scale_cam0_from_cam1) {
                     continue;
                 }
-                // ROBOT_CHECK(frames_[i].world_from_cam_initial_guess_,
-                //             "This rotation should be populated.");
-                // this could use some work to verify the quality of the output, particularly inside
-                // of estiamte_cam0_from_cam1
-                // also, at the moment I am not accounting for any covariance between the gps
-                // measurement and the unit translation vector from estimate_cam0_from_cam1
 
-                frames_[i].frame_from_other_frames_.emplace(
+                shared_frames_[i]->frame_from_other_frames_.emplace(
                     j, gtsam::Rot3(scale_cam0_from_cam1->linear().matrix()));
                 for (const cv::DMatch match : matches) {
-                    const KeypointCV kpt_cam0 = frames_[i].keypoint()[match.queryIdx];
-                    const KeypointCV kpt_cam1 = frames_[j].keypoint()[match.trainIdx];
+                    const KeypointCV kpt_cam0 = shared_frames_[i]->keypoint()[match.queryIdx];
+                    const KeypointCV kpt_cam1 = shared_frames_[j]->keypoint()[match.trainIdx];
 
-                    auto key = std::make_pair(frames_[i].id_, kpt_cam0);
+                    auto key = std::make_pair(shared_frames_[i]->id_, kpt_cam0);
                     if (lmk_id_map_.find(key) != lmk_id_map_.end()) {
                         const size_t id = lmk_id_map_.at(key);
                         ROBOT_CHECK(id < feature_tracks_.size(),
                                     "lmk_id_map_ id's shuold not exceed feature_tracks_ size!");
-                        feature_tracks_[id].obs_.emplace_back(frames_[i].id_, kpt_cam0);
-                        feature_tracks_[id].obs_.emplace_back(frames_[j].id_, kpt_cam1);
+                        feature_tracks_[id].obs_.emplace_back(shared_frames_[i]->id_, kpt_cam0);
+                        feature_tracks_[id].obs_.emplace_back(shared_frames_[j]->id_, kpt_cam1);
                     } else {
                         FeatureTrack feature_track(i, kpt_cam0);
-                        feature_track.obs_.emplace_back(frames_[j].id_, kpt_cam1);
+                        feature_track.obs_.emplace_back(shared_frames_[j]->id_, kpt_cam1);
                         feature_tracks_.push_back(feature_track);
-                        lmk_id_map_.emplace(std::make_pair(frames_[i].id_, kpt_cam0),
+                        lmk_id_map_.emplace(std::make_pair(shared_frames_[i]->id_, kpt_cam0),
                                             feature_tracks_.size() - 1);
                     }
                 }
             }
         }
     } else {  // successive only
-        for (size_t i = 0; i < frames_.size() - 1; i++) {
-            std::vector<cv::DMatch> matches =
-                compute_matches(frames_[i].descriptors(), frames_[i + 1].descriptors());
+        for (size_t i = 0; i < shared_frames_.size() - 1; i++) {
+            std::vector<cv::DMatch> matches = compute_matches(shared_frames_[i]->descriptors(),
+                                                              shared_frames_[i + 1]->descriptors());
             enforce_bijective_buffer_matches(matches);
             if (matches.size() < 5) {
                 continue;
@@ -285,12 +285,12 @@ void Frontend::match_frames_and_build_tracks() {
 
             std::vector<cv::KeyPoint> cv_kpts_1;
             std::vector<cv::KeyPoint> cv_kpts_2;
-            for (const KeypointCV &kpt : frames_[i].keypoint()) {
+            for (const KeypointCV &kpt : shared_frames_[i]->keypoint()) {
                 cv::KeyPoint cv_kpt;
                 cv_kpt.pt = kpt;
                 cv_kpts_1.push_back(cv_kpt);
             }
-            for (const KeypointCV &kpt : frames_[i + 1].keypoint()) {
+            for (const KeypointCV &kpt : shared_frames_[i + 1]->keypoint()) {
                 cv::KeyPoint cv_kpt;
                 cv_kpt.pt = kpt;
                 cv_kpts_2.push_back(cv_kpt);
@@ -301,28 +301,28 @@ void Frontend::match_frames_and_build_tracks() {
             if (!scale_cam0_from_cam1) {
                 continue;
             }
-            ROBOT_CHECK(frames_[i].world_from_cam_initial_guess_,
+            ROBOT_CHECK(shared_frames_[i]->world_from_cam_initial_guess_,
                         "This rotation should be populated.");
-            frames_[i + 1].world_from_cam_initial_guess_.emplace(
-                frames_[i].world_from_cam_initial_guess_->matrix() *
+            shared_frames_[i + 1]->world_from_cam_initial_guess_.emplace(
+                shared_frames_[i]->world_from_cam_initial_guess_->matrix() *
                 scale_cam0_from_cam1->linear().matrix());
 
             for (const cv::DMatch match : matches) {
-                const KeypointCV kpt_cam0 = frames_[i].keypoint()[match.queryIdx];
-                const KeypointCV kpt_cam1 = frames_[i + 1].keypoint()[match.trainIdx];
+                const KeypointCV kpt_cam0 = shared_frames_[i]->keypoint()[match.queryIdx];
+                const KeypointCV kpt_cam1 = shared_frames_[i + 1]->keypoint()[match.trainIdx];
 
-                auto key = std::make_pair(frames_[i].id_, kpt_cam0);
+                auto key = std::make_pair(shared_frames_[i]->id_, kpt_cam0);
                 if (lmk_id_map_.find(key) != lmk_id_map_.end()) {
                     const size_t id = lmk_id_map_.at(key);
                     ROBOT_CHECK(id < feature_tracks_.size(),
                                 "lmk_id_map_ id's shuold not exceed feature_tracks_ size!");
-                    feature_tracks_[id].obs_.emplace_back(frames_[i].id_, kpt_cam0);
-                    feature_tracks_[id].obs_.emplace_back(frames_[i + 1].id_, kpt_cam1);
+                    feature_tracks_[id].obs_.emplace_back(shared_frames_[i]->id_, kpt_cam0);
+                    feature_tracks_[id].obs_.emplace_back(shared_frames_[i + 1]->id_, kpt_cam1);
                 } else {
                     FeatureTrack feature_track(i, kpt_cam0);
-                    feature_track.obs_.emplace_back(frames_[i + 1].id_, kpt_cam1);
+                    feature_track.obs_.emplace_back(shared_frames_[i + 1]->id_, kpt_cam1);
                     feature_tracks_.push_back(feature_track);
-                    lmk_id_map_.emplace(std::make_pair(frames_[i].id_, kpt_cam0),
+                    lmk_id_map_.emplace(std::make_pair(shared_frames_[i]->id_, kpt_cam0),
                                         feature_tracks_.size() - 1);
                 }
             }
@@ -331,48 +331,42 @@ void Frontend::match_frames_and_build_tracks() {
     std::cout << "done processing matches" << std::endl;
 }
 
-std::optional<std::vector<Eigen::Vector3d>> Frontend::interpolated_initial_translations() {
+void Frontend::interpolate_frames() {
     std::vector<Frame *> frames_with_guess;
-    for (Frame &frame :
-         frames_) {  // this assumes that frames are ordered by seq (time), later on may have to
-                     // think about this more if trying to run pipeline on unordered images or sets
-                     // whose capture times are on different days
-        if (frame.cam_in_world_initial_guess_) {
-            frames_with_guess.push_back(&frame);
+    for (SharedFrame &shared_frame : shared_frames_) {  // this assumes that frames are ordered by
+                                                        // seq (time), later on may have to
+        // think about this more if trying to run pipeline on unordered images or sets
+        // whose capture times are on different days
+        if (shared_frame->cam_in_world_initial_guess_) {
+            frames_with_guess.push_back(&(*shared_frame));
         }
     }
-    if (frames_with_guess.size() < 2) return std::nullopt;
-    std::vector<Eigen::Vector3d> interpolated_init_guesses;
-    interpolated_init_guesses.reserve(frames_.size());
+    if (frames_with_guess.size() < 2) return;
     size_t idx_guess = 0;
-
-    for (const Frame &frame : frames_) {
+    for (SharedFrame &shared_frame : shared_frames_) {
         Eigen::Vector3d interpolated;
 
         // advance to next guess window if needed
         while (idx_guess + 1 < frames_with_guess.size() - 1 &&
-               frame.seq_ > frames_with_guess[idx_guess + 1]->seq_) {
+               shared_frame->seq_ > frames_with_guess[idx_guess + 1]->seq_) {
             idx_guess++;
         }
 
-        if (frame.cam_in_world_initial_guess_) {
-            interpolated = *frame.cam_in_world_initial_guess_;
+        if (shared_frame->cam_in_world_initial_guess_) {
+            interpolated = *shared_frame->cam_in_world_initial_guess_;
         } else {
             Eigen::Vector3d v_a_to_b =
                 *frames_with_guess[idx_guess]->velocity_to(*frames_with_guess[idx_guess + 1]);
-            double dt = (frame.seq_ < frames_with_guess[idx_guess]->seq_ ? -1.0 : 1.0) * 1e-9 *
-                        (frames_with_guess[idx_guess]->seq_ > frame.seq_
-                             ? frames_with_guess[idx_guess]->seq_ - frame.seq_
-                             : frame.seq_ - frames_with_guess[idx_guess]->seq_);
+            double dt = (shared_frame->seq_ < frames_with_guess[idx_guess]->seq_ ? -1.0 : 1.0) *
+                        1e-9 *
+                        (frames_with_guess[idx_guess]->seq_ > shared_frame->seq_
+                             ? frames_with_guess[idx_guess]->seq_ - shared_frame->seq_
+                             : shared_frame->seq_ - frames_with_guess[idx_guess]->seq_);
             interpolated = *frames_with_guess[idx_guess]->cam_in_world_initial_guess_ +
                            v_a_to_b * dt;  // add sign back to dt
-            std::cout << "interpolated frame " << frame.id_ << ": " << interpolated << std::endl;
-            std::cout << "\tdt: " << dt << std::endl;
-            std::cout << "\tv_a_to_b: " << v_a_to_b << std::endl;
         }
-        interpolated_init_guesses.push_back(interpolated);
+        shared_frame->cam_in_world_interpolated_guess_ = interpolated;
     }
-    return interpolated_init_guesses;
 }
 
 std::pair<std::vector<cv::KeyPoint>, cv::Mat> Frontend::extract_features(const cv::Mat &img) const {

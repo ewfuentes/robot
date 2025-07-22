@@ -34,7 +34,7 @@ class Frontend {
 
     void populate_frames(bool verbose = false);
     void match_frames_and_build_tracks();
-    std::optional<std::vector<Eigen::Vector3d>> interpolated_initial_translations();
+    void interpolate_frames();
 
     void add_image(const ImageAndPoint &img_and_pt) { images_and_points_.push_back(img_and_pt); };
     void add_images(const std::vector<ImageAndPoint> &img_and_pts) {
@@ -47,7 +47,7 @@ class Frontend {
     const FrontendParams::MatcherType &matcher_type() const { return params_.matcher_type; };
     const FeatureTracks &feature_tracks() const { return feature_tracks_; };
     const FrameLandmarkIdMap &frame_landmark_id_map() const { return lmk_id_map_; };
-    std::vector<Frame> &frames() { return frames_; };
+    std::vector<SharedFrame> &frames() { return shared_frames_; };
 
     std::pair<std::vector<cv::KeyPoint>, cv::Mat> extract_features(const cv::Mat &img) const;
     std::vector<cv::DMatch> compute_matches(const cv::Mat &descriptors1,
@@ -81,6 +81,6 @@ class Frontend {
     std::vector<ImageAndPoint> images_and_points_;
     FeatureTracks feature_tracks_;
     FrameLandmarkIdMap lmk_id_map_;
-    std::vector<Frame> frames_;
+    std::vector<SharedFrame> shared_frames_;
 };
 }  // namespace robot::experimental::learn_descriptors

@@ -45,8 +45,8 @@ std::optional<Eigen::Matrix3d> ImagePointFourSeasons::translation_covariance_in_
 
 std::optional<Eigen::Matrix3d> ImagePointFourSeasons::gps_covariance_in_world() const {
     if (!gps_gcs || !gps_gcs->uncertainty) return std::nullopt;
-    const Eigen::Matrix3d ENU_covariance(
-        gps_gcs->uncertainty->to_ENU_covariance(gps_gcs->latitude));
+    const Eigen::Matrix3d ENU_covariance(gps_gcs->uncertainty->to_ENU_covariance());
+    std::cout << "image point " << id << " ENU_covariance: " << ENU_covariance << std::endl;
     const Eigen::Matrix3d w_from_ENU(shared_static_transforms->w_from_gpsw.so3().matrix());
     const Eigen::Matrix3d w_covariance(w_from_ENU * ENU_covariance * w_from_ENU.transpose());
     return w_covariance;

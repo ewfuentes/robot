@@ -68,4 +68,5 @@ struct ImagePoint {
    private:
     std::optional<Eigen::Vector3d> cam_in_world_;
 };
+using SharedImagePoint = std::shared_ptr<ImagePoint>;
 }  // namespace robot::experimental::learn_descriptors

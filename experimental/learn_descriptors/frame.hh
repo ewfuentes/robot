@@ -1,4 +1,5 @@
 #pragma once
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -21,9 +22,22 @@ class Frame {
         : id_(id),
           seq_(seq),
           undistorted_img_(img),
-          K_(std::move(K)),
+          K_(K),
           kpts_(kpts),
           descriptors_(descriptors) {}
+    Frame(const Frame& other)
+        : id_(other.id_),
+          seq_(other.seq_),
+          undistorted_img_(other.undistorted_img_.clone()),
+          K_(other.K_),
+          kpts_(other.kpts_),
+          descriptors_(other.descriptors_.clone()),
+          frame_from_other_frames_(other.frame_from_other_frames_),
+          world_from_cam_groundtruth_(other.world_from_cam_groundtruth_),
+          cam_in_world_initial_guess_(other.cam_in_world_initial_guess_),
+          cam_in_world_interpolated_guess_(other.cam_in_world_interpolated_guess_),
+          world_from_cam_initial_guess_(other.world_from_cam_initial_guess_),
+          translation_covariance_in_cam_(other.translation_covariance_in_cam_) {}
 
     std::optional<Eigen::Vector3d> velocity_to(const Frame& other_frame) const {
         ROBOT_CHECK(other_frame.seq_ >= seq_);
@@ -97,8 +111,11 @@ class Frame {
     std::unordered_map<FrameId, gtsam::Rot3>
         frame_from_other_frames_;  // map of relative rotation for this_frame_from_frame_[FrameId]
     std::optional<gtsam::Pose3> world_from_cam_groundtruth_;
-    std::optional<gtsam::Point3> cam_in_world_initial_guess_;
+    std::optional<gtsam::Point3>
+        cam_in_world_initial_guess_;  // intended for data from sensors (GPS)
+    std::optional<gtsam::Point3> cam_in_world_interpolated_guess_;
     std::optional<gtsam::Rot3> world_from_cam_initial_guess_;
     std::optional<gtsam::Matrix3> translation_covariance_in_cam_;
 };
+using SharedFrame = std::shared_ptr<Frame>;
 }  // namespace robot::experimental::learn_descriptors

@@ -72,26 +72,7 @@ struct ImagePointFourSeasons : ImagePoint {
         } else {
             ss << "N/A";
         }
-        ss << "\n\tgps_gcs: ";
-        if (gps_gcs) {
-            ss << "\n\t\tseq: " << gps_gcs->seq;
-            ss << "\n\t\tval: " << gps_gcs->latitude << "\t" << gps_gcs->longitude << "\t";
-            if (gps_gcs->altitude) {
-                ss << *(gps_gcs->altitude);
-            } else {
-                ss << "alt N/A";
-            }
-            ss << "\n\t\tsigma: ";
-            if (gps_gcs->uncertainty) {
-                ss << gps_gcs->uncertainty->sigma_latitude_deg << "\t"
-                   << gps_gcs->uncertainty->sigma_longitude_deg << "\t"
-                   << gps_gcs->uncertainty->sigma_altitude_m;
-            } else {
-                ss << "N/A";
-            }
-        } else {
-            ss << "N/A";
-        }
+        ss << "\n" << (gps_gcs ? gps_gcs->to_string() : "GPS Data: N/A");
         return ss.str();
     }
 

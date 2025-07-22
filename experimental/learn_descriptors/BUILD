@@ -26,8 +26,10 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":backend",
-        ":feature_manager",
         ":frontend",
+        ":frame",
+        ":image_point",
+        "//common:check",
         "//visualization/opencv:opencv_viz",
         "@eigen",
         "@gtsam",
@@ -281,30 +283,6 @@ cc_library(
 )
 
 cc_library(
-    name = "feature_manager",
-    hdrs = ["feature_manager.hh"],
-    visibility = ["//visibility:public"],
-    deps = [
-        ":feature_set",
-        "@gtsam",
-        "@opencv",
-    ],
-)
-
-cc_test(
-    name = "feature_manager_test",
-    srcs = ["feature_manager_test.cc"],
-    deps = [
-        ":feature_manager",
-        ":spatial_test_scene_cube",
-        "@com_google_googletest//:gtest_main",
-        "@eigen",
-        "@gtsam",
-        "@opencv",
-    ],
-)
-
-cc_library(
     name = "spatial_test_scene",
     srcs = ["spatial_test_scene.cc"],
     hdrs = ["spatial_test_scene.hh"],
@@ -383,6 +361,7 @@ cc_library(
     deps = [
         ":structure_from_motion_types",
         ":frame",
+        "//common:check",
         "//common/geometry:camera",
         "@boost//:smart_ptr",
         "@gtsam",
@@ -475,5 +454,31 @@ cc_binary(
         "@gtsam",
         "@opencv",
         ":camera_calibration"
+    ],
+)
+
+cc_binary(
+    name = "structure_from_motion_example",
+    srcs = ["structure_from_motion_example.cc"],
+    copts = [
+        "-Wno-error=unused-parameter",
+        "-Wno-error=unused-function",
+    ],
+    deps = [
+        ":structure_from_motion",
+        ":frontend",
+        ":backend",
+        ":four_seasons_parser",
+        ":frame",
+        ":image_point",
+        ":image_point_four_seasons",
+        ":spatial_test_scene_cube",
+        ":structure_from_motion_types",
+        ":camera_calibration",
+        "//visualization/opencv:opencv_viz",
+        "@boost//:smart_ptr",
+        "@cxxopts",
+        "@eigen",
+        "@opencv",
     ],
 )
