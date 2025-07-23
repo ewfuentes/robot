@@ -278,46 +278,83 @@ void Backend::populate_rotation_estimate(std::vector<SharedFrame>& shared_frames
     }
 }
 
-void Backend::calculate_initial_values() { populate_rotation_estimate(shared_frames_); }
+void Backend::calculate_initial_values(bool interpolate_gps) {
+    populate_rotation_estimate(shared_frames_);
+    if (interpolate_gps) {
+        std::vector<SharedFrame> frames_with_gps;
+        for (SharedFrame& shared_frame : shared_frames_) {  // this assumes that frames are ordered
+                                                            // by seq (time), later on may have to
+            // think about this more if trying to run pipeline on unordered images or sets
+            // whose capture times are on different days
+            if (shared_frame->cam_in_world_initial_guess_) {
+                frames_with_gps.push_back(shared_frame);
+            }
+        }
+        if (frames_with_gps.size() < 2) return;
+        size_t idx_gps = 0;
+        for (SharedFrame& shared_frame : shared_frames_) {
+            // advance to next guess window if needed
+            while (idx_gps + 1 < frames_with_gps.size() - 1 &&
+                   shared_frame->seq_ > frames_with_gps[idx_gps + 1]->seq_) {
+                idx_gps++;
+            }
+
+            if (shared_frame->cam_in_world_initial_guess_) {
+                continue;
+            }
+            ROBOT_CHECK(
+                shared_frame->cam_in_world_interpolated_guess_,
+                "Currently assuming that the frontend populated interpolated initial guesses");
+            Eigen::Matrix3d interpolated_covariance(
+                *shared_frame->translation_covariance_in_cam_ *
+                100.0);  // very jank for now, not true interpolation
+            shared_frame->translation_covariance_in_cam_ = interpolated_covariance;
+            shared_frame->cam_in_world_initial_guess_ =
+                shared_frame->cam_in_world_interpolated_guess_;
+        }
+    }
+}
 
 void Backend::populate_graph(const FeatureTracks& feature_tracks) {
     ROBOT_CHECK(shared_frames_.size() > 3);
-    ROBOT_CHECK(shared_frames_[0]->world_from_cam_groundtruth_,
+    ROBOT_CHECK(shared_frames_.front()->world_from_cam_groundtruth_,
                 "We're assuming the first camera has groundtruth for now");
 
-    shared_frames_[0]->world_from_cam_initial_guess_ =
-        shared_frames_[0]->world_from_cam_groundtruth_->rotation();  // align rotation
+    shared_frames_.front()->world_from_cam_initial_guess_ =
+        shared_frames_.front()
+            ->world_from_cam_groundtruth_->rotation();  // align rotation with groundtruth
 
     Backend::populate_rotation_estimate(shared_frames_);
 
     // add first cam as prior
     Eigen::Vector3d cam0_in_w = *shared_frames_.front()->cam_in_world_interpolated_guess_;
-    const gtsam::Pose3 w_from_cam0_init_estimate(*shared_frames_[0]->world_from_cam_initial_guess_,
-                                                 gtsam::Point3());
+    const gtsam::Pose3 w_from_cam0_init_estimate(
+        *shared_frames_.front()->world_from_cam_initial_guess_, gtsam::Point3{0, 0, 0});
     const gtsam::Symbol symbol_cam0(symbol_char_pose, 0);
     graph_.add(gtsam::PriorFactor<gtsam::Pose3>(
         symbol_cam0, w_from_cam0_init_estimate,
-        noise_tight_prior));  // currently assuming that we have groundtruth on the first pose
+        noise_tight_prior_));  // currently assuming that we have groundtruth on the first pose
     initial_estimate_.insert(symbol_cam0, w_from_cam0_init_estimate);
 
-    // add gps factors
+    // add gps factors and populate initial pose values
     for (size_t i = 1; i < shared_frames_.size(); i++) {
         const Frame& frame = *shared_frames_[i];
         gtsam::Pose3 world_from_cam_estimate(
             frame.world_from_cam_initial_guess_ ? *frame.world_from_cam_initial_guess_
                                                 : gtsam::Rot3::Identity(),
             *shared_frames_[i]->cam_in_world_interpolated_guess_ - cam0_in_w);
-        world_from_cam_initial_estimates_[frame.id_] = world_from_cam_estimate;
-        const gtsam::Symbol cam_symbol(symbol_char_pose, frame.id_);
-        initial_estimate_.insert(cam_symbol, world_from_cam_estimate);
         world_from_cam_initial_estimates_.emplace(frame.id_, world_from_cam_estimate);
+
+        const gtsam::Symbol cam_symbol(symbol_char_pose, frame.id_);
+        initial_estimate_.insert(cam_symbol, world_from_cam_initial_estimates_[frame.id_]);
         if (frame.cam_in_world_initial_guess_) {
             gtsam::noiseModel::Diagonal::shared_ptr gps_noise = gtsam::noiseModel::Diagonal::Sigmas(
                 frame.translation_covariance_in_cam_
                     ? gtsam::Vector3(std::sqrt((*frame.translation_covariance_in_cam_)(0, 0)),
                                      std::sqrt((*frame.translation_covariance_in_cam_)(1, 1)),
                                      std::sqrt((*frame.translation_covariance_in_cam_)(2, 2)))
-                    : gps_sigmas_fallback);
+                    : gps_sigmas_fallback_);
+            std::cout << "gps noise " << i << gps_noise->sigmas() << std::endl;
             graph_.add(gtsam::GPSFactor(cam_symbol, *frame.cam_in_world_initial_guess_, gps_noise));
         }
     }
@@ -338,17 +375,13 @@ void Backend::populate_graph(const FeatureTracks& feature_tracks) {
             for (const auto& [frame_id, keypoint_cv] : feature_tracks[i].obs_) {
                 graph_.add(gtsam::GenericProjectionFactor(
                     gtsam::Point2(keypoint_cv.x, keypoint_cv.y), landmark_noise_,
-                    gtsam::Symbol(symbol_char_pose, frame_id), lmk_symbol, shared_frames_[0]->K_));
+                    gtsam::Symbol(symbol_char_pose, frame_id), lmk_symbol,
+                    shared_frames_[0]->K_));  // all K are the same for now...
             }
             initial_estimate_.insert(lmk_symbol, *landmark_estimate);
             lmk_initial_estimates_.emplace(i, *landmark_estimate);
         }
     }
-}
-
-void Backend::solve_graph() {
-    gtsam::LevenbergMarquardtOptimizer optimizer(graph_, initial_estimate_);
-    result_ = optimizer.optimize();
 }
 
 void Backend::solve_graph(const int num_epochs,
@@ -359,18 +392,36 @@ void Backend::solve_graph(const int num_epochs,
     gtsam::LevenbergMarquardtOptimizer optimizer(graph_, initial_estimate_, params);
 
     double prev_error = optimizer.error();
+    double lowest_error = prev_error;
+    gtsam::Values best_values = optimizer.values();
     for (int i = 0; i < num_epochs; i++) {
         optimizer.iterate();
         double curr_error = optimizer.error();
+        if (curr_error < lowest_error) {
+            lowest_error = curr_error;
+            best_values = optimizer.values();
+        }
 
         if (iter_debug_func) {
             (*iter_debug_func)(optimizer.values(), i);
         }
-        if (std::abs(prev_error - curr_error) < 1e-6) {
-            std::cout << "Converged at iteration " << i << "\n";
-            break;
-        }
+        // if (std::abs(prev_error - curr_error) < 1e-6) {
+        //     std::cout << "Converged at iteration " << i << "\n";
+        //     break;
+        // }
     }
-    result_ = optimizer.values();
+    result_ = best_values;
+}
+
+void Backend::clear() {
+    shared_frames_.clear();
+    shared_frames_.shrink_to_fit();
+
+    initial_estimate_ = gtsam::Values();
+    result_ = gtsam::Values();
+    graph_ = gtsam::NonlinearFactorGraph();
+
+    std::unordered_map<size_t, gtsam::Pose3>().swap(world_from_cam_initial_estimates_);
+    std::unordered_map<size_t, gtsam::Point3>().swap(lmk_initial_estimates_);
 }
 }  // namespace robot::experimental::learn_descriptors

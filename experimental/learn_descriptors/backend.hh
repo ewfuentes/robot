@@ -48,14 +48,13 @@ class Backend {
         shared_frames_.reserve(shared_frames_.size() + shared_frames.size());
         shared_frames_.insert(shared_frames_.end(), shared_frames.begin(), shared_frames.end());
     };
-    void calculate_initial_values();
+    void calculate_initial_values(bool interpolate_gps = true);
     void populate_graph(const FeatureTracks &feature_tracks);
-    void solve_graph();
     typedef int epoch;
     using graph_step_debug_func = std::function<void(const gtsam::Values &, const epoch)>;
     void solve_graph(const int num_epochs,
                      std::optional<graph_step_debug_func> iter_debug_func = std::nullopt);
-    // void imshow_keypoints(const size_t img_id, bool viz = true, bool viz_all = false);
+    void clear();
 
     const std::vector<SharedFrame> &shared_frames() const { return shared_frames_; };
     const gtsam::Values &current_initial_values() const { return initial_estimate_; };
@@ -71,14 +70,15 @@ class Backend {
     std::unordered_map<size_t, gtsam::Pose3> world_from_cam_initial_estimates_;
     std::unordered_map<size_t, gtsam::Point3> lmk_initial_estimates_;
 
-    gtsam::noiseModel::Diagonal::shared_ptr noise_tight_prior = gtsam::noiseModel::Diagonal::Sigmas(
-        (gtsam::Vector(6) << 0, 0, 0,  // rotation stdev in radians
-         1e-6, 1e-6, 1e-6              // translation stdev in meters
-         )
-            .finished());
-    gtsam::Vector3 gps_sigmas_fallback{0.5, 0.5, 0.5};
+    gtsam::noiseModel::Diagonal::shared_ptr noise_tight_prior_ =
+        gtsam::noiseModel::Diagonal::Sigmas((gtsam::Vector(6) << 1e-3, 1e-3,
+                                             1e-3,             // rotation stdev in radians
+                                             1e-3, 1e-3, 1e-3  // translation stdev in meters
+                                             )
+                                                .finished());
+    gtsam::Vector3 gps_sigmas_fallback_{0.5, 0.5, 0.5};
     gtsam::noiseModel::Isotropic::shared_ptr landmark_noise_ =
-        gtsam::noiseModel::Isotropic::Sigma(2, 1.0);
+        gtsam::noiseModel::Isotropic::Sigma(2, 10.0);
 };
 using Landmark = gtsam::Point3;
 }  // namespace robot::experimental::learn_descriptors

@@ -43,23 +43,16 @@ void StructureFromMotion::solve_structure(
                 "Assuming that our first frame has groundtruth for now.",
                 *frontend_.frames().front()->world_from_cam_groundtruth_);
     // align rotation via the initial guess
-    std::cout << "sfm heartbeat" << std::endl;
     frontend_.frames().front()->world_from_cam_initial_guess_ =
         frontend_.frames().front()->world_from_cam_groundtruth_->rotation();
-    std::cout << "sfm heartbeat 2" << std::endl;
-    std::cout << "sfm heartbeat 3" << std::endl;
-    std::cout << "sfm heartbeat 4" << std::endl;
 
     // BACKEND
+    backend_.clear();
     backend_.add_frames(frontend_.frames());
-    std::cout << "backend_.shared_frames.size(): " << backend_.shared_frames().size() << std::endl;
-    std::cout << "sfm heartbeat 5" << std::endl;
     backend_.calculate_initial_values();
-    std::cout << "backend.initial_values.size(): " << backend_.current_initial_values().size()
-              << std::endl;
-    std::cout << "sfm heartbeat 6" << std::endl;
+    backend_.populate_graph(frontend_.feature_tracks());
+    graph_values(backend_.current_initial_values(), "viz init values");
     backend_.solve_graph(10, iter_debug_func);
-    std::cout << "sfm heartbeat 7" << std::endl;
 }
 
 void StructureFromMotion::graph_values(const gtsam::Values &values, const std::string &window_name,
@@ -69,13 +62,21 @@ void StructureFromMotion::graph_values(const gtsam::Values &values, const std::s
     for (const auto &key_value : values) {
         gtsam::Key key = key_value.key;
         gtsam::Symbol symbol(key);
-        if (values.exists<gtsam::Pose3>(key)) {
+        try {
             const gtsam::Pose3 &pose = values.at<gtsam::Pose3>(key);
             final_poses.emplace_back(Eigen::Isometry3d(pose.matrix()), symbol.string());
-        } else if (values.exists<gtsam::Point3>(key)) {
+            continue;
+        } catch (const gtsam::ValuesIncorrectType &) {
+        }
+
+        try {
             const gtsam::Point3 &pt = values.at<gtsam::Point3>(key);
             final_lmks.emplace_back(pt, symbol.string());
+            continue;
+        } catch (const gtsam::ValuesIncorrectType &) {
         }
+
+        std::cerr << "Key " << symbol << " is neither Pose3 nor Point3.\n";
     }
     robot::visualization::viz_scene(final_poses, final_lmks, color, true, true, window_name);
 }

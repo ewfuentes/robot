@@ -53,13 +53,16 @@ int main(int argc, const char **argv) {
                                    FrontendParams::MatcherType::KNN, true, false};
     StructureFromMotion sfm(frontend_params);
 
-    for (size_t i = 633; i < 646; i += 2) {
+    // for (size_t i = 633; i < 1000; i += 1) {
+    //     const ImagePointFourSeasons img_pt = parser.get_image_point(i);
+    //     sfm.add_image_point(parser.load_image(i),
+    //     std::make_shared<ImagePointFourSeasons>(img_pt));
+    // }
+    for (size_t i = 835; i < 900; i += 4) {
         const ImagePointFourSeasons img_pt = parser.get_image_point(i);
         sfm.add_image_point(parser.load_image(i), std::make_shared<ImagePointFourSeasons>(img_pt));
-        std::cout << img_pt.to_string() << std::endl;
     }
 
-    std::cout << "heartbeat" << std::endl;
     using epoch = size_t;
     Backend::graph_step_debug_func graph_itr_debug_func = [&](const gtsam::Values &vals,
                                                               const epoch iter) {
@@ -67,9 +70,8 @@ int main(int argc, const char **argv) {
         std::string window_name = "Iteration_" + std::to_string(iter);
         StructureFromMotion::graph_values(vals, window_name);
     };
+    // passing graph_itr_debug_func will execute the function after each optimization epoch
     // sfm.solve_structure(10, graph_itr_debug_func);
     sfm.solve_structure(10);
-    std::cout << "heartbeat 2" << std::endl;
     StructureFromMotion::graph_values(sfm.result());
-    std::cout << "heartbeat 3" << std::endl;
 }

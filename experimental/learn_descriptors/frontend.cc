@@ -168,6 +168,9 @@ Frontend::Frontend(FrontendParams params_) : params_(params_) {
 }
 
 void Frontend::populate_frames(bool verbose) {
+    shared_frames_.clear();
+    shared_frames_.shrink_to_fit();
+    shared_frames_.reserve(images_and_points_.size());
     FrameId id = shared_frames_.size();
     for (const ImageAndPoint &img_and_pt : images_and_points_) {
         const std::shared_ptr<ImagePoint> &shared_img_pt = img_and_pt.shared_img_pt;
@@ -204,11 +207,6 @@ void Frontend::populate_frames(bool verbose) {
             shared_img_pt->translation_covariance_in_cam();
         if (maybe_translation_covariance_in_cam) {
             frame.translation_covariance_in_cam_ = *maybe_translation_covariance_in_cam;
-        }
-        if (id == 0) {
-            std::cout << (frame.world_from_cam_groundtruth_ ? "first frame has grnd"
-                                                            : "first frame doesn't have grnd")
-                      << std::endl;
         }
         shared_frames_.push_back(std::make_shared<Frame>(frame));
         id++;
