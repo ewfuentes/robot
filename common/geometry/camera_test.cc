@@ -76,7 +76,6 @@ TEST(CameraTest, test_estimate_pose) {
     cv::Mat K = (cv::Mat_<double>(3, 3) << fx, 0, cx, 0, fy, cy, 0, 0, 1);
 
     Eigen::Matrix3d K_eig = cv_to_eigen_mat(K);
-    std::vector<Eigen::Isometry3d> poses;
 
     Eigen::Matrix3d R_world_from_cam0(
         Eigen::AngleAxisd(M_PI / 2, Eigen::Vector3d(0, 0, 1)).toRotationMatrix() *
@@ -84,7 +83,6 @@ TEST(CameraTest, test_estimate_pose) {
     Eigen::Isometry3d world_from_cam0 = Eigen::Isometry3d::Identity();
     world_from_cam0.linear() = R_world_from_cam0;
     world_from_cam0.translation() = Eigen::Vector3d(4, cube_size / 2, cube_size / 2);
-    poses.push_back(world_from_cam0);
 
     Eigen::Matrix3d R_world_45deg(
         Eigen::AngleAxisd(M_PI / 4, Eigen::Vector3d(0, 0, 1)).toRotationMatrix());
@@ -92,7 +90,6 @@ TEST(CameraTest, test_estimate_pose) {
     world_from_cam1.linear() = R_world_45deg * world_from_cam0.linear();
     world_from_cam1.translation() =
         R_world_45deg * (world_from_cam0.translation() - p_world_cube_center) + p_world_cube_center;
-    poses.push_back(world_from_cam1);
 
     std::vector<cv::KeyPoint> kpts0;
     std::vector<cv::KeyPoint> kpts1;
@@ -127,9 +124,6 @@ TEST(CameraTest, test_estimate_pose) {
         EXPECT_TRUE(cam0_from_cam1_estimate->translation().isApprox(cam0_from_cam1.translation(),
                                                                     0.000001));
         EXPECT_TRUE(cam0_from_cam1_estimate->linear().isApprox(cam0_from_cam1.linear(), 0.001));
-
-        poses.emplace_back(world_from_cam0 * *cam0_from_cam1_estimate);
-        viz_scene(poses, p_W_cube);
     }
 }
 }  // namespace robot::geometry

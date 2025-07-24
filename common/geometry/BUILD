@@ -66,13 +66,3 @@ cc_test(
     ":translate_types"
   ]
 )
-
-cc_library(
-  name = "trajectory_evaluation",
-  hdrs = ["trajectory_evaluation.hh"],
-  srcs = ["trajectory_evaluation.cc"],
-  visibility = ["//visibility:public"],
-  deps = [
-    "@eigen",     
-  ]
-)
