@@ -8,7 +8,7 @@
 #include "GeographicLib/LocalCartesian.hpp"
 #include "gtest/gtest.h"
 
-namespace robot::experimental::learn_descriptors {
+namespace robot::gps {
 TEST(GeographiclibTest, airport_dist) {
     const GeographicLib::Geodesic& geod = GeographicLib::Geodesic::WGS84();
     // Distance from JFK to LHR
@@ -58,4 +58,4 @@ TEST(GeographiclibTest, local_cartestian) {
         EXPECT_NEAR(calais_height_meters, 264.915, 1e-3);
     }
 }
-}  // namespace robot::experimental::learn_descriptors
+}  // namespace robot::gps

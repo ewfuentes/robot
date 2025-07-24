@@ -3,7 +3,7 @@
 #include "gtest/gtest.h"
 #include "opencv2/viz.hpp"
 
-namespace robot::geometry {
+namespace robot::visualization {
 
 TEST(OpencvVizTest, demo) {
     cv::viz::Viz3d window("My Window");
@@ -111,4 +111,4 @@ TEST(OpencvVizTest, cube_test_labeled) {
 
     viz_scene(world_from_cams, cube_points_in_world);
 }
-}  // namespace robot::geometry
+}  // namespace robot::visualization

@@ -39,3 +39,30 @@ cc_test(
     "@com_google_googletest//:gtest_main"
   ]
 )
+
+
+cc_library(
+  name = "camera",
+  hdrs = ["camera.hh"],
+  srcs = ["camera.cc"],
+  visibility = ["//visibility:public"],
+  deps = [
+    "@eigen",     
+    "@opencv",
+    ":translate_types",
+    "@gtsam",
+    "//common:check"
+  ]
+)
+
+cc_test(
+  name = "camera_test", 
+  srcs = ["camera_test.cc"],
+  visibility = ["//visibility:public"],
+  deps = [
+    ":camera",
+    "@com_google_googletest//:gtest_main",
+    "//visualization/opencv:opencv_viz",
+    ":translate_types"
+  ]
+)

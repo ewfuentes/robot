@@ -2,10 +2,13 @@
 
 #include <iostream>
 
+#include "Eigen/Core"
+#include "Eigen/Geometry"
 #include "common/geometry/translate_types.hh"
 #include "opencv2/viz.hpp"
 
-namespace robot::geometry {
+using namespace robot::geometry;
+namespace robot::visualization {
 cv::Vec3d rotation_matrix_to_axis_angle(const cv::Matx33d &R) {
     // Ensure R is a valid rotation matrix
     CV_Assert(cv::determinant(R) > 0.999 && cv::determinant(R) < 1.001);
@@ -109,4 +112,4 @@ void viz_scene(const std::vector<VizPose> &world_from_poses,
 
     window.spin();
 }
-}  // namespace robot::geometry
+}  // namespace robot::visualization
