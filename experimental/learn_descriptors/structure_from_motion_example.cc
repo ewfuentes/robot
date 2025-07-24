@@ -53,12 +53,10 @@ int main(int argc, const char **argv) {
                                    FrontendParams::MatcherType::KNN, true, false};
     StructureFromMotion sfm(frontend_params);
 
-    // for (size_t i = 633; i < 1000; i += 1) {
-    //     const ImagePointFourSeasons img_pt = parser.get_image_point(i);
-    //     sfm.add_image_point(parser.load_image(i),
-    //     std::make_shared<ImagePointFourSeasons>(img_pt));
-    // }
-    for (size_t i = 835; i < 900; i += 4) {
+    // short sequences (maybe about a doezen points that have decent overlap and aren't spaced too
+    // far apart on the order of maybe a meter) perform ok. many improvements needed for the overall
+    // system
+    for (size_t i = 835; i < 855; i += 2) {
         const ImagePointFourSeasons img_pt = parser.get_image_point(i);
         sfm.add_image_point(parser.load_image(i), std::make_shared<ImagePointFourSeasons>(img_pt));
     }

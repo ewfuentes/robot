@@ -36,12 +36,7 @@ class Backend {
     static gtsam::Rot3 average_rotations(const std::vector<gtsam::Rot3> &rotations,
                                          int max_iter = 10);
     // use rotation averaging to set the rotation initial guess for each frame in the world frame.
-    // the world frame will be the first frame in the vector. deadreckon_incrementally won't
-    // optimize if true
-    static void populate_rotation_estimate(std::vector<Frame> &frames);
-    // use rotation averaging to set the rotation initial guess for each frame in the world frame.
-    // the world frame will be the first frame in the vector. deadreckon_incrementally won't
-    // optimize if true
+    // the world frame will be the first frame in the vector
     static void populate_rotation_estimate(std::vector<SharedFrame> &shared_frames);
 
     void add_frames(std::vector<SharedFrame> &shared_frames) {

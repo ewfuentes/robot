@@ -251,27 +251,6 @@ cc_library(
     ],
 )
 
-cc_test(
-    name = "sfm_mvp",
-    srcs = ["sfm_mvp.cc"],
-    copts = [
-        "-Wno-error=unused-parameter",
-        "-Wno-error=unused-variable",
-    ],
-    deps = [
-        ":frame",
-        ":frontend",
-        ":spatial_test_scene_cube",
-        ":structure_from_motion_types",
-        ":symphony_lake_parser",
-        "//visualization/opencv:opencv_viz",
-        "@com_google_googletest//:gtest_main",
-        "@eigen",
-        "@gtsam",
-        "@opencv",
-    ],
-)
-
 cc_library(
     name = "feature_set",
     hdrs = ["feature_set.hh"],
@@ -385,42 +364,6 @@ cc_test(
     ],
 )
 
-cc_binary(
-    name = "get_colmap_groundtruth",
-    srcs = ["get_colmap_groundtruth.cc"],
-    copts = [
-        "-Wno-error=unused-parameter",
-    ],
-    deps = [
-        ":symphony_lake_parser",
-    ],
-)
-
-cc_binary(
-    name = "incremental_sfm_mvp",
-    srcs = ["incremental_sfm_mvp.cc"],
-    copts = [
-        "-Wno-error=unused-parameter",
-        "-Wno-error=unused-function",
-    ],
-    deps = [
-        ":four_seasons_parser",
-        ":frame",
-        ":frontend",
-        ":spatial_test_scene_cube",
-        ":structure_from_motion_types",
-        "//common/geometry:camera",
-        "//common/gps:frame_translation",
-        "//visualization/opencv:opencv_viz",
-        "@boost//:smart_ptr",
-        "@cxxopts",
-        "@eigen",
-        "@gtsam",
-        "@opencv",
-        ":camera_calibration"
-    ],
-)
-
 cc_library(
     name = "camera_calibration",
     hdrs = ["camera_calibration.hh"],
@@ -428,33 +371,6 @@ cc_library(
     deps = [
         "@opencv"
     ]
-)
-
-cc_binary(
-    name = "refactor_sfm_mvp",
-    srcs = ["refactor_sfm_mvp.cc"],
-    copts = [
-        "-Wno-error=unused-parameter",
-        "-Wno-error=unused-function",
-    ],
-    deps = [
-        ":backend",
-        ":four_seasons_parser",
-        ":frame",
-        ":frontend",
-        ":image_point",
-        ":image_point_four_seasons",
-        ":spatial_test_scene_cube",
-        ":structure_from_motion_types",
-        "//common/geometry:camera",
-        "//visualization/opencv:opencv_viz",
-        "@boost//:smart_ptr",
-        "@cxxopts",
-        "@eigen",
-        "@gtsam",
-        "@opencv",
-        ":camera_calibration"
-    ],
 )
 
 cc_binary(
