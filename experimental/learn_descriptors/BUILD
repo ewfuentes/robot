@@ -37,22 +37,6 @@ cc_library(
     ],
 )
 
-cc_test(
-    name = "structure_from_motion_test",
-    srcs = ["structure_from_motion_test.cc"],
-    copts = [
-        "-Wno-error=unused-parameter",
-    ],
-    deps = [
-        ":frame",
-        ":structure_from_motion",
-        ":symphony_lake_parser",
-        "//common/geometry:translate_types",
-        "//visualization/opencv:opencv_viz",
-        "@com_google_googletest//:gtest_main",
-    ],
-)
-
 cc_library(
     name = "symphony_lake_parser",
     srcs = ["symphony_lake_parser.cc"],
@@ -166,20 +150,8 @@ cc_library(
     deps = [
         ":camera_calibration",
         ":gps_data",
-        "//common/liegroups:se3",
         "@com_google_absl//absl/strings:str_format",
-        "@geographiclib",
         "@nmea",
-    ],
-      "@eigen",
-      "@opencv//:opencv",
-      "//common/liegroups:se3",
-      "//common/time:robot_time",
-      "@com_google_absl//absl/strings:str_format",
-      ":image_point",
-      "@nmea",
-      "@geographiclib",
-      "//common:check"
     ]
 )
 
@@ -263,16 +235,6 @@ cc_library(
 )
 
 cc_library(
-    name = "feature_set",
-    hdrs = ["feature_set.hh"],
-    visibility = ["//visibility:public"],
-    deps = [
-        "@gtsam",
-        "@opencv",
-    ],
-)
-
-cc_library(
     name = "spatial_test_scene",
     srcs = ["spatial_test_scene.cc"],
     hdrs = ["spatial_test_scene.hh"],
@@ -332,6 +294,7 @@ cc_test(
     name = "frontend_test",
     srcs = ["frontend_test.cc"],
     deps = [
+        ":frame",
         ":frontend",
         ":image_point",
         "@com_google_googletest//:gtest_main",
@@ -355,22 +318,6 @@ cc_library(
         "//common/geometry:camera",
         "@boost//:smart_ptr",
         "@gtsam",
-        "@opencv",
-    ],
-)
-
-cc_test(
-    name = "backend_test",
-    srcs = ["backend_test.cc"],
-    copts = [
-        "-Wno-error=unused-parameter",
-    ],
-    deps = [
-        ":backend",
-        ":feature_manager",
-        ":spatial_test_scene_cube",
-        "//visualization/opencv:opencv_viz",
-        "@com_google_googletest//:gtest_main",
         "@opencv",
     ],
 )

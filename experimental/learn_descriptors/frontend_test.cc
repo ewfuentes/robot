@@ -7,6 +7,8 @@
 #include <vector>
 
 #include "Eigen/Core"
+#include "experimental/learn_descriptors/frame.hh"
+#include "experimental/learn_descriptors/frontend.hh"
 #include "experimental/learn_descriptors/image_point.hh"
 #include "gtest/gtest.h"
 #include "opencv2/opencv.hpp"
@@ -51,10 +53,10 @@ TEST(FrontendTest, pipeline_sweep) {
     cv::warpAffine(image_1, image_1, rotation_matrix, image_1.size());
     cv::warpAffine(image_1, image_2, translation_mat, image_1.size());
 
-    cv::Mat img_test_disp;
-    cv::hconcat(image_1, image_2, img_test_disp);
-    cv::imshow("Test", img_test_disp);
-    cv::waitKey(1000);
+    // cv::Mat img_test_disp;
+    // cv::hconcat(image_1, image_2, img_test_disp);
+    // cv::imshow("Test", img_test_disp);
+    // cv::waitKey(1000);
 
     FrontendParams::ExtractorType extractor_types[2] = {FrontendParams::ExtractorType::SIFT,
                                                         FrontendParams::ExtractorType::ORB};
@@ -70,7 +72,7 @@ TEST(FrontendTest, pipeline_sweep) {
     std::vector<cv::DMatch> matches;
     cv::Mat img_keypoints_out_1(height, width, CV_8UC3),
         img_keypoints_out_2(height, width, CV_8UC3), img_matches_out(height, 2 * width, CV_8UC3);
-    cv::Mat img_display_test;
+    // cv::Mat img_display_test;
     for (FrontendParams::ExtractorType extractor_type : extractor_types) {
         for (FrontendParams::MatcherType matcher_type : matcher_types) {
             printf("started frontend combination: (%d, %d)\n", static_cast<int>(extractor_type),
@@ -93,15 +95,15 @@ TEST(FrontendTest, pipeline_sweep) {
                                     img_keypoints_out_2);
             frontend.draw_matches(image_1, keypoints_descriptors_pair_1.first, image_2,
                                   keypoints_descriptors_pair_2.first, matches, img_matches_out);
-            cv::hconcat(img_keypoints_out_1, img_keypoints_out_2, img_display_test);
-            cv::vconcat(img_display_test, img_matches_out, img_display_test);
-            std::stringstream text;
-            text << "Extractor " << static_cast<int>(extractor_type) << ", matcher "
-                 << static_cast<int>(matcher_type);
-            cv::putText(img_display_test, text.str(), cv::Point(20, height - 50),
-                        cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0, 0, 255), 2, cv::LINE_AA);
-            cv::imshow("Keypoints and Matches Output.", img_display_test);
-            std::cout << "Hold spacebar to pause." << std::endl;
+            // cv::hconcat(img_keypoints_out_1, img_keypoints_out_2, img_display_test);
+            // cv::vconcat(img_display_test, img_matches_out, img_display_test);
+            // std::stringstream text;
+            // text << "Extractor " << static_cast<int>(extractor_type) << ", matcher "
+            //      << static_cast<int>(matcher_type);
+            // cv::putText(img_display_test, text.str(), cv::Point(20, height - 50),
+            //             cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0, 0, 255), 2, cv::LINE_AA);
+            // cv::imshow("Keypoints and Matches Output.", img_display_test);
+            // std::cout << "Hold spacebar to pause." << std::endl;
             while (cv::waitKey(1000) == 32) {
             }
             printf("completed frontend combination: (%d, %d)\n", static_cast<int>(extractor_type),
@@ -182,14 +184,15 @@ TEST(FrontendTest, interpolate_frames) {
         time += dt;
     }
     frontend.populate_frames();
-    std::optional<std::vector<Eigen::Vector3d>> interpolated_pts =
-        frontend.interpolated_initial_translations();
-    ROBOT_CHECK(interpolated_pts);
-    ROBOT_CHECK(interpolated_pts->size() == img_pts.size());
+    frontend.interpolate_frames();
+
+    const std::vector<SharedFrame> &shared_frames = frontend.frames();
     constexpr double TOL = 1e-5;
     for (size_t i = 0; i < pts_in_world.size(); i++) {
-        ROBOT_CHECK(pts_in_world[i].isApprox((*interpolated_pts)[i], TOL), i, pts_in_world[i],
-                    (*interpolated_pts)[i]);
+        const Frame &frame = *shared_frames[i];
+        ROBOT_CHECK(frame.cam_in_world_interpolated_guess_);
+        ROBOT_CHECK(pts_in_world[i].isApprox(*frame.cam_in_world_interpolated_guess_, TOL), i,
+                    pts_in_world[i], *frame.cam_in_world_interpolated_guess_);
     }
 }
 }  // namespace robot::experimental::learn_descriptors

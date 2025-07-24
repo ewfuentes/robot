@@ -106,7 +106,7 @@ int main(int argc, const char** argv) {
                                           Eigen::Isometry3d(img_pt.AS_w_from_gnss_cam->matrix()));
         viz_frames.emplace_back(w_from_gnss_cam, "x_ref_" + std::to_string(i));
         Eigen::Isometry3d frontend_w_from_cam_groundtruth(
-            frontend.frames()[i].world_from_cam_groundtruth_->matrix());
+            frontend.frames()[i]->world_from_cam_groundtruth_->matrix());
         ROBOT_CHECK(frontend_w_from_cam_groundtruth.matrix().isApprox(w_from_gnss_cam.matrix()),
                     frontend_w_from_cam_groundtruth.matrix(), w_from_gnss_cam.matrix());
         // Eigen::Isometry3d frontend_w_from_cam_groundtruth(*img_pt.world_from_cam_ground_truth());
@@ -139,8 +139,9 @@ int main(int argc, const char** argv) {
                 altitude_gps_from_gnss_cam = gnss_cam_in_gcs.z() - *(img_pt.gps_gcs->altitude);
             }
             if (!first_gps_to_cam) {
-                first_gps_to_cam = frontend.frames()[i].world_from_cam_groundtruth_->translation() -
-                                   *frontend.frames()[i].cam_in_world_initial_guess_;
+                first_gps_to_cam =
+                    frontend.frames()[i]->world_from_cam_groundtruth_->translation() -
+                    *frontend.frames()[i]->cam_in_world_initial_guess_;
             }
             gcs_coordinate.z() += *altitude_gps_from_gnss_cam;
             std::cout << std::setprecision(20) << "gnss_cam_in_gcs: " << gnss_cam_in_gcs
@@ -158,7 +159,7 @@ int main(int argc, const char** argv) {
             Eigen::Vector3d cam_gps_in_w = gps_in_w.head<3>() - cam_from_gps.translation();
             viz_points.emplace_back(cam_gps_in_w, "x_cam_gps" + std::to_string(i));
             viz_points.emplace_back(
-                *frontend.frames()[i].cam_in_world_initial_guess_ + *first_gps_to_cam,
+                *frontend.frames()[i]->cam_in_world_initial_guess_ + *first_gps_to_cam,
                 "x_frontend_cam_gps" + std::to_string(i));
             const Eigen::Vector3d gps_from_ref_in_world =
                 gps_in_w.head<3>() - w_from_gnss_cam.translation();
