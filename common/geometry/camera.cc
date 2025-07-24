@@ -16,7 +16,6 @@ Eigen::Matrix3d get_intrinsic_matrix(const gtsam::Cal3_S2 &intrinsic) {
 
 Eigen::Vector3d project(const Eigen::Matrix3d &K, const Eigen::Vector3d &p_cam_point) {
     return K * p_cam_point;
-    // return (K * p_cam_point).head<2>();
 }
 
 Eigen::Vector3d deproject(const Eigen::Matrix3d &K, const Eigen::Vector3d &pixel_homog) {
@@ -41,24 +40,21 @@ std::optional<Eigen::Isometry3d> estimate_cam0_from_cam1(const std::vector<cv::K
         pts2.push_back(kpts1[match.trainIdx].pt);
     }
     ROBOT_CHECK(pts1.size() == pts2.size() && pts1.size() >= 5);
-    // std::cout << "heartbeat 3" << std::endl;
     try {
         cv::Mat E = cv::findEssentialMat(pts1, pts2, K, cv::RANSAC, 0.999, 1.0);
         cv::Mat R_c1_c0, t_c1_c0;
-        // std::cout << "heartbest 4" << std::endl;
         ROBOT_CHECK(!E.empty(), "Essential matrix is empty.");
         // TOOD: handle multiple returned candidate E matrices better (they are stacked on top of
         // each other in E)
         if (E.rows > 3) {
             E = E.rowRange(0, 3);
         }
-        // std::cout << E << std::endl;
         cv::recoverPose(E, pts1, pts2, K, R_c1_c0, t_c1_c0);
         result.linear() = cv_to_eigen_mat(R_c1_c0);
         result.translation() = cv_to_eigen_mat(t_c1_c0);
         result = result.inverse();
         return result;
-    } catch (const std::exception e) {
+    } catch (const std::exception &e) {
         std::cerr << "Failed to estimate pose up to scale cam0_from_cam1.\n"
                   << e.what() << std::endl;
         return std::nullopt;
