@@ -129,9 +129,6 @@ double rotation_error(const Eigen::Isometry3d &T_est, const Eigen::Isometry3d &T
     // 3. Recover angle (in radians)
     return std::acos(cos_theta);
 }
-
-// const std::vector<double> get_absolute_trajectory_error(const std::vector<Eigen::Vector3d> &)
-// {}
 }  // namespace detail_sfm
 
 namespace robot::experimental::learn_descriptors {

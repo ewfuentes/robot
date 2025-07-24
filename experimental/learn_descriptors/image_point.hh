@@ -17,8 +17,9 @@ namespace robot::experimental::learn_descriptors {
 struct ImagePoint {
     virtual ~ImagePoint() = default;
 
-    size_t id;
-    size_t seq;  // for time. TODO: make a time struct
+    size_t id;   // idx for DB
+    size_t seq;  // time in nanoseconds of image capture (also could be name of image; this is also
+                 // time since unix epoch)
     std::shared_ptr<CameraCalibrationFisheye> K;
     void set_cam_in_world(const Eigen::Vector3d& cam_in_world) { cam_in_world_ = cam_in_world; };
     virtual std::optional<Eigen::Isometry3d> world_from_cam_ground_truth() const {

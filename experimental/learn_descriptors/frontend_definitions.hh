@@ -2,6 +2,7 @@
 
 #include <ostream>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "experimental/learn_descriptors/structure_from_motion_types.hh"

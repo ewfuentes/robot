@@ -1,7 +1,7 @@
 #include <cstddef>
 #include <functional>
-#include <iostream>
 #include <memory>
+#include <ostream>
 
 #include "Eigen/Core"
 #include "Eigen/Geometry"

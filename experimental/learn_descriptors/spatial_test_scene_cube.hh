@@ -1,5 +1,4 @@
 #pragma once
-#include <iostream>
 
 #include "Eigen/Core"
 #include "experimental/learn_descriptors/spatial_test_scene.hh"

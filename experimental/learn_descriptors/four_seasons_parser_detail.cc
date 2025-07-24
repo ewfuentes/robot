@@ -17,12 +17,6 @@
 #include "nmea/sentence.hpp"
 
 namespace robot::experimental::learn_descriptors::detail::four_seasons_parser {
-
-// template <typename T>
-// size_t abs_diff(const T& a, const T& b) {
-//     return a > b ? a - b : b - a;
-// }
-
 namespace txt_parser_help {
 
 std::vector<std::string> parse_line_adv(const std::string& line, const std::string& delim) {
