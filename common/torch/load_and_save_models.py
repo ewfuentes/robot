@@ -176,7 +176,10 @@ def save_model(
     # save weights alone
     torch.save(model_copy.state_dict(), save_path / "model_weights.pt")
     # save entire model
-    torch.save(model_copy, save_path / "model.pt")
+    try:
+        torch.save(model_copy, save_path / "model.pt")
+    except Exception as e:
+        print(f"Failed to pickle entire model: {e}")
 
     # dump aux information
     if aux_information is None:

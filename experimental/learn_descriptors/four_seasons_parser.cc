@@ -9,6 +9,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 
@@ -93,6 +94,7 @@ FourSeasonsParser::FourSeasonsParser(const std::filesystem::path& root_dir,
         //     std::clog << "There is no AS_w_from_vio_cam data at img_pt with id: " << id
         //               << std::endl;
         // }
+
         img_pt_vector_.push_back(img_pt);
         id++;
     }

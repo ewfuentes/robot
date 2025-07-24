@@ -8,21 +8,43 @@ import experimental.overhead_matching.swag.data.satellite_embedding_database as 
 import experimental.overhead_matching.swag.data.vigor_dataset as vd
 import experimental.overhead_matching.swag.evaluation.swag_algorithm as sa
 from common.math.haversine import find_d_on_unit_circle
-from experimental.overhead_matching.swag.evaluation.wag_config_pb2 import WagConfig
+from common.gps import web_mercator
+from experimental.overhead_matching.swag.evaluation.wag_config_pb2 import (
+        WagConfig, SatellitePatchConfig)
 from torch_kdtree import build_kd_tree
-from torch_kdtree.nn_distance import TorchKDTree
 import hashlib
 import dataclasses
+from typing import Callable
 
 
 @dataclasses.dataclass
 class PathInferenceResult:
     # sequence is start -> particle_history[0] = log_particle_weights[0] ->
     #  observe_wag -> particle_history_pre_move[0] -> move_wag -> particle_history[1]
-    # path_length x N x state_dim
-    particle_history: torch.Tensor
-    log_particle_weights: torch.Tensor | None
-    particle_history_pre_move: torch.Tensor | None
+    particle_history: torch.Tensor  # path_length x num_particles x state_dim
+    log_particle_weights: torch.Tensor | None   # path_length x num_particles
+    particle_history_pre_move: torch.Tensor | None # path_length x num_particles x state_dim
+    num_dual_particles: int | None # 
+
+    def get_dual_particle_history(self)->torch.Tensor | None:
+        if self.num_dual_particles is None or self.num_dual_particles == 0:
+            return None
+        assert self.num_dual_particles <= self.particle_history.shape[1]
+        return self.particle_history[:, -self.num_dual_particles:, :]
+    def get_dual_log_particle_weights(self)->torch.Tensor | None:
+        if self.num_dual_particles is None or self.log_particle_weights is None or self.num_dual_particles == 0:
+            return None
+        assert self.num_dual_particles <= self.log_particle_weights.shape[1]
+        return self.log_particle_weights[:, -self.num_dual_particles:]
+    def get_dual_particle_history_pre_move(self)->torch.Tensor | None:
+        if self.num_dual_particles is None or self.particle_history_pre_move is None or self.num_dual_particles == 0:
+            return None
+        assert self.num_dual_particles <= self.particle_history_pre_move.shape[1]
+        return self.particle_history_pre_move[:, -self.num_dual_particles:]
+
+
+        
+
 
 
 def hash_model(model: torch.nn.Module):
@@ -164,23 +186,62 @@ def get_distance_error_between_pano_and_particles_meters(
         assert particles.ndim == 2
         particles = particles.unsqueeze(0)
     
-    true_latlong = vigor_dataset.get_panorama_positions(panorama_index)
+    true_latlong = vigor_dataset.get_panorama_positions(panorama_index).to(device=particles.device)
     particle_latlong_estimate = particles.mean(dim=1)
-    out = []
-    for i in range(len(panorama_index)):
-        distance_error_meters = vd.EARTH_RADIUS_M * find_d_on_unit_circle(true_latlong[i], particle_latlong_estimate[i])
-        out.append(distance_error_meters)
 
-    out = torch.tensor(out)
-    if len(out) == 1:
-        out = out[0]
-    return out
+    mean_deviation_m = vd.EARTH_RADIUS_M * find_d_on_unit_circle(
+            particles, particle_latlong_estimate[:, None, :])
+    var_sq_m = torch.mean(mean_deviation_m ** 2, -1)
+
+    mean_error_m = []
+    for i in range(len(panorama_index)):
+        distance_error_meters = vd.EARTH_RADIUS_M * find_d_on_unit_circle(
+                true_latlong[i], particle_latlong_estimate[i])
+        mean_error_m.append(distance_error_meters)
+
+    mean_error_m = torch.tensor(mean_error_m)
+    if len(mean_error_m) == 1:
+        mean_error_m = mean_error_m[0]
+    return mean_error_m, var_sq_m
+
 
 def get_motion_deltas_from_path(vigor_dataset: vd.VigorDataset, path: list[int]):
     latlong = vigor_dataset.get_panorama_positions(path)
     motion_deltas = torch.diff(latlong, dim=0)
 
     return motion_deltas
+
+
+def build_patch_index_from_particle(
+        dataset: vd.VigorDataset,
+        satellite_patch_config: SatellitePatchConfig,
+        device: torch.device):
+    patch_positions_px = torch.tensor(
+            dataset._satellite_metadata[["web_mercator_y", "web_mercator_x"]].values,
+            device=device, dtype=torch.float32)
+    sat_patch_kdtree = build_kd_tree(patch_positions_px)
+    num_patches = patch_positions_px.shape[0]
+
+    def __inner__(particles: torch.Tensor):
+        K = 1
+        particles_px = web_mercator.latlon_to_pixel_coords(
+                particles[..., 0], particles[..., 1], satellite_patch_config.zoom_level)
+
+        # particles_px is num_particles x 2
+        particles_px = torch.stack(particles_px, dim=-1)
+        # px_dist_sq and idxs are num_particles x 1
+        px_dist_sq, idxs = sat_patch_kdtree.query(particles_px, nr_nns_searches=K)
+        # selected_patch_positions is num_particles x 2
+        selected_patch_positions = patch_positions_px[idxs, :].squeeze()
+        # abs_deltas is num_particles x 2
+        abs_deltas = torch.abs(particles_px - selected_patch_positions)
+        is_row_out_of_bounds = abs_deltas[:, 0] > satellite_patch_config.patch_height_px / 2.0
+        is_col_out_of_bounds = abs_deltas[:, 1] > satellite_patch_config.patch_width_px / 2.0
+        is_too_far = torch.logical_or(is_row_out_of_bounds, is_col_out_of_bounds)
+
+        idxs[is_too_far] = num_patches
+        return idxs.squeeze()
+    return __inner__
 
 
 def get_pano_embeddings_for_indices(vigor_dataset: vd.VigorDataset,
@@ -212,10 +273,11 @@ def pano_embeddings_and_motion_deltas_from_path(
 
 
 def run_inference_on_path(
-        satellite_patch_kdtree: TorchKDTree,
+        patch_index_from_particle: Callable[[torch.Tensor], torch.Tensor],
         initial_particle_state: torch.Tensor,  # N x state dim
         motion_deltas: torch.Tensor,  # path_length - 1 x state dim
         patch_similarity_for_path: torch.Tensor,  # path_length x W
+        satellite_patch_locations: torch.Tensor,  # num_patches x 2
         wag_config: WagConfig,
         generator: torch.Generator,
         return_intermediates: bool = False) -> PathInferenceResult:
@@ -225,45 +287,69 @@ def run_inference_on_path(
     particle_history = []
     log_particle_weights = []
     particle_history_pre_move = []  # the particle state history before move_wag but after observe_wag
+    num_dual_particles = []
     for likelihood_value, motion_delta in zip(patch_similarity_for_path[:-1], motion_deltas):
         particle_history.append(particle_state.cpu().clone())
-        # observe
-        wag_observation_result = sa.observe_wag(particle_state,
-            likelihood_value,
-            satellite_patch_kdtree,
-            wag_config,
-            generator,
-            return_past_particle_weights=return_intermediates)
+
+        # Generate new particles based on the observation
+        wag_observation_result = sa.measurement_wag(
+                particle_state,
+                likelihood_value,
+                patch_index_from_particle,
+                satellite_patch_locations,
+                wag_config,
+                generator,
+                return_past_particle_weights=return_intermediates)
 
         particle_state = wag_observation_result.resampled_particles
         if return_intermediates:
             log_particle_weights.append(wag_observation_result.log_particle_weights.cpu().clone())
             particle_history_pre_move.append(particle_state.cpu().clone())
+            num_dual_particles.append(wag_observation_result.num_dual_particles)
+
         # move
         particle_state = sa.move_wag(particle_state, motion_delta, wag_config, generator)
 
     # apply final observation
-    wag_observation_result = sa.observe_wag(particle_state,
-                                    patch_similarity_for_path[-1],
-                                    satellite_patch_kdtree,
-                                    wag_config,
-                                    generator)
+    wag_observation_result = sa.measurement_wag(
+            particle_state,
+            patch_similarity_for_path[-1],
+            patch_index_from_particle,
+            satellite_patch_locations,
+            wag_config,
+            generator,
+            return_past_particle_weights=return_intermediates)
+
+    if return_intermediates:
+        log_particle_weights.append(wag_observation_result.log_particle_weights.cpu().clone())
+        particle_history_pre_move.append(particle_state.cpu().clone())
+        num_dual_particles.append(wag_observation_result.num_dual_particles)
+
     particle_history.append(wag_observation_result.resampled_particles.cpu().clone())
 
     if return_intermediates:
+        if len(num_dual_particles) > 0:
+            num_dual_particles = torch.tensor(num_dual_particles)
+            assert torch.all(num_dual_particles[0] == num_dual_particles) 
+            num_dual_particles = num_dual_particles[0]
+        else:
+            num_dual_particles=None
+
         return PathInferenceResult(
             particle_history=torch.stack(particle_history),  # N+1, +1 from final particle state
             log_particle_weights=torch.stack(log_particle_weights),  # N
-            particle_history_pre_move=torch.stack(particle_history_pre_move))  # N
+            particle_history_pre_move=torch.stack(particle_history_pre_move),
+            num_dual_particles=num_dual_particles,
+        )
     else:
         return PathInferenceResult(
             particle_history=torch.stack(particle_history),
             log_particle_weights=None,
-            particle_history_pre_move=None)
+            particle_history_pre_move=None,
+            num_dual_particles=None)
 
 
-def construct_inputs_and_evalulate_path(
-    sat_patch_kdtree,
+def construct_inputs_and_evaluate_path(
     vigor_dataset: vd.VigorDataset,
     path: list[int],
     path_similarity_values: torch.Tensor,
@@ -274,20 +360,23 @@ def construct_inputs_and_evalulate_path(
 ) -> PathInferenceResult:
     generator = torch.Generator(device=device).manual_seed(generator_seed)
     motion_deltas = get_motion_deltas_from_path(vigor_dataset, path).to(device)
+    patch_index_from_particle = build_patch_index_from_particle(
+            vigor_dataset, wag_config.satellite_patch_config, device)
+    satellite_patch_locations = vigor_dataset.get_patch_positions()
     gt_initial_position_lat_lon = vigor_dataset._panorama_metadata.loc[path[0]]
     gt_initial_position_lat_lon = torch.tensor(
         (gt_initial_position_lat_lon['lat'], gt_initial_position_lat_lon['lon']), device=device)
     initial_particle_state = sa.initialize_wag_particles(
         gt_initial_position_lat_lon, wag_config, generator).to(device)
 
-    return run_inference_on_path(sat_patch_kdtree,
+    return run_inference_on_path(patch_index_from_particle,
                                  initial_particle_state,
                                  motion_deltas,
                                  path_similarity_values,
+                                 satellite_patch_locations,
                                  wag_config,
                                  generator,
                                  return_intermediates)
-
 
 def evaluate_model_on_paths(
     vigor_dataset: vd.VigorDataset,
@@ -303,9 +392,6 @@ def evaluate_model_on_paths(
 ) -> None:
     all_final_particle_error_meters = []
     with torch.no_grad():
-        sat_patch_positions = vigor_dataset.get_patch_positions().to(device)
-        sat_patch_kdtree = build_kd_tree(sat_patch_positions)
-
         all_similarity = compute_cached_similarity_matrix(
                 sat_model=sat_model,
                 pano_model=pano_model,
@@ -318,8 +404,7 @@ def evaluate_model_on_paths(
             path_similarity_values = all_similarity[path]
             generator_seed = seed * i
 
-            path_inference_result = construct_inputs_and_evalulate_path(
-                sat_patch_kdtree=sat_patch_kdtree,
+            path_inference_result = construct_inputs_and_evaluate_path(
                 vigor_dataset=vigor_dataset,
                 path=path,
                 path_similarity_values=path_similarity_values,
@@ -331,16 +416,23 @@ def evaluate_model_on_paths(
             particle_history = path_inference_result.particle_history
             save_path = output_path / f"{i:07d}"
             save_path.mkdir(parents=True, exist_ok=True)
-            error_meters_at_each_step = get_distance_error_between_pano_and_particles_meters(
-                    vigor_dataset, path, particle_history)
+            error_meters_at_each_step, var_sq_m_at_each_step = (
+                    get_distance_error_between_pano_and_particles_meters(
+                        vigor_dataset, path, particle_history.to(device))
+                )
             all_final_particle_error_meters.append(error_meters_at_each_step[-1])
             torch.save(error_meters_at_each_step, save_path / "error.pt")
+            torch.save(var_sq_m_at_each_step, save_path / "var.pt")
             torch.save(path, save_path / "path.pt")
             torch.save(path_similarity_values, save_path / "similarity.pt")
             if save_intermediate_filter_states:
-                torch.save(path_inference_result.particle_history, save_path / "particle_history.pt")
-                torch.save(path_inference_result.log_particle_weights, save_path / "log_particle_weights.pt")
-                torch.save(path_inference_result.particle_history_pre_move, save_path / "particle_history_pre_move.pt")
+                pir = path_inference_result
+                torch.save(pir.particle_history, save_path / "particle_history.pt")
+                torch.save(pir.log_particle_weights, save_path / "log_particle_weights.pt")
+                torch.save(pir.particle_history_pre_move, save_path / "particle_history_pre_move.pt")
+                torch.save(pir.dual_mcl_particles, save_path / "dual_mcl_particles.pt")
+                torch.save(pir.dual_log_particle_weights, save_path / "dual_log_particle_weights.pt")
+                torch.save(pir.num_dual_particles, save_path / "num_dual_particles.pt")
             with open(save_path / "other_info.json", "w") as f:
                 f.write(json.dumps({
                     "seed": generator_seed,

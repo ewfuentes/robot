@@ -17,6 +17,7 @@ py_binary(
     "//common/torch:load_and_save_models",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
     "//experimental/overhead_matching/swag/model:patch_embedding",
+    "//experimental/overhead_matching/swag/model:swag_patch_embedding",
   ]
 )
 
@@ -65,6 +66,7 @@ py_binary(
     "//experimental/overhead_matching/swag/evaluation:wag_config_proto_py",
     "//experimental/overhead_matching/swag/evaluation:evaluate_swag",
     "//experimental/overhead_matching/swag/model:patch_embedding",
+    "//experimental/overhead_matching/swag/model:swag_patch_embedding",
   ]
 )
 
@@ -84,6 +86,49 @@ py_binary(
   srcs = ["generate_training_configs.py"],
   deps = [
     requirement("msgspec"),
+    ":train",
+  ]
+)
+
+py_binary(
+  name = "extract_landmarks_for_vigor_dataset",
+  srcs = ["extract_landmarks_for_vigor_dataset.py"],
+  deps = [
+    requirement("osmnx"),
+    requirement("pandas"),
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//common/gps:web_mercator",
+  ]
+)
+
+py_binary(
+  name="step_through_filter",
+  srcs=["step_through_filter.py"],
+  deps=[
+    ":evaluate_model_on_paths",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/evaluation:swag_algorithm",
+    "//experimental/overhead_matching/swag/evaluation:wag_config_proto_py",
+    "//experimental/overhead_matching/swag/evaluation:evaluate_swag",
+    "//experimental/overhead_matching/swag/model:patch_embedding",
+    requirement("torch"),
+    requirement("dash"),
+    requirement("tqdm"),
+    requirement("opencv-python"),
+    "//common/torch:load_torch_deps",
+  ]
+)
+
+py_binary(
+  name="populate_tensor_cache",
+  srcs=["populate_tensor_cache.py"],
+  deps=[
+    requirement("lmdb"),
+    requirement("msgspec"),
+    requirement("torch"),
+    requirement("tqdm"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
     ":train",
   ]
 )

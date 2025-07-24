@@ -146,6 +146,7 @@ cc_library(
     srcs = ["four_seasons_parser.cc"],
     visibility = ["//visibility:public"],
     deps = [
+
         ":image_point_four_seasons",
         ":four_seasons_transforms",
         ":four_seasons_parser_detail",
@@ -170,6 +171,16 @@ cc_library(
         "@geographiclib",
         "@nmea",
     ],
+      "@eigen",
+      "@opencv//:opencv",
+      "//common/liegroups:se3",
+      "//common/time:robot_time",
+      "@com_google_absl//absl/strings:str_format",
+      ":image_point",
+      "@nmea",
+      "@geographiclib",
+      "//common:check"
+    ]
 )
 
 cc_binary(

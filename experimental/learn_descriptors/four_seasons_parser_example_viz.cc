@@ -115,7 +115,6 @@ int main(int argc, const char** argv) {
         // std::cout << "frontend_w_from_cam_groundtruth: " <<
         // frontend_w_from_cam_groundtruth.matrix()
         //           << std::endl;
-
         if (img_pt.gps_gcs) {
             if (img_pt.gps_gcs->seq > img_pt.seq) {
                 gps_ns_delta_from_shutter.push_back(
@@ -167,6 +166,7 @@ int main(int argc, const char** argv) {
         }
     }
     // std::cout << "ate_cam: " << ate_cam << "\tate_gps: " << ate_gps << std::endl;
+
     const double sum =
         std::accumulate(gps_ns_delta_from_shutter.begin(), gps_ns_delta_from_shutter.end(), 0.0);
     double avg_ns_gps_delta = sum / gps_ns_delta_from_shutter.size();

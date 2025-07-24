@@ -5,18 +5,32 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 from experimental.overhead_matching.swag.data import vigor_dataset as vd
-from experimental.overhead_matching.swag.evaluation.evaluate_swag import evaluate_prediction_top_k, get_distance_error_between_pano_and_particles_meters
+from experimental.overhead_matching.swag.evaluation.evaluate_swag import evaluate_prediction_top_k, get_distance_error_between_pano_and_particles_meters, PathInferenceResult
+
 from common.math.haversine import find_d_on_unit_circle
 import torch.nn as nn
 import experimental.overhead_matching.swag.data.satellite_embedding_database as sed
+import enum
+
+
+class ModelType(enum.Enum):
+    SATELLITE = enum.auto()
+    PANORAMA = enum.auto()
 
 
 class MockEmbeddingModel(nn.Module):
-    def __init__(self, embedding_dim):
+    def __init__(self, embedding_dim, model_type):
         super().__init__()
         self.embedding_dim = embedding_dim
         self.embedding_network = nn.LazyLinear(self.embedding_dim)
-    
+        self.model_type = model_type
+
+    def model_input_from_batch(self, x):
+        if self.model_type == ModelType.SATELLITE:
+            return x.satellite
+        else:
+            return x.panorama
+
     def forward(self, data: torch.Tensor):
         batch_size = data.shape[0]
         out = self.embedding_network(data[:, :, :100, :100].float().reshape(batch_size, -1))
@@ -31,7 +45,9 @@ class EvaluateSwagTest(unittest.TestCase):
         EMBEDDING_DIM = 16
         SEED = 42
         config = vd.VigorDatasetConfig(
-                panorama_neighbor_radius=0.2, sample_mode=vd.SampleMode.POS_SEMIPOS)
+            satellite_tensor_cache_info=None,
+            panorama_tensor_cache_info=None,
+            sample_mode=vd.SampleMode.POS_SEMIPOS)
 
         # Use same random seed for reproducibility
         torch.manual_seed(SEED)
@@ -39,8 +55,8 @@ class EvaluateSwagTest(unittest.TestCase):
         # Create dataset, model, and embedding database
         dataset = vd.VigorDataset(Path("external/vigor_snippet/vigor_snippet"), config)
 
-        sat_model = MockEmbeddingModel(EMBEDDING_DIM)
-        ego_model = MockEmbeddingModel(EMBEDDING_DIM)
+        sat_model = MockEmbeddingModel(EMBEDDING_DIM, ModelType.SATELLITE)
+        ego_model = MockEmbeddingModel(EMBEDDING_DIM, ModelType.PANORAMA)
 
         # Call the function to test
         result_df, all_similarities = evaluate_prediction_top_k(
@@ -93,10 +109,10 @@ class EvaluateSwagTest(unittest.TestCase):
             item = result_df[mask]
             self.assertEqual(item.iloc[0]["k_value"], expected_k_value)
 
-
     def test_get_distance_error_meters(self):
         # Setup
-        config = vd.VigorDatasetConfig(panorama_neighbor_radius=0.2)
+        config = vd.VigorDatasetConfig(
+            satellite_tensor_cache_info=None, panorama_tensor_cache_info=None)
         dataset = vd.VigorDataset(Path("external/vigor_snippet/vigor_snippet"), config)
 
 
@@ -126,13 +142,58 @@ class EvaluateSwagTest(unittest.TestCase):
                 [vd.EARTH_RADIUS_M * find_d_on_unit_circle(particle_means[0], true_latlong_multiple[0]),
                  vd.EARTH_RADIUS_M * find_d_on_unit_circle(particle_means[1], true_latlong_multiple[1])]
             )
-            distances = get_distance_error_between_pano_and_particles_meters(dataset, panorama_indices, multi_particles)
+            distances, _ = get_distance_error_between_pano_and_particles_meters(
+                    dataset, panorama_indices, multi_particles)
             self.assertTrue(torch.allclose(distances, expected_distances))
 
         finally:
             # Restore the original method
             dataset.get_panorama_positions = original_get_positions
 
+    def test_path_inference_result(self):
+        # setup
+        PATH_LENGTH = 101
+        STATE_DIM = 3
+        NUM_PARTICLES = 75
+        inf_result_none = PathInferenceResult(
+            particle_history=torch.rand(PATH_LENGTH, NUM_PARTICLES, STATE_DIM),
+            particle_history_pre_move=torch.rand(PATH_LENGTH, NUM_PARTICLES, STATE_DIM),
+            log_particle_weights=torch.rand(PATH_LENGTH, NUM_PARTICLES),
+            num_dual_particles=None
+        )
+        inf_result_0 = PathInferenceResult(
+            particle_history=torch.rand(PATH_LENGTH, NUM_PARTICLES, STATE_DIM),
+            particle_history_pre_move=torch.rand(PATH_LENGTH, NUM_PARTICLES, STATE_DIM),
+            log_particle_weights=torch.rand(PATH_LENGTH, NUM_PARTICLES),
+            num_dual_particles=0
+        )
+        inf_result_8 = PathInferenceResult(
+            particle_history=torch.rand(PATH_LENGTH, NUM_PARTICLES, STATE_DIM),
+            particle_history_pre_move=torch.rand(PATH_LENGTH, NUM_PARTICLES, STATE_DIM),
+            log_particle_weights=torch.rand(PATH_LENGTH, NUM_PARTICLES),
+            num_dual_particles=8
+        )
+        inf_result_way_too_many = PathInferenceResult(
+            particle_history=torch.rand(PATH_LENGTH, NUM_PARTICLES, STATE_DIM),
+            particle_history_pre_move=torch.rand(PATH_LENGTH, NUM_PARTICLES, STATE_DIM),
+            log_particle_weights=torch.rand(PATH_LENGTH, NUM_PARTICLES),
+            num_dual_particles=10 * NUM_PARTICLES
+        )
 
+        # action + verification
+        self.assertEqual(inf_result_0.get_dual_particle_history(), None)
+        self.assertEqual(inf_result_none.get_dual_particle_history(), None)
+        self.assertEqual(inf_result_0.get_dual_log_particle_weights(), None)
+        self.assertEqual(inf_result_none.get_dual_log_particle_weights(), None)
+        self.assertEqual(inf_result_0.get_dual_particle_history_pre_move(), None)
+        self.assertEqual(inf_result_none.get_dual_particle_history_pre_move(), None)
+
+        self.assertTrue(torch.equal(inf_result_8.get_dual_particle_history(), inf_result_8.particle_history[:, -8:]))
+        self.assertTrue(torch.equal(inf_result_8.get_dual_particle_history_pre_move(), inf_result_8.particle_history_pre_move[:, -8:]))
+        self.assertTrue(torch.equal(inf_result_8.get_dual_log_particle_weights(), inf_result_8.log_particle_weights[:, -8:]))
+
+        self.assertRaises(AssertionError, inf_result_way_too_many.get_dual_log_particle_weights)
+        self.assertRaises(AssertionError, inf_result_way_too_many.get_dual_particle_history)
+        self.assertRaises(AssertionError, inf_result_way_too_many.get_dual_particle_history_pre_move)
 if __name__ == "__main__":
     unittest.main()

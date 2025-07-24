@@ -16,6 +16,8 @@ py_binary(
     requirement("altair"),
     requirement("pandas"),
     requirement("seaborn"),
+    requirement("osmnx"),
+    requirement("supervision"),
     "//common/torch:load_torch_deps",
     "//experimental/overhead_matching/learned/model:clevr_transformer",
     "//experimental/overhead_matching/learned/model:clevr_tokenizer",
@@ -24,6 +26,7 @@ py_binary(
     "//experimental/overhead_matching/swag/evaluation:evaluate_swag",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
     "//experimental/overhead_matching/swag/model:patch_embedding",
+    "//experimental/overhead_matching/swag/model:swag_patch_embedding",
   ]
 )
 
@@ -100,6 +103,7 @@ py_library(
   name = "serialization",
   srcs = ["serialization.py"],
   visibility = ["//visibility:public"],
+  deps = [requirement("msgspec")]
 )
 py_test(
     name = "serialization_test",

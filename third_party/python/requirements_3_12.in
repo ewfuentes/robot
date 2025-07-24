@@ -12,6 +12,7 @@ Wand==0.6.11
 torch==2.7.0+cu128
 setuptools==80.3.1
 ipdb==0.13.13
+dash==3.0.4
 ipympl==0.9.3
 beautifulsoup4==4.12.2
 line_profiler==4.0.3
@@ -30,11 +31,15 @@ altair==5.5.0
 tensorboard==2.19.0
 protobuf==5.29.0rc2
 msgspec==0.19.0
-torch-kdtree @ git+https://github.com/thomgrand/torch_kdtree.git@86961f7def35a2d818916e343807f1867d0622c0
+osmnx==2.0.5
+huggingface-hub==0.33.4
+open-clip-torch==2.32.0
+lmdb==1.7.2
+dinov2 @ git+https://github.com/ewfuentes/dinov2.git@3680537d078b8cc2924f29657b8322cba8b4bb3d
+torch-kdtree @ git+https://github.com/ewfuentes/torch_kdtree.git@583b92b105fcc7aefdc0020136229f9ed32566b7
 sam-2 @ git+https://github.com/IDEA-Research/Grounded-SAM-2.git@dd4c5141b75e4838dd486c64f773c43b4db3a07b
 sdprlayers @ git+https://github.com/ewfuentes/sdprlayer.git@0d0663f96c106db549fa9bc5653af71620bc2861
 cvxpylayers @ git+https://github.com/holmesco/cvxpylayers.git@728b8f208875d0ad913167ae2c9b4220730ab4cd
 poly_matrix @ git+https://github.com/utiasASRL/poly_matrix.git@671d6b7704fcc82817189dbbc87814c429b2e15d
 cert_tools @ git+https://github.com/utiasASRL/certifiable-tools.git@afcd203bb4623ea60b339f00f8da802f776de1d4
 chompack @ git+https://github.com/ewfuentes/chompack.git@844adda111241bb64f7008e0d0680525290958f3
-

@@ -17,7 +17,7 @@ class FourSeasonsParser : std::enable_shared_from_this<FourSeasonsParser> {
    public:
     static constexpr double CAM_HZ = 30.0;
     static constexpr double CAM_CAP_DELTA_NS = 1e9 / CAM_HZ;
-
+  
     FourSeasonsParser(const std::filesystem::path& root_dir,
                       const std::filesystem::path& calibration_dir);
     std::shared_ptr<FourSeasonsParser> get_shared() { return shared_from_this(); }

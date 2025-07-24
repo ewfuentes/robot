@@ -10,6 +10,10 @@ class MockEmbeddingModel(nn.Module):
     def __init__(self, embedding_dim):
         super().__init__()
         self.embedding_dim = embedding_dim
+
+    def model_input_from_batch(self, x):
+        return x.satellite
+
     def forward(self, data: torch.Tensor):
         batch_size = data.shape[0]
         out = torch.rand((batch_size, self.embedding_dim))
@@ -24,7 +28,8 @@ class SatelliteEmbeddingDatabaseTest(unittest.TestCase):
         BATCH_SIZE = 32
         SEED = 32
         config = vigor_dataset.VigorDatasetConfig(
-            panorama_neighbor_radius=0.2,
+            satellite_tensor_cache_info=None,
+            panorama_tensor_cache_info=None,
         )
         dataset = vigor_dataset.VigorDataset(Path("external/vigor_snippet/vigor_snippet"), config)
         overhead_view = dataset.get_sat_patch_view()

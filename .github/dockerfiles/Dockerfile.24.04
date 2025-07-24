@@ -22,5 +22,3 @@ RUN echo "$USERNAME ALL=(ALL:ALL) NOPASSWD: ALL" > /etc/sudoers.d/$USERNAME
 
 WORKDIR actions-runner
 USER $USERNAME
-
-ENTRYPOINT ["/bin/bash"]

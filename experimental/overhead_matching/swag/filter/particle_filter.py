@@ -1,7 +1,7 @@
 import common.torch.load_torch_deps
 import torch
 import numpy as np
-import torch_kdtree.nn_distance
+from typing import Callable
 
 
 def wag_motion_model(particles: torch.Tensor,
@@ -37,15 +37,15 @@ def wag_observation_log_likelihood_from_similarity_matrix(
 
 
 def wag_calculate_log_particle_weights(observation_log_likelihood: torch.Tensor,
-                                       patch_kdtree: torch_kdtree.nn_distance.TorchKDTree,
                                        particles: torch.Tensor,
-                                       max_patch_distance_deg: float,
-                                       no_patch_log_likelihood: float = np.log(1e-6)) -> torch.Tensor:
+                                       patch_index_from_pos: Callable[[torch.Tensor], torch.Tensor],
+                                       no_patch_log_likelihood: float = np.log(1e-50)) -> torch.Tensor:
     """
     observation_likelihood_matrix: Matrix of length M, each cell contains log(p(z_t | x_t^j))
-    patch_kdtree: KDTree of the patch centers
     particles: N_particles x state dimension: the particles
-    max_patch_distance_deg: particles that are not closer to any patch than this distance are assigned..
+    patch_index_from_pos: A function that takes in `particles` and returns which index each
+        particle corresponds to. If a particle does not correspond to any patch, then it returns
+        len(observation_log_likelihood).
     no_patch_log_likelihood: ...this likelihood value
 
     Returns log weights of each particle
@@ -53,16 +53,19 @@ def wag_calculate_log_particle_weights(observation_log_likelihood: torch.Tensor,
     assert observation_log_likelihood.ndim == 1 and particles.ndim == 2
 
     # find which patches are closest to each particle
-    distances_to_patch, particle_patch_indices = patch_kdtree.query(particles, nr_nns_searches=1)
-    distances_to_patch = distances_to_patch.squeeze(1)
-    particle_patch_indices = particle_patch_indices.squeeze(1)  # N_particles x 1 -> N_particles
+    particle_patch_indices = patch_index_from_pos(particles)
 
-    particle_log_likelihood = observation_log_likelihood[particle_patch_indices]
-    lost_particles = distances_to_patch > max_patch_distance_deg
-    particle_log_likelihood[lost_particles] = no_patch_log_likelihood
+
+    valid_mask = particle_patch_indices < observation_log_likelihood.shape[0]
+    invalid_mask = torch.logical_not(valid_mask)
+
+    particle_log_likelihood = torch.empty(particles.shape[0], dtype=torch.float32, device=particles.device)
+    particle_log_likelihood[valid_mask] = observation_log_likelihood[particle_patch_indices[valid_mask]]
+    particle_log_likelihood[invalid_mask] = no_patch_log_likelihood
     # normalize
     particle_log_likelihood = particle_log_likelihood - particle_log_likelihood.logsumexp(dim=0)
     return particle_log_likelihood
+
 
 def wag_multinomial_resampling(particles: torch.Tensor,
                                log_weights: torch.Tensor,
@@ -80,3 +83,18 @@ def wag_multinomial_resampling(particles: torch.Tensor,
     indices = torch.multinomial(torch.exp(log_weights), num_samples, replacement=True, generator=generator)
     resampled_particles = particles[indices]
     return resampled_particles
+
+def wag_belief_log_likelihood_from_particles(particles: torch.Tensor,
+                                             satellite_patch_locations: torch.Tensor,
+                                             phantom_counts_frac: float,
+                                             patch_index_from_pos):
+    particle_patch_indices = patch_index_from_pos(particles)
+
+    num_phantom_counts = int(phantom_counts_frac * particles.shape[0])
+    out_counts = torch.full((particles.shape[0],), num_phantom_counts, device=particle_patch_indices.device)
+
+    patch_idxs, counts = torch.unique(particle_patch_indices, sorted=False, return_counts=True)
+    out_counts[patch_idxs] += counts
+
+    return torch.log(out_counts)
+
