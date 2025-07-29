@@ -10,3 +10,5 @@ services:
     restart: always
     volumes:
       - /data/docker_ci_cache:/tmp/caches
+    healthcheck:
+        test: "nvidia-smi || exit 1"
