@@ -3,8 +3,6 @@ name: github_runner
 services:
   github_runner:
     container_name: github_runner
-    # For hardware acceleration, add one of -[armnn, cuda, rocm, openvino, rknn] to the image tag.
-    # Example tag: ${IMMICH_VERSION:-release}-cuda
     image: github_runner:24.04
     shm_size: 2gb
     runtime: nvidia
