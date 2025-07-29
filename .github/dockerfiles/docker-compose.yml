@@ -8,3 +8,5 @@ services:
     runtime: nvidia
     command: bash -c "./config.sh --url https://github.com/ewfuentes/robot --token ${GITHUB_RUNNER_TOKEN} --unattended && ./run.sh"
     restart: always
+    volumes:
+      - /data/docker_ci_cache:/tmp/caches
