@@ -4,6 +4,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "Eigen/Core"
 #include "common/check.hh"
@@ -32,6 +33,7 @@ class Frame {
           K_(other.K_),
           kpts_(other.kpts_),
           descriptors_(other.descriptors_.clone()),
+          feature_tracks_(feature_tracks_),
           frame_from_other_frames_(other.frame_from_other_frames_),
           world_from_cam_groundtruth_(other.world_from_cam_groundtruth_),
           cam_in_world_initial_guess_(other.cam_in_world_initial_guess_),
@@ -108,6 +110,10 @@ class Frame {
     gtsam::Cal3_S2::shared_ptr K_;
     KeypointsCV kpts_;
     cv::Mat descriptors_;
+    std::unordered_set<FeatureTrack>
+        feature_tracks_;  // tracks in this frame. NOTE: currently I'm creating tracks BEFORE the
+                          // structure construction process, not during. this should probably change
+                          // at some point
     std::unordered_map<FrameId, gtsam::Rot3>
         frame_from_other_frames_;  // map of relative rotation for this_frame_from_frame_[FrameId]
     std::optional<gtsam::Pose3> world_from_cam_groundtruth_;

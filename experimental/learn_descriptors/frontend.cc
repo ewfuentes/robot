@@ -266,6 +266,8 @@ void Frontend::match_frames_and_build_tracks() {
                         lmk_id_map_.emplace(std::make_pair(shared_frames_[i]->id_, kpt_cam0),
                                             feature_tracks_.size() - 1);
                     }
+                    shared_frames_[i]->feature_tracks_.insert(lmk_id_map_.at(key));
+                    shared_frames_[j]->feature_tracks_.insert(lmk_id_map_.at(key));
                 }
             }
         }

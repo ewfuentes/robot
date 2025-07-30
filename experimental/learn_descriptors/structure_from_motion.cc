@@ -50,10 +50,40 @@ void StructureFromMotion::solve_structure(
     // BACKEND
     backend_.clear();
     backend_.add_frames(frontend_.frames());
+    backend_.add_feature_tracks(frontend_.feature_tracks());
     backend_.calculate_initial_values();
     backend_.populate_graph(frontend_.feature_tracks());
     graph_values(backend_.current_initial_values(), "viz init values");
     backend_.solve_graph(10, iter_debug_func);
+}
+
+void StructureFromMotion::solve_structure_incrementally() {
+    // FRONTEND
+    frontend_.populate_frames();
+    ROBOT_CHECK(frontend_.frames().size() > 2);
+    frontend_.match_frames_and_build_tracks();
+    ROBOT_CHECK(frontend_.frames().front()->world_from_cam_groundtruth_,
+                "Assuming that our first frame has groundtruth for now.",
+                *frontend_.frames().front()->world_from_cam_groundtruth_);
+    // align rotation via the initial guess
+    frontend_.frames().front()->world_from_cam_initial_guess_ =
+        frontend_.frames().front()->world_from_cam_groundtruth_->rotation();
+
+    // BACKEND
+    backend_.clear();
+    backend_.add_frames(frontend_.frames());
+    backend_.add_feature_tracks(frontend_.feature_tracks());
+    backend_.interpolate_gps();
+
+    backend_.seed_graph();
+    backend_.bundle_adjust();
+    backend_.filter_outliers();
+    while (backend_.register_next_best_image()) {
+        backend_.bundle_adjust();
+        backend_.filter_outliers();
+    }
+
+    graph_values(backend_.current_initial_values(), "viz init values");
 }
 
 void StructureFromMotion::graph_values(const gtsam::Values &values, const std::string &window_name,

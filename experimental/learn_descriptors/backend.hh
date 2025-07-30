@@ -43,8 +43,22 @@ class Backend {
         shared_frames_.reserve(shared_frames_.size() + shared_frames.size());
         shared_frames_.insert(shared_frames_.end(), shared_frames.begin(), shared_frames.end());
     };
+    void add_feature_tracks(FeatureTracks &feature_tracks) { feature_tracks_ = feature_tracks; };
     void calculate_initial_values(bool interpolate_gps = true);
-    void populate_graph(const FeatureTracks &feature_tracks);
+    void interpolate_gps();
+    void
+    seed_graph();  // TODO: make smart. this will just naively add the first 2 to the graph for now
+    bool register_next_best_image();  // TODO: make smart. this will just naively add the next idx
+                                      // image to the graph for now
+    // bundle adjust the current graph_ and values_
+    void bundle_adjust();
+    // check reprojections of the current state of the graph and filter landmark outliers
+    void filter_outliers();
+    void graph_add_frame(const size_t idx_frame);  // currently assuming all frames have
+    // interpolated gps/initial translation values
+    // add matches between the vector of frames
+    void graph_add_landmarks(std::vector<SharedFrame> &shared_frames);
+    void void populate_graph(const FeatureTracks &feature_tracks);
     typedef int epoch;
     using graph_step_debug_func = std::function<void(const gtsam::Values &, const epoch)>;
     void solve_graph(const int num_epochs,
@@ -52,13 +66,17 @@ class Backend {
     void clear();
 
     const std::vector<SharedFrame> &shared_frames() const { return shared_frames_; };
-    const gtsam::Values &current_initial_values() const { return initial_estimate_; };
+    const gtsam::Values &current_initial_values() const { return values_; };
     const gtsam::Values &result() const { return result_; };
 
    private:
     std::vector<SharedFrame> shared_frames_;
+    std::vector<size_t> frames_added_;
+    FeatureTracks feature_tracks_;  // TODO: shared_pointer
 
-    gtsam::Values initial_estimate_;
+    Eigen::Vector3d cam0_in_w_;
+
+    gtsam::Values values_;
     gtsam::Values result_;
     gtsam::NonlinearFactorGraph graph_;
 

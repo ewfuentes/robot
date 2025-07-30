@@ -45,7 +45,7 @@ class Frontend {
 
     const FrontendParams::ExtractorType &extractor_type() const { return params_.extractor_type; };
     const FrontendParams::MatcherType &matcher_type() const { return params_.matcher_type; };
-    const FeatureTracks &feature_tracks() const { return feature_tracks_; };
+    FeatureTracks &feature_tracks() const { return feature_tracks_; };
     const FrameLandmarkIdMap &frame_landmark_id_map() const { return lmk_id_map_; };
     std::vector<SharedFrame> &frames() { return shared_frames_; };
 

@@ -36,6 +36,9 @@ class StructureFromMotion {
     void solve_structure(
         const int num_steps,
         std::optional<Backend::graph_step_debug_func> iter_debug_func = std::nullopt);
+    void solve_structure_incrementally(
+        const int num_steps,
+        std::optional<Backend::graph_step_debug_func> iter_debug_func = std::nullopt);
     const gtsam::Values &result() { return backend_.result(); };
 
     Frontend frontend() { return frontend_; };

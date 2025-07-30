@@ -1,5 +1,6 @@
 #pragma once
 
+#include <memory>
 #include <ostream>
 #include <unordered_map>
 #include <utility>
@@ -38,6 +39,18 @@ class FeatureTrack {
     }
 };
 
+using SharedFeatureTrack = std::shared_ptr<FeatureTrack>;
+struct SharedFeatureTrackHash {
+    std::size_t operator()(const SharedFeatureTrack &ptr) const {
+        return std::hash<FeatureTrack *>()(ptr.get());
+    }
+};
+
+struct SharedFeatureTrackEqual {
+    bool operator()(const SharedFeatureTrack &a, const SharedFeatureTrack &b) const {
+        return a.get() == b.get();  // pointer identity
+    }
+};
 using FeatureTracks = std::vector<FeatureTrack>;  // each idx is the FeatureTracks's LandmarkId
 using FrameLandmarkIdMap = std::unordered_map<std::pair<FrameId, KeypointCV>, LandmarkId>;
 }  // namespace robot::experimental::learn_descriptors
