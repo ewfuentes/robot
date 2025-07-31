@@ -58,6 +58,7 @@ class OptimizationConfig:
     # Switch from random sampling to hard negative mining after
     # this many epochs
     enable_hard_negative_sampling_after_epoch_idx: int
+    hard_negative_pool_size: int
 
     random_sample_type: vigor_dataset.HardNegativeMiner.RandomSampleType
 
@@ -318,6 +319,7 @@ def train(config: TrainConfig, *, dataset, validation_dataset, panorama_model, s
             batch_size=opt_config.batch_size,
             embedding_dimension=panorama_model.output_dim,
             random_sample_type=opt_config.random_sample_type,
+            hard_negative_pool_size=opt_config.hard_negative_pool_size,
             dataset=dataset)
     dataloader = vigor_dataset.get_dataloader(
         dataset, batch_sampler=miner, num_workers=24, persistent_workers=False)

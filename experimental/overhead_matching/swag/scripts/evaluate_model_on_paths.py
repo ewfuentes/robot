@@ -49,11 +49,11 @@ def construct_path_eval_inputs_from_args(
 
     dataset_path = Path(dataset_path).expanduser()
     dataset_config = vd.VigorDatasetConfig(
-        panorama_tensor_cache_info=vigor_dataset.TensorCacheInfo(
+        panorama_tensor_cache_info=vd.TensorCacheInfo(
             dataset_key=dataset_path.name,
             model_type="panorama",
             hash_and_key=pano_model.cache_info()),
-        satellite_tensor_cache_info=vigor_dataset.TensorCacheInfo(
+        satellite_tensor_cache_info=vd.TensorCacheInfo(
             dataset_key=dataset_path.name,
             model_type="satellite",
             hash_and_key=sat_model.cache_info()),

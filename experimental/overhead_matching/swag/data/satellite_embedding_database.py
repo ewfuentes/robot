@@ -9,7 +9,7 @@ def build_embeddings_from_model(model: torch.nn.Module,
                                 dataloader: torch.utils.data.DataLoader,
                                 model_input_from_dataloader: callable,
                                 device: torch.device = "cuda:0",
-                                verbose: bool = False) -> torch.Tensor:
+                                verbose: bool = True) -> torch.Tensor:
     """Embeddings will match the order of the dataloader"""
 
     model.to(device)

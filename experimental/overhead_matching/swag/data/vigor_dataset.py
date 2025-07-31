@@ -551,7 +551,7 @@ class VigorDataset(torch.utils.data.Dataset):
             ax.add_collection(path_collection)
 
         _, sat_patch_size = load_image(self._satellite_metadata.iloc[0]["path"], resize_shape=None)
-        patch_height_px, patch_width_px = sat_patch_size[1:]
+        patch_height_px, patch_width_px = sat_patch_size
         left_x = (self._satellite_metadata["web_mercator_x"] - (patch_width_px / 2.0)).to_numpy()
         right_x = (self._satellite_metadata["web_mercator_x"] + (patch_width_px / 2.0)).to_numpy()
         bottom_y = (self._satellite_metadata["web_mercator_y"] + (patch_height_px / 2.0)).to_numpy()
@@ -583,7 +583,8 @@ class VigorDataset(torch.utils.data.Dataset):
 
         self._satellite_metadata.plot(x="lon", y="lat", ax=ax, kind="scatter", color="r")
         self._panorama_metadata.plot(x="lon", y="lat", ax=ax, kind="scatter", color="g")
-        self._landmark_metadata.plot(x="lon", y="lat", kind="scatter", ax=plt.gca())
+        for kind, df in self._landmark_metadata.groupby('landmark_type'):
+            df.plot(ax=plt.gca(), label=kind)
 
         if include_text_labels:
             for sat_idx, sat_meta in self._satellite_metadata.iterrows():
@@ -596,6 +597,7 @@ class VigorDataset(torch.utils.data.Dataset):
                 plt.text(landmark_meta.geometry.x, landmark_meta.geometry.y, f"{landmark_meta["landmark_type"]}").set_clip_on(True)
 
         plt.axis("equal")
+        plt.legend()
 
         return fig, ax
 

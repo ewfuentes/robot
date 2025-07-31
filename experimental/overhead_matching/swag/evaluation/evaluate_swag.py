@@ -85,9 +85,9 @@ def compute_similarity_matrix(
         dataset: vd.VigorDataset,
         device: torch.device):
     sat_data_view = dataset.get_sat_patch_view()
-    sat_data_view_loader = vd.get_dataloader(sat_data_view, batch_size=64, num_workers=4)
+    sat_data_view_loader = vd.get_dataloader(sat_data_view, batch_size=96, num_workers=8)
     pano_data_view = dataset.get_pano_view()
-    pano_data_view_loader = vd.get_dataloader(pano_data_view, batch_size=64, num_workers=4)
+    pano_data_view_loader = vd.get_dataloader(pano_data_view, batch_size=96, num_workers=8)
 
     with torch.no_grad():
         print("building satellite embedding database")
