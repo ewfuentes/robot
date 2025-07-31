@@ -78,14 +78,6 @@ with open(args.path_eval_path.parent / "wag_config.pbtxt", 'r') as f:
     wag_config = WagConfig()
     wag_config = text_format.Parse(f.read(), wag_config)
 
-sat_data_view = vigor_dataset.get_sat_patch_view()
-sat_data_view_loader = vd.get_dataloader(sat_data_view, batch_size=64, num_workers=16)
-pano_data_view = vigor_dataset.get_pano_view()
-pano_data_view_loader = vd.get_dataloader(pano_data_view, batch_size=64, num_workers=16)
-
-sat_patch_positions = vigor_dataset.get_patch_positions().to(DEVICE)
-sat_patch_kdtree = build_kd_tree(sat_patch_positions)
-
 path_similarity_values = torch.load(args.path_eval_path / "similarity.pt", weights_only=True)
 print("starting constructing particle histories")
 inference_result = construct_inputs_and_evaluate_path(
@@ -304,7 +296,7 @@ def display_satellite_image(clickData, view_mode):
             
             # Load satellite image
             sat_metadata = vigor_dataset._satellite_metadata.iloc[sat_idx]
-            sat_img = vd.load_image(sat_metadata.path, vigor_dataset._satellite_patch_size).permute(1, 2, 0).cpu().numpy()
+            sat_img = vd.load_image(sat_metadata.path, vigor_dataset._satellite_patch_size)[0].permute(1, 2, 0).cpu().numpy()
             
             # Convert to base64 for display
             _, buffer = cv2.imencode('.png', (sat_img * 255).astype(np.uint8)[..., ::-1])  # BGR to RGB for display
@@ -497,4 +489,9 @@ def step_frame(back_clicks, forward_clicks, current_value, min_value, max_value)
 
 if __name__=='__main__':
     print("Starting server...")
-    app.run(debug=True, port=8050)
+    for port in range(8050, 8100):
+        try:
+            app.run(debug=True, port=port)
+            break
+        except:
+            ...

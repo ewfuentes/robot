@@ -97,6 +97,7 @@ def _(
 
             model_weights = torch.load(path / 'model_weights.pt', weights_only=True)
             model_type = patch_embedding.WagPatchEmbedding if isinstance(config, patch_embedding.WagPatchEmbeddingConfig) else swag_patch_embedding.SwagPatchEmbedding
+            print("Creating model with config:", config)
             model = model_type(config)
             model.load_state_dict(model_weights)
             model = model.to(device)
@@ -135,9 +136,12 @@ def _(Path, pprint):
     #     model_paths[_p.name] = _p / f"{idx:04d}"
 
     model_paths = {
-        "all_chicago_sat_embedding_pano_wag": Path("/data/overhead_matching/models/all_chicago_sat_embedding_pano_wag/0059"),
+        "all_chicago_sat_dino_embedding_mat_pano_wag": Path("/data/overhead_matching/models/20250719_swag_model/all_chicago_sat_dino_embedding_mat_pano_wag/0059"),
         "all_chicago_dino_project_1024": Path("/data/overhead_matching/models/20250707_dino_features/all_chicago_dino_project_1024/0059"),
-        "all_chicago_sat_dino_embedding_mat_pano_dino_sam": Path("/data/overhead_matching/models/20250719_swag_model/all_chicago_sat_dino_embedding_mat_pano_dino_sam/0059")
+        "all_chicago_sat_dino_embedding_mat_pano_dino_sam": Path("/data/overhead_matching/models/20250719_swag_model/all_chicago_sat_dino_embedding_mat_pano_dino_sam/0059"),
+        "all_chicago_sat_dino_pano_dino": Path("/data/overhead_matching/models/20250719_swag_model/all_chicago_sat_dino_pano_dino/0059"),
+        "all_chicago_sat_dino_pano_dino_agg_small": Path("/data/overhead_matching/models/20250719_swag_model/all_chicago_sat_dino_pano_dino_agg_small/0059"),
+        "all_chicago_sat_dino_pano_dino_agg_small_attn_8": Path("/data/overhead_matching/models/20250719_swag_model/all_chicago_sat_dino_pano_dino_agg_small_attn_8/0059"),
     }
 
     pprint(model_paths)
@@ -192,6 +196,7 @@ def _(Path, pd, torch):
             try:
                 final_error_m, var_sq_m = process_path(p)
                 out.append({
+                    'location': p.parts[-3],
                     'path_idx': int(p.stem),
                     'final_error_m': final_error_m,
                     'var_sq_m': var_sq_m,
@@ -205,9 +210,17 @@ def _(Path, pd, torch):
 
     # _results_paths = sorted(_base_path.iterdir())
     _results_paths = [
-        Path('/data/overhead_matching/evaluation/results/all_chicago_sat_embedding_pano_wag'),
-        Path('/data/overhead_matching/evaluation/results/20250707_dino_features/all_chicago_dino_project_512'),
-        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/all_chicago_sat_dino_embedding_mat_pano_dino_sam'),
+        Path('/data/overhead_matching/evaluation/results/20250707_dino_features/NewYork/all_chicago_dino_project_512'),
+        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/NewYork/all_chicago_sat_dino_embedding_mat_pano_wag'),
+        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/NewYork/all_chicago_sat_dino_embedding_mat_pano_dino_sam'),
+        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/NewYork/all_chicago_sat_dino_pano_dino'),
+        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/NewYork/all_chicago_sat_dino_pano_dino_agg_small'),
+        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/NewYork/all_chicago_sat_dino_pano_dino_agg_small_attn_8'),
+        Path('/data/overhead_matching/evaluation/results/20250707_dino_features/Chicago/all_chicago_dino_project_512'),
+        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/Chicago/all_chicago_sat_dino_embedding_mat_pano_wag'),
+        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/Chicago/all_chicago_sat_dino_embedding_mat_pano_dino_sam'),
+        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/Chicago/all_chicago_sat_dino_pano_dino'),
+        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/Chicago/all_chicago_sat_dino_pano_dino_agg_small'),
     ]
 
     path_dfs = []
@@ -222,11 +235,17 @@ def _(Path, pd, torch):
 
 
 @app.cell
+def _(path_df):
+    path_df
+    return
+
+
+@app.cell
 def _(mo, path_df, plt, seaborn):
-    seaborn.displot(data=path_df, x='final_error_m', kind='ecdf', hue='model', palette="tab10")
-    plt.title("Final Error CDF across 100 paths in New York")
+    seaborn.displot(data=path_df, x='final_error_m', kind='ecdf', hue='model', palette="tab10", col='location')
+    plt.suptitle("Final Error CDF across 100 paths")
     plt.tight_layout()
-    plt.xlim(-1, 50)
+    plt.xlim(-1, 30)
     plt.ylim(-0.05, 1.05)
     mo.mpl.interactive(plt.gcf())
     return
@@ -308,7 +327,7 @@ def _(dataset_paths, get_similarity_matrix, model_paths, pd, torch):
 
 
 @app.cell
-def _(mo, np, plt, seaborn, sim_df):
+def _(np):
     def compute_approx(sigma):
         _x = np.linspace(0, 1.5, 1000)
         _dx = _x[1]
@@ -316,20 +335,317 @@ def _(mo, np, plt, seaborn, sim_df):
         _y =  np.exp(-_x**2 / (2.0 * sigma**2)) / (np.sqrt(2 * np.pi) * sigma)
         _y_sum = np.cumsum(_y) * _dx * 2.0
         return _x, _y_sum, _y
+    return (compute_approx,)
+
+
+@app.cell
+def _(compute_approx, mo, plt, seaborn, sim_df):
+
 
 
 
     plt.figure()
 
     seaborn.displot(data=sim_df, kind='ecdf', x='sim_diff_from_max', hue='model_name', palette='tab10')
-    for _sigma in [0.03, 0.1, 0.2, 0.3, 0.4, 0.5]:
+    for _sigma in [0.03, 0.1, 0.17, 0.2, 0.3, 0.4, 0.5]:
         _x, _approx_sum, _approx = compute_approx(_sigma)
         plt.plot(_x, _approx_sum, label=rf'$\sigma$={_sigma}', linestyle='--')
 
     plt.legend(loc='upper right')
     plt.tight_layout()
+    plt.savefig('/tmp/sigma.png')
     mo.mpl.interactive(plt.gcf())
-    return (compute_approx,)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""# Compute Probability Mass in Region""")
+    return
+
+
+@app.cell
+def _(Path, WagConfig, evaluate_swag, haversine, json, torch, vigor_dataset):
+    import experimental.overhead_matching.swag.scripts.evaluate_model_on_paths as emop
+    import experimental.overhead_matching.swag.filter.particle_filter as pf
+    from google.protobuf import text_format
+    import tqdm
+
+    def compute_particle_history(path_dir: Path, dataset: vigor_dataset.VigorDataset):
+        path_eval_args = json.loads((path_dir.parent / "args.json").read_text())
+        aux_info = json.loads((path_dir / "other_info.json").read_text())
+
+        gt_path_pano_indices = torch.load(path_dir / "path.pt")
+
+        # dataset, sat_model, pano_model, paths_data = emop.construct_path_eval_inputs_from_args(
+        #     sat_model_path=path_eval_args["sat_path"],
+        #     pano_model_path=path_eval_args["pano_path"],
+        #     dataset_path=path_eval_args["dataset_path"],
+        #     paths_path=path_eval_args["paths_path"],
+        #     panorama_neighbor_radius_deg=path_eval_args["panorama_neighbor_radius_deg"],
+        #     device="cuda:0")
+
+        wag_config = text_format.Parse((path_dir.parent / "wag_config.pbtxt").read_text(), WagConfig())
+
+        path_similarity_values = torch.load(path_dir / "similarity.pt")
+
+        inference_result = evaluate_swag.construct_inputs_and_evaluate_path(
+            device="cuda:0",
+            generator_seed=aux_info["seed"],
+            path=gt_path_pano_indices,
+            vigor_dataset=dataset,
+            path_similarity_values=path_similarity_values,
+            wag_config=wag_config,
+            return_intermediates=False)
+
+        obs_likelihood = pf.wag_observation_log_likelihood_from_similarity_matrix(
+            path_similarity_values, wag_config.sigma_obs_prob_from_sim)
+
+        return gt_path_pano_indices, path_similarity_values, obs_likelihood, inference_result.particle_history
+
+    def compute_particle_mass_near_robot(panorama_positions, particle_history, radius_m):
+        dist_m = haversine.find_d_on_unit_circle(panorama_positions.unsqueeze(1), particle_history) * vigor_dataset.EARTH_RADIUS_M
+        is_in_range = dist_m < radius_m
+        return torch.sum(is_in_range, axis=-1) / particle_history.shape[1]
+
+    def process_path(path_dir: Path, dataset: vigor_dataset.VigorDataset):
+        pano_indices, path_similarity, obs_likelihood, particle_history = compute_particle_history(path_dir, dataset)
+        particle_history = particle_history.cuda()
+        panorama_positions = dataset.get_panorama_positions(pano_indices).cuda()
+        particle_mass_near_robot = compute_particle_mass_near_robot(panorama_positions, particle_history, radius_m=50.0)
+
+        return particle_mass_near_robot, path_similarity, obs_likelihood, pano_indices
+
+
+    root_dir = Path('/data/overhead_matching/evaluation/results/20250719_swag_model/NewYork/all_chicago_sat_dino_pano_dino')
+
+    _path_eval_args = json.loads((root_dir / "args.json").read_text())
+    path_dataset = vigor_dataset.VigorDataset(
+        _path_eval_args["dataset_path"],
+        vigor_dataset.VigorDatasetConfig(
+            satellite_tensor_cache_info=None,
+            panorama_tensor_cache_info=None))
+
+    for path_idx in tqdm.tqdm(range(3, 4)):
+        particle_mass_near_robot, path_similarity, obs_likelihood, pano_indices = process_path(root_dir / f"{path_idx:07d}", path_dataset)
+
+        # plt.figure(figsize=(12, 6))
+        # plt.plot(particle_mass_near_robot.cpu().numpy(), label='prob. mass near robot')
+        # plt.plot(torch.exp(obs_likelihood).cpu().numpy(), label='obs likelihood near robot')
+        # plt.yscale('log')
+        # plt.title(f'path {path_idx:07d}')
+        # plt.legend()
+        # plt.xlim(0, 50)
+        # plt.savefig(f'/tmp/{path_idx:07d}.png')
+        # plt.close()
+    # mo.mpl.interactive(plt.gcf())
+    return (
+        compute_particle_history,
+        compute_particle_mass_near_robot,
+        emop,
+        obs_likelihood,
+        pano_indices,
+        particle_mass_near_robot,
+        path_dataset,
+        path_idx,
+        path_similarity,
+        pf,
+        process_path,
+        root_dir,
+        text_format,
+        tqdm,
+    )
+
+
+@app.cell
+def _(Path, get_similarity_matrix, json, root_dir):
+    def process_root(root_path: Path):
+        path_eval_args = json.loads((root_path / "args.json").read_text())
+        return get_similarity_matrix(Path(path_eval_args["sat_path"]).parent / "0059", Path(path_eval_args["dataset_path"]))
+
+    sim_dataset, similarity_matrix = process_root(root_dir)
+    return process_root, sim_dataset, similarity_matrix
+
+
+@app.cell
+def _(np, sim_dataset):
+    pos_mask = np.zeros((len(sim_dataset._panorama_metadata), len(sim_dataset._satellite_metadata)), dtype=bool)
+    semipos_mask = np.zeros((len(sim_dataset._panorama_metadata), len(sim_dataset._satellite_metadata)), dtype=bool)
+    for _idx, _row in sim_dataset._panorama_metadata.iterrows():
+        pos_idxs = _row.positive_satellite_idxs
+        semipos_idxs = _row.semipositive_satellite_idxs
+        pos_mask[_idx, pos_idxs] = True
+        semipos_mask[_idx, semipos_idxs] = True
+
+
+    pos_semipos_mask = np.logical_or(pos_mask, semipos_mask)
+    neg_mask = np.logical_not(pos_semipos_mask)
+    return (
+        neg_mask,
+        pos_idxs,
+        pos_mask,
+        pos_semipos_mask,
+        semipos_idxs,
+        semipos_mask,
+    )
+
+
+@app.cell
+def _(
+    neg_mask,
+    pos_mask,
+    pos_semipos_mask,
+    semipos_mask,
+    similarity_matrix,
+    torch,
+):
+    sigma = 0.2
+
+    sim_matrix = (torch.max(similarity_matrix, dim=-1).values.unsqueeze(-1) - similarity_matrix).cpu()
+    # sim_matrix = 1 - similarity_matrix.cpu()
+
+    pos_values = sim_matrix[pos_mask]
+    semipos_values = sim_matrix[semipos_mask]
+    pos_semipos_values = sim_matrix[pos_semipos_mask]
+    neg_values = sim_matrix[neg_mask][::10000]
+    return (
+        neg_values,
+        pos_semipos_values,
+        pos_values,
+        semipos_values,
+        sigma,
+        sim_matrix,
+    )
+
+
+@app.cell
+def _(neg_values):
+    neg_values.shape
+    return
+
+
+@app.cell
+def _(bins, compute_approx, mo, neg_values, plt, pos_semipos_values):
+    _x, _y_sum, _y = compute_approx(0.17)
+
+
+
+    plt.figure()
+    # plt.hist(pos_values, density=True, bins=100, alpha=0.5, label='positive')
+    # plt.hist(semipos_values, density=True, bins=100, alpha=0.5, label='semipos')
+    plt.hist(pos_semipos_values, density=True, bins=bins, alpha=0.5, label='pos_semipos')
+    plt.hist(neg_values, density=True, bins=bins, alpha=0.5, label='negative')
+    plt.plot(_x, _y)
+    plt.legend()
+    mo.mpl.interactive(plt.gcf())
+    return
+
+
+@app.cell
+def _(Path, get_similarity_matrix, itertools, mo, np, plt, torch):
+    _model_paths = [
+        Path("/data/overhead_matching/models/20250719_swag_model/all_chicago_sat_dino_pano_dino_agg_small_attn_8"),
+        Path("/data/overhead_matching/models/20250707_dino_features/all_chicago_dino_project_512"),
+    ]
+
+    _dataset_paths = [
+        Path("/data/overhead_matching/datasets/VIGOR/Chicago"),
+        Path("/data/overhead_matching/datasets/VIGOR/NewYork"),
+        Path("/data/overhead_matching/datasets/VIGOR/SanFrancisco"),
+        Path("/data/overhead_matching/datasets/VIGOR/Seattle"),
+    ]
+
+    _bins = np.linspace(0, 2, 100)
+
+    plt.figure(figsize=(16, 8))
+    for _plot_idx, (_mp, _dp) in enumerate(itertools.product(_model_paths, _dataset_paths)):
+
+        print(_mp, _dp)
+        _dataset, _sim_matrix = get_similarity_matrix(_mp / "0059", _dp)
+        _pos_mask = np.zeros((len(_dataset._panorama_metadata), len(_dataset._satellite_metadata)), dtype=bool)
+        _semipos_mask = np.zeros((len(_dataset._panorama_metadata), len(_dataset._satellite_metadata)), dtype=bool)
+        for _idx, _row in _dataset._panorama_metadata.iterrows():
+            _pos_idxs = _row.positive_satellite_idxs
+            _semipos_idxs = _row.semipositive_satellite_idxs
+            _pos_mask[_idx, _pos_idxs] = True
+            _semipos_mask[_idx, _semipos_idxs] = True
+
+        _sim_matrix = (torch.max(_sim_matrix, dim=-1).values.unsqueeze(-1) - _sim_matrix).cpu()
+    
+        _pos_semipos_mask = np.logical_or(_pos_mask, _semipos_mask)
+        _neg_mask = np.logical_not(_pos_semipos_mask)
+
+        _pos_values = _sim_matrix[_pos_mask]
+        _semipos_values = _sim_matrix[_semipos_mask]
+        _pos_semipos_values = _sim_matrix[_pos_semipos_mask]
+        _neg_values = _sim_matrix[_neg_mask][::10000]
+        plt.subplot(2, 4, _plot_idx+1)
+        if _plot_idx < 4:
+            plt.title(f"{_dp.name}")
+        if _plot_idx % 4 == 0:
+            plt.ylabel(f"{_mp.name[12:]}")
+
+        plt.hist(_pos_semipos_values, density=True, bins=_bins, alpha=0.5, label='pos_semipos')
+        plt.hist(_neg_values, density=True, bins=_bins, alpha=0.5, label='negative')
+        plt.ylim(0, 4)
+    plt.legend()
+    plt.tight_layout()
+    mo.mpl.interactive(plt.gcf())
+    return
+
+
+@app.cell
+def _(Path, get_similarity_matrix, itertools, mo, np, plt, torch):
+    _model_paths = [
+        Path("/data/overhead_matching/models/20250719_swag_model/all_chicago_sat_dino_pano_dino_agg_small_attn_8"),
+        Path("/data/overhead_matching/models/20250707_dino_features/all_chicago_dino_project_512"),
+    ]
+
+    _dataset_paths = [
+        Path("/data/overhead_matching/datasets/VIGOR/Chicago"),
+        Path("/data/overhead_matching/datasets/VIGOR/NewYork"),
+        Path("/data/overhead_matching/datasets/VIGOR/SanFrancisco"),
+        Path("/data/overhead_matching/datasets/VIGOR/Seattle"),
+    ]
+
+    _bins = np.linspace(0, 2, 100)
+
+    plt.figure(figsize=(16, 8))
+    for _plot_idx, (_mp, _dp) in enumerate(itertools.product(_model_paths, _dataset_paths)):
+
+        print(_mp, _dp)
+        _dataset, _sim_matrix = get_similarity_matrix(_mp / "0059", _dp)
+        _pos_mask = np.zeros((len(_dataset._panorama_metadata), len(_dataset._satellite_metadata)), dtype=bool)
+        _semipos_mask = np.zeros((len(_dataset._panorama_metadata), len(_dataset._satellite_metadata)), dtype=bool)
+        for _idx, _row in _dataset._panorama_metadata.iterrows():
+            _pos_idxs = _row.positive_satellite_idxs
+            _semipos_idxs = _row.semipositive_satellite_idxs
+            _pos_mask[_idx, _pos_idxs] = True
+            _semipos_mask[_idx, _semipos_idxs] = True
+
+        _sim_matrix = (torch.max(_sim_matrix, dim=-1).values.unsqueeze(-1) - _sim_matrix).cpu()
+    
+        _pos_semipos_mask = np.logical_or(_pos_mask, _semipos_mask)
+        _neg_mask = np.logical_not(_pos_semipos_mask)
+
+        _pos_values = _sim_matrix[_pos_mask]
+        _semipos_values = _sim_matrix[_semipos_mask]
+        _pos_semipos_values = _sim_matrix[_pos_semipos_mask]
+        _neg_values = _sim_matrix[_neg_mask][::10000]
+        plt.subplot(2, 4, _plot_idx+1)
+        if _plot_idx < 4:
+            plt.title(f"{_dp.name}")
+        if _plot_idx % 4 == 0:
+            plt.ylabel(f"{_mp.name[12:]}")
+
+        plt.hist(_pos_values, density=True, bins=_bins, alpha=0.5, label='pos')
+        plt.hist(_semipos_values, density=True, bins=_bins, alpha=0.5, label='semipos')
+        plt.hist(_neg_values, density=True, bins=_bins, alpha=0.5, label='negative')
+        plt.ylim(0, 4)
+    plt.legend()
+    plt.tight_layout()
+    mo.mpl.interactive(plt.gcf())
+    return
 
 
 @app.cell
