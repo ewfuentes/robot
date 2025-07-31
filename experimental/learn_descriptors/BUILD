@@ -1,3 +1,8 @@
+load("//common/proto:proto.bzl", "multi_proto_library")
+# load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
+# load("@rules_python//python:defs.bzl", "py_test")
+# load("@pip//:requirements.bzl", "requirement")
+
 package(features = ["warning_compile_flags"])
 
 cc_library(
@@ -355,4 +360,72 @@ cc_binary(
         "@eigen",
         "@opencv",
     ],
+)
+
+cc_library(
+    name = "translation_prior",
+    hdrs = ["translation_prior.hh"],
+    deps = [
+        "@eigen"
+    ]
+)
+
+multi_proto_library(
+    name = "translation_prior_proto",
+    srcs = ["translation_prior.proto"],
+    deps = [
+        "//common/math:matrix_proto"
+    ]
+)
+
+cc_library(
+    name = "translation_prior_to_proto",
+    hdrs = ["translation_prior_to_proto.hh"],
+    srcs = ["translation_prior_to_proto.cc"],
+    deps = [
+        ":translation_prior",
+        ":translation_prior_proto",
+        "//common/math:matrix_to_proto",
+        "@eigen"
+    ]
+)
+
+cc_test(
+    name = "translation_prior_to_proto_test",
+    srcs = ["translation_prior_to_proto_test.cc"],
+    deps = [
+        ":translation_prior",
+        ":translation_prior_proto",
+        ":translation_prior_to_proto",
+        "@eigen",
+        "@com_google_googletest//:gtest_main"
+    ]
+)
+
+# pybind_extension(
+#     name = "translation_prior_python",
+#     srcs = [
+#         "translation_prior_python.cc"
+#     ],
+#     deps = [
+#         ":translation_prior"
+#     ]
+# )
+
+# py_test(
+#     name = "translation_prior_python_test",
+#     srcs = ["translation_prior_python_test.cc"]
+
+# )
+
+cc_binary(
+    name = "translation_prior_proto_write_example",
+    srcs = ["translation_prior_proto_write_example.cc"],
+    deps = [
+        ":translation_prior",
+        ":translation_prior_proto",
+        ":translation_prior_to_proto",
+        "@cxxopts",
+        "@eigen"
+    ]
 )

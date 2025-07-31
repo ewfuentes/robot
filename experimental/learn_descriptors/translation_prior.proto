@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package robot.experimental.learn_descriptors.proto;
+
+import "common/math/matrix.proto";
+
+message TranslationPrior {
+    robot.math.proto.Matrix translation = 1;
+    robot.math.proto.Matrix covariance = 2; 
+}
