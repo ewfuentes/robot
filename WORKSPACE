@@ -642,3 +642,11 @@ http_archive(
     build_file = "//third_party:BUILD.geographiclib",
     sha256 = "d41e90b3009307fd96474fe21ccae824d981c7335ce8ddd3618c1f6084793011",
 )
+
+http_archive(
+    name = "sqlitecpp",
+    urls = ["https://github.com/SRombauts/SQLiteCpp/archive/refs/tags/3.3.3.zip"],
+    strip_prefix = "SQLiteCpp-3.3.3",
+    build_file = "//third_party:BUILD.sqlitecpp",
+    sha256 = "5af6691760ceba4c8110258ace1c3f68a8c481197f75dc45ffab179019faf2b5",
+)

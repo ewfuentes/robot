@@ -1,0 +1,33 @@
+package(features=["-warning_compile_flags"])
+
+cc_library(
+  name = "sqlitecpp",
+  hdrs = [
+    "include/SQLiteCpp/Assertion.h",
+    "include/SQLiteCpp/Backup.h",
+    "include/SQLiteCpp/Column.h",
+    "include/SQLiteCpp/Database.h",
+    "include/SQLiteCpp/Exception.h",
+    "include/SQLiteCpp/ExecuteMany.h",
+    "include/SQLiteCpp/SQLiteCpp.h",
+    "include/SQLiteCpp/SQLiteCppExport.h",
+    "include/SQLiteCpp/Savepoint.h",
+    "include/SQLiteCpp/Statement.h",
+    "include/SQLiteCpp/Transaction.h",
+    "include/SQLiteCpp/Utils.h",
+    "include/SQLiteCpp/VariadicBind.h",
+  ],
+  copts = ["-Wno-unused-parameter"],
+  visibility = ["//visibility:public"],
+  srcs = [
+    "src/Backup.cpp",
+    "src/Column.cpp",
+    "src/Database.cpp",
+    "src/Exception.cpp",
+    "src/Savepoint.cpp",
+    "src/Statement.cpp",
+    "src/Transaction.cpp",
+  ],
+  strip_include_prefix="include/",
+  linkopts = ["-lsqlite3"]
+)
