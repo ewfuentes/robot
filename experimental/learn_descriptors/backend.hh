@@ -65,7 +65,7 @@ class Backend {
                      std::optional<graph_step_debug_func> iter_debug_func = std::nullopt);
     void clear();
 
-    const std::vector<SharedFrame> &shared_frames() const { return shared_frames_; };
+    const std::vector<SharedFrame> &frames() const { return shared_frames_; };
     const gtsam::Values &current_initial_values() const { return values_; };
     const gtsam::Values &result() const { return result_; };
 
