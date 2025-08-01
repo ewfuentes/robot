@@ -429,3 +429,15 @@ cc_binary(
         "@eigen"
     ]
 )
+
+cc_binary(
+    name = "write_to_colmap_database",
+    srcs = [
+        "write_to_colmap_database.cc"
+    ], 
+    deps = [
+        ":four_seasons_parser",
+        "//common/sqlite3:sqlite3",
+        "@cxxopts"
+    ]
+)
