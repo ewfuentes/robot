@@ -435,9 +435,18 @@ cc_binary(
     srcs = [
         "write_to_colmap_database.cc"
     ], 
+    copts = [
+        "-Wno-error=unused-parameter",
+    ],
     deps = [
+        ":frontend",
+        ":frame",
+        ":backend",
+        ":image_point_four_seasons",
         ":four_seasons_parser",
         "//common/sqlite3:sqlite3",
-        "@cxxopts"
+        "//common:check",
+        "@cxxopts", 
+        "@eigen"
     ]
 )

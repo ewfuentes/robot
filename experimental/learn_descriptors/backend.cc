@@ -193,7 +193,8 @@ void Backend::populate_rotation_estimate(std::vector<SharedFrame>& shared_frames
     }
 }
 
-void Backend::calculate_initial_values(bool interpolate_gps) {
+void Backend::calculate_initial_values(const bool interpolate_gps,
+                                       const double multiplier_interpolated_covariance) {
     populate_rotation_estimate(shared_frames_);
     if (interpolate_gps) {
         std::vector<SharedFrame> frames_with_gps;
@@ -222,7 +223,7 @@ void Backend::calculate_initial_values(bool interpolate_gps) {
                 "Currently assuming that the frontend populated interpolated initial guesses");
             Eigen::Matrix3d interpolated_covariance(
                 *shared_frame->translation_covariance_in_cam_ *
-                100.0);  // very jank for now, not true interpolation
+                multiplier_interpolated_covariance);  // very jank for now, not true interpolation
             shared_frame->translation_covariance_in_cam_ = interpolated_covariance;
             shared_frame->cam_in_world_initial_guess_ =
                 shared_frame->cam_in_world_interpolated_guess_;

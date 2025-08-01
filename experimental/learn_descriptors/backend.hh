@@ -43,7 +43,8 @@ class Backend {
         shared_frames_.reserve(shared_frames_.size() + shared_frames.size());
         shared_frames_.insert(shared_frames_.end(), shared_frames.begin(), shared_frames.end());
     };
-    void calculate_initial_values(bool interpolate_gps = true);
+    void calculate_initial_values(const bool interpolate_gps = true,
+                                  const double multiplier_interpolated_covariance = 10.0);
     void populate_graph(const FeatureTracks &feature_tracks);
     typedef int epoch;
     using graph_step_debug_func = std::function<void(const gtsam::Values &, const epoch)>;

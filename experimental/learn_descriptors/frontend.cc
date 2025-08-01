@@ -352,6 +352,9 @@ void Frontend::interpolate_frames() {
         } else {
             Eigen::Vector3d v_a_to_b =
                 *frames_with_guess[idx_guess]->velocity_to(*frames_with_guess[idx_guess + 1]);
+            Eigen::Matrix3d interpolated_covariance =
+                *frames_with_guess[idx_guess]->translation_covariance_in_cam_;
+            shared_frame->translation_covariance_in_cam_ = interpolated_covariance;
             double dt = (shared_frame->seq_ < frames_with_guess[idx_guess]->seq_ ? -1.0 : 1.0) *
                         1e-9 *
                         (frames_with_guess[idx_guess]->seq_ > shared_frame->seq_
