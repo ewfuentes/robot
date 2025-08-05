@@ -8,6 +8,8 @@ services:
     runtime: nvidia
     command: bash -c "./launch.sh"
     restart: always
+    environment:
+      GITHUB_ACCESS_TOKEN: ${GITHUB_ACCESS_TOKEN}
     volumes:
       - /data/docker_ci_cache:/tmp/caches
     healthcheck:
