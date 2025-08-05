@@ -6,9 +6,20 @@ services:
     image: github_runner:24.04
     shm_size: 2gb
     runtime: nvidia
-    command: bash -c "./config.sh --url https://github.com/ewfuentes/robot --token ${GITHUB_RUNNER_TOKEN} --unattended && ./run.sh"
+    command: bash -c "./launch.sh"
     restart: always
     volumes:
       - /data/docker_ci_cache:/tmp/caches
     healthcheck:
         test: "nvidia-smi || exit 1"
+    labels:
+      autoheal-app: true
+  autoheal:
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal-app
+    image: willfarrell/autoheal:latest
+    network_mode: none
+    restart: always
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /var/run/docker.sock:/var/run/docker.sock
