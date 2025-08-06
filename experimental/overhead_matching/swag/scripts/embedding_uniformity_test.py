@@ -54,7 +54,7 @@ def _():
 
 
 @app.cell
-def _(json, load_and_save_models, model_path, msgspec, pe, spe, torch):
+def _(json, load_and_save_models, msgspec, pe, spe, torch):
     def load_model(path, device='cuda'):
         print(path)
         try:
@@ -75,10 +75,7 @@ def _(json, load_and_save_models, model_path, msgspec, pe, spe, torch):
             model.load_state_dict(model_weights)
             model = model.to(device)
         return model
-
-    sat_model = load_model(model_path / "0059_satellite").cuda()
-    pano_model = load_model(model_path / "0059_panorama").cuda()
-    return load_model, pano_model, sat_model
+    return (load_model,)
 
 
 @app.cell
@@ -94,12 +91,9 @@ def _(Path):
 
     model_paths = [
         Path('/data/overhead_matching/models/20250719_swag_model/all_chicago_sat_dino_pano_dino_agg_small_attn_8'),
+        Path('/data/overhead_matching/models/20250719_swag_model/all_chicago_sat_dino_pano_dino_agg_small_attn_8_avg_neg_0p25/'),
         Path('/data/overhead_matching/models/20250707_dino_features/all_chicago_dino_project_512'),
     ]
-
-
-
-
     return checkpoints, dataset_paths, model_paths
 
 
@@ -193,37 +187,44 @@ def _(
                 'negative': _neg_counts,
                 'semipositive': _semipos_counts,
             }
-
     return bin_edges, hist_counts
 
 
 @app.cell
 def _(plt):
-
     def plot_hist(bin_edges, pos_counts, semipos_counts, neg_counts):
         plt.bar(bin_edges[:-1], pos_counts, align='edge', width=bin_edges[1]-bin_edges[0], label='pos', alpha=0.5)
         plt.bar(bin_edges[:-1], semipos_counts, align='edge', width=bin_edges[1]-bin_edges[0], label='semipos', alpha=0.5)
         plt.bar(bin_edges[:-1], neg_counts, align='edge', width=bin_edges[1]-bin_edges[0], label='neg', alpha=0.5)
-
-
     return (plot_hist,)
 
 
 @app.cell
 def _(
+    Path,
     bin_edges,
     checkpoints,
-    dataset_paths,
     hist_counts,
     itertools,
+    mo,
     model_paths,
     plot_hist,
     plt,
 ):
-    for _dataset_path in dataset_paths:
-        plt.figure(figsize=(12, 6))
+    num_models = len(model_paths)
+    num_checkpoints = len(checkpoints)
+
+    _dataset_paths = [
+        Path('/data/overhead_matching/datasets/VIGOR/Chicago'),
+        # Path('/data/overhead_matching/datasets/VIGOR/NewYork'),
+        # Path('/data/overhead_matching/datasets/VIGOR/SanFrancisco'),
+        # Path('/data/overhead_matching/datasets/VIGOR/Seattle'),
+    ]
+
+    for _dataset_path in _dataset_paths:
+        plt.figure(figsize=(12, 3 * num_models))
         for _i, (_model_path, _checkpoint) in enumerate(itertools.product(model_paths, checkpoints)):
-            plt.subplot(2, 7, _i+1)
+            plt.subplot(num_models, num_checkpoints, _i+1)
             counts = hist_counts[(_dataset_path.name, _model_path.name, _checkpoint)]
             plot_hist(bin_edges, counts['positive'], counts["semipositive"], counts["negative"])
             if _i < 7:
@@ -231,13 +232,21 @@ def _(
             if _i % 7 > 0:
                 plt.gca().tick_params(labelleft=False, axis='y', length=0.0)
             if _i % 7 == 0:
-                plt.ylabel(_model_path.name[12:])
+                _model_parts = _model_path.name.split('_')
+                _label = [_model_parts[2]]
+                for _p in _model_parts[3:]:
+                    if len(_label[-1] + '_' + _p) < 30:
+                        _label[-1] += '_' + _p
+                    else:
+                        _label.append(_p)
+                _label = '\n'.join(_label)
+                plt.ylabel(_label)
             plt.ylim(0, 6)
             plt.suptitle(_dataset_path.name)
         plt.tight_layout()
     plt.show()
-    # mo.mpl.interactive(plt.gcf())
-    return (counts,)
+    mo.mpl.interactive(plt.gcf())
+    return counts, num_checkpoints, num_models
 
 
 @app.cell

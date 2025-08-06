@@ -134,14 +134,15 @@ def _(Path, pprint):
     # _base_path = Path("/data/overhead_matching/models/all_chicago_sat_embedding_pano_wag")
     # for _p in sorted(_base_path.iterdir()):
     #     model_paths[_p.name] = _p / f"{idx:04d}"
-
+    _base = Path("/data/overhead_matching/models")
     model_paths = {
-        "all_chicago_sat_dino_embedding_mat_pano_wag": Path("/data/overhead_matching/models/20250719_swag_model/all_chicago_sat_dino_embedding_mat_pano_wag/0059"),
-        "all_chicago_dino_project_1024": Path("/data/overhead_matching/models/20250707_dino_features/all_chicago_dino_project_1024/0059"),
-        "all_chicago_sat_dino_embedding_mat_pano_dino_sam": Path("/data/overhead_matching/models/20250719_swag_model/all_chicago_sat_dino_embedding_mat_pano_dino_sam/0059"),
-        "all_chicago_sat_dino_pano_dino": Path("/data/overhead_matching/models/20250719_swag_model/all_chicago_sat_dino_pano_dino/0059"),
-        "all_chicago_sat_dino_pano_dino_agg_small": Path("/data/overhead_matching/models/20250719_swag_model/all_chicago_sat_dino_pano_dino_agg_small/0059"),
-        "all_chicago_sat_dino_pano_dino_agg_small_attn_8": Path("/data/overhead_matching/models/20250719_swag_model/all_chicago_sat_dino_pano_dino_agg_small_attn_8/0059"),
+        # "all_chicago_sat_dino_embedding_mat_pano_wag": base / "20250719_swag_model/all_chicago_sat_dino_embedding_mat_pano_wag",
+        "all_chicago_dino_project_512": _base / "20250707_dino_features/all_chicago_dino_project_512",
+        # "all_chicago_sat_dino_embedding_mat_pano_dino_sam": base / "20250719_swag_model/all_chicago_sat_dino_embedding_mat_pano_dino_sam",
+        # "all_chicago_sat_dino_pano_dino": base / "20250719_swag_model/all_chicago_sat_dino_pano_dino",
+        # "all_chicago_sat_dino_pano_dino_agg_small": base / "20250719_swag_model/all_chicago_sat_dino_pano_dino_agg_small",
+        "all_chicago_sat_dino_pano_dino_agg_small_attn_8": _base / "20250719_swag_model/all_chicago_sat_dino_pano_dino_agg_small_attn_8",
+        'all_chicago_sat_dino_pano_dino_agg_small_attn_8_avg_neg_0p25': _base / '20250719_swag_model/all_chicago_sat_dino_pano_dino_agg_small_attn_8_avg_neg_0p25'
     }
 
     pprint(model_paths)
@@ -196,11 +197,11 @@ def _(Path, pd, torch):
             try:
                 final_error_m, var_sq_m = process_path(p)
                 out.append({
-                    'location': p.parts[-3],
+                    'location': 'NewYork',
                     'path_idx': int(p.stem),
                     'final_error_m': final_error_m,
                     'var_sq_m': var_sq_m,
-                    'model': path.stem,
+                    'model': p.parts[-4],
                 })
             except:
                 ...
@@ -210,25 +211,14 @@ def _(Path, pd, torch):
 
     # _results_paths = sorted(_base_path.iterdir())
     _results_paths = [
-        Path('/data/overhead_matching/evaluation/results/20250707_dino_features/NewYork/all_chicago_dino_project_512'),
-        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/NewYork/all_chicago_sat_dino_embedding_mat_pano_wag'),
-        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/NewYork/all_chicago_sat_dino_embedding_mat_pano_dino_sam'),
-        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/NewYork/all_chicago_sat_dino_pano_dino'),
-        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/NewYork/all_chicago_sat_dino_pano_dino_agg_small'),
-        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/NewYork/all_chicago_sat_dino_pano_dino_agg_small_attn_8'),
-        Path('/data/overhead_matching/evaluation/results/20250707_dino_features/Chicago/all_chicago_dino_project_512'),
-        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/Chicago/all_chicago_sat_dino_embedding_mat_pano_wag'),
-        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/Chicago/all_chicago_sat_dino_embedding_mat_pano_dino_sam'),
-        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/Chicago/all_chicago_sat_dino_pano_dino'),
-        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/Chicago/all_chicago_sat_dino_pano_dino_agg_small'),
+        Path('/data/overhead_matching/evaluation/results/20250707_dino_features/all_chicago_dino_project_512/checkpoints/0059'),
+        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/all_chicago_sat_dino_pano_dino_agg_small_attn_8_avg_neg_0p25/checkpoints/0059'),
+        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/all_chicago_sat_dino_pano_dino_agg_small_attn_8/checkpoints/0059'),
     ]
 
     path_dfs = []
     for _p in _results_paths:
         path_dfs.append(process_eval_results(_p))
-    # for _lr_schedule, _negative_mining, _pos_semipos in itertools.product(*[[False, True]]*3):
-    #     _model_name = f"all_chicago_lr_schedule_{_lr_schedule}_negative_mining_{_negative_mining}_pos_semipos_{_pos_semipos}"
-    #     path_dfs.append(process_eval_results(base_path / _model_name))
 
     path_df = pd.concat(path_dfs)
     return path_df, path_dfs, process_eval_results, process_path
@@ -289,9 +279,9 @@ def _(Path, mo, model_selector, path_slider, plt, torch):
 
 @app.cell
 def _(Path, evaluate_swag, load_model, vigor_dataset):
-    def get_similarity_matrix(model_path: Path, dataset_path: Path):
-        sat_model = load_model(Path(f"{model_path}_satellite"))
-        pano_model = load_model(Path(f"{model_path}_panorama"))
+    def get_similarity_matrix(model_path: Path, dataset_path: Path, checkpoint_idx=59):
+        sat_model = load_model(model_path / f"{checkpoint_idx:04d}_satellite")
+        pano_model = load_model(model_path / f"{checkpoint_idx:04d}_panorama")
         dataset_config = vigor_dataset.VigorDatasetConfig(
             satellite_patch_size=sat_model.patch_dims,
             panorama_size=pano_model.patch_dims,
@@ -340,10 +330,6 @@ def _(np):
 
 @app.cell
 def _(compute_approx, mo, plt, seaborn, sim_df):
-
-
-
-
     plt.figure()
 
     seaborn.displot(data=sim_df, kind='ecdf', x='sim_diff_from_max', hue='model_name', palette='tab10')
@@ -571,7 +557,7 @@ def _(Path, get_similarity_matrix, itertools, mo, np, plt, torch):
             _semipos_mask[_idx, _semipos_idxs] = True
 
         _sim_matrix = (torch.max(_sim_matrix, dim=-1).values.unsqueeze(-1) - _sim_matrix).cpu()
-    
+
         _pos_semipos_mask = np.logical_or(_pos_mask, _semipos_mask)
         _neg_mask = np.logical_not(_pos_semipos_mask)
 
@@ -624,7 +610,7 @@ def _(Path, get_similarity_matrix, itertools, mo, np, plt, torch):
             _semipos_mask[_idx, _semipos_idxs] = True
 
         _sim_matrix = (torch.max(_sim_matrix, dim=-1).values.unsqueeze(-1) - _sim_matrix).cpu()
-    
+
         _pos_semipos_mask = np.logical_or(_pos_mask, _semipos_mask)
         _neg_mask = np.logical_not(_pos_semipos_mask)
 
