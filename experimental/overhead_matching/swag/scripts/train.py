@@ -28,6 +28,18 @@ class LearningRateSchedule:
 
 
 @dataclass
+class LossConfig:
+    positive_weight: float
+    avg_positive_similarity: float
+
+    semipositive_weight: float
+    avg_semipositive_similarity: float
+
+    negative_weight: float
+    avg_negative_similarity: float
+
+
+@dataclass
 class OptimizationConfig:
     num_epochs: int
 
@@ -44,6 +56,8 @@ class OptimizationConfig:
     enable_hard_negative_sampling_after_epoch_idx: int
 
     random_sample_type: vigor_dataset.HardNegativeMiner.RandomSampleType
+
+    loss_config: LossConfig
 
 
 ModelConfig = Union[patch_embedding.WagPatchEmbeddingConfig,
@@ -189,8 +203,9 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model, quie
             neg_similarities = similarity[neg_rows, neg_cols]
 
             # Compute Loss
-            POS_WEIGHT = 5
-            AVG_POS_SIMILARITY = 0.0
+            loss_config = opt_config.loss_config
+            POS_WEIGHT = loss_config.positive_weight
+            AVG_POS_SIMILARITY = loss_config.avg_positive_similarity
             if len(pairs.positive_pairs):
                 pos_loss = torch.log(
                         1 + torch.exp(-POS_WEIGHT * (pos_similarities - AVG_POS_SIMILARITY)))
@@ -198,8 +213,8 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model, quie
             else:
                 pos_loss = torch.tensor(0)
 
-            SEMIPOS_WEIGHT = 6
-            AVG_SEMIPOS_SIMILARITY = 0.3
+            SEMIPOS_WEIGHT = loss_config.semipositive_weight
+            AVG_SEMIPOS_SIMILARITY = loss_config.avg_semipositive_similarity
             if len(pairs.semipositive_pairs):
                 semipos_loss = torch.log(
                         1 + torch.exp(-SEMIPOS_WEIGHT * (
@@ -208,8 +223,8 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model, quie
             else:
                 semipos_loss = torch.tensor(0)
 
-            NEG_WEIGHT = 20
-            AVG_NEG_SIMILARITY = 0.7
+            NEG_WEIGHT = loss_config.negative_weight
+            AVG_NEG_SIMILARITY = loss_config.avg_negative_similarity
             if len(pairs.negative_pairs):
                 neg_loss = torch.log(
                         1 + torch.exp(NEG_WEIGHT * (neg_similarities - AVG_NEG_SIMILARITY)))
