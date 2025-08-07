@@ -1,7 +1,7 @@
 load("//common/proto:proto.bzl", "multi_proto_library")
 # load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
 # load("@rules_python//python:defs.bzl", "py_test")
-# load("@pip//:requirements.bzl", "requirement")
+load("@pip//:requirements.bzl", "requirement")
 
 package(features = ["warning_compile_flags"])
 
@@ -449,4 +449,10 @@ cc_binary(
         "@cxxopts", 
         "@eigen"
     ]
+)
+
+py_test(
+    name = "libartipy_test",
+    srcs = ["libartipy_test.py"],
+    deps = [requirement("libartipy")]
 )

@@ -1141,6 +1141,10 @@ lazy-loader==0.4 \
     --hash=sha256:342aa8e14d543a154047afb4ba8ef17f5563baad3fc610d7b15b213b0f119efc \
     --hash=sha256:47c75182589b91a4e1a85a136c074285a5ad4d9f39c63e0d7fb76391c4574cd1
     # via scikit-image
+# WARNING: pip install will require the following package to be hashed.
+# Consider using a hashable URL like https://github.com/jazzband/pip-tools/archive/SOMECOMMIT.zip
+libartipy @ git+https://github.com/Artisense-ai/libartipy.git@7a6a7736637c106e7e9c6763ec8c1dea64db4b01
+    # via -r third_party/python/requirements_3_12.in
 lightning-utilities==0.14.3 \
     --hash=sha256:37e2f83f273890052955a44054382c211a303012ee577619efbaa5df9e65e9f5 \
     --hash=sha256:4ab9066aa36cd7b93a05713808901909e96cc3f187ea6fd3052b2fd91313b468

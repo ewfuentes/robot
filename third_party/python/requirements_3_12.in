@@ -43,3 +43,4 @@ cvxpylayers @ git+https://github.com/holmesco/cvxpylayers.git@728b8f208875d0ad91
 poly_matrix @ git+https://github.com/utiasASRL/poly_matrix.git@671d6b7704fcc82817189dbbc87814c429b2e15d
 cert_tools @ git+https://github.com/utiasASRL/certifiable-tools.git@afcd203bb4623ea60b339f00f8da802f776de1d4
 chompack @ git+https://github.com/ewfuentes/chompack.git@844adda111241bb64f7008e0d0680525290958f3
+libartipy @ git+https://github.com/Artisense-ai/libartipy.git@7a6a7736637c106e7e9c6763ec8c1dea64db4b01
