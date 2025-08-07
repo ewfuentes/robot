@@ -153,7 +153,7 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model, quie
             random_sample_type=opt_config.random_sample_type,
             dataset=dataset)
     dataloader = vigor_dataset.get_dataloader(
-        dataset, batch_sampler=miner, num_workers=8, persistent_workers=False)
+        dataset, batch_sampler=miner, num_workers=24, persistent_workers=False)
 
     opt = torch.optim.Adam(
         list(panorama_model.parameters()) + list(satellite_model.parameters()),
@@ -256,7 +256,8 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model, quie
                       f" num_pos_pairs: {len(pairs.positive_pairs):3d}" +
                       f" num_semipos_pairs: {len(pairs.semipositive_pairs):3d}" +
                       f" num_neg_pairs: {len(pairs.negative_pairs):3d} {pos_loss.item()=:0.6f}" +
-                      f" {semipos_loss.item()=:0.6f} {neg_loss.item()=:0.6f} {loss.item()=:0.6f}", end='\r')
+                      f" {semipos_loss.item()=:0.6f} {neg_loss.item()=:0.6f} {loss.item()=:0.6f}",
+                      end='\r')
                 if batch_idx % 50 == 0:
                     print()
 
@@ -267,6 +268,20 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model, quie
 
         if epoch_idx >= opt_config.enable_hard_negative_sampling_after_epoch_idx:
             miner.set_sample_mode(vigor_dataset.HardNegativeMiner.SampleMode.HARD_NEGATIVE)
+
+        if miner.sample_mode == vigor_dataset.HardNegativeMiner.SampleMode.HARD_NEGATIVE:
+            # Since we are hard negative mining, we want to update the embedding vectors for any
+            # satellite patches that were not observed as part of the epoch
+            unobserved_patch_dataset = torch.utils.data.Subset(
+                dataset.get_sat_patch_view(), list(miner.unobserved_sat_idxs))
+            unobserved_dataloader = vigor_dataset.get_dataloader(
+                unobserved_patch_dataset, num_workers=8, batch_size=128)
+
+            for batch in tqdm.tqdm(unobserved_dataloader, desc="Unobserved sat batches"):
+                with torch.no_grad():
+                    sat_embeddings = satellite_model(
+                        satellite_model.model_input_from_batch(batch).to("cuda"))
+                miner.consume(None, sat_embeddings, batch)
 
         if (epoch_idx % 10 == 0) or (epoch_idx == opt_config.num_epochs - 1):
             # Periodically save the model
