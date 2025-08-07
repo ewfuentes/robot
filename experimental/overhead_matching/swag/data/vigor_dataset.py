@@ -713,6 +713,7 @@ class HardNegativeMiner:
         self._hard_negative_pool_size = hard_negative_pool_size
         self._batch_size = batch_size
         self._random_sample_type = random_sample_type
+        self._observed_sat_idxs = set()
 
     def __iter__(self):
         # To sample batches, we create a random permutation of all panoramas
@@ -764,24 +765,41 @@ class HardNegativeMiner:
                     batch.append(SamplePair(panorama_idx=pano_idx, satellite_idx=satellite_idx))
             batches.append(batch)
 
+        self._unobserved_sat_idxs = set(range(self._satellite_embeddings.shape[0]))
         for b in batches:
+            self._unobserved_sat_idxs -= {x.satellite_idx for x in b}
             yield b
 
+    @property
+    def unobserved_sat_idxs(self):
+        return self._unobserved_sat_idxs
+
+    @property
+    def sample_mode(self):
+        return self._sample_mode
+
     def consume(self,
-                panorama_embeddings: torch.Tensor,
-                satellite_embeddings: torch.Tensor,
+                panorama_embeddings: torch.Tensor | None,
+                satellite_embeddings: torch.Tensor | None,
                 batch: VigorDatasetItem | None = None,
                 panorama_idxs: list[int] | None = None,
                 satellite_patch_idxs: list[int] | None = None):
         if batch is not None:
-            panorama_idxs = [x["index"] for x in batch.panorama_metadata]
-            satellite_patch_idxs = [x["index"] for x in batch.satellite_metadata]
-        assert panorama_idxs is not None and satellite_patch_idxs is not None
+            panorama_idxs = (None if batch.panorama_metadata is None else
+                             [x["index"] for x in batch.panorama_metadata])
+            satellite_patch_idxs = (None if batch.satellite_metadata is None else
+                                    [x["index"] for x in batch.satellite_metadata])
+        assert ((panorama_embeddings is None and panorama_idxs is None) or
+                (len(panorama_idxs) == panorama_embeddings.shape[0]))
+        assert ((satellite_embeddings is None and satellite_patch_idxs is None) or
+                (len(satellite_patch_idxs) == satellite_embeddings.shape[0]))
+        assert panorama_embeddings is not None or satellite_embeddings is not None
 
         device = self._panorama_embeddings.device
-
-        self._panorama_embeddings[panorama_idxs] = panorama_embeddings.to(device)
-        self._satellite_embeddings[satellite_patch_idxs] = satellite_embeddings.to(device)
+        if panorama_embeddings is not None:
+            self._panorama_embeddings[panorama_idxs] = panorama_embeddings.to(device)
+        if satellite_embeddings is not None:
+            self._satellite_embeddings[satellite_patch_idxs] = satellite_embeddings.to(device)
 
     def set_sample_mode(self, mode: SampleMode):
         self._sample_mode = mode
