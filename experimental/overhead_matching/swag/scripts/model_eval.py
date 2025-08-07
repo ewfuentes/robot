@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.11.9"
+__generated_with = "0.14.16"
 app = marimo.App(width="full")
 
 
@@ -40,20 +40,13 @@ def _():
     importlib.reload(evaluate_swag)
     importlib.reload(haversine)
     return (
-        NamedTuple,
         Path,
-        SatellitePatchConfig,
         WagConfig,
-        alt,
-        common,
         evaluate_swag,
         haversine,
-        importlib,
         itertools,
         json,
         load_and_save_models,
-        math,
-        matplotlib,
         mo,
         msgspec,
         np,
@@ -61,8 +54,6 @@ def _():
         pd,
         plt,
         pprint,
-        re,
-        satellite_embedding_database,
         seaborn,
         swag_patch_embedding,
         torch,
@@ -142,7 +133,10 @@ def _(Path, pprint):
         # "all_chicago_sat_dino_pano_dino": base / "20250719_swag_model/all_chicago_sat_dino_pano_dino",
         # "all_chicago_sat_dino_pano_dino_agg_small": base / "20250719_swag_model/all_chicago_sat_dino_pano_dino_agg_small",
         "all_chicago_sat_dino_pano_dino_agg_small_attn_8": _base / "20250719_swag_model/all_chicago_sat_dino_pano_dino_agg_small_attn_8",
-        'all_chicago_sat_dino_pano_dino_agg_small_attn_8_avg_neg_0p25': _base / '20250719_swag_model/all_chicago_sat_dino_pano_dino_agg_small_attn_8_avg_neg_0p25'
+        # 'all_chicago_sat_dino_pano_dino_agg_small_attn_8_avg_neg_0p25': _base / '20250719_swag_model/all_chicago_sat_dino_pano_dino_agg_small_attn_8_avg_neg_0p25',
+        "all_chicago_sat_dino_pano_dino_agg_small_attn_8_layer_1_fixed": _base / '20250806_swag_model_fixed/all_chicago_sat_dino_pano_dino_agg_small_attn_8_layers_1',
+        "all_chicago_sat_dino_pano_dino_agg_small_attn_8_fixed": _base / '20250806_swag_model_fixed/all_chicago_sat_dino_pano_dino_agg_small_attn_8',
+
     }
 
     pprint(model_paths)
@@ -152,7 +146,7 @@ def _(Path, pprint):
         # 'sanfrancisco': '/data/overhead_matching/datasets/VIGOR/SanFrancisco'
         "newyork": Path('/data/overhead_matching/datasets/VIGOR/NewYork')
     }
-    return dataset_paths, idx, model_paths
+    return dataset_paths, model_paths
 
 
 @app.cell
@@ -166,7 +160,7 @@ def _(dataset_paths, get_top_k_results, itertools, model_paths, pd):
         df["model"] = [model_name]*len(df)
         dfs.append(df)
     df = pd.concat(dfs)
-    return data_name, df, dfs, model_name, model_path
+    return (df,)
 
 
 @app.cell
@@ -201,7 +195,7 @@ def _(Path, pd, torch):
                     'path_idx': int(p.stem),
                     'final_error_m': final_error_m,
                     'var_sq_m': var_sq_m,
-                    'model': p.parts[-4],
+                    'model': p.parts[-2],
                 })
             except:
                 ...
@@ -211,9 +205,11 @@ def _(Path, pd, torch):
 
     # _results_paths = sorted(_base_path.iterdir())
     _results_paths = [
-        Path('/data/overhead_matching/evaluation/results/20250707_dino_features/all_chicago_dino_project_512/checkpoints/0059'),
-        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/all_chicago_sat_dino_pano_dino_agg_small_attn_8_avg_neg_0p25/checkpoints/0059'),
-        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/all_chicago_sat_dino_pano_dino_agg_small_attn_8/checkpoints/0059'),
+        Path('/data/overhead_matching/evaluation/results/20250707_dino_features/all_chicago_dino_project_512/checkpoints/0059/'),
+        # Path('/data/overhead_matching/evaluation/results/20250719_swag_model/NewYork/all_chicago_sat_dino_pano_dino_agg_small_attn_8_avg_neg_0p25'),
+        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/NewYork/all_chicago_sat_dino_pano_dino_agg_small_attn_8'),
+        Path("/data/overhead_matching/evaluation/results/20250806_swag_model_fixed/NewYork/all_chicago_sat_dino_pano_dino_agg_small_attn_8_layers_1/"),
+        # Path("/data/overhead_matching/evaluation/results/20250806_swag_model_fixed/NewYork/all_chicago_sat_dino_pano_dino_agg_small_attn_8/")
     ]
 
     path_dfs = []
@@ -221,7 +217,7 @@ def _(Path, pd, torch):
         path_dfs.append(process_eval_results(_p))
 
     path_df = pd.concat(path_dfs)
-    return path_df, path_dfs, process_eval_results, process_path
+    return (path_df,)
 
 
 @app.cell
@@ -313,7 +309,7 @@ def _(dataset_paths, get_similarity_matrix, model_paths, pd, torch):
         _sim_df["model_name"] = _model_name
         _sim_dfs.append(_sim_df)
     sim_df = pd.concat(_sim_dfs)
-    return all_similarity, dataset, sim_df
+    return (sim_df,)
 
 
 @app.cell
@@ -425,22 +421,7 @@ def _(Path, WagConfig, evaluate_swag, haversine, json, torch, vigor_dataset):
         # plt.savefig(f'/tmp/{path_idx:07d}.png')
         # plt.close()
     # mo.mpl.interactive(plt.gcf())
-    return (
-        compute_particle_history,
-        compute_particle_mass_near_robot,
-        emop,
-        obs_likelihood,
-        pano_indices,
-        particle_mass_near_robot,
-        path_dataset,
-        path_idx,
-        path_similarity,
-        pf,
-        process_path,
-        root_dir,
-        text_format,
-        tqdm,
-    )
+    return (root_dir,)
 
 
 @app.cell
@@ -450,7 +431,7 @@ def _(Path, get_similarity_matrix, json, root_dir):
         return get_similarity_matrix(Path(path_eval_args["sat_path"]).parent / "0059", Path(path_eval_args["dataset_path"]))
 
     sim_dataset, similarity_matrix = process_root(root_dir)
-    return process_root, sim_dataset, similarity_matrix
+    return sim_dataset, similarity_matrix
 
 
 @app.cell
@@ -466,14 +447,7 @@ def _(np, sim_dataset):
 
     pos_semipos_mask = np.logical_or(pos_mask, semipos_mask)
     neg_mask = np.logical_not(pos_semipos_mask)
-    return (
-        neg_mask,
-        pos_idxs,
-        pos_mask,
-        pos_semipos_mask,
-        semipos_idxs,
-        semipos_mask,
-    )
+    return neg_mask, pos_mask, pos_semipos_mask, semipos_mask
 
 
 @app.cell
@@ -494,14 +468,7 @@ def _(
     semipos_values = sim_matrix[semipos_mask]
     pos_semipos_values = sim_matrix[pos_semipos_mask]
     neg_values = sim_matrix[neg_mask][::10000]
-    return (
-        neg_values,
-        pos_semipos_values,
-        pos_values,
-        semipos_values,
-        sigma,
-        sim_matrix,
-    )
+    return neg_values, pos_semipos_values
 
 
 @app.cell

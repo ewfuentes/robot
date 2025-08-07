@@ -101,7 +101,8 @@ def _(Path, json, lsm, pd, torch, vd):
 
 @app.cell
 def _(Path, dataset, es, lsm, vd):
-    baseline_model_path = Path('/data/overhead_matching/models/20250707_dino_features/all_chicago_dino_project_512')
+    # baseline_model_path = Path('/data/overhead_matching/models/20250707_dino_features/all_chicago_dino_project_512')
+    baseline_model_path = Path('/data/overhead_matching/models/20250806_swag_model_fixed/all_chicago_sat_dino_pano_dino_agg_small_attn_8_layers_1/')
     baseline_sat_model = lsm.load_model(baseline_model_path / "0059_satellite").eval().cuda()
     baseline_pano_model = lsm.load_model(baseline_model_path / "0059_panorama").eval().cuda()
     baseline_dataset = vd.VigorDataset(
@@ -233,10 +234,9 @@ def _(pe, torch):
         attention_maps = {}
         input_tokens = {}
         # register forward hooks
-        model._aggregator_model._encoder.layers[0].self_attn.register_forward_hook(
-            create_attention_recording_hook("agg_layer_0", attention_maps), with_kwargs=True)
-        model._aggregator_model._encoder.layers[1].self_attn.register_forward_hook(
-            create_attention_recording_hook("agg_layer_1", attention_maps), with_kwargs=True)
+        for idx in range(len(model._aggregator_model._encoder.layers)):
+            model._aggregator_model._encoder.layers[idx].self_attn.register_forward_hook(
+                create_attention_recording_hook(f"agg_layer_{idx}", attention_maps), with_kwargs=True)
         model._aggregator_model.register_forward_hook(
             create_input_token_recording_hook("input_tokens", input_tokens))
 
@@ -264,7 +264,7 @@ def _(pe, torch):
             for m in model.modules():
                 m._forward_hooks.clear()
         return output, attention_maps
-    return get_attention_maps, get_safa_attention_maps
+    return (get_attention_maps,)
 
 
 @app.cell
@@ -274,7 +274,6 @@ def _(
     baseline_sample_pair,
     baseline_sat_model,
     get_attention_maps,
-    get_safa_attention_maps,
     max_similarity_pair,
     pano_model,
     sample_pair,
@@ -318,8 +317,8 @@ def _(
     delta.backward()
 
     # Run through the baseline model
-    baseline_sat_embeddings, baseline_sat_attn = get_safa_attention_maps(baseline_sat_model, baseline_sat_model.model_input_from_batch(_baseline_batch).cuda())
-    baseline_pano_embeddings, baseline_pano_attn = get_safa_attention_maps(baseline_pano_model, baseline_pano_model.model_input_from_batch(_baseline_batch).cuda())
+    baseline_sat_embeddings, baseline_sat_attn, _ = get_attention_maps(baseline_sat_model, baseline_sat_model.model_input_from_batch(_baseline_batch).to("cuda"))
+    baseline_pano_embeddings, baseline_pano_attn, _ = get_attention_maps(baseline_pano_model, baseline_pano_model.model_input_from_batch(_baseline_batch).to("cuda"))
 
     return (
         baseline_pano_attn,
@@ -459,7 +458,7 @@ def _(plt, resize_attn_map, torch):
             if i <= num_attn_heads: 
                 plt.title(f'Attention Head: {i}')
         plt.tight_layout()
-    return (plot_safa_attention_heads,)
+    return
 
 
 @app.cell
@@ -469,19 +468,31 @@ def _(
     baseline_sample_pair,
     baseline_sat_attn,
     mo,
-    plot_safa_attention_heads,
+    plot_attention_heads,
     plt,
 ):
+    # _pano_fig = plt.figure(figsize=(20, 4))
+    # plot_safa_attention_heads(baseline_pano_attn, 0, baseline_sample_pair.panorama)
+    # plt.suptitle("panorama")
+
+    # _correct_fig = plt.figure(figsize=(20, 4))
+    # plot_safa_attention_heads(baseline_sat_attn, 0, baseline_sample_pair.satellite)
+    # plt.suptitle('correct')
+
+    # _max_sim_fig = plt.figure(figsize=(20, 4))
+    # plot_safa_attention_heads(baseline_pano_attn, 1, baseline_max_similarity_pair.satellite)
+    # plt.suptitle("max similarity")
+
     _pano_fig = plt.figure(figsize=(20, 4))
-    plot_safa_attention_heads(baseline_pano_attn, 0, baseline_sample_pair.panorama)
+    plot_attention_heads(baseline_pano_attn, 0, baseline_sample_pair.panorama)
     plt.suptitle("panorama")
 
     _correct_fig = plt.figure(figsize=(20, 4))
-    plot_safa_attention_heads(baseline_sat_attn, 0, baseline_sample_pair.satellite)
+    plot_attention_heads(baseline_sat_attn, 0, baseline_sample_pair.satellite)
     plt.suptitle('correct')
 
     _max_sim_fig = plt.figure(figsize=(20, 4))
-    plot_safa_attention_heads(baseline_pano_attn, 1, baseline_max_similarity_pair.satellite)
+    plot_attention_heads(baseline_sat_attn, 1, baseline_max_similarity_pair.satellite)
     plt.suptitle("max similarity")
 
     mo.vstack([_pano_fig, _correct_fig, _max_sim_fig])
@@ -512,7 +523,14 @@ def _(baseline_pano_attn, torch):
 
 
 @app.cell
-def _():
+def _(sat_model):
+    sat_model
+    return
+
+
+@app.cell
+def _(baseline_sat_model):
+    baseline_sat_model
     return
 
 
