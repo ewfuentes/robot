@@ -26,6 +26,9 @@ class LearningRateSchedule:
     lr_step_factor: float
     num_epochs_at_lr: int
 
+    warmup_factor: float
+    num_warmup_epochs: int
+
 
 @dataclass
 class LossConfig:
@@ -160,9 +163,18 @@ def train(config: TrainConfig, *, dataset, panorama_model, satellite_model, quie
         lr=opt_config.lr_schedule.initial_lr
     )
 
-    lr_scheduler = torch.optim.lr_scheduler.StepLR(
-            opt, step_size=opt_config.lr_schedule.num_epochs_at_lr,
+    warmup_lr_scheduler = torch.optim.lr_scheduler.ConstantLR(
+        opt,
+        factor=opt_config.lr_schedule.warmup_factor,
+        total_iters=opt_config.lr_schedule.num_warmup_epochs)
+    step_lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            opt,
+            step_size=opt_config.lr_schedule.num_epochs_at_lr,
             gamma=opt_config.lr_schedule.lr_step_factor)
+    lr_scheduler = torch.optim.lr_scheduler.SequentialLR(
+        opt,
+        schedulers=[warmup_lr_scheduler, step_lr_scheduler],
+        milestones=[opt_config.lr_schedule.num_warmup_epochs])
 
     torch.set_printoptions(linewidth=200)
 
