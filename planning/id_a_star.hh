@@ -135,7 +135,7 @@ CostLimitedDFSResult<State> cost_limited_dfs(const State &initial_state,
         }
 
         // We have successors to expand from this node.
-        const auto &next_successor = frame.successors->back();
+        const auto next_successor = frame.successors->back();
         frame.successors->pop_back();
         const double next_cost_to_come = frame.cost_to_come + next_successor.edge_cost;
         const double next_est_cost_to_go = heuristic(next_successor.state);
@@ -146,10 +146,17 @@ CostLimitedDFSResult<State> cost_limited_dfs(const State &initial_state,
             continue;
         }
 
+        for (const auto &other_frame : stack) {
+            if (other_frame.state == next_successor.state) {
+                // We have already expanded this node, so we skip it.
+                continue;
+            }
+        }
+
         num_nodes_visited += 1;
         // We have not yet found a solution, so we push the successor onto the stack.
         stack.push_back(StackFrame{
-            .state = next_successor.state,
+            .state = std::move(next_successor.state),
             .cost_to_come = next_cost_to_come,
             .est_cost_to_go = next_est_cost_to_go,
             .successors = std::nullopt,
