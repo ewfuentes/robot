@@ -10,14 +10,12 @@
 
 #include "Eigen/Core"
 #include "Eigen/Geometry"
-#include "GeographicLib/Constants.hpp"
-#include "GeographicLib/Geocentric.hpp"
-#include "GeographicLib/Geodesic.hpp"
-#include "GeographicLib/LocalCartesian.hpp"
 #include "absl/strings/str_split.h"
 #include "absl/strings/strip.h"
 #include "common/check.hh"
+#include "common/gps/frame_translation.hh"
 #include "common/liegroups/se3.hh"
+#include "experimental/learn_descriptors/four_seasons_parser_detail.hh"
 #include "gtest/gtest.h"
 #include "nmea/message/gga.hpp"
 #include "nmea/message/rmc.hpp"
@@ -35,6 +33,7 @@ static bool images_equal(cv::Mat img1, cv::Mat img2) {
 }
 
 namespace robot::experimental::learn_descriptors {
+using namespace detail::four_seasons_parser;
 TEST(FourSeasonsParserTest, parser_test) {
     const std::filesystem::path dir_snippet =
         "external/four_seasons_snippet/recording_2020-04-07_11-33-45";
@@ -43,6 +42,7 @@ TEST(FourSeasonsParserTest, parser_test) {
     EXPECT_TRUE(std::filesystem::exists(dir_snippet));
     EXPECT_TRUE(std::filesystem::exists(dir_calibration));
 
+    std::cout << "heartbeat -1" << std::endl;
     FourSeasonsParser parser(dir_snippet, dir_calibration);
 
     // transformations test
@@ -65,17 +65,17 @@ TEST(FourSeasonsParserTest, parser_test) {
     EXPECT_DOUBLE_EQ(gnss_scale, parser.gnss_scale());
 
     // calibration test
-    const FourSeasonsParser::CameraCalibrationFisheye calibration_target =
-        detail::txt_parser_help::load_camera_calibration(dir_calibration);
-    const FourSeasonsParser::CameraCalibrationFisheye calibration = parser.camera_calibration();
-    EXPECT_DOUBLE_EQ(calibration_target.cx, calibration.cx);
-    EXPECT_DOUBLE_EQ(calibration_target.cy, calibration.cy);
-    EXPECT_DOUBLE_EQ(calibration_target.fx, calibration.fx);
-    EXPECT_DOUBLE_EQ(calibration_target.fy, calibration.fy);
-    EXPECT_DOUBLE_EQ(calibration_target.k1, calibration.k1);
-    EXPECT_DOUBLE_EQ(calibration_target.k2, calibration.k2);
-    EXPECT_DOUBLE_EQ(calibration_target.k3, calibration.k3);
-    EXPECT_DOUBLE_EQ(calibration_target.k4, calibration.k4);
+    const std::shared_ptr<CameraCalibrationFisheye> calibration_target =
+        txt_parser_help::load_camera_calibration(dir_calibration);
+    const std::shared_ptr<CameraCalibrationFisheye> calibration = parser.camera_calibration();
+    EXPECT_DOUBLE_EQ(calibration_target->cx, calibration->cx);
+    EXPECT_DOUBLE_EQ(calibration_target->cy, calibration->cy);
+    EXPECT_DOUBLE_EQ(calibration_target->fx, calibration->fx);
+    EXPECT_DOUBLE_EQ(calibration_target->fy, calibration->fy);
+    EXPECT_DOUBLE_EQ(calibration_target->k1, calibration->k1);
+    EXPECT_DOUBLE_EQ(calibration_target->k2, calibration->k2);
+    EXPECT_DOUBLE_EQ(calibration_target->k3, calibration->k3);
+    EXPECT_DOUBLE_EQ(calibration_target->k4, calibration->k4);
 
     EXPECT_NE(parser.num_images(), 0);
 
@@ -87,17 +87,16 @@ TEST(FourSeasonsParserTest, parser_test) {
     const std::filesystem::path path_img_time = dir_snippet / "times.txt";
     const std::filesystem::path path_gnss_poses = dir_snippet / "GNSSPoses.txt";
     const std::filesystem::path path_vio = dir_snippet / "result.txt";
-    const size_t min_sig_figs_time = detail::txt_parser_help::min_sig_figs_result_time(path_vio);
+    const size_t min_sig_figs_time = txt_parser_help::min_sig_figs_result_time(path_vio);
 
     // fetch data for all the fields (AS_w_from_gnss_cam, img times, result)
-    const detail::txt_parser_help::TimeDataList img_time_list =
-        detail::txt_parser_help::create_img_time_data_list(path_img_time, min_sig_figs_time);
+    const txt_parser_help::TimeDataList img_time_list =
+        txt_parser_help::create_img_time_data_list(path_img_time, min_sig_figs_time);
     EXPECT_EQ(img_time_list.size(), parser.num_images());
-    const detail::txt_parser_help::TimeDataMap gnss_poses_time_map =
-        detail::txt_parser_help::create_gnss_poses_time_data_map(path_gnss_poses,
-                                                                 min_sig_figs_time);
-    const detail::txt_parser_help::TimeDataMap vio_time_map =
-        detail::txt_parser_help::create_vio_time_data_map(path_vio, min_sig_figs_time);
+    const txt_parser_help::TimeDataMap gnss_poses_time_map =
+        txt_parser_help::create_gnss_poses_time_data_map(path_gnss_poses, min_sig_figs_time);
+    const txt_parser_help::TimeDataMap vio_time_map =
+        txt_parser_help::create_vio_time_data_map(path_vio, min_sig_figs_time);
 
     Eigen::Matrix4d scale_mat = Eigen::Matrix4d::Identity();
     scale_mat(0, 0) = scale_mat(1, 1) = scale_mat(2, 2) = parser.gnss_scale();
@@ -108,7 +107,7 @@ TEST(FourSeasonsParserTest, parser_test) {
     std::vector<double> gps_ns_delta_from_shutter;
 
     for (size_t i = 0; i < parser.num_images(); i++) {
-        const ImagePoint& img_pt = parser.get_image_point(i);
+        const ImagePointFourSeasons& img_pt = parser.get_image_point(i);
         const cv::Mat img = parser.load_image(i);
 
         // seq (time in nanoseconds) test
@@ -124,20 +123,22 @@ TEST(FourSeasonsParserTest, parser_test) {
             const std::vector<std::string>& parsed_line_gnss_poses =
                 gnss_poses_time_map.at(img_time_list[i].first);
 
-            Eigen::Vector3d gps_translation(std::stod(parsed_line_gnss_poses[static_cast<size_t>(
-                                                detail::txt_parser_help::GPSIdx::TRAN_X)]),
-                                            std::stod(parsed_line_gnss_poses[static_cast<size_t>(
-                                                detail::txt_parser_help::GPSIdx::TRAN_Y)]),
-                                            std::stod(parsed_line_gnss_poses[static_cast<size_t>(
-                                                detail::txt_parser_help::GPSIdx::TRAN_Z)]));
-            Eigen::Quaterniond gps_quat(std::stod(parsed_line_gnss_poses[static_cast<size_t>(
-                                            detail::txt_parser_help::GPSIdx::QUAT_W)]),
-                                        std::stod(parsed_line_gnss_poses[static_cast<size_t>(
-                                            detail::txt_parser_help::GPSIdx::QUAT_X)]),
-                                        std::stod(parsed_line_gnss_poses[static_cast<size_t>(
-                                            detail::txt_parser_help::GPSIdx::QUAT_Y)]),
-                                        std::stod(parsed_line_gnss_poses[static_cast<size_t>(
-                                            detail::txt_parser_help::GPSIdx::QUAT_Z)]));
+            Eigen::Vector3d gps_translation(
+                std::stod(
+                    parsed_line_gnss_poses[static_cast<size_t>(txt_parser_help::GPSIdx::TRAN_X)]),
+                std::stod(
+                    parsed_line_gnss_poses[static_cast<size_t>(txt_parser_help::GPSIdx::TRAN_Y)]),
+                std::stod(
+                    parsed_line_gnss_poses[static_cast<size_t>(txt_parser_help::GPSIdx::TRAN_Z)]));
+            Eigen::Quaterniond gps_quat(
+                std::stod(
+                    parsed_line_gnss_poses[static_cast<size_t>(txt_parser_help::GPSIdx::QUAT_W)]),
+                std::stod(
+                    parsed_line_gnss_poses[static_cast<size_t>(txt_parser_help::GPSIdx::QUAT_X)]),
+                std::stod(
+                    parsed_line_gnss_poses[static_cast<size_t>(txt_parser_help::GPSIdx::QUAT_Y)]),
+                std::stod(
+                    parsed_line_gnss_poses[static_cast<size_t>(txt_parser_help::GPSIdx::QUAT_Z)]));
             EXPECT_TRUE(liegroups::SE3(gps_quat, gps_translation)
                             .matrix()
                             .isApprox(img_pt.AS_w_from_gnss_cam->matrix()));
@@ -148,20 +149,16 @@ TEST(FourSeasonsParserTest, parser_test) {
             const std::vector<std::string>& parsed_line_gps =
                 vio_time_map.at(img_time_list[i].first);
             Eigen::Vector3d ground_truth_translation(
-                std::stod(parsed_line_gps[static_cast<size_t>(
-                    detail::txt_parser_help::ResultIdx::TRAN_X)]),
-                std::stod(parsed_line_gps[static_cast<size_t>(
-                    detail::txt_parser_help::ResultIdx::TRAN_Y)]),
-                std::stod(parsed_line_gps[static_cast<size_t>(
-                    detail::txt_parser_help::ResultIdx::TRAN_Z)]));
-            Eigen::Quaterniond ground_truth_quat(std::stod(parsed_line_gps[static_cast<size_t>(
-                                                     detail::txt_parser_help::ResultIdx::QUAT_W)]),
-                                                 std::stod(parsed_line_gps[static_cast<size_t>(
-                                                     detail::txt_parser_help::ResultIdx::QUAT_X)]),
-                                                 std::stod(parsed_line_gps[static_cast<size_t>(
-                                                     detail::txt_parser_help::ResultIdx::QUAT_Y)]),
-                                                 std::stod(parsed_line_gps[static_cast<size_t>(
-                                                     detail::txt_parser_help::ResultIdx::QUAT_Z)]));
+                std::stod(parsed_line_gps[static_cast<size_t>(txt_parser_help::ResultIdx::TRAN_X)]),
+                std::stod(parsed_line_gps[static_cast<size_t>(txt_parser_help::ResultIdx::TRAN_Y)]),
+                std::stod(
+                    parsed_line_gps[static_cast<size_t>(txt_parser_help::ResultIdx::TRAN_Z)]));
+            Eigen::Quaterniond ground_truth_quat(
+                std::stod(parsed_line_gps[static_cast<size_t>(txt_parser_help::ResultIdx::QUAT_W)]),
+                std::stod(parsed_line_gps[static_cast<size_t>(txt_parser_help::ResultIdx::QUAT_X)]),
+                std::stod(parsed_line_gps[static_cast<size_t>(txt_parser_help::ResultIdx::QUAT_Y)]),
+                std::stod(
+                    parsed_line_gps[static_cast<size_t>(txt_parser_help::ResultIdx::QUAT_Z)]));
             EXPECT_TRUE(liegroups::SE3(ground_truth_quat, ground_truth_translation)
                             .matrix()
                             .isApprox(img_pt.AS_w_from_vio_cam->matrix()));
@@ -177,8 +174,7 @@ TEST(FourSeasonsParserTest, parser_test) {
                 ECEF_from_gnss_cam * gps_from_cam.inverse();
 
             const Eigen::Vector3d& t_ECEF_from_gnss_gps = ECEF_from_gnss_gps.translation();
-            const Eigen::Vector3d gnss_gps_gcs =
-                FourSeasonsParser::gcs_from_ECEF(t_ECEF_from_gnss_gps);
+            const Eigen::Vector3d gnss_gps_gcs = gps::lla_from_ecef(t_ECEF_from_gnss_gps);
 
             const Eigen::Vector3d raw_gps_gcs(
                 img_pt.gps_gcs->latitude, img_pt.gps_gcs->longitude,
