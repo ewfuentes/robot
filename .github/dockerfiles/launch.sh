@@ -8,5 +8,6 @@ GITHUB_RUNNER_TOKEN=$(curl -s -X POST \
             https://api.github.com/repos/ewfuentes/robot/actions/runners/registration-token \
             | jq -r .token)
 
+./config.sh remove --token ${GITHUB_RUNNER_TOKEN} || true
 ./config.sh --url https://github.com/ewfuentes/robot --token ${GITHUB_RUNNER_TOKEN} --unattended
 ./run.sh
