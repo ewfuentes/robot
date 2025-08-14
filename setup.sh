@@ -7,8 +7,16 @@ if [ "${CODENAME}" = "noble" ]; then
     ln -s .bazelrc_noble .bazelrc_ubuntu
     PACKAGES="clang-18 clang-format-18 gcc-14 g++-14 gcc-11 g++-11"
 elif [ "${CODENAME}" = "jammy" ]; then
-    ln -s .bazelrc_jammy .bazelrc_ubuntu
     PACKAGES="clang-15 clang-format-15 gcc-12 g++-12 gcc-11 g++-11"
+    ARCH=$(uname -m)
+    if [ "${ARCH}" = "x86_64" ]; then
+        ln -s .bazelrc_jammy .bazelrc_ubuntu
+    elif [ "${ARCH}" = "aarch64" ]; then
+        ln -s .bazelrc_jammy_arm64 .bazelrc_ubuntu
+    else
+        echo "Unsupported architecture: ${ARCH}"
+        exit 1
+    fi
 fi
 
 

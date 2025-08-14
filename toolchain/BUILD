@@ -75,6 +75,22 @@ toolchain(
     ":clang15",
   ],
 )
+toolchain(
+  name = "clang_15_toolchain_for_linux_arm64",
+  toolchain = ":k8_clang_15_toolchain",
+  toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
+  exec_compatible_with = [
+    "@platforms//cpu:arm64",
+    "@platforms//os:linux",
+  ],
+  target_compatible_with = [
+    "@platforms//cpu:arm64",
+    "@platforms//os:linux",
+    ":jammy_22.04",
+    ":clang15",
+  ],
+)
+
 
 toolchain(
   name = "clang_18_toolchain_for_linux_x84_64",
@@ -222,6 +238,16 @@ platform(
   name="jammy_clang",
   constraint_values = [
     "@platforms//cpu:x86_64",
+    "@platforms//os:linux",
+    ":jammy_22.04",
+    ":clang15",
+  ]
+)
+
+platform(
+  name="jammy_clang_arm64",
+  constraint_values = [
+    "@platforms//cpu:arm64",
     "@platforms//os:linux",
     ":jammy_22.04",
     ":clang15",
