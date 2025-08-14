@@ -210,7 +210,7 @@ def load_model(
     load_path: Path,  # folder where model is saved
     device: str = "cpu",
     *,
-    skip_constient_output_check: bool = False
+    skip_consistent_output_check: bool = False
 ):
 
     if not isinstance(load_path, Path):
@@ -221,7 +221,7 @@ def load_model(
     model.eval()
 
     # verify model
-    if not skip_constient_output_check:
+    if not skip_consistent_output_check:
         input_output = torch.load(load_path / 'input_output.tar',
                                   map_location=device, weights_only=False)
         with torch.no_grad():

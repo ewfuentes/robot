@@ -5,6 +5,7 @@ load("@rules_python//python:packaging.bzl", "py_wheel", "py_package")
 py_binary(
   name="train",
   srcs=["train.py"],
+  visibility=["//common/python:__subpackages__"],
   deps=[
     requirement("torch"),
     requirement("tensorboard"),
