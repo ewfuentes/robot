@@ -203,16 +203,14 @@ def log_batch_metrics(writer, loss_dict, lr_scheduler, pairs, step_idx, epoch_id
 def compute_validation_metrics(
         sat_model,
         pano_model,
-        dataset,
-        epoch_idx):
+        dataset):
     sat_embeddings = sed.build_satellite_db(
         sat_model,
-        vigor_dataset.get_dataloader(dataset.get_sat_patch_view(), batch_size=96, num_workers=8))
+        vigor_dataset.get_dataloader(dataset.get_sat_patch_view(), batch_size=64, num_workers=8))
     pano_embeddings = sed.build_panorama_db(
         pano_model,
-        vigor_dataset.get_dataloader(dataset.get_pano_view(), batch_size=96, num_workers=8))
+        vigor_dataset.get_dataloader(dataset.get_pano_view(), batch_size=64, num_workers=8))
     similarity = pano_embeddings @ sat_embeddings.T
-    print(f"{similarity.shape=}")
     num_panos = similarity.shape[0]
 
     invalid_mask = torch.ones((num_panos, 5), dtype=torch.bool)
@@ -417,8 +415,7 @@ def train(config: TrainConfig, *, dataset, validation_dataset, panorama_model, s
         validation_metrics = compute_validation_metrics(
                 sat_model=satellite_model,
                 pano_model=panorama_model,
-                dataset=validation_dataset,
-                epoch_idx=epoch_idx)
+                dataset=validation_dataset)
         log_validation_metrics(
                 writer=writer,
                 validation_metrics=validation_metrics,
