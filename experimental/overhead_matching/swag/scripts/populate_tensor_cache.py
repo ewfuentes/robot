@@ -97,7 +97,7 @@ def main(train_config_path: Path,
     with lmdb.open(str(output_path), map_size=mmap_size) as db:
         with db.begin(write=True) as txn:
             txn.put(b"config_hash", config_hash.digest())
-            txn.put(b"config", yaml_str.encode('utf-8'))
+            txn.put(b"config", yaml_str)
 
         # Process the data
         for batch in tqdm.tqdm(dataloader):
