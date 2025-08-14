@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.11.9"
+__generated_with = "0.14.17"
 app = marimo.App(width="full")
 
 
@@ -22,7 +22,7 @@ def _():
     matplotlib.style.use('ggplot')
     import matplotlib.pyplot as plt
     import seaborn as sns
-    return Path, T, lsm, matplotlib, mo, pd, plt, sns, vd
+    return Path, T, lsm, mo, pd, plt, sns, vd
 
 
 @app.cell
@@ -31,6 +31,7 @@ def _(Path):
         Path('/data/overhead_matching/models/20250707_dino_features/all_chicago_dino_project_512'),
         Path('/data/overhead_matching/models/20250806_swag_model_fixed/all_chicago_sat_dino_pano_dino_agg_small_attn_8'),
         Path('/data/overhead_matching/models/20250806_swag_model_fixed/all_chicago_sat_dino_pano_dino_batch_size_256_hard_negative_20_lr_1p4e-4_warmup_5'),
+        Path('/data/overhead_matching/models/20250806_swag_model_fixed/all_chicago_sat_dino_pano_dino_batch_size_512_hard_negative_20_lr_3e-4_warmup_5')
     ]
 
     validation_set_paths = [
@@ -41,8 +42,42 @@ def _(Path):
 
 
 @app.cell
-def _(T, lsm, model_paths, pd, validation_set_paths, vd):
+def _(model_paths):
+    model_paths
+    return
+
+
+@app.cell
+def _(T, lsm, mo, vd):
+    @mo.persistent_cache
+    def compute_validation_metrics(model_path, dataset_path, checkpoint, factor):
+        print(f'working on: {model_path.name} {dataset_path.name} {checkpoint}')
+        _sat_model = lsm.load_model(
+            model_path / f"{checkpoint:04d}_satellite", device='cuda:0', skip_consistent_output_check=True).eval()
+        _pano_model = lsm.load_model(
+            model_path / f"{checkpoint:04d}_panorama", device='cuda:0', skip_consistent_output_check=True).eval()
+
+            
+        _dataset_config = vd.VigorDatasetConfig(
+            panorama_tensor_cache_info=None,
+            satellite_tensor_cache_info=None,
+            panorama_size=_pano_model.patch_dims,
+            satellite_patch_size=_sat_model.patch_dims,
+            factor=factor
+        )
+        _dataset = vd.VigorDataset(dataset_path, _dataset_config)
+
+        return T.compute_validation_metrics(
+            sat_model=_sat_model,
+            pano_model=_pano_model,
+            dataset=_dataset)
+    return (compute_validation_metrics,)
+
+
+@app.cell
+def _(compute_validation_metrics, model_paths, pd, validation_set_paths):
     _records = []
+    FACTOR=0.3
     for _dp in validation_set_paths:
         _dataset = None
         print(f'Dataset: {_dp.name}')
@@ -50,25 +85,7 @@ def _(T, lsm, model_paths, pd, validation_set_paths, vd):
             _checkpoints = [int(x.name.split("_")[0]) for x in sorted(_mp.glob("[0-9]*_satellite"))]
             print(_mp.name, _checkpoints)
             for _checkpoint in _checkpoints:
-                print(f'working on: {_mp.name} {_checkpoint}')
-                _sat_model = lsm.load_model(_mp / f"{_checkpoint:04d}_satellite", device='cuda:0', skip_consistent_output_check=True).eval()
-                _pano_model = lsm.load_model(_mp / f"{_checkpoint:04d}_panorama", device='cuda:0', skip_consistent_output_check=True).eval()
-
-                if _dataset is None:
-                    _dataset_config = vd.VigorDatasetConfig(
-                        panorama_tensor_cache_info=None,
-                        satellite_tensor_cache_info=None,
-                        panorama_size=_pano_model.patch_dims,
-                        satellite_patch_size=_sat_model.patch_dims,
-                        factor=0.3
-                    )
-                    _dataset = vd.VigorDataset(_dp, _dataset_config)
-                    print(f'loaded {len(_dataset._panorama_metadata)} panos and {len(_dataset._satellite_metadata)} sats from {_dp}')
-
-                _metrics = T.compute_validation_metrics(
-                    sat_model=_sat_model,
-                    pano_model=_pano_model,
-                    dataset=_dataset)
+                _metrics = compute_validation_metrics(_mp, _dp, _checkpoint, FACTOR)
                 for k, v in _metrics.items():
                     _records.append({
                         'model': _mp.name,
@@ -78,7 +95,7 @@ def _(T, lsm, model_paths, pd, validation_set_paths, vd):
                         'value': v})
 
     validation_df = pd.DataFrame.from_records(_records)
-    return k, v, validation_df
+    return (validation_df,)
 
 
 @app.cell
@@ -124,7 +141,7 @@ def _(mo, plt, sns, validation_df):
     plt.tight_layout()
 
     mo.mpl.interactive(_fig)
-    return (legend_objs,)
+    return
 
 
 @app.cell
