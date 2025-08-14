@@ -41,10 +41,10 @@ bazel_skylib_workspace()
 http_archive(
     name = "platforms",
     urls = [
-        "https://mirror.bazel.build/github.com/bazelbuild/platforms/releases/download/0.0.8/platforms-0.0.8.tar.gz",
-        "https://github.com/bazelbuild/platforms/releases/download/0.0.8/platforms-0.0.8.tar.gz",
+        "https://mirror.bazel.build/github.com/bazelbuild/platforms/releases/download/1.0.0/platforms-1.0.0.tar.gz",
+        "https://github.com/bazelbuild/platforms/releases/download/1.0.0/platforms-1.0.0.tar.gz",
     ],
-    sha256 = "8150406605389ececb6da07cbcb509d5637a3ab9a24bc69b1101531367d89d74",
+    sha256 = "3384eb1c30762704fbe38e440204e114154086c8fc8a8c2e3e28441028c019a8",
 )
 
 register_toolchains(
@@ -140,15 +140,11 @@ http_archive(
 # Note that rules_python must be loaded before protobuf
 http_archive(
     name = "rules_python",
-    sha256 = "2ef40fdcd797e07f0b6abda446d1d84e2d9570d234fddf8fcd2aa262da852d1c",
-    strip_prefix = "rules_python-1.2.0",
-    url = "https://github.com/bazelbuild/rules_python/releases/download/1.2.0/rules_python-1.2.0.tar.gz",
-    patch_args = ["-p1"],
-    patches = ["//third_party:rules_python_0001-disable-user-site-package.patch"],
-
+    sha256 = "0a1cefefb4a7b550fb0b43f54df67d6da95b7ba352637669e46c987f69986f6a",
+    strip_prefix = "rules_python-1.5.3",
+    url = "https://github.com/bazel-contrib/rules_python/releases/download/1.5.3/rules_python-1.5.3.tar.gz",
 )
 
-load("@rules_python//python:repositories.bzl", "py_repositories")
 load("@rules_python//python:repositories.bzl", "py_repositories", "python_register_multi_toolchains")
 
 py_repositories()
