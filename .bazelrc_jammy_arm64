@@ -1,0 +1,2 @@
+build --config=clang
+build:clang --platforms=//toolchain:jammy_clang_arm64

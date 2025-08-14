@@ -1,21 +1,21 @@
+
 --extra-index-url https://download.pytorch.org/whl/cu128
 easyocr==1.7.2
 numpy==1.26.4
 jupyterlab==4.0.8
-matplotlib==3.7.5
+matplotlib==3.9.2
 Pillow==10.4.0
 pandas==1.5.3
 scikit-learn==1.6.1
 tqdm==4.67.1
 opencv-python==4.7.0.72
 Wand==0.6.11
-torch==2.7.0+cu128
-setuptools==80.3.1
+torch==2.7.0
+# setuptools==80.3.1
 ipdb==0.13.13
 dash==3.0.4
 ipympl==0.9.3
 beautifulsoup4==4.12.2
-line_profiler==4.0.3
 PyYAML==6.0.2
 PyGObject==3.44.1
 click==8.1.7
