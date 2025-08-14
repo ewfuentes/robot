@@ -28,4 +28,15 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get -y install libxcursor-dev clang \
      libgirepository1.0-dev libcairo2-dev libgtk2.0-dev libcanberra-gtk-module libsuitesparse-dev \
      python-is-python3 build-essential ${PACKAGES}
 
+if [ "${CODENAME}" = "jammy" ]; then
+    ARCH=$(uname -m)
+    if [ "${ARCH}" = "aarch64" ]; then
+        # We need to regenerate the python requirements. Use uv
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        uv pip compile --python-version 3.12 -o third_party/python/requirements_3_12.txt \
+            --format requirements.txt --index-strategy unsafe-best-match --generate-hashes \
+            --emit-index-url third_party/python/requirements_3_12.in
+    fi
+fi
+
 echo "Installed all packages. Ensure that cuda-toolkit is also installed!"

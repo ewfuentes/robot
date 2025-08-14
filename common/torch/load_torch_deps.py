@@ -64,4 +64,6 @@ def preload_cuda_deps() -> None:
     for lib_folder, lib_name in cuda_libs.items():
         _preload_cuda_deps(lib_folder, lib_name)
 
-preload_cuda_deps()
+
+if platform.processor() != "aarch64":
+    preload_cuda_deps()
