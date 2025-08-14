@@ -3,8 +3,8 @@ index d041be5..dbf20b3 100644
 --- a/python/private/hermetic_runtime_repo_setup.bzl
 +++ b/python/private/hermetic_runtime_repo_setup.bzl
 @@ -199,6 +199,7 @@ def define_hermetic_runtime_toolchain_impl(
-             _IS_FREETHREADED: "cpython-{major}{minor}t".format(**version_dict),
-             "//conditions:default": "cpython-{major}{minor}".format(**version_dict),
+             _IS_FREETHREADED_YES: "cpython-{major}{minor}t".format(**version_dict),
+             _IS_FREETHREADED_NO: "cpython-{major}{minor}".format(**version_dict),
          }),
 +        stub_shebang="#! /usr/bin/env -S PYTHONNOUSERSITE=1 python",
      )

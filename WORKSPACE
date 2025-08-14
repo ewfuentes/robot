@@ -143,6 +143,8 @@ http_archive(
     sha256 = "0a1cefefb4a7b550fb0b43f54df67d6da95b7ba352637669e46c987f69986f6a",
     strip_prefix = "rules_python-1.5.3",
     url = "https://github.com/bazel-contrib/rules_python/releases/download/1.5.3/rules_python-1.5.3.tar.gz",
+    patch_args = ["-p1"],
+    patches = ["//third_party:rules_python_0001-disable-user-site-package.patch"],
 )
 
 load("@rules_python//python:repositories.bzl", "py_repositories", "python_register_multi_toolchains")
