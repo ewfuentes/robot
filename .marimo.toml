@@ -1,46 +1,70 @@
-[completion]
-copilot = false
-activate_on_typing = true
-
-[runtime]
-std_stream_max_bytes = 1000000
-watcher_on_save = "lazy"
-auto_instantiate = false
-on_cell_change = "autorun"
-output_max_bytes = 8000000
-auto_reload = "off"
-
-[experimental]
-
-[package_management]
-manager = "pip"
-
 [save]
-autosave_delay = 1000
 format_on_save = false
 autosave = "after_delay"
-
-[formatting]
-line_length = 79
-
-[display]
-code_editor_font_size = 14
-cell_output = "below"
-default_width = "full"
-dataframes = "rich"
-theme = "light"
+autosave_delay = 1000
 
 [server]
 browser = "default"
 follow_symlink = true
 
-[snippets]
-include_default_snippets = true
-custom_paths = []
+[package_management]
+manager = "pip"
 
-[ai]
-rules = ""
+[formatting]
+line_length = 79
+
+[experimental]
+
+[runtime]
+on_cell_change = "autorun"
+watcher_on_save = "lazy"
+output_max_bytes = 8000000
+default_auto_download = []
+auto_reload = "off"
+default_sql_output = "auto"
+reactive_tests = true
+std_stream_max_bytes = 1000000
+auto_instantiate = false
+
+[diagnostics]
 
 [keymap]
 preset = "default"
+destructive_delete = true
+
 [keymap.overrides]
+
+[display]
+dataframes = "rich"
+default_table_max_columns = 50
+theme = "system"
+reference_highlighting = false
+default_width = "full"
+default_table_page_size = 10
+code_editor_font_size = 14
+cell_output = "below"
+
+[language_servers.ty]
+
+[language_servers.basedpyright]
+
+[language_servers.pylsp]
+enable_mypy = true
+enable_flake8 = false
+enabled = true
+enable_pylint = false
+enable_pydocstyle = false
+enable_ruff = true
+enable_pyflakes = false
+
+[completion]
+copilot = false
+activate_on_typing = true
+
+[ai]
+mode = "manual"
+rules = ""
+
+[snippets]
+include_default_snippets = true
+custom_paths = []

@@ -85,6 +85,7 @@ def _(Path, pd, torch, tqdm):
                 error_m, var_sq_m = process_path(p)
                 for i, (e, v) in enumerate(zip(error_m.detach().cpu().tolist(), var_sq_m.detach().cpu().tolist())):
                     out.append({
+                        'location':p.parts[-3],
                         'path_idx': int(p.stem),
                         'error_m': e,
                         'var_sq_m': v,
@@ -99,8 +100,18 @@ def _(Path, pd, torch, tqdm):
 
     # _results_paths = sorted(_base_path.iterdir())
     _results_paths = [
-        Path("/data/overhead_matching/evaluation/results/all_chicago_sat_embedding_pano_wag"),
-        Path("/data/overhead_matching/evaluation/results/20250707_dino_features/all_chicago_dino_project_512")
+        Path('/data/overhead_matching/evaluation/results/20250707_dino_features/NewYork/all_chicago_dino_project_512'),
+        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/NewYork/all_chicago_sat_dino_embedding_mat_pano_wag'),
+        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/NewYork/all_chicago_sat_dino_embedding_mat_pano_dino_sam'),
+        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/NewYork/all_chicago_sat_dino_pano_dino'),
+        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/NewYork/all_chicago_sat_dino_pano_dino_agg_small'),
+        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/NewYork/all_chicago_sat_dino_pano_dino_agg_small_attn_8'),
+        Path('/data/overhead_matching/evaluation/results/20250707_dino_features/Chicago/all_chicago_dino_project_512'),
+        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/Chicago/all_chicago_sat_dino_embedding_mat_pano_wag'),
+        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/Chicago/all_chicago_sat_dino_embedding_mat_pano_dino_sam'),
+        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/Chicago/all_chicago_sat_dino_pano_dino'),
+        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/Chicago/all_chicago_sat_dino_pano_dino_agg_small'),
+
     ]
 
     path_dfs = []
@@ -135,7 +146,7 @@ def _(path_df, plt, sns):
 
 
 @app.cell
-def _(mo, path_df, plt, sns):
+def _(mo, np, path_df, plt, sns):
     plt.figure(figsize=(8,4))
     path_lengths = path_df.groupby("path_idx")["datapoint_index"].max()
     shortest_last_index = path_lengths.min()
@@ -146,7 +157,7 @@ def _(mo, path_df, plt, sns):
         data=path_df,
         x="datapoint_index",
         y="error_m",
-        estimator="median",  
+        estimator=lambda x: np.percentile(x, 95.0),
         errorbar=("ci", 95),
         hue="model"
     )
@@ -241,42 +252,140 @@ def _(np, path_df, pd):
             out_arrays[model_name] = out_arr
         return out_arrays
 
-    error_m_np_arrays = flattened_df_to_ndarray(path_df, "error_m")
-    return error_m_np_arrays, flattened_df_to_ndarray
+    # error_m_np_arrays = flattened_df_to_ndarray(path_df, "error_m")
+    return (flattened_df_to_ndarray,)
 
 
 @app.cell
-def _(error_m_np_arrays, matplotlib, mo, np, plt):
-    percentile_cutoff = np.asarray([5, 50, 95])
-    line_styles = ['-', '--', '-.']
+def _(mo, path_df, plt, sns):
+    quantiles = (
+        path_df.groupby(["location", "model", "datapoint_index"])["error_m"]
+        .quantile([0.05, 0.25, 0.5, 0.75, 0.95, 1.0])
+        .unstack()
+        .rename(columns=lambda x: f"q{int(x*100):02d}" if x < 1.0 else "max")
+        .reset_index()
+    )
+    palette = sns.color_palette(n_colors=quantiles["model"].nunique())
+    model_colors = dict(zip(sorted(quantiles["model"].unique()), palette))
 
-    cmap = matplotlib.colormaps.get_cmap('tab10')
-    error_percentiles = {k: np.percentile(v, percentile_cutoff, axis=0) for k, v in error_m_np_arrays.items()}
-    fig, ax = plt.subplots()
-    for model_i, (model, percentiles) in enumerate(error_percentiles.items()):
-        for i, (ls, percentile) in enumerate(zip(line_styles, percentile_cutoff)):
-            ax.plot(percentiles[i], c=cmap(model_i), ls=ls, label=f"{model} {percentile}%")
-    plt.xlabel("Timestep")
-    plt.ylabel("Error (m)")
-    plt.title("Error Percentiles over Timesteps")
-    plt.grid(True)
-    plt.legend()
-    plt.tight_layout()
+    g = sns.FacetGrid(quantiles, col="location", hue="model", palette=palette, height=6, aspect=1.25)
+    g.map(plt.plot, "datapoint_index", "q50", linewidth=2)
+
+    for ax, (location, subdf) in zip(g.axes.flat, quantiles.groupby("location")):
+        for model, mdf in subdf.groupby("model"):
+            color = model_colors[model]   # <-- ensure consistency
+            ax.plot(mdf["datapoint_index"], mdf["q05"], linestyle="--", linewidth=1.5, color=color)
+            ax.plot(mdf["datapoint_index"], mdf["q95"], linestyle="--", linewidth=1.5, color=color)
+            ax.plot(mdf["datapoint_index"], mdf["max"], linestyle=":", linewidth=1.5, color=color)
+
+    g.add_legend()
+    g.set_axis_labels("Datapoint Index (time)", "Error (m)")
+    g.set_titles("Location: {col_name}")
+
     mo.mpl.interactive(plt.gcf())
     return (
         ax,
-        cmap,
-        error_percentiles,
-        fig,
-        i,
-        line_styles,
-        ls,
+        color,
+        g,
+        location,
+        mdf,
         model,
-        model_i,
-        percentile,
-        percentile_cutoff,
-        percentiles,
+        model_colors,
+        palette,
+        quantiles,
+        subdf,
     )
+
+
+@app.cell
+def _(quantiles):
+    quantiles
+    return
+
+
+@app.cell
+def _(path_df):
+    path_df
+    return
+
+
+@app.cell
+def _(path_df, quantiles):
+    joint_df = path_df.merge(quantiles, on=["location", "model", "datapoint_index"], how='left')
+    return (joint_df,)
+
+
+@app.cell
+def _(joint_df):
+    joint_df
+    return
+
+
+@app.cell
+def _(joint_df):
+    high_error_mask = joint_df["error_m"] > joint_df["q95"]
+    joint_df["high_error_mask"] = high_error_mask
+    high_error_time = (joint_df.groupby(["location", 'model', 'path_idx'])["high_error_mask"]
+        .mean()
+        .rename("high_error_time")
+        .reset_index()
+    )
+
+    _df = joint_df.merge(high_error_time, on=["location", "model", "path_idx"])
+    _high_error_df =  _df.loc[_df['high_error_time'] > 0.9]
+
+    _baseline_model = 'all_chicago_dino_project_512'
+
+    _keys = _high_error_df[["location", "path_idx"]].drop_duplicates()
+
+    _baseline_df = (
+        joint_df
+            .merge(_keys, on=["location", 'path_idx'], how='inner')
+            .query(f"model == '{_baseline_model}'"))
+    comparison_df= _high_error_df.merge(_baseline_df, on=["location", "path_idx", 'datapoint_index'], how='left', suffixes=(None, '_baseline'))
+    return comparison_df, high_error_mask, high_error_time
+
+
+@app.cell
+def _(comparison_df):
+    comparison_df
+    return
+
+
+@app.cell
+def _(comparison_df, mo, plt, sns):
+    _df = comparison_df.melt(id_vars=['location', 'path_idx', 'datapoint_index'], value_vars=['error_m', 'error_m_baseline'], var_name="model", value_name="error_m")
+
+    # path_mask = _df["mask"] == 8
+
+    sns.lineplot(_df[_df["path_idx"] == 8], x="datapoint_index", y="error_m", hue="model")
+    mo.mpl.interactive(plt.gcf())
+    return
+
+
+@app.cell
+def _(comparison_df, sns):
+    _mask = comparison_df['path_idx'] == 9
+
+    sns.lineplot(x='datapoint_index', )
+
+    # _mask = high_error_df["model"] == "all_chicago_sat_dino_pano_dino_agg_small"
+    # # _mask = np.logical_and(_mask, joint_df["path_idx"] == 94)
+    # _mask = np.logical_and(_mask, high_error_df["location"] == "NewYork")
+    # _mask = np.logical_and(_mask, high_error_df["is_high_error"])
+
+
+    # sns.lineplot(high_error_df.loc[_mask], x='datapoint_index', y='error_m', hue='path_idx', palette='Paired')
+
+    # print(high_error_df.loc[_mask, "path_idx"].drop_duplicates())
+
+    # mo.mpl.interactive(plt.gcf())
+    return
+
+
+@app.cell
+def _():
+    return
 
 
 @app.cell

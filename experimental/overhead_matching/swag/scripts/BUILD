@@ -59,6 +59,7 @@ py_binary(
 py_binary(
   name="evaluate_model_on_paths",
   srcs=["evaluate_model_on_paths.py"],
+  visibility=["//common/python:__subpackages__"],
   deps=[
     requirement("torch"),
     requirement("tqdm"),
