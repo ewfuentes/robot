@@ -32,10 +32,7 @@ if [ "${CODENAME}" = "jammy" ]; then
     ARCH=$(uname -m)
     if [ "${ARCH}" = "aarch64" ]; then
         # We need to regenerate the python requirements. Use uv
-        if [ -x uv ]; then
-        else
-            curl -LsSf https://astral.sh/uv/install.sh | sh
-        fi
+        command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh
         uv python install 3.12
         rm third_party/python/requirements_3_12.txt
         uv pip compile --python-version 3.12 -o third_party/python/requirements_3_12.txt \
