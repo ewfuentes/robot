@@ -15,6 +15,12 @@ def _():
     from experimental.overhead_matching.swag.data import (
         vigor_dataset as vd
     )
+    from experimental.overhead_matching.swag.model import (
+        patch_embedding as pe,
+        swag_patch_embedding as spe
+    )
+    import common.torch.load_torch_deps
+    import torch
     import common.torch.load_and_save_models as lsm
     from pathlib import Path
     import pandas as pd
@@ -22,7 +28,9 @@ def _():
     matplotlib.style.use('ggplot')
     import matplotlib.pyplot as plt
     import seaborn as sns
-    return Path, T, lsm, mo, pd, plt, sns, vd
+    import json
+    import msgspec
+    return Path, T, json, lsm, mo, msgspec, pd, pe, plt, sns, spe, torch, vd
 
 
 @app.cell
@@ -30,8 +38,8 @@ def _(Path):
     model_paths = [
         Path('/data/overhead_matching/models/20250707_dino_features/all_chicago_dino_project_512'),
         Path('/data/overhead_matching/models/20250806_swag_model_fixed/all_chicago_sat_dino_pano_dino_agg_small_attn_8'),
-        Path('/data/overhead_matching/models/20250806_swag_model_fixed/all_chicago_sat_dino_pano_dino_batch_size_256_hard_negative_20_lr_1p4e-4_warmup_5'),
-        Path('/data/overhead_matching/models/20250806_swag_model_fixed/all_chicago_sat_dino_pano_dino_batch_size_512_hard_negative_20_lr_3e-4_warmup_5')
+        Path('/data/overhead_matching/models/20250806_swag_model_fixed/all_chicago_sat_dino_pano_dino_batch_size_512_hard_negative_20_lr_3e-4_warmup_5'),
+        Path('/data/overhead_matching/models/20250815_swag_semantic/all_chicago_sat_dino_embedding_mat_pano_dino_sam'),
     ]
 
     validation_set_paths = [
@@ -48,19 +56,50 @@ def _(model_paths):
 
 
 @app.cell
-def _(T, lsm, mo, vd):
+def _(json, lsm, msgspec, pe, spe, torch):
+    def load_model(path, device='cuda'):
+        print(path)
+        try:
+            model = lsm.load_model(path, device=device, skip_consistent_output_check=True)
+            model.patch_dims
+            model.model_input_from_batch
+        except Exception as e:
+            print("Failed to load model", e)
+            training_config_path = path.parent / "config.json"
+            training_config_json = json.loads(training_config_path.read_text())
+            model_config_json = training_config_json["sat_model_config"] if 'satellite' in path.name else training_config_json["pano_model_config"]
+            print(model_config_json)
+            config = msgspec.json.decode(json.dumps(model_config_json), type=pe.WagPatchEmbeddingConfig | spe.SwagPatchEmbeddingConfig)
+
+            model_weights = torch.load(path / 'model_weights.pt', weights_only=True)
+            model_type = pe.WagPatchEmbedding if isinstance(config, pe.WagPatchEmbeddingConfig) else spe.SwagPatchEmbedding
+            model = model_type(config)
+            model.load_state_dict(model_weights)
+            model = model.to(device)
+        return model
+    return (load_model,)
+
+
+@app.cell
+def _(T, load_model, mo, vd):
     @mo.persistent_cache
     def compute_validation_metrics(model_path, dataset_path, checkpoint, factor):
         print(f'working on: {model_path.name} {dataset_path.name} {checkpoint}')
-        _sat_model = lsm.load_model(
-            model_path / f"{checkpoint:04d}_satellite", device='cuda:0', skip_consistent_output_check=True).eval()
-        _pano_model = lsm.load_model(
-            model_path / f"{checkpoint:04d}_panorama", device='cuda:0', skip_consistent_output_check=True).eval()
+        _sat_model = load_model(
+            model_path / f"{checkpoint:04d}_satellite", device='cuda:0').eval()
+        _pano_model = load_model(
+            model_path / f"{checkpoint:04d}_panorama", device='cuda:0').eval()
 
-            
+
         _dataset_config = vd.VigorDatasetConfig(
-            panorama_tensor_cache_info=None,
-            satellite_tensor_cache_info=None,
+            panorama_tensor_cache_info=vd.TensorCacheInfo(
+                dataset_key=dataset_path.name,
+                model_type="panorama",
+                hash_and_key=_pano_model.cache_info()),
+            satellite_tensor_cache_info=vd.TensorCacheInfo(
+                dataset_key=dataset_path.name,
+                model_type="satellite",
+                hash_and_key=_sat_model.cache_info()),
             panorama_size=_pano_model.patch_dims,
             satellite_patch_size=_sat_model.patch_dims,
             factor=factor
@@ -70,7 +109,7 @@ def _(T, lsm, mo, vd):
         return T.compute_validation_metrics(
             sat_model=_sat_model,
             pano_model=_pano_model,
-            dataset=_dataset)
+            validation_datasets={"": _dataset})
     return (compute_validation_metrics,)
 
 
@@ -127,7 +166,7 @@ def _(mo, plt, sns, validation_df):
             if _metric is None:
                 _ax.remove()
                 continue
-            _mask = validation_df["metric"] == _metric
+            _mask = validation_df["metric"] == f"/{_metric}"
             _to_plot_df = validation_df[_mask]
             if _i == 0 and _j == 0:
                 sns.lineplot(_to_plot_df, x='epoch', y='value', hue='model', style='dataset', ax=_ax)    

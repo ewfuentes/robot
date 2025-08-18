@@ -38,7 +38,7 @@ def dec_hook(type, obj):
 
 def compute_config_hash(obj):
     yaml_str = msgspec.yaml.encode(obj, enc_hook=enc_hook, order='deterministic')
-    return hashlib.sha256(yaml_str).hexdigest()
+    return yaml_str, hashlib.sha256(yaml_str)
 
 
 def main(train_config_path: Path,
@@ -46,7 +46,8 @@ def main(train_config_path: Path,
          dataset_path: Path,
          output_path: Path,
          idx_start: None | int,
-         idx_end: None | int):
+         idx_end: None | int,
+         batch_size: int):
     # Load the training config
     with open(train_config_path, 'r') as file_in:
         train_config = msgspec.yaml.decode(
@@ -59,7 +60,8 @@ def main(train_config_path: Path,
         model_config = getattr(model_config, p)
     patch_dims = getattr(train_config, parts[0]).patch_dims
     hash_struct = HashStruct(model_config=model_config, patch_dims=patch_dims)
-    print('computing cache for: ', hash_struct, 'with hash: ', compute_config_hash(hash_struct))
+    yaml_str, config_hash = compute_config_hash(hash_struct)
+    print('computing cache for: ', hash_struct, 'with hash: ', config_hash.hexdigest())
 
     # Create the model
     if parts[-1] == "feature_map_extractor_config":
@@ -87,12 +89,16 @@ def main(train_config_path: Path,
     dataset = torch.utils.data.Subset(dataset, range(idx_start, idx_end))
 
     # Get a dataloader
-    dataloader = vd.get_dataloader(dataset, num_workers=4, batch_size=16)
+    dataloader = vd.get_dataloader(dataset, num_workers=4, batch_size=batch_size)
 
     # Open a database
     mmap_size = 2**40  # 1 TB
     output_path.mkdir(exist_ok=True, parents=True)
     with lmdb.open(str(output_path), map_size=mmap_size) as db:
+        with db.begin(write=True) as txn:
+            txn.put(b"config_hash", config_hash.digest())
+            txn.put(b"config", yaml_str)
+
         # Process the data
         for batch in tqdm.tqdm(dataloader):
             # Create the model input
@@ -136,6 +142,7 @@ if __name__ == "__main__":
     parser.add_argument('--output', type=str, required=True)
     parser.add_argument('--idx_start', type=int, default=None)
     parser.add_argument('--idx_end', type=int, default=None)
+    parser.add_argument("--batch_size", type=int, default=16)
 
     args = parser.parse_args()
 
@@ -144,4 +151,5 @@ if __name__ == "__main__":
          dataset_path=Path(args.dataset),
          output_path=Path(args.output),
          idx_start=args.idx_start,
-         idx_end=args.idx_end)
+         idx_end=args.idx_end,
+         batch_size=args.batch_size)

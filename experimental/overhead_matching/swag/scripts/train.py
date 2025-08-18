@@ -83,7 +83,7 @@ class TrainConfig:
     output_dir: Path
     tensorboard_output: Path | None
     dataset_config: DatasetConfig
-    validation_dataset_config: DatasetConfig
+    validation_dataset_configs: list[DatasetConfig]
 
 
 @dataclass
@@ -204,69 +204,72 @@ def log_batch_metrics(writer, loss_dict, lr_scheduler, pairs, step_idx, epoch_id
 def compute_validation_metrics(
         sat_model,
         pano_model,
-        dataset):
-    sat_embeddings = sed.build_satellite_db(
-        sat_model,
-        vigor_dataset.get_dataloader(dataset.get_sat_patch_view(), batch_size=64, num_workers=8))
-    pano_embeddings = sed.build_panorama_db(
-        pano_model,
-        vigor_dataset.get_dataloader(dataset.get_pano_view(), batch_size=64, num_workers=8))
-    similarity = pano_embeddings @ sat_embeddings.T
-    num_panos = similarity.shape[0]
+        validation_datasets):
+    out = {}
+    for name, dataset in validation_datasets.items():
+        sat_embeddings = sed.build_satellite_db(
+            sat_model,
+            vigor_dataset.get_dataloader(dataset.get_sat_patch_view(), batch_size=64, num_workers=8))
+        pano_embeddings = sed.build_panorama_db(
+            pano_model,
+            vigor_dataset.get_dataloader(dataset.get_pano_view(), batch_size=64, num_workers=8))
+        similarity = pano_embeddings @ sat_embeddings.T
+        num_panos = similarity.shape[0]
 
-    invalid_mask = torch.ones((num_panos, 5), dtype=torch.bool)
-    sat_idxs = torch.zeros((num_panos, 5), dtype=torch.int32)
-    for pano_idx, pano_metadata in dataset._panorama_metadata.iterrows():
-        assert len(pano_metadata.positive_satellite_idxs) <= 1
-        assert len(pano_metadata.semipositive_satellite_idxs) <= 4
+        invalid_mask = torch.ones((num_panos, 5), dtype=torch.bool)
+        sat_idxs = torch.zeros((num_panos, 5), dtype=torch.int32)
+        for pano_idx, pano_metadata in dataset._panorama_metadata.iterrows():
+            assert len(pano_metadata.positive_satellite_idxs) <= 1
+            assert len(pano_metadata.semipositive_satellite_idxs) <= 4
 
-        for col_idx, sat_idx in enumerate(pano_metadata.positive_satellite_idxs):
-            sat_idxs[pano_idx, col_idx] = sat_idx
-            invalid_mask[pano_idx, col_idx] = False
+            for col_idx, sat_idx in enumerate(pano_metadata.positive_satellite_idxs):
+                sat_idxs[pano_idx, col_idx] = sat_idx
+                invalid_mask[pano_idx, col_idx] = False
 
-        for col_idx, sat_idx in enumerate(pano_metadata.semipositive_satellite_idxs):
-            sat_idxs[pano_idx, col_idx+1] = sat_idx
-            invalid_mask[pano_idx, col_idx+1] = False
+            for col_idx, sat_idx in enumerate(pano_metadata.semipositive_satellite_idxs):
+                sat_idxs[pano_idx, col_idx+1] = sat_idx
+                invalid_mask[pano_idx, col_idx+1] = False
 
-    row_idxs = torch.arange(num_panos).reshape(-1, 1).expand(-1, 5)
-    pos_semipos_similarities = similarity[row_idxs, sat_idxs]
-    pos_semipos_similarities[invalid_mask] = torch.nan
+        row_idxs = torch.arange(num_panos).reshape(-1, 1).expand(-1, 5)
+        pos_semipos_similarities = similarity[row_idxs, sat_idxs]
+        pos_semipos_similarities[invalid_mask] = torch.nan
 
-    # Since the invalid entries are set to nan, their ranks are set to zero
-    ranks = (similarity[:, None, :] >= pos_semipos_similarities[:, :, None]).sum(dim=-1)
+        # Since the invalid entries are set to nan, their ranks are set to zero
+        ranks = (similarity[:, None, :] >= pos_semipos_similarities[:, :, None]).sum(dim=-1)
 
-    #  Compute the mean reciprocal rank of the valid positive matches
-    positive_recip_ranks = 1.0 / ranks[:, 0]
-    positive_recip_ranks[invalid_mask[:, 0]] = torch.nan
-    positive_mean_recip_rank = torch.nanmean(positive_recip_ranks)
+        #  Compute the mean reciprocal rank of the valid positive matches
+        positive_recip_ranks = 1.0 / ranks[:, 0]
+        positive_recip_ranks[invalid_mask[:, 0]] = torch.nan
+        positive_mean_recip_rank = torch.nanmean(positive_recip_ranks)
 
-    # Compute the mean reciprocal rank of the lowest ranked positive/semipositive matches
-    # All panoramas should have at least one positive or semipostive match, so the max
-    # rank is guaranteed to be greater than zero, to the reciprocal rank should be valid
-    max_pos_semi_pos_recip_ranks = 1.0 / ranks.max(dim=-1).values
-    max_pos_semi_pos_recip_ranks = torch.nanmean(max_pos_semi_pos_recip_ranks)
+        # Compute the mean reciprocal rank of the lowest ranked positive/semipositive matches
+        # All panoramas should have at least one positive or semipostive match, so the max
+        # rank is guaranteed to be greater than zero, to the reciprocal rank should be valid
+        max_pos_semi_pos_recip_ranks = 1.0 / ranks.max(dim=-1).values
+        max_pos_semi_pos_recip_ranks = torch.nanmean(max_pos_semi_pos_recip_ranks)
 
-    # compute the positive recall @ K
-    k_values = [1, 5, 10, 100]
-    pos_recall = {f"pos_recall@{k}": (ranks[~(invalid_mask[:, 0]), 0] <= k).float().mean().item()
-                  for k in k_values}
+        # compute the positive recall @ K
+        k_values = [1, 5, 10, 100]
+        pos_recall = {f"{name}/pos_recall@{k}": (ranks[~(invalid_mask[:, 0]), 0] <= k).float().mean().item()
+                      for k in k_values}
 
-    # compute the positive/semipositive recall @ K
-    invalid_mask_cuda = invalid_mask.cuda()
-    any_pos_semipos_recall = {
-            f"any pos_semipos_recall@{k}": ((ranks <= k) & (~invalid_mask_cuda)).any(dim=-1).float().mean().item()
-            for k in k_values}
+        # compute the positive/semipositive recall @ K
+        invalid_mask_cuda = invalid_mask.cuda()
+        any_pos_semipos_recall = {
+                f"{name}/any pos_semipos_recall@{k}": ((ranks <= k) & (~invalid_mask_cuda)).any(dim=-1).float().mean().item()
+                for k in k_values}
 
-    all_pos_semipos_recall = {
-            f"all pos_semipos_recall@{k}": (ranks <= k).all(dim=-1).float().mean().item()
-            for k in k_values[1:]}
+        all_pos_semipos_recall = {
+                f"{name}/all pos_semipos_recall@{k}": (ranks <= k).all(dim=-1).float().mean().item()
+                for k in k_values[1:]}
 
-    return ({
-        "positive_mean_recip_rank": positive_mean_recip_rank.item(),
-        "max_pos_semi_pos_recip_rank": max_pos_semi_pos_recip_ranks.item()}
-        | pos_recall
-        | any_pos_semipos_recall
-        | all_pos_semipos_recall)
+        out |= ({
+            f"{name}/positive_mean_recip_rank": positive_mean_recip_rank.item(),
+            f"{name}/max_pos_semi_pos_recip_rank": max_pos_semi_pos_recip_ranks.item()}
+            | pos_recall
+            | any_pos_semipos_recall
+            | all_pos_semipos_recall)
+    return out
 
 
 def log_validation_metrics(writer, validation_metrics, epoch_idx, quiet):
@@ -279,7 +282,7 @@ def log_validation_metrics(writer, validation_metrics, epoch_idx, quiet):
         print(f"epoch_idx: {epoch_idx} {' '.join(to_print)}")
 
 
-def train(config: TrainConfig, *, dataset, validation_dataset, panorama_model, satellite_model, quiet):
+def train(config: TrainConfig, *, dataset, validation_datasets, panorama_model, satellite_model, quiet):
     config.output_dir.mkdir(parents=True, exist_ok=True)
     # save config:
     config_json = msgspec.json.encode(config, enc_hook=enc_hook)
@@ -305,13 +308,11 @@ def train(config: TrainConfig, *, dataset, validation_dataset, panorama_model, s
     panorama_model.train()
     satellite_model.train()
 
-    print(dataset._satellite_metadata)
-    print(dataset._panorama_metadata)
-    print(dataset._landmark_metadata)
-
-    print(validation_dataset._satellite_metadata)
-    print(validation_dataset._panorama_metadata)
-    print(validation_dataset._landmark_metadata)
+    print(f"working with train dataset {len(dataset._satellite_metadata)=}" +
+          f"{len(dataset._panorama_metadata)=} {len(dataset._landmark_metadata)=}")
+    for name, val_dataset in validation_datasets.items():
+        print(f"working with validation dataset {name} {len(val_dataset._satellite_metadata)=}" +
+              f"{len(val_dataset._panorama_metadata)=} {len(val_dataset._landmark_metadata)=}")
 
     opt_config = config.opt_config
 
@@ -417,7 +418,7 @@ def train(config: TrainConfig, *, dataset, validation_dataset, panorama_model, s
         validation_metrics = compute_validation_metrics(
                 sat_model=satellite_model,
                 pano_model=panorama_model,
-                dataset=validation_dataset)
+                validation_datasets=validation_datasets)
         log_validation_metrics(
                 writer=writer,
                 validation_metrics=validation_metrics,
@@ -430,7 +431,8 @@ def train(config: TrainConfig, *, dataset, validation_dataset, panorama_model, s
             panorama_model_path = config.output_dir / f"{epoch_idx:04d}_panorama"
             satellite_model_path = config.output_dir / f"{epoch_idx:04d}_satellite"
 
-            batch = next(iter(dataloader))
+            save_dataloader = vigor_dataset.get_dataloader(dataset, batch_size=16)
+            batch = next(iter(save_dataloader))
             save_model(panorama_model, panorama_model_path,
                        (panorama_model.model_input_from_batch(batch).to("cuda"),))
 
@@ -475,23 +477,25 @@ def main(
     dataset_paths = [dataset_base_path / p for p in train_config.dataset_config.paths]
     dataset = vigor_dataset.VigorDataset(dataset_paths, dataset_config)
 
-    validation_dataset_config = vigor_dataset.VigorDatasetConfig(
-        satellite_patch_size=train_config.sat_model_config.patch_dims,
-        panorama_size=train_config.pano_model_config.patch_dims,
-        satellite_tensor_cache_info=vigor_dataset.TensorCacheInfo(
-            dataset_key=train_config.validation_dataset_config.paths[0],
-            model_type="satellite",
-            hash_and_key=satellite_model.cache_info()),
-        panorama_tensor_cache_info=vigor_dataset.TensorCacheInfo(
-            dataset_key=train_config.validation_dataset_config.paths[0],
-            model_type="panorama",
-            hash_and_key=panorama_model.cache_info()),
-        sample_mode=vigor_dataset.SampleMode.POS_SEMIPOS,
-        factor=train_config.validation_dataset_config.factor)
-    validation_dataset_paths = [dataset_base_path / p for p in train_config.validation_dataset_config.paths]
-    validation_dataset = vigor_dataset.VigorDataset(
+    validation_datasets = {}
+    for validation_dataset_config in train_config.validation_dataset_configs:
+        assert len(validation_dataset_config.paths) == 1
+        validation_dataset_paths = [dataset_base_path / p for p in validation_dataset_config.paths]
+        validation_datasets[validation_dataset_paths[0].name] = vigor_dataset.VigorDataset(
             validation_dataset_paths,
-            validation_dataset_config)
+            vigor_dataset.VigorDatasetConfig(
+                satellite_patch_size=satellite_model.patch_dims,
+                panorama_size=panorama_model.patch_dims,
+                satellite_tensor_cache_info=vigor_dataset.TensorCacheInfo(
+                    dataset_key=validation_dataset_config.paths[0],
+                    model_type="satellite",
+                    hash_and_key=satellite_model.cache_info()),
+                panorama_tensor_cache_info=vigor_dataset.TensorCacheInfo(
+                    dataset_key=validation_dataset_config.paths[0],
+                    model_type="panorama",
+                    hash_and_key=panorama_model.cache_info()),
+                sample_mode=vigor_dataset.SampleMode.POS_SEMIPOS,
+                factor=validation_dataset_config.factor))
 
     output_dir = output_base_path / train_config.output_dir
     tensorboard_output = train_config.tensorboard_output
@@ -504,7 +508,7 @@ def main(
         train(
             train_config,
             dataset=dataset,
-            validation_dataset=validation_dataset,
+            validation_datasets=validation_datasets,
             panorama_model=panorama_model,
             satellite_model=satellite_model,
             quiet=quiet)
