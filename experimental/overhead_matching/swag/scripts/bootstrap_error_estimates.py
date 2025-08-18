@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.14.16"
+__generated_with = "0.14.17"
 app = marimo.App(width="full")
 
 
@@ -25,6 +25,7 @@ def _():
 @app.cell
 def _(Path):
     result_paths = [
+        Path("/data/overhead_matching/evaluation/results/20250815_swag_semantic/NewYork/all_chicago_sat_dino_embedding_mat_pano_dino_sam"),
         Path("/data/overhead_matching/evaluation/results/20250806_swag_model_fixed/NewYork/all_chicago_sat_dino_pano_dino_batch_size_256_hard_negative_20_lr_1p4e-4_warmup_5"),
         Path("/data/overhead_matching/evaluation/results/20250806_swag_model_fixed/NewYork/all_chicago_sat_dino_pano_dino_agg_small_attn_8"),
         Path("/data/overhead_matching/evaluation/results/20250707_dino_features/NewYork/all_chicago_dino_project_512"),

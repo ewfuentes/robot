@@ -135,6 +135,7 @@ def _(Path, pprint):
         "all_chicago_sat_dino_pano_dino_agg_small_hard_negative_20": _fixed_base / 'all_chicago_sat_dino_pano_dino_agg_small_hard_negative_20',
         "all_chicago_sat_dino_pano_dino_agg_small_hard_negative_20_batch_size_128": _fixed_base / 'all_chicago_sat_dino_pano_dino_agg_small_hard_negative_20_batch_size_128',
         "all_chicago_sat_dino_pano_dino_batch_size_256_hard_negative_20_lr_1p4e-4_warmup_5": _fixed_base / "all_chicago_sat_dino_pano_dino_batch_size_256_hard_negative_20_lr_1p4e-4_warmup_5",
+        "all_chicago_sat_dino_embedding_mat_pano_dino_sam": _base / "20250815_swag_semantic" / "all_chicago_sat_dino_embedding_mat_pano_dino_sam",
     }
 
     """

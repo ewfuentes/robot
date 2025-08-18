@@ -418,7 +418,7 @@ def train(config: TrainConfig, *, dataset, validation_datasets, panorama_model, 
         validation_metrics = compute_validation_metrics(
                 sat_model=satellite_model,
                 pano_model=panorama_model,
-                dataset=validation_datasets)
+                validation_datasets=validation_datasets)
         log_validation_metrics(
                 writer=writer,
                 validation_metrics=validation_metrics,
