@@ -6,29 +6,26 @@ import torchvision as tv
 import msgspec
 import hashlib
 from typing import Any
-from dataclasses import dataclass
 from experimental.overhead_matching.swag.model.swag_model_input_output import (
     ModelInput, SemanticTokenExtractorOutput, FeatureMapExtractorOutput)
 from experimental.overhead_matching.swag.model.semantic_segment_extractor import SemanticSegmentExtractor
 from experimental.overhead_matching.swag.model.swag_config_types import (
     FeatureMapExtractorConfig,
-    FeatureMapExtractorType,
     DinoFeatureMapExtractorConfig,
 
     SemanticTokenExtractorConfig,
-    SemanticTokenExtractorType,
     SemanticNullExtractorConfig,
     SemanticEmbeddingMatrixConfig,
     SemanticSegmentExtractorConfig,
 
     PositionEmbeddingConfig,
-    PositionEmbeddingType,
     PlanarPositionEmbeddingConfig,
     SphericalPositionEmbeddingConfig,
 
     AggregationConfig,
-    AggregationType,
-    TransformerAggregatorConfig
+    TransformerAggregatorConfig,
+
+    ExtractorConfig
 )
 
 
@@ -43,6 +40,7 @@ def compute_config_hash(obj):
 
 
 class SwagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
+    extractor_config_by_name: dict[str, ExtractorConfig] = {}
     feature_map_extractor_config: FeatureMapExtractorConfig
     semantic_token_extractor_config: SemanticTokenExtractorConfig
     position_embedding_config: PositionEmbeddingConfig
@@ -52,38 +50,30 @@ class SwagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
     output_dim: int
     use_cached_feature_maps: bool = False
     use_cached_semantic_tokens: bool = False
+    use_cached_extractors: list[str] = []
 
 
 def create_feature_map_extractor(config: FeatureMapExtractorConfig):
-    types = {
-        FeatureMapExtractorType.DINOV2: DinoFeatureExtractor
-    }
-    assert config.type == FeatureMapExtractorType.DINOV2
-    return types[config.type](config)
+    match config:
+        case DinoFeatureMapExtractorConfig(): return DinoFeatureExtractor(config)
 
 
 def create_semantic_token_extractor(config: SemanticTokenExtractorConfig):
-    types = {
-        SemanticTokenExtractorType.NULL_EXTRACTOR: SemanticNullExtractor,
-        SemanticTokenExtractorType.EMBEDDING_MAT: SemanticEmbeddingMatrix,
-        SemanticTokenExtractorType.SEGMENT_EXTRACTOR: SemanticSegmentExtractor,
-    }
-    return types[config.type](config)
+    match config:
+        case SemanticNullExtractorConfig(): return SemanticNullExtractor(config)
+        case SemanticEmbeddingMatrixConfig(): return SemanticEmbeddingMatrix(config)
+        case SemanticSegmentExtractorConfig(): return SemanticSegmentExtractor(config)
 
 
 def create_position_embedding(config: PositionEmbeddingConfig):
-    types = {
-        PositionEmbeddingType.PLANAR: PlanarPositionEmbedding,
-        PositionEmbeddingType.SPHERICAL: SphericalPositionEmbedding,
-    }
-    return types[config.type](config)
+    match config:
+        case PlanarPositionEmbeddingConfig(): return PlanarPositionEmbedding(config)
+        case SphericalPositionEmbeddingConfig(): return SphericalPositionEmbedding(config)
 
 
 def create_aggregator_model(output_dim: int, config: AggregationConfig):
-    types = {
-        AggregationType.TRANSFORMER: TransformerAggregator,
-    }
-    return types[config.type](output_dim, config)
+    match config:
+        case TransformerAggregatorConfig(): TransformerAggregator(config)
 
 
 class DinoFeatureExtractor(torch.nn.Module):
