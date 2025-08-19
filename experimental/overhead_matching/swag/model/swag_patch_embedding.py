@@ -123,8 +123,8 @@ class DinoFeatureExtractor(torch.nn.Module):
 
         return ExtractorOutput(
             features=patch_tokens,
-            positions=relative_positions,
-            mask=mask,
+            positions=relative_positions.to(device=patch_tokens.device),
+            mask=mask.to(device=patch_tokens.device),
             debug={})
 
     @property
@@ -299,21 +299,21 @@ class TransformerAggregator(torch.nn.Module):
 class SwagPatchEmbedding(torch.nn.Module):
     def __init__(self, config: SwagPatchEmbeddingConfig):
         super().__init__()
-        self._extractor_by_name = {
-            k: create_extractor(c) for k, c in config.extractor_config_by_name.items()}
+        self._extractor_by_name = torch.nn.ModuleDict({
+            k: create_extractor(c) for k, c in config.extractor_config_by_name.items()})
 
-        self._token_marker_by_name = {
+        self._token_marker_by_name = torch.nn.ParameterDict({
                 k: torch.nn.Parameter(torch.randn(1, 1, config.output_dim))
-                for k in config.extractor_config_by_name}
+                for k in config.extractor_config_by_name})
 
         self._position_embedding = create_position_embedding(
                 config.position_embedding_config)
 
-        self._projection_by_name = {
+        self._projection_by_name = torch.nn.ModuleDict({
                 k: torch.nn.Linear(self._extractor_by_name[k].output_dim +
                                    self._position_embedding.output_dim,
                                    config.output_dim)
-                for k in config.extractor_config_by_name}
+                for k in config.extractor_config_by_name})
 
         self._cls_token = torch.nn.Parameter(torch.randn((1, 1, config.output_dim)))
 

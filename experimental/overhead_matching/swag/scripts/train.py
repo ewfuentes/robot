@@ -309,10 +309,10 @@ def train(config: TrainConfig, *, dataset, validation_datasets, panorama_model, 
     satellite_model.train()
 
     print(f"working with train dataset {len(dataset._satellite_metadata)=}" +
-          f"{len(dataset._panorama_metadata)=} {len(dataset._landmark_metadata)=}")
+          f" {len(dataset._panorama_metadata)=} {len(dataset._landmark_metadata)=}")
     for name, val_dataset in validation_datasets.items():
         print(f"working with validation dataset {name} {len(val_dataset._satellite_metadata)=}" +
-              f"{len(val_dataset._panorama_metadata)=} {len(val_dataset._landmark_metadata)=}")
+              f" {len(val_dataset._panorama_metadata)=} {len(val_dataset._landmark_metadata)=}")
 
     opt_config = config.opt_config
 
