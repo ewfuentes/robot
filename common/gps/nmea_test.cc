@@ -2,7 +2,7 @@
 #include "nmea/message/gga.hpp"
 #include "nmea/sentence.hpp"
 
-namespace robot::experimental::learn_descriptors {
+namespace robot::gps {
 TEST(NmeaTest, parse) {
     // Read an NMEA string from your serial port
     std::string nmea_string =
@@ -44,4 +44,4 @@ TEST(NmeaTest, generate) {
     EXPECT_EQ(nmea_sentence.get_field(1), "abc");
     EXPECT_EQ(nmea_sentence.get_field(2), "");
 }
-}  // namespace robot::experimental::learn_descriptors
+}  // namespace robot::gps
