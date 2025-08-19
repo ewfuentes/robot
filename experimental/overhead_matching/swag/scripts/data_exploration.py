@@ -53,8 +53,8 @@ def _():
 @app.cell
 def _(Path):
     dataset_path = Path('/data/overhead_matching/datasets/VIGOR/NewYork')
-    checkpoint = 99
-    model_path = Path('/data/overhead_matching/models/20250815_swag_semantic/all_chicago_sat_dino_embedding_mat_pano_dino_sam')
+    checkpoint = 130
+    model_path = Path('/data/overhead_matching/models/20250806_swag_model_fixed/all_chicago_sat_dino_pano_dino_batch_size_512_hard_negative_20_lr_3e-4_warmup_5/')
     return checkpoint, dataset_path, model_path
 
 

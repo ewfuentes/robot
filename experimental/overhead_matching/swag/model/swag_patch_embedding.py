@@ -5,30 +5,27 @@ import torch.nn.functional as F
 import torchvision as tv
 import msgspec
 import hashlib
-from typing import Any
-from dataclasses import dataclass
+from typing import Any, get_args
 from experimental.overhead_matching.swag.model.swag_model_input_output import (
-    ModelInput, SemanticTokenExtractorOutput, FeatureMapExtractorOutput)
+    ModelInput, SemanticTokenExtractorOutput, FeatureMapExtractorOutput, ExtractorOutput)
 from experimental.overhead_matching.swag.model.semantic_segment_extractor import SemanticSegmentExtractor
 from experimental.overhead_matching.swag.model.swag_config_types import (
     FeatureMapExtractorConfig,
-    FeatureMapExtractorType,
     DinoFeatureMapExtractorConfig,
 
     SemanticTokenExtractorConfig,
-    SemanticTokenExtractorType,
     SemanticNullExtractorConfig,
     SemanticEmbeddingMatrixConfig,
     SemanticSegmentExtractorConfig,
 
     PositionEmbeddingConfig,
-    PositionEmbeddingType,
     PlanarPositionEmbeddingConfig,
     SphericalPositionEmbeddingConfig,
 
     AggregationConfig,
-    AggregationType,
-    TransformerAggregatorConfig
+    TransformerAggregatorConfig,
+
+    ExtractorConfig
 )
 
 
@@ -43,56 +40,53 @@ def compute_config_hash(obj):
 
 
 class SwagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
-    feature_map_extractor_config: FeatureMapExtractorConfig
-    semantic_token_extractor_config: SemanticTokenExtractorConfig
     position_embedding_config: PositionEmbeddingConfig
     aggregation_config: AggregationConfig
 
     patch_dims: tuple[int, int]
     output_dim: int
+
+    extractor_config_by_name: dict[str, ExtractorConfig] = {}
+    use_cached_extractors: list[str] = []
+
+    # These are here for backwards compatibility
+    feature_map_extractor_config: FeatureMapExtractorConfig | None = None
+    semantic_token_extractor_config: SemanticTokenExtractorConfig | None = None
     use_cached_feature_maps: bool = False
     use_cached_semantic_tokens: bool = False
 
 
-def create_feature_map_extractor(config: FeatureMapExtractorConfig):
-    types = {
-        FeatureMapExtractorType.DINOV2: DinoFeatureExtractor
-    }
-    assert config.type == FeatureMapExtractorType.DINOV2
-    return types[config.type](config)
-
-
-def create_semantic_token_extractor(config: SemanticTokenExtractorConfig):
-    types = {
-        SemanticTokenExtractorType.NULL_EXTRACTOR: SemanticNullExtractor,
-        SemanticTokenExtractorType.EMBEDDING_MAT: SemanticEmbeddingMatrix,
-        SemanticTokenExtractorType.SEGMENT_EXTRACTOR: SemanticSegmentExtractor,
-    }
-    return types[config.type](config)
+def create_extractor(config: ExtractorConfig):
+    if config is None:
+        return None
+    match config:
+        case DinoFeatureMapExtractorConfig(): return DinoFeatureExtractor(config)
+        case SemanticNullExtractorConfig(): return SemanticNullExtractor(config)
+        case SemanticEmbeddingMatrixConfig(): return SemanticEmbeddingMatrix(config)
+        case SemanticSegmentExtractorConfig(): return SemanticSegmentExtractor(config)
+    raise NotImplementedError(f"Unhandled Config Type: {config}")
 
 
 def create_position_embedding(config: PositionEmbeddingConfig):
-    types = {
-        PositionEmbeddingType.PLANAR: PlanarPositionEmbedding,
-        PositionEmbeddingType.SPHERICAL: SphericalPositionEmbedding,
-    }
-    return types[config.type](config)
+    match config:
+        case PlanarPositionEmbeddingConfig(): return PlanarPositionEmbedding(config)
+        case SphericalPositionEmbeddingConfig(): return SphericalPositionEmbedding(config)
 
 
 def create_aggregator_model(output_dim: int, config: AggregationConfig):
-    types = {
-        AggregationType.TRANSFORMER: TransformerAggregator,
-    }
-    return types[config.type](output_dim, config)
+    match config:
+        case TransformerAggregatorConfig(): return TransformerAggregator(output_dim, config)
 
 
 class DinoFeatureExtractor(torch.nn.Module):
     def __init__(self, config: DinoFeatureMapExtractorConfig):
         super().__init__()
-        self._dino = torch.hub.load("facebookresearch/dinov2", config.model_str)
+        assert config.model_str.startswith('dino')
+        repo_name = f"facebookresearch/{config.model_str.split('_')[0]}"
+        self._dino = torch.hub.load(repo_name, config.model_str)
         self._dino.eval()
 
-    def forward(self, model_input: ModelInput) -> FeatureMapExtractorOutput:
+    def forward(self, model_input: ModelInput) -> ExtractorOutput:
         input_image = model_input.image
         x = tv.transforms.functional.normalize(
             input_image,
@@ -101,15 +95,46 @@ class DinoFeatureExtractor(torch.nn.Module):
 
         with torch.no_grad():
             patch_tokens = self._dino.forward_features(x)["x_norm_patchtokens"]
-        return FeatureMapExtractorOutput(features=patch_tokens)
+
+        # Compute the relative positions of each patch
+        batch_size = len(model_input.metadata)
+        original_shape = model_input.image.shape[2:]
+
+        num_row_tokens = original_shape[0] // self.patch_size[0]
+        num_col_tokens = original_shape[1] // self.patch_size[1]
+        num_tokens = num_row_tokens * num_col_tokens
+        assert num_tokens == patch_tokens.shape[1]
+
+        center_location = (original_shape[0] // 2, original_shape[1] // 2)
+
+        relative_positions = torch.zeros((batch_size, num_row_tokens, num_col_tokens, 2))
+        for row_idx in range(num_row_tokens):
+            for col_idx in range(num_col_tokens):
+                patch_center_row_px = self.patch_size[0] // 2 + row_idx * self.patch_size[0]
+                patch_center_col_px = self.patch_size[1] // 2 + col_idx * self.patch_size[1]
+
+                relative_positions[:, row_idx, col_idx, 0] = (
+                        patch_center_row_px - center_location[0])
+                relative_positions[:, row_idx, col_idx, 1] = (
+                        patch_center_col_px - center_location[1])
+
+        relative_positions = relative_positions.reshape(batch_size, num_tokens, 2)
+        mask = torch.zeros((batch_size, num_tokens), dtype=torch.bool, device=patch_tokens.device)
+
+        return ExtractorOutput(
+            features=patch_tokens,
+            positions=relative_positions,
+            mask=mask,
+            debug={})
 
     @property
     def patch_size(self):
-        return (14, 14)
+        p = self._dino.patch_size
+        return (p, p)
 
     @property
     def output_dim(self):
-        return 768
+        return self._dino.num_features
 
 
 class SemanticEmbeddingMatrix(torch.nn.Module):
@@ -191,34 +216,7 @@ class SphericalPositionEmbedding(torch.nn.Module):
 
     def forward(self, *,
                 model_input: ModelInput,
-                relative_positions: None | torch.Tensor = None,
-                patch_size: None | tuple[int, int] = None):
-        # If we're being given the patch size, we're being asked to compute the
-        # pixel coordinates of a feature map that has the given patch size, assuming
-        # no overlap
-        original_shape = model_input.image.shape[-2:]
-        if patch_size is not None:
-            batch_size = len(model_input.metadata)
-
-            num_row_tokens = original_shape[0] // patch_size[0]
-            num_col_tokens = original_shape[1] // patch_size[1]
-            num_tokens = num_row_tokens * num_col_tokens
-
-            center_location = (original_shape[0] // 2, original_shape[1] // 2)
-
-            relative_positions = torch.zeros((batch_size, num_row_tokens, num_col_tokens, 2))
-            for row_idx in range(num_row_tokens):
-                for col_idx in range(num_col_tokens):
-                    patch_center_row_px = patch_size[0] // 2 + row_idx * patch_size[0]
-                    patch_center_col_px = patch_size[1] // 2 + col_idx * patch_size[1]
-
-                    relative_positions[:, row_idx, col_idx, 0] = (
-                            patch_center_row_px - center_location[0])
-                    relative_positions[:, row_idx, col_idx, 1] = (
-                            patch_center_col_px - center_location[1])
-
-            relative_positions = relative_positions.reshape(batch_size, num_tokens, 2)
-
+                relative_positions: torch.Tensor):
         # We need to convert the pixel positions into an elevation and azimuth angles
         # The azimuth angle increases in the clockwise direction
         # We assume that zero degrees is on the left edge of the panorama and increases
@@ -226,6 +224,7 @@ class SphericalPositionEmbedding(torch.nn.Module):
         # The elevation angle is zero at the top of the image and increases as you move
         # from top to bottom. Note that these are not standard definitions of these angles
         # but it does simplify implementation, and ultimately shouldn't matter
+        original_shape = model_input.image.shape[-2:]
         elevation_rad = relative_positions[..., 0] / original_shape[0] * torch.pi
         azimuth_rad = relative_positions[..., 1] / original_shape[1] * 2 * torch.pi
         out = torch.zeros((*relative_positions.shape[:-1], self._embedding_dim), dtype=torch.float32)
@@ -257,34 +256,7 @@ class PlanarPositionEmbedding(torch.nn.Module):
 
     def forward(self, *,
                 model_input: ModelInput,
-                relative_positions: None | torch.Tensor = None,
-                patch_size: None | tuple[int, int] = None):
-
-        # If we're being given the model input and the patch size, we have to compute the
-        # relative patch locations
-        if patch_size is not None:
-            batch_size = len(model_input.metadata)
-            original_shape = model_input.image.shape[2:]
-
-            num_row_tokens = original_shape[0] // patch_size[0]
-            num_col_tokens = original_shape[1] // patch_size[1]
-            num_tokens = num_row_tokens * num_col_tokens
-
-            center_location = (original_shape[0] // 2, original_shape[1] // 2)
-
-            relative_positions = torch.zeros((batch_size, num_row_tokens, num_col_tokens, 2))
-            for row_idx in range(num_row_tokens):
-                for col_idx in range(num_col_tokens):
-                    patch_center_row_px = patch_size[0] // 2 + row_idx * patch_size[0]
-                    patch_center_col_px = patch_size[1] // 2 + col_idx * patch_size[1]
-
-                    relative_positions[:, row_idx, col_idx, 0] = (
-                            patch_center_row_px - center_location[0])
-                    relative_positions[:, row_idx, col_idx, 1] = (
-                            patch_center_col_px - center_location[1])
-
-            relative_positions = relative_positions.reshape(batch_size, num_tokens, 2)
-
+                relative_positions: torch.Tensor):
         batch_size, num_tokens = relative_positions.shape[:2]
 
         out = torch.zeros((batch_size, num_tokens, self._embedding_dim), dtype=torch.float32)
@@ -327,38 +299,66 @@ class TransformerAggregator(torch.nn.Module):
 class SwagPatchEmbedding(torch.nn.Module):
     def __init__(self, config: SwagPatchEmbeddingConfig):
         super().__init__()
-        self._feature_map_extractor = create_feature_map_extractor(
-                config.feature_map_extractor_config)
-        self._semantic_token_extractor = create_semantic_token_extractor(
-                config.semantic_token_extractor_config)
+        self._extractor_by_name = {
+            k: create_extractor(c) for k, c in config.extractor_config_by_name.items()}
+
+        self._token_marker_by_name = {
+                k: torch.nn.Parameter(torch.randn(1, 1, config.output_dim))
+                for k in config.extractor_config_by_name}
+
         self._position_embedding = create_position_embedding(
                 config.position_embedding_config)
+
+        self._projection_by_name = {
+                k: torch.nn.Linear(self._extractor_by_name[k].output_dim +
+                                   self._position_embedding.output_dim,
+                                   config.output_dim)
+                for k in config.extractor_config_by_name}
+
+        self._cls_token = torch.nn.Parameter(torch.randn((1, 1, config.output_dim)))
+
         self._aggregator_model = create_aggregator_model(
                 config.output_dim, config.aggregation_config)
 
-        self._feature_token_marker = torch.nn.Parameter(torch.randn((1, 1, config.output_dim)))
-        self._semantic_token_marker = torch.nn.Parameter(torch.randn((1, 1, config.output_dim)))
-        self._cls_token = torch.nn.Parameter(torch.randn((1, 1, config.output_dim)))
-
-        self._feature_token_projection = torch.nn.Linear(
-                self._feature_map_extractor.output_dim + self._position_embedding.output_dim,
-                config.output_dim)
-        self._semantic_token_projection = torch.nn.Linear(
-                self._semantic_token_extractor.output_dim + self._position_embedding.output_dim,
-                config.output_dim)
+        self._cache_info = {}
+        for k in config.use_cached_extractors:
+            config_hash = compute_config_hash(HashStruct(
+                model_config=config.extractor_config_by_name[k], patch_dims=config.patch_dims))
+            self._cache_info[config_hash] = (k, ExtractorOutput)
 
         self._patch_dims = config.patch_dims
         self._output_dim = config.output_dim
 
-        self._cache_info = {}
-        if config.use_cached_feature_maps:
-            config_hash = compute_config_hash(HashStruct(
-                model_config=config.feature_map_extractor_config, patch_dims=config.patch_dims))
-            self._cache_info[config_hash] = ("feature_maps", FeatureMapExtractorOutput)
-        if config.use_cached_semantic_tokens:
-            config_hash = compute_config_hash(HashStruct(
-                model_config=config.semantic_token_extractor_config, patch_dims=config.patch_dims))
-            self._cache_info[config_hash] = ("semantic_tokens", SemanticTokenExtractorOutput)
+        # We keep these for backwards compatibility
+        self._feature_map_extractor = create_extractor(config.feature_map_extractor_config)
+        self._semantic_token_extractor = create_extractor(config.semantic_token_extractor_config)
+        if self._feature_map_extractor is not None:
+            self._extractor_by_name["__feature_map_extractor"] = self._feature_map_extractor
+            self._feature_token_marker = torch.nn.Parameter(torch.randn((1, 1, config.output_dim)))
+            self._token_marker_by_name["__feature_map_extractor"] = self._feature_token_marker
+            self._feature_token_projection = torch.nn.Linear(
+                    self._feature_map_extractor.output_dim + self._position_embedding.output_dim,
+                    config.output_dim)
+            self._projection_by_name["__feature_map_extractor"] = self._feature_token_projection
+            if config.use_cached_feature_maps:
+                config_hash = compute_config_hash(HashStruct(
+                    model_config=config.feature_map_extractor_config, patch_dims=config.patch_dims))
+                self._cache_info[config_hash] = ("__feature_map_extractor", ExtractorOutput)
+
+        if self._semantic_token_extractor is not None:
+            self._extractor_by_name["__semantic_token_extractor"] = self._semantic_token_extractor
+            self._semantic_token_marker = torch.nn.Parameter(torch.randn((1, 1, config.output_dim)))
+            self._token_marker_by_name["__semantic_token_extractor"] = self._semantic_token_marker
+            self._semantic_token_projection = torch.nn.Linear(
+                    self._semantic_token_extractor.output_dim + self._position_embedding.output_dim,
+                    config.output_dim)
+            self._projection_by_name["__semantic_token_extractor"] = self._semantic_token_projection
+
+            if config.use_cached_semantic_tokens:
+                config_hash = compute_config_hash(HashStruct(
+                    model_config=config.semantic_token_extractor_config, patch_dims=config.patch_dims))
+                self._cache_info[config_hash] = ("__semantic_token_extractor", ExtractorOutput)
+
 
     def model_input_from_batch(self, batch_item):
         if self._patch_dims[0] != self._patch_dims[1]:
@@ -374,47 +374,32 @@ class SwagPatchEmbedding(torch.nn.Module):
 
     def forward(self, model_input: ModelInput):
         dev = model_input.image.device
-        # feature positions is batch x n_tokens x 2
-        # feature amp is batch x n_tokens x feature_dim
-        # The positions are where each token comes from in pixel space in the original image
-        feature_map_output = model_input.cached_tensors.get('feature_maps')
-        if feature_map_output is None:
-            feature_map_output = self._feature_map_extractor(model_input)
-        # semantic positions is batch x n_semantic_tokens x 2
-        # semantic tokens is batch x n_semantic_tokens x semantic_feature_dim
-        # The positions are where each token comes from in pixel space in the original image
-        # The semantic_mask is true if the corresponding token is a padding token
-        semantic_tokens_output = model_input.cached_tensors.get("semantic_tokens")
-        if semantic_tokens_output is None:
-            semantic_tokens_output = self._semantic_token_extractor(model_input)
+        extractor_outputs_by_name = {}
+        for k in self._extractor_by_name:
+            extractor_outputs_by_name[k] = model_input.cached_tensors.get(k)
+            if extractor_outputs_by_name[k] is None:
+                extractor_outputs_by_name[k] = self._extractor_by_name[k](model_input)
 
-        # feature_position embeddings is batch x n_tokens x pos_embedding_dim
-        # semantic_position_embeddings is batch x n_sematic_tokens x pos_embedding_dim
-        feature_position_embeddings = self._position_embedding(
+        input_tokens_by_name = {}
+        for k, v in extractor_outputs_by_name.items():
+            position_embeddings = self._position_embedding(
                 model_input=model_input,
-                patch_size=self._feature_map_extractor.patch_size).to(dev)
-        semantic_position_embeddings = self._position_embedding(
-                model_input=model_input,
-                relative_positions=semantic_tokens_output.positions).to(dev)
+                relative_positions=v.positions).to(dev)
 
-        pos_feature_tokens = torch.cat([feature_map_output.features, feature_position_embeddings], dim=-1)
-        pos_semantic_tokens = torch.cat([semantic_tokens_output.features, semantic_position_embeddings], dim=-1)
+            feature_tokens = torch.cat([v.features, position_embeddings], dim=-1)
+            feature_tokens = self._projection_by_name[k](feature_tokens)
+            feature_tokens += self._token_marker_by_name[k]
+            input_tokens_by_name[k] = feature_tokens
 
-        input_feature_tokens = self._feature_token_projection(pos_feature_tokens)
-        input_semantic_tokens = self._semantic_token_projection(pos_semantic_tokens)
-
-        input_feature_tokens += self._feature_token_marker
-        input_semantic_tokens += self._semantic_token_marker
-
-        # input tokens is batch x (n_semantic_tokens + n_feature_tokens + 1) x aggregation_dim
-        batch_size = input_feature_tokens.shape[0]
+        batch_size = model_input.image.shape[0]
         cls_token = self._cls_token.expand(batch_size, -1, -1)
-        input_tokens = torch.cat([cls_token, input_feature_tokens, input_semantic_tokens], dim=1)
+        input_tokens = torch.cat([cls_token] + list(input_tokens_by_name.values()), dim=1)
         input_tokens = F.normalize(input_tokens)
 
-        feature_and_cls_mask = torch.zeros(
-                (batch_size, input_feature_tokens.shape[1] + 1), device=dev)
-        input_mask = torch.cat([feature_and_cls_mask, semantic_tokens_output.mask], dim=1)
+        cls_mask = torch.zeros(
+                (batch_size, 1), device=dev)
+        input_mask = torch.cat([cls_mask] +
+                               [v.mask for v in extractor_outputs_by_name.values()], dim=1)
 
         output_tokens = self._aggregator_model(input_tokens, input_mask)
 
