@@ -52,3 +52,28 @@ class SemanticTokenExtractorOutput:
             features=self.features.to(*args, **kwargs),
             positions=self.positions.to(*args, **kwargs),
             mask=self.mask.to(*args, **kwargs))
+
+
+@dataclass
+class ExtractorOutput:
+    features: torch.Tensor
+    positions: torch.Tensor
+    mask: torch.Tensor
+    debug: dict[str, torch.Tensor]
+
+    @classmethod
+    def collate(cls, items: list["SemanticTokenExtractorOutput"]):
+        return ExtractorOutput(
+            features=pad_sequence([x.features for x in items], batch_first=True),
+            positions=pad_sequence([x.positions for x in items], batch_first=True),
+            mask=pad_sequence([x.mask for x in items], batch_first=True, padding_value=True),
+            debug={
+                k: pad_sequence([x.debug[k] for x in items], batch_first=True)
+                for k in items[0].debug})
+
+    def to(self, *args, **kwargs):
+        return ExtractorOutput(
+            features=self.features.to(*args, **kwargs),
+            positions=self.positions.to(*args, **kwargs),
+            mask=self.mask.to(*args, **kwargs),
+            debug={k: v.to(*args, **kwargs) for k, v in self.debug.items()})

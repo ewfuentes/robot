@@ -64,12 +64,7 @@ def main(train_config_path: Path,
     print('computing cache for: ', hash_struct, 'with hash: ', config_hash.hexdigest())
 
     # Create the model
-    if parts[-1] == "feature_map_extractor_config":
-        model = spe.create_feature_map_extractor(model_config)
-    elif parts[-1] == "semantic_token_extractor_config":
-        model = spe.create_semantic_token_extractor(model_config)
-    else:
-        raise NotImplementedError
+    model = spe.create_extractor(model_config)
     model = model.cuda()
 
     # Construct the dataset
