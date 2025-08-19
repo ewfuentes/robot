@@ -3,12 +3,12 @@
 set -x # enable echo
 
 CODENAME=`lsb_release --codename --short`
+ARCH=$(uname -m)
 if [ "${CODENAME}" = "noble" ]; then
     ln -s .bazelrc_noble .bazelrc_ubuntu
     PACKAGES="clang-18 clang-format-18 gcc-14 g++-14 gcc-11 g++-11"
 elif [ "${CODENAME}" = "jammy" ]; then
     PACKAGES="clang-15 clang-format-15 gcc-12 g++-12 gcc-11 g++-11"
-    ARCH=$(uname -m)
     if [ "${ARCH}" = "x86_64" ]; then
         ln -s .bazelrc_jammy .bazelrc_ubuntu
     elif [ "${ARCH}" = "aarch64" ]; then
@@ -29,7 +29,6 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get -y install libxcursor-dev clang \
      python-is-python3 build-essential ${PACKAGES}
 
 if [ "${CODENAME}" = "jammy" ]; then
-    ARCH=$(uname -m)
     if [ "${ARCH}" = "aarch64" ]; then
         # We need to regenerate the python requirements. Use uv
         command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -39,6 +38,22 @@ if [ "${CODENAME}" = "jammy" ]; then
             --format requirements.txt --index-strategy unsafe-best-match --generate-hashes \
             --emit-index-url third_party/python/requirements_3_12.in
     fi
+fi
+
+# Install bazelisk if not found
+if command -v bazel > /dev/null 2>&1; then
+    :
+else
+    if [ "${ARCH}" = "aarch64"]
+        BAZELISK_URL="https://github.com/bazelbuild/bazelisk/releases/download/v1.27.0/bazelisk-linux-arm64"
+    elif [ "${ARCH}" = "x86_64" ]; then
+        BAZELISK_URL="https://github.com/bazelbuild/bazelisk/releases/download/v1.27.0/bazelisk-linux-amd64"
+    else
+        echo "Unsupported architecture: ${ARCH}"
+        exit 1
+    fi
+    curl -o ~/.local/bin/bazel -L "${BAZELISK_URL}"
+    chmod +x ~/.local/bin/bazel
 fi
 
 echo "Installed all packages. Ensure that cuda-toolkit is also installed!"
