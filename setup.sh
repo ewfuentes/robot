@@ -44,7 +44,7 @@ fi
 if command -v bazel > /dev/null 2>&1; then
     :
 else
-    if [ "${ARCH}" = "aarch64"]
+    if [ "${ARCH}" = "aarch64"]; then
         BAZELISK_URL="https://github.com/bazelbuild/bazelisk/releases/download/v1.27.0/bazelisk-linux-arm64"
     elif [ "${ARCH}" = "x86_64" ]; then
         BAZELISK_URL="https://github.com/bazelbuild/bazelisk/releases/download/v1.27.0/bazelisk-linux-amd64"
