@@ -7,7 +7,7 @@
 #include "Eigen/Geometry"
 #include "opencv2/viz.hpp"
 
-namespace robot::geometry {
+namespace robot::visualization {
 struct VizPose {
     const Eigen::Isometry3d world_from_pose;
     const std::optional<std::string> label;
@@ -27,4 +27,4 @@ void viz_scene(const std::vector<VizPose> &world_from_poses,
                const cv::viz::Color color_background = cv::viz::Color::black(),
                const bool show_grid = true, const bool show_origin = true,
                const std::string &window_name = "Viz Window", const double text_scale = 0.1);
-}  // namespace robot::geometry
+}  // namespace robot::visualization
