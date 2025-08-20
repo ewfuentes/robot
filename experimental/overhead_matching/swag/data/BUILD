@@ -3,8 +3,11 @@ load("@pip//:requirements.bzl", "requirement")
 
 py_library(
   name = "vigor_dataset",
-  srcs = ["vigor_dataset.py"], visibility = ["//experimental/overhead_matching/swag:__subpackages__",
-                "//common/python:__subpackages__"],
+  srcs = ["vigor_dataset.py"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+    "//common/python:__subpackages__",
+  ],
   deps = [
     requirement("numpy"),
     requirement("torch"),
