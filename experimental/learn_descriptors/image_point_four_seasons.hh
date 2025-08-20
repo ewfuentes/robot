@@ -21,8 +21,6 @@ class FourSeasonsParser;
 struct ImagePointFourSeasons : ImagePoint {
     virtual ~ImagePointFourSeasons();
 
-    // size_t id;   // idx for DB
-    // size_t seq;  // time in nanoseconds of image capture (also the name of image)
     std::optional<liegroups::SE3>
         AS_w_from_gnss_cam;  // globally opimized arbitrary scale visual world (gnss + VIO + loop
                              // closure + etc.) from cam
