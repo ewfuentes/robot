@@ -6,7 +6,7 @@
 
 namespace robot::gps {
 TEST(frame_translation_test, lla_from_ecef) {
-    const Eigen::Vector3d lla_easthampton_ma(42.2608, -72.6634, 51.82);  //
+    const Eigen::Vector3d lla_easthampton_ma(42.2608, -72.6634, 51.82);
     const Eigen::Vector3d ecef_easthampton_ma = ecef_from_lla(lla_easthampton_ma);
 
     const Eigen::Vector3d ecef_expected_easthampton_ma(1408753.87, -4512832.60, 4267122.34);
