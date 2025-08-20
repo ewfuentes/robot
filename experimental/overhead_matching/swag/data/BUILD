@@ -3,8 +3,7 @@ load("@pip//:requirements.bzl", "requirement")
 
 py_library(
   name = "vigor_dataset",
-  srcs = ["vigor_dataset.py"],
-  visibility = ["//experimental/overhead_matching/swag:__subpackages__",
+  srcs = ["vigor_dataset.py"], visibility = ["//experimental/overhead_matching/swag:__subpackages__",
                 "//common/python:__subpackages__"],
   deps = [
     requirement("numpy"),
@@ -58,4 +57,20 @@ py_test(
     ":satellite_embedding_database",
     ":vigor_dataset",
   ]
+)
+
+py_library(
+  name = "alphaearth_registry",
+  srcs = ["alphaearth_registry.py"],
+  deps = [
+    requirement("rasterio"),
+    requirement("pyproj"),
+  ],
+)
+
+py_test(
+  name = "alphaearth_registry_test",
+  srcs = ["alphaearth_registry_test.py"],
+  data = ["@alphaearth_snippet//:files"],
+  deps = [":alphaearth_registry"],
 )
