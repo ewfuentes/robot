@@ -21,8 +21,9 @@ FourSeasonsParser::FourSeasonsParser(const std::filesystem::path& root_dir,
                                      const std::filesystem::path& calibration_dir)
     : root_dir_(root_dir),
       img_dir_(root_dir / "distorted_images" / "cam0"),
-      cal_(txt_parser_help::load_camera_calibration(calibration_dir)),
-      shared_transforms_(std::make_shared<FourSeasonsTransforms::StaticTransforms>(
+      cal_(std::make_shared<CameraCalibrationFisheye>(
+          txt_parser_help::load_camera_calibration(calibration_dir))),
+      shared_transforms_(std::make_shared<const FourSeasonsTransforms::StaticTransforms>(
           root_dir / "Transformations.txt")) {
     const std::filesystem::path path_img = root_dir_ / "times.txt";
     const std::filesystem::path path_gnss = root_dir_ / "GNSSPoses.txt";

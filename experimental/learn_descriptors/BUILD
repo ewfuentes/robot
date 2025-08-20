@@ -17,13 +17,13 @@ cc_test(
 )
 
 cc_library(
-  name = "visual_odometry",
-  hdrs = ["visual_odometry.hh"],
-  visibility = ["//visibility:public"],
-  srcs = ["visual_odometry.cc"],
-  deps = [
-    "@opencv//:opencv"
-  ]
+    name = "visual_odometry",
+    srcs = ["visual_odometry.cc"],
+    hdrs = ["visual_odometry.hh"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@opencv",
+    ],
 )
 
 cc_library(
@@ -43,12 +43,12 @@ cc_library(
 )
 
 cc_test(
-  name = "visual_odometry_test",
-  srcs = ["visual_odometry_test.cc"],  
-  deps = [
-    "@com_google_googletest//:gtest_main",
-    ":visual_odometry"
-  ]
+    name = "visual_odometry_test",
+    srcs = ["visual_odometry_test.cc"],
+    deps = [
+        ":visual_odometry",
+        "@com_google_googletest//:gtest_main",
+    ],
 )
 
 cc_test(
@@ -84,33 +84,33 @@ cc_library(
 
 cc_library(
     name = "four_seasons_transforms",
-    hdrs = ["four_seasons_transforms.hh"],
     srcs = ["four_seasons_transforms.cc"],
+    hdrs = ["four_seasons_transforms.hh"],
     visibility = ["//visibility:public"],
     deps = [
         ":four_seasons_parser_detail",
-        "//common/liegroups:se3",
         "//common:check",
+        "//common/liegroups:se3",
         "@eigen",
     ],
 )
 
 cc_library(
     name = "image_point_four_seasons",
-    hdrs = ["image_point_four_seasons.hh"],
     srcs = ["image_point_four_seasons.cc"],
+    hdrs = ["image_point_four_seasons.hh"],
     visibility = ["//visibility:public"],
     deps = [
-        ":image_point",
-        ":gps_data",
         ":four_seasons_transforms",
-        "//common/liegroups:se3",
-        "//common/gps:frame_translation",
+        ":gps_data",
+        ":image_point",
         "//common:check",
+        "//common/gps:frame_translation",
+        "//common/liegroups:se3",
         "@eigen",
-        "@opencv",
         "@geographiclib",
-    ]
+        "@opencv",
+    ],
 )
 
 cc_library(
@@ -119,38 +119,37 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "@eigen",
-    ]
+    ],
 )
 
 cc_library(
     name = "four_seasons_parser",
-    hdrs = ["four_seasons_parser.hh"],
     srcs = ["four_seasons_parser.cc"],
+    hdrs = ["four_seasons_parser.hh"],
     visibility = ["//visibility:public"],
     deps = [
-
-        ":image_point_four_seasons",
-        ":four_seasons_transforms",
+        ":camera_calibration",
         ":four_seasons_parser_detail",
+        ":four_seasons_transforms",
+        ":image_point_four_seasons",
         "//common:check",
         "//common/liegroups:se3",
         "@eigen",
         "@opencv",
-        ":camera_calibration"
     ],
 )
 
 cc_library(
     name = "four_seasons_parser_detail",
-    hdrs = ["four_seasons_parser_detail.hh"],
     srcs = ["four_seasons_parser_detail.cc"],
+    hdrs = ["four_seasons_parser_detail.hh"],
     visibility = ["//visibility:public"],
     deps = [
         ":camera_calibration",
         ":gps_data",
         "@com_google_absl//absl/strings:str_format",
         "@nmea",
-    ]
+    ],
 )
 
 cc_binary(
@@ -169,6 +168,7 @@ cc_test(
     srcs = ["four_seasons_parser_test.cc"],
     data = ["@four_seasons_snippet//:files"],
     deps = [
+        ":camera_calibration",
         ":four_seasons_parser",
         ":four_seasons_parser_detail",
         ":image_point_four_seasons",
@@ -180,7 +180,6 @@ cc_test(
         "@eigen",
         "@geographiclib",
         "@nmea",
-        ":camera_calibration"
     ],
 )
 
@@ -189,6 +188,6 @@ cc_library(
     hdrs = ["camera_calibration.hh"],
     visibility = ["//visibility:public"],
     deps = [
-        "@opencv"
-    ]
+        "@opencv",
+    ],
 )

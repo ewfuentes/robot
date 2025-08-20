@@ -27,13 +27,12 @@ std::vector<std::string> parse_line_adv(const std::string& line, const std::stri
     return std::vector<std::string>(absl::StrSplit(line, delim, absl::SkipWhitespace()));
 }
 
-std::shared_ptr<CameraCalibrationFisheye> load_camera_calibration(
-    const std::filesystem::path& calibration_dir) {
+CameraCalibrationFisheye load_camera_calibration(const std::filesystem::path& calibration_dir) {
     std::ifstream file_calibration(calibration_dir / "calib_0.txt");
     std::string line_calibration;
     std::getline(file_calibration, line_calibration);
     std::vector<std::string> parsed_calib_line = parse_line_adv(line_calibration, " ");
-    return std::make_shared<CameraCalibrationFisheye>(
+    return CameraCalibrationFisheye(
         std::stod(parsed_calib_line[static_cast<size_t>(CalibIdx::FX)]),
         std::stod(parsed_calib_line[static_cast<size_t>(CalibIdx::FY)]),
         std::stod(parsed_calib_line[static_cast<size_t>(CalibIdx::CX)]),

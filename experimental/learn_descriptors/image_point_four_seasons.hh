@@ -26,7 +26,7 @@ struct ImagePointFourSeasons : ImagePoint {
                              // closure + etc.) from cam
     std::optional<liegroups::SE3> AS_w_from_vio_cam;  // arbitrary scale world from vio result cam
     std::optional<GPSData> gps_gcs;  // raw gps measurement in gcs (global cordinate system)
-    std::shared_ptr<FourSeasonsTransforms::StaticTransforms> shared_static_transforms;
+    std::shared_ptr<const FourSeasonsTransforms::StaticTransforms> shared_static_transforms;
 
     std::optional<Eigen::Vector3d> velocity_to(const ImagePointFourSeasons& other_img_pt) const {
         ROBOT_CHECK(other_img_pt.seq >= seq);

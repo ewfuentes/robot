@@ -2,7 +2,6 @@
 
 #include <cstddef>
 #include <filesystem>
-#include <memory>
 #include <optional>
 #include <unordered_map>
 #include <utility>
@@ -47,8 +46,7 @@ enum class ResultIdx {
 };
 enum class CalibIdx { FX = 1, FY = 2, CX = 3, CY = 4, K1 = 5, K2 = 6, K3 = 7, K4 = 8 };
 std::vector<std::string> parse_line_adv(const std::string& line, const std::string& delim = " ");
-std::shared_ptr<CameraCalibrationFisheye> load_camera_calibration(
-    const std::filesystem::path& calibration_dir);
+CameraCalibrationFisheye load_camera_calibration(const std::filesystem::path& calibration_dir);
 template <typename T>
 T round_to_sig_figs(T val, int n) {
     if (val == 0) return 0;

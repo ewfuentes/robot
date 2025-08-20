@@ -15,6 +15,7 @@
 #include "common/check.hh"
 #include "common/gps/frame_translation.hh"
 #include "common/liegroups/se3.hh"
+#include "experimental/learn_descriptors/camera_calibration.hh"
 #include "experimental/learn_descriptors/four_seasons_parser_detail.hh"
 #include "gtest/gtest.h"
 #include "nmea/message/gga.hpp"
@@ -65,17 +66,17 @@ TEST(FourSeasonsParserTest, parser_test) {
     EXPECT_DOUBLE_EQ(gnss_scale, parser.gnss_scale());
 
     // calibration test
-    const std::shared_ptr<CameraCalibrationFisheye> calibration_target =
+    const CameraCalibrationFisheye calibration_target =
         txt_parser_help::load_camera_calibration(dir_calibration);
     const std::shared_ptr<CameraCalibrationFisheye> calibration = parser.camera_calibration();
-    EXPECT_DOUBLE_EQ(calibration_target->cx, calibration->cx);
-    EXPECT_DOUBLE_EQ(calibration_target->cy, calibration->cy);
-    EXPECT_DOUBLE_EQ(calibration_target->fx, calibration->fx);
-    EXPECT_DOUBLE_EQ(calibration_target->fy, calibration->fy);
-    EXPECT_DOUBLE_EQ(calibration_target->k1, calibration->k1);
-    EXPECT_DOUBLE_EQ(calibration_target->k2, calibration->k2);
-    EXPECT_DOUBLE_EQ(calibration_target->k3, calibration->k3);
-    EXPECT_DOUBLE_EQ(calibration_target->k4, calibration->k4);
+    EXPECT_DOUBLE_EQ(calibration_target.cx, calibration->cx);
+    EXPECT_DOUBLE_EQ(calibration_target.cy, calibration->cy);
+    EXPECT_DOUBLE_EQ(calibration_target.fx, calibration->fx);
+    EXPECT_DOUBLE_EQ(calibration_target.fy, calibration->fy);
+    EXPECT_DOUBLE_EQ(calibration_target.k1, calibration->k1);
+    EXPECT_DOUBLE_EQ(calibration_target.k2, calibration->k2);
+    EXPECT_DOUBLE_EQ(calibration_target.k3, calibration->k3);
+    EXPECT_DOUBLE_EQ(calibration_target.k4, calibration->k4);
 
     EXPECT_NE(parser.num_images(), 0);
 

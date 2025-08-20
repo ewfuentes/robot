@@ -13,14 +13,13 @@
 #include "experimental/learn_descriptors/image_point_four_seasons.hh"
 
 namespace robot::experimental::learn_descriptors {
-class FourSeasonsParser : std::enable_shared_from_this<FourSeasonsParser> {
+class FourSeasonsParser {
    public:
     static constexpr double CAM_HZ = 30.0;
     static constexpr double CAM_CAP_DELTA_NS = 1e9 / CAM_HZ;
 
     FourSeasonsParser(const std::filesystem::path& root_dir,
                       const std::filesystem::path& calibration_dir);
-    std::shared_ptr<FourSeasonsParser> get_shared() { return shared_from_this(); }
     cv::Mat load_image(const size_t idx) const;
     const ImagePointFourSeasons& get_image_point(const size_t idx) const {
         return img_pt_vector_[idx];
@@ -50,7 +49,7 @@ class FourSeasonsParser : std::enable_shared_from_this<FourSeasonsParser> {
     const std::filesystem::path root_dir_;
     const std::filesystem::path img_dir_;
     const std::shared_ptr<CameraCalibrationFisheye> cal_;
-    const std::shared_ptr<FourSeasonsTransforms::StaticTransforms> shared_transforms_;
+    const std::shared_ptr<const FourSeasonsTransforms::StaticTransforms> shared_transforms_;
     ImagePointFourSeasonsVector img_pt_vector_;
 };
 }  // namespace robot::experimental::learn_descriptors
