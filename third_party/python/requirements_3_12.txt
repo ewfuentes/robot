@@ -10,6 +10,10 @@ absl-py==2.3.1 \
     --hash=sha256:a97820526f7fbfd2ec1bce83f3f25e3a14840dac0d8e02a0b71cd75db3f77fc9 \
     --hash=sha256:eeecf07f0c2a93ace0772c92e596ace6d3d3996c042b2128459aaae2a76de11d
     # via tensorboard
+affine==2.4.0 \
+    --hash=sha256:8a3df80e2b2378aef598a83c1392efd47967afec4242021a0b06b4c7cbc61a92 \
+    --hash=sha256:a24d818d6a836c131976d22f8c27b8d3ca32d0af64c1d8d29deb7bafa4da1eea
+    # via rasterio
 altair==5.5.0 \
     --hash=sha256:91a310b926508d560fe0148d02a194f38b824122641ef528113d029fcd129f8c \
     --hash=sha256:d960ebe6178c56de3855a68c47b516be38640b73fb3b5111c2a9ca90546dd73d
@@ -82,6 +86,7 @@ attrs==25.3.0 \
     --hash=sha256:75d7cefc7fb576747b2c81b4442d4d4a1ce0900973527c011d1030fd3bf4af1b
     # via
     #   jsonschema
+    #   rasterio
     #   referencing
 babel==2.17.0 \
     --hash=sha256:0c54cffb19f690cdcc52a3b50bcbf71e07a808d1c80d549f2459b9d2cf0afb9d \
@@ -166,6 +171,7 @@ certifi==2025.8.3 \
     # via
     #   pyogrio
     #   pyproj
+    #   rasterio
     #   requests
 cffi==1.17.1 \
     --hash=sha256:045d61c734659cc045141be4bae381a41d89b741f795af1dd018bfb532fd0df8 \
@@ -344,9 +350,20 @@ click==8.1.7 \
     --hash=sha256:ca9853ad459e787e2192211578cc907e7594e294c7ccc834310722b41b9ca6de
     # via
     #   -r third_party/python/requirements_3_12.in
+    #   click-plugins
+    #   cligj
     #   flask
     #   marimo
+    #   rasterio
     #   uvicorn
+click-plugins==1.1.1.2 \
+    --hash=sha256:008d65743833ffc1f5417bf0e78e8d2c23aab04d9745ba817bd3e71b0feb6aa6 \
+    --hash=sha256:d7af3984a99d243c131aa1a828331e7630f4a88a9741fd05c927b204bcf92261
+    # via rasterio
+cligj==0.7.2 \
+    --hash=sha256:a4bc13d623356b373c2c27c53dbd9c68cae5d526270bfa71f6c6fa69669c6b27 \
+    --hash=sha256:c1ca117dbce1fe20a5809dc96f01e1c2840f6dcc939b3ddbb1111bf330ba82df
+    # via rasterio
 cloudpickle==3.1.1 \
     --hash=sha256:b216fa8ae4019d5482a8ac3c95d8f6346115d8835911fd4aefd1a445e4242c64 \
     --hash=sha256:c8c5a44295039331ee9dad40ba100a9c7297b6f988e50e87ccdf3765a668350e
@@ -1692,6 +1709,7 @@ numpy==1.26.4 \
     #   osqp
     #   pandas
     #   pyogrio
+    #   rasterio
     #   rosbags
     #   sam-2
     #   scikit-image
@@ -2182,7 +2200,9 @@ pyogrio==0.11.1 \
 pyparsing==3.2.3 \
     --hash=sha256:a749938e02d6fd0b59b356ca504a24982314bb090c383e3cf201c95ef7e2bfcf \
     --hash=sha256:b9c13f1ab8b3b542f72e28f634bad4de758ab3ce4546e4301970ad6fa77c38be
-    # via matplotlib
+    # via
+    #   matplotlib
+    #   rasterio
 pyproj==3.7.2 \
     --hash=sha256:0a9bb26a6356fb5b033433a6d1b4542158fb71e3c51de49b4c318a1dff3aeaab \
     --hash=sha256:0b7cb633565129677b2a183c4d807c727d1c736fcb0568a12299383056e67433 \
@@ -2239,7 +2259,9 @@ pyproj==3.7.2 \
     --hash=sha256:f7f5133dca4c703e8acadf6f30bc567d39a42c6af321e7f81975c2518f3ed357 \
     --hash=sha256:f9428b318530625cb389b9ddc9c51251e172808a4af79b82809376daaeabe5e9 \
     --hash=sha256:fc52ba896cfc3214dc9f9ca3c0677a623e8fdd096b257c14a31e719d21ff3fdd
-    # via geopandas
+    # via
+    #   -r third_party/python/requirements_3_12.in
+    #   geopandas
 python-bidi==0.6.6 \
     --hash=sha256:00081439e969c9d9d2ede8eccef4e91397f601931c4f02864edccb760c8f1db5 \
     --hash=sha256:00622f54a80826a918b22a2d6d5481bb3f669147e17bac85c81136b6ffbe7c06 \
@@ -2531,6 +2553,29 @@ pyzmq==27.0.1 \
     #   ipykernel
     #   jupyter-client
     #   jupyter-server
+rasterio==1.4.3 \
+    --hash=sha256:1839960e2f3057a6daa323ccf67b330f8f2f0dbd4a50cc7031e88e649301c5c0 \
+    --hash=sha256:1a6e6ca9ec361599b48c9918ce25adb1a9203b8c8ca9b34ad78dccb3aef7945a \
+    --hash=sha256:201f05dbc7c4739dacb2c78a1cf4e09c0b7265b0a4d16ccbd1753ce4f2af350a \
+    --hash=sha256:38a126f8dbf405cd3450b5bd10c6cc493a2e1be4cf83442d26f5e4f412372d36 \
+    --hash=sha256:3f411a6a5bcb81ab6dc9128a8bccd13d3822cfa4a50c239e3a0528751a1ad5fc \
+    --hash=sha256:4009f7ce4e0883d8e5b400970daa3f1ca309caac8916d955722ee4486654d452 \
+    --hash=sha256:54eef32d20a0dfbba59a8bb9828e562c3e9e97e2355b8dfe4a5274117976059f \
+    --hash=sha256:597f8dcf494d0ca4254434496e83b1723fec206d23d64da5751a582a2b01e1d3 \
+    --hash=sha256:5b8a4311582274de2346450e5361d092b80b8b5c7b02fda6203402ba101ffabf \
+    --hash=sha256:5d4fcb635379b3d7b2f5e944c153849e3d27e93f35ad73ad4d3f0b8a580f0c8e \
+    --hash=sha256:80f994b92e5dda78f13291710bd5c43efcfd164f69a8a2c20489115df9d178c8 \
+    --hash=sha256:812c854e7177064aeb58def2d59752887ad6b3d39ff3f858ed9df3f2ddc95613 \
+    --hash=sha256:8e90c2c300294265c16becc9822337ded0f01fb8664500b4d77890d633d8cd0e \
+    --hash=sha256:98a9c89eade8c779e8ac1e525269faaa18c6b9818fc3c72cfc4627df71c66d0d \
+    --hash=sha256:9c30114d95ebba4ff49f078b3c193d29ff56d832588649400a3fa78f1dda1c96 \
+    --hash=sha256:a702e21712ba237e34515d829847f9f5f06d8e665e864a7bb0a3d4d8f6dec10d \
+    --hash=sha256:a962ad4c29feaf38b1d7a94389313127de3646a5b9b734fbf9a04e16051a27ff \
+    --hash=sha256:af04f788f6f814569184bd9da6c5d9889512212385ab58c52720dfb1f972671d \
+    --hash=sha256:d9bab1a0bb22b8bed1db34b5258db93d790ed4e61ef21ac055a7c6933c8d5e84 \
+    --hash=sha256:e703e4b2c74c678786d5d110a3f30e26f3acfd65f09ccf35f69683a532f7a772 \
+    --hash=sha256:e79847a5a0e01399457a1e02d8c92040cb56729d054fe7796f0c17b246b18bf0
+    # via -r third_party/python/requirements_3_12.in
 referencing==0.36.2 \
     --hash=sha256:df2e89862cd09deabbdba16944cc3f10feb6b3e6f18e902f7cc25609a34775aa \
     --hash=sha256:e8699adbbf8b5c7de96d8ffa0eb5c158b3beafce084968e2ea8bb08c6794dcd0
