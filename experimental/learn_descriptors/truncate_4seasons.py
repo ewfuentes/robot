@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import argparse
 import os
+import shutil
 
 
 @dataclass
@@ -25,6 +26,7 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Update times.txt to only contain images that are in the cam0 directory."
     )
+    group = parser.add_mutually_exclusive_group()
 
     parser.add_argument(
         "path_4seasons_dataset",
@@ -38,6 +40,17 @@ def parse_args():
         metavar="N_IMG_SKIP",
         type=int,
         help="number of images to skip when removing images",
+    )
+
+    group.add_argument(
+        "--in_place", action="store_true", help="Modify the dataset in place"
+    )
+
+    group.add_argument(
+        "--path_dataset_copy",
+        metavar="path/to/4seasons_dataset_copy",
+        type=str,
+        help="Directory to copy path_4seasons_dataset to and subsequently operate on",
     )
 
     return parser.parse_args()
@@ -67,8 +80,15 @@ def update_times(dataset_dir: Path):
 
 if __name__ == "__main__":
     args = parse_args()
-    path_dataset = Path(args.path_4seasons_dataset)
-    dataset_dir = DatasetDir(path_dataset)
+    path_4seasons_dataset_operate = (
+        Path(args.path_4seasons_dataset)
+        if args.in_place
+        else Path(args.path_dataset_copy)
+    )
+    if not args.in_place:
+        shutil.copytree(Path(args.path_4seasons_dataset), Path(args.path_dataset_copy))
+
+    dataset_dir = DatasetDir(path_4seasons_dataset_operate)
     if args.downselect_imgs_stride is not None:
         n_skip_imgs = args.downselect_imgs_stride
         assert n_skip_imgs >= 1

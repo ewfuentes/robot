@@ -195,19 +195,17 @@ cc_library(
 cc_binary(
     name = "write_to_colmap_database",
     srcs = [
-        "write_to_colmap_database.cc"
-    ], 
-    copts = [
-        "-Wno-error=unused-parameter",
+        "write_to_colmap_database.cc",
     ],
     deps = [
-        ":image_point_four_seasons",
         ":four_seasons_parser",
-        "//common/sqlite3:sqlite3",
+        ":image_point_four_seasons",
+        "//common:argument_wrapper",
         "//common:check",
-        "@cxxopts", 
-        "@eigen"
-    ]
+        "//common/sqlite3",
+        "@cxxopts",
+        "@eigen",
+    ],
 )
 
 py_binary(
