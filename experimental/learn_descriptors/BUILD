@@ -191,3 +191,11 @@ cc_library(
         "@opencv",
     ],
 )
+
+py_test(
+  name = "hloc_test",
+  srcs = ["hloc_test.py"],
+  deps = [
+    requirement("hloc"),
+  ]
+)
