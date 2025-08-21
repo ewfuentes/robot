@@ -626,6 +626,13 @@ http_archive(
 )
 
 http_archive(
+  name = "alphaearth_snippet",
+  urls = ["https://www.dropbox.com/scl/fi/oeydut7c7b58wc4ezatv8/alphaearth_snippet.zip?rlkey=g8dqzbtmugnmgqy3z702uts9g&st=k0rcbpxx&dl=1"],
+  build_file = "//third_party:BUILD.zip_file",
+  integrity = "sha256-AVTNEBKAEfjw8E3kv8F0UHzNfGB/7yb2kRG2BeD2bd8=",
+)
+
+http_archive(
     name = "nmea",
     urls = ["https://github.com/pcdangio/nmea/archive/1d6e507dd08f3a646513dfdc5eea71470f366d59.zip"],
     strip_prefix = "nmea-1d6e507dd08f3a646513dfdc5eea71470f366d59",
