@@ -634,11 +634,3 @@ http_archive(
     build_file = "//third_party:BUILD.nmea",
     sha256 = "3069da17f99ca689701f83e2a9dcd366053cb170757aa5d75cf2b46e59ea1910",
 )
-
-http_archive(
-    name = "libartipy",
-    urls = ["https://github.com/Artisense-ai/libartipy/archive/7a6a7736637c106e7e9c6763ec8c1dea64db4b01.zip"],
-    strip_prefix = "libartipy",
-    build_file = "//third_party:BUILD.geographiclib",
-    sha256 = "d41e90b3009307fd96474fe21ccae824d981c7335ce8ddd3618c1f6084793011",
-)
