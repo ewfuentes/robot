@@ -65,6 +65,10 @@ py_test(
 py_library(
   name = "alphaearth_registry",
   srcs = ["alphaearth_registry.py"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+    "//common/python:__subpackages__",
+  ],
   deps = [
     requirement("rasterio"),
     requirement("pyproj"),

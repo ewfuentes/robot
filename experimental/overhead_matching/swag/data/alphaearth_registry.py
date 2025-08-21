@@ -74,14 +74,23 @@ class AlphaEarthRegistry:
                 width=patch_size[1])
         data = fh.read(window=window, masked=True).transpose(1, 2, 0)
 
-        to_web_mercator = pyproj.Transformer.from_crs(info.crs, WEB_MERCATOR_CRS, always_xy=True)
-        position_info = np.zeros((window.height, window.width, 2))
-        for row_idx, col_idx in itertools.product(range(window.height), range(window.width)):
-            row_in_image = window.row_off + row_idx
-            col_in_image = window.col_off + col_idx
-            utm_easting, utm_northing = fh.xy(row_in_image, col_in_image)
-            web_easting, web_northing = to_web_mercator.transform(utm_easting, utm_northing)
-            web_y, web_x = meters_to_pixel_coords(easting_m=web_easting, northing_m=web_northing, zoom_level=zoom_level)
-
-            position_info[row_idx, col_idx] = (web_y, web_x)
-        return data, position_info
+        row_idx, col_idx = np.meshgrid(
+                np.arange(row-half_height, row+half_height),
+                np.arange(col-half_width, col+half_width),
+                indexing='ij')
+        utm_easting_m, utm_northing_m = rasterio.transform.xy(
+                fh.transform,
+                row_idx.reshape(-1),
+                col_idx.reshape(-1),
+                offset='center')
+        web_mercator_from_utm = pyproj.Transformer.from_crs(
+                info.crs, WEB_MERCATOR_CRS, always_xy=True)
+        webm_easting_m, webm_northing_m = web_mercator_from_utm.transform(
+                utm_easting_m, utm_northing_m)
+        webm_y, webm_x = meters_to_pixel_coords(
+                easting_m=webm_easting_m,
+                northing_m=webm_northing_m,
+                zoom_level=zoom_level)
+        webm_y = webm_y.reshape(window.height, window.width)
+        webm_x = webm_x.reshape(window.height, window.width)
+        return data, np.stack([webm_y, webm_x], axis=-1)
