@@ -125,7 +125,7 @@ int main(int argc, const char** argv) {
     const std::filesystem::path path_colmap_database =
         args["colmap_database_path"].as<std::string>();
 
-        robot::sqlite3::Database colmap_db(path_colmap_database);
+    robot::sqlite3::Database colmap_db(path_colmap_database);
     ROBOT_CHECK(
         !colmap_db
              .query("SELECT name FROM sqlite_master WHERE type='table' AND name='pose_priors';")
