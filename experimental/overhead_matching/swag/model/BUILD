@@ -100,3 +100,25 @@ py_library(
     requirement("msgspec"),
   ]
 )
+
+py_library(
+  name = "alphaearth_extractor",
+  srcs = ["alphaearth_extractor.py"],
+  deps = [
+    requirement("torch"),
+    ":swag_model_input_output",
+    ":swag_config_types",
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:alphaearth_registry",
+  ]
+)
+
+py_test(
+  name = "alphaearth_extractor_test",
+  data = ["@alphaearth_snippet//:files"],
+  srcs = ["alphaearth_extractor_test.py"],
+  deps = [
+    "//common/gps:web_mercator",
+    ":alphaearth_extractor",
+  ]
+)

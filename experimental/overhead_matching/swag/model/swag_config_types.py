@@ -7,6 +7,11 @@ class DinoFeatureMapExtractorConfig(msgspec.Struct, tag=True, tag_field="kind", 
     model_str: str = "dinov2_vitb14"
 
 
+class AlphaEarthExtractorConfig(msgspec.Struct, tag=True, tag_field="kind", frozen=True):
+    version: str
+    patch_size: tuple[int, int]
+
+
 class SemanticNullExtractorConfig(msgspec.Struct, tag=True, tag_field="kind", frozen=True):
     ...
 
@@ -48,6 +53,7 @@ AggregationConfig = Union[TransformerAggregatorConfig]
 
 ExtractorConfig = Union[
     DinoFeatureMapExtractorConfig,
+    AlphaEarthExtractorConfig,
     SemanticNullExtractorConfig,
     SemanticEmbeddingMatrixConfig,
     SemanticSegmentExtractorConfig,
