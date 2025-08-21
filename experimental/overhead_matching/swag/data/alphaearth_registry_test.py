@@ -14,15 +14,15 @@ class AlphaEarthRegistryTest(unittest.TestCase):
 
         # Action
         # Dana square park in cambridgeport
-        cambridge_features, cambridge_position = registry.query(42.3614103, -71.1095213, (5, 6), zoom_level=20)
+        cambridge_features, cambridge_position = registry.query(42.3614103, -71.1095213, (6, 6), zoom_level=20)
         # Mercurio in Shadyside
-        shadyside_features, shadyside_position = registry.query(40.4503414, -79.9357473, (5, 7), zoom_level=20)
+        shadyside_features, shadyside_position = registry.query(40.4503414, -79.9357473, (6, 8), zoom_level=20)
 
         # Verification
-        self.assertEqual(cambridge_features.shape, (5, 6, 64))
-        self.assertEqual(shadyside_features.shape, (5, 7, 64))
-        self.assertEqual(cambridge_position.shape, (5, 6, 2))
-        self.assertEqual(shadyside_position.shape, (5, 7, 2))
+        self.assertEqual(cambridge_features.shape, (6, 6, 64))
+        self.assertEqual(shadyside_features.shape, (6, 8, 64))
+        self.assertEqual(cambridge_position.shape, (6, 6, 2))
+        self.assertEqual(shadyside_position.shape, (6, 8, 2))
         self.assertTrue(np.all(np.abs(np.linalg.norm(cambridge_features, axis=-1) - 1.0) < 1e-2))
         self.assertTrue(np.all(np.abs(np.linalg.norm(shadyside_features, axis=-1) - 1.0) < 1e-2))
 

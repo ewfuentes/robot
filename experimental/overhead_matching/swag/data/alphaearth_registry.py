@@ -57,8 +57,9 @@ class AlphaEarthRegistry:
 
     def query(self, lat_deg: float, lon_deg: float, patch_size: (int, int), zoom_level: int):
         '''
-        Extract a patch around the specified lat/lon. Note that patch size is in pixels 
+        Extract a patch around the specified lat/lon. Note that patch size is in pixels
         '''
+        assert patch_size[0] % 2 == 0 and patch_size[1] % 2 == 0
         name, easting, northing = self._find_dataset(lat_deg, lon_deg)
         if name not in self._file_handles:
             self._file_handles[name] = rasterio.open(self._partitions[name].path)
@@ -74,14 +75,16 @@ class AlphaEarthRegistry:
                 width=patch_size[1])
         data = fh.read(window=window, masked=True).transpose(1, 2, 0)
 
+        # Compute the position of each pixel in web mercator at the specified zoom level
         row_idx, col_idx = np.meshgrid(
                 np.arange(row-half_height, row+half_height),
                 np.arange(col-half_width, col+half_width),
                 indexing='ij')
+
         utm_easting_m, utm_northing_m = rasterio.transform.xy(
                 fh.transform,
-                row_idx.reshape(-1),
-                col_idx.reshape(-1),
+                rows=row_idx.reshape(-1),
+                cols=col_idx.reshape(-1),
                 offset='center')
         web_mercator_from_utm = pyproj.Transformer.from_crs(
                 info.crs, WEB_MERCATOR_CRS, always_xy=True)
