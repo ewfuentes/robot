@@ -102,8 +102,8 @@ def load_satellite_metadata(path: Path, zoom_level: int):
         lat = float(lat)
         lon = float(lon)
         web_mercator_px = web_mercator.latlon_to_pixel_coords(lat, lon, zoom_level)
-        out.append((lat, lon, *web_mercator_px, p))
-    return pd.DataFrame(out, columns=["lat", "lon", "web_mercator_y", "web_mercator_x", "path"])
+        out.append((lat, lon, *web_mercator_px, zoom_level, p))
+    return pd.DataFrame(out, columns=["lat", "lon", "web_mercator_y", "web_mercator_x", "zoom_level", "path"])
 
 
 def load_panorama_metadata(path: Path, zoom_level: int):
@@ -113,8 +113,9 @@ def load_panorama_metadata(path: Path, zoom_level: int):
         lat = float(lat)
         lon = float(lon)
         web_mercator_px = web_mercator.latlon_to_pixel_coords(lat, lon, zoom_level)
-        out.append((pano_id, lat, lon, *web_mercator_px, p))
-    return pd.DataFrame(out, columns=["pano_id", "lat", "lon", "web_mercator_y", "web_mercator_x", "path"])
+        out.append((pano_id, lat, lon, *web_mercator_px, zoom_level, p))
+    return pd.DataFrame(out, columns=["pano_id", "lat", "lon", "web_mercator_y", "web_mercator_x", "zoom_level", "path"])
+
 
 def load_landmark_geojson(path: Path, zoom_level: int):
     df = gpd.read_file(path)
