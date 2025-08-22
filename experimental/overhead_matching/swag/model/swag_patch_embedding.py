@@ -5,13 +5,16 @@ import torch.nn.functional as F
 import torchvision as tv
 import msgspec
 import hashlib
-from typing import Any, get_args
+from pathlib import Path
+from typing import Any
 from experimental.overhead_matching.swag.model.swag_model_input_output import (
     ModelInput, SemanticTokenExtractorOutput, FeatureMapExtractorOutput, ExtractorOutput)
 from experimental.overhead_matching.swag.model.semantic_segment_extractor import SemanticSegmentExtractor
+from experimental.overhead_matching.swag.model.alphaearth_extractor import AlphaEarthExtractor
 from experimental.overhead_matching.swag.model.swag_config_types import (
     FeatureMapExtractorConfig,
     DinoFeatureMapExtractorConfig,
+    AlphaEarthExtractorConfig,
 
     SemanticTokenExtractorConfig,
     SemanticNullExtractorConfig,
@@ -49,6 +52,8 @@ class SwagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
     extractor_config_by_name: dict[str, ExtractorConfig] = {}
     use_cached_extractors: list[str] = []
 
+    auxiliary_info: dict[str, Any] = {}
+
     # These are here for backwards compatibility
     feature_map_extractor_config: FeatureMapExtractorConfig | None = None
     semantic_token_extractor_config: SemanticTokenExtractorConfig | None = None
@@ -56,7 +61,7 @@ class SwagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
     use_cached_semantic_tokens: bool = False
 
 
-def create_extractor(config: ExtractorConfig):
+def create_extractor(config: ExtractorConfig, auxiliary_info: dict[str, Any]):
     if config is None:
         return None
     match config:
@@ -64,6 +69,8 @@ def create_extractor(config: ExtractorConfig):
         case SemanticNullExtractorConfig(): return SemanticNullExtractor(config)
         case SemanticEmbeddingMatrixConfig(): return SemanticEmbeddingMatrix(config)
         case SemanticSegmentExtractorConfig(): return SemanticSegmentExtractor(config)
+        case AlphaEarthExtractorConfig(): return AlphaEarthExtractor(
+                config, auxiliary_info[config.auxiliary_info_key])
     raise NotImplementedError(f"Unhandled Config Type: {config}")
 
 
@@ -300,7 +307,8 @@ class SwagPatchEmbedding(torch.nn.Module):
     def __init__(self, config: SwagPatchEmbeddingConfig):
         super().__init__()
         self._extractor_by_name = torch.nn.ModuleDict({
-            k: create_extractor(c) for k, c in config.extractor_config_by_name.items()})
+            k: create_extractor(c, config.auxiliary_info)
+            for k, c in config.extractor_config_by_name.items()})
 
         self._token_marker_by_name = torch.nn.ParameterDict({
                 k: torch.nn.Parameter(torch.randn(1, 1, config.output_dim))
@@ -330,8 +338,10 @@ class SwagPatchEmbedding(torch.nn.Module):
         self._output_dim = config.output_dim
 
         # We keep these for backwards compatibility
-        self._feature_map_extractor = create_extractor(config.feature_map_extractor_config)
-        self._semantic_token_extractor = create_extractor(config.semantic_token_extractor_config)
+        self._feature_map_extractor = create_extractor(
+                config.feature_map_extractor_config, config.auxiliary_info)
+        self._semantic_token_extractor = create_extractor(
+                config.semantic_token_extractor_config, config.auxiliary_info)
         if self._feature_map_extractor is not None:
             self._extractor_by_name["__feature_map_extractor"] = self._feature_map_extractor
             self._feature_token_marker = torch.nn.Parameter(torch.randn((1, 1, config.output_dim)))
