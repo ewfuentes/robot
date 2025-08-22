@@ -273,7 +273,7 @@ def get_cached_tensors(idx: int, caches: list[TensorCache]):
             stored_value = txn.get(key)
             assert stored_value is not None, f"Failed to get: {idx} from cache at: {db.path()}"
             deserialized = np.load(io.BytesIO(stored_value))
-            out[output_key] = record_type(**{k: torch.tensor(v) for k, v in deserialized.items()})
+            out[output_key] = record_type(**{k: torch.tensor(v) for k, v in deserialized.items() if not k.startswith("debug")})
     return out
 
 
