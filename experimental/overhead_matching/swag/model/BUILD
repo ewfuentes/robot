@@ -40,6 +40,7 @@ py_library(
     ":swag_model_input_output",
     ":swag_config_types",
     ":semantic_segment_extractor",
+    ":alphaearth_extractor",
     "//common/torch:load_torch_deps",
   ]
 )

@@ -8,6 +8,7 @@ class DinoFeatureMapExtractorConfig(msgspec.Struct, tag=True, tag_field="kind", 
 
 
 class AlphaEarthExtractorConfig(msgspec.Struct, tag=True, tag_field="kind", frozen=True):
+    auxiliary_info_key: str
     version: str
     patch_size: tuple[int, int]
 

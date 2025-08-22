@@ -13,6 +13,9 @@ from experimental.overhead_matching.swag.model.swag_model_input_output import (
 class AlphaEarthExtractor(torch.nn.Module):
     def __init__(self, config: AlphaEarthExtractorConfig, registry_base_path: Path):
         super().__init__()
+        if isinstance(registry_base_path, str):
+            registry_base_path = Path(registry_base_path)
+        assert registry_base_path.exists()
         self._config = config
         self._registry = ar.AlphaEarthRegistry(registry_base_path, config.version)
         self._patch_size = config.patch_size
@@ -33,8 +36,8 @@ class AlphaEarthExtractor(torch.nn.Module):
 
             features_out.append(features)
             position_out.append(position_info)
-        features_out = torch.stack(features_out, dim=0)
-        position_out = torch.stack(position_out, dim=0)
+        features_out = torch.stack(features_out, dim=0).to(torch.float32)
+        position_out = torch.stack(position_out, dim=0).to(torch.float32)
         mask = torch.isnan(features_out[..., 0])
         features_out[mask] = 0.0
 
