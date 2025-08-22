@@ -18,7 +18,8 @@ class AlphaEarthExtractorTest(unittest.TestCase):
         PATCH_SIZE = (10, 12)
         config = AlphaEarthExtractorConfig(
             version="v1",
-            patch_size=PATCH_SIZE)
+            patch_size=PATCH_SIZE,
+            auxiliary_info_key='')
         extractor = AlphaEarthExtractor(config, Path("external/alphaearth_snippet"))
 
         ZOOM_LEVEL = 20
