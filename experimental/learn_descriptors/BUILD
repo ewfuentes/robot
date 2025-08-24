@@ -191,3 +191,24 @@ cc_library(
         "@opencv",
     ],
 )
+
+cc_binary(
+    name = "write_to_colmap_database",
+    srcs = [
+        "write_to_colmap_database.cc",
+    ],
+    deps = [
+        ":four_seasons_parser",
+        ":image_point_four_seasons",
+        "//common:argument_wrapper",
+        "//common:check",
+        "//common/sqlite3",
+        "@cxxopts",
+        "@eigen",
+    ],
+)
+
+py_binary(
+    name = "truncate_4seasons",
+    srcs = ["truncate_4seasons.py"],
+)
