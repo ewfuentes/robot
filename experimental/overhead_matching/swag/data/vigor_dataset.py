@@ -88,6 +88,11 @@ class SatelliteFromLandmarkResult(NamedTuple):
     sat_idxs_from_landmark_idx: list[list[int]]
 
 
+class PanoramaFromLandmarkResult(NamedTuple):
+    landmark_idxs_from_pano_idx: list[list[int]]
+    pano_idxs_from_landmark_idx: list[list[int]]
+
+
 def series_to_dict_with_index(series: pd.Series, index_key: str = "index"):
     d = series.to_dict()
     assert index_key not in d
@@ -129,6 +134,8 @@ def load_landmark_geojson(path: Path, zoom_level: int):
 
 
 def compute_satellite_from_landmarks(sat_kd_tree, sat_metadata, landmark_metadata) -> SatelliteFromLandmarkResult:
+    # Use the satellite_from_panorama method to compute which landmarks are within
+    # the current satellite patch.
     sat_from_pano_result = compute_satellite_from_panorama(
             sat_kd_tree, sat_metadata, landmark_metadata)
 
@@ -143,6 +150,30 @@ def compute_satellite_from_landmarks(sat_kd_tree, sat_metadata, landmark_metadat
         sat_idxs_from_landmark_idx=merge_lists(
             sat_from_pano_result.positive_sat_idxs_from_pano_idx,
             sat_from_pano_result.semipositive_sat_idxs_from_pano_idx))
+
+
+def compute_panorama_from_landmarks(pano_kd_tree, pano_metadata, landmark_metadata) -> PanoramaFromLandmarkResult:
+    # Each satellite patch is 640x640 px and is roughly 100m x 100m.
+    MAX_DIST_PX = 320
+    # pano_kd_tree.query_ball_tree()
+    MAX_K = 100
+    landmark_locations = landmark_metadata[["web_mercator_x", "web_mercator_y"]].values
+    dists, idx = pano_kd_tree.query(landmark_locations, k=MAX_K, distance_upper_bound=MAX_DIST_PX)
+
+    num_panos = len(pano_metadata)
+    landmark_idxs_from_pano_idx = [[] for _ in range(num_panos)]
+    pano_idxs_from_landmark_idx = [[] for _ in range(len(landmark_metadata))]
+
+    for landmark_idx, neighbors in enumerate(idx):
+        for pano_idx in neighbors:
+            if pano_idx == num_panos:
+                break
+            landmark_idxs_from_pano_idx[pano_idx].append(landmark_idx)
+            pano_idxs_from_landmark_idx[landmark_idx].append(pano_idx)
+
+    return PanoramaFromLandmarkResult(
+        landmark_idxs_from_pano_idx=landmark_idxs_from_pano_idx,
+        pano_idxs_from_landmark_idx=pano_idxs_from_landmark_idx)
 
 
 def compute_satellite_from_panorama(sat_kdtree, sat_metadata, pano_metadata) -> SatelliteFromPanoramaResult:
@@ -317,7 +348,7 @@ class VigorDataset(torch.utils.data.Dataset):
         self._landmark_metadata = pd.concat(landmark_metadatas).reset_index(drop=True)
 
         self._satellite_kdtree = cKDTree(self._satellite_metadata.loc[:, ["web_mercator_x", "web_mercator_y"]].values)
-        self._panorama_kdtree = cKDTree(self._panorama_metadata.loc[:, ["lat", "lon"]].values)
+        self._panorama_kdtree = cKDTree(self._panorama_metadata.loc[:, ["web_mercator_x", "web_mercator_y"]].values)
 
         correspondences = compute_satellite_from_panorama(
             self._satellite_kdtree, self._satellite_metadata, self._panorama_metadata)
@@ -328,10 +359,15 @@ class VigorDataset(torch.utils.data.Dataset):
         self._panorama_metadata["semipositive_satellite_idxs"] = correspondences.semipositive_sat_idxs_from_pano_idx
         self._panorama_metadata["satellite_idx"] = correspondences.closest_sat_idx_from_pano_idx
 
-        landmark_correspondences = compute_satellite_from_landmarks(
+        sat_landmark_correspondences = compute_satellite_from_landmarks(
                 self._satellite_kdtree, self._satellite_metadata, self._landmark_metadata)
-        self._satellite_metadata["landmark_idxs"] = landmark_correspondences.landmark_idxs_from_sat_idx
-        self._landmark_metadata["satellite_idxs"] = landmark_correspondences.sat_idxs_from_landmark_idx
+        self._satellite_metadata["landmark_idxs"] = sat_landmark_correspondences.landmark_idxs_from_sat_idx
+        self._landmark_metadata["satellite_idxs"] = sat_landmark_correspondences.sat_idxs_from_landmark_idx
+
+        pano_landmark_correspondences = compute_panorama_from_landmarks(
+                self._panorama_kdtree, self._panorama_metadata, self._landmark_metadata)
+        self._panorama_metadata["landmark_idxs"] = pano_landmark_correspondences.landmark_idxs_from_pano_idx
+        self._landmark_metadata["panorama_idxs"] = pano_landmark_correspondences.pano_idxs_from_landmark_idx
 
         self._panorama_metadata["neighbor_panorama_idxs"] = compute_neighboring_panoramas(
             self._panorama_kdtree, config.panorama_neighbor_radius)
@@ -370,11 +406,15 @@ class VigorDataset(torch.utils.data.Dataset):
         pano, pano_original_shape = load_image(pano_metadata.path, self._panorama_size)
         sat, sat_original_shape = load_image(sat_metadata.path, self._satellite_patch_size)
 
+        pano_landmarks = self._landmark_metadata.iloc[pano_metadata["landmark_idxs"]]
+        pano_landmarks = [series_to_dict_with_index(x) for _, x in pano_landmarks.iterrows()]
         pano_metadata = series_to_dict_with_index(pano_metadata)
+        pano_metadata["landmarks"] = pano_landmarks
+
         sat_metadata = series_to_dict_with_index(sat_metadata)
-        landmarks = self._landmark_metadata.iloc[sat_metadata["landmark_idxs"]]
-        landmarks = [series_to_dict_with_index(x) for _, x in landmarks.iterrows()]
-        sat_metadata["landmarks"] = landmarks
+        sat_landmarks = self._landmark_metadata.iloc[sat_metadata["landmark_idxs"]]
+        sat_landmarks = [series_to_dict_with_index(x) for _, x in sat_landmarks.iterrows()]
+        sat_metadata["landmarks"] = sat_landmarks
         sat_metadata["original_shape"] = sat_original_shape
 
         cached_pano_tensors = get_cached_tensors(pano_idx, self._panorama_tensor_caches)
@@ -489,10 +529,15 @@ class VigorDataset(torch.utils.data.Dataset):
                 pano_metadata = self.dataset._panorama_metadata.loc[idx]
                 pano, pano_original_shape = load_image(pano_metadata.path, self.dataset._panorama_size)
 
+                landmarks = self.dataset._landmark_metadata.iloc[pano_metadata["landmark_idxs"]]
+                landmarks = [series_to_dict_with_index(x) for _, x in landmarks.iterrows()]
+                pano_metadata = series_to_dict_with_index(pano_metadata)
+                pano_metadata["landmarks"] = landmarks
+
                 cached_pano_tensors = get_cached_tensors(idx, self.dataset._panorama_tensor_caches)
 
                 return VigorDatasetItem(
-                    panorama_metadata=series_to_dict_with_index(pano_metadata),
+                    panorama_metadata=pano_metadata,
                     satellite_metadata=None,
                     panorama=pano,
                     satellite=None,
