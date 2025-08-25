@@ -640,3 +640,10 @@ http_archive(
     build_file = "//third_party:BUILD.geographiclib",
     sha256 = "d41e90b3009307fd96474fe21ccae824d981c7335ce8ddd3618c1f6084793011",
 )
+
+http_archive(
+  name = "sacre_coeur_snippet",
+  urls = ["https://www.dropbox.com/scl/fi/k05m15kfgr13e8pd5s65e/sacre_coeur.zip?rlkey=rv8lr6eiee07bee22r4qfqrat&st=dijow5kb&dl=1"],
+  build_file = "//third_party:BUILD.zip_file",
+  sha256 = "007894242b3fa9c351e58159bc3a7d8ec6f6a1d6163b129f26d872cd2df56e36",
+)

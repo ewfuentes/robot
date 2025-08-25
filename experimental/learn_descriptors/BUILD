@@ -1,4 +1,5 @@
 package(features = ["warning_compile_flags"])
+load("@pip//:requirements.bzl", "requirement")
 
 cc_library(
     name = "learn_descriptors",
@@ -193,9 +194,10 @@ cc_library(
 )
 
 py_test(
-  name = "hloc_test",
-  srcs = ["hloc_test.py"],
-  deps = [
-    requirement("hloc"),
-  ]
+    name = "hloc_test",
+    srcs = ["hloc_test.py"],
+    data = ["@four_seasons_snippet//:files"],
+    deps = [
+        requirement("hloc"),
+    ]
 )
