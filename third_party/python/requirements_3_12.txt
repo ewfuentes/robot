@@ -106,6 +106,10 @@ blinker==1.9.0 \
     --hash=sha256:b4ce2265a7abece45e7cc896e98dbebe6cead56bcf805a3d23136d145f5445bf \
     --hash=sha256:ba0efaa9080b619ff2f3459d1d500c57bddea4a6b424b60a91141db6fd2f08bc
     # via flask
+bokeh==3.7.3 \
+    --hash=sha256:70a89a9f797b103d5ee6ad15fb7944adda115cf0da996ed0b75cfba61cb12f2b \
+    --hash=sha256:b0e79dd737f088865212e4fdcb0f3b95d087f0f088bf8ca186a300ab1641e2c7
+    # via -r third_party/python/requirements_3_12.in
 casadi==3.7.1 \
     --hash=sha256:0cba2ec4d6907ced7eddda5405460622882ba3bd4a81c0a17b7c4c7081b0fcc7 \
     --hash=sha256:12577155cd3cd79ba162381bfed6add1541bc770ba3f1f1334e4eb159d9b39ba \
@@ -452,6 +456,7 @@ contourpy==1.3.3 \
     --hash=sha256:fd914713266421b7536de2bfa8181aa8c699432b6763a0ea64195ebe28bff6a9 \
     --hash=sha256:fde6c716d51c04b1c25d0b90364d0be954624a0ee9d60e23e850e8d48353d07a
     # via
+    #   bokeh
     #   matplotlib
     #   supervision
 cvxopt==1.3.2 \
@@ -940,6 +945,7 @@ jinja2==3.1.6 \
     --hash=sha256:85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67
     # via
     #   altair
+    #   bokeh
     #   flask
     #   jupyter-server
     #   jupyterlab
@@ -1595,6 +1601,7 @@ narwhals==2.1.1 \
     --hash=sha256:dee7d7582d456ef325cb831a65b80783041ef841bbf183180ec445d132a154c6
     # via
     #   altair
+    #   bokeh
     #   marimo
     #   plotly
 nbclient==0.10.2 \
@@ -1690,6 +1697,7 @@ numpy==1.26.4 \
     # via
     #   -r third_party/python/requirements_3_12.in
     #   asrl-pylgmath
+    #   bokeh
     #   casadi
     #   cert-tools
     #   clarabel
@@ -1848,6 +1856,7 @@ packaging==25.0 \
     --hash=sha256:d443872c98d677bf60f6a1f2f8c1cb748e8fe762d2bf9d3148b5599295b0fc4f
     # via
     #   altair
+    #   bokeh
     #   geopandas
     #   huggingface-hub
     #   hydra-core
@@ -1898,6 +1907,7 @@ pandas==1.5.3 \
     --hash=sha256:f76d097d12c82a535fda9dfe5e8dd4127952b45fea9b0276cb30cca5ea313fbc
     # via
     #   -r third_party/python/requirements_3_12.in
+    #   bokeh
     #   cert-tools
     #   geopandas
     #   osmnx
@@ -1997,6 +2007,7 @@ pillow==10.4.0 \
     --hash=sha256:ff337c552345e95702c5fde3158acb0625111017d0e5f24bf3acdb9cc16b90d1
     # via
     #   -r third_party/python/requirements_3_12.in
+    #   bokeh
     #   easyocr
     #   fvcore
     #   imageio
@@ -2445,6 +2456,7 @@ pyyaml==6.0.2 \
     --hash=sha256:ff3824dc5261f50c9b0dfb3be22b4567a6f938ccce4587b38952d85fd9e9afe4
     # via
     #   -r third_party/python/requirements_3_12.in
+    #   bokeh
     #   easyocr
     #   fvcore
     #   huggingface-hub
@@ -3356,6 +3368,7 @@ tornado==6.5.2 \
     --hash=sha256:e56a5af51cc30dd2cae649429af65ca2f6571da29504a07995175df14c18f35f \
     --hash=sha256:e792706668c87709709c18b353da1f7662317b563ff69f00bab83595940c7108
     # via
+    #   bokeh
     #   ipykernel
     #   jupyter-client
     #   jupyter-server
@@ -3534,6 +3547,10 @@ widgetsnbextension==4.0.14 \
     --hash=sha256:4875a9eaf72fbf5079dc372a51a9f268fc38d46f767cbf85c43a36da5cb9b575 \
     --hash=sha256:a3629b04e3edb893212df862038c7232f62973373869db5084aed739b437b5af
     # via ipywidgets
+xyzservices==2025.4.0 \
+    --hash=sha256:6fe764713648fac53450fbc61a3c366cb6ae5335a1b2ae0c3796b495de3709d8 \
+    --hash=sha256:8d4db9a59213ccb4ce1cf70210584f30b10795bff47627cdfb862b39ff6e10c9
+    # via bokeh
 yacs==0.1.8 \
     --hash=sha256:99f893e30497a4b66842821bac316386f7bd5c4f47ad35c9073ef089aa33af32 \
     --hash=sha256:d43d1854c1ffc4634c5b349d1c1120f86f05c3a294c9d141134f282961ab5d94 \

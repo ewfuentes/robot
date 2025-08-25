@@ -18,6 +18,7 @@ py_binary(
     requirement("seaborn"),
     requirement("osmnx"),
     requirement("supervision"),
+    requirement("bokeh"),
     "//common/torch:load_torch_deps",
     "//experimental/overhead_matching/learned/model:clevr_transformer",
     "//experimental/overhead_matching/learned/model:clevr_tokenizer",
