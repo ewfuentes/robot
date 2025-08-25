@@ -123,3 +123,27 @@ py_test(
     ":alphaearth_extractor",
   ]
 )
+
+py_library(
+  name = "semantic_landmark_extractor",
+  srcs = ["semantic_landmark_extractor.py"],
+  deps = [
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("sentence-transformers"),
+    requirement("ipdb"),
+    "//common/torch:load_torch_deps",
+    ":swag_model_input_output",
+    ":swag_config_types",
+  ]
+)
+
+py_test(
+  name = "semantic_landmark_extractor_test",
+  srcs = ["semantic_landmark_extractor_test.py"],
+  data = ["@vigor_snippet//:files"],
+  deps = [
+    ":semantic_landmark_extractor",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+  ]
+)
