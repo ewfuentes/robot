@@ -15,6 +15,10 @@
 #
 # Modifications: Changed directory names (August, 2025)
 
+import os
+
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
 
 import common.torch.load_torch_deps
 
