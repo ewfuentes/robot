@@ -196,8 +196,9 @@ cc_library(
 py_test(
     name = "hloc_test",
     srcs = ["hloc_test.py"],
-    data = ["@four_seasons_snippet//:files"],
+    data = ["@sacre_coeur_snippet//:files"],
     deps = [
         requirement("hloc"),
+        "//common/torch:load_torch_deps"
     ]
 )

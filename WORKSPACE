@@ -645,5 +645,5 @@ http_archive(
   name = "sacre_coeur_snippet",
   urls = ["https://www.dropbox.com/scl/fi/k05m15kfgr13e8pd5s65e/sacre_coeur.zip?rlkey=rv8lr6eiee07bee22r4qfqrat&st=dijow5kb&dl=1"],
   build_file = "//third_party:BUILD.zip_file",
-  sha256 = "007894242b3fa9c351e58159bc3a7d8ec6f6a1d6163b129f26d872cd2df56e36",
+  sha256 = "75c56d869bacc72e0c3686d39771c4ee27303136958ad63b10da682ec24a4608",
 )

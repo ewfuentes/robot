@@ -1,3 +1,23 @@
+# Borrowed from https://github.com/cvg/Hierarchical-Localization/blob/master/demo.ipynb
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2025 Philipp Lindenberger
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at:
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Modifications: Changed directory names (August, 2025)
+
+
+import common.torch.load_torch_deps
+
 import unittest
 
 import tqdm
@@ -17,7 +37,7 @@ from hloc.utils import viz_3d
 
 class HLocTest(unittest.TestCase):
     def test_hloc(self):
-        images = Path("external/sacre_coeur")
+        images = Path("external/sacre_coeur_snippet/sacre_coeur")
         outputs = Path("outputs/demo/")
 
         sfm_pairs = outputs / "pairs-sfm.txt"
@@ -101,7 +121,6 @@ class HLocTest(unittest.TestCase):
             f'found {ret["num_inliers"]}/{len(ret["inlier_mask"])} inlier correspondences.'
         )
         visualization.visualize_loc_from_log(images, query, log, model)
-        # -
 
         # We visualize the correspondences between the query images a few mapping images. We can also visualize the estimated camera pose in the 3D map.
 
