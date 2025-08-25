@@ -154,7 +154,7 @@ def compute_satellite_from_landmarks(sat_kd_tree, sat_metadata, landmark_metadat
 
 def compute_panorama_from_landmarks(pano_kd_tree, pano_metadata, landmark_metadata) -> PanoramaFromLandmarkResult:
     # Each satellite patch is 640x640 px and is roughly 100m x 100m.
-    MAX_DIST_PX = 320
+    MAX_DIST_PX = 640
     # pano_kd_tree.query_ball_tree()
     MAX_K = 100
     landmark_locations = landmark_metadata[["web_mercator_x", "web_mercator_y"]].values
