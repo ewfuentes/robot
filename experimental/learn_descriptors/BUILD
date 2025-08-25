@@ -1,5 +1,6 @@
-package(features = ["warning_compile_flags"])
 load("@pip//:requirements.bzl", "requirement")
+
+package(features = ["warning_compile_flags"])
 
 cc_library(
     name = "learn_descriptors",
@@ -199,6 +200,6 @@ py_test(
     data = ["@sacre_coeur_snippet//:files"],
     deps = [
         requirement("hloc"),
-        "//common/torch:load_torch_deps"
-    ]
+        "//common/torch:load_torch_deps",
+    ],
 )
