@@ -1,3 +1,5 @@
+load("@pip//:requirements.bzl", "requirement")
+
 package(features = ["warning_compile_flags"])
 
 cc_library(
@@ -189,5 +191,15 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "@opencv",
+    ],
+)
+
+py_test(
+    name = "hloc_test",
+    srcs = ["hloc_test.py"],
+    data = ["@sacre_coeur_snippet//:files"],
+    deps = [
+        requirement("hloc"),
+        "//common/torch:load_torch_deps",
     ],
 )
