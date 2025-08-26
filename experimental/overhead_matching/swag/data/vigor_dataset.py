@@ -347,11 +347,12 @@ class VigorDataset(torch.utils.data.Dataset):
         self._panorama_metadata = pd.concat(pano_metadatas).reset_index(drop=True)
         self._landmark_metadata = pd.concat(landmark_metadatas).reset_index(drop=True)
 
-        self._satellite_kdtree = cKDTree(self._satellite_metadata.loc[:, ["web_mercator_x", "web_mercator_y"]].values)
-        self._panorama_kdtree = cKDTree(self._panorama_metadata.loc[:, ["web_mercator_x", "web_mercator_y"]].values)
+        self._satellite_pixel_kdtree = cKDTree(self._satellite_metadata.loc[:, ["web_mercator_x", "web_mercator_y"]].values)
+        self._panorama_pixel_kdtree = cKDTree(self._panorama_metadata.loc[:, ["web_mercator_x", "web_mercator_y"]].values)
+        self._panorama_kdtree = cKDTree(self._panorama_metadata.loc[:, ["lat", "lon"]].values)
 
         correspondences = compute_satellite_from_panorama(
-            self._satellite_kdtree, self._satellite_metadata, self._panorama_metadata)
+            self._satellite_pixel_kdtree, self._satellite_metadata, self._panorama_metadata)
 
         self._satellite_metadata["positive_panorama_idxs"] = correspondences.positive_pano_idxs_from_sat_idx
         self._satellite_metadata["semipositive_panorama_idxs"] = correspondences.semipositive_pano_idxs_from_sat_idx
@@ -360,7 +361,7 @@ class VigorDataset(torch.utils.data.Dataset):
         self._panorama_metadata["satellite_idx"] = correspondences.closest_sat_idx_from_pano_idx
 
         sat_landmark_correspondences = compute_satellite_from_landmarks(
-                self._satellite_kdtree, self._satellite_metadata, self._landmark_metadata)
+                self._satellite_pixel_kdtree, self._satellite_metadata, self._landmark_metadata)
         self._satellite_metadata["landmark_idxs"] = sat_landmark_correspondences.landmark_idxs_from_sat_idx
         self._landmark_metadata["satellite_idxs"] = sat_landmark_correspondences.sat_idxs_from_landmark_idx
 
