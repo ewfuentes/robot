@@ -40,6 +40,8 @@ def _(Path):
         Path('/data/overhead_matching/models/20250806_swag_model_fixed/all_chicago_sat_dino_pano_dino_agg_small_attn_8'),
         Path('/data/overhead_matching/models/20250806_swag_model_fixed/all_chicago_sat_dino_pano_dino_batch_size_512_hard_negative_20_lr_3e-4_warmup_5'),
         Path('/data/overhead_matching/models/20250815_swag_semantic/all_chicago_sat_dino_embedding_mat_pano_dino_sam'),
+        Path('/data/overhead_matching/models/20250815_swag_semantic/all_chicago_sat_dinov3_pano_dinov3'),
+
     ]
 
     validation_set_paths = [
@@ -63,8 +65,12 @@ def _(json, lsm, msgspec, pe, spe, torch):
             model = lsm.load_model(path, device=device, skip_consistent_output_check=True)
             model.patch_dims
             model.model_input_from_batch
+            if isinstance(model, spe.SwagPatchEmbedding):
+                model._extractor_by_name
+            print('loading from saved model')
         except Exception as e:
-            print("Failed to load model", e)
+            print("failed to load model, trying to load from weights")
+            print(e)
             training_config_path = path.parent / "config.json"
             training_config_json = json.loads(training_config_path.read_text())
             model_config_json = training_config_json["sat_model_config"] if 'satellite' in path.name else training_config_json["pano_model_config"]
@@ -72,8 +78,34 @@ def _(json, lsm, msgspec, pe, spe, torch):
             config = msgspec.json.decode(json.dumps(model_config_json), type=pe.WagPatchEmbeddingConfig | spe.SwagPatchEmbeddingConfig)
 
             model_weights = torch.load(path / 'model_weights.pt', weights_only=True)
-            model_type = pe.WagPatchEmbedding if isinstance(config, pe.WagPatchEmbeddingConfig) else spe.SwagPatchEmbedding
+            model_type = (
+                pe.WagPatchEmbedding if isinstance(config, pe.WagPatchEmbeddingConfig) else spe.SwagPatchEmbedding)
             model = model_type(config)
+            if isinstance(config, spe.SwagPatchEmbeddingConfig):
+                to_add = {}
+                for k, v in model_weights.items():
+                    if k.startswith('_feature_map_extractor'):
+                        to_add_key = f"_extractor_by_name._{k}"
+                        to_add[to_add_key] = v
+                    elif k.startswith('_semantic_token_extractor'):
+                        to_add_key = f"_extractor_by_name._{k}"
+                        to_add[to_add_key] = v
+                    elif k.startswith("_feature_token_projection"):
+                        to_add_key = '.'.join(["_projection_by_name", '__feature_map_extractor'] + k.split('.')[1:])
+                        to_add[to_add_key] = v
+                    elif k.startswith("_semantic_token_projection"):
+                        to_add_key = '.'.join(
+                            ["_projection_by_name", '__semantic_token_extractor'] + k.split('.')[1:])
+                        to_add[to_add_key] = v
+                    elif k == "_feature_token_marker":
+                        to_add_key = "_token_marker_by_name.__feature_map_extractor"
+                        to_add[to_add_key] = v
+                    elif k == "_semantic_token_marker":
+                        to_add_key = "_token_marker_by_name.__semantic_token_extractor"
+                        to_add[to_add_key] = v
+
+                model_weights |= to_add
+
             model.load_state_dict(model_weights)
             model = model.to(device)
         return model

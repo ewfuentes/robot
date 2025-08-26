@@ -626,6 +626,13 @@ http_archive(
 )
 
 http_archive(
+  name = "alphaearth_snippet",
+  urls = ["https://www.dropbox.com/scl/fi/oeydut7c7b58wc4ezatv8/alphaearth_snippet.zip?rlkey=g8dqzbtmugnmgqy3z702uts9g&st=k0rcbpxx&dl=1"],
+  build_file = "//third_party:BUILD.zip_file",
+  integrity = "sha256-AVTNEBKAEfjw8E3kv8F0UHzNfGB/7yb2kRG2BeD2bd8=",
+)
+
+http_archive(
     name = "nmea",
     urls = ["https://github.com/pcdangio/nmea/archive/1d6e507dd08f3a646513dfdc5eea71470f366d59.zip"],
     strip_prefix = "nmea-1d6e507dd08f3a646513dfdc5eea71470f366d59",
@@ -639,4 +646,11 @@ http_archive(
     strip_prefix = "geographiclib-2.5",
     build_file = "//third_party:BUILD.geographiclib",
     sha256 = "d41e90b3009307fd96474fe21ccae824d981c7335ce8ddd3618c1f6084793011",
+)
+
+http_archive(
+  name = "sacre_coeur_snippet",
+  urls = ["https://www.dropbox.com/scl/fi/k05m15kfgr13e8pd5s65e/sacre_coeur.zip?rlkey=rv8lr6eiee07bee22r4qfqrat&st=dijow5kb&dl=1"],
+  build_file = "//third_party:BUILD.zip_file",
+  sha256 = "75c56d869bacc72e0c3686d39771c4ee27303136958ad63b10da682ec24a4608",
 )

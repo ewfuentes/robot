@@ -59,7 +59,7 @@ class ExtractorOutput:
     features: torch.Tensor
     positions: torch.Tensor
     mask: torch.Tensor
-    debug: dict[str, torch.Tensor]
+    debug: dict[str, torch.Tensor] = field(default_factory=dict)
 
     @classmethod
     def collate(cls, items: list["SemanticTokenExtractorOutput"]):

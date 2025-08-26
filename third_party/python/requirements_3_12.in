@@ -35,6 +35,8 @@ osmnx==2.0.5
 huggingface-hub==0.33.4
 open-clip-torch==2.32.0
 lmdb==1.7.2
+rasterio==1.4.3
+pyproj==3.7.2
 dinov2 @ git+https://github.com/ewfuentes/dinov2.git@3680537d078b8cc2924f29657b8322cba8b4bb3d
 torch-kdtree @ git+https://github.com/ewfuentes/torch_kdtree.git@583b92b105fcc7aefdc0020136229f9ed32566b7
 sam-2 @ git+https://github.com/IDEA-Research/Grounded-SAM-2.git@dd4c5141b75e4838dd486c64f773c43b4db3a07b
@@ -43,3 +45,4 @@ cvxpylayers @ git+https://github.com/holmesco/cvxpylayers.git@728b8f208875d0ad91
 poly_matrix @ git+https://github.com/utiasASRL/poly_matrix.git@671d6b7704fcc82817189dbbc87814c429b2e15d
 cert_tools @ git+https://github.com/utiasASRL/certifiable-tools.git@afcd203bb4623ea60b339f00f8da802f776de1d4
 chompack @ git+https://github.com/ewfuentes/chompack.git@844adda111241bb64f7008e0d0680525290958f3
+hloc @ git+https://github.com/cvg/Hierarchical-Localization.git@2e2a5517d88c7c84db0efd77d720c858da19edcd

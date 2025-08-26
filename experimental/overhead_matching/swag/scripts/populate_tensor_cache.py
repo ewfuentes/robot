@@ -57,14 +57,18 @@ def main(train_config_path: Path,
     parts = field_spec.split('.')
     model_config = train_config
     for p in parts:
-        model_config = getattr(model_config, p)
+        if isinstance(model_config, dict):
+            model_config = model_config[p]
+        else:
+            model_config = getattr(model_config, p)
+    aux_info = getattr(train_config, parts[0]).auxiliary_info
     patch_dims = getattr(train_config, parts[0]).patch_dims
     hash_struct = HashStruct(model_config=model_config, patch_dims=patch_dims)
     yaml_str, config_hash = compute_config_hash(hash_struct)
     print('computing cache for: ', hash_struct, 'with hash: ', config_hash.hexdigest())
 
     # Create the model
-    model = spe.create_extractor(model_config)
+    model = spe.create_extractor(model_config, aux_info)
     model = model.cuda()
 
     # Construct the dataset
@@ -93,6 +97,7 @@ def main(train_config_path: Path,
         with db.begin(write=True) as txn:
             txn.put(b"config_hash", config_hash.digest())
             txn.put(b"config", yaml_str)
+            txn.put(b"dataset", dataset_path.name.encode('utf-8'))
 
         # Process the data
         for batch in tqdm.tqdm(dataloader):
@@ -121,7 +126,11 @@ def main(train_config_path: Path,
 
                     to_write = {}
                     for key, value in out.items():
-                        to_write[key] = value[batch_idx, selector].cpu().numpy()
+                        if isinstance(value, torch.Tensor):
+                            to_write[key] = value[batch_idx, selector].cpu().numpy()
+                        if isinstance(value, dict):
+                            for k2, v2 in value.items():
+                                to_write[f"{key}.{k2}"] = v2[batch_idx, selector].cpu().numpy()
 
                     ostream = io.BytesIO()
                     np.savez(ostream, **to_write)
