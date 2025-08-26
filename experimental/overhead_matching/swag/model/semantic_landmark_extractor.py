@@ -223,34 +223,34 @@ class SemanticLandmarkExtractor(torch.nn.Module):
         is_panorama = 'pano_id' in model_input.metadata[0]
 
         sentences = []
-        num_sentences_per_item = []
+        sentence_splits = [0]
         for item in model_input.metadata:
-            num_sentences_per_item.append(len(item["landmarks"]))
+            sentence_splits.append(sentence_splits[-1] + len(item["landmarks"]))
             for landmark in item["landmarks"]:
                 sentences.append(describe_landmark(landmark))
 
         sentence_embedding = self._sentence_embedding_model.encode(
-                sentences, convert_to_tensor=True, device=model_input.image.device)
+                sentences,
+                convert_to_tensor=True,
+                device=model_input.image.device).reshape(-1, self.output_dim)
 
         mask = torch.ones((batch_size, max_num_landmarks), dtype=torch.bool)
         features = torch.zeros((batch_size, max_num_landmarks, self.output_dim))
         positions = torch.zeros((batch_size, max_num_landmarks, 2))
 
-        start_idx = 0
-        for i, num_landmarks_for_item in enumerate(num_sentences_per_item):
-            end_idx = start_idx + num_landmarks_for_item
-            mask[i, :num_landmarks_for_item] = False
-            features[i, :num_landmarks_for_item] = sentence_embedding[start_idx:end_idx]
+        for batch_item in range(batch_size):
+            start_idx, end_idx = sentence_splits[batch_item:batch_item+2]
+            num_landmarks_for_item = end_idx - start_idx
+            mask[batch_item, :num_landmarks_for_item] = False
+            features[batch_item, :num_landmarks_for_item] = sentence_embedding[start_idx:end_idx]
 
             # Compute the positions of the landmarks
             if is_panorama:
-                positions[i, :num_landmarks_for_item] = compute_landmark_pano_positions(
-                        model_input.metadata[i], model_input.image.shape[-2:])
+                positions[batch_item, :num_landmarks_for_item] = compute_landmark_pano_positions(
+                        model_input.metadata[batch_item], model_input.image.shape[-2:])
             else:
-                positions[i, :num_landmarks_for_item] = compute_landmark_sat_positions(
-                        model_input.metadata[i])
-
-            start_idx += num_landmarks_for_item
+                positions[batch_item, :num_landmarks_for_item] = compute_landmark_sat_positions(
+                        model_input.metadata[batch_item])
 
         return ExtractorOutput(
             features=features,
