@@ -68,4 +68,5 @@ ExtractorConfig = Union[
     SemanticNullExtractorConfig,
     SemanticEmbeddingMatrixConfig,
     SemanticSegmentExtractorConfig,
+    SemanticLandmarkExtractorConfig,
 ]

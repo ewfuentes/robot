@@ -229,10 +229,11 @@ class SemanticLandmarkExtractor(torch.nn.Module):
             for landmark in item["landmarks"]:
                 sentences.append(describe_landmark(landmark))
 
-        sentence_embedding = self._sentence_embedding_model.encode(
-                sentences,
-                convert_to_tensor=True,
-                device=model_input.image.device).reshape(-1, self.output_dim)
+        with torch.no_grad():
+            sentence_embedding = self._sentence_embedding_model.encode(
+                    sentences,
+                    convert_to_tensor=True,
+                    device=model_input.image.device).reshape(-1, self.output_dim)
 
         mask = torch.ones((batch_size, max_num_landmarks), dtype=torch.bool)
         features = torch.zeros((batch_size, max_num_landmarks, self.output_dim))
@@ -253,9 +254,9 @@ class SemanticLandmarkExtractor(torch.nn.Module):
                         model_input.metadata[batch_item])
 
         return ExtractorOutput(
-            features=features,
-            mask=mask,
-            positions=positions)
+            features=features.to(model_input.image.device),
+            mask=mask.to(model_input.image.device),
+            positions=positions.to(model_input.image.device))
 
     @property
     def output_dim(self):

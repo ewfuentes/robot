@@ -37,10 +37,11 @@ py_library(
     requirement("torch"),
     requirement("torchvision"),
     requirement("msgspec"),
-    ":swag_model_input_output",
-    ":swag_config_types",
-    ":semantic_segment_extractor",
     ":alphaearth_extractor",
+    ":semantic_landmark_extractor",
+    ":semantic_segment_extractor",
+    ":swag_config_types",
+    ":swag_model_input_output",
     "//common/torch:load_torch_deps",
   ]
 )
