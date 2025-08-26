@@ -1,6 +1,7 @@
 
 import common.torch.load_torch_deps
 import torch
+import math
 
 from experimental.overhead_matching.swag.model.swag_config_types import (
         SemanticLandmarkExtractorConfig)
@@ -186,16 +187,40 @@ def describe_landmark(props):
     return "An unknown landmark."
 
 
-class SemanticLandmarkExtractor(torch.nn.Module):
+def compute_landmark_pano_positions(pano_metadata, pano_shape):
+    out = []
+    for landmark in pano_metadata["landmarks"]:
+        # Compute dx and dy in the ENU frame.
+        dx = landmark["web_mercator_x"] - pano_metadata["web_mercator_x"]
+        dy = landmark["web_mercator_y"] - pano_metadata["web_mercator_y"]
+        # math.atan2 return an angle in [-pi, pi]. The panoramas are such that
+        # north points in the middle of the panorama, so we compute theta as
+        # atan(-dx / dy) so that zero angle corresponds to the center of the panorama
+        # and the angle increases as we move right in the panorama
+        theta = math.atan2(dx, dy)
+        frac = (theta + math.pi) / (2 * math.pi)
+        out.append((pano_shape[0] / 2.0, pano_shape[1] * frac))
+    return torch.tensor(out).reshape(-1, 2)
 
+
+def compute_landmark_sat_positions(sat_metadata):
+    out = []
+    for landmark in sat_metadata["landmarks"]:
+        out.append((landmark["web_mercator_y"] - sat_metadata["web_mercator_y"],
+                    landmark["web_mercator_x"] - sat_metadata["web_mercator_x"]))
+    return torch.tensor(out).reshape(-1, 2)
+
+
+class SemanticLandmarkExtractor(torch.nn.Module):
     def __init__(self, config: SemanticLandmarkExtractorConfig):
         super().__init__()
         self._sentence_embedding_model = SentenceTransformer(config.sentence_model_str)
 
     def forward(self, model_input: ModelInput) -> ExtractorOutput:
-        
         max_num_landmarks = max([len(x["landmarks"]) for x in model_input.metadata])
         batch_size = len(model_input.metadata)
+
+        is_panorama = 'pano_id' in model_input.metadata[0]
 
         sentences = []
         num_sentences_per_item = []
@@ -209,7 +234,7 @@ class SemanticLandmarkExtractor(torch.nn.Module):
 
         mask = torch.ones((batch_size, max_num_landmarks), dtype=torch.bool)
         features = torch.zeros((batch_size, max_num_landmarks, self.output_dim))
-        positions = None
+        positions = torch.zeros((batch_size, max_num_landmarks, 2))
 
         start_idx = 0
         for i, num_landmarks_for_item in enumerate(num_sentences_per_item):
@@ -218,6 +243,12 @@ class SemanticLandmarkExtractor(torch.nn.Module):
             features[i, :num_landmarks_for_item] = sentence_embedding[start_idx:end_idx]
 
             # Compute the positions of the landmarks
+            if is_panorama:
+                positions[i, :num_landmarks_for_item] = compute_landmark_pano_positions(
+                        model_input.metadata[i], model_input.image.shape[-2:])
+            else:
+                positions[i, :num_landmarks_for_item] = compute_landmark_sat_positions(
+                        model_input.metadata[i])
 
             start_idx += num_landmarks_for_item
 
