@@ -1,6 +1,4 @@
 
-load("@bazel_tools//platforms:platforms.bzl", "platform")
-
 mappings = {
   "jammy": ":jammy_22.04",
   "noble": ":noble_24.04",
@@ -14,7 +12,7 @@ def define_platforms():
   for os in ["jammy", "noble"]:
     for compiler in ["clang", "gcc"]:
       for arch in ["x86_64", "aarch64"]:
-        platform(
+        native.platform(
           name = "_".join(os, compiler, arch),
           constraint_values = [
             "@platforms//os:linux",
