@@ -10,7 +10,7 @@ from hloc import (
     extract_features,
     match_features,
 )
-from experimental.learn_descriptors.hloc_sfm import HlocHelperConfig, HlocHelper
+from experimental.learn_descriptors.hloc_helper import HlocHelperConfig, HlocHelper
 
 
 class HlocHelperTest(unittest.TestCase):
