@@ -24,11 +24,9 @@ cc_library(
     "-Wno-deprecated-copy-with-user-provided-copy",
     "-std=c++11",
     "-fPIC",
+    "-msse4.1",
     "-Wno-cast-qual",
-  ] + select({
-    "@platforms//cpu:x86_64": ["-msse4.1"],
-    "@platforms//cpu:aarch64": [],
-  }),
+  ],
   visibility = ["//visibility:public"],
   deps = [
     ":libdivide",
