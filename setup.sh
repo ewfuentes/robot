@@ -4,7 +4,12 @@ set -x # enable echo
 
 CODENAME=`lsb_release --codename --short`
 ARCH=$(uname -m)
-ln -sf .bazelrc_${CODENAME} .bazelrc_ubuntu
+cat <<EOF > .bazelrc_ubuntu
+build --config=clang
+build:clang --platforms=//toolchain:${CODENAME}_clang_${ARCH}
+build:gcc --platforms=//toolchain:${CODENAME}_gcc_${ARCH}
+EOF
+
 if [ "${CODENAME}" = "noble" ]; then
     PACKAGES="clang-18 clang-format-18 gcc-14 g++-14 gcc-11 g++-11"
 elif [ "${CODENAME}" = "jammy" ]; then

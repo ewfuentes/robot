@@ -209,55 +209,29 @@ constraint_value(
   constraint_setting= ":ubuntu_version"
 )
 
-platform(
-  name="jammy_clang",
-  constraint_values = [
-    "@platforms//os:linux",
-    ":jammy_22.04",
-    ":clang15",
-  ]
-)
 
-platform(
-  name="jammy_gcc",
-  constraint_values = [
-    "@platforms//os:linux",
-    ":jammy_22.04",
-    ":gcc11",
-  ]
-)
+mappings = {
+  "jammy": ":jammy_22.04",
+  "noble": ":noble_24.04",
+  "clang": {"jammy": ":clang15", "noble": ":clang18"},
+  "gcc": {"jammy": ":clang15", "noble": ":clang18"},
+  "x86_64": "@platforms//cpu:x86_64",
+  "aarch64": "@platforms//cpu:aarch64",
+}
 
-platform(
-  name="noble_clang",
-  constraint_values = [
-    "@platforms//os:linux",
-    ":noble_24.04",
-    ":clang18",
-  ]
-)
 
-platform(
-  name="noble_gcc",
-  constraint_values = [
-    "@platforms//os:linux",
-    ":noble_24.04",
-    ":gcc11",
-  ]
-)
-
-platform(
-  name="x86_64",
-  constraint_values = [
-    "@platforms//cpu:x86_64"
-  ]
-)
-
-platform(
-  name="aarch64",
-  constraint_values = [
-    "@platforms//cpu:aarch64"
-  ]
-)
+for os in ["jammy", "noble"]:
+  for compiler in ["clang", "gcc"]:
+    for arch in ["x86_64", "aarch64"]:
+      platform(
+        name = "_".join(os, compiler, arch),
+        constraint_values = [
+          "@platforms//os:linux",
+          mappings[os],
+          mappings[compiler][os],
+          mappings[arch],
+        ]
+      )
 
 
 git_info(
