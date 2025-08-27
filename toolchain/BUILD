@@ -230,7 +230,6 @@ platform(
 platform(
   name="noble_clang",
   constraint_values = [
-    "@platforms//cpu:x86_64",
     "@platforms//os:linux",
     ":noble_24.04",
     ":clang18",
@@ -243,6 +242,20 @@ platform(
     "@platforms//os:linux",
     ":noble_24.04",
     ":gcc11",
+  ]
+)
+
+platform(
+  name="x86_64",
+  constraint_values = [
+    "@platforms//cpu:x86_64"
+  ]
+)
+
+platform(
+  name="aarch64",
+  constraint_values = [
+    "@platforms//cpu:aarch64"
   ]
 )
 
