@@ -3,6 +3,7 @@ load(":clang_toolchain_config.bzl", "clang_toolchain_config")
 load(":gcc_toolchain_config.bzl", "gcc_toolchain_config")
 load(":gcc_aarch64_toolchain_config.bzl", "gcc_aarch64_toolchain_config")
 load(":git_info.bzl", "git_info")
+load(":define_platforms.bzl", "define_platforms")
 
 package(default_visibility = ["//visibility:public"], features=["warning_compile_flags"])
 
@@ -209,30 +210,7 @@ constraint_value(
   constraint_setting= ":ubuntu_version"
 )
 
-
-mappings = {
-  "jammy": ":jammy_22.04",
-  "noble": ":noble_24.04",
-  "clang": {"jammy": ":clang15", "noble": ":clang18"},
-  "gcc": {"jammy": ":clang15", "noble": ":clang18"},
-  "x86_64": "@platforms//cpu:x86_64",
-  "aarch64": "@platforms//cpu:aarch64",
-}
-
-
-for os in ["jammy", "noble"]:
-  for compiler in ["clang", "gcc"]:
-    for arch in ["x86_64", "aarch64"]:
-      platform(
-        name = "_".join(os, compiler, arch),
-        constraint_values = [
-          "@platforms//os:linux",
-          mappings[os],
-          mappings[compiler][os],
-          mappings[arch],
-        ]
-      )
-
+define_platforms()
 
 git_info(
     name = "git_info_gen",
