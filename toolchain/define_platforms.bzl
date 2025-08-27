@@ -13,7 +13,7 @@ def define_platforms():
     for compiler in ["clang", "gcc"]:
       for arch in ["x86_64", "aarch64"]:
         native.platform(
-          name = "_".join(os, compiler, arch),
+          name = "_".join([os, compiler, arch]),
           constraint_values = [
             "@platforms//os:linux",
             mappings[os],
