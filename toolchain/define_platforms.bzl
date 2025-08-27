@@ -1,4 +1,6 @@
 
+load("@bazel_tools//platforms:platforms.bzl", "platform")
+
 mappings = {
   "jammy": ":jammy_22.04",
   "noble": ":noble_24.04",
@@ -7,8 +9,6 @@ mappings = {
   "x86_64": "@platforms//cpu:x86_64",
   "aarch64": "@platforms//cpu:aarch64",
 }
-
-
 
 def define_platforms():
   for os in ["jammy", "noble"]:
