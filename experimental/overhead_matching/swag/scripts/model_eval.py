@@ -27,9 +27,12 @@ def _():
 
     from experimental.overhead_matching.swag.data import vigor_dataset, satellite_embedding_database
     from experimental.overhead_matching.swag.evaluation import evaluate_swag
-    from experimental.overhead_matching.swag.model import patch_embedding, swag_patch_embedding
+    from experimental.overhead_matching.swag.model import (
+        patch_embedding as pe,
+        swag_patch_embedding as spe
+    )
 
-    from common.torch import load_and_save_models
+    from common.torch import load_and_save_models as lsm
     from experimental.overhead_matching.swag.evaluation.wag_config_pb2 import WagConfig, SatellitePatchConfig
     from common.math import haversine
     from pathlib import Path
@@ -46,50 +49,69 @@ def _():
         haversine,
         itertools,
         json,
-        load_and_save_models,
+        lsm,
         mo,
         msgspec,
         np,
-        patch_embedding,
         pd,
+        pe,
         plt,
-        pprint,
         seaborn,
-        swag_patch_embedding,
+        spe,
         torch,
         vigor_dataset,
     )
 
 
 @app.cell
-def _(
-    Path,
-    evaluate_swag,
-    json,
-    load_and_save_models,
-    msgspec,
-    patch_embedding,
-    swag_patch_embedding,
-    torch,
-    vigor_dataset,
-):
+def _(Path, evaluate_swag, json, lsm, msgspec, pe, spe, torch, vigor_dataset):
     def load_model(path, device='cuda'):
         print(path)
         try:
-            model = load_and_save_models.load_model(path, device=device)
+            model = lsm.load_model(path, device=device, skip_consistent_output_check=True)
             model.patch_dims
             model.model_input_from_batch
+            if isinstance(model, spe.SwagPatchEmbedding):
+                model._extractor_by_name
+            print('loading from saved model')
         except Exception as e:
-            print("Failed to load model", e)
+            print("failed to load model, trying to load from weights")
+            print(e)
             training_config_path = path.parent / "config.json"
             training_config_json = json.loads(training_config_path.read_text())
             model_config_json = training_config_json["sat_model_config"] if 'satellite' in path.name else training_config_json["pano_model_config"]
-            config = msgspec.json.decode(json.dumps(model_config_json), type=patch_embedding.WagPatchEmbeddingConfig | swag_patch_embedding.SwagPatchEmbeddingConfig)
+            print(model_config_json)
+            config = msgspec.json.decode(json.dumps(model_config_json), type=pe.WagPatchEmbeddingConfig | spe.SwagPatchEmbeddingConfig)
 
             model_weights = torch.load(path / 'model_weights.pt', weights_only=True)
-            model_type = patch_embedding.WagPatchEmbedding if isinstance(config, patch_embedding.WagPatchEmbeddingConfig) else swag_patch_embedding.SwagPatchEmbedding
-            print("Creating model with config:", config)
+            model_type = (
+                pe.WagPatchEmbedding if isinstance(config, pe.WagPatchEmbeddingConfig) else spe.SwagPatchEmbedding)
             model = model_type(config)
+            if isinstance(config, spe.SwagPatchEmbeddingConfig):
+                to_add = {}
+                for k, v in model_weights.items():
+                    if k.startswith('_feature_map_extractor'):
+                        to_add_key = f"_extractor_by_name._{k}"
+                        to_add[to_add_key] = v
+                    elif k.startswith('_semantic_token_extractor'):
+                        to_add_key = f"_extractor_by_name._{k}"
+                        to_add[to_add_key] = v
+                    elif k.startswith("_feature_token_projection"):
+                        to_add_key = '.'.join(["_projection_by_name", '__feature_map_extractor'] + k.split('.')[1:])
+                        to_add[to_add_key] = v
+                    elif k.startswith("_semantic_token_projection"):
+                        to_add_key = '.'.join(
+                            ["_projection_by_name", '__semantic_token_extractor'] + k.split('.')[1:])
+                        to_add[to_add_key] = v
+                    elif k == "_feature_token_marker":
+                        to_add_key = "_token_marker_by_name.__feature_map_extractor"
+                        to_add[to_add_key] = v
+                    elif k == "_semantic_token_marker":
+                        to_add_key = "_token_marker_by_name.__semantic_token_extractor"
+                        to_add[to_add_key] = v
+
+                model_weights |= to_add
+
             model.load_state_dict(model_weights)
             model = model.to(device)
         return model
@@ -119,7 +141,7 @@ def _(
 
 
 @app.cell
-def _(Path, pprint):
+def _(Path):
     model_paths = {}
     idx=59
     # _base_path = Path("/data/overhead_matching/models/all_chicago_sat_embedding_pano_wag")
@@ -127,15 +149,20 @@ def _(Path, pprint):
     #     model_paths[_p.name] = _p / f"{idx:04d}"
     _base = Path("/data/overhead_matching/models")
     _fixed_base = _base / "20250806_swag_model_fixed"
+    _sem_base = _base / "20250815_swag_semantic"
     model_paths = {
         "all_chicago_dino_project_512": _base / "20250707_dino_features/all_chicago_dino_project_512",
-        "all_chicago_sat_dino_pano_dino_agg_small_attn_8": _fixed_base / 'all_chicago_sat_dino_pano_dino_agg_small_attn_8',
-        "all_chicago_sat_dino_pano_dino_agg_small_batch_size_128": _fixed_base / 'all_chicago_sat_dino_pano_dino_agg_small_batch_size_128',
-        "all_chicago_sat_dino_pano_dino_agg_small_batch_size_128_warmup_1e-5_lr_2p66e-5": _fixed_base / 'all_chicago_sat_dino_pano_dino_agg_small_batch_size_128_warmup_1e-5_lr_2p66e-5',
-        "all_chicago_sat_dino_pano_dino_agg_small_hard_negative_20": _fixed_base / 'all_chicago_sat_dino_pano_dino_agg_small_hard_negative_20',
-        "all_chicago_sat_dino_pano_dino_agg_small_hard_negative_20_batch_size_128": _fixed_base / 'all_chicago_sat_dino_pano_dino_agg_small_hard_negative_20_batch_size_128',
-        "all_chicago_sat_dino_pano_dino_batch_size_256_hard_negative_20_lr_1p4e-4_warmup_5": _fixed_base / "all_chicago_sat_dino_pano_dino_batch_size_256_hard_negative_20_lr_1p4e-4_warmup_5",
-        "all_chicago_sat_dino_embedding_mat_pano_dino_sam": _base / "20250815_swag_semantic" / "all_chicago_sat_dino_embedding_mat_pano_dino_sam",
+        # "all_chicago_sat_dino_pano_dino_agg_small_attn_8": _fixed_base / 'all_chicago_sat_dino_pano_dino_agg_small_attn_8',
+        # "all_chicago_sat_dino_pano_dino_agg_small_batch_size_128": _fixed_base / 'all_chicago_sat_dino_pano_dino_agg_small_batch_size_128',
+        # "all_chicago_sat_dino_pano_dino_agg_small_batch_size_128_warmup_1e-5_lr_2p66e-5": _fixed_base / 'all_chicago_sat_dino_pano_dino_agg_small_batch_size_128_warmup_1e-5_lr_2p66e-5',
+        # "all_chicago_sat_dino_pano_dino_agg_small_hard_negative_20": _fixed_base / 'all_chicago_sat_dino_pano_dino_agg_small_hard_negative_20',
+        # "all_chicago_sat_dino_pano_dino_agg_small_hard_negative_20_batch_size_128": _fixed_base / 'all_chicago_sat_dino_pano_dino_agg_small_hard_negative_20_batch_size_128',
+        # "all_chicago_sat_dino_pano_dino_batch_size_256_hard_negative_20_lr_1p4e-4_warmup_5": _fixed_base / "all_chicago_sat_dino_pano_dino_batch_size_256_hard_negative_20_lr_1p4e-4_warmup_5",
+        "all_chicago_sat_dino_embedding_mat_pano_dino_sam": _sem_base / "all_chicago_sat_dino_embedding_mat_pano_dino_sam",
+        "all_chicago_sat_dinov3_pano_dinov3": _sem_base / "all_chicago_sat_dinov3_pano_dinov3",
+        "all_chicago_sat_dinov3_alphaearth_pano_dinov3": _sem_base / "all_chicago_sat_dinov3_alphaearth_pano_dinov3",
+        "all_chicago_sat_dinov3_semLandmark_pano_dinov3_semLandmark": _sem_base / "all_chicago_sat_dinov3_semLandmark_pano_dinov3_semLandmark",
+        "all_chicago_sat_dinov3_semLandmark_pano_dinov3_semLandmark_autocast": _sem_base / "all_chicago_sat_dinov3_semLandmark_pano_dinov3_semLandmark_autocast",
     }
 
     """
@@ -147,7 +174,8 @@ def _(Path, pprint):
     drwxrwxr-x 17 erick erick 4096 Aug  7 18:54 all_chicago_sat_dino_pano_dino_agg_small_hard_negative_20_batch_size_128
     """
 
-    pprint(model_paths)
+    for k, v in model_paths.items():
+        assert v.exists(), f"{k} {v} does not exist!"
 
     dataset_paths = {
         'chicago': Path('/data/overhead_matching/datasets/VIGOR/Chicago'),
@@ -281,12 +309,12 @@ def _(Path, evaluate_swag, load_model, vigor_dataset):
 
 
 @app.cell
-def _(Path, model_paths):
+def _(Path):
     def get_max_checkpoint(model_path: Path):
         checkpoints = [int(x.name.split('_')[0]) for x in model_path.glob("*_satellite")]
         return max(checkpoints)
 
-    get_max_checkpoint(model_paths['all_chicago_sat_dino_pano_dino_batch_size_256_hard_negative_20_lr_1p4e-4_warmup_5'])
+    # get_max_checkpoint(model_paths['all_chicago_sat_dino_pano_dino_batch_size_256_hard_negative_20_lr_1p4e-4_warmup_5'])
 
     return (get_max_checkpoint,)
 
