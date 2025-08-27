@@ -343,6 +343,8 @@ def train(config: TrainConfig, *, dataset, validation_datasets, panorama_model, 
         schedulers=[warmup_lr_scheduler, step_lr_scheduler],
         milestones=[opt_config.lr_schedule.num_warmup_epochs])
 
+    grad_scaler = torch.amp.GradScaler()
+
     torch.set_printoptions(linewidth=200)
 
     total_batches = 0
@@ -361,19 +363,21 @@ def train(config: TrainConfig, *, dataset, validation_datasets, panorama_model, 
 
             opt.zero_grad()
 
-            panorama_embeddings = panorama_model(
-                    panorama_model.model_input_from_batch(batch).to("cuda"))
-            sat_embeddings = satellite_model(
-                    satellite_model.model_input_from_batch(batch).to("cuda"))
+            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                panorama_embeddings = panorama_model(
+                        panorama_model.model_input_from_batch(batch).to("cuda"))
+                sat_embeddings = satellite_model(
+                        satellite_model.model_input_from_batch(batch).to("cuda"))
 
-            loss_dict = compute_loss(
-                    pano_embeddings=panorama_embeddings,
-                    sat_embeddings=sat_embeddings,
-                    pairs=pairs,
-                    loss_config=opt_config.loss_config)
+                loss_dict = compute_loss(
+                        pano_embeddings=panorama_embeddings,
+                        sat_embeddings=sat_embeddings,
+                        pairs=pairs,
+                        loss_config=opt_config.loss_config)
 
-            loss_dict["loss"].backward()
-            opt.step()
+            grad_scaler.scale(loss_dict["loss"]).backward()
+            grad_scaler.step(opt)
+            grad_scaler.update()
 
             # Hard Negative Mining
             miner.consume(
