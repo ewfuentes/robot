@@ -64,18 +64,18 @@ class HlocHelper:
         if config is not None:
             self.config = config
         if dir_cached_colmap_model is not None:
-            assert dir_cached_colmap_model.exists()
             self.model = pycolmap.Reconstruction(str(dir_cached_colmap_model))
         else:
             self.model = None
 
-    # if query_images is left as None, this will operate on all images in the self.config.dir_images, including subdirectories
-    def extract_and_match(self):
+    # images in image_list should be relative to self.config.dir_images
+    def extract_and_match(self, image_list: list[Path]):
         extract_features.main(
             self.config.local_feature_config,
             self.config.dir_images,
             self.config.dir_outputs,
             feature_path=self.config.path_local_features,
+            image_list=image_list,
         )
         if not self.config.exhaustive_match:
             extract_features.main(
@@ -88,11 +88,13 @@ class HlocHelper:
                 self.config.path_global_features,
                 self.config.path_sfm_pairs,
                 num_matched=self.config.retrieval_num_matched,
+                query_list=image_list,
+                db_list=image_list,
             )
         else:
             pairs_from_exhaustive.main(
                 self.config.path_sfm_pairs,
-                [p.name for p in self.config.dir_images.iterdir()],
+                image_list=image_list,
             )
         match_features.main(
             self.config.matcher_local_config,
@@ -102,13 +104,15 @@ class HlocHelper:
             self.config.path_local_matches_sfm,
         )
 
-    def reconstruct(self) -> pycolmap.Reconstruction:
+    # if image_list is left as None, all images will be imported into colmap_db
+    def reconstruct(self, image_list: list[Path] = None) -> pycolmap.Reconstruction:
         self.model = reconstruction.main(
             self.config.dir_sfm,
             self.config.dir_images,
             self.config.path_sfm_pairs,
             self.config.path_local_features,
             self.config.path_local_matches_sfm,
+            image_list=image_list,
         )
         return self.model
 
@@ -123,11 +127,14 @@ class HlocHelper:
         path_results: Path,
     ):
         assert self.model is not None
+        assert path_localize_pairs.suffix == ".txt"
         assert path_results.suffix == ".txt"
         for query_image in query_images:
             assert (self.config.dir_images / query_image).exists()
         for reference_image in db_images:
             assert (self.config.dir_images / reference_image).exists()
+        path_localize_pairs.parent.mkdir(parents=True, exist_ok=True)
+        path_results.parent.mkdir(parents=True, exist_ok=True)
 
         # extract local features (will only extract for missing files)
         extract_features.main(
@@ -157,6 +164,7 @@ class HlocHelper:
             path_localize_pairs,
             self.config.path_local_features,
             self.config.dir_outputs,
+            path_results.parent / "matches.h5",
         )
         path_queries = self.config.dir_outputs / "tmp_localize_queries.txt"
         with open(path_queries, "w") as f:
