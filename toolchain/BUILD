@@ -3,6 +3,7 @@ load(":clang_toolchain_config.bzl", "clang_toolchain_config")
 load(":gcc_toolchain_config.bzl", "gcc_toolchain_config")
 load(":gcc_aarch64_toolchain_config.bzl", "gcc_aarch64_toolchain_config")
 load(":git_info.bzl", "git_info")
+load(":define_platforms.bzl", "define_platforms")
 
 package(default_visibility = ["//visibility:public"], features=["warning_compile_flags"])
 
@@ -61,53 +62,32 @@ cc_toolchain(
 )
 
 toolchain(
-  name = "clang_15_toolchain_for_linux_x84_64",
+  name = "clang_15_toolchain_for_linux",
   toolchain = ":k8_clang_15_toolchain",
   toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
   exec_compatible_with = [
-    "@platforms//cpu:x86_64",
     "@platforms//os:linux",
   ],
   target_compatible_with = [
-    "@platforms//cpu:x86_64",
-    "@platforms//os:linux",
-    ":jammy_22.04",
-    ":clang15",
-  ],
-)
-toolchain(
-  name = "clang_15_toolchain_for_linux_arm64",
-  toolchain = ":k8_clang_15_toolchain",
-  toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
-  exec_compatible_with = [
-    "@platforms//cpu:arm64",
-    "@platforms//os:linux",
-  ],
-  target_compatible_with = [
-    "@platforms//cpu:arm64",
     "@platforms//os:linux",
     ":jammy_22.04",
     ":clang15",
   ],
 )
 
-
 toolchain(
-  name = "clang_18_toolchain_for_linux_x84_64",
+  name = "clang_18_toolchain_for_linux",
   toolchain = ":k8_clang_18_toolchain",
   toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
   exec_compatible_with = [
-    "@platforms//cpu:x86_64",
     "@platforms//os:linux",
   ],
   target_compatible_with = [
-    "@platforms//cpu:x86_64",
     "@platforms//os:linux",
     ":noble_24.04",
     ":clang18",
   ],
 )
-
 
 cc_toolchain(
   name="k8_gcc_10_toolchain",
@@ -122,16 +102,14 @@ cc_toolchain(
 )
 
 toolchain(
-  name = "gcc_10_toolchain_for_linux_x84_64",
+  name = "gcc_10_toolchain_for_linux",
   toolchain = ":k8_gcc_10_toolchain",
   toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
   exec_compatible_with = [
-    "@platforms//cpu:x86_64",
     "@platforms//os:linux",
     ":gcc10",
   ],
   target_compatible_with = [
-    "@platforms//cpu:x86_64",
     "@platforms//os:linux",
   ],
 )
@@ -149,15 +127,13 @@ cc_toolchain(
 )
 
 toolchain(
-  name = "gcc_11_toolchain_for_linux_x84_64",
+  name = "gcc_11_toolchain_for_linux",
   toolchain = ":k8_gcc_11_toolchain",
   toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
   exec_compatible_with = [
-    "@platforms//cpu:x86_64",
     "@platforms//os:linux",
   ],
   target_compatible_with = [
-    "@platforms//cpu:x86_64",
     "@platforms//os:linux",
     ":gcc11",
   ],
@@ -234,57 +210,7 @@ constraint_value(
   constraint_setting= ":ubuntu_version"
 )
 
-platform(
-  name="jammy_clang",
-  constraint_values = [
-    "@platforms//cpu:x86_64",
-    "@platforms//os:linux",
-    ":jammy_22.04",
-    ":clang15",
-  ]
-)
-
-platform(
-  name="jammy_clang_arm64",
-  constraint_values = [
-    "@platforms//cpu:arm64",
-    "@platforms//os:linux",
-    ":jammy_22.04",
-    ":clang15",
-  ]
-)
-
-platform(
-  name="jammy_gcc",
-  constraint_values = [
-    "@platforms//cpu:x86_64",
-    "@platforms//os:linux",
-    ":jammy_22.04",
-    ":gcc11",
-  ]
-)
-
-
-platform(
-  name="noble_clang",
-  constraint_values = [
-    "@platforms//cpu:x86_64",
-    "@platforms//os:linux",
-    ":noble_24.04",
-    ":clang18",
-  ]
-)
-
-platform(
-  name="noble_gcc",
-  constraint_values = [
-    "@platforms//cpu:x86_64",
-    "@platforms//os:linux",
-    ":noble_24.04",
-    ":gcc11",
-  ]
-)
-
+define_platforms()
 
 git_info(
     name = "git_info_gen",
