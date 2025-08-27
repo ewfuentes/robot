@@ -869,6 +869,7 @@ huggingface-hub==0.33.4 \
     # via
     #   -r third_party/python/requirements_3_12.in
     #   open-clip-torch
+    #   sentence-transformers
     #   timm
     #   tokenizers
     #   transformers
@@ -2058,6 +2059,7 @@ pillow==10.4.0 \
     #   reportlab
     #   sam-2
     #   scikit-image
+    #   sentence-transformers
     #   supervision
     #   torchvision
 platformdirs==4.3.8 \
@@ -3088,7 +3090,9 @@ scikit-learn==1.6.1 \
     --hash=sha256:e7be3fa5d2eb9be7d77c3734ff1d599151bb523674be9b834e8da6abe132f44e \
     --hash=sha256:e8ca8cb270fee8f1f76fa9bfd5c3507d60c6438bbee5687f81042e2bb98e5a97 \
     --hash=sha256:fa909b1a36e000a03c382aade0bd2063fd5680ff8b8e501660c0f59f021a6415
-    # via -r third_party/python/requirements_3_12.in
+    # via
+    #   -r third_party/python/requirements_3_12.in
+    #   sentence-transformers
 scipy==1.16.1 \
     --hash=sha256:0851f6a1e537fe9399f35986897e395a1aa61c574b178c0d456be5b1a0f5ca1f \
     --hash=sha256:0a55ffe0ba0f59666e90951971a884d1ff6f4ec3275a48f472cfb64175570f77 \
@@ -3157,6 +3161,7 @@ scipy==1.16.1 \
     #   scikit-image
     #   scikit-learn
     #   scs
+    #   sentence-transformers
     #   sparseqr
     #   spatialmath-python
     #   supervision
@@ -3217,6 +3222,10 @@ send2trash==1.8.3 \
     --hash=sha256:0c31227e0bd08961c7665474a3d1ef7193929fedda4233843689baa056be46c9 \
     --hash=sha256:b18e7a3966d99871aefeb00cfbcfdced55ce4871194810fc71f4aa484b953abf
     # via jupyter-server
+sentence-transformers==5.1.0 \
+    --hash=sha256:70c7630697cc1c64ffca328d6e8688430ebd134b3c2df03dc07cb3a016b04739 \
+    --hash=sha256:fc803929f6a3ce82e2b2c06e0efed7a36de535c633d5ce55efac0b710ea5643e
+    # via -r third_party/python/requirements_3_12.in
 shapely==2.1.1 \
     --hash=sha256:04e4c12a45a1d70aeb266618d8cf81a2de9c4df511b63e105b90bfdfb52146de \
     --hash=sha256:0c062384316a47f776305ed2fa22182717508ffdeb4a56d0ff4087a77b2a0f6d \
@@ -3400,6 +3409,7 @@ torch==2.7.0+cu128 \
     #   lightglue
     #   open-clip-torch
     #   sam-2
+    #   sentence-transformers
     #   timm
     #   torch-kdtree
     #   torchmetrics
@@ -3464,6 +3474,7 @@ tqdm==4.67.1 \
     #   iopath
     #   open-clip-torch
     #   sam-2
+    #   sentence-transformers
     #   supervision
     #   transformers
 traitlets==5.14.3 \
@@ -3486,7 +3497,9 @@ traitlets==5.14.3 \
 transformers==4.47.1 \
     --hash=sha256:6c29c05a5f595e278481166539202bf8641281536df1c42357ee58a45d0a564a \
     --hash=sha256:d2f5d19bb6283cd66c893ec7e6d931d6370bbf1cc93633326ff1f41a40046c9c
-    # via -r third_party/python/requirements_3_12.in
+    # via
+    #   -r third_party/python/requirements_3_12.in
+    #   sentence-transformers
 triton==3.3.0 \
     --hash=sha256:0f12a8611eff721d3fd837d0cc2a1f2f8a4d382ec3fc3a8d6a07a5b1e535c81c
     # via torch
@@ -3505,6 +3518,7 @@ typing-extensions==4.14.1 \
     #   iopath
     #   lightning-utilities
     #   referencing
+    #   sentence-transformers
     #   spatialmath-python
     #   starlette
     #   submitit
