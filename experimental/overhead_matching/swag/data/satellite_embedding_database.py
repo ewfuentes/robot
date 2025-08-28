@@ -15,7 +15,7 @@ def build_embeddings_from_model(model: torch.nn.Module,
     model.to(device)
     model.eval()
     inf_results = []
-    with torch.no_grad():
+    with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
         for data in tqdm.tqdm(dataloader, disable=not verbose):
             embeddings = model(model_input_from_dataloader(data).to(device))
             inf_results.append(embeddings)
