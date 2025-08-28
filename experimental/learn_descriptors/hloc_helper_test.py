@@ -49,7 +49,9 @@ class HlocHelperTest(unittest.TestCase):
             path_localize_result,
         )
 
-        fig = hloc_helper.visualize_3d(path_localize_result, show=False)
+        fig = hloc_helper.visualize_3d(
+            hloc_helper.model, path_localize_result, show=False
+        )
 
     def test_hloc_sfm_exhaustive(self):
         config = HlocHelperConfig(
@@ -71,15 +73,13 @@ class HlocHelperTest(unittest.TestCase):
         hloc_helper.extract_and_match(sfm_image_list)
         hloc_helper.reconstruct(sfm_image_list)
 
-    # must be run after previous tests where colmap model get saved!
-    def test_hloc_sfm_cached_model(self):
         path_cached_sfm_model = self.path_output / "sfm"
-        hloc_helper = HlocHelper(dir_cached_colmap_model=path_cached_sfm_model)
+        hloc_helper_model_only = HlocHelper(
+            dir_cached_colmap_model=path_cached_sfm_model
+        )
         fig = hloc_helper.visualize_3d(
-            show=False
+            hloc_helper.model, show=False
         )  # this is basically the only thing that would work with only hloc_helper.model populated.
-        # however, with a config also loaded, you can forgo running the reconstruct function and use everything normally provided
-        # the cached model is consistent with the data in your config
 
 
 if __name__ == "__main__":
