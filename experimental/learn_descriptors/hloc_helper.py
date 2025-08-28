@@ -110,6 +110,7 @@ class HlocHelper:
 
     # if image_list is left as None, all images will be imported into colmap_db
     def reconstruct(self, image_list: list[Path] = None) -> pycolmap.Reconstruction:
+        assert self.config is not None
         self.model = reconstruction.main(
             self.config.dir_sfm,
             self.config.dir_images,
@@ -120,9 +121,10 @@ class HlocHelper:
         )
         return self.model
 
-    # db_images should be mapped/localized in self.model
+    # db_images should be mapped in self.model
     # both query_images and db_images should be relative paths from self.config.dir_images
     # (and might have to be children of self self.config.dir_images)
+    # this writes data to the path_results
     def localize_sfm(
         self,
         query_images: list[Path],
@@ -131,7 +133,7 @@ class HlocHelper:
         path_results: Path,
         query_images_intrinsics: Optional[List[List[str]]] = None,
     ):
-        assert self.model is not None
+        assert self.model is not None and self.config is not None
         assert path_localize_pairs.suffix == ".txt"
         assert path_results.suffix == ".txt"
         assert query_images_intrinsics is None or len(query_images_intrinsics) == len(
@@ -198,8 +200,9 @@ class HlocHelper:
             path_results,
         )
 
+    @staticmethod
     def _get_queries_to_logs(
-        self, path_result: Path, selected_queries: Optional[List[Path]] = None
+        path_result: Path, selected_queries: Optional[List[Path]] = None
     ):
         assert path_result.exists()
 
@@ -214,18 +217,19 @@ class HlocHelper:
         }
         return result_queries_to_logs
 
+    @staticmethod
     def visualize_3d(
-        self,
+        model: pycolmap.Reconstruction,
         path_localization_result: Optional[Path] = None,
         selected_localization_queries: Optional[List[Path]] = None,
         show: bool = True,
     ) -> go.Figure:
         fig = viz_3d.init_figure()
         viz_3d.plot_reconstruction(
-            fig, self.model, color="rgba(255,0,0,0.5)", name="mapping", points_rgb=True
+            fig, model, color="rgba(255,0,0,0.5)", name="mapping", points_rgb=True
         )
         if path_localization_result is not None and path_localization_result.exists():
-            queries_to_logs = self._get_queries_to_logs(
+            queries_to_logs = HlocHelper._get_queries_to_logs(
                 path_localization_result, selected_localization_queries
             )
             for query_name, log in queries_to_logs.items():
@@ -241,7 +245,7 @@ class HlocHelper:
                 # visualize 2D-3D correspodences
                 inl_3d = np.array(
                     [
-                        self.model.points3D[pid].xyz
+                        model.points3D[pid].xyz
                         for pid in np.array(log["points3D_ids"])[
                             log["PnP_ret"]["inlier_mask"]
                         ]
