@@ -210,6 +210,7 @@ py_library(
     visibility = ["//common/python:__pkg__"],
     deps = [
 	requirement("hloc"),
+    requirement("numpy"),
 	"//common/torch:load_torch_deps",
     ]
 )

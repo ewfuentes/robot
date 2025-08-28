@@ -49,6 +49,8 @@ class HlocHelperTest(unittest.TestCase):
             path_localize_result,
         )
 
+        fig = hloc_helper.visualize_3d(path_localize_result, show=False)
+
     def test_hloc_sfm_exhaustive(self):
         config = HlocHelperConfig(
             Path("external/sacre_coeur_snippet/sacre_coeur"),
@@ -73,7 +75,9 @@ class HlocHelperTest(unittest.TestCase):
     def test_hloc_sfm_cached_model(self):
         path_cached_sfm_model = self.path_output / "sfm"
         hloc_helper = HlocHelper(dir_cached_colmap_model=path_cached_sfm_model)
-        hloc_helper.visualize_3d()  # this is basically the only thing that would work with only hloc_helper.model populated.
+        fig = hloc_helper.visualize_3d(
+            show=False
+        )  # this is basically the only thing that would work with only hloc_helper.model populated.
         # however, with a config also loaded, you can forgo running the reconstruct function and use everything normally provided
         # the cached model is consistent with the data in your config
 

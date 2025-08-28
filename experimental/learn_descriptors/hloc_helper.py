@@ -15,6 +15,10 @@ from hloc import (
 from hloc.utils import viz_3d
 from hloc.utils.parsers import parse_image_list
 from typing import Optional, Union, List
+import random
+import pickle
+import numpy as np
+import plotly.graph_objects as go
 
 
 @dataclass
@@ -125,10 +129,14 @@ class HlocHelper:
         db_images: list[Path],
         path_localize_pairs: Path,
         path_results: Path,
+        query_images_intrinsics: Optional[List[List[str]]] = None,
     ):
         assert self.model is not None
         assert path_localize_pairs.suffix == ".txt"
         assert path_results.suffix == ".txt"
+        assert query_images_intrinsics is None or len(query_images_intrinsics) == len(
+            query_images
+        )
         for query_image in query_images:
             assert (self.config.dir_images / query_image).exists()
         for reference_image in db_images:
@@ -166,10 +174,21 @@ class HlocHelper:
             self.config.dir_outputs,
             path_results.parent / "matches.h5",
         )
+        # populate the queries file with camera data
         path_queries = self.config.dir_outputs / "tmp_localize_queries.txt"
         with open(path_queries, "w") as f:
-            for query_img in query_images:
-                f.write(str(query_img) + "\n")
+            for i, query_img in enumerate(query_images):
+                query_string = f"{query_img}"
+                if query_images_intrinsics is not None:
+                    query_string += " ".join(str(p) for p in query_images_intrinsics[i])
+                else:
+                    camera = pycolmap.infer_camera_from_image(
+                        self.config.dir_images / query_img
+                    )
+                    cam_params_str = " ".join(str(p) for p in camera.params.tolist())
+                    query_string += f" {camera.model.name} {camera.width} {camera.height} {cam_params_str}\n"
+                f.write(query_string)
+
         localize_sfm.main(
             self.model,
             path_queries,
@@ -179,9 +198,57 @@ class HlocHelper:
             path_results,
         )
 
-    def visualize_3d(self):
+    def _get_queries_to_logs(
+        self, path_result: Path, selected_queries: Optional[List[Path]] = None
+    ):
+        assert path_result.exists()
+
+        with open(str(path_result) + "_logs.pkl", "rb") as f:
+            logs = pickle.load(f)
+
+        if not selected_queries:
+            selected_queries = list(logs["loc"].keys())
+
+        result_queries_to_logs = {
+            query_name: logs["loc"][query_name] for query_name in selected_queries
+        }
+        return result_queries_to_logs
+
+    def visualize_3d(
+        self,
+        path_localization_result: Optional[Path] = None,
+        selected_localization_queries: Optional[List[Path]] = None,
+        show: bool = True,
+    ) -> go.Figure:
         fig = viz_3d.init_figure()
         viz_3d.plot_reconstruction(
             fig, self.model, color="rgba(255,0,0,0.5)", name="mapping", points_rgb=True
         )
-        fig.show()
+        if path_localization_result is not None and path_localization_result.exists():
+            queries_to_logs = self._get_queries_to_logs(
+                path_localization_result, selected_localization_queries
+            )
+            for query_name, log in queries_to_logs.items():
+                viz_3d.plot_camera_colmap(
+                    fig,
+                    log["PnP_ret"]["cam_from_world"],
+                    log["PnP_ret"]["camera"],
+                    color="rgba(0,255,0,0.5)",
+                    name=query_name,
+                    fill=True,
+                    text=f"inliers: {log["PnP_ret"]["num_inliers"]} / {log["PnP_ret"]['inlier_mask'].shape[0]}\nPose: {log["PnP_ret"]["cam_from_world"]}",
+                )
+                # visualize 2D-3D correspodences
+                inl_3d = np.array(
+                    [
+                        self.model.points3D[pid].xyz
+                        for pid in np.array(log["points3D_ids"])[
+                            log["PnP_ret"]["inlier_mask"]
+                        ]
+                    ]
+                )
+                viz_3d.plot_points(fig, inl_3d, color="lime", ps=1, name=query_name)
+
+        if show:
+            fig.show()
+        return fig
