@@ -137,6 +137,7 @@ py_library(
     requirement("sentence-transformers"),
     requirement("ipdb"),
     "//common/torch:load_torch_deps",
+    "//common/ollama:pyollama",
     ":swag_model_input_output",
     ":swag_config_types",
   ]

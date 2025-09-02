@@ -15,12 +15,32 @@ class Options:
 
 
 to_retreive = {
-    "bus_stop": Options({"highway": "bus_stop"}),
-    "t_stop": Options({"railway": "station"}),
-    "restaurants": Options({"amenity": ["restaurant", "cafe", "bar", "fast_food", "pub"]}),
-    "grocery_store": Options({"shop": ["supermarket", "convenience", "greengrocer", "deli"]}),
-    "places_of_worship": Options({"amenity": "place_of_worship"}),
-    "school": Options({"amenity": ["school", "college", "university"]}),
+        'all': Options({
+            "amenity": True,
+            "tourism": True,
+            "shop": True,
+            "craft": True,
+            "emergency": True,
+            "geological": True,
+            "highway": True,
+            "historic": True,
+            "landuse": True,
+            "leisure": True,
+            "man_made": True,
+            "military": True,
+            "natural": True,
+            "office": True,
+            "power": True,
+            "public_transport": True,
+            "railway": True,
+            })
+#     "bus_stop": Options({"highway": "bus_stop"}),
+#     "t_stop": Options({"railway": "station"}),
+#     "restaurants": Options({"amenity": ["restaurant", "cafe", "bar", "fast_food", "pub"]}),
+#     "grocery_store": Options({"shop": ["supermarket", "convenience", "greengrocer", "deli"]}),
+#     "places_of_worship": Options({"amenity": "place_of_worship"}),
+#     "school": Options({"amenity": ["school", "college", "university"]}),
+#     "tourism": Options({"tourism": ["museum", "hotel", "zoo", "attraction"]})
     # "residential": Options({"building": True}, only_nodes=False),
     # "parks": Options({"leisure": ["park", "garden", "nature_reserve"]}, only_nodes=False),
 }
@@ -34,7 +54,12 @@ def main(dataset_path: Path, zoom_level: int, output_path: Path | None, show_ext
 
     top, left = web_mercator.pixel_coords_to_latlon(*min_yx_pixel, zoom_level)
     bottom, right = web_mercator.pixel_coords_to_latlon(*max_yx_pixel, zoom_level)
-    bbox = [left, bottom, right, top]
+    height_delta = top - bottom
+    width_delta = right - left
+    bbox = [left - 0.1 * width_delta,
+            bottom - 0.1 * height_delta,
+            right + 0.1 * width_delta,
+            top + 0.1 * height_delta]
 
     dfs = []
 

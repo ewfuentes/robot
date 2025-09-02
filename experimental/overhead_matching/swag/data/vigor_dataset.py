@@ -65,6 +65,7 @@ class VigorDatasetConfig(NamedTuple):
     satellite_zoom_level: int = 20
     sample_mode: SampleMode = SampleMode.NEAREST
     should_load_images: bool = True
+    landmark_version: str = "v1"
 
 
 class VigorDatasetItem(NamedTuple):
@@ -327,7 +328,7 @@ class VigorDataset(torch.utils.data.Dataset):
             sat_metadata = load_satellite_metadata(p / "satellite", config.satellite_zoom_level)
             pano_metadata = load_panorama_metadata(p / "panorama", config.satellite_zoom_level)
             landmark_metadata = load_landmark_geojson(
-                p / "landmarks.geojson", config.satellite_zoom_level)
+                p / "landmarks" / f"{config.landmark_version}.geojson", config.satellite_zoom_level)
 
             min_lat = np.min(sat_metadata.lat)
             max_lat = np.max(sat_metadata.lat)
@@ -369,7 +370,7 @@ class VigorDataset(torch.utils.data.Dataset):
         self._landmark_metadata["satellite_idxs"] = sat_landmark_correspondences.sat_idxs_from_landmark_idx
 
         pano_landmark_correspondences = compute_panorama_from_landmarks(
-                self._panorama_kdtree, self._panorama_metadata, self._landmark_metadata)
+                self._panorama_pixel_kdtree, self._panorama_metadata, self._landmark_metadata)
         self._panorama_metadata["landmark_idxs"] = pano_landmark_correspondences.landmark_idxs_from_pano_idx
         self._landmark_metadata["panorama_idxs"] = pano_landmark_correspondences.pano_idxs_from_landmark_idx
 

@@ -85,6 +85,7 @@ ModelConfig = Union[patch_embedding.WagPatchEmbeddingConfig,
 @dataclass
 class DatasetConfig:
     paths: list[Path]
+    landmark_version: str
     factor: None | float = 1.0
     should_load_images: bool = True
 
