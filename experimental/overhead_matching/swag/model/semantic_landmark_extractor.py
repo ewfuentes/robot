@@ -227,16 +227,6 @@ class SemanticLandmarkExtractor(torch.nn.Module):
         self._ollama = config.llm_str
         self._description_cache = {}
 
-        for param in self._sentence_embedding_model.parameters():
-            param.requires_grad = False
-
-        self._feature_markers = {
-            "Point": torch.nn.Parameter(torch.randn(1, 1, self.output_dim)),
-            "LineString": torch.nn.Parameter(torch.randn(1, 1, self.output_dim)),
-            "Polygon": torch.nn.Parameter(torch.randn(1, 1, self.output_dim)),
-            "MultiPolygon": torch.nn.Parameter(torch.randn(1, 1, self.output_dim)),
-        }
-
     def forward(self, model_input: ModelInput) -> ExtractorOutput:
         max_num_landmarks = max([len(x["landmarks"]) for x in model_input.metadata])
         batch_size = len(model_input.metadata)
