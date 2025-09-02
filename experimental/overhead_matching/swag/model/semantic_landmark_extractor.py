@@ -2,6 +2,8 @@
 import common.torch.load_torch_deps
 import torch
 import math
+from common.ollama import pyollama
+import json
 
 from experimental.overhead_matching.swag.model.swag_config_types import (
         SemanticLandmarkExtractorConfig)
@@ -10,181 +12,48 @@ from experimental.overhead_matching.swag.model.swag_model_input_output import (
 from sentence_transformers import SentenceTransformer
 
 
-def describe_landmark(props):
-    """
-    Generates a detailed natural language description of a landmark.
+def describe_landmark(props, ollama):
+    d = dict(props)
+    prompt = f"""Generate a natural language description of this openstreetmap landmark.
+    Only include information relevant for visually identifying the object.
+    For example, don't include payment methods accepted. Don't include any details not derived
+    from the landmark information. Include no other details.
 
-    Args:
-      exemplar: A dictionary representing a landmark, typically with a
-                'properties' key.
+    {json.dumps(d)}"""
+    description = ollama(prompt)
+    return description
 
-    Returns:
-      A string containing the natural language description.
-    """
-    landmark_type = props.get('landmark_type', 'unknown landmark type').replace('_', ' ')
-    name = props.get('name')
 
-    address_parts = [
-        props.get('addr:housenumber'),
-        props.get('addr:street'),
-        props.get('addr:city'),
-        props.get('addr:state'),
-        props.get('addr:postcode')
-    ]
-    address = ", ".join(filter(None, address_parts))
+def prune_landmark(props):
+    to_drop = [
+        "web_mercator",
+        "panorama_idxs",
+        "satellite_idxs",
+        "landmark_type",
+        "element",
+        "id",
+        "geometry",
+        "opening_hours",
+        "website",
+        "addr:city",
+        "addr:state",
+        'check_date',
+        'checked_exists',
+        'opening_date',
+        'survey:date']
+    out = set()
+    for (k, v) in props.items():
+        should_add = True
+        if v is None:
+            continue
+        for prefix in to_drop:
+            if k.startswith(prefix):
+                should_add = False
+                break
+        if should_add:
+            out.add((k, v))
 
-    description_parts = []
-
-    # Core description phrase
-    if name:
-        description_parts.append(f"A {landmark_type} named **{name}**")
-    else:
-        description_parts.append(f"An unnamed {landmark_type}")
-
-    if address:
-        description_parts.append(f"is located at {address}")
-
-    # Add details based on landmark type
-    if landmark_type == 'bus stop' or landmark_type == 't stop':
-        network = props.get('network')
-        operator = props.get('operator')
-
-        if network:
-            description_parts.append(f"It's serviced by the **{network}** network")
-        if operator and operator != network:
-            description_parts.append(f"and operated by **{operator}**")
-
-        features = []
-        if props.get('bench') == 'yes':
-            features.append("a bench")
-        if props.get('shelter') == 'yes':
-            features.append("a shelter")
-        if props.get('wheelchair') == 'yes':
-            features.append("wheelchair accessible")
-
-        if features:
-            if len(features) > 1:
-                features_str = f"which includes {', '.join(features[:-1])} and {features[-1]}"
-            else:
-                features_str = f"which has {features[0]}"
-            description_parts.append(features_str)
-
-        departures_board = props.get('departures_board')
-        if departures_board == 'realtime':
-            description_parts.append("and features a real-time departures board")
-
-        public_transport = props.get('public_transport')
-        train = props.get('train')
-        subway = props.get('subway')
-        if public_transport == 'station' and (train == 'yes' or subway == 'yes'):
-            transport_types = []
-            if train == 'yes':
-                transport_types.append('train')
-            if subway == 'yes':
-                transport_types.append('subway')
-            transport_str = ' and '.join(transport_types)
-            description_parts.append(f"which is a **{transport_str} station**")
-
-    elif landmark_type == 'grocery store':
-        shop_type = props.get('shop')
-        brand = props.get('brand')
-        opening_hours = props.get('opening_hours')
-
-        if brand:
-            description_parts.append(f"The store operates under the **{brand}** brand")
-
-        if shop_type:
-            description_parts.append(f"and is a {shop_type} type of store")
-
-        if opening_hours:
-            description_parts.append(f"with business hours of {opening_hours}")
-
-        store_features = []
-        if props.get('atm') == 'yes':
-            store_features.append("an ATM")
-        if props.get('fast_food') == 'yes':
-            store_features.append("fast food offerings")
-
-        if store_features:
-            if len(store_features) > 1:
-                store_features_str = f"It also provides {', '.join(store_features[:-1])} and {store_features[-1]}"
-            else:
-                store_features_str = f"It also provides {store_features[0]}"
-            description_parts.append(store_features_str)
-
-    elif landmark_type == 'places of worship':
-        religion = props.get('religion')
-        denomination = props.get('denomination')
-
-        if religion:
-            description_parts.append(f"It is a religious building for the **{religion}** faith")
-            if denomination:
-                description_parts.append(f"of the **{denomination}** denomination")
-        if props.get('polling_station') == 'yes':
-            description_parts.append("and it also serves as a polling station")
-
-    elif landmark_type == 'restaurants':
-        cuisine = props.get('cuisine')
-        amenity = props.get('amenity')
-        opening_hours = props.get('opening_hours')
-        takeaway = props.get('takeaway')
-        indoor_seating = props.get('indoor_seating')
-        outdoor_seating = props.get('outdoor_seating')
-
-        if cuisine:
-            cuisine_list = cuisine.replace(";", " and ").split(" and ")
-            cuisine_str = f"serving a wide variety of cuisines, including {', and '.join(cuisine_list)}"
-            description_parts.append(cuisine_str)
-        if amenity:
-            description_parts.append(f"It is a **{amenity}**")
-        if opening_hours:
-            description_parts.append(f"with typical hours of {opening_hours}")
-
-        restaurant_features = []
-        if takeaway == 'yes':
-            restaurant_features.append("takeout service")
-        if indoor_seating == 'yes':
-            restaurant_features.append("indoor seating")
-        if outdoor_seating == 'yes':
-            restaurant_features.append("outdoor seating")
-
-        if restaurant_features:
-            if len(restaurant_features) > 1:
-                features_str = f"It offers {', '.join(restaurant_features[:-1])} and {restaurant_features[-1]}"
-            else:
-                features_str = f"It offers {restaurant_features[0]}"
-            description_parts.append(features_str)
-
-    elif landmark_type == 'school':
-        amenity = props.get('amenity')
-        operator = props.get('operator')
-        grades = props.get('grades')
-        website = props.get('website')
-
-        if amenity:
-            description_parts.append(f"which is an educational facility, specifically a **{amenity}**")
-        if operator:
-            description_parts.append(f"operated by **{operator}**")
-        if grades:
-            description_parts.append(f"and serves students in grades {grades}")
-        if website:
-            description_parts.append(f"with more information available at their website: {website}")
-
-    # Combine parts into a final string, ensuring proper sentence structure
-    final_description = ""
-    if description_parts:
-        final_description = description_parts[0]
-        if len(description_parts) > 1:
-            for part in description_parts[1:]:
-                if part.startswith(('It is', 'It offers', 'It\'s')):
-                    final_description += f". {part}"
-                else:
-                    final_description += f" {part}"
-
-    # Capitalize the first letter and add a period if necessary
-    if final_description:
-        return final_description.strip() + "."
-    return "An unknown landmark."
+    return frozenset(out)
 
 
 def compute_landmark_pano_positions(pano_metadata, pano_shape):
@@ -215,6 +84,8 @@ class SemanticLandmarkExtractor(torch.nn.Module):
     def __init__(self, config: SemanticLandmarkExtractorConfig):
         super().__init__()
         self._sentence_embedding_model = SentenceTransformer(config.sentence_model_str)
+        self._ollama = config.llm_str
+        self._description_cache = {}
 
     def forward(self, model_input: ModelInput) -> ExtractorOutput:
         max_num_landmarks = max([len(x["landmarks"]) for x in model_input.metadata])
@@ -226,8 +97,19 @@ class SemanticLandmarkExtractor(torch.nn.Module):
         sentence_splits = [0]
         for item in model_input.metadata:
             sentence_splits.append(sentence_splits[-1] + len(item["landmarks"]))
+            if isinstance(self._ollama, str):
+                self._ollama = pyollama.Ollama(self._ollama)
+                self._ollama.__enter__()
+
             for landmark in item["landmarks"]:
-                sentences.append(describe_landmark(landmark))
+                props = prune_landmark(landmark)
+                if props in self._description_cache:
+                    sentences.append(self._description_cache[props])
+                    continue
+
+                description = describe_landmark(props, self._ollama)
+                sentences.append(description)
+                self._description_cache[props] = description
 
         with torch.no_grad():
             sentence_embedding = self._sentence_embedding_model.encode(
@@ -238,6 +120,9 @@ class SemanticLandmarkExtractor(torch.nn.Module):
         mask = torch.ones((batch_size, max_num_landmarks), dtype=torch.bool)
         features = torch.zeros((batch_size, max_num_landmarks, self.output_dim))
         positions = torch.zeros((batch_size, max_num_landmarks, 2))
+        max_description_length = max([len(x.encode('utf-8')) for x in sentences]) if len(sentences) > 0 else 0
+        sentence_debug = torch.zeros(
+            (batch_size, max_num_landmarks, max_description_length), dtype=torch.uint8)
 
         for batch_item in range(batch_size):
             start_idx, end_idx = sentence_splits[batch_item:batch_item+2]
@@ -253,10 +138,22 @@ class SemanticLandmarkExtractor(torch.nn.Module):
                 positions[batch_item, :num_landmarks_for_item] = compute_landmark_sat_positions(
                         model_input.metadata[batch_item])
 
+            # Store the sentences in a debug tensor
+            if num_landmarks_for_item > 0:
+                curr_sentences = sentences[start_idx:end_idx]
+                sentence_tensors = [torch.tensor(list(x.encode('utf-8')), dtype=torch.uint8)
+                                    for x in curr_sentences]
+                sentence_tensor = torch.nested.nested_tensor(
+                    sentence_tensors)
+                sentence_tensor = sentence_tensor.to_padded_tensor(
+                    padding=0, output_size=(num_landmarks_for_item, max_description_length))
+                sentence_debug[batch_item, :num_landmarks_for_item] = sentence_tensor
+
         return ExtractorOutput(
             features=features.to(model_input.image.device),
             mask=mask.to(model_input.image.device),
-            positions=positions.to(model_input.image.device))
+            positions=positions.to(model_input.image.device),
+            debug={'sentences': sentence_debug.to(model_input.image.device)})
 
     @property
     def output_dim(self):
