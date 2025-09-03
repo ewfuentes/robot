@@ -51,4 +51,20 @@ else
     chmod +x ~/.local/bin/bazel
 fi
 
+if command -v ollama > /dev/null 2>&1; then
+    :
+else
+    if [ "${ARCH}" = "aarch64" ]; then
+        OLLAMA_URL="https://github.com/ollama/ollama/releases/download/v0.11.8/ollama-linux-arm64.tgz"
+    elif [ "${ARCH}" = "x86_64" ]; then
+        OLLAMA_URL="https://github.com/ollama/ollama/releases/download/v0.11.8/ollama-linux-amd64.tgz"
+    else
+        echo "Unsupported architecture: ${ARCH}"
+        exit 1
+    fi
+    mkdir -p ~/.local
+    curl -o /tmp/ollama.tar.gz -L "${OLLAMA_URL}"
+    tar -xzf /tmp/ollama.tar.gz -C ~/.local
+fi
+
 echo "Installed all packages. Ensure that cuda-toolkit is also installed!"
