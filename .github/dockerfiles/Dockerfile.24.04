@@ -22,3 +22,4 @@ COPY launch.sh /actions-runner
 
 WORKDIR /actions-runner
 USER $USERNAME
+ENV PATH="/home/${USERNAME}/.local/bin:${PATH}"
