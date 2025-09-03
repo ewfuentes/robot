@@ -17,8 +17,8 @@ RUN mkdir /actions-runner && \
         chmod a+x /usr/bin/bazel && \
         git lfs install
 RUN echo "$USERNAME ALL=(ALL:ALL) NOPASSWD: ALL" > /etc/sudoers.d/$USERNAME
-RUN mkdir -p "~/.local/bin"
 COPY launch.sh /actions-runner
 
 WORKDIR /actions-runner
 USER $USERNAME
+RUN mkdir -p "~/.local/bin"
