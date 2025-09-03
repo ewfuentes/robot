@@ -51,7 +51,7 @@ class Ollama:
             preexec_fn=os.setsid,  # so we can kill the whole process group
             env={
                 "OLLAMA_HOST": self.base_url(),
-                "HOME": os.environ["HOME"]}
+                "HOME": os.environ["HOME"] if "HOME" in os.environ else os.environ["TEST_TMPDIR"]}
         )
         wait_for_server(self.base_url())
 
