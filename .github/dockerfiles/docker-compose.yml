@@ -6,7 +6,7 @@ services:
     image: github_runner:24.04
     shm_size: 2gb
     runtime: nvidia
-    command: bash -c "./launch.sh"
+    command: bash -l -c "./launch.sh"
     restart: always
     environment:
       GITHUB_ACCESS_TOKEN: ${GITHUB_ACCESS_TOKEN}
