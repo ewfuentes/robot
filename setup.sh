@@ -67,4 +67,10 @@ else
     tar -xzf /tmp/ollama.tar.gz -C ~/.local
 fi
 
+if [ ! -f /etc/bash_completion.d/bazelisk.bash ]; then 
+    bash -c "~/.local/bin/bazel completion bash > /tmp/bazelisk.bash"; 
+    sudo mv /tmp/bazelisk.bash /etc/bash_completion.d/bazelisk.bash;
+    echo "Created new autocomplete for bazelisk in /etc/bash_completion.d/bazelisk.bash. Restart your shell for it to take effect";
+fi
+
 echo "Installed all packages. Ensure that cuda-toolkit is also installed!"
