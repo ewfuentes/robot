@@ -24,19 +24,22 @@ class AbsolutePositionExtractor(torch.nn.Module):
         features = torch.zeros((batch_size, 1, self.output_dim))
         positions = torch.zeros((batch_size, 1, 2))
 
+        lat_lon_tensor = torch.zeros((batch_size, 2), device=model_input.image.device)
+
         for batch_item in range(batch_size):
             lat, lon = model_input.metadata[batch_item]['lat'],  model_input.metadata[batch_item]['lon']
-            lat = torch.deg2rad(torch.as_tensor(lat))
-            lon = torch.deg2rad(torch.as_tensor(lon))
+            lat_lon_tensor[batch_item, 0] = lat
+            lat_lon_tensor[batch_item, 1] = lon
 
-            num_scales = self.embedding_dim // 4
-            for scale_idx in range(num_scales):
-                embedding_idx_start = 4 * scale_idx
-                scale = (self._scale_step ** scale_idx)
-                features[batch_item, :, embedding_idx_start + 0] = torch.sin(lat * scale)
-                features[batch_item, :, embedding_idx_start + 1] = torch.cos(lat * scale)
-                features[batch_item, :, embedding_idx_start + 2] = torch.sin(lon * scale)
-                features[batch_item, :, embedding_idx_start + 3] = torch.cos(lon * scale)
+        lat_lon_tensor = torch.deg2rad(lat_lon_tensor)
+        num_scales = self.embedding_dim // 4
+        for scale_idx in range(num_scales):
+            embedding_idx_start = 4 * scale_idx
+            scale = (self._scale_step ** scale_idx)
+            features[..., 0, embedding_idx_start + 0] = torch.sin(lat_lon_tensor[:, 0] * scale)
+            features[..., 0, embedding_idx_start + 1] = torch.cos(lat_lon_tensor[:, 0] * scale)
+            features[..., 0,  embedding_idx_start + 2] = torch.sin(lat_lon_tensor[:, 1] * scale)
+            features[..., 0,  embedding_idx_start + 3] = torch.cos(lat_lon_tensor[:, 1]  * scale)
             
         return ExtractorOutput(
             features=features.to(model_input.image.device),
