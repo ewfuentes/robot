@@ -13,21 +13,21 @@ export LAMBDA_API_KEY="your-api-key-here"
 
 ### List Available Instance Types
 ```bash
-bazel run //experimental/overhead_matching/swag/scripts/lambda_cloud/lambda_api:cli -- list-types
-bazel run //experimental/overhead_matching/swag/scripts/lambda_cloud/lambda_api:cli -- list-types --region us-east-3
-bazel run //experimental/overhead_matching/swag/scripts/lambda_cloud/lambda_api:cli -- list-types --gpu-type gpu_1x_gh200
-bazel run //experimental/overhead_matching/swag/scripts/lambda_cloud/lambda_api:cli -- list-types --json
+bazel run //common/tools/lambda_cloud/lambda_api:cli -- list-types
+bazel run //common/tools/lambda_cloud/lambda_api:cli -- list-types --region us-east-3
+bazel run //common/tools/lambda_cloud/lambda_api:cli -- list-types --gpu-type gpu_1x_gh200
+bazel run //common/tools/lambda_cloud/lambda_api:cli -- list-types --json
 ```
 
 ### List Running Instances (Status)
 ```bash
-bazel run //experimental/overhead_matching/swag/scripts/lambda_cloud/lambda_api:cli -- list-instances
-bazel run //experimental/overhead_matching/swag/scripts/lambda_cloud/lambda_api:cli -- list-instances --json
+bazel run //common/tools/lambda_cloud/lambda_api:cli -- list-instances
+bazel run //common/tools/lambda_cloud/lambda_api:cli -- list-instances --json
 ```
 
 ### Launch Instances
 ```bash
-bazel run //experimental/overhead_matching/swag/scripts/lambda_cloud/lambda_api:cli -- launch \
+bazel run //common/tools/lambda_cloud/lambda_api:cli -- launch \
   --region us-east-3 \
   --type gpu_1x_gh200 \
   --ssh-keys "ssh key name" \
@@ -39,13 +39,13 @@ bazel run //experimental/overhead_matching/swag/scripts/lambda_cloud/lambda_api:
 
 ### Get SSH Information
 ```bash
-bazel run //experimental/overhead_matching/swag/scripts/lambda_cloud/lambda_api:cli -- ssh <instance-id>
-bazel run //experimental/overhead_matching/swag/scripts/lambda_cloud/lambda_api:cli -- ssh <instance-id> --json
+bazel run //common/tools/lambda_cloud/lambda_api:cli -- ssh <instance-id>
+bazel run //common/tools/lambda_cloud/lambda_api:cli -- ssh <instance-id> --json
 ```
 
 ### Terminate Instances
 ```bash
-bazel run //experimental/overhead_matching/swag/scripts/lambda_cloud/lambda_api:cli -- terminate <instance-id>
+bazel run //common/tools/lambda_cloud/lambda_api:cli -- terminate <instance-id>
 ```
 
 ## Programmatic Usage

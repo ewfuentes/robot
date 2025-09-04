@@ -3,7 +3,6 @@ load("@pip//:requirements.bzl", "requirement")
 py_library(
     name = "lambda_cloud",
     srcs = [
-        "__init__.py",
         "client.py",
         "models.py",
     ],

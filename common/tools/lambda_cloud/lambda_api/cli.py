@@ -9,8 +9,8 @@ import time
 from typing import List
 
 # Allow running directly as a script
-from experimental.overhead_matching.swag.scripts.lambda_cloud.lambda_api.client import LambdaCloudClient
-from experimental.overhead_matching.swag.scripts.lambda_cloud.lambda_api.models import LambdaCloudError, InsufficientCapacityError
+from common.tools.lambda_cloud.lambda_api.client import LambdaCloudClient
+from common.tools.lambda_cloud.lambda_api.models import LambdaCloudError, InsufficientCapacityError
 
 
 def setup_logging(verbose: bool = False):
@@ -299,7 +299,7 @@ def main():
     launch_parser.add_argument("--max-retries", type=int, default=10, help="Maximum retry attempts for capacity issues")
     launch_parser.add_argument("--wait", "-w", action="store_true", help="Wait for instances to become active")
     launch_parser.add_argument("--quiet", action="store_true", help="Suppress status messages")
-    launch_parser.add_argument("--image-family", help="Image family name to use")
+    launch_parser.add_argument("--image-family", type=str, default="lambda-stack-24-04", help="Image family name to use")
     
     # terminate command
     terminate_parser = subparsers.add_parser("terminate", help="Terminate instances")
