@@ -37,7 +37,10 @@ def prune_landmark(props):
         "website",
         "addr:city",
         "addr:state",
-        'check_date']
+        'check_date',
+        'checked_exists',
+        'opening_date',
+        'survey:date']
     out = set()
     for (k, v) in props.items():
         should_add = True
@@ -117,7 +120,7 @@ class SemanticLandmarkExtractor(torch.nn.Module):
         mask = torch.ones((batch_size, max_num_landmarks), dtype=torch.bool)
         features = torch.zeros((batch_size, max_num_landmarks, self.output_dim))
         positions = torch.zeros((batch_size, max_num_landmarks, 2))
-        max_description_length = max([len(x.encode('utf-8')) for x in sentences])
+        max_description_length = max([len(x.encode('utf-8')) for x in sentences]) if len(sentences) > 0 else 0
         sentence_debug = torch.zeros(
             (batch_size, max_num_landmarks, max_description_length), dtype=torch.uint8)
 
@@ -150,7 +153,7 @@ class SemanticLandmarkExtractor(torch.nn.Module):
             features=features.to(model_input.image.device),
             mask=mask.to(model_input.image.device),
             positions=positions.to(model_input.image.device),
-            debug={'sentences': sentence_debug})
+            debug={'sentences': sentence_debug.to(model_input.image.device)})
 
     @property
     def output_dim(self):
