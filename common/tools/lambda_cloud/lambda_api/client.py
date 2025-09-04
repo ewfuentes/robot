@@ -3,6 +3,11 @@
 import os
 import time
 import logging
+import fcntl
+import tempfile
+import json
+import hashlib
+from pathlib import Path
 from typing import List, Dict, Optional, Any
 import requests
 from requests.adapters import HTTPAdapter
@@ -12,6 +17,63 @@ from common.tools.lambda_cloud.lambda_api.models import (
     Instance, InstanceType, InstanceStatus, SSHInfo,
     LambdaCloudError, InsufficientCapacityError, RateLimitError
 )
+
+
+class ProcessSafeRateLimiter:
+    """Rate limiter that works across multiple processes using file locks."""
+    
+    def __init__(self, api_key_hash: str):
+        """Initialize rate limiter with API key hash for isolation."""
+        self.lockfile = Path(tempfile.gettempdir()) / f"lambda_api_rate_limit_{api_key_hash}.lock"
+        self.statefile = Path(tempfile.gettempdir()) / f"lambda_api_rate_limit_{api_key_hash}.json"
+    
+    def rate_limit(self, is_launch: bool = False):
+        """Enforce rate limits across all processes using file locking."""
+        # Create lock file if it doesn't exist
+        self.lockfile.touch(exist_ok=True)
+        
+        with open(self.lockfile, 'w') as lock_file:
+            try:
+                # Acquire exclusive lock with timeout to prevent deadlocks
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                # If we can't get the lock immediately, wait a bit and try again
+                time.sleep(0.1)
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            
+            try:
+                # Read last request times from state file
+                try:
+                    with open(self.statefile, 'r') as f:
+                        state = json.load(f)
+                except (FileNotFoundError, json.JSONDecodeError):
+                    state = {"last_request": 0, "last_launch": 0}
+                
+                current_time = time.time()
+                min_interval = 12 if is_launch else 1
+                last_time = state["last_launch"] if is_launch else state["last_request"]
+                
+                # Calculate sleep time needed to respect rate limit
+                time_since_last = current_time - last_time
+                sleep_time = max(0, min_interval - time_since_last)
+                
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                
+                # Update state with current time
+                current_time = time.time()
+                if is_launch:
+                    state["last_launch"] = current_time
+                else:
+                    state["last_request"] = current_time
+                
+                # Write updated state back to file
+                with open(self.statefile, 'w') as f:
+                    json.dump(state, f)
+                    
+            finally:
+                # Lock is automatically released when file is closed
+                pass
 
 
 class LambdaCloudClient:
@@ -30,9 +92,11 @@ class LambdaCloudClient:
             raise ValueError(
                 "API key must be provided via parameter or LAMBDA_API_KEY environment variable")
 
+        # Create process-safe rate limiter using API key hash for isolation
+        api_key_hash = hashlib.sha256(self.api_key.encode()).hexdigest()[:16]
+        self.rate_limiter = ProcessSafeRateLimiter(api_key_hash)
+
         self.session = self._setup_session()
-        self._last_request_time = 0
-        self._launch_last_request_time = 0
 
         # Set up logging
         self.logger = logging.getLogger(__name__)
@@ -61,25 +125,8 @@ class LambdaCloudClient:
         return session
 
     def _rate_limit(self, is_launch: bool = False):
-        """Enforce API rate limits."""
-        current_time = time.time()
-
-        if is_launch:
-            # Launch endpoint: 1 request per 12 seconds
-            time_since_last = current_time - self._launch_last_request_time
-            if time_since_last < 12:
-                sleep_time = 12 - time_since_last
-                self.logger.info(f"Rate limiting launch request: sleeping {sleep_time:.1f}s")
-                time.sleep(sleep_time)
-            self._launch_last_request_time = time.time()
-        else:
-            # General endpoints: 1 request per second
-            time_since_last = current_time - self._last_request_time
-            if time_since_last < 1:
-                sleep_time = 1 - time_since_last
-                time.sleep(sleep_time)
-
-        self._last_request_time = time.time()
+        """Enforce API rate limits across all processes."""
+        self.rate_limiter.rate_limit(is_launch)
 
     def _make_request(self, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
         """Make a request to the API with rate limiting and error handling."""
@@ -189,7 +236,7 @@ class LambdaCloudClient:
             file_system_names=item["file_system_names"],
             region=item["region"]["name"],
             instance_type=item["instance_type"]["name"],
-            hostname=item["hostname"],
+            hostname=item.get("hostname"),
             jupyter_token=item.get("jupyter_token"),
             jupyter_url=item.get("jupyter_url")
         )

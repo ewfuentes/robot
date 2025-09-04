@@ -236,11 +236,57 @@ def cmd_terminate(args, client: LambdaCloudClient):
         sys.exit(1)
 
 
+def cmd_describe(args, client: LambdaCloudClient):
+    """Describe a specific instance with detailed information."""
+    try:
+        instance = client.get_instance(args.instance_id)
+        
+        if args.json:
+            data = {
+                "id": instance.id,
+                "name": instance.name,
+                "ip": instance.ip,
+                "private_ip": instance.private_ip,
+                "status": instance.status.value,
+                "ssh_key_names": instance.ssh_key_names,
+                "file_system_names": instance.file_system_names,
+                "region": instance.region,
+                "instance_type": instance.instance_type,
+                "hostname": instance.hostname,
+                "jupyter_token": instance.jupyter_token,
+                "jupyter_url": instance.jupyter_url
+            }
+            print_json(data)
+        else:
+            print(f"Instance Details for {instance.id}")
+            print("=" * 50)
+            print(f"Name:              {instance.name}")
+            print(f"Status:            {instance.status.value}")
+            print(f"Instance Type:     {instance.instance_type}")
+            print(f"Region:            {instance.region}")
+            print(f"IP Address:        {instance.ip}")
+            print(f"Private IP:        {instance.private_ip or 'N/A'}")
+            print(f"Hostname:          {instance.hostname}")
+            print(f"SSH Keys:          {', '.join(instance.ssh_key_names) if instance.ssh_key_names else 'None'}")
+            print(f"File Systems:      {', '.join(instance.file_system_names) if instance.file_system_names else 'None'}")
+            
+            if instance.jupyter_token:
+                print(f"Jupyter Token:     {instance.jupyter_token}")
+            if instance.jupyter_url:
+                print(f"Jupyter URL:       {instance.jupyter_url}")
+            
+            print("\nSSH Connection:")
+            print(f"  ssh ubuntu@{instance.ip}")
+            
+    except LambdaCloudError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_ssh(args, client: LambdaCloudClient):
     """Get SSH connection information."""
     try:
         ssh_info = client.get_ssh_info(args.instance_id)
-        
         if args.json:
             data = {
                 "instance_id": ssh_info.instance_id,
@@ -260,9 +306,7 @@ def cmd_ssh(args, client: LambdaCloudClient):
             print(f"  SSH Keys: {', '.join(ssh_info.ssh_key_names)}")
             print()
             print("To connect via SSH:")
-            print(f"  ssh -i <private_key_file> {ssh_info.username}@{ssh_info.ip}")
-            print()
-            print("Replace <private_key_file> with the path to your private key corresponding to one of the SSH keys above.")
+            print(f"  ssh {ssh_info.username}@{ssh_info.ip}")
             
     except LambdaCloudError as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -287,6 +331,10 @@ def main():
     
     # list-instances command
     subparsers.add_parser("list-instances", help="List running instances")
+    
+    # describe command
+    describe_parser = subparsers.add_parser("describe", help="Show detailed information for a specific instance")
+    describe_parser.add_argument("instance_id", help="Instance ID to describe")
     
     # launch command
     launch_parser = subparsers.add_parser("launch", help="Launch instances")
@@ -330,6 +378,8 @@ def main():
         cmd_list_types(args, client)
     elif args.command == "list-instances":
         cmd_list_instances(args, client)
+    elif args.command == "describe":
+        cmd_describe(args, client)
     elif args.command == "launch":
         cmd_launch(args, client)
     elif args.command == "terminate":
