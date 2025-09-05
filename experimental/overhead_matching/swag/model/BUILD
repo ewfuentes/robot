@@ -39,6 +39,7 @@ py_library(
     requirement("msgspec"),
     ":alphaearth_extractor",
     ":semantic_landmark_extractor",
+    ":synthetic_landmark_extractor",
     ":semantic_segment_extractor",
     ":swag_config_types",
     ":swag_model_input_output",
@@ -148,3 +149,26 @@ py_test(
     "//experimental/overhead_matching/swag/data:vigor_dataset",
   ]
 )
+
+py_library(
+  name = "synthetic_landmark_extractor",
+  srcs = ["synthetic_landmark_extractor.py"],
+  deps = [
+    requirement("torch"),
+    requirement("ipdb"),
+    "//common/torch:load_torch_deps",
+    ":swag_model_input_output",
+    ":swag_config_types",
+  ]
+)
+
+py_test(
+  name = "synthetic_landmark_extractor_test",
+  srcs = ["synthetic_landmark_extractor_test.py"],
+  data = ["@vigor_snippet//:files"],
+  deps = [
+    ":synthetic_landmark_extractor",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+  ]
+)
+
