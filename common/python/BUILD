@@ -16,6 +16,7 @@ py_binary(
     requirement("altair"),
     requirement("pandas"),
     requirement("seaborn"),
+    requirement("tensorboard"),
     requirement("osmnx"),
     requirement("supervision"),
     "//common/torch:load_torch_deps",
