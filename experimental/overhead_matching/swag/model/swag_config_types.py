@@ -35,6 +35,7 @@ class SemanticSegmentExtractorConfig(msgspec.Struct, **STRUCT_OPTS):
 
 
 class SemanticLandmarkExtractorConfig(msgspec.Struct, **STRUCT_OPTS):
+    llm_str: str = 'smollm2:135m'
     sentence_model_str: str = 'sentence-transformers/all-mpnet-base-v2'
 
 

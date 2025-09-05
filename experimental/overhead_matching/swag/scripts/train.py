@@ -72,6 +72,7 @@ ModelConfig = Union[patch_embedding.WagPatchEmbeddingConfig,
 @dataclass
 class DatasetConfig:
     paths: list[Path]
+    landmark_version: str
     factor: None | float = 1.0
 
 
