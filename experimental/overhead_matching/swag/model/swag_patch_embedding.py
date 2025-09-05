@@ -12,6 +12,7 @@ from experimental.overhead_matching.swag.model.swag_model_input_output import (
 from experimental.overhead_matching.swag.model.semantic_segment_extractor import SemanticSegmentExtractor
 from experimental.overhead_matching.swag.model.alphaearth_extractor import AlphaEarthExtractor
 from experimental.overhead_matching.swag.model.semantic_landmark_extractor import SemanticLandmarkExtractor
+from experimental.overhead_matching.swag.model.synthetic_landmark_extractor import SyntheticLandmarkExtractor
 from experimental.overhead_matching.swag.model.swag_config_types import (
     FeatureMapExtractorConfig,
     DinoFeatureMapExtractorConfig,
@@ -22,6 +23,7 @@ from experimental.overhead_matching.swag.model.swag_config_types import (
     SemanticEmbeddingMatrixConfig,
     SemanticSegmentExtractorConfig,
     SemanticLandmarkExtractorConfig,
+    SyntheticLandmarkExtractorConfig,
 
     PositionEmbeddingConfig,
     PlanarPositionEmbeddingConfig,
@@ -72,6 +74,7 @@ def create_extractor(config: ExtractorConfig, auxiliary_info: dict[str, Any]):
         case SemanticEmbeddingMatrixConfig(): return SemanticEmbeddingMatrix(config)
         case SemanticLandmarkExtractorConfig(): return SemanticLandmarkExtractor(config)
         case SemanticSegmentExtractorConfig(): return SemanticSegmentExtractor(config)
+        case SyntheticSegmentExtractorConfig(): return SyntheticSegmentExtractor(config)
         case AlphaEarthExtractorConfig(): return AlphaEarthExtractor(
                 config, auxiliary_info[config.auxiliary_info_key])
     raise NotImplementedError(f"Unhandled Config Type: {config}")
