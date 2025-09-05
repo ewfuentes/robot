@@ -74,7 +74,7 @@ def create_extractor(config: ExtractorConfig, auxiliary_info: dict[str, Any]):
         case SemanticEmbeddingMatrixConfig(): return SemanticEmbeddingMatrix(config)
         case SemanticLandmarkExtractorConfig(): return SemanticLandmarkExtractor(config)
         case SemanticSegmentExtractorConfig(): return SemanticSegmentExtractor(config)
-        case SyntheticSegmentExtractorConfig(): return SyntheticSegmentExtractor(config)
+        case SyntheticLandmarkExtractorConfig(): return SyntheticLandmarkExtractor(config)
         case AlphaEarthExtractorConfig(): return AlphaEarthExtractor(
                 config, auxiliary_info[config.auxiliary_info_key])
     raise NotImplementedError(f"Unhandled Config Type: {config}")
@@ -375,7 +375,6 @@ class SwagPatchEmbedding(torch.nn.Module):
                     model_config=config.semantic_token_extractor_config, patch_dims=config.patch_dims))
                 self._cache_info[config_hash] = ("__semantic_token_extractor", ExtractorOutput)
 
-
     def model_input_from_batch(self, batch_item):
         if self._patch_dims[0] != self._patch_dims[1]:
             return ModelInput(
@@ -389,7 +388,7 @@ class SwagPatchEmbedding(torch.nn.Module):
                 cached_tensors=batch_item.cached_satellite_tensors)
 
     def forward(self, model_input: ModelInput):
-        dev = model_input.image.device
+        dev = self._cls_token.device
         extractor_outputs_by_name = {}
         for k in self._extractor_by_name:
             extractor_outputs_by_name[k] = model_input.cached_tensors.get(k)
