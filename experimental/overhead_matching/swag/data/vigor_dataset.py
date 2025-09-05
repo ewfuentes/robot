@@ -411,8 +411,8 @@ class VigorDataset(torch.utils.data.Dataset):
             pano, _ = load_image(pano_metadata.path, self._panorama_size)
             sat, _ = load_image(sat_metadata.path, self._satellite_patch_size)
         else:
-            pano = torch.zeros((0, *self._panorama_size))
-            sat = torch.zeros((0, *self._satellite_patch_size))
+            pano = torch.full((1, *self._panorama_size), torch.nan)
+            sat = torch.full((1, *self._satellite_patch_size), torch.nan)
 
         pano_landmarks = self._landmark_metadata.iloc[pano_metadata["landmark_idxs"]]
         pano_landmarks = [series_to_dict_with_index(x) for _, x in pano_landmarks.iterrows()]
@@ -505,7 +505,7 @@ class VigorDataset(torch.utils.data.Dataset):
                 if self.dataset._config.should_load_images:
                     sat, _ = load_image(sat_metadata.path, self.dataset._satellite_patch_size)
                 else:
-                    sat = torch.zeros((0, *self.dataset._satellite_patch_size))
+                    sat = torch.full((1, *self.dataset._satellite_patch_size), torch.nan)
                 landmarks = self.dataset._landmark_metadata.iloc[sat_metadata["landmark_idxs"]]
                 landmarks = [series_to_dict_with_index(x) for _, x in landmarks.iterrows()]
                 sat_metadata = series_to_dict_with_index(sat_metadata)
@@ -541,7 +541,7 @@ class VigorDataset(torch.utils.data.Dataset):
                 if self.dataset._config.should_load_images:
                     pano, _ = load_image(pano_metadata.path, self.dataset._panorama_size)
                 else:
-                    pano = torch.zeros((0, *self.dataset._panorama_size))
+                    pano = torch.full((1, *self.dataset._panorama_size), torch.nan)
 
                 landmarks = self.dataset._landmark_metadata.iloc[pano_metadata["landmark_idxs"]]
                 landmarks = [series_to_dict_with_index(x) for _, x in landmarks.iterrows()]
