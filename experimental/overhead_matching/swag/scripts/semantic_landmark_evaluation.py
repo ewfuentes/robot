@@ -117,15 +117,20 @@ def _(dataset, mo, np, plt):
 
     bins = np.arange(-0.5, 15.5, 1.0)
 
-    plt.figure(figsize=(12, 6))
-    plt.subplot(121)
+    fig = plt.figure(figsize=(12, 6))
+    ax = plt.subplot(121)
     plt.hist(num_sat_landmark_idxs, bins=bins)
-    plt.title('satellite')
+    plt.title(f'Satellite (Count: {len(dataset._satellite_metadata)})')
     plt.yscale('log')
-    plt.subplot(122)
+    plt.subplot(122, sharey=ax)
     plt.hist(num_pano_landmark_idxs, bins=bins)
-    plt.title('panorama')
+    plt.ylim(100, 10000)
+    plt.title(f'Panorama (Count: {len(dataset._panorama_metadata)})')
     plt.yscale('log')
+    plt.suptitle(f'Chicago Landmarks (Count: {len(dataset._landmark_metadata)})')
+    fig.supylabel('Count')
+    fig.supxlabel('Number of landmarks')
+    plt.tight_layout()
     mo.mpl.interactive(plt.gcf())
     return
 
