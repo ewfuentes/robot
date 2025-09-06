@@ -12,6 +12,7 @@ from experimental.overhead_matching.swag.model.swag_model_input_output import (
 from experimental.overhead_matching.swag.model.semantic_segment_extractor import SemanticSegmentExtractor
 from experimental.overhead_matching.swag.model.alphaearth_extractor import AlphaEarthExtractor
 from experimental.overhead_matching.swag.model.semantic_landmark_extractor import SemanticLandmarkExtractor
+from torch.nn.init import xavier_uniform_
 from experimental.overhead_matching.swag.model.synthetic_landmark_extractor import SyntheticLandmarkExtractor
 from experimental.overhead_matching.swag.model.swag_config_types import (
     FeatureMapExtractorConfig,
@@ -98,6 +99,8 @@ class DinoFeatureExtractor(torch.nn.Module):
         repo_name = f"facebookresearch/{config.model_str.split('_')[0]}"
         self._dino = torch.hub.load(repo_name, config.model_str)
         self._dino.eval()
+        for param in self._dino.parameters():
+            param.requires_grad = False
 
     def forward(self, model_input: ModelInput) -> ExtractorOutput:
         input_image = model_input.image
@@ -289,6 +292,10 @@ class PlanarPositionEmbedding(torch.nn.Module):
     def output_dim(self):
         return self._embedding_dim
 
+def init_xavier(model):
+    for p in model.parameters():
+        if p.dim() > 1:
+            xavier_uniform_(p)
 
 class TransformerAggregator(torch.nn.Module):
     def __init__(self, output_dim: int, config: TransformerAggregatorConfig):
@@ -304,6 +311,8 @@ class TransformerAggregator(torch.nn.Module):
                 transformer_layer,
                 enable_nested_tensor=False,
                 num_layers=config.num_transformer_layers)
+        # see warning at https://docs.pytorch.org/docs/stable/generated/torch.nn.TransformerEncoder.html
+        init_xavier(self._encoder)
 
     def forward(self, tokens, token_mask):
         return self._encoder(tokens, src_key_padding_mask=token_mask, is_causal=False)
@@ -329,7 +338,7 @@ class SwagPatchEmbedding(torch.nn.Module):
                                    config.output_dim)
                 for k in config.extractor_config_by_name})
 
-        self._cls_token = torch.nn.Parameter(torch.randn((1, 1, config.output_dim)))
+        self.register_buffer("_cls_token", torch.randn((1, 1, config.output_dim), requires_grad=False))
 
         self._aggregator_model = create_aggregator_model(
                 config.output_dim, config.aggregation_config)
