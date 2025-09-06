@@ -38,8 +38,17 @@ class AlphaEarthExtractor(torch.nn.Module):
             position_out.append(position_info)
         features_out = torch.stack(features_out, dim=0).to(torch.float32)
         position_out = torch.stack(position_out, dim=0).to(torch.float32)
+
         mask = torch.isnan(features_out[..., 0])
-        features_out[mask] = 0.0
+        if self._config.summarize_with_maxpool:
+            features_out[mask] = -torch.inf 
+            features_out = torch.max(features_out, dim=1, keepdim=True).values
+            inf_mask = torch.isinf(features_out)
+            features_out[inf_mask] = 0.0
+            position_out = torch.zeros((position_out.shape[0], 1, 2))
+            mask = torch.zeros((position_out.shape[0], 1), dtype=bool)
+        else:
+            features_out[mask] = 0.0
 
         return ExtractorOutput(
             features=features_out.to(model_input.image.device),

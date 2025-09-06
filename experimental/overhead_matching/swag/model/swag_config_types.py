@@ -17,6 +17,7 @@ class AlphaEarthExtractorConfig(msgspec.Struct, **STRUCT_OPTS):
     auxiliary_info_key: str
     version: str
     patch_size: tuple[int, int]
+    summarize_with_maxpool: bool = False
 
 
 class SemanticNullExtractorConfig(msgspec.Struct, **STRUCT_OPTS):

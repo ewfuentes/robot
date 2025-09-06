@@ -68,6 +68,60 @@ class AlphaEarthExtractorTest(unittest.TestCase):
         # Some tokens from the last batch items should be valid
         self.assertTrue((~extractor_output.mask[-1]).any())
 
+    def test_maxpool_summarize(self):
+        # Setup
+        PATCH_SIZE = (10, 12)
+        no_maxpool_config = AlphaEarthExtractorConfig(
+            version="v1",
+            patch_size=PATCH_SIZE,
+            auxiliary_info_key='',
+            summarize_with_maxpool = False,
+        )
+        maxpool_config = AlphaEarthExtractorConfig(
+            version="v1",
+            patch_size=PATCH_SIZE,
+            auxiliary_info_key='',
+            summarize_with_maxpool = True,
+        )
+        extractor = AlphaEarthExtractor(no_maxpool_config, Path("external/alphaearth_snippet"))
+        maxpool_extractor = AlphaEarthExtractor(maxpool_config, Path("external/alphaearth_snippet"))
+
+        ZOOM_LEVEL = 20
+        locations = [
+            # Mercurio, Shadyside
+            (40.4503414, -79.9357473),
+            # Dana Square Park, Cambridge
+            (42.3614103, -71.1095213),
+            # Briggs Field
+            (42.356887, -71.101290),
+        ]
+        BATCH_SIZE = len(locations)
+
+        model_input = ModelInput(
+            image=torch.zeros((BATCH_SIZE, 0, 0, 0)),
+            metadata=[
+                {"lat": latlon[0],
+                 "lon": latlon[1],
+                 "zoom_level": ZOOM_LEVEL,
+                 "web_mercator_y": webm_yx[0],
+                 "web_mercator_x": webm_yx[1]}
+                for latlon in locations
+                if (webm_yx := latlon_to_pixel_coords(*latlon, ZOOM_LEVEL))])
+
+        # Action
+        extractor_output = extractor(model_input)
+        maxpool_extractor_output = maxpool_extractor(model_input)
+        # Verification
+        NUM_TOKENS = 1
+        expected_nans = torch.isnan(extractor_output.features)
+        extractor_output.features[expected_nans] = 0.0
+
+        self.assertEqual(maxpool_extractor_output.features.shape,
+                         (BATCH_SIZE, NUM_TOKENS, extractor.output_dim))
+        self.assertEqual(maxpool_extractor_output.positions.shape, (BATCH_SIZE, NUM_TOKENS, 2))
+        self.assertEqual(maxpool_extractor_output.mask.shape, (BATCH_SIZE, NUM_TOKENS))
+        self.assertTrue(torch.all(torch.le(maxpool_extractor_output.features, extractor_output.features.max(dim=1, keepdim=True).values)))
+
 
 if __name__ == "__main__":
     unittest.main()
