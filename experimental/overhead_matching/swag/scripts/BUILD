@@ -2,11 +2,22 @@
 load("@pip//:requirements.bzl", "requirement")
 load("@rules_python//python:packaging.bzl", "py_wheel", "py_package")
 
+py_library(
+  name = "logging_utils",
+  srcs = ["logging_utils.py"],
+  visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+  deps = [
+    requirement("torch"),
+    requirement("tensorboard"),
+  ]
+)
+
 py_binary(
   name="train",
   srcs=["train.py"],
   visibility=["//common/python:__subpackages__"],
   deps=[
+    ":logging_utils",
     requirement("torch"),
     requirement("tensorboard"),
     requirement("tqdm"),
