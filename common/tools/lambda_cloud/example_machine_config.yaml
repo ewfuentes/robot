@@ -11,6 +11,9 @@ region: us-east-3
 # SSH key name registered with Lambda Cloud
 ssh_key: aspen
 
+# Image family to use for instances
+image_family: lambda-stack-24-04
+
 # File systems to mount (default: vigor dataset)
 file_systems:
   - vigor

@@ -13,6 +13,7 @@ class MachineConfig:
     machine_types: List[str]
     region: List[str]  # Can be single region or list of regions
     ssh_key: str
+    image_family: str  # Image family name (e.g., "lambda-stack-24-04")
     file_systems: List[str]  # File systems to mount (e.g., ["vigor"])
     files_to_copy: Dict[str, str]
     remote_setup_commands: List[str]
@@ -50,6 +51,7 @@ class ConfigParser:
             machine_types=config['machine_types'],
             region=regions,
             ssh_key=config['ssh_key'],
+            image_family=config.get('image_family', 'lambda-stack-24-04'),
             file_systems=file_systems,
             files_to_copy=config['files_to_copy'],
             remote_setup_commands=config['remote_setup_commands'],

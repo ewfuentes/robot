@@ -83,7 +83,8 @@ class JobManager:
                 ssh_key_names=[self.machine_config.ssh_key],
                 name=instance_name,
                 file_system_names=self.machine_config.file_systems,
-                quantity=1
+                quantity=1,
+                image_family=self.machine_config.image_family
             )
             
             if not instance_ids or len(instance_ids) == 0:
