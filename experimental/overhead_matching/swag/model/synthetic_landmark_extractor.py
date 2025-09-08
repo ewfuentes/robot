@@ -36,21 +36,21 @@ def clear_lowest_n_bits(x: int, n: int):
     return (x >> n) << n
 
 
-def compute_landmark_pixel_locations(y_px: float, x_px: float, grid_bounds_px: int, log_grid_density: int):
+def compute_landmark_pixel_locations(y_px: float, x_px: float, grid_bounds_px: int, log_grid_spacing: int):
     half_grid_bound_px = grid_bounds_px / 2
-    top_px = y_px - half_grid_bound_px + (2 ** log_grid_density) - 1
-    left_px = x_px - half_grid_bound_px + (2 ** log_grid_density) - 1
+    top_px = y_px - half_grid_bound_px + (2 ** log_grid_spacing) - 1
+    left_px = x_px - half_grid_bound_px + (2 ** log_grid_spacing) - 1
     bottom_px = y_px + half_grid_bound_px
     right_px = x_px + half_grid_bound_px
 
-    snap_to_grid = lambda px: clear_lowest_n_bits(round(px), log_grid_density)
+    snap_to_grid = lambda px: clear_lowest_n_bits(round(px), log_grid_spacing)
     top_px = snap_to_grid(top_px)
     left_px = snap_to_grid(left_px)
     bottom_px = snap_to_grid(bottom_px)
     right_px = snap_to_grid(right_px)
 
-    ys = np.arange(top_px, bottom_px+1, 2**log_grid_density)
-    xs = np.arange(left_px, right_px+1, 2**log_grid_density)
+    ys = np.arange(top_px, bottom_px+1, 2**log_grid_spacing)
+    xs = np.arange(left_px, right_px+1, 2**log_grid_spacing)
     return np.stack(np.meshgrid(ys, xs, indexing='ij'), axis=-1).reshape(-1, 2)
 
 
@@ -66,14 +66,14 @@ def compute_landmark_embeddings(locations_px, embedding_dim):
 class SyntheticLandmarkExtractor(torch.nn.Module):
     def __init__(self, config: SyntheticLandmarkExtractorConfig):
         super().__init__()
-        self._log_grid_density = config.log_grid_density
+        self._log_grid_spacing = config.log_grid_spacing
         self._grid_bounds_px = config.grid_bounds_px
         self._should_produce_bearing_position_for_pano = config.should_produce_bearing_position_for_pano
         self._embedding_dim = config.embedding_dim
 
     def forward(self, model_input: ModelInput) -> ExtractorOutput:
         batch_size = len(model_input.metadata)
-        num_cols = (self._grid_bounds_px // (2 ** self._log_grid_density)) + 1
+        num_cols = (self._grid_bounds_px // (2 ** self._log_grid_spacing)) + 1
         num_rows = num_cols
         max_num_landmarks = num_cols * num_rows
 
@@ -90,7 +90,7 @@ class SyntheticLandmarkExtractor(torch.nn.Module):
             y_px = model_input.metadata[batch_item]["web_mercator_y"]
             x_px = model_input.metadata[batch_item]["web_mercator_x"]
             landmark_locations_px = compute_landmark_pixel_locations(
-                    y_px, x_px, self._grid_bounds_px, self._log_grid_density)
+                    y_px, x_px, self._grid_bounds_px, self._log_grid_spacing)
             landmark_locations_px_list.append(landmark_locations_px)
 
             # Compute the landmark embedding

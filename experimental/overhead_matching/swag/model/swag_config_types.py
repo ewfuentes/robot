@@ -39,7 +39,7 @@ class SemanticLandmarkExtractorConfig(msgspec.Struct, **STRUCT_OPTS):
 
 
 class SyntheticLandmarkExtractorConfig(msgspec.Struct, **STRUCT_OPTS):
-    log_grid_density: int
+    log_grid_spacing: int
     grid_bounds_px: int
     should_produce_bearing_position_for_pano: bool
     embedding_dim: int

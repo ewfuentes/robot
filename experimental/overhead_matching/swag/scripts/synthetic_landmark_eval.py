@@ -33,7 +33,7 @@ def _(Path, vd):
 @app.cell
 def _(sle):
     _config = sle.SyntheticLandmarkExtractorConfig(
-        log_grid_density=5,
+        log_grid_spacing=5,
         grid_bounds_px=640,
         embedding_dim=128,
         should_produce_bearing_position_for_pano=False

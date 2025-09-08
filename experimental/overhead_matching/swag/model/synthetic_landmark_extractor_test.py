@@ -19,7 +19,7 @@ class SyntheticLandmarkExtractorTest(unittest.TestCase):
             vd.VigorDatasetConfig(
                 satellite_tensor_cache_info=None, panorama_tensor_cache_info=None))
         config = sle.SyntheticLandmarkExtractorConfig(
-            log_grid_density=5,
+            log_grid_spacing=5,
             grid_bounds_px=128,
             should_produce_bearing_position_for_pano=False,
             embedding_dim=16)
@@ -50,7 +50,7 @@ class SyntheticLandmarkExtractorTest(unittest.TestCase):
             vd.VigorDatasetConfig(
                 satellite_tensor_cache_info=None, panorama_tensor_cache_info=None))
         config = sle.SyntheticLandmarkExtractorConfig(
-            log_grid_density=5,
+            log_grid_spacing=5,
             grid_bounds_px=128,
             should_produce_bearing_position_for_pano=False,
             embedding_dim=16)
@@ -93,7 +93,7 @@ class SyntheticLandmarkExtractorTest(unittest.TestCase):
             ],
         )
         config = sle.SyntheticLandmarkExtractorConfig(
-            log_grid_density=5,
+            log_grid_spacing=5,
             grid_bounds_px=128,
             should_produce_bearing_position_for_pano=False,
             embedding_dim=16)
@@ -129,7 +129,7 @@ class SyntheticLandmarkExtractorTest(unittest.TestCase):
             ],
         )
         config = sle.SyntheticLandmarkExtractorConfig(
-            log_grid_density=5,
+            log_grid_spacing=5,
             grid_bounds_px=128,
             should_produce_bearing_position_for_pano=True,
             embedding_dim=256)
