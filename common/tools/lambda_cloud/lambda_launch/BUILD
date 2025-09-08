@@ -28,13 +28,6 @@ py_library(
   ],
 )
 
-py_library(
-  name = "remote_monitor",
-  srcs = ["remote_monitor.py"],
-  deps = [
-    "//common/tools/lambda_cloud/lambda_api:lambda_cloud",
-  ],
-)
 
 py_library(
   name = "launcher",
@@ -51,5 +44,13 @@ py_binary(
   srcs = ["launch_training_jobs.py"],
   deps = [
     ":launcher",
+  ],
+)
+
+py_binary(
+  name = "remote_monitor",
+  srcs = ["remote_monitor.py"],
+  deps = [
+    "//common/tools/lambda_cloud/lambda_api:lambda_cloud",
   ],
 )

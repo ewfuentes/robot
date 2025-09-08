@@ -212,7 +212,7 @@ class JobManager:
             
             # Prepare training command
             train_command = (
-                f"cd robot && bazel run //experimental/overhead_matching/swag/scripts:train -- "
+                f"cd /home/ubuntu/robot && bazel run //experimental/overhead_matching/swag/scripts:train -- "
                 f"--dataset_base /tmp/ --output_base /tmp/output_{job_id} "
                 f"--train_config {remote_config_path}"
             )
@@ -234,7 +234,7 @@ class JobManager:
                 f"--instance-ip {instance_ip} "
                 f"> /tmp/monitor.log 2>&1 &"
             )
-            
+            print(monitor_command)
             result = remote_executor.execute_command(monitor_command)
             if not result.success:
                 print(f"[{job_id}] ✗ Failed to start remote monitor: {result.stderr}")
