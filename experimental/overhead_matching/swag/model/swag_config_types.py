@@ -38,6 +38,13 @@ class SemanticLandmarkExtractorConfig(msgspec.Struct, **STRUCT_OPTS):
     sentence_model_str: str = 'sentence-transformers/all-mpnet-base-v2'
 
 
+class SyntheticLandmarkExtractorConfig(msgspec.Struct, **STRUCT_OPTS):
+    log_grid_spacing: int
+    grid_bounds_px: int
+    should_produce_bearing_position_for_pano: bool
+    embedding_dim: int
+
+
 class PlanarPositionEmbeddingConfig(msgspec.Struct, **STRUCT_OPTS):
     min_scale: float
     scale_step: float
@@ -69,4 +76,5 @@ ExtractorConfig = Union[
     SemanticEmbeddingMatrixConfig,
     SemanticSegmentExtractorConfig,
     SemanticLandmarkExtractorConfig,
+    SyntheticLandmarkExtractorConfig,
 ]

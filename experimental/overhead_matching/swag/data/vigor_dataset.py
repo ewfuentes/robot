@@ -376,8 +376,12 @@ class VigorDataset(torch.utils.data.Dataset):
         self._panorama_metadata["neighbor_panorama_idxs"] = compute_neighboring_panoramas(
             self._panorama_kdtree, config.panorama_neighbor_radius)
 
-        self._satellite_patch_size = config.satellite_patch_size
-        self._panorama_size = config.panorama_size
+        self._satellite_patch_size = (
+                config.satellite_patch_size if config.satellite_patch_size is not None
+                else self._original_satellite_patch_size)
+        self._panorama_size = (
+                config.panorama_size if config.panorama_size is not None
+                else self._original_panorama_size)
 
         self._pairs = populate_pairs(self._panorama_metadata, self._satellite_metadata, config.sample_mode)
 
