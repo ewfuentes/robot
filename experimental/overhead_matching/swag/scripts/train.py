@@ -355,15 +355,9 @@ def train(config: TrainConfig, *, dataset, validation_datasets, panorama_model, 
                         pairs=pairs,
                         loss_config=opt_config.loss_config)
                 
-            
-            # Log embedding stats before backward/optimizer step
-            log_embedding_stats(writer, "pano", panorama_embeddings.detach(), total_batches)
-            log_embedding_stats(writer, "sat", sat_embeddings.detach(), total_batches)
-
-            # Backward with AMP scaler
             grad_scaler.scale(loss_dict["loss"]).backward()
-            # Unscale to inspect true gradients and log their stats
-            grad_scaler.unscale_(opt)
+            grad_scaler.step(opt)
+            grad_scaler.update()
             if torch.isnan(loss_dict["loss"]):
                 raise RuntimeError("Got NaN loss!")
             # perform checks that all parameters we expect to update have gradients for the first set of batches
@@ -371,13 +365,14 @@ def train(config: TrainConfig, *, dataset, validation_datasets, panorama_model, 
                 for model_name, model in zip(["pano", "sat"], [panorama_model, satellite_model]):
                     for name, param in model.named_parameters():
                         if param.grad is None and param.requires_grad:
-                            raise RuntimeError(f"Parameter {name} for model {model_name} requires grad, but had no update. Model: {model}")
+                            raise RuntimeError(f"Parameter {name} for model {model_name} requires grad, but had no update.")
+                        if param.grad is not None and torch.any(torch.isinf(param.grad)):
+                            print(f"Warining: INF was found in parameter gradient: {name} in model {model_name}")
 
             log_gradient_stats(writer, panorama_model, "panorama", total_batches)
             log_gradient_stats(writer, satellite_model, "satellite", total_batches)
-
-            grad_scaler.step(opt)  # this does not unscale the grad twice if .unscale_ was previously called
-            grad_scaler.update()
+            log_embedding_stats(writer, "pano", panorama_embeddings.detach(), total_batches)
+            log_embedding_stats(writer, "sat", sat_embeddings.detach(), total_batches)
 
             # Hard Negative Mining
             miner.consume(
