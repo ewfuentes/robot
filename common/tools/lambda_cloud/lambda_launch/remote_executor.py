@@ -3,6 +3,7 @@
 
 import paramiko
 import time
+import traceback
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
@@ -99,7 +100,11 @@ class RemoteExecutor:
             raise RuntimeError("Not connected to remote instance")
         
         try:
-            stdin, stdout, stderr = self.client.exec_command(command, timeout=timeout)
+            # Wrap command to source environment if ~/.local/bin/env exists
+            # This ensures bazel and other tools installed by setup.sh are available
+            wrapped_command = f"if [ -f ~/.local/bin/env ]; then source ~/.local/bin/env; fi && {command}"
+            
+            stdin, stdout, stderr = self.client.exec_command(wrapped_command, timeout=timeout)
             
             # Wait for command completion
             return_code = stdout.channel.recv_exit_status()
@@ -139,6 +144,22 @@ class RemoteExecutor:
             # Expand home directory if needed
             local_path = str(Path(local_path).expanduser())
             
+            # Check if local file/directory exists
+            if not Path(local_path).exists():
+                print(f"⚠ Skipping {local_path} -> {remote_path} (local path does not exist)")
+                return True  # Consider this successful - skip missing files
+            
+            # If source is a directory, use copy_directory instead
+            if Path(local_path).is_dir():
+                print(f"📁 {local_path} is a directory, using recursive copy...")
+                return self.copy_directory(local_path, remote_path)
+            
+            # Expand home directory for remote path (assumes ubuntu user)
+            if remote_path.startswith('~/'):
+                remote_path = remote_path.replace('~/', '/home/ubuntu/', 1)
+            elif remote_path == '~':
+                remote_path = '/home/ubuntu'
+            
             # Create remote directory if needed
             remote_dir = str(Path(remote_path).parent)
             if remote_dir != '.':
@@ -150,6 +171,8 @@ class RemoteExecutor:
             
         except Exception as e:
             print(f"✗ Failed to copy {local_path} -> {remote_path}: {e}")
+            print(f"Full traceback:")
+            traceback.print_exc()
             return False
     
     def copy_directory(self, local_path: str, remote_path: str) -> bool:
@@ -167,6 +190,15 @@ class RemoteExecutor:
         
         try:
             local_path = Path(local_path).expanduser()
+            
+            # Check if local directory exists
+            if not local_path.exists():
+                print(f"⚠ Skipping {local_path} -> {remote_path} (local directory does not exist)")
+                return True  # Consider this successful - skip missing directories
+                
+            if not local_path.is_dir():
+                print(f"✗ {local_path} is not a directory")
+                return False
             
             # Create remote directory
             self.execute_command(f"mkdir -p {remote_path}")
@@ -192,39 +224,3 @@ class RemoteExecutor:
             print(f"✗ Failed to copy directory {local_path} -> {remote_path}: {e}")
             return False
     
-    def start_tmux_session(self, session_name: str = "training") -> ExecutionResult:
-        """Start a new tmux session on the remote instance.
-        
-        Args:
-            session_name: Name of the tmux session
-            
-        Returns:
-            ExecutionResult from tmux command
-        """
-        command = f"tmux new-session -d -s {session_name}"
-        return self.execute_command(command)
-    
-    def run_command_in_tmux(self, command: str, session_name: str = "training") -> ExecutionResult:
-        """Run a command inside an existing tmux session.
-        
-        Args:
-            command: Command to run
-            session_name: Name of the tmux session
-            
-        Returns:
-            ExecutionResult from tmux send-keys command
-        """
-        tmux_command = f'tmux send-keys -t {session_name} "{command}" Enter'
-        return self.execute_command(tmux_command)
-    
-    def get_tmux_output(self, session_name: str = "training") -> str:
-        """Get the current output from a tmux session.
-        
-        Args:
-            session_name: Name of the tmux session
-            
-        Returns:
-            Current tmux pane content
-        """
-        result = self.execute_command(f"tmux capture-pane -t {session_name} -p")
-        return result.stdout if result.success else ""

@@ -11,7 +11,9 @@ from dataclasses import dataclass
 class MachineConfig:
     """Configuration for Lambda Cloud machine setup."""
     machine_types: List[str]
+    region: List[str]  # Can be single region or list of regions
     ssh_key: str
+    file_systems: List[str]  # File systems to mount (e.g., ["vigor"])
     files_to_copy: Dict[str, str]
     remote_setup_commands: List[str]
     max_train_time_hours: int
@@ -33,9 +35,22 @@ class ConfigParser:
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
         
+        # Handle region as single value or list
+        region_config = config['region']
+        if isinstance(region_config, str):
+            regions = [region_config]
+        else:
+            regions = region_config
+        
+        file_systems = config.get('file_systems')
+        if isinstance(file_systems, str):
+            file_systems = [file_systems]
+        
         return MachineConfig(
             machine_types=config['machine_types'],
+            region=regions,
             ssh_key=config['ssh_key'],
+            file_systems=file_systems,
             files_to_copy=config['files_to_copy'],
             remote_setup_commands=config['remote_setup_commands'],
             max_train_time_hours=config['max_train_time_hours']

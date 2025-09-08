@@ -32,15 +32,15 @@ class InstanceType:
 class Instance:
     """Represents a running instance."""
     id: str
-    name: str
-    ip: str
+    name: Optional[str] # Can be set to None by user
+    ip: Optional[str]  # Can be None during instance boot
     private_ip: Optional[str]
     status: InstanceStatus
     ssh_key_names: List[str]
     file_system_names: List[str]
     region: str
     instance_type: str
-    hostname: str
+    hostname: Optional[str]  # Can be None during instance boot
     jupyter_token: Optional[str] = None
     jupyter_url: Optional[str] = None
 

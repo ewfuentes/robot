@@ -3,37 +3,37 @@
 
 # Lambda Cloud instance types to try (in order of preference)
 machine_types:
-  - gpu_1x_h100_pcie  # Preferred GPU type
-  - gpu_1x_a100       # Fallback option
+  - gpu_1x_gh200 # Preferred GPU type
+
+# Region(s) to launch instances in (single region or list of regions)
+region: us-east-3
 
 # SSH key name registered with Lambda Cloud
-ssh_key: your_ssh_key_name
+ssh_key: aspen
+
+# File systems to mount (default: vigor dataset)
+file_systems:
+  - vigor
 
 # Files to copy from local machine to remote instance
 files_to_copy:
   # Copy torch model cache (adjust path as needed)
-  /home/user/.cache/torch/hub/checkpoints: /home/ubuntu/.cache/torch/hub/checkpoints
+  ~/.cache/torch/hub/checkpoints: /home/ubuntu/.cache/torch/hub/checkpoints
+  ~/.aws/credentials: ~/.aws/credentials
   
   # Copy tmux configuration
   ~/.tmux.conf: ~/.tmux.conf
-  
-  # Copy any additional data files
-  # /path/to/local/data: /tmp/data
 
 # Commands to run on the remote instance during setup
+# Note: Repository cloning and setup.sh are handled automatically
 remote_setup_commands:
-  # Copy datasets to /tmp/
+  # Datasets are automatically mounted from vigor filesystem
+  # Copy datasets to /tmp/ for faster access during training
   - cp -r vigor/Chicago /tmp/
   - cp -r vigor/Seattle /tmp/
-  
-  # Clone and setup the robot repository
-  - git clone https://github.com/your-org/robot.git && cd robot && ./setup.sh
-  
-  # Install any additional dependencies
-  - pip install tensorboard wandb
   
   # Create output directory
   - mkdir -p /tmp/output
 
 # Maximum training time in hours (jobs will be terminated after this time)
-max_train_time_hours: 43
+max_train_time_hours: 6

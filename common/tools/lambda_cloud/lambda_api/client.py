@@ -205,7 +205,7 @@ class LambdaCloudClient:
         for item in response["data"]:
             instance = Instance(
                 id=item["id"],
-                name=item["name"],
+                name=item.get("name"),
                 ip=item.get("ip"),
                 private_ip=item.get("private_ip"),
                 status=InstanceStatus(item["status"]),
@@ -213,7 +213,7 @@ class LambdaCloudClient:
                 file_system_names=item["file_system_names"],
                 region=item["region"]["name"],
                 instance_type=item["instance_type"]["name"],
-                hostname=item["hostname"],
+                hostname=item.get("hostname"),
                 jupyter_token=item.get("jupyter_token"),
                 jupyter_url=item.get("jupyter_url")
             )
@@ -381,7 +381,7 @@ class LambdaCloudClient:
                 file_system_names=item["file_system_names"],
                 region=item["region"]["name"],
                 instance_type=item["instance_type"]["name"],
-                hostname=item["hostname"],
+                hostname=item.get("hostname"),
                 jupyter_token=item.get("jupyter_token"),
                 jupyter_url=item.get("jupyter_url")
             )
@@ -392,6 +392,11 @@ class LambdaCloudClient:
     def get_ssh_info(self, instance_id: str) -> SSHInfo:
         """Get SSH connection information for an instance."""
         instance = self.get_instance(instance_id)
+
+        if not instance.ip:
+            raise LambdaCloudError(f"Instance {instance_id} does not have an IP address assigned yet")
+        if not instance.hostname:
+            raise LambdaCloudError(f"Instance {instance_id} does not have a hostname assigned yet")
 
         return SSHInfo(
             instance_id=instance.id,

@@ -11,8 +11,6 @@ from common.tools.lambda_cloud.lambda_api.client import LambdaCloudClient
 
 from common.tools.lambda_cloud.lambda_launch.config import ConfigParser, MachineConfig, JobConfig
 from common.tools.lambda_cloud.lambda_launch.job_manager import JobManager, JobResult, JobStatus
-from common.tools.lambda_cloud.lambda_launch.shutdown_handler import ShutdownHandler
-from common.tools.lambda_cloud.lambda_launch.remote_executor import RemoteExecutor
 
 
 class LambdaTrainingLauncher:
@@ -115,74 +113,13 @@ class LambdaTrainingLauncher:
         print(f"\n🚀 Starting {len(job_configs)} training jobs...")
         results = job_manager.run_jobs(job_configs)
         
-        # Handle shutdown for each job
-        self._handle_shutdowns(results)
+        # Jobs are now autonomous - no shutdown handling needed from host
+        print(f"\n✅ Successfully launched {len([r for r in results if r.status == JobStatus.COMPLETED])} training jobs")
         
         # Save results
         self._save_results(results)
         
         return results
-    
-    def _handle_shutdowns(self, results: List[JobResult]) -> None:
-        """Handle shutdown procedures for all jobs.
-        
-        Args:
-            results: List of job results
-        """
-        print(f"\n🔧 Handling shutdown for {len(results)} jobs...")
-        
-        for i, result in enumerate(results):
-            job_id = f"job_{i:03d}"
-            
-            if not result.instance_ip or result.status == JobStatus.FAILED:
-                print(f"[{job_id}] Skipping shutdown (no instance or failed)")
-                continue
-            
-            try:
-                print(f"[{job_id}] Starting shutdown procedure for {result.instance_ip}")
-                
-                # Connect to instance
-                remote_executor = RemoteExecutor(result.instance_ip)
-                if not remote_executor.connect(max_retries=3):
-                    print(f"[{job_id}] ✗ Failed to connect for shutdown")
-                    continue
-                
-                try:
-                    # Setup shutdown handler
-                    shutdown_handler = ShutdownHandler(remote_executor, self.api_key)
-                    
-                    # Setup AWS credentials
-                    if not shutdown_handler.setup_aws_credentials():
-                        print(f"[{job_id}] ⚠️  AWS credentials setup failed, manual cleanup required")
-                        print(f"[{job_id}]   SSH: ssh ubuntu@{result.instance_ip}")
-                        print(f"[{job_id}]   Instance ID: {result.instance_id}")
-                        continue
-                    
-                    # Generate S3 paths
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    s3_bucket = "lambda-training-outputs"  # Default bucket
-                    s3_key_prefix = f"training_job_{job_id}_{timestamp}"
-                    
-                    # Sync output to S3
-                    remote_output_dir = f"/tmp/output_{job_id}"
-                    if shutdown_handler.sync_output_to_s3(remote_output_dir, s3_bucket, s3_key_prefix):
-                        result.output_s3_path = f"s3://{s3_bucket}/{s3_key_prefix}/"
-                        print(f"[{job_id}] ✓ Output synced to {result.output_s3_path}")
-                    
-                    # Terminate instance
-                    if result.instance_id:
-                        if shutdown_handler.terminate_instance(result.instance_id):
-                            print(f"[{job_id}] ✓ Instance termination initiated")
-                        else:
-                            print(f"[{job_id}] ⚠️  Instance termination failed, manual cleanup required")
-                    
-                finally:
-                    remote_executor.disconnect()
-                    
-            except Exception as e:
-                print(f"[{job_id}] ✗ Shutdown error: {e}")
-                print(f"[{job_id}]   SSH: ssh ubuntu@{result.instance_ip}")
-                print(f"[{job_id}]   Instance ID: {result.instance_id}")
     
     def _save_results(self, results: List[JobResult]) -> None:
         """Save job results to output directory.

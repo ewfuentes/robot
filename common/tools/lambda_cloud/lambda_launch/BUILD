@@ -29,11 +29,10 @@ py_library(
 )
 
 py_library(
-  name = "shutdown_handler",
-  srcs = ["shutdown_handler.py"], 
+  name = "remote_monitor",
+  srcs = ["remote_monitor.py"],
   deps = [
-    requirement("boto3"),
-    ":remote_executor",
+    "//common/tools/lambda_cloud/lambda_api:lambda_cloud",
   ],
 )
 
@@ -43,7 +42,6 @@ py_library(
   deps = [
     ":config",
     ":job_manager", 
-    ":shutdown_handler",
     "//common/tools/lambda_cloud/lambda_api:lambda_cloud",
   ],
 )
