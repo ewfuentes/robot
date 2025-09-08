@@ -303,7 +303,7 @@ def train(config: TrainConfig, *, dataset, validation_datasets, panorama_model, 
             hard_negative_pool_size=opt_config.hard_negative_pool_size,
             dataset=dataset)
     dataloader = vigor_dataset.get_dataloader(
-        dataset, batch_sampler=miner, num_workers=12, persistent_workers=True)
+        dataset, batch_sampler=miner, num_workers=24, persistent_workers=True)
 
     opt = torch.optim.Adam(
         list(panorama_model.parameters()) + list(satellite_model.parameters()),
@@ -366,15 +366,17 @@ def train(config: TrainConfig, *, dataset, validation_datasets, panorama_model, 
             grad_scaler.unscale_(opt)
             if torch.isnan(loss_dict["loss"]):
                 raise RuntimeError("Got NaN loss!")
-            for model_name, model in zip(["pano", "sat"], [panorama_model, satellite_model]):
-                for name, param in model.named_parameters():
-                    if param.grad is None and param.requires_grad:
-                        print(f"{model_name}: Parameter {name} requires grad, but had no update.")
-                        # raise RuntimeError(f"Parameter {name} requires grad, but had no update. Model: {model}")
+            # perform checks that all parameters we expect to update have gradients for the first set of batches
+            if total_batches < 50:
+                for model_name, model in zip(["pano", "sat"], [panorama_model, satellite_model]):
+                    for name, param in model.named_parameters():
+                        if param.grad is None and param.requires_grad:
+                            raise RuntimeError(f"Parameter {name} for model {model_name} requires grad, but had no update. Model: {model}")
+
             log_gradient_stats(writer, panorama_model, "panorama", total_batches)
             log_gradient_stats(writer, satellite_model, "satellite", total_batches)
 
-            grad_scaler.step(opt)
+            grad_scaler.step(opt)  # this does not unscale the grad twice if .unscale_ was previously called
             grad_scaler.update()
 
             # Hard Negative Mining
