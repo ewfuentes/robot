@@ -9,7 +9,7 @@ from typing import List, Dict, Optional, Callable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-
+from common.tools.lambda_cloud.lambda_api.client import InsufficientCapacityError
 from common.tools.lambda_cloud.lambda_launch.config import JobConfig, MachineConfig
 from common.tools.lambda_cloud.lambda_launch.remote_executor import RemoteExecutor
 
@@ -114,7 +114,10 @@ class JobManager:
             
             print(f"[{job_id}] ✗ Instance failed to become ready within {max_wait_time}s")
             return None
-            
+        except InsufficientCapacityError:  # no nodes avaliable
+            print(f"[{job_id}] Failed to launch as out of capacity.")
+            return None
+
         except Exception as e:
             print(f"[{job_id}] ✗ Error launching instance: {e}")
             print(f"[{job_id}] Full traceback:")
@@ -160,10 +163,13 @@ class JobManager:
             
             # Run setup.sh to install bazel and dependencies
             print(f"[{job_id}] Running repository setup...")
-            result = remote_executor.execute_command("cd robot && ./setup.sh", timeout=600)  # 10 minute timeout
+            result = remote_executor.execute_command("cd /home/ubuntu/robot && ./setup.sh", timeout=600)  # 10 minute timeout
             if not result.success:
                 print(f"[{job_id}] ✗ Repository setup failed: {result.stderr}")
                 return False
+            
+            print(result.stderr)
+            print(result.stdout)
             
             # Run additional setup commands
             print(f"[{job_id}] Running additional setup commands...")
@@ -272,13 +278,16 @@ class JobManager:
             # Update status
             job_result.status = JobStatus.LAUNCHING
             
-            # Try each machine type in order
+            # Try each machine type in order until one works
             instance_info = None
-            for machine_type in self.machine_config.machine_types:
-                instance_info = self.launch_instance(machine_type, job_id)
+            while True:
+                for machine_type in self.machine_config.machine_types:
+                    instance_info = self.launch_instance(machine_type, job_id)
+                    if instance_info:
+                        break
                 if instance_info:
                     break
-                print(f"[{job_id}] Trying next machine type...")
+                time.sleep(15)
             
             if not instance_info:
                 job_result.status = JobStatus.FAILED

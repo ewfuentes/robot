@@ -24,6 +24,13 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get -y install libxcursor-dev clang \
      libgirepository1.0-dev libcairo2-dev libgtk2.0-dev libcanberra-gtk-module libsuitesparse-dev \
      python-is-python3 build-essential ${PACKAGES}
 
+sleep 1
+# Test DNS is online before continuing. The apt install can cause a systemd restart of core networking tools
+until nslookup github.com > /dev/null 2>&1; do
+    echo "Waiting for DNS..."
+    sleep 2
+done
+
 if [ "${ARCH}" = "aarch64" ]; then
     # We need to regenerate the python requirements. Use uv
     command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh

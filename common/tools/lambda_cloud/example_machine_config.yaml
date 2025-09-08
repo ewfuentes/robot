@@ -22,6 +22,7 @@ file_systems:
 files_to_copy:
   # Copy torch model cache (adjust path as needed)
   ~/.cache/torch/hub/checkpoints: /home/ubuntu/.cache/torch/hub/checkpoints
+  ~/.cache/robot/overhead_matching/tensor_cache: /home/ubuntu/.cache/robot/overhead_matching/tensor_cache
   ~/.aws/credentials: ~/.aws/credentials
   
   # Copy tmux configuration
@@ -30,13 +31,19 @@ files_to_copy:
 # Commands to run on the remote instance during setup
 # Note: Repository cloning and setup.sh are handled automatically
 remote_setup_commands:
-  # Datasets are automatically mounted from vigor filesystem
-  # Copy datasets to /tmp/ for faster access during training
-  - cp -r vigor/Chicago /tmp/
-  - cp -r vigor/Seattle /tmp/
-  
-  # Create output directory
-  - mkdir -p /tmp/output
+  # vigor datasets
+  - mkdir /tmp/Chicago
+  - cp /home/ubuntu/vigor/Chicago/*.tar.gz /tmp/Chicago/
+  - cp /home/ubuntu/vigor/Chicago/*.geojson /tmp/Chicago/
+  - tar -xzf /tmp/Chicago/panorama.tar.gz -C /tmp/Chicago/
+  - tar -xzf /tmp/Chicago/satellite.tar.gz -C /tmp/Chicago/
+  - mkdir /tmp/Seattle
+  - cp /home/ubuntu/vigor/Seattle/*.tar.gz /tmp/Seattle/
+  - cp /home/ubuntu/vigor/Seattle/*.geojson /tmp/Seattle/
+  - tar -xzf /tmp/Seattle/panorama.tar.gz -C /tmp/Seattle/
+  - tar -xzf /tmp/Seattle/satellite.tar.gz -C /tmp/Seattle/
+  # Alphaearth
+  - cp -r /home/ubuntu/vigor/alphaearth /tmp/
 
 # Maximum training time in hours (jobs will be terminated after this time)
 max_train_time_hours: 6
