@@ -211,7 +211,7 @@ class SemanticNullExtractor(torch.nn.Module):
         dev = model_input.image.device
         positions_in_patch = torch.zeros((batch_size, 0, 2), device=dev)
         semantic_tokens = torch.zeros((batch_size, 0, 0), device=dev)
-        mask = torch.zeros(batch_size, 0, device=dev)
+        mask = torch.zeros(batch_size, 0, device=dev, dtype=torch.bool)
         return SemanticTokenExtractorOutput(
             positions=positions_in_patch,
             features=semantic_tokens,
@@ -297,6 +297,22 @@ def init_xavier(model):
         if p.dim() > 1:
             xavier_uniform_(p)
 
+
+def make_float_mask_from_bool_mask(bool_mask_true_means_mask: torch.Tensor) -> torch.Tensor:
+    """
+    Create a float mask for a transformer en/decoder from a boolean mask.
+    TRUE in the input bool mask indicates we WILL mask that token.
+
+    Args:
+        bool_mask_true_means_mask: bool tensor where false allows attention and true does not 
+    Returns:
+        float tensor of the same shape. Zeros in all false positions, and -inf in true positions.
+
+        These values are added to the attention before softmax, so -inf zeros out. 
+    """
+    assert bool_mask_true_means_mask.dtype == torch.bool, f"Expected mask to be dtype bool, got {bool_mask_true_means_mask.dtype}"
+    return torch.where(bool_mask_true_means_mask, -torch.inf, 0.0)
+
 class TransformerAggregator(torch.nn.Module):
     def __init__(self, output_dim: int, config: TransformerAggregatorConfig):
         super().__init__()
@@ -315,7 +331,8 @@ class TransformerAggregator(torch.nn.Module):
         init_xavier(self._encoder)
 
     def forward(self, tokens, token_mask):
-        return self._encoder(tokens, src_key_padding_mask=token_mask, is_causal=False)
+        float_token_mask = make_float_mask_from_bool_mask(token_mask)
+        return self._encoder(tokens, src_key_padding_mask=float_token_mask, is_causal=False)
 
 
 class SwagPatchEmbedding(torch.nn.Module):
@@ -338,7 +355,7 @@ class SwagPatchEmbedding(torch.nn.Module):
                                    config.output_dim)
                 for k in config.extractor_config_by_name})
 
-        self.register_buffer("_cls_token", torch.randn((1, 1, config.output_dim), requires_grad=False))
+        self._cls_token = torch.nn.Parameter(torch.randn((1, 1, config.output_dim)))            
 
         self._aggregator_model = create_aggregator_model(
                 config.output_dim, config.aggregation_config)
@@ -421,7 +438,7 @@ class SwagPatchEmbedding(torch.nn.Module):
         input_tokens = F.normalize(input_tokens)
 
         cls_mask = torch.zeros(
-                (batch_size, 1), device=dev)
+                (batch_size, 1), device=dev, dtype=torch.bool)
         input_mask = torch.cat([cls_mask] +
                                [v.mask for v in extractor_outputs_by_name.values()], dim=1)
 
