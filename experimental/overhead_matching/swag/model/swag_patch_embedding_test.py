@@ -156,6 +156,22 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
         self.assertEqual(result.shape[0], BATCH_DIM)
         self.assertEqual(result.shape[1], config.output_dim)
 
+    def test_float_mask(self):
+        # Setup
+        BATCH_DIM = 23
+        NUM_TOKENS = 124
+
+        input_bool_mask = torch.rand((BATCH_DIM, NUM_TOKENS), generator=torch.manual_seed(42)) > 0.5
+
+        # Action
+        float_mask = spe.make_float_mask_from_bool_mask(input_bool_mask)
+
+        # Verification
+        self.assertEqual(float_mask.shape, input_bool_mask.shape)
+        self.assertEqual(float_mask.dtype, torch.float32)
+        self.assertTrue(torch.all(float_mask[input_bool_mask] == -torch.inf))
+        self.assertTrue(torch.all(float_mask[~input_bool_mask] == 0.0))
+
 
 if __name__ == "__main__":
     unittest.main()
