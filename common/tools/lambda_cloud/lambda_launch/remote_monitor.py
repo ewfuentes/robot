@@ -318,11 +318,14 @@ class RemoteMonitor:
                 if self.training_process:
                     exit_code = self.training_process.returncode
                     if exit_code == 0:
-                        self.cleanup_and_shutdown("Training completed successfully")
+                        pass
+                        # self.cleanup_and_shutdown("Training completed successfully")
                     else:
-                        self.cleanup_and_shutdown(f"Training failed with exit code {exit_code}")
+                        pass
+                        # self.cleanup_and_shutdown(f"Training failed with exit code {exit_code}")
                 else:
-                    self.cleanup_and_shutdown("Training process not found")
+                    pass
+                    # self.cleanup_and_shutdown("Training process not found")
                 break
             
             # Log progress
