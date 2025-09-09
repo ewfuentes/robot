@@ -165,16 +165,6 @@ blinker==1.9.0 \
     --hash=sha256:b4ce2265a7abece45e7cc896e98dbebe6cead56bcf805a3d23136d145f5445bf \
     --hash=sha256:ba0efaa9080b619ff2f3459d1d500c57bddea4a6b424b60a91141db6fd2f08bc
     # via flask
-boto3==1.40.24 \
-    --hash=sha256:24a19e275d33e918afc22a78c6a1e20c14d02cc00e2f786b05e2a4a32191457e \
-    --hash=sha256:cc147ad13e8edf7ec69cbb4df8fe60f187f8b2c9ab8befa0fd1fbcfa4fc80b1f
-    # via -r third_party/python/requirements_3_12.in
-botocore==1.40.24 \
-    --hash=sha256:af2b49e52950a12229440d7c297aaad0a7b75fd1c4f8700b164948b207a08cf0 \
-    --hash=sha256:d566840f2291bb5df1c0903ad385c61c865927d562d41dcf6468c9cee4cc313a
-    # via
-    #   boto3
-    #   s3transfer
 casadi==3.7.1 \
     --hash=sha256:0cba2ec4d6907ced7eddda5405460622882ba3bd4a81c0a17b7c4c7081b0fcc7 \
     --hash=sha256:12577155cd3cd79ba162381bfed6add1541bc770ba3f1f1334e4eb159d9b39ba \
@@ -1112,12 +1102,6 @@ jinja2==3.1.6 \
     #   nbconvert
     #   osqp
     #   torch
-jmespath==1.0.1 \
-    --hash=sha256:02e2e4cc71b5bcab88332eebf907519190dd9e6e82107fa7f83b1003a6252980 \
-    --hash=sha256:90261b206d6defd58fdd5e85f478bf633a2901798906be2ad389150c5c60edbe
-    # via
-    #   boto3
-    #   botocore
 joblib==1.5.1 \
     --hash=sha256:4719a31f054c7d766948dcd83e9613686b27114f190f717cec7eaa2084f8a74a \
     --hash=sha256:f4f86e351f39fe3d0d32a9f2c3d8af1ee4cec285aafcb27003dda5205576b444
@@ -2722,7 +2706,6 @@ python-dateutil==2.9.0.post0 \
     --hash=sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427
     # via
     #   arrow
-    #   botocore
     #   jupyter-client
     #   matplotlib
     #   pandas
@@ -3269,10 +3252,6 @@ ruamel-yaml-clib==0.2.12 \
     --hash=sha256:fc4b630cd3fa2cf7fce38afa91d7cfe844a9f75d7f0f36393fa98815e911d987 \
     --hash=sha256:fd5415dded15c3822597455bc02bcd66e81ef8b7a48cb71a33628fc9fdde39df
     # via ruamel-yaml
-s3transfer==0.13.1 \
-    --hash=sha256:a981aa7429be23fe6dfc13e80e4020057cbab622b08c0315288758d67cabc724 \
-    --hash=sha256:c3fdba22ba1bd367922f27ec8032d6a1cf5f10c934fb5d68cf60fd5a23d936cf
-    # via boto3
 safetensors==0.6.2 \
     --hash=sha256:1d2d2b3ce1e2509c68932ca03ab8f20570920cd9754b05063d4368ee52833ecd \
     --hash=sha256:43ff2aa0e6fa2dc3ea5524ac7ad93a9839256b8703761e76e2d0b2a3fa4f15d9 \
@@ -3799,9 +3778,7 @@ uri-template==1.3.0 \
 urllib3==2.5.0 \
     --hash=sha256:3fc47733c7e419d4bc3f6b3dc2b4f890bb743906a30d56ba4a5bfa4bbff92760 \
     --hash=sha256:e6b01673c0fa6a13e374b50871808eb3bf7046c4b125b216f6bf1cc604cff0dc
-    # via
-    #   botocore
-    #   requests
+    # via requests
 uvicorn==0.35.0 \
     --hash=sha256:197535216b25ff9b785e29a0b79199f55222193d47f820816e7da751e9bc8d4a \
     --hash=sha256:bc662f087f7cf2ce11a1d7fd70b90c9f98ef2e2831556dd078d131b96cc94a01

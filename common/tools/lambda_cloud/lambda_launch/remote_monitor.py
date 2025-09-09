@@ -22,7 +22,7 @@ class RemoteMonitor:
                  s3_bucket: str,
                  s3_key_prefix: str,
                  api_key: str,
-                 instance_ip: str):
+                 instance_id: str):
         """Initialize remote monitor.
         
         Args:
@@ -32,7 +32,7 @@ class RemoteMonitor:
             s3_bucket: S3 bucket for output sync
             s3_key_prefix: S3 key prefix
             api_key: Lambda Cloud API key
-            instance_ip: Instance IP for self-lookup
+            instance_id: Lambda Cloud instance ID
         """
         self.training_command = training_command
         self.max_train_hours = max_train_hours
@@ -40,7 +40,7 @@ class RemoteMonitor:
         self.s3_bucket = s3_bucket
         self.s3_key_prefix = s3_key_prefix
         self.api_key = api_key
-        self.instance_ip = instance_ip
+        self.instance_id = instance_id
         
         self.start_time = datetime.now()
         self.timeout_time = self.start_time + timedelta(hours=max_train_hours)
@@ -220,33 +220,17 @@ class RemoteMonitor:
             self.log(f"✗ S3 sync error: {e}")
             return False
     
-    def get_instance_id(self) -> str:
-        """Get instance ID by IP address using Lambda Cloud API."""
-        try:
-            client = LambdaCloudClient(api_key=self.api_key)
-            instances = client.list_instances()
-            
-            for instance in instances:
-                if instance.ip == self.instance_ip:
-                    return instance.id
-            
-            raise RuntimeError(f"No instance found with IP {self.instance_ip}")
-            
-        except Exception as e:
-            self.log(f"Failed to get instance ID: {e}")
-            raise
     
     def terminate_instance(self) -> bool:
         """Terminate this Lambda Cloud instance."""
         try:
-            instance_id = self.get_instance_id()
-            self.log(f"Terminating instance {instance_id}...")
+            self.log(f"Terminating instance {self.instance_id}...")
             
             # Use bazel to terminate via Lambda Cloud API
             terminate_command = [
                 "bazel", "run", 
                 "//common/tools/lambda_cloud/lambda_api:cli", 
-                "--", "terminate", "--force", instance_id
+                "--", "terminate", "--force", self.instance_id
             ]
             
             # Set environment for bazel
@@ -263,7 +247,7 @@ class RemoteMonitor:
             )
             
             if result.returncode == 0 and "Successfully terminated" in result.stdout:
-                self.log(f"✓ Successfully initiated termination of instance {instance_id}")
+                self.log(f"✓ Successfully initiated termination of instance {self.instance_id}")
                 return True
             else:
                 self.log(f"✗ Failed to terminate instance: {result.stderr}")
@@ -336,7 +320,7 @@ def main():
     parser.add_argument("--s3-bucket", required=True, help="S3 bucket for output sync")
     parser.add_argument("--s3-key-prefix", required=True, help="S3 key prefix")
     parser.add_argument("--api-key", required=True, help="Lambda Cloud API key")
-    parser.add_argument("--instance-ip", required=True, help="Instance IP address")
+    parser.add_argument("--instance-id", required=True, help="Lambda Cloud instance ID")
     
     args = parser.parse_args()
     
@@ -348,7 +332,7 @@ def main():
         s3_bucket=args.s3_bucket,
         s3_key_prefix=args.s3_key_prefix,
         api_key=args.api_key,
-        instance_ip=args.instance_ip
+        instance_id=args.instance_id
     )
     
     # Start training

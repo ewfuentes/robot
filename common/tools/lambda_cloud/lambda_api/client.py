@@ -228,7 +228,7 @@ class LambdaCloudClient:
 
         return Instance(
             id=item["id"],
-            name=item["name"],
+            name=item.get("name"),
             ip=item.get("ip"),
             private_ip=item.get("private_ip"),
             status=InstanceStatus(item["status"]),
@@ -373,7 +373,7 @@ class LambdaCloudClient:
         for item in response["data"]["terminated_instances"]:
             instance = Instance(
                 id=item["id"],
-                name=item["name"],
+                name=item.get("name"),
                 ip=item["ip"],
                 private_ip=item.get("private_ip"),
                 status=InstanceStatus(item["status"]),

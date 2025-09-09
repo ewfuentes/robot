@@ -10,14 +10,21 @@ from dataclasses import dataclass
 @dataclass
 class MachineConfig:
     """Configuration for Lambda Cloud machine setup."""
-    machine_types: List[str]
-    region: List[str]  # Can be single region or list of regions
+    machine_types: Dict[str, List[str]]  # machine_type -> [regions]
     ssh_key: str
     image_family: str  # Image family name (e.g., "lambda-stack-24-04")
     file_systems: List[str]  # File systems to mount (e.g., ["vigor"])
     files_to_copy: Dict[str, str]
     remote_setup_commands: List[str]
     max_train_time_hours: int
+    
+    def get_all_machine_types(self) -> List[str]:
+        """Get list of all configured machine types."""
+        return list(self.machine_types.keys())
+    
+    def get_regions_for_machine_type(self, machine_type: str) -> List[str]:
+        """Get list of regions for a specific machine type."""
+        return self.machine_types.get(machine_type, [])
 
 
 @dataclass 
@@ -36,20 +43,24 @@ class ConfigParser:
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
         
-        # Handle region as single value or list
-        region_config = config['region']
-        if isinstance(region_config, str):
-            regions = [region_config]
-        else:
-            regions = region_config
+        # Parse machine types and their regions
+        machine_types_config = config['machine_types']
+        machine_types = {}
+
+        for machine_type, regions_config in machine_types_config.items():
+            if isinstance(regions_config, str):
+                machine_types[machine_type] = [regions_config]
+            elif isinstance(regions_config, list):
+                machine_types[machine_type] = regions_config
+            else:
+                raise ValueError(f"Invalid regions format for machine type {machine_type}")
         
         file_systems = config.get('file_systems')
         if isinstance(file_systems, str):
             file_systems = [file_systems]
         
         return MachineConfig(
-            machine_types=config['machine_types'],
-            region=regions,
+            machine_types=machine_types,
             ssh_key=config['ssh_key'],
             image_family=config.get('image_family', 'lambda-stack-24-04'),
             file_systems=file_systems,
@@ -112,6 +123,11 @@ class ConfigParser:
         """Validate machine configuration."""
         if not machine_config.machine_types:
             raise ValueError("At least one machine type must be specified")
+        
+        # Validate each machine type has at least one region
+        for machine_type, regions in machine_config.machine_types.items():
+            if not regions:
+                raise ValueError(f"Machine type {machine_type} must have at least one region")
         
         if machine_config.max_train_time_hours <= 0:
             raise ValueError("max_train_time_hours must be positive")

@@ -196,9 +196,10 @@ def main() -> None:
             failed_count = len([r for r in results if r.status.value == "failed"])
             if failed_count > 0:
                 print(f"\n⚠️  {failed_count} jobs failed")
+                print(f"   Some instances may still be running and need manual cleanup")
                 sys.exit(1)
             else:
-                print(f"\n🎉 All jobs completed successfully!")
+                print(f"\n🎉 All jobs launched successfully!")
                 
         except KeyboardInterrupt:
             print(f"\n⚠️  Interrupted by user")
@@ -206,10 +207,12 @@ def main() -> None:
             sys.exit(1)
         except Exception as e:
             print(f"Error launching jobs: {e}")
+            print(f"   Some instances may still be running and need manual cleanup")
             sys.exit(1)
             
     except Exception as e:
         print(f"Unexpected error: {e}")
+        print(f"   Some instances may still be running and need manual cleanup")
         sys.exit(1)
 
 

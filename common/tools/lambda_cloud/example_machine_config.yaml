@@ -1,13 +1,12 @@
 # Example machine configuration for Lambda Cloud training jobs
 # Copy and modify this file for your specific setup
 
-# Lambda Cloud instance types to try (in order of preference)
+# Lambda Cloud instance types with their preferred regions
 machine_types:
-  - gpu_1x_gh200 # Preferred GPU type
-
-# Region(s) to launch instances in (single region or list of regions)
-region: us-east-3
-
+  gpu_1x_gh200:  # Preferred GPU type
+    - us-east-3  # Primary region
+    # supports fallback regions, e.g., us-west-2
+  # supports multiple machine types, from preferred to fallback
 # SSH key name registered with Lambda Cloud
 ssh_key: aspen
 

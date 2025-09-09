@@ -124,11 +124,12 @@ class JobManager:
         self.completed_jobs: List[JobResult] = []
         self._lock = threading.Lock()
     
-    def launch_instance(self, machine_type: str, job_id: str, logger: JobLogger) -> Optional[tuple]:
+    def launch_instance(self, machine_type: str, region_name: str, job_id: str, logger: JobLogger) -> Optional[tuple]:
         """Launch a Lambda Cloud instance.
         
         Args:
             machine_type: Type of machine to launch
+            region_name: Region to launch instance in
             job_id: Unique job identifier
             logger: JobLogger instance for this job
             
@@ -136,11 +137,9 @@ class JobManager:
             (instance_id, instance_ip) if successful, None otherwise
         """
         try:
-            logger.log(f"Launching {machine_type} instance...", terminal=True)
+            logger.log(f"Launching {machine_type} instance in {region_name}...", terminal=True)
             
             # Launch instance using Lambda Cloud API
-            # Use first configured region for now (could be enhanced to try multiple regions)
-            region_name = self.machine_config.region[0]
             instance_name = f"training-{job_id}-{int(time.time())}"
             
             instance_ids = self.lambda_client.launch_instance(
@@ -194,94 +193,101 @@ class JobManager:
     def setup_instance(self, 
                       remote_executor: RemoteExecutor, 
                       job_config: JobConfig, 
-                      job_id: str) -> bool:
+                      job_id: str,
+                      logger: JobLogger) -> bool:
         """Setup the remote instance for training.
         
         Args:
             remote_executor: Connected remote executor
             job_config: Job configuration
             job_id: Unique job identifier
+            logger: JobLogger instance for this job
             
         Returns:
             True if successful, False otherwise
         """
         try:
-            print(f"[{job_id}] Setting up instance...")
+            logger.log("Setting up instance...", "INFO", terminal=True)
             
             # Copy files to remote instance
-            print(f"[{job_id}] Copying files...")
+            logger.log("Copying files...")
             for local_path, remote_path in self.machine_config.files_to_copy.items():
-                print(f"[{job_id}]   Copying: {local_path} -> {remote_path}")
+                logger.log(f"Copying: {local_path} -> {remote_path}")
                 if not remote_executor.copy_file(local_path, remote_path):
-                    print(f"[{job_id}] ✗ File copy failed, aborting setup")
+                    logger.log("File copy failed, aborting setup", "ERROR", terminal=True)
                     return False
             
             # Clone repository with specified branch
-            print(f"[{job_id}] Cloning repository (branch: {job_config.branch})...")
+            logger.log(f"Cloning repository (branch: {job_config.branch})...", terminal=True)
             if job_config.branch == "main":
                 clone_cmd = "git clone https://github.com/ewfuentes/robot.git"
             else:
                 clone_cmd = f"git clone -b {job_config.branch} https://github.com/ewfuentes/robot.git"
             
             result = remote_executor.execute_command(clone_cmd, timeout=300)  # 5 minute timeout
+            logger.log_command(clone_cmd, result)
             if not result.success:
-                print(f"[{job_id}] ✗ Failed to clone repository: {result.stderr}")
+                logger.log(f"Failed to clone repository: {result.stderr}", "ERROR", terminal=True)
                 return False
             
             # Run setup.sh to install bazel and dependencies
-            print(f"[{job_id}] Running repository setup...")
-            result = remote_executor.execute_command("cd /home/ubuntu/robot && ./setup.sh", timeout=600)  # 10 minute timeout
+            logger.log("Running repository setup...")
+            setup_cmd = "cd /home/ubuntu/robot && ./setup.sh"
+            result = remote_executor.execute_command(setup_cmd, timeout=600)  # 10 minute timeout
+            logger.log_command(setup_cmd, result)
             if not result.success:
-                print(f"[{job_id}] ✗ Repository setup failed: {result.stderr}")
+                logger.log(f"Repository setup failed: {result.stderr}", "ERROR", terminal=True)
                 return False
             
-            print(result.stderr)
-            print(result.stdout)
-            
             # Run additional setup commands
-            print(f"[{job_id}] Running additional setup commands...")
+            logger.log("Running additional setup commands...")
             for command in self.machine_config.remote_setup_commands:
-                print(f"[{job_id}]   Running: {command}")
+                logger.log(f"Running: {command}")
                 result = remote_executor.execute_command(command, timeout=600)  # 10 minute timeout
+                logger.log_command(command, result)
                 if not result.success:
-                    print(f"[{job_id}] ✗ Setup command failed: {command}")
-                    print(f"[{job_id}]   Error: {result.stderr}")
+                    logger.log(f"Setup command failed: {command}", "ERROR", terminal=True)
+                    logger.log(f"Error: {result.stderr}", "ERROR")
                     return False
             
-            print(f"[{job_id}] ✓ Instance setup completed")
+            logger.log("Instance setup completed", "INFO", terminal=True)
             return True
             
         except Exception as e:
-            print(f"[{job_id}] ✗ Setup error: {e}")
-            print(f"[{job_id}] Full traceback:")
-            traceback.print_exc()
+            logger.log(f"Setup error: {e}", "ERROR", terminal=True)
+            logger.log(f"Full traceback:\n{traceback.format_exc()}", "ERROR")
             return False
     
     def start_autonomous_training(self,
                                  remote_executor: RemoteExecutor,
                                  job_config: JobConfig,
                                  job_id: str,
+                                 instance_id: str,
                                  instance_ip: str,
-                                 api_key: str) -> bool:
+                                 api_key: str,
+                                 logger: JobLogger) -> bool:
         """Start autonomous training job with remote monitoring.
         
         Args:
             remote_executor: Connected remote executor
             job_config: Job configuration  
             job_id: Unique job identifier
+            instance_id: Lambda Cloud instance ID
             instance_ip: Instance IP address
             api_key: Lambda Cloud API key
+            logger: JobLogger instance for this job
             
         Returns:
             True if training started successfully, False otherwise
         """
         try:
-            print(f"[{job_id}] Starting training...")
+            logger.log("Starting training...", "INFO", terminal=True)
             
             # Copy training config to remote instance  
             remote_config_path = f"/tmp/train_config_{job_id}.yaml"
+            logger.log(f"Copying training config to {remote_config_path}")
             if not remote_executor.copy_file(job_config.config_path, remote_config_path):
-                print(f"[{job_id}] ✗ Failed to copy training config")
+                logger.log("Failed to copy training config", "ERROR", terminal=True)
                 return False
             
             # Prepare training command
@@ -307,24 +313,23 @@ class JobManager:
                 f"--s3-bucket {s3_bucket} "
                 f"--s3-key-prefix {s3_key_prefix} "
                 f"--api-key {api_key} "
-                f"--instance-ip {instance_ip} "
+                f"--instance-id {instance_id} "
                 f"> /tmp/monitor.log 2>&1 &"
             )
-            print(f"[{job_id}]: Monitor command is: {monitor_command}")
             result = remote_executor.execute_command(monitor_command)
+            logger.log_command(monitor_command, result)
             if not result.success:
-                print(f"[{job_id}] ✗ Failed to start remote monitor: {result.stderr}")
+                logger.log(f"Failed to start remote monitor: {result.stderr}", "ERROR", terminal=True)
                 return False
             
-            print(f"[{job_id}] ✓ Autonomous training started")
-            print(f"[{job_id}] SSH to instance: ssh ubuntu@{instance_ip}")
-            print(f"[{job_id}] Monitor logs: tail -f /tmp/monitor.log")
-            print(f"[{job_id}] Training logs: tail -f /tmp/training.log")
-            print(f"[{job_id}] S3 destination: s3://{s3_bucket}/{s3_key_prefix}/")
+            logger.log("Autonomous training started", "INFO", terminal=True)
+            logger.log(f"SSH to instance: ssh ubuntu@{instance_ip}")
+            logger.log(f"Monitor logs: tail -f /tmp/monitor.log")
+            logger.log(f"Training logs: tail -f /tmp/training.log")
             return True
             
         except Exception as e:
-            print(f"[{job_id}] ✗ Training start error: {e}")
+            logger.log(f"Training start error: {e}", "ERROR", terminal=True)
             return False
     
     def execute_job(self, job_config: JobConfig, job_id: str) -> JobResult:
@@ -351,11 +356,15 @@ class JobManager:
             # Update status
             job_result.status = JobStatus.LAUNCHING
             
-            # Try each machine type in order until one works
+            # Try each machine type and region combination until one works
             instance_info = None
             while True:
-                for machine_type in self.machine_config.machine_types:
-                    instance_info = self.launch_instance(machine_type, job_id)
+                for machine_type in self.machine_config.get_all_machine_types():
+                    regions = self.machine_config.get_regions_for_machine_type(machine_type)
+                    for region_name in regions:
+                        instance_info = self.launch_instance(machine_type, region_name, job_id, logger)
+                        if instance_info:
+                            break
                     if instance_info:
                         break
                 if instance_info:
@@ -381,14 +390,14 @@ class JobManager:
             try:
                 # Setup instance
                 job_result.status = JobStatus.SETTING_UP
-                if not self.setup_instance(remote_executor, job_config, job_id):
+                if not self.setup_instance(remote_executor, job_config, job_id, logger):
                     job_result.status = JobStatus.FAILED
                     job_result.error_message = "Instance setup failed"
                     return job_result
                 
                 # Start autonomous training
                 job_result.status = JobStatus.TRAINING
-                if not self.start_autonomous_training(remote_executor, job_config, job_id, instance_ip, self.lambda_client.api_key):
+                if not self.start_autonomous_training(remote_executor, job_config, job_id, instance_id, instance_ip, self.lambda_client.api_key, logger):
                     job_result.status = JobStatus.FAILED
                     job_result.error_message = "Failed to start autonomous training"
                     return job_result
