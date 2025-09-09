@@ -275,7 +275,7 @@ class RemoteMonitor:
         self.sync_to_s3()
         
         # Terminate instance
-        # self.terminate_instance()
+        self.terminate_instance()
         
         self.log("Shutdown sequence completed")
     

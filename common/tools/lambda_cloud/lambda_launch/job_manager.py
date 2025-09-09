@@ -4,6 +4,7 @@
 import time
 import threading
 import traceback
+import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Optional
 from dataclasses import dataclass
@@ -124,6 +125,39 @@ class JobManager:
         self.completed_jobs: List[JobResult] = []
         self._lock = threading.Lock()
     
+    def _generate_safe_instance_name(self, job_id: str) -> str:
+        """Generate a safe instance name that fits Lambda Cloud's 64 character limit.
+        
+        Args:
+            job_id: Job identifier
+            
+        Returns:
+            Instance name that is <= 64 characters
+        """
+        base_name = f"training-{job_id}"
+        
+        # Lambda Cloud has a 64 character limit for instance names
+        max_length = 64
+        
+        if len(base_name) <= max_length:
+            return base_name
+        
+        # If too long, create a hash-based name
+        # Format: training-{trimmed_job_id}-{hash}
+        job_id_hash = hashlib.md5(job_id.encode()).hexdigest()[:8]
+        
+        # Calculate available space for trimmed job_id
+        # "training-" (9) + "-" (1) + hash (8) + "-" (1) = 19 chars
+        fixed_chars = 9 + 1 + 8 + 1
+        available_for_job_id = max_length - fixed_chars
+        
+        if available_for_job_id > 0:
+            trimmed_job_id = job_id[:available_for_job_id]
+            return f"training-{trimmed_job_id}-{job_id_hash}"
+        else:
+            # Extreme case: use only hash and timestamp
+            return f"training-{job_id_hash}"
+    
     def launch_instance(self, machine_type: str, region_name: str, job_id: str, logger: JobLogger) -> Optional[tuple]:
         """Launch a Lambda Cloud instance.
         
@@ -140,7 +174,8 @@ class JobManager:
             logger.log(f"Launching {machine_type} instance in {region_name}...", terminal=True)
             
             # Launch instance using Lambda Cloud API
-            instance_name = f"training-{job_id}-{int(time.time())}"
+            instance_name = self._generate_safe_instance_name(job_id)
+            logger.log(f"Using instance name: {instance_name} (length: {len(instance_name)})")
             
             instance_ids = self.lambda_client.launch_instance(
                 region_name=region_name,
