@@ -1,11 +1,9 @@
 import argparse
 import json
-import math
 import common.torch.load_torch_deps
 from common.torch.load_and_save_models import save_model
 import torch
 from torch.utils.tensorboard import SummaryWriter
-import torch.nn.functional as F
 import itertools
 from pathlib import Path
 from common.python.serialization import dataclass_to_dict, flatten_dict
@@ -13,12 +11,16 @@ from experimental.overhead_matching.swag.data import (
         vigor_dataset, satellite_embedding_database as sed)
 from experimental.overhead_matching.swag.model import (
         patch_embedding, swag_patch_embedding)
+from experimental.overhead_matching.swag.scripts.logging_utils import (
+        log_batch_metrics, log_embedding_stats, log_gradient_stats, log_validation_metrics)
 from typing import Union
 from dataclasses import dataclass
 import tqdm
 import msgspec
 from pprint import pprint
 import ipdb
+
+
 
 
 @dataclass
@@ -151,7 +153,7 @@ def compute_loss(sat_embeddings, pano_embeddings, pairs, loss_config):
                 1 + torch.exp(-POS_WEIGHT * (pos_similarities - AVG_POS_SIMILARITY)))
         pos_loss = torch.mean(pos_loss) / POS_WEIGHT
     else:
-        pos_loss = torch.tensor(0)
+        pos_loss = torch.tensor(0.0, device=similarity.device, dtype=similarity.dtype)
 
     SEMIPOS_WEIGHT = loss_config.semipositive_weight
     AVG_SEMIPOS_SIMILARITY = loss_config.avg_semipositive_similarity
@@ -161,7 +163,7 @@ def compute_loss(sat_embeddings, pano_embeddings, pairs, loss_config):
                     semipos_similarities - AVG_SEMIPOS_SIMILARITY)))
         semipos_loss = torch.mean(semipos_loss) / SEMIPOS_WEIGHT
     else:
-        semipos_loss = torch.tensor(0)
+        semipos_loss = torch.tensor(0.0, device=similarity.device, dtype=similarity.dtype)
 
     NEG_WEIGHT = loss_config.negative_weight
     AVG_NEG_SIMILARITY = loss_config.avg_negative_similarity
@@ -170,7 +172,7 @@ def compute_loss(sat_embeddings, pano_embeddings, pairs, loss_config):
                 1 + torch.exp(NEG_WEIGHT * (neg_similarities - AVG_NEG_SIMILARITY)))
         neg_loss = torch.mean(neg_loss) / NEG_WEIGHT
     else:
-        neg_loss = torch.tensor(0)
+        neg_loss = torch.tensor(0.0, device=similarity.device, dtype=similarity.dtype)
 
     return {
         'loss': pos_loss + neg_loss + semipos_loss,
@@ -179,27 +181,12 @@ def compute_loss(sat_embeddings, pano_embeddings, pairs, loss_config):
         'semipos_loss': semipos_loss}
 
 
-def log_batch_metrics(writer, loss_dict, lr_scheduler, pairs, step_idx, epoch_idx, batch_idx, quiet):
-    writer.add_scalar("train/learning_rate", lr_scheduler.get_last_lr()[0], global_step=step_idx)
-    writer.add_scalar("train/num_positive_pairs", len(pairs.positive_pairs), global_step=step_idx)
-    writer.add_scalar("train/num_semipos_pairs", len(pairs.semipositive_pairs), global_step=step_idx)
-    writer.add_scalar("train/num_neg_pairs", len(pairs.negative_pairs), global_step=step_idx)
-    writer.add_scalar("train/loss_pos", loss_dict["pos_loss"].item(), global_step=step_idx)
-    writer.add_scalar("train/loss_semipos", loss_dict["semipos_loss"].item(), global_step=step_idx)
-    writer.add_scalar("train/loss_neg", loss_dict["neg_loss"].item(), global_step=step_idx)
-    writer.add_scalar("train/loss", loss_dict["loss"].item(), global_step=step_idx)
-    if not quiet:
-        print(f"{epoch_idx=:4d} {batch_idx=:4d} lr: {lr_scheduler.get_last_lr()[0]:.2e} " +
-              f" num_pos_pairs: {len(pairs.positive_pairs):3d}" +
-              f" num_semipos_pairs: {len(pairs.semipositive_pairs):3d}" +
-              f" num_neg_pairs: {len(pairs.negative_pairs):3d}" +
-              f" pos_loss: {loss_dict["pos_loss"].item():0.6f}" +
-              f" semipos_loss: {loss_dict["semipos_loss"]:0.6f}" +
-              f" neg_loss: {loss_dict["neg_loss"].item():0.6f}" +
-              f" loss: {loss_dict["loss"].item():0.6f}",
-              end='\r')
-        if batch_idx % 50 == 0:
-            print()
+
+
+
+
+
+
 
 
 def compute_validation_metrics(
@@ -273,14 +260,6 @@ def compute_validation_metrics(
     return out
 
 
-def log_validation_metrics(writer, validation_metrics, epoch_idx, quiet):
-    to_print = []
-    for key, value in validation_metrics.items():
-        to_print.append(f'{key}: {value:0.3f}')
-        writer.add_scalar(f"validation/{key}", value, global_step=epoch_idx)
-
-    if not quiet:
-        print(f"epoch_idx: {epoch_idx} {' '.join(to_print)}")
 
 
 def train(config: TrainConfig, *, dataset, validation_datasets, panorama_model, satellite_model, quiet):
@@ -375,10 +354,25 @@ def train(config: TrainConfig, *, dataset, validation_datasets, panorama_model, 
                         sat_embeddings=sat_embeddings,
                         pairs=pairs,
                         loss_config=opt_config.loss_config)
-
+                
             grad_scaler.scale(loss_dict["loss"]).backward()
             grad_scaler.step(opt)
             grad_scaler.update()
+            if torch.isnan(loss_dict["loss"]):
+                raise RuntimeError("Got NaN loss!")
+            # perform checks that all parameters we expect to update have gradients for the first set of batches
+            if total_batches < 50:
+                for model_name, model in zip(["pano", "sat"], [panorama_model, satellite_model]):
+                    for name, param in model.named_parameters():
+                        if param.grad is None and param.requires_grad:
+                            raise RuntimeError(f"Parameter {name} for model {model_name} requires grad, but had no update.")
+                        if param.grad is not None and torch.any(torch.isinf(param.grad)):
+                            print(f"Warining: INF was found in parameter gradient: {name} in model {model_name}")
+
+            log_gradient_stats(writer, panorama_model, "panorama", total_batches)
+            log_gradient_stats(writer, satellite_model, "satellite", total_batches)
+            log_embedding_stats(writer, "pano", panorama_embeddings.detach(), total_batches)
+            log_embedding_stats(writer, "sat", sat_embeddings.detach(), total_batches)
 
             # Hard Negative Mining
             miner.consume(
@@ -458,11 +452,15 @@ def main(
         satellite_model = patch_embedding.WagPatchEmbedding(train_config.sat_model_config)
     elif isinstance(train_config.sat_model_config, swag_patch_embedding.SwagPatchEmbeddingConfig):
         satellite_model = swag_patch_embedding.SwagPatchEmbedding(train_config.sat_model_config)
+    else:
+        raise TypeError("Unsupported satellite model config type")
 
     if isinstance(train_config.pano_model_config, patch_embedding.WagPatchEmbeddingConfig):
         panorama_model = patch_embedding.WagPatchEmbedding(train_config.pano_model_config)
     elif isinstance(train_config.pano_model_config, swag_patch_embedding.SwagPatchEmbeddingConfig):
         panorama_model = swag_patch_embedding.SwagPatchEmbedding(train_config.pano_model_config)
+    else:
+        raise TypeError("Unsupported panorama model config type")
 
     assert len(train_config.dataset_config.paths) == 1
     dataset_config = vigor_dataset.VigorDatasetConfig(
