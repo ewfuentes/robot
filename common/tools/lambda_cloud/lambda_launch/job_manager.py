@@ -221,7 +221,7 @@ class JobManager:
             train_command = (
                 f"cd /home/ubuntu/robot && bazel run //experimental/overhead_matching/swag/scripts:train -- "
                 f"--dataset_base /tmp/ --output_base /tmp/output_{job_id} "
-                f"--train_config {remote_config_path}"
+                f"--train_config {remote_config_path} --no-ipdb"
             )
             
             # Prepare S3 configuration  
@@ -353,7 +353,11 @@ class JobManager:
             # Submit all jobs
             future_to_job = {}
             for i, job_config in enumerate(job_configs):
-                job_id = f"job_{i:03d}"
+                # Generate job_id: YYMMDD_HHMMSS_nameofconfigfile_uniquesha
+                timestamp = time.strftime("%y%m%d_%H%M%S")
+                config_name = Path(job_config.config_path).stem
+                job_id = f"{timestamp}_{config_name}"
+                assert job_id not in future_to_job.values(), f"Created jobs too fast, ended up wit two with same second: {future_to_job}. Tried to add {job_id}"
                 future = executor.submit(self.execute_job, job_config, job_id)
                 future_to_job[future] = job_id
             

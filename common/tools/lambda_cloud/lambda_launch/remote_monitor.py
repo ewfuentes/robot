@@ -8,6 +8,7 @@ import subprocess
 import argparse
 import json
 from datetime import datetime, timedelta
+from common.tools.lambda_cloud.lambda_api.client import LambdaCloudClient
 from pathlib import Path
 
 
@@ -222,10 +223,6 @@ class RemoteMonitor:
     def get_instance_id(self) -> str:
         """Get instance ID by IP address using Lambda Cloud API."""
         try:
-            # Import here to avoid dependency issues if not available
-            sys.path.append('/home/ubuntu/robot')
-            from common.tools.lambda_cloud.lambda_api.client import LambdaCloudClient
-            
             client = LambdaCloudClient(api_key=self.api_key)
             instances = client.list_instances()
             
@@ -291,14 +288,10 @@ class RemoteMonitor:
                 self.log("Training process didn't stop gracefully, killing...")
                 self.training_process.kill()
         
-        # Sync outputs to S3
-        if os.path.exists(self.output_dir):
-            self.sync_to_s3()
-        else:
-            self.log(f"Output directory {self.output_dir} does not exist, skipping S3 sync")
+        self.sync_to_s3()
         
         # Terminate instance
-        self.terminate_instance()
+        # self.terminate_instance()
         
         self.log("Shutdown sequence completed")
     
@@ -318,14 +311,11 @@ class RemoteMonitor:
                 if self.training_process:
                     exit_code = self.training_process.returncode
                     if exit_code == 0:
-                        pass
-                        # self.cleanup_and_shutdown("Training completed successfully")
+                        self.cleanup_and_shutdown("Training completed successfully")
                     else:
-                        pass
-                        # self.cleanup_and_shutdown(f"Training failed with exit code {exit_code}")
+                        self.cleanup_and_shutdown(f"Training failed with exit code {exit_code}")
                 else:
-                    pass
-                    # self.cleanup_and_shutdown("Training process not found")
+                    self.cleanup_and_shutdown("Training process not found")
                 break
             
             # Log progress

@@ -22,7 +22,7 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get -y install libxcursor-dev clang \
      libxrandr-dev libxinerama-dev libxi-dev freeglut3-dev libtbb-dev \
      libfmt-dev libspdlog-dev libvtk9-dev coinor-libipopt-dev coinor-libclp-dev \
      libgirepository1.0-dev libcairo2-dev libgtk2.0-dev libcanberra-gtk-module libsuitesparse-dev \
-     python-is-python3 build-essential ${PACKAGES}
+     python-is-python3 build-essential dnsutils ${PACKAGES}
 
 sleep 1
 # Test DNS is online before continuing. The apt install can cause a systemd restart of core networking tools

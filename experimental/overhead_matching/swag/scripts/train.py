@@ -19,6 +19,7 @@ import tqdm
 import msgspec
 from pprint import pprint
 import ipdb
+from contextlib import nullcontext
 
 
 
@@ -443,7 +444,8 @@ def main(
         dataset_base_path: Path,
         output_base_path: Path,
         train_config_path: Path,
-        quiet: bool):
+        quiet: bool,
+        no_ipdb: bool):
     with open(train_config_path, 'r') as file_in:
         train_config = msgspec.yaml.decode(file_in.read(), type=TrainConfig, dec_hook=dec_hook)
     pprint(train_config)
@@ -509,7 +511,7 @@ def main(
     train_config.output_dir = output_dir
     train_config.tensorboard_output = tensorboard_output
 
-    with ipdb.launch_ipdb_on_exception():
+    with ipdb.launch_ipdb_on_exception() if not no_ipdb else nullcontext():
         train(
             train_config,
             dataset=dataset,
@@ -526,10 +528,12 @@ if __name__ == "__main__":
     parser.add_argument("--output_base", help="path to output", required=True)
     parser.add_argument("--train_config", help="path to train_config", required=True)
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--no-ipdb", action='store_true', help="Disable falling into ipdb on exception")
     args = parser.parse_args()
 
     main(
         Path(args.dataset_base),
         Path(args.output_base),
         Path(args.train_config),
-        quiet=args.quiet)
+        quiet=args.quiet,
+        no_ipdb=args.no_ipdb)
