@@ -106,7 +106,8 @@ class LambdaTrainingLauncher:
         job_manager = JobManager(
             machine_config=self.machine_config,
             lambda_client=self.lambda_client,
-            max_parallel_jobs=self.max_parallel_jobs
+            max_parallel_jobs=self.max_parallel_jobs,
+            log_dir=self.output_dir / "job_logs"
         )
         
         # Run jobs
@@ -121,7 +122,7 @@ class LambdaTrainingLauncher:
         
         return results
     
-    def _save_results(self, results: List[JobResult]) -> None:
+    def _save_results(self, results: List[JobResult]) -> List[JobResult]:
         """Save job results to output directory.
         
         Args:

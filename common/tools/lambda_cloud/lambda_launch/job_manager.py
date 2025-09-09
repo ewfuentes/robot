@@ -5,13 +5,75 @@ import time
 import threading
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Dict, Optional, Callable
+from typing import List, Dict, Optional
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from datetime import datetime
 from common.tools.lambda_cloud.lambda_api.client import InsufficientCapacityError
 from common.tools.lambda_cloud.lambda_launch.config import JobConfig, MachineConfig
 from common.tools.lambda_cloud.lambda_launch.remote_executor import RemoteExecutor
+
+
+class JobLogger:
+    """Logger that writes detailed logs to job-specific files while keeping terminal output minimal."""
+    
+    def __init__(self, job_id: str, log_dir: Path):
+        """Initialize job logger.
+        
+        Args:
+            job_id: Unique job identifier
+            log_dir: Directory to store log files
+        """
+        self.job_id = job_id
+        self.log_dir = Path(log_dir)
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.log_file = self.log_dir / f"{job_id}.log"
+        
+        # Initialize log file
+        with open(self.log_file, 'w') as f:
+            f.write(f"=== Training Job {job_id} Log ===\n")
+            f.write(f"Started: {datetime.now()}\n")
+            f.write("=" * 50 + "\n\n")
+    
+    def log(self, message: str, level: str = "INFO", terminal: bool = False):
+        """Log a message to the job log file and optionally to terminal.
+        
+        Args:
+            message: Message to log
+            level: Log level (INFO, ERROR, DEBUG, etc.)
+            terminal: If True, also print to terminal
+        """
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_line = f"[{timestamp}] {level}: {message}"
+        
+        # Always write to log file
+        with open(self.log_file, 'a') as f:
+            f.write(log_line + '\n')
+            f.flush()
+        
+        # Optionally print to terminal
+        if terminal:
+            print(f"[{self.job_id}] {message}")
+    
+    def log_command(self, command: str, result=None):
+        """Log a command and its result.
+        
+        Args:
+            command: Command that was executed
+            result: ExecutionResult from the command (optional)
+        """
+        self.log(f"Executing command: {command}", "CMD")
+        
+        if result:
+            self.log(f"Command exit code: {result.return_code}", "CMD")
+            if result.stdout:
+                self.log(f"Command stdout:\n{result.stdout}", "STDOUT")
+            if result.stderr:
+                self.log(f"Command stderr:\n{result.stderr}", "STDERR")
+            
+            success_msg = "✓" if result.success else "✗"
+            self.log(f"Command result: {success_msg}", "CMD")
 
 
 class JobStatus(Enum):
@@ -44,33 +106,37 @@ class JobManager:
     def __init__(self, 
                  machine_config: MachineConfig,
                  lambda_client,
-                 max_parallel_jobs: int = 10):
+                 max_parallel_jobs: int = 10,
+                 log_dir: Optional[Path] = None):
         """Initialize job manager.
         
         Args:
             machine_config: Machine configuration for all jobs
             lambda_client: Lambda Cloud client instance
             max_parallel_jobs: Maximum number of parallel jobs
+            log_dir: Directory for job log files (optional)
         """
         self.machine_config = machine_config
         self.lambda_client = lambda_client
         self.max_parallel_jobs = max_parallel_jobs
+        self.log_dir = log_dir or Path("/tmp/lambda_jobs")
         self.active_jobs: Dict[str, JobResult] = {}
         self.completed_jobs: List[JobResult] = []
         self._lock = threading.Lock()
     
-    def launch_instance(self, machine_type: str, job_id: str) -> Optional[tuple]:
+    def launch_instance(self, machine_type: str, job_id: str, logger: JobLogger) -> Optional[tuple]:
         """Launch a Lambda Cloud instance.
         
         Args:
             machine_type: Type of machine to launch
             job_id: Unique job identifier
+            logger: JobLogger instance for this job
             
         Returns:
             (instance_id, instance_ip) if successful, None otherwise
         """
         try:
-            print(f"[{job_id}] Launching {machine_type} instance...")
+            logger.log(f"Launching {machine_type} instance...", terminal=True)
             
             # Launch instance using Lambda Cloud API
             # Use first configured region for now (could be enhanced to try multiple regions)
@@ -88,15 +154,17 @@ class JobManager:
             )
             
             if not instance_ids or len(instance_ids) == 0:
-                print(f"[{job_id}] ✗ Failed to launch instance")
+                logger.log("Failed to launch instance", "ERROR", terminal=True)
                 return None
             
             instance_id = instance_ids[0]
-            print(f"[{job_id}] ✓ Launched instance {instance_id}")
+            logger.log(f"Launched instance {instance_id}", "INFO", terminal=True)
             
             # Wait for instance to be ready and get IP
             max_wait_time = 20 * 60  # 20 minutes
             start_time = time.time()
+            
+            logger.log(f"Waiting for instance to become ready (max {max_wait_time}s)...")
             
             while time.time() - start_time < max_wait_time:
                 instances = self.lambda_client.list_instances()
@@ -104,24 +172,23 @@ class JobManager:
                     if inst.id == instance_id:
                         # Handle None/empty IP during instance boot
                         ip_status = inst.ip if inst.ip else "None"
-                        print(f"[{job_id}] Instance {instance_id} status: {inst.status.value}, IP: {ip_status}")
+                        logger.log(f"Instance {instance_id} status: {inst.status.value}, IP: {ip_status}")
                         if inst.status.value == "active" and inst.ip:
-                            print(f"[{job_id}] ✓ Instance ready at {inst.ip}")
+                            logger.log(f"Instance ready at {inst.ip}", "INFO", terminal=True)
                             return instance_id, inst.ip
                         break
                 
                 time.sleep(30)
             
-            print(f"[{job_id}] ✗ Instance failed to become ready within {max_wait_time}s")
+            logger.log(f"Instance failed to become ready within {max_wait_time}s", "ERROR", terminal=True)
             return None
-        except InsufficientCapacityError:  # no nodes avaliable
-            print(f"[{job_id}] Failed to launch as out of capacity.")
+        except InsufficientCapacityError:
+            logger.log("Failed to launch - insufficient capacity", "ERROR", terminal=True)
             return None
 
         except Exception as e:
-            print(f"[{job_id}] ✗ Error launching instance: {e}")
-            print(f"[{job_id}] Full traceback:")
-            traceback.print_exc()
+            logger.log(f"Error launching instance: {e}", "ERROR", terminal=True)
+            logger.log(f"Full traceback:\n{traceback.format_exc()}", "ERROR")
             return None
     
     def setup_instance(self, 
@@ -229,8 +296,10 @@ class JobManager:
             s3_key_prefix = f"training_outputs/{job_id}"
             
             # Start autonomous monitoring using bazel run
+            # stdbuf -oL to force flushing for each line
+            # nohup to run even after session disconnects
             monitor_command = (
-                f"cd /home/ubuntu/robot && nohup bazel run "
+                f"cd /home/ubuntu/robot && stdbuf -oL nohup bazel run "
                 f"//common/tools/lambda_cloud/lambda_launch:remote_monitor -- "
                 f"--training-command '{train_command}' "
                 f"--max-train-hours {self.machine_config.max_train_time_hours} "
@@ -241,7 +310,7 @@ class JobManager:
                 f"--instance-ip {instance_ip} "
                 f"> /tmp/monitor.log 2>&1 &"
             )
-            print(monitor_command)
+            print(f"[{job_id}]: Monitor command is: {monitor_command}")
             result = remote_executor.execute_command(monitor_command)
             if not result.success:
                 print(f"[{job_id}] ✗ Failed to start remote monitor: {result.stderr}")
@@ -268,6 +337,10 @@ class JobManager:
         Returns:
             JobResult with execution status and details
         """
+        # Create job logger
+        logger = JobLogger(job_id, self.log_dir)
+        logger.log("Starting training job execution", terminal=True)
+        
         job_result = JobResult(
             job_config=job_config,
             status=JobStatus.PENDING,
@@ -352,12 +425,12 @@ class JobManager:
         with ThreadPoolExecutor(max_workers=self.max_parallel_jobs) as executor:
             # Submit all jobs
             future_to_job = {}
-            for i, job_config in enumerate(job_configs):
-                # Generate job_id: YYMMDD_HHMMSS_nameofconfigfile_uniquesha
+            for idx, job_config in enumerate(job_configs):
+                # Generate job_id: YYMMDD_HHMMSS_config_name_idx
                 timestamp = time.strftime("%y%m%d_%H%M%S")
                 config_name = Path(job_config.config_path).stem
-                job_id = f"{timestamp}_{config_name}"
-                assert job_id not in future_to_job.values(), f"Created jobs too fast, ended up wit two with same second: {future_to_job}. Tried to add {job_id}"
+                job_id = f"{timestamp}_{config_name}_{idx:03d}"
+                assert job_id not in future_to_job.values(), f"Created jobs too fast, ended up with two with same second: {future_to_job}. Tried to add {job_id}"
                 future = executor.submit(self.execute_job, job_config, job_id)
                 future_to_job[future] = job_id
             

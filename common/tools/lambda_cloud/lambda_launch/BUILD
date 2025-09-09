@@ -25,6 +25,7 @@ py_library(
   deps = [
     ":config",
     ":remote_executor",
+    "//common/tools/lambda_cloud/lambda_api:lambda_cloud",
   ],
 )
 
