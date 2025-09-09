@@ -34,9 +34,9 @@ done
 if [ "${ARCH}" = "aarch64" ]; then
     # We need to regenerate the python requirements. Use uv
     command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh
-    uv python install 3.12
+    ~/.local/bin/uv python install 3.12
     rm third_party/python/requirements_3_12.txt
-    uv pip compile --python-version 3.12 -o third_party/python/requirements_3_12.txt \
+    ~/.local/bin/uv pip compile --python-version 3.12 -o third_party/python/requirements_3_12.txt \
         --format requirements.txt --index-strategy unsafe-best-match --generate-hashes \
         --emit-index-url third_party/python/requirements_3_12.in
 fi
