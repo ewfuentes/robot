@@ -412,8 +412,8 @@ class SwagPatchEmbedding(torch.nn.Module):
                 image=batch_item.satellite,
                 metadata=batch_item.satellite_metadata,
                 cached_tensors=batch_item.cached_satellite_tensors)
-
-    def forward(self, model_input: ModelInput):
+        
+    def _get_input_tokens(self, model_input):
         dev = self._cls_token.device
         extractor_outputs_by_name = {}
         for k in self._extractor_by_name:
@@ -435,13 +435,18 @@ class SwagPatchEmbedding(torch.nn.Module):
         batch_size = model_input.image.shape[0]
         cls_token = self._cls_token.expand(batch_size, -1, -1)
         input_tokens = torch.cat([cls_token] + list(input_tokens_by_name.values()), dim=1)
-        input_tokens = F.normalize(input_tokens)
+        input_tokens = F.normalize(input_tokens, dim=-1)
 
         cls_mask = torch.zeros(
                 (batch_size, 1), device=dev, dtype=torch.bool)
         input_mask = torch.cat([cls_mask] +
                                [v.mask for v in extractor_outputs_by_name.values()], dim=1)
 
+        return input_tokens, input_mask
+
+    def forward(self, model_input: ModelInput):
+
+        input_tokens, input_mask = self._get_input_tokens(model_input)
         output_tokens = self._aggregator_model(input_tokens, input_mask)
 
         # output is batch x feature_dim
