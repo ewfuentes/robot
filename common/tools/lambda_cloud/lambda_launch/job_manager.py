@@ -215,6 +215,7 @@ class JobManager:
                 time.sleep(30)
             
             logger.log(f"Instance failed to become ready within {max_wait_time}s", "ERROR", terminal=True)
+            self.lambda_client.terminate_instances([instance_id])  # attempt to teriminate errored instance
             return None
         except InsufficientCapacityError:
             logger.log("Failed to launch - insufficient capacity", "ERROR", terminal=True)
@@ -351,10 +352,33 @@ class JobManager:
                 f"--instance-id {instance_id} "
                 f"> /tmp/monitor.log 2>&1 &"
             )
-            result = remote_executor.execute_command(monitor_command)
-            logger.log_command(monitor_command, result)
-            if not result.success:
-                logger.log(f"Failed to start remote monitor: {result.stderr}", "ERROR", terminal=True)
+            
+            # Launch the monitor command with a short timeout to avoid waiting for the background process
+            # The command will start the background process and return immediately
+            logger.log("Launching monitor command...")
+            try:
+                result = remote_executor.execute_command(monitor_command, timeout=30)
+                logger.log_command(monitor_command, result)
+            except Exception as e:
+                logger.log(f"Monitor command timed out (expected for background process): {e}")
+                # This timeout is expected since the background process keeps the SSH channel open
+                
+            # Wait a moment for the process to start
+            time.sleep(3)
+            
+            # Verify the monitor process is actually running by checking for the process
+            verify_cmd = "ps aux | grep 'remote_monitor' | grep -v grep || echo 'No monitor process found'"
+            verify_result = remote_executor.execute_command(verify_cmd, timeout=10)
+            logger.log_command(verify_cmd, verify_result)
+            
+            if verify_result.success and "No monitor process found" not in verify_result.stdout:
+                logger.log("Monitor process confirmed running", "INFO")
+            else:
+                logger.log("Monitor process not found - launch may have failed", "ERROR", terminal=True)
+                # Check monitor log for startup errors
+                log_check_cmd = "head -20 /tmp/monitor.log 2>/dev/null || echo 'No monitor log yet'"
+                log_result = remote_executor.execute_command(log_check_cmd, timeout=10)
+                logger.log(f"Monitor log snippet: {log_result.stdout}", "ERROR")
                 return False
             
             logger.log("Autonomous training started", "INFO", terminal=True)
