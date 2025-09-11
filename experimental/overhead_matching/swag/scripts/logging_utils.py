@@ -12,6 +12,8 @@ def log_batch_metrics(writer, loss_dict, lr_scheduler, pairs, step_idx, epoch_id
     writer.add_scalar("train/num_positive_pairs", len(pairs.positive_pairs), global_step=step_idx)
     writer.add_scalar("train/num_semipos_pairs", len(pairs.semipositive_pairs), global_step=step_idx)
     writer.add_scalar("train/num_neg_pairs", len(pairs.negative_pairs), global_step=step_idx)
+    writer.add_scalar("train/loss_pano_uniformity", loss_dict["pano_uniformity_loss"].item(), global_step=step_idx)
+    writer.add_scalar("train/loss_sat_uniformity", loss_dict["sat_uniformity_loss"].item(), global_step=step_idx)
     writer.add_scalar("train/loss_pos", loss_dict["pos_loss"].item(), global_step=step_idx)
     writer.add_scalar("train/loss_semipos", loss_dict["semipos_loss"].item(), global_step=step_idx)
     writer.add_scalar("train/loss_neg", loss_dict["neg_loss"].item(), global_step=step_idx)
