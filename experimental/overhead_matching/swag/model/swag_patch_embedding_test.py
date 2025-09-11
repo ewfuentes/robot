@@ -13,6 +13,7 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
         BATCH_DIM = 2
         NUM_IMAGE_ROWS = 28
         NUM_IMAGE_COLS = 42
+        NUM_EMBEDDINGS = 1
         config = spe.SwagPatchEmbeddingConfig(
             feature_map_extractor_config=spe.DinoFeatureMapExtractorConfig(),
             semantic_token_extractor_config=spe.SemanticEmbeddingMatrixConfig(
@@ -28,7 +29,7 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
             patch_dims=(NUM_IMAGE_ROWS, NUM_IMAGE_COLS),
             output_dim=16)
 
-        model = spe.SwagPatchEmbedding(config)
+        model = spe.SwagPatchEmbedding(NUM_EMBEDDINGS, config)
         input_image = torch.zeros((BATCH_DIM, 3, NUM_IMAGE_ROWS, NUM_IMAGE_COLS))
         metadata = [
                 {"web_mercator_y": 100.0,
@@ -51,13 +52,15 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
 
         # Verification
         self.assertEqual(result.shape[0], BATCH_DIM)
-        self.assertEqual(result.shape[1], config.output_dim)
+        self.assertEqual(result.shape[1], NUM_EMBEDDINGS)
+        self.assertEqual(result.shape[2], config.output_dim)
 
     def test_input_token_generation(self):
         # Setup
         BATCH_DIM = 2
         NUM_IMAGE_ROWS = 28
         NUM_IMAGE_COLS = 42
+        NUM_EMBEDDINGS = 1
         config = spe.SwagPatchEmbeddingConfig(
             feature_map_extractor_config=spe.DinoFeatureMapExtractorConfig(),
             semantic_token_extractor_config=spe.SemanticEmbeddingMatrixConfig(
@@ -73,7 +76,7 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
             patch_dims=(NUM_IMAGE_ROWS, NUM_IMAGE_COLS),
             output_dim=16)
 
-        model = spe.SwagPatchEmbedding(config)
+        model = spe.SwagPatchEmbedding(NUM_EMBEDDINGS, config)
         input_image = torch.zeros((BATCH_DIM, 3, NUM_IMAGE_ROWS, NUM_IMAGE_COLS))
         metadata = [
                 {"web_mercator_y": 100.0,
@@ -105,6 +108,7 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
         BATCH_DIM = 2
         NUM_IMAGE_ROWS = 28
         NUM_IMAGE_COLS = 42
+        NUM_EMBEDDINGS = 1
         config = spe.SwagPatchEmbeddingConfig(
             feature_map_extractor_config=None,
             semantic_token_extractor_config=spe.SemanticNullExtractorConfig(),
@@ -126,7 +130,7 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
             patch_dims=(NUM_IMAGE_ROWS, NUM_IMAGE_COLS),
             output_dim=16)
 
-        model = spe.SwagPatchEmbedding(config)
+        model = spe.SwagPatchEmbedding(NUM_EMBEDDINGS, config)
         input_image = torch.zeros((BATCH_DIM, 3, NUM_IMAGE_ROWS, NUM_IMAGE_COLS))
         metadata = [
                 {"web_mercator_y": 100.0,
@@ -149,13 +153,15 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
 
         # Verification
         self.assertEqual(result.shape[0], BATCH_DIM)
-        self.assertEqual(result.shape[1], config.output_dim)
+        self.assertEqual(result.shape[1], NUM_EMBEDDINGS)
+        self.assertEqual(result.shape[2], config.output_dim)
 
     def test_none_for_legacy_configs(self):
         # Setup
         BATCH_DIM = 2
         NUM_IMAGE_ROWS = 28
         NUM_IMAGE_COLS = 42
+        NUM_EMBEDDINGS = 1
         config = spe.SwagPatchEmbeddingConfig(
             feature_map_extractor_config=None,
             semantic_token_extractor_config=None,
@@ -178,7 +184,7 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
             patch_dims=(NUM_IMAGE_ROWS, NUM_IMAGE_COLS),
             output_dim=16)
 
-        model = spe.SwagPatchEmbedding(config)
+        model = spe.SwagPatchEmbedding(NUM_EMBEDDINGS, config)
         input_image = torch.zeros((BATCH_DIM, 3, NUM_IMAGE_ROWS, NUM_IMAGE_COLS))
         metadata = [
                 {"web_mercator_y": 100.0,
@@ -201,7 +207,8 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
 
         # Verification
         self.assertEqual(result.shape[0], BATCH_DIM)
-        self.assertEqual(result.shape[1], config.output_dim)
+        self.assertEqual(result.shape[1], NUM_EMBEDDINGS)
+        self.assertEqual(result.shape[2], config.output_dim)
 
     def test_float_mask(self):
         # Setup
