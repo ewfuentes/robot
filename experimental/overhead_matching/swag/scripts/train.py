@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import common.torch.load_torch_deps
 from common.torch.load_and_save_models import save_model
 import torch
@@ -7,6 +8,8 @@ from torch.utils.tensorboard import SummaryWriter
 import itertools
 from pathlib import Path
 from common.python.serialization import dataclass_to_dict, flatten_dict
+from experimental.overhead_matching.swag.scripts.losses import LossConfig, compute_loss, Pairs
+from experimental.overhead_matching.swag.scripts.distances import DistanceTypes, distance_from_type
 from experimental.overhead_matching.swag.data import (
         vigor_dataset, satellite_embedding_database as sed)
 from experimental.overhead_matching.swag.model import (
@@ -35,16 +38,80 @@ class LearningRateSchedule:
 
 
 @dataclass
-class LossConfig:
-    positive_weight: float
-    avg_positive_similarity: float
+class WeightMatrixModelConfig:
+    input_types: list[str] # Options incldue "pano", "sat" or empty, in which case a single weight matrix is learned
+    hidden_dim: int
+    output_dim: int
 
-    semipositive_weight: float
-    avg_semipositive_similarity: float
 
-    negative_weight: float
-    avg_negative_similarity: float
+class WeightMatrixModel(torch.nn.Module):
+    """
+    Produce a weight matrix to be used with mahalanobis distance:
+    distance = (x-x').T M(x-x')
 
+    If no input is specified, learns a non-input-conditioned matrix
+
+    If inputs (pano/sat) are provided, creates a matrix per pano/sat embedding. 
+    If both are provided, creates a matrix per pano/sat embedding pair
+
+    Output: 
+        num_pano_embeds x num_sat_embeds x num_class_tokens x d_emb x d_emb
+        If an embedding is not part of the input (e.g., num_sat_embeds if pano is input)
+        the dimension is set to 1
+    """
+    def __init__(self, 
+                 config: WeightMatrixModelConfig):
+        super().__init__()
+        self.config = config
+        if len(self.config.input_types) == 0:
+            weight_matrix = torch.rand(1, 1, 1, config.output_dim, config.output_dim) - 0.5
+            weight_matrix_semipos = torch.matmul(weight_matrix.transpose(-2, -1), weight_matrix)
+            self.weight_matrix = torch.nn.Parameter(weight_matrix_semipos)
+        else:
+            self.mlp = torch.nn.Sequential(
+                torch.nn.Linear(config.output_dim * len(self.config.input_types), self.config.hidden_dim),
+                torch.nn.ReLU(),
+                torch.nn.Linear(self.config.hidden_dim, config.output_dim**2)
+            )
+    def forward(self, 
+                sat_embedding: torch.Tensor | None,
+                pano_embedding: torch.Tensor | None) -> torch.Tensor:
+        # if not conditional, return weight matrix
+        if len(self.config.input_types) == 0:
+            return self.weight_matrix
+        for item in self.config.input_types:
+            if item not in ["pano", "sat"]:
+                raise RuntimeError(f"Invalid item in config: {item}")
+        
+        # otherwise, run MLP to get matrix
+        embedding_dim = sat_embedding.shape[-1] if sat_embedding is not None else pano_embedding.shape[-1]
+        input = []
+        if "pano" in self.config.input_types and "sat" in self.config.input_types:
+            assert pano_embedding.ndim == 3  #(num_pano, num_class_tokens, D_emb)
+            assert sat_embedding.ndim == 3  #(num_sat, num_class_token, D_emb)
+            assert sat_embedding.shape[1] == pano_embedding.shape[1]
+            target_size = (pano_embedding.shape[0], 
+                           sat_embedding.shape[0],
+                           sat_embedding.shape[1],
+                           pano_embedding.shape[-1])
+            input = torch.cat([
+                pano_embedding.unsqueeze(1).expand(target_size),
+                sat_embedding.unsqueeze(0).expand(target_size)
+            ], dim=-1)
+            out_matrix = self.mlp(input)
+        elif "sat" in self.config.input_types:
+            assert sat_embedding.ndim == 3  #(num_sat, num_embeddings, D_emb)
+            out_matrix = self.mlp(sat_embedding).unsqueeze(0)
+        elif "pano" in self.config.input_types:
+            assert pano_embedding.ndim == 3  #(num_pano, num_embeddings, D_emb)
+            out_matrix = self.mlp(pano_embedding).unsqueeze(1)
+        else:
+            raise RuntimeError(f"Invalid input config {self.config.input_types}")
+
+        out_matrix = out_matrix.unflatten(-1, (embedding_dim, embedding_dim))
+        # Make matrix positive semi-definite by computing A^T @ A
+        out_matrix = torch.matmul(out_matrix.transpose(-2, -1), out_matrix)
+        return out_matrix
 
 @dataclass
 class OptimizationConfig:
@@ -64,9 +131,6 @@ class OptimizationConfig:
     hard_negative_pool_size: int
 
     random_sample_type: vigor_dataset.HardNegativeMiner.RandomSampleType
-
-    loss_config: LossConfig
-
 
 ModelConfig = Union[patch_embedding.WagPatchEmbeddingConfig,
                     swag_patch_embedding.SwagPatchEmbeddingConfig]
@@ -88,14 +152,10 @@ class TrainConfig:
     tensorboard_output: Path | None
     dataset_config: DatasetConfig
     validation_dataset_configs: list[DatasetConfig]
-
-
-@dataclass
-class Pairs:
-    positive_pairs: list[tuple[int, int]]
-    negative_pairs: list[tuple[int, int]]
-    semipositive_pairs: list[tuple[int, int]]
-
+    loss_configs: list[LossConfig]
+    distance_type: DistanceTypes
+    num_vector_embeddings: int = 1
+    weight_matrix_model_config: WeightMatrixModelConfig | None = None
 
 def enc_hook(obj):
     if isinstance(obj, Path):
@@ -131,69 +191,12 @@ def create_pairs(panorama_metadata, satellite_metadata) -> Pairs:
     return out
 
 
-def compute_loss(sat_embeddings, pano_embeddings, pairs, loss_config):
-    similarity = torch.einsum("ad,bd->ab", pano_embeddings, sat_embeddings)
-
-    pos_rows = [x[0] for x in pairs.positive_pairs]
-    pos_cols = [x[1] for x in pairs.positive_pairs]
-    pos_similarities = similarity[pos_rows, pos_cols]
-
-    semipos_rows = [x[0] for x in pairs.semipositive_pairs]
-    semipos_cols = [x[1] for x in pairs.semipositive_pairs]
-    semipos_similarities = similarity[semipos_rows, semipos_cols]
-
-    neg_rows = [x[0] for x in pairs.negative_pairs]
-    neg_cols = [x[1] for x in pairs.negative_pairs]
-    neg_similarities = similarity[neg_rows, neg_cols]
-
-    # Compute Loss
-    POS_WEIGHT = loss_config.positive_weight
-    AVG_POS_SIMILARITY = loss_config.avg_positive_similarity
-    if len(pairs.positive_pairs):
-        pos_loss = torch.log(
-                1 + torch.exp(-POS_WEIGHT * (pos_similarities - AVG_POS_SIMILARITY)))
-        pos_loss = torch.mean(pos_loss) / POS_WEIGHT
-    else:
-        pos_loss = torch.tensor(0.0, device=similarity.device, dtype=similarity.dtype)
-
-    SEMIPOS_WEIGHT = loss_config.semipositive_weight
-    AVG_SEMIPOS_SIMILARITY = loss_config.avg_semipositive_similarity
-    if len(pairs.semipositive_pairs):
-        semipos_loss = torch.log(
-                1 + torch.exp(-SEMIPOS_WEIGHT * (
-                    semipos_similarities - AVG_SEMIPOS_SIMILARITY)))
-        semipos_loss = torch.mean(semipos_loss) / SEMIPOS_WEIGHT
-    else:
-        semipos_loss = torch.tensor(0.0, device=similarity.device, dtype=similarity.dtype)
-
-    NEG_WEIGHT = loss_config.negative_weight
-    AVG_NEG_SIMILARITY = loss_config.avg_negative_similarity
-    if len(pairs.negative_pairs):
-        neg_loss = torch.log(
-                1 + torch.exp(NEG_WEIGHT * (neg_similarities - AVG_NEG_SIMILARITY)))
-        neg_loss = torch.mean(neg_loss) / NEG_WEIGHT
-    else:
-        neg_loss = torch.tensor(0.0, device=similarity.device, dtype=similarity.dtype)
-
-    return {
-        'loss': pos_loss + neg_loss + semipos_loss,
-        'pos_loss': pos_loss,
-        'neg_loss': neg_loss,
-        'semipos_loss': semipos_loss}
-
-
-
-
-
-
-
-
-
-
 def compute_validation_metrics(
         sat_model,
         pano_model,
-        validation_datasets):
+        validation_datasets,
+        distance_type: DistanceTypes,
+        weight_model: WeightMatrixModel | None):
     out = {}
     for name, dataset in validation_datasets.items():
         sat_embeddings = sed.build_satellite_db(
@@ -202,7 +205,21 @@ def compute_validation_metrics(
         pano_embeddings = sed.build_panorama_db(
             pano_model,
             vigor_dataset.get_dataloader(dataset.get_pano_view(), batch_size=64, num_workers=8))
-        similarity = pano_embeddings @ sat_embeddings.T
+        weight_matrix = None
+        if weight_model is not None:
+            weight_matrix = weight_model(
+                sat_embedding = sat_embeddings,
+                pano_embedding = pano_embeddings
+            )
+        similarity = distance_from_type(
+            distance_type=distance_type,
+            pano_embeddings=pano_embeddings,
+            sat_embeddings=sat_embeddings,
+            weight_matrix=weight_matrix
+        )
+        assert similarity.shape[2] == 1
+        similarity = similarity.squeeze(2)
+
         num_panos = similarity.shape[0]
 
         invalid_mask = torch.ones((num_panos, 5), dtype=torch.bool)
@@ -263,7 +280,14 @@ def compute_validation_metrics(
 
 
 
-def train(config: TrainConfig, *, dataset, validation_datasets, panorama_model, satellite_model, quiet):
+def train(config: TrainConfig, 
+          *, 
+          dataset, 
+          validation_datasets, 
+          panorama_model, 
+          satellite_model, 
+          weight_matrix_model, 
+          quiet):
     config.output_dir.mkdir(parents=True, exist_ok=True)
     # save config:
     config_json = msgspec.json.encode(config, enc_hook=enc_hook)
@@ -286,6 +310,7 @@ def train(config: TrainConfig, *, dataset, validation_datasets, panorama_model, 
     )
     panorama_model = panorama_model.cuda()
     satellite_model = satellite_model.cuda()
+    weight_matrix_model = weight_matrix_model.cuda() if weight_matrix_model is not None else None
     panorama_model.train()
     satellite_model.train()
 
@@ -304,7 +329,7 @@ def train(config: TrainConfig, *, dataset, validation_datasets, panorama_model, 
             hard_negative_pool_size=opt_config.hard_negative_pool_size,
             dataset=dataset)
     dataloader = vigor_dataset.get_dataloader(
-        dataset, batch_sampler=miner, num_workers=24, persistent_workers=True)
+        dataset, batch_sampler=miner, num_workers=min(24, os.cpu_count() // 2), persistent_workers=True)
 
     opt = torch.optim.Adam(
         list(panorama_model.parameters()) + list(satellite_model.parameters()),
@@ -345,16 +370,25 @@ def train(config: TrainConfig, *, dataset, validation_datasets, panorama_model, 
             opt.zero_grad()
 
             with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-                panorama_embeddings = panorama_model(
+                pano_embeddings = panorama_model(
                         panorama_model.model_input_from_batch(batch).to("cuda"))
                 sat_embeddings = satellite_model(
                         satellite_model.model_input_from_batch(batch).to("cuda"))
+                weight_matrix = None
+                if weight_matrix_model is not None:
+                    weight_matrix = weight_matrix_model(
+                        sat_embedding = sat_embeddings,
+                        pano_embedding = pano_embeddings
+                    )
 
                 loss_dict = compute_loss(
-                        pano_embeddings=panorama_embeddings,
+                        pano_embeddings=pano_embeddings,
                         sat_embeddings=sat_embeddings,
+                        distance_type=config.distance_type,
                         pairs=pairs,
-                        loss_config=opt_config.loss_config)
+                        loss_configs=config.loss_configs,
+                        weight_matrix=weight_matrix,
+                )
                 
             grad_scaler.scale(loss_dict["loss"]).backward()
             grad_scaler.step(opt)
@@ -372,14 +406,14 @@ def train(config: TrainConfig, *, dataset, validation_datasets, panorama_model, 
 
             log_gradient_stats(writer, panorama_model, "panorama", total_batches)
             log_gradient_stats(writer, satellite_model, "satellite", total_batches)
-            log_embedding_stats(writer, "pano", panorama_embeddings.detach(), total_batches)
+            log_embedding_stats(writer, "pano", pano_embeddings.detach(), total_batches)
             log_embedding_stats(writer, "sat", sat_embeddings.detach(), total_batches)
 
             # Hard Negative Mining
-            miner.consume(
-                    panorama_embeddings=panorama_embeddings.detach(),
-                    satellite_embeddings=sat_embeddings.detach(),
-                    batch=batch)
+            # miner.consume(
+            #         panorama_embeddings=pano_embedding.detach(),
+            #         satellite_embeddings=sat_embedding.detach(),
+            #         batch=batch)
 
             # Logging
             log_batch_metrics(
@@ -418,7 +452,9 @@ def train(config: TrainConfig, *, dataset, validation_datasets, panorama_model, 
         validation_metrics = compute_validation_metrics(
                 sat_model=satellite_model,
                 pano_model=panorama_model,
-                validation_datasets=validation_datasets)
+                validation_datasets=validation_datasets,
+                distance_type=config.distance_type,
+                weight_model=weight_matrix_model)
         log_validation_metrics(
                 writer=writer,
                 validation_metrics=validation_metrics,
@@ -430,14 +466,21 @@ def train(config: TrainConfig, *, dataset, validation_datasets, panorama_model, 
             config.output_dir.mkdir(parents=True, exist_ok=True)
             panorama_model_path = config.output_dir / f"{epoch_idx:04d}_panorama"
             satellite_model_path = config.output_dir / f"{epoch_idx:04d}_satellite"
+            weight_matrix_model_path = config.output_dir / f"{epoch_idx:04d}_weight_matrix"
 
             save_dataloader = vigor_dataset.get_dataloader(dataset, batch_size=16)
             batch = next(iter(save_dataloader))
+            pano_model_input = panorama_model.model_input_from_batch(batch).to("cuda")
+            sat_model_input = satellite_model.model_input_from_batch(batch).to("cuda")
             save_model(panorama_model, panorama_model_path,
-                       (panorama_model.model_input_from_batch(batch).to("cuda"),))
+                       (pano_model_input,))
 
             save_model(satellite_model, satellite_model_path,
-                       (satellite_model.model_input_from_batch(batch).to("cuda"),))
+                       (sat_model_input,))
+            if weight_matrix_model is not None:
+                with torch.no_grad():
+                    save_model(weight_matrix_model, weight_matrix_model_path,
+                            (satellite_model(sat_model_input), panorama_model(pano_model_input)))
 
 
 def main(
@@ -453,16 +496,22 @@ def main(
     if isinstance(train_config.sat_model_config, patch_embedding.WagPatchEmbeddingConfig):
         satellite_model = patch_embedding.WagPatchEmbedding(train_config.sat_model_config)
     elif isinstance(train_config.sat_model_config, swag_patch_embedding.SwagPatchEmbeddingConfig):
-        satellite_model = swag_patch_embedding.SwagPatchEmbedding(train_config.sat_model_config)
+        satellite_model = swag_patch_embedding.SwagPatchEmbedding(train_config.num_vector_embeddings, train_config.sat_model_config)
     else:
         raise TypeError("Unsupported satellite model config type")
 
     if isinstance(train_config.pano_model_config, patch_embedding.WagPatchEmbeddingConfig):
         panorama_model = patch_embedding.WagPatchEmbedding(train_config.pano_model_config)
     elif isinstance(train_config.pano_model_config, swag_patch_embedding.SwagPatchEmbeddingConfig):
-        panorama_model = swag_patch_embedding.SwagPatchEmbedding(train_config.pano_model_config)
+        panorama_model = swag_patch_embedding.SwagPatchEmbedding(train_config.num_vector_embeddings, train_config.pano_model_config)
     else:
         raise TypeError("Unsupported panorama model config type")
+    
+    weight_matrix_model = None 
+    if train_config.weight_matrix_model_config is not None:
+        weight_matrix_model = WeightMatrixModel(
+            train_config.weight_matrix_model_config
+        )
 
     assert len(train_config.dataset_config.paths) == 1
     dataset_config = vigor_dataset.VigorDatasetConfig(
@@ -518,6 +567,7 @@ def main(
             validation_datasets=validation_datasets,
             panorama_model=panorama_model,
             satellite_model=satellite_model,
+            weight_matrix_model=weight_matrix_model,
             quiet=quiet)
 
 
