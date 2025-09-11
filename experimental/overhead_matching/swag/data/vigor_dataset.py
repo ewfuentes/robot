@@ -860,6 +860,9 @@ class HardNegativeMiner:
                 (len(satellite_patch_idxs) == satellite_embeddings.shape[0]))
         assert panorama_embeddings is not None or satellite_embeddings is not None
 
+        if panorama_embeddings is not None and panorama_embeddings.ndim == 3:
+            raise NotImplementedError("Hard negative mining does not support multiple output vectors yet")
+
         device = self._panorama_embeddings.device
         if panorama_embeddings is not None:
             self._panorama_embeddings[panorama_idxs] = panorama_embeddings.to(device)
