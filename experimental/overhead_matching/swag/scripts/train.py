@@ -328,7 +328,7 @@ def train(config: TrainConfig,
             hard_negative_pool_size=opt_config.hard_negative_pool_size,
             dataset=dataset)
     dataloader = vigor_dataset.get_dataloader(
-        dataset, batch_sampler=miner, num_workers=12, persistent_workers=True)
+        dataset, batch_sampler=miner, num_workers=24, persistent_workers=True)
 
     opt = torch.optim.Adam(
         list(panorama_model.parameters()) + list(satellite_model.parameters()),
