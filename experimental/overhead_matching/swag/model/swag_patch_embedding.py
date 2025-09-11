@@ -97,6 +97,7 @@ class DinoFeatureExtractor(torch.nn.Module):
         super().__init__()
         assert config.model_str.startswith('dino')
         repo_name = f"facebookresearch/{config.model_str.split('_')[0]}"
+        self.use_class_token_only = config.use_class_token_only
         self._dino = torch.hub.load(repo_name, config.model_str)
         self._dino.eval()
         for param in self._dino.parameters():
@@ -109,32 +110,39 @@ class DinoFeatureExtractor(torch.nn.Module):
             mean=[0.485, 0.456, 0.406],
             std=[0.229, 0.224, 0.225])
 
-        with torch.no_grad():
-            patch_tokens = self._dino.forward_features(x)["x_norm_patchtokens"]
-
         # Compute the relative positions of each patch
         batch_size = len(model_input.metadata)
         original_shape = model_input.image.shape[2:]
 
-        num_row_tokens = original_shape[0] // self.patch_size[0]
-        num_col_tokens = original_shape[1] // self.patch_size[1]
-        num_tokens = num_row_tokens * num_col_tokens
+        with torch.no_grad():
+            if self.use_class_token_only:
+                patch_tokens = self._dino(x).unsqueeze(1) # batch x 1 x dino_emb_dim
+            else:
+                patch_tokens = self._dino.forward_features(x)["x_norm_patchtokens"]
+
+        if self.use_class_token_only:
+            num_tokens = 1
+            relative_positions = torch.zeros(batch_size, 1, 2)
+        else:
+            num_row_tokens = original_shape[0] // self.patch_size[0]
+            num_col_tokens = original_shape[1] // self.patch_size[1]
+            num_tokens = num_row_tokens * num_col_tokens
+            center_location = (original_shape[0] // 2, original_shape[1] // 2)
+
+            relative_positions = torch.zeros((batch_size, num_row_tokens, num_col_tokens, 2))
+            for row_idx in range(num_row_tokens):
+                for col_idx in range(num_col_tokens):
+                    patch_center_row_px = self.patch_size[0] // 2 + row_idx * self.patch_size[0]
+                    patch_center_col_px = self.patch_size[1] // 2 + col_idx * self.patch_size[1]
+
+                    relative_positions[:, row_idx, col_idx, 0] = (
+                            patch_center_row_px - center_location[0])
+                    relative_positions[:, row_idx, col_idx, 1] = (
+                            patch_center_col_px - center_location[1])
+
+            relative_positions = relative_positions.reshape(batch_size, num_tokens, 2)
         assert num_tokens == patch_tokens.shape[1]
 
-        center_location = (original_shape[0] // 2, original_shape[1] // 2)
-
-        relative_positions = torch.zeros((batch_size, num_row_tokens, num_col_tokens, 2))
-        for row_idx in range(num_row_tokens):
-            for col_idx in range(num_col_tokens):
-                patch_center_row_px = self.patch_size[0] // 2 + row_idx * self.patch_size[0]
-                patch_center_col_px = self.patch_size[1] // 2 + col_idx * self.patch_size[1]
-
-                relative_positions[:, row_idx, col_idx, 0] = (
-                        patch_center_row_px - center_location[0])
-                relative_positions[:, row_idx, col_idx, 1] = (
-                        patch_center_col_px - center_location[1])
-
-        relative_positions = relative_positions.reshape(batch_size, num_tokens, 2)
         mask = torch.zeros((batch_size, num_tokens), dtype=torch.bool, device=patch_tokens.device)
 
         return ExtractorOutput(
