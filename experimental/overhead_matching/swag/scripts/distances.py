@@ -38,7 +38,6 @@ def calculate_all_pairs_mahalanobis_distance(
         distances_squared = torch.einsum('psed,psed->pse', emb_diff, emb_diff)
     
     # Return the square root for actual Mahalanobis distance
-    print("min/max in distances is ", distances_squared.min(), distances_squared.max())
     return torch.sqrt(distances_squared)
 
 

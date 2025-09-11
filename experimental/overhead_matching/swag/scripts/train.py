@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import common.torch.load_torch_deps
 from common.torch.load_and_save_models import save_model
 import torch
@@ -328,7 +329,7 @@ def train(config: TrainConfig,
             hard_negative_pool_size=opt_config.hard_negative_pool_size,
             dataset=dataset)
     dataloader = vigor_dataset.get_dataloader(
-        dataset, batch_sampler=miner, num_workers=24, persistent_workers=True)
+        dataset, batch_sampler=miner, num_workers=min(24, os.cpu_count() // 2), persistent_workers=True)
 
     opt = torch.optim.Adam(
         list(panorama_model.parameters()) + list(satellite_model.parameters()),
