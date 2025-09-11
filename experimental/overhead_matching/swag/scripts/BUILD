@@ -12,12 +12,24 @@ py_library(
   ]
 )
 
+py_library(
+  name = "lr_sweep",
+  srcs = ["lr_sweep.py"],
+  visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+  deps = [
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("matplotlib"),
+  ]
+)
+
 py_binary(
   name="train",
   srcs=["train.py"],
   visibility=["//common/python:__subpackages__"],
   deps=[
     ":logging_utils",
+    ":lr_sweep",
     requirement("torch"),
     requirement("tensorboard"),
     requirement("tqdm"),
