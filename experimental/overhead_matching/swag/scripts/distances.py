@@ -10,7 +10,7 @@ def calculate_all_pairs_cosine_distance(
     sat_embeddings: torch.Tensor,
     pano_embeddings: torch.Tensor
 ) -> torch.Tensor:
-    return torch.einsum("aid,bid->aib", pano_embeddings, sat_embeddings) # n_pano x n_sat x n_emb
+    return torch.einsum("aid,bid->abi", pano_embeddings, sat_embeddings) # n_pano x n_sat x n_emb
 
 def calculate_all_pairs_mahalanobis_distance(
     sat_embeddings: torch.Tensor, # n_sat x n_emb x D_emb
