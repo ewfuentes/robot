@@ -1,0 +1,14 @@
+# Example job file for Lambda Cloud training jobs
+# Format: config_path[,branch]
+# Lines starting with # are ignored
+
+# Job with default branch (main)
+configs/baseline_config.yaml
+
+# Jobs with specific branches
+configs/experiment1_config.yaml,feature/new-loss
+configs/experiment2_config.yaml,experiment/augmentation
+configs/ablation_study.yaml,main
+
+# Another job with default branch
+configs/final_model.yaml

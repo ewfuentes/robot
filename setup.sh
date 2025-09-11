@@ -22,14 +22,21 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get -y install libxcursor-dev clang \
      libxrandr-dev libxinerama-dev libxi-dev freeglut3-dev libtbb-dev \
      libfmt-dev libspdlog-dev libvtk9-dev coinor-libipopt-dev coinor-libclp-dev \
      libgirepository1.0-dev libcairo2-dev libgtk2.0-dev libcanberra-gtk-module libsuitesparse-dev \
-     python-is-python3 build-essential ${PACKAGES}
+     python-is-python3 build-essential dnsutils ${PACKAGES}
+
+sleep 1
+# Test DNS is online before continuing. The apt install can cause a systemd restart of core networking tools
+until nslookup github.com > /dev/null 2>&1; do
+    echo "Waiting for DNS..."
+    sleep 2
+done
 
 if [ "${ARCH}" = "aarch64" ]; then
     # We need to regenerate the python requirements. Use uv
     command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh
-    uv python install 3.12
+    ~/.local/bin/uv python install 3.12
     rm third_party/python/requirements_3_12.txt
-    uv pip compile --python-version 3.12 -o third_party/python/requirements_3_12.txt \
+    ~/.local/bin/uv pip compile --python-version 3.12 -o third_party/python/requirements_3_12.txt \
         --format requirements.txt --index-strategy unsafe-best-match --generate-hashes \
         --emit-index-url third_party/python/requirements_3_12.in
 fi
