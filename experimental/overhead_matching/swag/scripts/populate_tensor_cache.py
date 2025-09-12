@@ -72,6 +72,9 @@ def main(train_config_path: Path,
     model = model.cuda()
 
     # Construct the dataset
+    # If the training config specifies that we can ignore images for all extractors
+    # then it is safe to ignore images for the specified extractor
+    should_load_images = train_config.dataset_config.should_load_images
     dataset = vd.VigorDataset(
         dataset_path,
         vd.VigorDatasetConfig(
@@ -79,7 +82,7 @@ def main(train_config_path: Path,
             panorama_size=train_config.pano_model_config.patch_dims,
             satellite_tensor_cache_info=None,
             panorama_tensor_cache_info=None,
-            should_load_images=False))
+            should_load_images=should_load_images))
     dataset = (dataset.get_sat_patch_view() if 'sat_model_config' == parts[0]
                else dataset.get_pano_view())
     if idx_start is None:
@@ -124,7 +127,7 @@ def main(train_config_path: Path,
             with db.begin(write=True) as txn:
                 for batch_idx in range(model_input.image.shape[0]):
                     if 'mask' in out:
-                        selector = ~out['mask'][batch_idx]
+                        selector = ~out['mask'][batch_idx].cpu().numpy()
                     else:
                         selector = slice(None)
 

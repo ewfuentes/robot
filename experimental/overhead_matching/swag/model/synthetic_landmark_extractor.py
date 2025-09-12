@@ -106,13 +106,18 @@ class SyntheticLandmarkExtractor(torch.nn.Module):
             else:
                 positions[batch_item, :num_landmarks_for_item] = compute_landmark_sat_positions(
                         landmark_locations_px, (y_px, x_px))
+
+        landmark_locations_px = torch.nested.nested_tensor(
+                landmark_locations_px_list, layout=torch.jagged)
+        landmark_locations_px = torch.nested.to_padded_tensor(
+                landmark_locations_px,
+                padding=0,
+                output_size=(batch_size, max_num_landmarks, 2))
         return ExtractorOutput(
             features=features.to(model_input.image.device),
             mask=mask.to(model_input.image.device),
             positions=positions.to(model_input.image.device),
-            debug={
-                "landmark_positions": torch.nested.nested_tensor(landmark_locations_px_list)
-            })
+            debug={"landmark_positions": landmark_locations_px})
 
     @property
     def output_dim(self):
