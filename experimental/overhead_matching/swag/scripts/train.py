@@ -45,6 +45,9 @@ class LossConfig:
     negative_weight: float
     avg_negative_similarity: float
 
+    batch_uniformity_weight: float
+    batch_uniformity_hinge_location: float
+
 
 @dataclass
 class OptimizationConfig:
@@ -175,19 +178,30 @@ def compute_loss(sat_embeddings, pano_embeddings, pairs, loss_config):
     else:
         neg_loss = torch.tensor(0.0, device=similarity.device, dtype=similarity.dtype)
 
+    # Compute a batch uniformity loss, different panoramas/satellites
+    # should have different embeddings
+    rolled_sat_embeddings = torch.roll(sat_embeddings, 1, dims=0)
+    rolled_pano_embeddings = torch.roll(pano_embeddings, 1, dims=0)
+
+    def mean_hinge_loss(similarities):
+        shifted_loss = torch.abs(similarities) - loss_config.batch_uniformity_hinge_location
+        relud_loss = torch.mean(torch.nn.functional.relu(shifted_loss))
+        return loss_config.batch_uniformity_weight * relud_loss
+
+    sat_similarity = torch.einsum("ad,ad->a", sat_embeddings, rolled_sat_embeddings)
+    pano_similarity = torch.einsum("ad,ad->a", pano_embeddings, rolled_pano_embeddings)
+
+    sat_uniformity_loss = mean_hinge_loss(sat_similarity)
+    pano_uniformity_loss = mean_hinge_loss(pano_similarity)
+
     return {
-        'loss': pos_loss + neg_loss + semipos_loss,
+        'loss': pos_loss + neg_loss + semipos_loss + sat_uniformity_loss + pano_uniformity_loss,
         'pos_loss': pos_loss,
         'neg_loss': neg_loss,
-        'semipos_loss': semipos_loss}
-
-
-
-
-
-
-
-
+        'semipos_loss': semipos_loss,
+        'sat_uniformity_loss': sat_uniformity_loss,
+        'pano_uniformity_loss': pano_uniformity_loss,
+    }
 
 
 def compute_validation_metrics(
@@ -270,6 +284,9 @@ def train(config: TrainConfig, *, dataset, validation_datasets, panorama_model, 
     config_dict = json.loads(config_json)
     with open(config.output_dir / "config.json", 'wb') as f:
         f.write(config_json)
+
+    with open(config.output_dir / "train_config.yaml", 'wb') as f:
+        f.write(msgspec.yaml.encode(config, enc_hook=enc_hook))
 
     with open(config.output_dir / "satellite_model.yaml", 'wb') as f:
         f.write(msgspec.yaml.encode(config.sat_model_config, enc_hook=enc_hook))
