@@ -22,6 +22,8 @@ class AlphaEarthExtractorConfig(msgspec.Struct, **STRUCT_OPTS):
 class SemanticNullExtractorConfig(msgspec.Struct, **STRUCT_OPTS):
     ...
 
+class AbsolutePositionExtractorConfig(msgspec.Struct, **STRUCT_OPTS):
+    ...
 
 class SemanticEmbeddingMatrixConfig(msgspec.Struct, **STRUCT_OPTS):
     vocabulary: list[str]
@@ -77,4 +79,5 @@ ExtractorConfig = Union[
     SemanticSegmentExtractorConfig,
     SemanticLandmarkExtractorConfig,
     SyntheticLandmarkExtractorConfig,
+    AbsolutePositionExtractorConfig,
 ]

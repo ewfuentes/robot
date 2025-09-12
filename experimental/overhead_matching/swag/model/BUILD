@@ -41,6 +41,7 @@ py_library(
     ":semantic_landmark_extractor",
     ":synthetic_landmark_extractor",
     ":semantic_segment_extractor",
+    ":absolute_position_extractor",
     ":swag_config_types",
     ":swag_model_input_output",
     "//common/torch:load_torch_deps",
@@ -172,3 +173,25 @@ py_test(
   ]
 )
 
+
+py_library(
+  name = "absolute_position_extractor",
+  srcs = ["absolute_position_extractor.py"],
+  deps = [
+    requirement("torch"),
+    requirement("numpy"),
+    "//common/torch:load_torch_deps",
+    ":swag_model_input_output",
+    ":swag_config_types",
+  ]
+)
+
+py_test(
+  name = "absolute_position_extractor_test",
+  srcs = ["absolute_position_extractor_test.py"],
+  data = ["@vigor_snippet//:files"],
+  deps = [
+    ":absolute_position_extractor",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+  ]
+)
