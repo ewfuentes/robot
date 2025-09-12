@@ -11,6 +11,7 @@ STRUCT_OPTS = {
 
 class DinoFeatureMapExtractorConfig(msgspec.Struct, **STRUCT_OPTS):
     model_str: str = "dinov2_vitb14"
+    use_class_token_only: bool = False
 
 
 class AlphaEarthExtractorConfig(msgspec.Struct, **STRUCT_OPTS):
