@@ -20,6 +20,7 @@ import msgspec
 from pprint import pprint
 import ipdb
 from contextlib import nullcontext
+from experimental.overhead_matching.swag.scripts.lr_sweep import LearningRateSweepConfig, run_lr_sweep
 
 
 
@@ -69,6 +70,7 @@ class OptimizationConfig:
     random_sample_type: vigor_dataset.HardNegativeMiner.RandomSampleType
 
     loss_config: LossConfig
+    lr_sweep_config: LearningRateSweepConfig | None = None
 
 
 ModelConfig = Union[patch_embedding.WagPatchEmbeddingConfig,
@@ -277,6 +279,64 @@ def compute_validation_metrics(
 
 
 
+def create_training_components(dataset, panorama_model, satellite_model, opt_config):
+    """Create miner, dataloader, and optimizer for training."""
+    # Create miner and dataloader  
+    miner = vigor_dataset.HardNegativeMiner(
+            batch_size=opt_config.batch_size,
+            embedding_dimension=panorama_model.output_dim,
+            random_sample_type=opt_config.random_sample_type,
+            hard_negative_pool_size=opt_config.hard_negative_pool_size,
+            dataset=dataset)
+    dataloader = vigor_dataset.get_dataloader(
+        dataset, batch_sampler=miner, num_workers=24, persistent_workers=True)
+    
+    # Create optimizer
+    opt = torch.optim.Adam(
+        list(panorama_model.parameters()) + list(satellite_model.parameters()),
+        lr=opt_config.lr_schedule.initial_lr
+    )
+    
+    return miner, dataloader, opt
+
+
+def setup_models_for_training(panorama_model, satellite_model):
+    """Move models to GPU and set to training mode."""
+    panorama_model = panorama_model.cuda()
+    satellite_model = satellite_model.cuda()
+    panorama_model.train()
+    satellite_model.train()
+    return panorama_model, satellite_model
+
+
+def compute_forward_pass_and_loss(batch, panorama_model, satellite_model, opt_config):
+    """Compute forward pass and loss for a batch."""
+    pairs = create_pairs(
+        batch.panorama_metadata,
+        batch.satellite_metadata
+    )
+    
+    if opt_config.random_sample_type == vigor_dataset.HardNegativeMiner.RandomSampleType.NEAREST:
+        pairs = Pairs(
+            positive_pairs=pairs.positive_pairs + pairs.semipositive_pairs,
+            semipositive_pairs=[],
+            negative_pairs=pairs.negative_pairs)
+    
+    with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+        panorama_embeddings = panorama_model(
+                panorama_model.model_input_from_batch(batch).to("cuda"))
+        sat_embeddings = satellite_model(
+                satellite_model.model_input_from_batch(batch).to("cuda"))
+        
+        loss_dict = compute_loss(
+                pano_embeddings=panorama_embeddings,
+                sat_embeddings=sat_embeddings,
+                pairs=pairs,
+                loss_config=opt_config.loss_config)
+    
+    return loss_dict, pairs, panorama_embeddings, sat_embeddings
+
+
 def train(config: TrainConfig, *, dataset, validation_datasets, panorama_model, satellite_model, quiet):
     config.output_dir.mkdir(parents=True, exist_ok=True)
     # save config:
@@ -301,10 +361,9 @@ def train(config: TrainConfig, *, dataset, validation_datasets, panorama_model, 
     writer.add_hparams(
         flatten_dict(config_dict['opt_config']), {}
     )
-    panorama_model = panorama_model.cuda()
-    satellite_model = satellite_model.cuda()
-    panorama_model.train()
-    satellite_model.train()
+    
+    # Setup models using extracted function
+    panorama_model, satellite_model = setup_models_for_training(panorama_model, satellite_model)
 
     print(f"working with train dataset {len(dataset._satellite_metadata)=}" +
           f" {len(dataset._panorama_metadata)=} {len(dataset._landmark_metadata)=}")
@@ -314,19 +373,8 @@ def train(config: TrainConfig, *, dataset, validation_datasets, panorama_model, 
 
     opt_config = config.opt_config
 
-    miner = vigor_dataset.HardNegativeMiner(
-            batch_size=opt_config.batch_size,
-            embedding_dimension=panorama_model.output_dim,
-            random_sample_type=opt_config.random_sample_type,
-            hard_negative_pool_size=opt_config.hard_negative_pool_size,
-            dataset=dataset)
-    dataloader = vigor_dataset.get_dataloader(
-        dataset, batch_sampler=miner, num_workers=24, persistent_workers=True)
-
-    opt = torch.optim.Adam(
-        list(panorama_model.parameters()) + list(satellite_model.parameters()),
-        lr=opt_config.lr_schedule.initial_lr
-    )
+    # Create training components using extracted function
+    miner, dataloader, opt = create_training_components(dataset, panorama_model, satellite_model, opt_config)
 
     warmup_lr_scheduler = torch.optim.lr_scheduler.ConstantLR(
         opt,
@@ -348,30 +396,11 @@ def train(config: TrainConfig, *, dataset, validation_datasets, panorama_model, 
     total_batches = 0
     for epoch_idx in tqdm.tqdm(range(opt_config.num_epochs),  desc="Epoch"):
         for batch_idx, batch in enumerate(dataloader):
-            pairs = create_pairs(
-                batch.panorama_metadata,
-                batch.satellite_metadata
-            )
-
-            if opt_config.random_sample_type == vigor_dataset.HardNegativeMiner.RandomSampleType.NEAREST:
-                pairs = Pairs(
-                    positive_pairs=pairs.positive_pairs + pairs.semipositive_pairs,
-                    semipositive_pairs=[],
-                    negative_pairs=pairs.negative_pairs)
-
             opt.zero_grad()
 
-            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-                panorama_embeddings = panorama_model(
-                        panorama_model.model_input_from_batch(batch).to("cuda"))
-                sat_embeddings = satellite_model(
-                        satellite_model.model_input_from_batch(batch).to("cuda"))
-
-                loss_dict = compute_loss(
-                        pano_embeddings=panorama_embeddings,
-                        sat_embeddings=sat_embeddings,
-                        pairs=pairs,
-                        loss_config=opt_config.loss_config)
+            # Use extracted function for forward pass and loss
+            loss_dict, pairs, panorama_embeddings, sat_embeddings = compute_forward_pass_and_loss(
+                batch, panorama_model, satellite_model, opt_config)
                 
             grad_scaler.scale(loss_dict["loss"]).backward()
             grad_scaler.step(opt)
@@ -462,7 +491,9 @@ def main(
         output_base_path: Path,
         train_config_path: Path,
         quiet: bool,
-        no_ipdb: bool):
+        no_ipdb: bool,
+        lr_sweep: bool = False,
+):
     with open(train_config_path, 'r') as file_in:
         train_config = msgspec.yaml.decode(file_in.read(), type=TrainConfig, dec_hook=dec_hook)
     pprint(train_config)
@@ -528,6 +559,30 @@ def main(
     train_config.output_dir = output_dir
     train_config.tensorboard_output = tensorboard_output
 
+    # Run learning rate sweep if requested
+    if lr_sweep:
+        # Create default LR sweep config if not in train config
+        if train_config.opt_config.lr_sweep_config is None:
+            train_config.opt_config.lr_sweep_config = LearningRateSweepConfig()
+        
+        optimal_lr = run_lr_sweep(
+            lr_sweep_config=train_config.opt_config.lr_sweep_config,
+            dataset=dataset,
+            panorama_model=panorama_model,
+            satellite_model=satellite_model,
+            opt_config=train_config.opt_config,
+            output_dir=output_dir,
+            compute_forward_pass_and_loss_fn=compute_forward_pass_and_loss,
+            create_training_components_fn=create_training_components,
+            setup_models_for_training_fn=setup_models_for_training,
+            quiet=quiet
+        )
+        
+        # Update the training config to use the optimal learning rate
+        train_config.opt_config.lr_schedule.initial_lr = optimal_lr
+        if not quiet:
+            print(f"Updated initial learning rate to {optimal_lr:.2e}")
+
     with ipdb.launch_ipdb_on_exception() if not no_ipdb else nullcontext():
         train(
             train_config,
@@ -545,12 +600,10 @@ if __name__ == "__main__":
     parser.add_argument("--output_base", help="path to output", required=True)
     parser.add_argument("--train_config", help="path to train_config", required=True)
     parser.add_argument("--quiet", action="store_true")
-    parser.add_argument("--no-ipdb", action='store_true', help="Disable falling into ipdb on exception")
     args = parser.parse_args()
 
     main(
         Path(args.dataset_base),
         Path(args.output_base),
         Path(args.train_config),
-        quiet=args.quiet,
-        no_ipdb=args.no_ipdb)
+        quiet=args.quiet)
