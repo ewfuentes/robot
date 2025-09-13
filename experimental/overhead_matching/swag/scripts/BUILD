@@ -3,10 +3,25 @@ load("@pip//:requirements.bzl", "requirement")
 load("@rules_python//python:packaging.bzl", "py_wheel", "py_package")
 
 py_library(
+  name="pairing",
+  srcs=["pairing.py"],
+  visibility=["//common/python:__subpackages__"],
+)
+
+py_test(
+  name="pairing_test",
+  srcs=["pairing_test.py"],
+  deps=[
+    ":pairing",
+  ]
+)
+
+py_library(
   name="losses",
   srcs=["losses.py"],
   visibility=["//common/python:__subpackages__"],
   deps=[
+    ":pairing",
     ":distances",
     requirement("torch"),
     requirement("tensorboard"),
@@ -60,6 +75,7 @@ py_binary(
   deps=[
     ":logging_utils",
     ":lr_sweep",
+    ":pairing",
     ":losses",
     ":distances",
     requirement("torch"),

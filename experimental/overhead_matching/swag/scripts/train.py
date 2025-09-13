@@ -7,9 +7,10 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 import itertools
 from pathlib import Path
-from common.python.serialization import dataclass_to_dict, flatten_dict
-from experimental.overhead_matching.swag.scripts.losses import LossConfig, compute_loss, Pairs
+from common.python.serialization import flatten_dict
+from experimental.overhead_matching.swag.scripts.losses import LossConfig, compute_loss
 from experimental.overhead_matching.swag.scripts.distances import DistanceTypes, distance_from_type
+from experimental.overhead_matching.swag.scripts.pairing import PairingType, create_pairs, create_anchors, Pairs, PairingDataType
 from experimental.overhead_matching.swag.data import (
         vigor_dataset, satellite_embedding_database as sed)
 from experimental.overhead_matching.swag.model import (
@@ -56,7 +57,7 @@ class WeightMatrixModel(torch.nn.Module):
     If both are provided, creates a matrix per pano/sat embedding pair
 
     Output: 
-        num_pano_embeds x num_sat_embeds x num_class_tokens x d_emb x d_emb
+        num_pano_embeds x num_sat_embeds x num_pano_class_tokens x num_sat_class_tokens x d_emb x d_emb
         If an embedding is not part of the input (e.g., num_sat_embeds if pano is input)
         the dimension is set to 1
     """
@@ -65,7 +66,8 @@ class WeightMatrixModel(torch.nn.Module):
         super().__init__()
         self.config = config
         if len(self.config.input_types) == 0:
-            weight_matrix = torch.rand(1, 1, 1, config.output_dim, config.output_dim) - 0.5
+            weight_matrix = 0.01 * (torch.rand(1, 1, 1, 1, config.output_dim, config.output_dim) - 0.5)
+            weight_matrix[0, 0, 0, 0].fill_diagonal_(1.0)
             weight_matrix_semipos = torch.matmul(weight_matrix.transpose(-2, -1), weight_matrix)
             self.weight_matrix = torch.nn.Parameter(weight_matrix_semipos)
         else:
@@ -102,10 +104,10 @@ class WeightMatrixModel(torch.nn.Module):
             out_matrix = self.mlp(input)
         elif "sat" in self.config.input_types:
             assert sat_embedding.ndim == 3  #(num_sat, num_embeddings, D_emb)
-            out_matrix = self.mlp(sat_embedding).unsqueeze(0)
+            out_matrix = self.mlp(sat_embedding).unsqueeze(0).unsqueeze(2) # 1, num_sat, 1, num_sat_emb, D_emb**2
         elif "pano" in self.config.input_types:
             assert pano_embedding.ndim == 3  #(num_pano, num_embeddings, D_emb)
-            out_matrix = self.mlp(pano_embedding).unsqueeze(1)
+            out_matrix = self.mlp(pano_embedding).unsqueeze(1).unsqueeze(3)
         else:
             raise RuntimeError(f"Invalid input config {self.config.input_types}")
 
@@ -158,6 +160,7 @@ class TrainConfig:
     validation_dataset_configs: list[DatasetConfig]
     loss_configs: list[LossConfig]
     distance_type: DistanceTypes
+    pairing_type: PairingType = PairingType.PAIRS
     num_vector_embeddings: int = 1
     weight_matrix_model_config: WeightMatrixModelConfig | None = None
 
@@ -172,27 +175,6 @@ def dec_hook(type, obj):
     if type is Path:
         return Path(obj)
     raise ValueError(f"Unhandled type: {type=} {obj=}")
-
-
-def create_pairs(panorama_metadata, satellite_metadata) -> Pairs:
-    # Generate an exhaustive set of triplets where the anchor is a panorama
-    # TODO consider creating triplets where a satellite patch is the anchor
-    out = Pairs(positive_pairs=[], negative_pairs=[], semipositive_pairs=[])
-    for batch_pano_idx in range(len(panorama_metadata)):
-        # batch_pano_idx is the index of the panorama in the batch
-        # pano_idx is the index of the panorama in the dataset
-        pano_idx = panorama_metadata[batch_pano_idx]['index']
-
-        for batch_sat_idx in range(len(satellite_metadata)):
-            # batch_sat_idx is the index of the satellite image in the batch
-            curr_sat_metadata = satellite_metadata[batch_sat_idx]
-            if pano_idx in curr_sat_metadata["positive_panorama_idxs"]:
-                out.positive_pairs.append((batch_pano_idx, batch_sat_idx))
-            elif pano_idx in curr_sat_metadata["semipositive_panorama_idxs"]:
-                out.semipositive_pairs.append((batch_pano_idx, batch_sat_idx))
-            else:
-                out.negative_pairs.append((batch_pano_idx, batch_sat_idx))
-    return out
 
 
 def compute_validation_metrics(
@@ -221,8 +203,6 @@ def compute_validation_metrics(
             sat_embeddings=sat_embeddings,
             weight_matrix=weight_matrix
         )
-        assert similarity.shape[2] == 1
-        similarity = similarity.squeeze(2)
 
         num_panos = similarity.shape[0]
 
@@ -319,14 +299,12 @@ def compute_forward_pass_and_loss(batch,
                                   panorama_model, 
                                   satellite_model, 
                                   weight_matrix_model,
+                                  pairing_data: PairingDataType,
                                   train_config: TrainConfig):
     """Compute forward pass and loss for a batch."""
-    pairs = create_pairs(
-        batch.panorama_metadata,
-        batch.satellite_metadata
-    )
     
     if train_config.opt_config.random_sample_type == vigor_dataset.HardNegativeMiner.RandomSampleType.NEAREST:
+        raise NotImplementedError()
         pairs = Pairs(
             positive_pairs=pairs.positive_pairs + pairs.semipositive_pairs,
             semipositive_pairs=[],
@@ -347,12 +325,12 @@ def compute_forward_pass_and_loss(batch,
         loss_dict = compute_loss(
                 pano_embeddings=panorama_embeddings,
                 sat_embeddings=sat_embeddings,
-                pairs=pairs,
+                pairing_data=pairing_data,
                 distance_type=train_config.distance_type,
                 weight_matrix=weight_matrix,
                 loss_configs=train_config.loss_configs)
     
-    return loss_dict, pairs, panorama_embeddings, sat_embeddings
+    return loss_dict, panorama_embeddings, sat_embeddings
 
 
 def train(config: TrainConfig, 
@@ -422,11 +400,31 @@ def train(config: TrainConfig,
     total_batches = 0
     for epoch_idx in tqdm.tqdm(range(opt_config.num_epochs),  desc="Epoch"):
         for batch_idx, batch in enumerate(dataloader):
+            match config.pairing_type:
+                case PairingType.PAIRS:
+                    pairing_data = create_pairs(
+                        batch.panorama_metadata,
+                        batch.satellite_metadata
+                    )
+
+                    if opt_config.random_sample_type == vigor_dataset.HardNegativeMiner.RandomSampleType.NEAREST:
+                        pairing_data = Pairs(
+                            positive_pairs=pairing_data.positive_pairs + pairing_data.semipositive_pairs,
+                            semipositive_pairs=[],
+                            negative_pairs=pairing_data.negative_pairs)
+                case PairingType.ANCHOR_SETS:
+                    pairing_data = create_anchors(
+                        batch.panorama_metadata,
+                        batch.satellite_metadata,
+                        use_pano_as_anchor=False
+                    )
+                case _: 
+                    raise RuntimeError(f"Pairing type not recongnized, {config.pairing_type}")
             opt.zero_grad()
 
             # Use extracted function for forward pass and loss
-            loss_dict, pairs, panorama_embeddings, sat_embeddings = compute_forward_pass_and_loss(
-                batch, panorama_model, satellite_model, weight_matrix_model, config)
+            loss_dict, panorama_embeddings, sat_embeddings = compute_forward_pass_and_loss(
+                batch, panorama_model, satellite_model, weight_matrix_model, pairing_data, config)
 
             grad_scaler.scale(loss_dict["loss"]).backward()
             grad_scaler.step(opt)
@@ -458,7 +456,7 @@ def train(config: TrainConfig,
                     writer=writer,
                     loss_dict=loss_dict,
                     lr_scheduler=lr_scheduler,
-                    pairs=pairs,
+                    pairing_data=pairing_data,
                     step_idx=total_batches,
                     epoch_idx=epoch_idx,
                     batch_idx=batch_idx,
