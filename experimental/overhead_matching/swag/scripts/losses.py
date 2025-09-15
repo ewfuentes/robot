@@ -165,7 +165,7 @@ def compute_info_nce_loss(
         negative_term = negative_term.topk(info_nce_config.max_num_negative_pairs, dim=1).values
 
     neg_scale = info_nce_config.negative_scale / (torch.count_nonzero(torch.isfinite(negative_term), dim=1) if info_nce_config.scale_negative_by_num_items else torch.tensor([1]))
-    log_neg_scale = torch.log(neg_scale).to(device).unsqueeze(0)
+    log_neg_scale = torch.log(neg_scale).to(device).unsqueeze(1)
     loss = info_nce_config.negative_scale * torch.logsumexp(torch.cat([positive_term.unsqueeze(
         1), log_neg_scale + negative_term], dim=1), dim=-1) - positive_term
 
@@ -175,7 +175,7 @@ def compute_info_nce_loss(
             avg_pos_semipos_similarity=positive_term.mean(),
             avg_negative_similarity=negative_term[torch.isfinite(negative_term)].mean(),
             avg_max_negative_similarity=negative_term.max(dim=1).values.mean(),
-            avg_min_negative_similarity=negative_term.max(dim=1).values.mean(),
+            avg_min_negative_similarity=negative_term.min(dim=1).values.mean(),
         )
 
     return loss.mean(), aux
