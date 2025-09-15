@@ -192,7 +192,7 @@ def compute_spherical_embedding_constraint_loss(
     pano_norms = torch.linalg.norm(loss_inputs.pano_embeddings, dim=2).flatten()
     all_norms = torch.cat([sat_norms, pano_norms])
     mu = all_norms.mean()
-    L_sec = torch.power(all_norms - mu(), 2).mean()
+    L_sec = torch.pow(all_norms - mu, 2).mean()
     final_loss = sec_config.weight_scale * L_sec
     return final_loss, {"sec_aux_loss": final_loss, "num_embeddings": all_norms.numel()}
 

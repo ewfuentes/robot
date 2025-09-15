@@ -452,7 +452,7 @@ class SwagPatchEmbedding(torch.nn.Module):
             input_tokens = F.normalize(input_tokens, dim=-1)
 
         cls_mask = torch.zeros(
-                (batch_size, 1), device=dev, dtype=torch.bool)
+                cls_token.shape[:2], device=dev, dtype=torch.bool)
         input_mask = torch.cat([cls_mask] +
                                [v.mask for v in extractor_outputs_by_name.values()], dim=1)
 
