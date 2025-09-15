@@ -22,8 +22,8 @@ STRUCT_OPTS = {
 @dataclass
 class LossInputs:
     similarity_matrix: torch.Tensor
-    sat_embeddings: torch.Tensor
-    pano_embeddings: torch.Tensor
+    sat_embeddings: torch.Tensor  # NOT NORMALIZED
+    pano_embeddings: torch.Tensor  # NOT NORMALIZED
     pairing_data: PairingDataType
 
 
@@ -48,8 +48,11 @@ class InfoNCELoss(msgspec.Struct, **STRUCT_OPTS):
     scale_negative_by_num_items: bool = False
     use_pano_as_anchor: bool = False
 
+class SphericalEmbeddingConstraintLoss(msgspec.Struct, **STRUCT_OPTS):
+    weight_scale: float 
 
-LossConfig = Union[PairwiseContrastiveLoss, InfoNCELoss]
+
+LossConfig = Union[PairwiseContrastiveLoss, InfoNCELoss, SphericalEmbeddingConstraintLoss]
 
 
 
@@ -180,6 +183,19 @@ def compute_info_nce_loss(
 
     return loss.mean(), aux
 
+def compute_spherical_embedding_constraint_loss(
+    loss_inputs: LossInputs,
+    sec_config: SphericalEmbeddingConstraintLoss
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """https://arxiv.org/pdf/2011.02785"""
+    sat_norms = torch.linalg.norm(loss_inputs.sat_embeddings, dim=2).flatten()
+    pano_norms = torch.linalg.norm(loss_inputs.pano_embeddings, dim=2).flatten()
+    all_norms = torch.cat([sat_norms, pano_norms])
+    mu = all_norms.mean()
+    L_sec = torch.power(all_norms - mu(), 2).mean()
+    final_loss = sec_config.weight_scale * L_sec
+    return final_loss, {"sec_aux_loss": final_loss, "num_embeddings": all_norms.numel()}
+
 
 def compute_loss(sat_embeddings: torch.Tensor,  # N_sat x n_emb_sat x D_emb
                  pano_embeddings: torch.Tensor,  # N_pano x n_emb_pano x D_emb
@@ -206,14 +222,14 @@ def compute_loss(sat_embeddings: torch.Tensor,  # N_sat x n_emb_sat x D_emb
     for loss_config in loss_configs:
         if isinstance(loss_config, PairwiseContrastiveLoss):
             l, new_aux = compute_pairwise_loss(loss_input, loss_config)
-            loss += l
-            aux_info |= new_aux
         elif isinstance(loss_config, InfoNCELoss):
             l, new_aux = compute_info_nce_loss(loss_input, loss_config)
-            loss += l
-            aux_info |= new_aux
+        elif isinstance(loss_config, SphericalEmbeddingConstraintLoss):
+            l, new_aux = compute_spherical_embedding_constraint_loss(loss_input, loss_config)
         else:
             raise ValueError(f"Unknown loss config type: {type(loss_config)}")
 
+        loss += l
+        aux_info |= new_aux
     assert "loss" not in aux_info
     return {"loss": loss} | aux_info

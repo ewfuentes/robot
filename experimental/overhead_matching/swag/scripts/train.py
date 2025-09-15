@@ -287,7 +287,7 @@ def create_training_components(dataset, panorama_model, satellite_model, opt_con
         dataset, batch_sampler=miner, num_workers=24, persistent_workers=True)
     
     # Create optimizer
-    opt = torch.optim.Adam(
+    opt = torch.optim.AdamW(
         list(panorama_model.parameters()) + list(satellite_model.parameters()),
         lr=opt_config.lr_schedule.initial_lr
     )

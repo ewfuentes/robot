@@ -61,6 +61,8 @@ class SwagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
 
     auxiliary_info: dict[str, Any] = {}
 
+    normalize_embeddings: bool = True
+
     # These are here for backwards compatibility
     feature_map_extractor_config: FeatureMapExtractorConfig | None = None
     semantic_token_extractor_config: SemanticTokenExtractorConfig | None = None
@@ -352,7 +354,7 @@ class SwagPatchEmbedding(torch.nn.Module):
         self._extractor_by_name = torch.nn.ModuleDict({
             k: create_extractor(c, config.auxiliary_info)
             for k, c in config.extractor_config_by_name.items()})
-
+        self._normalize_embeddings = config.normalize_embeddings
         self._token_marker_by_name = torch.nn.ParameterDict({
                 k: torch.nn.Parameter(torch.randn(1, 1, config.output_dim))
                 for k in config.extractor_config_by_name})
@@ -446,7 +448,8 @@ class SwagPatchEmbedding(torch.nn.Module):
         batch_size = model_input.image.shape[0]
         cls_token = self._cls_token.expand(batch_size, -1, -1)
         input_tokens = torch.cat([cls_token] + list(input_tokens_by_name.values()), dim=1)
-        input_tokens = F.normalize(input_tokens, dim=-1)
+        if self._normalize_embeddings:
+            input_tokens = F.normalize(input_tokens, dim=-1)
 
         cls_mask = torch.zeros(
                 (batch_size, 1), device=dev, dtype=torch.bool)
@@ -459,10 +462,12 @@ class SwagPatchEmbedding(torch.nn.Module):
 
         input_tokens, input_mask = self._get_input_tokens(model_input)
         output_tokens = self._aggregator_model(input_tokens, input_mask)
-        class_tokens = output_tokens[:, :self._cls_token.shape[1], :]  # B, num_class_tokens, D_emb
+        model_output = output_tokens[:, :self._cls_token.shape[1], :]  # B, num_class_tokens, D_emb
 
         # output is batch x num_class_tokens x feature_dim
-        model_output = F.normalize(class_tokens, dim=2)
+        if self._normalize_embeddings:
+            model_output = F.normalize(model_output, dim=2)
+
         return model_output
 
     def cache_info(self):
