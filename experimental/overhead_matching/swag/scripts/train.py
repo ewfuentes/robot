@@ -608,5 +608,5 @@ if __name__ == "__main__":
         Path(args.dataset_base),
         Path(args.output_base),
         Path(args.train_config),
-        no_ipdb=args.no_ipydb,
+        no_ipdb=args.no_ipdb,
         quiet=args.quiet)
