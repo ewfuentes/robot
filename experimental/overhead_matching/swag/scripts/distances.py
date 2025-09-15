@@ -1,5 +1,6 @@
 from enum import StrEnum
 import common.torch.load_torch_deps
+import torch.nn.functional as F
 import torch
 
 
@@ -55,22 +56,24 @@ def distance_from_type(
     weight_matrix: torch.Tensor | None,  # n_pano x n_sat x n_emb_pano x n_emb_sat x d_emb x d_emb
     distance_type: DistanceTypes,
 ) -> torch.Tensor:  # n_pano x n_sat
+    sat_embeddings_norm = F.normalize(sat_embeddings, dim=-1)
+    pano_embeddings_norm = F.normalize(pano_embeddings, dim=-1)
     match distance_type:
         case DistanceTypes.COSINE:
             similarity = calculate_all_pairs_cosine_distance(
-                sat_embeddings=sat_embeddings,
-                pano_embeddings=pano_embeddings,
+                sat_embeddings=sat_embeddings_norm,
+                pano_embeddings=pano_embeddings_norm,
             )
         case DistanceTypes.MAHALANOBIS:
             similarity = calculate_all_pairs_mahalanobis_distance(
-                sat_embeddings=sat_embeddings,
-                pano_embeddings=pano_embeddings,
+                sat_embeddings=sat_embeddings_norm,
+                pano_embeddings=pano_embeddings_norm,
                 weight_matrix=weight_matrix
             )
         case _:
             raise RuntimeError(f"Unknown distance type {distance_type}")
         
-    max_num_embeddings = max(sat_embeddings.shape[1], pano_embeddings.shape[1])
+    max_num_embeddings = max(sat_embeddings_norm.shape[1], pano_embeddings_norm.shape[1])
     if max_num_embeddings == 1:
         return similarity.squeeze(-1).squeeze(-1)
     else:
