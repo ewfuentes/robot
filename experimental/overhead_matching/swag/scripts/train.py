@@ -359,7 +359,8 @@ def train(config: TrainConfig, *, dataset, validation_datasets, panorama_model, 
     )
     # write hyperparameters
     writer.add_hparams(
-        flatten_dict(config_dict['opt_config']), {}
+        flatten_dict(config_dict['opt_config']), {},
+        run_name="."
     )
     
     # Setup models using extracted function
@@ -554,7 +555,7 @@ def main(
 
     output_dir = output_base_path / train_config.output_dir
     tensorboard_output = train_config.tensorboard_output
-    tensorboard_output = tensorboard_output if tensorboard_output is not None else output_dir / "logs"
+    tensorboard_output = tensorboard_output if tensorboard_output is not None else output_dir
 
     train_config.output_dir = output_dir
     train_config.tensorboard_output = tensorboard_output
@@ -599,6 +600,7 @@ if __name__ == "__main__":
     parser.add_argument("--dataset_base", help="path to dataset", required=True)
     parser.add_argument("--output_base", help="path to output", required=True)
     parser.add_argument("--train_config", help="path to train_config", required=True)
+    parser.add_argument("--no_ipydb", action="store_true", help="Don't run IPDB around the training job")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 
@@ -606,4 +608,5 @@ if __name__ == "__main__":
         Path(args.dataset_base),
         Path(args.output_base),
         Path(args.train_config),
+        no_ipdb=args.no_ipydb,
         quiet=args.quiet)
