@@ -600,7 +600,7 @@ if __name__ == "__main__":
     parser.add_argument("--dataset_base", help="path to dataset", required=True)
     parser.add_argument("--output_base", help="path to output", required=True)
     parser.add_argument("--train_config", help="path to train_config", required=True)
-    parser.add_argument("--no_ipydb", action="store_true", help="Don't run IPDB around the training job")
+    parser.add_argument("--no_ipdb", action="store_true", help="Don't run IPDB around the training job")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 
