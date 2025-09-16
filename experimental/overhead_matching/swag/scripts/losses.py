@@ -107,7 +107,10 @@ def compute_pairwise_loss(
     aux_data = {
         "pos_loss": pos_loss,
         "neg_loss": neg_loss,
-        "semipos_loss": semipos_loss
+        "semipos_loss": semipos_loss,
+        "pos_sim": pos_similarities,
+        "semipos_sim": semipos_similarities,
+        "neg_sim": neg_similarities,
     }
 
     return pos_loss + neg_loss + semipos_loss, aux_data
@@ -175,10 +178,8 @@ def compute_info_nce_loss(
     with torch.no_grad():
         aux = dict(
             num_batch_items=loss.shape[0],
-            avg_pos_semipos_similarity=positive_term.mean(),
-            avg_negative_similarity=negative_term[torch.isfinite(negative_term)].mean(),
-            avg_max_negative_similarity=negative_term.max(dim=1).values.mean(),
-            avg_min_negative_similarity=negative_term.min(dim=1).values.mean(),
+            pos_sim=positive_term,
+            neg_sim=negative_term[torch.isfinite(negative_term)],
         )
 
     return loss.mean(), aux
@@ -230,6 +231,9 @@ def compute_loss(sat_embeddings: torch.Tensor,  # N_sat x n_emb_sat x D_emb
             raise ValueError(f"Unknown loss config type: {type(loss_config)}")
 
         loss += l
+        overlapping_keys = set(aux_info.keys()).intersection(set(new_aux.keys()))
+        if len(overlapping_keys):
+            print("Warning: overwriting overlapping keys in loss aux info: ", overlapping_keys)
         aux_info |= new_aux
     assert "loss" not in aux_info
     return {"loss": loss} | aux_info
