@@ -24,6 +24,8 @@ import msgspec
 from pprint import pprint
 import ipdb
 from contextlib import nullcontext
+import threading
+import atexit
 from experimental.overhead_matching.swag.scripts.lr_sweep import LearningRateSweepConfig, run_lr_sweep
 
 
@@ -230,6 +232,47 @@ def compute_forward_pass_and_loss(batch,
 
     return loss_dict, panorama_embeddings, sat_embeddings
 
+def create_heartbeat_system(heartbeat_file: str = "/tmp/training_heartbeat.txt"):
+    """Create a heartbeat system that writes periodic status updates."""
+    heartbeat_active = threading.Event()
+    heartbeat_active.set()
+
+    def heartbeat_worker():
+        """Background thread that writes heartbeat every 30 seconds."""
+        while heartbeat_active.is_set():
+            try:
+                with open(heartbeat_file, 'w') as f:
+                    import datetime
+                    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    f.write(f"HEARTBEAT: {timestamp} - Training process alive\n")
+                    f.flush()
+                print(f"HEARTBEAT: {timestamp} - Training process alive", flush=True)
+            except Exception as e:
+                print(f"Heartbeat error: {e}", flush=True)
+
+            # Wait for 30 seconds or until stopped
+            heartbeat_active.wait(30)
+
+    # Start heartbeat thread
+    heartbeat_thread = threading.Thread(target=heartbeat_worker, daemon=True)
+    heartbeat_thread.start()
+
+    def stop_heartbeat():
+        """Stop the heartbeat system."""
+        heartbeat_active.clear()
+        try:
+            with open(heartbeat_file, 'w') as f:
+                import datetime
+                timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                f.write(f"TRAINING_COMPLETE: {timestamp} - Training finished successfully\n")
+                f.flush()
+            print(f"TRAINING_COMPLETE: {timestamp} - Training finished successfully", flush=True)
+        except Exception as e:
+            print(f"Completion signal error: {e}", flush=True)
+
+    # Register cleanup
+    atexit.register(stop_heartbeat)
+    return stop_heartbeat
 
 def train(config: TrainConfig,
           *,
@@ -241,6 +284,8 @@ def train(config: TrainConfig,
           quiet):
 
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    stop_heartbeat = create_heartbeat_system()
     # save config:
     config_json = msgspec.json.encode(config, enc_hook=msgspec_enc_hook)
     config_dict = json.loads(config_json)
@@ -420,10 +465,15 @@ def train(config: TrainConfig,
 
             save_model(satellite_model, satellite_model_path,
                        (sat_model_input,))
-
             if sum(param.numel() for param in distance_model.parameters()) > 0:
                 save_model(distance_model, distance_model_path,
                            (satellite_model(sat_model_input), panorama_model(pano_model_input) ))
+
+
+    # Signal training completion
+    print("🎉 TRAINING COMPLETED SUCCESSFULLY 🎉", flush=True)
+    stop_heartbeat()
+    print("Training process exiting normally.", flush=True)
 
 
 def main(
