@@ -3,11 +3,13 @@ import torch
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 from experimental.overhead_matching.swag.scripts.pairing import Pairs, PositiveAnchorSets
+import matplotlib.pyplot as plt 
+import numpy as np
 
 
 LOG_HIST_EVERY = 100
 
-
+@torch.no_grad()
 def log_batch_metrics(writer, loss_dict, lr_scheduler, pairing_data, step_idx, epoch_idx, batch_idx, quiet):
     if isinstance(pairing_data, Pairs):
         writer.add_scalar("train/num_positive_pairs", len(pairing_data.positive_pairs), global_step=step_idx)
@@ -23,7 +25,33 @@ def log_batch_metrics(writer, loss_dict, lr_scheduler, pairing_data, step_idx, e
         writer.add_scalar("train/max_semipositive", max(num_semipositive), global_step=step_idx)
 
     writer.add_scalar("train/learning_rate", lr_scheduler.get_last_lr()[0], global_step=step_idx)
+    if "pos_sim" in loss_dict and "neg_sim" in loss_dict:
+        pos_sim = loss_dict["pos_sim"]
+        neg_sim = loss_dict["neg_sim"]
+        semipos_sim = loss_dict["semipos_sim"] if "semipos_sim" in loss_dict else None  # may not be present 
+        writer.add_scalar("train/loss_pos_sim", pos_sim.mean().item(), global_step=step_idx)
+        writer.add_scalar("train/loss_neg_sim", neg_sim.mean().item(), global_step=step_idx)
+        if semipos_sim is not None:
+            writer.add_scalar("train/loss_semipos_sim", semipos_sim.mean().item(), global_step=step_idx)
+
+        if step_idx % LOG_HIST_EVERY == 0: 
+            min_val = min(-1, pos_sim.min().item(), neg_sim.min().item(), semipos_sim.min().item() if semipos_sim is not None else 0.0)
+            max_val = max(1, pos_sim.max().item(), neg_sim.max().item(), semipos_sim.max().item() if semipos_sim is not None else 0.0)
+            bins = np.linspace(min_val, max_val, 101)
+            fig, ax = plt.subplots()
+            ax.hist(neg_sim.detach().cpu().float().numpy(), bins=bins, label="Negative", density=False, alpha=0.5)
+            ax.hist(pos_sim.detach().cpu().float().numpy(), bins=bins, label="Positive", density=False, alpha=0.5)
+            if semipos_sim is not None:
+                ax.hist(semipos_sim.detach().cpu().float().numpy(), bins=bins, label="Semi", density=False, alpha=0.5)
+            ax.set_yscale("log")
+            ax.legend()
+            ax.set_xlabel("Similarity")
+            ax.set_ylabel("Count")
+            writer.add_figure("train/interclass_sim", fig, global_step=step_idx)
+
     for k, v in loss_dict.items():
+        if torch.is_tensor(v) and v.numel() > 1: 
+            continue  # skip larger tensors
         writer.add_scalar(f"train/loss_{k}", v.item() if torch.is_tensor(v) else v, global_step=step_idx)
 
     if not quiet:
@@ -66,14 +94,13 @@ def _sample_pairwise_cosine(x: torch.Tensor, num_pairs: int = 2048) -> tuple[flo
 @torch.no_grad()
 def log_embedding_stats(writer: SummaryWriter, name: str, emb: torch.Tensor, step_idx: int):
     """Log scalar stats and occasional histograms for embeddings."""
-    # emb: [B, D]
-    norms = emb.norm(dim=1)
+    # emb: [B, N_emb, D]
+    assert emb.ndim == 3
+    norms = emb.norm(dim=2)
     writer.add_scalar(f"{name}_emb/value_mean", emb.mean().item(), step_idx)
     writer.add_scalar(f"{name}_emb/value_std", emb.std().item(), step_idx)
     writer.add_scalar(f"{name}_emb/norm_mean", norms.mean().item(), step_idx)
     writer.add_scalar(f"{name}_emb/norm_std", norms.std().item(), step_idx)
-    writer.add_scalar(f"{name}_emb/norm_min", norms.min().item(), step_idx)
-    writer.add_scalar(f"{name}_emb/norm_max", norms.max().item(), step_idx)
 
     mean_cos, std_cos = _sample_pairwise_cosine(emb, num_pairs=2048)
     if not math.isnan(mean_cos):
@@ -108,7 +135,7 @@ def log_gradient_stats(writer: SummaryWriter, model: torch.nn.Module, name: str,
         if vals.numel() > 200_000:
             idx = torch.randint(0, vals.numel(), (200_000,), device=vals.device)
             vals = vals[idx]
-        writer.add_histogram(f"grad/{name}/values", vals.float().cpu(), step_idx)
+        writer.add_histogram(f"grad/{name}/values", vals.float().cpu(), step_idx, bins="auto")
 
 
 def log_validation_metrics(writer, validation_metrics, epoch_idx, quiet):
