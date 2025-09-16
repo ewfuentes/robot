@@ -330,7 +330,7 @@ class JobManager:
             train_command = (
                 f"cd /home/ubuntu/robot && bazel run //experimental/overhead_matching/swag/scripts:train -- "
                 f"--dataset_base /tmp/ --output_base /tmp/output_{job_id} "
-                f"--train_config {remote_config_path} --no-ipdb"
+                f"--train_config {remote_config_path} --no_ipdb"
             )
             
             # Prepare S3 configuration  
