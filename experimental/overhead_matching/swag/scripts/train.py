@@ -41,7 +41,7 @@ class LearningRateSchedule:
 
 @dataclass
 class WeightMatrixModelConfig:
-    input_types: list[str] # Options incldue "pano", "sat" or empty, in which case a single weight matrix is learned
+    input_types: list[str]  # Options incldue "pano", "sat" or empty, in which case a single weight matrix is learned
     hidden_dim: int
     output_dim: int
 
@@ -302,13 +302,6 @@ def compute_forward_pass_and_loss(batch,
                                   pairing_data: PairingDataType,
                                   train_config: TrainConfig):
     """Compute forward pass and loss for a batch."""
-    
-    if train_config.opt_config.random_sample_type == vigor_dataset.HardNegativeMiner.RandomSampleType.NEAREST:
-        raise NotImplementedError()
-        pairs = Pairs(
-            positive_pairs=pairs.positive_pairs + pairs.semipositive_pairs,
-            semipositive_pairs=[],
-            negative_pairs=pairs.negative_pairs)
     
     with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
         panorama_embeddings = panorama_model(
