@@ -22,8 +22,8 @@ STRUCT_OPTS = {
 @dataclass
 class LossInputs:
     similarity_matrix: torch.Tensor
-    sat_embeddings: torch.Tensor  # NOT NORMALIZED
-    pano_embeddings: torch.Tensor  # NOT NORMALIZED
+    sat_embeddings_unnormalized: torch.Tensor  # NOT NORMALIZED
+    pano_embeddings_unnormalized: torch.Tensor  # NOT NORMALIZED
     pairing_data: PairingDataType
 
 
@@ -115,32 +115,30 @@ def compute_pairwise_loss(
 
     return pos_loss + neg_loss + semipos_loss, aux_data
 
-
-
 def compute_batch_uniformity_loss(loss_inputs: LossInputs, batch_uniformity_loss_config: BatchUniformityLossConfig):
     # Compute a batch uniformity loss, different panoramas/satellites
     # should have different embeddings
-    rolled_sat_embeddings = torch.roll(loss_inputs.sat_embeddings, 1, dims=0)
-    rolled_pano_embeddings = torch.roll(loss_inputs.pano_embeddings, 1, dims=0)
+    assert loss_inputs.sat_embeddings_unnormalized.shape[1] == 1, f"Batch uniformity loss does not support multiple embeddings, got emb of shape {loss_inputs.sat_embeddings_unnormalized.shape}"
+    assert loss_inputs.pano_embeddings_unnormalized.shape[1] == 1, f"Batch uniformity loss does not support multiple embeddings, got emb of shape {loss_inputs.pano_embeddings_unnormalized.shape}"
+    sat_embeddings_norm = F.normalize(loss_inputs.sat_embeddings_unnormalized, dim=-1).squeeze(1)
+    pano_embeddings_norm = F.normalize(loss_inputs.pano_embeddings_unnormalized, dim=-1).squeeze(1)
+    rolled_sat_embeddings = torch.roll(sat_embeddings_norm, 1, dims=0)
+    rolled_pano_embeddings = torch.roll(pano_embeddings_norm, 1, dims=0)
 
     def mean_hinge_loss(similarities):
-        shifted_loss = torch.abs(similarities) - loss_config.batch_uniformity_hinge_location
+        shifted_loss = torch.abs(similarities) - batch_uniformity_loss_config.batch_uniformity_hinge_location
         relud_loss = torch.mean(torch.nn.functional.relu(shifted_loss))
         return batch_uniformity_loss_config.batch_uniformity_weight * relud_loss
 
-    sat_similarity = torch.einsum("ad,ad->a", loss_inputs.sat_embeddings, rolled_sat_embeddings)
-    pano_similarity = torch.einsum("ad,ad->a", loss_inputs.pano_embeddings, rolled_pano_embeddings)
+    sat_similarity = torch.einsum("ad,ad->a", loss_inputs.sat_embeddings_unnormalized, rolled_sat_embeddings)
+    pano_similarity = torch.einsum("ad,ad->a", loss_inputs.pano_embeddings_unnormalized, rolled_pano_embeddings)
 
     sat_uniformity_loss = mean_hinge_loss(sat_similarity)
     pano_uniformity_loss = mean_hinge_loss(pano_similarity)
-    raise NotImplementedError("Need to update this to work after rebasing. Need to add below, factor out config, update similarity computation")
-    return {
-        'loss': pos_loss + neg_loss + semipos_loss + sat_uniformity_loss + pano_uniformity_loss,
+    return sat_uniformity_loss + pano_uniformity_loss, {
         'sat_uniformity_loss': sat_uniformity_loss,
         'pano_uniformity_loss': pano_uniformity_loss,
     }
-
-    
 
 def compute_info_nce_loss(
     loss_inputs: LossInputs,
@@ -189,8 +187,8 @@ def compute_spherical_embedding_constraint_loss(
     sec_config: SphericalEmbeddingConstraintLoss
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """https://arxiv.org/pdf/2011.02785"""
-    sat_norms = torch.linalg.norm(loss_inputs.sat_embeddings, dim=2).flatten()
-    pano_norms = torch.linalg.norm(loss_inputs.pano_embeddings, dim=2).flatten()
+    sat_norms = torch.linalg.norm(loss_inputs.sat_embeddings_unnormalized, dim=2).flatten()
+    pano_norms = torch.linalg.norm(loss_inputs.pano_embeddings_unnormalized, dim=2).flatten()
     all_norms = torch.cat([sat_norms, pano_norms])
     mu = all_norms.mean()
     L_sec = torch.pow(all_norms - mu, 2).mean()
@@ -215,8 +213,8 @@ def compute_loss(sat_embeddings: torch.Tensor,  # N_sat x n_emb_sat x D_emb
 
     loss_input = LossInputs(
         similarity_matrix=similarity,
-        sat_embeddings=sat_embeddings,
-        pano_embeddings=pano_embeddings,
+        sat_embeddings_unnormalized=sat_embeddings,
+        pano_embeddings_unnormalized=pano_embeddings,
         pairing_data=pairing_data
     )
     aux_info = {}
@@ -227,6 +225,8 @@ def compute_loss(sat_embeddings: torch.Tensor,  # N_sat x n_emb_sat x D_emb
             l, new_aux = compute_info_nce_loss(loss_input, loss_config)
         elif isinstance(loss_config, SphericalEmbeddingConstraintLoss):
             l, new_aux = compute_spherical_embedding_constraint_loss(loss_input, loss_config)
+        elif isinstance(loss_config, BatchUniformityLossConfig):
+            l, new_aux = compute_batch_uniformity_loss(loss_input, loss_config)
         else:
             raise ValueError(f"Unknown loss config type: {type(loss_config)}")
 
