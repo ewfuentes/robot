@@ -284,7 +284,7 @@ def create_training_components(dataset, panorama_model, satellite_model, opt_con
             hard_negative_pool_size=opt_config.hard_negative_pool_size,
             dataset=dataset)
     dataloader = vigor_dataset.get_dataloader(
-        dataset, batch_sampler=miner, num_workers=24, persistent_workers=True)
+        dataset, batch_sampler=miner, num_workers=min(os.cpu_count() // 2, 24), persistent_workers=True)
     
     # Create optimizer
     opt = torch.optim.AdamW(
@@ -295,9 +295,9 @@ def create_training_components(dataset, panorama_model, satellite_model, opt_con
     return miner, dataloader, opt
 
 
-def compute_forward_pass_and_loss(batch, 
-                                  panorama_model, 
-                                  satellite_model, 
+def compute_forward_pass_and_loss(batch,
+                                  panorama_model,
+                                  satellite_model,
                                   weight_matrix_model,
                                   pairing_data: PairingDataType,
                                   train_config: TrainConfig):
