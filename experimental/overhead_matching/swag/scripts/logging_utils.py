@@ -29,6 +29,8 @@ def log_batch_metrics(writer, loss_dict, lr_scheduler, pairing_data, step_idx, e
         pos_sim = loss_dict["pos_sim"]
         neg_sim = loss_dict["neg_sim"]
         semipos_sim = loss_dict["semipos_sim"] if "semipos_sim" in loss_dict else None  # may not be present 
+        if semipos_sim is not None and semipos_sim.numel() == 0: 
+            semipos_sim = None
         writer.add_scalar("train/loss_pos_sim", pos_sim.mean().item(), global_step=step_idx)
         writer.add_scalar("train/loss_neg_sim", neg_sim.mean().item(), global_step=step_idx)
         if semipos_sim is not None:
@@ -50,7 +52,7 @@ def log_batch_metrics(writer, loss_dict, lr_scheduler, pairing_data, step_idx, e
             writer.add_figure("train/interclass_sim", fig, global_step=step_idx)
 
     for k, v in loss_dict.items():
-        if torch.is_tensor(v) and v.numel() > 1: 
+        if torch.is_tensor(v) and (v.numel() > 1 or v.numel() == 0): 
             continue  # skip larger tensors
         writer.add_scalar(f"train/loss_{k}", v.item() if torch.is_tensor(v) else v, global_step=step_idx)
 
