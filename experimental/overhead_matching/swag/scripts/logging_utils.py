@@ -2,30 +2,42 @@ import math
 import torch
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
+from experimental.overhead_matching.swag.scripts.pairing import Pairs, PositiveAnchorSets
 
 
 LOG_HIST_EVERY = 100
 
 
-def log_batch_metrics(writer, loss_dict, lr_scheduler, pairs, step_idx, epoch_idx, batch_idx, quiet):
+def log_batch_metrics(writer, loss_dict, lr_scheduler, pairing_data, step_idx, epoch_idx, batch_idx, quiet):
+    if isinstance(pairing_data, Pairs):
+        writer.add_scalar("train/num_positive_pairs", len(pairing_data.positive_pairs), global_step=step_idx)
+        writer.add_scalar("train/num_semipos_pairs", len(pairing_data.semipositive_pairs), global_step=step_idx)
+        writer.add_scalar("train/num_neg_pairs", len(pairing_data.negative_pairs), global_step=step_idx)
+    elif isinstance(pairing_data, PositiveAnchorSets):
+        num_positive = [len(x) for x in pairing_data.positive]
+        num_semipositive = [len(x) for x in pairing_data.semipositive]
+        writer.add_scalar("train/num_anchors", len(pairing_data.anchor), global_step=step_idx)
+        writer.add_scalar("train/min_positive", min(num_positive), global_step=step_idx)
+        writer.add_scalar("train/min_semipositive", min(num_semipositive), global_step=step_idx)
+        writer.add_scalar("train/max_positive", max(num_positive), global_step=step_idx)
+        writer.add_scalar("train/max_semipositive", max(num_semipositive), global_step=step_idx)
+
     writer.add_scalar("train/learning_rate", lr_scheduler.get_last_lr()[0], global_step=step_idx)
-    writer.add_scalar("train/num_positive_pairs", len(pairs.positive_pairs), global_step=step_idx)
-    writer.add_scalar("train/num_semipos_pairs", len(pairs.semipositive_pairs), global_step=step_idx)
-    writer.add_scalar("train/num_neg_pairs", len(pairs.negative_pairs), global_step=step_idx)
-    writer.add_scalar("train/loss_pos", loss_dict["pos_loss"].item(), global_step=step_idx)
-    writer.add_scalar("train/loss_semipos", loss_dict["semipos_loss"].item(), global_step=step_idx)
-    writer.add_scalar("train/loss_neg", loss_dict["neg_loss"].item(), global_step=step_idx)
-    writer.add_scalar("train/loss", loss_dict["loss"].item(), global_step=step_idx)
+    for k, v in loss_dict.items():
+        writer.add_scalar(f"train/loss_{k}", v.item() if torch.is_tensor(v) else v, global_step=step_idx)
+
     if not quiet:
-        print(f"{epoch_idx=:4d} {batch_idx=:4d} lr: {lr_scheduler.get_last_lr()[0]:.2e} " +
-              f" num_pos_pairs: {len(pairs.positive_pairs):3d}" +
-              f" num_semipos_pairs: {len(pairs.semipositive_pairs):3d}" +
-              f" num_neg_pairs: {len(pairs.negative_pairs):3d}" +
-              f" pos_loss: {loss_dict['pos_loss'].item():0.6f}" +
-              f" semipos_loss: {loss_dict['semipos_loss'].item():0.6f}" +
-              f" neg_loss: {loss_dict['neg_loss'].item():0.6f}" +
-              f" loss: {loss_dict['loss'].item():0.6f}",
-              end='\r')
+        out_str = f"{epoch_idx=:4d} {batch_idx=:4d} lr: {lr_scheduler.get_last_lr()[0]:.2e} " + \
+              f" loss: {loss_dict['loss'].item():0.6f}"
+        out_str += f" pos_loss: {loss_dict['pos_loss'].item():0.6f}" if "pos_loss" in loss_dict else ""
+        out_str += f" semipos_loss: {loss_dict['semipos_loss'].item():0.6f}" if 'semipos_loss' in loss_dict else ""
+        out_str += f" neg_loss: {loss_dict['neg_loss'].item():0.6f}" if "neg_loss" in loss_dict else "" 
+        if isinstance(pairing_data, Pairs):
+            out_str += f" num_pos_pairs: {len(pairing_data.positive_pairs):3d}" + \
+                f" num_semipos_pairs: {len(pairing_data.semipositive_pairs):3d}" + \
+                f" num_neg_pairs: {len(pairing_data.negative_pairs):3d}"
+
+        print(out_str, end='\r')
         if batch_idx % 50 == 0:
             print()
 
