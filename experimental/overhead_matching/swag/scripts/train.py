@@ -291,7 +291,7 @@ def create_training_components(dataset, panorama_model, satellite_model, opt_con
             hard_negative_pool_size=opt_config.hard_negative_pool_size,
             dataset=dataset)
     dataloader = vigor_dataset.get_dataloader(
-        dataset, batch_sampler=miner, num_workers=24, persistent_workers=True)
+        dataset, batch_sampler=miner, num_workers=min(os.cpu_count() // 2, 24), persistent_workers=True)
     
     # Create optimizer
     opt = torch.optim.Adam(
@@ -302,16 +302,12 @@ def create_training_components(dataset, panorama_model, satellite_model, opt_con
     return miner, dataloader, opt
 
 
-def setup_models_for_training(panorama_model, satellite_model):
-    """Move models to GPU and set to training mode."""
-    panorama_model = panorama_model.cuda()
-    satellite_model = satellite_model.cuda()
-    panorama_model.train()
-    satellite_model.train()
-    return panorama_model, satellite_model
-
-
-def compute_forward_pass_and_loss(batch, panorama_model, satellite_model, opt_config):
+def compute_forward_pass_and_loss(batch,
+                                  panorama_model,
+                                  satellite_model,
+                                  weight_matrix_model,
+                                  pairing_data: PairingDataType,
+                                  train_config: TrainConfig):
     """Compute forward pass and loss for a batch."""
     pairs = create_pairs(
         batch.panorama_metadata,
@@ -341,9 +337,6 @@ def compute_forward_pass_and_loss(batch, panorama_model, satellite_model, opt_co
     
     return loss_dict, panorama_embeddings, sat_embeddings
 
-
-
-
 def create_heartbeat_system(heartbeat_file: str = "/tmp/training_heartbeat.txt"):
     """Create a heartbeat system that writes periodic status updates."""
     heartbeat_active = threading.Event()
@@ -358,12 +351,20 @@ def create_heartbeat_system(heartbeat_file: str = "/tmp/training_heartbeat.txt")
                     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     f.write(f"HEARTBEAT: {timestamp} - Training process alive\n")
                     f.flush()
-                print(f"HEARTBEAT: {timestamp} - Training process alive", flush=True)
+                # Only print heartbeat to stdout occasionally, not every time
+                # Remove the print to avoid spamming stdout
             except Exception as e:
-                print(f"Heartbeat error: {e}", flush=True)
+                # Only log errors to file, not stdout
+                try:
+                    with open(heartbeat_file, 'a') as f:
+                        f.write(f"Heartbeat error: {e}\n")
+                        f.flush()
+                except:
+                    pass
 
-            # Wait for 30 seconds or until stopped
-            heartbeat_active.wait(30)
+            # Use time.sleep instead of Event.wait for more reliable timing
+            import time
+            time.sleep(30)
 
     # Start heartbeat thread
     heartbeat_thread = threading.Thread(target=heartbeat_worker, daemon=True)
@@ -378,9 +379,16 @@ def create_heartbeat_system(heartbeat_file: str = "/tmp/training_heartbeat.txt")
                 timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 f.write(f"TRAINING_COMPLETE: {timestamp} - Training finished successfully\n")
                 f.flush()
+            # Print completion to stdout just once
             print(f"TRAINING_COMPLETE: {timestamp} - Training finished successfully", flush=True)
         except Exception as e:
-            print(f"Completion signal error: {e}", flush=True)
+            # Log errors to file only, don't spam stdout
+            try:
+                with open(heartbeat_file, 'a') as f:
+                    f.write(f"Completion signal error: {e}\n")
+                    f.flush()
+            except:
+                pass
 
     # Register cleanup
     atexit.register(stop_heartbeat)

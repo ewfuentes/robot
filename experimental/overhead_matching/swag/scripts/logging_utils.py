@@ -9,15 +9,37 @@ LOG_HIST_EVERY = 100
 
 def log_batch_metrics(writer, loss_dict, lr_scheduler, pairs, step_idx, epoch_idx, batch_idx, quiet):
     writer.add_scalar("train/learning_rate", lr_scheduler.get_last_lr()[0], global_step=step_idx)
-    writer.add_scalar("train/num_positive_pairs", len(pairs.positive_pairs), global_step=step_idx)
-    writer.add_scalar("train/num_semipos_pairs", len(pairs.semipositive_pairs), global_step=step_idx)
-    writer.add_scalar("train/num_neg_pairs", len(pairs.negative_pairs), global_step=step_idx)
-    writer.add_scalar("train/loss_pano_uniformity", loss_dict["pano_uniformity_loss"].item(), global_step=step_idx)
-    writer.add_scalar("train/loss_sat_uniformity", loss_dict["sat_uniformity_loss"].item(), global_step=step_idx)
-    writer.add_scalar("train/loss_pos", loss_dict["pos_loss"].item(), global_step=step_idx)
-    writer.add_scalar("train/loss_semipos", loss_dict["semipos_loss"].item(), global_step=step_idx)
-    writer.add_scalar("train/loss_neg", loss_dict["neg_loss"].item(), global_step=step_idx)
-    writer.add_scalar("train/loss", loss_dict["loss"].item(), global_step=step_idx)
+    if "pos_sim" in loss_dict and "neg_sim" in loss_dict:
+        pos_sim = loss_dict["pos_sim"]
+        neg_sim = loss_dict["neg_sim"]
+        semipos_sim = loss_dict["semipos_sim"] if "semipos_sim" in loss_dict else None  # may not be present 
+        if semipos_sim is not None and semipos_sim.numel() == 0: 
+            semipos_sim = None
+        writer.add_scalar("train/loss_pos_sim", pos_sim.mean().item(), global_step=step_idx)
+        writer.add_scalar("train/loss_neg_sim", neg_sim.mean().item(), global_step=step_idx)
+        if semipos_sim is not None:
+            writer.add_scalar("train/loss_semipos_sim", semipos_sim.mean().item(), global_step=step_idx)
+
+        if step_idx % LOG_HIST_EVERY == 0: 
+            min_val = min(-1, pos_sim.min().item(), neg_sim.min().item(), semipos_sim.min().item() if semipos_sim is not None else 0.0)
+            max_val = max(1, pos_sim.max().item(), neg_sim.max().item(), semipos_sim.max().item() if semipos_sim is not None else 0.0)
+            bins = np.linspace(min_val, max_val, 101)
+            fig, ax = plt.subplots()
+            ax.hist(neg_sim.detach().cpu().float().numpy(), bins=bins, label="Negative", density=False, alpha=0.5)
+            ax.hist(pos_sim.detach().cpu().float().numpy(), bins=bins, label="Positive", density=False, alpha=0.5)
+            if semipos_sim is not None:
+                ax.hist(semipos_sim.detach().cpu().float().numpy(), bins=bins, label="Semi", density=False, alpha=0.5)
+            ax.set_yscale("log")
+            ax.legend()
+            ax.set_xlabel("Similarity")
+            ax.set_ylabel("Count")
+            writer.add_figure("train/interclass_sim", fig, global_step=step_idx)
+
+    for k, v in loss_dict.items():
+        if torch.is_tensor(v) and (v.numel() > 1 or v.numel() == 0): 
+            continue  # skip larger tensors
+        writer.add_scalar(f"train/loss_{k}", v.item() if torch.is_tensor(v) else v, global_step=step_idx)
+
     if not quiet:
         print(f"{epoch_idx=:4d} {batch_idx=:4d} lr: {lr_scheduler.get_last_lr()[0]:.2e} " +
               f" num_pos_pairs: {len(pairs.positive_pairs):3d}" +
