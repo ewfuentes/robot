@@ -296,13 +296,13 @@ def load_tensor_caches(info: TensorCacheInfo):
     return out
 
 
-def get_cached_tensors(idx: int, caches: list[TensorCache]):
-    key = int(idx).to_bytes(8)
+def get_cached_tensors(metadata: dict, caches: list[TensorCache]):
+    key = metadata["path"].name.encode('utf-8')
     out = {}
     for (output_key, record_type, db) in caches:
         with db.begin() as txn:
             stored_value = txn.get(key)
-            assert stored_value is not None, f"Failed to get: {idx} from cache at: {db.path()}"
+            assert stored_value is not None, f"Failed to get: {key} from cache at: {db.path()}"
             deserialized = np.load(io.BytesIO(stored_value))
             out[output_key] = record_type(**{k: torch.tensor(v) for k, v in deserialized.items() if not k.startswith("debug")})
     return out
@@ -429,8 +429,8 @@ class VigorDataset(torch.utils.data.Dataset):
         sat_metadata["landmarks"] = sat_landmarks
         sat_metadata["original_shape"] = self._original_satellite_patch_size
 
-        cached_pano_tensors = get_cached_tensors(pano_idx, self._panorama_tensor_caches)
-        cached_sat_tensors = get_cached_tensors(sat_idx, self._satellite_tensor_caches)
+        cached_pano_tensors = get_cached_tensors(pano_metadata, self._panorama_tensor_caches)
+        cached_sat_tensors = get_cached_tensors(sat_metadata, self._satellite_tensor_caches)
 
         return VigorDatasetItem(
             panorama_metadata=pano_metadata,
@@ -516,7 +516,7 @@ class VigorDataset(torch.utils.data.Dataset):
                 sat_metadata["landmarks"] = landmarks
                 sat_metadata["original_shape"] = self.dataset._original_satellite_patch_size
 
-                cached_sat_tensors = get_cached_tensors(idx, self.dataset._satellite_tensor_caches)
+                cached_sat_tensors = get_cached_tensors(sat_metadata, self.dataset._satellite_tensor_caches)
 
                 return VigorDatasetItem(
                     panorama_metadata=None,
@@ -552,7 +552,7 @@ class VigorDataset(torch.utils.data.Dataset):
                 pano_metadata = series_to_dict_with_index(pano_metadata)
                 pano_metadata["landmarks"] = landmarks
 
-                cached_pano_tensors = get_cached_tensors(idx, self.dataset._panorama_tensor_caches)
+                cached_pano_tensors = get_cached_tensors(pano_metadata, self.dataset._panorama_tensor_caches)
 
                 return VigorDatasetItem(
                     panorama_metadata=pano_metadata,

@@ -141,7 +141,7 @@ def main(train_config_path: Path,
 
                     ostream = io.BytesIO()
                     np.savez(ostream, **to_write)
-                    key = model_input.metadata[batch_idx]["index"].to_bytes(8)
+                    key = model_input.metadata[batch_idx]["path"].name.encode('utf-8')
                     txn.put(key, ostream.getvalue())
 
 
