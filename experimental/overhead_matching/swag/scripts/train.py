@@ -192,7 +192,7 @@ def create_training_components(dataset,
         dataset=dataset)
     dataloader = vigor_dataset.get_dataloader(
         dataset, batch_sampler=miner, num_workers=min(os.cpu_count() // 2, 24), persistent_workers=True)
-
+    
     # Create optimizer
     opt = torch.optim.AdamW(
         list(panorama_model.parameters()) + list(satellite_model.parameters()) +
@@ -246,12 +246,20 @@ def create_heartbeat_system(heartbeat_file: str = "/tmp/training_heartbeat.txt")
                     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     f.write(f"HEARTBEAT: {timestamp} - Training process alive\n")
                     f.flush()
-                print(f"HEARTBEAT: {timestamp} - Training process alive", flush=True)
+                # Only print heartbeat to stdout occasionally, not every time
+                # Remove the print to avoid spamming stdout
             except Exception as e:
-                print(f"Heartbeat error: {e}", flush=True)
+                # Only log errors to file, not stdout
+                try:
+                    with open(heartbeat_file, 'a') as f:
+                        f.write(f"Heartbeat error: {e}\n")
+                        f.flush()
+                except:
+                    pass
 
-            # Wait for 30 seconds or until stopped
-            heartbeat_active.wait(30)
+            # Use time.sleep instead of Event.wait for more reliable timing
+            import time
+            time.sleep(30)
 
     # Start heartbeat thread
     heartbeat_thread = threading.Thread(target=heartbeat_worker, daemon=True)
@@ -266,9 +274,16 @@ def create_heartbeat_system(heartbeat_file: str = "/tmp/training_heartbeat.txt")
                 timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 f.write(f"TRAINING_COMPLETE: {timestamp} - Training finished successfully\n")
                 f.flush()
+            # Print completion to stdout just once
             print(f"TRAINING_COMPLETE: {timestamp} - Training finished successfully", flush=True)
         except Exception as e:
-            print(f"Completion signal error: {e}", flush=True)
+            # Log errors to file only, don't spam stdout
+            try:
+                with open(heartbeat_file, 'a') as f:
+                    f.write(f"Completion signal error: {e}\n")
+                    f.flush()
+            except:
+                pass
 
     # Register cleanup
     atexit.register(stop_heartbeat)
