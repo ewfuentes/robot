@@ -3,12 +3,41 @@ load("@pip//:requirements.bzl", "requirement")
 load("@rules_python//python:packaging.bzl", "py_wheel", "py_package")
 
 py_library(
-  name = "logging_utils",
-  srcs = ["logging_utils.py"],
-  visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
-  deps = [
+  name="losses",
+  srcs=["losses.py"],
+  visibility=["//common/python:__subpackages__"],
+  deps=[
+    ":distances",
     requirement("torch"),
     requirement("tensorboard"),
+    requirement("tqdm"),
+    requirement("IPython"),
+    requirement("msgspec"),
+    requirement("pyyaml"),
+    "//common/python:serialization",
+    "//common/torch:load_torch_deps",
+    "//common/torch:load_and_save_models",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/data:satellite_embedding_database",
+    "//experimental/overhead_matching/swag/model:patch_embedding",
+    "//experimental/overhead_matching/swag/model:swag_patch_embedding",
+  ]
+)
+
+py_library(
+  name="distances",
+  srcs=["distances.py"],
+  visibility=["//common/python:__subpackages__"],
+  deps=[
+    requirement("torch"),
+  ]
+)
+py_library(
+  name="logging_utils",
+  srcs=["logging_utils.py"],
+  visibility=["//common/python:__subpackages__"],
+  deps=[
+    requirement("torch"),
   ]
 )
 
@@ -23,6 +52,7 @@ py_library(
   ]
 )
 
+
 py_binary(
   name="train",
   srcs=["train.py"],
@@ -30,6 +60,8 @@ py_binary(
   deps=[
     ":logging_utils",
     ":lr_sweep",
+    ":losses",
+    ":distances",
     requirement("torch"),
     requirement("tensorboard"),
     requirement("tqdm"),

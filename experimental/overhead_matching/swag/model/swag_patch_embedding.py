@@ -35,7 +35,7 @@ from experimental.overhead_matching.swag.model.swag_config_types import (
     AggregationConfig,
     TransformerAggregatorConfig,
 
-    ExtractorConfig
+    ExtractorConfig,
 )
 
 
@@ -347,7 +347,7 @@ class TransformerAggregator(torch.nn.Module):
 
 
 class SwagPatchEmbedding(torch.nn.Module):
-    def __init__(self, config: SwagPatchEmbeddingConfig):
+    def __init__(self, num_embeddings: int, config: SwagPatchEmbeddingConfig):
         super().__init__()
         self._extractor_by_name = torch.nn.ModuleDict({
             k: create_extractor(c, config.auxiliary_info)
@@ -366,7 +366,7 @@ class SwagPatchEmbedding(torch.nn.Module):
                                    config.output_dim)
                 for k in config.extractor_config_by_name})
 
-        self._cls_token = torch.nn.Parameter(torch.randn((1, 1, config.output_dim)))            
+        self._cls_token = torch.nn.Parameter(torch.randn((1, num_embeddings, config.output_dim)))
 
         self._aggregator_model = create_aggregator_model(
                 config.output_dim, config.aggregation_config)
@@ -423,8 +423,8 @@ class SwagPatchEmbedding(torch.nn.Module):
                 image=batch_item.satellite,
                 metadata=batch_item.satellite_metadata,
                 cached_tensors=batch_item.cached_satellite_tensors)
-        
-    def _get_input_tokens(self, model_input):
+
+    def _get_input_tokens(self, model_input: ModelInput) -> tuple[torch.Tensor, torch.Tensor]:
         dev = self._cls_token.device
         extractor_outputs_by_name = {}
         for k in self._extractor_by_name:
@@ -455,13 +455,15 @@ class SwagPatchEmbedding(torch.nn.Module):
 
         return input_tokens, input_mask
 
-    def forward(self, model_input: ModelInput):
+    def forward(self, model_input: ModelInput) -> torch.Tensor:
 
         input_tokens, input_mask = self._get_input_tokens(model_input)
         output_tokens = self._aggregator_model(input_tokens, input_mask)
+        class_tokens = output_tokens[:, :self._cls_token.shape[1], :]  # B, num_class_tokens, D_emb
 
-        # output is batch x feature_dim
-        return F.normalize(output_tokens[:, 0, :])
+        # output is batch x num_class_tokens x feature_dim
+        model_output = F.normalize(class_tokens, dim=2)
+        return model_output
 
     def cache_info(self):
         return self._cache_info
