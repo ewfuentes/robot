@@ -20,6 +20,8 @@ import msgspec
 from pprint import pprint
 import ipdb
 from contextlib import nullcontext
+import threading
+import atexit
 from experimental.overhead_matching.swag.scripts.lr_sweep import LearningRateSweepConfig, run_lr_sweep
 
 
@@ -289,7 +291,7 @@ def create_training_components(dataset, panorama_model, satellite_model, opt_con
             hard_negative_pool_size=opt_config.hard_negative_pool_size,
             dataset=dataset)
     dataloader = vigor_dataset.get_dataloader(
-        dataset, batch_sampler=miner, num_workers=24, persistent_workers=True)
+        dataset, batch_sampler=miner, num_workers=min(os.cpu_count() // 2, 24), persistent_workers=True)
     
     # Create optimizer
     opt = torch.optim.Adam(
@@ -300,16 +302,12 @@ def create_training_components(dataset, panorama_model, satellite_model, opt_con
     return miner, dataloader, opt
 
 
-def setup_models_for_training(panorama_model, satellite_model):
-    """Move models to GPU and set to training mode."""
-    panorama_model = panorama_model.cuda()
-    satellite_model = satellite_model.cuda()
-    panorama_model.train()
-    satellite_model.train()
-    return panorama_model, satellite_model
-
-
-def compute_forward_pass_and_loss(batch, panorama_model, satellite_model, opt_config):
+def compute_forward_pass_and_loss(batch,
+                                  panorama_model,
+                                  satellite_model,
+                                  weight_matrix_model,
+                                  pairing_data: PairingDataType,
+                                  train_config: TrainConfig):
     """Compute forward pass and loss for a batch."""
     pairs = create_pairs(
         batch.panorama_metadata,
@@ -331,13 +329,83 @@ def compute_forward_pass_and_loss(batch, panorama_model, satellite_model, opt_co
         loss_dict = compute_loss(
                 pano_embeddings=panorama_embeddings,
                 sat_embeddings=sat_embeddings,
-                pairs=pairs,
-                loss_config=opt_config.loss_config)
+                pairing_data=pairing_data,
+                distance_type=train_config.distance_type,
+                weight_matrix=weight_matrix,
+                loss_configs=train_config.loss_configs)
+
     
-    return loss_dict, pairs, panorama_embeddings, sat_embeddings
+    return loss_dict, panorama_embeddings, sat_embeddings
+
+def create_heartbeat_system(heartbeat_file: str = "/tmp/training_heartbeat.txt"):
+    """Create a heartbeat system that writes periodic status updates."""
+    heartbeat_active = threading.Event()
+    heartbeat_active.set()
+
+    def heartbeat_worker():
+        """Background thread that writes heartbeat every 30 seconds."""
+        while heartbeat_active.is_set():
+            try:
+                with open(heartbeat_file, 'w') as f:
+                    import datetime
+                    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    f.write(f"HEARTBEAT: {timestamp} - Training process alive\n")
+                    f.flush()
+                # Only print heartbeat to stdout occasionally, not every time
+                # Remove the print to avoid spamming stdout
+            except Exception as e:
+                # Only log errors to file, not stdout
+                try:
+                    with open(heartbeat_file, 'a') as f:
+                        f.write(f"Heartbeat error: {e}\n")
+                        f.flush()
+                except:
+                    pass
+
+            # Use time.sleep instead of Event.wait for more reliable timing
+            import time
+            time.sleep(30)
+
+    # Start heartbeat thread
+    heartbeat_thread = threading.Thread(target=heartbeat_worker, daemon=True)
+    heartbeat_thread.start()
+
+    def stop_heartbeat():
+        """Stop the heartbeat system."""
+        heartbeat_active.clear()
+        try:
+            with open(heartbeat_file, 'w') as f:
+                import datetime
+                timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                f.write(f"TRAINING_COMPLETE: {timestamp} - Training finished successfully\n")
+                f.flush()
+            # Print completion to stdout just once
+            print(f"TRAINING_COMPLETE: {timestamp} - Training finished successfully", flush=True)
+        except Exception as e:
+            # Log errors to file only, don't spam stdout
+            try:
+                with open(heartbeat_file, 'a') as f:
+                    f.write(f"Completion signal error: {e}\n")
+                    f.flush()
+            except:
+                pass
+
+    # Register cleanup
+    atexit.register(stop_heartbeat)
+    return stop_heartbeat
 
 
-def train(config: TrainConfig, *, dataset, validation_datasets, panorama_model, satellite_model, quiet):
+def train(config: TrainConfig,
+          *,
+          dataset,
+          validation_datasets,
+          panorama_model,
+          satellite_model,
+          weight_matrix_model,
+          quiet):
+    # Start heartbeat system
+    stop_heartbeat = create_heartbeat_system()
+
     config.output_dir.mkdir(parents=True, exist_ok=True)
     # save config:
     config_json = msgspec.json.encode(config, enc_hook=enc_hook)
@@ -485,6 +553,16 @@ def train(config: TrainConfig, *, dataset, validation_datasets, panorama_model, 
 
             save_model(satellite_model, satellite_model_path,
                        (satellite_model.model_input_from_batch(batch).to("cuda"),))
+
+    # Signal training completion
+    print("🎉 TRAINING COMPLETED SUCCESSFULLY 🎉", flush=True)
+    stop_heartbeat()
+    print("Training process exiting normally.", flush=True)
+
+    # Signal training completion
+    print("🎉 TRAINING COMPLETED SUCCESSFULLY 🎉", flush=True)
+    stop_heartbeat()
+    print("Training process exiting normally.", flush=True)
 
 
 def main(
