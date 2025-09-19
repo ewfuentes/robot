@@ -249,6 +249,7 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
                 hidden_dim=64,
                 dropout_frac=0.1),
             patch_dims=(NUM_IMAGE_ROWS, NUM_IMAGE_COLS),
+            normalize_embeddings=True,
             output_dim=16,
             num_embeddings=NUM_EMBEDDINGS)
 
@@ -279,10 +280,9 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
         self.assertEqual(result.shape[2], config.output_dim)
 
         # Test that each embedding vector is properly normalized
-        if config.normalize_embeddings:
-            norms = torch.linalg.norm(result, dim=2)
-            expected_norms = torch.ones((BATCH_DIM, NUM_EMBEDDINGS))
-            self.assertTrue(torch.allclose(norms, expected_norms, atol=1e-6))
+        norms = torch.linalg.norm(result, dim=2)
+        expected_norms = torch.ones((BATCH_DIM, NUM_EMBEDDINGS))
+        self.assertTrue(torch.allclose(norms, expected_norms, atol=1e-6))
 
         # Test that the model's num_embeddings property matches what we expect
         self.assertEqual(model.num_embeddings, NUM_EMBEDDINGS)
