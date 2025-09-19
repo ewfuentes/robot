@@ -1,22 +1,11 @@
 import common.torch.load_torch_deps
-from common.torch.load_and_save_models import save_model
 import torch
 import torch.nn.functional as F
-from common.python.serialization import dataclass_to_dict, flatten_dict
-from experimental.overhead_matching.swag.scripts.distances import (
-    DistanceTypes, distance_from_type
-)
+from common.python.serialization import MSGSPEC_STRUCT_OPTS
 from experimental.overhead_matching.swag.scripts.pairing import PairingDataType, PositiveAnchorSets, Pairs, collapse_anchors_to_torch
-from typing import Union
+from typing import Union, Callable
 from dataclasses import dataclass
-from pprint import pprint
 import msgspec
-
-STRUCT_OPTS = {
-    "tag": True,
-    "tag_field": "kind",
-    "frozen": True
-}
 
 
 @dataclass
@@ -27,7 +16,7 @@ class LossInputs:
     pairing_data: PairingDataType
 
 
-class PairwiseContrastiveLoss(msgspec.Struct, **STRUCT_OPTS):
+class PairwiseContrastiveLossConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     positive_weight: float
     avg_positive_similarity: float
 
@@ -37,28 +26,30 @@ class PairwiseContrastiveLoss(msgspec.Struct, **STRUCT_OPTS):
     negative_weight: float
     avg_negative_similarity: float
 
+
 @dataclass
 class BatchUniformityLossConfig:
     batch_uniformity_weight: float
     batch_uniformity_hinge_location: float
 
-class InfoNCELoss(msgspec.Struct, **STRUCT_OPTS):
+
+class InfoNCELossConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     max_num_negative_pairs: int  # if 0, uses all negative pairs
     negative_scale: float = 1.0
     scale_negative_by_num_items: bool = False
     use_pano_as_anchor: bool = False
 
-class SphericalEmbeddingConstraintLoss(msgspec.Struct, **STRUCT_OPTS):
-    weight_scale: float 
+
+class SphericalEmbeddingConstraintLossConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    weight_scale: float
 
 
-LossConfig = Union[PairwiseContrastiveLoss, InfoNCELoss, SphericalEmbeddingConstraintLoss]
-
+LossConfig = Union[PairwiseContrastiveLossConfig, InfoNCELossConfig, SphericalEmbeddingConstraintLossConfig]
 
 
 def compute_pairwise_loss(
     loss_inputs: LossInputs,
-    pairwise_loss_config: PairwiseContrastiveLoss
+    pairwise_loss_config: PairwiseContrastiveLossConfig
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     assert isinstance(loss_inputs.pairing_data,
                       Pairs), "PairwiseContrastiveLoss requires Pairs pairing data"
@@ -115,23 +106,29 @@ def compute_pairwise_loss(
 
     return pos_loss + neg_loss + semipos_loss, aux_data
 
+
 def compute_batch_uniformity_loss(loss_inputs: LossInputs, batch_uniformity_loss_config: BatchUniformityLossConfig):
     # Compute a batch uniformity loss, different panoramas/satellites
     # should have different embeddings
-    assert loss_inputs.sat_embeddings_unnormalized.shape[1] == 1, f"Batch uniformity loss does not support multiple embeddings, got emb of shape {loss_inputs.sat_embeddings_unnormalized.shape}"
-    assert loss_inputs.pano_embeddings_unnormalized.shape[1] == 1, f"Batch uniformity loss does not support multiple embeddings, got emb of shape {loss_inputs.pano_embeddings_unnormalized.shape}"
+    assert loss_inputs.sat_embeddings_unnormalized.shape[
+        1] == 1, f"Batch uniformity loss does not support multiple embeddings, got emb of shape {loss_inputs.sat_embeddings_unnormalized.shape}"
+    assert loss_inputs.pano_embeddings_unnormalized.shape[
+        1] == 1, f"Batch uniformity loss does not support multiple embeddings, got emb of shape {loss_inputs.pano_embeddings_unnormalized.shape}"
     sat_embeddings_norm = F.normalize(loss_inputs.sat_embeddings_unnormalized, dim=-1).squeeze(1)
     pano_embeddings_norm = F.normalize(loss_inputs.pano_embeddings_unnormalized, dim=-1).squeeze(1)
     rolled_sat_embeddings = torch.roll(sat_embeddings_norm, 1, dims=0)
     rolled_pano_embeddings = torch.roll(pano_embeddings_norm, 1, dims=0)
 
     def mean_hinge_loss(similarities):
-        shifted_loss = torch.abs(similarities) - batch_uniformity_loss_config.batch_uniformity_hinge_location
+        shifted_loss = torch.abs(similarities) - \
+            batch_uniformity_loss_config.batch_uniformity_hinge_location
         relud_loss = torch.mean(torch.nn.functional.relu(shifted_loss))
         return batch_uniformity_loss_config.batch_uniformity_weight * relud_loss
 
-    sat_similarity = torch.einsum("ad,ad->a", loss_inputs.sat_embeddings_unnormalized, rolled_sat_embeddings)
-    pano_similarity = torch.einsum("ad,ad->a", loss_inputs.pano_embeddings_unnormalized, rolled_pano_embeddings)
+    sat_similarity = torch.einsum(
+        "ad,ad->a", loss_inputs.sat_embeddings_unnormalized, rolled_sat_embeddings)
+    pano_similarity = torch.einsum(
+        "ad,ad->a", loss_inputs.pano_embeddings_unnormalized, rolled_pano_embeddings)
 
     sat_uniformity_loss = mean_hinge_loss(sat_similarity)
     pano_uniformity_loss = mean_hinge_loss(pano_similarity)
@@ -140,9 +137,10 @@ def compute_batch_uniformity_loss(loss_inputs: LossInputs, batch_uniformity_loss
         'pano_uniformity_loss': pano_uniformity_loss,
     }
 
+
 def compute_info_nce_loss(
     loss_inputs: LossInputs,
-    info_nce_config: InfoNCELoss
+    info_nce_config: InfoNCELossConfig
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     assert isinstance(loss_inputs.pairing_data,
                       PositiveAnchorSets), "InfoNCELoss requires PositiveAnchorSets pairing data"
@@ -161,14 +159,15 @@ def compute_info_nce_loss(
 
     # -inf will come out to log(0 + ...) in logsumexp, so it is a noop assuming at least one term, which pos guarentees
     negative_sim_matrix = torch.clone(similarity_matrix)
-    negative_sim_matrix[anchor_indices, pos_semipos_indices] = -torch.inf 
+    negative_sim_matrix[anchor_indices, pos_semipos_indices] = -torch.inf
 
     negative_term = negative_sim_matrix[anchor_indices]  # num loss terms x N non anchor
     if info_nce_config.max_num_negative_pairs != 0:
         # num loss terms x max_num_negative_pairs
         negative_term = negative_term.topk(info_nce_config.max_num_negative_pairs, dim=1).values
 
-    neg_scale = info_nce_config.negative_scale / (torch.count_nonzero(torch.isfinite(negative_term), dim=1) if info_nce_config.scale_negative_by_num_items else torch.tensor([1]))
+    neg_scale = info_nce_config.negative_scale / (torch.count_nonzero(torch.isfinite(
+        negative_term), dim=1) if info_nce_config.scale_negative_by_num_items else torch.tensor([1]))
     log_neg_scale = torch.log(neg_scale).to(device).unsqueeze(1)
     loss = info_nce_config.negative_scale * torch.logsumexp(torch.cat([positive_term.unsqueeze(
         1), log_neg_scale + negative_term], dim=1), dim=-1) - positive_term
@@ -182,9 +181,10 @@ def compute_info_nce_loss(
 
     return loss.mean(), aux
 
+
 def compute_spherical_embedding_constraint_loss(
     loss_inputs: LossInputs,
-    sec_config: SphericalEmbeddingConstraintLoss
+    sec_config: SphericalEmbeddingConstraintLossConfig
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """https://arxiv.org/pdf/2011.02785"""
     sat_norms = torch.linalg.norm(loss_inputs.sat_embeddings_unnormalized, dim=2).flatten()
@@ -196,19 +196,34 @@ def compute_spherical_embedding_constraint_loss(
     return final_loss, {"sec_aux_loss": final_loss, "num_embeddings": all_norms.numel()}
 
 
+LossFunctionType = Callable[[LossInputs], tuple[torch.Tensor, dict[str, torch.Tensor | int]]]
+
+
+def create_losses_from_loss_config_list(
+    loss_configs: list[LossConfig]
+) -> list[LossFunctionType]:
+    loss_functions = []
+    for loss_config in loss_configs:
+        if isinstance(loss_config, PairwiseContrastiveLossConfig):
+            loss_functions.append(lambda x: compute_pairwise_loss(x, loss_config))
+        elif isinstance(loss_config, InfoNCELossConfig):
+            loss_functions.append(lambda x: compute_info_nce_loss(x, loss_config))
+        elif isinstance(loss_config, SphericalEmbeddingConstraintLossConfig):
+            loss_functions.append(
+                lambda x: compute_spherical_embedding_constraint_loss(x, loss_config))
+        elif isinstance(loss_config, BatchUniformityLossConfig):
+            loss_functions.append(lambda x: compute_batch_uniformity_loss(x, loss_config))
+        else:
+            raise ValueError(f"Unknown loss config type: {type(loss_config)}")
+    return loss_functions
+
+
 def compute_loss(sat_embeddings: torch.Tensor,  # N_sat x n_emb_sat x D_emb
                  pano_embeddings: torch.Tensor,  # N_pano x n_emb_pano x D_emb
-                 distance_type: DistanceTypes,
+                 similarity: torch.Tensor,  # N_pano x N_sat
                  pairing_data: PairingDataType,
-                 loss_configs: list[LossConfig],
-                 weight_matrix: torch.Tensor | None = None,  # N_pano x N_sat x N_emb_pano x N_emb_sat x D_emb x D_emb
-                 ) -> dict[str, torch.Tensor]:
-    similarity = distance_from_type(
-        sat_embeddings=sat_embeddings,
-        pano_embeddings=pano_embeddings,
-        weight_matrix=weight_matrix,
-        distance_type=distance_type,
-    )  # N_pano x N_sat
+                 loss_functions: list[LossFunctionType],
+                 ) -> dict[str, torch.Tensor | int | float]:
     loss = 0.0
 
     loss_input = LossInputs(
@@ -218,18 +233,8 @@ def compute_loss(sat_embeddings: torch.Tensor,  # N_sat x n_emb_sat x D_emb
         pairing_data=pairing_data
     )
     aux_info = {}
-    for loss_config in loss_configs:
-        if isinstance(loss_config, PairwiseContrastiveLoss):
-            l, new_aux = compute_pairwise_loss(loss_input, loss_config)
-        elif isinstance(loss_config, InfoNCELoss):
-            l, new_aux = compute_info_nce_loss(loss_input, loss_config)
-        elif isinstance(loss_config, SphericalEmbeddingConstraintLoss):
-            l, new_aux = compute_spherical_embedding_constraint_loss(loss_input, loss_config)
-        elif isinstance(loss_config, BatchUniformityLossConfig):
-            l, new_aux = compute_batch_uniformity_loss(loss_input, loss_config)
-        else:
-            raise ValueError(f"Unknown loss config type: {type(loss_config)}")
-
+    for loss_fn in loss_functions:
+        l, new_aux = loss_fn(loss_input)
         loss += l
         overlapping_keys = set(aux_info.keys()).intersection(set(new_aux.keys()))
         if len(overlapping_keys):

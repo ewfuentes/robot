@@ -16,6 +16,7 @@ from typing import NamedTuple
 from common.math.haversine import find_d_on_unit_circle
 from common.gps import web_mercator
 from enum import StrEnum, auto
+from experimental.overhead_matching.swag.scripts.distances import distance_from_model
 
 from typing import Any
 
@@ -735,7 +736,10 @@ class HardNegativeMiner:
     def __init__(self,
                  batch_size: int,
                  embedding_dimension: int,
+                 num_sat_embeddings: int,
+                 num_pano_embeddings: int,
                  random_sample_type: RandomSampleType,
+                 distance_model: torch.nn.Module,  # make sure this doesn't become a copy
                  num_panoramas: int | None = None,
                  num_satellite_patches: int | None = None,
                  panorama_info_from_pano_idx: dict[int, PanoramaIndexInfo] | None = None,
@@ -766,10 +770,12 @@ class HardNegativeMiner:
         self._generator = generator if generator is not None else torch.Generator()
 
         self._panorama_embeddings = torch.full(
-                (num_panoramas, embedding_dimension), float('nan'), device=device)
+                (num_panoramas, num_pano_embeddings, embedding_dimension), float('nan'), device=device)
 
         self._satellite_embeddings = torch.full(
-                (num_satellite_patches, embedding_dimension), float('nan'), device=device)
+                (num_satellite_patches, num_sat_embeddings, embedding_dimension), float('nan'), device=device)
+        
+        self._distance_model = distance_model  # make sure this doesn't become a copy
         self._panorama_info_from_pano_idx = panorama_info_from_pano_idx
 
         self._sample_mode = self.SampleMode.RANDOM
@@ -787,8 +793,12 @@ class HardNegativeMiner:
         permuted_panoramas = torch.randperm(self._panorama_embeddings.shape[0], generator=self._generator).tolist()
 
         if self._sample_mode == HardNegativeMiner.SampleMode.HARD_NEGATIVE:
-            similarities = torch.einsum(
-                    "nd,md->nm", self._panorama_embeddings, self._satellite_embeddings)
+            with torch.no_grad():
+                similarities = distance_from_model(
+                    sat_embeddings_unnormalized=self._satellite_embeddings,
+                    pano_embeddings_unnormalized=self._panorama_embeddings,
+                    distance_model=self._distance_model
+                )
             # A row of this matrix contains the satellite patch similarities for a given panorama
             # sorted from least similar to most similar. When mining hard negatives, we want to
             # present the true positives and semipositives (since there are so few of them) and
@@ -859,9 +869,6 @@ class HardNegativeMiner:
         assert ((satellite_embeddings is None and satellite_patch_idxs is None) or
                 (len(satellite_patch_idxs) == satellite_embeddings.shape[0]))
         assert panorama_embeddings is not None or satellite_embeddings is not None
-
-        if panorama_embeddings is not None and panorama_embeddings.ndim == 3:
-            raise NotImplementedError("Hard negative mining does not support multiple output vectors yet")
 
         device = self._panorama_embeddings.device
         if panorama_embeddings is not None:

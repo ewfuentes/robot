@@ -2,6 +2,12 @@ from dataclasses import is_dataclass, fields, dataclass
 from pathlib import Path
 import msgspec
 
+MSGSPEC_STRUCT_OPTS = {
+    "tag": True,
+    "tag_field": "kind",
+    "frozen": True
+}
+
 def dataclass_to_dict(input_object: dataclass)->dict:
     """Convert a dataclass instance (and any nested dataclasses) to a dictionary.
     
