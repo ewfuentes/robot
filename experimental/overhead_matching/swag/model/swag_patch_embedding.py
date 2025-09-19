@@ -55,6 +55,7 @@ class SwagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
 
     patch_dims: tuple[int, int]
     output_dim: int
+    num_embeddings: int
 
     extractor_config_by_name: dict[str, ExtractorConfig] = {}
     use_cached_extractors: list[str] = []
@@ -349,7 +350,7 @@ class TransformerAggregator(torch.nn.Module):
 
 
 class SwagPatchEmbedding(torch.nn.Module):
-    def __init__(self, num_embeddings: int, config: SwagPatchEmbeddingConfig):
+    def __init__(self, config: SwagPatchEmbeddingConfig):
         super().__init__()
         self._extractor_by_name = torch.nn.ModuleDict({
             k: create_extractor(c, config.auxiliary_info)
@@ -368,7 +369,7 @@ class SwagPatchEmbedding(torch.nn.Module):
                                    config.output_dim)
                 for k in config.extractor_config_by_name})
 
-        self._cls_token = torch.nn.Parameter(torch.randn((1, num_embeddings, config.output_dim)))
+        self._cls_token = torch.nn.Parameter(torch.randn((1, config.num_embeddings, config.output_dim)))
 
         self._aggregator_model = create_aggregator_model(
                 config.output_dim, config.aggregation_config)
@@ -480,3 +481,8 @@ class SwagPatchEmbedding(torch.nn.Module):
     @property
     def output_dim(self):
         return self._output_dim
+    
+    @property
+    def num_embeddings(self):
+        return self._cls_token.shape[1]
+

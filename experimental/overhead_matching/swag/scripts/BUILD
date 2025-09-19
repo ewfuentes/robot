@@ -42,8 +42,10 @@ py_library(
 py_library(
   name="distances",
   srcs=["distances.py"],
-  visibility=["//common/python:__subpackages__"],
+  visibility=["//common/python:__subpackages__", "//experimental/overhead_matching/swag:__subpackages__"],
   deps=[
+    "//common/python:serialization",
+    requirement("msgspec"),
     requirement("torch"),
   ]
 )
