@@ -37,6 +37,7 @@ py_test(
     requirement("geopandas"),
     "//common/torch:load_torch_deps",
     ":vigor_dataset",
+    "//experimental/overhead_matching/swag/scripts:distances",
   ]
 )
 

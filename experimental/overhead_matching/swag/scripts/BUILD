@@ -13,6 +13,7 @@ py_test(
   srcs=["pairing_test.py"],
   deps=[
     ":pairing",
+    "//common/torch:load_torch_deps",
   ]
 )
 
