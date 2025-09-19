@@ -25,18 +25,9 @@ py_library(
     ":pairing",
     ":distances",
     requirement("torch"),
-    requirement("tensorboard"),
-    requirement("tqdm"),
-    requirement("IPython"),
     requirement("msgspec"),
-    requirement("pyyaml"),
     "//common/python:serialization",
     "//common/torch:load_torch_deps",
-    "//common/torch:load_and_save_models",
-    "//experimental/overhead_matching/swag/data:vigor_dataset",
-    "//experimental/overhead_matching/swag/data:satellite_embedding_database",
-    "//experimental/overhead_matching/swag/model:patch_embedding",
-    "//experimental/overhead_matching/swag/model:swag_patch_embedding",
   ]
 )
 
