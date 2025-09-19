@@ -35,7 +35,7 @@ from experimental.overhead_matching.swag.model.swag_config_types import (
     AggregationConfig,
     TransformerAggregatorConfig,
 
-    ExtractorConfig
+    ExtractorConfig,
 )
 
 
@@ -55,11 +55,14 @@ class SwagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
 
     patch_dims: tuple[int, int]
     output_dim: int
+    num_embeddings: int
 
     extractor_config_by_name: dict[str, ExtractorConfig] = {}
     use_cached_extractors: list[str] = []
 
     auxiliary_info: dict[str, Any] = {}
+
+    normalize_embeddings: bool = True
 
     # These are here for backwards compatibility
     feature_map_extractor_config: FeatureMapExtractorConfig | None = None
@@ -352,7 +355,7 @@ class SwagPatchEmbedding(torch.nn.Module):
         self._extractor_by_name = torch.nn.ModuleDict({
             k: create_extractor(c, config.auxiliary_info)
             for k, c in config.extractor_config_by_name.items()})
-
+        self._normalize_embeddings = config.normalize_embeddings
         self._token_marker_by_name = torch.nn.ParameterDict({
                 k: torch.nn.Parameter(torch.randn(1, 1, config.output_dim))
                 for k in config.extractor_config_by_name})
@@ -366,7 +369,7 @@ class SwagPatchEmbedding(torch.nn.Module):
                                    config.output_dim)
                 for k in config.extractor_config_by_name})
 
-        self._cls_token = torch.nn.Parameter(torch.randn((1, 1, config.output_dim)))            
+        self._cls_token = torch.nn.Parameter(torch.randn((1, config.num_embeddings, config.output_dim)))
 
         self._aggregator_model = create_aggregator_model(
                 config.output_dim, config.aggregation_config)
@@ -423,8 +426,8 @@ class SwagPatchEmbedding(torch.nn.Module):
                 image=batch_item.satellite,
                 metadata=batch_item.satellite_metadata,
                 cached_tensors=batch_item.cached_satellite_tensors)
-        
-    def _get_input_tokens(self, model_input):
+
+    def _get_input_tokens(self, model_input: ModelInput) -> tuple[torch.Tensor, torch.Tensor]:
         dev = self._cls_token.device
         extractor_outputs_by_name = {}
         for k in self._extractor_by_name:
@@ -446,22 +449,27 @@ class SwagPatchEmbedding(torch.nn.Module):
         batch_size = model_input.image.shape[0]
         cls_token = self._cls_token.expand(batch_size, -1, -1)
         input_tokens = torch.cat([cls_token] + list(input_tokens_by_name.values()), dim=1)
-        input_tokens = F.normalize(input_tokens, dim=-1)
+        if self._normalize_embeddings:
+            input_tokens = F.normalize(input_tokens, dim=-1)
 
         cls_mask = torch.zeros(
-                (batch_size, 1), device=dev, dtype=torch.bool)
+                cls_token.shape[:2], device=dev, dtype=torch.bool)
         input_mask = torch.cat([cls_mask] +
                                [v.mask for v in extractor_outputs_by_name.values()], dim=1)
 
         return input_tokens, input_mask
 
-    def forward(self, model_input: ModelInput):
+    def forward(self, model_input: ModelInput) -> torch.Tensor:
 
         input_tokens, input_mask = self._get_input_tokens(model_input)
         output_tokens = self._aggregator_model(input_tokens, input_mask)
+        model_output = output_tokens[:, :self._cls_token.shape[1], :]  # B, num_class_tokens, D_emb
 
-        # output is batch x feature_dim
-        return F.normalize(output_tokens[:, 0, :])
+        # output is batch x num_class_tokens x feature_dim
+        if self._normalize_embeddings:
+            model_output = F.normalize(model_output, dim=2)
+
+        return model_output
 
     def cache_info(self):
         return self._cache_info
@@ -473,3 +481,8 @@ class SwagPatchEmbedding(torch.nn.Module):
     @property
     def output_dim(self):
         return self._output_dim
+    
+    @property
+    def num_embeddings(self):
+        return self._cls_token.shape[1]
+

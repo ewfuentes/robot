@@ -102,6 +102,7 @@ py_library(
   srcs = ["swag_config_types.py"],
   deps = [
     requirement("msgspec"),
+    "//common/python:serialization",
   ]
 )
 
