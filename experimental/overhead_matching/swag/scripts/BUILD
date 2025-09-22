@@ -155,6 +155,7 @@ py_binary(
   deps = [
     requirement("msgspec"),
     ":train",
+    "//common/python:serialization",
   ]
 )
 
@@ -195,6 +196,7 @@ py_binary(
     requirement("msgspec"),
     requirement("torch"),
     requirement("tqdm"),
+    "//common/python:serialization",
     "//common/torch:load_torch_deps",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
     ":train",

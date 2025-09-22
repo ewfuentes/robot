@@ -7,9 +7,9 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 import itertools
 from pathlib import Path
-from common.python.serialization import flatten_dict
+from common.python.serialization import flatten_dict, msgspec_enc_hook, msgspec_dec_hook
 from experimental.overhead_matching.swag.scripts.losses import LossConfig, compute_loss, LossFunctionType, create_losses_from_loss_config_list
-from experimental.overhead_matching.swag.scripts.distances import DistanceConfig, create_distance_from_config, distance_from_model
+from experimental.overhead_matching.swag.scripts.distances import DistanceConfig, create_distance_from_config
 from experimental.overhead_matching.swag.scripts.pairing import PairingType, create_pairs, create_anchors, Pairs, PairingDataType
 from experimental.overhead_matching.swag.data import (
     vigor_dataset, satellite_embedding_database as sed)
@@ -82,19 +82,6 @@ class TrainConfig:
     pairing_type: PairingType = PairingType.PAIRS
 
 
-def enc_hook(obj):
-    if isinstance(obj, Path):
-        return str(obj)
-    else:
-        raise ValueError(f"Unhandled Value: {obj}")
-
-
-def dec_hook(type, obj):
-    if type is Path:
-        return Path(obj)
-    raise ValueError(f"Unhandled type: {type=} {obj=}")
-
-
 @torch.no_grad
 def compute_validation_metrics(
         sat_model,
@@ -110,10 +97,9 @@ def compute_validation_metrics(
         pano_embeddings = sed.build_panorama_db(
             pano_model,
             vigor_dataset.get_dataloader(dataset.get_pano_view(), batch_size=64, num_workers=8))
-        similarity = distance_from_model(
+        similarity = distance_model(
             pano_embeddings_unnormalized=pano_embeddings,
-            sat_embeddings_unnormalized=sat_embeddings,
-            distance_model=distance_model,
+            sat_embeddings_unnormalized=sat_embeddings
         )
 
         num_panos = similarity.shape[0]
@@ -229,10 +215,9 @@ def compute_forward_pass_and_loss(batch,
         sat_embeddings = satellite_model(
             satellite_model.model_input_from_batch(batch).to("cuda"))
 
-        similarity = distance_from_model(
+        similarity = distance_model(
             sat_embeddings_unnormalized=sat_embeddings,
-            pano_embeddings_unnormalized=panorama_embeddings,
-            distance_model=distance_model
+            pano_embeddings_unnormalized=panorama_embeddings
         )
         loss_dict = compute_loss(
             pano_embeddings=panorama_embeddings,
@@ -256,19 +241,12 @@ def train(config: TrainConfig,
 
     output_dir.mkdir(parents=True, exist_ok=True)
     # save config:
-    config_json = msgspec.json.encode(config, enc_hook=enc_hook)
+    config_json = msgspec.json.encode(config, enc_hook=msgspec_enc_hook)
     config_dict = json.loads(config_json)
-    with open(output_dir / "config.json", 'wb') as f:
-        f.write(config_json)
 
     with open(output_dir / "train_config.yaml", 'wb') as f:
-        f.write(msgspec.yaml.encode(config, enc_hook=enc_hook))
+        f.write(msgspec.yaml.encode(config, enc_hook=msgspec_enc_hook))
 
-    with open(output_dir / "satellite_model.yaml", 'wb') as f:
-        f.write(msgspec.yaml.encode(config.sat_model_config, enc_hook=enc_hook))
-
-    with open(output_dir / "panorama_model.yaml", 'wb') as f:
-        f.write(msgspec.yaml.encode(config.pano_model_config, enc_hook=enc_hook))
 
     writer = SummaryWriter(
         log_dir=output_dir 
@@ -452,7 +430,7 @@ def main(
         save_name: str | None = None,
 ):
     with open(train_config_path, 'r') as file_in:
-        train_config = msgspec.yaml.decode(file_in.read(), type=TrainConfig, dec_hook=dec_hook)
+        train_config = msgspec.yaml.decode(file_in.read(), type=TrainConfig, dec_hook=msgspec_dec_hook)
     pprint(train_config)
 
     if save_name is None:

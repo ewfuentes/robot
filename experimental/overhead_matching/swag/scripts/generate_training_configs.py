@@ -1,18 +1,13 @@
 import itertools
 import msgspec
 from pathlib import Path
-
+from common.python.serialization import msgspec_enc_hook
 import experimental.overhead_matching.swag.scripts.train as T
 import experimental.overhead_matching.swag.model.patch_embedding as pe
 from experimental.overhead_matching.swag.data.vigor_dataset import HardNegativeMiner
 import experimental.overhead_matching.swag.model.swag_patch_embedding as spe
 
 
-def enc_hook(obj):
-    if isinstance(obj, Path):
-        return str(obj)
-    else:
-        raise ValueError(f"Unhandled Value: {obj}")
 
 
 def generate_config(model_config):
@@ -114,5 +109,5 @@ if __name__ == "__main__":
                 "cos_mean_hinge": cmh})
 
         file_name = Path(f"/tmp/{cfg.output_dir}.yaml")
-        yaml_config = msgspec.yaml.encode(cfg, enc_hook=enc_hook)
+        yaml_config = msgspec.yaml.encode(cfg, enc_hook=msgspec_enc_hook)
         file_name.write_bytes(yaml_config)

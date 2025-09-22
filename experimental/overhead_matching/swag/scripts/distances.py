@@ -1,13 +1,12 @@
 import common.torch.load_torch_deps
 import torch.nn.functional as F
 import torch
-from dataclasses import dataclass
 import msgspec
 from typing import Union
 from common.python.serialization import MSGSPEC_STRUCT_OPTS
 
 
-class CosineDistanceModelConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+class CosineDistanceConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     ...
 
 
@@ -17,22 +16,33 @@ def normalize_embeddings(emb_1, emb_2) -> tuple[torch.Tensor, torch.Tensor]:
     return norm_emb_1, norm_emb_2
 
 
-class CosineDistanceModel(torch.nn.Module):
-    def __init__(self, config: CosineDistanceModelConfig):
+def compute_maxsim(similarity_matrix: torch.Tensor) -> torch.Tensor:
+    """
+    Similarity matrix: n_pano x n_sat x n_emb_pano x n_emb_sat
+    Use sum of maxsim score from https://dl.acm.org/doi/pdf/10.1145/3397271.3401075
+    Treat panorama as the query, and sat patches as the document
+    """
+    assert similarity_matrix.ndim == 4
+    return similarity_matrix.max(dim=3).values.sum(dim=2)
+
+
+class CosineDistance(torch.nn.Module):
+    def __init__(self, config: CosineDistanceConfig):
         super().__init__()
 
     def forward(self,
                 sat_embeddings_unnormalized: torch.Tensor,  # n_sat x n_emb_sat x D_emb
                 pano_embeddings_unnormalized: torch.Tensor  # n_pano x n_emb_pano x D_emb
-                ) -> torch.Tensor:  # n_pano x n_sat x n_emb_pano x n_emb_sat
+                ) -> torch.Tensor:  # n_pano x n_sat
 
         # n_pano x n_sat x n_emb_pano x n_emb_sat
         pano_embeddings_norm, sat_embeddings_norm = normalize_embeddings(
             pano_embeddings_unnormalized, sat_embeddings_unnormalized)
-        return torch.einsum("aid,bjd->abij", pano_embeddings_norm, sat_embeddings_norm)
+        similarity = torch.einsum("aid,bjd->abij", pano_embeddings_norm, sat_embeddings_norm)
+        return compute_maxsim(similarity)
 
 
-class MahalanobisDistanceModelConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+class MahalanobisDistanceConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     # Options include "pano", "sat" or empty, in which case a single unconditional weight matrix is learned
     input_types: list[str]
     hidden_dim: int
@@ -40,7 +50,7 @@ class MahalanobisDistanceModelConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     use_identity: bool  # if true, just use an identity matrix (Euclidean distance)
 
 
-class MahalanobisDistanceModel(torch.nn.Module):
+class MahalanobisDistance(torch.nn.Module):
     """
     Produce a weight matrix to be used with mahalanobis distance:
     distance = (x-x').T M(x-x')
@@ -49,15 +59,10 @@ class MahalanobisDistanceModel(torch.nn.Module):
 
     If inputs (pano/sat) are provided, creates a matrix per pano/sat embedding. 
     If both are provided, creates a matrix per pano/sat embedding pair
-
-    Output: 
-        num_pano_embeds x num_sat_embeds x num_pano_class_tokens x num_sat_class_tokens x d_emb x d_emb
-        If an embedding is not part of the input (e.g., num_sat_embeds if pano is input)
-        the dimension is set to 1
     """
 
     def __init__(self,
-                 config: MahalanobisDistanceModelConfig):
+                 config: MahalanobisDistanceConfig):
         super().__init__()
         self.config = config
         if self.config.use_identity:
@@ -123,11 +128,11 @@ class MahalanobisDistanceModel(torch.nn.Module):
     def forward(self,
                 sat_embeddings_unnormalized: torch.Tensor,  # n_sat x n_emb_sat x D_emb
                 pano_embeddings_unnormalized: torch.Tensor  # n_pano x n_emb_pano x D_emb
-                ) -> torch.Tensor:  # n_pano x n_sat x n_emb_pano x n_emb_sat
+                ) -> torch.Tensor:  # n_pano x n_sat
         """
-        If weight_matrix is none, assume identity matrix
-
-        Returns: n_pano x n_sat x n_emb x n_emb tensor of SQUARED Mahalanobis distances
+        If weight_matrix is none, assume identity matrix. Uses squared mahalanobis distance. 
+        If multiple embeddings are used, uses maxsim to reduce.
+        Returns: n_pano x n_sat similarity tensor
         """
         sat_embeddings_norm, pano_embeddings_norm = normalize_embeddings(
             sat_embeddings_unnormalized, pano_embeddings_unnormalized)
@@ -154,38 +159,19 @@ class MahalanobisDistanceModel(torch.nn.Module):
             distances_squared = torch.einsum('psemd,psemd->psem', emb_diff, emb_diff)
 
         # Return the square of actual Mahalanobis distance (found this improved performance)
-        return distances_squared
+        return compute_maxsim(distances_squared)
 
 
-DistanceConfig = Union[CosineDistanceModelConfig, MahalanobisDistanceModelConfig]
+DistanceConfig = Union[CosineDistanceConfig, MahalanobisDistanceConfig]
 
 
 def create_distance_from_config(
     distance_config: DistanceConfig
 ) -> torch.nn.Module:
-    if isinstance(distance_config, CosineDistanceModelConfig):
-        distance_module = CosineDistanceModel(distance_config)
-    elif isinstance(distance_config, MahalanobisDistanceModelConfig):
-        distance_module = MahalanobisDistanceModel(distance_config)
+    if isinstance(distance_config, CosineDistanceConfig):
+        distance_module = CosineDistance(distance_config)
+    elif isinstance(distance_config, MahalanobisDistanceConfig):
+        distance_module = MahalanobisDistance(distance_config)
     else:
         raise RuntimeError(f"Unknown distance config {distance_config}")
     return distance_module
-
-
-def distance_from_model(
-    sat_embeddings_unnormalized: torch.Tensor,  # n_sat x n_emb_sat x D_emb
-    pano_embeddings_unnormalized: torch.Tensor,  # n_pano x n_emb_pano x D_emb
-    distance_model: torch.nn.Module,  # distance module
-) -> torch.Tensor:  # n_pano x n_sat
-
-    similarity = distance_model(sat_embeddings_unnormalized=sat_embeddings_unnormalized,
-                                pano_embeddings_unnormalized=pano_embeddings_unnormalized)
-
-    max_num_embeddings = max(
-        sat_embeddings_unnormalized.shape[1], pano_embeddings_unnormalized.shape[1])
-    if max_num_embeddings == 1:
-        return similarity.squeeze(-1).squeeze(-1)
-    else:
-        # use sum of maxsim score from https://dl.acm.org/doi/pdf/10.1145/3397271.3401075
-        # treat panorama as the query, and sat patches as the document
-        return similarity.max(dim=3).values.sum(dim=2)

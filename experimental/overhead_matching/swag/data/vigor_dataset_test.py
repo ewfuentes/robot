@@ -14,7 +14,7 @@ import itertools
 from PIL import Image, ImageDraw
 
 from experimental.overhead_matching.swag.data import vigor_dataset
-from experimental.overhead_matching.swag.scripts.distances import CosineDistanceModel, CosineDistanceModelConfig, distance_from_model
+from experimental.overhead_matching.swag.scripts.distances import CosineDistance, CosineDistanceConfig
 
 class VigorDatasetTest(unittest.TestCase):
 
@@ -404,8 +404,8 @@ class HardNegativeMinerTest(unittest.TestCase):
         generator = torch.Generator().manual_seed(42)
 
         # Create a cosine distance model for the test
-        distance_config = CosineDistanceModelConfig()
-        distance_model = CosineDistanceModel(distance_config)
+        distance_config = CosineDistanceConfig()
+        distance_model = CosineDistance(distance_config)
 
         miner = vigor_dataset.HardNegativeMiner(
             batch_size=BATCH_SIZE,
@@ -460,8 +460,8 @@ class HardNegativeMinerTest(unittest.TestCase):
         generator = torch.Generator().manual_seed(42)
 
         # Create a cosine distance model for the test
-        distance_config = CosineDistanceModelConfig()
-        distance_model = CosineDistanceModel(distance_config)
+        distance_config = CosineDistanceConfig()
+        distance_model = CosineDistance(distance_config)
 
         miner = vigor_dataset.HardNegativeMiner(
             batch_size=BATCH_SIZE,
@@ -518,8 +518,8 @@ class HardNegativeMinerTest(unittest.TestCase):
         generator = torch.Generator().manual_seed(42)
 
         # Create a cosine distance model for the test
-        distance_config = CosineDistanceModelConfig()
-        distance_model = CosineDistanceModel(distance_config)
+        distance_config = CosineDistanceConfig()
+        distance_model = CosineDistance(distance_config)
 
         miner = vigor_dataset.HardNegativeMiner(
             batch_size=BATCH_SIZE,
@@ -591,8 +591,8 @@ class HardNegativeMinerTest(unittest.TestCase):
         generator = torch.Generator().manual_seed(42)
 
         # Create a cosine distance model for the test
-        distance_config = CosineDistanceModelConfig()
-        distance_model = CosineDistanceModel(distance_config)
+        distance_config = CosineDistanceConfig()
+        distance_model = CosineDistance(distance_config)
 
         miner = vigor_dataset.HardNegativeMiner(
             batch_size=BATCH_SIZE,
@@ -614,10 +614,10 @@ class HardNegativeMinerTest(unittest.TestCase):
             generator=generator)
 
         # First, let's verify the similarity rankings to understand what should be selected
-        similarities = distance_from_model(
+        similarities = distance_model(
             sat_embeddings_unnormalized=satellite_embeddings,
-            pano_embeddings_unnormalized=panorama_embeddings,
-            distance_model=distance_model)
+            pano_embeddings_unnormalized=panorama_embeddings
+        )
 
         # Should return a 1x3 tensor (1 pano, 3 sats)
         self.assertEqual(similarities.shape, (1, 3))

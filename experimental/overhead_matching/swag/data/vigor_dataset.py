@@ -16,7 +16,6 @@ from typing import NamedTuple
 from common.math.haversine import find_d_on_unit_circle
 from common.gps import web_mercator
 from enum import StrEnum, auto
-from experimental.overhead_matching.swag.scripts.distances import distance_from_model
 
 from typing import Any
 
@@ -794,10 +793,9 @@ class HardNegativeMiner:
 
         if self._sample_mode == HardNegativeMiner.SampleMode.HARD_NEGATIVE:
             with torch.no_grad():
-                similarities = distance_from_model(
+                similarities = self._distance_model(
                     sat_embeddings_unnormalized=self._satellite_embeddings,
-                    pano_embeddings_unnormalized=self._panorama_embeddings,
-                    distance_model=self._distance_model
+                    pano_embeddings_unnormalized=self._panorama_embeddings
                 )
             # A row of this matrix contains the satellite patch similarities for a given panorama
             # sorted from least similar to most similar. When mining hard negatives, we want to

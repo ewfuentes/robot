@@ -7,7 +7,7 @@ import torch
 import tqdm
 import lmdb
 import numpy as np
-
+from common.python.serialization import msgspec_enc_hook, msgspec_dec_hook
 import experimental.overhead_matching.swag.data.vigor_dataset as vd
 from experimental.overhead_matching.swag.scripts import train
 import experimental.overhead_matching.swag.model.swag_patch_embedding as spe
@@ -23,21 +23,8 @@ class HashStruct(msgspec.Struct, frozen=True):
     patch_dims: tuple[int, int]
 
 
-def enc_hook(obj):
-    if isinstance(obj, Path):
-        return str(obj)
-    else:
-        raise ValueError(f"Unhandled Value: {obj}")
-
-
-def dec_hook(type, obj):
-    if type is Path:
-        return Path(obj)
-    raise ValueError(f"Unhandled type: {type=} {obj=}")
-
-
 def compute_config_hash(obj):
-    yaml_str = msgspec.yaml.encode(obj, enc_hook=enc_hook, order='deterministic')
+    yaml_str = msgspec.yaml.encode(obj, enc_hook=msgspec_enc_hook, order='deterministic')
     return yaml_str, hashlib.sha256(yaml_str)
 
 
@@ -51,7 +38,7 @@ def main(train_config_path: Path,
     # Load the training config
     with open(train_config_path, 'r') as file_in:
         train_config = msgspec.yaml.decode(
-            file_in.read(), type=train.TrainConfig, dec_hook=dec_hook)
+            file_in.read(), type=train.TrainConfig, dec_hook=msgspec_dec_hook)
 
     # Get the desired model config
     parts = field_spec.split('.')
