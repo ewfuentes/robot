@@ -509,25 +509,54 @@ fi
             # 3. Sync monitor log
             if os.path.exists(self.monitor_log_file):
                 self.log(f"Uploading monitor log to s3://{self.s3_bucket}/{self.s3_key_prefix}/logs/monitor.log")
-                
+
                 monitor_upload_command = [
                     "aws", "s3", "cp",
                     self.monitor_log_file,
                     f"s3://{self.s3_bucket}/{self.s3_key_prefix}/logs/monitor.log"
                 ]
-                
+
                 result = subprocess.run(
                     monitor_upload_command,
                     capture_output=True,
                     text=True,
                     timeout=300  # 5 minute timeout
                 )
-                
+
                 if result.returncode == 0:
                     self.log("✓ Successfully uploaded monitor log to S3")
                 else:
                     self.log(f"✗ Monitor log upload failed: {result.stderr}")
                     success = False
+
+            # 4. Sync debug logs
+            debug_files = [
+                ("/tmp/training_debug.log", "debug.log"),
+                ("/tmp/training_heartbeat.txt", "heartbeat.txt")
+            ]
+
+            for local_path, s3_filename in debug_files:
+                if os.path.exists(local_path):
+                    self.log(f"Uploading {local_path} to s3://{self.s3_bucket}/{self.s3_key_prefix}/logs/{s3_filename}")
+
+                    debug_upload_command = [
+                        "aws", "s3", "cp",
+                        local_path,
+                        f"s3://{self.s3_bucket}/{self.s3_key_prefix}/logs/{s3_filename}"
+                    ]
+
+                    result = subprocess.run(
+                        debug_upload_command,
+                        capture_output=True,
+                        text=True,
+                        timeout=300  # 5 minute timeout
+                    )
+
+                    if result.returncode == 0:
+                        self.log(f"✓ Successfully uploaded {s3_filename} to S3")
+                    else:
+                        self.log(f"✗ {s3_filename} upload failed: {result.stderr}")
+                        success = False
             
             if success:
                 self.log(f"✅ All files synced to s3://{self.s3_bucket}/{self.s3_key_prefix}/")

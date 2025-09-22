@@ -317,20 +317,26 @@ class JobManager:
             True if training started successfully, False otherwise
         """
         try:
-            logger.log("Starting training...", "INFO", terminal=True)
-            
-            # Copy training config to remote instance  
+            logger.log("Starting training with debug monitoring...", "INFO", terminal=True)
+
+            # Copy training config to remote instance
             remote_config_path = f"/tmp/train_config_{job_id}.yaml"
             logger.log(f"Copying training config to {remote_config_path}")
             if not remote_executor.copy_file(job_config.config_path, remote_config_path):
                 logger.log("Failed to copy training config", "ERROR", terminal=True)
                 return False
-            
-            # Prepare training command
-            train_command = (
-                f"cd /home/ubuntu/robot && bazel run //experimental/overhead_matching/swag/scripts:train -- "
+
+            # Prepare training command with debug monitoring using bazel
+            base_train_args = (
                 f"--dataset_base /tmp/ --output_base /tmp/output_{job_id} "
                 f"--train_config {remote_config_path} --no_ipdb"
+            )
+
+            # Use bazel to run the debug train launcher from the repo
+            train_command = (
+                f"cd /home/ubuntu/robot && bazel run "
+                f"//experimental/overhead_matching/swag/scripts:debug_train_launcher -- "
+                f"{base_train_args}"
             )
             
             # Prepare S3 configuration  
