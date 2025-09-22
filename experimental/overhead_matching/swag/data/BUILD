@@ -21,6 +21,7 @@ py_library(
     "//common/torch:load_torch_deps",
     "//common/math:haversine",
     "//common/gps:web_mercator",
+    "//experimental/overhead_matching/swag/scripts:distances",
   ]
 )
 
@@ -36,6 +37,7 @@ py_test(
     requirement("geopandas"),
     "//common/torch:load_torch_deps",
     ":vigor_dataset",
+    "//experimental/overhead_matching/swag/scripts:distances",
   ]
 )
 

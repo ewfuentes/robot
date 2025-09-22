@@ -1,6 +1,27 @@
 from dataclasses import is_dataclass, fields, dataclass
 from pathlib import Path
+from types import MappingProxyType
 import msgspec
+
+# Make this immutable
+MSGSPEC_STRUCT_OPTS = MappingProxyType({
+    "tag": True,
+    "tag_field": "kind",
+    "frozen": True
+})
+
+def msgspec_enc_hook(obj):
+    if isinstance(obj, Path):
+        return str(obj)
+    else:
+        raise ValueError(f"Unhandled Value: {obj}")
+
+
+def msgspec_dec_hook(type, obj):
+    if type is Path:
+        return Path(obj)
+    raise ValueError(f"Unhandled type: {type=} {obj=}")
+
 
 def dataclass_to_dict(input_object: dataclass)->dict:
     """Convert a dataclass instance (and any nested dataclasses) to a dictionary.
