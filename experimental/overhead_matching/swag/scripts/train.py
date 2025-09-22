@@ -423,7 +423,7 @@ def train(config: TrainConfig,
 
             if sum(param.numel() for param in distance_model.parameters()) > 0:
                 save_model(distance_model, distance_model_path,
-                           (satellite_model(sat_model_input), ))
+                           (satellite_model(sat_model_input), panorama_model(pano_model_input) ))
 
 
 def main(
