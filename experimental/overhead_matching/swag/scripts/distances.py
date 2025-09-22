@@ -162,7 +162,171 @@ class MahalanobisDistance(torch.nn.Module):
         return compute_maxsim(distances_squared)
 
 
-DistanceConfig = Union[CosineDistanceConfig, MahalanobisDistanceConfig]
+class LearnedDistanceFunctionConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    architecture: str  # "mlp", "attention", or "transformer_decoder"
+    embedding_dim: int
+    num_pano_embed: int
+    num_sat_embed: int
+    hidden_dim: int  # hidden embedding for transformer/attention, hidden layer dim for MLP
+    num_heads: int = 8  # for attention and transformer_decoder
+    num_layers: int = 1  # for transformer_decoder
+    max_batch_size: int = 64  # maximum number of pano-sat pairs to process in a single batch
+
+
+class LearnedDistanceFunction(torch.nn.Module):
+    """
+    Learned distance function with three architecture options:
+    - mlp: Simple MLP on concatenated embeddings
+    - attention: Multi-head attention between pano and sat embeddings
+    - transformer_decoder: Transformer decoder with cross-attention
+    """
+
+    def __init__(self,
+                 config: LearnedDistanceFunctionConfig):
+        super().__init__()
+        self.config = config
+
+        if config.architecture == "mlp":
+            num_input_dim = self.config.embedding_dim * (self.config.num_pano_embed + self.config.num_sat_embed)
+            self.model = torch.nn.Sequential(
+                torch.nn.Linear(num_input_dim, self.config.hidden_dim),
+                torch.nn.ReLU(),
+                torch.nn.Linear(self.config.hidden_dim, 1)
+            )
+
+        elif config.architecture == "attention":
+            self.multihead_attn = torch.nn.MultiheadAttention(
+                embed_dim=self.config.embedding_dim,
+                num_heads=self.config.num_heads,
+                batch_first=True
+            )
+            self.output_proj = torch.nn.Linear(self.config.embedding_dim, 1)
+
+        elif config.architecture == "transformer_decoder":
+            # CLS token for aggregating information
+            self.cls_token = torch.nn.Parameter(torch.randn(1, 1, self.config.embedding_dim))
+
+            decoder_layer = torch.nn.TransformerDecoderLayer(
+                d_model=self.config.embedding_dim,
+                nhead=self.config.num_heads,
+                dim_feedforward=self.config.hidden_dim,
+                batch_first=True
+            )
+            self.transformer_decoder = torch.nn.TransformerDecoder(
+                decoder_layer,
+                num_layers=self.config.num_layers
+            )
+            self.output_proj = torch.nn.Linear(self.config.embedding_dim, 1)
+
+        else:
+            raise ValueError(f"Unknown architecture: {config.architecture}")
+
+    def _process_attention_batch(self, pano_batch, sat_batch):
+        """Process a batch of pano-sat pairs using attention."""
+        batch_size = pano_batch.shape[0]
+        similarities = []
+
+        for i in range(batch_size):
+            pano_emb = pano_batch[i:i+1]  # 1 x n_emb_pano x d_emb
+            sat_emb = sat_batch[i:i+1]    # 1 x n_emb_sat x d_emb
+
+            # Use pano as query, sat as key/value
+            attn_output, _ = self.multihead_attn(pano_emb, sat_emb, sat_emb)
+            # Pool attention output and project to similarity score
+            pooled = attn_output.mean(dim=1)  # 1 x d_emb
+            sim = self.output_proj(pooled)    # 1 x 1
+            similarities.append(sim)
+
+        return torch.cat(similarities, dim=0)
+
+    def _process_transformer_batch(self, pano_batch, sat_batch):
+        """Process a batch of pano-sat pairs using transformer decoder."""
+        batch_size = pano_batch.shape[0]
+        similarities = []
+
+        for i in range(batch_size):
+            pano_emb = pano_batch[i:i+1]  # 1 x n_emb_pano x d_emb
+            sat_emb = sat_batch[i:i+1]    # 1 x n_emb_sat x d_emb
+
+            # Use CLS token as target, sat+pano as memory
+            cls_token = self.cls_token.expand(1, -1, -1)  # 1 x 1 x d_emb
+            memory = torch.cat([pano_emb, sat_emb], dim=1)  # 1 x (n_emb_pano + n_emb_sat) x d_emb
+
+            # Pass through transformer decoder
+            output = self.transformer_decoder(cls_token, memory)  # 1 x 1 x d_emb
+            sim = self.output_proj(output.squeeze(1))  # 1 x 1
+            similarities.append(sim)
+
+        return torch.cat(similarities, dim=0)
+
+    def forward(self,
+                sat_embeddings_unnormalized: torch.Tensor,  # n_sat x n_emb_sat x D_emb
+                pano_embeddings_unnormalized: torch.Tensor  # n_pano x n_emb_pano x D_emb
+                ) -> torch.Tensor:  # n_pano x n_sat
+        """
+        Returns: n_pano x n_sat of similarity scores
+        """
+        n_pano, n_emb_pano, d_emb = pano_embeddings_unnormalized.shape
+        n_sat, n_emb_sat, _ = sat_embeddings_unnormalized.shape
+
+        if self.config.architecture == "mlp":
+            # MLP can handle the full batch efficiently
+            pano_expanded = pano_embeddings_unnormalized.unsqueeze(1).expand(n_pano, n_sat, n_emb_pano, d_emb)
+            sat_expanded = sat_embeddings_unnormalized.unsqueeze(0).expand(n_pano, n_sat, n_emb_sat, d_emb)
+
+            # Flatten embeddings and concatenate
+            pano_flat = pano_expanded.reshape(n_pano, n_sat, -1)
+            sat_flat = sat_expanded.reshape(n_pano, n_sat, -1)
+            combined = torch.cat([pano_flat, sat_flat], dim=-1)
+
+            # Pass through MLP
+            similarity = self.model(combined)  # n_pano x n_sat x 1
+            return similarity.squeeze(-1)  # n_pano x n_sat
+
+        elif self.config.architecture in ["attention", "transformer_decoder"]:
+            # Generate all pano-sat pairs
+            pano_sat_pairs = []
+            pair_indices = []
+
+            for p_idx in range(n_pano):
+                for s_idx in range(n_sat):
+                    pano_emb = pano_embeddings_unnormalized[p_idx]  # n_emb_pano x d_emb
+                    sat_emb = sat_embeddings_unnormalized[s_idx]    # n_emb_sat x d_emb
+                    pano_sat_pairs.append((pano_emb, sat_emb))
+                    pair_indices.append((p_idx, s_idx))
+
+            # Process pairs in batches
+            all_similarities = []
+            batch_size = self.config.max_batch_size
+
+            for i in range(0, len(pano_sat_pairs), batch_size):
+                batch_pairs = pano_sat_pairs[i:i+batch_size]
+
+                # Stack pairs for batch processing
+                pano_batch = torch.stack([pair[0] for pair in batch_pairs])  # batch_size x n_emb_pano x d_emb
+                sat_batch = torch.stack([pair[1] for pair in batch_pairs])   # batch_size x n_emb_sat x d_emb
+
+                if self.config.architecture == "attention":
+                    batch_similarities = self._process_attention_batch(pano_batch, sat_batch)
+                else:  # transformer_decoder
+                    batch_similarities = self._process_transformer_batch(pano_batch, sat_batch)
+
+                all_similarities.append(batch_similarities)
+
+            # Concatenate all batch results
+            similarities = torch.cat(all_similarities, dim=0)  # (n_pano * n_sat) x 1
+
+            # Reshape to n_pano x n_sat
+            similarities = similarities.view(n_pano, n_sat)
+            return similarities
+
+        else:
+            raise ValueError(f"Unknown architecture: {self.config.architecture}")
+
+
+
+
+DistanceConfig = Union[CosineDistanceConfig, MahalanobisDistanceConfig, LearnedDistanceFunctionConfig]
 
 
 def create_distance_from_config(
@@ -172,6 +336,8 @@ def create_distance_from_config(
         distance_module = CosineDistance(distance_config)
     elif isinstance(distance_config, MahalanobisDistanceConfig):
         distance_module = MahalanobisDistance(distance_config)
+    elif isinstance(distance_config, LearnedDistanceFunctionConfig):
+        distance_module = LearnedDistanceFunction(distance_config)
     else:
         raise RuntimeError(f"Unknown distance config {distance_config}")
     return distance_module

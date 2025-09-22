@@ -17,6 +17,18 @@ py_test(
   ]
 )
 
+py_test(
+  name="distances_test",
+  srcs=["distances_test.py"],
+  deps=[
+    ":distances",
+    "//common/torch:load_torch_deps",
+    requirement("torch"),
+    requirement("msgspec"),
+    "//common/python:serialization",
+  ]
+)
+
 py_library(
   name="losses",
   srcs=["losses.py"],
