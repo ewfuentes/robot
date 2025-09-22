@@ -281,7 +281,7 @@ class LearnedDistanceFunction(torch.nn.Module):
 
             # Pass through MLP
             similarity = self.model(combined)  # n_pano x n_sat x 1
-            return similarity.unsqueeze(-1)  # n_pano x n_sat x 1 x 1
+            return similarity.squeeze(-1)  # n_pano x n_sat
 
         elif self.config.architecture in ["attention", "transformer_decoder"]:
             # Generate all pano-sat pairs
