@@ -17,6 +17,7 @@ class Options:
 to_retreive = {
         'all': Options({
             "amenity": True,
+            "building": True,
             "tourism": True,
             "shop": True,
             "craft": True,
@@ -33,7 +34,7 @@ to_retreive = {
             "power": True,
             "public_transport": True,
             "railway": True,
-            })
+            }, only_nodes=False)
 #     "bus_stop": Options({"highway": "bus_stop"}),
 #     "t_stop": Options({"railway": "station"}),
 #     "restaurants": Options({"amenity": ["restaurant", "cafe", "bar", "fast_food", "pub"]}),

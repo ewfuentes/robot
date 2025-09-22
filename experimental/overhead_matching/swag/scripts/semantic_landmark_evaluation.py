@@ -21,10 +21,17 @@ def _():
     from common.ollama import pyollama
     import json
     import tqdm
+    import pandas as pd
+    import geopandas as gpd
+    from pathlib import Path
+    import math
     return (
+        Path,
         SemanticLandmarkExtractor,
         SemanticLandmarkExtractorConfig,
+        gpd,
         json,
+        math,
         mo,
         np,
         plt,
@@ -38,6 +45,86 @@ def _():
 def _():
     from experimental.overhead_matching.swag.model import swag_model_input_output as smio
     return (smio,)
+
+
+@app.cell
+def _(Path, gpd):
+    df = gpd.read_file(Path('/tmp/chicago_landmarks.geojson'))
+    return (df,)
+
+
+@app.cell
+def _(df, math):
+    def deg2num(lat_deg, lon_deg, zoom):
+        """Convert lat/lon to tile numbers at given zoom level"""
+        lat_rad = math.radians(lat_deg)
+        n = 2.0 ** zoom
+        xtile = int((lon_deg + 180.0) / 360.0 * n)
+        ytile = int((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * n)
+        return (xtile, ytile)
+
+    def deg2pixel(lat_deg, lon_deg, zoom):
+        """Convert lat/lon to global pixel coordinates at given zoom level"""
+        lat_rad = math.radians(lat_deg)
+        n = 2.0 ** zoom
+        x = int((lon_deg + 180.0) / 360.0 * n * 256)
+        y = int((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * n * 256)
+        return (x, y)
+
+    def convert_geometry_to_pixels(geometry, zoom=20):
+        """Convert geometry coordinates to pixel coordinates"""
+        from shapely.ops import transform
+    
+        def coord_transform(lon, lat, z=None):
+            x, y = deg2pixel(lat, lon, zoom)  # Note: deg2pixel expects (lat, lon)
+            return (x, y)
+    
+        return transform(coord_transform, geometry)
+
+    # Convert your OSM data to pixel coordinates
+    zoom_level = 20
+    gdf_pixels = df.copy()
+    gdf_pixels['geometry'] = gdf_pixels['geometry'].apply(
+        lambda geom: convert_geometry_to_pixels(geom, zoom_level)
+    )
+    return
+
+
+@app.cell
+def _(df, mo):
+    mo.mpl.interactive(df.plot())
+    return
+
+
+@app.cell
+def _(batch):
+    batch.satellite_metadata[0]
+    return
+
+
+@app.cell
+def _(df):
+    df.geometry.crs
+    return
+
+
+@app.cell
+def _(df):
+    df.geometry
+    return
+
+
+@app.cell
+def _(df, np):
+    mask = np.logical_and(
+        df.element == "way",
+        df["addr:city"] == "Chicago")
+
+    mask = np.logical_and(mask,
+                         df["addr:street:name"] == "Adams")
+
+    df[mask]
+    return
 
 
 @app.cell
@@ -58,7 +145,6 @@ def _(vd):
                              vd.VigorDatasetConfig(
                                  satellite_tensor_cache_info=None,
                                  panorama_tensor_cache_info=None,
-                                 landmark_version="v2"
                              ))
     return (dataset,)
 
@@ -73,6 +159,12 @@ def _(dataset, vd):
 def _(dataloader):
     batch = next(iter(dataloader))
     return (batch,)
+
+
+@app.cell
+def _(batch):
+    batch
+    return
 
 
 @app.cell
@@ -149,10 +241,10 @@ def _(dataset):
 
 
 @app.cell
-def _(dataset):
+def _(dataset, df):
     unique_landmarks = set() 
     check_date_cols = [x for x in dataset._landmark_metadata.columns if x.startswith('check_date')]
-    for i, df in dataset._landmark_metadata.iterrows():
+    for i, _df in dataset._landmark_metadata.iterrows():
         fields = df.drop([
             "web_mercator_y", "web_mercator_x", "panorama_idxs", "satellite_idxs",
             "landmark_type", 'element', 'id', 'geometry', 'opening_hours', 'website',
@@ -185,40 +277,6 @@ def _(json, pyollama, tqdm, unique_landmarks):
             if _i > 200:
                 break
 
-    return (descriptions,)
-
-
-@app.cell
-def _(descriptions, unique_landmarks):
-    for _i, (_lm, _desc) in enumerate(zip(unique_landmarks, descriptions)):
-        print('*'*100)
-        print(dict(_lm))
-        print(_desc)
-        if _i > 200:
-            break
-    return
-
-
-@app.cell
-def _(descriptions):
-    sum([x is None for x in descriptions])
-    return
-
-
-@app.cell
-def _(descriptions):
-    descriptions[1023]
-    return
-
-
-@app.cell
-def _(descriptions):
-    descriptions[:10]
-    return
-
-
-@app.cell
-def _():
     return
 
 
