@@ -1,12 +1,14 @@
 from dataclasses import is_dataclass, fields, dataclass
 from pathlib import Path
+from types import MappingProxyType
 import msgspec
 
-MSGSPEC_STRUCT_OPTS = {
+# Make this immutable
+MSGSPEC_STRUCT_OPTS = MappingProxyType({
     "tag": True,
     "tag_field": "kind",
     "frozen": True
-}
+})
 
 def msgspec_enc_hook(obj):
     if isinstance(obj, Path):

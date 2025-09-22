@@ -8,7 +8,7 @@ from torch.utils.tensorboard import SummaryWriter
 import itertools
 from pathlib import Path
 from common.python.serialization import flatten_dict, msgspec_enc_hook, msgspec_dec_hook
-from experimental.overhead_matching.swag.scripts.losses import LossConfig, compute_loss, LossFunctionType, create_losses_from_loss_config_list
+from experimental.overhead_matching.swag.scripts.losses import LossConfig, compute_loss, LossFunctionType, create_losses_from_loss_config_list, InfoNCELossConfig
 from experimental.overhead_matching.swag.scripts.distances import DistanceConfig, create_distance_from_config
 from experimental.overhead_matching.swag.scripts.pairing import PairingType, create_pairs, create_anchors, Pairs, PairingDataType
 from experimental.overhead_matching.swag.data import (
@@ -79,7 +79,8 @@ class TrainConfig:
     dataset_config: DatasetConfig
     validation_dataset_configs: list[DatasetConfig]
     loss_configs: list[LossConfig]
-    pairing_type: PairingType = PairingType.PAIRS
+    output_dir: Path
+    tensorboard_output: Path | None
 
 
 @torch.no_grad
@@ -247,9 +248,8 @@ def train(config: TrainConfig,
     with open(output_dir / "train_config.yaml", 'wb') as f:
         f.write(msgspec.yaml.encode(config, enc_hook=msgspec_enc_hook))
 
-
     writer = SummaryWriter(
-        log_dir=output_dir 
+        log_dir=config.tensorboard_output
     )
     # write hyperparameters
     writer.add_hparams(
@@ -292,10 +292,16 @@ def train(config: TrainConfig,
 
     torch.set_printoptions(linewidth=200)
 
+    pairing_type = PairingType.PAIRS
+
+    for loss_config in config.loss_configs:
+        if isinstance(loss_config, InfoNCELossConfig):
+            pairing_type = PairingType.ANCHOR_SETS
+
     total_batches = 0
     for epoch_idx in tqdm.tqdm(range(opt_config.num_epochs),  desc="Epoch"):
         for batch_idx, batch in enumerate(dataloader):
-            match config.pairing_type:
+            match pairing_type:
                 case PairingType.PAIRS:
                     pairing_data = create_pairs(
                         batch.panorama_metadata,
@@ -314,7 +320,7 @@ def train(config: TrainConfig,
                         use_pano_as_anchor=False
                     )
                 case _:
-                    raise RuntimeError(f"Pairing type not recongnized, {config.pairing_type}")
+                    raise RuntimeError(f"Pairing type not recongnized, {pairing_type}")
             opt.zero_grad()
 
             # Use extracted function for forward pass and loss
@@ -427,14 +433,10 @@ def main(
         quiet: bool,
         no_ipdb: bool,
         lr_sweep: bool = False,
-        save_name: str | None = None,
 ):
     with open(train_config_path, 'r') as file_in:
         train_config = msgspec.yaml.decode(file_in.read(), type=TrainConfig, dec_hook=msgspec_dec_hook)
     pprint(train_config)
-
-    if save_name is None:
-        save_name = train_config_path.name
 
     if isinstance(train_config.sat_model_config, patch_embedding.WagPatchEmbeddingConfig):
         satellite_model = patch_embedding.WagPatchEmbedding(train_config.sat_model_config)
@@ -490,7 +492,12 @@ def main(
                 factor=validation_dataset_config.factor,
                 should_load_images=validation_dataset_config.should_load_images))
 
-    output_dir = output_base_path / save_name
+    output_dir = output_base_path / train_config.output_dir
+    tensorboard_output = train_config.tensorboard_output
+    tensorboard_output = tensorboard_output if tensorboard_output is not None else output_dir
+
+    train_config.output_dir = output_dir
+    train_config.tensorboard_output = tensorboard_output
 
     # Run learning rate sweep if requested
     if lr_sweep:
@@ -523,7 +530,6 @@ def main(
             validation_datasets=validation_datasets,
             panorama_model=panorama_model,
             satellite_model=satellite_model,
-            output_dir=output_dir,
             quiet=quiet)
 
 
@@ -533,7 +539,6 @@ if __name__ == "__main__":
     parser.add_argument("--dataset_base", help="path to dataset", required=True)
     parser.add_argument("--output_base", help="path to output", required=True)
     parser.add_argument("--train_config", help="path to train_config", required=True)
-    parser.add_argument("--save_name", default=None, help="Custom save name for training job. If not provided defaults to config file name.")
     parser.add_argument("--no_ipdb", action="store_true",
                         help="Don't run IPDB around the training job")
     parser.add_argument("--quiet", action="store_true")
