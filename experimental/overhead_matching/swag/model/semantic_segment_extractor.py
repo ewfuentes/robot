@@ -83,3 +83,7 @@ class SemanticSegmentExtractor(torch.nn.Module):
     @property
     def output_dim(self):
         return self._clip_model.visual.output_dim
+
+    @property
+    def num_position_outputs(self):
+        return 1

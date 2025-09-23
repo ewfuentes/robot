@@ -74,10 +74,33 @@ def compute_landmark_pano_positions(pano_metadata, pano_shape):
 
 def compute_landmark_sat_positions(sat_metadata):
     out = []
+    sat_y = sat_metadata["web_mercator_y"]
+    sat_x = sat_metadata["web_mercator_x"]
     for landmark in sat_metadata["landmarks"]:
-        out.append((landmark["web_mercator_y"] - sat_metadata["web_mercator_y"],
-                    landmark["web_mercator_x"] - sat_metadata["web_mercator_x"]))
-    return torch.tensor(out).reshape(-1, 2)
+        geometry = landmark["geometry_px"]
+        if geometry.geom_type == "Point":
+            out.append([
+                [geometry.y - sat_y, geometry.x - sat_x],
+                [geometry.y - sat_y, geometry.x - sat_x]])
+        elif landmark['geometry_px'].geom_type == "LineString":
+            # Approximate a linestring by it's first and last points
+            x, y = geometry.xy
+            out.append([
+                [y[0] - sat_y, x[0] - sat_x],
+                [y[1] - sat_y, x[1] - sat_x]])
+        elif landmark['geometry_px'].geom_type in ["Polygon", "MultiPolygon"]:
+            # Approximate a polygon by its axis aligned bounding box
+            x_min, y_min, x_max, y_max = geometry.bounds
+            out.append([
+                # Top left
+                [y_min - sat_y, x_min - sat_x],
+                # Bottom Right
+                [y_max - sat_y, x_max - sat_x]])
+        else:
+            import IPython
+            IPython.embed()
+            raise ValueError(f"Unrecognized geometry type: {landmark["geometry_px"].geom_type}")
+    return torch.tensor(out)
 
 
 class SemanticLandmarkExtractor(torch.nn.Module):
@@ -86,6 +109,13 @@ class SemanticLandmarkExtractor(torch.nn.Module):
         self._sentence_embedding_model = SentenceTransformer(config.sentence_model_str)
         self._ollama = config.llm_str
         self._description_cache = {}
+
+        self._feature_markers = {
+            "Point": torch.nn.Parameter(torch.randn(1, 1, self.output_dim)),
+            "LineString": torch.nn.Parameter(torch.randn(1, 1, self.output_dim)),
+            "Polygon": torch.nn.Parameter(torch.randn(1, 1, self.output_dim)),
+            "MultiPolygon": torch.nn.Parameter(torch.randn(1, 1, self.output_dim)),
+        }
 
     def forward(self, model_input: ModelInput) -> ExtractorOutput:
         max_num_landmarks = max([len(x["landmarks"]) for x in model_input.metadata])
@@ -119,7 +149,7 @@ class SemanticLandmarkExtractor(torch.nn.Module):
 
         mask = torch.ones((batch_size, max_num_landmarks), dtype=torch.bool)
         features = torch.zeros((batch_size, max_num_landmarks, self.output_dim))
-        positions = torch.zeros((batch_size, max_num_landmarks, 2))
+        positions = torch.zeros((batch_size, max_num_landmarks, 2, 2))
         max_description_length = max([len(x.encode('utf-8')) for x in sentences]) if len(sentences) > 0 else 0
         sentence_debug = torch.zeros(
             (batch_size, max_num_landmarks, max_description_length), dtype=torch.uint8)
@@ -158,3 +188,7 @@ class SemanticLandmarkExtractor(torch.nn.Module):
     @property
     def output_dim(self):
         return self._sentence_embedding_model.get_sentence_embedding_dimension()
+
+    @property
+    def num_position_outputs(self):
+        return 2

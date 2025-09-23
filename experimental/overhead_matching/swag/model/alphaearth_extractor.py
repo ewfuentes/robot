@@ -49,3 +49,7 @@ class AlphaEarthExtractor(torch.nn.Module):
     @property
     def output_dim(self):
         return 64
+
+    @property
+    def num_position_outputs(self):
+        return 1

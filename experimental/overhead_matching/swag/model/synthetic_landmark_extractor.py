@@ -122,3 +122,7 @@ class SyntheticLandmarkExtractor(torch.nn.Module):
     @property
     def output_dim(self):
         return self._embedding_dim
+
+    @property
+    def num_position_outputs(self):
+        return 1
