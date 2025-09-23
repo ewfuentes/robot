@@ -49,3 +49,7 @@ class AbsolutePositionExtractor(torch.nn.Module):
     @property
     def output_dim(self):
         return self.embedding_dim
+
+    @property
+    def num_position_outputs(self):
+        return 1

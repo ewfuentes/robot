@@ -48,21 +48,7 @@ def _():
 
 
 @app.cell
-def _(Path, gpd):
-    df = gpd.read_file(Path('/tmp/chicago_landmarks.geojson'))
-    return (df,)
-
-
-@app.cell
-def _(df, math):
-    def deg2num(lat_deg, lon_deg, zoom):
-        """Convert lat/lon to tile numbers at given zoom level"""
-        lat_rad = math.radians(lat_deg)
-        n = 2.0 ** zoom
-        xtile = int((lon_deg + 180.0) / 360.0 * n)
-        ytile = int((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * n)
-        return (xtile, ytile)
-
+def _(Path, gpd, math):
     def deg2pixel(lat_deg, lon_deg, zoom):
         """Convert lat/lon to global pixel coordinates at given zoom level"""
         lat_rad = math.radians(lat_deg)
@@ -74,20 +60,33 @@ def _(df, math):
     def convert_geometry_to_pixels(geometry, zoom=20):
         """Convert geometry coordinates to pixel coordinates"""
         from shapely.ops import transform
-    
+
         def coord_transform(lon, lat, z=None):
             x, y = deg2pixel(lat, lon, zoom)  # Note: deg2pixel expects (lat, lon)
             return (x, y)
-    
-        return transform(coord_transform, geometry)
 
-    # Convert your OSM data to pixel coordinates
+        return transform(coord_transform, geometry)
     zoom_level = 20
-    gdf_pixels = df.copy()
-    gdf_pixels['geometry'] = gdf_pixels['geometry'].apply(
+    df = gpd.read_file(Path('/data/overhead_matching/datasets/VIGOR/Chicago/landmarks/v3.geojson'))
+    df["geometry_px"] = df['geometry'].apply(
         lambda geom: convert_geometry_to_pixels(geom, zoom_level)
     )
+
+    return (df,)
+
+
+@app.cell
+def _(df):
+    df_px = df.set_geometry('geometry_px')
     return
+
+
+app._unparsable_cell(
+    r"""
+    df_px.
+    """,
+    name="_"
+)
 
 
 @app.cell

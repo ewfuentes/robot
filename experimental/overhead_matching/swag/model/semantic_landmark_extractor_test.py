@@ -10,18 +10,44 @@ import experimental.overhead_matching.swag.model.semantic_landmark_extractor as 
 import experimental.overhead_matching.swag.data.vigor_dataset as vd
 
 
-class SemanticLandmarkExtractorTest(unittest.TestCase):
-    def test_panorama_landmark_extractor_with_dataset(self):
-        # Setup
-        BATCH_SIZE = 7
-        dataset = vd.VigorDataset(
+class SemanticLandmarkExtractorWithDatasetTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls._dataset = vd.VigorDataset(
             Path("external/vigor_snippet/vigor_snippet/"),
             vd.VigorDatasetConfig(
                 satellite_tensor_cache_info=None, panorama_tensor_cache_info=None))
+
+    def test_satellite_landmark_extractor_with_dataset(self):
+        # Setup
+        BATCH_SIZE = 13
         config = sle.SemanticLandmarkExtractorConfig()
         model = sle.SemanticLandmarkExtractor(config)
 
-        dataloader = vd.get_dataloader(dataset, batch_size=BATCH_SIZE)
+        dataloader = vd.get_dataloader(self._dataset, batch_size=BATCH_SIZE)
+        batch = next(iter(dataloader))
+        model_input = sle.ModelInput(
+            image=batch.satellite,
+            metadata=batch.satellite_metadata,
+        )
+
+        # Action
+        extractor_output = model(model_input)
+
+        # Verification
+        max_num_landmarks = extractor_output.features.shape[1]
+        self.assertEqual(extractor_output.mask.shape, (BATCH_SIZE, max_num_landmarks))
+        self.assertEqual(extractor_output.features.shape,
+                         (BATCH_SIZE, max_num_landmarks, model.output_dim))
+        self.assertEqual(extractor_output.positions.shape, (BATCH_SIZE, max_num_landmarks, 2, 2))
+
+    def test_panorama_landmark_extractor_with_dataset(self):
+        # Setup
+        BATCH_SIZE = 7
+        config = sle.SemanticLandmarkExtractorConfig()
+        model = sle.SemanticLandmarkExtractor(config)
+
+        dataloader = vd.get_dataloader(self._dataset, batch_size=BATCH_SIZE)
         batch = next(iter(dataloader))
         model_input = sle.ModelInput(
             image=batch.panorama,
@@ -38,33 +64,7 @@ class SemanticLandmarkExtractorTest(unittest.TestCase):
                          (BATCH_SIZE, max_num_landmarks, model.output_dim))
         self.assertEqual(extractor_output.positions.shape, (BATCH_SIZE, max_num_landmarks, 2))
 
-    def test_satellite_landmark_extractor_with_dataset(self):
-        # Setup
-        BATCH_SIZE = 13
-        dataset = vd.VigorDataset(
-            Path("external/vigor_snippet/vigor_snippet/"),
-            vd.VigorDatasetConfig(
-                satellite_tensor_cache_info=None, panorama_tensor_cache_info=None))
-        config = sle.SemanticLandmarkExtractorConfig()
-        model = sle.SemanticLandmarkExtractor(config)
-
-        dataloader = vd.get_dataloader(dataset, batch_size=BATCH_SIZE)
-        batch = next(iter(dataloader))
-        model_input = sle.ModelInput(
-            image=batch.satellite,
-            metadata=batch.satellite_metadata,
-        )
-
-        # Action
-        extractor_output = model(model_input)
-
-        # Verification
-        max_num_landmarks = extractor_output.features.shape[1]
-        self.assertEqual(extractor_output.mask.shape, (BATCH_SIZE, max_num_landmarks))
-        self.assertEqual(extractor_output.features.shape,
-                         (BATCH_SIZE, max_num_landmarks, model.output_dim))
-        self.assertEqual(extractor_output.positions.shape, (BATCH_SIZE, max_num_landmarks, 2))
-
+class SemanticLandmarkExtractorTest(unittest.TestCase):
     def test_satellite_landmark_extractor(self):
         # Setup
         BATCH_SIZE = 2
@@ -182,6 +182,7 @@ class SemanticLandmarkExtractorTest(unittest.TestCase):
                          compute_column_from_pano_landmark(loc_1, landmark_2, PANO_WIDTH))
         self.assertEqual(extractor_output.positions[1, 0, 1],
                          compute_column_from_pano_landmark(loc_2, landmark_1, PANO_WIDTH))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -166,6 +166,10 @@ class DinoFeatureExtractor(torch.nn.Module):
     def output_dim(self):
         return self._dino.num_features
 
+    @property
+    def num_position_outputs(self):
+        return 1
+
 
 class SemanticEmbeddingMatrix(torch.nn.Module):
     def __init__(self, config: SemanticEmbeddingMatrixConfig):
@@ -215,6 +219,10 @@ class SemanticEmbeddingMatrix(torch.nn.Module):
     def output_dim(self):
         return self._embedding_matrix.embedding_dim
 
+    @property
+    def num_position_outputs(self):
+        return 1
+
 
 class SemanticNullExtractor(torch.nn.Module):
     def __init__(self, config: SemanticNullExtractorConfig):
@@ -234,6 +242,10 @@ class SemanticNullExtractor(torch.nn.Module):
     @property
     def output_dim(self):
         return 0
+
+    @property
+    def num_position_outputs(self):
+        return 1
 
 
 class SphericalPositionEmbedding(torch.nn.Module):
@@ -288,8 +300,7 @@ class PlanarPositionEmbedding(torch.nn.Module):
                 model_input: ModelInput,
                 relative_positions: torch.Tensor):
         batch_size, num_tokens = relative_positions.shape[:2]
-
-        out = torch.zeros((batch_size, num_tokens, self._embedding_dim), dtype=torch.float32)
+        out = torch.zeros((*relative_positions.shape[-1], self._embedding_dim), dtype=torch.float32)
 
         num_scales = self._embedding_dim // 4
         for scale_idx in range(num_scales):
@@ -300,11 +311,12 @@ class PlanarPositionEmbedding(torch.nn.Module):
             out[..., embedding_idx_start + 1] = torch.cos(relative_positions[..., 0] / scale)
             out[..., embedding_idx_start + 2] = torch.sin(relative_positions[..., 1] / scale)
             out[..., embedding_idx_start + 3] = torch.cos(relative_positions[..., 1] / scale)
-        return out
+        return out.reshape(batch_size, num_tokens, -1)
 
     @property
     def output_dim(self):
         return self._embedding_dim
+
 
 def init_xavier(model):
     for p in model.parameters():
@@ -365,6 +377,7 @@ class SwagPatchEmbedding(torch.nn.Module):
 
         self._projection_by_name = torch.nn.ModuleDict({
                 k: torch.nn.Linear(self._extractor_by_name[k].output_dim +
+                                   self._extractor_by_name[k].num_position_outputs *
                                    self._position_embedding.output_dim,
                                    config.output_dim)
                 for k in config.extractor_config_by_name})
