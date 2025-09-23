@@ -179,7 +179,7 @@ class SemanticLandmarkExtractorTest(unittest.TestCase):
                          compute_column_from_pano_landmark(loc_1, landmark_2, PANO_WIDTH)).all())
         self.assertTrue((extractor_output.positions[1, 0, :, 1] ==
                          compute_column_from_pano_landmark(loc_2, landmark_1, PANO_WIDTH)).all())
-
+ 
     def test_panorama_landmark_extractor_line_string_feature(self):
         # Setup
         BATCH_SIZE = 1

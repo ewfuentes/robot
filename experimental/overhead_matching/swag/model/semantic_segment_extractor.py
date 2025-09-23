@@ -87,7 +87,3 @@ class SemanticSegmentExtractor(torch.nn.Module):
     @property
     def num_position_outputs(self):
         return 1
-
-    @property
-    def num_position_outputs(self):
-        return 1
