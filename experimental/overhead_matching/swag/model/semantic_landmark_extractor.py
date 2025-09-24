@@ -56,20 +56,133 @@ def prune_landmark(props):
     return frozenset(out)
 
 
+def compute_bounds_for_polygon(pano_loc_px, geometry):
+    pano_y, pano_x = pano_loc_px
+    # We need to compute the interval that the polygon occupies.
+    xs, ys = geometry.exterior.xy
+    dx_in_web_mercator = torch.tensor(xs) - pano_x
+    dy_in_web_mercator = torch.tensor(ys) - pano_y
+
+    pano_from_web_mercator = torch.tensor([[0.0, -1.0],
+                                           [1.0,  0.0]])
+    delta_in_pano = (
+        pano_from_web_mercator @
+        torch.stack([dx_in_web_mercator, dy_in_web_mercator]))
+
+    bounds = None
+    prev_theta = None
+    thetas_in_pano = torch.atan2(delta_in_pano[1, :], delta_in_pano[0, :]).squeeze()
+    wrap_accumulator = 0
+    for theta_in_pano in thetas_in_pano:
+        unwrapped_theta = theta_in_pano + wrap_accumulator
+        if bounds is None:
+            bounds = torch.tensor([unwrapped_theta, unwrapped_theta])
+            prev_theta = unwrapped_theta
+
+        if unwrapped_theta - prev_theta > torch.pi:
+            wrap_accumulator -= 2 * torch.pi
+            unwrapped_theta = theta_in_pano + wrap_accumulator
+        elif unwrapped_theta - prev_theta < -torch.pi:
+            wrap_accumulator += 2 * torch.pi
+            unwrapped_theta = theta_in_pano + wrap_accumulator
+
+        if unwrapped_theta < bounds[0]:
+            bounds[0] = unwrapped_theta
+        elif unwrapped_theta > bounds[1]:
+            bounds[1] = unwrapped_theta
+
+        prev_theta = unwrapped_theta
+
+
+    return bounds
+
+
 def compute_landmark_pano_positions(pano_metadata, pano_shape):
+    import IPython
     out = []
+    pano_y = pano_metadata["web_mercator_y"]
+    pano_x = pano_metadata["web_mercator_x"]
     for landmark in pano_metadata["landmarks"]:
-        # Compute dx and dy in the ENU frame.
-        dx = landmark["web_mercator_x"] - pano_metadata["web_mercator_x"]
-        dy = landmark["web_mercator_y"] - pano_metadata["web_mercator_y"]
-        # math.atan2 return an angle in [-pi, pi]. The panoramas are such that
-        # north points in the middle of the panorama, so we compute theta as
-        # atan(-dx / dy) so that zero angle corresponds to the center of the panorama
-        # and the angle increases as we move right in the panorama
-        theta = math.atan2(dx, dy)
-        frac = (theta + math.pi) / (2 * math.pi)
-        out.append((pano_shape[0] / 2.0, pano_shape[1] * frac))
-    return torch.tensor(out).reshape(-1, 2)
+        geometry = landmark["geometry_px"]
+
+        # We want to compute the range spanned by this geometry.
+        if geometry.geom_type == "Point":
+            # These deltas are in the web mercator frame where +x goes from west to east
+            # and +y goes from north to south.
+            dx_in_web_mercator = geometry.x - pano_x
+            dy_in_web_mercator = geometry.y - pano_y
+
+            # We rotate them such that +x goes from south to north and +y increases from
+            # west to east. The panoramas are such that north is always the middle column.
+            # An angle of -pi/+pi correspond to the left/right edge respectively
+            pano_from_web_mercator = torch.tensor([[0.0, -1.0],
+                                                   [1.0,  0.0]])
+            delta_in_pano = pano_from_web_mercator @ torch.tensor(
+                    [[dx_in_web_mercator, dy_in_web_mercator]]).T
+
+            theta = math.atan2(delta_in_pano[1], delta_in_pano[0])
+            frac = (theta + math.pi) / (2 * math.pi)
+            out.append([
+                [pano_shape[0] / 2.0, pano_shape[1] * frac],
+                [pano_shape[0] / 2.0, pano_shape[1] * frac]])
+        elif geometry.geom_type == "LineString":
+            xs,  ys = geometry.xy
+            dx_in_web_mercator = torch.tensor(xs) - pano_x
+            dy_in_web_mercator = torch.tensor(ys) - pano_y
+
+            pano_from_web_mercator = torch.tensor([[0.0, -1.0],
+                                                   [1.0,  0.0]])
+            delta_in_pano = (
+                pano_from_web_mercator @
+                torch.stack([dx_in_web_mercator, dy_in_web_mercator]))
+
+            thetas = torch.atan2(delta_in_pano[1, :], delta_in_pano[0, :]).squeeze()
+            thetas = torch.sort(thetas).values
+            if thetas[1] - thetas[0] > torch.pi:
+                thetas = torch.flip(thetas, (0,))
+            frac = (thetas + torch.pi) / (2 * torch.pi)
+            out.append([
+                [pano_shape[0] / 2.0, pano_shape[1] * frac[0]],
+                [pano_shape[0] / 2.0, pano_shape[1] * frac[1]]])
+        elif geometry.geom_type == "Polygon":
+            bounds = compute_bounds_for_polygon((pano_y, pano_x), geometry)
+            if bounds[1] - bounds[0] > 2 * torch.pi:
+                # We're enclosed, so return the entire interval:
+                bounds = torch.tensor([-torch.pi, torch.pi])
+            else:
+                bounds = torch.remainder(bounds, 2*torch.pi)
+                bounds[bounds > torch.pi] -= 2 * torch.pi
+
+            frac = (bounds + torch.pi) / (2 * torch.pi)
+            out.append([
+                [pano_shape[0] / 2.0, pano_shape[1] * frac[0].item()],
+                [pano_shape[0] / 2.0, pano_shape[1] * frac[1].item()]])
+        elif geometry.geom_type == "MultiPolygon":
+            bounds = torch.tensor([torch.inf, -torch.inf])
+            for p in geometry.geoms:
+                new_bounds = compute_bounds_for_polygon((pano_y, pano_x), p)
+                if new_bounds[0] < bounds[0]:
+                    bounds[0] = new_bounds[0]
+                if new_bounds[1] > bounds[1]:
+                    bounds[1] = new_bounds[1]
+            if bounds[1] - bounds[0] > 2 * torch.pi:
+                # We're enclosed, so return the entire interval:
+                bounds = torch.tensor([-torch.pi, torch.pi])
+            else:
+                bounds = torch.remainder(bounds, 2*torch.pi)
+                bounds[bounds > torch.pi] -= 2 * torch.pi
+
+            frac = (bounds + torch.pi) / (2 * torch.pi)
+            out.append([
+                [pano_shape[0] / 2.0, pano_shape[1] * frac[0].item()],
+                [pano_shape[0] / 2.0, pano_shape[1] * frac[1].item()]])
+
+        else:
+            import IPython
+            IPython.embed()
+            raise ValueError(f"Unrecognized geometry type: {landmark["geometry_px"].geom_type}")
+
+    return torch.tensor(out)
 
 
 def compute_landmark_sat_positions(sat_metadata):
@@ -97,8 +210,6 @@ def compute_landmark_sat_positions(sat_metadata):
                 # Bottom Right
                 [y_max - sat_y, x_max - sat_x]])
         else:
-            import IPython
-            IPython.embed()
             raise ValueError(f"Unrecognized geometry type: {landmark["geometry_px"].geom_type}")
     return torch.tensor(out)
 
