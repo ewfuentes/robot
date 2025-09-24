@@ -135,6 +135,7 @@ py_library(
     requirement("torch"),
     requirement("numpy"),
     requirement("sentence-transformers"),
+    requirement("shapely"),
     requirement("ipdb"),
     "//common/torch:load_torch_deps",
     "//common/ollama:pyollama",
@@ -148,6 +149,7 @@ py_test(
   srcs = ["semantic_landmark_extractor_test.py"],
   data = ["@vigor_snippet//:files"],
   deps = [
+    requirement("shapely"),
     ":semantic_landmark_extractor",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
   ]
