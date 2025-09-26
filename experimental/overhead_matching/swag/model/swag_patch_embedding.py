@@ -259,6 +259,7 @@ class SphericalPositionEmbedding(torch.nn.Module):
     def forward(self, *,
                 model_input: ModelInput,
                 relative_positions: torch.Tensor):
+        batch_size, num_tokens = relative_positions.shape[:2]
         # We need to convert the pixel positions into an elevation and azimuth angles
         # The azimuth angle increases in the clockwise direction
         # We assume that zero degrees is on the left edge of the panorama and increases
@@ -267,20 +268,20 @@ class SphericalPositionEmbedding(torch.nn.Module):
         # from top to bottom. Note that these are not standard definitions of these angles
         # but it does simplify implementation, and ultimately shouldn't matter
         original_shape = model_input.image.shape[-2:]
-        elevation_rad = relative_positions[..., 0] / original_shape[0] * torch.pi
+        elevation_rad = torch.pi / 2 - relative_positions[..., 0] / original_shape[0] * torch.pi
         azimuth_rad = relative_positions[..., 1] / original_shape[1] * 2 * torch.pi
         out = torch.zeros((*relative_positions.shape[:-1], self._embedding_dim), dtype=torch.float32)
 
         num_scales = self._embedding_dim // 4
         for scale_idx in range(num_scales):
             embedding_idx_start = 4 * scale_idx
-            scale = (self._scale_step ** -scale_idx) / (2 * torch.pi)
+            scale = (self._scale_step ** scale_idx)
 
-            out[..., embedding_idx_start + 0] = torch.sin(elevation_rad / scale)
-            out[..., embedding_idx_start + 1] = torch.cos(elevation_rad / scale)
-            out[..., embedding_idx_start + 2] = torch.sin(azimuth_rad / scale)
-            out[..., embedding_idx_start + 3] = torch.cos(azimuth_rad / scale)
-        return out
+            out[..., embedding_idx_start + 0] = torch.sin(elevation_rad * scale)
+            out[..., embedding_idx_start + 1] = torch.cos(elevation_rad * scale)
+            out[..., embedding_idx_start + 2] = torch.sin(azimuth_rad * scale)
+            out[..., embedding_idx_start + 3] = torch.cos(azimuth_rad * scale)
+        return out.reshape(batch_size, num_tokens, -1)
 
     @property
     def output_dim(self):
@@ -300,7 +301,7 @@ class PlanarPositionEmbedding(torch.nn.Module):
                 model_input: ModelInput,
                 relative_positions: torch.Tensor):
         batch_size, num_tokens = relative_positions.shape[:2]
-        out = torch.zeros((*relative_positions.shape[-1], self._embedding_dim), dtype=torch.float32)
+        out = torch.zeros((*relative_positions.shape[:-1], self._embedding_dim), dtype=torch.float32)
 
         num_scales = self._embedding_dim // 4
         for scale_idx in range(num_scales):
