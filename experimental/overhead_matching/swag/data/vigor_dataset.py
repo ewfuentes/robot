@@ -138,11 +138,6 @@ def load_landmark_geojson(path: Path, zoom_level: int):
 
     df["geometry_px"] = df["geometry"].apply(convert_geometry_to_pixels)
 
-    # landmark_lon, landmark_lat = df.geometry.x
-    # web_mercator_y, web_mercator_x = web_mercator.latlon_to_pixel_coords(
-    #         landmark_lat, landmark_lon, zoom_level=zoom_level)
-    # df["web_mercator_y"] = web_mercator_y
-    # df["web_mercator_x"] = web_mercator_x
     return df
 
 
