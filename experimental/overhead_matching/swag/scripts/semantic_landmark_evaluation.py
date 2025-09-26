@@ -27,12 +27,9 @@ def _():
     from pathlib import Path
     import math
     return (
-        Path,
         SemanticLandmarkExtractor,
         SemanticLandmarkExtractorConfig,
-        gpd,
         json,
-        math,
         mo,
         np,
         plt,
