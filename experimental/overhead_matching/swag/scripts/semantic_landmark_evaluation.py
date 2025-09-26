@@ -26,12 +26,9 @@ def _():
     from pathlib import Path
     import math
     return (
-        Path,
         SemanticLandmarkExtractor,
         SemanticLandmarkExtractorConfig,
-        gpd,
         json,
-        math,
         mo,
         np,
         plt,
@@ -45,85 +42,6 @@ def _():
 def _():
     from experimental.overhead_matching.swag.model import swag_model_input_output as smio
     return (smio,)
-
-
-@app.cell
-def _(Path, gpd, math):
-    def deg2pixel(lat_deg, lon_deg, zoom):
-        """Convert lat/lon to global pixel coordinates at given zoom level"""
-        lat_rad = math.radians(lat_deg)
-        n = 2.0 ** zoom
-        x = int((lon_deg + 180.0) / 360.0 * n * 256)
-        y = int((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * n * 256)
-        return (x, y)
-
-    def convert_geometry_to_pixels(geometry, zoom=20):
-        """Convert geometry coordinates to pixel coordinates"""
-        from shapely.ops import transform
-
-        def coord_transform(lon, lat, z=None):
-            x, y = deg2pixel(lat, lon, zoom)  # Note: deg2pixel expects (lat, lon)
-            return (x, y)
-
-        return transform(coord_transform, geometry)
-    zoom_level = 20
-    df = gpd.read_file(Path('/data/overhead_matching/datasets/VIGOR/Chicago/landmarks/v3.geojson'))
-    df["geometry_px"] = df['geometry'].apply(
-        lambda geom: convert_geometry_to_pixels(geom, zoom_level)
-    )
-
-    return (df,)
-
-
-@app.cell
-def _(df):
-    df_px = df.set_geometry('geometry_px')
-    return
-
-
-app._unparsable_cell(
-    r"""
-    df_px.
-    """,
-    name="_"
-)
-
-
-@app.cell
-def _(df, mo):
-    mo.mpl.interactive(df.plot())
-    return
-
-
-@app.cell
-def _(batch):
-    batch.satellite_metadata[0]
-    return
-
-
-@app.cell
-def _(df):
-    df.geometry.crs
-    return
-
-
-@app.cell
-def _(df):
-    df.geometry
-    return
-
-
-@app.cell
-def _(df, np):
-    mask = np.logical_and(
-        df.element == "way",
-        df["addr:city"] == "Chicago")
-
-    mask = np.logical_and(mask,
-                         df["addr:street:name"] == "Adams")
-
-    df[mask]
-    return
 
 
 @app.cell
@@ -144,6 +62,7 @@ def _(vd):
                              vd.VigorDatasetConfig(
                                  satellite_tensor_cache_info=None,
                                  panorama_tensor_cache_info=None,
+                                 landmark_version='v3'
                              ))
     return (dataset,)
 
