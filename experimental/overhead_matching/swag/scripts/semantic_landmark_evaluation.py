@@ -21,6 +21,7 @@ def _():
     from common.ollama import pyollama
     import json
     import tqdm
+    import tqdm.asyncio
     import pandas as pd
     import geopandas as gpd
     from pathlib import Path
@@ -45,6 +46,24 @@ def _():
 
 
 @app.cell
+def _():
+    from experimental.overhead_matching.swag.model.semantic_landmark_extractor import prune_landmark
+    return (prune_landmark,)
+
+
+@app.cell
+def _():
+    import openai
+    return (openai,)
+
+
+@app.cell
+def _():
+    import asyncio
+    return
+
+
+@app.cell
 def _(SemanticLandmarkExtractorConfig):
     SemanticLandmarkExtractorConfig()
     return
@@ -65,6 +84,86 @@ def _(vd):
                                  landmark_version='v3'
                              ))
     return (dataset,)
+
+
+@app.cell
+def _(vd):
+    seattle_dataset = vd.VigorDataset('/data/overhead_matching/datasets/VIGOR/Seattle',
+                             vd.VigorDatasetConfig(
+                                 satellite_tensor_cache_info=None,
+                                 panorama_tensor_cache_info=None,
+                                 landmark_version='v3'
+                             ))
+    return (seattle_dataset,)
+
+
+@app.cell
+def _(prune_landmark, seattle_dataset):
+
+    unique_landmarks = set()
+    # for _, v  in dataset._landmark_metadata.iterrows():
+    #     unique_landmarks.add(prune_landmark(v))
+
+    for _, v  in seattle_dataset._landmark_metadata.iterrows():
+        unique_landmarks.add(prune_landmark(v))
+
+    len(unique_landmarks)
+    return (unique_landmarks,)
+
+
+@app.cell
+def _(unique_landmarks):
+    for _i, _v in enumerate(unique_landmarks):
+        if _i > 100:
+            break
+        print(_i, _v)
+    return
+
+
+@app.cell
+def _(json, openai, unique_landmarks):
+    system_prompt = "Your job is to produce short natural language descriptions of openstreetmap landmarks that are helpful for visually identifying the landmark. For example, do not include information about building identifiers that are unlikely to be discernable by visual inspection. Don't include any details not derived from the provided landmark information. Don't include descriptions about the lack of information. Do not include instructions on how to identify the landmark. Do include an address if provided."
+    prompt_text = "Produce a short natural language description for this landmark: "
+
+
+    tasks = []
+    client = openai.AsyncOpenAI()
+    for idx, item in enumerate(unique_landmarks):
+        if idx > 100:
+            break
+        props = dict(item)
+        tasks.append(client.chat.completions.create(
+            model="gpt-5-nano",
+            reasoning_effort='low',
+            max_tokens=3000,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt_text + json.dumps(props)}]))
+    return item, tasks
+
+
+@app.cell
+def _(tasks):
+    tasks[0]
+    return
+
+
+@app.cell
+async def _(tasks, tqdm):
+    responses = await tqdm.asyncio.tqdm_asyncio.gather(*tasks, desc='generating descriptions')
+    return (responses,)
+
+
+@app.cell
+def _(responses):
+    responses
+    return
+
+
+@app.cell
+def _(responses):
+    max([r.usage.total_tokens for r in responses])
+    return
 
 
 @app.cell
@@ -159,8 +258,9 @@ def _(dataset):
 
 
 @app.cell
-def _(dataset, df):
-    unique_landmarks = set() 
+def _(dataset, df, json, pyollama, tqdm):
+
+    _unique_landmarks = set() 
     check_date_cols = [x for x in dataset._landmark_metadata.columns if x.startswith('check_date')]
     for i, _df in dataset._landmark_metadata.iterrows():
         fields = df.drop([
@@ -170,16 +270,11 @@ def _(dataset, df):
         fields = fields.dropna()
         fields = fields.to_dict()
         fields = frozenset(fields.items())
-        unique_landmarks.add(fields)
-    return (unique_landmarks,)
-
-
-@app.cell
-def _(json, pyollama, tqdm, unique_landmarks):
+        _unique_landmarks.add(fields)
 
     descriptions = []
     with pyollama.Ollama('gemma3:4b-it-qat') as ollama:
-        for _i, obj in tqdm.tqdm(list(enumerate(unique_landmarks))):
+        for _i, obj in tqdm.tqdm(list(enumerate(_unique_landmarks))):
             d = dict(obj)
             # print(dict(obj))
             try:
