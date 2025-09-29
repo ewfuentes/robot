@@ -270,18 +270,31 @@ class LearnedDistanceFunction(torch.nn.Module):
         n_sat, n_emb_sat, _ = sat_embeddings_unnormalized.shape
 
         if self.config.architecture == "mlp":
-            # MLP can handle the full batch efficiently
-            pano_expanded = pano_embeddings_unnormalized.unsqueeze(1).expand(n_pano, n_sat, n_emb_pano, d_emb)
-            sat_expanded = sat_embeddings_unnormalized.unsqueeze(0).expand(n_pano, n_sat, n_emb_sat, d_emb)
+            # Process in batches to avoid OOM with large n_pano x n_sat
+            batch_size = self.config.max_batch_size
+            all_similarities = []
 
-            # Flatten embeddings and concatenate
-            pano_flat = pano_expanded.reshape(n_pano, n_sat, -1)
-            sat_flat = sat_expanded.reshape(n_pano, n_sat, -1)
-            combined = torch.cat([pano_flat, sat_flat], dim=-1)
+            for pano_start in range(0, n_pano, batch_size):
+                pano_end = min(pano_start + batch_size, n_pano)
+                pano_batch = pano_embeddings_unnormalized[pano_start:pano_end]  # batch_size x n_emb_pano x d_emb
+                batch_n_pano = pano_batch.shape[0]
 
-            # Pass through MLP
-            similarity = self.model(combined)  # n_pano x n_sat x 1
-            return similarity.squeeze(-1)  # n_pano x n_sat
+                # Expand within batch
+                pano_expanded = pano_batch.unsqueeze(1).expand(batch_n_pano, n_sat, n_emb_pano, d_emb)
+                sat_expanded = sat_embeddings_unnormalized.unsqueeze(0).expand(batch_n_pano, n_sat, n_emb_sat, d_emb)
+
+                # Flatten embeddings and concatenate
+                pano_flat = pano_expanded.reshape(batch_n_pano, n_sat, -1)
+                sat_flat = sat_expanded.reshape(batch_n_pano, n_sat, -1)
+                combined = torch.cat([pano_flat, sat_flat], dim=-1)
+
+                # Pass through MLP
+                batch_similarity = self.model(combined)  # batch_size x n_sat x 1
+                all_similarities.append(batch_similarity.squeeze(-1))  # batch_size x n_sat
+
+            # Concatenate all batch results
+            similarity = torch.cat(all_similarities, dim=0)  # n_pano x n_sat
+            return similarity
 
         elif self.config.architecture in ["attention", "transformer_decoder"]:
             # Generate all pano-sat pairs
