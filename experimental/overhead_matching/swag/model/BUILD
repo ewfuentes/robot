@@ -128,7 +128,7 @@ py_test(
   ]
 )
 
-py_library(
+py_binary(
   name = "semantic_landmark_extractor",
   srcs = ["semantic_landmark_extractor.py"],
   deps = [
@@ -136,6 +136,8 @@ py_library(
     requirement("numpy"),
     requirement("sentence-transformers"),
     requirement("shapely"),
+    requirement("openai"),
+    requirement("geopandas"),
     requirement("ipdb"),
     "//common/torch:load_torch_deps",
     "//common/ollama:pyollama",

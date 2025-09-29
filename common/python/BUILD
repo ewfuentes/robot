@@ -19,6 +19,7 @@ py_binary(
     requirement("tensorboard"),
     requirement("osmnx"),
     requirement("supervision"),
+    requirement("openai"),
     "//common/torch:load_torch_deps",
     "//experimental/overhead_matching/learned/model:clevr_transformer",
     "//experimental/overhead_matching/learned/model:clevr_tokenizer",
