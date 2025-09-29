@@ -701,7 +701,10 @@ def get_dataloader(dataset: VigorDataset, **kwargs):
                 for k, v in first_item.cached_satellite_tensors.items()}),
         )
 
-    return torch.utils.data.DataLoader(dataset, collate_fn=_collate_fn, worker_init_fn=worker_init_fn, **kwargs)
+    # Only set worker_init_fn if not already provided in kwargs
+    if 'worker_init_fn' not in kwargs:
+        kwargs['worker_init_fn'] = worker_init_fn
+    return torch.utils.data.DataLoader(dataset, collate_fn=_collate_fn, **kwargs)
 
 
 class HardNegativeMiner:

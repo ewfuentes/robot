@@ -228,5 +228,8 @@ py_binary(
   srcs=["debug_train_launcher.py"],
   deps=[
     ":train",
+  ],
+  data=[
+    ":debug_hang_monitor",
   ]
 )

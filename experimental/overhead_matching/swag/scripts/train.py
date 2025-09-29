@@ -63,8 +63,11 @@ def create_heartbeat_system(heartbeat_file: str = "/tmp/training_heartbeat.txt")
             except Exception as e:
                 print(f"Heartbeat error: {e}", flush=True)
 
-            # Wait for 30 seconds or until stopped
-            heartbeat_active.wait(30)
+            # Sleep for 30 seconds, checking every second if we should stop
+            for _ in range(30):
+                if not heartbeat_active.is_set():
+                    break
+                time.sleep(1)
 
     # Start heartbeat thread
     heartbeat_thread = threading.Thread(target=heartbeat_worker, daemon=True)
@@ -643,6 +646,7 @@ def main(
     with ipdb.launch_ipdb_on_exception() if not no_ipdb else nullcontext():
         train(
             train_config,
+            output_dir=output_dir,
             dataset=dataset,
             validation_datasets=validation_datasets,
             panorama_model=panorama_model,
