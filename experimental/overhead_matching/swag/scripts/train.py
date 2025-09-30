@@ -213,12 +213,13 @@ def compute_validation_metrics(
 
         # compute the positive/semipositive recall @ K
         invalid_mask_cuda = invalid_mask.cuda()
+        ranks_cuda = ranks.cuda()
         any_pos_semipos_recall = {
-            f"{name}/any pos_semipos_recall@{k}": ((ranks <= k) & (~invalid_mask_cuda)).any(dim=-1).float().mean().item()
+            f"{name}/any pos_semipos_recall@{k}": ((ranks_cuda <= k) & (~invalid_mask_cuda)).any(dim=-1).float().mean().item()
             for k in k_values}
 
         all_pos_semipos_recall = {
-            f"{name}/all pos_semipos_recall@{k}": (ranks <= k).all(dim=-1).float().mean().item()
+            f"{name}/all pos_semipos_recall@{k}": (ranks_cuda <= k).all(dim=-1).float().mean().item()
             for k in k_values[1:]}
 
         out |= ({
