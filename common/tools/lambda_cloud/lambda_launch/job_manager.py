@@ -317,7 +317,7 @@ class JobManager:
             True if training started successfully, False otherwise
         """
         try:
-            logger.log("Starting training with debug monitoring...", "INFO", terminal=True)
+            logger.log("Starting autonomous training...", "INFO", terminal=True)
 
             # Copy training config to remote instance
             remote_config_path = f"/tmp/train_config_{job_id}.yaml"
@@ -326,16 +326,16 @@ class JobManager:
                 logger.log("Failed to copy training config", "ERROR", terminal=True)
                 return False
 
-            # Prepare training command with debug monitoring using bazel
+            # Prepare training command using bazel
             base_train_args = (
                 f"--dataset_base /tmp/ --output_base /tmp/output_{job_id} "
-                f"--train_config {remote_config_path} --no_ipdb"
+                f"--train_config {remote_config_path} --no_ipdb --quiet"
             )
 
-            # Use bazel to run the debug train launcher from the repo
+            # Use bazel to run the train script directly from the repo
             train_command = (
                 f"cd /home/ubuntu/robot && bazel run "
-                f"//experimental/overhead_matching/swag/scripts:debug_train_launcher -- "
+                f"//experimental/overhead_matching/swag/scripts:train -- "
                 f"{base_train_args}"
             )
             
@@ -390,7 +390,8 @@ class JobManager:
             logger.log("Autonomous training started", "INFO", terminal=True)
             logger.log(f"SSH to instance: ssh ubuntu@{instance_ip}")
             logger.log(f"Monitor logs: tail -f /tmp/monitor.log")
-            logger.log(f"Training logs: tail -f /tmp/training.log")
+            logger.log(f"Training debug log: tail -f /tmp/training_debug.log")
+            logger.log(f"Training output log: tail -f /tmp/training_output.log")
             return True
             
         except Exception as e:

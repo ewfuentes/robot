@@ -215,21 +215,3 @@ py_binary(
   ]
 )
 
-py_binary(
-  name="debug_hang_monitor",
-  srcs=["debug_hang_monitor.py"],
-  deps=[
-    requirement("psutil"),
-  ]
-)
-
-py_binary(
-  name="debug_train_launcher",
-  srcs=["debug_train_launcher.py"],
-  deps=[
-    ":train",
-  ],
-  data=[
-    ":debug_hang_monitor",
-  ]
-)

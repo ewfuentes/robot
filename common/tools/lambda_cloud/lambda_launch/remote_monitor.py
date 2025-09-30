@@ -49,7 +49,8 @@ class RemoteMonitor:
         self.training_process = None
         
         # Set up log file paths
-        self.training_log_file = "/tmp/training.log"
+        self.training_debug_log = "/tmp/training_debug.log"  # Reliable file-written log
+        self.training_output_log = "/tmp/training_output.log"  # Captured stdout (may buffer)
         self.monitor_log_file = "/tmp/monitor.log"
         self.diagnostics_log_file = "/tmp/diagnostics.log"
 
@@ -68,7 +69,8 @@ class RemoteMonitor:
                 f.write(f"=== Training Job Monitor Started ===\n")
                 f.write(f"Start time: {self.start_time}\n")
                 f.write(f"Timeout: {self.timeout_time}\n")
-                f.write(f"Training log: {self.training_log_file}\n")
+                f.write(f"Training debug log: {self.training_debug_log}\n")
+                f.write(f"Training output log: {self.training_output_log}\n")
                 f.write(f"Output dir: {self.output_dir}\n")
                 f.write(f"S3 destination: s3://{self.s3_bucket}/{self.s3_key_prefix}/\n")
                 f.write(f"=====================================\n\n")
@@ -96,8 +98,8 @@ class RemoteMonitor:
         try:
             self.log(f"Starting training: {self.training_command}")
 
-            # Create training log file
-            with open(self.training_log_file, 'w') as f:
+            # Create training output log file (captured stdout)
+            with open(self.training_output_log, 'w') as f:
                 f.write(f"=== Training Started ===\n")
                 f.write(f"Command: {self.training_command}\n")
                 f.write(f"Start time: {self.start_time}\n")
@@ -112,7 +114,7 @@ class RemoteMonitor:
             wrapper_script = f'''#!/bin/bash
 set -euo pipefail
 
-LOG_FILE="{self.training_log_file}"
+LOG_FILE="{self.training_output_log}"
 HEARTBEAT_FILE="/tmp/training_heartbeat.txt"
 
 echo "🚀 Robust training wrapper starting at $(date)" | tee -a "$LOG_FILE"
@@ -163,7 +165,8 @@ fi
             )
 
             self.log(f"Training started with PID {self.training_process.pid}")
-            self.log(f"Training logs: tail -f {self.training_log_file}")
+            self.log(f"Training debug log: tail -f {self.training_debug_log}")
+            self.log(f"Training output log: tail -f {self.training_output_log}")
             self.log(f"Monitor logs: tail -f {self.monitor_log_file}")
             self.log(f"Wrapper script: {wrapper_path}")
             self.log("🔧 Applied robust stdout buffering fixes")
@@ -198,17 +201,17 @@ fi
 
         current_time = datetime.now()
 
-        # Check 1: Training log file modification time
+        # Check 1: Training debug log file modification time (reliable file-written log)
         training_log_activity = False
-        if os.path.exists(self.training_log_file):
+        if os.path.exists(self.training_debug_log):
             try:
-                log_mtime = datetime.fromtimestamp(os.path.getmtime(self.training_log_file))
+                log_mtime = datetime.fromtimestamp(os.path.getmtime(self.training_debug_log))
                 # Consider active if log was modified in last 10 minutes
                 if (current_time - log_mtime).total_seconds() < 600:
                     training_log_activity = True
-                    self.log(f"Training log last modified: {log_mtime}")
+                    self.log(f"Training debug log last modified: {log_mtime}")
             except Exception as e:
-                self.log(f"Error checking training log mtime: {e}")
+                self.log(f"Error checking training debug log mtime: {e}")
 
         # Check 2: Output directory activity (wandb, checkpoints, etc.)
         output_activity = False
@@ -245,12 +248,12 @@ fi
         return datetime.now() >= self.timeout_time
 
     def check_log_activity(self) -> bool:
-        """Check if training log is still being written to."""
+        """Check if training debug log is still being written to."""
         try:
-            if not os.path.exists(self.training_log_file):
+            if not os.path.exists(self.training_debug_log):
                 return False
 
-            current_size = os.path.getsize(self.training_log_file)
+            current_size = os.path.getsize(self.training_debug_log)
             if current_size > self.last_log_size:
                 self.last_log_size = current_size
                 self.last_log_activity = datetime.now()
@@ -268,142 +271,49 @@ fi
             self.log(f"Error checking log activity: {e}")
             return False
 
-    def get_process_tree_info(self) -> dict:
-        """Get detailed info about training process tree."""
+    def get_cpu_usage(self) -> float:
+        """Get CPU usage for training process with proper warmup."""
         try:
             if not self.training_process:
-                return {}
-
+                return 0.0
             main_process = psutil.Process(self.training_process.pid)
-            children = main_process.children(recursive=True)
-
-            info = {
-                "main_pid": self.training_process.pid,
-                "main_status": main_process.status(),
-                "main_cpu_percent": main_process.cpu_percent(),
-                "main_memory_mb": main_process.memory_info().rss // (1024*1024),
-                "child_count": len(children),
-                "children": []
-            }
-
-            for child in children:
-                try:
-                    child_info = {
-                        "pid": child.pid,
-                        "name": child.name(),
-                        "status": child.status(),
-                        "cpu_percent": child.cpu_percent(),
-                        "cmdline": " ".join(child.cmdline()[:3])  # First 3 args only
-                    }
-                    info["children"].append(child_info)
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    continue
-
-            return info
-
-        except Exception as e:
-            self.log(f"Error getting process info: {e}")
-            return {}
-
-    def check_tensorboard_activity(self) -> dict:
-        """Check for recent tensorboard event files to detect if training is progressing."""
-        try:
-            # Find tensorboard event files
-            event_pattern = os.path.join(self.output_dir, "**/events.out.tfevents.*")
-            event_files = glob.glob(event_pattern, recursive=True)
-
-            if not event_files:
-                return {"status": "no_events", "message": "No tensorboard event files found"}
-
-            # Check most recent modification time
-            most_recent_file = max(event_files, key=os.path.getmtime)
-            last_modified = datetime.fromtimestamp(os.path.getmtime(most_recent_file))
-            time_since_update = datetime.now() - last_modified
-
-            return {
-                "status": "found_events",
-                "most_recent_file": most_recent_file,
-                "last_modified": last_modified,
-                "time_since_update": time_since_update,
-                "is_recent": time_since_update < timedelta(minutes=5)
-            }
-
-        except Exception as e:
-            return {"status": "error", "message": f"Error checking tensorboard: {e}"}
-
-    def diagnose_training_state(self):
-        """Comprehensive diagnosis of training state."""
-        try:
-            with open(self.diagnostics_log_file, 'a') as f:
-                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                f.write(f"\n=== DIAGNOSTIC REPORT [{timestamp}] ===\n")
-
-                # Process info
-                process_info = self.get_process_tree_info()
-                f.write(f"Process Info: {process_info}\n")
-
-                # Log activity
-                log_active = self.check_log_activity()
-                f.write(f"Log Activity: {log_active}, Last activity: {self.last_log_activity}\n")
-
-                # Tensorboard activity
-                tb_info = self.check_tensorboard_activity()
-                f.write(f"Tensorboard Activity: {tb_info}\n")
-
-                # File descriptors
-                if self.training_process:
-                    try:
-                        main_process = psutil.Process(self.training_process.pid)
-                        open_files = len(main_process.open_files())
-                        f.write(f"Open file descriptors: {open_files}\n")
-                    except:
-                        f.write("Could not get file descriptor info\n")
-
-                f.write("=== END DIAGNOSTIC ===\n\n")
-                f.flush()
-
-        except Exception as e:
-            self.log(f"Error in diagnosis: {e}")
+            # Warmup call then measure
+            main_process.cpu_percent()
+            time.sleep(0.1)
+            return main_process.cpu_percent(interval=1)
+        except:
+            return 0.0
 
     def detect_training_completion_alternative(self) -> bool:
         """Alternative method to detect training completion with multiple verification steps."""
         completion_indicators = 0
         required_indicators = 2  # Require multiple confirmations
 
-        # Method 1: Check if training log shows explicit completion
+        # Method 1: Check if training debug log shows explicit completion
         try:
-            if os.path.exists(self.training_log_file):
-                with open(self.training_log_file, 'r') as f:
+            if os.path.exists(self.training_debug_log):
+                with open(self.training_debug_log, 'r') as f:
                     content = f.read().lower()
 
                     # Look for definitive completion markers
                     completion_phrases = [
                         "training complete", "training finished", "training done",
-                        "100% complete", "epoch: 100/100", "final epoch complete",
-                        "training successfully completed", "all epochs finished"
+                        "training successfully completed", "training process exiting normally"
                     ]
 
                     if any(phrase in content for phrase in completion_phrases):
                         completion_indicators += 1
-                        self.log("✓ Found explicit completion marker in training log")
+                        self.log("✓ Found explicit completion marker in training debug log")
         except Exception as e:
-            self.log(f"Could not check training log completion: {e}")
+            self.log(f"Could not check training debug log completion: {e}")
 
-        # Method 2: Check process resource usage (low CPU/GPU indicates completion)
-        try:
-            if self.training_process:
-                import psutil
-                main_process = psutil.Process(self.training_process.pid)
-
-                # Check CPU usage over brief period
-                cpu_percent = main_process.cpu_percent(interval=5)
-                if cpu_percent < 2.0:  # Very low CPU usage
-                    completion_indicators += 1
-                    self.log(f"✓ Very low CPU usage detected: {cpu_percent:.1f}%")
-                else:
-                    self.log(f"Process still active - CPU: {cpu_percent:.1f}%")
-        except Exception as e:
-            self.log(f"Could not check process CPU usage: {e}")
+        # Method 2: Check CPU usage (low usage indicates completion)
+        cpu_percent = self.get_cpu_usage()
+        if cpu_percent < 2.0:
+            completion_indicators += 1
+            self.log(f"✓ Very low CPU usage: {cpu_percent:.1f}%")
+        else:
+            self.log(f"Process still active - CPU: {cpu_percent:.1f}%")
 
         # Method 3: Check GPU utilization (if available)
         try:
@@ -455,109 +365,40 @@ fi
     def sync_to_s3(self) -> bool:
         """Sync output directory and logs to S3."""
         success = True
-        
+
         try:
             # 1. Sync output directory
             if os.path.exists(self.output_dir):
-                self.log(f"Syncing output directory {self.output_dir} to s3://{self.s3_bucket}/{self.s3_key_prefix}/outputs/")
-                
-                sync_command = [
-                    "aws", "s3", "sync", 
-                    self.output_dir, 
-                    f"s3://{self.s3_bucket}/{self.s3_key_prefix}/outputs/",
-                    "--delete"
-                ]
-                
+                self.log(f"Syncing outputs to S3...")
                 result = subprocess.run(
-                    sync_command,
-                    capture_output=True,
-                    text=True,
-                    timeout=1800  # 30 minute timeout
+                    ["aws", "s3", "sync", self.output_dir,
+                     f"s3://{self.s3_bucket}/{self.s3_key_prefix}/outputs/", "--delete"],
+                    capture_output=True, text=True, timeout=1800
                 )
-                
-                if result.returncode == 0:
-                    self.log("✓ Successfully synced outputs to S3")
-                else:
-                    self.log(f"✗ Output S3 sync failed: {result.stderr}")
-                    success = False
-            else:
-                self.log(f"⚠ Output directory {self.output_dir} does not exist, skipping output sync")
-            
-            # 2. Sync training log
-            if os.path.exists(self.training_log_file):
-                self.log(f"Uploading training log to s3://{self.s3_bucket}/{self.s3_key_prefix}/logs/training.log")
-                
-                log_upload_command = [
-                    "aws", "s3", "cp",
-                    self.training_log_file,
-                    f"s3://{self.s3_bucket}/{self.s3_key_prefix}/logs/training.log"
-                ]
-                
-                result = subprocess.run(
-                    log_upload_command,
-                    capture_output=True,
-                    text=True,
-                    timeout=300  # 5 minute timeout
-                )
-                
-                if result.returncode == 0:
-                    self.log("✓ Successfully uploaded training log to S3")
-                else:
-                    self.log(f"✗ Training log upload failed: {result.stderr}")
-                    success = False
-            
-            # 3. Sync monitor log
-            if os.path.exists(self.monitor_log_file):
-                self.log(f"Uploading monitor log to s3://{self.s3_bucket}/{self.s3_key_prefix}/logs/monitor.log")
-
-                monitor_upload_command = [
-                    "aws", "s3", "cp",
-                    self.monitor_log_file,
-                    f"s3://{self.s3_bucket}/{self.s3_key_prefix}/logs/monitor.log"
-                ]
-
-                result = subprocess.run(
-                    monitor_upload_command,
-                    capture_output=True,
-                    text=True,
-                    timeout=300  # 5 minute timeout
-                )
-
-                if result.returncode == 0:
-                    self.log("✓ Successfully uploaded monitor log to S3")
-                else:
-                    self.log(f"✗ Monitor log upload failed: {result.stderr}")
+                if result.returncode != 0:
+                    self.log(f"✗ Output sync failed: {result.stderr}")
                     success = False
 
-            # 4. Sync debug logs
-            debug_files = [
-                ("/tmp/training_debug.log", "debug.log"),
+            # 2. Sync all log files
+            log_files = [
+                (self.training_debug_log, "training_debug.log"),
+                (self.training_output_log, "training_output.log"),
+                (self.monitor_log_file, "monitor.log"),
                 ("/tmp/training_heartbeat.txt", "heartbeat.txt")
             ]
 
-            for local_path, s3_filename in debug_files:
+            self.log("Uploading log files to S3...")
+            for local_path, s3_name in log_files:
                 if os.path.exists(local_path):
-                    self.log(f"Uploading {local_path} to s3://{self.s3_bucket}/{self.s3_key_prefix}/logs/{s3_filename}")
-
-                    debug_upload_command = [
-                        "aws", "s3", "cp",
-                        local_path,
-                        f"s3://{self.s3_bucket}/{self.s3_key_prefix}/logs/{s3_filename}"
-                    ]
-
                     result = subprocess.run(
-                        debug_upload_command,
-                        capture_output=True,
-                        text=True,
-                        timeout=300  # 5 minute timeout
+                        ["aws", "s3", "cp", local_path,
+                         f"s3://{self.s3_bucket}/{self.s3_key_prefix}/logs/{s3_name}"],
+                        capture_output=True, text=True, timeout=300
                     )
-
-                    if result.returncode == 0:
-                        self.log(f"✓ Successfully uploaded {s3_filename} to S3")
-                    else:
-                        self.log(f"✗ {s3_filename} upload failed: {result.stderr}")
+                    if result.returncode != 0:
+                        self.log(f"✗ Failed to upload {s3_name}: {result.stderr}")
                         success = False
-            
+
             if success:
                 self.log(f"✅ All files synced to s3://{self.s3_bucket}/{self.s3_key_prefix}/")
             
@@ -651,11 +492,9 @@ fi
             return {"status": "error", "message": f"Error reading heartbeat: {e}"}
 
     def monitor_loop(self):
-        """Main monitoring loop with enhanced detection."""
+        """Main monitoring loop."""
         self.log(f"Starting monitoring loop (timeout: {self.max_train_hours}h)")
         self.log(f"Training will timeout at: {self.timeout_time}")
-
-        diagnostic_counter = 0
 
         while True:
             # Check if timeout reached
@@ -691,7 +530,7 @@ fi
                     self.log("⚠️ Training progress stalled - starting monitoring")
                 else:
                     stall_minutes = (datetime.now() - self._stall_start_time).total_seconds() / 60
-                    if stall_minutes > 45:  # Only check completion after 45 minutes of no progress
+                    if stall_minutes > 5:  # Only check completion after 5 minutes of no progress
                         self.log(f"🔍 No progress for {stall_minutes:.1f} minutes - checking if training completed")
                         if self.detect_training_completion_alternative():
                             self.log("🔍 Training completion confirmed via multiple indicators")
@@ -707,11 +546,6 @@ fi
             log_active = self.check_log_activity()
             if not log_active:
                 self.log("⚠️  Training log appears stalled")
-
-            # Periodic diagnostics (every 5 minutes)
-            diagnostic_counter += 1
-            if diagnostic_counter % 5 == 0:
-                self.diagnose_training_state()
 
             # Log progress
             elapsed = datetime.now() - self.start_time

@@ -31,19 +31,22 @@ import time
 from experimental.overhead_matching.swag.scripts.lr_sweep import LearningRateSweepConfig, run_lr_sweep
 
 
-def debug_log(message: str, force_flush: bool = True):
-    """Debug logging with timestamp and forced flush."""
+def debug_log(message: str, log_file: str = "/tmp/training_debug.log"):
+    """Write log message to file with timestamp and flush. Also prints to stdout."""
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    debug_msg = f"[DEBUG {timestamp}] {message}"
-    print(debug_msg, flush=force_flush)
+    log_msg = f"[DEBUG {timestamp}] {message}"
 
-    # Also write to debug log file
+    # Print to stdout
+    print(log_msg, flush=True)
+
+    # Write to debug log file with flush
     try:
-        with open("/tmp/training_debug.log", 'a') as f:
-            f.write(debug_msg + '\n')
+        with open(log_file, 'a') as f:
+            f.write(log_msg + '\n')
             f.flush()
-    except Exception:
-        pass  # Don't fail if debug log write fails
+            os.fsync(f.fileno())  # Force write to disk
+    except Exception as e:
+        print(f"Warning: Failed to write debug log: {e}", flush=True)
 
 
 def create_heartbeat_system(heartbeat_file: str = "/tmp/training_heartbeat.txt"):
@@ -152,25 +155,22 @@ def compute_validation_metrics(
         pano_model,
         validation_datasets,
         distance_model: torch.nn.Module,
+        quiet: bool = False,
 ):
-    debug_log("Starting validation metrics computation")
     out = {}
     for name, dataset in validation_datasets.items():
-        debug_log(f"Computing validation metrics for dataset: {name}")
-        debug_log(f"Building satellite embedding database for {name}")
         sat_embeddings = sed.build_satellite_db(
             sat_model,
-            vigor_dataset.get_dataloader(dataset.get_sat_patch_view(), batch_size=64, num_workers=8))
-        debug_log(f"Building panorama embedding database for {name}")
+            vigor_dataset.get_dataloader(dataset.get_sat_patch_view(), batch_size=64, num_workers=8),
+            verbose=not quiet)
         pano_embeddings = sed.build_panorama_db(
             pano_model,
-            vigor_dataset.get_dataloader(dataset.get_pano_view(), batch_size=64, num_workers=8))
-        debug_log(f"Computing similarity matrix for {name}")
+            vigor_dataset.get_dataloader(dataset.get_pano_view(), batch_size=64, num_workers=8),
+            verbose=not quiet)
         similarity = distance_model(
             pano_embeddings_unnormalized=pano_embeddings,
             sat_embeddings_unnormalized=sat_embeddings
         )
-        debug_log(f"Similarity matrix computed for {name}, shape: {similarity.shape}")
 
         num_panos = similarity.shape[0]
 
@@ -249,7 +249,6 @@ def create_training_components(dataset,
                                opt_config):
     """Create miner, dataloader, and optimizer for training."""
     # Create miner and dataloader
-    debug_log("Creating HardNegativeMiner")
     # Note: embeddings stored on CPU to save GPU memory, transferred to GPU as needed
     miner = vigor_dataset.HardNegativeMiner(
         batch_size=opt_config.batch_size,
@@ -261,22 +260,10 @@ def create_training_components(dataset,
         hard_negative_pool_size=opt_config.hard_negative_pool_size,
         dataset=dataset,
         device='cpu')
-    debug_log("HardNegativeMiner created, creating dataloader")
-
-    # Create a debug wrapper for worker_init_fn
-    def debug_worker_init_fn(worker_id):
-        debug_log(f"Initializing worker {worker_id}")
-        try:
-            vigor_dataset.worker_init_fn(worker_id)
-            debug_log(f"Worker {worker_id} initialized successfully")
-        except Exception as e:
-            debug_log(f"Worker {worker_id} initialization failed: {e}")
-            raise
 
     dataloader = vigor_dataset.get_dataloader(
         dataset, batch_sampler=miner, num_workers=min(os.cpu_count() // 2, 24),
-        persistent_workers=True, worker_init_fn=debug_worker_init_fn)
-    debug_log(f"Dataloader created with {min(os.cpu_count() // 2, 24)} workers")
+        persistent_workers=True)
 
     # Create optimizer
     opt = torch.optim.AdamW(
@@ -328,13 +315,9 @@ def train(config: TrainConfig,
           quiet):
 
     # Start heartbeat system
-    debug_log("Starting training with heartbeat system")
     stop_heartbeat = create_heartbeat_system()
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    debug_log(f"Created output directory: {output_dir}")
-
-    stop_heartbeat = create_heartbeat_system()
     # save config:
     config_json = msgspec.json.encode(config, enc_hook=msgspec_enc_hook)
     config_dict = json.loads(config_json)
@@ -366,10 +349,8 @@ def train(config: TrainConfig,
     opt_config = config.opt_config
 
     # Create training components using extracted function
-    debug_log("Creating training components (miner, dataloader, optimizer)")
     miner, dataloader, opt = create_training_components(
         dataset, panorama_model, satellite_model, distance_model, opt_config)
-    debug_log("Training components created successfully")
 
     warmup_lr_scheduler = torch.optim.lr_scheduler.ConstantLR(
         opt,
@@ -395,14 +376,9 @@ def train(config: TrainConfig,
             pairing_type = PairingType.ANCHOR_SETS
 
     total_batches = 0
-    debug_log(f"Starting training loop: {opt_config.num_epochs} epochs")
-    for epoch_idx in tqdm.tqdm(range(opt_config.num_epochs),  desc="Epoch"):
+    for epoch_idx in tqdm.tqdm(range(opt_config.num_epochs),  desc="Epoch", disable=quiet):
         debug_log(f"Starting epoch {epoch_idx}")
-        batch_count = 0
         for batch_idx, batch in enumerate(dataloader):
-            batch_count += 1
-            if batch_count % 10 == 0:  # Log every 10 batches
-                debug_log(f"Epoch {epoch_idx}, processing batch {batch_idx} (total batches: {total_batches})")
             match pairing_type:
                 case PairingType.PAIRS:
                     pairing_data = create_pairs(
@@ -456,8 +432,6 @@ def train(config: TrainConfig,
             log_embedding_stats(writer, "sat", satellite_embeddings.detach(), total_batches)
 
             # Hard Negative Mining
-            if batch_count % 50 == 0:  # Log every 50 batches
-                debug_log(f"Consuming embeddings for hard negative mining, batch {batch_idx}")
             miner.consume(
                 panorama_embeddings=panorama_embeddings.detach(),
                 satellite_embeddings=satellite_embeddings.detach(),
@@ -479,26 +453,18 @@ def train(config: TrainConfig,
             print()
         lr_scheduler.step()
 
-        debug_log(f"Epoch {epoch_idx} completed, lr_scheduler stepping")
         if epoch_idx >= opt_config.enable_hard_negative_sampling_after_epoch_idx:
-            debug_log(f"Enabling hard negative sampling for epoch {epoch_idx}")
             miner.set_sample_mode(vigor_dataset.HardNegativeMiner.SampleMode.HARD_NEGATIVE)
 
         if miner.sample_mode == vigor_dataset.HardNegativeMiner.SampleMode.HARD_NEGATIVE:
-            debug_log("Processing unobserved satellite patches for hard negative mining")
             # Since we are hard negative mining, we want to update the embedding vectors for any
             # satellite patches that were not observed as part of the epoch
             unobserved_patch_dataset = torch.utils.data.Subset(
                 dataset.get_sat_patch_view(), list(miner.unobserved_sat_idxs))
             unobserved_dataloader = vigor_dataset.get_dataloader(
                 unobserved_patch_dataset, num_workers=8, batch_size=128)
-            debug_log(f"Processing {len(miner.unobserved_sat_idxs)} unobserved satellite patches")
 
-            unobs_batch_count = 0
-            for batch in tqdm.tqdm(unobserved_dataloader, desc="Unobserved sat batches"):
-                unobs_batch_count += 1
-                if unobs_batch_count % 10 == 0:
-                    debug_log(f"Processing unobserved batch {unobs_batch_count}")
+            for batch in tqdm.tqdm(unobserved_dataloader, desc="Unobserved sat batches", disable=quiet):
                 with torch.no_grad():
                     miner_satellite_embeddings = satellite_model(
                         satellite_model.model_input_from_batch(batch).to("cuda"))
@@ -510,8 +476,8 @@ def train(config: TrainConfig,
             sat_model=satellite_model,
             pano_model=panorama_model,
             validation_datasets=validation_datasets,
-            distance_model=distance_model)
-        debug_log(f"Validation metrics computed for epoch {epoch_idx}")
+            distance_model=distance_model,
+            quiet=quiet)
         log_validation_metrics(
             writer=writer,
             validation_metrics=validation_metrics,
@@ -542,10 +508,8 @@ def train(config: TrainConfig,
 
     # Signal training completion
     debug_log("🎉 TRAINING COMPLETED SUCCESSFULLY 🎉")
-    print("🎉 TRAINING COMPLETED SUCCESSFULLY 🎉", flush=True)
     stop_heartbeat()
-    print("Training process exiting normally.", flush=True)
-    debug_log(f"Models saved for epoch {epoch_idx}")
+    debug_log("Training process exiting normally")
 
 
 
