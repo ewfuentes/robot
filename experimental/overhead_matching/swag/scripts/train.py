@@ -249,6 +249,7 @@ def create_training_components(dataset,
     """Create miner, dataloader, and optimizer for training."""
     # Create miner and dataloader
     debug_log("Creating HardNegativeMiner")
+    # Note: embeddings stored on CPU to save GPU memory, transferred to GPU as needed
     miner = vigor_dataset.HardNegativeMiner(
         batch_size=opt_config.batch_size,
         num_pano_embeddings=panorama_model.num_embeddings,
@@ -257,7 +258,8 @@ def create_training_components(dataset,
         embedding_dimension=panorama_model.output_dim,
         random_sample_type=opt_config.random_sample_type,
         hard_negative_pool_size=opt_config.hard_negative_pool_size,
-        dataset=dataset)
+        dataset=dataset,
+        device='cpu')
     debug_log("HardNegativeMiner created, creating dataloader")
 
     # Create a debug wrapper for worker_init_fn
