@@ -9,7 +9,6 @@ from pathlib import Path
 import pandas as pd
 import openai
 import base64
-
 from experimental.overhead_matching.swag.model.swag_config_types import (
     SemanticLandmarkExtractorConfig)
 from experimental.overhead_matching.swag.model.swag_model_input_output import (
@@ -33,6 +32,7 @@ def describe_landmark(props, ollama):
 
 def prune_landmark(props):
     to_drop = [
+        "index",  # for props that come from a dataloader
         "web_mercator",
         "panorama_idxs",
         "satellite_idxs",
@@ -228,82 +228,77 @@ def compute_landmark_sat_positions(sat_metadata):
 class SemanticLandmarkExtractor(torch.nn.Module):
     def __init__(self, config: SemanticLandmarkExtractorConfig):
         super().__init__()
-        self._sentence_embedding_model = SentenceTransformer(config.sentence_model_str)
-        self._ollama = config.llm_str
+        self.config = config
         self._description_cache = {}
+        self.all_sentances = None
+        if config.sentance_jsonl_directory is not None:
+            self.all_sentances, _ = make_sentance_dict_from_json(
+                load_all_jsonl_from_folder(Path(config.sentance_jsonl_directory).expanduser()))
 
-        for param in self._sentence_embedding_model.parameters():
-            param.requires_grad = False
-
-        self._feature_markers = {
-            "Point": torch.nn.Parameter(torch.randn(1, 1, self.output_dim)),
-            "LineString": torch.nn.Parameter(torch.randn(1, 1, self.output_dim)),
-            "Polygon": torch.nn.Parameter(torch.randn(1, 1, self.output_dim)),
-            "MultiPolygon": torch.nn.Parameter(torch.randn(1, 1, self.output_dim)),
-        }
+        self.all_embeddings = make_embedding_dict_from_json(
+            load_all_jsonl_from_folder(Path(config.embedding_jsonl_directory).expanduser()))
 
     def forward(self, model_input: ModelInput) -> ExtractorOutput:
-        max_num_landmarks = max([len(x["landmarks"]) for x in model_input.metadata])
+        # drop landmarks not used by this extractor
+        # true indicates valid, false indicates not valid
+        landmark_mask = [torch.tensor([1 if lm['geometry'].geom_type.lower() == self.config.landmark_type.lower() else 0 for lm in batch_item["landmarks"]], dtype=bool) for batch_item in model_input.metadata]
+        valid_landmarks = [x.sum() for x in landmark_mask]
+        max_num_landmarks = max(valid_landmarks)
         batch_size = len(model_input.metadata)
 
         is_panorama = 'pano_id' in model_input.metadata[0]
 
-        sentences = []
-        sentence_splits = [0]
-        for item in model_input.metadata:
-            sentence_splits.append(sentence_splits[-1] + len(item["landmarks"]))
-            if isinstance(self._ollama, str):
-                self._ollama = pyollama.Ollama(self._ollama)
-                self._ollama.__enter__()
-
-            for landmark in item["landmarks"]:
-                props = prune_landmark(landmark)
-                if props in self._description_cache:
-                    sentences.append(self._description_cache[props])
-                    continue
-
-                description = describe_landmark(props, self._ollama)
-                sentences.append(description)
-                self._description_cache[props] = description
-
-        with torch.no_grad():
-            sentence_embedding = self._sentence_embedding_model.encode(
-                sentences,
-                convert_to_tensor=True,
-                device=model_input.image.device).reshape(-1, self.output_dim)
-
         mask = torch.ones((batch_size, max_num_landmarks), dtype=torch.bool)
         features = torch.zeros((batch_size, max_num_landmarks, self.output_dim))
         positions = torch.zeros((batch_size, max_num_landmarks, 2, 2))
-        max_description_length = max([len(x.encode('utf-8'))
-                                     for x in sentences]) if len(sentences) > 0 else 0
+        max_description_length = 0
+        for i, item in enumerate(model_input.metadata):
+            num_landmarks_for_item = valid_landmarks[i]
+            # Compute the positions of the landmarks
+            if num_landmarks_for_item > 0:
+                if is_panorama:
+                    positions[i, :num_landmarks_for_item] = compute_landmark_pano_positions(
+                        item, model_input.image.shape[-2:])[landmark_mask[i]]
+                else:
+                    positions[i, :num_landmarks_for_item] = compute_landmark_sat_positions(item)[landmark_mask[i]]
+            landmark_index = 0
+            for landmark in item["landmarks"]:
+                # skip landmarks of the wrong type
+                if landmark['geometry'].geom_type.lower() != self.config.landmark_type.lower():
+                    continue
+                props = prune_landmark(landmark)
+                landmark_id = _custom_id_from_props(props)
+                if landmark_id not in self.all_embeddings:
+                    print(f"Warning: missing embedding for props: {props}, ID {landmark_id}")
+                    continue
+                features[i, landmark_index, :] = torch.tensor(self.all_embeddings[landmark_id])
+                mask[i, landmark_index] = False
+                landmark_index += 1
+
+                if self.all_sentances is not None:
+                    max_description_length = max(max_description_length, len(
+                        self.all_sentances[landmark_id].encode("utf-8")))
+
         sentence_debug = torch.zeros(
             (batch_size, max_num_landmarks, max_description_length), dtype=torch.uint8)
 
-        for batch_item in range(batch_size):
-            start_idx, end_idx = sentence_splits[batch_item:batch_item+2]
-            num_landmarks_for_item = end_idx - start_idx
-            mask[batch_item, :num_landmarks_for_item] = False
-            features[batch_item, :num_landmarks_for_item] = sentence_embedding[start_idx:end_idx]
-
-            # Compute the positions of the landmarks
-            if is_panorama:
-                positions[batch_item, :num_landmarks_for_item] = compute_landmark_pano_positions(
-                    model_input.metadata[batch_item], model_input.image.shape[-2:])
-            else:
-                positions[batch_item, :num_landmarks_for_item] = compute_landmark_sat_positions(
-                    model_input.metadata[batch_item])
-
-            # Store the sentences in a debug tensor
-            if num_landmarks_for_item > 0:
-                curr_sentences = sentences[start_idx:end_idx]
-                sentence_tensors = [torch.tensor(list(x.encode('utf-8')), dtype=torch.uint8)
-                                    for x in curr_sentences]
-                sentence_tensor = torch.nested.nested_tensor(
-                    sentence_tensors)
-                sentence_tensor = sentence_tensor.to_padded_tensor(
+        # Store the sentences in a debug tensor
+        for i, item in enumerate(model_input.metadata):
+            num_landmarks_for_item = valid_landmarks[i]
+            sentence_tensors = []
+            for landmark in item["landmarks"]:
+                if landmark['geometry'].geom_type.lower() != self.config.landmark_type.lower():
+                    continue
+                props = prune_landmark(landmark)
+                landmark_id = _custom_id_from_props(props)
+                if landmark_id not in self.all_sentances:
+                    continue
+                sentence_tensors.append(torch.tensor(list(self.all_sentances[landmark_id].encode('utf-8')), dtype=torch.uint8))
+            if len(sentence_tensors):
+                landmarks_sentences_tensor = torch.nested.nested_tensor(sentence_tensors)
+                landmarks_sentences_tensor = landmarks_sentences_tensor.to_padded_tensor(
                     padding=0, output_size=(num_landmarks_for_item, max_description_length))
-                sentence_debug[batch_item, :num_landmarks_for_item] = sentence_tensor
+                sentence_debug[i, :num_landmarks_for_item] = landmarks_sentences_tensor
 
         return ExtractorOutput(
             features=features.to(model_input.image.device),
@@ -313,7 +308,7 @@ class SemanticLandmarkExtractor(torch.nn.Module):
 
     @property
     def output_dim(self):
-        return self._sentence_embedding_model.get_sentence_embedding_dimension()
+        return len(next(iter(self.all_embeddings.values())))
 
     @property
     def num_position_outputs(self):
@@ -325,9 +320,11 @@ def _load_landmarks(geojson_list):
     import pandas as pd
     return pd.concat([gpd.read_file(p) for p in geojson_list], ignore_index=True)
 
+
 def _custom_id_from_props(props: dict) -> str:
     json_props = json.dumps(dict(props), sort_keys=True)
-    custom_id = base64.b64encode(hashlib.sha256(json_props.encode('utf-8')).digest()).decode('utf-8')
+    custom_id = base64.b64encode(hashlib.sha256(
+        json_props.encode('utf-8')).digest()).decode('utf-8')
     return custom_id
 
 
@@ -379,7 +376,6 @@ def create(args):
     unique_landmarks = {prune_landmark(row.dropna().to_dict()) for _, row in landmarks.iterrows()}
     requests = _create_requests(unique_landmarks)
     print("num requests", len(requests))
-    i = 0
     for idx, request_batch in enumerate(itertools.batched(requests, BATCH_SIZE)):
         batch_requests_file = Path(f'/tmp/sentance_requests_{idx:03d}.jsonl')
         batch_requests_file.write_text('\n'.join(json.dumps(r) for r in request_batch))
@@ -388,9 +384,6 @@ def create(args):
             batch_response = launch_batch(idx, batch_requests_file, "/v1/chat/completions")
             print(batch_response.id, end=" ")
     print()
-        # i += 1
-        # if i > 5:
-        #     break
 
 
 def fetch(args):
@@ -422,6 +415,7 @@ def _make_sentance_embedding_request(custom_id: str, sentance: str) -> dict:
         }
     }
 
+
 def load_all_jsonl_from_folder(folder: Path) -> list:
 
     all_json_objs = []
@@ -430,6 +424,7 @@ def load_all_jsonl_from_folder(folder: Path) -> list:
             for line in f:
                 all_json_objs.append(json.loads(line))
     return all_json_objs
+
 
 def create_sentance_embedding_batch(args):
     from pathlib import Path
@@ -441,7 +436,8 @@ def create_sentance_embedding_batch(args):
 
     # create the batch API embedding requests
     sentance_dict, _ = make_sentance_dict_from_json(all_responses)
-    all_requests = [_make_sentance_embedding_request(custom_id, sentance) for custom_id, sentance in sentance_dict.items()]
+    all_requests = [_make_sentance_embedding_request(
+        custom_id, sentance) for custom_id, sentance in sentance_dict.items()]
     i = 0
     for idx, request_batch in enumerate(itertools.batched(all_requests, BATCH_SIZE)):
         batch_requests_file = Path(f'/tmp/embedding_requests_{idx:03d}.jsonl')
@@ -455,9 +451,10 @@ def create_sentance_embedding_batch(args):
         #     break
     print()
 
-def make_embedding_dict_from_json(sentance_jsons: list) -> dict[str, str]:
+
+def make_embedding_dict_from_json(embedding_jsons: list) -> dict[str, str]:
     out = {}
-    for response in sentance_jsons:
+    for response in embedding_jsons:
         assert response["error"] == None
         custom_id = response["custom_id"]
         embedding = response["response"]["body"]["data"][0]["embedding"]
@@ -465,10 +462,11 @@ def make_embedding_dict_from_json(sentance_jsons: list) -> dict[str, str]:
         out[custom_id] = embedding
     return out
 
-def make_sentance_dict_from_json(embedding_jsons: list) -> dict[str, str]:
+
+def make_sentance_dict_from_json(sentance_jsons: list) -> dict[str, str]:
     out = {}
     output_tokens = 0
-    for response in embedding_jsons:
+    for response in sentance_jsons:
         if len(response['response']['body']) == 0:
             print(f"GOT EMPTY RESPONSE {response}. SKIPPING")
             continue
@@ -481,22 +479,6 @@ def make_sentance_dict_from_json(embedding_jsons: list) -> dict[str, str]:
         out[custom_id] = sentance
         output_tokens += response["response"]["body"]["usage"]["completion_tokens"]
     return out, output_tokens
-
-
-def compile_embeddings_into_database(args):
-    sentance_output_dir = Path(args.sentance_output_dir)
-    embedding_output_dir = Path(args.embedding_output_dir)
-    all_sentances, output_tokens = make_sentance_dict_from_json(load_all_jsonl_from_folder(sentance_output_dir))
-    print("output token usage: ", output_tokens)
-    all_embeddings = make_embedding_dict_from_json(load_all_jsonl_from_folder(embedding_output_dir))
-    landmarks = _load_landmarks(args.geojson_files)
-    unique_landmarks = {prune_landmark(row.dropna().to_dict()) for _, row in landmarks.iterrows()}
-    all_unique_landmarks = {_custom_id_from_props(x): x for x in unique_landmarks}
-    for k, v in all_sentances.items():
-        print("-"*50)
-        print(v)
-        print(all_unique_landmarks[k])
-    print(len(all_sentances), len(all_embeddings))
 
 
 if __name__ == "__main__":
@@ -525,11 +507,6 @@ if __name__ == "__main__":
     create_parser.add_argument('--launch', action='store_true')
     create_parser.set_defaults(func=create_sentance_embedding_batch)
 
-    create_parser = subparsers.add_parser('compile_database')
-    create_parser.add_argument('--sentance_output_dir')
-    create_parser.add_argument('--embedding_output_dir')
-    create_parser.add_argument('--geojson_files', required=True, nargs="+")
-    create_parser.set_defaults(func=compile_embeddings_into_database)
 
     args = parser.parse_args()
     import ipdb
