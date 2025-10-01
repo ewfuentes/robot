@@ -52,9 +52,9 @@ def log_batch_metrics(writer, loss_dict, lr_scheduler, pairing_data, step_idx, e
             writer.add_figure("train/interclass_sim", fig, global_step=step_idx)
 
     for k, v in loss_dict.items():
-        if torch.is_tensor(v) and (v.numel() > 1 or v.numel() == 0): 
+        if torch.is_tensor(v) and (v.numel() > 1 or v.numel() == 0):
             continue  # skip larger tensors
-        writer.add_scalar(f"train/loss_{k}", v.item() if torch.is_tensor(v) else v, global_step=step_idx)
+        writer.add_scalar(f"train/{k}", v.item() if torch.is_tensor(v) else v, global_step=step_idx)
 
     if not quiet:
         out_str = f"{epoch_idx=:4d} {batch_idx=:4d} lr: {lr_scheduler.get_last_lr()[0]:.2e} " + \

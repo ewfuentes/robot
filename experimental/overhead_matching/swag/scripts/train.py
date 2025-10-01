@@ -526,6 +526,7 @@ def main(
     with ipdb.launch_ipdb_on_exception() if not no_ipdb else nullcontext():
         train(
             train_config,
+            output_dir=output_dir,
             dataset=dataset,
             validation_datasets=validation_datasets,
             panorama_model=panorama_model,

@@ -167,6 +167,8 @@ py_binary(
   deps = [
     requirement("msgspec"),
     ":train",
+    ":losses",
+    ":distances",
     "//common/python:serialization",
   ]
 )
