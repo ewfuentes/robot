@@ -5,13 +5,18 @@ import math
 from common.ollama import pyollama
 import json
 import hashlib
+from pathlib import Path
 import pandas as pd
+import openai
+import base64
 
 from experimental.overhead_matching.swag.model.swag_config_types import (
-        SemanticLandmarkExtractorConfig)
+    SemanticLandmarkExtractorConfig)
 from experimental.overhead_matching.swag.model.swag_model_input_output import (
-        ModelInput, ExtractorOutput)
+    ModelInput, ExtractorOutput)
 from sentence_transformers import SentenceTransformer
+
+BATCH_SIZE = 49_999
 
 
 def describe_landmark(props, ollama):
@@ -102,7 +107,6 @@ def compute_bounds_for_polygon(pano_loc_px, geometry):
 
         prev_theta = unwrapped_theta
 
-
     return bounds
 
 
@@ -127,7 +131,7 @@ def compute_landmark_pano_positions(pano_metadata, pano_shape):
             pano_from_web_mercator = torch.tensor([[0.0, -1.0],
                                                    [1.0,  0.0]])
             delta_in_pano = pano_from_web_mercator @ torch.tensor(
-                    [[dx_in_web_mercator, dy_in_web_mercator]]).T
+                [[dx_in_web_mercator, dy_in_web_mercator]]).T
 
             theta = math.atan2(delta_in_pano[1], delta_in_pano[0])
             frac = (theta + math.pi) / (2 * math.pi)
@@ -264,14 +268,15 @@ class SemanticLandmarkExtractor(torch.nn.Module):
 
         with torch.no_grad():
             sentence_embedding = self._sentence_embedding_model.encode(
-                    sentences,
-                    convert_to_tensor=True,
-                    device=model_input.image.device).reshape(-1, self.output_dim)
+                sentences,
+                convert_to_tensor=True,
+                device=model_input.image.device).reshape(-1, self.output_dim)
 
         mask = torch.ones((batch_size, max_num_landmarks), dtype=torch.bool)
         features = torch.zeros((batch_size, max_num_landmarks, self.output_dim))
         positions = torch.zeros((batch_size, max_num_landmarks, 2, 2))
-        max_description_length = max([len(x.encode('utf-8')) for x in sentences]) if len(sentences) > 0 else 0
+        max_description_length = max([len(x.encode('utf-8'))
+                                     for x in sentences]) if len(sentences) > 0 else 0
         sentence_debug = torch.zeros(
             (batch_size, max_num_landmarks, max_description_length), dtype=torch.uint8)
 
@@ -284,10 +289,10 @@ class SemanticLandmarkExtractor(torch.nn.Module):
             # Compute the positions of the landmarks
             if is_panorama:
                 positions[batch_item, :num_landmarks_for_item] = compute_landmark_pano_positions(
-                        model_input.metadata[batch_item], model_input.image.shape[-2:])
+                    model_input.metadata[batch_item], model_input.image.shape[-2:])
             else:
                 positions[batch_item, :num_landmarks_for_item] = compute_landmark_sat_positions(
-                        model_input.metadata[batch_item])
+                    model_input.metadata[batch_item])
 
             # Store the sentences in a debug tensor
             if num_landmarks_for_item > 0:
@@ -320,9 +325,13 @@ def _load_landmarks(geojson_list):
     import pandas as pd
     return pd.concat([gpd.read_file(p) for p in geojson_list], ignore_index=True)
 
+def _custom_id_from_props(props: dict) -> str:
+    json_props = json.dumps(dict(props), sort_keys=True)
+    custom_id = base64.b64encode(hashlib.sha256(json_props.encode('utf-8')).digest()).decode('utf-8')
+    return custom_id
+
 
 def _create_requests(landmarks):
-    import base64
     system_prompt = "Your job is to produce short natural language descriptions of openstreetmap landmarks that are helpful for visually identifying the landmark. For example, do not include information about building identifiers that are unlikely to be discernable by visual inspection. Don't include any details not derived from the provided landmark information. Don't include descriptions about the lack of information. Do not include instructions on how to identify the landmark. Do include an address if provided."
 
     user_prompt = "Produce a short natural language description for this landmark: "
@@ -331,13 +340,13 @@ def _create_requests(landmarks):
     for props in landmarks:
         json_props = json.dumps(dict(props), sort_keys=True)
         requests.append({
-            "custom_id": base64.b64encode(hashlib.sha256(json_props.encode('utf-8')).digest()).decode('utf-8'),
+            "custom_id": _custom_id_from_props(props),
             "method": "POST",
             "url": "/v1/chat/completions",
             "body": {
                 "model": "gpt-5-nano",
-                "max_tokens": 3000,
-                "reasoning_error": 'low',
+                "max_completion_tokens": 3000,
+                "reasoning_effort": 'low',
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt + json_props},
@@ -347,7 +356,7 @@ def _create_requests(landmarks):
     return requests
 
 
-def launch_batch(idx, batch_requests_file):
+def launch_batch(idx, batch_requests_file, endpoint):
     import openai
     client = openai.OpenAI()
     batch_input_file = client.files.create(
@@ -356,7 +365,7 @@ def launch_batch(idx, batch_requests_file):
 
     return client.batches.create(
         input_file_id=batch_input_file.id,
-        endpoint="/v1/chat/completions",
+        endpoint=endpoint,
         completion_window="24h",
         metadata={"description": f"landmark summarization part: {idx}"}
     )
@@ -369,21 +378,125 @@ def create(args):
     landmarks = _load_landmarks(args.geojson)
     unique_landmarks = {prune_landmark(row.dropna().to_dict()) for _, row in landmarks.iterrows()}
     requests = _create_requests(unique_landmarks)
-
-    for idx, request_batch in enumerate(itertools.batched(requests, 100)):
-        batch_requests_file = Path(f'/tmp/requests_{idx:03d}.jsonl')
+    print("num requests", len(requests))
+    i = 0
+    for idx, request_batch in enumerate(itertools.batched(requests, BATCH_SIZE)):
+        batch_requests_file = Path(f'/tmp/sentance_requests_{idx:03d}.jsonl')
         batch_requests_file.write_text('\n'.join(json.dumps(r) for r in request_batch))
 
         if args.launch:
-            batch_response = launch_batch(idx, batch_requests_file)
-            print(batch_response)
-        break
+            batch_response = launch_batch(idx, batch_requests_file, "/v1/chat/completions")
+            print(batch_response.id, end=" ")
+    print()
+        # i += 1
+        # if i > 5:
+        #     break
 
 
 def fetch(args):
+    output_folder = Path(args.output_folder)
+    output_folder.mkdir(exist_ok=True, parents=True)
+    client = openai.OpenAI()
     print(f'fetch {args}')
+    for batch_id in args.batch_ids:
+        batch = client.batches.retrieve(batch_id)
+        if batch.status != "completed":
+            print(
+                f"Batch has non 'completed' status is '{batch.status}'. Skipping!!. Batch info: {batch}")
+            continue
+        file_output = client.files.content(batch.output_file_id)
 
-    ...
+        with open(output_folder / batch.output_file_id, 'w') as f:
+            f.write(file_output.text)
+        print(f"Downloaded output for batch id {batch_id}")
+
+
+def _make_sentance_embedding_request(custom_id: str, sentance: str) -> dict:
+    return {
+        "custom_id": custom_id,
+        "method": "POST",
+        "url": "/v1/embeddings",
+        "body": {
+            "model": "text-embedding-3-small",
+            "input": sentance,
+        }
+    }
+
+def load_all_jsonl_from_folder(folder: Path) -> list:
+
+    all_json_objs = []
+    for file in folder.glob("*"):
+        with open(file, 'r') as f:
+            for line in f:
+                all_json_objs.append(json.loads(line))
+    return all_json_objs
+
+def create_sentance_embedding_batch(args):
+    from pathlib import Path
+    import itertools
+    input_path = Path(args.sentance_output_dir)
+
+    # read all of the files
+    all_responses = load_all_jsonl_from_folder(input_path)
+
+    # create the batch API embedding requests
+    sentance_dict, _ = make_sentance_dict_from_json(all_responses)
+    all_requests = [_make_sentance_embedding_request(custom_id, sentance) for custom_id, sentance in sentance_dict.items()]
+    i = 0
+    for idx, request_batch in enumerate(itertools.batched(all_requests, BATCH_SIZE)):
+        batch_requests_file = Path(f'/tmp/embedding_requests_{idx:03d}.jsonl')
+        batch_requests_file.write_text('\n'.join(json.dumps(r) for r in request_batch))
+
+        if args.launch:
+            batch_response = launch_batch(idx, batch_requests_file, "/v1/embeddings")
+            print(batch_response.id, end=" ")
+        # i += 1
+        # if i > 5:
+        #     break
+    print()
+
+def make_embedding_dict_from_json(sentance_jsons: list) -> dict[str, str]:
+    out = {}
+    for response in sentance_jsons:
+        assert response["error"] == None
+        custom_id = response["custom_id"]
+        embedding = response["response"]["body"]["data"][0]["embedding"]
+        assert custom_id not in out
+        out[custom_id] = embedding
+    return out
+
+def make_sentance_dict_from_json(embedding_jsons: list) -> dict[str, str]:
+    out = {}
+    output_tokens = 0
+    for response in embedding_jsons:
+        if len(response['response']['body']) == 0:
+            print(f"GOT EMPTY RESPONSE {response}. SKIPPING")
+            continue
+        assert response["error"] == None and \
+            response["response"]["body"]["choices"][0]["finish_reason"] == "stop" and \
+            response["response"]["body"]["choices"][0]["message"]["refusal"] == None
+        custom_id = response["custom_id"]
+        sentance = response["response"]["body"]["choices"][0]["message"]["content"]
+        assert custom_id not in out
+        out[custom_id] = sentance
+        output_tokens += response["response"]["body"]["usage"]["completion_tokens"]
+    return out, output_tokens
+
+
+def compile_embeddings_into_database(args):
+    sentance_output_dir = Path(args.sentance_output_dir)
+    embedding_output_dir = Path(args.embedding_output_dir)
+    all_sentances, output_tokens = make_sentance_dict_from_json(load_all_jsonl_from_folder(sentance_output_dir))
+    print("output token usage: ", output_tokens)
+    all_embeddings = make_embedding_dict_from_json(load_all_jsonl_from_folder(embedding_output_dir))
+    landmarks = _load_landmarks(args.geojson_files)
+    unique_landmarks = {prune_landmark(row.dropna().to_dict()) for _, row in landmarks.iterrows()}
+    all_unique_landmarks = {_custom_id_from_props(x): x for x in unique_landmarks}
+    for k, v in all_sentances.items():
+        print("-"*50)
+        print(v)
+        print(all_unique_landmarks[k])
+    print(len(all_sentances), len(all_embeddings))
 
 
 if __name__ == "__main__":
@@ -392,18 +505,31 @@ if __name__ == "__main__":
     # Arguments required to create a batch job
     subparsers = parser.add_subparsers()
 
-    create_parser = subparsers.add_parser('create')
+    create_parser = subparsers.add_parser('create_sentances')
     create_parser.add_argument('--train_config')
     create_parser.add_argument('--field_spec')
-    create_parser.add_argument('--geojson', required=True, action='append')
+    create_parser.add_argument('--geojson', required=True, nargs="+")
     create_parser.add_argument('--launch', action='store_true')
     create_parser.set_defaults(func=create)
 
     # Arguments required to fetch the result of a batch job
     fetch_parser = subparsers.add_parser("fetch")
-    fetch_parser.add_argument('--batch_info')
-    fetch_parser.add_argument('--output')
+    fetch_parser.add_argument('--batch_ids', required=True, type=str,
+                              nargs="+", help="List of batch IDs from batch processing jobs")
+    fetch_parser.add_argument('--output_folder', type=str, required=True,
+                              help="Folder to save the batch outputs to")
     fetch_parser.set_defaults(func=fetch)
+
+    create_parser = subparsers.add_parser('create_embed')
+    create_parser.add_argument('--sentance_output_dir')
+    create_parser.add_argument('--launch', action='store_true')
+    create_parser.set_defaults(func=create_sentance_embedding_batch)
+
+    create_parser = subparsers.add_parser('compile_database')
+    create_parser.add_argument('--sentance_output_dir')
+    create_parser.add_argument('--embedding_output_dir')
+    create_parser.add_argument('--geojson_files', required=True, nargs="+")
+    create_parser.set_defaults(func=compile_embeddings_into_database)
 
     args = parser.parse_args()
     import ipdb
