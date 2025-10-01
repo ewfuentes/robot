@@ -268,11 +268,11 @@ class LearnedDistanceFunction(torch.nn.Module):
         """
         n_pano, n_emb_pano, d_emb = pano_embeddings_unnormalized.shape
         n_sat, n_emb_sat, _ = sat_embeddings_unnormalized.shape
+        model_device = next(self.parameters()).device
 
         if self.config.architecture == "mlp":
             # Process in batches to avoid OOM with large n_pano x n_sat
             # Keep embeddings on CPU, move batches to GPU as needed
-            model_device = next(self.model.parameters()).device
             batch_size = self.config.max_batch_size
             all_similarities = []
 
@@ -305,7 +305,6 @@ class LearnedDistanceFunction(torch.nn.Module):
         elif self.config.architecture in ["attention", "transformer_decoder"]:
             # Generate all pano-sat pairs (indices only to avoid memory issues)
             # Keep embeddings on CPU, move batches to GPU as needed
-            model_device = next(self.model.parameters()).device
             pair_indices = []
 
             for p_idx in range(n_pano):
