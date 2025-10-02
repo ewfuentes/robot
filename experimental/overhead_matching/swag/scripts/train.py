@@ -216,8 +216,7 @@ def create_training_components(dataset,
         device='cpu')
 
     dataloader = vigor_dataset.get_dataloader(
-        dataset, batch_sampler=miner, num_workers=min(os.cpu_count() // 2, 24),
-        persistent_workers=True)
+        dataset, batch_sampler=miner, num_workers=int(os.environ.get("MAX_DATALOADER_WORKERS", min(os.cpu_count() // 2, 24))), persistent_workers=True)
 
     # Create optimizer
     opt = torch.optim.AdamW(

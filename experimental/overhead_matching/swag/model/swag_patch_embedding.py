@@ -38,11 +38,10 @@ from experimental.overhead_matching.swag.model.swag_config_types import (
     ExtractorConfig,
 )
 
-
 class HashStruct(msgspec.Struct, frozen=True):
     model_config: Any
     patch_dims: tuple[int, int]
-
+    landmark_version: str
 
 def compute_config_hash(obj):
     yaml_str = msgspec.yaml.encode(obj, order='deterministic')
@@ -393,7 +392,10 @@ class SwagPatchEmbedding(torch.nn.Module):
         self._cache_info = {}
         for k in config.use_cached_extractors:
             config_hash = compute_config_hash(HashStruct(
-                model_config=config.extractor_config_by_name[k], patch_dims=config.patch_dims))
+                model_config=config.extractor_config_by_name[k], 
+                patch_dims=config.patch_dims,
+                landmark_version="v3",
+                ))
             self._cache_info[config_hash] = (k, ExtractorOutput)
 
         self._patch_dims = config.patch_dims
@@ -414,7 +416,10 @@ class SwagPatchEmbedding(torch.nn.Module):
             self._projection_by_name["__feature_map_extractor"] = self._feature_token_projection
             if config.use_cached_feature_maps:
                 config_hash = compute_config_hash(HashStruct(
-                    model_config=config.feature_map_extractor_config, patch_dims=config.patch_dims))
+                    model_config=config.feature_map_extractor_config, 
+                    patch_dims=config.patch_dims,
+                    landmark_version="v3",
+                    ))
                 self._cache_info[config_hash] = ("__feature_map_extractor", ExtractorOutput)
 
         if self._semantic_token_extractor is not None:
@@ -428,7 +433,10 @@ class SwagPatchEmbedding(torch.nn.Module):
 
             if config.use_cached_semantic_tokens:
                 config_hash = compute_config_hash(HashStruct(
-                    model_config=config.semantic_token_extractor_config, patch_dims=config.patch_dims))
+                    model_config=config.semantic_token_extractor_config, 
+                    patch_dims=config.patch_dims,
+                    landmark_version="v3",
+                    ))
                 self._cache_info[config_hash] = ("__semantic_token_extractor", ExtractorOutput)
 
     def model_input_from_batch(self, batch_item):
@@ -454,6 +462,8 @@ class SwagPatchEmbedding(torch.nn.Module):
 
         input_tokens_by_name = {}
         for k, v in extractor_outputs_by_name.items():
+            if v.positions.shape[1] == 0:  # no features
+                continue
             position_embeddings = self._position_embedding(
                 model_input=model_input,
                 relative_positions=v.positions).to(dev)

@@ -230,15 +230,22 @@ class SemanticLandmarkExtractor(torch.nn.Module):
         super().__init__()
         self.config = config
         self._description_cache = {}
+        self.files_loaded = False
         self.all_sentances = None
-        if config.sentance_jsonl_directory is not None:
+
+    def load_files(self):
+        # lazy setup to speed things up when we're using caching
+        if self.config.sentance_jsonl_directory is not None:
             self.all_sentances, _ = make_sentance_dict_from_json(
-                load_all_jsonl_from_folder(Path(config.sentance_jsonl_directory).expanduser()))
+                load_all_jsonl_from_folder(Path(self.config.sentance_jsonl_directory).expanduser()))
 
         self.all_embeddings = make_embedding_dict_from_json(
-            load_all_jsonl_from_folder(Path(config.embedding_jsonl_directory).expanduser()))
+            load_all_jsonl_from_folder(Path(self.config.embedding_jsonl_directory).expanduser()))
 
     def forward(self, model_input: ModelInput) -> ExtractorOutput:
+        if not self.files_loaded:
+            self.load_files()
+            self.files_loaded = True
         # drop landmarks not used by this extractor
         # true indicates valid, false indicates not valid
         landmark_mask = [torch.tensor([1 if lm['geometry'].geom_type.lower() == self.config.landmark_type.lower() else 0 for lm in batch_item["landmarks"]], dtype=bool) for batch_item in model_input.metadata]
@@ -308,7 +315,7 @@ class SemanticLandmarkExtractor(torch.nn.Module):
 
     @property
     def output_dim(self):
-        return len(next(iter(self.all_embeddings.values())))
+        return 1536 #len(next(iter(self.all_embeddings.values())))
 
     @property
     def num_position_outputs(self):
@@ -320,6 +327,15 @@ def _load_landmarks(geojson_list):
     import pandas as pd
     return pd.concat([gpd.read_file(p) for p in geojson_list], ignore_index=True)
 
+# from pandas._libs.missing import NAType
+# from pandas._libs.tslibs.nattype import NaTType
+# class PandasJsonEncoder(json.JSONEncoder):
+#     def default(self, obj):
+#         if isinstance(obj, NAType):
+#             return None
+#         if isinstance(obj, NaTType):
+#             return None
+#         return json.JSONEncoder.default(self, obj)
 
 def _custom_id_from_props(props: dict) -> str:
     json_props = json.dumps(dict(props), sort_keys=True)
