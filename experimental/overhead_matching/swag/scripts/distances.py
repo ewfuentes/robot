@@ -299,7 +299,7 @@ class LearnedDistanceFunction(torch.nn.Module):
                 all_similarities.append(batch_similarity.squeeze(-1).cpu())  # batch_size x n_sat
 
             # Concatenate all batch results
-            similarity = torch.cat(all_similarities, dim=0)  # n_pano x n_sat
+            similarity = torch.cat(all_similarities, dim=0).to(model_device)  # n_pano x n_sat
             return similarity
 
         elif self.config.architecture in ["attention", "transformer_decoder"]:
@@ -337,7 +337,7 @@ class LearnedDistanceFunction(torch.nn.Module):
             similarities = torch.cat(all_similarities, dim=0)  # (n_pano * n_sat) x 1
 
             # Reshape to n_pano x n_sat
-            similarities = similarities.view(n_pano, n_sat)
+            similarities = similarities.view(n_pano, n_sat).to(model_device)
             return similarities
 
         else:
