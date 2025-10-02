@@ -286,6 +286,22 @@ fi
 
     def detect_training_completion_alternative(self) -> bool:
         """Alternative method to detect training completion with multiple verification steps."""
+
+        # First, check if heartbeat is still active - if so, process is alive (possibly hung, but not complete)
+        heartbeat_status = self.check_heartbeat_file()
+        if heartbeat_status["status"] == "active":
+            # Check if heartbeat is fresh (updated within last 2 minutes)
+            try:
+                heartbeat_file = "/tmp/training_heartbeat.txt"
+                if os.path.exists(heartbeat_file):
+                    heartbeat_mtime = datetime.fromtimestamp(os.path.getmtime(heartbeat_file))
+                    heartbeat_age = (datetime.now() - heartbeat_mtime).total_seconds()
+                    if heartbeat_age < 120:  # Less than 2 minutes old
+                        self.log(f"⚠️ Heartbeat is still active (updated {heartbeat_age:.0f}s ago) - training process is alive, not complete")
+                        return False
+            except Exception as e:
+                self.log(f"Could not check heartbeat freshness: {e}")
+
         completion_indicators = 0
         required_indicators = 2  # Require multiple confirmations
 
