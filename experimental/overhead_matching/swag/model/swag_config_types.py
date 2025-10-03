@@ -44,8 +44,9 @@ class LandmarkType(StrEnum):
 
 class SemanticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     landmark_type: LandmarkType
-    embedding_jsonl_directory: str
-    sentance_jsonl_directory: str | None
+    openai_embedding_size: int  # if smaller than the true embedding dim (1536), will crop and renormalize embedding
+    embedding_version: str
+    auxiliary_info_key: str
 
 
 class SyntheticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
