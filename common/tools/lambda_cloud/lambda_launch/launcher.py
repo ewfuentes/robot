@@ -16,19 +16,22 @@ from common.tools.lambda_cloud.lambda_launch.job_manager import JobManager, JobR
 class LambdaTrainingLauncher:
     """Main launcher for Lambda Cloud training jobs."""
     
-    def __init__(self, 
+    def __init__(self,
                  machine_config_path: str,
                  output_dir: Optional[str] = None,
-                 max_parallel_jobs: int = 10):
+                 max_parallel_jobs: int = 10,
+                 setup_only: bool = False):
         """Initialize the launcher.
-        
+
         Args:
             machine_config_path: Path to machine configuration YAML
             output_dir: Output directory for logs and results
             max_parallel_jobs: Maximum number of parallel jobs
+            setup_only: If True, only setup instances without starting training
         """
         self.machine_config_path = machine_config_path
         self.max_parallel_jobs = max_parallel_jobs
+        self.setup_only = setup_only
         
         # Parse machine configuration
         self.machine_config = ConfigParser.parse_machine_config(machine_config_path)
@@ -107,15 +110,22 @@ class LambdaTrainingLauncher:
             machine_config=self.machine_config,
             lambda_client=self.lambda_client,
             max_parallel_jobs=self.max_parallel_jobs,
-            log_dir=self.output_dir / "job_logs"
+            log_dir=self.output_dir / "job_logs",
+            setup_only=self.setup_only
         )
         
         # Run jobs
-        print(f"\n🚀 Starting {len(job_configs)} training jobs...")
+        if self.setup_only:
+            print(f"\n🔧 Setting up {len(job_configs)} instances (setup-only mode)...")
+        else:
+            print(f"\n🚀 Starting {len(job_configs)} training jobs...")
         results = job_manager.run_jobs(job_configs)
-        
+
         # Jobs are now autonomous - no shutdown handling needed from host
-        print(f"\n✅ Successfully launched {len([r for r in results if r.status == JobStatus.COMPLETED])} training jobs")
+        if self.setup_only:
+            print(f"\n✅ Successfully set up {len([r for r in results if r.status == JobStatus.COMPLETED])} instances")
+        else:
+            print(f"\n✅ Successfully launched {len([r for r in results if r.status == JobStatus.COMPLETED])} training jobs")
         
         # Save results
         self._save_results(results)

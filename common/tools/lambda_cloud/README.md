@@ -131,6 +131,16 @@ bazel run //common/tools/lambda_cloud/lambda_launch:launch_training_jobs -- \\
   --dry-run
 ```
 
+### Setup-Only Mode
+
+Launch instances and complete all setup without starting training (useful for debugging or manual training):
+```bash
+bazel run //common/tools/lambda_cloud/lambda_launch:launch_training_jobs -- \\
+  --config configs/train.yaml \\
+  --machine-config setup.yaml \\
+  --setup-only
+```
+
 
 ## Output
 
