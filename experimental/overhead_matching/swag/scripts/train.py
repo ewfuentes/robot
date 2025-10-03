@@ -169,6 +169,12 @@ def setup_models_for_training(panorama_model, satellite_model, distance_model):
     satellite_model.train()
     distance_model = distance_model.cuda()
     distance_model.train()
+
+    # Apply torch.compile for improved performance
+    panorama_model = torch.compile(panorama_model, mode="default", fullgraph=False)
+    satellite_model = torch.compile(satellite_model, mode="default", fullgraph=False)
+    distance_model = torch.compile(distance_model, mode="default", fullgraph=False)
+
     return panorama_model, satellite_model, distance_model
 
 
