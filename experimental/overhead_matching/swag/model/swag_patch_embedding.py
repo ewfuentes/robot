@@ -77,7 +77,7 @@ def create_extractor(config: ExtractorConfig, auxiliary_info: dict[str, Any]):
         case DinoFeatureMapExtractorConfig(): return DinoFeatureExtractor(config)
         case SemanticNullExtractorConfig(): return SemanticNullExtractor(config)
         case SemanticEmbeddingMatrixConfig(): return SemanticEmbeddingMatrix(config)
-        case SemanticLandmarkExtractorConfig(): return SemanticLandmarkExtractor(config)
+        case SemanticLandmarkExtractorConfig(): return SemanticLandmarkExtractor(config, auxiliary_info[config.auxiliary_info_key])
         case SemanticSegmentExtractorConfig(): return SemanticSegmentExtractor(config)
         case SyntheticLandmarkExtractorConfig(): return SyntheticLandmarkExtractor(config)
         case AbsolutePositionExtractorConfig(): return AbsolutePositionExtractor(config)
