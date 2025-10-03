@@ -27,7 +27,8 @@ class PairwiseContrastiveLossConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     avg_negative_similarity: float
 
 
-class BatchUniformityLossConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+@dataclass
+class BatchUniformityLossConfig:
     batch_uniformity_weight: float
     batch_uniformity_hinge_location: float
 
@@ -43,7 +44,7 @@ class SphericalEmbeddingConstraintLossConfig(msgspec.Struct, **MSGSPEC_STRUCT_OP
     weight_scale: float
 
 
-LossConfig = Union[PairwiseContrastiveLossConfig, InfoNCELossConfig, SphericalEmbeddingConstraintLossConfig, BatchUniformityLossConfig]
+LossConfig = Union[PairwiseContrastiveLossConfig, InfoNCELossConfig, SphericalEmbeddingConstraintLossConfig]
 
 
 def compute_pairwise_loss(
@@ -125,9 +126,9 @@ def compute_batch_uniformity_loss(loss_inputs: LossInputs, batch_uniformity_loss
         return batch_uniformity_loss_config.batch_uniformity_weight * relud_loss
 
     sat_similarity = torch.einsum(
-        "ad,ad->a", sat_embeddings_norm, rolled_sat_embeddings)
+        "ad,ad->a", loss_inputs.sat_embeddings_unnormalized, rolled_sat_embeddings)
     pano_similarity = torch.einsum(
-        "ad,ad->a", pano_embeddings_norm, rolled_pano_embeddings)
+        "ad,ad->a", loss_inputs.pano_embeddings_unnormalized, rolled_pano_embeddings)
 
     sat_uniformity_loss = mean_hinge_loss(sat_similarity)
     pano_uniformity_loss = mean_hinge_loss(pano_similarity)
@@ -204,14 +205,14 @@ def create_losses_from_loss_config_list(
     loss_functions = []
     for loss_config in loss_configs:
         if isinstance(loss_config, PairwiseContrastiveLossConfig):
-            loss_functions.append(lambda x, config=loss_config: compute_pairwise_loss(x, config))
+            loss_functions.append(lambda x: compute_pairwise_loss(x, loss_config))
         elif isinstance(loss_config, InfoNCELossConfig):
-            loss_functions.append(lambda x, config=loss_config: compute_info_nce_loss(x, config))
+            loss_functions.append(lambda x: compute_info_nce_loss(x, loss_config))
         elif isinstance(loss_config, SphericalEmbeddingConstraintLossConfig):
             loss_functions.append(
-                lambda x, config=loss_config: compute_spherical_embedding_constraint_loss(x, config))
+                lambda x: compute_spherical_embedding_constraint_loss(x, loss_config))
         elif isinstance(loss_config, BatchUniformityLossConfig):
-            loss_functions.append(lambda x, config=loss_config: compute_batch_uniformity_loss(x, config))
+            loss_functions.append(lambda x: compute_batch_uniformity_loss(x, loss_config))
         else:
             raise ValueError(f"Unknown loss config type: {type(loss_config)}")
     return loss_functions
