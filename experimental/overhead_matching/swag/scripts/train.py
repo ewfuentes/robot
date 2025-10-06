@@ -24,10 +24,7 @@ import msgspec
 from pprint import pprint
 import ipdb
 from contextlib import nullcontext
-import threading
-import atexit
 import datetime
-import time
 from experimental.overhead_matching.swag.scripts.lr_sweep import LearningRateSweepConfig, run_lr_sweep
 
 
@@ -47,50 +44,6 @@ def debug_log(message: str, log_file: str = "/tmp/training_debug.log"):
             os.fsync(f.fileno())  # Force write to disk
     except Exception as e:
         print(f"Warning: Failed to write debug log: {e}", flush=True)
-
-
-def create_heartbeat_system(heartbeat_file: str = "/tmp/training_heartbeat.txt"):
-    """Create a heartbeat system that writes periodic status updates."""
-    heartbeat_active = threading.Event()
-    heartbeat_active.set()
-
-    def heartbeat_worker():
-        """Background thread that writes heartbeat every 30 seconds."""
-        while heartbeat_active.is_set():
-            try:
-                with open(heartbeat_file, 'w') as f:
-                    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    f.write(f"HEARTBEAT: {timestamp} - Training process alive\n")
-                    f.flush()
-                print(f"HEARTBEAT: {timestamp} - Training process alive", flush=True)
-            except Exception as e:
-                print(f"Heartbeat error: {e}", flush=True)
-
-            # Sleep for 30 seconds, checking every second if we should stop
-            for _ in range(30):
-                if not heartbeat_active.is_set():
-                    break
-                time.sleep(1)
-
-    # Start heartbeat thread
-    heartbeat_thread = threading.Thread(target=heartbeat_worker, daemon=True)
-    heartbeat_thread.start()
-
-    def stop_heartbeat():
-        """Stop the heartbeat system."""
-        heartbeat_active.clear()
-        try:
-            with open(heartbeat_file, 'w') as f:
-                timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                f.write(f"TRAINING_COMPLETE: {timestamp} - Training finished successfully\n")
-                f.flush()
-            print(f"TRAINING_COMPLETE: {timestamp} - Training finished successfully", flush=True)
-        except Exception as e:
-            print(f"Completion signal error: {e}", flush=True)
-
-    # Register cleanup
-    atexit.register(stop_heartbeat)
-    return stop_heartbeat
 
 
 @dataclass
@@ -314,9 +267,6 @@ def train(config: TrainConfig,
           satellite_model,
           quiet):
 
-    # Start heartbeat system
-    stop_heartbeat = create_heartbeat_system()
-
     output_dir.mkdir(parents=True, exist_ok=True)
     # save config:
     config_json = msgspec.json.encode(config, enc_hook=msgspec_enc_hook)
@@ -508,7 +458,6 @@ def train(config: TrainConfig,
 
     # Signal training completion
     debug_log("🎉 TRAINING COMPLETED SUCCESSFULLY 🎉")
-    stop_heartbeat()
     debug_log("Training process exiting normally")
 
 

@@ -54,11 +54,6 @@ class RemoteMonitor:
         self.monitor_log_file = "/tmp/monitor.log"
         self.diagnostics_log_file = "/tmp/diagnostics.log"
 
-        # Track log monitoring
-        self.last_log_size = 0
-        self.last_log_activity = datetime.now()
-        self.stalled_log_threshold = timedelta(minutes=10)  # Alert if no log activity for 10 min
-
         # Initialize monitor log file
         self._setup_monitor_logging()
         
@@ -115,7 +110,6 @@ class RemoteMonitor:
 set -euo pipefail
 
 LOG_FILE="{self.training_output_log}"
-HEARTBEAT_FILE="/tmp/training_heartbeat.txt"
 
 echo "🚀 Robust training wrapper starting at $(date)" | tee -a "$LOG_FILE"
 echo "Command: {fixed_command}" | tee -a "$LOG_FILE"
@@ -186,90 +180,39 @@ fi
         return poll_result is None
 
     def is_training_progressing(self) -> bool:
-        """Check if training is actually making progress (not just running).
-
-        Uses multiple indicators:
-        1. Log file modification time
-        2. Output directory activity (checkpoints, wandb files)
-        3. Training process activity
+        """Check if training debug log has been modified in the last 15 minutes.
 
         Returns:
-            True if training appears to be progressing, False if stuck
+            True if log was modified recently, False otherwise
         """
         if not self.is_training_running():
             return False
 
-        current_time = datetime.now()
+        if not os.path.exists(self.training_debug_log):
+            self.log(f"Training debug log not found: {self.training_debug_log}")
+            return False
 
-        # Check 1: Training debug log file modification time (reliable file-written log)
-        training_log_activity = False
-        if os.path.exists(self.training_debug_log):
-            try:
-                log_mtime = datetime.fromtimestamp(os.path.getmtime(self.training_debug_log))
-                # Consider active if log was modified in last 10 minutes
-                if (current_time - log_mtime).total_seconds() < 600:
-                    training_log_activity = True
-                    self.log(f"Training debug log last modified: {log_mtime}")
-            except Exception as e:
-                self.log(f"Error checking training debug log mtime: {e}")
+        try:
+            current_time = datetime.now()
+            log_mtime = datetime.fromtimestamp(os.path.getmtime(self.training_debug_log))
+            seconds_since_update = (current_time - log_mtime).total_seconds()
 
-        # Check 2: Output directory activity (wandb, checkpoints, etc.)
-        output_activity = False
-        if os.path.exists(self.output_dir):
-            try:
+            # Consider active if log was modified in last 15 minutes
+            is_active = seconds_since_update < 900
 
-                # Check for checkpoint/model files
-                if not output_activity:
-                    for root, dirs, files in os.walk(self.output_dir):
-                        for file in files:
-                            if file.endswith(('.ckpt', '.pt', '.pth', '.pkl')):
-                                filepath = os.path.join(root, file)
-                                file_mtime = datetime.fromtimestamp(os.path.getmtime(filepath))
-                                if (current_time - file_mtime).total_seconds() < 600:
-                                    output_activity = True
-                                    self.log(f"Recent model file activity: {filepath} modified at {file_mtime}")
-                                    break
-                        if output_activity:
-                            break
+            if is_active:
+                self.log(f"Training debug log last modified {seconds_since_update:.0f}s ago: {log_mtime}")
+            else:
+                self.log(f"Training debug log stalled - last modified {seconds_since_update:.0f}s ago: {log_mtime}")
 
-            except Exception as e:
-                self.log(f"Error checking output directory activity: {e}")
-
-        # Return True if we see any sign of progress
-        is_progressing = training_log_activity or output_activity
-
-        if not is_progressing:
-            self.log(f"No training progress detected (log_activity={training_log_activity}, output_activity={output_activity})")
-
-        return is_progressing
+            return is_active
+        except Exception as e:
+            self.log(f"Error checking training debug log mtime: {e}")
+            return False
     
     def is_timeout_reached(self) -> bool:
         """Check if training timeout has been reached."""
         return datetime.now() >= self.timeout_time
-
-    def check_log_activity(self) -> bool:
-        """Check if training debug log is still being written to."""
-        try:
-            if not os.path.exists(self.training_debug_log):
-                return False
-
-            current_size = os.path.getsize(self.training_debug_log)
-            if current_size > self.last_log_size:
-                self.last_log_size = current_size
-                self.last_log_activity = datetime.now()
-                return True
-
-            # Check if log has been stalled too long
-            time_since_activity = datetime.now() - self.last_log_activity
-            if time_since_activity > self.stalled_log_threshold:
-                self.log(f"⚠️  Training log stalled for {time_since_activity}")
-                return False
-
-            return True
-
-        except Exception as e:
-            self.log(f"Error checking log activity: {e}")
-            return False
 
     def get_cpu_usage(self) -> float:
         """Get CPU usage for training process with proper warmup."""
@@ -284,54 +227,13 @@ fi
         except:
             return 0.0
 
-    def detect_training_completion_alternative(self) -> bool:
-        """Alternative method to detect training completion with multiple verification steps."""
-
-        # First, check if heartbeat is still active - if so, process is alive (possibly hung, but not complete)
-        heartbeat_status = self.check_heartbeat_file()
-        if heartbeat_status["status"] == "active":
-            # Check if heartbeat is fresh (updated within last 2 minutes)
-            try:
-                heartbeat_file = "/tmp/training_heartbeat.txt"
-                if os.path.exists(heartbeat_file):
-                    heartbeat_mtime = datetime.fromtimestamp(os.path.getmtime(heartbeat_file))
-                    heartbeat_age = (datetime.now() - heartbeat_mtime).total_seconds()
-                    if heartbeat_age < 120:  # Less than 2 minutes old
-                        self.log(f"⚠️ Heartbeat is still active (updated {heartbeat_age:.0f}s ago) - training process is alive, not complete")
-                        return False
-            except Exception as e:
-                self.log(f"Could not check heartbeat freshness: {e}")
-
-        completion_indicators = 0
-        required_indicators = 2  # Require multiple confirmations
-
-        # Method 1: Check if training debug log shows explicit completion
-        try:
-            if os.path.exists(self.training_debug_log):
-                with open(self.training_debug_log, 'r') as f:
-                    content = f.read().lower()
-
-                    # Look for definitive completion markers
-                    completion_phrases = [
-                        "training complete", "training finished", "training done",
-                        "training successfully completed", "training process exiting normally"
-                    ]
-
-                    if any(phrase in content for phrase in completion_phrases):
-                        completion_indicators += 1
-                        self.log("✓ Found explicit completion marker in training debug log")
-        except Exception as e:
-            self.log(f"Could not check training debug log completion: {e}")
-
-        # Method 2: Check CPU usage (low usage indicates completion)
+    def log_system_stats(self):
+        """Log CPU and GPU usage for monitoring purposes."""
+        # Log CPU usage
         cpu_percent = self.get_cpu_usage()
-        if cpu_percent < 2.0:
-            completion_indicators += 1
-            self.log(f"✓ Very low CPU usage: {cpu_percent:.1f}%")
-        else:
-            self.log(f"Process still active - CPU: {cpu_percent:.1f}%")
+        self.log(f"CPU usage: {cpu_percent:.1f}%")
 
-        # Method 3: Check GPU utilization (if available)
+        # Log GPU usage
         try:
             result = subprocess.run(['nvidia-smi', '--query-gpu=utilization.gpu', '--format=csv,noheader,nounits'],
                                   capture_output=True, text=True, timeout=10)
@@ -341,43 +243,15 @@ fi
                     if line.strip().isdigit():
                         gpu_usage.append(int(line.strip()))
 
-                if gpu_usage and max(gpu_usage) < 5:  # Very low GPU usage
-                    completion_indicators += 1
-                    self.log(f"✓ Very low GPU usage detected: {max(gpu_usage)}%")
+                if gpu_usage:
+                    self.log(f"GPU usage: {gpu_usage}")
                 else:
-                    self.log(f"GPU still active: {gpu_usage}")
+                    self.log("GPU usage: no data")
+            else:
+                self.log("GPU usage: nvidia-smi failed")
         except Exception as e:
-            self.log(f"Could not check GPU usage: {e}")
+            self.log(f"GPU usage: could not query ({e})")
 
-        # Method 4: Check if output files haven't changed in very long time (30+ minutes)
-        try:
-            if os.path.exists(self.output_dir):
-                latest_mtime = 0
-                for root, dirs, files in os.walk(self.output_dir):
-                    for file in files:
-                        if file.endswith(('.pt', '.pth', '.ckpt', '.log')):  # Model/checkpoint files
-                            filepath = os.path.join(root, file)
-                            try:
-                                mtime = os.path.getmtime(filepath)
-                                latest_mtime = max(latest_mtime, mtime)
-                            except:
-                                continue
-
-                if latest_mtime > 0:
-                    minutes_since_change = (datetime.now().timestamp() - latest_mtime) / 60
-                    if minutes_since_change > 30:  # No model saves for 30+ minutes
-                        completion_indicators += 1
-                        self.log(f"✓ Output files stable for {minutes_since_change:.1f} minutes")
-                    else:
-                        self.log(f"Output files changed {minutes_since_change:.1f} minutes ago")
-        except Exception as e:
-            self.log(f"Could not check output file activity: {e}")
-
-        is_complete = completion_indicators >= required_indicators
-        self.log(f"Completion verification: {completion_indicators}/{required_indicators + 2} indicators met (need {required_indicators})")
-
-        return is_complete
-    
     def sync_to_s3(self) -> bool:
         """Sync output directory and logs to S3."""
         success = True
@@ -399,8 +273,7 @@ fi
             log_files = [
                 (self.training_debug_log, "training_debug.log"),
                 (self.training_output_log, "training_output.log"),
-                (self.monitor_log_file, "monitor.log"),
-                ("/tmp/training_heartbeat.txt", "heartbeat.txt")
+                (self.monitor_log_file, "monitor.log")
             ]
 
             self.log("Uploading log files to S3...")
@@ -485,88 +358,51 @@ fi
         self.terminate_instance()
         
         self.log("Shutdown sequence completed")
-    
-    def check_heartbeat_file(self) -> dict:
-        """Check heartbeat file for training completion signals."""
-        heartbeat_file = "/tmp/training_heartbeat.txt"
-        try:
-            if not os.path.exists(heartbeat_file):
-                return {"status": "no_heartbeat", "message": "No heartbeat file found"}
-
-            with open(heartbeat_file, 'r') as f:
-                content = f.read().strip()
-
-            if "TRAINING_COMPLETE" in content:
-                return {"status": "completed", "message": content}
-            elif "HEARTBEAT" in content:
-                # Extract timestamp to check freshness
-                return {"status": "active", "message": content}
-            else:
-                return {"status": "unknown", "message": content}
-
-        except Exception as e:
-            return {"status": "error", "message": f"Error reading heartbeat: {e}"}
 
     def monitor_loop(self):
-        """Main monitoring loop."""
+        """Main monitoring loop.
+
+        Exits on one of three conditions:
+        1. Training process exits
+        2. Timeout is reached
+        3. No log file activity for 15 minutes
+        """
         self.log(f"Starting monitoring loop (timeout: {self.max_train_hours}h)")
         self.log(f"Training will timeout at: {self.timeout_time}")
 
         while True:
-            # Check if timeout reached
+            # Check 1: Timeout reached
             if self.is_timeout_reached():
+                self.log(f"✗ Timeout reached: {self.max_train_hours}h")
                 self.cleanup_and_shutdown(f"Timeout reached ({self.max_train_hours}h)")
                 break
 
-            # Check traditional process completion
+            # Check 2: Training process exited
             if not self.is_training_running():
                 if self.training_process:
                     exit_code = self.training_process.returncode
                     if exit_code == 0:
+                        self.log(f"✓ Training process exited successfully (exit code: {exit_code})")
                         self.cleanup_and_shutdown("Training completed successfully")
                     else:
+                        self.log(f"✗ Training process failed (exit code: {exit_code})")
                         self.cleanup_and_shutdown(f"Training failed with exit code {exit_code}")
                 else:
+                    self.log("✗ Training process not found")
                     self.cleanup_and_shutdown("Training process not found")
                 break
 
-            # Check heartbeat file for completion signal
-            heartbeat_status = self.check_heartbeat_file()
-            if heartbeat_status["status"] == "completed":
-                self.log(f"🎉 Training completion detected via heartbeat: {heartbeat_status['message']}")
-                self.cleanup_and_shutdown("Training completed successfully (detected via heartbeat)")
+            # Check 3: No log activity for 15 minutes
+            if not self.is_training_progressing():
+                self.log("✗ No log file activity for 15 minutes - assuming training stalled")
+                self.cleanup_and_shutdown("Training stalled - no log activity for 15 minutes")
                 break
 
-            # Check for training progress to avoid false completion detection
-            progress_status = self.is_training_progressing()
-            if not progress_status:
-                stall_duration = getattr(self, '_stall_start_time', None)
-                if stall_duration is None:
-                    self._stall_start_time = datetime.now()
-                    self.log("⚠️ Training progress stalled - starting monitoring")
-                else:
-                    stall_minutes = (datetime.now() - self._stall_start_time).total_seconds() / 60
-                    if stall_minutes > 5:  # Only check completion after 5 minutes of no progress
-                        self.log(f"🔍 No progress for {stall_minutes:.1f} minutes - checking if training completed")
-                        if self.detect_training_completion_alternative():
-                            self.log("🔍 Training completion confirmed via multiple indicators")
-                            self.cleanup_and_shutdown("Training completed successfully (detected via alternative methods)")
-                            break
-            else:
-                # Reset stall timer if progress is detected
-                if hasattr(self, '_stall_start_time'):
-                    delattr(self, '_stall_start_time')
-                    self.log("✅ Training progress resumed")
-
-            # Check log activity
-            log_active = self.check_log_activity()
-            if not log_active:
-                self.log("⚠️  Training log appears stalled")
-
-            # Log progress
+            # Log status and system stats
             elapsed = datetime.now() - self.start_time
             remaining = self.timeout_time - datetime.now()
-            self.log(f"Training running... Elapsed: {elapsed}, Remaining: {remaining}")
+            self.log(f"✓ Training running... Elapsed: {elapsed}, Remaining: {remaining}")
+            self.log_system_stats()
 
             # Sleep before next check
             time.sleep(60)  # Check every minute

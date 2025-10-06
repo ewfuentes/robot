@@ -701,8 +701,15 @@ def get_dataloader(dataset: VigorDataset, **kwargs):
                 for k, v in first_item.cached_satellite_tensors.items()}),
         )
 
-    # Only set worker_init_fn if not already provided in kwargs
-    if 'worker_init_fn' not in kwargs:
+    # Handle worker_init_fn: call both the default one and any user-provided one
+    user_worker_init_fn = kwargs.pop('worker_init_fn', None)
+    if user_worker_init_fn is not None:
+        # Create a wrapper that calls both functions
+        def combined_worker_init_fn(worker_id):
+            worker_init_fn(worker_id)  # Call default function first
+            user_worker_init_fn(worker_id)  # Then call user-provided function
+        kwargs['worker_init_fn'] = combined_worker_init_fn
+    else:
         kwargs['worker_init_fn'] = worker_init_fn
     return torch.utils.data.DataLoader(dataset, collate_fn=_collate_fn, **kwargs)
 
