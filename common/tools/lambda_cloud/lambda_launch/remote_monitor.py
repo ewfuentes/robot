@@ -323,7 +323,7 @@ fi
                 env=env,
                 capture_output=True,
                 text=True,
-                timeout=120
+                timeout=3600
             )
             
             if result.returncode == 0 and "Successfully terminated" in result.stdout:
@@ -369,6 +369,38 @@ fi
         """
         self.log(f"Starting monitoring loop (timeout: {self.max_train_hours}h)")
         self.log(f"Training will timeout at: {self.timeout_time}")
+
+        # Wait for training debug log to be created (grace period for Bazel build/startup)
+        grace_period_minutes = 25
+        grace_period_end = datetime.now() + timedelta(minutes=grace_period_minutes)
+        self.log(f"Waiting up to {grace_period_minutes} minutes for training to start and create log file...")
+
+        while datetime.now() < grace_period_end:
+            # Check if training process crashed during startup
+            if not self.is_training_running():
+                if self.training_process:
+                    exit_code = self.training_process.returncode
+                    self.log(f"✗ Training process exited during startup (exit code: {exit_code})")
+                    self.cleanup_and_shutdown(f"Training failed during startup with exit code {exit_code}")
+                else:
+                    self.log("✗ Training process not found during startup")
+                    self.cleanup_and_shutdown("Training process not found during startup")
+                return
+
+            # Check if log file has been created
+            if os.path.exists(self.training_debug_log):
+                self.log(f"✓ Training log file created: {self.training_debug_log}")
+                break
+
+            time.sleep(10)  # Check every 10 seconds during grace period
+        else:
+            # Grace period expired without log file appearing
+            self.log(f"✗ Training log file not created within {grace_period_minutes} minutes")
+            self.cleanup_and_shutdown(f"Training failed to start - no log file after {grace_period_minutes} minutes")
+            return
+
+        # Now start normal monitoring loop
+        self.log("Starting normal monitoring (checking for staleness every minute)...")
 
         while True:
             # Check 1: Timeout reached
