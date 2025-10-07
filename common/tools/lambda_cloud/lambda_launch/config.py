@@ -2,9 +2,12 @@
 """Configuration parsing and validation for Lambda Cloud job launcher."""
 
 import yaml
+import msgspec
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
+from common.python.serialization import msgspec_dec_hook
+from experimental.overhead_matching.swag.scripts.train import TrainConfig
 
 
 @dataclass
@@ -85,7 +88,10 @@ class ConfigParser:
             # Validate config file exists
             if not Path(config_path).exists():
                 raise FileNotFoundError(f"Training config not found: {config_path}")
-            
+
+            # Validate config can be loaded and decoded
+            ConfigParser.validate_training_config(config_path)
+
             jobs.append(JobConfig(config_path=config_path, branch=branch))
         
         return jobs
@@ -113,7 +119,10 @@ class ConfigParser:
                 # Validate config file exists
                 if not Path(config_path).exists():
                     raise FileNotFoundError(f"Training config not found: {config_path}")
-                
+
+                # Validate config can be loaded and decoded
+                ConfigParser.validate_training_config(config_path)
+
                 jobs.append(JobConfig(config_path=config_path, branch=branch))
         
         return jobs
@@ -123,14 +132,41 @@ class ConfigParser:
         """Validate machine configuration."""
         if not machine_config.machine_types:
             raise ValueError("At least one machine type must be specified")
-        
+
         # Validate each machine type has at least one region
         for machine_type, regions in machine_config.machine_types.items():
             if not regions:
                 raise ValueError(f"Machine type {machine_type} must have at least one region")
-        
+
         if machine_config.max_train_time_hours <= 0:
             raise ValueError("max_train_time_hours must be positive")
-        
+
         if not machine_config.ssh_key:
             raise ValueError("ssh_key must be specified")
+
+    @staticmethod
+    def validate_training_config(config_path: str) -> None:
+        """Validate training configuration by attempting to decode it.
+
+        This loads the training config YAML and attempts to decode it using
+        the same method as train.py, catching any errors before launching.
+
+        Args:
+            config_path: Path to training configuration YAML file
+
+        Raises:
+            Exception: If config cannot be loaded or decoded
+        """
+        try:
+            with open(config_path, 'r') as f:
+                config_content = f.read()
+
+            # Attempt to decode the config - this will raise if there's any issue
+            train_config = msgspec.yaml.decode(
+                config_content,
+                type=TrainConfig,
+                dec_hook=msgspec_dec_hook
+            )
+
+        except Exception as e:
+            raise ValueError(f"Training config validation failed for {config_path}: {e}") from e

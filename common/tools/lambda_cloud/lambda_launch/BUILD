@@ -8,6 +8,9 @@ py_library(
   srcs = ["config.py"],
   deps = [
     requirement("pyyaml"),
+    requirement("msgspec"),
+    "//common/python:serialization",
+    "//experimental/overhead_matching/swag/scripts:train",
   ],
 )
 
