@@ -268,56 +268,76 @@ class LearnedDistanceFunction(torch.nn.Module):
         """
         n_pano, n_emb_pano, d_emb = pano_embeddings_unnormalized.shape
         n_sat, n_emb_sat, _ = sat_embeddings_unnormalized.shape
+        model_device = next(self.parameters()).device
 
         if self.config.architecture == "mlp":
-            # MLP can handle the full batch efficiently
-            pano_expanded = pano_embeddings_unnormalized.unsqueeze(1).expand(n_pano, n_sat, n_emb_pano, d_emb)
-            sat_expanded = sat_embeddings_unnormalized.unsqueeze(0).expand(n_pano, n_sat, n_emb_sat, d_emb)
+            # Process in batches to avoid OOM with large n_pano x n_sat
+            # Keep embeddings on CPU, move batches to GPU as needed
+            batch_size = self.config.max_batch_size
+            all_similarities = []
 
-            # Flatten embeddings and concatenate
-            pano_flat = pano_expanded.reshape(n_pano, n_sat, -1)
-            sat_flat = sat_expanded.reshape(n_pano, n_sat, -1)
-            combined = torch.cat([pano_flat, sat_flat], dim=-1)
+            for pano_start in range(0, n_pano, batch_size):
+                pano_end = min(pano_start + batch_size, n_pano)
+                # Move batch to model device
+                pano_batch = pano_embeddings_unnormalized[pano_start:pano_end].to(model_device)
+                batch_n_pano = pano_batch.shape[0]
 
-            # Pass through MLP
-            similarity = self.model(combined)  # n_pano x n_sat x 1
-            return similarity.squeeze(-1)  # n_pano x n_sat
+                # Move sat embeddings to model device for this batch
+                sat_batch = sat_embeddings_unnormalized.to(model_device)
+
+                # Expand within batch
+                pano_expanded = pano_batch.unsqueeze(1).expand(batch_n_pano, n_sat, n_emb_pano, d_emb)
+                sat_expanded = sat_batch.unsqueeze(0).expand(batch_n_pano, n_sat, n_emb_sat, d_emb)
+
+                # Flatten embeddings and concatenate
+                pano_flat = pano_expanded.reshape(batch_n_pano, n_sat, -1)
+                sat_flat = sat_expanded.reshape(batch_n_pano, n_sat, -1)
+                combined = torch.cat([pano_flat, sat_flat], dim=-1)
+
+                # Pass through MLP
+                batch_similarity = self.model(combined)  # batch_size x n_sat x 1
+                all_similarities.append(batch_similarity.squeeze(-1).cpu())  # batch_size x n_sat
+
+            # Concatenate all batch results
+            similarity = torch.cat(all_similarities, dim=0).to(model_device)  # n_pano x n_sat
+            return similarity
 
         elif self.config.architecture in ["attention", "transformer_decoder"]:
-            # Generate all pano-sat pairs
-            pano_sat_pairs = []
+            # Generate all pano-sat pairs (indices only to avoid memory issues)
+            # Keep embeddings on CPU, move batches to GPU as needed
             pair_indices = []
 
             for p_idx in range(n_pano):
                 for s_idx in range(n_sat):
-                    pano_emb = pano_embeddings_unnormalized[p_idx]  # n_emb_pano x d_emb
-                    sat_emb = sat_embeddings_unnormalized[s_idx]    # n_emb_sat x d_emb
-                    pano_sat_pairs.append((pano_emb, sat_emb))
                     pair_indices.append((p_idx, s_idx))
 
             # Process pairs in batches
             all_similarities = []
             batch_size = self.config.max_batch_size
 
-            for i in range(0, len(pano_sat_pairs), batch_size):
-                batch_pairs = pano_sat_pairs[i:i+batch_size]
+            for i in range(0, len(pair_indices), batch_size):
+                batch_indices = pair_indices[i:i+batch_size]
 
-                # Stack pairs for batch processing
-                pano_batch = torch.stack([pair[0] for pair in batch_pairs])  # batch_size x n_emb_pano x d_emb
-                sat_batch = torch.stack([pair[1] for pair in batch_pairs])   # batch_size x n_emb_sat x d_emb
+                # Stack pairs for batch processing and move to device
+                pano_batch = torch.stack([
+                    pano_embeddings_unnormalized[p_idx] for p_idx, _ in batch_indices
+                ]).to(model_device)  # batch_size x n_emb_pano x d_emb
+                sat_batch = torch.stack([
+                    sat_embeddings_unnormalized[s_idx] for _, s_idx in batch_indices
+                ]).to(model_device)  # batch_size x n_emb_sat x d_emb
 
                 if self.config.architecture == "attention":
                     batch_similarities = self._process_attention_batch(pano_batch, sat_batch)
                 else:  # transformer_decoder
                     batch_similarities = self._process_transformer_batch(pano_batch, sat_batch)
 
-                all_similarities.append(batch_similarities)
+                all_similarities.append(batch_similarities.cpu())
 
             # Concatenate all batch results
             similarities = torch.cat(all_similarities, dim=0)  # (n_pano * n_sat) x 1
 
             # Reshape to n_pano x n_sat
-            similarities = similarities.view(n_pano, n_sat)
+            similarities = similarities.view(n_pano, n_sat).to(model_device)
             return similarities
 
         else:
