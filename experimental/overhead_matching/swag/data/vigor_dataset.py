@@ -6,6 +6,9 @@ import itertools
 import math
 import lmdb
 import io
+import time
+import psutil
+import logging
 import hashlib
 import msgspec
 
@@ -24,6 +27,10 @@ from experimental.overhead_matching.swag.model.swag_model_input_output import Ex
 from experimental.overhead_matching.swag.model.swag_config_types import CacheableExtractorInfo
 
 from typing import Any
+
+# Configure logger for this module
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 EARTH_RADIUS_M = 6378137.0
 
@@ -81,6 +88,7 @@ class VigorDatasetConfig(NamedTuple):
     satellite_zoom_level: int = 20
     sample_mode: SampleMode = SampleMode.NEAREST
     should_load_images: bool = True
+    should_load_landmarks: bool = True
     landmark_version: str = "v1"
 
 
@@ -355,6 +363,17 @@ class VigorDataset(torch.utils.data.Dataset):
         super().__init__()
         self._config = config
 
+        start_time = time.time()
+        process = psutil.Process()
+
+        def log_progress(label):
+            if logger.isEnabledFor(logging.DEBUG):
+                elapsed = time.time() - start_time
+                mem_mb = process.memory_info().rss / 1024 / 1024
+                logger.debug(f"[DATASET] T+{elapsed:.1f}s RSS={mem_mb:.1f}MB: {label}")
+
+        print(f"DATASET {dataset_path}: loading images: {config.should_load_images}, loading landmarks: {config.should_load_landmarks} with version {config.landmark_version}")
+
         if isinstance(dataset_path, Path):
             dataset_path = [dataset_path]
         elif isinstance(dataset_path, str):
@@ -363,11 +382,18 @@ class VigorDataset(torch.utils.data.Dataset):
         sat_metadatas = []
         pano_metadatas = []
         landmark_metadatas = []
+        log_progress(f"Starting dataset init for {[p.name for p in dataset_path]}")
         for p in dataset_path:
             sat_metadata = load_satellite_metadata(p / "satellite", config.satellite_zoom_level)
+            log_progress(f"Loaded satellite metadata: {len(sat_metadata)} items")
             pano_metadata = load_panorama_metadata(p / "panorama", config.satellite_zoom_level)
-            landmark_metadata = load_landmark_geojson(
-                p / "landmarks" / f"{config.landmark_version}.geojson", config.satellite_zoom_level)
+            log_progress(f"Loaded panorama metadata: {len(pano_metadata)} items")
+
+            if config.should_load_landmarks:
+                landmark_metadata = load_landmark_geojson(
+                    p / "landmarks" / f"{config.landmark_version}.geojson", config.satellite_zoom_level)
+                landmark_metadatas.append(landmark_metadata)
+                log_progress(f"Loaded landmark GeoJSON: {len(landmark_metadata)} landmarks")
 
             min_lat = np.min(sat_metadata.lat)
             max_lat = np.max(sat_metadata.lat)
@@ -382,19 +408,24 @@ class VigorDataset(torch.utils.data.Dataset):
                                        pano_metadata.lon <= min_lon + config.factor * delta_lon)
             sat_metadatas.append(sat_metadata[sat_mask])
             pano_metadatas.append(pano_metadata[pano_mask])
-            landmark_metadatas.append(landmark_metadata)
         self._satellite_metadata = pd.concat(sat_metadatas).reset_index(drop=True)
         self._panorama_metadata = pd.concat(pano_metadatas).reset_index(drop=True)
-        self._landmark_metadata = pd.concat(landmark_metadatas).reset_index(drop=True)
+        if config.should_load_landmarks:
+            self._landmark_metadata = pd.concat(landmark_metadatas).reset_index(drop=True)
+        else:
+            self._landmark_metadata = None
+        log_progress(f"Concatenated metadata: {len(self._satellite_metadata)} sats, {len(self._panorama_metadata)} panos, {len(self._landmark_metadata) if self._landmark_metadata is not None else 'NOT_LOADED'} landmarks")
 
         _, self._original_satellite_patch_size = load_image(self._satellite_metadata.iloc[0].path, None)
         _, self._original_panorama_size = load_image(self._panorama_metadata.iloc[0].path, None)
 
         self._satellite_pixel_kdtree = cKDTree(self._satellite_metadata.loc[:, ["web_mercator_x", "web_mercator_y"]].values)
         self._panorama_kdtree = cKDTree(self._panorama_metadata.loc[:, ["lat", "lon"]].values)
+        log_progress("Built KD-trees")
 
         correspondences = compute_satellite_from_panorama(
             self._satellite_pixel_kdtree, self._satellite_metadata, self._panorama_metadata, self._original_satellite_patch_size)
+        log_progress("Computed sat<->pano correspondences")
 
         self._satellite_metadata["positive_panorama_idxs"] = correspondences.positive_pano_idxs_from_sat_idx
         self._satellite_metadata["semipositive_panorama_idxs"] = correspondences.semipositive_pano_idxs_from_sat_idx
@@ -402,18 +433,24 @@ class VigorDataset(torch.utils.data.Dataset):
         self._panorama_metadata["semipositive_satellite_idxs"] = correspondences.semipositive_sat_idxs_from_pano_idx
         self._panorama_metadata["satellite_idx"] = correspondences.closest_sat_idx_from_pano_idx
 
-        sat_landmark_correspondences = compute_satellite_from_landmarks(
-                self._satellite_metadata, self._landmark_metadata, self._original_satellite_patch_size)
-        self._satellite_metadata["landmark_idxs"] = sat_landmark_correspondences.landmark_idxs_from_sat_idx
-        self._landmark_metadata["satellite_idxs"] = sat_landmark_correspondences.sat_idxs_from_landmark_idx
+        if config.should_load_landmarks:
+            sat_landmark_correspondences = compute_satellite_from_landmarks(
+                    self._satellite_metadata, self._landmark_metadata, self._original_satellite_patch_size)
+            log_progress("Computed sat<->landmark correspondences")
+            self._satellite_metadata["landmark_idxs"] = sat_landmark_correspondences.landmark_idxs_from_sat_idx
+            self._landmark_metadata["satellite_idxs"] = sat_landmark_correspondences.sat_idxs_from_landmark_idx
 
-        pano_landmark_correspondences = compute_panorama_from_landmarks(
-                self._panorama_metadata, self._landmark_metadata)
-        self._panorama_metadata["landmark_idxs"] = pano_landmark_correspondences.landmark_idxs_from_pano_idx
-        self._landmark_metadata["panorama_idxs"] = pano_landmark_correspondences.pano_idxs_from_landmark_idx
+            pano_landmark_correspondences = compute_panorama_from_landmarks(
+                    self._panorama_metadata, self._landmark_metadata)
+            log_progress("Computed pano<->landmark correspondences")
+            self._panorama_metadata["landmark_idxs"] = pano_landmark_correspondences.landmark_idxs_from_pano_idx
+            self._landmark_metadata["panorama_idxs"] = pano_landmark_correspondences.pano_idxs_from_landmark_idx
+        else:
+            log_progress("Skipped landmark correspondences")
 
         self._panorama_metadata["neighbor_panorama_idxs"] = compute_neighboring_panoramas(
             self._panorama_kdtree, config.panorama_neighbor_radius)
+        log_progress("Computed panorama neighbors")
 
         self._satellite_patch_size = (
                 config.satellite_patch_size if config.satellite_patch_size is not None
@@ -423,15 +460,31 @@ class VigorDataset(torch.utils.data.Dataset):
                 else self._original_panorama_size)
 
         self._pairs = populate_pairs(self._panorama_metadata, self._satellite_metadata, config.sample_mode)
+        log_progress(f"Created {len(self._pairs)} training pairs")
 
         self._panorama_tensor_caches = load_tensor_caches(self._config.panorama_tensor_cache_info)
+        log_progress(f"Loaded {len(self._panorama_tensor_caches)} panorama caches")
         self._satellite_tensor_caches = load_tensor_caches(self._config.satellite_tensor_cache_info)
+        log_progress(f"Loaded {len(self._satellite_tensor_caches)} satellite caches")
+        log_progress("Dataset initialization complete")
 
     @property
     def num_satellite_patches(self):
         return len(self._satellite_metadata)
 
     def __getitem__(self, idx_or_pair: int | SamplePair):
+        # Enable detailed logging for first 20 fetches
+        enable_logging = logger.isEnabledFor(logging.DEBUG) and not hasattr(self, '_fetch_count')
+        
+        if enable_logging:
+            self._fetch_count = 0
+            self._fetch_start = time.time()
+
+        should_log = enable_logging and self._fetch_count < 200
+        if should_log:
+            t0 = time.time()
+            worker_info = torch.utils.data.get_worker_info()
+            worker_id = worker_info.id if worker_info else "main"
 
         if isinstance(idx_or_pair, SamplePair):
             pair = idx_or_pair
@@ -457,19 +510,39 @@ class VigorDataset(torch.utils.data.Dataset):
             pano = torch.full((1, *self._panorama_size), torch.nan)
             sat = torch.full((1, *self._satellite_patch_size), torch.nan)
 
-        pano_landmarks = self._landmark_metadata.iloc[pano_metadata["landmark_idxs"]]
-        pano_landmarks = [series_to_dict_with_index(x) for _, x in pano_landmarks.iterrows()]
-        pano_metadata = series_to_dict_with_index(pano_metadata)
-        pano_metadata["landmarks"] = pano_landmarks
+        if should_log:
+            t1 = time.time()
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"[FETCH] Worker {worker_id} item {self._fetch_count}: images loaded in {(t1-t0)*1000:.1f}ms")
 
+        if self._config.should_load_landmarks:
+            pano_landmarks = self._landmark_metadata.iloc[pano_metadata["landmark_idxs"]]
+            sat_landmarks = self._landmark_metadata.iloc[sat_metadata["landmark_idxs"]]
+
+            pano_landmarks = [series_to_dict_with_index(x) for _, x in pano_landmarks.iterrows()]
+            sat_landmarks = [series_to_dict_with_index(x) for _, x in sat_landmarks.iterrows()]
+
+            if should_log:
+                t2 = time.time()
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(f"[FETCH] Worker {worker_id} item {self._fetch_count}: landmarks processed ({len(pano_landmarks)} pano, {len(sat_landmarks)} sat) in {(t2-t1)*1000:.1f}ms")
+
+        pano_metadata = series_to_dict_with_index(pano_metadata)
         sat_metadata = series_to_dict_with_index(sat_metadata)
-        sat_landmarks = self._landmark_metadata.iloc[sat_metadata["landmark_idxs"]]
-        sat_landmarks = [series_to_dict_with_index(x) for _, x in sat_landmarks.iterrows()]
-        sat_metadata["landmarks"] = sat_landmarks
+
+        if self._config.should_load_landmarks:
+            pano_metadata["landmarks"] = pano_landmarks
+            sat_metadata["landmarks"] = sat_landmarks
+
         sat_metadata["original_shape"] = self._original_satellite_patch_size
 
         cached_pano_tensors = get_cached_tensors(pano_metadata, self._panorama_tensor_caches)
         cached_sat_tensors = get_cached_tensors(sat_metadata, self._satellite_tensor_caches)
+
+        if should_log:
+            t3 = time.time()
+            logger.debug(f"[FETCH] Worker {worker_id} item {self._fetch_count}: caches loaded in {(t3-t2)*1000:.1f}ms, total {(t3-t0)*1000:.1f}ms")
+            self._fetch_count += 1
 
         return VigorDatasetItem(
             panorama_metadata=pano_metadata,
@@ -549,10 +622,14 @@ class VigorDataset(torch.utils.data.Dataset):
                     sat, _ = load_image(sat_metadata.path, self.dataset._satellite_patch_size)
                 else:
                     sat = torch.full((1, *self.dataset._satellite_patch_size), torch.nan)
-                landmarks = self.dataset._landmark_metadata.iloc[sat_metadata["landmark_idxs"]]
-                landmarks = [series_to_dict_with_index(x) for _, x in landmarks.iterrows()]
+
                 sat_metadata = series_to_dict_with_index(sat_metadata)
-                sat_metadata["landmarks"] = landmarks
+
+                if self.dataset._config.should_load_landmarks:
+                    landmarks = self.dataset._landmark_metadata.iloc[sat_metadata["landmark_idxs"]]
+                    landmarks = [series_to_dict_with_index(x) for _, x in landmarks.iterrows()]
+                    sat_metadata["landmarks"] = landmarks
+
                 sat_metadata["original_shape"] = self.dataset._original_satellite_patch_size
 
                 cached_sat_tensors = get_cached_tensors(sat_metadata, self.dataset._satellite_tensor_caches)
@@ -586,10 +663,12 @@ class VigorDataset(torch.utils.data.Dataset):
                 else:
                     pano = torch.full((1, *self.dataset._panorama_size), torch.nan)
 
-                landmarks = self.dataset._landmark_metadata.iloc[pano_metadata["landmark_idxs"]]
-                landmarks = [series_to_dict_with_index(x) for _, x in landmarks.iterrows()]
                 pano_metadata = series_to_dict_with_index(pano_metadata)
-                pano_metadata["landmarks"] = landmarks
+
+                if self.dataset._config.should_load_landmarks:
+                    landmarks = self.dataset._landmark_metadata.iloc[pano_metadata["landmark_idxs"]]
+                    landmarks = [series_to_dict_with_index(x) for _, x in landmarks.iterrows()]
+                    pano_metadata["landmarks"] = landmarks
 
                 cached_pano_tensors = get_cached_tensors(pano_metadata, self.dataset._panorama_tensor_caches)
 

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Union
 from enum import StrEnum, auto
 import msgspec
+from experimental.overhead_matching.swag.model.swag_config_types import ExtractorDataRequirement
 
 
 class BackboneType(StrEnum):
@@ -134,6 +135,10 @@ class WagPatchEmbedding(torch.nn.Module):
 
     def cache_info(self):
         return None
+
+    @property
+    def data_requirements(self) -> list[ExtractorDataRequirement]:
+        return [ExtractorDataRequirement.IMAGES]
 
     def safa(self, x):
         batch_size = x.shape[0]

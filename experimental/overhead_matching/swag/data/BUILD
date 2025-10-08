@@ -17,6 +17,7 @@ py_library(
     requirement("shapely"),
     requirement("scipy"),
     requirement("matplotlib"),
+    requirement("psutil"),
     requirement("PyGObject"),
     requirement("lmdb"),
     requirement("msgspec"),

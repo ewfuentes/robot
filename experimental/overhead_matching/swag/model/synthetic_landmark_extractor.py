@@ -5,7 +5,7 @@ import numpy as np
 import hashlib
 
 from experimental.overhead_matching.swag.model.swag_config_types import (
-        SyntheticLandmarkExtractorConfig)
+        SyntheticLandmarkExtractorConfig, ExtractorDataRequirement)
 from experimental.overhead_matching.swag.model.swag_model_input_output import (
         ModelInput, ExtractorOutput)
 
@@ -126,3 +126,7 @@ class SyntheticLandmarkExtractor(torch.nn.Module):
     @property
     def num_position_outputs(self):
         return 1
+
+    @property
+    def data_requirements(self) -> list[ExtractorDataRequirement]:
+        return []

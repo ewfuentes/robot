@@ -15,6 +15,7 @@ from experimental.overhead_matching.swag.data import (
     vigor_dataset, satellite_embedding_database as sed)
 from experimental.overhead_matching.swag.model import (
     patch_embedding, swag_patch_embedding)
+from experimental.overhead_matching.swag.model.swag_config_types import ExtractorDataRequirement
 from experimental.overhead_matching.swag.scripts.logging_utils import (
     log_batch_metrics, log_embedding_stats, log_gradient_stats, log_validation_metrics)
 from typing import Union
@@ -87,7 +88,6 @@ class DatasetConfig:
     paths: list[Path]
     landmark_version: str
     factor: None | float = 1.0
-    should_load_images: bool = True
 
 
 @dataclass
@@ -291,10 +291,10 @@ def train(config: TrainConfig,
         panorama_model, satellite_model, distance_model)
 
     print(f"working with train dataset {len(dataset._satellite_metadata)=}" +
-          f" {len(dataset._panorama_metadata)=} {len(dataset._landmark_metadata)=}")
+          f" {len(dataset._panorama_metadata)=}" + (" No landmarks" if dataset._landmark_metadata is None else f"{len(dataset._landmark_metadata)=}"))
     for name, val_dataset in validation_datasets.items():
         print(f"working with validation dataset {name} {len(val_dataset._satellite_metadata)=}" +
-              f" {len(val_dataset._panorama_metadata)=} {len(val_dataset._landmark_metadata)=}")
+              f" {len(val_dataset._panorama_metadata)=}" + (" No landmarks" if dataset._landmark_metadata is None else f"{len(dataset._landmark_metadata)=}"))
 
     opt_config = config.opt_config
 
@@ -462,6 +462,38 @@ def train(config: TrainConfig,
 
 
 
+def derive_data_requirements_from_model(model, use_cached_extractors=None):
+    """
+    Derive what data (images, landmarks) a model requires from its extractors.
+
+    Args:
+        model: SwagPatchEmbedding or WagPatchEmbedding instance
+        use_cached_extractors: list of extractor names that use caches (ignored for requirements)
+
+    Returns:
+        set of ExtractorDataRequirement values
+    """
+    if use_cached_extractors is None:
+        use_cached_extractors = []
+
+    requirements = set()
+
+    # Handle SwagPatchEmbedding - has _extractor_by_name
+    if hasattr(model, '_extractor_by_name'):
+        for name, extractor in model._extractor_by_name.items():
+            # Skip cached extractors - they don't need raw data
+            if name in use_cached_extractors:
+                continue
+            if hasattr(extractor, 'data_requirements'):
+                requirements.update(extractor.data_requirements)
+
+    # Handle WagPatchEmbedding - check its data_requirements property
+    elif hasattr(model, 'data_requirements'):
+        requirements.update(model.data_requirements)
+
+    return requirements
+
+
 def main(
         dataset_base_path: Path,
         output_base_path: Path,
@@ -489,6 +521,20 @@ def main(
         raise TypeError("Unsupported panorama model config type")
 
     assert len(train_config.dataset_config.paths) == 1
+
+    # Derive data requirements from both models
+    sat_requirements = derive_data_requirements_from_model(
+        satellite_model,
+        use_cached_extractors=getattr(train_config.sat_model_config, 'use_cached_extractors', []))
+    pano_requirements = derive_data_requirements_from_model(
+        panorama_model,
+        use_cached_extractors=getattr(train_config.pano_model_config, 'use_cached_extractors', []))
+    all_requirements = sat_requirements | pano_requirements
+
+    # Determine what to load based on requirements
+    should_load_images = ExtractorDataRequirement.IMAGES in all_requirements
+    should_load_landmarks = ExtractorDataRequirement.LANDMARKS in all_requirements
+
     dataset_config = vigor_dataset.VigorDatasetConfig(
         satellite_patch_size=train_config.sat_model_config.patch_dims,
         panorama_size=train_config.pano_model_config.patch_dims,
@@ -504,7 +550,8 @@ def main(
             extractor_info=panorama_model.cache_info()),
         sample_mode=vigor_dataset.SampleMode.POS_SEMIPOS,
         factor=train_config.dataset_config.factor,
-        should_load_images=train_config.dataset_config.should_load_images,
+        should_load_images=should_load_images,
+        should_load_landmarks=should_load_landmarks,
         landmark_version=train_config.dataset_config.landmark_version)
 
     dataset_paths = [dataset_base_path / p for p in train_config.dataset_config.paths]
@@ -514,6 +561,8 @@ def main(
     for validation_dataset_config in train_config.validation_dataset_configs:
         assert len(validation_dataset_config.paths) == 1
         validation_dataset_paths = [dataset_base_path / p for p in validation_dataset_config.paths]
+
+        # Use same data requirements for validation datasets
         validation_datasets[validation_dataset_paths[0].name] = vigor_dataset.VigorDataset(
             validation_dataset_paths,
             vigor_dataset.VigorDatasetConfig(
@@ -531,7 +580,8 @@ def main(
                     extractor_info=panorama_model.cache_info()),
                 sample_mode=vigor_dataset.SampleMode.POS_SEMIPOS,
                 factor=validation_dataset_config.factor,
-                should_load_images=validation_dataset_config.should_load_images,
+                should_load_images=should_load_images,
+                should_load_landmarks=should_load_landmarks,
                 landmark_version=validation_dataset_config.landmark_version))
 
     output_dir = output_base_path / train_config.output_dir

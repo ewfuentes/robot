@@ -5,10 +5,9 @@ import math
 import numpy as np
 
 from experimental.overhead_matching.swag.model.swag_config_types import (
-        AbsolutePositionExtractorConfig)
+    AbsolutePositionExtractorConfig, ExtractorDataRequirement)
 from experimental.overhead_matching.swag.model.swag_model_input_output import (
-        ModelInput, ExtractorOutput)
-
+    ModelInput, ExtractorOutput)
 
 
 class AbsolutePositionExtractor(torch.nn.Module):
@@ -53,3 +52,7 @@ class AbsolutePositionExtractor(torch.nn.Module):
     @property
     def num_position_outputs(self):
         return 1
+
+    @property
+    def data_requirements(self) -> list[ExtractorDataRequirement]:
+        return []
