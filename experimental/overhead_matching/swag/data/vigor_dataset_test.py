@@ -129,7 +129,8 @@ class VigorDatasetTest(unittest.TestCase):
         landmark_info_df = pd.DataFrame.from_records(landmark_info)
         landmark_geometry = gpd.points_from_xy(landmark_info_df["lon"], landmark_info_df["lat"])
         landmark_info_df = gpd.GeoDataFrame(landmark_info_df, geometry=landmark_geometry)
-        landmark_info_df.to_file(temp_dir / "landmarks.geojson", driver="GeoJSON")
+        (temp_dir / "landmarks").mkdir()
+        landmark_info_df.to_file(temp_dir / "landmarks" / "v1.geojson", driver="GeoJSON")
 
     @classmethod
     def tearDownClass(cls):
