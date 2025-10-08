@@ -36,6 +36,7 @@ from experimental.overhead_matching.swag.model.swag_config_types import (
     TransformerAggregatorConfig,
 
     ExtractorConfig,
+    ExtractorDataRequirement,
 )
 
 class HashStruct(msgspec.Struct, frozen=True):
@@ -169,6 +170,10 @@ class DinoFeatureExtractor(torch.nn.Module):
     def num_position_outputs(self):
         return 1
 
+    @property
+    def data_requirements(self) -> list[ExtractorDataRequirement]:
+        return [ExtractorDataRequirement.IMAGES]
+
 
 class SemanticEmbeddingMatrix(torch.nn.Module):
     def __init__(self, config: SemanticEmbeddingMatrixConfig):
@@ -222,6 +227,10 @@ class SemanticEmbeddingMatrix(torch.nn.Module):
     def num_position_outputs(self):
         return 1
 
+    @property
+    def data_requirements(self) -> list[ExtractorDataRequirement]:
+        return [ExtractorDataRequirement.LANDMARKS]
+
 
 class SemanticNullExtractor(torch.nn.Module):
     def __init__(self, config: SemanticNullExtractorConfig):
@@ -245,6 +254,10 @@ class SemanticNullExtractor(torch.nn.Module):
     @property
     def num_position_outputs(self):
         return 1
+
+    @property
+    def data_requirements(self) -> list[ExtractorDataRequirement]:
+        return []
 
 
 class SphericalPositionEmbedding(torch.nn.Module):

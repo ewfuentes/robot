@@ -12,6 +12,7 @@ py_library(
     requirement("torch"),
     requirement("torchvision"),
     requirement("msgspec"),
+    ":swag_config_types",
     "//common/torch:load_torch_deps",
   ]
 )

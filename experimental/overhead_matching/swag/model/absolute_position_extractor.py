@@ -5,10 +5,9 @@ import math
 import numpy as np
 
 from experimental.overhead_matching.swag.model.swag_config_types import (
-        AbsolutePositionExtractorConfig)
+    AbsolutePositionExtractorConfig, ExtractorDataRequirement)
 from experimental.overhead_matching.swag.model.swag_model_input_output import (
-        ModelInput, ExtractorOutput)
-
+    ModelInput, ExtractorOutput)
 
 
 class AbsolutePositionExtractor(torch.nn.Module):
@@ -39,8 +38,8 @@ class AbsolutePositionExtractor(torch.nn.Module):
             features[..., 0, embedding_idx_start + 0] = torch.sin(lat_lon_tensor[:, 0] * scale)
             features[..., 0, embedding_idx_start + 1] = torch.cos(lat_lon_tensor[:, 0] * scale)
             features[..., 0,  embedding_idx_start + 2] = torch.sin(lat_lon_tensor[:, 1] * scale)
-            features[..., 0,  embedding_idx_start + 3] = torch.cos(lat_lon_tensor[:, 1]  * scale)
-            
+            features[..., 0,  embedding_idx_start + 3] = torch.cos(lat_lon_tensor[:, 1] * scale)
+
         return ExtractorOutput(
             features=features.to(model_input.image.device),
             mask=mask.to(model_input.image.device),
@@ -53,3 +52,7 @@ class AbsolutePositionExtractor(torch.nn.Module):
     @property
     def num_position_outputs(self):
         return 1
+
+    @property
+    def data_requirements(self) -> list[ExtractorDataRequirement]:
+        return []
