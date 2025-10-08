@@ -4,7 +4,7 @@ import torch
 
 from experimental.overhead_matching.swag.model.swag_model_input_output import ModelInput, SemanticTokenExtractorOutput
 from experimental.overhead_matching.swag.model.swag_config_types import (
-        SemanticSegmentExtractorConfig)
+        SemanticSegmentExtractorConfig, ExtractorDataRequirement)
 from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
 import numpy as np
 from PIL import Image
@@ -87,3 +87,7 @@ class SemanticSegmentExtractor(torch.nn.Module):
     @property
     def num_position_outputs(self):
         return 1
+
+    @property
+    def data_requirements(self) -> list[ExtractorDataRequirement]:
+        return [ExtractorDataRequirement.IMAGES]
