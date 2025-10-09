@@ -30,6 +30,7 @@ from experimental.overhead_matching.swag.model.swag_config_types import (
     PositionEmbeddingConfig,
     PlanarPositionEmbeddingConfig,
     SphericalPositionEmbeddingConfig,
+    NullPositionEmbeddingConfig,
 
     AggregationConfig,
     TransformerAggregatorConfig,
@@ -82,6 +83,7 @@ def create_position_embedding(config: PositionEmbeddingConfig):
     match config:
         case PlanarPositionEmbeddingConfig(): return PlanarPositionEmbedding(config)
         case SphericalPositionEmbeddingConfig(): return SphericalPositionEmbedding(config)
+        case NullPositionEmbeddingConfig(): return NullPositionEmbedding(config)
 
 
 def create_aggregator_model(output_dim: int, config: AggregationConfig):
@@ -322,6 +324,27 @@ class PlanarPositionEmbedding(torch.nn.Module):
     @property
     def output_dim(self):
         return self._embedding_dim
+
+
+class NullPositionEmbedding(torch.nn.Module):
+    def __init__(self, config: NullPositionEmbeddingConfig):
+        super().__init__()
+
+    def forward(self, *,
+                model_input: ModelInput,
+                relative_positions: torch.Tensor):
+        # relative_positions can be (batch, tokens, 2) or (batch, tokens, num_positions, 2)
+        # We need to return zeros with shape (batch, tokens, 0)
+        # The reshape flattens any extra dimensions (like num_position_outputs) into the last dim
+        batch_size, num_tokens = relative_positions.shape[:2]
+        out = torch.zeros((*relative_positions.shape[:-1], 0),
+                         dtype=torch.float32,
+                         device=relative_positions.device)
+        return out.reshape(batch_size, num_tokens, -1)
+
+    @property
+    def output_dim(self):
+        return 0
 
 
 def init_xavier(model):

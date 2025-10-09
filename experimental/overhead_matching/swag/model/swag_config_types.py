@@ -73,6 +73,10 @@ class SphericalPositionEmbeddingConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     embedding_dim: int
 
 
+class NullPositionEmbeddingConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    ...
+
+
 class TransformerAggregatorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     num_transformer_layers: int
     num_attention_heads: int
@@ -83,7 +87,7 @@ class TransformerAggregatorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
 FeatureMapExtractorConfig = Union[DinoFeatureMapExtractorConfig, None]
 SemanticTokenExtractorConfig = Union[
     SemanticNullExtractorConfig, SemanticEmbeddingMatrixConfig, SemanticSegmentExtractorConfig]
-PositionEmbeddingConfig = Union[PlanarPositionEmbeddingConfig, SphericalPositionEmbeddingConfig]
+PositionEmbeddingConfig = Union[PlanarPositionEmbeddingConfig, SphericalPositionEmbeddingConfig, NullPositionEmbeddingConfig]
 AggregationConfig = Union[TransformerAggregatorConfig]
 
 ExtractorConfig = Union[
