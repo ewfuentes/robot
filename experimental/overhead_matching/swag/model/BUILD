@@ -148,6 +148,7 @@ py_binary(
     requirement("openai"),
     requirement("geopandas"),
     requirement("ipdb"),
+    requirement("tqdm"),
     "//common/torch:load_torch_deps",
     "//common/ollama:pyollama",
     ":swag_model_input_output",

@@ -13,6 +13,9 @@ from experimental.overhead_matching.swag.model.swag_config_types import (
     SemanticLandmarkExtractorConfig, ExtractorDataRequirement)
 from experimental.overhead_matching.swag.model.swag_model_input_output import (
     ModelInput, ExtractorOutput)
+from multiprocessing import Pool
+from functools import partial
+import tqdm
 
 BATCH_SIZE = 49_999
 
@@ -334,9 +337,96 @@ def _custom_id_from_props(props: dict) -> str:
         json_props.encode('utf-8')).digest()).decode('utf-8')
     return custom_id
 
+
+def encode_image_to_base64(image_path: Path) -> str:
+    """Encode a single image file to base64 string."""
+    with open(image_path, 'rb') as f:
+        return base64.b64encode(f.read()).decode('utf-8')
+
+
+def encode_images_parallel(image_paths: list[Path], num_workers: int = 8) -> list[str]:
+    """Encode multiple images to base64 in parallel using multiprocessing."""
+    with Pool(num_workers) as pool:
+        return list(tqdm.tqdm(
+            pool.imap(encode_image_to_base64, image_paths),
+            total=len(image_paths),
+            desc="Encoding images"
+        ))
+
+
+PANORAMA_LANDMARK_SCHEMAS = {
+    'all': {
+        "name": "landmark_extraction",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "landmarks": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "description": {"type": "string"},
+                            "yaw_angles": {
+                                "type": "array",
+                                "items": {"type": "integer", "enum": [0, 90, 180, 270]}
+                            }
+                        },
+                        "required": ["description", "yaw_angles"],
+                        "additionalProperties": False
+                    }
+                }
+            },
+            "required": ["landmarks"],
+            "additionalProperties": False
+        }
+    },
+    'individual': {
+        "name": "landmark_extraction",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "landmarks": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "description": {"type": "string"}
+                        },
+                        "required": ["description"],
+                        "additionalProperties": False
+                    }
+                }
+            },
+            "required": ["landmarks"],
+            "additionalProperties": False
+        }
+    }
+}
+
+EXAMPLE_SENTENCES = """
+A small, man-made water tap, located east of a larger non-drinking fountain.
+Lit, sheltered light-rail station platform with a bench and an adjacent bus stop; canopy over the platform, with seating and bus access, reference 21852.
+A small, low-rise building.
+A concrete footpath that climbs uphill, with a handrail on both sides.
+A nine-story building along Masonic Avenue.
+A professional law office storefront with a sign reading "Verso Law Group."
+A private sports pitch with bright artificial turf, marked for soccer and American football.
+A bus stop at the intersection of Denny Way and Dexter Ave N, with a sign labeled 2295.
+A Divvy bike rental docking station at Wentworth Ave and 24th St, with 15 docks and Divvy/Lyft branding.
+A small asphalt road labeled South Bayview Street, typical of a quiet, lightly trafficked street with a 20 mph speed limit.
+A multi-story rectangular building about 22 meters tall.
+A plain, mid-sized urban building.
+A pedestrian crosswalk with traffic lights at street level, with no traffic island in the middle, and tactile paving for the visually impaired.
+A narrow one-way service alley with an asphalt surface.
+A mid-rise building approximately 22 meters tall.
+A fast-food spot named Mr. Cow, known for corn dogs (Corndogs by Mr. Cow).
+"""
 SYSTEM_PROMPTS = {
     'default': "your job is to produce short natural language descriptions of openstreetmap landmarks that are helpful for visually identifying the landmark. for example, do not include information about building identifiers that are unlikely to be discernable by visual inspection. don't include any details not derived from the provided landmark information. don't include descriptions about the lack of information. do not include instructions on how to identify the landmark. do include an address if provided.",
-    'no-address': "your job is to produce short natural language descriptions of openstreetmap landmarks that are helpful for visually identifying the landmark. for example, do not include information about building identifiers that are unlikely to be discernable by visual inspection. don't include any details not derived from the provided landmark information. don't include descriptions about the lack of information. do not include instructions on how to identify the landmark. DO NOT include an address or parts of an address in the description."
+    'no-address': "your job is to produce short natural language descriptions of openstreetmap landmarks that are helpful for visually identifying the landmark. for example, do not include information about building identifiers that are unlikely to be discernable by visual inspection. don't include any details not derived from the provided landmark information. don't include descriptions about the lack of information. do not include instructions on how to identify the landmark. DO NOT include an address or parts of an address in the description.",
+    'panorama': f"You are an expert at identifying landmarks in street-level imagery. Identify distinctive, permanent landmarks visible in these image(s) and describe them in short, natural language descriptions. Focus on buildings, monuments, parks, infrastructure, or other landmarks that are likely to be present in OpenStreetMaps. Avoid transient landmarks like cars and pedestrians. If you can confidently make out text (e.g., a buisnesses name on a sign, a street sign), include these as landmarks. Do not mention the location of the landmark in the image or relative to other landmarks (e.g., on the left of the image/on the right side of the street). Match the style of these examples: {EXAMPLE_SENTENCES}. DO NOT make up details that are not present (for example, if there is no street sign in the image, don't say you are on a specific street).",
 }
 
 def _create_requests(landmarks, prompt_type = "default"):
@@ -463,6 +553,182 @@ def create_sentence_embedding_batch(args):
     print()
 
 
+def create_panorama_description_requests(args):
+    """
+    Create batch API requests for panorama landmark extraction.
+
+    Args:
+        args: Argument namespace containing:
+            - pinhole_dir: Path to directory with panorama subfolders containing pinhole images
+            - output_base: Path for output batch request files
+            - submit_mode: 'all' (all 4 images in one request) or 'individual' (1 image per request)
+            - num_workers: Number of parallel workers for image encoding
+            - max_requests_per_batch: Maximum requests per batch file
+            - launch: Whether to launch batch jobs automatically
+    """
+    from pathlib import Path
+    import itertools
+
+    pinhole_dir = Path(args.pinhole_dir)
+    output_base = Path(args.output_base) / 'panorama_sentence_requests'
+    output_base.mkdir(parents=True, exist_ok=True)
+
+    submit_mode = args.submit_mode
+    num_workers = args.num_workers
+    max_requests_per_batch = args.max_requests_per_batch
+
+    # Find all panorama subfolders
+    panorama_folders = [f for f in pinhole_dir.iterdir() if f.is_dir()]
+
+    if not panorama_folders:
+        print(f"No panorama folders found in {pinhole_dir}")
+        return
+
+    print(f"Found {len(panorama_folders)} panorama folders")
+    print(f"Submit mode: {submit_mode}")
+    print(f"Encoding workers: {num_workers}")
+
+    # Collect panorama metadata (don't load images yet)
+    yaw_angles = [0, 90, 180, 270]
+    panorama_image_map = {}  # Map from panorama stem to list of (yaw, image_path)
+
+    for pano_folder in panorama_folders:
+        pano_stem = pano_folder
+        images_for_pano = []
+        for yaw in yaw_angles:
+            image_path = pano_folder / f"yaw_{yaw:03d}.jpg"
+            if not image_path.exists():
+                image_path = pano_folder / f"yaw_{yaw:03d}.png"
+            if image_path.exists():
+                images_for_pano.append((yaw, image_path))
+
+        if len(images_for_pano) == 4:
+            panorama_image_map[pano_stem] = images_for_pano
+        else:
+            print(f"Warning: Skipping {pano_stem}, found only {len(images_for_pano)}/4 images")
+
+    print(f"Processing {len(panorama_image_map)} complete panoramas")
+
+    # Get system prompt and schema for this mode
+    system_prompt = SYSTEM_PROMPTS['panorama']
+    schema = PANORAMA_LANDMARK_SCHEMAS[submit_mode]
+
+    # Process in batches to avoid OOM
+    # We'll encode and write requests in chunks
+    PANORAMA_CHUNK_SIZE = 1000 
+
+    panorama_items = list(panorama_image_map.items())
+    total_requests_created = 0
+    batch_idx = 0
+    current_batch_requests = []
+    current_batch_size = 0
+
+    for chunk_start in tqdm.tqdm(range(0, len(panorama_items), PANORAMA_CHUNK_SIZE),
+                                   desc="Processing chunks"):
+        chunk_end = min(chunk_start + PANORAMA_CHUNK_SIZE, len(panorama_items))
+        chunk = panorama_items[chunk_start:chunk_end]
+
+        # Collect all images for this chunk
+        chunk_image_paths = []
+        for pano_stem, images_for_pano in chunk:
+            for yaw, image_path in images_for_pano:
+                chunk_image_paths.append(image_path)
+
+        # Encode this chunk's images in parallel
+        chunk_base64_images = encode_images_parallel(chunk_image_paths, num_workers)
+        chunk_image_to_base64 = dict(zip(chunk_image_paths, chunk_base64_images))
+
+        # Create requests for this chunk
+        if submit_mode == 'all':
+            # One request per panorama with all 4 images
+            user_prompt = "These four images show the same location from different angles (0°, 90°, 180°, 270° yaw). Identify all distinctive landmarks visible across these images. For each landmark, specify which yaw angle(s) it is visible in. Return a JSON object with a 'landmarks' array containing objects with 'description' and 'yaw_angles' fields."
+        elif submit_mode == "individual":
+            user_prompt = f"Identify distinctive landmarks visible in this image."
+        else:
+            raise RuntimeError(f"Unrecognized submit mode type: {submit_mode}")
+
+        for pano_stem, images_for_pano in chunk:
+            # Sort by yaw angle to ensure consistent ordering
+            images_for_pano = sorted(images_for_pano, key=lambda x: x[0])
+            all_content = []
+            if submit_mode == 'all':
+                content = [{"type": "text", "text": user_prompt}]
+                for yaw, image_path in images_for_pano:
+                    # Detect file extension
+                    ext = image_path.suffix.lower()
+                    mime_type = "image/jpeg" if ext == ".jpg" else "image/png"
+                    content.append({
+                        "type": "image_url",
+                        "image_url": {"detail": "high", "url": f"data:{mime_type};base64,{chunk_image_to_base64[image_path]}"}
+                    })
+                all_content.append((content, None))
+            else:  #individual
+                for yaw, image_path in images_for_pano:
+                    ext = image_path.suffix.lower()
+                    mime_type = "image/jpeg" if ext == ".jpg" else "image/png"
+                    content = [
+                        {"type": "text", "text": user_prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {"detail": "high", "url": f"data:{mime_type};base64,{chunk_image_to_base64[image_path]}"}
+                        }
+                    ]
+                    all_content.append((content, yaw))
+
+            for content, yaw in all_content:
+                request = {
+                    "custom_id": f"{pano_stem}" + ("_yaw_{yaw}" if yaw is not None else ""),
+                    "method": "POST",
+                    "url": "/v1/chat/completions",
+                    "body": {
+                        "model": "gpt-5-2025-08-07",
+                        "response_format": {"type": "json_schema", "json_schema": schema},
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": content}
+                        ]
+                    }
+                }
+
+                # Add to batch with size monitoring
+                request_json = json.dumps(request)
+                request_size = len(request_json.encode('utf-8'))
+
+                if (current_batch_size + request_size > 190_000_000 or
+                    len(current_batch_requests) >= max_requests_per_batch):
+                    # Write current batch
+                    _write_and_launch_batch(output_base, batch_idx, current_batch_requests, args.launch)
+                    batch_idx += 1
+                    current_batch_requests = []
+                    current_batch_size = 0
+
+                current_batch_requests.append(request)
+                current_batch_size += request_size
+                total_requests_created += 1
+
+        # Clear chunk data to free memory
+        del chunk_base64_images
+        del chunk_image_to_base64
+
+    # Write final batch if there are remaining requests
+    if current_batch_requests:
+        _write_and_launch_batch(output_base, batch_idx, current_batch_requests, args.launch)
+        batch_idx += 1
+    print()
+    print(f"Created {total_requests_created} API requests")
+    print(f"Wrote {batch_idx} batch file(s) to {output_base}")
+
+
+def _write_and_launch_batch(output_base, batch_idx, batch_requests, should_launch):
+    """Helper function to write and optionally launch a batch."""
+    batch_file = output_base / f'panorama_request_{batch_idx:03d}.jsonl'
+    batch_file.write_text('\n'.join(json.dumps(r) for r in batch_requests))
+
+    if should_launch:
+        batch_response = launch_batch(batch_idx, batch_file, "/v1/chat/completions")
+        print(f"{batch_response.id}", end=" ")
+
+
 def make_embedding_dict_from_json(embedding_jsons: list) -> dict[str, str]:
     out = {}
     for response in embedding_jsons:
@@ -519,6 +785,23 @@ if __name__ == "__main__":
     create_parser.add_argument('--launch', action='store_true')
     create_parser.set_defaults(func=create_sentence_embedding_batch)
 
+    # Panorama landmark extraction
+    panorama_parser = subparsers.add_parser('create_panorama_sentences',
+                                            help='Create batch requests for panorama landmark extraction')
+    panorama_parser.add_argument('--pinhole_dir', type=str, required=True,
+                                 help='Directory containing panorama subfolders with pinhole images')
+    panorama_parser.add_argument('--output_base', type=str, default="/tmp/",
+                                 help='Base path for output batch request files')
+    panorama_parser.add_argument('--submit_mode', type=str, default='all',
+                                 choices=['all', 'individual'],
+                                 help='Submit mode: "all" (all 4 images in one request) or "individual" (1 image per request)')
+    panorama_parser.add_argument('--num_workers', type=int, default=8,
+                                 help='Number of parallel workers for image encoding')
+    panorama_parser.add_argument('--max_requests_per_batch', type=int, default=10000,
+                                 help='Maximum requests per batch file')
+    panorama_parser.add_argument('--launch', action='store_true',
+                                 help='Automatically launch batch jobs')
+    panorama_parser.set_defaults(func=create_panorama_description_requests)
 
     args = parser.parse_args()
     import ipdb

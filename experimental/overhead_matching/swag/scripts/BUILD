@@ -217,3 +217,21 @@ py_binary(
   ]
 )
 
+py_binary(
+  name="panorama_to_pinhole",
+  srcs=["panorama_to_pinhole.py"],
+  deps=[
+    requirement("numpy"),
+    requirement("scipy"),
+    requirement("pillow"),
+    requirement("tqdm"),
+  ]
+)
+
+py_binary(
+  name="panorama_viewer",
+  srcs=["panorama_viewer.py"],
+  deps=[
+    requirement("flask"),
+  ]
+)
