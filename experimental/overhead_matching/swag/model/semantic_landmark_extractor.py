@@ -107,7 +107,6 @@ def compute_bounds_for_polygon(pano_loc_px, geometry):
 
 
 def compute_landmark_pano_positions(pano_metadata, pano_shape):
-    import IPython
     out = []
     pano_y = pano_metadata["web_mercator_y"]
     pano_x = pano_metadata["web_mercator_x"]
@@ -187,8 +186,6 @@ def compute_landmark_pano_positions(pano_metadata, pano_shape):
                 [pano_shape[0] / 2.0, pano_shape[1] * frac[1].item()]])
 
         else:
-            import IPython
-            IPython.embed()
             raise ValueError(f"Unrecognized geometry type: {landmark["geometry_px"].geom_type}")
 
     return torch.tensor(out)
@@ -315,99 +312,3 @@ class SemanticLandmarkExtractor(torch.nn.Module):
     @property
     def num_position_outputs(self):
         return 2
-
-
-def _load_landmarks(geojson_list):
-    import geopandas as gpd
-    import pandas as pd
-    return pd.concat([gpd.read_file(p) for p in geojson_list], ignore_index=True)
-
-
-def _create_requests(landmarks):
-    import base64
-    system_prompt = "Your job is to produce short natural language descriptions of openstreetmap landmarks that are helpful for visually identifying the landmark. For example, do not include information about building identifiers that are unlikely to be discernable by visual inspection. Don't include any details not derived from the provided landmark information. Don't include descriptions about the lack of information. Do not include instructions on how to identify the landmark. Do include an address if provided."
-
-    user_prompt = "Produce a short natural language description for this landmark: "
-
-    requests = []
-    for props in landmarks:
-        json_props = json.dumps(dict(props), sort_keys=True)
-        requests.append({
-            "custom_id": base64.b64encode(hashlib.sha256(json_props.encode('utf-8')).digest()).decode('utf-8'),
-            "method": "POST",
-            "url": "/v1/chat/completions",
-            "body": {
-                "model": "gpt-5-nano",
-                "max_tokens": 3000,
-                "reasoning_error": 'low',
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt + json_props},
-                ]
-            }
-        })
-    return requests
-
-
-def launch_batch(idx, batch_requests_file):
-    import openai
-    client = openai.OpenAI()
-    batch_input_file = client.files.create(
-        file=batch_requests_file.open('rb'),
-        purpose='batch')
-
-    return client.batches.create(
-        input_file_id=batch_input_file.id,
-        endpoint="/v1/chat/completions",
-        completion_window="24h",
-        metadata={"description": f"landmark summarization part: {idx}"}
-    )
-
-
-def create(args):
-    from pathlib import Path
-    import itertools
-    print(f'create {args}')
-    landmarks = _load_landmarks(args.geojson)
-    unique_landmarks = {prune_landmark(row.dropna().to_dict()) for _, row in landmarks.iterrows()}
-    requests = _create_requests(unique_landmarks)
-
-    for idx, request_batch in enumerate(itertools.batched(requests, 100)):
-        batch_requests_file = Path(f'/tmp/requests_{idx:03d}.jsonl')
-        batch_requests_file.write_text('\n'.join(json.dumps(r) for r in request_batch))
-
-        if args.launch:
-            batch_response = launch_batch(idx, batch_requests_file)
-            print(batch_response)
-        break
-
-
-def fetch(args):
-    print(f'fetch {args}')
-
-    ...
-
-
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser()
-    # Arguments required to create a batch job
-    subparsers = parser.add_subparsers()
-
-    create_parser = subparsers.add_parser('create')
-    create_parser.add_argument('--train_config')
-    create_parser.add_argument('--field_spec')
-    create_parser.add_argument('--geojson', required=True, action='append')
-    create_parser.add_argument('--launch', action='store_true')
-    create_parser.set_defaults(func=create)
-
-    # Arguments required to fetch the result of a batch job
-    fetch_parser = subparsers.add_parser("fetch")
-    fetch_parser.add_argument('--batch_info')
-    fetch_parser.add_argument('--output')
-    fetch_parser.set_defaults(func=fetch)
-
-    args = parser.parse_args()
-    import ipdb
-    with ipdb.launch_ipdb_on_exception():
-        args.func(args)
