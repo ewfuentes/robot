@@ -957,6 +957,23 @@ h5py==3.14.0 \
     --hash=sha256:f30dbc58f2a0efeec6c8836c97f6c94afd769023f44e2bb0ed7b17a16ec46088 \
     --hash=sha256:f5cc1601e78027cedfec6dd50efb4802f018551754191aeb58d948bd3ec3bd7a
     # via hloc
+hdbscan==0.8.40 \
+    --hash=sha256:05668ae7a17479a9061676290a66a810a62f2a4ec577ba18f561088b726ab01d \
+    --hash=sha256:127cbe8c858dc77adfde33a3e1ce4f3bea810f78b01d2bd47b1147d4b5a50472 \
+    --hash=sha256:1b55a935ed7b329adac52072e1c4028979dfc54312ca08de2deece9c97d6ebb1 \
+    --hash=sha256:353eaa22e42bee69df095744dbb8b29360e516bd9dcb84580dceeeb755f004cc \
+    --hash=sha256:56d3057d483d112ff8e0f0a49f0d59df8c078d444dbd5dea7b987faab0c6fb49 \
+    --hash=sha256:5e958f0d7a33cd2b5e8e927b47f7360bf8a3e7d72355dd65a701e8aabe407b27 \
+    --hash=sha256:6e0d6197ee045b173e1f16e6884386f335a56091e373a839dd24f7331a8fa9ed \
+    --hash=sha256:7ebe69a0ad2f86d090a518b17d4635dfc65d3402b8c453aa2942f9c7dc895b9e \
+    --hash=sha256:811a248e57353a4aa815019176879fd16bace55ed633583a6b47734edcb5397c \
+    --hash=sha256:9ba82e510508921e0b30a234b639f5d84a7d475746e7db814517c5c4d1589016 \
+    --hash=sha256:c18947947af7f843f47c0111f21ffd5a5fd31789fcae39689a44e8b01433e504 \
+    --hash=sha256:c5a16f38e1816ab69ad315a1eab429e5a7c725210d88e71d273496cce3a2693c \
+    --hash=sha256:c9e383ff17beee0591075ff65d524bda5b5a35dfb01d218245a7ba30c8d48a17 \
+    --hash=sha256:cda06a6f4e65c6c34bed083bb8cdf29fdb1ffcb15580829d79b2906c7bdc6dbc \
+    --hash=sha256:cf094aeea4df4513644333b9dda408ef8ef385d0ab5f3f8681e239a9008cbeb5
+    # via -r third_party/python/requirements_3_12.in
 hf-xet==1.1.7 \
     --hash=sha256:18b61bbae92d56ae731b92087c44efcac216071182c603fc535f8e29ec4b09b8 \
     --hash=sha256:20cec8db4561338824a3b5f8c19774055b04a8df7fff0cb1ff2cb1a0c1607b80 \
@@ -1193,6 +1210,7 @@ joblib==1.5.1 \
     --hash=sha256:4719a31f054c7d766948dcd83e9613686b27114f190f717cec7eaa2084f8a74a \
     --hash=sha256:f4f86e351f39fe3d0d32a9f2c3d8af1ee4cec285aafcb27003dda5205576b444
     # via
+    #   hdbscan
     #   osqp
     #   scikit-learn
 json5==0.12.1 \
@@ -1951,6 +1969,7 @@ numpy==1.26.4 \
     #   fvcore
     #   geopandas
     #   h5py
+    #   hdbscan
     #   hloc
     #   imageio
     #   ipympl
@@ -2073,6 +2092,10 @@ opencv-python-headless==4.11.0.86 \
     --hash=sha256:a66c1b286a9de872c343ee7c3553b084244299714ebb50fbdcd76f07ebbe6c81 \
     --hash=sha256:f447d8acbb0b6f2808da71fddd29c1cdd448d2bc98f72d9bb78a7a898fc9621b
     # via easyocr
+opt-einsum==3.4.0 \
+    --hash=sha256:69bb92469f86a1565195ece4ac0323943e83477171b91d24c35afe028a90d7cd \
+    --hash=sha256:96ca72f1b886d148241348783498194c577fa30a8faac108586b14f1ba4473ac
+    # via torch
 osmnx==2.0.5 \
     --hash=sha256:7a58237b904a8ad13a11cf57b758c530d3f8734020142a2d0149f39fc4ba88bc \
     --hash=sha256:b58663d210644c3f660fdffa767ff298a113cd7ad15f807c41af54fbca40fca9
@@ -3427,6 +3450,7 @@ scikit-learn==1.6.1 \
     --hash=sha256:fa909b1a36e000a03c382aade0bd2063fd5680ff8b8e501660c0f59f021a6415
     # via
     #   -r third_party/python/requirements_3_12.in
+    #   hdbscan
     #   sentence-transformers
 scipy==1.16.1 \
     --hash=sha256:0851f6a1e537fe9399f35986897e395a1aa61c574b178c0d456be5b1a0f5ca1f \
@@ -3491,6 +3515,7 @@ scipy==1.16.1 \
     #   cvxpy
     #   cvxpylayers
     #   easyocr
+    #   hdbscan
     #   hloc
     #   osqp
     #   scikit-image
@@ -3718,7 +3743,7 @@ tomlkit==0.13.3 \
     --hash=sha256:430cf247ee57df2b94ee3fbe588e71d362a941ebb545dec29b53961d61add2a1 \
     --hash=sha256:c89c649d79ee40629a9fda55f8ace8c6a1b42deb912b2a8fd8d942ddadb606b0
     # via marimo
-torch==2.7.0+cu128 \
+torch[opt-einsum]==2.7.0+cu128 \
     --hash=sha256:1704e5dd66c9221e4e8b6ae2d80cbf54e129571e643f5fa9ca78cc6d2096403a \
     --hash=sha256:2f155388b1200e08f3e901bb3487ff93ca6d63cde87c29b97bb6762a8f63b373 \
     --hash=sha256:3559e98be824c2b12ab807319cd61c6174d73a524c9961317de8e8a44133c5c5 \
