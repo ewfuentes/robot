@@ -104,23 +104,26 @@ class JobResult:
 class JobManager:
     """Manage parallel execution of Lambda Cloud training jobs."""
     
-    def __init__(self, 
+    def __init__(self,
                  machine_config: MachineConfig,
                  lambda_client,
                  max_parallel_jobs: int = 10,
-                 log_dir: Optional[Path] = None):
+                 log_dir: Optional[Path] = None,
+                 setup_only: bool = False):
         """Initialize job manager.
-        
+
         Args:
             machine_config: Machine configuration for all jobs
             lambda_client: Lambda Cloud client instance
             max_parallel_jobs: Maximum number of parallel jobs
             log_dir: Directory for job log files (optional)
+            setup_only: If True, only setup instances without starting training
         """
         self.machine_config = machine_config
         self.lambda_client = lambda_client
         self.max_parallel_jobs = max_parallel_jobs
         self.log_dir = log_dir or Path("/tmp/lambda_jobs")
+        self.setup_only = setup_only
         self.active_jobs: Dict[str, JobResult] = {}
         self.completed_jobs: List[JobResult] = []
         self._lock = threading.Lock()
@@ -318,19 +321,21 @@ class JobManager:
         """
         try:
             logger.log("Starting training...", "INFO", terminal=True)
-            
-            # Copy training config to remote instance  
+
+            # Training config has already been copied to remote instance
             remote_config_path = f"/tmp/train_config_{job_id}.yaml"
-            logger.log(f"Copying training config to {remote_config_path}")
-            if not remote_executor.copy_file(job_config.config_path, remote_config_path):
-                logger.log("Failed to copy training config", "ERROR", terminal=True)
-                return False
-            
-            # Prepare training command
-            train_command = (
-                f"cd /home/ubuntu/robot && bazel run //experimental/overhead_matching/swag/scripts:train -- "
+
+            # Prepare training command using bazel
+            base_train_args = (
                 f"--dataset_base /tmp/ --output_base /tmp/output_{job_id} "
-                f"--train_config {remote_config_path} --no_ipdb"
+                f"--train_config {remote_config_path} --no_ipdb --quiet"
+            )
+
+            # Use bazel to run the train script directly from the repo
+            train_command = (
+                f"cd /home/ubuntu/robot && bazel run "
+                f"//experimental/overhead_matching/swag/scripts:train -- "
+                f"{base_train_args}"
             )
             
             # Prepare S3 configuration  
@@ -384,7 +389,8 @@ class JobManager:
             logger.log("Autonomous training started", "INFO", terminal=True)
             logger.log(f"SSH to instance: ssh ubuntu@{instance_ip}")
             logger.log(f"Monitor logs: tail -f /tmp/monitor.log")
-            logger.log(f"Training logs: tail -f /tmp/training.log")
+            logger.log(f"Training debug log: tail -f /tmp/training_debug.log")
+            logger.log(f"Training output log: tail -f /tmp/training_output.log")
             return True
             
         except Exception as e:
@@ -453,17 +459,35 @@ class JobManager:
                     job_result.status = JobStatus.FAILED
                     job_result.error_message = "Instance setup failed"
                     return job_result
-                
-                # Start autonomous training
-                job_result.status = JobStatus.TRAINING
-                if not self.start_autonomous_training(remote_executor, job_config, job_id, instance_id, instance_ip, self.lambda_client.api_key, logger):
+
+                # Copy training config to remote instance
+                remote_config_path = f"/tmp/train_config_{job_id}.yaml"
+                logger.log(f"Copying training config to {remote_config_path}")
+                if not remote_executor.copy_file(job_config.config_path, remote_config_path):
+                    logger.log("Failed to copy training config", "ERROR", terminal=True)
                     job_result.status = JobStatus.FAILED
-                    job_result.error_message = "Failed to start autonomous training"
+                    job_result.error_message = "Failed to copy training config"
                     return job_result
-                
-                # Job is now autonomous - mark as completed from host perspective
-                job_result.status = JobStatus.COMPLETED
-                job_result.output_s3_path = f"s3://rrg-overhead-matching/training_outputs/{job_id}/"
+
+                if self.setup_only:
+                    # Setup-only mode: skip training start
+                    logger.log("Setup-only mode: skipping training start", "INFO", terminal=True)
+                    logger.log(f"Instance ready for manual training", "INFO", terminal=True)
+                    logger.log(f"Training config copied to: {remote_config_path}", "INFO", terminal=True)
+                    logger.log(f"SSH to instance: ssh ubuntu@{instance_ip}", "INFO", terminal=True)
+                    job_result.status = JobStatus.COMPLETED
+                    job_result.output_s3_path = None
+                else:
+                    # Start autonomous training
+                    job_result.status = JobStatus.TRAINING
+                    if not self.start_autonomous_training(remote_executor, job_config, job_id, instance_id, instance_ip, self.lambda_client.api_key, logger):
+                        job_result.status = JobStatus.FAILED
+                        job_result.error_message = "Failed to start autonomous training"
+                        return job_result
+
+                    # Job is now autonomous - mark as completed from host perspective
+                    job_result.status = JobStatus.COMPLETED
+                    job_result.output_s3_path = f"s3://rrg-overhead-matching/training_outputs/{job_id}/"
                 
             finally:
                 remote_executor.disconnect()

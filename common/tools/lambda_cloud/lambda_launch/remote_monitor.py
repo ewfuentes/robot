@@ -7,6 +7,8 @@ import time
 import subprocess
 import argparse
 import json
+import psutil
+import glob
 from datetime import datetime, timedelta
 from common.tools.lambda_cloud.lambda_api.client import LambdaCloudClient
 from pathlib import Path
@@ -47,9 +49,11 @@ class RemoteMonitor:
         self.training_process = None
         
         # Set up log file paths
-        self.training_log_file = "/tmp/training.log"
+        self.training_debug_log = "/tmp/training_debug.log"  # Reliable file-written log
+        self.training_output_log = "/tmp/training_output.log"  # Captured stdout (may buffer)
         self.monitor_log_file = "/tmp/monitor.log"
-        
+        self.diagnostics_log_file = "/tmp/diagnostics.log"
+
         # Initialize monitor log file
         self._setup_monitor_logging()
         
@@ -60,7 +64,8 @@ class RemoteMonitor:
                 f.write(f"=== Training Job Monitor Started ===\n")
                 f.write(f"Start time: {self.start_time}\n")
                 f.write(f"Timeout: {self.timeout_time}\n")
-                f.write(f"Training log: {self.training_log_file}\n")
+                f.write(f"Training debug log: {self.training_debug_log}\n")
+                f.write(f"Training output log: {self.training_output_log}\n")
                 f.write(f"Output dir: {self.output_dir}\n")
                 f.write(f"S3 destination: s3://{self.s3_bucket}/{self.s3_key_prefix}/\n")
                 f.write(f"=====================================\n\n")
@@ -84,22 +89,66 @@ class RemoteMonitor:
             print(f"Warning: Failed to write to monitor log: {e}")
         
     def start_training(self) -> bool:
-        """Start the training process with proper logging."""
+        """Start the training process with robust logging fixes."""
         try:
             self.log(f"Starting training: {self.training_command}")
-            
-            # Create training log file
-            with open(self.training_log_file, 'w') as f:
+
+            # Create training output log file (captured stdout)
+            with open(self.training_output_log, 'w') as f:
                 f.write(f"=== Training Started ===\n")
                 f.write(f"Command: {self.training_command}\n")
                 f.write(f"Start time: {self.start_time}\n")
                 f.write(f"========================\n\n")
-            
-            # Start training with output redirected to log file
-            log_command = f"({self.training_command}) 2>&1 | tee -a {self.training_log_file}"
-            
+
+            # Apply multiple fix strategies for stdout buffering issues
+
+            # Strategy 1: Handle bazel run commands (no python flag needed)
+            fixed_command = self.training_command
+
+            # Strategy 2: Create robust wrapper script for bazel commands
+            wrapper_script = f'''#!/bin/bash
+set -euo pipefail
+
+LOG_FILE="{self.training_output_log}"
+
+echo "🚀 Robust training wrapper starting at $(date)" | tee -a "$LOG_FILE"
+echo "Command: {fixed_command}" | tee -a "$LOG_FILE"
+
+# Function to cleanup on exit
+cleanup() {{
+    echo "⚠️  Wrapper script cleanup at $(date)" | tee -a "$LOG_FILE"
+}}
+trap cleanup EXIT
+
+# For bazel commands, we need to:
+# 1. Force line buffering with stdbuf
+# 2. Set PYTHONUNBUFFERED for any Python processes bazel spawns
+# 3. Use script to force PTY allocation which often fixes buffering issues
+
+export PYTHONUNBUFFERED=1
+
+# Execute with buffering fixes specific to bazel:
+# Option 1: Use stdbuf with explicit line buffering
+# Option 2: Use script to create pseudo-TTY which often resolves bazel output issues
+if command -v script >/dev/null 2>&1; then
+    # Use script for PTY allocation - often works better with bazel
+    script -q -c "{fixed_command}" /dev/null 2>&1 | stdbuf -o0 -e0 tee -a "$LOG_FILE"
+else
+    # Fallback to stdbuf only
+    stdbuf -o0 -e0 {fixed_command} 2>&1 | stdbuf -o0 -e0 tee -a "$LOG_FILE"
+fi
+'''
+
+            wrapper_path = "/tmp/training_wrapper.sh"
+            with open(wrapper_path, 'w') as f:
+                f.write(wrapper_script)
+            os.chmod(wrapper_path, 0o755)
+
+            # Use the wrapper script
+            final_command = f"bash {wrapper_path}"
+
             self.training_process = subprocess.Popen(
-                log_command,
+                final_command,
                 shell=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -108,13 +157,16 @@ class RemoteMonitor:
                 universal_newlines=True,
                 preexec_fn=os.setsid  # Create new process group for easier cleanup
             )
-            
+
             self.log(f"Training started with PID {self.training_process.pid}")
-            self.log(f"Training logs: tail -f {self.training_log_file}")
+            self.log(f"Training debug log: tail -f {self.training_debug_log}")
+            self.log(f"Training output log: tail -f {self.training_output_log}")
             self.log(f"Monitor logs: tail -f {self.monitor_log_file}")
-            
+            self.log(f"Wrapper script: {wrapper_path}")
+            self.log("🔧 Applied robust stdout buffering fixes")
+
             return True
-            
+
         except Exception as e:
             self.log(f"Failed to start training: {e}")
             return False
@@ -123,91 +175,119 @@ class RemoteMonitor:
         """Check if training process is still running."""
         if not self.training_process:
             return False
-            
+
         poll_result = self.training_process.poll()
         return poll_result is None
+
+    def is_training_progressing(self) -> bool:
+        """Check if training debug log has been modified in the last 15 minutes.
+
+        Returns:
+            True if log was modified recently, False otherwise
+        """
+        if not self.is_training_running():
+            return False
+
+        if not os.path.exists(self.training_debug_log):
+            self.log(f"Training debug log not found: {self.training_debug_log}")
+            return False
+
+        try:
+            current_time = datetime.now()
+            log_mtime = datetime.fromtimestamp(os.path.getmtime(self.training_debug_log))
+            seconds_since_update = (current_time - log_mtime).total_seconds()
+
+            # Consider active if log was modified in last 15 minutes
+            is_active = seconds_since_update < 900
+
+            if is_active:
+                self.log(f"Training debug log last modified {seconds_since_update:.0f}s ago: {log_mtime}")
+            else:
+                self.log(f"Training debug log stalled - last modified {seconds_since_update:.0f}s ago: {log_mtime}")
+
+            return is_active
+        except Exception as e:
+            self.log(f"Error checking training debug log mtime: {e}")
+            return False
     
     def is_timeout_reached(self) -> bool:
         """Check if training timeout has been reached."""
         return datetime.now() >= self.timeout_time
-    
+
+    def get_cpu_usage(self) -> float:
+        """Get CPU usage for training process with proper warmup."""
+        try:
+            if not self.training_process:
+                return 0.0
+            main_process = psutil.Process(self.training_process.pid)
+            # Warmup call then measure
+            main_process.cpu_percent()
+            time.sleep(0.1)
+            return main_process.cpu_percent(interval=1)
+        except:
+            return 0.0
+
+    def log_system_stats(self):
+        """Log CPU and GPU usage for monitoring purposes."""
+        # Log CPU usage
+        cpu_percent = self.get_cpu_usage()
+        self.log(f"CPU usage: {cpu_percent:.1f}%")
+
+        # Log GPU usage
+        try:
+            result = subprocess.run(['nvidia-smi', '--query-gpu=utilization.gpu', '--format=csv,noheader,nounits'],
+                                  capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                gpu_usage = []
+                for line in result.stdout.strip().split('\n'):
+                    if line.strip().isdigit():
+                        gpu_usage.append(int(line.strip()))
+
+                if gpu_usage:
+                    self.log(f"GPU usage: {gpu_usage}")
+                else:
+                    self.log("GPU usage: no data")
+            else:
+                self.log("GPU usage: nvidia-smi failed")
+        except Exception as e:
+            self.log(f"GPU usage: could not query ({e})")
+
     def sync_to_s3(self) -> bool:
         """Sync output directory and logs to S3."""
         success = True
-        
+
         try:
             # 1. Sync output directory
             if os.path.exists(self.output_dir):
-                self.log(f"Syncing output directory {self.output_dir} to s3://{self.s3_bucket}/{self.s3_key_prefix}/outputs/")
-                
-                sync_command = [
-                    "aws", "s3", "sync", 
-                    self.output_dir, 
-                    f"s3://{self.s3_bucket}/{self.s3_key_prefix}/outputs/",
-                    "--delete"
-                ]
-                
+                self.log(f"Syncing outputs to S3...")
                 result = subprocess.run(
-                    sync_command,
-                    capture_output=True,
-                    text=True,
-                    timeout=1800  # 30 minute timeout
+                    ["aws", "s3", "sync", self.output_dir,
+                     f"s3://{self.s3_bucket}/{self.s3_key_prefix}/outputs/", "--delete"],
+                    capture_output=True, text=True, timeout=1800
                 )
-                
-                if result.returncode == 0:
-                    self.log("✓ Successfully synced outputs to S3")
-                else:
-                    self.log(f"✗ Output S3 sync failed: {result.stderr}")
+                if result.returncode != 0:
+                    self.log(f"✗ Output sync failed: {result.stderr}")
                     success = False
-            else:
-                self.log(f"⚠ Output directory {self.output_dir} does not exist, skipping output sync")
-            
-            # 2. Sync training log
-            if os.path.exists(self.training_log_file):
-                self.log(f"Uploading training log to s3://{self.s3_bucket}/{self.s3_key_prefix}/logs/training.log")
-                
-                log_upload_command = [
-                    "aws", "s3", "cp",
-                    self.training_log_file,
-                    f"s3://{self.s3_bucket}/{self.s3_key_prefix}/logs/training.log"
-                ]
-                
-                result = subprocess.run(
-                    log_upload_command,
-                    capture_output=True,
-                    text=True,
-                    timeout=300  # 5 minute timeout
-                )
-                
-                if result.returncode == 0:
-                    self.log("✓ Successfully uploaded training log to S3")
-                else:
-                    self.log(f"✗ Training log upload failed: {result.stderr}")
-                    success = False
-            
-            # 3. Sync monitor log
-            if os.path.exists(self.monitor_log_file):
-                self.log(f"Uploading monitor log to s3://{self.s3_bucket}/{self.s3_key_prefix}/logs/monitor.log")
-                
-                monitor_upload_command = [
-                    "aws", "s3", "cp",
-                    self.monitor_log_file,
-                    f"s3://{self.s3_bucket}/{self.s3_key_prefix}/logs/monitor.log"
-                ]
-                
-                result = subprocess.run(
-                    monitor_upload_command,
-                    capture_output=True,
-                    text=True,
-                    timeout=300  # 5 minute timeout
-                )
-                
-                if result.returncode == 0:
-                    self.log("✓ Successfully uploaded monitor log to S3")
-                else:
-                    self.log(f"✗ Monitor log upload failed: {result.stderr}")
-                    success = False
-            
+
+            # 2. Sync all log files
+            log_files = [
+                (self.training_debug_log, "training_debug.log"),
+                (self.training_output_log, "training_output.log"),
+                (self.monitor_log_file, "monitor.log")
+            ]
+
+            self.log("Uploading log files to S3...")
+            for local_path, s3_name in log_files:
+                if os.path.exists(local_path):
+                    result = subprocess.run(
+                        ["aws", "s3", "cp", local_path,
+                         f"s3://{self.s3_bucket}/{self.s3_key_prefix}/logs/{s3_name}"],
+                        capture_output=True, text=True, timeout=300
+                    )
+                    if result.returncode != 0:
+                        self.log(f"✗ Failed to upload {s3_name}: {result.stderr}")
+                        success = False
+
             if success:
                 self.log(f"✅ All files synced to s3://{self.s3_bucket}/{self.s3_key_prefix}/")
             
@@ -243,7 +323,7 @@ class RemoteMonitor:
                 env=env,
                 capture_output=True,
                 text=True,
-                timeout=120
+                timeout=3600
             )
             
             if result.returncode == 0 and "Successfully terminated" in result.stdout:
@@ -278,35 +358,84 @@ class RemoteMonitor:
         self.terminate_instance()
         
         self.log("Shutdown sequence completed")
-    
+
     def monitor_loop(self):
-        """Main monitoring loop."""
+        """Main monitoring loop.
+
+        Exits on one of three conditions:
+        1. Training process exits
+        2. Timeout is reached
+        3. No log file activity for 15 minutes
+        """
         self.log(f"Starting monitoring loop (timeout: {self.max_train_hours}h)")
         self.log(f"Training will timeout at: {self.timeout_time}")
-        
+
+        # Wait for training debug log to be created (grace period for Bazel build/startup)
+        grace_period_minutes = 25
+        grace_period_end = datetime.now() + timedelta(minutes=grace_period_minutes)
+        self.log(f"Waiting up to {grace_period_minutes} minutes for training to start and create log file...")
+
+        while datetime.now() < grace_period_end:
+            # Check if training process crashed during startup
+            if not self.is_training_running():
+                if self.training_process:
+                    exit_code = self.training_process.returncode
+                    self.log(f"✗ Training process exited during startup (exit code: {exit_code})")
+                    self.cleanup_and_shutdown(f"Training failed during startup with exit code {exit_code}")
+                else:
+                    self.log("✗ Training process not found during startup")
+                    self.cleanup_and_shutdown("Training process not found during startup")
+                return
+
+            # Check if log file has been created
+            if os.path.exists(self.training_debug_log):
+                self.log(f"✓ Training log file created: {self.training_debug_log}")
+                break
+
+            time.sleep(10)  # Check every 10 seconds during grace period
+        else:
+            # Grace period expired without log file appearing
+            self.log(f"✗ Training log file not created within {grace_period_minutes} minutes")
+            self.cleanup_and_shutdown(f"Training failed to start - no log file after {grace_period_minutes} minutes")
+            return
+
+        # Now start normal monitoring loop
+        self.log("Starting normal monitoring (checking for staleness every minute)...")
+
         while True:
-            # Check if timeout reached
+            # Check 1: Timeout reached
             if self.is_timeout_reached():
+                self.log(f"✗ Timeout reached: {self.max_train_hours}h")
                 self.cleanup_and_shutdown(f"Timeout reached ({self.max_train_hours}h)")
                 break
-            
-            # Check if training completed
+
+            # Check 2: Training process exited
             if not self.is_training_running():
                 if self.training_process:
                     exit_code = self.training_process.returncode
                     if exit_code == 0:
+                        self.log(f"✓ Training process exited successfully (exit code: {exit_code})")
                         self.cleanup_and_shutdown("Training completed successfully")
                     else:
+                        self.log(f"✗ Training process failed (exit code: {exit_code})")
                         self.cleanup_and_shutdown(f"Training failed with exit code {exit_code}")
                 else:
+                    self.log("✗ Training process not found")
                     self.cleanup_and_shutdown("Training process not found")
                 break
-            
-            # Log progress
+
+            # Check 3: No log activity for 15 minutes
+            if not self.is_training_progressing():
+                self.log("✗ No log file activity for 15 minutes - assuming training stalled")
+                self.cleanup_and_shutdown("Training stalled - no log activity for 15 minutes")
+                break
+
+            # Log status and system stats
             elapsed = datetime.now() - self.start_time
             remaining = self.timeout_time - datetime.now()
-            self.log(f"Training running... Elapsed: {elapsed}, Remaining: {remaining}")
-            
+            self.log(f"✓ Training running... Elapsed: {elapsed}, Remaining: {remaining}")
+            self.log_system_stats()
+
             # Sleep before next check
             time.sleep(60)  # Check every minute
 

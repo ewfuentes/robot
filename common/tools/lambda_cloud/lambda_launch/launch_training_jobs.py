@@ -86,10 +86,16 @@ Job file format (CSV):
     
     parser.add_argument(
         "--verbose", "-v",
-        action="store_true", 
+        action="store_true",
         help="Enable verbose output"
     )
-    
+
+    parser.add_argument(
+        "--setup-only",
+        action="store_true",
+        help="Launch instances and complete setup, but don't start training"
+    )
+
     return parser.parse_args()
 
 
@@ -148,7 +154,8 @@ def main() -> None:
             launcher = LambdaTrainingLauncher(
                 machine_config_path=args.machine_config,
                 output_dir=args.output_dir,
-                max_parallel_jobs=args.max_parallel
+                max_parallel_jobs=args.max_parallel,
+                setup_only=args.setup_only
             )
         except Exception as e:
             print(f"Error initializing launcher: {e}")

@@ -77,7 +77,7 @@ py_library(
 py_binary(
   name="train",
   srcs=["train.py"],
-  visibility=["//common/python:__subpackages__"],
+  visibility=["//common/python:__subpackages__", "//common/tools/lambda_cloud:__subpackages__"],
   deps=[
     ":logging_utils",
     ":lr_sweep",
@@ -216,3 +216,4 @@ py_binary(
     ":train",
   ]
 )
+

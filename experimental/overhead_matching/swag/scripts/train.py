@@ -24,7 +24,26 @@ import msgspec
 from pprint import pprint
 import ipdb
 from contextlib import nullcontext
+import datetime
 from experimental.overhead_matching.swag.scripts.lr_sweep import LearningRateSweepConfig, run_lr_sweep
+
+
+def debug_log(message: str, log_file: str = "/tmp/training_debug.log"):
+    """Write log message to file with timestamp and flush. Also prints to stdout."""
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    log_msg = f"[DEBUG {timestamp}] {message}"
+
+    # Print to stdout
+    print(log_msg, flush=True)
+
+    # Write to debug log file with flush
+    try:
+        with open(log_file, 'a') as f:
+            f.write(log_msg + '\n')
+            f.flush()
+            os.fsync(f.fileno())  # Force write to disk
+    except Exception as e:
+        print(f"Warning: Failed to write debug log: {e}", flush=True)
 
 
 @dataclass
@@ -89,15 +108,18 @@ def compute_validation_metrics(
         pano_model,
         validation_datasets,
         distance_model: torch.nn.Module,
+        quiet: bool = False,
 ):
     out = {}
     for name, dataset in validation_datasets.items():
         sat_embeddings = sed.build_satellite_db(
             sat_model,
-            vigor_dataset.get_dataloader(dataset.get_sat_patch_view(), batch_size=64, num_workers=8))
+            vigor_dataset.get_dataloader(dataset.get_sat_patch_view(), batch_size=64, num_workers=8),
+            verbose=not quiet)
         pano_embeddings = sed.build_panorama_db(
             pano_model,
-            vigor_dataset.get_dataloader(dataset.get_pano_view(), batch_size=64, num_workers=8))
+            vigor_dataset.get_dataloader(dataset.get_pano_view(), batch_size=64, num_workers=8),
+            verbose=not quiet)
         similarity = distance_model(
             pano_embeddings_unnormalized=pano_embeddings,
             sat_embeddings_unnormalized=sat_embeddings
@@ -144,12 +166,13 @@ def compute_validation_metrics(
 
         # compute the positive/semipositive recall @ K
         invalid_mask_cuda = invalid_mask.cuda()
+        ranks_cuda = ranks.cuda()
         any_pos_semipos_recall = {
-            f"{name}/any pos_semipos_recall@{k}": ((ranks <= k) & (~invalid_mask_cuda)).any(dim=-1).float().mean().item()
+            f"{name}/any pos_semipos_recall@{k}": ((ranks_cuda <= k) & (~invalid_mask_cuda)).any(dim=-1).float().mean().item()
             for k in k_values}
 
         all_pos_semipos_recall = {
-            f"{name}/all pos_semipos_recall@{k}": (ranks <= k).all(dim=-1).float().mean().item()
+            f"{name}/all pos_semipos_recall@{k}": (ranks_cuda <= k).all(dim=-1).float().mean().item()
             for k in k_values[1:]}
 
         out |= ({
@@ -179,6 +202,7 @@ def create_training_components(dataset,
                                opt_config):
     """Create miner, dataloader, and optimizer for training."""
     # Create miner and dataloader
+    # Note: embeddings stored on CPU to save GPU memory, transferred to GPU as needed
     miner = vigor_dataset.HardNegativeMiner(
         batch_size=opt_config.batch_size,
         num_pano_embeddings=panorama_model.num_embeddings,
@@ -187,9 +211,12 @@ def create_training_components(dataset,
         embedding_dimension=panorama_model.output_dim,
         random_sample_type=opt_config.random_sample_type,
         hard_negative_pool_size=opt_config.hard_negative_pool_size,
-        dataset=dataset)
+        dataset=dataset,
+        device='cpu')
+
     dataloader = vigor_dataset.get_dataloader(
-        dataset, batch_sampler=miner, num_workers=min(os.cpu_count() // 2, 24), persistent_workers=True)
+        dataset, batch_sampler=miner, num_workers=min(os.cpu_count() // 2, 24),
+        persistent_workers=True)
 
     # Create optimizer
     opt = torch.optim.AdamW(
@@ -299,7 +326,8 @@ def train(config: TrainConfig,
             pairing_type = PairingType.ANCHOR_SETS
 
     total_batches = 0
-    for epoch_idx in tqdm.tqdm(range(opt_config.num_epochs),  desc="Epoch"):
+    for epoch_idx in tqdm.tqdm(range(opt_config.num_epochs),  desc="Epoch", disable=quiet):
+        debug_log(f"Starting epoch {epoch_idx}")
         for batch_idx, batch in enumerate(dataloader):
             match pairing_type:
                 case PairingType.PAIRS:
@@ -386,18 +414,20 @@ def train(config: TrainConfig,
             unobserved_dataloader = vigor_dataset.get_dataloader(
                 unobserved_patch_dataset, num_workers=8, batch_size=128)
 
-            for batch in tqdm.tqdm(unobserved_dataloader, desc="Unobserved sat batches"):
+            for batch in tqdm.tqdm(unobserved_dataloader, desc="Unobserved sat batches", disable=quiet):
                 with torch.no_grad():
                     miner_satellite_embeddings = satellite_model(
                         satellite_model.model_input_from_batch(batch).to("cuda"))
                 miner.consume(None, miner_satellite_embeddings, batch)
 
         # compute validation set metrics
+        debug_log(f"Computing validation metrics for epoch {epoch_idx}")
         validation_metrics = compute_validation_metrics(
             sat_model=satellite_model,
             pano_model=panorama_model,
             validation_datasets=validation_datasets,
-            distance_model=distance_model)
+            distance_model=distance_model,
+            quiet=quiet)
         log_validation_metrics(
             writer=writer,
             validation_metrics=validation_metrics,
@@ -406,6 +436,7 @@ def train(config: TrainConfig,
 
         if (epoch_idx % 10 == 0) or (epoch_idx == opt_config.num_epochs - 1):
             # Periodically save the model
+            debug_log(f"Saving models for epoch {epoch_idx}")
             output_dir.mkdir(parents=True, exist_ok=True)
             panorama_model_path = output_dir / f"{epoch_idx:04d}_panorama"
             satellite_model_path = output_dir / f"{epoch_idx:04d}_satellite"
@@ -420,10 +451,15 @@ def train(config: TrainConfig,
 
             save_model(satellite_model, satellite_model_path,
                        (sat_model_input,))
-
             if sum(param.numel() for param in distance_model.parameters()) > 0:
                 save_model(distance_model, distance_model_path,
                            (satellite_model(sat_model_input), panorama_model(pano_model_input) ))
+
+
+    # Signal training completion
+    debug_log("🎉 TRAINING COMPLETED SUCCESSFULLY 🎉")
+    debug_log("Training process exiting normally")
+
 
 
 def main(

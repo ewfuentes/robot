@@ -8,6 +8,9 @@ py_library(
   srcs = ["config.py"],
   deps = [
     requirement("pyyaml"),
+    requirement("msgspec"),
+    "//common/python:serialization",
+    "//experimental/overhead_matching/swag/scripts:train",
   ],
 )
 
@@ -52,6 +55,7 @@ py_binary(
   name = "remote_monitor",
   srcs = ["remote_monitor.py"],
   deps = [
+    requirement("psutil"),
     "//common/tools/lambda_cloud/lambda_api:lambda_cloud",
   ],
 )
