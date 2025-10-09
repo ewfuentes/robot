@@ -61,6 +61,10 @@ py_test(
 py_library(
   name = "swag_model_input_output",
   srcs = ["swag_model_input_output.py"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+    "//common/python:__subpackages__",
+  ],
   deps = [
     requirement("torch"),
     "//common/torch:load_torch_deps",
@@ -100,6 +104,10 @@ py_test(
 py_library(
   name = "swag_config_types",
   srcs = ["swag_config_types.py"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+    "//common/python:__subpackages__",
+  ],
   deps = [
     requirement("msgspec"),
     "//common/python:serialization",
