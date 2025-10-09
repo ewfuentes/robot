@@ -217,3 +217,15 @@ py_binary(
   ]
 )
 
+py_test(
+  name="spectral_landmark_extractor_test",
+  srcs=["spectral_landmark_extractor_test.py"],
+  deps=[
+    requirement("torch"),
+    requirement("torchvision"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/model:spectral_landmark_extractor",
+    "//experimental/overhead_matching/swag/model:swag_config_types",
+    "//experimental/overhead_matching/swag/model:swag_model_input_output",
+  ]
+)

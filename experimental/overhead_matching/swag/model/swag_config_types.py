@@ -49,6 +49,26 @@ class SemanticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     auxiliary_info_key: str
 
 
+class SpectralLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    """Configuration for spectral landmark extraction using DINOv3."""
+    # DINOv3 model
+    dino_model: str = "dinov3_vitb16"
+    feature_source: str = "attention_keys"  # or "attention_input", "model_output", etc.
+
+    # Spectral decomposition
+    lambda_knn: float = 10.0  # 0 = no color information
+    knn_neighbors: int = 10
+    intermediate_resolution: int = 64
+
+    # Detection
+    max_landmarks_per_image: int = 10
+    min_bbox_size: int = 20
+
+    # Feature aggregation
+    aggregation_method: str = "weighted_mean"
+    output_feature_dim: int = 768
+
+
 class SyntheticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     log_grid_spacing: int
     grid_bounds_px: int
@@ -87,6 +107,7 @@ ExtractorConfig = Union[
     SemanticEmbeddingMatrixConfig,
     SemanticSegmentExtractorConfig,
     SemanticLandmarkExtractorConfig,
+    SpectralLandmarkExtractorConfig,
     SyntheticLandmarkExtractorConfig,
     AbsolutePositionExtractorConfig,
 ]
