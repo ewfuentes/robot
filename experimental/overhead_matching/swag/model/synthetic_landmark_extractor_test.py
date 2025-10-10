@@ -40,7 +40,8 @@ class SyntheticLandmarkExtractorTest(unittest.TestCase):
         self.assertEqual(extractor_output.mask.shape, (BATCH_SIZE, max_num_landmarks))
         self.assertEqual(extractor_output.features.shape,
                          (BATCH_SIZE, max_num_landmarks, model.output_dim))
-        self.assertEqual(extractor_output.positions.shape, (BATCH_SIZE, max_num_landmarks, 2))
+        self.assertEqual(extractor_output.positions.shape,
+                         (BATCH_SIZE, max_num_landmarks, model.num_position_outputs, 2))
 
     def test_satellite_landmark_extractor_with_dataset(self):
         # Setup
@@ -71,7 +72,8 @@ class SyntheticLandmarkExtractorTest(unittest.TestCase):
         self.assertEqual(extractor_output.mask.shape, (BATCH_SIZE, max_num_landmarks))
         self.assertEqual(extractor_output.features.shape,
                          (BATCH_SIZE, max_num_landmarks, model.output_dim))
-        self.assertEqual(extractor_output.positions.shape, (BATCH_SIZE, max_num_landmarks, 2))
+        self.assertEqual(extractor_output.positions.shape,
+                         (BATCH_SIZE, max_num_landmarks, model.num_position_outputs, 2))
 
     def test_satellite_landmark_extractor(self):
         # Setup
@@ -106,7 +108,8 @@ class SyntheticLandmarkExtractorTest(unittest.TestCase):
         self.assertEqual(extractor_output.mask.shape, (BATCH_SIZE, MAX_NUM_LANDMARKS))
         self.assertEqual(extractor_output.features.shape,
                          (BATCH_SIZE, MAX_NUM_LANDMARKS, model.output_dim))
-        self.assertEqual(extractor_output.positions.shape, (BATCH_SIZE, MAX_NUM_LANDMARKS, 2))
+        self.assertEqual(extractor_output.positions.shape,
+                         (BATCH_SIZE, MAX_NUM_LANDMARKS, model.num_position_outputs, 2))
 
     def test_panorama_landmark_extractor(self):
         # Setup
@@ -142,7 +145,8 @@ class SyntheticLandmarkExtractorTest(unittest.TestCase):
         self.assertEqual(extractor_output.mask.shape, (BATCH_SIZE, MAX_NUM_LANDMARKS))
         self.assertEqual(extractor_output.features.shape,
                          (BATCH_SIZE, MAX_NUM_LANDMARKS, model.output_dim))
-        self.assertEqual(extractor_output.positions.shape, (BATCH_SIZE, MAX_NUM_LANDMARKS, 2))
+        self.assertEqual(extractor_output.positions.shape,
+                         (BATCH_SIZE, MAX_NUM_LANDMARKS, model.num_position_outputs, 2))
 
 if __name__ == "__main__":
     unittest.main()

@@ -22,7 +22,7 @@ class AbsolutePositionExtractor(torch.nn.Module):
 
         mask = torch.zeros((batch_size, 1), dtype=torch.bool)
         features = torch.zeros((batch_size, 1, self.output_dim))
-        positions = torch.zeros((batch_size, 1, 2))
+        positions = torch.zeros((batch_size, 1, self.num_position_outputs, 2))
 
         lat_lon_tensor = torch.zeros((batch_size, 2), device=model_input.image.device)
 
@@ -38,9 +38,9 @@ class AbsolutePositionExtractor(torch.nn.Module):
             scale = (self._scale_step ** scale_idx)
             features[..., 0, embedding_idx_start + 0] = torch.sin(lat_lon_tensor[:, 0] * scale)
             features[..., 0, embedding_idx_start + 1] = torch.cos(lat_lon_tensor[:, 0] * scale)
-            features[..., 0,  embedding_idx_start + 2] = torch.sin(lat_lon_tensor[:, 1] * scale)
-            features[..., 0,  embedding_idx_start + 3] = torch.cos(lat_lon_tensor[:, 1]  * scale)
-            
+            features[..., 0, embedding_idx_start + 2] = torch.sin(lat_lon_tensor[:, 1] * scale)
+            features[..., 0, embedding_idx_start + 3] = torch.cos(lat_lon_tensor[:, 1] * scale)
+
         return ExtractorOutput(
             features=features.to(model_input.image.device),
             mask=mask.to(model_input.image.device),

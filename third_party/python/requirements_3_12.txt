@@ -2333,6 +2333,7 @@ psutil==7.0.0 \
     --hash=sha256:a5f098451abc2828f7dc6b58d44b532b22f2088f4999a937557b603ce72b1993 \
     --hash=sha256:ba3fcef7523064a6c9da440fc4d6bd07da93ac726b5733c29027d7dc95b39d99
     # via
+    #   -r third_party/python/requirements_3_12.in
     #   ipykernel
     #   marimo
 ptyprocess==0.7.0 \

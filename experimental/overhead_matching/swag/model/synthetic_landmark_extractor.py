@@ -79,7 +79,7 @@ class SyntheticLandmarkExtractor(torch.nn.Module):
 
         mask = torch.ones((batch_size, max_num_landmarks), dtype=torch.bool)
         features = torch.zeros((batch_size, max_num_landmarks, self.output_dim))
-        positions = torch.zeros((batch_size, max_num_landmarks, 2))
+        positions = torch.zeros((batch_size, max_num_landmarks, self.num_position_outputs, 2))
 
         is_panorama = "pano_id" in model_input.metadata[0]
 
@@ -101,10 +101,10 @@ class SyntheticLandmarkExtractor(torch.nn.Module):
 
             # Compute the positions of the landmarks
             if is_panorama and self._should_produce_bearing_position_for_pano:
-                positions[batch_item, :num_landmarks_for_item] = compute_landmark_pano_positions(
+                positions[batch_item, :num_landmarks_for_item, 0] = compute_landmark_pano_positions(
                         landmark_locations_px, (y_px, x_px), model_input.image.shape[-2:])
             else:
-                positions[batch_item, :num_landmarks_for_item] = compute_landmark_sat_positions(
+                positions[batch_item, :num_landmarks_for_item, 0] = compute_landmark_sat_positions(
                         landmark_locations_px, (y_px, x_px))
 
         landmark_locations_px = torch.nested.nested_tensor(
