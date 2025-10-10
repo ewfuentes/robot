@@ -105,6 +105,7 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
         self.assertTrue(torch.allclose(torch.linalg.norm(input_tokens, dim=2), torch.ones((1,))))  # normalized over embedding dimension
         self.assertEqual(input_mask.dtype, torch.bool)
         self.assertEqual(input_mask.shape, input_tokens.shape[:2])
+
     def test_extractor_config(self):
         # Setup
         BATCH_DIM = 2

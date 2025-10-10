@@ -65,15 +65,15 @@ class SemanticSegmentExtractor(torch.nn.Module):
         batch_size = model_input.image.shape[0]
         dev = model_input.image.device
 
-        semantic_positions = torch.zeros((batch_size, max_num_segments, 2))
+        semantic_positions = torch.zeros((batch_size, max_num_segments, self.num_position_outputs, 2))
         semantic_tokens = torch.zeros((batch_size, max_num_segments, self.output_dim))
         semantic_mask = torch.ones((batch_size, max_num_segments), dtype=torch.bool)
         for batch_idx, image_features in enumerate(batch_features):
             semantic_mask[batch_idx, :len(image_features)] = False
             for segment_idx, segment_feature in enumerate(image_features):
                 start_col, start_row, width, height = segment_feature["bbox"]
-                semantic_positions[batch_idx, segment_idx, 0] = start_row + height / 2.0
-                semantic_positions[batch_idx, segment_idx, 1] = start_col + width / 2.0
+                semantic_positions[batch_idx, segment_idx, 0, 0] = start_row + height / 2.0
+                semantic_positions[batch_idx, segment_idx, 0, 1] = start_col + width / 2.0
                 semantic_tokens[batch_idx, segment_idx, :] = segment_feature["clip_feature"]
         return SemanticTokenExtractorOutput(
             positions=semantic_positions.to(dev),
@@ -83,3 +83,11 @@ class SemanticSegmentExtractor(torch.nn.Module):
     @property
     def output_dim(self):
         return self._clip_model.visual.output_dim
+
+    @property
+    def num_position_outputs(self):
+        return 1
+
+    @property
+    def num_position_outputs(self):
+        return 1

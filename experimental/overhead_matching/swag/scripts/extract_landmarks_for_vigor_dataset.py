@@ -15,14 +15,26 @@ class Options:
 
 
 to_retreive = {
-    "bus_stop": Options({"highway": "bus_stop"}),
-    "t_stop": Options({"railway": "station"}),
-    "restaurants": Options({"amenity": ["restaurant", "cafe", "bar", "fast_food", "pub"]}),
-    "grocery_store": Options({"shop": ["supermarket", "convenience", "greengrocer", "deli"]}),
-    "places_of_worship": Options({"amenity": "place_of_worship"}),
-    "school": Options({"amenity": ["school", "college", "university"]}),
-    # "residential": Options({"building": True}, only_nodes=False),
-    # "parks": Options({"leisure": ["park", "garden", "nature_reserve"]}, only_nodes=False),
+    'all': Options({
+        "amenity": True,
+        "building": True,
+        "tourism": True,
+        "shop": True,
+        "craft": True,
+        "emergency": True,
+        "geological": True,
+        "highway": True,
+        "historic": True,
+        "landuse": True,
+        "leisure": True,
+        "man_made": True,
+        "military": True,
+        "natural": True,
+        "office": True,
+        "power": True,
+        "public_transport": True,
+        "railway": True,
+        }, only_nodes=False)
 }
 
 
@@ -34,7 +46,12 @@ def main(dataset_path: Path, zoom_level: int, output_path: Path | None, show_ext
 
     top, left = web_mercator.pixel_coords_to_latlon(*min_yx_pixel, zoom_level)
     bottom, right = web_mercator.pixel_coords_to_latlon(*max_yx_pixel, zoom_level)
-    bbox = [left, bottom, right, top]
+    height_delta = top - bottom
+    width_delta = right - left
+    bbox = [left - 0.1 * width_delta,
+            bottom - 0.1 * height_delta,
+            right + 0.1 * width_delta,
+            top + 0.1 * height_delta]
 
     dfs = []
 
@@ -62,7 +79,7 @@ def main(dataset_path: Path, zoom_level: int, output_path: Path | None, show_ext
 
     if output_path is not None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        landmark_df.to_file(output_path, driver="GeoJSON")
+        output_path.write_text(landmark_df.to_json(na="drop"))
 
 
 if __name__ == "__main__":

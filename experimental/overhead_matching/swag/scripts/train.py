@@ -85,6 +85,7 @@ ModelConfig = Union[patch_embedding.WagPatchEmbeddingConfig,
 @dataclass
 class DatasetConfig:
     paths: list[Path]
+    landmark_version: str
     factor: None | float = 1.0
     should_load_images: bool = True
 
@@ -502,7 +503,8 @@ def main(
             hash_and_key=panorama_model.cache_info()),
         sample_mode=vigor_dataset.SampleMode.POS_SEMIPOS,
         factor=train_config.dataset_config.factor,
-        should_load_images=train_config.dataset_config.should_load_images)
+        should_load_images=train_config.dataset_config.should_load_images,
+        landmark_version=train_config.dataset_config.landmark_version)
 
     dataset_paths = [dataset_base_path / p for p in train_config.dataset_config.paths]
     dataset = vigor_dataset.VigorDataset(dataset_paths, dataset_config)
@@ -526,7 +528,8 @@ def main(
                     hash_and_key=panorama_model.cache_info()),
                 sample_mode=vigor_dataset.SampleMode.POS_SEMIPOS,
                 factor=validation_dataset_config.factor,
-                should_load_images=validation_dataset_config.should_load_images))
+                should_load_images=validation_dataset_config.should_load_images,
+                landmark_version=validation_dataset_config.landmark_version))
 
     output_dir = output_base_path / train_config.output_dir
     tensorboard_output = train_config.tensorboard_output

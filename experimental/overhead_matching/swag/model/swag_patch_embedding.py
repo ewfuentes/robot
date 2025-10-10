@@ -128,7 +128,7 @@ class DinoFeatureExtractor(torch.nn.Module):
 
         if self.use_class_token_only:
             num_tokens = 1
-            relative_positions = torch.zeros(batch_size, 1, 2)
+            relative_positions = torch.zeros(batch_size, num_tokens, self.num_position_outputs, 2)
         else:
             num_row_tokens = original_shape[0] // self.patch_size[0]
             num_col_tokens = original_shape[1] // self.patch_size[1]
@@ -146,7 +146,8 @@ class DinoFeatureExtractor(torch.nn.Module):
                     relative_positions[:, row_idx, col_idx, 1] = (
                             patch_center_col_px - center_location[1])
 
-            relative_positions = relative_positions.reshape(batch_size, num_tokens, 2)
+            relative_positions = relative_positions.reshape(
+                    batch_size, num_tokens, self.num_position_outputs, 2)
         assert num_tokens == patch_tokens.shape[1]
 
         mask = torch.zeros((batch_size, num_tokens), dtype=torch.bool, device=patch_tokens.device)
@@ -165,6 +166,10 @@ class DinoFeatureExtractor(torch.nn.Module):
     @property
     def output_dim(self):
         return self._dino.num_features
+
+    @property
+    def num_position_outputs(self):
+        return 1
 
 
 class SemanticEmbeddingMatrix(torch.nn.Module):
@@ -187,7 +192,7 @@ class SemanticEmbeddingMatrix(torch.nn.Module):
 
         if max_num_landmarks == 0:
             return SemanticTokenExtractorOutput(
-                positions=torch.zeros((batch_size, 0, 2), device=dev),
+                positions=torch.zeros((batch_size, 0, self.num_position_outputs, 2), device=dev),
                 features=torch.zeros((batch_size, 0, self._embedding_matrix.embedding_dim), device=dev),
                 mask=torch.zeros((batch_size, 0), device=dev))
 
@@ -207,13 +212,17 @@ class SemanticEmbeddingMatrix(torch.nn.Module):
         output_idxs = output_idxs.to(dev)
 
         return SemanticTokenExtractorOutput(
-            positions=positions_in_patch,
+            positions=positions_in_patch.reshape(batch_size, max_num_landmarks, self.num_position_outputs, 2),
             features=self._embedding_matrix(output_idxs),
             mask=mask)
 
     @property
     def output_dim(self):
         return self._embedding_matrix.embedding_dim
+
+    @property
+    def num_position_outputs(self):
+        return 1
 
 
 class SemanticNullExtractor(torch.nn.Module):
@@ -223,7 +232,7 @@ class SemanticNullExtractor(torch.nn.Module):
     def forward(self, model_input: ModelInput):
         batch_size = len(model_input.metadata)
         dev = model_input.image.device
-        positions_in_patch = torch.zeros((batch_size, 0, 2), device=dev)
+        positions_in_patch = torch.zeros((batch_size, 0, self.num_position_outputs, 2), device=dev)
         semantic_tokens = torch.zeros((batch_size, 0, 0), device=dev)
         mask = torch.zeros(batch_size, 0, device=dev, dtype=torch.bool)
         return SemanticTokenExtractorOutput(
@@ -234,6 +243,10 @@ class SemanticNullExtractor(torch.nn.Module):
     @property
     def output_dim(self):
         return 0
+
+    @property
+    def num_position_outputs(self):
+        return 1
 
 
 class SphericalPositionEmbedding(torch.nn.Module):
@@ -247,6 +260,7 @@ class SphericalPositionEmbedding(torch.nn.Module):
     def forward(self, *,
                 model_input: ModelInput,
                 relative_positions: torch.Tensor):
+        batch_size, num_tokens = relative_positions.shape[:2]
         # We need to convert the pixel positions into an elevation and azimuth angles
         # The azimuth angle increases in the clockwise direction
         # We assume that zero degrees is on the left edge of the panorama and increases
@@ -255,20 +269,20 @@ class SphericalPositionEmbedding(torch.nn.Module):
         # from top to bottom. Note that these are not standard definitions of these angles
         # but it does simplify implementation, and ultimately shouldn't matter
         original_shape = model_input.image.shape[-2:]
-        elevation_rad = relative_positions[..., 0] / original_shape[0] * torch.pi
+        elevation_rad = torch.pi / 2 - relative_positions[..., 0] / original_shape[0] * torch.pi
         azimuth_rad = relative_positions[..., 1] / original_shape[1] * 2 * torch.pi
         out = torch.zeros((*relative_positions.shape[:-1], self._embedding_dim), dtype=torch.float32)
 
         num_scales = self._embedding_dim // 4
         for scale_idx in range(num_scales):
             embedding_idx_start = 4 * scale_idx
-            scale = (self._scale_step ** -scale_idx) / (2 * torch.pi)
+            scale = (self._scale_step ** scale_idx)
 
-            out[..., embedding_idx_start + 0] = torch.sin(elevation_rad / scale)
-            out[..., embedding_idx_start + 1] = torch.cos(elevation_rad / scale)
-            out[..., embedding_idx_start + 2] = torch.sin(azimuth_rad / scale)
-            out[..., embedding_idx_start + 3] = torch.cos(azimuth_rad / scale)
-        return out
+            out[..., embedding_idx_start + 0] = torch.sin(elevation_rad * scale)
+            out[..., embedding_idx_start + 1] = torch.cos(elevation_rad * scale)
+            out[..., embedding_idx_start + 2] = torch.sin(azimuth_rad * scale)
+            out[..., embedding_idx_start + 3] = torch.cos(azimuth_rad * scale)
+        return out.reshape(batch_size, num_tokens, -1)
 
     @property
     def output_dim(self):
@@ -287,9 +301,9 @@ class PlanarPositionEmbedding(torch.nn.Module):
     def forward(self, *,
                 model_input: ModelInput,
                 relative_positions: torch.Tensor):
-        batch_size, num_tokens = relative_positions.shape[:2]
-
-        out = torch.zeros((batch_size, num_tokens, self._embedding_dim), dtype=torch.float32)
+        assert relative_positions.ndim == 4
+        batch_size, num_tokens, num_position_tokens = relative_positions.shape[:-1]
+        out = torch.zeros((*relative_positions.shape[:-1], self._embedding_dim), dtype=torch.float32)
 
         num_scales = self._embedding_dim // 4
         for scale_idx in range(num_scales):
@@ -300,11 +314,12 @@ class PlanarPositionEmbedding(torch.nn.Module):
             out[..., embedding_idx_start + 1] = torch.cos(relative_positions[..., 0] / scale)
             out[..., embedding_idx_start + 2] = torch.sin(relative_positions[..., 1] / scale)
             out[..., embedding_idx_start + 3] = torch.cos(relative_positions[..., 1] / scale)
-        return out
+        return out.reshape(batch_size, num_tokens, num_position_tokens * self._embedding_dim)
 
     @property
     def output_dim(self):
         return self._embedding_dim
+
 
 def init_xavier(model):
     for p in model.parameters():
@@ -365,6 +380,7 @@ class SwagPatchEmbedding(torch.nn.Module):
 
         self._projection_by_name = torch.nn.ModuleDict({
                 k: torch.nn.Linear(self._extractor_by_name[k].output_dim +
+                                   self._extractor_by_name[k].num_position_outputs *
                                    self._position_embedding.output_dim,
                                    config.output_dim)
                 for k in config.extractor_config_by_name})
@@ -434,6 +450,7 @@ class SwagPatchEmbedding(torch.nn.Module):
             extractor_outputs_by_name[k] = model_input.cached_tensors.get(k)
             if extractor_outputs_by_name[k] is None:
                 extractor_outputs_by_name[k] = self._extractor_by_name[k](model_input)
+                assert extractor_outputs_by_name[k].positions.ndim == 4, f"relative positions of {k} is not 4 dimensional"
 
         input_tokens_by_name = {}
         for k, v in extractor_outputs_by_name.items():

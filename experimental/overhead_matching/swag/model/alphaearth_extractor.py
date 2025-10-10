@@ -38,6 +38,7 @@ class AlphaEarthExtractor(torch.nn.Module):
             position_out.append(position_info)
         features_out = torch.stack(features_out, dim=0).to(torch.float32)
         position_out = torch.stack(position_out, dim=0).to(torch.float32)
+        position_out = position_out[:, :, None, :]
         mask = torch.isnan(features_out[..., 0])
         features_out[mask] = 0.0
 
@@ -49,3 +50,7 @@ class AlphaEarthExtractor(torch.nn.Module):
     @property
     def output_dim(self):
         return 64
+
+    @property
+    def num_position_outputs(self):
+        return 1

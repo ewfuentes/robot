@@ -51,7 +51,8 @@ class AlphaEarthExtractorTest(unittest.TestCase):
         NUM_TOKENS = PATCH_SIZE[0] * PATCH_SIZE[1]
         self.assertEqual(extractor_output.features.shape,
                          (BATCH_SIZE, NUM_TOKENS, extractor.output_dim))
-        self.assertEqual(extractor_output.positions.shape, (BATCH_SIZE, NUM_TOKENS, 2))
+        self.assertEqual(extractor_output.positions.shape,
+                         (BATCH_SIZE, NUM_TOKENS, extractor.num_position_outputs, 2))
         self.assertEqual(extractor_output.mask.shape, (BATCH_SIZE, NUM_TOKENS))
 
         feature_norms = torch.linalg.norm(extractor_output.features, dim=-1)

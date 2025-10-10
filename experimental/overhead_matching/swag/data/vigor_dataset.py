@@ -7,6 +7,8 @@ import math
 import lmdb
 import io
 
+
+import shapely
 from pathlib import Path
 import pandas as pd
 import geopandas as gpd
@@ -65,6 +67,7 @@ class VigorDatasetConfig(NamedTuple):
     satellite_zoom_level: int = 20
     sample_mode: SampleMode = SampleMode.NEAREST
     should_load_images: bool = True
+    landmark_version: str = "v1"
 
 
 class VigorDatasetItem(NamedTuple):
@@ -125,52 +128,69 @@ def load_panorama_metadata(path: Path, zoom_level: int):
 
 def load_landmark_geojson(path: Path, zoom_level: int):
     df = gpd.read_file(path)
-    landmark_lon = df.geometry.x
-    landmark_lat = df.geometry.y
-    web_mercator_y, web_mercator_x = web_mercator.latlon_to_pixel_coords(
-            landmark_lat, landmark_lon, zoom_level=zoom_level)
-    df["web_mercator_y"] = web_mercator_y
-    df["web_mercator_x"] = web_mercator_x
+
+    def convert_geometry_to_pixels(geometry):
+        def coord_transform(lon, lat):
+            y, x = web_mercator.latlon_to_pixel_coords(lat, lon, zoom_level)
+            return (x, y)
+
+        return shapely.ops.transform(coord_transform, geometry)
+
+    df["geometry_px"] = df["geometry"].apply(convert_geometry_to_pixels)
+
     return df
 
 
-def compute_satellite_from_landmarks(sat_kd_tree, sat_metadata, landmark_metadata, original_sat_size) -> SatelliteFromLandmarkResult:
+def compute_satellite_from_landmarks(sat_metadata, landmark_metadata, original_sat_size) -> SatelliteFromLandmarkResult:
     # Use the satellite_from_panorama method to compute which landmarks are within
     # the current satellite patch.
-    sat_from_pano_result = compute_satellite_from_panorama(
-            sat_kd_tree, sat_metadata, landmark_metadata, original_sat_size)
+    strtree = shapely.STRtree(landmark_metadata.geometry_px)
+    queries = []
+    sat_height, sat_width = original_sat_size
+    for _, sat in sat_metadata.iterrows():
+        center_y, center_x = sat["web_mercator_y"], sat["web_mercator_x"]
+        queries.append(shapely.box(
+            xmin=center_x-sat_width//2,
+            xmax=center_x+sat_width//2,
+            ymin=center_y-sat_height//2,
+            ymax=center_y+sat_height//2))
 
-    def merge_lists(a, b):
-        assert len(a) == len(b)
-        return [x + y for x, y in zip(a, b)]
+    results = strtree.query(queries, predicate='intersects')
+
+    landmark_idxs_from_sat_idx = [[] for _ in range(len(sat_metadata))]
+    sat_idxs_from_landmark_idx = [[] for _ in range(len(landmark_metadata))]
+
+    for sat_idx, landmark_idx in results.T:
+        landmark_idxs_from_sat_idx[sat_idx].append(landmark_idx)
+        sat_idxs_from_landmark_idx[landmark_idx].append(sat_idx)
 
     return SatelliteFromLandmarkResult(
-        landmark_idxs_from_sat_idx=merge_lists(
-            sat_from_pano_result.positive_pano_idxs_from_sat_idx,
-            sat_from_pano_result.semipositive_pano_idxs_from_sat_idx),
-        sat_idxs_from_landmark_idx=merge_lists(
-            sat_from_pano_result.positive_sat_idxs_from_pano_idx,
-            sat_from_pano_result.semipositive_sat_idxs_from_pano_idx))
+        landmark_idxs_from_sat_idx=landmark_idxs_from_sat_idx,
+        sat_idxs_from_landmark_idx=sat_idxs_from_landmark_idx)
 
 
-def compute_panorama_from_landmarks(pano_kd_tree, pano_metadata, landmark_metadata) -> PanoramaFromLandmarkResult:
+def compute_panorama_from_landmarks(pano_metadata, landmark_metadata) -> PanoramaFromLandmarkResult:
     # Each satellite patch is 640x640 px and is roughly 100m x 100m.
     MAX_DIST_PX = 640
-    # pano_kd_tree.query_ball_tree()
-    MAX_K = 100
-    landmark_locations = landmark_metadata[["web_mercator_x", "web_mercator_y"]].values
-    dists, idx = pano_kd_tree.query(landmark_locations, k=MAX_K, distance_upper_bound=MAX_DIST_PX)
+    strtree = shapely.STRtree(landmark_metadata.geometry_px)
+    queries = []
+    height, width = MAX_DIST_PX, MAX_DIST_PX
+    for _, pano in pano_metadata.iterrows():
+        center_y, center_x = pano["web_mercator_y"], pano["web_mercator_x"]
+        queries.append(shapely.box(
+            xmin=center_x-width//2,
+            xmax=center_x+width//2,
+            ymin=center_y-height//2,
+            ymax=center_y+height//2))
 
-    num_panos = len(pano_metadata)
-    landmark_idxs_from_pano_idx = [[] for _ in range(num_panos)]
+    results = strtree.query(queries, predicate='intersects')
+
+    landmark_idxs_from_pano_idx = [[] for _ in range(len(pano_metadata))]
     pano_idxs_from_landmark_idx = [[] for _ in range(len(landmark_metadata))]
 
-    for landmark_idx, neighbors in enumerate(idx):
-        for pano_idx in neighbors:
-            if pano_idx == num_panos:
-                break
-            landmark_idxs_from_pano_idx[pano_idx].append(landmark_idx)
-            pano_idxs_from_landmark_idx[landmark_idx].append(pano_idx)
+    for sat_idx, landmark_idx in results.T:
+        landmark_idxs_from_pano_idx[sat_idx].append(landmark_idx)
+        pano_idxs_from_landmark_idx[landmark_idx].append(sat_idx)
 
     return PanoramaFromLandmarkResult(
         landmark_idxs_from_pano_idx=landmark_idxs_from_pano_idx,
@@ -327,7 +347,7 @@ class VigorDataset(torch.utils.data.Dataset):
             sat_metadata = load_satellite_metadata(p / "satellite", config.satellite_zoom_level)
             pano_metadata = load_panorama_metadata(p / "panorama", config.satellite_zoom_level)
             landmark_metadata = load_landmark_geojson(
-                p / "landmarks.geojson", config.satellite_zoom_level)
+                p / "landmarks" / f"{config.landmark_version}.geojson", config.satellite_zoom_level)
 
             min_lat = np.min(sat_metadata.lat)
             max_lat = np.max(sat_metadata.lat)
@@ -351,7 +371,6 @@ class VigorDataset(torch.utils.data.Dataset):
         _, self._original_panorama_size = load_image(self._panorama_metadata.iloc[0].path, None)
 
         self._satellite_pixel_kdtree = cKDTree(self._satellite_metadata.loc[:, ["web_mercator_x", "web_mercator_y"]].values)
-        self._panorama_pixel_kdtree = cKDTree(self._panorama_metadata.loc[:, ["web_mercator_x", "web_mercator_y"]].values)
         self._panorama_kdtree = cKDTree(self._panorama_metadata.loc[:, ["lat", "lon"]].values)
 
         correspondences = compute_satellite_from_panorama(
@@ -364,12 +383,12 @@ class VigorDataset(torch.utils.data.Dataset):
         self._panorama_metadata["satellite_idx"] = correspondences.closest_sat_idx_from_pano_idx
 
         sat_landmark_correspondences = compute_satellite_from_landmarks(
-                self._satellite_pixel_kdtree, self._satellite_metadata, self._landmark_metadata, self._original_satellite_patch_size)
+                self._satellite_metadata, self._landmark_metadata, self._original_satellite_patch_size)
         self._satellite_metadata["landmark_idxs"] = sat_landmark_correspondences.landmark_idxs_from_sat_idx
         self._landmark_metadata["satellite_idxs"] = sat_landmark_correspondences.sat_idxs_from_landmark_idx
 
         pano_landmark_correspondences = compute_panorama_from_landmarks(
-                self._panorama_kdtree, self._panorama_metadata, self._landmark_metadata)
+                self._panorama_metadata, self._landmark_metadata)
         self._panorama_metadata["landmark_idxs"] = pano_landmark_correspondences.landmark_idxs_from_pano_idx
         self._landmark_metadata["panorama_idxs"] = pano_landmark_correspondences.pano_idxs_from_landmark_idx
 

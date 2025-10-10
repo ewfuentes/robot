@@ -14,6 +14,7 @@ py_library(
     requirement("torchvision"),
     requirement("pandas"),
     requirement("geopandas"),
+    requirement("shapely"),
     requirement("scipy"),
     requirement("matplotlib"),
     requirement("PyGObject"),

@@ -128,15 +128,19 @@ py_test(
   ]
 )
 
-py_library(
+py_binary(
   name = "semantic_landmark_extractor",
   srcs = ["semantic_landmark_extractor.py"],
   deps = [
     requirement("torch"),
     requirement("numpy"),
     requirement("sentence-transformers"),
+    requirement("shapely"),
+    requirement("openai"),
+    requirement("geopandas"),
     requirement("ipdb"),
     "//common/torch:load_torch_deps",
+    "//common/ollama:pyollama",
     ":swag_model_input_output",
     ":swag_config_types",
   ]
@@ -147,6 +151,7 @@ py_test(
   srcs = ["semantic_landmark_extractor_test.py"],
   data = ["@vigor_snippet//:files"],
   deps = [
+    requirement("shapely"),
     ":semantic_landmark_extractor",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
   ]

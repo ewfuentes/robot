@@ -22,18 +22,18 @@ def generate_config(model_config):
         enable_hard_negative_sampling_after_epoch_idx=20,
         hard_negative_pool_size=25,
         random_sample_type=HardNegativeMiner.RandomSampleType.NEAREST)
+
     loss_configs = [
-        losses.PairwiseContrastiveLossConfig(
-            positive_weight=5.0,
-            avg_positive_similarity=0.0,
-            semipositive_weight=6.0,
-            avg_semipositive_similarity=0.3,
-            negative_weight=20.0,
-            avg_negative_similarity=0.7),
-        losses.BatchUniformityLossConfig(
-            batch_uniformity_weight=1.0,
-            batch_uniformity_hinge_location=0.7 if model_config["cos_mean_hinge"] else 2.0)
-    ]
+            losses.PairwiseContrastiveLossConfig(
+                positive_weight=5.0,
+                avg_positive_similarity=0.0,
+                semipositive_weight=6.0,
+                avg_semipositive_similarity=0.3,
+                negative_weight=20.0,
+                avg_negative_similarity=0.7),
+            losses.BatchUniformityLossConfig(
+                batch_uniformity_weight=0.01,
+                batch_uniformity_hinge_location=0.7 if model_config["cos_mean_hinge"] else 2.0)]
 
     aggregation_config = spe.TransformerAggregatorConfig(
             num_transformer_layers=model_config["num_transformer_layers"],
@@ -80,15 +80,18 @@ def generate_config(model_config):
     dataset_config = T.DatasetConfig(
         paths=["Chicago"],
         should_load_images=False,
+        landmark_version='v1',
         factor=1.0)
     validation_dataset_configs = [
         T.DatasetConfig(
             paths=["Seattle"],
             should_load_images=False,
+            landmark_version='v1',
             factor=0.3),
         T.DatasetConfig(
             paths=["Chicago"],
             should_load_images=False,
+            landmark_version='v1',
             factor=0.3),
     ]
 
@@ -98,8 +101,8 @@ def generate_config(model_config):
         opt_config=opt_config,
         sat_model_config=sat_model_config,
         pano_model_config=pano_model_config,
-        loss_configs=loss_configs,
         distance_model_config=distance_model_config,
+        loss_configs=loss_configs,
         output_dir=output_dir,
         tensorboard_output=None,
         dataset_config=dataset_config,
