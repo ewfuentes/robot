@@ -16,8 +16,11 @@ import os
 import platform
 from typing import Dict
 
-def _preload_cuda_deps(lib_folder: str, lib_name: str) -> None:
-    """Preloads cuda deps if they could not be found otherwise."""
+def _preload_cuda_deps(lib_folder: str, lib_name: str) -> str:
+    """Preloads cuda deps if they could not be found otherwise.
+
+    Returns the directory containing the library.
+    """
     # Should only be called on Linux if default path resolution have failed
     assert platform.system() == 'Linux', 'Should only be called on Linux'
     import glob
@@ -42,6 +45,7 @@ def _preload_cuda_deps(lib_folder: str, lib_name: str) -> None:
             print(p)
         raise ValueError(f"{lib_name} not found in the system path")
     ctypes.CDLL(lib_path)
+    return os.path.dirname(lib_path)
 
 
 def preload_cuda_deps() -> None:
@@ -61,8 +65,21 @@ def preload_cuda_deps() -> None:
         'nccl': 'libnccl.so.*[0-9]',
         'nvtx': 'libnvToolsExt.so.*[0-9]',
     }
+
+    # Collect library directories and preload libraries
+    lib_dirs = set()
     for lib_folder, lib_name in cuda_libs.items():
-        _preload_cuda_deps(lib_folder, lib_name)
+        lib_dir = _preload_cuda_deps(lib_folder, lib_name)
+        lib_dirs.add(lib_dir)
+
+    # Update LD_LIBRARY_PATH so subprocesses (e.g., torch.compile workers) can find libraries
+    if lib_dirs:
+        current_ld_path = os.environ.get('LD_LIBRARY_PATH', '')
+        new_paths = ':'.join(lib_dirs)
+        if current_ld_path:
+            os.environ['LD_LIBRARY_PATH'] = f"{new_paths}:{current_ld_path}"
+        else:
+            os.environ['LD_LIBRARY_PATH'] = new_paths
 
 
 if platform.processor() != "aarch64":
