@@ -233,5 +233,11 @@ py_binary(
   srcs=["panorama_viewer.py"],
   deps=[
     requirement("flask"),
+    requirement("geopandas"),
+    requirement("shapely"),
+    requirement("pandas"),
+    requirement("ipdb"),
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//common/gps:web_mercator",
   ]
 )

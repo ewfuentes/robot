@@ -426,7 +426,7 @@ A fast-food spot named Mr. Cow, known for corn dogs (Corndogs by Mr. Cow).
 SYSTEM_PROMPTS = {
     'default': "your job is to produce short natural language descriptions of openstreetmap landmarks that are helpful for visually identifying the landmark. for example, do not include information about building identifiers that are unlikely to be discernable by visual inspection. don't include any details not derived from the provided landmark information. don't include descriptions about the lack of information. do not include instructions on how to identify the landmark. do include an address if provided.",
     'no-address': "your job is to produce short natural language descriptions of openstreetmap landmarks that are helpful for visually identifying the landmark. for example, do not include information about building identifiers that are unlikely to be discernable by visual inspection. don't include any details not derived from the provided landmark information. don't include descriptions about the lack of information. do not include instructions on how to identify the landmark. DO NOT include an address or parts of an address in the description.",
-    'panorama': f"You are an expert at identifying landmarks in street-level imagery. Identify distinctive, permanent landmarks visible in these image(s) and describe them in short, natural language descriptions. Focus on buildings, monuments, parks, infrastructure, or other landmarks that are likely to be present in OpenStreetMaps. Avoid transient landmarks like cars and pedestrians. If you can confidently make out text (e.g., a buisnesses name on a sign, a street sign), include these as landmarks. Do not mention the location of the landmark in the image or relative to other landmarks (e.g., on the left of the image/on the right side of the street). Match the style of these examples: {EXAMPLE_SENTENCES}. DO NOT make up details that are not present (for example, if there is no street sign in the image, don't say you are on a specific street).",
+    'panorama': f"You are an expert at identifying landmarks in street-level imagery. Identify distinctive, permanent landmarks visible in these image(s) and describe them in short, natural language descriptions. Do NOT include very distant objects that are likely to be more than a few hundered meters from where the image was taken. Focus on buildings, monuments, parks, infrastructure, or other landmarks that are likely to be present in OpenStreetMaps. Avoid transient landmarks like cars and pedestrians. If you can confidently make out text (e.g., a buisnesses name on a sign, a street sign), include these as landmarks. Do not mention the location of the landmark in the image or relative to other landmarks (e.g., on the left of the image/on the right side of the street). Match the style of these examples: {EXAMPLE_SENTENCES}. DO NOT make up details that are not present (for example, if there is no street sign in the image, don't say you are on a specific street).",
 }
 
 def _create_requests(landmarks, prompt_type = "default"):
@@ -593,7 +593,7 @@ def create_panorama_description_requests(args):
     panorama_image_map = {}  # Map from panorama stem to list of (yaw, image_path)
 
     for pano_folder in panorama_folders:
-        pano_stem = pano_folder
+        pano_stem = pano_folder.name
         images_for_pano = []
         for yaw in yaw_angles:
             image_path = pano_folder / f"yaw_{yaw:03d}.jpg"
@@ -641,9 +641,9 @@ def create_panorama_description_requests(args):
         # Create requests for this chunk
         if submit_mode == 'all':
             # One request per panorama with all 4 images
-            user_prompt = "These four images show the same location from different angles (0°, 90°, 180°, 270° yaw). Identify all distinctive landmarks visible across these images. For each landmark, specify which yaw angle(s) it is visible in. Return a JSON object with a 'landmarks' array containing objects with 'description' and 'yaw_angles' fields."
+            user_prompt = "These four images show the same location from different angles (0°, 90°, 180°, 270° yaw). Identify all distinctive landmarks visible in these images. For each landmark, specify which yaw angle(s) it is visible in. Return a JSON object with a 'landmarks' array containing objects with 'description' and 'yaw_angles' fields."
         elif submit_mode == "individual":
-            user_prompt = f"Identify distinctive landmarks visible in this image."
+            user_prompt = f"Identify distinctive landmarks visible in this image that are likely to be present in OpenStreetMaps."
         else:
             raise RuntimeError(f"Unrecognized submit mode type: {submit_mode}")
 
@@ -677,7 +677,7 @@ def create_panorama_description_requests(args):
 
             for content, yaw in all_content:
                 request = {
-                    "custom_id": f"{pano_stem}" + ("_yaw_{yaw}" if yaw is not None else ""),
+                    "custom_id": f"{pano_stem}" + (f"_yaw_{yaw}" if yaw is not None else ""),
                     "method": "POST",
                     "url": "/v1/chat/completions",
                     "body": {
