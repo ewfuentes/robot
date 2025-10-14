@@ -246,3 +246,16 @@ py_library(
     ":swag_config_types",
   ]
 )
+
+py_test(
+  name="spectral_landmark_extractor_test",
+  srcs=["spectral_landmark_extractor_test.py"],
+  deps=[
+    requirement("torch"),
+    requirement("torchvision"),
+    "//common/torch:load_torch_deps",
+    ":spectral_landmark_extractor",
+    ":swag_config_types",
+    ":swag_model_input_output",
+  ]
+)
