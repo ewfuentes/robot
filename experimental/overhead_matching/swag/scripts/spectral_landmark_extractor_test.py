@@ -27,8 +27,7 @@ class TestSpectralLandmarkExtractor(unittest.TestCase):
             feature_source="attention_keys",
             lambda_knn=10.0,
             max_landmarks_per_image=5,
-            min_bbox_size=10,
-            output_feature_dim=768
+            min_bbox_size=10
         )
 
         extractor = SpectralLandmarkExtractor(config).to(self.device)
@@ -70,8 +69,7 @@ class TestSpectralLandmarkExtractor(unittest.TestCase):
             feature_source="attention_keys",
             lambda_knn=0.0,  # No color information for faster test
             max_landmarks_per_image=3,
-            min_bbox_size=10,
-            output_feature_dim=384
+            min_bbox_size=10
         )
 
         extractor = SpectralLandmarkExtractor(config).to(self.device)
@@ -91,7 +89,7 @@ class TestSpectralLandmarkExtractor(unittest.TestCase):
             output = extractor(model_input)
 
         # Assertions
-        self.assertEqual(output.features.shape, (4, 3, 384))
+        self.assertEqual(output.features.shape, (4, 3, 768))
         self.assertEqual(output.positions.shape, (4, 3, 2))
         self.assertEqual(output.mask.shape, (4, 3))
 
@@ -123,8 +121,7 @@ class TestSpectralLandmarkExtractor(unittest.TestCase):
             dino_model="dinov3_vitb16",
             feature_source=feature_source,
             lambda_knn=0.0,
-            max_landmarks_per_image=3,
-            output_feature_dim=768
+            max_landmarks_per_image=3
         )
 
         extractor = SpectralLandmarkExtractor(config).to(self.device)
@@ -152,8 +149,7 @@ class TestSpectralLandmarkExtractor(unittest.TestCase):
             dino_model="dinov3_vitb16",
             feature_source="attention_keys",
             lambda_knn=0.0,  # No color
-            max_landmarks_per_image=5,
-            output_feature_dim=768
+            max_landmarks_per_image=5
         )
 
         extractor = SpectralLandmarkExtractor(config).to(self.device)
@@ -186,14 +182,13 @@ class TestSpectralLandmarkExtractor(unittest.TestCase):
             dino_model="dinov3_vitb16",
             feature_source="attention_keys",
             lambda_knn=0.0,
-            max_landmarks_per_image=3,
-            output_feature_dim=512
+            max_landmarks_per_image=3
         )
 
         extractor = SpectralLandmarkExtractor(config).to(self.device)
 
-        # Test output_dim property
-        self.assertEqual(extractor.output_dim, 512)
+        # Test output_dim property (should be DINO's native 768)
+        self.assertEqual(extractor.output_dim, 768)
 
         # Test patch_size property
         self.assertEqual(extractor.patch_size, 16)
@@ -204,8 +199,7 @@ class TestSpectralLandmarkExtractor(unittest.TestCase):
             dino_model="dinov2_vitb16",  # Invalid - should be dinov3
             feature_source="attention_keys",
             lambda_knn=0.0,
-            max_landmarks_per_image=3,
-            output_feature_dim=768
+            max_landmarks_per_image=3
         )
 
         with self.assertRaises(ValueError) as context:

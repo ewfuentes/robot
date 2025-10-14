@@ -2,16 +2,24 @@
 Spectral decomposition of graph Laplacian.
 
 Computes eigenvectors and eigenvalues for image segmentation.
+Uses the generalized eigenvalue formulation for numerical stability.
 """
 
 import torch
 import numpy as np
+import scipy.sparse as sp
 from scipy.sparse.linalg import eigsh
 
 
 class SpectralDecomposer:
     """
     Computes eigendecomposition of normalized graph Laplacian.
+
+    Uses the generalized eigenvalue problem formulation:
+    (D - W) v = λ D v
+
+    This is equivalent to the normalized Laplacian but more numerically stable
+    than explicitly computing D^(-1/2) (D - W) D^(-1/2).
     """
 
     def __init__(self, num_eigenvectors: int = 15):
@@ -21,40 +29,15 @@ class SpectralDecomposer:
         """
         self.num_eigenvectors = num_eigenvectors
 
-    def compute_laplacian(self, W: torch.Tensor) -> torch.Tensor:
-        """
-        Compute normalized Laplacian matrix.
-
-        L = D^(-1/2) (D - W) D^(-1/2)
-
-        Args:
-            W: [N, N] affinity matrix
-
-        Returns:
-            L: [N, N] normalized Laplacian matrix
-        """
-        # Compute degree matrix
-        D = torch.diag(W.sum(dim=1))
-
-        # Compute D^(-1/2)
-        D_values = D.diag()
-        D_inv_sqrt = torch.zeros_like(D)
-        # Avoid division by zero
-        nonzero_mask = D_values > 1e-12
-        D_inv_sqrt[nonzero_mask, nonzero_mask] = 1.0 / torch.sqrt(D_values[nonzero_mask])
-
-        # Compute normalized Laplacian: L = D^(-1/2) (D - W) D^(-1/2)
-        L = D_inv_sqrt @ (D - W) @ D_inv_sqrt
-
-        return L
-
     def decompose(
         self,
         W: torch.Tensor,
         return_all: bool = False
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Compute eigendecomposition of the Laplacian.
+        Compute eigendecomposition of the normalized Laplacian.
+
+        Solves the generalized eigenvalue problem: (D - W) v = λ D v
 
         Args:
             W: [N, N] affinity matrix
@@ -67,35 +50,69 @@ class SpectralDecomposer:
         N = W.shape[0]
         device = W.device
 
-        # Compute Laplacian
-        L = self.compute_laplacian(W)
+        # Zero out diagonal to remove self-loops
+        W = W.clone()
+        W.fill_diagonal_(0.0)
 
-        # Move to CPU for eigendecomposition (scipy is faster for this)
-        L_np = L.cpu().numpy()
+        # Normalize W by its maximum (as in the reference implementation)
+        W_max = W.max()
+        if W_max > 0:
+            W = W / W_max
 
-        # Compute eigendecomposition
+        # Move to numpy for scipy
+        W_np = W.cpu().numpy()
+
+        # Compute degree matrix D (row sums)
+        D_diag = W_np.sum(axis=1)
+        # Prevent division by zero
+        D_diag[D_diag < 1e-12] = 1.0
+        D = sp.diags(D_diag)
+
+        # Compute Laplacian matrix (D - W)
+        L = D - W_np
+
+        # Solve generalized eigenvalue problem: L v = λ D v
         if return_all or self.num_eigenvectors >= N - 1:
-            # Compute all eigenvectors
-            eigenvalues, eigenvectors = np.linalg.eigh(L_np)
+            # Compute all eigenvectors using dense solver
+            L_dense = L if isinstance(L, np.ndarray) else L.toarray()
+            D_dense = D.toarray()
+            eigenvalues, eigenvectors = sp.linalg.eigh(L_dense, D_dense)
         else:
             # Compute smallest k+1 eigenvectors (including constant)
             k = min(self.num_eigenvectors + 1, N - 1)
-            eigenvalues, eigenvectors = eigsh(
-                L_np,
-                k=k,
-                which='SM',  # Smallest magnitude
-                tol=1e-6
-            )
+            try:
+                # Try with sigma=0 (shift-invert mode for smallest eigenvalues)
+                eigenvalues, eigenvectors = eigsh(
+                    L,
+                    k=k,
+                    M=D,
+                    sigma=0,
+                    which='LM',
+                    tol=1e-6
+                )
+            except:
+                # Fallback: compute smallest eigenvalues directly
+                eigenvalues, eigenvectors = eigsh(
+                    L,
+                    k=k,
+                    M=D,
+                    which='SM',
+                    tol=1e-6
+                )
 
         # Convert back to torch
         eigenvalues = torch.from_numpy(eigenvalues).float().to(device)
         eigenvectors = torch.from_numpy(eigenvectors).float().to(device)
 
         # Skip the constant eigenvector (eigenvalue ≈ 0)
-        # The first eigenvalue should be very close to 0
         if eigenvalues[0] < 1e-6:
             eigenvalues = eigenvalues[1:]
             eigenvectors = eigenvectors[:, 1:]
+
+        # Fix sign ambiguity: flip eigenvectors so majority is positive
+        for k in range(eigenvectors.shape[1]):
+            if torch.mean((eigenvectors[:, k] > 0).float()).item() < 0.5:
+                eigenvectors[:, k] = -eigenvectors[:, k]
 
         return eigenvalues, eigenvectors
 

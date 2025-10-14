@@ -66,7 +66,6 @@ class SpectralLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
 
     # Feature aggregation
     aggregation_method: str = "weighted_mean"
-    output_feature_dim: int = 768
 
 
 class SyntheticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):

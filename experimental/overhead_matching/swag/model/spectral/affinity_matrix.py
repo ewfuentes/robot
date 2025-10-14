@@ -165,9 +165,16 @@ def build_affinity_matrix(
 
     # Optionally add color affinity
     if lambda_knn > 0 and image is not None:
-        # Downsample to intermediate resolution
-        target_H = min(H, intermediate_resolution)
-        target_W = min(W, intermediate_resolution)
+        # Downsample to intermediate resolution (preserving aspect ratio)
+        # intermediate_resolution is the target size for the smaller dimension
+        if H <= intermediate_resolution and W <= intermediate_resolution:
+            # No downsampling needed
+            target_H, target_W = H, W
+        else:
+            # Scale so the smaller dimension matches intermediate_resolution
+            scale = intermediate_resolution / min(H, W)
+            target_H = int(H * scale)
+            target_W = int(W * scale)
 
         # If features need to be resized to match color resolution
         if H != target_H or W != target_W:

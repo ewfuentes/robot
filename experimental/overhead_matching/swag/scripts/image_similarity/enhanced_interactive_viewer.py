@@ -312,7 +312,7 @@ class EnhancedInteractiveViewer:
             heatmap = self.similarity_engine.similarity_to_heatmap(
                 self.current_similarities[image_id], image_id
             )
-            ax.imshow(heatmap, alpha=0.6, cmap='hot', vmin=0, vmax=1)
+            ax.imshow(heatmap, alpha=0.6, cmap='bwr', vmin=0, vmax=1)
 
     def _add_pca_overlay(self, ax, image_id):
         """Add PCA component heatmap overlay (computed lazily on-demand)."""

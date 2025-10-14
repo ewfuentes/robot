@@ -38,7 +38,7 @@ class InteractiveImageViewer:
 
             # Initialize empty overlay for similarity heatmap
             overlay = ax.imshow(np.zeros_like(self.images[path][:, :, 0]),
-                              alpha=0.0, cmap='hot', vmin=0, vmax=1)
+                              alpha=0.0, cmap='bwr', vmin=-1, vmax=1)
             self.overlays.append(overlay)
 
             ax.set_title(f"Image {i+1}: {Path(path).name}")

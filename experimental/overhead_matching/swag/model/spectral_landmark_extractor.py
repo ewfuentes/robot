@@ -77,16 +77,9 @@ class SpectralLandmarkExtractor(nn.Module):
             num_eigenvectors=config.max_landmarks_per_image
         )
 
-        # Feature projection (if output dim differs from DINO dim)
-        dino_dim = self._dino.embed_dim
-        if config.output_feature_dim != dino_dim:
-            self._feature_projection = nn.Linear(dino_dim, config.output_feature_dim)
-        else:
-            self._feature_projection = nn.Identity()
-
     @property
     def output_dim(self):
-        return self.config.output_feature_dim
+        return self._dino.embed_dim
 
     @property
     def patch_size(self):
@@ -197,7 +190,7 @@ class SpectralLandmarkExtractor(nn.Module):
         """
         batch_size = len(all_landmarks)
         max_landmarks = self.config.max_landmarks_per_image
-        output_dim = self.config.output_feature_dim
+        output_dim = self._dino.embed_dim
 
         # Initialize output tensors
         features = torch.zeros(
@@ -257,9 +250,8 @@ class SpectralLandmarkExtractor(nn.Module):
 
             # Fill each detected object
             for j, obj in enumerate(objects[:max_landmarks]):
-                # Project feature
-                feature_projected = self._feature_projection(obj.feature)
-                features[i, j] = feature_projected
+                # Use feature directly (no projection)
+                features[i, j] = obj.feature
 
                 # Compute bbox center relative to image center
                 x1, y1, x2, y2 = obj.bbox

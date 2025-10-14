@@ -20,6 +20,9 @@ def _():
     from experimental.overhead_matching.swag.model.spectral_landmark_extractor import (
         SpectralLandmarkExtractor
     )
+    from experimental.overhead_matching.swag.model.spectral import (
+        dino_feature_extractor, affinity_matrix
+    )
 
     import matplotlib.pyplot as plt
     import matplotlib.patches as patches
@@ -34,13 +37,13 @@ def _():
         Path,
         SpectralLandmarkExtractor,
         SpectralLandmarkExtractorConfig,
+        dino_feature_extractor,
         mo,
         np,
         patches,
         plt,
         spe,
         torch,
-        tv,
         vd,
     )
 
@@ -60,37 +63,20 @@ def _(Path, vd):
 
 
 @app.cell
-def _(SpectralLandmarkExtractor, SpectralLandmarkExtractorConfig):
-    # Create extractor with default config
-    _config = SpectralLandmarkExtractorConfig(
-        dino_model="dinov3_vitb16",
-        feature_source="attention_keys",
-        lambda_knn=0.0,
-        max_landmarks_per_image=10,
-        min_bbox_size=20,
-        aggregation_method="weighted_mean",
-        output_feature_dim=768
-    )
-
-    _extractor = SpectralLandmarkExtractor(_config).cuda().eval()
-    return
-
-
-@app.cell
 def _(dataset, mo):
     # Get a subset of satellite images for visualization
-    sat_dataset = dataset.get_sat_patch_view()
+    pano_dataset = dataset.get_pano_view()
 
     # Create slider to select which image to visualize
     image_slider = mo.ui.slider(
         start=0,
-        stop=min(100, len(sat_dataset)-1),
+        stop=min(100, len(pano_dataset)-1),
         value=0,
         label='Image Index',
         show_value=True
     )
 
-    return image_slider, sat_dataset
+    return image_slider, pano_dataset
 
 
 @app.cell
@@ -129,53 +115,57 @@ def _(
     feature_source_dropdown,
     lambda_knn_slider,
     max_landmarks_slider,
+    mo,
 ):
     # Create extractor with interactive config
     _interactive_config = SpectralLandmarkExtractorConfig(
-        dino_model="dinov3_vitb16",
+        dino_model="dinov3_vitl16",
         feature_source=feature_source_dropdown.value,
         lambda_knn=lambda_knn_slider.value,
         max_landmarks_per_image=max_landmarks_slider.value,
-        min_bbox_size=20,
-        aggregation_method="weighted_mean",
-        output_feature_dim=768
+        min_bbox_size=0,
+        aggregation_method="weighted_mean"
     )
 
     interactive_extractor = SpectralLandmarkExtractor(_interactive_config).cuda().eval()
+
+    mo.vstack([
+        lambda_knn_slider, max_landmarks_slider, feature_source_dropdown
+    ])
     return (interactive_extractor,)
 
 
 @app.cell
-def _(
-    Path,
-    image_slider,
-    interactive_extractor,
-    sat_dataset,
-    spe,
-    torch,
-    tv,
-    vd,
-):
-    # Get the selected image
-    sample = sat_dataset[image_slider.value]
-    _image = sample.satellite.unsqueeze(0).cuda()
-    _image = tv.io.decode_image(Path('/home/erick/Downloads/2008_000129.jpg'))
-    _image = tv.transforms.v2.functional.to_dtype(_image, scale=True)
-    sample = vd.VigorDatasetItem(
-        satellite=_image,
-        satellite_metadata=sample.satellite_metadata,
-        panorama_metadata=None,
-        panorama=None,
-        cached_panorama_tensors=None,
-        cached_satellite_tensors=None
+def _(dino_feature_extractor, torch):
+    feature_extractor = dino_feature_extractor.DinoFeatureHookExtractor(
+        dino_model=torch.hub.load('facebookresearch/dinov3', "dinov3_vitb16"),
+        feature_source='attention_keys',
     )
-    _image = _image.unsqueeze(0).cuda()
+    return
 
-    print(_image.shape)
+
+@app.cell
+def _(image_slider, interactive_extractor, mo, pano_dataset, spe, torch):
+    # Get the selected image
+    sample = pano_dataset[image_slider.value]
+    image = sample.panorama.unsqueeze(0).cuda()[:, :, 128:-128, :]
+    # _image = tv.io.decode_image(Path('/home/erick/Downloads/2008_000005.jpg'))
+    # _image = tv.transforms.v2.functional.to_dtype(_image, scale=True)
+    # sample = vd.VigorDatasetItem(
+    #     satellite=_image,
+    #     satellite_metadata=sample.satellite_metadata,
+    #     panorama_metadata=None,
+    #     panorama=None,
+    #     cached_panorama_tensors=None,
+    #     cached_satellite_tensors=None
+    # )
+    # _image = _image.unsqueeze(0).cuda()
+
+    # print(_image.shape)
 
     # Run extractor
     _model_input = spe.ModelInput(
-        image=_image,
+        image=image,
         metadata=[sample.satellite_metadata]
     )
 
@@ -191,7 +181,15 @@ def _(
     # Get number of detected landmarks
     num_detected = (~mask[0]).sum().item()
 
-    return debug, features, mask, num_detected, sample
+    mo.vstack([image_slider])
+
+    return debug, features, image, mask, num_detected, sample
+
+
+@app.cell
+def _(debug):
+    debug
+    return
 
 
 @app.cell
@@ -199,10 +197,15 @@ def _(
     debug,
     image_slider,
     lambda_knn_slider,
+    mask,
     max_landmarks_slider,
     mo,
     num_detected,
 ):
+    # Get valid eigenvalues (non-padded)
+    _valid_eigenvalues = debug['eigenvalues'][0][~mask[0]]
+    _eigenvalues_str = ", ".join([f"{ev:.4f}" for ev in _valid_eigenvalues.cpu().numpy()])
+
     # Display configuration and results
     mo.md(f"""
     ## Spectral Landmark Extractor Visualization
@@ -214,25 +217,26 @@ def _(
 
     **Results:**
     - Detected Landmarks: {num_detected}
-    - Eigenvalues computed: {len(debug['eigenvalues'][0])}
+    - Total Eigenvectors: {len(debug['eigenvectors'][0])}
+    - Eigenvalues of detected objects: [{_eigenvalues_str}]
     """)
     return
 
 
 @app.cell
-def _(debug, mask, mo, np, patches, plt, sample):
+def _(debug, image, mask, mo, np, patches, plt):
     # Visualize detected landmarks with bounding boxes
     _fig, _axes = plt.subplots(1, 2, figsize=(16, 8))
 
     # Original image
     _ax = _axes[0]
-    _ax.imshow(sample.satellite.permute(1, 2, 0).cpu())
+    _ax.imshow(image.cpu().squeeze().permute(1, 2, 0))
     _ax.set_title('Original Image')
     _ax.axis('off')
 
     # Image with bounding boxes
     _ax = _axes[1]
-    _ax.imshow(sample.satellite.permute(1, 2, 0).cpu())
+    _ax.imshow(image.cpu().squeeze().permute(1, 2, 0))
 
     # Draw bounding boxes for detected landmarks
     _bboxes = debug['bboxes'][0].cpu().numpy()
@@ -273,7 +277,7 @@ def _(mo):
 
 
 @app.cell
-def _(debug, eigenvector_slider, mo, np, plt, sample):
+def _(debug, eigenvector_slider, image, mo, plt, sample):
     # Visualize eigenvectors as heatmaps
     _eigenvectors = debug['eigenvectors'][0].cpu()  # [K, H, W]
     eigenvalues = debug['eigenvalues'][0].cpu().numpy()
@@ -283,7 +287,7 @@ def _(debug, eigenvector_slider, mo, np, plt, sample):
     _fig, _axes = plt.subplots(1, 3, figsize=(18, 6))
 
     # Original image
-    _axes[0].imshow(sample.satellite.permute(1, 2, 0).cpu())
+    _axes[0].imshow(image.cpu().squeeze().permute(1, 2, 0))
     _axes[0].set_title('Original Image')
     _axes[0].axis('off')
 
@@ -295,9 +299,9 @@ def _(debug, eigenvector_slider, mo, np, plt, sample):
     _axes[1].axis('off')
 
     # Thresholded eigenvector (shows segmentation)
-    _threshold = np.percentile(_eigvec, 75)
-    _binary_mask = _eigvec > _threshold
-    _axes[2].imshow(sample.satellite.permute(1, 2, 0).cpu())
+
+    _binary_mask = _eigvec > 0.0
+    _axes[2].imshow(sample.panorama.permute(1, 2, 0).cpu())
     _axes[2].imshow(_binary_mask, alpha=0.5, cmap='Reds', interpolation='nearest')
     _axes[2].set_title(f'Thresholded (75th percentile)')
     _axes[2].axis('off')
@@ -412,7 +416,8 @@ def _(debug, mask, mo, np, plt):
         _fig, _axes = plt.subplots(1, 2, figsize=(14, 5))
 
         # Histogram of which eigenvectors were used
-        _axes[0].hist(_eigenvector_indices, bins=np.arange(0, 11)-0.5, edgecolor='black')
+        _max_eig_idx = max(_eigenvector_indices.max(), 10)
+        _axes[0].hist(_eigenvector_indices, bins=np.arange(0, _max_eig_idx + 2)-0.5, edgecolor='black')
         _axes[0].set_xlabel('Eigenvector Index')
         _axes[0].set_ylabel('Number of Landmarks')
         _axes[0].set_title('Distribution of Source Eigenvectors')
@@ -457,21 +462,6 @@ def _(
         max_landmarks_slider,
         feature_source_dropdown
     ])
-    return
-
-
-@app.cell
-def _():
-    return
-
-
-@app.cell
-def _():
-    return
-
-
-@app.cell
-def _():
     return
 
 
