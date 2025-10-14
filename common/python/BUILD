@@ -20,6 +20,8 @@ py_binary(
     requirement("osmnx"),
     requirement("supervision"),
     requirement("openai"),
+    requirement("scikit-learn"),
+    requirement("hdbscan"),
     "//common/torch:load_torch_deps",
     "//experimental/overhead_matching/learned/model:clevr_transformer",
     "//experimental/overhead_matching/learned/model:clevr_tokenizer",

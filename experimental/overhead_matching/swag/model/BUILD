@@ -39,6 +39,7 @@ py_library(
     requirement("msgspec"),
     ":alphaearth_extractor",
     ":semantic_landmark_extractor",
+    ":spectral_landmark_extractor",
     ":synthetic_landmark_extractor",
     ":semantic_segment_extractor",
     ":absolute_position_extractor",
@@ -207,5 +208,54 @@ py_test(
   deps = [
     ":absolute_position_extractor",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
+  ]
+)
+
+py_library(
+  name = "spectral",
+  srcs = [
+    "spectral/__init__.py",
+    "spectral/affinity_matrix.py",
+    "spectral/spectral_decomposer.py",
+    "spectral/object_detector.py",
+    "spectral/dino_feature_extractor.py",
+  ],
+  deps = [
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("scipy"),
+    requirement("scikit-learn"),
+    requirement("scikit-image"),
+    "//common/torch:load_torch_deps",
+  ]
+)
+
+py_library(
+  name = "spectral_landmark_extractor",
+  srcs = ["spectral_landmark_extractor.py"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+  ],
+  deps = [
+    requirement("torch"),
+    requirement("torchvision"),
+    requirement("numpy"),
+    "//common/torch:load_torch_deps",
+    ":spectral",
+    ":swag_model_input_output",
+    ":swag_config_types",
+  ]
+)
+
+py_test(
+  name="spectral_landmark_extractor_test",
+  srcs=["spectral_landmark_extractor_test.py"],
+  deps=[
+    requirement("torch"),
+    requirement("torchvision"),
+    "//common/torch:load_torch_deps",
+    ":spectral_landmark_extractor",
+    ":swag_config_types",
+    ":swag_model_input_output",
   ]
 )
