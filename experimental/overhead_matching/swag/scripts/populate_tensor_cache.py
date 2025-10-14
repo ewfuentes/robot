@@ -257,9 +257,7 @@ def main(train_config_path: Path,
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Populate tensor cache for SWAG models. "
-                    "Supports both single dataset and multi-dataset processing, "
-                    "as well as auto-detection of cached extractors from config.")
+        description="Populate tensor cache for SWAG models.")
     parser.add_argument('--train_config', type=str, required=True,
                         help='Path to training config YAML file')
     parser.add_argument('--field_spec', type=str, default=None,
