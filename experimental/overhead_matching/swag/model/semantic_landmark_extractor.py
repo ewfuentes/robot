@@ -286,22 +286,23 @@ class SemanticLandmarkExtractor(torch.nn.Module):
             (batch_size, max_num_landmarks, max_description_length), dtype=torch.uint8)
 
         # Store the sentences in a debug tensor
-        for i, item in enumerate(model_input.metadata):
-            num_landmarks_for_item = valid_landmarks[i]
-            sentence_tensors = []
-            for landmark in item["landmarks"]:
-                if landmark['geometry'].geom_type.lower() != self.config.landmark_type.lower():
-                    continue
-                props = prune_landmark(landmark)
-                landmark_id = _custom_id_from_props(props)
-                if landmark_id not in self.all_sentences:
-                    continue
-                sentence_tensors.append(torch.tensor(list(self.all_sentences[landmark_id].encode('utf-8')), dtype=torch.uint8))
-            if len(sentence_tensors):
-                landmarks_sentences_tensor = torch.nested.nested_tensor(sentence_tensors)
-                landmarks_sentences_tensor = landmarks_sentences_tensor.to_padded_tensor(
-                    padding=0, output_size=(num_landmarks_for_item, max_description_length))
-                sentence_debug[i, :num_landmarks_for_item] = landmarks_sentences_tensor
+        if self.all_sentences is not None:
+            for i, item in enumerate(model_input.metadata):
+                num_landmarks_for_item = valid_landmarks[i]
+                sentence_tensors = []
+                for landmark in item["landmarks"]:
+                    if landmark['geometry'].geom_type.lower() != self.config.landmark_type.lower():
+                        continue
+                    props = prune_landmark(landmark)
+                    landmark_id = _custom_id_from_props(props)
+                    if landmark_id not in self.all_sentences:
+                        continue
+                    sentence_tensors.append(torch.tensor(list(self.all_sentences[landmark_id].encode('utf-8')), dtype=torch.uint8))
+                if len(sentence_tensors):
+                    landmarks_sentences_tensor = torch.nested.nested_tensor(sentence_tensors)
+                    landmarks_sentences_tensor = landmarks_sentences_tensor.to_padded_tensor(
+                        padding=0, output_size=(num_landmarks_for_item, max_description_length))
+                    sentence_debug[i, :num_landmarks_for_item] = landmarks_sentences_tensor
 
         return ExtractorOutput(
             features=features.to(model_input.image.device),
