@@ -333,14 +333,12 @@ class NullPositionEmbedding(torch.nn.Module):
     def forward(self, *,
                 model_input: ModelInput,
                 relative_positions: torch.Tensor):
-        # relative_positions can be (batch, tokens, 2) or (batch, tokens, num_positions, 2)
-        # We need to return zeros with shape (batch, tokens, 0)
-        # The reshape flattens any extra dimensions (like num_position_outputs) into the last dim
+        assert relative_positions.ndim == 4  # (batch, tokens, num_positions, 2)
         batch_size, num_tokens = relative_positions.shape[:2]
-        out = torch.zeros((*relative_positions.shape[:-1], 0),
+        out = torch.zeros((batch_size, num_tokens, 0),
                          dtype=torch.float32,
                          device=relative_positions.device)
-        return out.reshape(batch_size, num_tokens, -1)
+        return out
 
     @property
     def output_dim(self):
