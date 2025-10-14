@@ -1,8 +1,14 @@
 
 import msgspec
 from typing import Union, NamedTuple
-from enum import StrEnum
+from enum import StrEnum, auto
 from common.python.serialization import MSGSPEC_STRUCT_OPTS
+
+
+class ExtractorDataRequirement(StrEnum):
+    """Specifies what data an extractor needs from the dataset."""
+    IMAGES = auto()
+    LANDMARKS = auto()
 
 
 class DinoFeatureMapExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):

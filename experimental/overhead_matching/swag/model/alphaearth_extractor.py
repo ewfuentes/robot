@@ -5,7 +5,7 @@ import torch
 from pathlib import Path
 
 import experimental.overhead_matching.swag.data.alphaearth_registry as ar
-from experimental.overhead_matching.swag.model.swag_config_types import AlphaEarthExtractorConfig
+from experimental.overhead_matching.swag.model.swag_config_types import AlphaEarthExtractorConfig, ExtractorDataRequirement
 from experimental.overhead_matching.swag.model.swag_model_input_output import (
         ModelInput, ExtractorOutput)
 
@@ -54,3 +54,7 @@ class AlphaEarthExtractor(torch.nn.Module):
     @property
     def num_position_outputs(self):
         return 1
+
+    @property
+    def data_requirements(self) -> list[ExtractorDataRequirement]:
+        return []

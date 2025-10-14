@@ -10,7 +10,7 @@ import pandas as pd
 import openai
 import base64
 from experimental.overhead_matching.swag.model.swag_config_types import (
-    SemanticLandmarkExtractorConfig)
+    SemanticLandmarkExtractorConfig, ExtractorDataRequirement)
 from experimental.overhead_matching.swag.model.swag_model_input_output import (
     ModelInput, ExtractorOutput)
 
@@ -316,6 +316,10 @@ class SemanticLandmarkExtractor(torch.nn.Module):
     @property
     def num_position_outputs(self):
         return 2
+
+    @property
+    def data_requirements(self) -> list[ExtractorDataRequirement]:
+        return [ExtractorDataRequirement.LANDMARKS]
 
 
 def _load_landmarks(geojson_list):
