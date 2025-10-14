@@ -18,10 +18,6 @@ import io
 import dataclasses
 
 
-class HashStruct(msgspec.Struct, frozen=True):
-    model_config: Any
-    patch_dims: tuple[int, int]
-
 
 def compute_config_hash(obj):
     yaml_str = msgspec.yaml.encode(obj, enc_hook=msgspec_enc_hook, order='deterministic')
@@ -30,6 +26,7 @@ def compute_config_hash(obj):
 
 def main(train_config_path: Path,
          field_spec: str,
+         landmark_version: str, 
          dataset_path: Path,
          base_output_path: Path,
          idx_start: None | int,
@@ -50,7 +47,7 @@ def main(train_config_path: Path,
             model_config = getattr(model_config, p)
     aux_info = getattr(train_config, parts[0]).auxiliary_info
     patch_dims = getattr(train_config, parts[0]).patch_dims
-    hash_struct = HashStruct(model_config=model_config, patch_dims=patch_dims)
+    hash_struct = vd.HashStruct(model_config=model_config, patch_dims=patch_dims, landmark_version=landmark_version)
     yaml_str, config_hash = compute_config_hash(hash_struct)
     print('computing cache for: ', hash_struct, 'with hash: ', config_hash.hexdigest())
 
@@ -69,6 +66,7 @@ def main(train_config_path: Path,
             panorama_size=train_config.pano_model_config.patch_dims,
             satellite_tensor_cache_info=None,
             panorama_tensor_cache_info=None,
+            landmark_version=landmark_version,
             should_load_images=should_load_images))
     dataset = (dataset.get_sat_patch_view() if 'sat_model_config' == parts[0]
                else dataset.get_pano_view())
@@ -87,6 +85,8 @@ def main(train_config_path: Path,
     output_path = base_output_path / dataset_path.name / model_type / config_hash.hexdigest()
     output_path.mkdir(exist_ok=True, parents=True)
     print('writing to:', output_path)
+    num_features = 0
+    num_items = 0
     with lmdb.open(str(output_path), map_size=mmap_size) as db:
         with db.begin(write=True) as txn:
             txn.put(b"config_hash", config_hash.digest())
@@ -110,6 +110,8 @@ def main(train_config_path: Path,
                 raise NotImplementedError
             # Run it through the model
             out = dataclasses.asdict(model(model_input))
+            num_features += (~out['mask']).sum()
+            num_items += out['mask'].shape[0]
             # Write the results
             with db.begin(write=True) as txn:
                 for batch_idx in range(model_input.image.shape[0]):
@@ -130,6 +132,7 @@ def main(train_config_path: Path,
                     np.savez(ostream, **to_write)
                     key = model_input.metadata[batch_idx]["path"].name.encode('utf-8')
                     txn.put(key, ostream.getvalue())
+    print(f"Created a total of {num_features} features for {num_items} items, with an average of {num_features / num_items} features per item")
 
 
 if __name__ == "__main__":
@@ -137,17 +140,20 @@ if __name__ == "__main__":
     parser.add_argument('--train_config', type=str, required=True)
     parser.add_argument('--field_spec', type=str, required=True)
     parser.add_argument('--dataset', type=str, required=True)
+    parser.add_argument('--landmark_version', type=str, required=True)
     parser.add_argument('--idx_start', type=int, default=None)
     parser.add_argument('--idx_end', type=int, default=None)
     parser.add_argument("--batch_size", type=int, default=16)
 
     output_path = Path('~/.cache/robot/overhead_matching/tensor_cache/').expanduser()
     args = parser.parse_args()
-
-    main(train_config_path=Path(args.train_config),
-         field_spec=args.field_spec,
-         dataset_path=Path(args.dataset),
-         base_output_path=output_path,
-         idx_start=args.idx_start,
-         idx_end=args.idx_end,
-         batch_size=args.batch_size)
+    import ipdb
+    with ipdb.launch_ipdb_on_exception():
+        main(train_config_path=Path(args.train_config),
+            field_spec=args.field_spec,
+            dataset_path=Path(args.dataset),
+            landmark_version=args.landmark_version,
+            base_output_path=output_path,
+            idx_start=args.idx_start,
+            idx_end=args.idx_end,
+            batch_size=args.batch_size)

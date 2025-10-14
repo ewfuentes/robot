@@ -6,6 +6,8 @@ import itertools
 import math
 import lmdb
 import io
+import hashlib
+import msgspec
 
 
 import shapely
@@ -18,10 +20,23 @@ from typing import NamedTuple
 from common.math.haversine import find_d_on_unit_circle
 from common.gps import web_mercator
 from enum import StrEnum, auto
+from experimental.overhead_matching.swag.model.swag_model_input_output import ExtractorOutput
+from experimental.overhead_matching.swag.model.swag_config_types import CacheableExtractorInfo
 
 from typing import Any
 
 EARTH_RADIUS_M = 6378137.0
+
+class HashStruct(msgspec.Struct, frozen=True):
+    """Structure for computing cache hashes. Combines model config, patch dims, and landmark version."""
+    model_config: Any
+    patch_dims: tuple[int, int]
+    landmark_version: str
+
+def compute_config_hash(obj):
+    """Compute a deterministic hash of a configuration object."""
+    yaml_str = msgspec.yaml.encode(obj, order='deterministic')
+    return hashlib.sha256(yaml_str).hexdigest()
 
 class SampleMode(StrEnum):
     # In nearest mode, when indexing into the dataset, return the nearest satellite patch
@@ -46,14 +61,13 @@ class PanoramaIndexInfo(NamedTuple):
 class TensorCacheInfo(NamedTuple):
     dataset_key: str
     model_type: str
-    # This is a map from a hash key to the key at which the cached tensors should appear
-    # and the type of the cached tensor
-    hash_and_key: dict[str, (str, type[Any])]
+    landmark_version: str
+    # Un-hashed extractor info provided by the model
+    extractor_info: dict[str, CacheableExtractorInfo]
 
 
 class TensorCache(NamedTuple):
     key: str
-    record_type: type[Any]
     db: lmdb.Environment
 
 
@@ -300,18 +314,23 @@ def populate_pairs(pano_metadata, sat_metadata, sample_mode):
 
 
 def load_tensor_caches(info: TensorCacheInfo):
-    if info is None or info.hash_and_key is None:
+    if info is None or info.extractor_info is None:
         return []
 
     base_path = Path("~/.cache/robot/overhead_matching/tensor_cache").expanduser()
     base_path = base_path / info.dataset_key / info.model_type
 
     out = []
-    for path, (key, record_type) in info.hash_and_key.items():
-        cache_path = base_path / path
+    for extractor_name, cacheable_info in info.extractor_info.items():
+        # Compute the hash using model config, patch_dims, AND landmark_version
+        config_hash = compute_config_hash(HashStruct(
+            model_config=cacheable_info.model_config,
+            patch_dims=cacheable_info.patch_dims,
+            landmark_version=info.landmark_version))
+
+        cache_path = base_path / config_hash
         out.append(TensorCache(
-            key=key,
-            record_type=record_type,
+            key=extractor_name,
             db=lmdb.open(str(cache_path), map_size=2**40, readonly=True)))
     return out
 
@@ -319,12 +338,13 @@ def load_tensor_caches(info: TensorCacheInfo):
 def get_cached_tensors(metadata: dict, caches: list[TensorCache]):
     key = metadata["path"].name.encode('utf-8')
     out = {}
-    for (output_key, record_type, db) in caches:
-        with db.begin() as txn:
+    for cache in caches:
+        with cache.db.begin() as txn:
             stored_value = txn.get(key)
-            assert stored_value is not None, f"Failed to get: {key} from cache at: {db.path()}"
+            assert stored_value is not None, f"Failed to get: {key} from cache at: {cache.db.path()}"
             deserialized = np.load(io.BytesIO(stored_value))
-            out[output_key] = record_type(**{k: torch.tensor(v) for k, v in deserialized.items() if not k.startswith("debug")})
+            # Always use ExtractorOutput for cached tensors
+            out[cache.key] = ExtractorOutput(**{k: torch.tensor(v) for k, v in deserialized.items() if not k.startswith("debug")})
     return out
 
 

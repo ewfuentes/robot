@@ -109,6 +109,7 @@ def _(checkpoint, load_model, model_path):
 
 @app.cell(hide_code=True)
 def _(dataset_path, pano_model, sat_model, vd):
+    landmark_version = "v3"
     dataset = vd.VigorDataset(
         dataset_path,
         vd.VigorDatasetConfig(
@@ -117,11 +118,14 @@ def _(dataset_path, pano_model, sat_model, vd):
             satellite_tensor_cache_info=vd.TensorCacheInfo(
                 dataset_key=dataset_path.name,
                 model_type="satellite",
-                hash_and_key=sat_model.cache_info()),
+                landmark_version=landmark_version,
+                extractor_info=sat_model.cache_info()),
             panorama_tensor_cache_info=vd.TensorCacheInfo(
                 dataset_key=dataset_path.name,
                 model_type="panorama",
-                hash_and_key=pano_model.cache_info())))
+                landmark_version=landmark_version,
+                extractor_info=pano_model.cache_info()),
+            landmark_version=landmark_version))
     return (dataset,)
 
 

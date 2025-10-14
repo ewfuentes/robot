@@ -1,7 +1,9 @@
 
 import msgspec
-from typing import Union
+from typing import Union, NamedTuple
+from enum import StrEnum
 from common.python.serialization import MSGSPEC_STRUCT_OPTS
+
 
 class DinoFeatureMapExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     model_str: str = "dinov2_vitb14"
@@ -17,8 +19,10 @@ class AlphaEarthExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
 class SemanticNullExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     ...
 
+
 class AbsolutePositionExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     ...
+
 
 class SemanticEmbeddingMatrixConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     vocabulary: list[str]
@@ -31,9 +35,18 @@ class SemanticSegmentExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     clip_model_str: str = "hf-hub:laion/CLIP-ViT-B-32-laion2B-s34B-b79K"
 
 
+class LandmarkType(StrEnum):
+    POINT = "point"
+    LINESTRING = "linestring"
+    POLYGON = "polygon"
+    MULTIPOLYGON = "multipolygon"
+
+
 class SemanticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
-    llm_str: str = 'smollm2:135m'
-    sentence_model_str: str = 'sentence-transformers/all-mpnet-base-v2'
+    landmark_type: LandmarkType
+    openai_embedding_size: int  # if smaller than the true embedding dim (1536), will crop and renormalize embedding
+    embedding_version: str
+    auxiliary_info_key: str
 
 
 class SyntheticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
@@ -63,7 +76,7 @@ class TransformerAggregatorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
 
 FeatureMapExtractorConfig = Union[DinoFeatureMapExtractorConfig, None]
 SemanticTokenExtractorConfig = Union[
-        SemanticNullExtractorConfig, SemanticEmbeddingMatrixConfig, SemanticSegmentExtractorConfig]
+    SemanticNullExtractorConfig, SemanticEmbeddingMatrixConfig, SemanticSegmentExtractorConfig]
 PositionEmbeddingConfig = Union[PlanarPositionEmbeddingConfig, SphericalPositionEmbeddingConfig]
 AggregationConfig = Union[TransformerAggregatorConfig]
 
@@ -77,3 +90,12 @@ ExtractorConfig = Union[
     SyntheticLandmarkExtractorConfig,
     AbsolutePositionExtractorConfig,
 ]
+
+
+class CacheableExtractorInfo(NamedTuple):
+    """Information about an extractor used to find its cache.
+
+    Passed from model to dataset to compute cache keys.
+    """
+    model_config: ExtractorConfig
+    patch_dims: tuple[int, int]

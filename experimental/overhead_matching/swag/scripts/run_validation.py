@@ -115,7 +115,7 @@ def _(json, lsm, msgspec, pe, spe, torch):
 @app.cell
 def _(T, load_model, mo, vd):
     @mo.persistent_cache
-    def compute_validation_metrics(model_path, dataset_path, checkpoint, factor):
+    def compute_validation_metrics(model_path, dataset_path, checkpoint, factor, landmark_version="v1"):
         print(f'working on: {model_path.name} {dataset_path.name} {checkpoint}')
         _sat_model = load_model(
             model_path / f"{checkpoint:04d}_satellite", device='cuda:0').eval()
@@ -127,14 +127,17 @@ def _(T, load_model, mo, vd):
             panorama_tensor_cache_info=vd.TensorCacheInfo(
                 dataset_key=dataset_path.name,
                 model_type="panorama",
-                hash_and_key=_pano_model.cache_info()),
+                landmark_version=landmark_version,
+                extractor_info=_pano_model.cache_info()),
             satellite_tensor_cache_info=vd.TensorCacheInfo(
                 dataset_key=dataset_path.name,
                 model_type="satellite",
-                hash_and_key=_sat_model.cache_info()),
+                landmark_version=landmark_version,
+                extractor_info=_sat_model.cache_info()),
             panorama_size=_pano_model.patch_dims,
             satellite_patch_size=_sat_model.patch_dims,
-            factor=factor
+            factor=factor,
+            landmark_version=landmark_version
         )
         _dataset = vd.VigorDataset(dataset_path, _dataset_config)
 

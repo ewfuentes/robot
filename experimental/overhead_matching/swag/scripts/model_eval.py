@@ -116,7 +116,7 @@ def _(Path, evaluate_swag, json, lsm, msgspec, pe, spe, torch, vigor_dataset):
             model = model.to(device)
         return model
 
-    def get_top_k_results(model_partial_path, dataset_path):
+    def get_top_k_results(model_partial_path, dataset_path, landmark_version):
         sat_model = load_model(Path(f"{model_partial_path}_satellite"), device='cuda')
         pano_model = load_model(Path(f"{model_partial_path}_panorama"), device='cuda')
 
@@ -126,11 +126,14 @@ def _(Path, evaluate_swag, json, lsm, msgspec, pe, spe, torch, vigor_dataset):
             panorama_tensor_cache_info=vigor_dataset.TensorCacheInfo(
                 dataset_key=dataset_path.name,
                 model_type="panorama",
-                hash_and_key=pano_model.cache_info()),
+                landmark_version=landmark_version,
+                extractor_info=pano_model.cache_info()),
             satellite_tensor_cache_info=vigor_dataset.TensorCacheInfo(
                 dataset_key=dataset_path.name,
                 model_type="satellite",
-                hash_and_key=sat_model.cache_info())
+                landmark_version=landmark_version,
+                extractor_info=sat_model.cache_info()),
+            landmark_version=landmark_version
         )
         dataset = vigor_dataset.VigorDataset(dataset_path, dataset_config)
 
@@ -288,7 +291,7 @@ def _(mo, path_df, plt, seaborn):
 
 @app.cell
 def _(Path, evaluate_swag, load_model, vigor_dataset):
-    def get_similarity_matrix(model_path: Path, dataset_path: Path, checkpoint_idx=59):
+    def get_similarity_matrix(model_path: Path, dataset_path: Path, checkpoint_idx, landmark_version):
         sat_model = load_model(model_path / f"{checkpoint_idx:04d}_satellite")
         pano_model = load_model(model_path / f"{checkpoint_idx:04d}_panorama")
         dataset_config = vigor_dataset.VigorDatasetConfig(
@@ -297,11 +300,14 @@ def _(Path, evaluate_swag, load_model, vigor_dataset):
             panorama_tensor_cache_info=vigor_dataset.TensorCacheInfo(
                 dataset_key=dataset_path.name,
                 model_type="panorama",
-                hash_and_key=pano_model.cache_info()),
+                landmark_version=landmark_version,
+                extractor_info=pano_model.cache_info()),
             satellite_tensor_cache_info=vigor_dataset.TensorCacheInfo(
                 dataset_key=dataset_path.name,
                 model_type="satellite",
-                hash_and_key=sat_model.cache_info())
+                landmark_version=landmark_version,
+                extractor_info=sat_model.cache_info()),
+            landmark_version=landmark_version
         )
         dataset = vigor_dataset.VigorDataset(dataset_path, dataset_config)
         return dataset, evaluate_swag.compute_cached_similarity_matrix(sat_model, pano_model, dataset, device='cuda', use_cached_similarity=True)

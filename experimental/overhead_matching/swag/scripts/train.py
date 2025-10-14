@@ -216,8 +216,7 @@ def create_training_components(dataset,
         device='cpu')
 
     dataloader = vigor_dataset.get_dataloader(
-        dataset, batch_sampler=miner, num_workers=min(os.cpu_count() // 2, 24),
-        persistent_workers=True)
+        dataset, batch_sampler=miner, num_workers=int(os.environ.get("MAX_DATALOADER_WORKERS", min(os.cpu_count() // 2, 24))), persistent_workers=True)
 
     # Create optimizer
     opt = torch.optim.AdamW(
@@ -496,11 +495,13 @@ def main(
         satellite_tensor_cache_info=vigor_dataset.TensorCacheInfo(
             dataset_key=train_config.dataset_config.paths[0],
             model_type="satellite",
-            hash_and_key=satellite_model.cache_info()),
+            landmark_version=train_config.dataset_config.landmark_version,
+            extractor_info=satellite_model.cache_info()),
         panorama_tensor_cache_info=vigor_dataset.TensorCacheInfo(
             dataset_key=train_config.dataset_config.paths[0],
             model_type="panorama",
-            hash_and_key=panorama_model.cache_info()),
+            landmark_version=train_config.dataset_config.landmark_version,
+            extractor_info=panorama_model.cache_info()),
         sample_mode=vigor_dataset.SampleMode.POS_SEMIPOS,
         factor=train_config.dataset_config.factor,
         should_load_images=train_config.dataset_config.should_load_images,
@@ -521,11 +522,13 @@ def main(
                 satellite_tensor_cache_info=vigor_dataset.TensorCacheInfo(
                     dataset_key=validation_dataset_config.paths[0],
                     model_type="satellite",
-                    hash_and_key=satellite_model.cache_info()),
+                    landmark_version=validation_dataset_config.landmark_version,
+                    extractor_info=satellite_model.cache_info()),
                 panorama_tensor_cache_info=vigor_dataset.TensorCacheInfo(
                     dataset_key=validation_dataset_config.paths[0],
                     model_type="panorama",
-                    hash_and_key=panorama_model.cache_info()),
+                    landmark_version=validation_dataset_config.landmark_version,
+                    extractor_info=panorama_model.cache_info()),
                 sample_mode=vigor_dataset.SampleMode.POS_SEMIPOS,
                 factor=validation_dataset_config.factor,
                 should_load_images=validation_dataset_config.should_load_images,
