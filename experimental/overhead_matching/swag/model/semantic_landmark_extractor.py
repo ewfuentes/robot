@@ -537,13 +537,42 @@ def create_sentence_embedding_batch(args):
     input_path = Path(args.sentence_output_dir)
     output_base = Path(args.output_base) / "embedding_requests"
     output_base.mkdir(parents=True, exist_ok=True)
+
     # read all of the files
     all_responses = load_all_jsonl_from_folder(input_path)
 
+    # Parse responses based on mode
+    is_panorama = args.is_panorama
+
+    if is_panorama:
+        print("Processing panorama landmark responses...")
+        sentence_dict, metadata_dict, output_tokens = make_panorama_sentence_dict_from_json(all_responses)
+        print(f"Extracted {len(sentence_dict)} landmark descriptions from {len(all_responses)} panorama responses")
+        print(f"Total output tokens: {output_tokens}")
+
+        # Save metadata for later use
+        metadata_file = output_base / "panorama_metadata.jsonl"
+        with open(metadata_file, 'w') as f:
+            for custom_id, metadata in metadata_dict.items():
+                f.write(json.dumps({
+                    "custom_id": custom_id,
+                    "panorama_id": metadata["panorama_id"],
+                    "landmark_idx": metadata["landmark_idx"],
+                    "yaw_angles": metadata["yaw_angles"]
+                }) + '\n')
+        print(f"Saved metadata to {metadata_file}")
+    else:
+        print("Processing regular landmark responses...")
+        sentence_dict, output_tokens = make_sentence_dict_from_json(all_responses)
+        print(f"Extracted {len(sentence_dict)} sentences")
+        print(f"Total output tokens: {output_tokens}")
+
     # create the batch API embedding requests
-    sentence_dict, _ = make_sentence_dict_from_json(all_responses)
     all_requests = [_make_sentence_embedding_request(
         custom_id, sentence) for custom_id, sentence in sentence_dict.items()]
+
+    print(f"Creating {len(all_requests)} embedding requests...")
+
     for idx, request_batch in enumerate(itertools.batched(all_requests, BATCH_SIZE)):
         batch_requests_file = output_base / f'embedding_requests_{idx:03d}.jsonl'
         batch_requests_file.write_text('\n'.join(json.dumps(r) for r in request_batch))
@@ -762,6 +791,66 @@ def make_sentence_dict_from_json(sentence_jsons: list) -> dict[str, str]:
     return out, output_tokens
 
 
+def make_panorama_sentence_dict_from_json(sentence_jsons: list) -> tuple[dict[str, str], dict[str, dict], int]:
+    """
+    Parse panorama landmark extraction responses.
+
+    Returns:
+        sentences: dict mapping custom_id to landmark description
+        metadata: dict mapping custom_id to metadata (panorama_id, landmark_idx, yaw_angles)
+        output_tokens: total output tokens used
+    """
+    sentences = {}
+    metadata = {}
+    output_tokens = 0
+
+    for response in sentence_jsons:
+        if len(response['response']['body']) == 0:
+            print(f"GOT EMPTY RESPONSE {response}. SKIPPING")
+            continue
+
+        assert response["error"] == None and \
+            response["response"]["body"]["choices"][0]["finish_reason"] == "stop" and \
+            response["response"]["body"]["choices"][0]["message"]["refusal"] == None
+
+        panorama_id = response["custom_id"]
+        content_str = response["response"]["body"]["choices"][0]["message"]["content"]
+
+        # Parse the JSON content
+        try:
+            content = json.loads(content_str)
+        except json.JSONDecodeError as e:
+            print(f"Failed to parse JSON for {panorama_id}: {e}")
+            print(f"Content: {content_str[:200]}...")
+            continue
+
+        # Extract landmarks
+        landmarks = content.get("landmarks", [])
+        for idx, landmark in enumerate(landmarks):
+            description = landmark.get("description", "")
+            yaw_angles = landmark.get("yaw_angles", [])
+
+            if not description:
+                continue
+
+            # Create custom_id for this landmark
+            # Format: {panorama_id}__landmark_{idx}
+            landmark_custom_id = f"{panorama_id}__landmark_{idx}"
+
+            assert landmark_custom_id not in sentences, f"Duplicate custom_id: {landmark_custom_id}"
+
+            sentences[landmark_custom_id] = description
+            metadata[landmark_custom_id] = {
+                "panorama_id": panorama_id,
+                "landmark_idx": idx,
+                "yaw_angles": yaw_angles
+            }
+
+        output_tokens += response["response"]["body"]["usage"]["completion_tokens"]
+
+    return sentences, metadata, output_tokens
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
@@ -787,6 +876,8 @@ if __name__ == "__main__":
     create_parser.add_argument('--sentence_output_dir')
     create_parser.add_argument('--output_base', type=str, default="/tmp/")
     create_parser.add_argument('--launch', action='store_true')
+    create_parser.add_argument('--is_panorama', action='store_true',
+                               help='Process panorama landmark extraction responses (extracts individual landmarks with metadata)')
     create_parser.set_defaults(func=create_sentence_embedding_batch)
 
     # Panorama landmark extraction
