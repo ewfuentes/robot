@@ -288,6 +288,32 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
         # Test that the model's num_embeddings property matches what we expect
         self.assertEqual(model.num_embeddings, NUM_EMBEDDINGS)
 
+    def test_null_position_embedding(self):
+        # Setup
+        config = spe.NullPositionEmbeddingConfig()
+        model = spe.NullPositionEmbedding(config)
+
+        batch_size = 2
+        num_tokens = 5
+        num_positions = 1
+        image = torch.zeros((batch_size, 3, 28, 28))
+        metadata = [
+            {"web_mercator_y": 100.0, "web_mercator_x": 200.0, "landmarks": []},
+            {"web_mercator_y": 300.0, "web_mercator_x": 400.0, "landmarks": []}
+        ]
+        model_input = spe.ModelInput(image=image, metadata=metadata)
+        relative_positions = torch.randn((batch_size, num_tokens, num_positions, 2))
+
+        # Action
+        result = model(model_input=model_input, relative_positions=relative_positions)
+
+        # Verification
+        self.assertEqual(result.shape, (batch_size, num_tokens, 0))
+        self.assertEqual(result.dtype, torch.float32)
+        self.assertEqual(model.output_dim, 0)
+        # Verify all values are zero (even though dimension is 0)
+        self.assertEqual(result.numel(), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
