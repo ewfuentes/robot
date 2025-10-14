@@ -344,13 +344,14 @@ def encode_image_to_base64(image_path: Path) -> str:
         return base64.b64encode(f.read()).decode('utf-8')
 
 
-def encode_images_parallel(image_paths: list[Path], num_workers: int = 8) -> list[str]:
+def encode_images_parallel(image_paths: list[Path], num_workers: int = 8, disable_tqdm: bool = False) -> list[str]:
     """Encode multiple images to base64 in parallel using multiprocessing."""
     with Pool(num_workers) as pool:
         return list(tqdm.tqdm(
             pool.imap(encode_image_to_base64, image_paths),
             total=len(image_paths),
-            desc="Encoding images"
+            desc="Encoding images",
+            disable=disable_tqdm
         ))
 
 
@@ -565,6 +566,7 @@ def create_panorama_description_requests(args):
             - num_workers: Number of parallel workers for image encoding
             - max_requests_per_batch: Maximum requests per batch file
             - launch: Whether to launch batch jobs automatically
+            - disable_tqdm: Whether to disable progress bars
     """
     from pathlib import Path
     import itertools
@@ -576,6 +578,7 @@ def create_panorama_description_requests(args):
     submit_mode = args.submit_mode
     num_workers = args.num_workers
     max_requests_per_batch = args.max_requests_per_batch
+    disable_tqdm = args.disable_tqdm
 
     # Find all panorama subfolders
     panorama_folders = [f for f in pinhole_dir.iterdir() if f.is_dir()]
@@ -624,7 +627,8 @@ def create_panorama_description_requests(args):
     current_batch_size = 0
 
     for chunk_start in tqdm.tqdm(range(0, len(panorama_items), PANORAMA_CHUNK_SIZE),
-                                   desc="Processing chunks"):
+                                   desc="Processing chunks",
+                                   disable=disable_tqdm):
         chunk_end = min(chunk_start + PANORAMA_CHUNK_SIZE, len(panorama_items))
         chunk = panorama_items[chunk_start:chunk_end]
 
@@ -635,7 +639,7 @@ def create_panorama_description_requests(args):
                 chunk_image_paths.append(image_path)
 
         # Encode this chunk's images in parallel
-        chunk_base64_images = encode_images_parallel(chunk_image_paths, num_workers)
+        chunk_base64_images = encode_images_parallel(chunk_image_paths, num_workers, disable_tqdm=disable_tqdm)
         chunk_image_to_base64 = dict(zip(chunk_image_paths, chunk_base64_images))
 
         # Create requests for this chunk
@@ -801,6 +805,8 @@ if __name__ == "__main__":
                                  help='Maximum requests per batch file')
     panorama_parser.add_argument('--launch', action='store_true',
                                  help='Automatically launch batch jobs')
+    panorama_parser.add_argument('--disable_tqdm', action='store_true',
+                                 help='Disable progress bars')
     panorama_parser.set_defaults(func=create_panorama_description_requests)
 
     args = parser.parse_args()
