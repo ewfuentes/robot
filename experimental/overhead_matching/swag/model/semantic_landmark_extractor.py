@@ -98,7 +98,6 @@ def compute_bounds_for_polygon(pano_loc_px, geometry):
 
 
 def compute_landmark_pano_positions(pano_metadata, pano_shape):
-    import IPython
     out = []
     pano_y = pano_metadata["web_mercator_y"]
     pano_x = pano_metadata["web_mercator_x"]
