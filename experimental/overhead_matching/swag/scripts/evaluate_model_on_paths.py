@@ -40,7 +40,8 @@ def construct_path_eval_inputs_from_args(
         dataset_path: str,
         paths_path: str,
         panorama_neighbor_radius_deg: float,
-        device: torch.device
+        device: torch.device,
+        landmark_version: str
 ):
     with open(paths_path, 'r') as f:
         paths_data = json.load(f)
@@ -52,15 +53,18 @@ def construct_path_eval_inputs_from_args(
         panorama_tensor_cache_info=vd.TensorCacheInfo(
             dataset_key=dataset_path.name,
             model_type="panorama",
-            hash_and_key=pano_model.cache_info()),
+            landmark_version=landmark_version,
+            extractor_info=pano_model.cache_info()),
         satellite_tensor_cache_info=vd.TensorCacheInfo(
             dataset_key=dataset_path.name,
             model_type="satellite",
-            hash_and_key=sat_model.cache_info()),
+            landmark_version=landmark_version,
+            extractor_info=sat_model.cache_info()),
         panorama_neighbor_radius=panorama_neighbor_radius_deg,
         satellite_patch_size=sat_model.patch_dims,
         panorama_size=pano_model.patch_dims,
         factor=1,
+        landmark_version=landmark_version,
     )
     vigor_dataset = vd.VigorDataset(dataset_path, dataset_config)
 
@@ -82,6 +86,7 @@ if __name__ == "__main__":
     # parser.add_argument("--wag-config-path", type=str, required=True, help="Path to WAG config file")
     parser.add_argument("--seed", type=int, default=42, help="random seed")
     parser.add_argument("--dataset-path", type=str, required=True, help="Dataset path")
+    parser.add_argument("--landmark_version", type=str, required=True)
     parser.add_argument("--save-intermediate-filter-states", action='store_true',
                         help="If intermediate filter states should be saved")
     parser.add_argument("--panorama-neighbor-radius-deg", type=float,
@@ -111,7 +116,8 @@ if __name__ == "__main__":
         dataset_path=args.dataset_path,
         paths_path=args.paths_path,
         panorama_neighbor_radius_deg=args.panorama_neighbor_radius_deg,
-        device=DEVICE
+        device=DEVICE,
+        landmark_version=args.landmark_version,
     )
 
     def degrees_from_meters(dist_m):

@@ -105,19 +105,23 @@ def _(dataset_paths, es, itertools, load_model, model_paths, vd):
         _checkpoint = get_max_checkpoint(_model_path)
         _sat_model = load_model(_model_path / f"{_checkpoint:04d}_satellite")
         _pano_model = load_model(_model_path / f"{_checkpoint:04d}_panorama")
+        _landmark_version = "v3"
         _dataset = vd.VigorDataset(
             _dataset_path,
             config=vd.VigorDatasetConfig(
                 satellite_tensor_cache_info=vd.TensorCacheInfo(
                     dataset_key=_dataset_path.name,
                     model_type="satellite",
-                    hash_and_key=_sat_model.cache_info()),
+                    landmark_version=_landmark_version,
+                    extractor_info=_sat_model.cache_info()),
                 panorama_tensor_cache_info=vd.TensorCacheInfo(
                     dataset_key=_dataset_path.name,
                     model_type="panorama",
-                    hash_and_key=_pano_model.cache_info()),
+                    landmark_version=_landmark_version,
+                    extractor_info=_pano_model.cache_info()),
                 satellite_patch_size=_sat_model.patch_dims,
-                panorama_size=_pano_model.patch_dims))
+                panorama_size=_pano_model.patch_dims,
+                landmark_version=_landmark_version))
 
         sim_matrix = es.compute_cached_similarity_matrix(
             sat_model=_sat_model,
@@ -146,19 +150,23 @@ def _(
         _checkpoint = get_max_checkpoint(_model_path)
         _sat_model = load_model(_model_path / f"{_checkpoint:04d}_satellite")
         _pano_model = load_model(_model_path / f"{_checkpoint:04d}_panorama")
+        _landmark_version = "v3"
         _dataset = vd.VigorDataset(
             _dataset_path,
             config=vd.VigorDatasetConfig(
                 satellite_tensor_cache_info=vd.TensorCacheInfo(
                     dataset_key=_dataset_path.name,
                     model_type="satellite",
-                    hash_and_key=_sat_model.cache_info()),
+                    landmark_version=_landmark_version,
+                    extractor_info=_sat_model.cache_info()),
                 panorama_tensor_cache_info=vd.TensorCacheInfo(
                     dataset_key=_dataset_path.name,
                     model_type="panorama",
-                    hash_and_key=_pano_model.cache_info()),
+                    landmark_version=_landmark_version,
+                    extractor_info=_pano_model.cache_info()),
                 satellite_patch_size=_sat_model.patch_dims,
-                panorama_size=_pano_model.patch_dims))
+                panorama_size=_pano_model.patch_dims,
+                landmark_version=_landmark_version))
 
         _sim_matrix = es.compute_cached_similarity_matrix(
             sat_model=_sat_model,

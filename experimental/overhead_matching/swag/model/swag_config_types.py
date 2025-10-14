@@ -1,6 +1,6 @@
 
 import msgspec
-from typing import Union
+from typing import Union, NamedTuple
 from enum import StrEnum
 from common.python.serialization import MSGSPEC_STRUCT_OPTS
 
@@ -90,3 +90,12 @@ ExtractorConfig = Union[
     SyntheticLandmarkExtractorConfig,
     AbsolutePositionExtractorConfig,
 ]
+
+
+class CacheableExtractorInfo(NamedTuple):
+    """Information about an extractor used to find its cache.
+
+    Passed from model to dataset to compute cache keys.
+    """
+    model_config: ExtractorConfig
+    patch_dims: tuple[int, int]

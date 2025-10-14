@@ -47,7 +47,7 @@ def main(train_config_path: Path,
             model_config = getattr(model_config, p)
     aux_info = getattr(train_config, parts[0]).auxiliary_info
     patch_dims = getattr(train_config, parts[0]).patch_dims
-    hash_struct = spe.HashStruct(model_config=model_config, patch_dims=patch_dims, landmark_version=landmark_version)
+    hash_struct = vd.HashStruct(model_config=model_config, patch_dims=patch_dims, landmark_version=landmark_version)
     yaml_str, config_hash = compute_config_hash(hash_struct)
     print('computing cache for: ', hash_struct, 'with hash: ', config_hash.hexdigest())
 

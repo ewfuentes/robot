@@ -19,10 +19,13 @@ py_library(
     requirement("matplotlib"),
     requirement("PyGObject"),
     requirement("lmdb"),
+    requirement("msgspec"),
     "//common/torch:load_torch_deps",
     "//common/math:haversine",
     "//common/gps:web_mercator",
     "//experimental/overhead_matching/swag/scripts:distances",
+    "//experimental/overhead_matching/swag/model:swag_model_input_output",
+    "//experimental/overhead_matching/swag/model:swag_config_types",
   ]
 )
 
