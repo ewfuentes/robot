@@ -55,6 +55,12 @@ class SemanticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     auxiliary_info_key: str
 
 
+class PanoramaSemanticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    openai_embedding_size: int  # if smaller than the true embedding dim (1536), will crop and renormalize embedding
+    embedding_version: str
+    auxiliary_info_key: str
+
+
 class SyntheticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     log_grid_spacing: int
     grid_bounds_px: int
@@ -97,6 +103,7 @@ ExtractorConfig = Union[
     SemanticEmbeddingMatrixConfig,
     SemanticSegmentExtractorConfig,
     SemanticLandmarkExtractorConfig,
+    PanoramaSemanticLandmarkExtractorConfig,
     SyntheticLandmarkExtractorConfig,
     AbsolutePositionExtractorConfig,
 ]
