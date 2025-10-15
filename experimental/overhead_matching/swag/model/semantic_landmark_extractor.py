@@ -609,16 +609,41 @@ def create_panorama_description_requests(args):
     max_requests_per_batch = args.max_requests_per_batch
     disable_tqdm = args.disable_tqdm
 
+    # Load pano IDs filter if provided
+    pano_ids_to_process = None
+    if args.pano_ids_file is not None:
+        pano_ids_file = Path(args.pano_ids_file)
+        if not pano_ids_file.exists():
+            print(f"Error: pano_ids_file not found: {pano_ids_file}")
+            return
+        with open(pano_ids_file, 'r') as f:
+            pano_ids_to_process = set(line.strip() for line in f if line.strip())
+        print(f"Loaded {len(pano_ids_to_process)} panorama IDs from {pano_ids_file}")
+
     # Find all panorama subfolders
-    panorama_folders = [f for f in pinhole_dir.iterdir() if f.is_dir()]
+    all_panorama_folders = [f for f in pinhole_dir.iterdir() if f.is_dir()]
+
+    # Filter by pano IDs if provided
+    if pano_ids_to_process is not None:
+        # Folder names are in format "pano_id,lat,lon," so extract just the pano_id part
+        panorama_folders = []
+        for f in all_panorama_folders:
+            # Extract pano_id by splitting on comma and taking first part
+            pano_id = f.name.split(',')[0]
+            if pano_id in pano_ids_to_process:
+                panorama_folders.append(f)
+        print(f"Found {len(all_panorama_folders)} total panorama folders, filtered to {len(panorama_folders)} based on pano_ids_file")
+    else:
+        panorama_folders = all_panorama_folders
+        print(f"Found {len(panorama_folders)} panorama folders")
 
     if not panorama_folders:
-        print(f"No panorama folders found in {pinhole_dir}")
+        print(f"No panorama folders found to process")
         return
 
-    print(f"Found {len(panorama_folders)} panorama folders")
     print(f"Submit mode: {submit_mode}")
     print(f"Encoding workers: {num_workers}")
+    print(f"Processing {len(panorama_folders)} panoramas")
 
     # Collect panorama metadata (don't load images yet)
     yaw_angles = [0, 90, 180, 270]
@@ -898,6 +923,8 @@ if __name__ == "__main__":
                                  help='Automatically launch batch jobs')
     panorama_parser.add_argument('--disable_tqdm', action='store_true',
                                  help='Disable progress bars')
+    panorama_parser.add_argument('--pano_ids_file', type=str, default=None,
+                                 help='Optional file containing panorama IDs to process (one per line). If not provided, all panoramas are processed.')
     panorama_parser.set_defaults(func=create_panorama_description_requests)
 
     args = parser.parse_args()

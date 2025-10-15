@@ -117,7 +117,7 @@ def process_single_cache(field_spec: str,
     # Construct the dataset
     # If the training config specifies that we can ignore images for all extractors
     # then it is safe to ignore images for the specified extractor
-    should_load_images = train_config.dataset_config.should_load_images
+    should_load_images = False  # TODO derive this automatically
     dataset = vd.VigorDataset(
         dataset_path,
         vd.VigorDatasetConfig(
