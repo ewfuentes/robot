@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """
-Simple web app to view panoramas, pinhole images, and landmark sentences.
+Simple web app to view panoramas, pinhole images, and landmark sentences with similarity comparison.
 
 Usage:
     python panorama_viewer.py \
         --panorama_dir /data/overhead_matching/datasets/VIGOR/Chicago/panorama \
-        --pinhole_dir /tmp/pinhole_images/Chicagojpg \
-        --sentence_dirs /tmp/pano_sentences/source1 /tmp/pano_sentences/source2
+        --pinhole_dir /data/overhead_matching/datasets/pinhole_images/Chicagojpg \
+        --pano_landmarks_dir /data/overhead_matching/datasets/semantic_landmark_embeddings/pano_v1/Chicago \
+        --osm_landmarks_dir /data/overhead_matching/datasets/semantic_landmark_embeddings/v2 \
+        --osm_landmarks_geojson /data/overhead_matching/datasets/VIGOR/Chicago/landmarks/v3.geojson
+
+Note: pano_landmarks_dir and osm_landmarks_dir should contain 'sentences/' and 'embeddings/' subdirectories.
 """
 
 import argparse
@@ -179,6 +183,78 @@ HTML_TEMPLATE = '''
             font-size: 12px;
             margin-top: 10px;
         }
+        .similarity-section {
+            margin-top: 40px;
+            padding-top: 30px;
+            border-top: 2px solid #eee;
+        }
+        .similarity-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-top: 20px;
+        }
+        .landmark-column {
+            background: #f9f9f9;
+            border-radius: 8px;
+            padding: 20px;
+        }
+        .landmark-column h3 {
+            margin-top: 0;
+            color: #333;
+            border-bottom: 2px solid #007bff;
+            padding-bottom: 10px;
+        }
+        .landmark-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        .landmark-item {
+            padding: 12px;
+            margin-bottom: 8px;
+            background: white;
+            border-radius: 4px;
+            border: 2px solid transparent;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .landmark-item:hover {
+            border-color: #007bff;
+            box-shadow: 0 2px 4px rgba(0,123,255,0.1);
+        }
+        .landmark-item.selected {
+            border-color: #28a745;
+            background: #e8f5e9;
+        }
+        .landmark-desc {
+            font-size: 14px;
+            color: #333;
+            margin-bottom: 6px;
+        }
+        .landmark-meta {
+            font-size: 12px;
+            color: #666;
+        }
+        .similarity-badge {
+            display: inline-block;
+            background: #ff9800;
+            color: white;
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: 600;
+            margin-left: 8px;
+        }
+        .similarity-badge.high {
+            background: #4caf50;
+        }
+        .similarity-badge.medium {
+            background: #ff9800;
+        }
+        .similarity-badge.low {
+            background: #9e9e9e;
+        }
     </style>
 </head>
 <body>
@@ -203,7 +279,9 @@ HTML_TEMPLATE = '''
             <h2>Pinhole Views</h2>
             <div style="margin-bottom: 15px; padding: 10px; background: #f0f8ff; border-radius: 4px; font-size: 13px;">
                 <strong>Legend:</strong>
-                <span style="margin-left: 10px;">Landmarks with matching colors and yaw badges (e.g., <span style="background:#ddd;padding:2px 4px;border-radius:2px;">90°</span>) appear in multiple views.</span>
+                <span style="margin-left: 10px;">
+                    Landmarks with matching colors and yaw badges (e.g., <span style="background:#ddd;padding:2px 4px;border-radius:2px;">90°</span>) appear in multiple views.
+                </span>
             </div>
             <div class="pinhole-grid" id="pinhole-grid">
                 <!-- Pinhole images will be inserted here -->
@@ -218,6 +296,36 @@ HTML_TEMPLATE = '''
         </div>
 
         <div class="panorama-section">
+            <h2>Landmark Similarity Comparison</h2>
+            <div class="similarity-section">
+                <div class="similarity-container">
+                    <div class="landmark-column">
+                        <h3>Panorama Landmarks <span id="pano-local-label">(Local)</span></h3>
+                        <ul class="landmark-list" id="pano-comparison-list">
+                            <!-- Populated by JavaScript -->
+                        </ul>
+                    </div>
+                    <div class="landmark-column">
+                        <h3>OSM Landmarks <span id="osm-local-label">(Local)</span></h3>
+                        <ul class="landmark-list" id="osm-comparison-list">
+                            <!-- Populated by JavaScript -->
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Global matches section -->
+            <div id="global-matches-section" style="margin-top: 20px; display: none;">
+                <h3 id="global-matches-title">Global Matches</h3>
+                <div style="max-height: 400px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; padding: 10px; background: #fafafa;">
+                    <ul class="landmark-list" id="global-matches-list">
+                        <!-- Populated by JavaScript -->
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <div class="panorama-section">
             <h2>Full Panorama</h2>
             <img id="panorama-img" class="panorama-img" src="" alt="Panorama">
         </div>
@@ -226,6 +334,10 @@ HTML_TEMPLATE = '''
     <script>
         let currentIndex = 0;
         let totalPanoramas = 0;
+        let selectedLandmark = null; // {type: 'pano'|'osm', key: string}
+        let currentSimilarityData = null; // Store current similarity data
+        let globalMatches = null; // Store global matches for selected landmark
+        let panoIdToIndex = {}; // Map panorama ID to index for navigation
 
         // Color palette for landmarks (distinct colors)
         const LANDMARK_COLORS = [
@@ -238,17 +350,236 @@ HTML_TEMPLATE = '''
             return LANDMARK_COLORS[landmarkId % LANDMARK_COLORS.length];
         }
 
-        function loadPanorama(index) {
-            fetch('/api/panorama/' + index)
-                .then(r => r.json())
-                .then(data => {
-                    currentIndex = index;
-                    totalPanoramas = data.total;
+        function getSimilarityClass(score) {
+            if (score >= 0.8) return 'high';
+            if (score >= 0.6) return 'medium';
+            return 'low';
+        }
 
-                    // Update header
-                    document.getElementById('pano-name').textContent = data.name;
-                    document.getElementById('pano-index').textContent = index + 1;
-                    document.getElementById('pano-total').textContent = totalPanoramas;
+        function navigateToPanoramaById(panoId) {
+            const index = panoIdToIndex[panoId];
+            if (index !== undefined) {
+                loadPanorama(index);
+            } else {
+                console.warn('Panorama not found:', panoId);
+            }
+        }
+
+        // Make function globally accessible
+        window.navigateToPanoramaById = navigateToPanoramaById;
+
+        function makeClickablePanoId(panoId) {
+            // Escape single quotes in panoId for onclick string
+            const escapedId = panoId.replace(/'/g, "\\'");
+            return `<a href="#" onclick="navigateToPanoramaById('${escapedId}'); return false;" style="color:#007bff;text-decoration:underline;cursor:pointer;">${panoId}</a>`;
+        }
+
+        function updateGlobalMatches() {
+            const section = document.getElementById('global-matches-section');
+            const title = document.getElementById('global-matches-title');
+            const list = document.getElementById('global-matches-list');
+
+            if (!selectedLandmark || !globalMatches || globalMatches.length === 0) {
+                section.style.display = 'none';
+                return;
+            }
+
+            section.style.display = 'block';
+
+            if (selectedLandmark.type === 'osm') {
+                title.textContent = 'Global Matches: Panorama Landmarks Most Similar to Selected OSM';
+                list.innerHTML = '';
+
+                globalMatches.forEach(match => {
+                    const li = document.createElement('li');
+                    li.className = 'landmark-item';
+                    li.style.cursor = 'default';
+
+                    const simBadge = `<span class="similarity-badge ${getSimilarityClass(match.similarity)}">${(match.similarity * 100).toFixed(1)}%</span>`;
+                    const panoInfo = `<span style="color: #666; font-size: 12px; margin-left: 8px;">(${makeClickablePanoId(match.pano_id)})</span>`;
+
+                    li.innerHTML = `${match.description} ${simBadge} ${panoInfo}`;
+                    list.appendChild(li);
+                });
+            } else {
+                title.textContent = 'Global Matches: OSM Landmarks Most Similar to Selected Panorama Landmark';
+                list.innerHTML = '';
+
+                globalMatches.forEach(match => {
+                    const li = document.createElement('li');
+                    li.className = 'landmark-item';
+                    li.style.cursor = 'default';
+
+                    const simBadge = `<span class="similarity-badge ${getSimilarityClass(match.similarity)}">${(match.similarity * 100).toFixed(1)}%</span>`;
+
+                    // Show nearby panoramas if available
+                    let panoInfo = '';
+                    if (match.nearby_panos && match.nearby_panos.length > 0) {
+                        const clickablePanos = match.nearby_panos.slice(0, 3).map(id => makeClickablePanoId(id)).join(', ');
+                        const moreCount = match.nearby_panos.length > 3 ? ` +${match.nearby_panos.length - 3} more` : '';
+                        panoInfo = `<span style="color: #666; font-size: 12px; margin-left: 8px;">(Near: ${clickablePanos}${moreCount})</span>`;
+                    }
+
+                    li.innerHTML = `${match.description} ${simBadge} ${panoInfo}`;
+                    list.appendChild(li);
+                });
+            }
+        }
+
+        function updateComparisonLists(similarityData, selectedType = null, selectedKey = null) {
+            const panoList = document.getElementById('pano-comparison-list');
+            const osmList = document.getElementById('osm-comparison-list');
+
+            if (!similarityData || !similarityData.pano_landmarks || !similarityData.osm_landmarks) {
+                panoList.innerHTML = '<li style="color:#999;font-style:italic;">No data available</li>';
+                osmList.innerHTML = '<li style="color:#999;font-style:italic;">No data available</li>';
+                return;
+            }
+
+            // Update panorama landmarks list
+            panoList.innerHTML = '';
+
+            // Build list of pano landmarks with their scores
+            const panoItems = similarityData.pano_landmarks.map(pano => {
+                const panoKey = pano.key;  // Already in format "pano_id:idx"
+                let similarityScore = 0;
+
+                if (selectedType === 'osm' && selectedKey) {
+                    // Show similarity to selected OSM landmark
+                    const osmToPano = similarityData.osm_to_pano[selectedKey] || [];
+                    const match = osmToPano.find(m => m.pano_key === panoKey);
+                    if (match) {
+                        similarityScore = match.similarity;
+                    }
+                } else {
+                    // Show highest similarity to any OSM landmark
+                    const panoToOsm = similarityData.pano_to_osm[panoKey] || [];
+                    if (panoToOsm.length > 0) {
+                        similarityScore = panoToOsm[0].similarity;
+                    }
+                }
+
+                return {pano, panoKey, similarityScore};
+            });
+
+            // Sort by similarity if a landmark is selected
+            if (selectedType === 'osm' && selectedKey) {
+                panoItems.sort((a, b) => b.similarityScore - a.similarityScore);
+            }
+
+            // Render pano landmarks
+            panoItems.forEach(({pano, panoKey, similarityScore}) => {
+                const li = document.createElement('li');
+                li.className = 'landmark-item';
+                if (selectedType === 'pano' && selectedKey === panoKey) {
+                    li.classList.add('selected');
+                }
+
+                let matchInfo = '';
+                if (similarityScore > 0) {
+                    matchInfo = `<span class="similarity-badge ${getSimilarityClass(similarityScore)}">${(similarityScore * 100).toFixed(1)}%</span>`;
+                }
+
+                li.innerHTML = `${pano.description} ${matchInfo}`;
+                li.dataset.type = 'pano';
+                li.dataset.key = panoKey;
+                li.addEventListener('click', () => handleLandmarkClick('pano', panoKey));
+                panoList.appendChild(li);
+            });
+
+            // Update OSM landmarks list
+            osmList.innerHTML = '';
+
+            // Build list of OSM landmarks with their scores
+            const osmItems = similarityData.osm_landmarks.map(osm => {
+                const osmKey = osm.key;  // OSM custom_id
+                let similarityScore = 0;
+
+                if (selectedType === 'pano' && selectedKey) {
+                    // Show similarity to selected pano landmark
+                    const panoToOsm = similarityData.pano_to_osm[selectedKey] || [];
+                    const match = panoToOsm.find(m => m.osm_key === osmKey);
+                    if (match) {
+                        similarityScore = match.similarity;
+                    }
+                } else {
+                    // Show highest similarity to any pano landmark
+                    const osmToPano = similarityData.osm_to_pano[osmKey] || [];
+                    if (osmToPano.length > 0) {
+                        similarityScore = osmToPano[0].similarity;
+                    }
+                }
+
+                return {osm, osmKey, similarityScore};
+            });
+
+            // Sort by similarity if a landmark is selected
+            if (selectedType === 'pano' && selectedKey) {
+                osmItems.sort((a, b) => b.similarityScore - a.similarityScore);
+            }
+
+            // Render OSM landmarks
+            osmItems.forEach(({osm, osmKey, similarityScore}) => {
+                const li = document.createElement('li');
+                li.className = 'landmark-item';
+                if (selectedType === 'osm' && selectedKey === osmKey) {
+                    li.classList.add('selected');
+                }
+
+                let matchInfo = '';
+                if (similarityScore > 0) {
+                    matchInfo = `<span class="similarity-badge ${getSimilarityClass(similarityScore)}">${(similarityScore * 100).toFixed(1)}%</span>`;
+                }
+
+                li.innerHTML = `${osm.description} ${matchInfo}`;
+                li.dataset.type = 'osm';
+                li.dataset.key = osmKey;
+                li.addEventListener('click', () => handleLandmarkClick('osm', osmKey));
+                osmList.appendChild(li);
+            });
+
+            // Update global matches section
+            updateGlobalMatches();
+        }
+
+        function handleLandmarkClick(type, key) {
+            // If clicking the same landmark, deselect it
+            if (selectedLandmark && selectedLandmark.type === type && selectedLandmark.key === key) {
+                selectedLandmark = null;
+                globalMatches = null;
+                updateComparisonLists(currentSimilarityData);
+            } else {
+                // Select the new landmark
+                selectedLandmark = {type, key};
+
+                // Fetch global matches
+                fetch(`/api/global_matches/${type}/${encodeURIComponent(key)}`)
+                    .then(r => r.json())
+                    .then(data => {
+                        globalMatches = data.matches;
+                        updateComparisonLists(currentSimilarityData, type, key);
+                    })
+                    .catch(err => {
+                        console.error('Error fetching global matches:', err);
+                        globalMatches = [];
+                        updateComparisonLists(currentSimilarityData, type, key);
+                    });
+            }
+        }
+
+        function loadPanorama(index) {
+            // Load panorama data and similarity data in parallel
+            Promise.all([
+                fetch('/api/panorama/' + index).then(r => r.json()),
+                fetch('/api/similarity/' + index).then(r => r.json())
+            ]).then(([data, similarityData]) => {
+                currentIndex = index;
+                totalPanoramas = data.total;
+
+                // Update header
+                document.getElementById('pano-name').textContent = data.name;
+                document.getElementById('pano-index').textContent = index + 1;
+                document.getElementById('pano-total').textContent = totalPanoramas;
 
                     // Update location links
                     const locationElem = document.getElementById('pano-location');
@@ -264,65 +595,73 @@ HTML_TEMPLATE = '''
                         locationElem.textContent = '';
                     }
 
-                    // Update panorama
-                    document.getElementById('panorama-img').src = '/api/image/panorama/' + index;
+                // Update panorama
+                document.getElementById('panorama-img').src = '/api/image/panorama/' + index;
 
-                    // Update pinhole images with sentences underneath
-                    const pinholeGrid = document.getElementById('pinhole-grid');
-                    pinholeGrid.innerHTML = '';
+                // Update pinhole images with sentences underneath
+                const pinholeGrid = document.getElementById('pinhole-grid');
+                pinholeGrid.innerHTML = '';
 
-                    // Iterate over yaw data from API
-                    data.yaw_data.forEach(yawItem => {
-                        const yaw = yawItem.yaw;
-                        const landmarks = yawItem.landmarks;
+                // Iterate over yaw data from API
+                data.yaw_data.forEach(yawItem => {
+                    const yaw = yawItem.yaw;
+                    const landmarks = yawItem.landmarks;
 
-                        const div = document.createElement('div');
-                        div.className = 'pinhole-item';
+                    const div = document.createElement('div');
+                    div.className = 'pinhole-item';
 
-                        let html = `
-                            <h3>Yaw ${yaw}°</h3>
-                            <img src="/api/image/pinhole/${index}/${yaw}" alt="Yaw ${yaw}">
-                            <div class="pinhole-sentences">
-                        `;
+                    let html = `
+                        <h3>Yaw ${yaw}°</h3>
+                        <img src="/api/image/pinhole/${index}/${yaw}" alt="Yaw ${yaw}">
+                        <div class="pinhole-sentences">
+                    `;
 
-                        // Add landmarks for this yaw
-                        if (landmarks && landmarks.length > 0) {
-                            html += `<ul>`;
-                            landmarks.forEach(lm => {
-                                const desc = lm.description;
-                                const count = lm.count || 1;
-                                const countBadge = count > 1 ? `<span style="background:#28a745;color:white;padding:2px 6px;border-radius:2px;font-size:11px;margin-left:4px;font-weight:600;">x${count}</span>` : '';
+                    // Add landmarks for this yaw
+                    if (landmarks && landmarks.length > 0) {
+                        html += `<ul>`;
+                        landmarks.forEach(lm => {
+                            const desc = lm.description;
+                            const count = lm.count || 1;
+                            const countBadge = count > 1 ? `<span style="background:#28a745;color:white;padding:2px 6px;border-radius:2px;font-size:11px;margin-left:4px;font-weight:600;">x${count}</span>` : '';
 
-                                // landmark_id is a tuple [pano_id, idx]
-                                const landmarkIdx = lm.landmark_id[1];
-                                const allYaws = lm.all_yaws;
-                                const color = getLandmarkColor(landmarkIdx);
-                                const yawBadges = allYaws.map(y => `<span style="background:#ddd;padding:2px 4px;border-radius:2px;font-size:11px;margin-left:4px;">${y}°</span>`).join('');
+                            // landmark_id is a tuple [pano_id, idx]
+                            const landmarkIdx = lm.landmark_id[1];
+                            const allYaws = lm.all_yaws;
+                            const color = getLandmarkColor(landmarkIdx);
+                            const yawBadges = allYaws.map(y => `<span style="background:#ddd;padding:2px 4px;border-radius:2px;font-size:11px;margin-left:4px;">${y}°</span>`).join('');
 
-                                html += `<li class="landmark-all-mode" style="border-color:${color};background-color:${color}15;">${desc}${yawBadges}${countBadge}</li>`;
-                            });
-                            html += `</ul>`;
-                        }
-
-                        html += `</div>`;
-                        div.innerHTML = html;
-                        pinholeGrid.appendChild(div);
-                    });
-
-                    // Update OSM landmarks
-                    const osmContainer = document.getElementById('osm-landmarks-container');
-                    if (data.osm_landmarks && data.osm_landmarks.length > 0) {
-                        osmContainer.innerHTML = '<ul style="margin:0;padding-left:20px;">' +
-                            data.osm_landmarks.map(lm => {
-                                const count = lm.count || 1;
-                                const countBadge = count > 1 ? `<span style="background:#28a745;color:white;padding:2px 6px;border-radius:2px;font-size:11px;margin-left:4px;font-weight:600;">x${count}</span>` : '';
-                                return `<li style="margin-bottom:8px;break-inside:avoid;">${lm.text}${countBadge}</li>`;
-                            }).join('') +
-                            '</ul>';
-                    } else {
-                        osmContainer.innerHTML = '<p style="color:#999;font-style:italic;">No OSM landmarks found near this panorama.</p>';
+                            html += `<li class="landmark-all-mode" style="border-color:${color};background-color:${color}15;">${desc}${yawBadges}${countBadge}</li>`;
+                        });
+                        html += `</ul>`;
                     }
+
+                    html += `</div>`;
+                    div.innerHTML = html;
+                    pinholeGrid.appendChild(div);
                 });
+
+                // Update OSM landmarks
+                const osmContainer = document.getElementById('osm-landmarks-container');
+                if (data.osm_landmarks && data.osm_landmarks.length > 0) {
+                    osmContainer.innerHTML = '<ul style="margin:0;padding-left:20px;">' +
+                        data.osm_landmarks.map(lm => {
+                            const count = lm.count || 1;
+                            const countBadge = count > 1 ? `<span style="background:#28a745;color:white;padding:2px 6px;border-radius:2px;font-size:11px;margin-left:4px;font-weight:600;">x${count}</span>` : '';
+                            return `<li style="margin-bottom:8px;break-inside:avoid;">${lm.text}${countBadge}</li>`;
+                        }).join('') +
+                        '</ul>';
+                } else {
+                    osmContainer.innerHTML = '<p style="color:#999;font-style:italic;">No OSM landmarks found near this panorama.</p>';
+                }
+
+                // Update comparison lists with similarity data
+                currentSimilarityData = similarityData;
+                selectedLandmark = null; // Reset selection when changing panorama
+                globalMatches = null; // Reset global matches when changing panorama
+                updateComparisonLists(similarityData);
+            }).catch(err => {
+                console.error('Error loading panorama:', err);
+            });
         }
 
         function navigate(delta) {
@@ -338,8 +677,22 @@ HTML_TEMPLATE = '''
             if (e.key === 'ArrowRight') navigate(1);
         });
 
-        // Load first panorama on page load
-        loadPanorama(0);
+        // Load panorama list for ID-to-index mapping, then load first panorama
+        fetch('/api/panorama_list')
+            .then(r => r.json())
+            .then(data => {
+                // Build panorama ID to index mapping
+                data.panoramas.forEach(p => {
+                    panoIdToIndex[p.id] = p.index;
+                });
+                // Now load the first panorama
+                loadPanorama(0);
+            })
+            .catch(err => {
+                console.error('Error loading panorama list:', err);
+                // Still try to load first panorama even if mapping fails
+                loadPanorama(0);
+            });
     </script>
 </body>
 </html>
@@ -592,12 +945,183 @@ def load_osm_landmarks(geojson_path, sentences_dir, embeddings_dir=None):
     print(f"  Created {len(osm_landmarks_dict)} OSMLandmark objects")
     print(f"Loaded OSM landmarks in {time.time()-start:.1f}s")
 
-    # TODO: Load embeddings if embeddings_dir is provided
-    osm_embeddings = None
-    osm_embedding_index = {}
-    osm_index_reverse = []
+    # Load embeddings if embeddings_dir is provided
+    if embeddings_dir:
+        print("\n  Loading OSM embeddings...")
+        emb_start = time.time()
+        embeddings_path = Path(embeddings_dir)
+
+        if not embeddings_path.exists():
+            print(f"  Warning: Embeddings directory not found: {embeddings_dir}")
+            osm_embeddings = None
+            osm_embedding_index = {}
+            osm_index_reverse = []
+        else:
+            # Collect embeddings for our loaded landmarks
+            embeddings_data = []  # List of (custom_id, embedding_vector)
+            custom_ids_set = set(osm_landmarks_dict.keys())
+
+            print(f"    Reading embedding files for {len(custom_ids_set)} landmarks...")
+            files_processed = 0
+            for jsonl_file in embeddings_path.glob('*.jsonl'):
+                files_processed += 1
+                with open(jsonl_file, 'r') as f:
+                    for line in f:
+                        try:
+                            entry = json.loads(line)
+                            custom_id = entry['custom_id']
+
+                            # Only load if we have this landmark
+                            if custom_id not in custom_ids_set:
+                                continue
+
+                            # Extract embedding from response
+                            if 'response' not in entry or 'body' not in entry['response']:
+                                continue
+
+                            body = entry['response']['body']
+                            if 'data' not in body or len(body['data']) == 0:
+                                continue
+
+                            embedding = body['data'][0]['embedding']
+                            embeddings_data.append((custom_id, embedding))
+
+                        except Exception as e:
+                            pass  # Skip malformed entries
+
+            print(f"    Processed {files_processed} files")
+            print(f"    Found {len(embeddings_data)} embeddings")
+
+            if len(embeddings_data) > 0:
+                # Build tensor and indices
+                print("    Building embedding tensor...")
+                embeddings_data.sort(key=lambda x: x[0])  # Sort by custom_id
+
+                osm_embedding_index = {}
+                osm_index_reverse = []
+                embedding_vectors = []
+
+                for row_idx, (custom_id, embedding) in enumerate(embeddings_data):
+                    osm_embedding_index[custom_id] = row_idx
+                    osm_index_reverse.append(custom_id)
+                    embedding_vectors.append(embedding)
+
+                # Convert to tensor
+                osm_embeddings = torch.tensor(embedding_vectors, dtype=torch.float32)
+                print(f"    Created tensor with shape {osm_embeddings.shape}")
+            else:
+                print("    No embeddings found!")
+                osm_embeddings = None
+                osm_embedding_index = {}
+                osm_index_reverse = []
+
+            print(f"  Loaded OSM embeddings in {time.time()-emb_start:.1f}s")
+    else:
+        osm_embeddings = None
+        osm_embedding_index = {}
+        osm_index_reverse = []
 
     return osm_landmarks_dict, osm_embeddings, osm_embedding_index, osm_index_reverse
+
+
+def load_pano_embeddings(embeddings_dir, pano_sentences):
+    """
+    Load panorama landmark embeddings from JSONL files.
+
+    Args:
+        embeddings_dir: Directory containing panorama embedding JSONL files
+        pano_sentences: dict[str, list[PanoramaLandmark]] to ensure consistency
+
+    Returns:
+        Tuple of (PANO_EMBEDDINGS tensor, PANO_EMBEDDING_INDEX, PANO_INDEX_REVERSE)
+    """
+    print("Loading panorama embeddings...")
+    start = time.time()
+
+    embeddings_path = Path(embeddings_dir)
+    if not embeddings_path.exists():
+        print(f"Warning: Embeddings directory not found: {embeddings_dir}")
+        return None, {}, []
+
+    # Collect all embeddings
+    embeddings_data = []  # List of (landmark_id, embedding_vector)
+
+    print("  Reading embedding files...")
+    files_processed = 0
+    for jsonl_file in embeddings_path.glob('*'):
+        if not jsonl_file.is_file():
+            continue
+
+        files_processed += 1
+        with open(jsonl_file, 'r') as f:
+            for line in f:
+                try:
+                    entry = json.loads(line)
+                    custom_id = entry['custom_id']
+
+                    # Parse custom_id: "pano_id,lat,lon,__landmark_N"
+                    parts = custom_id.split(',')
+                    if len(parts) < 4:
+                        continue
+
+                    # Check if the last part is the landmark marker
+                    landmark_part = parts[3]
+                    if not landmark_part.startswith('__landmark_'):
+                        continue
+
+                    pano_id = parts[0]
+                    try:
+                        landmark_idx = int(landmark_part.replace('__landmark_', ''))
+                    except ValueError:
+                        continue
+
+                    # Extract embedding from response
+                    if 'response' not in entry or 'body' not in entry['response']:
+                        continue
+
+                    body = entry['response']['body']
+                    if 'data' not in body or len(body['data']) == 0:
+                        continue
+
+                    embedding = body['data'][0]['embedding']
+
+                    # Verify this landmark exists in our loaded data
+                    landmark_id = (pano_id, landmark_idx)
+                    if pano_id in pano_sentences:
+                        # Check if this landmark_idx exists
+                        if any(lm.landmark_id == landmark_id for lm in pano_sentences[pano_id]):
+                            embeddings_data.append((landmark_id, embedding))
+
+                except Exception as e:
+                    pass  # Skip malformed entries
+
+    print(f"  Processed {files_processed} files")
+    print(f"  Found {len(embeddings_data)} embeddings")
+
+    if len(embeddings_data) == 0:
+        print("  No embeddings found!")
+        return None, {}, []
+
+    # Build tensor and indices
+    print("  Building embedding tensor...")
+    embeddings_data.sort(key=lambda x: x[0])  # Sort by landmark_id for consistency
+
+    embedding_index = {}
+    index_reverse = []
+    embedding_vectors = []
+
+    for row_idx, (landmark_id, embedding) in enumerate(embeddings_data):
+        embedding_index[landmark_id] = row_idx
+        index_reverse.append(landmark_id)
+        embedding_vectors.append(embedding)
+
+    # Convert to tensor
+    embeddings_tensor = torch.tensor(embedding_vectors, dtype=torch.float32)
+
+    print(f"  Created tensor with shape {embeddings_tensor.shape}")
+    print(f"Loaded panorama embeddings in {time.time()-start:.1f}s")
+
+    return embeddings_tensor, embedding_index, index_reverse
 
 
 def load_sentence_data(sentence_dirs):
@@ -632,7 +1156,8 @@ def load_sentence_data(sentence_dirs):
 
                         # Only process "all mode" entries (custom_id format: "pano_id,lat,lon,")
                         # Skip "individual mode" entries (format: "pano_id_yaw_N")
-                        if '_yaw_' in custom_id:
+                        # All mode has commas, individual mode doesn't
+                        if ',' not in custom_id:
                             continue
 
                         # Parse custom_id to extract panorama_id, lat, lon
@@ -688,6 +1213,249 @@ def load_sentence_data(sentence_dirs):
 
     print(f"  Loaded landmarks for {len(pano_landmarks)} panoramas")
     return pano_landmarks
+
+
+def compare_pano_to_nearby_osm(pano_id):
+    """
+    Compare panorama landmarks to nearby OSM landmarks using embeddings.
+    Returns bidirectional similarity data for interactive visualization.
+
+    Args:
+        pano_id: Panorama ID to compare
+
+    Returns:
+        dict with keys:
+            - 'pano_landmarks': list of pano landmark info
+            - 'osm_landmarks': list of nearby OSM landmark info
+            - 'pano_to_osm': dict mapping pano_key -> list of {osm_key, similarity}
+            - 'osm_to_pano': dict mapping osm_key -> list of {pano_key, similarity}
+        Returns None if embeddings are not loaded or panorama not found
+    """
+    global PANO_SENTENCES, PANO_EMBEDDINGS, PANO_EMBEDDING_INDEX
+    global PANO_TO_OSM, OSM_LANDMARKS, OSM_EMBEDDINGS, OSM_EMBEDDING_INDEX
+
+    # Check if embeddings are loaded
+    if PANO_EMBEDDINGS is None or OSM_EMBEDDINGS is None:
+        return None
+
+    # Check if panorama exists
+    if pano_id not in PANO_SENTENCES:
+        return None
+
+    # Get nearby OSM landmarks
+    if pano_id not in PANO_TO_OSM:
+        return {
+            'pano_landmarks': [],
+            'osm_landmarks': [],
+            'pano_to_osm': {},
+            'osm_to_pano': {}
+        }
+
+    nearby_osm_ids = PANO_TO_OSM[pano_id]
+
+    # Filter to only OSM landmarks with embeddings
+    nearby_osm_ids = [cid for cid in nearby_osm_ids if cid in OSM_EMBEDDING_INDEX]
+
+    if len(nearby_osm_ids) == 0:
+        return {
+            'pano_landmarks': [],
+            'osm_landmarks': [],
+            'pano_to_osm': {},
+            'osm_to_pano': {}
+        }
+
+    # Get panorama landmarks with embeddings
+    pano_landmarks = [lm for lm in PANO_SENTENCES[pano_id]
+                     if lm.landmark_id in PANO_EMBEDDING_INDEX]
+
+    if len(pano_landmarks) == 0:
+        return {
+            'pano_landmarks': [],
+            'osm_landmarks': [],
+            'pano_to_osm': {},
+            'osm_to_pano': {}
+        }
+
+    # Build embedding matrices
+    pano_indices = [PANO_EMBEDDING_INDEX[lm.landmark_id] for lm in pano_landmarks]
+    pano_embeddings = PANO_EMBEDDINGS[pano_indices]  # shape: (num_pano, embedding_dim)
+
+    osm_indices = [OSM_EMBEDDING_INDEX[cid] for cid in nearby_osm_ids]
+    osm_embeddings = OSM_EMBEDDINGS[osm_indices]  # shape: (num_osm, embedding_dim)
+
+    # Normalize embeddings
+    pano_embs_norm = pano_embeddings / torch.norm(pano_embeddings, dim=1, keepdim=True)
+    osm_embs_norm = osm_embeddings / torch.norm(osm_embeddings, dim=1, keepdim=True)
+
+    # Compute full similarity matrix: pano x osm
+    similarity_matrix = torch.matmul(pano_embs_norm, osm_embs_norm.T)  # shape: (num_pano, num_osm)
+
+    # Build result dictionaries
+    pano_to_osm = {}
+    osm_to_pano = {}
+
+    # For each pano landmark, get all OSM similarities
+    for i, pano_landmark in enumerate(pano_landmarks):
+        pano_key = f"{pano_landmark.landmark_id[0]}:{pano_landmark.landmark_id[1]}"
+        similarities = similarity_matrix[i].tolist()
+
+        pano_to_osm[pano_key] = [
+            {'osm_key': osm_id, 'similarity': float(sim)}
+            for osm_id, sim in zip(nearby_osm_ids, similarities)
+        ]
+        # Sort by similarity descending
+        pano_to_osm[pano_key].sort(key=lambda x: x['similarity'], reverse=True)
+
+    # For each OSM landmark, get all pano similarities
+    for j, osm_id in enumerate(nearby_osm_ids):
+        similarities = similarity_matrix[:, j].tolist()
+
+        osm_to_pano[osm_id] = [
+            {'pano_key': f"{lm.landmark_id[0]}:{lm.landmark_id[1]}", 'similarity': float(sim)}
+            for lm, sim in zip(pano_landmarks, similarities)
+        ]
+        # Sort by similarity descending
+        osm_to_pano[osm_id].sort(key=lambda x: x['similarity'], reverse=True)
+
+    # Build landmark info lists
+    pano_info = [
+        {
+            'key': f"{lm.landmark_id[0]}:{lm.landmark_id[1]}",
+            'description': lm.description,
+            'yaws': lm.yaws
+        }
+        for lm in pano_landmarks
+    ]
+
+    osm_info = [
+        {
+            'key': osm_id,
+            'description': OSM_LANDMARKS[osm_id].description if osm_id in OSM_LANDMARKS else "Unknown"
+        }
+        for osm_id in nearby_osm_ids
+    ]
+
+    return {
+        'pano_landmarks': pano_info,
+        'osm_landmarks': osm_info,
+        'pano_to_osm': pano_to_osm,
+        'osm_to_pano': osm_to_pano
+    }
+
+
+def get_global_similarity_matches(landmark_type, landmark_key, top_k=50):
+    """
+    Get global similarity matches for a given landmark across all panoramas/OSM landmarks.
+
+    Args:
+        landmark_type: 'pano' or 'osm'
+        landmark_key: For pano: "pano_id:idx", for osm: custom_id
+        top_k: Number of top matches to return
+
+    Returns:
+        List of matches with similarity scores and metadata
+    """
+    global PANO_SENTENCES, PANO_EMBEDDINGS, PANO_EMBEDDING_INDEX, PANO_INDEX_REVERSE
+    global OSM_LANDMARKS, OSM_EMBEDDINGS, OSM_EMBEDDING_INDEX, OSM_INDEX_REVERSE
+    global PANO_TO_OSM
+
+    if PANO_EMBEDDINGS is None or OSM_EMBEDDINGS is None:
+        return []
+
+    if landmark_type == 'osm':
+        # OSM landmark selected: find top K panorama landmarks globally
+        if landmark_key not in OSM_EMBEDDING_INDEX:
+            return []
+
+        osm_idx = OSM_EMBEDDING_INDEX[landmark_key]
+        osm_emb = OSM_EMBEDDINGS[osm_idx:osm_idx+1]  # shape: (1, dim)
+
+        # Normalize embeddings
+        osm_emb_norm = osm_emb / torch.norm(osm_emb, dim=1, keepdim=True)
+        pano_embs_norm = PANO_EMBEDDINGS / torch.norm(PANO_EMBEDDINGS, dim=1, keepdim=True)
+
+        # Compute similarities to all pano landmarks
+        similarities = torch.matmul(osm_emb_norm, pano_embs_norm.T).squeeze().tolist()
+
+        # Build list of matches with metadata
+        matches = []
+        for idx, sim in enumerate(similarities):
+            pano_id, lm_idx = PANO_INDEX_REVERSE[idx]
+
+            # Find the landmark object
+            if pano_id in PANO_SENTENCES:
+                for lm in PANO_SENTENCES[pano_id]:
+                    if lm.landmark_id == (pano_id, lm_idx):
+                        matches.append({
+                            'key': f"{pano_id}:{lm_idx}",
+                            'description': lm.description,
+                            'similarity': float(sim),
+                            'pano_id': pano_id,
+                            'pano_lat': lm.panorama_lat,
+                            'pano_lon': lm.panorama_lon
+                        })
+                        break
+
+        # Sort by similarity and return top K
+        matches.sort(key=lambda x: x['similarity'], reverse=True)
+        return matches[:top_k]
+
+    else:  # landmark_type == 'pano'
+        # Pano landmark selected: find top K OSM landmarks globally
+        # Parse the key (format: "pano_id:landmark_idx")
+        # Use rsplit to split from right in case pano_id contains colons
+        parts = landmark_key.rsplit(':', 1)
+        if len(parts) != 2:
+            return []
+        pano_id, lm_idx_str = parts
+        try:
+            lm_idx = int(lm_idx_str)
+        except ValueError:
+            return []
+
+        landmark_id = (pano_id, lm_idx)
+        if landmark_id not in PANO_EMBEDDING_INDEX:
+            return []
+
+        pano_idx = PANO_EMBEDDING_INDEX[landmark_id]
+        pano_emb = PANO_EMBEDDINGS[pano_idx:pano_idx+1]  # shape: (1, dim)
+
+        # Normalize embeddings
+        pano_emb_norm = pano_emb / torch.norm(pano_emb, dim=1, keepdim=True)
+        osm_embs_norm = OSM_EMBEDDINGS / torch.norm(OSM_EMBEDDINGS, dim=1, keepdim=True)
+
+        # Compute similarities to all OSM landmarks
+        similarities = torch.matmul(pano_emb_norm, osm_embs_norm.T).squeeze().tolist()
+
+        # Build reverse mapping: osm_id -> list of pano_ids
+        osm_to_panos = {}
+        for pano_id, osm_ids in PANO_TO_OSM.items():
+            for osm_id in osm_ids:
+                if osm_id not in osm_to_panos:
+                    osm_to_panos[osm_id] = []
+                osm_to_panos[osm_id].append(pano_id)
+
+        # Build list of matches with metadata
+        matches = []
+        for idx, sim in enumerate(similarities):
+            osm_id = OSM_INDEX_REVERSE[idx]
+
+            if osm_id in OSM_LANDMARKS:
+                osm_lm = OSM_LANDMARKS[osm_id]
+                pano_ids = osm_to_panos.get(osm_id, [])
+
+                matches.append({
+                    'key': osm_id,
+                    'description': osm_lm.description,
+                    'similarity': float(sim),
+                    'osm_lat': osm_lm.lat,
+                    'osm_lon': osm_lm.lon,
+                    'nearby_panos': pano_ids[:5]  # Limit to first 5 panos
+                })
+
+        # Sort by similarity and return top K
+        matches.sort(key=lambda x: x['similarity'], reverse=True)
+        return matches[:top_k]
 
 
 def find_common_panoramas(panorama_dir, pinhole_dir, pano_sentences):
@@ -781,6 +1549,15 @@ def collapse_string_list(strings):
     return [{'text': text, 'count': count} for text, count in counts.items()]
 
 
+@app.route('/api/panorama_list')
+def get_panorama_list():
+    """Return a list of all panorama IDs with their indices."""
+    global PANORAMA_DATA
+    return jsonify({
+        'panoramas': [{'id': pano['id'], 'index': i} for i, pano in enumerate(PANORAMA_DATA)]
+    })
+
+
 @app.route('/api/panorama/<int:index>')
 def get_panorama_data(index):
     global PANORAMA_DATA, PANO_SENTENCES, PANO_TO_OSM, OSM_LANDMARKS
@@ -845,6 +1622,50 @@ def get_panorama_data(index):
     })
 
 
+@app.route('/api/similarity/<int:index>')
+def get_similarity_data(index):
+    """Get bidirectional similarity data between panorama landmarks and nearby OSM landmarks."""
+    global PANORAMA_DATA
+
+    if index < 0 or index >= len(PANORAMA_DATA):
+        return jsonify({'error': 'Invalid index'}), 404
+
+    pano = PANORAMA_DATA[index]
+    pano_id = pano['id']
+
+    # Compute similarities
+    similarity_results = compare_pano_to_nearby_osm(pano_id)
+
+    if similarity_results is None:
+        return jsonify({
+            'error': 'Embeddings not loaded',
+            'pano_id': pano_id,
+            'pano_landmarks': [],
+            'osm_landmarks': [],
+            'pano_to_osm': {},
+            'osm_to_pano': {}
+        })
+
+    return jsonify({
+        'pano_id': pano_id,
+        **similarity_results
+    })
+
+
+@app.route('/api/global_matches/<string:landmark_type>/<path:landmark_key>')
+def get_global_matches(landmark_type, landmark_key):
+    """Get global similarity matches for a landmark across all panoramas/OSM landmarks."""
+    if landmark_type not in ['pano', 'osm']:
+        return jsonify({'error': 'Invalid landmark_type'}), 400
+
+    matches = get_global_similarity_matches(landmark_type, landmark_key, top_k=50)
+    return jsonify({
+        'landmark_type': landmark_type,
+        'landmark_key': landmark_key,
+        'matches': matches
+    })
+
+
 @app.route('/api/image/panorama/<int:index>')
 def get_panorama_image(index):
     global PANORAMA_DATA
@@ -878,34 +1699,51 @@ def get_pinhole_image(index, yaw):
 
 def main():
     global PANORAMA_DATA, PANO_SENTENCES, OSM_LANDMARKS, PANO_TO_OSM
+    global PANO_EMBEDDINGS, PANO_EMBEDDING_INDEX, PANO_INDEX_REVERSE
+    global OSM_EMBEDDINGS, OSM_EMBEDDING_INDEX, OSM_INDEX_REVERSE
 
     parser = argparse.ArgumentParser(description='Panorama viewer web app')
     parser.add_argument('--panorama_dir', type=str, required=True,
                        help='Directory containing panorama images (VIGOR format)')
     parser.add_argument('--pinhole_dir', type=str, required=True,
                        help='Directory containing pinhole image subdirectories')
-    parser.add_argument('--sentence_dirs', type=str, nargs='+', required=True,
-                       help='Directories containing JSONL sentence files')
+    parser.add_argument('--pano_landmarks_dir', type=str, required=True,
+                       help='Directory containing panorama landmarks (expects sentences/ and embeddings/ subdirs)')
+    parser.add_argument('--osm_landmarks_dir', type=str, default=None,
+                       help='Directory containing OSM landmarks (expects sentences/ and embeddings/ subdirs)')
     parser.add_argument('--osm_landmarks_geojson', type=str, default=None,
                        help='Path to OSM landmarks GeoJSON file')
-    parser.add_argument('--osm_sentences_dir', type=str, default=None,
-                       help='Directory containing OSM landmark sentence files')
     parser.add_argument('--port', type=int, default=5000,
                        help='Port to run the web server on')
 
     args = parser.parse_args()
 
+    # Construct paths for panorama landmarks
+    pano_sentences_dirs = [str(Path(args.pano_landmarks_dir) / 'sentences')]
+    pano_embeddings_dir = str(Path(args.pano_landmarks_dir) / 'embeddings')
+
+    # Construct paths for OSM landmarks (if provided)
+    if args.osm_landmarks_dir:
+        osm_sentences_dir = str(Path(args.osm_landmarks_dir) / 'sentences')
+        osm_embeddings_dir = str(Path(args.osm_landmarks_dir) / 'embeddings')
+    else:
+        osm_sentences_dir = None
+        osm_embeddings_dir = None
+
     # Step 1: Load OSM landmarks (independent, no duplication)
-    if args.osm_landmarks_geojson and args.osm_sentences_dir:
+    if args.osm_landmarks_geojson and osm_sentences_dir:
         print("\n" + "="*60)
         print("STEP 1: Loading OSM landmarks")
         print("="*60)
         osm_data = load_osm_landmarks(
             args.osm_landmarks_geojson,
-            args.osm_sentences_dir
+            osm_sentences_dir,
+            osm_embeddings_dir
         )
-        OSM_LANDMARKS, _, _, _ = osm_data
+        OSM_LANDMARKS, OSM_EMBEDDINGS, OSM_EMBEDDING_INDEX, OSM_INDEX_REVERSE = osm_data
         print(f"Loaded {len(OSM_LANDMARKS)} OSM landmarks")
+        if OSM_EMBEDDINGS is not None:
+            print(f"  Loaded {OSM_EMBEDDINGS.shape[0]} OSM embeddings")
 
         # Step 2: Pre-compute panorama→OSM associations (indices only)
         print("\n" + "="*60)
@@ -918,16 +1756,32 @@ def main():
         )
         print(f"Computed associations for {len(PANO_TO_OSM)} panoramas")
     else:
-        print("\nSkipping OSM landmarks (no geojson or sentences dir provided)")
+        print("\nSkipping OSM landmarks (no OSM data provided)")
         OSM_LANDMARKS = {}
+        OSM_EMBEDDINGS = None
+        OSM_EMBEDDING_INDEX = {}
+        OSM_INDEX_REVERSE = []
         PANO_TO_OSM = {}
 
     # Step 3: Load panorama landmark sentences
     print("\n" + "="*60)
     print("STEP 3: Loading panorama landmark sentences")
     print("="*60)
-    PANO_SENTENCES = load_sentence_data(args.sentence_dirs)
+    PANO_SENTENCES = load_sentence_data(pano_sentences_dirs)
     print(f"Loaded landmarks for {len(PANO_SENTENCES)} panoramas")
+
+    # Step 3.5: Load panorama embeddings
+    print("\n" + "="*60)
+    print("STEP 3.5: Loading panorama embeddings")
+    print("="*60)
+    PANO_EMBEDDINGS, PANO_EMBEDDING_INDEX, PANO_INDEX_REVERSE = load_pano_embeddings(
+        pano_embeddings_dir,
+        PANO_SENTENCES
+    )
+    if PANO_EMBEDDINGS is not None:
+        print(f"  Loaded {PANO_EMBEDDINGS.shape[0]} panorama embeddings")
+    else:
+        print("  No panorama embeddings found")
 
     # Step 4: Find common panoramas
     print("\n" + "="*60)
