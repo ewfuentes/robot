@@ -58,7 +58,6 @@ app = Flask(__name__)
 
 # Global data
 PANORAMA_DATA = []
-CURRENT_INDEX = 0
 
 # Panorama landmark data
 PANO_SENTENCES: dict[str, list[PanoramaLandmark]] = {}  # pano_id -> landmarks
@@ -889,6 +888,7 @@ def compute_panorama_to_osm_associations(panorama_dir, osm_landmarks, landmarks_
 def load_osm_landmarks(geojson_path, sentences_dir, embeddings_dir=None):
     """
     Load OSM landmarks from GeoJSON, sentences, and optionally embeddings.
+    Uses caching to avoid recomputing if inputs haven't changed.
 
     Args:
         geojson_path: Path to OSM landmarks GeoJSON file
@@ -899,7 +899,37 @@ def load_osm_landmarks(geojson_path, sentences_dir, embeddings_dir=None):
         Tuple of (OSM_LANDMARKS dict, OSM_EMBEDDINGS tensor, OSM_EMBEDDING_INDEX, OSM_INDEX_REVERSE)
         If embeddings_dir is None, returns (dict, None, {}, [])
     """
-    print("Loading OSM landmarks...")
+    # Compute cache key based on input file mtimes
+    geojson_path_obj = Path(geojson_path)
+    sentences_path_obj = Path(sentences_dir)
+
+    cache_key_parts = [
+        f"geojson:{geojson_path_obj.stat().st_mtime}",
+        f"sentences:{sentences_path_obj.stat().st_mtime}"
+    ]
+    if embeddings_dir:
+        embeddings_path_obj = Path(embeddings_dir)
+        if embeddings_path_obj.exists():
+            cache_key_parts.append(f"embeddings:{embeddings_path_obj.stat().st_mtime}")
+
+    cache_key = hashlib.sha256("_".join(cache_key_parts).encode()).hexdigest()[:16]
+    cache_file = Path(f"/tmp/osm_landmarks_{cache_key}.pkl")
+
+    # Try to load from cache
+    if cache_file.exists():
+        print(f"Loading OSM landmarks from cache: {cache_file}")
+        try:
+            with open(cache_file, 'rb') as f:
+                cached_data = pickle.load(f)
+            osm_landmarks, osm_embeddings, osm_embedding_index, osm_index_reverse = cached_data
+            print(f"  Loaded {len(osm_landmarks)} OSM landmarks from cache")
+            if osm_embeddings is not None:
+                print(f"  Loaded {osm_embeddings.shape[0]} OSM embeddings from cache")
+            return cached_data
+        except Exception as e:
+            print(f"  Cache load failed: {e}, recomputing...")
+
+    print("Loading OSM landmarks (no cache found)...")
     start = time.time()
 
     # Load GeoJSON to get landmark properties
@@ -1021,12 +1051,23 @@ def load_osm_landmarks(geojson_path, sentences_dir, embeddings_dir=None):
         osm_embedding_index = {}
         osm_index_reverse = []
 
-    return osm_landmarks_dict, osm_embeddings, osm_embedding_index, osm_index_reverse
+    # Save to cache
+    result = (osm_landmarks_dict, osm_embeddings, osm_embedding_index, osm_index_reverse)
+    print(f"Saving OSM landmarks to cache: {cache_file}")
+    try:
+        with open(cache_file, 'wb') as f:
+            pickle.dump(result, f)
+        print("  Cache saved successfully")
+    except Exception as e:
+        print(f"  Warning: Failed to save cache: {e}")
+
+    return result
 
 
 def load_pano_embeddings(embeddings_dir, pano_sentences):
     """
     Load panorama landmark embeddings from JSONL files.
+    Uses caching to avoid recomputing if inputs haven't changed.
 
     Args:
         embeddings_dir: Directory containing panorama embedding JSONL files
@@ -1035,13 +1076,35 @@ def load_pano_embeddings(embeddings_dir, pano_sentences):
     Returns:
         Tuple of (PANO_EMBEDDINGS tensor, PANO_EMBEDDING_INDEX, PANO_INDEX_REVERSE)
     """
-    print("Loading panorama embeddings...")
-    start = time.time()
-
     embeddings_path = Path(embeddings_dir)
     if not embeddings_path.exists():
         print(f"Warning: Embeddings directory not found: {embeddings_dir}")
         return None, {}, []
+
+    # Compute cache key based on embeddings dir mtime and pano_sentences structure
+    cache_key_parts = [
+        f"embeddings:{embeddings_path.stat().st_mtime}",
+        f"pano_count:{len(pano_sentences)}",
+        f"landmark_count:{sum(len(lms) for lms in pano_sentences.values())}"
+    ]
+    cache_key = hashlib.sha256("_".join(cache_key_parts).encode()).hexdigest()[:16]
+    cache_file = Path(f"/tmp/pano_embeddings_{cache_key}.pkl")
+
+    # Try to load from cache
+    if cache_file.exists():
+        print(f"Loading panorama embeddings from cache: {cache_file}")
+        try:
+            with open(cache_file, 'rb') as f:
+                cached_data = pickle.load(f)
+            pano_embeddings, pano_embedding_index, pano_index_reverse = cached_data
+            if pano_embeddings is not None:
+                print(f"  Loaded {pano_embeddings.shape[0]} panorama embeddings from cache")
+            return cached_data
+        except Exception as e:
+            print(f"  Cache load failed: {e}, recomputing...")
+
+    print("Loading panorama embeddings (no cache found)...")
+    start = time.time()
 
     # Collect all embeddings
     embeddings_data = []  # List of (landmark_id, embedding_vector)
@@ -1121,16 +1184,50 @@ def load_pano_embeddings(embeddings_dir, pano_sentences):
     print(f"  Created tensor with shape {embeddings_tensor.shape}")
     print(f"Loaded panorama embeddings in {time.time()-start:.1f}s")
 
-    return embeddings_tensor, embedding_index, index_reverse
+    # Save to cache
+    result = (embeddings_tensor, embedding_index, index_reverse)
+    print(f"Saving panorama embeddings to cache: {cache_file}")
+    try:
+        with open(cache_file, 'wb') as f:
+            pickle.dump(result, f)
+        print("  Cache saved successfully")
+    except Exception as e:
+        print(f"  Warning: Failed to save cache: {e}")
+
+    return result
 
 
 def load_sentence_data(sentence_dirs):
     """
     Load and parse JSONL sentence files from multiple directories.
+    Uses caching to avoid recomputing if inputs haven't changed.
 
     Returns:
         dict[str, list[PanoramaLandmark]]: Maps panorama_id to list of landmarks
     """
+    # Compute cache key based on all sentence directory mtimes
+    cache_key_parts = []
+    for sentence_dir in sentence_dirs:
+        sentence_path = Path(sentence_dir)
+        if sentence_path.exists():
+            cache_key_parts.append(f"{sentence_path.name}:{sentence_path.stat().st_mtime}")
+
+    cache_key = hashlib.sha256("_".join(cache_key_parts).encode()).hexdigest()[:16]
+    cache_file = Path(f"/tmp/pano_sentences_{cache_key}.pkl")
+
+    # Try to load from cache
+    if cache_file.exists():
+        print(f"Loading panorama sentences from cache: {cache_file}")
+        try:
+            with open(cache_file, 'rb') as f:
+                cached_data = pickle.load(f)
+            print(f"  Loaded landmarks for {len(cached_data)} panoramas from cache")
+            return cached_data
+        except Exception as e:
+            print(f"  Cache load failed: {e}, recomputing...")
+
+    print("Loading panorama sentences (no cache found)...")
+
     # Collect all landmarks by panorama_id
     pano_landmarks: dict[str, list[PanoramaLandmark]] = {}
 
@@ -1142,14 +1239,19 @@ def load_sentence_data(sentence_dirs):
             continue
 
         print(f"    Loading from {sentence_path.name}...")
+        dir_start = time.time()
+        file_count = 0
+        entry_count = 0
 
         # Load all files in this directory (JSONL format)
         for jsonl_file in sentence_path.glob('*'):
             if not jsonl_file.is_file():
                 continue
 
+            file_count += 1
             with open(jsonl_file, 'r') as f:
                 for line in f:
+                    entry_count += 1
                     try:
                         entry = json.loads(line)
                         custom_id = entry['custom_id']
@@ -1211,7 +1313,20 @@ def load_sentence_data(sentence_dirs):
                     except Exception as e:
                         print(f"Warning: Error parsing line in {jsonl_file}: {e}")
 
+        dir_time = time.time() - dir_start
+        print(f"    Processed {file_count} files with {entry_count} entries in {dir_time:.1f}s")
+
     print(f"  Loaded landmarks for {len(pano_landmarks)} panoramas")
+
+    # Save to cache
+    print(f"Saving panorama sentences to cache: {cache_file}")
+    try:
+        with open(cache_file, 'wb') as f:
+            pickle.dump(pano_landmarks, f)
+        print("  Cache saved successfully")
+    except Exception as e:
+        print(f"  Warning: Failed to save cache: {e}")
+
     return pano_landmarks
 
 
@@ -1474,15 +1589,21 @@ def find_common_panoramas(panorama_dir, pinhole_dir, pano_sentences):
     pinhole_path = Path(pinhole_dir)
 
     # Get panorama IDs from panorama directory
+    t1 = time.time()
     pano_files = {parse_vigor_filename(f.name): f for f in panorama_path.glob('*.jpg')}
+    print(f"  Scanned {len(pano_files)} panorama files in {time.time()-t1:.1f}s")
 
     # Get panorama IDs from pinhole directory
+    t2 = time.time()
     pinhole_dirs = {d.name.split(',')[0]: d for d in pinhole_path.iterdir() if d.is_dir()}
+    print(f"  Scanned {len(pinhole_dirs)} pinhole directories in {time.time()-t2:.1f}s")
 
     # Find intersection with sentence data
     common_ids = set(pano_files.keys()) & set(pinhole_dirs.keys()) & set(pano_sentences.keys())
+    print(f"  Found {len(common_ids)} panoramas present in all locations")
 
     # Build panorama data
+    t3 = time.time()
     panorama_data = []
     for pano_id in sorted(common_ids):
         # Get yaw angles available in pinhole dir
@@ -1501,6 +1622,7 @@ def find_common_panoramas(panorama_dir, pinhole_dir, pano_sentences):
                 'pinhole_dir': pinhole_subdir,
                 'yaw_angles': yaw_angles
             })
+    print(f"  Built panorama data in {time.time()-t3:.1f}s")
 
     return panorama_data
 
@@ -1718,6 +1840,8 @@ def main():
 
     args = parser.parse_args()
 
+    startup_start = time.time()
+
     # Construct paths for panorama landmarks
     pano_sentences_dirs = [str(Path(args.pano_landmarks_dir) / 'sentences')]
     pano_embeddings_dir = str(Path(args.pano_landmarks_dir) / 'embeddings')
@@ -1749,12 +1873,14 @@ def main():
         print("\n" + "="*60)
         print("STEP 2: Computing panorama→OSM associations")
         print("="*60)
+        step2_start = time.time()
         PANO_TO_OSM = compute_panorama_to_osm_associations(
             args.panorama_dir,
             OSM_LANDMARKS,
             args.osm_landmarks_geojson
         )
-        print(f"Computed associations for {len(PANO_TO_OSM)} panoramas")
+        step2_time = time.time() - step2_start
+        print(f"Computed associations for {len(PANO_TO_OSM)} panoramas in {step2_time:.1f}s")
     else:
         print("\nSkipping OSM landmarks (no OSM data provided)")
         OSM_LANDMARKS = {}
@@ -1767,8 +1893,10 @@ def main():
     print("\n" + "="*60)
     print("STEP 3: Loading panorama landmark sentences")
     print("="*60)
+    step3_start = time.time()
     PANO_SENTENCES = load_sentence_data(pano_sentences_dirs)
-    print(f"Loaded landmarks for {len(PANO_SENTENCES)} panoramas")
+    step3_time = time.time() - step3_start
+    print(f"Loaded landmarks for {len(PANO_SENTENCES)} panoramas in {step3_time:.1f}s")
 
     # Step 3.5: Load panorama embeddings
     print("\n" + "="*60)
@@ -1787,18 +1915,23 @@ def main():
     print("\n" + "="*60)
     print("STEP 4: Finding common panoramas")
     print("="*60)
+    step4_start = time.time()
     PANORAMA_DATA = find_common_panoramas(
         args.panorama_dir,
         args.pinhole_dir,
         PANO_SENTENCES
     )
-    print(f"Found {len(PANORAMA_DATA)} panoramas with complete data")
+    step4_time = time.time() - step4_start
+    print(f"Found {len(PANORAMA_DATA)} panoramas with complete data in {step4_time:.1f}s")
 
     if len(PANORAMA_DATA) == 0:
         print("ERROR: No panoramas found with complete data!")
         return
 
+    startup_time = time.time() - startup_start
     print("\n" + "="*60)
+    print(f"TOTAL STARTUP TIME: {startup_time:.1f}s")
+    print("="*60)
     print(f"Starting web server on http://localhost:{args.port}")
     print("Press Ctrl+C to stop")
     print("="*60)
