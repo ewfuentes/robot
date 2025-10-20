@@ -198,6 +198,7 @@ py_library(
     ":swag_config_types",
     ":swag_model_input_output",
     ":semantic_landmark_extractor",
+    ":semantic_landmark_utils",
   ]
 )
 
