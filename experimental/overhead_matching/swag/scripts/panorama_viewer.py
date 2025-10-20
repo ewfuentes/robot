@@ -221,11 +221,16 @@ HTML_TEMPLATE = '''
                     document.getElementById('pano-index').textContent = index + 1;
                     document.getElementById('pano-total').textContent = totalPanoramas;
 
-                    // Update location link
+                    // Update location links
                     const locationElem = document.getElementById('pano-location');
                     if (data.lat && data.lon) {
-                        const mapsUrl = `https://www.google.com/maps?q=${data.lat},${data.lon}`;
-                        locationElem.innerHTML = ` - <a href="${mapsUrl}" target="_blank" style="color:#007bff;text-decoration:none;">📍 ${data.lat.toFixed(6)}, ${data.lon.toFixed(6)}</a>`;
+                        const googleMapsUrl = `https://www.google.com/maps?q=${data.lat},${data.lon}`;
+                        const osmUrl = `https://www.openstreetmap.org/?mlat=${data.lat}&mlon=${data.lon}#map=19/${data.lat}/${data.lon}`;
+                        const osmNearbyUrl = `https://www.openstreetmap.org/query?lat=${data.lat}&lon=${data.lon}`;
+                        locationElem.innerHTML = ` - 📍 ${data.lat.toFixed(6)}, ${data.lon.toFixed(6)} ` +
+                            `[<a href="${googleMapsUrl}" target="_blank" style="color:#007bff;text-decoration:none;">Google</a> | ` +
+                            `<a href="${osmUrl}" target="_blank" style="color:#007bff;text-decoration:none;">OSM</a> | ` +
+                            `<a href="${osmNearbyUrl}" target="_blank" style="color:#007bff;text-decoration:none;">OSM Nearby</a>]`;
                     } else {
                         locationElem.textContent = '';
                     }
@@ -844,7 +849,7 @@ def main():
                        help='Path to OSM landmarks GeoJSON file')
     parser.add_argument('--osm_sentences_dir', type=str, default=None,
                        help='Directory containing OSM landmark sentence files')
-    parser.add_argument('--port', type=int, default=5000,
+    parser.add_argument('--port', type=int, default=5001,
                        help='Port to run the web server on')
 
     args = parser.parse_args()

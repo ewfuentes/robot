@@ -11,6 +11,8 @@ from common.python.serialization import msgspec_enc_hook, msgspec_dec_hook
 import experimental.overhead_matching.swag.data.vigor_dataset as vd
 from experimental.overhead_matching.swag.scripts import train
 import experimental.overhead_matching.swag.model.swag_patch_embedding as spe
+from experimental.overhead_matching.swag.model.swag_model_input_output import derive_data_requirements_from_model
+from experimental.overhead_matching.swag.model.swag_config_types import ExtractorDataRequirement
 import msgspec
 import hashlib
 import io
@@ -115,9 +117,13 @@ def process_single_cache(field_spec: str,
     model = model.cuda()
 
     # Construct the dataset
-    # If the training config specifies that we can ignore images for all extractors
-    # then it is safe to ignore images for the specified extractor
-    should_load_images = False  # TODO derive this automatically
+    requirements = derive_data_requirements_from_model(
+        model,
+        use_cached_extractors=None)
+
+    should_load_images = ExtractorDataRequirement.IMAGES in requirements
+    should_load_landmarks = ExtractorDataRequirement.LANDMARKS in requirements
+
     dataset = vd.VigorDataset(
         dataset_path,
         vd.VigorDatasetConfig(
@@ -126,7 +132,8 @@ def process_single_cache(field_spec: str,
             satellite_tensor_cache_info=None,
             panorama_tensor_cache_info=None,
             landmark_version=landmark_version,
-            should_load_images=should_load_images))
+            should_load_images=should_load_images,
+            should_load_landmarks=should_load_landmarks))
     dataset = (dataset.get_sat_patch_view() if 'sat_model_config' == parts[0]
                else dataset.get_pano_view())
     if idx_start is None:
