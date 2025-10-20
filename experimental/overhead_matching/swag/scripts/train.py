@@ -16,6 +16,7 @@ from experimental.overhead_matching.swag.data import (
 from experimental.overhead_matching.swag.model import (
     patch_embedding, swag_patch_embedding)
 from experimental.overhead_matching.swag.model.swag_config_types import ExtractorDataRequirement
+from experimental.overhead_matching.swag.model.swag_model_input_output import derive_data_requirements_from_model
 from experimental.overhead_matching.swag.scripts.logging_utils import (
     log_batch_metrics, log_embedding_stats, log_gradient_stats, log_validation_metrics)
 from typing import Union
@@ -460,38 +461,6 @@ def train(config: TrainConfig,
     debug_log("🎉 TRAINING COMPLETED SUCCESSFULLY 🎉")
     debug_log("Training process exiting normally")
 
-
-
-def derive_data_requirements_from_model(model, use_cached_extractors=None):
-    """
-    Derive what data (images, landmarks) a model requires from its extractors.
-
-    Args:
-        model: SwagPatchEmbedding or WagPatchEmbedding instance
-        use_cached_extractors: list of extractor names that use caches (ignored for requirements)
-
-    Returns:
-        set of ExtractorDataRequirement values
-    """
-    if use_cached_extractors is None:
-        use_cached_extractors = []
-
-    requirements = set()
-
-    # Handle SwagPatchEmbedding - has _extractor_by_name
-    if hasattr(model, '_extractor_by_name'):
-        for name, extractor in model._extractor_by_name.items():
-            # Skip cached extractors - they don't need raw data
-            if name in use_cached_extractors:
-                continue
-            if hasattr(extractor, 'data_requirements'):
-                requirements.update(extractor.data_requirements)
-
-    # Handle WagPatchEmbedding - check its data_requirements property
-    elif hasattr(model, 'data_requirements'):
-        requirements.update(model.data_requirements)
-
-    return requirements
 
 
 def main(

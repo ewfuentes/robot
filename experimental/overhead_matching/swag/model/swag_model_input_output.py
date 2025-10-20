@@ -77,3 +77,36 @@ class ExtractorOutput:
             positions=self.positions.to(*args, **kwargs),
             mask=self.mask.to(*args, **kwargs),
             debug={k: v.to(*args, **kwargs) for k, v in self.debug.items()})
+
+
+def derive_data_requirements_from_model(model, use_cached_extractors=None):
+    """
+    Derive what data (images, landmarks) a model requires from its extractors.
+
+    Args:
+        model: SwagPatchEmbedding or WagPatchEmbedding instance
+        use_cached_extractors: list of extractor names that use caches (ignored for requirements)
+
+    Returns:
+        set of ExtractorDataRequirement values
+    """
+
+    if use_cached_extractors is None:
+        use_cached_extractors = []
+
+    requirements = set()
+
+    # Handle SwagPatchEmbedding - has _extractor_by_name
+    if hasattr(model, '_extractor_by_name'):
+        for name, extractor in model._extractor_by_name.items():
+            # Skip cached extractors - they don't need raw data
+            if name in use_cached_extractors:
+                continue
+            if hasattr(extractor, 'data_requirements'):
+                requirements.update(extractor.data_requirements)
+
+    # Handle WagPatchEmbedding - check its data_requirements property
+    elif hasattr(model, 'data_requirements'):
+        requirements.update(model.data_requirements)
+
+    return requirements

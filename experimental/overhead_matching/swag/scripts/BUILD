@@ -217,3 +217,28 @@ py_binary(
   ]
 )
 
+py_binary(
+  name="panorama_to_pinhole",
+  srcs=["panorama_to_pinhole.py"],
+  deps=[
+    requirement("numpy"),
+    requirement("scipy"),
+    requirement("pillow"),
+    requirement("tqdm"),
+  ]
+)
+
+py_binary(
+  name="panorama_viewer",
+  srcs=["panorama_viewer.py"],
+  deps=[
+    requirement("flask"),
+    requirement("geopandas"),
+    requirement("shapely"),
+    requirement("pandas"),
+    requirement("ipdb"),
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
+    "//common/gps:web_mercator",
+  ]
+)

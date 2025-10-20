@@ -40,6 +40,7 @@ py_library(
     requirement("msgspec"),
     ":alphaearth_extractor",
     ":semantic_landmark_extractor",
+    ":panorama_semantic_landmark_extractor",
     ":synthetic_landmark_extractor",
     ":semantic_segment_extractor",
     ":absolute_position_extractor",
@@ -69,6 +70,7 @@ py_library(
   deps = [
     requirement("torch"),
     "//common/torch:load_torch_deps",
+    ":swag_config_types",
   ]
 )
 
@@ -116,6 +118,17 @@ py_library(
 )
 
 py_library(
+  name = "semantic_landmark_utils",
+  srcs = ["semantic_landmark_utils.py"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+  ],
+  deps = [
+    requirement("pandas"),
+  ]
+)
+
+py_library(
   name = "alphaearth_extractor",
   srcs = ["alphaearth_extractor.py"],
   deps = [
@@ -140,6 +153,10 @@ py_test(
 py_binary(
   name = "semantic_landmark_extractor",
   srcs = ["semantic_landmark_extractor.py"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+    "//common/python:__subpackages__",
+  ],
   deps = [
     requirement("torch"),
     requirement("numpy"),
@@ -148,10 +165,12 @@ py_binary(
     requirement("openai"),
     requirement("geopandas"),
     requirement("ipdb"),
+    requirement("tqdm"),
     "//common/torch:load_torch_deps",
     "//common/ollama:pyollama",
     ":swag_model_input_output",
     ":swag_config_types",
+    ":semantic_landmark_utils",
   ]
 )
 
@@ -163,6 +182,32 @@ py_test(
     requirement("shapely"),
     ":semantic_landmark_extractor",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
+  ]
+)
+
+py_library(
+  name = "panorama_semantic_landmark_extractor",
+  srcs = ["panorama_semantic_landmark_extractor.py"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+    "//common/python:__subpackages__",
+  ],
+  deps = [
+    requirement("torch"),
+    "//common/torch:load_torch_deps",
+    ":swag_model_input_output",
+    ":swag_config_types",
+    ":semantic_landmark_utils",
+  ]
+)
+
+py_test(
+  name = "panorama_semantic_landmark_extractor_test",
+  srcs = ["panorama_semantic_landmark_extractor_test.py"],
+  deps = [
+    requirement("torch"),
+    "//common/torch:load_torch_deps",
+    ":panorama_semantic_landmark_extractor",
   ]
 )
 
