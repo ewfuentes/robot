@@ -89,10 +89,22 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
         self.all_sentences = None
         self.panorama_metadata = None  # Maps pano_id -> list of (landmark_idx, custom_id, yaw_angles)
 
+        # Load the semantic class groupings
+        base_path = self.semantic_embedding_base_path / self.config.embedding_version
+        semantic_groupings_file = base_path / "semantic_class_grouping.json"
+        assert semantic_groupings_file.exists()
+        self.semantic_groupings = json.loads(semantic_groupings_file.read_text())
+
+        # Convert the base64 encoded embeddings into torch tensors
+        for k, v in self.semantic_groupings["class_details"].items():
+            base64_string = v["embedding"]["vector"]
+            base64_buffer = bytearray(base64.b64decode(base64_string))
+            v["embedding"]["vector"] = torch.frombuffer(base64_buffer, dtype=torch.float32)
+
+
     def load_files(self):
         """Load embeddings, sentences, and metadata from multi-city directory structure."""
         base_path = self.semantic_embedding_base_path / self.config.embedding_version
-        print(self.semantic_embedding_base_path)
 
         if not base_path.exists():
             raise FileNotFoundError(f"Embedding base path does not exist: {base_path}")
@@ -106,8 +118,6 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
         self.all_embeddings = {}
         self.all_sentences = {}
         self.panorama_metadata = {}
-        self.semantic_groupings = {}
-
         for city_dir in city_dirs:
             city_name = city_dir.name
             print(f"Loading panorama landmarks for city: {city_name}")
@@ -155,17 +165,6 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
                     assert metadata_from_sentences == new_metadata
                 self.panorama_metadata.update(new_metadata)
                 assert len(self.panorama_metadata) == old_metadata_size + new_pano_metadata_len
-
-        # Load the semantic class groupings
-        semantic_groupings_file = base_path / "semantic_class_grouping.json"
-        assert semantic_groupings_file.exists()
-        self.semantic_groupings = json.loads(semantic_groupings_file.read_text())
-
-        # Convert the base64 encoded embeddings into torch tensors
-        for k, v in self.semantic_groupings["class_details"].items():
-            base64_string = v["embedding"]["vector"]
-            base64_buffer = bytearray(base64.b64decode(base64_string))
-            v["embedding"]["vector"] = torch.frombuffer(base64_buffer, dtype=torch.float32)
 
         # Load the semantic class groupings
         semantic_groupings_file = base_path / "semantic_class_grouping.json"
@@ -295,10 +294,10 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
 
     @property
     def output_dim(self):
+        out = self.config.openai_embedding_size
         if self.config.should_classify_against_grouping:
-            return len(self.semantic_groupings["semantic_groups"])
-        else:
-            return self.config.openai_embedding_size
+            out = len(self.semantic_groupings["semantic_groups"])
+        return out
 
     @property
     def num_position_outputs(self):
