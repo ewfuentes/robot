@@ -87,7 +87,7 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
         self.files_loaded = False
         self.all_embeddings = None
         self.all_sentences = None
-        self.panorama_metadata = None  # Maps pano_id -> list of (landmark_idx, custom_id, yaw_angles, generic_class)
+        self.panorama_metadata = None  # Maps pano_id -> list of (landmark_idx, custom_id, yaw_angles)
 
     def load_files(self):
         """Load embeddings, sentences, and metadata from multi-city directory structure."""
