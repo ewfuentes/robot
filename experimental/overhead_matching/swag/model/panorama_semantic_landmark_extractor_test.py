@@ -131,7 +131,8 @@ class PanoramaSemanticLandmarkExtractorTest(unittest.TestCase):
                         f.write(json.dumps(meta) + "\n")
 
                 # Store for testing
-                cls.test_panoramas[pano_id] = {
+                pano_id_no_coords = pano_id.split(",")[0]
+                cls.test_panoramas[pano_id_no_coords] = {
                     "city": city,
                     "landmarks": landmarks,
                     "custom_ids": [f"{pano_id}__landmark_{i}" for i in range(3)]
