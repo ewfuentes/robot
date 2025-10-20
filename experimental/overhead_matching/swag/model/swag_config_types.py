@@ -69,6 +69,11 @@ class SyntheticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     embedding_dim: int
 
 
+class OSMSemanticClassExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    auxiliary_info_key: str  # Key for base path in auxiliary_info
+    embedding_version: str   # Name of JSON file (without extension) for cache key
+
+
 class PlanarPositionEmbeddingConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     min_scale: float
     scale_step: float
@@ -107,6 +112,7 @@ ExtractorConfig = Union[
     PanoramaSemanticLandmarkExtractorConfig,
     SyntheticLandmarkExtractorConfig,
     AbsolutePositionExtractorConfig,
+    OSMSemanticClassExtractorConfig,
 ]
 
 
