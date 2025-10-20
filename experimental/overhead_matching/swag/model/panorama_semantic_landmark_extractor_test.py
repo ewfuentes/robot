@@ -3,10 +3,13 @@ import unittest
 import tempfile
 import json
 import math
+import hashlib
+import base64
 
 import common.torch.load_torch_deps
 import torch
 from pathlib import Path
+import numpy as np
 
 import experimental.overhead_matching.swag.model.panorama_semantic_landmark_extractor as psle
 from experimental.overhead_matching.swag.model.swag_config_types import PanoramaSemanticLandmarkExtractorConfig
@@ -138,6 +141,64 @@ class PanoramaSemanticLandmarkExtractorTest(unittest.TestCase):
                     "custom_ids": [f"{pano_id}__landmark_{i}" for i in range(3)]
                 }
 
+        # Create a semantic class grouping
+        semantic_class_grouping_path = base_path / version / "semantic_class_grouping.json"
+
+        def random_vector(category: str):
+            # Create a random(ish) vector with 1536 elements
+            bits = hashlib.sha512(category.encode('utf-8')).digest() * 3
+            bits = np.unpackbits(np.frombuffer(bits, dtype=np.uint8))
+            scaled_bits = (2.0 * bits - 1.0).astype(dtype=np.float32)
+            scaled_bits = scaled_bits / np.linalg.norm(scaled_bits)
+            return base64.b64encode(scaled_bits.data).decode('utf-8')
+
+        semantic_class_grouping = {
+            "semantic_groups": {
+                "road": ['street', 'avenue', 'boulevard'],
+                "animal": ["cat", "dog", "deer"],
+                "vehicles": ["car", "truck", "scooter"],
+                },
+            "class_details": {
+                "street": {
+                    "osm_tags": {"paved": "yes", "direction": "east-west"},
+                    "embedding": {'model': "random", "vector": random_vector("street")},
+                    },
+                "avenue": {
+                    "osm_tags": {"paved": "yes", "direction": "north-south"},
+                    "embedding": {'model': "random", "vector": random_vector("avenue")},
+                    },
+                "boulevard": {
+                    "osm_tags": {"paved": "yes", "direction": "one"},
+                    "embedding": {'model': "random", "vector": random_vector("boulevard")},
+                    },
+                "cat": {
+                    "osm_tags": {"fuzzy": "yes", "friendly": "no"},
+                    "embedding": {'model': "random", "vector": random_vector("cat")},
+                    },
+                "dog": {
+                    "osm_tags": {"fuzzy": "yes", "friendly": "yes"},
+                    "embedding": {'model': "random", "vector": random_vector("dog")},
+                    },
+                "deer": {
+                    "osm_tags": {"fuzzy": "no", "friendly": "maybe"},
+                    "embedding": {'model': "random", "vector": random_vector("deer")},
+                    },
+                "car": {
+                    "osm_tags": {"wheels": "four", "size": "medium"},
+                    "embedding": {'model': "random", "vector": random_vector("car")},
+                    },
+                "truck": {
+                    "osm_tags": {"wheels": "eighteen", "size": "large"},
+                    "embedding": {'model': "random", "vector": random_vector("truck")},
+                    },
+                "scooter": {
+                    "osm_tags": {"wheels": "two", "size": "small"},
+                    "embedding": {'model': "random", "vector": random_vector("scooter")},
+                    },
+                }
+        }
+        semantic_class_grouping_path.write_text(json.dumps(semantic_class_grouping))
+
     @classmethod
     def tearDownClass(cls):
         cls._temp_dir.cleanup()
@@ -147,7 +208,7 @@ class PanoramaSemanticLandmarkExtractorTest(unittest.TestCase):
         config = PanoramaSemanticLandmarkExtractorConfig(
             openai_embedding_size=1536,
             embedding_version="test_v1",
-            auxiliary_info_key="test_key")
+            auxiliary_info_key="test_key",)
         model = psle.PanoramaSemanticLandmarkExtractor(config, Path(self._temp_dir.name))
         model.load_files()
 
@@ -158,6 +219,16 @@ class PanoramaSemanticLandmarkExtractorTest(unittest.TestCase):
 
         # Verify metadata loaded
         self.assertGreater(len(model.panorama_metadata), 0)
+
+        # Verify that the semantic groupings have been loaded
+        self.assertIn('semantic_groups', model.semantic_groupings)
+        self.assertIn('class_details', model.semantic_groupings)
+        class_details = model.semantic_groupings["class_details"]
+        for items in model.semantic_groupings["semantic_groups"].values():
+            for item in items:
+                self.assertIn(item, class_details)
+                embedding_vector = class_details[item]["embedding"]["vector"]
+                self.assertAlmostEqual(torch.linalg.norm(embedding_vector).item(), 1.0, places=5)
 
     def test_forward_basic(self):
         """Test basic forward pass with panorama data"""
