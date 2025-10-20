@@ -134,6 +134,9 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
         assert len(self.all_embeddings) > 0, f"Failed to load any embeddings from {base_path}"
         assert len(next(iter(self.all_embeddings.values()))) >= self.config.openai_embedding_size, \
             f"Requested embedding length ({self.config.openai_embedding_size}) longer than available ({len(next(iter(self.all_embeddings.values())))})"
+        
+        # remove coordinates from keys in self.panorama_metadata:
+        self.panorama_metadata = {k.split(",")[0]: v for k, v in self.panorama_metadata.items()}
 
         print(f"Total embeddings loaded: {len(self.all_embeddings)}")
         print(f"Total panoramas with landmarks: {len(self.panorama_metadata)}")
