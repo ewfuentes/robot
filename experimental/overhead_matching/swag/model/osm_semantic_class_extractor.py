@@ -2,7 +2,6 @@
 import common.torch.load_torch_deps
 import torch
 import json
-import ast
 from pathlib import Path
 from typing import Optional
 
@@ -12,6 +11,9 @@ from experimental.overhead_matching.swag.model.swag_model_input_output import (
     ModelInput, ExtractorOutput)
 from experimental.overhead_matching.swag.model.semantic_landmark_extractor import (
     compute_landmark_pano_positions, compute_landmark_sat_positions)
+from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
+    prune_landmark
+)
 
 
 class OSMSemanticClassExtractor(torch.nn.Module):
@@ -33,39 +35,48 @@ class OSMSemanticClassExtractor(torch.nn.Module):
         with open(json_path, 'r') as f:
             data = json.load(f)
 
-        # Extract ontology (defines class IDs by index)
-        self.ontology = data['ontology']
+        # Extract semantic groups (broad classes) and create ontology
+        # The ontology is a sorted list of broad class names for consistent indexing
+        semantic_groups = data['semantic_groups']
+        self.ontology = sorted(semantic_groups.keys())
         self.num_classes = len(self.ontology)
         self.broad_class_to_id = {cls: idx for idx, cls in enumerate(self.ontology)}
 
-        # Load mappings: tags -> semantic_class -> broad_class
+        # Build reverse mapping: semantic_class_name -> broad_class
+        semantic_class_to_broad = {}
+        for broad_class, semantic_class_list in semantic_groups.items():
+            for semantic_class in semantic_class_list:
+                semantic_class_to_broad[semantic_class] = broad_class
+
+        # Load class details and build mappings: tags -> semantic_class -> broad_class
+        class_details = data['class_details']
         self.mappings = []
-        for mapping_data in data['mappings']:
-            tags_str = mapping_data['tags']
-            try:
-                # Strip extra quotes if present (JSON may add them)
-                if tags_str.startswith('"') and tags_str.endswith('"'):
-                    tags_str = tags_str[1:-1]
 
-                # Parse the tag string
-                tags_list = ast.literal_eval(tags_str)
-                tags_frozen = frozenset(tags_list)
-                broad_class = mapping_data['broad_class']
+        for semantic_class_name, details in class_details.items():
+            osm_tags = details['osm_tags']
 
-                self.mappings.append({
-                    'tags': tags_frozen,
-                    'num_tags': len(tags_frozen),
-                    'broad_class': broad_class,
-                    'semantic_class': mapping_data['semantic_class']
-                })
-            except (ValueError, SyntaxError) as e:
-                print(f"Warning: Could not parse tags: {tags_str}, error: {e}")
+            # Convert OSM tags dict to frozenset of (key, value) tuples
+            tags_frozen = frozenset(osm_tags.items())
+
+            # Look up which broad class this semantic class belongs to
+            if semantic_class_name not in semantic_class_to_broad:
+                print(f"Warning: Semantic class '{semantic_class_name}' not found in any semantic group")
+                continue
+
+            broad_class = semantic_class_to_broad[semantic_class_name]
+
+            self.mappings.append({
+                'tags': tags_frozen,
+                'num_tags': len(tags_frozen),
+                'broad_class': broad_class,
+                'semantic_class': semantic_class_name
+            })
 
         # Sort by number of tags (descending) for most-specific matching
         self.mappings.sort(key=lambda x: x['num_tags'], reverse=True)
 
         print(f"OSMSemanticClassExtractor: Loaded {len(self.mappings)} mappings "
-              f"across {self.num_classes} semantic classes")
+              f"across {self.num_classes} broad semantic classes")
 
     def map_tags_to_class_id(self, tag_frozenset: frozenset) -> Optional[int]:
         """
@@ -94,7 +105,6 @@ class OSMSemanticClassExtractor(torch.nn.Module):
     @property
     def num_position_outputs(self) -> int:
         """Number of position outputs (satellite, panorama bearing)."""
-        # Match the pattern of other extractors - typically 2 for sat/pano
         return 2
 
     @property
@@ -151,7 +161,7 @@ class OSMSemanticClassExtractor(torch.nn.Module):
 
             for landmark_idx, landmark in enumerate(landmarks):
                 # Convert properties to frozenset of (key, value) tuples
-                tag_set = frozenset((k, v) for k, v in landmark.items())
+                tag_set = prune_landmark(landmark)
 
                 # Map to class ID
                 class_id = self.map_tags_to_class_id(tag_set)
