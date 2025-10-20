@@ -993,7 +993,7 @@ def load_osm_landmarks(geojson_path, sentences_dir, embeddings_dir=None):
 
             print(f"    Reading embedding files for {len(custom_ids_set)} landmarks...")
             files_processed = 0
-            for jsonl_file in embeddings_path.glob('*.jsonl'):
+            for jsonl_file in embeddings_path.glob('*'):
                 files_processed += 1
                 with open(jsonl_file, 'r') as f:
                     for line in f:
