@@ -70,6 +70,7 @@ py_library(
   deps = [
     requirement("torch"),
     "//common/torch:load_torch_deps",
+    ":swag_config_types",
   ]
 )
 
@@ -117,6 +118,17 @@ py_library(
 )
 
 py_library(
+  name = "semantic_landmark_utils",
+  srcs = ["semantic_landmark_utils.py"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+  ],
+  deps = [
+    requirement("pandas"),
+  ]
+)
+
+py_library(
   name = "alphaearth_extractor",
   srcs = ["alphaearth_extractor.py"],
   deps = [
@@ -141,6 +153,10 @@ py_test(
 py_binary(
   name = "semantic_landmark_extractor",
   srcs = ["semantic_landmark_extractor.py"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+    "//common/python:__subpackages__",
+  ],
   deps = [
     requirement("torch"),
     requirement("numpy"),
@@ -154,6 +170,7 @@ py_binary(
     "//common/ollama:pyollama",
     ":swag_model_input_output",
     ":swag_config_types",
+    ":semantic_landmark_utils",
   ]
 )
 
@@ -173,12 +190,14 @@ py_library(
   srcs = ["panorama_semantic_landmark_extractor.py"],
   visibility = [
     "//experimental/overhead_matching/swag:__subpackages__",
+    "//common/python:__subpackages__",
   ],
   deps = [
     requirement("torch"),
     "//common/torch:load_torch_deps",
     ":swag_model_input_output",
     ":swag_config_types",
+    ":semantic_landmark_utils",
   ]
 )
 

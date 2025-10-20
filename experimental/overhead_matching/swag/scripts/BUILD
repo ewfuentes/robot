@@ -238,6 +238,7 @@ py_binary(
     requirement("pandas"),
     requirement("ipdb"),
     "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
     "//common/gps:web_mercator",
   ]
 )

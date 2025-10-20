@@ -90,7 +90,6 @@ def derive_data_requirements_from_model(model, use_cached_extractors=None):
     Returns:
         set of ExtractorDataRequirement values
     """
-    from experimental.overhead_matching.swag.model.swag_config_types import ExtractorDataRequirement
 
     if use_cached_extractors is None:
         use_cached_extractors = []

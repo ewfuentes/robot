@@ -8,30 +8,8 @@ from experimental.overhead_matching.swag.model.swag_config_types import (
     PanoramaSemanticLandmarkExtractorConfig, ExtractorDataRequirement)
 from experimental.overhead_matching.swag.model.swag_model_input_output import (
     ModelInput, ExtractorOutput)
-
-
-def load_all_jsonl_from_folder(folder: Path) -> list:
-    """Load all JSONL files from a folder."""
-    all_json_objs = []
-    for file in folder.glob("*"):
-        if file.is_dir():
-            continue
-        with open(file, 'r') as f:
-            for line in f:
-                all_json_objs.append(json.loads(line))
-    return all_json_objs
-
-
-def make_embedding_dict_from_json(embedding_jsons: list) -> dict[str, list[float]]:
-    """Create a dictionary mapping custom_id to embedding vector."""
-    out = {}
-    for response in embedding_jsons:
-        assert response["error"] == None
-        custom_id = response["custom_id"]
-        embedding = response["response"]["body"]["data"][0]["embedding"]
-        assert custom_id not in out
-        out[custom_id] = embedding
-    return out
+from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
+    load_all_jsonl_from_folder, make_embedding_dict_from_json)
 
 
 def make_sentence_dict_from_json(sentence_jsons: list) -> tuple[dict[str, str], int]:

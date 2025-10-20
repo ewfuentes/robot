@@ -13,51 +13,14 @@ from experimental.overhead_matching.swag.model.swag_config_types import (
     SemanticLandmarkExtractorConfig, ExtractorDataRequirement)
 from experimental.overhead_matching.swag.model.swag_model_input_output import (
     ModelInput, ExtractorOutput)
+from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
+    load_all_jsonl_from_folder, make_embedding_dict_from_json, make_sentence_dict_from_json,
+    prune_landmark)
 from multiprocessing import Pool
 from functools import partial
 import tqdm
 
 BATCH_SIZE = 49_999
-
-def prune_landmark(props):
-    to_drop = [
-        "index",  # for props that come from a dataloader
-        "web_mercator",
-        "panorama_idxs",
-        "satellite_idxs",
-        "landmark_type",
-        "element",
-        "id",
-        "geometry",
-        "opening_hours",
-        "website",
-        "addr:city",
-        "addr:state",
-        'check_date',
-        'checked_exists',
-        'opening_date',
-        'chicago:building_id',
-        'survey:date',
-        'payment',
-        'disused',
-        'time',
-        'end_date']
-    out = set()
-    for (k, v) in props.items():
-        should_add = True
-        for prefix in to_drop:
-            if k.startswith(prefix):
-                should_add = False
-                break
-        if not should_add:
-            continue
-        if pd.isna(v):
-            continue
-        if isinstance(v, pd.Timestamp):
-            continue
-        out.add((k, v))
-
-    return frozenset(out)
 
 
 def compute_bounds_for_polygon(pano_loc_px, geometry):
@@ -521,16 +484,6 @@ def _make_sentence_embedding_request(custom_id: str, sentence: str) -> dict:
     }
 
 
-def load_all_jsonl_from_folder(folder: Path) -> list:
-
-    all_json_objs = []
-    for file in folder.glob("*"):
-        with open(file, 'r') as f:
-            for line in f:
-                all_json_objs.append(json.loads(line))
-    return all_json_objs
-
-
 def create_sentence_embedding_batch(args):
     from pathlib import Path
     import itertools
@@ -785,35 +738,6 @@ def _write_and_launch_batch(output_base, batch_idx, batch_requests, should_launc
     if should_launch:
         batch_response = launch_batch(batch_idx, batch_file, "/v1/chat/completions")
         print(f"{batch_response.id}", end=" ")
-
-
-def make_embedding_dict_from_json(embedding_jsons: list) -> dict[str, str]:
-    out = {}
-    for response in embedding_jsons:
-        assert response["error"] == None
-        custom_id = response["custom_id"]
-        embedding = response["response"]["body"]["data"][0]["embedding"]
-        assert custom_id not in out
-        out[custom_id] = embedding
-    return out
-
-
-def make_sentence_dict_from_json(sentence_jsons: list) -> dict[str, str]:
-    out = {}
-    output_tokens = 0
-    for response in sentence_jsons:
-        if len(response['response']['body']) == 0:
-            print(f"GOT EMPTY RESPONSE {response}. SKIPPING")
-            continue
-        assert response["error"] == None and \
-            response["response"]["body"]["choices"][0]["finish_reason"] == "stop" and \
-            response["response"]["body"]["choices"][0]["message"]["refusal"] == None
-        custom_id = response["custom_id"]
-        sentence = response["response"]["body"]["choices"][0]["message"]["content"]
-        assert custom_id not in out
-        out[custom_id] = sentence
-        output_tokens += response["response"]["body"]["usage"]["completion_tokens"]
-    return out, output_tokens
 
 
 def make_panorama_sentence_dict_from_json(sentence_jsons: list) -> tuple[dict[str, str], dict[str, dict], int]:

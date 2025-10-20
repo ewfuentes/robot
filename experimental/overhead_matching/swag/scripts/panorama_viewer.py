@@ -21,6 +21,8 @@ import time
 
 # Import from existing modules
 from experimental.overhead_matching.swag.data.vigor_dataset import load_landmark_geojson
+from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
+    prune_landmark)
 from common.gps import web_mercator
 
 app = Flask(__name__)
@@ -332,48 +334,12 @@ def parse_vigor_filename(filename):
     return filename
 
 
-def prune_landmark(props):
-    """Prune landmark properties (copied from semantic_landmark_extractor.py)."""
-    to_drop = [
-        "index", "web_mercator", "panorama_idxs", "satellite_idxs",
-        "landmark_type", "element", "id", "geometry",
-        "opening_hours", "website", "addr:city", "addr:state",
-        'check_date', 'checked_exists', 'opening_date',
-        'chicago:building_id', 'survey:date', 'payment',
-        'disused', 'time', 'end_date']
-    out = set()
-    for (k, v) in props.items():
-        should_add = True
-        for prefix in to_drop:
-            if k.startswith(prefix):
-                should_add = False
-                break
-        if not should_add:
-            continue
-        if pd.isna(v):
-            continue
-        if isinstance(v, pd.Timestamp):
-            continue
-        out.add((k, v))
-    return frozenset(out)
-
-
 def custom_id_from_props(props):
     """Generate custom_id from landmark properties (copied from semantic_landmark_extractor.py)."""
     json_props = json.dumps(dict(props), sort_keys=True)
     custom_id = base64.b64encode(hashlib.sha256(
         json_props.encode('utf-8')).digest()).decode('utf-8')
     return custom_id
-
-
-def load_all_jsonl_from_folder(folder):
-    """Load all JSONL files from a folder (copied from semantic_landmark_extractor.py)."""
-    all_json_objs = []
-    for file in folder.glob("*"):
-        with open(file, 'r') as f:
-            for line in f:
-                all_json_objs.append(json.loads(line))
-    return all_json_objs
 
 
 def load_osm_sentences_for_landmarks(sentence_dir, landmark_custom_ids):
