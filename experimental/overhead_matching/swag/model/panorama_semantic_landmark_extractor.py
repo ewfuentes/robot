@@ -159,10 +159,10 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
             pano_id = item['pano_id']
             matching_landmarks = self.panorama_metadata[pano_id]
 
-            num_landmarks = len(matching_landmarks) if matching_landmarks else 0
+            num_landmarks = len(matching_landmarks)
             valid_landmarks.append(num_landmarks)
 
-        max_num_landmarks = max(valid_landmarks) if valid_landmarks else 0
+        max_num_landmarks = max(valid_landmarks)
 
         # Initialize output tensors
         mask = torch.ones((batch_size, max_num_landmarks), dtype=torch.bool)
@@ -176,14 +176,8 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
             pano_id = item['pano_id']
 
             # Find matching panorama metadata
-            matching_landmarks = None
-            for meta_pano_id in self.panorama_metadata:
-                if pano_id in meta_pano_id or meta_pano_id in pano_id:
-                    matching_landmarks = self.panorama_metadata[meta_pano_id]
-                    break
+            matching_landmarks = self.panorama_metadata[pano_id]
 
-            if not matching_landmarks:
-                continue
 
             # Sort by landmark_idx to ensure consistent ordering
             matching_landmarks = sorted(matching_landmarks, key=lambda x: x["landmark_idx"])
@@ -215,7 +209,7 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
                 mask[i, landmark_idx] = False
 
                 # Track max description length for debug tensor
-                if self.all_sentences and custom_id in self.all_sentences:
+                if self.all_sentences:
                     max_description_length = max(
                         max_description_length,
                         len(self.all_sentences[custom_id].encode("utf-8")))
@@ -232,23 +226,15 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
                 pano_id = item['pano_id']
 
                 # Find matching panorama metadata
-                matching_landmarks = None
-                for meta_pano_id in self.panorama_metadata:
-                    if pano_id in meta_pano_id or meta_pano_id in pano_id:
-                        matching_landmarks = self.panorama_metadata[meta_pano_id]
-                        break
-
-                if not matching_landmarks:
-                    continue
+                matching_landmarks = self.panorama_metadata[pano_id]
 
                 matching_landmarks = sorted(matching_landmarks, key=lambda x: x["landmark_idx"])
 
                 for landmark_idx, landmark_meta in enumerate(matching_landmarks):
                     custom_id = landmark_meta["custom_id"]
-                    if custom_id in self.all_sentences:
-                        sentence_bytes = self.all_sentences[custom_id].encode('utf-8')
-                        sentence_tensor = torch.tensor(list(sentence_bytes), dtype=torch.uint8)
-                        sentence_debug[i, landmark_idx, :len(sentence_bytes)] = sentence_tensor
+                    sentence_bytes = self.all_sentences[custom_id].encode('utf-8')
+                    sentence_tensor = torch.tensor(list(sentence_bytes), dtype=torch.uint8)
+                    sentence_debug[i, landmark_idx, :len(sentence_bytes)] = sentence_tensor
 
         return ExtractorOutput(
             features=features.to(model_input.image.device),
