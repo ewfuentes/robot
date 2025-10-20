@@ -17,7 +17,7 @@ def yaw_angles_to_binary_vector(yaw_degrees: list[int]) -> list[float]:
     """
     Convert yaw angles to a 4D binary vector indicating which yaws are present.
 
-    Since only yaws 0°, 90°, 180°, 270° are possible, this creates a 4-element
+    Since only yaws 0° (north), 90° (west), 180°, 270° are possible, this creates a 4-element
     vector where each element is 1.0 if that yaw is present, 0.0 otherwise.
 
     Args:
@@ -97,11 +97,10 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
             # Load sentences (optional)
             sentence_dir = city_dir / "sentences"
             metadata_from_sentences = None
-            if sentence_dir.exists():
-                city_sentences, metadata_from_sentences, _ = make_sentence_dict_from_pano_jsons(
-                    load_all_jsonl_from_folder(sentence_dir))
-                self.all_sentences.update(city_sentences)
-                print(f"  Loaded {len(city_sentences)} sentences")
+            city_sentences, metadata_from_sentences, _ = make_sentence_dict_from_pano_jsons(
+                load_all_jsonl_from_folder(sentence_dir))
+            self.all_sentences.update(city_sentences)
+            print(f"  Loaded {len(city_sentences)} sentences")
 
             # Load panorama metadata
             metadata_file = city_dir / "embedding_requests" / "panorama_metadata.jsonl"
@@ -212,10 +211,9 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
                 mask[i, landmark_idx] = False
 
                 # Track max description length for debug tensor
-                if self.all_sentences:
-                    max_description_length = max(
-                        max_description_length,
-                        len(self.all_sentences[custom_id].encode("utf-8")))
+                max_description_length = max(
+                    max_description_length,
+                    len(self.all_sentences[custom_id].encode("utf-8")))
 
         # Re-normalize embeddings if we cropped them
         features[~mask] = features[~mask] / torch.norm(features[~mask], dim=-1).unsqueeze(-1)
@@ -224,20 +222,19 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
         sentence_debug = torch.zeros(
             (batch_size, max_num_landmarks, max_description_length), dtype=torch.uint8)
 
-        if self.all_sentences:
-            for i, item in enumerate(model_input.metadata):
-                pano_id = item['pano_id']
+        for i, item in enumerate(model_input.metadata):
+            pano_id = item['pano_id']
 
-                # Find matching panorama metadata
-                matching_landmarks = self.panorama_metadata[pano_id]
+            # Find matching panorama metadata
+            matching_landmarks = self.panorama_metadata[pano_id]
 
-                matching_landmarks = sorted(matching_landmarks, key=lambda x: x["landmark_idx"])
+            matching_landmarks = sorted(matching_landmarks, key=lambda x: x["landmark_idx"])
 
-                for landmark_idx, landmark_meta in enumerate(matching_landmarks):
-                    custom_id = landmark_meta["custom_id"]
-                    sentence_bytes = self.all_sentences[custom_id].encode('utf-8')
-                    sentence_tensor = torch.tensor(list(sentence_bytes), dtype=torch.uint8)
-                    sentence_debug[i, landmark_idx, :len(sentence_bytes)] = sentence_tensor
+            for landmark_idx, landmark_meta in enumerate(matching_landmarks):
+                custom_id = landmark_meta["custom_id"]
+                sentence_bytes = self.all_sentences[custom_id].encode('utf-8')
+                sentence_tensor = torch.tensor(list(sentence_bytes), dtype=torch.uint8)
+                sentence_debug[i, landmark_idx, :len(sentence_bytes)] = sentence_tensor
 
         return ExtractorOutput(
             features=features.to(model_input.image.device),
