@@ -9,41 +9,8 @@ from experimental.overhead_matching.swag.model.swag_config_types import (
 from experimental.overhead_matching.swag.model.swag_model_input_output import (
     ModelInput, ExtractorOutput)
 from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
-    load_all_jsonl_from_folder, make_embedding_dict_from_json)
+    load_all_jsonl_from_folder, make_embedding_dict_from_json, make_sentence_dict_from_pano_jsons)
 
-
-def make_sentence_dict_from_json(sentence_jsons: list) -> tuple[dict[str, str], int]:
-    """Create a dictionary mapping custom_id to sentence description."""
-    out = {}
-    output_tokens = 0
-    for response in sentence_jsons:
-        if len(response['response']['body']) == 0:
-            print(f"GOT EMPTY RESPONSE {response}. SKIPPING")
-            continue
-        assert response["error"] == None and \
-            response["response"]["body"]["choices"][0]["finish_reason"] == "stop" and \
-            response["response"]["body"]["choices"][0]["message"]["refusal"] == None
-        custom_id = response["custom_id"]
-
-        # Parse the JSON content to extract landmarks
-        content_str = response["response"]["body"]["choices"][0]["message"]["content"]
-        try:
-            content = json.loads(content_str)
-            landmarks = content.get("landmarks", [])
-
-            # Create entries for each landmark in this panorama
-            panorama_id = response["custom_id"]
-            for idx, landmark in enumerate(landmarks):
-                description = landmark.get("description", "")
-                if description:
-                    landmark_custom_id = f"{panorama_id}__landmark_{idx}"
-                    out[landmark_custom_id] = description
-        except json.JSONDecodeError as e:
-            print(f"Failed to parse JSON for {custom_id}: {e}")
-            continue
-
-        output_tokens += response["response"]["body"]["usage"]["completion_tokens"]
-    return out, output_tokens
 
 
 def yaw_angles_to_radians(yaw_degrees: list[int]) -> tuple[float, float]:
@@ -163,7 +130,7 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
             # Load sentences (optional)
             sentence_dir = city_dir / "sentences"
             if sentence_dir.exists():
-                city_sentences, _ = make_sentence_dict_from_json(
+                city_sentences, _ = make_sentence_dict_from_pano_jsons(
                     load_all_jsonl_from_folder(sentence_dir))
                 self.all_sentences.update(city_sentences)
                 print(f"  Loaded {len(city_sentences)} sentences")

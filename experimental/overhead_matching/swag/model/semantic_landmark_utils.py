@@ -73,6 +73,30 @@ def make_sentence_dict_from_json(sentence_jsons: list) -> tuple[dict[str, str], 
     return out, output_tokens
 
 
+def make_sentence_dict_from_pano_jsons(sentence_jsons: list) -> tuple[dict[str, str], int]:
+    """Create a dictionary mapping landmark_custom_id to sentence description. For panorama outputs where a json object is returned by OpenAI"""
+    pano_out = {}
+    out, output_tokens = make_sentence_dict_from_json(sentence_jsons)
+    for custom_id, content_str in out.items():
+        try:
+            content = json.loads(content_str)
+            landmarks = content.get("landmarks", [])
+
+            # Create entries for each landmark in this panorama
+            panorama_id = custom_id
+            for idx, landmark in enumerate(landmarks):
+                description = landmark.get("description", "")
+                if description:
+                    landmark_custom_id = f"{panorama_id}__landmark_{idx}"
+                    pano_out[landmark_custom_id] = description
+        except json.JSONDecodeError as e:
+            print(f"Failed to parse JSON for {custom_id}: {e}")
+            continue
+
+    return pano_out, output_tokens
+
+
+
 def prune_landmark(props):
     """Prune landmark properties by removing unwanted fields.
 
