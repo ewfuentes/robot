@@ -3,6 +3,7 @@ import common.torch.load_torch_deps
 import torch
 import math
 import json
+import base64
 from pathlib import Path
 from experimental.overhead_matching.swag.model.swag_config_types import (
     PanoramaSemanticLandmarkExtractorConfig, ExtractorDataRequirement)
