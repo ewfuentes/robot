@@ -15,6 +15,7 @@ from experimental.overhead_matching.swag.model.panorama_semantic_landmark_extrac
 from torch.nn.init import xavier_uniform_
 from experimental.overhead_matching.swag.model.synthetic_landmark_extractor import SyntheticLandmarkExtractor
 from experimental.overhead_matching.swag.model.absolute_position_extractor import AbsolutePositionExtractor
+from experimental.overhead_matching.swag.model.osm_semantic_class_extractor import OSMSemanticClassExtractor
 from experimental.overhead_matching.swag.model.swag_config_types import (
     FeatureMapExtractorConfig,
     DinoFeatureMapExtractorConfig,
@@ -28,6 +29,7 @@ from experimental.overhead_matching.swag.model.swag_config_types import (
     PanoramaSemanticLandmarkExtractorConfig,
     AbsolutePositionExtractorConfig,
     SyntheticLandmarkExtractorConfig,
+    OSMSemanticClassExtractorConfig,
 
     PositionEmbeddingConfig,
     PlanarPositionEmbeddingConfig,
@@ -78,6 +80,8 @@ def create_extractor(config: ExtractorConfig, auxiliary_info: dict[str, Any]):
         case SyntheticLandmarkExtractorConfig(): return SyntheticLandmarkExtractor(config)
         case AbsolutePositionExtractorConfig(): return AbsolutePositionExtractor(config)
         case AlphaEarthExtractorConfig(): return AlphaEarthExtractor(
+                config, auxiliary_info[config.auxiliary_info_key])
+        case OSMSemanticClassExtractorConfig(): return OSMSemanticClassExtractor(
                 config, auxiliary_info[config.auxiliary_info_key])
     raise NotImplementedError(f"Unhandled Config Type: {config}")
 
