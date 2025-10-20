@@ -150,13 +150,9 @@ class PanoramaSemanticLandmarkExtractorTest(unittest.TestCase):
         model = psle.PanoramaSemanticLandmarkExtractor(config, Path(self._temp_dir.name))
         model.load_files()
 
-        # Verify embeddings loaded
-        self.assertGreater(len(model.all_embeddings), 0)
         # Each panorama has 3 landmarks, 2 panoramas per city, 2 cities = 12 total
         self.assertEqual(len(model.all_embeddings), 12)
 
-        # Verify sentences loaded
-        self.assertGreater(len(model.all_sentences), 0)
         self.assertEqual(len(model.all_sentences), 12)
 
         # Verify metadata loaded
@@ -187,40 +183,48 @@ class PanoramaSemanticLandmarkExtractorTest(unittest.TestCase):
         self.assertEqual(output.features.shape[2], 1536)
         self.assertEqual(output.mask.shape[0], batch_size)
         self.assertEqual(output.positions.shape[0], batch_size)
-        self.assertEqual(output.positions.shape[2], 2)  # min/max bounds
-        self.assertEqual(output.positions.shape[3], 2)  # [vertical, horizontal]
+        self.assertEqual(output.positions.shape[2], 2)  # 2 position embeddings
+        self.assertEqual(output.positions.shape[3], 2)  # 2 values per position
 
         # Verify at least some landmarks are not masked
         self.assertFalse(output.mask.all())
 
-    def test_angular_position_computation(self):
-        """Test that yaw angles are correctly converted to angular positions"""
-        # Test single angle
-        angle1, angle2 = psle.yaw_angles_to_radians([0])
-        self.assertAlmostEqual(angle1, 0.0, places=5)
-        self.assertAlmostEqual(angle2, 0.0, places=5)
+    def test_yaw_binary_vector_computation(self):
+        """Test that yaw angles are correctly converted to binary presence vectors"""
+        # Test single yaw angles
+        vec = psle.yaw_angles_to_binary_vector([0])
+        self.assertEqual(vec, [1.0, 0.0, 0.0, 0.0])
 
-        # Test continuous range: [0, 90] (adjacent, continuous)
-        angle1, angle2 = psle.yaw_angles_to_radians([0, 90])
-        self.assertAlmostEqual(angle1, 0.0, places=5)
-        self.assertAlmostEqual(angle2, math.pi / 2, places=5)
+        vec = psle.yaw_angles_to_binary_vector([90])
+        self.assertEqual(vec, [0.0, 1.0, 0.0, 0.0])
 
-        # Test continuous wrap-around: [270, 0] = [-pi/2, 0] (adjacent across boundary)
-        angle1, angle2 = psle.yaw_angles_to_radians([270, 0])
-        self.assertAlmostEqual(angle1, -math.pi / 2, places=5)
-        self.assertAlmostEqual(angle2, 0.0, places=5)
+        vec = psle.yaw_angles_to_binary_vector([180])
+        self.assertEqual(vec, [0.0, 0.0, 1.0, 0.0])
 
-        # Test discontinuous range: [0, 180] (opposite sides, not adjacent)
-        # Should return only the first angle
-        angle1, angle2 = psle.yaw_angles_to_radians([0, 180])
-        self.assertAlmostEqual(angle1, 0.0, places=5)
-        self.assertAlmostEqual(angle2, 0.0, places=5)  # Same as first
+        vec = psle.yaw_angles_to_binary_vector([270])
+        self.assertEqual(vec, [0.0, 0.0, 0.0, 1.0])
 
-        # Test discontinuous range: [90, 270] (opposite sides)
-        # Should return only the first angle
-        angle1, angle2 = psle.yaw_angles_to_radians([90, 270])
-        self.assertAlmostEqual(angle1, math.pi / 2, places=5)
-        self.assertAlmostEqual(angle2, math.pi / 2, places=5)  # Same as first
+        # Test multiple yaw angles
+        vec = psle.yaw_angles_to_binary_vector([0, 90])
+        self.assertEqual(vec, [1.0, 1.0, 0.0, 0.0])
+
+        vec = psle.yaw_angles_to_binary_vector([90, 270])
+        self.assertEqual(vec, [0.0, 1.0, 0.0, 1.0])
+
+        vec = psle.yaw_angles_to_binary_vector([0, 180])
+        self.assertEqual(vec, [1.0, 0.0, 1.0, 0.0])
+
+        # Test all yaws present
+        vec = psle.yaw_angles_to_binary_vector([0, 90, 180, 270])
+        self.assertEqual(vec, [1.0, 1.0, 1.0, 1.0])
+
+        # Test empty list
+        vec = psle.yaw_angles_to_binary_vector([])
+        self.assertEqual(vec, [0.0, 0.0, 0.0, 0.0])
+
+        # Test that invalid yaw raises error
+        with self.assertRaises(ValueError):
+            psle.yaw_angles_to_binary_vector([45])
 
     def test_error_on_satellite_data(self):
         """Test that extractor raises error when given satellite data"""
@@ -304,7 +308,7 @@ class PanoramaSemanticLandmarkExtractorTest(unittest.TestCase):
         self.assertEqual(model.data_requirements, [])
 
     def test_position_output_format(self):
-        """Test that positions are output in angular format suitable for SphericalPositionEmbedding"""
+        """Test that positions are output as binary vectors indicating yaw presence"""
         config = PanoramaSemanticLandmarkExtractorConfig(
             openai_embedding_size=1536,
             embedding_version="test_v1",
@@ -323,20 +327,21 @@ class PanoramaSemanticLandmarkExtractorTest(unittest.TestCase):
         for i in range(output.features.shape[1]):
             if not output.mask[0, i]:
                 # Positions should be [batch, num_landmarks, 2, 2]
-                # dim 2: min/max bounds
-                # dim 3: [horizontal_angle, horizontal_angle] (no vertical component)
-                pos_bound1 = output.positions[0, i, 0, :]
-                pos_bound2 = output.positions[0, i, 1, :]
+                # Split 4D binary vector across 2 positions:
+                # position 0: [yaw_0_present, yaw_90_present]
+                # position 1: [yaw_180_present, yaw_270_present]
+                pos0 = output.positions[0, i, 0, :]
+                pos1 = output.positions[0, i, 1, :]
 
-                # Both elements in dim 3 should be the same (horizontal angle only)
-                self.assertAlmostEqual(pos_bound1[0].item(), pos_bound1[1].item(), places=5)
-                self.assertAlmostEqual(pos_bound2[0].item(), pos_bound2[1].item(), places=5)
+                # Each element should be either 0.0 or 1.0
+                for val in [pos0[0].item(), pos0[1].item(), pos1[0].item(), pos1[1].item()]:
+                    self.assertTrue(val == 0.0 or val == 1.0,
+                                    f"Yaw vector element should be 0.0 or 1.0, got {val}")
 
-                # Horizontal angles should be in [-π, π]
-                self.assertGreaterEqual(pos_bound1[0].item(), -math.pi - 0.01)
-                self.assertLessEqual(pos_bound1[0].item(), math.pi + 0.01)
-                self.assertGreaterEqual(pos_bound2[0].item(), -math.pi - 0.01)
-                self.assertLessEqual(pos_bound2[0].item(), math.pi + 0.01)
+                # At least one yaw should be present (not all zeros)
+                total = pos0.sum().item() + pos1.sum().item()
+                self.assertTrue(total > 0,
+                                "At least one yaw should be present in the vector")
 
                 break
 

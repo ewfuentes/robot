@@ -15,7 +15,7 @@ from experimental.overhead_matching.swag.model.swag_model_input_output import (
     ModelInput, ExtractorOutput)
 from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
     load_all_jsonl_from_folder, make_embedding_dict_from_json, make_sentence_dict_from_json,
-    prune_landmark)
+    prune_landmark, make_sentence_dict_from_pano_jsons)
 from multiprocessing import Pool
 from functools import partial
 import tqdm
@@ -499,7 +499,7 @@ def create_sentence_embedding_batch(args):
 
     if is_panorama:
         print("Processing panorama landmark responses...")
-        sentence_dict, metadata_dict, output_tokens = make_panorama_sentence_dict_from_json(all_responses)
+        sentence_dict, metadata_dict, output_tokens = make_sentence_dict_from_pano_jsons(all_responses)
         print(f"Extracted {len(sentence_dict)} landmark descriptions from {len(all_responses)} panorama responses")
         print(f"Total output tokens: {output_tokens}")
 
@@ -611,6 +611,8 @@ def create_panorama_description_requests(args):
                 image_path = pano_folder / f"yaw_{yaw:03d}.png"
             if image_path.exists():
                 images_for_pano.append((yaw, image_path))
+            else:
+                raise RuntimeError(f"Image not found! {image_path}")
 
         if len(images_for_pano) == 4:
             panorama_image_map[pano_stem] = images_for_pano
@@ -738,66 +740,6 @@ def _write_and_launch_batch(output_base, batch_idx, batch_requests, should_launc
     if should_launch:
         batch_response = launch_batch(batch_idx, batch_file, "/v1/chat/completions")
         print(f"{batch_response.id}", end=" ")
-
-
-def make_panorama_sentence_dict_from_json(sentence_jsons: list) -> tuple[dict[str, str], dict[str, dict], int]:
-    """
-    Parse panorama landmark extraction responses.
-
-    Returns:
-        sentences: dict mapping custom_id to landmark description
-        metadata: dict mapping custom_id to metadata (panorama_id, landmark_idx, yaw_angles)
-        output_tokens: total output tokens used
-    """
-    sentences = {}
-    metadata = {}
-    output_tokens = 0
-
-    for response in sentence_jsons:
-        if len(response['response']['body']) == 0:
-            print(f"GOT EMPTY RESPONSE {response}. SKIPPING")
-            continue
-
-        assert response["error"] == None and \
-            response["response"]["body"]["choices"][0]["finish_reason"] == "stop" and \
-            response["response"]["body"]["choices"][0]["message"]["refusal"] == None
-
-        panorama_id = response["custom_id"]
-        content_str = response["response"]["body"]["choices"][0]["message"]["content"]
-
-        # Parse the JSON content
-        try:
-            content = json.loads(content_str)
-        except json.JSONDecodeError as e:
-            print(f"Failed to parse JSON for {panorama_id}: {e}")
-            print(f"Content: {content_str[:200]}...")
-            continue
-
-        # Extract landmarks
-        landmarks = content.get("landmarks", [])
-        for idx, landmark in enumerate(landmarks):
-            description = landmark.get("description", "")
-            yaw_angles = landmark.get("yaw_angles", [])
-
-            if not description:
-                continue
-
-            # Create custom_id for this landmark
-            # Format: {panorama_id}__landmark_{idx}
-            landmark_custom_id = f"{panorama_id}__landmark_{idx}"
-
-            assert landmark_custom_id not in sentences, f"Duplicate custom_id: {landmark_custom_id}"
-
-            sentences[landmark_custom_id] = description
-            metadata[landmark_custom_id] = {
-                "panorama_id": panorama_id,
-                "landmark_idx": idx,
-                "yaw_angles": yaw_angles
-            }
-
-        output_tokens += response["response"]["body"]["usage"]["completion_tokens"]
-
-    return sentences, metadata, output_tokens
 
 
 if __name__ == "__main__":

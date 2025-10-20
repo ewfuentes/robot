@@ -73,27 +73,49 @@ def make_sentence_dict_from_json(sentence_jsons: list) -> tuple[dict[str, str], 
     return out, output_tokens
 
 
-def make_sentence_dict_from_pano_jsons(sentence_jsons: list) -> tuple[dict[str, str], int]:
-    """Create a dictionary mapping landmark_custom_id to sentence description. For panorama outputs where a json object is returned by OpenAI"""
+def make_sentence_dict_from_pano_jsons(sentence_jsons: list) -> tuple[dict[str, str], dict, int]:
+    """Create a dictionary mapping landmark_custom_id to sentence description. For panorama outputs where a json object is returned by OpenAI
+
+    Returns:
+        tuple of (sentences_dict, metadata_by_pano_id, output_tokens) where:
+        - sentences_dict: maps landmark_custom_id to description string
+        - metadata_by_pano_id: maps panorama_id to list of landmark metadata dicts
+        - output_tokens: total number of output tokens used
+    """
     pano_out = {}
+    metadata = {}  # Maps pano_id -> list of landmarks
     out, output_tokens = make_sentence_dict_from_json(sentence_jsons)
     for custom_id, content_str in out.items():
         try:
             content = json.loads(content_str)
-            landmarks = content.get("landmarks", [])
-
-            # Create entries for each landmark in this panorama
-            panorama_id = custom_id
-            for idx, landmark in enumerate(landmarks):
-                description = landmark.get("description", "")
-                if description:
-                    landmark_custom_id = f"{panorama_id}__landmark_{idx}"
-                    pano_out[landmark_custom_id] = description
         except json.JSONDecodeError as e:
             print(f"Failed to parse JSON for {custom_id}: {e}")
             continue
 
-    return pano_out, output_tokens
+        landmarks = content.get("landmarks", [])
+
+        # Create entries for each landmark in this panorama
+        panorama_id = custom_id
+
+        if panorama_id not in metadata:
+            metadata[panorama_id] = []
+
+        for idx, landmark in enumerate(landmarks):
+            description = landmark["description"]
+            yaw_angles = landmark["yaw_angles"]
+            if not description:
+                raise RuntimeError(f"No description! {landmark}")
+
+            landmark_custom_id = f"{panorama_id}__landmark_{idx}"
+            pano_out[landmark_custom_id] = description
+
+            # Append to metadata list for this panorama
+            metadata[panorama_id].append({
+                "landmark_idx": idx,
+                "custom_id": landmark_custom_id,
+                "yaw_angles": yaw_angles
+            })
+    return pano_out, metadata, output_tokens
 
 
 

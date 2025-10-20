@@ -13,71 +13,38 @@ from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
 
 
 
-def yaw_angles_to_radians(yaw_degrees: list[int]) -> tuple[float, float]:
+def yaw_angles_to_binary_vector(yaw_degrees: list[int]) -> list[float]:
     """
-    Convert yaw angles in degrees to angular bounds in radians.
+    Convert yaw angles to a 4D binary vector indicating which yaws are present.
 
-    Panorama coordinate system:
-    - 0° yaw = north = 0 radians (center of panorama)
-    - 90° yaw = east = π/2 radians (CCW from north)
-    - 180° yaw = south = π radians (edges)
-    - 270° yaw = west = -π/2 radians (CW from north)
+    Since only yaws 0°, 90°, 180°, 270° are possible, this creates a 4-element
+    vector where each element is 1.0 if that yaw is present, 0.0 otherwise.
 
-    For continuous ranges (adjacent angles like [0, 90] or [270, 0]),
-    returns (min_angle, max_angle).
-
-    For discontinuous ranges (non-adjacent like [90, 270] or [0, 180]),
-    returns (first_angle, first_angle) to use just the first value.
+    Args:
+        yaw_degrees: List of yaw angles (each should be 0, 90, 180, or 270)
 
     Returns:
-        (angle1, angle2) in radians, range [-π, π]
+        4-element list of floats: [yaw_0_present, yaw_90_present, yaw_180_present, yaw_270_present]
+
+    Examples:
+        [0] -> [1.0, 0.0, 0.0, 0.0]
+        [0, 90] -> [1.0, 1.0, 0.0, 0.0]
+        [90, 270] -> [0.0, 1.0, 0.0, 1.0]
+        [] -> [0.0, 0.0, 0.0, 0.0]
     """
-    if not yaw_degrees:
-        return (0.0, 0.0)
+    # Initialize all to 0.0
+    vector = [0.0, 0.0, 0.0, 0.0]
 
-    if len(yaw_degrees) == 1:
-        # Single angle: return it twice (degenerate range)
-        rad = math.radians(yaw_degrees[0])
-        # Normalize to [-π, π]
-        if rad > math.pi:
-            rad -= 2 * math.pi
-        return (rad, rad)
+    # Map yaw degrees to indices
+    yaw_to_idx = {0: 0, 90: 1, 180: 2, 270: 3}
 
-    # Convert to radians and normalize to [-π, π]
-    radians = []
-    for deg in yaw_degrees:
-        rad = math.radians(deg)
-        # Normalize: 270° = 3π/2 → -π/2
-        if rad > math.pi:
-            rad -= 2 * math.pi
-        radians.append(rad)
+    for yaw in yaw_degrees:
+        if yaw in yaw_to_idx:
+            vector[yaw_to_idx[yaw]] = 1.0
+        else:
+            raise ValueError(f"Invalid yaw angle: {yaw}. Must be 0, 90, 180, or 270.")
 
-    # Sort angles
-    radians_sorted = sorted(radians)
-
-    # Check if angles form a continuous range
-    # Continuous means all consecutive angles are < 180° apart (strictly less than)
-    # Angles exactly 180° apart or more are considered discontinuous
-    # Don't check wrap-around (last to first) for continuity - only forward gaps
-    is_continuous = True
-    for i in range(len(radians_sorted) - 1):  # Don't wrap around
-        gap = radians_sorted[i + 1] - radians_sorted[i]
-        # Gap should be positive and < π for continuous range (strictly less than)
-        if gap >= math.pi - 1e-6:  # Use small epsilon for floating point comparison
-            is_continuous = False
-            break
-
-    if not is_continuous:
-        # Discontinuous range: use only the first angle
-        first_angle = radians[0]  # Use original first angle, not sorted
-        return (first_angle, first_angle)
-
-    # Continuous range: return min and max
-    # Need to handle wrap-around (e.g., [270°, 0°] = [-π/2, 0])
-    min_angle = radians_sorted[0]
-    max_angle = radians_sorted[-1]
-
-    return (min_angle, max_angle)
+    return vector
 
 
 class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
@@ -129,8 +96,9 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
 
             # Load sentences (optional)
             sentence_dir = city_dir / "sentences"
+            metadata_from_sentences = None
             if sentence_dir.exists():
-                city_sentences, _ = make_sentence_dict_from_pano_jsons(
+                city_sentences, metadata_from_sentences, _ = make_sentence_dict_from_pano_jsons(
                     load_all_jsonl_from_folder(sentence_dir))
                 self.all_sentences.update(city_sentences)
                 print(f"  Loaded {len(city_sentences)} sentences")
@@ -138,6 +106,7 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
             # Load panorama metadata
             metadata_file = city_dir / "embedding_requests" / "panorama_metadata.jsonl"
             if metadata_file.exists():
+                new_metadata = {}
                 with open(metadata_file, 'r') as f:
                     for line in f:
                         meta = json.loads(line)
@@ -146,15 +115,21 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
                         custom_id = meta["custom_id"]
                         yaw_angles = meta.get("yaw_angles", [])
 
-                        if pano_id not in self.panorama_metadata:
-                            self.panorama_metadata[pano_id] = []
+                        if pano_id not in new_metadata:
+                            new_metadata[pano_id] = []
 
-                        self.panorama_metadata[pano_id].append({
+                        new_metadata[pano_id].append({
                             "landmark_idx": landmark_idx,
                             "custom_id": custom_id,
                             "yaw_angles": yaw_angles
                         })
-                print(f"  Loaded metadata for {len([k for k in self.panorama_metadata if k.startswith(city_name.split()[0])])} panoramas")
+                new_pano_metadata_len = len(new_metadata)
+                old_metadata_size = len(self.panorama_metadata)
+                print(f"  Loaded metadata for {len(new_metadata)} panoramas")
+                if metadata_from_sentences is not None:
+                    assert metadata_from_sentences == new_metadata
+                self.panorama_metadata.update(new_metadata)
+                assert len(self.panorama_metadata) == old_metadata_size + new_pano_metadata_len
 
         assert len(self.all_embeddings) > 0, f"Failed to load any embeddings from {base_path}"
         assert len(next(iter(self.all_embeddings.values()))) >= self.config.openai_embedding_size, \
@@ -182,13 +157,7 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
         valid_landmarks = []
         for item in model_input.metadata:
             pano_id = item['pano_id']
-            # The pano_id from metadata might have extra info, match by prefix
-            # Find matching panorama in our metadata
-            matching_landmarks = None
-            for meta_pano_id in self.panorama_metadata:
-                if pano_id in meta_pano_id or meta_pano_id in pano_id:
-                    matching_landmarks = self.panorama_metadata[meta_pano_id]
-                    break
+            matching_landmarks = self.panorama_metadata[pano_id]
 
             num_landmarks = len(matching_landmarks) if matching_landmarks else 0
             valid_landmarks.append(num_landmarks)
@@ -232,17 +201,15 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
                 features[i, landmark_idx, :] = torch.tensor(
                     self.all_embeddings[custom_id])[:self.output_dim]
 
-                # Compute angular positions from yaw angles
-                angle1, angle2 = yaw_angles_to_radians(yaw_angles)
+                # Convert yaw angles to binary presence vector
+                yaw_vector = yaw_angles_to_binary_vector(yaw_angles)
 
                 # Position format: [batch, num_landmarks, 2, 2]
-                # Shape is [batch, num_landmarks, 2, 2] where:
-                # - dim 2 (size 2): min/max bounds of the landmark
-                # - dim 3 (size 2): [horizontal_angle, horizontal_angle]
-                #   (no vertical component - landmarks are at horizon level)
-                # For SphericalPositionEmbedding, both positions are just horizontal angles
-                positions[i, landmark_idx, 0, :] = torch.tensor([angle1, angle1])
-                positions[i, landmark_idx, 1, :] = torch.tensor([angle2, angle2])
+                # Split the 4D binary vector across 2 positions:
+                # - position 0: [yaw_0_present, yaw_90_present]
+                # - position 1: [yaw_180_present, yaw_270_present]
+                positions[i, landmark_idx, 0, :] = torch.tensor([yaw_vector[0], yaw_vector[1]])
+                positions[i, landmark_idx, 1, :] = torch.tensor([yaw_vector[2], yaw_vector[3]])
 
                 # Mark as valid (False = not masked)
                 mask[i, landmark_idx] = False
