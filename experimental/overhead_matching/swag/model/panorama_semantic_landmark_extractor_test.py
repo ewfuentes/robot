@@ -251,8 +251,42 @@ class PanoramaSemanticLandmarkExtractorTest(unittest.TestCase):
         output = model(model_input)
 
         # Verify output shape
+        self.assertEqual(model.output_dim, config.openai_embedding_size)
         self.assertEqual(output.features.shape[0], batch_size)
-        self.assertEqual(output.features.shape[2], 1536)
+        self.assertEqual(output.features.shape[2], model.output_dim)
+        self.assertEqual(output.mask.shape[0], batch_size)
+        self.assertEqual(output.positions.shape[0], batch_size)
+        self.assertEqual(output.positions.shape[2], 2)  # min/max bounds
+        self.assertEqual(output.positions.shape[3], 2)  # [vertical, horizontal]
+
+        # Verify at least some landmarks are not masked
+        self.assertFalse(output.mask.all())
+
+    def test_semantic_grouping(self):
+        """Test basic forward pass with panorama data"""
+        config = PanoramaSemanticLandmarkExtractorConfig(
+            openai_embedding_size=1536,
+            embedding_version="test_v1",
+            auxiliary_info_key="test_key",
+            should_classify_against_grouping=True)
+        model = psle.PanoramaSemanticLandmarkExtractor(config, Path(self._temp_dir.name))
+
+        # Create test input
+        batch_size = 2
+        pano_ids = list(self.test_panoramas.keys())[:batch_size]
+
+        model_input = ModelInput(
+            image=torch.zeros((batch_size, 3, 256, 512)),
+            metadata=[{"pano_id": pid} for pid in pano_ids]
+        )
+
+        # Forward pass
+        output = model(model_input)
+
+        # Verify output shape
+        self.assertEqual(model.output_dim, len(model.semantic_groupings["semantic_groups"]))
+        self.assertEqual(output.features.shape[0], batch_size)
+        self.assertEqual(output.features.shape[2], model.output_dim)
         self.assertEqual(output.mask.shape[0], batch_size)
         self.assertEqual(output.positions.shape[0], batch_size)
         self.assertEqual(output.positions.shape[2], 2)  # 2 position embeddings

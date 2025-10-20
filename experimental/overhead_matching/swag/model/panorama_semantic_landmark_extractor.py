@@ -47,6 +47,30 @@ def yaw_angles_to_binary_vector(yaw_degrees: list[int]) -> list[float]:
     return vector
 
 
+def classify_against_grouping(features, semantic_grouping):
+    all_low_level_classes = list(semantic_grouping["class_details"].keys())
+    num_low_level_classes = len(all_low_level_classes)
+    num_high_level_classes = len(semantic_grouping["semantic_groups"])
+
+    low_level_class_embeddings = []
+    for v in semantic_grouping["class_details"].values():
+        low_level_class_embeddings.append(v["embedding"]["vector"])
+    low_level_class_embeddings = torch.stack(low_level_class_embeddings)
+
+    # Create a lookup table from low level classes to high level classes
+    high_level_class_from_low_level = torch.zeros((num_high_level_classes, num_low_level_classes))
+    for hlc_idx, low_level_classes in enumerate(semantic_grouping["semantic_groups"].values()):
+        for llc in low_level_classes:
+            llc_idx = all_low_level_classes.index(llc)
+            high_level_class_from_low_level[hlc_idx, llc_idx] = 1.0
+
+    similarities = features @ low_level_class_embeddings.T
+    max_similarities = torch.argmax(similarities, -1)
+    max_one_hot = torch.nn.functional.one_hot(max_similarities, num_classes=num_low_level_classes)
+    out = max_one_hot.to(torch.float32) @ high_level_class_from_low_level.T
+    return out
+
+
 class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
     """
     Extractor for panorama-based semantic landmarks.
@@ -192,7 +216,7 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
 
         # Initialize output tensors
         mask = torch.ones((batch_size, max_num_landmarks), dtype=torch.bool)
-        features = torch.zeros((batch_size, max_num_landmarks, self.output_dim))
+        features = torch.zeros((batch_size, max_num_landmarks, self.config.openai_embedding_size))
         positions = torch.zeros((batch_size, max_num_landmarks, 2, 2))
 
         max_description_length = 0
@@ -219,7 +243,7 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
 
                 # Crop embedding if needed
                 features[i, landmark_idx, :] = torch.tensor(
-                    self.all_embeddings[custom_id])[:self.output_dim]
+                    self.all_embeddings[custom_id])[:self.config.openai_embedding_size]
 
                 # Convert yaw angles to binary presence vector
                 yaw_vector = yaw_angles_to_binary_vector(yaw_angles)
@@ -239,8 +263,11 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
                     max_description_length,
                     len(self.all_sentences[custom_id].encode("utf-8")))
 
-        # Re-normalize embeddings if we cropped them
-        features[~mask] = features[~mask] / torch.norm(features[~mask], dim=-1).unsqueeze(-1)
+        if self.config.should_classify_against_grouping:
+            features = classify_against_grouping(features, self.semantic_groupings)
+        else:
+            # Re-normalize embeddings if we cropped them
+            features[~mask] = features[~mask] / torch.norm(features[~mask], dim=-1).unsqueeze(-1)
 
         # Create debug tensor for sentences
         sentence_debug = torch.zeros(
@@ -268,7 +295,10 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
 
     @property
     def output_dim(self):
-        return self.config.openai_embedding_size
+        if self.config.should_classify_against_grouping:
+            return len(self.semantic_groupings["semantic_groups"])
+        else:
+            return self.config.openai_embedding_size
 
     @property
     def num_position_outputs(self):
