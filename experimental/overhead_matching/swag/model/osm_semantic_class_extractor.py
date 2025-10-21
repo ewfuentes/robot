@@ -29,8 +29,8 @@ class OSMSemanticClassExtractor(torch.nn.Module):
         self.config = config
 
         # Construct full path from base_path and embedding_version
-        json_filename = f"{config.embedding_version}.json"
-        json_path = Path(base_path).expanduser() / json_filename
+        json_filename = "semantic_class_grouping.json"
+        json_path = Path(base_path).expanduser() / config.embedding_version / json_filename
 
         with open(json_path, 'r') as f:
             data = json.load(f)
