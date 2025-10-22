@@ -73,6 +73,17 @@ py_library(
   ]
 )
 
+py_library(
+  name = "model_inspector",
+  srcs = ["model_inspector.py"],
+  visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+  deps = [
+    requirement("torch"),
+    ":pairing",
+    "//experimental/overhead_matching/swag/model:swag_model_input_output",
+  ]
+)
+
 
 py_binary(
   name="train",
@@ -81,6 +92,7 @@ py_binary(
   deps=[
     ":logging_utils",
     ":lr_sweep",
+    ":model_inspector",
     ":pairing",
     ":losses",
     ":distances",
@@ -241,6 +253,21 @@ py_binary(
     "//experimental/overhead_matching/swag/data:vigor_dataset",
     "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
     "//common/gps:web_mercator",
+  ]
+)
+
+py_binary(
+  name="inspect_captured_batches",
+  srcs=["inspect_captured_batches.py"],
+  deps=[
+    ":model_inspector",
+    requirement("flask"),
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("pyyaml"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_extractor",
   ]
 )
 

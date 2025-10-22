@@ -90,6 +90,7 @@ class VigorDatasetConfig(NamedTuple):
     should_load_images: bool = True
     should_load_landmarks: bool = True
     landmark_version: str = "v1"
+    load_cache_debug: bool = False
 
 
 class VigorDatasetItem(NamedTuple):
@@ -350,7 +351,7 @@ def load_tensor_caches(info: TensorCacheInfo):
     return out
 
 
-def get_cached_tensors(metadata: dict, caches: list[TensorCache]):
+def get_cached_tensors(metadata: dict, caches: list[TensorCache], load_debug: bool = False):
     key = metadata["path"].name.encode('utf-8')
     out = {}
     for cache in caches:
@@ -359,7 +360,19 @@ def get_cached_tensors(metadata: dict, caches: list[TensorCache]):
             assert stored_value is not None, f"Failed to get: {key} from cache at: {cache.db.path()}"
             deserialized = np.load(io.BytesIO(stored_value))
             # Always use ExtractorOutput for cached tensors
-            out[cache.key] = ExtractorOutput(**{k: torch.tensor(v) for k, v in deserialized.items() if not k.startswith("debug")})
+            # Separate debug dict from other fields (debug dict uses dot notation: "debug.key_name")
+            extractor_dict = {}
+            debug_dict = {}
+            for k, v in deserialized.items():
+                if k.startswith("debug."):
+                    # Store debug items in debug dict (removing the "debug." prefix) only if requested
+                    if load_debug:
+                        debug_dict[k[6:]] = torch.tensor(v)
+                else:
+                    extractor_dict[k] = torch.tensor(v)
+
+            extractor_dict['debug'] = debug_dict
+            out[cache.key] = ExtractorOutput(**extractor_dict)
     return out
 
 
@@ -558,8 +571,8 @@ class VigorDataset(torch.utils.data.Dataset):
 
         sat_metadata["original_shape"] = self._original_satellite_patch_size
 
-        cached_pano_tensors = get_cached_tensors(pano_metadata, self._panorama_tensor_caches)
-        cached_sat_tensors = get_cached_tensors(sat_metadata, self._satellite_tensor_caches)
+        cached_pano_tensors = get_cached_tensors(pano_metadata, self._panorama_tensor_caches, self._config.load_cache_debug)
+        cached_sat_tensors = get_cached_tensors(sat_metadata, self._satellite_tensor_caches, self._config.load_cache_debug)
 
         if should_log:
             t3 = time.time()
@@ -675,7 +688,13 @@ class VigorDataset(torch.utils.data.Dataset):
 
                 sat_metadata["original_shape"] = self.dataset._original_satellite_patch_size
 
-                cached_sat_tensors = get_cached_tensors(sat_metadata, self.dataset._satellite_tensor_caches)
+                cached_sat_tensors = get_cached_tensors(sat_metadata, self.dataset._satellite_tensor_caches, self.dataset._config.load_cache_debug)
+
+                if should_log:
+                    t3 = time.time()
+                    t2_val = t2 if self.dataset._config.should_load_landmarks else t1
+                    logger.debug(f"[SAT_FETCH] Worker {worker_id} item {self._fetch_count}: caches loaded in {(t3-t2_val)*1000:.1f}ms, total {(t3-t0)*1000:.1f}ms")
+                    self._fetch_count += 1
 
                 if should_log:
                     t3 = time.time()
@@ -740,7 +759,7 @@ class VigorDataset(torch.utils.data.Dataset):
                         if logger.isEnabledFor(logging.DEBUG):
                             logger.debug(f"[PANO_FETCH] Worker {worker_id} item {self._fetch_count}: landmarks processed ({len(landmarks)} pano) in {(t2-t1)*1000:.1f}ms")
 
-                cached_pano_tensors = get_cached_tensors(pano_metadata, self.dataset._panorama_tensor_caches)
+                cached_pano_tensors = get_cached_tensors(pano_metadata, self.dataset._panorama_tensor_caches, self.dataset._config.load_cache_debug)
 
                 if should_log:
                     t3 = time.time()
