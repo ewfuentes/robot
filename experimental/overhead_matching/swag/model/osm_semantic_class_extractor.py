@@ -38,7 +38,7 @@ class OSMSemanticClassExtractor(torch.nn.Module):
         # Extract semantic groups (broad classes) and create ontology
         # The ontology is a sorted list of broad class names for consistent indexing
         semantic_groups = data['semantic_groups']
-        self.ontology = sorted(semantic_groups.keys())
+        self.ontology = list(semantic_groups.keys())
         self.num_classes = len(self.ontology)
         self.broad_class_to_id = {cls: idx for idx, cls in enumerate(self.ontology)}
 
