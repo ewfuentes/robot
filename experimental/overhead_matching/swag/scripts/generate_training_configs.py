@@ -79,18 +79,15 @@ def generate_config(model_config):
     output_dir = f'all_chicago_logGridSpacing_{model_config["log_grid_spacing"]}_outputDim_{model_config["output_dim"]}_hinge_{model_config["cos_mean_hinge"]}_isPanoPosPlanar_{model_config["is_pano_pos_planar"]}_synEmbeddingDim_{model_config["syn_embedding_dim"]:02d}'
     dataset_config = T.DatasetConfig(
         paths=["Chicago"],
-        should_load_images=False,
         landmark_version='v1',
         factor=1.0)
     validation_dataset_configs = [
         T.DatasetConfig(
             paths=["Seattle"],
-            should_load_images=False,
             landmark_version='v1',
             factor=0.3),
         T.DatasetConfig(
             paths=["Chicago"],
-            should_load_images=False,
             landmark_version='v1',
             factor=0.3),
     ]

@@ -3,6 +3,7 @@ import common.torch.load_torch_deps
 import torch
 import math
 import json
+import base64
 from pathlib import Path
 from experimental.overhead_matching.swag.model.swag_config_types import (
     PanoramaSemanticLandmarkExtractorConfig, ExtractorDataRequirement)
@@ -10,7 +11,14 @@ from experimental.overhead_matching.swag.model.swag_model_input_output import (
     ModelInput, ExtractorOutput)
 from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
     load_all_jsonl_from_folder, make_embedding_dict_from_json, make_sentence_dict_from_pano_jsons)
+import base64
+from typing import NamedTuple
 
+
+class GroupClassification(NamedTuple):
+    low_level_similarities: torch.Tensor
+    low_level_classification: torch.Tensor
+    high_level_classification: torch.Tensor
 
 
 def yaw_angles_to_binary_vector(yaw_degrees: list[int]) -> list[float]:
@@ -47,6 +55,34 @@ def yaw_angles_to_binary_vector(yaw_degrees: list[int]) -> list[float]:
     return vector
 
 
+def classify_against_grouping(features, semantic_grouping) -> GroupClassification:
+    all_low_level_classes = list(semantic_grouping["class_details"].keys())
+    num_low_level_classes = len(all_low_level_classes)
+    num_high_level_classes = len(semantic_grouping["semantic_groups"])
+
+    low_level_class_embeddings = []
+    for v in semantic_grouping["class_details"].values():
+        low_level_class_embeddings.append(v["embedding"]["vector"])
+    low_level_class_embeddings = torch.stack(low_level_class_embeddings)
+
+    # Create a lookup table from low level classes to high level classes
+    high_level_class_from_low_level = torch.zeros((num_high_level_classes, num_low_level_classes))
+    for hlc_idx, low_level_classes in enumerate(semantic_grouping["semantic_groups"].values()):
+        for llc in low_level_classes:
+            llc_idx = all_low_level_classes.index(llc)
+            high_level_class_from_low_level[hlc_idx, llc_idx] = 1.0
+
+    similarities = features @ low_level_class_embeddings.T
+    max_similarities = torch.argmax(similarities, -1)
+    max_one_hot = torch.nn.functional.one_hot(max_similarities, num_classes=num_low_level_classes)
+    out = max_one_hot.to(torch.float32) @ high_level_class_from_low_level.T
+    return GroupClassification(
+        low_level_similarities=similarities,
+        low_level_classification=max_one_hot,
+        high_level_classification=out
+    )
+
+
 class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
     """
     Extractor for panorama-based semantic landmarks.
@@ -65,6 +101,18 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
         self.all_sentences = None
         self.panorama_metadata = None  # Maps pano_id -> list of (landmark_idx, custom_id, yaw_angles)
 
+        # Load the semantic class groupings
+        base_path = self.semantic_embedding_base_path / self.config.embedding_version
+        semantic_groupings_file = base_path / "semantic_class_grouping.json"
+        assert semantic_groupings_file.exists()
+        self.semantic_groupings = json.loads(semantic_groupings_file.read_text())
+
+        # Convert the base64 encoded embeddings into torch tensors
+        for k, v in self.semantic_groupings["class_details"].items():
+            base64_string = v["embedding"]["vector"]
+            base64_buffer = bytearray(base64.b64decode(base64_string))
+            v["embedding"]["vector"] = torch.frombuffer(base64_buffer, dtype=torch.float32)
+
     def load_files(self):
         """Load embeddings, sentences, and metadata from multi-city directory structure."""
         base_path = self.semantic_embedding_base_path / self.config.embedding_version
@@ -81,7 +129,6 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
         self.all_embeddings = {}
         self.all_sentences = {}
         self.panorama_metadata = {}
-
         for city_dir in city_dirs:
             city_name = city_dir.name
             print(f"Loading panorama landmarks for city: {city_name}")
@@ -133,9 +180,11 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
         assert len(self.all_embeddings) > 0, f"Failed to load any embeddings from {base_path}"
         assert len(next(iter(self.all_embeddings.values()))) >= self.config.openai_embedding_size, \
             f"Requested embedding length ({self.config.openai_embedding_size}) longer than available ({len(next(iter(self.all_embeddings.values())))})"
-        
+
         # remove coordinates from keys in self.panorama_metadata:
         self.panorama_metadata = {k.split(",")[0]: v for k, v in self.panorama_metadata.items()}
+
+        self.files_loaded = True
 
         print(f"Total embeddings loaded: {len(self.all_embeddings)}")
         print(f"Total panoramas with landmarks: {len(self.panorama_metadata)}")
@@ -144,7 +193,6 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
         """Extract panorama-based semantic landmark features."""
         if not self.files_loaded:
             self.load_files()
-            self.files_loaded = True
 
         batch_size = len(model_input.metadata)
 
@@ -168,7 +216,7 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
 
         # Initialize output tensors
         mask = torch.ones((batch_size, max_num_landmarks), dtype=torch.bool)
-        features = torch.zeros((batch_size, max_num_landmarks, self.output_dim))
+        features = torch.zeros((batch_size, max_num_landmarks, self.config.openai_embedding_size))
         positions = torch.zeros((batch_size, max_num_landmarks, 2, 2))
 
         max_description_length = 0
@@ -179,7 +227,6 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
 
             # Find matching panorama metadata
             matching_landmarks = self.panorama_metadata[pano_id]
-
 
             # Sort by landmark_idx to ensure consistent ordering
             matching_landmarks = sorted(matching_landmarks, key=lambda x: x["landmark_idx"])
@@ -195,7 +242,7 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
 
                 # Crop embedding if needed
                 features[i, landmark_idx, :] = torch.tensor(
-                    self.all_embeddings[custom_id])[:self.output_dim]
+                    self.all_embeddings[custom_id])[:self.config.openai_embedding_size]
 
                 # Convert yaw angles to binary presence vector
                 yaw_vector = yaw_angles_to_binary_vector(yaw_angles)
@@ -215,8 +262,15 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
                     max_description_length,
                     len(self.all_sentences[custom_id].encode("utf-8")))
 
-        # Re-normalize embeddings if we cropped them
-        features[~mask] = features[~mask] / torch.norm(features[~mask], dim=-1).unsqueeze(-1)
+        debug = {}
+        if self.config.should_classify_against_grouping:
+            groupings = classify_against_grouping(features, self.semantic_groupings)
+            debug["low_level_similarity"] = groupings.low_level_similarities.to(model_input.image.device)
+            debug["low_level_classification"] = groupings.low_level_classification.to(model_input.image.device)
+            features = groupings.high_level_classification
+        else:
+            # Re-normalize embeddings if we cropped them
+            features[~mask] = features[~mask] / torch.norm(features[~mask], dim=-1).unsqueeze(-1)
 
         # Create debug tensor for sentences
         sentence_debug = torch.zeros(
@@ -235,16 +289,20 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
                 sentence_bytes = self.all_sentences[custom_id].encode('utf-8')
                 sentence_tensor = torch.tensor(list(sentence_bytes), dtype=torch.uint8)
                 sentence_debug[i, landmark_idx, :len(sentence_bytes)] = sentence_tensor
+        debug["sentences"] = sentence_debug.to(model_input.image.device)
 
         return ExtractorOutput(
             features=features.to(model_input.image.device),
             mask=mask.to(model_input.image.device),
             positions=positions.to(model_input.image.device),
-            debug={'sentences': sentence_debug.to(model_input.image.device)})
+            debug=debug)
 
     @property
     def output_dim(self):
-        return self.config.openai_embedding_size
+        out = self.config.openai_embedding_size
+        if self.config.should_classify_against_grouping:
+            out = len(self.semantic_groupings["semantic_groups"])
+        return out
 
     @property
     def num_position_outputs(self):

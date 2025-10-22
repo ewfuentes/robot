@@ -206,6 +206,7 @@ py_test(
   srcs = ["panorama_semantic_landmark_extractor_test.py"],
   deps = [
     requirement("torch"),
+    requirement("numpy"),
     "//common/torch:load_torch_deps",
     ":panorama_semantic_landmark_extractor",
   ]
