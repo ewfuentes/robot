@@ -177,17 +177,6 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
                 self.panorama_metadata.update(new_metadata)
                 assert len(self.panorama_metadata) == old_metadata_size + new_pano_metadata_len
 
-        # Load the semantic class groupings
-        semantic_groupings_file = base_path / "semantic_class_grouping.json"
-        assert semantic_groupings_file.exists()
-        self.semantic_groupings = json.loads(semantic_groupings_file.read_text())
-
-        # Convert the base64 encoded embeddings into torch tensors
-        for k, v in self.semantic_groupings["class_details"].items():
-            base64_string = v["embedding"]["vector"]
-            base64_buffer = bytearray(base64.b64decode(base64_string))
-            v["embedding"]["vector"] = torch.frombuffer(base64_buffer, dtype=torch.float32)
-
         assert len(self.all_embeddings) > 0, f"Failed to load any embeddings from {base_path}"
         assert len(next(iter(self.all_embeddings.values()))) >= self.config.openai_embedding_size, \
             f"Requested embedding length ({self.config.openai_embedding_size}) longer than available ({len(next(iter(self.all_embeddings.values())))})"
