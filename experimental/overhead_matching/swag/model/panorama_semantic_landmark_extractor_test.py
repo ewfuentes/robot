@@ -69,6 +69,21 @@ def create_sentence_response(pano_id, landmarks):
     }
 
 
+def create_random_embedding_vector(category: str):
+    """Create a deterministic random vector from a category string (returns raw numpy array)"""
+    bits = hashlib.sha512(category.encode('utf-8')).digest() * 3
+    bits = np.unpackbits(np.frombuffer(bits, dtype=np.uint8))
+    scaled_bits = (2.0 * bits - 1.0).astype(dtype=np.float32)
+    scaled_bits = scaled_bits / np.linalg.norm(scaled_bits)
+    return scaled_bits
+
+
+def random_vector(category: str):
+    """Create a random(ish) vector with 1536 elements (returns base64 encoded string)"""
+    scaled_bits = create_random_embedding_vector(category)
+    return base64.b64encode(scaled_bits.data).decode('utf-8')
+
+
 class PanoramaSemanticLandmarkExtractorTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -81,6 +96,18 @@ class PanoramaSemanticLandmarkExtractorTest(unittest.TestCase):
         cities = ["Chicago", "Seattle"]
 
         cls.test_panoramas = {}
+
+        # Define class assignments: city -> pano_idx -> [3 landmark classes]
+        class_assignments = {
+            "Chicago": {
+                0: ['street', 'cat', 'car'],
+                1: ['avenue', 'dog', 'truck']
+            },
+            "Seattle": {
+                0: ['boulevard', 'deer', 'scooter'],
+                1: ['street', 'cat', 'car']
+            }
+        }
 
         for city in cities:
             city_dir = base_path / version / city
@@ -96,6 +123,9 @@ class PanoramaSemanticLandmarkExtractorTest(unittest.TestCase):
             for pano_idx in range(2):
                 pano_id = f"pano_{city}_{pano_idx},41.85,-87.65,"
 
+                # Get the 3 classes for this panorama
+                landmark_classes = class_assignments[city][pano_idx]
+
                 # Create 3 landmarks per panorama
                 landmarks = []
                 embeddings = []
@@ -103,8 +133,11 @@ class PanoramaSemanticLandmarkExtractorTest(unittest.TestCase):
 
                 for lm_idx in range(3):
                     custom_id = f"{pano_id}__landmark_{lm_idx}"
-                    # Create unique embedding for each landmark
-                    embedding = [0.1 * (pano_idx + lm_idx + 1)] * 1536
+
+                    # Get assigned class for this landmark and generate matching embedding
+                    assigned_class = landmark_classes[lm_idx]
+                    embedding = create_random_embedding_vector(assigned_class).tolist()
+
                     yaw_angles = [0, 90] if lm_idx == 0 else ([180] if lm_idx == 1 else [270])
 
                     landmarks.append({
@@ -138,19 +171,12 @@ class PanoramaSemanticLandmarkExtractorTest(unittest.TestCase):
                 cls.test_panoramas[pano_id_no_coords] = {
                     "city": city,
                     "landmarks": landmarks,
-                    "custom_ids": [f"{pano_id}__landmark_{i}" for i in range(3)]
+                    "custom_ids": [f"{pano_id}__landmark_{i}" for i in range(3)],
+                    "expected_classes": landmark_classes
                 }
 
         # Create a semantic class grouping
         semantic_class_grouping_path = base_path / version / "semantic_class_grouping.json"
-
-        def random_vector(category: str):
-            # Create a random(ish) vector with 1536 elements
-            bits = hashlib.sha512(category.encode('utf-8')).digest() * 3
-            bits = np.unpackbits(np.frombuffer(bits, dtype=np.uint8))
-            scaled_bits = (2.0 * bits - 1.0).astype(dtype=np.float32)
-            scaled_bits = scaled_bits / np.linalg.norm(scaled_bits)
-            return base64.b64encode(scaled_bits.data).decode('utf-8')
 
         semantic_class_grouping = {
             "semantic_groups": {
@@ -294,6 +320,29 @@ class PanoramaSemanticLandmarkExtractorTest(unittest.TestCase):
 
         # Verify at least some landmarks are not masked
         self.assertFalse(output.mask.all())
+
+        # Verify classifications match expected classes
+        group_names = list(model.semantic_groupings["semantic_groups"].keys())
+
+        for batch_idx, pano_id in enumerate(pano_ids):
+            expected_classes = self.test_panoramas[pano_id]["expected_classes"]
+
+            for lm_idx in range(len(expected_classes)):
+                # Get predicted group (argmax of feature vector)
+                predicted_group_idx = torch.argmax(output.features[batch_idx, lm_idx]).item()
+                predicted_group_name = group_names[predicted_group_idx]
+
+                # Determine expected group from class assignment
+                expected_class = expected_classes[lm_idx]
+                expected_group_name = None
+                for group_name, classes in model.semantic_groupings["semantic_groups"].items():
+                    if expected_class in classes:
+                        expected_group_name = group_name
+                        break
+
+                self.assertEqual(predicted_group_name, expected_group_name,
+                                f"Landmark {lm_idx} (class '{expected_class}') should map to "
+                                f"group '{expected_group_name}', but got '{predicted_group_name}'")
 
     def test_yaw_binary_vector_computation(self):
         """Test that yaw angles are correctly converted to binary presence vectors"""
