@@ -19,6 +19,7 @@ from experimental.overhead_matching.swag.model.swag_config_types import Extracto
 from experimental.overhead_matching.swag.model.swag_model_input_output import derive_data_requirements_from_model
 from experimental.overhead_matching.swag.scripts.logging_utils import (
     log_batch_metrics, log_embedding_stats, log_gradient_stats, log_validation_metrics)
+from experimental.overhead_matching.swag.scripts.model_inspector import ModelInspector
 from typing import Union
 from dataclasses import dataclass
 import tqdm
@@ -266,7 +267,9 @@ def train(config: TrainConfig,
           validation_datasets,
           panorama_model,
           satellite_model,
-          quiet):
+          quiet,
+          capture_model_data: bool = False,
+          num_batches_to_capture: int = 10):
 
     output_dir.mkdir(parents=True, exist_ok=True)
     # save config:
@@ -302,6 +305,16 @@ def train(config: TrainConfig,
     # Create training components using extracted function
     miner, dataloader, opt = create_training_components(
         dataset, panorama_model, satellite_model, distance_model, opt_config)
+
+    # Create model inspector if requested
+    inspector = None
+    if capture_model_data:
+        inspector = ModelInspector(
+            output_dir=output_dir,
+            num_batches_to_capture=num_batches_to_capture)
+        # Enable debug mode to capture extractor outputs during forward pass
+        panorama_model.enable_debug_mode()
+        satellite_model.enable_debug_mode()
 
     warmup_lr_scheduler = torch.optim.lr_scheduler.ConstantLR(
         opt,
@@ -360,6 +373,23 @@ def train(config: TrainConfig,
                 distance_model=distance_model,
                 pairing_data=pairing_data,
                 loss_functions=loss_functions)
+
+            # Capture model inputs and extractor outputs if inspector is enabled
+            if inspector is not None and inspector.should_capture(total_batches):
+                pano_input = panorama_model.model_input_from_batch(batch)
+                sat_input = satellite_model.model_input_from_batch(batch)
+                # Get the extractor outputs that were computed during the forward pass
+                pano_extractor_outputs = panorama_model.get_last_extractor_outputs()
+                sat_extractor_outputs = satellite_model.get_last_extractor_outputs()
+                inspector.capture(
+                    pano_input=pano_input,
+                    sat_input=sat_input,
+                    pano_extractor_outputs=pano_extractor_outputs,
+                    sat_extractor_outputs=sat_extractor_outputs,
+                    pairing_data=pairing_data,
+                    batch_idx=batch_idx,
+                    epoch_idx=epoch_idx,
+                    total_batches=total_batches)
 
             grad_scaler.scale(loss_dict["loss"]).backward()
             grad_scaler.step(opt)
@@ -470,6 +500,8 @@ def main(
         quiet: bool,
         no_ipdb: bool,
         lr_sweep: bool = False,
+        capture_model_data: bool = False,
+        num_batches_to_capture: int = 10,
 ):
     with open(train_config_path, 'r') as file_in:
         train_config = msgspec.yaml.decode(file_in.read(), type=TrainConfig, dec_hook=msgspec_dec_hook)
@@ -521,7 +553,8 @@ def main(
         factor=train_config.dataset_config.factor,
         should_load_images=should_load_images,
         should_load_landmarks=should_load_landmarks,
-        landmark_version=train_config.dataset_config.landmark_version)
+        landmark_version=train_config.dataset_config.landmark_version,
+        load_cache_debug=capture_model_data)
 
     dataset_paths = [dataset_base_path / p for p in train_config.dataset_config.paths]
     dataset = vigor_dataset.VigorDataset(dataset_paths, dataset_config)
@@ -592,7 +625,9 @@ def main(
             validation_datasets=validation_datasets,
             panorama_model=panorama_model,
             satellite_model=satellite_model,
-            quiet=quiet)
+            quiet=quiet,
+            capture_model_data=capture_model_data,
+            num_batches_to_capture=num_batches_to_capture)
 
 
 if __name__ == "__main__":
@@ -604,6 +639,10 @@ if __name__ == "__main__":
     parser.add_argument("--no_ipdb", action="store_true",
                         help="Don't run IPDB around the training job")
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--capture_model_data", action="store_true",
+                        help="Capture model inputs and outputs for debugging")
+    parser.add_argument("--num_batches_to_capture", type=int, default=10,
+                        help="Number of batches to capture (default: 10)")
     args = parser.parse_args()
 
     main(
@@ -611,4 +650,6 @@ if __name__ == "__main__":
         Path(args.output_base),
         Path(args.train_config),
         no_ipdb=args.no_ipdb,
-        quiet=args.quiet)
+        quiet=args.quiet,
+        capture_model_data=args.capture_model_data,
+        num_batches_to_capture=args.num_batches_to_capture)

@@ -271,6 +271,13 @@ HTML_TEMPLATE = '''
             <div class="nav-buttons">
                 <button onclick="navigate(-1)">← Previous</button>
                 <button onclick="navigate(1)">Next →</button>
+                <div style="margin-top: 10px; display: flex; gap: 8px; align-items: center;">
+                    <input type="text" id="pano-search-input" placeholder="Panorama ID..."
+                           style="padding: 8px 12px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; width: 250px;"
+                           onkeypress="if(event.key === 'Enter') seekToPanorama()">
+                    <button onclick="seekToPanorama()" style="white-space: nowrap;">Go to Panorama</button>
+                    <span id="seek-status" style="font-size: 12px; color: #dc3545;"></span>
+                </div>
             </div>
         </div>
 
@@ -366,6 +373,33 @@ HTML_TEMPLATE = '''
 
         // Make function globally accessible
         window.navigateToPanoramaById = navigateToPanoramaById;
+
+        function seekToPanorama() {
+            const input = document.getElementById('pano-search-input');
+            const statusElement = document.getElementById('seek-status');
+            const panoId = input.value.trim();
+
+            if (!panoId) {
+                statusElement.textContent = 'Please enter a panorama ID';
+                statusElement.style.color = '#dc3545';
+                return;
+            }
+
+            const index = panoIdToIndex[panoId];
+            if (index !== undefined) {
+                loadPanorama(index);
+                statusElement.textContent = '✓ Found';
+                statusElement.style.color = '#28a745';
+                input.value = ''; // Clear input on success
+                setTimeout(() => { statusElement.textContent = ''; }, 2000);
+            } else {
+                statusElement.textContent = '✗ Panorama not found';
+                statusElement.style.color = '#dc3545';
+            }
+        }
+
+        // Make function globally accessible
+        window.seekToPanorama = seekToPanorama;
 
         function makeClickablePanoId(panoId) {
             // Escape single quotes in panoId for onclick string

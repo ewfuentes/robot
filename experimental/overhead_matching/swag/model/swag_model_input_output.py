@@ -63,13 +63,41 @@ class ExtractorOutput:
 
     @classmethod
     def collate(cls, items: list["SemanticTokenExtractorOutput"]):
+        # Collate debug tensors with proper padding for multi-dimensional tensors
+        debug_dict = {}
+        if items and items[0].debug:
+            for k in items[0].debug:
+                debug_tensors = [x.debug[k] for x in items]
+                # Check if all tensors have the same shape except first dimension
+                # If not, pad all dimensions to the maximum size
+                if len(debug_tensors[0].shape) > 1:
+                    # Multi-dimensional debug tensor (e.g., sentences)
+                    # Find max size for each dimension
+                    max_shape = list(debug_tensors[0].shape)
+                    for t in debug_tensors[1:]:
+                        for dim in range(len(max_shape)):
+                            max_shape[dim] = max(max_shape[dim], t.shape[dim])
+
+                    # Pad each tensor to max_shape
+                    padded_tensors = []
+                    for t in debug_tensors:
+                        # Calculate padding needed for each dimension (pad from right)
+                        padding = []
+                        for dim in reversed(range(len(max_shape))):
+                            pad_amount = max_shape[dim] - t.shape[dim]
+                            padding.extend([0, pad_amount])
+                        padded = torch.nn.functional.pad(t, padding)
+                        padded_tensors.append(padded)
+                    debug_dict[k] = torch.stack(padded_tensors, dim=0)
+                else:
+                    # 1D debug tensor, use standard pad_sequence
+                    debug_dict[k] = pad_sequence(debug_tensors, batch_first=True)
+
         return ExtractorOutput(
             features=pad_sequence([x.features for x in items], batch_first=True),
             positions=pad_sequence([x.positions for x in items], batch_first=True),
             mask=pad_sequence([x.mask for x in items], batch_first=True, padding_value=True),
-            debug={
-                k: pad_sequence([x.debug[k] for x in items], batch_first=True)
-                for k in items[0].debug})
+            debug=debug_dict)
 
     def to(self, *args, **kwargs):
         return ExtractorOutput(

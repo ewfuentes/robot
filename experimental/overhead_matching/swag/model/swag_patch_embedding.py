@@ -398,6 +398,9 @@ class TransformerAggregator(torch.nn.Module):
 class SwagPatchEmbedding(torch.nn.Module):
     def __init__(self, config: SwagPatchEmbeddingConfig):
         super().__init__()
+        # Debug flag to store extractor outputs during forward pass
+        self._debug_store_extractor_outputs = False
+        self._last_extractor_outputs = None
         self._extractor_by_name = torch.nn.ModuleDict({
             k: create_extractor(c, config.auxiliary_info)
             for k, c in config.extractor_config_by_name.items()})
@@ -484,6 +487,10 @@ class SwagPatchEmbedding(torch.nn.Module):
                 extractor_outputs_by_name[k] = self._extractor_by_name[k](model_input)
                 assert extractor_outputs_by_name[k].positions.ndim == 4, f"relative positions of {k} is not 4 dimensional"
 
+        # Store extractor outputs if debug flag is enabled
+        if self._debug_store_extractor_outputs:
+            self._last_extractor_outputs = extractor_outputs_by_name
+
         input_tokens_by_name = {}
         for k, v in extractor_outputs_by_name.items():
             if v.positions.shape[1] == 0:  # no features
@@ -509,6 +516,31 @@ class SwagPatchEmbedding(torch.nn.Module):
                                [v.mask for v in extractor_outputs_by_name.values()], dim=1)
 
         return input_tokens, input_mask
+
+    def enable_debug_mode(self):
+        """Enable debug mode to store extractor outputs during forward pass.
+
+        Call this before running the model if you want to access extractor outputs
+        via get_last_extractor_outputs() after the forward pass.
+        """
+        self._debug_store_extractor_outputs = True
+
+    def disable_debug_mode(self):
+        """Disable debug mode and clear stored extractor outputs."""
+        self._debug_store_extractor_outputs = False
+        self._last_extractor_outputs = None
+
+    def get_last_extractor_outputs(self) -> dict[str, ExtractorOutput] | None:
+        """Get the extractor outputs from the last forward pass.
+
+        This only works if enable_debug_mode() was called before the forward pass.
+        Returns None if debug mode is disabled or no forward pass has been run yet.
+
+        Returns:
+            Dictionary mapping extractor names to their ExtractorOutput objects,
+            or None if not available
+        """
+        return self._last_extractor_outputs
 
     def forward(self, model_input: ModelInput) -> torch.Tensor:
 
