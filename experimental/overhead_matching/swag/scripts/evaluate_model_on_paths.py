@@ -40,6 +40,7 @@ def construct_path_eval_inputs_from_args(
         dataset_path: str,
         paths_path: str,
         panorama_neighbor_radius_deg: float,
+        panorama_landmark_radius_px: int,
         device: torch.device,
         landmark_version: str
 ):
@@ -54,11 +55,13 @@ def construct_path_eval_inputs_from_args(
             dataset_key=dataset_path.name,
             model_type="panorama",
             landmark_version=landmark_version,
+            panorama_landmark_radius_px=panorama_landmark_radius_px,
             extractor_info=pano_model.cache_info()),
         satellite_tensor_cache_info=vd.TensorCacheInfo(
             dataset_key=dataset_path.name,
             model_type="satellite",
             landmark_version=landmark_version,
+            panorama_landmark_radius_px=panorama_landmark_radius_px,
             extractor_info=sat_model.cache_info()),
         panorama_neighbor_radius=panorama_neighbor_radius_deg,
         satellite_patch_size=sat_model.patch_dims,
@@ -91,6 +94,8 @@ if __name__ == "__main__":
                         help="If intermediate filter states should be saved")
     parser.add_argument("--panorama-neighbor-radius-deg", type=float,
                         default=0.0005, help="Panorama neighbor radius deg")
+    parser.add_argument("--panorama-landmark-radius-px", type=int,
+                        default=640, help="Panorama landmark radius in pixels")
     parser.add_argument("--sigma_obs_prob_from_sim", type=float, default=0.1)
     parser.add_argument("--dual_mcl_frac", type=float, default=0.0)
     parser.add_argument("--dual_mcl_phantom_counts_frac", type=float, default=1e-4)
@@ -116,6 +121,7 @@ if __name__ == "__main__":
         dataset_path=args.dataset_path,
         paths_path=args.paths_path,
         panorama_neighbor_radius_deg=args.panorama_neighbor_radius_deg,
+        panorama_landmark_radius_px=args.panorama_landmark_radius_px,
         device=DEVICE,
         landmark_version=args.landmark_version,
     )
