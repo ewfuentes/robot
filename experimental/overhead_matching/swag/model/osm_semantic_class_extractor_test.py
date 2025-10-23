@@ -65,7 +65,10 @@ class TestOSMSemanticClassExtractor(unittest.TestCase):
 
         # Save temp file with the expected name in temp directory
         cls.temp_dir = tempfile.mkdtemp()
-        cls.json_path = Path(cls.temp_dir) / 'test_semantic.json'
+        # Create subdirectory for embedding_version
+        semantic_dir = Path(cls.temp_dir) / 'test_semantic'
+        semantic_dir.mkdir(parents=True, exist_ok=True)
+        cls.json_path = semantic_dir / 'semantic_class_grouping.json'
         shutil.move(cls.temp_file.name, cls.json_path)
 
         cls.extractor = OSMSemanticClassExtractor(cls.config, cls.temp_dir)
@@ -84,27 +87,27 @@ class TestOSMSemanticClassExtractor(unittest.TestCase):
 
     def test_map_tags_to_class_id(self):
         """Test mapping tags to class IDs."""
-        # Note: ontology is sorted alphabetically: ['buildings', 'roads', 'transit', 'vegetation']
+        # Note: ontology order matches insertion order: ['roads', 'buildings', 'vegetation', 'transit']
 
         # Test simple road
         tags = frozenset([('highway', 'footway')])
         class_id = self.extractor.map_tags_to_class_id(tags)
         self.assertIsNotNone(class_id)
-        self.assertEqual(class_id, 1)  # 'roads' is second in sorted ontology
+        self.assertEqual(class_id, 0)  # 'roads' is first in ontology
         print(f"✓ Footway → class {class_id} (roads)")
 
         # Test building
         tags = frozenset([('building', 'yes')])
         class_id = self.extractor.map_tags_to_class_id(tags)
         self.assertIsNotNone(class_id)
-        self.assertEqual(class_id, 0)  # 'buildings' is first in sorted ontology
+        self.assertEqual(class_id, 1)  # 'buildings' is second in ontology
         print(f"✓ Building → class {class_id} (buildings)")
 
         # Test vegetation
         tags = frozenset([('natural', 'tree')])
         class_id = self.extractor.map_tags_to_class_id(tags)
         self.assertIsNotNone(class_id)
-        self.assertEqual(class_id, 3)  # 'vegetation' is fourth in sorted ontology
+        self.assertEqual(class_id, 2)  # 'vegetation' is third in ontology
         print(f"✓ Tree → class {class_id} (vegetation)")
 
     def test_most_specific_match(self):
@@ -113,7 +116,7 @@ class TestOSMSemanticClassExtractor(unittest.TestCase):
         tags = frozenset([('building', 'yes'), ('amenity', 'restaurant')])
         class_id = self.extractor.map_tags_to_class_id(tags)
         self.assertIsNotNone(class_id)
-        self.assertEqual(class_id, 0)  # 'buildings' is first in sorted ontology
+        self.assertEqual(class_id, 1)  # 'buildings' is second in ontology
         print(f"✓ Restaurant building → class {class_id} (most specific)")
 
         # With extra tags
@@ -162,21 +165,21 @@ class TestOSMSemanticClassExtractor(unittest.TestCase):
         # Check mask (should be False for valid landmark)
         self.assertFalse(output.mask[0, 0].item())
 
-        # Check one-hot encoding (should be [0, 1, 0, 0] for roads at index 1)
-        expected_embedding = torch.tensor([0.0, 1.0, 0.0, 0.0])
+        # Check one-hot encoding (should be [1, 0, 0, 0] for roads at index 0)
+        expected_embedding = torch.tensor([1.0, 0.0, 0.0, 0.0])
         self.assertTrue(torch.allclose(output.features[0, 0], expected_embedding))
         print(f"✓ Forward pass produces correct one-hot: {output.features[0, 0].tolist()}")
 
     def test_forward_multiple_landmarks(self):
         """Test forward pass with multiple landmarks."""
-        # Sorted ontology: ['buildings', 'roads', 'transit', 'vegetation']
+        # Ontology order: ['roads', 'buildings', 'vegetation', 'transit']
         metadata = [{
             'web_mercator_x': 100.0,
             'web_mercator_y': 200.0,
             'landmarks': [
-                {'highway': 'footway', 'geometry_px': Point(105.0, 205.0)},  # roads (idx 1): [0,1,0,0]
-                {'building': 'yes', 'geometry_px': Point(110.0, 210.0)},      # buildings (idx 0): [1,0,0,0]
-                {'natural': 'tree', 'geometry_px': Point(115.0, 215.0)},      # vegetation (idx 3): [0,0,0,1]
+                {'highway': 'footway', 'geometry_px': Point(105.0, 205.0)},  # roads (idx 0): [1,0,0,0]
+                {'building': 'yes', 'geometry_px': Point(110.0, 210.0)},      # buildings (idx 1): [0,1,0,0]
+                {'natural': 'tree', 'geometry_px': Point(115.0, 215.0)},      # vegetation (idx 2): [0,0,1,0]
             ]
         }]
 
@@ -197,9 +200,9 @@ class TestOSMSemanticClassExtractor(unittest.TestCase):
         self.assertFalse(output.mask[0, 2].item())
 
         # Check embeddings with updated indices
-        self.assertTrue(torch.allclose(output.features[0, 0], torch.tensor([0., 1., 0., 0.])))  # roads
-        self.assertTrue(torch.allclose(output.features[0, 1], torch.tensor([1., 0., 0., 0.])))  # buildings
-        self.assertTrue(torch.allclose(output.features[0, 2], torch.tensor([0., 0., 0., 1.])))  # vegetation
+        self.assertTrue(torch.allclose(output.features[0, 0], torch.tensor([1., 0., 0., 0.])))  # roads
+        self.assertTrue(torch.allclose(output.features[0, 1], torch.tensor([0., 1., 0., 0.])))  # buildings
+        self.assertTrue(torch.allclose(output.features[0, 2], torch.tensor([0., 0., 1., 0.])))  # vegetation
         print(f"✓ Multiple landmarks produce correct one-hot encodings")
 
     def test_forward_batch(self):
