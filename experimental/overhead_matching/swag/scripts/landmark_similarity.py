@@ -118,55 +118,46 @@ def _(all_embeddings):
 
 
 @app.cell
-def _(all_embeddings, torch, tqdm):
+def _(Path, all_embeddings, all_osm_keys, json, torch, tqdm):
     _batch_size=1024
 
-    _all_values = []
-    _all_idxs = []
 
-    _threshold = 0.6
-
-    for _i in tqdm.tqdm(range(0, all_embeddings.shape[0], _batch_size)):
-        _working_set = all_embeddings[_i:_i+_batch_size]
-        _set_similarities = all_embeddings @ _working_set.T
-
-        _set_similarities[_set_similarities > _threshold] = -1
-        _max = torch.max(_set_similarities, 0)
-
-        _all_values.append(_max.values)
-        _all_idxs.append(_max.indices)
-
-    all_values = torch.cat(_all_values)
-    all_idxs = torch.cat(_all_idxs)
-
-    return (all_idxs,)
-
-
-@app.cell
-def _(all_embeddings, all_idxs, torch):
-    target_embeddings = all_embeddings[all_idxs]
-
-    sims = torch.einsum('ij,ij->i', all_embeddings, target_embeddings)
-
-
-    return sims, target_embeddings
-
-
-@app.cell
-def _(Path, all_embeddings, all_osm_keys, json, sims, target_embeddings, tqdm):
-
-    target_sim = [1.0, 0.99, 0.96, 0.92, 0.85, 0.8, 0.7, 0.6]
+    target_sim = [1.0, 0.99, 0.96, 0.92, 0.85, 0.8, 0.7, 0.6, 0.4, 0.2]
 
     for t in target_sim:
+
+        _all_values = []
+        _all_idxs = []
+    
+        _threshold = t
+    
+        for _i in range(0, all_embeddings.shape[0], _batch_size):
+            _working_set = all_embeddings[_i:_i+_batch_size]
+            _set_similarities = all_embeddings @ _working_set.T
+    
+            _set_similarities[_set_similarities > _threshold] = -1
+            _max = torch.max(_set_similarities, 0)
+    
+            _all_values.append(_max.values)
+            _all_idxs.append(_max.indices)
+    
+        all_values = torch.cat(_all_values)
+        all_idxs = torch.cat(_all_idxs)
+
+        target_embeddings = all_embeddings[all_idxs]
+    
+        sims = torch.einsum('ij,ij->i', all_embeddings, target_embeddings)
+
+    
         lamda = ((t - sims) / (1 - sims)).unsqueeze(-1)
-    
+
         new_embeddings = lamda * all_embeddings + (1 - lamda) * target_embeddings
-    
+
         out_file = Path(f'/tmp/target_similarity_{t:0.2f}_v3_no_addresses/embeddings/file')
         out_file.parent.mkdir(parents=True, exist_ok=True)
-    
+
         with out_file.open('w') as out:
-            for i in tqdm.tqdm(range(len(all_osm_keys))):
+            for i in tqdm.tqdm(range(len(all_osm_keys)), desc=f'Target Sim: {t:02f}'):
                 out.write(json.dumps(create_embedding_response(all_osm_keys[i], new_embeddings[i, :].cpu().tolist())))
                 out.write("\n")
     return (new_embeddings,)

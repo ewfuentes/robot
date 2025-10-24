@@ -159,6 +159,7 @@ def compute_landmark_pano_positions(pano_metadata, pano_shape, landmark_mask=Non
 
 
 def compute_landmark_sat_positions(sat_metadata, landmark_mask=None):
+    # The mask entry should be true if we want to keep it
     out = []
     sat_y = sat_metadata["web_mercator_y"]
     sat_x = sat_metadata["web_mercator_x"]
@@ -245,15 +246,14 @@ class SemanticLandmarkExtractor(torch.nn.Module):
         if self.all_embeddings_tensor.shape[1] > output_dim:
             self.all_embeddings_tensor = self.all_embeddings_tensor[:, :output_dim]
 
-        print(f"Loading sentences took: {sentence_end_load_time - sentence_start_load_time:03f} s")
-        print(f"Loading embeddings took: {embedding_end_load_time - sentence_end_load_time:03f} s")
-        print(f"Embedding tensor shape: {self.all_embeddings_tensor.shape}")
+        self.all_embeddings_tensor = (
+                self.all_embeddings_tensor / torch.norm(self.all_embeddings_tensor, dim=-1))
 
+        self.files_loaded = True
 
     def forward(self, model_input: ModelInput) -> ExtractorOutput:
         if not self.files_loaded:
             self.load_files()
-            self.files_loaded = True
 
         # drop landmarks not used by this extractor
         # true indicates valid, false indicates not valid
@@ -277,7 +277,8 @@ class SemanticLandmarkExtractor(torch.nn.Module):
                     positions[i, :num_landmarks_for_item] = compute_landmark_pano_positions(
                         item, model_input.image.shape[-2:], landmark_mask=landmark_mask[i])
                 else:
-                    positions[i, :num_landmarks_for_item] = compute_landmark_sat_positions(item, landmark_mask=landmark_mask[i])
+                    positions[i, :num_landmarks_for_item] = compute_landmark_sat_positions(
+                        item, landmark_mask=landmark_mask[i])
 
             landmark_index = 0
             for landmark in item["landmarks"]:
@@ -299,9 +300,6 @@ class SemanticLandmarkExtractor(torch.nn.Module):
                 if self.all_sentences is not None:
                     max_description_length = max(max_description_length, len(
                         self.all_sentences[landmark_id].encode("utf-8")))
-
-        # re-normalize incase we trimmed embeddings
-        features[~mask] = features[~mask] / torch.norm(features[~mask], dim=-1).unsqueeze(-1)
 
         sentence_debug = torch.zeros(
             (batch_size, max_num_landmarks, max_description_length), dtype=torch.uint8)
