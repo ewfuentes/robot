@@ -29,8 +29,8 @@ from experimental.overhead_matching.swag.model.swag_config_types import Cacheabl
 from typing import Any
 
 # Configure logger for this module
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 EARTH_RADIUS_M = 6378137.0
 
@@ -149,7 +149,13 @@ def load_panorama_metadata(path: Path, zoom_level: int):
 
 
 def load_landmark_geojson(path: Path, zoom_level: int):
-    df = gpd.read_file(path)
+    from experimental.overhead_matching.swag.model.semantic_landmark_utils import prune_landmark
+
+    if path.suffix == ".feather":
+        df = gpd.read_feather(path)
+    else:
+        df = gpd.read_file(path)
+
 
     def convert_geometry_to_pixels(geometry):
         def coord_transform(lon, lat):
@@ -159,6 +165,7 @@ def load_landmark_geojson(path: Path, zoom_level: int):
         return shapely.ops.transform(coord_transform, geometry)
 
     df["geometry_px"] = df["geometry"].apply(convert_geometry_to_pixels)
+    df["pruned_props"] = df.apply(lambda row: prune_landmark(row.dropna().to_dict()), axis=1)
 
     return df
 
@@ -390,10 +397,16 @@ class VigorDataset(torch.utils.data.Dataset):
             log_progress(f"Loaded panorama metadata: {len(pano_metadata)} items")
 
             if config.should_load_landmarks:
+                landmark_start_load_time = time.time()
+                landmark_path = p / "landmarks" / f"{config.landmark_version}.feather"
+                if not landmark_path.exists():
+                    landmark_path = landmark_path.with_suffix('.geojson')
                 landmark_metadata = load_landmark_geojson(
-                    p / "landmarks" / f"{config.landmark_version}.geojson", config.satellite_zoom_level)
+                    landmark_path, config.satellite_zoom_level)
                 landmark_metadatas.append(landmark_metadata)
+                landmark_end_load_time = time.time()
                 log_progress(f"Loaded landmark GeoJSON: {len(landmark_metadata)} landmarks")
+                log_progress(f"Took {landmark_end_load_time - landmark_start_load_time: 0.3} s")
 
             min_lat = np.min(sat_metadata.lat)
             max_lat = np.max(sat_metadata.lat)
@@ -412,6 +425,14 @@ class VigorDataset(torch.utils.data.Dataset):
         self._panorama_metadata = pd.concat(pano_metadatas).reset_index(drop=True)
         if config.should_load_landmarks:
             self._landmark_metadata = pd.concat(landmark_metadatas).reset_index(drop=True)
+
+            # Pre-compute dict representation to avoid repeated conversions in __getitem__
+            log_progress("Pre-computing landmark dict representations...")
+            self._landmark_metadata['as_dict'] = [
+                series_to_dict_with_index(row)
+                for _, row in self._landmark_metadata.iterrows()
+            ]
+            log_progress(f"Pre-computed dicts for {len(self._landmark_metadata)} landmarks")
         else:
             self._landmark_metadata = None
         log_progress(f"Concatenated metadata: {len(self._satellite_metadata)} sats, {len(self._panorama_metadata)} panos, {len(self._landmark_metadata) if self._landmark_metadata is not None else 'NOT_LOADED'} landmarks")
@@ -473,14 +494,12 @@ class VigorDataset(torch.utils.data.Dataset):
         return len(self._satellite_metadata)
 
     def __getitem__(self, idx_or_pair: int | SamplePair):
-        # Enable detailed logging for first 20 fetches
-        enable_logging = logger.isEnabledFor(logging.DEBUG) and not hasattr(self, '_fetch_count')
-        
-        if enable_logging:
+        # Enable detailed logging for first 200 fetches
+        if not hasattr(self, '_fetch_count'):
             self._fetch_count = 0
             self._fetch_start = time.time()
 
-        should_log = enable_logging and self._fetch_count < 200
+        should_log = logger.isEnabledFor(logging.DEBUG) and self._fetch_count < 200
         if should_log:
             t0 = time.time()
             worker_info = torch.utils.data.get_worker_info()
@@ -519,8 +538,8 @@ class VigorDataset(torch.utils.data.Dataset):
             pano_landmarks = self._landmark_metadata.iloc[pano_metadata["landmark_idxs"]]
             sat_landmarks = self._landmark_metadata.iloc[sat_metadata["landmark_idxs"]]
 
-            pano_landmarks = [series_to_dict_with_index(x) for _, x in pano_landmarks.iterrows()]
-            sat_landmarks = [series_to_dict_with_index(x) for _, x in sat_landmarks.iterrows()]
+            pano_landmarks = pano_landmarks['as_dict'].tolist()
+            sat_landmarks = sat_landmarks['as_dict'].tolist()
 
             if should_log:
                 t2 = time.time()
@@ -614,6 +633,17 @@ class VigorDataset(torch.utils.data.Dataset):
                 return len(self.dataset._satellite_metadata)
 
             def __getitem__(self, idx):
+                # Enable detailed logging for first 200 fetches
+                if not hasattr(self, '_fetch_count'):
+                    self._fetch_count = 0
+                    self._fetch_start = time.time()
+
+                should_log = logger.isEnabledFor(logging.DEBUG) and self._fetch_count < 200
+                if should_log:
+                    t0 = time.time()
+                    worker_info = torch.utils.data.get_worker_info()
+                    worker_id = worker_info.id if worker_info else "main"
+
                 if idx > len(self) - 1:
                     raise IndexError  # if we don't raise index error the iterator won't terminate
                 # as this will throw a KeyError
@@ -623,16 +653,32 @@ class VigorDataset(torch.utils.data.Dataset):
                 else:
                     sat = torch.full((1, *self.dataset._satellite_patch_size), torch.nan)
 
+                if should_log:
+                    t1 = time.time()
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(f"[SAT_FETCH] Worker {worker_id} item {self._fetch_count}: image loaded in {(t1-t0)*1000:.1f}ms")
+
                 sat_metadata = series_to_dict_with_index(sat_metadata)
 
                 if self.dataset._config.should_load_landmarks:
                     landmarks = self.dataset._landmark_metadata.iloc[sat_metadata["landmark_idxs"]]
-                    landmarks = [series_to_dict_with_index(x) for _, x in landmarks.iterrows()]
+                    landmarks = landmarks['as_dict'].tolist()
                     sat_metadata["landmarks"] = landmarks
+
+                    if should_log:
+                        t2 = time.time()
+                        if logger.isEnabledFor(logging.DEBUG):
+                            logger.debug(f"[SAT_FETCH] Worker {worker_id} item {self._fetch_count}: landmarks processed ({len(landmarks)} sat) in {(t2-t1)*1000:.1f}ms")
 
                 sat_metadata["original_shape"] = self.dataset._original_satellite_patch_size
 
                 cached_sat_tensors = get_cached_tensors(sat_metadata, self.dataset._satellite_tensor_caches)
+
+                if should_log:
+                    t3 = time.time()
+                    t2_val = t2 if self.dataset._config.should_load_landmarks else t1
+                    logger.debug(f"[SAT_FETCH] Worker {worker_id} item {self._fetch_count}: caches loaded in {(t3-t2_val)*1000:.1f}ms, total {(t3-t0)*1000:.1f}ms")
+                    self._fetch_count += 1
 
                 return VigorDatasetItem(
                     panorama_metadata=None,
@@ -654,6 +700,17 @@ class VigorDataset(torch.utils.data.Dataset):
                 return len(self.dataset._panorama_metadata)
 
             def __getitem__(self, idx):
+                # Enable detailed logging for first 200 fetches
+                if not hasattr(self, '_fetch_count'):
+                    self._fetch_count = 0
+                    self._fetch_start = time.time()
+
+                should_log = logger.isEnabledFor(logging.DEBUG) and self._fetch_count < 200
+                if should_log:
+                    t0 = time.time()
+                    worker_info = torch.utils.data.get_worker_info()
+                    worker_id = worker_info.id if worker_info else "main"
+
                 if idx > len(self) - 1:
                     raise IndexError  # if we don't raise index error the iterator won't terminate
                 # as this will throw a KeyError
@@ -663,14 +720,30 @@ class VigorDataset(torch.utils.data.Dataset):
                 else:
                     pano = torch.full((1, *self.dataset._panorama_size), torch.nan)
 
+                if should_log:
+                    t1 = time.time()
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(f"[PANO_FETCH] Worker {worker_id} item {self._fetch_count}: image loaded in {(t1-t0)*1000:.1f}ms")
+
                 pano_metadata = series_to_dict_with_index(pano_metadata)
 
                 if self.dataset._config.should_load_landmarks:
                     landmarks = self.dataset._landmark_metadata.iloc[pano_metadata["landmark_idxs"]]
-                    landmarks = [series_to_dict_with_index(x) for _, x in landmarks.iterrows()]
+                    landmarks = landmarks['as_dict'].tolist()
                     pano_metadata["landmarks"] = landmarks
 
+                    if should_log:
+                        t2 = time.time()
+                        if logger.isEnabledFor(logging.DEBUG):
+                            logger.debug(f"[PANO_FETCH] Worker {worker_id} item {self._fetch_count}: landmarks processed ({len(landmarks)} pano) in {(t2-t1)*1000:.1f}ms")
+
                 cached_pano_tensors = get_cached_tensors(pano_metadata, self.dataset._panorama_tensor_caches)
+
+                if should_log:
+                    t3 = time.time()
+                    t2_val = t2 if self.dataset._config.should_load_landmarks else t1
+                    logger.debug(f"[PANO_FETCH] Worker {worker_id} item {self._fetch_count}: caches loaded in {(t3-t2_val)*1000:.1f}ms, total {(t3-t0)*1000:.1f}ms")
+                    self._fetch_count += 1
 
                 return VigorDatasetItem(
                     panorama_metadata=pano_metadata,

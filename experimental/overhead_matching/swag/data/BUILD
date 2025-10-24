@@ -15,6 +15,7 @@ py_library(
     requirement("pandas"),
     requirement("geopandas"),
     requirement("shapely"),
+    requirement("pyarrow"),
     requirement("scipy"),
     requirement("matplotlib"),
     requirement("psutil"),
@@ -27,6 +28,7 @@ py_library(
     "//experimental/overhead_matching/swag/scripts:distances",
     "//experimental/overhead_matching/swag/model:swag_model_input_output",
     "//experimental/overhead_matching/swag/model:swag_config_types",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
   ]
 )
 

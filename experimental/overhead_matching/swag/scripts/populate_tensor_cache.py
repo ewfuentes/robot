@@ -20,8 +20,6 @@ import dataclasses
 import sys
 
 
-
-
 def compute_config_hash(obj):
     yaml_str = msgspec.yaml.encode(obj, enc_hook=msgspec_enc_hook, order='deterministic')
     return yaml_str, hashlib.sha256(yaml_str)
@@ -76,16 +74,49 @@ def extract_field_specs_from_config(train_config: train.TrainConfig) -> list[str
     return field_specs
 
 
-def process_single_cache(field_spec: str,
-                        landmark_version: str,
-                        dataset_path: Path,
-                        base_output_path: Path,
-                        idx_start: None | int,
-                        idx_end: None | int,
-                        batch_size: int,
-                        train_config: train.TrainConfig,
-                        skip_existing: bool = False):
+def get_cache_output_path(field_spec: str,
+                          landmark_version: str,
+                          dataset_path: Path,
+                          base_output_path: Path,
+                          train_config: train.TrainConfig) -> tuple[Path, str]:
+    """
+    Determine the output path for a cache without building the dataset.
+    Returns (output_path, model_type).
+    """
+    parts = field_spec.split('.')
+    model_config = train_config
+    for p in parts:
+        if isinstance(model_config, dict):
+            model_config = model_config[p]
+        else:
+            model_config = getattr(model_config, p)
+    patch_dims = getattr(train_config, parts[0]).patch_dims
+    hash_struct = vd.HashStruct(model_config=model_config, patch_dims=patch_dims, landmark_version=landmark_version)
+    _, config_hash = compute_config_hash(hash_struct)
 
+    model_type = 'satellite' if 'sat_model_config' == parts[0] else 'panorama'
+    output_path = base_output_path / dataset_path.name / model_type / config_hash.hexdigest()
+
+    return output_path, model_type
+
+
+def should_skip_cache(output_path: Path) -> bool:
+    """Check if a cache already exists and is valid."""
+    if output_path.exists():
+        # Verify it's a valid LMDB database by checking for data.mdb or lock.mdb
+        if (output_path / "data.mdb").exists() or (output_path / "lock.mdb").exists():
+            return True
+    return False
+
+
+def build_dataset_for_extractor(field_spec: str,
+                                 landmark_version: str,
+                                 dataset_path: Path,
+                                 train_config: train.TrainConfig):
+    """
+    Build a dataset for a specific extractor.
+    Returns (dataset, model_type, requirements).
+    """
     # Get the desired model config
     parts = field_spec.split('.')
     model_config = train_config
@@ -95,26 +126,9 @@ def process_single_cache(field_spec: str,
         else:
             model_config = getattr(model_config, p)
     aux_info = getattr(train_config, parts[0]).auxiliary_info
-    patch_dims = getattr(train_config, parts[0]).patch_dims
-    hash_struct = vd.HashStruct(model_config=model_config, patch_dims=patch_dims, landmark_version=landmark_version)
-    yaml_str, config_hash = compute_config_hash(hash_struct)
 
-    # Determine output path
-    model_type = 'satellite' if 'sat_model_config' == parts[0] else 'panorama'
-    output_path = base_output_path / dataset_path.name / model_type / config_hash.hexdigest()
-
-    # Check if cache already exists
-    if skip_existing and output_path.exists():
-        # Verify it's a valid LMDB database by checking for data.mdb or lock.mdb
-        if (output_path / "data.mdb").exists() or (output_path / "lock.mdb").exists():
-            print(f'Skipping existing cache at: {output_path}')
-            return
-
-    print('computing cache for: ', hash_struct, 'with hash: ', config_hash.hexdigest())
-
-    # Create the model
+    # Create the model to determine requirements
     model = spe.create_extractor(model_config, aux_info)
-    model = model.cuda()
 
     # Construct the dataset
     requirements = derive_data_requirements_from_model(
@@ -134,13 +148,47 @@ def process_single_cache(field_spec: str,
             landmark_version=landmark_version,
             should_load_images=should_load_images,
             should_load_landmarks=should_load_landmarks))
+
+    model_type = 'satellite' if 'sat_model_config' == parts[0] else 'panorama'
     dataset = (dataset.get_sat_patch_view() if 'sat_model_config' == parts[0]
                else dataset.get_pano_view())
-    if idx_start is None:
-        idx_start = 0
-    if idx_end is None:
-        idx_end = len(dataset)
-    dataset = torch.utils.data.Subset(dataset, range(idx_start, idx_end))
+
+    return dataset, model_type, requirements
+
+
+def process_single_cache(field_spec: str,
+                         landmark_version: str,
+                         dataset_path: Path,
+                         base_output_path: Path,
+                         batch_size: int,
+                         train_config: train.TrainConfig,
+                         dataset):
+    """
+    Process a single cache. Assumes skip_existing check has already been done.
+    Dataset must be provided (not optional).
+    """
+    # Get the desired model config
+    parts = field_spec.split('.')
+    model_config = train_config
+    for p in parts:
+        if isinstance(model_config, dict):
+            model_config = model_config[p]
+        else:
+            model_config = getattr(model_config, p)
+    aux_info = getattr(train_config, parts[0]).auxiliary_info
+    patch_dims = getattr(train_config, parts[0]).patch_dims
+    hash_struct = vd.HashStruct(model_config=model_config, patch_dims=patch_dims, landmark_version=landmark_version)
+    yaml_str, config_hash = compute_config_hash(hash_struct)
+
+    # Determine output path
+    model_type = 'satellite' if 'sat_model_config' == parts[0] else 'panorama'
+    output_path = base_output_path / dataset_path.name / model_type / config_hash.hexdigest()
+
+    print('computing cache for: ', hash_struct, 'with hash: ', config_hash.hexdigest())
+
+    # Create the model
+    model = spe.create_extractor(model_config, aux_info)
+    model = model.cuda()
 
     # Get a dataloader
     dataloader = vd.get_dataloader(dataset, num_workers=4, batch_size=batch_size)
@@ -203,8 +251,6 @@ def main(train_config_path: Path,
          dataset_path: Path,
          landmark_version: str,
          base_output_path: Path,
-         idx_start: None | int,
-         idx_end: None | int,
          batch_size: int,
          field_spec: str | None = None,
          skip_existing: bool = False):
@@ -238,23 +284,78 @@ def main(train_config_path: Path,
     # Process each combination of dataset and field spec
     total_tasks = len(dataset_paths) * len(field_specs)
     current_task = 0
+
+    # Cache to opportunistically reuse datasets
+    previous_dataset_cache = None
+
     for dataset in dataset_paths:
+        # Reset cache when switching datasets
+        previous_dataset_cache = None
+
         for field_spec_str in field_specs:
             current_task += 1
             print(f"\n{'='*80}")
             print(f"Processing task {current_task}/{total_tasks}: {dataset.name} - {field_spec_str}")
             print(f"{'='*80}")
 
+            # Check if we should skip this cache
+            output_path, current_model_type = get_cache_output_path(
+                field_spec=field_spec_str,
+                landmark_version=landmark_version,
+                dataset_path=dataset,
+                base_output_path=base_output_path,
+                train_config=train_config)
+
+            if skip_existing and should_skip_cache(output_path):
+                print(f'✓ Skipping existing cache at: {output_path}')
+                continue
+
+            # Check if we can reuse the previous dataset
+            dataset_to_use = None
+            if previous_dataset_cache is not None:
+                cached_path, cached_model_type, cached_requirements, cached_dataset = previous_dataset_cache
+
+                # Build requirements for current extractor (without creating the dataset)
+                parts = field_spec_str.split('.')
+                model_config = train_config
+                for p in parts:
+                    if isinstance(model_config, dict):
+                        model_config = model_config[p]
+                    else:
+                        model_config = getattr(model_config, p)
+                aux_info = getattr(train_config, parts[0]).auxiliary_info
+                temp_model = spe.create_extractor(model_config, aux_info)
+                current_requirements = derive_data_requirements_from_model(
+                    temp_model,
+                    use_cached_extractors=None)
+
+                # Check if we can reuse
+                if (cached_path == dataset and
+                    cached_model_type == current_model_type and
+                    cached_requirements == current_requirements):
+                    print(f"✓ Reusing previous dataset (model_type={current_model_type}, requirements={current_requirements})")
+                    dataset_to_use = cached_dataset
+                else:
+                    print(f"✗ Cannot reuse dataset - rebuilding (model_type changed: {cached_model_type}→{current_model_type}, requirements changed: {cached_requirements}→{current_requirements})")
+
+            # Build new dataset if we can't reuse
+            if dataset_to_use is None:
+                dataset_to_use, model_type, requirements = build_dataset_for_extractor(
+                    field_spec=field_spec_str,
+                    landmark_version=landmark_version,
+                    dataset_path=dataset,
+                    train_config=train_config)
+                previous_dataset_cache = (dataset, model_type, requirements, dataset_to_use)
+                print(f"Built new dataset (model_type={model_type}, requirements={requirements})")
+
             process_single_cache(
                 field_spec=field_spec_str,
                 landmark_version=landmark_version,
                 dataset_path=dataset,
                 base_output_path=base_output_path,
-                idx_start=idx_start,
-                idx_end=idx_end,
                 batch_size=batch_size,
                 train_config=train_config,
-                skip_existing=skip_existing
+                dataset=dataset_to_use
             )
 
     print(f"\n{'='*80}")
@@ -274,10 +375,6 @@ if __name__ == "__main__":
                         help='Path to dataset or directory containing multiple datasets')
     parser.add_argument('--landmark_version', type=str, required=True,
                         help='Landmark version (e.g., v3)')
-    parser.add_argument('--idx_start', type=int, default=None,
-                        help='Starting index for processing (optional)')
-    parser.add_argument('--idx_end', type=int, default=None,
-                        help='Ending index for processing (optional)')
     parser.add_argument("--batch_size", type=int, default=16,
                         help='Batch size for processing')
     parser.add_argument("--skip-existing", action='store_true',
@@ -291,8 +388,6 @@ if __name__ == "__main__":
              dataset_path=Path(args.dataset),
              landmark_version=args.landmark_version,
              base_output_path=output_path,
-             idx_start=args.idx_start,
-             idx_end=args.idx_end,
              batch_size=args.batch_size,
              field_spec=args.field_spec,
              skip_existing=args.skip_existing)

@@ -80,6 +80,7 @@ def main(dataset_path: Path, zoom_level: int, output_path: Path | None, show_ext
     if output_path is not None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(landmark_df.to_json(na="drop"))
+        landmark_df.to_feather(output_path.with_suffix('.feather'))
 
 
 if __name__ == "__main__":

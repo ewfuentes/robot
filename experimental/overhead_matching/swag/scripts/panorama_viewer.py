@@ -860,7 +860,7 @@ def compute_panorama_to_osm_associations(panorama_dir, osm_landmarks, landmarks_
         landmark = landmarks_df.iloc[landmark_idx]
 
         # Compute custom_id
-        props = prune_landmark(landmark.dropna().to_dict())
+        props = landmark['pruned_props']
         custom_id = custom_id_from_props(props)
 
         # Only include if we have this OSM landmark loaded
@@ -940,7 +940,7 @@ def load_osm_landmarks(geojson_path, sentences_dir, embeddings_dir=None):
     print("  Computing custom IDs...")
     landmark_custom_ids = []
     for _, landmark in landmarks_df.iterrows():
-        props = prune_landmark(landmark.dropna().to_dict())
+        props = landmark['pruned_props']
         custom_id = custom_id_from_props(props)
         landmark_custom_ids.append((custom_id, props, landmark))
 

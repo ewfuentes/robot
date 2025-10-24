@@ -22,6 +22,8 @@ def load_all_jsonl_from_folder(folder: Path) -> list:
     for file in folder.glob("*"):
         if file.is_dir():
             continue
+        elif file.suffix == ".pkl":
+            continue
         with open(file, 'r') as f:
             for line in f:
                 all_json_objs.append(json.loads(line))
@@ -35,7 +37,7 @@ def make_embedding_dict_from_json(embedding_jsons: list) -> dict[str, list[float
         embedding_jsons: List of JSON responses containing embeddings
 
     Returns:
-        Dictionary mapping custom_id to embedding vector
+        Dictionary mapping custom_id to embedding vector (as lists)
     """
     out = {}
     for response in embedding_jsons:
@@ -45,6 +47,22 @@ def make_embedding_dict_from_json(embedding_jsons: list) -> dict[str, list[float
         assert custom_id not in out
         out[custom_id] = embedding
     return out
+
+
+def convert_embeddings_to_tensors(embedding_dict: dict[str, list[float]]):
+    """Convert embedding dict values from lists to tensors.
+
+    Args:
+        embedding_dict: Dictionary mapping custom_id to embedding vector (as lists)
+
+    Returns:
+        Dictionary mapping custom_id to embedding tensor
+    """
+    import torch
+    return {
+        custom_id: torch.tensor(embedding, dtype=torch.float32)
+        for custom_id, embedding in embedding_dict.items()
+    }
 
 
 def make_sentence_dict_from_json(sentence_jsons: list) -> tuple[dict[str, str], int]:
