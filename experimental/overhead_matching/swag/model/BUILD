@@ -44,6 +44,7 @@ py_library(
     ":synthetic_landmark_extractor",
     ":semantic_segment_extractor",
     ":absolute_position_extractor",
+    ":osm_semantic_class_extractor",
     ":swag_config_types",
     ":swag_model_input_output",
     "//common/torch:load_torch_deps",
@@ -182,6 +183,33 @@ py_test(
     requirement("shapely"),
     ":semantic_landmark_extractor",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
+  ]
+)
+
+py_library(
+  name = "osm_semantic_class_extractor",
+  srcs = ["osm_semantic_class_extractor.py"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+  ],
+  deps = [
+    requirement("torch"),
+    "//common/torch:load_torch_deps",
+    ":swag_config_types",
+    ":swag_model_input_output",
+    ":semantic_landmark_extractor",
+    ":semantic_landmark_utils",
+  ]
+)
+
+py_test(
+  name = "osm_semantic_class_extractor_test",
+  srcs = ["osm_semantic_class_extractor_test.py"],
+  deps = [
+    requirement("torch"),
+    requirement("shapely"),
+    "//common/torch:load_torch_deps",
+    ":osm_semantic_class_extractor",
   ]
 )
 

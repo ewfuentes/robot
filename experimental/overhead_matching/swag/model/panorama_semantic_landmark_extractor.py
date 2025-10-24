@@ -207,12 +207,14 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
         valid_landmarks = []
         for item in model_input.metadata:
             pano_id = item['pano_id']
+            if pano_id not in self.panorama_metadata:
+                continue
             matching_landmarks = self.panorama_metadata[pano_id]
 
             num_landmarks = len(matching_landmarks)
             valid_landmarks.append(num_landmarks)
 
-        max_num_landmarks = max(valid_landmarks)
+        max_num_landmarks = max(valid_landmarks) if valid_landmarks else 0
 
         # Initialize output tensors
         mask = torch.ones((batch_size, max_num_landmarks), dtype=torch.bool)
@@ -226,6 +228,9 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
             pano_id = item['pano_id']
 
             # Find matching panorama metadata
+            if pano_id not in self.panorama_metadata:
+                print(f"Failed to find pano id {pano_id} in panorama metadata! Skipping landmark")
+                continue
             matching_landmarks = self.panorama_metadata[pano_id]
 
             # Sort by landmark_idx to ensure consistent ordering
@@ -278,6 +283,8 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
 
         for i, item in enumerate(model_input.metadata):
             pano_id = item['pano_id']
+            if pano_id not in self.panorama_metadata:
+                continue
 
             # Find matching panorama metadata
             matching_landmarks = self.panorama_metadata[pano_id]
