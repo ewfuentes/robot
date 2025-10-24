@@ -19,6 +19,7 @@ from experimental.overhead_matching.swag.model.swag_config_types import Extracto
 from experimental.overhead_matching.swag.model.swag_model_input_output import derive_data_requirements_from_model
 from experimental.overhead_matching.swag.scripts.logging_utils import (
     log_batch_metrics, log_embedding_stats, log_gradient_stats, log_validation_metrics)
+from experimental.overhead_matching.swag.scripts.model_inspector import ModelInspector
 from typing import Union
 from dataclasses import dataclass
 import tqdm
@@ -239,9 +240,9 @@ def compute_forward_pass_and_loss(batch,
     """Compute forward pass and loss for a batch."""
 
     with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-        panorama_embeddings = panorama_model(
+        panorama_embeddings, pano_debug = panorama_model(
             panorama_model.model_input_from_batch(batch).to("cuda"))
-        sat_embeddings = satellite_model(
+        sat_embeddings, sat_debug = satellite_model(
             satellite_model.model_input_from_batch(batch).to("cuda"))
 
         similarity = distance_model(
@@ -256,7 +257,7 @@ def compute_forward_pass_and_loss(batch,
             loss_functions=loss_functions,
         )
 
-    return loss_dict, panorama_embeddings, sat_embeddings
+    return loss_dict, panorama_embeddings, sat_embeddings, {'sat': sat_debug, 'pano': pano_debug}
 
 
 def train(config: TrainConfig,
@@ -266,7 +267,9 @@ def train(config: TrainConfig,
           validation_datasets,
           panorama_model,
           satellite_model,
-          quiet):
+          quiet,
+          capture_model_data: bool = False,
+          num_batches_to_capture: int = 10):
 
     output_dir.mkdir(parents=True, exist_ok=True)
     # save config:
@@ -302,6 +305,13 @@ def train(config: TrainConfig,
     # Create training components using extracted function
     miner, dataloader, opt = create_training_components(
         dataset, panorama_model, satellite_model, distance_model, opt_config)
+
+    # Create model inspector if requested
+    inspector = None
+    if capture_model_data:
+        inspector = ModelInspector(
+            output_dir=output_dir,
+            num_batches_to_capture=num_batches_to_capture)
 
     warmup_lr_scheduler = torch.optim.lr_scheduler.ConstantLR(
         opt,
@@ -353,13 +363,30 @@ def train(config: TrainConfig,
             opt.zero_grad()
 
             # Use extracted function for forward pass and loss
-            loss_dict, panorama_embeddings, satellite_embeddings = compute_forward_pass_and_loss(
+            loss_dict, panorama_embeddings, satellite_embeddings, debug_dict = compute_forward_pass_and_loss(
                 batch=batch,
                 panorama_model=panorama_model,
                 satellite_model=satellite_model,
                 distance_model=distance_model,
                 pairing_data=pairing_data,
                 loss_functions=loss_functions)
+
+            # Capture model inputs and extractor outputs if inspector is enabled
+            if inspector is not None and inspector.should_capture(total_batches):
+                pano_input = panorama_model.model_input_from_batch(batch)
+                sat_input = satellite_model.model_input_from_batch(batch)
+                # Use the extractor outputs returned from the forward pass
+                pano_extractor_outputs = debug_dict['pano']
+                sat_extractor_outputs = debug_dict['sat']
+                inspector.capture(
+                    pano_input=pano_input,
+                    sat_input=sat_input,
+                    pano_extractor_outputs=pano_extractor_outputs,
+                    sat_extractor_outputs=sat_extractor_outputs,
+                    pairing_data=pairing_data,
+                    batch_idx=batch_idx,
+                    epoch_idx=epoch_idx,
+                    total_batches=total_batches)
 
             grad_scaler.scale(loss_dict["loss"]).backward()
             grad_scaler.step(opt)
@@ -417,7 +444,7 @@ def train(config: TrainConfig,
 
             for batch in tqdm.tqdm(unobserved_dataloader, desc="Unobserved sat batches", disable=quiet):
                 with torch.no_grad():
-                    miner_satellite_embeddings = satellite_model(
+                    miner_satellite_embeddings, _ = satellite_model(
                         satellite_model.model_input_from_batch(batch).to("cuda"))
                 miner.consume(None, miner_satellite_embeddings, batch)
 
@@ -453,8 +480,10 @@ def train(config: TrainConfig,
             save_model(satellite_model, satellite_model_path,
                        (sat_model_input,))
             if sum(param.numel() for param in distance_model.parameters()) > 0:
+                sat_emb, _ = satellite_model(sat_model_input)
+                pano_emb, _ = panorama_model(pano_model_input)
                 save_model(distance_model, distance_model_path,
-                           (satellite_model(sat_model_input), panorama_model(pano_model_input) ))
+                           (sat_emb, pano_emb))
 
 
     # Signal training completion
@@ -470,6 +499,8 @@ def main(
         quiet: bool,
         no_ipdb: bool,
         lr_sweep: bool = False,
+        capture_model_data: bool = False,
+        num_batches_to_capture: int = 10,
 ):
     with open(train_config_path, 'r') as file_in:
         train_config = msgspec.yaml.decode(file_in.read(), type=TrainConfig, dec_hook=msgspec_dec_hook)
@@ -521,7 +552,8 @@ def main(
         factor=train_config.dataset_config.factor,
         should_load_images=should_load_images,
         should_load_landmarks=should_load_landmarks,
-        landmark_version=train_config.dataset_config.landmark_version)
+        landmark_version=train_config.dataset_config.landmark_version,
+        load_cache_debug=capture_model_data)
 
     dataset_paths = [dataset_base_path / p for p in train_config.dataset_config.paths]
     dataset = vigor_dataset.VigorDataset(dataset_paths, dataset_config)
@@ -592,7 +624,9 @@ def main(
             validation_datasets=validation_datasets,
             panorama_model=panorama_model,
             satellite_model=satellite_model,
-            quiet=quiet)
+            quiet=quiet,
+            capture_model_data=capture_model_data,
+            num_batches_to_capture=num_batches_to_capture)
 
 
 if __name__ == "__main__":
@@ -604,6 +638,10 @@ if __name__ == "__main__":
     parser.add_argument("--no_ipdb", action="store_true",
                         help="Don't run IPDB around the training job")
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--capture_model_data", action="store_true",
+                        help="Capture model inputs and outputs for debugging")
+    parser.add_argument("--num_batches_to_capture", type=int, default=10,
+                        help="Number of batches to capture (default: 10)")
     args = parser.parse_args()
 
     main(
@@ -611,4 +649,6 @@ if __name__ == "__main__":
         Path(args.output_base),
         Path(args.train_config),
         no_ipdb=args.no_ipdb,
-        quiet=args.quiet)
+        quiet=args.quiet,
+        capture_model_data=args.capture_model_data,
+        num_batches_to_capture=args.num_batches_to_capture)

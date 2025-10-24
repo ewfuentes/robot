@@ -35,7 +35,7 @@ class MockEmbeddingModel(nn.Module):
         batch_size = data.shape[0]
         out = self.embedding_network(data[:, :, :100, :100].float().reshape(batch_size, -1))
         out = nn.functional.normalize(out, dim=1)
-        return out
+        return out, {}
 
 
 class EvaluateSwagTest(unittest.TestCase):
@@ -77,7 +77,7 @@ class EvaluateSwagTest(unittest.TestCase):
         with torch.no_grad():
             for batch in pano_dataloader:
                 # Get embeddings for panorama images
-                batch_embedding = ego_model(batch.panorama)
+                batch_embedding, _ = ego_model(batch.panorama)
 
                 # Calculate cosine similarity with all satellite patches
                 patch_cosine_similarity = sed.calculate_cos_similarity_against_database(

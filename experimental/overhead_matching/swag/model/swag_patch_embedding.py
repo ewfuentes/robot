@@ -475,7 +475,7 @@ class SwagPatchEmbedding(torch.nn.Module):
                 metadata=batch_item.satellite_metadata,
                 cached_tensors=batch_item.cached_satellite_tensors)
 
-    def _get_input_tokens(self, model_input: ModelInput) -> tuple[torch.Tensor, torch.Tensor]:
+    def _get_input_tokens(self, model_input: ModelInput) -> tuple[torch.Tensor, torch.Tensor, dict[str, ExtractorOutput]]:
         dev = self._cls_token.device
         extractor_outputs_by_name = {}
         for k in self._extractor_by_name:
@@ -508,11 +508,20 @@ class SwagPatchEmbedding(torch.nn.Module):
         input_mask = torch.cat([cls_mask] +
                                [v.mask for v in extractor_outputs_by_name.values()], dim=1)
 
-        return input_tokens, input_mask
+        return input_tokens, input_mask, extractor_outputs_by_name
 
-    def forward(self, model_input: ModelInput) -> torch.Tensor:
+    def forward(self, model_input: ModelInput) -> tuple[torch.Tensor, dict[str, ExtractorOutput]]:
+        """Forward pass through the model.
 
-        input_tokens, input_mask = self._get_input_tokens(model_input)
+        Args:
+            model_input: Input containing image and metadata
+
+        Returns:
+            Tuple of (embeddings, extractor_outputs_by_name) where:
+                - embeddings: Tensor of shape (batch, num_embeddings, output_dim)
+                - debug dict: currently extractor_outputs_by_name: Dict mapping extractor names to their ExtractorOutput objects
+        """
+        input_tokens, input_mask, extractor_outputs_by_name = self._get_input_tokens(model_input)
         output_tokens = self._aggregator_model(input_tokens, input_mask)
         model_output = output_tokens[:, :self._cls_token.shape[1], :]  # B, num_class_tokens, D_emb
 
@@ -520,7 +529,7 @@ class SwagPatchEmbedding(torch.nn.Module):
         if self._normalize_embeddings:
             model_output = F.normalize(model_output, dim=2)
 
-        return model_output
+        return model_output, extractor_outputs_by_name
 
     def cache_info(self) -> dict[str, CacheableExtractorInfo]:
         """Returns information about cacheable extractors

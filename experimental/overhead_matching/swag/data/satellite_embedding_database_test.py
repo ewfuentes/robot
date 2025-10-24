@@ -18,7 +18,7 @@ class MockEmbeddingModel(nn.Module):
         batch_size = data.shape[0]
         out = torch.rand((batch_size, self.embedding_dim))
         out[:, 0] = data[:, 0, 0, 0]
-        return out 
+        return out, {} 
 
 
 class SatelliteEmbeddingDatabaseTest(unittest.TestCase):
