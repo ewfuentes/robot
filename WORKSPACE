@@ -615,7 +615,7 @@ http_archive(
   name="vigor_snippet",
   urls=["https://www.dropbox.com/scl/fi/6breqzx8dwawzoouxu4w3/vigor_snippet.zip?rlkey=104sa118w76lbudmngd6wnc4i&st=ohxhjjcz&dl=1"],
   build_file="//third_party:BUILD.zip_file",
-  sha256 = "95f860117670c75e2d0eabdfe1260e40ecddd0d6557d0a6e9d507060bde2f07c"
+  sha256 = "4e852f46c6d5d6e415c6a7ac94849e64b8196b3e8199f272b24bf8db275ea22d"
 )
 
 http_archive(

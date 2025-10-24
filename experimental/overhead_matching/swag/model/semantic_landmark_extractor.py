@@ -7,15 +7,17 @@ import json
 import hashlib
 from pathlib import Path
 import pandas as pd
+import pickle
 import openai
 import base64
+import time
 from experimental.overhead_matching.swag.model.swag_config_types import (
     SemanticLandmarkExtractorConfig, ExtractorDataRequirement)
 from experimental.overhead_matching.swag.model.swag_model_input_output import (
     ModelInput, ExtractorOutput)
 from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
     load_all_jsonl_from_folder, make_embedding_dict_from_json, make_sentence_dict_from_json,
-    prune_landmark, make_sentence_dict_from_pano_jsons)
+    prune_landmark, make_sentence_dict_from_pano_jsons, convert_embeddings_to_tensors)
 from multiprocessing import Pool
 from functools import partial
 import tqdm
@@ -63,11 +65,16 @@ def compute_bounds_for_polygon(pano_loc_px, geometry):
     return bounds
 
 
-def compute_landmark_pano_positions(pano_metadata, pano_shape):
+def compute_landmark_pano_positions(pano_metadata, pano_shape, landmark_mask=None):
     out = []
     pano_y = pano_metadata["web_mercator_y"]
     pano_x = pano_metadata["web_mercator_x"]
-    for landmark in pano_metadata["landmarks"]:
+
+    for idx, landmark in enumerate(pano_metadata["landmarks"]):
+        # Skip landmarks that are filtered out by the mask
+        if landmark_mask is not None and not landmark_mask[idx]:
+            continue
+
         geometry = landmark["geometry_px"]
 
         # We want to compute the range spanned by this geometry.
@@ -90,6 +97,7 @@ def compute_landmark_pano_positions(pano_metadata, pano_shape):
             out.append([
                 [pano_shape[0] / 2.0, pano_shape[1] * frac],
                 [pano_shape[0] / 2.0, pano_shape[1] * frac]])
+
         elif geometry.geom_type == "LineString":
             xs,  ys = geometry.xy
             dx_in_web_mercator = torch.tensor(xs) - pano_x
@@ -109,6 +117,7 @@ def compute_landmark_pano_positions(pano_metadata, pano_shape):
             out.append([
                 [pano_shape[0] / 2.0, pano_shape[1] * frac[0]],
                 [pano_shape[0] / 2.0, pano_shape[1] * frac[1]]])
+
         elif geometry.geom_type == "Polygon":
             bounds = compute_bounds_for_polygon((pano_y, pano_x), geometry)
             if bounds[1] - bounds[0] > 2 * torch.pi:
@@ -122,6 +131,7 @@ def compute_landmark_pano_positions(pano_metadata, pano_shape):
             out.append([
                 [pano_shape[0] / 2.0, pano_shape[1] * frac[0].item()],
                 [pano_shape[0] / 2.0, pano_shape[1] * frac[1].item()]])
+
         elif geometry.geom_type == "MultiPolygon":
             bounds = torch.tensor([torch.inf, -torch.inf])
             for p in geometry.geoms:
@@ -148,22 +158,31 @@ def compute_landmark_pano_positions(pano_metadata, pano_shape):
     return torch.tensor(out)
 
 
-def compute_landmark_sat_positions(sat_metadata):
+def compute_landmark_sat_positions(sat_metadata, landmark_mask=None):
+    # The mask entry should be true if we want to keep it
     out = []
     sat_y = sat_metadata["web_mercator_y"]
     sat_x = sat_metadata["web_mercator_x"]
-    for landmark in sat_metadata["landmarks"]:
+
+    for idx, landmark in enumerate(sat_metadata["landmarks"]):
+        # Skip landmarks that are filtered out by the mask
+        if landmark_mask is not None and not landmark_mask[idx]:
+            continue
+
         geometry = landmark["geometry_px"]
+
         if geometry.geom_type == "Point":
             out.append([
                 [geometry.y - sat_y, geometry.x - sat_x],
                 [geometry.y - sat_y, geometry.x - sat_x]])
+
         elif landmark['geometry_px'].geom_type == "LineString":
             # Approximate a linestring by it's first and last points
             x, y = geometry.xy
             out.append([
                 [y[0] - sat_y, x[0] - sat_x],
                 [y[1] - sat_y, x[1] - sat_x]])
+
         elif landmark['geometry_px'].geom_type in ["Polygon", "MultiPolygon"]:
             # Approximate a polygon by its axis aligned bounding box
             x_min, y_min, x_max, y_max = geometry.bounds
@@ -172,6 +191,7 @@ def compute_landmark_sat_positions(sat_metadata):
                 [y_min - sat_y, x_min - sat_x],
                 # Bottom Right
                 [y_max - sat_y, x_max - sat_x]])
+
         else:
             raise ValueError(f"Unrecognized geometry type: {landmark["geometry_px"].geom_type}")
     return torch.tensor(out)
@@ -185,25 +205,56 @@ class SemanticLandmarkExtractor(torch.nn.Module):
         self._description_cache = {}
         self.files_loaded = False
         self.all_sentences = None
+        self._batch_counter = 0
 
     def load_files(self):
         # lazy setup to speed things up when we're using caching
+        sentence_start_load_time = time.time()
         sentence_directory = self.semantic_embedding_base_path / self.config.embedding_version / "sentences"
         embedding_directory = self.semantic_embedding_base_path / self.config.embedding_version / "embeddings"
         if sentence_directory.exists():
             self.all_sentences, _ = make_sentence_dict_from_json(
                 load_all_jsonl_from_folder(sentence_directory))
+        sentence_end_load_time = time.time()
 
-        self.all_embeddings = make_embedding_dict_from_json(
-            load_all_jsonl_from_folder(embedding_directory))
-        assert len(self.all_embeddings) != 0, f"Failed to load any embeddings from {embedding_directory}"
-        assert len(next(iter(self.all_embeddings.values()))) >= self.config.openai_embedding_size, f"Requested an embedding length longer than the OpenAI Embeddings {len(next(iter(self.all_embeddings.values())))}, requested {self.config.openai_embedding_size}"
+        if (embedding_directory / "embeddings.pkl").exists():
+            with open(embedding_directory / "embeddings.pkl", 'rb') as file_in:
+                self.all_embeddings_tensor, self.landmark_id_to_idx = pickle.load(file_in)
+        else:
+            # Build from JSON
+            embeddings = convert_embeddings_to_tensors(
+                make_embedding_dict_from_json(
+                    load_all_jsonl_from_folder(embedding_directory)))
 
+            # Build tensor and index map
+            embedding_list = []
+            self.landmark_id_to_idx = {}
+            for idx, (landmark_id, emb) in enumerate(embeddings.items()):
+                embedding_list.append(emb)
+                self.landmark_id_to_idx[landmark_id] = idx
+
+            self.all_embeddings_tensor = torch.stack(embedding_list)
+
+        embedding_end_load_time = time.time()
+
+        # Validate embeddings
+        assert len(self.landmark_id_to_idx) != 0, f"Failed to load any embeddings from {embedding_directory}"
+        assert self.all_embeddings_tensor.shape[1] >= self.config.openai_embedding_size, f"Requested an embedding length longer than the OpenAI Embeddings {self.all_embeddings_tensor.shape[1]}, requested {self.config.openai_embedding_size}"
+
+        # Slice to requested embedding size
+        output_dim = self.config.openai_embedding_size
+        if self.all_embeddings_tensor.shape[1] > output_dim:
+            self.all_embeddings_tensor = self.all_embeddings_tensor[:, :output_dim]
+        self.all_embeddings_tensor = (
+                self.all_embeddings_tensor / torch.norm(self.all_embeddings_tensor, dim=-1).unsqueeze(-1))
+
+
+        self.files_loaded = True
 
     def forward(self, model_input: ModelInput) -> ExtractorOutput:
         if not self.files_loaded:
             self.load_files()
-            self.files_loaded = True
+
         # drop landmarks not used by this extractor
         # true indicates valid, false indicates not valid
         landmark_mask = [torch.tensor([1 if lm['geometry'].geom_type.lower() == self.config.landmark_type.lower() else 0 for lm in batch_item["landmarks"]], dtype=bool) for batch_item in model_input.metadata]
@@ -216,6 +267,7 @@ class SemanticLandmarkExtractor(torch.nn.Module):
         mask = torch.ones((batch_size, max_num_landmarks), dtype=torch.bool)
         features = torch.zeros((batch_size, max_num_landmarks, self.output_dim))
         positions = torch.zeros((batch_size, max_num_landmarks, 2, 2))
+
         max_description_length = 0
         for i, item in enumerate(model_input.metadata):
             num_landmarks_for_item = valid_landmarks[i]
@@ -223,29 +275,31 @@ class SemanticLandmarkExtractor(torch.nn.Module):
             if num_landmarks_for_item > 0:
                 if is_panorama:
                     positions[i, :num_landmarks_for_item] = compute_landmark_pano_positions(
-                        item, model_input.image.shape[-2:])[landmark_mask[i]]
+                        item, model_input.image.shape[-2:], landmark_mask=landmark_mask[i])
                 else:
-                    positions[i, :num_landmarks_for_item] = compute_landmark_sat_positions(item)[landmark_mask[i]]
+                    positions[i, :num_landmarks_for_item] = compute_landmark_sat_positions(
+                        item, landmark_mask=landmark_mask[i])
+
             landmark_index = 0
             for landmark in item["landmarks"]:
                 # skip landmarks of the wrong type
                 if landmark['geometry'].geom_type.lower() != self.config.landmark_type.lower():
                     continue
-                props = prune_landmark(landmark)
+
+                props = landmark['pruned_props']
                 landmark_id = _custom_id_from_props(props)
-                if landmark_id not in self.all_embeddings:
+
+                if landmark_id not in self.landmark_id_to_idx:
                     print(f"Warning: missing embedding for props: {props}, ID {landmark_id}")
                     continue
-                features[i, landmark_index, :] = torch.tensor(self.all_embeddings[landmark_id])[:self.output_dim]  # crop off end if requested
+
+                emb_idx = self.landmark_id_to_idx[landmark_id]
+                features[i, landmark_index, :] = self.all_embeddings_tensor[emb_idx]
                 mask[i, landmark_index] = False
                 landmark_index += 1
-
                 if self.all_sentences is not None:
                     max_description_length = max(max_description_length, len(
                         self.all_sentences[landmark_id].encode("utf-8")))
-
-        ## re-normalize incase we trimmed embeddings
-        features[~mask] = features[~mask] / torch.norm(features[~mask], dim=-1).unsqueeze(-1)
 
         sentence_debug = torch.zeros(
             (batch_size, max_num_landmarks, max_description_length), dtype=torch.uint8)
@@ -258,7 +312,7 @@ class SemanticLandmarkExtractor(torch.nn.Module):
                 for landmark in item["landmarks"]:
                     if landmark['geometry'].geom_type.lower() != self.config.landmark_type.lower():
                         continue
-                    props = prune_landmark(landmark)
+                    props = landmark['pruned_props']
                     landmark_id = _custom_id_from_props(props)
                     if landmark_id not in self.all_sentences:
                         continue
@@ -290,7 +344,6 @@ class SemanticLandmarkExtractor(torch.nn.Module):
 
 def _load_landmarks(geojson_list):
     import geopandas as gpd
-    import pandas as pd
     return pd.concat([gpd.read_file(p) for p in geojson_list], ignore_index=True)
 
 
@@ -742,6 +795,39 @@ def _write_and_launch_batch(output_base, batch_idx, batch_requests, should_launc
         print(f"{batch_response.id}", end=" ")
 
 
+def _process_embedding_path(dirpath, _, filenames):
+    if dirpath.name != 'embeddings':
+        return
+
+    print(f"Processing: {dirpath}")
+    jsonl = load_all_jsonl_from_folder(dirpath)
+    embeddings = make_embedding_dict_from_json(jsonl)
+    # Convert to tensors
+    embeddings = convert_embeddings_to_tensors(embeddings)
+
+    # Build tensor and index map for efficient access
+    embedding_list = []
+    landmark_id_to_idx = {}
+    for idx, (landmark_id, emb) in enumerate(embeddings.items()):
+        embedding_list.append(emb)
+        landmark_id_to_idx[landmark_id] = idx
+
+    all_embeddings_tensor = torch.stack(embedding_list)
+
+    # Pickle the tensor and index map instead of the dict
+    print(f"Writing {dirpath / 'embeddings.pkl'} with tensor shape {all_embeddings_tensor.shape}")
+    with open(dirpath / "embeddings.pkl", 'wb') as file_out:
+        pickle.dump((all_embeddings_tensor, landmark_id_to_idx), file_out)
+
+
+def create_embedding_dict(args):
+    import multiprocessing
+    base_path = Path(args.embedding_dir)
+
+    with multiprocessing.Pool(5) as p:
+        p.starmap(_process_embedding_path, base_path.walk())
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
@@ -792,6 +878,12 @@ if __name__ == "__main__":
     panorama_parser.add_argument('--pano_ids_file', type=str, default=None,
                                  help='Optional file containing panorama IDs to process (one per line). If not provided, all panoramas are processed.')
     panorama_parser.set_defaults(func=create_panorama_description_requests)
+
+    embedding_dict_parser = subparsers.add_parser('create_embedding_dict',
+                                            help='convert jsonl files to a pickled dict')
+    embedding_dict_parser.add_argument('--embedding_dir', type=str, default="/tmp/",
+                                 help='Base path for output batch request files')
+    embedding_dict_parser.set_defaults(func=create_embedding_dict)
 
     args = parser.parse_args()
     import ipdb

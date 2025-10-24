@@ -98,14 +98,14 @@ def _(vd):
 
 
 @app.cell
-def _(prune_landmark, seattle_dataset):
+def _(seattle_dataset):
 
     unique_landmarks = set()
     # for _, v  in dataset._landmark_metadata.iterrows():
-    #     unique_landmarks.add(prune_landmark(v))
+    #     unique_landmarks.add(v['pruned_props'])
 
     for _, v  in seattle_dataset._landmark_metadata.iterrows():
-        unique_landmarks.add(prune_landmark(v))
+        unique_landmarks.add(v['pruned_props'])
 
     len(unique_landmarks)
     return (unique_landmarks,)

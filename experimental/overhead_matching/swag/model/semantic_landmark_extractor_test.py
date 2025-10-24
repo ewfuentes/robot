@@ -178,13 +178,17 @@ class SemanticLandmarkExtractorTest(unittest.TestCase):
         model.load_files()
 
         # Verify all embeddings are loaded
-        self.assertEqual(len(model.all_embeddings), len(self.landmark_embeddings))
+        self.assertEqual(model.all_embeddings_tensor.shape[0], len(self.landmark_embeddings))
 
         # Verify each embedding matches what we created
         for key, info in self.landmark_embeddings.items():
-            self.assertIn(info['custom_id'], model.all_embeddings)
-            loaded_embedding = model.all_embeddings[info['custom_id']]
-            self.assertEqual(loaded_embedding, info['embedding'])
+            self.assertIn(info['custom_id'], model.landmark_id_to_idx)
+            loaded_embedding = model.all_embeddings_tensor[
+                    model.landmark_id_to_idx[info['custom_id']]]
+            expected_embedding = torch.tensor(info['embedding'])
+            expected_embedding = expected_embedding / torch.linalg.norm(expected_embedding)
+            self.assertAlmostEqual(torch.linalg.norm(loaded_embedding - expected_embedding).item(),
+                                   0.0, places=4)
 
     def test_correct_embeddings_fetched_for_landmarks(self):
         """Test that the correct embeddings are fetched for specific landmark properties"""
@@ -199,16 +203,19 @@ class SemanticLandmarkExtractorTest(unittest.TestCase):
         restaurant_geom = shapely.Point(*landmark_1[::-1])
         restaurant_props['geometry'] = restaurant_geom
         restaurant_props['geometry_px'] = restaurant_geom
+        restaurant_props["pruned_props"] = prune_landmark(restaurant_props)
 
         bank_props = self.test_landmarks['bank'].copy()
         bank_geom = shapely.Point(*landmark_2[::-1])
         bank_props['geometry'] = bank_geom
         bank_props['geometry_px'] = bank_geom
+        bank_props["pruned_props"] = prune_landmark(bank_props)
 
         church_props = self.test_landmarks['church'].copy()
         church_geom = shapely.Point(*landmark_1[::-1])
         church_props['geometry'] = church_geom
         church_props['geometry_px'] = church_geom
+        church_props["pruned_props"] = prune_landmark(church_props)
 
         model_input = sle.ModelInput(
             image=torch.zeros((BATCH_SIZE, 0, 256, 256)),
@@ -274,11 +281,13 @@ class SemanticLandmarkExtractorTest(unittest.TestCase):
                         dict(
                             geometry=geom_1_1,
                             geometry_px=geom_1_1,
-                            landmark_type="bus_stop"),
+                            landmark_type="bus_stop",
+                            pruned_props=frozenset()),
                         dict(
                             geometry=geom_1_2,
                             geometry_px=geom_1_2,
-                            landmark_type="restaurants")]),
+                            landmark_type="restaurants",
+                            pruned_props=frozenset())]),
                 dict(
                     web_mercator_y=loc_2[0],
                     web_mercator_x=loc_2[1],
@@ -286,7 +295,8 @@ class SemanticLandmarkExtractorTest(unittest.TestCase):
                         dict(
                             geometry=geom_2_1,
                             geometry_px=geom_2_1,
-                            landmark_type="places_of_worship")]),
+                            landmark_type="places_of_worship",
+                            pruned_props={})]),
             ],
         )
         config = sle.SemanticLandmarkExtractorConfig(
@@ -339,11 +349,13 @@ class SemanticLandmarkExtractorTest(unittest.TestCase):
                         dict(
                             geometry=geom_1_1,
                             geometry_px=geom_1_1,
-                            landmark_type="bus_stop"),
+                            landmark_type="bus_stop",
+                            pruned_props={}),
                         dict(
                             geometry=geom_1_2,
                             geometry_px=geom_1_2,
-                            landmark_type="restaurants")]),
+                            landmark_type="restaurants",
+                            pruned_props={})]),
                 dict(
                     web_mercator_y=loc_2[0],
                     web_mercator_x=loc_2[1],
@@ -351,7 +363,8 @@ class SemanticLandmarkExtractorTest(unittest.TestCase):
                         dict(
                             geometry=geom_2_1,
                             geometry_px=geom_2_1,
-                            landmark_type="places_of_worship")]),
+                            landmark_type="places_of_worship",
+                            pruned_props={})]),
             ],
         )
         config = sle.SemanticLandmarkExtractorConfig(
@@ -407,7 +420,8 @@ class SemanticLandmarkExtractorTest(unittest.TestCase):
                         dict(
                             geometry=geom,
                             geometry_px=geom,
-                            landmark_type="bus_stop") for geom in landmark_geoms])])
+                            landmark_type="bus_stop",
+                            pruned_props={}) for geom in landmark_geoms])])
 
         config = sle.SemanticLandmarkExtractorConfig(
             landmark_type=LandmarkType.LINESTRING,
@@ -493,7 +507,7 @@ class SemanticLandmarkExtractorTest(unittest.TestCase):
                     web_mercator_y=loc[0],
                     web_mercator_x=loc[1],
                     pano_id="pano_id",
-                    landmarks=[dict(geometry=x, geometry_px=x, landmark_type="bus_stop") for x in landmarks])])
+                    landmarks=[dict(geometry=x, geometry_px=x, landmark_type="bus_stop", pruned_props={}) for x in landmarks])])
 
         config = sle.SemanticLandmarkExtractorConfig(
             landmark_type=LandmarkType.POLYGON,
@@ -548,6 +562,7 @@ class SemanticLandmarkExtractorTest(unittest.TestCase):
         geom = shapely.Point(100.0, 200.0)
         restaurant_props['geometry'] = geom
         restaurant_props['geometry_px'] = geom
+        restaurant_props['pruned_props'] = prune_landmark(restaurant_props)
 
         model_input = sle.ModelInput(
             image=torch.zeros((1, 0, 256, 256)),
@@ -581,7 +596,8 @@ class SemanticLandmarkExtractorTest(unittest.TestCase):
             'name': 'Unknown Landmark',
             'amenity': 'unknown_type',
             'geometry': geom,
-            'geometry_px': geom
+            'geometry_px': geom,
+            'pruned_props': frozenset({("Unknown", "Prop")})
         }
 
         model_input = sle.ModelInput(
