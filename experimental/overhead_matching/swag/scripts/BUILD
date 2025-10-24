@@ -219,20 +219,6 @@ py_binary(
 )
 
 py_binary(
-  name="profile_populate_tensor_cache",
-  srcs=["profile_populate_tensor_cache.py"],
-  deps=[
-    requirement("psutil"),
-    requirement("msgspec"),
-    requirement("torch"),
-    "//common/python:serialization",
-    "//common/torch:load_torch_deps",
-    "//experimental/overhead_matching/swag/data:vigor_dataset",
-    ":train",
-  ]
-)
-
-py_binary(
   name="panorama_to_pinhole",
   srcs=["panorama_to_pinhole.py"],
   deps=[
