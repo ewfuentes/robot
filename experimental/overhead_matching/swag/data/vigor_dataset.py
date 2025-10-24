@@ -35,10 +35,11 @@ logger = logging.getLogger(__name__)
 EARTH_RADIUS_M = 6378137.0
 
 class HashStruct(msgspec.Struct, frozen=True):
-    """Structure for computing cache hashes. Combines model config, patch dims, and landmark version."""
+    """Structure for computing cache hashes. Combines model config, patch dims, landmark version, and panorama landmark radius."""
     model_config: Any
     patch_dims: tuple[int, int]
     landmark_version: str
+    panorama_landmark_radius_px: float
 
 def compute_config_hash(obj):
     """Compute a deterministic hash of a configuration object."""
@@ -69,6 +70,7 @@ class TensorCacheInfo(NamedTuple):
     dataset_key: str
     model_type: str
     landmark_version: str
+    panorama_landmark_radius_px: float
     # Un-hashed extractor info provided by the model
     extractor_info: dict[str, CacheableExtractorInfo]
 
@@ -91,6 +93,7 @@ class VigorDatasetConfig(NamedTuple):
     should_load_landmarks: bool = True
     landmark_version: str = "v1"
     load_cache_debug: bool = False
+    panorama_landmark_radius_px: float = 640
 
 
 class VigorDatasetItem(NamedTuple):
@@ -199,12 +202,11 @@ def compute_satellite_from_landmarks(sat_metadata, landmark_metadata, original_s
         sat_idxs_from_landmark_idx=sat_idxs_from_landmark_idx)
 
 
-def compute_panorama_from_landmarks(pano_metadata, landmark_metadata) -> PanoramaFromLandmarkResult:
+def compute_panorama_from_landmarks(pano_metadata, landmark_metadata, max_dist_px: float) -> PanoramaFromLandmarkResult:
     # Each satellite patch is 640x640 px and is roughly 100m x 100m.
-    MAX_DIST_PX = 640
     strtree = shapely.STRtree(landmark_metadata.geometry_px)
     queries = []
-    height, width = MAX_DIST_PX, MAX_DIST_PX
+    height, width = max_dist_px, max_dist_px
     for _, pano in pano_metadata.iterrows():
         center_y, center_x = pano["web_mercator_y"], pano["web_mercator_x"]
         queries.append(shapely.box(
@@ -338,11 +340,12 @@ def load_tensor_caches(info: TensorCacheInfo):
 
     out = []
     for extractor_name, cacheable_info in info.extractor_info.items():
-        # Compute the hash using model config, patch_dims, AND landmark_version
+        # Compute the hash using model config, patch_dims, landmark_version, AND panorama_landmark_radius_px
         config_hash = compute_config_hash(HashStruct(
             model_config=cacheable_info.model_config,
             patch_dims=cacheable_info.patch_dims,
-            landmark_version=info.landmark_version))
+            landmark_version=info.landmark_version,
+            panorama_landmark_radius_px=info.panorama_landmark_radius_px))
 
         cache_path = base_path / config_hash
         out.append(TensorCache(
@@ -478,7 +481,7 @@ class VigorDataset(torch.utils.data.Dataset):
             self._landmark_metadata["satellite_idxs"] = sat_landmark_correspondences.sat_idxs_from_landmark_idx
 
             pano_landmark_correspondences = compute_panorama_from_landmarks(
-                    self._panorama_metadata, self._landmark_metadata)
+                    self._panorama_metadata, self._landmark_metadata, self._config.panorama_landmark_radius_px)
             log_progress("Computed pano<->landmark correspondences")
             self._panorama_metadata["landmark_idxs"] = pano_landmark_correspondences.landmark_idxs_from_pano_idx
             self._landmark_metadata["panorama_idxs"] = pano_landmark_correspondences.pano_idxs_from_landmark_idx

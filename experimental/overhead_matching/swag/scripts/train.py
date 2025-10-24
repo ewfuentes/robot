@@ -90,6 +90,7 @@ class DatasetConfig:
     paths: list[Path]
     landmark_version: str
     factor: None | float = 1.0
+    panorama_landmark_radius_px: float = 640
 
 
 @dataclass
@@ -542,18 +543,21 @@ def main(
             dataset_key=train_config.dataset_config.paths[0],
             model_type="satellite",
             landmark_version=train_config.dataset_config.landmark_version,
+            panorama_landmark_radius_px=train_config.dataset_config.panorama_landmark_radius_px,
             extractor_info=satellite_model.cache_info()),
         panorama_tensor_cache_info=vigor_dataset.TensorCacheInfo(
             dataset_key=train_config.dataset_config.paths[0],
             model_type="panorama",
             landmark_version=train_config.dataset_config.landmark_version,
+            panorama_landmark_radius_px=train_config.dataset_config.panorama_landmark_radius_px,
             extractor_info=panorama_model.cache_info()),
         sample_mode=vigor_dataset.SampleMode.POS_SEMIPOS,
         factor=train_config.dataset_config.factor,
         should_load_images=should_load_images,
         should_load_landmarks=should_load_landmarks,
         landmark_version=train_config.dataset_config.landmark_version,
-        load_cache_debug=capture_model_data)
+        load_cache_debug=capture_model_data,
+        panorama_landmark_radius_px=train_config.dataset_config.panorama_landmark_radius_px)
 
     dataset_paths = [dataset_base_path / p for p in train_config.dataset_config.paths]
     dataset = vigor_dataset.VigorDataset(dataset_paths, dataset_config)
@@ -573,17 +577,20 @@ def main(
                     dataset_key=validation_dataset_config.paths[0],
                     model_type="satellite",
                     landmark_version=validation_dataset_config.landmark_version,
+                    panorama_landmark_radius_px=validation_dataset_config.panorama_landmark_radius_px,
                     extractor_info=satellite_model.cache_info()),
                 panorama_tensor_cache_info=vigor_dataset.TensorCacheInfo(
                     dataset_key=validation_dataset_config.paths[0],
                     model_type="panorama",
                     landmark_version=validation_dataset_config.landmark_version,
+                    panorama_landmark_radius_px=validation_dataset_config.panorama_landmark_radius_px,
                     extractor_info=panorama_model.cache_info()),
                 sample_mode=vigor_dataset.SampleMode.POS_SEMIPOS,
                 factor=validation_dataset_config.factor,
                 should_load_images=should_load_images,
                 should_load_landmarks=should_load_landmarks,
-                landmark_version=validation_dataset_config.landmark_version))
+                landmark_version=validation_dataset_config.landmark_version,
+                panorama_landmark_radius_px=validation_dataset_config.panorama_landmark_radius_px))
 
     output_dir = output_base_path / train_config.output_dir
     tensorboard_output = train_config.tensorboard_output
