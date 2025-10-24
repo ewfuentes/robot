@@ -245,9 +245,9 @@ class SemanticLandmarkExtractor(torch.nn.Module):
         output_dim = self.config.openai_embedding_size
         if self.all_embeddings_tensor.shape[1] > output_dim:
             self.all_embeddings_tensor = self.all_embeddings_tensor[:, :output_dim]
-
         self.all_embeddings_tensor = (
-                self.all_embeddings_tensor / torch.norm(self.all_embeddings_tensor, dim=-1))
+                self.all_embeddings_tensor / torch.norm(self.all_embeddings_tensor, dim=-1).unsqueeze(-1))
+
 
         self.files_loaded = True
 

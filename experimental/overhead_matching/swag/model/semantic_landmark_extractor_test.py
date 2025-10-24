@@ -185,7 +185,9 @@ class SemanticLandmarkExtractorTest(unittest.TestCase):
             self.assertIn(info['custom_id'], model.landmark_id_to_idx)
             loaded_embedding = model.all_embeddings_tensor[
                     model.landmark_id_to_idx[info['custom_id']]]
-            self.assertAlmostEqual(torch.linalg.norm(loaded_embedding - torch.tensor(info['embedding'])),
+            expected_embedding = torch.tensor(info['embedding'])
+            expected_embedding = expected_embedding / torch.linalg.norm(expected_embedding)
+            self.assertAlmostEqual(torch.linalg.norm(loaded_embedding - expected_embedding).item(),
                                    0.0, places=4)
 
     def test_correct_embeddings_fetched_for_landmarks(self):
