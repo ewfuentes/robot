@@ -257,7 +257,7 @@ def compute_forward_pass_and_loss(batch,
             loss_functions=loss_functions,
         )
 
-    return loss_dict, panorama_embeddings, sat_embeddings, pano_debug, sat_debug
+    return loss_dict, panorama_embeddings, sat_embeddings, {'sat': sat_debug, 'pano': pano_debug}
 
 
 def train(config: TrainConfig,
@@ -363,7 +363,7 @@ def train(config: TrainConfig,
             opt.zero_grad()
 
             # Use extracted function for forward pass and loss
-            loss_dict, panorama_embeddings, satellite_embeddings, pano_debug, sat_debug = compute_forward_pass_and_loss(
+            loss_dict, panorama_embeddings, satellite_embeddings, debug_dict = compute_forward_pass_and_loss(
                 batch=batch,
                 panorama_model=panorama_model,
                 satellite_model=satellite_model,
@@ -376,8 +376,8 @@ def train(config: TrainConfig,
                 pano_input = panorama_model.model_input_from_batch(batch)
                 sat_input = satellite_model.model_input_from_batch(batch)
                 # Use the extractor outputs returned from the forward pass
-                pano_extractor_outputs = pano_debug
-                sat_extractor_outputs = sat_debug
+                pano_extractor_outputs = debug_dict['pano']
+                sat_extractor_outputs = debug_dict['sat']
                 inspector.capture(
                     pano_input=pano_input,
                     sat_input=sat_input,

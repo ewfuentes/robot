@@ -696,12 +696,6 @@ class VigorDataset(torch.utils.data.Dataset):
                     logger.debug(f"[SAT_FETCH] Worker {worker_id} item {self._fetch_count}: caches loaded in {(t3-t2_val)*1000:.1f}ms, total {(t3-t0)*1000:.1f}ms")
                     self._fetch_count += 1
 
-                if should_log:
-                    t3 = time.time()
-                    t2_val = t2 if self.dataset._config.should_load_landmarks else t1
-                    logger.debug(f"[SAT_FETCH] Worker {worker_id} item {self._fetch_count}: caches loaded in {(t3-t2_val)*1000:.1f}ms, total {(t3-t0)*1000:.1f}ms")
-                    self._fetch_count += 1
-
                 return VigorDatasetItem(
                     panorama_metadata=None,
                     satellite_metadata=sat_metadata,
