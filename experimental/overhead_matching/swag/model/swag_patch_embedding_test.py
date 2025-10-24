@@ -49,7 +49,7 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
 
         # Action
         model_input = spe.ModelInput(image=input_image, metadata=metadata)
-        result = model(model_input)
+        result, _ = model(model_input)
 
         # Verification
         self.assertEqual(result.shape[0], BATCH_DIM)
@@ -97,7 +97,7 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
 
         # Action
         model_input = spe.ModelInput(image=input_image, metadata=metadata)
-        input_tokens, input_mask = model._get_input_tokens(model_input)
+        input_tokens, input_mask, _ = model._get_input_tokens(model_input)
 
         # Verification
         self.assertEqual(input_tokens.shape[0], BATCH_DIM)
@@ -153,7 +153,7 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
 
         # Action
         model_input = spe.ModelInput(image=input_image, metadata=metadata)
-        result = model(model_input)
+        result, _ = model(model_input)
 
         # Verification
         self.assertEqual(result.shape[0], BATCH_DIM)
@@ -208,7 +208,7 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
 
         # Action
         model_input = spe.ModelInput(image=input_image, metadata=metadata)
-        result = model(model_input)
+        result, _ = model(model_input)
 
         # Verification
         self.assertEqual(result.shape[0], BATCH_DIM)
@@ -273,7 +273,7 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
 
         # Action
         model_input = spe.ModelInput(image=input_image, metadata=metadata)
-        result = model(model_input)
+        result, _ = model(model_input)
 
         # Verification
         self.assertEqual(result.shape[0], BATCH_DIM)

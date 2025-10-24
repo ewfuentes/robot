@@ -240,9 +240,9 @@ def compute_forward_pass_and_loss(batch,
     """Compute forward pass and loss for a batch."""
 
     with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-        panorama_embeddings = panorama_model(
+        panorama_embeddings, pano_debug = panorama_model(
             panorama_model.model_input_from_batch(batch).to("cuda"))
-        sat_embeddings = satellite_model(
+        sat_embeddings, sat_debug = satellite_model(
             satellite_model.model_input_from_batch(batch).to("cuda"))
 
         similarity = distance_model(
@@ -257,7 +257,7 @@ def compute_forward_pass_and_loss(batch,
             loss_functions=loss_functions,
         )
 
-    return loss_dict, panorama_embeddings, sat_embeddings
+    return loss_dict, panorama_embeddings, sat_embeddings, pano_debug, sat_debug
 
 
 def train(config: TrainConfig,
@@ -312,9 +312,6 @@ def train(config: TrainConfig,
         inspector = ModelInspector(
             output_dir=output_dir,
             num_batches_to_capture=num_batches_to_capture)
-        # Enable debug mode to capture extractor outputs during forward pass
-        panorama_model.enable_debug_mode()
-        satellite_model.enable_debug_mode()
 
     warmup_lr_scheduler = torch.optim.lr_scheduler.ConstantLR(
         opt,
@@ -366,7 +363,7 @@ def train(config: TrainConfig,
             opt.zero_grad()
 
             # Use extracted function for forward pass and loss
-            loss_dict, panorama_embeddings, satellite_embeddings = compute_forward_pass_and_loss(
+            loss_dict, panorama_embeddings, satellite_embeddings, pano_debug, sat_debug = compute_forward_pass_and_loss(
                 batch=batch,
                 panorama_model=panorama_model,
                 satellite_model=satellite_model,
@@ -378,9 +375,9 @@ def train(config: TrainConfig,
             if inspector is not None and inspector.should_capture(total_batches):
                 pano_input = panorama_model.model_input_from_batch(batch)
                 sat_input = satellite_model.model_input_from_batch(batch)
-                # Get the extractor outputs that were computed during the forward pass
-                pano_extractor_outputs = panorama_model.get_last_extractor_outputs()
-                sat_extractor_outputs = satellite_model.get_last_extractor_outputs()
+                # Use the extractor outputs returned from the forward pass
+                pano_extractor_outputs = pano_debug
+                sat_extractor_outputs = sat_debug
                 inspector.capture(
                     pano_input=pano_input,
                     sat_input=sat_input,
@@ -447,7 +444,7 @@ def train(config: TrainConfig,
 
             for batch in tqdm.tqdm(unobserved_dataloader, desc="Unobserved sat batches", disable=quiet):
                 with torch.no_grad():
-                    miner_satellite_embeddings = satellite_model(
+                    miner_satellite_embeddings, _ = satellite_model(
                         satellite_model.model_input_from_batch(batch).to("cuda"))
                 miner.consume(None, miner_satellite_embeddings, batch)
 
@@ -483,8 +480,10 @@ def train(config: TrainConfig,
             save_model(satellite_model, satellite_model_path,
                        (sat_model_input,))
             if sum(param.numel() for param in distance_model.parameters()) > 0:
+                sat_emb, _ = satellite_model(sat_model_input)
+                pano_emb, _ = panorama_model(pano_model_input)
                 save_model(distance_model, distance_model_path,
-                           (satellite_model(sat_model_input), panorama_model(pano_model_input) ))
+                           (sat_emb, pano_emb))
 
 
     # Signal training completion
