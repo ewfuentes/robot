@@ -32,23 +32,11 @@ def is_valid_dataset(path: Path) -> bool:
             (path / "panorama").exists())
 
 
-def get_dataset_paths(dataset_path: Path | list[Path] | None) -> list[Path]:
+def get_dataset_paths(dataset_path: Path) -> list[Path]:
     """
-    Get list of dataset paths. Handles three cases:
-    1. If dataset_path is a list, validate each path and return valid datasets
-    2. If dataset_path is a valid dataset, return [dataset_path]
-    3. If it's a directory containing datasets, return all valid dataset subdirectories
+    Get list of dataset paths. If dataset_path is a valid dataset, return [dataset_path].
+    If it's a directory containing datasets, return all valid dataset subdirectories.
     """
-    # Handle list of datasets
-    if isinstance(dataset_path, list):
-        datasets = []
-        for path in dataset_path:
-            if not is_valid_dataset(path):
-                raise ValueError(f"{path} is not a valid dataset")
-            datasets.append(path)
-        return datasets
-
-    # Handle single path
     if is_valid_dataset(dataset_path):
         return [dataset_path]
 
