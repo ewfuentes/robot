@@ -428,11 +428,14 @@ class VigorDataset(torch.utils.data.Dataset):
 
             # Pre-compute dict representation to avoid repeated conversions in __getitem__
             log_progress("Pre-computing landmark dict representations...")
+            dict_start_time = time.time()
             self._landmark_metadata['as_dict'] = [
                 series_to_dict_with_index(row)
                 for _, row in self._landmark_metadata.iterrows()
             ]
+            dict_end_time = time.time()
             log_progress(f"Pre-computed dicts for {len(self._landmark_metadata)} landmarks")
+            log_progress(f"Took {dict_end_time - dict_start_time: 0.3} s")
         else:
             self._landmark_metadata = None
         log_progress(f"Concatenated metadata: {len(self._satellite_metadata)} sats, {len(self._panorama_metadata)} panos, {len(self._landmark_metadata) if self._landmark_metadata is not None else 'NOT_LOADED'} landmarks")
