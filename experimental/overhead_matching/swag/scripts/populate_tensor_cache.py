@@ -32,11 +32,23 @@ def is_valid_dataset(path: Path) -> bool:
             (path / "panorama").exists())
 
 
-def get_dataset_paths(dataset_path: Path) -> list[Path]:
+def get_dataset_paths(dataset_path: Path | list[Path] | None) -> list[Path]:
     """
-    Get list of dataset paths. If dataset_path is a valid dataset, return [dataset_path].
-    If it's a directory containing datasets, return all valid dataset subdirectories.
+    Get list of dataset paths. Handles three cases:
+    1. If dataset_path is a list, validate each path and return valid datasets
+    2. If dataset_path is a valid dataset, return [dataset_path]
+    3. If it's a directory containing datasets, return all valid dataset subdirectories
     """
+    # Handle list of datasets
+    if isinstance(dataset_path, list):
+        datasets = []
+        for path in dataset_path:
+            if not is_valid_dataset(path):
+                raise ValueError(f"{path} is not a valid dataset")
+            datasets.append(path)
+        return datasets
+
+    # Handle single path
     if is_valid_dataset(dataset_path):
         return [dataset_path]
 
@@ -74,8 +86,41 @@ def extract_field_specs_from_config(train_config: train.TrainConfig) -> list[str
     return field_specs
 
 
+def extract_unique_datasets_from_config(train_config: train.TrainConfig,
+                                       dataset_base_path: Path) -> list[tuple[Path, str, float]]:
+    """
+    Extract unique dataset configurations from training config.
+    Returns list of (dataset_path, landmark_version, panorama_landmark_radius_px) tuples.
+    Deduplicates datasets that appear multiple times (e.g., in train and validation with different factors).
+    """
+    # Collect all dataset configs (train + validation)
+    all_dataset_configs = [train_config.dataset_config]
+    if train_config.validation_dataset_configs:
+        all_dataset_configs.extend(train_config.validation_dataset_configs)
+
+    # Deduplicate by (dataset_path, landmark_version, panorama_landmark_radius_px)
+    # Use dict to preserve order
+    unique_datasets = {}
+    for dataset_config in all_dataset_configs:
+        for path_str in dataset_config.paths:
+            # Convert relative path to absolute path
+            dataset_path = dataset_base_path / path_str
+
+            key = (
+                dataset_path,
+                dataset_config.landmark_version,
+                dataset_config.panorama_landmark_radius_px
+            )
+
+            if key not in unique_datasets:
+                unique_datasets[key] = True
+
+    return list(unique_datasets.keys())
+
+
 def get_cache_output_path(field_spec: str,
                           landmark_version: str,
+                          panorama_landmark_radius_px: float,
                           dataset_path: Path,
                           base_output_path: Path,
                           train_config: train.TrainConfig) -> tuple[Path, str]:
@@ -91,7 +136,11 @@ def get_cache_output_path(field_spec: str,
         else:
             model_config = getattr(model_config, p)
     patch_dims = getattr(train_config, parts[0]).patch_dims
-    hash_struct = vd.HashStruct(model_config=model_config, patch_dims=patch_dims, landmark_version=landmark_version)
+    hash_struct = vd.HashStruct(
+        model_config=model_config,
+        patch_dims=patch_dims,
+        landmark_version=landmark_version,
+        panorama_landmark_radius_px=panorama_landmark_radius_px)
     _, config_hash = compute_config_hash(hash_struct)
 
     model_type = 'satellite' if 'sat_model_config' == parts[0] else 'panorama'
@@ -111,6 +160,7 @@ def should_skip_cache(output_path: Path) -> bool:
 
 def build_dataset_for_extractor(field_spec: str,
                                  landmark_version: str,
+                                 panorama_landmark_radius_px: float,
                                  dataset_path: Path,
                                  train_config: train.TrainConfig):
     """
@@ -146,6 +196,8 @@ def build_dataset_for_extractor(field_spec: str,
             satellite_tensor_cache_info=None,
             panorama_tensor_cache_info=None,
             landmark_version=landmark_version,
+            panorama_landmark_radius_px=panorama_landmark_radius_px,
+            factor=1.0,  # Always use full dataset for caching
             should_load_images=should_load_images,
             should_load_landmarks=should_load_landmarks))
 
@@ -158,6 +210,7 @@ def build_dataset_for_extractor(field_spec: str,
 
 def process_single_cache(field_spec: str,
                          landmark_version: str,
+                         panorama_landmark_radius_px: float,
                          dataset_path: Path,
                          base_output_path: Path,
                          batch_size: int,
@@ -177,7 +230,11 @@ def process_single_cache(field_spec: str,
             model_config = getattr(model_config, p)
     aux_info = getattr(train_config, parts[0]).auxiliary_info
     patch_dims = getattr(train_config, parts[0]).patch_dims
-    hash_struct = vd.HashStruct(model_config=model_config, patch_dims=patch_dims, landmark_version=landmark_version)
+    hash_struct = vd.HashStruct(
+        model_config=model_config,
+        patch_dims=patch_dims,
+        landmark_version=landmark_version,
+        panorama_landmark_radius_px=panorama_landmark_radius_px)
     yaml_str, config_hash = compute_config_hash(hash_struct)
 
     # Determine output path
@@ -247,62 +304,199 @@ def process_single_cache(field_spec: str,
     print(f"Created a total of {num_features} features for {num_items} items, with an average of {num_features / num_items} features per item")
 
 
-def main(train_config_path: Path,
-         dataset_path: Path,
-         landmark_version: str,
+def load_train_config(train_config_path: Path) -> train.TrainConfig:
+    """Load a single training config."""
+    with open(train_config_path, 'r') as file_in:
+        return msgspec.yaml.decode(
+            file_in.read(), type=train.TrainConfig, dec_hook=msgspec_dec_hook)
+
+
+def compute_task_requirements(field_spec: str, train_config: train.TrainConfig) -> tuple[str, frozenset]:
+    """
+    Compute the (model_type, requirements) tuple for a task without building the dataset.
+    This is used for sorting tasks to maximize cache reuse.
+
+    Returns: (model_type, requirements) where requirements is a frozenset of ExtractorDataRequirement.
+    """
+    parts = field_spec.split('.')
+    model_config = train_config
+    for p in parts:
+        if isinstance(model_config, dict):
+            model_config = model_config[p]
+        else:
+            model_config = getattr(model_config, p)
+    aux_info = getattr(train_config, parts[0]).auxiliary_info
+
+    # Create temporary model to determine requirements
+    temp_model = spe.create_extractor(model_config, aux_info)
+    requirements = derive_data_requirements_from_model(
+        temp_model,
+        use_cached_extractors=None)
+
+    model_type = 'satellite' if parts[0] == 'sat_model_config' else 'panorama'
+
+    # Convert set to frozenset so it can be used as a sort key
+    return (model_type, frozenset(requirements))
+
+
+def main(train_config_paths: list[Path],
          base_output_path: Path,
          batch_size: int,
          field_spec: str | None = None,
-         skip_existing: bool = False):
+         skip_existing: bool = False,
+         # Mode 1: Explicit dataset specification
+         dataset_path: Path | None = None,
+         landmark_version: str | None = None,
+         panorama_landmark_radius_px: float | None = None,
+         # Mode 2: Derive from config
+         dataset_base_path: Path | None = None):
     """
-    Main entry point. Handles both single field_spec mode and auto-detection mode.
-    Also handles both single dataset and multi-dataset modes.
+    Process tensor caching for the given configs.
+
+    Two modes of operation:
+    1. Explicit mode: Provide dataset_path, landmark_version, and panorama_landmark_radius_px
+    2. Config-derived mode: Provide dataset_base_path, and datasets are derived from training configs
+
+    When multiple configs are provided, they are processed by dataset first to maximize cache reuse.
     """
-    # Load the training config once
-    with open(train_config_path, 'r') as file_in:
-        train_config = msgspec.yaml.decode(
-            file_in.read(), type=train.TrainConfig, dec_hook=msgspec_dec_hook)
+    # Load all training configs
+    print(f"\n{'#'*80}")
+    print(f"Loading {len(train_config_paths)} training config(s)")
+    print(f"{'#'*80}")
 
-    # Get dataset paths
-    dataset_paths = get_dataset_paths(dataset_path)
-    print(f"Found {len(dataset_paths)} dataset(s): {[d.name for d in dataset_paths]}")
+    train_configs = {}
+    for config_path in train_config_paths:
+        print(f"  Loading: {config_path}")
+        train_configs[config_path] = load_train_config(config_path)
 
-    # Get field specs
-    if field_spec is not None:
-        # Single field spec mode (backward compatibility)
-        field_specs = [field_spec]
+    # Build mapping of (dataset_config) -> list of (train_config_path, field_spec) that need it
+    # This allows us to process by dataset first for maximum cache reuse
+    dataset_to_tasks = {}  # {(dataset_path, lv, radius): [(config_path, field_spec), ...]}
+
+    if dataset_path is not None:
+        # Mode 1: Explicit dataset specification - all configs use same dataset params
+        print("\nMode: Explicit dataset specification")
+        if landmark_version is None:
+            raise ValueError("--landmark_version is required when using --dataset")
+
+        dataset_paths = get_dataset_paths(dataset_path)
+        print(f"Found {len(dataset_paths)} dataset(s):")
+        for ds in dataset_paths:
+            print(f"  - {ds}")
+
+        # For each config, get its field specs and map to datasets
+        for config_path, train_config in train_configs.items():
+            # Get field specs for this config
+            if field_spec is not None:
+                field_specs = [field_spec]
+            else:
+                field_specs = extract_field_specs_from_config(train_config)
+                if not field_specs:
+                    print(f"Warning: No cached extractors found in {config_path.name}")
+                    continue
+
+            # Map each dataset to this config's field specs
+            for ds in dataset_paths:
+                key = (ds, landmark_version, panorama_landmark_radius_px)
+                if key not in dataset_to_tasks:
+                    dataset_to_tasks[key] = []
+                for fs in field_specs:
+                    dataset_to_tasks[key].append((config_path, fs))
     else:
-        # Auto-detect from config
-        field_specs = extract_field_specs_from_config(train_config)
-        if not field_specs:
-            print("No cached extractors found in config. Check sat_model_config.use_cached_extractors and pano_model_config.use_cached_extractors")
-            sys.exit(1)
-        print(f"Auto-detected {len(field_specs)} extractor(s) to cache:")
-        for fs in field_specs:
-            print(f"  - {fs}")
+        # Mode 2: Derive from configs
+        print("\nMode: Deriving datasets from training configs")
+        if dataset_base_path is None:
+            raise ValueError("Either --dataset or --dataset_base must be provided")
 
-    # Process each combination of dataset and field spec
-    total_tasks = len(dataset_paths) * len(field_specs)
+        # For each config, extract its datasets and field specs
+        for config_path, train_config in train_configs.items():
+            # Get field specs for this config
+            if field_spec is not None:
+                field_specs = [field_spec]
+            else:
+                field_specs = extract_field_specs_from_config(train_config)
+                if not field_specs:
+                    print(f"Warning: No cached extractors found in {config_path.name}")
+                    continue
+
+            # Get unique datasets from this config
+            dataset_configs = extract_unique_datasets_from_config(train_config, dataset_base_path)
+
+            # Map each dataset to this config's field specs
+            for ds_path, lv, radius in dataset_configs:
+                key = (ds_path, lv, radius)
+                if key not in dataset_to_tasks:
+                    dataset_to_tasks[key] = []
+                for fs in field_specs:
+                    dataset_to_tasks[key].append((config_path, fs))
+
+    # Print summary
+    print(f"\nFound {len(dataset_to_tasks)} unique dataset configuration(s):")
+    for (ds_path, lv, radius), tasks in dataset_to_tasks.items():
+        num_configs = len(set(config_path for config_path, _ in tasks))
+        print(f"  - {ds_path.name} (landmark_version={lv}, radius={radius}): {len(tasks)} task(s) from {num_configs} config(s)")
+
+    # Sort tasks within each dataset by (model_type, requirements) to maximize cache reuse
+    print(f"\nSorting tasks by data requirements to maximize cache usage...")
+    for dataset_key in dataset_to_tasks:
+        tasks = dataset_to_tasks[dataset_key]
+        # Compute requirements for each task and sort by them
+        tasks_with_requirements = []
+        for config_path, field_spec_str in tasks:
+            train_config = train_configs[config_path]
+            model_type, requirements = compute_task_requirements(field_spec_str, train_config)
+            # Sort by (model_type, sorted requirements) for consistent ordering
+            sort_key = (model_type, tuple(sorted(requirements)))
+            tasks_with_requirements.append((sort_key, config_path, field_spec_str))
+
+        # Sort and remove the sort key
+        tasks_with_requirements.sort(key=lambda x: x[0])
+        dataset_to_tasks[dataset_key] = [(config_path, field_spec) for _, config_path, field_spec in tasks_with_requirements]
+
+    # Process by dataset to maximize cache reuse
+    total_tasks = sum(len(tasks) for tasks in dataset_to_tasks.values())
     current_task = 0
 
-    # Cache to opportunistically reuse datasets
-    previous_dataset_cache = None
+    for (ds_path, lv, radius), tasks in dataset_to_tasks.items():
+        print(f"\n{'='*80}")
+        print(f"Processing dataset: {ds_path.name}")
+        print(f"  landmark_version={lv}, panorama_landmark_radius_px={radius}")
+        print(f"  {len(tasks)} task(s) to process")
+        print(f"{'='*80}")
 
-    for dataset in dataset_paths:
-        # Reset cache when switching datasets
+        # Cache to opportunistically reuse datasets within this dataset config
         previous_dataset_cache = None
 
-        for field_spec_str in field_specs:
+        for config_path, field_spec_str in tasks:
             current_task += 1
-            print(f"\n{'='*80}")
-            print(f"Processing task {current_task}/{total_tasks}: {dataset.name} - {field_spec_str}")
-            print(f"{'='*80}")
+            train_config = train_configs[config_path]
+
+            # Compute requirements for this task (for logging and cache reuse)
+            parts = field_spec_str.split('.')
+            model_config = train_config
+            for p in parts:
+                if isinstance(model_config, dict):
+                    model_config = model_config[p]
+                else:
+                    model_config = getattr(model_config, p)
+            aux_info = getattr(train_config, parts[0]).auxiliary_info
+            temp_model = spe.create_extractor(model_config, aux_info)
+            current_requirements = derive_data_requirements_from_model(
+                temp_model,
+                use_cached_extractors=None)
+            current_model_type = 'satellite' if parts[0] == 'sat_model_config' else 'panorama'
+
+            print(f"\n{'-'*80}")
+            print(f"Task {current_task}/{total_tasks}: {config_path.name} - {field_spec_str}")
+            print(f"  Model type: {current_model_type}, Requirements: {sorted([r.name for r in current_requirements])}")
+            print(f"{'-'*80}")
 
             # Check if we should skip this cache
-            output_path, current_model_type = get_cache_output_path(
+            output_path, _ = get_cache_output_path(
                 field_spec=field_spec_str,
-                landmark_version=landmark_version,
-                dataset_path=dataset,
+                landmark_version=lv,
+                panorama_landmark_radius_px=radius,
+                dataset_path=ds_path,
                 base_output_path=base_output_path,
                 train_config=train_config)
 
@@ -310,48 +504,35 @@ def main(train_config_path: Path,
                 print(f'✓ Skipping existing cache at: {output_path}')
                 continue
 
-            # Check if we can reuse the previous dataset
+            # Check if we can reuse the previous dataset (already computed requirements above)
             dataset_to_use = None
             if previous_dataset_cache is not None:
-                cached_path, cached_model_type, cached_requirements, cached_dataset = previous_dataset_cache
+                cached_model_type, cached_requirements, cached_dataset = previous_dataset_cache
 
-                # Build requirements for current extractor (without creating the dataset)
-                parts = field_spec_str.split('.')
-                model_config = train_config
-                for p in parts:
-                    if isinstance(model_config, dict):
-                        model_config = model_config[p]
-                    else:
-                        model_config = getattr(model_config, p)
-                aux_info = getattr(train_config, parts[0]).auxiliary_info
-                temp_model = spe.create_extractor(model_config, aux_info)
-                current_requirements = derive_data_requirements_from_model(
-                    temp_model,
-                    use_cached_extractors=None)
-
-                # Check if we can reuse
-                if (cached_path == dataset and
-                    cached_model_type == current_model_type and
+                # Check if we can reuse (model_type and requirements must match)
+                if (cached_model_type == current_model_type and
                     cached_requirements == current_requirements):
-                    print(f"✓ Reusing previous dataset (model_type={current_model_type}, requirements={current_requirements})")
+                    print(f"✓ Reusing previous dataset (model_type={current_model_type}, requirements={sorted([r.name for r in current_requirements])})")
                     dataset_to_use = cached_dataset
                 else:
-                    print(f"✗ Cannot reuse dataset - rebuilding (model_type changed: {cached_model_type}→{current_model_type}, requirements changed: {cached_requirements}→{current_requirements})")
+                    print(f"✗ Cannot reuse dataset - rebuilding (previous: {cached_model_type}, {sorted([r.name for r in cached_requirements])})")
 
             # Build new dataset if we can't reuse
             if dataset_to_use is None:
                 dataset_to_use, model_type, requirements = build_dataset_for_extractor(
                     field_spec=field_spec_str,
-                    landmark_version=landmark_version,
-                    dataset_path=dataset,
+                    landmark_version=lv,
+                    panorama_landmark_radius_px=radius,
+                    dataset_path=ds_path,
                     train_config=train_config)
-                previous_dataset_cache = (dataset, model_type, requirements, dataset_to_use)
-                print(f"Built new dataset (model_type={model_type}, requirements={requirements})")
+                previous_dataset_cache = (current_model_type, current_requirements, dataset_to_use)
+                print(f"Built new dataset (model_type={current_model_type}, requirements={sorted([r.name for r in current_requirements])})")
 
             process_single_cache(
                 field_spec=field_spec_str,
-                landmark_version=landmark_version,
-                dataset_path=dataset,
+                landmark_version=lv,
+                panorama_landmark_radius_px=radius,
+                dataset_path=ds_path,
                 base_output_path=base_output_path,
                 batch_size=batch_size,
                 train_config=train_config,
@@ -359,22 +540,40 @@ def main(train_config_path: Path,
             )
 
     print(f"\n{'='*80}")
-    print(f"Completed all {total_tasks} tasks!")
+    print(f"ALL COMPLETE!")
+    print(f"Processed {len(train_configs)} config(s), {len(dataset_to_tasks)} dataset(s), {total_tasks} total task(s)")
     print(f"{'='*80}")
+    return total_tasks
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Populate tensor cache for SWAG models.")
-    parser.add_argument('--train_config', type=str, required=True,
-                        help='Path to training config YAML file')
+        description="Populate tensor cache for SWAG models. Supports multiple training configs "
+                    "and processes them by dataset for maximum cache reuse.")
+
+    parser.add_argument('--train_config', type=str, nargs='+', required=True,
+                        help='Path(s) to training config YAML file(s). Multiple configs can be provided and '
+                             'will be processed by dataset first for maximum cache reuse.')
     parser.add_argument('--field_spec', type=str, default=None,
                         help='Field spec (e.g., sat_model_config.extractor_config_by_name.dinov3_feature_extractor). '
                              'If not provided, auto-detects from use_cached_extractors in config.')
-    parser.add_argument('--dataset', type=str, required=True,
-                        help='Path to dataset or directory containing multiple datasets')
-    parser.add_argument('--landmark_version', type=str, required=True,
-                        help='Landmark version (e.g., v3)')
+
+    # Mode 1: Explicit dataset specification
+    parser.add_argument('--dataset', type=str, default=None,
+                        help='Path to dataset or directory containing multiple datasets. '
+                             'When provided, requires --landmark_version and --panorama_landmark_radius_px. '
+                             'If not provided, datasets are derived from training config using --dataset_base.')
+
+    # Mode 2: Config-derived (with default)
+    parser.add_argument('--dataset_base', type=str,
+                        default='/data/overhead_matching/datasets/VIGOR/',
+                        help='Base path where datasets are located. Used when --dataset is not provided. '
+                             'Datasets will be derived from training config. (default: /data/overhead_matching/datasets/VIGOR/)')
+
+    parser.add_argument('--landmark_version', type=str, default=None,
+                        help='Landmark version (e.g., v3). Required when using --dataset.')
+    parser.add_argument('--panorama_landmark_radius_px', type=float, default=None,
+                        help='Panorama landmark radius in pixels. Required when using --dataset.')
     parser.add_argument("--batch_size", type=int, default=16,
                         help='Batch size for processing')
     parser.add_argument("--skip-existing", action='store_true',
@@ -382,12 +581,27 @@ if __name__ == "__main__":
 
     output_path = Path('~/.cache/robot/overhead_matching/tensor_cache/').expanduser()
     args = parser.parse_args()
+
+    # Validate mode-specific requirements
+    if args.dataset is not None:
+        if args.landmark_version is None:
+            parser.error("--landmark_version is required when using --dataset")
+        if args.panorama_landmark_radius_px is None:
+            parser.error("--panorama_landmark_radius_px is required when using --dataset")
+
+    # Convert train_config paths to Path objects
+    train_config_paths = [Path(p) for p in args.train_config]
+
     import ipdb
     with ipdb.launch_ipdb_on_exception():
-        main(train_config_path=Path(args.train_config),
-             dataset_path=Path(args.dataset),
-             landmark_version=args.landmark_version,
+        main(train_config_paths=train_config_paths,
              base_output_path=output_path,
              batch_size=args.batch_size,
              field_spec=args.field_spec,
-             skip_existing=args.skip_existing)
+             skip_existing=args.skip_existing,
+             # Mode 1 parameters
+             dataset_path=Path(args.dataset) if args.dataset else None,
+             landmark_version=args.landmark_version,
+             panorama_landmark_radius_px=args.panorama_landmark_radius_px,
+             # Mode 2 parameter
+             dataset_base_path=Path(args.dataset_base))
