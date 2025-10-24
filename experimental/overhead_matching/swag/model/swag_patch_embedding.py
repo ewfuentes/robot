@@ -60,6 +60,11 @@ class SwagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
 
     normalize_embeddings: bool = True
 
+    # Panorama landmark dropout configuration
+    panorama_landmark_dropout_rate: float = 0.0  # 0.0 = no dropout, 1.0 = drop all
+    min_panorama_landmarks: int = 0  # never drop below this count
+    panorama_dropout_extractor_names: list[str] = []  # which extractors to apply dropout to
+
     # These are here for backwards compatibility
     feature_map_extractor_config: FeatureMapExtractorConfig | None = None
     semantic_token_extractor_config: SemanticTokenExtractorConfig | None = None
@@ -398,6 +403,10 @@ class TransformerAggregator(torch.nn.Module):
 class SwagPatchEmbedding(torch.nn.Module):
     def __init__(self, config: SwagPatchEmbeddingConfig):
         super().__init__()
+        self._config = config
+        # Debug flag to store extractor outputs during forward pass
+        self._debug_store_extractor_outputs = False
+        self._last_extractor_outputs = None
         self._extractor_by_name = torch.nn.ModuleDict({
             k: create_extractor(c, config.auxiliary_info)
             for k, c in config.extractor_config_by_name.items()})
@@ -475,7 +484,11 @@ class SwagPatchEmbedding(torch.nn.Module):
                 metadata=batch_item.satellite_metadata,
                 cached_tensors=batch_item.cached_satellite_tensors)
 
-    def _get_input_tokens(self, model_input: ModelInput) -> tuple[torch.Tensor, torch.Tensor, dict[str, ExtractorOutput]]:
+    def _is_panorama_input(self, model_input: ModelInput) -> bool:
+        """Check if model input is panorama (has pano_id) vs satellite."""
+        return len(model_input.metadata) > 0 and 'pano_id' in model_input.metadata[0]
+
+    def _get_input_tokens(self, model_input: ModelInput) -> tuple[torch.Tensor, torch.Tensor]:
         dev = self._cls_token.device
         extractor_outputs_by_name = {}
         for k in self._extractor_by_name:
@@ -483,6 +496,50 @@ class SwagPatchEmbedding(torch.nn.Module):
             if extractor_outputs_by_name[k] is None:
                 extractor_outputs_by_name[k] = self._extractor_by_name[k](model_input)
                 assert extractor_outputs_by_name[k].positions.ndim == 4, f"relative positions of {k} is not 4 dimensional"
+
+        # Store extractor outputs if debug flag is enabled
+        if self._debug_store_extractor_outputs:
+            self._last_extractor_outputs = extractor_outputs_by_name
+
+        # Apply panorama landmark dropout if configured
+        if (self._config.panorama_landmark_dropout_rate > 0 and
+            self._is_panorama_input(model_input) and
+            len(self._config.panorama_dropout_extractor_names) > 0):
+
+            for extractor_name in self._config.panorama_dropout_extractor_names:
+
+                output = extractor_outputs_by_name[extractor_name]
+                batch_size = output.features.shape[0]
+
+                # Process each batch item independently
+                for batch_idx in range(batch_size):
+                    # Use pano_id as deterministic seed
+                    pano_id = model_input.metadata[batch_idx]['pano_id']
+                    # Combine pano_id and extractor_name for unique seed per extractor
+                    seed = hash((pano_id, extractor_name)) & 0xFFFFFFFF
+                    rng = torch.Generator().manual_seed(seed)
+
+                    # Count valid (unmasked) landmarks
+                    valid_mask = ~output.mask[batch_idx]
+                    num_valid = valid_mask.sum().item()
+
+                    # Compute how many to keep
+                    num_to_drop = int(num_valid * self._config.panorama_landmark_dropout_rate)
+                    num_to_keep = max(num_valid - num_to_drop,
+                                    self._config.min_panorama_landmarks)
+                    num_to_keep = min(num_to_keep, num_valid)  # Can't keep more than we have
+
+                    # Apply dropout if we need to drop some
+                    if num_to_keep < num_valid:
+                        # Get indices of valid landmarks
+                        valid_indices = torch.where(valid_mask)[0]
+                        # Randomly select which to keep (deterministic via seed)
+                        perm = torch.randperm(len(valid_indices), generator=rng)
+                        keep_indices = valid_indices[perm[:num_to_keep]]
+                        # Create new mask: True = masked (dropped)
+                        new_mask = torch.ones_like(output.mask[batch_idx], dtype=torch.bool)
+                        new_mask[keep_indices] = False
+                        output.mask[batch_idx] = new_mask
 
         input_tokens_by_name = {}
         for k, v in extractor_outputs_by_name.items():
