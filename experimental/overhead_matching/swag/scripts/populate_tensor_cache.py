@@ -425,6 +425,7 @@ def main(train_config_paths: list[Path],
         print(f"  - {ds_path.name} (landmark_version={lv}, radius={radius}): {len(tasks)} task(s) from {num_configs} config(s)")
 
     # Sort tasks within each dataset by (model_type, requirements) to maximize cache reuse
+    # Also compute and store requirements to avoid recomputing during processing
     print(f"\nSorting tasks by data requirements to maximize cache usage...")
     for dataset_key in dataset_to_tasks:
         tasks = dataset_to_tasks[dataset_key]
@@ -435,11 +436,12 @@ def main(train_config_paths: list[Path],
             model_type, requirements = compute_task_requirements(field_spec_str, train_config)
             # Sort by (model_type, sorted requirements) for consistent ordering
             sort_key = (model_type, tuple(sorted(requirements)))
-            tasks_with_requirements.append((sort_key, config_path, field_spec_str))
+            tasks_with_requirements.append((sort_key, config_path, field_spec_str, model_type, requirements))
 
-        # Sort and remove the sort key
+        # Sort and store with precomputed requirements
         tasks_with_requirements.sort(key=lambda x: x[0])
-        dataset_to_tasks[dataset_key] = [(config_path, field_spec) for _, config_path, field_spec in tasks_with_requirements]
+        dataset_to_tasks[dataset_key] = [(config_path, field_spec, model_type, requirements)
+                                          for _, config_path, field_spec, model_type, requirements in tasks_with_requirements]
 
     # Process by dataset to maximize cache reuse
     total_tasks = sum(len(tasks) for tasks in dataset_to_tasks.values())
@@ -455,24 +457,9 @@ def main(train_config_paths: list[Path],
         # Cache to opportunistically reuse datasets within this dataset config
         previous_dataset_cache = None
 
-        for config_path, field_spec_str in tasks:
+        for config_path, field_spec_str, current_model_type, current_requirements in tasks:
             current_task += 1
             train_config = train_configs[config_path]
-
-            # Compute requirements for this task (for logging and cache reuse)
-            parts = field_spec_str.split('.')
-            model_config = train_config
-            for p in parts:
-                if isinstance(model_config, dict):
-                    model_config = model_config[p]
-                else:
-                    model_config = getattr(model_config, p)
-            aux_info = getattr(train_config, parts[0]).auxiliary_info
-            temp_model = spe.create_extractor(model_config, aux_info)
-            current_requirements = derive_data_requirements_from_model(
-                temp_model,
-                use_cached_extractors=None)
-            current_model_type = 'satellite' if parts[0] == 'sat_model_config' else 'panorama'
 
             print(f"\n{'-'*80}")
             print(f"Task {current_task}/{total_tasks}: {config_path.name} - {field_spec_str}")
