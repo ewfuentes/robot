@@ -203,7 +203,6 @@ def compute_satellite_from_landmarks(sat_metadata, landmark_metadata, original_s
 
 
 def compute_panorama_from_landmarks(pano_metadata, landmark_metadata, max_dist_px: float) -> PanoramaFromLandmarkResult:
-    # Each satellite patch is 640x640 px and is roughly 100m x 100m.
     strtree = shapely.STRtree(landmark_metadata.geometry_px)
     queries = []
     height, width = max_dist_px, max_dist_px
