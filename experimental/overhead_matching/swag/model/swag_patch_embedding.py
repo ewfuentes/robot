@@ -42,6 +42,7 @@ from experimental.overhead_matching.swag.model.swag_config_types import (
     ExtractorConfig,
     ExtractorDataRequirement,
     CacheableExtractorInfo,
+    LandmarkDropoutSchedule,
 )
 
 
@@ -60,10 +61,8 @@ class SwagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
 
     normalize_embeddings: bool = True
 
-    # Panorama landmark dropout configuration
-    panorama_landmark_dropout_rate: float = 0.0  # 0.0 = no dropout, 1.0 = drop all
-    min_panorama_landmarks: int = 0  # never drop below this count
-    panorama_dropout_extractor_names: list[str] = []  # which extractors to apply dropout to
+    # Landmark dropout scheduling configuration
+    landmark_dropout_schedules: list[LandmarkDropoutSchedule] = []
 
     # These are here for backwards compatibility
     feature_map_extractor_config: FeatureMapExtractorConfig | None = None
@@ -407,6 +406,9 @@ class SwagPatchEmbedding(torch.nn.Module):
         # Debug flag to store extractor outputs during forward pass
         self._debug_store_extractor_outputs = False
         self._last_extractor_outputs = None
+        # Training progress tracking for dropout scheduling
+        self._current_epoch = 0
+        self._total_epochs = 1  # Default to avoid division by zero
         self._extractor_by_name = torch.nn.ModuleDict({
             k: create_extractor(c, config.auxiliary_info)
             for k, c in config.extractor_config_by_name.items()})
@@ -439,6 +441,10 @@ class SwagPatchEmbedding(torch.nn.Module):
 
         self._patch_dims = config.patch_dims
         self._output_dim = config.output_dim
+
+        # Track current epoch and total epochs for dropout scheduling
+        self._current_epoch = 0
+        self._total_epochs = 1  # Default to avoid division by zero
 
         # We keep these for backwards compatibility
         self._feature_map_extractor = create_extractor(
@@ -488,6 +494,16 @@ class SwagPatchEmbedding(torch.nn.Module):
         """Check if model input is panorama (has pano_id) vs satellite."""
         return len(model_input.metadata) > 0 and 'pano_id' in model_input.metadata[0]
 
+    def set_training_progress(self, current_epoch: int, total_epochs: int):
+        """Set the current training progress for dropout scheduling.
+
+        Args:
+            current_epoch: Current epoch number (0-indexed)
+            total_epochs: Total number of training epochs
+        """
+        self._current_epoch = current_epoch
+        self._total_epochs = max(total_epochs, 1)  # Avoid division by zero
+
     def _get_input_tokens(self, model_input: ModelInput) -> tuple[torch.Tensor, torch.Tensor, dict[str, ExtractorOutput]]:
         dev = self._cls_token.device
         extractor_outputs_by_name = {}
@@ -501,45 +517,73 @@ class SwagPatchEmbedding(torch.nn.Module):
         if self._debug_store_extractor_outputs:
             self._last_extractor_outputs = extractor_outputs_by_name
 
-        # Apply panorama landmark dropout if configured
-        if (self._config.panorama_landmark_dropout_rate > 0 and
-            self._is_panorama_input(model_input) and
-            len(self._config.panorama_dropout_extractor_names) > 0):
+        # Apply scheduled landmark dropout if configured
+        if len(self._config.landmark_dropout_schedules) > 0:
+            # Compute dropout rates for each extractor based on current training progress
+            progress = self._current_epoch / self._total_epochs
 
-            for extractor_name in self._config.panorama_dropout_extractor_names:
+            for schedule in self._config.landmark_dropout_schedules:
+                # Compute current dropout rate for this schedule
+                if progress < schedule.start_progress:
+                    dropout_rate = schedule.initial_dropout_rate
+                elif progress >= schedule.end_progress:
+                    dropout_rate = schedule.final_dropout_rate
+                else:
+                    # Linear interpolation
+                    schedule_progress = (progress - schedule.start_progress) / \
+                                      (schedule.end_progress - schedule.start_progress)
+                    dropout_rate = (schedule.initial_dropout_rate +
+                                  schedule_progress * (schedule.final_dropout_rate -
+                                                      schedule.initial_dropout_rate))
 
-                output = extractor_outputs_by_name[extractor_name]
-                batch_size = output.features.shape[0]
+                # Apply dropout to each extractor in this schedule
+                for extractor_name in schedule.extractor_names:
+                    if extractor_name not in extractor_outputs_by_name:
+                        continue
 
-                # Process each batch item independently
-                for batch_idx in range(batch_size):
-                    # Use pano_id as deterministic seed
-                    pano_id = model_input.metadata[batch_idx]['pano_id']
-                    # Combine pano_id and extractor_name for unique seed per extractor
-                    seed = hash((pano_id, extractor_name)) & 0xFFFFFFFF
-                    rng = torch.Generator().manual_seed(seed)
+                    output = extractor_outputs_by_name[extractor_name]
+                    batch_size = output.features.shape[0]
 
-                    # Count valid (unmasked) landmarks
-                    valid_mask = ~output.mask[batch_idx]
-                    num_valid = valid_mask.sum().item()
+                    # Process each batch item independently
+                    for batch_idx in range(batch_size):
+                        # Use deterministic seed based on sample ID
+                        # For panoramas, use pano_id; for satellites, use sat_id
+                        if self._is_panorama_input(model_input):
+                            sample_id = model_input.metadata[batch_idx].get('pano_id', batch_idx)
+                        else:
+                            sample_id = model_input.metadata[batch_idx].get('sat_id', batch_idx)
 
-                    # Compute how many to keep
-                    num_to_drop = int(num_valid * self._config.panorama_landmark_dropout_rate)
-                    num_to_keep = max(num_valid - num_to_drop,
-                                    self._config.min_panorama_landmarks)
-                    num_to_keep = min(num_to_keep, num_valid)  # Can't keep more than we have
+                        # Combine sample_id and extractor_name for unique seed per extractor
+                        seed = hash((sample_id, extractor_name)) & 0xFFFFFFFF
+                        rng = torch.Generator().manual_seed(seed)
 
-                    # Apply dropout if we need to drop some
-                    if num_to_keep < num_valid:
-                        # Get indices of valid landmarks
-                        valid_indices = torch.where(valid_mask)[0]
-                        # Randomly select which to keep (deterministic via seed)
-                        perm = torch.randperm(len(valid_indices), generator=rng)
-                        keep_indices = valid_indices[perm[:num_to_keep]]
-                        # Create new mask: True = masked (dropped)
-                        new_mask = torch.ones_like(output.mask[batch_idx], dtype=torch.bool)
-                        new_mask[keep_indices] = False
-                        output.mask[batch_idx] = new_mask
+                        # Count valid (unmasked) landmarks
+                        valid_mask = ~output.mask[batch_idx]
+                        num_valid = valid_mask.sum().item()
+
+                        # Compute how many to keep
+                        num_to_drop = int(num_valid * dropout_rate)
+                        num_to_keep = max(num_valid - num_to_drop, schedule.min_landmarks)
+                        num_to_keep = min(num_to_keep, num_valid)  # Can't keep more than we have
+
+                        # Apply dropout if we need to drop some
+                        if num_to_keep < num_valid:
+                            # Get indices of valid landmarks
+                            valid_indices = torch.where(valid_mask)[0]
+                            # Randomly select which to keep (deterministic via seed)
+                            perm = torch.randperm(len(valid_indices), generator=rng)
+                            keep_indices = valid_indices[perm[:num_to_keep]]
+                            # Create new mask: True = masked (dropped)
+                            new_mask = torch.ones_like(output.mask[batch_idx], dtype=torch.bool)
+                            new_mask[keep_indices] = False
+                            output.mask[batch_idx] = new_mask
+                        # Handle edge cases for dropout_rate
+                        elif dropout_rate >= 1.0 and num_valid > 0:
+                            # Drop all features (set all to masked)
+                            output.mask[batch_idx] = torch.ones_like(output.mask[batch_idx], dtype=torch.bool)
+                        elif dropout_rate <= 0.0:
+                            # Keep all features (leave mask unchanged)
+                            pass
 
         input_tokens_by_name = {}
         for k, v in extractor_outputs_by_name.items():
@@ -566,6 +610,48 @@ class SwagPatchEmbedding(torch.nn.Module):
                                [v.mask for v in extractor_outputs_by_name.values()], dim=1)
 
         return input_tokens, input_mask, extractor_outputs_by_name
+
+    def enable_debug_mode(self):
+        """Enable debug mode to store extractor outputs during forward pass."""
+        self._debug_store_extractor_outputs = True
+
+    def disable_debug_mode(self):
+        """Disable debug mode."""
+        self._debug_store_extractor_outputs = False
+
+    def get_last_extractor_outputs(self) -> dict[str, ExtractorOutput] | None:
+        """Get extractor outputs from the last forward pass.
+
+        Returns None if debug mode is disabled or no forward pass has been run yet.
+        """
+        return self._last_extractor_outputs
+
+    def get_feature_counts_by_extractor(self) -> dict[str, dict[str, float]] | None:
+        """Get statistics about feature counts per extractor from the last forward pass.
+
+        This only works if enable_debug_mode() was called before the forward pass.
+        Returns None if debug mode is disabled or no forward pass has been run yet.
+
+        Returns:
+            Dictionary mapping extractor names to statistics dictionaries containing:
+                - 'mean_count': Mean number of unmasked features across batch
+                - 'total_count': Total number of unmasked features in batch
+                - 'batch_size': Number of items in batch
+            or None if not available
+        """
+        if self._last_extractor_outputs is None:
+            return None
+
+        stats = {}
+        for extractor_name, output in self._last_extractor_outputs.items():
+            # Count unmasked features per batch item
+            unmasked_counts = (~output.mask).sum(dim=1).float()
+            stats[extractor_name] = {
+                'mean_count': unmasked_counts.mean().item(),
+                'total_count': unmasked_counts.sum().item(),
+                'batch_size': output.mask.shape[0]
+            }
+        return stats
 
     def forward(self, model_input: ModelInput) -> tuple[torch.Tensor, dict[str, ExtractorOutput]]:
         """Forward pass through the model.

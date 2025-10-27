@@ -74,6 +74,28 @@ class OSMSemanticClassExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     embedding_version: str   # Name of JSON file (without extension) for cache key
 
 
+class LandmarkDropoutSchedule(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    """Configuration for a single landmark dropout schedule.
+
+    The schedule linearly interpolates the dropout rate between start_progress
+    and end_progress, where progress is defined as epoch / total_epochs.
+
+    Attributes:
+        start_progress: Fraction of total training (0.0-1.0) when ramping begins
+        end_progress: Fraction of total training (0.0-1.0) when ramping ends
+        initial_dropout_rate: Dropout rate at start_progress (0.0 = keep all, 1.0 = drop all)
+        final_dropout_rate: Dropout rate at end_progress (0.0 = keep all, 1.0 = drop all)
+        extractor_names: List of extractor names to apply this schedule to
+        min_landmarks: Never drop below this many landmarks per batch item
+    """
+    start_progress: float
+    end_progress: float
+    initial_dropout_rate: float
+    final_dropout_rate: float
+    extractor_names: list[str]
+    min_landmarks: int = 0
+
+
 class PlanarPositionEmbeddingConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     min_scale: float
     scale_step: float

@@ -22,7 +22,8 @@ def load_all_jsonl_from_folder(folder: Path) -> list:
     for file in folder.glob("*"):
         if file.is_dir():
             continue
-        elif file.suffix == ".pkl":
+        # Skip pickle files and other non-text files
+        if file.suffix in ['.pkl', '.pickle']:
             continue
         with open(file, 'r') as f:
             for line in f:

@@ -567,16 +567,14 @@ if __name__ == "__main__":
     # Convert train_config paths to Path objects
     train_config_paths = [Path(p) for p in args.train_config]
 
-    import ipdb
-    with ipdb.launch_ipdb_on_exception():
-        main(train_config_paths=train_config_paths,
-             base_output_path=output_path,
-             batch_size=args.batch_size,
-             field_spec=args.field_spec,
-             skip_existing=args.skip_existing,
-             # Mode 1 parameters
-             dataset_path=Path(args.dataset) if args.dataset else None,
-             landmark_version=args.landmark_version,
-             panorama_landmark_radius_px=args.panorama_landmark_radius_px,
-             # Mode 2 parameter
-             dataset_base_path=Path(args.dataset_base))
+    main(train_config_paths=train_config_paths,
+         base_output_path=output_path,
+         batch_size=args.batch_size,
+         field_spec=args.field_spec,
+         skip_existing=args.skip_existing,
+         # Mode 1 parameters
+         dataset_path=Path(args.dataset) if args.dataset else None,
+         landmark_version=args.landmark_version,
+         panorama_landmark_radius_px=args.panorama_landmark_radius_px,
+         # Mode 2 parameter
+         dataset_base_path=Path(args.dataset_base))
