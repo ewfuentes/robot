@@ -404,9 +404,6 @@ class SwagPatchEmbedding(torch.nn.Module):
     def __init__(self, config: SwagPatchEmbeddingConfig):
         super().__init__()
         self._config = config
-        # Debug flag to store extractor outputs during forward pass
-        self._debug_store_extractor_outputs = False
-        self._last_extractor_outputs = None
         self._extractor_by_name = torch.nn.ModuleDict({
             k: create_extractor(c, config.auxiliary_info)
             for k, c in config.extractor_config_by_name.items()})
@@ -496,10 +493,6 @@ class SwagPatchEmbedding(torch.nn.Module):
             if extractor_outputs_by_name[k] is None:
                 extractor_outputs_by_name[k] = self._extractor_by_name[k](model_input)
                 assert extractor_outputs_by_name[k].positions.ndim == 4, f"relative positions of {k} is not 4 dimensional"
-
-        # Store extractor outputs if debug flag is enabled
-        if self._debug_store_extractor_outputs:
-            self._last_extractor_outputs = extractor_outputs_by_name
 
         # Apply panorama landmark dropout if configured
         if (self._config.panorama_landmark_dropout_rate > 0 and
@@ -600,7 +593,7 @@ class SwagPatchEmbedding(torch.nn.Module):
     @property
     def output_dim(self):
         return self._output_dim
-    
+
     @property
     def num_embeddings(self):
         return self._cls_token.shape[1]

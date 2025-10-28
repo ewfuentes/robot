@@ -362,12 +362,8 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
 
         # Action - run twice with same input
         model_input = spe.ModelInput(image=input_image, metadata=metadata)
-        model.enable_debug_mode()
-        result1 = model(model_input)
-        outputs1 = model.get_last_extractor_outputs()
-
-        result2 = model(model_input)
-        outputs2 = model.get_last_extractor_outputs()
+        result1, outputs1 = model(model_input)
+        result2, outputs2 = model(model_input)
 
         # Verification - masks should be identical across runs
         mask1 = outputs1["test_extractor"].mask
@@ -420,9 +416,7 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
 
         # Action
         model_input = spe.ModelInput(image=input_image, metadata=metadata)
-        model.enable_debug_mode()
-        result = model(model_input)
-        outputs = model.get_last_extractor_outputs()
+        result, outputs = model(model_input)
 
         # Verification - should keep at least MIN_LANDMARKS
         mask = outputs["test_extractor"].mask[0]
@@ -470,9 +464,7 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
 
         # Action
         model_input = spe.ModelInput(image=input_image, metadata=metadata)
-        model.enable_debug_mode()
-        result = model(model_input)
-        outputs = model.get_last_extractor_outputs()
+        result, outputs = model(model_input)
 
         # Verification - no dropout should occur for satellite
         mask = outputs["test_extractor"].mask[0]
@@ -523,9 +515,7 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
 
         # Action
         model_input = spe.ModelInput(image=input_image, metadata=metadata)
-        model.enable_debug_mode()
-        result = model(model_input)
-        outputs = model.get_last_extractor_outputs()
+        result, outputs = model(model_input)
 
         # Verification
         mask = outputs["test_extractor"].mask[0]
