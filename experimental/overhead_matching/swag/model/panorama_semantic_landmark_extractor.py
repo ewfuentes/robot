@@ -11,6 +11,8 @@ from experimental.overhead_matching.swag.model.swag_model_input_output import (
     ModelInput, ExtractorOutput)
 from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
     load_all_jsonl_from_folder, make_embedding_dict_from_json, make_sentence_dict_from_pano_jsons)
+from experimental.overhead_matching.swag.model.trainable_sentence_embedder import (
+    TrainableSentenceEmbedder)
 import base64
 from typing import NamedTuple
 
@@ -101,6 +103,19 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
         self.all_sentences = None
         self.panorama_metadata = None  # Maps pano_id -> list of (landmark_idx, custom_id, yaw_angles)
 
+        # Initialize trainable embedder if configured
+        self.trainable_embedder = None
+        if config.trainable_embedder_config is not None:
+            embedder_config = config.trainable_embedder_config
+            self.trainable_embedder = TrainableSentenceEmbedder(
+                pretrained_model_name_or_path=embedder_config.pretrained_model_name_or_path,
+                output_dim=embedder_config.output_dim,
+                freeze_weights=embedder_config.freeze_weights,
+                max_sequence_length=embedder_config.max_sequence_length,
+                model_weights_path=embedder_config.model_weights_path,
+            )
+            print("Initialized trainable sentence embedder for panorama landmarks")
+
         # Load the semantic class groupings
         base_path = self.semantic_embedding_base_path / self.config.embedding_version
         semantic_groupings_file = base_path / "semantic_class_grouping.json"
@@ -126,20 +141,21 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
         if not city_dirs:
             raise FileNotFoundError(f"No city directories found in {base_path}")
 
-        self.all_embeddings = {}
+        self.all_embeddings = {} if self.trainable_embedder is None else None
         self.all_sentences = {}
         self.panorama_metadata = {}
         for city_dir in city_dirs:
             city_name = city_dir.name
             print(f"Loading panorama landmarks for city: {city_name}")
 
-            # Load embeddings
-            embedding_dir = city_dir / "embeddings"
-            if embedding_dir.exists():
-                city_embeddings = make_embedding_dict_from_json(
-                    load_all_jsonl_from_folder(embedding_dir))
-                self.all_embeddings.update(city_embeddings)
-                print(f"  Loaded {len(city_embeddings)} embeddings")
+            # Load embeddings only if not using trainable embedder
+            if self.trainable_embedder is None:
+                embedding_dir = city_dir / "embeddings"
+                if embedding_dir.exists():
+                    city_embeddings = make_embedding_dict_from_json(
+                        load_all_jsonl_from_folder(embedding_dir))
+                    self.all_embeddings.update(city_embeddings)
+                    print(f"  Loaded {len(city_embeddings)} embeddings")
 
             # Load sentences (optional)
             sentence_dir = city_dir / "sentences"
@@ -177,16 +193,19 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
                 self.panorama_metadata.update(new_metadata)
                 assert len(self.panorama_metadata) == old_metadata_size + new_pano_metadata_len
 
-        assert len(self.all_embeddings) > 0, f"Failed to load any embeddings from {base_path}"
-        assert len(next(iter(self.all_embeddings.values()))) >= self.config.openai_embedding_size, \
-            f"Requested embedding length ({self.config.openai_embedding_size}) longer than available ({len(next(iter(self.all_embeddings.values())))})"
+        # Validate embeddings only if not using trainable embedder
+        if self.trainable_embedder is None:
+            assert len(self.all_embeddings) > 0, f"Failed to load any embeddings from {base_path}"
+            assert len(next(iter(self.all_embeddings.values()))) >= self.config.openai_embedding_size, \
+                f"Requested embedding length ({self.config.openai_embedding_size}) longer than available ({len(next(iter(self.all_embeddings.values())))})"
 
         # remove coordinates from keys in self.panorama_metadata:
         self.panorama_metadata = {k.split(",")[0]: v for k, v in self.panorama_metadata.items()}
 
         self.files_loaded = True
 
-        print(f"Total embeddings loaded: {len(self.all_embeddings)}")
+        if self.trainable_embedder is None:
+            print(f"Total embeddings loaded: {len(self.all_embeddings)}")
         print(f"Total panoramas with landmarks: {len(self.panorama_metadata)}")
 
     def forward(self, model_input: ModelInput) -> ExtractorOutput:
@@ -218,7 +237,8 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
 
         # Initialize output tensors
         mask = torch.ones((batch_size, max_num_landmarks), dtype=torch.bool)
-        features = torch.zeros((batch_size, max_num_landmarks, self.config.openai_embedding_size))
+        output_dim = self.output_dim if self.trainable_embedder is None else self.trainable_embedder.output_dim
+        features = torch.zeros((batch_size, max_num_landmarks, output_dim))
         positions = torch.zeros((batch_size, max_num_landmarks, 2, 2))
 
         max_description_length = 0
@@ -236,36 +256,77 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
             # Sort by landmark_idx to ensure consistent ordering
             matching_landmarks = sorted(matching_landmarks, key=lambda x: x["landmark_idx"])
 
-            for landmark_idx, landmark_meta in enumerate(matching_landmarks):
-                custom_id = landmark_meta["custom_id"]
-                yaw_angles = landmark_meta["yaw_angles"]
+            # Use trainable embedder or OpenAI embeddings
+            if self.trainable_embedder is not None:
+                # Collect sentences for all landmarks in this panorama
+                sentences = []
+                for landmark_meta in matching_landmarks:
+                    custom_id = landmark_meta["custom_id"]
+                    if custom_id not in self.all_sentences:
+                        print(f"Warning: missing sentence for {custom_id}")
+                        sentences.append("")  # Add empty string as placeholder
+                    else:
+                        sentences.append(self.all_sentences[custom_id])
 
-                # Get embedding
-                if custom_id not in self.all_embeddings:
-                    print(f"Warning: missing embedding for {custom_id}")
-                    continue
+                # Get embeddings for all sentences
+                if len(sentences) > 0:
+                    with torch.set_grad_enabled(self.training):
+                        batch_embeddings = self.trainable_embedder(sentences)
+                        features[i, :len(sentences), :] = batch_embeddings
 
-                # Crop embedding if needed
-                features[i, landmark_idx, :] = torch.tensor(
-                    self.all_embeddings[custom_id])[:self.config.openai_embedding_size]
+                # Set positions and mask
+                for landmark_idx, landmark_meta in enumerate(matching_landmarks):
+                    yaw_angles = landmark_meta["yaw_angles"]
 
-                # Convert yaw angles to binary presence vector
-                yaw_vector = yaw_angles_to_binary_vector(yaw_angles)
+                    # Convert yaw angles to binary presence vector
+                    yaw_vector = yaw_angles_to_binary_vector(yaw_angles)
 
-                # Position format: [batch, num_landmarks, 2, 2]
-                # Split the 4D binary vector across 2 positions:
-                # - position 0: [yaw_0_present, yaw_90_present]
-                # - position 1: [yaw_180_present, yaw_270_present]
-                positions[i, landmark_idx, 0, :] = torch.tensor([yaw_vector[0], yaw_vector[1]])
-                positions[i, landmark_idx, 1, :] = torch.tensor([yaw_vector[2], yaw_vector[3]])
+                    # Position format: [batch, num_landmarks, 2, 2]
+                    positions[i, landmark_idx, 0, :] = torch.tensor([yaw_vector[0], yaw_vector[1]])
+                    positions[i, landmark_idx, 1, :] = torch.tensor([yaw_vector[2], yaw_vector[3]])
 
-                # Mark as valid (False = not masked)
-                mask[i, landmark_idx] = False
+                    # Mark as valid (False = not masked)
+                    mask[i, landmark_idx] = False
 
-                # Track max description length for debug tensor
-                max_description_length = max(
-                    max_description_length,
-                    len(self.all_sentences[custom_id].encode("utf-8")))
+                    # Track max description length for debug tensor
+                    custom_id = landmark_meta["custom_id"]
+                    if custom_id in self.all_sentences:
+                        max_description_length = max(
+                            max_description_length,
+                            len(self.all_sentences[custom_id].encode("utf-8")))
+
+            else:
+                # Use OpenAI embeddings (original behavior)
+                for landmark_idx, landmark_meta in enumerate(matching_landmarks):
+                    custom_id = landmark_meta["custom_id"]
+                    yaw_angles = landmark_meta["yaw_angles"]
+
+                    # Get embedding
+                    if custom_id not in self.all_embeddings:
+                        print(f"Warning: missing embedding for {custom_id}")
+                        continue
+
+                    # Crop embedding if needed
+                    features[i, landmark_idx, :] = torch.tensor(
+                        self.all_embeddings[custom_id])[:self.config.openai_embedding_size]
+
+                    # Convert yaw angles to binary presence vector
+                    yaw_vector = yaw_angles_to_binary_vector(yaw_angles)
+
+                    # Position format: [batch, num_landmarks, 2, 2]
+                    # Split the 4D binary vector across 2 positions:
+                    # - position 0: [yaw_0_present, yaw_90_present]
+                    # - position 1: [yaw_180_present, yaw_270_present]
+                    positions[i, landmark_idx, 0, :] = torch.tensor([yaw_vector[0], yaw_vector[1]])
+                    positions[i, landmark_idx, 1, :] = torch.tensor([yaw_vector[2], yaw_vector[3]])
+
+                    # Mark as valid (False = not masked)
+                    mask[i, landmark_idx] = False
+
+                    # Track max description length for debug tensor
+                    max_description_length = max(
+                        max_description_length,
+                        len(self.all_sentences[custom_id].encode("utf-8")))
 
         debug = {}
         if self.config.should_classify_against_grouping:
@@ -306,6 +367,8 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
 
     @property
     def output_dim(self):
+        if self.trainable_embedder is not None:
+            return self.trainable_embedder.output_dim
         out = self.config.openai_embedding_size
         if self.config.should_classify_against_grouping:
             out = len(self.semantic_groupings["semantic_groups"])
