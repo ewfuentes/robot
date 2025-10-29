@@ -445,7 +445,7 @@ class VigorDataset(torch.utils.data.Dataset):
             log_progress("Pre-computing landmark dict representations...")
             dict_start_time = time.time()
             self._landmark_metadata['as_dict'] = [
-                series_to_dict_with_index(row)
+                series_to_dict_with_index(row.dropna())
                 for _, row in self._landmark_metadata.iterrows()
             ]
             dict_end_time = time.time()
