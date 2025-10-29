@@ -48,11 +48,26 @@ class LandmarkType(StrEnum):
     MULTIPOLYGON = "multipolygon"
 
 
+class TrainableSentenceEmbedderConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    """Configuration for trainable sentence embedding model.
+
+    Used to configure a Sentence-BERT style model that can be fine-tuned
+    during training as an alternative to frozen OpenAI embeddings.
+    """
+    pretrained_model_name_or_path: str  # HuggingFace model name or path
+    output_dim: int  # Dimension of output embeddings
+    freeze_weights: bool = True  # Whether to freeze transformer during training
+    max_sequence_length: int = 128  # Maximum sequence length for tokenization
+    model_weights_path: str | None = None  # Optional path to custom pretrained weights
+
+
 class SemanticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     landmark_type: LandmarkType
     openai_embedding_size: int  # if smaller than the true embedding dim (1536), will crop and renormalize embedding
     embedding_version: str
     auxiliary_info_key: str
+    trainable_embedder_config: TrainableSentenceEmbedderConfig | None = None  # If present, use trainable embedder instead of OpenAI
+    osm_input_mode: str = "natural_language"  # "osm_text" or "natural_language"
 
 
 class PanoramaSemanticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
@@ -60,6 +75,7 @@ class PanoramaSemanticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_O
     embedding_version: str
     auxiliary_info_key: str
     should_classify_against_grouping: bool = False
+    trainable_embedder_config: TrainableSentenceEmbedderConfig | None = None  # If present, use trainable embedder instead of OpenAI
 
 
 class SyntheticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):

@@ -177,6 +177,34 @@ py_test(
   ]
 )
 
+py_library(
+  name = "trainable_sentence_embedder",
+  srcs = ["trainable_sentence_embedder.py"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+  ],
+  deps = [
+    requirement("torch"),
+    requirement("transformers"),
+    "//common/torch:load_torch_deps",
+  ]
+)
+
+py_test(
+  name = "trainable_sentence_embedder_test",
+  srcs = ["trainable_sentence_embedder_test.py"],
+  local = True,  # Requires network access to download HuggingFace models
+  deps = [
+    requirement("torch"),
+    requirement("shapely"),
+    "//common/torch:load_torch_deps",
+    ":trainable_sentence_embedder",
+    ":semantic_landmark_extractor",
+    ":panorama_semantic_landmark_extractor",
+    ":swag_config_types",
+  ]
+)
+
 py_binary(
   name = "semantic_landmark_extractor",
   srcs = ["semantic_landmark_extractor.py"],
@@ -199,6 +227,7 @@ py_binary(
     ":swag_model_input_output",
     ":swag_config_types",
     ":semantic_landmark_utils",
+    ":trainable_sentence_embedder",
   ]
 )
 
@@ -253,6 +282,7 @@ py_library(
     ":swag_model_input_output",
     ":swag_config_types",
     ":semantic_landmark_utils",
+    ":trainable_sentence_embedder",
   ]
 )
 
