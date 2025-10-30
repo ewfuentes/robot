@@ -116,17 +116,20 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
             )
             print("Initialized trainable sentence embedder for panorama landmarks")
 
-        # Load the semantic class groupings
+        # Load the semantic class groupings only if needed
         base_path = self.semantic_embedding_base_path / self.config.embedding_version
-        semantic_groupings_file = base_path / "semantic_class_grouping.json"
-        assert semantic_groupings_file.exists()
-        self.semantic_groupings = json.loads(semantic_groupings_file.read_text())
+        if config.should_classify_against_grouping:
+            semantic_groupings_file = base_path / "semantic_class_grouping.json"
+            assert semantic_groupings_file.exists(), f"Semantic grouping file not found: {semantic_groupings_file}"
+            self.semantic_groupings = json.loads(semantic_groupings_file.read_text())
 
-        # Convert the base64 encoded embeddings into torch tensors
-        for k, v in self.semantic_groupings["class_details"].items():
-            base64_string = v["embedding"]["vector"]
-            base64_buffer = bytearray(base64.b64decode(base64_string))
-            v["embedding"]["vector"] = torch.frombuffer(base64_buffer, dtype=torch.float32)
+            # Convert the base64 encoded embeddings into torch tensors
+            for k, v in self.semantic_groupings["class_details"].items():
+                base64_string = v["embedding"]["vector"]
+                base64_buffer = bytearray(base64.b64decode(base64_string))
+                v["embedding"]["vector"] = torch.frombuffer(base64_buffer, dtype=torch.float32)
+        else:
+            self.semantic_groupings = None
 
     def load_files(self):
         """Load embeddings, sentences, and metadata from multi-city directory structure."""
