@@ -12,7 +12,7 @@ import openai
 import base64
 import time
 from experimental.overhead_matching.swag.model.swag_config_types import (
-    SemanticLandmarkExtractorConfig, ExtractorDataRequirement)
+    SemanticLandmarkExtractorConfig, ExtractorDataRequirement, OSMInputMode)
 from experimental.overhead_matching.swag.model.swag_model_input_output import (
     ModelInput, ExtractorOutput)
 from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
@@ -200,7 +200,7 @@ def compute_landmark_sat_positions(sat_metadata, landmark_mask=None):
 
 
 class SemanticLandmarkExtractor(torch.nn.Module):
-    def __init__(self, config: SemanticLandmarkExtractorConfig, semantic_embedding_base_path: Path):
+    def __init__(self, config: SemanticLandmarkExtractorConfig, semantic_embedding_base_path: Path, trainable_embedder: TrainableSentenceEmbedder | None = None):
         super().__init__()
         self.config = config
         self.semantic_embedding_base_path = Path(semantic_embedding_base_path).expanduser()
@@ -209,18 +209,8 @@ class SemanticLandmarkExtractor(torch.nn.Module):
         self.all_sentences = None
         self._batch_counter = 0
 
-        # Initialize trainable embedder if configured
-        self.trainable_embedder = None
-        if config.trainable_embedder_config is not None:
-            embedder_config = config.trainable_embedder_config
-            self.trainable_embedder = TrainableSentenceEmbedder(
-                pretrained_model_name_or_path=embedder_config.pretrained_model_name_or_path,
-                output_dim=embedder_config.output_dim,
-                freeze_weights=embedder_config.freeze_weights,
-                max_sequence_length=embedder_config.max_sequence_length,
-                model_weights_path=embedder_config.model_weights_path,
-            )
-            print(f"Initialized trainable sentence embedder for {config.landmark_type} landmarks")
+        # Use shared trainable embedder (passed from SwagPatchEmbedding)
+        self.trainable_embedder = trainable_embedder
 
     def _convert_osm_props_to_text(self, props) -> str:
         """Convert OSM properties to text based on osm_input_mode.
@@ -230,15 +220,18 @@ class SemanticLandmarkExtractor(torch.nn.Module):
 
         Returns:
             Text representation of the landmark
+
+        Raises:
+            ValueError: If osm_input_mode is not a recognized OSMInputMode value
         """
         custom_id = _custom_id_from_props(props)
 
-        if self.config.osm_input_mode == "natural_language":
+        if self.config.osm_input_mode == OSMInputMode.NATURAL_LANGUAGE:
             # Load cached GPT-generated description
             if custom_id not in self.all_sentences:
                 raise ValueError(f"No natural language description found for landmark {custom_id}")
             return self.all_sentences[custom_id]
-        else:  # "osm_text"
+        elif self.config.osm_input_mode == OSMInputMode.OSM_TEXT:
             # Format as "key: value, key: value, ..."
             # Handle both dict and frozenset inputs
             if isinstance(props, dict):
@@ -246,6 +239,9 @@ class SemanticLandmarkExtractor(torch.nn.Module):
             else:  # frozenset of tuples
                 items = sorted(props)
             return ", ".join(f"{k}: {v}" for k, v in items)
+        else:
+            raise ValueError(f"Unrecognized osm_input_mode: {self.config.osm_input_mode}. "
+                           f"Must be one of {[mode.value for mode in OSMInputMode]}")
 
     def load_files(self):
         # lazy setup to speed things up when we're using caching

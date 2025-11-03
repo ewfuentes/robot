@@ -94,7 +94,7 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
     by vision models. Landmarks are associated with panoramas by ID alone.
     """
 
-    def __init__(self, config: PanoramaSemanticLandmarkExtractorConfig, semantic_embedding_base_path: Path):
+    def __init__(self, config: PanoramaSemanticLandmarkExtractorConfig, semantic_embedding_base_path: Path, trainable_embedder: TrainableSentenceEmbedder | None = None):
         super().__init__()
         self.config = config
         self.semantic_embedding_base_path = Path(semantic_embedding_base_path).expanduser()
@@ -103,18 +103,8 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
         self.all_sentences = None
         self.panorama_metadata = None  # Maps pano_id -> list of (landmark_idx, custom_id, yaw_angles)
 
-        # Initialize trainable embedder if configured
-        self.trainable_embedder = None
-        if config.trainable_embedder_config is not None:
-            embedder_config = config.trainable_embedder_config
-            self.trainable_embedder = TrainableSentenceEmbedder(
-                pretrained_model_name_or_path=embedder_config.pretrained_model_name_or_path,
-                output_dim=embedder_config.output_dim,
-                freeze_weights=embedder_config.freeze_weights,
-                max_sequence_length=embedder_config.max_sequence_length,
-                model_weights_path=embedder_config.model_weights_path,
-            )
-            print("Initialized trainable sentence embedder for panorama landmarks")
+        # Use shared trainable embedder (passed from SwagPatchEmbedding)
+        self.trainable_embedder = trainable_embedder
 
         # Load the semantic class groupings only if needed
         base_path = self.semantic_embedding_base_path / self.config.embedding_version

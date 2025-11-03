@@ -13,6 +13,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoModel, AutoTokenizer
 
+from experimental.overhead_matching.swag.model.swag_config_types import TrainableSentenceEmbedderConfig
+
 
 class TrainableSentenceEmbedder(nn.Module):
     """Trainable sentence embedding model using pretrained transformers.
@@ -26,52 +28,40 @@ class TrainableSentenceEmbedder(nn.Module):
     The transformer weights can be frozen or fine-tuned during training.
     """
 
-    def __init__(
-        self,
-        pretrained_model_name_or_path: str,
-        output_dim: int,
-        freeze_weights: bool = True,
-        max_sequence_length: int = 128,
-        model_weights_path: str | None = None,
-    ):
+    def __init__(self, config: 'TrainableSentenceEmbedderConfig'):
         """Initialize the trainable sentence embedder.
 
         Args:
-            pretrained_model_name_or_path: HuggingFace model identifier
-                (e.g., "sentence-transformers/all-MiniLM-L6-v2", "bert-base-uncased")
-            output_dim: Dimension of output embeddings
-            freeze_weights: If True, freeze transformer weights during training
-            max_sequence_length: Maximum sequence length for tokenization
-            model_weights_path: Optional path to custom pretrained weights to load
+            config: Configuration object with model parameters
         """
         super().__init__()
 
-        self.output_dim = output_dim
-        self.max_sequence_length = max_sequence_length
+        self.output_dim = config.output_dim
+        self.max_sequence_length = config.max_sequence_length
 
         # Load pretrained transformer and tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path)
-        self.transformer = AutoModel.from_pretrained(pretrained_model_name_or_path)
+        self.tokenizer = AutoTokenizer.from_pretrained(config.pretrained_model_name_or_path)
+        self.transformer = AutoModel.from_pretrained(config.pretrained_model_name_or_path)
 
         # Load custom weights if provided
-        if model_weights_path is not None:
-            weights_path = Path(model_weights_path).expanduser()
+        if config.model_weights_path is not None:
+            weights_path = Path(config.model_weights_path).expanduser()
             if weights_path.exists():
                 state_dict = torch.load(weights_path, map_location='cpu')
                 self.transformer.load_state_dict(state_dict)
                 print(f"Loaded custom transformer weights from {weights_path}")
             else:
-                raise FileNotFoundError(f"Model weights not found at {model_weights_path}")
+                raise FileNotFoundError(f"Model weights not found at {config.model_weights_path}")
 
         # Freeze transformer weights if requested
-        if freeze_weights:
+        if config.freeze_weights:
             for param in self.transformer.parameters():
                 param.requires_grad = False
-            print(f"Frozen transformer weights for {pretrained_model_name_or_path}")
+            print(f"Frozen transformer weights for {config.pretrained_model_name_or_path}")
 
         # Learned projection to output dimension
         transformer_output_dim = self.transformer.config.hidden_size
-        self.projection = nn.Linear(transformer_output_dim, output_dim)
+        self.projection = nn.Linear(transformer_output_dim, self.output_dim)
 
     def mean_pool(
         self,

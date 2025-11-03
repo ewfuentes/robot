@@ -48,6 +48,16 @@ class LandmarkType(StrEnum):
     MULTIPOLYGON = "multipolygon"
 
 
+class OSMInputMode(StrEnum):
+    """Mode for converting OSM properties to text for embedding.
+
+    OSM_TEXT: Use raw OSM properties as "key: value, key: value, ..."
+    NATURAL_LANGUAGE: Use GPT-generated natural language descriptions
+    """
+    OSM_TEXT = "osm_text"
+    NATURAL_LANGUAGE = "natural_language"
+
+
 class TrainableSentenceEmbedderConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     """Configuration for trainable sentence embedding model.
 
@@ -66,8 +76,7 @@ class SemanticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     openai_embedding_size: int  # if smaller than the true embedding dim (1536), will crop and renormalize embedding
     embedding_version: str
     auxiliary_info_key: str
-    trainable_embedder_config: TrainableSentenceEmbedderConfig | None = None  # If present, use trainable embedder instead of OpenAI
-    osm_input_mode: str = "natural_language"  # "osm_text" or "natural_language"
+    osm_input_mode: OSMInputMode = OSMInputMode.NATURAL_LANGUAGE
 
 
 class PanoramaSemanticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
@@ -75,7 +84,6 @@ class PanoramaSemanticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_O
     embedding_version: str
     auxiliary_info_key: str
     should_classify_against_grouping: bool = False
-    trainable_embedder_config: TrainableSentenceEmbedderConfig | None = None  # If present, use trainable embedder instead of OpenAI
 
 
 class SyntheticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
