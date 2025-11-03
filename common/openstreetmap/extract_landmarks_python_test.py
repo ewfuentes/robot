@@ -24,7 +24,7 @@ class ExtractLandmarksPythonTest(unittest.TestCase):
         self.assertGreater(len(point_features), 0, "Should have point features")
 
         point = point_features[0]
-        self.assertEqual(point.osm_type, "node")
+        self.assertEqual(point.osm_type, elm.OsmType.NODE)
         self.assertIsInstance(point.geometry.coord, elm.Coordinate)
         self.assertIsInstance(point.geometry.coord.lat, float)
         self.assertIsInstance(point.geometry.coord.lon, float)
@@ -38,7 +38,7 @@ class ExtractLandmarksPythonTest(unittest.TestCase):
         self.assertGreater(len(line_features), 0, "Should have linestring features")
 
         line = line_features[0]
-        self.assertEqual(line.osm_type, "way")
+        self.assertEqual(line.osm_type, elm.OsmType.WAY)
         self.assertGreaterEqual(len(line.geometry.coords), 2)
 
     def test_extracts_polygon_geometry(self):
@@ -61,7 +61,7 @@ class ExtractLandmarksPythonTest(unittest.TestCase):
 
         if len(mp_features) > 0:
             mp = mp_features[0]
-            self.assertEqual(mp.osm_type, "relation")
+            self.assertEqual(mp.osm_type, elm.OsmType.RELATION)
             self.assertGreater(len(mp.geometry.polygons), 0)
 
     # === Conversion to Shapely ===
@@ -178,10 +178,10 @@ class ExtractLandmarksPythonTest(unittest.TestCase):
         """BoundingBox can be constructed from Python"""
         bbox = elm.BoundingBox(-65.0, 17.5, -64.5, 18.5)
 
-        self.assertEqual(bbox.left, -65.0)
-        self.assertEqual(bbox.bottom, 17.5)
-        self.assertEqual(bbox.right, -64.5)
-        self.assertEqual(bbox.top, 18.5)
+        self.assertEqual(bbox.left_deg, -65.0)
+        self.assertEqual(bbox.bottom_deg, 17.5)
+        self.assertEqual(bbox.right_deg, -64.5)
+        self.assertEqual(bbox.top_deg, 18.5)
 
     def test_bounding_box_contains(self):
         """BoundingBox.contains works from Python"""

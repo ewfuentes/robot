@@ -54,7 +54,7 @@ class LandmarkHandler : public osmium::handler::Handler {
         }
 
         LandmarkFeature feature;
-        feature.osm_type = "node";
+        feature.osm_type = OsmType::NODE;
         feature.osm_id = node.id();
         feature.geometry = PointGeometry{{node.location().lon(), node.location().lat()}};
         feature.tags = tags_to_map(node.tags());
@@ -108,7 +108,7 @@ class LandmarkHandler : public osmium::handler::Handler {
         }
 
         LandmarkFeature feature;
-        feature.osm_type = "way";
+        feature.osm_type = OsmType::WAY;
         feature.osm_id = way.id();
         feature.tags = tags_to_map(way.tags());
 

@@ -10,6 +10,13 @@ namespace robot::openstreetmap {
 PYBIND11_MODULE(extract_landmarks_python, m) {
     m.doc() = "Python bindings for OSM landmark extraction from PBF files";
 
+    // OsmType enum
+    py::enum_<OsmType>(m, "OsmType")
+        .value("NODE", OsmType::NODE)
+        .value("WAY", OsmType::WAY)
+        .value("RELATION", OsmType::RELATION)
+        .export_values();
+
     // Coordinate struct
     py::class_<Coordinate>(m, "Coordinate")
         .def(py::init<>())
@@ -65,25 +72,32 @@ PYBIND11_MODULE(extract_landmarks_python, m) {
         .def_readwrite("tags", &LandmarkFeature::tags)
         .def_readwrite("landmark_type", &LandmarkFeature::landmark_type)
         .def("__repr__", [](const LandmarkFeature& f) {
-            return "LandmarkFeature(osm_type='" + f.osm_type +
-                   "', osm_id=" + std::to_string(f.osm_id) +
+            std::string type_str;
+            switch (f.osm_type) {
+                case OsmType::NODE: type_str = "NODE"; break;
+                case OsmType::WAY: type_str = "WAY"; break;
+                case OsmType::RELATION: type_str = "RELATION"; break;
+            }
+            return "LandmarkFeature(osm_type=" + type_str +
+                   ", osm_id=" + std::to_string(f.osm_id) +
                    ", landmark_type='" + f.landmark_type + "')";
         });
 
     // BoundingBox
     py::class_<BoundingBox>(m, "BoundingBox")
         .def(py::init<>())
-        .def(py::init<double, double, double, double>(), py::arg("left"), py::arg("bottom"),
-             py::arg("right"), py::arg("top"))
-        .def_readwrite("left", &BoundingBox::left)
-        .def_readwrite("bottom", &BoundingBox::bottom)
-        .def_readwrite("right", &BoundingBox::right)
-        .def_readwrite("top", &BoundingBox::top)
+        .def(py::init<double, double, double, double>(), py::arg("left_deg"), py::arg("bottom_deg"),
+             py::arg("right_deg"), py::arg("top_deg"))
+        .def_readwrite("left_deg", &BoundingBox::left_deg)
+        .def_readwrite("bottom_deg", &BoundingBox::bottom_deg)
+        .def_readwrite("right_deg", &BoundingBox::right_deg)
+        .def_readwrite("top_deg", &BoundingBox::top_deg)
         .def("contains", &BoundingBox::contains, py::arg("lon"), py::arg("lat"))
         .def("__repr__", [](const BoundingBox& b) {
-            return "BoundingBox(left=" + std::to_string(b.left) +
-                   ", bottom=" + std::to_string(b.bottom) + ", right=" + std::to_string(b.right) +
-                   ", top=" + std::to_string(b.top) + ")";
+            return "BoundingBox(left_deg=" + std::to_string(b.left_deg) +
+                   ", bottom_deg=" + std::to_string(b.bottom_deg) +
+                   ", right_deg=" + std::to_string(b.right_deg) +
+                   ", top_deg=" + std::to_string(b.top_deg) + ")";
         });
 
     // Main extraction function

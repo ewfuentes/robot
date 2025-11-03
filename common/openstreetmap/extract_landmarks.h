@@ -9,8 +9,14 @@
 namespace robot::openstreetmap {
 
 struct Coordinate {
-    double lon;
-    double lat;
+    double lon;  // Longitude in degrees (WGS84)
+    double lat;  // Latitude in degrees (WGS84)
+};
+
+enum class OsmType {
+    NODE,
+    WAY,
+    RELATION
 };
 
 struct PointGeometry {
@@ -34,21 +40,21 @@ using Geometry = std::variant<PointGeometry, LineStringGeometry, PolygonGeometry
                                MultiPolygonGeometry>;
 
 struct LandmarkFeature {
-    std::string osm_type;  // "node", "way", "relation"
-    int64_t osm_id;
-    Geometry geometry;
-    std::map<std::string, std::string> tags;
-    std::string landmark_type;
+    OsmType osm_type;      // Type of OSM element (NODE, WAY, or RELATION)
+    int64_t osm_id;        // OSM element ID
+    Geometry geometry;     // Geometric representation
+    std::map<std::string, std::string> tags;  // All OSM tags (key-value pairs)
+    std::string landmark_type;  // The tag key that matched the filter (e.g., "amenity", "building")
 };
 
 struct BoundingBox {
-    double left;
-    double bottom;
-    double right;
-    double top;
+    double left_deg;
+    double bottom_deg;
+    double right_deg;
+    double top_deg;
 
     bool contains(double lon, double lat) const {
-        return lon >= left && lon <= right && lat >= bottom && lat <= top;
+        return lon >= left_deg && lon <= right_deg && lat >= bottom_deg && lat <= top_deg;
     }
 };
 

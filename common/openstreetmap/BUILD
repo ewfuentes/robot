@@ -38,6 +38,7 @@ pybind_extension(
   name = "extract_landmarks_python",
   srcs = ["extract_landmarks_python.cc"],
   deps = [":extract_landmarks"],
+  visibility = ["//visibility:public"],
 )
 
 py_test(

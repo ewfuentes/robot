@@ -56,10 +56,10 @@ def compute_bbox_from_dataset(dataset_path: Path, zoom_level: int):
     width_delta = right - left
 
     return elm.BoundingBox(
-        left - 0.1 * width_delta,
-        bottom - 0.1 * height_delta,
-        right + 0.1 * width_delta,
-        top + 0.1 * height_delta,
+        left - 0.1 * width_delta,   # left_deg
+        bottom - 0.1 * height_delta,  # bottom_deg
+        right + 0.1 * width_delta,  # right_deg
+        top + 0.1 * height_delta,    # top_deg
     )
 
 
@@ -78,7 +78,7 @@ def main(
         bbox_obj = compute_bbox_from_dataset(dataset_path, zoom_level)
         print(
             f"Computed bounding box from dataset: "
-            f"[{bbox_obj.left}, {bbox_obj.bottom}, {bbox_obj.right}, {bbox_obj.top}]"
+            f"[{bbox_obj.left_deg}, {bbox_obj.bottom_deg}, {bbox_obj.right_deg}, {bbox_obj.top_deg}]"
         )
     else:
         raise ValueError("Must provide either --bbox or --dataset_path")
@@ -115,8 +115,16 @@ def main(
 
     # Convert to GeoDataFrame
     print("Converting to GeoDataFrame...")
+
+    # Convert OsmType enum to string for DataFrame
+    osm_type_map = {
+        elm.OsmType.NODE: "node",
+        elm.OsmType.WAY: "way",
+        elm.OsmType.RELATION: "relation"
+    }
+
     data = {
-        "osm_type": [f.osm_type for f in features],
+        "osm_type": [osm_type_map[f.osm_type] for f in features],
         "osm_id": [f.osm_id for f in features],
         "geometry": [create_shapely_geometry(f.geometry) for f in features],
         "landmark_type": [f.landmark_type for f in features],

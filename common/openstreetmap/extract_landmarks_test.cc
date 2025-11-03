@@ -27,7 +27,7 @@ TEST_F(ExtractLandmarksTest, ExtractsPointGeometry) {
         });
 
     ASSERT_NE(point_it, features.end()) << "Should have at least one point feature";
-    EXPECT_EQ(point_it->osm_type, "node");
+    EXPECT_EQ(point_it->osm_type, OsmType::NODE);
 
     auto& point = std::get<PointGeometry>(point_it->geometry);
     EXPECT_GE(point.coord.lat, 17.5);
@@ -46,7 +46,7 @@ TEST_F(ExtractLandmarksTest, ExtractsLineStringGeometry) {
         });
 
     ASSERT_NE(line_it, features.end()) << "Should have at least one linestring";
-    EXPECT_EQ(line_it->osm_type, "way");
+    EXPECT_EQ(line_it->osm_type, OsmType::WAY);
 
     auto& line = std::get<LineStringGeometry>(line_it->geometry);
     EXPECT_GE(line.coords.size(), 2) << "LineString must have at least 2 points";
@@ -81,7 +81,7 @@ TEST_F(ExtractLandmarksTest, ExtractsMultiPolygonGeometry) {
         });
 
     if (mp_it != features.end()) {
-        EXPECT_EQ(mp_it->osm_type, "relation");
+        EXPECT_EQ(mp_it->osm_type, OsmType::RELATION);
         auto& mp = std::get<MultiPolygonGeometry>(mp_it->geometry);
         EXPECT_GT(mp.polygons.size(), 0);
     }
@@ -107,10 +107,10 @@ TEST_F(ExtractLandmarksTest, BoundingBoxFilterWorks) {
             [&](auto&& geom) {
                 using T = std::decay_t<decltype(geom)>;
                 if constexpr (std::is_same_v<T, PointGeometry>) {
-                    EXPECT_GE(geom.coord.lat, tight_bbox.bottom);
-                    EXPECT_LE(geom.coord.lat, tight_bbox.top);
-                    EXPECT_GE(geom.coord.lon, tight_bbox.left);
-                    EXPECT_LE(geom.coord.lon, tight_bbox.right);
+                    EXPECT_GE(geom.coord.lat, tight_bbox.bottom_deg);
+                    EXPECT_LE(geom.coord.lat, tight_bbox.top_deg);
+                    EXPECT_GE(geom.coord.lon, tight_bbox.left_deg);
+                    EXPECT_LE(geom.coord.lon, tight_bbox.right_deg);
                 }
             },
             f.geometry);
@@ -161,8 +161,8 @@ TEST_F(ExtractLandmarksTest, PreservesOsmMetadata) {
     ASSERT_GT(features.size(), 0);
 
     for (const auto& f : features) {
-        EXPECT_FALSE(f.osm_type.empty());
-        EXPECT_TRUE(f.osm_type == "node" || f.osm_type == "way" || f.osm_type == "relation");
+        EXPECT_TRUE(f.osm_type == OsmType::NODE || f.osm_type == OsmType::WAY ||
+                   f.osm_type == OsmType::RELATION);
         EXPECT_GT(f.osm_id, 0);
     }
 }
