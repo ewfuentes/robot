@@ -23,6 +23,7 @@ py_binary(
     requirement("osmnx"),
     requirement("supervision"),
     requirement("openai"),
+    requirement("z3_solver"),
     "//common/torch:load_torch_deps",
     "//experimental/overhead_matching/learned/model:clevr_transformer",
     "//experimental/overhead_matching/learned/model:clevr_tokenizer",
