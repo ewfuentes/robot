@@ -13,11 +13,7 @@ struct Coordinate {
     double lat;  // Latitude in degrees (WGS84)
 };
 
-enum class OsmType {
-    NODE,
-    WAY,
-    RELATION
-};
+enum class OsmType { NODE, WAY, RELATION };
 
 struct PointGeometry {
     Coordinate coord;
@@ -36,13 +32,13 @@ struct MultiPolygonGeometry {
     std::vector<PolygonGeometry> polygons;
 };
 
-using Geometry = std::variant<PointGeometry, LineStringGeometry, PolygonGeometry,
-                               MultiPolygonGeometry>;
+using Geometry =
+    std::variant<PointGeometry, LineStringGeometry, PolygonGeometry, MultiPolygonGeometry>;
 
 struct LandmarkFeature {
-    OsmType osm_type;      // Type of OSM element (NODE, WAY, or RELATION)
-    int64_t osm_id;        // OSM element ID
-    Geometry geometry;     // Geometric representation
+    OsmType osm_type;                         // Type of OSM element (NODE, WAY, or RELATION)
+    int64_t osm_id;                           // OSM element ID
+    Geometry geometry;                        // Geometric representation
     std::map<std::string, std::string> tags;  // All OSM tags (key-value pairs)
     std::string landmark_type;  // The tag key that matched the filter (e.g., "amenity", "building")
 };
@@ -63,8 +59,7 @@ struct BoundingBox {
 // - bbox: Bounding box to filter features
 // - tag_filters: Map of OSM tags to filter by (e.g., {"amenity": true, "building": true})
 // Returns: Vector of extracted landmark features
-std::vector<LandmarkFeature> extract_landmarks(const std::string& pbf_path,
-                                                const BoundingBox& bbox,
-                                                const std::map<std::string, bool>& tag_filters);
+std::vector<LandmarkFeature> extract_landmarks(const std::string& pbf_path, const BoundingBox& bbox,
+                                               const std::map<std::string, bool>& tag_filters);
 
 }  // namespace robot::openstreetmap

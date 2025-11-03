@@ -1,21 +1,19 @@
 #include "common/openstreetmap/extract_landmarks.h"
 
 #include <filesystem>
-#include <stdexcept>
-
 #include <osmium/handler.hpp>
 #include <osmium/handler/node_locations_for_ways.hpp>
 #include <osmium/index/map/flex_mem.hpp>
 #include <osmium/io/pbf_input.hpp>
 #include <osmium/visitor.hpp>
+#include <stdexcept>
 
 namespace robot::openstreetmap {
 
 namespace {
 
 // Helper to check if any tag in the filter map matches
-bool has_matching_tag(const osmium::TagList& tags,
-                     const std::map<std::string, bool>& tag_filters) {
+bool has_matching_tag(const osmium::TagList& tags, const std::map<std::string, bool>& tag_filters) {
     for (const auto& tag : tags) {
         if (tag_filters.count(tag.key()) > 0) {
             return true;
@@ -144,9 +142,8 @@ class LandmarkHandler : public osmium::handler::Handler {
 
 }  // namespace
 
-std::vector<LandmarkFeature> extract_landmarks(const std::string& pbf_path,
-                                                const BoundingBox& bbox,
-                                                const std::map<std::string, bool>& tag_filters) {
+std::vector<LandmarkFeature> extract_landmarks(const std::string& pbf_path, const BoundingBox& bbox,
+                                               const std::map<std::string, bool>& tag_filters) {
     // Verify file exists
     if (!std::filesystem::exists(pbf_path)) {
         throw std::runtime_error("PBF file not found: " + pbf_path);
@@ -155,7 +152,8 @@ std::vector<LandmarkFeature> extract_landmarks(const std::string& pbf_path,
     std::vector<LandmarkFeature> all_features;
 
     // Use location index to store node locations for ways
-    using IndexType = osmium::index::map::FlexMem<osmium::unsigned_object_id_type, osmium::Location>;
+    using IndexType =
+        osmium::index::map::FlexMem<osmium::unsigned_object_id_type, osmium::Location>;
     using LocationHandler = osmium::handler::NodeLocationsForWays<IndexType>;
 
     IndexType index;

@@ -15,7 +15,7 @@ cc_test(
 
 cc_library(
   name = "extract_landmarks",
-  hdrs = ["extract_landmarks.h"],
+  hdrs = ["extract_landmarks.hh"],
   srcs = ["extract_landmarks.cc"],
   deps = [
     "@libosmium",

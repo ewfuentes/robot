@@ -1,5 +1,4 @@
-#include "common/openstreetmap/extract_landmarks.h"
-
+#include "common/openstreetmap/extract_landmarks.hh"
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
 
@@ -74,12 +73,17 @@ PYBIND11_MODULE(extract_landmarks_python, m) {
         .def("__repr__", [](const LandmarkFeature& f) {
             std::string type_str;
             switch (f.osm_type) {
-                case OsmType::NODE: type_str = "NODE"; break;
-                case OsmType::WAY: type_str = "WAY"; break;
-                case OsmType::RELATION: type_str = "RELATION"; break;
+                case OsmType::NODE:
+                    type_str = "NODE";
+                    break;
+                case OsmType::WAY:
+                    type_str = "WAY";
+                    break;
+                case OsmType::RELATION:
+                    type_str = "RELATION";
+                    break;
             }
-            return "LandmarkFeature(osm_type=" + type_str +
-                   ", osm_id=" + std::to_string(f.osm_id) +
+            return "LandmarkFeature(osm_type=" + type_str + ", osm_id=" + std::to_string(f.osm_id) +
                    ", landmark_type='" + f.landmark_type + "')";
         });
 

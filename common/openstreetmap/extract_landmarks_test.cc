@@ -1,4 +1,4 @@
-#include "common/openstreetmap/extract_landmarks.h"
+#include "common/openstreetmap/extract_landmarks.hh"
 
 #include <chrono>
 #include <filesystem>
@@ -21,10 +21,9 @@ TEST_F(ExtractLandmarksTest, ExtractsPointGeometry) {
     auto features = extract_landmarks(test_pbf_.string(), full_bbox_, {{"amenity", true}});
 
     // Find at least one point
-    auto point_it =
-        std::find_if(features.begin(), features.end(), [](const auto& f) {
-            return std::holds_alternative<PointGeometry>(f.geometry);
-        });
+    auto point_it = std::find_if(features.begin(), features.end(), [](const auto& f) {
+        return std::holds_alternative<PointGeometry>(f.geometry);
+    });
 
     ASSERT_NE(point_it, features.end()) << "Should have at least one point feature";
     EXPECT_EQ(point_it->osm_type, OsmType::NODE);
@@ -40,10 +39,9 @@ TEST_F(ExtractLandmarksTest, ExtractsLineStringGeometry) {
     auto features = extract_landmarks(test_pbf_.string(), full_bbox_, {{"highway", true}});
 
     // Find a linestring (open way)
-    auto line_it =
-        std::find_if(features.begin(), features.end(), [](const auto& f) {
-            return std::holds_alternative<LineStringGeometry>(f.geometry);
-        });
+    auto line_it = std::find_if(features.begin(), features.end(), [](const auto& f) {
+        return std::holds_alternative<LineStringGeometry>(f.geometry);
+    });
 
     ASSERT_NE(line_it, features.end()) << "Should have at least one linestring";
     EXPECT_EQ(line_it->osm_type, OsmType::WAY);
@@ -56,10 +54,9 @@ TEST_F(ExtractLandmarksTest, ExtractsPolygonGeometry) {
     auto features = extract_landmarks(test_pbf_.string(), full_bbox_, {{"building", true}});
 
     // Find a polygon
-    auto poly_it =
-        std::find_if(features.begin(), features.end(), [](const auto& f) {
-            return std::holds_alternative<PolygonGeometry>(f.geometry);
-        });
+    auto poly_it = std::find_if(features.begin(), features.end(), [](const auto& f) {
+        return std::holds_alternative<PolygonGeometry>(f.geometry);
+    });
 
     ASSERT_NE(poly_it, features.end()) << "Should have at least one polygon";
 
@@ -75,10 +72,9 @@ TEST_F(ExtractLandmarksTest, ExtractsMultiPolygonGeometry) {
     auto features = extract_landmarks(test_pbf_.string(), full_bbox_, {{"landuse", true}});
 
     // Check if any multipolygons exist
-    auto mp_it =
-        std::find_if(features.begin(), features.end(), [](const auto& f) {
-            return std::holds_alternative<MultiPolygonGeometry>(f.geometry);
-        });
+    auto mp_it = std::find_if(features.begin(), features.end(), [](const auto& f) {
+        return std::holds_alternative<MultiPolygonGeometry>(f.geometry);
+    });
 
     if (mp_it != features.end()) {
         EXPECT_EQ(mp_it->osm_type, OsmType::RELATION);
@@ -93,10 +89,8 @@ TEST_F(ExtractLandmarksTest, BoundingBoxFilterWorks) {
     // Tight bbox (0.02 degrees ≈ 2km)
     BoundingBox tight_bbox{-64.95, 18.33, -64.93, 18.35};
 
-    auto features_tight =
-        extract_landmarks(test_pbf_.string(), tight_bbox, {{"amenity", true}});
-    auto features_full =
-        extract_landmarks(test_pbf_.string(), full_bbox_, {{"amenity", true}});
+    auto features_tight = extract_landmarks(test_pbf_.string(), tight_bbox, {{"amenity", true}});
+    auto features_full = extract_landmarks(test_pbf_.string(), full_bbox_, {{"amenity", true}});
 
     EXPECT_LT(features_tight.size(), features_full.size())
         << "Tight bbox should return fewer features";
@@ -162,7 +156,7 @@ TEST_F(ExtractLandmarksTest, PreservesOsmMetadata) {
 
     for (const auto& f : features) {
         EXPECT_TRUE(f.osm_type == OsmType::NODE || f.osm_type == OsmType::WAY ||
-                   f.osm_type == OsmType::RELATION);
+                    f.osm_type == OsmType::RELATION);
         EXPECT_GT(f.osm_id, 0);
     }
 }
@@ -173,8 +167,8 @@ TEST_F(ExtractLandmarksTest, PreservesTags) {
     ASSERT_GT(features.size(), 0);
 
     // At least some features should have multiple tags
-    auto multi_tag_count = std::count_if(
-        features.begin(), features.end(), [](const auto& f) { return f.tags.size() > 1; });
+    auto multi_tag_count = std::count_if(features.begin(), features.end(),
+                                         [](const auto& f) { return f.tags.size() > 1; });
 
     EXPECT_GT(multi_tag_count, 0) << "Some features should have multiple tags";
 }
@@ -208,9 +202,8 @@ TEST_F(ExtractLandmarksTest, HandlesInvalidPbfPath) {
 TEST_F(ExtractLandmarksTest, ExtractsFullIslandReasonablyFast) {
     auto start = std::chrono::steady_clock::now();
 
-    auto features =
-        extract_landmarks(test_pbf_.string(), full_bbox_,
-                          {{"building", true}, {"highway", true}, {"amenity", true}});
+    auto features = extract_landmarks(test_pbf_.string(), full_bbox_,
+                                      {{"building", true}, {"highway", true}, {"amenity", true}});
 
     auto duration = std::chrono::steady_clock::now() - start;
     auto seconds = std::chrono::duration_cast<std::chrono::seconds>(duration).count();
