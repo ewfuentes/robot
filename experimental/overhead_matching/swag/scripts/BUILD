@@ -198,6 +198,21 @@ py_binary(
 )
 
 py_binary(
+  name = "extract_landmarks_historical",
+  srcs = ["extract_landmarks_historical.py"],
+  data = [
+    "//common/openstreetmap:extract_landmarks_python.so",
+  ],
+  deps = [
+    requirement("geopandas"),
+    requirement("shapely"),
+    requirement("pyarrow"),
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//common/gps:web_mercator",
+  ]
+)
+
+py_binary(
   name="step_through_filter",
   srcs=["step_through_filter.py"],
   deps=[
