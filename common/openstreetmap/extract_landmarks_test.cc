@@ -85,9 +85,9 @@ TEST_F(ExtractLandmarksTest, ExtractsMultiPolygonGeometry) {
 
 TEST_F(ExtractLandmarksTest, ExtractsSpecificMultiPolygonRelation) {
     // Relation 4784235 is a known multipolygon in the USVI dataset
-    auto features = extract_landmarks(test_pbf_.string(), full_bbox_,
-                                      {{"landuse", true}, {"natural", true},
-                                       {"building", true}, {"leisure", true}});
+    auto features = extract_landmarks(
+        test_pbf_.string(), full_bbox_,
+        {{"landuse", true}, {"natural", true}, {"building", true}, {"leisure", true}});
 
     // Find the specific relation
     auto relation_it = std::find_if(features.begin(), features.end(), [](const auto& f) {
@@ -117,10 +117,8 @@ TEST_F(ExtractLandmarksTest, ExtractsSpecificMultiPolygonRelation) {
         // Verify holes are also closed
         for (const auto& hole : poly.holes) {
             EXPECT_GE(hole.size(), 4) << "Polygon hole must have at least 4 points";
-            EXPECT_NEAR(hole.front().lat, hole.back().lat, 1e-7)
-                << "Polygon hole should be closed";
-            EXPECT_NEAR(hole.front().lon, hole.back().lon, 1e-7)
-                << "Polygon hole should be closed";
+            EXPECT_NEAR(hole.front().lat, hole.back().lat, 1e-7) << "Polygon hole should be closed";
+            EXPECT_NEAR(hole.front().lon, hole.back().lon, 1e-7) << "Polygon hole should be closed";
         }
     }
 

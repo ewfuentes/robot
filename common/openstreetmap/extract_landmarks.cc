@@ -283,10 +283,10 @@ std::vector<LandmarkFeature> extract_landmarks(const std::string& pbf_path, cons
             osmium::io::Reader reader(pbf_path);
             AreaHandler area_handler(bbox, tag_filters);
 
-            osmium::apply(reader, location_handler, mp_manager.handler(
-                [&area_handler](osmium::memory::Buffer&& buffer) {
-                    osmium::apply(buffer, area_handler);
-                }));
+            osmium::apply(reader, location_handler,
+                          mp_manager.handler([&area_handler](osmium::memory::Buffer&& buffer) {
+                              osmium::apply(buffer, area_handler);
+                          }));
 
             reader.close();
 
