@@ -83,6 +83,52 @@ TEST_F(ExtractLandmarksTest, ExtractsMultiPolygonGeometry) {
     }
 }
 
+TEST_F(ExtractLandmarksTest, ExtractsSpecificMultiPolygonRelation) {
+    // Relation 4784235 is a known multipolygon in the USVI dataset
+    auto features = extract_landmarks(test_pbf_.string(), full_bbox_,
+                                      {{"landuse", true}, {"natural", true},
+                                       {"building", true}, {"leisure", true}});
+
+    // Find the specific relation
+    auto relation_it = std::find_if(features.begin(), features.end(), [](const auto& f) {
+        return f.osm_type == OsmType::RELATION && f.osm_id == 4784235;
+    });
+
+    ASSERT_NE(relation_it, features.end())
+        << "Relation 4784235 should be extracted from USVI dataset";
+
+    // Verify it's a multipolygon
+    ASSERT_TRUE(std::holds_alternative<MultiPolygonGeometry>(relation_it->geometry))
+        << "Relation 4784235 should be a MultiPolygonGeometry";
+
+    const auto& mp = std::get<MultiPolygonGeometry>(relation_it->geometry);
+    EXPECT_GT(mp.polygons.size(), 0) << "Multipolygon should contain at least one polygon";
+
+    // Verify each polygon is valid
+    for (const auto& poly : mp.polygons) {
+        EXPECT_GE(poly.exterior.size(), 4) << "Polygon exterior must have at least 4 points";
+
+        // Verify closed ring
+        EXPECT_NEAR(poly.exterior.front().lat, poly.exterior.back().lat, 1e-7)
+            << "Polygon exterior should be closed";
+        EXPECT_NEAR(poly.exterior.front().lon, poly.exterior.back().lon, 1e-7)
+            << "Polygon exterior should be closed";
+
+        // Verify holes are also closed
+        for (const auto& hole : poly.holes) {
+            EXPECT_GE(hole.size(), 4) << "Polygon hole must have at least 4 points";
+            EXPECT_NEAR(hole.front().lat, hole.back().lat, 1e-7)
+                << "Polygon hole should be closed";
+            EXPECT_NEAR(hole.front().lon, hole.back().lon, 1e-7)
+                << "Polygon hole should be closed";
+        }
+    }
+
+    // Verify tags are preserved
+    EXPECT_GT(relation_it->tags.size(), 0) << "Multipolygon should have tags";
+    EXPECT_FALSE(relation_it->landmark_type.empty()) << "landmark_type should be set";
+}
+
 // === Filtering Tests ===
 
 TEST_F(ExtractLandmarksTest, BoundingBoxFilterWorks) {

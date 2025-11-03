@@ -1,10 +1,13 @@
-#include "common/openstreetmap/extract_landmarks.h"
+#include "common/openstreetmap/extract_landmarks.hh"
 
 #include <filesystem>
+#include <osmium/area/assembler.hpp>
+#include <osmium/area/multipolygon_manager.hpp>
 #include <osmium/handler.hpp>
 #include <osmium/handler/node_locations_for_ways.hpp>
 #include <osmium/index/map/flex_mem.hpp>
 #include <osmium/io/pbf_input.hpp>
+#include <osmium/relations/relations_manager.hpp>
 #include <osmium/visitor.hpp>
 #include <stdexcept>
 
@@ -140,6 +143,92 @@ class LandmarkHandler : public osmium::handler::Handler {
     std::vector<LandmarkFeature> features_;
 };
 
+// Handler for processing multipolygon areas
+class AreaHandler : public osmium::handler::Handler {
+   public:
+    AreaHandler(const BoundingBox& bbox, const std::map<std::string, bool>& tag_filters)
+        : bbox_(bbox), tag_filters_(tag_filters) {}
+
+    void area(const osmium::Area& area) {
+        // Only process relations (multipolygons), not closed ways
+        if (area.from_way()) {
+            return;  // Skip - already handled as PolygonGeometry in LandmarkHandler
+        }
+
+        if (area.tags().empty()) {
+            return;
+        }
+
+        if (!has_matching_tag(area.tags(), tag_filters_)) {
+            return;
+        }
+
+        // Check if any node is within bbox
+        bool in_bbox = false;
+        for (const auto& outer_ring : area.outer_rings()) {
+            for (const auto& node_ref : outer_ring) {
+                if (bbox_.contains(node_ref.lon(), node_ref.lat())) {
+                    in_bbox = true;
+                    break;
+                }
+            }
+            if (in_bbox) break;
+        }
+
+        if (!in_bbox) {
+            return;
+        }
+
+        // Build MultiPolygonGeometry
+        MultiPolygonGeometry mp;
+
+        // Osmium areas can have multiple outer rings
+        for (const auto& outer_ring : area.outer_rings()) {
+            PolygonGeometry poly;
+
+            // Extract outer ring coordinates
+            for (const auto& node_ref : outer_ring) {
+                poly.exterior.push_back({node_ref.lon(), node_ref.lat()});
+            }
+
+            // Extract inner rings (holes) for this outer ring
+            for (const auto& inner_ring : area.inner_rings(outer_ring)) {
+                std::vector<Coordinate> hole;
+                for (const auto& node_ref : inner_ring) {
+                    hole.push_back({node_ref.lon(), node_ref.lat()});
+                }
+                poly.holes.push_back(std::move(hole));
+            }
+
+            mp.polygons.push_back(std::move(poly));
+        }
+
+        // Create feature
+        LandmarkFeature feature;
+        feature.osm_type = OsmType::RELATION;
+        feature.osm_id = area.orig_id();  // Original relation ID
+        feature.geometry = std::move(mp);
+        feature.tags = tags_to_map(area.tags());
+
+        // Set landmark_type
+        for (const auto& [key, _] : tag_filters_) {
+            if (feature.tags.count(key) > 0) {
+                feature.landmark_type = key;
+                break;
+            }
+        }
+
+        features_.push_back(std::move(feature));
+    }
+
+    const std::vector<LandmarkFeature>& features() const { return features_; }
+
+   private:
+    const BoundingBox& bbox_;
+    const std::map<std::string, bool>& tag_filters_;
+    std::vector<LandmarkFeature> features_;
+};
+
 }  // namespace
 
 std::vector<LandmarkFeature> extract_landmarks(const std::string& pbf_path, const BoundingBox& bbox,
@@ -171,9 +260,41 @@ std::vector<LandmarkFeature> extract_landmarks(const std::string& pbf_path, cons
         all_features = handler.features();
     }
 
-    // Note: Multipolygon relations are not yet supported due to complexity
-    // of the osmium area assembler API. This covers >95% of landmarks
-    // (nodes and ways). Future enhancement: add proper multipolygon support.
+    // Pass 2: Extract multipolygon relations
+    {
+        // MultipolygonManager collects relations and their members
+        using MultipolygonManager = osmium::area::MultipolygonManager<osmium::area::Assembler>;
+
+        osmium::area::Assembler::config_type assembler_config;
+        MultipolygonManager mp_manager{assembler_config};
+
+        // First pass: collect relations
+        {
+            osmium::io::Reader reader(pbf_path, osmium::osm_entity_bits::relation);
+            osmium::apply(reader, mp_manager);
+            reader.close();
+        }
+
+        // Prepare manager for member lookups
+        mp_manager.prepare_for_lookup();
+
+        // Second pass: read ways/nodes and assemble areas
+        {
+            osmium::io::Reader reader(pbf_path);
+            AreaHandler area_handler(bbox, tag_filters);
+
+            osmium::apply(reader, location_handler, mp_manager.handler(
+                [&area_handler](osmium::memory::Buffer&& buffer) {
+                    osmium::apply(buffer, area_handler);
+                }));
+
+            reader.close();
+
+            // Add multipolygon features to results
+            auto mp_features = area_handler.features();
+            all_features.insert(all_features.end(), mp_features.begin(), mp_features.end());
+        }
+    }
 
     return all_features;
 }
