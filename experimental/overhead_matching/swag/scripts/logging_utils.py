@@ -148,3 +148,46 @@ def log_validation_metrics(writer, validation_metrics, epoch_idx, quiet):
 
     if not quiet:
         print(f"epoch_idx: {epoch_idx} {' '.join(to_print)}")
+
+
+@torch.no_grad()
+def log_feature_counts(writer: SummaryWriter,
+                       panorama_model,
+                       satellite_model,
+                       step_idx: int):
+    """Log feature counts per extractor for both panorama and satellite models.
+
+    This function retrieves feature count statistics from models that have debug mode
+    enabled and logs them to TensorBoard.
+
+    Args:
+        writer: TensorBoard SummaryWriter
+        panorama_model: Panorama embedding model
+        satellite_model: Satellite embedding model
+        step_idx: Current training step for logging
+    """
+    # Log panorama extractor feature counts
+    pano_stats = panorama_model.get_feature_counts_by_extractor()
+    if pano_stats is not None:
+        for extractor_name, stats in pano_stats.items():
+            writer.add_scalar(
+                f"features/pano/{extractor_name}/mean_count",
+                stats['mean_count'],
+                step_idx)
+            writer.add_scalar(
+                f"features/pano/{extractor_name}/total_count",
+                stats['total_count'],
+                step_idx)
+
+    # Log satellite extractor feature counts
+    sat_stats = satellite_model.get_feature_counts_by_extractor()
+    if sat_stats is not None:
+        for extractor_name, stats in sat_stats.items():
+            writer.add_scalar(
+                f"features/sat/{extractor_name}/mean_count",
+                stats['mean_count'],
+                step_idx)
+            writer.add_scalar(
+                f"features/sat/{extractor_name}/total_count",
+                stats['total_count'],
+                step_idx)

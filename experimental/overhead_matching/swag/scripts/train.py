@@ -18,7 +18,7 @@ from experimental.overhead_matching.swag.model import (
 from experimental.overhead_matching.swag.model.swag_config_types import ExtractorDataRequirement
 from experimental.overhead_matching.swag.model.swag_model_input_output import derive_data_requirements_from_model
 from experimental.overhead_matching.swag.scripts.logging_utils import (
-    log_batch_metrics, log_embedding_stats, log_gradient_stats, log_validation_metrics)
+    log_batch_metrics, log_embedding_stats, log_gradient_stats, log_validation_metrics, log_feature_counts)
 from experimental.overhead_matching.swag.scripts.model_inspector import ModelInspector
 from typing import Union
 from dataclasses import dataclass
@@ -307,6 +307,11 @@ def train(config: TrainConfig,
     miner, dataloader, opt = create_training_components(
         dataset, panorama_model, satellite_model, distance_model, opt_config)
 
+    # Enable debug mode to capture extractor outputs for feature count logging
+    # This is always enabled to support TensorBoard feature count logging
+    panorama_model.enable_debug_mode()
+    satellite_model.enable_debug_mode()
+
     # Create model inspector if requested
     inspector = None
     if capture_model_data:
@@ -340,6 +345,10 @@ def train(config: TrainConfig,
     total_batches = 0
     for epoch_idx in tqdm.tqdm(range(opt_config.num_epochs),  desc="Epoch", disable=quiet):
         debug_log(f"Starting epoch {epoch_idx}")
+
+        # Update training progress for dropout scheduling
+        panorama_model.set_training_progress(epoch_idx, opt_config.num_epochs)
+        satellite_model.set_training_progress(epoch_idx, opt_config.num_epochs)
         for batch_idx, batch in enumerate(dataloader):
             match pairing_type:
                 case PairingType.PAIRS:
@@ -409,6 +418,7 @@ def train(config: TrainConfig,
             log_gradient_stats(writer, satellite_model, "satellite", total_batches)
             log_embedding_stats(writer, "pano", panorama_embeddings.detach(), total_batches)
             log_embedding_stats(writer, "sat", satellite_embeddings.detach(), total_batches)
+            log_feature_counts(writer, panorama_model, satellite_model, total_batches)
 
             # Hard Negative Mining
             miner.consume(
