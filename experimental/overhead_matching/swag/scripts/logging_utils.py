@@ -150,44 +150,64 @@ def log_validation_metrics(writer, validation_metrics, epoch_idx, quiet):
         print(f"epoch_idx: {epoch_idx} {' '.join(to_print)}")
 
 
+def compute_feature_counts_from_extractor_outputs(
+    extractor_outputs_by_name: dict[str, 'ExtractorOutput']
+) -> dict[str, dict[str, float]]:
+    """Compute feature count statistics from extractor outputs.
+
+    Args:
+        extractor_outputs_by_name: Dictionary mapping extractor names to their outputs
+
+    Returns:
+        Dictionary mapping extractor names to statistics dictionaries containing:
+            - mean_count: Average number of unmasked features across the batch
+            - total_count: Total number of unmasked features in the batch
+            - batch_size: Number of items in the batch
+    """
+    stats_by_extractor = {}
+    for extractor_name, output in extractor_outputs_by_name.items():
+        unmasked_counts = (~output.mask).sum(dim=1).float()
+        stats_by_extractor[extractor_name] = {
+            'mean_count': unmasked_counts.mean().item(),
+            'total_count': unmasked_counts.sum().item(),
+            'batch_size': output.mask.shape[0],
+        }
+    return stats_by_extractor
+
+
 @torch.no_grad()
 def log_feature_counts(writer: SummaryWriter,
-                       panorama_model,
-                       satellite_model,
+                       pano_extractor_outputs: dict[str, 'ExtractorOutput'],
+                       sat_extractor_outputs: dict[str, 'ExtractorOutput'],
                        step_idx: int):
     """Log feature counts per extractor for both panorama and satellite models.
 
-    This function retrieves feature count statistics from models that have debug mode
-    enabled and logs them to TensorBoard.
-
     Args:
         writer: TensorBoard SummaryWriter
-        panorama_model: Panorama embedding model
-        satellite_model: Satellite embedding model
+        pano_extractor_outputs: Extractor outputs from panorama model's forward pass
+        sat_extractor_outputs: Extractor outputs from satellite model's forward pass
         step_idx: Current training step for logging
     """
     # Log panorama extractor feature counts
-    pano_stats = panorama_model.get_feature_counts_by_extractor()
-    if pano_stats is not None:
-        for extractor_name, stats in pano_stats.items():
-            writer.add_scalar(
-                f"features/pano/{extractor_name}/mean_count",
-                stats['mean_count'],
-                step_idx)
-            writer.add_scalar(
-                f"features/pano/{extractor_name}/total_count",
-                stats['total_count'],
-                step_idx)
+    pano_stats = compute_feature_counts_from_extractor_outputs(pano_extractor_outputs)
+    for extractor_name, stats in pano_stats.items():
+        writer.add_scalar(
+            f"features/pano/{extractor_name}/mean_count",
+            stats['mean_count'],
+            step_idx)
+        writer.add_scalar(
+            f"features/pano/{extractor_name}/total_count",
+            stats['total_count'],
+            step_idx)
 
     # Log satellite extractor feature counts
-    sat_stats = satellite_model.get_feature_counts_by_extractor()
-    if sat_stats is not None:
-        for extractor_name, stats in sat_stats.items():
-            writer.add_scalar(
-                f"features/sat/{extractor_name}/mean_count",
-                stats['mean_count'],
-                step_idx)
-            writer.add_scalar(
-                f"features/sat/{extractor_name}/total_count",
-                stats['total_count'],
-                step_idx)
+    sat_stats = compute_feature_counts_from_extractor_outputs(sat_extractor_outputs)
+    for extractor_name, stats in sat_stats.items():
+        writer.add_scalar(
+            f"features/sat/{extractor_name}/mean_count",
+            stats['mean_count'],
+            step_idx)
+        writer.add_scalar(
+            f"features/sat/{extractor_name}/total_count",
+            stats['total_count'],
+            step_idx)

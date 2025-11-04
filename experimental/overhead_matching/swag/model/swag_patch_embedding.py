@@ -42,10 +42,6 @@ from experimental.overhead_matching.swag.model.swag_config_types import (
     ExtractorConfig,
     ExtractorDataRequirement,
     CacheableExtractorInfo,
-    LandmarkDropoutSchedule,
-)
-from experimental.overhead_matching.swag.model.landmark_scheduler import (
-    apply_landmark_dropout_schedules,
 )
 
 
@@ -63,9 +59,6 @@ class SwagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
     auxiliary_info: dict[str, Any] = {}
 
     normalize_embeddings: bool = True
-
-    # Landmark dropout scheduling configuration
-    landmark_dropout_schedules: list[LandmarkDropoutSchedule] = []
 
     # These are here for backwards compatibility
     feature_map_extractor_config: FeatureMapExtractorConfig | None = None
@@ -407,11 +400,6 @@ class SwagPatchEmbedding(torch.nn.Module):
         super().__init__()
         self._config = config
         # Debug flag to store extractor outputs during forward pass
-        self._debug_store_extractor_outputs = False
-        self._last_extractor_outputs = None
-        # Training progress tracking for dropout scheduling
-        self._current_epoch = 0
-        self._total_epochs = 1  # Default to avoid division by zero
         self._extractor_by_name = torch.nn.ModuleDict({
             k: create_extractor(c, config.auxiliary_info)
             for k, c in config.extractor_config_by_name.items()})
@@ -497,17 +485,7 @@ class SwagPatchEmbedding(torch.nn.Module):
         """Check if model input is panorama (has pano_id) vs satellite."""
         return len(model_input.metadata) > 0 and 'pano_id' in model_input.metadata[0]
 
-    def set_training_progress(self, current_epoch: int, total_epochs: int):
-        """Set the current training progress for dropout scheduling.
-
-        Args:
-            current_epoch: Current epoch number (0-indexed)
-            total_epochs: Total number of training epochs
-        """
-        self._current_epoch = current_epoch
-        self._total_epochs = max(total_epochs, 1)  # Avoid division by zero
-
-    def _get_input_tokens(self, model_input: ModelInput) -> tuple[torch.Tensor, torch.Tensor, dict[str, ExtractorOutput]]:
+    def _get_input_tokens(self, model_input: ModelInput, landmark_dropout_scheduler=None) -> tuple[torch.Tensor, torch.Tensor, dict[str, ExtractorOutput]]:
         dev = self._cls_token.device
         extractor_outputs_by_name = {}
         for k in self._extractor_by_name:
@@ -516,19 +494,12 @@ class SwagPatchEmbedding(torch.nn.Module):
                 extractor_outputs_by_name[k] = self._extractor_by_name[k](model_input)
                 assert extractor_outputs_by_name[k].positions.ndim == 4, f"relative positions of {k} is not 4 dimensional"
 
-        # Store extractor outputs if debug flag is enabled
-        if self._debug_store_extractor_outputs:
-            self._last_extractor_outputs = extractor_outputs_by_name
-
-        # Apply scheduled landmark dropout if configured
-        extractor_outputs_by_name = apply_landmark_dropout_schedules(
-            extractor_outputs_by_name,
-            self._config.landmark_dropout_schedules,
-            self._current_epoch,
-            self._total_epochs,
-            model_input,
-            self._is_panorama_input(model_input),
-        )
+        # Apply scheduled landmark dropout if scheduler is provided
+        if landmark_dropout_scheduler is not None:
+            extractor_outputs_by_name = landmark_dropout_scheduler.apply_dropout(
+                extractor_outputs_by_name,
+                model_input,
+            )
 
         input_tokens_by_name = {}
         for k, v in extractor_outputs_by_name.items():
@@ -556,49 +527,7 @@ class SwagPatchEmbedding(torch.nn.Module):
 
         return input_tokens, input_mask, extractor_outputs_by_name
 
-    def enable_debug_mode(self):
-        """Enable debug mode to store extractor outputs during forward pass."""
-        self._debug_store_extractor_outputs = True
-
-    def disable_debug_mode(self):
-        """Disable debug mode."""
-        self._debug_store_extractor_outputs = False
-
-    def get_last_extractor_outputs(self) -> dict[str, ExtractorOutput] | None:
-        """Get extractor outputs from the last forward pass.
-
-        Returns None if debug mode is disabled or no forward pass has been run yet.
-        """
-        return self._last_extractor_outputs
-
-    def get_feature_counts_by_extractor(self) -> dict[str, dict[str, float]] | None:
-        """Get statistics about feature counts per extractor from the last forward pass.
-
-        This only works if enable_debug_mode() was called before the forward pass.
-        Returns None if debug mode is disabled or no forward pass has been run yet.
-
-        Returns:
-            Dictionary mapping extractor names to statistics dictionaries containing:
-                - 'mean_count': Mean number of unmasked features across batch
-                - 'total_count': Total number of unmasked features in batch
-                - 'batch_size': Number of items in batch
-            or None if not available
-        """
-        if self._last_extractor_outputs is None:
-            return None
-
-        stats = {}
-        for extractor_name, output in self._last_extractor_outputs.items():
-            # Count unmasked features per batch item
-            unmasked_counts = (~output.mask).sum(dim=1).float()
-            stats[extractor_name] = {
-                'mean_count': unmasked_counts.mean().item(),
-                'total_count': unmasked_counts.sum().item(),
-                'batch_size': output.mask.shape[0]
-            }
-        return stats
-
-    def forward(self, model_input: ModelInput) -> tuple[torch.Tensor, dict[str, ExtractorOutput]]:
+    def forward(self, model_input: ModelInput, landmark_dropout_scheduler=None) -> tuple[torch.Tensor, dict[str, ExtractorOutput]]:
         """Forward pass through the model.
 
         Args:
@@ -609,7 +538,7 @@ class SwagPatchEmbedding(torch.nn.Module):
                 - embeddings: Tensor of shape (batch, num_embeddings, output_dim)
                 - debug dict: currently extractor_outputs_by_name: Dict mapping extractor names to their ExtractorOutput objects
         """
-        input_tokens, input_mask, extractor_outputs_by_name = self._get_input_tokens(model_input)
+        input_tokens, input_mask, extractor_outputs_by_name = self._get_input_tokens(model_input, landmark_dropout_scheduler)
         output_tokens = self._aggregator_model(input_tokens, input_mask)
         model_output = output_tokens[:, :self._cls_token.shape[1], :]  # B, num_class_tokens, D_emb
 

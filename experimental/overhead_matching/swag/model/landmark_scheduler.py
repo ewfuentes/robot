@@ -20,8 +20,9 @@ from experimental.overhead_matching.swag.model.swag_model_input_output import Ex
 class LandmarkDropoutScheduler:
     """Applies landmark dropout schedules during training.
 
-    This class computes the current dropout rate for each schedule based on
-    training progress and can be used to apply dropout to extractor outputs.
+    This class maintains state about the current epoch and computes dropout rates
+    based on training progress. It can be passed to models to apply dropout to
+    extractor outputs.
     """
 
     def __init__(self, schedules: list[LandmarkDropoutSchedule], total_epochs: int):
@@ -33,6 +34,7 @@ class LandmarkDropoutScheduler:
         """
         self.schedules = schedules
         self.total_epochs = total_epochs
+        self.current_epoch = 0
 
         # Validate that no extractor appears in multiple schedules
         all_extractors = []
@@ -44,6 +46,14 @@ class LandmarkDropoutScheduler:
             raise ValueError(
                 f"Each extractor can only appear in one schedule. "
                 f"Duplicate extractors: {set(duplicates)}")
+
+    def set_epoch(self, epoch: int):
+        """Update the current epoch.
+
+        Args:
+            epoch: Current epoch number (0-indexed)
+        """
+        self.current_epoch = epoch
 
     def compute_dropout_rate(self, schedule: LandmarkDropoutSchedule, epoch: int) -> float:
         """Compute the current dropout rate for a schedule.
@@ -95,6 +105,36 @@ class LandmarkDropoutScheduler:
                 rates[extractor_name] = (dropout_rate, schedule.min_landmarks)
         return rates
 
+    def apply_dropout(
+        self,
+        extractor_outputs_by_name: dict[str, ExtractorOutput],
+        model_input: ModelInput,
+    ) -> dict[str, ExtractorOutput]:
+        """Apply dropout to extractor outputs based on current epoch.
+
+        This method modifies the masks in the extractor outputs to implement dropout
+        according to the scheduler's current state. The dropout is:
+        - Deterministic: Same sample always drops same landmarks (based on sample ID)
+        - Per-extractor: Different extractors can have different dropout schedules
+        - Progressive: Dropout rate changes linearly over training based on epoch progress
+
+        Args:
+            extractor_outputs_by_name: Dictionary mapping extractor names to their outputs.
+                The masks in these outputs will be modified in-place.
+            model_input: Model input containing metadata with sample IDs for deterministic seeding.
+
+        Returns:
+            The same extractor_outputs_by_name dictionary with modified masks. The dictionary
+            is modified in-place, but returned for convenience.
+        """
+        return apply_landmark_dropout_schedules(
+            extractor_outputs_by_name,
+            self.schedules,
+            self.current_epoch,
+            self.total_epochs,
+            model_input,
+        )
+
 
 def apply_landmark_dropout_schedules(
     extractor_outputs_by_name: dict[str, ExtractorOutput],
@@ -102,7 +142,6 @@ def apply_landmark_dropout_schedules(
     current_epoch: int,
     total_epochs: int,
     model_input: ModelInput,
-    is_panorama: bool,
 ) -> dict[str, ExtractorOutput]:
     """Apply scheduled landmark dropout to extractor outputs.
 
@@ -120,7 +159,6 @@ def apply_landmark_dropout_schedules(
         current_epoch: Current training epoch (0-indexed).
         total_epochs: Total number of training epochs.
         model_input: Model input containing metadata with sample IDs for deterministic seeding.
-        is_panorama: Whether this is panorama input (uses pano_id) or satellite (uses sat_id).
 
     Returns:
         The same extractor_outputs_by_name dictionary with modified masks. The dictionary
@@ -128,6 +166,10 @@ def apply_landmark_dropout_schedules(
     """
     if len(schedules) == 0:
         return extractor_outputs_by_name
+
+    # Determine if this is panorama input (has pano_id) vs satellite (has sat_id)
+    assert len(model_input.metadata) > 0
+    is_panorama = 'pano_id' in model_input.metadata[0]
 
     # Compute training progress as fraction of total epochs
     progress = current_epoch / total_epochs

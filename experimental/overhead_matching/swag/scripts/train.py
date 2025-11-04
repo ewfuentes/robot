@@ -15,8 +15,9 @@ from experimental.overhead_matching.swag.data import (
     vigor_dataset, satellite_embedding_database as sed)
 from experimental.overhead_matching.swag.model import (
     patch_embedding, swag_patch_embedding)
-from experimental.overhead_matching.swag.model.swag_config_types import ExtractorDataRequirement
+from experimental.overhead_matching.swag.model.swag_config_types import ExtractorDataRequirement, LandmarkDropoutSchedule
 from experimental.overhead_matching.swag.model.swag_model_input_output import derive_data_requirements_from_model
+from experimental.overhead_matching.swag.model.landmark_scheduler import LandmarkDropoutScheduler
 from experimental.overhead_matching.swag.scripts.logging_utils import (
     log_batch_metrics, log_embedding_stats, log_gradient_stats, log_validation_metrics, log_feature_counts)
 from experimental.overhead_matching.swag.scripts.model_inspector import ModelInspector
@@ -104,6 +105,8 @@ class TrainConfig:
     loss_configs: list[LossConfig]
     output_dir: Path
     tensorboard_output: Path | None
+    pano_landmark_dropout_schedules: list[LandmarkDropoutSchedule] = None
+    sat_landmark_dropout_schedules: list[LandmarkDropoutSchedule] = None
 
 
 @torch.no_grad
@@ -237,14 +240,18 @@ def compute_forward_pass_and_loss(batch,
                                   distance_model,
                                   pairing_data: PairingDataType,
                                   loss_functions: list[LossFunctionType],
+                                  pano_dropout_scheduler=None,
+                                  sat_dropout_scheduler=None,
                                   ):
     """Compute forward pass and loss for a batch."""
 
     with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
         panorama_embeddings, pano_debug = panorama_model(
-            panorama_model.model_input_from_batch(batch).to("cuda"))
+            panorama_model.model_input_from_batch(batch).to("cuda"),
+            pano_dropout_scheduler)
         sat_embeddings, sat_debug = satellite_model(
-            satellite_model.model_input_from_batch(batch).to("cuda"))
+            satellite_model.model_input_from_batch(batch).to("cuda"),
+            sat_dropout_scheduler)
 
         similarity = distance_model(
             sat_embeddings_unnormalized=sat_embeddings,
@@ -307,10 +314,20 @@ def train(config: TrainConfig,
     miner, dataloader, opt = create_training_components(
         dataset, panorama_model, satellite_model, distance_model, opt_config)
 
-    # Enable debug mode to capture extractor outputs for feature count logging
-    # This is always enabled to support TensorBoard feature count logging
-    panorama_model.enable_debug_mode()
-    satellite_model.enable_debug_mode()
+    # Create landmark dropout schedulers if configured
+    pano_dropout_scheduler = None
+    if config.pano_landmark_dropout_schedules:
+        pano_dropout_scheduler = LandmarkDropoutScheduler(
+            config.pano_landmark_dropout_schedules,
+            opt_config.num_epochs
+        )
+
+    sat_dropout_scheduler = None
+    if config.sat_landmark_dropout_schedules:
+        sat_dropout_scheduler = LandmarkDropoutScheduler(
+            config.sat_landmark_dropout_schedules,
+            opt_config.num_epochs
+        )
 
     # Create model inspector if requested
     inspector = None
@@ -346,9 +363,11 @@ def train(config: TrainConfig,
     for epoch_idx in tqdm.tqdm(range(opt_config.num_epochs),  desc="Epoch", disable=quiet):
         debug_log(f"Starting epoch {epoch_idx}")
 
-        # Update training progress for dropout scheduling
-        panorama_model.set_training_progress(epoch_idx, opt_config.num_epochs)
-        satellite_model.set_training_progress(epoch_idx, opt_config.num_epochs)
+        # Update epoch for dropout schedulers
+        if pano_dropout_scheduler is not None:
+            pano_dropout_scheduler.set_epoch(epoch_idx)
+        if sat_dropout_scheduler is not None:
+            sat_dropout_scheduler.set_epoch(epoch_idx)
         for batch_idx, batch in enumerate(dataloader):
             match pairing_type:
                 case PairingType.PAIRS:
@@ -379,7 +398,9 @@ def train(config: TrainConfig,
                 satellite_model=satellite_model,
                 distance_model=distance_model,
                 pairing_data=pairing_data,
-                loss_functions=loss_functions)
+                loss_functions=loss_functions,
+                pano_dropout_scheduler=pano_dropout_scheduler,
+                sat_dropout_scheduler=sat_dropout_scheduler)
 
             # Capture model inputs and extractor outputs if inspector is enabled
             if inspector is not None and inspector.should_capture(total_batches):
@@ -418,7 +439,7 @@ def train(config: TrainConfig,
             log_gradient_stats(writer, satellite_model, "satellite", total_batches)
             log_embedding_stats(writer, "pano", panorama_embeddings.detach(), total_batches)
             log_embedding_stats(writer, "sat", satellite_embeddings.detach(), total_batches)
-            log_feature_counts(writer, panorama_model, satellite_model, total_batches)
+            log_feature_counts(writer, debug_dict['pano'], debug_dict['sat'], total_batches)
 
             # Hard Negative Mining
             miner.consume(

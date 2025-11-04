@@ -5,6 +5,8 @@ import common.torch.load_torch_deps  # noqa: F401
 import torch
 
 from experimental.overhead_matching.swag.model import swag_patch_embedding as spe
+from experimental.overhead_matching.swag.model.landmark_scheduler import LandmarkDropoutScheduler
+from experimental.overhead_matching.swag.model.swag_config_types import LandmarkDropoutSchedule
 
 
 class SwagPatchEmbeddingTest(unittest.TestCase):
@@ -334,9 +336,12 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
                 dropout_frac=0.1),
             patch_dims=(NUM_IMAGE_ROWS, NUM_IMAGE_COLS),
             output_dim=16,
-            num_embeddings=1,
-            landmark_dropout_schedules=[
-                spe.LandmarkDropoutSchedule(
+            num_embeddings=1)
+
+        # Create scheduler with dropout configuration
+        dropout_scheduler = LandmarkDropoutScheduler(
+            schedules=[
+                LandmarkDropoutSchedule(
                     start_progress=0.0,
                     end_progress=1.0,
                     initial_dropout_rate=0.5,
@@ -344,7 +349,9 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
                     extractor_names=["test_extractor"],
                     min_landmarks=2
                 )
-            ])
+            ],
+            total_epochs=10)
+        dropout_scheduler.set_epoch(0)
 
         model = spe.SwagPatchEmbedding(config)
         input_image = torch.zeros((BATCH_DIM, 3, NUM_IMAGE_ROWS, NUM_IMAGE_COLS))
@@ -369,12 +376,9 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
 
         # Action - run twice with same input
         model_input = spe.ModelInput(image=input_image, metadata=metadata)
-        model.enable_debug_mode()
-        result1 = model(model_input)
-        outputs1 = model.get_last_extractor_outputs()
+        result1, outputs1 = model(model_input, dropout_scheduler)
 
-        result2 = model(model_input)
-        outputs2 = model.get_last_extractor_outputs()
+        result2, outputs2 = model(model_input, dropout_scheduler)
 
         # Verification - masks should be identical across runs
         mask1 = outputs1["test_extractor"].mask
@@ -406,9 +410,12 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
                 dropout_frac=0.1),
             patch_dims=(NUM_IMAGE_ROWS, NUM_IMAGE_COLS),
             output_dim=16,
-            num_embeddings=1,
-            landmark_dropout_schedules=[
-                spe.LandmarkDropoutSchedule(
+            num_embeddings=1)
+
+        # Create scheduler with dropout configuration
+        dropout_scheduler = LandmarkDropoutScheduler(
+            schedules=[
+                LandmarkDropoutSchedule(
                     start_progress=0.0,
                     end_progress=1.0,
                     initial_dropout_rate=0.9,  # High dropout rate
@@ -416,7 +423,9 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
                     extractor_names=["test_extractor"],
                     min_landmarks=MIN_LANDMARKS
                 )
-            ])
+            ],
+            total_epochs=10)
+        dropout_scheduler.set_epoch(0)
 
         model = spe.SwagPatchEmbedding(config)
         input_image = torch.zeros((BATCH_DIM, 3, NUM_IMAGE_ROWS, NUM_IMAGE_COLS))
@@ -434,9 +443,7 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
 
         # Action
         model_input = spe.ModelInput(image=input_image, metadata=metadata)
-        model.enable_debug_mode()
-        result = model(model_input)
-        outputs = model.get_last_extractor_outputs()
+        result, outputs = model(model_input, dropout_scheduler)
 
         # Verification - should keep at least MIN_LANDMARKS
         mask = outputs["test_extractor"].mask[0]
@@ -445,11 +452,11 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
                                f"Should keep at least {MIN_LANDMARKS} landmarks")
 
     def test_panorama_landmark_dropout_satellite_unaffected(self):
-        """Test that when no dropout is configured, satellites are not affected.
+        """Test that when no dropout scheduler is passed, landmarks are not affected.
 
-        Note: With the new design, dropout schedules are model-specific.
-        Panorama models can have dropout configured separately from satellite models.
-        This test verifies that a model without dropout schedules works correctly.
+        Note: With the new design, dropout schedules are passed to forward() calls.
+        When no scheduler is passed, no dropout occurs.
+        This test verifies that a model without a dropout scheduler works correctly.
         """
         # Setup - satellite uses square patch, NO dropout configured
         BATCH_DIM = 1
@@ -468,9 +475,7 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
                 dropout_frac=0.1),
             patch_dims=(NUM_IMAGE_SIZE, NUM_IMAGE_SIZE),  # Square = satellite
             output_dim=16,
-            num_embeddings=1,
-            # No dropout schedules configured
-            landmark_dropout_schedules=[])
+            num_embeddings=1)
 
         model = spe.SwagPatchEmbedding(config)
         input_image = torch.zeros((BATCH_DIM, 3, NUM_IMAGE_SIZE, NUM_IMAGE_SIZE))
@@ -486,16 +491,14 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
                 {"web_mercator_y": 110.0, "web_mercator_x": 205.0, "landmark_type": "a"}]}
         ]
 
-        # Action
+        # Action - no scheduler passed
         model_input = spe.ModelInput(image=input_image, metadata=metadata)
-        model.enable_debug_mode()
-        result = model(model_input)
-        outputs = model.get_last_extractor_outputs()
+        result, outputs = model(model_input)
 
-        # Verification - no dropout should occur when no schedules configured
+        # Verification - no dropout should occur when no scheduler passed
         mask = outputs["test_extractor"].mask[0]
         num_kept = (~mask).sum().item()
-        self.assertEqual(num_kept, 4, "All landmarks should be kept when no dropout configured")
+        self.assertEqual(num_kept, 4, "All landmarks should be kept when no dropout scheduler passed")
 
     def test_panorama_landmark_dropout_percentage(self):
         """Test that dropout percentage is approximately correct."""
@@ -520,9 +523,12 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
                 dropout_frac=0.1),
             patch_dims=(NUM_IMAGE_ROWS, NUM_IMAGE_COLS),
             output_dim=16,
-            num_embeddings=1,
-            landmark_dropout_schedules=[
-                spe.LandmarkDropoutSchedule(
+            num_embeddings=1)
+
+        # Create scheduler with dropout configuration
+        dropout_scheduler = LandmarkDropoutScheduler(
+            schedules=[
+                LandmarkDropoutSchedule(
                     start_progress=0.0,
                     end_progress=1.0,
                     initial_dropout_rate=DROPOUT_RATE,
@@ -530,7 +536,9 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
                     extractor_names=["test_extractor"],
                     min_landmarks=1
                 )
-            ])
+            ],
+            total_epochs=10)
+        dropout_scheduler.set_epoch(0)
 
         model = spe.SwagPatchEmbedding(config)
         input_image = torch.zeros((BATCH_DIM, 3, NUM_IMAGE_ROWS, NUM_IMAGE_COLS))
@@ -548,9 +556,7 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
 
         # Action
         model_input = spe.ModelInput(image=input_image, metadata=metadata)
-        model.enable_debug_mode()
-        result = model(model_input)
-        outputs = model.get_last_extractor_outputs()
+        result, outputs = model(model_input, dropout_scheduler)
 
         # Verification
         mask = outputs["test_extractor"].mask[0]
