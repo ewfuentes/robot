@@ -327,6 +327,104 @@ def compute_task_requirements(field_spec: str, train_config: train.TrainConfig) 
     return (model_type, frozenset(requirements))
 
 
+def build_dataset_to_tasks_explicit_mode(
+        train_configs: dict[Path, train.TrainConfig],
+        dataset_path: Path,
+        landmark_version: str,
+        panorama_landmark_radius_px: float,
+        field_spec: str | None = None) -> dict[tuple[Path, str, float], list[tuple[Path, str]]]:
+    """
+    Build dataset-to-tasks mapping when the dataset is specified explicitly
+
+    Args:
+        train_configs: Mapping of config paths to loaded TrainConfig objects
+        dataset_path: Path to dataset or directory containing datasets
+        landmark_version: Landmark version (e.g., 'v3')
+        panorama_landmark_radius_px: Panorama landmark radius in pixels
+        field_spec: Optional specific field spec to cache (if None, auto-detect from config)
+
+    Returns:
+        Mapping of (dataset_path, landmark_version, radius) -> [(config_path, field_spec), ...]
+    """
+    print("\nMode: Explicit dataset specification")
+    if landmark_version is None:
+        raise ValueError("--landmark_version is required when using --dataset")
+
+    dataset_paths = get_dataset_paths(dataset_path)
+    print(f"Found {len(dataset_paths)} dataset(s):")
+    for ds in dataset_paths:
+        print(f"  - {ds}")
+
+    dataset_to_tasks = {}  # {(dataset_path, lv, radius): [(config_path, field_spec), ...]}
+
+    # For each config, get its field specs and map to datasets
+    for config_path, train_config in train_configs.items():
+        # Get field specs for this config
+        if field_spec is not None:
+            field_specs = [field_spec]
+        else:
+            field_specs = extract_field_specs_from_config(train_config)
+            if not field_specs:
+                print(f"Warning: No cached extractors found in {config_path.name}")
+                continue
+
+        # Map each dataset to this config's field specs
+        for ds in dataset_paths:
+            key = (ds, landmark_version, panorama_landmark_radius_px)
+            if key not in dataset_to_tasks:
+                dataset_to_tasks[key] = []
+            for fs in field_specs:
+                dataset_to_tasks[key].append((config_path, fs))
+
+    return dataset_to_tasks
+
+
+def build_dataset_to_tasks_config_derived_mode(
+        train_configs: dict[Path, train.TrainConfig],
+        dataset_base_path: Path,
+        field_spec: str | None = None) -> dict[tuple[Path, str, float], list[tuple[Path, str]]]:
+    """
+    Build dataset-to-tasks mapping by deriving datasets from training configs.
+
+    Args:
+        train_configs: Mapping of config paths to loaded TrainConfig objects
+        dataset_base_path: Base path where datasets are located
+        field_spec: Optional specific field spec to cache (if None, auto-detect from config)
+
+    Returns:
+        Mapping of (dataset_path, landmark_version, radius) -> [(config_path, field_spec), ...]
+    """
+    print("\nMode: Deriving datasets from training configs")
+    if dataset_base_path is None:
+        raise ValueError("Either --dataset or --dataset_base must be provided")
+
+    dataset_to_tasks = {}  # {(dataset_path, lv, radius): [(config_path, field_spec), ...]}
+
+    # For each config, extract its datasets and field specs
+    for config_path, train_config in train_configs.items():
+        # Get field specs for this config
+        if field_spec is not None:
+            field_specs = [field_spec]
+        else:
+            field_specs = extract_field_specs_from_config(train_config)
+            if not field_specs:
+                print(f"Warning: No cached extractors found in {config_path.name}")
+                continue
+
+        # Get unique datasets from this config
+        dataset_configs = extract_unique_datasets_from_config(train_config, dataset_base_path)
+
+        # Map each dataset to this config's field specs
+        for ds_path, lv, radius in dataset_configs:
+            key = (ds_path, lv, radius)
+            if key not in dataset_to_tasks:
+                dataset_to_tasks[key] = []
+            for fs in field_specs:
+                dataset_to_tasks[key].append((config_path, fs))
+
+    return dataset_to_tasks
+
+
 def main(train_config_paths: list[Path],
          base_output_path: Path,
          batch_size: int,
@@ -359,64 +457,20 @@ def main(train_config_paths: list[Path],
 
     # Build mapping of (dataset_config) -> list of (train_config_path, field_spec) that need it
     # This allows us to process by dataset first for maximum cache reuse
-    dataset_to_tasks = {}  # {(dataset_path, lv, radius): [(config_path, field_spec), ...]}
-
     if dataset_path is not None:
         # Mode 1: Explicit dataset specification - all configs use same dataset params
-        print("\nMode: Explicit dataset specification")
-        if landmark_version is None:
-            raise ValueError("--landmark_version is required when using --dataset")
-
-        dataset_paths = get_dataset_paths(dataset_path)
-        print(f"Found {len(dataset_paths)} dataset(s):")
-        for ds in dataset_paths:
-            print(f"  - {ds}")
-
-        # For each config, get its field specs and map to datasets
-        for config_path, train_config in train_configs.items():
-            # Get field specs for this config
-            if field_spec is not None:
-                field_specs = [field_spec]
-            else:
-                field_specs = extract_field_specs_from_config(train_config)
-                if not field_specs:
-                    print(f"Warning: No cached extractors found in {config_path.name}")
-                    continue
-
-            # Map each dataset to this config's field specs
-            for ds in dataset_paths:
-                key = (ds, landmark_version, panorama_landmark_radius_px)
-                if key not in dataset_to_tasks:
-                    dataset_to_tasks[key] = []
-                for fs in field_specs:
-                    dataset_to_tasks[key].append((config_path, fs))
+        dataset_to_tasks = build_dataset_to_tasks_explicit_mode(
+            train_configs=train_configs,
+            dataset_path=dataset_path,
+            landmark_version=landmark_version,
+            panorama_landmark_radius_px=panorama_landmark_radius_px,
+            field_spec=field_spec)
     else:
         # Mode 2: Derive from configs
-        print("\nMode: Deriving datasets from training configs")
-        if dataset_base_path is None:
-            raise ValueError("Either --dataset or --dataset_base must be provided")
-
-        # For each config, extract its datasets and field specs
-        for config_path, train_config in train_configs.items():
-            # Get field specs for this config
-            if field_spec is not None:
-                field_specs = [field_spec]
-            else:
-                field_specs = extract_field_specs_from_config(train_config)
-                if not field_specs:
-                    print(f"Warning: No cached extractors found in {config_path.name}")
-                    continue
-
-            # Get unique datasets from this config
-            dataset_configs = extract_unique_datasets_from_config(train_config, dataset_base_path)
-
-            # Map each dataset to this config's field specs
-            for ds_path, lv, radius in dataset_configs:
-                key = (ds_path, lv, radius)
-                if key not in dataset_to_tasks:
-                    dataset_to_tasks[key] = []
-                for fs in field_specs:
-                    dataset_to_tasks[key].append((config_path, fs))
+        dataset_to_tasks = build_dataset_to_tasks_config_derived_mode(
+            train_configs=train_configs,
+            dataset_base_path=dataset_base_path,
+            field_spec=field_spec)
 
     # Print summary
     print(f"\nFound {len(dataset_to_tasks)} unique dataset configuration(s):")
@@ -567,14 +621,16 @@ if __name__ == "__main__":
     # Convert train_config paths to Path objects
     train_config_paths = [Path(p) for p in args.train_config]
 
-    main(train_config_paths=train_config_paths,
-         base_output_path=output_path,
-         batch_size=args.batch_size,
-         field_spec=args.field_spec,
-         skip_existing=args.skip_existing,
-         # Mode 1 parameters
-         dataset_path=Path(args.dataset) if args.dataset else None,
-         landmark_version=args.landmark_version,
-         panorama_landmark_radius_px=args.panorama_landmark_radius_px,
-         # Mode 2 parameter
-         dataset_base_path=Path(args.dataset_base))
+    import ipdb
+    with ipdb.launch_ipdb_on_exception():
+        main(train_config_paths=train_config_paths,
+             base_output_path=output_path,
+             batch_size=args.batch_size,
+             field_spec=args.field_spec,
+             skip_existing=args.skip_existing,
+             # Mode 1 parameters
+             dataset_path=Path(args.dataset) if args.dataset else None,
+             landmark_version=args.landmark_version,
+             panorama_landmark_radius_px=args.panorama_landmark_radius_px,
+             # Mode 2 parameter
+             dataset_base_path=Path(args.dataset_base))

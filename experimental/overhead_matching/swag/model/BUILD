@@ -190,6 +190,7 @@ py_binary(
     requirement("shapely"),
     requirement("openai"),
     requirement("geopandas"),
+    requirement("pyarrow"),
     requirement("ipdb"),
     requirement("tqdm"),
     "//common/torch:load_torch_deps",
