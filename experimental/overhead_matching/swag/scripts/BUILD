@@ -278,3 +278,15 @@ py_binary(
     requirement("pyarrow"),
   ]
 )
+
+py_binary(
+  name="train_sentence_embedder",
+  srcs=["train_sentence_embedder.py"],
+  deps=[
+    requirement("torch"),
+    requirement("transformers"),
+    requirement("tqdm"),
+    requirement("tensorboard"),
+    "//common/torch:load_torch_deps",
+  ]
+)
