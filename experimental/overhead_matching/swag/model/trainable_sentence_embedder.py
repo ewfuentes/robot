@@ -59,6 +59,11 @@ class TrainableSentenceEmbedder(nn.Module):
                 param.requires_grad = False
             print(f"Frozen transformer weights for {config.pretrained_model_name_or_path}")
 
+        else:  # freeze the pooling weights, which isn't used per the quickstart guide
+            print(f"Freezing pooler for sentence transformer, as goes unused: {self.transformer.pooler}")
+            for param in self.transformer.pooler.parameters():
+                param.requires_grad = False
+
         # Learned projection to output dimension
         transformer_output_dim = self.transformer.config.hidden_size
         self.projection = nn.Linear(transformer_output_dim, self.output_dim)
@@ -118,7 +123,7 @@ class TrainableSentenceEmbedder(nn.Module):
         transformer_output = self.transformer(**encoded)
 
         # Mean pool over token embeddings
-        token_embeddings = transformer_output.last_hidden_state  # [batch, seq_len, hidden_dim]
+        token_embeddings = transformer_output[0]
         pooled_embeddings = self.mean_pool(token_embeddings, encoded['attention_mask'])
 
         # Project to output dimension
