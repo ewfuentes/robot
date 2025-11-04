@@ -124,7 +124,6 @@ TEST_F(ExtractLandmarksTest, ExtractsSpecificMultiPolygonRelation) {
 
     // Verify tags are preserved
     EXPECT_GT(relation_it->tags.size(), 0) << "Multipolygon should have tags";
-    EXPECT_FALSE(relation_it->landmark_type.empty()) << "landmark_type should be set";
 }
 
 // === Filtering Tests ===
@@ -215,17 +214,6 @@ TEST_F(ExtractLandmarksTest, PreservesTags) {
                                          [](const auto& f) { return f.tags.size() > 1; });
 
     EXPECT_GT(multi_tag_count, 0) << "Some features should have multiple tags";
-}
-
-TEST_F(ExtractLandmarksTest, SetsLandmarkType) {
-    auto features = extract_landmarks(test_pbf_.string(), full_bbox_, {{"amenity", true}});
-
-    ASSERT_GT(features.size(), 0);
-
-    for (const auto& f : features) {
-        EXPECT_FALSE(f.landmark_type.empty()) << "landmark_type should be set";
-        EXPECT_EQ(f.landmark_type, "amenity") << "landmark_type should match filter key";
-    }
 }
 
 // === Edge Cases ===

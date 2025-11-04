@@ -127,7 +127,7 @@ def main(
         "osm_type": [osm_type_map[f.osm_type] for f in features],
         "osm_id": [f.osm_id for f in features],
         "geometry": [create_shapely_geometry(f.geometry) for f in features],
-        "landmark_type": [f.landmark_type for f in features],
+        "landmark_type": ["historical" for _ in features],
     }
 
     # Flatten important tags as columns
@@ -154,9 +154,9 @@ def main(
     json_path.write_text(gdf.to_json(na="drop"))
 
     print(f"Done! Extracted {len(features)} landmarks")
-    print(f"  - Nodes: {sum(1 for f in features if f.osm_type == 'node')}")
-    print(f"  - Ways: {sum(1 for f in features if f.osm_type == 'way')}")
-    print(f"  - Relations: {sum(1 for f in features if f.osm_type == 'relation')}")
+    print(f"  - Nodes: {sum(1 for f in features if f.osm_type == elm.OsmType.NODE)}")
+    print(f"  - Ways: {sum(1 for f in features if f.osm_type == elm.OsmType.WAY)}")
+    print(f"  - Relations: {sum(1 for f in features if f.osm_type == elm.OsmType.RELATION)}")
 
 
 if __name__ == "__main__":

@@ -40,7 +40,6 @@ struct LandmarkFeature {
     int64_t osm_id;                           // OSM element ID
     Geometry geometry;                        // Geometric representation
     std::map<std::string, std::string> tags;  // All OSM tags (key-value pairs)
-    std::string landmark_type;  // The tag key that matched the filter (e.g., "amenity", "building")
 };
 
 struct BoundingBox {

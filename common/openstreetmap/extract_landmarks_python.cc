@@ -69,7 +69,6 @@ PYBIND11_MODULE(extract_landmarks_python, m) {
         .def_readwrite("osm_id", &LandmarkFeature::osm_id)
         .def_readwrite("geometry", &LandmarkFeature::geometry)
         .def_readwrite("tags", &LandmarkFeature::tags)
-        .def_readwrite("landmark_type", &LandmarkFeature::landmark_type)
         .def("__repr__", [](const LandmarkFeature& f) {
             std::string type_str;
             switch (f.osm_type) {
@@ -84,7 +83,7 @@ PYBIND11_MODULE(extract_landmarks_python, m) {
                     break;
             }
             return "LandmarkFeature(osm_type=" + type_str + ", osm_id=" + std::to_string(f.osm_id) +
-                   ", landmark_type='" + f.landmark_type + "')";
+                   ", tags=" + std::to_string(f.tags.size()) + ")";
         });
 
     // BoundingBox

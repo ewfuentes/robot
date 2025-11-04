@@ -60,14 +60,6 @@ class LandmarkHandler : public osmium::handler::Handler {
         feature.geometry = PointGeometry{{node.location().lon(), node.location().lat()}};
         feature.tags = tags_to_map(node.tags());
 
-        // Set landmark_type to first matching tag key
-        for (const auto& [key, _] : tag_filters_) {
-            if (feature.tags.count(key) > 0) {
-                feature.landmark_type = key;
-                break;
-            }
-        }
-
         features_.push_back(std::move(feature));
     }
 
@@ -112,14 +104,6 @@ class LandmarkHandler : public osmium::handler::Handler {
         feature.osm_type = OsmType::WAY;
         feature.osm_id = way.id();
         feature.tags = tags_to_map(way.tags());
-
-        // Set landmark_type
-        for (const auto& [key, _] : tag_filters_) {
-            if (feature.tags.count(key) > 0) {
-                feature.landmark_type = key;
-                break;
-            }
-        }
 
         // Determine if closed way (polygon) or open way (linestring)
         bool is_closed = way.is_closed() && coords.size() >= 4;
@@ -209,14 +193,6 @@ class AreaHandler : public osmium::handler::Handler {
         feature.osm_id = area.orig_id();  // Original relation ID
         feature.geometry = std::move(mp);
         feature.tags = tags_to_map(area.tags());
-
-        // Set landmark_type
-        for (const auto& [key, _] : tag_filters_) {
-            if (feature.tags.count(key) > 0) {
-                feature.landmark_type = key;
-                break;
-            }
-        }
 
         features_.push_back(std::move(feature));
     }
