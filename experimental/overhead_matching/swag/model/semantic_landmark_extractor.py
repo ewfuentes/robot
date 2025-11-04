@@ -344,7 +344,14 @@ class SemanticLandmarkExtractor(torch.nn.Module):
 
 def _load_landmarks(geojson_list):
     import geopandas as gpd
-    return pd.concat([gpd.read_file(p) for p in geojson_list], ignore_index=True)
+
+    def load_file(path):
+        if Path(path).suffix == '.feather':
+            return gpd.read_feather(path)
+        else:
+            return gpd.read_file(path)
+
+    return pd.concat([load_file(p) for p in geojson_list], ignore_index=True)
 
 
 def _custom_id_from_props(props: dict) -> str:
