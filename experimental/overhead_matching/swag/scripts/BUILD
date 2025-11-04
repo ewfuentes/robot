@@ -84,25 +84,6 @@ py_library(
   ]
 )
 
-py_library(
-  name = "landmark_scheduler",
-  srcs = ["landmark_scheduler.py"],
-  visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
-  deps = [
-    "//experimental/overhead_matching/swag/model:swag_config_types",
-  ]
-)
-
-py_test(
-  name = "landmark_scheduler_test",
-  srcs = ["landmark_scheduler_test.py"],
-  deps = [
-    ":landmark_scheduler",
-    "//experimental/overhead_matching/swag/model:swag_config_types",
-  ]
-)
-
-
 py_binary(
   name="train",
   srcs=["train.py"],

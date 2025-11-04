@@ -335,9 +335,16 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
             patch_dims=(NUM_IMAGE_ROWS, NUM_IMAGE_COLS),
             output_dim=16,
             num_embeddings=1,
-            panorama_landmark_dropout_rate=0.5,
-            min_panorama_landmarks=2,
-            panorama_dropout_extractor_names=["test_extractor"])
+            landmark_dropout_schedules=[
+                spe.LandmarkDropoutSchedule(
+                    start_progress=0.0,
+                    end_progress=1.0,
+                    initial_dropout_rate=0.5,
+                    final_dropout_rate=0.5,
+                    extractor_names=["test_extractor"],
+                    min_landmarks=2
+                )
+            ])
 
         model = spe.SwagPatchEmbedding(config)
         input_image = torch.zeros((BATCH_DIM, 3, NUM_IMAGE_ROWS, NUM_IMAGE_COLS))
@@ -400,9 +407,16 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
             patch_dims=(NUM_IMAGE_ROWS, NUM_IMAGE_COLS),
             output_dim=16,
             num_embeddings=1,
-            panorama_landmark_dropout_rate=0.9,  # High dropout rate
-            min_panorama_landmarks=MIN_LANDMARKS,
-            panorama_dropout_extractor_names=["test_extractor"])
+            landmark_dropout_schedules=[
+                spe.LandmarkDropoutSchedule(
+                    start_progress=0.0,
+                    end_progress=1.0,
+                    initial_dropout_rate=0.9,  # High dropout rate
+                    final_dropout_rate=0.9,
+                    extractor_names=["test_extractor"],
+                    min_landmarks=MIN_LANDMARKS
+                )
+            ])
 
         model = spe.SwagPatchEmbedding(config)
         input_image = torch.zeros((BATCH_DIM, 3, NUM_IMAGE_ROWS, NUM_IMAGE_COLS))
@@ -431,8 +445,13 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
                                f"Should keep at least {MIN_LANDMARKS} landmarks")
 
     def test_panorama_landmark_dropout_satellite_unaffected(self):
-        """Test that dropout doesn't affect satellite side."""
-        # Setup - satellite uses square patch
+        """Test that when no dropout is configured, satellites are not affected.
+
+        Note: With the new design, dropout schedules are model-specific.
+        Panorama models can have dropout configured separately from satellite models.
+        This test verifies that a model without dropout schedules works correctly.
+        """
+        # Setup - satellite uses square patch, NO dropout configured
         BATCH_DIM = 1
         NUM_IMAGE_SIZE = 320
         config = spe.SwagPatchEmbeddingConfig(
@@ -450,9 +469,8 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
             patch_dims=(NUM_IMAGE_SIZE, NUM_IMAGE_SIZE),  # Square = satellite
             output_dim=16,
             num_embeddings=1,
-            panorama_landmark_dropout_rate=0.9,  # High dropout
-            min_panorama_landmarks=1,
-            panorama_dropout_extractor_names=["test_extractor"])
+            # No dropout schedules configured
+            landmark_dropout_schedules=[])
 
         model = spe.SwagPatchEmbedding(config)
         input_image = torch.zeros((BATCH_DIM, 3, NUM_IMAGE_SIZE, NUM_IMAGE_SIZE))
@@ -474,10 +492,10 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
         result = model(model_input)
         outputs = model.get_last_extractor_outputs()
 
-        # Verification - no dropout should occur for satellite
+        # Verification - no dropout should occur when no schedules configured
         mask = outputs["test_extractor"].mask[0]
         num_kept = (~mask).sum().item()
-        self.assertEqual(num_kept, 4, "All satellite landmarks should be kept")
+        self.assertEqual(num_kept, 4, "All landmarks should be kept when no dropout configured")
 
     def test_panorama_landmark_dropout_percentage(self):
         """Test that dropout percentage is approximately correct."""
@@ -503,9 +521,16 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
             patch_dims=(NUM_IMAGE_ROWS, NUM_IMAGE_COLS),
             output_dim=16,
             num_embeddings=1,
-            panorama_landmark_dropout_rate=DROPOUT_RATE,
-            min_panorama_landmarks=1,
-            panorama_dropout_extractor_names=["test_extractor"])
+            landmark_dropout_schedules=[
+                spe.LandmarkDropoutSchedule(
+                    start_progress=0.0,
+                    end_progress=1.0,
+                    initial_dropout_rate=DROPOUT_RATE,
+                    final_dropout_rate=DROPOUT_RATE,
+                    extractor_names=["test_extractor"],
+                    min_landmarks=1
+                )
+            ])
 
         model = spe.SwagPatchEmbedding(config)
         input_image = torch.zeros((BATCH_DIM, 3, NUM_IMAGE_ROWS, NUM_IMAGE_COLS))

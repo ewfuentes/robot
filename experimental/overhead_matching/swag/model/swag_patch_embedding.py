@@ -44,6 +44,9 @@ from experimental.overhead_matching.swag.model.swag_config_types import (
     CacheableExtractorInfo,
     LandmarkDropoutSchedule,
 )
+from experimental.overhead_matching.swag.model.landmark_scheduler import (
+    apply_landmark_dropout_schedules,
+)
 
 
 class SwagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
@@ -518,72 +521,14 @@ class SwagPatchEmbedding(torch.nn.Module):
             self._last_extractor_outputs = extractor_outputs_by_name
 
         # Apply scheduled landmark dropout if configured
-        if len(self._config.landmark_dropout_schedules) > 0:
-            # Compute dropout rates for each extractor based on current training progress
-            progress = self._current_epoch / self._total_epochs
-
-            for schedule in self._config.landmark_dropout_schedules:
-                # Compute current dropout rate for this schedule
-                if progress < schedule.start_progress:
-                    dropout_rate = schedule.initial_dropout_rate
-                elif progress >= schedule.end_progress:
-                    dropout_rate = schedule.final_dropout_rate
-                else:
-                    # Linear interpolation
-                    schedule_progress = (progress - schedule.start_progress) / \
-                                      (schedule.end_progress - schedule.start_progress)
-                    dropout_rate = (schedule.initial_dropout_rate +
-                                  schedule_progress * (schedule.final_dropout_rate -
-                                                      schedule.initial_dropout_rate))
-
-                # Apply dropout to each extractor in this schedule
-                for extractor_name in schedule.extractor_names:
-                    if extractor_name not in extractor_outputs_by_name:
-                        continue
-
-                    output = extractor_outputs_by_name[extractor_name]
-                    batch_size = output.features.shape[0]
-
-                    # Process each batch item independently
-                    for batch_idx in range(batch_size):
-                        # Use deterministic seed based on sample ID
-                        # For panoramas, use pano_id; for satellites, use sat_id
-                        if self._is_panorama_input(model_input):
-                            sample_id = model_input.metadata[batch_idx].get('pano_id', batch_idx)
-                        else:
-                            sample_id = model_input.metadata[batch_idx].get('sat_id', batch_idx)
-
-                        # Combine sample_id and extractor_name for unique seed per extractor
-                        seed = hash((sample_id, extractor_name)) & 0xFFFFFFFF
-                        rng = torch.Generator().manual_seed(seed)
-
-                        # Count valid (unmasked) landmarks
-                        valid_mask = ~output.mask[batch_idx]
-                        num_valid = valid_mask.sum().item()
-
-                        # Compute how many to keep
-                        num_to_drop = int(num_valid * dropout_rate)
-                        num_to_keep = max(num_valid - num_to_drop, schedule.min_landmarks)
-                        num_to_keep = min(num_to_keep, num_valid)  # Can't keep more than we have
-
-                        # Apply dropout if we need to drop some
-                        if num_to_keep < num_valid:
-                            # Get indices of valid landmarks
-                            valid_indices = torch.where(valid_mask)[0]
-                            # Randomly select which to keep (deterministic via seed)
-                            perm = torch.randperm(len(valid_indices), generator=rng)
-                            keep_indices = valid_indices[perm[:num_to_keep]]
-                            # Create new mask: True = masked (dropped)
-                            new_mask = torch.ones_like(output.mask[batch_idx], dtype=torch.bool)
-                            new_mask[keep_indices] = False
-                            output.mask[batch_idx] = new_mask
-                        # Handle edge cases for dropout_rate
-                        elif dropout_rate >= 1.0 and num_valid > 0:
-                            # Drop all features (set all to masked)
-                            output.mask[batch_idx] = torch.ones_like(output.mask[batch_idx], dtype=torch.bool)
-                        elif dropout_rate <= 0.0:
-                            # Keep all features (leave mask unchanged)
-                            pass
+        extractor_outputs_by_name = apply_landmark_dropout_schedules(
+            extractor_outputs_by_name,
+            self._config.landmark_dropout_schedules,
+            self._current_epoch,
+            self._total_epochs,
+            model_input,
+            self._is_panorama_input(model_input),
+        )
 
         input_tokens_by_name = {}
         for k, v in extractor_outputs_by_name.items():

@@ -2,7 +2,7 @@
 
 import unittest
 from experimental.overhead_matching.swag.model.swag_config_types import LandmarkDropoutSchedule
-from experimental.overhead_matching.swag.scripts.landmark_scheduler import LandmarkDropoutScheduler
+from experimental.overhead_matching.swag.model.landmark_scheduler import LandmarkDropoutScheduler
 
 
 class LandmarkDropoutScheduleTest(unittest.TestCase):
