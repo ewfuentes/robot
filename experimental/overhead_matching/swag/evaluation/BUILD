@@ -52,3 +52,26 @@ py_test(
     ":evaluate_swag",
   ],
 )
+
+py_library(
+  name = "observation_likelihood",
+  srcs = ["observation_likelihood.py"],
+  deps = [
+    requirement("torch"),
+    requirement("geopandas"),
+    "//common/torch:load_torch_deps",
+  ]
+)
+
+py_test(
+  name = "observation_likelihood_test",
+  srcs = ["observation_likelihood_test.py"],
+  deps = [
+    requirement("torch"),
+    requirement("pandas"),
+    requirement("geopandas"),
+    requirement("shapely"),
+    "//common/torch:load_torch_deps",
+    ":observation_likelihood",
+  ]
+)
