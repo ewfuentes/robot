@@ -15,9 +15,12 @@ from experimental.overhead_matching.swag.data import (
     vigor_dataset, satellite_embedding_database as sed)
 from experimental.overhead_matching.swag.model import (
     patch_embedding, swag_patch_embedding)
-from experimental.overhead_matching.swag.model.swag_config_types import ExtractorDataRequirement, LandmarkDropoutSchedule
+from experimental.overhead_matching.swag.model.swag_config_types import ExtractorDataRequirement
 from experimental.overhead_matching.swag.model.swag_model_input_output import derive_data_requirements_from_model
-from experimental.overhead_matching.swag.model.landmark_scheduler import LandmarkDropoutScheduler
+from experimental.overhead_matching.swag.model.landmark_scheduler import (
+    LandmarkDropoutScheduleConfig,
+    LandmarkDropoutScheduler,
+)
 from experimental.overhead_matching.swag.scripts.logging_utils import (
     log_batch_metrics, log_embedding_stats, log_gradient_stats, log_validation_metrics, log_feature_counts)
 from experimental.overhead_matching.swag.scripts.model_inspector import ModelInspector
@@ -105,8 +108,8 @@ class TrainConfig:
     loss_configs: list[LossConfig]
     output_dir: Path
     tensorboard_output: Path | None
-    pano_landmark_dropout_schedules: list[LandmarkDropoutSchedule] = None
-    sat_landmark_dropout_schedules: list[LandmarkDropoutSchedule] = None
+    pano_landmark_dropout_schedules: list[LandmarkDropoutScheduleConfig] = None
+    sat_landmark_dropout_schedules: list[LandmarkDropoutScheduleConfig] = None
 
 
 @torch.no_grad

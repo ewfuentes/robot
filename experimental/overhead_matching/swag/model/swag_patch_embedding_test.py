@@ -5,8 +5,10 @@ import common.torch.load_torch_deps  # noqa: F401
 import torch
 
 from experimental.overhead_matching.swag.model import swag_patch_embedding as spe
-from experimental.overhead_matching.swag.model.landmark_scheduler import LandmarkDropoutScheduler
-from experimental.overhead_matching.swag.model.swag_config_types import LandmarkDropoutSchedule
+from experimental.overhead_matching.swag.model.landmark_scheduler import (
+    LandmarkDropoutScheduleConfig,
+    LandmarkDropoutScheduler,
+)
 
 
 class SwagPatchEmbeddingTest(unittest.TestCase):
@@ -341,7 +343,7 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
         # Create scheduler with dropout configuration
         dropout_scheduler = LandmarkDropoutScheduler(
             schedules=[
-                LandmarkDropoutSchedule(
+                LandmarkDropoutScheduleConfig(
                     start_progress=0.0,
                     end_progress=1.0,
                     initial_dropout_rate=0.5,
@@ -415,7 +417,7 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
         # Create scheduler with dropout configuration
         dropout_scheduler = LandmarkDropoutScheduler(
             schedules=[
-                LandmarkDropoutSchedule(
+                LandmarkDropoutScheduleConfig(
                     start_progress=0.0,
                     end_progress=1.0,
                     initial_dropout_rate=0.9,  # High dropout rate
@@ -528,7 +530,7 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
         # Create scheduler with dropout configuration
         dropout_scheduler = LandmarkDropoutScheduler(
             schedules=[
-                LandmarkDropoutSchedule(
+                LandmarkDropoutScheduleConfig(
                     start_progress=0.0,
                     end_progress=1.0,
                     initial_dropout_rate=DROPOUT_RATE,

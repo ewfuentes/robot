@@ -10,11 +10,34 @@ in the extractor outputs within the model's forward pass.
 
 import hashlib
 import common.torch.load_torch_deps
+import msgspec
 import torch
 from typing import Dict
 
-from experimental.overhead_matching.swag.model.swag_config_types import LandmarkDropoutSchedule
+from common.python.serialization import MSGSPEC_STRUCT_OPTS
 from experimental.overhead_matching.swag.model.swag_model_input_output import ExtractorOutput, ModelInput
+
+
+class LandmarkDropoutScheduleConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    """Configuration for a single landmark dropout schedule.
+
+    The schedule linearly interpolates the dropout rate between start_progress
+    and end_progress, where progress is defined as epoch / total_epochs.
+
+    Attributes:
+        start_progress: Fraction of total training (0.0-1.0) when ramping begins
+        end_progress: Fraction of total training (0.0-1.0) when ramping ends
+        initial_dropout_rate: Dropout rate at start_progress (0.0 = keep all, 1.0 = drop all)
+        final_dropout_rate: Dropout rate at end_progress (0.0 = keep all, 1.0 = drop all)
+        extractor_names: List of extractor names to apply this schedule to
+        min_landmarks: Never drop below this many landmarks per batch item
+    """
+    start_progress: float
+    end_progress: float
+    initial_dropout_rate: float
+    final_dropout_rate: float
+    extractor_names: list[str]
+    min_landmarks: int = 0
 
 
 class LandmarkDropoutScheduler:
@@ -25,7 +48,7 @@ class LandmarkDropoutScheduler:
     extractor outputs.
     """
 
-    def __init__(self, schedules: list[LandmarkDropoutSchedule], total_epochs: int):
+    def __init__(self, schedules: list[LandmarkDropoutScheduleConfig], total_epochs: int):
         """Initialize the scheduler.
 
         Args:
@@ -55,7 +78,7 @@ class LandmarkDropoutScheduler:
         """
         self.current_epoch = epoch
 
-    def compute_dropout_rate(self, schedule: LandmarkDropoutSchedule, epoch: int) -> float:
+    def compute_dropout_rate(self, schedule: LandmarkDropoutScheduleConfig, epoch: int) -> float:
         """Compute the current dropout rate for a schedule.
 
         Args:
@@ -138,7 +161,7 @@ class LandmarkDropoutScheduler:
 
 def apply_landmark_dropout_schedules(
     extractor_outputs_by_name: dict[str, ExtractorOutput],
-    schedules: list[LandmarkDropoutSchedule],
+    schedules: list[LandmarkDropoutScheduleConfig],
     current_epoch: int,
     total_epochs: int,
     model_input: ModelInput,
@@ -199,11 +222,12 @@ def apply_landmark_dropout_schedules(
             # Process each batch item independently with deterministic seeding
             for batch_idx in range(batch_size):
                 # Get sample ID for deterministic seeding
-                # For panoramas, use pano_id; for satellites, use sat_id
+                # For panoramas, use pano_id; for satellites, use path stem (filename)
                 if is_panorama:
-                    sample_id = model_input.metadata[batch_idx].get('pano_id', batch_idx)
+                    sample_id = model_input.metadata[batch_idx]['pano_id']
                 else:
-                    sample_id = model_input.metadata[batch_idx].get('sat_id', batch_idx)
+                    # Satellites don't have IDs, use the path stem (filename) as unique identifier
+                    sample_id = model_input.metadata[batch_idx]["path"].stem
 
                 # Generate deterministic seed using sample_id and extractor_name
                 # Use hashlib for consistency across runs (hash() is not deterministic)

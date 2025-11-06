@@ -1,8 +1,10 @@
 """Tests for landmark dropout scheduler functionality."""
 
 import unittest
-from experimental.overhead_matching.swag.model.swag_config_types import LandmarkDropoutSchedule
-from experimental.overhead_matching.swag.model.landmark_scheduler import LandmarkDropoutScheduler
+from experimental.overhead_matching.swag.model.landmark_scheduler import (
+    LandmarkDropoutScheduleConfig,
+    LandmarkDropoutScheduler,
+)
 
 
 class LandmarkDropoutScheduleTest(unittest.TestCase):
@@ -10,7 +12,7 @@ class LandmarkDropoutScheduleTest(unittest.TestCase):
 
     def test_valid_schedule(self):
         """Test that valid schedules are created without errors."""
-        schedule = LandmarkDropoutSchedule(
+        schedule = LandmarkDropoutScheduleConfig(
             start_progress=0.0,
             end_progress=1.0,
             initial_dropout_rate=0.0,
@@ -27,7 +29,7 @@ class LandmarkDropoutScheduleTest(unittest.TestCase):
 
     def test_partial_schedule(self):
         """Test schedule that only covers part of training."""
-        schedule = LandmarkDropoutSchedule(
+        schedule = LandmarkDropoutScheduleConfig(
             start_progress=0.2,
             end_progress=0.8,
             initial_dropout_rate=0.1,
@@ -43,7 +45,7 @@ class LandmarkDropoutSchedulerTest(unittest.TestCase):
 
     def test_linear_interpolation(self):
         """Test that dropout rates are correctly interpolated."""
-        schedule = LandmarkDropoutSchedule(
+        schedule = LandmarkDropoutScheduleConfig(
             start_progress=0.0,
             end_progress=1.0,
             initial_dropout_rate=0.0,
@@ -89,7 +91,7 @@ class LandmarkDropoutSchedulerTest(unittest.TestCase):
 
     def test_partial_progress_schedule(self):
         """Test schedule that only ramps during middle of training."""
-        schedule = LandmarkDropoutSchedule(
+        schedule = LandmarkDropoutScheduleConfig(
             start_progress=0.25,
             end_progress=0.75,
             initial_dropout_rate=0.2,
@@ -145,7 +147,7 @@ class LandmarkDropoutSchedulerTest(unittest.TestCase):
 
     def test_decreasing_dropout(self):
         """Test schedule that decreases dropout rate over time."""
-        schedule = LandmarkDropoutSchedule(
+        schedule = LandmarkDropoutScheduleConfig(
             start_progress=0.0,
             end_progress=1.0,
             initial_dropout_rate=1.0,
@@ -177,7 +179,7 @@ class LandmarkDropoutSchedulerTest(unittest.TestCase):
 
     def test_constant_dropout(self):
         """Test schedule with same initial and final rates (constant)."""
-        schedule = LandmarkDropoutSchedule(
+        schedule = LandmarkDropoutScheduleConfig(
             start_progress=0.0,
             end_progress=1.0,
             initial_dropout_rate=0.5,
@@ -196,7 +198,7 @@ class LandmarkDropoutSchedulerTest(unittest.TestCase):
 
     def test_multiple_extractors(self):
         """Test get_dropout_rates_by_extractor with multiple schedules."""
-        schedule1 = LandmarkDropoutSchedule(
+        schedule1 = LandmarkDropoutScheduleConfig(
             start_progress=0.0,
             end_progress=1.0,
             initial_dropout_rate=0.0,
@@ -204,7 +206,7 @@ class LandmarkDropoutSchedulerTest(unittest.TestCase):
             extractor_names=["extractor1"],
             min_landmarks=5
         )
-        schedule2 = LandmarkDropoutSchedule(
+        schedule2 = LandmarkDropoutScheduleConfig(
             start_progress=0.0,
             end_progress=1.0,
             initial_dropout_rate=0.0,
@@ -233,14 +235,14 @@ class LandmarkDropoutSchedulerTest(unittest.TestCase):
 
     def test_duplicate_extractor_validation(self):
         """Test that duplicate extractors across schedules raises error."""
-        schedule1 = LandmarkDropoutSchedule(
+        schedule1 = LandmarkDropoutScheduleConfig(
             start_progress=0.0,
             end_progress=0.5,
             initial_dropout_rate=0.0,
             final_dropout_rate=0.5,
             extractor_names=["extractor1"]
         )
-        schedule2 = LandmarkDropoutSchedule(
+        schedule2 = LandmarkDropoutScheduleConfig(
             start_progress=0.5,
             end_progress=1.0,
             initial_dropout_rate=0.5,
@@ -255,7 +257,7 @@ class LandmarkDropoutSchedulerTest(unittest.TestCase):
 
     def test_zero_total_epochs(self):
         """Test scheduler behavior with zero total epochs."""
-        schedule = LandmarkDropoutSchedule(
+        schedule = LandmarkDropoutScheduleConfig(
             start_progress=0.0,
             end_progress=1.0,
             initial_dropout_rate=0.0,
@@ -274,7 +276,7 @@ class LandmarkDropoutSchedulerTest(unittest.TestCase):
     def test_edge_case_dropout_rates(self):
         """Test edge cases with dropout rates at 0.0 and 1.0."""
         # Test 0.0 dropout (keep all features)
-        schedule_zero = LandmarkDropoutSchedule(
+        schedule_zero = LandmarkDropoutScheduleConfig(
             start_progress=0.0,
             end_progress=1.0,
             initial_dropout_rate=0.0,
@@ -289,7 +291,7 @@ class LandmarkDropoutSchedulerTest(unittest.TestCase):
         )
 
         # Test 1.0 dropout (drop all features)
-        schedule_one = LandmarkDropoutSchedule(
+        schedule_one = LandmarkDropoutScheduleConfig(
             start_progress=0.0,
             end_progress=1.0,
             initial_dropout_rate=1.0,

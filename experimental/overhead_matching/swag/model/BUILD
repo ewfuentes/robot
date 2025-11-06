@@ -35,8 +35,9 @@ py_library(
   ],
   deps = [
     requirement("torch"),
+    requirement("msgspec"),
+    "//common/python:serialization",
     "//common/torch:load_torch_deps",
-    ":swag_config_types",
     ":swag_model_input_output",
   ]
 )

@@ -433,10 +433,6 @@ class SwagPatchEmbedding(torch.nn.Module):
         self._patch_dims = config.patch_dims
         self._output_dim = config.output_dim
 
-        # Track current epoch and total epochs for dropout scheduling
-        self._current_epoch = 0
-        self._total_epochs = 1  # Default to avoid division by zero
-
         # We keep these for backwards compatibility
         self._feature_map_extractor = create_extractor(
                 config.feature_map_extractor_config, config.auxiliary_info)
@@ -480,10 +476,6 @@ class SwagPatchEmbedding(torch.nn.Module):
                 image=batch_item.satellite,
                 metadata=batch_item.satellite_metadata,
                 cached_tensors=batch_item.cached_satellite_tensors)
-
-    def _is_panorama_input(self, model_input: ModelInput) -> bool:
-        """Check if model input is panorama (has pano_id) vs satellite."""
-        return len(model_input.metadata) > 0 and 'pano_id' in model_input.metadata[0]
 
     def _get_input_tokens(self, model_input: ModelInput, landmark_dropout_scheduler=None) -> tuple[torch.Tensor, torch.Tensor, dict[str, ExtractorOutput]]:
         dev = self._cls_token.device
