@@ -7,7 +7,7 @@ import pandas as pd
 import geopandas as gpd
 import shapely
 
-import experimental.overhead_matching.swag.evaluation.landmark_observation_likelihood as lol
+import experimental.overhead_matching.swag.evaluation.observation_likelihood as lol
 
 
 def create_square_patch(center_x, center_y, size=10):
@@ -22,7 +22,7 @@ def create_square_patch(center_x, center_y, size=10):
     ])
 
 
-class LandmarkObservationLikelihoodTest(unittest.TestCase):
+class ObservationLikelihoodTest(unittest.TestCase):
     def test_compute_log_observation_likelihood_valid_inputs(self):
         """Test that valid inputs don't raise exceptions."""
         osm_geometry = pd.DataFrame([
@@ -59,7 +59,7 @@ class LandmarkObservationLikelihoodTest(unittest.TestCase):
             ])
         )
 
-        config = lol.LandmarkObservationLikelihoodConfig()
+        config = lol.ObservationLikelihoodConfig()
 
         sat_log_likelihood, osm_log_likelihood = lol.compute_log_observation_likelihood(
             prior_data, query, config
@@ -100,7 +100,7 @@ class LandmarkObservationLikelihoodTest(unittest.TestCase):
             pano_ids=['pano_0'],
             particle_locs_deg=torch.tensor([[37.7749, -122.4194]])
         )
-        config = lol.LandmarkObservationLikelihoodConfig()
+        config = lol.ObservationLikelihoodConfig()
 
         with self.assertRaises(Exception):
             lol.compute_log_observation_likelihood(prior_data, query, config)
@@ -134,7 +134,7 @@ class LandmarkObservationLikelihoodTest(unittest.TestCase):
             pano_ids=['pano_0'],
             particle_locs_deg=torch.tensor([[37.7749, -122.4194]])
         )
-        config = lol.LandmarkObservationLikelihoodConfig()
+        config = lol.ObservationLikelihoodConfig()
 
         with self.assertRaises((KeyError, ValueError)):
             lol.compute_log_observation_likelihood(prior_data, query, config)
@@ -169,7 +169,7 @@ class LandmarkObservationLikelihoodTest(unittest.TestCase):
             pano_ids=['pano_99'],
             particle_locs_deg=torch.tensor([[37.7749, -122.4194]])
         )
-        config = lol.LandmarkObservationLikelihoodConfig()
+        config = lol.ObservationLikelihoodConfig()
 
         with self.assertRaises((AssertionError,)):
             lol.compute_log_observation_likelihood(prior_data, query, config)
@@ -209,7 +209,7 @@ class LandmarkObservationLikelihoodTest(unittest.TestCase):
                 [37.7753, -122.4198],
             ])
         )
-        config = lol.LandmarkObservationLikelihoodConfig()
+        config = lol.ObservationLikelihoodConfig()
 
         sat_ll, osm_ll = lol.compute_log_observation_likelihood(prior_data, query, config)
 
@@ -249,7 +249,7 @@ class LandmarkObservationLikelihoodTest(unittest.TestCase):
                 for i in range(3)
             ])
         )
-        config = lol.LandmarkObservationLikelihoodConfig()
+        config = lol.ObservationLikelihoodConfig()
 
         sat_ll, osm_ll = lol.compute_log_observation_likelihood(prior_data, query, config)
 

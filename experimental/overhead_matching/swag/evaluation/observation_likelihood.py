@@ -7,7 +7,7 @@ import itertools
 
 
 @dataclass
-class LandmarkObservationLikelihoodConfig:
+class ObservationLikelihoodConfig:
     ...
 
 
