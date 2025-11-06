@@ -9,6 +9,7 @@ and saves to Feather format for compatibility with the existing pipeline.
 import argparse
 from pathlib import Path
 import geopandas as gpd
+import pandas as pd
 from shapely.geometry import Point, LineString, Polygon, MultiPolygon
 
 from common.openstreetmap import extract_landmarks_python as elm
@@ -123,9 +124,9 @@ def main(
         elm.OsmType.RELATION: "relation"
     }
 
+    # Create 'id' column with tuple strings (matching osmnx format from v3 feather)
     data = {
-        "osm_type": [osm_type_map[f.osm_type] for f in features],
-        "osm_id": [f.osm_id for f in features],
+        "id": [f"('{osm_type_map[f.osm_type]}', {f.osm_id})" for f in features],
         "geometry": [create_shapely_geometry(f.geometry) for f in features],
         "landmark_type": ["historical" for _ in features],
     }
@@ -149,7 +150,7 @@ def main(
     gdf.to_feather(feather_path)
 
     # Save as JSON (text, compatible)
-    json_path = output_path.with_suffix(".json")
+    json_path = output_path.with_suffix(".geojson")
     print(f"Saving to {json_path}...")
     json_path.write_text(gdf.to_json(na="drop"))
 
