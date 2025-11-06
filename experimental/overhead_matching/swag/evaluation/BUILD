@@ -54,8 +54,8 @@ py_test(
 )
 
 py_library(
-  name = "landmark_observation_likelihood",
-  srcs = ["landmark_observation_likelihood.py"],
+  name = "observation_likelihood",
+  srcs = ["observation_likelihood.py"],
   deps = [
     requirement("torch"),
     requirement("geopandas"),
@@ -64,14 +64,14 @@ py_library(
 )
 
 py_test(
-  name = "landmark_observation_likelihood_test",
-  srcs = ["landmark_observation_likelihood_test.py"],
+  name = "observation_likelihood_test",
+  srcs = ["observation_likelihood_test.py"],
   deps = [
     requirement("torch"),
     requirement("pandas"),
     requirement("geopandas"),
     requirement("shapely"),
     "//common/torch:load_torch_deps",
-    ":landmark_observation_likelihood",
+    ":observation_likelihood",
   ]
 )
