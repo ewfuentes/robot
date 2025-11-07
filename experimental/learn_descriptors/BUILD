@@ -246,3 +246,25 @@ py_binary(
         "//common/torch:load_torch_deps",
     ],
 )
+
+py_library(
+    name="hloc_helper",
+    srcs=["hloc_helper.py"],
+    visibility=["//common/python:__pkg__"],
+    deps=[
+        requirement("hloc"),
+        requirement("numpy"),
+        "//common/torch:load_torch_deps",
+    ],
+)
+
+py_test(
+    name="hloc_helper_test",
+    srcs=["hloc_helper_test.py"],
+    data=["@sacre_coeur_snippet//:files"],
+    deps=[
+        ":hloc_helper",
+        requirement("hloc"),
+        "//common/torch:load_torch_deps",
+    ],
+)

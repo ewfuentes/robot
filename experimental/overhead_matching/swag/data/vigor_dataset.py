@@ -64,6 +64,7 @@ class VigorDatasetConfig(NamedTuple):
     factor: float = 1.0
     satellite_zoom_level: int = 20
     sample_mode: SampleMode = SampleMode.NEAREST
+    should_load_images: bool = True
 
 
 class VigorDatasetItem(NamedTuple):
@@ -133,11 +134,11 @@ def load_landmark_geojson(path: Path, zoom_level: int):
     return df
 
 
-def compute_satellite_from_landmarks(sat_kd_tree, sat_metadata, landmark_metadata) -> SatelliteFromLandmarkResult:
+def compute_satellite_from_landmarks(sat_kd_tree, sat_metadata, landmark_metadata, original_sat_size) -> SatelliteFromLandmarkResult:
     # Use the satellite_from_panorama method to compute which landmarks are within
     # the current satellite patch.
     sat_from_pano_result = compute_satellite_from_panorama(
-            sat_kd_tree, sat_metadata, landmark_metadata)
+            sat_kd_tree, sat_metadata, landmark_metadata, original_sat_size)
 
     def merge_lists(a, b):
         assert len(a) == len(b)
@@ -176,9 +177,8 @@ def compute_panorama_from_landmarks(pano_kd_tree, pano_metadata, landmark_metada
         pano_idxs_from_landmark_idx=pano_idxs_from_landmark_idx)
 
 
-def compute_satellite_from_panorama(sat_kdtree, sat_metadata, pano_metadata) -> SatelliteFromPanoramaResult:
+def compute_satellite_from_panorama(sat_kdtree, sat_metadata, pano_metadata, sat_original_size) -> SatelliteFromPanoramaResult:
     # Get the satellite patch size:
-    sat_patch, sat_original_size = load_image(sat_metadata.iloc[0]["path"], resize_shape=None)
     half_width = sat_original_size[1] / 2.0
     half_height = sat_original_size[0] / 2.0
     max_dist = np.sqrt(half_width ** 2 + half_height ** 2)
@@ -296,13 +296,13 @@ def load_tensor_caches(info: TensorCacheInfo):
     return out
 
 
-def get_cached_tensors(idx: int, caches: list[TensorCache]):
-    key = int(idx).to_bytes(8)
+def get_cached_tensors(metadata: dict, caches: list[TensorCache]):
+    key = metadata["path"].name.encode('utf-8')
     out = {}
     for (output_key, record_type, db) in caches:
         with db.begin() as txn:
             stored_value = txn.get(key)
-            assert stored_value is not None, f"Failed to get: {idx} from cache at: {db.path()}"
+            assert stored_value is not None, f"Failed to get: {key} from cache at: {db.path()}"
             deserialized = np.load(io.BytesIO(stored_value))
             out[output_key] = record_type(**{k: torch.tensor(v) for k, v in deserialized.items() if not k.startswith("debug")})
     return out
@@ -347,12 +347,15 @@ class VigorDataset(torch.utils.data.Dataset):
         self._panorama_metadata = pd.concat(pano_metadatas).reset_index(drop=True)
         self._landmark_metadata = pd.concat(landmark_metadatas).reset_index(drop=True)
 
+        _, self._original_satellite_patch_size = load_image(self._satellite_metadata.iloc[0].path, None)
+        _, self._original_panorama_size = load_image(self._panorama_metadata.iloc[0].path, None)
+
         self._satellite_pixel_kdtree = cKDTree(self._satellite_metadata.loc[:, ["web_mercator_x", "web_mercator_y"]].values)
         self._panorama_pixel_kdtree = cKDTree(self._panorama_metadata.loc[:, ["web_mercator_x", "web_mercator_y"]].values)
         self._panorama_kdtree = cKDTree(self._panorama_metadata.loc[:, ["lat", "lon"]].values)
 
         correspondences = compute_satellite_from_panorama(
-            self._satellite_pixel_kdtree, self._satellite_metadata, self._panorama_metadata)
+            self._satellite_pixel_kdtree, self._satellite_metadata, self._panorama_metadata, self._original_satellite_patch_size)
 
         self._satellite_metadata["positive_panorama_idxs"] = correspondences.positive_pano_idxs_from_sat_idx
         self._satellite_metadata["semipositive_panorama_idxs"] = correspondences.semipositive_pano_idxs_from_sat_idx
@@ -361,7 +364,7 @@ class VigorDataset(torch.utils.data.Dataset):
         self._panorama_metadata["satellite_idx"] = correspondences.closest_sat_idx_from_pano_idx
 
         sat_landmark_correspondences = compute_satellite_from_landmarks(
-                self._satellite_pixel_kdtree, self._satellite_metadata, self._landmark_metadata)
+                self._satellite_pixel_kdtree, self._satellite_metadata, self._landmark_metadata, self._original_satellite_patch_size)
         self._satellite_metadata["landmark_idxs"] = sat_landmark_correspondences.landmark_idxs_from_sat_idx
         self._landmark_metadata["satellite_idxs"] = sat_landmark_correspondences.sat_idxs_from_landmark_idx
 
@@ -373,8 +376,12 @@ class VigorDataset(torch.utils.data.Dataset):
         self._panorama_metadata["neighbor_panorama_idxs"] = compute_neighboring_panoramas(
             self._panorama_kdtree, config.panorama_neighbor_radius)
 
-        self._satellite_patch_size = config.satellite_patch_size
-        self._panorama_size = config.panorama_size
+        self._satellite_patch_size = (
+                config.satellite_patch_size if config.satellite_patch_size is not None
+                else self._original_satellite_patch_size)
+        self._panorama_size = (
+                config.panorama_size if config.panorama_size is not None
+                else self._original_panorama_size)
 
         self._pairs = populate_pairs(self._panorama_metadata, self._satellite_metadata, config.sample_mode)
 
@@ -404,8 +411,12 @@ class VigorDataset(torch.utils.data.Dataset):
 
         pano_metadata = self._panorama_metadata.loc[pano_idx]
         sat_metadata = self._satellite_metadata.loc[sat_idx]
-        pano, pano_original_shape = load_image(pano_metadata.path, self._panorama_size)
-        sat, sat_original_shape = load_image(sat_metadata.path, self._satellite_patch_size)
+        if self._config.should_load_images:
+            pano, _ = load_image(pano_metadata.path, self._panorama_size)
+            sat, _ = load_image(sat_metadata.path, self._satellite_patch_size)
+        else:
+            pano = torch.full((1, *self._panorama_size), torch.nan)
+            sat = torch.full((1, *self._satellite_patch_size), torch.nan)
 
         pano_landmarks = self._landmark_metadata.iloc[pano_metadata["landmark_idxs"]]
         pano_landmarks = [series_to_dict_with_index(x) for _, x in pano_landmarks.iterrows()]
@@ -416,10 +427,10 @@ class VigorDataset(torch.utils.data.Dataset):
         sat_landmarks = self._landmark_metadata.iloc[sat_metadata["landmark_idxs"]]
         sat_landmarks = [series_to_dict_with_index(x) for _, x in sat_landmarks.iterrows()]
         sat_metadata["landmarks"] = sat_landmarks
-        sat_metadata["original_shape"] = sat_original_shape
+        sat_metadata["original_shape"] = self._original_satellite_patch_size
 
-        cached_pano_tensors = get_cached_tensors(pano_idx, self._panorama_tensor_caches)
-        cached_sat_tensors = get_cached_tensors(sat_idx, self._satellite_tensor_caches)
+        cached_pano_tensors = get_cached_tensors(pano_metadata, self._panorama_tensor_caches)
+        cached_sat_tensors = get_cached_tensors(sat_metadata, self._satellite_tensor_caches)
 
         return VigorDatasetItem(
             panorama_metadata=pano_metadata,
@@ -495,14 +506,17 @@ class VigorDataset(torch.utils.data.Dataset):
                     raise IndexError  # if we don't raise index error the iterator won't terminate
                 # as this will throw a KeyError
                 sat_metadata = self.dataset._satellite_metadata.iloc[idx]
-                sat, sat_original_shape = load_image(sat_metadata.path, self.dataset._satellite_patch_size)
+                if self.dataset._config.should_load_images:
+                    sat, _ = load_image(sat_metadata.path, self.dataset._satellite_patch_size)
+                else:
+                    sat = torch.full((1, *self.dataset._satellite_patch_size), torch.nan)
                 landmarks = self.dataset._landmark_metadata.iloc[sat_metadata["landmark_idxs"]]
                 landmarks = [series_to_dict_with_index(x) for _, x in landmarks.iterrows()]
                 sat_metadata = series_to_dict_with_index(sat_metadata)
                 sat_metadata["landmarks"] = landmarks
-                sat_metadata["original_shape"] = sat_original_shape
+                sat_metadata["original_shape"] = self.dataset._original_satellite_patch_size
 
-                cached_sat_tensors = get_cached_tensors(idx, self.dataset._satellite_tensor_caches)
+                cached_sat_tensors = get_cached_tensors(sat_metadata, self.dataset._satellite_tensor_caches)
 
                 return VigorDatasetItem(
                     panorama_metadata=None,
@@ -528,14 +542,17 @@ class VigorDataset(torch.utils.data.Dataset):
                     raise IndexError  # if we don't raise index error the iterator won't terminate
                 # as this will throw a KeyError
                 pano_metadata = self.dataset._panorama_metadata.loc[idx]
-                pano, pano_original_shape = load_image(pano_metadata.path, self.dataset._panorama_size)
+                if self.dataset._config.should_load_images:
+                    pano, _ = load_image(pano_metadata.path, self.dataset._panorama_size)
+                else:
+                    pano = torch.full((1, *self.dataset._panorama_size), torch.nan)
 
                 landmarks = self.dataset._landmark_metadata.iloc[pano_metadata["landmark_idxs"]]
                 landmarks = [series_to_dict_with_index(x) for _, x in landmarks.iterrows()]
                 pano_metadata = series_to_dict_with_index(pano_metadata)
                 pano_metadata["landmarks"] = landmarks
 
-                cached_pano_tensors = get_cached_tensors(idx, self.dataset._panorama_tensor_caches)
+                cached_pano_tensors = get_cached_tensors(pano_metadata, self.dataset._panorama_tensor_caches)
 
                 return VigorDatasetItem(
                     panorama_metadata=pano_metadata,
@@ -597,8 +614,7 @@ class VigorDataset(torch.utils.data.Dataset):
                 0.25, 0.25, 0.9) for x in range(len(neighbor_segments))])
             ax.add_collection(path_collection)
 
-        _, sat_patch_size = load_image(self._satellite_metadata.iloc[0]["path"], resize_shape=None)
-        patch_height_px, patch_width_px = sat_patch_size
+        patch_height_px, patch_width_px = self._original_satellite_patch_size
         left_x = (self._satellite_metadata["web_mercator_x"] - (patch_width_px / 2.0)).to_numpy()
         right_x = (self._satellite_metadata["web_mercator_x"] + (patch_width_px / 2.0)).to_numpy()
         bottom_y = (self._satellite_metadata["web_mercator_y"] + (patch_height_px / 2.0)).to_numpy()
@@ -719,7 +735,10 @@ class HardNegativeMiner:
     def __init__(self,
                  batch_size: int,
                  embedding_dimension: int,
+                 num_sat_embeddings: int,
+                 num_pano_embeddings: int,
                  random_sample_type: RandomSampleType,
+                 distance_model: torch.nn.Module,  # make sure this doesn't become a copy
                  num_panoramas: int | None = None,
                  num_satellite_patches: int | None = None,
                  panorama_info_from_pano_idx: dict[int, PanoramaIndexInfo] | None = None,
@@ -750,10 +769,12 @@ class HardNegativeMiner:
         self._generator = generator if generator is not None else torch.Generator()
 
         self._panorama_embeddings = torch.full(
-                (num_panoramas, embedding_dimension), float('nan'), device=device)
+                (num_panoramas, num_pano_embeddings, embedding_dimension), float('nan'), device=device)
 
         self._satellite_embeddings = torch.full(
-                (num_satellite_patches, embedding_dimension), float('nan'), device=device)
+                (num_satellite_patches, num_sat_embeddings, embedding_dimension), float('nan'), device=device)
+        
+        self._distance_model = distance_model  # make sure this doesn't become a copy
         self._panorama_info_from_pano_idx = panorama_info_from_pano_idx
 
         self._sample_mode = self.SampleMode.RANDOM
@@ -771,8 +792,11 @@ class HardNegativeMiner:
         permuted_panoramas = torch.randperm(self._panorama_embeddings.shape[0], generator=self._generator).tolist()
 
         if self._sample_mode == HardNegativeMiner.SampleMode.HARD_NEGATIVE:
-            similarities = torch.einsum(
-                    "nd,md->nm", self._panorama_embeddings, self._satellite_embeddings)
+            with torch.no_grad():
+                similarities = self._distance_model(
+                    sat_embeddings_unnormalized=self._satellite_embeddings,
+                    pano_embeddings_unnormalized=self._panorama_embeddings
+                )
             # A row of this matrix contains the satellite patch similarities for a given panorama
             # sorted from least similar to most similar. When mining hard negatives, we want to
             # present the true positives and semipositives (since there are so few of them) and

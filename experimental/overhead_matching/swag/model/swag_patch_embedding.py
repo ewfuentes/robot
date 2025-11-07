@@ -12,6 +12,9 @@ from experimental.overhead_matching.swag.model.swag_model_input_output import (
 from experimental.overhead_matching.swag.model.semantic_segment_extractor import SemanticSegmentExtractor
 from experimental.overhead_matching.swag.model.alphaearth_extractor import AlphaEarthExtractor
 from experimental.overhead_matching.swag.model.semantic_landmark_extractor import SemanticLandmarkExtractor
+from torch.nn.init import xavier_uniform_
+from experimental.overhead_matching.swag.model.synthetic_landmark_extractor import SyntheticLandmarkExtractor
+from experimental.overhead_matching.swag.model.absolute_position_extractor import AbsolutePositionExtractor
 from experimental.overhead_matching.swag.model.swag_config_types import (
     FeatureMapExtractorConfig,
     DinoFeatureMapExtractorConfig,
@@ -22,6 +25,8 @@ from experimental.overhead_matching.swag.model.swag_config_types import (
     SemanticEmbeddingMatrixConfig,
     SemanticSegmentExtractorConfig,
     SemanticLandmarkExtractorConfig,
+    AbsolutePositionExtractorConfig,
+    SyntheticLandmarkExtractorConfig,
 
     PositionEmbeddingConfig,
     PlanarPositionEmbeddingConfig,
@@ -30,7 +35,7 @@ from experimental.overhead_matching.swag.model.swag_config_types import (
     AggregationConfig,
     TransformerAggregatorConfig,
 
-    ExtractorConfig
+    ExtractorConfig,
 )
 
 
@@ -50,11 +55,14 @@ class SwagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
 
     patch_dims: tuple[int, int]
     output_dim: int
+    num_embeddings: int
 
     extractor_config_by_name: dict[str, ExtractorConfig] = {}
     use_cached_extractors: list[str] = []
 
     auxiliary_info: dict[str, Any] = {}
+
+    normalize_embeddings: bool = True
 
     # These are here for backwards compatibility
     feature_map_extractor_config: FeatureMapExtractorConfig | None = None
@@ -72,6 +80,8 @@ def create_extractor(config: ExtractorConfig, auxiliary_info: dict[str, Any]):
         case SemanticEmbeddingMatrixConfig(): return SemanticEmbeddingMatrix(config)
         case SemanticLandmarkExtractorConfig(): return SemanticLandmarkExtractor(config)
         case SemanticSegmentExtractorConfig(): return SemanticSegmentExtractor(config)
+        case SyntheticLandmarkExtractorConfig(): return SyntheticLandmarkExtractor(config)
+        case AbsolutePositionExtractorConfig(): return AbsolutePositionExtractor(config)
         case AlphaEarthExtractorConfig(): return AlphaEarthExtractor(
                 config, auxiliary_info[config.auxiliary_info_key])
     raise NotImplementedError(f"Unhandled Config Type: {config}")
@@ -93,8 +103,11 @@ class DinoFeatureExtractor(torch.nn.Module):
         super().__init__()
         assert config.model_str.startswith('dino')
         repo_name = f"facebookresearch/{config.model_str.split('_')[0]}"
+        self.use_class_token_only = config.use_class_token_only
         self._dino = torch.hub.load(repo_name, config.model_str)
         self._dino.eval()
+        for param in self._dino.parameters():
+            param.requires_grad = False
 
     def forward(self, model_input: ModelInput) -> ExtractorOutput:
         input_image = model_input.image
@@ -103,32 +116,39 @@ class DinoFeatureExtractor(torch.nn.Module):
             mean=[0.485, 0.456, 0.406],
             std=[0.229, 0.224, 0.225])
 
-        with torch.no_grad():
-            patch_tokens = self._dino.forward_features(x)["x_norm_patchtokens"]
-
         # Compute the relative positions of each patch
         batch_size = len(model_input.metadata)
         original_shape = model_input.image.shape[2:]
 
-        num_row_tokens = original_shape[0] // self.patch_size[0]
-        num_col_tokens = original_shape[1] // self.patch_size[1]
-        num_tokens = num_row_tokens * num_col_tokens
+        with torch.no_grad():
+            if self.use_class_token_only:
+                patch_tokens = self._dino(x).unsqueeze(1) # batch x 1 x dino_emb_dim
+            else:
+                patch_tokens = self._dino.forward_features(x)["x_norm_patchtokens"]
+
+        if self.use_class_token_only:
+            num_tokens = 1
+            relative_positions = torch.zeros(batch_size, 1, 2)
+        else:
+            num_row_tokens = original_shape[0] // self.patch_size[0]
+            num_col_tokens = original_shape[1] // self.patch_size[1]
+            num_tokens = num_row_tokens * num_col_tokens
+            center_location = (original_shape[0] // 2, original_shape[1] // 2)
+
+            relative_positions = torch.zeros((batch_size, num_row_tokens, num_col_tokens, 2))
+            for row_idx in range(num_row_tokens):
+                for col_idx in range(num_col_tokens):
+                    patch_center_row_px = self.patch_size[0] // 2 + row_idx * self.patch_size[0]
+                    patch_center_col_px = self.patch_size[1] // 2 + col_idx * self.patch_size[1]
+
+                    relative_positions[:, row_idx, col_idx, 0] = (
+                            patch_center_row_px - center_location[0])
+                    relative_positions[:, row_idx, col_idx, 1] = (
+                            patch_center_col_px - center_location[1])
+
+            relative_positions = relative_positions.reshape(batch_size, num_tokens, 2)
         assert num_tokens == patch_tokens.shape[1]
 
-        center_location = (original_shape[0] // 2, original_shape[1] // 2)
-
-        relative_positions = torch.zeros((batch_size, num_row_tokens, num_col_tokens, 2))
-        for row_idx in range(num_row_tokens):
-            for col_idx in range(num_col_tokens):
-                patch_center_row_px = self.patch_size[0] // 2 + row_idx * self.patch_size[0]
-                patch_center_col_px = self.patch_size[1] // 2 + col_idx * self.patch_size[1]
-
-                relative_positions[:, row_idx, col_idx, 0] = (
-                        patch_center_row_px - center_location[0])
-                relative_positions[:, row_idx, col_idx, 1] = (
-                        patch_center_col_px - center_location[1])
-
-        relative_positions = relative_positions.reshape(batch_size, num_tokens, 2)
         mask = torch.zeros((batch_size, num_tokens), dtype=torch.bool, device=patch_tokens.device)
 
         return ExtractorOutput(
@@ -205,7 +225,7 @@ class SemanticNullExtractor(torch.nn.Module):
         dev = model_input.image.device
         positions_in_patch = torch.zeros((batch_size, 0, 2), device=dev)
         semantic_tokens = torch.zeros((batch_size, 0, 0), device=dev)
-        mask = torch.zeros(batch_size, 0, device=dev)
+        mask = torch.zeros(batch_size, 0, device=dev, dtype=torch.bool)
         return SemanticTokenExtractorOutput(
             positions=positions_in_patch,
             features=semantic_tokens,
@@ -286,6 +306,26 @@ class PlanarPositionEmbedding(torch.nn.Module):
     def output_dim(self):
         return self._embedding_dim
 
+def init_xavier(model):
+    for p in model.parameters():
+        if p.dim() > 1:
+            xavier_uniform_(p)
+
+
+def make_float_mask_from_bool_mask(bool_mask_true_means_mask: torch.Tensor) -> torch.Tensor:
+    """
+    Create a float mask for a transformer en/decoder from a boolean mask.
+    TRUE in the input bool mask indicates we WILL mask that token.
+
+    Args:
+        bool_mask_true_means_mask: bool tensor where false allows attention and true does not 
+    Returns:
+        float tensor of the same shape. Zeros in all false positions, and -inf in true positions.
+
+        These values are added to the attention before softmax, so -inf zeros out. 
+    """
+    assert bool_mask_true_means_mask.dtype == torch.bool, f"Expected mask to be dtype bool, got {bool_mask_true_means_mask.dtype}"
+    return torch.where(bool_mask_true_means_mask, -torch.inf, 0.0)
 
 class TransformerAggregator(torch.nn.Module):
     def __init__(self, output_dim: int, config: TransformerAggregatorConfig):
@@ -301,9 +341,12 @@ class TransformerAggregator(torch.nn.Module):
                 transformer_layer,
                 enable_nested_tensor=False,
                 num_layers=config.num_transformer_layers)
+        # see warning at https://docs.pytorch.org/docs/stable/generated/torch.nn.TransformerEncoder.html
+        init_xavier(self._encoder)
 
     def forward(self, tokens, token_mask):
-        return self._encoder(tokens, src_key_padding_mask=token_mask, is_causal=False)
+        float_token_mask = make_float_mask_from_bool_mask(token_mask)
+        return self._encoder(tokens, src_key_padding_mask=float_token_mask, is_causal=False)
 
 
 class SwagPatchEmbedding(torch.nn.Module):
@@ -312,7 +355,7 @@ class SwagPatchEmbedding(torch.nn.Module):
         self._extractor_by_name = torch.nn.ModuleDict({
             k: create_extractor(c, config.auxiliary_info)
             for k, c in config.extractor_config_by_name.items()})
-
+        self._normalize_embeddings = config.normalize_embeddings
         self._token_marker_by_name = torch.nn.ParameterDict({
                 k: torch.nn.Parameter(torch.randn(1, 1, config.output_dim))
                 for k in config.extractor_config_by_name})
@@ -326,7 +369,7 @@ class SwagPatchEmbedding(torch.nn.Module):
                                    config.output_dim)
                 for k in config.extractor_config_by_name})
 
-        self._cls_token = torch.nn.Parameter(torch.randn((1, 1, config.output_dim)))
+        self._cls_token = torch.nn.Parameter(torch.randn((1, config.num_embeddings, config.output_dim)))
 
         self._aggregator_model = create_aggregator_model(
                 config.output_dim, config.aggregation_config)
@@ -372,7 +415,6 @@ class SwagPatchEmbedding(torch.nn.Module):
                     model_config=config.semantic_token_extractor_config, patch_dims=config.patch_dims))
                 self._cache_info[config_hash] = ("__semantic_token_extractor", ExtractorOutput)
 
-
     def model_input_from_batch(self, batch_item):
         if self._patch_dims[0] != self._patch_dims[1]:
             return ModelInput(
@@ -385,8 +427,8 @@ class SwagPatchEmbedding(torch.nn.Module):
                 metadata=batch_item.satellite_metadata,
                 cached_tensors=batch_item.cached_satellite_tensors)
 
-    def forward(self, model_input: ModelInput):
-        dev = model_input.image.device
+    def _get_input_tokens(self, model_input: ModelInput) -> tuple[torch.Tensor, torch.Tensor]:
+        dev = self._cls_token.device
         extractor_outputs_by_name = {}
         for k in self._extractor_by_name:
             extractor_outputs_by_name[k] = model_input.cached_tensors.get(k)
@@ -407,17 +449,27 @@ class SwagPatchEmbedding(torch.nn.Module):
         batch_size = model_input.image.shape[0]
         cls_token = self._cls_token.expand(batch_size, -1, -1)
         input_tokens = torch.cat([cls_token] + list(input_tokens_by_name.values()), dim=1)
-        input_tokens = F.normalize(input_tokens)
+        if self._normalize_embeddings:
+            input_tokens = F.normalize(input_tokens, dim=-1)
 
         cls_mask = torch.zeros(
-                (batch_size, 1), device=dev)
+                cls_token.shape[:2], device=dev, dtype=torch.bool)
         input_mask = torch.cat([cls_mask] +
                                [v.mask for v in extractor_outputs_by_name.values()], dim=1)
 
-        output_tokens = self._aggregator_model(input_tokens, input_mask)
+        return input_tokens, input_mask
 
-        # output is batch x feature_dim
-        return F.normalize(output_tokens[:, 0, :])
+    def forward(self, model_input: ModelInput) -> torch.Tensor:
+
+        input_tokens, input_mask = self._get_input_tokens(model_input)
+        output_tokens = self._aggregator_model(input_tokens, input_mask)
+        model_output = output_tokens[:, :self._cls_token.shape[1], :]  # B, num_class_tokens, D_emb
+
+        # output is batch x num_class_tokens x feature_dim
+        if self._normalize_embeddings:
+            model_output = F.normalize(model_output, dim=2)
+
+        return model_output
 
     def cache_info(self):
         return self._cache_info
@@ -429,3 +481,8 @@ class SwagPatchEmbedding(torch.nn.Module):
     @property
     def output_dim(self):
         return self._output_dim
+    
+    @property
+    def num_embeddings(self):
+        return self._cls_token.shape[1]
+

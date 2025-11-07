@@ -14,6 +14,7 @@ import itertools
 from PIL import Image, ImageDraw
 
 from experimental.overhead_matching.swag.data import vigor_dataset
+from experimental.overhead_matching.swag.scripts.distances import CosineDistance, CosineDistanceConfig
 
 class VigorDatasetTest(unittest.TestCase):
 
@@ -395,17 +396,24 @@ class HardNegativeMinerTest(unittest.TestCase):
         EMBEDDING_DIMENSION = 4
         BATCH_SIZE = 1
         panorama_embeddings = torch.tensor(
-            [[1.0, 0.0, 0.0, 0.0]])
+            [[[1.0, 0.0, 0.0, 0.0]]])
         satellite_embeddings = torch.tensor([
-             [0.0, 1.0, 0.0, 0.0],
-             [math.sqrt(2)/2, math.sqrt(2), 0.0, 0.0],
-             [-1.0, 0.0, 0.0, 0.0]])
+             [[0.0, 1.0, 0.0, 0.0]],
+             [[math.sqrt(2)/2, math.sqrt(2), 0.0, 0.0]],
+             [[-1.0, 0.0, 0.0, 0.0]]])
         generator = torch.Generator().manual_seed(42)
+
+        # Create a cosine distance model for the test
+        distance_config = CosineDistanceConfig()
+        distance_model = CosineDistance(distance_config)
 
         miner = vigor_dataset.HardNegativeMiner(
             batch_size=BATCH_SIZE,
             embedding_dimension=EMBEDDING_DIMENSION,
+            num_sat_embeddings=1,
+            num_pano_embeddings=1,
             random_sample_type=vigor_dataset.HardNegativeMiner.RandomSampleType.POS_SEMIPOS,
+            distance_model=distance_model,
             num_panoramas=len(panorama_embeddings),
             num_satellite_patches=len(satellite_embeddings),
             hard_negative_pool_size=1,
@@ -444,17 +452,24 @@ class HardNegativeMinerTest(unittest.TestCase):
         EMBEDDING_DIMENSION = 4
         BATCH_SIZE = 1
         panorama_embeddings = torch.tensor(
-            [[1.0, 0.0, 0.0, 0.0]])
+            [[[1.0, 0.0, 0.0, 0.0]]])
         satellite_embeddings = torch.tensor([
-             [0.0, 1.0, 0.0, 0.0],
-             [math.sqrt(2)/2, math.sqrt(2), 0.0, 0.0],
-             [-1.0, 0.0, 0.0, 0.0]])
+             [[0.0, 1.0, 0.0, 0.0]],
+             [[math.sqrt(2)/2, math.sqrt(2), 0.0, 0.0]],
+             [[-1.0, 0.0, 0.0, 0.0]]])
         generator = torch.Generator().manual_seed(42)
+
+        # Create a cosine distance model for the test
+        distance_config = CosineDistanceConfig()
+        distance_model = CosineDistance(distance_config)
 
         miner = vigor_dataset.HardNegativeMiner(
             batch_size=BATCH_SIZE,
             embedding_dimension=EMBEDDING_DIMENSION,
+            num_sat_embeddings=1,
+            num_pano_embeddings=1,
             random_sample_type=vigor_dataset.HardNegativeMiner.RandomSampleType.POS_SEMIPOS,
+            distance_model=distance_model,
             num_panoramas=len(panorama_embeddings),
             num_satellite_patches=len(satellite_embeddings),
             panorama_info_from_pano_idx={
@@ -495,17 +510,24 @@ class HardNegativeMinerTest(unittest.TestCase):
         EMBEDDING_DIMENSION = 4
         BATCH_SIZE = 1
         panorama_embeddings = torch.tensor(
-            [[1.0, 0.0, 0.0, 0.0]])
+            [[[1.0, 0.0, 0.0, 0.0]]])
         satellite_embeddings = torch.tensor([
-             [0.0, 1.0, 0.0, 0.0],
-             [math.sqrt(2)/2, math.sqrt(2), 0.0, 0.0],
-             [-1.0, 0.0, 0.0, 0.0]])
+             [[0.0, 1.0, 0.0, 0.0]],
+             [[math.sqrt(2)/2, math.sqrt(2), 0.0, 0.0]],
+             [[-1.0, 0.0, 0.0, 0.0]]])
         generator = torch.Generator().manual_seed(42)
+
+        # Create a cosine distance model for the test
+        distance_config = CosineDistanceConfig()
+        distance_model = CosineDistance(distance_config)
 
         miner = vigor_dataset.HardNegativeMiner(
             batch_size=BATCH_SIZE,
             embedding_dimension=EMBEDDING_DIMENSION,
+            num_sat_embeddings=1,
+            num_pano_embeddings=1,
             random_sample_type=vigor_dataset.HardNegativeMiner.RandomSampleType.NEAREST,
+            distance_model=distance_model,
             num_panoramas=len(panorama_embeddings),
             num_satellite_patches=len(satellite_embeddings),
             panorama_info_from_pano_idx={
@@ -532,6 +554,99 @@ class HardNegativeMinerTest(unittest.TestCase):
             self.assertEqual(batch_idxs[0].panorama_idx, 0)
             self.assertEqual(batch_idxs[0].satellite_idx, 2)
 
+    def test_negative_miner_with_multiple_embeddings(self):
+        '''
+        Test that the hard negative miner works correctly with multiple embeddings per sample
+        and that it actually selects the hardest negatives based on similarity scores.
+        '''
+        # Setup
+        EMBEDDING_DIMENSION = 4
+        BATCH_SIZE = 1
+        NUM_SAT_EMBEDDINGS = 2
+        NUM_PANO_EMBEDDINGS = 3
+
+        # Create embeddings with multiple vectors per sample where we can predict the hardest negative
+        # Panorama embedding: orthogonal vectors
+        panorama_embeddings = torch.tensor([
+            [[1.0, 0.0, 0.0, 0.0],
+             [0.0, 1.0, 0.0, 0.0],
+             [0.0, 0.0, 1.0, 0.0]]
+        ])  # 1 x 3 x 4
+
+        # Satellite embeddings designed so satellite_1 will be the hardest overall (and selected):
+        # - satellite_0: positive match (moderate similarity)
+        # - satellite_1: very similar to panorama (highest similarity - will be selected in hard negative mode)
+        # - satellite_2: least similar (easy negative)
+        satellite_embeddings = torch.tensor([
+            # satellite_0: positive match - moderate similarity
+            [[0.6, 0.8, 0.0, 0.0],   # moderate similarity to pano embedding 0
+             [0.8, 0.6, 0.0, 0.0]],  # moderate similarity to pano embedding 1
+            # satellite_1: semipositive - highest similarity (will be selected in hard negative mode)
+            [[0.95, 0.0, 0.0, 0.0],  # very high similarity to pano embedding 0
+             [0.0, 0.95, 0.0, 0.0]], # very high similarity to pano embedding 1
+            # satellite_2: negative - very different (low similarity)
+            [[-1.0, 0.0, 0.0, 0.0],  # opposite to pano embedding 0
+             [0.0, -1.0, 0.0, 0.0]]  # opposite to pano embedding 1
+        ])  # 3 x 2 x 4
+        generator = torch.Generator().manual_seed(42)
+
+        # Create a cosine distance model for the test
+        distance_config = CosineDistanceConfig()
+        distance_model = CosineDistance(distance_config)
+
+        miner = vigor_dataset.HardNegativeMiner(
+            batch_size=BATCH_SIZE,
+            embedding_dimension=EMBEDDING_DIMENSION,
+            num_sat_embeddings=NUM_SAT_EMBEDDINGS,
+            num_pano_embeddings=NUM_PANO_EMBEDDINGS,
+            random_sample_type=vigor_dataset.HardNegativeMiner.RandomSampleType.POS_SEMIPOS,
+            distance_model=distance_model,
+            num_panoramas=len(panorama_embeddings),
+            num_satellite_patches=len(satellite_embeddings),
+            hard_negative_pool_size=1,  
+            panorama_info_from_pano_idx={
+                0: vigor_dataset.PanoramaIndexInfo(
+                    panorama_idx=0,
+                    nearest_satellite_idx=2,
+                    positive_satellite_idxs=[0],      # satellite_0 is positive
+                    semipositive_satellite_idxs=[1])},  # satellite_1 is semipositive (but will be selected due to high similarity)
+            device='cpu',
+            generator=generator)
+
+        # First, let's verify the similarity rankings to understand what should be selected
+        similarities = distance_model(
+            sat_embeddings_unnormalized=satellite_embeddings,
+            pano_embeddings_unnormalized=panorama_embeddings
+        )
+
+        # Should return a 1x3 tensor (1 pano, 3 sats)
+        self.assertEqual(similarities.shape, (1, 3))
+
+        # Get the similarity scores for panorama 0
+        pano_0_similarities = similarities[0]  # shape: [3]
+
+        # Satellite_1 should be the most similar overall (including positives/semipositives)
+        # This is why it will be selected in hard negative mode
+        self.assertGreater(pano_0_similarities[1].item(), pano_0_similarities[0].item(),
+                          "Satellite 1 should be more similar than satellite 0")
+        self.assertGreater(pano_0_similarities[1].item(), pano_0_similarities[2].item(),
+                          "Satellite 1 should be more similar than satellite 2")
+
+        # Action - test hard negative mining
+        miner.set_sample_mode(vigor_dataset.HardNegativeMiner.SampleMode.HARD_NEGATIVE)
+        miner.consume(
+            panorama_embeddings=panorama_embeddings,
+            satellite_embeddings=satellite_embeddings,
+            panorama_idxs=[0],
+            satellite_patch_idxs=[0, 1, 2])
+
+        # Verification - hard negative mining should consistently select the most similar samples
+        # (which includes positives, semipositives, and negatives - it picks the "hardest" overall)
+        for i in range(100):  # Run multiple times to check consistency
+            batch_idxs = next(iter(miner))
+            self.assertEqual(len(batch_idxs), BATCH_SIZE)
+            self.assertEqual(batch_idxs[0].panorama_idx, 0)
+            self.assertEqual(batch_idxs[0].satellite_idx, 1)
 
 if __name__ == "__main__":
     unittest.main()

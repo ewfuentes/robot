@@ -2,11 +2,88 @@
 load("@pip//:requirements.bzl", "requirement")
 load("@rules_python//python:packaging.bzl", "py_wheel", "py_package")
 
+py_library(
+  name="pairing",
+  srcs=["pairing.py"],
+  visibility=["//common/python:__subpackages__"],
+)
+
+py_test(
+  name="pairing_test",
+  srcs=["pairing_test.py"],
+  deps=[
+    ":pairing",
+    "//common/torch:load_torch_deps",
+  ]
+)
+
+py_test(
+  name="distances_test",
+  srcs=["distances_test.py"],
+  deps=[
+    ":distances",
+    "//common/torch:load_torch_deps",
+    requirement("torch"),
+    requirement("msgspec"),
+    "//common/python:serialization",
+  ]
+)
+
+py_library(
+  name="losses",
+  srcs=["losses.py"],
+  visibility=["//common/python:__subpackages__"],
+  deps=[
+    ":pairing",
+    ":distances",
+    requirement("torch"),
+    requirement("msgspec"),
+    "//common/python:serialization",
+    "//common/torch:load_torch_deps",
+  ]
+)
+
+py_library(
+  name="distances",
+  srcs=["distances.py"],
+  visibility=["//common/python:__subpackages__", "//experimental/overhead_matching/swag:__subpackages__"],
+  deps=[
+    "//common/python:serialization",
+    requirement("msgspec"),
+    requirement("torch"),
+  ]
+)
+py_library(
+  name="logging_utils",
+  srcs=["logging_utils.py"],
+  visibility=["//common/python:__subpackages__"],
+  deps=[
+    requirement("torch"),
+  ]
+)
+
+py_library(
+  name = "lr_sweep",
+  srcs = ["lr_sweep.py"],
+  visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+  deps = [
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("matplotlib"),
+  ]
+)
+
+
 py_binary(
   name="train",
   srcs=["train.py"],
   visibility=["//common/python:__subpackages__"],
   deps=[
+    ":logging_utils",
+    ":lr_sweep",
+    ":pairing",
+    ":losses",
+    ":distances",
     requirement("torch"),
     requirement("tensorboard"),
     requirement("tqdm"),
@@ -90,6 +167,7 @@ py_binary(
   deps = [
     requirement("msgspec"),
     ":train",
+    "//common/python:serialization",
   ]
 )
 
@@ -130,6 +208,7 @@ py_binary(
     requirement("msgspec"),
     requirement("torch"),
     requirement("tqdm"),
+    "//common/python:serialization",
     "//common/torch:load_torch_deps",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
     ":train",
