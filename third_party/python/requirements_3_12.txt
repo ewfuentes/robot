@@ -689,6 +689,10 @@ defusedxml==0.7.1 \
     # via
     #   nbconvert
     #   supervision
+# WARNING: pip install will require the following package to be hashed.
+# Consider using a hashable URL like https://github.com/jazzband/pip-tools/archive/SOMECOMMIT.zip
+depth-pro @ git+https://github.com/apple/ml-depth-pro.git@9efe5c1def37a26c5367a71df664b18e1306c708
+    # via -r third_party/python/requirements_3_12.in
 depthai==2.28.0.0 \
     --hash=sha256:00a134ac521f41a8e51005ce912ad195595258cd343bb371cbdf5c8bf35e7bb3 \
     --hash=sha256:0530886985f8e2f9df2d6c5640f46e0f34100d318e11742dfa119bddf62d040f \
@@ -1778,6 +1782,7 @@ matplotlib==3.9.2 \
     # via
     #   -r third_party/python/requirements_3_12.in
     #   cert-tools
+    #   depth-pro
     #   hloc
     #   ipympl
     #   lightglue
@@ -1947,6 +1952,7 @@ numpy==1.26.4 \
     #   contourpy
     #   cvxpy
     #   cvxpylayers
+    #   depth-pro
     #   easyocr
     #   fvcore
     #   geopandas
@@ -2271,12 +2277,61 @@ pillow==10.4.0 \
     #   imageio
     #   ipympl
     #   matplotlib
+    #   pillow-heif
     #   reportlab
     #   sam-2
     #   scikit-image
     #   sentence-transformers
     #   supervision
     #   torchvision
+pillow-heif==0.22.0 \
+    --hash=sha256:165b7e0d87e233f42be3de1237d7c026916c356de476d4aeaac1febafaab45c3 \
+    --hash=sha256:1a5c88b34b49731d79deaf4f4ac8726400de9ca44e5b50cae56775ee60c3b85b \
+    --hash=sha256:1b46976aa563e031dece0b9eb3611e02622e2a6cea0e3f4146e0dd95b304505d \
+    --hash=sha256:1f548d852405a84bdfbc76ec060e94c0b17c9a06da968c104fd6146d874d9f07 \
+    --hash=sha256:2345932d4efea71fce7990a8412c37f2e1dd19bf97909f42d96a452ad18a21db \
+    --hash=sha256:24b7b5bdc5a3a953cdf1de8aa8ee83b0305ab6be3c7808b1ca67594df0d750e2 \
+    --hash=sha256:27400e7abc476df122d712b44cfe2eac5b2825cbe8761541bfc9a1c64ba2cb56 \
+    --hash=sha256:29caf663afcf142ac7ffb903fda4e5a01991054a0fe4abd379fef3d42575ca67 \
+    --hash=sha256:31a2a4838b3eacec665befbd621a43201c2ece0e35d636e001c4039cca875ba8 \
+    --hash=sha256:487543a9d00157132f1aa45eee8099b3359c8626a85ee420dd28abab0d29428b \
+    --hash=sha256:49f2258f08d85cab66408c48fa437accbe9b89f2387a4e847664645c8ce7e669 \
+    --hash=sha256:550093ee350c8cd404dbba61f7449d4ecc018109ab65f6f89b96a6dc39dde177 \
+    --hash=sha256:5af08d451689539a2f9c4c6088180548b6146475f34d41a1334bc4ee1eab7a0b \
+    --hash=sha256:5c6f37f7f2ef0a12cfb8498c75ce964a57ca61258058c1bceb6dee4327b5b324 \
+    --hash=sha256:61d473929340d3073722f6316b7fbbdb11132faa6bac0242328e8436cc55b39a \
+    --hash=sha256:646f2d05dd4a84ee1feb3a4aaa092269bf8f3f615c8f36d6e5d15b22a79d7cdd \
+    --hash=sha256:6cb570abd9045f0141fe5053d8d0adf09e2d4c0bf51ae1736140d48a9cfec2d3 \
+    --hash=sha256:6e31596116328d0a3bd5a3be9fbacea56e28d5950c824b12d2486e9989364bc0 \
+    --hash=sha256:782eef461c836b3947fe253baaa5dcf6c75fba484c4905b4ac6b5b1a0bb04b7c \
+    --hash=sha256:79010a7c4544d8e2ff2027087003a77e679d35399c6a1d73d6344d88acef0d2c \
+    --hash=sha256:7903f947db209b39e63e83def9885c2cb8bd3ace9982c5950773470911a6651e \
+    --hash=sha256:7b91c8a76bafdf776c4251475805ce777c2803e30386e997738a6b5c80efe437 \
+    --hash=sha256:827640bbb58b227a60095911f909d9eead1f7aa31417a80aa86b87f15bfa758b \
+    --hash=sha256:8b6e195b4cb17bf71e374b167f14be434dde54bb68afee6fba5aa1b6f7644bee \
+    --hash=sha256:8ccd70ff3c30e93f8153fa08b5533aee54a73574c980784f0b74f5fba7b61e19 \
+    --hash=sha256:9b7d765b00e7b80245120e0d53259b61f54bba2957f116f5ee07fcc1769be93f \
+    --hash=sha256:a15ecf743d14bc772188bf8f25f15f81ddf9a441e8dbe53f6ee10582431ccb01 \
+    --hash=sha256:a7c70fe0b5b6c232749ac7cbb608f0732a66804598a422cfcfbb1fb77e076f77 \
+    --hash=sha256:b3035b4b4304e7624f9559989618ccad8ac614144befd30361ff51941b8c1b44 \
+    --hash=sha256:bac5e9a4d85ffc724180eb0fa3aef304aa9b67faea6f86c33e4c2e6a447db098 \
+    --hash=sha256:bc78e4eb3198462ad6a79a73b7da0bc83a7d50a24e65429104e491cd3924ec08 \
+    --hash=sha256:bf30bcaab9d2c0dbc43bb58d385faa9d3d8a693392beb50287aa6cda7a2f769e \
+    --hash=sha256:c5b25c2c4f147ca57e51ecfdd833c9ae9cbf00c8da34b7892ec0c8f4b57785b9 \
+    --hash=sha256:c65291dc4f2f8404720b781580aba00eb3120acd26d829a58140b317d69093d3 \
+    --hash=sha256:d68d5eb3ea132613ed2fc6b20cf30359b886786b5b428554cd951a8aab4cd1e4 \
+    --hash=sha256:d7b8b1535df032730d3a1b4050f235b539dddac784dfc58612b072dcab3f85c1 \
+    --hash=sha256:d96d73cb237ca55aeff09bd13eb7824f3f279ef8939583a3c57b9e765d5bc7a7 \
+    --hash=sha256:d9dcde90c30e61f1f0da30393bf1983fe8dad3b890f52406e617b7840c682948 \
+    --hash=sha256:e760f910ff90a97f9764be79e55a14c4ad0470322bb60b40789b3a0c38200dd3 \
+    --hash=sha256:e78b48e85c981d03a3307bcf258763d54a2ab3d2426f11b3e6345d63fda038cb \
+    --hash=sha256:e8a058d7243779f5b02736b16d5be8f4a13321cb9163dd06a3ea90052dd68cb8 \
+    --hash=sha256:ee1a8d571636dffcc576d0d23a4017fe9c4635e585944fe72af6cfa7a5ed05ff \
+    --hash=sha256:f0e980ac065690a61732dbdc3bac50de4064d09df24fca435178bd63df31a180 \
+    --hash=sha256:f73b7ce0d47e2dbd4f89de765a0c2d6e75f7dde95c5a5d87c4a6ad11bc9da4a3 \
+    --hash=sha256:f8563f14d76e544f5d1e8915c34dc2b01863351b7f74efbbaf9671d599b4ea5b \
+    --hash=sha256:ff9f295a89b616e2f1648286752f269d4e3055f54884a7a46c5c74ea4b23c20c
+    # via depth-pro
 platformdirs==4.3.8 \
     --hash=sha256:3d512d96e16bcb959a814c9f348431070822a6496326a4be0911c40b5a74c2bc \
     --hash=sha256:ff7059bb7eb1179e2685604f4aaf157cfd9535242bd23742eadc3c13542139b4
@@ -3737,7 +3792,9 @@ tifffile==2025.6.11 \
 timm==1.0.19 \
     --hash=sha256:6e71e1f67ac80c229d3a78ca58347090514c508aeba8f2e2eb5289eda86e9f43 \
     --hash=sha256:c07b56c32f3d3226c656f75c1b5479c08eb34eefed927c82fd8751a852f47931
-    # via open-clip-torch
+    # via
+    #   depth-pro
+    #   open-clip-torch
 tinycss2==1.4.0 \
     --hash=sha256:10c0972f6fc0fbee87c3edb76549357415e94548c1ae10ebccdea16fb404a9b7 \
     --hash=sha256:3a49cf47b7675da0b15d0c6e1df8df4ebd96e9394bb905a5775adb0d884c5289
@@ -3784,6 +3841,7 @@ torch==2.7.0+cu128 \
     --hash=sha256:fa05ac6ebed4777de7a5eff398c1f17b697c02422516748ce66a8151873e5a0e
     # via
     #   -r third_party/python/requirements_3_12.in
+    #   depth-pro
     #   dinov2
     #   easyocr
     #   hloc
@@ -3818,6 +3876,7 @@ torchvision==0.22.0+cu128 \
     --hash=sha256:f3ac527d58b4c2043eb8d9e29fc56cd1751f36f2aaa6dc75e34ec54c951bcb9c \
     --hash=sha256:f5dae1307c34813425c0b753530c035e1cc72af0bded395d1ba64dcb2872889f
     # via
+    #   depth-pro
     #   dinov2
     #   easyocr
     #   hloc
