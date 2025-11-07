@@ -28,6 +28,31 @@ py_test(
 )
 
 py_library(
+  name = "landmark_scheduler",
+  srcs = ["landmark_scheduler.py"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+  ],
+  deps = [
+    requirement("torch"),
+    requirement("msgspec"),
+    "//common/python:serialization",
+    "//common/torch:load_torch_deps",
+    ":swag_model_input_output",
+  ]
+)
+
+py_test(
+  name = "landmark_scheduler_test",
+  srcs = ["landmark_scheduler_test.py"],
+  deps = [
+    requirement("torch"),
+    "//common/torch:load_torch_deps",
+    ":landmark_scheduler",
+  ]
+)
+
+py_library(
   name = "swag_patch_embedding",
   srcs = ["swag_patch_embedding.py"],
   visibility = [
@@ -47,6 +72,7 @@ py_library(
     ":osm_semantic_class_extractor",
     ":swag_config_types",
     ":swag_model_input_output",
+    ":landmark_scheduler",
     "//common/torch:load_torch_deps",
   ]
 )

@@ -5,6 +5,10 @@ import common.torch.load_torch_deps  # noqa: F401
 import torch
 
 from experimental.overhead_matching.swag.model import swag_patch_embedding as spe
+from experimental.overhead_matching.swag.model.landmark_scheduler import (
+    LandmarkDropoutScheduleConfig,
+    LandmarkDropoutScheduler,
+)
 
 
 class SwagPatchEmbeddingTest(unittest.TestCase):
@@ -313,6 +317,257 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
         self.assertEqual(model.output_dim, 0)
         # Verify all values are zero (even though dimension is 0)
         self.assertEqual(result.numel(), 0)
+
+    def test_panorama_landmark_dropout_deterministic(self):
+        """Test that dropout is deterministic based on pano_id."""
+        # Setup
+        BATCH_DIM = 2
+        NUM_IMAGE_ROWS = 320
+        NUM_IMAGE_COLS = 640
+        config = spe.SwagPatchEmbeddingConfig(
+            extractor_config_by_name={
+                "test_extractor": spe.SemanticEmbeddingMatrixConfig(
+                    vocabulary=["a", "b", "c"],
+                    embedding_dim=8),
+            },
+            position_embedding_config=spe.NullPositionEmbeddingConfig(),
+            aggregation_config=spe.TransformerAggregatorConfig(
+                num_transformer_layers=2,
+                num_attention_heads=4,
+                hidden_dim=64,
+                dropout_frac=0.1),
+            patch_dims=(NUM_IMAGE_ROWS, NUM_IMAGE_COLS),
+            output_dim=16,
+            num_embeddings=1)
+
+        # Create scheduler with dropout configuration
+        dropout_scheduler = LandmarkDropoutScheduler(
+            schedules=[
+                LandmarkDropoutScheduleConfig(
+                    start_progress=0.0,
+                    end_progress=1.0,
+                    initial_dropout_rate=0.5,
+                    final_dropout_rate=0.5,
+                    extractor_names=["test_extractor"],
+                    min_landmarks=2
+                )
+            ],
+            total_epochs=10)
+        dropout_scheduler.set_epoch(0)
+
+        model = spe.SwagPatchEmbedding(config)
+        input_image = torch.zeros((BATCH_DIM, 3, NUM_IMAGE_ROWS, NUM_IMAGE_COLS))
+
+        # Create panorama metadata (with pano_id)
+        metadata = [
+            {"pano_id": "pano_001",
+             "web_mercator_y": 100.0,
+             "web_mercator_x": 200.0,
+             "landmarks": [
+                {"web_mercator_y": 95.0, "web_mercator_x": 210.0, "landmark_type": "a"},
+                {"web_mercator_y": 90.0, "web_mercator_x": 190.0, "landmark_type": "b"},
+                {"web_mercator_y": 105.0, "web_mercator_x": 195.0, "landmark_type": "c"},
+                {"web_mercator_y": 110.0, "web_mercator_x": 205.0, "landmark_type": "a"}]},
+            {"pano_id": "pano_002",
+             "web_mercator_y": 300.0,
+             "web_mercator_x": 400.0,
+             "landmarks": [
+                {"web_mercator_y": 275.0, "web_mercator_x": 425.0, "landmark_type": "c"},
+                {"web_mercator_y": 350.0, "web_mercator_x": 390.0, "landmark_type": "b"}]}
+        ]
+
+        # Action - run twice with same input
+        model_input = spe.ModelInput(image=input_image, metadata=metadata)
+        result1, outputs1 = model(model_input, dropout_scheduler)
+
+        result2, outputs2 = model(model_input, dropout_scheduler)
+
+        # Verification - masks should be identical across runs
+        mask1 = outputs1["test_extractor"].mask
+        mask2 = outputs2["test_extractor"].mask
+        self.assertTrue(torch.equal(mask1, mask2), "Dropout should be deterministic")
+
+        # Verify dropout happened (at least some landmarks masked)
+        self.assertTrue(mask1[0].any() or mask1[1].any(),
+                       "At least some landmarks should be dropped")
+
+    def test_panorama_landmark_dropout_respects_minimum(self):
+        """Test that dropout respects min_panorama_landmarks."""
+        # Setup
+        BATCH_DIM = 1
+        NUM_IMAGE_ROWS = 320
+        NUM_IMAGE_COLS = 640
+        MIN_LANDMARKS = 3
+        config = spe.SwagPatchEmbeddingConfig(
+            extractor_config_by_name={
+                "test_extractor": spe.SemanticEmbeddingMatrixConfig(
+                    vocabulary=["a", "b", "c"],
+                    embedding_dim=8),
+            },
+            position_embedding_config=spe.NullPositionEmbeddingConfig(),
+            aggregation_config=spe.TransformerAggregatorConfig(
+                num_transformer_layers=2,
+                num_attention_heads=4,
+                hidden_dim=64,
+                dropout_frac=0.1),
+            patch_dims=(NUM_IMAGE_ROWS, NUM_IMAGE_COLS),
+            output_dim=16,
+            num_embeddings=1)
+
+        # Create scheduler with dropout configuration
+        dropout_scheduler = LandmarkDropoutScheduler(
+            schedules=[
+                LandmarkDropoutScheduleConfig(
+                    start_progress=0.0,
+                    end_progress=1.0,
+                    initial_dropout_rate=0.9,  # High dropout rate
+                    final_dropout_rate=0.9,
+                    extractor_names=["test_extractor"],
+                    min_landmarks=MIN_LANDMARKS
+                )
+            ],
+            total_epochs=10)
+        dropout_scheduler.set_epoch(0)
+
+        model = spe.SwagPatchEmbedding(config)
+        input_image = torch.zeros((BATCH_DIM, 3, NUM_IMAGE_ROWS, NUM_IMAGE_COLS))
+
+        # Create metadata with more landmarks than minimum
+        metadata = [
+            {"pano_id": "pano_001",
+             "web_mercator_y": 100.0,
+             "web_mercator_x": 200.0,
+             "landmarks": [
+                {"web_mercator_y": float(95 + i), "web_mercator_x": float(210 + i), "landmark_type": "a"}
+                for i in range(10)
+             ]}
+        ]
+
+        # Action
+        model_input = spe.ModelInput(image=input_image, metadata=metadata)
+        result, outputs = model(model_input, dropout_scheduler)
+
+        # Verification - should keep at least MIN_LANDMARKS
+        mask = outputs["test_extractor"].mask[0]
+        num_kept = (~mask).sum().item()
+        self.assertGreaterEqual(num_kept, MIN_LANDMARKS,
+                               f"Should keep at least {MIN_LANDMARKS} landmarks")
+
+    def test_panorama_landmark_dropout_satellite_unaffected(self):
+        """Test that when no dropout scheduler is passed, landmarks are not affected.
+
+        Note: With the new design, dropout schedules are passed to forward() calls.
+        When no scheduler is passed, no dropout occurs.
+        This test verifies that a model without a dropout scheduler works correctly.
+        """
+        # Setup - satellite uses square patch, NO dropout configured
+        BATCH_DIM = 1
+        NUM_IMAGE_SIZE = 320
+        config = spe.SwagPatchEmbeddingConfig(
+            extractor_config_by_name={
+                "test_extractor": spe.SemanticEmbeddingMatrixConfig(
+                    vocabulary=["a", "b", "c"],
+                    embedding_dim=8),
+            },
+            position_embedding_config=spe.NullPositionEmbeddingConfig(),
+            aggregation_config=spe.TransformerAggregatorConfig(
+                num_transformer_layers=2,
+                num_attention_heads=4,
+                hidden_dim=64,
+                dropout_frac=0.1),
+            patch_dims=(NUM_IMAGE_SIZE, NUM_IMAGE_SIZE),  # Square = satellite
+            output_dim=16,
+            num_embeddings=1)
+
+        model = spe.SwagPatchEmbedding(config)
+        input_image = torch.zeros((BATCH_DIM, 3, NUM_IMAGE_SIZE, NUM_IMAGE_SIZE))
+
+        # Create satellite metadata (no pano_id)
+        metadata = [
+            {"web_mercator_y": 100.0,
+             "web_mercator_x": 200.0,
+             "landmarks": [
+                {"web_mercator_y": 95.0, "web_mercator_x": 210.0, "landmark_type": "a"},
+                {"web_mercator_y": 90.0, "web_mercator_x": 190.0, "landmark_type": "b"},
+                {"web_mercator_y": 105.0, "web_mercator_x": 195.0, "landmark_type": "c"},
+                {"web_mercator_y": 110.0, "web_mercator_x": 205.0, "landmark_type": "a"}]}
+        ]
+
+        # Action - no scheduler passed
+        model_input = spe.ModelInput(image=input_image, metadata=metadata)
+        result, outputs = model(model_input)
+
+        # Verification - no dropout should occur when no scheduler passed
+        mask = outputs["test_extractor"].mask[0]
+        num_kept = (~mask).sum().item()
+        self.assertEqual(num_kept, 4, "All landmarks should be kept when no dropout scheduler passed")
+
+    def test_panorama_landmark_dropout_percentage(self):
+        """Test that dropout percentage is approximately correct."""
+        # Setup
+        BATCH_DIM = 1
+        NUM_IMAGE_ROWS = 320
+        NUM_IMAGE_COLS = 640
+        DROPOUT_RATE = 0.3
+        NUM_LANDMARKS = 100  # Large number for statistical testing
+
+        config = spe.SwagPatchEmbeddingConfig(
+            extractor_config_by_name={
+                "test_extractor": spe.SemanticEmbeddingMatrixConfig(
+                    vocabulary=["a"],
+                    embedding_dim=8),
+            },
+            position_embedding_config=spe.NullPositionEmbeddingConfig(),
+            aggregation_config=spe.TransformerAggregatorConfig(
+                num_transformer_layers=2,
+                num_attention_heads=4,
+                hidden_dim=64,
+                dropout_frac=0.1),
+            patch_dims=(NUM_IMAGE_ROWS, NUM_IMAGE_COLS),
+            output_dim=16,
+            num_embeddings=1)
+
+        # Create scheduler with dropout configuration
+        dropout_scheduler = LandmarkDropoutScheduler(
+            schedules=[
+                LandmarkDropoutScheduleConfig(
+                    start_progress=0.0,
+                    end_progress=1.0,
+                    initial_dropout_rate=DROPOUT_RATE,
+                    final_dropout_rate=DROPOUT_RATE,
+                    extractor_names=["test_extractor"],
+                    min_landmarks=1
+                )
+            ],
+            total_epochs=10)
+        dropout_scheduler.set_epoch(0)
+
+        model = spe.SwagPatchEmbedding(config)
+        input_image = torch.zeros((BATCH_DIM, 3, NUM_IMAGE_ROWS, NUM_IMAGE_COLS))
+
+        # Create metadata with many landmarks
+        metadata = [
+            {"pano_id": "pano_001",
+             "web_mercator_y": 100.0,
+             "web_mercator_x": 200.0,
+             "landmarks": [
+                {"web_mercator_y": float(95 + i), "web_mercator_x": float(210 + i), "landmark_type": "a"}
+                for i in range(NUM_LANDMARKS)
+             ]}
+        ]
+
+        # Action
+        model_input = spe.ModelInput(image=input_image, metadata=metadata)
+        result, outputs = model(model_input, dropout_scheduler)
+
+        # Verification
+        mask = outputs["test_extractor"].mask[0]
+        num_kept = (~mask).sum().item()
+        expected_kept = int(NUM_LANDMARKS * (1 - DROPOUT_RATE))
+
+        # Allow some tolerance (within 5 landmarks)
+        self.assertAlmostEqual(num_kept, expected_kept, delta=5,
+                              msg=f"Expected ~{expected_kept} landmarks, got {num_kept}")
 
 
 if __name__ == "__main__":

@@ -398,6 +398,8 @@ class TransformerAggregator(torch.nn.Module):
 class SwagPatchEmbedding(torch.nn.Module):
     def __init__(self, config: SwagPatchEmbeddingConfig):
         super().__init__()
+        self._config = config
+        # Debug flag to store extractor outputs during forward pass
         self._extractor_by_name = torch.nn.ModuleDict({
             k: create_extractor(c, config.auxiliary_info)
             for k, c in config.extractor_config_by_name.items()})
@@ -475,7 +477,7 @@ class SwagPatchEmbedding(torch.nn.Module):
                 metadata=batch_item.satellite_metadata,
                 cached_tensors=batch_item.cached_satellite_tensors)
 
-    def _get_input_tokens(self, model_input: ModelInput) -> tuple[torch.Tensor, torch.Tensor, dict[str, ExtractorOutput]]:
+    def _get_input_tokens(self, model_input: ModelInput, landmark_dropout_scheduler=None) -> tuple[torch.Tensor, torch.Tensor, dict[str, ExtractorOutput]]:
         dev = self._cls_token.device
         extractor_outputs_by_name = {}
         for k in self._extractor_by_name:
@@ -483,6 +485,13 @@ class SwagPatchEmbedding(torch.nn.Module):
             if extractor_outputs_by_name[k] is None:
                 extractor_outputs_by_name[k] = self._extractor_by_name[k](model_input)
                 assert extractor_outputs_by_name[k].positions.ndim == 4, f"relative positions of {k} is not 4 dimensional"
+
+        # Apply scheduled landmark dropout if scheduler is provided
+        if landmark_dropout_scheduler is not None:
+            extractor_outputs_by_name = landmark_dropout_scheduler.apply_dropout(
+                extractor_outputs_by_name,
+                model_input,
+            )
 
         input_tokens_by_name = {}
         for k, v in extractor_outputs_by_name.items():
@@ -510,7 +519,7 @@ class SwagPatchEmbedding(torch.nn.Module):
 
         return input_tokens, input_mask, extractor_outputs_by_name
 
-    def forward(self, model_input: ModelInput) -> tuple[torch.Tensor, dict[str, ExtractorOutput]]:
+    def forward(self, model_input: ModelInput, landmark_dropout_scheduler=None) -> tuple[torch.Tensor, dict[str, ExtractorOutput]]:
         """Forward pass through the model.
 
         Args:
@@ -521,7 +530,7 @@ class SwagPatchEmbedding(torch.nn.Module):
                 - embeddings: Tensor of shape (batch, num_embeddings, output_dim)
                 - debug dict: currently extractor_outputs_by_name: Dict mapping extractor names to their ExtractorOutput objects
         """
-        input_tokens, input_mask, extractor_outputs_by_name = self._get_input_tokens(model_input)
+        input_tokens, input_mask, extractor_outputs_by_name = self._get_input_tokens(model_input, landmark_dropout_scheduler)
         output_tokens = self._aggregator_model(input_tokens, input_mask)
         model_output = output_tokens[:, :self._cls_token.shape[1], :]  # B, num_class_tokens, D_emb
 

@@ -1021,65 +1021,89 @@ def load_osm_landmarks(geojson_path, sentences_dir, embeddings_dir=None):
             osm_embedding_index = {}
             osm_index_reverse = []
         else:
-            # Collect embeddings for our loaded landmarks
-            embeddings_data = []  # List of (custom_id, embedding_vector)
-            custom_ids_set = set(osm_landmarks_dict.keys())
+            pkl_file = embeddings_path / "embeddings.pkl"
+            osm_embeddings = None  # Initialize before trying to load
 
-            print(f"    Reading embedding files for {len(custom_ids_set)} landmarks...")
-            files_processed = 0
-            for jsonl_file in embeddings_path.glob('*'):
-                files_processed += 1
-                with open(jsonl_file, 'r') as f:
-                    for line in f:
-                        try:
-                            entry = json.loads(line)
-                            custom_id = entry['custom_id']
+            # Try to load from .pkl file first (fast path, same as semantic_landmark_extractor)
+            if pkl_file.exists():
+                print(f"    Loading from {pkl_file}...")
+                try:
+                    with open(pkl_file, 'rb') as f:
+                        osm_embeddings, osm_embedding_index = pickle.load(f)
 
-                            # Only load if we have this landmark
-                            if custom_id not in custom_ids_set:
-                                continue
+                    # Build reverse index
+                    osm_index_reverse = [None] * len(osm_embedding_index)
+                    for custom_id, idx in osm_embedding_index.items():
+                        osm_index_reverse[idx] = custom_id
 
-                            # Extract embedding from response
-                            if 'response' not in entry or 'body' not in entry['response']:
-                                continue
+                    print(f"    Loaded {osm_embeddings.shape[0]} OSM embeddings from .pkl in {time.time()-emb_start:.1f}s")
+                except Exception as e:
+                    print(f"    Failed to load .pkl file: {e}, falling back to JSONL...")
+                    osm_embeddings = None  # Reset on failure
 
-                            body = entry['response']['body']
-                            if 'data' not in body or len(body['data']) == 0:
-                                continue
+            # Fall back to JSONL loading if .pkl doesn't exist or failed
+            if osm_embeddings is None:
+                # Collect embeddings for our loaded landmarks
+                embeddings_data = []  # List of (custom_id, embedding_vector)
+                custom_ids_set = set(osm_landmarks_dict.keys())
 
-                            embedding = body['data'][0]['embedding']
-                            embeddings_data.append((custom_id, embedding))
+                print(f"    Reading embedding files for {len(custom_ids_set)} landmarks...")
+                files_processed = 0
+                for jsonl_file in embeddings_path.glob('*'):
+                    if not jsonl_file.is_file() or jsonl_file.suffix == '.pkl':
+                        continue
+                    files_processed += 1
+                    with open(jsonl_file, 'r') as f:
+                        for line in f:
+                            try:
+                                entry = json.loads(line)
+                                custom_id = entry['custom_id']
 
-                        except Exception as e:
-                            pass  # Skip malformed entries
+                                # Only load if we have this landmark
+                                if custom_id not in custom_ids_set:
+                                    continue
 
-            print(f"    Processed {files_processed} files")
-            print(f"    Found {len(embeddings_data)} embeddings")
+                                # Extract embedding from response
+                                if 'response' not in entry or 'body' not in entry['response']:
+                                    continue
 
-            if len(embeddings_data) > 0:
-                # Build tensor and indices
-                print("    Building embedding tensor...")
-                embeddings_data.sort(key=lambda x: x[0])  # Sort by custom_id
+                                body = entry['response']['body']
+                                if 'data' not in body or len(body['data']) == 0:
+                                    continue
 
-                osm_embedding_index = {}
-                osm_index_reverse = []
-                embedding_vectors = []
+                                embedding = body['data'][0]['embedding']
+                                embeddings_data.append((custom_id, embedding))
 
-                for row_idx, (custom_id, embedding) in enumerate(embeddings_data):
-                    osm_embedding_index[custom_id] = row_idx
-                    osm_index_reverse.append(custom_id)
-                    embedding_vectors.append(embedding)
+                            except Exception as e:
+                                pass  # Skip malformed entries
 
-                # Convert to tensor
-                osm_embeddings = torch.tensor(embedding_vectors, dtype=torch.float32)
-                print(f"    Created tensor with shape {osm_embeddings.shape}")
-            else:
-                print("    No embeddings found!")
-                osm_embeddings = None
-                osm_embedding_index = {}
-                osm_index_reverse = []
+                print(f"    Processed {files_processed} files")
+                print(f"    Found {len(embeddings_data)} embeddings")
 
-            print(f"  Loaded OSM embeddings in {time.time()-emb_start:.1f}s")
+                if len(embeddings_data) > 0:
+                    # Build tensor and indices
+                    print("    Building embedding tensor...")
+                    embeddings_data.sort(key=lambda x: x[0])  # Sort by custom_id
+
+                    osm_embedding_index = {}
+                    osm_index_reverse = []
+                    embedding_vectors = []
+
+                    for row_idx, (custom_id, embedding) in enumerate(embeddings_data):
+                        osm_embedding_index[custom_id] = row_idx
+                        osm_index_reverse.append(custom_id)
+                        embedding_vectors.append(embedding)
+
+                    # Convert to tensor
+                    osm_embeddings = torch.tensor(embedding_vectors, dtype=torch.float32)
+                    print(f"    Created tensor with shape {osm_embeddings.shape}")
+                else:
+                    print("    No embeddings found!")
+                    osm_embeddings = None
+                    osm_embedding_index = {}
+                    osm_index_reverse = []
+
+                print(f"  Loaded OSM embeddings in {time.time()-emb_start:.1f}s")
     else:
         osm_embeddings = None
         osm_embedding_index = {}
@@ -1100,11 +1124,11 @@ def load_osm_landmarks(geojson_path, sentences_dir, embeddings_dir=None):
 
 def load_pano_embeddings(embeddings_dir, pano_sentences):
     """
-    Load panorama landmark embeddings from JSONL files.
+    Load panorama landmark embeddings from .pkl file if available, otherwise from JSONL files.
     Uses caching to avoid recomputing if inputs haven't changed.
 
     Args:
-        embeddings_dir: Directory containing panorama embedding JSONL files
+        embeddings_dir: Directory containing panorama embedding files (.pkl or JSONL)
         pano_sentences: dict[str, list[PanoramaLandmark]] to ensure consistency
 
     Returns:
@@ -1115,6 +1139,42 @@ def load_pano_embeddings(embeddings_dir, pano_sentences):
         print(f"Warning: Embeddings directory not found: {embeddings_dir}")
         return None, {}, []
 
+    pkl_file = embeddings_path / "embeddings.pkl"
+
+    # Try to load from .pkl file first (fast path, same as semantic_landmark_extractor)
+    if pkl_file.exists():
+        print(f"Loading panorama embeddings from {pkl_file}...")
+        start = time.time()
+        try:
+            with open(pkl_file, 'rb') as f:
+                embeddings_tensor, embedding_index_raw = pickle.load(f)
+
+            # Convert string landmark IDs to tuples
+            # The pkl file stores keys as strings like "pano_id,lat,lon,__landmark_N"
+            # But we need tuples like (pano_id, landmark_idx)
+            embedding_index = {}
+            index_reverse = [None] * len(embedding_index_raw)
+
+            for string_id, idx in embedding_index_raw.items():
+                # Parse custom_id: "pano_id,lat,lon,__landmark_N"
+                parts = string_id.split(',')
+                if len(parts) >= 4 and parts[3].startswith('__landmark_'):
+                    pano_id = parts[0]
+                    try:
+                        landmark_idx = int(parts[3].replace('__landmark_', ''))
+                        landmark_id = (pano_id, landmark_idx)
+                        embedding_index[landmark_id] = idx
+                        index_reverse[idx] = landmark_id
+                    except ValueError:
+                        continue
+
+            print(f"  Loaded {embeddings_tensor.shape[0]} panorama embeddings in {time.time()-start:.1f}s")
+            print(f"  Converted {len(embedding_index)} landmark IDs to tuple format")
+            return embeddings_tensor, embedding_index, index_reverse
+        except Exception as e:
+            print(f"  Failed to load .pkl file: {e}, falling back to JSONL...")
+
+    # Fall back to JSONL loading with caching
     # Compute cache key based on embeddings dir mtime and pano_sentences structure
     cache_key_parts = [
         f"embeddings:{embeddings_path.stat().st_mtime}",
@@ -1137,7 +1197,7 @@ def load_pano_embeddings(embeddings_dir, pano_sentences):
         except Exception as e:
             print(f"  Cache load failed: {e}, recomputing...")
 
-    print("Loading panorama embeddings (no cache found)...")
+    print("Loading panorama embeddings from JSONL (no cache found)...")
     start = time.time()
 
     # Collect all embeddings
@@ -1146,7 +1206,7 @@ def load_pano_embeddings(embeddings_dir, pano_sentences):
     print("  Reading embedding files...")
     files_processed = 0
     for jsonl_file in embeddings_path.glob('*'):
-        if not jsonl_file.is_file():
+        if not jsonl_file.is_file() or jsonl_file.suffix == '.pkl':
             continue
 
         files_processed += 1
@@ -1882,8 +1942,8 @@ def main():
 
     # Construct paths for OSM landmarks (if provided)
     if args.osm_landmarks_dir:
-        osm_sentences_dir = str(Path(args.osm_landmarks_dir) / 'sentences')
-        osm_embeddings_dir = str(Path(args.osm_landmarks_dir) / 'embeddings')
+        osm_sentences_dir = Path(args.osm_landmarks_dir) / 'sentences'
+        osm_embeddings_dir = Path(args.osm_landmarks_dir) / 'embeddings'
     else:
         osm_sentences_dir = None
         osm_embeddings_dir = None
@@ -1894,7 +1954,7 @@ def main():
         print("STEP 1: Loading OSM landmarks")
         print("="*60)
         osm_data = load_osm_landmarks(
-            args.osm_landmarks_geojson,
+            Path(args.osm_landmarks_geojson),
             osm_sentences_dir,
             osm_embeddings_dir
         )

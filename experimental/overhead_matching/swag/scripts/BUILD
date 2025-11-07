@@ -84,7 +84,6 @@ py_library(
   ]
 )
 
-
 py_binary(
   name="train",
   srcs=["train.py"],
