@@ -82,13 +82,14 @@ def process_reconstruction_data(dir_reconstruction: Path):
         n_points3D.append(len(current_points3D_id_to_2D))
 
 
-args = parse_args()
-# get undistorted images
-dir_images = Path(args.dir_images)
-dir_reconstruction = Path(args.dir_reconstruction)
+if __name__ == "__main__":
+    args = parse_args()
+    # get undistorted images
+    dir_images = Path(args.dir_images)
+    dir_reconstruction = Path(args.dir_reconstruction)
 
-assert dir_images.exists()
-assert dir_reconstruction.exists()
+    assert dir_images.exists()
+    assert dir_reconstruction.exists()
 
 
 # get reconstruction of images (per scene)
