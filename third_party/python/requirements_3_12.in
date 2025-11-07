@@ -48,4 +48,3 @@ cert_tools @ git+https://github.com/utiasASRL/certifiable-tools.git@afcd203bb462
 chompack @ git+https://github.com/ewfuentes/chompack.git@844adda111241bb64f7008e0d0680525290958f3
 hloc @ git+https://github.com/cvg/Hierarchical-Localization.git@2e2a5517d88c7c84db0efd77d720c858da19edcd; platform_machine == "x86_64"
 depth_pro  @ git+https://github.com/apple/ml-depth-pro.git@9efe5c1def37a26c5367a71df664b18e1306c708
-datasets 
