@@ -60,6 +60,7 @@ py_library(
     requirement("torch"),
     requirement("geopandas"),
     "//common/torch:load_torch_deps",
+    "//common/gps:web_mercator",
   ]
 )
 
@@ -72,6 +73,7 @@ py_test(
     requirement("geopandas"),
     requirement("shapely"),
     "//common/torch:load_torch_deps",
+    "//common/gps:web_mercator",
     ":observation_likelihood",
   ]
 )
