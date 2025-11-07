@@ -17,6 +17,7 @@ cc_library(
   name = "extract_landmarks",
   hdrs = ["extract_landmarks.hh"],
   srcs = ["extract_landmarks.cc"],
+  copts = ["-std=c++17"],
   deps = [
     "@libosmium",
     "@fmt",
@@ -27,6 +28,7 @@ cc_library(
 cc_test(
   name = "extract_landmarks_test",
   srcs = ["extract_landmarks_test.cc"],
+  copts = ["-std=c++17"],
   data = ["@openstreetmap_snippet//:files"],
   deps = [
     ":extract_landmarks",
@@ -37,6 +39,7 @@ cc_test(
 pybind_extension(
   name = "extract_landmarks_python",
   srcs = ["extract_landmarks_python.cc"],
+  copts = ["-std=c++17"],
   deps = [":extract_landmarks"],
   visibility = ["//visibility:public"],
 )

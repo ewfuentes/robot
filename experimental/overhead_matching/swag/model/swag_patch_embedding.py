@@ -45,6 +45,7 @@ from experimental.overhead_matching.swag.model.swag_config_types import (
     ExtractorDataRequirement,
     CacheableExtractorInfo,
 )
+from experimental.overhead_matching.swag.model.landmark_scheduler import LandmarkDropoutScheduleConfig
 
 
 class SwagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
@@ -63,7 +64,7 @@ class SwagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
     normalize_embeddings: bool = True
 
     # Landmark dropout scheduling configuration
-    landmark_dropout_schedules: list[LandmarkDropoutSchedule] = []
+    landmark_dropout_schedules: list[LandmarkDropoutScheduleConfig] = []
 
     # Trainable sentence embedder config (shared across all extractors in this model)
     trainable_embedder_config: TrainableSentenceEmbedderConfig | None = None

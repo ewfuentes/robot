@@ -31,12 +31,13 @@ class TrainableSentenceEmbedderTest(unittest.TestCase):
 
     def test_model_creation(self):
         """Test that the model can be created with a HuggingFace model."""
-        embedder = TrainableSentenceEmbedder(
+        config = TrainableSentenceEmbedderConfig(
             pretrained_model_name_or_path="prajjwal1/bert-tiny",  # Small model for testing
             output_dim=128,
             freeze_weights=True,
             max_sequence_length=64,
         )
+        embedder = TrainableSentenceEmbedder(config)
 
         self.assertEqual(embedder.output_dim, 128)
         self.assertEqual(embedder.max_sequence_length, 64)
@@ -47,12 +48,13 @@ class TrainableSentenceEmbedderTest(unittest.TestCase):
 
     def test_forward_pass_shape(self):
         """Test that forward pass produces correct output shape."""
-        embedder = TrainableSentenceEmbedder(
+        config = TrainableSentenceEmbedderConfig(
             pretrained_model_name_or_path="prajjwal1/bert-tiny",
             output_dim=256,
             freeze_weights=True,
             max_sequence_length=64,
         )
+        embedder = TrainableSentenceEmbedder(config)
 
         texts = ["This is a test.", "Another test sentence.", "Third one."]
         embeddings = embedder(texts)
@@ -61,12 +63,13 @@ class TrainableSentenceEmbedderTest(unittest.TestCase):
 
     def test_embeddings_are_normalized(self):
         """Test that output embeddings are normalized to unit length."""
-        embedder = TrainableSentenceEmbedder(
+        config = TrainableSentenceEmbedderConfig(
             pretrained_model_name_or_path="prajjwal1/bert-tiny",
             output_dim=128,
             freeze_weights=True,
             max_sequence_length=64,
         )
+        embedder = TrainableSentenceEmbedder(config)
 
         texts = ["Test sentence for normalization check."]
         embeddings = embedder(texts)
@@ -77,12 +80,13 @@ class TrainableSentenceEmbedderTest(unittest.TestCase):
 
     def test_empty_input(self):
         """Test handling of empty input list."""
-        embedder = TrainableSentenceEmbedder(
+        config = TrainableSentenceEmbedderConfig(
             pretrained_model_name_or_path="prajjwal1/bert-tiny",
             output_dim=128,
             freeze_weights=True,
             max_sequence_length=64,
         )
+        embedder = TrainableSentenceEmbedder(config)
 
         texts = []
         embeddings = embedder(texts)
@@ -91,12 +95,13 @@ class TrainableSentenceEmbedderTest(unittest.TestCase):
 
     def test_freeze_unfreeze(self):
         """Test freeze and unfreeze functionality."""
-        embedder = TrainableSentenceEmbedder(
+        config = TrainableSentenceEmbedderConfig(
             pretrained_model_name_or_path="prajjwal1/bert-tiny",
             output_dim=128,
             freeze_weights=True,
             max_sequence_length=64,
         )
+        embedder = TrainableSentenceEmbedder(config)
 
         # Initially frozen
         for param in embedder.transformer.parameters():
@@ -114,12 +119,13 @@ class TrainableSentenceEmbedderTest(unittest.TestCase):
 
     def test_batch_processing(self):
         """Test that batching produces consistent results."""
-        embedder = TrainableSentenceEmbedder(
+        config = TrainableSentenceEmbedderConfig(
             pretrained_model_name_or_path="prajjwal1/bert-tiny",
             output_dim=128,
             freeze_weights=True,
             max_sequence_length=64,
         )
+        embedder = TrainableSentenceEmbedder(config)
         embedder.eval()  # Ensure deterministic behavior
 
         text = "Test sentence for batch consistency."
@@ -137,12 +143,13 @@ class TrainableSentenceEmbedderTest(unittest.TestCase):
 
     def test_different_lengths(self):
         """Test handling of sentences with different lengths."""
-        embedder = TrainableSentenceEmbedder(
+        config = TrainableSentenceEmbedderConfig(
             pretrained_model_name_or_path="prajjwal1/bert-tiny",
             output_dim=128,
             freeze_weights=True,
             max_sequence_length=128,
         )
+        embedder = TrainableSentenceEmbedder(config)
 
         texts = [
             "Short.",
@@ -236,17 +243,17 @@ class SemanticLandmarkExtractorWithTrainableEmbedderTest(unittest.TestCase):
             freeze_weights=True,
             max_sequence_length=64,
         )
+        trainable_embedder = TrainableSentenceEmbedder(embedder_config)
 
         config = SemanticLandmarkExtractorConfig(
             landmark_type=LandmarkType.POINT,
             openai_embedding_size=1536,  # Not used with trainable embedder
             embedding_version="test_version",
             auxiliary_info_key="test_key",
-            trainable_embedder_config=embedder_config,
             osm_input_mode="natural_language",
         )
 
-        model = SemanticLandmarkExtractor(config, Path(self._temp_dir.name))
+        model = SemanticLandmarkExtractor(config, Path(self._temp_dir.name), trainable_embedder)
 
         # Check that trainable embedder was created
         self.assertIsNotNone(model.trainable_embedder)
@@ -260,17 +267,17 @@ class SemanticLandmarkExtractorWithTrainableEmbedderTest(unittest.TestCase):
             freeze_weights=True,
             max_sequence_length=64,
         )
+        trainable_embedder = TrainableSentenceEmbedder(embedder_config)
 
         config = SemanticLandmarkExtractorConfig(
             landmark_type=LandmarkType.POINT,
             openai_embedding_size=1536,
             embedding_version="test_version",
             auxiliary_info_key="test_key",
-            trainable_embedder_config=embedder_config,
             osm_input_mode="natural_language",
         )
 
-        model = SemanticLandmarkExtractor(config, Path(self._temp_dir.name))
+        model = SemanticLandmarkExtractor(config, Path(self._temp_dir.name), trainable_embedder)
 
         # Create test input with landmarks
         restaurant_props = self.test_landmarks['restaurant'].copy()
@@ -318,17 +325,17 @@ class SemanticLandmarkExtractorWithTrainableEmbedderTest(unittest.TestCase):
             freeze_weights=True,
             max_sequence_length=64,
         )
+        trainable_embedder = TrainableSentenceEmbedder(embedder_config)
 
         config = SemanticLandmarkExtractorConfig(
             landmark_type=LandmarkType.POINT,
             openai_embedding_size=1536,
             embedding_version="test_version",
             auxiliary_info_key="test_key",
-            trainable_embedder_config=embedder_config,
             osm_input_mode="osm_text",  # Use raw OSM properties
         )
 
-        model = SemanticLandmarkExtractor(config, Path(self._temp_dir.name))
+        model = SemanticLandmarkExtractor(config, Path(self._temp_dir.name), trainable_embedder)
 
         # Create test input
         restaurant_props = self.test_landmarks['restaurant'].copy()
@@ -361,17 +368,17 @@ class SemanticLandmarkExtractorWithTrainableEmbedderTest(unittest.TestCase):
             freeze_weights=False,  # Unfrozen!
             max_sequence_length=64,
         )
+        trainable_embedder = TrainableSentenceEmbedder(embedder_config)
 
         config = SemanticLandmarkExtractorConfig(
             landmark_type=LandmarkType.POINT,
             openai_embedding_size=1536,
             embedding_version="test_version",
             auxiliary_info_key="test_key",
-            trainable_embedder_config=embedder_config,
             osm_input_mode="natural_language",
         )
 
-        model = SemanticLandmarkExtractor(config, Path(self._temp_dir.name))
+        model = SemanticLandmarkExtractor(config, Path(self._temp_dir.name), trainable_embedder)
         model.train()  # Set to training mode
 
         # Create test input
@@ -414,17 +421,17 @@ class SemanticLandmarkExtractorWithTrainableEmbedderTest(unittest.TestCase):
             freeze_weights=True,
             max_sequence_length=64,
         )
+        trainable_embedder = TrainableSentenceEmbedder(embedder_config)
 
         config = SemanticLandmarkExtractorConfig(
             landmark_type=LandmarkType.POINT,
             openai_embedding_size=1536,
             embedding_version="test_version",
             auxiliary_info_key="test_key",
-            trainable_embedder_config=embedder_config,
             osm_input_mode="natural_language",
         )
 
-        model = SemanticLandmarkExtractor(config, Path(self._temp_dir.name))
+        model = SemanticLandmarkExtractor(config, Path(self._temp_dir.name), trainable_embedder)
 
         # Should return embedder's output_dim, not openai_embedding_size
         self.assertEqual(model.output_dim, 256)
@@ -532,16 +539,16 @@ class PanoramaSemanticLandmarkExtractorWithTrainableEmbedderTest(unittest.TestCa
             freeze_weights=True,
             max_sequence_length=128,
         )
+        trainable_embedder = TrainableSentenceEmbedder(embedder_config)
 
         config = PanoramaSemanticLandmarkExtractorConfig(
             openai_embedding_size=1536,
             embedding_version="test_version",
             auxiliary_info_key="test_key",
             should_classify_against_grouping=False,
-            trainable_embedder_config=embedder_config,
         )
 
-        model = PanoramaSemanticLandmarkExtractor(config, Path(self._temp_dir.name))
+        model = PanoramaSemanticLandmarkExtractor(config, Path(self._temp_dir.name), trainable_embedder)
 
         # Check that trainable embedder was created
         self.assertIsNotNone(model.trainable_embedder)
@@ -555,16 +562,16 @@ class PanoramaSemanticLandmarkExtractorWithTrainableEmbedderTest(unittest.TestCa
             freeze_weights=True,
             max_sequence_length=128,
         )
+        trainable_embedder = TrainableSentenceEmbedder(embedder_config)
 
         config = PanoramaSemanticLandmarkExtractorConfig(
             openai_embedding_size=1536,
             embedding_version="test_version",
             auxiliary_info_key="test_key",
             should_classify_against_grouping=False,
-            trainable_embedder_config=embedder_config,
         )
 
-        model = PanoramaSemanticLandmarkExtractor(config, Path(self._temp_dir.name))
+        model = PanoramaSemanticLandmarkExtractor(config, Path(self._temp_dir.name), trainable_embedder)
 
         # Create test input
         model_input = ModelInput(
@@ -599,16 +606,16 @@ class PanoramaSemanticLandmarkExtractorWithTrainableEmbedderTest(unittest.TestCa
             freeze_weights=True,
             max_sequence_length=128,
         )
+        trainable_embedder = TrainableSentenceEmbedder(embedder_config)
 
         config = PanoramaSemanticLandmarkExtractorConfig(
             openai_embedding_size=1536,
             embedding_version="test_version",
             auxiliary_info_key="test_key",
             should_classify_against_grouping=False,
-            trainable_embedder_config=embedder_config,
         )
 
-        model = PanoramaSemanticLandmarkExtractor(config, Path(self._temp_dir.name))
+        model = PanoramaSemanticLandmarkExtractor(config, Path(self._temp_dir.name), trainable_embedder)
 
         # Should return embedder's output_dim
         self.assertEqual(model.output_dim, 256)
@@ -621,16 +628,16 @@ class PanoramaSemanticLandmarkExtractorWithTrainableEmbedderTest(unittest.TestCa
             freeze_weights=False,  # Unfrozen!
             max_sequence_length=128,
         )
+        trainable_embedder = TrainableSentenceEmbedder(embedder_config)
 
         config = PanoramaSemanticLandmarkExtractorConfig(
             openai_embedding_size=1536,
             embedding_version="test_version",
             auxiliary_info_key="test_key",
             should_classify_against_grouping=False,
-            trainable_embedder_config=embedder_config,
         )
 
-        model = PanoramaSemanticLandmarkExtractor(config, Path(self._temp_dir.name))
+        model = PanoramaSemanticLandmarkExtractor(config, Path(self._temp_dir.name), trainable_embedder)
         model.train()
 
         # Create test input

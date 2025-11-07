@@ -230,8 +230,14 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
 
         # Initialize output tensors
         mask = torch.ones((batch_size, max_num_landmarks), dtype=torch.bool)
-        output_dim = self.output_dim if self.trainable_embedder is None else self.trainable_embedder.output_dim
-        features = torch.zeros((batch_size, max_num_landmarks, output_dim))
+        # When using trainable embedder, use its output dimension
+        # When not using trainable embedder, always use openai_embedding_size for initial storage
+        # (classification against grouping will happen later if needed)
+        if self.trainable_embedder is not None:
+            feature_storage_dim = self.trainable_embedder.output_dim
+        else:
+            feature_storage_dim = self.config.openai_embedding_size
+        features = torch.zeros((batch_size, max_num_landmarks, feature_storage_dim))
         positions = torch.zeros((batch_size, max_num_landmarks, 2, 2))
 
         max_description_length = 0
