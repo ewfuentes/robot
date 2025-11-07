@@ -63,9 +63,6 @@ class SwagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
 
     normalize_embeddings: bool = True
 
-    # Landmark dropout scheduling configuration
-    landmark_dropout_schedules: list[LandmarkDropoutScheduleConfig] = []
-
     # Trainable sentence embedder config (shared across all extractors in this model)
     trainable_embedder_config: TrainableSentenceEmbedderConfig | None = None
 
