@@ -6,6 +6,7 @@ import torch
 import pandas as pd
 import geopandas as gpd
 import shapely
+from common.gps import web_mercator
 
 import experimental.overhead_matching.swag.evaluation.observation_likelihood as lol
 
@@ -664,6 +665,78 @@ class ObservationLikelihoodTest(unittest.TestCase):
                 similarities.landmark[0, 1:, :],
                 torch.zeros_like(similarities.landmark[0, 1:, :])
             )
+
+    def test_compute_pixel_locs_single_location(self):
+        """Test that single lat/lon converts to single pixel location."""
+        particle_locs_deg = torch.tensor([[37.7749, -122.4194]])
+
+        pixel_locs = lol._compute_pixel_locs_px(particle_locs_deg)
+
+        self.assertEqual(pixel_locs.shape, (1, 2))
+        self.assertIsInstance(pixel_locs, torch.Tensor)
+
+    def test_compute_pixel_locs_batch(self):
+        """Test batch conversion preserves shape."""
+        particle_locs_deg = torch.tensor([
+            [37.7749, -122.4194],
+            [40.7128, -74.0060],
+            [51.5074, -0.1278],
+        ])
+
+        pixel_locs = lol._compute_pixel_locs_px(particle_locs_deg)
+
+        self.assertEqual(pixel_locs.shape, (3, 2))
+        self.assertFalse(torch.isnan(pixel_locs).any())
+        self.assertFalse(torch.isinf(pixel_locs).any())
+
+    def test_compute_pixel_locs_multidimensional(self):
+        """Test that multi-dimensional particle tensors work."""
+        particle_locs_deg = torch.tensor([
+            [[37.0, -122.0], [37.1, -122.1], [37.2, -122.2]],
+            [[38.0, -123.0], [38.1, -123.1], [38.2, -123.2]],
+        ])
+
+        pixel_locs = lol._compute_pixel_locs_px(particle_locs_deg)
+
+        self.assertEqual(pixel_locs.shape, (2, 3, 2))
+
+    def test_compute_pixel_locs_output_ordering(self):
+        """Test that output is [y, x] not [x, y]."""
+        particle_locs_deg = torch.tensor([[0.0, 0.0]])
+
+        pixel_locs = lol._compute_pixel_locs_px(particle_locs_deg, zoom_level=20)
+
+        y_direct, x_direct = web_mercator.latlon_to_pixel_coords(0.0, 0.0, 20)
+
+        torch.testing.assert_close(pixel_locs[0, 0], torch.tensor(y_direct, dtype=torch.float32))
+        torch.testing.assert_close(pixel_locs[0, 1], torch.tensor(x_direct, dtype=torch.float32))
+
+    def test_compute_pixel_locs_default_zoom(self):
+        """Test that default zoom level is 20."""
+        particle_locs_deg = torch.tensor([[37.7749, -122.4194]])
+
+        pixel_locs_default = lol._compute_pixel_locs_px(particle_locs_deg)
+        pixel_locs_explicit = lol._compute_pixel_locs_px(particle_locs_deg, zoom_level=20)
+
+        torch.testing.assert_close(pixel_locs_default, pixel_locs_explicit)
+
+    def test_compute_pixel_locs_custom_zoom(self):
+        """Test that different zoom levels produce different results."""
+        particle_locs_deg = torch.tensor([[37.7749, -122.4194]])
+
+        pixel_locs_10 = lol._compute_pixel_locs_px(particle_locs_deg, zoom_level=10)
+        pixel_locs_20 = lol._compute_pixel_locs_px(particle_locs_deg, zoom_level=20)
+
+        self.assertFalse(torch.allclose(pixel_locs_10, pixel_locs_20))
+
+    def test_compute_pixel_locs_torch_compatibility(self):
+        """Test that function works with torch tensors and supports autograd."""
+        particle_locs_deg = torch.tensor([[37.7749, -122.4194]], requires_grad=True)
+
+        pixel_locs = lol._compute_pixel_locs_px(particle_locs_deg)
+
+        self.assertIsInstance(pixel_locs, torch.Tensor)
+        self.assertTrue(pixel_locs.requires_grad)
 
 
 if __name__ == "__main__":

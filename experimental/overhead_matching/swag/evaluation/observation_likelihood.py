@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import geopandas as gpd
 import pandas as pd
 import itertools
+from common.gps import web_mercator
 
 
 @dataclass
@@ -87,8 +88,10 @@ def _get_similarities(prior_data: PriorData, pano_ids: list[str]) -> Similaritie
     )
 
 
-def _compute_pixel_locs_px(particle_locs_deg: torch.Tensor):
-    return particle_locs_deg
+def _compute_pixel_locs_px(particle_locs_deg: torch.Tensor, zoom_level: int = 20):
+    y_px, x_px = web_mercator.latlon_to_pixel_coords(
+            particle_locs_deg[..., 0], particle_locs_deg[..., 1], zoom_level=zoom_level)
+    return torch.stack([y_px, x_px], dim=-1)
 
 
 def _compute_sat_log_likelihood(similarities, sat_geometry, particle_locs_px):
