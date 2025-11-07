@@ -256,6 +256,415 @@ class ObservationLikelihoodTest(unittest.TestCase):
         self.assertEqual(sat_ll.shape, (3, 4))
         self.assertEqual(osm_ll.shape, (3, 4))
 
+    def test_get_similarities_single_pano(self):
+        """Test extracting similarities for a single panorama."""
+        osm_geometry = pd.DataFrame([
+            {'osm_id': 0, 'geometry_px': shapely.Point(100, 50), 'osm_embedding_idx': 0},
+            {'osm_id': 1, 'geometry_px': shapely.Point(200, 150), 'osm_embedding_idx': 1},
+        ])
+
+        sat_geometry = pd.DataFrame([
+            {'geometry_px': create_square_patch(100, 50, size=20), 'embedding_idx': 0},
+            {'geometry_px': create_square_patch(200, 150, size=20), 'embedding_idx': 1},
+            {'geometry_px': create_square_patch(300, 250, size=20), 'embedding_idx': 2},
+        ])
+
+        pano_metadata = pd.DataFrame([
+            {'pano_id': 'pano_0', 'pano_lm_idxs': [0, 1]},
+            {'pano_id': 'pano_1', 'pano_lm_idxs': [2, 3]},
+        ])
+
+        pano_sat_similarity = torch.tensor([
+            [0.8, 0.3, 0.5],
+            [0.2, 0.9, 0.1],
+        ])
+        pano_osm_similarity = torch.tensor([
+            [0.9, 0.2],
+            [0.1, 0.7],
+            [0.6, 0.4],
+            [0.3, 0.8],
+        ])
+
+        prior_data = lol.PriorData(
+            osm_geometry=osm_geometry,
+            sat_geometry=sat_geometry,
+            pano_metadata=pano_metadata,
+            pano_sat_similarity=pano_sat_similarity,
+            pano_osm_landmark_similarity=pano_osm_similarity
+        )
+
+        similarities = lol._get_similarities(prior_data, ['pano_0'])
+
+        expected_sat = torch.tensor([[0.8, 0.3, 0.5]])
+        torch.testing.assert_close(similarities.sat_patch, expected_sat)
+
+        self.assertEqual(similarities.landmark.shape[0], 1)
+        self.assertEqual(similarities.landmark.shape[2], 2)
+        self.assertEqual(similarities.landmark_mask.shape, (1, 2))
+
+    def test_get_similarities_multiple_panos(self):
+        """Test extracting similarities for multiple panoramas."""
+        osm_geometry = pd.DataFrame([
+            {'osm_id': 0, 'geometry_px': shapely.Point(100, 50), 'osm_embedding_idx': 0},
+        ])
+
+        sat_geometry = pd.DataFrame([
+            {'geometry_px': create_square_patch(100, 50, size=20), 'embedding_idx': 0},
+            {'geometry_px': create_square_patch(200, 150, size=20), 'embedding_idx': 1},
+        ])
+
+        pano_metadata = pd.DataFrame([
+            {'pano_id': 'pano_0', 'pano_lm_idxs': [0]},
+            {'pano_id': 'pano_1', 'pano_lm_idxs': [1]},
+            {'pano_id': 'pano_2', 'pano_lm_idxs': [2]},
+        ])
+
+        pano_sat_similarity = torch.tensor([
+            [0.8, 0.3],
+            [0.2, 0.9],
+            [0.5, 0.4],
+        ])
+        pano_osm_similarity = torch.tensor([
+            [0.9],
+            [0.7],
+            [0.6],
+        ])
+
+        prior_data = lol.PriorData(
+            osm_geometry=osm_geometry,
+            sat_geometry=sat_geometry,
+            pano_metadata=pano_metadata,
+            pano_sat_similarity=pano_sat_similarity,
+            pano_osm_landmark_similarity=pano_osm_similarity
+        )
+
+        similarities = lol._get_similarities(prior_data, ['pano_0', 'pano_2'])
+
+        expected_sat = torch.tensor([
+            [0.8, 0.3],
+            [0.5, 0.4],
+        ])
+        torch.testing.assert_close(similarities.sat_patch, expected_sat)
+
+        self.assertEqual(similarities.landmark.shape, (2, 1, 1))
+        self.assertEqual(similarities.landmark_mask.shape, (2, 1))
+
+    def test_get_similarities_preserves_order(self):
+        """Test that returned similarities match the order of requested pano_ids."""
+        osm_geometry = pd.DataFrame([
+            {'osm_id': 0, 'geometry_px': shapely.Point(100, 50), 'osm_embedding_idx': 0},
+        ])
+
+        sat_geometry = pd.DataFrame([
+            {'geometry_px': create_square_patch(100, 50, size=20), 'embedding_idx': 0},
+        ])
+
+        pano_metadata = pd.DataFrame([
+            {'pano_id': 'pano_0', 'pano_lm_idxs': [0]},
+            {'pano_id': 'pano_1', 'pano_lm_idxs': [1]},
+            {'pano_id': 'pano_2', 'pano_lm_idxs': [2]},
+        ])
+
+        pano_sat_similarity = torch.tensor([
+            [0.1],
+            [0.2],
+            [0.3],
+        ])
+        pano_osm_similarity = torch.tensor([
+            [0.4],
+            [0.5],
+            [0.6],
+        ])
+
+        prior_data = lol.PriorData(
+            osm_geometry=osm_geometry,
+            sat_geometry=sat_geometry,
+            pano_metadata=pano_metadata,
+            pano_sat_similarity=pano_sat_similarity,
+            pano_osm_landmark_similarity=pano_osm_similarity
+        )
+
+        similarities = lol._get_similarities(prior_data, ['pano_2', 'pano_1', 'pano_0'])
+
+        expected_sat = torch.tensor([[0.3], [0.2], [0.1]])
+        torch.testing.assert_close(similarities.sat_patch, expected_sat)
+
+        self.assertEqual(similarities.landmark.shape, (3, 1, 1))
+        self.assertEqual(similarities.landmark_mask.shape, (3, 1))
+
+    def test_get_similarities_nonexistent_pano(self):
+        """Test that requesting non-existent pano_id raises assertion error."""
+        osm_geometry = pd.DataFrame([
+            {'osm_id': 0, 'geometry_px': shapely.Point(100, 50), 'osm_embedding_idx': 0},
+        ])
+
+        sat_geometry = pd.DataFrame([
+            {'geometry_px': create_square_patch(100, 50, size=20), 'embedding_idx': 0},
+        ])
+
+        pano_metadata = pd.DataFrame([
+            {'pano_id': 'pano_0', 'pano_lm_idxs': [0]},
+        ])
+
+        pano_sat_similarity = torch.tensor([[0.8]])
+        pano_osm_similarity = torch.tensor([[0.9]])
+
+        prior_data = lol.PriorData(
+            osm_geometry=osm_geometry,
+            sat_geometry=sat_geometry,
+            pano_metadata=pano_metadata,
+            pano_sat_similarity=pano_sat_similarity,
+            pano_osm_landmark_similarity=pano_osm_similarity
+        )
+
+        with self.assertRaises(AssertionError):
+            lol._get_similarities(prior_data, ['pano_99'])
+
+    def test_get_similarities_empty_list(self):
+        """Test with empty pano_ids list."""
+        osm_geometry = pd.DataFrame([
+            {'osm_id': 0, 'geometry_px': shapely.Point(100, 50), 'osm_embedding_idx': 0},
+        ])
+
+        sat_geometry = pd.DataFrame([
+            {'geometry_px': create_square_patch(100, 50, size=20), 'embedding_idx': 0},
+        ])
+
+        pano_metadata = pd.DataFrame([
+            {'pano_id': 'pano_0', 'pano_lm_idxs': [0]},
+        ])
+
+        pano_sat_similarity = torch.tensor([[0.8]])
+        pano_osm_similarity = torch.tensor([[0.9]])
+
+        prior_data = lol.PriorData(
+            osm_geometry=osm_geometry,
+            sat_geometry=sat_geometry,
+            pano_metadata=pano_metadata,
+            pano_sat_similarity=pano_sat_similarity,
+            pano_osm_landmark_similarity=pano_osm_similarity
+        )
+
+        similarities = lol._get_similarities(prior_data, [])
+
+        self.assertEqual(similarities.sat_patch.shape, (0, 1))
+        self.assertEqual(similarities.landmark.shape, (0, 0, 1))
+        self.assertEqual(similarities.landmark_mask.shape, (0, 0))
+
+    def test_get_similarities_pano_with_multiple_landmarks(self):
+        """Test panorama with many landmarks."""
+        osm_geometry = pd.DataFrame([
+            {'osm_id': i, 'geometry_px': shapely.Point(100+i*10, 50+i*10), 'osm_embedding_idx': i}
+            for i in range(3)
+        ])
+
+        sat_geometry = pd.DataFrame([
+            {'geometry_px': create_square_patch(100, 50, size=20), 'embedding_idx': 0},
+        ])
+
+        pano_metadata = pd.DataFrame([
+            {'pano_id': 'pano_0', 'pano_lm_idxs': [0, 1, 2, 3, 4]},
+        ])
+
+        pano_sat_similarity = torch.tensor([[0.8]])
+        pano_osm_similarity = torch.tensor([
+            [0.9, 0.1, 0.2],
+            [0.8, 0.2, 0.3],
+            [0.7, 0.3, 0.4],
+            [0.6, 0.4, 0.5],
+            [0.5, 0.5, 0.6],
+        ])
+
+        prior_data = lol.PriorData(
+            osm_geometry=osm_geometry,
+            sat_geometry=sat_geometry,
+            pano_metadata=pano_metadata,
+            pano_sat_similarity=pano_sat_similarity,
+            pano_osm_landmark_similarity=pano_osm_similarity
+        )
+
+        similarities = lol._get_similarities(prior_data, ['pano_0'])
+
+        self.assertEqual(similarities.sat_patch.shape, (1, 1))
+        self.assertEqual(similarities.landmark.shape, (1, 5, 3))
+        self.assertEqual(similarities.landmark_mask.shape, (1, 5))
+
+    def test_get_similarities_pano_with_no_landmarks(self):
+        """Test panorama with empty landmark list."""
+        osm_geometry = pd.DataFrame([
+            {'osm_id': 0, 'geometry_px': shapely.Point(100, 50), 'osm_embedding_idx': 0},
+        ])
+
+        sat_geometry = pd.DataFrame([
+            {'geometry_px': create_square_patch(100, 50, size=20), 'embedding_idx': 0},
+        ])
+
+        pano_metadata = pd.DataFrame([
+            {'pano_id': 'pano_0', 'pano_lm_idxs': []},
+        ])
+
+        pano_sat_similarity = torch.tensor([[0.8]])
+        pano_osm_similarity = torch.tensor([[0.9]])
+
+        prior_data = lol.PriorData(
+            osm_geometry=osm_geometry,
+            sat_geometry=sat_geometry,
+            pano_metadata=pano_metadata,
+            pano_sat_similarity=pano_sat_similarity,
+            pano_osm_landmark_similarity=pano_osm_similarity
+        )
+
+        similarities = lol._get_similarities(prior_data, ['pano_0'])
+
+        self.assertEqual(similarities.sat_patch.shape, (1, 1))
+        self.assertEqual(similarities.landmark.shape, (1, 0, 1))
+        self.assertEqual(similarities.landmark_mask.shape, (1, 0))
+
+    def test_get_similarities_landmark_mask_values(self):
+        """Test that landmark_mask correctly marks valid landmarks as True."""
+        osm_geometry = pd.DataFrame([
+            {'osm_id': 0, 'geometry_px': shapely.Point(100, 50), 'osm_embedding_idx': 0},
+        ])
+
+        sat_geometry = pd.DataFrame([
+            {'geometry_px': create_square_patch(100, 50, size=20), 'embedding_idx': 0},
+        ])
+
+        pano_metadata = pd.DataFrame([
+            {'pano_id': 'pano_0', 'pano_lm_idxs': [0, 1, 2]},
+        ])
+
+        pano_sat_similarity = torch.tensor([[0.8]])
+        pano_osm_similarity = torch.tensor([
+            [0.9],
+            [0.8],
+            [0.7],
+        ])
+
+        prior_data = lol.PriorData(
+            osm_geometry=osm_geometry,
+            sat_geometry=sat_geometry,
+            pano_metadata=pano_metadata,
+            pano_sat_similarity=pano_sat_similarity,
+            pano_osm_landmark_similarity=pano_osm_similarity
+        )
+
+        similarities = lol._get_similarities(prior_data, ['pano_0'])
+
+        expected_mask = torch.tensor([[True, True, True]])
+        torch.testing.assert_close(similarities.landmark_mask, expected_mask)
+
+    def test_get_similarities_landmark_mask_with_padding(self):
+        """Test that landmark_mask correctly handles different landmark counts per pano."""
+        osm_geometry = pd.DataFrame([
+            {'osm_id': 0, 'geometry_px': shapely.Point(100, 50), 'osm_embedding_idx': 0},
+        ])
+
+        sat_geometry = pd.DataFrame([
+            {'geometry_px': create_square_patch(100, 50, size=20), 'embedding_idx': 0},
+        ])
+
+        pano_metadata = pd.DataFrame([
+            {'pano_id': 'pano_0', 'pano_lm_idxs': [0, 1, 2]},
+            {'pano_id': 'pano_1', 'pano_lm_idxs': [3]},
+            {'pano_id': 'pano_2', 'pano_lm_idxs': [4, 5]},
+        ])
+
+        pano_sat_similarity = torch.tensor([[0.8], [0.7], [0.6]])
+        pano_osm_similarity = torch.tensor([
+            [0.9], [0.8], [0.7],
+            [0.6],
+            [0.5], [0.4],
+        ])
+
+        prior_data = lol.PriorData(
+            osm_geometry=osm_geometry,
+            sat_geometry=sat_geometry,
+            pano_metadata=pano_metadata,
+            pano_sat_similarity=pano_sat_similarity,
+            pano_osm_landmark_similarity=pano_osm_similarity
+        )
+
+        similarities = lol._get_similarities(prior_data, ['pano_0', 'pano_1', 'pano_2'])
+
+        self.assertEqual(similarities.landmark_mask.shape, (3, 3))
+
+        expected_mask = torch.tensor([
+            [True,  True,  True],
+            [True,  False, False],
+            [True,  True,  False],
+        ])
+        torch.testing.assert_close(similarities.landmark_mask, expected_mask)
+
+    def test_get_similarities_landmark_mask_empty_pano(self):
+        """Test that pano with no landmarks has all-False mask."""
+        osm_geometry = pd.DataFrame([
+            {'osm_id': 0, 'geometry_px': shapely.Point(100, 50), 'osm_embedding_idx': 0},
+        ])
+
+        sat_geometry = pd.DataFrame([
+            {'geometry_px': create_square_patch(100, 50, size=20), 'embedding_idx': 0},
+        ])
+
+        pano_metadata = pd.DataFrame([
+            {'pano_id': 'pano_0', 'pano_lm_idxs': []},
+            {'pano_id': 'pano_1', 'pano_lm_idxs': [0, 1]},
+        ])
+
+        pano_sat_similarity = torch.tensor([[0.8], [0.7]])
+        pano_osm_similarity = torch.tensor([[0.9], [0.8]])
+
+        prior_data = lol.PriorData(
+            osm_geometry=osm_geometry,
+            sat_geometry=sat_geometry,
+            pano_metadata=pano_metadata,
+            pano_sat_similarity=pano_sat_similarity,
+            pano_osm_landmark_similarity=pano_osm_similarity
+        )
+
+        similarities = lol._get_similarities(prior_data, ['pano_0', 'pano_1'])
+
+        expected_mask = torch.tensor([
+            [False, False],
+            [True,  True],
+        ])
+        torch.testing.assert_close(similarities.landmark_mask, expected_mask)
+
+    def test_get_similarities_landmark_values_padded_correctly(self):
+        """Test that padded positions in landmark tensor are zero."""
+        osm_geometry = pd.DataFrame([
+            {'osm_id': 0, 'geometry_px': shapely.Point(100, 50), 'osm_embedding_idx': 0},
+        ])
+
+        sat_geometry = pd.DataFrame([
+            {'geometry_px': create_square_patch(100, 50, size=20), 'embedding_idx': 0},
+        ])
+
+        pano_metadata = pd.DataFrame([
+            {'pano_id': 'pano_0', 'pano_lm_idxs': [0]},
+        ])
+
+        pano_sat_similarity = torch.tensor([[0.8]])
+        pano_osm_similarity = torch.tensor([[0.9]])
+
+        prior_data = lol.PriorData(
+            osm_geometry=osm_geometry,
+            sat_geometry=sat_geometry,
+            pano_metadata=pano_metadata,
+            pano_sat_similarity=pano_sat_similarity,
+            pano_osm_landmark_similarity=pano_osm_similarity
+        )
+
+        similarities = lol._get_similarities(prior_data, ['pano_0'])
+
+        self.assertNotEqual(similarities.landmark[0, 0, 0].item(), 0.0)
+
+        if similarities.landmark.shape[1] > 1:
+            torch.testing.assert_close(
+                similarities.landmark[0, 1:, :],
+                torch.zeros_like(similarities.landmark[0, 1:, :])
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
