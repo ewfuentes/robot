@@ -738,6 +738,176 @@ class ObservationLikelihoodTest(unittest.TestCase):
         self.assertIsInstance(pixel_locs, torch.Tensor)
         self.assertTrue(pixel_locs.requires_grad)
 
+    def test_compute_sat_log_likelihood_single_particle(self):
+        """Test that single particle produces scalar output."""
+        sat_geometry = pd.DataFrame([
+            {'geometry_px': create_square_patch(100, 50, size=20), 'embedding_idx': 0},
+        ])
+
+        similarities = torch.tensor([[0.8]])
+        particle_locs_px = torch.tensor([[100.0, 50.0]])
+
+        log_likelihood = lol._compute_sat_log_likelihood(
+            similarities, sat_geometry, particle_locs_px
+        )
+
+        self.assertEqual(log_likelihood.shape, (1,))
+        self.assertIsInstance(log_likelihood, torch.Tensor)
+
+    def test_compute_sat_log_likelihood_batch(self):
+        """Test that batch of particles produces correct shape."""
+        sat_geometry = pd.DataFrame([
+            {'geometry_px': create_square_patch(100, 50, size=20), 'embedding_idx': 0},
+            {'geometry_px': create_square_patch(200, 150, size=20), 'embedding_idx': 1},
+        ])
+
+        similarities = torch.tensor([[0.8, 0.3]])
+        particle_locs_px = torch.tensor([
+            [100.0, 50.0],
+            [150.0, 100.0],
+            [200.0, 150.0],
+        ])
+
+        log_likelihood = lol._compute_sat_log_likelihood(
+            similarities, sat_geometry, particle_locs_px
+        )
+
+        self.assertEqual(log_likelihood.shape, (3,))
+
+    def test_compute_sat_log_likelihood_multidimensional(self):
+        """Test with 2D grid of particles."""
+        sat_geometry = pd.DataFrame([
+            {'geometry_px': create_square_patch(100, 50, size=20), 'embedding_idx': 0},
+        ])
+
+        similarities = torch.tensor([[0.8]])
+        particle_locs_px = torch.tensor([
+            [[100.0, 50.0], [110.0, 60.0], [120.0, 70.0]],
+            [[130.0, 80.0], [140.0, 90.0], [150.0, 100.0]],
+        ])
+
+        log_likelihood = lol._compute_sat_log_likelihood(
+            similarities, sat_geometry, particle_locs_px
+        )
+
+        self.assertEqual(log_likelihood.shape, (2, 3))
+
+    def test_compute_sat_log_likelihood_near_high_similarity_patch(self):
+        """Test that particles near high-similarity patches have higher likelihood."""
+        sat_geometry = pd.DataFrame([
+            {'geometry_px': create_square_patch(100, 50, size=20), 'embedding_idx': 0},
+            {'geometry_px': create_square_patch(200, 150, size=20), 'embedding_idx': 1},
+        ])
+
+        similarities = torch.tensor([[0.9, 0.1]])
+        particle_near_high = torch.tensor([[100.0, 50.0]])
+        particle_near_low = torch.tensor([[200.0, 150.0]])
+
+        ll_near_high = lol._compute_sat_log_likelihood(
+            similarities, sat_geometry, particle_near_high
+        )
+        ll_near_low = lol._compute_sat_log_likelihood(
+            similarities, sat_geometry, particle_near_low
+        )
+
+        self.assertGreater(ll_near_high.item(), ll_near_low.item())
+
+    def test_compute_sat_log_likelihood_multiple_patches(self):
+        """Test with multiple satellite patches."""
+        sat_geometry = pd.DataFrame([
+            {'geometry_px': create_square_patch(100, 50, size=20), 'embedding_idx': 0},
+            {'geometry_px': create_square_patch(200, 150, size=20), 'embedding_idx': 1},
+            {'geometry_px': create_square_patch(300, 250, size=20), 'embedding_idx': 2},
+        ])
+
+        similarities = torch.tensor([[0.8, 0.5, 0.2]])
+        particle_locs_px = torch.tensor([[100.0, 50.0]])
+
+        log_likelihood = lol._compute_sat_log_likelihood(
+            similarities, sat_geometry, particle_locs_px
+        )
+
+        self.assertEqual(log_likelihood.shape, (1,))
+        self.assertFalse(torch.isnan(log_likelihood).any())
+        self.assertFalse(torch.isinf(log_likelihood).any())
+
+    def test_compute_sat_log_likelihood_far_from_patches(self):
+        """Test that particles far from all patches get low likelihood."""
+        sat_geometry = pd.DataFrame([
+            {'geometry_px': create_square_patch(100, 50, size=20), 'embedding_idx': 0},
+        ])
+
+        similarities = torch.tensor([[0.9]])
+        particle_near = torch.tensor([[100.0, 50.0]])
+        particle_far = torch.tensor([[1000.0, 1000.0]])
+
+        ll_near = lol._compute_sat_log_likelihood(
+            similarities, sat_geometry, particle_near
+        )
+        ll_far = lol._compute_sat_log_likelihood(
+            similarities, sat_geometry, particle_far
+        )
+
+        self.assertGreater(ll_near.item(), ll_far.item())
+
+    def test_compute_sat_log_likelihood_no_patches(self):
+        """Test with empty satellite geometry."""
+        sat_geometry = pd.DataFrame(columns=['geometry_px', 'embedding_idx'])
+
+        similarities = torch.zeros((1, 0))
+        particle_locs_px = torch.tensor([[100.0, 50.0]])
+
+        log_likelihood = lol._compute_sat_log_likelihood(
+            similarities, sat_geometry, particle_locs_px
+        )
+
+        self.assertEqual(log_likelihood.shape, (1,))
+
+    def test_compute_sat_log_likelihood_zero_similarity(self):
+        """Test with all zero similarities."""
+        sat_geometry = pd.DataFrame([
+            {'geometry_px': create_square_patch(100, 50, size=20), 'embedding_idx': 0},
+        ])
+
+        similarities = torch.tensor([[0.0]])
+        particle_locs_px = torch.tensor([[100.0, 50.0]])
+
+        log_likelihood = lol._compute_sat_log_likelihood(
+            similarities, sat_geometry, particle_locs_px
+        )
+
+        self.assertEqual(log_likelihood.shape, (1,))
+
+    def test_compute_sat_log_likelihood_is_negative(self):
+        """Test that log likelihood values are negative."""
+        sat_geometry = pd.DataFrame([
+            {'geometry_px': create_square_patch(100, 50, size=20), 'embedding_idx': 0},
+        ])
+
+        similarities = torch.tensor([[0.8]])
+        particle_locs_px = torch.tensor([[100.0, 50.0]])
+
+        log_likelihood = lol._compute_sat_log_likelihood(
+            similarities, sat_geometry, particle_locs_px
+        )
+
+        self.assertTrue((log_likelihood <= 0).all())
+
+    def test_compute_sat_log_likelihood_returns_tensor(self):
+        """Test that function returns a torch.Tensor."""
+        sat_geometry = pd.DataFrame([
+            {'geometry_px': create_square_patch(100, 50, size=20), 'embedding_idx': 0},
+        ])
+
+        similarities = torch.tensor([[0.8]])
+        particle_locs_px = torch.tensor([[100.0, 50.0]])
+
+        log_likelihood = lol._compute_sat_log_likelihood(
+            similarities, sat_geometry, particle_locs_px
+        )
+
+        self.assertIsInstance(log_likelihood, torch.Tensor)
+
 
 if __name__ == "__main__":
     unittest.main()
