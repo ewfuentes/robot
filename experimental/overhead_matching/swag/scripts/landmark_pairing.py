@@ -49,9 +49,21 @@ def _(Path, vd):
         landmark_version='v3'
     )
 
-    dataset = vd.VigorDataset(dataset_path=_dataset_path,
+    new_dataset = vd.VigorDataset(dataset_path=_dataset_path,
                              config=_config)
-    return (dataset,)
+
+    _dataset_path = Path('/data/overhead_matching/datasets/VIGOR/Chicago/')
+    _config = vd.VigorDatasetConfig(
+        satellite_tensor_cache_info=None,
+        panorama_tensor_cache_info=None,
+        should_load_images=False,
+        should_load_landmarks=True,
+        landmark_version='v4_202001'
+    )
+
+    historical_dataset = vd.VigorDataset(dataset_path=_dataset_path,
+                             config=_config)
+    return historical_dataset, new_dataset
 
 
 @app.cell
@@ -75,7 +87,7 @@ def _(Path, pickle):
 def _(metadata_from_pano_id, sentence_from_pano_landmark):
     landmark_sentences_from_pano_id = {
         k.split(',')[0]:[
-            {"lm_id": info["custom_id"], "sentence": sentence_from_pano_landmark[info["custom_id"]]} 
+            {"lm_id": info["custom_id"], "sentence": sentence_from_pano_landmark[info["custom_id"]], "yaw_angles": info["yaw_angles"]}
             for info in v
         ]
         for k, v in metadata_from_pano_id.items()
@@ -87,17 +99,32 @@ def _(metadata_from_pano_id, sentence_from_pano_landmark):
 def _(Path, pickle):
     _osm_embedding_path = Path('/data/overhead_matching/datasets/semantic_landmark_embeddings/v3_no_addresses/embeddings/embeddings.pkl')
     with _osm_embedding_path.open('rb') as _file_in:
-        osm_embeddings, osm_lm_idx_from_osm_id = pickle.load(_file_in)
-    return osm_embeddings, osm_lm_idx_from_osm_id
+        recent_osm_embeddings, recent_osm_lm_idx_from_osm_id = pickle.load(_file_in)
+    return
 
 
 @app.cell
-def _(dataset):
+def _(Path, pickle):
+    _osm_embedding_path = Path('/data/overhead_matching/datasets/semantic_landmark_embeddings/v4_202001_no_addresses/embeddings/embeddings.pkl')
+    with _osm_embedding_path.open('rb') as _file_in:
+        historical_osm_embeddings, historical_osm_lm_idx_from_osm_id = pickle.load(_file_in)
+    return historical_osm_embeddings, historical_osm_lm_idx_from_osm_id
+
+
+@app.cell
+def _(historical_osm_lm_idx_from_osm_id):
+    historical_osm_lm_idx_from_osm_id["MVdkTIc8bXC2EC/3YA8JuH7kaTXcmHc/MlSQ1qiocyg="]
+    return
+
+
+@app.cell
+def _(historical_dataset):
+
 
 
 
     _pano_id = '--z0RFQbsumsJC2wWUUKIg'
-    def osm_landmarks_from_pano_id(pano_id):
+    def osm_landmarks_from_pano_id(pano_id, dataset):
         pano_info = dataset._panorama_metadata[dataset._panorama_metadata.pano_id == pano_id].iloc[0]
         sat_idxs = pano_info.positive_satellite_idxs + pano_info.semipositive_satellite_idxs
         osm_landmarks = set()
@@ -107,7 +134,7 @@ def _(dataset):
         out = set(all_landmarks["pruned_props"].values)
         return [list(x) for x in out], all_landmarks
 
-    osm_landmarks_from_pano_id(_pano_id)
+    osm_landmarks_from_pano_id(_pano_id, historical_dataset)
     return (osm_landmarks_from_pano_id,)
 
 
@@ -122,8 +149,12 @@ def _(landmark_sentences_from_pano_id):
 
 
 @app.cell
-def _(osm_landmarks_from_pano_id, pano_sentences_from_pano_id):
-    _pano_id = '-0KSAsfK2L8z_pO6SKbhmQ'
+def _(
+    historical_dataset,
+    osm_landmarks_from_pano_id,
+    pano_sentences_from_pano_id,
+):
+    _pano_id = 'EZd0yEWwrNSoGQhljhV1Uw'
 
     def itemized_list(items):
         out = []
@@ -168,7 +199,7 @@ def _(osm_landmarks_from_pano_id, pano_sentences_from_pano_id):
     { itemized_list([x["sentence"] for x in pano_sentences_from_pano_id(pano_id)])}
 
     Set 2:
-    { itemized_list( '; '.join([f"{a}={b}" for a, b in x]) for x in osm_landmarks_from_pano_id(pano_id)[0])}
+    { itemized_list( '; '.join([f"{a}={b}" for a, b in x]) for x in osm_landmarks_from_pano_id(pano_id, historical_dataset)[0])}
     """
 
     print(create_prompt(_pano_id))
@@ -205,14 +236,8 @@ def _(create_request, landmark_sentences_from_pano_id, np):
     _rng = np.random.default_rng(1024)
     _selected_panoramas = _rng.choice(list(landmark_sentences_from_pano_id.keys()), size=(1000), replace=False)
     # _selected_panoramas = list(landmark_sentences_from_pano_id.keys())
-    requests = [create_request(_p, reasoning_effort="minimal") for _p in _selected_panoramas]
+    requests = [create_request(_p, reasoning_effort="medium") for _p in _selected_panoramas]
     return (requests,)
-
-
-@app.cell
-def _(requests):
-    requests[0]
-    return
 
 
 @app.cell
@@ -240,25 +265,33 @@ def _(batch_file_response, client):
         input_file_id=batch_file_response.id,
         endpoint="/v1/chat/completions",
         completion_window="24h",
-        metadata={"reasoning_effort": "minimal",
+        metadata={"reasoning_effort": "medium",
                  "seed":"1024"}
     )
     return
 
 
 @app.cell
-def _(Path, json, osm_landmarks_from_pano_id, slu):
-    results = {
-        'minimal': Path('/data/overhead_matching/datasets/landmark_correspondence/v1_minimal/'),
+def _(
+    Path,
+    historical_dataset,
+    json,
+    landmark_sentences_from_pano_id,
+    new_dataset,
+    osm_landmarks_from_pano_id,
+    slu,
+):
+    results_and_dataset = {
+        'minimal': (Path('/data/overhead_matching/datasets/landmark_correspondence/v1_minimal/'), new_dataset),
         # 'minimal_full': Path('/data/overhead_matching/datasets/landmark_correspondence/v4_minimal_full/'),
-        'low': Path('/data/overhead_matching/datasets/landmark_correspondence/v3_low/'),
-        'medium': Path('/data/overhead_matching/datasets/landmark_correspondence/v2_medium/'),
+        'low': (Path('/data/overhead_matching/datasets/landmark_correspondence/v3_low/'), new_dataset),
+        'medium': (Path('/data/overhead_matching/datasets/landmark_correspondence/v2_medium/'), new_dataset),
+        'medium_historical': (Path('/data/overhead_matching/datasets/landmark_correspondence/v5_medium_historical/'), historical_dataset),
     }
 
     def parse_sets(text):
         """
         Parse a string containing two numbered sets and return them as lists.
-
         Args:
             text: String containing "Set 1:" and "Set 2:" sections with numbered items
 
@@ -293,7 +326,7 @@ def _(Path, json, osm_landmarks_from_pano_id, slu):
                     prefix = line[:period_index].strip()
                     if prefix.isdigit():
                         item = line[period_index + 2:].strip()
-                        items.append(item)
+                        items.append((int(prefix), item))
 
             return items
 
@@ -302,32 +335,38 @@ def _(Path, json, osm_landmarks_from_pano_id, slu):
 
         return set1, set2
 
-    def load_matches_from_folder(path):
+    def load_matches_from_folder(path, dataset):
         # Load requests
         requests_json = slu.load_all_jsonl_from_folder(path / "requests")
         landmarks = {}    
         for req in requests_json:
             lm_msg = req["body"]["messages"][-1]["content"]
             pano_lms, osm_lms = parse_sets(lm_msg)
-            _, full_osm_landmarks = osm_landmarks_from_pano_id(req["custom_id"])
+            pano_lms_from_req = landmark_sentences_from_pano_id[req["custom_id"]]
+            _, full_osm_landmarks = osm_landmarks_from_pano_id(req["custom_id"], dataset)
+
             pruned_lms = [
-                frozenset([tuple(tag.split('=')) for tag in x.split('; ')])
-                for x in osm_lms
+                (idx, frozenset([tuple(tag.split('=')) for tag in tags.split('; ')]))
+                for idx, tags in osm_lms
             ]
 
+            for from_prompt, from_req in zip(pano_lms, pano_lms_from_req):
+                from_req["index"] = from_prompt[0]
+        
             def parse_id(x):
                 return json.loads(x.replace('(', '[')
                                  .replace(')', ']')
                                  .replace("'", '"'))
 
             landmarks[req["custom_id"]] = {
-                "pano": pano_lms,
+                "pano": pano_lms_from_req,
                 "osm": [{
                     "tags": pruned,
-                    "ids": full_osm_landmarks[full_osm_landmarks["pruned_props"] == fs].id.apply(parse_id).values.tolist()
-                } for pruned, fs in zip(osm_lms, pruned_lms)],
+                    "ids": full_osm_landmarks[full_osm_landmarks["pruned_props"] == fs].id.apply(parse_id).values.tolist(),
+                    "index": idx,
+                } for (_, pruned), (idx, fs) in zip(osm_lms, pruned_lms)],
             }
-
+        
         # Load responses
         response_json = slu.load_all_jsonl_from_folder(path / "responses")
         return {
@@ -339,17 +378,17 @@ def _(Path, json, osm_landmarks_from_pano_id, slu):
             )
             for r in response_json
         }
-    # m = load_matches_from_folder(Path("/data/overhead_matching/datasets/landmark_correspondence/v1_minimal/"))
-    return load_matches_from_folder, results
+    m = load_matches_from_folder(Path("/data/overhead_matching/datasets/landmark_correspondence/v1_minimal/"), new_dataset)
+    return load_matches_from_folder, m, results_and_dataset
 
 
 @app.cell
-def _(load_matches_from_folder, results):
+def _(Path, json, load_matches_from_folder, results_and_dataset):
     matches = {}
-    for k, v in results.items():
+    for k, v in results_and_dataset.items():
         print('Loading', k)
-        matches[k] = load_matches_from_folder(v)
-    #     Path(f'/tmp/{k}.json').write_text(json.dumps(_matches))
+        matches[k] = load_matches_from_folder(*v)
+        Path(f'/tmp/{k}.json').write_text(json.dumps(matches[k]))
 
 
     return (matches,)
@@ -362,8 +401,8 @@ def _(m):
 
 
 @app.cell
-def _(dataset):
-    dataset._landmark_metadata.id.apply(lambda x: x.replace("(", "[").replace(")", "]").replace("'", '"'))
+def _(historical_dataset):
+    historical_dataset._landmark_metadata.id.apply(lambda x: x.replace("(", "[").replace(")", "]").replace("'", '"'))
     return
 
 
@@ -376,14 +415,14 @@ def _():
 
 @app.cell
 def _(
-    dataset,
+    historical_dataset,
+    historical_osm_embeddings,
+    historical_osm_lm_idx_from_osm_id,
     itertools,
     json,
     matches,
     metadata_from_pano_id,
-    osm_embeddings,
     osm_landmarks_from_pano_id,
-    osm_lm_idx_from_osm_id,
     pano_embeddings_from_lm_idx,
     pano_lm_idx_from_lm_id,
     pano_sentences_from_pano_id,
@@ -404,9 +443,13 @@ def _(
         idxs = [pano_lm_idx_from_lm_id[x["lm_id"]] for x in pano_sentences]
         return pano_embeddings_from_lm_idx[idxs]
 
-    def osm_embeddings_from_osm_lms(osm_lms):
+    def osm_embeddings_from_osm_lms(osm_lms, osm_lm_idx_from_osm_id, osm_embeddings):
         osm_lm_ids = osm_lms.pruned_props.apply(custom_id_from_props)
-        idxs = [osm_lm_idx_from_osm_id[x] for x in osm_lm_ids]
+        idxs = []
+        for _, row in osm_lms.iterrows():
+            pruned_props = row.pruned_props
+            osm_lm_id = custom_id_from_props(pruned_props)
+            idxs.append(osm_lm_idx_from_osm_id[osm_lm_id])
         return osm_embeddings[idxs]
 
     def create_z3_problem(pano_osm_sims, heading_agreement, match_boost):
@@ -641,16 +684,15 @@ def _(
 
         for i, pano_matches in enumerate(matches["matches"]["matches"]):
             for osm_match_idx in pano_matches["set_2_matches"]:
-                osm_match_idx -= 1
                 for osm_id in matches["osm"][osm_match_idx]["ids"]:
                     osm_idx = osm_ids[osm_ids.apply(lambda x: x == osm_id)].index.values[0]
                     out[i, osm_idx] += 1.0
-    
+
         return out
 
 
 
-    def produce_matches_for_pano_id(pano_id):
+    def produce_matches_for_pano_id(pano_id, dataset, osm_lm_idx_from_osm_id, osm_embeddings, matches_to_use):
         # Collect the landmark sentences and embeddings
         pano_sentences = pano_sentences_from_pano_id(pano_id)
         pano_embeddings = pano_embeddings_for_pano_id(pano_sentences)
@@ -658,15 +700,18 @@ def _(
         pano_lm_metadata = metadata_from_pano_id[pano_id]
 
         # Collect the osm landmarks and embeddings
-        _, osm_landmarks = osm_landmarks_from_pano_id(pano_id)
-        osm_embeddings = osm_embeddings_from_osm_lms(osm_landmarks)
+        _, osm_landmarks = osm_landmarks_from_pano_id(pano_id, dataset)
+        osm_embeddings = osm_embeddings_from_osm_lms(osm_landmarks, osm_lm_idx_from_osm_id, osm_embeddings)
 
         sentence_metadata = metadata_from_pano_id[pano_id]
 
         pano_osm_sims = pano_embeddings @ osm_embeddings.T
         heading_agreement, osm_heading_intervals = compute_heading_agreement(pano_metadata, pano_lm_metadata, osm_landmarks)
-        match_boost = compute_match_boost(pano_lm_metadata, osm_landmarks, matches["medium"][pano_id])
+        match_boost = compute_match_boost(pano_lm_metadata, osm_landmarks, matches[matches_to_use][pano_id])
 
+        # print(heading_agreement)
+        # print(match_boost)
+    
         assignment, model = create_z3_problem(
             pano_osm_sims = pano_osm_sims,
             heading_agreement=heading_agreement,
@@ -689,8 +734,8 @@ def _(
     #     print(osm_embeddings.shape)
         ...
 
-    _pano_id = "SJq255LiDUv2fBTorbRUIQ"
-    assignment, model, pano_osm_sims, heading_agreement, match_boost, osm_heading_intervals, _ = produce_matches_for_pano_id(_pano_id)
+    _pano_id = "EZd0yEWwrNSoGQhljhV1Uw"
+    assignment, model, pano_osm_sims, heading_agreement, match_boost, osm_heading_intervals, _ = produce_matches_for_pano_id(_pano_id, historical_dataset, historical_osm_lm_idx_from_osm_id,   historical_osm_embeddings,  matches_to_use='medium_historical')
 
     return (produce_matches_for_pano_id,)
 
@@ -710,12 +755,20 @@ def _(dataset, metadata_from_pano_id, mo):
 
 
 @app.cell
-def _(json, matches, produce_matches_for_pano_id):
+def _(
+    historical_dataset,
+    historical_osm_embeddings,
+    historical_osm_lm_idx_from_osm_id,
+    json,
+    matches,
+    produce_matches_for_pano_id,
+):
     import tqdm
     import copy
-    to_fill = copy.deepcopy(matches["medium"])
+    to_fill = copy.deepcopy(matches["medium_historical"])
+
     for _pano_id, _v in tqdm.tqdm(to_fill.items()):
-        _assignment, _model, _, _, _, _, _osm_landmarks = produce_matches_for_pano_id(_pano_id)
+        _assignment, _model, _, _, _, _, _osm_landmarks = produce_matches_for_pano_id(_pano_id, historical_dataset, historical_osm_lm_idx_from_osm_id, historical_osm_embeddings, matches_to_use='medium_historical')
         _new_matches = []
 
         _osm_match_id_from_pruned_props = {}
@@ -723,11 +776,11 @@ def _(json, matches, produce_matches_for_pano_id):
             _row_id = json.loads(_row.id.replace('(', '[').replace(')', ']').replace("'", '"'))
             for _i, _deduped_osm_lm in enumerate(to_fill[_pano_id]["osm"]):
                 if _row_id in _deduped_osm_lm["ids"]:
-                    _osm_match_id_from_pruned_props[_row.pruned_props] = _i+1
-                
+                    _osm_match_id_from_pruned_props[_row.pruned_props] = _deduped_osm_lm["index"]
+
         for _i in range(len(_assignment)):
             _new_matches.append({
-                "set_1_id": _i + 1,
+                "set_1_id": to_fill[_pano_id]["pano"][_i]["index"],
                 "set_2_matches": []
             })
             for _j in range(len(_assignment[0])):
@@ -746,7 +799,7 @@ def _():
 
 @app.cell
 def _(Path, json, to_fill):
-    Path('/tmp/medium_heading.json').write_text(json.dumps(to_fill))
+    Path('/tmp/medium_historical_heading.json').write_text(json.dumps(to_fill))
     return
 
 
