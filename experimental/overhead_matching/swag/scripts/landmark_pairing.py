@@ -246,7 +246,7 @@ def _():
     return (json,)
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(Path, client, json, requests):
     batch_path = Path("/tmp/batch_request.jsonl")
     with batch_path.open('w') as file_out:
@@ -259,7 +259,7 @@ def _(Path, client, json, requests):
     return (batch_file_response,)
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(batch_file_response, client):
     client.batches.create(
         input_file_id=batch_file_response.id,
@@ -717,12 +717,12 @@ def _(
             heading_agreement=heading_agreement,
             match_boost=match_boost)
 
-        for i, j in itertools.product(range(len(pano_embeddings)), range(len(osm_embeddings))):
-            if model[assignment[i][j]] == 1:
-                print('='*30)
-                print(i, j, model[assignment[i][j]], f"sim: {pano_osm_sims[i, j]:0.4f} heading agreement: {heading_agreement[i, j]} match boost: {match_boost[i, j]}")
-                print('\t', pano_sentences[i]["sentence"], pano_lm_metadata[i])
-                print('\t', osm_landmarks.iloc[j]['pruned_props'], f"heading range: {osm_heading_intervals[j]}")
+        # for i, j in itertools.product(range(len(pano_embeddings)), range(len(osm_embeddings))):
+        #     if model[assignment[i][j]] == 1:
+        #         print('='*30)
+        #         print(i, j, model[assignment[i][j]], f"sim: {pano_osm_sims[i, j]:0.4f} heading agreement: {heading_agreement[i, j]} match boost: {match_boost[i, j]}")
+        #         print('\t', pano_sentences[i]["sentence"], pano_lm_metadata[i])
+        #         print('\t', osm_landmarks.iloc[j]['pruned_props'], f"heading range: {osm_heading_intervals[j]}")
 
         return assignment, model, pano_osm_sims, heading_agreement, match_boost, osm_heading_intervals, osm_landmarks
 
@@ -740,15 +740,7 @@ def _(
     return (produce_matches_for_pano_id,)
 
 
-app._unparsable_cell(
-    r"""
-    |list(historical_osm_lm_idx_from_osm_id.keys())[:10]
-    """,
-    name="_"
-)
-
-
-@app.cell(disabled=True)
+@app.cell
 def _(dataset, metadata_from_pano_id, mo):
     _pano_id = "SJq255LiDUv2fBTorbRUIQ"
     _row = dataset._panorama_metadata[dataset._panorama_metadata["pano_id"] == _pano_id]
