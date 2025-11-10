@@ -326,7 +326,7 @@ def _(
                     prefix = line[:period_index].strip()
                     if prefix.isdigit():
                         item = line[period_index + 2:].strip()
-                        items.append(item)
+                        items.append((int(prefix), item))
 
             return items
 
@@ -342,26 +342,31 @@ def _(
         for req in requests_json:
             lm_msg = req["body"]["messages"][-1]["content"]
             pano_lms, osm_lms = parse_sets(lm_msg)
-            pano_lms = landmark_sentences_from_pano_id[req["custom_id"]]
+            pano_lms_from_req = landmark_sentences_from_pano_id[req["custom_id"]]
             _, full_osm_landmarks = osm_landmarks_from_pano_id(req["custom_id"], dataset)
+
             pruned_lms = [
-                frozenset([tuple(tag.split('=')) for tag in x.split('; ')])
-                for x in osm_lms
+                (idx, frozenset([tuple(tag.split('=')) for tag in tags.split('; ')]))
+                for idx, tags in osm_lms
             ]
 
+            for from_prompt, from_req in zip(pano_lms, pano_lms_from_req):
+                from_req["index"] = from_prompt[0]
+        
             def parse_id(x):
                 return json.loads(x.replace('(', '[')
                                  .replace(')', ']')
                                  .replace("'", '"'))
 
             landmarks[req["custom_id"]] = {
-                "pano": pano_lms,
+                "pano": pano_lms_from_req,
                 "osm": [{
                     "tags": pruned,
-                    "ids": full_osm_landmarks[full_osm_landmarks["pruned_props"] == fs].id.apply(parse_id).values.tolist()
-                } for pruned, fs in zip(osm_lms, pruned_lms)],
+                    "ids": full_osm_landmarks[full_osm_landmarks["pruned_props"] == fs].id.apply(parse_id).values.tolist(),
+                    "index": idx,
+                } for (_, pruned), (idx, fs) in zip(osm_lms, pruned_lms)],
             }
-
+        
         # Load responses
         response_json = slu.load_all_jsonl_from_folder(path / "responses")
         return {
@@ -679,7 +684,6 @@ def _(
 
         for i, pano_matches in enumerate(matches["matches"]["matches"]):
             for osm_match_idx in pano_matches["set_2_matches"]:
-                osm_match_idx -= 1
                 for osm_id in matches["osm"][osm_match_idx]["ids"]:
                     osm_idx = osm_ids[osm_ids.apply(lambda x: x == osm_id)].index.values[0]
                     out[i, osm_idx] += 1.0
@@ -705,8 +709,8 @@ def _(
         heading_agreement, osm_heading_intervals = compute_heading_agreement(pano_metadata, pano_lm_metadata, osm_landmarks)
         match_boost = compute_match_boost(pano_lm_metadata, osm_landmarks, matches[matches_to_use][pano_id])
 
-        print(heading_agreement)
-        print(match_boost)
+        # print(heading_agreement)
+        # print(match_boost)
     
         assignment, model = create_z3_problem(
             pano_osm_sims = pano_osm_sims,
@@ -758,7 +762,7 @@ def _(dataset, metadata_from_pano_id, mo):
     return
 
 
-@app.cell(disabled=True)
+@app.cell
 def _(
     historical_dataset,
     historical_osm_embeddings,
@@ -770,6 +774,7 @@ def _(
     import tqdm
     import copy
     to_fill = copy.deepcopy(matches["medium_historical"])
+
     for _pano_id, _v in tqdm.tqdm(to_fill.items()):
         _assignment, _model, _, _, _, _, _osm_landmarks = produce_matches_for_pano_id(_pano_id, historical_dataset, historical_osm_lm_idx_from_osm_id, historical_osm_embeddings, matches_to_use='medium_historical')
         _new_matches = []
@@ -779,11 +784,11 @@ def _(
             _row_id = json.loads(_row.id.replace('(', '[').replace(')', ']').replace("'", '"'))
             for _i, _deduped_osm_lm in enumerate(to_fill[_pano_id]["osm"]):
                 if _row_id in _deduped_osm_lm["ids"]:
-                    _osm_match_id_from_pruned_props[_row.pruned_props] = _i+1
+                    _osm_match_id_from_pruned_props[_row.pruned_props] = _deduped_osm_lm["index"]
 
         for _i in range(len(_assignment)):
             _new_matches.append({
-                "set_1_id": _i + 1,
+                "set_1_id": to_fill[_pano_id]["pano"][_i]["index"],
                 "set_2_matches": []
             })
             for _j in range(len(_assignment[0])):
