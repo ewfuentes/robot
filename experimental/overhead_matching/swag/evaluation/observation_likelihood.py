@@ -5,12 +5,16 @@ from dataclasses import dataclass
 import geopandas as gpd
 import pandas as pd
 import itertools
+import shapely
 from common.gps import web_mercator
+import math
+import numpy as np
 
 
 @dataclass
 class ObservationLikelihoodConfig:
-    ...
+    obs_likelihood_from_sat_similarity_sigma: float
+    obs_likelihood_from_osm_similarity_sigma: float
 
 
 @dataclass
@@ -36,7 +40,7 @@ class PriorData:
 @dataclass
 class QueryData:
     pano_ids: list[str]
-    # A ... x 2 tensor that contains lat/lon locations
+    # A num_particles x 2 tensor that contains lat/lon locations
     particle_locs_deg: torch.Tensor
 
 
@@ -94,12 +98,90 @@ def _compute_pixel_locs_px(particle_locs_deg: torch.Tensor, zoom_level: int = 20
     return torch.stack([y_px, x_px], dim=-1)
 
 
-def _compute_sat_log_likelihood(similarities, sat_geometry, particle_locs_px):
-    return torch.full(particle_locs_px.shape[:-1], -torch.inf)
+def _compute_sat_log_likelihood(similarities, sat_geometry, particle_locs_px, sigma_px=0.1):
+    # Similarities is a n_panos x n_sat_patches similarity matrix
+    # Sat geometry contains bounding box information for each satellite patch
+    # particle_locs_px is a num_panos x num_particles x 2 (row, col) tensor of particle locations
+
+    # This function returns a num_panos x num_particles shaped unnormalized log likelihood
+
+    assert similarities.shape[0] == particle_locs_px.shape[0]
+    assert particle_locs_px.shape[-1] == 2
+    assert len(sat_geometry) == similarities.shape[1]
+
+    if len(sat_geometry) == 0:
+        return torch.full((particle_locs_px.shape[:-1]), -torch.inf, dtype=torch.float32)
+
+    max_similarities, _ = torch.max(similarities, -1, keepdim=True)
+    obs_log_likelihood = (-torch.log(torch.tensor(math.sqrt(2 * torch.pi) * sigma_px)) +
+                          -0.5 * torch.square((max_similarities - similarities) / sigma_px))
+
+    sat_tree = shapely.STRtree(sat_geometry.geometry_px)
+    query_pts = [shapely.Point(x) for x in particle_locs_px.reshape(-1, 2)]
+    pt_and_patch_idxs = sat_tree.query(query_pts).T
+    particle_idxs = torch.unravel_index(torch.from_numpy(pt_and_patch_idxs[:, 0]), particle_locs_px.shape[:-1])
+    particle_match_idxs = pt_and_patch_idxs[:, 1]
+
+    out = torch.full(particle_locs_px.shape[:-1], -torch.inf)
+    
+    if pt_and_patch_idxs.shape[0] > 0:
+        # some particles overlapped with a satellite patch, update the likelihoods to match
+        pano_idxs = particle_idxs[0]
+        particle_likelihoods = obs_log_likelihood[pano_idxs, particle_match_idxs]
+        out[particle_idxs] = particle_likelihoods
+
+    return out
 
 
-def _compute_osm_log_likelihood(similarities, mask, osm_geometry, particle_locs_px):
-    return torch.full(particle_locs_px.shape[:-1], -torch.inf)
+def _compute_osm_log_likelihood(similarities, mask, osm_geometry, particle_locs_px, point_sigma_px: float):
+    # Similarities is a num_panos x num_pano_landmarks x num_osm_landmark tensor
+    # Mask is a num_panos x num_pano_landmarks tensor where true means that it's a valid landmark
+    # osm_geometry is a dataframe that contains the geometry for each osm landmark
+    # particle_locs_px is a num_panos x num_particles x 2 tensor
+
+    assert similarities.ndim == 3
+    assert mask.ndim == 2
+    assert particle_locs_px.ndim == 3
+    assert similarities.shape[0] == mask.shape[0]
+    assert similarities.shape[0] == particle_locs_px.shape[0]
+    assert similarities.shape[1] == mask.shape[1]
+    assert similarities.shape[2] == len(osm_geometry)
+
+    is_point = osm_geometry.geometry_px.apply(lambda x: x.geom_type == "Point")
+    assert is_point.all()
+    num_panos, num_particles = particle_locs_px.shape[:2]
+    num_osm = len(osm_geometry)
+
+    # For each particle, compute the distance to the OSM geometry
+    particles_flat = [shapely.Point(*x) for x in particle_locs_px.reshape(-1, 2)]
+    particles = np.array(particles_flat).reshape(num_panos, num_particles, 1)
+    osm_landmarks = osm_geometry.geometry_px.values.reshape(1, 1, num_osm)
+    distances = shapely.distance(particles, osm_geometry.geometry_px.values)
+    # Handle the case where we may only have a single particle or a single osm landmark
+    distances = distances.reshape(num_panos, num_particles, num_osm)
+            
+    # Compute the observation likelihood for each particle/geometry pair
+    # dimensions: num_panos x num_particles x num_osm
+    obs_log_likelihood_per_landmark = (
+            -torch.log(torch.tensor(math.sqrt(2 * torch.pi) * point_sigma_px)) +
+            -0.5 * torch.square(torch.tensor(distances) / point_sigma_px))
+
+    # compute the weights
+    # dimensions: num_panos x num_pano_landmarks x num_osm_landmarks
+    weight = torch.log(similarities)
+    weight[~mask, :] = -torch.inf
+
+    # We want both tensors to be num_panos x num_particles x num_pano_landmarks x num_osm
+    # So we insert a singular dimension for the observation likelihoods, and
+    # we insert all num_particles dimensions to the weights
+    obs_log_likelihood_per_landmark = obs_log_likelihood_per_landmark.unsqueeze(-2)
+    weight = weight.unsqueeze(1)
+    obs_log_likelihood_per_landmark = weight + obs_log_likelihood_per_landmark
+
+    # logsumexp over the panorama and osm landmarks
+    # num_panos x num_particles
+    out = torch.logsumexp(obs_log_likelihood_per_landmark, (-1, -2))
+    return out
 
 
 def _check_prior_data(prior_data: PriorData):
@@ -128,7 +210,8 @@ def compute_log_observation_likelihood(prior_data, query, config):
             similarities.landmark,
             similarities.landmark_mask,
             prior_data.osm_geometry,
-            particle_locs_px)
+            particle_locs_px,
+            point_sigma_px=config.obs_likelihood_from_osm_similarity_sigma)
 
     return sat_log_likelihood, osm_log_likelihood
 
