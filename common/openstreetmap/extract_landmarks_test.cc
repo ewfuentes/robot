@@ -1,5 +1,6 @@
 #include "common/openstreetmap/extract_landmarks.hh"
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 
