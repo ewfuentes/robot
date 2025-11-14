@@ -117,17 +117,72 @@ def _compute_sat_log_likelihood(similarities, sat_geometry, particle_locs_px, si
                           -0.5 * torch.square((max_similarities - similarities) / sigma_px))
 
     sat_tree = shapely.STRtree(sat_geometry.geometry_px)
-    query_pts = [shapely.Point(x) for x in particle_locs_px.reshape(-1, 2)]
+    query_pts = np.array([shapely.Point(x) for x in particle_locs_px.reshape(-1, 2)])
     pt_and_patch_idxs = sat_tree.query(query_pts).T
-    particle_idxs = torch.unravel_index(torch.from_numpy(pt_and_patch_idxs[:, 0]), particle_locs_px.shape[:-1])
-    particle_match_idxs = pt_and_patch_idxs[:, 1]
+    flat_particle_idxs = torch.tensor(pt_and_patch_idxs[:, 0])
+    particle_match_idxs = torch.tensor(pt_and_patch_idxs[:, 1])
+
+    if len(flat_particle_idxs) == 0:
+        # There were no particle/sat patch overlaps, so return -inf for all particles
+        return torch.full((particle_locs_px.shape[:-1]), -torch.inf, dtype=torch.float32)
+
+    # we have a list of particle indices and the sat patches that the particles are within.
+    # If a particle matches to multiple patches, we need to compute which one is the closest
+    centroids = sat_geometry.geometry_px.apply(lambda x: x.centroid).values
+    particle_to_center_distances = torch.tensor(
+            shapely.distance(centroids[particle_match_idxs],
+                             query_pts[flat_particle_idxs]))
+
+    # Step 2: Mark beginning of each run of repeated particle indices
+    run_starts = torch.ones(
+            len(flat_particle_idxs), dtype=torch.bool, device=flat_particle_idxs.device)
+    if len(flat_particle_idxs) > 1:
+        run_starts[1:] = flat_particle_idxs[1:] != flat_particle_idxs[:-1]
+
+    # Step 3: Compute segment IDs (which run each element belongs to)
+    segment_ids = torch.cumsum(run_starts, dim=0) - 1
+
+    # Step 4: Find minimum distance per segment
+    num_segments = segment_ids[-1].item() + 1 if len(segment_ids) > 0 else 0
+    min_distances = torch.full((num_segments,), float('inf'),
+                               device=particle_to_center_distances.device,
+                               dtype=particle_to_center_distances.dtype)
+    min_distances.scatter_reduce_(0, segment_ids, particle_to_center_distances, reduce='amin')
+
+    # Step 5: Mark which elements to keep (those with minimum distance in their segment)
+    segment_min_distances = min_distances[segment_ids]
+    keep_mask = particle_to_center_distances == segment_min_distances
+
+    # Step 6: Keep only the FIRST occurrence of minimum per segment
+    # Find the first index with minimum distance in each segment
+    first_keep_idx_per_segment = torch.full((num_segments,), -1,
+                                            dtype=torch.long, device=segment_ids.device)
+
+    # Get indices where keep_mask is True
+    true_indices = torch.where(keep_mask)[0]
+    if len(true_indices) > 0:
+        true_segments = segment_ids[true_indices]
+        # Use scatter_reduce with 'amin' to get minimum index per segment
+        first_keep_idx_per_segment.scatter_reduce_(
+                0, true_segments, true_indices, reduce='amin', include_self=False)
+
+    # Create new keep_mask: only True at the first kept index per segment
+    keep_mask = torch.zeros_like(keep_mask)
+    valid_segments = first_keep_idx_per_segment >= 0
+    if valid_segments.any():
+        keep_mask[first_keep_idx_per_segment[valid_segments]] = True
+
+    # Step 7: Filter to get final results
+    kept_particle_idxs = flat_particle_idxs[keep_mask]
+    kept_patch_idxs = particle_match_idxs[keep_mask]
 
     out = torch.full(particle_locs_px.shape[:-1], -torch.inf)
-    
-    if pt_and_patch_idxs.shape[0] > 0:
+    particle_idxs = torch.unravel_index(kept_particle_idxs, particle_locs_px.shape[:-1])
+
+    if len(particle_idxs) > 0:
         # some particles overlapped with a satellite patch, update the likelihoods to match
         pano_idxs = particle_idxs[0]
-        particle_likelihoods = obs_log_likelihood[pano_idxs, particle_match_idxs]
+        particle_likelihoods = obs_log_likelihood[pano_idxs, kept_patch_idxs]
         out[particle_idxs] = particle_likelihoods
 
     return out

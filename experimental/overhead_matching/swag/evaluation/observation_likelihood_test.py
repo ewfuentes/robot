@@ -1086,6 +1086,119 @@ class ObservationLikelihoodTest(unittest.TestCase):
 
         self.assertIsInstance(log_likelihood, torch.Tensor)
 
+    def test_compute_sat_log_likelihood_overlapping_patches(self):
+        """Test behavior with overlapping satellite patches."""
+        # Create two overlapping square patches
+        # Patch 0: centered at (100, 100), size 40 -> covers [80, 120] x [80, 120]
+        # Patch 1: centered at (110, 110), size 40 -> covers [90, 130] x [90, 130]
+        # Overlap region: [90, 120] x [90, 120]
+        sat_geometry = pd.DataFrame([
+            {'geometry_px': create_square_patch(100, 100, size=40), 'embedding_idx': 0},
+            {'geometry_px': create_square_patch(110, 110, size=40), 'embedding_idx': 1},
+        ])
+
+        # Give different similarities to the two patches
+        # Panorama has high similarity to patch 0, low similarity to patch 1
+        similarities = torch.tensor([[0.9, 0.2]])
+
+        # Test 1: Particle in the overlap region at (105, 105)
+        # Should be inside both patches
+        particle_in_overlap = torch.tensor([[[105.0, 105.0]]])
+
+        ll_overlap = lol._compute_sat_log_likelihood(
+            similarities, sat_geometry, particle_in_overlap
+        )
+
+        # Should get a finite likelihood (not -inf) since particle is inside at least one patch
+        self.assertFalse(torch.isinf(ll_overlap))
+        self.assertFalse(torch.isnan(ll_overlap))
+
+        # Test 2: Particle outside all patches at (200, 200)
+        particle_outside = torch.tensor([[[200.0, 200.0]]])
+
+        ll_outside = lol._compute_sat_log_likelihood(
+            similarities, sat_geometry, particle_outside
+        )
+
+        # Should get -inf likelihood since particle is outside all patches
+        self.assertTrue(torch.isinf(ll_outside))
+        self.assertTrue(ll_outside.item() < 0)
+
+        # Test 3: Particle inside only patch 0 at (85, 85)
+        particle_in_patch0_only = torch.tensor([[[85.0, 85.0]]])
+
+        ll_patch0 = lol._compute_sat_log_likelihood(
+            similarities, sat_geometry, particle_in_patch0_only
+        )
+
+        # Should use patch 0's similarity (0.9), which is higher
+        self.assertFalse(torch.isinf(ll_patch0))
+
+        # Test 4: Particle inside only patch 1 at (125, 125)
+        particle_in_patch1_only = torch.tensor([[[125.0, 125.0]]])
+
+        ll_patch1 = lol._compute_sat_log_likelihood(
+            similarities, sat_geometry, particle_in_patch1_only
+        )
+
+        # Should use patch 1's similarity (0.2), which is lower
+        self.assertFalse(torch.isinf(ll_patch1))
+
+        # Particle inside high-similarity patch should have higher likelihood
+        self.assertGreater(ll_patch0.item(), ll_patch1.item())
+
+    def test_compute_sat_log_likelihood_overlapping_patches_nearest_patch(self):
+        """Test that overlapping patches use nearest patch deterministically."""
+        # Create two overlapping square patches
+        # Patch 0: centered at (100, 100), size 40 -> covers [80, 120] x [80, 120]
+        # Patch 1: centered at (110, 110), size 40 -> covers [90, 130] x [90, 130]
+        # Overlap region: [90, 120] x [90, 120]
+        sat_geometry = pd.DataFrame([
+            {'geometry_px': create_square_patch(100, 100, size=40), 'embedding_idx': 0},
+            {'geometry_px': create_square_patch(110, 110, size=40), 'embedding_idx': 1},
+        ])
+
+        # Particle at (105, 105) is in the overlap region
+        # Distance to patch 0 center (100, 100): sqrt(25 + 25) ≈ 7.07
+        # Distance to patch 1 center (110, 110): sqrt(25 + 25) ≈ 7.07
+        # They're equidistant! Let's use a point closer to patch 0
+        particle_in_overlap = torch.tensor([[[102.0, 102.0]]])
+        # Distance to patch 0 center (100, 100): sqrt(4 + 4) ≈ 2.83
+        # Distance to patch 1 center (110, 110): sqrt(64 + 64) ≈ 11.31
+        # So this should use patch 0
+
+        # Case A: patch 0 has high similarity, patch 1 has low similarity
+        similarities_A = torch.tensor([[0.9, 0.2]])
+        ll_A = lol._compute_sat_log_likelihood(
+            similarities_A, sat_geometry, particle_in_overlap
+        )
+
+        # Case B: swap the similarities
+        # patch 0 has low similarity, patch 1 has high similarity
+        similarities_B = torch.tensor([[0.2, 0.9]])
+        ll_B = lol._compute_sat_log_likelihood(
+            similarities_B, sat_geometry, particle_in_overlap
+        )
+
+        # If the implementation uses nearest patch (patch 0), then:
+        # - Case A should use patch 0's similarity (0.9) -> higher likelihood
+        # - Case B should use patch 0's similarity (0.2) -> lower likelihood
+        # So ll_A should be greater than ll_B
+        #
+        # If the implementation is non-deterministic or always uses patch 1:
+        # - Case A might use patch 1's similarity (0.2)
+        # - Case B might use patch 1's similarity (0.9)
+        # Then ll_A would be less than ll_B (opposite of expected)
+
+        # With nearest patch, Case A should have higher likelihood
+        self.assertGreater(
+            ll_A.item(), ll_B.item(),
+            "Particle at (102, 102) should use patch 0 (centered at 100, 100) "
+            "which is closer than patch 1 (centered at 110, 110). "
+            "Case A has patch 0 with similarity 0.9, Case B has patch 0 with similarity 0.2, "
+            f"so Case A should have higher likelihood. {ll_A.item()=} {ll_B.item()=}"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
