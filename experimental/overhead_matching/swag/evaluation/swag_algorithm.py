@@ -2,7 +2,6 @@ import common.torch.load_torch_deps
 import torch
 from typing import NamedTuple
 import experimental.overhead_matching.swag.filter.particle_filter as pf
-import experimental.overhead_matching.swag.data.satellite_embedding_database as sed
 from experimental.overhead_matching.swag.evaluation.wag_config_pb2 import WagConfig
 import dataclasses
 from typing import Callable, Protocol
@@ -100,23 +99,23 @@ class ObservationLikelihoodCalculator(Protocol):
     necessary context (e.g., satellite patch locations, observation data).
     """
 
-    def compute_log_likelihoods(self, particles: torch.Tensor, panorama_id: str) -> torch.Tensor:
+    def compute_log_likelihoods(self, particles: torch.Tensor, panorama_ids: list[str]) -> torch.Tensor:
         """
-        Compute unnormalized log likelihoods for particles given an observation.
+        Compute unnormalized log likelihoods for particles given observations.
 
-        This computes p(z|x) for each particle x, where z is the observation
-        identified by panorama_id.
+        This computes p(z|x) for each particle x, where z are the observations
+        identified by panorama_ids.
 
         Args:
             particles: (num_particles, state_dim) tensor of particle states
-            panorama_id: Identifier for the observation/panorama
+            panorama_ids: List of identifiers for the observations/panoramas
 
         Returns:
-            log_likelihoods: (num_particles,) tensor of unnormalized log likelihoods
+            log_likelihoods: (num_panoramas, num_particles) tensor of unnormalized log likelihoods
         """
         ...
 
-    def sample_from_observation(self, num_particles: int, panorama_id: str,
+    def sample_from_observation(self, num_particles: int, panorama_ids: list[str],
                                 generator: torch.Generator) -> torch.Tensor:
         """
         Sample particles from the observation likelihood distribution.
@@ -125,12 +124,12 @@ class ObservationLikelihoodCalculator(Protocol):
         The caller (measurement_wag) will weight these samples by the prior belief.
 
         Args:
-            num_particles: Number of particles to sample
-            panorama_id: Identifier for the observation/panorama
+            num_particles: Number of particles to sample per panorama
+            panorama_ids: List of identifiers for the observations/panoramas
             generator: Random generator for sampling
 
         Returns:
-            particles: (num_particles, state_dim) sampled particles
+            particles: (num_panoramas, num_particles, state_dim) sampled particles
         """
         ...
 
@@ -167,54 +166,65 @@ class WagObservationLikelihoodCalculator:
         self.sigma = wag_config.sigma_obs_prob_from_sim
         self.device = device
 
-    def compute_log_likelihoods(self, particles: torch.Tensor, panorama_id: str) -> torch.Tensor:
+    def compute_log_likelihoods(self, particles: torch.Tensor, panorama_ids: list[str]) -> torch.Tensor:
         """Compute unnormalized log likelihoods for particles."""
-        # Get similarity values for this panorama
-        pano_idx = self.pano_id_to_idx[panorama_id]
-        similarity_vector = self.similarity_matrix[pano_idx]  # (num_patches,)
+        # Get similarity values for these panoramas
+        pano_indices = [self.pano_id_to_idx[pano_id] for pano_id in panorama_ids]
+        similarity_matrix = self.similarity_matrix[pano_indices]  # (num_panoramas, num_patches)
 
-        # Compute observation log likelihood from similarity
-        observation_log_likelihoods = pf.wag_observation_log_likelihood_from_similarity_matrix(
-            similarity_vector, self.sigma)
+        # Map particles to patches and get their likelihoods for each panorama
+        # Need to compute for each panorama separately
+        particle_log_likelihoods_list = []
+        for i in range(len(panorama_ids)):
+            # Compute observation log likelihood from similarity for this panorama
+            observation_log_likelihoods = pf.wag_observation_log_likelihood_from_similarity_matrix(
+                similarity_matrix[i], self.sigma)  # (num_patches,)
 
-        # Map particles to patches and get their likelihoods
-        particle_log_likelihoods = pf.wag_calculate_log_particle_weights(
-            observation_log_likelihoods,
-            particles,
-            self.patch_index_from_particle)
+            # Get particle likelihoods
+            particle_log_likelihoods = pf.wag_calculate_log_particle_weights(
+                observation_log_likelihoods,
+                particles,
+                self.patch_index_from_particle)
+            particle_log_likelihoods_list.append(particle_log_likelihoods)
 
-        return particle_log_likelihoods
+        # Stack to get (num_panoramas, num_particles)
+        return torch.stack(particle_log_likelihoods_list, dim=0)
 
-    def sample_from_observation(self, num_particles: int, panorama_id: str,
+    def sample_from_observation(self, num_particles: int, panorama_ids: list[str],
                                 generator: torch.Generator) -> torch.Tensor:
         """Sample particles from observation likelihood distribution."""
-        # Get similarity values for this panorama
-        pano_idx = self.pano_id_to_idx[panorama_id]
-        similarity_vector = self.similarity_matrix[pano_idx]
+        # Get similarity values for these panoramas
+        pano_indices = [self.pano_id_to_idx[pano_id] for pano_id in panorama_ids]
+        similarity_matrix = self.similarity_matrix[pano_indices]  # (num_panoramas, num_patches)
 
-        # Compute observation log likelihood from similarity
-        observation_log_likelihoods = pf.wag_observation_log_likelihood_from_similarity_matrix(
-            similarity_vector, self.sigma)
+        # Sample particles for each panorama
+        sampled_particles_list = []
+        for i in range(len(panorama_ids)):
+            # Compute observation log likelihood from similarity for this panorama
+            observation_log_likelihoods = pf.wag_observation_log_likelihood_from_similarity_matrix(
+                similarity_matrix[i], self.sigma)  # (num_patches,)
 
-        # Normalize to get state likelihood
-        normalizer = torch.logsumexp(observation_log_likelihoods, 0)
-        state_log_likelihood = observation_log_likelihoods - normalizer
+            # Normalize to get state likelihood
+            normalizer = torch.logsumexp(observation_log_likelihoods, 0)
+            state_log_likelihood = observation_log_likelihoods - normalizer
 
-        # Sample from satellite patch locations weighted by state likelihood
-        sampled_particles = pf.wag_multinomial_resampling(
-            self.satellite_patch_locations,
-            state_log_likelihood,
-            generator,
-            num_samples=num_particles)
+            # Sample from satellite patch locations weighted by state likelihood
+            sampled_particles = pf.wag_multinomial_resampling(
+                self.satellite_patch_locations,
+                state_log_likelihood,
+                generator,
+                num_samples=num_particles)
+            sampled_particles_list.append(sampled_particles)
 
-        return sampled_particles
+        # Stack to get (num_panoramas, num_particles, state_dim)
+        return torch.stack(sampled_particles_list, dim=0)
 
 
 def measurement_wag(
         particles: torch.Tensor,  # N x state dimension
         obs_likelihood_calculator: ObservationLikelihoodCalculator,
         belief_weighting: BeliefWeighting,
-        panorama_id: str,
+        panorama_id: str | list[str],
         wag_config: WagConfig,
         generator: torch.Generator,
         return_past_particle_weights: bool = False
@@ -225,7 +235,8 @@ def measurement_wag(
         particles: Current particle states (num_particles, state_dim)
         obs_likelihood_calculator: Calculator for observation likelihoods
         belief_weighting: Calculator for belief-based weighting (dual MCL)
-        panorama_id: Identifier for the current observation
+        panorama_id: Identifier(s) for the current observation(s). If a list is provided,
+                     the likelihoods are computed for all panoramas and averaged.
         wag_config: WAG configuration parameters
         generator: Random generator for sampling
         return_past_particle_weights: If True, return log weights in result
@@ -234,6 +245,9 @@ def measurement_wag(
         WagMeasurementResult with resampled particles and optional weights
     """
 
+    # Normalize panorama_id to a list
+    panorama_ids = [panorama_id] if isinstance(panorama_id, str) else panorama_id
+
     num_dual_mcl_samples = int(wag_config.dual_mcl_frac * particles.shape[0])
     num_mcl_samples = particles.shape[0] - num_dual_mcl_samples
 
@@ -241,8 +255,14 @@ def measurement_wag(
     # Resample from prior particles weighted by observation likelihood
     if num_mcl_samples:
         # Compute observation log likelihoods for current particles
+        # Shape: (num_panoramas, num_particles)
         observation_log_likelihoods = obs_likelihood_calculator.compute_log_likelihoods(
-            particles, panorama_id)
+            particles, panorama_ids)
+
+        # Average log likelihoods across panoramas if multiple are provided
+        # Shape: (num_particles,)
+        if observation_log_likelihoods.dim() == 2:
+            observation_log_likelihoods = observation_log_likelihoods.mean(dim=0)
 
         # Normalize to get particle weights
         primal_log_particle_weights = observation_log_likelihoods - observation_log_likelihoods.logsumexp(dim=0)
@@ -258,8 +278,15 @@ def measurement_wag(
     # Sample from observation likelihood, then weight by prior belief
     if num_dual_mcl_samples:
         # Sample particles from observation likelihood distribution
+        # Shape: (num_panoramas, num_particles, state_dim) or (num_particles, state_dim)
         dual_mcl_particles = obs_likelihood_calculator.sample_from_observation(
-            num_dual_mcl_samples, panorama_id, generator)
+            num_dual_mcl_samples, panorama_ids, generator)
+
+        # If multiple panoramas, we need to handle each separately and then combine
+        if dual_mcl_particles.dim() == 3:
+            # For now, take particles from the first panorama
+            # TODO: Consider a better strategy for combining samples from multiple panoramas
+            dual_mcl_particles = dual_mcl_particles[0]
 
         # Weight dual particles by belief (where do prior particles think we are?)
         # This is independent of the observation model

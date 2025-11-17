@@ -19,7 +19,6 @@ py_library(
     "//common/torch:load_torch_deps",
     "//common/torch:load_and_save_models",
     "//experimental/overhead_matching/swag/filter:particle_filter",
-    "//experimental/overhead_matching/swag/data:satellite_embedding_database",
   ]
 )
 
@@ -73,5 +72,16 @@ py_test(
     requirement("shapely"),
     "//common/torch:load_torch_deps",
     ":observation_likelihood",
+  ]
+)
+
+py_test(
+  name = "swag_algorithm_test",
+  srcs = ["swag_algorithm_test.py"],
+  deps = [
+    requirement("torch"),
+    "//common/torch:load_torch_deps",
+    ":swag_algorithm",
+    ":wag_config_proto_py",
   ]
 )
