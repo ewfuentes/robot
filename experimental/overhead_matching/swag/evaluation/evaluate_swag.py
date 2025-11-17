@@ -368,6 +368,7 @@ def construct_inputs_and_evaluate_path(
     satellite_patch_locations = vigor_dataset.get_patch_positions()
 
     # Build patch index function for spatial discretization
+    # This is used by both observation likelihood and belief weighting
     patch_index_from_particle = build_patch_index_from_particle(
         vigor_dataset, wag_config.satellite_patch_config, device)
 
@@ -376,7 +377,7 @@ def construct_inputs_and_evaluate_path(
         similarity_matrix=path_similarity_values,
         panorama_ids=panorama_ids,
         satellite_patch_locations=satellite_patch_locations,
-        satellite_patch_config=wag_config.satellite_patch_config,
+        patch_index_from_particle=patch_index_from_particle,
         wag_config=wag_config,
         device=device
     )

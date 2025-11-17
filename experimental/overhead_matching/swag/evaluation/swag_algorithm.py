@@ -146,7 +146,7 @@ class WagObservationLikelihoodCalculator:
                  similarity_matrix: torch.Tensor,  # path_length x num_patches
                  panorama_ids: list[str],
                  satellite_patch_locations: torch.Tensor,  # num_patches x 2 (lat, lon)
-                 satellite_patch_config,  # SatellitePatchConfig
+                 patch_index_from_particle: Callable[[torch.Tensor], torch.Tensor],
                  wag_config: WagConfig,
                  device: torch.device):
         """
@@ -156,64 +156,16 @@ class WagObservationLikelihoodCalculator:
             similarity_matrix: (path_length, num_patches) precomputed similarities
             panorama_ids: List of panorama IDs corresponding to rows of similarity_matrix
             satellite_patch_locations: (num_patches, 2) lat/lon coordinates of patch centers
-            satellite_patch_config: Configuration for satellite patches (zoom, dimensions)
-            wag_config: WAG configuration (sigma, phantom counts, etc.)
+            patch_index_from_particle: Function mapping particle positions to patch indices
+            wag_config: WAG configuration (sigma, etc.)
             device: Device for torch operations
         """
         self.similarity_matrix = similarity_matrix.to(device)
         self.pano_id_to_idx = {pano_id: i for i, pano_id in enumerate(panorama_ids)}
         self.satellite_patch_locations = satellite_patch_locations.to(device)
+        self.patch_index_from_particle = patch_index_from_particle
         self.sigma = wag_config.sigma_obs_prob_from_sim
-        self.phantom_counts_frac = wag_config.dual_mcl_belief_phantom_counts_frac
         self.device = device
-
-        # Build patch index lookup from particle positions
-        # Convert satellite patch locations to Web Mercator pixels for KD-tree
-        import common.gps.web_mercator as web_mercator
-        from experimental.overhead_matching.swag.data.satellite_embedding_database import build_kd_tree
-
-        patch_positions_lat_lon = satellite_patch_locations
-        patch_positions_px_y, patch_positions_px_x = web_mercator.latlon_to_pixel_coords(
-            patch_positions_lat_lon[:, 0], patch_positions_lat_lon[:, 1],
-            satellite_patch_config.zoom_level)
-        patch_positions_px = torch.stack([patch_positions_px_y, patch_positions_px_x], dim=-1)
-
-        self.sat_patch_kdtree = build_kd_tree(patch_positions_px)
-        self.num_patches = len(satellite_patch_locations)
-        self.zoom_level = satellite_patch_config.zoom_level
-        self.patch_height_px = satellite_patch_config.patch_height_px
-        self.patch_width_px = satellite_patch_config.patch_width_px
-        self.patch_positions_px = patch_positions_px
-
-    def _patch_index_from_particle(self, particles: torch.Tensor) -> torch.Tensor:
-        """
-        Map particle positions to satellite patch indices.
-
-        Args:
-            particles: (num_particles, 2) lat/lon positions
-
-        Returns:
-            indices: (num_particles,) patch indices, or num_patches if out of bounds
-        """
-        import common.gps.web_mercator as web_mercator
-
-        # Convert particles to Web Mercator pixels
-        particles_px_y, particles_px_x = web_mercator.latlon_to_pixel_coords(
-            particles[:, 0], particles[:, 1], self.zoom_level)
-        particles_px = torch.stack([particles_px_y, particles_px_x], dim=-1)
-
-        # Find nearest patch
-        px_dist_sq, idxs = self.sat_patch_kdtree.query(particles_px, nr_nns_searches=1)
-
-        # Check if particle is within patch bounds
-        selected_patch_positions = self.patch_positions_px[idxs, :].squeeze()
-        abs_deltas = torch.abs(particles_px - selected_patch_positions)
-        is_row_out_of_bounds = abs_deltas[:, 0] > self.patch_height_px / 2.0
-        is_col_out_of_bounds = abs_deltas[:, 1] > self.patch_width_px / 2.0
-        is_too_far = torch.logical_or(is_row_out_of_bounds, is_col_out_of_bounds)
-
-        idxs[is_too_far] = self.num_patches
-        return idxs.squeeze()
 
     def compute_log_likelihoods(self, particles: torch.Tensor, panorama_id: str) -> torch.Tensor:
         """Compute unnormalized log likelihoods for particles."""
@@ -229,7 +181,7 @@ class WagObservationLikelihoodCalculator:
         particle_log_likelihoods = pf.wag_calculate_log_particle_weights(
             observation_log_likelihoods,
             particles,
-            self._patch_index_from_particle)
+            self.patch_index_from_particle)
 
         return particle_log_likelihoods
 
