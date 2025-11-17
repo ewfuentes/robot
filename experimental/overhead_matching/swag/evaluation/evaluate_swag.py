@@ -273,11 +273,10 @@ def pano_embeddings_and_motion_deltas_from_path(
 
 
 def run_inference_on_path(
-        patch_index_from_particle: Callable[[torch.Tensor], torch.Tensor],
+        obs_likelihood_calculator: sa.ObservationLikelihoodCalculator,
         initial_particle_state: torch.Tensor,  # N x state dim
         motion_deltas: torch.Tensor,  # path_length - 1 x state dim
-        patch_similarity_for_path: torch.Tensor,  # path_length x W
-        satellite_patch_locations: torch.Tensor,  # num_patches x 2
+        panorama_ids: list[str],  # path_length panorama IDs
         wag_config: WagConfig,
         generator: torch.Generator,
         return_intermediates: bool = False) -> PathInferenceResult:
@@ -288,15 +287,14 @@ def run_inference_on_path(
     log_particle_weights = []
     particle_history_pre_move = []  # the particle state history before move_wag but after observe_wag
     num_dual_particles = []
-    for likelihood_value, motion_delta in zip(patch_similarity_for_path[:-1], motion_deltas):
+    for panorama_id, motion_delta in zip(panorama_ids[:-1], motion_deltas):
         particle_history.append(particle_state.cpu().clone())
 
         # Generate new particles based on the observation
         wag_observation_result = sa.measurement_wag(
                 particle_state,
-                likelihood_value,
-                patch_index_from_particle,
-                satellite_patch_locations,
+                obs_likelihood_calculator,
+                panorama_id,
                 wag_config,
                 generator,
                 return_past_particle_weights=return_intermediates)
@@ -313,9 +311,8 @@ def run_inference_on_path(
     # apply final observation
     wag_observation_result = sa.measurement_wag(
             particle_state,
-            patch_similarity_for_path[-1],
-            patch_index_from_particle,
-            satellite_patch_locations,
+            obs_likelihood_calculator,
+            panorama_ids[-1],
             wag_config,
             generator,
             return_past_particle_weights=return_intermediates)
@@ -360,23 +357,38 @@ def construct_inputs_and_evaluate_path(
 ) -> PathInferenceResult:
     generator = torch.Generator(device=device).manual_seed(generator_seed)
     motion_deltas = get_motion_deltas_from_path(vigor_dataset, path).to(device)
-    patch_index_from_particle = build_patch_index_from_particle(
-            vigor_dataset, wag_config.satellite_patch_config, device)
+
+    # Convert path indices to panorama IDs
+    panorama_ids = [vigor_dataset._panorama_metadata.iloc[idx].pano_id for idx in path]
+
+    # Get satellite patch locations
     satellite_patch_locations = vigor_dataset.get_patch_positions()
-    gt_initial_position_lat_lon = vigor_dataset._panorama_metadata.loc[path[0]]
+
+    # Create observation likelihood calculator
+    obs_likelihood_calculator = sa.WagObservationLikelihoodCalculator(
+        similarity_matrix=path_similarity_values,
+        panorama_ids=panorama_ids,
+        satellite_patch_locations=satellite_patch_locations,
+        satellite_patch_config=wag_config.satellite_patch_config,
+        wag_config=wag_config,
+        device=device
+    )
+
+    # Initialize particles
+    gt_initial_position_lat_lon = vigor_dataset._panorama_metadata.iloc[path[0]]
     gt_initial_position_lat_lon = torch.tensor(
         (gt_initial_position_lat_lon['lat'], gt_initial_position_lat_lon['lon']), device=device)
     initial_particle_state = sa.initialize_wag_particles(
         gt_initial_position_lat_lon, wag_config, generator).to(device)
 
-    return run_inference_on_path(patch_index_from_particle,
-                                 initial_particle_state,
-                                 motion_deltas,
-                                 path_similarity_values,
-                                 satellite_patch_locations,
-                                 wag_config,
-                                 generator,
-                                 return_intermediates)
+    return run_inference_on_path(
+        obs_likelihood_calculator=obs_likelihood_calculator,
+        initial_particle_state=initial_particle_state,
+        motion_deltas=motion_deltas,
+        panorama_ids=panorama_ids,
+        wag_config=wag_config,
+        generator=generator,
+        return_intermediates=return_intermediates)
 
 def evaluate_model_on_paths(
     vigor_dataset: vd.VigorDataset,
