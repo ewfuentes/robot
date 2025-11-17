@@ -274,6 +274,7 @@ def pano_embeddings_and_motion_deltas_from_path(
 
 def run_inference_on_path(
         obs_likelihood_calculator: sa.ObservationLikelihoodCalculator,
+        belief_weighting: sa.BeliefWeighting,
         initial_particle_state: torch.Tensor,  # N x state dim
         motion_deltas: torch.Tensor,  # path_length - 1 x state dim
         panorama_ids: list[str],  # path_length panorama IDs
@@ -294,6 +295,7 @@ def run_inference_on_path(
         wag_observation_result = sa.measurement_wag(
                 particle_state,
                 obs_likelihood_calculator,
+                belief_weighting,
                 panorama_id,
                 wag_config,
                 generator,
@@ -312,6 +314,7 @@ def run_inference_on_path(
     wag_observation_result = sa.measurement_wag(
             particle_state,
             obs_likelihood_calculator,
+            belief_weighting,
             panorama_ids[-1],
             wag_config,
             generator,
@@ -364,6 +367,10 @@ def construct_inputs_and_evaluate_path(
     # Get satellite patch locations
     satellite_patch_locations = vigor_dataset.get_patch_positions()
 
+    # Build patch index function for spatial discretization
+    patch_index_from_particle = build_patch_index_from_particle(
+        vigor_dataset, wag_config.satellite_patch_config, device)
+
     # Create observation likelihood calculator
     obs_likelihood_calculator = sa.WagObservationLikelihoodCalculator(
         similarity_matrix=path_similarity_values,
@@ -372,6 +379,13 @@ def construct_inputs_and_evaluate_path(
         satellite_patch_config=wag_config.satellite_patch_config,
         wag_config=wag_config,
         device=device
+    )
+
+    # Create belief weighting (independent of observation model)
+    belief_weighting = sa.BeliefWeighting(
+        satellite_patch_locations=satellite_patch_locations,
+        patch_index_from_particle=patch_index_from_particle,
+        phantom_counts_frac=wag_config.dual_mcl_belief_phantom_counts_frac
     )
 
     # Initialize particles
@@ -383,6 +397,7 @@ def construct_inputs_and_evaluate_path(
 
     return run_inference_on_path(
         obs_likelihood_calculator=obs_likelihood_calculator,
+        belief_weighting=belief_weighting,
         initial_particle_state=initial_particle_state,
         motion_deltas=motion_deltas,
         panorama_ids=panorama_ids,

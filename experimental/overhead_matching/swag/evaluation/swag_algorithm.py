@@ -34,6 +34,65 @@ def initialize_wag_particles(gt_start_position_lat_lon: torch.Tensor,
     return particles
 
 
+class BeliefWeighting:
+    """Computes particle weights based on prior belief distribution.
+
+    Used for dual MCL weighting in WAG particle filter. The belief weighting
+    is independent of the observation model - it only depends on where the
+    prior particles are located in space.
+    """
+
+    def __init__(self,
+                 satellite_patch_locations: torch.Tensor,
+                 patch_index_from_particle: Callable[[torch.Tensor], torch.Tensor],
+                 phantom_counts_frac: float):
+        """
+        Initialize belief weighting.
+
+        Args:
+            satellite_patch_locations: (num_patches, 2) lat/lon coordinates
+            patch_index_from_particle: Function mapping particles to patch indices
+            phantom_counts_frac: Fraction of phantom counts to add (for smoothing)
+        """
+        self.satellite_patch_locations = satellite_patch_locations
+        self.patch_index_from_particle = patch_index_from_particle
+        self.phantom_counts_frac = phantom_counts_frac
+
+    def compute_weights(self,
+                       belief_particles: torch.Tensor,
+                       particles_to_weight: torch.Tensor) -> torch.Tensor:
+        """
+        Compute log weights for particles based on prior belief distribution.
+
+        This computes how likely each particle in particles_to_weight is according
+        to where the belief_particles are located. Particles in regions with many
+        belief particles get higher weights.
+
+        Args:
+            belief_particles: (num_belief_particles, state_dim) representing prior belief
+            particles_to_weight: (num_particles, state_dim) particles to compute weights for
+
+        Returns:
+            log_weights: (num_particles,) unnormalized log weights
+        """
+        # Compute belief log likelihood from particle distribution
+        belief_log_likelihoods = pf.wag_belief_log_likelihood_from_particles(
+            belief_particles,
+            self.satellite_patch_locations,
+            self.phantom_counts_frac,
+            self.patch_index_from_particle
+        )
+
+        # Map particles to patches and get their belief likelihoods
+        particle_log_weights = pf.wag_calculate_log_particle_weights(
+            belief_log_likelihoods,
+            particles_to_weight,
+            self.patch_index_from_particle
+        )
+
+        return particle_log_weights
+
+
 class ObservationLikelihoodCalculator(Protocol):
     """Protocol for computing observation likelihoods in WAG particle filter.
 
@@ -72,23 +131,6 @@ class ObservationLikelihoodCalculator(Protocol):
 
         Returns:
             particles: (num_particles, state_dim) sampled particles
-        """
-        ...
-
-    def compute_belief_log_likelihoods(self, belief_particles: torch.Tensor,
-                                      particles_to_weight: torch.Tensor) -> torch.Tensor:
-        """
-        Compute log likelihoods for particles based on prior belief distribution.
-
-        This computes how likely each particle in particles_to_weight is according
-        to where the belief_particles are located. Used for dual MCL weighting.
-
-        Args:
-            belief_particles: (num_belief_particles, state_dim) representing prior belief
-            particles_to_weight: (num_particles, state_dim) particles to compute weights for
-
-        Returns:
-            log_likelihoods: (num_particles,) unnormalized log likelihoods based on belief
         """
         ...
 
@@ -215,28 +257,11 @@ class WagObservationLikelihoodCalculator:
 
         return sampled_particles
 
-    def compute_belief_log_likelihoods(self, belief_particles: torch.Tensor,
-                                      particles_to_weight: torch.Tensor) -> torch.Tensor:
-        """Compute log likelihoods based on prior belief distribution."""
-        # Compute belief log likelihood from particle distribution
-        belief_log_likelihoods = pf.wag_belief_log_likelihood_from_particles(
-            belief_particles,
-            self.satellite_patch_locations,
-            self.phantom_counts_frac,
-            self._patch_index_from_particle)
-
-        # Map particles to patches and get their belief likelihoods
-        particle_log_likelihoods = pf.wag_calculate_log_particle_weights(
-            belief_log_likelihoods,
-            particles_to_weight,
-            self._patch_index_from_particle)
-
-        return particle_log_likelihoods
-
 
 def measurement_wag(
         particles: torch.Tensor,  # N x state dimension
         obs_likelihood_calculator: ObservationLikelihoodCalculator,
+        belief_weighting: BeliefWeighting,
         panorama_id: str,
         wag_config: WagConfig,
         generator: torch.Generator,
@@ -247,6 +272,7 @@ def measurement_wag(
     Args:
         particles: Current particle states (num_particles, state_dim)
         obs_likelihood_calculator: Calculator for observation likelihoods
+        belief_weighting: Calculator for belief-based weighting (dual MCL)
         panorama_id: Identifier for the current observation
         wag_config: WAG configuration parameters
         generator: Random generator for sampling
@@ -283,13 +309,13 @@ def measurement_wag(
         dual_mcl_particles = obs_likelihood_calculator.sample_from_observation(
             num_dual_mcl_samples, panorama_id, generator)
 
-        # Compute belief log likelihoods (where do prior particles think we are?)
-        # This weights dual particles by how well they match the prior belief distribution
-        belief_log_likelihoods = obs_likelihood_calculator.compute_belief_log_likelihoods(
+        # Weight dual particles by belief (where do prior particles think we are?)
+        # This is independent of the observation model
+        dual_log_particle_weights = belief_weighting.compute_weights(
             particles, dual_mcl_particles)
 
         # Normalize to get particle weights
-        dual_log_particle_weights = belief_log_likelihoods - belief_log_likelihoods.logsumexp(dim=0)
+        dual_log_particle_weights = dual_log_particle_weights - dual_log_particle_weights.logsumexp(dim=0)
 
         # Resample dual particles according to belief weights
         resampled_dual_particles = pf.wag_multinomial_resampling(
