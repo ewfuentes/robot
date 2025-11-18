@@ -2,6 +2,8 @@
 import common.torch.load_torch_deps
 import torch
 from dataclasses import dataclass
+from enum import Enum
+from typing import Protocol
 import geopandas as gpd
 import pandas as pd
 import itertools
@@ -11,10 +13,17 @@ import math
 import numpy as np
 
 
+class LikelihoodMode(Enum):
+    SAT_ONLY = "sat_only"
+    OSM_ONLY = "osm_only"
+    COMBINED = "combined"
+
+
 @dataclass
 class ObservationLikelihoodConfig:
     obs_likelihood_from_sat_similarity_sigma: float
     obs_likelihood_from_osm_similarity_sigma: float
+    likelihood_mode: LikelihoodMode = LikelihoodMode.COMBINED
 
 
 @dataclass
@@ -269,4 +278,146 @@ def compute_log_observation_likelihood(prior_data, query, config):
             point_sigma_px=config.obs_likelihood_from_osm_similarity_sigma)
 
     return sat_log_likelihood, osm_log_likelihood
+
+
+class ObservationLikelihoodCalculator(Protocol):
+    """Protocol for computing observation likelihoods in particle filter.
+
+    Implementations should be initialized with prior data and any
+    necessary context (e.g., satellite patch locations, observation data).
+    """
+
+    def compute_log_likelihoods(self, particles: torch.Tensor, panorama_ids: list[str]) -> torch.Tensor:
+        """
+        Compute unnormalized log likelihoods for particles given observations.
+
+        Args:
+            particles: (num_particles, 2) tensor of particle states (lat/lon)
+            panorama_ids: List of identifiers for the observations/panoramas
+
+        Returns:
+            log_likelihoods: (num_panoramas, num_particles) tensor of unnormalized log likelihoods
+        """
+        ...
+
+    def sample_from_observation(self, num_particles: int, panorama_ids: list[str],
+                                generator: torch.Generator) -> torch.Tensor:
+        """
+        Sample particles from the observation likelihood distribution.
+
+        Args:
+            num_particles: Number of particles to sample per panorama
+            panorama_ids: List of identifiers for the observations/panoramas
+            generator: Random generator for sampling
+
+        Returns:
+            particles: (num_panoramas, num_particles, 2) sampled particles (lat/lon)
+        """
+        ...
+
+
+class LandmarkObservationLikelihoodCalculator:
+    """Observation likelihood calculator using satellite patches and OSM landmarks.
+
+    This implements the observation likelihood model that combines satellite patch
+    similarities and OSM landmark similarities based on the configured mode.
+    """
+
+    def __init__(self,
+                 prior_data: PriorData,
+                 config: ObservationLikelihoodConfig,
+                 device: torch.device):
+        """
+        Initialize the landmark observation likelihood calculator.
+
+        Args:
+            prior_data: Contains geometry and similarity matrices
+            config: Configuration with sigma values and likelihood mode
+            device: PyTorch device for computation
+        """
+        self.prior_data = prior_data
+        self.config = config
+        self.device = device
+
+        # Build panorama ID to index mapping
+        self.pano_id_to_idx = {
+            pano_id: idx for idx, pano_id in enumerate(prior_data.pano_metadata.pano_id)
+        }
+
+        # Validate prior data
+        _check_prior_data(prior_data)
+
+    def compute_log_likelihoods(self, particles: torch.Tensor, panorama_ids: list[str]) -> torch.Tensor:
+        """
+        Compute unnormalized log likelihoods for particles given observations.
+
+        Args:
+            particles: (num_particles, 2) tensor of particle states (lat/lon)
+            panorama_ids: List of identifiers for the observations/panoramas
+
+        Returns:
+            log_likelihoods: (num_panoramas, num_particles) tensor of unnormalized log likelihoods
+        """
+        # Get similarities for the specified panoramas
+        similarities = _get_similarities(self.prior_data, panorama_ids)
+
+        # Convert lat/lon to pixel coordinates
+        # Need to expand particles to (num_panoramas, num_particles, 2) for the likelihood functions
+        num_panoramas = len(panorama_ids)
+        particle_locs_px = _compute_pixel_locs_px(particles)
+        # Expand to (num_panoramas, num_particles, 2)
+        particle_locs_px = particle_locs_px.unsqueeze(0).expand(num_panoramas, -1, -1)
+
+        mode = self.config.likelihood_mode
+
+        if mode == LikelihoodMode.SAT_ONLY:
+            log_likelihood = _compute_sat_log_likelihood(
+                similarities.sat_patch,
+                self.prior_data.sat_geometry,
+                particle_locs_px,
+                sigma_px=self.config.obs_likelihood_from_sat_similarity_sigma
+            )
+        elif mode == LikelihoodMode.OSM_ONLY:
+            log_likelihood = _compute_osm_log_likelihood(
+                similarities.landmark,
+                similarities.landmark_mask,
+                self.prior_data.osm_geometry,
+                particle_locs_px,
+                point_sigma_px=self.config.obs_likelihood_from_osm_similarity_sigma
+            )
+        else:  # COMBINED
+            sat_log_likelihood = _compute_sat_log_likelihood(
+                similarities.sat_patch,
+                self.prior_data.sat_geometry,
+                particle_locs_px,
+                sigma_px=self.config.obs_likelihood_from_sat_similarity_sigma
+            )
+            osm_log_likelihood = _compute_osm_log_likelihood(
+                similarities.landmark,
+                similarities.landmark_mask,
+                self.prior_data.osm_geometry,
+                particle_locs_px,
+                point_sigma_px=self.config.obs_likelihood_from_osm_similarity_sigma
+            )
+            log_likelihood = sat_log_likelihood + osm_log_likelihood
+
+        return log_likelihood
+
+    def sample_from_observation(self, num_particles: int, panorama_ids: list[str],
+                                generator: torch.Generator) -> torch.Tensor:
+        """
+        Sample particles from the observation likelihood distribution.
+
+        Args:
+            num_particles: Number of particles to sample per panorama
+            panorama_ids: List of identifiers for the observations/panoramas
+            generator: Random generator for sampling
+
+        Returns:
+            particles: (num_panoramas, num_particles, 2) sampled particles (lat/lon)
+
+        Raises:
+            NotImplementedError: This method is not yet implemented.
+        """
+        raise NotImplementedError("sample_from_observation is not yet implemented")
 

@@ -1189,5 +1189,270 @@ class ObservationLikelihoodTest(unittest.TestCase):
         )
 
 
+class LandmarkObservationLikelihoodCalculatorTest(unittest.TestCase):
+    def _create_test_prior_data(self):
+        """Create test prior data with known structure."""
+        osm_geometry = pd.DataFrame([
+            {'osm_id': 0, 'geometry_px': shapely.Point(100, 50), 'osm_embedding_idx': 0},
+            {'osm_id': 1, 'geometry_px': shapely.Point(200, 150), 'osm_embedding_idx': 1},
+        ])
+
+        sat_geometry = pd.DataFrame([
+            {'geometry_px': create_square_patch(100, 50, size=20), 'embedding_idx': 0},
+            {'geometry_px': create_square_patch(200, 150, size=20), 'embedding_idx': 1},
+        ])
+
+        pano_metadata = pd.DataFrame([
+            {'pano_id': 'pano_0', 'pano_lm_idxs': [0, 1]},
+            {'pano_id': 'pano_1', 'pano_lm_idxs': [2, 3]},
+        ])
+
+        pano_sat_similarity = torch.tensor([
+            [0.8, 0.3],
+            [0.2, 0.9],
+        ])
+        pano_osm_similarity = torch.tensor([
+            [0.9, 0.2],
+            [0.1, 0.7],
+            [0.6, 0.4],
+            [0.3, 0.8],
+        ])
+
+        return lol.PriorData(
+            osm_geometry=osm_geometry,
+            sat_geometry=sat_geometry,
+            pano_metadata=pano_metadata,
+            pano_sat_similarity=pano_sat_similarity,
+            pano_osm_landmark_similarity=pano_osm_similarity
+        )
+
+    def test_compute_log_likelihoods_output_shape(self):
+        """Test that compute_log_likelihoods returns correct shape."""
+        prior_data = self._create_test_prior_data()
+        config = lol.ObservationLikelihoodConfig(
+            obs_likelihood_from_sat_similarity_sigma=0.1,
+            obs_likelihood_from_osm_similarity_sigma=100.0,
+            likelihood_mode=lol.LikelihoodMode.COMBINED
+        )
+
+        calculator = lol.LandmarkObservationLikelihoodCalculator(
+            prior_data=prior_data,
+            config=config,
+            device=torch.device('cpu')
+        )
+
+        # 5 particles, 1 panorama
+        particles = torch.tensor([
+            [37.7749, -122.4194],
+            [37.7750, -122.4195],
+            [37.7751, -122.4196],
+            [37.7752, -122.4197],
+            [37.7753, -122.4198],
+        ])
+
+        log_likelihoods = calculator.compute_log_likelihoods(particles, ['pano_0'])
+
+        self.assertEqual(log_likelihoods.shape, (1, 5))
+
+    def test_compute_log_likelihoods_multiple_panoramas(self):
+        """Test with multiple panoramas."""
+        prior_data = self._create_test_prior_data()
+        config = lol.ObservationLikelihoodConfig(
+            obs_likelihood_from_sat_similarity_sigma=0.1,
+            obs_likelihood_from_osm_similarity_sigma=100.0,
+            likelihood_mode=lol.LikelihoodMode.COMBINED
+        )
+
+        calculator = lol.LandmarkObservationLikelihoodCalculator(
+            prior_data=prior_data,
+            config=config,
+            device=torch.device('cpu')
+        )
+
+        particles = torch.tensor([
+            [37.7749, -122.4194],
+            [37.7750, -122.4195],
+            [37.7751, -122.4196],
+        ])
+
+        log_likelihoods = calculator.compute_log_likelihoods(particles, ['pano_0', 'pano_1'])
+
+        self.assertEqual(log_likelihoods.shape, (2, 3))
+
+    def test_sat_only_mode(self):
+        """Test that SAT_ONLY mode uses only satellite likelihood."""
+        prior_data = self._create_test_prior_data()
+        config = lol.ObservationLikelihoodConfig(
+            obs_likelihood_from_sat_similarity_sigma=0.1,
+            obs_likelihood_from_osm_similarity_sigma=100.0,
+            likelihood_mode=lol.LikelihoodMode.SAT_ONLY
+        )
+
+        calculator = lol.LandmarkObservationLikelihoodCalculator(
+            prior_data=prior_data,
+            config=config,
+            device=torch.device('cpu')
+        )
+
+        particles = torch.tensor([
+            [37.7749, -122.4194],
+        ])
+
+        log_likelihoods = calculator.compute_log_likelihoods(particles, ['pano_0'])
+
+        self.assertEqual(log_likelihoods.shape, (1, 1))
+        self.assertFalse(torch.isnan(log_likelihoods).any())
+
+    def test_osm_only_mode(self):
+        """Test that OSM_ONLY mode uses only OSM likelihood."""
+        prior_data = self._create_test_prior_data()
+        config = lol.ObservationLikelihoodConfig(
+            obs_likelihood_from_sat_similarity_sigma=0.1,
+            obs_likelihood_from_osm_similarity_sigma=100.0,
+            likelihood_mode=lol.LikelihoodMode.OSM_ONLY
+        )
+
+        calculator = lol.LandmarkObservationLikelihoodCalculator(
+            prior_data=prior_data,
+            config=config,
+            device=torch.device('cpu')
+        )
+
+        particles = torch.tensor([
+            [37.7749, -122.4194],
+        ])
+
+        log_likelihoods = calculator.compute_log_likelihoods(particles, ['pano_0'])
+
+        self.assertEqual(log_likelihoods.shape, (1, 1))
+        self.assertFalse(torch.isnan(log_likelihoods).any())
+
+    def test_combined_mode(self):
+        """Test that COMBINED mode sums both likelihoods."""
+        prior_data = self._create_test_prior_data()
+
+        # Create calculators for each mode
+        config_sat = lol.ObservationLikelihoodConfig(
+            obs_likelihood_from_sat_similarity_sigma=0.1,
+            obs_likelihood_from_osm_similarity_sigma=100.0,
+            likelihood_mode=lol.LikelihoodMode.SAT_ONLY
+        )
+        config_osm = lol.ObservationLikelihoodConfig(
+            obs_likelihood_from_sat_similarity_sigma=0.1,
+            obs_likelihood_from_osm_similarity_sigma=100.0,
+            likelihood_mode=lol.LikelihoodMode.OSM_ONLY
+        )
+        config_combined = lol.ObservationLikelihoodConfig(
+            obs_likelihood_from_sat_similarity_sigma=0.1,
+            obs_likelihood_from_osm_similarity_sigma=100.0,
+            likelihood_mode=lol.LikelihoodMode.COMBINED
+        )
+
+        calc_sat = lol.LandmarkObservationLikelihoodCalculator(
+            prior_data=prior_data, config=config_sat, device=torch.device('cpu')
+        )
+        calc_osm = lol.LandmarkObservationLikelihoodCalculator(
+            prior_data=prior_data, config=config_osm, device=torch.device('cpu')
+        )
+        calc_combined = lol.LandmarkObservationLikelihoodCalculator(
+            prior_data=prior_data, config=config_combined, device=torch.device('cpu')
+        )
+
+        particles = torch.tensor([
+            [37.7749, -122.4194],
+        ])
+
+        ll_sat = calc_sat.compute_log_likelihoods(particles, ['pano_0'])
+        ll_osm = calc_osm.compute_log_likelihoods(particles, ['pano_0'])
+        ll_combined = calc_combined.compute_log_likelihoods(particles, ['pano_0'])
+
+        # Combined should be the sum of sat and osm
+        expected = ll_sat + ll_osm
+        torch.testing.assert_close(ll_combined, expected)
+
+    def test_sample_from_observation_raises_not_implemented(self):
+        """Test that sample_from_observation raises NotImplementedError."""
+        prior_data = self._create_test_prior_data()
+        config = lol.ObservationLikelihoodConfig(
+            obs_likelihood_from_sat_similarity_sigma=0.1,
+            obs_likelihood_from_osm_similarity_sigma=100.0,
+            likelihood_mode=lol.LikelihoodMode.COMBINED
+        )
+
+        calculator = lol.LandmarkObservationLikelihoodCalculator(
+            prior_data=prior_data,
+            config=config,
+            device=torch.device('cpu')
+        )
+
+        generator = torch.Generator().manual_seed(42)
+
+        with self.assertRaises(NotImplementedError):
+            calculator.sample_from_observation(10, ['pano_0'], generator)
+
+    def test_invalid_pano_id_raises_error(self):
+        """Test that invalid panorama ID raises an error."""
+        prior_data = self._create_test_prior_data()
+        config = lol.ObservationLikelihoodConfig(
+            obs_likelihood_from_sat_similarity_sigma=0.1,
+            obs_likelihood_from_osm_similarity_sigma=100.0,
+            likelihood_mode=lol.LikelihoodMode.COMBINED
+        )
+
+        calculator = lol.LandmarkObservationLikelihoodCalculator(
+            prior_data=prior_data,
+            config=config,
+            device=torch.device('cpu')
+        )
+
+        particles = torch.tensor([
+            [37.7749, -122.4194],
+        ])
+
+        with self.assertRaises(AssertionError):
+            calculator.compute_log_likelihoods(particles, ['nonexistent_pano'])
+
+    def test_constructor_validates_prior_data(self):
+        """Test that constructor validates prior data."""
+        osm_geometry = pd.DataFrame([
+            {'osm_id': 0, 'geometry_px': shapely.Point(100, 50), 'osm_embedding_idx': 0},
+        ])
+
+        sat_geometry = pd.DataFrame([
+            {'geometry_px': create_square_patch(100, 50, size=20), 'embedding_idx': 0},
+            {'geometry_px': create_square_patch(200, 150, size=20), 'embedding_idx': 1},
+            {'geometry_px': create_square_patch(300, 250, size=20), 'embedding_idx': 2},
+        ])
+
+        pano_metadata = pd.DataFrame([
+            {'pano_id': 'pano_0', 'pano_lm_idxs': [0]},
+        ])
+
+        # Mismatched shape: should be (1, 3) but is (1, 2)
+        pano_sat_similarity = torch.tensor([[0.8, 0.3]])
+        pano_osm_similarity = torch.tensor([[0.9]])
+
+        prior_data = lol.PriorData(
+            osm_geometry=osm_geometry,
+            sat_geometry=sat_geometry,
+            pano_metadata=pano_metadata,
+            pano_sat_similarity=pano_sat_similarity,
+            pano_osm_landmark_similarity=pano_osm_similarity
+        )
+
+        config = lol.ObservationLikelihoodConfig(
+            obs_likelihood_from_sat_similarity_sigma=0.1,
+            obs_likelihood_from_osm_similarity_sigma=100.0,
+            likelihood_mode=lol.LikelihoodMode.COMBINED
+        )
+
+        with self.assertRaises(AssertionError):
+            lol.LandmarkObservationLikelihoodCalculator(
+                prior_data=prior_data,
+                config=config,
+                device=torch.device('cpu')
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
