@@ -424,7 +424,8 @@ def compute_landmark_similarity_data(
 
     # Compute pano_osm_landmark_similarity
     # pano_embeddings is already the full tensor, compute similarity against all OSM embeddings
-    pano_osm_similarity = pano_embeddings @ osm_embeddings.T
+    # Compute in float16 to save memory (100k x 100k = 10B elements)
+    pano_osm_similarity = pano_embeddings.half() @ osm_embeddings.half().T
 
     return LandmarkSimilarityData(
         osm_geometry=osm_geometry,
