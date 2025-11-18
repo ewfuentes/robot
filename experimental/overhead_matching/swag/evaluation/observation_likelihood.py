@@ -11,6 +11,8 @@ import shapely
 from common.gps import web_mercator
 import math
 import numpy as np
+import hashlib
+import pickle
 
 from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
     load_embeddings, custom_id_from_props, build_embedding_idx_mapping)
@@ -316,47 +318,36 @@ def _check_prior_data(prior_data: PriorData):
     assert max_osm_idx < prior_data.pano_osm_landmark_similarity.shape[1]
 
 
-def build_prior_data_from_vigor(
+@dataclass
+class LandmarkSimilarityData:
+    """Pre-computed landmark similarity data that can be cached."""
+    # GeoDataFrame with columns: [osm_id, geometry_px, osm_embedding_idx]
+    osm_geometry: gpd.GeoDataFrame
+    # GeoDataFrame with columns: [pano_id, pano_lm_idxs]
+    pano_metadata: gpd.GeoDataFrame
+    # Similarity matrix: (num_pano_landmarks, num_osm_landmarks)
+    pano_osm_landmark_similarity: torch.Tensor
+
+
+def compute_landmark_similarity_data(
     vigor_dataset,
-    pano_sat_similarity: torch.Tensor,
     osm_embedding_path: Path,
     pano_embedding_path: Path,
     embedding_dim: int = 1536,
-) -> PriorData:
-    """Build PriorData from a VIGOR dataset and embeddings.
+) -> LandmarkSimilarityData:
+    """Compute landmark similarity data from embeddings.
+
+    This is the expensive operation that loads embeddings and computes similarities.
 
     Args:
         vigor_dataset: VigorDataset instance with loaded landmarks
-        pano_sat_similarity: Pre-computed (num_panos, num_sat_patches) similarity matrix
         osm_embedding_path: Path to directory containing OSM landmark embeddings
         pano_embedding_path: Path to directory containing panorama landmark embeddings
         embedding_dim: Dimension to truncate embeddings to
 
     Returns:
-        PriorData instance ready for use with LandmarkObservationLikelihoodCalculator
+        LandmarkSimilarityData with OSM geometry, pano metadata, and similarity matrix
     """
-    # Build satellite geometry with bounding boxes
-    sat_metadata = vigor_dataset._satellite_metadata
-    patch_height, patch_width = vigor_dataset._original_satellite_patch_size
-
-    sat_geometries = []
-    for _, row in sat_metadata.iterrows():
-        center_x = row.web_mercator_x
-        center_y = row.web_mercator_y
-        geom = shapely.box(
-            xmin=center_x - patch_width // 2,
-            xmax=center_x + patch_width // 2,
-            ymin=center_y - patch_height // 2,
-            ymax=center_y + patch_height // 2
-        )
-        sat_geometries.append(geom)
-
-    sat_geometry = gpd.GeoDataFrame({
-        'geometry_px': sat_geometries,
-        'embedding_idx': range(len(sat_metadata))
-    })
-
-    # Build OSM geometry from landmark metadata
     landmark_metadata = vigor_dataset._landmark_metadata
 
     # Load OSM embeddings
@@ -392,8 +383,6 @@ def build_prior_data_from_vigor(
     # Build pano metadata with landmark indices
     pano_metadata = vigor_dataset._panorama_metadata
 
-    # For each panorama, we need to track which pano landmarks it has
-    # and build the pano_lm_idxs list
     pano_lm_counter = 0
     pano_metadata_rows = []
     pano_lm_embeddings_list = []
@@ -423,20 +412,121 @@ def build_prior_data_from_vigor(
     pano_metadata_df = gpd.GeoDataFrame(pano_metadata_rows)
 
     # Compute pano_osm_landmark_similarity
-    # This is (num_pano_landmarks, num_osm_landmarks)
     if len(pano_lm_embeddings_list) > 0:
         pano_lm_embeddings = torch.stack(pano_lm_embeddings_list)
-        # Cosine similarity (embeddings are already normalized)
         pano_osm_similarity = pano_lm_embeddings @ osm_embeddings.T
     else:
         pano_osm_similarity = torch.zeros((0, len(osm_geometry)))
 
-    return PriorData(
+    return LandmarkSimilarityData(
         osm_geometry=osm_geometry,
-        sat_geometry=sat_geometry,
         pano_metadata=pano_metadata_df,
-        pano_sat_similarity=pano_sat_similarity,
         pano_osm_landmark_similarity=pano_osm_similarity
+    )
+
+
+def _compute_landmark_similarity_hash(
+    vigor_dataset,
+    osm_embedding_path: Path,
+    pano_embedding_path: Path,
+    embedding_dim: int
+) -> str:
+    """Compute a hash for caching landmark similarity data."""
+    hash_input = (
+        f"{len(vigor_dataset._landmark_metadata)}"
+        f"{len(vigor_dataset._panorama_metadata)}"
+        f"{osm_embedding_path}"
+        f"{pano_embedding_path}"
+        f"{embedding_dim}"
+    )
+    return hashlib.sha256(hash_input.encode()).hexdigest()[:16]
+
+
+def compute_cached_landmark_similarity_data(
+    vigor_dataset,
+    osm_embedding_path: Path,
+    pano_embedding_path: Path,
+    embedding_dim: int = 1536,
+    use_cache: bool = True,
+) -> LandmarkSimilarityData:
+    """Compute landmark similarity data with disk caching.
+
+    Args:
+        vigor_dataset: VigorDataset instance with loaded landmarks
+        osm_embedding_path: Path to directory containing OSM landmark embeddings
+        pano_embedding_path: Path to directory containing panorama landmark embeddings
+        embedding_dim: Dimension to truncate embeddings to
+        use_cache: Whether to use disk caching
+
+    Returns:
+        LandmarkSimilarityData with OSM geometry, pano metadata, and similarity matrix
+    """
+    cache_path = None
+    if use_cache:
+        cache_hash = _compute_landmark_similarity_hash(
+            vigor_dataset, osm_embedding_path, pano_embedding_path, embedding_dim)
+        cache_path = Path(f"~/.cache/robot/overhead_matching/landmark_similarity/{cache_hash}.pkl").expanduser()
+
+        if cache_path.exists():
+            print(f"Loading cached landmark similarity data from {cache_path}")
+            with open(cache_path, 'rb') as f:
+                return pickle.load(f)
+
+    print("Computing landmark similarity data...")
+    data = compute_landmark_similarity_data(
+        vigor_dataset, osm_embedding_path, pano_embedding_path, embedding_dim)
+
+    if use_cache and cache_path is not None:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(cache_path, 'wb') as f:
+            pickle.dump(data, f)
+        print(f"Cached landmark similarity data to {cache_path}")
+
+    return data
+
+
+def build_prior_data_from_vigor(
+    vigor_dataset,
+    pano_sat_similarity: torch.Tensor,
+    landmark_similarity_data: LandmarkSimilarityData,
+) -> PriorData:
+    """Build PriorData from a VIGOR dataset and pre-computed similarity data.
+
+    Args:
+        vigor_dataset: VigorDataset instance with loaded landmarks
+        pano_sat_similarity: Pre-computed (num_panos, num_sat_patches) similarity matrix
+        landmark_similarity_data: Pre-computed landmark similarity data
+
+    Returns:
+        PriorData instance ready for use with LandmarkObservationLikelihoodCalculator
+    """
+    # Build satellite geometry with bounding boxes
+    sat_metadata = vigor_dataset._satellite_metadata
+    patch_height, patch_width = vigor_dataset._original_satellite_patch_size
+
+    sat_geometries = []
+    for _, row in sat_metadata.iterrows():
+        center_x = row.web_mercator_x
+        center_y = row.web_mercator_y
+        geom = shapely.box(
+            xmin=center_x - patch_width // 2,
+            xmax=center_x + patch_width // 2,
+            ymin=center_y - patch_height // 2,
+            ymax=center_y + patch_height // 2
+        )
+        sat_geometries.append(geom)
+
+    sat_geometry = gpd.GeoDataFrame({
+        'geometry_px': sat_geometries,
+        'embedding_idx': range(len(sat_metadata))
+    })
+
+    return PriorData(
+        osm_geometry=landmark_similarity_data.osm_geometry,
+        sat_geometry=sat_geometry,
+        pano_metadata=landmark_similarity_data.pano_metadata,
+        pano_sat_similarity=pano_sat_similarity,
+        pano_osm_landmark_similarity=landmark_similarity_data.pano_osm_landmark_similarity
     )
 
 
