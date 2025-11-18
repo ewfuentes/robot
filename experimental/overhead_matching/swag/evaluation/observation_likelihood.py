@@ -2,6 +2,7 @@
 import common.torch.load_torch_deps
 import torch
 from dataclasses import dataclass
+from enum import Enum
 import geopandas as gpd
 import pandas as pd
 import itertools
@@ -11,10 +12,17 @@ import math
 import numpy as np
 
 
+class LikelihoodMode(Enum):
+    SAT_ONLY = "sat_only"
+    OSM_ONLY = "osm_only"
+    COMBINED = "combined"
+
+
 @dataclass
 class ObservationLikelihoodConfig:
     obs_likelihood_from_sat_similarity_sigma: float
     obs_likelihood_from_osm_similarity_sigma: float
+    likelihood_mode: LikelihoodMode = LikelihoodMode.COMBINED
 
 
 @dataclass
@@ -98,63 +106,81 @@ def _compute_pixel_locs_px(particle_locs_deg: torch.Tensor, zoom_level: int = 20
     return torch.stack([y_px, x_px], dim=-1)
 
 
-def _compute_sat_log_likelihood(similarities, sat_geometry, particle_locs_px, sigma_px=0.1):
-    # Similarities is a n_panos x n_sat_patches similarity matrix
-    # Sat geometry contains bounding box information for each satellite patch
-    # particle_locs_px is a num_panos x num_particles x 2 (row, col) tensor of particle locations
+def _build_sat_spatial_index(sat_geometry):
+    """Build spatial index and centroids for satellite patches.
 
-    # This function returns a num_panos x num_particles shaped unnormalized log likelihood
+    Args:
+        sat_geometry: GeoDataFrame with geometry_px column containing patch polygons
 
-    assert similarities.shape[0] == particle_locs_px.shape[0]
-    assert particle_locs_px.shape[-1] == 2
-    assert len(sat_geometry) == similarities.shape[1]
-
+    Returns:
+        sat_tree: STRtree for spatial queries, or None if no patches
+        patch_centroids: Array of patch centroids, or None if no patches
+    """
     if len(sat_geometry) == 0:
-        return torch.full((particle_locs_px.shape[:-1]), -torch.inf, dtype=torch.float32)
-
-    max_similarities, _ = torch.max(similarities, -1, keepdim=True)
-    obs_log_likelihood = (-torch.log(torch.tensor(math.sqrt(2 * torch.pi) * sigma_px)) +
-                          -0.5 * torch.square((max_similarities - similarities) / sigma_px))
+        return None, None
 
     sat_tree = shapely.STRtree(sat_geometry.geometry_px)
+    patch_centroids = sat_geometry.geometry_px.apply(lambda x: x.centroid).values
+    return sat_tree, patch_centroids
+
+
+def _query_particle_patch_mapping(particle_locs_px: torch.Tensor, sat_tree, patch_centroids):
+    """
+    Query the spatial index to find which patch each particle belongs to.
+
+    For particles that overlap multiple patches, returns the nearest patch
+    by centroid distance.
+
+    Args:
+        particle_locs_px: Particle locations in pixels, shape (..., 2)
+        sat_tree: STRtree built from satellite patch geometries
+        patch_centroids: Array of patch centroids
+
+    Returns:
+        kept_particle_idxs: Indices of particles that matched a patch
+        kept_patch_idxs: Corresponding patch indices for each matched particle
+    """
+    if sat_tree is None:
+        return torch.tensor([], dtype=torch.long), torch.tensor([], dtype=torch.long)
+
     query_pts = np.array([shapely.Point(x) for x in particle_locs_px.reshape(-1, 2)])
     pt_and_patch_idxs = sat_tree.query(query_pts).T
+
+    if len(pt_and_patch_idxs) == 0:
+        return torch.tensor([], dtype=torch.long), torch.tensor([], dtype=torch.long)
+
     flat_particle_idxs = torch.tensor(pt_and_patch_idxs[:, 0])
     particle_match_idxs = torch.tensor(pt_and_patch_idxs[:, 1])
 
     if len(flat_particle_idxs) == 0:
-        # There were no particle/sat patch overlaps, so return -inf for all particles
-        return torch.full((particle_locs_px.shape[:-1]), -torch.inf, dtype=torch.float32)
+        return torch.tensor([], dtype=torch.long), torch.tensor([], dtype=torch.long)
 
-    # we have a list of particle indices and the sat patches that the particles are within.
-    # If a particle matches to multiple patches, we need to compute which one is the closest
-    centroids = sat_geometry.geometry_px.apply(lambda x: x.centroid).values
+    # For particles matching multiple patches, find the closest by centroid distance
     particle_to_center_distances = torch.tensor(
-            shapely.distance(centroids[particle_match_idxs],
+            shapely.distance(patch_centroids[particle_match_idxs],
                              query_pts[flat_particle_idxs]))
 
-    # Step 2: Mark beginning of each run of repeated particle indices
+    # Mark beginning of each run of repeated particle indices
     run_starts = torch.ones(
             len(flat_particle_idxs), dtype=torch.bool, device=flat_particle_idxs.device)
     if len(flat_particle_idxs) > 1:
         run_starts[1:] = flat_particle_idxs[1:] != flat_particle_idxs[:-1]
 
-    # Step 3: Compute segment IDs (which run each element belongs to)
+    # Compute segment IDs (which run each element belongs to)
     segment_ids = torch.cumsum(run_starts, dim=0) - 1
 
-    # Step 4: Find minimum distance per segment
+    # Find minimum distance per segment
     num_segments = segment_ids[-1].item() + 1 if len(segment_ids) > 0 else 0
     min_distances = torch.full((num_segments,), float('inf'),
                                device=particle_to_center_distances.device,
                                dtype=particle_to_center_distances.dtype)
     min_distances.scatter_reduce_(0, segment_ids, particle_to_center_distances, reduce='amin')
 
-    # Step 5: Mark which elements to keep (those with minimum distance in their segment)
+    # Mark which elements to keep (those with minimum distance in their segment)
     segment_min_distances = min_distances[segment_ids]
     keep_mask = particle_to_center_distances == segment_min_distances
 
-    # Step 6: Keep only the FIRST occurrence of minimum per segment
-    # Find the first index with minimum distance in each segment
+    # Keep only the FIRST occurrence of minimum per segment
     first_keep_idx_per_segment = torch.full((num_segments,), -1,
                                             dtype=torch.long, device=segment_ids.device)
 
@@ -172,15 +198,52 @@ def _compute_sat_log_likelihood(similarities, sat_geometry, particle_locs_px, si
     if valid_segments.any():
         keep_mask[first_keep_idx_per_segment[valid_segments]] = True
 
-    # Step 7: Filter to get final results
+    # Filter to get final results
     kept_particle_idxs = flat_particle_idxs[keep_mask]
     kept_patch_idxs = particle_match_idxs[keep_mask]
+
+    return kept_particle_idxs, kept_patch_idxs
+
+
+def _compute_sat_log_likelihood(similarities: torch.Tensor,
+                                particle_locs_px: torch.Tensor,
+                                sat_tree,
+                                patch_centroids,
+                                sigma_px: float = 0.1) -> torch.Tensor:
+    """
+    Compute satellite patch observation log likelihood.
+
+    Args:
+        similarities: (num_panos, num_sat_patches) similarity matrix
+        particle_locs_px: (num_panos, num_particles, 2) particle locations in pixels
+        sat_tree: STRtree built from satellite patch geometries
+        patch_centroids: Array of patch centroids
+        sigma_px: Sigma parameter for the Gaussian likelihood
+
+    Returns:
+        log_likelihood: (num_panos, num_particles) unnormalized log likelihood
+    """
+    assert similarities.shape[0] == particle_locs_px.shape[0]
+    assert particle_locs_px.shape[-1] == 2
+
+    num_patches = similarities.shape[1]
+    if num_patches == 0:
+        return torch.full((particle_locs_px.shape[:-1]), -torch.inf, dtype=torch.float32)
+
+    max_similarities, _ = torch.max(similarities, -1, keepdim=True)
+    obs_log_likelihood = (-torch.log(torch.tensor(math.sqrt(2 * torch.pi) * sigma_px)) +
+                          -0.5 * torch.square((max_similarities - similarities) / sigma_px))
+
+    kept_particle_idxs, kept_patch_idxs = _query_particle_patch_mapping(
+        particle_locs_px, sat_tree, patch_centroids)
+
+    if len(kept_particle_idxs) == 0:
+        return torch.full((particle_locs_px.shape[:-1]), -torch.inf, dtype=torch.float32)
 
     out = torch.full(particle_locs_px.shape[:-1], -torch.inf)
     particle_idxs = torch.unravel_index(kept_particle_idxs, particle_locs_px.shape[:-1])
 
     if len(particle_idxs) > 0:
-        # some particles overlapped with a satellite patch, update the likelihoods to match
         pano_idxs = particle_idxs[0]
         particle_likelihoods = obs_log_likelihood[pano_idxs, kept_patch_idxs]
         out[particle_idxs] = particle_likelihoods
@@ -249,24 +312,113 @@ def _check_prior_data(prior_data: PriorData):
     assert max_osm_idx < prior_data.pano_osm_landmark_similarity.shape[1]
 
 
-def compute_log_observation_likelihood(prior_data, query, config):
-    _check_prior_data(prior_data)
-    # Given the panorama ids, get the relevant satellite patch
-    # similarities and osm landmark similarities
-    similarities = _get_similarities(prior_data, query.pano_ids)
+class LandmarkObservationLikelihoodCalculator:
+    """Observation likelihood calculator using satellite patches and OSM landmarks.
 
-    # Convert the particle lat/lon locations to pixels
-    particle_locs_px = _compute_pixel_locs_px(query.particle_locs_deg)
+    This implements the observation likelihood model that combines satellite patch
+    similarities and OSM landmark similarities based on the configured mode.
+    """
 
-    # Compute the log observation likelihood for each particle
-    sat_log_likelihood = _compute_sat_log_likelihood(
-            similarities.sat_patch, prior_data.sat_geometry, particle_locs_px)
-    osm_log_likelihood = _compute_osm_log_likelihood(
-            similarities.landmark,
-            similarities.landmark_mask,
-            prior_data.osm_geometry,
-            particle_locs_px,
-            point_sigma_px=config.obs_likelihood_from_osm_similarity_sigma)
+    def __init__(self,
+                 prior_data: PriorData,
+                 config: ObservationLikelihoodConfig,
+                 device: torch.device):
+        """
+        Initialize the landmark observation likelihood calculator.
 
-    return sat_log_likelihood, osm_log_likelihood
+        Args:
+            prior_data: Contains geometry and similarity matrices
+            config: Configuration with sigma values and likelihood mode
+            device: PyTorch device for computation
+        """
+        self.prior_data = prior_data
+        self.config = config
+        self.device = device
+
+        # Build panorama ID to index mapping
+        self.pano_id_to_idx = {
+            pano_id: idx for idx, pano_id in enumerate(prior_data.pano_metadata.pano_id)
+        }
+
+        # Validate prior data
+        _check_prior_data(prior_data)
+
+        # Build spatial index for satellite patches
+        self._sat_tree, self._patch_centroids = _build_sat_spatial_index(prior_data.sat_geometry)
+
+    def compute_log_likelihoods(self, particles: torch.Tensor, panorama_ids: list[str]) -> torch.Tensor:
+        """
+        Compute unnormalized log likelihoods for particles given observations.
+
+        Args:
+            particles: (num_particles, 2) tensor of particle states (lat/lon)
+            panorama_ids: List of identifiers for the observations/panoramas
+
+        Returns:
+            log_likelihoods: (num_panoramas, num_particles) tensor of unnormalized log likelihoods
+        """
+        # Get similarities for the specified panoramas
+        similarities = _get_similarities(self.prior_data, panorama_ids)
+
+        # Convert lat/lon to pixel coordinates
+        # Need to expand particles to (num_panoramas, num_particles, 2) for the likelihood functions
+        num_panoramas = len(panorama_ids)
+        particle_locs_px = _compute_pixel_locs_px(particles)
+        # Expand to (num_panoramas, num_particles, 2)
+        particle_locs_px = particle_locs_px.unsqueeze(0).expand(num_panoramas, -1, -1)
+
+        mode = self.config.likelihood_mode
+
+        if mode == LikelihoodMode.SAT_ONLY:
+            log_likelihood = _compute_sat_log_likelihood(
+                similarities.sat_patch,
+                particle_locs_px,
+                self._sat_tree,
+                self._patch_centroids,
+                sigma_px=self.config.obs_likelihood_from_sat_similarity_sigma
+            )
+        elif mode == LikelihoodMode.OSM_ONLY:
+            log_likelihood = _compute_osm_log_likelihood(
+                similarities.landmark,
+                similarities.landmark_mask,
+                self.prior_data.osm_geometry,
+                particle_locs_px,
+                point_sigma_px=self.config.obs_likelihood_from_osm_similarity_sigma
+            )
+        else:  # COMBINED
+            sat_log_likelihood = _compute_sat_log_likelihood(
+                similarities.sat_patch,
+                particle_locs_px,
+                self._sat_tree,
+                self._patch_centroids,
+                sigma_px=self.config.obs_likelihood_from_sat_similarity_sigma
+            )
+            osm_log_likelihood = _compute_osm_log_likelihood(
+                similarities.landmark,
+                similarities.landmark_mask,
+                self.prior_data.osm_geometry,
+                particle_locs_px,
+                point_sigma_px=self.config.obs_likelihood_from_osm_similarity_sigma
+            )
+            log_likelihood = sat_log_likelihood + osm_log_likelihood
+
+        return log_likelihood
+
+    def sample_from_observation(self, num_particles: int, panorama_ids: list[str],
+                                generator: torch.Generator) -> torch.Tensor:
+        """
+        Sample particles from the observation likelihood distribution.
+
+        Args:
+            num_particles: Number of particles to sample per panorama
+            panorama_ids: List of identifiers for the observations/panoramas
+            generator: Random generator for sampling
+
+        Returns:
+            particles: (num_panoramas, num_particles, 2) sampled particles (lat/lon)
+
+        Raises:
+            NotImplementedError: This method is not yet implemented.
+        """
+        raise NotImplementedError("sample_from_observation is not yet implemented")
 
