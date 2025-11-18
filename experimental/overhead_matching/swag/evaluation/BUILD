@@ -60,6 +60,7 @@ py_library(
     requirement("geopandas"),
     "//common/torch:load_torch_deps",
     "//common/gps:web_mercator",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
   ]
 )
 

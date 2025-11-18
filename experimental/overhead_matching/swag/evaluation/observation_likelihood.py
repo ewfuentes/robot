@@ -3,6 +3,7 @@ import common.torch.load_torch_deps
 import torch
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 import geopandas as gpd
 import pandas as pd
 import itertools
@@ -10,6 +11,9 @@ import shapely
 from common.gps import web_mercator
 import math
 import numpy as np
+
+from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
+    load_embeddings, custom_id_from_props, build_embedding_idx_mapping)
 
 
 class LikelihoodMode(Enum):
@@ -310,6 +314,130 @@ def _check_prior_data(prior_data: PriorData):
     max_pano_idx = max(list(itertools.chain(*prior_data.pano_metadata.pano_lm_idxs)))
     assert max_pano_idx < prior_data.pano_osm_landmark_similarity.shape[0]
     assert max_osm_idx < prior_data.pano_osm_landmark_similarity.shape[1]
+
+
+def build_prior_data_from_vigor(
+    vigor_dataset,
+    pano_sat_similarity: torch.Tensor,
+    osm_embedding_path: Path,
+    pano_embedding_path: Path,
+    embedding_dim: int = 1536,
+) -> PriorData:
+    """Build PriorData from a VIGOR dataset and embeddings.
+
+    Args:
+        vigor_dataset: VigorDataset instance with loaded landmarks
+        pano_sat_similarity: Pre-computed (num_panos, num_sat_patches) similarity matrix
+        osm_embedding_path: Path to directory containing OSM landmark embeddings
+        pano_embedding_path: Path to directory containing panorama landmark embeddings
+        embedding_dim: Dimension to truncate embeddings to
+
+    Returns:
+        PriorData instance ready for use with LandmarkObservationLikelihoodCalculator
+    """
+    # Build satellite geometry with bounding boxes
+    sat_metadata = vigor_dataset._satellite_metadata
+    patch_height, patch_width = vigor_dataset._original_satellite_patch_size
+
+    sat_geometries = []
+    for _, row in sat_metadata.iterrows():
+        center_x = row.web_mercator_x
+        center_y = row.web_mercator_y
+        geom = shapely.box(
+            xmin=center_x - patch_width // 2,
+            xmax=center_x + patch_width // 2,
+            ymin=center_y - patch_height // 2,
+            ymax=center_y + patch_height // 2
+        )
+        sat_geometries.append(geom)
+
+    sat_geometry = gpd.GeoDataFrame({
+        'geometry_px': sat_geometries,
+        'embedding_idx': range(len(sat_metadata))
+    })
+
+    # Build OSM geometry from landmark metadata
+    landmark_metadata = vigor_dataset._landmark_metadata
+
+    # Load OSM embeddings
+    osm_embeddings, osm_id_to_idx = load_embeddings(
+        osm_embedding_path,
+        output_dim=embedding_dim,
+        normalize=True
+    )
+
+    # Build mapping from landmark metadata index to OSM embedding index
+    osm_idx_mapping = build_embedding_idx_mapping(
+        landmark_metadata, osm_id_to_idx, props_column='pruned_props')
+
+    # Filter to landmarks that have embeddings and build OSM geometry
+    osm_geometry_rows = []
+    for metadata_idx, embedding_idx in osm_idx_mapping.items():
+        row = landmark_metadata.iloc[metadata_idx]
+        osm_geometry_rows.append({
+            'osm_id': metadata_idx,
+            'geometry_px': row.geometry_px,
+            'osm_embedding_idx': embedding_idx
+        })
+
+    osm_geometry = gpd.GeoDataFrame(osm_geometry_rows)
+
+    # Load panorama embeddings
+    pano_embeddings, pano_id_to_idx = load_embeddings(
+        pano_embedding_path,
+        output_dim=embedding_dim,
+        normalize=True
+    )
+
+    # Build pano metadata with landmark indices
+    pano_metadata = vigor_dataset._panorama_metadata
+
+    # For each panorama, we need to track which pano landmarks it has
+    # and build the pano_lm_idxs list
+    pano_lm_counter = 0
+    pano_metadata_rows = []
+    pano_lm_embeddings_list = []
+
+    for pano_idx, row in pano_metadata.iterrows():
+        pano_id = row.path.stem  # Extract pano_id from path
+        pano_lm_idxs = []
+
+        # Get landmarks for this panorama
+        if hasattr(row, 'landmark_idxs') and row.landmark_idxs is not None:
+            for lm_idx in row.landmark_idxs:
+                lm_row = landmark_metadata.iloc[lm_idx]
+                props = lm_row.get('pruned_props', lm_row.to_dict())
+                custom_id = custom_id_from_props(props)
+
+                # Check if we have an embedding for this landmark from pano perspective
+                if custom_id in pano_id_to_idx:
+                    pano_lm_idxs.append(pano_lm_counter)
+                    pano_lm_embeddings_list.append(pano_embeddings[pano_id_to_idx[custom_id]])
+                    pano_lm_counter += 1
+
+        pano_metadata_rows.append({
+            'pano_id': pano_id,
+            'pano_lm_idxs': pano_lm_idxs
+        })
+
+    pano_metadata_df = gpd.GeoDataFrame(pano_metadata_rows)
+
+    # Compute pano_osm_landmark_similarity
+    # This is (num_pano_landmarks, num_osm_landmarks)
+    if len(pano_lm_embeddings_list) > 0:
+        pano_lm_embeddings = torch.stack(pano_lm_embeddings_list)
+        # Cosine similarity (embeddings are already normalized)
+        pano_osm_similarity = pano_lm_embeddings @ osm_embeddings.T
+    else:
+        pano_osm_similarity = torch.zeros((0, len(osm_geometry)))
+
+    return PriorData(
+        osm_geometry=osm_geometry,
+        sat_geometry=sat_geometry,
+        pano_metadata=pano_metadata_df,
+        pano_sat_similarity=pano_sat_similarity,
+        pano_osm_landmark_similarity=pano_osm_similarity
+    )
 
 
 class LandmarkObservationLikelihoodCalculator:
