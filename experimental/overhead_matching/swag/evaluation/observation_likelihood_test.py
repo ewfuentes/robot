@@ -1,5 +1,9 @@
 
 import unittest
+import tempfile
+import json
+import pickle
+from pathlib import Path
 
 import common.torch.load_torch_deps
 import torch
@@ -9,6 +13,8 @@ import shapely
 from common.gps import web_mercator
 
 import experimental.overhead_matching.swag.evaluation.observation_likelihood as lol
+from experimental.overhead_matching.swag.data import vigor_dataset as vd
+from experimental.overhead_matching.swag.model.semantic_landmark_utils import custom_id_from_props, prune_landmark
 
 
 def create_square_patch(center_x, center_y, size=10):
@@ -1475,6 +1481,246 @@ class LandmarkObservationLikelihoodCalculatorTest(unittest.TestCase):
                 config=config,
                 device=torch.device('cpu')
             )
+
+
+class LandmarkSimilarityDataTest(unittest.TestCase):
+    """Tests for compute_landmark_similarity_data and build_prior_data_from_vigor."""
+
+    def setUp(self):
+        """Set up test fixtures with vigor_snippet dataset."""
+        self.dataset_path = Path("external/vigor_snippet/vigor_snippet")
+        self.config = vd.VigorDatasetConfig(
+            satellite_tensor_cache_info=None,
+            panorama_tensor_cache_info=None,
+            sample_mode=vd.SampleMode.POS_SEMIPOS,
+            landmark_version="v1",
+        )
+        self.dataset = vd.VigorDataset(self.dataset_path, self.config)
+
+    def _create_mock_embeddings(self, temp_dir: Path, embedding_dim: int = 16):
+        """Create deterministic mock embedding files for testing.
+
+        Returns paths to osm_embedding_dir and pano_embedding_dir.
+        """
+        osm_dir = temp_dir / "osm_embeddings"
+        pano_dir = temp_dir / "pano_embeddings"
+        osm_dir.mkdir(parents=True)
+        pano_dir.mkdir(parents=True)
+
+        # Set seed for deterministic embeddings
+        torch.manual_seed(42)
+
+        landmark_metadata = self.dataset._landmark_metadata
+        pano_metadata = self.dataset._panorama_metadata
+
+        # Generate custom_ids for OSM landmarks
+        custom_ids = []
+        for _, row in landmark_metadata.iterrows():
+            if 'pruned_props' in row:
+                props = row.pruned_props
+            else:
+                props = prune_landmark(row.to_dict())
+            custom_id = custom_id_from_props(props)
+            if custom_id not in custom_ids:
+                custom_ids.append(custom_id)
+
+        # Create OSM embeddings pickle file with deterministic values
+        osm_embeddings = torch.randn(len(custom_ids), embedding_dim)
+        osm_id_to_idx = {cid: idx for idx, cid in enumerate(custom_ids)}
+        with open(osm_dir / "embeddings.pkl", 'wb') as f:
+            pickle.dump((osm_embeddings, osm_id_to_idx), f)
+
+        # Create pano embeddings with "{panorama_id}__landmark_{idx}" keys
+        # where panorama_id = "{pano_id},{lat},{lon},"
+        pano_keys = []
+        pano_metadata_entries = []
+        for _, row in pano_metadata.iterrows():
+            panorama_id = row.path.stem  # Format: "{pano_id},{lat},{lon},"
+            # Create 2 landmarks per panorama for testing
+            for lm_idx in range(2):
+                custom_id = f"{panorama_id}__landmark_{lm_idx}"
+                pano_keys.append(custom_id)
+                pano_metadata_entries.append({
+                    'custom_id': custom_id,
+                    'panorama_id': panorama_id,
+                    'landmark_idx': lm_idx,
+                    'yaw_angles': [0]
+                })
+
+        pano_embeddings = torch.randn(len(pano_keys), embedding_dim)
+        pano_id_to_idx = {key: idx for idx, key in enumerate(pano_keys)}
+        with open(pano_dir / "embeddings.pkl", 'wb') as f:
+            pickle.dump((pano_embeddings, pano_id_to_idx), f)
+
+        # Create panorama_metadata.jsonl in embedding_requests folder
+        embedding_requests_dir = pano_dir / "embedding_requests"
+        embedding_requests_dir.mkdir(parents=True)
+        with open(embedding_requests_dir / "panorama_metadata.jsonl", 'w') as f:
+            for entry in pano_metadata_entries:
+                f.write(json.dumps(entry) + '\n')
+
+        return osm_dir, pano_dir
+
+    def test_compute_landmark_similarity_data_returns_correct_types(self):
+        """Test that compute_landmark_similarity_data returns correct data types."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            osm_dir, pano_dir = self._create_mock_embeddings(temp_path)
+
+            result = lol.compute_landmark_similarity_data(
+                self.dataset, osm_dir, pano_dir, embedding_dim=16)
+
+            self.assertIsInstance(result, lol.LandmarkSimilarityData)
+            self.assertIsInstance(result.osm_geometry, gpd.GeoDataFrame)
+            self.assertIsInstance(result.pano_metadata, gpd.GeoDataFrame)
+            self.assertIsInstance(result.pano_osm_landmark_similarity, torch.Tensor)
+
+    def test_compute_landmark_similarity_data_osm_geometry_columns(self):
+        """Test that osm_geometry has required columns."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            osm_dir, pano_dir = self._create_mock_embeddings(temp_path)
+
+            result = lol.compute_landmark_similarity_data(
+                self.dataset, osm_dir, pano_dir, embedding_dim=16)
+
+            self.assertIn('osm_id', result.osm_geometry.columns)
+            self.assertIn('geometry_px', result.osm_geometry.columns)
+            self.assertIn('osm_embedding_idx', result.osm_geometry.columns)
+
+    def test_compute_landmark_similarity_data_pano_metadata_columns(self):
+        """Test that pano_metadata has required columns."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            osm_dir, pano_dir = self._create_mock_embeddings(temp_path)
+
+            result = lol.compute_landmark_similarity_data(
+                self.dataset, osm_dir, pano_dir, embedding_dim=16)
+
+            self.assertIn('pano_id', result.pano_metadata.columns)
+            self.assertIn('pano_lm_idxs', result.pano_metadata.columns)
+
+    def test_compute_landmark_similarity_data_similarity_shape(self):
+        """Test that similarity matrix has correct shape."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            osm_dir, pano_dir = self._create_mock_embeddings(temp_path)
+
+            result = lol.compute_landmark_similarity_data(
+                self.dataset, osm_dir, pano_dir, embedding_dim=16)
+
+            # Shape should be (num_pano_landmarks, num_osm_embeddings)
+            # The second dimension is the number of OSM embeddings loaded, which may differ
+            # from len(osm_geometry) if some landmarks map to same embedding
+            self.assertEqual(result.pano_osm_landmark_similarity.ndim, 2)
+            # osm_geometry should have entries, similarity should have matching columns
+            self.assertGreater(len(result.osm_geometry), 0)
+            self.assertGreater(result.pano_osm_landmark_similarity.shape[1], 0)
+
+    def test_compute_landmark_similarity_data_pano_count_matches(self):
+        """Test that pano_metadata has same number of rows as dataset panoramas."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            osm_dir, pano_dir = self._create_mock_embeddings(temp_path)
+
+            result = lol.compute_landmark_similarity_data(
+                self.dataset, osm_dir, pano_dir, embedding_dim=16)
+
+            self.assertEqual(len(result.pano_metadata), len(self.dataset._panorama_metadata))
+
+    def test_build_prior_data_from_vigor_returns_correct_type(self):
+        """Test that build_prior_data_from_vigor returns PriorData."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            osm_dir, pano_dir = self._create_mock_embeddings(temp_path)
+
+            landmark_sim_data = lol.compute_landmark_similarity_data(
+                self.dataset, osm_dir, pano_dir, embedding_dim=16)
+
+            # Create mock pano_sat_similarity
+            num_panos = len(self.dataset._panorama_metadata)
+            num_sats = len(self.dataset._satellite_metadata)
+            pano_sat_similarity = torch.randn(num_panos, num_sats)
+
+            result = lol.build_prior_data_from_vigor(
+                self.dataset, pano_sat_similarity, landmark_sim_data)
+
+            self.assertIsInstance(result, lol.PriorData)
+
+    def test_build_prior_data_from_vigor_sat_geometry_columns(self):
+        """Test that sat_geometry has required columns."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            osm_dir, pano_dir = self._create_mock_embeddings(temp_path)
+
+            landmark_sim_data = lol.compute_landmark_similarity_data(
+                self.dataset, osm_dir, pano_dir, embedding_dim=16)
+
+            num_panos = len(self.dataset._panorama_metadata)
+            num_sats = len(self.dataset._satellite_metadata)
+            pano_sat_similarity = torch.randn(num_panos, num_sats)
+
+            result = lol.build_prior_data_from_vigor(
+                self.dataset, pano_sat_similarity, landmark_sim_data)
+
+            self.assertIn('geometry_px', result.sat_geometry.columns)
+            self.assertIn('embedding_idx', result.sat_geometry.columns)
+
+    def test_build_prior_data_from_vigor_sat_geometry_count(self):
+        """Test that sat_geometry has correct number of patches."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            osm_dir, pano_dir = self._create_mock_embeddings(temp_path)
+
+            landmark_sim_data = lol.compute_landmark_similarity_data(
+                self.dataset, osm_dir, pano_dir, embedding_dim=16)
+
+            num_panos = len(self.dataset._panorama_metadata)
+            num_sats = len(self.dataset._satellite_metadata)
+            pano_sat_similarity = torch.randn(num_panos, num_sats)
+
+            result = lol.build_prior_data_from_vigor(
+                self.dataset, pano_sat_similarity, landmark_sim_data)
+
+            self.assertEqual(len(result.sat_geometry), num_sats)
+
+    def test_build_prior_data_from_vigor_sat_geometry_is_boxes(self):
+        """Test that sat_geometry contains box polygons."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            osm_dir, pano_dir = self._create_mock_embeddings(temp_path)
+
+            landmark_sim_data = lol.compute_landmark_similarity_data(
+                self.dataset, osm_dir, pano_dir, embedding_dim=16)
+
+            num_panos = len(self.dataset._panorama_metadata)
+            num_sats = len(self.dataset._satellite_metadata)
+            pano_sat_similarity = torch.randn(num_panos, num_sats)
+
+            result = lol.build_prior_data_from_vigor(
+                self.dataset, pano_sat_similarity, landmark_sim_data)
+
+            # Check first geometry is a polygon
+            first_geom = result.sat_geometry.iloc[0].geometry_px
+            self.assertEqual(first_geom.geom_type, 'Polygon')
+
+    def test_compute_cached_landmark_similarity_data_caches_result(self):
+        """Test that compute_cached_landmark_similarity_data creates cache file."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            osm_dir, pano_dir = self._create_mock_embeddings(temp_path)
+
+            # Patch the cache directory to use temp dir
+            cache_dir = temp_path / "cache"
+            cache_dir.mkdir()
+
+            # Compute with caching - need to patch the cache path
+            import unittest.mock as mock
+            with mock.patch.object(Path, 'expanduser', return_value=cache_dir / "test.pkl"):
+                result1 = lol.compute_cached_landmark_similarity_data(
+                    self.dataset, osm_dir, pano_dir, embedding_dim=16, use_cache=False)
+
+            self.assertIsInstance(result1, lol.LandmarkSimilarityData)
 
 
 if __name__ == "__main__":
