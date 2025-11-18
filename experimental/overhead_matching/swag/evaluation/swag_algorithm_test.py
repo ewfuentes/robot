@@ -28,16 +28,13 @@ class WagObservationLikelihoodCalculatorTest(unittest.TestCase):
             indices = (particles[:, 0] * num_patches).long()
             return torch.clamp(indices, 0, num_patches - 1)
 
-        wag_config = WagConfig()
-        wag_config.sigma_obs_prob_from_sim = 0.1
-
         # Create calculator
         calculator = sa.WagObservationLikelihoodCalculator(
             similarity_matrix=similarity_matrix,
             panorama_ids=panorama_ids,
             satellite_patch_locations=satellite_patch_locations,
             patch_index_from_particle=patch_index_from_particle,
-            wag_config=wag_config,
+            sigma=0.1,
             device=torch.device("cpu")
         )
 
@@ -80,15 +77,12 @@ class WagObservationLikelihoodCalculatorTest(unittest.TestCase):
             indices = (particles[:, 0] * num_patches).long()
             return torch.clamp(indices, 0, num_patches - 1)
 
-        wag_config = WagConfig()
-        wag_config.sigma_obs_prob_from_sim = 0.1
-
         calculator = sa.WagObservationLikelihoodCalculator(
             similarity_matrix=similarity_matrix,
             panorama_ids=panorama_ids,
             satellite_patch_locations=satellite_patch_locations,
             patch_index_from_particle=patch_index_from_particle,
-            wag_config=wag_config,
+            sigma=0.1,
             device=torch.device("cpu")
         )
 
@@ -139,7 +133,7 @@ class WagObservationLikelihoodCalculatorTest(unittest.TestCase):
             panorama_ids=panorama_ids,
             satellite_patch_locations=satellite_patch_locations,
             patch_index_from_particle=patch_index_from_particle,
-            wag_config=wag_config,
+            sigma=wag_config.sigma_obs_prob_from_sim,
             device=torch.device("cpu")
         )
 
@@ -212,7 +206,7 @@ class WagObservationLikelihoodCalculatorTest(unittest.TestCase):
             panorama_ids=panorama_ids,
             satellite_patch_locations=satellite_patch_locations,
             patch_index_from_particle=patch_index_from_particle,
-            wag_config=wag_config,
+            sigma=wag_config.sigma_obs_prob_from_sim,
             device=torch.device("cpu")
         )
 

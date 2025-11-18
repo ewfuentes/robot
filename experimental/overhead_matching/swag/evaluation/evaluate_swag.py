@@ -423,26 +423,23 @@ def evaluate_model_on_paths(
         patch_index_from_particle = build_patch_index_from_particle(
             vigor_dataset, wag_config.satellite_patch_config, device)
 
+        # Create observation likelihood calculator if not provided
+        if obs_likelihood_calculator is None:
+            # Get all panorama IDs
+            all_panorama_ids = vigor_dataset._panorama_metadata['pano_id'].tolist()
+
+            obs_likelihood_calculator = sa.WagObservationLikelihoodCalculator(
+                similarity_matrix=all_similarity,
+                panorama_ids=all_panorama_ids,
+                satellite_patch_locations=satellite_patch_locations,
+                patch_index_from_particle=patch_index_from_particle,
+                sigma=wag_config.sigma_obs_prob_from_sim,
+                device=device
+            )
+
         print("starting iter over paths")
         for i, path in enumerate(tqdm.tqdm(paths)):
-            path_similarity_values = all_similarity[path]
             generator_seed = seed * i
-
-            # Convert path indices to panorama IDs
-            panorama_ids = [vigor_dataset._panorama_metadata.iloc[idx].pano_id for idx in path]
-
-            # Create observation likelihood calculator if not provided
-            if obs_likelihood_calculator is None:
-                path_obs_calculator = sa.WagObservationLikelihoodCalculator(
-                    similarity_matrix=path_similarity_values,
-                    panorama_ids=panorama_ids,
-                    satellite_patch_locations=satellite_patch_locations,
-                    patch_index_from_particle=patch_index_from_particle,
-                    wag_config=wag_config,
-                    device=device
-                )
-            else:
-                path_obs_calculator = obs_likelihood_calculator
 
             path_inference_result = construct_inputs_and_evaluate_path(
                 vigor_dataset=vigor_dataset,
@@ -450,7 +447,7 @@ def evaluate_model_on_paths(
                 generator_seed=generator_seed,
                 device=device,
                 wag_config=wag_config,
-                obs_likelihood_calculator=path_obs_calculator,
+                obs_likelihood_calculator=obs_likelihood_calculator,
                 return_intermediates=save_intermediate_filter_states)
 
             particle_history = path_inference_result.particle_history
@@ -464,7 +461,7 @@ def evaluate_model_on_paths(
             torch.save(error_meters_at_each_step, save_path / "error.pt")
             torch.save(var_sq_m_at_each_step, save_path / "var.pt")
             torch.save(path, save_path / "path.pt")
-            torch.save(path_similarity_values, save_path / "similarity.pt")
+            torch.save(all_similarity[path], save_path / "similarity.pt")
             if save_intermediate_filter_states:
                 pir = path_inference_result
                 torch.save(pir.particle_history, save_path / "particle_history.pt")
