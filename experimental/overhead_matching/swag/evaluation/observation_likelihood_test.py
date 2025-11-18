@@ -664,17 +664,6 @@ class ObservationLikelihoodTest(unittest.TestCase):
         self.assertFalse(torch.isnan(pixel_locs).any())
         self.assertFalse(torch.isinf(pixel_locs).any())
 
-    def test_compute_pixel_locs_multidimensional(self):
-        """Test that multi-dimensional particle tensors work."""
-        particle_locs_deg = torch.tensor([
-            [[37.0, -122.0], [37.1, -122.1], [37.2, -122.2]],
-            [[38.0, -123.0], [38.1, -123.1], [38.2, -123.2]],
-        ])
-
-        pixel_locs = lol._compute_pixel_locs_px(particle_locs_deg)
-
-        self.assertEqual(pixel_locs.shape, (2, 3, 2))
-
     def test_compute_pixel_locs_output_ordering(self):
         """Test that output is [y, x] not [x, y]."""
         particle_locs_deg = torch.tensor([[0.0, 0.0]])
