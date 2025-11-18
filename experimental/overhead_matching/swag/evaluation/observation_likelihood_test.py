@@ -1497,8 +1497,8 @@ class LandmarkSimilarityDataTest(unittest.TestCase):
         )
         self.dataset = vd.VigorDataset(self.dataset_path, self.config)
 
-    def _create_mock_embeddings(self, temp_dir: Path, landmark_metadata, embedding_dim: int = 16):
-        """Create mock embedding files for testing.
+    def _create_mock_embeddings(self, temp_dir: Path, embedding_dim: int = 16):
+        """Create deterministic mock embedding files for testing.
 
         Returns paths to osm_embedding_dir and pano_embedding_dir.
         """
@@ -1507,25 +1507,40 @@ class LandmarkSimilarityDataTest(unittest.TestCase):
         osm_dir.mkdir(parents=True)
         pano_dir.mkdir(parents=True)
 
-        # Generate custom_ids for landmarks that need embeddings
-        custom_ids = set()
+        # Set seed for deterministic embeddings
+        torch.manual_seed(42)
+
+        landmark_metadata = self.dataset._landmark_metadata
+        pano_metadata = self.dataset._panorama_metadata
+
+        # Generate custom_ids for OSM landmarks
+        custom_ids = []
         for _, row in landmark_metadata.iterrows():
             if 'pruned_props' in row:
                 props = row.pruned_props
             else:
                 props = prune_landmark(row.to_dict())
             custom_id = custom_id_from_props(props)
-            custom_ids.add(custom_id)
+            if custom_id not in custom_ids:
+                custom_ids.append(custom_id)
 
-        # Create OSM embeddings pickle file
+        # Create OSM embeddings pickle file with deterministic values
         osm_embeddings = torch.randn(len(custom_ids), embedding_dim)
         osm_id_to_idx = {cid: idx for idx, cid in enumerate(custom_ids)}
         with open(osm_dir / "embeddings.pkl", 'wb') as f:
             pickle.dump((osm_embeddings, osm_id_to_idx), f)
 
-        # Create pano embeddings pickle file (same landmarks for simplicity)
-        pano_embeddings = torch.randn(len(custom_ids), embedding_dim)
-        pano_id_to_idx = {cid: idx for idx, cid in enumerate(custom_ids)}
+        # Create pano embeddings with "{pano_id}__landmark_{idx}" keys
+        # For testing, create a few landmarks per panorama
+        pano_keys = []
+        for _, row in pano_metadata.iterrows():
+            pano_id = row.path.stem
+            # Create 2 landmarks per panorama for testing
+            for lm_idx in range(2):
+                pano_keys.append(f"{pano_id}__landmark_{lm_idx}")
+
+        pano_embeddings = torch.randn(len(pano_keys), embedding_dim)
+        pano_id_to_idx = {key: idx for idx, key in enumerate(pano_keys)}
         with open(pano_dir / "embeddings.pkl", 'wb') as f:
             pickle.dump((pano_embeddings, pano_id_to_idx), f)
 
@@ -1535,8 +1550,7 @@ class LandmarkSimilarityDataTest(unittest.TestCase):
         """Test that compute_landmark_similarity_data returns correct data types."""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
-            osm_dir, pano_dir = self._create_mock_embeddings(
-                temp_path, self.dataset._landmark_metadata)
+            osm_dir, pano_dir = self._create_mock_embeddings(temp_path)
 
             result = lol.compute_landmark_similarity_data(
                 self.dataset, osm_dir, pano_dir, embedding_dim=16)
@@ -1550,8 +1564,7 @@ class LandmarkSimilarityDataTest(unittest.TestCase):
         """Test that osm_geometry has required columns."""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
-            osm_dir, pano_dir = self._create_mock_embeddings(
-                temp_path, self.dataset._landmark_metadata)
+            osm_dir, pano_dir = self._create_mock_embeddings(temp_path)
 
             result = lol.compute_landmark_similarity_data(
                 self.dataset, osm_dir, pano_dir, embedding_dim=16)
@@ -1564,8 +1577,7 @@ class LandmarkSimilarityDataTest(unittest.TestCase):
         """Test that pano_metadata has required columns."""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
-            osm_dir, pano_dir = self._create_mock_embeddings(
-                temp_path, self.dataset._landmark_metadata)
+            osm_dir, pano_dir = self._create_mock_embeddings(temp_path)
 
             result = lol.compute_landmark_similarity_data(
                 self.dataset, osm_dir, pano_dir, embedding_dim=16)
@@ -1577,8 +1589,7 @@ class LandmarkSimilarityDataTest(unittest.TestCase):
         """Test that similarity matrix has correct shape."""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
-            osm_dir, pano_dir = self._create_mock_embeddings(
-                temp_path, self.dataset._landmark_metadata)
+            osm_dir, pano_dir = self._create_mock_embeddings(temp_path)
 
             result = lol.compute_landmark_similarity_data(
                 self.dataset, osm_dir, pano_dir, embedding_dim=16)
@@ -1595,8 +1606,7 @@ class LandmarkSimilarityDataTest(unittest.TestCase):
         """Test that pano_metadata has same number of rows as dataset panoramas."""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
-            osm_dir, pano_dir = self._create_mock_embeddings(
-                temp_path, self.dataset._landmark_metadata)
+            osm_dir, pano_dir = self._create_mock_embeddings(temp_path)
 
             result = lol.compute_landmark_similarity_data(
                 self.dataset, osm_dir, pano_dir, embedding_dim=16)
@@ -1607,8 +1617,7 @@ class LandmarkSimilarityDataTest(unittest.TestCase):
         """Test that build_prior_data_from_vigor returns PriorData."""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
-            osm_dir, pano_dir = self._create_mock_embeddings(
-                temp_path, self.dataset._landmark_metadata)
+            osm_dir, pano_dir = self._create_mock_embeddings(temp_path)
 
             landmark_sim_data = lol.compute_landmark_similarity_data(
                 self.dataset, osm_dir, pano_dir, embedding_dim=16)
@@ -1627,8 +1636,7 @@ class LandmarkSimilarityDataTest(unittest.TestCase):
         """Test that sat_geometry has required columns."""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
-            osm_dir, pano_dir = self._create_mock_embeddings(
-                temp_path, self.dataset._landmark_metadata)
+            osm_dir, pano_dir = self._create_mock_embeddings(temp_path)
 
             landmark_sim_data = lol.compute_landmark_similarity_data(
                 self.dataset, osm_dir, pano_dir, embedding_dim=16)
@@ -1647,8 +1655,7 @@ class LandmarkSimilarityDataTest(unittest.TestCase):
         """Test that sat_geometry has correct number of patches."""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
-            osm_dir, pano_dir = self._create_mock_embeddings(
-                temp_path, self.dataset._landmark_metadata)
+            osm_dir, pano_dir = self._create_mock_embeddings(temp_path)
 
             landmark_sim_data = lol.compute_landmark_similarity_data(
                 self.dataset, osm_dir, pano_dir, embedding_dim=16)
@@ -1666,8 +1673,7 @@ class LandmarkSimilarityDataTest(unittest.TestCase):
         """Test that sat_geometry contains box polygons."""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
-            osm_dir, pano_dir = self._create_mock_embeddings(
-                temp_path, self.dataset._landmark_metadata)
+            osm_dir, pano_dir = self._create_mock_embeddings(temp_path)
 
             landmark_sim_data = lol.compute_landmark_similarity_data(
                 self.dataset, osm_dir, pano_dir, embedding_dim=16)
@@ -1687,8 +1693,7 @@ class LandmarkSimilarityDataTest(unittest.TestCase):
         """Test that compute_cached_landmark_similarity_data creates cache file."""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
-            osm_dir, pano_dir = self._create_mock_embeddings(
-                temp_path, self.dataset._landmark_metadata)
+            osm_dir, pano_dir = self._create_mock_embeddings(temp_path)
 
             # Patch the cache directory to use temp dir
             cache_dir = temp_path / "cache"

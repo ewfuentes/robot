@@ -374,6 +374,7 @@ def compute_landmark_similarity_data(
     osm_geometry = gpd.GeoDataFrame(osm_geometry_rows)
 
     # Load panorama embeddings
+    # Pano embeddings are keyed by "{pano_id}__landmark_{idx}" format
     pano_embeddings, pano_id_to_idx = load_embeddings(
         pano_embedding_path,
         output_dim=embedding_dim,
@@ -391,18 +392,18 @@ def compute_landmark_similarity_data(
         pano_id = row.path.stem  # Extract pano_id from path
         pano_lm_idxs = []
 
-        # Get landmarks for this panorama
-        if hasattr(row, 'landmark_idxs') and row.landmark_idxs is not None:
-            for lm_idx in row.landmark_idxs:
-                lm_row = landmark_metadata.iloc[lm_idx]
-                props = lm_row.get('pruned_props', lm_row.to_dict())
-                custom_id = custom_id_from_props(props)
+        # Look up panorama landmarks by their pano-specific IDs
+        # Format: "{pano_id}__landmark_{idx}"
+        lm_idx = 0
+        while True:
+            pano_lm_key = f"{pano_id}__landmark_{lm_idx}"
+            if pano_lm_key not in pano_id_to_idx:
+                break
 
-                # Check if we have an embedding for this landmark from pano perspective
-                if custom_id in pano_id_to_idx:
-                    pano_lm_idxs.append(pano_lm_counter)
-                    pano_lm_embeddings_list.append(pano_embeddings[pano_id_to_idx[custom_id]])
-                    pano_lm_counter += 1
+            pano_lm_idxs.append(pano_lm_counter)
+            pano_lm_embeddings_list.append(pano_embeddings[pano_id_to_idx[pano_lm_key]])
+            pano_lm_counter += 1
+            lm_idx += 1
 
         pano_metadata_rows.append({
             'pano_id': pano_id,
