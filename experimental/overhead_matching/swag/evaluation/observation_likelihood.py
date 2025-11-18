@@ -432,14 +432,28 @@ def _compute_landmark_similarity_hash(
     embedding_dim: int
 ) -> str:
     """Compute a hash for caching landmark similarity data."""
-    hash_input = (
-        f"{len(vigor_dataset._landmark_metadata)}"
-        f"{len(vigor_dataset._panorama_metadata)}"
-        f"{osm_embedding_path}"
-        f"{pano_embedding_path}"
-        f"{embedding_dim}"
-    )
-    return hashlib.sha256(hash_input.encode()).hexdigest()[:16]
+    import struct
+    m = hashlib.sha256()
+
+    # Hash panorama metadata (pano_ids)
+    for i, row in vigor_dataset._panorama_metadata.iterrows():
+        m.update(i.to_bytes(length=4, byteorder='little', signed=True))
+        m.update(row.path.stem.encode())  # pano_id
+
+    # Hash landmark metadata
+    landmark_metadata = vigor_dataset._landmark_metadata
+    for i, row in landmark_metadata.iterrows():
+        m.update(i.to_bytes(length=4, byteorder='little', signed=True))
+        # Hash geometry bounds as a proxy for the geometry
+        bounds = row.geometry_px.bounds
+        m.update(struct.pack('<dddd', *bounds))
+
+    # Hash embedding paths and dimension
+    m.update(str(osm_embedding_path.resolve()).encode())
+    m.update(str(pano_embedding_path.resolve()).encode())
+    m.update(embedding_dim.to_bytes(length=4, byteorder='little'))
+
+    return m.hexdigest()[:16]
 
 
 def compute_cached_landmark_similarity_data(
