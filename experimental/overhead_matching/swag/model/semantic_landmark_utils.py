@@ -230,13 +230,19 @@ def load_embeddings_from_jsonl(embedding_directory: Path) -> tuple[torch.Tensor,
     return embeddings_tensor, landmark_id_to_idx
 
 
-def load_embeddings(embedding_directory: Path) -> tuple[torch.Tensor, dict[str, int]]:
+def load_embeddings(
+    embedding_directory: Path,
+    output_dim: int | None = None,
+    normalize: bool = False
+) -> tuple[torch.Tensor, dict[str, int]]:
     """Load embeddings from a directory, handling both pickle and JSONL formats.
 
     Prefers pickle format if embeddings.pkl exists, otherwise loads from JSONL.
 
     Args:
         embedding_directory: Path to directory containing embeddings
+        output_dim: If specified, truncate embeddings to this dimension
+        normalize: If True, normalize embeddings to unit length
 
     Returns:
         embeddings_tensor: (num_landmarks, embedding_dim) tensor of embeddings
@@ -244,36 +250,17 @@ def load_embeddings(embedding_directory: Path) -> tuple[torch.Tensor, dict[str, 
     """
     pickle_path = embedding_directory / "embeddings.pkl"
     if pickle_path.exists():
-        return load_embeddings_from_pickle(pickle_path)
+        embeddings, landmark_id_to_idx = load_embeddings_from_pickle(pickle_path)
     else:
-        return load_embeddings_from_jsonl(embedding_directory)
+        embeddings, landmark_id_to_idx = load_embeddings_from_jsonl(embedding_directory)
 
+    if output_dim is not None and embeddings.shape[1] > output_dim:
+        embeddings = embeddings[:, :output_dim]
 
-def normalize_embeddings(embeddings: torch.Tensor) -> torch.Tensor:
-    """Normalize embeddings to unit length.
+    if normalize:
+        embeddings = embeddings / torch.norm(embeddings, dim=-1, keepdim=True)
 
-    Args:
-        embeddings: (num_landmarks, embedding_dim) tensor
-
-    Returns:
-        Normalized embeddings tensor
-    """
-    return embeddings / torch.norm(embeddings, dim=-1, keepdim=True)
-
-
-def truncate_embeddings(embeddings: torch.Tensor, output_dim: int) -> torch.Tensor:
-    """Truncate embeddings to a specified dimension.
-
-    Args:
-        embeddings: (num_landmarks, embedding_dim) tensor
-        output_dim: Desired output dimension
-
-    Returns:
-        Truncated embeddings tensor of shape (num_landmarks, output_dim)
-    """
-    if embeddings.shape[1] > output_dim:
-        return embeddings[:, :output_dim]
-    return embeddings
+    return embeddings, landmark_id_to_idx
 
 
 def custom_id_from_props(props: dict | frozenset) -> str:

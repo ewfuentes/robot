@@ -17,8 +17,7 @@ from experimental.overhead_matching.swag.model.swag_model_input_output import (
     ModelInput, ExtractorOutput)
 from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
     load_all_jsonl_from_folder, make_sentence_dict_from_json,
-    prune_landmark, make_sentence_dict_from_pano_jsons, load_embeddings,
-    normalize_embeddings, truncate_embeddings)
+    prune_landmark, make_sentence_dict_from_pano_jsons, load_embeddings)
 from multiprocessing import Pool
 from functools import partial
 import tqdm
@@ -216,16 +215,13 @@ class SemanticLandmarkExtractor(torch.nn.Module):
             self.all_sentences, _ = make_sentence_dict_from_json(
                 load_all_jsonl_from_folder(sentence_directory))
 
-        self.all_embeddings_tensor, self.landmark_id_to_idx = load_embeddings(embedding_directory)
+        self.all_embeddings_tensor, self.landmark_id_to_idx = load_embeddings(
+            embedding_directory,
+            output_dim=self.config.openai_embedding_size,
+            normalize=True)
 
         # Validate embeddings
         assert len(self.landmark_id_to_idx) != 0, f"Failed to load any embeddings from {embedding_directory}"
-        assert self.all_embeddings_tensor.shape[1] >= self.config.openai_embedding_size, f"Requested an embedding length longer than the OpenAI Embeddings {self.all_embeddings_tensor.shape[1]}, requested {self.config.openai_embedding_size}"
-
-        # Slice to requested embedding size and normalize
-        self.all_embeddings_tensor = truncate_embeddings(
-            self.all_embeddings_tensor, self.config.openai_embedding_size)
-        self.all_embeddings_tensor = normalize_embeddings(self.all_embeddings_tensor)
 
         self.files_loaded = True
 
