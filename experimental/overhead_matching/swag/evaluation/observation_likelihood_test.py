@@ -1530,19 +1530,19 @@ class LandmarkSimilarityDataTest(unittest.TestCase):
         with open(osm_dir / "embeddings.pkl", 'wb') as f:
             pickle.dump((osm_embeddings, osm_id_to_idx), f)
 
-        # Create pano embeddings with "{pano_id}__landmark_{idx}" keys
-        # For testing, create a few landmarks per panorama
+        # Create pano embeddings with "{panorama_id}__landmark_{idx}" keys
+        # where panorama_id = "{pano_id},{lat},{lon},"
         pano_keys = []
         pano_metadata_entries = []
         for _, row in pano_metadata.iterrows():
-            pano_id = row.path.stem
+            panorama_id = row.path.stem  # Format: "{pano_id},{lat},{lon},"
             # Create 2 landmarks per panorama for testing
             for lm_idx in range(2):
-                custom_id = f"{pano_id}__landmark_{lm_idx}"
+                custom_id = f"{panorama_id}__landmark_{lm_idx}"
                 pano_keys.append(custom_id)
                 pano_metadata_entries.append({
                     'custom_id': custom_id,
-                    'panorama_id': pano_id,
+                    'panorama_id': panorama_id,
                     'landmark_idx': lm_idx,
                     'yaw_angles': [0]
                 })

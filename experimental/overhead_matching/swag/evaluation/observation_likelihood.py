@@ -377,7 +377,7 @@ def compute_landmark_similarity_data(
     # Load panorama embeddings
     # Pano embeddings are keyed by "{panorama_id}__landmark_{idx}" format
     # where panorama_id = "{pano_id},{lat},{lon},"
-    pano_embeddings, pano_id_to_idx = load_embeddings(
+    pano_embeddings, pano_custom_id_to_idx = load_embeddings(
         pano_embedding_path,
         output_dim=embedding_dim,
         normalize=True
@@ -387,35 +387,33 @@ def compute_landmark_similarity_data(
     pano_lm_metadata_path = pano_embedding_path / "embedding_requests" / "panorama_metadata.jsonl"
     pano_lm_jsons = load_all_jsonl_from_folder(pano_lm_metadata_path.parent)
 
-    # Group landmarks by panorama_id
-    pano_lm_by_panorama = {}
+    # Group landmarks by pano_id (without GPS coordinates)
+    # panorama_id format is "{pano_id},{lat},{lon}," - extract just pano_id
+    pano_lm_by_pano_id = {}
     for entry in pano_lm_jsons:
-        pano_id = entry['panorama_id']
-        if pano_id not in pano_lm_by_panorama:
-            pano_lm_by_panorama[pano_id] = []
-        pano_lm_by_panorama[pano_id].append(entry)
+        panorama_id = entry['panorama_id']
+        pano_id = panorama_id.split(',')[0]  # Extract just the pano_id
+        if pano_id not in pano_lm_by_pano_id:
+            pano_lm_by_pano_id[pano_id] = []
+        pano_lm_by_pano_id[pano_id].append(entry)
 
-    # Build pano metadata with landmark indices
+    # Build pano metadata with landmark indices into pano_embeddings tensor
     pano_metadata = vigor_dataset._panorama_metadata
-
-    pano_lm_counter = 0
     pano_metadata_rows = []
-    pano_lm_embeddings_list = []
 
     for pano_idx, row in pano_metadata.iterrows():
-        pano_id = row.path.stem  # Format: "{pano_id},{lat},{lon},"
+        # Extract pano_id without GPS coordinates
+        pano_id = row.path.stem.split(',')[0]
         pano_lm_idxs = []
 
         # Get landmarks for this panorama from metadata
-        if pano_id in pano_lm_by_panorama:
+        if pano_id in pano_lm_by_pano_id:
             # Sort by landmark_idx to ensure correct order
-            landmarks = sorted(pano_lm_by_panorama[pano_id], key=lambda x: x['landmark_idx'])
+            landmarks = sorted(pano_lm_by_pano_id[pano_id], key=lambda x: x['landmark_idx'])
             for lm_entry in landmarks:
                 custom_id = lm_entry['custom_id']
-                if custom_id in pano_id_to_idx:
-                    pano_lm_idxs.append(pano_lm_counter)
-                    pano_lm_embeddings_list.append(pano_embeddings[pano_id_to_idx[custom_id]])
-                    pano_lm_counter += 1
+                if custom_id in pano_custom_id_to_idx:
+                    pano_lm_idxs.append(pano_custom_id_to_idx[custom_id])
 
         pano_metadata_rows.append({
             'pano_id': pano_id,
@@ -425,11 +423,8 @@ def compute_landmark_similarity_data(
     pano_metadata_df = gpd.GeoDataFrame(pano_metadata_rows)
 
     # Compute pano_osm_landmark_similarity
-    if len(pano_lm_embeddings_list) > 0:
-        pano_lm_embeddings = torch.stack(pano_lm_embeddings_list)
-        pano_osm_similarity = pano_lm_embeddings @ osm_embeddings.T
-    else:
-        pano_osm_similarity = torch.zeros((0, len(osm_geometry)))
+    # pano_embeddings is already the full tensor, compute similarity against all OSM embeddings
+    pano_osm_similarity = pano_embeddings @ osm_embeddings.T
 
     return LandmarkSimilarityData(
         osm_geometry=osm_geometry,
