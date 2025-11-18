@@ -29,6 +29,221 @@ def build_test_spatial_index(sat_geometry):
 
 
 class ObservationLikelihoodTest(unittest.TestCase):
+    def test_calculator_valid_inputs(self):
+        """Test that valid inputs don't raise exceptions."""
+        osm_geometry = pd.DataFrame([
+            {'osm_id': 0, 'geometry_px': shapely.Point(100, 50), 'osm_embedding_idx': 0},
+            {'osm_id': 1, 'geometry_px': shapely.Point(200, 150), 'osm_embedding_idx': 1},
+        ])
+
+        sat_geometry = pd.DataFrame([
+            {'geometry_px': create_square_patch(100, 50, size=20), 'embedding_idx': 0},
+            {'geometry_px': create_square_patch(200, 150, size=20), 'embedding_idx': 1},
+        ])
+
+        pano_metadata = pd.DataFrame([
+            {'pano_id': 'pano_0', 'pano_lm_idxs': [0, 1]},
+        ])
+
+        pano_sat_similarity = torch.tensor([[0.8, 0.3]])
+        pano_osm_similarity = torch.tensor([[0.9, 0.2], [0.1, 0.7]])
+
+        prior_data = lol.PriorData(
+            osm_geometry=osm_geometry,
+            sat_geometry=sat_geometry,
+            pano_metadata=pano_metadata,
+            pano_sat_similarity=pano_sat_similarity,
+            pano_osm_landmark_similarity=pano_osm_similarity
+        )
+
+        config = lol.ObservationLikelihoodConfig(
+            obs_likelihood_from_sat_similarity_sigma=0.1,
+            obs_likelihood_from_osm_similarity_sigma=100.0,
+        )
+
+        calculator = lol.LandmarkObservationLikelihoodCalculator(
+            prior_data=prior_data,
+            config=config,
+            device=torch.device('cpu')
+        )
+
+        particles = torch.tensor([
+            [37.7749, -122.4194],
+            [40.7128, -74.0060],
+            [51.5074, -0.1278],
+        ])
+
+        log_likelihood = calculator.compute_log_likelihoods(particles, ['pano_0'])
+
+        self.assertEqual(log_likelihood.shape, (1, 3))
+
+    def test_calculator_mismatched_pano_sat_similarity_shape(self):
+        """Test that pano_sat_similarity with wrong shape raises error."""
+        osm_geometry = pd.DataFrame([
+            {'osm_id': 0, 'geometry_px': shapely.Point(100, 50), 'osm_embedding_idx': 0},
+        ])
+
+        sat_geometry = pd.DataFrame([
+            {'geometry_px': create_square_patch(100, 50, size=20), 'embedding_idx': 0},
+            {'geometry_px': create_square_patch(200, 150, size=20), 'embedding_idx': 1},
+            {'geometry_px': create_square_patch(300, 250, size=20), 'embedding_idx': 2},
+        ])
+
+        pano_metadata = pd.DataFrame([
+            {'pano_id': 'pano_0', 'pano_lm_idxs': [0]},
+        ])
+
+        # Should be (1, 3) but is (1, 2)
+        pano_sat_similarity = torch.tensor([[0.8, 0.3]])
+        pano_osm_similarity = torch.tensor([[0.9]])
+
+        prior_data = lol.PriorData(
+            osm_geometry=osm_geometry,
+            sat_geometry=sat_geometry,
+            pano_metadata=pano_metadata,
+            pano_sat_similarity=pano_sat_similarity,
+            pano_osm_landmark_similarity=pano_osm_similarity
+        )
+
+        config = lol.ObservationLikelihoodConfig(
+            obs_likelihood_from_sat_similarity_sigma=0.1,
+            obs_likelihood_from_osm_similarity_sigma=100.0,
+        )
+
+        with self.assertRaises(Exception):
+            lol.LandmarkObservationLikelihoodCalculator(
+                prior_data=prior_data,
+                config=config,
+                device=torch.device('cpu')
+            )
+
+    def test_calculator_missing_required_column(self):
+        """Test that missing osm_embedding_idx column raises error."""
+        osm_geometry = pd.DataFrame([
+            {'osm_id': 0, 'geometry_px': shapely.Point(100, 50)},
+        ])
+
+        sat_geometry = pd.DataFrame([
+            {'geometry_px': create_square_patch(100, 50, size=20), 'embedding_idx': 0},
+        ])
+
+        pano_metadata = pd.DataFrame([
+            {'pano_id': 'pano_0', 'pano_lm_idxs': [0]},
+        ])
+
+        pano_sat_similarity = torch.tensor([[0.8]])
+        pano_osm_similarity = torch.tensor([[0.9]])
+
+        prior_data = lol.PriorData(
+            osm_geometry=osm_geometry,
+            sat_geometry=sat_geometry,
+            pano_metadata=pano_metadata,
+            pano_sat_similarity=pano_sat_similarity,
+            pano_osm_landmark_similarity=pano_osm_similarity
+        )
+
+        config = lol.ObservationLikelihoodConfig(
+            obs_likelihood_from_sat_similarity_sigma=0.1,
+            obs_likelihood_from_osm_similarity_sigma=100.0,
+        )
+
+        with self.assertRaises((KeyError, ValueError)):
+            lol.LandmarkObservationLikelihoodCalculator(
+                prior_data=prior_data,
+                config=config,
+                device=torch.device('cpu')
+            )
+
+    def test_calculator_nonexistent_pano_id(self):
+        """Test that requesting non-existent pano_id raises error."""
+        osm_geometry = pd.DataFrame([
+            {'osm_id': 0, 'geometry_px': shapely.Point(100, 50), 'osm_embedding_idx': 0},
+        ])
+
+        sat_geometry = pd.DataFrame([
+            {'geometry_px': create_square_patch(100, 50, size=20), 'embedding_idx': 0},
+        ])
+
+        pano_metadata = pd.DataFrame([
+            {'pano_id': 'pano_0', 'pano_lm_idxs': [0]},
+            {'pano_id': 'pano_1', 'pano_lm_idxs': [0]},
+        ])
+
+        pano_sat_similarity = torch.tensor([[0.8], [0.5]])
+        pano_osm_similarity = torch.tensor([[0.9], [0.7]])
+
+        prior_data = lol.PriorData(
+            osm_geometry=osm_geometry,
+            sat_geometry=sat_geometry,
+            pano_metadata=pano_metadata,
+            pano_sat_similarity=pano_sat_similarity,
+            pano_osm_landmark_similarity=pano_osm_similarity
+        )
+
+        config = lol.ObservationLikelihoodConfig(
+            obs_likelihood_from_sat_similarity_sigma=0.1,
+            obs_likelihood_from_osm_similarity_sigma=100.0,
+        )
+
+        calculator = lol.LandmarkObservationLikelihoodCalculator(
+            prior_data=prior_data,
+            config=config,
+            device=torch.device('cpu')
+        )
+
+        particles = torch.tensor([[37.7749, -122.4194]])
+
+        with self.assertRaises(AssertionError):
+            calculator.compute_log_likelihoods(particles, ['pano_99'])
+
+    def test_calculator_batch_particles_output_shape(self):
+        """Test that output shape matches particle shape for batch."""
+        osm_geometry = pd.DataFrame([
+            {'osm_id': 0, 'geometry_px': shapely.Point(100, 50), 'osm_embedding_idx': 0},
+        ])
+
+        sat_geometry = pd.DataFrame([
+            {'geometry_px': create_square_patch(100, 50, size=20), 'embedding_idx': 0},
+        ])
+
+        pano_metadata = pd.DataFrame([
+            {'pano_id': 'pano_0', 'pano_lm_idxs': [0]},
+        ])
+
+        pano_sat_similarity = torch.tensor([[0.8]])
+        pano_osm_similarity = torch.tensor([[0.9]])
+
+        prior_data = lol.PriorData(
+            osm_geometry=osm_geometry,
+            sat_geometry=sat_geometry,
+            pano_metadata=pano_metadata,
+            pano_sat_similarity=pano_sat_similarity,
+            pano_osm_landmark_similarity=pano_osm_similarity
+        )
+
+        config = lol.ObservationLikelihoodConfig(
+            obs_likelihood_from_sat_similarity_sigma=0.1,
+            obs_likelihood_from_osm_similarity_sigma=100.0,
+        )
+
+        calculator = lol.LandmarkObservationLikelihoodCalculator(
+            prior_data=prior_data,
+            config=config,
+            device=torch.device('cpu')
+        )
+
+        particles = torch.tensor([
+            [37.7749, -122.4194],
+            [37.7750, -122.4195],
+            [37.7751, -122.4196],
+            [37.7752, -122.4197],
+            [37.7753, -122.4198],
+        ])
+
+        log_likelihood = calculator.compute_log_likelihoods(particles, ['pano_0'])
+
+        self.assertEqual(log_likelihood.shape, (1, 5))
+
     def test_get_similarities_single_pano(self):
         """Test extracting similarities for a single panorama."""
         osm_geometry = pd.DataFrame([
