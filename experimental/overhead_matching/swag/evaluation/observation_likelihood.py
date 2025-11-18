@@ -15,7 +15,8 @@ import hashlib
 import pickle
 
 from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
-    load_embeddings, custom_id_from_props, build_embedding_idx_mapping)
+    load_embeddings, custom_id_from_props, build_embedding_idx_mapping,
+    load_all_jsonl_from_folder)
 
 
 class LikelihoodMode(Enum):
@@ -374,12 +375,25 @@ def compute_landmark_similarity_data(
     osm_geometry = gpd.GeoDataFrame(osm_geometry_rows)
 
     # Load panorama embeddings
-    # Pano embeddings are keyed by "{pano_id}__landmark_{idx}" format
+    # Pano embeddings are keyed by "{panorama_id}__landmark_{idx}" format
+    # where panorama_id = "{pano_id},{lat},{lon},"
     pano_embeddings, pano_id_to_idx = load_embeddings(
         pano_embedding_path,
         output_dim=embedding_dim,
         normalize=True
     )
+
+    # Load panorama landmark metadata to get landmark info per panorama
+    pano_lm_metadata_path = pano_embedding_path / "embedding_requests" / "panorama_metadata.jsonl"
+    pano_lm_jsons = load_all_jsonl_from_folder(pano_lm_metadata_path.parent)
+
+    # Group landmarks by panorama_id
+    pano_lm_by_panorama = {}
+    for entry in pano_lm_jsons:
+        pano_id = entry['panorama_id']
+        if pano_id not in pano_lm_by_panorama:
+            pano_lm_by_panorama[pano_id] = []
+        pano_lm_by_panorama[pano_id].append(entry)
 
     # Build pano metadata with landmark indices
     pano_metadata = vigor_dataset._panorama_metadata
@@ -389,21 +403,19 @@ def compute_landmark_similarity_data(
     pano_lm_embeddings_list = []
 
     for pano_idx, row in pano_metadata.iterrows():
-        pano_id = row.path.stem  # Extract pano_id from path
+        pano_id = row.path.stem  # Format: "{pano_id},{lat},{lon},"
         pano_lm_idxs = []
 
-        # Look up panorama landmarks by their pano-specific IDs
-        # Format: "{pano_id}__landmark_{idx}"
-        lm_idx = 0
-        while True:
-            pano_lm_key = f"{pano_id}__landmark_{lm_idx}"
-            if pano_lm_key not in pano_id_to_idx:
-                break
-
-            pano_lm_idxs.append(pano_lm_counter)
-            pano_lm_embeddings_list.append(pano_embeddings[pano_id_to_idx[pano_lm_key]])
-            pano_lm_counter += 1
-            lm_idx += 1
+        # Get landmarks for this panorama from metadata
+        if pano_id in pano_lm_by_panorama:
+            # Sort by landmark_idx to ensure correct order
+            landmarks = sorted(pano_lm_by_panorama[pano_id], key=lambda x: x['landmark_idx'])
+            for lm_entry in landmarks:
+                custom_id = lm_entry['custom_id']
+                if custom_id in pano_id_to_idx:
+                    pano_lm_idxs.append(pano_lm_counter)
+                    pano_lm_embeddings_list.append(pano_embeddings[pano_id_to_idx[custom_id]])
+                    pano_lm_counter += 1
 
         pano_metadata_rows.append({
             'pano_id': pano_id,

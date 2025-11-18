@@ -1533,16 +1533,31 @@ class LandmarkSimilarityDataTest(unittest.TestCase):
         # Create pano embeddings with "{pano_id}__landmark_{idx}" keys
         # For testing, create a few landmarks per panorama
         pano_keys = []
+        pano_metadata_entries = []
         for _, row in pano_metadata.iterrows():
             pano_id = row.path.stem
             # Create 2 landmarks per panorama for testing
             for lm_idx in range(2):
-                pano_keys.append(f"{pano_id}__landmark_{lm_idx}")
+                custom_id = f"{pano_id}__landmark_{lm_idx}"
+                pano_keys.append(custom_id)
+                pano_metadata_entries.append({
+                    'custom_id': custom_id,
+                    'panorama_id': pano_id,
+                    'landmark_idx': lm_idx,
+                    'yaw_angles': [0]
+                })
 
         pano_embeddings = torch.randn(len(pano_keys), embedding_dim)
         pano_id_to_idx = {key: idx for idx, key in enumerate(pano_keys)}
         with open(pano_dir / "embeddings.pkl", 'wb') as f:
             pickle.dump((pano_embeddings, pano_id_to_idx), f)
+
+        # Create panorama_metadata.jsonl in embedding_requests folder
+        embedding_requests_dir = pano_dir / "embedding_requests"
+        embedding_requests_dir.mkdir(parents=True)
+        with open(embedding_requests_dir / "panorama_metadata.jsonl", 'w') as f:
+            for entry in pano_metadata_entries:
+                f.write(json.dumps(entry) + '\n')
 
         return osm_dir, pano_dir
 
