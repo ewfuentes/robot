@@ -4,6 +4,7 @@ import torch
 import math
 import json
 import base64
+import pickle
 from pathlib import Path
 from experimental.overhead_matching.swag.model.swag_config_types import (
     PanoramaSemanticLandmarkExtractorConfig, ExtractorDataRequirement)
@@ -101,17 +102,22 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
         self.all_sentences = None
         self.panorama_metadata = None  # Maps pano_id -> list of (landmark_idx, custom_id, yaw_angles)
 
-        # Load the semantic class groupings
-        base_path = self.semantic_embedding_base_path / self.config.embedding_version
-        semantic_groupings_file = base_path / "semantic_class_grouping.json"
-        assert semantic_groupings_file.exists()
-        self.semantic_groupings = json.loads(semantic_groupings_file.read_text())
+        # Load the semantic class groupings (only if needed)
+        self.semantic_groupings = None
+        if self.config.should_classify_against_grouping:
+            base_path = self.semantic_embedding_base_path / self.config.embedding_version
+            semantic_groupings_file = base_path / "semantic_class_grouping.json"
+            if not semantic_groupings_file.exists():
+                raise FileNotFoundError(
+                    f"Semantic groupings file not found: {semantic_groupings_file}. "
+                    f"Either provide this file or set should_classify_against_grouping=False in config.")
+            self.semantic_groupings = json.loads(semantic_groupings_file.read_text())
 
-        # Convert the base64 encoded embeddings into torch tensors
-        for k, v in self.semantic_groupings["class_details"].items():
-            base64_string = v["embedding"]["vector"]
-            base64_buffer = bytearray(base64.b64decode(base64_string))
-            v["embedding"]["vector"] = torch.frombuffer(base64_buffer, dtype=torch.float32)
+            # Convert the base64 encoded embeddings into torch tensors
+            for k, v in self.semantic_groupings["class_details"].items():
+                base64_string = v["embedding"]["vector"]
+                base64_buffer = bytearray(base64.b64decode(base64_string))
+                v["embedding"]["vector"] = torch.frombuffer(base64_buffer, dtype=torch.float32)
 
     def load_files(self):
         """Load embeddings, sentences, and metadata from multi-city directory structure."""
@@ -136,10 +142,22 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
             # Load embeddings
             embedding_dir = city_dir / "embeddings"
             if embedding_dir.exists():
-                city_embeddings = make_embedding_dict_from_json(
-                    load_all_jsonl_from_folder(embedding_dir))
+                # Try to load from pickle file first (faster)
+                pickle_path = embedding_dir / "embeddings.pkl"
+                if pickle_path.exists():
+                    with open(pickle_path, 'rb') as f:
+                        embedding_data = pickle.load(f)
+                        tensor, id_to_idx = embedding_data
+                        city_embeddings = {}
+                        for custom_id, idx in id_to_idx.items():
+                            city_embeddings[custom_id] = tensor[idx].tolist()
+                    print(f"  Loaded {len(city_embeddings)} embeddings from pickle")
+                else:
+                    # Fall back to JSONL loading
+                    city_embeddings = make_embedding_dict_from_json(
+                        load_all_jsonl_from_folder(embedding_dir))
+                    print(f"  Loaded {len(city_embeddings)} embeddings from JSONL")
                 self.all_embeddings.update(city_embeddings)
-                print(f"  Loaded {len(city_embeddings)} embeddings")
 
             # Load sentences (optional)
             sentence_dir = city_dir / "sentences"
@@ -172,9 +190,16 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
                 new_pano_metadata_len = len(new_metadata)
                 old_metadata_size = len(self.panorama_metadata)
                 print(f"  Loaded metadata for {len(new_metadata)} panoramas")
-                if metadata_from_sentences is not None:
+                if metadata_from_sentences is not None and len(metadata_from_sentences) > 0:
                     assert metadata_from_sentences == new_metadata
                 self.panorama_metadata.update(new_metadata)
+                assert len(self.panorama_metadata) == old_metadata_size + new_pano_metadata_len
+            elif metadata_from_sentences is not None:
+                # If no metadata file exists, use the metadata derived from sentences
+                old_metadata_size = len(self.panorama_metadata)
+                new_pano_metadata_len = len(metadata_from_sentences)
+                print(f"  Loaded metadata for {len(metadata_from_sentences)} panoramas (from sentences)")
+                self.panorama_metadata.update(metadata_from_sentences)
                 assert len(self.panorama_metadata) == old_metadata_size + new_pano_metadata_len
 
         assert len(self.all_embeddings) > 0, f"Failed to load any embeddings from {base_path}"
@@ -263,9 +288,10 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
                 mask[i, landmark_idx] = False
 
                 # Track max description length for debug tensor
-                max_description_length = max(
-                    max_description_length,
-                    len(self.all_sentences[custom_id].encode("utf-8")))
+                if custom_id in self.all_sentences:
+                    max_description_length = max(
+                        max_description_length,
+                        len(self.all_sentences[custom_id].encode("utf-8")))
 
         debug = {}
         if self.config.should_classify_against_grouping:
@@ -293,9 +319,10 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
 
             for landmark_idx, landmark_meta in enumerate(matching_landmarks):
                 custom_id = landmark_meta["custom_id"]
-                sentence_bytes = self.all_sentences[custom_id].encode('utf-8')
-                sentence_tensor = torch.tensor(list(sentence_bytes), dtype=torch.uint8)
-                sentence_debug[i, landmark_idx, :len(sentence_bytes)] = sentence_tensor
+                if custom_id in self.all_sentences:
+                    sentence_bytes = self.all_sentences[custom_id].encode('utf-8')
+                    sentence_tensor = torch.tensor(list(sentence_bytes), dtype=torch.uint8)
+                    sentence_debug[i, landmark_idx, :len(sentence_bytes)] = sentence_tensor
         debug["sentences"] = sentence_debug.to(model_input.image.device)
 
         return ExtractorOutput(
