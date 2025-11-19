@@ -234,7 +234,8 @@ class PanoramaSemanticLandmarkExtractorTest(unittest.TestCase):
         config = PanoramaSemanticLandmarkExtractorConfig(
             openai_embedding_size=1536,
             embedding_version="test_v1",
-            auxiliary_info_key="test_key",)
+            auxiliary_info_key="test_key",
+            should_classify_against_grouping=True,)
         model = psle.PanoramaSemanticLandmarkExtractor(config, Path(self._temp_dir.name))
         model.load_files()
 
