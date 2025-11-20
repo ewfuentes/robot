@@ -148,6 +148,7 @@ py_library(
   srcs = ["semantic_landmark_utils.py"],
   visibility = [
     "//experimental/overhead_matching/swag:__subpackages__",
+    "//common/python:__subpackages__",
   ],
   deps = [
     requirement("pandas"),
