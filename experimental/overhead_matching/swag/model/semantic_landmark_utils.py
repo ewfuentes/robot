@@ -280,26 +280,3 @@ def custom_id_from_props(props: dict | frozenset) -> str:
     ).decode('utf-8')
     return custom_id
 
-
-def build_embedding_idx_mapping(
-    landmark_metadata,
-    lm_idx_from_custom_id: dict[str, int],
-    props_column: str = 'pruned_props'
-) -> dict[int, int]:
-    """Build a mapping from landmark metadata index to embedding tensor index.
-
-    Args:
-        landmark_metadata: DataFrame with landmark metadata
-        lm_idx_from_custom_id: Dict mapping custom_id to embedding index
-        props_column: Name of column containing properties for custom_id generation
-
-    Returns:
-        Dict mapping metadata row index to embedding tensor index
-    """
-    metadata_idx_to_embedding_idx = {}
-    for metadata_idx, row in landmark_metadata.iterrows():
-        props = row[props_column]
-        custom_id = custom_id_from_props(props)
-        if custom_id in lm_idx_from_custom_id:
-            metadata_idx_to_embedding_idx[metadata_idx] = lm_idx_from_custom_id[custom_id]
-    return metadata_idx_to_embedding_idx

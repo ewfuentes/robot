@@ -55,6 +55,7 @@ py_test(
 py_library(
   name = "observation_likelihood",
   srcs = ["observation_likelihood.py"],
+  visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
   deps = [
     requirement("torch"),
     requirement("geopandas"),
