@@ -1,6 +1,13 @@
 import experimental.overhead_matching.swag.data.vigor_dataset as vd
 import experimental.overhead_matching.swag.evaluation.evaluate_swag as es
 from experimental.overhead_matching.swag.evaluation.wag_config_pb2 import WagConfig, SatellitePatchConfig
+from experimental.overhead_matching.swag.evaluation.observation_likelihood import (
+    compute_cached_landmark_similarity_data,
+    build_prior_data_from_vigor,
+    LandmarkObservationLikelihoodCalculator,
+    ObservationLikelihoodConfig,
+    LikelihoodMode,
+)
 import common.torch.load_and_save_models as lsm
 from experimental.overhead_matching.swag.model import patch_embedding, swag_patch_embedding
 from pathlib import Path
@@ -99,6 +106,16 @@ if __name__ == "__main__":
     parser.add_argument("--sigma_obs_prob_from_sim", type=float, default=0.1)
     parser.add_argument("--dual_mcl_frac", type=float, default=0.0)
     parser.add_argument("--dual_mcl_phantom_counts_frac", type=float, default=1e-4)
+    parser.add_argument("--osm-embedding-path", type=str, default=None,
+                        help="Path to OSM landmark embeddings directory")
+    parser.add_argument("--pano-embedding-path", type=str, default=None,
+                        help="Path to panorama landmark embeddings directory")
+    parser.add_argument("--use-landmark-likelihood", action='store_true',
+                        help="Use LandmarkObservationLikelihoodCalculator instead of WagObservationLikelihoodCalculator")
+    parser.add_argument("--landmark-sigma", type=float, default=100.0,
+                        help="Sigma for OSM landmark observation likelihood")
+    parser.add_argument("--embedding-dim", type=int, default=1536,
+                        help="Embedding dimension for landmark embeddings")
 
     args = parser.parse_args()
 
@@ -147,6 +164,53 @@ if __name__ == "__main__":
     with open(Path(args.output_path) / "wag_config.pbtxt", "w") as f:
         f.write(text_format.MessageToString(wag_config))
 
+    # Build landmark observation likelihood calculator if requested
+    landmark_obs_calculator = None
+    if args.use_landmark_likelihood:
+        if args.osm_embedding_path is None or args.pano_embedding_path is None:
+            raise ValueError("--osm-embedding-path and --pano-embedding-path are required when using --use-landmark-likelihood")
+
+        osm_embedding_path = Path(args.osm_embedding_path).expanduser()
+        pano_embedding_path = Path(args.pano_embedding_path).expanduser()
+
+        print("Computing landmark similarity data...")
+        landmark_sim_data = compute_cached_landmark_similarity_data(
+            vigor_dataset,
+            osm_embedding_path,
+            pano_embedding_path,
+            embedding_dim=args.embedding_dim,
+            use_cache=True
+        )
+
+        # Get pano_sat_similarity from evaluate_swag
+        all_similarity = es.compute_cached_similarity_matrix(
+            sat_model=sat_model,
+            pano_model=pano_model,
+            dataset=vigor_dataset,
+            device=DEVICE,
+            use_cached_similarity=True
+        )
+
+        print("Building prior data...")
+        prior_data = build_prior_data_from_vigor(
+            vigor_dataset,
+            all_similarity,
+            landmark_sim_data
+        )
+
+        obs_config = ObservationLikelihoodConfig(
+            obs_likelihood_from_sat_similarity_sigma=args.sigma_obs_prob_from_sim,
+            obs_likelihood_from_osm_similarity_sigma=args.landmark_sigma,
+            likelihood_mode=LikelihoodMode.COMBINED
+        )
+
+        landmark_obs_calculator = LandmarkObservationLikelihoodCalculator(
+            prior_data=prior_data,
+            config=obs_config,
+            device=torch.device(DEVICE)
+        )
+        print("Landmark observation likelihood calculator ready")
+
     es.evaluate_model_on_paths(
         vigor_dataset=vigor_dataset,
         sat_model=sat_model,
@@ -156,5 +220,6 @@ if __name__ == "__main__":
         seed=args.seed,
         output_path=args.output_path,
         device=DEVICE,
-        save_intermediate_filter_states=args.save_intermediate_filter_states
+        save_intermediate_filter_states=args.save_intermediate_filter_states,
+        obs_likelihood_calculator=landmark_obs_calculator
     )

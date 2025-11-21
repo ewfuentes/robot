@@ -278,3 +278,26 @@ py_binary(
     requirement("pyarrow"),
   ]
 )
+
+py_binary(
+  name="visualize_observation_likelihood",
+  srcs=["visualize_observation_likelihood.py"],
+  deps=[
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("dash"),
+    requirement("plotly"),
+    requirement("geopandas"),
+    requirement("shapely"),
+    requirement("msgspec"),
+    "//common/torch:load_torch_deps",
+    "//common/torch:load_and_save_models",
+    "//common/gps:web_mercator",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/evaluation:evaluate_swag",
+    "//experimental/overhead_matching/swag/evaluation:observation_likelihood",
+    "//experimental/overhead_matching/swag/filter:particle_filter",
+    "//experimental/overhead_matching/swag/model:patch_embedding",
+    "//experimental/overhead_matching/swag/model:swag_patch_embedding",
+  ]
+)
