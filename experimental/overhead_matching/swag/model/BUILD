@@ -209,6 +209,7 @@ py_test(
   deps = [
     requirement("shapely"),
     ":semantic_landmark_extractor",
+    ":semantic_landmark_utils",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
   ]
 )
