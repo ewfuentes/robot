@@ -271,21 +271,6 @@ py_binary(
 )
 
 py_binary(
-  name="inspect_captured_batches",
-  srcs=["inspect_captured_batches.py"],
-  deps=[
-    ":model_inspector",
-    requirement("flask"),
-    requirement("torch"),
-    requirement("numpy"),
-    requirement("pyyaml"),
-    "//common/torch:load_torch_deps",
-    "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
-    "//experimental/overhead_matching/swag/model:semantic_landmark_extractor",
-  ]
-)
-
-py_binary(
   name="reexport_geojson",
   srcs=["reexport_geojson.py"],
   deps=[
