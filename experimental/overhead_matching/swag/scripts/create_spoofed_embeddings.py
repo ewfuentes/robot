@@ -26,6 +26,7 @@ def _():
     from typing import Any
     import matplotlib.pyplot as plt
     import numpy as np
+    import marimo as mo
     from tqdm import tqdm
     from collections import defaultdict
 
@@ -37,15 +38,13 @@ def _():
 
     return (
         Path,
-        argparse,
-        base64,
         collections,
-        dataclass,
         defaultdict,
-        hashlib,
         json,
+        mo,
         np,
         pickle,
+        slu,
         torch,
         tqdm,
         vd,
@@ -53,105 +52,15 @@ def _():
 
 
 @app.cell
-def _(Path, argparse):
-    parser = argparse.ArgumentParser(
-        description="Create spoofed landmark embeddings based on correspondences"
-    )
-    parser.add_argument(
-        "--correspondence_path",
-        type=Path,
-        default=Path("/data/overhead_matching/datasets/landmark_correspondence/v4_minimal_full/"),
-        help="Path to correspondence data directory"
-    )
-    parser.add_argument(
-        "--pano_embedding_path",
-        type=Path,
-        default=Path("/data/overhead_matching/datasets/semantic_landmark_embeddings/pano_v1/"),
-        help="Path to panorama embeddings directory"
-    )
-    parser.add_argument(
-        "--osm_embedding_path",
-        type=Path,
-        default=Path("/data/overhead_matching/datasets/semantic_landmark_embeddings/v3_no_addresses/"),
-        help="Path to OSM embeddings directory"
-    )
-    parser.add_argument(
-        "--vigor_dataset_path",
-        type=Path,
-        default=Path("/data/overhead_matching/datasets/VIGOR/Chicago/"),
-        help="Path to VIGOR dataset (for landmark metadata)"
-    )
-    parser.add_argument(
-        "--output_path",
-        type=Path,
-        default=Path("/data/overhead_matching/datasets/semantic_landmark_embeddings/spoofed_perfect_correspondence/"),
-        help="Output path for spoofed embeddings"
-    )
-    parser.add_argument(
-        "--embedding_dim",
-        type=int,
-        default=1536,
-        help="Dimension of embeddings"
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=42,
-        help="Random seed for reproducibility"
-    )
-
-    args = parser.parse_args()
-    for k in vars(args):
-        print(k, vars(args)[k])
-    return (args,)
-
-
-@app.cell
-def _(args, vd):
+def _(Path, vd):
     dataset = vd.VigorDataset(config=vd.VigorDatasetConfig(
         satellite_tensor_cache_info=None,
         panorama_tensor_cache_info=None,
         should_load_images = False,
         should_load_landmarks= True,
         landmark_version= "v3",
-    ), dataset_path=args.vigor_dataset_path)
+    ), dataset_path=Path("/data/overhead_matching/datasets/VIGOR/Chicago/"))
     return (dataset,)
-
-
-@app.cell
-def _(base64, dataclass, hashlib, json):
-    @dataclass
-    class GroupStatistics:
-        """Statistics about correspondence groups."""
-        num_groups: int
-        group_sizes: list[int]
-        pano_only_groups: int
-        osm_only_groups: int
-        mixed_groups: int
-        singleton_groups: int
-        largest_group_size: int
-        mean_group_size: float
-
-
-
-
-    def custom_id_from_props(props: dict) -> str:
-        """Generate custom_id for OSM landmarks (same as in semantic_landmark_extractor.py)."""
-        json_props = json.dumps(dict(props), sort_keys=True)
-        custom_id = base64.b64encode(
-            hashlib.sha256(json_props.encode('utf-8')).digest()
-        ).decode('utf-8')
-        return custom_id
-
-
-    def get_city_from_coordinates(lat: float, lon: float) -> str:
-        """Determine city based on lat/lon coordinates."""
-        # Chicago: ~41-42°N, Seattle: ~47-48°N
-        if lat < 45.0:
-            return "Chicago"
-        else:
-            return "Seattle"
-    return (custom_id_from_props,)
 
 
 @app.cell
@@ -179,15 +88,8 @@ def _(Path, parse_correspondence_responses):
 
     # Use minimal_heading.json for all Chicago panoramas (25,478 panos)
     correspondences = parse_correspondence_responses(Path("/tmp/minimal_heading.json"))
-    # correspondences = parse_correspondence_responses(Path("/tmp/medium_heading.json"))  # Only 1000 panos
     print(len(correspondences))
     return (correspondences,)
-
-
-@app.cell
-def _(dataset):
-    dataset._landmark_metadata
-    return
 
 
 @app.cell
@@ -197,21 +99,17 @@ def _(dataset):
 
 
 @app.cell
-def _():
-    return
-
-
-@app.cell
 def _(dataset):
-    all_props = {}
+    # Print low instance count tag keys
+    _all_props = {}
     for _props in dataset._landmark_metadata["pruned_props"].unique():
-        for x in _props:
-            tag = x[0]
-            if tag not in all_props:
-                all_props[tag] = set()
-            all_props[tag] = all_props[tag].union({x[1]})
+        for _x in _props:
+            _tag = _x[0]
+            if _tag not in _all_props:
+                _all_props[_tag] = set()
+            _all_props[_tag] = _all_props[_tag].union({_x[1]})
     # print(all_props)
-    for _k,_v in sorted(all_props.items(), key=lambda x: len(x[1])):
+    for _k,_v in sorted(_all_props.items(), key=lambda x: len(x[1])):
         print(_k, len(_v),
               list(_v)[:min(len(_v), 5)])
     return
@@ -260,9 +158,8 @@ def _(dataset):
         return frozenset(out)
 
     dataset._landmark_metadata["new_pruned_props"] = dataset._landmark_metadata["pruned_props"].apply(trim_bad_props)
-    # print(len(dataset._landmark_metadata["new_pruned_props"].unique()))
     len(dataset._landmark_metadata["new_pruned_props"].unique())
-    return
+    return (trim_bad_props,)
 
 
 @app.cell
@@ -321,8 +218,8 @@ def _(edges, nodes, split_idx):
 
 @app.cell
 def _(correspondences):
-    pano_id = "eICZd2TZWjHa1ibb55eD3g"
-    # pano_id = next(iter(correspondences.keys()))
+    # pano_id = "eICZd2TZWjHa1ibb55eD3g"
+    pano_id = next(iter(correspondences.keys()))
     correspondences[pano_id]
     return
 
@@ -407,90 +304,6 @@ def _(edges):
 
 
 @app.cell
-def _(adjacency_list, nodes, osm_node_degrees, split_idx):
-    # Show what the highest degree OSM node is connected to
-    if osm_node_degrees:
-        _top_osm_node_idx, _top_osm_degree = osm_node_degrees[0]
-        print(f"\n=== CONNECTIONS FOR HIGHEST DEGREE OSM NODE ===")
-        print(f"Node {_top_osm_node_idx}: {nodes[_top_osm_node_idx]}")
-        print(f"Degree: {_top_osm_degree}")
-        print(f"\nConnected to {len(adjacency_list[_top_osm_node_idx])} nodes:")
-
-        # Sample some connections
-        _connections = adjacency_list[_top_osm_node_idx]
-        print(f"\nFirst 50 connections:")
-        for _i, _neighbor_idx in enumerate(_connections[:50]):
-            if _neighbor_idx < split_idx:
-                _pano_data = nodes[_neighbor_idx]
-                print(f"  {_i+1}. PANO Node {_neighbor_idx}: {_pano_data[0]}, idx={_pano_data[1]}, desc={_pano_data[2]}")
-            else:
-                print(f"  {_i+1}. OSM Node {_neighbor_idx}: {nodes[_neighbor_idx]}")
-    return
-
-
-@app.function
-# Function to trace edge back to correspondence
-def trace_edge_to_correspondence(edge, nodes, correspondences, split_idx):
-    """Trace an edge back to the correspondence it came from."""
-    e1, e2 = edge
-
-    # Determine which is pano and which is OSM
-    if e1 < split_idx and e2 >= split_idx:
-        pano_idx, osm_idx = e1, e2
-    elif e2 < split_idx and e1 >= split_idx:
-        pano_idx, osm_idx = e2, e1
-    else:
-        return None  # Both same type, shouldn't happen
-
-    pano_data = nodes[pano_idx]
-    osm_id = nodes[osm_idx]
-
-    pano_id = pano_data[0]
-    pano_landmark_idx = pano_data[1]
-
-    # Find the correspondence
-    if pano_id in correspondences:
-        corr = correspondences[pano_id]
-
-        # Find which OSM landmark in the correspondence matches
-        for osm_landmark in corr["osm"]:
-            for osm_id_tuple in osm_landmark["ids"]:
-                if str((osm_id_tuple[0], osm_id_tuple[1])) == osm_id:
-                    return {
-                        "pano_id": pano_id,
-                        "pano_landmark_idx": pano_landmark_idx,
-                        "pano_description": pano_data[2],
-                        "osm_id": osm_id,
-                        "osm_tags": osm_landmark.get("tags", ""),
-                    }
-
-    return None
-
-
-@app.cell
-def _(correspondences, edges, nodes, osm_node_degrees, split_idx):
-    # Trace edges from highest degree OSM node back to correspondences
-    if osm_node_degrees:
-        _top_osm_node_idx, _ = osm_node_degrees[0]
-        print(f"\n=== TRACE EDGES FOR HIGHEST DEGREE OSM NODE ===")
-        print(f"OSM Node {_top_osm_node_idx}: {nodes[_top_osm_node_idx]}")
-
-        # Find all edges involving this node
-        _relevant_edges = [(_e1, _e2) for _e1, _e2 in edges if _e1 == _top_osm_node_idx or _e2 == _top_osm_node_idx]
-
-        print(f"\nTracing first 20 edges back to correspondences:")
-        for _i, _edge in enumerate(_relevant_edges[:20]):
-            _trace_info = trace_edge_to_correspondence(_edge, nodes, correspondences, split_idx)
-            if _trace_info:
-                print(f"\n{_i+1}. Edge: {_edge}")
-                print(f"   Pano: {_trace_info['pano_id']}")
-                print(f"   Pano landmark #{_trace_info['pano_landmark_idx']}: {_trace_info['pano_description']}")
-                print(f"   OSM ID: {_trace_info['osm_id']}")
-                print(f"   OSM tags: {_trace_info['osm_tags'][:100]}...")
-    return
-
-
-@app.cell
 def _(correspondences, nodes, osm_node_degrees):
     # Lookup function to get OSM landmark details from correspondence
     def _get_osm_details(_osm_node_idx, _nodes, _correspondences):
@@ -521,7 +334,7 @@ def _(correspondences, nodes, osm_node_degrees):
     return
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(
     adjacency_list,
     dataset,
@@ -632,11 +445,6 @@ def _(
 
     print(f"Exported {len(_node_data)} nodes and {len(_edge_data)} edges to /tmp/graph_export.json")
     print(f"File size: {len(json.dumps(_export_data)) / 1024 / 1024:.1f} MB")
-    return
-
-
-@app.cell
-def _():
     # Instructions for viewing the visualization
     print("\n" + "="*60)
     print("GRAPH VISUALIZATION WEB APP")
@@ -648,6 +456,12 @@ def _():
     print("   http://localhost:8000/graph_viz/")
     print("\n3. Use the controls to filter by degree and explore!")
     print("="*60)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""# Create Spoofed Embeddings From Correspondences""")
     return
 
 
@@ -718,12 +532,7 @@ def _(dataset, np):
     _max_group_size = max(len(_osm_ids) for _osm_ids in osm_groups_by_props.values())
     print(f"Max OSM group size: {_max_group_size}")
 
-    return (
-        osm_group_to_osm_id,
-        osm_groups_by_props,
-        osm_id_to_group,
-        osm_singleton_groups,
-    )
+    return osm_group_to_osm_id, osm_groups_by_props, osm_id_to_group
 
 
 @app.cell
@@ -770,21 +579,7 @@ def _(adjacency_list, nodes, np, osm_id_to_group, split_idx):
             _selected_group = list(_group_set)[np.random.randint(0, len(_group_set))]
             pano_to_selected_group[_pano_idx] = _selected_group
 
-    return pano_tiebreaks, pano_to_osm_groups, pano_to_selected_group
-
-
-@app.cell
-def _(pano_to_selected_group):
-    print(len(pano_to_selected_group))
-    next(iter(pano_to_selected_group.items()))
-    return
-
-
-@app.cell
-def _(osm_id_to_group):
-    print(len(osm_id_to_group))
-    next(iter(osm_id_to_group.items())) # new pruned props, to 
-    return
+    return (pano_to_selected_group,)
 
 
 @app.cell
@@ -818,21 +613,20 @@ def _(nodes, osm_id_to_group, pano_to_selected_group, split_idx):
 @app.cell
 def _(torch):
     def generate_normal_vector(dim):
-        # _v = torch.rand(dim)-0.5
-        # return (_v / _v.norm(dim=0))
-        return torch.rand(dim)
+        _v = torch.rand(dim)-0.5
+        return (_v / _v.norm(dim=0))
     generate_normal_vector(10)
     return (generate_normal_vector,)
 
 
 @app.cell
 def _(
-    custom_id_from_props,
     dataset,
     generate_normal_vector,
     osm_embeddings_tensor,
     osm_group_to_osm_id,
     osm_landmark_id_to_idx,
+    slu,
     tqdm,
 ):
 
@@ -847,7 +641,7 @@ def _(
 
     for _group_props, _selected_osm_id in tqdm(osm_group_to_osm_id.items(), desc="Creating group embeddings"):
         # Semantic: Use embedding from selected member
-        _selected_custom_id = custom_id_from_props(
+        _selected_custom_id = slu.custom_id_from_props(
             dataset._landmark_metadata[dataset._landmark_metadata["id"] == _selected_osm_id].iloc[0]["pruned_props"]
         )
         _emb_idx = osm_landmark_id_to_idx[_selected_custom_id]
@@ -859,38 +653,27 @@ def _(
 
 
 @app.cell
-def _(
-    defaultdict,
-    group_to_random_emb,
-    group_to_semantic_emb,
-    osm_embeddings_tensor,
-    tqdm,
-):
+def _(defaultdict, group_to_random_emb, group_to_semantic_emb, tqdm):
     random_emb_dict = defaultdict(set)
     semantic_emb_dict = defaultdict(set)
-    direct_emb_dict = defaultdict(set)
     for _k, _v in tqdm(group_to_random_emb.items()):
         _key = tuple(_v.tolist())
         random_emb_dict[_key].add(_k)
     for _k, _v in tqdm(group_to_semantic_emb.items()):
         _key = tuple(_v.tolist())
         semantic_emb_dict[_key].add(_k)
-    for _v in tqdm(osm_embeddings_tensor):
-        _key = tuple(_v.tolist())
-        direct_emb_dict[_key].add(1)
     print(len(random_emb_dict))
     print(len(semantic_emb_dict))
-    print(len(direct_emb_dict))
     return
 
 
 @app.cell
 def _(
-    custom_id_from_props,
     dataset,
     group_to_random_emb,
     group_to_semantic_emb,
     osm_id_to_group,
+    slu,
     torch,
     tqdm,
 ):
@@ -911,7 +694,7 @@ def _(
     for _idx, _row in tqdm(list(dataset._landmark_metadata.iterrows()), desc="  Mapping custom_ids"):
         _osm_id = _row["id"]
         _pruned_props = _row["pruned_props"]
-        _custom_id = custom_id_from_props(_pruned_props)
+        _custom_id = slu.custom_id_from_props(_pruned_props)
 
         if _osm_id not in osm_id_to_group:
             raise RuntimeError(f"{_osm_id} not found in osm_id_to_groups")
@@ -1020,6 +803,7 @@ def _(
         random_pano_id_to_idx[_custom_id] = len(random_pano_embeddings)
         random_pano_embeddings.append(_random_emb)
 
+    assert spoofed_pano_id_to_idx == random_pano_id_to_idx
     spoofed_pano_embeddings_tensor = torch.stack(spoofed_pano_embeddings)
     random_pano_embeddings_tensor = torch.stack(random_pano_embeddings)
     print(f"Created {len(spoofed_pano_embeddings)} pano embeddings (semantic and random)")
@@ -1027,7 +811,6 @@ def _(
     print(f"Pano landmarks without OSM edges (keep original): {pano_landmarks_without_edges}")
 
     return (
-        pano_landmarks_without_edges,
         random_pano_embeddings_tensor,
         random_pano_id_to_idx,
         spoofed_pano_embeddings_tensor,
@@ -1070,24 +853,6 @@ def _(
         no_semantic_osm_embeddings_tensor,
         no_semantic_pano_embeddings_tensor,
     )
-
-
-@app.cell
-def _(spoofed_pano_id_to_idx):
-    next(iter(spoofed_pano_id_to_idx.items()))
-    return
-
-
-@app.cell
-def _(random_pano_id_to_idx):
-    next(iter(random_pano_id_to_idx.items()))
-    return
-
-
-@app.cell
-def _(random_pano_id_to_idx, spoofed_pano_id_to_idx):
-    spoofed_pano_id_to_idx == random_pano_id_to_idx
-    return
 
 
 @app.cell
@@ -1182,40 +947,1501 @@ def _(
 
 
 @app.cell
+def _(Path, json, random_pano_id_to_idx, spoofed_pano_id_to_idx):
+    # Generate panorama_metadata.jsonl for Chicago training embeddings
+    print("\n=== GENERATING CHICAGO TRAINING PANO METADATA ===")
+
+    _base_dir = Path("/data/overhead_matching/datasets/semantic_landmark_embeddings/")
+
+    # Versions to generate metadata for
+    _chicago_training_versions = [
+        ("pano_spoof", spoofed_pano_id_to_idx),
+        ("pano_spoof_random", random_pano_id_to_idx),
+        ("pano_spoof_no_semantic", spoofed_pano_id_to_idx),  # Uses same id_to_idx as semantic
+    ]
+
+    for _version_name, _id_to_idx in _chicago_training_versions:
+        print(f"\nGenerating metadata for {_version_name}/Chicago...")
+
+        # Parse custom_ids and create metadata entries
+        _metadata_entries = []
+        for _custom_id in _id_to_idx.keys():
+            # Parse custom_id format: "pano_id,lat,lon,__landmark_N"
+            _parts = _custom_id.split(',')
+            if len(_parts) != 4:
+                print(f"Warning: Skipping malformed custom_id: {_custom_id}")
+                continue
+
+            _pano_id = _parts[0]
+            _lat = _parts[1]
+            _lon = _parts[2]
+            _landmark_part = _parts[3]
+
+            # Extract landmark_idx from "__landmark_N"
+            if not _landmark_part.startswith('__landmark_'):
+                print(f"Warning: Unexpected landmark format in {_custom_id}")
+                continue
+            _landmark_idx = int(_landmark_part.split('_')[-1])
+
+            # Create metadata entry
+            _entry = {
+                "panorama_id": f"{_pano_id},{_lat},{_lon},",
+                "landmark_idx": _landmark_idx,
+                "custom_id": _custom_id,
+                "yaw_angles": [0.0, 0.0, 0.0, 0.0]  # Default: present at all angles
+            }
+            _metadata_entries.append(_entry)
+
+        # Sort by panorama_id then landmark_idx
+        _metadata_entries.sort(key=lambda x: (x["panorama_id"], x["landmark_idx"]))
+
+        # Write to file
+        _output_dir = _base_dir / _version_name / "Chicago" / "embedding_requests"
+        _output_dir.mkdir(parents=True, exist_ok=True)
+        _output_file = _output_dir / "panorama_metadata.jsonl"
+
+        with open(_output_file, 'w') as _f:
+            for _entry in _metadata_entries:
+                _f.write(json.dumps(_entry) + '\n')
+
+        print(f"  ✓ Wrote {len(_metadata_entries)} entries to {_output_file}")
+
+    print("\n✓ Chicago training pano metadata generated successfully!")
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""# Create Seattle Validation Set Embeddings""")
+    return
+
+
+@app.cell
+def _(Path, vd):
+    # Load Seattle dataset
+    print("Loading Seattle dataset...")
+    seattle_dataset = vd.VigorDataset(config=vd.VigorDatasetConfig(
+        satellite_tensor_cache_info=None,
+        panorama_tensor_cache_info=None,
+        should_load_images = False,
+        should_load_landmarks= True,
+        landmark_version= "v4_202001",
+        factor=0.3 
+    ), dataset_path=Path("/data/overhead_matching/datasets/VIGOR/Seattle/"))
+    print(f"Loaded {len(seattle_dataset._landmark_metadata)} Seattle OSM landmarks")
+    print(f"Loaded {len(seattle_dataset._panorama_metadata)} Seattle panoramas")
+    return (seattle_dataset,)
+
+
+@app.cell
+def _(Path, parse_correspondence_responses):
+    # Load Seattle correspondences
+    print("\nLoading Seattle correspondences...")
+    seattle_correspondences = parse_correspondence_responses(Path("/tmp/minimal_historical_seattle.json"))
+    print(f"Loaded correspondences for {len(seattle_correspondences)} Seattle panoramas")
+    return (seattle_correspondences,)
+
+
+@app.cell
+def _(Path, pickle):
+    # Load Seattle pano embeddings
+    print("\nLoading Seattle pano embeddings...")
+    _seattle_pano_emb_path = Path("/data/overhead_matching/datasets/semantic_landmark_embeddings/pano_v1/Seattle_validation/embeddings/embeddings.pkl")
+    with open(_seattle_pano_emb_path, 'rb') as _f:
+        seattle_pano_embeddings_tensor, seattle_pano_landmark_id_to_idx = pickle.load(_f)
+    print(f"Loaded Seattle pano embeddings: {seattle_pano_embeddings_tensor.shape}")
+
+    return seattle_pano_embeddings_tensor, seattle_pano_landmark_id_to_idx
+
+
+@app.cell
+def _(Path, pickle):
+    # Load Seattle OSM embeddings
+    print("\nLoading Seattle OSM embeddings...")
+    _seattle_osm_emb_path = Path("/data/overhead_matching/datasets/semantic_landmark_embeddings/v4_202001_no_addresses/embeddings/embeddings.pkl")
+    with open(_seattle_osm_emb_path, 'rb') as _f:
+        seattle_osm_embeddings_tensor, seattle_osm_landmark_id_to_idx = pickle.load(_f)
+    print(f"Loaded Seattle OSM embeddings: {seattle_osm_embeddings_tensor.shape}")
+
+    return seattle_osm_embeddings_tensor, seattle_osm_landmark_id_to_idx
+
+
+@app.cell
+def _(seattle_dataset, trim_bad_props):
+    # Apply same trimming to Seattle OSM landmarks
+    print("\nProcessing Seattle OSM landmarks...")
+    seattle_dataset._landmark_metadata["new_pruned_props"] = seattle_dataset._landmark_metadata["pruned_props"].apply(trim_bad_props)
+    print(f"Seattle unique new_pruned_props groups: {len(seattle_dataset._landmark_metadata['new_pruned_props'].unique())}")
+    return
+
+
+@app.cell
+def _(osm_groups_by_props, seattle_dataset):
+    # Match Seattle OSM landmarks to Chicago groups or create Seattle-only groups
+    print("\nMatching Seattle OSM to Chicago groups...")
+
+    seattle_osm_groups_by_props = {}  # Seattle OSM groups by new_pruned_props
+    seattle_osm_id_to_group = {}  # Maps Seattle OSM ID -> group props
+
+    chicago_group_props = set(osm_groups_by_props.keys())
+    matched_to_chicago = 0
+    seattle_only_groups = 0
+
+    # Group Seattle OSM by new_pruned_props
+    for _name, _group in seattle_dataset._landmark_metadata.groupby("new_pruned_props"):
+        _seattle_osm_ids = _group["id"].tolist()
+        seattle_osm_groups_by_props[_name] = _seattle_osm_ids
+
+        # Check if this matches a Chicago group
+        if _name in chicago_group_props:
+            matched_to_chicago += len(_seattle_osm_ids)
+        else:
+            seattle_only_groups += 1
+
+        # Map each Seattle OSM ID to its group
+        for _osm_id in _seattle_osm_ids:
+            seattle_osm_id_to_group[_osm_id] = _name
+
+    print(f"Created {len(seattle_osm_groups_by_props)} Seattle OSM groups")
+    print(f"  Matched to existing Chicago groups: {matched_to_chicago} landmarks")
+    print(f"  Seattle-only groups: {seattle_only_groups} groups")
+
+    # Identify which groups are Seattle-only (not in Chicago)
+    seattle_only_group_props = set(seattle_osm_groups_by_props.keys()) - chicago_group_props
+    print(f"  Total Seattle-only group props: {len(seattle_only_group_props)}")
+
+    return (
+        seattle_only_group_props,
+        seattle_osm_groups_by_props,
+        seattle_osm_id_to_group,
+    )
+
+
+@app.cell
+def _(seattle_correspondences, seattle_dataset):
+    # Build Seattle correspondence graph (similar to Chicago version)
+    print("\nBuilding Seattle correspondence graph...")
+
+    def get_seattle_nodes_from_correspondences(correspondences, dataset):
+        panorama_nodes = []
+        osm_nodes = dataset._landmark_metadata["id"].tolist()
+        osm_index_map = {_k: _v for _v, _k in enumerate(osm_nodes)}
+        assert len(osm_index_map) == len(osm_nodes)
+
+        osm_edges = []
+        # Add edges between all Seattle OSM nodes that have the same "new_pruned_props"
+        for name, group in dataset._landmark_metadata.groupby("new_pruned_props"):
+            ids = [osm_index_map[x] for x in group["id"]]
+            if len(ids) > 1:
+                osm_edges.extend([(ids[0], x) for x in ids[1:]])
+
+        edges = []
+        for pano_id in correspondences.keys():
+            pano_correspondences = correspondences[pano_id]
+            pano_ids = [(pano_id, _idx, x) for _idx, x in enumerate(pano_correspondences["pano"])]
+            zero_pano_index_number = len(panorama_nodes)
+            panorama_nodes.extend(pano_ids)
+            for match in pano_correspondences["matches"]["matches"]:
+                pano_local_idx = match["set_1_id"] - 1 # zero indexed
+                for set_2_idx in match["set_2_matches"]:
+                    if set_2_idx - 1 >= len(pano_correspondences["osm"]):
+                        continue
+                    osm_landmark = pano_correspondences["osm"][set_2_idx - 1]
+                    for osm_id in osm_landmark["ids"]:
+                        str_id = str((osm_id[0], osm_id[1]))
+                        edges.append((pano_local_idx + zero_pano_index_number, osm_index_map[str_id]))
+
+        # Combine nodes into single list
+        split_idx = len(panorama_nodes)
+        all_nodes = panorama_nodes + osm_nodes
+        edges = [(x, y+split_idx) for x,y in edges]
+        osm_edges = [(x+split_idx, y + split_idx) for x,y in osm_edges]
+        return all_nodes, edges + osm_edges, split_idx
+
+    seattle_nodes, seattle_edges, seattle_split_idx = get_seattle_nodes_from_correspondences(
+        correspondences=seattle_correspondences,
+        dataset=seattle_dataset
+    )
+
+    print(f"Seattle graph: {len(seattle_nodes)} nodes, {len(seattle_edges)} edges")
+    print(f"  Pano nodes: {seattle_split_idx}")
+    print(f"  OSM nodes: {len(seattle_nodes) - seattle_split_idx}")
+
+    return seattle_edges, seattle_nodes, seattle_split_idx
+
+
+@app.cell
 def _(
-    osm_groups_by_props,
-    osm_singleton_groups,
-    pano_landmarks_with_embeddings,
-    pano_landmarks_without_edges,
-    pano_tiebreaks,
-    pano_to_osm_groups,
-    split_idx,
+    np,
+    seattle_edges,
+    seattle_nodes,
+    seattle_osm_id_to_group,
+    seattle_split_idx,
 ):
-    # Print final statistics
+    # Build adjacency list for Seattle graph
+    seattle_adjacency_list = {}
+    for _e1, _e2 in seattle_edges:
+        if _e1 not in seattle_adjacency_list:
+            seattle_adjacency_list[_e1] = []
+        if _e2 not in seattle_adjacency_list:
+            seattle_adjacency_list[_e2] = []
+        seattle_adjacency_list[_e1].append(_e2)
+        seattle_adjacency_list[_e2].append(_e1)
+
+    # Associate Seattle pano landmarks with groups
+    print("\nAssociating Seattle pano landmarks with groups...")
+    seattle_pano_to_osm_groups = {}  # Maps pano node index -> set of OSM group props
+    seattle_pano_tiebreaks = 0  # Count of pano landmarks connecting to multiple groups
+
+    for _pano_idx in range(seattle_split_idx):
+        # Get all neighbors (should be OSM nodes)
+        _neighbors = seattle_adjacency_list.get(_pano_idx, [])
+
+        # Filter to only OSM neighbors
+        _osm_neighbors = [_n for _n in _neighbors if _n >= seattle_split_idx]
+        if len(_neighbors) != len(_osm_neighbors) and len(_neighbors) > 0:
+            raise RuntimeError(f"Pano node has non-OSM neighbors: {_neighbors}, {_osm_neighbors}")
+
+        if not _osm_neighbors:
+            continue
+
+        # Get the OSM IDs and their groups
+        _osm_groups_connected = set()
+        for _osm_idx in _osm_neighbors:
+            _osm_id = seattle_nodes[_osm_idx]
+            if _osm_id in seattle_osm_id_to_group:
+                _group_props = seattle_osm_id_to_group[_osm_id]
+                _osm_groups_connected.add(_group_props)
+
+        seattle_pano_to_osm_groups[_pano_idx] = _osm_groups_connected
+
+        if len(_osm_groups_connected) > 1:
+            seattle_pano_tiebreaks += 1
+
+    print(f"Seattle pano landmarks with edges: {len(seattle_pano_to_osm_groups)}")
+    print(f"Seattle pano landmarks requiring tiebreak: {seattle_pano_tiebreaks} ({seattle_pano_tiebreaks / max(len(seattle_pano_to_osm_groups), 1) * 100:.1f}%)")
+
+    # Select random group for each Seattle pano landmark
+    seattle_pano_to_selected_group = {}
+    for _pano_idx, _group_set in seattle_pano_to_osm_groups.items():
+        if _group_set:
+            # Randomly pick one group
+            _selected_group = list(_group_set)[np.random.randint(0, len(_group_set))]
+            seattle_pano_to_selected_group[_pano_idx] = _selected_group
+
+    return (seattle_pano_to_selected_group,)
+
+
+@app.cell
+def _(
+    generate_normal_vector,
+    np,
+    seattle_dataset,
+    seattle_only_group_props,
+    seattle_osm_embeddings_tensor,
+    seattle_osm_groups_by_props,
+    seattle_osm_landmark_id_to_idx,
+    slu,
+    tqdm,
+):
+    # Generate embeddings for Seattle-only groups
+    print("\nGenerating embeddings for Seattle-only groups...")
+
+    seattle_group_to_semantic_emb = {}
+    seattle_group_to_random_emb = {}
+
+    for _group_props in tqdm(seattle_only_group_props, desc="Seattle-only groups"):
+        _seattle_osm_ids = seattle_osm_groups_by_props[_group_props]
+
+        # Randomly select one Seattle OSM member from this group
+        _selected_osm_id = _seattle_osm_ids[np.random.randint(0, len(_seattle_osm_ids))]
+
+        # Get the original embedding for semantic version (from Seattle OSM embeddings)
+        _selected_custom_id = slu.custom_id_from_props(
+            seattle_dataset._landmark_metadata[seattle_dataset._landmark_metadata["id"] == _selected_osm_id].iloc[0]["pruned_props"]
+        )
+        _emb_idx = seattle_osm_landmark_id_to_idx[_selected_custom_id]
+        seattle_group_to_semantic_emb[_group_props] = seattle_osm_embeddings_tensor[_emb_idx]
+
+        # Generate random embedding
+        seattle_group_to_random_emb[_group_props] = generate_normal_vector(1536)
+
+    print(f"Created embeddings for {len(seattle_only_group_props)} Seattle-only groups")
+
+    return seattle_group_to_random_emb, seattle_group_to_semantic_emb
+
+
+@app.cell
+def _(
+    dataset,
+    group_to_random_emb,
+    group_to_semantic_emb,
+    osm_id_to_group,
+    seattle_dataset,
+    seattle_group_to_random_emb,
+    seattle_group_to_semantic_emb,
+    seattle_osm_id_to_group,
+    slu,
+    torch,
+    tqdm,
+):
+    # Create combined OSM embeddings (Chicago + Seattle)
+    print("\n=== CREATING COMBINED OSM EMBEDDINGS ===")
+
+    combined_osm_embeddings_semantic = []
+    combined_osm_id_to_idx_semantic = {}
+    combined_osm_embeddings_random = []
+    combined_osm_id_to_idx_random = {}
+
+    # First: Process all Chicago OSM landmarks
+    print("Processing Chicago OSM landmarks...")
+    chicago_custom_id_to_group = {}
+    chicago_group_conflicts = 0
+
+    for _idx, _row in tqdm(list(dataset._landmark_metadata.iterrows()), desc="  Chicago OSM"):
+        _osm_id = _row["id"]
+        _pruned_props = _row["pruned_props"]
+        _custom_id = slu.custom_id_from_props(_pruned_props)
+
+        if _osm_id not in osm_id_to_group:
+            raise RuntimeError(f"Chicago {_osm_id} not found in osm_id_to_group")
+
+        _group_props = osm_id_to_group[_osm_id]
+
+        if _custom_id in chicago_custom_id_to_group:
+            if chicago_custom_id_to_group[_custom_id] != _group_props:
+                chicago_group_conflicts += 1
+        else:
+            chicago_custom_id_to_group[_custom_id] = _group_props
+
+    if chicago_group_conflicts > 0:
+        print(f"  Found {chicago_group_conflicts} Chicago custom_ids in multiple groups")
+
+    # Add Chicago embeddings
+    for _custom_id, _group_props in tqdm(chicago_custom_id_to_group.items(), desc="  Adding Chicago embeddings"):
+        # Semantic version
+        combined_osm_id_to_idx_semantic[_custom_id] = len(combined_osm_embeddings_semantic)
+        combined_osm_embeddings_semantic.append(group_to_semantic_emb[_group_props])
+
+        # Random version
+        combined_osm_id_to_idx_random[_custom_id] = len(combined_osm_embeddings_random)
+        combined_osm_embeddings_random.append(group_to_random_emb[_group_props])
+
+    print(f"Added {len(chicago_custom_id_to_group)} Chicago OSM embeddings")
+
+    # Second: Process all Seattle OSM landmarks
+    print("\nProcessing Seattle OSM landmarks...")
+    seattle_custom_id_to_group = {}
+    seattle_group_conflicts = 0
+
+    for _idx, _row in tqdm(list(seattle_dataset._landmark_metadata.iterrows()), desc="  Seattle OSM"):
+        _osm_id = _row["id"]
+        _pruned_props = _row["pruned_props"]
+        _custom_id = slu.custom_id_from_props(_pruned_props)
+
+        if _osm_id not in seattle_osm_id_to_group:
+            raise RuntimeError(f"Seattle {_osm_id} not found in seattle_osm_id_to_group")
+
+        _group_props = seattle_osm_id_to_group[_osm_id]
+
+        if _custom_id in seattle_custom_id_to_group:
+            if seattle_custom_id_to_group[_custom_id] != _group_props:
+                seattle_group_conflicts += 1
+        else:
+            seattle_custom_id_to_group[_custom_id] = _group_props
+
+    if seattle_group_conflicts > 0:
+        print(f"  Found {seattle_group_conflicts} Seattle custom_ids in multiple groups")
+
+    # Add Seattle embeddings
+    for _custom_id, _group_props in tqdm(seattle_custom_id_to_group.items(), desc="  Adding Seattle embeddings"):
+        # Check if this group is Chicago or Seattle-only
+        if _group_props in group_to_semantic_emb:
+            # Chicago group - use Chicago embeddings
+            _semantic_emb = group_to_semantic_emb[_group_props]
+            _random_emb = group_to_random_emb[_group_props]
+        else:
+            # Seattle-only group
+            _semantic_emb = seattle_group_to_semantic_emb[_group_props]
+            _random_emb = seattle_group_to_random_emb[_group_props]
+
+        # Semantic version
+        combined_osm_id_to_idx_semantic[_custom_id] = len(combined_osm_embeddings_semantic)
+        combined_osm_embeddings_semantic.append(_semantic_emb)
+
+        # Random version
+        combined_osm_id_to_idx_random[_custom_id] = len(combined_osm_embeddings_random)
+        combined_osm_embeddings_random.append(_random_emb)
+
+    print(f"Added {len(seattle_custom_id_to_group)} Seattle OSM embeddings")
+
+    # Convert to tensors
+    combined_osm_embeddings_tensor_semantic = torch.stack(combined_osm_embeddings_semantic)
+    combined_osm_embeddings_tensor_random = torch.stack(combined_osm_embeddings_random)
+
+    print(f"\nCombined OSM embeddings:")
+    print(f"  Semantic: {combined_osm_embeddings_tensor_semantic.shape}")
+    print(f"  Random: {combined_osm_embeddings_tensor_random.shape}")
+    print(f"  Total unique custom_ids: {len(combined_osm_id_to_idx_semantic)}")
+
+    return (
+        combined_osm_embeddings_tensor_random,
+        combined_osm_embeddings_tensor_semantic,
+        combined_osm_id_to_idx_random,
+        combined_osm_id_to_idx_semantic,
+    )
+
+
+@app.cell
+def _(
+    generate_normal_vector,
+    group_to_random_emb,
+    group_to_semantic_emb,
+    seattle_dataset,
+    seattle_group_to_random_emb,
+    seattle_group_to_semantic_emb,
+    seattle_nodes,
+    seattle_pano_embeddings_tensor,
+    seattle_pano_landmark_id_to_idx,
+    seattle_pano_to_selected_group,
+    seattle_split_idx,
+    torch,
+    tqdm,
+):
+    # Create Seattle pano embeddings
+    print("\n=== CREATING SEATTLE PANO EMBEDDINGS ===")
+
+    # Build Seattle pano lookup for lat/lon
+    _seattle_pano_lookup = {}
+    for _, _row in seattle_dataset._panorama_metadata.iterrows():
+        _seattle_pano_lookup[_row.pano_id] = {
+            "lat": float(_row.lat),
+            "lon": float(_row.lon)
+        }
+
+    seattle_pano_embeddings_semantic = []
+    seattle_pano_id_to_idx_semantic = {}
+    seattle_pano_embeddings_random = []
+    seattle_pano_id_to_idx_random = {}
+    seattle_pano_with_edges = 0
+    seattle_pano_without_edges = 0
+
+    for _pano_idx in tqdm(range(seattle_split_idx), desc="Seattle pano landmarks"):
+        _pano_node = seattle_nodes[_pano_idx]
+        _pano_id, _landmark_idx, _description = _pano_node
+
+        # Get lat/lon for this pano
+        if _pano_id not in _seattle_pano_lookup:
+            print(f"Warning: Seattle pano {_pano_id} not in metadata")
+            continue
+        _lat = _seattle_pano_lookup[_pano_id]["lat"]
+        _lon = _seattle_pano_lookup[_pano_id]["lon"]
+        _custom_id = f"{_pano_id},{_lat:.6f},{_lon:.6f},__landmark_{_landmark_idx}"
+
+        # Check if this pano has edges to OSM groups
+        if _pano_idx in seattle_pano_to_selected_group:
+            # Has edges - use group's embedding
+            _selected_group = seattle_pano_to_selected_group[_pano_idx]
+
+            # Check if Chicago or Seattle-only group
+            if _selected_group in group_to_semantic_emb:
+                # Chicago group
+                _semantic_emb = group_to_semantic_emb[_selected_group]
+                _random_emb = group_to_random_emb[_selected_group]
+            else:
+                # Seattle-only group
+                _semantic_emb = seattle_group_to_semantic_emb[_selected_group]
+                _random_emb = seattle_group_to_random_emb[_selected_group]
+
+            seattle_pano_with_edges += 1
+        else:
+            # No edges - use original or generate random
+            if _custom_id not in seattle_pano_landmark_id_to_idx:
+                print(f"Warning: Seattle pano embedding not found for {_custom_id}")
+                continue
+            _emb_idx = seattle_pano_landmark_id_to_idx[_custom_id]
+            _original_emb = seattle_pano_embeddings_tensor[_emb_idx]
+            _semantic_emb = _original_emb
+            _random_emb = generate_normal_vector(1536)
+            seattle_pano_without_edges += 1
+
+        # Add to both versions
+        seattle_pano_id_to_idx_semantic[_custom_id] = len(seattle_pano_embeddings_semantic)
+        seattle_pano_embeddings_semantic.append(_semantic_emb)
+
+        seattle_pano_id_to_idx_random[_custom_id] = len(seattle_pano_embeddings_random)
+        seattle_pano_embeddings_random.append(_random_emb)
+
+    assert seattle_pano_id_to_idx_semantic == seattle_pano_id_to_idx_random
+
+    seattle_pano_embeddings_tensor_semantic = torch.stack(seattle_pano_embeddings_semantic)
+    seattle_pano_embeddings_tensor_random = torch.stack(seattle_pano_embeddings_random)
+
+    print(f"Created {len(seattle_pano_embeddings_semantic)} Seattle pano embeddings")
+    print(f"  With OSM edges: {seattle_pano_with_edges}")
+    print(f"  Without OSM edges: {seattle_pano_without_edges}")
+
+    return (
+        seattle_pano_embeddings_tensor_random,
+        seattle_pano_embeddings_tensor_semantic,
+        seattle_pano_id_to_idx_random,
+        seattle_pano_id_to_idx_semantic,
+    )
+
+
+@app.cell
+def _(
+    combined_osm_embeddings_tensor_semantic,
+    defaultdict,
+    generate_normal_vector,
+    seattle_pano_embeddings_tensor_semantic,
+    spoofed_pano_embeddings_tensor,
+    torch,
+    tqdm,
+):
+    # Create "no_semantic" versions for validation set
+    print("\n=== CREATING NO_SEMANTIC VERSIONS ===")
+
+    # Combine all spoofed embeddings (Chicago pano + combined OSM + Seattle pano)
+    all_chicago_pano = spoofed_pano_embeddings_tensor
+    all_combined_osm = combined_osm_embeddings_tensor_semantic
+    all_seattle_pano = seattle_pano_embeddings_tensor_semantic
+
+    # Hash all unique embeddings across all three sources
+    _hash = defaultdict(set)
+
+    print("Hashing Chicago pano embeddings...")
+    for _i in tqdm(range(all_chicago_pano.shape[0])):
+        _vector = all_chicago_pano[_i]
+        _key = tuple(_vector.tolist())
+        _hash[_key].add(('chicago_pano', _i))
+
+    print("Hashing combined OSM embeddings...")
+    for _i in tqdm(range(all_combined_osm.shape[0])):
+        _vector = all_combined_osm[_i]
+        _key = tuple(_vector.tolist())
+        _hash[_key].add(('combined_osm', _i))
+
+    print("Hashing Seattle pano embeddings...")
+    for _i in tqdm(range(all_seattle_pano.shape[0])):
+        _vector = all_seattle_pano[_i]
+        _key = tuple(_vector.tolist())
+        _hash[_key].add(('seattle_pano', _i))
+
+    print(f"Found {len(_hash)} unique embedding groups")
+
+    # Create no_semantic versions
+    combined_osm_no_semantic = torch.ones_like(combined_osm_embeddings_tensor_semantic) * torch.nan
+    chicago_pano_no_semantic = torch.ones_like(spoofed_pano_embeddings_tensor) * torch.nan
+    seattle_pano_no_semantic = torch.ones_like(seattle_pano_embeddings_tensor_semantic) * torch.nan
+
+    print("Assigning new random embeddings to each group...")
+    for _key, _indexes in tqdm(_hash.items(), desc="Assigning embeddings"):
+        _new_vector = generate_normal_vector(1536)
+
+        for _source, _idx in _indexes:
+            if _source == 'chicago_pano':
+                chicago_pano_no_semantic[_idx] = _new_vector
+            elif _source == 'combined_osm':
+                combined_osm_no_semantic[_idx] = _new_vector
+            elif _source == 'seattle_pano':
+                seattle_pano_no_semantic[_idx] = _new_vector
+
+    # Verify no NaNs
+    assert not torch.any(torch.isnan(combined_osm_no_semantic))
+    assert not torch.any(torch.isnan(chicago_pano_no_semantic))
+    assert not torch.any(torch.isnan(seattle_pano_no_semantic))
+
+    print("✓ No_semantic versions created successfully")
+
+    return (
+        chicago_pano_no_semantic,
+        combined_osm_no_semantic,
+        seattle_pano_no_semantic,
+    )
+
+
+@app.cell
+def _(
+    Path,
+    chicago_pano_no_semantic,
+    combined_osm_embeddings_tensor_random,
+    combined_osm_embeddings_tensor_semantic,
+    combined_osm_id_to_idx_random,
+    combined_osm_id_to_idx_semantic,
+    combined_osm_no_semantic,
+    pickle,
+    random_pano_embeddings_tensor,
+    random_pano_id_to_idx,
+    seattle_pano_embeddings_tensor_random,
+    seattle_pano_embeddings_tensor_semantic,
+    seattle_pano_id_to_idx_random,
+    seattle_pano_id_to_idx_semantic,
+    seattle_pano_no_semantic,
+    spoofed_pano_embeddings_tensor,
+    spoofed_pano_id_to_idx,
+):
+    # Save validation embeddings
+    print("\n=== SAVING VALIDATION EMBEDDINGS ===")
+
+    _val_base_dir = Path("/data/overhead_matching/datasets/semantic_landmark_embeddings/")
+
+    # ========== SEMANTIC VERSION ==========
+    print("\n1. Saving semantic version...")
+
+    # OSM (combined Chicago + Seattle)
+    _val_osm_semantic_dir = _val_base_dir / "sat_spoof_validation/embeddings"
+    _val_osm_semantic_dir.mkdir(parents=True, exist_ok=True)
+    _val_osm_semantic_path = _val_osm_semantic_dir / "embeddings.pkl"
+    with open(_val_osm_semantic_path, 'wb') as _val_f:
+        pickle.dump((combined_osm_embeddings_tensor_semantic, combined_osm_id_to_idx_semantic), _val_f)
+    print(f"  ✓ OSM semantic: {_val_osm_semantic_path}")
+    print(f"    Shape: {combined_osm_embeddings_tensor_semantic.shape}")
+
+    # Chicago Pano
+    _val_chicago_pano_semantic_dir = _val_base_dir / "pano_spoof_validation/Chicago/embeddings"
+    _val_chicago_pano_semantic_dir.mkdir(parents=True, exist_ok=True)
+    _val_chicago_pano_semantic_path = _val_chicago_pano_semantic_dir / "embeddings.pkl"
+    with open(_val_chicago_pano_semantic_path, 'wb') as _val_f:
+        pickle.dump((spoofed_pano_embeddings_tensor, spoofed_pano_id_to_idx), _val_f)
+    print(f"  ✓ Chicago pano semantic: {_val_chicago_pano_semantic_path}")
+    print(f"    Shape: {spoofed_pano_embeddings_tensor.shape}")
+
+    # Seattle Pano
+    _val_seattle_pano_semantic_dir = _val_base_dir / "pano_spoof_validation/Seattle/embeddings"
+    _val_seattle_pano_semantic_dir.mkdir(parents=True, exist_ok=True)
+    _val_seattle_pano_semantic_path = _val_seattle_pano_semantic_dir / "embeddings.pkl"
+    with open(_val_seattle_pano_semantic_path, 'wb') as _val_f:
+        pickle.dump((seattle_pano_embeddings_tensor_semantic, seattle_pano_id_to_idx_semantic), _val_f)
+    print(f"  ✓ Seattle pano semantic: {_val_seattle_pano_semantic_path}")
+    print(f"    Shape: {seattle_pano_embeddings_tensor_semantic.shape}")
+
+    # ========== RANDOM VERSION ==========
+    print("\n2. Saving random version...")
+
+    # OSM (combined Chicago + Seattle)
+    _val_osm_random_dir = _val_base_dir / "sat_spoof_random_validation/embeddings"
+    _val_osm_random_dir.mkdir(parents=True, exist_ok=True)
+    _val_osm_random_path = _val_osm_random_dir / "embeddings.pkl"
+    with open(_val_osm_random_path, 'wb') as _val_f:
+        pickle.dump((combined_osm_embeddings_tensor_random, combined_osm_id_to_idx_random), _val_f)
+    print(f"  ✓ OSM random: {_val_osm_random_path}")
+    print(f"    Shape: {combined_osm_embeddings_tensor_random.shape}")
+
+    # Chicago Pano
+    _val_chicago_pano_random_dir = _val_base_dir / "pano_spoof_random_validation/Chicago/embeddings"
+    _val_chicago_pano_random_dir.mkdir(parents=True, exist_ok=True)
+    _val_chicago_pano_random_path = _val_chicago_pano_random_dir / "embeddings.pkl"
+    with open(_val_chicago_pano_random_path, 'wb') as _val_f:
+        pickle.dump((random_pano_embeddings_tensor, random_pano_id_to_idx), _val_f)
+    print(f"  ✓ Chicago pano random: {_val_chicago_pano_random_path}")
+    print(f"    Shape: {random_pano_embeddings_tensor.shape}")
+
+    # Seattle Pano
+    _val_seattle_pano_random_dir = _val_base_dir / "pano_spoof_random_validation/Seattle/embeddings"
+    _val_seattle_pano_random_dir.mkdir(parents=True, exist_ok=True)
+    _val_seattle_pano_random_path = _val_seattle_pano_random_dir / "embeddings.pkl"
+    with open(_val_seattle_pano_random_path, 'wb') as _val_f:
+        pickle.dump((seattle_pano_embeddings_tensor_random, seattle_pano_id_to_idx_random), _val_f)
+    print(f"  ✓ Seattle pano random: {_val_seattle_pano_random_path}")
+    print(f"    Shape: {seattle_pano_embeddings_tensor_random.shape}")
+
+    # ========== NO_SEMANTIC VERSION ==========
+    print("\n3. Saving no_semantic version...")
+
+    # OSM (combined Chicago + Seattle)
+    _val_osm_no_semantic_dir = _val_base_dir / "sat_spoof_no_semantic_validation/embeddings"
+    _val_osm_no_semantic_dir.mkdir(parents=True, exist_ok=True)
+    _val_osm_no_semantic_path = _val_osm_no_semantic_dir / "embeddings.pkl"
+    with open(_val_osm_no_semantic_path, 'wb') as _val_f:
+        pickle.dump((combined_osm_no_semantic, combined_osm_id_to_idx_semantic), _val_f)
+    print(f"  ✓ OSM no_semantic: {_val_osm_no_semantic_path}")
+    print(f"    Shape: {combined_osm_no_semantic.shape}")
+
+    # Chicago Pano
+    _val_chicago_pano_no_semantic_dir = _val_base_dir / "pano_spoof_no_semantic_validation/Chicago/embeddings"
+    _val_chicago_pano_no_semantic_dir.mkdir(parents=True, exist_ok=True)
+    _val_chicago_pano_no_semantic_path = _val_chicago_pano_no_semantic_dir / "embeddings.pkl"
+    with open(_val_chicago_pano_no_semantic_path, 'wb') as _val_f:
+        pickle.dump((chicago_pano_no_semantic, spoofed_pano_id_to_idx), _val_f)
+    print(f"  ✓ Chicago pano no_semantic: {_val_chicago_pano_no_semantic_path}")
+    print(f"    Shape: {chicago_pano_no_semantic.shape}")
+
+    # Seattle Pano
+    _val_seattle_pano_no_semantic_dir = _val_base_dir / "pano_spoof_no_semantic_validation/Seattle/embeddings"
+    _val_seattle_pano_no_semantic_dir.mkdir(parents=True, exist_ok=True)
+    _val_seattle_pano_no_semantic_path = _val_seattle_pano_no_semantic_dir / "embeddings.pkl"
+    with open(_val_seattle_pano_no_semantic_path, 'wb') as _val_f:
+        pickle.dump((seattle_pano_no_semantic, seattle_pano_id_to_idx_semantic), _val_f)
+    print(f"  ✓ Seattle pano no_semantic: {_val_seattle_pano_no_semantic_path}")
+    print(f"    Shape: {seattle_pano_no_semantic.shape}")
+
     print("\n" + "="*60)
-    print("SPOOFED EMBEDDINGS STATISTICS")
+    print("✓ ALL VALIDATION EMBEDDINGS SAVED SUCCESSFULLY!")
     print("="*60)
+    print("\nSummary:")
+    print(f"  - Combined OSM embeddings (Chicago + Seattle): {len(combined_osm_id_to_idx_semantic)} unique IDs")
+    print(f"  - Chicago pano embeddings: {len(spoofed_pano_id_to_idx)} unique IDs")
+    print(f"  - Seattle pano embeddings: {len(seattle_pano_id_to_idx_semantic)} unique IDs")
+    print(f"\nThree versions created: semantic, random, no_semantic")
+    print(f"Base directory: {_val_base_dir}")
 
-    print("\n--- OSM Landmarks ---")
-    print(f"Total OSM groups (by new_pruned_props): {len(osm_groups_by_props)}")
-    print(f"OSM singleton groups: {osm_singleton_groups} ({osm_singleton_groups / len(osm_groups_by_props) * 100:.1f}%)")
+    return
 
-    # Group size distribution
-    _group_sizes = [len(ids) for ids in osm_groups_by_props.values()]
-    print(f"OSM group sizes - min: {min(_group_sizes)}, max: {max(_group_sizes)}, mean: {sum(_group_sizes) / len(_group_sizes):.1f}")
 
-    print("\n--- Pano Landmarks ---")
-    print(f"Total pano landmarks: {split_idx}")
-    print(f"Pano landmarks with OSM edges: {pano_landmarks_with_embeddings} ({pano_landmarks_with_embeddings / split_idx * 100:.1f}%)")
-    print(f"Pano landmarks without OSM edges (singletons): {pano_landmarks_without_edges} ({pano_landmarks_without_edges / split_idx * 100:.1f}%)")
-    print(f"Pano landmarks requiring tiebreak: {pano_tiebreaks} ({pano_tiebreaks / max(len(pano_to_osm_groups), 1) * 100:.1f}%)")
+@app.cell
+def _(
+    Path,
+    json,
+    random_pano_id_to_idx,
+    seattle_pano_id_to_idx_random,
+    seattle_pano_id_to_idx_semantic,
+    spoofed_pano_id_to_idx,
+):
+    # Generate panorama_metadata.jsonl for validation embeddings
+    print("\n=== GENERATING VALIDATION PANO METADATA ===")
 
-    # Distribution of number of groups per pano
-    _groups_per_pano = [len(groups) for groups in pano_to_osm_groups.values()]
-    if _groups_per_pano:
-        print(f"OSM groups per pano - min: {min(_groups_per_pano)}, max: {max(_groups_per_pano)}, mean: {sum(_groups_per_pano) / len(_groups_per_pano):.1f}")
+    _val_meta_base_dir = Path("/data/overhead_matching/datasets/semantic_landmark_embeddings/")
 
+    # Validation versions with their Chicago and Seattle id_to_idx mappings
+    _validation_versions = [
+        ("pano_spoof_validation", spoofed_pano_id_to_idx, seattle_pano_id_to_idx_semantic),
+        ("pano_spoof_random_validation", random_pano_id_to_idx, seattle_pano_id_to_idx_random),
+        ("pano_spoof_no_semantic_validation", spoofed_pano_id_to_idx, seattle_pano_id_to_idx_semantic),  # Uses same as semantic
+    ]
+
+    for _version_name, _chicago_id_to_idx, _seattle_id_to_idx in _validation_versions:
+        print(f"\nGenerating metadata for {_version_name}...")
+
+        # Process Chicago
+        print(f"  Processing Chicago...")
+        _chicago_metadata_entries = []
+        for _custom_id in _chicago_id_to_idx.keys():
+            # Parse custom_id format: "pano_id,lat,lon,__landmark_N"
+            _parts = _custom_id.split(',')
+            if len(_parts) != 4:
+                continue
+
+            _pano_id = _parts[0]
+            _lat = _parts[1]
+            _lon = _parts[2]
+            _landmark_part = _parts[3]
+
+            if not _landmark_part.startswith('__landmark_'):
+                continue
+            _landmark_idx = int(_landmark_part.split('_')[-1])
+
+            _entry = {
+                "panorama_id": f"{_pano_id},{_lat},{_lon},",
+                "landmark_idx": _landmark_idx,
+                "custom_id": _custom_id,
+                "yaw_angles": [0.0, 0.0, 0.0, 0.0]
+            }
+            _chicago_metadata_entries.append(_entry)
+
+        _chicago_metadata_entries.sort(key=lambda x: (x["panorama_id"], x["landmark_idx"]))
+
+        _chicago_output_dir = _val_meta_base_dir / _version_name / "Chicago" / "embedding_requests"
+        _chicago_output_dir.mkdir(parents=True, exist_ok=True)
+        _chicago_output_file = _chicago_output_dir / "panorama_metadata.jsonl"
+
+        with open(_chicago_output_file, 'w') as _f:
+            for _entry in _chicago_metadata_entries:
+                _f.write(json.dumps(_entry) + '\n')
+
+        print(f"    ✓ Chicago: {len(_chicago_metadata_entries)} entries")
+
+        # Process Seattle
+        print(f"  Processing Seattle...")
+        _seattle_metadata_entries = []
+        for _custom_id in _seattle_id_to_idx.keys():
+            _parts = _custom_id.split(',')
+            if len(_parts) != 4:
+                continue
+
+            _pano_id = _parts[0]
+            _lat = _parts[1]
+            _lon = _parts[2]
+            _landmark_part = _parts[3]
+
+            if not _landmark_part.startswith('__landmark_'):
+                continue
+            _landmark_idx = int(_landmark_part.split('_')[-1])
+
+            _entry = {
+                "panorama_id": f"{_pano_id},{_lat},{_lon},",
+                "landmark_idx": _landmark_idx,
+                "custom_id": _custom_id,
+                "yaw_angles": [0.0, 0.0, 0.0, 0.0]
+            }
+            _seattle_metadata_entries.append(_entry)
+
+        _seattle_metadata_entries.sort(key=lambda x: (x["panorama_id"], x["landmark_idx"]))
+
+        _seattle_output_dir = _val_meta_base_dir / _version_name / "Seattle" / "embedding_requests"
+        _seattle_output_dir.mkdir(parents=True, exist_ok=True)
+        _seattle_output_file = _seattle_output_dir / "panorama_metadata.jsonl"
+
+        with open(_seattle_output_file, 'w') as _f:
+            for _entry in _seattle_metadata_entries:
+                _f.write(json.dumps(_entry) + '\n')
+
+        print(f"    ✓ Seattle: {len(_seattle_metadata_entries)} entries")
+
+    print("\n✓ Validation pano metadata generated successfully!")
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""# Create Independent Seattle Embeddings""")
+    return
+
+
+@app.cell
+def _(np, seattle_dataset):
+    # Create independent Seattle OSM groups (not matched to Chicago)
+    print("\n=== CREATING INDEPENDENT SEATTLE GROUPS ===")
+
+    independent_seattle_osm_groups_by_props = {}
+    independent_seattle_osm_id_to_group = {}
+    independent_seattle_group_to_osm_id = {}
+
+    # Group Seattle OSM by new_pruned_props independently
+    for _name, _group in seattle_dataset._landmark_metadata.groupby("new_pruned_props"):
+        _osm_ids = _group["id"].tolist()
+        independent_seattle_osm_groups_by_props[_name] = _osm_ids
+
+        # Randomly select one OSM member from this group
+        _selected_osm_id = _osm_ids[np.random.randint(0, len(_osm_ids))]
+        independent_seattle_group_to_osm_id[_name] = _selected_osm_id
+
+        # Map each OSM ID to its group
+        for _osm_id in _osm_ids:
+            independent_seattle_osm_id_to_group[_osm_id] = _name
+
+    print(f"Created {len(independent_seattle_osm_groups_by_props)} independent Seattle OSM groups")
+
+    # Count singleton groups
+    _singleton_groups = sum(1 for _osm_ids in independent_seattle_osm_groups_by_props.values() if len(_osm_ids) == 1)
+    print(f"Singleton groups: {_singleton_groups} / {len(independent_seattle_osm_groups_by_props)} ({_singleton_groups / len(independent_seattle_osm_groups_by_props) * 100:.1f}%)")
+
+    # Show max group size
+    _max_group_size = max(len(_osm_ids) for _osm_ids in independent_seattle_osm_groups_by_props.values())
+    print(f"Max group size: {_max_group_size}")
+
+    return (
+        independent_seattle_group_to_osm_id,
+        independent_seattle_osm_groups_by_props,
+        independent_seattle_osm_id_to_group,
+    )
+
+
+@app.cell
+def _(
+    independent_seattle_osm_id_to_group,
+    np,
+    seattle_adjacency_list,
+    seattle_nodes,
+    seattle_split_idx,
+):
+    # Associate independent Seattle pano landmarks with independent Seattle groups
+    print("\nAssociating independent Seattle pano with groups...")
+
+    independent_seattle_pano_to_osm_groups = {}
+    independent_seattle_pano_tiebreaks = 0
+
+    for _pano_idx in range(seattle_split_idx):
+        # Get all neighbors (should be OSM nodes)
+        _neighbors = seattle_adjacency_list.get(_pano_idx, [])
+
+        # Filter to only OSM neighbors
+        _osm_neighbors = [_n for _n in _neighbors if _n >= seattle_split_idx]
+        if len(_neighbors) != len(_osm_neighbors) and len(_neighbors) > 0:
+            raise RuntimeError(f"Pano node has non-OSM neighbors: {_neighbors}, {_osm_neighbors}")
+
+        if not _osm_neighbors:
+            continue
+
+        # Get the OSM IDs and their independent groups
+        _osm_groups_connected = set()
+        for _osm_idx in _osm_neighbors:
+            _osm_id = seattle_nodes[_osm_idx]
+            if _osm_id in independent_seattle_osm_id_to_group:
+                _group_props = independent_seattle_osm_id_to_group[_osm_id]
+                _osm_groups_connected.add(_group_props)
+
+        independent_seattle_pano_to_osm_groups[_pano_idx] = _osm_groups_connected
+
+        if len(_osm_groups_connected) > 1:
+            independent_seattle_pano_tiebreaks += 1
+
+    print(f"Independent Seattle pano landmarks with edges: {len(independent_seattle_pano_to_osm_groups)}")
+    print(f"Requiring tiebreak: {independent_seattle_pano_tiebreaks} ({independent_seattle_pano_tiebreaks / max(len(independent_seattle_pano_to_osm_groups), 1) * 100:.1f}%)")
+
+    # Select random group for each pano landmark
+    independent_seattle_pano_to_selected_group = {}
+    for _pano_idx, _group_set in independent_seattle_pano_to_osm_groups.items():
+        if _group_set:
+            # Randomly pick one group
+            _selected_group = list(_group_set)[np.random.randint(0, len(_group_set))]
+            independent_seattle_pano_to_selected_group[_pano_idx] = _selected_group
+
+    return (independent_seattle_pano_to_selected_group,)
+
+
+@app.cell
+def _(
+    generate_normal_vector,
+    independent_seattle_group_to_osm_id,
+    independent_seattle_osm_groups_by_props,
+    seattle_dataset,
+    seattle_osm_embeddings_tensor,
+    seattle_osm_landmark_id_to_idx,
+    slu,
+    tqdm,
+):
+    # Generate embeddings for independent Seattle groups
+    print("\nGenerating embeddings for independent Seattle groups...")
+
+    independent_seattle_group_to_semantic_emb = {}
+    independent_seattle_group_to_random_emb = {}
+
+    for _group_props in tqdm(independent_seattle_osm_groups_by_props.keys(), desc="Independent Seattle groups"):
+        # Get the selected Seattle OSM member for this group
+        _selected_osm_id = independent_seattle_group_to_osm_id[_group_props]
+
+        # Get the original embedding for semantic version (from Seattle OSM embeddings)
+        _selected_custom_id = slu.custom_id_from_props(
+            seattle_dataset._landmark_metadata[seattle_dataset._landmark_metadata["id"] == _selected_osm_id].iloc[0]["pruned_props"]
+        )
+        _emb_idx = seattle_osm_landmark_id_to_idx[_selected_custom_id]
+        independent_seattle_group_to_semantic_emb[_group_props] = seattle_osm_embeddings_tensor[_emb_idx]
+
+        # Generate random embedding
+        independent_seattle_group_to_random_emb[_group_props] = generate_normal_vector(1536)
+
+    print(f"Created embeddings for {len(independent_seattle_osm_groups_by_props)} independent Seattle groups")
+
+    return (
+        independent_seattle_group_to_random_emb,
+        independent_seattle_group_to_semantic_emb,
+    )
+
+
+@app.cell
+def _(
+    dataset,
+    group_to_random_emb,
+    group_to_semantic_emb,
+    independent_seattle_group_to_random_emb,
+    independent_seattle_group_to_semantic_emb,
+    independent_seattle_osm_id_to_group,
+    osm_id_to_group,
+    seattle_dataset,
+    slu,
+    torch,
+    tqdm,
+):
+    # Create independent combined OSM embeddings (Chicago + independent Seattle)
+    print("\n=== CREATING INDEPENDENT COMBINED OSM EMBEDDINGS ===")
+
+    _indep_combined_osm_embeddings_semantic = []
+    _indep_combined_osm_id_to_idx_semantic = {}
+    _indep_combined_osm_embeddings_random = []
+    _indep_combined_osm_id_to_idx_random = {}
+
+    # First: Process all Chicago OSM landmarks
+    print("Processing Chicago OSM landmarks...")
+    _indep_chicago_custom_id_to_group = {}
+    _indep_chicago_group_conflicts = 0
+
+    for _indep_idx, _indep_row in tqdm(list(dataset._landmark_metadata.iterrows()), desc="  Chicago OSM"):
+        _indep_osm_id = _indep_row["id"]
+        _indep_pruned_props = _indep_row["pruned_props"]
+        _indep_custom_id = slu.custom_id_from_props(_indep_pruned_props)
+
+        if _indep_osm_id not in osm_id_to_group:
+            raise RuntimeError(f"Chicago {_indep_osm_id} not found in osm_id_to_group")
+
+        _indep_group_props = osm_id_to_group[_indep_osm_id]
+
+        if _indep_custom_id in _indep_chicago_custom_id_to_group:
+            if _indep_chicago_custom_id_to_group[_indep_custom_id] != _indep_group_props:
+                _indep_chicago_group_conflicts += 1
+        else:
+            _indep_chicago_custom_id_to_group[_indep_custom_id] = _indep_group_props
+
+    if _indep_chicago_group_conflicts > 0:
+        print(f"  Found {_indep_chicago_group_conflicts} Chicago custom_ids in multiple groups")
+
+    # Add Chicago embeddings
+    for _indep_custom_id, _indep_group_props in tqdm(_indep_chicago_custom_id_to_group.items(), desc="  Adding Chicago embeddings"):
+        # Semantic version
+        _indep_combined_osm_id_to_idx_semantic[_indep_custom_id] = len(_indep_combined_osm_embeddings_semantic)
+        _indep_combined_osm_embeddings_semantic.append(group_to_semantic_emb[_indep_group_props])
+
+        # Random version
+        _indep_combined_osm_id_to_idx_random[_indep_custom_id] = len(_indep_combined_osm_embeddings_random)
+        _indep_combined_osm_embeddings_random.append(group_to_random_emb[_indep_group_props])
+
+    print(f"Added {len(_indep_chicago_custom_id_to_group)} Chicago OSM embeddings")
+
+    # Second: Process all Seattle OSM landmarks (with independent groups)
+    print("\nProcessing independent Seattle OSM landmarks...")
+    _indep_seattle_custom_id_to_group = {}
+    _indep_seattle_group_conflicts = 0
+
+    for _indep_idx, _indep_row in tqdm(list(seattle_dataset._landmark_metadata.iterrows()), desc="  Seattle OSM"):
+        _indep_osm_id = _indep_row["id"]
+        _indep_pruned_props = _indep_row["pruned_props"]
+        _indep_custom_id = slu.custom_id_from_props(_indep_pruned_props)
+
+        if _indep_osm_id not in independent_seattle_osm_id_to_group:
+            raise RuntimeError(f"Seattle {_indep_osm_id} not found in independent_seattle_osm_id_to_group")
+
+        _indep_group_props = independent_seattle_osm_id_to_group[_indep_osm_id]
+
+        if _indep_custom_id in _indep_seattle_custom_id_to_group:
+            if _indep_seattle_custom_id_to_group[_indep_custom_id] != _indep_group_props:
+                _indep_seattle_group_conflicts += 1
+        else:
+            _indep_seattle_custom_id_to_group[_indep_custom_id] = _indep_group_props
+
+    if _indep_seattle_group_conflicts > 0:
+        print(f"  Found {_indep_seattle_group_conflicts} Seattle custom_ids in multiple groups")
+
+    # Add independent Seattle embeddings
+    for _indep_custom_id, _indep_group_props in tqdm(_indep_seattle_custom_id_to_group.items(), desc="  Adding Seattle embeddings"):
+        # Use independent Seattle group embeddings
+        _indep_semantic_emb = independent_seattle_group_to_semantic_emb[_indep_group_props]
+        _indep_random_emb = independent_seattle_group_to_random_emb[_indep_group_props]
+
+        # Semantic version
+        _indep_combined_osm_id_to_idx_semantic[_indep_custom_id] = len(_indep_combined_osm_embeddings_semantic)
+        _indep_combined_osm_embeddings_semantic.append(_indep_semantic_emb)
+
+        # Random version
+        _indep_combined_osm_id_to_idx_random[_indep_custom_id] = len(_indep_combined_osm_embeddings_random)
+        _indep_combined_osm_embeddings_random.append(_indep_random_emb)
+
+    print(f"Added {len(_indep_seattle_custom_id_to_group)} independent Seattle OSM embeddings")
+
+    # Convert to tensors
+    independent_combined_osm_embeddings_tensor_semantic = torch.stack(_indep_combined_osm_embeddings_semantic)
+    independent_combined_osm_embeddings_tensor_random = torch.stack(_indep_combined_osm_embeddings_random)
+
+    # Export without underscore prefix for marimo
+    independent_combined_osm_id_to_idx_semantic = _indep_combined_osm_id_to_idx_semantic
+    independent_combined_osm_id_to_idx_random = _indep_combined_osm_id_to_idx_random
+
+    print(f"\nIndependent combined OSM embeddings:")
+    print(f"  Semantic: {independent_combined_osm_embeddings_tensor_semantic.shape}")
+    print(f"  Random: {independent_combined_osm_embeddings_tensor_random.shape}")
+    print(f"  Total unique custom_ids: {len(independent_combined_osm_id_to_idx_semantic)}")
+
+    return (
+        independent_combined_osm_embeddings_tensor_random,
+        independent_combined_osm_embeddings_tensor_semantic,
+        independent_combined_osm_id_to_idx_random,
+        independent_combined_osm_id_to_idx_semantic,
+    )
+
+
+@app.cell
+def _(
+    generate_normal_vector,
+    independent_seattle_group_to_random_emb,
+    independent_seattle_group_to_semantic_emb,
+    independent_seattle_pano_to_selected_group,
+    seattle_dataset,
+    seattle_nodes,
+    seattle_pano_embeddings_tensor,
+    seattle_pano_landmark_id_to_idx,
+    seattle_split_idx,
+    torch,
+    tqdm,
+):
+    # Create independent Seattle pano embeddings
+    print("\n=== CREATING INDEPENDENT SEATTLE PANO EMBEDDINGS ===")
+
+    # Build Seattle pano lookup for lat/lon
+    _indep_seattle_pano_lookup = {}
+    for _, _indep_row in seattle_dataset._panorama_metadata.iterrows():
+        _indep_seattle_pano_lookup[_indep_row.pano_id] = {
+            "lat": float(_indep_row.lat),
+            "lon": float(_indep_row.lon)
+        }
+
+    _indep_seattle_pano_embeddings_semantic = []
+    _indep_seattle_pano_id_to_idx_semantic = {}
+    _indep_seattle_pano_embeddings_random = []
+    _indep_seattle_pano_id_to_idx_random = {}
+    _indep_seattle_pano_with_edges = 0
+    _indep_seattle_pano_without_edges = 0
+
+    for _indep_pano_idx in tqdm(range(seattle_split_idx), desc="Independent Seattle pano"):
+        _indep_pano_node = seattle_nodes[_indep_pano_idx]
+        _indep_pano_id, _indep_landmark_idx, _indep_description = _indep_pano_node
+
+        # Get lat/lon for this pano
+        if _indep_pano_id not in _indep_seattle_pano_lookup:
+            print(f"Warning: Seattle pano {_indep_pano_id} not in metadata")
+            continue
+        _indep_lat = _indep_seattle_pano_lookup[_indep_pano_id]["lat"]
+        _indep_lon = _indep_seattle_pano_lookup[_indep_pano_id]["lon"]
+        _indep_custom_id = f"{_indep_pano_id},{_indep_lat:.6f},{_indep_lon:.6f},__landmark_{_indep_landmark_idx}"
+
+        # Check if this pano has edges to independent Seattle OSM groups
+        if _indep_pano_idx in independent_seattle_pano_to_selected_group:
+            # Has edges - use independent group's embedding
+            _indep_selected_group = independent_seattle_pano_to_selected_group[_indep_pano_idx]
+            _indep_semantic_emb = independent_seattle_group_to_semantic_emb[_indep_selected_group]
+            _indep_random_emb = independent_seattle_group_to_random_emb[_indep_selected_group]
+            _indep_seattle_pano_with_edges += 1
+        else:
+            # No edges - use original or generate random
+            if _indep_custom_id not in seattle_pano_landmark_id_to_idx:
+                print(f"Warning: Seattle pano embedding not found for {_indep_custom_id}")
+                continue
+            _indep_emb_idx = seattle_pano_landmark_id_to_idx[_indep_custom_id]
+            _indep_original_emb = seattle_pano_embeddings_tensor[_indep_emb_idx]
+            _indep_semantic_emb = _indep_original_emb
+            _indep_random_emb = generate_normal_vector(1536)
+            _indep_seattle_pano_without_edges += 1
+
+        # Add to both versions
+        _indep_seattle_pano_id_to_idx_semantic[_indep_custom_id] = len(_indep_seattle_pano_embeddings_semantic)
+        _indep_seattle_pano_embeddings_semantic.append(_indep_semantic_emb)
+
+        _indep_seattle_pano_id_to_idx_random[_indep_custom_id] = len(_indep_seattle_pano_embeddings_random)
+        _indep_seattle_pano_embeddings_random.append(_indep_random_emb)
+
+    assert _indep_seattle_pano_id_to_idx_semantic == _indep_seattle_pano_id_to_idx_random
+
+    independent_seattle_pano_embeddings_tensor_semantic = torch.stack(_indep_seattle_pano_embeddings_semantic)
+    independent_seattle_pano_embeddings_tensor_random = torch.stack(_indep_seattle_pano_embeddings_random)
+
+    # Export without underscore prefix for marimo
+    independent_seattle_pano_id_to_idx_semantic = _indep_seattle_pano_id_to_idx_semantic
+    independent_seattle_pano_id_to_idx_random = _indep_seattle_pano_id_to_idx_random
+
+    print(f"Created {len(_indep_seattle_pano_embeddings_semantic)} independent Seattle pano embeddings")
+    print(f"  With OSM edges: {_indep_seattle_pano_with_edges}")
+    print(f"  Without OSM edges: {_indep_seattle_pano_without_edges}")
+
+    return (
+        independent_seattle_pano_embeddings_tensor_random,
+        independent_seattle_pano_embeddings_tensor_semantic,
+        independent_seattle_pano_id_to_idx_random,
+        independent_seattle_pano_id_to_idx_semantic,
+    )
+
+
+@app.cell
+def _(
+    defaultdict,
+    generate_normal_vector,
+    independent_combined_osm_embeddings_tensor_semantic,
+    independent_seattle_pano_embeddings_tensor_semantic,
+    spoofed_pano_embeddings_tensor,
+    torch,
+    tqdm,
+):
+    # Create independent no_semantic versions
+    print("\n=== CREATING INDEPENDENT NO_SEMANTIC VERSIONS ===")
+
+    # Combine all independent spoofed embeddings (Chicago pano + independent combined OSM + independent Seattle pano)
+    _indep_all_chicago_pano = spoofed_pano_embeddings_tensor
+    _indep_all_combined_osm = independent_combined_osm_embeddings_tensor_semantic
+    _indep_all_seattle_pano = independent_seattle_pano_embeddings_tensor_semantic
+
+    # Hash all unique embeddings across all three sources
+    _indep_hash = defaultdict(set)
+
+    print("Hashing Chicago pano embeddings...")
+    for _indep_i in tqdm(range(_indep_all_chicago_pano.shape[0])):
+        _indep_vector = _indep_all_chicago_pano[_indep_i]
+        _indep_key = tuple(_indep_vector.tolist())
+        _indep_hash[_indep_key].add(('chicago_pano', _indep_i))
+
+    print("Hashing independent combined OSM embeddings...")
+    for _indep_i in tqdm(range(_indep_all_combined_osm.shape[0])):
+        _indep_vector = _indep_all_combined_osm[_indep_i]
+        _indep_key = tuple(_indep_vector.tolist())
+        _indep_hash[_indep_key].add(('combined_osm', _indep_i))
+
+    print("Hashing independent Seattle pano embeddings...")
+    for _indep_i in tqdm(range(_indep_all_seattle_pano.shape[0])):
+        _indep_vector = _indep_all_seattle_pano[_indep_i]
+        _indep_key = tuple(_indep_vector.tolist())
+        _indep_hash[_indep_key].add(('seattle_pano', _indep_i))
+
+    print(f"Found {len(_indep_hash)} unique embedding groups")
+
+    # Create no_semantic versions
+    _indep_combined_osm_no_semantic = torch.ones_like(independent_combined_osm_embeddings_tensor_semantic) * torch.nan
+    _indep_chicago_pano_no_semantic = torch.ones_like(spoofed_pano_embeddings_tensor) * torch.nan
+    _indep_seattle_pano_no_semantic = torch.ones_like(independent_seattle_pano_embeddings_tensor_semantic) * torch.nan
+
+    print("Assigning new random embeddings to each group...")
+    for _indep_key, _indep_indexes in tqdm(_indep_hash.items(), desc="Assigning embeddings"):
+        _indep_new_vector = generate_normal_vector(1536)
+
+        for _indep_source, _indep_idx in _indep_indexes:
+            if _indep_source == 'chicago_pano':
+                _indep_chicago_pano_no_semantic[_indep_idx] = _indep_new_vector
+            elif _indep_source == 'combined_osm':
+                _indep_combined_osm_no_semantic[_indep_idx] = _indep_new_vector
+            elif _indep_source == 'seattle_pano':
+                _indep_seattle_pano_no_semantic[_indep_idx] = _indep_new_vector
+
+    # Verify no NaNs
+    assert not torch.any(torch.isnan(_indep_combined_osm_no_semantic))
+    assert not torch.any(torch.isnan(_indep_chicago_pano_no_semantic))
+    assert not torch.any(torch.isnan(_indep_seattle_pano_no_semantic))
+
+    # Export without underscore prefix for marimo
+    independent_chicago_pano_no_semantic = _indep_chicago_pano_no_semantic
+    independent_combined_osm_no_semantic = _indep_combined_osm_no_semantic
+    independent_seattle_pano_no_semantic = _indep_seattle_pano_no_semantic
+
+    print("✓ Independent no_semantic versions created successfully")
+
+    return (
+        independent_chicago_pano_no_semantic,
+        independent_combined_osm_no_semantic,
+        independent_seattle_pano_no_semantic,
+    )
+
+
+@app.cell
+def _(
+    Path,
+    independent_chicago_pano_no_semantic,
+    independent_combined_osm_embeddings_tensor_random,
+    independent_combined_osm_embeddings_tensor_semantic,
+    independent_combined_osm_id_to_idx_random,
+    independent_combined_osm_id_to_idx_semantic,
+    independent_combined_osm_no_semantic,
+    independent_seattle_pano_embeddings_tensor_random,
+    independent_seattle_pano_embeddings_tensor_semantic,
+    independent_seattle_pano_id_to_idx_random,
+    independent_seattle_pano_id_to_idx_semantic,
+    independent_seattle_pano_no_semantic,
+    pickle,
+    random_pano_embeddings_tensor,
+    random_pano_id_to_idx,
+    spoofed_pano_embeddings_tensor,
+    spoofed_pano_id_to_idx,
+):
+    # Save independent embeddings
+    print("\n=== SAVING INDEPENDENT EMBEDDINGS ===")
+
+    _indep_save_base_dir = Path("/data/overhead_matching/datasets/semantic_landmark_embeddings/")
+
+    # ========== SEMANTIC VERSION ==========
+    print("\n1. Saving independent semantic version...")
+
+    # OSM (combined Chicago + independent Seattle)
+    _indep_save_osm_semantic_dir = _indep_save_base_dir / "sat_spoof_independent_validation/embeddings"
+    _indep_save_osm_semantic_dir.mkdir(parents=True, exist_ok=True)
+    _indep_save_osm_semantic_path = _indep_save_osm_semantic_dir / "embeddings.pkl"
+    with open(_indep_save_osm_semantic_path, 'wb') as _indep_save_f:
+        pickle.dump((independent_combined_osm_embeddings_tensor_semantic, independent_combined_osm_id_to_idx_semantic), _indep_save_f)
+    print(f"  ✓ OSM semantic: {_indep_save_osm_semantic_path}")
+    print(f"    Shape: {independent_combined_osm_embeddings_tensor_semantic.shape}")
+
+    # Chicago Pano
+    _indep_save_chicago_pano_semantic_dir = _indep_save_base_dir / "pano_spoof_independent_validation/Chicago/embeddings"
+    _indep_save_chicago_pano_semantic_dir.mkdir(parents=True, exist_ok=True)
+    _indep_save_chicago_pano_semantic_path = _indep_save_chicago_pano_semantic_dir / "embeddings.pkl"
+    with open(_indep_save_chicago_pano_semantic_path, 'wb') as _indep_save_f:
+        pickle.dump((spoofed_pano_embeddings_tensor, spoofed_pano_id_to_idx), _indep_save_f)
+    print(f"  ✓ Chicago pano semantic: {_indep_save_chicago_pano_semantic_path}")
+    print(f"    Shape: {spoofed_pano_embeddings_tensor.shape}")
+
+    # Seattle Pano
+    _indep_save_seattle_pano_semantic_dir = _indep_save_base_dir / "pano_spoof_independent_validation/Seattle/embeddings"
+    _indep_save_seattle_pano_semantic_dir.mkdir(parents=True, exist_ok=True)
+    _indep_save_seattle_pano_semantic_path = _indep_save_seattle_pano_semantic_dir / "embeddings.pkl"
+    with open(_indep_save_seattle_pano_semantic_path, 'wb') as _indep_save_f:
+        pickle.dump((independent_seattle_pano_embeddings_tensor_semantic, independent_seattle_pano_id_to_idx_semantic), _indep_save_f)
+    print(f"  ✓ Seattle pano semantic: {_indep_save_seattle_pano_semantic_path}")
+    print(f"    Shape: {independent_seattle_pano_embeddings_tensor_semantic.shape}")
+
+    # ========== RANDOM VERSION ==========
+    print("\n2. Saving independent random version...")
+
+    # OSM (combined Chicago + independent Seattle)
+    _indep_save_osm_random_dir = _indep_save_base_dir / "sat_spoof_random_independent_validation/embeddings"
+    _indep_save_osm_random_dir.mkdir(parents=True, exist_ok=True)
+    _indep_save_osm_random_path = _indep_save_osm_random_dir / "embeddings.pkl"
+    with open(_indep_save_osm_random_path, 'wb') as _indep_save_f:
+        pickle.dump((independent_combined_osm_embeddings_tensor_random, independent_combined_osm_id_to_idx_random), _indep_save_f)
+    print(f"  ✓ OSM random: {_indep_save_osm_random_path}")
+    print(f"    Shape: {independent_combined_osm_embeddings_tensor_random.shape}")
+
+    # Chicago Pano
+    _indep_save_chicago_pano_random_dir = _indep_save_base_dir / "pano_spoof_random_independent_validation/Chicago/embeddings"
+    _indep_save_chicago_pano_random_dir.mkdir(parents=True, exist_ok=True)
+    _indep_save_chicago_pano_random_path = _indep_save_chicago_pano_random_dir / "embeddings.pkl"
+    with open(_indep_save_chicago_pano_random_path, 'wb') as _indep_save_f:
+        pickle.dump((random_pano_embeddings_tensor, random_pano_id_to_idx), _indep_save_f)
+    print(f"  ✓ Chicago pano random: {_indep_save_chicago_pano_random_path}")
+    print(f"    Shape: {random_pano_embeddings_tensor.shape}")
+
+    # Seattle Pano
+    _indep_save_seattle_pano_random_dir = _indep_save_base_dir / "pano_spoof_random_independent_validation/Seattle/embeddings"
+    _indep_save_seattle_pano_random_dir.mkdir(parents=True, exist_ok=True)
+    _indep_save_seattle_pano_random_path = _indep_save_seattle_pano_random_dir / "embeddings.pkl"
+    with open(_indep_save_seattle_pano_random_path, 'wb') as _indep_save_f:
+        pickle.dump((independent_seattle_pano_embeddings_tensor_random, independent_seattle_pano_id_to_idx_random), _indep_save_f)
+    print(f"  ✓ Seattle pano random: {_indep_save_seattle_pano_random_path}")
+    print(f"    Shape: {independent_seattle_pano_embeddings_tensor_random.shape}")
+
+    # ========== NO_SEMANTIC VERSION ==========
+    print("\n3. Saving independent no_semantic version...")
+
+    # OSM (combined Chicago + independent Seattle)
+    _indep_save_osm_no_semantic_dir = _indep_save_base_dir / "sat_spoof_no_semantic_independent_validation/embeddings"
+    _indep_save_osm_no_semantic_dir.mkdir(parents=True, exist_ok=True)
+    _indep_save_osm_no_semantic_path = _indep_save_osm_no_semantic_dir / "embeddings.pkl"
+    with open(_indep_save_osm_no_semantic_path, 'wb') as _indep_save_f:
+        pickle.dump((independent_combined_osm_no_semantic, independent_combined_osm_id_to_idx_semantic), _indep_save_f)
+    print(f"  ✓ OSM no_semantic: {_indep_save_osm_no_semantic_path}")
+    print(f"    Shape: {independent_combined_osm_no_semantic.shape}")
+
+    # Chicago Pano
+    _indep_save_chicago_pano_no_semantic_dir = _indep_save_base_dir / "pano_spoof_no_semantic_independent_validation/Chicago/embeddings"
+    _indep_save_chicago_pano_no_semantic_dir.mkdir(parents=True, exist_ok=True)
+    _indep_save_chicago_pano_no_semantic_path = _indep_save_chicago_pano_no_semantic_dir / "embeddings.pkl"
+    with open(_indep_save_chicago_pano_no_semantic_path, 'wb') as _indep_save_f:
+        pickle.dump((independent_chicago_pano_no_semantic, spoofed_pano_id_to_idx), _indep_save_f)
+    print(f"  ✓ Chicago pano no_semantic: {_indep_save_chicago_pano_no_semantic_path}")
+    print(f"    Shape: {independent_chicago_pano_no_semantic.shape}")
+
+    # Seattle Pano
+    _indep_save_seattle_pano_no_semantic_dir = _indep_save_base_dir / "pano_spoof_no_semantic_independent_validation/Seattle/embeddings"
+    _indep_save_seattle_pano_no_semantic_dir.mkdir(parents=True, exist_ok=True)
+    _indep_save_seattle_pano_no_semantic_path = _indep_save_seattle_pano_no_semantic_dir / "embeddings.pkl"
+    with open(_indep_save_seattle_pano_no_semantic_path, 'wb') as _indep_save_f:
+        pickle.dump((independent_seattle_pano_no_semantic, independent_seattle_pano_id_to_idx_semantic), _indep_save_f)
+    print(f"  ✓ Seattle pano no_semantic: {_indep_save_seattle_pano_no_semantic_path}")
+    print(f"    Shape: {independent_seattle_pano_no_semantic.shape}")
+
+    print("\n" + "="*60)
+    print("✓ ALL INDEPENDENT EMBEDDINGS SAVED SUCCESSFULLY!")
     print("="*60)
+    print("\nSummary:")
+    print(f"  - Independent combined OSM embeddings (Chicago + Seattle): {len(independent_combined_osm_id_to_idx_semantic)} unique IDs")
+    print(f"  - Chicago pano embeddings: {len(spoofed_pano_id_to_idx)} unique IDs")
+    print(f"  - Independent Seattle pano embeddings: {len(independent_seattle_pano_id_to_idx_semantic)} unique IDs")
+    print(f"\nThree versions created: semantic, random, no_semantic")
+    print(f"Base directory: {_indep_save_base_dir}")
+
+    return
+
+
+@app.cell
+def _(
+    Path,
+    independent_seattle_pano_id_to_idx_random,
+    independent_seattle_pano_id_to_idx_semantic,
+    json,
+    random_pano_id_to_idx,
+    spoofed_pano_id_to_idx,
+):
+    # Generate panorama_metadata.jsonl for independent validation embeddings
+    print("\n=== GENERATING INDEPENDENT VALIDATION PANO METADATA ===")
+
+    _indep_meta_base_dir = Path("/data/overhead_matching/datasets/semantic_landmark_embeddings/")
+
+    # Independent validation versions with their Chicago and Seattle id_to_idx mappings
+    _independent_validation_versions = [
+        ("pano_spoof_independent_validation", spoofed_pano_id_to_idx, independent_seattle_pano_id_to_idx_semantic),
+        ("pano_spoof_random_independent_validation", random_pano_id_to_idx, independent_seattle_pano_id_to_idx_random),
+        ("pano_spoof_no_semantic_independent_validation", spoofed_pano_id_to_idx, independent_seattle_pano_id_to_idx_semantic),
+    ]
+
+    for _version_name, _chicago_id_to_idx, _seattle_id_to_idx in _independent_validation_versions:
+        print(f"\nGenerating metadata for {_version_name}...")
+
+        # Process Chicago
+        print(f"  Processing Chicago...")
+        _chicago_metadata_entries = []
+        for _custom_id in _chicago_id_to_idx.keys():
+            _parts = _custom_id.split(',')
+            if len(_parts) != 4:
+                continue
+
+            _pano_id = _parts[0]
+            _lat = _parts[1]
+            _lon = _parts[2]
+            _landmark_part = _parts[3]
+
+            if not _landmark_part.startswith('__landmark_'):
+                continue
+            _landmark_idx = int(_landmark_part.split('_')[-1])
+
+            _entry = {
+                "panorama_id": f"{_pano_id},{_lat},{_lon},",
+                "landmark_idx": _landmark_idx,
+                "custom_id": _custom_id,
+                "yaw_angles": [0.0, 0.0, 0.0, 0.0]
+            }
+            _chicago_metadata_entries.append(_entry)
+
+        _chicago_metadata_entries.sort(key=lambda x: (x["panorama_id"], x["landmark_idx"]))
+
+        _chicago_output_dir = _indep_meta_base_dir / _version_name / "Chicago" / "embedding_requests"
+        _chicago_output_dir.mkdir(parents=True, exist_ok=True)
+        _chicago_output_file = _chicago_output_dir / "panorama_metadata.jsonl"
+
+        with open(_chicago_output_file, 'w') as _f:
+            for _entry in _chicago_metadata_entries:
+                _f.write(json.dumps(_entry) + '\n')
+
+        print(f"    ✓ Chicago: {len(_chicago_metadata_entries)} entries")
+
+        # Process Seattle
+        print(f"  Processing Seattle...")
+        _seattle_metadata_entries = []
+        for _custom_id in _seattle_id_to_idx.keys():
+            _parts = _custom_id.split(',')
+            if len(_parts) != 4:
+                continue
+
+            _pano_id = _parts[0]
+            _lat = _parts[1]
+            _lon = _parts[2]
+            _landmark_part = _parts[3]
+
+            if not _landmark_part.startswith('__landmark_'):
+                continue
+            _landmark_idx = int(_landmark_part.split('_')[-1])
+
+            _entry = {
+                "panorama_id": f"{_pano_id},{_lat},{_lon},",
+                "landmark_idx": _landmark_idx,
+                "custom_id": _custom_id,
+                "yaw_angles": [0.0, 0.0, 0.0, 0.0]
+            }
+            _seattle_metadata_entries.append(_entry)
+
+        _seattle_metadata_entries.sort(key=lambda x: (x["panorama_id"], x["landmark_idx"]))
+
+        _seattle_output_dir = _indep_meta_base_dir / _version_name / "Seattle" / "embedding_requests"
+        _seattle_output_dir.mkdir(parents=True, exist_ok=True)
+        _seattle_output_file = _seattle_output_dir / "panorama_metadata.jsonl"
+
+        with open(_seattle_output_file, 'w') as _f:
+            for _entry in _seattle_metadata_entries:
+                _f.write(json.dumps(_entry) + '\n')
+
+        print(f"    ✓ Seattle: {len(_seattle_metadata_entries)} entries")
+
+    print("\n✓ Independent validation pano metadata generated successfully!")
     return
 
 
