@@ -39,7 +39,7 @@ from sentence_transformers.trainer import SentenceTransformerTrainer
 from experimental.overhead_matching.swag.model.trainable_sentence_embedder import TrainableSentenceEmbedder
 from experimental.overhead_matching.swag.model.swag_config_types import TrainableSentenceEmbedderConfig
 from experimental.overhead_matching.swag.model.semantic_landmark_utils import load_all_jsonl_from_folder, make_sentence_dict_from_json
-from experimental.overhead_matching.swag.model.semantic_landmark_extractor import _custom_id_from_props
+from experimental.overhead_matching.swag.model.semantic_landmark_extractor import custom_id_from_props
 from common.torch.load_and_save_models import save_model as save_model_with_metadata
 
 
@@ -96,7 +96,7 @@ def process_osm_item(
     pruned_props = parse_osm_tags(tags_str)
 
     if use_natural_language and sentence_dict:
-        custom_id = _custom_id_from_props(pruned_props)
+        custom_id = custom_id_from_props(pruned_props)
         if custom_id in sentence_dict:
             return sentence_dict[custom_id]
 

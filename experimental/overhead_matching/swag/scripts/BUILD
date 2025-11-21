@@ -278,20 +278,3 @@ py_binary(
     requirement("pyarrow"),
   ]
 )
-
-py_binary(
-  name="train_sentence_embedder",
-  srcs=["train_sentence_embedder.py"],
-  deps=[
-    requirement("torch"),
-    requirement("transformers"),
-    requirement("tqdm"),
-    requirement("tensorboard"),
-    "//common/torch:load_torch_deps",
-    "//common/torch:load_and_save_models",
-    "//experimental/overhead_matching/swag/model:trainable_sentence_embedder",
-    "//experimental/overhead_matching/swag/model:swag_config_types",
-    "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
-    "//experimental/overhead_matching/swag/model:semantic_landmark_extractor",
-  ]
-)
