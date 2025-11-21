@@ -59,7 +59,6 @@ class PanoramaSemanticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_O
     openai_embedding_size: int  # if smaller than the true embedding dim (1536), will crop and renormalize embedding
     embedding_version: str
     auxiliary_info_key: str
-    should_classify_against_grouping: bool = False
 
 
 class SyntheticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
@@ -67,11 +66,6 @@ class SyntheticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     grid_bounds_px: int
     should_produce_bearing_position_for_pano: bool
     embedding_dim: int
-
-
-class OSMSemanticClassExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
-    auxiliary_info_key: str  # Key for base path in auxiliary_info
-    embedding_version: str   # Name of JSON file (without extension) for cache key
 
 
 class PlanarPositionEmbeddingConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
@@ -112,7 +106,6 @@ ExtractorConfig = Union[
     PanoramaSemanticLandmarkExtractorConfig,
     SyntheticLandmarkExtractorConfig,
     AbsolutePositionExtractorConfig,
-    OSMSemanticClassExtractorConfig,
 ]
 
 

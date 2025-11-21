@@ -47,9 +47,9 @@ class BatchInspector:
             # Handle different JSON formats
             if 'ontology' in class_data:
                 self.semantic_class_names = class_data['ontology']
-            elif 'semantic_groups' in class_data:
-                # Extract group names (keys) as the semantic class names
-                self.semantic_class_names = list(class_data['semantic_groups'].keys())
+            elif 'class_details' in class_data:
+                # Extract semantic class names from class_details (sorted for consistency)
+                self.semantic_class_names = sorted(class_data['class_details'].keys())
             else:
                 raise ValueError(f"Unknown semantic class JSON format in {semantic_classes_path}")
 

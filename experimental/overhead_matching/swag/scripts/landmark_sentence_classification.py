@@ -9,8 +9,7 @@ def _(Path, psle):
     _config = psle.PanoramaSemanticLandmarkExtractorConfig(
         openai_embedding_size=1536,
         embedding_version='pano_v1',
-        auxiliary_info_key=None,
-        should_classify_against_grouping=True
+        auxiliary_info_key=None
     )
 
     model = psle.PanoramaSemanticLandmarkExtractor(
@@ -51,22 +50,16 @@ def _(dataset, model, psle, vd):
 
 
 @app.cell
-def _(model, output, torch):
-    _high_level_classes = list(model.semantic_groupings["semantic_groups"].keys())
-    _low_level_classes = list(model.semantic_groupings["class_details"].keys())
-
-    for _batch_idx, _lm_idx, _high_level_class_idx in zip(*torch.where(output.features)):
-        if output.mask[_batch_idx, _lm_idx]:
-            continue
-        # print(_batch_idx, _lm_idx)
-        _sentence = bytearray(output.debug["sentences"][_batch_idx, _lm_idx]).strip(b'\x00').decode('utf-8')
-        _low_level_classification = torch.where(output.debug["low_level_classification"][_batch_idx, _lm_idx])[0].item()
-        _sorted_low_level_sim = torch.sort(output.debug["low_level_similarity"][_batch_idx, _lm_idx])
-        top_k_low_level = [f"({_low_level_classes[_sorted_low_level_sim.indices[_low_level_idx]]}, {_sorted_low_level_sim.values[_low_level_idx].item():0.3f})" for _low_level_idx in range(-1, -4, -1)]
-        # print('sentence:', _sentence)
-        print(f"high level: {_high_level_classes[_high_level_class_idx]:<25} {_sentence:135s} {', '.join(top_k_low_level)}")
-        # for _idx, _sentence_buffer in enumerate(output.debug["sentences"][_batch_idx][~output.mask[_batch_idx]]):
-        #     print(bytearray(_sentence_buffer).decode('utf-8'), )
+def _(output, torch):
+    # Print landmark sentences from debug output
+    for _batch_idx in range(len(output.mask)):
+        for _lm_idx in range(len(output.mask[_batch_idx])):
+            if output.mask[_batch_idx, _lm_idx]:
+                continue
+            _sentence = bytearray(output.debug["sentences"][_batch_idx, _lm_idx]).strip(b'\x00').decode('utf-8')
+            # Get the feature vector norm as a simple metric
+            _feature_norm = torch.norm(output.features[_batch_idx, _lm_idx]).item()
+            print(f"Batch {_batch_idx}, Landmark {_lm_idx}: {_sentence:135s} (norm: {_feature_norm:.3f})")
     return
 
 
