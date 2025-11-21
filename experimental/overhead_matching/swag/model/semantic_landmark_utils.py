@@ -4,6 +4,8 @@ This module contains shared functions for loading and processing semantic landma
 that are used across multiple extractor modules.
 """
 
+import base64
+import hashlib
 import json
 from pathlib import Path
 import pandas as pd
@@ -186,3 +188,20 @@ def prune_landmark(props):
             continue
         out.add((k, v))
     return frozenset(out)
+
+
+def custom_id_from_props(props: dict) -> str:
+    """Generate a unique ID from landmark properties.
+
+    Creates a deterministic ID by hashing the JSON-serialized properties.
+
+    Args:
+        props: Dictionary of landmark properties
+
+    Returns:
+        Base64-encoded SHA-256 hash of the properties
+    """
+    json_props = json.dumps(dict(props), sort_keys=True)
+    custom_id = base64.b64encode(hashlib.sha256(
+        json_props.encode('utf-8')).digest()).decode('utf-8')
+    return custom_id

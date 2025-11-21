@@ -426,29 +426,22 @@ def _(
     pano_embeddings_from_lm_idx,
     pano_lm_idx_from_lm_id,
     pano_sentences_from_pano_id,
+    slu,
     torch,
     z3,
 ):
-    import base64
     import math
-    import hashlib
-    def custom_id_from_props(props: dict) -> str:
-        json_props = json.dumps(dict(props), sort_keys=True)
-        custom_id = base64.b64encode(hashlib.sha256(
-            json_props.encode('utf-8')).digest()).decode('utf-8')
-        return custom_id
-
 
     def pano_embeddings_for_pano_id(pano_sentences):
         idxs = [pano_lm_idx_from_lm_id[x["lm_id"]] for x in pano_sentences]
         return pano_embeddings_from_lm_idx[idxs]
 
     def osm_embeddings_from_osm_lms(osm_lms, osm_lm_idx_from_osm_id, osm_embeddings):
-        osm_lm_ids = osm_lms.pruned_props.apply(custom_id_from_props)
+        osm_lm_ids = osm_lms.pruned_props.apply(slu.custom_id_from_props)
         idxs = []
         for _, row in osm_lms.iterrows():
             pruned_props = row.pruned_props
-            osm_lm_id = custom_id_from_props(pruned_props)
+            osm_lm_id = slu.custom_id_from_props(pruned_props)
             idxs.append(osm_lm_idx_from_osm_id[osm_lm_id])
         return osm_embeddings[idxs]
 

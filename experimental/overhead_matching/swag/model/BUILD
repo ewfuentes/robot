@@ -148,6 +148,7 @@ py_library(
   srcs = ["semantic_landmark_utils.py"],
   visibility = [
     "//experimental/overhead_matching/swag:__subpackages__",
+    "//common/python:__subpackages__",
   ],
   deps = [
     requirement("pandas"),
@@ -208,6 +209,7 @@ py_test(
   deps = [
     requirement("shapely"),
     ":semantic_landmark_extractor",
+    ":semantic_landmark_utils",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
   ]
 )

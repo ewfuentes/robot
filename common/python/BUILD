@@ -36,6 +36,7 @@ py_binary(
     "//experimental/overhead_matching/swag/data:alphaearth_registry",
     "//experimental/overhead_matching/swag/model:patch_embedding",
     "//experimental/overhead_matching/swag/model:swag_patch_embedding",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
   ]
 )
 

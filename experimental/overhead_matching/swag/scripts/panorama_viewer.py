@@ -30,7 +30,7 @@ import torch
 # Import from existing modules
 from experimental.overhead_matching.swag.data.vigor_dataset import load_landmark_geojson
 from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
-    prune_landmark)
+    prune_landmark, custom_id_from_props)
 from common.gps import web_mercator
 
 
@@ -739,14 +739,6 @@ def parse_vigor_filename(filename):
     if len(parts) >= 1:
         return parts[0]
     return filename
-
-
-def custom_id_from_props(props):
-    """Generate custom_id from landmark properties (copied from semantic_landmark_extractor.py)."""
-    json_props = json.dumps(dict(props), sort_keys=True)
-    custom_id = base64.b64encode(hashlib.sha256(
-        json_props.encode('utf-8')).digest()).decode('utf-8')
-    return custom_id
 
 
 def load_osm_sentences_for_landmarks(sentence_dir, landmark_custom_ids):

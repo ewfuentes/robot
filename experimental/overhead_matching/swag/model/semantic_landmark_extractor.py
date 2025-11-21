@@ -17,7 +17,8 @@ from experimental.overhead_matching.swag.model.swag_model_input_output import (
     ModelInput, ExtractorOutput)
 from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
     load_all_jsonl_from_folder, make_embedding_dict_from_json, make_sentence_dict_from_json,
-    prune_landmark, make_sentence_dict_from_pano_jsons, convert_embeddings_to_tensors)
+    prune_landmark, make_sentence_dict_from_pano_jsons, convert_embeddings_to_tensors,
+    custom_id_from_props)
 from multiprocessing import Pool
 from functools import partial
 import tqdm
@@ -287,7 +288,7 @@ class SemanticLandmarkExtractor(torch.nn.Module):
                     continue
 
                 props = landmark['pruned_props']
-                landmark_id = _custom_id_from_props(props)
+                landmark_id = custom_id_from_props(props)
 
                 if landmark_id not in self.landmark_id_to_idx:
                     print(f"Warning: missing embedding for props: {props}, ID {landmark_id}")
@@ -313,7 +314,7 @@ class SemanticLandmarkExtractor(torch.nn.Module):
                     if landmark['geometry'].geom_type.lower() != self.config.landmark_type.lower():
                         continue
                     props = landmark['pruned_props']
-                    landmark_id = _custom_id_from_props(props)
+                    landmark_id = custom_id_from_props(props)
                     if landmark_id not in self.all_sentences:
                         continue
                     sentence_tensors.append(torch.tensor(list(self.all_sentences[landmark_id].encode('utf-8')), dtype=torch.uint8))
@@ -354,11 +355,6 @@ def _load_landmarks(geojson_list):
     return pd.concat([load_file(p) for p in geojson_list], ignore_index=True)
 
 
-def _custom_id_from_props(props: dict) -> str:
-    json_props = json.dumps(dict(props), sort_keys=True)
-    custom_id = base64.b64encode(hashlib.sha256(
-        json_props.encode('utf-8')).digest()).decode('utf-8')
-    return custom_id
 
 
 def encode_image_to_base64(image_path: Path) -> str:
@@ -462,7 +458,7 @@ def _create_requests(landmarks, prompt_type = "default"):
     for props in landmarks:
         json_props = json.dumps(dict(props), sort_keys=True)
         requests.append({
-            "custom_id": _custom_id_from_props(props),
+            "custom_id": custom_id_from_props(props),
             "method": "POST",
             "url": "/v1/chat/completions",
             "body": {

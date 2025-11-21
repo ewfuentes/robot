@@ -12,8 +12,8 @@ import shapely
 import experimental.overhead_matching.swag.model.semantic_landmark_extractor as sle
 import experimental.overhead_matching.swag.data.vigor_dataset as vd
 from experimental.overhead_matching.swag.model.swag_config_types import LandmarkType
-from experimental.overhead_matching.swag.model.semantic_landmark_extractor import (
-    prune_landmark, _custom_id_from_props as custom_id_from_props
+from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
+    prune_landmark, custom_id_from_props
 )
 
 
