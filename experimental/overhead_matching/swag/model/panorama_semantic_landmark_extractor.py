@@ -87,10 +87,22 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
             # Load embeddings
             embedding_dir = city_dir / "embeddings"
             if embedding_dir.exists():
-                city_embeddings = make_embedding_dict_from_json(
-                    load_all_jsonl_from_folder(embedding_dir))
+                pickle_path = embedding_dir / "embeddings.pkl"
+                if pickle_path.exists():
+                    with open(pickle_path, 'rb') as f:
+                        embedding_data = pickle.load(f)
+                        tensor, id_to_idx = embedding_data
+                        city_embeddings = {}
+                        for custom_id, idx in id_to_idx.items():
+                            city_embeddings[custom_id] = tensor[idx].tolist()
+                    print(f"  Loaded {len(city_embeddings)} embeddings from pickle")
+                else:
+                    # Fall back to JSONL loading
+                    city_embeddings = make_embedding_dict_from_json(
+                        load_all_jsonl_from_folder(embedding_dir))
+                    print(f"  Loaded {len(city_embeddings)} embeddings from JSONL")
+
                 self.all_embeddings.update(city_embeddings)
-                print(f"  Loaded {len(city_embeddings)} embeddings")
 
             # Load sentences (optional)
             sentence_dir = city_dir / "sentences"
