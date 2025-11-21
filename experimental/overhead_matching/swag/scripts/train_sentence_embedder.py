@@ -1,13 +1,19 @@
 """
-Standalone training script for sentence embedding models.
+Standalone training script for sentence embedding models using sentence-transformers.
 
-This script trains a sentence embedding model on correspondence data,
-following the training approach used by all-MiniLM-L6-v2:
-- Cross-entropy loss with in-batch negatives
-- Symmetric loss (both anchor->positive and positive->anchor)
-- Mean pooling + L2 normalization
+This script trains a sentence embedding model on correspondence data using
+the sentence-transformers library and best practices from:
+- https://github.com/huggingface/sentence-transformers
+- https://sbert.net/docs/sentence_transformer/loss_overview.html
+- https://huggingface.co/blog/train-sentence-transformers
 
-The trained model can then be loaded into the geolocalization pipeline
+Training approach:
+- CachedMultipleNegativesRankingLoss for efficient in-batch negatives
+- InformationRetrievalEvaluator for validation
+- SentenceTransformerTrainer for training loop
+- Automatic TensorBoard logging
+
+The trained model can be loaded into the geolocalization pipeline
 via the model_weights_path parameter in TrainableSentenceEmbedderConfig.
 """
 
@@ -16,7 +22,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 import tqdm
 
 # Disable tokenizers parallelism warning
@@ -24,10 +30,12 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import common.torch.load_torch_deps
 import torch
-import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
-from torch.utils.tensorboard import SummaryWriter
-from transformers import get_linear_schedule_with_warmup
+from datasets import Dataset, load_dataset
+from sentence_transformers import SentenceTransformer, losses
+from sentence_transformers.evaluation import InformationRetrievalEvaluator, SequentialEvaluator
+from sentence_transformers.training_args import SentenceTransformerTrainingArguments, BatchSamplers
+from sentence_transformers.trainer import SentenceTransformerTrainer
+
 from experimental.overhead_matching.swag.model.trainable_sentence_embedder import TrainableSentenceEmbedder
 from experimental.overhead_matching.swag.model.swag_config_types import TrainableSentenceEmbedderConfig
 from experimental.overhead_matching.swag.model.semantic_landmark_utils import load_all_jsonl_from_folder, make_sentence_dict_from_json
@@ -43,216 +51,281 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class CorrespondenceDataset(Dataset):
-    """Dataset that loads pano<->OSM correspondence pairs."""
-
-    def __init__(
-        self,
-        correspondence_file: Path,
-        sentence_directory: Path | None = None,
-        use_natural_language: bool = True,
-    ):
-        """
-        Args:
-            correspondence_file: Path to JSON file with correspondences
-            sentence_directory: Optional path to directory with natural language descriptions
-            use_natural_language: Whether to use natural language descriptions from sentence_directory
-        """
-        logger.info(f"Loading correspondences from {correspondence_file}")
-        with open(correspondence_file, "r") as f:
-            self.data = json.load(f)
-
-        self.pairs = []
-        self.use_natural_language = use_natural_language
-        self.sentence_dict = {}
-
-        # Load sentences from directory if using natural language mode
-        if self.use_natural_language and sentence_directory is not None:
-            sentence_dir = Path(sentence_directory)
-            if sentence_dir.exists():
-                logger.info(f"Loading sentences from {sentence_dir}")
-                sentence_jsons = load_all_jsonl_from_folder(sentence_dir)
-                self.sentence_dict, _ = make_sentence_dict_from_json(sentence_jsons)
-                logger.info(f"Loaded {len(self.sentence_dict)} sentences")
-            else:
-                logger.warning(f"Sentence directory not found: {sentence_dir}. Using tag format instead.")
-                self.use_natural_language = False
-
-        # Extract positive pairs from correspondences
-        missing_sentences = 0
-        for entry_id, entry in tqdm.tqdm(self.data.items(), desc="Processing correspondences"):
-            pano_descs = entry["pano"]
-            osm_items = entry["osm"]
-            matches = entry["matches"]["matches"]
-
-            for match in matches:
-                pano_idx = match["set_1_id"]
-                osm_indices = match["set_2_matches"]
-
-                if pano_idx < len(pano_descs):
-                    pano_text = pano_descs[pano_idx]
-
-                    for osm_idx in osm_indices:
-                        if osm_idx < len(osm_items):
-                            osm_item = osm_items[osm_idx]
-                            osm_text, found_sentence = self._process_osm_item(osm_item)
-                            if osm_text:  # Skip if empty
-                                self.pairs.append((pano_text, osm_text))
-                                if not found_sentence and self.use_natural_language:
-                                    missing_sentences += 1
-
-        logger.info(f"Loaded {len(self.pairs)} positive pairs")
-        if missing_sentences > 0 and self.use_natural_language:
-            logger.warning(
-                f"Could not find natural language sentences for {missing_sentences} OSM items. "
-                f"Using tag format as fallback. This may happen if the correspondence file contains "
-                f"OSM tags that were not in the original sentence generation."
-            )
-
-    def _parse_osm_tags(self, tags_str: str) -> dict:
-        """Parse OSM tags string into a dictionary."""
-        props = {}
-        for tag_pair in tags_str.split(";"):
-            tag_pair = tag_pair.strip()
-            if "=" in tag_pair:
-                key, value = tag_pair.split("=", 1)
-                props[key.strip()] = value.strip()
-        return props
-
-    def _process_osm_item(self, osm_item: dict) -> tuple[str, bool]:
-        """Convert OSM item to text representation.
-
-        Returns:
-            tuple of (text, found_sentence_in_dict)
-        """
-        if "tags" not in osm_item:
-            return "", False
-
-        tags_str = osm_item["tags"]
-        pruned_props = self._parse_osm_tags(tags_str)
-
-        if self.use_natural_language:
-            # Try to load natural language description from sentences
-            custom_id = _custom_id_from_props(pruned_props)
-            if custom_id in self.sentence_dict:
-                return self.sentence_dict[custom_id], True
-
-        # Fall back to tag format: "key: value, key: value, ..."
-        parts = [f"{k}: {v}" for k, v in sorted(pruned_props.items())]
-        text = ", ".join(parts) if parts else ""
-        return text, False
-
-    def __len__(self):
-        return len(self.pairs)
-
-    def __getitem__(self, idx):
-        return self.pairs[idx]
+def parse_osm_tags(tags_str: str) -> dict:
+    """Parse OSM tags string into a dictionary."""
+    props = {}
+    for tag_pair in tags_str.split(";"):
+        tag_pair = tag_pair.strip()
+        if "=" in tag_pair:
+            key, value = tag_pair.split("=", 1)
+            props[key.strip()] = value.strip()
+    return props
 
 
-def train_step(
-    batch: List[Tuple[str, str]],
-    model: TrainableSentenceEmbedder,
-    optimizer,
-    device,
-    scale: float,
-    loss_fn,
-) -> Tuple[torch.Tensor, dict]:
-    """Execute one training step with in-batch negatives."""
+def load_sentence_dict(sentence_directory: Path | None) -> Dict[str, str]:
+    """Load natural language sentence dictionary from directory."""
+    if sentence_directory is None or not sentence_directory.exists():
+        return {}
 
-    # Separate anchor and positive texts
-    anchor_texts = [pair[0] for pair in batch]
-    positive_texts = [pair[1] for pair in batch]
-
-    # Compute embeddings using TrainableSentenceEmbedder
-    # (handles tokenization internally)
-    anchor_embeddings = model(anchor_texts)
-    positive_embeddings = model(positive_texts)
-
-    # Compute similarity matrix: [batch_size, batch_size]
-    # Scaled cosine similarity (embeddings are already normalized)
-    scores = torch.mm(anchor_embeddings, positive_embeddings.transpose(0, 1)) * scale
-
-    # Labels: diagonal elements are the true matches
-    # anchor[i] should match with positive[i]
-    labels = torch.arange(len(scores), dtype=torch.long, device=device)
-
-    # Symmetric loss as in CLIP and all-MiniLM-L6-v2
-    loss = (loss_fn(scores, labels) + loss_fn(scores.transpose(0, 1), labels)) / 2
-
-    # Compute accuracy
-    predictions = torch.argmax(scores, dim=1)
-    accuracy = (predictions == labels).float().mean()
-
-    metrics = {
-        "loss": loss.item(),
-        "accuracy": accuracy.item(),
-        "avg_positive_sim": scores.diag().mean().item(),
-        "avg_negative_sim": (scores.sum() - scores.diag().sum()).item()
-        / (scores.numel() - len(scores)),
-    }
-
-    return loss, metrics
+    logger.info(f"Loading sentences from {sentence_directory}")
+    sentence_jsons = load_all_jsonl_from_folder(sentence_directory)
+    sentence_dict, _ = make_sentence_dict_from_json(sentence_jsons)
+    logger.info(f"Loaded {len(sentence_dict)} sentences")
+    return sentence_dict
 
 
-def extract_validation_data(correspondence_file: Path, sentence_directory: Path | None, use_natural_language: bool):
-    """Extract unique texts and correspondence mappings from validation file.
+def process_osm_item(
+    osm_item: dict,
+    sentence_dict: Dict[str, str],
+    use_natural_language: bool
+) -> str:
+    """Convert OSM item to text representation.
+
+    Args:
+        osm_item: OSM item dict with 'tags' field
+        sentence_dict: Dictionary mapping custom_id -> natural language sentence
+        use_natural_language: Whether to use natural language descriptions
 
     Returns:
-        tuple: (pano_texts, osm_texts, pano_to_osm_indices)
-            - pano_texts: List of unique pano descriptions
-            - osm_texts: List of unique OSM descriptions
-            - pano_to_osm_indices: Dict mapping pano_idx -> list of osm_indices
+        Text representation of OSM item
     """
-    logger.info(f"Loading validation data from {correspondence_file}")
+    if "tags" not in osm_item:
+        return ""
 
-    # Load correspondence data
+    tags_str = osm_item["tags"]
+    pruned_props = parse_osm_tags(tags_str)
+
+    if use_natural_language and sentence_dict:
+        custom_id = _custom_id_from_props(pruned_props)
+        if custom_id in sentence_dict:
+            return sentence_dict[custom_id]
+
+    # Fall back to tag format: "key: value, key: value, ..."
+    parts = [f"{k}: {v}" for k, v in sorted(pruned_props.items())]
+    return ", ".join(parts) if parts else ""
+
+
+def create_training_dataset(
+    correspondence_file: Path,
+    sentence_directory: Path | None,
+    use_natural_language: bool
+) -> Dataset:
+    """Create HuggingFace Dataset with (anchor, positive) pairs from correspondence file.
+
+    Args:
+        correspondence_file: Path to correspondence JSON file
+        sentence_directory: Optional directory with natural language descriptions
+        use_natural_language: Whether to use natural language mode
+
+    Returns:
+        datasets.Dataset with columns ["anchor", "positive"]
+    """
+    logger.info(f"Loading correspondences from {correspondence_file}")
+    with open(correspondence_file, "r") as f:
+        corr_data = json.load(f)
+
+    # Load sentence dictionary if using natural language
+    sentence_dict = load_sentence_dict(sentence_directory) if use_natural_language else {}
+
+    # Extract (anchor, positive) pairs
+    anchors = []
+    positives = []
+    missing_sentences = 0
+
+    for entry_id, entry in tqdm.tqdm(corr_data.items(), desc="Processing correspondences"):
+        pano_descs = entry["pano"]
+        osm_items = entry["osm"]
+        matches = entry["matches"]["matches"]
+
+        for match in matches:
+            pano_idx = match["set_1_id"] - 1
+            osm_indices = [x-1 for x in match["set_2_matches"]]
+
+            if pano_idx >= len(pano_descs):
+                continue
+
+            # Handle different pano formats: dict with 'sentence' key or plain string
+            pano_desc = pano_descs[pano_idx]
+            if isinstance(pano_desc, dict):
+                pano_text = pano_desc.get('sentence', '')
+            else:
+                pano_text = pano_desc
+
+            if not pano_text:
+                continue
+
+            # Process matched OSM items
+            for osm_idx in osm_indices:
+                if osm_idx >= len(osm_items):
+                    continue
+
+                osm_item = osm_items[osm_idx]
+                osm_text = process_osm_item(osm_item, sentence_dict, use_natural_language)
+
+                if not osm_text:
+                    continue
+
+                # Check if we found a natural language sentence
+                if use_natural_language and sentence_dict:
+                    if "tags" in osm_item:
+                        props = parse_osm_tags(osm_item["tags"])
+                        custom_id = _custom_id_from_props(props)
+                        if custom_id not in sentence_dict:
+                            missing_sentences += 1
+
+                anchors.append(pano_text)
+                positives.append(osm_text)
+
+    logger.info(f"Created {len(anchors)} training pairs")
+    if missing_sentences > 0 and use_natural_language:
+        logger.warning(
+            f"Could not find natural language sentences for {missing_sentences} OSM items. "
+            f"Using tag format as fallback."
+        )
+
+    # Create HuggingFace Dataset
+    # Column order matters! First column is anchor, second is positive
+    dataset = Dataset.from_dict({
+        "anchor": anchors,
+        "positive": positives,
+    })
+
+    return dataset
+
+
+def load_huggingface_dataset(
+    dataset_name: str,
+    target_size: int | None = None,
+    seed: int = 42
+) -> Dataset:
+    """Load and prepare a HuggingFace benchmark dataset.
+
+    Args:
+        dataset_name: Name of the dataset (natural-questions, squad, all-nli)
+        target_size: Optional target size to trim the dataset
+        seed: Random seed for shuffling
+
+    Returns:
+        datasets.Dataset with columns ["anchor", "positive"]
+    """
+    logger.info(f"Loading HuggingFace dataset: sentence-transformers/{dataset_name}")
+
+    # Map dataset names to their HuggingFace paths and column mappings
+    dataset_configs = {
+        "natural-questions": {
+            "path": "sentence-transformers/natural-questions",
+            "anchor_col": "query",
+            "positive_col": "answer",
+        },
+        "squad": {
+            "path": "sentence-transformers/squad",
+            "anchor_col": "query",
+            "positive_col": "answer",
+        },
+        "all-nli": {
+            "path": "sentence-transformers/all-nli",
+            "anchor_col": "anchor",
+            "positive_col": "positive",
+        },
+    }
+
+    if dataset_name not in dataset_configs:
+        raise ValueError(
+            f"Unknown dataset: {dataset_name}. "
+            f"Available datasets: {list(dataset_configs.keys())}"
+        )
+
+    config = dataset_configs[dataset_name]
+
+    # Load dataset from HuggingFace
+    # Most sentence-transformers datasets have a "train" split
+    try:
+        dataset = load_dataset(config["path"], split="train")
+    except Exception as e:
+        logger.error(f"Failed to load dataset {config['path']}: {e}")
+        raise
+
+    logger.info(f"Loaded {len(dataset)} examples from {dataset_name}")
+
+    # Map columns to standard format: ["anchor", "positive"]
+    anchor_col = config["anchor_col"]
+    positive_col = config["positive_col"]
+
+    # Check if columns exist
+    if anchor_col not in dataset.column_names or positive_col not in dataset.column_names:
+        raise ValueError(
+            f"Expected columns '{anchor_col}' and '{positive_col}' not found in dataset. "
+            f"Available columns: {dataset.column_names}"
+        )
+
+    # Rename columns if needed
+    if anchor_col != "anchor" or positive_col != "positive":
+        dataset = dataset.rename_column(anchor_col, "anchor")
+        dataset = dataset.rename_column(positive_col, "positive")
+
+    # Keep only anchor and positive columns
+    columns_to_remove = [col for col in dataset.column_names if col not in ["anchor", "positive"]]
+    if columns_to_remove:
+        dataset = dataset.remove_columns(columns_to_remove)
+
+    # Filter out empty examples
+    original_size = len(dataset)
+    dataset = dataset.filter(lambda x: x["anchor"] and x["positive"])
+    filtered_count = original_size - len(dataset)
+    if filtered_count > 0:
+        logger.info(f"Filtered out {filtered_count} empty examples")
+
+    # Trim to target size if specified
+    if target_size is not None and len(dataset) > target_size:
+        logger.info(f"Trimming dataset from {len(dataset)} to {target_size} examples")
+        # Shuffle before selecting to get a random subset
+        dataset = dataset.shuffle(seed=seed)
+        dataset = dataset.select(range(target_size))
+
+    logger.info(f"Final dataset size: {len(dataset)} (anchor, positive) pairs")
+
+    return dataset
+
+
+def create_information_retrieval_evaluator(
+    correspondence_file: Path,
+    sentence_directory: Path | None,
+    use_natural_language: bool,
+    name: str = "validation"
+) -> InformationRetrievalEvaluator | None:
+    """Create InformationRetrievalEvaluator from correspondence file.
+
+    Args:
+        correspondence_file: Path to correspondence JSON file
+        sentence_directory: Optional directory with natural language descriptions
+        use_natural_language: Whether to use natural language mode
+        name: Name for the evaluator
+
+    Returns:
+        InformationRetrievalEvaluator or None if no valid data
+    """
+    logger.info(f"Creating {name} evaluator from {correspondence_file}")
+
     with open(correspondence_file, 'r') as f:
         corr_data = json.load(f)
 
-    # Load sentences if using natural language mode
-    sentence_dict = {}
-    if use_natural_language and sentence_directory is not None:
-        sentence_dir = Path(sentence_directory)
-        if sentence_dir.exists():
-            sentence_jsons = load_all_jsonl_from_folder(sentence_dir)
-            sentence_dict, _ = make_sentence_dict_from_json(sentence_jsons)
-            logger.info(f"Loaded {len(sentence_dict)} validation sentences")
+    # Load sentence dictionary if using natural language
+    sentence_dict = load_sentence_dict(sentence_directory) if use_natural_language else {}
 
-    def parse_osm_tags(tags_str: str) -> dict:
-        """Parse OSM tags string into a dictionary."""
-        props = {}
-        for tag_pair in tags_str.split(";"):
-            tag_pair = tag_pair.strip()
-            if "=" in tag_pair:
-                key, value = tag_pair.split("=", 1)
-                props[key.strip()] = value.strip()
-        return props
+    # Build unique text lists and mappings
+    # For InformationRetrievalEvaluator we need:
+    # - queries: Dict[query_id, query_text]
+    # - corpus: Dict[corpus_id, corpus_text]
+    # - relevant_docs: Dict[query_id, Set[corpus_id]]
 
-    def process_osm_item(osm_item: dict) -> str:
-        """Convert OSM item to text representation."""
-        if "tags" not in osm_item:
-            return ""
+    queries = {}
+    corpus = {}
+    relevant_docs = {}
 
-        tags_str = osm_item["tags"]
-        pruned_props = parse_osm_tags(tags_str)
+    pano_text_to_id = {}
+    osm_text_to_id = {}
 
-        if use_natural_language and sentence_dict:
-            custom_id = _custom_id_from_props(pruned_props)
-            if custom_id in sentence_dict:
-                return sentence_dict[custom_id]
-
-        # Fall back to tag format
-        parts = [f"{k}: {v}" for k, v in sorted(pruned_props.items())]
-        return ", ".join(parts) if parts else ""
-
-    # Build unique text lists and mapping
-    pano_text_to_idx = {}
-    osm_text_to_idx = {}
-    pano_texts = []
-    osm_texts = []
-    pano_to_osm_indices = {}
-
-    for entry_id, entry in corr_data.items():
+    for entry_id, entry in tqdm.tqdm(corr_data.items(), desc=f"Processing {name} data"):
         pano_descs = entry["pano"]
         osm_items = entry["osm"]
         matches = entry["matches"]["matches"]
@@ -264,9 +337,8 @@ def extract_validation_data(correspondence_file: Path, sentence_directory: Path 
             if pano_idx_in_entry >= len(pano_descs):
                 continue
 
+            # Handle different pano formats
             pano_desc = pano_descs[pano_idx_in_entry]
-
-            # Handle different pano formats: dict with 'sentence' key or plain string
             if isinstance(pano_desc, dict):
                 pano_text = pano_desc.get('sentence', '')
             else:
@@ -275,12 +347,13 @@ def extract_validation_data(correspondence_file: Path, sentence_directory: Path 
             if not pano_text:
                 continue
 
-            # Add pano text if not seen
-            if pano_text not in pano_text_to_idx:
-                pano_text_to_idx[pano_text] = len(pano_texts)
-                pano_texts.append(pano_text)
+            # Add pano text to queries if not seen
+            if pano_text not in pano_text_to_id:
+                pano_id = f"pano_{len(pano_text_to_id)}"
+                pano_text_to_id[pano_text] = pano_id
+                queries[pano_id] = pano_text
 
-            pano_idx = pano_text_to_idx[pano_text]
+            pano_id = pano_text_to_id[pano_text]
 
             # Process matched OSM items
             for osm_idx_in_entry in osm_indices_in_entry:
@@ -288,371 +361,119 @@ def extract_validation_data(correspondence_file: Path, sentence_directory: Path 
                     continue
 
                 osm_item = osm_items[osm_idx_in_entry]
-                osm_text = process_osm_item(osm_item)
+                osm_text = process_osm_item(osm_item, sentence_dict, use_natural_language)
 
                 if not osm_text:
                     continue
 
-                # Add OSM text if not seen
-                if osm_text not in osm_text_to_idx:
-                    osm_text_to_idx[osm_text] = len(osm_texts)
-                    osm_texts.append(osm_text)
+                # Add OSM text to corpus if not seen
+                if osm_text not in osm_text_to_id:
+                    osm_id = f"osm_{len(osm_text_to_id)}"
+                    osm_text_to_id[osm_text] = osm_id
+                    corpus[osm_id] = osm_text
 
-                osm_idx = osm_text_to_idx[osm_text]
+                osm_id = osm_text_to_id[osm_text]
 
-                # Record correspondence
-                if pano_idx not in pano_to_osm_indices:
-                    pano_to_osm_indices[pano_idx] = []
-                if osm_idx not in pano_to_osm_indices[pano_idx]:
-                    pano_to_osm_indices[pano_idx].append(osm_idx)
+                # Record correspondence in relevant_docs
+                if pano_id not in relevant_docs:
+                    relevant_docs[pano_id] = set()
+                relevant_docs[pano_id].add(osm_id)
 
-    logger.info(f"Validation set: {len(pano_texts)} unique panos, {len(osm_texts)} unique OSMs")
+    logger.info(f"{name} set: {len(queries)} queries, {len(corpus)} corpus items")
 
-    if len(pano_texts) == 0 or len(osm_texts) == 0:
-        logger.warning("Validation set is empty! Validation will be skipped.")
+    if len(queries) == 0 or len(corpus) == 0:
+        logger.warning(f"{name} set is empty! Evaluator will not be created.")
         return None
 
-    return pano_texts, osm_texts, pano_to_osm_indices
+    # Create InformationRetrievalEvaluator
+    evaluator = InformationRetrievalEvaluator(
+        queries=queries,
+        corpus=corpus,
+        relevant_docs=relevant_docs,
+        name=name,
+        show_progress_bar=True,
+    )
+
+    return evaluator
 
 
-@torch.no_grad()
-def compute_validation_metrics(
-    model: TrainableSentenceEmbedder,
-    pano_texts: List[str],
-    osm_texts: List[str],
-    pano_to_osm_indices: dict,
-    device: torch.device,
-    batch_size: int = 128
-) -> dict:
-    """Compute retrieval metrics on validation set.
-
-    Args:
-        model: The sentence embedding model
-        pano_texts: List of pano descriptions
-        osm_texts: List of OSM descriptions
-        pano_to_osm_indices: Dict mapping pano_idx -> list of correct osm_indices
-        device: Device to run on
-        batch_size: Batch size for embedding computation
-
-    Returns:
-        dict: Validation metrics including MRR, recall@k, mean/median rank
-    """
-    model.eval()
-
-    # Safety check
-    if len(pano_texts) == 0 or len(osm_texts) == 0:
-        logger.warning("Empty validation set, returning empty metrics")
-        return {}
-
-    logger.info("Computing validation embeddings...")
-
-    # Compute pano embeddings in batches
-    pano_embeddings_list = []
-    for i in range(0, len(pano_texts), batch_size):
-        batch_texts = pano_texts[i:i+batch_size]
-        embeddings = model(batch_texts)
-        pano_embeddings_list.append(embeddings.cpu())
-    pano_embeddings = torch.cat(pano_embeddings_list, dim=0)
-
-    # Compute OSM embeddings in batches
-    osm_embeddings_list = []
-    for i in range(0, len(osm_texts), batch_size):
-        batch_texts = osm_texts[i:i+batch_size]
-        embeddings = model(batch_texts)
-        osm_embeddings_list.append(embeddings.cpu())
-    osm_embeddings = torch.cat(osm_embeddings_list, dim=0)
-
-    # Chunk size for computing rankings to avoid OOM
-    chunk_size = 500
-
-    # Move embeddings to device for computation
-    pano_embeddings = pano_embeddings.to(device)
-    osm_embeddings = osm_embeddings.to(device)
-
-    # Compute rankings in chunks to avoid OOM
-    # We only need the rankings, not the full similarity matrix
-    all_ranks = []
-
-    for chunk_idx, start_idx in enumerate(range(0, len(pano_embeddings), chunk_size)):
-        end_idx = min(start_idx + chunk_size, len(pano_embeddings))
-        pano_chunk = pano_embeddings[start_idx:end_idx]
-
-        # Compute similarity for this chunk: [chunk_size, N_osm]
-        similarity_chunk = torch.mm(pano_chunk, osm_embeddings.T)
-
-        # Rank OSMs for this chunk (descending order)
-        ranks_chunk = torch.argsort(similarity_chunk, dim=1, descending=True)
-        all_ranks.append(ranks_chunk.cpu())
-
-        # Free memory immediately
-        del similarity_chunk, ranks_chunk
-        if device.type == 'cuda':
-            torch.cuda.empty_cache()
-
-    ranks = torch.cat(all_ranks, dim=0)  # [N_pano, N_osm]
-
-    # Compute metrics
-    reciprocal_ranks = []
-    min_ranks = []
-    recall_at_1 = 0
-    recall_at_5 = 0
-    recall_at_10 = 0
-    recall_at_100 = 0
-
-    num_queries = len(pano_to_osm_indices)
-
-    for pano_idx, correct_osm_indices in pano_to_osm_indices.items():
-        # Get ranked OSM indices for this pano
-        ranked_osm_indices = ranks[pano_idx].cpu().tolist()
-
-        # Find positions of correct OSMs in the ranked list
-        positions = []
-        for correct_osm_idx in correct_osm_indices:
-            try:
-                pos = ranked_osm_indices.index(correct_osm_idx)
-                positions.append(pos + 1)  # 1-indexed rank
-            except ValueError:
-                # This should not happen but handle gracefully
-                continue
-
-        if not positions:
-            continue
-
-        # MRR: reciprocal rank of first correct match
-        min_rank = min(positions)
-        min_ranks.append(min_rank)
-        reciprocal_ranks.append(1.0 / min_rank)
-
-        # Recall@k: is any correct match in top-k?
-        if min_rank <= 1:
-            recall_at_1 += 1
-        if min_rank <= 5:
-            recall_at_5 += 1
-        if min_rank <= 10:
-            recall_at_10 += 1
-        if min_rank <= 100:
-            recall_at_100 += 1
-
-    # Compute final metrics
-    mrr = sum(reciprocal_ranks) / num_queries if num_queries > 0 else 0.0
-    mean_rank = sum(min_ranks) / num_queries if num_queries > 0 else 0.0
-    median_rank = torch.tensor(min_ranks).float().median().item() if min_ranks else 0.0
-
-    metrics = {
-        "pano_to_osm/mrr": mrr,
-        "pano_to_osm/recall@1": recall_at_1 / num_queries if num_queries > 0 else 0.0,
-        "pano_to_osm/recall@5": recall_at_5 / num_queries if num_queries > 0 else 0.0,
-        "pano_to_osm/recall@10": recall_at_10 / num_queries if num_queries > 0 else 0.0,
-        "pano_to_osm/recall@100": recall_at_100 / num_queries if num_queries > 0 else 0.0,
-        "pano_to_osm/mean_rank": mean_rank,
-        "pano_to_osm/median_rank": median_rank,
-    }
-
-    # Compute reverse direction: osm -> pano
-    # Build osm_to_pano mapping
-    osm_to_pano_indices = {}
-    for pano_idx, osm_indices in pano_to_osm_indices.items():
-        for osm_idx in osm_indices:
-            if osm_idx not in osm_to_pano_indices:
-                osm_to_pano_indices[osm_idx] = []
-            if pano_idx not in osm_to_pano_indices[osm_idx]:
-                osm_to_pano_indices[osm_idx].append(pano_idx)
-
-    # Compute reverse rankings in chunks (osm -> pano)
-    all_ranks_reverse = []
-    for chunk_idx, start_idx in enumerate(range(0, len(osm_embeddings), chunk_size)):
-        end_idx = min(start_idx + chunk_size, len(osm_embeddings))
-        osm_chunk = osm_embeddings[start_idx:end_idx]
-
-        # Compute similarity for this chunk: [chunk_size, N_pano]
-        similarity_chunk = torch.mm(osm_chunk, pano_embeddings.T)
-
-        # Rank panos for this chunk (descending order)
-        ranks_chunk = torch.argsort(similarity_chunk, dim=1, descending=True)
-        all_ranks_reverse.append(ranks_chunk.cpu())
-
-        # Free memory immediately
-        del similarity_chunk, ranks_chunk
-        if device.type == 'cuda':
-            torch.cuda.empty_cache()
-
-    ranks_reverse = torch.cat(all_ranks_reverse, dim=0)  # [N_osm, N_pano]
-
-    reciprocal_ranks_reverse = []
-    min_ranks_reverse = []
-    num_queries_reverse = len(osm_to_pano_indices)
-
-    for osm_idx, correct_pano_indices in osm_to_pano_indices.items():
-        ranked_pano_indices = ranks_reverse[osm_idx].cpu().tolist()
-
-        positions = []
-        for correct_pano_idx in correct_pano_indices:
-            try:
-                pos = ranked_pano_indices.index(correct_pano_idx)
-                positions.append(pos + 1)
-            except ValueError:
-                continue
-
-        if not positions:
-            continue
-
-        min_rank = min(positions)
-        min_ranks_reverse.append(min_rank)
-        reciprocal_ranks_reverse.append(1.0 / min_rank)
-
-    mrr_reverse = sum(reciprocal_ranks_reverse) / num_queries_reverse if num_queries_reverse > 0 else 0.0
-    mean_rank_reverse = sum(min_ranks_reverse) / num_queries_reverse if num_queries_reverse > 0 else 0.0
-
-    metrics["osm_to_pano/mrr"] = mrr_reverse
-    metrics["osm_to_pano/mean_rank"] = mean_rank_reverse
-
-    return metrics
-
-
-def train(
-    model: TrainableSentenceEmbedder,
-    train_dataloader: DataLoader,
-    optimizer,
-    lr_scheduler,
-    device,
-    args,
-    writer: SummaryWriter,
-    validation_data: tuple | None = None,
+def save_model_for_pipeline(
+    model: SentenceTransformer,
+    output_path: Path,
+    training_args: dict
 ):
-    """Main training loop.
+    """Save SentenceTransformer in format compatible with pipeline loading.
+
+    This function extracts the trained weights and saves them using the same
+    format as the original TrainableSentenceEmbedder, ensuring compatibility
+    with the geo-localization pipeline.
 
     Args:
-        validation_data: Optional tuple of (pano_texts, osm_texts, pano_to_osm_indices)
+        model: Trained SentenceTransformer model
+        output_path: Path to save the model
+        training_args: Dictionary of training arguments for metadata
     """
+    logger.info(f"Saving model for pipeline compatibility to {output_path}")
 
-    model.train()
-    loss_fn = nn.CrossEntropyLoss()
-    max_grad_norm = 1.0
+    # Create a TrainableSentenceEmbedder config matching the trained model
+    # We need to extract the base model name from the SentenceTransformer
+    base_model_name = training_args.get("base_model", "sentence-transformers/all-MiniLM-L6-v2")
 
-    global_step = 0
-    total_loss = 0
-    log_interval = 100
+    # Get the transformer model's config to determine output dimension
+    # SentenceTransformer models typically have a Dense layer that defines output dim
+    # We'll use the embedding dimension from the model
+    output_dim = model.get_sentence_embedding_dimension()
+    max_seq_length = model.get_max_seq_length()
 
-    # Track best validation MRR
-    best_val_mrr = 0.0
+    # Create config
+    model_config = TrainableSentenceEmbedderConfig(
+        pretrained_model_name_or_path=base_model_name,
+        output_dim=output_dim,
+        max_sequence_length=max_seq_length,
+        freeze_weights=False,  # Weights are already trained
+        model_weights_path=None,
+    )
 
-    logger.info("Starting training...")
-    logger.info(f"  Total steps: {args.steps}")
-    logger.info(f"  Batch size: {args.batch_size}")
-    logger.info(f"  Learning rate: {args.lr}")
-    logger.info(f"  TensorBoard logs: {args.output}/tensorboard")
-    if validation_data is not None:
-        logger.info(f"  Validation will run every {args.validation_interval} steps")
+    # Create a new TrainableSentenceEmbedder instance
+    pipeline_model = TrainableSentenceEmbedder(model_config)
 
-    pbar = tqdm.tqdm(total=args.steps, desc="Training")
+    # Copy weights from SentenceTransformer to TrainableSentenceEmbedder
+    # The SentenceTransformer architecture is: [Transformer, Pooling, (optional) Dense, Normalize]
+    # TrainableSentenceEmbedder has: transformer, projection, and does pooling/normalization in forward
 
-    while global_step < args.steps:
-        for batch in train_dataloader:
-            if global_step >= args.steps:
-                break
+    # Copy transformer weights
+    st_transformer = model[0]  # First module is the transformer
+    pipeline_model.transformer.load_state_dict(st_transformer.auto_model.state_dict())
 
-            optimizer.zero_grad()
+    # Check if SentenceTransformer has a Dense layer (projection)
+    has_dense = False
+    for module in model.modules():
+        if hasattr(module, '__class__') and 'Dense' in module.__class__.__name__:
+            has_dense = True
+            # Copy dense layer weights to projection
+            # Dense layer typically has linear transformation
+            if hasattr(module, 'linear'):
+                pipeline_model.projection.load_state_dict(module.linear.state_dict())
+            break
 
-            loss, metrics = train_step(
-                batch=batch,
-                model=model,
-                optimizer=optimizer,
-                device=device,
-                scale=args.scale,
-                loss_fn=loss_fn,
-            )
-
-            # Backward pass
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
-            optimizer.step()
-            lr_scheduler.step()
-
-            total_loss += metrics["loss"]
-            global_step += 1
-
-            # TensorBoard logging (every step)
-            writer.add_scalar("train/loss", metrics["loss"], global_step)
-            writer.add_scalar("train/accuracy", metrics["accuracy"], global_step)
-            writer.add_scalar("train/avg_positive_sim", metrics["avg_positive_sim"], global_step)
-            writer.add_scalar("train/avg_negative_sim", metrics["avg_negative_sim"], global_step)
-            writer.add_scalar("train/learning_rate", lr_scheduler.get_last_lr()[0], global_step)
-
-            # Console logging
-            if global_step % log_interval == 0:
-                avg_loss = total_loss / log_interval
-                pbar.set_postfix(
-                    {
-                        "loss": f"{avg_loss:.4f}",
-                        "acc": f"{metrics['accuracy']:.3f}",
-                        "pos_sim": f"{metrics['avg_positive_sim']:.3f}",
-                        "neg_sim": f"{metrics['avg_negative_sim']:.3f}",
-                        "lr": f"{lr_scheduler.get_last_lr()[0]:.2e}",
-                    }
-                )
-                total_loss = 0
-
-            pbar.update(1)
-
-            # Save checkpoint
-            if (global_step + 1) % args.save_steps == 0:
-                save_path = os.path.join(args.output, f"step_{global_step + 1}")
-                save_model(model, save_path, vars(args))
-                logger.info(f"Saved checkpoint to {save_path}")
-
-            # Run validation
-            if validation_data is not None and (global_step + 1) % args.validation_interval == 0:
-                logger.info(f"\nRunning validation at step {global_step + 1}...")
-                pano_texts, osm_texts, pano_to_osm_indices = validation_data
-
-                val_metrics = compute_validation_metrics(
-                    model=model,
-                    pano_texts=pano_texts,
-                    osm_texts=osm_texts,
-                    pano_to_osm_indices=pano_to_osm_indices,
-                    device=device,
-                    batch_size=args.batch_size * 2  # Use larger batch for validation
-                )
-
-                # Log validation metrics
-                logger.info("Validation Results:")
-                for metric_name, metric_value in val_metrics.items():
-                    logger.info(f"  {metric_name}: {metric_value:.4f}")
-                    writer.add_scalar(f"val/{metric_name}", metric_value, global_step + 1)
-
-                # Save best checkpoint based on validation MRR
-                current_mrr = val_metrics["pano_to_osm/mrr"]
-                if args.save_best_checkpoint and current_mrr > best_val_mrr:
-                    best_val_mrr = current_mrr
-                    best_path = os.path.join(args.output, "best_model")
-                    save_model(model, best_path, vars(args))
-                    logger.info(f"New best validation MRR: {best_val_mrr:.4f}! Saved to {best_path}")
-
-                # Return model to training mode
-                model.train()
-
-    pbar.close()
-    writer.close()
-
-    # Save final model
-    save_path = os.path.join(args.output, "final")
-    save_model(model, save_path, vars(args))
-    logger.info(f"Saved final model to {save_path}")
-
-
-def save_model(model: TrainableSentenceEmbedder, output_path: str, training_args: dict):
-    """Save model using the same logic as train.py."""
-    # Create example input for the model
-    example_texts = ["This is a test sentence."]
+    if not has_dense:
+        logger.warning(
+            "SentenceTransformer does not have a Dense layer. "
+            "Pipeline model projection layer will use random initialization. "
+            "Consider training with a model that includes a Dense layer."
+        )
 
     # Save using common save_model function
+    example_texts = ["This is a test sentence."]
     save_model_with_metadata(
-        model=model,
-        save_path=Path(output_path),
+        model=pipeline_model,
+        save_path=output_path,
         example_model_inputs=(example_texts,),
         aux_information={
             "training_args": training_args,
             "model_type": "TrainableSentenceEmbedder",
+            "trained_with_sentence_transformers": True,
+            "sentence_embedding_dimension": output_dim,
         }
     )
 
@@ -661,111 +482,143 @@ def save_model(model: TrainableSentenceEmbedder, output_path: str, training_args
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Train sentence embedding model on correspondence data"
+        description="Train sentence embedding model using sentence-transformers"
     )
     parser.add_argument(
-        "--model",
+        "--base_model",
         type=str,
-        default="sentence-transformers/paraphrase-MiniLM-L3-v2",
-        help="Pretrained model name from HuggingFace",
+        default="sentence-transformers/all-MiniLM-L6-v2",
+        help="Base SentenceTransformer model from HuggingFace",
     )
     parser.add_argument(
-        "--correspondence_file",
+        "--dataset_source",
+        type=str,
+        choices=["correspondence", "huggingface"],
+        default="correspondence",
+        help="Source of training data: 'correspondence' for custom correspondence files, 'huggingface' for benchmark datasets",
+    )
+    parser.add_argument(
+        "--hf_dataset_name",
+        type=str,
+        choices=["natural-questions", "squad", "all-nli"],
+        default="natural-questions",
+        help="HuggingFace dataset to use when --dataset_source=huggingface (default: natural-questions)",
+    )
+    parser.add_argument(
+        "--hf_dataset_size",
+        type=int,
+        default=None,
+        help="Optional size to trim HuggingFace dataset to (default: use full dataset)",
+    )
+    parser.add_argument(
+        "--train_correspondence_file",
+        type=str,
+        default=None,
+        help="Path to training correspondence JSON file (required when --dataset_source=correspondence)",
+    )
+    parser.add_argument(
+        "--val_correspondence_file",
         type=str,
         required=True,
-        help="Path to correspondence JSON file",
+        help="Path to validation correspondence JSON file (e.g., /tmp/minimal_historical_seattle.json for Seattle)",
     )
     parser.add_argument(
-        "--sentence_directory",
+        "--train_sentence_directory",
         type=str,
         default=None,
-        help="Optional path to directory with natural language descriptions",
+        help="Optional path to directory with natural language descriptions for training",
     )
     parser.add_argument(
-        "--output", type=str, required=True, help="Output directory for trained model"
-    )
-    parser.add_argument(
-        "--steps", type=int, default=10000, help="Total training steps"
-    )
-    parser.add_argument(
-        "--batch_size", type=int, default=64, help="Batch size per device"
-    )
-    parser.add_argument(
-        "--max_length",
-        type=int,
-        default=128,
-        help="Maximum sequence length for tokenization",
-    )
-    parser.add_argument(
-        "--output_dim",
-        type=int,
-        default=384,
-        help="Output embedding dimension",
-    )
-    parser.add_argument(
-        "--lr", type=float, default=2e-5, help="Learning rate"
-    )
-    parser.add_argument(
-        "--warmup_steps", type=int, default=500, help="Number of warmup steps"
-    )
-    parser.add_argument(
-        "--save_steps",
-        type=int,
-        default=5000,
-        help="Save checkpoint every N steps",
-    )
-    parser.add_argument(
-        "--scale",
-        type=float,
-        default=20.0,
-        help="Similarity scale factor (20 for cosine similarity)",
-    )
-    parser.add_argument(
-        "--use_natural_language",
-        action="store_true",
-        help="Use natural language descriptions from sentence_directory",
-    )
-    parser.add_argument(
-        "--freeze_weights",
-        action="store_true",
-        help="Freeze transformer weights (only train projection layer)",
-    )
-    parser.add_argument(
-        "--seed", type=int, default=42, help="Random seed"
-    )
-    parser.add_argument(
-        "--validation_file",
-        type=str,
-        default=None,
-        help="Path to validation correspondence JSON file",
-    )
-    parser.add_argument(
-        "--validation_sentence_directory",
+        "--val_sentence_directory",
         type=str,
         default=None,
         help="Optional path to directory with natural language descriptions for validation",
     )
     parser.add_argument(
-        "--validation_interval",
-        type=int,
-        default=1000,
-        help="Run validation every N steps",
+        "--output",
+        type=str,
+        required=True,
+        help="Output directory for trained model and logs",
     )
     parser.add_argument(
-        "--save_best_checkpoint",
+        "--num_epochs",
+        type=int,
+        default=1,
+        help="Number of training epochs",
+    )
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=64,
+        help="Training batch size per device",
+    )
+    parser.add_argument(
+        "--learning_rate",
+        type=float,
+        default=2e-5,
+        help="Learning rate",
+    )
+    parser.add_argument(
+        "--warmup_ratio",
+        type=float,
+        default=0.1,
+        help="Warmup ratio (fraction of total steps)",
+    )
+    parser.add_argument(
+        "--eval_steps",
+        type=int,
+        default=500,
+        help="Evaluate every N steps",
+    )
+    parser.add_argument(
+        "--save_steps",
+        type=int,
+        default=1000,
+        help="Save checkpoint every N steps",
+    )
+    parser.add_argument(
+        "--use_natural_language",
         action="store_true",
-        default=True,
-        help="Save best model based on validation MRR",
+        help="Use natural language descriptions from sentence directories",
+    )
+    parser.add_argument(
+        "--freeze_transformer",
+        action="store_true",
+        help="Freeze transformer weights (only train final layers)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed",
+    )
+    parser.add_argument(
+        "--fp16",
+        action="store_true",
+        help="Use mixed precision training (FP16)",
+    )
+    parser.add_argument(
+        "--bf16",
+        action="store_true",
+        help="Use mixed precision training (BF16)",
+    )
+    parser.add_argument(
+        "--train_val_split",
+        type=float,
+        default=0.95,
+        help="Fraction of training data to use for training (rest for validation subset)",
     )
 
     args = parser.parse_args()
 
-    # Set random seed
-    torch.manual_seed(args.seed)
-
-    # Setup device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info(f"Using device: {device}")
+    # Validate arguments based on dataset source
+    if args.dataset_source == "correspondence":
+        if not args.train_correspondence_file:
+            parser.error("--train_correspondence_file is required when --dataset_source=correspondence")
+    elif args.dataset_source == "huggingface":
+        logger.info(f"Using HuggingFace dataset: {args.hf_dataset_name}")
+        if args.hf_dataset_size:
+            logger.info(f"Will trim to {args.hf_dataset_size} examples")
 
     # Create output directory
     os.makedirs(args.output, exist_ok=True)
@@ -774,81 +627,188 @@ def main():
     with open(os.path.join(args.output, "training_args.json"), "w") as f:
         json.dump(vars(args), f, indent=2)
 
-    # Create model config and initialize TrainableSentenceEmbedder
-    logger.info(f"Loading model: {args.model}")
-    model_config = TrainableSentenceEmbedderConfig(
-        pretrained_model_name_or_path=args.model,
-        output_dim=args.output_dim,
-        max_sequence_length=args.max_length,
-        freeze_weights=args.freeze_weights,
-        model_weights_path=None,
-    )
-    model = TrainableSentenceEmbedder(model_config)
-    model = model.to(device)
+    logger.info(f"Loading base model: {args.base_model}")
+    model = SentenceTransformer(args.base_model)
 
-    # Load dataset
-    sentence_dir = Path(args.sentence_directory) if args.sentence_directory else None
-    dataset = CorrespondenceDataset(
-        correspondence_file=Path(args.correspondence_file),
-        sentence_directory=sentence_dir,
-        use_natural_language=args.use_natural_language,
-    )
+    # Freeze transformer if requested
+    if args.freeze_transformer:
+        logger.info("Freezing transformer weights")
+        # The first module is typically the transformer
+        if len(model) > 0 and hasattr(model[0], 'auto_model'):
+            model[0].auto_model.requires_grad_(False)
+            logger.info(f"Frozen transformer: {model[0].__class__.__name__}")
+        else:
+            logger.warning("Could not find transformer module to freeze")
 
-    # Create dataloader with infinite iteration
-    def infinite_dataloader(dataloader):
-        """Create infinite dataloader by repeating."""
-        while True:
-            for batch in dataloader:
-                yield batch
-
-    # Use num_workers=0 to avoid tokenizer fork warnings
-    dataloader = DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=0,
-        pin_memory=True,
-    )
-    train_dataloader = infinite_dataloader(dataloader)
-
-    # Setup optimizer and scheduler (use torch.optim.AdamW to avoid deprecation warning)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
-    lr_scheduler = get_linear_schedule_with_warmup(
-        optimizer=optimizer,
-        num_warmup_steps=args.warmup_steps,
-        num_training_steps=args.steps,
-    )
-
-    # Setup TensorBoard
-    tensorboard_dir = os.path.join(args.output, "tensorboard")
-    writer = SummaryWriter(log_dir=tensorboard_dir)
-
-    # Log hyperparameters
-    writer.add_text("hyperparameters", json.dumps(vars(args), indent=2), 0)
-
-    # Load validation data if provided
-    validation_data = None
-    if args.validation_file is not None:
-        val_sentence_dir = Path(args.validation_sentence_directory) if args.validation_sentence_directory else None
-        validation_data = extract_validation_data(
-            correspondence_file=Path(args.validation_file),
-            sentence_directory=val_sentence_dir,
+    # Load training dataset based on source
+    if args.dataset_source == "correspondence":
+        # Create full training dataset from correspondence files
+        train_sentence_dir = Path(args.train_sentence_directory) if args.train_sentence_directory else None
+        full_train_dataset = create_training_dataset(
+            correspondence_file=Path(args.train_correspondence_file),
+            sentence_directory=train_sentence_dir,
             use_natural_language=args.use_natural_language,
         )
+    else:  # huggingface
+        # Load HuggingFace benchmark dataset
+        full_train_dataset = load_huggingface_dataset(
+            dataset_name=args.hf_dataset_name,
+            target_size=args.hf_dataset_size,
+            seed=args.seed,
+        )
 
-    # Train
-    train(
-        model=model,
-        train_dataloader=train_dataloader,
-        optimizer=optimizer,
-        lr_scheduler=lr_scheduler,
-        device=device,
-        args=args,
-        writer=writer,
-        validation_data=validation_data,
+    # Split training dataset into train and train_validation subsets
+    train_val_split_idx = int(len(full_train_dataset) * args.train_val_split)
+    train_dataset = full_train_dataset.select(range(train_val_split_idx))
+    train_val_dataset = full_train_dataset.select(range(train_val_split_idx, len(full_train_dataset)))
+
+    logger.info(f"Split training data: {len(train_dataset)} train, {len(train_val_dataset)} train_validation")
+
+    # Create evaluator for training validation subset (Chicago)
+    # Convert train_val_dataset back to correspondence format for evaluator
+    train_val_queries = {}
+    train_val_corpus = {}
+    train_val_relevant_docs = {}
+
+    # Build unique sets for queries and corpus
+    anchor_to_id = {}
+    positive_to_id = {}
+
+    for idx, example in enumerate(train_val_dataset):
+        anchor = example["anchor"]
+        positive = example["positive"]
+
+        # Add anchor to queries if not seen
+        if anchor not in anchor_to_id:
+            anchor_id = f"train_anchor_{len(anchor_to_id)}"
+            anchor_to_id[anchor] = anchor_id
+            train_val_queries[anchor_id] = anchor
+
+        # Add positive to corpus if not seen
+        if positive not in positive_to_id:
+            positive_id = f"train_positive_{len(positive_to_id)}"
+            positive_to_id[positive] = positive_id
+            train_val_corpus[positive_id] = positive
+
+        # Record correspondence
+        anchor_id = anchor_to_id[anchor]
+        positive_id = positive_to_id[positive]
+
+        if anchor_id not in train_val_relevant_docs:
+            train_val_relevant_docs[anchor_id] = set()
+        train_val_relevant_docs[anchor_id].add(positive_id)
+
+    logger.info(f"Train validation set: {len(train_val_queries)} queries, {len(train_val_corpus)} corpus items")
+
+    # Use consistent names for TensorBoard plotting across different datasets
+    train_val_evaluator = InformationRetrievalEvaluator(
+        queries=train_val_queries,
+        corpus=train_val_corpus,
+        relevant_docs=train_val_relevant_docs,
+        name="train_val",  # Consistent name for training subset validation
+        show_progress_bar=True,
     )
 
+    # Create validation evaluator for Seattle test set
+    val_sentence_dir = Path(args.val_sentence_directory) if args.val_sentence_directory else None
+    seattle_evaluator = create_information_retrieval_evaluator(
+        correspondence_file=Path(args.val_correspondence_file),
+        sentence_directory=val_sentence_dir,
+        use_natural_language=args.use_natural_language,
+        name="test",  # Consistent name for test set
+    )
+
+    # Combine evaluators using SequentialEvaluator
+    evaluator = SequentialEvaluator([train_val_evaluator, seattle_evaluator])
+
+    # Create loss function
+    # CachedMultipleNegativesRankingLoss uses in-batch negatives with caching
+    # for better performance
+    loss = losses.CachedMultipleNegativesRankingLoss(model=model)
+
+    # Setup training arguments
+    training_args = SentenceTransformerTrainingArguments(
+        output_dir=args.output,
+        num_train_epochs=args.num_epochs,
+        per_device_train_batch_size=args.batch_size,
+        learning_rate=args.learning_rate,
+        warmup_ratio=args.warmup_ratio,
+        fp16=args.fp16,
+        bf16=args.bf16,
+        batch_sampler=BatchSamplers.NO_DUPLICATES,  # Required for in-batch negatives
+        eval_strategy="steps",
+        eval_steps=args.eval_steps,
+        save_strategy="steps",
+        save_steps=args.save_steps,
+        logging_steps=100,
+        save_total_limit=3,
+        load_best_model_at_end=True,
+        metric_for_best_model="test_cosine_ndcg@10",  # Use NDCG@10 on test set as metric
+        greater_is_better=True,
+        seed=args.seed,
+        # TensorBoard logging is automatic
+        report_to="tensorboard",
+    )
+
+    # Create trainer
+    trainer = SentenceTransformerTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        loss=loss,
+        evaluator=evaluator,
+    )
+
+    # Log training info
+    logger.info("=" * 80)
+    logger.info("Training Configuration:")
+    logger.info(f"  Base model: {args.base_model}")
+    logger.info(f"  Dataset source: {args.dataset_source}")
+    if args.dataset_source == "huggingface":
+        logger.info(f"  HuggingFace dataset: {args.hf_dataset_name}")
+        if args.hf_dataset_size:
+            logger.info(f"  Dataset size (trimmed): {args.hf_dataset_size}")
+    logger.info(f"  Training samples: {len(train_dataset)}")
+    logger.info(f"  Train validation samples: {len(train_val_dataset)}")
+    logger.info(f"  Test validation queries: {len(seattle_evaluator.queries) if seattle_evaluator else 0}")
+    logger.info(f"  Epochs: {args.num_epochs}")
+    logger.info(f"  Batch size: {args.batch_size}")
+    logger.info(f"  Learning rate: {args.learning_rate}")
+    logger.info(f"  Warmup ratio: {args.warmup_ratio}")
+    logger.info(f"  Train/val split: {args.train_val_split:.2%}")
+    logger.info(f"  Freeze transformer: {args.freeze_transformer}")
+    logger.info(f"  Output directory: {args.output}")
+    logger.info(f"  TensorBoard logs: {args.output}/runs")
+    logger.info("=" * 80)
+
+    # Train!
+    trainer.train()
+
+    # Save final model in sentence-transformers format
+    final_model_path = os.path.join(args.output, "final_sentence_transformer")
+    model.save(final_model_path)
+    logger.info(f"Saved final model (sentence-transformers format) to {final_model_path}")
+
+    # Save model in format compatible with pipeline
+    pipeline_model_path = Path(args.output) / "final_pipeline_compatible"
+    save_model_for_pipeline(
+        model=model,
+        output_path=pipeline_model_path,
+        training_args=vars(args),
+    )
+
+    # Also save best model in pipeline format if different from final
+    if training_args.load_best_model_at_end:
+        best_pipeline_path = Path(args.output) / "best_pipeline_compatible"
+        save_model_for_pipeline(
+            model=model,
+            output_path=best_pipeline_path,
+            training_args=vars(args),
+        )
+        logger.info(f"Saved best model (pipeline compatible) to {best_pipeline_path}")
+
     logger.info("Training completed!")
+    logger.info(f"View training logs with: tensorboard --logdir {args.output}/runs")
 
 
 if __name__ == "__main__":
