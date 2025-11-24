@@ -30,6 +30,19 @@ class AbsolutePositionExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     ...
 
 
+class TrainableSentenceEmbedderConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    """Configuration for trainable sentence embedding model.
+
+    Used to configure a Sentence-BERT style model that can be fine-tuned
+    during training as an alternative to frozen OpenAI embeddings.
+    """
+    pretrained_model_name_or_path: str  # HuggingFace model name or path
+    output_dim: int  # Dimension of output embeddings
+    freeze_weights: bool = True  # Whether to freeze transformer during training
+    max_sequence_length: int = 128  # Maximum sequence length for tokenization
+    model_weights_path: str | None = None  # Optional path to custom pretrained weights
+
+
 class SemanticEmbeddingMatrixConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     vocabulary: list[str]
     embedding_dim: int

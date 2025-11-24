@@ -285,3 +285,27 @@ py_test(
     "//experimental/overhead_matching/swag/data:vigor_dataset",
   ]
 )
+
+py_library(
+  name = "trainable_sentence_embedder",
+  srcs = ["trainable_sentence_embedder.py"],
+  visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+  deps = [
+    requirement("torch"),
+    requirement("transformers"),
+    "//common/torch:load_torch_deps",
+    ":swag_config_types",
+  ]
+)
+
+py_test(
+  name = "trainable_sentence_embedder_test",
+  srcs = ["trainable_sentence_embedder_test.py"],
+  deps = [
+    ":trainable_sentence_embedder",
+    ":swag_config_types",
+    requirement("torch"),
+    requirement("transformers"),
+    "//common/torch:load_torch_deps",
+  ]
+)
