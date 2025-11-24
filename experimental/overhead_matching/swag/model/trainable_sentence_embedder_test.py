@@ -13,7 +13,7 @@ from experimental.overhead_matching.swag.model.trainable_sentence_embedder impor
     TrainableSentenceEmbedder
 )
 from experimental.overhead_matching.swag.model.semantic_landmark_extractor import (
-    SemanticLandmarkExtractor, ModelInput, prune_landmark, _custom_id_from_props
+    SemanticLandmarkExtractor, ModelInput, prune_landmark, custom_id_from_props
 )
 from experimental.overhead_matching.swag.model.panorama_semantic_landmark_extractor import (
     PanoramaSemanticLandmarkExtractor
@@ -183,7 +183,7 @@ class SemanticLandmarkExtractorWithTrainableEmbedderTest(unittest.TestCase):
         cls.landmark_sentences = {}
         for key, props in cls.test_landmarks.items():
             pruned_props = prune_landmark(props)
-            custom_id = _custom_id_from_props(pruned_props)
+            custom_id = custom_id_from_props(pruned_props)
 
             # Create natural language sentence
             if key == 'restaurant':

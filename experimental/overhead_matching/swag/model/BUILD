@@ -304,8 +304,12 @@ py_test(
   deps = [
     ":trainable_sentence_embedder",
     ":swag_config_types",
+    ":semantic_landmark_extractor",
+    ":panorama_semantic_landmark_extractor",
+    ":semantic_landmark_utils",
     requirement("torch"),
     requirement("transformers"),
+    requirement("shapely"),
     "//common/torch:load_torch_deps",
   ]
 )
