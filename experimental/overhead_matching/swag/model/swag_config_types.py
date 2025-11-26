@@ -30,6 +30,19 @@ class AbsolutePositionExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     ...
 
 
+class TrainableSentenceEmbedderConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    """Configuration for trainable sentence embedding model.
+
+    Used to configure a Sentence-BERT style model that can be fine-tuned
+    during training as an alternative to frozen OpenAI embeddings.
+    """
+    pretrained_model_name_or_path: str  # HuggingFace model name or path
+    output_dim: int  # Dimension of output embeddings
+    freeze_weights: bool = True  # Whether to freeze transformer during training
+    max_sequence_length: int = 128  # Maximum sequence length for tokenization
+    model_weights_path: str | None = None  # Optional path to custom pretrained weights
+
+
 class SemanticEmbeddingMatrixConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     vocabulary: list[str]
     embedding_dim: int
@@ -48,17 +61,30 @@ class LandmarkType(StrEnum):
     MULTIPOLYGON = "multipolygon"
 
 
+class OSMInputMode(StrEnum):
+    """Mode for converting OSM properties to text for embedding.
+
+    OSM_TEXT: Use raw OSM properties as "key: value, key: value, ..."
+    NATURAL_LANGUAGE: Use GPT-generated natural language descriptions
+    """
+    OSM_TEXT = "osm_text"
+    NATURAL_LANGUAGE = "natural_language"
+
+
 class SemanticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     landmark_type: LandmarkType
     openai_embedding_size: int  # if smaller than the true embedding dim (1536), will crop and renormalize embedding
     embedding_version: str
     auxiliary_info_key: str
+    osm_input_mode: OSMInputMode = OSMInputMode.NATURAL_LANGUAGE
+    trainable_embedder_config: 'TrainableSentenceEmbedderConfig | None' = None
 
 
 class PanoramaSemanticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     openai_embedding_size: int  # if smaller than the true embedding dim (1536), will crop and renormalize embedding
     embedding_version: str
     auxiliary_info_key: str
+    trainable_embedder_config: 'TrainableSentenceEmbedderConfig | None' = None
 
 
 class SyntheticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
