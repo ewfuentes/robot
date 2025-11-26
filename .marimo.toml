@@ -29,8 +29,8 @@ auto_instantiate = false
 [diagnostics]
 
 [keymap]
-preset = "default"
 destructive_delete = true
+preset = "vim"
 
 [keymap.overrides]
 

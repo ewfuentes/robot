@@ -1,6 +1,7 @@
 
 import common.torch.load_torch_deps
 import torch
+import pickle
 import math
 import json
 from pathlib import Path
@@ -107,10 +108,13 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
             # Load sentences (optional)
             sentence_dir = city_dir / "sentences"
             metadata_from_sentences = None
-            city_sentences, metadata_from_sentences, _ = make_sentence_dict_from_pano_jsons(
-                load_all_jsonl_from_folder(sentence_dir))
-            self.all_sentences.update(city_sentences)
-            print(f"  Loaded {len(city_sentences)} sentences")
+            if sentence_dir.exists():
+                city_sentences, metadata_from_sentences, _ = make_sentence_dict_from_pano_jsons(
+                    load_all_jsonl_from_folder(sentence_dir))
+                self.all_sentences.update(city_sentences)
+                print(f"  Loaded {len(city_sentences)} sentences")
+            else:
+                print(f"  Sentences dir {sentence_dir} does not exist, skipping loading sentences")
 
             # Load panorama metadata
             metadata_file = city_dir / "embedding_requests" / "panorama_metadata.jsonl"
@@ -228,7 +232,7 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
                 # Track max description length for debug tensor
                 max_description_length = max(
                     max_description_length,
-                    len(self.all_sentences[custom_id].encode("utf-8")))
+                    len(self.all_sentences.get(custom_id, "").encode("utf-8")))
 
         # Re-normalize embeddings if we cropped them
         features[~mask] = features[~mask] / torch.norm(features[~mask], dim=-1).unsqueeze(-1)
@@ -251,7 +255,7 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
 
             for landmark_idx, landmark_meta in enumerate(matching_landmarks):
                 custom_id = landmark_meta["custom_id"]
-                sentence_bytes = self.all_sentences[custom_id].encode('utf-8')
+                sentence_bytes = self.all_sentences.get(custom_id, "").encode('utf-8')
                 sentence_tensor = torch.tensor(list(sentence_bytes), dtype=torch.uint8)
                 sentence_debug[i, landmark_idx, :len(sentence_bytes)] = sentence_tensor
         debug["sentences"] = sentence_debug.to(model_input.image.device)
