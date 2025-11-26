@@ -728,7 +728,7 @@ class ObservationLikelihoodTest(unittest.TestCase):
         sat_tree, patch_centroids = build_test_spatial_index(sat_geometry)
 
         similarities = torch.tensor([[0.8]])
-        particle_locs_px = torch.tensor([[100.0, 50.0]])
+        particle_locs_px = torch.tensor([[50.0, 100.0]])
 
         log_likelihood = lol._compute_sat_log_likelihood(
             similarities, particle_locs_px, sat_tree, patch_centroids
@@ -751,9 +751,9 @@ class ObservationLikelihoodTest(unittest.TestCase):
             [0.2, 0.9]
         ])
         particle_locs_px = torch.tensor([
-            [100.0, 50.0],
-            [150.0, 100.0],
-            [200.0, 150.0],
+            [50.0, 100.0],
+            [100.0, 150.0],
+            [150.0, 200.0],
         ])
 
         log_likelihood = lol._compute_sat_log_likelihood(
@@ -771,8 +771,8 @@ class ObservationLikelihoodTest(unittest.TestCase):
 
         similarities = torch.tensor([[0.8], [0.7]])
         particle_locs_px = torch.tensor([
-            [[100.0, 50.0], [110.0, 60.0], [120.0, 70.0]],
-            [[130.0, 80.0], [140.0, 90.0], [150.0, 100.0]],
+            [[50.0, 100.0], [60.0, 110.0], [70.0, 120.0]],
+            [[80.0, 130.0], [90.0, 140.0], [100.0, 150.0]],
         ])
 
         log_likelihood = lol._compute_sat_log_likelihood(
@@ -790,8 +790,8 @@ class ObservationLikelihoodTest(unittest.TestCase):
         sat_tree, patch_centroids = build_test_spatial_index(sat_geometry)
 
         similarities = torch.tensor([[0.9, 0.1]])
-        particle_near_high = torch.tensor([[100.0, 50.0]])
-        particle_near_low = torch.tensor([[200.0, 150.0]])
+        particle_near_high = torch.tensor([[50.0, 100.0]])
+        particle_near_low = torch.tensor([[150.0, 200.0]])
 
         ll_near_high = lol._compute_sat_log_likelihood(
             similarities, particle_near_high, sat_tree, patch_centroids
@@ -812,7 +812,7 @@ class ObservationLikelihoodTest(unittest.TestCase):
         sat_tree, patch_centroids = build_test_spatial_index(sat_geometry)
 
         similarities = torch.tensor([[0.8, 0.5, 0.2]])
-        particle_locs_px = torch.tensor([[100.0, 50.0]])
+        particle_locs_px = torch.tensor([[50.0, 100.0]])
 
         log_likelihood = lol._compute_sat_log_likelihood(
             similarities, particle_locs_px, sat_tree, patch_centroids
@@ -830,7 +830,7 @@ class ObservationLikelihoodTest(unittest.TestCase):
         sat_tree, patch_centroids = build_test_spatial_index(sat_geometry)
 
         similarities = torch.tensor([[0.9]])
-        particle_near = torch.tensor([[100.0, 50.0]])
+        particle_near = torch.tensor([[50.0, 100.0]])
         particle_far = torch.tensor([[1000.0, 1000.0]])
 
         ll_near = lol._compute_sat_log_likelihood(
@@ -864,7 +864,7 @@ class ObservationLikelihoodTest(unittest.TestCase):
         sat_tree, patch_centroids = build_test_spatial_index(sat_geometry)
 
         similarities = torch.tensor([[0.0]])
-        particle_locs_px = torch.tensor([[100.0, 50.0]])
+        particle_locs_px = torch.tensor([[50.0, 100.0]])
 
         log_likelihood = lol._compute_sat_log_likelihood(
             similarities, particle_locs_px, sat_tree, patch_centroids
@@ -880,7 +880,7 @@ class ObservationLikelihoodTest(unittest.TestCase):
         sat_tree, patch_centroids = build_test_spatial_index(sat_geometry)
 
         similarities = torch.tensor([[0.8]])
-        particle_locs_px = torch.tensor([[100.0, 50.0]])
+        particle_locs_px = torch.tensor([[50.0, 100.0]])
 
         log_likelihood = lol._compute_sat_log_likelihood(
             similarities, particle_locs_px, sat_tree, patch_centroids
@@ -896,7 +896,7 @@ class ObservationLikelihoodTest(unittest.TestCase):
 
         similarities = torch.tensor([[[0.9]]])
         mask = torch.tensor([[True]])
-        particle_locs_px = torch.tensor([[[100.0, 50.0]]])
+        particle_locs_px = torch.tensor([[[50.0, 100.0]]])
 
         log_likelihood = lol._compute_osm_log_likelihood(
             similarities, mask, osm_geometry, particle_locs_px, point_sigma_px=300
@@ -919,9 +919,9 @@ class ObservationLikelihoodTest(unittest.TestCase):
             [True, True],
         ])
         particle_locs_px = torch.tensor([[
-            [100.0, 50.0],
-            [150.0, 100.0],
-            [200.0, 150.0],
+            [50.0, 100.0],
+            [100.0, 150.0],
+            [150.0, 200.0],
         ]])
 
         log_likelihood = lol._compute_osm_log_likelihood(
@@ -945,8 +945,8 @@ class ObservationLikelihoodTest(unittest.TestCase):
             [True, True]
         ])
         particle_locs_px = torch.tensor([
-            [[100.0, 50.0], [110.0, 60.0]],
-            [[120.0, 70.0], [130.0, 80.0]],
+            [[50.0, 100.0], [60.0, 110.0]],
+            [[70.0, 120.0], [80.0, 130.0]],
         ])
 
         log_likelihood = lol._compute_osm_log_likelihood(
@@ -965,8 +965,8 @@ class ObservationLikelihoodTest(unittest.TestCase):
         similarities = torch.tensor([[[0.9, 0.1]]])
         mask = torch.tensor([[True]])
 
-        particle_near_high = torch.tensor([[[100.0, 50.0]]])
-        particle_near_low = torch.tensor([[[200.0, 150.0]]])
+        particle_near_high = torch.tensor([[[50.0, 100.0]]])
+        particle_near_low = torch.tensor([[[150.0, 200.0]]])
 
         ll_near_high = lol._compute_osm_log_likelihood(
             similarities, mask, osm_geometry, particle_near_high, point_sigma_px=300
@@ -987,7 +987,7 @@ class ObservationLikelihoodTest(unittest.TestCase):
 
         similarities = torch.tensor([[[0.8, 0.5, 0.2], [0.3, 0.6, 0.9]]])
         mask = torch.tensor([[True, True]])
-        particle_locs_px = torch.tensor([[[100.0, 50.0]]])
+        particle_locs_px = torch.tensor([[[50.0, 100.0]]])
 
         log_likelihood = lol._compute_osm_log_likelihood(
             similarities, mask, osm_geometry, particle_locs_px, point_sigma_px=300
@@ -1006,7 +1006,7 @@ class ObservationLikelihoodTest(unittest.TestCase):
         similarities = torch.tensor([[[0.9]]])
         mask = torch.tensor([[True]])
 
-        particle_near = torch.tensor([[[100.0, 50.0]]])
+        particle_near = torch.tensor([[[50.0, 100.0]]])
         particle_far = torch.tensor([[[1000.0, 1000.0]]])
 
         ll_near = lol._compute_osm_log_likelihood(
@@ -1029,7 +1029,7 @@ class ObservationLikelihoodTest(unittest.TestCase):
         mask_all = torch.tensor([[True, True]])
         mask_first_only = torch.tensor([[True, False]])
 
-        particle_locs_px = torch.tensor([[[100.0, 50.0]]])
+        particle_locs_px = torch.tensor([[[50.0, 100.0]]])
 
         ll_all = lol._compute_osm_log_likelihood(
             similarities_both, mask_all, osm_geometry, particle_locs_px, point_sigma_px=300
@@ -1048,7 +1048,7 @@ class ObservationLikelihoodTest(unittest.TestCase):
 
         similarities = torch.tensor([[[0.9]]])
         mask = torch.tensor([[False]])
-        particle_locs_px = torch.tensor([[[100.0, 50.0]]])
+        particle_locs_px = torch.tensor([[[50.0, 100.0]]])
 
         log_likelihood = lol._compute_osm_log_likelihood(
             similarities, mask, osm_geometry, particle_locs_px, point_sigma_px=300
@@ -1078,7 +1078,7 @@ class ObservationLikelihoodTest(unittest.TestCase):
 
         similarities = torch.tensor([[[0.0]]])
         mask = torch.tensor([[True]])
-        particle_locs_px = torch.tensor([[[100.0, 50.0]]])
+        particle_locs_px = torch.tensor([[[50.0, 100.0]]])
 
         log_likelihood = lol._compute_osm_log_likelihood(
             similarities, mask, osm_geometry, particle_locs_px, point_sigma_px=300
@@ -1094,7 +1094,7 @@ class ObservationLikelihoodTest(unittest.TestCase):
 
         similarities = torch.tensor([[[0.8]]])
         mask = torch.tensor([[True]])
-        particle_locs_px = torch.tensor([[[100.0, 50.0]]])
+        particle_locs_px = torch.tensor([[[50.0, 100.0]]])
 
         log_likelihood = lol._compute_osm_log_likelihood(
             similarities, mask, osm_geometry, particle_locs_px, point_sigma_px=300
@@ -1504,8 +1504,17 @@ class LandmarkSimilarityDataTest(unittest.TestCase):
         """
         osm_dir = temp_dir / "osm_embeddings"
         pano_dir = temp_dir / "pano_embeddings"
-        osm_dir.mkdir(parents=True)
-        pano_dir.mkdir(parents=True)
+
+        # Create subdirectories as expected by compute_landmark_similarity_data
+        osm_embeddings_dir = osm_dir / "embeddings"
+        osm_sentences_dir = osm_dir / "sentences"
+        pano_embeddings_dir = pano_dir / "embeddings"
+        pano_sentences_dir = pano_dir / "sentences"
+
+        osm_embeddings_dir.mkdir(parents=True)
+        osm_sentences_dir.mkdir(parents=True)
+        pano_embeddings_dir.mkdir(parents=True)
+        pano_sentences_dir.mkdir(parents=True)
 
         # Set seed for deterministic embeddings
         torch.manual_seed(42)
@@ -1527,16 +1536,43 @@ class LandmarkSimilarityDataTest(unittest.TestCase):
         # Create OSM embeddings pickle file with deterministic values
         osm_embeddings = torch.randn(len(custom_ids), embedding_dim)
         osm_id_to_idx = {cid: idx for idx, cid in enumerate(custom_ids)}
-        with open(osm_dir / "embeddings.pkl", 'wb') as f:
+        with open(osm_embeddings_dir / "embeddings.pkl", 'wb') as f:
             pickle.dump((osm_embeddings, osm_id_to_idx), f)
 
-        # Create pano embeddings with "{panorama_id}__landmark_{idx}" keys
-        # where panorama_id = "{pano_id},{lat},{lon},"
-        pano_keys = []
-        pano_metadata_entries = []
+        # Create mock sentences file for OSM in OpenAI API response format
+        with open(osm_sentences_dir / "sentences.jsonl", 'w') as f:
+            for cid in custom_ids:
+                response = {
+                    "custom_id": cid,
+                    "error": None,
+                    "response": {
+                        "body": {
+                            "choices": [{
+                                "finish_reason": "stop",
+                                "message": {
+                                    "content": f"Mock sentence for {cid}",
+                                    "refusal": None
+                                }
+                            }],
+                            "usage": {
+                                "completion_tokens": 10
+                            }
+                        }
+                    }
+                }
+                f.write(json.dumps(response) + '\n')
+
+        # Build panorama landmark data
+        # For each panorama, create embeddings and sentence data
+        pano_keys = []  # landmark_custom_id list for embeddings
+        pano_metadata_entries = []  # For panorama_metadata.jsonl
+        pano_sentence_data = {}  # panorama_id -> landmarks list for sentences.jsonl
+
         for _, row in pano_metadata.iterrows():
             panorama_id = row.path.stem  # Format: "{pano_id},{lat},{lon},"
+
             # Create 2 landmarks per panorama for testing
+            landmarks_for_pano = []
             for lm_idx in range(2):
                 custom_id = f"{panorama_id}__landmark_{lm_idx}"
                 pano_keys.append(custom_id)
@@ -1546,13 +1582,44 @@ class LandmarkSimilarityDataTest(unittest.TestCase):
                     'landmark_idx': lm_idx,
                     'yaw_angles': [0]
                 })
+                landmarks_for_pano.append({
+                    "description": f"Mock description for {custom_id}",
+                    "yaw_angles": [0]
+                })
+
+            pano_sentence_data[panorama_id] = landmarks_for_pano
 
         pano_embeddings = torch.randn(len(pano_keys), embedding_dim)
         pano_id_to_idx = {key: idx for idx, key in enumerate(pano_keys)}
-        with open(pano_dir / "embeddings.pkl", 'wb') as f:
+        with open(pano_embeddings_dir / "embeddings.pkl", 'wb') as f:
             pickle.dump((pano_embeddings, pano_id_to_idx), f)
 
-        # Create panorama_metadata.jsonl in embedding_requests folder
+        # Create mock sentences file for pano in OpenAI API response format
+        # The content should be a JSON string containing a "landmarks" array
+        with open(pano_sentences_dir / "sentences.jsonl", 'w') as f:
+            for panorama_id, landmarks in pano_sentence_data.items():
+                content_dict = {"landmarks": landmarks}
+                response = {
+                    "custom_id": panorama_id,
+                    "error": None,
+                    "response": {
+                        "body": {
+                            "choices": [{
+                                "finish_reason": "stop",
+                                "message": {
+                                    "content": json.dumps(content_dict),
+                                    "refusal": None
+                                }
+                            }],
+                            "usage": {
+                                "completion_tokens": 10
+                            }
+                        }
+                    }
+                }
+                f.write(json.dumps(response) + '\n')
+
+        # Create panorama_metadata.jsonl in embedding_requests folder (under pano_dir, not pano_embeddings_dir)
         embedding_requests_dir = pano_dir / "embedding_requests"
         embedding_requests_dir.mkdir(parents=True)
         with open(embedding_requests_dir / "panorama_metadata.jsonl", 'w') as f:

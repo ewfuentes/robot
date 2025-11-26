@@ -12,7 +12,6 @@ from common.gps import web_mercator
 import math
 import numpy as np
 import hashlib
-import tqdm
 import json
 
 from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
@@ -299,8 +298,9 @@ def _compute_osm_log_likelihood(similarities, mask, osm_geometry, particle_locs_
     distances = distances.reshape(num_panos, num_particles, num_osm)
 
     # Debug: check distance statistics
-    print(f"DEBUG: Distance stats - min={distances.min():.1f}px, max={distances.max():.1f}px, median={np.median(distances):.1f}px")
-    print(f"DEBUG: sigma_osm={point_sigma_px}px, so distances within 3*sigma={3*point_sigma_px}px are significant")
+    if num_osm > 0:
+        print(f"DEBUG: Distance stats - min={distances.min():.1f}px, max={distances.max():.1f}px, median={np.median(distances):.1f}px")
+        print(f"DEBUG: sigma_osm={point_sigma_px}px, so distances within 3*sigma={3*point_sigma_px}px are significant")
             
     # Compute the observation likelihood for each particle/geometry pair
     # dimensions: num_panos x num_particles x num_osm
@@ -527,7 +527,7 @@ def compute_landmark_similarity_data(
             (len(pano_embeddings), len(osm_embeddings)), dtype=torch.float16)
     print(f"{cuda_pano_embeddings.shape=} {cuda_osm_embeddings.shape=}")
     BATCH_SIZE = 4096
-    for start_idx in tqdm.tqdm(range(0, len(cuda_osm_embeddings), BATCH_SIZE)):
+    for start_idx in range(0, len(cuda_osm_embeddings), BATCH_SIZE):
         batch = cuda_osm_embeddings[start_idx:start_idx+BATCH_SIZE]
         num_items = batch.shape[0]
         pano_osm_similarity[:, start_idx:start_idx+num_items] = (
