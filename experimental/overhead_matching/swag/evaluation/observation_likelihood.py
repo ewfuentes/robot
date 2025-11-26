@@ -72,8 +72,6 @@ class Similarities:
 
 
 def _get_similarities(prior_data: PriorData, pano_ids: list[str]) -> Similarities:
-    print(f"get similarities for {pano_ids=}")
-
     if len(pano_ids) == 0:
         return Similarities(
             sat_patch=torch.zeros((0, prior_data.pano_sat_similarity.shape[1])),
@@ -87,7 +85,6 @@ def _get_similarities(prior_data: PriorData, pano_ids: list[str]) -> Similaritie
     ])
     assert len(pano_metadata) == len(pano_ids)
 
-    print(f"{pano_metadata=}")
     sat_patch_similarities = prior_data.pano_sat_similarity[pano_metadata.index]
 
     num_panos = len(pano_ids)
@@ -100,8 +97,6 @@ def _get_similarities(prior_data: PriorData, pano_ids: list[str]) -> Similaritie
 
     for pano_idx, (_, row) in enumerate(pano_metadata.iterrows()):
         num_pano_lms = len(row.pano_lm_idxs)
-        print(f"{prior_data.pano_osm_landmark_similarity[
-            row.pano_lm_idxs][:, prior_data.osm_geometry.osm_embedding_idx].shape}")
         landmark_similarities[pano_idx, :num_pano_lms] = prior_data.pano_osm_landmark_similarity[:,prior_data.osm_geometry.osm_embedding_idx][row.pano_lm_idxs]
         landmark_mask[pano_idx, :num_pano_lms] = True
 
@@ -297,11 +292,6 @@ def _compute_osm_log_likelihood(similarities, mask, osm_geometry, particle_locs_
     # Handle the case where we may only have a single particle or a single osm landmark
     distances = distances.reshape(num_panos, num_particles, num_osm)
 
-    # Debug: check distance statistics
-    if num_osm > 0:
-        print(f"DEBUG: Distance stats - min={distances.min():.1f}px, max={distances.max():.1f}px, median={np.median(distances):.1f}px")
-        print(f"DEBUG: sigma_osm={point_sigma_px}px, so distances within 3*sigma={3*point_sigma_px}px are significant")
-            
     # Compute the observation likelihood for each particle/geometry pair
     # dimensions: num_panos x num_particles x num_osm
     obs_log_likelihood_per_landmark = (
@@ -313,17 +303,6 @@ def _compute_osm_log_likelihood(similarities, mask, osm_geometry, particle_locs_
     # dimensions: num_panos x num_pano_landmarks x num_osm_landmarks
     weight = similarities * similarity_scale
     weight[~mask, :] = -torch.inf
-
-    # Debug: check similarity statistics for valid (non-masked) landmarks
-    if selected_pano_landmark_idx is not None and mask[0, selected_pano_landmark_idx]:
-        sims = similarities[0, selected_pano_landmark_idx]
-        print(f"DEBUG: Similarity stats for landmark {selected_pano_landmark_idx} - min={sims.min():.3f}, max={sims.max():.3f}, mean={sims.mean():.3f}")
-        for thresh in [0.5, 0.6, 0.7, 0.8]:
-            count = (sims > thresh).sum().item()
-            print(f"DEBUG:   {count} OSM landmarks have similarity > {thresh}")
-        # Show top 10 similarities
-        top_sims, top_indices = torch.topk(sims, min(10, len(sims)))
-        print(f"DEBUG: Top 10 similarities: {top_sims.tolist()}")
 
     # We want both tensors to be num_panos x num_particles x num_pano_landmarks x num_osm
     # So we insert a singular dimension for the observation likelihoods, and
@@ -343,13 +322,9 @@ def _compute_osm_log_likelihood(similarities, mask, osm_geometry, particle_locs_
         num_pano_landmarks = per_pano_lm.shape[2]
         if selected_pano_landmark_idx >= num_pano_landmarks:
             raise ValueError(f"selected_pano_landmark_idx {selected_pano_landmark_idx} >= num_pano_landmarks {num_pano_landmarks}")
-        print(f"DEBUG _compute_osm_log_likelihood: Extracting landmark {selected_pano_landmark_idx} from {num_pano_landmarks} total landmarks")
-        print(f"  per_pano_lm shape: {per_pano_lm.shape}")
-        print(f"  per_pano_lm stats for selected landmark: min={per_pano_lm[:, :, selected_pano_landmark_idx].min():.3f}, max={per_pano_lm[:, :, selected_pano_landmark_idx].max():.3f}")
         out = per_pano_lm[:, :, selected_pano_landmark_idx]
     else:
         # Sum over all pano landmarks
-        print(f"DEBUG _compute_osm_log_likelihood: Summing over all landmarks (shape={per_pano_lm.shape})")
         out = torch.sum(per_pano_lm, dim=-1)
 
     return out
@@ -409,7 +384,6 @@ def compute_landmark_similarity_data(
     
     assert osm_embeddings_dir.exists()
     assert osm_sentences_dir.exists()
-    print(f"Loading embeddings from: {osm_embeddings_dir}")
     osm_embeddings, osm_id_to_idx = load_embeddings(
         osm_embeddings_dir,
         output_dim=embedding_dim,
@@ -428,10 +402,6 @@ def compute_landmark_similarity_data(
     for idx, row in landmark_metadata.iterrows():
         custom_id = custom_id_from_props(row.pruned_props)
         sentence = osm_sentences.get(custom_id, '')
-
-        # Debug: Show first few lookups
-        if idx < 3:
-            print(f"DEBUG: OSM landmark {idx}: custom_id={custom_id[:50]}..., has_sentence={len(sentence) > 0}")
 
         if sentence:
             num_with_sentences += 1
@@ -453,7 +423,6 @@ def compute_landmark_similarity_data(
         })
 
     osm_geometry = gpd.GeoDataFrame(osm_geometry_rows)
-    print(f"DEBUG: {num_total_embeddings=} {num_with_sentences=} {num_with_embeddings=}")
 
     # Load panorama embeddings
     # Pano embeddings are keyed by "{panorama_id}__landmark_{idx}" format
@@ -525,7 +494,6 @@ def compute_landmark_similarity_data(
 
     pano_osm_similarity = torch.empty(
             (len(pano_embeddings), len(osm_embeddings)), dtype=torch.float16)
-    print(f"{cuda_pano_embeddings.shape=} {cuda_osm_embeddings.shape=}")
     BATCH_SIZE = 4096
     for start_idx in range(0, len(cuda_osm_embeddings), BATCH_SIZE):
         batch = cuda_osm_embeddings[start_idx:start_idx+BATCH_SIZE]
@@ -610,7 +578,6 @@ def compute_cached_landmark_similarity_data(
 
     if use_cache and cache_path is not None:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        print('Saving cached data with torch.save...')
         torch.save({
             'osm_geometry': data.osm_geometry,
             'pano_metadata': data.pano_metadata,
