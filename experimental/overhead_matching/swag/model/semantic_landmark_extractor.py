@@ -18,7 +18,7 @@ from experimental.overhead_matching.swag.model.swag_model_input_output import (
 from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
     load_all_jsonl_from_folder, make_embedding_dict_from_json, make_sentence_dict_from_json,
     prune_landmark, make_sentence_dict_from_pano_jsons, convert_embeddings_to_tensors,
-    custom_id_from_props)
+    custom_id_from_props, load_embeddings)
 from multiprocessing import Pool
 from functools import partial
 import tqdm
@@ -210,45 +210,19 @@ class SemanticLandmarkExtractor(torch.nn.Module):
 
     def load_files(self):
         # lazy setup to speed things up when we're using caching
-        sentence_start_load_time = time.time()
         sentence_directory = self.semantic_embedding_base_path / self.config.embedding_version / "sentences"
         embedding_directory = self.semantic_embedding_base_path / self.config.embedding_version / "embeddings"
         if sentence_directory.exists():
             self.all_sentences, _ = make_sentence_dict_from_json(
                 load_all_jsonl_from_folder(sentence_directory))
-        sentence_end_load_time = time.time()
 
-        if (embedding_directory / "embeddings.pkl").exists():
-            with open(embedding_directory / "embeddings.pkl", 'rb') as file_in:
-                self.all_embeddings_tensor, self.landmark_id_to_idx = pickle.load(file_in)
-        else:
-            # Build from JSON
-            embeddings = convert_embeddings_to_tensors(
-                make_embedding_dict_from_json(
-                    load_all_jsonl_from_folder(embedding_directory)))
-
-            # Build tensor and index map
-            embedding_list = []
-            self.landmark_id_to_idx = {}
-            for idx, (landmark_id, emb) in enumerate(embeddings.items()):
-                embedding_list.append(emb)
-                self.landmark_id_to_idx[landmark_id] = idx
-
-            self.all_embeddings_tensor = torch.stack(embedding_list)
-
-        embedding_end_load_time = time.time()
+        self.all_embeddings_tensor, self.landmark_id_to_idx = load_embeddings(
+            embedding_directory,
+            output_dim=self.config.openai_embedding_size,
+            normalize=True)
 
         # Validate embeddings
         assert len(self.landmark_id_to_idx) != 0, f"Failed to load any embeddings from {embedding_directory}"
-        assert self.all_embeddings_tensor.shape[1] >= self.config.openai_embedding_size, f"Requested an embedding length longer than the OpenAI Embeddings {self.all_embeddings_tensor.shape[1]}, requested {self.config.openai_embedding_size}"
-
-        # Slice to requested embedding size
-        output_dim = self.config.openai_embedding_size
-        if self.all_embeddings_tensor.shape[1] > output_dim:
-            self.all_embeddings_tensor = self.all_embeddings_tensor[:, :output_dim]
-        self.all_embeddings_tensor = (
-                self.all_embeddings_tensor / torch.norm(self.all_embeddings_tensor, dim=-1).unsqueeze(-1))
-
 
         self.files_loaded = True
 

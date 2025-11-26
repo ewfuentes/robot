@@ -7,8 +7,12 @@ that are used across multiple extractor modules.
 import base64
 import hashlib
 import json
+import pickle
+import hashlib
+import base64
 from pathlib import Path
 import pandas as pd
+import torch
 
 
 def load_all_jsonl_from_folder(folder: Path) -> list:
@@ -60,7 +64,6 @@ def convert_embeddings_to_tensors(embedding_dict: dict[str, list[float]]):
     Returns:
         Dictionary mapping custom_id to embedding tensor
     """
-    import torch
     return {
         custom_id: torch.tensor(embedding, dtype=torch.float32)
         for custom_id, embedding in embedding_dict.items()
@@ -190,18 +193,92 @@ def prune_landmark(props):
     return frozenset(out)
 
 
-def custom_id_from_props(props: dict) -> str:
-    """Generate a unique ID from landmark properties.
-
-    Creates a deterministic ID by hashing the JSON-serialized properties.
+def load_embeddings_from_pickle(embedding_path: Path) -> tuple[torch.Tensor, dict[str, int]]:
+    """Load embeddings from a pickle file.
 
     Args:
-        props: Dictionary of landmark properties
+        embedding_path: Path to the embeddings.pkl file
 
     Returns:
-        Base64-encoded SHA-256 hash of the properties
+        embeddings_tensor: (num_landmarks, embedding_dim) tensor of embeddings
+        landmark_id_to_idx: Dict mapping landmark custom_id to tensor row index
     """
-    json_props = json.dumps(dict(props), sort_keys=True)
-    custom_id = base64.b64encode(hashlib.sha256(
-        json_props.encode('utf-8')).digest()).decode('utf-8')
+    with open(embedding_path, 'rb') as f:
+        embeddings_tensor, landmark_id_to_idx = pickle.load(f)
+    return embeddings_tensor, landmark_id_to_idx
+
+
+def load_embeddings_from_jsonl(embedding_directory: Path) -> tuple[torch.Tensor, dict[str, int]]:
+    """Load embeddings from JSONL files in a directory.
+
+    Args:
+        embedding_directory: Path to directory containing embedding JSONL files
+
+    Returns:
+        embeddings_tensor: (num_landmarks, embedding_dim) tensor of embeddings
+        landmark_id_to_idx: Dict mapping landmark custom_id to tensor row index
+    """
+    embeddings = convert_embeddings_to_tensors(
+        make_embedding_dict_from_json(
+            load_all_jsonl_from_folder(embedding_directory)))
+
+    embedding_list = []
+    landmark_id_to_idx = {}
+    for idx, (landmark_id, emb) in enumerate(embeddings.items()):
+        embedding_list.append(emb)
+        landmark_id_to_idx[landmark_id] = idx
+
+    embeddings_tensor = torch.stack(embedding_list)
+    return embeddings_tensor, landmark_id_to_idx
+
+
+def load_embeddings(
+    embedding_directory: Path,
+    output_dim: int | None = None,
+    normalize: bool = False
+) -> tuple[torch.Tensor, dict[str, int]]:
+    """Load embeddings from a directory, handling both pickle and JSONL formats.
+
+    Prefers pickle format if embeddings.pkl exists, otherwise loads from JSONL.
+
+    Args:
+        embedding_directory: Path to directory containing embeddings
+        output_dim: If specified, truncate embeddings to this dimension
+        normalize: If True, normalize embeddings to unit length
+
+    Returns:
+        embeddings_tensor: (num_landmarks, embedding_dim) tensor of embeddings
+        landmark_id_to_idx: Dict mapping landmark custom_id to tensor row index
+    """
+    pickle_path = embedding_directory / "embeddings.pkl"
+    if pickle_path.exists():
+        embeddings, landmark_id_to_idx = load_embeddings_from_pickle(pickle_path)
+    else:
+        embeddings, landmark_id_to_idx = load_embeddings_from_jsonl(embedding_directory)
+
+    if output_dim is not None and embeddings.shape[1] > output_dim:
+        embeddings = embeddings[:, :output_dim]
+
+    if normalize:
+        embeddings = embeddings / torch.norm(embeddings, dim=-1, keepdim=True)
+
+    return embeddings, landmark_id_to_idx
+
+
+def custom_id_from_props(props: dict | frozenset) -> str:
+    """Generate a custom ID from landmark properties using SHA256 hash.
+
+    Args:
+        props: Dictionary or frozenset of (key, value) tuples representing landmark properties
+
+    Returns:
+        Base64-encoded SHA256 hash of the JSON-serialized properties
+    """
+    if isinstance(props, frozenset):
+        props = dict(props)
+    json_props = json.dumps(props, sort_keys=True)
+    custom_id = base64.b64encode(
+        hashlib.sha256(json_props.encode('utf-8')).digest()
+    ).decode('utf-8')
     return custom_id
+

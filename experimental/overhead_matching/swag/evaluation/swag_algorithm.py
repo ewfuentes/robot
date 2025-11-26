@@ -142,28 +142,28 @@ class WagObservationLikelihoodCalculator:
     """
 
     def __init__(self,
-                 similarity_matrix: torch.Tensor,  # path_length x num_patches
+                 similarity_matrix: torch.Tensor,  # num_panoramas x num_patches
                  panorama_ids: list[str],
                  satellite_patch_locations: torch.Tensor,  # num_patches x 2 (lat, lon)
                  patch_index_from_particle: Callable[[torch.Tensor], torch.Tensor],
-                 wag_config: WagConfig,
+                 sigma: float,
                  device: torch.device):
         """
         Initialize WAG observation likelihood calculator.
 
         Args:
-            similarity_matrix: (path_length, num_patches) precomputed similarities
+            similarity_matrix: (num_panoramas, num_patches) precomputed similarities
             panorama_ids: List of panorama IDs corresponding to rows of similarity_matrix
             satellite_patch_locations: (num_patches, 2) lat/lon coordinates of patch centers
             patch_index_from_particle: Function mapping particle positions to patch indices
-            wag_config: WAG configuration (sigma, etc.)
+            sigma: Sigma for observation probability from similarity
             device: Device for torch operations
         """
         self.similarity_matrix = similarity_matrix.to(device)
         self.pano_id_to_idx = {pano_id: i for i, pano_id in enumerate(panorama_ids)}
         self.satellite_patch_locations = satellite_patch_locations.to(device)
         self.patch_index_from_particle = patch_index_from_particle
-        self.sigma = wag_config.sigma_obs_prob_from_sim
+        self.sigma = sigma
         self.device = device
 
     def compute_log_likelihoods(self, particles: torch.Tensor, panorama_ids: list[str]) -> torch.Tensor:

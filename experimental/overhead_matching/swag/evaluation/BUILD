@@ -55,17 +55,20 @@ py_test(
 py_library(
   name = "observation_likelihood",
   srcs = ["observation_likelihood.py"],
+  visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
   deps = [
     requirement("torch"),
     requirement("geopandas"),
     "//common/torch:load_torch_deps",
     "//common/gps:web_mercator",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
   ]
 )
 
 py_test(
   name = "observation_likelihood_test",
   srcs = ["observation_likelihood_test.py"],
+  data = ["@vigor_snippet//:files"],
   deps = [
     requirement("torch"),
     requirement("pandas"),
@@ -74,6 +77,8 @@ py_test(
     "//common/torch:load_torch_deps",
     "//common/gps:web_mercator",
     ":observation_likelihood",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
   ]
 )
 
