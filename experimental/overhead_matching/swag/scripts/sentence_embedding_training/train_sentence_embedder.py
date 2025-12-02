@@ -418,17 +418,11 @@ def save_model_for_pipeline(
     # Create a TrainableSentenceEmbedder config matching the trained model
     # We need to extract the base model name from the SentenceTransformer
     base_model_name = training_args.get("base_model", "sentence-transformers/all-MiniLM-L6-v2")
-
-    # Get the transformer model's config to determine output dimension
-    # SentenceTransformer models typically have a Dense layer that defines output dim
-    # We'll use the embedding dimension from the model
-    output_dim = model.get_sentence_embedding_dimension()
     max_seq_length = model.get_max_seq_length()
 
     # Create config
     model_config = TrainableSentenceEmbedderConfig(
         pretrained_model_name_or_path=base_model_name,
-        output_dim=output_dim,
         max_sequence_length=max_seq_length,
         freeze_weights=False,  # Weights are already trained
         model_weights_path=None,
@@ -439,29 +433,15 @@ def save_model_for_pipeline(
 
     # Copy weights from SentenceTransformer to TrainableSentenceEmbedder
     # The SentenceTransformer architecture is: [Transformer, Pooling, (optional) Dense, Normalize]
-    # TrainableSentenceEmbedder has: transformer, projection, and does pooling/normalization in forward
+    # TrainableSentenceEmbedder has: transformer and does pooling/normalization in forward
+    # We only copy the transformer weights - no projection layer
 
     # Copy transformer weights
     st_transformer = model[0]  # First module is the transformer
     pipeline_model.transformer.load_state_dict(st_transformer.auto_model.state_dict())
 
-    # Check if SentenceTransformer has a Dense layer (projection)
-    has_dense = False
-    for module in model.modules():
-        if hasattr(module, '__class__') and 'Dense' in module.__class__.__name__:
-            has_dense = True
-            # Copy dense layer weights to projection
-            # Dense layer typically has linear transformation
-            if hasattr(module, 'linear'):
-                pipeline_model.projection.load_state_dict(module.linear.state_dict())
-            break
-
-    if not has_dense:
-        logger.warning(
-            "SentenceTransformer does not have a Dense layer. "
-            "Pipeline model projection layer will use random initialization. "
-            "Consider training with a model that includes a Dense layer."
-        )
+    logger.info("Copied transformer weights from SentenceTransformer to TrainableSentenceEmbedder")
+    logger.info(f"Output dimension: {pipeline_model.output_dim}")
 
     # Save using common save_model function
     example_texts = ["This is a test sentence."]
@@ -473,7 +453,7 @@ def save_model_for_pipeline(
             "training_args": training_args,
             "model_type": "TrainableSentenceEmbedder",
             "trained_with_sentence_transformers": True,
-            "sentence_embedding_dimension": output_dim,
+            "sentence_embedding_dimension": pipeline_model.output_dim,
         }
     )
 

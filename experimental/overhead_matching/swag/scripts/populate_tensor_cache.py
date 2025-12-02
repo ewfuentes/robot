@@ -13,6 +13,7 @@ from experimental.overhead_matching.swag.scripts import train
 import experimental.overhead_matching.swag.model.swag_patch_embedding as spe
 from experimental.overhead_matching.swag.model.swag_model_input_output import derive_data_requirements_from_model
 from experimental.overhead_matching.swag.model.swag_config_types import ExtractorDataRequirement
+from experimental.overhead_matching.swag.model.trainable_sentence_embedder import TrainableSentenceEmbedder
 import msgspec
 import hashlib
 import io
@@ -124,11 +125,13 @@ def get_cache_output_path(field_spec: str,
         else:
             model_config = getattr(model_config, p)
     patch_dims = getattr(train_config, parts[0]).patch_dims
+    trainable_embedder_config = getattr(train_config, parts[0]).trainable_embedder_config
     hash_struct = vd.HashStruct(
         model_config=model_config,
         patch_dims=patch_dims,
         landmark_version=landmark_version,
-        panorama_landmark_radius_px=panorama_landmark_radius_px)
+        panorama_landmark_radius_px=panorama_landmark_radius_px,
+        trainable_embedder_config=trainable_embedder_config)
     _, config_hash = compute_config_hash(hash_struct)
 
     model_type = 'satellite' if 'sat_model_config' == parts[0] else 'panorama'
@@ -164,9 +167,13 @@ def build_dataset_for_extractor(field_spec: str,
         else:
             model_config = getattr(model_config, p)
     aux_info = getattr(train_config, parts[0]).auxiliary_info
+    trainable_embedder_config = getattr(train_config, parts[0]).trainable_embedder_config
+
+    # Create trainable embedder if configured
+    trainable_embedder = TrainableSentenceEmbedder(trainable_embedder_config) if trainable_embedder_config is not None else None
 
     # Create the model to determine requirements
-    model = spe.create_extractor(model_config, aux_info)
+    model = spe.create_extractor(model_config, aux_info, trainable_embedder)
 
     # Construct the dataset
     requirements = derive_data_requirements_from_model(
@@ -218,11 +225,13 @@ def process_single_cache(field_spec: str,
             model_config = getattr(model_config, p)
     aux_info = getattr(train_config, parts[0]).auxiliary_info
     patch_dims = getattr(train_config, parts[0]).patch_dims
+    trainable_embedder_config = getattr(train_config, parts[0]).trainable_embedder_config
     hash_struct = vd.HashStruct(
         model_config=model_config,
         patch_dims=patch_dims,
         landmark_version=landmark_version,
-        panorama_landmark_radius_px=panorama_landmark_radius_px)
+        panorama_landmark_radius_px=panorama_landmark_radius_px,
+        trainable_embedder_config=trainable_embedder_config)
     yaml_str, config_hash = compute_config_hash(hash_struct)
 
     # Determine output path
@@ -231,8 +240,19 @@ def process_single_cache(field_spec: str,
 
     print('computing cache for: ', hash_struct, 'with hash: ', config_hash.hexdigest())
 
+    # Create trainable embedder if configured
+    trainable_embedder = TrainableSentenceEmbedder(trainable_embedder_config) if trainable_embedder_config is not None else None
+    if trainable_embedder is not None:
+        trainable_embedder = trainable_embedder.cuda()
+        print(f"[populate_tensor_cache] Using trainable sentence embedder:")
+        print(f"  Model: {trainable_embedder_config.pretrained_model_name_or_path}")
+        print(f"  Output dim: {trainable_embedder.output_dim}")
+        print(f"  Weights path: {trainable_embedder_config.model_weights_path}")
+    else:
+        print(f"[populate_tensor_cache] No trainable embedder configured (will use pre-computed embeddings)")
+
     # Create the model
-    model = spe.create_extractor(model_config, aux_info)
+    model = spe.create_extractor(model_config, aux_info, trainable_embedder)
     model = model.cuda()
 
     # Get a dataloader
@@ -266,24 +286,27 @@ def process_single_cache(field_spec: str,
             else:
                 raise NotImplementedError
             # Run it through the model
-            out = dataclasses.asdict(model(model_input))
-            num_features += (~out['mask']).sum()
-            num_items += out['mask'].shape[0]
+            with torch.no_grad():
+                out = model(model_input)
+            # Convert to dict manually without deepcopy (to avoid issues with non-leaf tensors)
+            out_dict = {field.name: getattr(out, field.name) for field in dataclasses.fields(out)}
+            num_features += (~out_dict['mask']).sum()
+            num_items += out_dict['mask'].shape[0]
             # Write the results
             with db.begin(write=True) as txn:
                 for batch_idx in range(model_input.image.shape[0]):
-                    if 'mask' in out:
-                        selector = ~out['mask'][batch_idx].cpu().numpy()
+                    if 'mask' in out_dict:
+                        selector = ~out_dict['mask'][batch_idx].cpu().numpy()
                     else:
                         selector = slice(None)
 
                     to_write = {}
-                    for key, value in out.items():
+                    for key, value in out_dict.items():
                         if isinstance(value, torch.Tensor):
-                            to_write[key] = value[batch_idx, selector].cpu().numpy()
+                            to_write[key] = value[batch_idx, selector].detach().cpu().numpy()
                         if isinstance(value, dict):
                             for k2, v2 in value.items():
-                                to_write[f"{key}.{k2}"] = v2[batch_idx, selector].cpu().numpy()
+                                to_write[f"{key}.{k2}"] = v2[batch_idx, selector].detach().cpu().numpy()
 
                     ostream = io.BytesIO()
                     np.savez(ostream, **to_write)
@@ -314,9 +337,13 @@ def compute_task_requirements(field_spec: str, train_config: train.TrainConfig) 
         else:
             model_config = getattr(model_config, p)
     aux_info = getattr(train_config, parts[0]).auxiliary_info
+    trainable_embedder_config = getattr(train_config, parts[0]).trainable_embedder_config
+
+    # Create trainable embedder if configured
+    trainable_embedder = TrainableSentenceEmbedder(trainable_embedder_config) if trainable_embedder_config is not None else None
 
     # Create temporary model to determine requirements
-    temp_model = spe.create_extractor(model_config, aux_info)
+    temp_model = spe.create_extractor(model_config, aux_info, trainable_embedder)
     requirements = derive_data_requirements_from_model(
         temp_model,
         use_cached_extractors=None)

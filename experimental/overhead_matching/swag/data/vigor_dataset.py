@@ -35,11 +35,12 @@ logger = logging.getLogger(__name__)
 EARTH_RADIUS_M = 6378137.0
 
 class HashStruct(msgspec.Struct, frozen=True):
-    """Structure for computing cache hashes. Combines model config, patch dims, landmark version, and panorama landmark radius."""
+    """Structure for computing cache hashes. Combines model config, patch dims, landmark version, panorama landmark radius, and trainable embedder config."""
     model_config: Any
     patch_dims: tuple[int, int]
     landmark_version: str
     panorama_landmark_radius_px: float
+    trainable_embedder_config: Any
 
 def compute_config_hash(obj):
     """Compute a deterministic hash of a configuration object."""
@@ -339,12 +340,13 @@ def load_tensor_caches(info: TensorCacheInfo):
 
     out = []
     for extractor_name, cacheable_info in info.extractor_info.items():
-        # Compute the hash using model config, patch_dims, landmark_version, AND panorama_landmark_radius_px
+        # Compute the hash using model config, patch_dims, landmark_version, panorama_landmark_radius_px, and trainable_embedder_config
         config_hash = compute_config_hash(HashStruct(
             model_config=cacheable_info.model_config,
             patch_dims=cacheable_info.patch_dims,
             landmark_version=info.landmark_version,
-            panorama_landmark_radius_px=info.panorama_landmark_radius_px))
+            panorama_landmark_radius_px=info.panorama_landmark_radius_px,
+            trainable_embedder_config=cacheable_info.trainable_embedder_config))
 
         cache_path = base_path / config_hash
         out.append(TensorCache(

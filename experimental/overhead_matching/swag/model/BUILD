@@ -177,7 +177,7 @@ py_test(
   ]
 )
 
-py_binary(
+py_library(
   name = "semantic_landmark_extractor",
   srcs = ["semantic_landmark_extractor.py"],
   visibility = [
@@ -199,6 +199,7 @@ py_binary(
     ":swag_model_input_output",
     ":swag_config_types",
     ":semantic_landmark_utils",
+    ":trainable_sentence_embedder",
   ]
 )
 
@@ -227,6 +228,7 @@ py_library(
     ":swag_model_input_output",
     ":swag_config_types",
     ":semantic_landmark_utils",
+    ":trainable_sentence_embedder",
   ]
 )
 

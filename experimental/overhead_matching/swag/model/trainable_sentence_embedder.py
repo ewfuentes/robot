@@ -23,7 +23,6 @@ class TrainableSentenceEmbedder(nn.Module):
     1. Tokenizes input text using a pretrained tokenizer
     2. Encodes tokens using a pretrained transformer (BERT, RoBERTa, etc.)
     3. Applies mean pooling over token embeddings
-    4. Projects to desired output dimension with a learned linear layer
 
     The transformer weights can be frozen or fine-tuned during training.
     """
@@ -36,20 +35,22 @@ class TrainableSentenceEmbedder(nn.Module):
         """
         super().__init__()
 
-        self.output_dim = config.output_dim
         self.max_sequence_length = config.max_sequence_length
 
         # Load pretrained transformer and tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(config.pretrained_model_name_or_path)
         self.transformer = AutoModel.from_pretrained(config.pretrained_model_name_or_path)
 
+        # Output dimension is determined by the transformer's hidden size
+        self.output_dim = self.transformer.config.hidden_size
+
         # Load custom weights if provided
         if config.model_weights_path is not None:
             weights_path = Path(config.model_weights_path).expanduser()
             if weights_path.exists():
                 state_dict = torch.load(weights_path, map_location='cpu')
-                self.transformer.load_state_dict(state_dict)
-                print(f"Loaded custom transformer weights from {weights_path}")
+                self.load_state_dict(state_dict)
+                print(f"Loaded custom model weights from {weights_path}")
             else:
                 raise FileNotFoundError(f"Model weights not found at {config.model_weights_path}")
 
@@ -63,10 +64,6 @@ class TrainableSentenceEmbedder(nn.Module):
             print(f"Freezing pooler for sentence transformer, as goes unused: {self.transformer.pooler}")
             for param in self.transformer.pooler.parameters():
                 param.requires_grad = False
-
-        # Learned projection to output dimension
-        transformer_output_dim = self.transformer.config.hidden_size
-        self.projection = nn.Linear(transformer_output_dim, self.output_dim)
 
     def mean_pool(
         self,
@@ -126,11 +123,8 @@ class TrainableSentenceEmbedder(nn.Module):
         token_embeddings = transformer_output[0]
         pooled_embeddings = self.mean_pool(token_embeddings, encoded['attention_mask'])
 
-        # Project to output dimension
-        projected_embeddings = self.projection(pooled_embeddings)
-
         # Normalize to unit length (for cosine similarity)
-        normalized_embeddings = F.normalize(projected_embeddings, p=2, dim=1)
+        normalized_embeddings = F.normalize(pooled_embeddings, p=2, dim=1)
 
         return normalized_embeddings
 

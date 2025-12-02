@@ -12,13 +12,15 @@ import openai
 import base64
 import time
 from experimental.overhead_matching.swag.model.swag_config_types import (
-    SemanticLandmarkExtractorConfig, ExtractorDataRequirement)
+    SemanticLandmarkExtractorConfig, ExtractorDataRequirement, OSMInputMode)
 from experimental.overhead_matching.swag.model.swag_model_input_output import (
     ModelInput, ExtractorOutput)
 from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
     load_all_jsonl_from_folder, make_embedding_dict_from_json, make_sentence_dict_from_json,
     prune_landmark, make_sentence_dict_from_pano_jsons, convert_embeddings_to_tensors,
     custom_id_from_props)
+from experimental.overhead_matching.swag.model.trainable_sentence_embedder import (
+    TrainableSentenceEmbedder)
 from multiprocessing import Pool
 from functools import partial
 import tqdm
@@ -199,7 +201,7 @@ def compute_landmark_sat_positions(sat_metadata, landmark_mask=None):
 
 
 class SemanticLandmarkExtractor(torch.nn.Module):
-    def __init__(self, config: SemanticLandmarkExtractorConfig, semantic_embedding_base_path: Path):
+    def __init__(self, config: SemanticLandmarkExtractorConfig, semantic_embedding_base_path: Path, trainable_embedder: TrainableSentenceEmbedder | None):
         super().__init__()
         self.config = config
         self.semantic_embedding_base_path = Path(semantic_embedding_base_path).expanduser()
@@ -208,47 +210,87 @@ class SemanticLandmarkExtractor(torch.nn.Module):
         self.all_sentences = None
         self._batch_counter = 0
 
+        # Use shared trainable embedder (passed from SwagPatchEmbedding)
+        self.trainable_embedder = trainable_embedder
+
+    def _convert_osm_props_to_text(self, props) -> str:
+        """Convert OSM properties to text based on osm_input_mode.
+
+        Args:
+            props: Dictionary or frozenset of OSM properties
+
+        Returns:
+            Text representation of the landmark
+
+        Raises:
+            ValueError: If osm_input_mode is not a recognized OSMInputMode value
+        """
+        custom_id = custom_id_from_props(props)
+
+        if self.config.osm_input_mode == OSMInputMode.NATURAL_LANGUAGE:
+            # Load cached GPT-generated description
+            if custom_id not in self.all_sentences:
+                raise ValueError(f"No natural language description found for landmark {custom_id}")
+            return self.all_sentences[custom_id]
+        elif self.config.osm_input_mode == OSMInputMode.OSM_TEXT:
+            # Format as "key: value, key: value, ..."
+            # Handle both dict and frozenset inputs
+            if isinstance(props, dict):
+                items = sorted(props.items())
+            else:  # frozenset of tuples
+                items = sorted(props)
+            return ", ".join(f"{k}: {v}" for k, v in items)
+        else:
+            raise ValueError(f"Unrecognized osm_input_mode: {self.config.osm_input_mode}. "
+                           f"Must be one of {[mode.value for mode in OSMInputMode]}")
+
     def load_files(self):
         # lazy setup to speed things up when we're using caching
         sentence_start_load_time = time.time()
         sentence_directory = self.semantic_embedding_base_path / self.config.embedding_version / "sentences"
         embedding_directory = self.semantic_embedding_base_path / self.config.embedding_version / "embeddings"
+
+        # Load sentences (needed for both trainable embedder and OpenAI embeddings)
         if sentence_directory.exists():
             self.all_sentences, _ = make_sentence_dict_from_json(
                 load_all_jsonl_from_folder(sentence_directory))
         sentence_end_load_time = time.time()
 
-        if (embedding_directory / "embeddings.pkl").exists():
-            with open(embedding_directory / "embeddings.pkl", 'rb') as file_in:
-                self.all_embeddings_tensor, self.landmark_id_to_idx = pickle.load(file_in)
+        # Only load OpenAI embeddings if not using trainable embedder
+        if self.trainable_embedder is None:
+            print(f"[SemanticLandmarkExtractor] Loading pre-computed OpenAI embeddings from {embedding_directory}")
+            if (embedding_directory / "embeddings.pkl").exists():
+                with open(embedding_directory / "embeddings.pkl", 'rb') as file_in:
+                    self.all_embeddings_tensor, self.landmark_id_to_idx = pickle.load(file_in)
+            else:
+                # Build from JSON
+                embeddings = convert_embeddings_to_tensors(
+                    make_embedding_dict_from_json(
+                        load_all_jsonl_from_folder(embedding_directory)))
+
+                # Build tensor and index map
+                embedding_list = []
+                self.landmark_id_to_idx = {}
+                for idx, (landmark_id, emb) in enumerate(embeddings.items()):
+                    embedding_list.append(emb)
+                    self.landmark_id_to_idx[landmark_id] = idx
+
+                self.all_embeddings_tensor = torch.stack(embedding_list)
+
+            embedding_end_load_time = time.time()
+
+            # Validate embeddings
+            assert len(self.landmark_id_to_idx) != 0, f"Failed to load any embeddings from {embedding_directory}"
+            assert self.all_embeddings_tensor.shape[1] >= self.config.openai_embedding_size, f"Requested an embedding length longer than the OpenAI Embeddings {self.all_embeddings_tensor.shape[1]}, requested {self.config.openai_embedding_size}"
+
+            # Slice to requested embedding size
+            output_dim = self.config.openai_embedding_size
+            if self.all_embeddings_tensor.shape[1] > output_dim:
+                self.all_embeddings_tensor = self.all_embeddings_tensor[:, :output_dim]
+            self.all_embeddings_tensor = (
+                    self.all_embeddings_tensor / torch.norm(self.all_embeddings_tensor, dim=-1).unsqueeze(-1))
         else:
-            # Build from JSON
-            embeddings = convert_embeddings_to_tensors(
-                make_embedding_dict_from_json(
-                    load_all_jsonl_from_folder(embedding_directory)))
-
-            # Build tensor and index map
-            embedding_list = []
-            self.landmark_id_to_idx = {}
-            for idx, (landmark_id, emb) in enumerate(embeddings.items()):
-                embedding_list.append(emb)
-                self.landmark_id_to_idx[landmark_id] = idx
-
-            self.all_embeddings_tensor = torch.stack(embedding_list)
-
-        embedding_end_load_time = time.time()
-
-        # Validate embeddings
-        assert len(self.landmark_id_to_idx) != 0, f"Failed to load any embeddings from {embedding_directory}"
-        assert self.all_embeddings_tensor.shape[1] >= self.config.openai_embedding_size, f"Requested an embedding length longer than the OpenAI Embeddings {self.all_embeddings_tensor.shape[1]}, requested {self.config.openai_embedding_size}"
-
-        # Slice to requested embedding size
-        output_dim = self.config.openai_embedding_size
-        if self.all_embeddings_tensor.shape[1] > output_dim:
-            self.all_embeddings_tensor = self.all_embeddings_tensor[:, :output_dim]
-        self.all_embeddings_tensor = (
-                self.all_embeddings_tensor / torch.norm(self.all_embeddings_tensor, dim=-1).unsqueeze(-1))
-
+            print(f"[SemanticLandmarkExtractor] Using trainable sentence embedder (skipping OpenAI embeddings)")
 
         self.files_loaded = True
 
@@ -281,26 +323,59 @@ class SemanticLandmarkExtractor(torch.nn.Module):
                     positions[i, :num_landmarks_for_item] = compute_landmark_sat_positions(
                         item, landmark_mask=landmark_mask[i])
 
-            landmark_index = 0
-            for landmark in item["landmarks"]:
-                # skip landmarks of the wrong type
-                if landmark['geometry'].geom_type.lower() != self.config.landmark_type.lower():
-                    continue
+            # Use trainable embedder or OpenAI embeddings
+            if self.trainable_embedder is not None:
+                # Collect texts for trainable embedder
+                texts_for_batch_item = []
+                landmark_index = 0
+                for landmark in item["landmarks"]:
+                    # skip landmarks of the wrong type
+                    if landmark['geometry'].geom_type.lower() != self.config.landmark_type.lower():
+                        continue
 
-                props = landmark['pruned_props']
-                landmark_id = custom_id_from_props(props)
+                    props = landmark['pruned_props']
+                    try:
+                        text = self._convert_osm_props_to_text(props)
+                        texts_for_batch_item.append(text)
+                        landmark_index += 1
+                        if self.all_sentences is not None:
+                            landmark_id = custom_id_from_props(props)
+                            if landmark_id in self.all_sentences:
+                                max_description_length = max(max_description_length, len(
+                                    self.all_sentences[landmark_id].encode("utf-8")))
+                    except ValueError as e:
+                        print(f"Warning: {e}")
+                        continue
 
-                if landmark_id not in self.landmark_id_to_idx:
-                    print(f"Warning: missing embedding for props: {props}, ID {landmark_id}")
-                    continue
+                # Get embeddings for all texts in this batch item
+                if len(texts_for_batch_item) > 0:
+                    with torch.set_grad_enabled(self.training):
+                        batch_embeddings = self.trainable_embedder(texts_for_batch_item)
+                        features[i, :len(texts_for_batch_item), :] = batch_embeddings
+                        mask[i, :len(texts_for_batch_item)] = False
 
-                emb_idx = self.landmark_id_to_idx[landmark_id]
-                features[i, landmark_index, :] = self.all_embeddings_tensor[emb_idx]
-                mask[i, landmark_index] = False
-                landmark_index += 1
-                if self.all_sentences is not None:
-                    max_description_length = max(max_description_length, len(
-                        self.all_sentences[landmark_id].encode("utf-8")))
+            else:
+                # Use OpenAI embeddings (original behavior)
+                landmark_index = 0
+                for landmark in item["landmarks"]:
+                    # skip landmarks of the wrong type
+                    if landmark['geometry'].geom_type.lower() != self.config.landmark_type.lower():
+                        continue
+
+                    props = landmark['pruned_props']
+                    landmark_id = custom_id_from_props(props)
+
+                    if landmark_id not in self.landmark_id_to_idx:
+                        print(f"Warning: missing embedding for props: {props}, ID {landmark_id}")
+                        continue
+
+                    emb_idx = self.landmark_id_to_idx[landmark_id]
+                    features[i, landmark_index, :] = self.all_embeddings_tensor[emb_idx]
+                    mask[i, landmark_index] = False
+                    landmark_index += 1
+                    if self.all_sentences is not None:
+                        max_description_length = max(max_description_length, len(
+                            self.all_sentences[landmark_id].encode("utf-8")))
 
         sentence_debug = torch.zeros(
             (batch_size, max_num_landmarks, max_description_length), dtype=torch.uint8)
@@ -332,6 +407,8 @@ class SemanticLandmarkExtractor(torch.nn.Module):
 
     @property
     def output_dim(self):
+        if self.trainable_embedder is not None:
+            return self.trainable_embedder.output_dim
         return self.config.openai_embedding_size
 
     @property

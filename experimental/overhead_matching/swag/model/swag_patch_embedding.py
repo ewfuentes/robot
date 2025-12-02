@@ -12,6 +12,7 @@ from experimental.overhead_matching.swag.model.semantic_segment_extractor import
 from experimental.overhead_matching.swag.model.alphaearth_extractor import AlphaEarthExtractor
 from experimental.overhead_matching.swag.model.semantic_landmark_extractor import SemanticLandmarkExtractor
 from experimental.overhead_matching.swag.model.panorama_semantic_landmark_extractor import PanoramaSemanticLandmarkExtractor
+from experimental.overhead_matching.swag.model.trainable_sentence_embedder import TrainableSentenceEmbedder
 from torch.nn.init import xavier_uniform_
 from experimental.overhead_matching.swag.model.synthetic_landmark_extractor import SyntheticLandmarkExtractor
 from experimental.overhead_matching.swag.model.absolute_position_extractor import AbsolutePositionExtractor
@@ -28,6 +29,7 @@ from experimental.overhead_matching.swag.model.swag_config_types import (
     PanoramaSemanticLandmarkExtractorConfig,
     AbsolutePositionExtractorConfig,
     SyntheticLandmarkExtractorConfig,
+    TrainableSentenceEmbedderConfig,
 
     PositionEmbeddingConfig,
     PlanarPositionEmbeddingConfig,
@@ -58,6 +60,9 @@ class SwagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
 
     normalize_embeddings: bool = True
 
+    # Shared trainable sentence embedder configuration
+    trainable_embedder_config: 'TrainableSentenceEmbedderConfig | None' = None
+
     # These are here for backwards compatibility
     feature_map_extractor_config: FeatureMapExtractorConfig | None = None
     semantic_token_extractor_config: SemanticTokenExtractorConfig | None = None
@@ -65,15 +70,17 @@ class SwagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
     use_cached_semantic_tokens: bool = False
 
 
-def create_extractor(config: ExtractorConfig, auxiliary_info: dict[str, Any]):
+def create_extractor(config: ExtractorConfig, auxiliary_info: dict[str, Any], trainable_embedder: 'TrainableSentenceEmbedder | None'):
     if config is None:
         return None
     match config:
         case DinoFeatureMapExtractorConfig(): return DinoFeatureExtractor(config)
         case SemanticNullExtractorConfig(): return SemanticNullExtractor(config)
         case SemanticEmbeddingMatrixConfig(): return SemanticEmbeddingMatrix(config)
-        case SemanticLandmarkExtractorConfig(): return SemanticLandmarkExtractor(config, auxiliary_info[config.auxiliary_info_key])
-        case PanoramaSemanticLandmarkExtractorConfig(): return PanoramaSemanticLandmarkExtractor(config, auxiliary_info[config.auxiliary_info_key])
+        case SemanticLandmarkExtractorConfig(): return SemanticLandmarkExtractor(
+            config, auxiliary_info[config.auxiliary_info_key], trainable_embedder)
+        case PanoramaSemanticLandmarkExtractorConfig(): return PanoramaSemanticLandmarkExtractor(
+            config, auxiliary_info[config.auxiliary_info_key], trainable_embedder)
         case SemanticSegmentExtractorConfig(): return SemanticSegmentExtractor(config)
         case SyntheticLandmarkExtractorConfig(): return SyntheticLandmarkExtractor(config)
         case AbsolutePositionExtractorConfig(): return AbsolutePositionExtractor(config)
@@ -395,9 +402,24 @@ class SwagPatchEmbedding(torch.nn.Module):
     def __init__(self, config: SwagPatchEmbeddingConfig):
         super().__init__()
         self._config = config
+
+        # Create shared trainable embedder if configured
+        # This is created once and shared across all extractors
+        if config.trainable_embedder_config is not None:
+            print(f"[SwagPatchEmbedding] Creating shared trainable sentence embedder:")
+            print(f"  Model: {config.trainable_embedder_config.pretrained_model_name_or_path}")
+            print(f"  Weights path: {config.trainable_embedder_config.model_weights_path}")
+            print(f"  Frozen: {config.trainable_embedder_config.freeze_weights}")
+            self._trainable_embedder = TrainableSentenceEmbedder(config.trainable_embedder_config)
+            print(f"[SwagPatchEmbedding] ✓ Trainable embedder created successfully")
+            print(f"  Output dim: {self._trainable_embedder.output_dim}")
+        else:
+            print(f"[SwagPatchEmbedding] No trainable embedder configured (will use pre-computed embeddings)")
+            self._trainable_embedder = None
+
         # Debug flag to store extractor outputs during forward pass
         self._extractor_by_name = torch.nn.ModuleDict({
-            k: create_extractor(c, config.auxiliary_info)
+            k: create_extractor(c, config.auxiliary_info, self._trainable_embedder)
             for k, c in config.extractor_config_by_name.items()})
         self._normalize_embeddings = config.normalize_embeddings
         self._token_marker_by_name = torch.nn.ParameterDict({
@@ -424,16 +446,17 @@ class SwagPatchEmbedding(torch.nn.Module):
         for k in config.use_cached_extractors:
             self._cacheable_extractor_info[k] = CacheableExtractorInfo(
                 model_config=config.extractor_config_by_name[k],
-                patch_dims=config.patch_dims)
+                patch_dims=config.patch_dims,
+                trainable_embedder_config=config.trainable_embedder_config)
 
         self._patch_dims = config.patch_dims
         self._output_dim = config.output_dim
 
         # We keep these for backwards compatibility
         self._feature_map_extractor = create_extractor(
-                config.feature_map_extractor_config, config.auxiliary_info)
+                config.feature_map_extractor_config, config.auxiliary_info, self._trainable_embedder)
         self._semantic_token_extractor = create_extractor(
-                config.semantic_token_extractor_config, config.auxiliary_info)
+                config.semantic_token_extractor_config, config.auxiliary_info, self._trainable_embedder)
         if self._feature_map_extractor is not None:
             self._extractor_by_name["__feature_map_extractor"] = self._feature_map_extractor
             self._feature_token_marker = torch.nn.Parameter(torch.randn((1, 1, config.output_dim)))

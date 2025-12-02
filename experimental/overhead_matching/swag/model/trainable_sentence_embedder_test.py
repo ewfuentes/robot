@@ -13,7 +13,10 @@ from experimental.overhead_matching.swag.model.trainable_sentence_embedder impor
     TrainableSentenceEmbedder
 )
 from experimental.overhead_matching.swag.model.semantic_landmark_extractor import (
-    SemanticLandmarkExtractor, ModelInput, prune_landmark, custom_id_from_props
+    SemanticLandmarkExtractor, ModelInput, prune_landmark
+)
+from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
+    custom_id_from_props
 )
 from experimental.overhead_matching.swag.model.panorama_semantic_landmark_extractor import (
     PanoramaSemanticLandmarkExtractor
@@ -31,12 +34,13 @@ class TrainableSentenceEmbedderTest(unittest.TestCase):
 
     def test_model_creation(self):
         """Test that the model can be created with a HuggingFace model."""
-        embedder = TrainableSentenceEmbedder(
+        config = TrainableSentenceEmbedderConfig(
             pretrained_model_name_or_path="prajjwal1/bert-tiny",  # Small model for testing
             output_dim=128,
             freeze_weights=True,
             max_sequence_length=64,
         )
+        embedder = TrainableSentenceEmbedder(config)
 
         self.assertEqual(embedder.output_dim, 128)
         self.assertEqual(embedder.max_sequence_length, 64)
@@ -47,12 +51,13 @@ class TrainableSentenceEmbedderTest(unittest.TestCase):
 
     def test_forward_pass_shape(self):
         """Test that forward pass produces correct output shape."""
-        embedder = TrainableSentenceEmbedder(
+        config = TrainableSentenceEmbedderConfig(
             pretrained_model_name_or_path="prajjwal1/bert-tiny",
             output_dim=256,
             freeze_weights=True,
             max_sequence_length=64,
         )
+        embedder = TrainableSentenceEmbedder(config)
 
         texts = ["This is a test.", "Another test sentence.", "Third one."]
         embeddings = embedder(texts)
@@ -61,12 +66,13 @@ class TrainableSentenceEmbedderTest(unittest.TestCase):
 
     def test_embeddings_are_normalized(self):
         """Test that output embeddings are normalized to unit length."""
-        embedder = TrainableSentenceEmbedder(
+        config = TrainableSentenceEmbedderConfig(
             pretrained_model_name_or_path="prajjwal1/bert-tiny",
             output_dim=128,
             freeze_weights=True,
             max_sequence_length=64,
         )
+        embedder = TrainableSentenceEmbedder(config)
 
         texts = ["Test sentence for normalization check."]
         embeddings = embedder(texts)
@@ -77,12 +83,13 @@ class TrainableSentenceEmbedderTest(unittest.TestCase):
 
     def test_empty_input(self):
         """Test handling of empty input list."""
-        embedder = TrainableSentenceEmbedder(
+        config = TrainableSentenceEmbedderConfig(
             pretrained_model_name_or_path="prajjwal1/bert-tiny",
             output_dim=128,
             freeze_weights=True,
             max_sequence_length=64,
         )
+        embedder = TrainableSentenceEmbedder(config)
 
         texts = []
         embeddings = embedder(texts)
@@ -91,12 +98,13 @@ class TrainableSentenceEmbedderTest(unittest.TestCase):
 
     def test_freeze_unfreeze(self):
         """Test freeze and unfreeze functionality."""
-        embedder = TrainableSentenceEmbedder(
+        config = TrainableSentenceEmbedderConfig(
             pretrained_model_name_or_path="prajjwal1/bert-tiny",
             output_dim=128,
             freeze_weights=True,
             max_sequence_length=64,
         )
+        embedder = TrainableSentenceEmbedder(config)
 
         # Initially frozen
         for param in embedder.transformer.parameters():
@@ -114,12 +122,13 @@ class TrainableSentenceEmbedderTest(unittest.TestCase):
 
     def test_batch_processing(self):
         """Test that batching produces consistent results."""
-        embedder = TrainableSentenceEmbedder(
+        config = TrainableSentenceEmbedderConfig(
             pretrained_model_name_or_path="prajjwal1/bert-tiny",
             output_dim=128,
             freeze_weights=True,
             max_sequence_length=64,
         )
+        embedder = TrainableSentenceEmbedder(config)
         embedder.eval()  # Ensure deterministic behavior
 
         text = "Test sentence for batch consistency."
@@ -137,12 +146,13 @@ class TrainableSentenceEmbedderTest(unittest.TestCase):
 
     def test_different_lengths(self):
         """Test handling of sentences with different lengths."""
-        embedder = TrainableSentenceEmbedder(
+        config = TrainableSentenceEmbedderConfig(
             pretrained_model_name_or_path="prajjwal1/bert-tiny",
             output_dim=128,
             freeze_weights=True,
             max_sequence_length=128,
         )
+        embedder = TrainableSentenceEmbedder(config)
 
         texts = [
             "Short.",
@@ -537,7 +547,6 @@ class PanoramaSemanticLandmarkExtractorWithTrainableEmbedderTest(unittest.TestCa
             openai_embedding_size=1536,
             embedding_version="test_version",
             auxiliary_info_key="test_key",
-            should_classify_against_grouping=False,
             trainable_embedder_config=embedder_config,
         )
 
@@ -560,7 +569,6 @@ class PanoramaSemanticLandmarkExtractorWithTrainableEmbedderTest(unittest.TestCa
             openai_embedding_size=1536,
             embedding_version="test_version",
             auxiliary_info_key="test_key",
-            should_classify_against_grouping=False,
             trainable_embedder_config=embedder_config,
         )
 
@@ -604,7 +612,6 @@ class PanoramaSemanticLandmarkExtractorWithTrainableEmbedderTest(unittest.TestCa
             openai_embedding_size=1536,
             embedding_version="test_version",
             auxiliary_info_key="test_key",
-            should_classify_against_grouping=False,
             trainable_embedder_config=embedder_config,
         )
 
@@ -626,7 +633,6 @@ class PanoramaSemanticLandmarkExtractorWithTrainableEmbedderTest(unittest.TestCa
             openai_embedding_size=1536,
             embedding_version="test_version",
             auxiliary_info_key="test_key",
-            should_classify_against_grouping=False,
             trainable_embedder_config=embedder_config,
         )
 
