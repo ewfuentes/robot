@@ -2404,6 +2404,7 @@ numpy==1.26.4 \
     #   cvxpy
     #   cvxpylayers
     #   datasets
+    #   depth-pro
     #   easyocr
     #   fvcore
     #   geopandas
@@ -4429,6 +4430,7 @@ torch==2.7.0+cu128 \
     # via
     #   -r third_party/python/requirements_3_12.in
     #   accelerate
+    #   depth-pro
     #   dinov2
     #   easyocr
     #   hloc
@@ -4524,9 +4526,9 @@ traitlets==5.14.3 \
     #   nbclient
     #   nbconvert
     #   nbformat
-transformers==4.47.1 \
-    --hash=sha256:6c29c05a5f595e278481166539202bf8641281536df1c42357ee58a45d0a564a \
-    --hash=sha256:d2f5d19bb6283cd66c893ec7e6d931d6370bbf1cc93633326ff1f41a40046c9c
+transformers==4.51.1 \
+    --hash=sha256:206ea0b75dfde142ed7495b911da76579dce6ea249cc3695fdd29a544a9e007b \
+    --hash=sha256:c7038e216afb2a3e9b00dd12d87ad5e3af4c30895f70b28e92f65459eded0161
     # via
     #   -r third_party/python/requirements_3_12.in
     #   sentence-transformers
