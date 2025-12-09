@@ -6,6 +6,39 @@ from experimental.overhead_matching.swag.scripts.pairing import PairingDataType,
 from typing import Union, Callable
 from dataclasses import dataclass
 import msgspec
+from common.math.haversine import find_d_on_unit_circle
+
+EARTH_RADIUS_M = 6378137.0
+
+
+def compute_gps_distances(
+    pano_metadata_list: list[dict],
+    sat_metadata_list: list[dict],
+    pairs: list[tuple[int, int]]
+) -> torch.Tensor:
+    """Compute GPS distances in meters for (pano_idx, sat_idx) pairs."""
+    distances = []
+    for pano_idx, sat_idx in pairs:
+        pano_latlon = (pano_metadata_list[pano_idx]['lat'],
+                       pano_metadata_list[pano_idx]['lon'])
+        sat_latlon = (sat_metadata_list[sat_idx]['lat'],
+                      sat_metadata_list[sat_idx]['lon'])
+
+        distance_on_sphere = find_d_on_unit_circle(pano_latlon, sat_latlon)
+        distance_m = distance_on_sphere * EARTH_RADIUS_M
+        distances.append(distance_m)
+
+    return torch.tensor(distances, dtype=torch.float32)
+
+
+def compute_distance_weights(distances: torch.Tensor) -> torch.Tensor:
+    """
+    Convert distances to loss weights using: weight = 2 * (1 - exp(-distance/100))
+
+    Note: This formula gives weight=0 at distance=0 and approaches weight=2
+    as distance increases. Verify this behavior during testing.
+    """
+    return 2.0 * (1.0 - torch.exp(-distances / 100.0))
 
 
 @dataclass
@@ -14,9 +47,23 @@ class LossInputs:
     sat_embeddings_unnormalized: torch.Tensor  # NOT NORMALIZED
     pano_embeddings_unnormalized: torch.Tensor  # NOT NORMALIZED
     pairing_data: PairingDataType
+    # Optional metadata for distance-based losses
+    pano_metadata: list[dict] | None = None
+    sat_metadata: list[dict] | None = None
 
 
 class PairwiseContrastiveLossConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    positive_weight: float
+    avg_positive_similarity: float
+
+    semipositive_weight: float
+    avg_semipositive_similarity: float
+
+    negative_weight: float
+    avg_negative_similarity: float
+
+
+class DistanceWeightedPairwiseContrastiveLossConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     positive_weight: float
     avg_positive_similarity: float
 
@@ -45,6 +92,7 @@ class SphericalEmbeddingConstraintLossConfig(msgspec.Struct, **MSGSPEC_STRUCT_OP
 
 LossConfig = Union[
     PairwiseContrastiveLossConfig,
+    DistanceWeightedPairwiseContrastiveLossConfig,
     InfoNCELossConfig,
     SphericalEmbeddingConstraintLossConfig,
     BatchUniformityLossConfig
@@ -107,6 +155,101 @@ def compute_pairwise_loss(
         "semipos_sim": semipos_similarities,
         "neg_sim": neg_similarities,
     }
+
+    return pos_loss + neg_loss + semipos_loss, aux_data
+
+
+def compute_distance_weighted_pairwise_loss(
+    loss_inputs: LossInputs,
+    config: DistanceWeightedPairwiseContrastiveLossConfig
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """
+    Pairwise contrastive loss with distance-based weighting for negative pairs.
+    """
+    assert isinstance(loss_inputs.pairing_data, Pairs), \
+        "DistanceWeightedPairwiseContrastiveLoss requires Pairs pairing data"
+
+    if loss_inputs.pano_metadata is None or loss_inputs.sat_metadata is None:
+        raise ValueError(
+            "DistanceWeightedPairwiseContrastiveLoss requires pano_metadata and "
+            "sat_metadata in LossInputs"
+        )
+
+    similarity = loss_inputs.similarity_matrix
+    pairs = loss_inputs.pairing_data
+    device = similarity.device
+
+    # Extract similarities (same as original PairwiseContrastiveLoss)
+    pos_rows = [x[0] for x in pairs.positive_pairs]
+    pos_cols = [x[1] for x in pairs.positive_pairs]
+    pos_similarities = similarity[pos_rows, pos_cols] if pairs.positive_pairs else \
+                       torch.tensor([], device=device)
+
+    semipos_rows = [x[0] for x in pairs.semipositive_pairs]
+    semipos_cols = [x[1] for x in pairs.semipositive_pairs]
+    semipos_similarities = similarity[semipos_rows, semipos_cols] if pairs.semipositive_pairs else \
+                           torch.tensor([], device=device)
+
+    neg_rows = [x[0] for x in pairs.negative_pairs]
+    neg_cols = [x[1] for x in pairs.negative_pairs]
+    neg_similarities = similarity[neg_rows, neg_cols] if pairs.negative_pairs else \
+                       torch.tensor([], device=device)
+
+    # Compute positive loss (unchanged)
+    if len(pairs.positive_pairs):
+        pos_loss = torch.log(1 + torch.exp(-config.positive_weight *
+                                           (pos_similarities - config.avg_positive_similarity)))
+        pos_loss = torch.mean(pos_loss) / config.positive_weight
+    else:
+        pos_loss = torch.tensor(0, device=device, dtype=similarity.dtype)
+
+    # Compute semipositive loss (unchanged)
+    if len(pairs.semipositive_pairs):
+        semipos_loss = torch.log(1 + torch.exp(-config.semipositive_weight *
+                                                (semipos_similarities - config.avg_semipositive_similarity)))
+        semipos_loss = torch.mean(semipos_loss) / config.semipositive_weight
+    else:
+        semipos_loss = torch.tensor(0, device=device, dtype=similarity.dtype)
+
+    # Compute negative loss WITH distance weighting
+    if len(pairs.negative_pairs):
+        # Compute raw loss
+        raw_neg_loss = torch.log(1 + torch.exp(config.negative_weight *
+                                                (neg_similarities - config.avg_negative_similarity)))
+
+        # Compute distance weights
+        distances = compute_gps_distances(
+            loss_inputs.pano_metadata,
+            loss_inputs.sat_metadata,
+            pairs.negative_pairs
+        ).to(device)
+
+        distance_weights = compute_distance_weights(distances).to(device)
+
+        # Apply weights and compute mean
+        weighted_neg_loss = raw_neg_loss * distance_weights
+        neg_loss = torch.mean(weighted_neg_loss) / config.negative_weight
+
+        # Store distance stats for logging
+        neg_distances = distances.detach()
+    else:
+        neg_loss = torch.tensor(0, device=device, dtype=similarity.dtype)
+        neg_distances = None
+
+    # Prepare auxiliary data
+    aux_data = {
+        "pos_loss": pos_loss,
+        "neg_loss": neg_loss,
+        "semipos_loss": semipos_loss,
+        "pos_sim": pos_similarities,
+        "semipos_sim": semipos_similarities,
+        "neg_sim": neg_similarities,
+    }
+
+    if neg_distances is not None:
+        aux_data["neg_distances_m"] = neg_distances
+        aux_data["neg_distance_mean_m"] = neg_distances.mean()
+        aux_data["neg_distance_max_m"] = neg_distances.max()
 
     return pos_loss + neg_loss + semipos_loss, aux_data
 
@@ -210,6 +353,8 @@ def create_losses_from_loss_config_list(
     for loss_config in loss_configs:
         if isinstance(loss_config, PairwiseContrastiveLossConfig):
             loss_functions.append(lambda x, config=loss_config: compute_pairwise_loss(x, config))
+        elif isinstance(loss_config, DistanceWeightedPairwiseContrastiveLossConfig):
+            loss_functions.append(lambda x, config=loss_config: compute_distance_weighted_pairwise_loss(x, config))
         elif isinstance(loss_config, InfoNCELossConfig):
             loss_functions.append(lambda x, config=loss_config: compute_info_nce_loss(x, config))
         elif isinstance(loss_config, SphericalEmbeddingConstraintLossConfig):
@@ -227,6 +372,8 @@ def compute_loss(sat_embeddings: torch.Tensor,  # N_sat x n_emb_sat x D_emb
                  similarity: torch.Tensor,  # N_pano x N_sat
                  pairing_data: PairingDataType,
                  loss_functions: list[LossFunctionType],
+                 pano_metadata: list[dict] | None = None,
+                 sat_metadata: list[dict] | None = None,
                  ) -> dict[str, torch.Tensor | int | float]:
     loss = 0.0
 
@@ -234,7 +381,9 @@ def compute_loss(sat_embeddings: torch.Tensor,  # N_sat x n_emb_sat x D_emb
         similarity_matrix=similarity,
         sat_embeddings_unnormalized=sat_embeddings,
         pano_embeddings_unnormalized=pano_embeddings,
-        pairing_data=pairing_data
+        pairing_data=pairing_data,
+        pano_metadata=pano_metadata,
+        sat_metadata=sat_metadata,
     )
     aux_info = {}
     for loss_fn in loss_functions:

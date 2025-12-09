@@ -570,5 +570,162 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
                               msg=f"Expected ~{expected_kept} landmarks, got {num_kept}")
 
 
+    def test_polar_position_embedding_basic(self):
+        """Test basic functionality of PolarPositionEmbedding."""
+        # Setup
+        config = spe.PolarPositionEmbeddingConfig(
+            min_scale=0.1, scale_step=2.0, embedding_dim=64)
+        model = spe.PolarPositionEmbedding(config)
+
+        batch_size = 2
+        num_tokens = 5
+        num_positions = 1
+        image = torch.zeros((batch_size, 3, 28, 28))
+        metadata = [
+            {"web_mercator_y": 100.0, "web_mercator_x": 200.0, "landmarks": []},
+            {"web_mercator_y": 300.0, "web_mercator_x": 400.0, "landmarks": []}
+        ]
+        model_input = spe.ModelInput(image=image, metadata=metadata)
+
+        # Create some test positions in Cartesian coordinates
+        relative_positions = torch.tensor([
+            [[[0.0, 0.0]],   # origin
+             [[3.0, 4.0]],   # distance=5, heading=atan2(3,4)≈0.6435 rad
+             [[-3.0, 4.0]],  # distance=5, heading=atan2(-3,4)≈5.6397 rad (negative y)
+             [[0.0, 5.0]],   # distance=5, heading=0
+             [[5.0, 0.0]]],  # distance=5, heading=π/2
+            [[[1.0, 1.0]],   # distance=√2, heading=π/4
+             [[0.0, -1.0]],  # distance=1, heading=π
+             [[-1.0, -1.0]], # distance=√2, heading=5π/4
+             [[10.0, 0.0]],  # distance=10, heading=π/2
+             [[0.0, 10.0]]]  # distance=10, heading=0
+        ], dtype=torch.float32)
+
+        # Action
+        result = model(model_input=model_input, relative_positions=relative_positions)
+
+        # Verification
+        self.assertEqual(result.shape, (batch_size, num_tokens, config.embedding_dim))
+        self.assertEqual(result.dtype, torch.float32)
+        self.assertEqual(model.output_dim, 64)
+
+    def test_polar_position_embedding_distance_and_heading(self):
+        """Test that polar coordinates are correctly computed."""
+        # Setup
+        config = spe.PolarPositionEmbeddingConfig(
+            min_scale=1.0, scale_step=1.0, embedding_dim=4)  # Single scale for easy testing
+        model = spe.PolarPositionEmbedding(config)
+
+        batch_size = 1
+        num_tokens = 4
+        num_positions = 1
+        image = torch.zeros((batch_size, 3, 28, 28))
+        metadata = [{"web_mercator_y": 0.0, "web_mercator_x": 0.0, "landmarks": []}]
+        model_input = spe.ModelInput(image=image, metadata=metadata)
+
+        # Test specific known positions
+        relative_positions = torch.tensor([
+            [[[0.0, 1.0]],   # East: distance=1, heading=0
+             [[1.0, 0.0]],   # North: distance=1, heading=π/2
+             [[0.0, -1.0]],  # West: distance=1, heading=π
+             [[-1.0, 0.0]]]  # South: distance=1, heading=3π/2
+        ], dtype=torch.float32)
+
+        # Action
+        result = model(model_input=model_input, relative_positions=relative_positions)
+
+        # Verification - check that all positions have the same distance encoding
+        # (since distance=1 for all), but different heading encodings
+        scale = (config.min_scale * 1.0) / (2 * torch.pi)
+
+        # Distance encodings (indices 0, 1) should be the same for all tokens
+        expected_dist_sin = torch.sin(torch.tensor(1.0 / scale))
+        expected_dist_cos = torch.cos(torch.tensor(1.0 / scale))
+        self.assertTrue(torch.allclose(result[0, :, 0], expected_dist_sin.expand(num_tokens), atol=1e-5))
+        self.assertTrue(torch.allclose(result[0, :, 1], expected_dist_cos.expand(num_tokens), atol=1e-5))
+
+        # Heading encodings (indices 2, 3) should differ
+        # East (heading=0): sin(0)=0, cos(0)=1
+        self.assertAlmostEqual(result[0, 0, 2].item(), torch.sin(torch.tensor(0.0 * scale)).item(), places=5)
+        self.assertAlmostEqual(result[0, 0, 3].item(), torch.cos(torch.tensor(0.0 * scale)).item(), places=5)
+
+        # North (heading=π/2): sin(π/2*scale), cos(π/2*scale)
+        self.assertAlmostEqual(result[0, 1, 2].item(), torch.sin(torch.tensor(torch.pi / 2 * scale)).item(), places=5)
+        self.assertAlmostEqual(result[0, 1, 3].item(), torch.cos(torch.tensor(torch.pi / 2 * scale)).item(), places=5)
+
+    def test_polar_position_embedding_with_swag_model(self):
+        """Test integration with SwagPatchEmbedding."""
+        # Setup
+        BATCH_DIM = 2
+        NUM_IMAGE_ROWS = 28
+        NUM_IMAGE_COLS = 28  # Square for satellite
+        NUM_EMBEDDINGS = 1
+        config = spe.SwagPatchEmbeddingConfig(
+            extractor_config_by_name={
+                "embedding_mat": spe.SemanticEmbeddingMatrixConfig(
+                    vocabulary=["a", "b", "c"],
+                    embedding_dim=8),
+            },
+            position_embedding_config=spe.PolarPositionEmbeddingConfig(
+                min_scale=0.1, scale_step=2.0, embedding_dim=64),
+            aggregation_config=spe.TransformerAggregatorConfig(
+                num_transformer_layers=2,
+                num_attention_heads=4,
+                hidden_dim=64,
+                dropout_frac=0.1),
+            patch_dims=(NUM_IMAGE_ROWS, NUM_IMAGE_COLS),
+            output_dim=16,
+            num_embeddings=NUM_EMBEDDINGS)
+
+        model = spe.SwagPatchEmbedding(config)
+        input_image = torch.zeros((BATCH_DIM, 3, NUM_IMAGE_ROWS, NUM_IMAGE_COLS))
+        metadata = [
+                {"web_mercator_y": 100.0,
+                 "web_mercator_x": 200.0,
+                 "original_shape": (NUM_IMAGE_ROWS, NUM_IMAGE_COLS),
+                 "landmarks": [
+                    {"web_mercator_y": 95.0, "web_mercator_x": 210.0, "landmark_type": "a"},
+                    {"web_mercator_y": 90.0, "web_mercator_x": 190.0, "landmark_type": "b"}]},
+                {"web_mercator_y": 300.0,
+                 "web_mercator_x": 400.0,
+                 "original_shape": (NUM_IMAGE_ROWS, NUM_IMAGE_COLS),
+                 "landmarks": [
+                    {"web_mercator_y": 275.0, "web_mercator_x": 425.0, "landmark_type": "c"}]}]
+
+        # Action
+        model_input = spe.ModelInput(image=input_image, metadata=metadata)
+        result, _ = model(model_input)
+
+        # Verification
+        self.assertEqual(result.shape[0], BATCH_DIM)
+        self.assertEqual(result.shape[1], NUM_EMBEDDINGS)
+        self.assertEqual(result.shape[2], config.output_dim)
+
+    def test_polar_position_embedding_zero_distance(self):
+        """Test that zero distance (origin) is handled correctly."""
+        # Setup
+        config = spe.PolarPositionEmbeddingConfig(
+            min_scale=1.0, scale_step=2.0, embedding_dim=8)
+        model = spe.PolarPositionEmbedding(config)
+
+        batch_size = 1
+        num_tokens = 1
+        num_positions = 1
+        image = torch.zeros((batch_size, 3, 28, 28))
+        metadata = [{"web_mercator_y": 0.0, "web_mercator_x": 0.0, "landmarks": []}]
+        model_input = spe.ModelInput(image=image, metadata=metadata)
+
+        # Position at origin
+        relative_positions = torch.tensor([[[[0.0, 0.0]]]], dtype=torch.float32)
+
+        # Action
+        result = model(model_input=model_input, relative_positions=relative_positions)
+
+        # Verification - should not crash and should have valid output
+        self.assertEqual(result.shape, (batch_size, num_tokens, config.embedding_dim))
+        self.assertFalse(torch.isnan(result).any(), "Output should not contain NaN")
+        self.assertFalse(torch.isinf(result).any(), "Output should not contain Inf")
+
+
 if __name__ == "__main__":
     unittest.main()

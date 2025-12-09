@@ -32,6 +32,7 @@ from experimental.overhead_matching.swag.model.swag_config_types import (
     PositionEmbeddingConfig,
     PlanarPositionEmbeddingConfig,
     SphericalPositionEmbeddingConfig,
+    PolarPositionEmbeddingConfig,
     NullPositionEmbeddingConfig,
 
     AggregationConfig,
@@ -86,6 +87,7 @@ def create_position_embedding(config: PositionEmbeddingConfig):
     match config:
         case PlanarPositionEmbeddingConfig(): return PlanarPositionEmbedding(config)
         case SphericalPositionEmbeddingConfig(): return SphericalPositionEmbedding(config)
+        case PolarPositionEmbeddingConfig(): return PolarPositionEmbedding(config)
         case NullPositionEmbeddingConfig(): return NullPositionEmbedding(config)
 
 
@@ -322,6 +324,60 @@ class PlanarPositionEmbedding(torch.nn.Module):
             out[..., embedding_idx_start + 1] = torch.cos(relative_positions[..., 0] / scale)
             out[..., embedding_idx_start + 2] = torch.sin(relative_positions[..., 1] / scale)
             out[..., embedding_idx_start + 3] = torch.cos(relative_positions[..., 1] / scale)
+        return out.reshape(batch_size, num_tokens, num_position_tokens * self._embedding_dim)
+
+    @property
+    def output_dim(self):
+        return self._embedding_dim
+
+
+class PolarPositionEmbedding(torch.nn.Module):
+    def __init__(self, config: PolarPositionEmbeddingConfig):
+        super().__init__()
+        self._embedding_dim = config.embedding_dim
+        self._min_scale = config.min_scale
+        self._scale_step = config.scale_step
+
+        assert self._embedding_dim % 4 == 0
+
+    def forward(self, *,
+                model_input: ModelInput,
+                relative_positions: torch.Tensor):
+        """Convert Cartesian (y, x) positions to polar (distance, heading) and encode.
+
+        Args:
+            model_input: Model input (unused but kept for interface consistency)
+            relative_positions: Tensor of shape (batch, num_tokens, num_position_tokens, 2)
+                               where last dimension is [y, x] in Cartesian coordinates
+
+        Returns:
+            Tensor of shape (batch, num_tokens, num_position_tokens * embedding_dim)
+        """
+        assert relative_positions.ndim == 4
+        batch_size, num_tokens, num_position_tokens = relative_positions.shape[:-1]
+
+        # Extract y and x coordinates
+        y = relative_positions[..., 0]  # (batch, num_tokens, num_position_tokens)
+        x = relative_positions[..., 1]  # (batch, num_tokens, num_position_tokens)
+
+        # Convert to polar coordinates
+        distance = torch.sqrt(x**2 + y**2)  # Euclidean distance
+        heading = torch.atan2(y, x)  # Angle in [-π, π]
+        # Normalize heading to [0, 2π] for consistency
+        heading = torch.where(heading < 0, heading + 2 * torch.pi, heading)
+
+        out = torch.zeros((*relative_positions.shape[:-1], self._embedding_dim), dtype=torch.float32)
+
+        num_scales = self._embedding_dim // 4
+        for scale_idx in range(num_scales):
+            embedding_idx_start = 4 * scale_idx
+            scale = (self._min_scale * self._scale_step ** scale_idx) / (2 * torch.pi)
+
+            out[..., embedding_idx_start + 0] = torch.sin(distance / scale)
+            out[..., embedding_idx_start + 1] = torch.cos(distance / scale)
+            out[..., embedding_idx_start + 2] = torch.sin(heading * scale)
+            out[..., embedding_idx_start + 3] = torch.cos(heading * scale)
+
         return out.reshape(batch_size, num_tokens, num_position_tokens * self._embedding_dim)
 
     @property

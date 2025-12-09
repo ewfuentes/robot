@@ -95,6 +95,7 @@ class DatasetConfig:
     landmark_version: str
     factor: None | float = 1.0
     panorama_landmark_radius_px: float = 640
+    landmark_correspondence_inflation_factor: float = 1.0
 
 
 @dataclass
@@ -267,6 +268,8 @@ def compute_forward_pass_and_loss(batch,
             similarity=similarity,
             pairing_data=pairing_data,
             loss_functions=loss_functions,
+            pano_metadata=batch.panorama_metadata,
+            sat_metadata=batch.satellite_metadata,
         )
 
     return loss_dict, panorama_embeddings, sat_embeddings, {'sat': sat_debug, 'pano': pano_debug}
@@ -579,12 +582,14 @@ def main(
             model_type="satellite",
             landmark_version=train_config.dataset_config.landmark_version,
             panorama_landmark_radius_px=train_config.dataset_config.panorama_landmark_radius_px,
+            landmark_correspondence_inflation_factor=train_config.dataset_config.landmark_correspondence_inflation_factor,
             extractor_info=satellite_model.cache_info()),
         panorama_tensor_cache_info=vigor_dataset.TensorCacheInfo(
             dataset_key=train_config.dataset_config.paths[0],
             model_type="panorama",
             landmark_version=train_config.dataset_config.landmark_version,
             panorama_landmark_radius_px=train_config.dataset_config.panorama_landmark_radius_px,
+            landmark_correspondence_inflation_factor=train_config.dataset_config.landmark_correspondence_inflation_factor,
             extractor_info=panorama_model.cache_info()),
         sample_mode=vigor_dataset.SampleMode.POS_SEMIPOS,
         factor=train_config.dataset_config.factor,
@@ -592,7 +597,8 @@ def main(
         should_load_landmarks=should_load_landmarks,
         landmark_version=train_config.dataset_config.landmark_version,
         load_cache_debug=capture_model_data,
-        panorama_landmark_radius_px=train_config.dataset_config.panorama_landmark_radius_px)
+        panorama_landmark_radius_px=train_config.dataset_config.panorama_landmark_radius_px,
+        landmark_correspondence_inflation_factor=train_config.dataset_config.landmark_correspondence_inflation_factor)
 
     dataset_paths = [dataset_base_path / p for p in train_config.dataset_config.paths]
     dataset = vigor_dataset.VigorDataset(dataset_paths, dataset_config)
@@ -613,19 +619,22 @@ def main(
                     model_type="satellite",
                     landmark_version=validation_dataset_config.landmark_version,
                     panorama_landmark_radius_px=validation_dataset_config.panorama_landmark_radius_px,
+                    landmark_correspondence_inflation_factor=validation_dataset_config.landmark_correspondence_inflation_factor,
                     extractor_info=satellite_model.cache_info()),
                 panorama_tensor_cache_info=vigor_dataset.TensorCacheInfo(
                     dataset_key=validation_dataset_config.paths[0],
                     model_type="panorama",
                     landmark_version=validation_dataset_config.landmark_version,
                     panorama_landmark_radius_px=validation_dataset_config.panorama_landmark_radius_px,
+                    landmark_correspondence_inflation_factor=validation_dataset_config.landmark_correspondence_inflation_factor,
                     extractor_info=panorama_model.cache_info()),
                 sample_mode=vigor_dataset.SampleMode.POS_SEMIPOS,
                 factor=validation_dataset_config.factor,
                 should_load_images=should_load_images,
                 should_load_landmarks=should_load_landmarks,
                 landmark_version=validation_dataset_config.landmark_version,
-                panorama_landmark_radius_px=validation_dataset_config.panorama_landmark_radius_px))
+                panorama_landmark_radius_px=validation_dataset_config.panorama_landmark_radius_px,
+                landmark_correspondence_inflation_factor=validation_dataset_config.landmark_correspondence_inflation_factor))
 
     output_dir = output_base_path / train_config.output_dir
     tensorboard_output = train_config.tensorboard_output

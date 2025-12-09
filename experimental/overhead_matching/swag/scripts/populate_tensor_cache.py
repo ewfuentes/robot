@@ -75,10 +75,10 @@ def extract_field_specs_from_config(train_config: train.TrainConfig) -> list[str
 
 
 def extract_unique_datasets_from_config(train_config: train.TrainConfig,
-                                       dataset_base_path: Path) -> list[tuple[Path, str, float]]:
+                                       dataset_base_path: Path) -> list[tuple[Path, str, float, float]]:
     """
     Extract unique dataset configurations from training config.
-    Returns list of (dataset_path, landmark_version, panorama_landmark_radius_px) tuples.
+    Returns list of (dataset_path, landmark_version, panorama_landmark_radius_px, landmark_correspondence_inflation_factor) tuples.
     Deduplicates datasets that appear multiple times (e.g., in train and validation with different factors).
     """
     # Collect all dataset configs (train + validation)
@@ -86,7 +86,7 @@ def extract_unique_datasets_from_config(train_config: train.TrainConfig,
     if train_config.validation_dataset_configs:
         all_dataset_configs.extend(train_config.validation_dataset_configs)
 
-    # Deduplicate by (dataset_path, landmark_version, panorama_landmark_radius_px)
+    # Deduplicate by (dataset_path, landmark_version, panorama_landmark_radius_px, landmark_correspondence_inflation_factor)
     # Use dict to preserve order
     unique_datasets = {}
     for dataset_config in all_dataset_configs:
@@ -97,7 +97,8 @@ def extract_unique_datasets_from_config(train_config: train.TrainConfig,
             key = (
                 dataset_path,
                 dataset_config.landmark_version,
-                dataset_config.panorama_landmark_radius_px
+                dataset_config.panorama_landmark_radius_px,
+                dataset_config.landmark_correspondence_inflation_factor
             )
 
             if key not in unique_datasets:
@@ -109,6 +110,7 @@ def extract_unique_datasets_from_config(train_config: train.TrainConfig,
 def get_cache_output_path(field_spec: str,
                           landmark_version: str,
                           panorama_landmark_radius_px: float,
+                          landmark_correspondence_inflation_factor: float,
                           dataset_path: Path,
                           base_output_path: Path,
                           train_config: train.TrainConfig) -> tuple[Path, str]:
@@ -128,7 +130,8 @@ def get_cache_output_path(field_spec: str,
         model_config=model_config,
         patch_dims=patch_dims,
         landmark_version=landmark_version,
-        panorama_landmark_radius_px=panorama_landmark_radius_px)
+        panorama_landmark_radius_px=panorama_landmark_radius_px,
+        landmark_correspondence_inflation_factor=landmark_correspondence_inflation_factor)
     _, config_hash = compute_config_hash(hash_struct)
 
     model_type = 'satellite' if 'sat_model_config' == parts[0] else 'panorama'
@@ -149,6 +152,7 @@ def should_skip_cache(output_path: Path) -> bool:
 def build_dataset_for_extractor(field_spec: str,
                                  landmark_version: str,
                                  panorama_landmark_radius_px: float,
+                                 landmark_correspondence_inflation_factor: float,
                                  dataset_path: Path,
                                  train_config: train.TrainConfig):
     """
@@ -185,6 +189,7 @@ def build_dataset_for_extractor(field_spec: str,
             panorama_tensor_cache_info=None,
             landmark_version=landmark_version,
             panorama_landmark_radius_px=panorama_landmark_radius_px,
+            landmark_correspondence_inflation_factor=landmark_correspondence_inflation_factor,
             factor=1.0,  # Always use full dataset for caching
             should_load_images=should_load_images,
             should_load_landmarks=should_load_landmarks))
@@ -199,6 +204,7 @@ def build_dataset_for_extractor(field_spec: str,
 def process_single_cache(field_spec: str,
                          landmark_version: str,
                          panorama_landmark_radius_px: float,
+                         landmark_correspondence_inflation_factor: float,
                          dataset_path: Path,
                          base_output_path: Path,
                          batch_size: int,
@@ -222,7 +228,8 @@ def process_single_cache(field_spec: str,
         model_config=model_config,
         patch_dims=patch_dims,
         landmark_version=landmark_version,
-        panorama_landmark_radius_px=panorama_landmark_radius_px)
+        panorama_landmark_radius_px=panorama_landmark_radius_px,
+        landmark_correspondence_inflation_factor=landmark_correspondence_inflation_factor)
     yaml_str, config_hash = compute_config_hash(hash_struct)
 
     # Determine output path
@@ -332,7 +339,8 @@ def build_dataset_to_tasks_explicit_mode(
         dataset_path: Path,
         landmark_version: str,
         panorama_landmark_radius_px: float,
-        field_spec: str | None = None) -> dict[tuple[Path, str, float], list[tuple[Path, str]]]:
+        landmark_correspondence_inflation_factor: float,
+        field_spec: str | None = None) -> dict[tuple[Path, str, float, float], list[tuple[Path, str]]]:
     """
     Build dataset-to-tasks mapping when the dataset is specified explicitly
 
@@ -341,10 +349,11 @@ def build_dataset_to_tasks_explicit_mode(
         dataset_path: Path to dataset or directory containing datasets
         landmark_version: Landmark version (e.g., 'v3')
         panorama_landmark_radius_px: Panorama landmark radius in pixels
+        landmark_correspondence_inflation_factor: Landmark correspondence inflation factor
         field_spec: Optional specific field spec to cache (if None, auto-detect from config)
 
     Returns:
-        Mapping of (dataset_path, landmark_version, radius) -> [(config_path, field_spec), ...]
+        Mapping of (dataset_path, landmark_version, radius, inflation_factor) -> [(config_path, field_spec), ...]
     """
     print("\nMode: Explicit dataset specification")
     if landmark_version is None:
@@ -355,7 +364,7 @@ def build_dataset_to_tasks_explicit_mode(
     for ds in dataset_paths:
         print(f"  - {ds}")
 
-    dataset_to_tasks = {}  # {(dataset_path, lv, radius): [(config_path, field_spec), ...]}
+    dataset_to_tasks = {}  # {(dataset_path, lv, radius, inflation_factor): [(config_path, field_spec), ...]}
 
     # For each config, get its field specs and map to datasets
     for config_path, train_config in train_configs.items():
@@ -370,7 +379,7 @@ def build_dataset_to_tasks_explicit_mode(
 
         # Map each dataset to this config's field specs
         for ds in dataset_paths:
-            key = (ds, landmark_version, panorama_landmark_radius_px)
+            key = (ds, landmark_version, panorama_landmark_radius_px, landmark_correspondence_inflation_factor)
             if key not in dataset_to_tasks:
                 dataset_to_tasks[key] = []
             for fs in field_specs:
@@ -382,7 +391,7 @@ def build_dataset_to_tasks_explicit_mode(
 def build_dataset_to_tasks_config_derived_mode(
         train_configs: dict[Path, train.TrainConfig],
         dataset_base_path: Path,
-        field_spec: str | None = None) -> dict[tuple[Path, str, float], list[tuple[Path, str]]]:
+        field_spec: str | None = None) -> dict[tuple[Path, str, float, float], list[tuple[Path, str]]]:
     """
     Build dataset-to-tasks mapping by deriving datasets from training configs.
 
@@ -392,13 +401,13 @@ def build_dataset_to_tasks_config_derived_mode(
         field_spec: Optional specific field spec to cache (if None, auto-detect from config)
 
     Returns:
-        Mapping of (dataset_path, landmark_version, radius) -> [(config_path, field_spec), ...]
+        Mapping of (dataset_path, landmark_version, radius, inflation_factor) -> [(config_path, field_spec), ...]
     """
     print("\nMode: Deriving datasets from training configs")
     if dataset_base_path is None:
         raise ValueError("Either --dataset or --dataset_base must be provided")
 
-    dataset_to_tasks = {}  # {(dataset_path, lv, radius): [(config_path, field_spec), ...]}
+    dataset_to_tasks = {}  # {(dataset_path, lv, radius, inflation_factor): [(config_path, field_spec), ...]}
 
     # For each config, extract its datasets and field specs
     for config_path, train_config in train_configs.items():
@@ -415,8 +424,8 @@ def build_dataset_to_tasks_config_derived_mode(
         dataset_configs = extract_unique_datasets_from_config(train_config, dataset_base_path)
 
         # Map each dataset to this config's field specs
-        for ds_path, lv, radius in dataset_configs:
-            key = (ds_path, lv, radius)
+        for ds_path, lv, radius, inflation_factor in dataset_configs:
+            key = (ds_path, lv, radius, inflation_factor)
             if key not in dataset_to_tasks:
                 dataset_to_tasks[key] = []
             for fs in field_specs:
@@ -434,13 +443,14 @@ def main(train_config_paths: list[Path],
          dataset_path: Path | None = None,
          landmark_version: str | None = None,
          panorama_landmark_radius_px: float | None = None,
+         landmark_correspondence_inflation_factor: float = 1.0,
          # Mode 2: Derive from config
          dataset_base_path: Path | None = None):
     """
     Process tensor caching for the given configs.
 
     Two modes of operation:
-    1. Explicit mode: Provide dataset_path, landmark_version, and panorama_landmark_radius_px
+    1. Explicit mode: Provide dataset_path, landmark_version, panorama_landmark_radius_px, and landmark_correspondence_inflation_factor
     2. Config-derived mode: Provide dataset_base_path, and datasets are derived from training configs
 
     When multiple configs are provided, they are processed by dataset first to maximize cache reuse.
@@ -464,6 +474,7 @@ def main(train_config_paths: list[Path],
             dataset_path=dataset_path,
             landmark_version=landmark_version,
             panorama_landmark_radius_px=panorama_landmark_radius_px,
+            landmark_correspondence_inflation_factor=landmark_correspondence_inflation_factor,
             field_spec=field_spec)
     else:
         # Mode 2: Derive from configs
@@ -474,9 +485,9 @@ def main(train_config_paths: list[Path],
 
     # Print summary
     print(f"\nFound {len(dataset_to_tasks)} unique dataset configuration(s):")
-    for (ds_path, lv, radius), tasks in dataset_to_tasks.items():
+    for (ds_path, lv, radius, inflation_factor), tasks in dataset_to_tasks.items():
         num_configs = len(set(config_path for config_path, _ in tasks))
-        print(f"  - {ds_path.name} (landmark_version={lv}, radius={radius}): {len(tasks)} task(s) from {num_configs} config(s)")
+        print(f"  - {ds_path.name} (landmark_version={lv}, radius={radius}, inflation={inflation_factor}): {len(tasks)} task(s) from {num_configs} config(s)")
 
     # Sort tasks within each dataset by (model_type, requirements) to maximize cache reuse
     # Also compute and store requirements to avoid recomputing during processing
@@ -501,10 +512,10 @@ def main(train_config_paths: list[Path],
     total_tasks = sum(len(tasks) for tasks in dataset_to_tasks.values())
     current_task = 0
 
-    for (ds_path, lv, radius), tasks in dataset_to_tasks.items():
+    for (ds_path, lv, radius, inflation_factor), tasks in dataset_to_tasks.items():
         print(f"\n{'='*80}")
         print(f"Processing dataset: {ds_path.name}")
-        print(f"  landmark_version={lv}, panorama_landmark_radius_px={radius}")
+        print(f"  landmark_version={lv}, panorama_landmark_radius_px={radius}, inflation_factor={inflation_factor}")
         print(f"  {len(tasks)} task(s) to process")
         print(f"{'='*80}")
 
@@ -525,6 +536,7 @@ def main(train_config_paths: list[Path],
                 field_spec=field_spec_str,
                 landmark_version=lv,
                 panorama_landmark_radius_px=radius,
+                landmark_correspondence_inflation_factor=inflation_factor,
                 dataset_path=ds_path,
                 base_output_path=base_output_path,
                 train_config=train_config)
@@ -552,6 +564,7 @@ def main(train_config_paths: list[Path],
                     field_spec=field_spec_str,
                     landmark_version=lv,
                     panorama_landmark_radius_px=radius,
+                    landmark_correspondence_inflation_factor=inflation_factor,
                     dataset_path=ds_path,
                     train_config=train_config)
                 previous_dataset_cache = (current_model_type, current_requirements, dataset_to_use)
@@ -561,6 +574,7 @@ def main(train_config_paths: list[Path],
                 field_spec=field_spec_str,
                 landmark_version=lv,
                 panorama_landmark_radius_px=radius,
+                landmark_correspondence_inflation_factor=inflation_factor,
                 dataset_path=ds_path,
                 base_output_path=base_output_path,
                 batch_size=batch_size,
@@ -603,6 +617,8 @@ if __name__ == "__main__":
                         help='Landmark version (e.g., v3). Required when using --dataset.')
     parser.add_argument('--panorama_landmark_radius_px', type=float, default=None,
                         help='Panorama landmark radius in pixels. Required when using --dataset.')
+    parser.add_argument('--landmark_correspondence_inflation_factor', type=float, default=1.0,
+                        help='Landmark correspondence inflation factor (default: 1.0)')
     parser.add_argument("--batch_size", type=int, default=16,
                         help='Batch size for processing')
     parser.add_argument("--skip-existing", action='store_true',
@@ -632,5 +648,6 @@ if __name__ == "__main__":
              dataset_path=Path(args.dataset) if args.dataset else None,
              landmark_version=args.landmark_version,
              panorama_landmark_radius_px=args.panorama_landmark_radius_px,
+             landmark_correspondence_inflation_factor=args.landmark_correspondence_inflation_factor,
              # Mode 2 parameter
              dataset_base_path=Path(args.dataset_base))
