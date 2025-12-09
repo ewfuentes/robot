@@ -13,6 +13,7 @@ import math
 import numpy as np
 import hashlib
 import json
+import time
 
 from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
     load_embeddings, custom_id_from_props, load_all_jsonl_from_folder,
@@ -147,29 +148,37 @@ def _query_particle_patch_mapping(particle_locs_px: torch.Tensor, sat_tree, patc
         kept_particle_idxs: Indices of particles that matched a patch
         kept_patch_idxs: Corresponding patch indices for each matched particle
     """
+    device = particle_locs_px.device
     if sat_tree is None:
         return torch.tensor([], dtype=torch.long), torch.tensor([], dtype=torch.long)
 
-    query_pts = np.array([shapely.Point(x) for x in particle_locs_px.reshape(-1, 2)])
+    # Everything here is on the CPU for now
+    query_pts = np.array([shapely.Point(x) for x in particle_locs_px.reshape(-1, 2).cpu()])
     pt_and_patch_idxs = sat_tree.query(query_pts).T
 
     if len(pt_and_patch_idxs) == 0:
-        return torch.tensor([], dtype=torch.long), torch.tensor([], dtype=torch.long)
+        return (torch.tensor([], dtype=torch.long, device=device),
+                torch.tensor([], dtype=torch.long, device=device))
 
     flat_particle_idxs = torch.tensor(pt_and_patch_idxs[:, 0])
     particle_match_idxs = torch.tensor(pt_and_patch_idxs[:, 1])
 
     if len(flat_particle_idxs) == 0:
-        return torch.tensor([], dtype=torch.long), torch.tensor([], dtype=torch.long)
+        return (torch.tensor([], dtype=torch.long, device=device),
+                torch.tensor([], dtype=torch.long, device=device))
 
     # For particles matching multiple patches, find the closest by centroid distance
     particle_to_center_distances = torch.tensor(
             shapely.distance(patch_centroids[particle_match_idxs],
-                             query_pts[flat_particle_idxs]))
+                             query_pts[flat_particle_idxs]), device=device)
+
+    # This is now on the GPU
+    flat_particle_idxs = flat_particle_idxs.to(device)
+    particle_match_idxs = particle_match_idxs.to(device)
 
     # Mark beginning of each run of repeated particle indices
     run_starts = torch.ones(
-            len(flat_particle_idxs), dtype=torch.bool, device=flat_particle_idxs.device)
+            len(flat_particle_idxs), dtype=torch.bool, device=device)
     if len(flat_particle_idxs) > 1:
         run_starts[1:] = flat_particle_idxs[1:] != flat_particle_idxs[:-1]
 
@@ -232,10 +241,11 @@ def _compute_sat_log_likelihood(similarities: torch.Tensor,
     """
     assert similarities.shape[0] == particle_locs_px.shape[0]
     assert particle_locs_px.shape[-1] == 2
+    device = particle_locs_px.device
 
     num_patches = similarities.shape[1]
     if num_patches == 0:
-        return torch.full((particle_locs_px.shape[:-1]), -torch.inf, dtype=torch.float32)
+        return torch.full((particle_locs_px.shape[:-1]), -torch.inf, dtype=torch.float32, device=device)
 
     max_similarities, _ = torch.max(similarities, -1, keepdim=True)
     obs_log_likelihood = (-torch.log(torch.tensor(math.sqrt(2 * torch.pi) * sigma_px)) +
@@ -248,9 +258,9 @@ def _compute_sat_log_likelihood(similarities: torch.Tensor,
         swapped_particles, sat_tree, patch_centroids)
 
     if len(kept_particle_idxs) == 0:
-        return torch.full((particle_locs_px.shape[:-1]), -torch.inf, dtype=torch.float32)
+        return torch.full((particle_locs_px.shape[:-1]), -torch.inf, dtype=torch.float32, device=device)
 
-    out = torch.full(particle_locs_px.shape[:-1], -torch.inf)
+    out = torch.full(particle_locs_px.shape[:-1], -torch.inf, device=device)
     particle_idxs = torch.unravel_index(kept_particle_idxs, particle_locs_px.shape[:-1])
 
     if len(particle_idxs) > 0:
@@ -277,6 +287,7 @@ def _compute_osm_log_likelihood(similarities, mask, osm_geometry, particle_locs_
     assert similarities.shape[1] == mask.shape[1]
     assert similarities.shape[2] == len(osm_geometry)
 
+    device = particle_locs_px.device
     is_point = osm_geometry.geometry_px.apply(lambda x: x.geom_type == "Point")
     # assert is_point.all()
     num_panos, num_particles = particle_locs_px.shape[:2]
@@ -284,19 +295,29 @@ def _compute_osm_log_likelihood(similarities, mask, osm_geometry, particle_locs_
 
     # For each particle, compute the distance to the OSM geometry
     # Shapely objects have the column, row ordering, so we swap the particle order here
+    # This part happens on the CPU
     swapped_particles = torch.roll(particle_locs_px, 1, dims=-1)
-    particles_flat = [shapely.Point(*x) for x in swapped_particles.reshape(-1, 2)]
+    particles_flat = [shapely.Point(*x) for x in swapped_particles.reshape(-1, 2).cpu()]
     particles = np.array(particles_flat).reshape(num_panos, num_particles, 1)
     osm_landmarks = osm_geometry.geometry_px.values.reshape(1, 1, num_osm)
+    start_time = time.time()
+    print()
+    print(f"computing distances for {particles.shape=} {len(osm_geometry.geometry_px.values)=}")
+    print(f"{particles=}\n{osm_geometry=}")
     distances = shapely.distance(particles, osm_geometry.geometry_px.values)
+    end_time = time.time()
+    print(f"elapsed times: {end_time - start_time}")
+
+    # This part happens on the GPU
+
     # Handle the case where we may only have a single particle or a single osm landmark
-    distances = distances.reshape(num_panos, num_particles, num_osm)
+    distances = torch.tensor(distances.reshape(num_panos, num_particles, num_osm), device=device)
 
     # Compute the observation likelihood for each particle/geometry pair
     # dimensions: num_panos x num_particles x num_osm
     obs_log_likelihood_per_landmark = (
             -torch.log(torch.tensor(math.sqrt(2 * torch.pi) * point_sigma_px)) +
-            -0.5 * torch.square(torch.tensor(distances) / point_sigma_px))
+            -0.5 * torch.square(distances / point_sigma_px))
     obs_log_likelihood_per_landmark[obs_log_likelihood_per_landmark < -14.0] = -14.0
 
     # compute the weights

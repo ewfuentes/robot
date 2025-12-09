@@ -98,7 +98,7 @@ def compute_similarity_matrix(
             pano_model, pano_data_view_loader, device=device)
         print("building all similarity")
         out = sed.calculate_cos_similarity_against_database(
-            pano_embeddings, sat_embeddings)  # pano_embeddings x sat_patches
+            pano_embeddings.squeeze(), sat_embeddings.squeeze())  # pano_embeddings x sat_patches
     return out
 
 
@@ -288,7 +288,7 @@ def run_inference_on_path(
     log_particle_weights = []
     particle_history_pre_move = []  # the particle state history before move_wag but after observe_wag
     num_dual_particles = []
-    for panorama_id, motion_delta in zip(panorama_ids[:-1], motion_deltas):
+    for panorama_id, motion_delta in tqdm.tqdm(zip(panorama_ids[:-1], motion_deltas)):
         particle_history.append(particle_state.cpu().clone())
 
         # Generate new particles based on the observation

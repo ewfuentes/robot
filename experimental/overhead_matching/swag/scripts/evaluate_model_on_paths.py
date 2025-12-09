@@ -116,6 +116,8 @@ if __name__ == "__main__":
                         help="Sigma for OSM landmark observation likelihood")
     parser.add_argument("--embedding-dim", type=int, default=1536,
                         help="Embedding dimension for landmark embeddings")
+    parser.add_argument("--osm-similarity-scale", type=float, default=10.0,
+                        help="Scale factor for OSM similarity in log-likelihood computation")
 
     args = parser.parse_args()
 
@@ -152,7 +154,7 @@ if __name__ == "__main__":
                            initial_particle_distribution_offset_std_deg=degrees_from_meters(1300.0),
                            # page 73 of thesis
                            initial_particle_distribution_std_deg=degrees_from_meters(2970.0),
-                           num_particles=100_000,
+                           num_particles=10_000,
                            sigma_obs_prob_from_sim=args.sigma_obs_prob_from_sim,
                            satellite_patch_config=SatellitePatchConfig(
                                zoom_level=20,
@@ -173,6 +175,7 @@ if __name__ == "__main__":
         osm_embedding_path = Path(args.osm_embedding_path).expanduser()
         pano_embedding_path = Path(args.pano_embedding_path).expanduser()
 
+        import ipdb
         print("Computing landmark similarity data...")
         landmark_sim_data = compute_cached_landmark_similarity_data(
             vigor_dataset,
@@ -201,6 +204,7 @@ if __name__ == "__main__":
         obs_config = ObservationLikelihoodConfig(
             obs_likelihood_from_sat_similarity_sigma=args.sigma_obs_prob_from_sim,
             obs_likelihood_from_osm_similarity_sigma=args.landmark_sigma,
+            osm_similarity_scale=args.osm_similarity_scale,
             likelihood_mode=LikelihoodMode.COMBINED
         )
 
@@ -211,15 +215,16 @@ if __name__ == "__main__":
         )
         print("Landmark observation likelihood calculator ready")
 
-    es.evaluate_model_on_paths(
-        vigor_dataset=vigor_dataset,
-        sat_model=sat_model,
-        pano_model=pano_model,
-        paths=paths_data['paths'],
-        wag_config=wag_config,
-        seed=args.seed,
-        output_path=args.output_path,
-        device=DEVICE,
-        save_intermediate_filter_states=args.save_intermediate_filter_states,
-        obs_likelihood_calculator=landmark_obs_calculator
-    )
+    with ipdb.launch_ipdb_on_exception():
+        es.evaluate_model_on_paths(
+            vigor_dataset=vigor_dataset,
+            sat_model=sat_model,
+            pano_model=pano_model,
+            paths=paths_data['paths'],
+            wag_config=wag_config,
+            seed=args.seed,
+            output_path=args.output_path,
+            device=DEVICE,
+            save_intermediate_filter_states=args.save_intermediate_filter_states,
+            obs_likelihood_calculator=landmark_obs_calculator
+        )
