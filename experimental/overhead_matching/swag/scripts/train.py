@@ -267,6 +267,8 @@ def compute_forward_pass_and_loss(batch,
             similarity=similarity,
             pairing_data=pairing_data,
             loss_functions=loss_functions,
+            pano_metadata=batch.panorama_metadata,
+            sat_metadata=batch.satellite_metadata,
         )
 
     return loss_dict, panorama_embeddings, sat_embeddings, {'sat': sat_debug, 'pano': pano_debug}
