@@ -301,3 +301,20 @@ py_binary(
     "//experimental/overhead_matching/swag/model:swag_patch_embedding",
   ]
 )
+
+py_binary(
+  name="compute_patch_similarities",
+  srcs=["compute_patch_similarities.py"],
+  deps=[
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("pandas"),
+    requirement("geopandas"),
+    requirement("shapely"),
+    requirement("tqdm"),
+    "//common/torch:load_torch_deps",
+    "//common/gps:web_mercator",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
+  ]
+)
