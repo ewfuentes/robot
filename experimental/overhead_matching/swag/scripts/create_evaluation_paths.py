@@ -10,6 +10,7 @@ from pathlib import Path
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset-path", type=Path, required=True, help="Path to Vigor dataset")
+    parser.add_argument("--factor", type=float, required=False, help="Path to Vigor dataset", default=1.0)
     parser.add_argument("--out", type=Path, required=True, help="Save json file path")
     parser.add_argument("--path-length-m", type=float, required=True, help="Path length meters")
     parser.add_argument("--num-paths", type=int, required=True, help="Number of paths to generate")
@@ -24,17 +25,21 @@ if __name__ == "__main__":
     dataset_config = vd.VigorDatasetConfig(
         satellite_tensor_cache_info=None,
         panorama_tensor_cache_info=None,
-        panorama_neighbor_radius=args.panorama_neighbor_radius_deg)
+        panorama_neighbor_radius=args.panorama_neighbor_radius_deg,
+        factor=args.factor)
     dataset = vd.VigorDataset(Path(args.dataset_path), dataset_config)
     paths = []
+
 
     for i in tqdm.tqdm(range(args.num_paths)):
         generator = torch.manual_seed(args.seed + i)
         paths.append(dataset.generate_random_path(
             generator, args.path_length_m, args.turn_temperature))
         if not args.skip_plots:
+            plot_dir = args.out.with_suffix('')
+            plot_dir.mkdir(exist_ok=True, parents=True)
             fig, ax = dataset.visualize(path=paths[-1])
-            plt.savefig(args.out.parent / f"{i:06d}.png")
+            plt.savefig(plot_dir / f"{i:06d}.png")
             plt.close(fig)
 
     out = {
@@ -45,7 +50,8 @@ if __name__ == "__main__":
             "path_length_m": args.path_length_m,
             "seed": args.seed,
             "turn_temperature": args.turn_temperature,
-            "panorama_neighbor_radius_deg": args.panorama_neighbor_radius_deg
+            "panorama_neighbor_radius_deg": args.panorama_neighbor_radius_deg,
+            "factor": args.factor,
         },
     }
     with open(args.out, 'w') as f:
