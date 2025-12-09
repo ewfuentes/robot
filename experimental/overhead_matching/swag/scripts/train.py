@@ -26,6 +26,7 @@ from experimental.overhead_matching.swag.scripts.logging_utils import (
 from experimental.overhead_matching.swag.scripts.model_inspector import ModelInspector
 from typing import Union
 from dataclasses import dataclass
+import pandas as pd
 import tqdm
 import msgspec
 from pprint import pprint
@@ -111,6 +112,69 @@ class TrainConfig:
     pano_landmark_dropout_schedules: list[LandmarkDropoutScheduleConfig] = None
     sat_landmark_dropout_schedules: list[LandmarkDropoutScheduleConfig] = None
 
+@torch.no_grad
+def validation_metrics_from_similarity(
+    name: str,
+    similarity: torch.Tensor,  # num_panos x num_sat
+    panorama_metadata: pd.DataFrame,
+) -> dict:
+    num_panos = similarity.shape[0]
+
+    invalid_mask = torch.ones((num_panos, 5), dtype=torch.bool)
+    sat_idxs = torch.zeros((num_panos, 5), dtype=torch.int32)
+    for pano_idx, pano_metadata in panorama_metadata.iterrows():
+        assert len(pano_metadata.positive_satellite_idxs) <= 1
+        assert len(pano_metadata.semipositive_satellite_idxs) <= 4
+
+        for col_idx, sat_idx in enumerate(pano_metadata.positive_satellite_idxs):
+            sat_idxs[pano_idx, col_idx] = sat_idx
+            invalid_mask[pano_idx, col_idx] = False
+
+        for col_idx, sat_idx in enumerate(pano_metadata.semipositive_satellite_idxs):
+            sat_idxs[pano_idx, col_idx+1] = sat_idx
+            invalid_mask[pano_idx, col_idx+1] = False
+
+    row_idxs = torch.arange(num_panos).reshape(-1, 1).expand(-1, 5)
+    pos_semipos_similarities = similarity[row_idxs, sat_idxs]
+    pos_semipos_similarities[invalid_mask] = torch.nan
+
+    # Since the invalid entries are set to nan, their ranks are set to zero
+    ranks = (similarity[:, None, :] >= pos_semipos_similarities[:, :, None]).sum(dim=-1)
+
+    #  Compute the mean reciprocal rank of the valid positive matches
+    positive_recip_ranks = 1.0 / ranks[:, 0]
+    positive_recip_ranks[invalid_mask[:, 0]] = torch.nan
+    positive_mean_recip_rank = torch.nanmean(positive_recip_ranks)
+
+    # Compute the mean reciprocal rank of the lowest ranked positive/semipositive matches
+    # All panoramas should have at least one positive or semipostive match, so the max
+    # rank is guaranteed to be greater than zero, to the reciprocal rank should be valid
+    max_pos_semi_pos_recip_ranks = 1.0 / ranks.max(dim=-1).values
+    max_pos_semi_pos_recip_ranks = torch.nanmean(max_pos_semi_pos_recip_ranks)
+
+    # compute the positive recall @ K
+    k_values = [1, 5, 10, 100]
+    pos_recall = {f"{name}/pos_recall@{k}": (ranks[~(invalid_mask[:, 0]), 0] <= k).float().mean().item()
+                    for k in k_values}
+
+    # compute the positive/semipositive recall @ K
+    invalid_mask_cuda = invalid_mask.cuda()
+    ranks_cuda = ranks.cuda()
+    any_pos_semipos_recall = {
+        f"{name}/any pos_semipos_recall@{k}": ((ranks_cuda <= k) & (~invalid_mask_cuda)).any(dim=-1).float().mean().item()
+        for k in k_values}
+
+    all_pos_semipos_recall = {
+        f"{name}/all pos_semipos_recall@{k}": (ranks_cuda <= k).all(dim=-1).float().mean().item()
+        for k in k_values[1:]}
+
+    out = ({
+        f"{name}/positive_mean_recip_rank": positive_mean_recip_rank.item(),
+        f"{name}/max_pos_semi_pos_recip_rank": max_pos_semi_pos_recip_ranks.item()}
+        | pos_recall
+        | any_pos_semipos_recall
+        | all_pos_semipos_recall)
+    return out
 
 @torch.no_grad
 def compute_validation_metrics(
@@ -134,63 +198,9 @@ def compute_validation_metrics(
             pano_embeddings_unnormalized=pano_embeddings,
             sat_embeddings_unnormalized=sat_embeddings
         )
+        similarity = similarity.to("cpu")
+        out |= validation_metrics_from_similarity(name, similarity, panorama_metadata=dataset._panorama_metadata)
 
-        num_panos = similarity.shape[0]
-
-        invalid_mask = torch.ones((num_panos, 5), dtype=torch.bool)
-        sat_idxs = torch.zeros((num_panos, 5), dtype=torch.int32)
-        for pano_idx, pano_metadata in dataset._panorama_metadata.iterrows():
-            assert len(pano_metadata.positive_satellite_idxs) <= 1
-            assert len(pano_metadata.semipositive_satellite_idxs) <= 4
-
-            for col_idx, sat_idx in enumerate(pano_metadata.positive_satellite_idxs):
-                sat_idxs[pano_idx, col_idx] = sat_idx
-                invalid_mask[pano_idx, col_idx] = False
-
-            for col_idx, sat_idx in enumerate(pano_metadata.semipositive_satellite_idxs):
-                sat_idxs[pano_idx, col_idx+1] = sat_idx
-                invalid_mask[pano_idx, col_idx+1] = False
-
-        row_idxs = torch.arange(num_panos).reshape(-1, 1).expand(-1, 5)
-        pos_semipos_similarities = similarity[row_idxs, sat_idxs]
-        pos_semipos_similarities[invalid_mask] = torch.nan
-
-        # Since the invalid entries are set to nan, their ranks are set to zero
-        ranks = (similarity[:, None, :] >= pos_semipos_similarities[:, :, None]).sum(dim=-1)
-
-        #  Compute the mean reciprocal rank of the valid positive matches
-        positive_recip_ranks = 1.0 / ranks[:, 0]
-        positive_recip_ranks[invalid_mask[:, 0]] = torch.nan
-        positive_mean_recip_rank = torch.nanmean(positive_recip_ranks)
-
-        # Compute the mean reciprocal rank of the lowest ranked positive/semipositive matches
-        # All panoramas should have at least one positive or semipostive match, so the max
-        # rank is guaranteed to be greater than zero, to the reciprocal rank should be valid
-        max_pos_semi_pos_recip_ranks = 1.0 / ranks.max(dim=-1).values
-        max_pos_semi_pos_recip_ranks = torch.nanmean(max_pos_semi_pos_recip_ranks)
-
-        # compute the positive recall @ K
-        k_values = [1, 5, 10, 100]
-        pos_recall = {f"{name}/pos_recall@{k}": (ranks[~(invalid_mask[:, 0]), 0] <= k).float().mean().item()
-                      for k in k_values}
-
-        # compute the positive/semipositive recall @ K
-        invalid_mask_cuda = invalid_mask.cuda()
-        ranks_cuda = ranks.cuda()
-        any_pos_semipos_recall = {
-            f"{name}/any pos_semipos_recall@{k}": ((ranks_cuda <= k) & (~invalid_mask_cuda)).any(dim=-1).float().mean().item()
-            for k in k_values}
-
-        all_pos_semipos_recall = {
-            f"{name}/all pos_semipos_recall@{k}": (ranks_cuda <= k).all(dim=-1).float().mean().item()
-            for k in k_values[1:]}
-
-        out |= ({
-            f"{name}/positive_mean_recip_rank": positive_mean_recip_rank.item(),
-            f"{name}/max_pos_semi_pos_recip_rank": max_pos_semi_pos_recip_ranks.item()}
-            | pos_recall
-            | any_pos_semipos_recall
-            | all_pos_semipos_recall)
     return out
 
 
