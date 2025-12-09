@@ -17,7 +17,12 @@ def build_embeddings_from_model(model: torch.nn.Module,
     inf_results = []
     with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
         for data in tqdm.tqdm(dataloader, disable=not verbose):
-            embeddings, _ = model(model_input_from_dataloader(data).to(device))
+            embeddings = model(model_input_from_dataloader(data).to(device))
+            # The SwagPatchEmbedding model returns (output_embeddings, extractor_outputs)
+            # where as the WagPatchEmbedding model only returns output_embeddings.
+            # Keep only the embedding outputs
+            if isinstance(embeddings, tuple):
+                embeddings = embeddings[0]
             inf_results.append(embeddings)
     embeddings = torch.concatenate(inf_results, dim=0)
     return embeddings
