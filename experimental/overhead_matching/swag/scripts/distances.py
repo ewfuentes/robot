@@ -165,8 +165,8 @@ class MahalanobisDistance(torch.nn.Module):
 class LearnedDistanceFunctionConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     architecture: str  # "mlp", "attention", or "transformer_decoder"
     embedding_dim: int
-    num_pano_embed: int
-    num_sat_embed: int
+    num_pano_embed: int | None  # needed for MLP
+    num_sat_embed: int | None  # needed for MLP
     hidden_dim: int  # hidden embedding for transformer/attention, hidden layer dim for MLP
     num_heads: int = 8  # for attention and transformer_decoder
     num_layers: int = 1  # for transformer_decoder
