@@ -65,6 +65,7 @@ class SwagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
     auxiliary_info: dict[str, Any] = {}
 
     normalize_embeddings: bool = True
+    skip_aggregation: bool = False
 
     # These are here for backwards compatibility
     feature_map_extractor_config: FeatureMapExtractorConfig | None = None
@@ -424,10 +425,14 @@ class SwagPatchEmbedding(torch.nn.Module):
                                    config.output_dim)
                 for k in config.extractor_config_by_name})
 
-        self._cls_token = torch.nn.Parameter(torch.randn((1, config.num_embeddings, config.output_dim)))
-
-        self._aggregator_model = create_aggregator_model(
-                config.output_dim, config.aggregation_config)
+        # Only create class token and aggregator if not skipping aggregation
+        if not config.skip_aggregation:
+            self._cls_token = torch.nn.Parameter(torch.randn((1, config.num_embeddings, config.output_dim)))
+            self._aggregator_model = create_aggregator_model(
+                    config.output_dim, config.aggregation_config)
+        else:
+            self._cls_token = None
+            self._aggregator_model = None
 
         # Store cacheable extractor info
         self._cacheable_extractor_info = {}
@@ -483,8 +488,8 @@ class SwagPatchEmbedding(torch.nn.Module):
                 metadata=batch_item.satellite_metadata,
                 cached_tensors=batch_item.cached_satellite_tensors)
 
-    def _get_input_tokens(self, model_input: ModelInput, landmark_dropout_scheduler=None) -> tuple[torch.Tensor, torch.Tensor, dict[str, ExtractorOutput]]:
-        dev = self._cls_token.device
+    def _get_input_tokens(self, model_input: ModelInput, landmark_dropout_scheduler=None, include_class_tokens: bool = True) -> tuple[torch.Tensor, torch.Tensor, dict[str, ExtractorOutput]]:
+        dev = model_input.image.device
         extractor_outputs_by_name = {}
         for k in self._extractor_by_name:
             extractor_outputs_by_name[k] = model_input.cached_tensors.get(k)
@@ -513,15 +518,23 @@ class SwagPatchEmbedding(torch.nn.Module):
             input_tokens_by_name[k] = feature_tokens
 
         batch_size = model_input.image.shape[0]
-        cls_token = self._cls_token.expand(batch_size, -1, -1)
-        input_tokens = torch.cat([cls_token] + list(input_tokens_by_name.values()), dim=1)
-        if self._normalize_embeddings:
-            input_tokens = F.normalize(input_tokens, dim=-1)
 
-        cls_mask = torch.zeros(
-                cls_token.shape[:2], device=dev, dtype=torch.bool)
-        input_mask = torch.cat([cls_mask] +
-                               [v.mask for v in extractor_outputs_by_name.values()], dim=1)
+        if include_class_tokens:
+            cls_token = self._cls_token.expand(batch_size, -1, -1)
+            input_tokens = torch.cat([cls_token] + list(input_tokens_by_name.values()), dim=1)
+            if self._normalize_embeddings:
+                input_tokens = F.normalize(input_tokens, dim=-1)
+
+            cls_mask = torch.zeros(
+                    cls_token.shape[:2], device=dev, dtype=torch.bool)
+            input_mask = torch.cat([cls_mask] +
+                                   [v.mask for v in extractor_outputs_by_name.values()], dim=1)
+        else:
+            input_tokens = torch.cat(list(input_tokens_by_name.values()), dim=1)
+            if self._normalize_embeddings:
+                input_tokens = F.normalize(input_tokens, dim=-1)
+
+            input_mask = torch.cat([v.mask for v in extractor_outputs_by_name.values()], dim=1)
 
         return input_tokens, input_mask, extractor_outputs_by_name
 
@@ -533,18 +546,27 @@ class SwagPatchEmbedding(torch.nn.Module):
 
         Returns:
             Tuple of (embeddings, extractor_outputs_by_name) where:
-                - embeddings: Tensor of shape (batch, num_embeddings, output_dim)
+                - embeddings: Tensor of shape (batch, num_embeddings, output_dim) when skip_aggregation=False,
+                             or (batch, num_tokens, output_dim) when skip_aggregation=True
                 - debug dict: currently extractor_outputs_by_name: Dict mapping extractor names to their ExtractorOutput objects
         """
-        input_tokens, input_mask, extractor_outputs_by_name = self._get_input_tokens(model_input, landmark_dropout_scheduler)
-        output_tokens = self._aggregator_model(input_tokens, input_mask)
-        model_output = output_tokens[:, :self._cls_token.shape[1], :]  # B, num_class_tokens, D_emb
+        if self._config.skip_aggregation:
+            # Skip aggregation mode: return all input tokens without class tokens
+            input_tokens, input_mask, extractor_outputs_by_name = self._get_input_tokens(
+                model_input, landmark_dropout_scheduler, include_class_tokens=False)
+            return input_tokens, extractor_outputs_by_name
+        else:
+            # Normal mode: add class tokens, run aggregation, return class tokens
+            input_tokens, input_mask, extractor_outputs_by_name = self._get_input_tokens(
+                model_input, landmark_dropout_scheduler, include_class_tokens=True)
+            output_tokens = self._aggregator_model(input_tokens, input_mask)
+            model_output = output_tokens[:, :self._cls_token.shape[1], :]  # B, num_class_tokens, D_emb
 
-        # output is batch x num_class_tokens x feature_dim
-        if self._normalize_embeddings:
-            model_output = F.normalize(model_output, dim=2)
+            # output is batch x num_class_tokens x feature_dim
+            if self._normalize_embeddings:
+                model_output = F.normalize(model_output, dim=2)
 
-        return model_output, extractor_outputs_by_name
+            return model_output, extractor_outputs_by_name
 
     def cache_info(self) -> dict[str, CacheableExtractorInfo]:
         """Returns information about cacheable extractors
@@ -561,5 +583,5 @@ class SwagPatchEmbedding(torch.nn.Module):
     
     @property
     def num_embeddings(self):
-        return self._cls_token.shape[1]
+        return self._config.num_embeddings
 
