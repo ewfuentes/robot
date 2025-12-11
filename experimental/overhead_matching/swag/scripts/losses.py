@@ -41,6 +41,74 @@ def compute_distance_weights(distances: torch.Tensor) -> torch.Tensor:
     return 2.0 * (1.0 - torch.exp(-distances / 100.0))
 
 
+def _extract_pair_similarities(
+    similarity: torch.Tensor,
+    pairs: Pairs,
+    device: torch.device
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Extract pos/semipos/neg similarities from similarity matrix.
+
+    Args:
+        similarity: Similarity matrix (N_pano x N_sat)
+        pairs: Pairs object containing positive, semipositive, and negative pairs
+        device: Device to place empty tensors on
+
+    Returns:
+        Tuple of (pos_similarities, semipos_similarities, neg_similarities)
+    """
+    pos_rows = [x[0] for x in pairs.positive_pairs]
+    pos_cols = [x[1] for x in pairs.positive_pairs]
+    pos_similarities = similarity[pos_rows, pos_cols] if pairs.positive_pairs else \
+                       torch.tensor([], device=device)
+
+    semipos_rows = [x[0] for x in pairs.semipositive_pairs]
+    semipos_cols = [x[1] for x in pairs.semipositive_pairs]
+    semipos_similarities = similarity[semipos_rows, semipos_cols] if pairs.semipositive_pairs else \
+                           torch.tensor([], device=device)
+
+    neg_rows = [x[0] for x in pairs.negative_pairs]
+    neg_cols = [x[1] for x in pairs.negative_pairs]
+    neg_similarities = similarity[neg_rows, neg_cols] if pairs.negative_pairs else \
+                       torch.tensor([], device=device)
+
+    return pos_similarities, semipos_similarities, neg_similarities
+
+
+def _compute_contrastive_term(
+    similarities: torch.Tensor,
+    weight: float,
+    avg_similarity: float,
+    device: torch.device,
+    dtype: torch.dtype,
+    is_positive: bool,
+    distance_weights: torch.Tensor | None = None
+) -> torch.Tensor:
+    """Compute a single contrastive loss term (positive, semipositive, or negative).
+
+    Args:
+        similarities: Similarity values for this pair type
+        weight: Loss weight parameter
+        avg_similarity: Average similarity parameter
+        device: Device for tensors
+        dtype: Data type for tensors
+        is_positive: True for pos/semipos pairs, False for negative pairs
+        distance_weights: Optional distance weights to apply to loss (for negative pairs)
+
+    Returns:
+        Computed loss term
+    """
+    if len(similarities) == 0:
+        return torch.tensor(0, device=device, dtype=dtype)
+
+    sign = -1 if is_positive else 1
+    raw_loss = torch.log(1 + torch.exp(sign * weight * (similarities - avg_similarity)))
+
+    if distance_weights is not None:
+        raw_loss = raw_loss * distance_weights
+
+    return torch.mean(raw_loss) / weight
+
+
 @dataclass
 class LossInputs:
     similarity_matrix: torch.Tensor
@@ -62,16 +130,7 @@ class PairwiseContrastiveLossConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     negative_weight: float
     avg_negative_similarity: float
 
-
-class DistanceWeightedPairwiseContrastiveLossConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
-    positive_weight: float
-    avg_positive_similarity: float
-
-    semipositive_weight: float
-    avg_semipositive_similarity: float
-
-    negative_weight: float
-    avg_negative_similarity: float
+    use_distance_weighting: bool = False
 
 
 class BatchUniformityLossConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
@@ -92,7 +151,6 @@ class SphericalEmbeddingConstraintLossConfig(msgspec.Struct, **MSGSPEC_STRUCT_OP
 
 LossConfig = Union[
     PairwiseContrastiveLossConfig,
-    DistanceWeightedPairwiseContrastiveLossConfig,
     InfoNCELossConfig,
     SphericalEmbeddingConstraintLossConfig,
     BatchUniformityLossConfig
@@ -103,147 +161,70 @@ def compute_pairwise_loss(
     loss_inputs: LossInputs,
     pairwise_loss_config: PairwiseContrastiveLossConfig
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    assert isinstance(loss_inputs.pairing_data,
-                      Pairs), "PairwiseContrastiveLoss requires Pairs pairing data"
-    similarity, pairs = loss_inputs.similarity_matrix, loss_inputs.pairing_data
-    pos_rows = [x[0] for x in pairs.positive_pairs]
-    pos_cols = [x[1] for x in pairs.positive_pairs]
-    pos_similarities = similarity[pos_rows, pos_cols]
+    """Implementation for pairwise contrastive loss with optional distance weighting.
 
-    semipos_rows = [x[0] for x in pairs.semipositive_pairs]
-    semipos_cols = [x[1] for x in pairs.semipositive_pairs]
-    semipos_similarities = similarity[semipos_rows, semipos_cols]
+    Args:
+        loss_inputs: Loss inputs containing similarity matrix, embeddings, and metadata
+        config: Configuration for the loss
+        use_distance_weighting: Whether to apply distance-based weighting to negative pairs
 
-    neg_rows = [x[0] for x in pairs.negative_pairs]
-    neg_cols = [x[1] for x in pairs.negative_pairs]
-    neg_similarities = similarity[neg_rows, neg_cols]
-
-    # Compute Loss
-    POS_WEIGHT = pairwise_loss_config.positive_weight
-    AVG_POS_SIMILARITY = pairwise_loss_config.avg_positive_similarity
-    if len(pairs.positive_pairs):
-        pos_loss = torch.log(
-            1 + torch.exp(-POS_WEIGHT * (pos_similarities - AVG_POS_SIMILARITY)))
-        pos_loss = torch.mean(pos_loss) / POS_WEIGHT
-    else:
-        pos_loss = torch.tensor(0, device=similarity.device, dtype=similarity.dtype)
-
-    SEMIPOS_WEIGHT = pairwise_loss_config.semipositive_weight
-    AVG_SEMIPOS_SIMILARITY = pairwise_loss_config.avg_semipositive_similarity
-    if len(pairs.semipositive_pairs):
-        semipos_loss = torch.log(
-            1 + torch.exp(-SEMIPOS_WEIGHT * (
-                semipos_similarities - AVG_SEMIPOS_SIMILARITY)))
-        semipos_loss = torch.mean(semipos_loss) / SEMIPOS_WEIGHT
-    else:
-        semipos_loss = torch.tensor(0, device=similarity.device, dtype=similarity.dtype)
-
-    NEG_WEIGHT = pairwise_loss_config.negative_weight
-    AVG_NEG_SIMILARITY = pairwise_loss_config.avg_negative_similarity
-    if len(pairs.negative_pairs):
-        neg_loss = torch.log(
-            1 + torch.exp(NEG_WEIGHT * (neg_similarities - AVG_NEG_SIMILARITY)))
-        neg_loss = torch.mean(neg_loss) / NEG_WEIGHT
-    else:
-        neg_loss = torch.tensor(0, device=similarity.device, dtype=similarity.dtype)
-
-    aux_data = {
-        "pos_loss": pos_loss,
-        "neg_loss": neg_loss,
-        "semipos_loss": semipos_loss,
-        "pos_sim": pos_similarities,
-        "semipos_sim": semipos_similarities,
-        "neg_sim": neg_similarities,
-    }
-
-    return pos_loss + neg_loss + semipos_loss, aux_data
-
-
-def compute_distance_weighted_pairwise_loss(
-    loss_inputs: LossInputs,
-    config: DistanceWeightedPairwiseContrastiveLossConfig
-) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    """
-    Pairwise contrastive loss with distance-based weighting for negative pairs.
+    Returns:
+        Tuple of (total_loss, aux_data_dict)
     """
     assert isinstance(loss_inputs.pairing_data, Pairs), \
-        "DistanceWeightedPairwiseContrastiveLoss requires Pairs pairing data"
+        "PairwiseContrastiveLoss requires Pairs pairing data"
 
-    if loss_inputs.pano_metadata is None or loss_inputs.sat_metadata is None:
-        raise ValueError(
-            "DistanceWeightedPairwiseContrastiveLoss requires pano_metadata and "
-            "sat_metadata in LossInputs"
-        )
+    if pairwise_loss_config.use_distance_weighting:
+        if loss_inputs.pano_metadata is None or loss_inputs.sat_metadata is None:
+            raise ValueError(
+                "Distance-weighted loss requires pano_metadata and sat_metadata in LossInputs"
+            )
 
     similarity = loss_inputs.similarity_matrix
     pairs = loss_inputs.pairing_data
     device = similarity.device
 
-    # Extract similarities (same as original PairwiseContrastiveLoss)
-    pos_rows = [x[0] for x in pairs.positive_pairs]
-    pos_cols = [x[1] for x in pairs.positive_pairs]
-    pos_similarities = similarity[pos_rows, pos_cols] if pairs.positive_pairs else \
-                       torch.tensor([], device=device)
+    # Extract similarities using helper
+    pos_sim, semipos_sim, neg_sim = _extract_pair_similarities(similarity, pairs, device)
 
-    semipos_rows = [x[0] for x in pairs.semipositive_pairs]
-    semipos_cols = [x[1] for x in pairs.semipositive_pairs]
-    semipos_similarities = similarity[semipos_rows, semipos_cols] if pairs.semipositive_pairs else \
-                           torch.tensor([], device=device)
+    # Compute positive loss
+    pos_loss = _compute_contrastive_term(
+        pos_sim, pairwise_loss_config.positive_weight, pairwise_loss_config.avg_positive_similarity,
+        device, similarity.dtype, is_positive=True
+    )
 
-    neg_rows = [x[0] for x in pairs.negative_pairs]
-    neg_cols = [x[1] for x in pairs.negative_pairs]
-    neg_similarities = similarity[neg_rows, neg_cols] if pairs.negative_pairs else \
-                       torch.tensor([], device=device)
+    # Compute semipositive loss
+    semipos_loss = _compute_contrastive_term(
+        semipos_sim, pairwise_loss_config.semipositive_weight, pairwise_loss_config.avg_semipositive_similarity,
+        device, similarity.dtype, is_positive=True
+    )
 
-    # Compute positive loss (unchanged)
-    if len(pairs.positive_pairs):
-        pos_loss = torch.log(1 + torch.exp(-config.positive_weight *
-                                           (pos_similarities - config.avg_positive_similarity)))
-        pos_loss = torch.mean(pos_loss) / config.positive_weight
-    else:
-        pos_loss = torch.tensor(0, device=device, dtype=similarity.dtype)
-
-    # Compute semipositive loss (unchanged)
-    if len(pairs.semipositive_pairs):
-        semipos_loss = torch.log(1 + torch.exp(-config.semipositive_weight *
-                                                (semipos_similarities - config.avg_semipositive_similarity)))
-        semipos_loss = torch.mean(semipos_loss) / config.semipositive_weight
-    else:
-        semipos_loss = torch.tensor(0, device=device, dtype=similarity.dtype)
-
-    # Compute negative loss WITH distance weighting
-    if len(pairs.negative_pairs):
-        # Compute raw loss
-        raw_neg_loss = torch.log(1 + torch.exp(config.negative_weight *
-                                                (neg_similarities - config.avg_negative_similarity)))
-
-        # Compute distance weights
+    # Compute negative loss (with optional distance weighting)
+    distance_weights = None
+    neg_distances = None
+    if pairwise_loss_config.use_distance_weighting and len(pairs.negative_pairs) > 0:
         distances = compute_gps_distances(
             loss_inputs.pano_metadata,
             loss_inputs.sat_metadata,
             pairs.negative_pairs
         ).to(device)
-
         distance_weights = compute_distance_weights(distances).to(device)
-
-        # Apply weights and compute mean
-        weighted_neg_loss = raw_neg_loss * distance_weights
-        neg_loss = torch.mean(weighted_neg_loss) / config.negative_weight
-
-        # Store distance stats for logging
         neg_distances = distances.detach()
-    else:
-        neg_loss = torch.tensor(0, device=device, dtype=similarity.dtype)
-        neg_distances = None
+
+    neg_loss = _compute_contrastive_term(
+        neg_sim, pairwise_loss_config.negative_weight, pairwise_loss_config.avg_negative_similarity,
+        device, similarity.dtype, is_positive=False,
+        distance_weights=distance_weights
+    )
 
     # Prepare auxiliary data
     aux_data = {
         "pos_loss": pos_loss,
         "neg_loss": neg_loss,
         "semipos_loss": semipos_loss,
-        "pos_sim": pos_similarities,
-        "semipos_sim": semipos_similarities,
-        "neg_sim": neg_similarities,
+        "pos_sim": pos_sim,
+        "semipos_sim": semipos_sim,
+        "neg_sim": neg_sim,
     }
 
     if neg_distances is not None:
@@ -353,8 +334,6 @@ def create_losses_from_loss_config_list(
     for loss_config in loss_configs:
         if isinstance(loss_config, PairwiseContrastiveLossConfig):
             loss_functions.append(lambda x, config=loss_config: compute_pairwise_loss(x, config))
-        elif isinstance(loss_config, DistanceWeightedPairwiseContrastiveLossConfig):
-            loss_functions.append(lambda x, config=loss_config: compute_distance_weighted_pairwise_loss(x, config))
         elif isinstance(loss_config, InfoNCELossConfig):
             loss_functions.append(lambda x, config=loss_config: compute_info_nce_loss(x, config))
         elif isinstance(loss_config, SphericalEmbeddingConstraintLossConfig):
