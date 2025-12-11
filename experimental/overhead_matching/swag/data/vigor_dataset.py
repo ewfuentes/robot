@@ -35,11 +35,12 @@ logger = logging.getLogger(__name__)
 EARTH_RADIUS_M = 6378137.0
 
 class HashStruct(msgspec.Struct, frozen=True):
-    """Structure for computing cache hashes. Combines model config, patch dims, landmark version, and panorama landmark radius."""
+    """Structure for computing cache hashes. Combines model config, patch dims, landmark version, panorama landmark radius, and landmark correspondence inflation factor."""
     model_config: Any
     patch_dims: tuple[int, int]
     landmark_version: str
     panorama_landmark_radius_px: float
+    landmark_correspondence_inflation_factor: float
 
 def compute_config_hash(obj):
     """Compute a deterministic hash of a configuration object."""
@@ -71,6 +72,7 @@ class TensorCacheInfo(NamedTuple):
     model_type: str
     landmark_version: str
     panorama_landmark_radius_px: float
+    landmark_correspondence_inflation_factor: float
     # Un-hashed extractor info provided by the model
     extractor_info: dict[str, CacheableExtractorInfo]
 
@@ -94,6 +96,7 @@ class VigorDatasetConfig(NamedTuple):
     landmark_version: str = "v1"
     load_cache_debug: bool = False
     panorama_landmark_radius_px: float = 640
+    landmark_correspondence_inflation_factor: float = 1.0
 
 
 class VigorDatasetItem(NamedTuple):
@@ -174,19 +177,26 @@ def load_landmark_geojson(path: Path, zoom_level: int):
     return df
 
 
-def compute_satellite_from_landmarks(sat_metadata, landmark_metadata, original_sat_size) -> SatelliteFromLandmarkResult:
+def compute_satellite_from_landmarks(sat_metadata, landmark_metadata, original_sat_size,
+                                     inflation_factor: float) -> SatelliteFromLandmarkResult:
     # Use the satellite_from_panorama method to compute which landmarks are within
     # the current satellite patch.
+    assert inflation_factor > 0, "landmark_correspondence_inflation_factor must be positive"
+
     strtree = shapely.STRtree(landmark_metadata.geometry_px)
     queries = []
     sat_height, sat_width = original_sat_size
+    # Apply inflation factor to dimensions
+    inflated_height = sat_height * inflation_factor
+    inflated_width = sat_width * inflation_factor
+
     for _, sat in sat_metadata.iterrows():
         center_y, center_x = sat["web_mercator_y"], sat["web_mercator_x"]
         queries.append(shapely.box(
-            xmin=center_x-sat_width//2,
-            xmax=center_x+sat_width//2,
-            ymin=center_y-sat_height//2,
-            ymax=center_y+sat_height//2))
+            xmin=center_x-inflated_width//2,
+            xmax=center_x+inflated_width//2,
+            ymin=center_y-inflated_height//2,
+            ymax=center_y+inflated_height//2))
 
     results = strtree.query(queries, predicate='intersects')
 
@@ -339,12 +349,13 @@ def load_tensor_caches(info: TensorCacheInfo):
 
     out = []
     for extractor_name, cacheable_info in info.extractor_info.items():
-        # Compute the hash using model config, patch_dims, landmark_version, AND panorama_landmark_radius_px
+        # Compute the hash using model config, patch_dims, landmark_version, panorama_landmark_radius_px, AND landmark_correspondence_inflation_factor
         config_hash = compute_config_hash(HashStruct(
             model_config=cacheable_info.model_config,
             patch_dims=cacheable_info.patch_dims,
             landmark_version=info.landmark_version,
-            panorama_landmark_radius_px=info.panorama_landmark_radius_px))
+            panorama_landmark_radius_px=info.panorama_landmark_radius_px,
+            landmark_correspondence_inflation_factor=info.landmark_correspondence_inflation_factor))
 
         cache_path = base_path / config_hash
         out.append(TensorCache(
@@ -474,7 +485,8 @@ class VigorDataset(torch.utils.data.Dataset):
 
         if config.should_load_landmarks:
             sat_landmark_correspondences = compute_satellite_from_landmarks(
-                    self._satellite_metadata, self._landmark_metadata, self._original_satellite_patch_size)
+                    self._satellite_metadata, self._landmark_metadata, self._original_satellite_patch_size,
+                    inflation_factor=config.landmark_correspondence_inflation_factor)
             log_progress("Computed sat<->landmark correspondences")
             self._satellite_metadata["landmark_idxs"] = sat_landmark_correspondences.landmark_idxs_from_sat_idx
             self._landmark_metadata["satellite_idxs"] = sat_landmark_correspondences.sat_idxs_from_landmark_idx
