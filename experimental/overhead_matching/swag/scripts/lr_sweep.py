@@ -21,24 +21,28 @@ def run_lr_sweep(
         dataset,
         panorama_model,
         satellite_model,
+        distance_model,
         opt_config,
         output_dir: Path,
         compute_forward_pass_and_loss_fn,
         create_training_components_fn,
         setup_models_for_training_fn,
-        quiet: bool = False) -> float:
+        quiet: bool = False,
+        generator: torch.Generator | None = None) -> float:
     """
     Run learning rate sweep and return the optimal learning rate.
     Saves a plot showing loss vs learning rate.
     """
     if not quiet:
         print(f"Running learning rate sweep: burn-in ({lr_sweep_config.burn_in_batches} batches @ {lr_sweep_config.burn_in_lr:.2e}) + sweep ({lr_sweep_config.num_batches} batches: {lr_sweep_config.start_lr:.2e} → {lr_sweep_config.end_lr:.2e})")
-    
+
     # Setup models
-    panorama_model, satellite_model = setup_models_for_training_fn(panorama_model, satellite_model)
-    
+    panorama_model, satellite_model, distance_model = setup_models_for_training_fn(
+        panorama_model, satellite_model, distance_model)
+
     # Create training components
-    miner, dataloader, opt = create_training_components_fn(dataset, panorama_model, satellite_model, opt_config)
+    miner, dataloader, opt = create_training_components_fn(
+        dataset, panorama_model, satellite_model, distance_model, opt_config, generator)
     
     # Start with burn-in learning rate
     for param_group in opt.param_groups:

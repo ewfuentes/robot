@@ -33,7 +33,40 @@ from pprint import pprint
 import ipdb
 from contextlib import nullcontext
 import datetime
+import random
+import numpy as np
 from experimental.overhead_matching.swag.scripts.lr_sweep import LearningRateSweepConfig, run_lr_sweep
+
+
+def setup_reproducibility(seed: int | None) -> torch.Generator | None:
+    """Set up reproducible training by seeding all RNGs.
+
+    Note: This does NOT set torch.backends.cudnn.deterministic to preserve
+    training performance. Some minor non-determinism may remain in CUDA operations.
+
+    Args:
+        seed: Random seed for reproducibility. If None, uses default non-deterministic behavior.
+
+    Returns:
+        A seeded torch.Generator if seed is provided, None otherwise.
+    """
+    if seed is None:
+        return None
+
+    print(f"Setting random seed to {seed} for reproducible training")
+
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    # Note: NOT setting cudnn.deterministic to preserve performance
+    # Most randomness is controlled, but some CUDA ops may have minor variance
+
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+    return generator
 
 
 def debug_log(message: str, log_file: str = "/tmp/training_debug.log"):
@@ -111,6 +144,7 @@ class TrainConfig:
     tensorboard_output: Path | None
     pano_landmark_dropout_schedules: list[LandmarkDropoutScheduleConfig] = None
     sat_landmark_dropout_schedules: list[LandmarkDropoutScheduleConfig] = None
+    seed: int | None = None
 
 @torch.no_grad
 def validation_metrics_from_similarity(
@@ -219,7 +253,8 @@ def create_training_components(dataset,
                                panorama_model,
                                satellite_model,
                                distance_model,
-                               opt_config):
+                               opt_config,
+                               generator: torch.Generator | None = None):
     """Create miner, dataloader, and optimizer for training."""
     # Create miner and dataloader
     # Note: embeddings stored on CPU to save GPU memory, transferred to GPU as needed
@@ -232,11 +267,15 @@ def create_training_components(dataset,
         random_sample_type=opt_config.random_sample_type,
         hard_negative_pool_size=opt_config.hard_negative_pool_size,
         dataset=dataset,
-        device='cpu')
+        device='cpu',
+        generator=generator)
 
     num_workers = int(os.environ.get("MAX_DATALOADER_WORKERS", min(os.cpu_count() // 2, 24)))
+    # Pass seed to training dataloader for reproducibility (if generator is provided)
+    worker_seed = generator.initial_seed() if generator is not None else None
     dataloader = vigor_dataset.get_dataloader(
-        dataset, batch_sampler=miner, num_workers=num_workers, persistent_workers=(num_workers > 0))
+        dataset, batch_sampler=miner, num_workers=num_workers, persistent_workers=(num_workers > 0),
+        worker_seed=worker_seed)
 
     # Create optimizer
     opt = torch.optim.AdamW(
@@ -291,7 +330,8 @@ def train(config: TrainConfig,
           satellite_model,
           quiet,
           capture_model_data: bool = False,
-          num_batches_to_capture: int = 10):
+          num_batches_to_capture: int = 10,
+          generator: torch.Generator | None = None):
 
     output_dir.mkdir(parents=True, exist_ok=True)
     # save config:
@@ -326,7 +366,7 @@ def train(config: TrainConfig,
 
     # Create training components using extracted function
     miner, dataloader, opt = create_training_components(
-        dataset, panorama_model, satellite_model, distance_model, opt_config)
+        dataset, panorama_model, satellite_model, distance_model, opt_config, generator)
 
     # Create landmark dropout schedulers if configured
     pano_dropout_scheduler = None
@@ -547,10 +587,18 @@ def main(
         lr_sweep: bool = False,
         capture_model_data: bool = False,
         num_batches_to_capture: int = 10,
+        seed: int | None = None,
 ):
+
     with open(train_config_path, 'r') as file_in:
         train_config = msgspec.yaml.decode(file_in.read(), type=TrainConfig, dec_hook=msgspec_dec_hook)
     pprint(train_config)
+    if train_config.seed is not None and seed is not None:
+        raise RuntimeError(f"Got seed in both train config ({train_config.seed}) and through args ({seed}). Only set it in one place")
+    
+    train_config.seed = seed
+    # Set up reproducibility first, before any model/dataset initialization
+    generator = setup_reproducibility(train_config.seed)
 
     if isinstance(train_config.sat_model_config, patch_embedding.WagPatchEmbeddingConfig):
         satellite_model = patch_embedding.WagPatchEmbedding(train_config.sat_model_config)
@@ -650,17 +698,20 @@ def main(
         if train_config.opt_config.lr_sweep_config is None:
             train_config.opt_config.lr_sweep_config = LearningRateSweepConfig()
 
+        distance_model = create_distance_from_config(train_config.distance_model_config)
         optimal_lr = run_lr_sweep(
             lr_sweep_config=train_config.opt_config.lr_sweep_config,
             dataset=dataset,
             panorama_model=panorama_model,
             satellite_model=satellite_model,
+            distance_model=distance_model,
             opt_config=train_config.opt_config,
             output_dir=output_dir,
             compute_forward_pass_and_loss_fn=compute_forward_pass_and_loss,
             create_training_components_fn=create_training_components,
             setup_models_for_training_fn=setup_models_for_training,
-            quiet=quiet
+            quiet=quiet,
+            generator=generator
         )
 
         # Update the training config to use the optimal learning rate
@@ -678,7 +729,8 @@ def main(
             satellite_model=satellite_model,
             quiet=quiet,
             capture_model_data=capture_model_data,
-            num_batches_to_capture=num_batches_to_capture)
+            num_batches_to_capture=num_batches_to_capture,
+            generator=generator)
 
 
 if __name__ == "__main__":
@@ -694,6 +746,8 @@ if __name__ == "__main__":
                         help="Capture model inputs and outputs for debugging")
     parser.add_argument("--num_batches_to_capture", type=int, default=10,
                         help="Number of batches to capture (default: 10)")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Random seed for reproducible training. If seed set in CLI and train_config, throws")
     args = parser.parse_args()
 
     main(
@@ -703,4 +757,5 @@ if __name__ == "__main__":
         no_ipdb=args.no_ipdb,
         quiet=args.quiet,
         capture_model_data=args.capture_model_data,
-        num_batches_to_capture=args.num_batches_to_capture)
+        num_batches_to_capture=args.num_batches_to_capture,
+        seed=args.seed)
