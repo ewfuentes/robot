@@ -80,6 +80,7 @@ def wag_multinomial_resampling(particles: torch.Tensor,
     num_particles, state_dim = particles.shape
     if num_samples is None:
         num_samples = num_particles
+    log_weights_cpu = log_weights.cpu()
     indices = torch.multinomial(torch.exp(log_weights), num_samples, replacement=True, generator=generator)
     resampled_particles = particles[indices]
     return resampled_particles

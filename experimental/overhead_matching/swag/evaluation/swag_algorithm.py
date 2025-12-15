@@ -228,7 +228,7 @@ def measurement_wag(
         wag_config: WagConfig,
         generator: torch.Generator,
         return_past_particle_weights: bool = False
-) -> WagMeasurementResult:
+) -> WagMeasurementResult | None:
     """WAG measurement update step.
 
     Args:
@@ -258,6 +258,8 @@ def measurement_wag(
         # Shape: (num_panoramas, num_particles)
         observation_log_likelihoods = obs_likelihood_calculator.compute_log_likelihoods(
             particles, panorama_ids)
+        if observation_log_likelihoods.isinf().all():
+            return None
 
         # Average log likelihoods across panoramas if multiple are provided
         # Shape: (num_particles,)
