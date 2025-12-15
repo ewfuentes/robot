@@ -73,7 +73,7 @@ def construct_path_eval_inputs_from_args(
         panorama_neighbor_radius=panorama_neighbor_radius_deg,
         satellite_patch_size=sat_model.patch_dims,
         panorama_size=pano_model.patch_dims,
-        factor=1,
+        factor=0.3,
         landmark_version=landmark_version,
     )
     vigor_dataset = vd.VigorDataset(dataset_path, dataset_config)

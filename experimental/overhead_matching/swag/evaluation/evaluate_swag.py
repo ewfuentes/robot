@@ -25,6 +25,8 @@ class PathInferenceResult:
     log_particle_weights: torch.Tensor | None   # path_length x num_particles
     particle_history_pre_move: torch.Tensor | None # path_length x num_particles x state_dim
     num_dual_particles: int | None # 
+    # true when the path inference terminates early due to all particles having a -inf likelihood
+    terminated_early: bool
 
     def get_dual_particle_history(self)->torch.Tensor | None:
         if self.num_dual_particles is None or self.num_dual_particles == 0:
@@ -194,7 +196,7 @@ def get_distance_error_between_pano_and_particles_meters(
     var_sq_m = torch.mean(mean_deviation_m ** 2, -1)
 
     mean_error_m = []
-    for i in range(len(panorama_index)):
+    for i in range(particles.shape[0]):
         distance_error_meters = vd.EARTH_RADIUS_M * find_d_on_unit_circle(
                 true_latlong[i], particle_latlong_estimate[i])
         mean_error_m.append(distance_error_meters)
@@ -288,6 +290,7 @@ def run_inference_on_path(
     log_particle_weights = []
     particle_history_pre_move = []  # the particle state history before move_wag but after observe_wag
     num_dual_particles = []
+    terminated_early = False
     for panorama_id, motion_delta in tqdm.tqdm(zip(panorama_ids[:-1], motion_deltas)):
         particle_history.append(particle_state.cpu().clone())
 
@@ -301,6 +304,11 @@ def run_inference_on_path(
                 generator,
                 return_past_particle_weights=return_intermediates)
 
+        if wag_observation_result is None:
+            # This happens when all particles have a -inf likelihood
+            terminated_early = True
+            break
+
         particle_state = wag_observation_result.resampled_particles
         if return_intermediates:
             log_particle_weights.append(wag_observation_result.log_particle_weights.cpu().clone())
@@ -309,23 +317,23 @@ def run_inference_on_path(
 
         # move
         particle_state = sa.move_wag(particle_state, motion_delta, wag_config, generator)
+    else:
+        # apply final observation if we didn't break early
+        wag_observation_result = sa.measurement_wag(
+                particle_state,
+                obs_likelihood_calculator,
+                belief_weighting,
+                panorama_ids[-1],
+                wag_config,
+                generator,
+                return_past_particle_weights=return_intermediates)
 
-    # apply final observation
-    wag_observation_result = sa.measurement_wag(
-            particle_state,
-            obs_likelihood_calculator,
-            belief_weighting,
-            panorama_ids[-1],
-            wag_config,
-            generator,
-            return_past_particle_weights=return_intermediates)
+        if return_intermediates:
+            log_particle_weights.append(wag_observation_result.log_particle_weights.cpu().clone())
+            particle_history_pre_move.append(particle_state.cpu().clone())
+            num_dual_particles.append(wag_observation_result.num_dual_particles)
 
-    if return_intermediates:
-        log_particle_weights.append(wag_observation_result.log_particle_weights.cpu().clone())
-        particle_history_pre_move.append(particle_state.cpu().clone())
-        num_dual_particles.append(wag_observation_result.num_dual_particles)
-
-    particle_history.append(wag_observation_result.resampled_particles.cpu().clone())
+        particle_history.append(wag_observation_result.resampled_particles.cpu().clone())
 
     if return_intermediates:
         if len(num_dual_particles) > 0:
@@ -340,13 +348,15 @@ def run_inference_on_path(
             log_particle_weights=torch.stack(log_particle_weights),  # N
             particle_history_pre_move=torch.stack(particle_history_pre_move),
             num_dual_particles=num_dual_particles,
+            terminated_early=terminated_early
         )
     else:
         return PathInferenceResult(
             particle_history=torch.stack(particle_history),
             log_particle_weights=None,
             particle_history_pre_move=None,
-            num_dual_particles=None)
+            num_dual_particles=None,
+            terminated_early=terminated_early)
 
 
 def construct_inputs_and_evaluate_path(
@@ -363,6 +373,12 @@ def construct_inputs_and_evaluate_path(
 
     # Convert path indices to panorama IDs
     panorama_ids = [vigor_dataset._panorama_metadata.iloc[idx].pano_id for idx in path]
+
+    torch.save(
+        dict(ground_truth = vigor_dataset._panorama_metadata.iloc[path]),
+        '/tmp/ground_truth.pt'
+    )
+
 
     # Get satellite patch locations
     satellite_patch_locations = vigor_dataset.get_patch_positions()
@@ -461,7 +477,7 @@ def evaluate_model_on_paths(
             torch.save(error_meters_at_each_step, save_path / "error.pt")
             torch.save(var_sq_m_at_each_step, save_path / "var.pt")
             torch.save(path, save_path / "path.pt")
-            torch.save(all_similarity[path], save_path / "similarity.pt")
+            # torch.save(all_similarity[path], save_path / "similarity.pt")
             if save_intermediate_filter_states:
                 pir = path_inference_result
                 torch.save(pir.particle_history, save_path / "particle_history.pt")
@@ -477,7 +493,8 @@ def evaluate_model_on_paths(
         average_final_error_meters = torch.tensor(all_final_particle_error_meters).mean().item()
         with open(output_path / "summary_statistics.json", 'w') as f:
             f.write(json.dumps({
-                "average_final_error": average_final_error_meters
+                "average_final_error": average_final_error_meters,
+                "terminated_early": path_inference_result.terminated_early
             }, indent=2))
 
         print(f"Average final error meters is {average_final_error_meters}")
