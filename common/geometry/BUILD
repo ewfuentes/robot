@@ -74,6 +74,7 @@ py_library(
     srcs = ["gpu_distance.py"],
     visibility = ["//visibility:public"],
     deps = [
+        "//common/torch:load_torch_deps",
         requirement("torch"),
     ],
 )
@@ -95,10 +96,8 @@ py_library(
     visibility = ["//visibility:public"],
     deps = [
         ":gpu_distance",
-        requirement("numpy"),
         requirement("shapely"),
         requirement("torch"),
-        requirement("torch-kdtree"),
     ],
 )
 
@@ -110,7 +109,6 @@ py_test(
         ":gpu_geometry_collection",
         "//common/torch:load_torch_deps",
         requirement("geopandas"),
-        requirement("numpy"),
         requirement("pyarrow"),
         requirement("shapely"),
     ],

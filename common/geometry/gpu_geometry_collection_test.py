@@ -1,4 +1,4 @@
-"""Tests for GPU geometry collection and spatial index."""
+"""Tests for GPU geometry collection."""
 
 import time
 import unittest
@@ -6,15 +6,12 @@ from pathlib import Path
 
 import common.torch.load_torch_deps  # Must be imported before torch  # noqa: F401
 import geopandas as gpd
-import numpy as np
 import shapely
 import torch
 
 from common.geometry.gpu_geometry_collection import (
     GPUGeometryCollection,
-    GPUSpatialIndex,
     GeometryType,
-    sample_geometry_boundary,
 )
 
 
@@ -187,86 +184,6 @@ class TestGPUGeometryCollection(unittest.TestCase):
             )
 
 
-class TestSampleGeometryBoundary(unittest.TestCase):
-    def test_sample_point(self):
-        """Sampling a point returns just that point."""
-        point = shapely.Point(1, 2)
-        samples = sample_geometry_boundary(point, spacing=10.0)
-
-        np.testing.assert_array_equal(samples, [[1.0, 2.0]])
-
-    def test_sample_linestring(self):
-        """Sampling a linestring returns evenly spaced points."""
-        line = shapely.LineString([(0, 0), (10, 0)])
-        samples = sample_geometry_boundary(line, spacing=2.5)
-
-        # Should have 5 points: 0, 2.5, 5, 7.5, 10
-        self.assertEqual(samples.shape[0], 5)
-        np.testing.assert_array_almost_equal(samples[0], [0, 0])
-        np.testing.assert_array_almost_equal(samples[-1], [10, 0])
-
-    def test_sample_polygon(self):
-        """Sampling a polygon samples its boundary."""
-        polygon = shapely.Polygon([(0, 0), (10, 0), (10, 10), (0, 10)])
-        samples = sample_geometry_boundary(polygon, spacing=5.0)
-
-        # Perimeter is 40, so roughly 9 samples
-        self.assertGreater(samples.shape[0], 5)
-
-
-class TestGPUSpatialIndex(unittest.TestCase):
-    def test_build_index(self):
-        """Test building spatial index."""
-        geometries = [
-            shapely.Point(0, 0),
-            shapely.LineString([(5, 0), (5, 10)]),
-            shapely.Polygon([(10, 0), (15, 0), (15, 5), (10, 5)]),
-        ]
-
-        index = GPUSpatialIndex.build(geometries, sample_spacing=2.0)
-
-        self.assertEqual(index.collection.num_geometries, 3)
-        self.assertGreater(index.sample_points.shape[0], 3)
-
-    def test_query_nearest(self):
-        """Test nearest neighbor query."""
-        geometries = [
-            shapely.Point(0, 0),
-            shapely.Point(10, 0),
-            shapely.Point(20, 0),
-        ]
-
-        index = GPUSpatialIndex.build(geometries, sample_spacing=1.0)
-
-        query = torch.tensor([[5.0, 0.0]])
-        geom_idxs, distances = index.query_nearest(query, k=2)
-
-        self.assertEqual(geom_idxs.shape, (1, 2))
-        # Nearest should be geometry 0 or 1 (both at distance 5)
-        self.assertIn(geom_idxs[0, 0].item(), [0, 1])
-
-    def test_query_within_distance(self):
-        """Test range query."""
-        geometries = [
-            shapely.Point(0, 0),
-            shapely.Point(10, 0),
-            shapely.Point(100, 0),
-        ]
-
-        index = GPUSpatialIndex.build(geometries, sample_spacing=1.0)
-
-        query = torch.tensor([[5.0, 0.0]])
-        query_idxs, geom_idxs, distances = index.query_within_distance(
-            query, distance=6.0
-        )
-
-        # Should find geometries 0 and 1 (both within distance 6)
-        found_geoms = set(geom_idxs.tolist())
-        self.assertIn(0, found_geoms)
-        self.assertIn(1, found_geoms)
-        self.assertNotIn(2, found_geoms)
-
-
 class TestWithVigorSnippet(unittest.TestCase):
     """Tests using the vigor_snippet dataset."""
 
@@ -293,13 +210,6 @@ class TestWithVigorSnippet(unittest.TestCase):
         self.assertGreater(type_counts[GeometryType.POINT], 0)
         self.assertGreater(type_counts[GeometryType.LINESTRING], 0)
         self.assertGreater(type_counts[GeometryType.POLYGON], 0)
-
-    def test_build_spatial_index(self):
-        """Test building spatial index on full dataset."""
-        index = GPUSpatialIndex.build(self.geometries, sample_spacing=0.001)
-
-        self.assertEqual(index.collection.num_geometries, len(self.geometries))
-        self.assertGreater(index.sample_points.shape[0], len(self.geometries))
 
     def test_distance_sample_matches_shapely(self):
         """Compare GPU distances to shapely for sample of vigor_snippet."""
@@ -404,54 +314,6 @@ class TestBenchmark(unittest.TestCase):
         print(f"  GPU time: {gpu_time:.3f}s")
         print(f"  Shapely time (extrapolated): {shapely_extrapolated:.3f}s")
         print(f"  Speedup: {shapely_extrapolated / gpu_time:.1f}x")
-
-    def test_benchmark_spatial_index(self):
-        """Benchmark spatial index query vs shapely STRtree."""
-        num_geoms = min(10000, len(self.geometries))
-        num_queries = 1000
-        search_distance = 0.001  # degrees
-
-        sample_geoms = list(self.geometries[:num_geoms])
-
-        # Build GPU spatial index
-        start = time.time()
-        index = GPUSpatialIndex.build(sample_geoms, sample_spacing=0.0001)
-        gpu_build_time = time.time() - start
-
-        # Build shapely STRtree
-        start = time.time()
-        strtree = shapely.STRtree(sample_geoms)
-        shapely_build_time = time.time() - start
-
-        # Generate random query points
-        bounds = shapely.bounds(shapely.GeometryCollection(sample_geoms))
-        min_x, min_y, max_x, max_y = bounds
-
-        torch.manual_seed(42)
-        queries = torch.zeros(num_queries, 2)
-        queries[:, 0] = torch.rand(num_queries) * (max_x - min_x) + min_x
-        queries[:, 1] = torch.rand(num_queries) * (max_y - min_y) + min_y
-
-        query_points = shapely.points(queries.numpy())
-
-        # Benchmark GPU spatial index
-        start = time.time()
-        _, _, _ = index.query_within_distance(queries, distance=search_distance)
-        gpu_query_time = time.time() - start
-
-        # Benchmark shapely STRtree
-        start = time.time()
-        for i, pt in enumerate(query_points):
-            candidates_idx = strtree.query(pt.buffer(search_distance))
-            for j in candidates_idx:
-                _ = pt.distance(sample_geoms[j])
-        shapely_query_time = time.time() - start
-
-        print(f"\nSpatial Index Benchmark: {num_queries} queries, {num_geoms} geometries")
-        print(f"  Build time - GPU: {gpu_build_time:.3f}s, STRtree: {shapely_build_time:.3f}s")
-        print(f"  Query time - GPU: {gpu_query_time:.3f}s, STRtree: {shapely_query_time:.3f}s")
-        if shapely_query_time > 0:
-            print(f"  Query speedup: {shapely_query_time / gpu_query_time:.1f}x")
 
 
 if __name__ == "__main__":

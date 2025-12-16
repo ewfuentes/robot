@@ -5,6 +5,7 @@ This module provides batched distance computations between points and various
 GPU acceleration.
 """
 
+import common.torch.load_torch_deps  # noqa: F401  # Must be imported before torch
 import torch
 
 
@@ -21,7 +22,7 @@ def point_to_point_distance(
     Returns:
         (...,) tensor of distances. Supports broadcasting.
     """
-    return torch.norm(query_points - target_points, dim=-1)
+    return torch.linalg.vector_norm(query_points - target_points, dim=-1)
 
 
 def point_to_segment_distance(
@@ -69,7 +70,7 @@ def point_to_segment_distance(
     closest = segment_starts.unsqueeze(0) + t.unsqueeze(-1) * AB.unsqueeze(0)
 
     # Distance from query point to closest point, shape (Q, S)
-    distances = torch.norm(query_points.unsqueeze(1) - closest, dim=-1)
+    distances = torch.linalg.vector_norm(query_points.unsqueeze(1) - closest, dim=-1)
 
     return distances
 
@@ -137,6 +138,10 @@ def point_in_polygon_winding(
     Returns:
         (Q, P) boolean tensor where result[i, j] is True if query_points[i]
         is inside polygon j.
+
+    Note:
+        Polygons are assumed to be implicitly closed - the first and last vertices
+        are connected automatically. Do NOT include a duplicate closing vertex.
     """
     Q = query_points.shape[0]
     P = polygon_ranges.shape[0]
@@ -145,13 +150,12 @@ def point_in_polygon_winding(
     # Initialize winding numbers
     winding = torch.zeros((Q, P), device=device, dtype=torch.float32)
 
-    # Process each polygon
+    # Process each polygon separately (variable vertex counts make batching complex)
     for poly_idx in range(P):
         start_idx = polygon_ranges[poly_idx, 0].item()
         end_idx = polygon_ranges[poly_idx, 1].item()
 
-        if end_idx <= start_idx:
-            continue
+        assert end_idx > start_idx, f"Polygon {poly_idx} has no vertices"
 
         # Get polygon vertices for this polygon
         poly_verts = polygon_vertices[start_idx:end_idx]  # (N, 2)
