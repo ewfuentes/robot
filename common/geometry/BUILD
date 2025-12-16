@@ -1,3 +1,4 @@
+load("@pip//:requirements.bzl", "requirement")
 
 package(features=["warning_compile_flags"])
 
@@ -56,7 +57,7 @@ cc_library(
 )
 
 cc_test(
-  name = "camera_test", 
+  name = "camera_test",
   srcs = ["camera_test.cc"],
   visibility = ["//visibility:public"],
   deps = [
@@ -65,4 +66,52 @@ cc_test(
     "//visualization/opencv:opencv_viz",
     ":translate_types"
   ]
+)
+
+# Python GPU geometry library
+py_library(
+    name = "gpu_distance",
+    srcs = ["gpu_distance.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        requirement("torch"),
+    ],
+)
+
+py_test(
+    name = "gpu_distance_test",
+    srcs = ["gpu_distance_test.py"],
+    deps = [
+        ":gpu_distance",
+        "//common/torch:load_torch_deps",
+        requirement("numpy"),
+        requirement("shapely"),
+    ],
+)
+
+py_library(
+    name = "gpu_geometry_collection",
+    srcs = ["gpu_geometry_collection.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":gpu_distance",
+        requirement("numpy"),
+        requirement("shapely"),
+        requirement("torch"),
+        requirement("torch-kdtree"),
+    ],
+)
+
+py_test(
+    name = "gpu_geometry_collection_test",
+    srcs = ["gpu_geometry_collection_test.py"],
+    data = ["@vigor_snippet//:files"],
+    deps = [
+        ":gpu_geometry_collection",
+        "//common/torch:load_torch_deps",
+        requirement("geopandas"),
+        requirement("numpy"),
+        requirement("pyarrow"),
+        requirement("shapely"),
+    ],
 )
