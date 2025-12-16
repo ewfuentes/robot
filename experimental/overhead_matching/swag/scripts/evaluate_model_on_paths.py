@@ -17,6 +17,7 @@ import math
 import common.torch.load_torch_deps
 from google.protobuf import text_format
 import torch
+import ipdb
 
 
 def load_model(path, device='cuda'):
@@ -112,6 +113,8 @@ if __name__ == "__main__":
                         help="Path to panorama landmark embeddings directory")
     parser.add_argument("--use-landmark-likelihood", action='store_true',
                         help="Use LandmarkObservationLikelihoodCalculator instead of WagObservationLikelihoodCalculator")
+    parser.add_argument("--use-landmark-likelihood-only", action='store_true',
+                        help="Use LandmarkObservationLikelihoodCalculator instead of WagObservationLikelihoodCalculator")
     parser.add_argument("--landmark-sigma", type=float, default=100.0,
                         help="Sigma for OSM landmark observation likelihood")
     parser.add_argument("--embedding-dim", type=int, default=1536,
@@ -168,14 +171,13 @@ if __name__ == "__main__":
 
     # Build landmark observation likelihood calculator if requested
     landmark_obs_calculator = None
-    if args.use_landmark_likelihood:
+    if args.use_landmark_likelihood or args.use_landmark_likelihood_only:
         if args.osm_embedding_path is None or args.pano_embedding_path is None:
             raise ValueError("--osm-embedding-path and --pano-embedding-path are required when using --use-landmark-likelihood")
 
         osm_embedding_path = Path(args.osm_embedding_path).expanduser()
         pano_embedding_path = Path(args.pano_embedding_path).expanduser()
 
-        import ipdb
         print("Computing landmark similarity data...")
         landmark_sim_data = compute_cached_landmark_similarity_data(
             vigor_dataset,
@@ -201,11 +203,16 @@ if __name__ == "__main__":
             landmark_sim_data
         )
 
+        mode = None
+        if args.use_landmark_likelihood:
+            mode = LikelihoodMode.COMBINED
+        elif args.use_landmark_likelihood_only:
+            mode = LikelihoodMode.OSM_ONLY
         obs_config = ObservationLikelihoodConfig(
             obs_likelihood_from_sat_similarity_sigma=args.sigma_obs_prob_from_sim,
             obs_likelihood_from_osm_similarity_sigma=args.landmark_sigma,
             osm_similarity_scale=args.osm_similarity_scale,
-            likelihood_mode=LikelihoodMode.COMBINED
+            likelihood_mode=mode
         )
 
         landmark_obs_calculator = LandmarkObservationLikelihoodCalculator(
