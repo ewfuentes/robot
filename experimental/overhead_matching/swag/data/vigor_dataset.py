@@ -874,19 +874,51 @@ class VigorDataset(torch.utils.data.Dataset):
         return fig, ax
 
 
-def worker_init_fn(worker_id):
-    worker_info = torch.utils.data.get_worker_info()
-    dataset = worker_info.dataset
-    while hasattr(dataset, 'dataset'):
-        # This dataset is an instance of the pano_view or sat_patch_view datasets
-        dataset = dataset.dataset
-    dataset._panorama_tensor_caches = load_tensor_caches(
-        dataset._config.panorama_tensor_cache_info)
-    dataset._satellite_tensor_caches = load_tensor_caches(
-        dataset._config.satellite_tensor_cache_info)
+def make_worker_init_fn(base_seed: int | None = None):
+    """Factory function to create worker_init_fn with optional seeding.
+
+    Args:
+        base_seed: Base random seed. If provided, each worker gets seed = base_seed + worker_id
+
+    Returns:
+        Worker initialization function for DataLoader
+    """
+    def worker_init_fn(worker_id):
+        # Set worker-specific seed if base_seed is provided
+        if base_seed is not None:
+            worker_seed = base_seed + worker_id
+            torch.manual_seed(worker_seed)
+            import numpy as np
+            np.random.seed(worker_seed)
+            import random
+            random.seed(worker_seed)
+
+        # Load tensor caches (existing logic)
+        worker_info = torch.utils.data.get_worker_info()
+        dataset = worker_info.dataset
+        while hasattr(dataset, 'dataset'):
+            # This dataset is an instance of the pano_view or sat_patch_view datasets
+            dataset = dataset.dataset
+        dataset._panorama_tensor_caches = load_tensor_caches(
+            dataset._config.panorama_tensor_cache_info)
+        dataset._satellite_tensor_caches = load_tensor_caches(
+            dataset._config.satellite_tensor_cache_info)
+
+    return worker_init_fn
 
 
-def get_dataloader(dataset: VigorDataset, **kwargs):
+def get_dataloader(dataset: VigorDataset, worker_seed: int | None = None, **kwargs):
+    """Create a DataLoader for VigorDataset with optional worker seeding.
+
+    Args:
+        dataset: VigorDataset to load from
+        worker_seed: Optional random seed for DataLoader workers. If provided,
+                    each worker gets seed = worker_seed + worker_id
+        **kwargs: Additional arguments passed to DataLoader
+
+    Returns:
+        torch.utils.data.DataLoader instance
+    """
     def _collate_fn(samples: list[VigorDatasetItem]):
         first_item = samples[0]
         def if_not_none(obj, to_do):
@@ -910,16 +942,19 @@ def get_dataloader(dataset: VigorDataset, **kwargs):
                 for k, v in first_item.cached_satellite_tensors.items()}),
         )
 
-    # Handle worker_init_fn: call both the default one and any user-provided one
+    # Create appropriate worker_init_fn based on whether seeding is requested
+    default_worker_init_fn = make_worker_init_fn(base_seed=worker_seed)
+
+    # Handle user-provided worker_init_fn: call both the default one and any user-provided one
     user_worker_init_fn = kwargs.pop('worker_init_fn', None)
     if user_worker_init_fn is not None:
         # Create a wrapper that calls both functions
         def combined_worker_init_fn(worker_id):
-            worker_init_fn(worker_id)  # Call default function first
+            default_worker_init_fn(worker_id)  # Call default function first
             user_worker_init_fn(worker_id)  # Then call user-provided function
         kwargs['worker_init_fn'] = combined_worker_init_fn
     else:
-        kwargs['worker_init_fn'] = worker_init_fn
+        kwargs['worker_init_fn'] = default_worker_init_fn
     return torch.utils.data.DataLoader(dataset, collate_fn=_collate_fn, **kwargs)
 
 
@@ -1035,7 +1070,7 @@ class HardNegativeMiner:
             for i, pano_idx in enumerate(pano_batches):
                 if i < num_hard_negatives_per_batch:
                     # Sample hard negatives
-                    hard_negative_idx = torch.randint(num_hard_negatives, (1,))
+                    hard_negative_idx = torch.randint(num_hard_negatives, (1,), generator=self._generator)
                     sat_idx = sorted_sat_idxs_from_pano_idx[pano_idx, -(hard_negative_idx+1)].item()
 
                     batch.append(SamplePair(panorama_idx=pano_idx, satellite_idx=sat_idx))
