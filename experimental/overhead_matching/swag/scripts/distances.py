@@ -1,6 +1,7 @@
 import common.torch.load_torch_deps
 import torch.nn.functional as F
 import torch
+import tqdm
 import msgspec
 from typing import Union
 from common.python.serialization import MSGSPEC_STRUCT_OPTS
@@ -205,14 +206,13 @@ class LearnedDistanceFunction(torch.nn.Module):
         elif config.architecture == "transformer_decoder":
             # CLS token for aggregating information
             self.cls_token = torch.nn.Parameter(torch.randn(1, 1, self.config.embedding_dim))
-
-            decoder_layer = torch.nn.TransformerDecoderLayer(
+            decoder_layer = torch.nn.TransformerEncoderLayer(
                 d_model=self.config.embedding_dim,
                 nhead=self.config.num_heads,
                 dim_feedforward=self.config.hidden_dim,
                 batch_first=True
             )
-            self.transformer_decoder = torch.nn.TransformerDecoder(
+            self.transformer_decoder = torch.nn.TransformerEncoder(
                 decoder_layer,
                 num_layers=self.config.num_layers
             )
@@ -242,22 +242,21 @@ class LearnedDistanceFunction(torch.nn.Module):
     def _process_transformer_batch(self, pano_batch, sat_batch):
         """Process a batch of pano-sat pairs using transformer decoder."""
         batch_size = pano_batch.shape[0]
-        similarities = []
 
-        for i in range(batch_size):
-            pano_emb = pano_batch[i:i+1]  # 1 x n_emb_pano x d_emb
-            sat_emb = sat_batch[i:i+1]    # 1 x n_emb_sat x d_emb
 
-            # Use CLS token as target, sat+pano as memory
-            cls_token = self.cls_token.expand(1, -1, -1)  # 1 x 1 x d_emb
-            memory = torch.cat([pano_emb, sat_emb], dim=1)  # 1 x (n_emb_pano + n_emb_sat) x d_emb
+        # Use CLS token as target, sat+pano as memory
+        cls_token = self.cls_token.expand(batch_size, -1, -1)  # batch_size x 1 x d_emb
+        memory = torch.cat([cls_token, pano_batch, sat_batch], dim=1)  # batch_size x (1 + n_emb_pano + n_emb_sat) x d_emb
+        memory_mask = torch.any(torch.isnan(memory), dim=2, keepdim=False)
+        assert memory_mask.dtype == torch.bool
+        memory[memory_mask] = 0.0
 
-            # Pass through transformer decoder
-            output = self.transformer_decoder(cls_token, memory)  # 1 x 1 x d_emb
-            sim = self.output_proj(output.squeeze(1))  # 1 x 1
-            similarities.append(sim)
+        # Pass through transformer decoder
+        output = self.transformer_decoder(memory, src_key_padding_mask=memory_mask)  # batch x 1 x d_emb
+        output = output[:, 0, :]
+        sim = self.output_proj(output)  # batch x 1
 
-        return torch.cat(similarities, dim=0)
+        return sim
 
     def forward(self,
                 sat_embeddings_unnormalized: torch.Tensor,  # n_sat x n_emb_sat x D_emb
@@ -315,7 +314,7 @@ class LearnedDistanceFunction(torch.nn.Module):
             all_similarities = []
             batch_size = self.config.max_batch_size
 
-            for i in range(0, len(pair_indices), batch_size):
+            for i in tqdm.tqdm(range(0, len(pair_indices), batch_size), desc="dist iter"):
                 batch_indices = pair_indices[i:i+batch_size]
 
                 # Stack pairs for batch processing and move to device

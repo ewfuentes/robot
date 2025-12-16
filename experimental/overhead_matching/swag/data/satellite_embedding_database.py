@@ -1,6 +1,7 @@
 import common.torch.load_torch_deps
 import torch
 import tqdm
+from torch.nn.utils.rnn import pad_sequence
 
 import experimental.overhead_matching.swag.data.vigor_dataset as vig_dataset
 
@@ -23,8 +24,8 @@ def build_embeddings_from_model(model: torch.nn.Module,
             # Keep only the embedding outputs
             if isinstance(embeddings, tuple):
                 embeddings = embeddings[0]
-            inf_results.append(embeddings)
-    embeddings = torch.concatenate(inf_results, dim=0)
+            inf_results.extend(embeddings.unbind(0))
+    embeddings = pad_sequence(inf_results, batch_first=True, padding_value=torch.nan)
     return embeddings
 
 
