@@ -551,10 +551,10 @@ def train(config: TrainConfig,
             log_feature_counts(writer, debug_dict['pano'], debug_dict['sat'], total_batches)
 
             # Hard Negative Mining
-            miner.consume(
-                panorama_embeddings=panorama_embeddings.detach(),
-                satellite_embeddings=satellite_embeddings.detach(),
-                batch=batch)
+            #miner.consume(
+            #    panorama_embeddings=panorama_embeddings.detach(),
+            #    satellite_embeddings=satellite_embeddings.detach(),
+            #    batch=batch)
 
             # Logging
             log_batch_metrics(
