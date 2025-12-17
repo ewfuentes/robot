@@ -291,7 +291,7 @@ def run_inference_on_path(
     particle_history_pre_move = []  # the particle state history before move_wag but after observe_wag
     num_dual_particles = []
     terminated_early = False
-    for panorama_id, motion_delta in tqdm.tqdm(zip(panorama_ids[:-1], motion_deltas)):
+    for panorama_id, motion_delta in zip(panorama_ids[:-1], motion_deltas):
         particle_history.append(particle_state.cpu().clone())
 
         # Generate new particles based on the observation
@@ -412,6 +412,11 @@ def construct_inputs_and_evaluate_path(
         generator=generator,
         return_intermediates=return_intermediates)
 
+def compute_distance_traveled(vigor_dataset, path):
+    latlon = vigor_dataset.get_panorama_positions(path)
+    distance_delta = vd.EARTH_RADIUS_M * find_d_on_unit_circle(latlon[:-1], latlon[1:])
+    return torch.cat([torch.tensor([0]), torch.cumsum(distance_delta, 0)])
+
 def evaluate_model_on_paths(
     vigor_dataset: vd.VigorDataset,
     sat_model: torch.nn.Module,
@@ -466,6 +471,8 @@ def evaluate_model_on_paths(
                 obs_likelihood_calculator=obs_likelihood_calculator,
                 return_intermediates=save_intermediate_filter_states)
 
+            distance_traveled_m = compute_distance_traveled(vigor_dataset, path)
+
             particle_history = path_inference_result.particle_history
             save_path = output_path / f"{i:07d}"
             save_path.mkdir(parents=True, exist_ok=True)
@@ -474,9 +481,11 @@ def evaluate_model_on_paths(
                         vigor_dataset, path, particle_history.to(device))
                 )
             all_final_particle_error_meters.append(error_meters_at_each_step[-1])
+
             torch.save(error_meters_at_each_step, save_path / "error.pt")
             torch.save(var_sq_m_at_each_step, save_path / "var.pt")
             torch.save(path, save_path / "path.pt")
+            torch.save(distance_traveled_m, save_path / "distance_traveled_m.pt")
             # torch.save(all_similarity[path], save_path / "similarity.pt")
             if save_intermediate_filter_states:
                 pir = path_inference_result
@@ -489,12 +498,12 @@ def evaluate_model_on_paths(
             with open(save_path / "other_info.json", "w") as f:
                 f.write(json.dumps({
                     "seed": generator_seed,
+                    "terminated_early": path_inference_result.terminated_early
                 }, indent=2))
         average_final_error_meters = torch.tensor(all_final_particle_error_meters).mean().item()
         with open(output_path / "summary_statistics.json", 'w') as f:
             f.write(json.dumps({
                 "average_final_error": average_final_error_meters,
-                "terminated_early": path_inference_result.terminated_early
             }, indent=2))
 
         print(f"Average final error meters is {average_final_error_meters}")

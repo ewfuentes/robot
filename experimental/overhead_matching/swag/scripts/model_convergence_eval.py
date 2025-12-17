@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.11.9"
+__generated_with = "0.14.17"
 app = marimo.App(width="full")
 
 
@@ -37,34 +37,7 @@ def _():
     import importlib
     importlib.reload(evaluate_swag)
     importlib.reload(haversine)
-    return (
-        NamedTuple,
-        Path,
-        SatellitePatchConfig,
-        WagConfig,
-        alt,
-        common,
-        evaluate_swag,
-        experimental,
-        haversine,
-        importlib,
-        itertools,
-        load_model,
-        math,
-        matplotlib,
-        mo,
-        np,
-        pd,
-        plt,
-        pprint,
-        re,
-        satellite_embedding_database,
-        seaborn,
-        sns,
-        torch,
-        tqdm,
-        vigor_dataset,
-    )
+    return Path, mo, np, pd, plt, sns, torch, tqdm
 
 
 @app.cell
@@ -76,19 +49,21 @@ def _(Path, pd, torch, tqdm):
         var_path = path / 'var.pt'
         error_data = torch.load(error_path)
         var_data = torch.load(var_path)
-        return error_data, var_data
+        distance_traveled = torch.load(path / "distance_traveled_m.pt")
+        return error_data, var_data, distance_traveled
 
     def process_eval_results(path: Path):
         out = []
         for p in tqdm.tqdm(sorted(path.glob("[0-9]*"))):
             try:
-                error_m, var_sq_m = process_path(p)
-                for i, (e, v) in enumerate(zip(error_m.detach().cpu().tolist(), var_sq_m.detach().cpu().tolist())):
+                error_m, var_sq_m, dist_traveled_m = process_path(p)
+                for i, (e, v, d) in enumerate(zip(error_m.detach().cpu().tolist(), var_sq_m.detach().cpu().tolist(), dist_traveled_m.tolist())):
                     out.append({
                         'location':p.parts[-3],
                         'path_idx': int(p.stem),
                         'error_m': e,
                         'var_sq_m': v,
+                        "dist_traveled_m": d,
                         "datapoint_index": i,
                         'model': path.stem,
                     })
@@ -100,17 +75,18 @@ def _(Path, pd, torch, tqdm):
 
     # _results_paths = sorted(_base_path.iterdir())
     _results_paths = [
-        Path('/data/overhead_matching/evaluation/results/20250707_dino_features/NewYork/all_chicago_dino_project_512'),
-        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/NewYork/all_chicago_sat_dino_embedding_mat_pano_wag'),
-        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/NewYork/all_chicago_sat_dino_embedding_mat_pano_dino_sam'),
-        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/NewYork/all_chicago_sat_dino_pano_dino'),
-        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/NewYork/all_chicago_sat_dino_pano_dino_agg_small'),
-        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/NewYork/all_chicago_sat_dino_pano_dino_agg_small_attn_8'),
-        Path('/data/overhead_matching/evaluation/results/20250707_dino_features/Chicago/all_chicago_dino_project_512'),
-        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/Chicago/all_chicago_sat_dino_embedding_mat_pano_wag'),
-        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/Chicago/all_chicago_sat_dino_embedding_mat_pano_dino_sam'),
-        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/Chicago/all_chicago_sat_dino_pano_dino'),
-        Path('/data/overhead_matching/evaluation/results/20250719_swag_model/Chicago/all_chicago_sat_dino_pano_dino_agg_small'),
+        # Path('/data/overhead_matching/evaluation/results/20250707_dino_features/NewYork/all_chicago_dino_project_512'),
+        # Path('/data/overhead_matching/evaluation/results/20250719_swag_model/NewYork/all_chicago_sat_dino_embedding_mat_pano_wag'),
+        # Path('/data/overhead_matching/evaluation/results/20250719_swag_model/NewYork/all_chicago_sat_dino_embedding_mat_pano_dino_sam'),
+        # Path('/data/overhead_matching/evaluation/results/20250719_swag_model/NewYork/all_chicago_sat_dino_pano_dino'),
+        # Path('/data/overhead_matching/evaluation/results/20250719_swag_model/NewYork/all_chicago_sat_dino_pano_dino_agg_small'),
+        # Path('/data/overhead_matching/evaluation/results/20250719_swag_model/NewYork/all_chicago_sat_dino_pano_dino_agg_small_attn_8'),
+        # Path('/data/overhead_matching/evaluation/results/20250707_dino_features/Chicago/all_chicago_dino_project_512'),
+        # Path('/data/overhead_matching/evaluation/results/20250719_swag_model/Chicago/all_chicago_sat_dino_embedding_mat_pano_wag'),
+        # Path('/data/overhead_matching/evaluation/results/20250719_swag_model/Chicago/all_chicago_sat_dino_embedding_mat_pano_dino_sam'),
+        # Path('/data/overhead_matching/evaluation/results/20250719_swag_model/Chicago/all_chicago_sat_dino_pano_dino'),
+        # Path('/data/overhead_matching/evaluation/results/20250719_swag_model/Chicago/all_chicago_sat_dino_pano_dino_agg_small'),
+        Path('/tmp/NewYork/all_chicago_dino_project_512/')
 
     ]
 
@@ -118,7 +94,7 @@ def _(Path, pd, torch, tqdm):
     for _p in _results_paths:
         path_dfs.append(process_eval_results(_p))
     path_df = pd.concat(path_dfs)
-    return path_df, path_dfs, process_eval_results, process_path
+    return (path_df,)
 
 
 @app.cell
@@ -168,7 +144,7 @@ def _(mo, np, path_df, plt, sns):
     plt.grid(True)
     plt.tight_layout()
     mo.mpl.interactive(plt.gcf())
-    return path_lengths, shortest_last_index
+    return (shortest_last_index,)
 
 
 @app.cell
@@ -194,7 +170,7 @@ def _(path_df, plt, sns):
     plt.grid(True, axis="y")
     plt.tight_layout()
     plt.show()
-    return (bin_size,)
+    return
 
 
 @app.cell
@@ -225,7 +201,7 @@ def _(path_df, pd, plt, shortest_last_index):
     plt.legend()
     plt.tight_layout()
     plt.show()
-    return all_thresh_df, grouped, result, subset, t, thresholds, tmp
+    return
 
 
 @app.cell
@@ -253,7 +229,7 @@ def _(np, path_df, pd):
         return out_arrays
 
     # error_m_np_arrays = flattened_df_to_ndarray(path_df, "error_m")
-    return (flattened_df_to_ndarray,)
+    return
 
 
 @app.cell
@@ -276,25 +252,50 @@ def _(mo, path_df, plt, sns):
             color = model_colors[model]   # <-- ensure consistency
             ax.plot(mdf["datapoint_index"], mdf["q05"], linestyle="--", linewidth=1.5, color=color)
             ax.plot(mdf["datapoint_index"], mdf["q95"], linestyle="--", linewidth=1.5, color=color)
-            ax.plot(mdf["datapoint_index"], mdf["max"], linestyle=":", linewidth=1.5, color=color)
+            # ax.plot(mdf["datapoint_index"], mdf["max"], linestyle=":", linewidth=1.5, color=color)
 
     g.add_legend()
     g.set_axis_labels("Datapoint Index (time)", "Error (m)")
     g.set_titles("Location: {col_name}")
+    plt.yscale('log')
 
     mo.mpl.interactive(plt.gcf())
-    return (
-        ax,
-        color,
-        g,
-        location,
-        mdf,
-        model,
-        model_colors,
-        palette,
-        quantiles,
-        subdf,
-    )
+    return (quantiles,)
+
+
+@app.cell
+def _(path_df):
+    path_df
+    return
+
+
+@app.cell
+def _(np, path_df):
+    x_vals = np.arange(0, path_df.groupby(['path_idx', 'model']).apply(lambda x: x["dist_traveled_m"].max()).min(), 250)
+    errors = np.empty((100, x_vals.shape[0]))
+    for _idx, _g in path_df.groupby(['path_idx', 'model']):
+        errors[_idx[0]] = np.interp(x_vals, _g["dist_traveled_m"], _g["error_m"], right=np.nan)
+    
+    return errors, x_vals
+
+
+@app.cell
+def _(errors, mo, np, plt, x_vals):
+    _quantiles = np.nanquantile(errors, [0.05, 0.5, 0.95], axis=0)
+
+    plt.figure(figsize=(8, 4))
+
+    plt.plot(x_vals / 1000.0, _quantiles[0], 'r:', label="$5^{th}$ percentile")
+    plt.plot(x_vals / 1000.0, _quantiles[1], 'r-', label="$50^{th}$ percentile")
+    plt.plot(x_vals / 1000.0, _quantiles[2], 'r--', label="$95^{th}$ percentile")
+    plt.legend(bbox_to_anchor=(1.0, 0.5), facecolor='w')
+    plt.xlabel('Distance Traveled (km)')
+    plt.ylabel("Error (m)")
+    plt.yscale('log')
+    plt.title('Error Distribution vs Distance Traveled')
+    plt.tight_layout()
+    mo.mpl.interactive(plt.gcf())
+    return
 
 
 @app.cell
@@ -343,7 +344,7 @@ def _(joint_df):
             .merge(_keys, on=["location", 'path_idx'], how='inner')
             .query(f"model == '{_baseline_model}'"))
     comparison_df= _high_error_df.merge(_baseline_df, on=["location", "path_idx", 'datapoint_index'], how='left', suffixes=(None, '_baseline'))
-    return comparison_df, high_error_mask, high_error_time
+    return (comparison_df,)
 
 
 @app.cell
@@ -380,11 +381,6 @@ def _(comparison_df, sns):
     # print(high_error_df.loc[_mask, "path_idx"].drop_duplicates())
 
     # mo.mpl.interactive(plt.gcf())
-    return
-
-
-@app.cell
-def _():
     return
 
 

@@ -296,6 +296,7 @@ def _compute_sat_log_likelihood(similarities: torch.Tensor,
     assert not torch.isnan(out).any()
     return out
 
+
 def _compute_osm_log_likelihood(similarities, mask, osm_geometry, particle_locs_px, point_sigma_px: float, osm_tree, similarity_scale: float = 1.0, selected_pano_landmark_idx: int | None = None):
     # Similarities is a num_panos x num_pano_landmarks x num_osm_landmark tensor
     # Mask is a num_panos x num_pano_landmarks tensor where true means that it's a valid landmark
@@ -329,13 +330,11 @@ def _compute_osm_log_likelihood(similarities, mask, osm_geometry, particle_locs_
     query_points = shapely.points(particles_flat)
 
     # Query all landmarks within max_distance using dwithin predicate
-    start_time = time.time()
     flat_particle_idxs, landmark_idxs = osm_tree.query(
         query_points,
         predicate='dwithin',
         distance=max_relevant_distance
     )
-    dist_time = time.time()
 
     # Convert to torch tensors
     flat_particle_idxs = torch.tensor(flat_particle_idxs, dtype=torch.long, device=device)
