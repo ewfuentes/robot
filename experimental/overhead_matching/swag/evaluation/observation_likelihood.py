@@ -13,7 +13,6 @@ import math
 import numpy as np
 import hashlib
 import json
-import time
 
 from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
     load_embeddings, custom_id_from_props, load_all_jsonl_from_folder,
@@ -286,7 +285,6 @@ def _compute_sat_log_likelihood(similarities: torch.Tensor,
 
     out = torch.full(particle_locs_px.shape[:-1], -torch.inf, device=device)
     particle_idxs = torch.unravel_index(kept_particle_idxs, particle_locs_px.shape[:-1])
-    # print(f'sat likelihood: {particle_idxs[0].shape=}')
 
     if len(particle_idxs) > 0:
         pano_idxs = particle_idxs[0]
@@ -365,7 +363,6 @@ def _compute_osm_log_likelihood(similarities, mask, osm_geometry, particle_locs_
     # Result shape: (num_panos, num_pano_lm, num_particles)
     per_pano_lm = torch.zeros((num_panos, num_pano_lm, num_particles), device=device)
 
-    query_time = time.time()
     for pano_lm_idx in range(num_pano_lm):
         # Get weights for this pano landmark across all nearby pairs
         # nearby_weights_for_lm[i] = weight[pano_idxs[i], pano_lm_idx, landmark_idxs[i]]
@@ -393,9 +390,6 @@ def _compute_osm_log_likelihood(similarities, mask, osm_geometry, particle_locs_
         # Sum over all pano landmarks
         out = torch.sum(per_pano_lm, dim=1)
 
-    end_time = time.time()
-    # print(f'distance computation_time: {dist_time - start_time} query: {query_time - dist_time} rest: {end_time - query_time} shapes: particles={len(query_points)}, nearby_pairs={len(nearby_distances)}')
-    assert not torch.isnan(out).any()
     return out
 
 
