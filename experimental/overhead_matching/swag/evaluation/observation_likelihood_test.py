@@ -893,13 +893,14 @@ class ObservationLikelihoodTest(unittest.TestCase):
         osm_geometry = pd.DataFrame([
             {'osm_id': 0, 'geometry_px': shapely.Point(100, 50), 'osm_embedding_idx': 0},
         ])
+        osm_tree = shapely.STRtree(osm_geometry.geometry_px.values)
 
         similarities = torch.tensor([[[0.9]]])
         mask = torch.tensor([[True]])
         particle_locs_px = torch.tensor([[[50.0, 100.0]]])
 
         log_likelihood = lol._compute_osm_log_likelihood(
-            similarities, mask, osm_geometry, particle_locs_px, point_sigma_px=300
+            similarities, mask, osm_geometry, particle_locs_px, point_sigma_px=300, osm_tree=osm_tree
         )
 
         self.assertEqual(log_likelihood.shape, (1, 1))
@@ -911,6 +912,7 @@ class ObservationLikelihoodTest(unittest.TestCase):
             {'osm_id': 0, 'geometry_px': shapely.Point(100, 50), 'osm_embedding_idx': 0},
             {'osm_id': 1, 'geometry_px': shapely.Point(200, 150), 'osm_embedding_idx': 1},
         ])
+        osm_tree = shapely.STRtree(osm_geometry.geometry_px.values)
 
         similarities = torch.tensor([
             [[0.8, 0.2], [0.3, 0.7]],
@@ -925,7 +927,7 @@ class ObservationLikelihoodTest(unittest.TestCase):
         ]])
 
         log_likelihood = lol._compute_osm_log_likelihood(
-            similarities, mask, osm_geometry, particle_locs_px, point_sigma_px=300
+            similarities, mask, osm_geometry, particle_locs_px, point_sigma_px=300, osm_tree=osm_tree
         )
 
         self.assertEqual(log_likelihood.shape, (1, 3))
@@ -935,6 +937,7 @@ class ObservationLikelihoodTest(unittest.TestCase):
         osm_geometry = pd.DataFrame([
             {'osm_id': 0, 'geometry_px': shapely.Point(100, 50), 'osm_embedding_idx': 0},
         ])
+        osm_tree = shapely.STRtree(osm_geometry.geometry_px.values)
 
         similarities = torch.tensor([
             [[0.8], [0.7]],
@@ -950,7 +953,7 @@ class ObservationLikelihoodTest(unittest.TestCase):
         ])
 
         log_likelihood = lol._compute_osm_log_likelihood(
-            similarities, mask, osm_geometry, particle_locs_px, point_sigma_px=300
+            similarities, mask, osm_geometry, particle_locs_px, point_sigma_px=300, osm_tree=osm_tree
         )
 
         self.assertEqual(log_likelihood.shape, (2, 2))
@@ -961,6 +964,7 @@ class ObservationLikelihoodTest(unittest.TestCase):
             {'osm_id': 0, 'geometry_px': shapely.Point(100, 50), 'osm_embedding_idx': 0},
             {'osm_id': 1, 'geometry_px': shapely.Point(200, 150), 'osm_embedding_idx': 1},
         ])
+        osm_tree = shapely.STRtree(osm_geometry.geometry_px.values)
 
         similarities = torch.tensor([[[0.9, 0.1]]])
         mask = torch.tensor([[True]])
@@ -969,10 +973,10 @@ class ObservationLikelihoodTest(unittest.TestCase):
         particle_near_low = torch.tensor([[[150.0, 200.0]]])
 
         ll_near_high = lol._compute_osm_log_likelihood(
-            similarities, mask, osm_geometry, particle_near_high, point_sigma_px=300
+            similarities, mask, osm_geometry, particle_near_high, point_sigma_px=300, osm_tree=osm_tree
         )
         ll_near_low = lol._compute_osm_log_likelihood(
-            similarities, mask, osm_geometry, particle_near_low, point_sigma_px=300
+            similarities, mask, osm_geometry, particle_near_low, point_sigma_px=300, osm_tree=osm_tree
         )
 
         self.assertGreater(ll_near_high.item(), ll_near_low.item())
@@ -984,13 +988,14 @@ class ObservationLikelihoodTest(unittest.TestCase):
             {'osm_id': 1, 'geometry_px': shapely.Point(200, 150), 'osm_embedding_idx': 1},
             {'osm_id': 2, 'geometry_px': shapely.Point(300, 250), 'osm_embedding_idx': 2},
         ])
+        osm_tree = shapely.STRtree(osm_geometry.geometry_px.values)
 
         similarities = torch.tensor([[[0.8, 0.5, 0.2], [0.3, 0.6, 0.9]]])
         mask = torch.tensor([[True, True]])
         particle_locs_px = torch.tensor([[[50.0, 100.0]]])
 
         log_likelihood = lol._compute_osm_log_likelihood(
-            similarities, mask, osm_geometry, particle_locs_px, point_sigma_px=300
+            similarities, mask, osm_geometry, particle_locs_px, point_sigma_px=300, osm_tree=osm_tree
         )
 
         self.assertEqual(log_likelihood.shape, (1, 1))
@@ -1002,6 +1007,7 @@ class ObservationLikelihoodTest(unittest.TestCase):
         osm_geometry = pd.DataFrame([
             {'osm_id': 0, 'geometry_px': shapely.Point(100, 50), 'osm_embedding_idx': 0},
         ])
+        osm_tree = shapely.STRtree(osm_geometry.geometry_px.values)
 
         similarities = torch.tensor([[[0.9]]])
         mask = torch.tensor([[True]])
@@ -1010,10 +1016,10 @@ class ObservationLikelihoodTest(unittest.TestCase):
         particle_far = torch.tensor([[[1000.0, 1000.0]]])
 
         ll_near = lol._compute_osm_log_likelihood(
-            similarities, mask, osm_geometry, particle_near, point_sigma_px=300
+            similarities, mask, osm_geometry, particle_near, point_sigma_px=300, osm_tree=osm_tree
         )
         ll_far = lol._compute_osm_log_likelihood(
-            similarities, mask, osm_geometry, particle_far, point_sigma_px=300
+            similarities, mask, osm_geometry, particle_far, point_sigma_px=300, osm_tree=osm_tree
         )
 
         self.assertGreater(ll_near.item(), ll_far.item())
@@ -1024,6 +1030,7 @@ class ObservationLikelihoodTest(unittest.TestCase):
             {'osm_id': 0, 'geometry_px': shapely.Point(100, 50), 'osm_embedding_idx': 0},
             {'osm_id': 1, 'geometry_px': shapely.Point(200, 150), 'osm_embedding_idx': 1},
         ])
+        osm_tree = shapely.STRtree(osm_geometry.geometry_px.values)
 
         similarities_both = torch.tensor([[[0.9, 0.1], [0.2, 0.8]]])
         mask_all = torch.tensor([[True, True]])
@@ -1032,10 +1039,10 @@ class ObservationLikelihoodTest(unittest.TestCase):
         particle_locs_px = torch.tensor([[[50.0, 100.0]]])
 
         ll_all = lol._compute_osm_log_likelihood(
-            similarities_both, mask_all, osm_geometry, particle_locs_px, point_sigma_px=300
+            similarities_both, mask_all, osm_geometry, particle_locs_px, point_sigma_px=300, osm_tree=osm_tree
         )
         ll_masked = lol._compute_osm_log_likelihood(
-            similarities_both, mask_first_only, osm_geometry, particle_locs_px, point_sigma_px=300
+            similarities_both, mask_first_only, osm_geometry, particle_locs_px, point_sigma_px=300, osm_tree=osm_tree
         )
 
         self.assertNotEqual(ll_all.item(), ll_masked.item())
@@ -1045,13 +1052,14 @@ class ObservationLikelihoodTest(unittest.TestCase):
         osm_geometry = pd.DataFrame([
             {'osm_id': 0, 'geometry_px': shapely.Point(100, 50), 'osm_embedding_idx': 0},
         ])
+        osm_tree = shapely.STRtree(osm_geometry.geometry_px.values)
 
         similarities = torch.tensor([[[0.9]]])
         mask = torch.tensor([[False]])
         particle_locs_px = torch.tensor([[[50.0, 100.0]]])
 
         log_likelihood = lol._compute_osm_log_likelihood(
-            similarities, mask, osm_geometry, particle_locs_px, point_sigma_px=300
+            similarities, mask, osm_geometry, particle_locs_px, point_sigma_px=300, osm_tree=osm_tree
         )
 
         self.assertEqual(log_likelihood.shape, (1, 1))
@@ -1059,13 +1067,14 @@ class ObservationLikelihoodTest(unittest.TestCase):
     def test_compute_osm_log_likelihood_no_landmarks(self):
         """Test with empty OSM geometry."""
         osm_geometry = pd.DataFrame(columns=['osm_id', 'geometry_px', 'osm_embedding_idx'])
+        osm_tree = shapely.STRtree([])
 
         similarities = torch.zeros((1, 1, 0))
         mask = torch.zeros((1, 1), dtype=torch.bool)
         particle_locs_px = torch.tensor([[[100.0, 50.0]]])
 
         log_likelihood = lol._compute_osm_log_likelihood(
-            similarities, mask, osm_geometry, particle_locs_px, point_sigma_px=300
+            similarities, mask, osm_geometry, particle_locs_px, point_sigma_px=300, osm_tree=osm_tree
         )
 
         self.assertEqual(log_likelihood.shape, (1, 1))
@@ -1075,13 +1084,14 @@ class ObservationLikelihoodTest(unittest.TestCase):
         osm_geometry = pd.DataFrame([
             {'osm_id': 0, 'geometry_px': shapely.Point(100, 50), 'osm_embedding_idx': 0},
         ])
+        osm_tree = shapely.STRtree(osm_geometry.geometry_px.values)
 
         similarities = torch.tensor([[[0.0]]])
         mask = torch.tensor([[True]])
         particle_locs_px = torch.tensor([[[50.0, 100.0]]])
 
         log_likelihood = lol._compute_osm_log_likelihood(
-            similarities, mask, osm_geometry, particle_locs_px, point_sigma_px=300
+            similarities, mask, osm_geometry, particle_locs_px, point_sigma_px=300, osm_tree=osm_tree
         )
 
         self.assertEqual(log_likelihood.shape, (1, 1))
@@ -1091,13 +1101,14 @@ class ObservationLikelihoodTest(unittest.TestCase):
         osm_geometry = pd.DataFrame([
             {'osm_id': 0, 'geometry_px': shapely.Point(100, 50), 'osm_embedding_idx': 0},
         ])
+        osm_tree = shapely.STRtree(osm_geometry.geometry_px.values)
 
         similarities = torch.tensor([[[0.8]]])
         mask = torch.tensor([[True]])
         particle_locs_px = torch.tensor([[[50.0, 100.0]]])
 
         log_likelihood = lol._compute_osm_log_likelihood(
-            similarities, mask, osm_geometry, particle_locs_px, point_sigma_px=300
+            similarities, mask, osm_geometry, particle_locs_px, point_sigma_px=300, osm_tree=osm_tree
         )
 
         self.assertIsInstance(log_likelihood, torch.Tensor)

@@ -113,6 +113,30 @@ def _compute_pixel_locs_px(particle_locs_deg: torch.Tensor, zoom_level: int = 20
     return torch.stack([y_px, x_px], dim=-1)
 
 
+def _scatter_logsumexp(src: torch.Tensor, index: torch.Tensor, dim_size: int) -> torch.Tensor:
+    """Compute logsumexp over groups defined by index.
+
+    Args:
+        src: Source tensor of values to aggregate
+        index: Index tensor mapping each src element to an output group
+        dim_size: Size of output dimension (number of groups)
+
+    Returns:
+        Tensor of shape (dim_size,) with logsumexp computed per group.
+        Groups with no elements get -inf.
+    """
+    # Find max per group for numerical stability
+    max_val = torch.full((dim_size,), -float('inf'), device=src.device, dtype=src.dtype)
+    max_val.scatter_reduce_(0, index, src, reduce='amax')
+
+    # Compute logsumexp: log(sum(exp(src - max))) + max
+    exp_src = torch.exp(src - max_val[index])
+    sum_exp = torch.zeros(dim_size, device=src.device, dtype=src.dtype)
+    sum_exp.scatter_add_(0, index, exp_src)
+
+    return max_val + torch.log(sum_exp)
+
+
 def _build_sat_spatial_index(sat_geometry):
     """Build spatial index and centroids for satellite patches.
 
@@ -147,29 +171,37 @@ def _query_particle_patch_mapping(particle_locs_px: torch.Tensor, sat_tree, patc
         kept_particle_idxs: Indices of particles that matched a patch
         kept_patch_idxs: Corresponding patch indices for each matched particle
     """
+    device = particle_locs_px.device
     if sat_tree is None:
         return torch.tensor([], dtype=torch.long), torch.tensor([], dtype=torch.long)
 
-    query_pts = np.array([shapely.Point(x) for x in particle_locs_px.reshape(-1, 2)])
+    # Everything here is on the CPU for now
+    query_pts = np.array([shapely.Point(x) for x in particle_locs_px.reshape(-1, 2).cpu()])
     pt_and_patch_idxs = sat_tree.query(query_pts).T
 
     if len(pt_and_patch_idxs) == 0:
-        return torch.tensor([], dtype=torch.long), torch.tensor([], dtype=torch.long)
+        return (torch.tensor([], dtype=torch.long, device=device),
+                torch.tensor([], dtype=torch.long, device=device))
 
     flat_particle_idxs = torch.tensor(pt_and_patch_idxs[:, 0])
     particle_match_idxs = torch.tensor(pt_and_patch_idxs[:, 1])
 
     if len(flat_particle_idxs) == 0:
-        return torch.tensor([], dtype=torch.long), torch.tensor([], dtype=torch.long)
+        return (torch.tensor([], dtype=torch.long, device=device),
+                torch.tensor([], dtype=torch.long, device=device))
 
     # For particles matching multiple patches, find the closest by centroid distance
     particle_to_center_distances = torch.tensor(
             shapely.distance(patch_centroids[particle_match_idxs],
-                             query_pts[flat_particle_idxs]))
+                             query_pts[flat_particle_idxs]), device=device)
+
+    # This is now on the GPU
+    flat_particle_idxs = flat_particle_idxs.to(device)
+    particle_match_idxs = particle_match_idxs.to(device)
 
     # Mark beginning of each run of repeated particle indices
     run_starts = torch.ones(
-            len(flat_particle_idxs), dtype=torch.bool, device=flat_particle_idxs.device)
+            len(flat_particle_idxs), dtype=torch.bool, device=device)
     if len(flat_particle_idxs) > 1:
         run_starts[1:] = flat_particle_idxs[1:] != flat_particle_idxs[:-1]
 
@@ -232,10 +264,11 @@ def _compute_sat_log_likelihood(similarities: torch.Tensor,
     """
     assert similarities.shape[0] == particle_locs_px.shape[0]
     assert particle_locs_px.shape[-1] == 2
+    device = particle_locs_px.device
 
     num_patches = similarities.shape[1]
     if num_patches == 0:
-        return torch.full((particle_locs_px.shape[:-1]), -torch.inf, dtype=torch.float32)
+        return torch.full((particle_locs_px.shape[:-1]), -torch.inf, dtype=torch.float32, device=device)
 
     max_similarities, _ = torch.max(similarities, -1, keepdim=True)
     obs_log_likelihood = (-torch.log(torch.tensor(math.sqrt(2 * torch.pi) * sigma_px)) +
@@ -248,9 +281,9 @@ def _compute_sat_log_likelihood(similarities: torch.Tensor,
         swapped_particles, sat_tree, patch_centroids)
 
     if len(kept_particle_idxs) == 0:
-        return torch.full((particle_locs_px.shape[:-1]), -torch.inf, dtype=torch.float32)
+        return torch.full((particle_locs_px.shape[:-1]), -torch.inf, dtype=torch.float32, device=device)
 
-    out = torch.full(particle_locs_px.shape[:-1], -torch.inf)
+    out = torch.full(particle_locs_px.shape[:-1], -torch.inf, device=device)
     particle_idxs = torch.unravel_index(kept_particle_idxs, particle_locs_px.shape[:-1])
 
     if len(particle_idxs) > 0:
@@ -258,10 +291,11 @@ def _compute_sat_log_likelihood(similarities: torch.Tensor,
         particle_likelihoods = obs_log_likelihood[pano_idxs, kept_patch_idxs]
         out[particle_idxs] = particle_likelihoods
 
+    assert not torch.isnan(out).any()
     return out
 
 
-def _compute_osm_log_likelihood(similarities, mask, osm_geometry, particle_locs_px, point_sigma_px: float, similarity_scale: float = 1.0, selected_pano_landmark_idx: int | None = None):
+def _compute_osm_log_likelihood(similarities, mask, osm_geometry, particle_locs_px, point_sigma_px: float, osm_tree, similarity_scale: float = 1.0, selected_pano_landmark_idx: int | None = None):
     # Similarities is a num_panos x num_pano_landmarks x num_osm_landmark tensor
     # Mask is a num_panos x num_pano_landmarks tensor where true means that it's a valid landmark
     # osm_geometry is a dataframe that contains the geometry for each osm landmark
@@ -277,55 +311,84 @@ def _compute_osm_log_likelihood(similarities, mask, osm_geometry, particle_locs_
     assert similarities.shape[1] == mask.shape[1]
     assert similarities.shape[2] == len(osm_geometry)
 
-    is_point = osm_geometry.geometry_px.apply(lambda x: x.geom_type == "Point")
-    # assert is_point.all()
+    device = particle_locs_px.device
     num_panos, num_particles = particle_locs_px.shape[:2]
-    num_osm = len(osm_geometry)
+    num_pano_lm = similarities.shape[1]
 
-    # For each particle, compute the distance to the OSM geometry
-    # Shapely objects have the column, row ordering, so we swap the particle order here
+    # Compute the max distance where likelihood isn't clamped
+    # From: log_ll = -log(sqrt(2*pi)*sigma) - 0.5*(d/sigma)^2
+    # Solving for d when log_ll = CLAMP_THRESHOLD
+    CLAMP_THRESHOLD = -14.0
+    log_norm = -math.log(math.sqrt(2 * math.pi) * point_sigma_px)
+    max_relevant_distance = point_sigma_px * math.sqrt(2 * (-CLAMP_THRESHOLD + log_norm))
+
+    # Shapely uses col,row ordering; swap particle coordinates
     swapped_particles = torch.roll(particle_locs_px, 1, dims=-1)
-    particles_flat = [shapely.Point(*x) for x in swapped_particles.reshape(-1, 2)]
-    particles = np.array(particles_flat).reshape(num_panos, num_particles, 1)
-    osm_landmarks = osm_geometry.geometry_px.values.reshape(1, 1, num_osm)
-    distances = shapely.distance(particles, osm_geometry.geometry_px.values)
-    # Handle the case where we may only have a single particle or a single osm landmark
-    distances = distances.reshape(num_panos, num_particles, num_osm)
+    particles_flat = swapped_particles.reshape(-1, 2).cpu().numpy()
+    query_points = shapely.points(particles_flat)
 
-    # Compute the observation likelihood for each particle/geometry pair
-    # dimensions: num_panos x num_particles x num_osm
-    obs_log_likelihood_per_landmark = (
-            -torch.log(torch.tensor(math.sqrt(2 * torch.pi) * point_sigma_px)) +
-            -0.5 * torch.square(torch.tensor(distances) / point_sigma_px))
-    obs_log_likelihood_per_landmark[obs_log_likelihood_per_landmark < -14.0] = -14.0
+    # Query all landmarks within max_distance using dwithin predicate
+    flat_particle_idxs, landmark_idxs = osm_tree.query(
+        query_points,
+        predicate='dwithin',
+        distance=max_relevant_distance
+    )
 
-    # compute the weights
+    # Convert to torch tensors
+    flat_particle_idxs = torch.tensor(flat_particle_idxs, dtype=torch.long, device=device)
+    landmark_idxs_torch = torch.tensor(landmark_idxs, dtype=torch.long, device=device)
+
+    # Compute distances for the nearby pairs
+    nearby_distances = shapely.distance(
+        query_points[flat_particle_idxs.cpu().numpy()],
+        osm_geometry.geometry_px.values[landmark_idxs]
+    )
+    nearby_distances = torch.tensor(nearby_distances, dtype=torch.float32, device=device)
+
+    # Compute log-likelihoods only for nearby pairs
+    # log_ll = -log(sqrt(2*pi)*sigma) - 0.5*(d/sigma)^2
+    nearby_log_ll = log_norm - 0.5 * torch.square(nearby_distances / point_sigma_px)
+
+    # Compute weights: similarities scaled
     # dimensions: num_panos x num_pano_landmarks x num_osm_landmarks
-    weight = similarities * similarity_scale
+    weight = (similarities * similarity_scale).to(device)
     weight[~mask, :] = -torch.inf
 
-    # We want both tensors to be num_panos x num_particles x num_pano_landmarks x num_osm
-    # So we insert a singular dimension for the observation likelihoods, and
-    # we insert all num_particles dimensions to the weights
-    obs_log_likelihood_per_landmark = obs_log_likelihood_per_landmark.unsqueeze(-2)
-    weight = weight.unsqueeze(1)
-    obs_log_likelihood_per_landmark = weight + obs_log_likelihood_per_landmark
+    # Get weights for nearby landmarks: (num_nearby,) for each (pano, pano_lm)
+    # nearby_weights[i] = weight[pano_idx, :, landmark_idxs[i]]
+    # We need to extract pano_idx from flat_particle_idxs
+    pano_idxs = flat_particle_idxs // num_particles  # which pano each nearby pair belongs to
 
-    # logsumexp over the osm landmarks
-    # num_panos x num_particles x num_pano_landmarks
-    per_pano_lm = torch.logsumexp(obs_log_likelihood_per_landmark, dim=-1)
-    per_pano_lm = torch.where(mask.unsqueeze(1), per_pano_lm, torch.tensor(0.0))
+    # For sparse computation, loop over pano landmarks (typically ~10)
+    # Result shape: (num_panos, num_pano_lm, num_particles)
+    per_pano_lm = torch.zeros((num_panos, num_pano_lm, num_particles), device=device)
+
+    for pano_lm_idx in range(num_pano_lm):
+        # Get weights for this pano landmark across all nearby pairs
+        # nearby_weights_for_lm[i] = weight[pano_idxs[i], pano_lm_idx, landmark_idxs[i]]
+        nearby_weights_for_lm = weight[pano_idxs, pano_lm_idx, landmark_idxs_torch]
+
+        # Combined weighted log-likelihood for each nearby pair
+        weighted_ll = nearby_weights_for_lm + nearby_log_ll
+
+        # Scatter logsumexp by flat particle index
+        # This aggregates all nearby landmarks for each particle
+        per_pano_lm[:, pano_lm_idx, :] = _scatter_logsumexp(
+            weighted_ll, flat_particle_idxs, dim_size=num_panos * num_particles
+        ).reshape(num_panos, num_particles)
+
+    # Zero out invalid pano landmarks
+    per_pano_lm = torch.where(mask.unsqueeze(-1).to(device), per_pano_lm, torch.tensor(0.0, device=device))
 
     # If a specific landmark is selected, return only that landmark's contribution
     if selected_pano_landmark_idx is not None:
         # Validate index
-        num_pano_landmarks = per_pano_lm.shape[2]
-        if selected_pano_landmark_idx >= num_pano_landmarks:
-            raise ValueError(f"selected_pano_landmark_idx {selected_pano_landmark_idx} >= num_pano_landmarks {num_pano_landmarks}")
-        out = per_pano_lm[:, :, selected_pano_landmark_idx]
+        if selected_pano_landmark_idx >= num_pano_lm:
+            raise ValueError(f"selected_pano_landmark_idx {selected_pano_landmark_idx} >= num_pano_landmarks {num_pano_lm}")
+        out = per_pano_lm[:, selected_pano_landmark_idx, :]
     else:
         # Sum over all pano landmarks
-        out = torch.sum(per_pano_lm, dim=-1)
+        out = torch.sum(per_pano_lm, dim=1)
 
     return out
 
@@ -667,6 +730,9 @@ class LandmarkObservationLikelihoodCalculator:
         # Build spatial index for satellite patches
         self._sat_tree, self._patch_centroids = _build_sat_spatial_index(prior_data.sat_geometry)
 
+        # Build spatial index for OSM landmarks
+        self._osm_tree = shapely.STRtree(prior_data.osm_geometry.geometry_px.values)
+
     def compute_log_likelihoods(self, particles: torch.Tensor, panorama_ids: list[str], selected_pano_landmark_idx: int | None = None) -> torch.Tensor:
         """
         Compute unnormalized log likelihoods for particles given observations.
@@ -707,6 +773,7 @@ class LandmarkObservationLikelihoodCalculator:
                 self.prior_data.osm_geometry,
                 particle_locs_px,
                 point_sigma_px=self.config.obs_likelihood_from_osm_similarity_sigma,
+                osm_tree=self._osm_tree,
                 similarity_scale=self.config.osm_similarity_scale,
                 selected_pano_landmark_idx=selected_pano_landmark_idx
             )
@@ -724,6 +791,7 @@ class LandmarkObservationLikelihoodCalculator:
                 self.prior_data.osm_geometry,
                 particle_locs_px,
                 point_sigma_px=self.config.obs_likelihood_from_osm_similarity_sigma,
+                osm_tree=self._osm_tree,
                 similarity_scale=self.config.osm_similarity_scale,
                 selected_pano_landmark_idx=selected_pano_landmark_idx
             )

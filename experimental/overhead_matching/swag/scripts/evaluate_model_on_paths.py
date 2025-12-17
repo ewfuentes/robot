@@ -17,6 +17,7 @@ import math
 import common.torch.load_torch_deps
 from google.protobuf import text_format
 import torch
+import ipdb
 
 
 def load_model(path, device='cuda'):
@@ -73,7 +74,7 @@ def construct_path_eval_inputs_from_args(
         panorama_neighbor_radius=panorama_neighbor_radius_deg,
         satellite_patch_size=sat_model.patch_dims,
         panorama_size=pano_model.patch_dims,
-        factor=1,
+        factor=1.0,
         landmark_version=landmark_version,
     )
     vigor_dataset = vd.VigorDataset(dataset_path, dataset_config)
@@ -112,10 +113,14 @@ if __name__ == "__main__":
                         help="Path to panorama landmark embeddings directory")
     parser.add_argument("--use-landmark-likelihood", action='store_true',
                         help="Use LandmarkObservationLikelihoodCalculator instead of WagObservationLikelihoodCalculator")
+    parser.add_argument("--use-landmark-likelihood-only", action='store_true',
+                        help="Use LandmarkObservationLikelihoodCalculator instead of WagObservationLikelihoodCalculator")
     parser.add_argument("--landmark-sigma", type=float, default=100.0,
                         help="Sigma for OSM landmark observation likelihood")
     parser.add_argument("--embedding-dim", type=int, default=1536,
                         help="Embedding dimension for landmark embeddings")
+    parser.add_argument("--osm-similarity-scale", type=float, default=10.0,
+                        help="Scale factor for OSM similarity in log-likelihood computation")
 
     args = parser.parse_args()
 
@@ -152,7 +157,7 @@ if __name__ == "__main__":
                            initial_particle_distribution_offset_std_deg=degrees_from_meters(1300.0),
                            # page 73 of thesis
                            initial_particle_distribution_std_deg=degrees_from_meters(2970.0),
-                           num_particles=100_000,
+                           num_particles=10_000,
                            sigma_obs_prob_from_sim=args.sigma_obs_prob_from_sim,
                            satellite_patch_config=SatellitePatchConfig(
                                zoom_level=20,
@@ -166,7 +171,7 @@ if __name__ == "__main__":
 
     # Build landmark observation likelihood calculator if requested
     landmark_obs_calculator = None
-    if args.use_landmark_likelihood:
+    if args.use_landmark_likelihood or args.use_landmark_likelihood_only:
         if args.osm_embedding_path is None or args.pano_embedding_path is None:
             raise ValueError("--osm-embedding-path and --pano-embedding-path are required when using --use-landmark-likelihood")
 
@@ -198,10 +203,16 @@ if __name__ == "__main__":
             landmark_sim_data
         )
 
+        mode = None
+        if args.use_landmark_likelihood:
+            mode = LikelihoodMode.COMBINED
+        elif args.use_landmark_likelihood_only:
+            mode = LikelihoodMode.OSM_ONLY
         obs_config = ObservationLikelihoodConfig(
             obs_likelihood_from_sat_similarity_sigma=args.sigma_obs_prob_from_sim,
             obs_likelihood_from_osm_similarity_sigma=args.landmark_sigma,
-            likelihood_mode=LikelihoodMode.COMBINED
+            osm_similarity_scale=args.osm_similarity_scale,
+            likelihood_mode=mode
         )
 
         landmark_obs_calculator = LandmarkObservationLikelihoodCalculator(
@@ -211,15 +222,16 @@ if __name__ == "__main__":
         )
         print("Landmark observation likelihood calculator ready")
 
-    es.evaluate_model_on_paths(
-        vigor_dataset=vigor_dataset,
-        sat_model=sat_model,
-        pano_model=pano_model,
-        paths=paths_data['paths'],
-        wag_config=wag_config,
-        seed=args.seed,
-        output_path=args.output_path,
-        device=DEVICE,
-        save_intermediate_filter_states=args.save_intermediate_filter_states,
-        obs_likelihood_calculator=landmark_obs_calculator
-    )
+    with ipdb.launch_ipdb_on_exception():
+        es.evaluate_model_on_paths(
+            vigor_dataset=vigor_dataset,
+            sat_model=sat_model,
+            pano_model=pano_model,
+            paths=paths_data['paths'],
+            wag_config=wag_config,
+            seed=args.seed,
+            output_path=args.output_path,
+            device=DEVICE,
+            save_intermediate_filter_states=args.save_intermediate_filter_states,
+            obs_likelihood_calculator=landmark_obs_calculator
+        )
