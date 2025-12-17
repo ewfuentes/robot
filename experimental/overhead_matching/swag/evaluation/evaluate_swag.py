@@ -374,12 +374,6 @@ def construct_inputs_and_evaluate_path(
     # Convert path indices to panorama IDs
     panorama_ids = [vigor_dataset._panorama_metadata.iloc[idx].pano_id for idx in path]
 
-    torch.save(
-        dict(ground_truth = vigor_dataset._panorama_metadata.iloc[path]),
-        '/tmp/ground_truth.pt'
-    )
-
-
     # Get satellite patch locations
     satellite_patch_locations = vigor_dataset.get_patch_positions()
 
@@ -486,7 +480,7 @@ def evaluate_model_on_paths(
             torch.save(var_sq_m_at_each_step, save_path / "var.pt")
             torch.save(path, save_path / "path.pt")
             torch.save(distance_traveled_m, save_path / "distance_traveled_m.pt")
-            # torch.save(all_similarity[path], save_path / "similarity.pt")
+            torch.save(all_similarity[path], save_path / "similarity.pt")
             if save_intermediate_filter_states:
                 pir = path_inference_result
                 torch.save(pir.particle_history, save_path / "particle_history.pt")
@@ -503,7 +497,7 @@ def evaluate_model_on_paths(
         average_final_error_meters = torch.tensor(all_final_particle_error_meters).mean().item()
         with open(output_path / "summary_statistics.json", 'w') as f:
             f.write(json.dumps({
-                "average_final_error": average_final_error_meters,
+                "average_final_error": average_final_error_meters
             }, indent=2))
 
         print(f"Average final error meters is {average_final_error_meters}")

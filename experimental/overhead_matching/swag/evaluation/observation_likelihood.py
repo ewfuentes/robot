@@ -738,8 +738,6 @@ class LandmarkObservationLikelihoodCalculator:
 
         # Build spatial index for OSM landmarks
         self._osm_tree = shapely.STRtree(prior_data.osm_geometry.geometry_px.values)
-        # self._num_calls = 0
-        # torch.save(self._patch_centroids, '/tmp/patch_centroids.pt')
 
     def compute_log_likelihoods(self, particles: torch.Tensor, panorama_ids: list[str], selected_pano_landmark_idx: int | None = None) -> torch.Tensor:
         """
@@ -774,7 +772,6 @@ class LandmarkObservationLikelihoodCalculator:
                 self._patch_centroids,
                 sigma_px=self.config.obs_likelihood_from_sat_similarity_sigma
             )
-            sat_log_likelihood_cpu = log_likelihood.cpu()
         elif mode == LikelihoodMode.OSM_ONLY:
             log_likelihood = _compute_osm_log_likelihood(
                 similarities.landmark,
@@ -786,7 +783,6 @@ class LandmarkObservationLikelihoodCalculator:
                 similarity_scale=self.config.osm_similarity_scale,
                 selected_pano_landmark_idx=selected_pano_landmark_idx
             )
-            osm_log_likelihood_cpu = log_likelihood.cpu()
         else:  # COMBINED
             sat_log_likelihood = _compute_sat_log_likelihood(
                 similarities.sat_patch,
@@ -805,16 +801,8 @@ class LandmarkObservationLikelihoodCalculator:
                 similarity_scale=self.config.osm_similarity_scale,
                 selected_pano_landmark_idx=selected_pano_landmark_idx
             )
-            sat_log_likelihood_cpu = sat_log_likelihood.cpu()
-            osm_log_likelihood_cpu = sat_log_likelihood.cpu()
             log_likelihood = sat_log_likelihood + osm_log_likelihood
 
-            # torch.save(dict(
-            #     particles=particle_locs_px.cpu(),
-            #     sat_log_likelihood=sat_log_likelihood_cpu,
-            #     osm_log_likelihood=osm_log_likelihood_cpu,
-            #     ), f'/tmp/step_{self._num_calls:04d}.pt')
-        # self._num_calls += 1
         return log_likelihood
 
     def sample_from_observation(self, num_particles: int, panorama_ids: list[str],
