@@ -1,5 +1,5 @@
-#include "torch/extension.h"
 #include "common/torch/example_kernel.hh"
+#include "torch/extension.h"
 
 namespace robot::torch {
 
