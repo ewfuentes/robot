@@ -1,7 +1,7 @@
 import unittest
 import common.torch.load_torch_deps
-import common.torch.example_kernel_python as ekp
 import torch
+import common.torch.example_kernel_python as ekp
 
 class ExampleKernelTest(unittest.TestCase):
     def test_example_kernel_float32(self):

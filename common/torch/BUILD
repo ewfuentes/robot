@@ -1,8 +1,9 @@
 
 load("@rules_python//python:defs.bzl", "py_library")
-load("@pip//:requirements.bzl", "requirement")
+load("@pip//:requirements.bzl", "requirement", "extra_requirement")
 load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
+load("@rules_python//python:pip.bzl", "whl_filegroup")
 
 py_library(
   name = "load_torch_deps",
@@ -46,14 +47,17 @@ cuda_library(
   hdrs = ["example_kernel.hh"],
   srcs = ["example_kernel.cu"],
   deps = [
-    "@libtorch//:headers",
+    "@pip_torch//:libtorch",
   ]
 )
 
 pybind_extension(
   name = "example_kernel_python",
   srcs = ["example_kernel_python.cc"],
-  deps = [":example_kernel"],
+  deps = [
+    ":example_kernel",
+    extra_requirement("torch", "libtorch"),
+  ],
 )
 
 py_test(

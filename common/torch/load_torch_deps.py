@@ -85,9 +85,30 @@ def preload_cuda_deps() -> None:
 if platform.processor() != "aarch64":
     preload_cuda_deps()
 
-# Import torch with RTLD_GLOBAL so its symbols are available to C++ extensions
-# This must happen before any PyTorch C++ extensions are imported
-old_flags = sys.getdlopenflags()
-sys.setdlopenflags(old_flags | ctypes.RTLD_GLOBAL)
-import torch
-sys.setdlopenflags(old_flags)
+
+def enable_torch_extensions():
+    """
+    Makes torch C++ symbols globally available for PyTorch C++ extensions.
+
+    IMPORTANT: This must be called AFTER importing torch and BEFORE importing
+    any C++ extensions that depend on torch symbols.
+
+    WARNING: This may cause conflicts with some libraries (like sdprlayers).
+    To avoid issues, import and USE those libraries BEFORE calling this function.
+
+    Example:
+        import common.torch.load_torch_deps
+        import torch
+
+        # Import and use libraries that might conflict (like sdprlayers)
+        import sdprlayers
+        # ... use sdprlayers here to trigger C extension loading ...
+
+        # Now make torch symbols global for your custom extensions
+        common.torch.load_torch_deps.enable_torch_extensions()
+        import my_custom_extension
+    """
+    import torch
+    # Re-dlopen torch's C extension with RTLD_GLOBAL
+    torch_lib = torch._C.__file__
+    ctypes.CDLL(torch_lib, mode=ctypes.RTLD_GLOBAL)
