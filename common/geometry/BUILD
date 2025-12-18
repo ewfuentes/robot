@@ -113,3 +113,19 @@ py_test(
         requirement("shapely"),
     ],
 )
+
+py_binary(
+    name = "benchmark_spatial_index",
+    srcs = ["benchmark_spatial_index.py"],
+    deps = [
+        ":gpu_geometry_collection",
+        "//common/gps:web_mercator",
+        "//common/torch:load_torch_deps",
+        requirement("geopandas"),
+        requirement("IPython"),
+        requirement("numpy"),
+        requirement("pyarrow"),
+        requirement("shapely"),
+        requirement("torch"),
+    ],
+)
