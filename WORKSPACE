@@ -144,7 +144,10 @@ http_archive(
     strip_prefix = "rules_python-1.5.3",
     url = "https://github.com/bazel-contrib/rules_python/releases/download/1.5.3/rules_python-1.5.3.tar.gz",
     patch_args = ["-p1"],
-    patches = ["//third_party:rules_python_0001-disable-user-site-package.patch"],
+    patches = [
+        "//third_party:rules_python_0001-disable-user-site-package.patch",
+        "//third_party:rules_python_0002-expose-extra-hub-aliases.patch",
+    ],
 )
 
 load("@rules_python//python:repositories.bzl", "py_repositories", "python_register_multi_toolchains")
@@ -159,6 +162,20 @@ python_register_multi_toolchains(
 )
 
 load("@python//:pip.bzl", "multi_pip_parse")
+load("@rules_python//python:pip.bzl", "package_annotation")
+
+PIP_ANNOTATIONS = {
+    "torch": package_annotation(
+        additive_build_content="""
+load("@robot//common/torch:extra_torch_targets.bzl", "extra_torch_targets")
+extra_torch_targets()
+        """
+    )
+}
+
+EXTRA_HUB_ALIASES = {
+    "torch": ["libtorch"],
+}
 
 multi_pip_parse(
   name="pip",
@@ -173,6 +190,8 @@ multi_pip_parse(
     "3.10": "//third_party/python:requirements_3_10.txt",
     "3.12": "//third_party/python:requirements_3_12.txt"
   },
+  annotations = PIP_ANNOTATIONS,
+  extra_hub_aliases = EXTRA_HUB_ALIASES,
 )
 
 load("@pip//:requirements.bzl", install_pip_deps = "install_deps")
@@ -451,6 +470,18 @@ container_pull(
 
 load("@io_bazel_rules_docker//python3:image.bzl", _py_image_repos = "repositories")
 _py_image_repos()
+
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+http_archive(
+    name = "rules_cuda",
+    sha256 = "fe8d3d8ed52b9b433f89021b03e3c428a82e10ed90c72808cc4988d1f4b9d1b3",
+    strip_prefix = "rules_cuda-v0.2.5",
+    urls = ["https://github.com/bazel-contrib/rules_cuda/releases/download/v0.2.5/rules_cuda-v0.2.5.tar.gz"],
+)
+
+load("@rules_cuda//cuda:repositories.bzl", "register_detected_cuda_toolchains", "rules_cuda_dependencies")
+rules_cuda_dependencies()
+register_detected_cuda_toolchains()
 
 http_archive(
     name = "approxcdf",
