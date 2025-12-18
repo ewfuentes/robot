@@ -84,3 +84,10 @@ def preload_cuda_deps() -> None:
 
 if platform.processor() != "aarch64":
     preload_cuda_deps()
+
+# Import torch with RTLD_GLOBAL so its symbols are available to C++ extensions
+# This must happen before any PyTorch C++ extensions are imported
+old_flags = sys.getdlopenflags()
+sys.setdlopenflags(old_flags | ctypes.RTLD_GLOBAL)
+import torch
+sys.setdlopenflags(old_flags)

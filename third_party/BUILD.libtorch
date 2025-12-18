@@ -1,0 +1,27 @@
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "headers",
+    hdrs = glob(["include/**/*.h"]) + glob(["include/**/*.cuh"]),
+    includes = [
+        "include",
+        "include/torch/csrc/api/include",
+    ],
+)
+
+cc_library(
+    name = "libtorch",
+    srcs = glob(
+        ["lib/*.so*"],
+        exclude = [
+            "lib/*python*",           # Exclude Python bindings
+            "lib/libnnapi_backend*",   # Depends on libtorch_python.so
+            "lib/*_test.so*",          # Exclude test libraries
+        ],
+    ),
+    hdrs = glob(["include/**/*.h"]) + glob(["include/**/*.cuh"]),
+    includes = [
+        "include",
+        "include/torch/csrc/api/include",
+    ],
+)
