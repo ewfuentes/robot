@@ -447,16 +447,25 @@ class GPUGeometryCollection:
 
         t0 = time.time()
         # Convert to cell coordinates
-        cell_min = torch.floor((seg_bbox_min - grid_origin) / cell_size).long()
-        cell_max = torch.floor((seg_bbox_max - grid_origin) / cell_size).long()
+        cell_min_unclamped = torch.floor((seg_bbox_min - grid_origin) / cell_size).long()
+        cell_max_unclamped = torch.floor((seg_bbox_max - grid_origin) / cell_size).long()
 
         # Clamp to grid bounds
         zeros = torch.zeros_like(grid_dims)
         grid_max = grid_dims - 1
-        cell_min = torch.maximum(cell_min, zeros)
+        cell_min = torch.maximum(cell_min_unclamped, zeros)
         cell_min = torch.minimum(cell_min, grid_max)
-        cell_max = torch.maximum(cell_max, zeros)
+        cell_max = torch.maximum(cell_max_unclamped, zeros)
         cell_max = torch.minimum(cell_max, grid_max)
+
+        # Check if segment bbox intersects grid [0, grid_dims-1]
+        # Segment intersects if: cell_max_unclamped >= 0 AND cell_min_unclamped < grid_dims
+        intersects_grid = (
+            (cell_max_unclamped[:, 0] >= 0) &
+            (cell_max_unclamped[:, 1] >= 0) &
+            (cell_min_unclamped[:, 0] < grid_dims[0]) &
+            (cell_min_unclamped[:, 1] < grid_dims[1])
+        )
         if profile is not None:
             profile['cell_coords'] = time.time() - t0
 
@@ -465,6 +474,13 @@ class GPUGeometryCollection:
         # Step 1: Compute number of cells each segment spans
         cell_ranges = cell_max - cell_min + 1  # (N, 2)
         num_cells_per_seg = cell_ranges[:, 0] * cell_ranges[:, 1]  # (N,)
+
+        # Zero out segments that don't intersect grid (prevents false positives)
+        num_cells_per_seg = torch.where(
+            intersects_grid,
+            num_cells_per_seg,
+            torch.tensor(0, dtype=torch.long, device=self.device)
+        )
         total_pairs = num_cells_per_seg.sum().item()
 
         if total_pairs == 0:
@@ -571,16 +587,25 @@ class GPUGeometryCollection:
 
         t0 = time.time()
         # Convert to cell coordinates
-        cell_min = torch.floor((point_bbox_min - grid_origin) / cell_size).long()
-        cell_max = torch.floor((point_bbox_max - grid_origin) / cell_size).long()
+        cell_min_unclamped = torch.floor((point_bbox_min - grid_origin) / cell_size).long()
+        cell_max_unclamped = torch.floor((point_bbox_max - grid_origin) / cell_size).long()
 
         # Clamp to grid bounds
         zeros = torch.zeros_like(grid_dims)
         grid_max = grid_dims - 1
-        cell_min = torch.maximum(cell_min, zeros)
+        cell_min = torch.maximum(cell_min_unclamped, zeros)
         cell_min = torch.minimum(cell_min, grid_max)
-        cell_max = torch.maximum(cell_max, zeros)
+        cell_max = torch.maximum(cell_max_unclamped, zeros)
         cell_max = torch.minimum(cell_max, grid_max)
+
+        # Check if point bbox intersects grid [0, grid_dims-1]
+        # Point intersects if: cell_max_unclamped >= 0 AND cell_min_unclamped < grid_dims
+        intersects_grid = (
+            (cell_max_unclamped[:, 0] >= 0) &
+            (cell_max_unclamped[:, 1] >= 0) &
+            (cell_min_unclamped[:, 0] < grid_dims[0]) &
+            (cell_min_unclamped[:, 1] < grid_dims[1])
+        )
         if profile is not None:
             profile['cell_coords'] = time.time() - t0
 
@@ -589,6 +614,13 @@ class GPUGeometryCollection:
         # Step 1: Compute number of cells each point spans
         cell_ranges = cell_max - cell_min + 1  # (N, 2)
         num_cells_per_point = cell_ranges[:, 0] * cell_ranges[:, 1]  # (N,)
+
+        # Zero out points that don't intersect grid (prevents false positives)
+        num_cells_per_point = torch.where(
+            intersects_grid,
+            num_cells_per_point,
+            torch.tensor(0, dtype=torch.long, device=self.device)
+        )
         total_pairs = num_cells_per_point.sum().item()
 
         if total_pairs == 0:

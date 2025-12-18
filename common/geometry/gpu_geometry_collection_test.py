@@ -609,6 +609,44 @@ class TestBenchmark(unittest.TestCase):
 
         self.assertEqual(unique_geom_indices, {0})
 
+    def test_spatial_index_segment_outside_grid(self):
+        """Test that segments outside custom grid bounds are excluded."""
+        # Create geometries at different locations
+        geometries = [
+            shapely.Point(50, 50),     # Inside grid
+            shapely.Point(-100, -100), # Outside grid (negative coords)
+            shapely.Point(150, 150),   # Outside grid (beyond max)
+        ]
+        collection = GPUGeometryCollection.from_shapely(geometries)
+
+        cell_size = 10.0
+        expansion_distance = 5.0
+
+        # Provide custom bounds that only cover the first point
+        bbox_min = torch.tensor([0.0, 0.0], device=collection.device)
+        bbox_max = torch.tensor([100.0, 100.0], device=collection.device)
+        collection.build_spatial_index(
+            cell_size,
+            expansion_distance,
+            grid_bounds=(bbox_min, bbox_max)
+        )
+
+        idx = collection.spatial_index
+
+        # Expected assignments:
+        # - Point at (50, 50) with expansion 5: bbox [45,45] to [55,55]
+        #   -> cells [4,4] to [5,5] = 2×2 = 4 cells
+        # - Point at (-100, -100): outside grid -> 0 cells (excluded)
+        # - Point at (150, 150): outside grid -> 0 cells (excluded)
+        # Total: 4 assignments
+
+        self.assertIsNotNone(idx)
+        self.assertEqual(idx.cell_point_indices.shape[0], 4)
+
+        # Verify all point indices reference the first point (index 0)
+        # The outside points should not appear in the index
+        self.assertTrue((idx.cell_point_indices == 0).all())
+
 
 if __name__ == "__main__":
     unittest.main()
