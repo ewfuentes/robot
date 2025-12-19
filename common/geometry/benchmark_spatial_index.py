@@ -245,6 +245,99 @@ def simulate_query(
     print(f"  Reduction factor: {reduction_factor:.1f}x")
 
 
+def benchmark_query_distances(
+    collection: GPUGeometryCollection,
+    num_queries: int = 1000,
+) -> None:
+    """Benchmark query_distances method with both PyTorch and CUDA."""
+    if collection.spatial_index is None:
+        print("No spatial index built!")
+        return
+
+    idx = collection.spatial_index
+
+    # Generate random query points within grid bounds
+    grid_min = idx.grid_origin
+    grid_max = idx.grid_origin + idx.grid_dims.float() * idx.cell_size
+
+    query_points = torch.rand(num_queries, 2, device=collection.device)
+    query_points = query_points * (grid_max - grid_min) + grid_min
+
+    # Benchmark PyTorch implementation
+    print("\n" + "=" * 60)
+    print(f"BENCHMARKING: PyTorch Implementation ({num_queries:,} queries)")
+    print("=" * 60)
+
+    # Warm-up
+    for _ in range(3):
+        _ = collection.query_distances(query_points[:10], use_cuda_kernel=False)
+
+    # Benchmark with multiple iterations
+    num_iterations = 100
+    torch.cuda.synchronize()
+    start = time.time()
+    for _ in range(num_iterations):
+        result_pytorch = collection.query_distances(query_points, use_cuda_kernel=False)
+    torch.cuda.synchronize()
+    elapsed_pytorch = time.time() - start
+    avg_time = elapsed_pytorch / num_iterations
+
+    print(f"Total time ({num_iterations} iterations): {elapsed_pytorch:.3f}s")
+    print(f"Average time per iteration: {avg_time * 1000:.3f}ms")
+    print(f"Time per query: {avg_time * 1000000 / num_queries:.3f}µs")
+    print(f"Queries per second: {num_queries / avg_time:.1f}")
+
+    print(f"\nResult statistics:")
+    print(f"  Total distance pairs: {result_pytorch.shape[0]:,}")
+    print(f"  Avg pairs per query: {result_pytorch.shape[0] / num_queries:.1f}")
+
+    # Benchmark CUDA implementation
+    if collection.device.type == "cuda":
+        print("\n" + "=" * 60)
+        print(f"BENCHMARKING: CUDA Kernel ({num_queries:,} queries)")
+        print("=" * 60)
+
+        # Warm-up
+        for _ in range(3):
+            _ = collection.query_distances(query_points[:10], use_cuda_kernel=True)
+
+        # Benchmark with multiple iterations
+        torch.cuda.synchronize()
+        start = time.time()
+        for _ in range(num_iterations):
+            result_cuda = collection.query_distances(query_points, use_cuda_kernel=True)
+        torch.cuda.synchronize()
+        elapsed_cuda = time.time() - start
+        avg_time_cuda = elapsed_cuda / num_iterations
+
+        print(f"Total time ({num_iterations} iterations): {elapsed_cuda:.3f}s")
+        print(f"Average time per iteration: {avg_time_cuda * 1000:.3f}ms")
+        print(f"Time per query: {avg_time_cuda * 1000000 / num_queries:.3f}µs")
+        print(f"Queries per second: {num_queries / avg_time_cuda:.1f}")
+
+        print(f"\nResult statistics:")
+        print(f"  Total distance pairs: {result_cuda.shape[0]:,}")
+        print(f"  Avg pairs per query: {result_cuda.shape[0] / num_queries:.1f}")
+
+        print(f"\n" + "=" * 60)
+        print("SPEEDUP COMPARISON")
+        print("=" * 60)
+        speedup = avg_time / avg_time_cuda
+        print(f"CUDA vs PyTorch: {speedup:.2f}x faster")
+        print(f"PyTorch: {avg_time * 1000:.3f}ms per iteration")
+        print(f"CUDA:    {avg_time_cuda * 1000:.3f}ms per iteration")
+
+    # Analyze result distribution
+    result = result_pytorch
+    if result.shape[0] > 0:
+        distances = result[:, 2]
+        print(f"\nDistance statistics:")
+        print(f"  Min distance: {distances.min():.2f}")
+        print(f"  Max distance: {distances.max():.2f}")
+        print(f"  Mean distance: {distances.mean():.2f}")
+        print(f"  Median distance: {distances.median():.2f}")
+
+
 def main():
     # Configuration
     feather_path = Path("/data/overhead_matching/datasets/VIGOR/Chicago/landmarks/v4_202001.feather")
@@ -281,6 +374,9 @@ def main():
 
     # Simulate queries
     simulate_query(collection, num_queries=100000)
+
+    # Benchmark query_distances
+    benchmark_query_distances(collection, num_queries=100000)
 
     print("\n" + "=" * 60)
     print("Benchmark complete!")

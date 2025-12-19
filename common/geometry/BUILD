@@ -1,4 +1,6 @@
-load("@pip//:requirements.bzl", "requirement")
+load("@pip//:requirements.bzl", "requirement", "extra_requirement")
+load("@rules_cuda//cuda:defs.bzl", "cuda_library")
+load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
 
 package(features=["warning_compile_flags"])
 
@@ -117,6 +119,7 @@ py_test(
 py_binary(
     name = "benchmark_spatial_index",
     srcs = ["benchmark_spatial_index.py"],
+    data = [":spatial_distance_python.so"],
     deps = [
         ":gpu_geometry_collection",
         "//common/gps:web_mercator",
@@ -127,5 +130,69 @@ py_binary(
         requirement("pyarrow"),
         requirement("shapely"),
         requirement("torch"),
+    ],
+)
+
+py_binary(
+    name = "profile_cuda_kernel",
+    srcs = ["profile_cuda_kernel.py"],
+    data = [":spatial_distance_python.so"],
+    deps = [
+        ":gpu_geometry_collection",
+        "//common/gps:web_mercator",
+        "//common/torch:load_torch_deps",
+        requirement("geopandas"),
+        requirement("numpy"),
+        requirement("pyarrow"),
+        requirement("shapely"),
+        requirement("torch"),
+    ],
+)
+
+py_binary(
+    name = "profile_with_pytorch",
+    srcs = ["profile_with_pytorch.py"],
+    data = [":spatial_distance_python.so"],
+    deps = [
+        ":gpu_geometry_collection",
+        "//common/gps:web_mercator",
+        "//common/torch:load_torch_deps",
+        requirement("geopandas"),
+        requirement("numpy"),
+        requirement("pyarrow"),
+        requirement("shapely"),
+        requirement("torch"),
+    ],
+)
+
+py_test(
+    name = "spatial_distance_test",
+    srcs = ["spatial_distance_test.py"],
+    data = [":spatial_distance_python.so"],
+    deps = [
+        ":gpu_geometry_collection",
+        "//common/torch:load_torch_deps",
+        requirement("numpy"),
+        requirement("shapely"),
+        requirement("torch"),
+    ],
+)
+
+# CUDA-accelerated spatial distance queries
+cuda_library(
+    name = "spatial_distance_cuda",
+    hdrs = ["spatial_distance.hh"],
+    srcs = ["spatial_distance.cu"],
+    deps = [
+        "@pip_torch//:libtorch",
+    ],
+)
+
+pybind_extension(
+    name = "spatial_distance_python",
+    srcs = ["spatial_distance_python.cc"],
+    deps = [
+        ":spatial_distance_cuda",
+        extra_requirement("torch", "libtorch"),
     ],
 )

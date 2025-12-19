@@ -692,6 +692,280 @@ class GPUGeometryCollection:
 
         return sorted_point_indices, cell_offsets
 
+    def query_distances(
+        self,
+        query_points: torch.Tensor,
+        use_cuda_kernel: bool = True,
+    ) -> torch.Tensor:
+        """Query distances from points to geometries using spatial index.
+
+        Uses the spatial index to efficiently compute distances only to nearby
+        geometries, returning sparse output.
+
+        Args:
+            query_points: (N, 2) tensor of query positions in same coordinate
+                system as geometries
+            use_cuda_kernel: If True and on CUDA device, use CUDA kernel for
+                faster computation. If False, use PyTorch implementation.
+
+        Returns:
+            (K, 3) tensor where K = num_particle_landmark_pairs.
+            Columns: [particle_idx, geometry_idx, distance]
+
+        Raises:
+            ValueError: If spatial index has not been built
+        """
+        if self.spatial_index is None:
+            raise ValueError(
+                "Spatial index must be built before querying distances. "
+                "Call build_spatial_index() first."
+            )
+
+        if query_points.shape[1] != 2:
+            raise ValueError(f"query_points must have shape (N, 2), got {query_points.shape}")
+
+        # Use CUDA kernel if requested and available
+        if use_cuda_kernel and self.device.type == "cuda":
+            try:
+                return self._query_distances_cuda(query_points)
+            except Exception:
+                # Fall back to PyTorch implementation if CUDA kernel fails
+                pass
+
+        # PyTorch implementation (baseline)
+
+        # Move query points to same device if needed
+        if query_points.device != self.device:
+            query_points = query_points.to(self.device)
+
+        idx = self.spatial_index
+
+        # Step 1: Hash query points to cells
+        cell_coords = torch.floor((query_points - idx.grid_origin) / idx.cell_size).long()
+
+        # Check which points are within grid bounds
+        in_bounds = (
+            (cell_coords[:, 0] >= 0) &
+            (cell_coords[:, 0] < idx.grid_dims[0]) &
+            (cell_coords[:, 1] >= 0) &
+            (cell_coords[:, 1] < idx.grid_dims[1])
+        )
+
+        cell_ids = cell_coords[:, 1] * idx.grid_dims[0] + cell_coords[:, 0]  # (N,)
+
+        # Step 2: Filter to in-bounds particles
+        valid_mask = in_bounds
+        valid_particle_indices = torch.where(valid_mask)[0]
+        valid_cell_ids = cell_ids[valid_mask]
+        valid_query_points = query_points[valid_mask]
+
+        if len(valid_particle_indices) == 0:
+            return torch.empty((0, 3), dtype=torch.float32, device=self.device)
+
+        # Step 3: Get segment and point ranges for each valid cell
+        # cell_offsets has shape (num_cells+1,), so we can index directly
+        # Clamp to valid range to avoid out-of-bounds
+        num_cells = idx.grid_dims[0] * idx.grid_dims[1]
+        valid_cell_ids = torch.clamp(valid_cell_ids, 0, num_cells - 1)
+
+        seg_starts_per_cell = idx.cell_offsets[valid_cell_ids]  # (N,)
+        seg_ends_per_cell = idx.cell_offsets[valid_cell_ids + 1]  # (N,)
+        pt_starts_per_cell = idx.cell_point_offsets[valid_cell_ids]  # (N,)
+        pt_ends_per_cell = idx.cell_point_offsets[valid_cell_ids + 1]  # (N,)
+
+        # Step 4: Expand particles to (particle, segment) pairs
+        num_segs_per_particle = seg_ends_per_cell - seg_starts_per_cell
+        num_pts_per_particle = pt_ends_per_cell - pt_starts_per_cell
+
+        # Create local indices for indexing valid_query_points
+        valid_local_indices = torch.arange(len(valid_particle_indices), device=self.device)
+
+        # Create particle->segment pairs
+        total_seg_pairs = num_segs_per_particle.sum().item()
+        if total_seg_pairs > 0:
+            # Repeat particle indices by number of segments
+            # Use local indices for indexing valid_query_points
+            particle_indices_expanded_seg = valid_local_indices.repeat_interleave(num_segs_per_particle)
+            # Keep track of original particle indices for the output
+            original_particle_indices_expanded = valid_particle_indices.repeat_interleave(num_segs_per_particle)
+
+            # Generate segment indices
+            offsets_seg = torch.cat([torch.zeros(1, dtype=torch.long, device=self.device),
+                                     num_segs_per_particle.cumsum(0)])
+            local_seg_indices = torch.arange(total_seg_pairs, device=self.device) - offsets_seg[:-1].repeat_interleave(num_segs_per_particle)
+            global_seg_indices = idx.cell_segment_indices[seg_starts_per_cell.repeat_interleave(num_segs_per_particle) + local_seg_indices]
+
+            # Get segment data
+            seg_starts_all = self.segment_starts[global_seg_indices]  # (total_pairs, 2)
+            seg_ends_all = self.segment_ends[global_seg_indices]  # (total_pairs, 2)
+            geom_ids_all = self.segment_to_geom[global_seg_indices]  # (total_pairs,)
+            query_points_expanded = valid_query_points[particle_indices_expanded_seg]  # (total_pairs, 2)
+
+            # Compute distances directly for each (query, segment) pair
+            # Using parametric projection: closest point = A + t*(B-A)
+            # where t = clamp(dot(P-A, B-A) / |B-A|^2, 0, 1)
+            AB = seg_ends_all - seg_starts_all  # (total_pairs, 2)
+            AB_norm_sq = (AB * AB).sum(dim=-1).clamp(min=1e-12)  # (total_pairs,)
+            AP = query_points_expanded - seg_starts_all  # (total_pairs, 2)
+            AP_dot_AB = (AP * AB).sum(dim=-1)  # (total_pairs,)
+            t = (AP_dot_AB / AB_norm_sq).clamp(0, 1)  # (total_pairs,)
+            closest = seg_starts_all + t.unsqueeze(-1) * AB  # (total_pairs, 2)
+            all_seg_distances = torch.norm(query_points_expanded - closest, dim=-1)  # (total_pairs,)
+
+            # Create combined keys for (particle, geometry) pairs to find minimum
+            # Use original particle indices for the output
+            combined_keys = original_particle_indices_expanded * self.num_geometries + geom_ids_all
+            unique_keys, inverse_indices = torch.unique(combined_keys, return_inverse=True)
+
+            # Scatter-reduce to find minimum distance per (particle, geometry) pair
+            min_distances_seg = torch.full((len(unique_keys),), float('inf'), device=self.device)
+            min_distances_seg.scatter_reduce_(0, inverse_indices, all_seg_distances, reduce='amin')
+
+            # Extract particle and geometry indices
+            seg_result_particle_indices = unique_keys // self.num_geometries
+            seg_result_geom_indices = unique_keys % self.num_geometries
+
+            # Check for polygons and handle inside points
+            polygon_mask = (self.geometry_types[seg_result_geom_indices] == GeometryType.POLYGON) | \
+                          (self.geometry_types[seg_result_geom_indices] == GeometryType.MULTIPOLYGON)
+
+            if polygon_mask.any() and len(self.polygon_ranges) > 0:
+                # For polygons, check if query points are inside
+                poly_particle_indices = seg_result_particle_indices[polygon_mask]
+                poly_geom_indices = seg_result_geom_indices[polygon_mask]
+                poly_query_points = valid_query_points[poly_particle_indices]
+
+                # DISABLED: Point-in-polygon check (just uses boundary distance for now)
+                # # Batch check all polygon queries
+                # # Build list of polygons to check for each query
+                # unique_poly_geoms = torch.unique(poly_geom_indices)
+                # for g_idx in unique_poly_geoms:
+                #     # Find all particles querying this geometry
+                #     particles_for_this_geom = poly_particle_indices[poly_geom_indices == g_idx]
+                #     query_points_for_geom = valid_query_points[particles_for_this_geom]
+                #
+                #     # Get polygon ranges for this geometry
+                #     poly_ranges_mask = self.polygon_geom_indices == g_idx
+                #     if not poly_ranges_mask.any():
+                #         continue
+                #
+                #     poly_ranges_for_geom = self.polygon_ranges[poly_ranges_mask]
+                #
+                #     # Batch check if any of these points are inside
+                #     inside = gpu_distance.point_in_polygon_winding(
+                #         query_points_for_geom,  # (num_particles, 2)
+                #         self.polygon_vertices,
+                #         poly_ranges_for_geom,
+                #     )  # (num_particles, num_polys_in_geom)
+                #
+                #     # If any polygon contains the point, set distance to 0
+                #     inside_any = inside.any(dim=1)  # (num_particles,)
+                #     if inside_any.any():
+                #         # Map back to indices in min_distances_seg
+                #         particles_inside = particles_for_this_geom[inside_any]
+                #         for p_idx in particles_inside:
+                #             # Find the index in the result arrays
+                #             result_idx = torch.where(
+                #                 (seg_result_particle_indices == p_idx) &
+                #                 (seg_result_geom_indices == g_idx)
+                #             )[0]
+                #             if len(result_idx) > 0:
+                #                 min_distances_seg[result_idx[0]] = 0.0
+        else:
+            seg_result_particle_indices = torch.empty(0, dtype=torch.long, device=self.device)
+            seg_result_geom_indices = torch.empty(0, dtype=torch.long, device=self.device)
+            min_distances_seg = torch.empty(0, dtype=torch.float32, device=self.device)
+
+        # Create particle->point pairs
+        total_pt_pairs = num_pts_per_particle.sum().item()
+        if total_pt_pairs > 0:
+            # Use local indices for indexing valid_query_points
+            particle_indices_local_pt = valid_local_indices.repeat_interleave(num_pts_per_particle)
+            # Keep original indices for output
+            particle_indices_expanded_pt = valid_particle_indices.repeat_interleave(num_pts_per_particle)
+
+            offsets_pt = torch.cat([torch.zeros(1, dtype=torch.long, device=self.device),
+                                   num_pts_per_particle.cumsum(0)])
+            local_pt_indices = torch.arange(total_pt_pairs, device=self.device) - offsets_pt[:-1].repeat_interleave(num_pts_per_particle)
+            global_pt_indices = idx.cell_point_indices[pt_starts_per_cell.repeat_interleave(num_pts_per_particle) + local_pt_indices]
+
+            point_positions = self.point_coords[global_pt_indices]  # (total_pt_pairs, 2)
+            pt_geom_ids = self.point_to_geom[global_pt_indices]  # (total_pt_pairs,)
+            query_points_expanded_pt = valid_query_points[particle_indices_local_pt]  # (total_pt_pairs, 2)
+
+            # Compute distances
+            pt_distances = torch.norm(point_positions - query_points_expanded_pt, dim=1)
+
+            pt_result_particle_indices = particle_indices_expanded_pt
+            pt_result_geom_indices = pt_geom_ids
+        else:
+            pt_result_particle_indices = torch.empty(0, dtype=torch.long, device=self.device)
+            pt_result_geom_indices = torch.empty(0, dtype=torch.long, device=self.device)
+            pt_distances = torch.empty(0, dtype=torch.float32, device=self.device)
+
+        # Step 5: Combine results
+        if len(min_distances_seg) > 0 and len(pt_distances) > 0:
+            result_particle_indices = torch.cat([seg_result_particle_indices, pt_result_particle_indices])
+            result_geom_indices = torch.cat([seg_result_geom_indices, pt_result_geom_indices])
+            result_distances = torch.cat([min_distances_seg, pt_distances])
+        elif len(min_distances_seg) > 0:
+            result_particle_indices = seg_result_particle_indices
+            result_geom_indices = seg_result_geom_indices
+            result_distances = min_distances_seg
+        elif len(pt_distances) > 0:
+            result_particle_indices = pt_result_particle_indices
+            result_geom_indices = pt_result_geom_indices
+            result_distances = pt_distances
+        else:
+            return torch.empty((0, 3), dtype=torch.float32, device=self.device)
+
+        result = torch.stack([
+            result_particle_indices.float(),
+            result_geom_indices.float(),
+            result_distances,
+        ], dim=1)  # (K, 3)
+
+        return result
+
+    def _query_distances_cuda(
+        self,
+        query_points: torch.Tensor,
+    ) -> torch.Tensor:
+        """Query distances using CUDA kernel (internal method).
+
+        Args:
+            query_points: (N, 2) tensor of query positions
+
+        Returns:
+            (K, 3) tensor: [particle_idx, geometry_idx, distance]
+        """
+        import spatial_distance_python as sdp
+
+        idx = self.spatial_index
+
+        result = sdp.query_distances_cuda(
+            query_points,
+            self.segment_starts,
+            self.segment_ends,
+            self.segment_to_geom,
+            self.point_coords,
+            self.point_to_geom,
+            self.geometry_types,
+            self.polygon_vertices,
+            self.polygon_ranges,
+            self.polygon_geom_indices,
+            self.num_geometries,
+            idx.cell_segment_indices,
+            idx.cell_offsets,
+            idx.cell_point_indices,
+            idx.cell_point_offsets,
+            idx.grid_origin,
+            idx.cell_size,
+            idx.grid_dims,
+        )
+
+        return result
+
 
 def _process_polygon(
     polygon: shapely.Polygon,
