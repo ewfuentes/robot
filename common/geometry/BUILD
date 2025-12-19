@@ -95,6 +95,7 @@ py_test(
 py_library(
     name = "gpu_geometry_collection",
     srcs = ["gpu_geometry_collection.py"],
+    data = [":spatial_distance_python.so"],
     visibility = ["//visibility:public"],
     deps = [
         ":gpu_distance",
@@ -165,6 +166,22 @@ py_binary(
     ],
 )
 
+py_binary(
+    name = "benchmark_query_clean",
+    srcs = ["benchmark_query_clean.py"],
+    data = [":spatial_distance_python.so"],
+    deps = [
+        ":gpu_geometry_collection",
+        "//common/gps:web_mercator",
+        "//common/torch:load_torch_deps",
+        requirement("geopandas"),
+        requirement("numpy"),
+        requirement("pyarrow"),
+        requirement("shapely"),
+        requirement("torch"),
+    ],
+)
+
 py_test(
     name = "spatial_distance_test",
     srcs = ["spatial_distance_test.py"],
@@ -185,6 +202,7 @@ cuda_library(
     srcs = ["spatial_distance.cu"],
     deps = [
         "@pip_torch//:libtorch",
+        "@fmt",
     ],
 )
 

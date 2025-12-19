@@ -7,6 +7,7 @@ of 2D geometries (Points, LineStrings, Polygons, MultiPolygons) on GPU.
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Sequence
+import common.geometry.spatial_distance_python as sdp
 
 import shapely
 import torch
@@ -35,10 +36,14 @@ class SpatialIndex:
         cell_size: Grid cell size for hashing particles
         expansion_distance: Distance to expand geometries
         grid_dims: (2,) tensor - (num_cells_x, num_cells_y)
-        cell_segment_indices: (K,) tensor - segment indices sorted by cell
+        cell_segment_indices: (K,) tensor - segment indices sorted by (cell, geom_id)
         cell_offsets: (num_cells+1,) tensor - CSR row pointers for segments
-        cell_point_indices: (P',) tensor - point indices sorted by cell
+        cell_point_indices: (P',) tensor - point indices sorted by (cell, geom_id)
         cell_point_offsets: (num_cells+1,) tensor - CSR row pointers for points
+        cell_geom_indices: (G',) tensor - unique geometry IDs per cell (CSR format)
+        cell_geom_offsets: (num_cells+1,) tensor - CSR row pointers for geometries
+        cell_point_geom_indices: (G'',) tensor - unique geometry IDs per cell for points
+        cell_point_geom_offsets: (num_cells+1,) tensor - CSR row pointers for point geometries
     """
 
     grid_origin: torch.Tensor
@@ -49,6 +54,10 @@ class SpatialIndex:
     cell_offsets: torch.Tensor
     cell_point_indices: torch.Tensor
     cell_point_offsets: torch.Tensor
+    cell_geom_indices: torch.Tensor
+    cell_geom_offsets: torch.Tensor
+    cell_point_geom_indices: torch.Tensor
+    cell_point_geom_offsets: torch.Tensor
 
 
 @dataclass
@@ -370,6 +379,10 @@ class GPUGeometryCollection:
                     cell_offsets=torch.zeros(num_cells + 1, dtype=torch.long, device=self.device),
                     cell_point_indices=torch.empty(0, dtype=torch.long, device=self.device),
                     cell_point_offsets=torch.zeros(num_cells + 1, dtype=torch.long, device=self.device),
+                    cell_geom_indices=torch.empty(0, dtype=torch.long, device=self.device),
+                    cell_geom_offsets=torch.zeros(num_cells + 1, dtype=torch.long, device=self.device),
+                    cell_point_geom_indices=torch.empty(0, dtype=torch.long, device=self.device),
+                    cell_point_geom_offsets=torch.zeros(num_cells + 1, dtype=torch.long, device=self.device),
                 )
                 return
 
@@ -383,7 +396,7 @@ class GPUGeometryCollection:
 
         # Step 2: Build segment index
         seg_profile = {} if profile is not None else None
-        cell_segment_indices, cell_offsets = self._index_segments(
+        cell_segment_indices, cell_offsets, cell_geom_indices, cell_geom_offsets = self._index_segments(
             grid_origin, cell_size, grid_dims, expansion_distance, seg_profile
         )
         if profile is not None:
@@ -391,7 +404,7 @@ class GPUGeometryCollection:
 
         # Step 3: Build point index
         pt_profile = {} if profile is not None else None
-        cell_point_indices, cell_point_offsets = self._index_points(
+        cell_point_indices, cell_point_offsets, cell_point_geom_indices, cell_point_geom_offsets = self._index_points(
             grid_origin, cell_size, grid_dims, expansion_distance, pt_profile
         )
         if profile is not None:
@@ -407,6 +420,10 @@ class GPUGeometryCollection:
             cell_offsets=cell_offsets,
             cell_point_indices=cell_point_indices,
             cell_point_offsets=cell_point_offsets,
+            cell_geom_indices=cell_geom_indices,
+            cell_geom_offsets=cell_geom_offsets,
+            cell_point_geom_indices=cell_point_geom_indices,
+            cell_point_geom_offsets=cell_point_geom_offsets,
         )
 
     def _index_segments(
@@ -416,20 +433,26 @@ class GPUGeometryCollection:
         grid_dims: torch.Tensor,
         expansion_distance: float,
         profile: dict | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Build CSR index for segments.
 
         Args:
             profile: Optional dict to store timing information
 
         Returns:
-            Tuple of (cell_segment_indices, cell_offsets) in CSR format
+            Tuple of (cell_segment_indices, cell_offsets, cell_geom_indices, cell_geom_offsets)
+            - cell_segment_indices: sorted by (cell_id, geom_id)
+            - cell_offsets: CSR row pointers for segments per cell
+            - cell_geom_indices: unique geometry IDs per cell (CSR format)
+            - cell_geom_offsets: CSR row pointers for geometries per cell
         """
         import time
 
         if self.segment_starts.shape[0] == 0:
             num_cells = grid_dims[0].item() * grid_dims[1].item()
             return (
+                torch.empty(0, dtype=torch.long, device=self.device),
+                torch.zeros(num_cells + 1, dtype=torch.long, device=self.device),
                 torch.empty(0, dtype=torch.long, device=self.device),
                 torch.zeros(num_cells + 1, dtype=torch.long, device=self.device),
             )
@@ -491,6 +514,8 @@ class GPUGeometryCollection:
             return (
                 torch.empty(0, dtype=torch.long, device=self.device),
                 torch.zeros(num_cells + 1, dtype=torch.long, device=self.device),
+                torch.empty(0, dtype=torch.long, device=self.device),
+                torch.zeros(num_cells + 1, dtype=torch.long, device=self.device),
             )
 
         # Step 2: Create segment indices repeated by number of cells
@@ -530,15 +555,20 @@ class GPUGeometryCollection:
             profile['num_pairs'] = total_pairs
 
         t0 = time.time()
-        # Sort by cell_id
-        sorted_order = torch.argsort(cell_ids)
+        # Get geometry IDs for each segment
+        geom_ids_expanded = self.segment_to_geom[segment_indices_expanded]
+
+        # Sort by (cell_id, geom_id) using combined key
+        combined_key = cell_ids * self.num_geometries + geom_ids_expanded
+        sorted_order = torch.argsort(combined_key)
         sorted_segment_indices = segment_indices_expanded[sorted_order]
         sorted_cell_ids = cell_ids[sorted_order]
+        sorted_geom_ids = geom_ids_expanded[sorted_order]
         if profile is not None:
             profile['sorting'] = time.time() - t0
 
         t0 = time.time()
-        # Build CSR offsets using bincount
+        # Build CSR offsets for segments per cell using bincount
         num_cells = grid_dims[0].item() * grid_dims[1].item()
         cell_counts = torch.bincount(sorted_cell_ids, minlength=num_cells)
         cell_offsets = torch.cat(
@@ -550,7 +580,28 @@ class GPUGeometryCollection:
         if profile is not None:
             profile['csr_build'] = time.time() - t0
 
-        return sorted_segment_indices, cell_offsets
+        t0 = time.time()
+        # Compute unique (cell_id, geom_id) pairs for CSR geometry index
+        # Use combined key to find unique pairs
+        combined_sorted = sorted_cell_ids * self.num_geometries + sorted_geom_ids
+        unique_combined, unique_inverse = torch.unique(combined_sorted, return_inverse=True)
+        unique_cell_ids = unique_combined // self.num_geometries
+        unique_geom_ids = unique_combined % self.num_geometries
+
+        # Build CSR offsets for geometries per cell
+        # For each cell, count unique geometries
+        cell_geom_counts = torch.bincount(unique_cell_ids, minlength=num_cells)
+        cell_geom_offsets = torch.cat(
+            [
+                torch.tensor([0], dtype=torch.long, device=self.device),
+                torch.cumsum(cell_geom_counts, dim=0),
+            ]
+        )
+        cell_geom_indices = unique_geom_ids
+        if profile is not None:
+            profile['geom_csr_build'] = time.time() - t0
+
+        return sorted_segment_indices, cell_offsets, cell_geom_indices, cell_geom_offsets
 
     def _index_points(
         self,
@@ -559,7 +610,7 @@ class GPUGeometryCollection:
         grid_dims: torch.Tensor,
         expansion_distance: float,
         profile: dict | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Build CSR index for points.
 
         Points are treated as having a square bbox of size 2*expansion_distance.
@@ -568,12 +619,18 @@ class GPUGeometryCollection:
             profile: Optional dict to store timing information
 
         Returns:
-            Tuple of (cell_point_indices, cell_point_offsets) in CSR format
+            Tuple of (cell_point_indices, cell_offsets, cell_geom_indices, cell_geom_offsets)
+            - cell_point_indices: sorted by (cell_id, geom_id)
+            - cell_offsets: CSR row pointers for points per cell
+            - cell_geom_indices: unique geometry IDs per cell (CSR format)
+            - cell_geom_offsets: CSR row pointers for geometries per cell
         """
         import time
         if self.point_coords.shape[0] == 0:
             num_cells = grid_dims[0].item() * grid_dims[1].item()
             return (
+                torch.empty(0, dtype=torch.long, device=self.device),
+                torch.zeros(num_cells + 1, dtype=torch.long, device=self.device),
                 torch.empty(0, dtype=torch.long, device=self.device),
                 torch.zeros(num_cells + 1, dtype=torch.long, device=self.device),
             )
@@ -631,6 +688,8 @@ class GPUGeometryCollection:
             return (
                 torch.empty(0, dtype=torch.long, device=self.device),
                 torch.zeros(num_cells + 1, dtype=torch.long, device=self.device),
+                torch.empty(0, dtype=torch.long, device=self.device),
+                torch.zeros(num_cells + 1, dtype=torch.long, device=self.device),
             )
 
         # Step 2: Create point indices repeated by number of cells
@@ -670,15 +729,20 @@ class GPUGeometryCollection:
             profile['num_pairs'] = total_pairs
 
         t0 = time.time()
-        # Sort by cell_id
-        sorted_order = torch.argsort(cell_ids)
+        # Get geometry IDs for each point
+        geom_ids_expanded = self.point_to_geom[point_indices_expanded]
+
+        # Sort by (cell_id, geom_id) using combined key
+        combined_key = cell_ids * self.num_geometries + geom_ids_expanded
+        sorted_order = torch.argsort(combined_key)
         sorted_point_indices = point_indices_expanded[sorted_order]
         sorted_cell_ids = cell_ids[sorted_order]
+        sorted_geom_ids = geom_ids_expanded[sorted_order]
         if profile is not None:
             profile['sorting'] = time.time() - t0
 
         t0 = time.time()
-        # Build CSR offsets using bincount
+        # Build CSR offsets for points per cell using bincount
         num_cells = grid_dims[0].item() * grid_dims[1].item()
         cell_counts = torch.bincount(sorted_cell_ids, minlength=num_cells)
         cell_offsets = torch.cat(
@@ -690,13 +754,30 @@ class GPUGeometryCollection:
         if profile is not None:
             profile['csr_build'] = time.time() - t0
 
-        return sorted_point_indices, cell_offsets
+        t0 = time.time()
+        # Compute unique (cell_id, geom_id) pairs for CSR geometry index
+        combined_sorted = sorted_cell_ids * self.num_geometries + sorted_geom_ids
+        unique_combined, unique_inverse = torch.unique(combined_sorted, return_inverse=True)
+        unique_cell_ids = unique_combined // self.num_geometries
+        unique_geom_ids = unique_combined % self.num_geometries
+
+        # Build CSR offsets for geometries per cell
+        cell_geom_counts = torch.bincount(unique_cell_ids, minlength=num_cells)
+        cell_geom_offsets = torch.cat(
+            [
+                torch.tensor([0], dtype=torch.long, device=self.device),
+                torch.cumsum(cell_geom_counts, dim=0),
+            ]
+        )
+        cell_geom_indices = unique_geom_ids
+        if profile is not None:
+            profile['geom_csr_build'] = time.time() - t0
+
+        return sorted_point_indices, cell_offsets, cell_geom_indices, cell_geom_offsets
 
     def query_distances(
         self,
-        query_points: torch.Tensor,
-        use_cuda_kernel: bool = True,
-    ) -> torch.Tensor:
+        query_points: torch.Tensor) -> torch.Tensor:
         """Query distances from points to geometries using spatial index.
 
         Uses the spatial index to efficiently compute distances only to nearby
@@ -723,16 +804,6 @@ class GPUGeometryCollection:
 
         if query_points.shape[1] != 2:
             raise ValueError(f"query_points must have shape (N, 2), got {query_points.shape}")
-
-        # Use CUDA kernel if requested and available
-        if use_cuda_kernel and self.device.type == "cuda":
-            try:
-                return self._query_distances_cuda(query_points)
-            except Exception:
-                # Fall back to PyTorch implementation if CUDA kernel fails
-                pass
-
-        # PyTorch implementation (baseline)
 
         # Move query points to same device if needed
         if query_points.device != self.device:
@@ -779,6 +850,11 @@ class GPUGeometryCollection:
 
         # Create local indices for indexing valid_query_points
         valid_local_indices = torch.arange(len(valid_particle_indices), device=self.device)
+
+        # Create inverse mapping from original particle indices to local indices
+        # This is needed for the polygon check later
+        original_to_local = torch.full((len(query_points),), -1, dtype=torch.long, device=self.device)
+        original_to_local[valid_particle_indices] = valid_local_indices
 
         # Create particle->segment pairs
         total_seg_pairs = num_segs_per_particle.sum().item()
@@ -829,48 +905,69 @@ class GPUGeometryCollection:
             polygon_mask = (self.geometry_types[seg_result_geom_indices] == GeometryType.POLYGON) | \
                           (self.geometry_types[seg_result_geom_indices] == GeometryType.MULTIPOLYGON)
 
-            if polygon_mask.any() and len(self.polygon_ranges) > 0:
+            if False and polygon_mask.any() and len(self.polygon_ranges) > 0:
                 # For polygons, check if query points are inside
-                poly_particle_indices = seg_result_particle_indices[polygon_mask]
+                poly_particle_indices = seg_result_particle_indices[polygon_mask]  # Original indices
                 poly_geom_indices = seg_result_geom_indices[polygon_mask]
-                poly_query_points = valid_query_points[poly_particle_indices]
+                # Convert original indices to local indices for indexing valid_query_points
+                poly_local_indices = original_to_local[poly_particle_indices]
+                poly_query_points = valid_query_points[poly_local_indices]
 
-                # DISABLED: Point-in-polygon check (just uses boundary distance for now)
-                # # Batch check all polygon queries
-                # # Build list of polygons to check for each query
-                # unique_poly_geoms = torch.unique(poly_geom_indices)
-                # for g_idx in unique_poly_geoms:
-                #     # Find all particles querying this geometry
-                #     particles_for_this_geom = poly_particle_indices[poly_geom_indices == g_idx]
-                #     query_points_for_geom = valid_query_points[particles_for_this_geom]
-                #
-                #     # Get polygon ranges for this geometry
-                #     poly_ranges_mask = self.polygon_geom_indices == g_idx
-                #     if not poly_ranges_mask.any():
-                #         continue
-                #
-                #     poly_ranges_for_geom = self.polygon_ranges[poly_ranges_mask]
-                #
-                #     # Batch check if any of these points are inside
-                #     inside = gpu_distance.point_in_polygon_winding(
-                #         query_points_for_geom,  # (num_particles, 2)
-                #         self.polygon_vertices,
-                #         poly_ranges_for_geom,
-                #     )  # (num_particles, num_polys_in_geom)
-                #
-                #     # If any polygon contains the point, set distance to 0
-                #     inside_any = inside.any(dim=1)  # (num_particles,)
-                #     if inside_any.any():
-                #         # Map back to indices in min_distances_seg
-                #         particles_inside = particles_for_this_geom[inside_any]
-                #         for p_idx in particles_inside:
-                #             # Find the index in the result arrays
-                #             result_idx = torch.where(
-                #                 (seg_result_particle_indices == p_idx) &
-                #                 (seg_result_geom_indices == g_idx)
-                #             )[0]
-                #             if len(result_idx) > 0:
-                #                 min_distances_seg[result_idx[0]] = 0.0
+                # Optimized batched polygon check
+                unique_poly_geoms = torch.unique(poly_geom_indices)
+
+                # Batch check all at once instead of looping
+                if len(unique_poly_geoms) > 0:
+                    # Get all polygon ranges we need to check
+                    all_poly_ranges = []
+                    geom_to_range_idx = {}
+                    for g_idx in unique_poly_geoms:
+                        poly_ranges_mask = self.polygon_geom_indices == g_idx
+                        if poly_ranges_mask.any():
+                            poly_ranges_for_geom = self.polygon_ranges[poly_ranges_mask]
+                            geom_to_range_idx[g_idx.item()] = len(all_poly_ranges)
+                            all_poly_ranges.append(poly_ranges_for_geom)
+
+                    if all_poly_ranges:
+                        # Concatenate all polygon ranges
+                        all_ranges_cat = torch.cat(all_poly_ranges, dim=0)
+
+                        # Batch check all query points against all polygons
+                        inside_all = gpu_distance.point_in_polygon_winding(
+                            poly_query_points,
+                            self.polygon_vertices,
+                            all_ranges_cat,
+                        )  # (num_poly_queries, num_polys_total)
+
+                        # Update distances for inside points
+                        range_offset = 0
+                        for g_idx in unique_poly_geoms:
+                            if g_idx.item() not in geom_to_range_idx:
+                                continue
+
+                            # Find particles for this geometry
+                            geom_mask = poly_geom_indices == g_idx
+                            particles_for_geom = poly_particle_indices[geom_mask]
+
+                            # Get the polygon ranges for this geometry
+                            num_polys = all_poly_ranges[geom_to_range_idx[g_idx.item()]].shape[0]
+
+                            # Check if any particle is inside any polygon of this geometry
+                            inside_geom = inside_all[geom_mask, range_offset:range_offset+num_polys]
+                            inside_any = inside_geom.any(dim=1)
+
+                            if inside_any.any():
+                                # Set distance to 0 for inside particles
+                                particles_inside = particles_for_geom[inside_any]
+                                for p_idx in particles_inside:
+                                    result_idx = torch.where(
+                                        (seg_result_particle_indices == p_idx) &
+                                        (seg_result_geom_indices == g_idx)
+                                    )[0]
+                                    if len(result_idx) > 0:
+                                        min_distances_seg[result_idx[0]] = 0.0
+
+                            range_offset += num_polys
         else:
             seg_result_particle_indices = torch.empty(0, dtype=torch.long, device=self.device)
             seg_result_geom_indices = torch.empty(0, dtype=torch.long, device=self.device)
@@ -927,7 +1024,7 @@ class GPUGeometryCollection:
 
         return result
 
-    def _query_distances_cuda(
+    def query_distances_cuda(
         self,
         query_points: torch.Tensor,
     ) -> torch.Tensor:
@@ -939,11 +1036,18 @@ class GPUGeometryCollection:
         Returns:
             (K, 3) tensor: [particle_idx, geometry_idx, distance]
         """
-        import spatial_distance_python as sdp
+        if self.spatial_index is None:
+            raise ValueError(
+                "Spatial index must be built before querying distances. "
+                "Call build_spatial_index() first."
+            )
+
+        if query_points.shape[1] != 2:
+            raise ValueError(f"query_points must have shape (N, 2), got {query_points.shape}")
 
         idx = self.spatial_index
 
-        result = sdp.query_distances_cuda(
+        particle_indices, geometry_indices, distances = sdp.query_distances_cuda(
             query_points,
             self.segment_starts,
             self.segment_ends,
@@ -957,14 +1061,26 @@ class GPUGeometryCollection:
             self.num_geometries,
             idx.cell_segment_indices,
             idx.cell_offsets,
+            idx.cell_geom_indices,
+            idx.cell_geom_offsets,
             idx.cell_point_indices,
             idx.cell_point_offsets,
+            idx.cell_point_geom_indices,
+            idx.cell_point_geom_offsets,
             idx.grid_origin,
             idx.cell_size,
             idx.grid_dims,
         )
 
-        return result
+        # Stack into (K, 3) tensor for backwards compatibility
+        if particle_indices.numel() == 0:
+            return torch.empty((0, 3), dtype=torch.float32, device=self.device)
+
+        return torch.stack([
+            particle_indices.float(),
+            geometry_indices.float(),
+            distances,
+        ], dim=1)
 
 
 def _process_polygon(

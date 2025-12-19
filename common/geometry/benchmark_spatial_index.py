@@ -273,7 +273,7 @@ def benchmark_query_distances(
         _ = collection.query_distances(query_points[:10], use_cuda_kernel=False)
 
     # Benchmark with multiple iterations
-    num_iterations = 100
+    num_iterations = 1
     torch.cuda.synchronize()
     start = time.time()
     for _ in range(num_iterations):
@@ -376,7 +376,7 @@ def main():
     simulate_query(collection, num_queries=100000)
 
     # Benchmark query_distances
-    benchmark_query_distances(collection, num_queries=100000)
+    benchmark_query_distances(collection, num_queries=10000)
 
     print("\n" + "=" * 60)
     print("Benchmark complete!")

@@ -59,8 +59,8 @@ def main():
 
     # Warm-up both implementations
     print("Warming up...")
-    _ = collection.query_distances(query_points[:100], use_cuda_kernel=False)
-    _ = collection.query_distances(query_points[:100], use_cuda_kernel=True)
+    _ = collection.query_distances(query_points[:100])
+    _ = collection.query_distances_cuda(query_points[:100])
     torch.cuda.synchronize()
 
     # Profile PyTorch implementation
@@ -75,12 +75,12 @@ def main():
         with_stack=True,
     ) as prof:
         with record_function("pytorch_query_distances"):
-            result_pytorch = collection.query_distances(query_points, use_cuda_kernel=False)
+            result_pytorch = collection.query_distances(query_points)
 
     torch.cuda.synchronize()
 
     # Export chrome trace
-    trace_file = "pytorch_trace.json"
+    trace_file = "/tmp/pytorch_trace.json"
     prof.export_chrome_trace(trace_file)
     print(f"\nExported chrome trace to: {trace_file}")
 
@@ -102,12 +102,13 @@ def main():
         with_stack=True,
     ) as prof:
         with record_function("cuda_query_distances"):
-            result_cuda = collection.query_distances(query_points, use_cuda_kernel=True)
+            for i in range(10):
+                result_cuda = collection.query_distances_cuda(query_points)
 
     torch.cuda.synchronize()
 
     # Export chrome trace
-    trace_file = "cuda_trace.json"
+    trace_file = "/tmp/cuda_trace.json"
     prof.export_chrome_trace(trace_file)
     print(f"\nExported chrome trace to: {trace_file}")
 
