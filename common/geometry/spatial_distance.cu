@@ -1,40 +1,13 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <cuda_runtime.h>
-#include <fmt/core.h>
 #include <torch/csrc/autograd/profiler.h>
-#include "fmt/base.h"
 
 #include <algorithm>
 #include <tuple>
 #include <vector>
 
 #include "common/geometry/spatial_distance.hh"
-
-template <>
-struct fmt::formatter<::torch::Tensor> {
-  bool shape_only = false;
-
-  constexpr auto parse(format_parse_context& ctx) {
-      auto it = ctx.begin();
-      if (it != ctx.end() && *it == 's') {
-          shape_only = true;
-          ++it;
-      }
-      return it;
-  }
-
-  template <typename FormatContext>
-  auto format(const torch::Tensor& t, FormatContext& ctx) const {
-      std::ostringstream oss;
-      if (shape_only) {
-          oss << "Tensor(shape=" << t.sizes() << ", dtype=" << t.dtype() << ")";
-      } else {
-          oss << t;
-      }
-      return fmt::format_to(ctx.out(), "{}", oss.str());
-  }
-};
 
 namespace robot::geometry {
 

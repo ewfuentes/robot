@@ -5,6 +5,7 @@ from pathlib import Path
 
 import common.torch.load_torch_deps  # Must be before torch  # noqa: F401
 import geopandas as gpd
+import numpy as np
 import shapely
 import torch
 from torch.profiler import profile, ProfilerActivity, record_function
@@ -19,6 +20,74 @@ def convert_geometry_to_pixels(geometry, zoom_level: int):
         x_px, y_px = web_mercator.latlon_to_pixel_coords(lat, lon, zoom_level)
         return x_px, y_px
     return shapely.ops.transform(coord_transform, geometry)
+
+
+def verify_with_shapely(
+    query_points: torch.Tensor,
+    cuda_results: torch.Tensor,
+    geometries: list,
+    tolerance: float = 1e-3,
+) -> dict:
+    """Verify all CUDA results against shapely.
+
+    Args:
+        query_points: (N, 2) tensor of query positions
+        cuda_results: (K, 3) tensor of [particle_idx, geometry_idx, distance]
+        geometries: List of shapely geometries
+        tolerance: Relative tolerance for distance comparison
+
+    Returns:
+        Dict with verification results
+    """
+    query_np = query_points.cpu().numpy()
+    results_np = cuda_results.cpu().numpy()
+
+    errors = []
+    checked = 0
+    matched = 0
+
+    for i in range(len(results_np)):
+        p_idx = int(results_np[i, 0])
+        g_idx = int(results_np[i, 1])
+        cuda_dist = results_np[i, 2]
+
+        if g_idx >= len(geometries):
+            continue
+
+        point = shapely.Point(query_np[p_idx])
+        geom = geometries[g_idx]
+        shapely_dist = point.distance(geom)
+
+        # For points inside polygons, CUDA returns 0
+        if cuda_dist == 0 and isinstance(geom, (shapely.Polygon, shapely.MultiPolygon)):
+            # Check if point is inside
+            if geom.contains(point) or point.within(geom):
+                matched += 1
+                checked += 1
+                continue
+
+        # Compare distances
+        checked += 1
+        if abs(cuda_dist - shapely_dist) <= tolerance * max(1.0, shapely_dist):
+            matched += 1
+        else:
+            errors.append({
+                "point_idx": p_idx,
+                "geom_idx": g_idx,
+                "cuda_dist": cuda_dist,
+                "shapely_dist": shapely_dist,
+                "diff": abs(cuda_dist - shapely_dist),
+            })
+
+    # Sort errors by diff (largest first) and take top 10
+    errors.sort(key=lambda e: e["diff"], reverse=True)
+
+    return {
+        "checked": checked,
+        "matched": matched,
+        "match_rate": matched / checked if checked > 0 else 1.0,
+        "errors": errors[:10],  # Largest 10 errors
+    }
 
 
 def main():
@@ -95,6 +164,28 @@ def main():
     print("SUMMARY")
     print("=" * 80)
     print(f"CUDA result pairs: {result_cuda.shape[0]:,}")
+
+    # Verify correctness against shapely
+    print("\n" + "=" * 80)
+    print("CORRECTNESS VERIFICATION (vs Shapely)")
+    print("=" * 80)
+    print(f"Verifying all {result_cuda.shape[0]:,} result pairs against shapely...")
+
+    geometries_px = list(df["geometry_px"].values)
+    verification = verify_with_shapely(
+        query_points, result_cuda, geometries_px, tolerance=1e-2
+    )
+
+    print(f"Checked: {verification['checked']:,} (point, geometry) pairs")
+    print(f"Matched: {verification['matched']:,}")
+    print(f"Match rate: {verification['match_rate']:.2%}")
+
+    if verification["errors"]:
+        print(f"\nLargest {len(verification['errors'])} errors:")
+        for err in verification["errors"]:
+            print(f"  Point {err['point_idx']}, Geom {err['geom_idx']}: "
+                  f"CUDA={err['cuda_dist']:.6f}, Shapely={err['shapely_dist']:.6f}, "
+                  f"diff={err['diff']:.6f}")
 
 
 if __name__ == "__main__":
