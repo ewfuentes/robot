@@ -412,6 +412,7 @@ class TestBenchmark(unittest.TestCase):
             polygon_vertices=torch.empty((0, 2), dtype=torch.float32),
             polygon_ranges=torch.empty((0, 2), dtype=torch.long),
             polygon_geom_indices=torch.empty(0, dtype=torch.long),
+            geom_ring_offsets=torch.zeros(1, dtype=torch.long),
         )
 
         # Should not crash on empty collection

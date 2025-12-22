@@ -75,7 +75,8 @@ def main():
         with_stack=True,
     ) as prof:
         with record_function("pytorch_query_distances"):
-            result_pytorch = collection.query_distances(query_points)
+            for _ in range(100):
+                result_pytorch = collection.query_distances(query_points)
 
     torch.cuda.synchronize()
 
@@ -102,7 +103,7 @@ def main():
         with_stack=True,
     ) as prof:
         with record_function("cuda_query_distances"):
-            for i in range(10):
+            for _ in range(100):
                 result_cuda = collection.query_distances_cuda(query_points)
 
     torch.cuda.synchronize()

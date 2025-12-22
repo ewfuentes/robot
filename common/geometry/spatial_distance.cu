@@ -60,6 +60,35 @@ struct BlockAssignmentData {
     bool empty;
 };
 
+// Device function for computing winding number contribution from a single edge
+// Returns +1 for upward crossing, -1 for downward crossing, 0 otherwise
+__device__ inline int winding_number_edge(float px, float py, float x1, float y1, float x2,
+                                          float y2) {
+    // Translate to query point origin
+    float v1y = y1 - py;
+    float v2y = y2 - py;
+
+    // Check edge crossing conditions
+    if (v1y <= 0) {
+        if (v2y > 0) {
+            // Potential upward crossing - check which side of edge
+            float v1x = x1 - px;
+            float v2x = x2 - px;
+            float cross = v1x * v2y - v1y * v2x;
+            if (cross > 0) return 1;  // Upward crossing, point is left of edge
+        }
+    } else {
+        if (v2y <= 0) {
+            // Potential downward crossing - check which side of edge
+            float v1x = x1 - px;
+            float v2x = x2 - px;
+            float cross = v1x * v2y - v1y * v2x;
+            if (cross < 0) return -1;  // Downward crossing, point is right of edge
+        }
+    }
+    return 0;
+}
+
 // Device function for point-to-segment distance
 __device__ inline float point_to_segment_distance(float px, float py, float ax, float ay, float bx,
                                                   float by) {
@@ -572,6 +601,111 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> query_distances_cuda(
         torch::cat({seg_particles, pt_particles}, 0),
         torch::cat({seg_geoms, pt_geoms}, 0),
         torch::cat({seg_dists, pt_dists}, 0));
+}
+
+// Kernel for point-in-polygon testing using winding number algorithm
+// Each block processes one polygon geometry, threads process query points
+// Sums winding numbers across all rings of the geometry (handles holes correctly)
+__global__ void point_in_polygon_kernel(
+    const float* __restrict__ query_points,           // (N, 2)
+    const int64_t num_queries,
+    const float* __restrict__ polygon_vertices,       // (V, 2)
+    const int64_t* __restrict__ polygon_ranges,       // (R, 2) [start, end) per ring
+    const int64_t* __restrict__ polygon_geom_indices, // (R,) geometry index per ring
+    const int64_t num_rings,
+    const int64_t* __restrict__ geom_ring_offsets,    // (G_poly+1,) CSR offsets
+    const int64_t num_polygon_geoms,
+    bool* __restrict__ is_inside                      // (N, G_poly) output
+) {
+    int geom_idx = blockIdx.x;
+    if (geom_idx >= num_polygon_geoms) return;
+
+    // Get the range of rings for this geometry
+    int64_t ring_start = geom_ring_offsets[geom_idx];
+    int64_t ring_end = geom_ring_offsets[geom_idx + 1];
+
+    // Process query points in parallel
+    for (int64_t q_idx = threadIdx.x; q_idx < num_queries; q_idx += blockDim.x) {
+        float px = query_points[q_idx * 2];
+        float py = query_points[q_idx * 2 + 1];
+
+        int total_winding = 0;
+
+        // Sum winding numbers across all rings of this geometry
+        for (int64_t r = ring_start; r < ring_end; r++) {
+            int64_t vert_start = polygon_ranges[r * 2];
+            int64_t vert_end = polygon_ranges[r * 2 + 1];
+            int64_t num_verts = vert_end - vert_start;
+
+            if (num_verts < 3) continue;
+
+            // Compute winding number for this ring
+            for (int64_t i = 0; i < num_verts; i++) {
+                int64_t i1 = vert_start + i;
+                int64_t i2 = vert_start + ((i + 1) % num_verts);
+
+                float x1 = polygon_vertices[i1 * 2];
+                float y1 = polygon_vertices[i1 * 2 + 1];
+                float x2 = polygon_vertices[i2 * 2];
+                float y2 = polygon_vertices[i2 * 2 + 1];
+
+                total_winding += winding_number_edge(px, py, x1, y1, x2, y2);
+            }
+        }
+
+        // Point is inside if total winding number is non-zero
+        is_inside[q_idx * num_polygon_geoms + geom_idx] = (total_winding != 0);
+    }
+}
+
+torch::Tensor point_in_polygon_cuda(
+    const torch::Tensor& query_points,
+    const torch::Tensor& polygon_vertices,
+    const torch::Tensor& polygon_ranges,
+    const torch::Tensor& polygon_geom_indices,
+    const torch::Tensor& geom_ring_offsets
+) {
+    // Check inputs
+    TORCH_CHECK(query_points.is_cuda(), "query_points must be on CUDA");
+    TORCH_CHECK(query_points.dim() == 2 && query_points.size(1) == 2,
+                "query_points must be (N, 2)");
+    TORCH_CHECK(query_points.scalar_type() == torch::kFloat32, "query_points must be float32");
+
+    int64_t num_queries = query_points.size(0);
+    int64_t num_rings = polygon_ranges.size(0);
+    int64_t num_polygon_geoms = geom_ring_offsets.size(0) - 1;
+
+    if (num_queries == 0 || num_polygon_geoms == 0) {
+        return torch::zeros({num_queries, num_polygon_geoms},
+                           torch::TensorOptions().dtype(torch::kBool).device(query_points.device()));
+    }
+
+    auto device = query_points.device();
+    c10::cuda::CUDAGuard device_guard(device);
+
+    // Allocate output
+    auto is_inside = torch::zeros({num_queries, num_polygon_geoms},
+                                  torch::TensorOptions().dtype(torch::kBool).device(device));
+
+    // Launch kernel: one block per polygon geometry
+    const int threads = 256;
+    const int blocks = num_polygon_geoms;
+
+    point_in_polygon_kernel<<<blocks, threads>>>(
+        query_points.data_ptr<float>(),
+        num_queries,
+        polygon_vertices.data_ptr<float>(),
+        polygon_ranges.data_ptr<int64_t>(),
+        polygon_geom_indices.data_ptr<int64_t>(),
+        num_rings,
+        geom_ring_offsets.data_ptr<int64_t>(),
+        num_polygon_geoms,
+        is_inside.data_ptr<bool>()
+    );
+
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+
+    return is_inside;
 }
 
 }  // namespace robot::geometry
