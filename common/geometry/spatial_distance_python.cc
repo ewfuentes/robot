@@ -7,8 +7,6 @@ PYBIND11_MODULE(spatial_distance_python, m) {
     m.doc() = "GPU-accelerated spatial distance queries with CUDA";
     m.def("query_distances_cuda", &query_distances_cuda,
           "Query distances from points to geometries using CUDA kernel with spatial index");
-    m.def("point_in_polygon_cuda", &point_in_polygon_cuda,
-          "Test if points are inside polygon geometries using winding number algorithm");
     m.def("point_in_polygon_sparse_cuda", &point_in_polygon_sparse_cuda,
           "Sparse point-in-polygon test on candidate (point, polygon) pairs");
 }
