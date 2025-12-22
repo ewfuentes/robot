@@ -50,7 +50,7 @@ def main():
     grid_min = idx.grid_origin
     grid_max = idx.grid_origin + idx.grid_dims.float() * idx.cell_size
 
-    num_queries = 10000
+    num_queries = 1000000
     query_points = torch.rand(num_queries, 2, device=device)
     query_points = query_points * (grid_max - grid_min) + grid_min
 
@@ -75,7 +75,7 @@ def main():
         with_stack=True,
     ) as prof:
         with record_function("pytorch_query_distances"):
-            for _ in range(100):
+            for _ in range(10):
                 result_pytorch = collection.query_distances(query_points)
 
     torch.cuda.synchronize()
@@ -103,7 +103,7 @@ def main():
         with_stack=True,
     ) as prof:
         with record_function("cuda_query_distances"):
-            for _ in range(100):
+            for _ in range(10):
                 result_cuda = collection.query_distances_cuda(query_points)
 
     torch.cuda.synchronize()

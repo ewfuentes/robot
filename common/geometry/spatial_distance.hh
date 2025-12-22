@@ -80,4 +80,28 @@ torch::Tensor point_in_polygon_cuda(
     const torch::Tensor& polygon_geom_indices,
     const torch::Tensor& geom_ring_offsets);
 
+/**
+ * Sparse point-in-polygon test using winding number algorithm.
+ *
+ * Takes explicit candidate (point, polygon) pairs instead of dense matrix.
+ * Uses spatial indexing to only check points against nearby polygons.
+ *
+ * @param query_points (N, 2) float32 tensor - query point coordinates
+ * @param candidate_point_idx (K,) int64 tensor - query point indices to check
+ * @param candidate_poly_idx (K,) int64 tensor - polygon geometry indices to check
+ * @param segment_starts (S, 2) float32 tensor - ring vertices
+ * @param polygon_segment_ranges (R, 2) int64 tensor - [start, end) segment indices per ring
+ * @param geom_ring_offsets (G_poly+1,) int64 tensor - CSR offsets for rings per polygon
+ *
+ * @return (K,) bool tensor where result[i] is true if point candidate_point_idx[i]
+ *         is inside polygon candidate_poly_idx[i]
+ */
+torch::Tensor point_in_polygon_sparse_cuda(
+    const torch::Tensor& query_points,
+    const torch::Tensor& candidate_point_idx,
+    const torch::Tensor& candidate_poly_idx,
+    const torch::Tensor& segment_starts,
+    const torch::Tensor& polygon_segment_ranges,
+    const torch::Tensor& geom_ring_offsets);
+
 }  // namespace robot::geometry

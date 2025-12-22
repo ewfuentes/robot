@@ -44,6 +44,8 @@ class SpatialIndex:
         cell_geom_offsets: (num_cells+1,) tensor - CSR row pointers for geometries
         cell_point_geom_indices: (G'',) tensor - unique geometry IDs per cell for points
         cell_point_geom_offsets: (num_cells+1,) tensor - CSR row pointers for point geometries
+        cell_polygon_indices: (K',) tensor - polygon geometry indices per cell (CSR format)
+        cell_polygon_offsets: (num_cells+1,) tensor - CSR row pointers for polygons
     """
 
     grid_origin: torch.Tensor
@@ -58,6 +60,8 @@ class SpatialIndex:
     cell_geom_offsets: torch.Tensor
     cell_point_geom_indices: torch.Tensor
     cell_point_geom_offsets: torch.Tensor
+    cell_polygon_indices: torch.Tensor
+    cell_polygon_offsets: torch.Tensor
 
 
 @dataclass
@@ -404,6 +408,8 @@ class GPUGeometryCollection:
                     cell_geom_offsets=torch.zeros(num_cells + 1, dtype=torch.long, device=self.device),
                     cell_point_geom_indices=torch.empty(0, dtype=torch.long, device=self.device),
                     cell_point_geom_offsets=torch.zeros(num_cells + 1, dtype=torch.long, device=self.device),
+                    cell_polygon_indices=torch.empty(0, dtype=torch.long, device=self.device),
+                    cell_polygon_offsets=torch.zeros(num_cells + 1, dtype=torch.long, device=self.device),
                 )
                 return
 
@@ -431,7 +437,12 @@ class GPUGeometryCollection:
         if profile is not None:
             profile['points'] = pt_profile
 
-        # Step 4: Store index
+        # Step 4: Build polygon bbox index
+        cell_polygon_indices, cell_polygon_offsets = self._index_polygon_bboxes(
+            grid_origin, cell_size, grid_dims, expansion_distance
+        )
+
+        # Step 5: Store index
         self.spatial_index = SpatialIndex(
             grid_origin=grid_origin,
             cell_size=cell_size,
@@ -445,6 +456,8 @@ class GPUGeometryCollection:
             cell_geom_offsets=cell_geom_offsets,
             cell_point_geom_indices=cell_point_geom_indices,
             cell_point_geom_offsets=cell_point_geom_offsets,
+            cell_polygon_indices=cell_polygon_indices,
+            cell_polygon_offsets=cell_polygon_offsets,
         )
 
     def _index_segments(
@@ -796,6 +809,183 @@ class GPUGeometryCollection:
 
         return sorted_point_indices, cell_offsets, cell_geom_indices, cell_geom_offsets
 
+    def _index_polygon_bboxes(
+        self,
+        grid_origin: torch.Tensor,
+        cell_size: float,
+        grid_dims: torch.Tensor,
+        expansion_distance: float,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Build CSR index for polygon bounding boxes.
+
+        Each polygon geometry gets one bounding box entry (union of all its rings).
+        This enables sparse point-in-polygon queries by only checking polygons
+        whose bboxes overlap with a query point's cell.
+
+        Returns:
+            Tuple of (cell_polygon_indices, cell_polygon_offsets)
+            - cell_polygon_indices: polygon geometry indices per cell (CSR values)
+            - cell_polygon_offsets: CSR row pointers for polygons per cell
+        """
+        num_cells = grid_dims[0].item() * grid_dims[1].item()
+        num_polygon_geoms = self.geom_ring_offsets.size(0) - 1
+
+        if num_polygon_geoms == 0:
+            return (
+                torch.empty(0, dtype=torch.long, device=self.device),
+                torch.zeros(num_cells + 1, dtype=torch.long, device=self.device),
+            )
+
+        # Get unique polygon geometry indices
+        unique_poly_geoms = self.polygon_geom_indices.unique()
+        num_unique_polys = len(unique_poly_geoms)
+
+        # Create mapping from global geom index to local polygon index
+        geom_to_poly_idx = torch.full((self.num_geometries,), -1,
+                                      dtype=torch.long, device=self.device)
+        geom_to_poly_idx[unique_poly_geoms] = torch.arange(num_unique_polys, device=self.device)
+
+        # Vectorized bbox computation - no Python loops
+        # Step 1: Get segment ranges for all rings
+        seg_starts = self.polygon_segment_ranges[:, 0]  # (R,)
+        seg_ends = self.polygon_segment_ranges[:, 1]    # (R,)
+        ring_lengths = seg_ends - seg_starts            # (R,)
+
+        # Step 2: Expand to get all vertex indices
+        # For each ring, generate indices: seg_start, seg_start+1, ..., seg_end-1
+        total_vertices = ring_lengths.sum()
+        ring_indices = torch.arange(len(ring_lengths), device=self.device)
+        ring_indices_expanded = ring_indices.repeat_interleave(ring_lengths)
+
+        # Compute vertex indices within segment_starts
+        ring_offsets = torch.cat([
+            torch.zeros(1, dtype=torch.long, device=self.device),
+            ring_lengths.cumsum(0)
+        ])
+        flat_vertex_idx = torch.arange(total_vertices, device=self.device, dtype=torch.long)
+        local_vertex_idx = flat_vertex_idx - ring_offsets[ring_indices_expanded]
+        seg_starts_expanded = seg_starts[ring_indices_expanded]
+        vertex_indices = seg_starts_expanded + local_vertex_idx
+
+        # Step 3: Gather all vertices
+        all_vertices = self.segment_starts[vertex_indices]  # (total_vertices, 2)
+
+        # Step 4: Map rings to polygon geometry indices
+        poly_idx_per_ring = geom_to_poly_idx[self.polygon_geom_indices]  # (R,)
+        poly_idx_per_vertex = poly_idx_per_ring[ring_indices_expanded]   # (total_vertices,)
+
+        # Step 5: Compute bbox per polygon using scatter_reduce
+        # Need to expand poly_idx for both x and y coordinates
+        poly_idx_expanded = poly_idx_per_vertex.unsqueeze(1).expand(-1, 2)  # (total_vertices, 2)
+
+        poly_bbox_min = torch.full((num_unique_polys, 2), float('inf'),
+                                   dtype=torch.float32, device=self.device)
+        poly_bbox_max = torch.full((num_unique_polys, 2), float('-inf'),
+                                   dtype=torch.float32, device=self.device)
+
+        poly_bbox_min.scatter_reduce_(0, poly_idx_expanded, all_vertices, reduce='amin')
+        poly_bbox_max.scatter_reduce_(0, poly_idx_expanded, all_vertices, reduce='amax')
+
+        # Expand bboxes by expansion_distance
+        poly_bbox_min = poly_bbox_min - expansion_distance
+        poly_bbox_max = poly_bbox_max + expansion_distance
+
+        # Convert to cell coordinates
+        cell_min_unclamped = torch.floor((poly_bbox_min - grid_origin) / cell_size).long()
+        cell_max_unclamped = torch.floor((poly_bbox_max - grid_origin) / cell_size).long()
+
+        # Clamp to grid bounds
+        zeros = torch.zeros_like(grid_dims)
+        grid_max = grid_dims - 1
+        cell_min = torch.maximum(cell_min_unclamped, zeros)
+        cell_min = torch.minimum(cell_min, grid_max)
+        cell_max = torch.maximum(cell_max_unclamped, zeros)
+        cell_max = torch.minimum(cell_max, grid_max)
+
+        # Check if polygon bbox intersects grid
+        intersects_grid = (
+            (cell_max_unclamped[:, 0] >= 0) &
+            (cell_max_unclamped[:, 1] >= 0) &
+            (cell_min_unclamped[:, 0] < grid_dims[0]) &
+            (cell_min_unclamped[:, 1] < grid_dims[1])
+        )
+
+        # Expand polygons to (polygon_idx, cell_id) pairs using vectorized operations
+        cell_ranges = cell_max - cell_min + 1  # (P, 2)
+        num_cells_per_poly = cell_ranges[:, 0] * cell_ranges[:, 1]  # (P,)
+
+        # Zero out polygons that don't intersect grid
+        num_cells_per_poly = torch.where(
+            intersects_grid,
+            num_cells_per_poly,
+            torch.tensor(0, dtype=torch.long, device=self.device)
+        )
+        total_pairs = num_cells_per_poly.sum().item()
+
+        if total_pairs == 0:
+            return (
+                torch.empty(0, dtype=torch.long, device=self.device),
+                torch.zeros(num_cells + 1, dtype=torch.long, device=self.device),
+            )
+
+        # Create polygon indices repeated by number of cells
+        poly_indices = torch.arange(num_unique_polys, device=self.device)
+        poly_indices_expanded = poly_indices.repeat_interleave(num_cells_per_poly)
+
+        # Generate local cell indices for each polygon
+        offsets = torch.cat([
+            torch.tensor([0], device=self.device, dtype=torch.long),
+            num_cells_per_poly.cumsum(0)
+        ])
+
+        flat_indices = torch.arange(total_pairs, device=self.device, dtype=torch.long)
+        local_indices = flat_indices - offsets[poly_indices_expanded]
+
+        # Unravel local indices to 2D offsets
+        widths = cell_ranges[:, 0]
+        widths_expanded = widths[poly_indices_expanded]
+
+        cx_offset = local_indices % widths_expanded
+        cy_offset = local_indices // widths_expanded
+
+        # Convert to absolute cell coordinates
+        cell_min_expanded = cell_min[poly_indices_expanded]
+        cx = cell_min_expanded[:, 0] + cx_offset
+        cy = cell_min_expanded[:, 1] + cy_offset
+
+        # Convert to linear cell IDs
+        grid_width = grid_dims[0]
+        cell_ids = cy * grid_width + cx
+
+        # Map local polygon indices back to global geometry indices
+        global_geom_indices = unique_poly_geoms[poly_indices_expanded]
+
+        # Sort by cell_id
+        sorted_order = torch.argsort(cell_ids)
+        sorted_cell_ids = cell_ids[sorted_order]
+        sorted_geom_indices = global_geom_indices[sorted_order]
+
+        # Remove duplicates (same polygon can appear multiple times per cell if
+        # the bbox expansion spans it, but we only need one entry)
+        combined_key = sorted_cell_ids * self.num_geometries + sorted_geom_indices
+        unique_combined, unique_indices = torch.unique(combined_key, return_inverse=True)
+
+        # Get first occurrence of each unique pair
+        first_occurrence = torch.zeros(len(unique_combined), dtype=torch.long, device=self.device)
+        first_occurrence.scatter_(0, unique_indices, torch.arange(len(unique_indices), device=self.device))
+
+        unique_cell_ids = unique_combined // self.num_geometries
+        unique_geom_ids = unique_combined % self.num_geometries
+
+        # Build CSR offsets for polygons per cell
+        cell_counts = torch.bincount(unique_cell_ids, minlength=num_cells)
+        cell_polygon_offsets = torch.cat([
+            torch.tensor([0], dtype=torch.long, device=self.device),
+            torch.cumsum(cell_counts, dim=0),
+        ])
+
+        return unique_geom_ids, cell_polygon_offsets
+
     def query_distances(
         self,
         query_points: torch.Tensor) -> torch.Tensor:
@@ -1041,10 +1231,10 @@ class GPUGeometryCollection:
             idx.grid_dims,
         )
 
-        # For polygon geometries, check if points are inside and set distance to 0
-        # Also add entries for points that are inside polygons but weren't near any edges
+        # For polygon geometries, use sparse point-in-polygon check with spatial filtering
+        # Only check points against polygons whose bboxes overlap with the point's cell
         num_polygon_geoms = self.geom_ring_offsets.size(0) - 1
-        if num_polygon_geoms > 0:
+        if num_polygon_geoms > 0 and idx.cell_polygon_indices.numel() > 0:
             # Get unique polygon geometry indices and create mapping
             unique_poly_geoms = self.polygon_geom_indices.unique()
 
@@ -1052,75 +1242,120 @@ class GPUGeometryCollection:
             geom_to_poly_idx = torch.full((self.num_geometries,), -1, dtype=torch.long, device=self.device)
             geom_to_poly_idx[unique_poly_geoms] = torch.arange(len(unique_poly_geoms), device=self.device)
 
-            # Check ALL query points against all polygon geometries
-            # This is O(N * P) but necessary for points far from edges
-            # Ring vertices are read from segment_starts to avoid duplicate storage
-            is_inside_all = sdp.point_in_polygon_cuda(
-                query_points,
-                self.segment_starts,
-                self.polygon_segment_ranges,
-                self.polygon_geom_indices,
-                self.geom_ring_offsets,
-            )  # (N, num_polygon_geoms) bool tensor
+            # Step 1: Hash query points to cells
+            cell_coords = torch.floor((query_points - idx.grid_origin) / idx.cell_size).long()
+            num_cells = idx.grid_dims[0] * idx.grid_dims[1]
 
-            # For existing polygon results, set distance to 0 if inside
-            if particle_indices.numel() > 0:
-                polygon_mask = (self.geometry_types[geometry_indices] == GeometryType.POLYGON) | \
-                              (self.geometry_types[geometry_indices] == GeometryType.MULTIPOLYGON)
+            # Check which points are in bounds
+            in_bounds = (
+                (cell_coords[:, 0] >= 0) & (cell_coords[:, 0] < idx.grid_dims[0]) &
+                (cell_coords[:, 1] >= 0) & (cell_coords[:, 1] < idx.grid_dims[1])
+            )
+            cell_ids = cell_coords[:, 1] * idx.grid_dims[0] + cell_coords[:, 0]
+            cell_ids = torch.clamp(cell_ids, 0, num_cells - 1)
 
-                if polygon_mask.any():
-                    poly_particle_indices = particle_indices[polygon_mask]
-                    poly_geom_indices = geometry_indices[polygon_mask]
-                    poly_local_indices = geom_to_poly_idx[poly_geom_indices]
+            # Step 2: Get candidate polygon counts per point using CSR lookup
+            poly_starts = idx.cell_polygon_offsets[cell_ids]  # (N,)
+            poly_ends = idx.cell_polygon_offsets[cell_ids + 1]  # (N,)
+            num_candidates_per_point = poly_ends - poly_starts  # (N,)
 
-                    # Gather inside status for each (particle, geometry) pair
-                    is_inside = is_inside_all[poly_particle_indices, poly_local_indices]
+            # Zero out candidates for out-of-bounds points
+            num_candidates_per_point = torch.where(
+                in_bounds,
+                num_candidates_per_point,
+                torch.tensor(0, dtype=torch.long, device=self.device)
+            )
+            total_candidates = num_candidates_per_point.sum().item()
 
-                    # Set distance to 0 for inside points
-                    polygon_result_indices = torch.where(polygon_mask)[0]
-                    inside_result_indices = polygon_result_indices[is_inside]
-                    distances[inside_result_indices] = 0.0
+            if total_candidates > 0:
+                # Step 3: Build sparse (point_idx, polygon_idx) candidate pairs
+                point_indices_local = torch.arange(len(query_points), device=self.device)
+                candidate_point_idx = point_indices_local.repeat_interleave(num_candidates_per_point)
 
-            # Find points that are inside polygons but NOT in the existing results
-            # These are points far from polygon edges that we need to add with distance=0
-            inside_any = is_inside_all.any(dim=1)  # (N,) - True if inside any polygon
+                # Generate polygon indices using CSR expansion
+                offsets = torch.cat([
+                    torch.tensor([0], device=self.device, dtype=torch.long),
+                    num_candidates_per_point.cumsum(0)
+                ])
+                flat_indices = torch.arange(total_candidates, device=self.device, dtype=torch.long)
+                local_poly_offset = flat_indices - offsets[candidate_point_idx]
 
-            if inside_any.any():
-                # For each inside point, find which polygon(s) it's inside
-                inside_particle_indices = torch.where(inside_any)[0]
+                # Look up the actual polygon geometry indices
+                poly_starts_expanded = poly_starts[candidate_point_idx]
+                global_poly_indices = idx.cell_polygon_indices[poly_starts_expanded + local_poly_offset]
 
-                # Build set of existing (particle, polygon_geom) pairs for fast lookup
+                # Convert global geometry indices to local polygon indices for geom_ring_offsets
+                candidate_local_poly_idx = geom_to_poly_idx[global_poly_indices]
+
+                # Step 4: Call sparse point-in-polygon kernel
+                is_inside_sparse = sdp.point_in_polygon_sparse_cuda(
+                    query_points,
+                    candidate_point_idx,
+                    candidate_local_poly_idx,
+                    self.segment_starts,
+                    self.polygon_segment_ranges,
+                    self.geom_ring_offsets,
+                )  # (K,) bool tensor
+
+                # Step 5: For existing polygon results, set distance to 0 if inside
+                # Use searchsorted for sparse key matching (avoids huge N*G lookup table)
+                sparse_keys = candidate_point_idx * self.num_geometries + global_poly_indices
+
                 if particle_indices.numel() > 0:
                     polygon_mask = (self.geometry_types[geometry_indices] == GeometryType.POLYGON) | \
                                   (self.geometry_types[geometry_indices] == GeometryType.MULTIPOLYGON)
-                    existing_keys = particle_indices[polygon_mask] * self.num_geometries + geometry_indices[polygon_mask]
-                    existing_set = set(existing_keys.tolist())
-                else:
-                    existing_set = set()
 
-                # Add new entries for inside points not already in results
-                new_particle_indices = []
-                new_geometry_indices = []
-                new_distances = []
+                    # Process unconditionally - empty tensors are cheap
+                    poly_particle_indices = particle_indices[polygon_mask]
+                    poly_geom_indices = geometry_indices[polygon_mask]
+                    existing_keys = poly_particle_indices * self.num_geometries + poly_geom_indices
 
-                for local_poly_idx, global_geom_idx in enumerate(unique_poly_geoms):
-                    # Find particles inside this polygon
-                    inside_this_poly = is_inside_all[:, local_poly_idx]
-                    particles_inside = torch.where(inside_this_poly)[0]
+                    if existing_keys.numel() > 0:
+                        # Sort sparse keys for binary search
+                        sparse_keys_sorted, sort_idx = sparse_keys.sort()
+                        is_inside_sorted = is_inside_sparse[sort_idx]
 
-                    for p_idx in particles_inside:
-                        key = p_idx.item() * self.num_geometries + global_geom_idx.item()
-                        if key not in existing_set:
-                            new_particle_indices.append(p_idx.item())
-                            new_geometry_indices.append(global_geom_idx.item())
-                            new_distances.append(0.0)
-                            existing_set.add(key)
+                        # Find where existing_keys would be inserted in sorted sparse_keys
+                        match_idx = torch.searchsorted(sparse_keys_sorted, existing_keys)
 
-                # Append new entries
-                if new_particle_indices:
-                    new_p = torch.tensor(new_particle_indices, dtype=torch.long, device=self.device)
-                    new_g = torch.tensor(new_geometry_indices, dtype=torch.long, device=self.device)
-                    new_d = torch.tensor(new_distances, dtype=torch.float32, device=self.device)
+                        # Check if matches are valid (within bounds and keys match)
+                        valid_match = match_idx < len(sparse_keys_sorted)
+                        valid_match = valid_match & (sparse_keys_sorted[match_idx.clamp(max=len(sparse_keys_sorted)-1)] == existing_keys)
+
+                        # Get is_inside for valid matches
+                        is_inside = torch.zeros(len(existing_keys), dtype=torch.bool, device=self.device)
+                        is_inside[valid_match] = is_inside_sorted[match_idx[valid_match]]
+
+                        # Set distance to 0 for inside points using boolean indexing
+                        # Create a full-size mask and combine with polygon_mask
+                        inside_full_mask = torch.zeros(len(distances), dtype=torch.bool, device=self.device)
+                        inside_full_mask[polygon_mask] = is_inside
+                        distances[inside_full_mask] = 0.0
+
+                # Step 6: Add entries for points inside polygons but not near edges
+                # Filter using boolean indexing directly (no torch.where)
+                inside_point_idx = candidate_point_idx[is_inside_sparse]
+                inside_poly_geom_idx = global_poly_indices[is_inside_sparse]
+
+                if inside_point_idx.numel() > 0:
+                    # Build existing keys for deduplication
+                    if particle_indices.numel() > 0:
+                        polygon_mask = (self.geometry_types[geometry_indices] == GeometryType.POLYGON) | \
+                                      (self.geometry_types[geometry_indices] == GeometryType.MULTIPOLYGON)
+                        existing_keys = particle_indices[polygon_mask] * self.num_geometries + geometry_indices[polygon_mask]
+                    else:
+                        existing_keys = torch.empty(0, dtype=torch.long, device=self.device)
+
+                    # Compute new keys
+                    new_keys = inside_point_idx * self.num_geometries + inside_poly_geom_idx
+
+                    # Find keys that don't exist in results yet using torch.isin (GPU-native)
+                    new_mask = ~torch.isin(new_keys, existing_keys)
+
+                    # Apply mask directly without .any() check - cat with empty is fine
+                    new_p = inside_point_idx[new_mask]
+                    new_g = inside_poly_geom_idx[new_mask]
+                    new_d = torch.zeros(new_p.size(0), dtype=torch.float32, device=self.device)
 
                     particle_indices = torch.cat([particle_indices, new_p])
                     geometry_indices = torch.cat([geometry_indices, new_g])

@@ -707,4 +707,110 @@ torch::Tensor point_in_polygon_cuda(
     return is_inside;
 }
 
+// Sparse kernel for point-in-polygon testing
+// Takes explicit candidate (point, polygon) pairs instead of dense matrix
+// Each thread processes one candidate pair
+__global__ void point_in_polygon_sparse_kernel(
+    const float* __restrict__ query_points,              // (N, 2)
+    const int64_t* __restrict__ candidate_point_idx,     // (K,) query point indices
+    const int64_t* __restrict__ candidate_poly_idx,      // (K,) polygon geometry indices
+    const int64_t num_candidates,
+    const float* __restrict__ segment_starts,            // (S, 2) - ring vertices
+    const int64_t* __restrict__ polygon_segment_ranges,  // (R, 2) [start, end) per ring
+    const int64_t* __restrict__ geom_ring_offsets,       // (G_poly+1,) CSR offsets
+    bool* __restrict__ is_inside                         // (K,) output
+) {
+    int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_candidates) return;
+
+    int64_t point_idx = candidate_point_idx[idx];
+    int64_t poly_idx = candidate_poly_idx[idx];
+
+    float px = query_points[point_idx * 2];
+    float py = query_points[point_idx * 2 + 1];
+
+    // Get the range of rings for this polygon geometry
+    int64_t ring_start = geom_ring_offsets[poly_idx];
+    int64_t ring_end = geom_ring_offsets[poly_idx + 1];
+
+    int total_winding = 0;
+
+    // Sum winding numbers across all rings of this geometry
+    for (int64_t r = ring_start; r < ring_end; r++) {
+        int64_t seg_start = polygon_segment_ranges[r * 2];
+        int64_t seg_end = polygon_segment_ranges[r * 2 + 1];
+        int64_t num_verts = seg_end - seg_start;
+
+        if (num_verts < 3) continue;
+
+        // Compute winding number for this ring
+        for (int64_t i = 0; i < num_verts; i++) {
+            int64_t seg_idx1 = seg_start + i;
+            int64_t seg_idx2 = seg_start + ((i + 1) % num_verts);
+
+            float x1 = segment_starts[seg_idx1 * 2];
+            float y1 = segment_starts[seg_idx1 * 2 + 1];
+            float x2 = segment_starts[seg_idx2 * 2];
+            float y2 = segment_starts[seg_idx2 * 2 + 1];
+
+            total_winding += winding_number_edge(px, py, x1, y1, x2, y2);
+        }
+    }
+
+    // Point is inside if total winding number is non-zero
+    is_inside[idx] = (total_winding != 0);
+}
+
+torch::Tensor point_in_polygon_sparse_cuda(
+    const torch::Tensor& query_points,
+    const torch::Tensor& candidate_point_idx,
+    const torch::Tensor& candidate_poly_idx,
+    const torch::Tensor& segment_starts,
+    const torch::Tensor& polygon_segment_ranges,
+    const torch::Tensor& geom_ring_offsets
+) {
+    // Check inputs
+    TORCH_CHECK(query_points.is_cuda(), "query_points must be on CUDA");
+    TORCH_CHECK(query_points.dim() == 2 && query_points.size(1) == 2,
+                "query_points must be (N, 2)");
+    TORCH_CHECK(query_points.scalar_type() == torch::kFloat32, "query_points must be float32");
+    TORCH_CHECK(candidate_point_idx.dim() == 1, "candidate_point_idx must be 1D");
+    TORCH_CHECK(candidate_poly_idx.dim() == 1, "candidate_poly_idx must be 1D");
+    TORCH_CHECK(candidate_point_idx.size(0) == candidate_poly_idx.size(0),
+                "candidate_point_idx and candidate_poly_idx must have same length");
+
+    int64_t num_candidates = candidate_point_idx.size(0);
+
+    if (num_candidates == 0) {
+        return torch::zeros({0},
+                           torch::TensorOptions().dtype(torch::kBool).device(query_points.device()));
+    }
+
+    auto device = query_points.device();
+    c10::cuda::CUDAGuard device_guard(device);
+
+    // Allocate output
+    auto is_inside = torch::zeros({num_candidates},
+                                  torch::TensorOptions().dtype(torch::kBool).device(device));
+
+    // Launch kernel: one thread per candidate pair
+    const int threads = 256;
+    const int blocks = (num_candidates + threads - 1) / threads;
+
+    point_in_polygon_sparse_kernel<<<blocks, threads>>>(
+        query_points.data_ptr<float>(),
+        candidate_point_idx.data_ptr<int64_t>(),
+        candidate_poly_idx.data_ptr<int64_t>(),
+        num_candidates,
+        segment_starts.data_ptr<float>(),
+        polygon_segment_ranges.data_ptr<int64_t>(),
+        geom_ring_offsets.data_ptr<int64_t>(),
+        is_inside.data_ptr<bool>()
+    );
+
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+
+    return is_inside;
+}
+
 }  // namespace robot::geometry
