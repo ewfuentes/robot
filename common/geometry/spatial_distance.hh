@@ -59,20 +59,24 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> query_distances_cuda(
  * Uses CUDA kernel with one block per polygon geometry. Handles polygons with
  * holes correctly by summing winding numbers across all rings of a geometry.
  *
+ * Ring vertices are read from segment_starts to avoid duplicate storage.
+ *
  * @param query_points (N, 2) float32 tensor - query point coordinates
- * @param polygon_vertices (V, 2) float32 tensor - all polygon vertices
- * @param polygon_ranges (R, 2) int64 tensor - [start, end) vertex indices per ring
+ * @param segment_starts (S, 2) float32 tensor - segment start coordinates
+ *        (ring vertices are consecutive segment_starts for each ring)
+ * @param polygon_segment_ranges (R, 2) int64 tensor - [start, end) segment
+ *        indices per ring (vertices are segment_starts[start:end])
  * @param polygon_geom_indices (R,) int64 tensor - geometry index per ring
  * @param geom_ring_offsets (G_poly+1,) int64 tensor - CSR offsets mapping
- *        geometry index to its rings in polygon_ranges
+ *        geometry index to its rings in polygon_segment_ranges
  *
  * @return (N, G_poly) bool tensor where result[i, j] is true if query_points[i]
  *         is inside polygon geometry j
  */
 torch::Tensor point_in_polygon_cuda(
     const torch::Tensor& query_points,
-    const torch::Tensor& polygon_vertices,
-    const torch::Tensor& polygon_ranges,
+    const torch::Tensor& segment_starts,
+    const torch::Tensor& polygon_segment_ranges,
     const torch::Tensor& polygon_geom_indices,
     const torch::Tensor& geom_ring_offsets);
 

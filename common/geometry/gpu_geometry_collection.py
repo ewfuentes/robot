@@ -76,9 +76,10 @@ class GPUGeometryCollection:
         segment_to_geom: (S,) tensor mapping each segment to geometry index.
         point_coords: (P, 2) tensor of point geometry coordinates.
         point_to_geom: (P,) tensor mapping each point to geometry index.
-        polygon_vertices: (V, 2) tensor of polygon ring vertices.
-        polygon_ranges: (num_polygons, 2) tensor of [start, end) vertex indices.
-        polygon_geom_indices: (num_polygons,) tensor mapping to geometry index.
+        polygon_segment_ranges: (R, 2) tensor of [start, end) segment indices per ring.
+            Ring vertices are segment_starts[start:end].
+        polygon_geom_indices: (R,) tensor mapping each ring to geometry index.
+        geom_ring_offsets: (G_poly+1,) CSR offsets for rings per polygon geometry.
         spatial_index: Optional spatial index for fast distance queries.
     """
 
@@ -96,10 +97,11 @@ class GPUGeometryCollection:
     point_to_geom: torch.Tensor
 
     # Polygon data (for inside/outside tests)
-    polygon_vertices: torch.Tensor
-    polygon_ranges: torch.Tensor
+    # polygon_segment_ranges: (R, 2) tensor of [start, end) segment indices per ring
+    # Ring vertices can be read from segment_starts[start:end]
+    polygon_segment_ranges: torch.Tensor
     polygon_geom_indices: torch.Tensor
-    # CSR offsets mapping polygon geometry index to its rings in polygon_ranges
+    # CSR offsets mapping polygon geometry index to its rings in polygon_segment_ranges
     # geom_ring_offsets[i:i+1] gives the range of rings for polygon geometry i
     geom_ring_offsets: torch.Tensor
 
@@ -134,10 +136,8 @@ class GPUGeometryCollection:
         point_to_geom_list = []
 
         # Collect polygon data
-        polygon_vertices_list = []
-        polygon_ranges_list = []
+        polygon_segment_ranges_list = []
         polygon_geom_indices_list = []
-        vertex_offset = 0
 
         for geom_idx, geom in enumerate(geometries):
             geom_type = geom.geom_type
@@ -157,31 +157,27 @@ class GPUGeometryCollection:
 
             elif geom_type == "Polygon":
                 geometry_types.append(GeometryType.POLYGON)
-                vertex_offset = _process_polygon(
+                _process_polygon(
                     geom,
                     geom_idx,
                     segment_starts_list,
                     segment_ends_list,
                     segment_to_geom_list,
-                    polygon_vertices_list,
-                    polygon_ranges_list,
+                    polygon_segment_ranges_list,
                     polygon_geom_indices_list,
-                    vertex_offset,
                 )
 
             elif geom_type == "MultiPolygon":
                 geometry_types.append(GeometryType.MULTIPOLYGON)
                 for poly in geom.geoms:
-                    vertex_offset = _process_polygon(
+                    _process_polygon(
                         poly,
                         geom_idx,
                         segment_starts_list,
                         segment_ends_list,
                         segment_to_geom_list,
-                        polygon_vertices_list,
-                        polygon_ranges_list,
+                        polygon_segment_ranges_list,
                         polygon_geom_indices_list,
-                        vertex_offset,
                     )
 
             else:
@@ -221,12 +217,9 @@ class GPUGeometryCollection:
             point_to_geom = torch.empty((0,), dtype=torch.long, device=device)
 
         # Polygons
-        if polygon_vertices_list:
-            polygon_vertices = torch.tensor(
-                polygon_vertices_list, dtype=torch.float32, device=device
-            )
-            polygon_ranges = torch.tensor(
-                polygon_ranges_list, dtype=torch.long, device=device
+        if polygon_segment_ranges_list:
+            polygon_segment_ranges = torch.tensor(
+                polygon_segment_ranges_list, dtype=torch.long, device=device
             )
             polygon_geom_indices = torch.tensor(
                 polygon_geom_indices_list, dtype=torch.long, device=device
@@ -243,8 +236,7 @@ class GPUGeometryCollection:
                 counts.cumsum(0)
             ])
         else:
-            polygon_vertices = torch.empty((0, 2), dtype=torch.float32, device=device)
-            polygon_ranges = torch.empty((0, 2), dtype=torch.long, device=device)
+            polygon_segment_ranges = torch.empty((0, 2), dtype=torch.long, device=device)
             polygon_geom_indices = torch.empty((0,), dtype=torch.long, device=device)
             geom_ring_offsets = torch.zeros(1, dtype=torch.long, device=device)
 
@@ -257,8 +249,7 @@ class GPUGeometryCollection:
             segment_to_geom=segment_to_geom,
             point_coords=point_coords,
             point_to_geom=point_to_geom,
-            polygon_vertices=polygon_vertices,
-            polygon_ranges=polygon_ranges,
+            polygon_segment_ranges=polygon_segment_ranges,
             polygon_geom_indices=polygon_geom_indices,
             geom_ring_offsets=geom_ring_offsets,
         )
@@ -320,9 +311,28 @@ class GPUGeometryCollection:
             )
 
         # Handle Polygon signed distances
-        if self.polygon_ranges.shape[0] > 0:
+        if self.polygon_segment_ranges.shape[0] > 0:
+            # Reconstruct polygon_vertices and polygon_ranges for the fallback function
+            # Ring vertices are segment_starts[seg_start:seg_end]
+            polygon_vertices_list = []
+            polygon_ranges_list = []
+            vertex_offset = 0
+            for i in range(self.polygon_segment_ranges.shape[0]):
+                seg_start = self.polygon_segment_ranges[i, 0].item()
+                seg_end = self.polygon_segment_ranges[i, 1].item()
+                ring_verts = self.segment_starts[seg_start:seg_end]
+                polygon_vertices_list.append(ring_verts)
+                num_verts = seg_end - seg_start
+                polygon_ranges_list.append([vertex_offset, vertex_offset + num_verts])
+                vertex_offset += num_verts
+
+            polygon_vertices = torch.cat(polygon_vertices_list, dim=0)
+            polygon_ranges = torch.tensor(
+                polygon_ranges_list, dtype=torch.long, device=self.device
+            )
+
             signed_distances = gpu_distance.signed_distance_to_polygons(
-                query_points, self.polygon_vertices, self.polygon_ranges
+                query_points, polygon_vertices, polygon_ranges
             )  # (Q, num_polygon_rings)
 
             # Map back to geometry indices
@@ -916,69 +926,10 @@ class GPUGeometryCollection:
             polygon_mask = (self.geometry_types[seg_result_geom_indices] == GeometryType.POLYGON) | \
                           (self.geometry_types[seg_result_geom_indices] == GeometryType.MULTIPOLYGON)
 
-            if False and polygon_mask.any() and len(self.polygon_ranges) > 0:
-                # For polygons, check if query points are inside
-                poly_particle_indices = seg_result_particle_indices[polygon_mask]  # Original indices
-                poly_geom_indices = seg_result_geom_indices[polygon_mask]
-                # Convert original indices to local indices for indexing valid_query_points
-                poly_local_indices = original_to_local[poly_particle_indices]
-                poly_query_points = valid_query_points[poly_local_indices]
-
-                # Optimized batched polygon check
-                unique_poly_geoms = torch.unique(poly_geom_indices)
-
-                # Batch check all at once instead of looping
-                if len(unique_poly_geoms) > 0:
-                    # Get all polygon ranges we need to check
-                    all_poly_ranges = []
-                    geom_to_range_idx = {}
-                    for g_idx in unique_poly_geoms:
-                        poly_ranges_mask = self.polygon_geom_indices == g_idx
-                        if poly_ranges_mask.any():
-                            poly_ranges_for_geom = self.polygon_ranges[poly_ranges_mask]
-                            geom_to_range_idx[g_idx.item()] = len(all_poly_ranges)
-                            all_poly_ranges.append(poly_ranges_for_geom)
-
-                    if all_poly_ranges:
-                        # Concatenate all polygon ranges
-                        all_ranges_cat = torch.cat(all_poly_ranges, dim=0)
-
-                        # Batch check all query points against all polygons
-                        inside_all = gpu_distance.point_in_polygon_winding(
-                            poly_query_points,
-                            self.polygon_vertices,
-                            all_ranges_cat,
-                        )  # (num_poly_queries, num_polys_total)
-
-                        # Update distances for inside points
-                        range_offset = 0
-                        for g_idx in unique_poly_geoms:
-                            if g_idx.item() not in geom_to_range_idx:
-                                continue
-
-                            # Find particles for this geometry
-                            geom_mask = poly_geom_indices == g_idx
-                            particles_for_geom = poly_particle_indices[geom_mask]
-
-                            # Get the polygon ranges for this geometry
-                            num_polys = all_poly_ranges[geom_to_range_idx[g_idx.item()]].shape[0]
-
-                            # Check if any particle is inside any polygon of this geometry
-                            inside_geom = inside_all[geom_mask, range_offset:range_offset+num_polys]
-                            inside_any = inside_geom.any(dim=1)
-
-                            if inside_any.any():
-                                # Set distance to 0 for inside particles
-                                particles_inside = particles_for_geom[inside_any]
-                                for p_idx in particles_inside:
-                                    result_idx = torch.where(
-                                        (seg_result_particle_indices == p_idx) &
-                                        (seg_result_geom_indices == g_idx)
-                                    )[0]
-                                    if len(result_idx) > 0:
-                                        min_distances_seg[result_idx[0]] = 0.0
-
-                            range_offset += num_polys
+            if False and polygon_mask.any() and len(self.polygon_segment_ranges) > 0:
+                # NOTE: This code path is disabled. If enabling, update to use
+                # polygon_segment_ranges and derive vertices from segment_starts.
+                pass
         else:
             seg_result_particle_indices = torch.empty(0, dtype=torch.long, device=self.device)
             seg_result_geom_indices = torch.empty(0, dtype=torch.long, device=self.device)
@@ -1058,6 +1009,13 @@ class GPUGeometryCollection:
 
         idx = self.spatial_index
 
+        # Note: polygon_vertices, polygon_ranges, polygon_geom_indices are passed
+        # as empty tensors because they're unused placeholder parameters in the
+        # C++ function. Point-in-polygon is handled separately via point_in_polygon_cuda.
+        empty_float = torch.empty((0, 2), dtype=torch.float32, device=self.device)
+        empty_long = torch.empty((0, 2), dtype=torch.long, device=self.device)
+        empty_long_1d = torch.empty((0,), dtype=torch.long, device=self.device)
+
         particle_indices, geometry_indices, distances = sdp.query_distances_cuda(
             query_points,
             self.segment_starts,
@@ -1066,9 +1024,9 @@ class GPUGeometryCollection:
             self.point_coords,
             self.point_to_geom,
             self.geometry_types,
-            self.polygon_vertices,
-            self.polygon_ranges,
-            self.polygon_geom_indices,
+            empty_float,   # polygon_vertices (unused)
+            empty_long,    # polygon_ranges (unused)
+            empty_long_1d, # polygon_geom_indices (unused)
             self.num_geometries,
             idx.cell_segment_indices,
             idx.cell_offsets,
@@ -1096,10 +1054,11 @@ class GPUGeometryCollection:
 
             # Check ALL query points against all polygon geometries
             # This is O(N * P) but necessary for points far from edges
+            # Ring vertices are read from segment_starts to avoid duplicate storage
             is_inside_all = sdp.point_in_polygon_cuda(
                 query_points,
-                self.polygon_vertices,
-                self.polygon_ranges,
+                self.segment_starts,
+                self.polygon_segment_ranges,
                 self.polygon_geom_indices,
                 self.geom_ring_offsets,
             )  # (N, num_polygon_geoms) bool tensor
@@ -1184,16 +1143,17 @@ def _process_polygon(
     segment_starts_list: list,
     segment_ends_list: list,
     segment_to_geom_list: list,
-    polygon_vertices_list: list,
-    polygon_ranges_list: list,
+    polygon_segment_ranges_list: list,
     polygon_geom_indices_list: list,
-    vertex_offset: int,
-) -> int:
+) -> None:
     """Process a single polygon, adding its data to the collection lists.
 
     Processes the exterior ring and all interior rings (holes). All rings
     share the same geom_idx. The winding number algorithm handles holes
     correctly because exterior rings are CCW and hole rings are CW.
+
+    Ring vertices are stored as segment_starts for consecutive segments,
+    avoiding duplicate storage of coordinates.
 
     Args:
         polygon: Shapely polygon to process
@@ -1201,13 +1161,8 @@ def _process_polygon(
         segment_starts_list: List to append segment start coordinates
         segment_ends_list: List to append segment end coordinates
         segment_to_geom_list: List to append geometry indices for segments
-        polygon_vertices_list: List to append polygon vertices
-        polygon_ranges_list: List to append [start, end) vertex ranges
+        polygon_segment_ranges_list: List to append [start, end) segment indices per ring
         polygon_geom_indices_list: List to append geometry indices for rings
-        vertex_offset: Current offset into polygon_vertices
-
-    Returns:
-        Updated vertex_offset after processing all rings
     """
     # Ensure correct ring orientation: exterior CCW, holes CW
     # This is required for the winding number algorithm to work correctly
@@ -1224,17 +1179,17 @@ def _process_polygon(
             # Skip degenerate rings
             continue
 
+        # Track segment range for this ring
+        ring_segment_start = len(segment_starts_list)
+
         # Add segments for this ring
         for i in range(len(ring_coords)):
             segment_starts_list.append(ring_coords[i])
             segment_ends_list.append(ring_coords[(i + 1) % len(ring_coords)])
             segment_to_geom_list.append(geom_idx)
 
-        # Add polygon vertices for inside/outside test
-        polygon_vertices_list.extend(ring_coords)
-        polygon_ranges_list.append([vertex_offset, vertex_offset + len(ring_coords)])
+        ring_segment_end = len(segment_starts_list)
+
+        # Store segment range for this ring (vertices are segment_starts[start:end])
+        polygon_segment_ranges_list.append([ring_segment_start, ring_segment_end])
         polygon_geom_indices_list.append(geom_idx)
-
-        vertex_offset += len(ring_coords)
-
-    return vertex_offset

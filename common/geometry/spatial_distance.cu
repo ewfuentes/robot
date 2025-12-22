@@ -606,16 +606,15 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> query_distances_cuda(
 // Kernel for point-in-polygon testing using winding number algorithm
 // Each block processes one polygon geometry, threads process query points
 // Sums winding numbers across all rings of the geometry (handles holes correctly)
+// Ring vertices are read from segment_starts to avoid duplicate storage
 __global__ void point_in_polygon_kernel(
-    const float* __restrict__ query_points,           // (N, 2)
+    const float* __restrict__ query_points,              // (N, 2)
     const int64_t num_queries,
-    const float* __restrict__ polygon_vertices,       // (V, 2)
-    const int64_t* __restrict__ polygon_ranges,       // (R, 2) [start, end) per ring
-    const int64_t* __restrict__ polygon_geom_indices, // (R,) geometry index per ring
-    const int64_t num_rings,
-    const int64_t* __restrict__ geom_ring_offsets,    // (G_poly+1,) CSR offsets
+    const float* __restrict__ segment_starts,            // (S, 2) - ring vertices are here
+    const int64_t* __restrict__ polygon_segment_ranges,  // (R, 2) [start, end) segment indices per ring
+    const int64_t* __restrict__ geom_ring_offsets,       // (G_poly+1,) CSR offsets
     const int64_t num_polygon_geoms,
-    bool* __restrict__ is_inside                      // (N, G_poly) output
+    bool* __restrict__ is_inside                         // (N, G_poly) output
 ) {
     int geom_idx = blockIdx.x;
     if (geom_idx >= num_polygon_geoms) return;
@@ -633,21 +632,23 @@ __global__ void point_in_polygon_kernel(
 
         // Sum winding numbers across all rings of this geometry
         for (int64_t r = ring_start; r < ring_end; r++) {
-            int64_t vert_start = polygon_ranges[r * 2];
-            int64_t vert_end = polygon_ranges[r * 2 + 1];
-            int64_t num_verts = vert_end - vert_start;
+            int64_t seg_start = polygon_segment_ranges[r * 2];
+            int64_t seg_end = polygon_segment_ranges[r * 2 + 1];
+            int64_t num_verts = seg_end - seg_start;
 
             if (num_verts < 3) continue;
 
             // Compute winding number for this ring
+            // Vertices are segment_starts[seg_start:seg_end]
             for (int64_t i = 0; i < num_verts; i++) {
-                int64_t i1 = vert_start + i;
-                int64_t i2 = vert_start + ((i + 1) % num_verts);
+                int64_t seg_idx1 = seg_start + i;
+                int64_t seg_idx2 = seg_start + ((i + 1) % num_verts);
 
-                float x1 = polygon_vertices[i1 * 2];
-                float y1 = polygon_vertices[i1 * 2 + 1];
-                float x2 = polygon_vertices[i2 * 2];
-                float y2 = polygon_vertices[i2 * 2 + 1];
+                // Read vertices from segment_starts
+                float x1 = segment_starts[seg_idx1 * 2];
+                float y1 = segment_starts[seg_idx1 * 2 + 1];
+                float x2 = segment_starts[seg_idx2 * 2];
+                float y2 = segment_starts[seg_idx2 * 2 + 1];
 
                 total_winding += winding_number_edge(px, py, x1, y1, x2, y2);
             }
@@ -660,8 +661,8 @@ __global__ void point_in_polygon_kernel(
 
 torch::Tensor point_in_polygon_cuda(
     const torch::Tensor& query_points,
-    const torch::Tensor& polygon_vertices,
-    const torch::Tensor& polygon_ranges,
+    const torch::Tensor& segment_starts,
+    const torch::Tensor& polygon_segment_ranges,
     const torch::Tensor& polygon_geom_indices,
     const torch::Tensor& geom_ring_offsets
 ) {
@@ -672,7 +673,7 @@ torch::Tensor point_in_polygon_cuda(
     TORCH_CHECK(query_points.scalar_type() == torch::kFloat32, "query_points must be float32");
 
     int64_t num_queries = query_points.size(0);
-    int64_t num_rings = polygon_ranges.size(0);
+    int64_t num_rings = polygon_segment_ranges.size(0);
     int64_t num_polygon_geoms = geom_ring_offsets.size(0) - 1;
 
     if (num_queries == 0 || num_polygon_geoms == 0) {
@@ -694,10 +695,8 @@ torch::Tensor point_in_polygon_cuda(
     point_in_polygon_kernel<<<blocks, threads>>>(
         query_points.data_ptr<float>(),
         num_queries,
-        polygon_vertices.data_ptr<float>(),
-        polygon_ranges.data_ptr<int64_t>(),
-        polygon_geom_indices.data_ptr<int64_t>(),
-        num_rings,
+        segment_starts.data_ptr<float>(),
+        polygon_segment_ranges.data_ptr<int64_t>(),
         geom_ring_offsets.data_ptr<int64_t>(),
         num_polygon_geoms,
         is_inside.data_ptr<bool>()

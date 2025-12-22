@@ -56,9 +56,8 @@ class TestGPUGeometryCollection(unittest.TestCase):
         self.assertEqual(collection.num_geometries, 2)
         # Each polygon has 4 segments
         self.assertEqual(collection.segment_starts.shape[0], 8)
-        # Each polygon has 4 vertices
-        self.assertEqual(collection.polygon_vertices.shape[0], 8)
-        self.assertEqual(collection.polygon_ranges.shape, (2, 2))
+        # Each polygon has 1 ring with 4 segments
+        self.assertEqual(collection.polygon_segment_ranges.shape, (2, 2))
 
     def test_from_shapely_mixed(self):
         """Test conversion of mixed geometry types."""
@@ -409,8 +408,7 @@ class TestBenchmark(unittest.TestCase):
             segment_to_geom=torch.empty(0, dtype=torch.long),
             point_coords=torch.empty((0, 2), dtype=torch.float32),
             point_to_geom=torch.empty(0, dtype=torch.long),
-            polygon_vertices=torch.empty((0, 2), dtype=torch.float32),
-            polygon_ranges=torch.empty((0, 2), dtype=torch.long),
+            polygon_segment_ranges=torch.empty((0, 2), dtype=torch.long),
             polygon_geom_indices=torch.empty(0, dtype=torch.long),
             geom_ring_offsets=torch.zeros(1, dtype=torch.long),
         )
