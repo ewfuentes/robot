@@ -129,6 +129,8 @@ def point_in_polygon_winding(
     The winding number counts how many times the polygon winds around the point.
     A non-zero winding number means the point is inside.
 
+    Uses chunking to avoid memory issues while still batching the main computation.
+
     Args:
         query_points: (Q, 2) tensor of query point coordinates
         polygon_vertices: (V, 2) tensor of all polygon vertices concatenated
@@ -149,23 +151,6 @@ def point_in_polygon_winding(
 
     if P == 0:
         return torch.zeros((Q, 0), device=device, dtype=torch.bool)
-
-    # Use batched version if available, otherwise fall back to loop
-    return point_in_polygon_winding_batched(query_points, polygon_vertices, polygon_ranges)
-
-
-def point_in_polygon_winding_batched(
-    query_points: torch.Tensor,
-    polygon_vertices: torch.Tensor,
-    polygon_ranges: torch.Tensor,
-) -> torch.Tensor:
-    """Optimized batched version of point_in_polygon_winding.
-
-    Uses chunking to avoid memory issues while still batching the main computation.
-    """
-    Q = query_points.shape[0]
-    P = polygon_ranges.shape[0]
-    device = query_points.device
 
     result = torch.zeros((Q, P), device=device, dtype=torch.bool)
 

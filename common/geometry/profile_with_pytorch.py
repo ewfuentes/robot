@@ -50,46 +50,17 @@ def main():
     grid_min = idx.grid_origin
     grid_max = idx.grid_origin + idx.grid_dims.float() * idx.cell_size
 
-    num_queries = 1000000
+    num_queries = 100000
     query_points = torch.rand(num_queries, 2, device=device)
     query_points = query_points * (grid_max - grid_min) + grid_min
 
     print(f"\nProfiling with {num_queries:,} queries...")
     print("=" * 80)
 
-    # Warm-up both implementations
+    # Warm-up
     print("Warming up...")
-    _ = collection.query_distances(query_points[:100])
     _ = collection.query_distances_cuda(query_points[:100])
     torch.cuda.synchronize()
-
-    # Profile PyTorch implementation
-    print("\n" + "=" * 80)
-    print("PROFILING: PyTorch Implementation")
-    print("=" * 80)
-
-    with profile(
-        activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-        record_shapes=True,
-        profile_memory=True,
-        with_stack=True,
-    ) as prof:
-        with record_function("pytorch_query_distances"):
-            for _ in range(10):
-                result_pytorch = collection.query_distances(query_points)
-
-    torch.cuda.synchronize()
-
-    # Export chrome trace
-    trace_file = "/tmp/pytorch_trace.json"
-    prof.export_chrome_trace(trace_file)
-    print(f"\nExported chrome trace to: {trace_file}")
-
-    print("\nTop operations by CUDA time:")
-    print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=20))
-
-    print("\nTop operations by CPU time:")
-    print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=10))
 
     # Profile CUDA kernel implementation
     print("\n" + "=" * 80)
@@ -123,9 +94,7 @@ def main():
     print("\n" + "=" * 80)
     print("SUMMARY")
     print("=" * 80)
-    print(f"PyTorch result pairs: {result_pytorch.shape[0]:,}")
     print(f"CUDA result pairs: {result_cuda.shape[0]:,}")
-    print(f"Results match: {torch.allclose(result_pytorch, result_cuda, rtol=1e-4)}")
 
 
 if __name__ == "__main__":

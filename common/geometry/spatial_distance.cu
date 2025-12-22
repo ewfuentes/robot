@@ -532,18 +532,176 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> query_segment_distances(
         cell_segment_indices, cell_offsets, device);
 }
 
+// Build candidate (point, polygon) pairs from sorted particle data
+// Returns (candidate_point_idx, candidate_poly_idx)
+std::tuple<torch::Tensor, torch::Tensor> build_polygon_candidates(
+    const SortedParticleData& sorted_data,
+    const torch::Tensor& cell_polygon_indices,
+    const torch::Tensor& cell_polygon_offsets,
+    const torch::Tensor& grid_dims,
+    torch::Device device) {
+    RECORD_FUNCTION("cuda_kernel::build_polygon_candidates", std::vector<c10::IValue>{});
+
+    if (sorted_data.empty || cell_polygon_indices.numel() == 0) {
+        return std::make_tuple(
+            torch::empty({0}, torch::TensorOptions().dtype(torch::kInt64).device(device)),
+            torch::empty({0}, torch::TensorOptions().dtype(torch::kInt64).device(device)));
+    }
+
+    // Get polygon candidates per particle using CSR lookup
+    auto poly_starts = cell_polygon_offsets.index_select(0, sorted_data.sorted_cell_ids);
+    auto poly_ends = cell_polygon_offsets.index_select(0, sorted_data.sorted_cell_ids + 1);
+    auto num_candidates_per_point = poly_ends - poly_starts;
+    int64_t total_candidates = num_candidates_per_point.sum().item<int64_t>();
+
+    if (total_candidates == 0) {
+        return std::make_tuple(
+            torch::empty({0}, torch::TensorOptions().dtype(torch::kInt64).device(device)),
+            torch::empty({0}, torch::TensorOptions().dtype(torch::kInt64).device(device)));
+    }
+
+    // Expand particles by number of candidates
+    auto candidate_point_idx = sorted_data.sorted_particle_indices.repeat_interleave(num_candidates_per_point);
+
+    // Generate polygon indices using CSR expansion
+    auto offsets = torch::cat({
+        torch::zeros({1}, torch::TensorOptions().dtype(torch::kInt64).device(device)),
+        num_candidates_per_point.cumsum(0)
+    });
+
+    auto flat_indices = torch::arange(total_candidates, torch::TensorOptions().dtype(torch::kInt64).device(device));
+    auto sorted_particle_expanded = torch::arange(sorted_data.sorted_particle_indices.size(0),
+        torch::TensorOptions().dtype(torch::kInt64).device(device)).repeat_interleave(num_candidates_per_point);
+    auto local_poly_offset = flat_indices - offsets.index_select(0, sorted_particle_expanded);
+
+    // Look up the actual polygon geometry indices
+    auto poly_starts_expanded = poly_starts.index_select(0, sorted_particle_expanded);
+    auto candidate_poly_idx = cell_polygon_indices.index_select(0, poly_starts_expanded + local_poly_offset);
+
+    return std::make_tuple(candidate_point_idx, candidate_poly_idx);
+}
+
+// Merge polygon results: set dist=0 for inside points, add new (point, polygon) pairs
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> merge_polygon_results(
+    const torch::Tensor& particle_indices,
+    const torch::Tensor& geometry_indices,
+    const torch::Tensor& distances,
+    const torch::Tensor& candidate_point_idx,
+    const torch::Tensor& candidate_poly_idx,
+    const torch::Tensor& is_inside,
+    const torch::Tensor& polygon_geom_indices,
+    int64_t num_geometries,
+    torch::Device device) {
+    RECORD_FUNCTION("cuda_kernel::merge_polygon_results", std::vector<c10::IValue>{});
+
+    auto opts_long = torch::TensorOptions().dtype(torch::kInt64).device(device);
+    auto opts_float = torch::TensorOptions().dtype(torch::kFloat32).device(device);
+
+    // Get unique polygon geometry indices
+    auto unique_poly_geoms = std::get<0>(torch::unique_consecutive(polygon_geom_indices));
+
+    // Create mask for polygon geometries in existing results
+    auto is_polygon_geom = torch::zeros({num_geometries}, torch::TensorOptions().dtype(torch::kBool).device(device));
+    is_polygon_geom.index_fill_(0, unique_poly_geoms, true);
+
+    // Copy distances for modification
+    auto merged_distances = distances.clone();
+
+    // Compute sparse keys for is_inside lookup
+    auto sparse_keys = candidate_point_idx * num_geometries + candidate_poly_idx;
+
+    if (particle_indices.numel() > 0) {
+        auto polygon_mask = is_polygon_geom.index_select(0, geometry_indices);
+
+        if (polygon_mask.any().item<bool>()) {
+            auto poly_particle_indices = particle_indices.index({polygon_mask});
+            auto poly_geom_indices = geometry_indices.index({polygon_mask});
+            auto existing_keys = poly_particle_indices * num_geometries + poly_geom_indices;
+
+            if (existing_keys.numel() > 0) {
+                // Sort sparse keys for binary search
+                auto sort_result = sparse_keys.sort();
+                auto sparse_keys_sorted = std::get<0>(sort_result);
+                auto sort_idx = std::get<1>(sort_result);
+                auto is_inside_sorted = is_inside.index_select(0, sort_idx);
+
+                // Find where existing_keys would be inserted in sorted sparse_keys
+                auto match_idx = torch::searchsorted(sparse_keys_sorted, existing_keys);
+
+                // Check if matches are valid
+                auto max_idx = sparse_keys_sorted.size(0) - 1;
+                auto match_idx_clamped = match_idx.clamp(0, max_idx);
+                auto valid_match = (match_idx < sparse_keys_sorted.size(0)) &
+                                   (sparse_keys_sorted.index_select(0, match_idx_clamped) == existing_keys);
+
+                // Get is_inside for valid matches
+                auto inside_for_existing = torch::zeros({existing_keys.size(0)},
+                    torch::TensorOptions().dtype(torch::kBool).device(device));
+                auto valid_indices = torch::where(valid_match)[0];
+                if (valid_indices.numel() > 0) {
+                    auto valid_match_idx = match_idx.index_select(0, valid_indices);
+                    inside_for_existing.index_put_({valid_indices}, is_inside_sorted.index_select(0, valid_match_idx));
+                }
+
+                // Set distance to 0 for inside points
+                auto inside_full_mask = torch::zeros({distances.size(0)},
+                    torch::TensorOptions().dtype(torch::kBool).device(device));
+                inside_full_mask.index_put_({polygon_mask}, inside_for_existing);
+                merged_distances.index_put_({inside_full_mask}, 0.0f);
+            }
+        }
+    }
+
+    // Add entries for points inside polygons but not near edges
+    auto inside_indices = torch::where(is_inside)[0];
+    if (inside_indices.numel() > 0) {
+        auto inside_point_idx = candidate_point_idx.index_select(0, inside_indices);
+        auto inside_poly_geom_idx = candidate_poly_idx.index_select(0, inside_indices);
+
+        // Build existing keys for deduplication
+        torch::Tensor existing_keys;
+        if (particle_indices.numel() > 0) {
+            auto polygon_mask = is_polygon_geom.index_select(0, geometry_indices);
+            existing_keys = particle_indices.index({polygon_mask}) * num_geometries +
+                           geometry_indices.index({polygon_mask});
+        } else {
+            existing_keys = torch::empty({0}, opts_long);
+        }
+
+        // Compute new keys
+        auto new_keys = inside_point_idx * num_geometries + inside_poly_geom_idx;
+
+        // Find keys that don't exist in results yet
+        auto new_mask = ~torch::isin(new_keys, existing_keys);
+        auto new_indices = torch::where(new_mask)[0];
+
+        if (new_indices.numel() > 0) {
+            auto new_p = inside_point_idx.index_select(0, new_indices);
+            auto new_g = inside_poly_geom_idx.index_select(0, new_indices);
+            auto new_d = torch::zeros({new_p.size(0)}, opts_float);
+
+            return std::make_tuple(
+                torch::cat({particle_indices, new_p}),
+                torch::cat({geometry_indices, new_g}),
+                torch::cat({merged_distances, new_d}));
+        }
+    }
+
+    return std::make_tuple(particle_indices, geometry_indices, merged_distances);
+}
+
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> query_distances_cuda(
     const torch::Tensor& query_points, const torch::Tensor& segment_starts,
     const torch::Tensor& segment_ends, const torch::Tensor& segment_to_geom,
     const torch::Tensor& point_coords, const torch::Tensor& point_to_geom,
-    const torch::Tensor& geometry_types, const torch::Tensor& polygon_vertices,
-    const torch::Tensor& polygon_ranges, const torch::Tensor& polygon_geom_indices,
     int64_t num_geometries, const torch::Tensor& cell_segment_indices,
     const torch::Tensor& cell_offsets, const torch::Tensor& cell_geom_indices,
     const torch::Tensor& cell_geom_offsets, const torch::Tensor& cell_point_indices,
     const torch::Tensor& cell_point_offsets, const torch::Tensor& cell_point_geom_indices,
     const torch::Tensor& cell_point_geom_offsets, const torch::Tensor& grid_origin, float cell_size,
-    const torch::Tensor& grid_dims) {
+    const torch::Tensor& grid_dims, const torch::Tensor& cell_polygon_indices,
+    const torch::Tensor& cell_polygon_offsets, const torch::Tensor& polygon_segment_ranges,
+    const torch::Tensor& polygon_geom_indices, const torch::Tensor& geom_ring_offsets) {
     // Check inputs
     TORCH_CHECK(query_points.is_cuda(), "query_points must be on CUDA");
     TORCH_CHECK(query_points.dim() == 2 && query_points.size(1) == 2,
@@ -597,10 +755,48 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> query_distances_cuda(
             device);
 
     // Concatenate segment and point results
-    return std::make_tuple(
-        torch::cat({seg_particles, pt_particles}, 0),
-        torch::cat({seg_geoms, pt_geoms}, 0),
-        torch::cat({seg_dists, pt_dists}, 0));
+    auto particle_indices = torch::cat({seg_particles, pt_particles}, 0);
+    auto geometry_indices = torch::cat({seg_geoms, pt_geoms}, 0);
+    auto distances = torch::cat({seg_dists, pt_dists}, 0);
+
+    // Step 4: Handle polygon point-in-polygon checks
+    int64_t num_polygon_geoms = geom_ring_offsets.size(0) - 1;
+    if (num_polygon_geoms > 0 && cell_polygon_indices.numel() > 0) {
+        // Build polygon candidates using the sorted particle data (reuses cell hashing!)
+        auto [candidate_point_idx, candidate_poly_idx] = build_polygon_candidates(
+            sorted_data, cell_polygon_indices, cell_polygon_offsets, grid_dims, device);
+
+        if (candidate_point_idx.numel() > 0) {
+            // Get unique polygon geometry indices and create mapping
+            auto unique_poly_geoms = std::get<0>(torch::_unique(polygon_geom_indices, true));
+            auto geom_to_poly_idx = torch::full({num_geometries}, -1,
+                torch::TensorOptions().dtype(torch::kInt64).device(device));
+            geom_to_poly_idx.index_put_(
+                {unique_poly_geoms},
+                torch::arange(unique_poly_geoms.size(0),
+                    torch::TensorOptions().dtype(torch::kInt64).device(device)));
+
+            // Convert global geometry indices to local polygon indices
+            auto candidate_local_poly_idx = geom_to_poly_idx.index_select(0, candidate_poly_idx);
+
+            // Call sparse point-in-polygon kernel
+            auto is_inside = point_in_polygon_sparse_cuda(
+                query_points,
+                candidate_point_idx,
+                candidate_local_poly_idx,
+                segment_starts,
+                polygon_segment_ranges,
+                geom_ring_offsets);
+
+            // Merge results: set dist=0 for inside, add new pairs
+            std::tie(particle_indices, geometry_indices, distances) = merge_polygon_results(
+                particle_indices, geometry_indices, distances,
+                candidate_point_idx, candidate_poly_idx, is_inside,
+                polygon_geom_indices, num_geometries, device);
+        }
+    }
+
+    return std::make_tuple(particle_indices, geometry_indices, distances);
 }
 
 // Sparse kernel for point-in-polygon testing
