@@ -1,14 +1,14 @@
 
-#include <c10/cuda/CUDAGuard.h>
-
 #include "common/torch/example_kernel.hh"
+#include <c10/cuda/CUDAGuard.h>
 
 namespace robot::torch {
 
 // Template CUDA kernel that works with any scalar type
 template <typename scalar_t>
-__global__ void square_kernel(const scalar_t* __restrict__ input, scalar_t* __restrict__ output,
-                              int64_t numel) {
+__global__ void square_kernel(const scalar_t* __restrict__ input,
+                               scalar_t* __restrict__ output,
+                               int64_t numel) {
     int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < numel) {
         scalar_t val = input[idx];
@@ -16,7 +16,7 @@ __global__ void square_kernel(const scalar_t* __restrict__ input, scalar_t* __re
     }
 }
 
-::torch::Tensor square(const ::torch::Tensor& in) {
+::torch::Tensor square(const ::torch::Tensor &in) {
     // Check input is on CUDA
     TORCH_CHECK(in.is_cuda(), "Input tensor must be on CUDA");
     TORCH_CHECK(in.is_contiguous(), "Input tensor must be contiguous");
@@ -37,8 +37,11 @@ __global__ void square_kernel(const scalar_t* __restrict__ input, scalar_t* __re
 
     // Dispatch to the right kernel based on dtype
     AT_DISPATCH_ALL_TYPES(in.scalar_type(), "square_kernel", [&] {
-        square_kernel<scalar_t>
-            <<<blocks, threads>>>(in.data_ptr<scalar_t>(), output.data_ptr<scalar_t>(), numel);
+        square_kernel<scalar_t><<<blocks, threads>>>(
+            in.data_ptr<scalar_t>(),
+            output.data_ptr<scalar_t>(),
+            numel
+        );
     });
 
     // Check for CUDA errors
@@ -46,4 +49,4 @@ __global__ void square_kernel(const scalar_t* __restrict__ input, scalar_t* __re
 
     return output;
 }
-}  // namespace robot::torch
+}
