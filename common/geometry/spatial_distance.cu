@@ -329,20 +329,18 @@ __global__ void compute_distances_optimized_kernel(
 // Step 1: Hash particles to cells and sort by cell ID
 SortedParticleData hash_and_sort_particles(
     const torch::Tensor& query_points,
-    const torch::Tensor& grid_origin,
-    float cell_size,
-    const torch::Tensor& grid_dims) {
+    const GridConfig& grid) {
     RECORD_FUNCTION("cuda_kernel::hash_and_sort", std::vector<c10::IValue>{});
 
     SortedParticleData result;
     result.empty = false;
 
-    auto cell_coords = ((query_points - grid_origin) / cell_size).floor().to(torch::kInt64);
+    auto cell_coords = ((query_points - grid.origin) / grid.cell_size).floor().to(torch::kInt64);
     auto in_bounds =
-        (cell_coords.select(1, 0) >= 0) & (cell_coords.select(1, 0) < grid_dims[0]) &
-        (cell_coords.select(1, 1) >= 0) & (cell_coords.select(1, 1) < grid_dims[1]);
+        (cell_coords.select(1, 0) >= 0) & (cell_coords.select(1, 0) < grid.dims[0]) &
+        (cell_coords.select(1, 1) >= 0) & (cell_coords.select(1, 1) < grid.dims[1]);
 
-    auto cell_ids = cell_coords.select(1, 1) * grid_dims[0] + cell_coords.select(1, 0);
+    auto cell_ids = cell_coords.select(1, 1) * grid.dims[0] + cell_coords.select(1, 0);
 
     auto valid_indices = torch::where(in_bounds)[0];
     if (valid_indices.numel() == 0) {
@@ -367,8 +365,7 @@ BlockAssignmentData build_block_assignments(
     const SortedParticleData& sorted_data,
     const torch::Tensor& cell_offsets,
     const torch::Tensor& cell_geom_indices,
-    const torch::Tensor& cell_geom_offsets,
-    torch::Device device) {
+    const torch::Tensor& cell_geom_offsets) {
     RECORD_FUNCTION("cuda_kernel::build_block_assignments", std::vector<c10::IValue>{});
     BlockAssignmentData result;
     result.empty = false;
@@ -459,13 +456,12 @@ BlockAssignmentData build_block_assignments(
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> launch_distance_kernel(
     const SortedParticleData& sorted_data,
     const BlockAssignmentData& block_data,
-    const torch::Tensor& segment_starts,
-    const torch::Tensor& segment_ends,
-    const torch::Tensor& segment_to_geom,
+    const SegmentGeometry& segments,
     const torch::Tensor& cell_segment_indices,
-    const torch::Tensor& cell_offsets,
-    torch::Device device) {
+    const torch::Tensor& cell_offsets) {
     RECORD_FUNCTION("cuda_kernel::compute_distances_kernel", std::vector<c10::IValue>{});
+
+    auto device = sorted_data.sorted_particles.device();
 
     // Allocate three output tensors
     auto output_particle_indices =
@@ -488,9 +484,9 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> launch_distance_kernel(
         block_data.particle_ends.data_ptr<int64_t>(),
         block_data.block_cell_ids.data_ptr<int64_t>(),
         block_data.num_geoms_per_block.data_ptr<int64_t>(),
-        segment_starts.data_ptr<float>(),
-        segment_ends.data_ptr<float>(),
-        segment_to_geom.data_ptr<int64_t>(),
+        segments.starts.data_ptr<float>(),
+        segments.ends.data_ptr<float>(),
+        segments.to_geom.data_ptr<int64_t>(),
         cell_segment_indices.data_ptr<int64_t>(),
         cell_offsets.data_ptr<int64_t>(),
         block_data.local_to_global.data_ptr<int64_t>(),
@@ -506,18 +502,12 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> launch_distance_kernel(
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> query_segment_distances(
-        const SortedParticleData &sorted_data,
-        const torch::Tensor &segment_to_geom,
-        const torch::Tensor &cell_segment_indices,
-        const torch::Tensor &cell_offsets,
-        const torch::Tensor &cell_geom_indices,
-        const torch::Tensor &cell_geom_offsets,
-        const torch::Tensor &segment_starts,
-        const torch::Tensor &segment_ends,
-        const torch::Device device) {
+        const SortedParticleData& sorted_data,
+        const SegmentGeometry& segments,
+        const SegmentSpatialIndex& seg_idx) {
     // Step 2: Build block assignments using precomputed geometry info
     auto block_data = build_block_assignments(
-        sorted_data, cell_offsets, cell_geom_indices, cell_geom_offsets, device);
+        sorted_data, seg_idx.cell_offsets, seg_idx.geom_indices, seg_idx.geom_offsets);
     if (block_data.empty) {
         auto opts = sorted_data.sorted_particles.options();
         return std::make_tuple(
@@ -528,29 +518,27 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> query_segment_distances(
 
     // Step 3: Launch CUDA kernel (returns particle indices, geometry indices, distances)
     return launch_distance_kernel(
-        sorted_data, block_data, segment_starts, segment_ends, segment_to_geom,
-        cell_segment_indices, cell_offsets, device);
+        sorted_data, block_data, segments, seg_idx.segment_indices, seg_idx.cell_offsets);
 }
 
 // Build candidate (point, polygon) pairs from sorted particle data
 // Returns (candidate_point_idx, candidate_poly_idx)
 std::tuple<torch::Tensor, torch::Tensor> build_polygon_candidates(
     const SortedParticleData& sorted_data,
-    const torch::Tensor& cell_polygon_indices,
-    const torch::Tensor& cell_polygon_offsets,
-    const torch::Tensor& grid_dims,
-    torch::Device device) {
+    const PolygonSpatialIndex& poly_idx) {
     RECORD_FUNCTION("cuda_kernel::build_polygon_candidates", std::vector<c10::IValue>{});
 
-    if (sorted_data.empty || cell_polygon_indices.numel() == 0) {
+    auto device = sorted_data.sorted_particles.device();
+
+    if (sorted_data.empty || poly_idx.geom_indices.numel() == 0) {
         return std::make_tuple(
             torch::empty({0}, torch::TensorOptions().dtype(torch::kInt64).device(device)),
             torch::empty({0}, torch::TensorOptions().dtype(torch::kInt64).device(device)));
     }
 
     // Get polygon candidates per particle using CSR lookup
-    auto poly_starts = cell_polygon_offsets.index_select(0, sorted_data.sorted_cell_ids);
-    auto poly_ends = cell_polygon_offsets.index_select(0, sorted_data.sorted_cell_ids + 1);
+    auto poly_starts = poly_idx.cell_offsets.index_select(0, sorted_data.sorted_cell_ids);
+    auto poly_ends = poly_idx.cell_offsets.index_select(0, sorted_data.sorted_cell_ids + 1);
     auto num_candidates_per_point = poly_ends - poly_starts;
     int64_t total_candidates = num_candidates_per_point.sum().item<int64_t>();
 
@@ -576,9 +564,9 @@ std::tuple<torch::Tensor, torch::Tensor> build_polygon_candidates(
 
     // Look up the actual polygon geometry indices
     auto poly_starts_expanded = poly_starts.index_select(0, sorted_particle_expanded);
-    auto candidate_poly_idx = cell_polygon_indices.index_select(0, poly_starts_expanded + local_poly_offset);
+    auto candidate_poly_indices = poly_idx.geom_indices.index_select(0, poly_starts_expanded + local_poly_offset);
 
-    return std::make_tuple(candidate_point_idx, candidate_poly_idx);
+    return std::make_tuple(candidate_point_idx, candidate_poly_indices);
 }
 
 // Merge polygon results: set dist=0 for inside points, add new (point, polygon) pairs
@@ -691,17 +679,15 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> merge_polygon_results(
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> query_distances_cuda(
-    const torch::Tensor& query_points, const torch::Tensor& segment_starts,
-    const torch::Tensor& segment_ends, const torch::Tensor& segment_to_geom,
-    const torch::Tensor& point_coords, const torch::Tensor& point_to_geom,
-    int64_t num_geometries, const torch::Tensor& cell_segment_indices,
-    const torch::Tensor& cell_offsets, const torch::Tensor& cell_geom_indices,
-    const torch::Tensor& cell_geom_offsets, const torch::Tensor& cell_point_indices,
-    const torch::Tensor& cell_point_offsets, const torch::Tensor& cell_point_geom_indices,
-    const torch::Tensor& cell_point_geom_offsets, const torch::Tensor& grid_origin, float cell_size,
-    const torch::Tensor& grid_dims, const torch::Tensor& cell_polygon_indices,
-    const torch::Tensor& cell_polygon_offsets, const torch::Tensor& polygon_segment_ranges,
-    const torch::Tensor& polygon_geom_indices, const torch::Tensor& geom_ring_offsets) {
+    const torch::Tensor& query_points,
+    int64_t num_geometries,
+    const SegmentGeometry& segments,
+    const PointGeometry& points,
+    const PolygonRingData& poly_rings,
+    const GridConfig& grid,
+    const SegmentSpatialIndex& seg_idx,
+    const PointSpatialIndex& pt_idx,
+    const PolygonSpatialIndex& poly_idx) {
     // Check inputs
     TORCH_CHECK(query_points.is_cuda(), "query_points must be on CUDA");
     TORCH_CHECK(query_points.dim() == 2 && query_points.size(1) == 2,
@@ -721,7 +707,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> query_distances_cuda(
     c10::cuda::CUDAGuard device_guard(device);
 
     // Step 1: Hash particles to cells and sort
-    auto sorted_data = hash_and_sort_particles(query_points, grid_origin, cell_size, grid_dims);
+    auto sorted_data = hash_and_sort_particles(query_points, grid);
     if (sorted_data.empty) {
         auto opts = query_points.options();
         return std::make_tuple(
@@ -732,27 +718,14 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> query_distances_cuda(
 
     // Compute the distance to segments
     auto [seg_particles, seg_geoms, seg_dists] = query_segment_distances(
-            sorted_data,
-            segment_to_geom,
-            cell_segment_indices,
-            cell_offsets,
-            cell_geom_indices,
-            cell_geom_offsets,
-            segment_starts,
-            segment_ends,
-            device);
+            sorted_data, segments, seg_idx);
 
-    // Compute the distance to points
+    // Compute the distance to points (reuse segment distance code with points as degenerate segments)
+    SegmentGeometry point_as_segments{points.coords, points.coords, points.to_geom};
+    SegmentSpatialIndex pt_as_seg_idx{pt_idx.point_indices, pt_idx.cell_offsets,
+                                       pt_idx.geom_indices, pt_idx.geom_offsets};
     auto [pt_particles, pt_geoms, pt_dists] = query_segment_distances(
-            sorted_data,
-            point_to_geom,
-            cell_point_indices,
-            cell_point_offsets,
-            cell_point_geom_indices,
-            cell_point_geom_offsets,
-            point_coords,
-            point_coords,
-            device);
+            sorted_data, point_as_segments, pt_as_seg_idx);
 
     // Concatenate segment and point results
     auto particle_indices = torch::cat({seg_particles, pt_particles}, 0);
@@ -760,15 +733,15 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> query_distances_cuda(
     auto distances = torch::cat({seg_dists, pt_dists}, 0);
 
     // Step 4: Handle polygon point-in-polygon checks
-    int64_t num_polygon_geoms = geom_ring_offsets.size(0) - 1;
-    if (num_polygon_geoms > 0 && cell_polygon_indices.numel() > 0) {
+    int64_t num_polygon_geoms = poly_rings.geom_ring_offsets.size(0) - 1;
+    if (num_polygon_geoms > 0 && poly_idx.geom_indices.numel() > 0) {
         // Build polygon candidates using the sorted particle data (reuses cell hashing!)
         auto [candidate_point_idx, candidate_poly_idx] = build_polygon_candidates(
-            sorted_data, cell_polygon_indices, cell_polygon_offsets, grid_dims, device);
+            sorted_data, poly_idx);
 
         if (candidate_point_idx.numel() > 0) {
             // Get unique polygon geometry indices and create mapping
-            auto unique_poly_geoms = std::get<0>(torch::_unique(polygon_geom_indices, true));
+            auto unique_poly_geoms = std::get<0>(torch::_unique(poly_rings.geom_indices, true));
             auto geom_to_poly_idx = torch::full({num_geometries}, -1,
                 torch::TensorOptions().dtype(torch::kInt64).device(device));
             geom_to_poly_idx.index_put_(
@@ -784,15 +757,15 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> query_distances_cuda(
                 query_points,
                 candidate_point_idx,
                 candidate_local_poly_idx,
-                segment_starts,
-                polygon_segment_ranges,
-                geom_ring_offsets);
+                segments.starts,
+                poly_rings.segment_ranges,
+                poly_rings.geom_ring_offsets);
 
             // Merge results: set dist=0 for inside, add new pairs
             std::tie(particle_indices, geometry_indices, distances) = merge_polygon_results(
                 particle_indices, geometry_indices, distances,
                 candidate_point_idx, candidate_poly_idx, is_inside,
-                polygon_geom_indices, num_geometries, device);
+                poly_rings.geom_indices, num_geometries, device);
         }
     }
 

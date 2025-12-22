@@ -3,9 +3,52 @@
 
 namespace robot::geometry {
 
+// Wrapper that builds structs from individual tensor arguments
+// This keeps the Python interface unchanged while using structs internally
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> query_distances_cuda_wrapper(
+    const torch::Tensor& query_points,
+    const torch::Tensor& segment_starts,
+    const torch::Tensor& segment_ends,
+    const torch::Tensor& segment_to_geom,
+    const torch::Tensor& point_coords,
+    const torch::Tensor& point_to_geom,
+    int64_t num_geometries,
+    const torch::Tensor& cell_segment_indices,
+    const torch::Tensor& cell_offsets,
+    const torch::Tensor& cell_geom_indices,
+    const torch::Tensor& cell_geom_offsets,
+    const torch::Tensor& cell_point_indices,
+    const torch::Tensor& cell_point_offsets,
+    const torch::Tensor& cell_point_geom_indices,
+    const torch::Tensor& cell_point_geom_offsets,
+    const torch::Tensor& grid_origin,
+    float cell_size,
+    const torch::Tensor& grid_dims,
+    const torch::Tensor& cell_polygon_indices,
+    const torch::Tensor& cell_polygon_offsets,
+    const torch::Tensor& polygon_segment_ranges,
+    const torch::Tensor& polygon_geom_indices,
+    const torch::Tensor& geom_ring_offsets) {
+
+    // Build geometry structs
+    SegmentGeometry segments{segment_starts, segment_ends, segment_to_geom};
+    PointGeometry points{point_coords, point_to_geom};
+    PolygonRingData poly_rings{polygon_segment_ranges, polygon_geom_indices, geom_ring_offsets};
+
+    // Build spatial index structs
+    GridConfig grid{grid_origin, cell_size, grid_dims};
+    SegmentSpatialIndex seg_idx{cell_segment_indices, cell_offsets, cell_geom_indices, cell_geom_offsets};
+    PointSpatialIndex pt_idx{cell_point_indices, cell_point_offsets, cell_point_geom_indices, cell_point_geom_offsets};
+    PolygonSpatialIndex poly_idx{cell_polygon_indices, cell_polygon_offsets};
+
+    // Call the actual function with structs
+    return query_distances_cuda(query_points, num_geometries, segments, points, poly_rings,
+                                grid, seg_idx, pt_idx, poly_idx);
+}
+
 PYBIND11_MODULE(spatial_distance_python, m) {
     m.doc() = "GPU-accelerated spatial distance queries with CUDA";
-    m.def("query_distances_cuda", &query_distances_cuda,
+    m.def("query_distances_cuda", &query_distances_cuda_wrapper,
           "Query distances from points to geometries using CUDA kernel with spatial index.\n"
           "Includes integrated point-in-polygon processing for polygon geometries.\n"
           "\n"
