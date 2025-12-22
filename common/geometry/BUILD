@@ -118,39 +118,6 @@ py_test(
 )
 
 py_binary(
-    name = "benchmark_spatial_index",
-    srcs = ["benchmark_spatial_index.py"],
-    data = [":spatial_distance_python.so"],
-    deps = [
-        ":gpu_geometry_collection",
-        "//common/gps:web_mercator",
-        "//common/torch:load_torch_deps",
-        requirement("geopandas"),
-        requirement("IPython"),
-        requirement("numpy"),
-        requirement("pyarrow"),
-        requirement("shapely"),
-        requirement("torch"),
-    ],
-)
-
-py_binary(
-    name = "profile_cuda_kernel",
-    srcs = ["profile_cuda_kernel.py"],
-    data = [":spatial_distance_python.so"],
-    deps = [
-        ":gpu_geometry_collection",
-        "//common/gps:web_mercator",
-        "//common/torch:load_torch_deps",
-        requirement("geopandas"),
-        requirement("numpy"),
-        requirement("pyarrow"),
-        requirement("shapely"),
-        requirement("torch"),
-    ],
-)
-
-py_binary(
     name = "profile_with_pytorch",
     srcs = ["profile_with_pytorch.py"],
     data = [":spatial_distance_python.so"],
