@@ -112,6 +112,11 @@ class GPUGeometryCollection:
     # Spatial index (optional, built on demand)
     spatial_index: SpatialIndex | None = None
 
+    # Coordinate origin for precision: all coords are stored relative to this point.
+    # This avoids float32 precision loss with large coordinates (e.g., web mercator).
+    # Query points must be translated by this origin before distance computation.
+    coordinate_origin: torch.Tensor | None = None
+
     @classmethod
     def from_shapely(
         cls,
@@ -187,6 +192,35 @@ class GPUGeometryCollection:
             else:
                 raise ValueError(f"Unsupported geometry type: {geom_type}")
 
+        # Compute coordinate origin (bounding box min) for precision.
+        # By translating all coordinates to be relative to this origin,
+        # we avoid float32 precision loss with large coordinates (e.g., web mercator ~10^8).
+        import numpy as np
+        all_coords = segment_starts_list + segment_ends_list + point_coords_list
+        if all_coords:
+            all_coords_array = np.array(all_coords, dtype=np.float64)
+            origin = all_coords_array.min(axis=0)
+            coordinate_origin = torch.tensor(origin, dtype=torch.float64, device=device)
+
+            # Translate all coordinates to local system
+            for i in range(len(segment_starts_list)):
+                segment_starts_list[i] = (
+                    segment_starts_list[i][0] - origin[0],
+                    segment_starts_list[i][1] - origin[1],
+                )
+            for i in range(len(segment_ends_list)):
+                segment_ends_list[i] = (
+                    segment_ends_list[i][0] - origin[0],
+                    segment_ends_list[i][1] - origin[1],
+                )
+            for i in range(len(point_coords_list)):
+                point_coords_list[i] = (
+                    point_coords_list[i][0] - origin[0],
+                    point_coords_list[i][1] - origin[1],
+                )
+        else:
+            coordinate_origin = torch.zeros(2, dtype=torch.float64, device=device)
+
         # Convert to tensors
         geometry_types_tensor = torch.tensor(
             geometry_types, dtype=torch.long, device=device
@@ -256,6 +290,7 @@ class GPUGeometryCollection:
             polygon_segment_ranges=polygon_segment_ranges,
             polygon_geom_indices=polygon_geom_indices,
             geom_ring_offsets=geom_ring_offsets,
+            coordinate_origin=coordinate_origin,
         )
 
     def distance_to_points(
@@ -989,6 +1024,7 @@ class GPUGeometryCollection:
     def query_distances_cuda(
         self,
         query_points: torch.Tensor,
+        debug: bool = False,
     ) -> torch.Tensor:
         """Query distances using CUDA kernel (internal method).
 
@@ -996,8 +1032,13 @@ class GPUGeometryCollection:
         a GPU-accelerated spatial index. For polygon geometries, also performs
         point-in-polygon checks and sets distance to 0 for points inside.
 
+        Results are filtered to only include distances <= expansion_distance,
+        since the bounding box expansion approach can only guarantee correctness
+        within this radius.
+
         Args:
             query_points: (N, 2) tensor of query positions
+            debug: Enable debug output from CUDA kernel (default: False)
 
         Returns:
             (K, 3) tensor: [particle_idx, geometry_idx, distance]
@@ -1012,6 +1053,12 @@ class GPUGeometryCollection:
             raise ValueError(f"query_points must have shape (N, 2), got {query_points.shape}")
 
         idx = self.spatial_index
+
+        # Translate query points to local coordinate system.
+        # This matches the translation applied to geometry coordinates in from_shapely.
+        # The subtraction must happen at float64 precision to avoid precision loss.
+        if self.coordinate_origin is not None:
+            query_points = (query_points.double() - self.coordinate_origin).float()
 
         # Call C++ function which handles segments, points, AND polygon inside checks
         particle_indices, geometry_indices, distances = sdp.query_distances_cuda(
@@ -1038,7 +1085,17 @@ class GPUGeometryCollection:
             self.polygon_segment_ranges,
             self.polygon_geom_indices,
             self.geom_ring_offsets,
+            debug,
         )
+
+        # Filter results to only include distances <= expansion_distance
+        # This is necessary because bounding box expansion can include segments
+        # whose boxes overlap a cell but whose actual geometry is far away
+        expansion_distance = idx.expansion_distance
+        valid_mask = distances <= expansion_distance
+        particle_indices = particle_indices[valid_mask]
+        geometry_indices = geometry_indices[valid_mask]
+        distances = distances[valid_mask]
 
         # Stack into (K, 3) tensor for backwards compatibility
         if particle_indices.numel() == 0:

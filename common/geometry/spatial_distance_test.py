@@ -318,8 +318,9 @@ class SpatialDistanceTest(unittest.TestCase):
             geometries, device=torch.device("cuda")
         )
 
-        # Build spatial index
-        collection.build_spatial_index(cell_size=5.0, expansion_distance=2.0)
+        # Build spatial index - use expansion_distance large enough to reach
+        # points in the center of holes (holes are 6x6, so center is 3 units from edge)
+        collection.build_spatial_index(cell_size=5.0, expansion_distance=5.0)
 
         # Test points at various locations
         query_points = torch.tensor([
@@ -364,8 +365,9 @@ class SpatialDistanceTest(unittest.TestCase):
             geometries, device=torch.device("cuda")
         )
 
-        # Build spatial index
-        collection.build_spatial_index(cell_size=5.0, expansion_distance=2.0)
+        # Build spatial index - use expansion_distance large enough to reach
+        # points in the hole (4x4 hole, center is 2 units from edge)
+        collection.build_spatial_index(cell_size=5.0, expansion_distance=5.0)
 
         # Test points
         query_points = torch.tensor([

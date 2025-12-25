@@ -28,7 +28,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> query_distances_cuda_wra
     const torch::Tensor& cell_polygon_offsets,
     const torch::Tensor& polygon_segment_ranges,
     const torch::Tensor& polygon_geom_indices,
-    const torch::Tensor& geom_ring_offsets) {
+    const torch::Tensor& geom_ring_offsets,
+    bool debug = false) {
 
     // Build geometry structs
     SegmentGeometry segments{segment_starts, segment_ends, segment_to_geom};
@@ -43,7 +44,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> query_distances_cuda_wra
 
     // Call the actual function with structs
     return query_distances_cuda(query_points, num_geometries, segments, points, poly_rings,
-                                grid, seg_idx, pt_idx, poly_idx);
+                                grid, seg_idx, pt_idx, poly_idx, debug);
 }
 
 PYBIND11_MODULE(spatial_distance_python, m) {
@@ -76,9 +77,34 @@ PYBIND11_MODULE(spatial_distance_python, m) {
           "    polygon_segment_ranges: (R, 2) int64 tensor of [start, end) segment indices per ring\n"
           "    polygon_geom_indices: (R,) int64 tensor of geometry index per ring\n"
           "    geom_ring_offsets: (G_poly+1,) int64 CSR offsets for rings per polygon geometry\n"
+          "    debug: Enable debug output (default: False)\n"
           "\n"
           "Returns:\n"
-          "    Tuple of (particle_indices, geometry_indices, distances)\n");
+          "    Tuple of (particle_indices, geometry_indices, distances)\n",
+          pybind11::arg("query_points"),
+          pybind11::arg("segment_starts"),
+          pybind11::arg("segment_ends"),
+          pybind11::arg("segment_to_geom"),
+          pybind11::arg("point_coords"),
+          pybind11::arg("point_to_geom"),
+          pybind11::arg("num_geometries"),
+          pybind11::arg("cell_segment_indices"),
+          pybind11::arg("cell_offsets"),
+          pybind11::arg("cell_geom_indices"),
+          pybind11::arg("cell_geom_offsets"),
+          pybind11::arg("cell_point_indices"),
+          pybind11::arg("cell_point_offsets"),
+          pybind11::arg("cell_point_geom_indices"),
+          pybind11::arg("cell_point_geom_offsets"),
+          pybind11::arg("grid_origin"),
+          pybind11::arg("cell_size"),
+          pybind11::arg("grid_dims"),
+          pybind11::arg("cell_polygon_indices"),
+          pybind11::arg("cell_polygon_offsets"),
+          pybind11::arg("polygon_segment_ranges"),
+          pybind11::arg("polygon_geom_indices"),
+          pybind11::arg("geom_ring_offsets"),
+          pybind11::arg("debug") = false);
     m.def("point_in_polygon_sparse_cuda", &point_in_polygon_sparse_cuda,
           "Sparse point-in-polygon test on candidate (point, polygon) pairs");
 }

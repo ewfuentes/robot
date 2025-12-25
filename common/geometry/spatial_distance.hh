@@ -100,7 +100,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> query_distances_cuda(
     const GridConfig& grid,
     const SegmentSpatialIndex& seg_idx,
     const PointSpatialIndex& pt_idx,
-    const PolygonSpatialIndex& poly_idx);
+    const PolygonSpatialIndex& poly_idx,
+    bool debug = false);
 
 /**
  * Sparse point-in-polygon test using winding number algorithm.

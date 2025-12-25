@@ -63,37 +63,32 @@ __device__ inline int winding_number_edge(float px, float py, float x1, float y1
 }
 
 // Device function for point-to-segment distance
+// Uses local coordinate system (relative to segment start) to avoid float32 precision loss
+// when coordinates are large (e.g., web mercator pixels at ~10^8)
 __device__ inline float point_to_segment_distance(float px, float py, float ax, float ay, float bx,
                                                   float by) {
-    // Vector from A to B
-    float abx = bx - ax;
-    float aby = by - ay;
+    // Translate to local coordinate system centered at A
+    // This avoids precision loss when subtracting large similar numbers
+    float local_px = px - ax;
+    float local_py = py - ay;
+    float local_bx = bx - ax;
+    float local_by = by - ay;
 
     // |AB|^2
-    float ab_len_sq = abx * abx + aby * aby;
+    float ab_len_sq = local_bx * local_bx + local_by * local_by;
 
     // Handle degenerate case (A == B)
     if (ab_len_sq < 1e-12f) {
-        float dx = px - ax;
-        float dy = py - ay;
-        return sqrtf(dx * dx + dy * dy);
+        return sqrtf(local_px * local_px + local_py * local_py);
     }
 
-    // Vector from A to P
-    float apx = px - ax;
-    float apy = py - ay;
-
-    // Compute parameter t
-    float t = (apx * abx + apy * aby) / ab_len_sq;
+    // Compute parameter t using local coordinates
+    float t = (local_px * local_bx + local_py * local_by) / ab_len_sq;
     t = fmaxf(0.0f, fminf(1.0f, t));
 
-    // Closest point on segment
-    float closest_x = ax + t * abx;
-    float closest_y = ay + t * aby;
-
-    // Distance from P to closest point
-    float dx = px - closest_x;
-    float dy = py - closest_y;
+    // Distance from P to closest point (in local coords)
+    float dx = local_px - t * local_bx;
+    float dy = local_py - t * local_by;
     return sqrtf(dx * dx + dy * dy);
 }
 
@@ -129,7 +124,10 @@ __global__ void compute_distances_optimized_kernel(
     int64_t* __restrict__ output_particle_indices, // (total_output_size,)
     int64_t* __restrict__ output_geometry_indices, // (total_output_size,)
     float* __restrict__ output_distances,          // (total_output_size,)
-    const int64_t* __restrict__ output_offsets     // (num_blocks,) offset for each block
+    const int64_t* __restrict__ output_offsets,    // (num_blocks,) offset for each block
+
+    // Debug flag
+    bool debug
 ) {
     int block_id = blockIdx.x;
 
@@ -143,10 +141,24 @@ __global__ void compute_distances_optimized_kernel(
 
     int64_t num_particles = particle_end - particle_start;
 
+    // Debug: print block info (only first thread of first block or single-particle blocks)
+    if (debug && threadIdx.x == 0 && num_particles == 1) {
+        int64_t global_particle_idx = sorted_particle_indices[particle_start];
+        float px = sorted_particles[particle_start * 2];
+        float py = sorted_particles[particle_start * 2 + 1];
+        printf("[DEBUG] Block %d: cell=%ld, particle=%ld at (%.2f, %.2f), %ld geometries\n",
+               block_id, cell_id, global_particle_idx, px, py, num_geometries);
+    }
+
     // Get segments in this cell
     int64_t cell_seg_start = cell_offsets[cell_id];
     int64_t cell_seg_end = cell_offsets[cell_id + 1];
     int64_t total_segments = cell_seg_end - cell_seg_start;
+
+    if (debug && threadIdx.x == 0 && num_particles == 1) {
+        printf("[DEBUG]   Cell segments: [%ld, %ld), total=%ld\n",
+               cell_seg_start, cell_seg_end, total_segments);
+    }
 
     // Shared memory for segments (up to 512 segments per chunk)
     __shared__ float seg_starts_shared[512][2];
@@ -276,6 +288,16 @@ __global__ void compute_distances_optimized_kernel(
                                 px, py,
                                 seg_starts_shared[i][0], seg_starts_shared[i][1],
                                 seg_ends_shared[i][0], seg_ends_shared[i][1]);
+
+                            if (debug && num_particles == 1 && dist < min_dists[local_geom_id]) {
+                                int64_t global_seg_idx = cell_segment_indices[cell_seg_start + chunk_start + i];
+                                int64_t global_geom_id = local_to_global[geom_base_offset + local_geom_start + local_geom_id];
+                                printf("[DEBUG]   Seg[%ld] %ld->geom %ld: (%.1f,%.1f)->(%.1f,%.1f) dist=%.2f (new min)\n",
+                                       global_seg_idx, i, global_geom_id,
+                                       seg_starts_shared[i][0], seg_starts_shared[i][1],
+                                       seg_ends_shared[i][0], seg_ends_shared[i][1], dist);
+                            }
+
                             min_dists[local_geom_id] = fminf(min_dists[local_geom_id], dist);
                         }
                     }
@@ -290,9 +312,15 @@ __global__ void compute_distances_optimized_kernel(
 
                 for (int64_t i = 0; i < num_geoms_this_pass; ++i) {
                     int64_t output_idx = output_base + i;
+                    int64_t global_geom_id = local_to_global[geom_base_offset + local_geom_start + i];
                     output_particle_indices[output_idx] = global_particle_idx;
-                    output_geometry_indices[output_idx] = local_to_global[geom_base_offset + local_geom_start + i];
+                    output_geometry_indices[output_idx] = global_geom_id;
                     output_distances[output_idx] = min_dists[i];
+
+                    if (debug && num_particles == 1) {
+                        printf("[DEBUG] OUTPUT: particle=%ld, geom=%ld, dist=%.6f\n",
+                               global_particle_idx, global_geom_id, min_dists[i]);
+                    }
                 }
             }
         }
@@ -431,7 +459,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> launch_distance_kernel(
     const BlockAssignmentData& block_data,
     const SegmentGeometry& segments,
     const torch::Tensor& cell_segment_indices,
-    const torch::Tensor& cell_offsets) {
+    const torch::Tensor& cell_offsets,
+    bool debug) {
     RECORD_FUNCTION("cuda_kernel::compute_distances_kernel", std::vector<c10::IValue>{});
 
     auto device = sorted_data.sorted_particles.device();
@@ -467,7 +496,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> launch_distance_kernel(
         output_particle_indices.data_ptr<int64_t>(),
         output_geometry_indices.data_ptr<int64_t>(),
         output_distances.data_ptr<float>(),
-        block_data.output_offsets.data_ptr<int64_t>());
+        block_data.output_offsets.data_ptr<int64_t>(),
+        debug);
 
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 
@@ -477,7 +507,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> launch_distance_kernel(
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> query_segment_distances(
         const SortedParticleData& sorted_data,
         const SegmentGeometry& segments,
-        const SegmentSpatialIndex& seg_idx) {
+        const SegmentSpatialIndex& seg_idx,
+        bool debug) {
     // Step 2: Build block assignments using precomputed geometry info
     auto block_data = build_block_assignments(
         sorted_data, seg_idx.cell_offsets, seg_idx.geom_indices, seg_idx.geom_offsets);
@@ -491,7 +522,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> query_segment_distances(
 
     // Step 3: Launch CUDA kernel (returns particle indices, geometry indices, distances)
     return launch_distance_kernel(
-        sorted_data, block_data, segments, seg_idx.segment_indices, seg_idx.cell_offsets);
+        sorted_data, block_data, segments, seg_idx.segment_indices, seg_idx.cell_offsets, debug);
 }
 
 // Build candidate (point, polygon) pairs from sorted particle data
@@ -660,7 +691,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> query_distances_cuda(
     const GridConfig& grid,
     const SegmentSpatialIndex& seg_idx,
     const PointSpatialIndex& pt_idx,
-    const PolygonSpatialIndex& poly_idx) {
+    const PolygonSpatialIndex& poly_idx,
+    bool debug) {
     // Check inputs
     TORCH_CHECK(query_points.is_cuda(), "query_points must be on CUDA");
     TORCH_CHECK(query_points.dim() == 2 && query_points.size(1) == 2,
@@ -690,15 +722,20 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> query_distances_cuda(
     }
 
     // Compute the distance to segments
+    if (debug) {
+        printf("[DEBUG] query_distances_cuda: %ld queries, %ld geometries\n",
+               query_points.size(0), num_geometries);
+    }
+
     auto [seg_particles, seg_geoms, seg_dists] = query_segment_distances(
-            sorted_data, segments, seg_idx);
+            sorted_data, segments, seg_idx, debug);
 
     // Compute the distance to points (reuse segment distance code with points as degenerate segments)
     SegmentGeometry point_as_segments{points.coords, points.coords, points.to_geom};
     SegmentSpatialIndex pt_as_seg_idx{pt_idx.point_indices, pt_idx.cell_offsets,
                                        pt_idx.geom_indices, pt_idx.geom_offsets};
     auto [pt_particles, pt_geoms, pt_dists] = query_segment_distances(
-            sorted_data, point_as_segments, pt_as_seg_idx);
+            sorted_data, point_as_segments, pt_as_seg_idx, debug);
 
     // Concatenate segment and point results
     auto particle_indices = torch::cat({seg_particles, pt_particles}, 0);
