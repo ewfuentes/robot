@@ -215,7 +215,7 @@ class TestWithVigorSnippet(unittest.TestCase):
         # Use a smaller subset for comparison test
         sample_size = 100
         sample_geoms = self.geometries[:sample_size]
-        collection = GPUGeometryCollection.from_shapely(sample_geoms)
+        collection = GPUGeometryCollection.from_shapely(sample_geoms, device='cuda')
 
         # Generate random query points within the bounding box
         bounds = shapely.bounds(shapely.GeometryCollection(list(sample_geoms)))
@@ -226,33 +226,25 @@ class TestWithVigorSnippet(unittest.TestCase):
         queries = torch.zeros(num_queries, 2)
         queries[:, 0] = torch.rand(num_queries) * (max_x - min_x) + min_x
         queries[:, 1] = torch.rand(num_queries) * (max_y - min_y) + min_y
+        queries = queries.cuda()
 
-        gpu_distances = collection.distance_to_points(queries)
+        collection.build_spatial_index(200, 1000)
+        gpu_distances = collection.query_distances_cuda(queries)
 
         # Compare sample of results with shapely
-        for i in range(min(10, num_queries)):
-            point = shapely.Point(queries[i].tolist())
-            for j in range(min(10, sample_size)):
-                geom = sample_geoms[j]
-                shapely_dist = point.distance(geom)
+        for idx in range(gpu_distances.particle_idxs.shape[0]):
+            particle_idx = gpu_distances.particle_idxs[idx].item()
+            geom_idx = gpu_distances.geom_idxs[idx].item()
+            gpu_dist = gpu_distances.distances[idx].cpu()
+            point = shapely.Point(queries[particle_idx].tolist())
+            geom = sample_geoms[geom_idx]
+            shapely_dist = point.distance(geom)
 
-                # For polygons, check signed distance
-                if geom.geom_type == "Polygon":
-                    shapely_inside = geom.contains(point)
-                    gpu_inside = gpu_distances[i, j].item() < 0
-                    self.assertEqual(
-                        gpu_inside,
-                        shapely_inside,
-                        f"Inside/outside mismatch at point {i}, geom {j}",
-                    )
-                    shapely_dist = point.distance(geom.boundary)
-
-                torch.testing.assert_close(
-                    gpu_distances[i, j].abs(),
-                    torch.tensor(shapely_dist, dtype=torch.float32),
-                    rtol=1e-3,
-                    atol=1e-4,
-                )
+            torch.testing.assert_close(
+                gpu_dist,
+                torch.tensor(shapely_dist, dtype=torch.float32),
+                rtol=1e-3,
+                atol=1e-4)
 
 
 class TestBenchmark(unittest.TestCase):
@@ -572,8 +564,8 @@ class TestBenchmark(unittest.TestCase):
         idx = collection.spatial_index
 
         # Grid should use custom bounds
-        self.assertAlmostEqual(idx.grid_origin[0].item(), 0.0, places=1)
-        self.assertAlmostEqual(idx.grid_origin[1].item(), 0.0, places=1)
+        self.assertAlmostEqual(idx.grid_origin[0].item(), -50.0, places=1)
+        self.assertAlmostEqual(idx.grid_origin[1].item(), -50.0, places=1)
 
         expected_dims_x = int(torch.ceil(torch.tensor(200.0 / cell_size)).item())
         expected_dims_y = int(torch.ceil(torch.tensor(200.0 / cell_size)).item())

@@ -25,6 +25,13 @@ class GeometryType(IntEnum):
 
 
 @dataclass
+class QueryDistancesResult:
+    particle_idxs: torch.Tensor
+    geom_idxs: torch.Tensor
+    distances: torch.Tensor
+
+
+@dataclass
 class SpatialIndex:
     """Uniform grid spatial index for fast distance queries.
 
@@ -404,9 +411,15 @@ class GPUGeometryCollection:
         """
         # Step 1: Compute or use provided grid bounds
         if grid_bounds is not None:
+            # We assume that the grid bounds are given in the global coordinate frame,
+            # make sure to offset by the local origin
             bbox_min, bbox_max = grid_bounds
+            bbox_min -= self.coordinate_origin
+            bbox_max -= self.coordinate_origin
         else:
             # Compute bounds from geometry without creating intermediate tensor
+            # Since the geometry is already in the local frame, there is no need to
+            # compensate for the local origin
             bbox_min = None
             bbox_max = None
 
@@ -1097,15 +1110,8 @@ class GPUGeometryCollection:
         geometry_indices = geometry_indices[valid_mask]
         distances = distances[valid_mask]
 
-        # Stack into (K, 3) tensor for backwards compatibility
-        if particle_indices.numel() == 0:
-            return torch.empty((0, 3), dtype=torch.float32, device=self.device)
-
-        return torch.stack([
-            particle_indices.float(),
-            geometry_indices.float(),
-            distances,
-        ], dim=1)
+        return QueryDistancesResult(
+            particle_indices, geometry_indices, distances)
 
 
 def _process_polygon(
