@@ -117,23 +117,6 @@ py_test(
     ],
 )
 
-py_binary(
-    name = "profile_with_pytorch",
-    srcs = ["profile_with_pytorch.py"],
-    data = [":spatial_distance_python.so"],
-    deps = [
-        ":gpu_geometry_collection",
-        "//common/gps:web_mercator",
-        "//common/torch:load_torch_deps",
-        requirement("geopandas"),
-        requirement("matplotlib"),
-        requirement("numpy"),
-        requirement("pyarrow"),
-        requirement("shapely"),
-        requirement("torch"),
-    ],
-)
-
 py_test(
     name = "spatial_distance_test",
     srcs = ["spatial_distance_test.py"],
