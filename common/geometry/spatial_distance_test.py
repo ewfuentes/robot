@@ -47,8 +47,9 @@ class SpatialDistanceTest(unittest.TestCase):
         result = collection.query_distances_cuda(query_points)
 
         # Should return empty result (no geometries in those cells)
-        self.assertEqual(result.shape[0], 0)
-        self.assertEqual(result.shape[1], 3)
+        self.assertEqual(len(result.particle_idxs), 0)
+        self.assertEqual(len(result.geom_idxs), 0)
+        self.assertEqual(len(result.distances), 0)
 
     def test_query_distances_single_point(self):
         """Test query_distances with a single point geometry."""
@@ -67,14 +68,18 @@ class SpatialDistanceTest(unittest.TestCase):
         result = collection.query_distances_cuda(query_points)
 
         # Should have one result
-        self.assertEqual(result.shape, (1, 3))
-        particle_idx, geom_idx, distance = result[0]
+        self.assertEqual(len(result.particle_idxs), 1)
+        self.assertEqual(len(result.geom_idxs), 1)
+        self.assertEqual(len(result.distances), 1)
+        particle_idx = result.particle_idxs[0].item()
+        geom_idx = result.geom_idxs[0].item()
+        distance = result.distances[0].item()
 
         self.assertEqual(particle_idx, 0)
         self.assertEqual(geom_idx, 0)
         # Distance should be sqrt(0.5^2 + 0.5^2) ≈ 0.707
         expected_dist = np.sqrt(0.5**2 + 0.5**2)
-        self.assertAlmostEqual(float(distance), expected_dist, places=5)
+        self.assertAlmostEqual(distance, expected_dist, places=5)
 
     def test_query_distances_line_segment(self):
         """Test query_distances with a line segment."""
@@ -93,13 +98,17 @@ class SpatialDistanceTest(unittest.TestCase):
         result = collection.query_distances_cuda(query_points)
 
         # Should have one result
-        self.assertEqual(result.shape, (1, 3))
-        particle_idx, geom_idx, distance = result[0]
+        self.assertEqual(len(result.particle_idxs), 1)
+        self.assertEqual(len(result.geom_idxs), 1)
+        self.assertEqual(len(result.distances), 1)
+        particle_idx = result.particle_idxs[0].item()
+        geom_idx = result.geom_idxs[0].item()
+        distance = result.distances[0].item()
 
         self.assertEqual(particle_idx, 0)
         self.assertEqual(geom_idx, 0)
         # Distance from (5, 1) to line should be 1.0 (perpendicular distance)
-        self.assertAlmostEqual(float(distance), 1.0, places=5)
+        self.assertAlmostEqual(distance, 1.0, places=5)
 
     def test_query_distances_polygon_minimum(self):
         """Test that distance to polygon is minimum across all segments."""
@@ -118,13 +127,17 @@ class SpatialDistanceTest(unittest.TestCase):
         result = collection.query_distances_cuda(query_points)
 
         # Should have one result (one geometry)
-        self.assertEqual(result.shape, (1, 3))
-        particle_idx, geom_idx, distance = result[0]
+        self.assertEqual(len(result.particle_idxs), 1)
+        self.assertEqual(len(result.geom_idxs), 1)
+        self.assertEqual(len(result.distances), 1)
+        particle_idx = result.particle_idxs[0].item()
+        geom_idx = result.geom_idxs[0].item()
+        distance = result.distances[0].item()
 
         self.assertEqual(particle_idx, 0)
         self.assertEqual(geom_idx, 0)
         # Distance should be 1.0 (to bottom edge)
-        self.assertAlmostEqual(float(distance), 1.0, places=5)
+        self.assertAlmostEqual(distance, 1.0, places=5)
 
     def test_query_distances_multiple_particles(self):
         """Test query_distances with multiple query points."""
@@ -145,22 +158,22 @@ class SpatialDistanceTest(unittest.TestCase):
         result = collection.query_distances_cuda(query_points)
 
         # Each particle should find one geometry
-        self.assertEqual(result.shape[0], 2)
-        self.assertEqual(result.shape[1], 3)
+        self.assertEqual(len(result.particle_idxs), 2)
+        self.assertEqual(len(result.geom_idxs), 2)
+        self.assertEqual(len(result.distances), 2)
+        particle_idx = result.particle_idxs[0].item()
+        geom_idx = result.geom_idxs[0].item()
+        distance = result.distances[0].item()
 
-        # Check particle 0 (closest to geom 0)
-        particle_0_results = result[result[:, 0] == 0]
-        self.assertEqual(len(particle_0_results), 1)
-        self.assertEqual(particle_0_results[0, 1], 0)  # geom_idx
-        expected_dist_0 = np.sqrt(1.0**2 + 1.0**2)
-        self.assertAlmostEqual(float(particle_0_results[0, 2]), expected_dist_0, places=5)
+        for idx in range(len(result.particle_idxs)):
+            particle_idx = result.particle_idxs[idx].item()
+            geom_idx = result.geom_idxs[idx].item()
+            distance = result.distances[idx].item()
 
-        # Check particle 1 (closest to geom 1)
-        particle_1_results = result[result[:, 0] == 1]
-        self.assertEqual(len(particle_1_results), 1)
-        self.assertEqual(particle_1_results[0, 1], 1)  # geom_idx
-        expected_dist_1 = np.sqrt(1.0**2 + 1.0**2)
-        self.assertAlmostEqual(float(particle_1_results[0, 2]), expected_dist_1, places=5)
+            expected_geom_idx = 0 if particle_idx == 0 else 1
+            expected_distance = np.sqrt(2)
+            self.assertAlmostEqual(distance, expected_distance)
+            self.assertEqual(geom_idx, expected_geom_idx)
 
     def test_query_distances_vs_shapely(self):
         """Test correctness vs shapely on small dataset."""
@@ -186,9 +199,10 @@ class SpatialDistanceTest(unittest.TestCase):
 
         # Convert to dict for easy lookup
         result_dict = {}
-        for particle_idx, geom_idx, distance in result:
-            particle_idx = int(particle_idx)
-            geom_idx = int(geom_idx)
+        for idx in range(len(result.particle_idxs)):
+            particle_idx = result.particle_idxs[idx].item()
+            geom_idx = result.geom_idxs[idx].item()
+            distance = result.distances[idx].item()
             if particle_idx not in result_dict:
                 result_dict[particle_idx] = {}
             result_dict[particle_idx][geom_idx] = float(distance)
@@ -232,9 +246,12 @@ class SpatialDistanceTest(unittest.TestCase):
         result = collection.query_distances_cuda(query_points)
 
         # Check result is on CUDA
-        self.assertEqual(result.device.type, "cuda")
-        self.assertGreater(result.shape[0], 0)  # Should find some distances
-        self.assertEqual(result.shape[1], 3)
+        self.assertEqual(result.particle_idxs.device.type, "cuda")
+        self.assertEqual(result.geom_idxs.device.type, "cuda")
+        self.assertEqual(result.distances.device.type, "cuda")
+        self.assertGreater(len(result.particle_idxs), 0)
+        self.assertGreater(len(result.geom_idxs), 0)
+        self.assertGreater(len(result.distances), 0)
 
 
     def test_polygon_inside_distance_zero(self):
@@ -254,13 +271,14 @@ class SpatialDistanceTest(unittest.TestCase):
         result = collection.query_distances_cuda(query_points)
 
         # Should have one result
-        self.assertEqual(result.shape, (1, 3))
-        particle_idx, geom_idx, distance = result[0]
+        self.assertEqual(len(result.particle_idxs), 1)
+        self.assertEqual(len(result.geom_idxs), 1)
+        self.assertEqual(len(result.distances), 1)
 
-        self.assertEqual(particle_idx, 0)
-        self.assertEqual(geom_idx, 0)
+        self.assertEqual(result.particle_idxs[0].item(), 0)
+        self.assertEqual(result.geom_idxs[0].item(), 0)
         # Distance should be 0 for point inside polygon
-        self.assertAlmostEqual(float(distance), 0.0, places=5)
+        self.assertAlmostEqual(result.distances[0].item(), 0.0, places=5)
 
     def test_polygon_with_hole(self):
         """Test polygon with a hole - point inside hole should have positive distance."""
@@ -281,8 +299,8 @@ class SpatialDistanceTest(unittest.TestCase):
         query_inside_hole = torch.tensor([[5.0, 5.0]], dtype=torch.float32).cuda()
         result_hole = collection.query_distances_cuda(query_inside_hole)
 
-        self.assertEqual(result_hole.shape, (1, 3))
-        distance_in_hole = float(result_hole[0, 2])
+        self.assertEqual(len(result_hole.distances), 1)
+        distance_in_hole = result_hole.distances[0].item()
         # Point is inside hole, so it's outside the polygon - distance should be > 0
         # Distance from (5, 5) to nearest edge of hole is min(5-3, 7-5, 5-3, 7-5) = 2
         self.assertAlmostEqual(distance_in_hole, 2.0, places=4)
@@ -291,8 +309,8 @@ class SpatialDistanceTest(unittest.TestCase):
         query_inside_polygon = torch.tensor([[1.0, 5.0]], dtype=torch.float32).cuda()
         result_inside = collection.query_distances_cuda(query_inside_polygon)
 
-        self.assertEqual(result_inside.shape, (1, 3))
-        distance_inside = float(result_inside[0, 2])
+        self.assertEqual(len(result_inside.distances), 1)
+        distance_inside = result_inside.distances[0].item()
         # Point is inside polygon (between exterior and hole) - distance should be 0
         self.assertAlmostEqual(distance_inside, 0.0, places=4)
 
@@ -300,8 +318,8 @@ class SpatialDistanceTest(unittest.TestCase):
         query_outside = torch.tensor([[-1.0, 5.0]], dtype=torch.float32).cuda()
         result_outside = collection.query_distances_cuda(query_outside)
 
-        self.assertEqual(result_outside.shape, (1, 3))
-        distance_outside = float(result_outside[0, 2])
+        self.assertEqual(len(result_inside.distances), 1)
+        distance_outside = result_outside.distances[0].item()
         # Point is outside polygon - distance should be 1.0 (to left edge)
         self.assertAlmostEqual(distance_outside, 1.0, places=4)
 
@@ -334,8 +352,10 @@ class SpatialDistanceTest(unittest.TestCase):
 
         # Convert to dict for easy lookup
         distances = {}
-        for particle_idx, geom_idx, distance in result:
-            distances[int(particle_idx)] = float(distance)
+        for idx in range(len(result.particle_idxs)):
+            particle_idx = result.particle_idxs[idx].item()
+            distance = result.distances[idx].item()
+            distances[particle_idx] = distance
 
         # Inside hole 1 - should have positive distance
         self.assertGreater(distances[0], 0, "Point in hole 1 should have positive distance")
@@ -379,8 +399,10 @@ class SpatialDistanceTest(unittest.TestCase):
         result = collection.query_distances_cuda(query_points)
 
         distances = {}
-        for particle_idx, geom_idx, distance in result:
-            distances[int(particle_idx)] = float(distance)
+        for idx in range(len(result.particle_idxs)):
+            particle_idx = result.particle_idxs[idx].item()
+            distance = result.distances[idx].item()
+            distances[particle_idx] = distance
 
         # Inside simple polygon
         self.assertAlmostEqual(distances[0], 0.0, places=4)
