@@ -129,6 +129,8 @@ def point_in_polygon_winding(
     The winding number counts how many times the polygon winds around the point.
     A non-zero winding number means the point is inside.
 
+    Uses chunking to avoid memory issues while still batching the main computation.
+
     Args:
         query_points: (Q, 2) tensor of query point coordinates
         polygon_vertices: (V, 2) tensor of all polygon vertices concatenated
@@ -147,57 +149,65 @@ def point_in_polygon_winding(
     P = polygon_ranges.shape[0]
     device = query_points.device
 
-    # Initialize winding numbers
-    winding = torch.zeros((Q, P), device=device, dtype=torch.float32)
+    if P == 0:
+        return torch.zeros((Q, 0), device=device, dtype=torch.bool)
 
-    # Process each polygon separately (variable vertex counts make batching complex)
-    for poly_idx in range(P):
-        start_idx = polygon_ranges[poly_idx, 0].item()
-        end_idx = polygon_ranges[poly_idx, 1].item()
+    result = torch.zeros((Q, P), device=device, dtype=torch.bool)
 
-        assert end_idx > start_idx, f"Polygon {poly_idx} has no vertices"
+    # Chunk both query points and polygons to control memory
+    query_chunk_size = 1000
+    poly_chunk_size = 50
 
-        # Get polygon vertices for this polygon
-        poly_verts = polygon_vertices[start_idx:end_idx]  # (N, 2)
-        N = poly_verts.shape[0]
+    for q_start in range(0, Q, query_chunk_size):
+        q_end = min(q_start + query_chunk_size, Q)
+        query_chunk = query_points[q_start:q_end]
 
-        # Create edges: from vertex i to vertex (i+1) % N
-        v1 = poly_verts  # (N, 2)
-        v2 = torch.roll(poly_verts, -1, dims=0)  # (N, 2)
+        for p_start in range(0, P, poly_chunk_size):
+            p_end = min(p_start + poly_chunk_size, P)
+            poly_chunk_ranges = polygon_ranges[p_start:p_end]
 
-        # Translate vertices relative to each query point
-        # query_points: (Q, 2), v1: (N, 2)
-        # v1_rel: (Q, N, 2)
-        v1_rel = v1.unsqueeze(0) - query_points.unsqueeze(1)
-        v2_rel = v2.unsqueeze(0) - query_points.unsqueeze(1)
+            vertex_counts = poly_chunk_ranges[:, 1] - poly_chunk_ranges[:, 0]
+            max_verts = vertex_counts.max().item() if len(vertex_counts) > 0 else 0
 
-        # Compute cross product (signed area) for each edge relative to each point
-        # cross = v1.x * v2.y - v1.y * v2.x
-        cross = v1_rel[..., 0] * v2_rel[..., 1] - v1_rel[..., 1] * v2_rel[..., 0]
+            if max_verts == 0:
+                continue
 
-        # Check if edge crosses the positive x-axis from the query point
-        # An upward crossing (v1.y <= 0 < v2.y) with point to the left (cross > 0)
-        # contributes +1 to the winding number
-        # A downward crossing (v2.y <= 0 < v1.y) with point to the right (cross < 0)
-        # contributes -1 to the winding number
+            chunk_P = p_end - p_start
 
-        y1 = v1_rel[..., 1]  # (Q, N)
-        y2 = v2_rel[..., 1]  # (Q, N)
+            # Pad polygons
+            padded = torch.zeros((chunk_P, max_verts, 2), device=device, dtype=polygon_vertices.dtype)
+            for i in range(chunk_P):
+                start = poly_chunk_ranges[i, 0]
+                end = poly_chunk_ranges[i, 1]
+                verts = polygon_vertices[start:end]
+                padded[i, :len(verts)] = verts
 
-        # Upward crossing: y1 <= 0 and y2 > 0 and cross > 0
-        upward = (y1 <= 0) & (y2 > 0) & (cross > 0)
+            # Vertex mask
+            vert_mask = torch.arange(max_verts, device=device).unsqueeze(0) < vertex_counts.unsqueeze(1)
 
-        # Downward crossing: y1 > 0 and y2 <= 0 and cross < 0
-        downward = (y1 > 0) & (y2 <= 0) & (cross < 0)
+            # Edges
+            v1 = padded
+            v2 = torch.roll(padded, -1, dims=1)
+            poly_indices = torch.arange(chunk_P, device=device)
+            last_indices = vertex_counts - 1
+            v2[poly_indices, last_indices] = padded[poly_indices, 0]
 
-        # Winding contribution: +1 for upward, -1 for downward
-        winding_contrib = upward.float() - downward.float()
+            # Compute winding (Q_chunk, P_chunk, max_verts)
+            v1_rel = v1.unsqueeze(0) - query_chunk.unsqueeze(1).unsqueeze(1)
+            v2_rel = v2.unsqueeze(0) - query_chunk.unsqueeze(1).unsqueeze(1)
 
-        # Sum over edges for this polygon
-        winding[:, poly_idx] = winding_contrib.sum(dim=1)
+            cross = v1_rel[..., 0] * v2_rel[..., 1] - v1_rel[..., 1] * v2_rel[..., 0]
+            y1 = v1_rel[..., 1]
+            y2 = v2_rel[..., 1]
 
-    # Point is inside if winding number is non-zero
-    return winding != 0
+            upward = (y1 <= 0) & (y2 > 0) & (cross > 0)
+            downward = (y1 > 0) & (y2 <= 0) & (cross < 0)
+
+            winding = ((upward.float() - downward.float()) * vert_mask.unsqueeze(0)).sum(dim=2)
+
+            result[q_start:q_end, p_start:p_end] = winding != 0
+
+    return result
 
 
 def signed_distance_to_polygons(

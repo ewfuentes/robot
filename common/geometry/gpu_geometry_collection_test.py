@@ -56,9 +56,8 @@ class TestGPUGeometryCollection(unittest.TestCase):
         self.assertEqual(collection.num_geometries, 2)
         # Each polygon has 4 segments
         self.assertEqual(collection.segment_starts.shape[0], 8)
-        # Each polygon has 4 vertices
-        self.assertEqual(collection.polygon_vertices.shape[0], 8)
-        self.assertEqual(collection.polygon_ranges.shape, (2, 2))
+        # Each polygon has 1 ring with 4 segments
+        self.assertEqual(collection.polygon_segment_ranges.shape, (2, 2))
 
     def test_from_shapely_mixed(self):
         """Test conversion of mixed geometry types."""
@@ -216,7 +215,7 @@ class TestWithVigorSnippet(unittest.TestCase):
         # Use a smaller subset for comparison test
         sample_size = 100
         sample_geoms = self.geometries[:sample_size]
-        collection = GPUGeometryCollection.from_shapely(sample_geoms)
+        collection = GPUGeometryCollection.from_shapely(sample_geoms, device='cuda')
 
         # Generate random query points within the bounding box
         bounds = shapely.bounds(shapely.GeometryCollection(list(sample_geoms)))
@@ -227,33 +226,25 @@ class TestWithVigorSnippet(unittest.TestCase):
         queries = torch.zeros(num_queries, 2)
         queries[:, 0] = torch.rand(num_queries) * (max_x - min_x) + min_x
         queries[:, 1] = torch.rand(num_queries) * (max_y - min_y) + min_y
+        queries = queries.cuda()
 
-        gpu_distances = collection.distance_to_points(queries)
+        collection.build_spatial_index(200, 1000)
+        gpu_distances = collection.query_distances_cuda(queries)
 
         # Compare sample of results with shapely
-        for i in range(min(10, num_queries)):
-            point = shapely.Point(queries[i].tolist())
-            for j in range(min(10, sample_size)):
-                geom = sample_geoms[j]
-                shapely_dist = point.distance(geom)
+        for idx in range(gpu_distances.particle_idxs.shape[0]):
+            particle_idx = gpu_distances.particle_idxs[idx].item()
+            geom_idx = gpu_distances.geom_idxs[idx].item()
+            gpu_dist = gpu_distances.distances[idx].cpu()
+            point = shapely.Point(queries[particle_idx].tolist())
+            geom = sample_geoms[geom_idx]
+            shapely_dist = point.distance(geom)
 
-                # For polygons, check signed distance
-                if geom.geom_type == "Polygon":
-                    shapely_inside = geom.contains(point)
-                    gpu_inside = gpu_distances[i, j].item() < 0
-                    self.assertEqual(
-                        gpu_inside,
-                        shapely_inside,
-                        f"Inside/outside mismatch at point {i}, geom {j}",
-                    )
-                    shapely_dist = point.distance(geom.boundary)
-
-                torch.testing.assert_close(
-                    gpu_distances[i, j].abs(),
-                    torch.tensor(shapely_dist, dtype=torch.float32),
-                    rtol=1e-3,
-                    atol=1e-4,
-                )
+            torch.testing.assert_close(
+                gpu_dist,
+                torch.tensor(shapely_dist, dtype=torch.float32),
+                rtol=1e-3,
+                atol=1e-4)
 
 
 class TestBenchmark(unittest.TestCase):
@@ -314,6 +305,338 @@ class TestBenchmark(unittest.TestCase):
         print(f"  GPU time: {gpu_time:.3f}s")
         print(f"  Shapely time (extrapolated): {shapely_extrapolated:.3f}s")
         print(f"  Speedup: {shapely_extrapolated / gpu_time:.1f}x")
+
+    def test_build_spatial_index_simple(self):
+        """Test building spatial index on simple geometries."""
+        # Create simple geometry collection
+        geometries = [
+            shapely.Point(0, 0),
+            shapely.Point(10, 10),
+            shapely.LineString([(5, 0), (5, 10)]),
+        ]
+        collection = GPUGeometryCollection.from_shapely(geometries)
+
+        # Build spatial index
+        cell_size = 5.0
+        expansion_distance = 2.5
+        collection.build_spatial_index(cell_size, expansion_distance)
+
+        # Verify index was created
+        self.assertIsNotNone(collection.spatial_index)
+        self.assertEqual(collection.spatial_index.cell_size, cell_size)
+        self.assertEqual(collection.spatial_index.expansion_distance, expansion_distance)
+
+        # Verify grid bounds make sense
+        self.assertEqual(collection.spatial_index.grid_origin.shape, (2,))
+        self.assertEqual(collection.spatial_index.grid_dims.shape, (2,))
+        self.assertGreater(collection.spatial_index.grid_dims[0].item(), 0)
+        self.assertGreater(collection.spatial_index.grid_dims[1].item(), 0)
+
+    def test_spatial_index_csr_structure(self):
+        """Test that CSR structure is correctly built."""
+        # Create a small grid with known geometry
+        geometries = [
+            shapely.LineString([(0, 0), (10, 0)]),  # Horizontal line
+            shapely.Point(20, 20),  # Far away point
+        ]
+        collection = GPUGeometryCollection.from_shapely(geometries)
+
+        cell_size = 5.0
+        expansion_distance = 2.5
+        collection.build_spatial_index(cell_size, expansion_distance)
+
+        idx = collection.spatial_index
+
+        # Check CSR format
+        num_cells = idx.grid_dims[0].item() * idx.grid_dims[1].item()
+        self.assertEqual(idx.cell_offsets.shape[0], num_cells + 1)
+
+        # First offset should be 0
+        self.assertEqual(idx.cell_offsets[0].item(), 0)
+
+        # Last offset should equal length of segment indices
+        self.assertEqual(
+            idx.cell_offsets[-1].item(), idx.cell_segment_indices.shape[0]
+        )
+
+        # Offsets should be monotonically increasing
+        for i in range(len(idx.cell_offsets) - 1):
+            self.assertLessEqual(idx.cell_offsets[i].item(), idx.cell_offsets[i + 1].item())
+
+    def test_spatial_index_segment_assignment(self):
+        """Test that segments are assigned to correct cells."""
+        # Create a single horizontal segment at y=0
+        geometries = [shapely.LineString([(0, 0), (10, 0)])]
+        collection = GPUGeometryCollection.from_shapely(geometries)
+
+        cell_size = 5.0
+        expansion_distance = 1.0  # Small expansion
+        collection.build_spatial_index(cell_size, expansion_distance)
+
+        idx = collection.spatial_index
+
+        # Segment should appear in cells along the line
+        # With expansion_distance=1.0, segment from (0,0) to (10,0) should be in cells
+        # that cover y in [-1, 1] and x in [-1, 11]
+
+        # Check that at least some cells have segments
+        non_empty_cells = (idx.cell_offsets[1:] - idx.cell_offsets[:-1]) > 0
+        self.assertGreater(non_empty_cells.sum().item(), 0)
+
+        # All segment indices should be valid (0 since we have 1 segment)
+        self.assertTrue((idx.cell_segment_indices == 0).all())
+
+    def test_spatial_index_empty_collection(self):
+        """Test building spatial index on empty collection."""
+        geometries = []
+        # Need to create manually since from_shapely expects non-empty
+        device = torch.device("cpu")
+        collection = GPUGeometryCollection(
+            device=device,
+            num_geometries=0,
+            geometry_types=torch.empty(0, dtype=torch.long),
+            segment_starts=torch.empty((0, 2), dtype=torch.float32),
+            segment_ends=torch.empty((0, 2), dtype=torch.float32),
+            segment_to_geom=torch.empty(0, dtype=torch.long),
+            point_coords=torch.empty((0, 2), dtype=torch.float32),
+            point_to_geom=torch.empty(0, dtype=torch.long),
+            polygon_segment_ranges=torch.empty((0, 2), dtype=torch.long),
+            polygon_geom_indices=torch.empty(0, dtype=torch.long),
+            geom_ring_offsets=torch.zeros(1, dtype=torch.long),
+        )
+
+        # Should not crash on empty collection
+        collection.build_spatial_index(cell_size=5.0, expansion_distance=2.5)
+
+        self.assertIsNotNone(collection.spatial_index)
+        self.assertEqual(collection.spatial_index.cell_segment_indices.shape[0], 0)
+        self.assertEqual(collection.spatial_index.cell_point_indices.shape[0], 0)
+
+    def test_spatial_index_point_assignment(self):
+        """Test that points are assigned to cells correctly."""
+        geometries = [shapely.Point(5, 5), shapely.Point(15, 15)]
+        collection = GPUGeometryCollection.from_shapely(geometries)
+
+        cell_size = 10.0
+        expansion_distance = 3.0
+        collection.build_spatial_index(cell_size, expansion_distance)
+
+        idx = collection.spatial_index
+
+        # Points should be in the index
+        self.assertGreater(idx.cell_point_indices.shape[0], 0)
+
+        # All point indices should be valid (0 or 1)
+        self.assertTrue((idx.cell_point_indices >= 0).all())
+        self.assertTrue((idx.cell_point_indices < 2).all())
+
+    def test_spatial_index_mixed_geometries(self):
+        """Test spatial index with mixed geometry types."""
+        geometries = [
+            shapely.Point(5, 5),
+            shapely.LineString([(0, 0), (10, 10)]),
+            shapely.Polygon([(20, 20), (30, 20), (30, 30), (20, 30)]),
+        ]
+        collection = GPUGeometryCollection.from_shapely(geometries)
+
+        cell_size = 5.0
+        expansion_distance = 2.0
+        collection.build_spatial_index(cell_size, expansion_distance)
+
+        idx = collection.spatial_index
+
+        # Should have both segments (from LineString and Polygon) and points
+        self.assertGreater(idx.cell_segment_indices.shape[0], 0)
+        self.assertGreater(idx.cell_point_indices.shape[0], 0)
+
+        # Verify CSR structure is valid
+        num_cells = idx.grid_dims[0].item() * idx.grid_dims[1].item()
+        self.assertEqual(idx.cell_offsets.shape[0], num_cells + 1)
+        self.assertEqual(idx.cell_point_offsets.shape[0], num_cells + 1)
+
+    def test_spatial_index_large_expansion(self):
+        """Test spatial index with large expansion distance."""
+        geometries = [shapely.Point(50, 50)]
+        collection = GPUGeometryCollection.from_shapely(geometries)
+
+        cell_size = 10.0
+        expansion_distance = 50.0  # Very large expansion
+        collection.build_spatial_index(cell_size, expansion_distance)
+
+        idx = collection.spatial_index
+
+        # Point should appear in many cells due to large expansion
+        # Each cell that contains this point should have it in the index
+        total_point_assignments = idx.cell_point_indices.shape[0]
+        self.assertGreater(total_point_assignments, 1)
+
+        # All assignments should point to the same point (index 0)
+        self.assertTrue((idx.cell_point_indices == 0).all())
+
+    def test_spatial_index_correctness(self):
+        """Test that spatial index correctly identifies geometries near query points."""
+        # Create a grid of known geometries
+        geometries = [
+            shapely.Point(10, 10),
+            shapely.Point(100, 100),
+            shapely.LineString([(50, 50), (60, 50)]),
+        ]
+        collection = GPUGeometryCollection.from_shapely(geometries)
+
+        cell_size = 20.0
+        expansion_distance = 15.0
+        collection.build_spatial_index(cell_size, expansion_distance)
+
+        idx = collection.spatial_index
+
+        # Test query: point at (10, 10) should find geometry 0 (the point at 10,10)
+        query_point = torch.tensor([[10.0, 10.0]], device=collection.device)
+
+        # Hash query to cell
+        cell_coords = torch.floor((query_point - idx.grid_origin) / idx.cell_size).long()
+        zeros = torch.zeros_like(idx.grid_dims)
+        grid_max = idx.grid_dims - 1
+        cell_coords = torch.maximum(cell_coords, zeros)
+        cell_coords = torch.minimum(cell_coords, grid_max)
+        cell_id = cell_coords[0, 1] * idx.grid_dims[0] + cell_coords[0, 0]
+
+        # Get geometries in this cell
+        start = idx.cell_point_offsets[cell_id].item()
+        end = idx.cell_point_offsets[cell_id + 1].item()
+        point_indices_in_cell = idx.cell_point_indices[start:end]
+
+        # Geometry 0 (point at 10,10) should be in this cell
+        self.assertIn(0, point_indices_in_cell.tolist())
+
+        # Test query: point at (100, 100) should find geometry 1
+        query_point2 = torch.tensor([[100.0, 100.0]], device=collection.device)
+        cell_coords2 = torch.floor((query_point2 - idx.grid_origin) / idx.cell_size).long()
+        cell_coords2 = torch.maximum(cell_coords2, zeros)
+        cell_coords2 = torch.minimum(cell_coords2, grid_max)
+        cell_id2 = cell_coords2[0, 1] * idx.grid_dims[0] + cell_coords2[0, 0]
+
+        start2 = idx.cell_point_offsets[cell_id2].item()
+        end2 = idx.cell_point_offsets[cell_id2 + 1].item()
+        point_indices_in_cell2 = idx.cell_point_indices[start2:end2]
+
+        self.assertIn(1, point_indices_in_cell2.tolist())
+
+    def test_spatial_index_boundary_cases(self):
+        """Test spatial index with geometries at grid boundaries."""
+        # Create geometry at origin and far corner
+        geometries = [
+            shapely.Point(0, 0),
+            shapely.Point(1000, 1000),
+        ]
+        collection = GPUGeometryCollection.from_shapely(geometries)
+
+        cell_size = 100.0
+        expansion_distance = 50.0
+        collection.build_spatial_index(cell_size, expansion_distance)
+
+        idx = collection.spatial_index
+
+        # Both points should be in the index
+        self.assertEqual(collection.num_geometries, 2)
+        self.assertGreater(idx.cell_point_indices.shape[0], 0)
+
+        # Verify grid covers both points
+        self.assertLessEqual(idx.grid_origin[0].item(), 0 - expansion_distance)
+        self.assertLessEqual(idx.grid_origin[1].item(), 0 - expansion_distance)
+
+    def test_spatial_index_custom_bounds(self):
+        """Test spatial index with custom grid bounds."""
+        geometries = [shapely.Point(50, 50)]
+        collection = GPUGeometryCollection.from_shapely(geometries)
+
+        cell_size = 10.0
+        expansion_distance = 5.0
+
+        # Provide custom bounds larger than needed
+        bbox_min = torch.tensor([0.0, 0.0], device=collection.device)
+        bbox_max = torch.tensor([200.0, 200.0], device=collection.device)
+        collection.build_spatial_index(
+            cell_size,
+            expansion_distance,
+            grid_bounds=(bbox_min, bbox_max)
+        )
+
+        idx = collection.spatial_index
+
+        # Grid should use custom bounds
+        self.assertAlmostEqual(idx.grid_origin[0].item(), -50.0, places=1)
+        self.assertAlmostEqual(idx.grid_origin[1].item(), -50.0, places=1)
+
+        expected_dims_x = int(torch.ceil(torch.tensor(200.0 / cell_size)).item())
+        expected_dims_y = int(torch.ceil(torch.tensor(200.0 / cell_size)).item())
+
+        self.assertEqual(idx.grid_dims[0].item(), expected_dims_x)
+        self.assertEqual(idx.grid_dims[1].item(), expected_dims_y)
+
+    def test_spatial_index_multipolygon(self):
+        """Test spatial index with MultiPolygon geometry."""
+        # Create a MultiPolygon with two separated polygons
+        poly1 = shapely.Polygon([(0, 0), (10, 0), (10, 10), (0, 10)])
+        poly2 = shapely.Polygon([(100, 100), (110, 100), (110, 110), (100, 110)])
+        multipolygon = shapely.MultiPolygon([poly1, poly2])
+
+        geometries = [multipolygon]
+        collection = GPUGeometryCollection.from_shapely(geometries)
+
+        cell_size = 20.0
+        expansion_distance = 5.0
+        collection.build_spatial_index(cell_size, expansion_distance)
+
+        idx = collection.spatial_index
+
+        # MultiPolygon should generate multiple segments (8 segments: 4 per polygon)
+        self.assertGreater(idx.cell_segment_indices.shape[0], 0)
+
+        # All segment indices should reference geometry 0 (the multipolygon)
+        unique_geom_indices = set()
+        for seg_idx in idx.cell_segment_indices:
+            geom_idx = collection.segment_to_geom[seg_idx].item()
+            unique_geom_indices.add(geom_idx)
+
+        self.assertEqual(unique_geom_indices, {0})
+
+    def test_spatial_index_segment_outside_grid(self):
+        """Test that segments outside custom grid bounds are excluded."""
+        # Create geometries at different locations
+        geometries = [
+            shapely.Point(50, 50),     # Inside grid
+            shapely.Point(-100, -100), # Outside grid (negative coords)
+            shapely.Point(150, 150),   # Outside grid (beyond max)
+        ]
+        collection = GPUGeometryCollection.from_shapely(geometries)
+
+        cell_size = 10.0
+        expansion_distance = 5.0
+
+        # Provide custom bounds that only cover the first point
+        bbox_min = torch.tensor([0.0, 0.0], device=collection.device)
+        bbox_max = torch.tensor([100.0, 100.0], device=collection.device)
+        collection.build_spatial_index(
+            cell_size,
+            expansion_distance,
+            grid_bounds=(bbox_min, bbox_max)
+        )
+
+        idx = collection.spatial_index
+
+        # Expected assignments:
+        # - Point at (50, 50) with expansion 5: bbox [45,45] to [55,55]
+        #   -> cells [4,4] to [5,5] = 2×2 = 4 cells
+        # - Point at (-100, -100): outside grid -> 0 cells (excluded)
+        # - Point at (150, 150): outside grid -> 0 cells (excluded)
+        # Total: 4 assignments
+
+        self.assertIsNotNone(idx)
+        self.assertEqual(idx.cell_point_indices.shape[0], 4)
+
+        # Verify all point indices reference the first point (index 0)
+        # The outside points should not appear in the index
+        self.assertTrue((idx.cell_point_indices == 0).all())
 
 
 if __name__ == "__main__":

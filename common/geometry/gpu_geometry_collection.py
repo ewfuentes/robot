@@ -7,6 +7,7 @@ of 2D geometries (Points, LineStrings, Polygons, MultiPolygons) on GPU.
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Sequence
+import common.geometry.spatial_distance_python as sdp
 
 import shapely
 import torch
@@ -21,6 +22,53 @@ class GeometryType(IntEnum):
     LINESTRING = 1
     POLYGON = 2
     MULTIPOLYGON = 3
+
+
+@dataclass
+class QueryDistancesResult:
+    particle_idxs: torch.Tensor
+    geom_idxs: torch.Tensor
+    distances: torch.Tensor
+
+
+@dataclass
+class SpatialIndex:
+    """Uniform grid spatial index for fast distance queries.
+
+    Uses CSR (Compressed Sparse Row) format to efficiently store which
+    segments/points belong to each grid cell.
+
+    Attributes:
+        grid_origin: (2,) tensor - (x_min, y_min) of grid bounds
+        cell_size: Grid cell size for hashing particles
+        expansion_distance: Distance to expand geometries
+        grid_dims: (2,) tensor - (num_cells_x, num_cells_y)
+        cell_segment_indices: (K,) tensor - segment indices sorted by (cell, geom_id)
+        cell_offsets: (num_cells+1,) tensor - CSR row pointers for segments
+        cell_point_indices: (P',) tensor - point indices sorted by (cell, geom_id)
+        cell_point_offsets: (num_cells+1,) tensor - CSR row pointers for points
+        cell_geom_indices: (G',) tensor - unique geometry IDs per cell (CSR format)
+        cell_geom_offsets: (num_cells+1,) tensor - CSR row pointers for geometries
+        cell_point_geom_indices: (G'',) tensor - unique geometry IDs per cell for points
+        cell_point_geom_offsets: (num_cells+1,) tensor - CSR row pointers for point geometries
+        cell_polygon_indices: (K',) tensor - polygon geometry indices per cell (CSR format)
+        cell_polygon_offsets: (num_cells+1,) tensor - CSR row pointers for polygons
+    """
+
+    grid_origin: torch.Tensor
+    cell_size: float
+    expansion_distance: float
+    grid_dims: torch.Tensor
+    cell_segment_indices: torch.Tensor
+    cell_offsets: torch.Tensor
+    cell_point_indices: torch.Tensor
+    cell_point_offsets: torch.Tensor
+    cell_geom_indices: torch.Tensor
+    cell_geom_offsets: torch.Tensor
+    cell_point_geom_indices: torch.Tensor
+    cell_point_geom_offsets: torch.Tensor
+    cell_polygon_indices: torch.Tensor
+    cell_polygon_offsets: torch.Tensor
 
 
 @dataclass
@@ -39,9 +87,11 @@ class GPUGeometryCollection:
         segment_to_geom: (S,) tensor mapping each segment to geometry index.
         point_coords: (P, 2) tensor of point geometry coordinates.
         point_to_geom: (P,) tensor mapping each point to geometry index.
-        polygon_vertices: (V, 2) tensor of polygon ring vertices.
-        polygon_ranges: (num_polygons, 2) tensor of [start, end) vertex indices.
-        polygon_geom_indices: (num_polygons,) tensor mapping to geometry index.
+        polygon_segment_ranges: (R, 2) tensor of [start, end) segment indices per ring.
+            Ring vertices are segment_starts[start:end].
+        polygon_geom_indices: (R,) tensor mapping each ring to geometry index.
+        geom_ring_offsets: (G_poly+1,) CSR offsets for rings per polygon geometry.
+        spatial_index: Optional spatial index for fast distance queries.
     """
 
     device: torch.device
@@ -58,9 +108,21 @@ class GPUGeometryCollection:
     point_to_geom: torch.Tensor
 
     # Polygon data (for inside/outside tests)
-    polygon_vertices: torch.Tensor
-    polygon_ranges: torch.Tensor
+    # polygon_segment_ranges: (R, 2) tensor of [start, end) segment indices per ring
+    # Ring vertices can be read from segment_starts[start:end]
+    polygon_segment_ranges: torch.Tensor
     polygon_geom_indices: torch.Tensor
+    # CSR offsets mapping polygon geometry index to its rings in polygon_segment_ranges
+    # geom_ring_offsets[i:i+1] gives the range of rings for polygon geometry i
+    geom_ring_offsets: torch.Tensor
+
+    # Spatial index (optional, built on demand)
+    spatial_index: SpatialIndex | None = None
+
+    # Coordinate origin for precision: all coords are stored relative to this point.
+    # This avoids float32 precision loss with large coordinates (e.g., web mercator).
+    # Query points must be translated by this origin before distance computation.
+    coordinate_origin: torch.Tensor | None = None
 
     @classmethod
     def from_shapely(
@@ -90,10 +152,8 @@ class GPUGeometryCollection:
         point_to_geom_list = []
 
         # Collect polygon data
-        polygon_vertices_list = []
-        polygon_ranges_list = []
+        polygon_segment_ranges_list = []
         polygon_geom_indices_list = []
-        vertex_offset = 0
 
         for geom_idx, geom in enumerate(geometries):
             geom_type = geom.geom_type
@@ -119,14 +179,9 @@ class GPUGeometryCollection:
                     segment_starts_list,
                     segment_ends_list,
                     segment_to_geom_list,
-                    polygon_vertices_list,
-                    polygon_ranges_list,
+                    polygon_segment_ranges_list,
                     polygon_geom_indices_list,
-                    vertex_offset,
                 )
-                # Update vertex offset
-                ring_coords = list(geom.exterior.coords)[:-1]
-                vertex_offset += len(ring_coords)
 
             elif geom_type == "MultiPolygon":
                 geometry_types.append(GeometryType.MULTIPOLYGON)
@@ -137,16 +192,41 @@ class GPUGeometryCollection:
                         segment_starts_list,
                         segment_ends_list,
                         segment_to_geom_list,
-                        polygon_vertices_list,
-                        polygon_ranges_list,
+                        polygon_segment_ranges_list,
                         polygon_geom_indices_list,
-                        vertex_offset,
                     )
-                    ring_coords = list(poly.exterior.coords)[:-1]
-                    vertex_offset += len(ring_coords)
 
             else:
                 raise ValueError(f"Unsupported geometry type: {geom_type}")
+
+        # Compute coordinate origin (bounding box min) for precision.
+        # By translating all coordinates to be relative to this origin,
+        # we avoid float32 precision loss with large coordinates (e.g., web mercator ~10^8).
+        import numpy as np
+        all_coords = segment_starts_list + segment_ends_list + point_coords_list
+        if all_coords:
+            all_coords_array = np.array(all_coords, dtype=np.float64)
+            origin = all_coords_array.min(axis=0)
+            coordinate_origin = torch.tensor(origin, dtype=torch.float64, device=device)
+
+            # Translate all coordinates to local system
+            for i in range(len(segment_starts_list)):
+                segment_starts_list[i] = (
+                    segment_starts_list[i][0] - origin[0],
+                    segment_starts_list[i][1] - origin[1],
+                )
+            for i in range(len(segment_ends_list)):
+                segment_ends_list[i] = (
+                    segment_ends_list[i][0] - origin[0],
+                    segment_ends_list[i][1] - origin[1],
+                )
+            for i in range(len(point_coords_list)):
+                point_coords_list[i] = (
+                    point_coords_list[i][0] - origin[0],
+                    point_coords_list[i][1] - origin[1],
+                )
+        else:
+            coordinate_origin = torch.zeros(2, dtype=torch.float64, device=device)
 
         # Convert to tensors
         geometry_types_tensor = torch.tensor(
@@ -182,20 +262,28 @@ class GPUGeometryCollection:
             point_to_geom = torch.empty((0,), dtype=torch.long, device=device)
 
         # Polygons
-        if polygon_vertices_list:
-            polygon_vertices = torch.tensor(
-                polygon_vertices_list, dtype=torch.float32, device=device
-            )
-            polygon_ranges = torch.tensor(
-                polygon_ranges_list, dtype=torch.long, device=device
+        if polygon_segment_ranges_list:
+            polygon_segment_ranges = torch.tensor(
+                polygon_segment_ranges_list, dtype=torch.long, device=device
             )
             polygon_geom_indices = torch.tensor(
                 polygon_geom_indices_list, dtype=torch.long, device=device
             )
+
+            # Compute geom_ring_offsets: CSR offsets mapping unique polygon geometry
+            # indices to their rings. Rings are already ordered by geometry index
+            # from the way _process_polygon is called.
+            unique_geoms, counts = torch.unique_consecutive(
+                polygon_geom_indices, return_counts=True
+            )
+            geom_ring_offsets = torch.cat([
+                torch.zeros(1, dtype=torch.long, device=device),
+                counts.cumsum(0)
+            ])
         else:
-            polygon_vertices = torch.empty((0, 2), dtype=torch.float32, device=device)
-            polygon_ranges = torch.empty((0, 2), dtype=torch.long, device=device)
+            polygon_segment_ranges = torch.empty((0, 2), dtype=torch.long, device=device)
             polygon_geom_indices = torch.empty((0,), dtype=torch.long, device=device)
+            geom_ring_offsets = torch.zeros(1, dtype=torch.long, device=device)
 
         return cls(
             device=device,
@@ -206,9 +294,10 @@ class GPUGeometryCollection:
             segment_to_geom=segment_to_geom,
             point_coords=point_coords,
             point_to_geom=point_to_geom,
-            polygon_vertices=polygon_vertices,
-            polygon_ranges=polygon_ranges,
+            polygon_segment_ranges=polygon_segment_ranges,
             polygon_geom_indices=polygon_geom_indices,
+            geom_ring_offsets=geom_ring_offsets,
+            coordinate_origin=coordinate_origin,
         )
 
     def distance_to_points(
@@ -268,9 +357,28 @@ class GPUGeometryCollection:
             )
 
         # Handle Polygon signed distances
-        if self.polygon_ranges.shape[0] > 0:
+        if self.polygon_segment_ranges.shape[0] > 0:
+            # Reconstruct polygon_vertices and polygon_ranges for the fallback function
+            # Ring vertices are segment_starts[seg_start:seg_end]
+            polygon_vertices_list = []
+            polygon_ranges_list = []
+            vertex_offset = 0
+            for i in range(self.polygon_segment_ranges.shape[0]):
+                seg_start = self.polygon_segment_ranges[i, 0].item()
+                seg_end = self.polygon_segment_ranges[i, 1].item()
+                ring_verts = self.segment_starts[seg_start:seg_end]
+                polygon_vertices_list.append(ring_verts)
+                num_verts = seg_end - seg_start
+                polygon_ranges_list.append([vertex_offset, vertex_offset + num_verts])
+                vertex_offset += num_verts
+
+            polygon_vertices = torch.cat(polygon_vertices_list, dim=0)
+            polygon_ranges = torch.tensor(
+                polygon_ranges_list, dtype=torch.long, device=self.device
+            )
+
             signed_distances = gpu_distance.signed_distance_to_polygons(
-                query_points, self.polygon_vertices, self.polygon_ranges
+                query_points, polygon_vertices, polygon_ranges
             )  # (Q, num_polygon_rings)
 
             # Map back to geometry indices
@@ -285,6 +393,726 @@ class GPUGeometryCollection:
 
         return distances
 
+    def build_spatial_index(
+        self,
+        cell_size: float,
+        expansion_distance: float,
+        grid_bounds: tuple[torch.Tensor, torch.Tensor] | None = None,
+        profile: dict | None = None,
+    ) -> None:
+        """Build uniform grid spatial index for fast distance queries.
+
+        Args:
+            cell_size: Grid discretization for hashing particles (e.g., sigma_px)
+            expansion_distance: Distance to expand geometries (e.g., 5*sigma_px)
+            grid_bounds: Optional (bbox_min, bbox_max) tensors of shape (2,).
+                If None, computed from geometry bounding box.
+            profile: Optional dict to store detailed timing information.
+        """
+        # Step 1: Compute or use provided grid bounds
+        if grid_bounds is not None:
+            # We assume that the grid bounds are given in the global coordinate frame,
+            # make sure to offset by the local origin
+            bbox_min, bbox_max = grid_bounds
+            bbox_min -= self.coordinate_origin
+            bbox_max -= self.coordinate_origin
+        else:
+            # Compute bounds from geometry without creating intermediate tensor
+            # Since the geometry is already in the local frame, there is no need to
+            # compensate for the local origin
+            bbox_min = None
+            bbox_max = None
+
+            if self.segment_starts.shape[0] > 0:
+                seg_min = torch.minimum(self.segment_starts.min(dim=0).values,
+                                       self.segment_ends.min(dim=0).values)
+                seg_max = torch.maximum(self.segment_starts.max(dim=0).values,
+                                       self.segment_ends.max(dim=0).values)
+                bbox_min = seg_min if bbox_min is None else torch.minimum(bbox_min, seg_min)
+                bbox_max = seg_max if bbox_max is None else torch.maximum(bbox_max, seg_max)
+
+            if self.point_coords.shape[0] > 0:
+                pt_min = self.point_coords.min(dim=0).values
+                pt_max = self.point_coords.max(dim=0).values
+                bbox_min = pt_min if bbox_min is None else torch.minimum(bbox_min, pt_min)
+                bbox_max = pt_max if bbox_max is None else torch.maximum(bbox_max, pt_max)
+
+            if bbox_min is None:
+                # Empty collection - create empty index
+                grid_origin = torch.zeros(2, dtype=torch.float32, device=self.device)
+                grid_dims = torch.ones(2, dtype=torch.long, device=self.device)
+                num_cells = 1
+
+                self.spatial_index = SpatialIndex(
+                    grid_origin=grid_origin,
+                    cell_size=cell_size,
+                    expansion_distance=expansion_distance,
+                    grid_dims=grid_dims,
+                    cell_segment_indices=torch.empty(0, dtype=torch.long, device=self.device),
+                    cell_offsets=torch.zeros(num_cells + 1, dtype=torch.long, device=self.device),
+                    cell_point_indices=torch.empty(0, dtype=torch.long, device=self.device),
+                    cell_point_offsets=torch.zeros(num_cells + 1, dtype=torch.long, device=self.device),
+                    cell_geom_indices=torch.empty(0, dtype=torch.long, device=self.device),
+                    cell_geom_offsets=torch.zeros(num_cells + 1, dtype=torch.long, device=self.device),
+                    cell_point_geom_indices=torch.empty(0, dtype=torch.long, device=self.device),
+                    cell_point_geom_offsets=torch.zeros(num_cells + 1, dtype=torch.long, device=self.device),
+                    cell_polygon_indices=torch.empty(0, dtype=torch.long, device=self.device),
+                    cell_polygon_offsets=torch.zeros(num_cells + 1, dtype=torch.long, device=self.device),
+                )
+                return
+
+            # Add expansion to computed bounds
+            bbox_min = bbox_min - expansion_distance
+            bbox_max = bbox_max + expansion_distance
+
+        grid_origin = bbox_min
+        grid_dims = torch.ceil((bbox_max - bbox_min) / cell_size).long()
+        num_cells = grid_dims[0].item() * grid_dims[1].item()
+
+        # Step 2: Build segment index
+        seg_profile = {} if profile is not None else None
+        cell_segment_indices, cell_offsets, cell_geom_indices, cell_geom_offsets = self._index_segments(
+            grid_origin, cell_size, grid_dims, expansion_distance, seg_profile
+        )
+        if profile is not None:
+            profile['segments'] = seg_profile
+
+        # Step 3: Build point index
+        pt_profile = {} if profile is not None else None
+        cell_point_indices, cell_point_offsets, cell_point_geom_indices, cell_point_geom_offsets = self._index_points(
+            grid_origin, cell_size, grid_dims, expansion_distance, pt_profile
+        )
+        if profile is not None:
+            profile['points'] = pt_profile
+
+        # Step 4: Build polygon bbox index
+        cell_polygon_indices, cell_polygon_offsets = self._index_polygon_bboxes(
+            grid_origin, cell_size, grid_dims, expansion_distance
+        )
+
+        # Step 5: Store index
+        self.spatial_index = SpatialIndex(
+            grid_origin=grid_origin,
+            cell_size=cell_size,
+            expansion_distance=expansion_distance,
+            grid_dims=grid_dims,
+            cell_segment_indices=cell_segment_indices,
+            cell_offsets=cell_offsets,
+            cell_point_indices=cell_point_indices,
+            cell_point_offsets=cell_point_offsets,
+            cell_geom_indices=cell_geom_indices,
+            cell_geom_offsets=cell_geom_offsets,
+            cell_point_geom_indices=cell_point_geom_indices,
+            cell_point_geom_offsets=cell_point_geom_offsets,
+            cell_polygon_indices=cell_polygon_indices,
+            cell_polygon_offsets=cell_polygon_offsets,
+        )
+
+    def _index_segments(
+        self,
+        grid_origin: torch.Tensor,
+        cell_size: float,
+        grid_dims: torch.Tensor,
+        expansion_distance: float,
+        profile: dict | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Build CSR index for segments.
+
+        Args:
+            profile: Optional dict to store timing information
+
+        Returns:
+            Tuple of (cell_segment_indices, cell_offsets, cell_geom_indices, cell_geom_offsets)
+            - cell_segment_indices: sorted by (cell_id, geom_id)
+            - cell_offsets: CSR row pointers for segments per cell
+            - cell_geom_indices: unique geometry IDs per cell (CSR format)
+            - cell_geom_offsets: CSR row pointers for geometries per cell
+        """
+        import time
+
+        if self.segment_starts.shape[0] == 0:
+            num_cells = grid_dims[0].item() * grid_dims[1].item()
+            return (
+                torch.empty(0, dtype=torch.long, device=self.device),
+                torch.zeros(num_cells + 1, dtype=torch.long, device=self.device),
+                torch.empty(0, dtype=torch.long, device=self.device),
+                torch.zeros(num_cells + 1, dtype=torch.long, device=self.device),
+            )
+
+        t0 = time.time()
+        # Compute expanded bbox for each segment
+        seg_bbox_min = (
+            torch.minimum(self.segment_starts, self.segment_ends) - expansion_distance
+        )
+        seg_bbox_max = (
+            torch.maximum(self.segment_starts, self.segment_ends) + expansion_distance
+        )
+        if profile is not None:
+            profile['bbox_compute'] = time.time() - t0
+
+        t0 = time.time()
+        # Convert to cell coordinates
+        cell_min_unclamped = torch.floor((seg_bbox_min - grid_origin) / cell_size).long()
+        cell_max_unclamped = torch.floor((seg_bbox_max - grid_origin) / cell_size).long()
+
+        # Clamp to grid bounds
+        zeros = torch.zeros_like(grid_dims)
+        grid_max = grid_dims - 1
+        cell_min = torch.maximum(cell_min_unclamped, zeros)
+        cell_min = torch.minimum(cell_min, grid_max)
+        cell_max = torch.maximum(cell_max_unclamped, zeros)
+        cell_max = torch.minimum(cell_max, grid_max)
+
+        # Check if segment bbox intersects grid [0, grid_dims-1]
+        # Segment intersects if: cell_max_unclamped >= 0 AND cell_min_unclamped < grid_dims
+        intersects_grid = (
+            (cell_max_unclamped[:, 0] >= 0) &
+            (cell_max_unclamped[:, 1] >= 0) &
+            (cell_min_unclamped[:, 0] < grid_dims[0]) &
+            (cell_min_unclamped[:, 1] < grid_dims[1])
+        )
+        if profile is not None:
+            profile['cell_coords'] = time.time() - t0
+
+        t0 = time.time()
+        # Expand segments to (segment_idx, cell_id) pairs using vectorized operations
+        # Step 1: Compute number of cells each segment spans
+        cell_ranges = cell_max - cell_min + 1  # (N, 2)
+        num_cells_per_seg = cell_ranges[:, 0] * cell_ranges[:, 1]  # (N,)
+
+        # Zero out segments that don't intersect grid (prevents false positives)
+        num_cells_per_seg = torch.where(
+            intersects_grid,
+            num_cells_per_seg,
+            torch.tensor(0, dtype=torch.long, device=self.device)
+        )
+        total_pairs = num_cells_per_seg.sum().item()
+
+        if total_pairs == 0:
+            num_cells = grid_dims[0].item() * grid_dims[1].item()
+            if profile is not None:
+                profile['vectorized_expansion'] = time.time() - t0
+                profile['num_pairs'] = 0
+            return (
+                torch.empty(0, dtype=torch.long, device=self.device),
+                torch.zeros(num_cells + 1, dtype=torch.long, device=self.device),
+                torch.empty(0, dtype=torch.long, device=self.device),
+                torch.zeros(num_cells + 1, dtype=torch.long, device=self.device),
+            )
+
+        # Step 2: Create segment indices repeated by number of cells
+        segment_indices = torch.arange(len(self.segment_starts), device=self.device)
+        segment_indices_expanded = segment_indices.repeat_interleave(num_cells_per_seg)
+
+        # Step 3: Generate local cell indices for each segment
+        # Compute cumulative offsets to map flat indices to segments
+        offsets = torch.cat([
+            torch.tensor([0], device=self.device, dtype=torch.long),
+            num_cells_per_seg.cumsum(0)
+        ])
+
+        # For each pair, compute its local index within the segment's cell range
+        flat_indices = torch.arange(total_pairs, device=self.device, dtype=torch.long)
+        local_indices = flat_indices - offsets[segment_indices_expanded]
+
+        # Step 4: Unravel local indices to 2D offsets
+        # local_idx = cy_offset * width + cx_offset
+        widths = cell_ranges[:, 0]  # x-dimension width
+        widths_expanded = widths[segment_indices_expanded]
+
+        cx_offset = local_indices % widths_expanded
+        cy_offset = local_indices // widths_expanded
+
+        # Step 5: Convert offsets to absolute cell coordinates
+        cell_min_expanded = cell_min[segment_indices_expanded]  # (total_pairs, 2)
+        cx = cell_min_expanded[:, 0] + cx_offset
+        cy = cell_min_expanded[:, 1] + cy_offset
+
+        # Convert to linear cell IDs
+        grid_width = grid_dims[0]
+        cell_ids = cy * grid_width + cx
+
+        if profile is not None:
+            profile['vectorized_expansion'] = time.time() - t0
+            profile['num_pairs'] = total_pairs
+
+        t0 = time.time()
+        # Get geometry IDs for each segment
+        geom_ids_expanded = self.segment_to_geom[segment_indices_expanded]
+
+        # Sort by (cell_id, geom_id) using combined key
+        combined_key = cell_ids * self.num_geometries + geom_ids_expanded
+        sorted_order = torch.argsort(combined_key)
+        sorted_segment_indices = segment_indices_expanded[sorted_order]
+        sorted_cell_ids = cell_ids[sorted_order]
+        sorted_geom_ids = geom_ids_expanded[sorted_order]
+        if profile is not None:
+            profile['sorting'] = time.time() - t0
+
+        t0 = time.time()
+        # Build CSR offsets for segments per cell using bincount
+        num_cells = grid_dims[0].item() * grid_dims[1].item()
+        cell_counts = torch.bincount(sorted_cell_ids, minlength=num_cells)
+        cell_offsets = torch.cat(
+            [
+                torch.tensor([0], dtype=torch.long, device=self.device),
+                torch.cumsum(cell_counts, dim=0),
+            ]
+        )
+        if profile is not None:
+            profile['csr_build'] = time.time() - t0
+
+        t0 = time.time()
+        # Compute unique (cell_id, geom_id) pairs for CSR geometry index
+        # Use combined key to find unique pairs
+        combined_sorted = sorted_cell_ids * self.num_geometries + sorted_geom_ids
+        unique_combined, unique_inverse = torch.unique(combined_sorted, return_inverse=True)
+        unique_cell_ids = unique_combined // self.num_geometries
+        unique_geom_ids = unique_combined % self.num_geometries
+
+        # Build CSR offsets for geometries per cell
+        # For each cell, count unique geometries
+        cell_geom_counts = torch.bincount(unique_cell_ids, minlength=num_cells)
+        cell_geom_offsets = torch.cat(
+            [
+                torch.tensor([0], dtype=torch.long, device=self.device),
+                torch.cumsum(cell_geom_counts, dim=0),
+            ]
+        )
+        cell_geom_indices = unique_geom_ids
+        if profile is not None:
+            profile['geom_csr_build'] = time.time() - t0
+
+        return sorted_segment_indices, cell_offsets, cell_geom_indices, cell_geom_offsets
+
+    def _index_points(
+        self,
+        grid_origin: torch.Tensor,
+        cell_size: float,
+        grid_dims: torch.Tensor,
+        expansion_distance: float,
+        profile: dict | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Build CSR index for points.
+
+        Points are treated as having a square bbox of size 2*expansion_distance.
+
+        Args:
+            profile: Optional dict to store timing information
+
+        Returns:
+            Tuple of (cell_point_indices, cell_offsets, cell_geom_indices, cell_geom_offsets)
+            - cell_point_indices: sorted by (cell_id, geom_id)
+            - cell_offsets: CSR row pointers for points per cell
+            - cell_geom_indices: unique geometry IDs per cell (CSR format)
+            - cell_geom_offsets: CSR row pointers for geometries per cell
+        """
+        import time
+        if self.point_coords.shape[0] == 0:
+            num_cells = grid_dims[0].item() * grid_dims[1].item()
+            return (
+                torch.empty(0, dtype=torch.long, device=self.device),
+                torch.zeros(num_cells + 1, dtype=torch.long, device=self.device),
+                torch.empty(0, dtype=torch.long, device=self.device),
+                torch.zeros(num_cells + 1, dtype=torch.long, device=self.device),
+            )
+
+        t0 = time.time()
+        # Compute expanded bbox for each point
+        point_bbox_min = self.point_coords - expansion_distance
+        point_bbox_max = self.point_coords + expansion_distance
+        if profile is not None:
+            profile['bbox_compute'] = time.time() - t0
+
+        t0 = time.time()
+        # Convert to cell coordinates
+        cell_min_unclamped = torch.floor((point_bbox_min - grid_origin) / cell_size).long()
+        cell_max_unclamped = torch.floor((point_bbox_max - grid_origin) / cell_size).long()
+
+        # Clamp to grid bounds
+        zeros = torch.zeros_like(grid_dims)
+        grid_max = grid_dims - 1
+        cell_min = torch.maximum(cell_min_unclamped, zeros)
+        cell_min = torch.minimum(cell_min, grid_max)
+        cell_max = torch.maximum(cell_max_unclamped, zeros)
+        cell_max = torch.minimum(cell_max, grid_max)
+
+        # Check if point bbox intersects grid [0, grid_dims-1]
+        # Point intersects if: cell_max_unclamped >= 0 AND cell_min_unclamped < grid_dims
+        intersects_grid = (
+            (cell_max_unclamped[:, 0] >= 0) &
+            (cell_max_unclamped[:, 1] >= 0) &
+            (cell_min_unclamped[:, 0] < grid_dims[0]) &
+            (cell_min_unclamped[:, 1] < grid_dims[1])
+        )
+        if profile is not None:
+            profile['cell_coords'] = time.time() - t0
+
+        t0 = time.time()
+        # Expand points to (point_idx, cell_id) pairs using vectorized operations
+        # Step 1: Compute number of cells each point spans
+        cell_ranges = cell_max - cell_min + 1  # (N, 2)
+        num_cells_per_point = cell_ranges[:, 0] * cell_ranges[:, 1]  # (N,)
+
+        # Zero out points that don't intersect grid (prevents false positives)
+        num_cells_per_point = torch.where(
+            intersects_grid,
+            num_cells_per_point,
+            torch.tensor(0, dtype=torch.long, device=self.device)
+        )
+        total_pairs = num_cells_per_point.sum().item()
+
+        if total_pairs == 0:
+            num_cells = grid_dims[0].item() * grid_dims[1].item()
+            if profile is not None:
+                profile['vectorized_expansion'] = time.time() - t0
+                profile['num_pairs'] = 0
+            return (
+                torch.empty(0, dtype=torch.long, device=self.device),
+                torch.zeros(num_cells + 1, dtype=torch.long, device=self.device),
+                torch.empty(0, dtype=torch.long, device=self.device),
+                torch.zeros(num_cells + 1, dtype=torch.long, device=self.device),
+            )
+
+        # Step 2: Create point indices repeated by number of cells
+        point_indices = torch.arange(len(self.point_coords), device=self.device)
+        point_indices_expanded = point_indices.repeat_interleave(num_cells_per_point)
+
+        # Step 3: Generate local cell indices for each point
+        # Compute cumulative offsets to map flat indices to points
+        offsets = torch.cat([
+            torch.tensor([0], device=self.device, dtype=torch.long),
+            num_cells_per_point.cumsum(0)
+        ])
+
+        # For each pair, compute its local index within the point's cell range
+        flat_indices = torch.arange(total_pairs, device=self.device, dtype=torch.long)
+        local_indices = flat_indices - offsets[point_indices_expanded]
+
+        # Step 4: Unravel local indices to 2D offsets
+        # local_idx = cy_offset * width + cx_offset
+        widths = cell_ranges[:, 0]  # x-dimension width
+        widths_expanded = widths[point_indices_expanded]
+
+        cx_offset = local_indices % widths_expanded
+        cy_offset = local_indices // widths_expanded
+
+        # Step 5: Convert offsets to absolute cell coordinates
+        cell_min_expanded = cell_min[point_indices_expanded]  # (total_pairs, 2)
+        cx = cell_min_expanded[:, 0] + cx_offset
+        cy = cell_min_expanded[:, 1] + cy_offset
+
+        # Convert to linear cell IDs
+        grid_width = grid_dims[0]
+        cell_ids = cy * grid_width + cx
+
+        if profile is not None:
+            profile['vectorized_expansion'] = time.time() - t0
+            profile['num_pairs'] = total_pairs
+
+        t0 = time.time()
+        # Get geometry IDs for each point
+        geom_ids_expanded = self.point_to_geom[point_indices_expanded]
+
+        # Sort by (cell_id, geom_id) using combined key
+        combined_key = cell_ids * self.num_geometries + geom_ids_expanded
+        sorted_order = torch.argsort(combined_key)
+        sorted_point_indices = point_indices_expanded[sorted_order]
+        sorted_cell_ids = cell_ids[sorted_order]
+        sorted_geom_ids = geom_ids_expanded[sorted_order]
+        if profile is not None:
+            profile['sorting'] = time.time() - t0
+
+        t0 = time.time()
+        # Build CSR offsets for points per cell using bincount
+        num_cells = grid_dims[0].item() * grid_dims[1].item()
+        cell_counts = torch.bincount(sorted_cell_ids, minlength=num_cells)
+        cell_offsets = torch.cat(
+            [
+                torch.tensor([0], dtype=torch.long, device=self.device),
+                torch.cumsum(cell_counts, dim=0),
+            ]
+        )
+        if profile is not None:
+            profile['csr_build'] = time.time() - t0
+
+        t0 = time.time()
+        # Compute unique (cell_id, geom_id) pairs for CSR geometry index
+        combined_sorted = sorted_cell_ids * self.num_geometries + sorted_geom_ids
+        unique_combined, unique_inverse = torch.unique(combined_sorted, return_inverse=True)
+        unique_cell_ids = unique_combined // self.num_geometries
+        unique_geom_ids = unique_combined % self.num_geometries
+
+        # Build CSR offsets for geometries per cell
+        cell_geom_counts = torch.bincount(unique_cell_ids, minlength=num_cells)
+        cell_geom_offsets = torch.cat(
+            [
+                torch.tensor([0], dtype=torch.long, device=self.device),
+                torch.cumsum(cell_geom_counts, dim=0),
+            ]
+        )
+        cell_geom_indices = unique_geom_ids
+        if profile is not None:
+            profile['geom_csr_build'] = time.time() - t0
+
+        return sorted_point_indices, cell_offsets, cell_geom_indices, cell_geom_offsets
+
+    def _index_polygon_bboxes(
+        self,
+        grid_origin: torch.Tensor,
+        cell_size: float,
+        grid_dims: torch.Tensor,
+        expansion_distance: float,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Build CSR index for polygon bounding boxes.
+
+        Each polygon geometry gets one bounding box entry (union of all its rings).
+        This enables sparse point-in-polygon queries by only checking polygons
+        whose bboxes overlap with a query point's cell.
+
+        Returns:
+            Tuple of (cell_polygon_indices, cell_polygon_offsets)
+            - cell_polygon_indices: polygon geometry indices per cell (CSR values)
+            - cell_polygon_offsets: CSR row pointers for polygons per cell
+        """
+        num_cells = grid_dims[0].item() * grid_dims[1].item()
+        num_polygon_geoms = self.geom_ring_offsets.size(0) - 1
+
+        if num_polygon_geoms == 0:
+            return (
+                torch.empty(0, dtype=torch.long, device=self.device),
+                torch.zeros(num_cells + 1, dtype=torch.long, device=self.device),
+            )
+
+        # Get unique polygon geometry indices
+        unique_poly_geoms = self.polygon_geom_indices.unique()
+        num_unique_polys = len(unique_poly_geoms)
+
+        # Create mapping from global geom index to local polygon index
+        geom_to_poly_idx = torch.full((self.num_geometries,), -1,
+                                      dtype=torch.long, device=self.device)
+        geom_to_poly_idx[unique_poly_geoms] = torch.arange(num_unique_polys, device=self.device)
+
+        # Vectorized bbox computation - no Python loops
+        # Step 1: Get segment ranges for all rings
+        seg_starts = self.polygon_segment_ranges[:, 0]  # (R,)
+        seg_ends = self.polygon_segment_ranges[:, 1]    # (R,)
+        ring_lengths = seg_ends - seg_starts            # (R,)
+
+        # Step 2: Expand to get all vertex indices
+        # For each ring, generate indices: seg_start, seg_start+1, ..., seg_end-1
+        total_vertices = ring_lengths.sum()
+        ring_indices = torch.arange(len(ring_lengths), device=self.device)
+        ring_indices_expanded = ring_indices.repeat_interleave(ring_lengths)
+
+        # Compute vertex indices within segment_starts
+        ring_offsets = torch.cat([
+            torch.zeros(1, dtype=torch.long, device=self.device),
+            ring_lengths.cumsum(0)
+        ])
+        flat_vertex_idx = torch.arange(total_vertices, device=self.device, dtype=torch.long)
+        local_vertex_idx = flat_vertex_idx - ring_offsets[ring_indices_expanded]
+        seg_starts_expanded = seg_starts[ring_indices_expanded]
+        vertex_indices = seg_starts_expanded + local_vertex_idx
+
+        # Step 3: Gather all vertices
+        all_vertices = self.segment_starts[vertex_indices]  # (total_vertices, 2)
+
+        # Step 4: Map rings to polygon geometry indices
+        poly_idx_per_ring = geom_to_poly_idx[self.polygon_geom_indices]  # (R,)
+        poly_idx_per_vertex = poly_idx_per_ring[ring_indices_expanded]   # (total_vertices,)
+
+        # Step 5: Compute bbox per polygon using scatter_reduce
+        # Need to expand poly_idx for both x and y coordinates
+        poly_idx_expanded = poly_idx_per_vertex.unsqueeze(1).expand(-1, 2)  # (total_vertices, 2)
+
+        poly_bbox_min = torch.full((num_unique_polys, 2), float('inf'),
+                                   dtype=torch.float32, device=self.device)
+        poly_bbox_max = torch.full((num_unique_polys, 2), float('-inf'),
+                                   dtype=torch.float32, device=self.device)
+
+        poly_bbox_min.scatter_reduce_(0, poly_idx_expanded, all_vertices, reduce='amin')
+        poly_bbox_max.scatter_reduce_(0, poly_idx_expanded, all_vertices, reduce='amax')
+
+        # Expand bboxes by expansion_distance
+        poly_bbox_min = poly_bbox_min - expansion_distance
+        poly_bbox_max = poly_bbox_max + expansion_distance
+
+        # Convert to cell coordinates
+        cell_min_unclamped = torch.floor((poly_bbox_min - grid_origin) / cell_size).long()
+        cell_max_unclamped = torch.floor((poly_bbox_max - grid_origin) / cell_size).long()
+
+        # Clamp to grid bounds
+        zeros = torch.zeros_like(grid_dims)
+        grid_max = grid_dims - 1
+        cell_min = torch.maximum(cell_min_unclamped, zeros)
+        cell_min = torch.minimum(cell_min, grid_max)
+        cell_max = torch.maximum(cell_max_unclamped, zeros)
+        cell_max = torch.minimum(cell_max, grid_max)
+
+        # Check if polygon bbox intersects grid
+        intersects_grid = (
+            (cell_max_unclamped[:, 0] >= 0) &
+            (cell_max_unclamped[:, 1] >= 0) &
+            (cell_min_unclamped[:, 0] < grid_dims[0]) &
+            (cell_min_unclamped[:, 1] < grid_dims[1])
+        )
+
+        # Expand polygons to (polygon_idx, cell_id) pairs using vectorized operations
+        cell_ranges = cell_max - cell_min + 1  # (P, 2)
+        num_cells_per_poly = cell_ranges[:, 0] * cell_ranges[:, 1]  # (P,)
+
+        # Zero out polygons that don't intersect grid
+        num_cells_per_poly = torch.where(
+            intersects_grid,
+            num_cells_per_poly,
+            torch.tensor(0, dtype=torch.long, device=self.device)
+        )
+        total_pairs = num_cells_per_poly.sum().item()
+
+        if total_pairs == 0:
+            return (
+                torch.empty(0, dtype=torch.long, device=self.device),
+                torch.zeros(num_cells + 1, dtype=torch.long, device=self.device),
+            )
+
+        # Create polygon indices repeated by number of cells
+        poly_indices = torch.arange(num_unique_polys, device=self.device)
+        poly_indices_expanded = poly_indices.repeat_interleave(num_cells_per_poly)
+
+        # Generate local cell indices for each polygon
+        offsets = torch.cat([
+            torch.tensor([0], device=self.device, dtype=torch.long),
+            num_cells_per_poly.cumsum(0)
+        ])
+
+        flat_indices = torch.arange(total_pairs, device=self.device, dtype=torch.long)
+        local_indices = flat_indices - offsets[poly_indices_expanded]
+
+        # Unravel local indices to 2D offsets
+        widths = cell_ranges[:, 0]
+        widths_expanded = widths[poly_indices_expanded]
+
+        cx_offset = local_indices % widths_expanded
+        cy_offset = local_indices // widths_expanded
+
+        # Convert to absolute cell coordinates
+        cell_min_expanded = cell_min[poly_indices_expanded]
+        cx = cell_min_expanded[:, 0] + cx_offset
+        cy = cell_min_expanded[:, 1] + cy_offset
+
+        # Convert to linear cell IDs
+        grid_width = grid_dims[0]
+        cell_ids = cy * grid_width + cx
+
+        # Map local polygon indices back to global geometry indices
+        global_geom_indices = unique_poly_geoms[poly_indices_expanded]
+
+        # Sort by cell_id
+        sorted_order = torch.argsort(cell_ids)
+        sorted_cell_ids = cell_ids[sorted_order]
+        sorted_geom_indices = global_geom_indices[sorted_order]
+
+        # Remove duplicates (same polygon can appear multiple times per cell if
+        # the bbox expansion spans it, but we only need one entry)
+        combined_key = sorted_cell_ids * self.num_geometries + sorted_geom_indices
+        unique_combined, unique_indices = torch.unique(combined_key, return_inverse=True)
+
+        # Get first occurrence of each unique pair
+        first_occurrence = torch.zeros(len(unique_combined), dtype=torch.long, device=self.device)
+        first_occurrence.scatter_(0, unique_indices, torch.arange(len(unique_indices), device=self.device))
+
+        unique_cell_ids = unique_combined // self.num_geometries
+        unique_geom_ids = unique_combined % self.num_geometries
+
+        # Build CSR offsets for polygons per cell
+        cell_counts = torch.bincount(unique_cell_ids, minlength=num_cells)
+        cell_polygon_offsets = torch.cat([
+            torch.tensor([0], dtype=torch.long, device=self.device),
+            torch.cumsum(cell_counts, dim=0),
+        ])
+
+        return unique_geom_ids, cell_polygon_offsets
+
+    def query_distances_cuda(
+        self,
+        query_points: torch.Tensor,
+        debug: bool = False,
+    ) -> torch.Tensor:
+        """Query distances using CUDA kernel (internal method).
+
+        Computes distances from query points to all nearby geometries using
+        a GPU-accelerated spatial index. For polygon geometries, also performs
+        point-in-polygon checks and sets distance to 0 for points inside.
+
+        Results are filtered to only include distances <= expansion_distance,
+        since the bounding box expansion approach can only guarantee correctness
+        within this radius.
+
+        Args:
+            query_points: (N, 2) tensor of query positions
+            debug: Enable debug output from CUDA kernel (default: False)
+
+        Returns:
+            (K, 3) tensor: [particle_idx, geometry_idx, distance]
+        """
+        if self.spatial_index is None:
+            raise ValueError(
+                "Spatial index must be built before querying distances. "
+                "Call build_spatial_index() first."
+            )
+
+        if query_points.shape[1] != 2:
+            raise ValueError(f"query_points must have shape (N, 2), got {query_points.shape}")
+
+        idx = self.spatial_index
+
+        # Translate query points to local coordinate system.
+        # This matches the translation applied to geometry coordinates in from_shapely.
+        # The subtraction must happen at float64 precision to avoid precision loss.
+        if self.coordinate_origin is not None:
+            query_points = (query_points.double() - self.coordinate_origin).float()
+
+        # Call C++ function which handles segments, points, AND polygon inside checks
+        particle_indices, geometry_indices, distances = sdp.query_distances_cuda(
+            query_points,
+            self.segment_starts,
+            self.segment_ends,
+            self.segment_to_geom,
+            self.point_coords,
+            self.point_to_geom,
+            self.num_geometries,
+            idx.cell_segment_indices,
+            idx.cell_offsets,
+            idx.cell_geom_indices,
+            idx.cell_geom_offsets,
+            idx.cell_point_indices,
+            idx.cell_point_offsets,
+            idx.cell_point_geom_indices,
+            idx.cell_point_geom_offsets,
+            idx.grid_origin,
+            idx.cell_size,
+            idx.grid_dims,
+            idx.cell_polygon_indices,
+            idx.cell_polygon_offsets,
+            self.polygon_segment_ranges,
+            self.polygon_geom_indices,
+            self.geom_ring_offsets,
+            debug,
+        )
+
+        # Filter results to only include distances <= expansion_distance
+        # This is necessary because bounding box expansion can include segments
+        # whose boxes overlap a cell but whose actual geometry is far away
+        expansion_distance = idx.expansion_distance
+        valid_mask = distances <= expansion_distance
+        particle_indices = particle_indices[valid_mask]
+        geometry_indices = geometry_indices[valid_mask]
+        distances = distances[valid_mask]
+
+        return QueryDistancesResult(
+            particle_indices, geometry_indices, distances)
+
 
 def _process_polygon(
     polygon: shapely.Polygon,
@@ -292,22 +1120,53 @@ def _process_polygon(
     segment_starts_list: list,
     segment_ends_list: list,
     segment_to_geom_list: list,
-    polygon_vertices_list: list,
-    polygon_ranges_list: list,
+    polygon_segment_ranges_list: list,
     polygon_geom_indices_list: list,
-    vertex_offset: int,
-):
-    """Process a single polygon, adding its data to the collection lists."""
-    # Get exterior ring coordinates (remove duplicate closing point)
-    ring_coords = list(polygon.exterior.coords)[:-1]
+) -> None:
+    """Process a single polygon, adding its data to the collection lists.
 
-    # Add segments
-    for i in range(len(ring_coords)):
-        segment_starts_list.append(ring_coords[i])
-        segment_ends_list.append(ring_coords[(i + 1) % len(ring_coords)])
-        segment_to_geom_list.append(geom_idx)
+    Processes the exterior ring and all interior rings (holes). All rings
+    share the same geom_idx. The winding number algorithm handles holes
+    correctly because exterior rings are CCW and hole rings are CW.
 
-    # Add polygon vertices for inside/outside test
-    polygon_vertices_list.extend(ring_coords)
-    polygon_ranges_list.append([vertex_offset, vertex_offset + len(ring_coords)])
-    polygon_geom_indices_list.append(geom_idx)
+    Ring vertices are stored as segment_starts for consecutive segments,
+    avoiding duplicate storage of coordinates.
+
+    Args:
+        polygon: Shapely polygon to process
+        geom_idx: Geometry index for this polygon
+        segment_starts_list: List to append segment start coordinates
+        segment_ends_list: List to append segment end coordinates
+        segment_to_geom_list: List to append geometry indices for segments
+        polygon_segment_ranges_list: List to append [start, end) segment indices per ring
+        polygon_geom_indices_list: List to append geometry indices for rings
+    """
+    # Ensure correct ring orientation: exterior CCW, holes CW
+    # This is required for the winding number algorithm to work correctly
+    polygon = shapely.geometry.polygon.orient(polygon)
+
+    # Process exterior ring and all interior rings (holes)
+    all_rings = [polygon.exterior] + list(polygon.interiors)
+
+    for ring in all_rings:
+        # Get ring coordinates (remove duplicate closing point)
+        ring_coords = list(ring.coords)[:-1]
+
+        if len(ring_coords) < 3:
+            # Skip degenerate rings
+            continue
+
+        # Track segment range for this ring
+        ring_segment_start = len(segment_starts_list)
+
+        # Add segments for this ring
+        for i in range(len(ring_coords)):
+            segment_starts_list.append(ring_coords[i])
+            segment_ends_list.append(ring_coords[(i + 1) % len(ring_coords)])
+            segment_to_geom_list.append(geom_idx)
+
+        ring_segment_end = len(segment_starts_list)
+
+        # Store segment range for this ring (vertices are segment_starts[start:end])
+        polygon_segment_ranges_list.append([ring_segment_start, ring_segment_end])
+        polygon_geom_indices_list.append(geom_idx)

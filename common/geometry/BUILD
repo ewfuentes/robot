@@ -1,4 +1,6 @@
-load("@pip//:requirements.bzl", "requirement")
+load("@pip//:requirements.bzl", "requirement", "extra_requirement")
+load("@rules_cuda//cuda:defs.bzl", "cuda_library")
+load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
 
 package(features=["warning_compile_flags"])
 
@@ -93,6 +95,7 @@ py_test(
 py_library(
     name = "gpu_geometry_collection",
     srcs = ["gpu_geometry_collection.py"],
+    data = [":spatial_distance_python.so"],
     visibility = ["//visibility:public"],
     deps = [
         ":gpu_distance",
@@ -111,5 +114,38 @@ py_test(
         requirement("geopandas"),
         requirement("pyarrow"),
         requirement("shapely"),
+    ],
+)
+
+py_test(
+    name = "spatial_distance_test",
+    srcs = ["spatial_distance_test.py"],
+    data = [":spatial_distance_python.so"],
+    deps = [
+        ":gpu_geometry_collection",
+        "//common/torch:load_torch_deps",
+        requirement("numpy"),
+        requirement("shapely"),
+        requirement("torch"),
+    ],
+)
+
+# CUDA-accelerated spatial distance queries
+cuda_library(
+    name = "spatial_distance_cuda",
+    hdrs = ["spatial_distance.hh"],
+    srcs = ["spatial_distance.cu"],
+    deps = [
+        "@pip_torch//:libtorch",
+        "@fmt",
+    ],
+)
+
+pybind_extension(
+    name = "spatial_distance_python",
+    srcs = ["spatial_distance_python.cc"],
+    deps = [
+        ":spatial_distance_cuda",
+        extra_requirement("torch", "libtorch"),
     ],
 )
