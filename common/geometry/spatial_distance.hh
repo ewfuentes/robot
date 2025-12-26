@@ -1,6 +1,7 @@
 #pragma once
 
 #include <tuple>
+
 #include "torch/torch.h"
 
 namespace robot::geometry {
@@ -24,9 +25,9 @@ struct PointGeometry {
 
 /// Polygon ring structure for point-in-polygon tests
 struct PolygonRingData {
-    torch::Tensor segment_ranges;    // (R, 2) [start, end) segment indices per ring
-    torch::Tensor geom_indices;      // (R,) geometry index per ring
-    torch::Tensor geom_ring_offsets; // (G_poly+1,) CSR offsets for rings per polygon
+    torch::Tensor segment_ranges;     // (R, 2) [start, end) segment indices per ring
+    torch::Tensor geom_indices;       // (R,) geometry index per ring
+    torch::Tensor geom_ring_offsets;  // (G_poly+1,) CSR offsets for rings per polygon
 };
 
 // ============================================================================
@@ -92,16 +93,10 @@ struct PolygonSpatialIndex {
  *         - distances: (K,) float32 tensor - distances (0 if inside polygon)
  */
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> query_distances_cuda(
-    const torch::Tensor& query_points,
-    int64_t num_geometries,
-    const SegmentGeometry& segments,
-    const PointGeometry& points,
-    const PolygonRingData& poly_rings,
-    const GridConfig& grid,
-    const SegmentSpatialIndex& seg_idx,
-    const PointSpatialIndex& pt_idx,
-    const PolygonSpatialIndex& poly_idx,
-    bool debug = false);
+    const torch::Tensor& query_points, int64_t num_geometries, const SegmentGeometry& segments,
+    const PointGeometry& points, const PolygonRingData& poly_rings, const GridConfig& grid,
+    const SegmentSpatialIndex& seg_idx, const PointSpatialIndex& pt_idx,
+    const PolygonSpatialIndex& poly_idx, bool debug = false);
 
 /**
  * Sparse point-in-polygon test using winding number algorithm.
@@ -119,12 +114,11 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> query_distances_cuda(
  * @return (K,) bool tensor where result[i] is true if point candidate_point_idx[i]
  *         is inside polygon candidate_poly_idx[i]
  */
-torch::Tensor point_in_polygon_sparse_cuda(
-    const torch::Tensor& query_points,
-    const torch::Tensor& candidate_point_idx,
-    const torch::Tensor& candidate_poly_idx,
-    const torch::Tensor& segment_starts,
-    const torch::Tensor& polygon_segment_ranges,
-    const torch::Tensor& geom_ring_offsets);
+torch::Tensor point_in_polygon_sparse_cuda(const torch::Tensor& query_points,
+                                           const torch::Tensor& candidate_point_idx,
+                                           const torch::Tensor& candidate_poly_idx,
+                                           const torch::Tensor& segment_starts,
+                                           const torch::Tensor& polygon_segment_ranges,
+                                           const torch::Tensor& geom_ring_offsets);
 
 }  // namespace robot::geometry

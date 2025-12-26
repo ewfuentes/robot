@@ -13,9 +13,9 @@ namespace robot::geometry {
 
 // Data structure holding sorted particle information
 struct SortedParticleData {
-    torch::Tensor sorted_particles;        // (N, 2) sorted by cell
-    torch::Tensor sorted_particle_indices; // Original indices
-    torch::Tensor sorted_cell_ids;         // Cell ID for each sorted particle
+    torch::Tensor sorted_particles;         // (N, 2) sorted by cell
+    torch::Tensor sorted_particle_indices;  // Original indices
+    torch::Tensor sorted_cell_ids;          // Cell ID for each sorted particle
     bool empty;
 };
 
@@ -99,8 +99,8 @@ __device__ inline float point_to_segment_distance(float px, float py, float ax, 
 // It writes particle indices, geometry indices, and distances directly.
 __global__ void compute_distances_optimized_kernel(
     // Sorted particle data
-    const float* __restrict__ sorted_particles,          // (N, 2) sorted by cell
-    const int64_t* __restrict__ sorted_particle_indices, // (N,) global particle IDs
+    const float* __restrict__ sorted_particles,           // (N, 2) sorted by cell
+    const int64_t* __restrict__ sorted_particle_indices,  // (N,) global particle IDs
 
     // Block assignments (indexed by blockIdx.x)
     const int64_t* __restrict__ particle_starts,      // (num_blocks,)
@@ -117,18 +117,17 @@ __global__ void compute_distances_optimized_kernel(
     const int64_t* __restrict__ cell_segment_indices, const int64_t* __restrict__ cell_offsets,
 
     // Local to global geometry mapping
-    const int64_t* __restrict__ local_to_global,         // Flattened local→global geom IDs
-    const int64_t* __restrict__ local_to_global_offsets, // (num_blocks+1,) CSR offsets
+    const int64_t* __restrict__ local_to_global,          // Flattened local→global geom IDs
+    const int64_t* __restrict__ local_to_global_offsets,  // (num_blocks+1,) CSR offsets
 
     // Output arrays (dense per block)
-    int64_t* __restrict__ output_particle_indices, // (total_output_size,)
-    int64_t* __restrict__ output_geometry_indices, // (total_output_size,)
-    float* __restrict__ output_distances,          // (total_output_size,)
-    const int64_t* __restrict__ output_offsets,    // (num_blocks,) offset for each block
+    int64_t* __restrict__ output_particle_indices,  // (total_output_size,)
+    int64_t* __restrict__ output_geometry_indices,  // (total_output_size,)
+    float* __restrict__ output_distances,           // (total_output_size,)
+    const int64_t* __restrict__ output_offsets,     // (num_blocks,) offset for each block
 
     // Debug flag
-    bool debug
-) {
+    bool debug) {
     int block_id = blockIdx.x;
 
     // Get this block's assignment
@@ -156,8 +155,8 @@ __global__ void compute_distances_optimized_kernel(
     int64_t total_segments = cell_seg_end - cell_seg_start;
 
     if (debug && threadIdx.x == 0 && num_particles == 1) {
-        printf("[DEBUG]   Cell segments: [%ld, %ld), total=%ld\n",
-               cell_seg_start, cell_seg_end, total_segments);
+        printf("[DEBUG]   Cell segments: [%ld, %ld), total=%ld\n", cell_seg_start, cell_seg_end,
+               total_segments);
     }
 
     // Shared memory for segments (up to 512 segments per chunk)
@@ -285,17 +284,21 @@ __global__ void compute_distances_optimized_kernel(
                         int local_geom_id = seg_local_geom_ids[i];
                         if (local_geom_id >= 0 && local_geom_id < 128) {
                             float dist = point_to_segment_distance(
-                                px, py,
-                                seg_starts_shared[i][0], seg_starts_shared[i][1],
+                                px, py, seg_starts_shared[i][0], seg_starts_shared[i][1],
                                 seg_ends_shared[i][0], seg_ends_shared[i][1]);
 
                             if (debug && num_particles == 1 && dist < min_dists[local_geom_id]) {
-                                int64_t global_seg_idx = cell_segment_indices[cell_seg_start + chunk_start + i];
-                                int64_t global_geom_id = local_to_global[geom_base_offset + local_geom_start + local_geom_id];
-                                printf("[DEBUG]   Seg[%ld] %ld->geom %ld: (%.1f,%.1f)->(%.1f,%.1f) dist=%.2f (new min)\n",
-                                       global_seg_idx, i, global_geom_id,
-                                       seg_starts_shared[i][0], seg_starts_shared[i][1],
-                                       seg_ends_shared[i][0], seg_ends_shared[i][1], dist);
+                                int64_t global_seg_idx =
+                                    cell_segment_indices[cell_seg_start + chunk_start + i];
+                                int64_t global_geom_id =
+                                    local_to_global[geom_base_offset + local_geom_start +
+                                                    local_geom_id];
+                                printf(
+                                    "[DEBUG]   Seg[%ld] %ld->geom %ld: (%.1f,%.1f)->(%.1f,%.1f) "
+                                    "dist=%.2f (new min)\n",
+                                    global_seg_idx, i, global_geom_id, seg_starts_shared[i][0],
+                                    seg_starts_shared[i][1], seg_ends_shared[i][0],
+                                    seg_ends_shared[i][1], dist);
                             }
 
                             min_dists[local_geom_id] = fminf(min_dists[local_geom_id], dist);
@@ -307,12 +310,14 @@ __global__ void compute_distances_optimized_kernel(
             // Write output for this geometry pass
             if (valid_particle) {
                 int64_t local_particle_idx = particle_idx - particle_start;
-                int64_t output_base = output_offset + local_particle_idx * num_geometries + local_geom_start;
+                int64_t output_base =
+                    output_offset + local_particle_idx * num_geometries + local_geom_start;
                 int64_t global_particle_idx = sorted_particle_indices[particle_idx];
 
                 for (int64_t i = 0; i < num_geoms_this_pass; ++i) {
                     int64_t output_idx = output_base + i;
-                    int64_t global_geom_id = local_to_global[geom_base_offset + local_geom_start + i];
+                    int64_t global_geom_id =
+                        local_to_global[geom_base_offset + local_geom_start + i];
                     output_particle_indices[output_idx] = global_particle_idx;
                     output_geometry_indices[output_idx] = global_geom_id;
                     output_distances[output_idx] = min_dists[i];
@@ -328,18 +333,16 @@ __global__ void compute_distances_optimized_kernel(
 }
 
 // Step 1: Hash particles to cells and sort by cell ID
-SortedParticleData hash_and_sort_particles(
-    const torch::Tensor& query_points,
-    const GridConfig& grid) {
+SortedParticleData hash_and_sort_particles(const torch::Tensor& query_points,
+                                           const GridConfig& grid) {
     RECORD_FUNCTION("cuda_kernel::hash_and_sort", std::vector<c10::IValue>{});
 
     SortedParticleData result;
     result.empty = false;
 
     auto cell_coords = ((query_points - grid.origin) / grid.cell_size).floor().to(torch::kInt64);
-    auto in_bounds =
-        (cell_coords.select(1, 0) >= 0) & (cell_coords.select(1, 0) < grid.dims[0]) &
-        (cell_coords.select(1, 1) >= 0) & (cell_coords.select(1, 1) < grid.dims[1]);
+    auto in_bounds = (cell_coords.select(1, 0) >= 0) & (cell_coords.select(1, 0) < grid.dims[0]) &
+                     (cell_coords.select(1, 1) >= 0) & (cell_coords.select(1, 1) < grid.dims[1]);
 
     auto cell_ids = cell_coords.select(1, 1) * grid.dims[0] + cell_coords.select(1, 0);
 
@@ -362,21 +365,20 @@ SortedParticleData hash_and_sort_particles(
 
 // Step 2: Build block assignments from sorted particles
 // Uses GPU tensor operations instead of CPU loop
-BlockAssignmentData build_block_assignments(
-    const SortedParticleData& sorted_data,
-    const torch::Tensor& cell_offsets,
-    const torch::Tensor& cell_geom_indices,
-    const torch::Tensor& cell_geom_offsets) {
+BlockAssignmentData build_block_assignments(const SortedParticleData& sorted_data,
+                                            const torch::Tensor& cell_offsets,
+                                            const torch::Tensor& cell_geom_indices,
+                                            const torch::Tensor& cell_geom_offsets) {
     RECORD_FUNCTION("cuda_kernel::build_block_assignments", std::vector<c10::IValue>{});
     BlockAssignmentData result;
     result.empty = false;
     result.total_output_size = 0;
 
     // Step 1: Get unique cells and particle counts (on GPU)
-    auto unique_result = torch::unique_consecutive(
-            sorted_data.sorted_cell_ids, false, true, torch::nullopt);
+    auto unique_result =
+        torch::unique_consecutive(sorted_data.sorted_cell_ids, false, true, torch::nullopt);
     auto unique_cells = std::get<0>(unique_result);  // (num_unique_cells,)
-    auto counts = std::get<2>(unique_result);         // (num_unique_cells,)
+    auto counts = std::get<2>(unique_result);        // (num_unique_cells,)
 
     if (unique_cells.numel() == 0) {
         result.empty = true;
@@ -418,10 +420,8 @@ BlockAssignmentData build_block_assignments(
 
     // Step 7: Build local_to_global mapping using GPU operations
     // Compute CSR offsets for local_to_global
-    auto local_to_global_offsets = torch::cat({
-        torch::zeros({1}, num_geoms_per_block.options()),
-        num_geoms_per_block.cumsum(0)
-    });
+    auto local_to_global_offsets = torch::cat(
+        {torch::zeros({1}, num_geoms_per_block.options()), num_geoms_per_block.cumsum(0)});
 
     // Expand block indices by num_geoms_per_block to gather geometry IDs
     int64_t num_blocks = block_cell_ids.numel();
@@ -455,23 +455,18 @@ BlockAssignmentData build_block_assignments(
 
 // Step 3: Launch the CUDA kernel and return three output tensors
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> launch_distance_kernel(
-    const SortedParticleData& sorted_data,
-    const BlockAssignmentData& block_data,
-    const SegmentGeometry& segments,
-    const torch::Tensor& cell_segment_indices,
-    const torch::Tensor& cell_offsets,
-    bool debug) {
+    const SortedParticleData& sorted_data, const BlockAssignmentData& block_data,
+    const SegmentGeometry& segments, const torch::Tensor& cell_segment_indices,
+    const torch::Tensor& cell_offsets, bool debug) {
     RECORD_FUNCTION("cuda_kernel::compute_distances_kernel", std::vector<c10::IValue>{});
 
     auto device = sorted_data.sorted_particles.device();
 
     // Allocate three output tensors
-    auto output_particle_indices =
-        torch::empty({block_data.total_output_size},
-                    torch::TensorOptions().dtype(torch::kInt64).device(device));
-    auto output_geometry_indices =
-        torch::empty({block_data.total_output_size},
-                    torch::TensorOptions().dtype(torch::kInt64).device(device));
+    auto output_particle_indices = torch::empty(
+        {block_data.total_output_size}, torch::TensorOptions().dtype(torch::kInt64).device(device));
+    auto output_geometry_indices = torch::empty(
+        {block_data.total_output_size}, torch::TensorOptions().dtype(torch::kInt64).device(device));
     auto output_distances =
         torch::full({block_data.total_output_size}, INFINITY,
                     torch::TensorOptions().dtype(torch::kFloat32).device(device));
@@ -483,21 +478,14 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> launch_distance_kernel(
         sorted_data.sorted_particles.data_ptr<float>(),
         sorted_data.sorted_particle_indices.data_ptr<int64_t>(),
         block_data.particle_starts.data_ptr<int64_t>(),
-        block_data.particle_ends.data_ptr<int64_t>(),
-        block_data.block_cell_ids.data_ptr<int64_t>(),
-        block_data.num_geoms_per_block.data_ptr<int64_t>(),
-        segments.starts.data_ptr<float>(),
-        segments.ends.data_ptr<float>(),
-        segments.to_geom.data_ptr<int64_t>(),
-        cell_segment_indices.data_ptr<int64_t>(),
-        cell_offsets.data_ptr<int64_t>(),
+        block_data.particle_ends.data_ptr<int64_t>(), block_data.block_cell_ids.data_ptr<int64_t>(),
+        block_data.num_geoms_per_block.data_ptr<int64_t>(), segments.starts.data_ptr<float>(),
+        segments.ends.data_ptr<float>(), segments.to_geom.data_ptr<int64_t>(),
+        cell_segment_indices.data_ptr<int64_t>(), cell_offsets.data_ptr<int64_t>(),
         block_data.local_to_global.data_ptr<int64_t>(),
         block_data.local_to_global_offsets.data_ptr<int64_t>(),
-        output_particle_indices.data_ptr<int64_t>(),
-        output_geometry_indices.data_ptr<int64_t>(),
-        output_distances.data_ptr<float>(),
-        block_data.output_offsets.data_ptr<int64_t>(),
-        debug);
+        output_particle_indices.data_ptr<int64_t>(), output_geometry_indices.data_ptr<int64_t>(),
+        output_distances.data_ptr<float>(), block_data.output_offsets.data_ptr<int64_t>(), debug);
 
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 
@@ -505,31 +493,27 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> launch_distance_kernel(
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> query_segment_distances(
-        const SortedParticleData& sorted_data,
-        const SegmentGeometry& segments,
-        const SegmentSpatialIndex& seg_idx,
-        bool debug) {
+    const SortedParticleData& sorted_data, const SegmentGeometry& segments,
+    const SegmentSpatialIndex& seg_idx, bool debug) {
     // Step 2: Build block assignments using precomputed geometry info
-    auto block_data = build_block_assignments(
-        sorted_data, seg_idx.cell_offsets, seg_idx.geom_indices, seg_idx.geom_offsets);
+    auto block_data = build_block_assignments(sorted_data, seg_idx.cell_offsets,
+                                              seg_idx.geom_indices, seg_idx.geom_offsets);
     if (block_data.empty) {
         auto opts = sorted_data.sorted_particles.options();
-        return std::make_tuple(
-            torch::empty({0}, opts.dtype(torch::kInt64)),
-            torch::empty({0}, opts.dtype(torch::kInt64)),
-            torch::empty({0}, opts.dtype(torch::kFloat32)));
+        return std::make_tuple(torch::empty({0}, opts.dtype(torch::kInt64)),
+                               torch::empty({0}, opts.dtype(torch::kInt64)),
+                               torch::empty({0}, opts.dtype(torch::kFloat32)));
     }
 
     // Step 3: Launch CUDA kernel (returns particle indices, geometry indices, distances)
-    return launch_distance_kernel(
-        sorted_data, block_data, segments, seg_idx.segment_indices, seg_idx.cell_offsets, debug);
+    return launch_distance_kernel(sorted_data, block_data, segments, seg_idx.segment_indices,
+                                  seg_idx.cell_offsets, debug);
 }
 
 // Build candidate (point, polygon) pairs from sorted particle data
 // Returns (candidate_point_idx, candidate_poly_idx)
 std::tuple<torch::Tensor, torch::Tensor> build_polygon_candidates(
-    const SortedParticleData& sorted_data,
-    const PolygonSpatialIndex& poly_idx) {
+    const SortedParticleData& sorted_data, const PolygonSpatialIndex& poly_idx) {
     RECORD_FUNCTION("cuda_kernel::build_polygon_candidates", std::vector<c10::IValue>{});
 
     auto device = sorted_data.sorted_particles.device();
@@ -553,37 +537,36 @@ std::tuple<torch::Tensor, torch::Tensor> build_polygon_candidates(
     }
 
     // Expand particles by number of candidates
-    auto candidate_point_idx = sorted_data.sorted_particle_indices.repeat_interleave(num_candidates_per_point);
+    auto candidate_point_idx =
+        sorted_data.sorted_particle_indices.repeat_interleave(num_candidates_per_point);
 
     // Generate polygon indices using CSR expansion
-    auto offsets = torch::cat({
-        torch::zeros({1}, torch::TensorOptions().dtype(torch::kInt64).device(device)),
-        num_candidates_per_point.cumsum(0)
-    });
+    auto offsets =
+        torch::cat({torch::zeros({1}, torch::TensorOptions().dtype(torch::kInt64).device(device)),
+                    num_candidates_per_point.cumsum(0)});
 
-    auto flat_indices = torch::arange(total_candidates, torch::TensorOptions().dtype(torch::kInt64).device(device));
-    auto sorted_particle_expanded = torch::arange(sorted_data.sorted_particle_indices.size(0),
-        torch::TensorOptions().dtype(torch::kInt64).device(device)).repeat_interleave(num_candidates_per_point);
+    auto flat_indices =
+        torch::arange(total_candidates, torch::TensorOptions().dtype(torch::kInt64).device(device));
+    auto sorted_particle_expanded =
+        torch::arange(sorted_data.sorted_particle_indices.size(0),
+                      torch::TensorOptions().dtype(torch::kInt64).device(device))
+            .repeat_interleave(num_candidates_per_point);
     auto local_poly_offset = flat_indices - offsets.index_select(0, sorted_particle_expanded);
 
     // Look up the actual polygon geometry indices
     auto poly_starts_expanded = poly_starts.index_select(0, sorted_particle_expanded);
-    auto candidate_poly_indices = poly_idx.geom_indices.index_select(0, poly_starts_expanded + local_poly_offset);
+    auto candidate_poly_indices =
+        poly_idx.geom_indices.index_select(0, poly_starts_expanded + local_poly_offset);
 
     return std::make_tuple(candidate_point_idx, candidate_poly_indices);
 }
 
 // Merge polygon results: set dist=0 for inside points, add new (point, polygon) pairs
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> merge_polygon_results(
-    const torch::Tensor& particle_indices,
-    const torch::Tensor& geometry_indices,
-    const torch::Tensor& distances,
-    const torch::Tensor& candidate_point_idx,
-    const torch::Tensor& candidate_poly_idx,
-    const torch::Tensor& is_inside,
-    const torch::Tensor& polygon_geom_indices,
-    int64_t num_geometries,
-    torch::Device device) {
+    const torch::Tensor& particle_indices, const torch::Tensor& geometry_indices,
+    const torch::Tensor& distances, const torch::Tensor& candidate_point_idx,
+    const torch::Tensor& candidate_poly_idx, const torch::Tensor& is_inside,
+    const torch::Tensor& polygon_geom_indices, int64_t num_geometries, torch::Device device) {
     RECORD_FUNCTION("cuda_kernel::merge_polygon_results", std::vector<c10::IValue>{});
 
     auto opts_long = torch::TensorOptions().dtype(torch::kInt64).device(device);
@@ -593,7 +576,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> merge_polygon_results(
     auto unique_poly_geoms = std::get<0>(torch::unique_consecutive(polygon_geom_indices));
 
     // Create mask for polygon geometries in existing results
-    auto is_polygon_geom = torch::zeros({num_geometries}, torch::TensorOptions().dtype(torch::kBool).device(device));
+    auto is_polygon_geom =
+        torch::zeros({num_geometries}, torch::TensorOptions().dtype(torch::kBool).device(device));
     is_polygon_geom.index_fill_(0, unique_poly_geoms, true);
 
     // Copy distances for modification
@@ -623,21 +607,24 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> merge_polygon_results(
                 // Check if matches are valid
                 auto max_idx = sparse_keys_sorted.size(0) - 1;
                 auto match_idx_clamped = match_idx.clamp(0, max_idx);
-                auto valid_match = (match_idx < sparse_keys_sorted.size(0)) &
-                                   (sparse_keys_sorted.index_select(0, match_idx_clamped) == existing_keys);
+                auto valid_match =
+                    (match_idx < sparse_keys_sorted.size(0)) &
+                    (sparse_keys_sorted.index_select(0, match_idx_clamped) == existing_keys);
 
                 // Get is_inside for valid matches
-                auto inside_for_existing = torch::zeros({existing_keys.size(0)},
-                    torch::TensorOptions().dtype(torch::kBool).device(device));
+                auto inside_for_existing =
+                    torch::zeros({existing_keys.size(0)},
+                                 torch::TensorOptions().dtype(torch::kBool).device(device));
                 auto valid_indices = torch::where(valid_match)[0];
                 if (valid_indices.numel() > 0) {
                     auto valid_match_idx = match_idx.index_select(0, valid_indices);
-                    inside_for_existing.index_put_({valid_indices}, is_inside_sorted.index_select(0, valid_match_idx));
+                    inside_for_existing.index_put_(
+                        {valid_indices}, is_inside_sorted.index_select(0, valid_match_idx));
                 }
 
                 // Set distance to 0 for inside points
-                auto inside_full_mask = torch::zeros({distances.size(0)},
-                    torch::TensorOptions().dtype(torch::kBool).device(device));
+                auto inside_full_mask = torch::zeros(
+                    {distances.size(0)}, torch::TensorOptions().dtype(torch::kBool).device(device));
                 inside_full_mask.index_put_({polygon_mask}, inside_for_existing);
                 merged_distances.index_put_({inside_full_mask}, 0.0f);
             }
@@ -655,7 +642,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> merge_polygon_results(
         if (particle_indices.numel() > 0) {
             auto polygon_mask = is_polygon_geom.index_select(0, geometry_indices);
             existing_keys = particle_indices.index({polygon_mask}) * num_geometries +
-                           geometry_indices.index({polygon_mask});
+                            geometry_indices.index({polygon_mask});
         } else {
             existing_keys = torch::empty({0}, opts_long);
         }
@@ -672,10 +659,9 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> merge_polygon_results(
             auto new_g = inside_poly_geom_idx.index_select(0, new_indices);
             auto new_d = torch::zeros({new_p.size(0)}, opts_float);
 
-            return std::make_tuple(
-                torch::cat({particle_indices, new_p}),
-                torch::cat({geometry_indices, new_g}),
-                torch::cat({merged_distances, new_d}));
+            return std::make_tuple(torch::cat({particle_indices, new_p}),
+                                   torch::cat({geometry_indices, new_g}),
+                                   torch::cat({merged_distances, new_d}));
         }
     }
 
@@ -683,16 +669,10 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> merge_polygon_results(
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> query_distances_cuda(
-    const torch::Tensor& query_points,
-    int64_t num_geometries,
-    const SegmentGeometry& segments,
-    const PointGeometry& points,
-    const PolygonRingData& poly_rings,
-    const GridConfig& grid,
-    const SegmentSpatialIndex& seg_idx,
-    const PointSpatialIndex& pt_idx,
-    const PolygonSpatialIndex& poly_idx,
-    bool debug) {
+    const torch::Tensor& query_points, int64_t num_geometries, const SegmentGeometry& segments,
+    const PointGeometry& points, const PolygonRingData& poly_rings, const GridConfig& grid,
+    const SegmentSpatialIndex& seg_idx, const PointSpatialIndex& pt_idx,
+    const PolygonSpatialIndex& poly_idx, bool debug) {
     // Check inputs
     TORCH_CHECK(query_points.is_cuda(), "query_points must be on CUDA");
     TORCH_CHECK(query_points.dim() == 2 && query_points.size(1) == 2,
@@ -702,10 +682,9 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> query_distances_cuda(
     int64_t num_queries = query_points.size(0);
     if (num_queries == 0) {
         auto opts = query_points.options();
-        return std::make_tuple(
-            torch::empty({0}, opts.dtype(torch::kInt64)),
-            torch::empty({0}, opts.dtype(torch::kInt64)),
-            torch::empty({0}, opts.dtype(torch::kFloat32)));
+        return std::make_tuple(torch::empty({0}, opts.dtype(torch::kInt64)),
+                               torch::empty({0}, opts.dtype(torch::kInt64)),
+                               torch::empty({0}, opts.dtype(torch::kFloat32)));
     }
 
     auto device = query_points.device();
@@ -715,27 +694,27 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> query_distances_cuda(
     auto sorted_data = hash_and_sort_particles(query_points, grid);
     if (sorted_data.empty) {
         auto opts = query_points.options();
-        return std::make_tuple(
-            torch::empty({0}, opts.dtype(torch::kInt64)),
-            torch::empty({0}, opts.dtype(torch::kInt64)),
-            torch::empty({0}, opts.dtype(torch::kFloat32)));
+        return std::make_tuple(torch::empty({0}, opts.dtype(torch::kInt64)),
+                               torch::empty({0}, opts.dtype(torch::kInt64)),
+                               torch::empty({0}, opts.dtype(torch::kFloat32)));
     }
 
     // Compute the distance to segments
     if (debug) {
-        printf("[DEBUG] query_distances_cuda: %ld queries, %ld geometries\n",
-               query_points.size(0), num_geometries);
+        printf("[DEBUG] query_distances_cuda: %ld queries, %ld geometries\n", query_points.size(0),
+               num_geometries);
     }
 
-    auto [seg_particles, seg_geoms, seg_dists] = query_segment_distances(
-            sorted_data, segments, seg_idx, debug);
+    auto [seg_particles, seg_geoms, seg_dists] =
+        query_segment_distances(sorted_data, segments, seg_idx, debug);
 
-    // Compute the distance to points (reuse segment distance code with points as degenerate segments)
+    // Compute the distance to points (reuse segment distance code with points as degenerate
+    // segments)
     SegmentGeometry point_as_segments{points.coords, points.coords, points.to_geom};
     SegmentSpatialIndex pt_as_seg_idx{pt_idx.point_indices, pt_idx.cell_offsets,
-                                       pt_idx.geom_indices, pt_idx.geom_offsets};
-    auto [pt_particles, pt_geoms, pt_dists] = query_segment_distances(
-            sorted_data, point_as_segments, pt_as_seg_idx, debug);
+                                      pt_idx.geom_indices, pt_idx.geom_offsets};
+    auto [pt_particles, pt_geoms, pt_dists] =
+        query_segment_distances(sorted_data, point_as_segments, pt_as_seg_idx, debug);
 
     // Concatenate segment and point results
     auto particle_indices = torch::cat({seg_particles, pt_particles}, 0);
@@ -746,36 +725,31 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> query_distances_cuda(
     int64_t num_polygon_geoms = poly_rings.geom_ring_offsets.size(0) - 1;
     if (num_polygon_geoms > 0 && poly_idx.geom_indices.numel() > 0) {
         // Build polygon candidates using the sorted particle data (reuses cell hashing!)
-        auto [candidate_point_idx, candidate_poly_idx] = build_polygon_candidates(
-            sorted_data, poly_idx);
+        auto [candidate_point_idx, candidate_poly_idx] =
+            build_polygon_candidates(sorted_data, poly_idx);
 
         if (candidate_point_idx.numel() > 0) {
             // Get unique polygon geometry indices and create mapping
             auto unique_poly_geoms = std::get<0>(torch::_unique(poly_rings.geom_indices, true));
-            auto geom_to_poly_idx = torch::full({num_geometries}, -1,
-                torch::TensorOptions().dtype(torch::kInt64).device(device));
+            auto geom_to_poly_idx = torch::full(
+                {num_geometries}, -1, torch::TensorOptions().dtype(torch::kInt64).device(device));
             geom_to_poly_idx.index_put_(
                 {unique_poly_geoms},
                 torch::arange(unique_poly_geoms.size(0),
-                    torch::TensorOptions().dtype(torch::kInt64).device(device)));
+                              torch::TensorOptions().dtype(torch::kInt64).device(device)));
 
             // Convert global geometry indices to local polygon indices
             auto candidate_local_poly_idx = geom_to_poly_idx.index_select(0, candidate_poly_idx);
 
             // Call sparse point-in-polygon kernel
             auto is_inside = point_in_polygon_sparse_cuda(
-                query_points,
-                candidate_point_idx,
-                candidate_local_poly_idx,
-                segments.starts,
-                poly_rings.segment_ranges,
-                poly_rings.geom_ring_offsets);
+                query_points, candidate_point_idx, candidate_local_poly_idx, segments.starts,
+                poly_rings.segment_ranges, poly_rings.geom_ring_offsets);
 
             // Merge results: set dist=0 for inside, add new pairs
             std::tie(particle_indices, geometry_indices, distances) = merge_polygon_results(
-                particle_indices, geometry_indices, distances,
-                candidate_point_idx, candidate_poly_idx, is_inside,
-                poly_rings.geom_indices, num_geometries, device);
+                particle_indices, geometry_indices, distances, candidate_point_idx,
+                candidate_poly_idx, is_inside, poly_rings.geom_indices, num_geometries, device);
         }
     }
 
@@ -786,9 +760,9 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> query_distances_cuda(
 // Takes explicit candidate (point, polygon) pairs instead of dense matrix
 // Each thread processes one candidate pair
 __global__ void point_in_polygon_sparse_kernel(
-    const float* __restrict__ query_points,              // (N, 2)
-    const int64_t* __restrict__ candidate_point_idx,     // (K,) query point indices
-    const int64_t* __restrict__ candidate_poly_idx,      // (K,) polygon geometry indices
+    const float* __restrict__ query_points,           // (N, 2)
+    const int64_t* __restrict__ candidate_point_idx,  // (K,) query point indices
+    const int64_t* __restrict__ candidate_poly_idx,   // (K,) polygon geometry indices
     const int64_t num_candidates,
     const float* __restrict__ segment_starts,            // (S, 2) - ring vertices
     const int64_t* __restrict__ polygon_segment_ranges,  // (R, 2) [start, end) per ring
@@ -836,14 +810,12 @@ __global__ void point_in_polygon_sparse_kernel(
     is_inside[idx] = (total_winding != 0);
 }
 
-torch::Tensor point_in_polygon_sparse_cuda(
-    const torch::Tensor& query_points,
-    const torch::Tensor& candidate_point_idx,
-    const torch::Tensor& candidate_poly_idx,
-    const torch::Tensor& segment_starts,
-    const torch::Tensor& polygon_segment_ranges,
-    const torch::Tensor& geom_ring_offsets
-) {
+torch::Tensor point_in_polygon_sparse_cuda(const torch::Tensor& query_points,
+                                           const torch::Tensor& candidate_point_idx,
+                                           const torch::Tensor& candidate_poly_idx,
+                                           const torch::Tensor& segment_starts,
+                                           const torch::Tensor& polygon_segment_ranges,
+                                           const torch::Tensor& geom_ring_offsets) {
     // Check inputs
     TORCH_CHECK(query_points.is_cuda(), "query_points must be on CUDA");
     TORCH_CHECK(query_points.dim() == 2 && query_points.size(1) == 2,
@@ -857,31 +829,26 @@ torch::Tensor point_in_polygon_sparse_cuda(
     int64_t num_candidates = candidate_point_idx.size(0);
 
     if (num_candidates == 0) {
-        return torch::zeros({0},
-                           torch::TensorOptions().dtype(torch::kBool).device(query_points.device()));
+        return torch::zeros(
+            {0}, torch::TensorOptions().dtype(torch::kBool).device(query_points.device()));
     }
 
     auto device = query_points.device();
     c10::cuda::CUDAGuard device_guard(device);
 
     // Allocate output
-    auto is_inside = torch::zeros({num_candidates},
-                                  torch::TensorOptions().dtype(torch::kBool).device(device));
+    auto is_inside =
+        torch::zeros({num_candidates}, torch::TensorOptions().dtype(torch::kBool).device(device));
 
     // Launch kernel: one thread per candidate pair
     const int threads = 256;
     const int blocks = (num_candidates + threads - 1) / threads;
 
     point_in_polygon_sparse_kernel<<<blocks, threads>>>(
-        query_points.data_ptr<float>(),
-        candidate_point_idx.data_ptr<int64_t>(),
-        candidate_poly_idx.data_ptr<int64_t>(),
-        num_candidates,
-        segment_starts.data_ptr<float>(),
-        polygon_segment_ranges.data_ptr<int64_t>(),
-        geom_ring_offsets.data_ptr<int64_t>(),
-        is_inside.data_ptr<bool>()
-    );
+        query_points.data_ptr<float>(), candidate_point_idx.data_ptr<int64_t>(),
+        candidate_poly_idx.data_ptr<int64_t>(), num_candidates, segment_starts.data_ptr<float>(),
+        polygon_segment_ranges.data_ptr<int64_t>(), geom_ring_offsets.data_ptr<int64_t>(),
+        is_inside.data_ptr<bool>());
 
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 
