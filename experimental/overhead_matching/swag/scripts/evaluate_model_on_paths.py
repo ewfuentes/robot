@@ -64,17 +64,19 @@ def construct_path_eval_inputs_from_args(
             model_type="panorama",
             landmark_version=landmark_version,
             panorama_landmark_radius_px=panorama_landmark_radius_px,
+            landmark_correspondence_inflation_factor=1.0,
             extractor_info=pano_model.cache_info()),
         satellite_tensor_cache_info=vd.TensorCacheInfo(
             dataset_key=dataset_path.name,
             model_type="satellite",
             landmark_version=landmark_version,
             panorama_landmark_radius_px=panorama_landmark_radius_px,
+            landmark_correspondence_inflation_factor=1.0,
             extractor_info=sat_model.cache_info()),
         panorama_neighbor_radius=panorama_neighbor_radius_deg,
         satellite_patch_size=sat_model.patch_dims,
         panorama_size=pano_model.patch_dims,
-        factor=1.0,
+        factor=0.3,
         landmark_version=landmark_version,
     )
     vigor_dataset = vd.VigorDataset(dataset_path, dataset_config)

@@ -61,6 +61,7 @@ py_library(
     requirement("geopandas"),
     "//common/torch:load_torch_deps",
     "//common/gps:web_mercator",
+    "//common/geometry:gpu_geometry_collection",
     "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
   ]
 )
@@ -76,6 +77,7 @@ py_test(
     requirement("shapely"),
     "//common/torch:load_torch_deps",
     "//common/gps:web_mercator",
+    "//common/geometry:gpu_geometry_collection",
     ":observation_likelihood",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
     "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
