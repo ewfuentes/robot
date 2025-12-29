@@ -159,24 +159,28 @@ class EvaluateSwagTest(unittest.TestCase):
             particle_history=torch.rand(PATH_LENGTH, NUM_PARTICLES, STATE_DIM),
             particle_history_pre_move=torch.rand(PATH_LENGTH, NUM_PARTICLES, STATE_DIM),
             log_particle_weights=torch.rand(PATH_LENGTH, NUM_PARTICLES),
-            num_dual_particles=None
+            terminated_early=False,
+            num_dual_particles=None,
         )
         inf_result_0 = PathInferenceResult(
             particle_history=torch.rand(PATH_LENGTH, NUM_PARTICLES, STATE_DIM),
             particle_history_pre_move=torch.rand(PATH_LENGTH, NUM_PARTICLES, STATE_DIM),
             log_particle_weights=torch.rand(PATH_LENGTH, NUM_PARTICLES),
+            terminated_early=False,
             num_dual_particles=0
         )
         inf_result_8 = PathInferenceResult(
             particle_history=torch.rand(PATH_LENGTH, NUM_PARTICLES, STATE_DIM),
             particle_history_pre_move=torch.rand(PATH_LENGTH, NUM_PARTICLES, STATE_DIM),
             log_particle_weights=torch.rand(PATH_LENGTH, NUM_PARTICLES),
+            terminated_early=False,
             num_dual_particles=8
         )
         inf_result_way_too_many = PathInferenceResult(
             particle_history=torch.rand(PATH_LENGTH, NUM_PARTICLES, STATE_DIM),
             particle_history_pre_move=torch.rand(PATH_LENGTH, NUM_PARTICLES, STATE_DIM),
             log_particle_weights=torch.rand(PATH_LENGTH, NUM_PARTICLES),
+            terminated_early=False,
             num_dual_particles=10 * NUM_PARTICLES
         )
 

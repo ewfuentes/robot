@@ -156,6 +156,7 @@ py_binary(
     "//experimental/overhead_matching/swag/evaluation:swag_algorithm",
     "//experimental/overhead_matching/swag/evaluation:wag_config_proto_py",
     "//experimental/overhead_matching/swag/evaluation:evaluate_swag",
+    "//experimental/overhead_matching/swag/evaluation:observation_likelihood",
     "//experimental/overhead_matching/swag/model:patch_embedding",
     "//experimental/overhead_matching/swag/model:swag_patch_embedding",
   ]
