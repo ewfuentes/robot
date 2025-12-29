@@ -72,7 +72,7 @@ class Similarities:
     landmark_mask: torch.Tensor
 
 
-def _get_similarities(prior_data: PriorData, pano_ids: list[str]) -> Similarities:
+def _get_similarities(prior_data: PriorData, pano_ids: list[str], _pano_id_to_idx: dict[str, int] | None = None, _pano_osm_similarity_reordered: torch.Tensor | None = None) -> Similarities:
     if len(pano_ids) == 0:
         return Similarities(
             sat_patch=torch.zeros((0, prior_data.pano_sat_similarity.shape[1])),
@@ -80,10 +80,18 @@ def _get_similarities(prior_data: PriorData, pano_ids: list[str]) -> Similaritie
             landmark_mask=torch.zeros((0, 0), dtype=torch.bool)
         )
 
-    pano_metadata = pd.concat([
-        prior_data.pano_metadata[prior_data.pano_metadata.pano_id == p]
-        for p in pano_ids
-    ])
+    # Use pre-built index if available, otherwise fall back to slow lookup
+    if _pano_id_to_idx is not None:
+        try:
+            pano_idxs = [_pano_id_to_idx[p] for p in pano_ids]
+        except KeyError as e:
+            raise KeyError(f"Panorama ID not found: {e}") from e
+        pano_metadata = prior_data.pano_metadata.iloc[pano_idxs]
+    else:
+        pano_metadata = pd.concat([
+            prior_data.pano_metadata[prior_data.pano_metadata.pano_id == p]
+            for p in pano_ids
+        ])
     assert len(pano_metadata) == len(pano_ids)
 
     sat_patch_similarities = prior_data.pano_sat_similarity[pano_metadata.index]
@@ -96,10 +104,18 @@ def _get_similarities(prior_data: PriorData, pano_ids: list[str]) -> Similaritie
                                         dtype=torch.float32)
     landmark_mask = torch.zeros((num_panos, max_num_pano_landmarks), dtype=torch.bool)
 
+    # Use pre-computed reordered similarity matrix if available
+    if _pano_osm_similarity_reordered is not None:
+        pano_osm_sim = _pano_osm_similarity_reordered
+    else:
+        # Fall back to expensive reindexing
+        pano_osm_sim = prior_data.pano_osm_landmark_similarity[:, prior_data.osm_geometry.osm_embedding_idx]
+
     for pano_idx, (_, row) in enumerate(pano_metadata.iterrows()):
         num_pano_lms = len(row.pano_lm_idxs)
-        landmark_similarities[pano_idx, :num_pano_lms] = prior_data.pano_osm_landmark_similarity[:,prior_data.osm_geometry.osm_embedding_idx][row.pano_lm_idxs]
-        landmark_mask[pano_idx, :num_pano_lms] = True
+        if num_pano_lms > 0:
+            landmark_similarities[pano_idx, :num_pano_lms] = pano_osm_sim[row.pano_lm_idxs]
+            landmark_mask[pano_idx, :num_pano_lms] = True
 
     return Similarities(
         sat_patch=sat_patch_similarities,
@@ -328,6 +344,7 @@ def _compute_osm_log_likelihood(similarities, mask, osm_geometry, particle_locs_
     # GPU-accelerated spatial query and distance computation
     # Move particles to the same device as the collection for CUDA queries
     particles_cuda = particles_flat.to(osm_collection.device)
+
     # The collection's spatial index filters to distances <= expansion_distance
     result = osm_collection.query_distances_cuda(particles_cuda)
 
@@ -710,13 +727,18 @@ class LandmarkObservationLikelihoodCalculator:
         self.config = config
         self.device = device
 
+        # Validate prior data first
+        _check_prior_data(prior_data)
+
         # Build panorama ID to index mapping
         self.pano_id_to_idx = {
             pano_id: idx for idx, pano_id in enumerate(prior_data.pano_metadata.pano_id)
         }
 
-        # Validate prior data
-        _check_prior_data(prior_data)
+        # Pre-compute the reordered similarity matrix (columns reordered to match osm_geometry order)
+        # This avoids expensive reindexing on every call to _get_similarities
+        osm_embedding_idxs = prior_data.osm_geometry.osm_embedding_idx.values
+        self._pano_osm_similarity_reordered = prior_data.pano_osm_landmark_similarity[:, osm_embedding_idxs]
 
         # Build spatial index for satellite patches
         self._sat_tree, self._patch_centroids = _build_sat_spatial_index(prior_data.sat_geometry)
@@ -752,7 +774,10 @@ class LandmarkObservationLikelihoodCalculator:
             log_likelihoods: (num_panoramas, num_particles) tensor of unnormalized log likelihoods
         """
         # Get similarities for the specified panoramas
-        similarities = _get_similarities(self.prior_data, panorama_ids)
+        similarities = _get_similarities(
+            self.prior_data, panorama_ids,
+            _pano_id_to_idx=self.pano_id_to_idx,
+            _pano_osm_similarity_reordered=self._pano_osm_similarity_reordered)
 
         # Convert lat/lon to pixel coordinates
         # Need to expand particles to (num_panoramas, num_particles, 2) for the likelihood functions

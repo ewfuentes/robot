@@ -226,7 +226,7 @@ class ObservationLikelihoodTest(unittest.TestCase):
 
         particles = torch.tensor([[37.7749, -122.4194]])
 
-        with self.assertRaises(AssertionError):
+        with self.assertRaises(KeyError):
             calculator.compute_log_likelihoods(particles, ['pano_99'])
 
     def test_calculator_batch_particles_output_shape(self):
@@ -1477,7 +1477,7 @@ class LandmarkObservationLikelihoodCalculatorTest(unittest.TestCase):
             [37.7749, -122.4194],
         ])
 
-        with self.assertRaises(AssertionError):
+        with self.assertRaises(KeyError):
             calculator.compute_log_likelihoods(particles, ['nonexistent_pano'])
 
     def test_constructor_validates_prior_data(self):
