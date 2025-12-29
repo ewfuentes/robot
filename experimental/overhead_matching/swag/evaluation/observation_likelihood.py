@@ -9,6 +9,7 @@ import pandas as pd
 import itertools
 import shapely
 from common.gps import web_mercator
+from common.geometry.gpu_geometry_collection import GPUGeometryCollection
 import math
 import numpy as np
 import hashlib
@@ -108,8 +109,9 @@ def _get_similarities(prior_data: PriorData, pano_ids: list[str]) -> Similaritie
 
 
 def _compute_pixel_locs_px(particle_locs_deg: torch.Tensor, zoom_level: int = 20):
+    # Use float64 to preserve precision with large web mercator coordinates (~10^8 at zoom 20)
     y_px, x_px = web_mercator.latlon_to_pixel_coords(
-            particle_locs_deg[..., 0], particle_locs_deg[..., 1], zoom_level=zoom_level)
+            particle_locs_deg[..., 0].double(), particle_locs_deg[..., 1].double(), zoom_level=zoom_level)
     return torch.stack([y_px, x_px], dim=-1)
 
 
@@ -295,11 +297,12 @@ def _compute_sat_log_likelihood(similarities: torch.Tensor,
     return out
 
 
-def _compute_osm_log_likelihood(similarities, mask, osm_geometry, particle_locs_px, point_sigma_px: float, osm_tree, similarity_scale: float = 1.0, selected_pano_landmark_idx: int | None = None):
+def _compute_osm_log_likelihood(similarities, mask, osm_geometry, particle_locs_px, point_sigma_px: float, osm_collection: GPUGeometryCollection, similarity_scale: float = 1.0, selected_pano_landmark_idx: int | None = None):
     # Similarities is a num_panos x num_pano_landmarks x num_osm_landmark tensor
     # Mask is a num_panos x num_pano_landmarks tensor where true means that it's a valid landmark
     # osm_geometry is a dataframe that contains the geometry for each osm landmark
-    # particle_locs_px is a num_panos x num_particles x 2 tensor
+    # particle_locs_px is a num_panos x num_particles x 2 tensor (float64 for precision)
+    # osm_collection is a GPUGeometryCollection with pre-built spatial index
     # similarity_scale: factor to multiply similarities by before adding to log-likelihood
     # selected_pano_landmark_idx: if provided, only compute likelihood for this pano landmark
 
@@ -315,35 +318,23 @@ def _compute_osm_log_likelihood(similarities, mask, osm_geometry, particle_locs_
     num_panos, num_particles = particle_locs_px.shape[:2]
     num_pano_lm = similarities.shape[1]
 
-    # Compute the max distance where likelihood isn't clamped
-    # From: log_ll = -log(sqrt(2*pi)*sigma) - 0.5*(d/sigma)^2
-    # Solving for d when log_ll = CLAMP_THRESHOLD
-    CLAMP_THRESHOLD = -14.0
+    # Log normalization constant for Gaussian likelihood
     log_norm = -math.log(math.sqrt(2 * math.pi) * point_sigma_px)
-    max_relevant_distance = point_sigma_px * math.sqrt(2 * (-CLAMP_THRESHOLD + log_norm))
 
-    # Shapely uses col,row ordering; swap particle coordinates
+    # GPU library uses col,row (x,y) ordering; swap particle coordinates
     swapped_particles = torch.roll(particle_locs_px, 1, dims=-1)
-    particles_flat = swapped_particles.reshape(-1, 2).cpu().numpy()
-    query_points = shapely.points(particles_flat)
+    particles_flat = swapped_particles.reshape(-1, 2)
 
-    # Query all landmarks within max_distance using dwithin predicate
-    flat_particle_idxs, landmark_idxs = osm_tree.query(
-        query_points,
-        predicate='dwithin',
-        distance=max_relevant_distance
-    )
+    # GPU-accelerated spatial query and distance computation
+    # Move particles to the same device as the collection for CUDA queries
+    particles_cuda = particles_flat.to(osm_collection.device)
+    # The collection's spatial index filters to distances <= expansion_distance
+    result = osm_collection.query_distances_cuda(particles_cuda)
 
-    # Convert to torch tensors
-    flat_particle_idxs = torch.tensor(flat_particle_idxs, dtype=torch.long, device=device)
-    landmark_idxs_torch = torch.tensor(landmark_idxs, dtype=torch.long, device=device)
-
-    # Compute distances for the nearby pairs
-    nearby_distances = shapely.distance(
-        query_points[flat_particle_idxs.cpu().numpy()],
-        osm_geometry.geometry_px.values[landmark_idxs]
-    )
-    nearby_distances = torch.tensor(nearby_distances, dtype=torch.float32, device=device)
+    # Move results to the same device as the input tensors for subsequent operations
+    flat_particle_idxs = result.particle_idxs.to(device)
+    landmark_idxs_torch = result.geom_idxs.to(device)
+    nearby_distances = result.distances.to(device)
 
     # Compute log-likelihoods only for nearby pairs
     # log_ll = -log(sqrt(2*pi)*sigma) - 0.5*(d/sigma)^2
@@ -730,8 +721,22 @@ class LandmarkObservationLikelihoodCalculator:
         # Build spatial index for satellite patches
         self._sat_tree, self._patch_centroids = _build_sat_spatial_index(prior_data.sat_geometry)
 
-        # Build spatial index for OSM landmarks
-        self._osm_tree = shapely.STRtree(prior_data.osm_geometry.geometry_px.values)
+        # Build GPU geometry collection and spatial index for OSM landmarks
+        self._osm_collection = GPUGeometryCollection.from_shapely(
+            prior_data.osm_geometry.geometry_px.values,
+            device=torch.device("cuda")
+        )
+        # Compute max distance threshold from sigma (same formula as in _compute_osm_log_likelihood)
+        # From: log_ll = -log(sqrt(2*pi)*sigma) - 0.5*(d/sigma)^2
+        # Solving for d when log_ll = CLAMP_THRESHOLD
+        CLAMP_THRESHOLD = -14.0
+        sigma = config.obs_likelihood_from_osm_similarity_sigma
+        log_norm = -math.log(math.sqrt(2 * math.pi) * sigma)
+        max_relevant_distance = sigma * math.sqrt(2 * (-CLAMP_THRESHOLD + log_norm))
+        self._osm_collection.build_spatial_index(
+            cell_size=sigma,
+            expansion_distance=max_relevant_distance
+        )
 
     def compute_log_likelihoods(self, particles: torch.Tensor, panorama_ids: list[str], selected_pano_landmark_idx: int | None = None) -> torch.Tensor:
         """
@@ -773,7 +778,7 @@ class LandmarkObservationLikelihoodCalculator:
                 self.prior_data.osm_geometry,
                 particle_locs_px,
                 point_sigma_px=self.config.obs_likelihood_from_osm_similarity_sigma,
-                osm_tree=self._osm_tree,
+                osm_collection=self._osm_collection,
                 similarity_scale=self.config.osm_similarity_scale,
                 selected_pano_landmark_idx=selected_pano_landmark_idx
             )
@@ -791,7 +796,7 @@ class LandmarkObservationLikelihoodCalculator:
                 self.prior_data.osm_geometry,
                 particle_locs_px,
                 point_sigma_px=self.config.obs_likelihood_from_osm_similarity_sigma,
-                osm_tree=self._osm_tree,
+                osm_collection=self._osm_collection,
                 similarity_scale=self.config.osm_similarity_scale,
                 selected_pano_landmark_idx=selected_pano_landmark_idx
             )
