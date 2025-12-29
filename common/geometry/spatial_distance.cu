@@ -406,7 +406,51 @@ BlockAssignmentData build_block_assignments(const SortedParticleData& sorted_dat
     auto particle_ends = particle_ends_all.index_select(0, valid_indices);
     auto particle_counts = counts.index_select(0, valid_indices);
 
+    // Step 4b: Split large cells into multiple blocks for better GPU utilization
+    // When particles converge, one cell can have thousands of particles, causing
+    // a single CUDA block to do all the work while other SMs sit idle.
+    const int64_t MAX_PARTICLES_PER_BLOCK = 256;
+
+    // Compute number of sub-blocks needed for each cell
+    // Use floor_divide to ensure int64 result (regular / can produce float in some cases)
+    auto num_sub_blocks =
+        torch::floor_divide(particle_counts + MAX_PARTICLES_PER_BLOCK - 1, MAX_PARTICLES_PER_BLOCK);
+
+    // Check if any splitting is needed (optimization: skip if all cells are small)
+    auto max_sub_blocks = num_sub_blocks.max().item<int64_t>();
+    if (max_sub_blocks > 1) {
+        // Expand everything by num_sub_blocks
+        auto num_cells = num_sub_blocks.size(0);
+        auto cell_indices = torch::arange(num_cells, num_sub_blocks.options());
+        auto cell_indices_expanded = cell_indices.repeat_interleave(num_sub_blocks);
+
+        // Compute sub-block index within each cell (0, 1, 2, ... for each cell)
+        int64_t total_sub_blocks = num_sub_blocks.sum().item<int64_t>();
+        auto flat_indices = torch::arange(total_sub_blocks, num_sub_blocks.options());
+        auto sub_block_offsets = torch::cat(
+            {torch::zeros({1}, num_sub_blocks.options()), num_sub_blocks.cumsum(0)});
+        auto sub_block_idx =
+            flat_indices - sub_block_offsets.index_select(0, cell_indices_expanded);
+
+        // Compute particle ranges for each sub-block
+        auto original_starts = particle_starts.index_select(0, cell_indices_expanded);
+        auto original_counts = particle_counts.index_select(0, cell_indices_expanded);
+
+        auto new_particle_starts = original_starts + sub_block_idx * MAX_PARTICLES_PER_BLOCK;
+        auto new_particle_ends =
+            torch::minimum(new_particle_starts + MAX_PARTICLES_PER_BLOCK,
+                           original_starts + original_counts);
+
+        // Update all tensors to have one entry per sub-block
+        block_cell_ids = block_cell_ids.index_select(0, cell_indices_expanded);
+        particle_starts = new_particle_starts;
+        particle_ends = new_particle_ends;
+        particle_counts = new_particle_ends - new_particle_starts;
+    }
+
     // Step 5: Look up geometry counts from precomputed CSR
+    // Note: after splitting, block_cell_ids may have repeated entries for the same cell,
+    // which is correct - all sub-blocks of a cell need the same geometry data
     auto geom_starts = cell_geom_offsets.index_select(0, block_cell_ids);
     auto geom_ends = cell_geom_offsets.index_select(0, block_cell_ids + 1);
     auto num_geoms_per_block = geom_ends - geom_starts;

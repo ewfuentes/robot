@@ -298,7 +298,7 @@ def run_inference_on_path(
     particle_history_pre_move = []  # the particle state history before move_wag but after observe_wag
     num_dual_particles = []
     terminated_early = False
-    for panorama_id, motion_delta in tqdm.tqdm(zip(panorama_ids[:-1], motion_deltas)):
+    for panorama_id, motion_delta in zip(panorama_ids[:-1], motion_deltas):
         particle_history.append(particle_state.cpu().clone())
 
         # Generate new particles based on the observation
