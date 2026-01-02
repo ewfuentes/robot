@@ -312,8 +312,8 @@ def get_batch_items():
     if not indices:
         return jsonify({'items': []})
 
-    # Limit to 100 items for performance
-    indices = indices[:100]
+    # No limit - allow fetching all requested items
+    # (Map may request thousands of items)
 
     items = []
     if mode == 'panorama':
@@ -502,8 +502,6 @@ HTML_TEMPLATE = '''
         .left-panel {
             border-right: 1px solid #e1e4e8;
             padding: 20px;
-            overflow-y: auto;
-            max-height: calc(100vh - 280px);
         }
 
         .right-panel {
@@ -553,6 +551,74 @@ HTML_TEMPLATE = '''
             color: #374151;
         }
 
+        .ground-truth-card {
+            background: #fefce8;
+            border: 2px solid #facc15;
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 12px;
+        }
+
+        .ground-truth-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #fde047;
+        }
+
+        .ground-truth-title {
+            font-weight: 600;
+            color: #854d0e;
+            font-size: 13px;
+        }
+
+        .ground-truth-links {
+            display: flex;
+            gap: 8px;
+        }
+
+        .map-link {
+            padding: 3px 8px;
+            background: #fbbf24;
+            color: #78350f;
+            text-decoration: none;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        .map-link:hover {
+            background: #f59e0b;
+        }
+
+        .ground-truth-landmarks {
+            font-size: 13px;
+        }
+
+        .ground-truth-landmarks .landmark-item {
+            background: #fffbeb;
+            border-left-color: #fbbf24;
+        }
+
+        .item-nav-link {
+            margin-left: auto;
+            padding: 4px 12px;
+            background: #667eea;
+            color: white;
+            text-decoration: none;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .item-nav-link:hover {
+            background: #5568d3;
+        }
+
         .histogram-container {
             padding: 20px;
             border-bottom: 1px solid #e1e4e8;
@@ -596,7 +662,6 @@ HTML_TEMPLATE = '''
             border-radius: 8px;
             padding: 15px;
             margin-bottom: 12px;
-            cursor: pointer;
             transition: all 0.2s;
         }
 
@@ -757,10 +822,36 @@ HTML_TEMPLATE = '''
                     </div>
                 </div>
 
-                <div class="section-title">Landmarks</div>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                    <div class="section-title" style="margin-bottom: 0;">Landmarks</div>
+                    <div style="display: flex; gap: 12px;">
+                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer;">
+                            <input type="checkbox" id="show-ground-truth" onchange="toggleGroundTruth()" style="cursor: pointer;">
+                            <span>Show Ground Truth</span>
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer;">
+                            <input type="checkbox" id="show-map" onchange="toggleMap()" style="cursor: pointer;">
+                            <span>Show Map</span>
+                        </label>
+                    </div>
+                </div>
                 <ul class="landmarks-list" id="landmarks-list">
                     <li class="landmark-item">Loading...</li>
                 </ul>
+                <div id="ground-truth-section" style="display: none; margin-top: 20px; padding-top: 20px; border-top: 2px solid #e1e4e8;">
+                    <div class="section-title">Ground Truth Matches</div>
+                    <div id="ground-truth-content">
+                        Loading...
+                    </div>
+                </div>
+
+                <div id="map-section" style="display: none; margin-top: 20px; padding-top: 20px; border-top: 2px solid #e1e4e8;">
+                    <div class="section-title">Interactive Map</div>
+                    <div id="map-info" style="font-size: 12px; margin-bottom: 8px; padding: 8px; background: #f3f4f6; border-radius: 4px; border: 1px solid #e5e7eb; color: #374151;">
+                        Showing <span id="map-count-shown">0</span> markers<span id="map-perf-warning" style="display: none; color: #f59e0b; font-weight: 500;"> ⚠️ Large dataset may affect performance</span>
+                    </div>
+                    <div id="map-container" style="width: 100%; height: 400px; border: 1px solid #e1e4e8; border-radius: 8px;"></div>
+                </div>
             </div>
 
             <div class="right-panel">
@@ -795,7 +886,10 @@ HTML_TEMPLATE = '''
             filterExpression: '',
             displayedResultsCount: 50,  // Start with 50 results
             maxDisplayedResults: 50,    // Increase when "Load More" clicked
-            queryPhrases: []  // Extracted phrases from Python expression
+            queryPhrases: [],  // Extracted phrases from Python expression
+            showGroundTruth: false,
+            showMap: false,
+            mapInitialized: false
         };
 
         // Initialize on page load
@@ -873,9 +967,11 @@ HTML_TEMPLATE = '''
             updateCurrentInfo();
             updateImage();
             updateLandmarks();
+            updateGroundTruth();
             updateHistogram();
             updateResultsList();
             updateNavigationButtons();
+            updateMap();
         }
 
         function updateCurrentInfo() {
@@ -933,6 +1029,333 @@ HTML_TEMPLATE = '''
             list.innerHTML = sentences.map(s =>
                 `<li class="landmark-item">${escapeHtml(s)}</li>`
             ).join('') + duplicateNote;
+        }
+
+        async function toggleGroundTruth() {
+            state.showGroundTruth = document.getElementById('show-ground-truth').checked;
+            updateGroundTruth();
+        }
+
+        async function updateGroundTruth() {
+            const section = document.getElementById('ground-truth-section');
+            const content = document.getElementById('ground-truth-content');
+
+            if (!state.showGroundTruth) {
+                section.style.display = 'none';
+                return;
+            }
+
+            section.style.display = 'block';
+
+            const positiveIndices = state.currentData.positive_indices;
+
+            if (!positiveIndices || positiveIndices.length === 0) {
+                content.innerHTML = '<div style="color: #9ca3af; font-size: 13px;">No ground truth matches</div>';
+                return;
+            }
+
+            content.innerHTML = '<div style="color: #9ca3af; font-size: 13px;">Loading ground truth...</div>';
+
+            try {
+                // Fetch data for ground truth items
+                const response = await fetch('/api/batch_items', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        indices: positiveIndices,
+                        mode: state.mode
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.error) {
+                    content.innerHTML = '<div style="color: #ef4444;">Error loading ground truth</div>';
+                    return;
+                }
+
+                // Render ground truth items
+                const html = data.items.map(item => {
+                    const similarity = state.allSimilarities[item.idx];
+                    const dedupedSentences = deduplicateSentences(item.sentences);
+
+                    const mapsUrl = `https://www.google.com/maps?q=${item.loc[0]},${item.loc[1]}`;
+                    const osmUrl = `https://www.openstreetmap.org/?mlat=${item.loc[0]}&mlon=${item.loc[1]}&zoom=18`;
+
+                    const itemType = state.mode === 'panorama' ? 'Satellite' : 'Panorama';
+                    const itemLabel = state.mode === 'satellite' && item.pano_id
+                        ? `${item.pano_id}`
+                        : `#${item.idx}`;
+
+                    return `
+                        <div class="ground-truth-card">
+                            <div class="ground-truth-header">
+                                <div class="ground-truth-title">
+                                    ${itemType} ${itemLabel} • Similarity: ${similarity.toFixed(3)}
+                                </div>
+                                <div class="ground-truth-links">
+                                    <a href="${mapsUrl}" target="_blank" class="map-link">Maps</a>
+                                    <a href="${osmUrl}" target="_blank" class="map-link">OSM</a>
+                                </div>
+                            </div>
+                            <div class="ground-truth-landmarks">
+                                ${dedupedSentences.length === 0
+                                    ? '<div style="color: #9ca3af; font-size: 12px;">No landmarks</div>'
+                                    : dedupedSentences.map(s =>
+                                        `<div class="landmark-item">${escapeHtml(s)}</div>`
+                                    ).join('')}
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+
+                content.innerHTML = html;
+
+            } catch (error) {
+                content.innerHTML = '<div style="color: #ef4444;">Error: ' + escapeHtml(error.message) + '</div>';
+            }
+        }
+
+        async function toggleMap() {
+            state.showMap = document.getElementById('show-map').checked;
+            const mapSection = document.getElementById('map-section');
+
+            if (!state.showMap) {
+                mapSection.style.display = 'none';
+                return;
+            }
+
+            mapSection.style.display = 'block';
+            await updateMap();
+        }
+
+        async function updateMap() {
+            if (!state.showMap) {
+                return;
+            }
+
+            const mapContainer = document.getElementById('map-container');
+            const mapCountShown = document.getElementById('map-count-shown');
+            const mapPerfWarning = document.getElementById('map-perf-warning');
+
+            // Get filtered items (apply both Python filter and histogram range)
+            const filteredItems = state.filteredIndices
+                .map(idx => ({
+                    idx: idx,
+                    similarity: state.allSimilarities[idx]
+                }))
+                .filter(item => {
+                    if (!state.similarityRange) return true;
+                    return item.similarity >= state.similarityRange[0] &&
+                           item.similarity <= state.similarityRange[1];
+                });
+
+            // Show all filtered items (no limit)
+            const itemsToShow = filteredItems;
+            const totalCount = itemsToShow.length;
+
+            // Update info display
+            mapCountShown.textContent = totalCount;
+
+            // Show performance warning for very large datasets
+            if (totalCount > 10000) {
+                mapPerfWarning.style.display = 'inline';
+            } else {
+                mapPerfWarning.style.display = 'none';
+            }
+
+            try {
+                // Always render the current location marker, even if no filtered items
+                let filteredMarkers = [];
+
+                if (itemsToShow.length > 0) {
+                    const response = await fetch('/api/batch_items', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            indices: itemsToShow.map(item => item.idx),
+                            mode: state.mode
+                        })
+                    });
+
+                    const data = await response.json();
+
+                    if (data.error) {
+                        console.error('Error loading map data:', data.error);
+                    } else {
+                        // Build marker data
+                        filteredMarkers = data.items.map((item, i) => ({
+                            lat: item.loc[0],
+                            lon: item.loc[1],
+                            idx: item.idx,
+                            similarity: itemsToShow[i].similarity,
+                            isTrueMatch: false,
+                            isCurrent: false
+                        }));
+                    }
+                }
+
+                // Add true match markers
+                const trueMatchIndices = state.currentData.positive_indices || [];
+                const trueMatchResponse = await fetch('/api/batch_items', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        indices: trueMatchIndices,
+                        mode: state.mode
+                    })
+                });
+
+                const trueMatchData = await trueMatchResponse.json();
+                const trueMatchMarkers = trueMatchData.items ? trueMatchData.items.map(item => ({
+                    lat: item.loc[0],
+                    lon: item.loc[1],
+                    idx: item.idx,
+                    similarity: state.allSimilarities[item.idx],
+                    isTrueMatch: true,
+                    isCurrent: false
+                })) : [];
+
+                // Add current location marker
+                const currentMarker = {
+                    lat: state.currentData.loc[0],
+                    lon: state.currentData.loc[1],
+                    idx: state.currentIndex,
+                    similarity: null,
+                    isTrueMatch: false,
+                    isCurrent: true
+                };
+
+                // Create Plotly traces
+                const traces = [];
+
+                // Filtered results trace (blue, colored by similarity)
+                if (filteredMarkers.length > 0) {
+                    const viridisColors = filteredMarkers.map(m => {
+                        const normalized = (m.similarity - 0) / (1 - 0);
+                        return normalized;
+                    });
+
+                    traces.push({
+                        type: 'scattermapbox',
+                        mode: 'markers',
+                        lon: filteredMarkers.map(m => m.lon),
+                        lat: filteredMarkers.map(m => m.lat),
+                        marker: {
+                            size: 6,
+                            color: viridisColors,
+                            colorscale: 'Viridis',
+                            showscale: true,
+                            colorbar: {
+                                title: 'Similarity',
+                                thickness: 10,
+                                len: 0.5
+                            }
+                        },
+                        text: filteredMarkers.map(m => `#${m.idx}: ${m.similarity.toFixed(3)}`),
+                        hoverinfo: 'text',
+                        customdata: filteredMarkers.map(m => m.idx),
+                        name: 'Filtered Results'
+                    });
+                }
+
+                // True matches trace (green)
+                if (trueMatchMarkers.length > 0) {
+                    traces.push({
+                        type: 'scattermapbox',
+                        mode: 'markers',
+                        lon: trueMatchMarkers.map(m => m.lon),
+                        lat: trueMatchMarkers.map(m => m.lat),
+                        marker: {
+                            size: 10,
+                            color: '#10b981',
+                            symbol: 'circle'
+                        },
+                        text: trueMatchMarkers.map(m => `TRUE MATCH #${m.idx}: ${m.similarity.toFixed(3)}`),
+                        hoverinfo: 'text',
+                        customdata: trueMatchMarkers.map(m => m.idx),
+                        name: 'True Matches'
+                    });
+                }
+
+                // Current location trace (red circle with border)
+                traces.push({
+                    type: 'scattermapbox',
+                    mode: 'markers',
+                    lon: [currentMarker.lon],
+                    lat: [currentMarker.lat],
+                    marker: {
+                        size: 16,
+                        color: '#ef4444',
+                        opacity: 0.9,
+                        symbol: 'circle'
+                    },
+                    text: [`Current: ${state.mode === 'panorama' ? 'Panorama' : 'Satellite'} #${currentMarker.idx}`],
+                    hoverinfo: 'text',
+                    customdata: [null],  // Don't navigate to self
+                    name: 'Current Location'
+                });
+
+                // Calculate map center
+                const allLats = [...filteredMarkers.map(m => m.lat), ...trueMatchMarkers.map(m => m.lat), currentMarker.lat];
+                const allLons = [...filteredMarkers.map(m => m.lon), ...trueMatchMarkers.map(m => m.lon), currentMarker.lon];
+                const centerLat = allLats.reduce((a, b) => a + b, 0) / allLats.length;
+                const centerLon = allLons.reduce((a, b) => a + b, 0) / allLons.length;
+
+                const layout = {
+                    mapbox: {
+                        style: 'open-street-map',
+                        center: {lat: centerLat, lon: centerLon},
+                        zoom: 12
+                    },
+                    showlegend: true,
+                    legend: {
+                        x: 0,
+                        y: 1,
+                        bgcolor: 'rgba(255,255,255,0.8)'
+                    },
+                    margin: {l: 0, r: 0, t: 0, b: 0},
+                    dragmode: 'pan'
+                };
+
+                const config = {
+                    responsive: true,
+                    displayModeBar: true,
+                    displaylogo: false
+                };
+
+                if (state.mapInitialized) {
+                    Plotly.react('map-container', traces, layout, config);
+                } else {
+                    Plotly.newPlot('map-container', traces, layout, config);
+                    state.mapInitialized = true;
+
+                    // Attach click handler
+                    mapContainer.on('plotly_click', handleMapClick);
+                }
+
+            } catch (error) {
+                console.error('Error updating map:', error);
+                // Render empty map on error
+                if (state.mapInitialized) {
+                    Plotly.react('map-container', [], {
+                        mapbox: {style: 'open-street-map', center: {lat: 0, lon: 0}, zoom: 1},
+                        margin: {l: 0, r: 0, t: 0, b: 0}
+                    }, {responsive: true});
+                }
+            }
+        }
+
+        function handleMapClick(eventData) {
+            if (!eventData || !eventData.points || eventData.points.length === 0) return;
+
+            const point = eventData.points[0];
+            if (point.customdata !== undefined && point.customdata !== null) {
+                const clickedIdx = point.customdata;
+                if (clickedIdx !== state.currentIndex) {
+                    navigateToItem(clickedIdx);
+                }
+            }
         }
 
         function updateHistogram() {
@@ -1019,6 +1442,7 @@ HTML_TEMPLATE = '''
             state.similarityRange = [minSim, maxSim];
             updateResultsList();
             updateSimRangeInfo();
+            updateMap();
         }
 
         function updateSimRangeInfo() {
@@ -1094,13 +1518,13 @@ HTML_TEMPLATE = '''
                 const isTrueMatch = trueMatchSet.has(item.idx);
 
                 return `
-                    <div class="item-card" onclick="navigateToItem(${item.idx})" data-idx="${item.idx}">
+                    <div class="item-card" data-idx="${item.idx}">
                         <div class="item-header">
                             <span class="sim-badge ${simClass}">${item.similarity.toFixed(3)}</span>
                             <span class="item-index">#${item.idx}</span>
                             ${isTrueMatch ? '<span class="true-match-badge">TRUE MATCH</span>' : ''}
-                            <a href="#" class="maps-link" onclick="event.stopPropagation(); openMaps(${item.idx}, event)">
-                                📍 Maps
+                            <a href="#" class="item-nav-link" onclick="navigateToItem(${item.idx}); return false;">
+                                View →
                             </a>
                         </div>
                         <div class="item-landmarks" id="landmarks-${item.idx}">
@@ -1287,6 +1711,7 @@ HTML_TEMPLATE = '''
                 document.getElementById('filter-count').innerHTML = 'No filter applied';
                 updateHistogram();
                 updateResultsList();
+                updateMap();
                 return;
             }
 
@@ -1316,6 +1741,7 @@ HTML_TEMPLATE = '''
 
                 updateHistogram();
                 updateResultsList();
+                updateMap();
 
             } catch (error) {
                 alert('Failed to apply filter: ' + error.message);

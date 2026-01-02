@@ -47,10 +47,11 @@ def _(vd):
         should_load_images=False,
         should_load_landmarks=True,
         landmark_version="v4_202001",
-        # factor=0.3,
-        factor=1,
+        factor=0.3,
+        # factor=1,
     )
-    dataset = vd.VigorDataset(config=_dataset_config,dataset_path="/data/overhead_matching/datasets/VIGOR/Chicago/")
+    dataset = vd.VigorDataset(config=_dataset_config,dataset_path="/data/overhead_matching/datasets/VIGOR/Seattle/")
+    # dataset = vd.VigorDataset(config=_dataset_config,dataset_path="/data/overhead_matching/datasets/VIGOR/Chicago/")
     return (dataset,)
 
 
@@ -285,7 +286,7 @@ def _(
 
 @app.cell
 def _(output_dict, pickle):
-    with open("/tmp/visualizer_information.pkl", 'wb') as f:
+    with open("/tmp/visualizer_information_seattle.pkl", 'wb') as f:
         pickle.dump(output_dict, f)
     return
 
