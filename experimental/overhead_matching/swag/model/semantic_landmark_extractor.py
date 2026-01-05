@@ -22,8 +22,122 @@ from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
 from multiprocessing import Pool
 from functools import partial
 import tqdm
+from google import genai
+from pydantic import BaseModel, Field
+from typing import List, Literal
+from enum import Enum
 
 BATCH_SIZE = 49_999
+MAX_BATCH_FILE_SIZE_OPENAI = 190_000_000  # 190 MB for OpenAI
+MAX_BATCH_FILE_SIZE_GCP = 1_900_000_000   # 1.9 GB for GCP
+
+
+# Pydantic models for panorama landmark extraction schemas
+
+class YawAngle(str, Enum):
+    """Yaw angles for panorama images"""
+    YAW_0 = "0"
+    YAW_90 = "90"
+    YAW_180 = "180"
+    YAW_270 = "270"
+
+
+class LandmarkWithYaw(BaseModel):
+    """A landmark with its visible yaw angles"""
+    description: str = Field(description="Natural language description of the landmark")
+    yaw_angles: List[YawAngle] = Field(description="Yaw angles where this landmark is visible")
+
+
+class LandmarksResponse(BaseModel):
+    """Response schema for landmarks with yaw angles"""
+    landmarks: List[LandmarkWithYaw] = Field(
+        description="List of landmarks visible in the panorama")
+
+
+def _add_required_no_add_props(schema: dict) -> dict:
+    """
+    This recursively adds propertyOrdering lists to all objects in the schema
+    """
+    if isinstance(schema, dict):
+        if schema.get("type") == "object" and "properties" in schema:
+            schema["additionalProperties"] = False
+            schema["required"] = list(schema["properties"].keys())
+
+        # Recursively process nested schemas
+        for key, value in schema.items():
+            if isinstance(value, dict):
+                _add_required_no_add_props(value)
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        _add_required_no_add_props(item)
+
+    return schema
+
+
+def _resolve_refs(schema: dict, defs: dict = None) -> dict:
+    """Recursively resolve $ref in schema by inlining definitions."""
+    if defs is None:
+        defs = schema.get("$defs", {}) or schema.get("definitions", {})
+
+    if isinstance(schema, dict):
+        if "$ref" in schema:
+            ref_path = schema["$ref"]
+            # Handle #/$defs/Name or #/definitions/Name
+            ref_name = ref_path.split("/")[-1]
+            if ref_name in defs:
+                # Inline the definition (recursively resolve refs in it too)
+                resolved = _resolve_refs(defs[ref_name], defs)
+                return resolved
+            else:
+                return schema  # Should probably warn if ref not found
+
+        new_schema = {}
+        for key, value in schema.items():
+            if key == "$defs" or key == "definitions":
+                continue
+            new_schema[key] = _resolve_refs(value, defs)
+        return new_schema
+    elif isinstance(schema, list):
+        return [_resolve_refs(item, defs) for item in schema]
+    else:
+        return schema
+
+
+
+
+def get_panorama_schema(use_gcp: bool = False) -> dict:
+    """Get the JSON schema for panorama landmark extraction.
+
+    Args:
+        use_gcp: If True, return GCP-compatible schema; otherwise OpenAI format
+    
+    Old OpenAI schema formatting:
+        # {"name": "landmark_extraction", "strict": true, "schema": {"type": "object", "properties": {"landmarks": {"type": "array", "items": {"type": "object", "properties": {"description": {"type": "string"}, "yaw_angles": {"type": "array", "items": {"type": "integer", "enum": [0, 90, 180, 270]}}}, "required": ["description", "yaw_angles"], "additionalProperties": false}}}, "required": ["landmarks"], "additionalProperties": false}}
+
+    Returns:
+        dict: JSON schema for the response format
+    """
+    # Get the base Pydantic model
+    model_class = LandmarksResponse
+
+    # Generate base schema from Pydantic
+    schema = model_class.model_json_schema()
+
+    schema = _resolve_refs(schema)
+    schema = _add_required_no_add_props(schema)
+
+    if not use_gcp:
+        # OpenAI format: wrap with name and strict mode
+        schema = {
+            "name": "landmark_extraction",
+            "strict": True,
+            "schema": schema
+        }
+
+    return schema
+    
+
 
 
 def compute_bounds_for_polygon(pano_loc_px, geometry):
@@ -329,8 +443,6 @@ def _load_landmarks(geojson_list):
     return pd.concat([load_file(p) for p in geojson_list], ignore_index=True)
 
 
-
-
 def encode_image_to_base64(image_path: Path) -> str:
     """Encode a single image file to base64 string."""
     with open(image_path, 'rb') as f:
@@ -347,57 +459,6 @@ def encode_images_parallel(image_paths: list[Path], num_workers: int = 8, disabl
             disable=disable_tqdm
         ))
 
-
-PANORAMA_LANDMARK_SCHEMAS = {
-    'all': {
-        "name": "landmark_extraction",
-        "strict": True,
-        "schema": {
-            "type": "object",
-            "properties": {
-                "landmarks": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "description": {"type": "string"},
-                            "yaw_angles": {
-                                "type": "array",
-                                "items": {"type": "integer", "enum": [0, 90, 180, 270]}
-                            }
-                        },
-                        "required": ["description", "yaw_angles"],
-                        "additionalProperties": False
-                    }
-                }
-            },
-            "required": ["landmarks"],
-            "additionalProperties": False
-        }
-    },
-    'individual': {
-        "name": "landmark_extraction",
-        "strict": True,
-        "schema": {
-            "type": "object",
-            "properties": {
-                "landmarks": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "description": {"type": "string"}
-                        },
-                        "required": ["description"],
-                        "additionalProperties": False
-                    }
-                }
-            },
-            "required": ["landmarks"],
-            "additionalProperties": False
-        }
-    }
-}
 
 EXAMPLE_SENTENCES = """
 A small, man-made water tap, located east of a larger non-drinking fountain.
@@ -423,44 +484,164 @@ SYSTEM_PROMPTS = {
     'panorama': f"You are an expert at identifying landmarks in street-level imagery. Identify distinctive, permanent landmarks visible in these image(s) and describe them in short, natural language descriptions. Do NOT include very distant objects that are likely to be more than a few hundered meters from where the image was taken. Focus on buildings, monuments, parks, infrastructure, or other landmarks that are likely to be present in OpenStreetMaps. Avoid transient landmarks like cars and pedestrians. If you can confidently make out text (e.g., a buisnesses name on a sign, a street sign), include these as landmarks. Do not mention the location of the landmark in the image or relative to other landmarks (e.g., on the left of the image/on the right side of the street). Match the style of these examples: {EXAMPLE_SENTENCES}. DO NOT make up details that are not present (for example, if there is no street sign in the image, don't say you are on a specific street).",
 }
 
-def _create_requests(landmarks, prompt_type = "default"):
-    system_prompt = SYSTEM_PROMPTS[prompt_type]
 
+def _create_requests(landmarks, prompt_type, model, thinking_mode, use_gcp=False):
+    """Create batch API requests for landmark descriptions.
+
+    Args:
+        landmarks: Set of landmark property dicts
+        prompt_type: Type of prompt to use from SYSTEM_PROMPTS
+        model: Model name (Gemini for GCP, GPT for OpenAI)
+        thinking_mode: Thinking mode for Gemini ("high", "medium", "low")
+        use_gcp: If True, generate Gemini native format; otherwise OpenAI format
+
+    Returns:
+        List of request dicts in appropriate batch format
+    """
+    system_prompt = SYSTEM_PROMPTS[prompt_type]
     user_prompt = "Produce a short natural language description for this landmark: "
 
     requests = []
     for props in landmarks:
         json_props = json.dumps(dict(props), sort_keys=True)
-        requests.append({
-            "custom_id": custom_id_from_props(props),
-            "method": "POST",
-            "url": "/v1/chat/completions",
-            "body": {
-                "model": "gpt-5-nano",
-                "max_completion_tokens": 3000,
-                "reasoning_effort": 'low',
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt + json_props},
-                ]
+        landmark_id = custom_id_from_props(props)
+
+        if use_gcp:
+            # Gemini native batch format
+            request = {
+                "key": landmark_id,
+                "request": {
+                    "contents": [{
+                        "parts": [{"text": user_prompt + json_props}],
+                        "role": "user"
+                    }],
+                    "config": {
+                        "system_instruction": {
+                            "parts": [{"text": system_prompt}]
+                        },
+                        "thinking_mode": thinking_mode,
+                    }
+                }
             }
-        })
+        else:
+            # OpenAI batch format
+            request = {
+                "custom_id": landmark_id,
+                "method": "POST",
+                "url": "/v1/chat/completions",
+                "body": {
+                    "model": model,
+                    "max_completion_tokens": 3000,
+                    "reasoning_effort": thinking_mode,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt + json_props},
+                    ]
+                }
+            }
+
+        requests.append(request)
     return requests
 
 
-def launch_batch(idx, batch_requests_file, endpoint):
-    import openai
-    client = openai.OpenAI()
-    batch_input_file = client.files.create(
-        file=batch_requests_file.open('rb'),
-        purpose='batch')
+def launch_chat_completion_batch(idx, batch_requests_file, model=None, use_gcp=False) -> str:
+    """Launch a batch job for chat completions (text generation).
 
-    return client.batches.create(
-        input_file_id=batch_input_file.id,
-        endpoint=endpoint,
-        completion_window="24h",
-        metadata={"description": f"landmark summarization part: {idx}"}
-    )
+    Args:
+        idx: Batch index for labeling
+        batch_requests_file: Path to JSONL file containing requests
+        model: Model name (required for Gemini, ignored for OpenAI as it's in the request body)
+        use_gcp: If True, use Gemini API; otherwise OpenAI
+
+    Returns:
+        Batch job ID (Gemini resource name or OpenAI batch ID)
+    """
+    if use_gcp:
+        # Use genai SDK for Gemini
+        from google import genai
+        from google.genai import types
+        genai_client = genai.Client()
+
+        uploaded_file = genai_client.files.upload(
+            file=str(batch_requests_file),
+            config=types.UploadFileConfig(
+                display_name=batch_requests_file.name,
+                mime_type='application/jsonl'
+            )
+        )
+
+        batch_job = genai_client.batches.create(
+            model=model,
+            src=uploaded_file.name,
+            config=types.CreateBatchJobConfig(
+                display_name=f"chat completion batch: {idx}"
+            )
+        )
+        return batch_job.name
+
+    else:
+        # Use OpenAI SDK
+        openai_client = openai.OpenAI()
+        batch_input_file = openai_client.files.create(
+            file=batch_requests_file.open('rb'),
+            purpose='batch')
+
+        return openai_client.batches.create(
+            input_file_id=batch_input_file.id,
+            endpoint="/v1/chat/completions",
+            completion_window="24h",
+            metadata={"description": f"chat completion batch: {idx}"}
+        ).id
+
+
+def launch_embedding_batch(idx, batch_requests_file, model=None, use_gcp=False) -> str:
+    """Launch a batch job for embeddings.
+
+    Args:
+        idx: Batch index for labeling
+        batch_requests_file: Path to JSONL file containing requests
+        model: Model name (required for Gemini, ignored for OpenAI as it's in the request body)
+        use_gcp: If True, use Gemini API; otherwise OpenAI
+
+    Returns:
+        Batch job ID (Gemini resource name or OpenAI batch ID)
+    """
+
+    raise RuntimeError("Untested")
+    if use_gcp:
+        # Use genai SDK for Gemini embeddings
+        from google import genai
+        from google.genai import types
+        genai_client = genai.Client()
+
+        uploaded_file = genai_client.files.upload(
+            file=str(batch_requests_file),
+            config=types.UploadFileConfig(
+                display_name=batch_requests_file.name,
+                mime_type='application/jsonl'
+            )
+        )
+
+        batch_job = genai_client.batches.create_embeddings(
+            model=model,
+            src={'file_name': uploaded_file.name},
+            config={'display_name': f"embedding batch: {idx}"}
+        )
+        return batch_job.name
+
+    else:
+        # Use OpenAI SDK
+        openai_client = openai.OpenAI()
+        batch_input_file = openai_client.files.create(
+            file=batch_requests_file.open('rb'),
+            purpose='batch')
+
+        return openai_client.batches.create(
+            input_file_id=batch_input_file.id,
+            endpoint="/v1/embeddings",
+            completion_window="24h",
+            metadata={"description": f"embedding batch: {idx}"}
+        ).id
 
 
 def create_description_requests(args):
@@ -468,38 +649,84 @@ def create_description_requests(args):
     out_path = Path(args.output_base) / 'sentence_requests'
     out_path.mkdir(parents=True, exist_ok=True)
     prompt_type = args.prompt_type
+    use_gcp = getattr(args, 'use_gcp', False)
     import itertools
     print(f'create {args}')
     landmarks = _load_landmarks(args.geojson)
     unique_landmarks = {prune_landmark(row.dropna().to_dict()) for _, row in landmarks.iterrows()}
-    requests = _create_requests(unique_landmarks, prompt_type=prompt_type)
+
+    # Select model and thinking mode based on backend
+    if use_gcp:
+        model = "gemini-3-flash-preview"
+        thinking_mode = "high"
+    else:
+        model = "gpt-5-nano"
+        thinking_mode = "low"
+
+    requests = _create_requests(unique_landmarks, prompt_type=prompt_type,
+                                model=model, thinking_mode=thinking_mode, use_gcp=use_gcp)
     print("num requests", len(requests))
     for idx, request_batch in enumerate(itertools.batched(requests, BATCH_SIZE)):
         batch_requests_file = out_path / f'sentence_request_{idx:03d}.jsonl'
         batch_requests_file.write_text('\n'.join(json.dumps(r) for r in request_batch))
 
         if args.launch:
-            batch_response = launch_batch(idx, batch_requests_file, "/v1/chat/completions")
-            print(batch_response.id, end=" ")
+            batch_response = launch_chat_completion_batch(
+                idx, batch_requests_file, model=model if use_gcp else None, use_gcp=use_gcp)
+            print(batch_response, end=" ")
     print()
 
 
 def fetch(args):
     output_folder = Path(args.output_folder)
     output_folder.mkdir(exist_ok=True, parents=True)
-    client = openai.OpenAI()
+    use_gcp = getattr(args, 'use_gcp', False)
     print(f'fetch {args}')
-    for batch_id in args.batch_ids:
-        batch = client.batches.retrieve(batch_id)
-        if batch.status != "completed":
-            print(
-                f"Batch has non 'completed' status is '{batch.status}'. Skipping!!. Batch info: {batch}")
-            continue
-        file_output = client.files.content(batch.output_file_id)
 
-        with open(output_folder / batch.output_file_id, 'w') as f:
-            f.write(file_output.text)
-        print(f"Downloaded output for batch id {batch_id}")
+    if use_gcp:
+        # Use genai SDK for native Gemini batches
+        genai_client = genai.Client()
+
+        for batch_id in args.batch_ids:
+            batch_job = genai_client.batches.get(name=batch_id)
+
+            if batch_job.state.name != "JOB_STATE_SUCCEEDED":
+                print(
+                    f"Batch has non 'succeeded' state: '{batch_job.state.name}'. Skipping!! Batch info: {batch_job}")
+                continue
+
+            # Download result file
+            if batch_job.dest and batch_job.dest.file_name:
+                result_file_name = batch_job.dest.file_name
+                file_content = genai_client.files.download(file=result_file_name).decode('utf-8')
+
+                # Extract just the file ID from the full name (e.g., "files/abc123" -> "abc123")
+                file_id = result_file_name.split('/')[-1]
+                output_file = output_folder / file_id
+                with open(output_file, 'w') as f:
+                    f.write(file_content)
+
+                print(f"Downloaded output for batch {batch_id} to {output_file}")
+            else:
+                print(f"No output file found for batch {batch_id}")
+
+    else:
+        # Use OpenAI SDK for OpenAI batches
+        openai_client = openai.OpenAI()
+
+        for batch_id in args.batch_ids:
+            batch = openai_client.batches.retrieve(batch_id)
+            if batch.status != "completed":
+                print(
+                    f"Batch has non 'completed' status: '{batch.status}'. Skipping!! Batch info: {batch}")
+                continue
+
+            # Download using OpenAI SDK
+            file_output = openai_client.files.content(batch.output_file_id)
+            with open(output_folder / batch.output_file_id, 'w') as f:
+                f.write(file_output.text)
+
+            print(f"Downloaded output for batch id {batch_id}")
 
 
 def _make_sentence_embedding_request(custom_id: str, sentence: str) -> dict:
@@ -529,8 +756,10 @@ def create_sentence_embedding_batch(args):
 
     if is_panorama:
         print("Processing panorama landmark responses...")
-        sentence_dict, metadata_dict, output_tokens = make_sentence_dict_from_pano_jsons(all_responses)
-        print(f"Extracted {len(sentence_dict)} landmark descriptions from {len(all_responses)} panorama responses")
+        sentence_dict, metadata_dict, output_tokens = make_sentence_dict_from_pano_jsons(
+            all_responses)
+        print(
+            f"Extracted {len(sentence_dict)} landmark descriptions from {len(all_responses)} panorama responses")
         print(f"Total output tokens: {output_tokens}")
 
         # Save metadata for later use
@@ -561,9 +790,78 @@ def create_sentence_embedding_batch(args):
         batch_requests_file.write_text('\n'.join(json.dumps(r) for r in request_batch))
 
         if args.launch:
-            batch_response = launch_batch(idx, batch_requests_file, "/v1/embeddings")
-            print(batch_response.id, end=" ")
+            use_gcp = getattr(args, 'use_gcp', False)
+            # For Gemini embeddings, we need to specify the model
+            embedding_model = "text-embedding-004" if use_gcp else None
+            batch_response = launch_embedding_batch(
+                idx, batch_requests_file, model=embedding_model, use_gcp=use_gcp)
+            print(batch_response, end=" ")
     print()
+
+
+def _create_panorama_batch_request(
+    custom_id: str,
+    item_metadata: dict,
+    user_prompt: str,
+    system_prompt: str,
+    images: list[tuple[str, str]],  # list of (mime_type, base64_data)
+    schema: dict,
+    model: str,
+    use_gcp: bool = False
+) -> dict:
+    """Create a batch request object for either OpenAI or Gemini (native)."""
+    if use_gcp:
+        # Native Gemini format (using Python SDK field names)
+        parts = [{"text": user_prompt}]
+        for mime_type, b64_data in images:
+            parts.append({
+                "inline_data": {
+                    "mime_type": mime_type,
+                    "data": b64_data
+                }
+            })
+        return {
+            "key": custom_id,
+            "request": {
+                "contents": [{
+                    "parts": parts
+                }],
+                "systemInstruction": {
+                    "parts": [{"text": system_prompt}]
+                },
+                "generationConfig": {
+                    "responseMimeType": "application/json",
+                    "responseJsonSchema": schema,
+                    "thinkingConfig": {"thinkingLevel": "HIGH"},
+                    "mediaResolution": "MEDIA_RESOLUTION_HIGH"
+                }
+            }
+        }
+    else:
+        # OpenAI format
+        content = [{"type": "text", "text": user_prompt}]
+        for mime_type, b64_data in images:
+            content.append({
+                "type": "image_url",
+                "image_url": {
+                    "detail": "high",
+                    "url": f"data:{mime_type};base64,{b64_data}"
+                }
+            })
+
+        return {
+            "custom_id": custom_id,
+            "method": "POST",
+            "url": "/v1/chat/completions",
+            "body": {
+                "model": model,
+                "response_format": {"type": "json_schema", "json_schema": schema},
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": content}
+                ]
+            }
+        }
 
 
 def create_panorama_description_requests(args):
@@ -574,7 +872,6 @@ def create_panorama_description_requests(args):
         args: Argument namespace containing:
             - pinhole_dir: Path to directory with panorama subfolders containing pinhole images
             - output_base: Path for output batch request files
-            - submit_mode: 'all' (all 4 images in one request) or 'individual' (1 image per request)
             - num_workers: Number of parallel workers for image encoding
             - max_requests_per_batch: Maximum requests per batch file
             - launch: Whether to launch batch jobs automatically
@@ -587,10 +884,18 @@ def create_panorama_description_requests(args):
     output_base = Path(args.output_base) / 'panorama_sentence_requests'
     output_base.mkdir(parents=True, exist_ok=True)
 
-    submit_mode = args.submit_mode
     num_workers = args.num_workers
     max_requests_per_batch = args.max_requests_per_batch
     disable_tqdm = args.disable_tqdm
+    use_gcp = getattr(args, 'use_gcp', False)
+
+    # Select model and file size limit based on backend
+    if use_gcp:
+        model = "gemini-3-flash-preview"
+        max_file_size = MAX_BATCH_FILE_SIZE_GCP
+    else:
+        model = "gpt-5-2025-08-07"
+        max_file_size = MAX_BATCH_FILE_SIZE_OPENAI
 
     # Load pano IDs filter if provided
     pano_ids_to_process = None
@@ -624,7 +929,6 @@ def create_panorama_description_requests(args):
         print(f"No panorama folders found to process")
         return
 
-    print(f"Submit mode: {submit_mode}")
     print(f"Encoding workers: {num_workers}")
     print(f"Processing {len(panorama_folders)} panoramas")
 
@@ -653,13 +957,20 @@ def create_panorama_description_requests(args):
 
     # Get system prompt and schema for this mode
     system_prompt = SYSTEM_PROMPTS['panorama']
-    schema = PANORAMA_LANDMARK_SCHEMAS[submit_mode]
+    schema = get_panorama_schema(use_gcp=use_gcp)
 
     # Process in batches to avoid OOM
     # We'll encode and write requests in chunks
     PANORAMA_CHUNK_SIZE = 1000 
 
     panorama_items = list(panorama_image_map.items())
+
+    # Limit to max_panoramas if specified
+    max_panoramas = args.max_panoramas
+    if max_panoramas is not None:
+        panorama_items = panorama_items[:max_panoramas]
+        print(f"Limited to {len(panorama_items)} panoramas (--max_panoramas={max_panoramas})")
+
     total_requests_created = 0
     batch_idx = 0
     current_batch_requests = []
@@ -682,72 +993,47 @@ def create_panorama_description_requests(args):
         chunk_image_to_base64 = dict(zip(chunk_image_paths, chunk_base64_images))
 
         # Create requests for this chunk
-        if submit_mode == 'all':
-            # One request per panorama with all 4 images
-            user_prompt = "These four images show the same location from different angles (0°, 90°, 180°, 270° yaw). Identify all distinctive landmarks visible in these images. For each landmark, specify which yaw angle(s) it is visible in. Return a JSON object with a 'landmarks' array containing objects with 'description' and 'yaw_angles' fields."
-        elif submit_mode == "individual":
-            user_prompt = f"Identify distinctive landmarks visible in this image that are likely to be present in OpenStreetMaps."
-        else:
-            raise RuntimeError(f"Unrecognized submit mode type: {submit_mode}")
+        user_prompt = "These four images show the same location from different angles (0°, 90°, 180°, 270° yaw). Identify all distinctive landmarks visible in these images. For each landmark, specify which yaw angle(s) it is visible in. Return a JSON object with a 'landmarks' array containing objects with 'description' and 'yaw_angles' fields."
 
         for pano_stem, images_for_pano in chunk:
             # Sort by yaw angle to ensure consistent ordering
             images_for_pano = sorted(images_for_pano, key=lambda x: x[0])
-            all_content = []
-            if submit_mode == 'all':
-                content = [{"type": "text", "text": user_prompt}]
-                for yaw, image_path in images_for_pano:
-                    # Detect file extension
-                    ext = image_path.suffix.lower()
-                    mime_type = "image/jpeg" if ext == ".jpg" else "image/png"
-                    content.append({
-                        "type": "image_url",
-                        "image_url": {"detail": "high", "url": f"data:{mime_type};base64,{chunk_image_to_base64[image_path]}"}
-                    })
-                all_content.append((content, None))
-            else:  #individual
-                for yaw, image_path in images_for_pano:
-                    ext = image_path.suffix.lower()
-                    mime_type = "image/jpeg" if ext == ".jpg" else "image/png"
-                    content = [
-                        {"type": "text", "text": user_prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {"detail": "high", "url": f"data:{mime_type};base64,{chunk_image_to_base64[image_path]}"}
-                        }
-                    ]
-                    all_content.append((content, yaw))
 
-            for content, yaw in all_content:
-                request = {
-                    "custom_id": f"{pano_stem}" + (f"_yaw_{yaw}" if yaw is not None else ""),
-                    "method": "POST",
-                    "url": "/v1/chat/completions",
-                    "body": {
-                        "model": "gpt-5-2025-08-07",
-                        "response_format": {"type": "json_schema", "json_schema": schema},
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": content}
-                        ]
-                    }
-                }
+            # Prepare image data list [(mime_type, base64_data)]
+            image_data_list = []
+            for _, image_path in images_for_pano:
+                ext = image_path.suffix.lower()
+                mime_type = "image/jpeg" if ext == ".jpg" else "image/png"
+                image_data_list.append((mime_type, chunk_image_to_base64[image_path]))
 
-                # Add to batch with size monitoring
-                request_json = json.dumps(request)
-                request_size = len(request_json.encode('utf-8'))
+            request = _create_panorama_batch_request(
+                custom_id=f"{pano_stem}" + (f"_yaw_{yaw}" if yaw is not None else ""),
+                item_metadata={},  # unused for now
+                user_prompt=user_prompt,
+                system_prompt=system_prompt,
+                images=image_data_list,
+                schema=schema,
+                model=model,
+                use_gcp=use_gcp
+            )
 
-                if (current_batch_size + request_size > 190_000_000 or
+            # Add to batch with size monitoring
+            request_json = json.dumps(request)
+            request_size = len(request_json.encode('utf-8'))
+
+            if (current_batch_size + request_size > max_file_size or
                     len(current_batch_requests) >= max_requests_per_batch):
-                    # Write current batch
-                    _write_and_launch_batch(output_base, batch_idx, current_batch_requests, args.launch)
-                    batch_idx += 1
-                    current_batch_requests = []
-                    current_batch_size = 0
+                # Write current batch
+                _write_and_launch_chat_batch(
+                    output_base, batch_idx, current_batch_requests, args.launch,
+                    model=model if use_gcp else None, use_gcp=use_gcp)
+                batch_idx += 1
+                current_batch_requests = []
+                current_batch_size = 0
 
-                current_batch_requests.append(request)
-                current_batch_size += request_size
-                total_requests_created += 1
+            current_batch_requests.append(request)
+            current_batch_size += request_size
+            total_requests_created += 1
 
         # Clear chunk data to free memory
         del chunk_base64_images
@@ -755,21 +1041,32 @@ def create_panorama_description_requests(args):
 
     # Write final batch if there are remaining requests
     if current_batch_requests:
-        _write_and_launch_batch(output_base, batch_idx, current_batch_requests, args.launch)
+        _write_and_launch_chat_batch(output_base, batch_idx, current_batch_requests,
+                                args.launch, model=model if use_gcp else None, use_gcp=use_gcp)
         batch_idx += 1
     print()
     print(f"Created {total_requests_created} API requests")
     print(f"Wrote {batch_idx} batch file(s) to {output_base}")
 
 
-def _write_and_launch_batch(output_base, batch_idx, batch_requests, should_launch):
-    """Helper function to write and optionally launch a batch."""
+def _write_and_launch_chat_batch(output_base, batch_idx, batch_requests, should_launch, model=None, use_gcp=False):
+    """Helper function to write and optionally launch a chat completion batch for panoramas.
+
+    Args:
+        output_base: Output directory path
+        batch_idx: Batch index for file naming
+        batch_requests: List of request dicts
+        should_launch: Whether to launch the batch job
+        model: Model name (required for Gemini, ignored for OpenAI)
+        use_gcp: If True, use Gemini API; otherwise OpenAI
+    """
     batch_file = output_base / f'panorama_request_{batch_idx:03d}.jsonl'
     batch_file.write_text('\n'.join(json.dumps(r) for r in batch_requests))
 
     if should_launch:
-        batch_response = launch_batch(batch_idx, batch_file, "/v1/chat/completions")
-        print(f"{batch_response.id}", end=" ")
+        batch_response = launch_chat_completion_batch(
+            batch_idx, batch_file, model=model, use_gcp=use_gcp)
+        print(f"{batch_response}", end=" ")
 
 
 def _process_embedding_path(dirpath, _, filenames):
@@ -816,6 +1113,8 @@ if __name__ == "__main__":
     create_parser.add_argument('--output_base', type=str, default="/tmp/")
     create_parser.add_argument('--prompt_type', type=str, default="default")
     create_parser.add_argument('--launch', action='store_true')
+    create_parser.add_argument('--use_gcp', action='store_true',
+                               help='Use Gemini API instead of OpenAI')
     create_parser.set_defaults(func=create_description_requests)
 
     # Arguments required to fetch the result of a batch job
@@ -824,6 +1123,8 @@ if __name__ == "__main__":
                               nargs="+", help="List of batch IDs from batch processing jobs")
     fetch_parser.add_argument('--output_folder', type=str, required=True,
                               help="Folder to save the batch outputs to")
+    fetch_parser.add_argument('--use_gcp', action='store_true',
+                              help='Fetch from Gemini API instead of OpenAI')
     fetch_parser.set_defaults(func=fetch)
 
     create_parser = subparsers.add_parser('create_embed')
@@ -832,6 +1133,8 @@ if __name__ == "__main__":
     create_parser.add_argument('--launch', action='store_true')
     create_parser.add_argument('--is_panorama', action='store_true',
                                help='Process panorama landmark extraction responses (extracts individual landmarks with metadata)')
+    create_parser.add_argument('--use_gcp', action='store_true',
+                               help='Use Gemini API instead of OpenAI')
     create_parser.set_defaults(func=create_sentence_embedding_batch)
 
     # Panorama landmark extraction
@@ -854,12 +1157,16 @@ if __name__ == "__main__":
                                  help='Disable progress bars')
     panorama_parser.add_argument('--pano_ids_file', type=str, default=None,
                                  help='Optional file containing panorama IDs to process (one per line). If not provided, all panoramas are processed.')
+    panorama_parser.add_argument('--max_panoramas', type=int, default=None,
+                                 help='Maximum number of panoramas to process (useful for testing). If not provided, all panoramas are processed.')
+    panorama_parser.add_argument('--use_gcp', action='store_true',
+                                 help='Use Gemini API via OpenAI compatibility instead of OpenAI')
     panorama_parser.set_defaults(func=create_panorama_description_requests)
 
     embedding_dict_parser = subparsers.add_parser('create_embedding_dict',
-                                            help='convert jsonl files to a pickled dict')
+                                                  help='convert jsonl files to a pickled dict')
     embedding_dict_parser.add_argument('--embedding_dir', type=str, default="/tmp/",
-                                 help='Base path for output batch request files')
+                                       help='Base path for output batch request files')
     embedding_dict_parser.set_defaults(func=create_embedding_dict)
 
     args = parser.parse_args()
