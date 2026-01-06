@@ -25,7 +25,7 @@ app = Flask(__name__)
 # Global data stores
 PINHOLE_DIR = None
 PANORAMA_DIR = None
-APPROACHES = []  # List of (approach_name, response_data) tuples
+APPROACHES = []  # List of (approach_name, response_data, token_stats) tuples
 COMMON_PANO_IDS = []  # List of panorama IDs that exist in all approaches
 YAW_ANGLES = [0, 90, 180, 270]
 
@@ -109,18 +109,123 @@ def parse_custom_id(custom_id: str) -> str:
     return pano_id
 
 
-def load_response_data(response_file_path: str) -> Dict[str, Dict]:
-    """Load response data from JSONL file.
+def detect_format(record: Dict) -> str:
+    """Detect which format a response record uses.
 
-    Returns:
-        Dict mapping pano_id -> {
-            'general_vibe': str,
-            'landmarks': List[Dict],
-            'yaw_data': Dict[yaw -> response_content]  # For debugging
+    Returns: 'current', 'gemini_batch', or 'openai_batch'
+    """
+    # Check for new Gemini batch format (has 'key' field and nested response)
+    if 'key' in record and isinstance(record.get('response'), dict):
+        if 'candidates' in record['response']:
+            return 'gemini_batch'
+
+    # Check for old OpenAI batch format (has 'body' in response)
+    if 'response' in record and isinstance(record['response'], dict):
+        if 'body' in record['response']:
+            return 'openai_batch'
+
+    # Current format (custom_id + string response)
+    return 'current'
+
+
+def extract_response_data(record: Dict, format_type: str) -> tuple:
+    """Extract panorama_id, landmarks, and token_usage from a record.
+
+    Returns: (pano_id, parsed_content, token_usage)
+    """
+    if format_type == 'current':
+        pano_id = parse_custom_id(record['custom_id'])
+        content = parse_response(record['response'])
+        tokens = {
+            'prompt': record.get('usage_metadata', {}).get('prompt_token_count', 0),
+            'completion': record.get('usage_metadata', {}).get('candidates_token_count', 0),
+            'total': record.get('usage_metadata', {}).get('total_token_count', 0)
         }
+
+    elif format_type == 'gemini_batch':
+        pano_id = parse_custom_id(record['key'])
+        text = record['response']['candidates'][0]['content']['parts'][0]['text']
+        content = parse_response(text)
+        usage = record['response'].get('usageMetadata', {})
+        tokens = {
+            'prompt': usage.get('promptTokenCount', 0),
+            'completion': usage.get('candidatesTokenCount', 0),
+            'total': usage.get('totalTokenCount', 0)
+        }
+
+    elif format_type == 'openai_batch':
+        pano_id = parse_custom_id(record['custom_id'])
+        text = record['response']['body']['choices'][0]['message']['content']
+        content = parse_response(text)
+        usage = record['response']['body'].get('usage', {})
+        tokens = {
+            'prompt': usage.get('prompt_tokens', 0),
+            'completion': usage.get('completion_tokens', 0),
+            'total': usage.get('total_tokens', 0)
+        }
+        # Old format doesn't have general_vibe or location_type - add empty string
+        if 'general_vibe' not in content and 'location_type' not in content:
+            content['general_vibe'] = ''
+
+    return pano_id, content, tokens
+
+
+def load_response_directory(directory_path: str) -> tuple:
+    """Load all JSONL files from a directory and combine them.
+
+    Used for old format with 89 separate files.
+
+    Returns: (data_dict, token_stats_dict)
+    """
+    combined_data = {}
+    combined_tokens = {'prompt': 0, 'completion': 0, 'total': 0}
+
+    dir_path = Path(directory_path)
+    files = sorted(dir_path.glob('file-*'))
+
+    print(f"  Loading {len(files)} files from directory...")
+
+    for file_path in files:
+        with open(file_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+
+                record = json.loads(line)
+                format_type = detect_format(record)
+                pano_id, content, tokens = extract_response_data(record, format_type)
+
+                # Initialize pano_data for this panorama if needed
+                if pano_id not in combined_data:
+                    combined_data[pano_id] = {
+                        'general_vibe': content.get('general_vibe') or content.get('location_type', ''),
+                        'landmarks': content.get('landmarks', []),
+                        'yaw_data': {}
+                    }
+
+                combined_tokens['prompt'] += tokens['prompt']
+                combined_tokens['completion'] += tokens['completion']
+                combined_tokens['total'] += tokens['total']
+
+    print(f"  Loaded {len(combined_data)} panoramas from directory")
+    return combined_data, combined_tokens
+
+
+def load_response_data(response_file_path: str) -> tuple:
+    """Load response data from JSONL file or directory.
+
+    Returns: (data_dict, token_stats_dict)
     """
     print(f"Loading {response_file_path}...")
+
+    # Check if it's a directory (old format)
+    if os.path.isdir(response_file_path):
+        return load_response_directory(response_file_path)
+
+    # Load JSONL file
     pano_data = {}
+    tokens = {'prompt': 0, 'completion': 0, 'total': 0}
 
     with open(response_file_path, 'r') as f:
         for line in f:
@@ -129,29 +234,26 @@ def load_response_data(response_file_path: str) -> Dict[str, Dict]:
                 continue
 
             record = json.loads(line)
-            custom_id = record.get('custom_id', '')
-            pano_id = parse_custom_id(custom_id)
+            format_type = detect_format(record)
 
-            # Parse the response content
             try:
-                content = parse_response(record)
+                pano_id, content, token_usage = extract_response_data(record, format_type)
             except Exception as e:
-                print(f"Error parsing response for {custom_id}: {e}")
+                print(f"Error parsing response: {e}")
                 continue
 
             # Initialize pano_data for this panorama if needed
             if pano_id not in pano_data:
                 pano_data[pano_id] = {
-                    'general_vibe': content.get('general_vibe', ''),
+                    'general_vibe': content.get('general_vibe') or content.get('location_type', ''),
                     'landmarks': content.get('landmarks', []),
                     'yaw_data': {}
                 }
 
-            # Store yaw-specific data (for debugging, not currently used)
-            yaw_match = custom_id.split('_yaw_')
-            if len(yaw_match) > 1:
-                yaw = yaw_match[-1]
-                pano_data[pano_id]['yaw_data'][yaw] = content
+            # Aggregate tokens
+            tokens['prompt'] += token_usage['prompt']
+            tokens['completion'] += token_usage['completion']
+            tokens['total'] += token_usage['total']
 
     print(f"  Loaded {len(pano_data)} panoramas")
     if len(pano_data) > 0:
@@ -160,20 +262,21 @@ def load_response_data(response_file_path: str) -> Dict[str, Dict]:
         print(f"    First pano ID: {first_id}")
         print(f"    General vibe: {first_data.get('general_vibe', '')[:50]}")
         print(f"    Landmarks count: {len(first_data.get('landmarks', []))}")
-    return pano_data
+
+    return pano_data, tokens
 
 
 def load_all_approaches(response_files: List[str]) -> List[tuple]:
     """Load all approach data.
 
     Returns:
-        List of (approach_name, response_data) tuples
+        List of (approach_name, response_data, token_stats) tuples
     """
     approaches = []
     for filepath in response_files:
         approach_name = derive_approach_name(filepath)
-        response_data = load_response_data(filepath)
-        approaches.append((approach_name, response_data))
+        response_data, token_stats = load_response_data(filepath)
+        approaches.append((approach_name, response_data, token_stats))
         print(f"  Loaded approach: {approach_name}")
 
     return approaches
@@ -186,7 +289,7 @@ def find_common_panoramas(approaches: List[tuple], pinhole_dir: str) -> List[str
         List of panorama IDs
     """
     # Find intersection of all approach panorama sets
-    pano_sets = [set(response_data.keys()) for _, response_data in approaches]
+    pano_sets = [set(response_data.keys()) for _, response_data, _ in approaches]
     common_panos = set.intersection(*pano_sets) if pano_sets else set()
 
     print(f"Found {len(common_panos)} panoramas common to all approaches")
@@ -243,15 +346,16 @@ def filter_landmarks_for_yaw(landmarks: List[Dict], yaw: int) -> List[Dict]:
     """
     filtered = []
     yaw_str = str(yaw)
+    yaw_int = int(yaw)
 
     for lm in landmarks:
         # Check if landmark has bounding boxes
         if 'bounding_boxes' in lm and lm['bounding_boxes']:
-            # Filter by bboxes with matching yaw_angle
-            if any(bbox.get('yaw_angle') == yaw_str for bbox in lm['bounding_boxes']):
+            # Filter by bboxes with matching yaw_angle (handle both string and int)
+            if any(bbox.get('yaw_angle') == yaw_str or bbox.get('yaw_angle') == yaw_int for bbox in lm['bounding_boxes']):
                 filtered.append(lm)
-        # Otherwise check yaw_angles list
-        elif 'yaw_angles' in lm and yaw_str in lm['yaw_angles']:
+        # Otherwise check yaw_angles list (handle both string and int arrays)
+        elif 'yaw_angles' in lm and (yaw_str in lm['yaw_angles'] or yaw_int in lm['yaw_angles']):
             filtered.append(lm)
 
     return filtered
@@ -464,6 +568,41 @@ def index():
             color: #666;
             margin-top: 10px;
         }
+        .token-summary {
+            background-color: #f5f5f5;
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 5px;
+        }
+        .token-summary h2 {
+            margin: 0 0 10px 0;
+            font-size: 16px;
+        }
+        .token-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+        }
+        .token-box {
+            border: 1px solid #ddd;
+            padding: 12px;
+            border-radius: 5px;
+            background-color: white;
+        }
+        .token-box h3 {
+            margin: 0 0 10px 0;
+            font-size: 14px;
+        }
+        .token-stat {
+            display: flex;
+            justify-content: space-between;
+            margin: 5px 0;
+            font-size: 12px;
+        }
+        .token-value {
+            font-weight: bold;
+            font-family: monospace;
+        }
     </style>
 </head>
 <body>
@@ -476,6 +615,13 @@ def index():
             <div class="nav-buttons">
                 <button onclick="navigate(-1)">← Previous</button>
                 <button onclick="navigate(1)">Next →</button>
+            </div>
+        </div>
+
+        <div class="token-summary">
+            <h2>Token Usage Summary</h2>
+            <div class="token-grid" id="token-grid">
+                <!-- Populated by JavaScript -->
             </div>
         </div>
 
@@ -568,6 +714,31 @@ def index():
                     // Update info
                     document.getElementById('pano-info').textContent =
                         `Panorama ${index + 1} of ${totalPanoramas} (ID: ${data.pano_id})`;
+
+                    // Update token summary
+                    const tokenGrid = document.getElementById('token-grid');
+                    tokenGrid.innerHTML = '';
+                    data.approaches.forEach(approach => {
+                        const box = document.createElement('div');
+                        box.className = 'token-box';
+                        box.style.backgroundColor = approach.color;
+                        box.innerHTML = `
+                            <h3>${approach.name}</h3>
+                            <div class="token-stat">
+                                <span>Prompt tokens:</span>
+                                <span class="token-value">${approach.tokens.prompt.toLocaleString()}</span>
+                            </div>
+                            <div class="token-stat">
+                                <span>Completion tokens:</span>
+                                <span class="token-value">${approach.tokens.completion.toLocaleString()}</span>
+                            </div>
+                            <div class="token-stat">
+                                <span>Total tokens:</span>
+                                <span class="token-value">${approach.tokens.total.toLocaleString()}</span>
+                            </div>
+                        `;
+                        tokenGrid.appendChild(box);
+                    });
 
                     // Update pinhole grid
                     const grid = document.getElementById('pinhole-grid');
@@ -709,14 +880,15 @@ def index():
 
         function filterLandmarksForYaw(landmarks, yaw) {
             const yawStr = String(yaw);
+            const yawNum = Number(yaw);
             return landmarks.filter(lm => {
                 // Check bounding boxes
                 if (lm.bounding_boxes && lm.bounding_boxes.length > 0) {
-                    return lm.bounding_boxes.some(bbox => bbox.yaw_angle == yawStr);
+                    return lm.bounding_boxes.some(bbox => bbox.yaw_angle == yawStr || bbox.yaw_angle == yawNum);
                 }
-                // Check yaw_angles
+                // Check yaw_angles (handle both string and number arrays)
                 if (lm.yaw_angles) {
-                    return lm.yaw_angles.includes(yawStr);
+                    return lm.yaw_angles.includes(yawStr) || lm.yaw_angles.includes(yawNum);
                 }
                 return false;
             });
@@ -754,28 +926,16 @@ def get_panorama_data(index: int):
 
     # Gather data from all approaches
     approach_data = []
-    for i, (approach_name, response_data) in enumerate(APPROACHES):
+    for i, (approach_name, response_data, token_stats) in enumerate(APPROACHES):
         pano_data = response_data.get(pano_id, {})
         landmarks = pano_data.get('landmarks', [])
-
-        # Debug: print first landmark for first panorama
-        if index == 0 and i == 0 and len(landmarks) > 0:
-            print(f"\nDEBUG: First landmark from {approach_name}:")
-            print(f"  Description: {landmarks[0].get('description', '')[:80]}")
-            print(f"  Has yaw_angles: {'yaw_angles' in landmarks[0]}")
-            print(f"  Has bounding_boxes: {'bounding_boxes' in landmarks[0]}")
-            if 'yaw_angles' in landmarks[0]:
-                print(f"  Yaw angles: {landmarks[0]['yaw_angles']}")
-            if 'bounding_boxes' in landmarks[0]:
-                print(f"  Bounding boxes count: {len(landmarks[0]['bounding_boxes'])}")
-                if len(landmarks[0]['bounding_boxes']) > 0:
-                    print(f"  First bbox yaw_angle: {landmarks[0]['bounding_boxes'][0].get('yaw_angle')}")
 
         approach_data.append({
             'name': approach_name,
             'general_vibe': pano_data.get('general_vibe', ''),
             'landmarks': landmarks,
-            'color': get_approach_color(i, len(APPROACHES))
+            'color': get_approach_color(i, len(APPROACHES)),
+            'tokens': token_stats  # Include token statistics
         })
 
     return jsonify({
