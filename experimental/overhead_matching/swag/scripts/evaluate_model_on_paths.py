@@ -54,6 +54,7 @@ def construct_path_eval_inputs_from_args(
 ):
     with open(paths_path, 'r') as f:
         paths_data = json.load(f)
+    factor = paths_data.get('args', {}).get('factor', 1.0)
     pano_model = load_model(pano_model_path, device=device)
     sat_model = load_model(sat_model_path, device=device)
 
@@ -76,7 +77,7 @@ def construct_path_eval_inputs_from_args(
         panorama_neighbor_radius=panorama_neighbor_radius_deg,
         satellite_patch_size=sat_model.patch_dims,
         panorama_size=pano_model.patch_dims,
-        factor=0.3,
+        factor=factor,
         landmark_version=landmark_version,
     )
     vigor_dataset = vd.VigorDataset(dataset_path, dataset_config)
