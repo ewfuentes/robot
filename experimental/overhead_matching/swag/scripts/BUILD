@@ -163,6 +163,26 @@ py_binary(
 )
 
 py_binary(
+  name="grid_search_combined_likelihood",
+  srcs=["grid_search_combined_likelihood.py"],
+  visibility=["//common/python:__subpackages__"],
+  deps=[
+    requirement("torch"),
+    requirement("tqdm"),
+    requirement("msgspec"),
+    "//common/torch:load_torch_deps",
+    "//common/torch:load_and_save_models",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/evaluation:swag_algorithm",
+    "//experimental/overhead_matching/swag/evaluation:wag_config_proto_py",
+    "//experimental/overhead_matching/swag/evaluation:evaluate_swag",
+    "//experimental/overhead_matching/swag/evaluation:combined_observation_likelihood",
+    "//experimental/overhead_matching/swag/model:patch_embedding",
+    "//experimental/overhead_matching/swag/model:swag_patch_embedding",
+  ]
+)
+
+py_binary(
   name="plot_path_evaluations",
   srcs=["plot_path_evaluations.py"],
   deps=[
