@@ -292,6 +292,15 @@ py_binary(
 )
 
 py_binary(
+  name="compare_panorama_prompts_viewer",
+  srcs=["compare_panorama_prompts_viewer.py"],
+  visibility=["//experimental/overhead_matching/swag:__subpackages__"],
+  deps=[
+    requirement("flask"),
+  ]
+)
+
+py_binary(
   name="reexport_geojson",
   srcs=["reexport_geojson.py"],
   deps=[
@@ -386,4 +395,13 @@ py_binary(
     ":sentence_configs",
     ":sentence_losses",
   ],
+)
+
+py_binary(
+  name="submit_non_batch_requests",
+  srcs=["submit_non_batch_requests.py"],
+  visibility=["//experimental/overhead_matching/swag:__subpackages__"],
+  deps=[
+    requirement("tqdm"),
+  ]
 )
