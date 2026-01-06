@@ -97,6 +97,10 @@ class ObservationLikelihoodCalculator(Protocol):
 
     Implementations should be initialized with a list of panorama IDs and any
     necessary context (e.g., satellite patch locations, observation data).
+
+    This interface supports batch processing of multiple trajectories in parallel.
+    Each trajectory has its own set of particles and is evaluated against its
+    corresponding panorama observation.
     """
 
     def compute_log_likelihoods(self, particles: torch.Tensor, panorama_ids: list[str]) -> torch.Tensor:
@@ -104,14 +108,17 @@ class ObservationLikelihoodCalculator(Protocol):
         Compute unnormalized log likelihoods for particles given observations.
 
         This computes p(z|x) for each particle x, where z are the observations
-        identified by panorama_ids.
+        identified by panorama_ids. Each trajectory's particles are evaluated
+        against that trajectory's observation.
 
         Args:
-            particles: (num_particles, state_dim) tensor of particle states
-            panorama_ids: List of identifiers for the observations/panoramas
+            particles: (num_panoramas, num_particles, state_dim) tensor of particle states.
+                Each panorama/trajectory has its own set of particles.
+            panorama_ids: List of identifiers for the observations/panoramas, one per trajectory.
 
         Returns:
-            log_likelihoods: (num_panoramas, num_particles) tensor of unnormalized log likelihoods
+            log_likelihoods: (num_panoramas, num_particles) tensor of unnormalized log likelihoods.
+                Each trajectory's particles are evaluated against that trajectory's observation.
         """
         ...
 
@@ -167,23 +174,37 @@ class WagObservationLikelihoodCalculator:
         self.device = device
 
     def compute_log_likelihoods(self, particles: torch.Tensor, panorama_ids: list[str]) -> torch.Tensor:
-        """Compute unnormalized log likelihoods for particles."""
+        """Compute unnormalized log likelihoods for particles.
+
+        Args:
+            particles: (num_panoramas, num_particles, state_dim) tensor of particle states.
+                Each panorama/trajectory has its own set of particles.
+            panorama_ids: List of panorama identifiers, one per trajectory.
+
+        Returns:
+            log_likelihoods: (num_panoramas, num_particles) tensor of unnormalized log likelihoods.
+                Each trajectory's particles are evaluated against that trajectory's observation.
+        """
+        assert particles.shape[0] == len(panorama_ids), (
+            f"First dimension of particles ({particles.shape[0]}) must match "
+            f"number of panorama_ids ({len(panorama_ids)})"
+        )
+
         # Get similarity values for these panoramas
         pano_indices = [self.pano_id_to_idx[pano_id] for pano_id in panorama_ids]
         similarity_matrix = self.similarity_matrix[pano_indices]  # (num_panoramas, num_patches)
 
         # Map particles to patches and get their likelihoods for each panorama
-        # Need to compute for each panorama separately
         particle_log_likelihoods_list = []
         for i in range(len(panorama_ids)):
             # Compute observation log likelihood from similarity for this panorama
             observation_log_likelihoods = pf.wag_observation_log_likelihood_from_similarity_matrix(
                 similarity_matrix[i], self.sigma)  # (num_patches,)
 
-            # Get particle likelihoods
+            # Get particle likelihoods for this trajectory's particles
             particle_log_likelihoods = pf.wag_calculate_log_particle_weights(
                 observation_log_likelihoods,
-                particles,
+                particles[i],  # Use this trajectory's particles
                 self.patch_index_from_particle)
             particle_log_likelihoods_list.append(particle_log_likelihoods)
 
@@ -254,10 +275,14 @@ def measurement_wag(
     # Create new MCL samples (primal particles)
     # Resample from prior particles weighted by observation likelihood
     if num_mcl_samples:
+        # Expand 2D particles to 3D: (num_panoramas, num_particles, state_dim)
+        # Each panorama gets the same particles (we'll average the likelihoods across panoramas)
+        particles_3d = particles.unsqueeze(0).expand(len(panorama_ids), -1, -1)
+
         # Compute observation log likelihoods for current particles
         # Shape: (num_panoramas, num_particles)
         observation_log_likelihoods = obs_likelihood_calculator.compute_log_likelihoods(
-            particles, panorama_ids)
+            particles_3d, panorama_ids)
         if observation_log_likelihoods.isinf().all():
             return None
 

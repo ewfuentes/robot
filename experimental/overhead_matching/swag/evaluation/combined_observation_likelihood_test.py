@@ -20,7 +20,8 @@ class CombinedObservationLikelihoodCalculatorTest(unittest.TestCase):
         self.osm_similarity_matrix = torch.rand(self.num_panoramas, self.num_patches)
         self.panorama_ids = [f"pano_{i}" for i in range(self.num_panoramas)]
         self.satellite_patch_locations = torch.rand(self.num_patches, self.state_dim)
-        self.particles = torch.rand(self.num_particles, self.state_dim)
+        # 3D particles: (num_panoramas, num_particles, state_dim)
+        self.particles = torch.rand(self.num_panoramas, self.num_particles, self.state_dim)
 
         # Simple patch_index_from_particle function
         def patch_index_from_particle(particles):
@@ -304,8 +305,9 @@ class CombinedObservationLikelihoodCalculatorTest(unittest.TestCase):
             device=self.device,
         )
 
-        # Compute for single panorama
-        likelihoods = calculator.compute_log_likelihoods(self.particles, ["pano_0"])
+        # Compute for single panorama - particles must match panorama count
+        single_particles = self.particles[:1]  # (1, num_particles, state_dim)
+        likelihoods = calculator.compute_log_likelihoods(single_particles, ["pano_0"])
 
         self.assertEqual(likelihoods.shape, (1, self.num_particles))
 

@@ -765,14 +765,21 @@ class LandmarkObservationLikelihoodCalculator:
         Compute unnormalized log likelihoods for particles given observations.
 
         Args:
-            particles: (num_particles, 2) tensor of particle states (lat/lon)
-            panorama_ids: List of identifiers for the observations/panoramas
+            particles: (num_panoramas, num_particles, 2) tensor of particle states (lat/lon).
+                Each panorama/trajectory has its own set of particles.
+            panorama_ids: List of identifiers for the observations/panoramas, one per trajectory.
             selected_pano_landmark_idx: If provided, only compute OSM likelihood for this specific
                 panorama landmark index (applies to OSM_ONLY and COMBINED modes)
 
         Returns:
-            log_likelihoods: (num_panoramas, num_particles) tensor of unnormalized log likelihoods
+            log_likelihoods: (num_panoramas, num_particles) tensor of unnormalized log likelihoods.
+                Each trajectory's particles are evaluated against that trajectory's observation.
         """
+        assert particles.shape[0] == len(panorama_ids), (
+            f"First dimension of particles ({particles.shape[0]}) must match "
+            f"number of panorama_ids ({len(panorama_ids)})"
+        )
+
         # Get similarities for the specified panoramas
         similarities = _get_similarities(
             self.prior_data, panorama_ids,
@@ -780,11 +787,8 @@ class LandmarkObservationLikelihoodCalculator:
             _pano_osm_similarity_reordered=self._pano_osm_similarity_reordered)
 
         # Convert lat/lon to pixel coordinates
-        # Need to expand particles to (num_panoramas, num_particles, 2) for the likelihood functions
-        num_panoramas = len(panorama_ids)
+        # particles is already (num_panoramas, num_particles, 2)
         particle_locs_px = _compute_pixel_locs_px(particles)
-        # Expand to (num_panoramas, num_particles, 2)
-        particle_locs_px = particle_locs_px.unsqueeze(0).expand(num_panoramas, -1, -1)
 
         mode = self.config.likelihood_mode
 

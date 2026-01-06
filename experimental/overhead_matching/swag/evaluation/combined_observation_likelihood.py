@@ -109,13 +109,19 @@ class CombinedObservationLikelihoodCalculator:
         """Compute combined log likelihoods for particles given observations.
 
         Args:
-            particles: (num_particles, state_dim) tensor of particle states
-            panorama_ids: List of identifiers for the observations/panoramas
+            particles: (num_panoramas, num_particles, state_dim) tensor of particle states.
+                Each panorama/trajectory has its own set of particles.
+            panorama_ids: List of identifiers for the observations/panoramas, one per trajectory.
 
         Returns:
             log_likelihoods: (num_panoramas, num_particles) tensor of unnormalized
-                log likelihoods
+                log likelihoods. Each trajectory's particles are evaluated against
+                that trajectory's observation.
         """
+        assert particles.shape[0] == len(panorama_ids), (
+            f"First dimension of particles ({particles.shape[0]}) must match "
+            f"number of panorama_ids ({len(panorama_ids)})"
+        )
         if self.config.mode == CombinedLikelihoodMode.SAT_ONLY:
             return self._compute_log_likelihood_for_matrix(
                 particles, panorama_ids,
@@ -150,16 +156,16 @@ class CombinedObservationLikelihoodCalculator:
     ) -> torch.Tensor:
         """Compute log likelihoods using a single similarity matrix.
 
-        Follows the WagObservationLikelihoodCalculator pattern exactly.
-
         Args:
-            particles: (num_particles, state_dim) tensor of particle states
-            panorama_ids: List of panorama IDs
+            particles: (num_panoramas, num_particles, state_dim) tensor of particle states.
+                Each panorama/trajectory has its own set of particles.
+            panorama_ids: List of panorama IDs, one per trajectory.
             similarity_matrix: (num_panoramas, num_patches) similarity matrix
             sigma: Sigma for Gaussian log-likelihood conversion
 
         Returns:
-            (num_panoramas, num_particles) tensor of log likelihoods
+            (num_panoramas, num_particles) tensor of log likelihoods.
+                Each trajectory's particles are evaluated against that trajectory's observation.
         """
         # Get similarity values for these panoramas
         pano_indices = [self.pano_id_to_idx[pano_id] for pano_id in panorama_ids]
@@ -173,10 +179,10 @@ class CombinedObservationLikelihoodCalculator:
                 pano_similarities[i], sigma
             )  # (num_patches,)
 
-            # Get particle likelihoods by mapping particles to patches
+            # Get particle likelihoods for this trajectory's particles
             particle_log_likelihoods = pf.wag_calculate_log_particle_weights(
                 observation_log_likelihoods,
-                particles,
+                particles[i],  # Use this trajectory's particles
                 self.patch_index_from_particle
             )
             particle_log_likelihoods_list.append(particle_log_likelihoods)

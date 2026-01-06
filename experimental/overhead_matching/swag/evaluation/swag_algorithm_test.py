@@ -7,8 +7,8 @@ from experimental.overhead_matching.swag.evaluation.wag_config_pb2 import WagCon
 
 
 class WagObservationLikelihoodCalculatorTest(unittest.TestCase):
-    def test_batch_computation_single_vs_multiple(self):
-        """Test that batching multiple panoramas gives expected results."""
+    def test_3d_particles_input(self):
+        """Test that 3D particles input works correctly."""
         # Setup
         num_patches = 100
         num_particles = 50
@@ -19,7 +19,8 @@ class WagObservationLikelihoodCalculatorTest(unittest.TestCase):
         similarity_matrix = torch.rand(num_panoramas, num_patches)
         panorama_ids = [f"pano_{i}" for i in range(num_panoramas)]
         satellite_patch_locations = torch.rand(num_patches, state_dim)
-        particles = torch.rand(num_particles, state_dim)
+        # 3D particles: each panorama has its own set of particles
+        particles = torch.rand(num_panoramas, num_particles, state_dim)
 
         # Create a simple patch_index_from_particle function
         def patch_index_from_particle(particles):
@@ -38,27 +39,54 @@ class WagObservationLikelihoodCalculatorTest(unittest.TestCase):
             device=torch.device("cpu")
         )
 
-        # Test 1: Compute likelihoods for single panorama
-        single_likelihoods = []
-        for pano_id in panorama_ids:
-            likelihood = calculator.compute_log_likelihoods(particles, [pano_id])
-            single_likelihoods.append(likelihood)
-        single_likelihoods = torch.cat(single_likelihoods, dim=0)
-
-        # Test 2: Compute likelihoods for all panoramas at once
+        # Compute likelihoods
         batch_likelihoods = calculator.compute_log_likelihoods(particles, panorama_ids)
 
-        # Verify shapes
-        self.assertEqual(single_likelihoods.shape, (num_panoramas, num_particles))
+        # Verify shape
         self.assertEqual(batch_likelihoods.shape, (num_panoramas, num_particles))
 
-        # Verify that batch computation gives same results as sequential
-        if not torch.allclose(single_likelihoods, batch_likelihoods):
-            print(f"single_likelihoods:\n{single_likelihoods}")
-            print(f"batch_likelihoods:\n{batch_likelihoods}")
-            print(f"difference:\n{single_likelihoods - batch_likelihoods}")
-            print(f"max difference: {(single_likelihoods - batch_likelihoods).abs().max()}")
-        self.assertTrue(torch.allclose(single_likelihoods, batch_likelihoods))
+    def test_each_trajectory_uses_own_particles(self):
+        """Test that each trajectory's particles are evaluated against that trajectory's observation."""
+        # Setup
+        num_patches = 100
+        num_particles = 50
+        num_panoramas = 3
+        state_dim = 2
+
+        # Create mock data
+        similarity_matrix = torch.rand(num_panoramas, num_patches)
+        panorama_ids = [f"pano_{i}" for i in range(num_panoramas)]
+        satellite_patch_locations = torch.rand(num_patches, state_dim)
+        # 3D particles: each panorama has its own set of particles
+        particles = torch.rand(num_panoramas, num_particles, state_dim)
+
+        def patch_index_from_particle(particles):
+            indices = (particles[:, 0] * num_patches).long()
+            return torch.clamp(indices, 0, num_patches - 1)
+
+        calculator = sa.WagObservationLikelihoodCalculator(
+            similarity_matrix=similarity_matrix,
+            panorama_ids=panorama_ids,
+            satellite_patch_locations=satellite_patch_locations,
+            patch_index_from_particle=patch_index_from_particle,
+            sigma=0.1,
+            device=torch.device("cpu")
+        )
+
+        # Compute likelihoods for all trajectories
+        batch_likelihoods = calculator.compute_log_likelihoods(particles, panorama_ids)
+
+        # Compute likelihoods one at a time and verify they match
+        for i, pano_id in enumerate(panorama_ids):
+            # Extract this trajectory's particles as 3D with batch size 1
+            single_particles = particles[i:i+1]
+            single_likelihoods = calculator.compute_log_likelihoods(single_particles, [pano_id])
+
+            # Should match the corresponding row of batch_likelihoods
+            self.assertTrue(
+                torch.allclose(single_likelihoods[0], batch_likelihoods[i]),
+                f"Trajectory {i} likelihoods don't match"
+            )
 
     def test_sample_from_observation_batch(self):
         """Test that sampling from multiple observations works."""
