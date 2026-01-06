@@ -34,48 +34,15 @@ MAX_BATCH_FILE_SIZE_GCP = 1_900_000_000   # 1.9 GB for GCP
 
 # Pydantic models for panorama landmark extraction schemas
 
-class YawAngle(str, Enum):
-    """Yaw angles for panorama images"""
-    YAW_0 = "0"
-    YAW_90 = "90"
-    YAW_180 = "180"
-    YAW_270 = "270"
 
+# Enhanced schemas with location_type and proper_nouns (always enabled)
+proper_noun_description = "List of proper nouns (business names, street signs, etc.) that may be in OpenStreetMaps."
+location_type_description = "Few-word classification of the environment type (e.g., 'urban commercial district', 'residential neighborhood', 'industrial area')"
 
-class LandmarkWithYaw(BaseModel):
-    """A landmark with its visible yaw angles"""
-    description: str = Field(description="Natural language description of the landmark")
-    yaw_angles: List[YawAngle] = Field(description="Yaw angles where this landmark is visible")
-
-
-class LandmarksResponse(BaseModel):
-    """Response schema for landmarks with yaw angles"""
-    landmarks: List[LandmarkWithYaw] = Field(
-        description="List of landmarks visible in the panorama")
-
-
-# Enhanced schemas with general_vibe and proper_nouns (always enabled)
-
-class LandmarkWithYawEnhanced(BaseModel):
-    """A landmark with yaw angles, proper nouns, and enhanced features"""
-    description: str = Field(description="Natural language description of the landmark")
-    yaw_angles: List[YawAngle] = Field(description="Yaw angles where this landmark is visible")
-    proper_nouns: List[str] = Field(description="List of proper nouns (business names, street signs, house numbers, etc.) visible on the landmark")
-
-
-class PanoramaLandmarksEnhanced(BaseModel):
-    """Enhanced panorama landmarks with general vibe"""
-    general_vibe: str = Field(
-        description="Overall description of the environment type (e.g., 'urban commercial district', 'residential neighborhood', 'industrial area')")
-    landmarks: List[LandmarkWithYawEnhanced] = Field(
-        description="List of distinctive landmarks visible in the panorama")
-
-
-# Bounding box schemas (for --use_bounding_boxes mode)
 
 class BoundingBox(BaseModel):
     """Bounding box for a landmark in a specific yaw image"""
-    yaw_angle: YawAngle = Field(
+    yaw_angle: str = Field(
         description="Which yaw image this bounding box refers to (0, 90, 180, or 270)")
     ymin: int = Field(
         description="Minimum y coordinate (0-1000), normalized to image height",
@@ -93,18 +60,18 @@ class BoundingBox(BaseModel):
 
 class LandmarkWithBBox(BaseModel):
     """A landmark with bounding boxes and proper nouns"""
-    description: str = Field(description="Natural language description of the landmark")
+    description: str = Field(description="Description of the landmark")
     bounding_boxes: List[BoundingBox] = Field(
         description="List of bounding boxes showing where this landmark appears across different yaw angles")
-    proper_nouns: List[str] = Field(description="List of proper nouns (business names, street signs, house numbers, etc.) visible on the landmark")
+    proper_nouns: List[str] = Field(description=proper_noun_description)
 
 
 class PanoramaLandmarksWithBBox(BaseModel):
     """Panorama landmarks with bounding boxes"""
-    general_vibe: str = Field(
-        description="Overall description of the environment type (e.g., 'urban commercial district', 'residential neighborhood', 'industrial area')")
+    location_type: str = Field(
+        description=location_type_description)
     landmarks: List[LandmarkWithBBox] = Field(
-        description="List of distinctive landmarks visible in the panorama")
+        description="List of OpenStreetMap-relevant landmarks visible in the panorama")
 
 
 def _add_required_no_add_props(schema: dict) -> dict:
@@ -160,12 +127,11 @@ def _resolve_refs(schema: dict, defs: dict = None) -> dict:
 
 
 
-def get_panorama_schema(use_gcp: bool = False, use_bounding_boxes: bool = False) -> dict:
+def get_panorama_schema(use_gcp: bool = False) -> dict:
     """Get the JSON schema for panorama landmark extraction.
 
     Args:
         use_gcp: If True, return GCP-compatible schema; otherwise OpenAI format
-        use_bounding_boxes: If True, use bbox schema; otherwise enhanced yaw schema
 
     Old OpenAI schema formatting:
         # {"name": "landmark_extraction", "strict": true, "schema": {"type": "object", "properties": {"landmarks": {"type": "array", "items": {"type": "object", "properties": {"description": {"type": "string"}, "yaw_angles": {"type": "array", "items": {"type": "integer", "enum": [0, 90, 180, 270]}}}, "required": ["description", "yaw_angles"], "additionalProperties": false}}}, "required": ["landmarks"], "additionalProperties": false}}
@@ -173,11 +139,8 @@ def get_panorama_schema(use_gcp: bool = False, use_bounding_boxes: bool = False)
     Returns:
         dict: JSON schema for the response format
     """
-    # Always use enhanced schema (with general_vibe + proper_nouns)
-    if use_bounding_boxes:
-        model_class = PanoramaLandmarksWithBBox
-    else:
-        model_class = PanoramaLandmarksEnhanced
+    # Always use enhanced schema (with location_type + proper_nouns)
+    model_class = PanoramaLandmarksWithBBox
 
     # Generate base schema from Pydantic
     schema = model_class.model_json_schema()
@@ -517,15 +480,9 @@ def encode_images_parallel(image_paths: list[Path], num_workers: int = 8, disabl
             disable=disable_tqdm
         ))
 
-
-EXAMPLE_SENTENCES = """
+_old_sentences="""
 A small, man-made water tap, located east of a larger non-drinking fountain.
-Lit, sheltered light-rail station platform with a bench and an adjacent bus stop; canopy over the platform, with seating and bus access, reference 21852.
-A small, low-rise building.
 A concrete footpath that climbs uphill, with a handrail on both sides.
-A nine-story building along Masonic Avenue.
-A professional law office storefront with a sign reading "Verso Law Group."
-A private sports pitch with bright artificial turf, marked for soccer and American football.
 A bus stop at the intersection of Denny Way and Dexter Ave N, with a sign labeled 2295.
 A Divvy bike rental docking station at Wentworth Ave and 24th St, with 15 docks and Divvy/Lyft branding.
 A small asphalt road labeled South Bayview Street, typical of a quiet, lightly trafficked street with a 20 mph speed limit.
@@ -534,14 +491,130 @@ A plain, mid-sized urban building.
 A pedestrian crosswalk with traffic lights at street level, with no traffic island in the middle, and tactile paving for the visually impaired.
 A narrow one-way service alley with an asphalt surface.
 A mid-rise building approximately 22 meters tall.
+"""
+EXAMPLE_SENTENCES = """
+Lit, sheltered light-rail station platform with a bench and an adjacent bus stop.
+A small, low-rise building.
+A nine-story building.
+A professional law office storefront with a sign reading "Verso Law Group."
+A private sports pitch with bright artificial turf, marked for soccer and American football.
 A fast-food spot named Mr. Cow, known for corn dogs (Corndogs by Mr. Cow).
+"""
+EXAMPLE_JSON = """
+[
+    {
+        "location_type": "Urban commercial corridor",
+        "landmarks": [
+            {
+                "description": "A flat-roofed commercial building housing a Dunkin' Donuts and a Mobil Food Mart convenience store.",
+                "bounding_boxes": [
+                    {
+                        "yaw_angle": "180",
+                        "ymin": 431,
+                        "xmin": 0,
+                        "ymax": 561,
+                        "xmax": 540
+                    }
+                ],
+                "proper_nouns": [
+                    "DUNKIN' DONUTS",
+                    "Mobil FOOD MART"
+                ]
+            },
+            {
+                "description": "A large rectangular canopy with a blue edge and white underside, sheltering gas pumps at a Mobil station.",
+                "bounding_boxes": [
+                    {
+                        "yaw_angle": "90",
+                        "ymin": 410,
+                        "xmin": 0,
+                        "ymax": 556,
+                        "xmax": 241
+                    }
+                ],
+                "proper_nouns": ["Mobil"]
+            },
+            {
+                "description": "A brown-brick two-story building with rectangular windows and a flat roof, located across the street.",
+                "bounding_boxes": [
+                    {
+                        "yaw_angle": "0",
+                        "ymin": 404,
+                        "xmin": 170,
+                        "ymax": 522,
+                        "xmax": 366
+                    },
+                    {
+                        "yaw_angle": "270",
+                        "ymin": 448,
+                        "xmin": 32,
+                        "ymax": 513,
+                        "xmax": 116
+                    }
+                ],
+                "proper_nouns": []
+            },
+            {
+                "description": "A tall metal street lamp with two curved light fixtures, located in the grassy median of the road.",
+                "bounding_boxes": [
+                    {
+                        "yaw_angle": "0",
+                        "ymin": 134,
+                        "xmin": 440,
+                        "ymax": 561,
+                        "xmax": 482
+                    }
+                ],
+                "proper_nouns": []
+            }
+        ]
+    }
+]
 """
 SYSTEM_PROMPTS = {
     'default': "your job is to produce short natural language descriptions of openstreetmap landmarks that are helpful for visually identifying the landmark. for example, do not include information about building identifiers that are unlikely to be discernable by visual inspection. don't include any details not derived from the provided landmark information. don't include descriptions about the lack of information. do not include instructions on how to identify the landmark. do include an address if provided.",
     'no-address': "your job is to produce short natural language descriptions of openstreetmap landmarks that are helpful for visually identifying the landmark. for example, do not include information about building identifiers that are unlikely to be discernable by visual inspection. don't include any details not derived from the provided landmark information. don't include descriptions about the lack of information. do not include instructions on how to identify the landmark. DO NOT include an address or parts of an address in the description.",
-    'panorama': f"You are an expert at identifying landmarks in street-level imagery. Identify distinctive, permanent landmarks visible in these image(s). For each landmark:\n- Provide a short, natural language description\n- Specify which yaw angle(s) it appears in (or provide bounding boxes if requested in the schema)\n- List any proper nouns visible on the landmark (business names, street signs, house numbers, etc.)\n\nAlso provide a \"general_vibe\" describing the overall environment type (e.g., \"urban commercial district\", \"residential suburb\", \"industrial area\").\n\nFocus on buildings, monuments, parks, infrastructure, or other landmarks likely in OpenStreetMaps. Do NOT include very distant objects (more than a few hundred meters away). Avoid transient objects like cars and pedestrians. If you can confidently make out text (business names, street signs), include these as proper nouns.\n\nDo NOT mention the location of landmarks in the image or relative to other landmarks (e.g., \"on the left\", \"on the right side of the street\"). Match the style of these examples: {EXAMPLE_SENTENCES}. DO NOT make up details not present in the images.",
+    'panorama': f"""
+<role>
+You are an expert at identifying distinctive, permanent landmarks in street-level imagery. You are precise, analytical, and double check your work.
+</role>
+
+<instructions>
+Given four images which show the same location from yaws 0°, 90°, 180°, and 270° respectively, extract the OpenStreetMap-relevant landmarks.
+For each landmark:
+- Provide a short, natural language description.
+- Specify which yaw angle(s)/images the landmark appears in and provide bounding boxes for each.
+- List proper nouns visible on the landmark (business names, street signs, house numbers, etc.) that may identify this location in OpenStreetMaps.
+Based on the images, provide a few-word summary of the location type (e.g., industrial center, commercial district, residential area).
+Finally, review your work, and confirm that you have not included any information you cannot confidently make out from the images. If something is difficult to read, do NOT include it.
+</instructions>
+
+<constraints>
+- Focus on buildings, monuments, parks, infrastructure, or other landmarks likely in OpenStreetMaps.
+- Do not include very distant objects (more than a few hundred meters away). 
+- Never include landmarks or proper nouns from temporary objects like cars, trucks, or advertisements.
+- Do not mention the location of landmarks in the image or relative to other landmarks (e.g., "on the left", "on the right side of the street").
+- DO not make up details not present in the images.
+</constraints>
+
+<examples>
+An example of a full output is below
+{EXAMPLE_JSON}
+
+Other examples of landmark descriptions include:
+{EXAMPLE_SENTENCES}
+</examples>
+
+<output_format>
+Provide your response as a json object that conforms to the assigned schema.
+Remember: Bounding box coordinates are normalized 0-1000, where (0,0) is top-left and (1000,1000) is bottom-right of each image.
+</output_format>
+""",
 }
 
+panorama_user_prompt = """
+Based on the four images above (which show the same location from yaws 0°, 90°, 180°, and 270° respectively), extract the OpenStreetMap-relevant landmarks.
+"""
 
 def _create_requests(landmarks, prompt_type, model, thinking_mode, use_gcp=False):
     """Create batch API requests for landmark descriptions.
@@ -870,7 +943,7 @@ def _create_panorama_batch_request(
     """Create a batch request object for either OpenAI or Gemini (native)."""
     if use_gcp:
         # Native Gemini format (using Python SDK field names)
-        parts = [{"text": user_prompt}]
+        parts = []
         for mime_type, b64_data in images:
             parts.append({
                 "inline_data": {
@@ -878,6 +951,7 @@ def _create_panorama_batch_request(
                     "data": b64_data
                 }
             })
+        parts.append({"text": user_prompt})
         return {
             "key": custom_id,
             "request": {
@@ -889,7 +963,7 @@ def _create_panorama_batch_request(
                 },
                 "generationConfig": {
                     "responseMimeType": "application/json",
-                    "responseSchema": schema,
+                    "responseJsonSchema": schema,  # for some cursed reason, this needs to be responseSchema for non-batch submisions, but can't be for batch
                     "thinkingConfig": {"thinkingLevel": "HIGH"},
                     "mediaResolution": "MEDIA_RESOLUTION_HIGH"
                 }
@@ -946,18 +1020,8 @@ def create_panorama_description_requests(args):
     max_requests_per_batch = args.max_requests_per_batch
     disable_tqdm = args.disable_tqdm
     use_gcp = getattr(args, 'use_gcp', False)
-    use_bounding_boxes = getattr(args, 'use_bounding_boxes', False)
-    use_robotics_model = getattr(args, 'use_robotics_model', False)
 
-    # Select model and file size limit based on backend
-    if use_robotics_model:
-        # Robotics model requires GCP
-        model = "gemini-robotics-er-1.5-preview"
-        max_file_size = MAX_BATCH_FILE_SIZE_GCP
-        if not use_gcp:
-            print("Warning: --use_robotics_model requires --use_gcp. Enabling GCP mode.")
-            use_gcp = True
-    elif use_gcp:
+    if use_gcp:
         model = "gemini-3-flash-preview"
         max_file_size = MAX_BATCH_FILE_SIZE_GCP
     else:
@@ -1024,7 +1088,7 @@ def create_panorama_description_requests(args):
 
     # Get system prompt and schema for this mode
     system_prompt = SYSTEM_PROMPTS['panorama']
-    schema = get_panorama_schema(use_gcp=use_gcp, use_bounding_boxes=use_bounding_boxes)
+    schema = get_panorama_schema(use_gcp=use_gcp)
 
     # Process in batches to avoid OOM
     # We'll encode and write requests in chunks
@@ -1060,30 +1124,7 @@ def create_panorama_description_requests(args):
         chunk_image_to_base64 = dict(zip(chunk_image_paths, chunk_base64_images))
 
         # Create requests for this chunk
-        if use_bounding_boxes:
-            user_prompt = """These four images show the same location from different angles (0°, 90°, 180°, 270° yaw).
-
-Identify all distinctive landmarks and provide bounding boxes showing exactly where they appear in each yaw image.
-
-For each landmark:
-- Provide a short description
-- Draw tight bounding boxes (normalized 0-1000) in each yaw image where it's visible
-- List any proper nouns you can see (business names, street signs, house numbers, etc.)
-
-Also provide a "general_vibe" describing the overall environment type.
-
-Remember: Coordinates are normalized 0-1000, where (0,0) is top-left and (1000,1000) is bottom-right of each image."""
-        else:
-            user_prompt = """These four images show the same location from different angles (0°, 90°, 180°, 270° yaw).
-
-Identify all distinctive landmarks visible in these images.
-
-For each landmark:
-- Provide a short description
-- Specify which yaw angle(s) it appears in
-- List any proper nouns you can see (business names, street signs, house numbers, etc.)
-
-Also provide a "general_vibe" describing the overall environment type."""
+        user_prompt = panorama_user_prompt
 
         for pano_stem, images_for_pano in chunk:
             # Sort by yaw angle to ensure consistent ordering
@@ -1248,10 +1289,6 @@ if __name__ == "__main__":
                                  help='Maximum number of panoramas to process (useful for testing). If not provided, all panoramas are processed.')
     panorama_parser.add_argument('--use_gcp', action='store_true',
                                  help='Use Gemini API via OpenAI compatibility instead of OpenAI')
-    panorama_parser.add_argument('--use_bounding_boxes', action='store_true',
-                                 help='Extract bounding boxes instead of yaw angles')
-    panorama_parser.add_argument('--use_robotics_model', action='store_true',
-                                 help='Use gemini-robotics-er-1.5-preview model (requires non-batch API submission)')
     panorama_parser.set_defaults(func=create_panorama_description_requests)
 
     embedding_dict_parser = subparsers.add_parser('create_embedding_dict',
