@@ -90,11 +90,11 @@ def evaluate_single_config(
     config: CombinedObservationLikelihoodConfig,
     seed: int,
     device: torch.device,
+    save_path: Path,
 ) -> float:
     """Evaluate a single config and return average final error in meters.
 
-    This is a lightweight version of evaluate_model_on_paths that doesn't save
-    intermediate files.
+    Saves per-path results to save_path in the same format as evaluate_model_on_paths.
     """
     # Build shared components
     satellite_patch_locations = vigor_dataset.get_patch_positions()
@@ -118,7 +118,7 @@ def evaluate_single_config(
     all_final_errors = []
 
     for i, path in enumerate(paths):
-        generator_seed = seed * i
+        generator_seed = seed + i
 
         # Use the existing evaluation infrastructure
         path_inference_result = es.construct_inputs_and_evaluate_path(
@@ -133,9 +133,27 @@ def evaluate_single_config(
 
         # Get final particle positions and compute error
         particle_history = path_inference_result.particle_history.to(device)
-        error_meters_at_each_step, _ = es.get_distance_error_between_pano_and_particles_meters(
+        error_meters_at_each_step, var_sq_m_at_each_step = es.get_distance_error_between_pano_and_particles_meters(
             vigor_dataset, path, particle_history)
         all_final_errors.append(error_meters_at_each_step[-1].item())
+
+        # Compute distance traveled
+        distance_traveled_m = es.compute_distance_traveled(vigor_dataset, path)
+
+        # Save per-path results
+        path_save_dir = save_path / f"{i:07d}"
+        path_save_dir.mkdir(parents=True, exist_ok=True)
+
+        torch.save(error_meters_at_each_step, path_save_dir / "error.pt")
+        torch.save(var_sq_m_at_each_step, path_save_dir / "var.pt")
+        torch.save(path, path_save_dir / "path.pt")
+        torch.save(distance_traveled_m, path_save_dir / "distance_traveled_m.pt")
+
+        with open(path_save_dir / "other_info.json", "w") as f:
+            json.dump({
+                "seed": generator_seed,
+                "terminated_early": path_inference_result.terminated_early,
+            }, f, indent=2)
 
     return sum(all_final_errors) / len(all_final_errors)
 
@@ -148,22 +166,31 @@ def run_grid_search(
     wag_config: WagConfig,
     seed: int,
     device: torch.device,
+    output_path: Path,
     sat_sigma_values: list[float],
     osm_sigma_values: list[float],
-    sat_weight_values: list[float],
-    osm_weight_values: list[float],
+    alpha_values: list[float],
 ) -> list[GridSearchResult]:
-    """Run grid search over all parameter combinations."""
+    """Run grid search over all parameter combinations.
+
+    Args:
+        alpha_values: Values for alpha where sat_weight=alpha, osm_weight=1-alpha.
+            alpha=1.0 means SAT only, alpha=0.0 means OSM only.
+        output_path: Base directory for saving per-path results.
+    """
     results = []
 
     # Generate all parameter combinations
     param_combinations = list(itertools.product(
-        sat_sigma_values, osm_sigma_values, sat_weight_values, osm_weight_values
+        sat_sigma_values, osm_sigma_values, alpha_values
     ))
 
     print(f"Running grid search over {len(param_combinations)} parameter combinations...")
 
-    for sat_sigma, osm_sigma, sat_weight, osm_weight in tqdm.tqdm(param_combinations):
+    for sat_sigma, osm_sigma, alpha in tqdm.tqdm(param_combinations):
+        sat_weight = alpha
+        osm_weight = 1.0 - alpha
+
         config = CombinedObservationLikelihoodConfig(
             mode=CombinedLikelihoodMode.COMBINED,
             sat_sigma=sat_sigma,
@@ -171,6 +198,13 @@ def run_grid_search(
             sat_weight=sat_weight,
             osm_weight=osm_weight,
         )
+
+        # Create config directory name with explicit weight names
+        config_dir_name = (
+            f"sat_sigma_{sat_sigma:.2f}_osm_sigma_{osm_sigma:.2f}_"
+            f"sat_weight_{sat_weight:.2f}_osm_weight_{osm_weight:.2f}"
+        )
+        config_save_path = output_path / config_dir_name
 
         avg_error = evaluate_single_config(
             vigor_dataset=vigor_dataset,
@@ -181,6 +215,7 @@ def run_grid_search(
             config=config,
             seed=seed,
             device=device,
+            save_path=config_save_path,
         )
 
         result = GridSearchResult(
@@ -195,7 +230,7 @@ def run_grid_search(
         results.append(result)
 
         print(f"  sat_sigma={sat_sigma:.3f}, osm_sigma={osm_sigma:.3f}, "
-              f"sat_weight={sat_weight:.2f}, osm_weight={osm_weight:.2f} -> "
+              f"alpha={alpha:.2f} (sat={sat_weight:.2f}, osm={osm_weight:.2f}) -> "
               f"avg_error={avg_error:.2f}m")
 
     return results
@@ -233,10 +268,9 @@ if __name__ == "__main__":
                         help="Comma-separated list of sat_sigma values to search")
     parser.add_argument("--osm-sigma-values", type=str, default="0.05,0.1,0.2",
                         help="Comma-separated list of osm_sigma values to search")
-    parser.add_argument("--sat-weight-values", type=str, default="0.5,1.0,2.0",
-                        help="Comma-separated list of sat_weight values to search")
-    parser.add_argument("--osm-weight-values", type=str, default="0.5,1.0,2.0",
-                        help="Comma-separated list of osm_weight values to search")
+    parser.add_argument("--alpha-values", type=str, default="0.0,0.25,0.5,0.75,1.0",
+                        help="Comma-separated list of alpha values (sat_weight=alpha, osm_weight=1-alpha). "
+                             "alpha=1.0 means SAT only, alpha=0.0 means OSM only.")
 
     args = parser.parse_args()
 
@@ -246,14 +280,12 @@ if __name__ == "__main__":
     # Parse grid search parameter values
     sat_sigma_values = [float(x) for x in args.sat_sigma_values.split(",")]
     osm_sigma_values = [float(x) for x in args.osm_sigma_values.split(",")]
-    sat_weight_values = [float(x) for x in args.sat_weight_values.split(",")]
-    osm_weight_values = [float(x) for x in args.osm_weight_values.split(",")]
+    alpha_values = [float(x) for x in args.alpha_values.split(",")]
 
     print(f"Grid search parameters:")
     print(f"  sat_sigma: {sat_sigma_values}")
     print(f"  osm_sigma: {osm_sigma_values}")
-    print(f"  sat_weight: {sat_weight_values}")
-    print(f"  osm_weight: {osm_weight_values}")
+    print(f"  alpha: {alpha_values} (sat_weight=alpha, osm_weight=1-alpha)")
 
     # Create output directory
     output_path = Path(args.output_path).expanduser()
@@ -384,10 +416,10 @@ if __name__ == "__main__":
         wag_config=wag_config,
         seed=args.seed,
         device=DEVICE,
+        output_path=output_path,
         sat_sigma_values=sat_sigma_values,
         osm_sigma_values=osm_sigma_values,
-        sat_weight_values=sat_weight_values,
-        osm_weight_values=osm_weight_values,
+        alpha_values=alpha_values,
     )
 
     # Save results
