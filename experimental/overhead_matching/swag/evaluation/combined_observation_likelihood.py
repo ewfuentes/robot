@@ -97,7 +97,7 @@ class CombinedObservationLikelihoodCalculator:
 
         self.sat_similarity_matrix = sat_similarity_matrix.to(device)
         self.osm_similarity_matrix = osm_similarity_matrix.to(device)
-        self.pano_id_to_idx = {pano_id: i for i, pano_id in enumerate(panorama_ids)}
+        self.idx_from_pano_id = {pano_id: i for i, pano_id in enumerate(panorama_ids)}
         self.satellite_patch_locations = satellite_patch_locations.to(device)
         self.patch_index_from_particle = patch_index_from_particle
         self.config = config
@@ -168,7 +168,7 @@ class CombinedObservationLikelihoodCalculator:
                 Each trajectory's particles are evaluated against that trajectory's observation.
         """
         # Get similarity values for these panoramas
-        pano_indices = [self.pano_id_to_idx[pano_id] for pano_id in panorama_ids]
+        pano_indices = [self.idx_from_pano_id[pano_id] for pano_id in panorama_ids]
         pano_similarities = similarity_matrix[pano_indices]  # (num_panoramas, num_patches)
 
         # Compute log likelihoods for each panorama
