@@ -405,3 +405,13 @@ py_binary(
     requirement("tqdm"),
   ]
 )
+
+py_binary(
+  name="vertex_batch_manager",
+  srcs=["vertex_batch_manager.py"],
+  visibility=["//experimental/overhead_matching/swag:__subpackages__"],
+  deps=[
+    requirement("google-genai"),
+    requirement("google-cloud-storage"),
+  ]
+)
