@@ -100,11 +100,12 @@ class ObservationLikelihoodTest(unittest.TestCase):
             device=torch.device('cpu')
         )
 
-        particles = torch.tensor([
+        # 3D particles: (num_panoramas, num_particles, state_dim)
+        particles = torch.tensor([[
             [37.7749, -122.4194],
             [40.7128, -74.0060],
             [51.5074, -0.1278],
-        ])
+        ]])
 
         log_likelihood = calculator.compute_log_likelihoods(particles, ['pano_0'])
 
@@ -265,13 +266,14 @@ class ObservationLikelihoodTest(unittest.TestCase):
             device=torch.device('cpu')
         )
 
-        particles = torch.tensor([
+        # 3D particles: (num_panoramas, num_particles, state_dim)
+        particles = torch.tensor([[
             [37.7749, -122.4194],
             [37.7750, -122.4195],
             [37.7751, -122.4196],
             [37.7752, -122.4197],
             [37.7753, -122.4198],
-        ])
+        ]])
 
         log_likelihood = calculator.compute_log_likelihoods(particles, ['pano_0'])
 
@@ -1309,14 +1311,14 @@ class LandmarkObservationLikelihoodCalculatorTest(unittest.TestCase):
             device=torch.device('cpu')
         )
 
-        # 5 particles, 1 panorama
-        particles = torch.tensor([
+        # 3D particles: (num_panoramas, num_particles, state_dim)
+        particles = torch.tensor([[
             [37.7749, -122.4194],
             [37.7750, -122.4195],
             [37.7751, -122.4196],
             [37.7752, -122.4197],
             [37.7753, -122.4198],
-        ])
+        ]])
 
         log_likelihoods = calculator.compute_log_likelihoods(particles, ['pano_0'])
 
@@ -1337,10 +1339,19 @@ class LandmarkObservationLikelihoodCalculatorTest(unittest.TestCase):
             device=torch.device('cpu')
         )
 
+        # 3D particles: (num_panoramas, num_particles, state_dim)
+        # 2 panoramas, each with 3 particles
         particles = torch.tensor([
-            [37.7749, -122.4194],
-            [37.7750, -122.4195],
-            [37.7751, -122.4196],
+            [
+                [37.7749, -122.4194],
+                [37.7750, -122.4195],
+                [37.7751, -122.4196],
+            ],
+            [
+                [37.7749, -122.4194],
+                [37.7750, -122.4195],
+                [37.7751, -122.4196],
+            ],
         ])
 
         log_likelihoods = calculator.compute_log_likelihoods(particles, ['pano_0', 'pano_1'])
@@ -1362,9 +1373,8 @@ class LandmarkObservationLikelihoodCalculatorTest(unittest.TestCase):
             device=torch.device('cpu')
         )
 
-        particles = torch.tensor([
-            [37.7749, -122.4194],
-        ])
+        # 3D particles: (num_panoramas, num_particles, state_dim)
+        particles = torch.tensor([[[37.7749, -122.4194]]])
 
         log_likelihoods = calculator.compute_log_likelihoods(particles, ['pano_0'])
 
@@ -1386,9 +1396,8 @@ class LandmarkObservationLikelihoodCalculatorTest(unittest.TestCase):
             device=torch.device('cpu')
         )
 
-        particles = torch.tensor([
-            [37.7749, -122.4194],
-        ])
+        # 3D particles: (num_panoramas, num_particles, state_dim)
+        particles = torch.tensor([[[37.7749, -122.4194]]])
 
         log_likelihoods = calculator.compute_log_likelihoods(particles, ['pano_0'])
 
@@ -1426,9 +1435,8 @@ class LandmarkObservationLikelihoodCalculatorTest(unittest.TestCase):
             prior_data=prior_data, config=config_combined, device=torch.device('cpu')
         )
 
-        particles = torch.tensor([
-            [37.7749, -122.4194],
-        ])
+        # 3D particles: (num_panoramas, num_particles, state_dim)
+        particles = torch.tensor([[[37.7749, -122.4194]]])
 
         ll_sat = calc_sat.compute_log_likelihoods(particles, ['pano_0'])
         ll_osm = calc_osm.compute_log_likelihoods(particles, ['pano_0'])

@@ -94,3 +94,25 @@ py_test(
     ":wag_config_proto_py",
   ]
 )
+
+py_library(
+  name = "combined_observation_likelihood",
+  srcs = ["combined_observation_likelihood.py"],
+  visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+  deps = [
+    requirement("torch"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/filter:particle_filter",
+  ]
+)
+
+py_test(
+  name = "combined_observation_likelihood_test",
+  srcs = ["combined_observation_likelihood_test.py"],
+  deps = [
+    requirement("torch"),
+    "//common/torch:load_torch_deps",
+    ":combined_observation_likelihood",
+    ":swag_algorithm",
+  ]
+)
