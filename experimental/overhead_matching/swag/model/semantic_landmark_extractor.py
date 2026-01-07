@@ -956,14 +956,15 @@ def _create_panorama_batch_request(
             "key": custom_id,
             "request": {
                 "contents": [{
-                    "parts": parts
+                    "parts": parts,
+                    "role": "user"
                 }],
                 "systemInstruction": {
                     "parts": [{"text": system_prompt}]
                 },
                 "generationConfig": {
                     "responseMimeType": "application/json",
-                    "responseJsonSchema": schema,  # for some cursed reason, this needs to be responseSchema for non-batch submisions, but can't be for batch
+                    "responseSchema": schema,  # responseJsonSchema for some cursed reason, this needs to be responseSchema for non-batch submisions, but can't be for batch
                     "thinkingConfig": {"thinkingLevel": "HIGH"},
                     "mediaResolution": "MEDIA_RESOLUTION_HIGH"
                 }

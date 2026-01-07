@@ -43,6 +43,7 @@ paramiko==4.0.0
 psutil==7.0.0
 openai==1.109.1
 google-genai==1.56.0
+google-cloud-storage==3.7.0
 pyarrow==21.0.0
 z3-solver==4.15.4.0
 dinov2 @ git+https://github.com/ewfuentes/dinov2.git@3680537d078b8cc2924f29657b8322cba8b4bb3d
