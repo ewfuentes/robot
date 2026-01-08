@@ -198,14 +198,15 @@ def _shift_grid(
     """
     H, W = log_belief.shape
     device = log_belief.device
+    dtype = log_belief.dtype
 
     # Convert to probability space for interpolation
     belief_prob = torch.exp(log_belief)
 
     # Create sampling grid
     # grid_sample expects coordinates in [-1, 1] range
-    y = torch.linspace(-1, 1, H, device=device)
-    x = torch.linspace(-1, 1, W, device=device)
+    y = torch.linspace(-1, 1, H, device=device, dtype=dtype)
+    x = torch.linspace(-1, 1, W, device=device, dtype=dtype)
     grid_y, grid_x = torch.meshgrid(y, x, indexing="ij")
 
     # Apply shift (convert cell shift to [-1,1] range)
@@ -258,6 +259,31 @@ def segment_logsumexp(
     result = torch.where(sum_exp > 0, result, torch.full_like(result, -float("inf")))
 
     return result
+
+
+def segment_max(
+    values: torch.Tensor, offsets: torch.Tensor, segment_ids: torch.Tensor
+) -> torch.Tensor:
+    """Compute max over variable-length segments (vectorized).
+
+    Args:
+        values: (total_elements,) flat tensor of values
+        offsets: (num_segments + 1,) start indices for each segment
+        segment_ids: (total_elements,) segment index for each value
+
+    Returns:
+        (num_segments,) max value for each segment
+    """
+    num_segments = len(offsets) - 1
+    device = values.device
+
+    if len(values) == 0:
+        return torch.full((num_segments,), -float("inf"), device=device)
+
+    max_vals = torch.full((num_segments,), -float("inf"), device=device)
+    max_vals.scatter_reduce_(0, segment_ids, values, reduce="amax", include_self=True)
+
+    return max_vals
 
 
 def build_cell_to_patch_mapping(
@@ -549,8 +575,10 @@ class HistogramBelief:
     ) -> None:
         """Apply observation update using satellite patch similarities.
 
-        For each cell, computes log-sum-exp over all overlapping patches'
-        log-likelihoods, treating overlapping patches as a mixture model.
+        For each cell, uses the maximum log-likelihood among all overlapping
+        patches. This is similar to how the particle filter works (each particle
+        uses its nearest/best patch) and avoids artifacts from varying overlap
+        counts at patch boundaries.
 
         Args:
             similarity_matrix: (num_patches,) similarity scores for current observation
@@ -565,9 +593,8 @@ class HistogramBelief:
         # Gather log-likelihoods for all overlapping patches
         all_log_ll = patch_log_ll[mapping.patch_indices]  # (total_overlaps,)
 
-        # Compute log-sum-exp over overlapping patches for each cell
-        num_cells = self.grid_spec.num_rows * self.grid_spec.num_cols
-        cell_log_ll = segment_logsumexp(
+        # Take max log-likelihood over overlapping patches for each cell
+        cell_log_ll = segment_max(
             all_log_ll, mapping.cell_offsets, mapping.segment_ids
         )
 
