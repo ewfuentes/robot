@@ -324,6 +324,7 @@ py_binary(
 )
 
 py_binary(
+<<<<<<< HEAD
   name="generate_city_bboxes",
   srcs=["generate_city_bboxes.py"],
   deps=[
@@ -408,6 +409,38 @@ py_binary(
   deps=[
     requirement("google-genai"),
     requirement("google-cloud-storage"),
+=======
+  name="evaluate_histogram_on_paths",
+  srcs=["evaluate_histogram_on_paths.py"],
+  visibility=["//common/python:__subpackages__"],
+  deps=[
+    requirement("torch"),
+    requirement("tqdm"),
+    requirement("msgspec"),
+    "//common/torch:load_torch_deps",
+    "//common/torch:load_and_save_models",
+    "//common/gps:web_mercator",
+    "//common/math:haversine",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/evaluation:evaluate_swag",
+    "//experimental/overhead_matching/swag/evaluation:wag_config_proto_py",
+    "//experimental/overhead_matching/swag/filter:histogram_belief",
+    "//experimental/overhead_matching/swag/model:patch_embedding",
+    "//experimental/overhead_matching/swag/model:swag_patch_embedding",
+  ]
+)
+
+py_binary(
+  name="visualize_histogram_results",
+  srcs=["visualize_histogram_results.py"],
+  deps=[
+    requirement("torch"),
+    requirement("matplotlib"),
+    requirement("numpy"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/evaluation:evaluate_swag",
+    "//experimental/overhead_matching/swag/filter:histogram_belief",
   ]
 )
 
@@ -420,5 +453,25 @@ py_binary(
     requirement("torch"),
     requirement("google-genai"),
     "//common/torch:load_torch_deps",
+  ]
+)
+
+py_binary(
+  name="step_through_histogram",
+  srcs=["step_through_histogram.py"],
+  deps=[
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("msgspec"),
+    requirement("dash"),
+    requirement("plotly"),
+    "//common/torch:load_torch_deps",
+    "//common/torch:load_and_save_models",
+    "//common/gps:web_mercator",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/evaluation:evaluate_swag",
+    "//experimental/overhead_matching/swag/filter:histogram_belief",
+    "//experimental/overhead_matching/swag/model:patch_embedding",
+    "//experimental/overhead_matching/swag/model:swag_patch_embedding",
   ]
 )
