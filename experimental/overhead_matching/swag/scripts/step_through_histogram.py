@@ -10,7 +10,7 @@ import math
 import msgspec
 
 import dash
-from dash import dcc, html
+from dash import dcc, html, dash_table
 from dash.dependencies import Input, Output, State
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -24,6 +24,7 @@ from experimental.overhead_matching.swag.filter.histogram_belief import (
 import experimental.overhead_matching.swag.evaluation.evaluate_swag as es
 import common.torch.load_and_save_models as lsm
 from experimental.overhead_matching.swag.model import patch_embedding, swag_patch_embedding
+from common.gps import web_mercator
 
 
 def load_model(path, device='cuda'):
@@ -139,6 +140,47 @@ def create_belief_heatmap(log_belief, grid_spec):
     return belief, lat_coords, lon_coords
 
 
+def load_path_statistics(eval_path: Path) -> list[dict]:
+    """Load statistics for all evaluated paths."""
+    stats = []
+
+    # Find all path directories
+    path_dirs = sorted([d for d in eval_path.iterdir() if d.is_dir() and d.name.isdigit()])
+
+    for path_dir in path_dirs:
+        path_idx = int(path_dir.name)
+        try:
+            path = torch.load(path_dir / "path.pt", map_location='cpu')
+            path_len = len(path) if isinstance(path, (list, torch.Tensor)) else 1
+
+            error = None
+            final_error = None
+            if (path_dir / "error.pt").exists():
+                error = torch.load(path_dir / "error.pt", map_location='cpu')
+                if hasattr(error, 'cpu'):
+                    error = error.cpu()
+                final_error = float(error[-1]) if len(error) > 0 else None
+
+            distance = None
+            if (path_dir / "distance_traveled_m.pt").exists():
+                dist = torch.load(path_dir / "distance_traveled_m.pt", map_location='cpu')
+                if hasattr(dist, 'cpu'):
+                    dist = dist.cpu()
+                distance = float(dist[-1]) if len(dist) > 0 else None
+
+            stats.append({
+                'path_idx': path_idx,
+                'path_len': path_len,
+                'final_error_m': final_error,
+                'distance_m': distance,
+            })
+        except Exception as e:
+            print(f"Failed to load path {path_idx}: {e}")
+            continue
+
+    return stats
+
+
 def main():
     parser = argparse.ArgumentParser(description="Web-based histogram filter visualization")
     parser.add_argument("--eval-path", type=str, required=True,
@@ -149,8 +191,6 @@ def main():
                         help="Path to satellite model")
     parser.add_argument("--pano-path", type=str, required=True,
                         help="Path to panorama model")
-    parser.add_argument("--path-idx", type=int, required=True,
-                        help="Path index to visualize")
     parser.add_argument("--sigma-obs", type=float, default=None)
     parser.add_argument("--noise-percent", type=float, default=None)
     parser.add_argument("--port", type=int, default=8050)
@@ -172,6 +212,20 @@ def main():
 
     print(f"Config: sigma_obs={sigma_obs}, noise_percent={noise_percent}, subdivision={subdivision_factor}")
 
+    # Load path statistics
+    print("Loading path statistics...")
+    path_stats = load_path_statistics(eval_path)
+    print(f"Found {len(path_stats)} paths")
+
+    # Compute summary statistics
+    final_errors = [s['final_error_m'] for s in path_stats if s['final_error_m'] is not None]
+    if final_errors:
+        avg_error = np.mean(final_errors)
+        median_error = np.median(final_errors)
+        min_error = np.min(final_errors)
+        max_error = np.max(final_errors)
+        print(f"Error stats: avg={avg_error:.1f}m, median={median_error:.1f}m, min={min_error:.1f}m, max={max_error:.1f}m")
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
@@ -192,10 +246,6 @@ def main():
     )
     vigor_dataset = vd.VigorDataset(dataset_path, dataset_config)
 
-    # Load path
-    path_dir = eval_path / f"{args.path_idx:07d}"
-    path = torch.load(path_dir / "path.pt", map_location='cpu')
-
     # Compute similarity matrix
     print("Computing similarity matrix (cached)...")
     all_similarity = es.compute_cached_similarity_matrix(
@@ -205,7 +255,6 @@ def main():
         device=device,
         use_cached_similarity=True,
     )
-    path_similarity = all_similarity[path].cpu()
 
     # Use CPU for filter computations (visualization doesn't need GPU)
     filter_device = torch.device('cpu')
@@ -215,9 +264,7 @@ def main():
     cell_size_px = 640.0 / subdivision_factor
 
     # Add buffer of half patch size (320 pixels at zoom 20)
-    # Convert to degrees using web mercator at the center latitude
     center_lat = (min_lat + max_lat) / 2
-    from common.gps import web_mercator
     ref_y, ref_x = web_mercator.latlon_to_pixel_coords(center_lat, min_lon, 20)
     buf_lat, _ = web_mercator.pixel_coords_to_latlon(ref_y - 320, ref_x, 20)
     _, buf_lon = web_mercator.pixel_coords_to_latlon(ref_y, ref_x + 320, 20)
@@ -234,76 +281,186 @@ def main():
     patch_positions_px = get_patch_positions_px(vigor_dataset, filter_device)
     mapping = build_cell_to_patch_mapping(grid_spec, patch_positions_px, 320.0, filter_device)
 
-    # Get positions
-    gt_positions = vigor_dataset.get_panorama_positions(path).numpy()
-    motion_deltas = es.get_motion_deltas_from_path(vigor_dataset, path)
     sat_positions = vigor_dataset._satellite_metadata[['lat', 'lon']].values
 
-    # Initialize belief
-    def degrees_from_meters(dist_m):
-        return math.degrees(dist_m / 6_371_000.0)
+    # Prepare table data (keep as numbers for proper sorting)
+    table_data = []
+    for s in path_stats:
+        table_data.append({
+            'Path': s['path_idx'],
+            'Length': s['path_len'],
+            'Final Error (m)': round(s['final_error_m'], 1) if s['final_error_m'] is not None else None,
+            'Distance (m)': round(s['distance_m'], 0) if s['distance_m'] is not None else None,
+        })
 
-    belief = HistogramBelief.from_uniform(grid_spec, filter_device)
-
-    print("Running filter...")
-    history = run_filter_with_history(
-        grid_spec, mapping, belief,
-        motion_deltas, path_similarity,
-        sigma_obs, noise_percent
-    )
-    print(f"Generated {len(history)} steps")
+    # Server-side cache for filter history (avoid sending huge data to browser)
+    cache = {
+        'current_path_idx': None,
+        'history': None,
+        'gt_positions': None,
+    }
 
     # Create Dash app
     app = dash.Dash(__name__)
 
     app.layout = html.Div([
-        html.H1(f"Histogram Filter - Path {args.path_idx}"),
+        html.H1("Histogram Filter Visualization"),
+
+        # Summary statistics
         html.Div([
-            html.Label("Step:"),
-            dcc.Slider(
-                id='step-slider',
-                min=0,
-                max=len(history) - 1,
-                value=0,
-                marks={i: str(i) for i in range(0, len(history), max(1, len(history)//20))},
-                step=1,
+            html.H3("Summary Statistics"),
+            html.Div([
+                html.Span(f"Paths: {len(path_stats)}", style={'marginRight': '30px'}),
+                html.Span(f"Avg Error: {avg_error:.1f}m" if final_errors else "N/A", style={'marginRight': '30px'}),
+                html.Span(f"Median Error: {median_error:.1f}m" if final_errors else "N/A", style={'marginRight': '30px'}),
+                html.Span(f"Min: {min_error:.1f}m" if final_errors else "N/A", style={'marginRight': '30px'}),
+                html.Span(f"Max: {max_error:.1f}m" if final_errors else "N/A"),
+            ], style={'marginBottom': '20px'}),
+        ]),
+
+        # Path selection table
+        html.Div([
+            html.H3("Select Path (click a row)"),
+            dash_table.DataTable(
+                id='path-table',
+                columns=[
+                    {'name': 'Path', 'id': 'Path', 'type': 'numeric'},
+                    {'name': 'Length', 'id': 'Length', 'type': 'numeric'},
+                    {'name': 'Final Error (m)', 'id': 'Final Error (m)', 'type': 'numeric'},
+                    {'name': 'Distance (m)', 'id': 'Distance (m)', 'type': 'numeric'},
+                ],
+                data=table_data,
+                row_selectable='single',
+                selected_rows=[0] if table_data else [],
+                style_table={'height': '200px', 'overflowY': 'auto'},
+                style_cell={'textAlign': 'left', 'padding': '5px'},
+                style_header={'fontWeight': 'bold'},
+                sort_action='native',
+                filter_action='native',
             ),
-        ], style={'width': '80%', 'margin': '20px auto'}),
+        ], style={'marginBottom': '20px'}),
+
+        # Step controls
         html.Div([
-            html.Button('Previous', id='prev-btn', n_clicks=0),
-            html.Button('Next', id='next-btn', n_clicks=0),
-            html.Span(id='step-info', style={'marginLeft': '20px'}),
-        ], style={'textAlign': 'center', 'margin': '10px'}),
-        dcc.Graph(id='main-plot', style={'height': '80vh'}),
+            html.Div([
+                html.Label("Step:"),
+                dcc.Slider(
+                    id='step-slider',
+                    min=0,
+                    max=1,
+                    value=0,
+                    marks={},
+                    step=1,
+                ),
+            ], style={'width': '80%', 'margin': '20px auto'}),
+            html.Div([
+                html.Button('Previous', id='prev-btn', n_clicks=0),
+                html.Button('Next', id='next-btn', n_clicks=0),
+                html.Span(id='step-info', style={'marginLeft': '20px'}),
+            ], style={'textAlign': 'center', 'margin': '10px'}),
+        ], id='step-controls'),
+
+        # Main plot
+        dcc.Graph(id='main-plot', style={'height': '70vh'}),
+
+        # Minimal client-side state (just path index and step count)
+        dcc.Store(id='path-metadata-store'),
     ])
 
     @app.callback(
-        Output('step-slider', 'value'),
+        [Output('path-metadata-store', 'data'),
+         Output('step-slider', 'max'),
+         Output('step-slider', 'marks'),
+         Output('step-slider', 'value')],
+        [Input('path-table', 'selected_rows')],
+        [State('path-table', 'data')]
+    )
+    def load_path(selected_rows, table_data):
+        if not selected_rows or not table_data:
+            return None, 1, {}, 0
+
+        row = table_data[selected_rows[0]]
+        path_idx = row['Path']
+
+        print(f"Loading path {path_idx}...")
+
+        # Load path
+        path_dir = eval_path / f"{path_idx:07d}"
+        path = torch.load(path_dir / "path.pt", map_location='cpu')
+
+        # Get ground truth positions
+        gt_positions = vigor_dataset.get_panorama_positions(path).numpy()
+
+        # Get similarity for this path
+        path_similarity = all_similarity[path].cpu()
+
+        # Get motion deltas
+        motion_deltas = es.get_motion_deltas_from_path(vigor_dataset, path)
+
+        # Initialize and run filter
+        belief = HistogramBelief.from_uniform(grid_spec, filter_device)
+        history = run_filter_with_history(
+            grid_spec, mapping, belief,
+            motion_deltas, path_similarity,
+            sigma_obs, noise_percent
+        )
+
+        # Store in server-side cache (not sent to browser)
+        cache['current_path_idx'] = path_idx
+        cache['history'] = history
+        cache['gt_positions'] = gt_positions
+
+        num_steps = len(history)
+        marks = {i: str(i) for i in range(0, num_steps, max(1, num_steps // 20))}
+
+        print(f"Loaded path {path_idx} with {num_steps} steps")
+
+        # Only send minimal metadata to browser
+        return {'path_idx': path_idx, 'num_steps': num_steps}, num_steps - 1, marks, 0
+
+    @app.callback(
+        Output('step-slider', 'value', allow_duplicate=True),
         [Input('prev-btn', 'n_clicks'),
          Input('next-btn', 'n_clicks')],
-        [State('step-slider', 'value')]
+        [State('step-slider', 'value'),
+         State('step-slider', 'max')],
+        prevent_initial_call=True
     )
-    def update_slider(prev_clicks, next_clicks, current_value):
+    def update_slider(prev_clicks, next_clicks, current_value, max_value):
         ctx = dash.callback_context
         if not ctx.triggered:
             return current_value
         button_id = ctx.triggered[0]['prop_id'].split('.')[0]
         if button_id == 'prev-btn' and current_value > 0:
             return current_value - 1
-        elif button_id == 'next-btn' and current_value < len(history) - 1:
+        elif button_id == 'next-btn' and current_value < max_value:
             return current_value + 1
         return current_value
 
     @app.callback(
         [Output('main-plot', 'figure'),
          Output('step-info', 'children')],
-        [Input('step-slider', 'value')]
+        [Input('step-slider', 'value'),
+         Input('path-metadata-store', 'data')]
     )
-    def update_plot(step_idx):
-        step = history[step_idx]
+    def update_plot(step_idx, metadata):
+        if not metadata or cache['history'] is None:
+            # Return empty figure
+            fig = go.Figure()
+            fig.update_layout(
+                title="Select a path from the table above",
+                height=600,
+            )
+            return fig, "No path selected"
+
+        # Get data from server-side cache
+        path_idx = cache['current_path_idx']
+        gt_positions = cache['gt_positions']
+        step = cache['history'][step_idx]
+
         stage = step['stage']
         log_belief = step['log_belief']
-        mean = step['mean']
+        mean = step['mean'].numpy()
         gt_idx = step['gt_idx']
 
         # Create heatmap data
@@ -312,7 +469,7 @@ def main():
         # Create subplots
         fig = make_subplots(
             rows=1, cols=2,
-            subplot_titles=['Full View', 'Zoomed View'],
+            subplot_titles=[f'Full View - Path {path_idx}', 'Zoomed View'],
             horizontal_spacing=0.1,
         )
 
@@ -371,8 +528,8 @@ def main():
         # Estimate
         fig.add_trace(
             go.Scatter(
-                x=[mean[1].item()],
-                y=[mean[0].item()],
+                x=[mean[1]],
+                y=[mean[0]],
                 mode='markers',
                 marker=dict(size=15, color='red', symbol='x'),
                 name='Estimate',
@@ -429,8 +586,8 @@ def main():
 
         fig.add_trace(
             go.Scatter(
-                x=[mean[1].item()],
-                y=[mean[0].item()],
+                x=[mean[1]],
+                y=[mean[0]],
                 mode='markers',
                 marker=dict(size=20, color='red', symbol='x'),
                 showlegend=False,
@@ -439,25 +596,25 @@ def main():
         )
 
         # Set zoom for right plot
-        center_lat = (gt_positions[gt_idx, 0] + mean[0].item()) / 2
-        center_lon = (gt_positions[gt_idx, 1] + mean[1].item()) / 2
+        center_lat = (gt_positions[gt_idx, 0] + mean[0]) / 2
+        center_lon = (gt_positions[gt_idx, 1] + mean[1]) / 2
         zoom_size = 0.015
 
         fig.update_xaxes(range=[center_lon - zoom_size, center_lon + zoom_size], row=1, col=2)
         fig.update_yaxes(range=[center_lat - zoom_size, center_lat + zoom_size], row=1, col=2)
 
         fig.update_layout(
-            height=700,
+            height=600,
             showlegend=True,
             legend=dict(x=0.01, y=0.99),
         )
 
         # Compute error
-        error_deg = np.sqrt((mean[0].item() - gt_positions[gt_idx, 0])**2 +
-                           (mean[1].item() - gt_positions[gt_idx, 1])**2)
+        error_deg = np.sqrt((mean[0] - gt_positions[gt_idx, 0])**2 +
+                           (mean[1] - gt_positions[gt_idx, 1])**2)
         error_m = error_deg * 111000
 
-        info = f"Stage: {stage} | GT idx: {gt_idx} | Error: {error_m:.1f}m"
+        info = f"Path {path_idx} | Stage: {stage} | GT idx: {gt_idx} | Error: {error_m:.1f}m"
 
         return fig, info
 
