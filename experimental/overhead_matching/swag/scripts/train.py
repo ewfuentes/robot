@@ -250,6 +250,43 @@ def setup_models_for_training(panorama_model, satellite_model, distance_model):
     return panorama_model, satellite_model, distance_model
 
 
+def save_checkpoint(
+    output_dir: Path,
+    checkpoint_name: str,
+    panorama_model,
+    satellite_model,
+    distance_model,
+    dataset,
+):
+    """Save a checkpoint with the given name prefix.
+
+    For checkpoints like 'best' and 'last' that get overwritten,
+    existing directories are removed first.
+    """
+    import shutil
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    panorama_model_path = output_dir / f"{checkpoint_name}_panorama"
+    satellite_model_path = output_dir / f"{checkpoint_name}_satellite"
+    distance_model_path = output_dir / f"{checkpoint_name}_distance"
+
+    # Remove existing checkpoint directories if they exist (for best/last overwrites)
+    for path in [panorama_model_path, satellite_model_path, distance_model_path]:
+        if path.exists():
+            shutil.rmtree(path)
+
+    save_dataloader = vigor_dataset.get_dataloader(dataset, batch_size=16)
+    batch = next(iter(save_dataloader))
+    pano_model_input = panorama_model.model_input_from_batch(batch).to("cuda")
+    sat_model_input = satellite_model.model_input_from_batch(batch).to("cuda")
+    save_model(panorama_model, panorama_model_path, (pano_model_input,))
+    save_model(satellite_model, satellite_model_path, (sat_model_input,))
+    if sum(param.numel() for param in distance_model.parameters()) > 0:
+        sat_emb, _ = satellite_model(sat_model_input)
+        pano_emb, _ = panorama_model(pano_model_input)
+        save_model(distance_model, distance_model_path, (sat_emb, pano_emb))
+
+
 def create_training_components(dataset,
                                panorama_model,
                                satellite_model,
@@ -414,6 +451,19 @@ def train(config: TrainConfig,
         if isinstance(loss_config, InfoNCELossConfig):
             pairing_type = PairingType.ANCHOR_SETS
 
+    # Track best model based on validation MRR (higher is better)
+    # If no non-training validation datasets, fall back to loss (lower is better)
+    best_metric = None
+    best_epoch = -1
+
+    # Identify non-training validation datasets for best model selection
+    training_dataset_name = config.dataset_config.paths[0] if config.dataset_config.paths else None
+    non_training_val_datasets = [
+        name for name in validation_datasets.keys()
+        if name not in config.dataset_config.paths
+    ]
+    use_mrr_for_best = len(non_training_val_datasets) > 0
+
     total_batches = 0
     for epoch_idx in tqdm.tqdm(range(opt_config.num_epochs),  desc="Epoch", disable=quiet):
         debug_log(f"Starting epoch {epoch_idx}")
@@ -549,28 +599,64 @@ def train(config: TrainConfig,
             epoch_idx=epoch_idx,
             quiet=quiet)
 
-        if (epoch_idx % 10 == 0) or (epoch_idx == opt_config.num_epochs - 1):
-            # Periodically save the model
-            debug_log(f"Saving models for epoch {epoch_idx}")
-            output_dir.mkdir(parents=True, exist_ok=True)
-            panorama_model_path = output_dir / f"{epoch_idx:04d}_panorama"
-            satellite_model_path = output_dir / f"{epoch_idx:04d}_satellite"
-            distance_model_path = output_dir / f"{epoch_idx:04d}_distance"
+        # Check if this is the best model
+        is_best = False
+        if use_mrr_for_best:
+            # Compute average MRR across non-training validation datasets
+            mrr_values = [
+                validation_metrics.get(f"{name}/positive_mean_recip_rank", 0.0)
+                for name in non_training_val_datasets
+            ]
+            current_metric = sum(mrr_values) / len(mrr_values) if mrr_values else 0.0
+            if best_metric is None or current_metric > best_metric:
+                best_metric = current_metric
+                best_epoch = epoch_idx
+                is_best = True
+                debug_log(f"New best model at epoch {epoch_idx} with avg validation MRR: {current_metric:.4f}")
+        else:
+            # Fall back to using loss (lower is better)
+            # We need to track average loss over the epoch - use the last batch's loss as proxy
+            current_metric = loss_dict["loss"].item()
+            if best_metric is None or current_metric < best_metric:
+                best_metric = current_metric
+                best_epoch = epoch_idx
+                is_best = True
+                debug_log(f"New best model at epoch {epoch_idx} with loss: {current_metric:.4f}")
 
-            save_dataloader = vigor_dataset.get_dataloader(dataset, batch_size=16)
-            batch = next(iter(save_dataloader))
-            pano_model_input = panorama_model.model_input_from_batch(batch).to("cuda")
-            sat_model_input = satellite_model.model_input_from_batch(batch).to("cuda")
-            save_model(panorama_model, panorama_model_path,
-                       (pano_model_input,))
+        # Save best model if this is the best so far
+        if is_best:
+            debug_log(f"Saving best model (epoch {epoch_idx})")
+            save_checkpoint(
+                output_dir=output_dir,
+                checkpoint_name="best",
+                panorama_model=panorama_model,
+                satellite_model=satellite_model,
+                distance_model=distance_model,
+                dataset=dataset,
+            )
 
-            save_model(satellite_model, satellite_model_path,
-                       (sat_model_input,))
-            if sum(param.numel() for param in distance_model.parameters()) > 0:
-                sat_emb, _ = satellite_model(sat_model_input)
-                pano_emb, _ = panorama_model(pano_model_input)
-                save_model(distance_model, distance_model_path,
-                           (sat_emb, pano_emb))
+        # Periodic checkpoint every 50 epochs
+        if epoch_idx > 0 and epoch_idx % 50 == 0:
+            debug_log(f"Saving periodic checkpoint for epoch {epoch_idx}")
+            save_checkpoint(
+                output_dir=output_dir,
+                checkpoint_name=f"{epoch_idx:04d}",
+                panorama_model=panorama_model,
+                satellite_model=satellite_model,
+                distance_model=distance_model,
+                dataset=dataset,
+            )
+
+    # Always save the last model
+    debug_log(f"Saving last model (epoch {opt_config.num_epochs - 1})")
+    save_checkpoint(
+        output_dir=output_dir,
+        checkpoint_name="last",
+        panorama_model=panorama_model,
+        satellite_model=satellite_model,
+        distance_model=distance_model,
+        dataset=dataset,
+    )
 
 
     # Signal training completion
