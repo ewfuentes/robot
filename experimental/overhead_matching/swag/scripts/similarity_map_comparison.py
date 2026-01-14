@@ -9,15 +9,15 @@ def _():
     import marimo as mo
     import common.torch.load_torch_deps
     import torch
+    import torch.nn.functional as F
     import common.torch.load_and_save_models as lsm
     from pathlib import Path
-    return Path, lsm, mo, torch
+    return F, Path, lsm, mo, torch
 
 
 @app.cell
 def _():
-    import torch.nn.functional as F
-    return (F,)
+    return
 
 
 @app.cell
@@ -28,7 +28,7 @@ def _(Path, lsm):
             checkpoints.append(dir.name.split('_')[0])
         sorted_checkpoints = sorted(checkpoints)
         return sorted_checkpoints[-1]
-    
+
     def load_models(base_path: Path):
         checkpoint_idx = get_latest_checkpoint(base_path)
         sat_path = base_path / f"{checkpoint_idx}_satellite"
@@ -40,15 +40,8 @@ def _(Path, lsm):
         return pano_model, sat_model 
         ...
 
-    osm_pano_model, osm_sat_model = load_models(Path('/data/overhead_matching/models/20251209_test_model'))
-    pano_model, sat_model = load_models(Path('/data/overhead_matching/models/20250707_dino_features/all_chicago_dino_project_512'))
-    return osm_pano_model, osm_sat_model, pano_model, sat_model
-
-
-@app.cell
-def _(osm_pano_model):
-    osm_pano_model._extractor_by_name['panorama_semantic_landmark_extractor'].load_files()
-    return
+    osm_pano_model, osm_sat_model = load_models(Path('/data/overhead_matching/training_outputs/spoofed_generalization_experiments/spoofed_4_layers_baseline/'))
+    return osm_pano_model, osm_sat_model
 
 
 @app.cell
@@ -60,6 +53,8 @@ def _(F, dataset, osm_pano_model, osm_sat_model, torch, tqdm, vd):
         for _item in list_of_tensors:
             _max_dims[0] = max(_item.shape[1], _max_dims[0])
             _max_dims[1] = max(_item.shape[2], _max_dims[1])
+        if 0 in _max_dims:
+            return torch.zeros((len(list_of_tensors), *_max_dims), dtype=list_of_tensors[0].dtype)
         for _item in list_of_tensors:
             _padded_tensors.append(F.pad(
                 _item, 
@@ -121,7 +116,7 @@ def _(Path):
                 pano_id = j["custom_id"].split(',')[0]
                 sentences = json.loads(j["response"]['body']['choices'][0]['message']['content'])["landmarks"]
                 out[pano_id] = [x["description"] for x in sentences]
-            
+
         return out
 
     def load_sentences(base_path):
@@ -129,7 +124,7 @@ def _(Path):
         for p in base_path.glob("**/sentences/*"):
             out.update(load_sentence_file(p))
         return out
-    
+
     embeddings_dir = Path('/data/overhead_matching/datasets/semantic_landmark_embeddings/pano_v1')
     sentences_from_pano_id = load_sentences(embeddings_dir)
 
@@ -137,18 +132,18 @@ def _(Path):
 
 
 @app.cell
-def _(pano_model, sat_model, vd):
+def _(osm_pano_model, osm_sat_model, vd):
     _dataset_config = vd.VigorDatasetConfig(
         satellite_tensor_cache_info=None,
         panorama_tensor_cache_info=None,
         should_load_images=True,
         should_load_landmarks=True,
-        landmark_version="v4_202001",
+        landmark_version="spoofed_v1",
         factor=1,
-        satellite_patch_size = sat_model.patch_dims,
-        panorama_size=pano_model.patch_dims,
+        satellite_patch_size = osm_sat_model.patch_dims,
+        panorama_size=osm_pano_model.patch_dims,
     )
-    dataset = vd.VigorDataset(config=_dataset_config,dataset_path="/data/overhead_matching/datasets/VIGOR/Seattle/")
+    dataset = vd.VigorDataset(config=_dataset_config,dataset_path="/data/overhead_matching/datasets/VIGOR/Chicago/")
     return (dataset,)
 
 
@@ -274,7 +269,7 @@ def _(
     for geom in ["point", 'linestring', 'polygon', 'multipolygon']:
         pruned_props += [x["pruned_props"] for x in input_metadata["landmarks"] if x["geometry"].geom_type.lower() == geom]
         osm_sentences += decode_sentence_tensor(sat_inference_data[f"{geom}_semantic_landmark_extractor"][row.sat_idx])
-    
+
     osm_sentences = osm_sentences
 
     mo.vstack([
@@ -353,6 +348,12 @@ def _(torch):
 def _(dataset):
     places_and_things = dataset._landmark_metadata[["name", "building", "addr:housenumber", "addr:street"]].dropna()
     return (places_and_things,)
+
+
+@app.cell
+def _(places_and_things):
+    places_and_things
+    return
 
 
 @app.cell

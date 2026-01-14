@@ -322,3 +322,21 @@ py_binary(
     "//experimental/overhead_matching/swag/model:swag_patch_embedding",
   ]
 )
+
+py_binary(
+  name="create_spoofed_pano_osm_dataset",
+  srcs=["create_spoofed_pano_osm_dataset.py"],
+  deps=[
+    requirement("geopandas"),
+    requirement("numpy"),
+    requirement("openai"),
+    requirement("pandas"),
+    requirement("shapely"),
+    requirement("tqdm"),
+    requirement("torch"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
+  ]
+)
+

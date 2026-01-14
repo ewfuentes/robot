@@ -536,13 +536,14 @@ def create_sentence_embedding_batch(args):
         # Save metadata for later use
         metadata_file = output_base / "panorama_metadata.jsonl"
         with open(metadata_file, 'w') as f:
-            for custom_id, metadata in metadata_dict.items():
-                f.write(json.dumps({
-                    "custom_id": custom_id,
-                    "panorama_id": metadata["panorama_id"],
-                    "landmark_idx": metadata["landmark_idx"],
-                    "yaw_angles": metadata["yaw_angles"]
-                }) + '\n')
+            for panorama_id, landmarks_list in metadata_dict.items():
+                for landmark_meta in landmarks_list:
+                    f.write(json.dumps({
+                        "custom_id": landmark_meta["custom_id"],
+                        "panorama_id": panorama_id,
+                        "landmark_idx": landmark_meta["landmark_idx"],
+                        "yaw_angles": landmark_meta["yaw_angles"]
+                    }) + '\n')
         print(f"Saved metadata to {metadata_file}")
     else:
         print("Processing regular landmark responses...")
