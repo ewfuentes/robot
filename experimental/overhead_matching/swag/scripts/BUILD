@@ -322,3 +322,20 @@ py_binary(
     "//experimental/overhead_matching/swag/model:swag_patch_embedding",
   ]
 )
+
+py_binary(
+  name="generate_city_bboxes",
+  srcs=["generate_city_bboxes.py"],
+  deps=[
+    requirement("pyyaml"),
+  ]
+)
+
+py_binary(
+  name="extract_landmarks_for_cities",
+  srcs=["extract_landmarks_for_cities.py"],
+  deps=[
+    ":extract_landmarks_historical",
+    requirement("pyyaml"),
+  ]
+)

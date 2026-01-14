@@ -149,11 +149,6 @@ def main(
     print(f"Saving to {feather_path}...")
     gdf.to_feather(feather_path)
 
-    # Save as JSON (text, compatible)
-    json_path = output_path.with_suffix(".geojson")
-    print(f"Saving to {json_path}...")
-    json_path.write_text(gdf.to_json(na="drop"))
-
     print(f"Done! Extracted {len(features)} landmarks")
     print(f"  - Nodes: {sum(1 for f in features if f.osm_type == elm.OsmType.NODE)}")
     print(f"  - Ways: {sum(1 for f in features if f.osm_type == elm.OsmType.WAY)}")
