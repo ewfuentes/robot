@@ -1,0 +1,256 @@
+# OSM Sentence Embedding Training Pipeline
+
+This document describes how to train sentence embeddings from OpenStreetMap landmark descriptions.
+
+## Overview
+
+The pipeline:
+1. Download US city data from SimpleMaps
+2. Generate city bounding boxes
+3. Download OSM data dumps from Geofabrik
+4. Extract landmarks to SQLite database
+5. Train sentence embedding model (vocabularies built automatically)
+
+## Prerequisites
+
+- Bazel build system
+- ~10GB disk space for OSM dumps
+- ~1GB disk space for landmarks database
+- GPU recommended for training
+
+## Step 1: Download SimpleMaps US Cities Dataset
+
+Download the free US cities dataset from SimpleMaps:
+
+1. Go to https://simplemaps.com/data/us-cities
+2. Download the free "Basic" version (CSV format)
+3. Save to `/data/overhead_matching/datasets/simplemaps/uscities.csv`
+
+```bash
+mkdir -p /data/overhead_matching/datasets/simplemaps
+# Download manually from the website and save as uscities.csv
+```
+
+## Step 2: Generate City Bounding Boxes
+
+Generate a YAML file with city bounding boxes for landmark extraction:
+
+```bash
+bazel run //experimental/overhead_matching/swag/scripts:generate_city_bboxes -- \
+    --input_csv /data/overhead_matching/datasets/simplemaps/uscities.csv \
+    --output_yaml /data/overhead_matching/datasets/us_city_bboxes.yaml \
+    --min_population 100000 \
+    --radius_km 10.0
+```
+
+Parameters:
+- `--min_population`: Only include cities above this population (default: 100,000)
+- `--radius_km`: Bounding box radius around city center (default: 10km)
+
+## Step 3: Download OSM Data Dumps
+
+Download OpenStreetMap PBF files for US states from Geofabrik:
+
+```bash
+# Option 1: Use the provided script
+./experimental/overhead_matching/swag/scripts/download_osm_dumps.sh
+
+# Option 2: Download manually
+mkdir -p /data/overhead_matching/datasets/osm_dumps
+cd /data/overhead_matching/datasets/osm_dumps
+wget https://download.geofabrik.de/north-america/us/california-latest.osm.pbf
+wget https://download.geofabrik.de/north-america/us/new-york-latest.osm.pbf
+# ... repeat for other states
+```
+
+The download script downloads all US states (~6.5GB total). Files are named `{state}-200101.osm.pbf`.
+
+## Step 4: Extract Landmarks to SQLite Database
+
+Extract OSM landmarks from the PBF files into a SQLite database:
+
+```bash
+bazel run //experimental/overhead_matching/swag/scripts:extract_landmarks_to_sqlite -- \
+    --city_bboxes_yaml /data/overhead_matching/datasets/us_city_bboxes.yaml \
+    --osm_dumps_dir /data/overhead_matching/datasets/osm_dumps \
+    --output_db /data/overhead_matching/datasets/us_osm_landmarks/landmarks.db
+```
+
+Options:
+- `--states CA NY TX`: Only process specific states
+- `--cities "Los Angeles" "New York"`: Only process specific cities
+- `--no_geometry`: Skip storing full geometry (smaller database)
+
+This creates a normalized SQLite database with:
+- `landmarks`: Deduplicated landmarks with tag signatures
+- `tags`: Tag key-value pairs linked to landmarks
+- `tag_keys`: Unique tag keys
+- `tag_values`: Unique tag values
+
+## Step 5: Train Sentence Embedding Model
+
+Train the multi-task sentence embedding model.
+
+### Option A: Using a config file (recommended)
+
+Copy and modify the example config:
+
+```bash
+cp experimental/overhead_matching/swag/scripts/example_sentence_config.yaml my_config.yaml
+# Edit my_config.yaml with your paths and settings
+
+bazel run //experimental/overhead_matching/swag/scripts:train_sentence_embeddings -- \
+    --config my_config.yaml
+```
+
+CLI args override config values, so you can use a base config and override specific settings:
+
+```bash
+bazel run //experimental/overhead_matching/swag/scripts:train_sentence_embeddings -- \
+    --config my_config.yaml \
+    --batch_size 128 \
+    --limit 10000
+```
+
+### Option B: Using CLI args only
+
+```bash
+bazel run //experimental/overhead_matching/swag/scripts:train_sentence_embeddings -- \
+    --db_path /data/overhead_matching/datasets/us_osm_landmarks/landmarks.db \
+    --output_dir /data/overhead_matching/models/sentence_embeddings \
+    --batch_size 256 \
+    --num_epochs 5 \
+    --encoder_lr 2e-5 \
+    --heads_lr 1e-4
+```
+
+### CLI Options
+
+- `--config`: Path to YAML config file
+- `--db_path`: Path to landmarks SQLite database
+- `--output_dir`: Output directory for model and logs
+- `--tag_vocabs`: Path to precomputed vocabularies (optional)
+- `--encoder_name`: Sentence transformer model (default: `all-MiniLM-L6-v2`)
+- `--batch_size`: Batch size (default: 256)
+- `--num_epochs`: Number of epochs (default: 5)
+- `--encoder_lr`: Learning rate for encoder (default: 2e-5)
+- `--heads_lr`: Learning rate for heads (default: 1e-4)
+- `--train_split`: Fraction of data for training (default: 0.9)
+- `--limit`: Limit landmarks for testing
+
+### Training Recommendations
+
+**Epochs**: Start with 3-5 epochs. Monitor validation loss - stop if it plateaus or increases.
+
+**Learning Rates**: The model uses differential learning rates by default:
+- `encoder_lr: 2e-5` - Lower rate for pretrained encoder (preserves knowledge)
+- `heads_lr: 1e-4` - Higher rate for randomly initialized heads (faster convergence)
+
+**Freezing**: Set `model.freeze_encoder: true` in config to only train heads (faster, less GPU memory, but won't adapt embeddings to OSM language).
+
+### Training Output
+
+The training script outputs:
+- `config.json`: Training configuration
+- `tag_vocabs.json`: Tag vocabularies (if not provided)
+- `best_model.pt`: Best model weights
+- `checkpoint_epoch_N.pt`: Epoch checkpoints
+- `tensorboard/`: TensorBoard logs
+
+### Monitor Training
+
+```bash
+bazel run //common/torch:run_tensorboard -- \
+    --logdir /data/overhead_matching/models/sentence_embeddings/tensorboard
+```
+
+## Model Architecture
+
+The model consists of:
+- **Base encoder**: Pretrained sentence transformer (fine-tuned)
+- **Classification heads**: Linear layers for categorical tags (amenity, building, highway, etc.)
+- **Contrastive heads**: MLP projections for high-cardinality tags (name, addr:street)
+
+### Training Tasks
+
+**Classification (CrossEntropy loss)**:
+- amenity (~60 classes): restaurant, school, parking, etc.
+- building (~76 classes): house, apartments, commercial, etc.
+- highway (~20 classes): residential, service, footway, etc.
+- And more: shop, leisure, tourism, landuse, natural, surface, cuisine
+
+**Contrastive (InfoNCE loss with in-batch negatives)**:
+- name: Sentences with same landmark name are positives
+- addr:street: Sentences on same street are positives
+
+### Key Design Features
+
+1. **On-the-fly sentence generation**: Sentences are generated from tags during training using `OSMSentenceGenerator`, with different seeds per epoch for variety
+2. **Masked loss**: Only compute loss for tags present in `used_tags` (tags actually mentioned in the sentence)
+3. **Precomputed label matrices**: Collate function builds classification labels and contrastive positive matrices efficiently
+
+## File Structure
+
+```
+experimental/overhead_matching/swag/
+├── data/
+│   ├── osm_sentence_generator.py     # Template-based sentence generation
+│   ├── sentence_dataset.py           # Dataset and data loading
+│   └── README_SENTENCE_EMBEDDINGS.md # This file
+├── model/
+│   └── sentence_embedding_model.py   # Multi-task model architecture
+└── scripts/
+    ├── download_osm_dumps.sh         # Download OSM data
+    ├── generate_city_bboxes.py       # Generate city bounding boxes
+    ├── extract_landmarks_to_sqlite.py # Extract landmarks to SQLite
+    ├── build_tag_vocabularies.py     # Build classification vocabularies
+    ├── train_sentence_embeddings.py  # Training script
+    ├── sentence_configs.py           # Configuration dataclasses
+    ├── sentence_losses.py            # Loss functions
+    └── example_sentence_config.yaml  # Example training config
+```
+
+## Quick Start (Full Pipeline)
+
+```bash
+# 1. Download SimpleMaps data manually from https://simplemaps.com/data/us-cities
+
+# 2. Generate bounding boxes
+bazel run //experimental/overhead_matching/swag/scripts:generate_city_bboxes
+
+# 3. Download OSM dumps
+./experimental/overhead_matching/swag/scripts/download_osm_dumps.sh
+
+# 4. Extract landmarks
+bazel run //experimental/overhead_matching/swag/scripts:extract_landmarks_to_sqlite -- \
+    --output_db /data/overhead_matching/datasets/us_osm_landmarks/landmarks.db
+
+# 5. Train (vocabularies built automatically)
+bazel run //experimental/overhead_matching/swag/scripts:train_sentence_embeddings -- \
+    --db_path /data/overhead_matching/datasets/us_osm_landmarks/landmarks.db \
+    --output_dir /data/overhead_matching/models/sentence_embeddings
+```
+
+## Optional Tools
+
+### Inspect Tag Vocabularies
+
+To inspect database statistics or pre-build vocabularies before training:
+
+```bash
+bazel run //experimental/overhead_matching/swag/scripts:build_tag_vocabularies -- \
+    --db_path /data/overhead_matching/datasets/us_osm_landmarks/landmarks.db \
+    --output /data/overhead_matching/datasets/us_osm_landmarks/tag_vocabs.json \
+    --min_count 100 \
+    --show_stats
+```
+
+Options:
+- `--min_count`: Minimum count for a value to be included (default: 100)
+- `--tags amenity building highway`: Only build vocabularies for specific tags
+- `--show_stats`: Print database statistics
+
+This is useful for:
+- Inspecting class distributions before training
+- Sharing vocabularies across multiple training runs
+- Using `--tag_vocabs` flag in the training script to skip vocabulary building

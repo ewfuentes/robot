@@ -206,23 +206,29 @@ def build_chunk_tasks(
 
 
 def create_database(db_path: Path) -> None:
-    """Create the SQLite database with schema."""
+    """Create the SQLite database with schema.
+
+    Landmarks are deduplicated by their filtered tag signature. Each row represents
+    a unique combination of semantically-meaningful tags (excluding metadata like
+    tiger:*, gnis:*, source, etc.).
+    """
     conn = sqlite3.connect(db_path)
     cur = conn.cursor()
 
-    # Main landmarks table
+    # Main landmarks table (deduplicated by tag signature)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS landmarks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            osm_type TEXT NOT NULL CHECK(osm_type IN ('node', 'way', 'relation')),
-            osm_id INTEGER NOT NULL,
+            tag_signature TEXT NOT NULL UNIQUE,
+            count INTEGER NOT NULL DEFAULT 1,
+            representative_osm_type TEXT NOT NULL CHECK(representative_osm_type IN ('node', 'way', 'relation')),
+            representative_osm_id INTEGER NOT NULL,
             city TEXT NOT NULL,
             state TEXT NOT NULL,
             geometry_type TEXT NOT NULL,
             geometry_wkb BLOB,
             centroid_lon REAL NOT NULL,
-            centroid_lat REAL NOT NULL,
-            UNIQUE(osm_type, osm_id)
+            centroid_lat REAL NOT NULL
         )
     """)
 
@@ -270,6 +276,7 @@ def create_indexes(db_path: Path) -> None:
         "CREATE INDEX IF NOT EXISTS idx_landmarks_centroid ON landmarks(centroid_lon, centroid_lat)"
     )
     cur.execute("CREATE INDEX IF NOT EXISTS idx_landmarks_geometry_type ON landmarks(geometry_type)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_landmarks_count ON landmarks(count)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_tags_key_id ON tags(key_id)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_tags_value_id ON tags(value_id)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_tags_key_value ON tags(key_id, value_id)")
@@ -303,6 +310,65 @@ TAG_FILTERS = {
     "public_transport": True,
     "railway": True,
 }
+
+# Tag prefixes to exclude for deduplication (pure metadata, not visible)
+EXCLUDED_TAG_PREFIXES = (
+    "tiger:",      # TIGER import metadata
+    "gnis:",       # GNIS import metadata
+    "source:",     # Source metadata
+    "brand:",      # Brand wikidata links (brand name itself is kept)
+    "payment:",    # Payment methods
+    "contact:",    # Contact info
+    "ref:",        # Internal reference IDs (ref:walmart, ref:penndot, etc.)
+)
+
+# Specific tags to exclude for deduplication
+EXCLUDED_TAGS = frozenset((
+    "source",
+    "created_by",
+    "wikidata",
+    "wikipedia",
+    "website",
+    "phone",
+    "fax",
+    "email",
+    "opening_hours",
+    "unsigned_ref",
+    "gtfs_id",
+    "ntd_id",
+    "ele",
+    "note",
+    "fixme",
+    "FIXME",
+    "description",
+    "is_in",
+    "import_uuid",
+    "layer",
+))
+
+
+def is_excluded_tag(tag_key: str) -> bool:
+    """Check if a tag should be excluded from deduplication."""
+    if tag_key in EXCLUDED_TAGS:
+        return True
+    for prefix in EXCLUDED_TAG_PREFIXES:
+        if tag_key.startswith(prefix):
+            return True
+    return False
+
+
+def filter_tags(tags: dict[str, str]) -> dict[str, str]:
+    """Filter out excluded tags for deduplication."""
+    return {k: v for k, v in tags.items() if not is_excluded_tag(k)}
+
+
+def compute_tag_signature(tags: dict[str, str]) -> str:
+    """Compute a deterministic signature for a set of tags."""
+    import hashlib
+    filtered = filter_tags(tags)
+    tag_str = "|".join(f"{k}={v}" for k, v in sorted(filtered.items()))
+    return hashlib.sha256(tag_str.encode()).hexdigest()[:16]
+
 
 OSM_TYPE_MAP = {
     elm.OsmType.NODE: "node",
@@ -358,10 +424,14 @@ def write_results_to_db(
     db_path: Path,
     chunk_result: ChunkResult,
     store_geometry: bool,
-) -> tuple[int, int]:
-    """Write extraction results to SQLite database.
+) -> tuple[int, int, int]:
+    """Write extraction results to SQLite database with deduplication.
 
-    Returns (landmarks_added, tags_added).
+    Landmarks are deduplicated by their filtered tag signature. If a signature
+    already exists, its count is incremented. Only filtered (non-metadata) tags
+    are stored.
+
+    Returns (landmarks_added, landmarks_deduplicated, tags_added).
     """
     conn = sqlite3.connect(db_path)
     cur = conn.cursor()
@@ -388,6 +458,7 @@ def write_results_to_db(
         return value_cache[value]
 
     landmarks_added = 0
+    landmarks_deduplicated = 0
     tags_added = 0
 
     cur.execute("BEGIN TRANSACTION")
@@ -398,20 +469,37 @@ def write_results_to_db(
             geometry_type = get_geometry_type(feature.geometry)
             centroid_lon, centroid_lat = get_centroid(feature.geometry)
 
-            geometry_blob = None
-            if store_geometry:
-                shapely_geom = create_shapely_geometry(feature.geometry)
-                geometry_blob = wkb.dumps(shapely_geom)
+            # Compute tag signature for deduplication
+            tag_sig = compute_tag_signature(feature.tags)
+            filtered_tags = filter_tags(feature.tags)
 
-            # Insert landmark (skip if duplicate osm_type + osm_id)
-            try:
+            # Check if this signature already exists
+            cur.execute("SELECT id FROM landmarks WHERE tag_signature = ?", (tag_sig,))
+            existing = cur.fetchone()
+
+            if existing:
+                # Increment count for existing signature
+                cur.execute(
+                    "UPDATE landmarks SET count = count + 1 WHERE tag_signature = ?",
+                    (tag_sig,),
+                )
+                landmarks_deduplicated += 1
+            else:
+                # Insert new landmark
+                geometry_blob = None
+                if store_geometry:
+                    shapely_geom = create_shapely_geometry(feature.geometry)
+                    geometry_blob = wkb.dumps(shapely_geom)
+
                 cur.execute(
                     """
                     INSERT INTO landmarks
-                    (osm_type, osm_id, city, state, geometry_type, geometry_wkb, centroid_lon, centroid_lat)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (tag_signature, count, representative_osm_type, representative_osm_id,
+                     city, state, geometry_type, geometry_wkb, centroid_lon, centroid_lat)
+                    VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
+                        tag_sig,
                         osm_type,
                         feature.osm_id,
                         city_name,
@@ -425,8 +513,8 @@ def write_results_to_db(
                 landmark_id = cur.lastrowid
                 landmarks_added += 1
 
-                # Insert tags
-                for key, value in feature.tags.items():
+                # Insert only filtered tags (no metadata)
+                for key, value in filtered_tags.items():
                     key_id = get_or_create_key(key)
                     value_id = get_or_create_value(value)
                     cur.execute(
@@ -435,14 +523,10 @@ def write_results_to_db(
                     )
                     tags_added += 1
 
-            except sqlite3.IntegrityError:
-                # Duplicate landmark, skip
-                pass
-
     conn.commit()
     conn.close()
 
-    return landmarks_added, tags_added
+    return landmarks_added, landmarks_deduplicated, tags_added
 
 
 # --- Main ---
@@ -501,6 +585,7 @@ def main(
 
     # Process chunks
     total_landmarks = 0
+    total_deduplicated = 0
     total_tags = 0
 
     def format_city_list(cities: list[str], max_display: int = 3) -> str:
@@ -514,26 +599,33 @@ def main(
             city_str = format_city_list([c.city_name for c in task.cities])
             print(f"[{i+1}/{len(tasks)}] Extracting {task.state_id}: {city_str}...")
             chunk_result = process_chunk(task)
-            landmarks, tags = write_results_to_db(output_db, chunk_result, store_geometry)
+            landmarks, deduped, tags = write_results_to_db(output_db, chunk_result, store_geometry)
             total_landmarks += landmarks
+            total_deduplicated += deduped
             total_tags += tags
-            print(f"  -> {chunk_result.total_features} features extracted, {landmarks} new landmarks, {tags} tags")
+            print(f"  -> {chunk_result.total_features} features, {landmarks} new, {deduped} deduplicated")
     else:
         with mp.Pool(num_workers) as pool:
             for i, chunk_result in enumerate(pool.imap_unordered(process_chunk, tasks)):
                 city_str = format_city_list(chunk_result.city_names)
-                landmarks, tags = write_results_to_db(output_db, chunk_result, store_geometry)
+                landmarks, deduped, tags = write_results_to_db(output_db, chunk_result, store_geometry)
                 total_landmarks += landmarks
+                total_deduplicated += deduped
                 total_tags += tags
                 print(
                     f"[{i+1}/{len(tasks)}] {chunk_result.state_id}: {city_str} "
-                    f"-> {chunk_result.total_features} features, {landmarks} new landmarks"
+                    f"-> {chunk_result.total_features} features, {landmarks} new, {deduped} deduped"
                 )
 
     # Create indexes after bulk insert
     create_indexes(output_db)
 
-    print(f"\nDone! Total: {total_landmarks} landmarks, {total_tags} tags")
+    total_features = total_landmarks + total_deduplicated
+    print(f"\nDone!")
+    print(f"  Total features processed: {total_features:,}")
+    print(f"  Unique landmarks: {total_landmarks:,}")
+    print(f"  Deduplicated: {total_deduplicated:,} ({total_deduplicated/total_features*100:.1f}%)")
+    print(f"  Tags stored: {total_tags:,}")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,51 @@
+# Example configuration for sentence embedding training
+# Copy and modify this file for your training run
+
+# Data paths
+db_path: /data/overhead_matching/datasets/us_osm_landmarks/landmarks.db
+output_dir: /data/overhead_matching/models/sentence_embeddings
+# tag_vocabs_path: null  # Optional, built automatically if not provided
+# tensorboard_dir: null  # Defaults to {output_dir}/tensorboard
+
+# Model configuration
+model:
+  encoder_name: sentence-transformers/all-MiniLM-L6-v2
+  projection_dim: 128
+  freeze_encoder: false
+
+# Training configuration
+training:
+  batch_size: 256
+  num_epochs: 5
+  lr_schedule:
+    encoder_lr: 2.0e-5   # Lower LR for pretrained encoder
+    heads_lr: 1.0e-4     # Higher LR for randomly initialized heads (null = use encoder_lr)
+    warmup_steps: 1000
+  gradient_clip_norm: 1.0
+  temperature: 0.07
+  num_workers: 4
+  log_every_n_steps: 100
+
+# Task selection - which tags to use for training
+classification_tags:
+  - amenity
+  - building
+  - highway
+  - shop
+  - leisure
+  - tourism
+  - landuse
+  - natural
+  - surface
+  - cuisine
+
+contrastive_tags:
+  - name
+  - addr:street
+
+# Train/test split
+train_split: 0.9
+seed: 42
+
+# Limit landmarks for testing (null for all)
+# limit: 10000

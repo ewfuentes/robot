@@ -342,3 +342,48 @@ py_binary(
     requirement("shapely"),
   ]
 )
+
+py_library(
+  name = "sentence_configs",
+  srcs = ["sentence_configs.py"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+  ],
+  deps = [
+    requirement("msgspec"),
+  ],
+)
+
+py_library(
+  name = "sentence_losses",
+  srcs = ["sentence_losses.py"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+  ],
+  deps = [
+    requirement("torch"),
+    "//experimental/overhead_matching/swag/data:sentence_dataset",
+  ],
+)
+
+py_binary(
+  name = "build_tag_vocabularies",
+  srcs = ["build_tag_vocabularies.py"],
+  deps = [],
+)
+
+py_binary(
+  name = "train_sentence_embeddings",
+  srcs = ["train_sentence_embeddings.py"],
+  deps = [
+    requirement("torch"),
+    requirement("tensorboard"),
+    requirement("tqdm"),
+    requirement("numpy"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:sentence_dataset",
+    "//experimental/overhead_matching/swag/model:sentence_embedding_model",
+    ":sentence_configs",
+    ":sentence_losses",
+  ],
+)

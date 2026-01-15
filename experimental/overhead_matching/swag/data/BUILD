@@ -90,3 +90,30 @@ py_test(
   data = ["@alphaearth_snippet//:files"],
   deps = [":alphaearth_registry"],
 )
+
+py_library(
+  name = "osm_sentence_generator",
+  srcs = ["osm_sentence_generator.py"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+  ],
+  deps = [],
+)
+
+py_test(
+  name = "osm_sentence_generator_test",
+  srcs = ["osm_sentence_generator_test.py"],
+  deps = [":osm_sentence_generator"],
+)
+
+py_library(
+  name = "sentence_dataset",
+  srcs = ["sentence_dataset.py"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+  ],
+  deps = [
+    requirement("torch"),
+    ":osm_sentence_generator",
+  ],
+)
