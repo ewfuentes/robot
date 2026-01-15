@@ -388,12 +388,16 @@ def get_cached_tensors(metadata: dict, caches_by_dataset: dict[str, list[TensorC
     """
     # Look up caches for this image's dataset
     dataset_key = metadata.get("dataset_key")
-    if dataset_key is None or not caches_by_dataset:
-        raise RuntimeError(f"missing metadata: {metadata}")
+    if dataset_key is None:
+        raise RuntimeError(f"missing dataset_key in metadata: {metadata}")
+
+    # If no caches configured, return empty dict (e.g., text-only extractors)
+    if not caches_by_dataset:
+        return {}
 
     caches = caches_by_dataset.get(dataset_key, [])
     if not caches:
-        raise RuntimeError(f"missing caches: {caches_by_dataset}")
+        return {}
 
     key = metadata["path"].name.encode('utf-8')
     out = {}
