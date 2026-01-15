@@ -197,7 +197,7 @@ TEST_F(ExtractLandmarksTest, EmptyTagFilterReturnsEmpty) {
 
 TEST_F(ExtractLandmarksTest, MultipleTagFilters) {
     auto features = extract_features(test_pbf_.string(), full_bbox_,
-                                      {{"amenity", true}, {"building", true}, {"highway", true}});
+                                     {{"amenity", true}, {"building", true}, {"highway", true}});
 
     EXPECT_GT(features.size(), 0) << "Should find features with any of the tags";
 
@@ -244,9 +244,9 @@ TEST_F(ExtractLandmarksTest, HandlesEmptyBoundingBox) {
 }
 
 TEST_F(ExtractLandmarksTest, HandlesInvalidPbfPath) {
-    EXPECT_THROW(
-        extract_landmarks("/nonexistent/file.osm.pbf", make_bboxes(full_bbox_), {{"amenity", true}}),
-        std::runtime_error);
+    EXPECT_THROW(extract_landmarks("/nonexistent/file.osm.pbf", make_bboxes(full_bbox_),
+                                   {{"amenity", true}}),
+                 std::runtime_error);
 }
 
 // === Performance Test ===
@@ -255,7 +255,7 @@ TEST_F(ExtractLandmarksTest, ExtractsFullIslandReasonablyFast) {
     auto start = std::chrono::steady_clock::now();
 
     auto features = extract_features(test_pbf_.string(), full_bbox_,
-                                      {{"building", true}, {"highway", true}, {"amenity", true}});
+                                     {{"building", true}, {"highway", true}, {"amenity", true}});
 
     auto duration = std::chrono::steady_clock::now() - start;
     auto seconds = std::chrono::duration_cast<std::chrono::seconds>(duration).count();
