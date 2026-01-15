@@ -48,6 +48,80 @@ class LandmarkType(StrEnum):
     MULTIPOLYGON = "multipolygon"
 
 
+class CLIPEmbedMode(StrEnum):
+    """Mode for composable CLIP text extractors."""
+    PROPER_NOUNS_ONLY = "proper_nouns_only"  # proper nouns via CLIP/hash, sentences via pre-computed
+    SENTENCES_ONLY = "sentences_only"
+    BOTH = "both"
+
+
+class TextEncoderType(StrEnum):
+    """Type of text encoder to use."""
+    CLIP = "clip"
+    HASH_BIT = "hash_bit"
+
+
+class ComposableCLIPPanoExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    """Composable text encoder for panorama landmarks.
+
+    Supports multiple embedding modes:
+    - proper_nouns_only: Encode proper nouns with CLIP/hash, sentences use pre-computed
+    - sentences_only: Encode full sentences with CLIP/hash, drop proper nouns/addresses
+    - both: Encode both proper nouns and sentences with CLIP/hash
+    """
+    # CLIP settings (used when encoder_type=clip)
+    model_name: str = "openai/clip-vit-large-patch14"
+    max_text_length: int = 77
+    freeze_encoder: bool = False
+    use_gradient_checkpointing: bool = True
+
+    # Data loading
+    embedding_version: str = ""
+    auxiliary_info_key: str = ""
+
+    # Composability options
+    embed_mode: CLIPEmbedMode = CLIPEmbedMode.SENTENCES_ONLY
+    encoder_type: TextEncoderType = TextEncoderType.CLIP
+
+    # Hash-bit settings (used when encoder_type=hash_bit)
+    hash_bit_dim: int = 256
+
+    # Pre-computed embedding size (for sentence fallback in proper_nouns_only mode)
+    precomputed_embedding_size: int = 1536
+
+
+class ComposableCLIPOSMExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    """Composable text encoder for OSM landmarks.
+
+    Supports multiple embedding modes:
+    - proper_nouns_only: Encode names/addresses with CLIP/hash, sentences use pre-computed
+    - sentences_only: Encode full sentences with CLIP/hash, drop proper nouns/addresses
+    - both: Encode both names/addresses and sentences with CLIP/hash
+
+    Extracts name from 'name' tag, address from 'addr:street' and 'addr:housenumber'.
+    Supports all geometry types with learned type embeddings (CLIP mode only).
+    """
+    # CLIP settings (used when encoder_type=clip)
+    model_name: str = "openai/clip-vit-large-patch14"
+    max_text_length: int = 77
+    freeze_encoder: bool = False
+    use_gradient_checkpointing: bool = True
+
+    # Data loading
+    embedding_version: str = ""
+    auxiliary_info_key: str = ""
+
+    # Composability options
+    embed_mode: CLIPEmbedMode = CLIPEmbedMode.SENTENCES_ONLY
+    encoder_type: TextEncoderType = TextEncoderType.CLIP
+
+    # Hash-bit settings (used when encoder_type=hash_bit)
+    hash_bit_dim: int = 256
+
+    # Pre-computed embedding size (for sentence fallback in proper_nouns_only mode)
+    precomputed_embedding_size: int = 1536
+
+
 class SemanticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     landmark_type: LandmarkType
     openai_embedding_size: int  # if smaller than the true embedding dim (1536), will crop and renormalize embedding
@@ -57,6 +131,28 @@ class SemanticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
 
 class PanoramaSemanticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     openai_embedding_size: int  # if smaller than the true embedding dim (1536), will crop and renormalize embedding
+    embedding_version: str
+    auxiliary_info_key: str
+
+
+class PanoramaProperNounExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    """Config for extracting proper noun embeddings from panorama landmarks.
+
+    Proper nouns are business names, street signs, etc. extracted from panorama images.
+    Produces one token per proper noun per landmark.
+    """
+    openai_embedding_size: int
+    embedding_version: str
+    auxiliary_info_key: str
+
+
+class PanoramaLocationTypeExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    """Config for extracting location type embeddings from panoramas.
+
+    Location type is a scene classification like "urban commercial district".
+    Produces exactly one token per panorama.
+    """
+    openai_embedding_size: int
     embedding_version: str
     auxiliary_info_key: str
 
@@ -104,6 +200,10 @@ ExtractorConfig = Union[
     SemanticSegmentExtractorConfig,
     SemanticLandmarkExtractorConfig,
     PanoramaSemanticLandmarkExtractorConfig,
+    PanoramaProperNounExtractorConfig,
+    PanoramaLocationTypeExtractorConfig,
+    ComposableCLIPPanoExtractorConfig,
+    ComposableCLIPOSMExtractorConfig,
     SyntheticLandmarkExtractorConfig,
     AbsolutePositionExtractorConfig,
 ]

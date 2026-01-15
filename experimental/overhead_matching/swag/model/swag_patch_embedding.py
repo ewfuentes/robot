@@ -11,7 +11,13 @@ from experimental.overhead_matching.swag.model.swag_model_input_output import (
 from experimental.overhead_matching.swag.model.semantic_segment_extractor import SemanticSegmentExtractor
 from experimental.overhead_matching.swag.model.alphaearth_extractor import AlphaEarthExtractor
 from experimental.overhead_matching.swag.model.semantic_landmark_extractor import SemanticLandmarkExtractor
-from experimental.overhead_matching.swag.model.panorama_semantic_landmark_extractor import PanoramaSemanticLandmarkExtractor
+from experimental.overhead_matching.swag.model.panorama_semantic_landmark_extractor import (
+    PanoramaSemanticLandmarkExtractor,
+    PanoramaProperNounExtractor,
+    PanoramaLocationTypeExtractor,
+)
+from experimental.overhead_matching.swag.model.composable_clip_pano_extractor import ComposableCLIPPanoExtractor
+from experimental.overhead_matching.swag.model.composable_clip_osm_extractor import ComposableCLIPOSMExtractor
 from torch.nn.init import xavier_uniform_
 from experimental.overhead_matching.swag.model.synthetic_landmark_extractor import SyntheticLandmarkExtractor
 from experimental.overhead_matching.swag.model.absolute_position_extractor import AbsolutePositionExtractor
@@ -26,6 +32,10 @@ from experimental.overhead_matching.swag.model.swag_config_types import (
     SemanticSegmentExtractorConfig,
     SemanticLandmarkExtractorConfig,
     PanoramaSemanticLandmarkExtractorConfig,
+    PanoramaProperNounExtractorConfig,
+    PanoramaLocationTypeExtractorConfig,
+    ComposableCLIPPanoExtractorConfig,
+    ComposableCLIPOSMExtractorConfig,
     AbsolutePositionExtractorConfig,
     SyntheticLandmarkExtractorConfig,
 
@@ -74,6 +84,10 @@ def create_extractor(config: ExtractorConfig, auxiliary_info: dict[str, Any]):
         case SemanticEmbeddingMatrixConfig(): return SemanticEmbeddingMatrix(config)
         case SemanticLandmarkExtractorConfig(): return SemanticLandmarkExtractor(config, auxiliary_info[config.auxiliary_info_key])
         case PanoramaSemanticLandmarkExtractorConfig(): return PanoramaSemanticLandmarkExtractor(config, auxiliary_info[config.auxiliary_info_key])
+        case PanoramaProperNounExtractorConfig(): return PanoramaProperNounExtractor(config, auxiliary_info[config.auxiliary_info_key])
+        case PanoramaLocationTypeExtractorConfig(): return PanoramaLocationTypeExtractor(config, auxiliary_info[config.auxiliary_info_key])
+        case ComposableCLIPPanoExtractorConfig(): return ComposableCLIPPanoExtractor(config, auxiliary_info[config.auxiliary_info_key])
+        case ComposableCLIPOSMExtractorConfig(): return ComposableCLIPOSMExtractor(config, auxiliary_info[config.auxiliary_info_key])
         case SemanticSegmentExtractorConfig(): return SemanticSegmentExtractor(config)
         case SyntheticLandmarkExtractorConfig(): return SyntheticLandmarkExtractor(config)
         case AbsolutePositionExtractorConfig(): return AbsolutePositionExtractor(config)
