@@ -116,12 +116,12 @@ def _(dataset_path, pano_model, sat_model, vd):
             satellite_patch_size=sat_model.patch_dims,
             panorama_size=pano_model.patch_dims,
             satellite_tensor_cache_info=vd.TensorCacheInfo(
-                dataset_key=dataset_path.name,
+                dataset_keys=[dataset_path.name],
                 model_type="satellite",
                 landmark_version=landmark_version,
                 extractor_info=sat_model.cache_info()),
             panorama_tensor_cache_info=vd.TensorCacheInfo(
-                dataset_key=dataset_path.name,
+                dataset_keys=[dataset_path.name],
                 model_type="panorama",
                 landmark_version=landmark_version,
                 extractor_info=pano_model.cache_info()),

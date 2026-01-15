@@ -68,7 +68,7 @@ class PanoramaIndexInfo(NamedTuple):
 
 
 class TensorCacheInfo(NamedTuple):
-    dataset_key: str
+    dataset_keys: list[str]  # List of dataset keys, one per dataset path
     model_type: str
     landmark_version: str
     panorama_landmark_radius_px: float
@@ -340,37 +340,67 @@ def populate_pairs(pano_metadata, sat_metadata, sample_mode):
     return out
 
 
-def load_tensor_caches(info: TensorCacheInfo):
+def load_tensor_caches(info: TensorCacheInfo) -> dict[str, list[TensorCache]]:
+    """Load tensor caches for all datasets specified in info.
+
+    Returns:
+        Dict mapping dataset_key -> list of TensorCache objects for that dataset.
+        Returns empty dict if info is None or has no extractor_info.
+    """
     if info is None or info.extractor_info is None:
-        return []
+        return {}
 
     base_path = Path("~/.cache/robot/overhead_matching/tensor_cache").expanduser()
-    base_path = base_path / info.dataset_key / info.model_type
 
-    out = []
-    for extractor_name, cacheable_info in info.extractor_info.items():
-        # Compute the hash using model config, patch_dims, landmark_version, panorama_landmark_radius_px, AND landmark_correspondence_inflation_factor
-        config_hash = compute_config_hash(HashStruct(
-            model_config=cacheable_info.model_config,
-            patch_dims=cacheable_info.patch_dims,
-            landmark_version=info.landmark_version,
-            panorama_landmark_radius_px=info.panorama_landmark_radius_px,
-            landmark_correspondence_inflation_factor=info.landmark_correspondence_inflation_factor))
+    out = {}
+    for dataset_key in info.dataset_keys:
+        dataset_base_path = base_path / dataset_key / info.model_type
+        dataset_caches = []
+        for extractor_name, cacheable_info in info.extractor_info.items():
+            # Compute the hash using model config, patch_dims, landmark_version, panorama_landmark_radius_px, AND landmark_correspondence_inflation_factor
+            config_hash = compute_config_hash(HashStruct(
+                model_config=cacheable_info.model_config,
+                patch_dims=cacheable_info.patch_dims,
+                landmark_version=info.landmark_version,
+                panorama_landmark_radius_px=info.panorama_landmark_radius_px,
+                landmark_correspondence_inflation_factor=info.landmark_correspondence_inflation_factor))
 
-        cache_path = base_path / config_hash
-        out.append(TensorCache(
-            key=extractor_name,
-            db=lmdb.open(str(cache_path), map_size=2**40, readonly=True)))
+            cache_path = dataset_base_path / config_hash
+            dataset_caches.append(TensorCache(
+                key=extractor_name,
+                db=lmdb.open(str(cache_path), map_size=2**40, readonly=True)))
+        # Convert to string to match metadata["dataset_key"] which stores p.name
+        key_str = dataset_key.name if hasattr(dataset_key, 'name') else str(dataset_key)
+        out[key_str] = dataset_caches
     return out
 
 
-def get_cached_tensors(metadata: dict, caches: list[TensorCache], load_debug: bool = False):
+def get_cached_tensors(metadata: dict, caches_by_dataset: dict[str, list[TensorCache]], load_debug: bool = False):
+    """Get cached tensors for a single image.
+
+    Args:
+        metadata: Dict containing image metadata, must include 'path' and 'dataset_key'
+        caches_by_dataset: Dict mapping dataset_key -> list of TensorCache objects
+        load_debug: Whether to load debug tensors
+
+    Returns:
+        Dict mapping extractor name -> ExtractorOutput
+    """
+    # Look up caches for this image's dataset
+    dataset_key = metadata.get("dataset_key")
+    if dataset_key is None or not caches_by_dataset:
+        raise RuntimeError(f"missing metadata: {metadata}")
+
+    caches = caches_by_dataset.get(dataset_key, [])
+    if not caches:
+        raise RuntimeError(f"missing caches: {caches_by_dataset}")
+
     key = metadata["path"].name.encode('utf-8')
     out = {}
     for cache in caches:
         with cache.db.begin() as txn:
             stored_value = txn.get(key)
-            assert stored_value is not None, f"Failed to get: {key} from cache at: {cache.db.path()}"
+            assert stored_value is not None, f"Failed to get: {key} from cache at: {cache.db.path()} for dataset '{dataset_key}'"
             deserialized = np.load(io.BytesIO(stored_value))
             # Always use ExtractorOutput for cached tensors
             # Separate debug dict from other fields (debug dict uses dot notation: "debug.key_name")
@@ -418,8 +448,10 @@ class VigorDataset(torch.utils.data.Dataset):
         log_progress(f"Starting dataset init for {[p.name for p in dataset_path]}")
         for p in dataset_path:
             sat_metadata = load_satellite_metadata(p / "satellite", config.satellite_zoom_level)
+            sat_metadata["dataset_key"] = p.name  # Track which dataset this came from
             log_progress(f"Loaded satellite metadata: {len(sat_metadata)} items")
             pano_metadata = load_panorama_metadata(p / "panorama", config.satellite_zoom_level)
+            pano_metadata["dataset_key"] = p.name  # Track which dataset this came from
             log_progress(f"Loaded panorama metadata: {len(pano_metadata)} items")
 
             if config.should_load_landmarks:
@@ -514,9 +546,9 @@ class VigorDataset(torch.utils.data.Dataset):
         log_progress(f"Created {len(self._pairs)} training pairs")
 
         self._panorama_tensor_caches = load_tensor_caches(self._config.panorama_tensor_cache_info)
-        log_progress(f"Loaded {len(self._panorama_tensor_caches)} panorama caches")
+        log_progress(f"Loaded panorama caches for {len(self._panorama_tensor_caches)} dataset(s)")
         self._satellite_tensor_caches = load_tensor_caches(self._config.satellite_tensor_cache_info)
-        log_progress(f"Loaded {len(self._satellite_tensor_caches)} satellite caches")
+        log_progress(f"Loaded satellite caches for {len(self._satellite_tensor_caches)} dataset(s)")
         log_progress("Dataset initialization complete")
 
     @property
