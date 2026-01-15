@@ -25,7 +25,12 @@ PYBIND11_MODULE(extract_landmarks_python, m) {
         .def("__repr__", [](const Coordinate& c) {
             return "Coordinate(lon=" + std::to_string(c.lon) + ", lat=" + std::to_string(c.lat) +
                    ")";
-        });
+        })
+        .def(py::pickle(
+            [](const Coordinate& c) { return py::make_tuple(c.lon, c.lat); },
+            [](py::tuple t) {
+                return Coordinate{t[0].cast<double>(), t[1].cast<double>()};
+            }));
 
     // PointGeometry
     py::class_<PointGeometry>(m, "PointGeometry")
@@ -34,7 +39,10 @@ PYBIND11_MODULE(extract_landmarks_python, m) {
         .def("__repr__", [](const PointGeometry& g) {
             return "PointGeometry(coord=Coordinate(lon=" + std::to_string(g.coord.lon) +
                    ", lat=" + std::to_string(g.coord.lat) + "))";
-        });
+        })
+        .def(py::pickle(
+            [](const PointGeometry& g) { return py::make_tuple(g.coord); },
+            [](py::tuple t) { return PointGeometry{t[0].cast<Coordinate>()}; }));
 
     // LineStringGeometry
     py::class_<LineStringGeometry>(m, "LineStringGeometry")
@@ -42,7 +50,12 @@ PYBIND11_MODULE(extract_landmarks_python, m) {
         .def_readwrite("coords", &LineStringGeometry::coords)
         .def("__repr__", [](const LineStringGeometry& g) {
             return "LineStringGeometry(coords=" + std::to_string(g.coords.size()) + " points)";
-        });
+        })
+        .def(py::pickle(
+            [](const LineStringGeometry& g) { return py::make_tuple(g.coords); },
+            [](py::tuple t) {
+                return LineStringGeometry{t[0].cast<std::vector<Coordinate>>()};
+            }));
 
     // PolygonGeometry
     py::class_<PolygonGeometry>(m, "PolygonGeometry")
@@ -52,7 +65,13 @@ PYBIND11_MODULE(extract_landmarks_python, m) {
         .def("__repr__", [](const PolygonGeometry& g) {
             return "PolygonGeometry(exterior=" + std::to_string(g.exterior.size()) +
                    " points, holes=" + std::to_string(g.holes.size()) + ")";
-        });
+        })
+        .def(py::pickle(
+            [](const PolygonGeometry& g) { return py::make_tuple(g.exterior, g.holes); },
+            [](py::tuple t) {
+                return PolygonGeometry{t[0].cast<std::vector<Coordinate>>(),
+                                       t[1].cast<std::vector<std::vector<Coordinate>>>()};
+            }));
 
     // MultiPolygonGeometry
     py::class_<MultiPolygonGeometry>(m, "MultiPolygonGeometry")
@@ -60,7 +79,12 @@ PYBIND11_MODULE(extract_landmarks_python, m) {
         .def_readwrite("polygons", &MultiPolygonGeometry::polygons)
         .def("__repr__", [](const MultiPolygonGeometry& g) {
             return "MultiPolygonGeometry(polygons=" + std::to_string(g.polygons.size()) + ")";
-        });
+        })
+        .def(py::pickle(
+            [](const MultiPolygonGeometry& g) { return py::make_tuple(g.polygons); },
+            [](py::tuple t) {
+                return MultiPolygonGeometry{t[0].cast<std::vector<PolygonGeometry>>()};
+            }));
 
     // LandmarkFeature
     py::class_<LandmarkFeature>(m, "LandmarkFeature")
@@ -84,7 +108,37 @@ PYBIND11_MODULE(extract_landmarks_python, m) {
             }
             return "LandmarkFeature(osm_type=" + type_str + ", osm_id=" + std::to_string(f.osm_id) +
                    ", tags=" + std::to_string(f.tags.size()) + ")";
-        });
+        })
+        .def(py::pickle(
+            [](const LandmarkFeature& f) {
+                // Serialize geometry variant with type index
+                py::object geom_obj;
+                int geom_type = static_cast<int>(f.geometry.index());
+                std::visit([&geom_obj](auto&& g) { geom_obj = py::cast(g); }, f.geometry);
+                return py::make_tuple(f.osm_type, f.osm_id, geom_type, geom_obj, f.tags);
+            },
+            [](py::tuple t) {
+                LandmarkFeature f;
+                f.osm_type = t[0].cast<OsmType>();
+                f.osm_id = t[1].cast<int64_t>();
+                int geom_type = t[2].cast<int>();
+                switch (geom_type) {
+                    case 0:
+                        f.geometry = t[3].cast<PointGeometry>();
+                        break;
+                    case 1:
+                        f.geometry = t[3].cast<LineStringGeometry>();
+                        break;
+                    case 2:
+                        f.geometry = t[3].cast<PolygonGeometry>();
+                        break;
+                    case 3:
+                        f.geometry = t[3].cast<MultiPolygonGeometry>();
+                        break;
+                }
+                f.tags = t[4].cast<std::map<std::string, std::string>>();
+                return f;
+            }));
 
     // BoundingBox
     py::class_<BoundingBox>(m, "BoundingBox")
@@ -104,24 +158,24 @@ PYBIND11_MODULE(extract_landmarks_python, m) {
         });
 
     // Main extraction function
-    m.def("extract_landmarks", &extract_landmarks, py::arg("pbf_path"), py::arg("bbox"),
+    m.def("extract_landmarks", &extract_landmarks, py::arg("pbf_path"), py::arg("bboxes"),
           py::arg("tag_filters"),
           R"pbdoc(
-        Extract landmarks from an OSM PBF file.
+        Extract landmarks from an OSM PBF file for multiple bounding boxes in one pass.
 
         Parameters
         ----------
         pbf_path : str
             Path to the OSM PBF file
-        bbox : BoundingBox
-            Bounding box to filter features
+        bboxes : dict[str, BoundingBox]
+            Dictionary mapping region_id to BoundingBox to extract landmarks for
         tag_filters : dict
             Dictionary of OSM tags to filter by (e.g., {"amenity": True, "building": True})
 
         Returns
         -------
-        list of LandmarkFeature
-            List of extracted landmark features with geometry and tags
+        list of tuple[str, LandmarkFeature]
+            List of (region_id, LandmarkFeature) pairs with geometry and tags
     )pbdoc");
 }
 

@@ -107,7 +107,8 @@ def main(
     }
 
     print(f"Extracting landmarks from {pbf_path}...")
-    features = elm.extract_landmarks(str(pbf_path), bbox_obj, tag_filters)
+    results = elm.extract_landmarks(str(pbf_path), {"region": bbox_obj}, tag_filters)
+    features = [feature for region_id, feature in results]
     print(f"Extracted {len(features)} features")
 
     if len(features) == 0:

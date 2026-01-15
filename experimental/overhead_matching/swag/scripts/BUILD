@@ -332,10 +332,13 @@ py_binary(
 )
 
 py_binary(
-  name="extract_landmarks_for_cities",
-  srcs=["extract_landmarks_for_cities.py"],
+  name="extract_landmarks_to_sqlite",
+  srcs=["extract_landmarks_to_sqlite.py"],
+  data = [
+    "//common/openstreetmap:extract_landmarks_python.so",
+  ],
   deps=[
-    ":extract_landmarks_historical",
     requirement("pyyaml"),
+    requirement("shapely"),
   ]
 )

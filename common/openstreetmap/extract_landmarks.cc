@@ -10,6 +10,7 @@
 #include <osmium/relations/relations_manager.hpp>
 #include <osmium/visitor.hpp>
 #include <stdexcept>
+#include <unordered_map>
 
 namespace robot::openstreetmap {
 
@@ -37,16 +38,13 @@ std::map<std::string, std::string> tags_to_map(const osmium::TagList& tags) {
 // Handler for extracting nodes and ways
 class LandmarkHandler : public osmium::handler::Handler {
    public:
-    LandmarkHandler(const BoundingBox& bbox, const std::map<std::string, bool>& tag_filters)
-        : bbox_(bbox), tag_filters_(tag_filters) {}
+    LandmarkHandler(const std::unordered_map<std::string, BoundingBox>& bboxes,
+                    const std::map<std::string, bool>& tag_filters)
+        : bboxes_(bboxes), tag_filters_(tag_filters) {}
 
     void node(const osmium::Node& node) {
-        // Only extract nodes with tags and within bbox
+        // Only extract nodes with tags
         if (node.tags().empty()) {
-            return;
-        }
-
-        if (!bbox_.contains(node.location().lon(), node.location().lat())) {
             return;
         }
 
@@ -54,13 +52,21 @@ class LandmarkHandler : public osmium::handler::Handler {
             return;
         }
 
-        LandmarkFeature feature;
-        feature.osm_type = OsmType::NODE;
-        feature.osm_id = node.id();
-        feature.geometry = PointGeometry{{node.location().lon(), node.location().lat()}};
-        feature.tags = tags_to_map(node.tags());
+        double lon = node.location().lon();
+        double lat = node.location().lat();
 
-        features_.push_back(std::move(feature));
+        // Check all bboxes, assign to first match
+        for (const auto& [region_id, bbox] : bboxes_) {
+            if (bbox.contains(lon, lat)) {
+                LandmarkFeature feature;
+                feature.osm_type = OsmType::NODE;
+                feature.osm_id = node.id();
+                feature.geometry = PointGeometry{{lon, lat}};
+                feature.tags = tags_to_map(node.tags());
+                features_.emplace_back(region_id, std::move(feature));
+                break;  // Assign to first matching region only
+            }
+        }
     }
 
     void way(const osmium::Way& way) {
@@ -72,23 +78,7 @@ class LandmarkHandler : public osmium::handler::Handler {
             return;
         }
 
-        // Check if any node is within bbox (simplified bbox check)
-        bool in_bbox = false;
-        for (const auto& node_ref : way.nodes()) {
-            if (!node_ref.location().valid()) {
-                continue;
-            }
-            if (bbox_.contains(node_ref.location().lon(), node_ref.location().lat())) {
-                in_bbox = true;
-                break;
-            }
-        }
-
-        if (!in_bbox) {
-            return;
-        }
-
-        // Extract coordinates
+        // Extract coordinates first
         std::vector<Coordinate> coords;
         for (const auto& node_ref : way.nodes()) {
             if (node_ref.location().valid()) {
@@ -98,6 +88,24 @@ class LandmarkHandler : public osmium::handler::Handler {
 
         if (coords.size() < 2) {
             return;  // Invalid way
+        }
+
+        // Check all bboxes using first valid coordinate
+        std::string matched_region;
+        for (const auto& [region_id, bbox] : bboxes_) {
+            for (const auto& coord : coords) {
+                if (bbox.contains(coord.lon, coord.lat)) {
+                    matched_region = region_id;
+                    break;
+                }
+            }
+            if (!matched_region.empty()) {
+                break;
+            }
+        }
+
+        if (matched_region.empty()) {
+            return;  // Not in any bbox
         }
 
         LandmarkFeature feature;
@@ -116,22 +124,25 @@ class LandmarkHandler : public osmium::handler::Handler {
             feature.geometry = LineStringGeometry{coords};
         }
 
-        features_.push_back(std::move(feature));
+        features_.emplace_back(matched_region, std::move(feature));
     }
 
-    const std::vector<LandmarkFeature>& features() const { return features_; }
+    const std::vector<std::pair<std::string, LandmarkFeature>>& features() const {
+        return features_;
+    }
 
    private:
-    const BoundingBox& bbox_;
+    const std::unordered_map<std::string, BoundingBox>& bboxes_;
     const std::map<std::string, bool>& tag_filters_;
-    std::vector<LandmarkFeature> features_;
+    std::vector<std::pair<std::string, LandmarkFeature>> features_;
 };
 
 // Handler for processing multipolygon areas
 class AreaHandler : public osmium::handler::Handler {
    public:
-    AreaHandler(const BoundingBox& bbox, const std::map<std::string, bool>& tag_filters)
-        : bbox_(bbox), tag_filters_(tag_filters) {}
+    AreaHandler(const std::unordered_map<std::string, BoundingBox>& bboxes,
+                const std::map<std::string, bool>& tag_filters)
+        : bboxes_(bboxes), tag_filters_(tag_filters) {}
 
     void area(const osmium::Area& area) {
         // Only process relations (multipolygons), not closed ways
@@ -147,20 +158,27 @@ class AreaHandler : public osmium::handler::Handler {
             return;
         }
 
-        // Check if any node is within bbox
-        bool in_bbox = false;
-        for (const auto& outer_ring : area.outer_rings()) {
-            for (const auto& node_ref : outer_ring) {
-                if (bbox_.contains(node_ref.lon(), node_ref.lat())) {
-                    in_bbox = true;
-                    break;
+        // Check all bboxes to find first match
+        std::string matched_region;
+        for (const auto& [region_id, bbox] : bboxes_) {
+            bool in_bbox = false;
+            for (const auto& outer_ring : area.outer_rings()) {
+                for (const auto& node_ref : outer_ring) {
+                    if (bbox.contains(node_ref.lon(), node_ref.lat())) {
+                        in_bbox = true;
+                        break;
+                    }
                 }
+                if (in_bbox) break;
             }
-            if (in_bbox) break;
+            if (in_bbox) {
+                matched_region = region_id;
+                break;
+            }
         }
 
-        if (!in_bbox) {
-            return;
+        if (matched_region.empty()) {
+            return;  // Not in any bbox
         }
 
         // Build MultiPolygonGeometry
@@ -194,27 +212,30 @@ class AreaHandler : public osmium::handler::Handler {
         feature.geometry = std::move(mp);
         feature.tags = tags_to_map(area.tags());
 
-        features_.push_back(std::move(feature));
+        features_.emplace_back(matched_region, std::move(feature));
     }
 
-    const std::vector<LandmarkFeature>& features() const { return features_; }
+    const std::vector<std::pair<std::string, LandmarkFeature>>& features() const {
+        return features_;
+    }
 
    private:
-    const BoundingBox& bbox_;
+    const std::unordered_map<std::string, BoundingBox>& bboxes_;
     const std::map<std::string, bool>& tag_filters_;
-    std::vector<LandmarkFeature> features_;
+    std::vector<std::pair<std::string, LandmarkFeature>> features_;
 };
 
 }  // namespace
 
-std::vector<LandmarkFeature> extract_landmarks(const std::string& pbf_path, const BoundingBox& bbox,
-                                               const std::map<std::string, bool>& tag_filters) {
+std::vector<std::pair<std::string, LandmarkFeature>> extract_landmarks(
+    const std::string& pbf_path, const std::unordered_map<std::string, BoundingBox>& bboxes,
+    const std::map<std::string, bool>& tag_filters) {
     // Verify file exists
     if (!std::filesystem::exists(pbf_path)) {
         throw std::runtime_error("PBF file not found: " + pbf_path);
     }
 
-    std::vector<LandmarkFeature> all_features;
+    std::vector<std::pair<std::string, LandmarkFeature>> all_features;
 
     // Use location index to store node locations for ways
     using IndexType =
@@ -229,7 +250,7 @@ std::vector<LandmarkFeature> extract_landmarks(const std::string& pbf_path, cons
         osmium::io::Reader reader(pbf_path,
                                   osmium::osm_entity_bits::node | osmium::osm_entity_bits::way);
 
-        LandmarkHandler handler(bbox, tag_filters);
+        LandmarkHandler handler(bboxes, tag_filters);
         osmium::apply(reader, location_handler, handler);
         reader.close();
 
@@ -257,7 +278,7 @@ std::vector<LandmarkFeature> extract_landmarks(const std::string& pbf_path, cons
         // Second pass: read ways/nodes and assemble areas
         {
             osmium::io::Reader reader(pbf_path);
-            AreaHandler area_handler(bbox, tag_filters);
+            AreaHandler area_handler(bboxes, tag_filters);
 
             osmium::apply(reader, location_handler,
                           mp_manager.handler([&area_handler](osmium::memory::Buffer&& buffer) {
@@ -267,7 +288,7 @@ std::vector<LandmarkFeature> extract_landmarks(const std::string& pbf_path, cons
             reader.close();
 
             // Add multipolygon features to results
-            auto mp_features = area_handler.features();
+            const auto& mp_features = area_handler.features();
             all_features.insert(all_features.end(), mp_features.begin(), mp_features.end());
         }
     }
