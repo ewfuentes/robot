@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <unordered_map>
 
 #include "gtest/gtest.h"
 
@@ -13,12 +14,30 @@ class ExtractLandmarksTest : public ::testing::Test {
         "external/openstreetmap_snippet/us-virgin-islands-latest.osm.pbf";
 
     const BoundingBox full_bbox_{-65.0, 17.5, -64.5, 18.5};  // Covers all USVI
+
+    // Helper to create single-region bbox map
+    std::unordered_map<std::string, BoundingBox> make_bboxes(const BoundingBox& bbox) const {
+        return {{"test_region", bbox}};
+    }
+
+    // Helper to extract features (returns just the LandmarkFeature part)
+    std::vector<LandmarkFeature> extract_features(
+        const std::string& pbf_path, const BoundingBox& bbox,
+        const std::map<std::string, bool>& tag_filters) const {
+        auto results = extract_landmarks(pbf_path, make_bboxes(bbox), tag_filters);
+        std::vector<LandmarkFeature> features;
+        features.reserve(results.size());
+        for (auto& [region_id, feature] : results) {
+            features.push_back(std::move(feature));
+        }
+        return features;
+    }
 };
 
 // === Geometry Type Tests ===
 
 TEST_F(ExtractLandmarksTest, ExtractsPointGeometry) {
-    auto features = extract_landmarks(test_pbf_.string(), full_bbox_, {{"amenity", true}});
+    auto features = extract_features(test_pbf_.string(), full_bbox_, {{"amenity", true}});
 
     // Find at least one point
     auto point_it = std::find_if(features.begin(), features.end(), [](const auto& f) {
@@ -36,7 +55,7 @@ TEST_F(ExtractLandmarksTest, ExtractsPointGeometry) {
 }
 
 TEST_F(ExtractLandmarksTest, ExtractsLineStringGeometry) {
-    auto features = extract_landmarks(test_pbf_.string(), full_bbox_, {{"highway", true}});
+    auto features = extract_features(test_pbf_.string(), full_bbox_, {{"highway", true}});
 
     // Find a linestring (open way)
     auto line_it = std::find_if(features.begin(), features.end(), [](const auto& f) {
@@ -51,7 +70,7 @@ TEST_F(ExtractLandmarksTest, ExtractsLineStringGeometry) {
 }
 
 TEST_F(ExtractLandmarksTest, ExtractsPolygonGeometry) {
-    auto features = extract_landmarks(test_pbf_.string(), full_bbox_, {{"building", true}});
+    auto features = extract_features(test_pbf_.string(), full_bbox_, {{"building", true}});
 
     // Find a polygon
     auto poly_it = std::find_if(features.begin(), features.end(), [](const auto& f) {
@@ -69,7 +88,7 @@ TEST_F(ExtractLandmarksTest, ExtractsPolygonGeometry) {
 }
 
 TEST_F(ExtractLandmarksTest, ExtractsMultiPolygonGeometry) {
-    auto features = extract_landmarks(test_pbf_.string(), full_bbox_, {{"landuse", true}});
+    auto features = extract_features(test_pbf_.string(), full_bbox_, {{"landuse", true}});
 
     // Check if any multipolygons exist
     auto mp_it = std::find_if(features.begin(), features.end(), [](const auto& f) {
@@ -85,7 +104,7 @@ TEST_F(ExtractLandmarksTest, ExtractsMultiPolygonGeometry) {
 
 TEST_F(ExtractLandmarksTest, ExtractsSpecificMultiPolygonRelation) {
     // Relation 4784235 is a known multipolygon in the USVI dataset
-    auto features = extract_landmarks(
+    auto features = extract_features(
         test_pbf_.string(), full_bbox_,
         {{"landuse", true}, {"natural", true}, {"building", true}, {"leisure", true}});
 
@@ -132,8 +151,8 @@ TEST_F(ExtractLandmarksTest, BoundingBoxFilterWorks) {
     // Tight bbox (0.02 degrees ≈ 2km)
     BoundingBox tight_bbox{-64.95, 18.33, -64.93, 18.35};
 
-    auto features_tight = extract_landmarks(test_pbf_.string(), tight_bbox, {{"amenity", true}});
-    auto features_full = extract_landmarks(test_pbf_.string(), full_bbox_, {{"amenity", true}});
+    auto features_tight = extract_features(test_pbf_.string(), tight_bbox, {{"amenity", true}});
+    auto features_full = extract_features(test_pbf_.string(), full_bbox_, {{"amenity", true}});
 
     EXPECT_LT(features_tight.size(), features_full.size())
         << "Tight bbox should return fewer features";
@@ -155,8 +174,8 @@ TEST_F(ExtractLandmarksTest, BoundingBoxFilterWorks) {
 }
 
 TEST_F(ExtractLandmarksTest, TagFilterWorks) {
-    auto amenities = extract_landmarks(test_pbf_.string(), full_bbox_, {{"amenity", true}});
-    auto buildings = extract_landmarks(test_pbf_.string(), full_bbox_, {{"building", true}});
+    auto amenities = extract_features(test_pbf_.string(), full_bbox_, {{"amenity", true}});
+    auto buildings = extract_features(test_pbf_.string(), full_bbox_, {{"building", true}});
 
     EXPECT_GT(amenities.size(), 0) << "Should find some amenities";
     EXPECT_GT(buildings.size(), 0) << "Should find some buildings";
@@ -172,13 +191,13 @@ TEST_F(ExtractLandmarksTest, TagFilterWorks) {
 
 TEST_F(ExtractLandmarksTest, EmptyTagFilterReturnsEmpty) {
     auto features =
-        extract_landmarks(test_pbf_.string(), full_bbox_, {{"nonexistent_tag_xyz", true}});
+        extract_features(test_pbf_.string(), full_bbox_, {{"nonexistent_tag_xyz", true}});
     EXPECT_EQ(features.size(), 0);
 }
 
 TEST_F(ExtractLandmarksTest, MultipleTagFilters) {
-    auto features = extract_landmarks(test_pbf_.string(), full_bbox_,
-                                      {{"amenity", true}, {"building", true}, {"highway", true}});
+    auto features = extract_features(test_pbf_.string(), full_bbox_,
+                                     {{"amenity", true}, {"building", true}, {"highway", true}});
 
     EXPECT_GT(features.size(), 0) << "Should find features with any of the tags";
 
@@ -193,7 +212,7 @@ TEST_F(ExtractLandmarksTest, MultipleTagFilters) {
 // === Data Integrity Tests ===
 
 TEST_F(ExtractLandmarksTest, PreservesOsmMetadata) {
-    auto features = extract_landmarks(test_pbf_.string(), full_bbox_, {{"amenity", true}});
+    auto features = extract_features(test_pbf_.string(), full_bbox_, {{"amenity", true}});
 
     ASSERT_GT(features.size(), 0);
 
@@ -205,7 +224,7 @@ TEST_F(ExtractLandmarksTest, PreservesOsmMetadata) {
 }
 
 TEST_F(ExtractLandmarksTest, PreservesTags) {
-    auto features = extract_landmarks(test_pbf_.string(), full_bbox_, {{"amenity", true}});
+    auto features = extract_features(test_pbf_.string(), full_bbox_, {{"amenity", true}});
 
     ASSERT_GT(features.size(), 0);
 
@@ -220,12 +239,13 @@ TEST_F(ExtractLandmarksTest, PreservesTags) {
 
 TEST_F(ExtractLandmarksTest, HandlesEmptyBoundingBox) {
     BoundingBox empty_bbox{0.0, 0.0, 0.0, 0.0};  // Not in USVI
-    auto features = extract_landmarks(test_pbf_.string(), empty_bbox, {{"amenity", true}});
+    auto features = extract_features(test_pbf_.string(), empty_bbox, {{"amenity", true}});
     EXPECT_EQ(features.size(), 0);
 }
 
 TEST_F(ExtractLandmarksTest, HandlesInvalidPbfPath) {
-    EXPECT_THROW(extract_landmarks("/nonexistent/file.osm.pbf", full_bbox_, {{"amenity", true}}),
+    EXPECT_THROW(extract_landmarks("/nonexistent/file.osm.pbf", make_bboxes(full_bbox_),
+                                   {{"amenity", true}}),
                  std::runtime_error);
 }
 
@@ -234,8 +254,8 @@ TEST_F(ExtractLandmarksTest, HandlesInvalidPbfPath) {
 TEST_F(ExtractLandmarksTest, ExtractsFullIslandReasonablyFast) {
     auto start = std::chrono::steady_clock::now();
 
-    auto features = extract_landmarks(test_pbf_.string(), full_bbox_,
-                                      {{"building", true}, {"highway", true}, {"amenity", true}});
+    auto features = extract_features(test_pbf_.string(), full_bbox_,
+                                     {{"building", true}, {"highway", true}, {"amenity", true}});
 
     auto duration = std::chrono::steady_clock::now() - start;
     auto seconds = std::chrono::duration_cast<std::chrono::seconds>(duration).count();
@@ -247,7 +267,7 @@ TEST_F(ExtractLandmarksTest, ExtractsFullIslandReasonablyFast) {
 // === Geometry Validation Tests ===
 
 TEST_F(ExtractLandmarksTest, PolygonExteriorIsClosed) {
-    auto features = extract_landmarks(test_pbf_.string(), full_bbox_, {{"building", true}});
+    auto features = extract_features(test_pbf_.string(), full_bbox_, {{"building", true}});
 
     for (const auto& f : features) {
         if (std::holds_alternative<PolygonGeometry>(f.geometry)) {
@@ -264,7 +284,7 @@ TEST_F(ExtractLandmarksTest, PolygonExteriorIsClosed) {
 }
 
 TEST_F(ExtractLandmarksTest, LineStringNotClosed) {
-    auto features = extract_landmarks(test_pbf_.string(), full_bbox_, {{"highway", true}});
+    auto features = extract_features(test_pbf_.string(), full_bbox_, {{"highway", true}});
 
     // Find some linestrings
     int linestring_count = 0;
@@ -279,6 +299,46 @@ TEST_F(ExtractLandmarksTest, LineStringNotClosed) {
     }
 
     EXPECT_GT(linestring_count, 0) << "Should find some linestrings";
+}
+
+// === Multi-Bbox Tests ===
+
+TEST_F(ExtractLandmarksTest, MultipleBboxesExtractCorrectRegions) {
+    // Define two non-overlapping bboxes within USVI
+    BoundingBox bbox_a{-64.95, 18.33, -64.90, 18.38};  // St. Thomas area
+    BoundingBox bbox_b{-64.80, 18.30, -64.75, 18.35};  // Different area
+
+    std::unordered_map<std::string, BoundingBox> bboxes{{"region_a", bbox_a}, {"region_b", bbox_b}};
+
+    auto results = extract_landmarks(test_pbf_.string(), bboxes, {{"amenity", true}});
+
+    // Count features per region
+    int region_a_count = 0;
+    int region_b_count = 0;
+    for (const auto& [region_id, feature] : results) {
+        if (region_id == "region_a") {
+            region_a_count++;
+        } else if (region_id == "region_b") {
+            region_b_count++;
+        }
+    }
+
+    // Both regions should have some features (assuming both areas have amenities)
+    EXPECT_GT(region_a_count + region_b_count, 0) << "Should find features in at least one region";
+
+    // Verify region assignment is correct by checking coordinates
+    for (const auto& [region_id, feature] : results) {
+        if (std::holds_alternative<PointGeometry>(feature.geometry)) {
+            const auto& point = std::get<PointGeometry>(feature.geometry);
+            if (region_id == "region_a") {
+                EXPECT_TRUE(bbox_a.contains(point.coord.lon, point.coord.lat))
+                    << "Region A feature should be within bbox_a";
+            } else if (region_id == "region_b") {
+                EXPECT_TRUE(bbox_b.contains(point.coord.lon, point.coord.lat))
+                    << "Region B feature should be within bbox_b";
+            }
+        }
+    }
 }
 
 }  // namespace robot::openstreetmap

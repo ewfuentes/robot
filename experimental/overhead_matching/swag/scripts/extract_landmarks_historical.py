@@ -107,7 +107,8 @@ def main(
     }
 
     print(f"Extracting landmarks from {pbf_path}...")
-    features = elm.extract_landmarks(str(pbf_path), bbox_obj, tag_filters)
+    results = elm.extract_landmarks(str(pbf_path), {"region": bbox_obj}, tag_filters)
+    features = [feature for region_id, feature in results]
     print(f"Extracted {len(features)} features")
 
     if len(features) == 0:
@@ -148,11 +149,6 @@ def main(
     feather_path = output_path.with_suffix(".feather")
     print(f"Saving to {feather_path}...")
     gdf.to_feather(feather_path)
-
-    # Save as JSON (text, compatible)
-    json_path = output_path.with_suffix(".geojson")
-    print(f"Saving to {json_path}...")
-    json_path.write_text(gdf.to_json(na="drop"))
 
     print(f"Done! Extracted {len(features)} landmarks")
     print(f"  - Nodes: {sum(1 for f in features if f.osm_type == elm.OsmType.NODE)}")

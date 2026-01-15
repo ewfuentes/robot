@@ -3,6 +3,7 @@
 #include <array>
 #include <map>
 #include <string>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -53,12 +54,13 @@ struct BoundingBox {
     }
 };
 
-// Extract landmarks from a PBF file
+// Extract landmarks from a PBF file for multiple bounding boxes in one pass
 // - pbf_path: Path to the OSM PBF file
-// - bbox: Bounding box to filter features
+// - bboxes: Map of region_id -> BoundingBox to extract landmarks for
 // - tag_filters: Map of OSM tags to filter by (e.g., {"amenity": true, "building": true})
-// Returns: Vector of extracted landmark features
-std::vector<LandmarkFeature> extract_landmarks(const std::string& pbf_path, const BoundingBox& bbox,
-                                               const std::map<std::string, bool>& tag_filters);
+// Returns: Vector of (region_id, LandmarkFeature) pairs
+std::vector<std::pair<std::string, LandmarkFeature>> extract_landmarks(
+    const std::string& pbf_path, const std::unordered_map<std::string, BoundingBox>& bboxes,
+    const std::map<std::string, bool>& tag_filters);
 
 }  // namespace robot::openstreetmap

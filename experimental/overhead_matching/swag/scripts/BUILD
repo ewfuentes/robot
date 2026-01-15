@@ -322,3 +322,23 @@ py_binary(
     "//experimental/overhead_matching/swag/model:swag_patch_embedding",
   ]
 )
+
+py_binary(
+  name="generate_city_bboxes",
+  srcs=["generate_city_bboxes.py"],
+  deps=[
+    requirement("pyyaml"),
+  ]
+)
+
+py_binary(
+  name="extract_landmarks_to_sqlite",
+  srcs=["extract_landmarks_to_sqlite.py"],
+  data = [
+    "//common/openstreetmap:extract_landmarks_python.so",
+  ],
+  deps=[
+    requirement("pyyaml"),
+    requirement("shapely"),
+  ]
+)

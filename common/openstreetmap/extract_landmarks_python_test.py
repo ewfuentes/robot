@@ -13,11 +13,16 @@ class ExtractLandmarksPythonTest(unittest.TestCase):
         cls.test_pbf = Path("external/openstreetmap_snippet/us-virgin-islands-latest.osm.pbf")
         cls.full_bbox = elm.BoundingBox(-65.0, 17.5, -64.5, 18.5)
 
+    def _extract_features(self, pbf_path, bbox, tag_filters):
+        """Helper to extract features using new API and return just the features"""
+        results = elm.extract_landmarks(pbf_path, {"test_region": bbox}, tag_filters)
+        return [feature for region_id, feature in results]
+
     # === Geometry Type Tests ===
 
     def test_extracts_point_geometry(self):
         """Python wrapper correctly exposes PointGeometry"""
-        features = elm.extract_landmarks(str(self.test_pbf), self.full_bbox, {"amenity": True})
+        features = self._extract_features(str(self.test_pbf), self.full_bbox, {"amenity": True})
 
         point_features = [f for f in features if isinstance(f.geometry, elm.PointGeometry)]
 
@@ -31,7 +36,7 @@ class ExtractLandmarksPythonTest(unittest.TestCase):
 
     def test_extracts_linestring_geometry(self):
         """Python wrapper correctly exposes LineStringGeometry"""
-        features = elm.extract_landmarks(str(self.test_pbf), self.full_bbox, {"highway": True})
+        features = self._extract_features(str(self.test_pbf), self.full_bbox, {"highway": True})
 
         line_features = [f for f in features if isinstance(f.geometry, elm.LineStringGeometry)]
 
@@ -43,7 +48,7 @@ class ExtractLandmarksPythonTest(unittest.TestCase):
 
     def test_extracts_polygon_geometry(self):
         """Python wrapper correctly exposes PolygonGeometry"""
-        features = elm.extract_landmarks(str(self.test_pbf), self.full_bbox, {"building": True})
+        features = self._extract_features(str(self.test_pbf), self.full_bbox, {"building": True})
 
         poly_features = [f for f in features if isinstance(f.geometry, elm.PolygonGeometry)]
 
@@ -55,7 +60,7 @@ class ExtractLandmarksPythonTest(unittest.TestCase):
 
     def test_extracts_multipolygon_geometry(self):
         """Python wrapper correctly exposes MultiPolygonGeometry"""
-        features = elm.extract_landmarks(str(self.test_pbf), self.full_bbox, {"landuse": True})
+        features = self._extract_features(str(self.test_pbf), self.full_bbox, {"landuse": True})
 
         mp_features = [f for f in features if isinstance(f.geometry, elm.MultiPolygonGeometry)]
 
@@ -68,7 +73,7 @@ class ExtractLandmarksPythonTest(unittest.TestCase):
 
     def test_converts_to_shapely_point(self):
         """Can convert PointGeometry to Shapely Point"""
-        features = elm.extract_landmarks(str(self.test_pbf), self.full_bbox, {"amenity": True})
+        features = self._extract_features(str(self.test_pbf), self.full_bbox, {"amenity": True})
 
         point_features = [f for f in features if isinstance(f.geometry, elm.PointGeometry)]
 
@@ -82,7 +87,7 @@ class ExtractLandmarksPythonTest(unittest.TestCase):
 
     def test_converts_to_shapely_linestring(self):
         """Can convert LineStringGeometry to Shapely LineString"""
-        features = elm.extract_landmarks(str(self.test_pbf), self.full_bbox, {"highway": True})
+        features = self._extract_features(str(self.test_pbf), self.full_bbox, {"highway": True})
 
         line_features = [f for f in features if isinstance(f.geometry, elm.LineStringGeometry)]
 
@@ -96,7 +101,7 @@ class ExtractLandmarksPythonTest(unittest.TestCase):
 
     def test_converts_to_shapely_polygon(self):
         """Can convert PolygonGeometry to Shapely Polygon"""
-        features = elm.extract_landmarks(str(self.test_pbf), self.full_bbox, {"building": True})
+        features = self._extract_features(str(self.test_pbf), self.full_bbox, {"building": True})
 
         poly_features = [f for f in features if isinstance(f.geometry, elm.PolygonGeometry)]
 
@@ -115,7 +120,7 @@ class ExtractLandmarksPythonTest(unittest.TestCase):
 
     def test_creates_geopandas_dataframe(self):
         """Can create GeoDataFrame from extracted features"""
-        features = elm.extract_landmarks(str(self.test_pbf), self.full_bbox, {"amenity": True})
+        features = self._extract_features(str(self.test_pbf), self.full_bbox, {"amenity": True})
 
         self.assertGreater(len(features), 0)
 
@@ -134,7 +139,7 @@ class ExtractLandmarksPythonTest(unittest.TestCase):
 
     def test_writes_and_reads_feather(self):
         """Can write to Feather and read back with geopandas"""
-        features = elm.extract_landmarks(
+        features = self._extract_features(
             str(self.test_pbf),
             elm.BoundingBox(-64.95, 18.33, -64.93, 18.35),  # Small area
             {"building": True},
@@ -164,7 +169,7 @@ class ExtractLandmarksPythonTest(unittest.TestCase):
 
     def test_preserves_tags_as_dict(self):
         """Tags are exposed as Python dict"""
-        features = elm.extract_landmarks(str(self.test_pbf), self.full_bbox, {"amenity": True})
+        features = self._extract_features(str(self.test_pbf), self.full_bbox, {"amenity": True})
 
         self.assertGreater(len(features), 0)
 
@@ -195,8 +200,8 @@ class ExtractLandmarksPythonTest(unittest.TestCase):
 
     def test_tag_filter_works(self):
         """Tag filtering works from Python"""
-        amenities = elm.extract_landmarks(str(self.test_pbf), self.full_bbox, {"amenity": True})
-        buildings = elm.extract_landmarks(str(self.test_pbf), self.full_bbox, {"building": True})
+        amenities = self._extract_features(str(self.test_pbf), self.full_bbox, {"amenity": True})
+        buildings = self._extract_features(str(self.test_pbf), self.full_bbox, {"building": True})
 
         self.assertGreater(len(amenities), 0)
         self.assertGreater(len(buildings), 0)
@@ -210,7 +215,7 @@ class ExtractLandmarksPythonTest(unittest.TestCase):
 
     def test_multiple_tag_filters(self):
         """Multiple tag filters work"""
-        features = elm.extract_landmarks(
+        features = self._extract_features(
             str(self.test_pbf),
             self.full_bbox,
             {"amenity": True, "building": True, "highway": True},
@@ -228,7 +233,9 @@ class ExtractLandmarksPythonTest(unittest.TestCase):
     def test_handles_invalid_path(self):
         """Raises error for invalid PBF path"""
         with self.assertRaises(RuntimeError):
-            elm.extract_landmarks("/nonexistent/file.osm.pbf", self.full_bbox, {"amenity": True})
+            elm.extract_landmarks(
+                "/nonexistent/file.osm.pbf", {"test": self.full_bbox}, {"amenity": True}
+            )
 
     # === Repr Tests ===
 
@@ -248,7 +255,7 @@ class ExtractLandmarksPythonTest(unittest.TestCase):
 
     def test_landmark_feature_repr(self):
         """LandmarkFeature has useful repr"""
-        features = elm.extract_landmarks(str(self.test_pbf), self.full_bbox, {"amenity": True})
+        features = self._extract_features(str(self.test_pbf), self.full_bbox, {"amenity": True})
         self.assertGreater(len(features), 0)
 
         repr_str = repr(features[0])
