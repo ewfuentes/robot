@@ -962,13 +962,13 @@ if __name__ == "__main__":
 
     dataset_config = vd.VigorDatasetConfig(
         panorama_tensor_cache_info=vd.TensorCacheInfo(
-            dataset_key=dataset_path.name,
+            dataset_keys=[dataset_path.name],
             model_type="panorama",
             landmark_version=args.landmark_version,
             panorama_landmark_radius_px=args.panorama_landmark_radius_px,
             extractor_info=pano_model.cache_info()),
         satellite_tensor_cache_info=vd.TensorCacheInfo(
-            dataset_key=dataset_path.name,
+            dataset_keys=[dataset_path.name],
             model_type="satellite",
             landmark_version=args.landmark_version,
             panorama_landmark_radius_px=args.panorama_landmark_radius_px,

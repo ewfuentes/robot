@@ -110,12 +110,12 @@ def _(dataset_paths, es, itertools, load_model, model_paths, vd):
             _dataset_path,
             config=vd.VigorDatasetConfig(
                 satellite_tensor_cache_info=vd.TensorCacheInfo(
-                    dataset_key=_dataset_path.name,
+                    dataset_keys=[_dataset_path.name],
                     model_type="satellite",
                     landmark_version=_landmark_version,
                     extractor_info=_sat_model.cache_info()),
                 panorama_tensor_cache_info=vd.TensorCacheInfo(
-                    dataset_key=_dataset_path.name,
+                    dataset_keys=[_dataset_path.name],
                     model_type="panorama",
                     landmark_version=_landmark_version,
                     extractor_info=_pano_model.cache_info()),
@@ -155,12 +155,12 @@ def _(
             _dataset_path,
             config=vd.VigorDatasetConfig(
                 satellite_tensor_cache_info=vd.TensorCacheInfo(
-                    dataset_key=_dataset_path.name,
+                    dataset_keys=[_dataset_path.name],
                     model_type="satellite",
                     landmark_version=_landmark_version,
                     extractor_info=_sat_model.cache_info()),
                 panorama_tensor_cache_info=vd.TensorCacheInfo(
-                    dataset_key=_dataset_path.name,
+                    dataset_keys=[_dataset_path.name],
                     model_type="panorama",
                     landmark_version=_landmark_version,
                     extractor_info=_pano_model.cache_info()),

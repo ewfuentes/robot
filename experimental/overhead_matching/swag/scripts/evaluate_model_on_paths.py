@@ -61,14 +61,14 @@ def construct_path_eval_inputs_from_args(
     dataset_path = Path(dataset_path).expanduser()
     dataset_config = vd.VigorDatasetConfig(
         panorama_tensor_cache_info=vd.TensorCacheInfo(
-            dataset_key=dataset_path.name,
+            dataset_keys=[dataset_path.name],
             model_type="panorama",
             landmark_version=landmark_version,
             panorama_landmark_radius_px=panorama_landmark_radius_px,
             landmark_correspondence_inflation_factor=1.0,
             extractor_info=pano_model.cache_info()),
         satellite_tensor_cache_info=vd.TensorCacheInfo(
-            dataset_key=dataset_path.name,
+            dataset_keys=[dataset_path.name],
             model_type="satellite",
             landmark_version=landmark_version,
             panorama_landmark_radius_px=panorama_landmark_radius_px,
