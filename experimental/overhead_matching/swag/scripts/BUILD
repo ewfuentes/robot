@@ -406,3 +406,15 @@ py_binary(
     requirement("google-cloud-storage"),
   ]
 )
+
+py_binary(
+  name="create_embeddings_with_gemini",
+  srcs=["create_embeddings_with_gemini.py"],
+  visibility=["//experimental/overhead_matching/swag:__subpackages__"],
+  deps=[
+    requirement("tqdm"),
+    requirement("torch"),
+    requirement("google-genai"),
+    "//common/torch:load_torch_deps",
+  ]
+)
