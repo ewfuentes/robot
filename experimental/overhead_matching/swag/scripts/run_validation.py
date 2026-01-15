@@ -125,12 +125,12 @@ def _(T, load_model, mo, vd):
 
         _dataset_config = vd.VigorDatasetConfig(
             panorama_tensor_cache_info=vd.TensorCacheInfo(
-                dataset_key=dataset_path.name,
+                dataset_keys=[dataset_path.name],
                 model_type="panorama",
                 landmark_version=landmark_version,
                 extractor_info=_pano_model.cache_info()),
             satellite_tensor_cache_info=vd.TensorCacheInfo(
-                dataset_key=dataset_path.name,
+                dataset_keys=[dataset_path.name],
                 model_type="satellite",
                 landmark_version=landmark_version,
                 extractor_info=_sat_model.cache_info()),
