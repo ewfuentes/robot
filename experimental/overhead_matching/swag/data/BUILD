@@ -116,5 +116,31 @@ py_library(
   deps = [
     requirement("torch"),
     ":osm_sentence_generator",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
+  ],
+)
+
+py_library(
+  name = "llm_sentence_loader",
+  srcs = ["llm_sentence_loader.py"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+  ],
+  deps = [
+    "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
+  ],
+)
+
+py_library(
+  name = "paired_sentence_dataset",
+  srcs = ["paired_sentence_dataset.py"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+  ],
+  deps = [
+    requirement("torch"),
+    ":osm_sentence_generator",
+    ":sentence_dataset",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
   ],
 )

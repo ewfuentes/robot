@@ -10,12 +10,16 @@ import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import torch
 from torch.utils.data import Dataset, Sampler
 
 from experimental.overhead_matching.swag.data.osm_sentence_generator import (
     OSMSentenceGenerator,
+)
+from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
+    prune_landmark,
 )
 
 
@@ -35,6 +39,9 @@ class SentenceSample:
     used_tags: dict[str, str]
     unused_tags: dict[str, str]
     landmark_id: int
+    all_tags: dict[str, str]  # All tags for this landmark
+    pruned_tags: frozenset  # For landmark identity matching
+    source: Literal["template", "llm"]  # Source of the sentence
 
 
 @dataclass
@@ -48,9 +55,19 @@ class SentenceBatch:
     contrastive_labels: dict[str, tuple[torch.Tensor, torch.Tensor]]
     # Presence: {task_name: labels} where labels[i]=1 if tag is in used_tags
     presence_labels: dict[str, torch.Tensor]
+    # Base contrastive: (mask, positive_matrix) for same-landmark pairing (template <-> LLM)
+    base_contrastive_labels: tuple[torch.Tensor, torch.Tensor] | None
+    # Template mask: mask[i]=True if sample is from template (for template-only losses)
+    template_mask: torch.Tensor | None
 
     def to(self, device: torch.device) -> "SentenceBatch":
         """Move tensors to device."""
+        base_contrastive = None
+        if self.base_contrastive_labels is not None:
+            base_contrastive = (
+                self.base_contrastive_labels[0].to(device),
+                self.base_contrastive_labels[1].to(device),
+            )
         return SentenceBatch(
             sentences=self.sentences,
             classification_labels={
@@ -65,6 +82,8 @@ class SentenceBatch:
                 task: labels.to(device)
                 for task, labels in self.presence_labels.items()
             },
+            base_contrastive_labels=base_contrastive,
+            template_mask=self.template_mask.to(device) if self.template_mask is not None else None,
         )
 
 
@@ -109,6 +128,9 @@ class SentenceDataset(Dataset):
             used_tags=result.used_tags,
             unused_tags=result.unused_tags,
             landmark_id=landmark.landmark_id,
+            all_tags=landmark.tags,
+            pruned_tags=prune_landmark(landmark.tags),
+            source="template",
         )
 
     def set_epoch(self, epoch: int) -> None:
@@ -400,6 +422,7 @@ def collate_sentences(
     tag_vocabs: dict[str, dict[str, int]],
     classification_tasks: list[str],
     contrastive_tasks: list[str],
+    include_base_contrastive: bool = False,
 ) -> SentenceBatch:
     """Collate function that precomputes all label matrices.
 
@@ -408,6 +431,8 @@ def collate_sentences(
         tag_vocabs: Tag vocabularies for classification tasks
         classification_tasks: List of tag keys for classification
         contrastive_tasks: List of tag keys for contrastive learning
+        include_base_contrastive: If True, build base_contrastive_labels for
+            samples with the same pruned_tags (used for template <-> LLM pairing)
 
     Returns:
         SentenceBatch with precomputed labels
@@ -415,7 +440,10 @@ def collate_sentences(
     n = len(samples)
     sentences = [s.sentence for s in samples]
 
-    # Precompute classification labels
+    # Build template mask (True if source == "template")
+    template_mask = torch.tensor([s.source == "template" for s in samples], dtype=torch.bool)
+
+    # Precompute classification labels (only for template samples)
     classification_labels = {}
     for task in classification_tasks:
         if task not in tag_vocabs:
@@ -425,20 +453,22 @@ def collate_sentences(
         labels = torch.zeros(n, dtype=torch.long)
 
         for i, s in enumerate(samples):
-            if task in s.used_tags and s.used_tags[task] in tag_vocabs[task]:
+            # Only include template samples for classification
+            if s.source == "template" and task in s.used_tags and s.used_tags[task] in tag_vocabs[task]:
                 mask[i] = True
                 labels[i] = tag_vocabs[task][s.used_tags[task]]
 
         classification_labels[task] = (mask, labels)
 
-    # Precompute contrastive positive matrices
+    # Precompute contrastive positive matrices (projection head contrastive, template only)
     contrastive_labels = {}
     for task in contrastive_tasks:
         mask = torch.zeros(n, dtype=torch.bool)
         values: list[str | None] = []
 
         for i, s in enumerate(samples):
-            if task in s.used_tags:
+            # Only include template samples for projection head contrastive
+            if s.source == "template" and task in s.used_tags:
                 mask[i] = True
                 values.append(s.used_tags[task])
             else:
@@ -457,21 +487,44 @@ def collate_sentences(
         contrastive_labels[task] = (mask, positive_matrix)
 
     # Precompute presence labels (binary: is the tag in used_tags?)
-    # Include both classification and contrastive tasks
+    # Include both classification and contrastive tasks (template only)
     presence_labels = {}
     all_tasks = list(classification_tasks) + list(contrastive_tasks)
     for task in all_tasks:
         labels = torch.zeros(n, dtype=torch.float)
         for i, s in enumerate(samples):
-            if task in s.used_tags:
+            # Only include template samples for presence prediction
+            if s.source == "template" and task in s.used_tags:
                 labels[i] = 1.0
         presence_labels[task] = labels
+
+    # Build base contrastive labels (samples with same pruned_tags are positives)
+    base_contrastive_labels = None
+    if include_base_contrastive:
+        # Map pruned_tags to sample indices
+        pruned_to_indices: dict[frozenset, list[int]] = defaultdict(list)
+        for i, s in enumerate(samples):
+            pruned_to_indices[s.pruned_tags].append(i)
+
+        # Build positive matrix: samples with same pruned_tags are positives
+        base_mask = torch.ones(n, dtype=torch.bool)  # All samples participate
+        base_positive_matrix = torch.zeros(n, n, dtype=torch.float)
+        for indices in pruned_to_indices.values():
+            if len(indices) >= 2:
+                for i in indices:
+                    for j in indices:
+                        if i != j:
+                            base_positive_matrix[i, j] = 1.0
+
+        base_contrastive_labels = (base_mask, base_positive_matrix)
 
     return SentenceBatch(
         sentences=sentences,
         classification_labels=classification_labels,
         contrastive_labels=contrastive_labels,
         presence_labels=presence_labels,
+        base_contrastive_labels=base_contrastive_labels,
+        template_mask=template_mask,
     )
 
 
@@ -479,6 +532,7 @@ def create_collate_fn(
     tag_vocabs: dict[str, dict[str, int]],
     classification_tasks: list[str],
     contrastive_tasks: list[str],
+    include_base_contrastive: bool = False,
 ):
     """Create a collate function with bound parameters.
 
@@ -486,6 +540,8 @@ def create_collate_fn(
         tag_vocabs: Tag vocabularies for classification tasks
         classification_tasks: List of tag keys for classification
         contrastive_tasks: List of tag keys for contrastive learning
+        include_base_contrastive: If True, build base_contrastive_labels for
+            samples with the same pruned_tags
 
     Returns:
         Collate function suitable for DataLoader
@@ -497,6 +553,7 @@ def create_collate_fn(
             tag_vocabs=tag_vocabs,
             classification_tasks=classification_tasks,
             contrastive_tasks=contrastive_tasks,
+            include_base_contrastive=include_base_contrastive,
         )
 
     return collate_fn

@@ -99,6 +99,7 @@ class SentenceTrainConfig:
     output_dir: Path | None = None
     tag_vocabs_path: Path | None = None  # Optional, built automatically if not provided
     tensorboard_dir: Path | None = None
+    llm_sentences_path: Path | None = None  # Path to LLM sentences JSONL file
 
     # Model config
     model: SentenceEmbeddingModelConfig = field(

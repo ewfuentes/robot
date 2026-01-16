@@ -50,6 +50,41 @@ def info_nce_loss_from_matrix(
     return loss / max(count, 1)
 
 
+def compute_base_contrastive_loss(
+    base_embedding: torch.Tensor,
+    base_contrastive_labels: tuple[torch.Tensor, torch.Tensor],
+    temperature: float = 0.07,
+) -> torch.Tensor:
+    """Compute contrastive loss on base embeddings for same-landmark pairing.
+
+    This loss pairs template sentences with LLM sentences for the same landmark,
+    using the base embedding (before projection heads).
+
+    Args:
+        base_embedding: (n, d) tensor of base embeddings
+        base_contrastive_labels: Tuple of (mask, positive_matrix) where:
+            - mask: (n,) boolean tensor (all True for now)
+            - positive_matrix: (n, n) tensor where [i,j]=1 if same landmark
+        temperature: Temperature for contrastive loss scaling
+
+    Returns:
+        Scalar loss tensor
+    """
+    mask, positive_matrix = base_contrastive_labels
+
+    # Check if there are any positive pairs
+    if positive_matrix.sum() == 0:
+        return torch.tensor(0.0, device=base_embedding.device)
+
+    # Normalize embeddings for cosine similarity
+    normalized = F.normalize(base_embedding, p=2, dim=-1)
+
+    # Compute similarity matrix (temperature-scaled)
+    similarity = normalized @ normalized.T / temperature
+
+    return info_nce_loss_from_matrix(similarity, positive_matrix)
+
+
 def compute_sentence_losses(
     model_output: dict[str, torch.Tensor | dict[str, torch.Tensor]],
     batch: SentenceBatch,
@@ -118,6 +153,16 @@ def compute_sentence_losses(
         logits = presence_logits[task].squeeze(-1)  # (batch_size,)
 
         losses[f"loss_presence_{task}"] = F.binary_cross_entropy_with_logits(logits, labels)
+
+    # Base embedding contrastive loss (for template <-> LLM pairing)
+    if batch.base_contrastive_labels is not None:
+        base_loss = compute_base_contrastive_loss(
+            base_embedding=model_output["base_embedding"],
+            base_contrastive_labels=batch.base_contrastive_labels,
+            temperature=temperature,
+        )
+        if base_loss.item() > 0:  # Only add if there are positive pairs
+            losses["loss_base_contrastive"] = base_loss
 
     return losses
 

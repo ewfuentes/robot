@@ -130,6 +130,7 @@ bazel run //experimental/overhead_matching/swag/scripts:train_sentence_embedding
 - `--db_path`: Path to landmarks SQLite database
 - `--output_dir`: Output directory for model and logs
 - `--tag_vocabs`: Path to precomputed vocabularies (optional)
+- `--llm_sentences`: Path to LLM sentences JSONL file or directory of JSONL files (optional)
 - `--encoder_name`: Sentence transformer model (default: `all-MiniLM-L6-v2`)
 - `--batch_size`: Batch size (default: 256)
 - `--num_epochs`: Number of epochs (default: 5)
@@ -137,6 +138,22 @@ bazel run //experimental/overhead_matching/swag/scripts:train_sentence_embedding
 - `--heads_lr`: Learning rate for heads (default: 1e-4)
 - `--train_split`: Fraction of data for training (default: 0.9)
 - `--limit`: Limit landmarks for testing
+
+### Train/Test Split
+
+The split operates at the **landmark level**, not the sentence level:
+
+1. All landmarks are loaded from the SQLite database
+2. Landmarks are shuffled with a fixed seed (default: 42) for reproducibility
+3. The first `train_split` fraction (default: 90%) becomes the training set
+4. The remaining landmarks become the test set
+
+This ensures:
+- **No data leakage**: A landmark is in either train or test, never both
+- **Reproducibility**: Same seed produces same split across runs
+- **Sentence variety**: Each landmark generates sentences on-the-fly with epoch-based seeds, so different epochs see different sentence variations for the same landmarks
+
+When using LLM sentences (`--llm_sentences`), only landmarks that have both template capability and LLM sentences are included in training. The script reports coverage statistics showing how many landmarks have LLM sentences available.
 
 ### Training Recommendations
 
@@ -170,24 +187,50 @@ The model consists of:
 - **Base encoder**: Pretrained sentence transformer (fine-tuned)
 - **Classification heads**: Linear layers for categorical tags (amenity, building, highway, etc.)
 - **Contrastive heads**: MLP projections for high-cardinality tags (name, addr:street)
+- **Presence heads**: Binary classifiers predicting if a tag was used in the sentence
 
 ### Training Tasks
 
-**Classification (CrossEntropy loss)**:
+**Classification (CrossEntropy loss)** - Template sentences only:
 - amenity (~60 classes): restaurant, school, parking, etc.
 - building (~76 classes): house, apartments, commercial, etc.
 - highway (~20 classes): residential, service, footway, etc.
 - And more: shop, leisure, tourism, landuse, natural, surface, cuisine
 
-**Contrastive (InfoNCE loss with in-batch negatives)**:
+**Projection Head Contrastive (InfoNCE loss)** - Template sentences only:
 - name: Sentences with same landmark name are positives
 - addr:street: Sentences on same street are positives
+
+**Presence Prediction (Binary CrossEntropy)** - Template sentences only:
+- Predicts which tags were used in generating the sentence
+
+**Base Embedding Contrastive (InfoNCE loss)** - Template + LLM sentences:
+- Pairs template and LLM sentences for the **same landmark** as positives
+- Uses the base encoder embedding (before projection heads)
+- Only active when `--llm_sentences` is provided
+
+### Loss Architecture with LLM Sentences
+
+When training with LLM sentences, the architecture computes losses as follows:
+
+```
+Template sentence ──┐                      ┌── Classification heads (template only)
+                    ├── Base Embedding ────┼── Projection head contrastive (template only)
+LLM sentence ───────┘         │            └── Presence heads (template only)
+                              │
+                              └── Base contrastive loss (cross-source: template ↔ LLM)
+```
+
+This design ensures the base embedding learns to produce similar representations for:
+- Different template variations of the same landmark
+- Template and LLM descriptions of the same landmark
 
 ### Key Design Features
 
 1. **On-the-fly sentence generation**: Sentences are generated from tags during training using `OSMSentenceGenerator`, with different seeds per epoch for variety
 2. **Masked loss**: Only compute loss for tags present in `used_tags` (tags actually mentioned in the sentence)
 3. **Precomputed label matrices**: Collate function builds classification labels and contrastive positive matrices efficiently
+4. **Source tracking**: Each sample tracks its source (`"template"` or `"llm"`) to route losses correctly
 
 ## File Structure
 
@@ -195,10 +238,12 @@ The model consists of:
 experimental/overhead_matching/swag/
 ├── data/
 │   ├── osm_sentence_generator.py     # Template-based sentence generation
-│   ├── sentence_dataset.py           # Dataset and data loading
-│   └── README_SENTENCE_EMBEDDINGS.md # This file
+│   ├── sentence_dataset.py           # Dataset, data loading, and collation
+│   ├── llm_sentence_loader.py        # Load LLM-generated sentences from JSONL
+│   └── paired_sentence_dataset.py    # Dataset for template + LLM sentence pairs
 ├── model/
-│   └── sentence_embedding_model.py   # Multi-task model architecture
+│   ├── sentence_embedding_model.py   # Multi-task model architecture
+│   └── semantic_landmark_utils.py    # Landmark pruning and custom ID generation
 └── scripts/
     ├── download_osm_dumps.sh         # Download OSM data
     ├── generate_city_bboxes.py       # Generate city bounding boxes
@@ -206,7 +251,7 @@ experimental/overhead_matching/swag/
     ├── build_tag_vocabularies.py     # Build classification vocabularies
     ├── train_sentence_embeddings.py  # Training script
     ├── sentence_configs.py           # Configuration dataclasses
-    ├── sentence_losses.py            # Loss functions
+    ├── sentence_losses.py            # Loss functions (incl. base contrastive)
     └── example_sentence_config.yaml  # Example training config
 ```
 
@@ -254,3 +299,49 @@ This is useful for:
 - Inspecting class distributions before training
 - Sharing vocabularies across multiple training runs
 - Using `--tag_vocabs` flag in the training script to skip vocabulary building
+
+### Training with LLM Sentences
+
+To improve robustness to natural language variation, you can train with LLM-generated sentences in addition to template sentences:
+
+```bash
+# Using a single JSONL file
+bazel run //experimental/overhead_matching/swag/scripts:train_sentence_embeddings -- \
+    --db_path /data/overhead_matching/datasets/us_osm_landmarks/landmarks.db \
+    --output_dir /data/overhead_matching/models/sentence_embeddings_with_llm \
+    --llm_sentences /data/overhead_matching/datasets/semantic_landmark_embeddings/v4_202001_no_addresses/sentences/deduplicated_sentences.jsonl
+
+# Or using a directory of JSONL files
+bazel run //experimental/overhead_matching/swag/scripts:train_sentence_embeddings -- \
+    --db_path /data/overhead_matching/datasets/us_osm_landmarks/landmarks.db \
+    --output_dir /data/overhead_matching/models/sentence_embeddings_with_llm \
+    --llm_sentences /data/overhead_matching/datasets/semantic_landmark_embeddings/v4_202001_no_addresses/sentences/
+```
+
+**How it works:**
+
+1. **Landmark matching**: LLM sentences are matched to landmarks using `custom_id_from_props(prune_landmark(tags))`, which creates a hash of the pruned tag properties.
+
+2. **Paired dataset**: When LLM sentences are provided, training uses `PairedSentenceDataset` which yields (template, llm) pairs for each landmark that has both.
+
+3. **Base contrastive loss**: The base encoder embedding (before projection heads) is trained with InfoNCE loss where template and LLM sentences for the same landmark are positives.
+
+4. **Template-only losses**: Classification, presence, and projection head contrastive losses are only computed for template sentences (since we know which tags were used).
+
+**LLM sentence format:**
+
+The LLM sentences JSONL file should contain OpenAI batch API responses:
+```json
+{"custom_id": "BASE64_HASH", "response": {"body": {"choices": [{"message": {"content": "A sentence describing the landmark."}}]}}}
+```
+
+The `custom_id` is `base64(sha256(json.dumps(pruned_props, sort_keys=True)))`.
+
+**Coverage:**
+
+Not all landmarks will have LLM sentences. The training script reports coverage:
+```
+LLM sentences loaded: 165,432 sentences (73.2% coverage)
+Paired train set: 148,889 landmarks with LLM sentences
+Paired test set: 16,543 landmarks with LLM sentences
+```

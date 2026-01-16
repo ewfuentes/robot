@@ -23,12 +23,23 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
+from experimental.overhead_matching.swag.data.llm_sentence_loader import (
+    get_coverage_stats,
+    load_llm_sentences_by_pruned_tags,
+    load_llm_sentences_by_pruned_tags_from_dir,
+)
 from experimental.overhead_matching.swag.data.osm_sentence_generator import (
     OSMSentenceGenerator,
+)
+from experimental.overhead_matching.swag.data.paired_sentence_dataset import (
+    PairedBatchSampler,
+    PairedSentenceDataset,
+    collate_paired_samples,
 )
 from experimental.overhead_matching.swag.data.sentence_dataset import (
     ContrastiveBatchSampler,
     SentenceDataset,
+    SentenceSample,
     create_collate_fn,
     load_landmarks_from_db,
     load_tag_vocabularies_from_db,
@@ -391,6 +402,7 @@ def train(
     output_dir: Path,
     tag_vocabs_path: Path | None = None,
     tensorboard_dir: Path | None = None,
+    llm_sentences_path: Path | None = None,
     model_config: SentenceEmbeddingModelConfig | None = None,
     training_config: TrainingConfig | None = None,
     classification_tags: list[str] | None = None,
@@ -407,6 +419,7 @@ def train(
         output_dir: Directory to save model and logs
         tag_vocabs_path: Optional path to precomputed vocabularies JSON
         tensorboard_dir: Optional TensorBoard log directory
+        llm_sentences_path: Optional path to LLM sentences JSONL file for base contrastive loss
         model_config: Model configuration
         training_config: Training configuration
         classification_tags: Tags for classification tasks
@@ -473,26 +486,80 @@ def train(
     print(f"Required tags (always included): {effective_required_tags}")
     generator = OSMSentenceGenerator(required_tags=effective_required_tags)
 
+    # Load LLM sentences if provided
+    llm_sentences = None
+    use_paired_dataset = False
+    if llm_sentences_path is not None and llm_sentences_path.exists():
+        print(f"\nLoading LLM sentences from {llm_sentences_path}")
+        # Get all landmark tags for mapping
+        all_tags = [l.tags for l in train_landmarks + test_landmarks]
+        # Support both file and directory paths
+        if llm_sentences_path.is_dir():
+            llm_sentences = load_llm_sentences_by_pruned_tags_from_dir(llm_sentences_path, all_tags)
+        else:
+            llm_sentences = load_llm_sentences_by_pruned_tags(llm_sentences_path, all_tags)
+        coverage = get_coverage_stats(llm_sentences, len(all_tags))
+        print(f"LLM sentences loaded: {coverage['llm_sentences_count']:,} sentences "
+              f"({coverage['coverage_percent']:.1f}% coverage)")
+        use_paired_dataset = len(llm_sentences) > 0
+
     # Create datasets
-    train_dataset = SentenceDataset(train_landmarks, generator=generator, epoch=0)
-    test_dataset = SentenceDataset(test_landmarks, generator=generator, epoch=0)
+    if use_paired_dataset:
+        # Use paired dataset that yields both template and LLM sentences
+        print("\nUsing paired dataset (template + LLM sentences)")
+        train_dataset = PairedSentenceDataset(
+            train_landmarks, llm_sentences, generator=generator, epoch=0
+        )
+        test_dataset = PairedSentenceDataset(
+            test_landmarks, llm_sentences, generator=generator, epoch=0
+        )
+        print(f"Paired train set: {len(train_dataset):,} landmarks with LLM sentences")
+        print(f"Paired test set: {len(test_dataset):,} landmarks with LLM sentences")
 
-    # Create collate function
-    collate_fn = create_collate_fn(
-        tag_vocabs=tag_vocabs,
-        classification_tasks=classification_tags,
-        contrastive_tasks=contrastive_tags,
-    )
+        # Create collate function that first flattens pairs, then collates
+        base_collate_fn = create_collate_fn(
+            tag_vocabs=tag_vocabs,
+            classification_tasks=classification_tags,
+            contrastive_tasks=contrastive_tags,
+            include_base_contrastive=True,  # Enable base contrastive loss
+        )
 
-    # Create data loaders with smart batching for contrastive learning
-    train_batch_sampler = ContrastiveBatchSampler(
-        landmarks=train_landmarks,
-        contrastive_tags=contrastive_tags,
-        batch_size=training_config.batch_size,
-        groups_per_batch=training_config.groups_per_batch,
-        samples_per_group=training_config.samples_per_group,
-        seed=seed,
-    )
+        def paired_collate_fn(pairs: list[tuple[SentenceSample, SentenceSample]]):
+            flat_samples = collate_paired_samples(pairs)
+            return base_collate_fn(flat_samples)
+
+        collate_fn = paired_collate_fn
+
+        # Use simple batch sampler for paired dataset
+        # batch_size is number of pairs, so total samples = 2 * batch_size
+        train_batch_sampler = PairedBatchSampler(
+            dataset_size=len(train_dataset),
+            batch_size=training_config.batch_size // 2,  # Half since each yields 2 samples
+            seed=seed,
+        )
+    else:
+        # Use standard template-only dataset
+        print("\nUsing template-only dataset")
+        train_dataset = SentenceDataset(train_landmarks, generator=generator, epoch=0)
+        test_dataset = SentenceDataset(test_landmarks, generator=generator, epoch=0)
+
+        # Create collate function
+        collate_fn = create_collate_fn(
+            tag_vocabs=tag_vocabs,
+            classification_tasks=classification_tags,
+            contrastive_tasks=contrastive_tags,
+            include_base_contrastive=False,
+        )
+
+        # Create data loaders with smart batching for contrastive learning
+        train_batch_sampler = ContrastiveBatchSampler(
+            landmarks=train_landmarks,
+            contrastive_tags=contrastive_tags,
+            batch_size=training_config.batch_size,
+            groups_per_batch=training_config.groups_per_batch,
+            samples_per_group=training_config.samples_per_group,
+            seed=seed,
+        )
 
     train_loader = DataLoader(
         train_dataset,
@@ -501,11 +568,28 @@ def train(
         num_workers=training_config.num_workers,
         pin_memory=True,
     )
+
+    # Test loader always uses standard collate (no base contrastive needed for eval)
+    test_collate_fn = create_collate_fn(
+        tag_vocabs=tag_vocabs,
+        classification_tasks=classification_tags,
+        contrastive_tasks=contrastive_tags,
+        include_base_contrastive=False,
+    )
+    if use_paired_dataset:
+        # For paired test dataset, flatten pairs before collating
+        def test_paired_collate_fn(pairs: list[tuple[SentenceSample, SentenceSample]]):
+            flat_samples = collate_paired_samples(pairs)
+            return test_collate_fn(flat_samples)
+        test_collate = test_paired_collate_fn
+    else:
+        test_collate = test_collate_fn
+
     test_loader = DataLoader(
         test_dataset,
-        batch_size=training_config.batch_size,
+        batch_size=training_config.batch_size // 2 if use_paired_dataset else training_config.batch_size,
         shuffle=False,
-        collate_fn=collate_fn,
+        collate_fn=test_collate,
         num_workers=training_config.num_workers,
         pin_memory=True,
     )
@@ -563,6 +647,8 @@ def train(
     # Save config
     config_dict = {
         "db_path": str(db_path),
+        "llm_sentences_path": str(llm_sentences_path) if llm_sentences_path else None,
+        "use_paired_dataset": use_paired_dataset,
         "model_config": {
             "encoder_name": model_config.encoder_name,
             "projection_dim": model_config.projection_dim,
@@ -687,6 +773,11 @@ def main():
         help="TensorBoard log directory (optional)",
     )
     parser.add_argument(
+        "--llm_sentences",
+        type=Path,
+        help="Path to LLM sentences JSONL file or directory of JSONL files (optional)",
+    )
+    parser.add_argument(
         "--batch_size",
         type=int,
         help="Batch size (default: 256)",
@@ -754,6 +845,8 @@ def main():
         config.tag_vocabs_path = args.tag_vocabs
     if args.tensorboard_dir is not None:
         config.tensorboard_dir = args.tensorboard_dir
+    if args.llm_sentences is not None:
+        config.llm_sentences_path = args.llm_sentences
     if args.batch_size is not None:
         config.training.batch_size = args.batch_size
     if args.num_epochs is not None:
@@ -791,6 +884,7 @@ def main():
         output_dir=config.output_dir,
         tag_vocabs_path=config.tag_vocabs_path,
         tensorboard_dir=tensorboard_dir,
+        llm_sentences_path=config.llm_sentences_path,
         model_config=config.model,
         training_config=config.training,
         classification_tags=config.classification_tags,
