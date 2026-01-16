@@ -23,7 +23,7 @@ def _():
     import experimental.overhead_matching.swag.scripts.train as train_module
     import experimental.overhead_matching.swag.scripts.distances as distances_module
 
-    return F, Path, lsm, mo, plt, torch, tqdm, train_module, vd
+    return F, Path, lsm, mo, pickle, plt, torch, tqdm, train_module, vd
 
 
 @app.cell
@@ -47,9 +47,11 @@ def _(vd):
         should_load_images=False,
         should_load_landmarks=True,
         landmark_version="v4_202001",
-        factor=0.3
+        factor=0.3,
+        # factor=1,
     )
     dataset = vd.VigorDataset(config=_dataset_config,dataset_path="/data/overhead_matching/datasets/VIGOR/Seattle/")
+    # dataset = vd.VigorDataset(config=_dataset_config,dataset_path="/data/overhead_matching/datasets/VIGOR/Chicago/")
     return (dataset,)
 
 
@@ -238,6 +240,58 @@ def _(
 
 
 @app.cell
+def _(
+    dataset,
+    decode_sentence_tensor,
+    pano_inference_data,
+    sat_inference_data,
+    similarity_tensor,
+    tqdm,
+):
+    # export 
+
+    output_dict = {
+        "similarity_matrix": similarity_tensor.flatten().tolist(),  # list[float] flattened, npano * nsat
+        "panorama_id": [], # list[str] 
+        "panorama_loc":  [], # list[tuple[float,float]] =
+        "panorama_sentences":  [], # list[list[str]] =
+        "sat_loc": [], # list[tuple[float,float]] = 
+        "sat_sentences":  [], # list[list[str]] =
+        "pano_to_positive_sat_index_map":  [], # list[[list[int]] =
+    }
+
+    for _pano_idx in tqdm.tqdm(range(len(dataset._panorama_metadata))):
+        _pano_data_row = dataset._panorama_metadata.iloc[_pano_idx]
+        _pano_metadata_from_batch = pano_inference_data["input_metadata"][_pano_idx]
+        assert _pano_metadata_from_batch["pano_id"] == _pano_data_row["pano_id"]
+        _pano_landmark_sentences = pano_inference_data["panorama_semantic_landmark_extractor"][_pano_idx]
+        output_dict["panorama_id"].append(_pano_data_row["pano_id"])
+        output_dict["panorama_sentences"].append(decode_sentence_tensor(_pano_landmark_sentences))
+        output_dict["panorama_loc"].append((_pano_data_row["lat"], _pano_data_row["lon"]))
+        output_dict["pano_to_positive_sat_index_map"].append(_pano_data_row.positive_satellite_idxs + _pano_data_row.semipositive_satellite_idxs)
+
+    for _sat_idx in tqdm.tqdm(range(len(dataset._satellite_metadata))):
+        _sat_data_row = dataset._satellite_metadata.iloc[_sat_idx]
+        _sat_metadata_from_batch = sat_inference_data["input_metadata"][_sat_idx]
+        _sentences = []
+        for _k in sat_inference_data.keys():
+            if "extractor" in _k:
+                _sentences.extend(decode_sentence_tensor(sat_inference_data[_k][_sat_idx]))
+
+        output_dict["sat_sentences"].append(_sentences)
+        output_dict["sat_loc"].append((_sat_metadata_from_batch["lat"], _sat_metadata_from_batch["lon"]))
+
+    return (output_dict,)
+
+
+@app.cell
+def _(output_dict, pickle):
+    with open("/tmp/visualizer_information_seattle.pkl", 'wb') as f:
+        pickle.dump(output_dict, f)
+    return
+
+
+@app.cell
 def _(matching_sat_indexes, pano_data_row, pano_idx, plt, similarity_tensor):
     _fig, _ax = plt.subplots()
     _ax.hist(similarity_tensor[pano_idx, :], bins=100)
@@ -285,7 +339,7 @@ def _(
                 _sentences = decode_sentence_tensor(sat_inference_data[_k][_sat_idx])
                 for _s in set(_sentences):
                     print(f"\t- {_s}")
-                
+
     print("\n========= Patches sampled with range of similarity values")
     _sim_targets = torch.linspace(similarity_tensor[pano_idx, matching_sat_indexes[-1]], similarity_tensor[pano_idx].max().item(), 3)
     _closest_indexes = (similarity_tensor[pano_idx].unsqueeze(0) - _sim_targets.unsqueeze(1)).abs().argmin(dim=1)
@@ -296,7 +350,7 @@ def _(
                 _sentences = decode_sentence_tensor(sat_inference_data[_k][_sat_idx])
                 for _s in set(_sentences):
                     print(f"\t- {_s}")
-                
+
     print("\n========= Patches sampled with range of LOW similarity values")
     _sim_targets = torch.linspace(similarity_tensor[pano_idx].min().item(), similarity_tensor[pano_idx, matching_sat_indexes[-1]], 3)
     _closest_indexes = (similarity_tensor[pano_idx].unsqueeze(0) - _sim_targets.unsqueeze(1)).abs().argmin(dim=1)
