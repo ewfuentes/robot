@@ -143,6 +143,7 @@ def load_embedding_type_across_cities(
 
     Returns:
         Tuple of (concatenated embedding tensor, combined id_to_idx dict with offsets applied).
+        Returns (empty tensor, empty dict) if no cities have the requested embedding type.
     """
     all_tensors = []
     all_id_to_idx = {}
@@ -151,10 +152,12 @@ def load_embedding_type_across_cities(
         pickle_path = city_dir / "embeddings" / "embeddings.pkl"
         data = _load_v2_pickle(pickle_path)
         if data is None:
-            raise RuntimeError(f"  Warning: {pickle_path} missing or not v2.0 format")
+            print(f"  Warning: {pickle_path} missing or not v2.0 format, skipping")
+            continue
 
         if embedding_key not in data or id_to_idx_key not in data:
-            raise RuntimeError(f"  Warning: No {embedding_key} in {pickle_path}")
+            print(f"  Warning: No {embedding_key} in {pickle_path}, skipping")
+            continue
 
         tensor = data[embedding_key]
         id_to_idx = data[id_to_idx_key]
@@ -168,7 +171,9 @@ def load_embedding_type_across_cities(
         all_tensors.append(tensor)
         print(f"  Loaded {len(id_to_idx)} {embedding_key} for {city_name}")
 
-    return torch.cat(all_tensors, dim=0), all_id_to_idx
+    if all_tensors:
+        return torch.cat(all_tensors, dim=0), all_id_to_idx
+    return torch.zeros((0, default_dim)), {}
 
 
 def extract_panorama_data_across_cities(
@@ -191,10 +196,12 @@ def extract_panorama_data_across_cities(
         pickle_path = city_dir / "embeddings" / "embeddings.pkl"
         data = _load_v2_pickle(pickle_path)
         if data is None:
-            raise RuntimeError()
+            print(f"  Warning: {pickle_path} missing or not v2.0 format, skipping")
+            continue
 
         if "panoramas" not in data:
-            raise RuntimeError()
+            print(f"  Warning: No panoramas in {pickle_path}, skipping")
+            continue
 
         for pano_id, pano_data in data["panoramas"].items():
             pano_id_clean = pano_id.split(",")[0]
