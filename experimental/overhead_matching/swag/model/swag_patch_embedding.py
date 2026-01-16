@@ -452,37 +452,6 @@ class SwagPatchEmbedding(torch.nn.Module):
         self._patch_dims = config.patch_dims
         self._output_dim = config.output_dim
 
-        # We keep these for backwards compatibility
-        self._feature_map_extractor = create_extractor(
-                config.feature_map_extractor_config, config.auxiliary_info, self._trainable_embedder)
-        self._semantic_token_extractor = create_extractor(
-                config.semantic_token_extractor_config, config.auxiliary_info, self._trainable_embedder)
-        if self._feature_map_extractor is not None:
-            self._extractor_by_name["__feature_map_extractor"] = self._feature_map_extractor
-            self._feature_token_marker = torch.nn.Parameter(torch.randn((1, 1, config.output_dim)))
-            self._token_marker_by_name["__feature_map_extractor"] = self._feature_token_marker
-            self._feature_token_projection = torch.nn.Linear(
-                    self._feature_map_extractor.output_dim + self._position_embedding.output_dim,
-                    config.output_dim)
-            self._projection_by_name["__feature_map_extractor"] = self._feature_token_projection
-            if config.use_cached_feature_maps:
-                self._cacheable_extractor_info["__feature_map_extractor"] = CacheableExtractorInfo(
-                    model_config=config.feature_map_extractor_config,
-                    patch_dims=config.patch_dims)
-
-        if self._semantic_token_extractor is not None:
-            self._extractor_by_name["__semantic_token_extractor"] = self._semantic_token_extractor
-            self._semantic_token_marker = torch.nn.Parameter(torch.randn((1, 1, config.output_dim)))
-            self._token_marker_by_name["__semantic_token_extractor"] = self._semantic_token_marker
-            self._semantic_token_projection = torch.nn.Linear(
-                    self._semantic_token_extractor.output_dim + self._position_embedding.output_dim,
-                    config.output_dim)
-            self._projection_by_name["__semantic_token_extractor"] = self._semantic_token_projection
-
-            if config.use_cached_semantic_tokens:
-                self._cacheable_extractor_info["__semantic_token_extractor"] = CacheableExtractorInfo(
-                    model_config=config.semantic_token_extractor_config,
-                    patch_dims=config.patch_dims)
 
     def model_input_from_batch(self, batch_item):
         if self._patch_dims[0] != self._patch_dims[1]:

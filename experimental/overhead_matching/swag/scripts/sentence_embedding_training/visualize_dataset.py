@@ -13,6 +13,11 @@ from pathlib import Path
 from typing import Dict
 
 from datasets import load_dataset
+from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
+    load_all_jsonl_from_folder,
+    make_sentence_dict_from_json,
+    custom_id_from_props
+)
 
 
 def parse_osm_tags(tags_str: str) -> dict:
@@ -33,13 +38,6 @@ def load_sentence_dict(sentence_directory: Path | None) -> Dict[str, str]:
 
     print(f"Loading sentences from {sentence_directory}")
     # Import here to avoid dependency issues when not needed
-    from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
-        load_all_jsonl_from_folder,
-        make_sentence_dict_from_json,
-    )
-    from experimental.overhead_matching.swag.model.semantic_landmark_extractor import (
-        _custom_id_from_props,
-    )
 
     sentence_jsons = load_all_jsonl_from_folder(sentence_directory)
     sentence_dict, _ = make_sentence_dict_from_json(sentence_jsons)
@@ -69,11 +67,7 @@ def process_osm_item(
     pruned_props = parse_osm_tags(tags_str)
 
     if use_natural_language and sentence_dict:
-        # Import here to avoid dependency issues
-        from experimental.overhead_matching.swag.model.semantic_landmark_extractor import (
-            _custom_id_from_props,
-        )
-        custom_id = _custom_id_from_props(pruned_props)
+        custom_id = custom_id_from_props(pruned_props)
         if custom_id in sentence_dict:
             return sentence_dict[custom_id]
 
@@ -144,10 +138,7 @@ def visualize_correspondence_dataset(
                 # Track missing sentences
                 if use_natural_language and sentence_dict and "tags" in osm_item:
                     props = parse_osm_tags(osm_item["tags"])
-                    from experimental.overhead_matching.swag.model.semantic_landmark_extractor import (
-                        _custom_id_from_props,
-                    )
-                    custom_id = _custom_id_from_props(props)
+                    custom_id = custom_id_from_props(props)
                     if custom_id not in sentence_dict:
                         missing_sentences += 1
 

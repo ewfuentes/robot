@@ -99,10 +99,9 @@ def process_osm_item(
         custom_id = custom_id_from_props(pruned_props)
         if custom_id in sentence_dict:
             return sentence_dict[custom_id]
-
-    # Fall back to tag format: "key: value, key: value, ..."
-    parts = [f"{k}: {v}" for k, v in sorted(pruned_props.items())]
-    return ", ".join(parts) if parts else ""
+        else:
+            print(f"Can't find custom id {custom_id}")
+            return ""
 
 
 def create_training_dataset(
@@ -163,15 +162,9 @@ def create_training_dataset(
                 osm_text = process_osm_item(osm_item, sentence_dict, use_natural_language)
 
                 if not osm_text:
+                    print(f"Failed to find {osm_item}")
                     continue
 
-                # Check if we found a natural language sentence
-                if use_natural_language and sentence_dict:
-                    if "tags" in osm_item:
-                        props = parse_osm_tags(osm_item["tags"])
-                        custom_id = _custom_id_from_props(props)
-                        if custom_id not in sentence_dict:
-                            missing_sentences += 1
 
                 anchors.append(pano_text)
                 positives.append(osm_text)
@@ -608,7 +601,9 @@ def main():
         json.dump(vars(args), f, indent=2)
 
     logger.info(f"Loading base model: {args.base_model}")
-    model = SentenceTransformer(args.base_model)
+    model = SentenceTransformer(args.base_model)#,
+                                # model_kwargs={"attn_implementation": "flash_attention_2", "device_map": "auto"},
+                                # tokenizer_kwargs={"padding_side": "left"},)
 
     # Freeze transformer if requested
     if args.freeze_transformer:
