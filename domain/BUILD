@@ -4,6 +4,7 @@ cc_library(
   name = "canadian_traveler",
   hdrs = ["canadian_traveler.hh"],
   srcs = ["canadian_traveler.cc"],
+  visibility = ["//visibility:public"],
   deps = ["@eigen"],
 )
 
