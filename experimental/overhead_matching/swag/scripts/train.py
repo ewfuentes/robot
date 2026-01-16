@@ -130,6 +130,8 @@ class DatasetConfig:
     factor: None | float = 1.0
     panorama_landmark_radius_px: float = 640
     landmark_correspondence_inflation_factor: float = 1.0
+    require_proper_noun_match: bool = False
+    pano_gemini_base_path: str | None = None
 
 
 @dataclass
@@ -713,6 +715,12 @@ def main(
     # Determine what to load based on requirements
     should_load_images = ExtractorDataRequirement.IMAGES in all_requirements
     should_load_landmarks = ExtractorDataRequirement.LANDMARKS in all_requirements
+    # Force landmarks to load if any dataset uses proper noun filtering
+    if train_config.dataset_config.require_proper_noun_match:
+        should_load_landmarks = True
+    for val_cfg in train_config.validation_dataset_configs:
+        if val_cfg.require_proper_noun_match:
+            should_load_landmarks = True
 
     dataset_config = vigor_dataset.VigorDatasetConfig(
         satellite_patch_size=train_config.sat_model_config.patch_dims,
@@ -738,7 +746,9 @@ def main(
         landmark_version=train_config.dataset_config.landmark_version,
         load_cache_debug=capture_model_data,
         panorama_landmark_radius_px=train_config.dataset_config.panorama_landmark_radius_px,
-        landmark_correspondence_inflation_factor=train_config.dataset_config.landmark_correspondence_inflation_factor)
+        landmark_correspondence_inflation_factor=train_config.dataset_config.landmark_correspondence_inflation_factor,
+        require_proper_noun_match=train_config.dataset_config.require_proper_noun_match,
+        pano_gemini_base_path=train_config.dataset_config.pano_gemini_base_path)
 
     dataset_paths = [dataset_base_path / p for p in train_config.dataset_config.paths]
     dataset = vigor_dataset.VigorDataset(dataset_paths, dataset_config)
@@ -774,7 +784,9 @@ def main(
                 should_load_landmarks=should_load_landmarks,
                 landmark_version=validation_dataset_config.landmark_version,
                 panorama_landmark_radius_px=validation_dataset_config.panorama_landmark_radius_px,
-                landmark_correspondence_inflation_factor=validation_dataset_config.landmark_correspondence_inflation_factor))
+                landmark_correspondence_inflation_factor=validation_dataset_config.landmark_correspondence_inflation_factor,
+                require_proper_noun_match=validation_dataset_config.require_proper_noun_match,
+                pano_gemini_base_path=validation_dataset_config.pano_gemini_base_path))
 
     output_dir = output_base_path / train_config.output_dir
     tensorboard_output = train_config.tensorboard_output

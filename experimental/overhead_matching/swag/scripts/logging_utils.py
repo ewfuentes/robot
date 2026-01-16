@@ -45,8 +45,7 @@ def _dump_empty_sim_debug_info(
                 "device": str(v.device),
                 "has_nan": bool(torch.isnan(v).any()) if v.numel() > 0 else False,
                 "has_inf": bool(torch.isinf(v).any()) if v.numel() > 0 else False,
-                "values_sample": v[:10].tolist() if v.numel() > 0 and v.numel() <= 100 else
-                                 (v.flatten()[:10].tolist() if v.numel() > 0 else []),
+                "values_sample": (v.flatten()[:10].tolist() if v.numel() > 0 else []),
             }
         else:
             debug_info["loss_dict_summary"][k] = {"value": v, "type": type(v).__name__}

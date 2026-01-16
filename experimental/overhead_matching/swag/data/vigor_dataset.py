@@ -97,6 +97,8 @@ class VigorDatasetConfig(NamedTuple):
     load_cache_debug: bool = False
     panorama_landmark_radius_px: float = 640
     landmark_correspondence_inflation_factor: float = 1.0
+    require_proper_noun_match: bool = False
+    pano_gemini_base_path: None | str = None  # Auto-detects if None
 
 
 class VigorDatasetItem(NamedTuple):
@@ -326,6 +328,83 @@ def load_image(path: Path, resize_shape: None | tuple[int, int]):
     return img, original_shape
 
 
+# OSM text keys for proper noun matching
+OSM_TEXT_KEYS = ['name', 'brand', 'operator', 'addr:street', 'network',
+                 'alt_name', 'official_name', 'short_name', 'old_name', 'description']
+
+
+def get_osm_text_from_landmark(landmark_dict: dict) -> list[str]:
+    """Extract text fields from OSM landmark for matching."""
+    texts = []
+    for key in OSM_TEXT_KEYS:
+        value = landmark_dict.get(key)
+        if value and isinstance(value, str):
+            texts.append(value)
+    return texts
+
+
+def check_proper_noun_match(proper_noun: str, osm_texts: list[str]) -> bool:
+    """Check if proper_noun.lower() appears in any OSM text (case-insensitive)."""
+    pn_lower = proper_noun.lower()
+    return any(pn_lower in text.lower() for text in osm_texts)
+
+
+def load_pano_gemini_proper_nouns(base_path: Path, city_names: list[str]) -> dict[str, list[str]]:
+    """Load pano_gemini data and return dict mapping pano_id -> all proper nouns."""
+    import pickle
+    pano_proper_nouns = {}
+
+    for city_name in city_names:
+        pickle_path = base_path / city_name / "embeddings" / "embeddings.pkl"
+        if not pickle_path.exists():
+            logger.warning(f"pano_gemini not found: {pickle_path}")
+            continue
+        with open(pickle_path, 'rb') as f:
+            data = pickle.load(f)
+        if data.get('version') != '2.0':
+            continue
+        for pano_key, pano_data in data.get('panoramas', {}).items():
+            pano_id = pano_key.split(',')[0]
+            all_pns = []
+            for lm in pano_data.get('landmarks', []):
+                all_pns.extend(lm.get('proper_nouns', []))
+            if all_pns:
+                pano_proper_nouns[pano_id] = all_pns
+    return pano_proper_nouns
+
+
+def compute_proper_noun_matches(
+    pano_metadata: pd.DataFrame,
+    satellite_metadata: pd.DataFrame,
+    landmark_metadata: pd.DataFrame,
+    pano_proper_nouns: dict[str, list[str]]
+) -> set[int]:
+    """Return set of pano indices with at least one proper noun match."""
+    matching_idxs = set()
+
+    for pano_idx, pano_row in pano_metadata.iterrows():
+        pano_id = pano_row['pano_id']
+        proper_nouns = pano_proper_nouns.get(pano_id, [])
+        if not proper_nouns:
+            continue
+
+        # Get OSM texts from true satellite's landmarks
+        sat_idx = pano_row['satellite_idx']
+        landmark_idxs = satellite_metadata.iloc[sat_idx].get('landmark_idxs', [])
+        osm_texts = []
+        for lm_idx in landmark_idxs:
+            lm_dict = landmark_metadata.iloc[lm_idx]['as_dict']
+            osm_texts.extend(get_osm_text_from_landmark(dict(lm_dict)))
+
+        # Check for match
+        for pn in proper_nouns:
+            if check_proper_noun_match(pn, osm_texts):
+                matching_idxs.add(pano_idx)
+                break
+
+    return matching_idxs
+
+
 def populate_pairs(pano_metadata, sat_metadata, sample_mode):
     out = []
     for i, d in pano_metadata.iterrows():
@@ -534,6 +613,50 @@ class VigorDataset(torch.utils.data.Dataset):
             self._landmark_metadata["panorama_idxs"] = pano_landmark_correspondences.pano_idxs_from_landmark_idx
         else:
             log_progress("Skipped landmark correspondences")
+
+        if config.require_proper_noun_match:
+            if not config.should_load_landmarks:
+                raise ValueError("require_proper_noun_match requires should_load_landmarks=True")
+
+            pano_gemini_base = (Path(config.pano_gemini_base_path) if config.pano_gemini_base_path
+                                else Path("/data/overhead_matching/datasets/semantic_landmark_embeddings/pano_gemini/"))
+
+            city_names = list(set(self._panorama_metadata['dataset_key'].unique()))
+            log_progress(f"Loading pano_gemini data for cities: {city_names}")
+
+            pano_proper_nouns = load_pano_gemini_proper_nouns(pano_gemini_base, city_names)
+            log_progress(f"Loaded proper nouns for {len(pano_proper_nouns)} panoramas")
+
+            matching_pano_idxs = compute_proper_noun_matches(
+                self._panorama_metadata, self._satellite_metadata,
+                self._landmark_metadata, pano_proper_nouns)
+
+            original_count = len(self._panorama_metadata)
+
+            # Create mapping from old panorama indices to new indices
+            old_to_new_pano_idx = {old_idx: new_idx for new_idx, old_idx in enumerate(sorted(matching_pano_idxs))}
+            kept_pano_idxs = set(matching_pano_idxs)
+
+            # Filter panorama metadata
+            self._panorama_metadata = self._panorama_metadata.loc[list(matching_pano_idxs)].reset_index(drop=True)
+            log_progress(f"Filtered panoramas: {original_count} -> {len(self._panorama_metadata)} using proper noun matching")
+
+            # Update satellite metadata's positive/semipositive_panorama_idxs to use new indices
+            def remap_pano_idxs(old_idxs):
+                return [old_to_new_pano_idx[idx] for idx in old_idxs if idx in kept_pano_idxs]
+
+            self._satellite_metadata["positive_panorama_idxs"] = self._satellite_metadata["positive_panorama_idxs"].apply(remap_pano_idxs)
+            self._satellite_metadata["semipositive_panorama_idxs"] = self._satellite_metadata["semipositive_panorama_idxs"].apply(remap_pano_idxs)
+            log_progress("Updated satellite metadata with remapped panorama indices")
+
+            # Also update landmark metadata's panorama_idxs if landmarks were loaded
+            if config.should_load_landmarks and "panorama_idxs" in self._landmark_metadata.columns:
+                self._landmark_metadata["panorama_idxs"] = self._landmark_metadata["panorama_idxs"].apply(remap_pano_idxs)
+                log_progress("Updated landmark metadata with remapped panorama indices")
+
+            # Rebuild KD-tree with filtered panoramas
+            self._panorama_kdtree = cKDTree(self._panorama_metadata.loc[:, ["lat", "lon"]].values)
+            log_progress("Rebuilt panorama KD-tree after filtering")
 
         self._panorama_metadata["neighbor_panorama_idxs"] = compute_neighboring_panoramas(
             self._panorama_kdtree, config.panorama_neighbor_radius)
