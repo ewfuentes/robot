@@ -1,0 +1,52 @@
+# Sentence Embedding Training Configuration
+# Usage: bazel run //experimental/overhead_matching/swag/scripts:train_sentence_embeddings -- --config /path/to/this/config.yaml
+
+# Data paths
+db_path: /data/overhead_matching/datasets/us_osm_landmarks/landmarks.sqlite
+output_dir: /data/overhead_matching/models/sentence_embeddings/sentence_embeddings_addrname_debug_w_fix
+# tag_vocabs_path: null  # Built automatically if not provided
+# tensorboard_dir: null  # Defaults to {output_dir}/tensorboard
+
+# Model configuration
+model:
+  encoder_name: sentence-transformers/all-MiniLM-L6-v2
+  projection_dim: 128
+  freeze_encoder: false  # Set true to only train heads (faster but less expressive)
+
+# Training configuration
+training:
+  batch_size: 1024
+  num_epochs: 5
+  lr_schedule:
+    encoder_lr: 2.0e-5   # Lower LR for pretrained encoder (preserves knowledge)
+    heads_lr: 1.0e-4     # Higher LR for randomly initialized heads
+    warmup_steps: 1000
+  gradient_clip_norm: 1.0
+  temperature: 0.07      # Temperature for contrastive loss
+  num_workers: 4
+  log_every_n_steps: 100
+
+# Classification tasks - predict categorical tag values
+classification_tags:
+  - amenity      # ~80 classes: restaurant, school, parking, etc.
+  - building     # ~55 classes: house, apartments, commercial, etc.
+  - highway      # ~38 classes: residential, service, footway, etc.
+  - shop         # ~103 classes: supermarket, clothes, convenience, etc.
+  - leisure      # ~25 classes: park, pitch, playground, etc.
+  - tourism      # ~18 classes: hotel, museum, attraction, etc.
+  - landuse      # ~29 classes: residential, commercial, industrial, etc.
+  - natural      # ~14 classes: tree, water, wood, etc.
+  - surface      # ~24 classes: asphalt, concrete, gravel, etc.
+  - cuisine      # ~48 classes: italian, chinese, mexican, etc.
+
+# Contrastive tasks - learn similar embeddings for matching values
+contrastive_tags:
+  - name         # Sentences with same landmark name are positives
+  - addr:street  # Sentences on same street are positives
+
+# Train/test split
+train_split: 0.9
+seed: 42
+
+# Set to limit landmarks for testing (null for all)
+# limit: 10000

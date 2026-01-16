@@ -34,6 +34,8 @@ py_binary(
     "//experimental/overhead_matching/swag/scripts:evaluate_model_on_paths",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
     "//experimental/overhead_matching/swag/data:alphaearth_registry",
+    "//experimental/overhead_matching/swag/data:osm_sentence_generator",
+    "//experimental/overhead_matching/swag/model:sentence_embedding_model",
     "//experimental/overhead_matching/swag/model:patch_embedding",
     "//experimental/overhead_matching/swag/model:swag_patch_embedding",
     "//experimental/overhead_matching/swag/model:semantic_landmark_utils",

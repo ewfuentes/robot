@@ -285,3 +285,17 @@ py_test(
     "//experimental/overhead_matching/swag/data:vigor_dataset",
   ]
 )
+
+py_library(
+  name = "sentence_embedding_model",
+  srcs = ["sentence_embedding_model.py"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+    "//common/python:__subpackages__",
+  ],
+  deps = [
+    requirement("torch"),
+    requirement("sentence-transformers"),
+    "//experimental/overhead_matching/swag/scripts:sentence_configs",
+  ]
+)
