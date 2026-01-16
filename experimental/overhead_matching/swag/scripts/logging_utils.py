@@ -299,3 +299,20 @@ def log_feature_counts(writer: SummaryWriter,
             f"features/sat/{extractor_name}/total_count",
             stats['total_count'],
             step_idx)
+
+    # Log token type counts from debug dicts (for composable extractors)
+    for extractor_name, output in pano_extractor_outputs.items():
+        for key, value in output.debug.items():
+            if isinstance(value, (int, float)):
+                writer.add_scalar(
+                    f"token_types/pano/{extractor_name}/{key}",
+                    value,
+                    step_idx)
+
+    for extractor_name, output in sat_extractor_outputs.items():
+        for key, value in output.debug.items():
+            if isinstance(value, (int, float)):
+                writer.add_scalar(
+                    f"token_types/sat/{extractor_name}/{key}",
+                    value,
+                    step_idx)

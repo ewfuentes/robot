@@ -87,6 +87,7 @@ class ComposableCLIPPanoExtractor(torch.nn.Module):
             # Extract panorama data (descriptions + proper_nouns)
             landmark_count = 0
             for pano_id, pano_data in data["panoramas"].items():
+                # pano_id may be "panoid,lat,lng," format - extract just the panoid for key
                 pano_id_clean = pano_id.split(",")[0]
 
                 if pano_id_clean not in self.panorama_data:
@@ -109,7 +110,8 @@ class ComposableCLIPPanoExtractor(torch.nn.Module):
                         continue
 
                     yaw_angles = _extract_yaw_angles_from_bboxes(bounding_boxes)
-                    custom_id = f"{pano_id_clean}__landmark_{landmark_idx}"
+                    # Use full pano_id for custom_id to match description_id_to_idx format
+                    custom_id = f"{pano_id}__landmark_{landmark_idx}"
 
                     self.panorama_data[pano_id_clean].append({
                         "landmark_idx": landmark_idx,
@@ -224,23 +226,33 @@ class ComposableCLIPPanoExtractor(torch.nn.Module):
         positions = torch.zeros((batch_size, max_tokens, 2, 2), device=device)
 
         # Encode texts that need encoding (not pre-computed sentences in proper_nouns_only mode)
+        # Track which text_info indices need encoding and map to encoded position
         texts_to_encode = []
-        encode_indices = []  # Which text_info entries need encoding
+        text_info_idx_to_enc_pos = {}  # text_info index -> position in encoded_embeddings
 
-        for idx, (text, type_id) in enumerate(all_texts):
+        for text_info_idx, (batch_idx, local_token_idx, type_id, yaw_angles, custom_id) in enumerate(text_info):
             # In proper_nouns_only mode, sentences (type_id=1) use pre-computed
             if self.config.embed_mode == CLIPEmbedMode.PROPER_NOUNS_ONLY and type_id == 1:
                 continue
-            texts_to_encode.append(text)
-            encode_indices.append(idx)
+            # Get the text from all_texts - need to find matching entry
+            # Since we track text_info_idx, we need the corresponding all_texts entry
+            # In PROPER_NOUNS_ONLY: all_texts only has proper nouns, text_info has both
+            # In other modes: all_texts and text_info are aligned
+            if self.config.embed_mode == CLIPEmbedMode.PROPER_NOUNS_ONLY:
+                # Count how many proper noun entries are before this text_info_idx
+                all_texts_idx = sum(1 for i in range(text_info_idx) if text_info[i][2] == 0)
+            else:
+                all_texts_idx = text_info_idx
+            text, _ = all_texts[all_texts_idx]
+            text_info_idx_to_enc_pos[text_info_idx] = len(texts_to_encode)
+            texts_to_encode.append((text, type_id))
 
         if texts_to_encode:
-            encoded_embeddings = self._encode_texts(texts_to_encode, device)
+            encoded_embeddings = self._encode_texts([t for t, _ in texts_to_encode], device)
 
             # Add type embeddings for CLIP mode
             if self._use_clip:
-                for enc_idx, text_idx in enumerate(encode_indices):
-                    _, type_id = all_texts[text_idx]
+                for enc_idx, (_, type_id) in enumerate(texts_to_encode):
                     type_emb = self.type_embedding(torch.tensor(type_id, device=device))
                     encoded_embeddings[enc_idx] = encoded_embeddings[enc_idx] + type_emb
 
@@ -248,7 +260,10 @@ class ComposableCLIPPanoExtractor(torch.nn.Module):
                 encoded_embeddings = encoded_embeddings / torch.norm(
                     encoded_embeddings, dim=-1, keepdim=True)
 
-        # Fill output tensors
+        # Fill output tensors and track token type counts
+        proper_noun_count = 0
+        sentence_count = 0
+
         for idx, (batch_idx, local_token_idx, type_id, yaw_angles, custom_id) in enumerate(text_info):
             # Get embedding
             if self.config.embed_mode == CLIPEmbedMode.PROPER_NOUNS_ONLY and type_id == 1:
@@ -267,16 +282,22 @@ class ComposableCLIPPanoExtractor(torch.nn.Module):
                     padded[:embedding.shape[0]] = embedding
                     embedding = padded
             else:
-                # Use encoded embedding - idx must be in encode_indices
-                if idx not in encode_indices:
+                # Use encoded embedding
+                if idx not in text_info_idx_to_enc_pos:
                     raise RuntimeError(
-                        f"Internal error: text_info idx {idx} not found in encode_indices. "
+                        f"Internal error: text_info idx {idx} not found in text_info_idx_to_enc_pos. "
                         f"embed_mode={self.config.embed_mode}, type_id={type_id}")
-                enc_pos = encode_indices.index(idx)
+                enc_pos = text_info_idx_to_enc_pos[idx]
                 embedding = encoded_embeddings[enc_pos]
 
             features[batch_idx, local_token_idx, :] = embedding
             mask[batch_idx, local_token_idx] = False
+
+            # Track token type counts
+            if type_id == 0:
+                proper_noun_count += 1
+            else:
+                sentence_count += 1
 
             # Position encoding from yaw angles
             yaw_vector = yaw_angles_to_binary_vector(yaw_angles) if yaw_angles else [0.0, 0.0, 0.0, 0.0]
@@ -289,7 +310,10 @@ class ComposableCLIPPanoExtractor(torch.nn.Module):
             features=features,
             mask=mask,
             positions=positions,
-            debug={})
+            debug={
+                'proper_noun_count': proper_noun_count,
+                'sentence_count': sentence_count,
+            })
 
     @property
     def output_dim(self):

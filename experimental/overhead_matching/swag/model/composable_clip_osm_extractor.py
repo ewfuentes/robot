@@ -217,6 +217,7 @@ class ComposableCLIPOSMExtractor(torch.nn.Module):
 
     def load_files(self):
         """Load sentence data and pre-computed embeddings."""
+        import pickle
         base_path = self.semantic_embedding_base_path / self.config.embedding_version
 
         # Load sentences (required)
@@ -231,11 +232,26 @@ class ComposableCLIPOSMExtractor(torch.nn.Module):
         embedding_directory = base_path / "embeddings"
         if not embedding_directory.exists():
             raise FileNotFoundError(f"Required embeddings directory not found at {embedding_directory}")
-        self.precomputed_tensor, self.precomputed_id_to_idx = load_embeddings(
-            embedding_directory,
-            output_dim=self.config.precomputed_embedding_size,
-            normalize=True)
-        print(f"Loaded {len(self.precomputed_id_to_idx)} pre-computed sentence embeddings")
+
+        # Check for single-file format (e.g., gemini embeddings: embeddings/embeddings.pkl)
+        single_file_path = embedding_directory / "embeddings.pkl"
+        if single_file_path.exists():
+            # Load from single pickle file (tensor, id_to_idx) tuple
+            with open(single_file_path, "rb") as f:
+                tensor, id_to_idx = pickle.load(f)
+            # Normalize if needed
+            norms = torch.norm(tensor, dim=-1, keepdim=True)
+            norms = torch.clamp(norms, min=1e-8)
+            self.precomputed_tensor = tensor / norms
+            self.precomputed_id_to_idx = id_to_idx
+            print(f"Loaded {len(self.precomputed_id_to_idx)} pre-computed sentence embeddings from single file")
+        else:
+            # Load from per-city pickle files
+            self.precomputed_tensor, self.precomputed_id_to_idx = load_embeddings(
+                embedding_directory,
+                output_dim=self.config.precomputed_embedding_size,
+                normalize=True)
+            print(f"Loaded {len(self.precomputed_id_to_idx)} pre-computed sentence embeddings")
 
         self.files_loaded = True
 
@@ -357,8 +373,11 @@ class ComposableCLIPOSMExtractor(torch.nn.Module):
                 encoded_embeddings = encoded_embeddings / torch.norm(
                     encoded_embeddings, dim=-1, keepdim=True)
 
-        # Fill output tensors
-        encode_ptr = 0
+        # Fill output tensors and track token type counts
+        name_count = 0
+        address_count = 0
+        sentence_count = 0
+
         for idx, (batch_idx, local_token_idx, token_type, geom_type_idx, position, custom_id, text) in enumerate(token_info_list):
             if text is not None:
                 # Use encoded embedding
@@ -378,9 +397,18 @@ class ComposableCLIPOSMExtractor(torch.nn.Module):
                         embedding = padded
                 else:
                     print(f"Failed to find sentence embedding for {custom_id}")
+                    continue
 
             features[batch_idx, local_token_idx, :] = embedding
             mask[batch_idx, local_token_idx] = False
+
+            # Track token type counts
+            if token_type == 0:
+                name_count += 1
+            elif token_type == 1:
+                address_count += 1
+            else:
+                sentence_count += 1
 
             # Set position
             positions[batch_idx, local_token_idx, 0, :] = torch.tensor(position[0], device=device)
@@ -390,7 +418,11 @@ class ComposableCLIPOSMExtractor(torch.nn.Module):
             features=features,
             mask=mask,
             positions=positions,
-            debug={})
+            debug={
+                'name_count': name_count,
+                'address_count': address_count,
+                'sentence_count': sentence_count,
+            })
 
     @property
     def output_dim(self):
