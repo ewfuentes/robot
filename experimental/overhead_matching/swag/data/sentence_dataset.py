@@ -299,7 +299,7 @@ class ContrastiveBatchSampler(Sampler):
         self.epoch = 0
 
         # Build index: tag_value -> list of landmark indices
-        # Combine all contrastive tags into one grouping
+        # A landmark can belong to multiple groups (one per contrastive tag it has)
         self.value_to_indices: dict[str, list[int]] = defaultdict(list)
         self.ungrouped_indices: list[int] = []
 
@@ -311,7 +311,7 @@ class ContrastiveBatchSampler(Sampler):
                     key = f"{tag}:{landmark.tags[tag]}"
                     self.value_to_indices[key].append(idx)
                     grouped = True
-                    break  # Only add to one group
+                    # No break - add to all matching groups
             if not grouped:
                 self.ungrouped_indices.append(idx)
 
@@ -322,8 +322,18 @@ class ContrastiveBatchSampler(Sampler):
             if len(indices) >= 2
         ]
 
+        # Count groups per contrastive tag
+        groups_per_tag: dict[str, int] = defaultdict(int)
+        for key, _ in self.valid_groups:
+            # Find which contrastive tag this key belongs to
+            for tag in contrastive_tags:
+                if key.startswith(f"{tag}:"):
+                    groups_per_tag[tag] += 1
+                    break
+
         print(f"ContrastiveBatchSampler: {len(self.valid_groups)} groups with 2+ members, "
               f"{len(self.ungrouped_indices)} ungrouped landmarks")
+        print(f"  Groups per tag: {dict(groups_per_tag)}")
 
     def set_epoch(self, epoch: int) -> None:
         """Set epoch for shuffling."""
@@ -341,8 +351,9 @@ class ContrastiveBatchSampler(Sampler):
 
         group_idx = 0
         ungrouped_idx = 0
+        total_samples_yielded = 0
 
-        while True:
+        while total_samples_yielded < len(self.landmarks):
             batch = []
 
             # Sample from groups
@@ -377,11 +388,7 @@ class ContrastiveBatchSampler(Sampler):
                 break
 
             yield batch
-
-            # Check if we've covered enough data for one epoch
-            total_yielded = (group_idx * self.samples_per_group + ungrouped_idx)
-            if total_yielded >= len(self.landmarks):
-                break
+            total_samples_yielded += len(batch)
 
     def __len__(self) -> int:
         """Approximate number of batches per epoch."""

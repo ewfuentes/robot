@@ -64,6 +64,10 @@ class TrainingConfig:
     eval_every_n_steps: int = 1000
     save_every_n_steps: int = 5000
 
+    # Contrastive batch sampling parameters
+    groups_per_batch: int = 32  # Number of contrastive groups to sample per batch
+    samples_per_group: int = 4  # Target samples per group (for positive pairs)
+
 
 # Default classification tasks (tag keys to use for classification)
 DEFAULT_CLASSIFICATION_TAGS = [
@@ -118,6 +122,10 @@ class SentenceTrainConfig:
 
     # Limit landmarks for testing
     limit: int | None = None
+
+    # Tags that must always be included in sentences when present
+    # Defaults to contrastive_tags to ensure contrastive learning has signal
+    required_tags: list[str] | None = None  # None = use contrastive_tags
 
 
 def msgspec_enc_hook(obj):

@@ -3,7 +3,7 @@
 
 # Data paths
 db_path: /data/overhead_matching/datasets/us_osm_landmarks/landmarks.sqlite
-output_dir: /data/overhead_matching/models/sentence_embeddings/sentence_embeddings_with_presence_prediction
+output_dir: /data/overhead_matching/models/sentence_embeddings/sentence_embeddings_addrname_debug_w_fix
 # tag_vocabs_path: null  # Built automatically if not provided
 # tensorboard_dir: null  # Defaults to {output_dir}/tensorboard
 

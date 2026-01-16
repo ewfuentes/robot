@@ -96,6 +96,7 @@ py_library(
   srcs = ["osm_sentence_generator.py"],
   visibility = [
     "//experimental/overhead_matching/swag:__subpackages__",
+    "//common/python:__subpackages__",
   ],
   deps = [],
 )

@@ -127,8 +127,22 @@ class TagTemplateConfig:
 class OSMSentenceGenerator:
     """Generate varied natural language descriptions from OSM tags."""
 
-    def __init__(self, config: TagTemplateConfig | None = None):
+    def __init__(
+        self,
+        config: TagTemplateConfig | None = None,
+        required_tags: list[str] | None = None,
+    ):
+        """Initialize the sentence generator.
+
+        Args:
+            config: Template configuration
+            required_tags: List of tag keys that must always be included in
+                sentences when present on a landmark (e.g., ["name", "addr:street"]).
+                By default, attributes have 50% inclusion probability. Required
+                tags are always included (100% probability).
+        """
         self.config = config or TagTemplateConfig()
+        self.required_tags = set(required_tags) if required_tags else set()
         self._init_templates()
         self._init_synonyms()
 
@@ -593,8 +607,9 @@ class OSMSentenceGenerator:
         # Check each attribute that has suffix templates
         for attr, templates in self._attribute_suffixes.items():
             if attr in tags and attr not in used_tags:
-                # 50% chance to include each attribute
-                if rng.random() < 0.5:
+                # Required tags always included, others have 50% chance
+                include_prob = 1.0 if attr in self.required_tags else 0.5
+                if rng.random() < include_prob:
                     # Use string replace instead of .format() to handle keys with colons
                     suffix = rng.choice(templates).replace(f"{{{attr}}}", tags[attr])
                     base = base + suffix
@@ -622,7 +637,7 @@ class OSMSentenceGenerator:
         article = self._get_article(category)
 
         # Select template based on whether name exists
-        if name and rng.random() < 0.8:  # 80% chance to include name if present
+        if name and (rng.random() < 0.8 or "name" in self.required_tags):
             template = rng.choice(self._named_entity_templates)
             base = template.format(name=name, article=article, category=category)
             used_tags["name"] = name
@@ -700,7 +715,7 @@ class OSMSentenceGenerator:
 
         # Prepend name if exists and random says so
         if name:
-            if rng.random() < 0.7:
+            if rng.random() < 0.7 or "name" in self.required_tags:
                 sentence = f"{name}, {sentence[0].lower()}{sentence[1:]}"
                 used_tags["name"] = name
             else:
@@ -711,6 +726,9 @@ class OSMSentenceGenerator:
             if key not in used_tags and key not in unused_tags:
                 if key in self.config.attribute_tags:
                     unused_tags[key] = tags[key]
+
+        # Optionally add attribute suffixes
+        sentence = self._maybe_add_suffix(sentence, tags, rng, used_tags, unused_tags)
 
         return GeneratedSentence(
             sentence=sentence,
@@ -754,7 +772,7 @@ class OSMSentenceGenerator:
                 unused_tags["surface"] = surface
 
         # Named vs anonymous
-        if name and rng.random() < 0.7:
+        if name and (rng.random() < 0.7 or "name" in self.required_tags):
             template = rng.choice(self._named_road_templates)
             sentence = template.format(
                 name=name,
@@ -772,6 +790,9 @@ class OSMSentenceGenerator:
                 road_type=road_type,
                 surface_type=surface_type,
             )
+
+        # Optionally add attribute suffixes
+        sentence = self._maybe_add_suffix(sentence, tags, rng, used_tags, unused_tags)
 
         return GeneratedSentence(
             sentence=sentence,
@@ -796,11 +817,14 @@ class OSMSentenceGenerator:
         # Handle name if present
         name = tags.get("name")
         if name:
-            if rng.random() < 0.5:
+            if rng.random() < 0.5 or "name" in self.required_tags:
                 sentence = f"{name}, {sentence[0].lower()}{sentence[1:]}"
                 used_tags["name"] = name
             else:
                 unused_tags["name"] = name
+
+        # Optionally add attribute suffixes
+        sentence = self._maybe_add_suffix(sentence, tags, rng, used_tags, unused_tags)
 
         return GeneratedSentence(
             sentence=sentence,
@@ -825,11 +849,14 @@ class OSMSentenceGenerator:
         # Handle name if present
         name = tags.get("name")
         if name:
-            if rng.random() < 0.5:
+            if rng.random() < 0.5 or "name" in self.required_tags:
                 sentence = f"{name}, {sentence[0].lower()}{sentence[1:]}"
                 used_tags["name"] = name
             else:
                 unused_tags["name"] = name
+
+        # Optionally add attribute suffixes
+        sentence = self._maybe_add_suffix(sentence, tags, rng, used_tags, unused_tags)
 
         return GeneratedSentence(
             sentence=sentence,
@@ -854,11 +881,14 @@ class OSMSentenceGenerator:
         # Handle name if present
         name = tags.get("name")
         if name:
-            if rng.random() < 0.5:
+            if rng.random() < 0.5 or "name" in self.required_tags:
                 sentence = f"{name}, {sentence[0].lower()}{sentence[1:]}"
                 used_tags["name"] = name
             else:
                 unused_tags["name"] = name
+
+        # Optionally add attribute suffixes
+        sentence = self._maybe_add_suffix(sentence, tags, rng, used_tags, unused_tags)
 
         return GeneratedSentence(
             sentence=sentence,
@@ -883,11 +913,14 @@ class OSMSentenceGenerator:
         # Handle name if present
         name = tags.get("name")
         if name:
-            if rng.random() < 0.5:
+            if rng.random() < 0.5 or "name" in self.required_tags:
                 sentence = f"{name}, {sentence[0].lower()}{sentence[1:]}"
                 used_tags["name"] = name
             else:
                 unused_tags["name"] = name
+
+        # Optionally add attribute suffixes
+        sentence = self._maybe_add_suffix(sentence, tags, rng, used_tags, unused_tags)
 
         return GeneratedSentence(
             sentence=sentence,
@@ -912,11 +945,14 @@ class OSMSentenceGenerator:
         # Handle name if present
         name = tags.get("name")
         if name:
-            if rng.random() < 0.5:
+            if rng.random() < 0.5 or "name" in self.required_tags:
                 sentence = f"{name}, {sentence[0].lower()}{sentence[1:]}"
                 used_tags["name"] = name
             else:
                 unused_tags["name"] = name
+
+        # Optionally add attribute suffixes
+        sentence = self._maybe_add_suffix(sentence, tags, rng, used_tags, unused_tags)
 
         return GeneratedSentence(
             sentence=sentence,
@@ -941,11 +977,14 @@ class OSMSentenceGenerator:
         # Handle name if present
         name = tags.get("name")
         if name:
-            if rng.random() < 0.6:
+            if rng.random() < 0.6 or "name" in self.required_tags:
                 sentence = f"{name}, {sentence[0].lower()}{sentence[1:]}"
                 used_tags["name"] = name
             else:
                 unused_tags["name"] = name
+
+        # Optionally add attribute suffixes
+        sentence = self._maybe_add_suffix(sentence, tags, rng, used_tags, unused_tags)
 
         return GeneratedSentence(
             sentence=sentence,
@@ -966,6 +1005,9 @@ class OSMSentenceGenerator:
 
         template = rng.choice(self._emergency_templates)
         sentence = template.format(article=article, emergency_type=variant)
+
+        # Optionally add attribute suffixes
+        sentence = self._maybe_add_suffix(sentence, tags, rng, used_tags, unused_tags)
 
         return GeneratedSentence(
             sentence=sentence,
@@ -990,11 +1032,14 @@ class OSMSentenceGenerator:
         # Handle name if present
         name = tags.get("name")
         if name:
-            if rng.random() < 0.7:
+            if rng.random() < 0.7 or "name" in self.required_tags:
                 sentence = f"{name}, {sentence[0].lower()}{sentence[1:]}"
                 used_tags["name"] = name
             else:
                 unused_tags["name"] = name
+
+        # Optionally add attribute suffixes
+        sentence = self._maybe_add_suffix(sentence, tags, rng, used_tags, unused_tags)
 
         return GeneratedSentence(
             sentence=sentence,
@@ -1019,11 +1064,14 @@ class OSMSentenceGenerator:
         # Handle name if present
         name = tags.get("name")
         if name:
-            if rng.random() < 0.7:
+            if rng.random() < 0.7 or "name" in self.required_tags:
                 sentence = f"{name}, {sentence[0].lower()}{sentence[1:]}"
                 used_tags["name"] = name
             else:
                 unused_tags["name"] = name
+
+        # Optionally add attribute suffixes
+        sentence = self._maybe_add_suffix(sentence, tags, rng, used_tags, unused_tags)
 
         return GeneratedSentence(
             sentence=sentence,
@@ -1048,11 +1096,14 @@ class OSMSentenceGenerator:
         # Handle name if present
         name = tags.get("name")
         if name:
-            if rng.random() < 0.7:
+            if rng.random() < 0.7 or "name" in self.required_tags:
                 sentence = f"{name}, {sentence[0].lower()}{sentence[1:]}"
                 used_tags["name"] = name
             else:
                 unused_tags["name"] = name
+
+        # Optionally add attribute suffixes
+        sentence = self._maybe_add_suffix(sentence, tags, rng, used_tags, unused_tags)
 
         return GeneratedSentence(
             sentence=sentence,
@@ -1077,11 +1128,14 @@ class OSMSentenceGenerator:
         # Handle name if present
         name = tags.get("name")
         if name:
-            if rng.random() < 0.5:
+            if rng.random() < 0.5 or "name" in self.required_tags:
                 sentence = f"{name}, {sentence[0].lower()}{sentence[1:]}"
                 used_tags["name"] = name
             else:
                 unused_tags["name"] = name
+
+        # Optionally add attribute suffixes
+        sentence = self._maybe_add_suffix(sentence, tags, rng, used_tags, unused_tags)
 
         return GeneratedSentence(
             sentence=sentence,

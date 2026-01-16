@@ -291,6 +291,7 @@ py_library(
   srcs = ["sentence_embedding_model.py"],
   visibility = [
     "//experimental/overhead_matching/swag:__subpackages__",
+    "//common/python:__subpackages__",
   ],
   deps = [
     requirement("torch"),

@@ -119,7 +119,7 @@ def log_example_sentences(
             ]
 
             cls_text_parts.append(
-                f"- **Sentence:** {sentence[:100]}...\n"
+                f"- **Sentence:** {sentence}\n"
                 f"  - **True:** {true_name} | **Pred:** {pred_name} ({confidence:.2f}) {status}\n"
                 f"  - **Top-3:** {', '.join(top_preds)}\n"
             )
@@ -159,7 +159,7 @@ def log_example_sentences(
             if not other_indices:
                 continue
 
-            contrast_text_parts.append(f"- **Anchor:** {sentence[:80]}...\n")
+            contrast_text_parts.append(f"- **Anchor:** {sentence}\n")
 
             # Show positives
             if len(pos_indices) > 0:
@@ -168,7 +168,7 @@ def log_example_sentences(
                     j = pi.item()
                     sim = similarity[i, j].item()
                     contrast_text_parts.append(
-                        f"    - (sim={sim:.3f}) {batch.sentences[j][:60]}...\n"
+                        f"    - (sim={sim:.3f}) {batch.sentences[j]}\n"
                     )
 
             # Show top negative (highest similarity among negatives)
@@ -179,7 +179,7 @@ def log_example_sentences(
                 contrast_text_parts.append("  - **Hardest negatives:**\n")
                 for j, sim in neg_sims[:2]:
                     contrast_text_parts.append(
-                        f"    - (sim={sim:.3f}) {batch.sentences[j][:60]}...\n"
+                        f"    - (sim={sim:.3f}) {batch.sentences[j]}\n"
                     )
 
     writer.add_text("examples/contrastive", "".join(contrast_text_parts), global_step)
@@ -299,6 +299,14 @@ def train_epoch(
             for name, acc in accuracies.items():
                 writer.add_scalar(f"train/{name}", acc, global_step)
 
+            # Log contrastive batch statistics
+            for task, (mask, positive_matrix) in batch.contrastive_labels.items():
+                n_samples_with_tag = mask.sum().item()
+                # positive_matrix is symmetric, so divide by 2 for unique pairs
+                n_positive_pairs = int(positive_matrix.sum().item() / 2)
+                writer.add_scalar(f"train/contrastive_samples_{task}", n_samples_with_tag, global_step)
+                writer.add_scalar(f"train/contrastive_pairs_{task}", n_positive_pairs, global_step)
+
         # Log example sentences periodically (also at first step of epoch)
         is_first_step_of_epoch = (global_step - 1) % len(dataloader) == 0
         if (
@@ -387,6 +395,7 @@ def train(
     training_config: TrainingConfig | None = None,
     classification_tags: list[str] | None = None,
     contrastive_tags: list[str] | None = None,
+    required_tags: list[str] | None = None,
     train_split: float = 0.9,
     seed: int = 42,
     limit: int | None = None,
@@ -402,6 +411,7 @@ def train(
         training_config: Training configuration
         classification_tags: Tags for classification tasks
         contrastive_tags: Tags for contrastive tasks
+        required_tags: Tags that must always be included in sentences (defaults to contrastive_tags)
         train_split: Fraction of data for training
         seed: Random seed
         limit: Optional limit on number of landmarks
@@ -458,7 +468,10 @@ def train(
     print(f"Train: {len(train_landmarks):,}, Test: {len(test_landmarks):,}")
 
     # Create sentence generator (shared across datasets)
-    generator = OSMSentenceGenerator()
+    # Default required_tags to contrastive_tags to ensure contrastive learning has signal
+    effective_required_tags = required_tags if required_tags is not None else contrastive_tags
+    print(f"Required tags (always included): {effective_required_tags}")
+    generator = OSMSentenceGenerator(required_tags=effective_required_tags)
 
     # Create datasets
     train_dataset = SentenceDataset(train_landmarks, generator=generator, epoch=0)
@@ -476,8 +489,8 @@ def train(
         landmarks=train_landmarks,
         contrastive_tags=contrastive_tags,
         batch_size=training_config.batch_size,
-        groups_per_batch=32,  # Sample from 32 groups per batch
-        samples_per_group=4,  # Up to 4 samples per group
+        groups_per_batch=training_config.groups_per_batch,
+        samples_per_group=training_config.samples_per_group,
         seed=seed,
     )
 
@@ -561,9 +574,12 @@ def train(
             "encoder_lr": training_config.lr_schedule.encoder_lr,
             "heads_lr": training_config.lr_schedule.heads_lr,
             "temperature": training_config.temperature,
+            "groups_per_batch": training_config.groups_per_batch,
+            "samples_per_group": training_config.samples_per_group,
         },
         "classification_tags": classification_tags,
         "contrastive_tags": contrastive_tags,
+        "required_tags": effective_required_tags,
         "train_split": train_split,
         "seed": seed,
     }
@@ -710,6 +726,16 @@ def main():
         type=int,
         help="Limit number of landmarks to load (for testing)",
     )
+    parser.add_argument(
+        "--groups_per_batch",
+        type=int,
+        help="Number of contrastive groups to sample per batch (default: 32)",
+    )
+    parser.add_argument(
+        "--samples_per_group",
+        type=int,
+        help="Target samples per contrastive group (default: 4)",
+    )
     args = parser.parse_args()
 
     # Load config from file or use defaults
@@ -744,6 +770,10 @@ def main():
         config.seed = args.seed
     if args.limit is not None:
         config.limit = args.limit
+    if args.groups_per_batch is not None:
+        config.training.groups_per_batch = args.groups_per_batch
+    if args.samples_per_group is not None:
+        config.training.samples_per_group = args.samples_per_group
 
     # Validate required fields
     if config.db_path is None:
@@ -765,6 +795,7 @@ def main():
         training_config=config.training,
         classification_tags=config.classification_tags,
         contrastive_tags=config.contrastive_tags,
+        required_tags=config.required_tags,
         train_split=config.train_split,
         seed=config.seed,
         limit=config.limit,
