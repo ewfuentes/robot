@@ -89,6 +89,11 @@ class ComposableCLIPPanoExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     # Pre-computed embedding size (for sentence fallback in proper_nouns_only mode)
     precomputed_embedding_size: int = 1536
 
+    # Whether to use a learned projection layer for precomputed embeddings
+    # When True (default), projects from precomputed_embedding_size to hash_bit_dim
+    # When False, truncates/pads embeddings to match output_dim
+    use_sentence_projection: bool = True
+
 
 class ComposableCLIPOSMExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     """Composable text encoder for OSM landmarks.
@@ -120,6 +125,11 @@ class ComposableCLIPOSMExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
 
     # Pre-computed embedding size (for sentence fallback in proper_nouns_only mode)
     precomputed_embedding_size: int = 1536
+
+    # Whether to use a learned projection layer for precomputed embeddings
+    # When True (default), projects from precomputed_embedding_size to hash_bit_dim
+    # When False, truncates/pads embeddings to match output_dim
+    use_sentence_projection: bool = True
 
 
 class SemanticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):

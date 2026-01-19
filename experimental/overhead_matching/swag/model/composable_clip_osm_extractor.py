@@ -209,6 +209,17 @@ class ComposableCLIPOSMExtractor(torch.nn.Module):
             self.token_type_embedding = None
             self.geometry_type_embedding = None
 
+        # Learned projection for precomputed sentence embeddings when using hash_bit + proper_nouns_only
+        # Projects from precomputed_embedding_size to hash_bit_dim instead of truncating
+        if (not self._use_clip and
+                config.embed_mode == CLIPEmbedMode.PROPER_NOUNS_ONLY and
+                config.precomputed_embedding_size != config.hash_bit_dim and
+                config.use_sentence_projection):
+            print(f"Creating sentence projection layer: {config.precomputed_embedding_size} -> {config.hash_bit_dim}")
+            self.sentence_projection = nn.Linear(config.precomputed_embedding_size, config.hash_bit_dim)
+        else:
+            self.sentence_projection = None
+
         # Data storage
         self.all_sentences = {}  # custom_id -> sentence
         self.precomputed_tensor = None  # For sentence fallback in proper_nouns_only mode
@@ -388,8 +399,10 @@ class ComposableCLIPOSMExtractor(torch.nn.Module):
                 if custom_id in self.precomputed_id_to_idx:
                     emb_idx = self.precomputed_id_to_idx[custom_id]
                     embedding = self.precomputed_tensor[emb_idx].to(device)
-                    # Adjust dimensions if needed
-                    if embedding.shape[0] > self.output_dim:
+                    # Apply learned projection if available, otherwise truncate/pad
+                    if self.sentence_projection is not None:
+                        embedding = self.sentence_projection(embedding)
+                    elif embedding.shape[0] > self.output_dim:
                         embedding = embedding[:self.output_dim]
                     elif embedding.shape[0] < self.output_dim:
                         padded = torch.zeros(self.output_dim, device=device)
