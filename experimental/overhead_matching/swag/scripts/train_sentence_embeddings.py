@@ -18,6 +18,7 @@ import common.torch.load_torch_deps  # noqa: F401 - Must import before torch
 import numpy as np
 import torch
 import torch.nn.functional as F
+from torch.amp import GradScaler, autocast
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 from torch.profiler import profile, record_function, ProfilerActivity
@@ -241,38 +242,65 @@ def train_step(
     scheduler: LambdaLR,
     config: TrainingConfig,
     device: torch.device,
+    scaler: GradScaler | None = None,
 ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor], torch.Tensor] | None:
     """Execute a single training step.
 
+    Args:
+        model: The model to train
+        batch: Input batch
+        optimizer: Optimizer
+        scheduler: Learning rate scheduler
+        config: Training configuration
+        device: Device to train on
+        scaler: GradScaler for mixed precision training (None to disable)
+
     Returns:
-        Tuple of (losses, output, total_loss) or None if no losses computed.
+        Tuple of (losses, output, total_loss, batch) or None if no losses computed.
     """
+    use_amp = scaler is not None
+
     with record_function("batch_to_device"):
         batch = batch.to(device)
 
     with record_function("forward"):
         # Use pre-tokenized input if available (parallel tokenization in workers)
-        if batch.token_ids is not None:
-            output = model(token_ids=batch.token_ids)
-        else:
-            output = model(sentences=batch.sentences)
+        with autocast(device_type="cuda", enabled=use_amp):
+            if batch.token_ids is not None:
+                output = model(token_ids=batch.token_ids)
+            else:
+                output = model(sentences=batch.sentences)
 
     with record_function("compute_losses"):
-        losses = compute_sentence_losses(output, batch, temperature=config.temperature)
+        with autocast(device_type="cuda", enabled=use_amp):
+            losses = compute_sentence_losses(output, batch, temperature=config.temperature)
 
     if not losses:
         return None
 
     with record_function("backward"):
         total_loss = aggregate_losses(losses)
-        total_loss.backward()
+        if use_amp:
+            scaler.scale(total_loss).backward()
+        else:
+            total_loss.backward()
 
     with record_function("optimizer_step"):
-        if config.gradient_clip_norm > 0:
-            torch.nn.utils.clip_grad_norm_(
-                model.parameters(), config.gradient_clip_norm
-            )
-        optimizer.step()
+        if use_amp:
+            # Unscale gradients before clipping
+            scaler.unscale_(optimizer)
+            if config.gradient_clip_norm > 0:
+                torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), config.gradient_clip_norm
+                )
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            if config.gradient_clip_norm > 0:
+                torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), config.gradient_clip_norm
+                )
+            optimizer.step()
         scheduler.step()
         optimizer.zero_grad()
 
@@ -291,6 +319,7 @@ def train_epoch(
     tag_vocabs: dict[str, dict[str, int]] | None = None,
     log_examples_every_n_steps: int = 500,
     profile_dir: Path | None = None,
+    scaler: GradScaler | None = None,
 ) -> tuple[int, dict[str, float]]:
     """Train for one epoch.
 
@@ -306,6 +335,7 @@ def train_epoch(
         tag_vocabs: Tag vocabularies for logging examples
         log_examples_every_n_steps: How often to log example sentences
         profile_dir: If provided, enable PyTorch profiler and save traces here
+        scaler: GradScaler for mixed precision training (None to disable)
 
     Returns:
         Tuple of (final_global_step, epoch_metrics)
@@ -391,7 +421,7 @@ def train_epoch(
                 with record_function("data_loading"):
                     pass  # Data already loaded by iterator
 
-                result = train_step(model, batch, optimizer, scheduler, config, device)
+                result = train_step(model, batch, optimizer, scheduler, config, device, scaler)
                 global_step = process_step_results(result, global_step, epoch_losses, epoch_accuracies)
 
                 if result is not None:
@@ -409,7 +439,7 @@ def train_epoch(
     else:
         pbar = tqdm(dataloader, desc="Training")
         for batch in pbar:
-            result = train_step(model, batch, optimizer, scheduler, config, device)
+            result = train_step(model, batch, optimizer, scheduler, config, device, scaler)
             global_step = process_step_results(result, global_step, epoch_losses, epoch_accuracies)
 
             if result is not None:
@@ -454,15 +484,18 @@ def evaluate(
     all_base_embeddings: list[torch.Tensor] = []
     all_pruned_tags: list[frozenset] = []
 
+    use_amp = config.use_amp and device.type == "cuda"
+
     for batch in tqdm(dataloader, desc="Evaluating"):
         batch = batch.to(device)
         # Use pre-tokenized input if available
-        if batch.token_ids is not None:
-            output = model(token_ids=batch.token_ids)
-        else:
-            output = model(sentences=batch.sentences)
+        with autocast(device_type="cuda", enabled=use_amp):
+            if batch.token_ids is not None:
+                output = model(token_ids=batch.token_ids)
+            else:
+                output = model(sentences=batch.sentences)
 
-        losses = compute_sentence_losses(output, batch, temperature=config.temperature)
+            losses = compute_sentence_losses(output, batch, temperature=config.temperature)
         accuracies = compute_classification_accuracy(output, batch)
 
         for name, loss in losses.items():
@@ -859,6 +892,14 @@ def train(
         total_steps=total_steps,
     )
 
+    # Mixed precision training
+    scaler = None
+    if training_config.use_amp and device.type == "cuda":
+        scaler = GradScaler()
+        print("Mixed precision training enabled (FP16)")
+    elif training_config.use_amp:
+        print("Mixed precision training disabled (requires CUDA)")
+
     # TensorBoard writer
     writer = None
     if tensorboard_dir is not None:
@@ -883,6 +924,7 @@ def train(
             "temperature": training_config.temperature,
             "groups_per_batch": training_config.groups_per_batch,
             "samples_per_group": training_config.samples_per_group,
+            "use_amp": training_config.use_amp,
         },
         "classification_tags": classification_tags,
         "contrastive_tags": contrastive_tags,
@@ -921,6 +963,7 @@ def train(
             device=device,
             tag_vocabs=tag_vocabs,
             profile_dir=profile_dir,
+            scaler=scaler,
         )
 
         print(f"Train metrics: {train_metrics}")

@@ -73,6 +73,9 @@ class TrainingConfig:
     # 1.0 = all paired, 0.0 = all template-only, 0.5 = half and half
     paired_ratio: float = 1.0
 
+    # Mixed precision training (FP16)
+    use_amp: bool = True  # Enable automatic mixed precision
+
 
 # Default classification tasks (tag keys to use for classification)
 DEFAULT_CLASSIFICATION_TAGS = [
