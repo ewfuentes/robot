@@ -10,7 +10,7 @@ def info_nce_loss_from_matrix(
     similarity: torch.Tensor,
     positive_matrix: torch.Tensor,
 ) -> torch.Tensor:
-    """Compute InfoNCE loss with precomputed positive matrix.
+    """Compute InfoNCE loss with precomputed positive matrix (vectorized).
 
     For each anchor, the loss is:
         -mean(pos_similarities) + logsumexp(all_similarities_except_self)
@@ -26,28 +26,32 @@ def info_nce_loss_from_matrix(
     if n < 2:
         return torch.tensor(0.0, device=similarity.device)
 
-    loss = torch.tensor(0.0, device=similarity.device)
-    count = 0
+    # Count positives per anchor: (n,)
+    pos_mask = positive_matrix > 0
+    pos_counts = pos_mask.sum(dim=1).float()
 
-    for i in range(n):
-        pos_mask = positive_matrix[i] > 0
+    # Identify anchors with at least one positive
+    has_positive = pos_counts > 0
+    if not has_positive.any():
+        return torch.tensor(0.0, device=similarity.device)
 
-        # Skip if no positives for this anchor
-        if pos_mask.sum() == 0:
-            continue
+    # Compute mean positive similarity per anchor
+    # Zero out non-positives, sum, then divide by count
+    masked_pos_sim = similarity.masked_fill(~pos_mask, 0.0)
+    pos_sum = masked_pos_sim.sum(dim=1)
+    # Avoid div by zero (anchors without positives will be masked out anyway)
+    pos_mean = pos_sum / pos_counts.clamp(min=1)
 
-        # Positive similarities
-        pos_sim = similarity[i, pos_mask]
+    # Compute logsumexp over all similarities except self (diagonal)
+    self_mask = torch.eye(n, dtype=torch.bool, device=similarity.device)
+    sim_no_self = similarity.masked_fill(self_mask, float('-inf'))
+    logsumexp_all = torch.logsumexp(sim_no_self, dim=1)
 
-        # All similarities except self (for denominator)
-        all_except_self = torch.cat([similarity[i, :i], similarity[i, i + 1 :]])
+    # Per-anchor InfoNCE loss: -mean(positives) + logsumexp(all except self)
+    per_anchor_loss = -pos_mean + logsumexp_all
 
-        # InfoNCE: -log(sum(exp(pos)) / sum(exp(all)))
-        # = -mean(pos) + logsumexp(all)
-        loss = loss + (-pos_sim.mean() + torch.logsumexp(all_except_self, dim=0))
-        count += 1
-
-    return loss / max(count, 1)
+    # Average over anchors that have positives
+    return per_anchor_loss[has_positive].mean()
 
 
 def compute_base_contrastive_loss(
