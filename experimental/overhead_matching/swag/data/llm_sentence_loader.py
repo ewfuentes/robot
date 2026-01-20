@@ -5,6 +5,7 @@ pruned landmark properties for matching with template-based sentences.
 """
 
 import json
+import random
 from pathlib import Path
 
 from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
@@ -150,3 +151,30 @@ def get_coverage_stats(
         "total_landmarks": total_landmarks,
         "coverage_percent": len(llm_sentences) / total_landmarks * 100 if total_landmarks > 0 else 0,
     }
+
+
+def split_llm_sentences(
+    llm_sentences: dict[frozenset, str],
+    train_fraction: float = 0.9,
+    seed: int = 42,
+) -> tuple[dict[frozenset, str], dict[frozenset, str]]:
+    """Split LLM sentences into train/test sets by pruned_tags.
+
+    Args:
+        llm_sentences: Dictionary mapping pruned_tags to LLM sentences
+        train_fraction: Fraction of items for training
+        seed: Random seed for reproducibility
+
+    Returns:
+        Tuple of (train_llm_sentences, test_llm_sentences)
+    """
+    keys = list(llm_sentences.keys())
+    rng = random.Random(seed)
+    rng.shuffle(keys)
+
+    split_idx = int(len(keys) * train_fraction)
+    train_keys = set(keys[:split_idx])
+
+    train = {k: v for k, v in llm_sentences.items() if k in train_keys}
+    test = {k: v for k, v in llm_sentences.items() if k not in train_keys}
+    return train, test

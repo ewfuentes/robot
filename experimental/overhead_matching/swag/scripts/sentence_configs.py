@@ -68,6 +68,11 @@ class TrainingConfig:
     groups_per_batch: int = 32  # Number of contrastive groups to sample per batch
     samples_per_group: int = 4  # Target samples per group (for positive pairs)
 
+    # Mixed batch sampling (when both LLM sentences and template-only are available)
+    # Ratio of paired samples (template + LLM) vs template-only samples
+    # 1.0 = all paired, 0.0 = all template-only, 0.5 = half and half
+    paired_ratio: float = 1.0
+
 
 # Default classification tasks (tag keys to use for classification)
 DEFAULT_CLASSIFICATION_TAGS = [

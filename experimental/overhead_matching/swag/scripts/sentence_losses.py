@@ -195,18 +195,60 @@ def aggregate_losses(
     return total
 
 
+def compute_contrastive_mrr(
+    similarity: torch.Tensor,
+    positive_matrix: torch.Tensor,
+) -> float:
+    """Compute Mean Reciprocal Rank for contrastive embeddings using GPU-efficient broadcasting.
+
+    For each anchor, finds the rank of the best positive match and computes 1/rank.
+    MRR is the mean of these reciprocal ranks across all anchors with positives.
+
+    Args:
+        similarity: (n, n) tensor of pairwise similarities
+        positive_matrix: (n, n) binary tensor where [i,j]=1 if i and j are positives
+
+    Returns:
+        Mean Reciprocal Rank (higher is better, max is 1.0)
+    """
+    n = similarity.shape[0]
+    if n < 2:
+        return 0.0
+
+    # For each row, get the max similarity among positives
+    # Set non-positives to -inf so they don't affect the max
+    masked_sim = similarity.clone()
+    masked_sim[~(positive_matrix > 0)] = float('-inf')
+    best_positive_sim = masked_sim.max(dim=-1).values  # (n,)
+
+    # Compute rank of best positive for each anchor
+    # Rank = count of items with similarity >= best_positive_sim (excluding self)
+    self_mask = torch.eye(n, dtype=torch.bool, device=similarity.device)
+    other_sims = similarity.masked_fill(self_mask, float('-inf'))
+    ranks = (other_sims >= best_positive_sim[:, None]).sum(dim=-1)  # (n,)
+
+    # Only include anchors that have at least one positive
+    has_positive = (positive_matrix > 0).any(dim=-1)
+    valid_ranks = ranks[has_positive].float()
+
+    if valid_ranks.numel() == 0:
+        return 0.0
+
+    return (1.0 / valid_ranks).mean().item()
+
+
 def compute_classification_accuracy(
     model_output: dict[str, torch.Tensor | dict[str, torch.Tensor]],
     batch: SentenceBatch,
 ) -> dict[str, float]:
-    """Compute classification and presence accuracy for each task.
+    """Compute classification, presence accuracy, and contrastive MRR for each task.
 
     Args:
         model_output: Output from SentenceEmbeddingModel.forward()
         batch: SentenceBatch with precomputed labels
 
     Returns:
-        Dictionary mapping task names to accuracy values
+        Dictionary mapping task names to accuracy/MRR values
     """
     accuracies = {}
     device = model_output["base_embedding"].device
@@ -242,5 +284,44 @@ def compute_classification_accuracy(
         predictions = (torch.sigmoid(logits) > 0.5).float()
         correct = (predictions == labels).float().mean().item()
         accuracies[f"acc_presence_{task}"] = correct
+
+    # Contrastive MRR for per-task heads
+    contrastive_embeddings = model_output["contrastive_embeddings"]
+    for task, (mask, positive_matrix) in batch.contrastive_labels.items():
+        if task not in contrastive_embeddings:
+            continue
+
+        mask = mask.to(device)
+        positive_matrix = positive_matrix.to(device)
+
+        if mask.sum() < 2:
+            continue
+
+        embeddings = contrastive_embeddings[task]
+
+        # Compute similarity matrix
+        similarity = embeddings @ embeddings.T
+
+        # Extract only masked rows/cols
+        masked_sim = similarity[mask][:, mask]
+        masked_pos = positive_matrix[mask][:, mask]
+
+        mrr = compute_contrastive_mrr(masked_sim, masked_pos)
+        accuracies[f"mrr_contrast_{task}"] = mrr
+
+    # Base embedding contrastive MRR (for template <-> LLM pairing)
+    if batch.base_contrastive_labels is not None:
+        mask, positive_matrix = batch.base_contrastive_labels
+        mask = mask.to(device)
+        positive_matrix = positive_matrix.to(device)
+
+        if positive_matrix.sum() > 0:
+            base_embedding = model_output["base_embedding"]
+            # Normalize for cosine similarity
+            normalized = F.normalize(base_embedding, p=2, dim=-1)
+            similarity = normalized @ normalized.T
+
+            mrr = compute_contrastive_mrr(similarity, positive_matrix)
+            accuracies["mrr_base_contrastive"] = mrr
 
     return accuracies

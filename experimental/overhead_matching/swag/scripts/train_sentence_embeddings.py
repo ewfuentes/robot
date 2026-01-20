@@ -17,6 +17,7 @@ import common.torch.load_torch_deps  # noqa: F401 - Must import before torch
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
@@ -27,23 +28,29 @@ from experimental.overhead_matching.swag.data.llm_sentence_loader import (
     get_coverage_stats,
     load_llm_sentences_by_pruned_tags,
     load_llm_sentences_by_pruned_tags_from_dir,
+    split_llm_sentences,
 )
 from experimental.overhead_matching.swag.data.osm_sentence_generator import (
     OSMSentenceGenerator,
 )
 from experimental.overhead_matching.swag.data.paired_sentence_dataset import (
     PairedBatchSampler,
+    PairedContrastiveBatchSampler,
     PairedSentenceDataset,
     collate_paired_samples,
 )
 from experimental.overhead_matching.swag.data.sentence_dataset import (
+    CombinedBatchSampler,
+    CombinedDataset,
     ContrastiveBatchSampler,
     SentenceDataset,
     SentenceSample,
     create_collate_fn,
+    get_unique_pruned_tags_from_landmarks,
     load_landmarks_from_db,
     load_tag_vocabularies_from_db,
     split_landmarks_by_id,
+    split_pruned_tags,
 )
 from experimental.overhead_matching.swag.model.sentence_embedding_model import (
     create_model_from_config,
@@ -61,6 +68,7 @@ from experimental.overhead_matching.swag.scripts.sentence_configs import (
 from experimental.overhead_matching.swag.scripts.sentence_losses import (
     aggregate_losses,
     compute_classification_accuracy,
+    compute_contrastive_mrr,
     compute_sentence_losses,
 )
 
@@ -353,6 +361,7 @@ def evaluate(
     dataloader: DataLoader,
     config: TrainingConfig,
     device: torch.device,
+    compute_global_mrr: bool = True,
 ) -> dict[str, float]:
     """Evaluate the model on a dataset.
 
@@ -361,6 +370,7 @@ def evaluate(
         dataloader: Evaluation data loader
         config: Training configuration
         device: Device to evaluate on
+        compute_global_mrr: If True, compute global MRR across all samples
 
     Returns:
         Dictionary of evaluation metrics
@@ -369,6 +379,10 @@ def evaluate(
 
     all_losses: dict[str, list[float]] = {}
     all_accuracies: dict[str, list[float]] = {}
+
+    # For global MRR computation
+    all_base_embeddings: list[torch.Tensor] = []
+    all_pruned_tags: list[frozenset] = []
 
     for batch in tqdm(dataloader, desc="Evaluating"):
         batch = batch.to(device)
@@ -387,12 +401,34 @@ def evaluate(
                 all_accuracies[name] = []
             all_accuracies[name].append(acc)
 
+        # Collect for global MRR
+        if compute_global_mrr and batch.pruned_tags is not None:
+            all_base_embeddings.append(output["base_embedding"].cpu())
+            all_pruned_tags.extend(batch.pruned_tags)
+
     # Aggregate metrics
     metrics = {}
     for name, values in all_losses.items():
         metrics[f"val_{name}"] = sum(values) / len(values)
     for name, values in all_accuracies.items():
         metrics[f"val_{name}"] = sum(values) / len(values)
+
+    # Compute global MRR across all samples
+    if compute_global_mrr and all_base_embeddings:
+        embeddings = torch.cat(all_base_embeddings, dim=0)
+        normalized = F.normalize(embeddings, p=2, dim=-1)
+        similarity = normalized @ normalized.T
+
+        # Build positive matrix: same pruned_tags = positive
+        n = len(all_pruned_tags)
+        positive_matrix = torch.zeros(n, n, dtype=torch.float)
+        for i in range(n):
+            for j in range(n):
+                if i != j and all_pruned_tags[i] == all_pruned_tags[j]:
+                    positive_matrix[i, j] = 1.0
+
+        global_mrr = compute_contrastive_mrr(similarity, positive_matrix)
+        metrics["val_mrr_base_contrastive_global"] = global_mrr
 
     return metrics
 
@@ -469,16 +505,10 @@ def train(
     for tag, vocab in tag_vocabs.items():
         print(f"  {tag}: {len(vocab)} classes")
 
-    # Load landmarks
+    # Load landmarks to get all tags for LLM sentence matching
     print(f"\nLoading landmarks from {db_path}")
     landmarks = load_landmarks_from_db(db_path, limit=limit)
     print(f"Loaded {len(landmarks):,} landmarks")
-
-    # Split data
-    train_landmarks, test_landmarks = split_landmarks_by_id(
-        landmarks, train_fraction=train_split, seed=seed
-    )
-    print(f"Train: {len(train_landmarks):,}, Test: {len(test_landmarks):,}")
 
     # Create sentence generator (shared across datasets)
     # Default required_tags to contrastive_tags to ensure contrastive learning has signal
@@ -492,7 +522,7 @@ def train(
     if llm_sentences_path is not None and llm_sentences_path.exists():
         print(f"\nLoading LLM sentences from {llm_sentences_path}")
         # Get all landmark tags for mapping
-        all_tags = [l.tags for l in train_landmarks + test_landmarks]
+        all_tags = [l.tags for l in landmarks]
         # Support both file and directory paths
         if llm_sentences_path.is_dir():
             llm_sentences = load_llm_sentences_by_pruned_tags_from_dir(llm_sentences_path, all_tags)
@@ -503,45 +533,143 @@ def train(
               f"({coverage['coverage_percent']:.1f}% coverage)")
         use_paired_dataset = len(llm_sentences) > 0
 
+    # Extract unique pruned_tags from all landmarks for template-only dataset
+    all_pruned_tags = get_unique_pruned_tags_from_landmarks(landmarks)
+    print(f"Unique pruned_tags from landmarks: {len(all_pruned_tags):,}")
+
     # Create datasets
+    use_combined_sampler = False
     if use_paired_dataset:
-        # Use paired dataset that yields both template and LLM sentences
+        # Use paired dataset indexed by pruned_tags
         print("\nUsing paired dataset (template + LLM sentences)")
-        train_dataset = PairedSentenceDataset(
-            train_landmarks, llm_sentences, generator=generator, epoch=0
-        )
-        test_dataset = PairedSentenceDataset(
-            test_landmarks, llm_sentences, generator=generator, epoch=0
-        )
-        print(f"Paired train set: {len(train_dataset):,} landmarks with LLM sentences")
-        print(f"Paired test set: {len(test_dataset):,} landmarks with LLM sentences")
 
-        # Create collate function that first flattens pairs, then collates
-        base_collate_fn = create_collate_fn(
-            tag_vocabs=tag_vocabs,
-            classification_tasks=classification_tags,
-            contrastive_tasks=contrastive_tags,
-            include_base_contrastive=True,  # Enable base contrastive loss
+        # Split LLM sentences into train/test
+        train_llm, test_llm = split_llm_sentences(
+            llm_sentences, train_fraction=train_split, seed=seed
         )
+        print(f"LLM sentences split: Train {len(train_llm):,}, Test {len(test_llm):,}")
 
-        def paired_collate_fn(pairs: list[tuple[SentenceSample, SentenceSample]]):
-            flat_samples = collate_paired_samples(pairs)
-            return base_collate_fn(flat_samples)
-
-        collate_fn = paired_collate_fn
-
-        # Use simple batch sampler for paired dataset
-        # batch_size is number of pairs, so total samples = 2 * batch_size
-        train_batch_sampler = PairedBatchSampler(
-            dataset_size=len(train_dataset),
-            batch_size=training_config.batch_size // 2,  # Half since each yields 2 samples
-            seed=seed,
+        # Create paired datasets (indexed by pruned_tags, not landmarks)
+        train_paired_dataset = PairedSentenceDataset(
+            train_llm, generator=generator, epoch=0
         )
+        test_paired_dataset = PairedSentenceDataset(
+            test_llm, generator=generator, epoch=0
+        )
+        print(f"Paired train set: {len(train_paired_dataset):,} unique pruned_tags")
+        print(f"Paired test set: {len(test_paired_dataset):,} unique pruned_tags")
+
+        # Check if we need combined sampling (mixed paired + template-only)
+        paired_ratio = training_config.paired_ratio
+        if paired_ratio < 1.0:
+            use_combined_sampler = True
+            print(f"\nUsing combined sampling with paired_ratio={paired_ratio}")
+
+            # Get template-only pruned_tags (exclude those already in paired dataset)
+            paired_tags_set = set(train_llm.keys())
+            template_only_tags = [t for t in all_pruned_tags if t not in paired_tags_set]
+
+            # Split template-only tags
+            train_template_tags, test_template_tags = split_pruned_tags(
+                template_only_tags, train_fraction=train_split, seed=seed
+            )
+            print(f"Template-only tags: {len(template_only_tags):,} "
+                  f"(train: {len(train_template_tags):,}, test: {len(test_template_tags):,})")
+
+            # Create template-only datasets
+            train_template_dataset = SentenceDataset(
+                train_template_tags, generator=generator, epoch=0
+            )
+            test_template_dataset = SentenceDataset(
+                test_template_tags, generator=generator, epoch=0
+            )
+
+            # Create combined batch sampler
+            train_batch_sampler = CombinedBatchSampler(
+                paired_pruned_tags=train_paired_dataset.pruned_tags_list,
+                template_pruned_tags=train_template_dataset.pruned_tags_list,
+                contrastive_tags=contrastive_tags,
+                batch_size=training_config.batch_size,
+                paired_ratio=paired_ratio,
+                groups_per_batch=training_config.groups_per_batch,
+                samples_per_group=training_config.samples_per_group,
+                seed=seed,
+            )
+
+            # Create collate function for combined batches
+            base_collate_fn = create_collate_fn(
+                tag_vocabs=tag_vocabs,
+                classification_tasks=classification_tags,
+                contrastive_tasks=contrastive_tags,
+                include_base_contrastive=True,
+            )
+
+            combined_dataset = CombinedDataset(
+                paired_dataset=train_paired_dataset,
+                template_dataset=train_template_dataset,
+                sampler_len=len(train_batch_sampler),
+            )
+
+            def combined_collate_fn(nested_samples: list[list[SentenceSample]]):
+                # Flatten the nested list of samples
+                samples = [s for sample_list in nested_samples for s in sample_list]
+                return base_collate_fn(samples)
+
+            train_loader = DataLoader(
+                combined_dataset,
+                batch_sampler=train_batch_sampler,
+                collate_fn=combined_collate_fn,
+                num_workers=training_config.num_workers,
+            )
+        else:
+            # Pure paired mode (paired_ratio = 1.0)
+            train_dataset = train_paired_dataset
+            test_dataset = test_paired_dataset
+
+            # Create collate function that first flattens pairs, then collates
+            base_collate_fn = create_collate_fn(
+                tag_vocabs=tag_vocabs,
+                classification_tasks=classification_tags,
+                contrastive_tasks=contrastive_tags,
+                include_base_contrastive=True,
+            )
+
+            def paired_collate_fn(pairs: list[tuple[SentenceSample, SentenceSample]]):
+                flat_samples = collate_paired_samples(pairs)
+                return base_collate_fn(flat_samples)
+
+            collate_fn = paired_collate_fn
+
+            # Use contrastive batch sampler for tag-specific grouping
+            train_batch_sampler = PairedContrastiveBatchSampler(
+                pruned_tags_list=train_dataset.pruned_tags_list,
+                contrastive_tags=contrastive_tags,
+                batch_size=training_config.batch_size // 2,
+                groups_per_batch=training_config.groups_per_batch,
+                samples_per_group=training_config.samples_per_group,
+                seed=seed,
+            )
+
+            train_loader = DataLoader(
+                train_dataset,
+                batch_sampler=train_batch_sampler,
+                collate_fn=collate_fn,
+                num_workers=training_config.num_workers,
+                pin_memory=True,
+            )
     else:
-        # Use standard template-only dataset
+        # Use standard template-only dataset indexed by pruned_tags
         print("\nUsing template-only dataset")
-        train_dataset = SentenceDataset(train_landmarks, generator=generator, epoch=0)
-        test_dataset = SentenceDataset(test_landmarks, generator=generator, epoch=0)
+
+        # Split pruned_tags into train/test
+        train_pruned_tags, test_pruned_tags = split_pruned_tags(
+            all_pruned_tags, train_fraction=train_split, seed=seed
+        )
+        print(f"Split: Train {len(train_pruned_tags):,}, Test {len(test_pruned_tags):,}")
+
+        # Create datasets indexed by pruned_tags
+        train_dataset = SentenceDataset(train_pruned_tags, generator=generator, epoch=0)
+        test_dataset = SentenceDataset(test_pruned_tags, generator=generator, epoch=0)
 
         # Create collate function
         collate_fn = create_collate_fn(
@@ -553,7 +681,7 @@ def train(
 
         # Create data loaders with smart batching for contrastive learning
         train_batch_sampler = ContrastiveBatchSampler(
-            landmarks=train_landmarks,
+            pruned_tags_list=train_pruned_tags,
             contrastive_tags=contrastive_tags,
             batch_size=training_config.batch_size,
             groups_per_batch=training_config.groups_per_batch,
@@ -561,33 +689,47 @@ def train(
             seed=seed,
         )
 
-    train_loader = DataLoader(
-        train_dataset,
-        batch_sampler=train_batch_sampler,
-        collate_fn=collate_fn,
-        num_workers=training_config.num_workers,
-        pin_memory=True,
-    )
+        train_loader = DataLoader(
+            train_dataset,
+            batch_sampler=train_batch_sampler,
+            collate_fn=collate_fn,
+            num_workers=training_config.num_workers,
+            pin_memory=True,
+        )
 
-    # Test loader always uses standard collate (no base contrastive needed for eval)
+    # Test loader setup
+    # For evaluation, we always use the paired test dataset if available (for global MRR)
     test_collate_fn = create_collate_fn(
         tag_vocabs=tag_vocabs,
         classification_tasks=classification_tags,
         contrastive_tasks=contrastive_tags,
-        include_base_contrastive=False,
+        include_base_contrastive=True,  # Enable for global MRR computation
     )
-    if use_paired_dataset:
-        # For paired test dataset, flatten pairs before collating
+
+    if use_combined_sampler:
+        # Use paired test dataset for evaluation (includes both template and LLM)
+        test_dataset = test_paired_dataset
+
         def test_paired_collate_fn(pairs: list[tuple[SentenceSample, SentenceSample]]):
             flat_samples = collate_paired_samples(pairs)
             return test_collate_fn(flat_samples)
         test_collate = test_paired_collate_fn
+        test_batch_size = training_config.batch_size // 2
+    elif use_paired_dataset:
+        # Pure paired mode - test_dataset already set
+        def test_paired_collate_fn(pairs: list[tuple[SentenceSample, SentenceSample]]):
+            flat_samples = collate_paired_samples(pairs)
+            return test_collate_fn(flat_samples)
+        test_collate = test_paired_collate_fn
+        test_batch_size = training_config.batch_size // 2
     else:
+        # Template-only mode - test_dataset already set
         test_collate = test_collate_fn
+        test_batch_size = training_config.batch_size
 
     test_loader = DataLoader(
         test_dataset,
-        batch_size=training_config.batch_size // 2 if use_paired_dataset else training_config.batch_size,
+        batch_size=test_batch_size,
         shuffle=False,
         collate_fn=test_collate,
         num_workers=training_config.num_workers,
@@ -680,7 +822,11 @@ def train(
         print(f"\nEpoch {epoch + 1}/{training_config.num_epochs}")
 
         # Update epoch for sentence variety and batch sampling
-        train_dataset.set_epoch(epoch)
+        if use_combined_sampler:
+            train_paired_dataset.set_epoch(epoch)
+            train_template_dataset.set_epoch(epoch)
+        else:
+            train_dataset.set_epoch(epoch)
         train_batch_sampler.set_epoch(epoch)
 
         # Train

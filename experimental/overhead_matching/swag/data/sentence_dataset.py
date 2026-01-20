@@ -38,8 +38,6 @@ class SentenceSample:
     sentence: str
     used_tags: dict[str, str]
     unused_tags: dict[str, str]
-    landmark_id: int
-    all_tags: dict[str, str]  # All tags for this landmark
     pruned_tags: frozenset  # For landmark identity matching
     source: Literal["template", "llm"]  # Source of the sentence
 
@@ -59,6 +57,8 @@ class SentenceBatch:
     base_contrastive_labels: tuple[torch.Tensor, torch.Tensor] | None
     # Template mask: mask[i]=True if sample is from template (for template-only losses)
     template_mask: torch.Tensor | None
+    # Pruned tags for each sample (for global MRR computation)
+    pruned_tags: list[frozenset] | None = None
 
     def to(self, device: torch.device) -> "SentenceBatch":
         """Move tensors to device."""
@@ -84,58 +84,81 @@ class SentenceBatch:
             },
             base_contrastive_labels=base_contrastive,
             template_mask=self.template_mask.to(device) if self.template_mask is not None else None,
+            pruned_tags=self.pruned_tags,  # No need to move, it's a list of frozensets
         )
 
 
 class SentenceDataset(Dataset):
-    """Dataset that loads landmarks from SQLite and generates sentences on-the-fly.
+    """Dataset indexed by unique pruned_tags that generates sentences on-the-fly.
 
     Sentences are generated using OSMSentenceGenerator with a seed that combines
-    the landmark index and current epoch, providing variety across epochs while
+    the index and current epoch, providing variety across epochs while
     maintaining reproducibility within an epoch.
     """
 
     def __init__(
         self,
-        landmarks: list[LandmarkRecord],
+        pruned_tags_list: list[frozenset],
         generator: OSMSentenceGenerator | None = None,
         epoch: int = 0,
     ):
         """Initialize dataset.
 
         Args:
-            landmarks: List of LandmarkRecord objects
+            pruned_tags_list: List of unique pruned_tags (frozensets)
             generator: OSMSentenceGenerator instance (created if None)
             epoch: Current epoch (used for seed variation)
         """
-        self.landmarks = landmarks
+        self.pruned_tags_list = pruned_tags_list
         self.generator = generator or OSMSentenceGenerator()
         self.epoch = epoch
 
     def __len__(self) -> int:
-        return len(self.landmarks)
+        return len(self.pruned_tags_list)
 
     def __getitem__(self, idx: int) -> SentenceSample:
-        landmark = self.landmarks[idx]
+        pruned_tags = self.pruned_tags_list[idx]
+
+        # Convert frozenset to dict for sentence generation
+        tags_dict = dict(pruned_tags)
 
         # Generate sentence with RNG seeded by index + epoch for variety
-        seed = idx + self.epoch * len(self.landmarks)
+        seed = idx + self.epoch * len(self)
         rng = random.Random(seed)
-        result = self.generator.generate_sentence(landmark.tags, rng=rng)
+        result = self.generator.generate_sentence(tags_dict, rng=rng)
 
         return SentenceSample(
             sentence=result.sentence,
             used_tags=result.used_tags,
             unused_tags=result.unused_tags,
-            landmark_id=landmark.landmark_id,
-            all_tags=landmark.tags,
-            pruned_tags=prune_landmark(landmark.tags),
+            pruned_tags=pruned_tags,
             source="template",
         )
 
     def set_epoch(self, epoch: int) -> None:
         """Set current epoch for seed variation."""
         self.epoch = epoch
+
+    @classmethod
+    def from_landmarks(
+        cls,
+        landmarks: list[LandmarkRecord],
+        generator: OSMSentenceGenerator | None = None,
+        epoch: int = 0,
+    ) -> "SentenceDataset":
+        """Create dataset from landmarks, extracting unique pruned_tags.
+
+        Args:
+            landmarks: List of LandmarkRecord objects
+            generator: OSMSentenceGenerator instance
+            epoch: Current epoch
+
+        Returns:
+            SentenceDataset instance indexed by unique pruned_tags
+        """
+        # Extract unique pruned_tags from landmarks
+        unique_pruned_tags = list({prune_landmark(lm.tags) for lm in landmarks})
+        return cls(unique_pruned_tags, generator=generator, epoch=epoch)
 
     @classmethod
     def from_database(
@@ -157,7 +180,7 @@ class SentenceDataset(Dataset):
             SentenceDataset instance
         """
         landmarks = load_landmarks_from_db(db_path, limit=limit)
-        return cls(landmarks, generator=generator, epoch=epoch)
+        return cls.from_landmarks(landmarks, generator=generator, epoch=epoch)
 
 
 def load_landmarks_from_db(
@@ -287,16 +310,87 @@ def split_landmarks_by_id(
     return train_landmarks, test_landmarks
 
 
-class ContrastiveBatchSampler(Sampler):
-    """Batch sampler that ensures positive pairs for contrastive learning.
+def split_pruned_tags(
+    pruned_tags_list: list[frozenset],
+    train_fraction: float = 0.9,
+    seed: int = 42,
+) -> tuple[list[frozenset], list[frozenset]]:
+    """Split pruned_tags into train/test sets.
 
-    Groups landmarks by their contrastive tag values and samples batches
-    that contain multiple landmarks sharing the same value.
+    Args:
+        pruned_tags_list: List of unique pruned_tags
+        train_fraction: Fraction of items for training
+        seed: Random seed for reproducibility
+
+    Returns:
+        Tuple of (train_pruned_tags, test_pruned_tags)
+    """
+    # Shuffle indices
+    indices = list(range(len(pruned_tags_list)))
+    rng = random.Random(seed)
+    rng.shuffle(indices)
+
+    # Split
+    split_idx = int(len(indices) * train_fraction)
+    train_indices = set(indices[:split_idx])
+
+    train_tags = [pruned_tags_list[i] for i in range(len(pruned_tags_list)) if i in train_indices]
+    test_tags = [pruned_tags_list[i] for i in range(len(pruned_tags_list)) if i not in train_indices]
+
+    return train_tags, test_tags
+
+
+def get_unique_pruned_tags_from_landmarks(landmarks: list[LandmarkRecord]) -> list[frozenset]:
+    """Extract unique pruned_tags from a list of landmarks.
+
+    Args:
+        landmarks: List of LandmarkRecord objects
+
+    Returns:
+        List of unique pruned_tags (frozensets)
+    """
+    return list({prune_landmark(lm.tags) for lm in landmarks})
+
+
+class CombinedDataset(Dataset):
+    """Dataset that combines paired and template datasets for mixed batch sampling.
+
+    Each index is a (dataset_type, idx) tuple where dataset_type is "paired" or "template".
+    This is a top-level class (not a closure) to enable pickling for DataLoader workers.
     """
 
     def __init__(
         self,
-        landmarks: list[LandmarkRecord],
+        paired_dataset: "PairedSentenceDataset",
+        template_dataset: "SentenceDataset",
+        sampler_len: int,
+    ):
+        self.paired_dataset = paired_dataset
+        self.template_dataset = template_dataset
+        self._len = sampler_len
+
+    def __len__(self) -> int:
+        return self._len
+
+    def __getitem__(self, key: tuple[str, int]) -> list["SentenceSample"]:
+        dataset_type, idx = key
+        if dataset_type == "paired":
+            template_sample, llm_sample = self.paired_dataset[idx]
+            return [template_sample, llm_sample]
+        else:
+            return [self.template_dataset[idx]]
+
+
+class ContrastiveBatchSampler(Sampler):
+    """Batch sampler that ensures positive pairs for contrastive learning.
+
+    Groups pruned_tags by their contrastive tag values and samples batches
+    that contain multiple items sharing the same value.
+    """
+
+    def __init__(
+        self,
+        pruned_tags_list: list[frozenset],
         contrastive_tags: list[str],
         batch_size: int,
         groups_per_batch: int = 32,
@@ -306,31 +400,32 @@ class ContrastiveBatchSampler(Sampler):
         """Initialize the sampler.
 
         Args:
-            landmarks: List of LandmarkRecord objects
+            pruned_tags_list: List of unique pruned_tags (frozensets)
             contrastive_tags: Tag keys to group by (e.g., ["name", "addr:street"])
             batch_size: Total batch size
             groups_per_batch: Number of groups to sample per batch
             samples_per_group: Target samples per group (may be less if group is smaller)
             seed: Random seed
         """
-        self.landmarks = landmarks
+        self.pruned_tags_list = pruned_tags_list
         self.batch_size = batch_size
         self.groups_per_batch = groups_per_batch
         self.samples_per_group = samples_per_group
         self.seed = seed
         self.epoch = 0
 
-        # Build index: tag_value -> list of landmark indices
-        # A landmark can belong to multiple groups (one per contrastive tag it has)
+        # Build index: tag_value -> list of pruned_tags indices
+        # An item can belong to multiple groups (one per contrastive tag it has)
         self.value_to_indices: dict[str, list[int]] = defaultdict(list)
         self.ungrouped_indices: list[int] = []
 
-        for idx, landmark in enumerate(landmarks):
+        for idx, pruned_tags in enumerate(pruned_tags_list):
+            tags_dict = dict(pruned_tags)
             grouped = False
             for tag in contrastive_tags:
-                if tag in landmark.tags:
+                if tag in tags_dict:
                     # Use tag:value as key to separate different tags
-                    key = f"{tag}:{landmark.tags[tag]}"
+                    key = f"{tag}:{tags_dict[tag]}"
                     self.value_to_indices[key].append(idx)
                     grouped = True
                     # No break - add to all matching groups
@@ -354,7 +449,7 @@ class ContrastiveBatchSampler(Sampler):
                     break
 
         print(f"ContrastiveBatchSampler: {len(self.valid_groups)} groups with 2+ members, "
-              f"{len(self.ungrouped_indices)} ungrouped landmarks")
+              f"{len(self.ungrouped_indices)} ungrouped items")
         print(f"  Groups per tag: {dict(groups_per_tag)}")
 
     def set_epoch(self, epoch: int) -> None:
@@ -375,7 +470,7 @@ class ContrastiveBatchSampler(Sampler):
         ungrouped_idx = 0
         total_samples_yielded = 0
 
-        while total_samples_yielded < len(self.landmarks):
+        while total_samples_yielded < len(self.pruned_tags_list):
             batch = []
 
             # Sample from groups
@@ -414,7 +509,214 @@ class ContrastiveBatchSampler(Sampler):
 
     def __len__(self) -> int:
         """Approximate number of batches per epoch."""
-        return (len(self.landmarks) + self.batch_size - 1) // self.batch_size
+        return (len(self.pruned_tags_list) + self.batch_size - 1) // self.batch_size
+
+
+class CombinedBatchSampler(Sampler):
+    """Batch sampler that mixes samples from PairedSentenceDataset and SentenceDataset.
+
+    Each batch contains:
+    - paired_ratio * batch_size samples from PairedSentenceDataset (template + LLM pairs)
+    - (1 - paired_ratio) * batch_size samples from SentenceDataset (template only)
+
+    Groups samples by tag values for tag-specific contrastive learning.
+    """
+
+    def __init__(
+        self,
+        paired_pruned_tags: list[frozenset],
+        template_pruned_tags: list[frozenset],
+        contrastive_tags: list[str],
+        batch_size: int,
+        paired_ratio: float = 0.5,
+        groups_per_batch: int = 32,
+        samples_per_group: int = 4,
+        seed: int = 42,
+    ):
+        """Initialize the sampler.
+
+        Args:
+            paired_pruned_tags: List of pruned_tags from PairedSentenceDataset
+            template_pruned_tags: List of pruned_tags from SentenceDataset
+            contrastive_tags: Tag keys to group by (e.g., ["name", "addr:street"])
+            batch_size: Total batch size (paired samples count as 2 each)
+            paired_ratio: Ratio of paired vs template-only (1.0 = all paired)
+            groups_per_batch: Number of groups to sample per batch
+            samples_per_group: Target samples per group
+            seed: Random seed
+        """
+        self.paired_pruned_tags = paired_pruned_tags
+        self.template_pruned_tags = template_pruned_tags
+        self.batch_size = batch_size
+        self.paired_ratio = paired_ratio
+        self.groups_per_batch = groups_per_batch
+        self.samples_per_group = samples_per_group
+        self.seed = seed
+        self.epoch = 0
+
+        # Calculate samples per type
+        # Paired samples yield 2 items each (template + LLM)
+        # So if we want paired_ratio of the final batch to be paired:
+        # paired_count * 2 / (paired_count * 2 + template_count) = paired_ratio
+        # Solving: paired_count = paired_ratio * batch_size / 2
+        #          template_count = (1 - paired_ratio) * batch_size
+        self.paired_per_batch = int(paired_ratio * batch_size / 2)
+        self.template_per_batch = batch_size - (self.paired_per_batch * 2)
+
+        # Build tag value indices for paired dataset
+        self.paired_value_to_indices: dict[str, list[int]] = defaultdict(list)
+        self.paired_ungrouped: list[int] = []
+        for idx, pruned_tags in enumerate(paired_pruned_tags):
+            tags_dict = dict(pruned_tags)
+            grouped = False
+            for tag in contrastive_tags:
+                if tag in tags_dict:
+                    key = f"{tag}:{tags_dict[tag]}"
+                    self.paired_value_to_indices[key].append(idx)
+                    grouped = True
+            if not grouped:
+                self.paired_ungrouped.append(idx)
+
+        self.paired_valid_groups = [
+            (key, indices)
+            for key, indices in self.paired_value_to_indices.items()
+            if len(indices) >= 2
+        ]
+
+        # Build tag value indices for template dataset
+        self.template_value_to_indices: dict[str, list[int]] = defaultdict(list)
+        self.template_ungrouped: list[int] = []
+        for idx, pruned_tags in enumerate(template_pruned_tags):
+            tags_dict = dict(pruned_tags)
+            grouped = False
+            for tag in contrastive_tags:
+                if tag in tags_dict:
+                    key = f"{tag}:{tags_dict[tag]}"
+                    self.template_value_to_indices[key].append(idx)
+                    grouped = True
+            if not grouped:
+                self.template_ungrouped.append(idx)
+
+        self.template_valid_groups = [
+            (key, indices)
+            for key, indices in self.template_value_to_indices.items()
+            if len(indices) >= 2
+        ]
+
+        # Calculate batches per epoch based on larger dataset coverage
+        # An epoch should see all of the larger dataset once; smaller dataset gets recycled
+        paired_batches_for_full = len(self.paired_pruned_tags) / max(self.paired_per_batch, 1)
+        template_batches_for_full = len(self.template_pruned_tags) / max(self.template_per_batch, 1)
+        self.batches_per_epoch = int(max(paired_batches_for_full, template_batches_for_full))
+
+        print(f"CombinedBatchSampler:")
+        print(f"  Paired: {len(paired_pruned_tags)} items, {len(self.paired_valid_groups)} groups")
+        print(f"  Template: {len(template_pruned_tags)} items, {len(self.template_valid_groups)} groups")
+        print(f"  Per batch: {self.paired_per_batch} paired ({self.paired_per_batch * 2} samples) + "
+              f"{self.template_per_batch} template = {self.paired_per_batch * 2 + self.template_per_batch} total")
+        print(f"  Batches per epoch: {self.batches_per_epoch} (paired needs {paired_batches_for_full:.1f}, "
+              f"template needs {template_batches_for_full:.1f})")
+
+    def set_epoch(self, epoch: int) -> None:
+        """Set epoch for shuffling."""
+        self.epoch = epoch
+
+    def __iter__(self):
+        """Yield batches of (dataset_type, idx) tuples.
+
+        Each batch is a list of tuples where dataset_type is "paired" or "template"
+        and idx is the index into that dataset. Yields exactly batches_per_epoch
+        batches. The smaller dataset is recycled as needed while the larger dataset
+        is seen approximately once.
+        """
+        rng = random.Random(self.seed + self.epoch)
+
+        # Shuffle groups
+        paired_groups = list(self.paired_valid_groups)
+        rng.shuffle(paired_groups)
+        template_groups = list(self.template_valid_groups)
+        rng.shuffle(template_groups)
+
+        paired_ungrouped = list(self.paired_ungrouped)
+        rng.shuffle(paired_ungrouped)
+        template_ungrouped = list(self.template_ungrouped)
+        rng.shuffle(template_ungrouped)
+
+        paired_group_idx = 0
+        template_group_idx = 0
+        paired_ungrouped_idx = 0
+        template_ungrouped_idx = 0
+
+        # Yield exactly batches_per_epoch batches
+        for _ in range(self.batches_per_epoch):
+            paired_indices = []
+            template_indices = []
+
+            # Sample paired indices
+            groups_sampled = 0
+            half_groups = self.groups_per_batch // 2
+            while groups_sampled < half_groups and len(paired_indices) < self.paired_per_batch:
+                if paired_group_idx >= len(paired_groups):
+                    rng.shuffle(paired_groups)
+                    paired_group_idx = 0
+
+                if paired_groups:
+                    key, indices = paired_groups[paired_group_idx]
+                    paired_group_idx += 1
+                    n_samples = min(self.samples_per_group, len(indices),
+                                    self.paired_per_batch - len(paired_indices))
+                    sampled = rng.sample(indices, n_samples)
+                    paired_indices.extend(sampled)
+                    groups_sampled += 1
+                else:
+                    break
+
+            # Fill remaining paired with ungrouped
+            while len(paired_indices) < self.paired_per_batch:
+                if paired_ungrouped_idx >= len(paired_ungrouped):
+                    if not paired_ungrouped:
+                        break
+                    rng.shuffle(paired_ungrouped)
+                    paired_ungrouped_idx = 0
+                paired_indices.append(paired_ungrouped[paired_ungrouped_idx])
+                paired_ungrouped_idx += 1
+
+            # Sample template indices
+            groups_sampled = 0
+            while groups_sampled < half_groups and len(template_indices) < self.template_per_batch:
+                if template_group_idx >= len(template_groups):
+                    rng.shuffle(template_groups)
+                    template_group_idx = 0
+
+                if template_groups:
+                    key, indices = template_groups[template_group_idx]
+                    template_group_idx += 1
+                    n_samples = min(self.samples_per_group, len(indices),
+                                    self.template_per_batch - len(template_indices))
+                    sampled = rng.sample(indices, n_samples)
+                    template_indices.extend(sampled)
+                    groups_sampled += 1
+                else:
+                    break
+
+            # Fill remaining template with ungrouped
+            while len(template_indices) < self.template_per_batch:
+                if template_ungrouped_idx >= len(template_ungrouped):
+                    if not template_ungrouped:
+                        break
+                    rng.shuffle(template_ungrouped)
+                    template_ungrouped_idx = 0
+                template_indices.append(template_ungrouped[template_ungrouped_idx])
+                template_ungrouped_idx += 1
+
+            # Build flat batch of (dataset_type, idx) tuples
+            batch = [("paired", idx) for idx in paired_indices]
+            batch.extend([("template", idx) for idx in template_indices])
+            yield batch
+
+    def __len__(self) -> int:
+        """Return number of batches per epoch (covers larger dataset once)."""
+        return self.batches_per_epoch
 
 
 def collate_sentences(
@@ -518,6 +820,9 @@ def collate_sentences(
 
         base_contrastive_labels = (base_mask, base_positive_matrix)
 
+    # Extract pruned_tags for global MRR computation
+    pruned_tags_list = [s.pruned_tags for s in samples]
+
     return SentenceBatch(
         sentences=sentences,
         classification_labels=classification_labels,
@@ -525,6 +830,7 @@ def collate_sentences(
         presence_labels=presence_labels,
         base_contrastive_labels=base_contrastive_labels,
         template_mask=template_mask,
+        pruned_tags=pruned_tags_list,
     )
 
 

@@ -2,10 +2,14 @@
 # Copy and modify this file for your training run
 
 # Data paths
-db_path: /data/overhead_matching/datasets/us_osm_landmarks/landmarks.db
-output_dir: /data/overhead_matching/models/sentence_embeddings
+db_path: /data/overhead_matching/datasets/us_osm_landmarks/landmarks.sqlite
+output_dir: /data/overhead_matching/models/sentence_embeddings/train_with_osm_sentences_v2
 # tag_vocabs_path: null  # Optional, built automatically if not provided
 # tensorboard_dir: null  # Defaults to {output_dir}/tensorboard
+
+# LLM sentences for base contrastive loss (optional)
+# Can be a single JSONL file or a directory of JSONL files
+llm_sentences_path: /data/overhead_matching/datasets/semantic_landmark_embeddings/v4_202001_no_addresses/sentences/
 
 # Model configuration
 model:
@@ -15,7 +19,7 @@ model:
 
 # Training configuration
 training:
-  batch_size: 256
+  batch_size: 1024
   num_epochs: 5
   lr_schedule:
     encoder_lr: 2.0e-5   # Lower LR for pretrained encoder
@@ -23,8 +27,14 @@ training:
     warmup_steps: 1000
   gradient_clip_norm: 1.0
   temperature: 0.07
-  num_workers: 4
+  num_workers: 8
   log_every_n_steps: 100
+
+  # Mixed batch sampling (when llm_sentences_path is provided)
+  # Ratio of paired samples (template + LLM) vs template-only samples
+  # 1.0 = all paired, 0.0 = all template-only, 0.5 = half and half
+  # Epoch length is based on the larger dataset (smaller is recycled)
+  paired_ratio: 0.1
 
 # Task selection - which tags to use for training
 classification_tags:
