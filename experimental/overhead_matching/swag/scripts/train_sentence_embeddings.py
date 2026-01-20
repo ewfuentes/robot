@@ -20,6 +20,7 @@ import torch
 import torch.nn.functional as F
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
+from torch.profiler import profile, record_function, ProfilerActivity, schedule, tensorboard_trace_handler
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
@@ -233,6 +234,47 @@ def create_lr_scheduler(
     return LambdaLR(optimizer, lr_lambda)
 
 
+def train_step(
+    model: torch.nn.Module,
+    batch,
+    optimizer: AdamW,
+    scheduler: LambdaLR,
+    config: TrainingConfig,
+    device: torch.device,
+) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor], torch.Tensor] | None:
+    """Execute a single training step.
+
+    Returns:
+        Tuple of (losses, output, total_loss) or None if no losses computed.
+    """
+    with record_function("batch_to_device"):
+        batch = batch.to(device)
+
+    with record_function("forward"):
+        output = model(batch.sentences)
+
+    with record_function("compute_losses"):
+        losses = compute_sentence_losses(output, batch, temperature=config.temperature)
+
+    if not losses:
+        return None
+
+    with record_function("backward"):
+        total_loss = aggregate_losses(losses)
+        total_loss.backward()
+
+    with record_function("optimizer_step"):
+        if config.gradient_clip_norm > 0:
+            torch.nn.utils.clip_grad_norm_(
+                model.parameters(), config.gradient_clip_norm
+            )
+        optimizer.step()
+        scheduler.step()
+        optimizer.zero_grad()
+
+    return losses, output, total_loss, batch
+
+
 def train_epoch(
     model: torch.nn.Module,
     dataloader: DataLoader,
@@ -244,6 +286,7 @@ def train_epoch(
     device: torch.device,
     tag_vocabs: dict[str, dict[str, int]] | None = None,
     log_examples_every_n_steps: int = 500,
+    profile_dir: Path | None = None,
 ) -> tuple[int, dict[str, float]]:
     """Train for one epoch.
 
@@ -258,6 +301,7 @@ def train_epoch(
         device: Device to train on
         tag_vocabs: Tag vocabularies for logging examples
         log_examples_every_n_steps: How often to log example sentences
+        profile_dir: If provided, enable PyTorch profiler and save traces here
 
     Returns:
         Tuple of (final_global_step, epoch_metrics)
@@ -267,32 +311,17 @@ def train_epoch(
     epoch_losses: dict[str, list[float]] = {}
     epoch_accuracies: dict[str, list[float]] = {}
 
-    pbar = tqdm(dataloader, desc="Training")
-    for batch in pbar:
-        batch = batch.to(device)
+    def process_step_results(
+        result: tuple | None,
+        global_step: int,
+        epoch_losses: dict,
+        epoch_accuracies: dict,
+    ) -> int:
+        """Process results from a training step, update metrics, and log."""
+        if result is None:
+            return global_step
 
-        # Forward pass
-        output = model(batch.sentences)
-
-        # Compute losses
-        losses = compute_sentence_losses(output, batch, temperature=config.temperature)
-
-        if not losses:
-            continue
-
-        # Aggregate and backward
-        total_loss = aggregate_losses(losses)
-        total_loss.backward()
-
-        # Gradient clipping
-        if config.gradient_clip_norm > 0:
-            torch.nn.utils.clip_grad_norm_(
-                model.parameters(), config.gradient_clip_norm
-            )
-
-        optimizer.step()
-        scheduler.step()
-        optimizer.zero_grad()
+        losses, output, total_loss, batch = result
 
         # Track losses
         for name, loss in losses.items():
@@ -321,12 +350,11 @@ def train_epoch(
             # Log contrastive batch statistics
             for task, (mask, positive_matrix) in batch.contrastive_labels.items():
                 n_samples_with_tag = mask.sum().item()
-                # positive_matrix is symmetric, so divide by 2 for unique pairs
                 n_positive_pairs = int(positive_matrix.sum().item() / 2)
                 writer.add_scalar(f"train/contrastive_samples_{task}", n_samples_with_tag, global_step)
                 writer.add_scalar(f"train/contrastive_pairs_{task}", n_positive_pairs, global_step)
 
-        # Log example sentences periodically (also at first step of epoch)
+        # Log example sentences periodically
         is_first_step_of_epoch = (global_step - 1) % len(dataloader) == 0
         if (
             writer is not None
@@ -342,8 +370,47 @@ def train_epoch(
                     global_step=global_step,
                 )
 
-        # Update progress bar
-        pbar.set_postfix({"loss": total_loss.item(), "step": global_step})
+        return global_step
+
+    if profile_dir is not None:
+        # Profile first 20 batches: 5 warmup, 15 active
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        prof_schedule = schedule(wait=1, warmup=4, active=15, repeat=1)
+
+        with profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            schedule=prof_schedule,
+            on_trace_ready=tensorboard_trace_handler(str(profile_dir)),
+            record_shapes=True,
+            profile_memory=True,
+            with_stack=True,
+        ) as prof:
+            pbar = tqdm(dataloader, desc="Training (profiling)")
+            for batch in pbar:
+                with record_function("data_loading"):
+                    pass  # Data already loaded by iterator
+
+                result = train_step(model, batch, optimizer, scheduler, config, device)
+                global_step = process_step_results(result, global_step, epoch_losses, epoch_accuracies)
+
+                if result is not None:
+                    pbar.set_postfix({"loss": result[2].item(), "step": global_step})
+
+                prof.step()
+
+                # Stop after profiled batches
+                if global_step >= 20:
+                    print(f"\nProfiler trace saved to {profile_dir}")
+                    print("View with: tensorboard --logdir", profile_dir)
+                    break
+    else:
+        pbar = tqdm(dataloader, desc="Training")
+        for batch in pbar:
+            result = train_step(model, batch, optimizer, scheduler, config, device)
+            global_step = process_step_results(result, global_step, epoch_losses, epoch_accuracies)
+
+            if result is not None:
+                pbar.set_postfix({"loss": result[2].item(), "step": global_step})
 
     # Compute epoch metrics
     metrics = {}
@@ -447,6 +514,7 @@ def train(
     train_split: float = 0.9,
     seed: int = 42,
     limit: int | None = None,
+    profile: bool = False,
 ) -> None:
     """Main training function.
 
@@ -464,6 +532,7 @@ def train(
         train_split: Fraction of data for training
         seed: Random seed
         limit: Optional limit on number of landmarks
+        profile: If True, enable PyTorch profiler for first epoch
     """
     # Setup
     setup_reproducibility(seed)
@@ -829,7 +898,8 @@ def train(
             train_dataset.set_epoch(epoch)
         train_batch_sampler.set_epoch(epoch)
 
-        # Train
+        # Train (enable profiler on first epoch if requested)
+        profile_dir = output_dir / "profiler" if profile and epoch == 0 else None
         global_step, train_metrics = train_epoch(
             model=model,
             dataloader=train_loader,
@@ -840,6 +910,7 @@ def train(
             global_step=global_step,
             device=device,
             tag_vocabs=tag_vocabs,
+            profile_dir=profile_dir,
         )
 
         print(f"Train metrics: {train_metrics}")
@@ -973,6 +1044,11 @@ def main():
         type=int,
         help="Target samples per contrastive group (default: 4)",
     )
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="Enable PyTorch profiler for first epoch (saves to output_dir/profiler)",
+    )
     args = parser.parse_args()
 
     # Load config from file or use defaults
@@ -1039,6 +1115,7 @@ def main():
         train_split=config.train_split,
         seed=config.seed,
         limit=config.limit,
+        profile=args.profile,
     )
 
 
