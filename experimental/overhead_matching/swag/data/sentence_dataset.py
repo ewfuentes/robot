@@ -10,7 +10,7 @@ import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 
 import torch
 from torch.utils.data import Dataset, Sampler
@@ -59,6 +59,8 @@ class SentenceBatch:
     template_mask: torch.Tensor | None
     # Pruned tags for each sample (for global MRR computation)
     pruned_tags: list[frozenset] | None = None
+    # Pre-tokenized input (if tokenizer provided to collate function)
+    token_ids: dict[str, torch.Tensor] | None = None
 
     def to(self, device: torch.device) -> "SentenceBatch":
         """Move tensors to device."""
@@ -68,6 +70,9 @@ class SentenceBatch:
                 self.base_contrastive_labels[0].to(device),
                 self.base_contrastive_labels[1].to(device),
             )
+        token_ids = None
+        if self.token_ids is not None:
+            token_ids = {k: v.to(device) for k, v in self.token_ids.items()}
         return SentenceBatch(
             sentences=self.sentences,
             classification_labels={
@@ -85,6 +90,7 @@ class SentenceBatch:
             base_contrastive_labels=base_contrastive,
             template_mask=self.template_mask.to(device) if self.template_mask is not None else None,
             pruned_tags=self.pruned_tags,  # No need to move, it's a list of frozensets
+            token_ids=token_ids,
         )
 
 
@@ -719,12 +725,17 @@ class CombinedBatchSampler(Sampler):
         return self.batches_per_epoch
 
 
+# Type alias for tokenizer function (e.g., SentenceTransformer.tokenize)
+Tokenizer = Callable[[list[str]], dict[str, torch.Tensor]]
+
+
 def collate_sentences(
     samples: list[SentenceSample],
     tag_vocabs: dict[str, dict[str, int]],
     classification_tasks: list[str],
     contrastive_tasks: list[str],
     include_base_contrastive: bool = False,
+    tokenizer: Tokenizer | None = None,
 ) -> SentenceBatch:
     """Collate function that precomputes all label matrices.
 
@@ -735,6 +746,8 @@ def collate_sentences(
         contrastive_tasks: List of tag keys for contrastive learning
         include_base_contrastive: If True, build base_contrastive_labels for
             samples with the same pruned_tags (used for template <-> LLM pairing)
+        tokenizer: Optional tokenizer function to pre-tokenize sentences
+            (enables parallel tokenization in DataLoader workers)
 
     Returns:
         SentenceBatch with precomputed labels
@@ -823,6 +836,11 @@ def collate_sentences(
     # Extract pruned_tags for global MRR computation
     pruned_tags_list = [s.pruned_tags for s in samples]
 
+    # Tokenize sentences if tokenizer provided (enables parallel tokenization in workers)
+    token_ids = None
+    if tokenizer is not None:
+        token_ids = tokenizer(sentences)
+
     return SentenceBatch(
         sentences=sentences,
         classification_labels=classification_labels,
@@ -831,6 +849,7 @@ def collate_sentences(
         base_contrastive_labels=base_contrastive_labels,
         template_mask=template_mask,
         pruned_tags=pruned_tags_list,
+        token_ids=token_ids,
     )
 
 
@@ -839,6 +858,7 @@ def create_collate_fn(
     classification_tasks: list[str],
     contrastive_tasks: list[str],
     include_base_contrastive: bool = False,
+    tokenizer: Tokenizer | None = None,
 ):
     """Create a collate function with bound parameters.
 
@@ -848,6 +868,8 @@ def create_collate_fn(
         contrastive_tasks: List of tag keys for contrastive learning
         include_base_contrastive: If True, build base_contrastive_labels for
             samples with the same pruned_tags
+        tokenizer: Optional tokenizer function to pre-tokenize sentences
+            (enables parallel tokenization in DataLoader workers)
 
     Returns:
         Collate function suitable for DataLoader
@@ -860,6 +882,7 @@ def create_collate_fn(
             classification_tasks=classification_tasks,
             contrastive_tasks=contrastive_tasks,
             include_base_contrastive=include_base_contrastive,
+            tokenizer=tokenizer,
         )
 
     return collate_fn

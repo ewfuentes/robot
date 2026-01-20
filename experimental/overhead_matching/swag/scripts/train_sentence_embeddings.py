@@ -251,7 +251,11 @@ def train_step(
         batch = batch.to(device)
 
     with record_function("forward"):
-        output = model(batch.sentences)
+        # Use pre-tokenized input if available (parallel tokenization in workers)
+        if batch.token_ids is not None:
+            output = model(token_ids=batch.token_ids)
+        else:
+            output = model(sentences=batch.sentences)
 
     with record_function("compute_losses"):
         losses = compute_sentence_losses(output, batch, temperature=config.temperature)
@@ -452,7 +456,11 @@ def evaluate(
 
     for batch in tqdm(dataloader, desc="Evaluating"):
         batch = batch.to(device)
-        output = model(batch.sentences)
+        # Use pre-tokenized input if available
+        if batch.token_ids is not None:
+            output = model(token_ids=batch.token_ids)
+        else:
+            output = model(sentences=batch.sentences)
 
         losses = compute_sentence_losses(output, batch, temperature=config.temperature)
         accuracies = compute_classification_accuracy(output, batch)
@@ -573,6 +581,18 @@ def train(
     for tag, vocab in tag_vocabs.items():
         print(f"  {tag}: {len(vocab)} classes")
 
+    # Create model early to get tokenizer for parallel tokenization in DataLoader workers
+    print("\nCreating model...")
+    model = create_model_from_config(
+        model_config=model_config,
+        tag_vocabs=tag_vocabs,
+        classification_task_names=classification_tags,
+        contrastive_task_names=contrastive_tags,
+    )
+    model = model.to(device)
+    print(f"Model created with {sum(p.numel() for p in model.parameters()):,} parameters")
+    tokenizer = model.encoder.tokenize
+
     # Load landmarks to get all tags for LLM sentence matching
     print(f"\nLoading landmarks from {db_path}")
     landmarks = load_landmarks_from_db(db_path, limit=limit)
@@ -670,6 +690,7 @@ def train(
                 classification_tasks=classification_tags,
                 contrastive_tasks=contrastive_tags,
                 include_base_contrastive=True,
+                tokenizer=tokenizer,
             )
 
             combined_dataset = CombinedDataset(
@@ -700,6 +721,7 @@ def train(
                 classification_tasks=classification_tags,
                 contrastive_tasks=contrastive_tags,
                 include_base_contrastive=True,
+                tokenizer=tokenizer,
             )
 
             def paired_collate_fn(pairs: list[tuple[SentenceSample, SentenceSample]]):
@@ -745,6 +767,7 @@ def train(
             classification_tasks=classification_tags,
             contrastive_tasks=contrastive_tags,
             include_base_contrastive=False,
+            tokenizer=tokenizer,
         )
 
         # Create data loaders with smart batching for contrastive learning
@@ -772,6 +795,7 @@ def train(
         classification_tasks=classification_tags,
         contrastive_tasks=contrastive_tags,
         include_base_contrastive=True,  # Enable for global MRR computation
+        tokenizer=tokenizer,
     )
 
     if use_combined_sampler:
@@ -802,19 +826,6 @@ def train(
         collate_fn=test_collate,
         num_workers=training_config.num_workers,
         pin_memory=True,
-    )
-
-    # Create model
-    print("\nCreating model...")
-    model = create_model_from_config(
-        model_config=model_config,
-        tag_vocabs=tag_vocabs,
-        classification_task_names=classification_tags,
-        contrastive_task_names=contrastive_tags,
-    )
-    model = model.to(device)
-    print(
-        f"Model created with {sum(p.numel() for p in model.parameters()):,} parameters"
     )
 
     # Create optimizer with differential learning rates
