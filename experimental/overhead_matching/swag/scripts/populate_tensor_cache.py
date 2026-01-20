@@ -298,6 +298,10 @@ def process_single_cache(field_spec: str,
                     txn.put(key, ostream.getvalue())
     print(f"Created a total of {num_features} features for {num_items} items, with an average of {num_features / num_items} features per item")
 
+    # Print pano ID summary if this extractor tracks it
+    if hasattr(model, 'print_pano_id_summary'):
+        model.print_pano_id_summary()
+
 
 def load_train_config(train_config_path: Path) -> train.TrainConfig:
     """Load a single training config."""
