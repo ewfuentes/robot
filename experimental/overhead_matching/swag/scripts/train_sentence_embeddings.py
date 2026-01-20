@@ -20,7 +20,7 @@ import torch
 import torch.nn.functional as F
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
-from torch.profiler import profile, record_function, ProfilerActivity, schedule, tensorboard_trace_handler
+from torch.profiler import profile, record_function, ProfilerActivity
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
@@ -375,12 +375,9 @@ def train_epoch(
     if profile_dir is not None:
         # Profile first 20 batches: 5 warmup, 15 active
         profile_dir.mkdir(parents=True, exist_ok=True)
-        prof_schedule = schedule(wait=1, warmup=4, active=15, repeat=1)
 
         with profile(
             activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-            schedule=prof_schedule,
-            on_trace_ready=tensorboard_trace_handler(str(profile_dir)),
             record_shapes=True,
             profile_memory=True,
             with_stack=True,
@@ -396,13 +393,15 @@ def train_epoch(
                 if result is not None:
                     pbar.set_postfix({"loss": result[2].item(), "step": global_step})
 
-                prof.step()
-
                 # Stop after profiled batches
                 if global_step >= 20:
-                    print(f"\nProfiler trace saved to {profile_dir}")
-                    print("View with: tensorboard --logdir", profile_dir)
                     break
+
+        # Export Chrome trace
+        trace_path = profile_dir / "trace.json"
+        prof.export_chrome_trace(str(trace_path))
+        print(f"\nProfiler trace saved to {trace_path}")
+        print("View with: chrome://tracing or https://ui.perfetto.dev")
     else:
         pbar = tqdm(dataloader, desc="Training")
         for batch in pbar:
