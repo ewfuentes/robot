@@ -3,7 +3,6 @@ set -e
 pip install --break-system-packages tensorpool
 tp cluster attach $(hostname) s-x9o8dimbyx --no-input
 ./setup.sh
-export PATH="$PATH:~/.local/bin"
 mkdir -p /data/overhead_matching/{datasets,training_outputs}/
 # copy datasets (took ~15 minutes)
 rclone copy /mnt/flex-s-x9o8dimbyx/datasets/ /data/overhead_matching/datasets/ --transfers 8 --checkers 8 --ignore-checksum --progress
