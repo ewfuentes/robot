@@ -394,6 +394,17 @@ def train_step(
     return losses, output, total_loss, batch
 
 
+def log_memory_usage(step: int, writer: SummaryWriter | None = None) -> None:
+    """Log current GPU memory usage."""
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / 1e9
+        reserved = torch.cuda.memory_reserved() / 1e9
+        print(f"[Step {step}] GPU memory: {allocated:.2f} GB allocated, {reserved:.2f} GB reserved")
+        if writer is not None:
+            writer.add_scalar("memory/allocated_gb", allocated, step)
+            writer.add_scalar("memory/reserved_gb", reserved, step)
+
+
 def train_epoch(
     model: torch.nn.Module,
     dataloader: DataLoader,
@@ -407,6 +418,7 @@ def train_epoch(
     log_examples_every_n_steps: int = 500,
     profile_dir: Path | None = None,
     scaler: GradScaler | None = None,
+    log_memory_every_n_steps: int = 1000,
 ) -> tuple[int, dict[str, float]]:
     """Train for one epoch.
 
@@ -531,6 +543,14 @@ def train_epoch(
 
             if result is not None:
                 pbar.set_postfix({"loss": result[2].item(), "step": global_step})
+
+            # Explicitly delete to free GPU memory
+            del result, batch
+
+            # Log memory usage periodically
+            if global_step % log_memory_every_n_steps == 0:
+                log_memory_usage(global_step, writer)
+                torch.cuda.empty_cache()
 
     # Compute epoch metrics
     metrics = {}
@@ -1069,6 +1089,10 @@ def train(
 
         print(f"Train metrics: {train_metrics}")
 
+        # Log memory and clear cache before evaluation
+        log_memory_usage(global_step, writer)
+        torch.cuda.empty_cache()
+
         # Evaluate
         val_metrics = evaluate(
             model=model,
@@ -1077,6 +1101,9 @@ def train(
             device=device,
         )
         print(f"Val metrics: {val_metrics}")
+
+        # Log memory after evaluation
+        log_memory_usage(global_step, writer)
 
         # Log to TensorBoard
         if writer is not None:
