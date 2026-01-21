@@ -3,11 +3,94 @@ import torch
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 from experimental.overhead_matching.swag.scripts.pairing import Pairs, PositiveAnchorSets
-import matplotlib.pyplot as plt 
+import matplotlib.pyplot as plt
 import numpy as np
+import pickle
+from pathlib import Path
+from datetime import datetime
 
 
 LOG_HIST_EVERY = 100
+
+
+def _dump_empty_sim_debug_info(
+    loss_dict: dict,
+    pairing_data,
+    step_idx: int,
+    epoch_idx: int,
+    batch_idx: int,
+    empty_tensor_name: str,
+):
+    """Dump diagnostic info when pos_sim or neg_sim is unexpectedly empty."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    debug_path = Path(f"/tmp/empty_sim_debug_{timestamp}.pkl")
+
+    debug_info = {
+        "timestamp": timestamp,
+        "empty_tensor_name": empty_tensor_name,
+        "step_idx": step_idx,
+        "epoch_idx": epoch_idx,
+        "batch_idx": batch_idx,
+        "loss_dict_summary": {},
+        "pairing_data_summary": {},
+    }
+
+    # Summarize loss_dict
+    for k, v in loss_dict.items():
+        if torch.is_tensor(v):
+            debug_info["loss_dict_summary"][k] = {
+                "shape": list(v.shape),
+                "numel": v.numel(),
+                "dtype": str(v.dtype),
+                "device": str(v.device),
+                "has_nan": bool(torch.isnan(v).any()) if v.numel() > 0 else False,
+                "has_inf": bool(torch.isinf(v).any()) if v.numel() > 0 else False,
+                "values_sample": (v.flatten()[:10].tolist() if v.numel() > 0 else []),
+            }
+        else:
+            debug_info["loss_dict_summary"][k] = {"value": v, "type": type(v).__name__}
+
+    # Summarize pairing_data
+    if isinstance(pairing_data, Pairs):
+        debug_info["pairing_data_summary"] = {
+            "type": "Pairs",
+            "num_positive_pairs": len(pairing_data.positive_pairs),
+            "num_semipositive_pairs": len(pairing_data.semipositive_pairs),
+            "num_negative_pairs": len(pairing_data.negative_pairs),
+            "positive_pairs_sample": pairing_data.positive_pairs[:10],
+            "negative_pairs_sample": pairing_data.negative_pairs[:10],
+        }
+    elif isinstance(pairing_data, PositiveAnchorSets):
+        debug_info["pairing_data_summary"] = {
+            "type": "PositiveAnchorSets",
+            "num_anchors": len(pairing_data.anchor),
+            "positive_set_sizes": [len(x) for x in pairing_data.positive],
+            "semipositive_set_sizes": [len(x) for x in pairing_data.semipositive],
+        }
+
+    # Save to file
+    with open(debug_path, "wb") as f:
+        pickle.dump(debug_info, f)
+
+    # Build error message
+    error_msg = f"""
+UNEXPECTED EMPTY SIMILARITY TENSOR: {empty_tensor_name}
+
+Debug info saved to: {debug_path}
+
+Summary:
+  step_idx={step_idx}, epoch_idx={epoch_idx}, batch_idx={batch_idx}
+
+Pairing data:
+  {debug_info['pairing_data_summary']}
+
+Loss dict tensor shapes:
+"""
+    for k, v in debug_info["loss_dict_summary"].items():
+        if isinstance(v, dict) and "shape" in v:
+            error_msg += f"  {k}: shape={v['shape']}, numel={v['numel']}, has_nan={v.get('has_nan')}, has_inf={v.get('has_inf')}\n"
+
+    return error_msg, debug_path
 
 @torch.no_grad()
 def log_batch_metrics(writer, loss_dict, lr_scheduler, pairing_data, step_idx, epoch_idx, batch_idx, quiet):
@@ -28,15 +111,26 @@ def log_batch_metrics(writer, loss_dict, lr_scheduler, pairing_data, step_idx, e
     if "pos_sim" in loss_dict and "neg_sim" in loss_dict:
         pos_sim = loss_dict["pos_sim"]
         neg_sim = loss_dict["neg_sim"]
-        semipos_sim = loss_dict["semipos_sim"] if "semipos_sim" in loss_dict else None  # may not be present 
-        if semipos_sim is not None and semipos_sim.numel() == 0: 
+        semipos_sim = loss_dict["semipos_sim"] if "semipos_sim" in loss_dict else None  # may not be present
+        if semipos_sim is not None and semipos_sim.numel() == 0:
             semipos_sim = None
+
+        # Assert that pos_sim and neg_sim are non-empty - dump debug info if they are
+        if pos_sim.numel() == 0:
+            error_msg, debug_path = _dump_empty_sim_debug_info(
+                loss_dict, pairing_data, step_idx, epoch_idx, batch_idx, "pos_sim")
+            raise RuntimeError(error_msg)
+        if neg_sim.numel() == 0:
+            error_msg, debug_path = _dump_empty_sim_debug_info(
+                loss_dict, pairing_data, step_idx, epoch_idx, batch_idx, "neg_sim")
+            raise RuntimeError(error_msg)
+
         writer.add_scalar("train/loss_pos_sim", pos_sim.mean().item(), global_step=step_idx)
         writer.add_scalar("train/loss_neg_sim", neg_sim.mean().item(), global_step=step_idx)
         if semipos_sim is not None:
             writer.add_scalar("train/loss_semipos_sim", semipos_sim.mean().item(), global_step=step_idx)
 
-        if step_idx % LOG_HIST_EVERY == 0: 
+        if step_idx % LOG_HIST_EVERY == 0:
             min_val = min(-1, pos_sim.min().item(), neg_sim.min().item(), semipos_sim.min().item() if semipos_sim is not None else 0.0)
             max_val = max(1, pos_sim.max().item(), neg_sim.max().item(), semipos_sim.max().item() if semipos_sim is not None else 0.0)
             bins = np.linspace(min_val, max_val, 101)
@@ -131,13 +225,6 @@ def log_gradient_stats(writer: SummaryWriter, model: torch.nn.Module, name: str,
     writer.add_scalar(f"grad/{name}/nan_frac", nan_frac.item(), step_idx)
     writer.add_scalar(f"grad/{name}/inf_frac", inf_frac.item(), step_idx)
 
-    if step_idx % LOG_HIST_EVERY == 0:
-        # Downsample to keep TB light
-        vals = flat
-        if vals.numel() > 200_000:
-            idx = torch.randint(0, vals.numel(), (200_000,), device=vals.device)
-            vals = vals[idx]
-        writer.add_histogram(f"grad/{name}/values", vals.float().cpu(), step_idx, bins="auto")
 
 
 def log_validation_metrics(writer, validation_metrics, epoch_idx, quiet):
@@ -211,3 +298,20 @@ def log_feature_counts(writer: SummaryWriter,
             f"features/sat/{extractor_name}/total_count",
             stats['total_count'],
             step_idx)
+
+    # Log token type counts from debug dicts (for composable extractors)
+    for extractor_name, output in pano_extractor_outputs.items():
+        for key, value in output.debug.items():
+            if isinstance(value, (int, float)):
+                writer.add_scalar(
+                    f"token_types/pano/{extractor_name}/{key}",
+                    value,
+                    step_idx)
+
+    for extractor_name, output in sat_extractor_outputs.items():
+        for key, value in output.debug.items():
+            if isinstance(value, (int, float)):
+                writer.add_scalar(
+                    f"token_types/sat/{extractor_name}/{key}",
+                    value,
+                    step_idx)
