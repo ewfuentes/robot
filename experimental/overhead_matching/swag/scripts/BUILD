@@ -387,3 +387,25 @@ py_binary(
     ":sentence_losses",
   ],
 )
+
+py_binary(
+  name="vertex_batch_manager",
+  srcs=["vertex_batch_manager.py"],
+  visibility=["//experimental/overhead_matching/swag:__subpackages__"],
+  deps=[
+    requirement("google-genai"),
+    requirement("google-cloud-storage"),
+  ]
+)
+
+py_binary(
+  name="create_embeddings_with_gemini",
+  srcs=["create_embeddings_with_gemini.py"],
+  visibility=["//experimental/overhead_matching/swag:__subpackages__"],
+  deps=[
+    requirement("tqdm"),
+    requirement("torch"),
+    requirement("google-genai"),
+    "//common/torch:load_torch_deps",
+  ]
+)
