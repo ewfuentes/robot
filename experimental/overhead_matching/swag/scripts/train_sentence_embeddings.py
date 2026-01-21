@@ -206,6 +206,65 @@ def log_example_sentences(
     writer.add_text("examples/contrastive", "".join(contrast_text_parts), global_step)
 
 
+def compute_token_length_stats(
+    pruned_tags_list: list[frozenset],
+    generator: "OSMSentenceGenerator",
+    tokenizer,
+    num_samples: int = 1000,
+    seed: int = 42,
+) -> dict[str, float]:
+    """Compute statistics about token lengths for sentences.
+
+    Args:
+        pruned_tags_list: List of unique pruned_tags
+        generator: OSMSentenceGenerator instance
+        tokenizer: Tokenizer function from the model
+        num_samples: Number of samples to analyze
+        seed: Random seed for sampling
+
+    Returns:
+        Dictionary with min, max, mean, median, p90, p95, p99 token lengths
+    """
+    rng = random.Random(seed)
+    sample_indices = rng.sample(
+        range(len(pruned_tags_list)), min(num_samples, len(pruned_tags_list))
+    )
+
+    sentences = []
+    for idx in sample_indices:
+        pruned_tags = pruned_tags_list[idx]
+        tags_dict = dict(pruned_tags)
+        result = generator.generate_sentence(tags_dict, rng=rng)
+        sentences.append(result.sentence)
+
+    # Tokenize all sentences
+    tokens = tokenizer(sentences)
+    # Get token lengths from input_ids
+    token_lengths = tokens["input_ids"].shape[1] if len(tokens["input_ids"].shape) == 2 else [
+        len(ids) for ids in tokens["input_ids"]
+    ]
+
+    # If uniform length (padded), get actual lengths from attention mask
+    if "attention_mask" in tokens:
+        token_lengths = tokens["attention_mask"].sum(dim=1).tolist()
+    else:
+        token_lengths = [tokens["input_ids"].shape[1]] * len(sentences)
+
+    token_lengths = np.array(token_lengths)
+
+    stats = {
+        "min": float(np.min(token_lengths)),
+        "max": float(np.max(token_lengths)),
+        "mean": float(np.mean(token_lengths)),
+        "median": float(np.median(token_lengths)),
+        "p90": float(np.percentile(token_lengths, 90)),
+        "p95": float(np.percentile(token_lengths, 95)),
+        "p99": float(np.percentile(token_lengths, 99)),
+    }
+
+    return stats
+
+
 def setup_reproducibility(seed: int) -> None:
     """Set random seeds for reproducibility."""
     random.seed(seed)
@@ -657,6 +716,17 @@ def train(
     # Extract unique pruned_tags from all landmarks for template-only dataset
     all_pruned_tags = get_unique_pruned_tags_from_landmarks(landmarks)
     print(f"Unique pruned_tags from landmarks: {len(all_pruned_tags):,}")
+
+    # Compute token length statistics to identify potential VRAM issues
+    print("\nComputing token length statistics...")
+    token_stats = compute_token_length_stats(
+        all_pruned_tags, generator, tokenizer, num_samples=min(5000, len(all_pruned_tags)), seed=seed
+    )
+    print(f"Token length stats (from {min(5000, len(all_pruned_tags))} samples):")
+    print(f"  min: {token_stats['min']:.0f}, max: {token_stats['max']:.0f}, "
+          f"mean: {token_stats['mean']:.1f}, median: {token_stats['median']:.0f}")
+    print(f"  p90: {token_stats['p90']:.0f}, p95: {token_stats['p95']:.0f}, "
+          f"p99: {token_stats['p99']:.0f}")
 
     # Create datasets
     use_combined_sampler = False
