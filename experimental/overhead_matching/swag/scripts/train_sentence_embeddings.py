@@ -538,7 +538,17 @@ def train_epoch(
     else:
         pbar = tqdm(dataloader, desc="Training")
         for batch in pbar:
+            # Detailed logging for first few batches
+            if global_step < 5:
+                log_memory_usage(global_step, writer)
+                print(f"  [Step {global_step}] Before train_step")
+
             result = train_step(model, batch, optimizer, scheduler, config, device, scaler)
+
+            if global_step < 5:
+                log_memory_usage(global_step, writer)
+                print(f"  [Step {global_step}] After train_step")
+
             global_step = process_step_results(result, global_step, epoch_losses, epoch_accuracies)
 
             if result is not None:
@@ -546,6 +556,10 @@ def train_epoch(
 
             # Explicitly delete to free GPU memory
             del result, batch
+
+            if global_step <= 5:
+                log_memory_usage(global_step, writer)
+                print(f"  [Step {global_step}] After cleanup")
 
             # Log memory usage periodically
             if global_step % log_memory_every_n_steps == 0:
