@@ -3,7 +3,7 @@
 
 # Data paths
 db_path: /data/overhead_matching/datasets/us_osm_landmarks/landmarks.sqlite
-output_dir: /data/overhead_matching/models/sentence_embeddings/train_with_osm_sentences_v2
+output_dir: /tmp/memory_profiling
 # tag_vocabs_path: null  # Optional, built automatically if not provided
 # tensorboard_dir: null  # Defaults to {output_dir}/tensorboard
 
@@ -13,13 +13,13 @@ llm_sentences_path: /data/overhead_matching/datasets/semantic_landmark_embedding
 
 # Model configuration
 model:
-  encoder_name: sentence-transformers/all-MiniLM-L6-v2
+  encoder_name: BAAI/bge-large-en-v1.5
   projection_dim: 128
   freeze_encoder: false
 
 # Training configuration
 training:
-  batch_size: 1024
+  batch_size: 512
   num_epochs: 5
   lr_schedule:
     encoder_lr: 2.0e-5   # Lower LR for pretrained encoder
