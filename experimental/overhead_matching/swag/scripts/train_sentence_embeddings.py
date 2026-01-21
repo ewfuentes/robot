@@ -1070,6 +1070,13 @@ def train(
     global_step = 0
     best_val_loss = float("inf")
 
+    # Clear any cached memory before training
+    print("\nMemory before training:")
+    log_memory_usage(0, None)
+    torch.cuda.empty_cache()
+    print("After empty_cache:")
+    log_memory_usage(0, None)
+
     for epoch in range(training_config.num_epochs):
         print(f"\nEpoch {epoch + 1}/{training_config.num_epochs}")
 
