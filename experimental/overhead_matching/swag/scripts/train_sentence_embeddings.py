@@ -210,59 +210,87 @@ def compute_token_length_stats(
     pruned_tags_list: list[frozenset],
     generator: "OSMSentenceGenerator",
     tokenizer,
-    num_samples: int = 1000,
+    llm_sentences: dict[frozenset, str] | None = None,
+    batch_size: int = 256,
     seed: int = 42,
-) -> dict[str, float]:
+) -> dict[str, dict[str, float]]:
     """Compute statistics about token lengths for sentences.
 
     Args:
-        pruned_tags_list: List of unique pruned_tags
+        pruned_tags_list: List of unique pruned_tags for template sentences
         generator: OSMSentenceGenerator instance
         tokenizer: Tokenizer function from the model
-        num_samples: Number of samples to analyze
-        seed: Random seed for sampling
+        llm_sentences: Optional dict mapping pruned_tags to LLM sentences
+        batch_size: Batch size for tokenization
+        seed: Random seed for sentence generation
 
     Returns:
-        Dictionary with min, max, mean, median, p90, p95, p99 token lengths
+        Dictionary with stats for 'template' and optionally 'llm' sentences.
+        Each contains min, max, mean, median, p90, p95, p99 token lengths.
     """
-    rng = random.Random(seed)
-    sample_indices = rng.sample(
-        range(len(pruned_tags_list)), min(num_samples, len(pruned_tags_list))
-    )
+    def get_token_lengths(sentences: list[str]) -> list[int]:
+        """Tokenize sentences and return actual token lengths."""
+        tokens = tokenizer(sentences)
+        if "attention_mask" in tokens:
+            return tokens["attention_mask"].sum(dim=1).tolist()
+        else:
+            return [tokens["input_ids"].shape[1]] * len(sentences)
 
-    sentences = []
-    for idx in sample_indices:
-        pruned_tags = pruned_tags_list[idx]
+    def compute_stats(token_lengths: list[int]) -> dict[str, float]:
+        """Compute statistics from token lengths."""
+        arr = np.array(token_lengths)
+        return {
+            "min": float(np.min(arr)),
+            "max": float(np.max(arr)),
+            "mean": float(np.mean(arr)),
+            "median": float(np.median(arr)),
+            "p90": float(np.percentile(arr, 90)),
+            "p95": float(np.percentile(arr, 95)),
+            "p99": float(np.percentile(arr, 99)),
+        }
+
+    results = {}
+    rng = random.Random(seed)
+
+    # Compute stats for template sentences (full pass)
+    print("  Tokenizing template sentences...")
+    template_lengths = []
+    template_sentences = []
+    for pruned_tags in tqdm(pruned_tags_list, desc="  Generating templates"):
         tags_dict = dict(pruned_tags)
         result = generator.generate_sentence(tags_dict, rng=rng)
-        sentences.append(result.sentence)
+        template_sentences.append(result.sentence)
 
-    # Tokenize all sentences
-    tokens = tokenizer(sentences)
-    # Get token lengths from input_ids
-    token_lengths = tokens["input_ids"].shape[1] if len(tokens["input_ids"].shape) == 2 else [
-        len(ids) for ids in tokens["input_ids"]
-    ]
+        # Tokenize in batches
+        if len(template_sentences) >= batch_size:
+            template_lengths.extend(get_token_lengths(template_sentences))
+            template_sentences = []
 
-    # If uniform length (padded), get actual lengths from attention mask
-    if "attention_mask" in tokens:
-        token_lengths = tokens["attention_mask"].sum(dim=1).tolist()
-    else:
-        token_lengths = [tokens["input_ids"].shape[1]] * len(sentences)
+    # Tokenize remaining
+    if template_sentences:
+        template_lengths.extend(get_token_lengths(template_sentences))
 
-    token_lengths = np.array(token_lengths)
+    results["template"] = compute_stats(template_lengths)
 
-    stats = {
-        "min": float(np.min(token_lengths)),
-        "max": float(np.max(token_lengths)),
-        "mean": float(np.mean(token_lengths)),
-        "median": float(np.median(token_lengths)),
-        "p90": float(np.percentile(token_lengths, 90)),
-        "p95": float(np.percentile(token_lengths, 95)),
-        "p99": float(np.percentile(token_lengths, 99)),
-    }
+    # Compute stats for LLM sentences (if provided)
+    if llm_sentences:
+        print("  Tokenizing LLM sentences...")
+        llm_lengths = []
+        llm_sentence_list = []
+        for sentence in tqdm(llm_sentences.values(), desc="  Processing LLM"):
+            llm_sentence_list.append(sentence)
 
-    return stats
+            if len(llm_sentence_list) >= batch_size:
+                llm_lengths.extend(get_token_lengths(llm_sentence_list))
+                llm_sentence_list = []
+
+        # Tokenize remaining
+        if llm_sentence_list:
+            llm_lengths.extend(get_token_lengths(llm_sentence_list))
+
+        results["llm"] = compute_stats(llm_lengths)
+
+    return results
 
 
 def setup_reproducibility(seed: int) -> None:
@@ -720,13 +748,16 @@ def train(
     # Compute token length statistics to identify potential VRAM issues
     print("\nComputing token length statistics...")
     token_stats = compute_token_length_stats(
-        all_pruned_tags, generator, tokenizer, num_samples=min(5000, len(all_pruned_tags)), seed=seed
+        all_pruned_tags,
+        generator,
+        tokenizer,
+        llm_sentences=llm_sentences,
+        seed=seed,
     )
-    print(f"Token length stats (from {min(5000, len(all_pruned_tags))} samples):")
-    print(f"  min: {token_stats['min']:.0f}, max: {token_stats['max']:.0f}, "
-          f"mean: {token_stats['mean']:.1f}, median: {token_stats['median']:.0f}")
-    print(f"  p90: {token_stats['p90']:.0f}, p95: {token_stats['p95']:.0f}, "
-          f"p99: {token_stats['p99']:.0f}")
+    for source, stats in token_stats.items():
+        print(f"  {source}: min={stats['min']:.0f}, max={stats['max']:.0f}, "
+              f"mean={stats['mean']:.1f}, median={stats['median']:.0f}, "
+              f"p90={stats['p90']:.0f}, p95={stats['p95']:.0f}, p99={stats['p99']:.0f}")
 
     # Create datasets
     use_combined_sampler = False
