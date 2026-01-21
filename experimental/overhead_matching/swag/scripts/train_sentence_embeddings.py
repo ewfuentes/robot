@@ -731,6 +731,7 @@ def train(
     )
     model = model.to(device)
     print(f"Model created with {sum(p.numel() for p in model.parameters()):,} parameters")
+    log_memory_usage(0, None)
     tokenizer = model.encoder.tokenize
 
     # Load landmarks to get all tags for LLM sentence matching
@@ -778,6 +779,11 @@ def train(
         print(f"  {source}: min={stats['min']:.0f}, max={stats['max']:.0f}, "
               f"mean={stats['mean']:.1f}, median={stats['median']:.0f}, "
               f"p90={stats['p90']:.0f}, p95={stats['p95']:.0f}, p99={stats['p99']:.0f}")
+
+    # Check memory after token stats and clear any cached allocations
+    log_memory_usage(0, None)
+    torch.cuda.empty_cache()
+    log_memory_usage(0, None)
 
     # Create datasets
     use_combined_sampler = False
@@ -845,6 +851,7 @@ def train(
                 contrastive_tasks=contrastive_tags,
                 include_base_contrastive=True,
                 tokenizer=tokenizer,
+                max_length=training_config.max_seq_length,
             )
 
             combined_dataset = CombinedDataset(
@@ -876,6 +883,7 @@ def train(
                 contrastive_tasks=contrastive_tags,
                 include_base_contrastive=True,
                 tokenizer=tokenizer,
+                max_length=training_config.max_seq_length,
             )
 
             def paired_collate_fn(pairs: list[tuple[SentenceSample, SentenceSample]]):
@@ -922,6 +930,7 @@ def train(
             contrastive_tasks=contrastive_tags,
             include_base_contrastive=False,
             tokenizer=tokenizer,
+            max_length=training_config.max_seq_length,
         )
 
         # Create data loaders with smart batching for contrastive learning
@@ -950,6 +959,7 @@ def train(
         contrastive_tasks=contrastive_tags,
         include_base_contrastive=True,  # Enable for global MRR computation
         tokenizer=tokenizer,
+        max_length=training_config.max_seq_length,
     )
 
     if use_combined_sampler:

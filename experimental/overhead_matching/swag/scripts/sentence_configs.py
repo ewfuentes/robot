@@ -76,6 +76,11 @@ class TrainingConfig:
     # Mixed precision training (FP16)
     use_amp: bool = True  # Enable automatic mixed precision
 
+    # Max sequence length for tokenization. If set, all sequences are padded/truncated
+    # to this length to avoid GPU memory fragmentation from variable-sized tensors.
+    # Set based on token length statistics (e.g., p99 + margin). None = dynamic padding.
+    max_seq_length: int | None = 160
+
 
 # Default classification tasks (tag keys to use for classification)
 DEFAULT_CLASSIFICATION_TAGS = [

@@ -736,6 +736,7 @@ def collate_sentences(
     contrastive_tasks: list[str],
     include_base_contrastive: bool = False,
     tokenizer: Tokenizer | None = None,
+    max_length: int | None = None,
 ) -> SentenceBatch:
     """Collate function that precomputes all label matrices.
 
@@ -748,6 +749,9 @@ def collate_sentences(
             samples with the same pruned_tags (used for template <-> LLM pairing)
         tokenizer: Optional tokenizer function to pre-tokenize sentences
             (enables parallel tokenization in DataLoader workers)
+        max_length: Optional max sequence length for tokenization. If set, all
+            sequences are padded/truncated to this length to avoid memory
+            fragmentation from variable-sized tensors.
 
     Returns:
         SentenceBatch with precomputed labels
@@ -839,7 +843,12 @@ def collate_sentences(
     # Tokenize sentences if tokenizer provided (enables parallel tokenization in workers)
     token_ids = None
     if tokenizer is not None:
-        token_ids = tokenizer(sentences)
+        if max_length is not None:
+            token_ids = tokenizer(
+                sentences, padding="max_length", truncation=True, max_length=max_length
+            )
+        else:
+            token_ids = tokenizer(sentences)
 
     return SentenceBatch(
         sentences=sentences,
@@ -859,6 +868,7 @@ def create_collate_fn(
     contrastive_tasks: list[str],
     include_base_contrastive: bool = False,
     tokenizer: Tokenizer | None = None,
+    max_length: int | None = None,
 ):
     """Create a collate function with bound parameters.
 
@@ -870,6 +880,9 @@ def create_collate_fn(
             samples with the same pruned_tags
         tokenizer: Optional tokenizer function to pre-tokenize sentences
             (enables parallel tokenization in DataLoader workers)
+        max_length: Optional max sequence length for tokenization. If set, all
+            sequences are padded/truncated to this length to avoid memory
+            fragmentation from variable-sized tensors.
 
     Returns:
         Collate function suitable for DataLoader
@@ -883,6 +896,7 @@ def create_collate_fn(
             contrastive_tasks=contrastive_tasks,
             include_base_contrastive=include_base_contrastive,
             tokenizer=tokenizer,
+            max_length=max_length,
         )
 
     return collate_fn
