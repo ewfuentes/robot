@@ -706,8 +706,6 @@ def main(
     else:
         raise TypeError("Unsupported panorama model config type")
 
-    assert len(train_config.dataset_config.paths) == 1
-
     # Derive data requirements from both models
     sat_requirements = derive_data_requirements_from_model(
         satellite_model,
@@ -725,14 +723,14 @@ def main(
         satellite_patch_size=train_config.sat_model_config.patch_dims,
         panorama_size=train_config.pano_model_config.patch_dims,
         satellite_tensor_cache_info=vigor_dataset.TensorCacheInfo(
-            dataset_key=train_config.dataset_config.paths[0],
+            dataset_keys=train_config.dataset_config.paths,
             model_type="satellite",
             landmark_version=train_config.dataset_config.landmark_version,
             panorama_landmark_radius_px=train_config.dataset_config.panorama_landmark_radius_px,
             landmark_correspondence_inflation_factor=train_config.dataset_config.landmark_correspondence_inflation_factor,
             extractor_info=satellite_model.cache_info()),
         panorama_tensor_cache_info=vigor_dataset.TensorCacheInfo(
-            dataset_key=train_config.dataset_config.paths[0],
+            dataset_keys=train_config.dataset_config.paths,
             model_type="panorama",
             landmark_version=train_config.dataset_config.landmark_version,
             panorama_landmark_radius_px=train_config.dataset_config.panorama_landmark_radius_px,
@@ -762,14 +760,14 @@ def main(
                 satellite_patch_size=satellite_model.patch_dims,
                 panorama_size=panorama_model.patch_dims,
                 satellite_tensor_cache_info=vigor_dataset.TensorCacheInfo(
-                    dataset_key=validation_dataset_config.paths[0],
+                    dataset_keys=validation_dataset_config.paths,
                     model_type="satellite",
                     landmark_version=validation_dataset_config.landmark_version,
                     panorama_landmark_radius_px=validation_dataset_config.panorama_landmark_radius_px,
                     landmark_correspondence_inflation_factor=validation_dataset_config.landmark_correspondence_inflation_factor,
                     extractor_info=satellite_model.cache_info()),
                 panorama_tensor_cache_info=vigor_dataset.TensorCacheInfo(
-                    dataset_key=validation_dataset_config.paths[0],
+                    dataset_keys=validation_dataset_config.paths,
                     model_type="panorama",
                     landmark_version=validation_dataset_config.landmark_version,
                     panorama_landmark_radius_px=validation_dataset_config.panorama_landmark_radius_px,
