@@ -351,6 +351,18 @@ py_library(
   ],
   deps = [
     requirement("msgspec"),
+    requirement("pyyaml"),
+    "//common/python:serialization",
+  ],
+)
+
+py_test(
+  name = "sentence_configs_test",
+  srcs = ["sentence_configs_test.py"],
+  deps = [
+    ":sentence_configs",
+    requirement("msgspec"),
+    requirement("pyyaml"),
   ],
 )
 
@@ -382,6 +394,7 @@ py_binary(
     requirement("numpy"),
     "//common/torch:load_torch_deps",
     "//experimental/overhead_matching/swag/data:sentence_dataset",
+    "//experimental/overhead_matching/swag/data:paired_sentence_dataset",
     "//experimental/overhead_matching/swag/model:sentence_embedding_model",
     ":sentence_configs",
     ":sentence_losses",

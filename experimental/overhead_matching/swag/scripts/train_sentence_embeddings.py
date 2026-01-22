@@ -17,22 +17,34 @@ import common.torch.load_torch_deps  # noqa: F401 - Must import before torch
 
 import numpy as np
 import torch
+import torch.nn.functional as F
+from torch.amp import GradScaler, autocast
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
-from torch.utils.data import DataLoader
+from torch.utils.data import BatchSampler, DataLoader, Dataset, RandomSampler, Sampler
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from experimental.overhead_matching.swag.data.osm_sentence_generator import (
     OSMSentenceGenerator,
 )
+from experimental.overhead_matching.swag.data.paired_sentence_dataset import (
+    PairedSentenceDataset,
+    flatten_samples,
+    load_sentences_from_pickle,
+    split_llm_sentences,
+)
 from experimental.overhead_matching.swag.data.sentence_dataset import (
+    CombinedDataset,
     ContrastiveBatchSampler,
+    MixingSampler,
     SentenceDataset,
+    SentenceSample,
     create_collate_fn,
+    get_unique_pruned_tags_from_landmarks,
     load_landmarks_from_db,
     load_tag_vocabularies_from_db,
-    split_landmarks_by_id,
+    split_pruned_tags,
 )
 from experimental.overhead_matching.swag.model.sentence_embedding_model import (
     create_model_from_config,
@@ -40,8 +52,11 @@ from experimental.overhead_matching.swag.model.sentence_embedding_model import (
 from experimental.overhead_matching.swag.scripts.sentence_configs import (
     DEFAULT_CLASSIFICATION_TAGS,
     DEFAULT_CONTRASTIVE_TAGS,
+    DatasetConfig,
+    OSMPairedDatasetConfig,
     SentenceEmbeddingModelConfig,
     SentenceTrainConfig,
+    TemplateDatasetConfig,
     TrainingConfig,
     load_config,
     save_config,
@@ -50,6 +65,7 @@ from experimental.overhead_matching.swag.scripts.sentence_configs import (
 from experimental.overhead_matching.swag.scripts.sentence_losses import (
     aggregate_losses,
     compute_classification_accuracy,
+    compute_contrastive_mrr,
     compute_sentence_losses,
 )
 
@@ -214,6 +230,73 @@ def create_lr_scheduler(
     return LambdaLR(optimizer, lr_lambda)
 
 
+def train_step(
+    model: torch.nn.Module,
+    batch,
+    optimizer: AdamW,
+    scheduler: LambdaLR,
+    config: TrainingConfig,
+    device: torch.device,
+    scaler: GradScaler | None = None,
+) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor], torch.Tensor] | None:
+    """Execute a single training step.
+
+    Args:
+        model: The model to train
+        batch: Input batch
+        optimizer: Optimizer
+        scheduler: Learning rate scheduler
+        config: Training configuration
+        device: Device to train on
+        scaler: GradScaler for mixed precision training (None to disable)
+
+    Returns:
+        Tuple of (losses, output, total_loss, batch) or None if no losses computed.
+    """
+    use_amp = scaler is not None
+
+    batch = batch.to(device)
+    optimizer.zero_grad()
+
+    # Use pre-tokenized input if available (parallel tokenization in workers)
+    with autocast(device_type="cuda", enabled=use_amp):
+        if batch.token_ids is not None:
+            output = model(token_ids=batch.token_ids)
+        else:
+            output = model(sentences=batch.sentences)
+
+    with autocast(device_type="cuda", enabled=use_amp):
+        losses = compute_sentence_losses(output, batch, temperature=config.temperature)
+
+    if not losses:
+        return None
+
+    total_loss = aggregate_losses(losses)
+    if use_amp:
+        scaler.scale(total_loss).backward()
+    else:
+        total_loss.backward()
+
+    if use_amp:
+        # Unscale gradients before clipping
+        scaler.unscale_(optimizer)
+        if config.gradient_clip_norm > 0:
+            torch.nn.utils.clip_grad_norm_(
+                model.parameters(), config.gradient_clip_norm
+            )
+        scaler.step(optimizer)
+        scaler.update()
+    else:
+        if config.gradient_clip_norm > 0:
+            torch.nn.utils.clip_grad_norm_(
+                model.parameters(), config.gradient_clip_norm
+            )
+        optimizer.step()
+    scheduler.step()
+
+    return losses, output, total_loss, batch
+
+
 def train_epoch(
     model: torch.nn.Module,
     dataloader: DataLoader,
@@ -225,6 +308,7 @@ def train_epoch(
     device: torch.device,
     tag_vocabs: dict[str, dict[str, int]] | None = None,
     log_examples_every_n_steps: int = 500,
+    scaler: GradScaler | None = None,
 ) -> tuple[int, dict[str, float]]:
     """Train for one epoch.
 
@@ -239,6 +323,7 @@ def train_epoch(
         device: Device to train on
         tag_vocabs: Tag vocabularies for logging examples
         log_examples_every_n_steps: How often to log example sentences
+        scaler: GradScaler for mixed precision training (None to disable)
 
     Returns:
         Tuple of (final_global_step, epoch_metrics)
@@ -248,32 +333,17 @@ def train_epoch(
     epoch_losses: dict[str, list[float]] = {}
     epoch_accuracies: dict[str, list[float]] = {}
 
-    pbar = tqdm(dataloader, desc="Training")
-    for batch in pbar:
-        batch = batch.to(device)
+    def process_step_results(
+        result: tuple | None,
+        global_step: int,
+        epoch_losses: dict,
+        epoch_accuracies: dict,
+    ) -> int:
+        """Process results from a training step, update metrics, and log."""
+        if result is None:
+            return global_step
 
-        # Forward pass
-        output = model(batch.sentences)
-
-        # Compute losses
-        losses = compute_sentence_losses(output, batch, temperature=config.temperature)
-
-        if not losses:
-            continue
-
-        # Aggregate and backward
-        total_loss = aggregate_losses(losses)
-        total_loss.backward()
-
-        # Gradient clipping
-        if config.gradient_clip_norm > 0:
-            torch.nn.utils.clip_grad_norm_(
-                model.parameters(), config.gradient_clip_norm
-            )
-
-        optimizer.step()
-        scheduler.step()
-        optimizer.zero_grad()
+        losses, output, total_loss, batch = result
 
         # Track losses
         for name, loss in losses.items():
@@ -302,12 +372,11 @@ def train_epoch(
             # Log contrastive batch statistics
             for task, (mask, positive_matrix) in batch.contrastive_labels.items():
                 n_samples_with_tag = mask.sum().item()
-                # positive_matrix is symmetric, so divide by 2 for unique pairs
                 n_positive_pairs = int(positive_matrix.sum().item() / 2)
                 writer.add_scalar(f"train/contrastive_samples_{task}", n_samples_with_tag, global_step)
                 writer.add_scalar(f"train/contrastive_pairs_{task}", n_positive_pairs, global_step)
 
-        # Log example sentences periodically (also at first step of epoch)
+        # Log example sentences periodically
         is_first_step_of_epoch = (global_step - 1) % len(dataloader) == 0
         if (
             writer is not None
@@ -323,8 +392,15 @@ def train_epoch(
                     global_step=global_step,
                 )
 
-        # Update progress bar
-        pbar.set_postfix({"loss": total_loss.item(), "step": global_step})
+        return global_step
+
+    pbar = tqdm(dataloader, desc="Training")
+    for batch in pbar:
+        result = train_step(model, batch, optimizer, scheduler, config, device, scaler)
+        global_step = process_step_results(result, global_step, epoch_losses, epoch_accuracies)
+
+        if result is not None:
+            pbar.set_postfix({"loss": result[2].item(), "step": global_step})
 
     # Compute epoch metrics
     metrics = {}
@@ -337,17 +413,101 @@ def train_epoch(
 
 
 @torch.no_grad()
+def evaluate_base_contrastive(
+    model: torch.nn.Module,
+    dataloader: DataLoader,
+    config: TrainingConfig,
+    device: torch.device,
+) -> dict[str, float]:
+    """Evaluate base contrastive loss and global MRR on paired dataset.
+
+    This is a focused evaluation that only computes metrics relevant to
+    template <-> LLM alignment, skipping classification and tag-specific metrics.
+
+    Args:
+        model: The model to evaluate
+        dataloader: Evaluation data loader (should be paired dataset)
+        config: Training configuration
+        device: Device to evaluate on
+
+    Returns:
+        Dictionary with 'val_loss_base_contrastive' and 'val_mrr_base_contrastive_global'
+    """
+    model.eval()
+
+    all_base_losses: list[float] = []
+    all_base_embeddings: list[torch.Tensor] = []
+    all_pruned_tags: list[frozenset] = []
+
+    use_amp = config.use_amp and device.type == "cuda"
+
+    for batch in tqdm(dataloader, desc="Evaluating (base contrastive)"):
+        batch = batch.to(device)
+
+        with autocast(device_type="cuda", enabled=use_amp):
+            if batch.token_ids is not None:
+                output = model(token_ids=batch.token_ids)
+            else:
+                output = model(sentences=batch.sentences)
+
+            # Compute only base contrastive loss
+            if batch.base_contrastive_labels is not None:
+                from experimental.overhead_matching.swag.scripts.sentence_losses import (
+                    compute_base_contrastive_loss,
+                )
+                base_loss = compute_base_contrastive_loss(
+                    base_embedding=output["base_embedding"],
+                    base_contrastive_labels=batch.base_contrastive_labels,
+                    temperature=config.temperature,
+                )
+                if base_loss.item() > 0:
+                    all_base_losses.append(base_loss.item())
+
+        # Collect embeddings for global MRR
+        if batch.pruned_tags is not None:
+            all_base_embeddings.append(output["base_embedding"].cpu())
+            all_pruned_tags.extend(batch.pruned_tags)
+
+    metrics = {}
+
+    # Average base contrastive loss
+    if all_base_losses:
+        metrics["val_loss_base_contrastive"] = sum(all_base_losses) / len(all_base_losses)
+
+    # Compute global MRR across all samples
+    if all_base_embeddings:
+        embeddings = torch.cat(all_base_embeddings, dim=0)
+        normalized = F.normalize(embeddings, p=2, dim=-1)
+        similarity = normalized @ normalized.T
+
+        # Build positive matrix: same pruned_tags = positive
+        n = len(all_pruned_tags)
+        positive_matrix = torch.zeros(n, n, dtype=torch.float)
+        for i in range(n):
+            for j in range(n):
+                if i != j and all_pruned_tags[i] == all_pruned_tags[j]:
+                    positive_matrix[i, j] = 1.0
+
+        global_mrr = compute_contrastive_mrr(similarity, positive_matrix)
+        metrics["val_mrr_base_contrastive_global"] = global_mrr
+
+    return metrics
+
+
+@torch.no_grad()
 def evaluate(
     model: torch.nn.Module,
     dataloader: DataLoader,
     config: TrainingConfig,
     device: torch.device,
 ) -> dict[str, float]:
-    """Evaluate the model on a dataset.
+    """Evaluate the model on template dataset for classification and tag-specific metrics.
+
+    For base contrastive / global MRR evaluation on paired data, use evaluate_base_contrastive().
 
     Args:
         model: The model to evaluate
-        dataloader: Evaluation data loader
+        dataloader: Evaluation data loader (template dataset)
         config: Training configuration
         device: Device to evaluate on
 
@@ -359,11 +519,17 @@ def evaluate(
     all_losses: dict[str, list[float]] = {}
     all_accuracies: dict[str, list[float]] = {}
 
+    use_amp = config.use_amp and device.type == "cuda"
+
     for batch in tqdm(dataloader, desc="Evaluating"):
         batch = batch.to(device)
-        output = model(batch.sentences)
+        with autocast(device_type="cuda", enabled=use_amp):
+            if batch.token_ids is not None:
+                output = model(token_ids=batch.token_ids)
+            else:
+                output = model(sentences=batch.sentences)
 
-        losses = compute_sentence_losses(output, batch, temperature=config.temperature)
+            losses = compute_sentence_losses(output, batch, temperature=config.temperature)
         accuracies = compute_classification_accuracy(output, batch)
 
         for name, loss in losses.items():
@@ -387,144 +553,281 @@ def evaluate(
 
 
 def train(
-    db_path: Path,
-    output_dir: Path,
-    tag_vocabs_path: Path | None = None,
-    tensorboard_dir: Path | None = None,
-    model_config: SentenceEmbeddingModelConfig | None = None,
-    training_config: TrainingConfig | None = None,
-    classification_tags: list[str] | None = None,
-    contrastive_tags: list[str] | None = None,
-    required_tags: list[str] | None = None,
-    train_split: float = 0.9,
-    seed: int = 42,
-    limit: int | None = None,
+    config: SentenceTrainConfig,
 ) -> None:
     """Main training function.
 
     Args:
-        db_path: Path to landmarks SQLite database
-        output_dir: Directory to save model and logs
-        tag_vocabs_path: Optional path to precomputed vocabularies JSON
-        tensorboard_dir: Optional TensorBoard log directory
-        model_config: Model configuration
-        training_config: Training configuration
-        classification_tags: Tags for classification tasks
-        contrastive_tags: Tags for contrastive tasks
-        required_tags: Tags that must always be included in sentences (defaults to contrastive_tags)
-        train_split: Fraction of data for training
-        seed: Random seed
-        limit: Optional limit on number of landmarks
+        config: Full training configuration
     """
     # Setup
-    setup_reproducibility(seed)
+    setup_reproducibility(config.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     # Create output directory
-    output_dir.mkdir(parents=True, exist_ok=True)
+    config.output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Use defaults if not provided
-    model_config = model_config or SentenceEmbeddingModelConfig()
-    training_config = training_config or TrainingConfig()
-    classification_tags = classification_tags or list(DEFAULT_CLASSIFICATION_TAGS)
-    contrastive_tags = contrastive_tags or list(DEFAULT_CONTRASTIVE_TAGS)
+    # Set tensorboard dir default if not provided
+    tensorboard_dir = config.tensorboard_dir
+    if tensorboard_dir is None:
+        tensorboard_dir = config.output_dir / "tensorboard"
 
-    print(f"Classification tasks: {classification_tags}")
-    print(f"Contrastive tasks: {contrastive_tags}")
+    print(f"Classification tasks: {config.classification_tags}")
+    print(f"Contrastive tasks: {config.contrastive_tags}")
+
+    # Validate datasets
+    if not config.datasets:
+        raise ValueError("At least one dataset must be configured in config.datasets")
+
+    # Find first TemplateDatasetConfig for vocabulary building
+    template_configs = [d for d in config.datasets if isinstance(d, TemplateDatasetConfig)]
+    paired_configs = [d for d in config.datasets if isinstance(d, OSMPairedDatasetConfig)]
 
     # Load or build vocabularies
-    if tag_vocabs_path is not None and tag_vocabs_path.exists():
-        print(f"Loading vocabularies from {tag_vocabs_path}")
-        with open(tag_vocabs_path) as f:
+    if config.tag_vocabs_path is not None and config.tag_vocabs_path.exists():
+        print(f"Loading vocabularies from {config.tag_vocabs_path}")
+        with open(config.tag_vocabs_path) as f:
             tag_vocabs = json.load(f)
-    else:
+    elif template_configs:
+        db_path = template_configs[0].db_path
         print(f"Building vocabularies from {db_path}")
         tag_vocabs = load_tag_vocabularies_from_db(
-            db_path, classification_tags, min_count=100
+            db_path, config.classification_tags, min_count=100
         )
         # Save for future runs
-        vocab_save_path = output_dir / "tag_vocabs.json"
+        vocab_save_path = config.output_dir / "tag_vocabs.json"
         with open(vocab_save_path, "w") as f:
             json.dump(tag_vocabs, f, indent=2)
         print(f"Saved vocabularies to {vocab_save_path}")
+    else:
+        # No template configs and no vocab path - use empty vocabs
+        print("No TemplateDatasetConfig found and no tag_vocabs_path - using empty vocabularies")
+        tag_vocabs = {}
 
     # Filter classification tags to those with vocabularies
-    classification_tags = [t for t in classification_tags if t in tag_vocabs]
+    classification_tags = [t for t in config.classification_tags if t in tag_vocabs]
     print(f"Classification tasks (with vocab): {classification_tags}")
 
     for tag, vocab in tag_vocabs.items():
         print(f"  {tag}: {len(vocab)} classes")
 
-    # Load landmarks
-    print(f"\nLoading landmarks from {db_path}")
-    landmarks = load_landmarks_from_db(db_path, limit=limit)
-    print(f"Loaded {len(landmarks):,} landmarks")
-
-    # Split data
-    train_landmarks, test_landmarks = split_landmarks_by_id(
-        landmarks, train_fraction=train_split, seed=seed
+    # Create model early to get tokenizer for parallel tokenization in DataLoader workers
+    print("\nCreating model...")
+    model = create_model_from_config(
+        model_config=config.model,
+        tag_vocabs=tag_vocabs,
+        classification_task_names=classification_tags,
+        contrastive_task_names=config.contrastive_tags,
     )
-    print(f"Train: {len(train_landmarks):,}, Test: {len(test_landmarks):,}")
+    model = model.to(device)
+    print(f"Model created with {sum(p.numel() for p in model.parameters()):,} parameters")
+    tokenizer = model.encoder.tokenize
 
     # Create sentence generator (shared across datasets)
     # Default required_tags to contrastive_tags to ensure contrastive learning has signal
-    effective_required_tags = required_tags if required_tags is not None else contrastive_tags
+    effective_required_tags = (
+        config.required_tags if config.required_tags is not None else config.contrastive_tags
+    )
     print(f"Required tags (always included): {effective_required_tags}")
     generator = OSMSentenceGenerator(required_tags=effective_required_tags)
 
-    # Create datasets
-    train_dataset = SentenceDataset(train_landmarks, generator=generator, epoch=0)
-    test_dataset = SentenceDataset(test_landmarks, generator=generator, epoch=0)
+    # -------------------------------------------------------------------------
+    # Build datasets and samplers from config.datasets
+    # -------------------------------------------------------------------------
+    train_datasets: dict[str, Dataset] = {}
+    test_datasets: dict[str, Dataset] = {}
+    train_sampler_configs: dict[str, tuple[Sampler, float, int]] = {}
+
+    # Track whether we have any paired datasets (for base contrastive loss)
+    has_paired_data = bool(paired_configs)
+
+    # Process template datasets
+    for i, tc in enumerate(template_configs):
+        name = f"template_{i}" if len(template_configs) > 1 else "template"
+        print(f"\nLoading template dataset from {tc.db_path}")
+        landmarks = load_landmarks_from_db(tc.db_path, limit=tc.limit)
+        print(f"Loaded {len(landmarks):,} landmarks")
+
+        # Extract unique pruned_tags
+        all_pruned_tags = get_unique_pruned_tags_from_landmarks(landmarks)
+        print(f"Unique pruned_tags: {len(all_pruned_tags):,}")
+
+        # Split into train/test
+        train_tags, test_tags = split_pruned_tags(
+            all_pruned_tags, train_fraction=config.train_split, seed=config.seed
+        )
+        print(f"Split: train={len(train_tags):,}, test={len(test_tags):,}")
+
+        # Create datasets
+        train_dataset = SentenceDataset(train_tags, generator=generator, epoch=0)
+        test_dataset = SentenceDataset(test_tags, generator=generator, epoch=0)
+        train_datasets[name] = train_dataset
+        test_datasets[name] = test_dataset
+
+        # Create sampler with ContrastiveBatchSampler for grouping
+        sampler = ContrastiveBatchSampler(
+            pruned_tags_list=train_tags,
+            contrastive_tags=config.contrastive_tags,
+            batch_size=config.training.batch_size,
+            groups_per_batch=config.training.groups_per_batch,
+            samples_per_group=config.training.samples_per_group,
+            seed=config.seed,
+        )
+        train_sampler_configs[name] = (sampler, tc.weight, 1)
+
+    # Process paired datasets
+    for i, pc in enumerate(paired_configs):
+        name = f"osm_paired_{i}" if len(paired_configs) > 1 else "osm_paired"
+        print(f"\nLoading OSM paired dataset from {pc.sentences_path}")
+        llm_sentences = load_sentences_from_pickle(pc.sentences_path)
+        if pc.limit is not None and len(llm_sentences) > pc.limit:
+            # Take first N items (dict ordering is preserved in Python 3.7+)
+            llm_sentences = dict(list(llm_sentences.items())[:pc.limit])
+        print(f"Loaded {len(llm_sentences):,} sentence pairs")
+
+        # Split into train/test
+        train_llm, test_llm = split_llm_sentences(
+            llm_sentences, train_fraction=config.train_split, seed=config.seed
+        )
+        print(f"Split: train={len(train_llm):,}, test={len(test_llm):,}")
+
+        # Create datasets
+        train_dataset = PairedSentenceDataset(train_llm, generator=generator, epoch=0)
+        test_dataset = PairedSentenceDataset(test_llm, generator=generator, epoch=0)
+        train_datasets[name] = train_dataset
+        test_datasets[name] = test_dataset
+
+        # Paired dataset uses simple shuffle sampler (positives come from pair structure)
+        paired_batch_size = config.training.batch_size // 2  # Each index yields 2 samples
+        sampler = BatchSampler(
+            RandomSampler(train_dataset),
+            batch_size=paired_batch_size,
+            drop_last=False,
+        )
+        train_sampler_configs[name] = (sampler, pc.weight, 2)
+
+    # Create combined dataset and mixing sampler
+    combined_train_dataset = CombinedDataset(train_datasets)
+
+    # Determine if we need mixing or single-source sampling
+    use_mixing_sampler = len(train_sampler_configs) > 1
+    include_base_contrastive = has_paired_data
 
     # Create collate function
-    collate_fn = create_collate_fn(
+    base_collate_fn = create_collate_fn(
         tag_vocabs=tag_vocabs,
         classification_tasks=classification_tags,
-        contrastive_tasks=contrastive_tags,
+        contrastive_tasks=config.contrastive_tags,
+        include_base_contrastive=include_base_contrastive,
+        tokenizer=tokenizer,
+        max_length=config.training.max_seq_length,
     )
 
-    # Create data loaders with smart batching for contrastive learning
-    train_batch_sampler = ContrastiveBatchSampler(
-        landmarks=train_landmarks,
-        contrastive_tags=contrastive_tags,
-        batch_size=training_config.batch_size,
-        groups_per_batch=training_config.groups_per_batch,
-        samples_per_group=training_config.samples_per_group,
-        seed=seed,
-    )
+    if use_mixing_sampler:
+        # Mixed mode: use MixingSampler with multiple sources
+        print(f"\nUsing MixingSampler with sources: {list(train_sampler_configs.keys())}")
+        train_batch_sampler = MixingSampler(
+            samplers=train_sampler_configs,
+            batch_size=config.training.batch_size,
+            seed=config.seed,
+        )
 
-    train_loader = DataLoader(
-        train_dataset,
-        batch_sampler=train_batch_sampler,
-        collate_fn=collate_fn,
-        num_workers=training_config.num_workers,
-        pin_memory=True,
-    )
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=training_config.batch_size,
-        shuffle=False,
-        collate_fn=collate_fn,
-        num_workers=training_config.num_workers,
-        pin_memory=True,
-    )
+        def mixing_collate_fn(samples: list):
+            # Flatten samples (handles singles, pairs, tuples)
+            flat = flatten_samples(samples)
+            return base_collate_fn(flat)
 
-    # Create model
-    print("\nCreating model...")
-    model = create_model_from_config(
-        model_config=model_config,
-        tag_vocabs=tag_vocabs,
-        classification_task_names=classification_tags,
-        contrastive_task_names=contrastive_tags,
-    )
-    model = model.to(device)
-    print(
-        f"Model created with {sum(p.numel() for p in model.parameters()):,} parameters"
-    )
+        train_loader = DataLoader(
+            combined_train_dataset,
+            batch_sampler=train_batch_sampler,
+            collate_fn=mixing_collate_fn,
+            num_workers=config.training.num_workers,
+            pin_memory=True,
+        )
+    else:
+        # Single source mode
+        single_name = list(train_sampler_configs.keys())[0]
+        single_sampler, _, _ = train_sampler_configs[single_name]
+        print(f"\nUsing single source: {single_name}")
+        train_batch_sampler = single_sampler
+
+        single_dataset = train_datasets[single_name]
+
+        # For paired datasets, need to flatten
+        if isinstance(single_dataset, PairedSentenceDataset):
+            def single_collate_fn(samples: list):
+                flat = flatten_samples(samples)
+                return base_collate_fn(flat)
+            collate_fn = single_collate_fn
+        else:
+            collate_fn = base_collate_fn
+
+        train_loader = DataLoader(
+            single_dataset,
+            batch_sampler=train_batch_sampler,
+            collate_fn=collate_fn,
+            num_workers=config.training.num_workers,
+            pin_memory=True,
+        )
+
+    # -------------------------------------------------------------------------
+    # Test loader setup
+    # -------------------------------------------------------------------------
+    # Find template test datasets (for classification accuracy and tag-specific metrics)
+    template_test_names = [n for n in test_datasets.keys() if n.startswith("template")]
+    paired_test_names = [n for n in test_datasets.keys() if n.startswith("osm_paired")]
+
+    # Template test loader: for classification accuracy and tag-specific contrastive metrics
+    template_test_loader = None
+    if template_test_names:
+        template_test_collate_fn = create_collate_fn(
+            tag_vocabs=tag_vocabs,
+            classification_tasks=classification_tags,
+            contrastive_tasks=config.contrastive_tags,
+            include_base_contrastive=False,
+            tokenizer=tokenizer,
+            max_length=config.training.max_seq_length,
+        )
+
+        # Use the first template test dataset for evaluation
+        template_test_loader = DataLoader(
+            test_datasets[template_test_names[0]],
+            batch_size=config.training.batch_size,
+            shuffle=False,
+            collate_fn=template_test_collate_fn,
+            num_workers=config.training.num_workers,
+            pin_memory=True,
+        )
+
+    # Paired test loader: for global MRR (template <-> LLM alignment)
+    paired_test_loader = None
+    if paired_test_names:
+        paired_test_collate_fn = create_collate_fn(
+            tag_vocabs=tag_vocabs,
+            classification_tasks=classification_tags,
+            contrastive_tasks=config.contrastive_tags,
+            include_base_contrastive=True,
+            tokenizer=tokenizer,
+            max_length=config.training.max_seq_length,
+        )
+
+        def paired_collate_wrapper(pairs: list[tuple[SentenceSample, SentenceSample]]):
+            flat = flatten_samples(pairs)
+            return paired_test_collate_fn(flat)
+
+        # Use the first paired test dataset for evaluation
+        paired_test_loader = DataLoader(
+            test_datasets[paired_test_names[0]],
+            batch_size=config.training.batch_size // 2,
+            shuffle=False,
+            collate_fn=paired_collate_wrapper,
+            num_workers=config.training.num_workers,
+            pin_memory=True,
+        )
 
     # Create optimizer with differential learning rates
-    lr_config = training_config.lr_schedule
+    lr_config = config.training.lr_schedule
     encoder_lr = lr_config.encoder_lr
     heads_lr = lr_config.heads_lr if lr_config.heads_lr is not None else encoder_lr
 
@@ -547,12 +850,20 @@ def train(
         optimizer = AdamW(model.parameters(), lr=encoder_lr)
         print(f"Using single learning rate: {encoder_lr}")
 
-    total_steps = len(train_loader) * training_config.num_epochs
+    total_steps = len(train_loader) * config.training.num_epochs
     scheduler = create_lr_scheduler(
         optimizer,
         warmup_steps=lr_config.warmup_steps,
         total_steps=total_steps,
     )
+
+    # Mixed precision training
+    scaler = None
+    if config.training.use_amp and device.type == "cuda":
+        scaler = GradScaler()
+        print("Mixed precision training enabled (FP16)")
+    elif config.training.use_amp:
+        print("Mixed precision training disabled (requires CUDA)")
 
     # TensorBoard writer
     writer = None
@@ -561,64 +872,56 @@ def train(
         writer = SummaryWriter(tensorboard_dir)
 
     # Save config
-    config_dict = {
-        "db_path": str(db_path),
-        "model_config": {
-            "encoder_name": model_config.encoder_name,
-            "projection_dim": model_config.projection_dim,
-            "freeze_encoder": model_config.freeze_encoder,
-        },
-        "training_config": {
-            "batch_size": training_config.batch_size,
-            "num_epochs": training_config.num_epochs,
-            "encoder_lr": training_config.lr_schedule.encoder_lr,
-            "heads_lr": training_config.lr_schedule.heads_lr,
-            "temperature": training_config.temperature,
-            "groups_per_batch": training_config.groups_per_batch,
-            "samples_per_group": training_config.samples_per_group,
-        },
-        "classification_tags": classification_tags,
-        "contrastive_tags": contrastive_tags,
-        "required_tags": effective_required_tags,
-        "train_split": train_split,
-        "seed": seed,
-    }
-    with open(output_dir / "config.json", "w") as f:
-        json.dump(config_dict, f, indent=2)
+    save_config(config, config.output_dir / "config.yaml")
 
     # Training loop
     global_step = 0
     best_val_loss = float("inf")
 
-    for epoch in range(training_config.num_epochs):
-        print(f"\nEpoch {epoch + 1}/{training_config.num_epochs}")
+    for epoch in range(config.training.num_epochs):
+        print(f"\nEpoch {epoch + 1}/{config.training.num_epochs}")
 
         # Update epoch for sentence variety and batch sampling
-        train_dataset.set_epoch(epoch)
+        for dataset in train_datasets.values():
+            if hasattr(dataset, "set_epoch"):
+                dataset.set_epoch(epoch)
         train_batch_sampler.set_epoch(epoch)
 
-        # Train
         global_step, train_metrics = train_epoch(
             model=model,
             dataloader=train_loader,
             optimizer=optimizer,
             scheduler=scheduler,
-            config=training_config,
+            config=config.training,
             writer=writer,
             global_step=global_step,
             device=device,
             tag_vocabs=tag_vocabs,
+            scaler=scaler,
         )
 
         print(f"Train metrics: {train_metrics}")
 
-        # Evaluate
-        val_metrics = evaluate(
-            model=model,
-            dataloader=test_loader,
-            config=training_config,
-            device=device,
-        )
+        # Evaluate on template test set (classification, tag-specific contrastive)
+        val_metrics = {}
+        if template_test_loader is not None:
+            val_metrics = evaluate(
+                model=model,
+                dataloader=template_test_loader,
+                config=config.training,
+                device=device,
+            )
+
+        # Evaluate on paired test set (base contrastive loss and global MRR)
+        if paired_test_loader is not None:
+            paired_metrics = evaluate_base_contrastive(
+                model=model,
+                dataloader=paired_test_loader,
+                config=config.training,
+                device=device,
+            )
+            val_metrics.update(paired_metrics)
+
         print(f"Val metrics: {val_metrics}")
 
         # Log to TensorBoard
@@ -634,12 +937,12 @@ def train(
         )
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            save_path = output_dir / "best_model.pt"
+            save_path = config.output_dir / "best_model.pt"
             torch.save(model.state_dict(), save_path)
             print(f"Saved best model to {save_path}")
 
         # Save checkpoint
-        checkpoint_path = output_dir / f"checkpoint_epoch_{epoch + 1}.pt"
+        checkpoint_path = config.output_dir / f"checkpoint_epoch_{epoch + 1}.pt"
         torch.save(
             {
                 "epoch": epoch + 1,
@@ -664,12 +967,8 @@ def main():
     parser.add_argument(
         "--config",
         type=Path,
+        required=True,
         help="Path to YAML config file. CLI args override config values.",
-    )
-    parser.add_argument(
-        "--db_path",
-        type=Path,
-        help="Path to landmarks SQLite database",
     )
     parser.add_argument(
         "--output_dir",
@@ -722,11 +1021,6 @@ def main():
         help="Random seed (default: 42)",
     )
     parser.add_argument(
-        "--limit",
-        type=int,
-        help="Limit number of landmarks to load (for testing)",
-    )
-    parser.add_argument(
         "--groups_per_batch",
         type=int,
         help="Number of contrastive groups to sample per batch (default: 32)",
@@ -738,16 +1032,11 @@ def main():
     )
     args = parser.parse_args()
 
-    # Load config from file or use defaults
-    if args.config is not None:
-        print(f"Loading config from {args.config}")
-        config = load_config(args.config)
-    else:
-        config = SentenceTrainConfig()
+    # Load config from file
+    print(f"Loading config from {args.config}")
+    config = load_config(args.config)
 
     # Override config with CLI args
-    if args.db_path is not None:
-        config.db_path = args.db_path
     if args.output_dir is not None:
         config.output_dir = args.output_dir
     if args.tag_vocabs is not None:
@@ -768,38 +1057,16 @@ def main():
         config.train_split = args.train_split
     if args.seed is not None:
         config.seed = args.seed
-    if args.limit is not None:
-        config.limit = args.limit
     if args.groups_per_batch is not None:
         config.training.groups_per_batch = args.groups_per_batch
     if args.samples_per_group is not None:
         config.training.samples_per_group = args.samples_per_group
 
     # Validate required fields
-    if config.db_path is None:
-        parser.error("--db_path is required (via config or CLI)")
     if config.output_dir is None:
         parser.error("--output_dir is required (via config or CLI)")
 
-    # Set tensorboard dir default
-    tensorboard_dir = config.tensorboard_dir
-    if tensorboard_dir is None:
-        tensorboard_dir = config.output_dir / "tensorboard"
-
-    train(
-        db_path=config.db_path,
-        output_dir=config.output_dir,
-        tag_vocabs_path=config.tag_vocabs_path,
-        tensorboard_dir=tensorboard_dir,
-        model_config=config.model,
-        training_config=config.training,
-        classification_tags=config.classification_tags,
-        contrastive_tags=config.contrastive_tags,
-        required_tags=config.required_tags,
-        train_split=config.train_split,
-        seed=config.seed,
-        limit=config.limit,
-    )
+    train(config=config)
 
 
 if __name__ == "__main__":

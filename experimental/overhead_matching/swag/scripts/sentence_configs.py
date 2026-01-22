@@ -5,6 +5,37 @@ from pathlib import Path
 
 import msgspec
 
+from common.python.serialization import MSGSPEC_STRUCT_OPTS
+
+
+# -----------------------------------------------------------------------------
+# Dataset configs (msgspec Struct with tagged union support)
+# -----------------------------------------------------------------------------
+
+
+class TemplateDatasetConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    """Config for template-only dataset (generates sentences from DB)."""
+
+    db_path: Path  # Required - landmarks database
+    weight: float = 1.0
+    limit: int | None = None  # Optional limit on number of landmarks
+
+
+class OSMPairedDatasetConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    """Config for OSM paired dataset (template + LLM sentences).
+
+    Loads a pickle file mapping frozenset[tags] -> LLM sentence.
+    Template sentences are generated on-the-fly from the tags.
+    """
+
+    sentences_path: Path  # Required - pickle file with {frozenset: str}
+    weight: float = 1.0
+    limit: int | None = None  # Optional limit on number of sentence pairs
+
+
+# Union type for dataset configs
+DatasetConfig = TemplateDatasetConfig | OSMPairedDatasetConfig
+
 
 @dataclass
 class ClassificationTaskConfig:
@@ -68,6 +99,14 @@ class TrainingConfig:
     groups_per_batch: int = 32  # Number of contrastive groups to sample per batch
     samples_per_group: int = 4  # Target samples per group (for positive pairs)
 
+    # Mixed precision training (FP16)
+    use_amp: bool = True  # Enable automatic mixed precision
+
+    # Max sequence length for tokenization. If set, all sequences are padded/truncated
+    # to this length to avoid GPU memory fragmentation from variable-sized tensors.
+    # Set based on token length statistics (e.g., p99 + margin). None = dynamic padding.
+    max_seq_length: int | None = 160
+
 
 # Default classification tasks (tag keys to use for classification)
 DEFAULT_CLASSIFICATION_TAGS = [
@@ -95,10 +134,12 @@ class SentenceTrainConfig:
     """Full training configuration."""
 
     # Data paths
-    db_path: Path | None = None  # Path to landmarks SQLite database
     output_dir: Path | None = None
     tag_vocabs_path: Path | None = None  # Optional, built automatically if not provided
     tensorboard_dir: Path | None = None
+
+    # Dataset configs (replaces db_path, llm_sentences_path, source_weights)
+    datasets: list[DatasetConfig] = field(default_factory=list)
 
     # Model config
     model: SentenceEmbeddingModelConfig = field(
@@ -119,9 +160,6 @@ class SentenceTrainConfig:
     # Train/test split
     train_split: float = 0.9
     seed: int = 42
-
-    # Limit landmarks for testing
-    limit: int | None = None
 
     # Tags that must always be included in sentences when present
     # Defaults to contrastive_tags to ensure contrastive learning has signal

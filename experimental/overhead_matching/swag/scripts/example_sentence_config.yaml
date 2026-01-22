@@ -1,11 +1,29 @@
 # Example configuration for sentence embedding training
 # Copy and modify this file for your training run
 
-# Data paths
-db_path: /data/overhead_matching/datasets/us_osm_landmarks/landmarks.db
-output_dir: /data/overhead_matching/models/sentence_embeddings
+# Output paths
+output_dir: /tmp/sentence_training
 # tag_vocabs_path: null  # Optional, built automatically if not provided
 # tensorboard_dir: null  # Defaults to {output_dir}/tensorboard
+
+# Dataset configuration
+# Each dataset specifies its type via 'kind', paths, and sampling weight
+# Each dataset can have an optional 'limit' for testing with smaller data
+datasets:
+  # Template dataset: generates sentences from landmark database
+  - kind: TemplateDatasetConfig
+    db_path: /data/overhead_matching/datasets/us_osm_landmarks/landmarks.sqlite
+    weight: 0.9
+    # limit: 10000  # Optional: limit landmarks for testing
+
+  # OSM Paired dataset: template + LLM sentence pairs for contrastive learning
+  # Create the pickle file using:
+  #   bazel run //experimental/overhead_matching/swag/model:semantic_landmark_extractor -- \
+  #     create_sentences_pickle --geojson <files> --sentences_dir <dir> --output <path.pkl>
+  - kind: OSMPairedDatasetConfig
+    sentences_path: /data/overhead_matching/datasets/semantic_landmark_embeddings/v4_202001_no_addresses/sentences/sentences.pkl
+    weight: 0.1
+    # limit: 5000  # Optional: limit sentence pairs for testing
 
 # Model configuration
 model:
@@ -15,7 +33,7 @@ model:
 
 # Training configuration
 training:
-  batch_size: 256
+  batch_size: 512
   num_epochs: 5
   lr_schedule:
     encoder_lr: 2.0e-5   # Lower LR for pretrained encoder
@@ -23,7 +41,7 @@ training:
     warmup_steps: 1000
   gradient_clip_norm: 1.0
   temperature: 0.07
-  num_workers: 4
+  num_workers: 8
   log_every_n_steps: 100
 
 # Task selection - which tags to use for training
@@ -46,6 +64,3 @@ contrastive_tags:
 # Train/test split
 train_split: 0.9
 seed: 42
-
-# Limit landmarks for testing (null for all)
-# limit: 10000

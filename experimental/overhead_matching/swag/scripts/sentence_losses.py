@@ -10,7 +10,7 @@ def info_nce_loss_from_matrix(
     similarity: torch.Tensor,
     positive_matrix: torch.Tensor,
 ) -> torch.Tensor:
-    """Compute InfoNCE loss with precomputed positive matrix.
+    """Compute InfoNCE loss with precomputed positive matrix (vectorized).
 
     For each anchor, the loss is:
         -mean(pos_similarities) + logsumexp(all_similarities_except_self)
@@ -26,28 +26,67 @@ def info_nce_loss_from_matrix(
     if n < 2:
         return torch.tensor(0.0, device=similarity.device)
 
-    loss = torch.tensor(0.0, device=similarity.device)
-    count = 0
+    # Count positives per anchor: (n,)
+    pos_mask = positive_matrix > 0
+    pos_counts = pos_mask.sum(dim=1).float()
 
-    for i in range(n):
-        pos_mask = positive_matrix[i] > 0
+    # Identify anchors with at least one positive
+    has_positive = pos_counts > 0
+    if not has_positive.any():
+        return torch.tensor(0.0, device=similarity.device)
 
-        # Skip if no positives for this anchor
-        if pos_mask.sum() == 0:
-            continue
+    # Compute mean positive similarity per anchor
+    # Zero out non-positives, sum, then divide by count
+    masked_pos_sim = similarity.masked_fill(~pos_mask, 0.0)
+    pos_sum = masked_pos_sim.sum(dim=1)
+    # Avoid div by zero (anchors without positives will be masked out anyway)
+    pos_mean = pos_sum / pos_counts.clamp(min=1)
 
-        # Positive similarities
-        pos_sim = similarity[i, pos_mask]
+    # Compute logsumexp over all similarities except self (diagonal)
+    self_mask = torch.eye(n, dtype=torch.bool, device=similarity.device)
+    sim_no_self = similarity.masked_fill(self_mask, float('-inf'))
+    logsumexp_all = torch.logsumexp(sim_no_self, dim=1)
 
-        # All similarities except self (for denominator)
-        all_except_self = torch.cat([similarity[i, :i], similarity[i, i + 1 :]])
+    # Per-anchor InfoNCE loss: -mean(positives) + logsumexp(all except self)
+    per_anchor_loss = -pos_mean + logsumexp_all
 
-        # InfoNCE: -log(sum(exp(pos)) / sum(exp(all)))
-        # = -mean(pos) + logsumexp(all)
-        loss = loss + (-pos_sim.mean() + torch.logsumexp(all_except_self, dim=0))
-        count += 1
+    # Average over anchors that have positives
+    return per_anchor_loss[has_positive].mean()
 
-    return loss / max(count, 1)
+
+def compute_base_contrastive_loss(
+    base_embedding: torch.Tensor,
+    base_contrastive_labels: tuple[torch.Tensor, torch.Tensor],
+    temperature: float = 0.07,
+) -> torch.Tensor:
+    """Compute contrastive loss on base embeddings for same-landmark pairing.
+
+    This loss pairs template sentences with LLM sentences for the same landmark,
+    using the base embedding (before projection heads).
+
+    Args:
+        base_embedding: (n, d) tensor of base embeddings
+        base_contrastive_labels: Tuple of (mask, positive_matrix) where:
+            - mask: (n,) boolean tensor (all True for now)
+            - positive_matrix: (n, n) tensor where [i,j]=1 if same landmark
+        temperature: Temperature for contrastive loss scaling
+
+    Returns:
+        Scalar loss tensor
+    """
+    mask, positive_matrix = base_contrastive_labels
+
+    # Check if there are any positive pairs
+    if positive_matrix.sum() == 0:
+        return torch.tensor(0.0, device=base_embedding.device)
+
+    # Normalize embeddings for cosine similarity
+    normalized = F.normalize(base_embedding, p=2, dim=-1)
+
+    # Compute similarity matrix (temperature-scaled)
+    similarity = normalized @ normalized.T / temperature
+
+    return info_nce_loss_from_matrix(similarity, positive_matrix)
 
 
 def compute_sentence_losses(
@@ -119,6 +158,16 @@ def compute_sentence_losses(
 
         losses[f"loss_presence_{task}"] = F.binary_cross_entropy_with_logits(logits, labels)
 
+    # Base embedding contrastive loss (for template <-> LLM pairing)
+    if batch.base_contrastive_labels is not None:
+        base_loss = compute_base_contrastive_loss(
+            base_embedding=model_output["base_embedding"],
+            base_contrastive_labels=batch.base_contrastive_labels,
+            temperature=temperature,
+        )
+        if base_loss.item() > 0:  # Only add if there are positive pairs
+            losses["loss_base_contrastive"] = base_loss
+
     return losses
 
 
@@ -150,18 +199,60 @@ def aggregate_losses(
     return total
 
 
+def compute_contrastive_mrr(
+    similarity: torch.Tensor,
+    positive_matrix: torch.Tensor,
+) -> float:
+    """Compute Mean Reciprocal Rank for contrastive embeddings using GPU-efficient broadcasting.
+
+    For each anchor, finds the rank of the best positive match and computes 1/rank.
+    MRR is the mean of these reciprocal ranks across all anchors with positives.
+
+    Args:
+        similarity: (n, n) tensor of pairwise similarities
+        positive_matrix: (n, n) binary tensor where [i,j]=1 if i and j are positives
+
+    Returns:
+        Mean Reciprocal Rank (higher is better, max is 1.0)
+    """
+    n = similarity.shape[0]
+    if n < 2:
+        return 0.0
+
+    # For each row, get the max similarity among positives
+    # Set non-positives to -inf so they don't affect the max
+    masked_sim = similarity.clone()
+    masked_sim[~(positive_matrix > 0)] = float('-inf')
+    best_positive_sim = masked_sim.max(dim=-1).values  # (n,)
+
+    # Compute rank of best positive for each anchor
+    # Rank = count of items with similarity >= best_positive_sim (excluding self)
+    self_mask = torch.eye(n, dtype=torch.bool, device=similarity.device)
+    other_sims = similarity.masked_fill(self_mask, float('-inf'))
+    ranks = (other_sims >= best_positive_sim[:, None]).sum(dim=-1)  # (n,)
+
+    # Only include anchors that have at least one positive
+    has_positive = (positive_matrix > 0).any(dim=-1)
+    valid_ranks = ranks[has_positive].float()
+
+    if valid_ranks.numel() == 0:
+        return 0.0
+
+    return (1.0 / valid_ranks).mean().item()
+
+
 def compute_classification_accuracy(
     model_output: dict[str, torch.Tensor | dict[str, torch.Tensor]],
     batch: SentenceBatch,
 ) -> dict[str, float]:
-    """Compute classification and presence accuracy for each task.
+    """Compute classification, presence accuracy, and contrastive MRR for each task.
 
     Args:
         model_output: Output from SentenceEmbeddingModel.forward()
         batch: SentenceBatch with precomputed labels
 
     Returns:
-        Dictionary mapping task names to accuracy values
+        Dictionary mapping task names to accuracy/MRR values
     """
     accuracies = {}
     device = model_output["base_embedding"].device
@@ -197,5 +288,44 @@ def compute_classification_accuracy(
         predictions = (torch.sigmoid(logits) > 0.5).float()
         correct = (predictions == labels).float().mean().item()
         accuracies[f"acc_presence_{task}"] = correct
+
+    # Contrastive MRR for per-task heads
+    contrastive_embeddings = model_output["contrastive_embeddings"]
+    for task, (mask, positive_matrix) in batch.contrastive_labels.items():
+        if task not in contrastive_embeddings:
+            continue
+
+        mask = mask.to(device)
+        positive_matrix = positive_matrix.to(device)
+
+        if mask.sum() < 2:
+            continue
+
+        embeddings = contrastive_embeddings[task]
+
+        # Compute similarity matrix
+        similarity = embeddings @ embeddings.T
+
+        # Extract only masked rows/cols
+        masked_sim = similarity[mask][:, mask]
+        masked_pos = positive_matrix[mask][:, mask]
+
+        mrr = compute_contrastive_mrr(masked_sim, masked_pos)
+        accuracies[f"mrr_contrast_{task}"] = mrr
+
+    # Base embedding contrastive MRR (for template <-> LLM pairing)
+    if batch.base_contrastive_labels is not None:
+        mask, positive_matrix = batch.base_contrastive_labels
+        mask = mask.to(device)
+        positive_matrix = positive_matrix.to(device)
+
+        if positive_matrix.sum() > 0:
+            base_embedding = model_output["base_embedding"]
+            # Normalize for cosine similarity
+            normalized = F.normalize(base_embedding, p=2, dim=-1)
+            similarity = normalized @ normalized.T
+
+            mrr = compute_contrastive_mrr(similarity, positive_matrix)
+            accuracies["mrr_base_contrastive"] = mrr
 
     return accuracies

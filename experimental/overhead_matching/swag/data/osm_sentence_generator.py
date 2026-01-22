@@ -69,6 +69,8 @@ class TagTemplateConfig:
     )
 
     # Tags that provide descriptive attributes
+    # Note: addr:city is excluded because it's pruned from landmarks
+    # (used for deduplication, not for visual description)
     attribute_tags: tuple[str, ...] = (
         "name",
         "brand",
@@ -85,7 +87,6 @@ class TagTemplateConfig:
         "ref",              # Road/exit numbers (visible on signs)
         "addr:street",      # Street name (visible on signs)
         "addr:housenumber", # House number (visible on buildings)
-        "addr:city",        # City name
     )
 
     # Tag prefixes to exclude (pure metadata, not visible)

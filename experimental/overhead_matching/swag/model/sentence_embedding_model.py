@@ -88,21 +88,31 @@ class SentenceEmbeddingModel(nn.Module):
         """Get names of contrastive tasks."""
         return self._contrastive_task_names
 
-    def encode_sentences(self, sentences: list[str]) -> torch.Tensor:
+    def encode_sentences(
+        self,
+        sentences: list[str] | None = None,
+        token_ids: dict[str, torch.Tensor] | None = None,
+    ) -> torch.Tensor:
         """Encode sentences to base embeddings (training mode with gradients).
 
         Args:
-            sentences: List of sentence strings
+            sentences: List of sentence strings (used if token_ids not provided)
+            token_ids: Pre-tokenized input tensors (preferred, enables parallel tokenization)
 
         Returns:
             Tensor of shape (batch_size, base_dim)
         """
-        # Tokenize sentences
-        features = self.encoder.tokenize(sentences)
-
-        # Move to same device as model
         device = next(self.encoder.parameters()).device
-        features = {k: v.to(device) for k, v in features.items()}
+
+        if token_ids is not None:
+            # Use pre-tokenized input (already on correct device after batch.to(device))
+            features = token_ids
+        elif sentences is not None:
+            # Tokenize sentences on-the-fly
+            features = self.encoder.tokenize(sentences)
+            features = {k: v.to(device) for k, v in features.items()}
+        else:
+            raise ValueError("Either sentences or token_ids must be provided")
 
         # Forward through encoder modules (with gradients, unlike .encode())
         output = self.encoder(features)
@@ -111,12 +121,15 @@ class SentenceEmbeddingModel(nn.Module):
         return output["sentence_embedding"]
 
     def forward(
-        self, sentences: list[str]
+        self,
+        sentences: list[str] | None = None,
+        token_ids: dict[str, torch.Tensor] | None = None,
     ) -> dict[str, torch.Tensor | dict[str, torch.Tensor]]:
         """Forward pass through the model.
 
         Args:
-            sentences: List of sentence strings
+            sentences: List of sentence strings (used if token_ids not provided)
+            token_ids: Pre-tokenized input tensors (preferred, enables parallel tokenization)
 
         Returns:
             Dictionary containing:
@@ -126,7 +139,7 @@ class SentenceEmbeddingModel(nn.Module):
                 - presence_logits: {task_name: (batch_size, 1)} - predicts if tag is present
         """
         # Encode sentences
-        base_emb = self.encode_sentences(sentences)
+        base_emb = self.encode_sentences(sentences=sentences, token_ids=token_ids)
 
         # Compute classification logits
         classification_logits = {
