@@ -779,37 +779,49 @@ def train(
     # -------------------------------------------------------------------------
     # Test loader setup
     # -------------------------------------------------------------------------
-    test_collate_fn = create_collate_fn(
+    # Template test loader: for classification accuracy and tag-specific contrastive metrics
+    template_test_collate_fn = create_collate_fn(
         tag_vocabs=tag_vocabs,
         classification_tasks=classification_tags,
         contrastive_tasks=config.contrastive_tags,
-        include_base_contrastive=True,  # Enable for global MRR computation
+        include_base_contrastive=False,
         tokenizer=tokenizer,
         max_length=config.training.max_seq_length,
     )
 
-    # Use paired test dataset if available (for global MRR with template <-> LLM)
-    if "osm_paired" in test_datasets:
-        test_dataset = test_datasets["osm_paired"]
-
-        def test_paired_collate_fn(pairs: list[tuple[SentenceSample, SentenceSample]]):
-            flat = flatten_samples(pairs)
-            return test_collate_fn(flat)
-        test_collate = test_paired_collate_fn
-        test_batch_size = config.training.batch_size // 2
-    else:
-        test_dataset = test_datasets["template"]
-        test_collate = test_collate_fn
-        test_batch_size = config.training.batch_size
-
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=test_batch_size,
+    template_test_loader = DataLoader(
+        test_datasets["template"],
+        batch_size=config.training.batch_size,
         shuffle=False,
-        collate_fn=test_collate,
+        collate_fn=template_test_collate_fn,
         num_workers=config.training.num_workers,
         pin_memory=True,
     )
+
+    # Paired test loader: for global MRR (template <-> LLM alignment)
+    paired_test_loader = None
+    if "osm_paired" in test_datasets:
+        paired_test_collate_fn = create_collate_fn(
+            tag_vocabs=tag_vocabs,
+            classification_tasks=classification_tags,
+            contrastive_tasks=config.contrastive_tags,
+            include_base_contrastive=True,
+            tokenizer=tokenizer,
+            max_length=config.training.max_seq_length,
+        )
+
+        def paired_collate_wrapper(pairs: list[tuple[SentenceSample, SentenceSample]]):
+            flat = flatten_samples(pairs)
+            return paired_test_collate_fn(flat)
+
+        paired_test_loader = DataLoader(
+            test_datasets["osm_paired"],
+            batch_size=config.training.batch_size // 2,
+            shuffle=False,
+            collate_fn=paired_collate_wrapper,
+            num_workers=config.training.num_workers,
+            pin_memory=True,
+        )
 
     # Create optimizer with differential learning rates
     lr_config = config.training.lr_schedule
@@ -890,13 +902,28 @@ def train(
 
         print(f"Train metrics: {train_metrics}")
 
-        # Evaluate
+        # Evaluate on template test set (classification, tag-specific contrastive)
         val_metrics = evaluate(
             model=model,
-            dataloader=test_loader,
+            dataloader=template_test_loader,
             config=config.training,
             device=device,
+            compute_global_mrr=False,
         )
+
+        # Evaluate on paired test set (global MRR for template <-> LLM alignment)
+        if paired_test_loader is not None:
+            paired_metrics = evaluate(
+                model=model,
+                dataloader=paired_test_loader,
+                config=config.training,
+                device=device,
+                compute_global_mrr=True,
+            )
+            # Only take the global MRR metric from paired evaluation
+            if "val_mrr_base_contrastive_global" in paired_metrics:
+                val_metrics["val_mrr_base_contrastive_global"] = paired_metrics["val_mrr_base_contrastive_global"]
+
         print(f"Val metrics: {val_metrics}")
 
         # Log to TensorBoard
