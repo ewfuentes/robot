@@ -10,13 +10,13 @@ OSM mode stores in flat tuple format compatible with existing infrastructure.
 
 Usage:
     # Panorama mode
-    bazel run //experimental/overhead_matching/swag/scripts:process_batch_outputs -- \
+    bazel run //experimental/overhead_matching/swag/scripts:create_embeddings_with_gemini -- \
       --mode panorama \
       --input_dir ~/Downloads/ \
       --output_file /path/to/embeddings.pkl
 
     # OSM mode
-    bazel run //experimental/overhead_matching/swag/scripts:process_batch_outputs -- \
+    bazel run //experimental/overhead_matching/swag/scripts:create_embeddings_with_gemini -- \
       --mode osm \
       --input_dir /data/.../sentences/ \
       --output_file /path/to/embeddings_gemini.pkl
