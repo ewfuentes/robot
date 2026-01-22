@@ -6,7 +6,7 @@ commands = [
     "bazel run //experimental/overhead_matching/swag/scripts:populate_tensor_cache -- --dataset_base /data/overhead_matching/datasets/VIGOR/ --train_config $(pwd)/config.yaml",
     "MAX_DATALOADER_WORKERS=3 bazel run //experimental/overhead_matching/swag/scripts:train -- --dataset_base /data/overhead_matching/datasets/VIGOR/ --output_base /data/overhead_matching/training_outputs/ --no_ipdb --train_config $(pwd)/config.yaml",
 ]
-instance_type = "1xL40S" # https://docs.tensorpool.dev/resources/instance-types
+instance_type = "1xH100" # https://docs.tensorpool.dev/resources/instance-types
 
 # List of the files you want saved at the end of the job
 outputs = [
@@ -14,7 +14,8 @@ outputs = [
     # "checkpoints/",
     # "weights.pth",
     # "/*", # accepts glob patterns
-    "/data/overhead_matching/training_outputs/"
+    "/data/overhead_matching/training_outputs/",
+    "/tmp/*.pkl"
 ]
 
 # A List of files to ignore sending with your project

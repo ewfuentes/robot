@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-pip install --break-system-packages tensorpool
+pip install tensorpool || pip install --break-system-packages tensorpool
 tp cluster attach $(hostname) s-x9o8dimbyx --no-input
 ./setup.sh
 mkdir -p /data/overhead_matching/{datasets,training_outputs}/
