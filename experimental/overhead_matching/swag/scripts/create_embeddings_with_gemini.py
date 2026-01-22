@@ -31,21 +31,17 @@ import json
 import pickle
 import sys
 import time
+import warnings
 from collections import Counter
 from pathlib import Path
-from typing import Optional
 
 # IMPORTANT: Must import torch deps before torch to load CUDA libraries
 import common.torch.load_torch_deps
 import torch
 from tqdm import tqdm
 
-try:
-    from google import genai
-    from google.genai.types import EmbedContentConfig
-    HAS_VERTEX_AI = True
-except ImportError:
-    HAS_VERTEX_AI = False
+from google import genai
+from google.genai.types import EmbedContentConfig
 
 
 class BatchOutputCollector:
@@ -116,8 +112,14 @@ class BatchOutputCollector:
         text_content = candidates[0]["content"]["parts"][0]["text"]
         parsed = json.loads(text_content)
 
+        # Validate landmarks field exists
+        if "landmarks" not in parsed:
+            raise KeyError("'landmarks' key missing from response")
+        landmarks = parsed["landmarks"]
+        if not landmarks:
+            warnings.warn(f"Panorama {pano_id} has empty landmarks list")
+
         # Add landmark_idx to each landmark if not present
-        landmarks = parsed.get("landmarks", [])
         for idx, landmark in enumerate(landmarks):
             if "landmark_idx" not in landmark:
                 landmark["landmark_idx"] = idx
@@ -214,11 +216,6 @@ class VertexEmbeddingGenerator:
                  task_type: str = "SEMANTIC_SIMILARITY",
                  batch_size: int = 250,
                  output_dimensionality: int = 1536):
-        if not HAS_VERTEX_AI:
-            raise ImportError(
-                "Vertex AI SDK not available. Install with: pip install google-genai"
-            )
-
         self.model = model
         self.task_type = task_type
         self.batch_size = min(batch_size, 250)  # Max 250 per Vertex AI request
@@ -382,13 +379,10 @@ class OSMLandmarkCollector:
 
     def collect(self) -> dict:
         """Scan directory and parse all batch output JSONL files."""
-        # Look for batch_*_output.jsonl and deduplicated_*.jsonl
-        jsonl_files = list(self.input_dir.glob("batch_*_output.jsonl"))
-        jsonl_files.extend(self.input_dir.glob("deduplicated_*.jsonl"))
+        jsonl_files = list(self.input_dir.glob("*.jsonl"))
 
         if not jsonl_files:
-            print(f"Warning: No batch output JSONL files found in {self.input_dir}")
-            return self.landmarks
+            raise FileNotFoundError(f"No JSONL files found in {self.input_dir}")
 
         print(f"Found {len(jsonl_files)} JSONL file(s) to process")
 
@@ -425,11 +419,13 @@ class OSMLandmarkCollector:
         """Extract OSM landmark data from batch output JSON."""
         # Skip if error is present
         if data.get("error"):
+            self.errors.append(f"Entry has error field: {data.get('error')}")
             return
 
         # Extract custom_id
         custom_id = data.get("custom_id")
         if not custom_id:
+            self.errors.append("Entry missing custom_id field")
             return
 
         # Extract description from OpenAI response format
@@ -439,6 +435,7 @@ class OSMLandmarkCollector:
 
             # Skip non-200 responses
             if status_code != 200:
+                self.errors.append(f"Entry {custom_id}: non-200 status code: {status_code}")
                 return
 
             # Extract plain text description
@@ -450,9 +447,8 @@ class OSMLandmarkCollector:
             # Store mapping
             self.landmarks[custom_id] = description
 
-        except (KeyError, IndexError, TypeError):
-            # Missing expected fields - skip this entry
-            pass
+        except (KeyError, IndexError, TypeError) as e:
+            self.errors.append(f"Entry {custom_id}: missing expected fields: {e}")
 
 
 class OSMStatisticsReporter:
@@ -695,12 +691,6 @@ def main_panorama(args):
     print("PHASE 2 & 3: EMBEDDING GENERATION & STORAGE")
     print("="*80)
 
-    # Check Vertex AI availability
-    if not HAS_VERTEX_AI:
-        print("\nError: Vertex AI SDK not available")
-        print("Install with: pip install google-genai")
-        return 1
-
     try:
         generator = VertexEmbeddingGenerator(
             model=args.model,
@@ -756,12 +746,6 @@ def main_osm(args):
     print("\n" + "="*80)
     print("PHASE 2 & 3: EMBEDDING GENERATION & STORAGE")
     print("="*80)
-
-    # Check Vertex AI availability
-    if not HAS_VERTEX_AI:
-        print("\nError: Vertex AI SDK not available")
-        print("Install with: pip install google-genai")
-        return 1
 
     try:
         generator = VertexEmbeddingGenerator(

@@ -35,8 +35,7 @@ import argparse
 import os
 import sys
 import time
-from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 from google import genai
 from google.genai.types import CreateBatchJobConfig, JobState, HttpOptions
