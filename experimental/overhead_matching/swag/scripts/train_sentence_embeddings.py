@@ -405,17 +405,26 @@ def train_epoch(
         return global_step
 
     if profile_dir is not None:
-        # Profile first 20 batches: 5 warmup, 15 active
+        # Profile first 20 batches, then continue without profiling
         profile_dir.mkdir(parents=True, exist_ok=True)
+        profile_batches = 20
 
+        dataloader_iter = iter(dataloader)
+        pbar = tqdm(total=len(dataloader), desc="Training (profiling)")
+
+        # Phase 1: Profile first N batches
         with profile(
             activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
             record_shapes=True,
             profile_memory=True,
             with_stack=True,
         ) as prof:
-            pbar = tqdm(dataloader, desc="Training (profiling)")
-            for batch in pbar:
+            for _ in range(profile_batches):
+                try:
+                    batch = next(dataloader_iter)
+                except StopIteration:
+                    break
+
                 with record_function("data_loading"):
                     pass  # Data already loaded by iterator
 
@@ -424,16 +433,25 @@ def train_epoch(
 
                 if result is not None:
                     pbar.set_postfix({"loss": result[2].item(), "step": global_step})
-
-                # Stop after profiled batches
-                if global_step >= 20:
-                    break
+                pbar.update(1)
 
         # Export Chrome trace
         trace_path = profile_dir / "trace.json"
         prof.export_chrome_trace(str(trace_path))
         print(f"\nProfiler trace saved to {trace_path}")
         print("View with: chrome://tracing or https://ui.perfetto.dev")
+
+        # Phase 2: Continue with remaining batches without profiling
+        pbar.set_description("Training")
+        for batch in dataloader_iter:
+            result = train_step(model, batch, optimizer, scheduler, config, device, scaler)
+            global_step = process_step_results(result, global_step, epoch_losses, epoch_accuracies)
+
+            if result is not None:
+                pbar.set_postfix({"loss": result[2].item(), "step": global_step})
+            pbar.update(1)
+
+        pbar.close()
     else:
         pbar = tqdm(dataloader, desc="Training")
         for batch in pbar:
