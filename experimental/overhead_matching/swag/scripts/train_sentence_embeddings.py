@@ -708,7 +708,7 @@ def train(
     for i, tc in enumerate(template_configs):
         name = f"template_{i}" if len(template_configs) > 1 else "template"
         print(f"\nLoading template dataset from {tc.db_path}")
-        landmarks = load_landmarks_from_db(tc.db_path, limit=config.limit)
+        landmarks = load_landmarks_from_db(tc.db_path, limit=tc.limit)
         print(f"Loaded {len(landmarks):,} landmarks")
 
         # Extract unique pruned_tags
@@ -743,6 +743,9 @@ def train(
         name = f"osm_paired_{i}" if len(paired_configs) > 1 else "osm_paired"
         print(f"\nLoading OSM paired dataset from {pc.sentences_path}")
         llm_sentences = load_sentences_from_pickle(pc.sentences_path)
+        if pc.limit is not None and len(llm_sentences) > pc.limit:
+            # Take first N items (dict ordering is preserved in Python 3.7+)
+            llm_sentences = dict(list(llm_sentences.items())[:pc.limit])
         print(f"Loaded {len(llm_sentences):,} sentence pairs")
 
         # Split into train/test
@@ -1083,11 +1086,6 @@ def main():
         help="Random seed (default: 42)",
     )
     parser.add_argument(
-        "--limit",
-        type=int,
-        help="Limit number of landmarks to load (for testing)",
-    )
-    parser.add_argument(
         "--groups_per_batch",
         type=int,
         help="Number of contrastive groups to sample per batch (default: 32)",
@@ -1129,8 +1127,6 @@ def main():
         config.train_split = args.train_split
     if args.seed is not None:
         config.seed = args.seed
-    if args.limit is not None:
-        config.limit = args.limit
     if args.groups_per_batch is not None:
         config.training.groups_per_batch = args.groups_per_batch
     if args.samples_per_group is not None:

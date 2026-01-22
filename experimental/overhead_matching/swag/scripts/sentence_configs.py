@@ -18,6 +18,7 @@ class TemplateDatasetConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
 
     db_path: Path  # Required - landmarks database
     weight: float = 1.0
+    limit: int | None = None  # Optional limit on number of landmarks
 
 
 class OSMPairedDatasetConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
@@ -29,6 +30,7 @@ class OSMPairedDatasetConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
 
     sentences_path: Path  # Required - pickle file with {frozenset: str}
     weight: float = 1.0
+    limit: int | None = None  # Optional limit on number of sentence pairs
 
 
 # Union type for dataset configs
@@ -158,9 +160,6 @@ class SentenceTrainConfig:
     # Train/test split
     train_split: float = 0.9
     seed: int = 42
-
-    # Limit landmarks for testing
-    limit: int | None = None
 
     # Tags that must always be included in sentences when present
     # Defaults to contrastive_tags to ensure contrastive learning has signal

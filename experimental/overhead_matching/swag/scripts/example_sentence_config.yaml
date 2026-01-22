@@ -1,19 +1,33 @@
 # Example configuration for sentence embedding training
 # Copy and modify this file for your training run
 
-# Data paths
-db_path: /data/overhead_matching/datasets/us_osm_landmarks/landmarks.sqlite
-output_dir: /tmp/memory_profiling
+# Output paths
+output_dir: /tmp/sentence_training
 # tag_vocabs_path: null  # Optional, built automatically if not provided
 # tensorboard_dir: null  # Defaults to {output_dir}/tensorboard
 
-# LLM sentences for base contrastive loss (optional)
-# Can be a single JSONL file or a directory of JSONL files
-llm_sentences_path: /data/overhead_matching/datasets/semantic_landmark_embeddings/v4_202001_no_addresses/sentences/
+# Dataset configuration
+# Each dataset specifies its type via 'kind', paths, and sampling weight
+# Each dataset can have an optional 'limit' for testing with smaller data
+datasets:
+  # Template dataset: generates sentences from landmark database
+  - kind: TemplateDatasetConfig
+    db_path: /data/overhead_matching/datasets/us_osm_landmarks/landmarks.sqlite
+    weight: 0.9
+    # limit: 10000  # Optional: limit landmarks for testing
+
+  # OSM Paired dataset: template + LLM sentence pairs for contrastive learning
+  # Create the pickle file using:
+  #   bazel run //experimental/overhead_matching/swag/model:semantic_landmark_extractor -- \
+  #     create_sentences_pickle --geojson <files> --sentences_dir <dir> --output <path.pkl>
+  - kind: OSMPairedDatasetConfig
+    sentences_path: /data/overhead_matching/datasets/semantic_landmark_embeddings/v4_202001_no_addresses/sentences/sentences.pkl
+    weight: 0.1
+    # limit: 5000  # Optional: limit sentence pairs for testing
 
 # Model configuration
 model:
-  encoder_name: BAAI/bge-large-en-v1.5
+  encoder_name: sentence-transformers/all-MiniLM-L6-v2
   projection_dim: 128
   freeze_encoder: false
 
@@ -29,12 +43,6 @@ training:
   temperature: 0.07
   num_workers: 8
   log_every_n_steps: 100
-
-  # Mixed batch sampling (when llm_sentences_path is provided)
-  # Ratio of paired samples (template + LLM) vs template-only samples
-  # 1.0 = all paired, 0.0 = all template-only, 0.5 = half and half
-  # Epoch length is based on the larger dataset (smaller is recycled)
-  paired_ratio: 0.1
 
 # Task selection - which tags to use for training
 classification_tags:
@@ -56,6 +64,3 @@ contrastive_tags:
 # Train/test split
 train_split: 0.9
 seed: 42
-
-# Limit landmarks for testing (null for all)
-# limit: 10000
