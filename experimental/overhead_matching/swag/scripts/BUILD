@@ -394,7 +394,6 @@ py_binary(
     requirement("numpy"),
     "//common/torch:load_torch_deps",
     "//experimental/overhead_matching/swag/data:sentence_dataset",
-    "//experimental/overhead_matching/swag/data:llm_sentence_loader",
     "//experimental/overhead_matching/swag/data:paired_sentence_dataset",
     "//experimental/overhead_matching/swag/model:sentence_embedding_model",
     ":sentence_configs",

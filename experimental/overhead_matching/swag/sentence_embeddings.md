@@ -9,7 +9,8 @@ The pipeline:
 2. Generate city bounding boxes
 3. Download OSM data dumps from Geofabrik
 4. Extract landmarks to SQLite database
-5. Train sentence embedding model (vocabularies built automatically)
+5. (Optional) Generate LLM sentences and create paired dataset
+6. Train sentence embedding model (vocabularies built automatically)
 
 ## Prerequisites
 
@@ -89,9 +90,9 @@ This creates a normalized SQLite database with:
 
 ## Step 5: Train Sentence Embedding Model
 
-Train the multi-task sentence embedding model.
+Train the multi-task sentence embedding model using a YAML config file.
 
-### Option A: Using a config file (recommended)
+### Configuration
 
 Copy and modify the example config:
 
@@ -103,41 +104,59 @@ bazel run //experimental/overhead_matching/swag/scripts:train_sentence_embedding
     --config my_config.yaml
 ```
 
-CLI args override config values, so you can use a base config and override specific settings:
+### Dataset Configuration
+
+The config uses a `datasets` list where each dataset specifies its type via `kind`:
+
+```yaml
+datasets:
+  # Template dataset: generates sentences from landmark database
+  - kind: TemplateDatasetConfig
+    db_path: /data/overhead_matching/datasets/us_osm_landmarks/landmarks.sqlite
+    weight: 0.9
+    # limit: 10000  # Optional: limit landmarks for testing
+
+  # OSM Paired dataset: template + LLM sentence pairs for contrastive learning
+  - kind: OSMPairedDatasetConfig
+    sentences_path: /data/sentences.pkl
+    weight: 0.1
+    # limit: 5000  # Optional: limit sentence pairs for testing
+```
+
+**Dataset types:**
+- `TemplateDatasetConfig`: Loads landmarks from SQLite, generates template sentences on-the-fly
+- `OSMPairedDatasetConfig`: Loads pre-computed LLM sentences from a pickle file, pairs with template sentences
+
+**Weights:** Control sampling ratio between datasets. Weights are normalized automatically.
+
+**Limits:** Each dataset can have an optional `limit` for testing with smaller data.
+
+### CLI Options
+
+CLI args override config values:
 
 ```bash
 bazel run //experimental/overhead_matching/swag/scripts:train_sentence_embeddings -- \
     --config my_config.yaml \
     --batch_size 128 \
-    --limit 10000
+    --num_epochs 3
 ```
 
-### Option B: Using CLI args only
-
-```bash
-bazel run //experimental/overhead_matching/swag/scripts:train_sentence_embeddings -- \
-    --db_path /data/overhead_matching/datasets/us_osm_landmarks/landmarks.db \
-    --output_dir /data/overhead_matching/models/sentence_embeddings \
-    --batch_size 256 \
-    --num_epochs 5 \
-    --encoder_lr 2e-5 \
-    --heads_lr 1e-4
-```
-
-### CLI Options
-
-- `--config`: Path to YAML config file
-- `--db_path`: Path to landmarks SQLite database
+Available options:
+- `--config`: Path to YAML config file (required)
 - `--output_dir`: Output directory for model and logs
 - `--tag_vocabs`: Path to precomputed vocabularies (optional)
-- `--llm_sentences`: Path to LLM sentences JSONL file or directory of JSONL files (optional)
+- `--tensorboard_dir`: TensorBoard log directory (optional)
 - `--encoder_name`: Sentence transformer model (default: `all-MiniLM-L6-v2`)
 - `--batch_size`: Batch size (default: 256)
 - `--num_epochs`: Number of epochs (default: 5)
 - `--encoder_lr`: Learning rate for encoder (default: 2e-5)
 - `--heads_lr`: Learning rate for heads (default: 1e-4)
 - `--train_split`: Fraction of data for training (default: 0.9)
-- `--limit`: Limit landmarks for testing
+- `--seed`: Random seed (default: 42)
+- `--groups_per_batch`: Contrastive groups per batch (default: 32)
+- `--samples_per_group`: Samples per contrastive group (default: 4)
+- `--profile`: Enable PyTorch profiler for first epoch
 
 ### Train/Test Split
 
@@ -153,8 +172,6 @@ This ensures:
 - **Reproducibility**: Same seed produces same split across runs
 - **Sentence variety**: Each landmark generates sentences on-the-fly with epoch-based seeds, so different epochs see different sentence variations for the same landmarks
 
-When using LLM sentences (`--llm_sentences`), only landmarks that have both template capability and LLM sentences are included in training. The script reports coverage statistics showing how many landmarks have LLM sentences available.
-
 ### Training Recommendations
 
 **Epochs**: Start with 3-5 epochs. Monitor validation loss - stop if it plateaus or increases.
@@ -168,7 +185,7 @@ When using LLM sentences (`--llm_sentences`), only landmarks that have both temp
 ### Training Output
 
 The training script outputs:
-- `config.json`: Training configuration
+- `config.yaml`: Training configuration
 - `tag_vocabs.json`: Tag vocabularies (if not provided)
 - `best_model.pt`: Best model weights
 - `checkpoint_epoch_N.pt`: Epoch checkpoints
@@ -207,7 +224,7 @@ The model consists of:
 **Base Embedding Contrastive (InfoNCE loss)** - Template + LLM sentences:
 - Pairs template and LLM sentences for the **same landmark** as positives
 - Uses the base encoder embedding (before projection heads)
-- Only active when `--llm_sentences` is provided
+- Only active when `OSMPairedDatasetConfig` is included
 
 ### Loss Architecture with LLM Sentences
 
@@ -239,10 +256,10 @@ experimental/overhead_matching/swag/
 ├── data/
 │   ├── osm_sentence_generator.py     # Template-based sentence generation
 │   ├── sentence_dataset.py           # Dataset, data loading, and collation
-│   ├── llm_sentence_loader.py        # Load LLM-generated sentences from JSONL
 │   └── paired_sentence_dataset.py    # Dataset for template + LLM sentence pairs
 ├── model/
 │   ├── sentence_embedding_model.py   # Multi-task model architecture
+│   ├── semantic_landmark_extractor.py # Landmark extraction and sentence pickle creation
 │   └── semantic_landmark_utils.py    # Landmark pruning and custom ID generation
 └── scripts/
     ├── download_osm_dumps.sh         # Download OSM data
@@ -270,10 +287,13 @@ bazel run //experimental/overhead_matching/swag/scripts:generate_city_bboxes
 bazel run //experimental/overhead_matching/swag/scripts:extract_landmarks_to_sqlite -- \
     --output_db /data/overhead_matching/datasets/us_osm_landmarks/landmarks.db
 
-# 5. Train (vocabularies built automatically)
+# 5. Create config file
+cp experimental/overhead_matching/swag/scripts/example_sentence_config.yaml my_config.yaml
+# Edit paths in my_config.yaml
+
+# 6. Train (vocabularies built automatically)
 bazel run //experimental/overhead_matching/swag/scripts:train_sentence_embeddings -- \
-    --db_path /data/overhead_matching/datasets/us_osm_landmarks/landmarks.db \
-    --output_dir /data/overhead_matching/models/sentence_embeddings
+    --config my_config.yaml
 ```
 
 ## Optional Tools
@@ -302,46 +322,75 @@ This is useful for:
 
 ### Training with LLM Sentences
 
-To improve robustness to natural language variation, you can train with LLM-generated sentences in addition to template sentences:
+To improve robustness to natural language variation, you can train with LLM-generated sentences in addition to template sentences.
+
+#### Step 1: Generate LLM Sentences
+
+Use the OpenAI batch API to generate sentences from landmark tags:
 
 ```bash
-# Using a single JSONL file
-bazel run //experimental/overhead_matching/swag/scripts:train_sentence_embeddings -- \
-    --db_path /data/overhead_matching/datasets/us_osm_landmarks/landmarks.db \
-    --output_dir /data/overhead_matching/models/sentence_embeddings_with_llm \
-    --llm_sentences /data/overhead_matching/datasets/semantic_landmark_embeddings/v4_202001_no_addresses/sentences/deduplicated_sentences.jsonl
+# Create batch API requests
+bazel run //experimental/overhead_matching/swag/model:semantic_landmark_extractor -- \
+    create_sentences \
+    --geojson /data/landmarks.geojson \
+    --output_base /tmp/sentence_generation \
+    --launch  # Optional: auto-launch batch job
 
-# Or using a directory of JSONL files
-bazel run //experimental/overhead_matching/swag/scripts:train_sentence_embeddings -- \
-    --db_path /data/overhead_matching/datasets/us_osm_landmarks/landmarks.db \
-    --output_dir /data/overhead_matching/models/sentence_embeddings_with_llm \
-    --llm_sentences /data/overhead_matching/datasets/semantic_landmark_embeddings/v4_202001_no_addresses/sentences/
+# Fetch results when complete
+bazel run //experimental/overhead_matching/swag/model:semantic_landmark_extractor -- \
+    fetch \
+    --batch_ids <batch_id_1> <batch_id_2> \
+    --output_folder /data/sentence_responses/
 ```
 
-**How it works:**
+#### Step 2: Create Sentences Pickle File
+
+Convert the JSONL responses to a pickle file for training:
+
+```bash
+bazel run //experimental/overhead_matching/swag/model:semantic_landmark_extractor -- \
+    create_sentences_pickle \
+    --geojson /data/landmarks.geojson /data/more_landmarks.feather \
+    --sentences_dir /data/sentence_responses/ \
+    --output /data/sentences.pkl
+```
+
+This creates a pickle file mapping `frozenset[tuple[str, str]] -> str` (pruned tags to sentence).
+
+#### Step 3: Configure Training
+
+Add an `OSMPairedDatasetConfig` to your training config:
+
+```yaml
+datasets:
+  - kind: TemplateDatasetConfig
+    db_path: /data/landmarks.sqlite
+    weight: 0.9
+
+  - kind: OSMPairedDatasetConfig
+    sentences_path: /data/sentences.pkl
+    weight: 0.1
+```
+
+#### How it works
 
 1. **Landmark matching**: LLM sentences are matched to landmarks using `custom_id_from_props(prune_landmark(tags))`, which creates a hash of the pruned tag properties.
 
-2. **Paired dataset**: When LLM sentences are provided, training uses `PairedSentenceDataset` which yields (template, llm) pairs for each landmark that has both.
+2. **Paired dataset**: `PairedSentenceDataset` yields (template, llm) pairs for each landmark that has an LLM sentence.
 
 3. **Base contrastive loss**: The base encoder embedding (before projection heads) is trained with InfoNCE loss where template and LLM sentences for the same landmark are positives.
 
 4. **Template-only losses**: Classification, presence, and projection head contrastive losses are only computed for template sentences (since we know which tags were used).
 
-**LLM sentence format:**
+**Pickle file format:**
 
-The LLM sentences JSONL file should contain OpenAI batch API responses:
-```json
-{"custom_id": "BASE64_HASH", "response": {"body": {"choices": [{"message": {"content": "A sentence describing the landmark."}}]}}}
+```python
+# dict[frozenset[tuple[str, str]], str]
+{
+    frozenset({("amenity", "restaurant"), ("name", "Joe's Diner")}): "A restaurant called Joe's Diner",
+    frozenset({("shop", "bakery"), ("name", "Fresh Bread")}): "Fresh Bread is a bakery shop",
+    ...
+}
 ```
 
-The `custom_id` is `base64(sha256(json.dumps(pruned_props, sort_keys=True)))`.
-
-**Coverage:**
-
-Not all landmarks will have LLM sentences. The training script reports coverage:
-```
-LLM sentences loaded: 165,432 sentences (73.2% coverage)
-Paired train set: 148,889 landmarks with LLM sentences
-Paired test set: 16,543 landmarks with LLM sentences
-```
+The keys are pruned tags (frozensets of (key, value) tuples) and values are LLM-generated sentences.

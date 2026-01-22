@@ -26,17 +26,14 @@ from torch.utils.data import BatchSampler, DataLoader, Dataset, RandomSampler, S
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from experimental.overhead_matching.swag.data.llm_sentence_loader import (
-    split_llm_sentences,
-)
 from experimental.overhead_matching.swag.data.osm_sentence_generator import (
     OSMSentenceGenerator,
 )
-
 from experimental.overhead_matching.swag.data.paired_sentence_dataset import (
     PairedSentenceDataset,
     flatten_samples,
     load_sentences_from_pickle,
+    split_llm_sentences,
 )
 from experimental.overhead_matching.swag.data.sentence_dataset import (
     CombinedDataset,
