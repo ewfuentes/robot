@@ -257,12 +257,20 @@ def save_checkpoint(
     satellite_model,
     distance_model,
     dataset,
+    remove_existing: bool = False,
 ):
     """Save a checkpoint with the given name prefix."""
+    import shutil
+
     output_dir.mkdir(parents=True, exist_ok=True)
     panorama_model_path = output_dir / f"{checkpoint_name}_panorama"
     satellite_model_path = output_dir / f"{checkpoint_name}_satellite"
     distance_model_path = output_dir / f"{checkpoint_name}_distance"
+
+    if remove_existing:
+        for path in [panorama_model_path, satellite_model_path, distance_model_path]:
+            if path.exists():
+                shutil.rmtree(path)
 
     save_dataloader = vigor_dataset.get_dataloader(dataset, batch_size=16)
     batch = next(iter(save_dataloader))
@@ -597,11 +605,13 @@ def train(config: TrainConfig,
         is_best = False
         if use_mrr_for_best:
             # Compute average MRR across non-training validation datasets
-            mrr_values = [
-                validation_metrics.get(f"{name}/positive_mean_recip_rank", 0.0)
-                for name in non_training_val_datasets
-            ]
-            current_metric = sum(mrr_values) / len(mrr_values) if mrr_values else 0.0
+            mrr_values = []
+            for name in non_training_val_datasets:
+                key = f"{name}/positive_mean_recip_rank"
+                if key not in validation_metrics:
+                    raise KeyError(f"Expected validation metric '{key}' not found in validation_metrics")
+                mrr_values.append(validation_metrics[key])
+            current_metric = sum(mrr_values) / len(mrr_values)
             if best_metric is None or current_metric > best_metric:
                 best_metric = current_metric
                 best_epoch = epoch_idx
@@ -627,6 +637,7 @@ def train(config: TrainConfig,
                 satellite_model=satellite_model,
                 distance_model=distance_model,
                 dataset=dataset,
+                remove_existing=True,
             )
 
         # Periodic checkpoint every 50 epochs
