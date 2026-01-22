@@ -258,22 +258,11 @@ def save_checkpoint(
     distance_model,
     dataset,
 ):
-    """Save a checkpoint with the given name prefix.
-
-    For checkpoints like 'best' and 'last' that get overwritten,
-    existing directories are removed first.
-    """
-    import shutil
-
+    """Save a checkpoint with the given name prefix."""
     output_dir.mkdir(parents=True, exist_ok=True)
     panorama_model_path = output_dir / f"{checkpoint_name}_panorama"
     satellite_model_path = output_dir / f"{checkpoint_name}_satellite"
     distance_model_path = output_dir / f"{checkpoint_name}_distance"
-
-    # Remove existing checkpoint directories if they exist (for best/last overwrites)
-    for path in [panorama_model_path, satellite_model_path, distance_model_path]:
-        if path.exists():
-            shutil.rmtree(path)
 
     save_dataloader = vigor_dataset.get_dataloader(dataset, batch_size=16)
     batch = next(iter(save_dataloader))
@@ -457,12 +446,17 @@ def train(config: TrainConfig,
     best_epoch = -1
 
     # Identify non-training validation datasets for best model selection
-    training_dataset_name = config.dataset_config.paths[0] if config.dataset_config.paths else None
+    # Convert training paths to strings for comparison with validation dataset names
+    training_city_names = [str(p) for p in config.dataset_config.paths]
     non_training_val_datasets = [
         name for name in validation_datasets.keys()
-        if name not in config.dataset_config.paths
+        if name not in training_city_names
     ]
     use_mrr_for_best = len(non_training_val_datasets) > 0
+    if use_mrr_for_best:
+        print(f"Using MRR for best model selection. Datasets included in average: {non_training_val_datasets}")
+    else:
+        print(f"No non-training validation datasets found. Using loss for best model selection.")
 
     total_batches = 0
     for epoch_idx in tqdm.tqdm(range(opt_config.num_epochs),  desc="Epoch", disable=quiet):
@@ -778,7 +772,9 @@ def main(
                 panorama_landmark_radius_px=validation_dataset_config.panorama_landmark_radius_px,
                 landmark_correspondence_inflation_factor=validation_dataset_config.landmark_correspondence_inflation_factor))
 
-    output_dir = output_base_path / train_config.output_dir
+    # Add datetime prefix to output directory
+    timestamp = datetime.datetime.now().strftime("%y%m%d_%H%M%S")
+    output_dir = output_base_path / f"{timestamp}_{train_config.output_dir}"
     tensorboard_output = train_config.tensorboard_output
     tensorboard_output = tensorboard_output if tensorboard_output is not None else output_dir
 
@@ -829,7 +825,7 @@ def main(
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset_base", help="path to dataset", required=True)
+    parser.add_argument("--dataset_base", help="path to dataset", default="/data/overhead_matching/datasets/VIGOR")
     parser.add_argument("--output_base", help="path to output", required=True)
     parser.add_argument("--train_config", help="path to train_config", required=True)
     parser.add_argument("--no_ipdb", action="store_true",
