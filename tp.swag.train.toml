@@ -1,0 +1,29 @@
+# List of commands to run as if you were starting from a fresh virtual environment
+commands = [
+    './tp_setup.sh',
+    'export PATH="$PATH:~/.local/bin"',
+    # create tensor caching
+    "bazel run //experimental/overhead_matching/swag/scripts:populate_tensor_cache -- --dataset_base /data/overhead_matching/datasets/VIGOR/ --train_config $(pwd)/config.yaml",
+    "MAX_DATALOADER_WORKERS=3 bazel run //experimental/overhead_matching/swag/scripts:train -- --dataset_base /data/overhead_matching/datasets/VIGOR/ --output_base /data/overhead_matching/training_outputs/ --no_ipdb --train_config $(pwd)/config.yaml",
+]
+instance_type = "1xH100" # https://docs.tensorpool.dev/resources/instance-types
+
+# List of the files you want saved at the end of the job
+outputs = [
+    # For example:
+    # "checkpoints/",
+    # "weights.pth",
+    # "/*", # accepts glob patterns
+    "/data/overhead_matching/training_outputs/",
+    "/tmp/*.pkl"
+]
+
+# A List of files to ignore sending with your project
+ignore = [
+    # For example:
+    "bazel-*",
+    ".claude/",
+    ".git/",
+    "__pycache__/",
+    ".vscode/",
+]
