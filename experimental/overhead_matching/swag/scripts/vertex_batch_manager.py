@@ -14,13 +14,11 @@ Prerequisites:
        gcloud auth application-default login
 
 Example usage:
-    # Submit all JSONL files from a list
-    # First create a text file with GCS URIs (one per line):
-    # gs://bucket/requests/file1.jsonl
-    # gs://bucket/requests/file2.jsonl
+    # Submit all JSONL files from a GCS prefix
+    # This will find all *.jsonl files under the given prefix in the bucket.
     bazel run //experimental/overhead_matching/swag/scripts:vertex_batch_manager -- \\
         submit-all \\
-        --file_list /path/to/file_list.txt \\
+        --input_prefix gs://bucket/requests/ \\
         --output_prefix gs://your-bucket/output-results/ \\
         --model gemini-2.5-flash
 
