@@ -156,7 +156,6 @@ Available options:
 - `--seed`: Random seed (default: 42)
 - `--groups_per_batch`: Contrastive groups per batch (default: 32)
 - `--samples_per_group`: Samples per contrastive group (default: 4)
-- `--profile`: Enable PyTorch profiler for first epoch
 
 ### Train/Test Split
 

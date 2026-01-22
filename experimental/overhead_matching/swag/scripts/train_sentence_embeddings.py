@@ -21,7 +21,6 @@ import torch.nn.functional as F
 from torch.amp import GradScaler, autocast
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
-from torch.profiler import profile, record_function, ProfilerActivity
 from torch.utils.data import BatchSampler, DataLoader, Dataset, RandomSampler, Sampler
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
@@ -314,7 +313,6 @@ def train_epoch(
     device: torch.device,
     tag_vocabs: dict[str, dict[str, int]] | None = None,
     log_examples_every_n_steps: int = 500,
-    profile_dir: Path | None = None,
     scaler: GradScaler | None = None,
 ) -> tuple[int, dict[str, float]]:
     """Train for one epoch.
@@ -330,7 +328,6 @@ def train_epoch(
         device: Device to train on
         tag_vocabs: Tag vocabularies for logging examples
         log_examples_every_n_steps: How often to log example sentences
-        profile_dir: If provided, enable PyTorch profiler and save traces here
         scaler: GradScaler for mixed precision training (None to disable)
 
     Returns:
@@ -402,62 +399,13 @@ def train_epoch(
 
         return global_step
 
-    if profile_dir is not None:
-        # Profile first 20 batches, then continue without profiling
-        profile_dir.mkdir(parents=True, exist_ok=True)
-        profile_batches = 20
+    pbar = tqdm(dataloader, desc="Training")
+    for batch in pbar:
+        result = train_step(model, batch, optimizer, scheduler, config, device, scaler)
+        global_step = process_step_results(result, global_step, epoch_losses, epoch_accuracies)
 
-        dataloader_iter = iter(dataloader)
-        pbar = tqdm(total=len(dataloader), desc="Training (profiling)")
-
-        # Phase 1: Profile first N batches
-        with profile(
-            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-            record_shapes=True,
-            profile_memory=True,
-            with_stack=True,
-        ) as prof:
-            for _ in range(profile_batches):
-                try:
-                    batch = next(dataloader_iter)
-                except StopIteration:
-                    break
-
-                with record_function("data_loading"):
-                    pass  # Data already loaded by iterator
-
-                result = train_step(model, batch, optimizer, scheduler, config, device, scaler)
-                global_step = process_step_results(result, global_step, epoch_losses, epoch_accuracies)
-
-                if result is not None:
-                    pbar.set_postfix({"loss": result[2].item(), "step": global_step})
-                pbar.update(1)
-
-        # Export Chrome trace
-        trace_path = profile_dir / "trace.json"
-        prof.export_chrome_trace(str(trace_path))
-        print(f"\nProfiler trace saved to {trace_path}")
-        print("View with: chrome://tracing or https://ui.perfetto.dev")
-
-        # Phase 2: Continue with remaining batches without profiling
-        pbar.set_description("Training")
-        for batch in dataloader_iter:
-            result = train_step(model, batch, optimizer, scheduler, config, device, scaler)
-            global_step = process_step_results(result, global_step, epoch_losses, epoch_accuracies)
-
-            if result is not None:
-                pbar.set_postfix({"loss": result[2].item(), "step": global_step})
-            pbar.update(1)
-
-        pbar.close()
-    else:
-        pbar = tqdm(dataloader, desc="Training")
-        for batch in pbar:
-            result = train_step(model, batch, optimizer, scheduler, config, device, scaler)
-            global_step = process_step_results(result, global_step, epoch_losses, epoch_accuracies)
-
-            if result is not None:
-                pbar.set_postfix({"loss": result[2].item(), "step": global_step})
+        if result is not None:
+            pbar.set_postfix({"loss": result[2].item(), "step": global_step})
 
     # Compute epoch metrics
     metrics = {}
@@ -611,13 +559,11 @@ def evaluate(
 
 def train(
     config: SentenceTrainConfig,
-    profile: bool = False,
 ) -> None:
     """Main training function.
 
     Args:
         config: Full training configuration
-        profile: If True, enable PyTorch profiler for first epoch
     """
     # Setup
     setup_reproducibility(config.seed)
@@ -946,8 +892,6 @@ def train(
                 dataset.set_epoch(epoch)
         train_batch_sampler.set_epoch(epoch)
 
-        # Train (enable profiler on first epoch if requested)
-        profile_dir = config.output_dir / "profiler" if profile and epoch == 0 else None
         global_step, train_metrics = train_epoch(
             model=model,
             dataloader=train_loader,
@@ -958,7 +902,6 @@ def train(
             global_step=global_step,
             device=device,
             tag_vocabs=tag_vocabs,
-            profile_dir=profile_dir,
             scaler=scaler,
         )
 
@@ -1092,11 +1035,6 @@ def main():
         type=int,
         help="Target samples per contrastive group (default: 4)",
     )
-    parser.add_argument(
-        "--profile",
-        action="store_true",
-        help="Enable PyTorch profiler for first epoch (saves to output_dir/profiler)",
-    )
     args = parser.parse_args()
 
     # Load config from file
@@ -1133,7 +1071,7 @@ def main():
     if config.output_dir is None:
         parser.error("--output_dir is required (via config or CLI)")
 
-    train(config=config, profile=args.profile)
+    train(config=config)
 
 
 if __name__ == "__main__":
