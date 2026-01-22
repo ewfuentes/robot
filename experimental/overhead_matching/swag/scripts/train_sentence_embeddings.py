@@ -255,49 +255,44 @@ def train_step(
     """
     use_amp = scaler is not None
 
-    with record_function("batch_to_device"):
-        batch = batch.to(device)
+    batch = batch.to(device)
+    optimizer.zero_grad()
 
-    with record_function("forward"):
-        # Use pre-tokenized input if available (parallel tokenization in workers)
-        with autocast(device_type="cuda", enabled=use_amp):
-            if batch.token_ids is not None:
-                output = model(token_ids=batch.token_ids)
-            else:
-                output = model(sentences=batch.sentences)
+    # Use pre-tokenized input if available (parallel tokenization in workers)
+    with autocast(device_type="cuda", enabled=use_amp):
+        if batch.token_ids is not None:
+            output = model(token_ids=batch.token_ids)
+        else:
+            output = model(sentences=batch.sentences)
 
-    with record_function("compute_losses"):
-        with autocast(device_type="cuda", enabled=use_amp):
-            losses = compute_sentence_losses(output, batch, temperature=config.temperature)
+    with autocast(device_type="cuda", enabled=use_amp):
+        losses = compute_sentence_losses(output, batch, temperature=config.temperature)
 
     if not losses:
         return None
 
-    with record_function("backward"):
-        total_loss = aggregate_losses(losses)
-        if use_amp:
-            scaler.scale(total_loss).backward()
-        else:
-            total_loss.backward()
+    total_loss = aggregate_losses(losses)
+    if use_amp:
+        scaler.scale(total_loss).backward()
+    else:
+        total_loss.backward()
 
-    with record_function("optimizer_step"):
-        if use_amp:
-            # Unscale gradients before clipping
-            scaler.unscale_(optimizer)
-            if config.gradient_clip_norm > 0:
-                torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), config.gradient_clip_norm
-                )
-            scaler.step(optimizer)
-            scaler.update()
-        else:
-            if config.gradient_clip_norm > 0:
-                torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), config.gradient_clip_norm
-                )
-            optimizer.step()
-        scheduler.step()
-        optimizer.zero_grad()
+    if use_amp:
+        # Unscale gradients before clipping
+        scaler.unscale_(optimizer)
+        if config.gradient_clip_norm > 0:
+            torch.nn.utils.clip_grad_norm_(
+                model.parameters(), config.gradient_clip_norm
+            )
+        scaler.step(optimizer)
+        scaler.update()
+    else:
+        if config.gradient_clip_norm > 0:
+            torch.nn.utils.clip_grad_norm_(
+                model.parameters(), config.gradient_clip_norm
+            )
+        optimizer.step()
+    scheduler.step()
 
     return losses, output, total_loss, batch
 
