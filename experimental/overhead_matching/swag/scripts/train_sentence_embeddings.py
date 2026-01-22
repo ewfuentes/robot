@@ -472,21 +472,103 @@ def train_epoch(
 
 
 @torch.no_grad()
+def evaluate_base_contrastive(
+    model: torch.nn.Module,
+    dataloader: DataLoader,
+    config: TrainingConfig,
+    device: torch.device,
+) -> dict[str, float]:
+    """Evaluate base contrastive loss and global MRR on paired dataset.
+
+    This is a focused evaluation that only computes metrics relevant to
+    template <-> LLM alignment, skipping classification and tag-specific metrics.
+
+    Args:
+        model: The model to evaluate
+        dataloader: Evaluation data loader (should be paired dataset)
+        config: Training configuration
+        device: Device to evaluate on
+
+    Returns:
+        Dictionary with 'val_loss_base_contrastive' and 'val_mrr_base_contrastive_global'
+    """
+    model.eval()
+
+    all_base_losses: list[float] = []
+    all_base_embeddings: list[torch.Tensor] = []
+    all_pruned_tags: list[frozenset] = []
+
+    use_amp = config.use_amp and device.type == "cuda"
+
+    for batch in tqdm(dataloader, desc="Evaluating (base contrastive)"):
+        batch = batch.to(device)
+
+        with autocast(device_type="cuda", enabled=use_amp):
+            if batch.token_ids is not None:
+                output = model(token_ids=batch.token_ids)
+            else:
+                output = model(sentences=batch.sentences)
+
+            # Compute only base contrastive loss
+            if batch.base_contrastive_labels is not None:
+                from experimental.overhead_matching.swag.scripts.sentence_losses import (
+                    compute_base_contrastive_loss,
+                )
+                base_loss = compute_base_contrastive_loss(
+                    base_embedding=output["base_embedding"],
+                    base_contrastive_labels=batch.base_contrastive_labels,
+                    temperature=config.temperature,
+                )
+                if base_loss.item() > 0:
+                    all_base_losses.append(base_loss.item())
+
+        # Collect embeddings for global MRR
+        if batch.pruned_tags is not None:
+            all_base_embeddings.append(output["base_embedding"].cpu())
+            all_pruned_tags.extend(batch.pruned_tags)
+
+    metrics = {}
+
+    # Average base contrastive loss
+    if all_base_losses:
+        metrics["val_loss_base_contrastive"] = sum(all_base_losses) / len(all_base_losses)
+
+    # Compute global MRR across all samples
+    if all_base_embeddings:
+        embeddings = torch.cat(all_base_embeddings, dim=0)
+        normalized = F.normalize(embeddings, p=2, dim=-1)
+        similarity = normalized @ normalized.T
+
+        # Build positive matrix: same pruned_tags = positive
+        n = len(all_pruned_tags)
+        positive_matrix = torch.zeros(n, n, dtype=torch.float)
+        for i in range(n):
+            for j in range(n):
+                if i != j and all_pruned_tags[i] == all_pruned_tags[j]:
+                    positive_matrix[i, j] = 1.0
+
+        global_mrr = compute_contrastive_mrr(similarity, positive_matrix)
+        metrics["val_mrr_base_contrastive_global"] = global_mrr
+
+    return metrics
+
+
+@torch.no_grad()
 def evaluate(
     model: torch.nn.Module,
     dataloader: DataLoader,
     config: TrainingConfig,
     device: torch.device,
-    compute_global_mrr: bool = True,
 ) -> dict[str, float]:
-    """Evaluate the model on a dataset.
+    """Evaluate the model on template dataset for classification and tag-specific metrics.
+
+    For base contrastive / global MRR evaluation on paired data, use evaluate_base_contrastive().
 
     Args:
         model: The model to evaluate
-        dataloader: Evaluation data loader
+        dataloader: Evaluation data loader (template dataset)
         config: Training configuration
         device: Device to evaluate on
-        compute_global_mrr: If True, compute global MRR across all samples
 
     Returns:
         Dictionary of evaluation metrics
@@ -496,15 +578,10 @@ def evaluate(
     all_losses: dict[str, list[float]] = {}
     all_accuracies: dict[str, list[float]] = {}
 
-    # For global MRR computation
-    all_base_embeddings: list[torch.Tensor] = []
-    all_pruned_tags: list[frozenset] = []
-
     use_amp = config.use_amp and device.type == "cuda"
 
     for batch in tqdm(dataloader, desc="Evaluating"):
         batch = batch.to(device)
-        # Use pre-tokenized input if available
         with autocast(device_type="cuda", enabled=use_amp):
             if batch.token_ids is not None:
                 output = model(token_ids=batch.token_ids)
@@ -524,34 +601,12 @@ def evaluate(
                 all_accuracies[name] = []
             all_accuracies[name].append(acc)
 
-        # Collect for global MRR
-        if compute_global_mrr and batch.pruned_tags is not None:
-            all_base_embeddings.append(output["base_embedding"].cpu())
-            all_pruned_tags.extend(batch.pruned_tags)
-
     # Aggregate metrics
     metrics = {}
     for name, values in all_losses.items():
         metrics[f"val_{name}"] = sum(values) / len(values)
     for name, values in all_accuracies.items():
         metrics[f"val_{name}"] = sum(values) / len(values)
-
-    # Compute global MRR across all samples
-    if compute_global_mrr and all_base_embeddings:
-        embeddings = torch.cat(all_base_embeddings, dim=0)
-        normalized = F.normalize(embeddings, p=2, dim=-1)
-        similarity = normalized @ normalized.T
-
-        # Build positive matrix: same pruned_tags = positive
-        n = len(all_pruned_tags)
-        positive_matrix = torch.zeros(n, n, dtype=torch.float)
-        for i in range(n):
-            for j in range(n):
-                if i != j and all_pruned_tags[i] == all_pruned_tags[j]:
-                    positive_matrix[i, j] = 1.0
-
-        global_mrr = compute_contrastive_mrr(similarity, positive_matrix)
-        metrics["val_mrr_base_contrastive_global"] = global_mrr
 
     return metrics
 
@@ -908,21 +963,17 @@ def train(
             dataloader=template_test_loader,
             config=config.training,
             device=device,
-            compute_global_mrr=False,
         )
 
-        # Evaluate on paired test set (global MRR for template <-> LLM alignment)
+        # Evaluate on paired test set (base contrastive loss and global MRR)
         if paired_test_loader is not None:
-            paired_metrics = evaluate(
+            paired_metrics = evaluate_base_contrastive(
                 model=model,
                 dataloader=paired_test_loader,
                 config=config.training,
                 device=device,
-                compute_global_mrr=True,
             )
-            # Only take the global MRR metric from paired evaluation
-            if "val_mrr_base_contrastive_global" in paired_metrics:
-                val_metrics["val_mrr_base_contrastive_global"] = paired_metrics["val_mrr_base_contrastive_global"]
+            val_metrics.update(paired_metrics)
 
         print(f"Val metrics: {val_metrics}")
 
