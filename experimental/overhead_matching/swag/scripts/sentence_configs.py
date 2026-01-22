@@ -68,10 +68,11 @@ class TrainingConfig:
     groups_per_batch: int = 32  # Number of contrastive groups to sample per batch
     samples_per_group: int = 4  # Target samples per group (for positive pairs)
 
-    # Mixed batch sampling (when both LLM sentences and template-only are available)
-    # Ratio of paired samples (template + LLM) vs template-only samples
-    # 1.0 = all paired, 0.0 = all template-only, 0.5 = half and half
-    paired_ratio: float = 1.0
+    # Mixed batch sampling weights for different data sources.
+    # Keys are source names (e.g., "template", "osm_paired"), values are relative weights.
+    # Weights are normalized automatically. If None, uses default weights based on available sources.
+    # Example: {"template": 0.4, "osm_paired": 0.6}
+    source_weights: dict[str, float] | None = None
 
     # Mixed precision training (FP16)
     use_amp: bool = True  # Enable automatic mixed precision

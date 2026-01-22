@@ -22,7 +22,7 @@ from torch.amp import GradScaler, autocast
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 from torch.profiler import profile, record_function, ProfilerActivity
-from torch.utils.data import DataLoader
+from torch.utils.data import BatchSampler, DataLoader, Dataset, RandomSampler, Sampler
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
@@ -35,23 +35,21 @@ from experimental.overhead_matching.swag.data.llm_sentence_loader import (
 from experimental.overhead_matching.swag.data.osm_sentence_generator import (
     OSMSentenceGenerator,
 )
+
 from experimental.overhead_matching.swag.data.paired_sentence_dataset import (
-    PairedBatchSampler,
-    PairedContrastiveBatchSampler,
     PairedSentenceDataset,
-    collate_paired_samples,
+    flatten_samples,
 )
 from experimental.overhead_matching.swag.data.sentence_dataset import (
-    CombinedBatchSampler,
     CombinedDataset,
     ContrastiveBatchSampler,
+    MixingSampler,
     SentenceDataset,
     SentenceSample,
     create_collate_fn,
     get_unique_pruned_tags_from_landmarks,
     load_landmarks_from_db,
     load_tag_vocabularies_from_db,
-    split_landmarks_by_id,
     split_pruned_tags,
 )
 from experimental.overhead_matching.swag.model.sentence_embedding_model import (
@@ -616,7 +614,6 @@ def train(
 
     # Load LLM sentences if provided
     llm_sentences = None
-    use_paired_dataset = False
     if config.llm_sentences_path is not None and config.llm_sentences_path.exists():
         print(f"\nLoading LLM sentences from {config.llm_sentences_path}")
         # Get all landmark tags for mapping
@@ -629,180 +626,141 @@ def train(
         coverage = get_coverage_stats(llm_sentences, len(all_tags))
         print(f"LLM sentences loaded: {coverage['llm_sentences_count']:,} sentences "
               f"({coverage['coverage_percent']:.1f}% coverage)")
-        use_paired_dataset = len(llm_sentences) > 0
 
-    # Extract unique pruned_tags from all landmarks for template-only dataset
+    # Extract unique pruned_tags from all landmarks
     all_pruned_tags = get_unique_pruned_tags_from_landmarks(landmarks)
     print(f"Unique pruned_tags from landmarks: {len(all_pruned_tags):,}")
 
-    # Create datasets
-    use_combined_sampler = False
-    if use_paired_dataset:
-        # Use paired dataset indexed by pruned_tags
-        print("\nUsing paired dataset (template + LLM sentences)")
+    # -------------------------------------------------------------------------
+    # Build datasets and samplers using compositional approach
+    # -------------------------------------------------------------------------
+    train_datasets: dict[str, Dataset] = {}
+    test_datasets: dict[str, Dataset] = {}
+    train_sampler_configs: dict[str, tuple[Sampler, float, int]] = {}
 
+    # Determine source weights (normalize later)
+    source_weights = config.training.source_weights or {}
+
+    # Always create template dataset
+    # If we have paired data, template dataset uses only non-paired pruned_tags
+    if llm_sentences:
+        paired_tags_set = set(llm_sentences.keys())
+        template_only_tags = [t for t in all_pruned_tags if t not in paired_tags_set]
+    else:
+        template_only_tags = all_pruned_tags
+
+    # Split template-only tags into train/test
+    train_template_tags, test_template_tags = split_pruned_tags(
+        template_only_tags, train_fraction=config.train_split, seed=config.seed
+    )
+    print(f"Template-only tags: {len(template_only_tags):,} "
+          f"(train: {len(train_template_tags):,}, test: {len(test_template_tags):,})")
+
+    # Create template dataset
+    train_template_dataset = SentenceDataset(
+        train_template_tags, generator=generator, epoch=0
+    )
+    test_template_dataset = SentenceDataset(
+        test_template_tags, generator=generator, epoch=0
+    )
+    train_datasets["template"] = train_template_dataset
+    test_datasets["template"] = test_template_dataset
+
+    # Template sampler uses ContrastiveBatchSampler for grouping
+    template_sampler = ContrastiveBatchSampler(
+        pruned_tags_list=train_template_tags,
+        contrastive_tags=config.contrastive_tags,
+        batch_size=config.training.batch_size,
+        groups_per_batch=config.training.groups_per_batch,
+        samples_per_group=config.training.samples_per_group,
+        seed=config.seed,
+    )
+    template_weight = source_weights.get("template", 0.5 if llm_sentences else 1.0)
+    train_sampler_configs["template"] = (template_sampler, template_weight, 1)
+
+    # Add paired dataset if LLM sentences available
+    if llm_sentences:
         # Split LLM sentences into train/test
         train_llm, test_llm = split_llm_sentences(
             llm_sentences, train_fraction=config.train_split, seed=config.seed
         )
         print(f"LLM sentences split: Train {len(train_llm):,}, Test {len(test_llm):,}")
 
-        # Create paired datasets (indexed by pruned_tags, not landmarks)
+        # Create paired datasets
         train_paired_dataset = PairedSentenceDataset(
             train_llm, generator=generator, epoch=0
         )
         test_paired_dataset = PairedSentenceDataset(
             test_llm, generator=generator, epoch=0
         )
-        print(f"Paired train set: {len(train_paired_dataset):,} unique pruned_tags")
-        print(f"Paired test set: {len(test_paired_dataset):,} unique pruned_tags")
+        train_datasets["osm_paired"] = train_paired_dataset
+        test_datasets["osm_paired"] = test_paired_dataset
 
-        # Check if we need combined sampling (mixed paired + template-only)
-        paired_ratio = config.training.paired_ratio
-        if paired_ratio < 1.0:
-            use_combined_sampler = True
-            print(f"\nUsing combined sampling with paired_ratio={paired_ratio}")
-
-            # Get template-only pruned_tags (exclude those already in paired dataset)
-            paired_tags_set = set(train_llm.keys())
-            template_only_tags = [t for t in all_pruned_tags if t not in paired_tags_set]
-
-            # Split template-only tags
-            train_template_tags, test_template_tags = split_pruned_tags(
-                template_only_tags, train_fraction=config.train_split, seed=config.seed
-            )
-            print(f"Template-only tags: {len(template_only_tags):,} "
-                  f"(train: {len(train_template_tags):,}, test: {len(test_template_tags):,})")
-
-            # Create template-only datasets
-            train_template_dataset = SentenceDataset(
-                train_template_tags, generator=generator, epoch=0
-            )
-            test_template_dataset = SentenceDataset(
-                test_template_tags, generator=generator, epoch=0
-            )
-
-            # Create combined batch sampler
-            train_batch_sampler = CombinedBatchSampler(
-                paired_pruned_tags=train_paired_dataset.pruned_tags_list,
-                template_pruned_tags=train_template_dataset.pruned_tags_list,
-                contrastive_tags=config.contrastive_tags,
-                batch_size=config.training.batch_size,
-                paired_ratio=paired_ratio,
-                groups_per_batch=config.training.groups_per_batch,
-                samples_per_group=config.training.samples_per_group,
-                seed=config.seed,
-            )
-
-            # Create collate function for combined batches
-            base_collate_fn = create_collate_fn(
-                tag_vocabs=tag_vocabs,
-                classification_tasks=classification_tags,
-                contrastive_tasks=config.contrastive_tags,
-                include_base_contrastive=True,
-                tokenizer=tokenizer,
-                max_length=config.training.max_seq_length,
-            )
-
-            combined_dataset = CombinedDataset(
-                paired_dataset=train_paired_dataset,
-                template_dataset=train_template_dataset,
-                sampler_len=len(train_batch_sampler),
-            )
-
-            def combined_collate_fn(nested_samples: list[list[SentenceSample]]):
-                # Flatten the nested list of samples
-                samples = [s for sample_list in nested_samples for s in sample_list]
-                return base_collate_fn(samples)
-
-            train_loader = DataLoader(
-                combined_dataset,
-                batch_sampler=train_batch_sampler,
-                collate_fn=combined_collate_fn,
-                num_workers=config.training.num_workers,
-            )
-        else:
-            # Pure paired mode (paired_ratio = 1.0)
-            train_dataset = train_paired_dataset
-            test_dataset = test_paired_dataset
-
-            # Create collate function that first flattens pairs, then collates
-            base_collate_fn = create_collate_fn(
-                tag_vocabs=tag_vocabs,
-                classification_tasks=classification_tags,
-                contrastive_tasks=config.contrastive_tags,
-                include_base_contrastive=True,
-                tokenizer=tokenizer,
-                max_length=config.training.max_seq_length,
-            )
-
-            def paired_collate_fn(pairs: list[tuple[SentenceSample, SentenceSample]]):
-                flat_samples = collate_paired_samples(pairs)
-                return base_collate_fn(flat_samples)
-
-            collate_fn = paired_collate_fn
-
-            # Use contrastive batch sampler for tag-specific grouping
-            train_batch_sampler = PairedContrastiveBatchSampler(
-                pruned_tags_list=train_dataset.pruned_tags_list,
-                contrastive_tags=config.contrastive_tags,
-                batch_size=config.training.batch_size // 2,
-                groups_per_batch=config.training.groups_per_batch,
-                samples_per_group=config.training.samples_per_group,
-                seed=config.seed,
-            )
-
-            train_loader = DataLoader(
-                train_dataset,
-                batch_sampler=train_batch_sampler,
-                collate_fn=collate_fn,
-                num_workers=config.training.num_workers,
-                pin_memory=True,
-            )
-    else:
-        # Use standard template-only dataset indexed by pruned_tags
-        print("\nUsing template-only dataset")
-
-        # Split pruned_tags into train/test
-        train_pruned_tags, test_pruned_tags = split_pruned_tags(
-            all_pruned_tags, train_fraction=config.train_split, seed=config.seed
+        # Paired dataset uses simple shuffle sampler (positives come from pair structure)
+        # BatchSampler wraps RandomSampler to yield batches of indices
+        paired_batch_size = config.training.batch_size // 2  # Each index yields 2 samples
+        paired_sampler = BatchSampler(
+            RandomSampler(train_paired_dataset),
+            batch_size=paired_batch_size,
+            drop_last=False,
         )
-        print(f"Split: Train {len(train_pruned_tags):,}, Test {len(test_pruned_tags):,}")
+        paired_weight = source_weights.get("osm_paired", 0.5)
+        train_sampler_configs["osm_paired"] = (paired_sampler, paired_weight, 2)
 
-        # Create datasets indexed by pruned_tags
-        train_dataset = SentenceDataset(train_pruned_tags, generator=generator, epoch=0)
-        test_dataset = SentenceDataset(test_pruned_tags, generator=generator, epoch=0)
+    # Create combined dataset and mixing sampler
+    combined_train_dataset = CombinedDataset(train_datasets)
 
-        # Create collate function
-        collate_fn = create_collate_fn(
-            tag_vocabs=tag_vocabs,
-            classification_tasks=classification_tags,
-            contrastive_tasks=config.contrastive_tags,
-            include_base_contrastive=False,
-            tokenizer=tokenizer,
-            max_length=config.training.max_seq_length,
-        )
+    # Determine if we need mixing or single-source sampling
+    use_mixing_sampler = len(train_sampler_configs) > 1
+    include_base_contrastive = llm_sentences is not None
 
-        # Create data loaders with smart batching for contrastive learning
-        train_batch_sampler = ContrastiveBatchSampler(
-            pruned_tags_list=train_pruned_tags,
-            contrastive_tags=config.contrastive_tags,
+    # Create collate function
+    base_collate_fn = create_collate_fn(
+        tag_vocabs=tag_vocabs,
+        classification_tasks=classification_tags,
+        contrastive_tasks=config.contrastive_tags,
+        include_base_contrastive=include_base_contrastive,
+        tokenizer=tokenizer,
+        max_length=config.training.max_seq_length,
+    )
+
+    if use_mixing_sampler:
+        # Mixed mode: use MixingSampler with multiple sources
+        print(f"\nUsing MixingSampler with sources: {list(train_sampler_configs.keys())}")
+        train_batch_sampler = MixingSampler(
+            samplers=train_sampler_configs,
             batch_size=config.training.batch_size,
-            groups_per_batch=config.training.groups_per_batch,
-            samples_per_group=config.training.samples_per_group,
             seed=config.seed,
         )
 
+        def mixing_collate_fn(samples: list):
+            # Flatten samples (handles singles, pairs, tuples)
+            flat = flatten_samples(samples)
+            return base_collate_fn(flat)
+
         train_loader = DataLoader(
-            train_dataset,
+            combined_train_dataset,
             batch_sampler=train_batch_sampler,
-            collate_fn=collate_fn,
+            collate_fn=mixing_collate_fn,
+            num_workers=config.training.num_workers,
+            pin_memory=True,
+        )
+    else:
+        # Single source mode (template only)
+        print("\nUsing single source (template only)")
+        train_batch_sampler = template_sampler
+
+        train_loader = DataLoader(
+            train_template_dataset,
+            batch_sampler=train_batch_sampler,
+            collate_fn=base_collate_fn,
             num_workers=config.training.num_workers,
             pin_memory=True,
         )
 
+    # -------------------------------------------------------------------------
     # Test loader setup
-    # For evaluation, we always use the paired test dataset if available (for global MRR)
+    # -------------------------------------------------------------------------
     test_collate_fn = create_collate_fn(
         tag_vocabs=tag_vocabs,
         classification_tasks=classification_tags,
@@ -812,24 +770,17 @@ def train(
         max_length=config.training.max_seq_length,
     )
 
-    if use_combined_sampler:
-        # Use paired test dataset for evaluation (includes both template and LLM)
-        test_dataset = test_paired_dataset
+    # Use paired test dataset if available (for global MRR with template <-> LLM)
+    if "osm_paired" in test_datasets:
+        test_dataset = test_datasets["osm_paired"]
 
         def test_paired_collate_fn(pairs: list[tuple[SentenceSample, SentenceSample]]):
-            flat_samples = collate_paired_samples(pairs)
-            return test_collate_fn(flat_samples)
-        test_collate = test_paired_collate_fn
-        test_batch_size = config.training.batch_size // 2
-    elif use_paired_dataset:
-        # Pure paired mode - test_dataset already set
-        def test_paired_collate_fn(pairs: list[tuple[SentenceSample, SentenceSample]]):
-            flat_samples = collate_paired_samples(pairs)
-            return test_collate_fn(flat_samples)
+            flat = flatten_samples(pairs)
+            return test_collate_fn(flat)
         test_collate = test_paired_collate_fn
         test_batch_size = config.training.batch_size // 2
     else:
-        # Template-only mode - test_dataset already set
+        test_dataset = test_datasets["template"]
         test_collate = test_collate_fn
         test_batch_size = config.training.batch_size
 
@@ -898,11 +849,9 @@ def train(
         print(f"\nEpoch {epoch + 1}/{config.training.num_epochs}")
 
         # Update epoch for sentence variety and batch sampling
-        if use_combined_sampler:
-            train_paired_dataset.set_epoch(epoch)
-            train_template_dataset.set_epoch(epoch)
-        else:
-            train_dataset.set_epoch(epoch)
+        for dataset in train_datasets.values():
+            if hasattr(dataset, "set_epoch"):
+                dataset.set_epoch(epoch)
         train_batch_sampler.set_epoch(epoch)
 
         # Train (enable profiler on first epoch if requested)

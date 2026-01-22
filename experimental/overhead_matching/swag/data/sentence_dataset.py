@@ -359,32 +359,37 @@ def get_unique_pruned_tags_from_landmarks(landmarks: list[LandmarkRecord]) -> li
 
 
 class CombinedDataset(Dataset):
-    """Dataset that combines paired and template datasets for mixed batch sampling.
+    """Dataset that combines multiple datasets for mixed batch sampling.
 
-    Each index is a (dataset_type, idx) tuple where dataset_type is "paired" or "template".
+    Each index is a (source_key, idx) tuple where source_key identifies the dataset.
     This is a top-level class (not a closure) to enable pickling for DataLoader workers.
     """
 
     def __init__(
         self,
-        paired_dataset: "PairedSentenceDataset",
-        template_dataset: "SentenceDataset",
-        sampler_len: int,
+        datasets: dict[str, Dataset],
     ):
-        self.paired_dataset = paired_dataset
-        self.template_dataset = template_dataset
-        self._len = sampler_len
+        """Initialize combined dataset.
+
+        Args:
+            datasets: Dictionary mapping source keys to datasets.
+        """
+        self.datasets = datasets
 
     def __len__(self) -> int:
-        return self._len
+        return sum(len(d) for d in self.datasets.values())
 
-    def __getitem__(self, key: tuple[str, int]) -> list["SentenceSample"]:
-        dataset_type, idx = key
-        if dataset_type == "paired":
-            template_sample, llm_sample = self.paired_dataset[idx]
-            return [template_sample, llm_sample]
-        else:
-            return [self.template_dataset[idx]]
+    def __getitem__(self, key: tuple[str, int]):
+        """Get item from the appropriate dataset.
+
+        Args:
+            key: Tuple of (source_key, index)
+
+        Returns:
+            Item from the specified dataset at the given index.
+        """
+        source_key, idx = key
+        return self.datasets[source_key][idx]
 
 
 class ContrastiveBatchSampler(Sampler):
@@ -518,210 +523,125 @@ class ContrastiveBatchSampler(Sampler):
         return (len(self.pruned_tags_list) + self.batch_size - 1) // self.batch_size
 
 
-class CombinedBatchSampler(Sampler):
-    """Batch sampler that mixes samples from PairedSentenceDataset and SentenceDataset.
+class MixingSampler(Sampler):
+    """Batch sampler that mixes samples from multiple child samplers with configurable ratios.
 
-    Each batch contains:
-    - paired_ratio * batch_size samples from PairedSentenceDataset (template + LLM pairs)
-    - (1 - paired_ratio) * batch_size samples from SentenceDataset (template only)
-
-    Groups samples by tag values for tag-specific contrastive learning.
+    Composes multiple samplers, drawing from each according to their weight.
+    Yields batches of (source_key, index) tuples.
     """
 
     def __init__(
         self,
-        paired_pruned_tags: list[frozenset],
-        template_pruned_tags: list[frozenset],
-        contrastive_tags: list[str],
+        samplers: dict[str, tuple[Sampler, float, int]],
         batch_size: int,
-        paired_ratio: float = 0.5,
-        groups_per_batch: int = 32,
-        samples_per_group: int = 4,
         seed: int = 42,
     ):
-        """Initialize the sampler.
+        """Initialize the mixing sampler.
 
         Args:
-            paired_pruned_tags: List of pruned_tags from PairedSentenceDataset
-            template_pruned_tags: List of pruned_tags from SentenceDataset
-            contrastive_tags: Tag keys to group by (e.g., ["name", "addr:street"])
-            batch_size: Total batch size (paired samples count as 2 each)
-            paired_ratio: Ratio of paired vs template-only (1.0 = all paired)
-            groups_per_batch: Number of groups to sample per batch
-            samples_per_group: Target samples per group
+            samplers: Dictionary mapping source keys to (sampler, weight, samples_per_index).
+                - sampler: The child batch sampler
+                - weight: Relative weight for this source (will be normalized)
+                - samples_per_index: Number of samples each index yields (e.g., 1 for single,
+                  2 for pairs, 3 for triples)
+            batch_size: Total number of samples per batch (accounts for samples_per_index)
             seed: Random seed
         """
-        self.paired_pruned_tags = paired_pruned_tags
-        self.template_pruned_tags = template_pruned_tags
+        self.samplers = samplers
         self.batch_size = batch_size
-        self.paired_ratio = paired_ratio
-        self.groups_per_batch = groups_per_batch
-        self.samples_per_group = samples_per_group
         self.seed = seed
         self.epoch = 0
 
-        # Calculate samples per type
-        # Paired samples yield 2 items each (template + LLM)
-        # So if we want paired_ratio of the final batch to be paired:
-        # paired_count * 2 / (paired_count * 2 + template_count) = paired_ratio
-        # Solving: paired_count = paired_ratio * batch_size / 2
-        #          template_count = (1 - paired_ratio) * batch_size
-        self.paired_per_batch = int(paired_ratio * batch_size / 2)
-        self.template_per_batch = batch_size - (self.paired_per_batch * 2)
+        # Normalize weights
+        total_weight = sum(w for _, w, _ in samplers.values())
+        self.normalized_weights = {
+            key: weight / total_weight
+            for key, (_, weight, _) in samplers.items()
+        }
 
-        # Build tag value indices for paired dataset
-        self.paired_value_to_indices: dict[str, list[int]] = defaultdict(list)
-        self.paired_ungrouped: list[int] = []
-        for idx, pruned_tags in enumerate(paired_pruned_tags):
-            tags_dict = dict(pruned_tags)
-            grouped = False
-            for tag in contrastive_tags:
-                if tag in tags_dict:
-                    key = f"{tag}:{tags_dict[tag]}"
-                    self.paired_value_to_indices[key].append(idx)
-                    grouped = True
-            if not grouped:
-                self.paired_ungrouped.append(idx)
+        # Calculate indices per source based on weights and samples_per_index
+        # E.g., if batch_size=64, weight=0.5, samples_per_index=2:
+        #   samples_from_source = 64 * 0.5 = 32
+        #   indices_from_source = 32 / 2 = 16
+        self.indices_per_source: dict[str, int] = {}
+        for key, (_, weight, samples_per_index) in samplers.items():
+            normalized_weight = self.normalized_weights[key]
+            samples_from_source = int(batch_size * normalized_weight)
+            self.indices_per_source[key] = max(1, samples_from_source // samples_per_index)
 
-        self.paired_valid_groups = [
-            (key, indices)
-            for key, indices in self.paired_value_to_indices.items()
-            if len(indices) >= 2
-        ]
+        # Calculate batches per epoch: continue until ALL child samplers are exhausted
+        # Each child sampler has a known length (number of batches it can yield)
+        batches_needed = []
+        for key, (sampler, _, _) in samplers.items():
+            indices_per_batch = self.indices_per_source[key]
+            total_indices = sum(len(batch) for batch in iter(sampler))
+            if indices_per_batch > 0:
+                batches_needed.append(total_indices / indices_per_batch)
+        self.batches_per_epoch = int(max(batches_needed)) if batches_needed else 0
 
-        # Build tag value indices for template dataset
-        self.template_value_to_indices: dict[str, list[int]] = defaultdict(list)
-        self.template_ungrouped: list[int] = []
-        for idx, pruned_tags in enumerate(template_pruned_tags):
-            tags_dict = dict(pruned_tags)
-            grouped = False
-            for tag in contrastive_tags:
-                if tag in tags_dict:
-                    key = f"{tag}:{tags_dict[tag]}"
-                    self.template_value_to_indices[key].append(idx)
-                    grouped = True
-            if not grouped:
-                self.template_ungrouped.append(idx)
-
-        self.template_valid_groups = [
-            (key, indices)
-            for key, indices in self.template_value_to_indices.items()
-            if len(indices) >= 2
-        ]
-
-        # Calculate batches per epoch based on larger dataset coverage
-        # An epoch should see all of the larger dataset once; smaller dataset gets recycled
-        paired_batches_for_full = len(self.paired_pruned_tags) / max(self.paired_per_batch, 1)
-        template_batches_for_full = len(self.template_pruned_tags) / max(self.template_per_batch, 1)
-        self.batches_per_epoch = int(max(paired_batches_for_full, template_batches_for_full))
-
-        print(f"CombinedBatchSampler:")
-        print(f"  Paired: {len(paired_pruned_tags)} items, {len(self.paired_valid_groups)} groups")
-        print(f"  Template: {len(template_pruned_tags)} items, {len(self.template_valid_groups)} groups")
-        print(f"  Per batch: {self.paired_per_batch} paired ({self.paired_per_batch * 2} samples) + "
-              f"{self.template_per_batch} template = {self.paired_per_batch * 2 + self.template_per_batch} total")
-        print(f"  Batches per epoch: {self.batches_per_epoch} (paired needs {paired_batches_for_full:.1f}, "
-              f"template needs {template_batches_for_full:.1f})")
+        # Print configuration
+        print(f"MixingSampler:")
+        for key, (sampler, weight, samples_per_index) in samplers.items():
+            print(f"  {key}: weight={self.normalized_weights[key]:.2f}, "
+                  f"samples_per_index={samples_per_index}, "
+                  f"indices_per_batch={self.indices_per_source[key]}")
+        print(f"  Total batch_size: {batch_size}")
+        print(f"  Batches per epoch: {self.batches_per_epoch}")
 
     def set_epoch(self, epoch: int) -> None:
-        """Set epoch for shuffling."""
+        """Set epoch for shuffling. Propagates to all child samplers."""
         self.epoch = epoch
+        for sampler, _, _ in self.samplers.values():
+            if hasattr(sampler, "set_epoch"):
+                sampler.set_epoch(epoch)
 
     def __iter__(self):
-        """Yield batches of (dataset_type, idx) tuples.
-
-        Each batch is a list of tuples where dataset_type is "paired" or "template"
-        and idx is the index into that dataset. Yields exactly batches_per_epoch
-        batches. The smaller dataset is recycled as needed while the larger dataset
-        is seen approximately once.
-        """
+        """Yield batches of (source_key, idx) tuples."""
         rng = random.Random(self.seed + self.epoch)
 
-        # Shuffle groups
-        paired_groups = list(self.paired_valid_groups)
-        rng.shuffle(paired_groups)
-        template_groups = list(self.template_valid_groups)
-        rng.shuffle(template_groups)
+        # Get iterators for each child sampler
+        # Each child sampler yields batches of indices
+        source_indices: dict[str, list[int]] = {key: [] for key in self.samplers}
 
-        paired_ungrouped = list(self.paired_ungrouped)
-        rng.shuffle(paired_ungrouped)
-        template_ungrouped = list(self.template_ungrouped)
-        rng.shuffle(template_ungrouped)
+        # Create fresh iterators for each child sampler
+        source_iters: dict[str, iter] = {}
+        for key, (sampler, _, _) in self.samplers.items():
+            source_iters[key] = iter(sampler)
 
-        paired_group_idx = 0
-        template_group_idx = 0
-        paired_ungrouped_idx = 0
-        template_ungrouped_idx = 0
-
-        # Yield exactly batches_per_epoch batches
         for _ in range(self.batches_per_epoch):
-            paired_indices = []
-            template_indices = []
+            batch: list[tuple[str, int]] = []
 
-            # Sample paired indices
-            groups_sampled = 0
-            half_groups = self.groups_per_batch // 2
-            while groups_sampled < half_groups and len(paired_indices) < self.paired_per_batch:
-                if paired_group_idx >= len(paired_groups):
-                    rng.shuffle(paired_groups)
-                    paired_group_idx = 0
+            for key in self.samplers:
+                indices_needed = self.indices_per_source[key]
 
-                if paired_groups:
-                    key, indices = paired_groups[paired_group_idx]
-                    paired_group_idx += 1
-                    n_samples = min(self.samples_per_group, len(indices),
-                                    self.paired_per_batch - len(paired_indices))
-                    sampled = rng.sample(indices, n_samples)
-                    paired_indices.extend(sampled)
-                    groups_sampled += 1
-                else:
-                    break
+                # Refill source indices if needed
+                while len(source_indices[key]) < indices_needed:
+                    try:
+                        child_batch = next(source_iters[key])
+                        # Shuffle child batch indices
+                        child_batch = list(child_batch)
+                        rng.shuffle(child_batch)
+                        source_indices[key].extend(child_batch)
+                    except StopIteration:
+                        # Child sampler exhausted, create new iterator
+                        sampler, _, _ = self.samplers[key]
+                        source_iters[key] = iter(sampler)
+                        child_batch = next(source_iters[key])
+                        child_batch = list(child_batch)
+                        rng.shuffle(child_batch)
+                        source_indices[key].extend(child_batch)
 
-            # Fill remaining paired with ungrouped
-            while len(paired_indices) < self.paired_per_batch:
-                if paired_ungrouped_idx >= len(paired_ungrouped):
-                    if not paired_ungrouped:
-                        break
-                    rng.shuffle(paired_ungrouped)
-                    paired_ungrouped_idx = 0
-                paired_indices.append(paired_ungrouped[paired_ungrouped_idx])
-                paired_ungrouped_idx += 1
+                # Take indices for this batch
+                taken = source_indices[key][:indices_needed]
+                source_indices[key] = source_indices[key][indices_needed:]
+                batch.extend((key, idx) for idx in taken)
 
-            # Sample template indices
-            groups_sampled = 0
-            while groups_sampled < half_groups and len(template_indices) < self.template_per_batch:
-                if template_group_idx >= len(template_groups):
-                    rng.shuffle(template_groups)
-                    template_group_idx = 0
-
-                if template_groups:
-                    key, indices = template_groups[template_group_idx]
-                    template_group_idx += 1
-                    n_samples = min(self.samples_per_group, len(indices),
-                                    self.template_per_batch - len(template_indices))
-                    sampled = rng.sample(indices, n_samples)
-                    template_indices.extend(sampled)
-                    groups_sampled += 1
-                else:
-                    break
-
-            # Fill remaining template with ungrouped
-            while len(template_indices) < self.template_per_batch:
-                if template_ungrouped_idx >= len(template_ungrouped):
-                    if not template_ungrouped:
-                        break
-                    rng.shuffle(template_ungrouped)
-                    template_ungrouped_idx = 0
-                template_indices.append(template_ungrouped[template_ungrouped_idx])
-                template_ungrouped_idx += 1
-
-            # Build flat batch of (dataset_type, idx) tuples
-            batch = [("paired", idx) for idx in paired_indices]
-            batch.extend([("template", idx) for idx in template_indices])
+            # Shuffle the combined batch
+            rng.shuffle(batch)
             yield batch
 
     def __len__(self) -> int:
-        """Return number of batches per epoch (covers larger dataset once)."""
+        """Return number of batches per epoch."""
         return self.batches_per_epoch
 
 
