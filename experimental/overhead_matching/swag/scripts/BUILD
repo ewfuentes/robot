@@ -351,6 +351,18 @@ py_library(
   ],
   deps = [
     requirement("msgspec"),
+    requirement("pyyaml"),
+    "//common/python:serialization",
+  ],
+)
+
+py_test(
+  name = "sentence_configs_test",
+  srcs = ["sentence_configs_test.py"],
+  deps = [
+    ":sentence_configs",
+    requirement("msgspec"),
+    requirement("pyyaml"),
   ],
 )
 

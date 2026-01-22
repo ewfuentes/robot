@@ -5,7 +5,9 @@ LLM-generated sentences for each unique pruned_tags, enabling contrastive learni
 between the two sentence types.
 """
 
+import pickle
 import random
+from pathlib import Path
 
 from torch.utils.data import Dataset
 
@@ -114,3 +116,20 @@ def flatten_samples(
         else:
             flat.append(item)
     return flat
+
+
+def load_sentences_from_pickle(path: Path) -> dict[frozenset[tuple[str, str]], str]:
+    """Load LLM sentences from a pickle file.
+
+    The pickle file contains a dict mapping frozenset[tuple[str, str]] -> str,
+    where the keys are pruned tags (frozensets of (key, value) tuples) and
+    values are the corresponding LLM-generated sentences.
+
+    Args:
+        path: Path to the pickle file
+
+    Returns:
+        Dictionary mapping pruned_tags frozensets to sentence strings
+    """
+    with open(path, "rb") as f:
+        return pickle.load(f)

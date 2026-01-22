@@ -27,9 +27,6 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from experimental.overhead_matching.swag.data.llm_sentence_loader import (
-    get_coverage_stats,
-    load_llm_sentences_by_pruned_tags,
-    load_llm_sentences_by_pruned_tags_from_dir,
     split_llm_sentences,
 )
 from experimental.overhead_matching.swag.data.osm_sentence_generator import (
@@ -39,6 +36,7 @@ from experimental.overhead_matching.swag.data.osm_sentence_generator import (
 from experimental.overhead_matching.swag.data.paired_sentence_dataset import (
     PairedSentenceDataset,
     flatten_samples,
+    load_sentences_from_pickle,
 )
 from experimental.overhead_matching.swag.data.sentence_dataset import (
     CombinedDataset,
@@ -58,8 +56,11 @@ from experimental.overhead_matching.swag.model.sentence_embedding_model import (
 from experimental.overhead_matching.swag.scripts.sentence_configs import (
     DEFAULT_CLASSIFICATION_TAGS,
     DEFAULT_CONTRASTIVE_TAGS,
+    DatasetConfig,
+    OSMPairedDatasetConfig,
     SentenceEmbeddingModelConfig,
     SentenceTrainConfig,
+    TemplateDatasetConfig,
     TrainingConfig,
     load_config,
     save_config,
@@ -637,21 +638,34 @@ def train(
     print(f"Classification tasks: {config.classification_tags}")
     print(f"Contrastive tasks: {config.contrastive_tags}")
 
+    # Validate datasets
+    if not config.datasets:
+        raise ValueError("At least one dataset must be configured in config.datasets")
+
+    # Find first TemplateDatasetConfig for vocabulary building
+    template_configs = [d for d in config.datasets if isinstance(d, TemplateDatasetConfig)]
+    paired_configs = [d for d in config.datasets if isinstance(d, OSMPairedDatasetConfig)]
+
     # Load or build vocabularies
     if config.tag_vocabs_path is not None and config.tag_vocabs_path.exists():
         print(f"Loading vocabularies from {config.tag_vocabs_path}")
         with open(config.tag_vocabs_path) as f:
             tag_vocabs = json.load(f)
-    else:
-        print(f"Building vocabularies from {config.db_path}")
+    elif template_configs:
+        db_path = template_configs[0].db_path
+        print(f"Building vocabularies from {db_path}")
         tag_vocabs = load_tag_vocabularies_from_db(
-            config.db_path, config.classification_tags, min_count=100
+            db_path, config.classification_tags, min_count=100
         )
         # Save for future runs
         vocab_save_path = config.output_dir / "tag_vocabs.json"
         with open(vocab_save_path, "w") as f:
             json.dump(tag_vocabs, f, indent=2)
         print(f"Saved vocabularies to {vocab_save_path}")
+    else:
+        # No template configs and no vocab path - use empty vocabs
+        print("No TemplateDatasetConfig found and no tag_vocabs_path - using empty vocabularies")
+        tag_vocabs = {}
 
     # Filter classification tags to those with vocabularies
     classification_tags = [t for t in config.classification_tags if t in tag_vocabs]
@@ -672,11 +686,6 @@ def train(
     print(f"Model created with {sum(p.numel() for p in model.parameters()):,} parameters")
     tokenizer = model.encoder.tokenize
 
-    # Load landmarks to get all tags for LLM sentence matching
-    print(f"\nLoading landmarks from {config.db_path}")
-    landmarks = load_landmarks_from_db(config.db_path, limit=config.limit)
-    print(f"Loaded {len(landmarks):,} landmarks")
-
     # Create sentence generator (shared across datasets)
     # Default required_tags to contrastive_tags to ensure contrastive learning has signal
     effective_required_tags = (
@@ -685,107 +694,84 @@ def train(
     print(f"Required tags (always included): {effective_required_tags}")
     generator = OSMSentenceGenerator(required_tags=effective_required_tags)
 
-    # Load LLM sentences if provided
-    llm_sentences = None
-    if config.llm_sentences_path is not None and config.llm_sentences_path.exists():
-        print(f"\nLoading LLM sentences from {config.llm_sentences_path}")
-        # Get all landmark tags for mapping
-        all_tags = [l.tags for l in landmarks]
-        # Support both file and directory paths
-        if config.llm_sentences_path.is_dir():
-            llm_sentences = load_llm_sentences_by_pruned_tags_from_dir(config.llm_sentences_path, all_tags)
-        else:
-            llm_sentences = load_llm_sentences_by_pruned_tags(config.llm_sentences_path, all_tags)
-        coverage = get_coverage_stats(llm_sentences, len(all_tags))
-        print(f"LLM sentences loaded: {coverage['llm_sentences_count']:,} sentences "
-              f"({coverage['coverage_percent']:.1f}% coverage)")
-
-    # Extract unique pruned_tags from all landmarks
-    all_pruned_tags = get_unique_pruned_tags_from_landmarks(landmarks)
-    print(f"Unique pruned_tags from landmarks: {len(all_pruned_tags):,}")
-
     # -------------------------------------------------------------------------
-    # Build datasets and samplers using compositional approach
+    # Build datasets and samplers from config.datasets
     # -------------------------------------------------------------------------
     train_datasets: dict[str, Dataset] = {}
     test_datasets: dict[str, Dataset] = {}
     train_sampler_configs: dict[str, tuple[Sampler, float, int]] = {}
 
-    # Determine source weights (normalize later)
-    source_weights = config.training.source_weights or {}
+    # Track whether we have any paired datasets (for base contrastive loss)
+    has_paired_data = bool(paired_configs)
 
-    # Always create template dataset
-    # If we have paired data, template dataset uses only non-paired pruned_tags
-    if llm_sentences:
-        paired_tags_set = set(llm_sentences.keys())
-        template_only_tags = [t for t in all_pruned_tags if t not in paired_tags_set]
-    else:
-        template_only_tags = all_pruned_tags
+    # Process template datasets
+    for i, tc in enumerate(template_configs):
+        name = f"template_{i}" if len(template_configs) > 1 else "template"
+        print(f"\nLoading template dataset from {tc.db_path}")
+        landmarks = load_landmarks_from_db(tc.db_path, limit=config.limit)
+        print(f"Loaded {len(landmarks):,} landmarks")
 
-    # Split template-only tags into train/test
-    train_template_tags, test_template_tags = split_pruned_tags(
-        template_only_tags, train_fraction=config.train_split, seed=config.seed
-    )
-    print(f"Template-only tags: {len(template_only_tags):,} "
-          f"(train: {len(train_template_tags):,}, test: {len(test_template_tags):,})")
+        # Extract unique pruned_tags
+        all_pruned_tags = get_unique_pruned_tags_from_landmarks(landmarks)
+        print(f"Unique pruned_tags: {len(all_pruned_tags):,}")
 
-    # Create template dataset
-    train_template_dataset = SentenceDataset(
-        train_template_tags, generator=generator, epoch=0
-    )
-    test_template_dataset = SentenceDataset(
-        test_template_tags, generator=generator, epoch=0
-    )
-    train_datasets["template"] = train_template_dataset
-    test_datasets["template"] = test_template_dataset
+        # Split into train/test
+        train_tags, test_tags = split_pruned_tags(
+            all_pruned_tags, train_fraction=config.train_split, seed=config.seed
+        )
+        print(f"Split: train={len(train_tags):,}, test={len(test_tags):,}")
 
-    # Template sampler uses ContrastiveBatchSampler for grouping
-    template_sampler = ContrastiveBatchSampler(
-        pruned_tags_list=train_template_tags,
-        contrastive_tags=config.contrastive_tags,
-        batch_size=config.training.batch_size,
-        groups_per_batch=config.training.groups_per_batch,
-        samples_per_group=config.training.samples_per_group,
-        seed=config.seed,
-    )
-    template_weight = source_weights.get("template", 0.5 if llm_sentences else 1.0)
-    train_sampler_configs["template"] = (template_sampler, template_weight, 1)
+        # Create datasets
+        train_dataset = SentenceDataset(train_tags, generator=generator, epoch=0)
+        test_dataset = SentenceDataset(test_tags, generator=generator, epoch=0)
+        train_datasets[name] = train_dataset
+        test_datasets[name] = test_dataset
 
-    # Add paired dataset if LLM sentences available
-    if llm_sentences:
-        # Split LLM sentences into train/test
+        # Create sampler with ContrastiveBatchSampler for grouping
+        sampler = ContrastiveBatchSampler(
+            pruned_tags_list=train_tags,
+            contrastive_tags=config.contrastive_tags,
+            batch_size=config.training.batch_size,
+            groups_per_batch=config.training.groups_per_batch,
+            samples_per_group=config.training.samples_per_group,
+            seed=config.seed,
+        )
+        train_sampler_configs[name] = (sampler, tc.weight, 1)
+
+    # Process paired datasets
+    for i, pc in enumerate(paired_configs):
+        name = f"osm_paired_{i}" if len(paired_configs) > 1 else "osm_paired"
+        print(f"\nLoading OSM paired dataset from {pc.sentences_path}")
+        llm_sentences = load_sentences_from_pickle(pc.sentences_path)
+        print(f"Loaded {len(llm_sentences):,} sentence pairs")
+
+        # Split into train/test
         train_llm, test_llm = split_llm_sentences(
             llm_sentences, train_fraction=config.train_split, seed=config.seed
         )
-        print(f"LLM sentences split: Train {len(train_llm):,}, Test {len(test_llm):,}")
+        print(f"Split: train={len(train_llm):,}, test={len(test_llm):,}")
 
-        # Create paired datasets
-        train_paired_dataset = PairedSentenceDataset(
-            train_llm, generator=generator, epoch=0
-        )
-        test_paired_dataset = PairedSentenceDataset(
-            test_llm, generator=generator, epoch=0
-        )
-        train_datasets["osm_paired"] = train_paired_dataset
-        test_datasets["osm_paired"] = test_paired_dataset
+        # Create datasets
+        train_dataset = PairedSentenceDataset(train_llm, generator=generator, epoch=0)
+        test_dataset = PairedSentenceDataset(test_llm, generator=generator, epoch=0)
+        train_datasets[name] = train_dataset
+        test_datasets[name] = test_dataset
 
         # Paired dataset uses simple shuffle sampler (positives come from pair structure)
-        # BatchSampler wraps RandomSampler to yield batches of indices
         paired_batch_size = config.training.batch_size // 2  # Each index yields 2 samples
-        paired_sampler = BatchSampler(
-            RandomSampler(train_paired_dataset),
+        sampler = BatchSampler(
+            RandomSampler(train_dataset),
             batch_size=paired_batch_size,
             drop_last=False,
         )
-        paired_weight = source_weights.get("osm_paired", 0.5)
-        train_sampler_configs["osm_paired"] = (paired_sampler, paired_weight, 2)
+        train_sampler_configs[name] = (sampler, pc.weight, 2)
 
     # Create combined dataset and mixing sampler
     combined_train_dataset = CombinedDataset(train_datasets)
 
     # Determine if we need mixing or single-source sampling
     use_mixing_sampler = len(train_sampler_configs) > 1
-    include_base_contrastive = llm_sentences is not None
+    include_base_contrastive = has_paired_data
 
     # Create collate function
     base_collate_fn = create_collate_fn(
@@ -819,14 +805,27 @@ def train(
             pin_memory=True,
         )
     else:
-        # Single source mode (template only)
-        print("\nUsing single source (template only)")
-        train_batch_sampler = template_sampler
+        # Single source mode
+        single_name = list(train_sampler_configs.keys())[0]
+        single_sampler, _, _ = train_sampler_configs[single_name]
+        print(f"\nUsing single source: {single_name}")
+        train_batch_sampler = single_sampler
+
+        single_dataset = train_datasets[single_name]
+
+        # For paired datasets, need to flatten
+        if isinstance(single_dataset, PairedSentenceDataset):
+            def single_collate_fn(samples: list):
+                flat = flatten_samples(samples)
+                return base_collate_fn(flat)
+            collate_fn = single_collate_fn
+        else:
+            collate_fn = base_collate_fn
 
         train_loader = DataLoader(
-            train_template_dataset,
+            single_dataset,
             batch_sampler=train_batch_sampler,
-            collate_fn=base_collate_fn,
+            collate_fn=collate_fn,
             num_workers=config.training.num_workers,
             pin_memory=True,
         )
@@ -834,28 +833,35 @@ def train(
     # -------------------------------------------------------------------------
     # Test loader setup
     # -------------------------------------------------------------------------
-    # Template test loader: for classification accuracy and tag-specific contrastive metrics
-    template_test_collate_fn = create_collate_fn(
-        tag_vocabs=tag_vocabs,
-        classification_tasks=classification_tags,
-        contrastive_tasks=config.contrastive_tags,
-        include_base_contrastive=False,
-        tokenizer=tokenizer,
-        max_length=config.training.max_seq_length,
-    )
+    # Find template test datasets (for classification accuracy and tag-specific metrics)
+    template_test_names = [n for n in test_datasets.keys() if n.startswith("template")]
+    paired_test_names = [n for n in test_datasets.keys() if n.startswith("osm_paired")]
 
-    template_test_loader = DataLoader(
-        test_datasets["template"],
-        batch_size=config.training.batch_size,
-        shuffle=False,
-        collate_fn=template_test_collate_fn,
-        num_workers=config.training.num_workers,
-        pin_memory=True,
-    )
+    # Template test loader: for classification accuracy and tag-specific contrastive metrics
+    template_test_loader = None
+    if template_test_names:
+        template_test_collate_fn = create_collate_fn(
+            tag_vocabs=tag_vocabs,
+            classification_tasks=classification_tags,
+            contrastive_tasks=config.contrastive_tags,
+            include_base_contrastive=False,
+            tokenizer=tokenizer,
+            max_length=config.training.max_seq_length,
+        )
+
+        # Use the first template test dataset for evaluation
+        template_test_loader = DataLoader(
+            test_datasets[template_test_names[0]],
+            batch_size=config.training.batch_size,
+            shuffle=False,
+            collate_fn=template_test_collate_fn,
+            num_workers=config.training.num_workers,
+            pin_memory=True,
+        )
 
     # Paired test loader: for global MRR (template <-> LLM alignment)
     paired_test_loader = None
-    if "osm_paired" in test_datasets:
+    if paired_test_names:
         paired_test_collate_fn = create_collate_fn(
             tag_vocabs=tag_vocabs,
             classification_tasks=classification_tags,
@@ -869,8 +875,9 @@ def train(
             flat = flatten_samples(pairs)
             return paired_test_collate_fn(flat)
 
+        # Use the first paired test dataset for evaluation
         paired_test_loader = DataLoader(
-            test_datasets["osm_paired"],
+            test_datasets[paired_test_names[0]],
             batch_size=config.training.batch_size // 2,
             shuffle=False,
             collate_fn=paired_collate_wrapper,
@@ -958,12 +965,14 @@ def train(
         print(f"Train metrics: {train_metrics}")
 
         # Evaluate on template test set (classification, tag-specific contrastive)
-        val_metrics = evaluate(
-            model=model,
-            dataloader=template_test_loader,
-            config=config.training,
-            device=device,
-        )
+        val_metrics = {}
+        if template_test_loader is not None:
+            val_metrics = evaluate(
+                model=model,
+                dataloader=template_test_loader,
+                config=config.training,
+                device=device,
+            )
 
         # Evaluate on paired test set (base contrastive loss and global MRR)
         if paired_test_loader is not None:
@@ -1020,12 +1029,8 @@ def main():
     parser.add_argument(
         "--config",
         type=Path,
+        required=True,
         help="Path to YAML config file. CLI args override config values.",
-    )
-    parser.add_argument(
-        "--db_path",
-        type=Path,
-        help="Path to landmarks SQLite database",
     )
     parser.add_argument(
         "--output_dir",
@@ -1041,11 +1046,6 @@ def main():
         "--tensorboard_dir",
         type=Path,
         help="TensorBoard log directory (optional)",
-    )
-    parser.add_argument(
-        "--llm_sentences",
-        type=Path,
-        help="Path to LLM sentences JSONL file or directory of JSONL files (optional)",
     )
     parser.add_argument(
         "--batch_size",
@@ -1104,24 +1104,17 @@ def main():
     )
     args = parser.parse_args()
 
-    # Load config from file or use defaults
-    if args.config is not None:
-        print(f"Loading config from {args.config}")
-        config = load_config(args.config)
-    else:
-        config = SentenceTrainConfig()
+    # Load config from file
+    print(f"Loading config from {args.config}")
+    config = load_config(args.config)
 
     # Override config with CLI args
-    if args.db_path is not None:
-        config.db_path = args.db_path
     if args.output_dir is not None:
         config.output_dir = args.output_dir
     if args.tag_vocabs is not None:
         config.tag_vocabs_path = args.tag_vocabs
     if args.tensorboard_dir is not None:
         config.tensorboard_dir = args.tensorboard_dir
-    if args.llm_sentences is not None:
-        config.llm_sentences_path = args.llm_sentences
     if args.batch_size is not None:
         config.training.batch_size = args.batch_size
     if args.num_epochs is not None:
@@ -1144,8 +1137,6 @@ def main():
         config.training.samples_per_group = args.samples_per_group
 
     # Validate required fields
-    if config.db_path is None:
-        parser.error("--db_path is required (via config or CLI)")
     if config.output_dir is None:
         parser.error("--output_dir is required (via config or CLI)")
 
