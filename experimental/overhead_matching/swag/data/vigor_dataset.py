@@ -617,8 +617,8 @@ class VigorDataset(torch.utils.data.Dataset):
 
         sat_metadata["original_shape"] = self._original_satellite_patch_size
 
-        cached_pano_tensors = get_cached_tensors(pano_metadata, self._panorama_tensor_caches, self._config.load_cache_debug)
-        cached_sat_tensors = get_cached_tensors(sat_metadata, self._satellite_tensor_caches, self._config.load_cache_debug)
+        cached_pano_tensors = get_cached_tensors(pano_metadata, self._panorama_tensor_caches, self._config.load_cache_debug) if self._panorama_tensor_caches else {}
+        cached_sat_tensors = get_cached_tensors(sat_metadata, self._satellite_tensor_caches, self._config.load_cache_debug) if self._satellite_tensor_caches else {}
 
         if should_log:
             t3 = time.time()
@@ -734,7 +734,7 @@ class VigorDataset(torch.utils.data.Dataset):
 
                 sat_metadata["original_shape"] = self.dataset._original_satellite_patch_size
 
-                cached_sat_tensors = get_cached_tensors(sat_metadata, self.dataset._satellite_tensor_caches, self.dataset._config.load_cache_debug)
+                cached_sat_tensors = get_cached_tensors(sat_metadata, self.dataset._satellite_tensor_caches, self.dataset._config.load_cache_debug) if self.dataset._satellite_tensor_caches else {}
 
                 if should_log:
                     t3 = time.time()
@@ -799,7 +799,7 @@ class VigorDataset(torch.utils.data.Dataset):
                         if logger.isEnabledFor(logging.DEBUG):
                             logger.debug(f"[PANO_FETCH] Worker {worker_id} item {self._fetch_count}: landmarks processed ({len(landmarks)} pano) in {(t2-t1)*1000:.1f}ms")
 
-                cached_pano_tensors = get_cached_tensors(pano_metadata, self.dataset._panorama_tensor_caches, self.dataset._config.load_cache_debug)
+                cached_pano_tensors = get_cached_tensors(pano_metadata, self.dataset._panorama_tensor_caches, self.dataset._config.load_cache_debug) if self.dataset._panorama_tensor_caches else {}
 
                 if should_log:
                     t3 = time.time()
