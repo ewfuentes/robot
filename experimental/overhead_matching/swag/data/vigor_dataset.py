@@ -97,7 +97,7 @@ class VigorDatasetConfig(NamedTuple):
     panorama_landmark_radius_px: float = 640
     landmark_correspondence_inflation_factor: float = 1.0
     require_proper_noun_match: bool = False
-    pano_gemini_base_path: None | str = None  # Auto-detects if None
+    pano_gemini_base_path: None | str = None
 
 
 class VigorDatasetItem(NamedTuple):
