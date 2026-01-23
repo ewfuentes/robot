@@ -3,11 +3,12 @@ import torch
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 from experimental.overhead_matching.swag.scripts.pairing import Pairs, PositiveAnchorSets
-import matplotlib.pyplot as plt 
+import matplotlib.pyplot as plt
 import numpy as np
 
 
 LOG_HIST_EVERY = 100
+
 
 @torch.no_grad()
 def log_batch_metrics(writer, loss_dict, lr_scheduler, pairing_data, step_idx, epoch_idx, batch_idx, quiet):
@@ -28,15 +29,16 @@ def log_batch_metrics(writer, loss_dict, lr_scheduler, pairing_data, step_idx, e
     if "pos_sim" in loss_dict and "neg_sim" in loss_dict:
         pos_sim = loss_dict["pos_sim"]
         neg_sim = loss_dict["neg_sim"]
-        semipos_sim = loss_dict["semipos_sim"] if "semipos_sim" in loss_dict else None  # may not be present 
-        if semipos_sim is not None and semipos_sim.numel() == 0: 
+        semipos_sim = loss_dict["semipos_sim"] if "semipos_sim" in loss_dict else None  # may not be present
+        if semipos_sim is not None and semipos_sim.numel() == 0:
             semipos_sim = None
+
         writer.add_scalar("train/loss_pos_sim", pos_sim.mean().item(), global_step=step_idx)
         writer.add_scalar("train/loss_neg_sim", neg_sim.mean().item(), global_step=step_idx)
         if semipos_sim is not None:
             writer.add_scalar("train/loss_semipos_sim", semipos_sim.mean().item(), global_step=step_idx)
 
-        if step_idx % LOG_HIST_EVERY == 0: 
+        if step_idx % LOG_HIST_EVERY == 0:
             min_val = min(-1, pos_sim.min().item(), neg_sim.min().item(), semipos_sim.min().item() if semipos_sim is not None else 0.0)
             max_val = max(1, pos_sim.max().item(), neg_sim.max().item(), semipos_sim.max().item() if semipos_sim is not None else 0.0)
             bins = np.linspace(min_val, max_val, 101)
@@ -131,13 +133,6 @@ def log_gradient_stats(writer: SummaryWriter, model: torch.nn.Module, name: str,
     writer.add_scalar(f"grad/{name}/nan_frac", nan_frac.item(), step_idx)
     writer.add_scalar(f"grad/{name}/inf_frac", inf_frac.item(), step_idx)
 
-    if step_idx % LOG_HIST_EVERY == 0:
-        # Downsample to keep TB light
-        vals = flat
-        if vals.numel() > 200_000:
-            idx = torch.randint(0, vals.numel(), (200_000,), device=vals.device)
-            vals = vals[idx]
-        writer.add_histogram(f"grad/{name}/values", vals.float().cpu(), step_idx, bins="auto")
 
 
 def log_validation_metrics(writer, validation_metrics, epoch_idx, quiet):
@@ -211,3 +206,20 @@ def log_feature_counts(writer: SummaryWriter,
             f"features/sat/{extractor_name}/total_count",
             stats['total_count'],
             step_idx)
+
+    # Log token type counts from debug dicts (for composable extractors)
+    for extractor_name, output in pano_extractor_outputs.items():
+        for key, value in output.debug.items():
+            if isinstance(value, (int, float)):
+                writer.add_scalar(
+                    f"token_types/pano/{extractor_name}/{key}",
+                    value,
+                    step_idx)
+
+    for extractor_name, output in sat_extractor_outputs.items():
+        for key, value in output.debug.items():
+            if isinstance(value, (int, float)):
+                writer.add_scalar(
+                    f"token_types/sat/{extractor_name}/{key}",
+                    value,
+                    step_idx)
