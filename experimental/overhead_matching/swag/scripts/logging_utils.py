@@ -5,92 +5,10 @@ from torch.utils.tensorboard import SummaryWriter
 from experimental.overhead_matching.swag.scripts.pairing import Pairs, PositiveAnchorSets
 import matplotlib.pyplot as plt
 import numpy as np
-import pickle
-from pathlib import Path
-from datetime import datetime
 
 
 LOG_HIST_EVERY = 100
 
-
-def _dump_empty_sim_debug_info(
-    loss_dict: dict,
-    pairing_data,
-    step_idx: int,
-    epoch_idx: int,
-    batch_idx: int,
-    empty_tensor_name: str,
-):
-    """Dump diagnostic info when pos_sim or neg_sim is unexpectedly empty."""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    debug_path = Path(f"/tmp/empty_sim_debug_{timestamp}.pkl")
-
-    debug_info = {
-        "timestamp": timestamp,
-        "empty_tensor_name": empty_tensor_name,
-        "step_idx": step_idx,
-        "epoch_idx": epoch_idx,
-        "batch_idx": batch_idx,
-        "loss_dict_summary": {},
-        "pairing_data_summary": {},
-    }
-
-    # Summarize loss_dict
-    for k, v in loss_dict.items():
-        if torch.is_tensor(v):
-            debug_info["loss_dict_summary"][k] = {
-                "shape": list(v.shape),
-                "numel": v.numel(),
-                "dtype": str(v.dtype),
-                "device": str(v.device),
-                "has_nan": bool(torch.isnan(v).any()) if v.numel() > 0 else False,
-                "has_inf": bool(torch.isinf(v).any()) if v.numel() > 0 else False,
-                "values_sample": (v.flatten()[:10].tolist() if v.numel() > 0 else []),
-            }
-        else:
-            debug_info["loss_dict_summary"][k] = {"value": v, "type": type(v).__name__}
-
-    # Summarize pairing_data
-    if isinstance(pairing_data, Pairs):
-        debug_info["pairing_data_summary"] = {
-            "type": "Pairs",
-            "num_positive_pairs": len(pairing_data.positive_pairs),
-            "num_semipositive_pairs": len(pairing_data.semipositive_pairs),
-            "num_negative_pairs": len(pairing_data.negative_pairs),
-            "positive_pairs_sample": pairing_data.positive_pairs[:10],
-            "negative_pairs_sample": pairing_data.negative_pairs[:10],
-        }
-    elif isinstance(pairing_data, PositiveAnchorSets):
-        debug_info["pairing_data_summary"] = {
-            "type": "PositiveAnchorSets",
-            "num_anchors": len(pairing_data.anchor),
-            "positive_set_sizes": [len(x) for x in pairing_data.positive],
-            "semipositive_set_sizes": [len(x) for x in pairing_data.semipositive],
-        }
-
-    # Save to file
-    with open(debug_path, "wb") as f:
-        pickle.dump(debug_info, f)
-
-    # Build error message
-    error_msg = f"""
-UNEXPECTED EMPTY SIMILARITY TENSOR: {empty_tensor_name}
-
-Debug info saved to: {debug_path}
-
-Summary:
-  step_idx={step_idx}, epoch_idx={epoch_idx}, batch_idx={batch_idx}
-
-Pairing data:
-  {debug_info['pairing_data_summary']}
-
-Loss dict tensor shapes:
-"""
-    for k, v in debug_info["loss_dict_summary"].items():
-        if isinstance(v, dict) and "shape" in v:
-            error_msg += f"  {k}: shape={v['shape']}, numel={v['numel']}, has_nan={v.get('has_nan')}, has_inf={v.get('has_inf')}\n"
-
-    return error_msg, debug_path
 
 @torch.no_grad()
 def log_batch_metrics(writer, loss_dict, lr_scheduler, pairing_data, step_idx, epoch_idx, batch_idx, quiet):
@@ -114,16 +32,6 @@ def log_batch_metrics(writer, loss_dict, lr_scheduler, pairing_data, step_idx, e
         semipos_sim = loss_dict["semipos_sim"] if "semipos_sim" in loss_dict else None  # may not be present
         if semipos_sim is not None and semipos_sim.numel() == 0:
             semipos_sim = None
-
-        # Assert that pos_sim and neg_sim are non-empty - dump debug info if they are
-        if pos_sim.numel() == 0:
-            error_msg, debug_path = _dump_empty_sim_debug_info(
-                loss_dict, pairing_data, step_idx, epoch_idx, batch_idx, "pos_sim")
-            raise RuntimeError(error_msg)
-        if neg_sim.numel() == 0:
-            error_msg, debug_path = _dump_empty_sim_debug_info(
-                loss_dict, pairing_data, step_idx, epoch_idx, batch_idx, "neg_sim")
-            raise RuntimeError(error_msg)
 
         writer.add_scalar("train/loss_pos_sim", pos_sim.mean().item(), global_step=step_idx)
         writer.add_scalar("train/loss_neg_sim", neg_sim.mean().item(), global_step=step_idx)

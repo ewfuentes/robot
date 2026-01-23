@@ -64,6 +64,8 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
         self.all_embeddings = None
         self.all_sentences = None
         self.panorama_metadata = None  # Maps pano_id -> list of (landmark_idx, custom_id, yaw_angles)
+        self._found_pano_ids = set()
+        self._missing_pano_ids = set()
 
     def load_files(self):
         """Load embeddings, sentences, and metadata from multi-city directory structure."""
@@ -196,8 +198,9 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
 
             # Find matching panorama metadata
             if pano_id not in self.panorama_metadata:
-                print(f"Failed to find pano id {pano_id} in panorama metadata! Skipping landmark")
+                self._missing_pano_ids.add(pano_id)
                 continue
+            self._found_pano_ids.add(pano_id)
             matching_landmarks = self.panorama_metadata[pano_id]
 
             # Sort by landmark_idx to ensure consistent ordering
@@ -279,3 +282,20 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
         # This extractor doesn't use landmarks from the dataset
         # (it uses vision-extracted landmarks stored separately)
         return []
+
+    def get_pano_id_stats(self) -> tuple[int, int]:
+        """Return (num_found, num_missing) pano IDs encountered during forward passes."""
+        return len(self._found_pano_ids), len(self._missing_pano_ids)
+
+    def print_pano_id_summary(self):
+        """Print a summary of found vs missing pano IDs. Call after processing is complete."""
+        num_found = len(self._found_pano_ids)
+        num_missing = len(self._missing_pano_ids)
+        total = num_found + num_missing
+        if num_missing > 0:
+            print(f"\n{'!'*80}")
+            print(f"WARNING: {num_missing}/{total} pano IDs ({100*num_missing/total:.1f}%) not found in embedding metadata!")
+            print(f"  Found: {num_found}, Missing: {num_missing}")
+            print(f"{'!'*80}\n")
+        else:
+            print(f"All {num_found} pano IDs found in embedding metadata.")
