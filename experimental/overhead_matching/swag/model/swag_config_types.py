@@ -61,6 +61,28 @@ class PanoramaSemanticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_O
     auxiliary_info_key: str
 
 
+class PanoramaProperNounExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    """Config for extracting proper noun embeddings from panorama landmarks.
+
+    Proper nouns are business names, street signs, etc. extracted from panorama images.
+    Produces one token per proper noun per landmark.
+    """
+    openai_embedding_size: int
+    embedding_version: str
+    auxiliary_info_key: str
+
+
+class PanoramaLocationTypeExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    """Config for extracting location type embeddings from panoramas.
+
+    Location type is a scene classification like "urban commercial district".
+    Produces exactly one token per panorama.
+    """
+    openai_embedding_size: int
+    embedding_version: str
+    auxiliary_info_key: str
+
+
 class SyntheticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     log_grid_spacing: int
     grid_bounds_px: int
@@ -104,6 +126,8 @@ ExtractorConfig = Union[
     SemanticSegmentExtractorConfig,
     SemanticLandmarkExtractorConfig,
     PanoramaSemanticLandmarkExtractorConfig,
+    PanoramaProperNounExtractorConfig,
+    PanoramaLocationTypeExtractorConfig,
     SyntheticLandmarkExtractorConfig,
     AbsolutePositionExtractorConfig,
 ]
