@@ -361,7 +361,7 @@ def load_pano_gemini_proper_nouns(base_path: Path, city_names: list[str]) -> dic
         with open(pickle_path, 'rb') as f:
             data = pickle.load(f)
         if data.get('version') != '2.0':
-            continue
+            raise ValueError(f"Expected pano_gemini version '2.0', got '{data.get('version')}' in {pickle_path}")
         for pano_key, pano_data in data.get('panoramas', {}).items():
             pano_id = pano_key.split(',')[0]
             all_pns = []
@@ -613,8 +613,9 @@ class VigorDataset(torch.utils.data.Dataset):
             if not config.should_load_landmarks:
                 raise ValueError("require_proper_noun_match requires should_load_landmarks=True")
 
-            pano_gemini_base = (Path(config.pano_gemini_base_path) if config.pano_gemini_base_path
-                                else Path("/data/overhead_matching/datasets/semantic_landmark_embeddings/pano_gemini/"))
+            if not config.pano_gemini_base_path:
+                raise ValueError("require_proper_noun_match requires pano_gemini_base_path to be set")
+            pano_gemini_base = Path(config.pano_gemini_base_path)
 
             city_names = list(set(self._panorama_metadata['dataset_key'].unique()))
             log_progress(f"Loading pano_gemini data for cities: {city_names}")
