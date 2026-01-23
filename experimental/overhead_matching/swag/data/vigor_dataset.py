@@ -1102,14 +1102,20 @@ class HardNegativeMiner:
             sorted_sat_idxs_from_pano_idx = torch.argsort(similarities)
 
             num_hard_negatives = min(self._satellite_embeddings.shape[0], self._hard_negative_pool_size)
-
-            num_hard_negatives_per_batch = min(
-                    math.ceil(self._batch_size * self._hard_negative_fraction), self._batch_size)
         else:
-            num_hard_negatives_per_batch = 0
+            num_hard_negatives = 0
 
         batches = []
         for pano_batches in itertools.batched(permuted_panoramas, self._batch_size):
+            # Calculate num_hard_negatives_per_batch based on actual batch size,
+            # not configured batch size, to handle incomplete final batches correctly
+            actual_batch_size = len(pano_batches)
+            if self._sample_mode == HardNegativeMiner.SampleMode.HARD_NEGATIVE:
+                num_hard_negatives_per_batch = min(
+                    math.ceil(actual_batch_size * self._hard_negative_fraction), actual_batch_size)
+            else:
+                num_hard_negatives_per_batch = 0
+
             batch = []
             for i, pano_idx in enumerate(pano_batches):
                 if i < num_hard_negatives_per_batch:
