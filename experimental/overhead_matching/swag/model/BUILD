@@ -66,6 +66,8 @@ py_library(
     ":alphaearth_extractor",
     ":semantic_landmark_extractor",
     ":panorama_semantic_landmark_extractor",
+    ":composable_clip_pano_extractor",
+    ":composable_clip_osm_extractor",
     ":synthetic_landmark_extractor",
     ":semantic_segment_extractor",
     ":absolute_position_extractor",
@@ -238,6 +240,41 @@ py_test(
     requirement("numpy"),
     "//common/torch:load_torch_deps",
     ":panorama_semantic_landmark_extractor",
+  ]
+)
+
+py_library(
+  name = "composable_clip_pano_extractor",
+  srcs = ["composable_clip_pano_extractor.py"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+    "//common/python:__subpackages__",
+  ],
+  deps = [
+    requirement("torch"),
+    requirement("transformers"),
+    "//common/torch:load_torch_deps",
+    ":swag_model_input_output",
+    ":swag_config_types",
+    ":panorama_semantic_landmark_extractor",
+    ":composable_clip_osm_extractor",
+  ]
+)
+
+py_library(
+  name = "composable_clip_osm_extractor",
+  srcs = ["composable_clip_osm_extractor.py"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+    "//common/python:__subpackages__",
+  ],
+  deps = [
+    requirement("torch"),
+    requirement("transformers"),
+    "//common/torch:load_torch_deps",
+    ":swag_model_input_output",
+    ":swag_config_types",
+    ":semantic_landmark_utils",
   ]
 )
 
