@@ -292,6 +292,15 @@ py_binary(
 )
 
 py_binary(
+  name="vis_for_human_landmark_matching_benchmark",
+  srcs=["vis_for_human_landmark_matching_benchmark.py"],
+  deps=[
+    requirement("flask"),
+    requirement("numpy"),
+  ]
+)
+
+py_binary(
   name="reexport_geojson",
   srcs=["reexport_geojson.py"],
   deps=[
