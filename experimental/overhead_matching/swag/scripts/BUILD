@@ -431,3 +431,15 @@ py_binary(
     "//common/torch:load_torch_deps",
   ]
 )
+
+py_binary(
+  name = "extractor_inference_test",
+  srcs = ["extractor_inference_test.py"],
+  deps = [
+    "//common/torch:load_torch_deps",
+    "//common/torch:load_and_save_models",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/model:swag_patch_embedding",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
+  ],
+)

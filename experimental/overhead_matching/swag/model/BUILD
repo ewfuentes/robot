@@ -66,6 +66,7 @@ py_library(
     ":alphaearth_extractor",
     ":semantic_landmark_extractor",
     ":panorama_semantic_landmark_extractor",
+    ":osm_field_extractor",
     ":synthetic_landmark_extractor",
     ":semantic_segment_extractor",
     ":absolute_position_extractor",
@@ -227,6 +228,23 @@ py_library(
     ":swag_model_input_output",
     ":swag_config_types",
     ":semantic_landmark_utils",
+  ]
+)
+
+py_library(
+  name = "osm_field_extractor",
+  srcs = ["osm_field_extractor.py"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+    "//common/python:__subpackages__",
+  ],
+  deps = [
+    requirement("torch"),
+    "//common/torch:load_torch_deps",
+    ":swag_model_input_output",
+    ":swag_config_types",
+    ":semantic_landmark_utils",
+    ":semantic_landmark_extractor",
   ]
 )
 

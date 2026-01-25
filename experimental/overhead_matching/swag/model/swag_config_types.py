@@ -83,6 +83,31 @@ class PanoramaLocationTypeExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS)
     auxiliary_info_key: str
 
 
+class OSMFieldExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    """Config for extracting embeddings for a specific OSM field from v2.0 pickle.
+
+    This extractor works with the v2.0 pickle format that stores separate embeddings
+    for different fields (name, brand, amenity, street_address, osm_sentences).
+
+    Attributes:
+        tag: Which field to extract embeddings for. Options:
+            - "name": Business/place names
+            - "brand": Brand names
+            - "amenity": Amenity types
+            - "street_address": Street addresses
+            - "osm_sentences": Full OSM sentence descriptions
+        openai_embedding_size: Output embedding dimension (crops if smaller than source)
+        embedding_version: Version directory containing embeddings.pkl
+        auxiliary_info_key: Key in auxiliary_info dict for base path
+        landmark_type: Optional geometry filter (point, linestring, polygon, multipolygon)
+    """
+    tag: str
+    openai_embedding_size: int
+    embedding_version: str
+    auxiliary_info_key: str
+    landmark_type: LandmarkType | None = None
+
+
 class SyntheticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     log_grid_spacing: int
     grid_bounds_px: int
@@ -128,6 +153,7 @@ ExtractorConfig = Union[
     PanoramaSemanticLandmarkExtractorConfig,
     PanoramaProperNounExtractorConfig,
     PanoramaLocationTypeExtractorConfig,
+    OSMFieldExtractorConfig,
     SyntheticLandmarkExtractorConfig,
     AbsolutePositionExtractorConfig,
 ]
