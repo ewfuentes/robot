@@ -324,7 +324,6 @@ py_binary(
 )
 
 py_binary(
-<<<<<<< HEAD
   name="generate_city_bboxes",
   srcs=["generate_city_bboxes.py"],
   deps=[
@@ -409,7 +408,10 @@ py_binary(
   deps=[
     requirement("google-genai"),
     requirement("google-cloud-storage"),
-=======
+  ]
+)
+
+py_binary(
   name="evaluate_histogram_on_paths",
   srcs=["evaluate_histogram_on_paths.py"],
   visibility=["//common/python:__subpackages__"],
