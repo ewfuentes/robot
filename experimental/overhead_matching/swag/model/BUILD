@@ -66,6 +66,7 @@ py_library(
     ":alphaearth_extractor",
     ":semantic_landmark_extractor",
     ":panorama_semantic_landmark_extractor",
+    ":additional_panorama_extractors",
     ":synthetic_landmark_extractor",
     ":semantic_segment_extractor",
     ":absolute_position_extractor",
@@ -237,6 +238,22 @@ py_test(
     requirement("torch"),
     requirement("numpy"),
     "//common/torch:load_torch_deps",
+    ":panorama_semantic_landmark_extractor",
+  ]
+)
+
+py_library(
+  name = "additional_panorama_extractors",
+  srcs = ["additional_panorama_extractors.py"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+    "//common/python:__subpackages__",
+  ],
+  deps = [
+    requirement("torch"),
+    "//common/torch:load_torch_deps",
+    ":swag_model_input_output",
+    ":swag_config_types",
     ":panorama_semantic_landmark_extractor",
   ]
 )

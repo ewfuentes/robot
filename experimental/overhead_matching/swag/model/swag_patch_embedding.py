@@ -13,6 +13,8 @@ from experimental.overhead_matching.swag.model.alphaearth_extractor import Alpha
 from experimental.overhead_matching.swag.model.semantic_landmark_extractor import SemanticLandmarkExtractor
 from experimental.overhead_matching.swag.model.panorama_semantic_landmark_extractor import (
     PanoramaSemanticLandmarkExtractor,
+)
+from experimental.overhead_matching.swag.model.additional_panorama_extractors import (
     PanoramaProperNounExtractor,
     PanoramaLocationTypeExtractor,
 )
