@@ -129,7 +129,7 @@ def run_histogram_filter_on_path(
 
 def get_distance_error_from_mean_history(
     vigor_dataset: vd.VigorDataset,
-    path: list[int],
+    path: list[str],
     mean_history: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Compute distance error between mean estimates and ground truth.
@@ -173,7 +173,7 @@ def evaluate_histogram_on_paths(
     vigor_dataset: vd.VigorDataset,
     sat_model: torch.nn.Module,
     pano_model: torch.nn.Module,
-    paths: list[list[int]],
+    paths: list[list[str]],
     config: HistogramFilterConfig,
     seed: int,
     output_path: Path,
@@ -187,7 +187,7 @@ def evaluate_histogram_on_paths(
         vigor_dataset: VIGOR dataset
         sat_model: Satellite embedding model
         pano_model: Panorama embedding model
-        paths: List of paths (each path is list of panorama indices)
+        paths: List of paths (each path is list of pano_ids)
         config: Histogram filter configuration
         seed: Random seed for initial offset
         output_path: Directory to save results
@@ -255,7 +255,9 @@ def evaluate_histogram_on_paths(
 
             # Get motion deltas and similarities for this path
             motion_deltas = es.get_motion_deltas_from_path(vigor_dataset, path).to(device)
-            path_similarity = all_similarity[path]  # (path_len, num_patches)
+            # Convert pano_ids to indices for similarity matrix access
+            path_indices = vigor_dataset.pano_ids_to_indices(path)
+            path_similarity = all_similarity[path_indices]  # (path_len, num_patches)
 
             # Run filter
             result = run_histogram_filter_on_path(
@@ -324,6 +326,13 @@ def construct_path_eval_inputs_from_args(
     """Load models and dataset for evaluation."""
     with open(paths_path, 'r') as f:
         paths_data = json.load(f)
+    # Check that paths use pano_id strings, not old integer indices
+    paths = paths_data.get('paths', [])
+    if paths and paths[0] and isinstance(paths[0][0], int):
+        raise ValueError(
+            f"Path file '{paths_path}' uses old index format (integers). "
+            "Regenerate with create_evaluation_paths.py to get pano_id format (strings)."
+        )
     factor = paths_data.get('args', {}).get('factor', 1.0)
     pano_model = load_model(pano_model_path, device=device)
     sat_model = load_model(sat_model_path, device=device)

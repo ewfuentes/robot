@@ -401,7 +401,13 @@ def _(Path, WagConfig, evaluate_swag, haversine, json, torch, vigor_dataset):
         path_eval_args = json.loads((path_dir.parent / "args.json").read_text())
         aux_info = json.loads((path_dir / "other_info.json").read_text())
 
-        gt_path_pano_indices = torch.load(path_dir / "path.pt")
+        gt_path_pano_ids = torch.load(path_dir / "path.pt")
+        # Check for old format
+        if gt_path_pano_ids and isinstance(gt_path_pano_ids[0], int):
+            raise ValueError(
+                f"path.pt in '{path_dir}' uses old index format (integers). "
+                "Re-run evaluation with new path files to get pano_id format (strings)."
+            )
 
         # dataset, sat_model, pano_model, paths_data = emop.construct_path_eval_inputs_from_args(
         #     sat_model_path=path_eval_args["sat_path"],
@@ -418,7 +424,7 @@ def _(Path, WagConfig, evaluate_swag, haversine, json, torch, vigor_dataset):
         inference_result = evaluate_swag.construct_inputs_and_evaluate_path(
             device="cuda:0",
             generator_seed=aux_info["seed"],
-            path=gt_path_pano_indices,
+            path=gt_path_pano_ids,
             vigor_dataset=dataset,
             path_similarity_values=path_similarity_values,
             wag_config=wag_config,
@@ -427,7 +433,7 @@ def _(Path, WagConfig, evaluate_swag, haversine, json, torch, vigor_dataset):
         obs_likelihood = pf.wag_observation_log_likelihood_from_similarity_matrix(
             path_similarity_values, wag_config.sigma_obs_prob_from_sim)
 
-        return gt_path_pano_indices, path_similarity_values, obs_likelihood, inference_result.particle_history
+        return gt_path_pano_ids, path_similarity_values, obs_likelihood, inference_result.particle_history
 
     def compute_particle_mass_near_robot(panorama_positions, particle_history, radius_m):
         dist_m = haversine.find_d_on_unit_circle(panorama_positions.unsqueeze(1), particle_history) * vigor_dataset.EARTH_RADIUS_M
@@ -435,12 +441,12 @@ def _(Path, WagConfig, evaluate_swag, haversine, json, torch, vigor_dataset):
         return torch.sum(is_in_range, axis=-1) / particle_history.shape[1]
 
     def process_path(path_dir: Path, dataset: vigor_dataset.VigorDataset):
-        pano_indices, path_similarity, obs_likelihood, particle_history = compute_particle_history(path_dir, dataset)
+        pano_ids, path_similarity, obs_likelihood, particle_history = compute_particle_history(path_dir, dataset)
         particle_history = particle_history.cuda()
-        panorama_positions = dataset.get_panorama_positions(pano_indices).cuda()
+        panorama_positions = dataset.get_panorama_positions(pano_ids).cuda()
         particle_mass_near_robot = compute_particle_mass_near_robot(panorama_positions, particle_history, radius_m=50.0)
 
-        return particle_mass_near_robot, path_similarity, obs_likelihood, pano_indices
+        return particle_mass_near_robot, path_similarity, obs_likelihood, pano_ids
 
 
     root_dir = Path('/data/overhead_matching/evaluation/results/20250719_swag_model/NewYork/all_chicago_sat_dino_pano_dino')

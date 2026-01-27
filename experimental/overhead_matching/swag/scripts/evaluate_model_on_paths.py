@@ -54,6 +54,13 @@ def construct_path_eval_inputs_from_args(
 ):
     with open(paths_path, 'r') as f:
         paths_data = json.load(f)
+    # Check that paths use pano_id strings, not old integer indices
+    paths = paths_data.get('paths', [])
+    if paths and paths[0] and isinstance(paths[0][0], int):
+        raise ValueError(
+            f"Path file '{paths_path}' uses old index format (integers). "
+            "Regenerate with create_evaluation_paths.py to get pano_id format (strings)."
+        )
     factor = paths_data.get('args', {}).get('factor', 1.0)
     pano_model = load_model(pano_model_path, device=device)
     sat_model = load_model(sat_model_path, device=device)

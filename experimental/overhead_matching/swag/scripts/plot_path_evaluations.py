@@ -116,6 +116,12 @@ if __name__ == "__main__":
     for path_eval_path in sorted(Path(args.eval_path).glob("*/")):
         print(f"Plotting path evaluation for {path_eval_path}")
         path = torch.load(path_eval_path / 'path.pt')
+        # Check for old format
+        if path and isinstance(path[0], int):
+            raise ValueError(
+                f"path.pt in '{path_eval_path}' uses old index format (integers). "
+                "Re-run evaluation with new path files to get pano_id format (strings)."
+            )
         particle_history = torch.load(path_eval_path / 'particle_history.pt')
         similarity = torch.load(path_eval_path / 'similarity.pt')
         save_all_similarity_plots(
