@@ -21,17 +21,31 @@ from flask import Flask, render_template_string, send_file, jsonify, request
 import numpy as np
 from typing import Optional
 
+# Torch modules will be imported lazily when needed
+TORCH_AVAILABLE = None  # Will be set on first import attempt
+
 # Global data
 VISUALIZER_DATA: Optional[dict] = None
 PANORAMA_PATH_MAP: dict[str, Path] = {}
 SIMILARITY_MATRIX: Optional[np.ndarray] = None
 PANORAMA_DIR: Optional[Path] = None
 
+# Model inference state (lazy loaded)
+MODELS_LOADED = False
+PANO_MODEL = None
+SAT_MODEL = None
+OPENAI_CLIENT = None
+PANO_EMBEDDINGS = None  # Cached embeddings for all panoramas
+SAT_EMBEDDINGS = None  # Cached embeddings for all satellites
+EDITED_STATE = {}  # {mode_idx: {sentences, custom_embedding, similarities}}
+
 app = Flask(__name__)
 
 
 def load_visualizer_data(pickle_path: Path) -> dict:
     """Load and process the visualizer data from pickle file."""
+    global PANO_EMBEDDINGS, SAT_EMBEDDINGS
+
     print(f"Loading data from {pickle_path}...")
     with open(pickle_path, 'rb') as f:
         data = pickle.load(f)
@@ -49,6 +63,20 @@ def load_visualizer_data(pickle_path: Path) -> dict:
 
     print(f"Reshaping similarity matrix to ({n_pano}, {n_sat})...")
     data['similarity_matrix'] = np.array(data['similarity_matrix'], dtype=np.float32).reshape(n_pano, n_sat)
+
+    # Load pre-computed embeddings if available
+    if 'panorama_embeddings' in data and 'sat_embeddings' in data:
+        print("Loading pre-computed embeddings...")
+        # Convert to numpy arrays for now, will convert to torch when models are loaded
+        data['panorama_embeddings_array'] = np.array(data['panorama_embeddings'], dtype=np.float32)
+        data['sat_embeddings_array'] = np.array(data['sat_embeddings'], dtype=np.float32)
+        print(f"  Panorama embeddings: {data['panorama_embeddings_array'].shape}")
+        print(f"  Satellite embeddings: {data['sat_embeddings_array'].shape}")
+    else:
+        print("Warning: Pre-computed embeddings not found in pickle file.")
+        print("Landmark editing will require computing embeddings on-demand.")
+        data['panorama_embeddings_array'] = None
+        data['sat_embeddings_array'] = None
 
     print("Data loaded successfully!")
     return data
@@ -341,6 +369,195 @@ def get_batch_items():
     return jsonify({'items': items})
 
 
+# ============================================================================
+# Landmark Editing API Endpoints
+# ============================================================================
+
+@app.route('/api/edit/landmarks', methods=['POST'])
+def api_edit_landmarks():
+    """Save edited landmarks to session state."""
+    data = request.json
+    item_idx = data.get('item_idx')
+    mode = data.get('mode')  # 'panorama' or 'satellite'
+    sentences = data.get('sentences', [])
+
+    if item_idx is None or mode is None:
+        return jsonify({'error': 'Missing item_idx or mode'}), 400
+
+    # Store edited landmarks in global state
+    state_key = f"{mode}_{item_idx}"
+    EDITED_STATE[state_key] = {
+        'sentences': sentences,
+        'mode': mode,
+        'item_idx': item_idx
+    }
+
+    return jsonify({'success': True})
+
+
+@app.route('/api/edit/recompute', methods=['POST'])
+def api_edit_recompute():
+    """Recompute similarities using edited landmarks."""
+    data = request.json
+    item_idx = data.get('item_idx')
+    mode = data.get('mode')
+
+    if item_idx is None or mode is None:
+        return jsonify({'error': 'Missing item_idx or mode'}), 400
+
+    state_key = f"{mode}_{item_idx}"
+    if state_key not in EDITED_STATE:
+        return jsonify({'error': 'No edited landmarks found'}), 400
+
+    try:
+        # Get custom sentences
+        custom_sentences = EDITED_STATE[state_key]['sentences']
+
+        # Compute new similarities
+        similarities = compute_similarity_with_custom_landmarks(
+            item_idx, mode, custom_sentences
+        )
+
+        # Store in state for retrieval
+        EDITED_STATE[state_key]['similarities'] = similarities
+
+        return jsonify({
+            'success': True,
+            'similarities': similarities
+        })
+
+    except Exception as e:
+        import traceback
+        return jsonify({
+            'error': f'Error computing similarities: {str(e)}',
+            'traceback': traceback.format_exc()
+        }), 500
+
+
+@app.route('/api/edit/reset', methods=['POST'])
+def api_edit_reset():
+    """Clear edits and restore original data."""
+    data = request.json
+    item_idx = data.get('item_idx')
+    mode = data.get('mode')
+
+    if item_idx is None or mode is None:
+        return jsonify({'error': 'Missing item_idx or mode'}), 400
+
+    state_key = f"{mode}_{item_idx}"
+    if state_key in EDITED_STATE:
+        del EDITED_STATE[state_key]
+
+    return jsonify({'success': True})
+
+
+@app.route('/api/edit/status', methods=['GET'])
+def api_edit_status():
+    """Check if current item has edits."""
+    item_idx = request.args.get('item_idx', type=int)
+    mode = request.args.get('mode')
+
+    if item_idx is None or mode is None:
+        return jsonify({'error': 'Missing item_idx or mode'}), 400
+
+    state_key = f"{mode}_{item_idx}"
+    has_edits = state_key in EDITED_STATE
+    has_similarities = has_edits and 'similarities' in EDITED_STATE.get(state_key, {})
+
+    response = {
+        'has_edits': has_edits,
+        'has_similarities': has_similarities
+    }
+
+    if has_edits:
+        response['sentences'] = EDITED_STATE[state_key]['sentences']
+    if has_similarities:
+        response['similarities'] = EDITED_STATE[state_key]['similarities']
+
+    return jsonify(response)
+
+
+@app.route('/api/test/validate_embeddings', methods=['POST'])
+def api_test_validate_embeddings():
+    """
+    Test endpoint to validate that recomputing embeddings for unedited landmarks
+    produces the same similarities as the cached data.
+    """
+    data = request.json
+    num_test_items = data.get('num_test_items', 5)
+    mode = data.get('mode', 'panorama')
+
+    try:
+        # Ensure models are loaded
+        load_models_lazy()
+
+        torch = globals()['torch']
+
+        results = []
+
+        # Test a few items
+        if mode == 'panorama':
+            test_indices = list(range(min(num_test_items, len(VISUALIZER_DATA['panorama_id']))))
+            num_opposite = len(VISUALIZER_DATA['sat_loc'])
+        else:
+            test_indices = list(range(min(num_test_items, len(VISUALIZER_DATA['sat_loc']))))
+            num_opposite = len(VISUALIZER_DATA['panorama_id'])
+
+        for idx in test_indices:
+            # Get original sentences
+            if mode == 'panorama':
+                original_sentences = VISUALIZER_DATA['panorama_sentences'][idx]
+                # Get cached similarities from similarity matrix
+                # Matrix shape is (npano, nsat), so extract row idx
+                cached_similarities = SIMILARITY_MATRIX[idx, :].tolist()
+            else:
+                original_sentences = VISUALIZER_DATA['sat_sentences'][idx]
+                # For satellite mode, similarities are in columns
+                # Matrix shape is (npano, nsat), so extract column idx
+                cached_similarities = SIMILARITY_MATRIX[:, idx].tolist()
+
+            # Recompute similarities using our implementation
+            recomputed_similarities = compute_similarity_with_custom_landmarks(
+                idx, mode, original_sentences
+            )
+
+            # Compare
+            cached_tensor = torch.tensor(cached_similarities, dtype=torch.float32)
+            recomputed_tensor = torch.tensor(recomputed_similarities, dtype=torch.float32)
+
+            max_diff = (cached_tensor - recomputed_tensor).abs().max().item()
+            mean_diff = (cached_tensor - recomputed_tensor).abs().mean().item()
+            correlation = torch.corrcoef(torch.stack([cached_tensor, recomputed_tensor]))[0, 1].item()
+
+            results.append({
+                'idx': idx,
+                'num_sentences': len(original_sentences),
+                'max_diff': float(max_diff),
+                'mean_diff': float(mean_diff),
+                'correlation': float(correlation),
+                'cached_min': float(cached_tensor.min()),
+                'cached_max': float(cached_tensor.max()),
+                'cached_mean': float(cached_tensor.mean()),
+                'recomputed_min': float(recomputed_tensor.min()),
+                'recomputed_max': float(recomputed_tensor.max()),
+                'recomputed_mean': float(recomputed_tensor.mean()),
+            })
+
+        return jsonify({
+            'success': True,
+            'mode': mode,
+            'num_tested': len(results),
+            'results': results
+        })
+
+    except Exception as e:
+        import traceback
+        return jsonify({
+            'error': f'Validation error: {str(e)}',
+            'traceback': traceback.format_exc()
+        }), 500
+
+
 # HTML Template with embedded CSS and JavaScript
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
@@ -549,6 +766,67 @@ HTML_TEMPLATE = '''
             font-size: 14px;
             line-height: 1.5;
             color: #374151;
+        }
+
+        .landmark-edit-row {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 8px;
+            align-items: flex-start;
+        }
+
+        .landmark-edit-input {
+            flex: 1;
+            padding: 8px 12px;
+            background: white;
+            border: 2px solid #667eea;
+            border-radius: 4px;
+            font-size: 14px;
+            line-height: 1.5;
+            font-family: inherit;
+            resize: vertical;
+            min-height: 42px;
+        }
+
+        .landmark-edit-input:focus {
+            outline: none;
+            border-color: #4f46e5;
+            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+        }
+
+        .landmark-remove-btn {
+            padding: 6px 10px;
+            background: #ef4444;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            font-size: 18px;
+            font-weight: bold;
+            cursor: pointer;
+            line-height: 1;
+            transition: background 0.2s;
+        }
+
+        .landmark-remove-btn:hover {
+            background: #dc2626;
+        }
+
+        .landmark-add-btn {
+            padding: 8px 16px;
+            background: #10b981;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            font-size: 14px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            transition: background 0.2s;
+        }
+
+        .landmark-add-btn:hover {
+            background: #059669;
         }
 
         .ground-truth-card {
@@ -835,6 +1113,31 @@ HTML_TEMPLATE = '''
                         </label>
                     </div>
                 </div>
+
+                <!-- Edit controls -->
+                <div style="display: flex; gap: 8px; margin-bottom: 12px; align-items: center;">
+                    <button id="edit-landmarks-btn" onclick="toggleEditMode()"
+                            style="padding: 6px 12px; font-size: 13px; border: 1px solid #d1d5db; background: white; border-radius: 4px; cursor: pointer; display: flex; align-items: center; gap: 4px;">
+                        ✏️ Edit
+                    </button>
+                    <button id="recompute-btn" onclick="recomputeSimilarities()"
+                            style="padding: 6px 12px; font-size: 13px; border: 1px solid #3b82f6; background: #3b82f6; color: white; border-radius: 4px; cursor: pointer; display: none; align-items: center; gap: 4px;">
+                        🔄 Recompute
+                    </button>
+                    <button id="reset-btn" onclick="resetEdits()"
+                            style="padding: 6px 12px; font-size: 13px; border: 1px solid #ef4444; background: #ef4444; color: white; border-radius: 4px; cursor: pointer; display: none; align-items: center; gap: 4px;">
+                        ↩️ Reset
+                    </button>
+                    <div id="edit-status" style="font-size: 12px; color: #6b7280; margin-left: auto; display: none;">
+                        <span id="edit-status-text"></span>
+                    </div>
+                </div>
+
+                <!-- Edit indicator -->
+                <div id="edit-indicator" style="display: none; padding: 8px 12px; margin-bottom: 12px; background: #fef3c7; border-left: 3px solid #f59e0b; border-radius: 4px; font-size: 13px; color: #92400e;">
+                    ⚠️ Viewing edited landmarks. Click "Recompute" to update similarities with your changes.
+                </div>
+
                 <ul class="landmarks-list" id="landmarks-list">
                     <li class="landmark-item">Loading...</li>
                 </ul>
@@ -889,7 +1192,12 @@ HTML_TEMPLATE = '''
             queryPhrases: [],  // Extracted phrases from Python expression
             showGroundTruth: false,
             showMap: false,
-            mapInitialized: false
+            mapInitialized: false,
+            // Edit mode state
+            isEditing: false,
+            hasUnsavedEdits: false,
+            hasComputedEdits: false,
+            editedLandmarks: null
         };
 
         // Initialize on page load
@@ -1013,8 +1321,12 @@ HTML_TEMPLATE = '''
         }
 
         function updateLandmarks() {
+            if (state.isEditing) {
+                return; // Don't update while in edit mode
+            }
+
             const list = document.getElementById('landmarks-list');
-            const sentences = deduplicateSentences(state.currentData.sentences);
+            const sentences = state.editedLandmarks || deduplicateSentences(state.currentData.sentences);
 
             if (sentences.length === 0) {
                 list.innerHTML = '<li class="landmark-item">No landmarks</li>';
@@ -1029,6 +1341,225 @@ HTML_TEMPLATE = '''
             list.innerHTML = sentences.map(s =>
                 `<li class="landmark-item">${escapeHtml(s)}</li>`
             ).join('') + duplicateNote;
+        }
+
+        // Edit mode functions
+        function toggleEditMode() {
+            if (state.mode !== 'panorama') {
+                alert('Landmark editing is only supported for panorama mode.');
+                return;
+            }
+
+            if (state.isEditing) {
+                exitEditMode();
+            } else {
+                enterEditMode();
+            }
+        }
+
+        function enterEditMode() {
+            state.isEditing = true;
+            const sentences = state.editedLandmarks || deduplicateSentences(state.currentData.sentences);
+            const list = document.getElementById('landmarks-list');
+
+            const editHTML = sentences.map((s, idx) => `
+                <div class="landmark-edit-row">
+                    <textarea class="landmark-edit-input" data-idx="${idx}">${escapeHtml(s)}</textarea>
+                    <button class="landmark-remove-btn" onclick="removeLandmark(${idx})">×</button>
+                </div>
+            `).join('');
+
+            const addButtonHTML = `
+                <button class="landmark-add-btn" onclick="addLandmark()">
+                    + Add Landmark
+                </button>
+            `;
+
+            list.innerHTML = editHTML + addButtonHTML;
+
+            // Update button states
+            document.getElementById('edit-landmarks-btn').textContent = '💾 Save';
+            document.getElementById('recompute-btn').style.display = 'none';
+            document.getElementById('reset-btn').style.display = 'none';
+        }
+
+        async function exitEditMode() {
+            // Collect edited landmarks
+            const textareas = document.querySelectorAll('.landmark-edit-input');
+            const editedSentences = Array.from(textareas)
+                .map(ta => ta.value.trim())
+                .filter(s => s.length > 0);
+
+            if (editedSentences.length === 0) {
+                alert('Cannot save with no landmarks. Add at least one landmark.');
+                return;
+            }
+
+            // Save to client state
+            state.editedLandmarks = editedSentences;
+            state.isEditing = false;
+
+            // Save to server
+            try {
+                const response = await fetch('/api/edit/landmarks', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        item_idx: state.currentIndex,
+                        mode: state.mode,
+                        sentences: editedSentences
+                    })
+                });
+
+                const data = await response.json();
+
+                if (!data.success) {
+                    throw new Error(data.error || 'Failed to save landmarks');
+                }
+
+                state.hasUnsavedEdits = true;
+
+                // Update UI
+                updateLandmarks();
+                document.getElementById('edit-landmarks-btn').textContent = '✏️ Edit';
+                document.getElementById('recompute-btn').style.display = 'inline-flex';
+                document.getElementById('reset-btn').style.display = 'inline-flex';
+                document.getElementById('edit-indicator').style.display = 'block';
+
+            } catch (error) {
+                alert(`Failed to save landmarks: ${error.message}`);
+                // Re-enter edit mode so user doesn't lose their changes
+                state.isEditing = true;
+            }
+        }
+
+        function addLandmark() {
+            const list = document.getElementById('landmarks-list');
+            const existingRows = list.querySelectorAll('.landmark-edit-row');
+            const newIdx = existingRows.length;
+
+            const newRowHTML = `
+                <div class="landmark-edit-row">
+                    <textarea class="landmark-edit-input" data-idx="${newIdx}" placeholder="Enter landmark description..."></textarea>
+                    <button class="landmark-remove-btn" onclick="removeLandmark(${newIdx})">×</button>
+                </div>
+            `;
+
+            const addButton = list.querySelector('.landmark-add-btn');
+            addButton.insertAdjacentHTML('beforebegin', newRowHTML);
+
+            // Focus on the new textarea
+            list.querySelectorAll('.landmark-edit-input')[newIdx].focus();
+        }
+
+        function removeLandmark(idx) {
+            const list = document.getElementById('landmarks-list');
+            const rows = list.querySelectorAll('.landmark-edit-row');
+            if (rows.length > 1) {  // Keep at least one landmark
+                rows[idx].remove();
+            } else {
+                alert('Cannot remove the last landmark. Add a new one first if you want to replace it.');
+            }
+        }
+
+        async function recomputeSimilarities() {
+            if (!state.editedLandmarks) {
+                alert('No edits to recompute.');
+                return;
+            }
+
+            const recomputeBtn = document.getElementById('recompute-btn');
+            const statusText = document.getElementById('edit-status-text');
+            const statusDiv = document.getElementById('edit-status');
+
+            recomputeBtn.disabled = true;
+            recomputeBtn.textContent = '⏳ Computing...';
+            statusDiv.style.display = 'block';
+            statusText.textContent = 'Generating embeddings and computing similarities...';
+
+            try {
+                const response = await fetch('/api/edit/recompute', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        item_idx: state.currentIndex,
+                        mode: state.mode,
+                        sentences: state.editedLandmarks
+                    })
+                });
+
+                const data = await response.json();
+
+                if (!data.success) {
+                    throw new Error(data.error || 'Recomputation failed');
+                }
+
+                // Update similarities
+                state.allSimilarities = data.similarities;
+                state.hasComputedEdits = true;
+                state.hasUnsavedEdits = false;
+
+                // Update UI
+                updateHistogram();
+                updateResultsList();
+                if (state.showMap) {
+                    updateMap();
+                }
+
+                statusText.textContent = '✓ Similarities updated successfully!';
+                setTimeout(() => {
+                    statusDiv.style.display = 'none';
+                }, 3000);
+
+            } catch (error) {
+                statusText.textContent = `Error: ${error.message}`;
+                statusText.style.color = '#ef4444';
+                alert(`Failed to recompute similarities: ${error.message}`);
+            } finally {
+                recomputeBtn.disabled = false;
+                recomputeBtn.textContent = '🔄 Recompute';
+            }
+        }
+
+        async function resetEdits() {
+            if (!confirm('Reset all edits and restore original landmarks?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/edit/reset', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        item_idx: state.currentIndex,
+                        mode: state.mode
+                    })
+                });
+
+                const data = await response.json();
+
+                if (!data.success) {
+                    throw new Error(data.error || 'Reset failed');
+                }
+
+                // Clear edit state
+                state.editedLandmarks = null;
+                state.hasUnsavedEdits = false;
+                state.hasComputedEdits = false;
+                state.isEditing = false;
+
+                // Reload original data
+                await loadItem(state.currentIndex);
+
+                // Update UI
+                document.getElementById('edit-landmarks-btn').textContent = '✏️ Edit';
+                document.getElementById('recompute-btn').style.display = 'none';
+                document.getElementById('reset-btn').style.display = 'none';
+                document.getElementById('edit-indicator').style.display = 'none';
+
+            } catch (error) {
+                alert(`Failed to reset edits: ${error.message}`);
+            }
         }
 
         async function toggleGroundTruth() {
@@ -1803,6 +2334,254 @@ HTML_TEMPLATE = '''
 </body>
 </html>
 '''
+
+
+# ============================================================================
+# Model Loading and Inference Functions
+# ============================================================================
+
+def load_models_lazy():
+    """Lazy load PyTorch models and pre-compute all embeddings on first use."""
+    global MODELS_LOADED, PANO_MODEL, SAT_MODEL, OPENAI_CLIENT
+    global PANO_EMBEDDINGS, SAT_EMBEDDINGS, TORCH_AVAILABLE
+
+    if MODELS_LOADED:
+        return
+
+    # Try to import torch modules if not already attempted
+    if TORCH_AVAILABLE is None:
+        try:
+            # CRITICAL: Import load_torch_deps BEFORE torch to enable CUDA
+            import common.torch.load_torch_deps
+            import torch
+            import torch.nn.functional as F
+            import common.torch.load_and_save_models as lsm
+            from openai import OpenAI
+
+            # Make modules globally available
+            globals()['torch'] = torch
+            globals()['F'] = F
+            globals()['lsm'] = lsm
+            globals()['OpenAI'] = OpenAI
+
+            TORCH_AVAILABLE = True
+            print("Successfully imported PyTorch with CUDA support")
+        except ImportError as e:
+            TORCH_AVAILABLE = False
+            raise RuntimeError(f"Could not import PyTorch dependencies: {e}")
+
+    if not TORCH_AVAILABLE:
+        raise RuntimeError("PyTorch dependencies not available. Cannot load models.")
+
+    print("\n" + "="*80)
+    print("Loading PyTorch models and computing embeddings...")
+    print("="*80)
+
+    try:
+        # Import modules from globals (set above)
+        torch = globals()['torch']
+        lsm = globals()['lsm']
+        OpenAI = globals()['OpenAI']
+
+        # Load models from same paths as understand_model_performance.py
+        model_base = Path("/data/overhead_matching/training_outputs/"
+                         "251205_09000000_model_size_experiments/"
+                         "landmark_base_performance/"
+                         "panorama_semantic_landmark_embeddings/")
+
+        print(f"Loading panorama model from {model_base / '0099_panorama'}...")
+        PANO_MODEL = lsm.load_model(model_base / "0099_panorama", device="cuda:0")
+
+        print(f"Loading satellite model from {model_base / '0099_satellite'}...")
+        SAT_MODEL = lsm.load_model(model_base / "0099_satellite", device="cuda:0")
+
+        # Debug: Print available extractors
+        print(f"\nPanorama model extractors: {list(PANO_MODEL._config.extractor_config_by_name.keys())}")
+        print(f"Satellite model extractors: {list(SAT_MODEL._config.extractor_config_by_name.keys())}")
+
+        # Initialize OpenAI client
+        print("Initializing OpenAI client...")
+        OPENAI_CLIENT = OpenAI()
+
+        # Load pre-computed embeddings from pickle file
+        if VISUALIZER_DATA.get('panorama_embeddings_array') is not None:
+            print("\nLoading pre-computed embeddings from pickle file...")
+            PANO_EMBEDDINGS = torch.from_numpy(VISUALIZER_DATA['panorama_embeddings_array']).to("cuda:0")
+            SAT_EMBEDDINGS = torch.from_numpy(VISUALIZER_DATA['sat_embeddings_array']).to("cuda:0")
+            print(f"  ✓ Loaded {PANO_EMBEDDINGS.shape[0]} panorama embeddings (shape: {PANO_EMBEDDINGS.shape})")
+            print(f"  ✓ Loaded {SAT_EMBEDDINGS.shape[0]} satellite embeddings (shape: {SAT_EMBEDDINGS.shape})")
+        else:
+            print("\nWarning: No pre-computed embeddings available.")
+            print("Embeddings will be computed on-demand (slower, requires OpenAI API calls).")
+
+        MODELS_LOADED = True
+        print("\n" + "="*80)
+        print("Models loaded successfully!")
+        print("="*80 + "\n")
+
+    except Exception as e:
+        print(f"\nERROR loading models: {e}")
+        print("Landmark editing will be disabled.")
+        import traceback
+        traceback.print_exc()
+        raise
+
+
+def compute_item_embedding(sentences: list[str], mode: str):
+    """
+    Compute embedding for a single panorama given its landmark sentences.
+
+    Full pipeline:
+    1. Generate OpenAI embeddings for sentences (1536-dim, full length)
+    2. Normalize embeddings
+    3. Project to model output dimension (no position embeddings - NullPositionEmbedding behavior)
+    4. Run through aggregator transformer
+    5. Extract CLS token output (final embedding)
+
+    Args:
+        sentences: List of landmark description strings
+        mode: 'panorama' only (satellite mode not supported)
+
+    Returns:
+        torch.Tensor of shape (output_dim,) - normalized embedding vector
+    """
+    if mode != 'panorama':
+        raise ValueError("Only panorama mode is supported for landmark editing")
+
+    torch = globals()['torch']
+    F = globals()['F']
+
+    model = PANO_MODEL
+    extractor_name = 'panorama_semantic_landmark_extractor'
+    output_dim = model._output_dim
+
+    if not sentences or len(sentences) == 0:
+        # No landmarks - return zero embedding
+        return torch.zeros(output_dim, device=model._cls_token.device)
+
+    # Step 1: Generate OpenAI embeddings (1536-dim, full length - no truncation)
+    raw_embeddings = generate_embeddings_for_sentences(sentences)  # (N_sentences, 1536)
+    raw_embeddings = raw_embeddings.to(model._cls_token.device)
+
+    # Step 2: Normalize
+    raw_embeddings = F.normalize(raw_embeddings, dim=-1)
+
+    # Step 3: Project to model output dimension
+    # NullPositionEmbedding behavior: no position features appended
+    projection = model._projection_by_name[extractor_name]
+    projected_tokens = projection(raw_embeddings)  # (N_sentences, output_dim)
+
+    # Add token marker
+    token_marker = model._token_marker_by_name[extractor_name]
+
+    # Ensure token_marker is 1D (output_dim,) by squeezing out batch/sequence dimensions
+    token_marker_squeezed = token_marker.squeeze()
+    tokens_with_marker = projected_tokens + token_marker_squeezed  # (N_sentences, output_dim)
+
+    # Add batch dimension
+    tokens_with_marker = tokens_with_marker.unsqueeze(0)  # (1, N_sentences, output_dim)
+
+    # Step 4: Add CLS token (expand to batch size like in swag_patch_embedding.py:506)
+    batch_size = tokens_with_marker.shape[0]  # Should be 1
+    cls_token = model._cls_token.expand(batch_size, -1, -1)  # (batch_size, num_embeddings, output_dim)
+    all_tokens = torch.cat([cls_token, tokens_with_marker], dim=1)  # (batch_size, num_embeddings + N_sentences, output_dim)
+
+    # CRITICAL: Normalize all input tokens before aggregator (swag_patch_embedding.py:508-509)
+    if model._normalize_embeddings:
+        all_tokens = F.normalize(all_tokens, dim=-1)
+
+    # Create mask (all tokens are valid)
+    token_mask = torch.zeros(all_tokens.shape[0], all_tokens.shape[1], dtype=torch.bool, device=all_tokens.device)
+
+    # Step 5: Run through aggregator transformer
+    aggregated = model._aggregator_model(all_tokens, token_mask)  # (1, num_embeddings + N_sentences, output_dim)
+
+    # Extract CLS token output (first num_embeddings tokens, then average)
+    cls_output = aggregated[:, :model._config.num_embeddings, :].mean(dim=1).squeeze(0)  # (output_dim,)
+
+    # Final normalization if configured
+    if model._normalize_embeddings:
+        cls_output = F.normalize(cls_output, dim=-1)
+
+    return cls_output
+
+
+def generate_embeddings_for_sentences(sentences: list[str]):
+    """
+    Call OpenAI API to generate embeddings for a list of sentences.
+
+    Args:
+        sentences: List of text descriptions
+
+    Returns:
+        torch.Tensor of shape (len(sentences), 1536)
+    """
+    torch = globals()['torch']
+
+    if not sentences:
+        return torch.zeros((0, 1536))
+
+    try:
+        response = OPENAI_CLIENT.embeddings.create(
+            model="text-embedding-3-small",
+            input=sentences
+        )
+
+        # Extract embeddings from response
+        embeddings = [item.embedding for item in response.data]
+        return torch.tensor(embeddings, dtype=torch.float32)
+
+    except Exception as e:
+        print(f"ERROR calling OpenAI API: {e}")
+        raise
+
+
+def compute_similarity_with_custom_landmarks(
+    item_idx: int,
+    mode: str,
+    custom_sentences: list[str]
+) -> list[float]:
+    """
+    Recompute similarities using custom landmark descriptions.
+    Only supports panorama mode.
+
+    Steps:
+    1. Ensure models and pre-computed embeddings are loaded
+    2. Generate embedding for custom panorama landmarks (OpenAI API + full model pipeline)
+    3. Compute dot product with pre-computed satellite embeddings
+
+    Args:
+        item_idx: Index of panorama item
+        mode: 'panorama' only (satellite mode not supported)
+        custom_sentences: New landmark descriptions
+
+    Returns:
+        List of similarity scores for all satellites
+    """
+    if mode != 'panorama':
+        raise ValueError("Only panorama mode is supported for landmark editing. Cannot edit satellite landmarks.")
+
+    # Ensure models and embeddings are loaded
+    load_models_lazy()
+
+    torch = globals()['torch']
+
+    if PANO_EMBEDDINGS is None or SAT_EMBEDDINGS is None:
+        raise RuntimeError("Pre-computed embeddings not available. Please regenerate the pickle file with embeddings.")
+
+    # Compute embedding for custom panorama landmarks (runs full model pipeline)
+    custom_embedding = compute_item_embedding(custom_sentences, mode)  # (output_dim,)
+
+    # Get all pre-computed satellite embeddings
+    sat_embeddings = SAT_EMBEDDINGS  # (N_sat, output_dim)
+
+    # Compute dot product similarities
+    similarities = torch.matmul(
+        sat_embeddings,  # (N_sat, output_dim)
+        custom_embedding.unsqueeze(-1)  # (output_dim, 1)
+    ).squeeze(-1)  # (N_sat,)
+
+    return similarities.cpu().tolist()
 
 
 def main():
