@@ -297,6 +297,14 @@ py_binary(
   deps=[
     requirement("flask"),
     requirement("numpy"),
+    requirement("torch"),
+    requirement("openai"),
+    requirement("msgspec"),
+    "//common/torch:load_torch_deps",
+    "//common/torch:load_and_save_models",
+    "//common/python:serialization",
+    "//experimental/overhead_matching/swag/model:patch_embedding",
+    "//experimental/overhead_matching/swag/model:swag_patch_embedding",
   ]
 )
 

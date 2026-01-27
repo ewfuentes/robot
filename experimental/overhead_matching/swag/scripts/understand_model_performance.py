@@ -248,15 +248,17 @@ def _(
     similarity_tensor,
     tqdm,
 ):
-    # export 
+    # export
 
     output_dict = {
         "similarity_matrix": similarity_tensor.flatten().tolist(),  # list[float] flattened, npano * nsat
-        "panorama_id": [], # list[str] 
+        "panorama_id": [], # list[str]
         "panorama_loc":  [], # list[tuple[float,float]] =
         "panorama_sentences":  [], # list[list[str]] =
-        "sat_loc": [], # list[tuple[float,float]] = 
+        "panorama_embeddings": pano_inference_data["pano_embedding_vector"].squeeze(1).cpu().tolist(),  # list[list[float]], shape (npano, emb_dim)
+        "sat_loc": [], # list[tuple[float,float]] =
         "sat_sentences":  [], # list[list[str]] =
+        "sat_embeddings": sat_inference_data["sat_embedding_vector"].squeeze(1).cpu().tolist(),  # list[list[float]], shape (nsat, emb_dim)
         "pano_to_positive_sat_index_map":  [], # list[[list[int]] =
     }
 
