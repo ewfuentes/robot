@@ -10,6 +10,7 @@ import torch
 import math
 
 from common.gps import web_mercator
+from experimental.overhead_matching.swag.data.vigor_dataset import EARTH_RADIUS_M
 from experimental.overhead_matching.swag.filter.histogram_belief import (
     HistogramBelief,
 )
@@ -30,7 +31,7 @@ def get_meters_per_pixel(lat_deg: float, zoom_level: int) -> float:
     Returns:
         Meters per pixel at the given latitude
     """
-    earth_circumference_m = 2 * math.pi * 6_371_000.0
+    earth_circumference_m = 2 * math.pi * EARTH_RADIUS_M
     map_size_px = 2 ** (8 + zoom_level)
     meters_per_pixel_equator = earth_circumference_m / map_size_px
     # Scale by cos(lat) for latitude correction

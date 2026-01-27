@@ -18,10 +18,9 @@ from experimental.overhead_matching.swag.filter.histogram_belief import (
     GridSpec,
     HistogramBelief,
 )
+from experimental.overhead_matching.swag.data.vigor_dataset import EARTH_RADIUS_M
 from common.gps import web_mercator
 from common.math.haversine import find_d_on_unit_circle
-
-EARTH_RADIUS_M = 6_371_000.0
 
 
 # =============================================================================
@@ -36,7 +35,7 @@ class TestGetMetersPerPixel(unittest.TestCase):
         """At equator, meters_per_pixel has an exact formula."""
         lat = 0.0
         zoom = 20
-        earth_circumference_m = 2 * math.pi * 6_371_000.0
+        earth_circumference_m = 2 * math.pi * EARTH_RADIUS_M
         map_size_px = 2 ** (8 + zoom)
         expected = earth_circumference_m / map_size_px
 
