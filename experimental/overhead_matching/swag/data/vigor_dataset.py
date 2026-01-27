@@ -830,9 +830,17 @@ class VigorDataset(torch.utils.data.Dataset):
 
         Returns:
             List of integer indices corresponding to the pano_ids, preserving order.
+
+        Raises:
+            ValueError: If any pano_id is not found in the dataset.
         """
-        pano_id_to_idx = {row['pano_id']: idx for idx, row in self._panorama_metadata.iterrows()}
-        return [pano_id_to_idx[pano_id] for pano_id in pano_ids]
+        pano_index = pd.Index(self._panorama_metadata['pano_id'])
+        indices = pano_index.get_indexer(pano_ids)
+        missing_mask = indices == -1
+        if missing_mask.any():
+            missing_ids = [pano_ids[i] for i, is_missing in enumerate(missing_mask) if is_missing]
+            raise ValueError(f"pano_ids not found in dataset: {missing_ids}")
+        return indices.tolist()
 
     def get_panorama_positions(self, path: list[str] = None) -> torch.Tensor:
         """Returns a tensor of shape (N, 2) where N is the number of panoramas.
