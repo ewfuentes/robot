@@ -116,3 +116,28 @@ py_test(
     ":swag_algorithm",
   ]
 )
+
+py_library(
+  name = "convergence_metrics",
+  srcs = ["convergence_metrics.py"],
+  visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+  deps = [
+    requirement("torch"),
+    "//common/gps:web_mercator",
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/filter:histogram_belief",
+  ],
+)
+
+py_test(
+  name = "convergence_metrics_test",
+  srcs = ["convergence_metrics_test.py"],
+  deps = [
+    requirement("torch"),
+    "//common/gps:web_mercator",
+    "//common/math:haversine",
+    "//common/torch:load_torch_deps",
+    ":convergence_metrics",
+    "//experimental/overhead_matching/swag/filter:histogram_belief",
+  ],
+)

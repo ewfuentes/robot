@@ -1,6 +1,10 @@
 import experimental.overhead_matching.swag.data.vigor_dataset as vd
 import experimental.overhead_matching.swag.evaluation.evaluate_swag as es
 from experimental.overhead_matching.swag.evaluation.wag_config_pb2 import SatellitePatchConfig
+from experimental.overhead_matching.swag.evaluation.convergence_metrics import (
+    compute_probability_mass_within_radius,
+    compute_convergence_cost,
+)
 from experimental.overhead_matching.swag.filter.histogram_belief import (
     GridSpec,
     HistogramBelief,
@@ -18,7 +22,7 @@ import math
 import common.torch.load_torch_deps
 import torch
 import tqdm
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 def load_model(path, device='cuda'):
@@ -61,6 +65,9 @@ class HistogramPathResult:
     mean_history: torch.Tensor  # (path_len + 1, 2) lat/lon estimates
     variance_history: torch.Tensor  # (path_len + 1, 2) variance in degrees squared
     final_belief: HistogramBelief
+    # Convergence metrics: probability mass within radius at each step
+    # Keys are radius in meters, values are (path_len + 1,) tensors
+    prob_mass_by_radius: dict[int, torch.Tensor] = field(default_factory=dict)
 
 
 def get_dataset_bounds(vigor_dataset: vd.VigorDataset) -> tuple[float, float, float, float]:
@@ -87,6 +94,8 @@ def run_histogram_filter_on_path(
     path_similarity: torch.Tensor,
     mapping: CellToPatchMapping,
     config: HistogramFilterConfig,
+    true_latlons: torch.Tensor | None = None,
+    convergence_radii: list[int] | None = None,
 ) -> HistogramPathResult:
     """Run histogram filter on a single path.
 
@@ -96,12 +105,26 @@ def run_histogram_filter_on_path(
         path_similarity: (path_len, num_patches) similarity scores
         mapping: Cell-to-patch mapping
         config: Filter configuration
+        true_latlons: (path_len, 2) ground truth positions for convergence metrics
+        convergence_radii: List of radii in meters for convergence metrics
 
     Returns:
-        HistogramPathResult with mean/variance history
+        HistogramPathResult with mean/variance history and convergence metrics
     """
     mean_history = [belief.get_mean_latlon()]
     variance_history = [belief.get_variance_deg_sq()]
+
+    # Initialize convergence tracking
+    track_convergence = true_latlons is not None and convergence_radii is not None
+    prob_mass_by_radius: dict[int, list[float]] = {}
+    if track_convergence:
+        for radius in convergence_radii:
+            prob_mass_by_radius[radius] = []
+            # Record initial probability mass (before any observations)
+            prob_mass = compute_probability_mass_within_radius(
+                belief, true_latlons[0], float(radius)
+            )
+            prob_mass_by_radius[radius].append(prob_mass)
 
     path_len = path_similarity.shape[0]
 
@@ -115,15 +138,37 @@ def run_histogram_filter_on_path(
         mean_history.append(belief.get_mean_latlon())
         variance_history.append(belief.get_variance_deg_sq())
 
+        # Track convergence after motion (aligned with next position)
+        if track_convergence:
+            for radius in convergence_radii:
+                prob_mass = compute_probability_mass_within_radius(
+                    belief, true_latlons[step_idx + 1], float(radius)
+                )
+                prob_mass_by_radius[radius].append(prob_mass)
+
     # Final observation
     belief.apply_observation(path_similarity[-1], mapping, config.sigma_obs)
     mean_history.append(belief.get_mean_latlon())
     variance_history.append(belief.get_variance_deg_sq())
 
+    # Track convergence after final observation
+    if track_convergence:
+        for radius in convergence_radii:
+            prob_mass = compute_probability_mass_within_radius(
+                belief, true_latlons[-1], float(radius)
+            )
+            prob_mass_by_radius[radius].append(prob_mass)
+
+    # Convert lists to tensors
+    prob_mass_tensors = {
+        radius: torch.tensor(masses) for radius, masses in prob_mass_by_radius.items()
+    }
+
     return HistogramPathResult(
         mean_history=torch.stack(mean_history),
         variance_history=torch.stack(variance_history),
         final_belief=belief,
+        prob_mass_by_radius=prob_mass_tensors,
     )
 
 
@@ -178,6 +223,7 @@ def evaluate_histogram_on_paths(
     output_path: Path,
     device: torch.device = "cuda:0",
     save_intermediate_states: bool = False,
+    convergence_radii: list[int] | None = None,
 ) -> None:
     """Evaluate histogram filter on paths.
 
@@ -190,9 +236,15 @@ def evaluate_histogram_on_paths(
         output_path: Directory to save results
         device: Torch device
         save_intermediate_states: Whether to save belief history
+        convergence_radii: List of radii in meters for convergence metrics
     """
     all_final_error_meters = []
     all_similarity = similarity
+    # Track convergence costs per radius
+    convergence_costs_by_radius: dict[int, list[float]] = {}
+    if convergence_radii:
+        for radius in convergence_radii:
+            convergence_costs_by_radius[radius] = []
 
     with torch.no_grad():
         # Build GridSpec from dataset bounds with buffer of half patch size
@@ -219,14 +271,20 @@ def evaluate_histogram_on_paths(
         )
         print(f"Grid size: {grid_spec.num_rows} x {grid_spec.num_cols} = {grid_spec.num_rows * grid_spec.num_cols} cells")
 
-        # Get patch positions and build mapping
-        patch_positions_px = get_patch_positions_px(vigor_dataset, device)
+        # Get patch positions and build mapping (on CPU to avoid OOM, then move to GPU)
+        patch_positions_px = get_patch_positions_px(vigor_dataset, torch.device("cpu"))
         patch_half_size_px = config.patch_size_px / 2.0
         mapping = build_cell_to_patch_mapping(
             grid_spec=grid_spec,
             patch_positions_px=patch_positions_px,
             patch_half_size_px=patch_half_size_px,
-            device=device,
+            device=torch.device("cpu"),
+        )
+        # Move mapping to GPU
+        mapping = CellToPatchMapping(
+            patch_indices=mapping.patch_indices.to(device),
+            cell_offsets=mapping.cell_offsets.to(device),
+            segment_ids=mapping.segment_ids.to(device),
         )
         print(f"Built cell-to-patch mapping with {len(mapping.patch_indices)} overlaps")
 
@@ -247,6 +305,9 @@ def evaluate_histogram_on_paths(
             path_indices = vigor_dataset.pano_ids_to_indices(path)
             path_similarity = all_similarity[path_indices]  # (path_len, num_patches)
 
+            # Get ground truth positions for convergence metrics
+            true_latlons = vigor_dataset.get_panorama_positions(path).to(device)
+
             # Run filter
             result = run_histogram_filter_on_path(
                 belief=belief,
@@ -254,6 +315,8 @@ def evaluate_histogram_on_paths(
                 path_similarity=path_similarity,
                 mapping=mapping,
                 config=config,
+                true_latlons=true_latlons if convergence_radii else None,
+                convergence_radii=convergence_radii,
             )
 
             # Compute distance traveled
@@ -282,6 +345,17 @@ def evaluate_histogram_on_paths(
                 torch.save(result.mean_history.cpu(), save_path / "mean_history.pt")
                 torch.save(result.variance_history.cpu(), save_path / "variance_history.pt")
 
+            # Save convergence metrics
+            if convergence_radii and result.prob_mass_by_radius:
+                torch.save(result.prob_mass_by_radius, save_path / "prob_mass_by_radius.pt")
+                # Compute and track convergence costs
+                for radius in convergence_radii:
+                    cost = compute_convergence_cost(
+                        result.prob_mass_by_radius[radius],
+                        distance_traveled_m,
+                    )
+                    convergence_costs_by_radius[radius].append(cost)
+
             with open(save_path / "other_info.json", "w") as f:
                 f.write(json.dumps({
                     "seed": generator_seed,
@@ -289,16 +363,31 @@ def evaluate_histogram_on_paths(
 
         # Summary statistics
         average_final_error = sum(all_final_error_meters) / len(all_final_error_meters)
+        summary_stats = {
+            "average_final_error": average_final_error,
+            "filter_type": "histogram",
+            "grid_rows": grid_spec.num_rows,
+            "grid_cols": grid_spec.num_cols,
+            "cell_size_px": cell_size_px,
+        }
+
+        # Add convergence metrics to summary
+        if convergence_radii:
+            for radius in convergence_radii:
+                costs = convergence_costs_by_radius[radius]
+                summary_stats[f"convergence_cost_{radius}m"] = costs
+                summary_stats[f"mean_convergence_cost_{radius}m"] = (
+                    sum(costs) / len(costs) if costs else 0.0
+                )
+
         with open(output_path / "summary_statistics.json", "w") as f:
-            f.write(json.dumps({
-                "average_final_error": average_final_error,
-                "filter_type": "histogram",
-                "grid_rows": grid_spec.num_rows,
-                "grid_cols": grid_spec.num_cols,
-                "cell_size_px": cell_size_px,
-            }, indent=2))
+            f.write(json.dumps(summary_stats, indent=2))
 
         print(f"Average final error meters: {average_final_error:.2f}")
+        if convergence_radii:
+            for radius in convergence_radii:
+                mean_cost = summary_stats[f"mean_convergence_cost_{radius}m"]
+                print(f"Mean convergence cost ({radius}m): {mean_cost:.2f}")
 
 
 def construct_path_eval_inputs_from_args(
@@ -350,14 +439,14 @@ def construct_path_eval_inputs_from_args(
         pano_model = load_model(pano_model_path, device=device)
         sat_model = load_model(sat_model_path, device=device)
         panorama_tensor_cache_info = vd.TensorCacheInfo(
-            dataset_key=dataset_path.name,
+            dataset_keys=[dataset_path.name],
             model_type="panorama",
             landmark_version=landmark_version,
             panorama_landmark_radius_px=panorama_landmark_radius_px,
             landmark_correspondence_inflation_factor=1.0,
             extractor_info=pano_model.cache_info())
         satellite_tensor_cache_info = vd.TensorCacheInfo(
-            dataset_key=dataset_path.name,
+            dataset_keys=[dataset_path.name],
             model_type="satellite",
             landmark_version=landmark_version,
             panorama_landmark_radius_px=panorama_landmark_radius_px,
@@ -426,6 +515,8 @@ if __name__ == "__main__":
                         help="Motion noise as fraction of motion magnitude")
     parser.add_argument("--subdivision-factor", type=int, default=4,
                         help="Grid subdivision factor (4 = 160px cells)")
+    parser.add_argument("--convergence-radii", type=str, default="25,50,100",
+                        help="Comma-separated list of radii (meters) for convergence metrics")
 
     args = parser.parse_args()
 
@@ -440,6 +531,9 @@ if __name__ == "__main__":
         parser.error("Must provide either --similarity-matrix OR both --sat-path and --pano-path")
     if has_similarity_matrix and has_models:
         parser.error("Cannot provide both --similarity-matrix and model paths")
+
+    # Parse convergence radii
+    convergence_radii = [int(r.strip()) for r in args.convergence_radii.split(",")]
 
     DEVICE = "cuda:0"
     torch.set_deterministic_debug_mode('error')
@@ -523,4 +617,5 @@ if __name__ == "__main__":
         output_path=args.output_path,
         device=DEVICE,
         save_intermediate_states=args.save_intermediate_filter_states,
+        convergence_radii=convergence_radii,
     )
