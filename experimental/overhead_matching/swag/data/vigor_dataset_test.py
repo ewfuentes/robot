@@ -351,13 +351,14 @@ class VigorDatasetTest(unittest.TestCase):
 
         PATH_LENGTH_M = 100
         SEED = 532
-        # action 
+        # action
         path1 = dataset.generate_random_path(torch.manual_seed(SEED), PATH_LENGTH_M, 1.0)
         path2 = dataset.generate_random_path(torch.manual_seed(SEED), PATH_LENGTH_M, 1.0)
         path3 = dataset.generate_random_path(torch.manual_seed(SEED-3), PATH_LENGTH_M, 1.0)
-    
+
+        # Paths should contain pano_id strings, not integers
         for item in path1:
-            self.assertTrue(type(item) == int)
+            self.assertTrue(type(item) == str, f"Expected str, got {type(item)}")
         self.assertListEqual(path1, path2)
         self.assertNotEqual(path1, path3)
 

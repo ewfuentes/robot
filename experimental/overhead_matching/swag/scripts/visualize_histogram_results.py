@@ -26,10 +26,17 @@ def load_evaluation_results(eval_path: Path, path_idx: int):
         t = torch.load(path, map_location='cpu')
         return t.cpu() if hasattr(t, 'cpu') else t
 
+    path = torch.load(path_dir / "path.pt", map_location='cpu')
+    # Check for old format
+    if path and isinstance(path[0], int):
+        raise ValueError(
+            f"path.pt in '{path_dir}' uses old index format (integers). "
+            "Re-run evaluation with new path files to get pano_id format (strings)."
+        )
     results = {
         "error": load_cpu(path_dir / "error.pt"),
         "var": load_cpu(path_dir / "var.pt"),
-        "path": torch.load(path_dir / "path.pt", map_location='cpu'),  # May be list
+        "path": path,
         "distance_traveled_m": load_cpu(path_dir / "distance_traveled_m.pt"),
     }
 

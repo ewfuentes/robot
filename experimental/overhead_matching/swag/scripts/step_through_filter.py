@@ -64,7 +64,13 @@ with open(args.path_eval_path.parent / "args.json", 'r') as f:
 with open(args.path_eval_path / "other_info.json", 'r') as f:
     aux_info = json.load(f)
 
-gt_path_pano_indices = torch.load(args.path_eval_path / 'path.pt', weights_only=True)
+gt_path_pano_ids = torch.load(args.path_eval_path / 'path.pt', weights_only=True)
+# Check for old format
+if gt_path_pano_ids and isinstance(gt_path_pano_ids[0], int):
+    raise ValueError(
+        f"path.pt in '{args.path_eval_path}' uses old index format (integers). "
+        "Re-run evaluation with new path files to get pano_id format (strings)."
+    )
 
 vigor_dataset, sat_model, pano_model, paths_data = construct_path_eval_inputs_from_args(
     sat_model_path=path_eval_args['sat_path'],
@@ -83,14 +89,14 @@ print("starting constructing particle histories")
 inference_result = construct_inputs_and_evaluate_path(
     device=DEVICE,
     generator_seed=aux_info['seed'],
-    path=gt_path_pano_indices,
+    path=gt_path_pano_ids,
     vigor_dataset=vigor_dataset,
     path_similarity_values=path_similarity_values,
     wag_config=wag_config,
     return_intermediates=True
 )
 print("finished calculating particle histories")
-gt_path_latlong = vigor_dataset.get_panorama_positions(gt_path_pano_indices).cpu().numpy()
+gt_path_latlong = vigor_dataset.get_panorama_positions(gt_path_pano_ids).cpu().numpy()
 particle_histories = inference_result.particle_history.numpy()
 log_particle_weights = inference_result.log_particle_weights.numpy()
 particle_histories_pre_move = inference_result.particle_history_pre_move.numpy()

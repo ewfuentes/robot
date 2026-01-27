@@ -640,8 +640,8 @@ class VigorDataset(torch.utils.data.Dataset):
                              generator: torch.Generator,
                              max_length_m: float,
                              turn_temperature: float,
-                             avoid_retrace_steps: bool = True) -> list[int]:
-        """Returns a list of indices into the dataset's panoramas to define a path through the graph"""
+                             avoid_retrace_steps: bool = True) -> list[str]:
+        """Returns a list of pano_ids defining a path through the graph"""
         path = []
         distance_traveled_m = 0.0
         last_direction = torch.rand((2,), generator=generator)*0.5 - 1  # random initial direction
@@ -683,7 +683,8 @@ class VigorDataset(torch.utils.data.Dataset):
             distance_traveled_m += EARTH_RADIUS_M * \
                 find_d_on_unit_circle(last_coord.numpy(), neighbor_coords[winning_neighbor].numpy())
 
-        return path
+        # Convert indices to pano_ids
+        return [self._panorama_metadata.loc[idx, 'pano_id'] for idx in path]
 
     def get_sat_patch_view(self) -> torch.utils.data.Dataset:
         class OverheadVigorDataset(torch.utils.data.Dataset):
@@ -821,12 +822,30 @@ class VigorDataset(torch.utils.data.Dataset):
         """Returns a tensor of shape (N, 2) where N is the number of satellite patches and the columns are lat, lon"""
         return torch.tensor(self._satellite_metadata.loc[:, ["lat", "lon"]].values, dtype=torch.float32)
 
-    def get_panorama_positions(self, path: list[int] = None) -> torch.Tensor:
-        """Returns a tensor of shape (N, 2) where N is the number of panoramas
+    def pano_ids_to_indices(self, pano_ids: list[str]) -> list[int]:
+        """Convert pano_ids to their corresponding DataFrame indices.
+
+        Args:
+            pano_ids: List of pano_id strings.
+
+        Returns:
+            List of integer indices corresponding to the pano_ids, preserving order.
+        """
+        pano_id_to_idx = {row['pano_id']: idx for idx, row in self._panorama_metadata.iterrows()}
+        return [pano_id_to_idx[pano_id] for pano_id in pano_ids]
+
+    def get_panorama_positions(self, path: list[str] = None) -> torch.Tensor:
+        """Returns a tensor of shape (N, 2) where N is the number of panoramas.
+
+        Args:
+            path: List of pano_ids. If None, returns positions for all panoramas.
         """
         if path is None:
-            path = np.arange(len(self._panorama_metadata))
-        return torch.tensor(self._panorama_metadata.loc[path, ["lat", "lon"]].values, dtype=torch.float32)
+            return torch.tensor(self._panorama_metadata[["lat", "lon"]].values, dtype=torch.float32)
+        # Look up rows by pano_id and preserve order of input path
+        rows = self._panorama_metadata[self._panorama_metadata['pano_id'].isin(path)]
+        rows = rows.set_index('pano_id').loc[path]
+        return torch.tensor(rows[["lat", "lon"]].values, dtype=torch.float32)
 
     def visualize(self, include_text_labels=False, path=None) -> tuple["plt.Figure", "plt.Axes"]:
         import matplotlib.pyplot as plt
@@ -857,11 +876,12 @@ class VigorDataset(torch.utils.data.Dataset):
 
         if path is not None and len(path) > 2:
             path_segments = []
-            def get_long_lat_from_idx(idx): return (
-                self._panorama_metadata.loc[idx].lon, self._panorama_metadata.loc[idx].lat)
-            last_pos = get_long_lat_from_idx(path[0])
-            for pano_idx in path[1:]:
-                path_segments.append([last_pos, get_long_lat_from_idx(pano_idx)])
+            def get_long_lat_from_pano_id(pano_id):
+                row = self._panorama_metadata[self._panorama_metadata['pano_id'] == pano_id].iloc[0]
+                return (row.lon, row.lat)
+            last_pos = get_long_lat_from_pano_id(path[0])
+            for pano_id in path[1:]:
+                path_segments.append([last_pos, get_long_lat_from_pano_id(pano_id)])
                 last_pos = path_segments[-1][-1]
             path_collection = LineCollection(path_segments, colors=[(
                 0.25, 0.25, 0.9) for x in range(len(neighbor_segments))])

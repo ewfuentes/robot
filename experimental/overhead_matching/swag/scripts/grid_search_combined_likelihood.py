@@ -298,8 +298,14 @@ if __name__ == "__main__":
     # Load paths
     with open(args.paths_path, 'r') as f:
         paths_data = json.load(f)
-    factor = paths_data.get('args', {}).get('factor', 1.0)
+    # Check for old format
     paths = paths_data['paths']
+    if paths and paths[0] and isinstance(paths[0][0], int):
+        raise ValueError(
+            f"Path file '{args.paths_path}' uses old index format (integers). "
+            "Regenerate with create_evaluation_paths.py to get pano_id format (strings)."
+        )
+    factor = paths_data.get('args', {}).get('factor', 1.0)
 
     print(f"Loaded {len(paths)} evaluation paths")
 

@@ -180,22 +180,29 @@ def evaluate_prediction_top_k(
 
 def get_distance_error_between_pano_and_particles_meters(
     vigor_dataset: vd.VigorDataset,
-    panorama_index: int | list[int],
+    panorama_id: str | list[str],
     particles: torch.Tensor,
 )->torch.Tensor:
     """
     Calculate the distance in meters between the mean particle position (in lat-lon deg)
-    and the panorama at index panorama_index
+    and the panorama with the given pano_id.
 
-    If panorama_index is a list of length N, then particles should be of shape (N, num_particles, num_state_dim)
+    Args:
+        vigor_dataset: The VIGOR dataset.
+        panorama_id: A single pano_id string, or a list of pano_ids of length N.
+        particles: If panorama_id is a list of length N, particles should be of shape
+            (N, num_particles, num_state_dim).
 
+    Returns:
+        mean_error_m: Distance error in meters.
+        var_sq_m: Variance in meters squared.
     """
-    if isinstance(panorama_index, int):
-        panorama_index = [panorama_index]
+    if isinstance(panorama_id, str):
+        panorama_id = [panorama_id]
         assert particles.ndim == 2
         particles = particles.unsqueeze(0)
-    
-    true_latlong = vigor_dataset.get_panorama_positions(panorama_index).to(device=particles.device)
+
+    true_latlong = vigor_dataset.get_panorama_positions(panorama_id).to(device=particles.device)
     particle_latlong_estimate = particles.mean(dim=1)
 
     mean_deviation_m = vd.EARTH_RADIUS_M * find_d_on_unit_circle(
@@ -214,7 +221,16 @@ def get_distance_error_between_pano_and_particles_meters(
     return mean_error_m, var_sq_m
 
 
-def get_motion_deltas_from_path(vigor_dataset: vd.VigorDataset, path: list[int]):
+def get_motion_deltas_from_path(vigor_dataset: vd.VigorDataset, path: list[str]):
+    """Compute motion deltas between consecutive path positions.
+
+    Args:
+        vigor_dataset: The VIGOR dataset.
+        path: List of pano_ids defining the path.
+
+    Returns:
+        Tensor of shape (len(path)-1, 2) with lat/lon deltas.
+    """
     latlong = vigor_dataset.get_panorama_positions(path)
     motion_deltas = torch.diff(latlong, dim=0)
 
@@ -368,18 +384,32 @@ def run_inference_on_path(
 
 def construct_inputs_and_evaluate_path(
     vigor_dataset: vd.VigorDataset,
-    path: list[int],
+    path: list[str],
     generator_seed: int,
     device: str,
     wag_config: WagConfig,
     obs_likelihood_calculator: sa.ObservationLikelihoodCalculator,
     return_intermediates: bool = False,
 ) -> PathInferenceResult:
+    """Construct inputs and run inference on a path.
+
+    Args:
+        vigor_dataset: The VIGOR dataset.
+        path: List of pano_ids defining the path.
+        generator_seed: Seed for random number generator.
+        device: Torch device to run on.
+        wag_config: WAG configuration.
+        obs_likelihood_calculator: Observation likelihood calculator.
+        return_intermediates: Whether to return intermediate states.
+
+    Returns:
+        PathInferenceResult with particle history and optional intermediates.
+    """
     generator = torch.Generator(device=device).manual_seed(generator_seed)
     motion_deltas = get_motion_deltas_from_path(vigor_dataset, path).to(device)
 
-    # Convert path indices to panorama IDs
-    panorama_ids = [vigor_dataset._panorama_metadata.iloc[idx].pano_id for idx in path]
+    # Path already contains pano_ids
+    panorama_ids = path
 
     # Get satellite patch locations
     satellite_patch_locations = vigor_dataset.get_patch_positions()
@@ -396,10 +426,11 @@ def construct_inputs_and_evaluate_path(
         phantom_counts_frac=wag_config.dual_mcl_belief_phantom_counts_frac
     )
 
-    # Initialize particles
-    gt_initial_position_lat_lon = vigor_dataset._panorama_metadata.iloc[path[0]]
+    # Initialize particles - look up by pano_id
+    gt_initial_row = vigor_dataset._panorama_metadata[
+        vigor_dataset._panorama_metadata['pano_id'] == path[0]].iloc[0]
     gt_initial_position_lat_lon = torch.tensor(
-        (gt_initial_position_lat_lon['lat'], gt_initial_position_lat_lon['lon']), device=device)
+        (gt_initial_row['lat'], gt_initial_row['lon']), device=device)
     initial_particle_state = sa.initialize_wag_particles(
         gt_initial_position_lat_lon, wag_config, generator).to(device)
 
@@ -422,7 +453,7 @@ def evaluate_model_on_paths(
     vigor_dataset: vd.VigorDataset,
     sat_model: torch.nn.Module,
     pano_model: torch.nn.Module,
-    paths: list[list[int]],
+    paths: list[list[str]],
     wag_config: WagConfig,
     seed: int,
     output_path: Path,
@@ -487,7 +518,9 @@ def evaluate_model_on_paths(
             torch.save(var_sq_m_at_each_step, save_path / "var.pt")
             torch.save(path, save_path / "path.pt")
             torch.save(distance_traveled_m, save_path / "distance_traveled_m.pt")
-            torch.save(all_similarity[path], save_path / "similarity.pt")
+            # Convert pano_ids to indices for similarity matrix access
+            path_indices = vigor_dataset.pano_ids_to_indices(path)
+            torch.save(all_similarity[path_indices], save_path / "similarity.pt")
             if save_intermediate_filter_states:
                 pir = path_inference_result
                 torch.save(pir.particle_history, save_path / "particle_history.pt")

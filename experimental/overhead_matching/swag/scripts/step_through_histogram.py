@@ -151,6 +151,12 @@ def load_path_statistics(eval_path: Path) -> list[dict]:
         path_idx = int(path_dir.name)
         try:
             path = torch.load(path_dir / "path.pt", map_location='cpu')
+            # Check for old format
+            if path and isinstance(path[0], int):
+                raise ValueError(
+                    f"path.pt in '{path_dir}' uses old index format (integers). "
+                    "Re-run evaluation with new path files to get pano_id format (strings)."
+                )
             path_len = len(path) if isinstance(path, (list, torch.Tensor)) else 1
 
             error = None
@@ -387,12 +393,19 @@ def main():
         # Load path
         path_dir = eval_path / f"{path_idx:07d}"
         path = torch.load(path_dir / "path.pt", map_location='cpu')
+        # Check for old format
+        if path and isinstance(path[0], int):
+            raise ValueError(
+                f"path.pt in '{path_dir}' uses old index format (integers). "
+                "Re-run evaluation with new path files to get pano_id format (strings)."
+            )
 
         # Get ground truth positions
         gt_positions = vigor_dataset.get_panorama_positions(path).numpy()
 
-        # Get similarity for this path
-        path_similarity = all_similarity[path].cpu()
+        # Get similarity for this path - convert pano_ids to indices
+        path_indices = vigor_dataset.pano_ids_to_indices(path)
+        path_similarity = all_similarity[path_indices].cpu()
 
         # Get motion deltas
         motion_deltas = es.get_motion_deltas_from_path(vigor_dataset, path)

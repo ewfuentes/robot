@@ -46,10 +46,17 @@ def _(Path, json, lsm, pd, torch, vd):
         error = torch.load(path_dir / "error.pt")
         var = torch.load(path_dir / "var.pt")
         path = torch.load(path_dir / "path.pt")
+        # Check for old format
+        if path and isinstance(path[0], int):
+            raise ValueError(
+                f"path.pt in '{path_dir}' uses old index format (integers). "
+                "Re-run evaluation with new path files to get pano_id format (strings)."
+            )
         similarity = torch.load(path_dir / "similarity.pt").cpu()
         max_similarity = torch.max(similarity,dim=1)
         for i in range(len(path)):
-            pano_metadata  = dataset._panorama_metadata.loc[path[i]]
+            pano_metadata = dataset._panorama_metadata[
+                dataset._panorama_metadata['pano_id'] == path[i]].iloc[0]
             sat_idx = pano_metadata.satellite_idx
             positive_similarity = similarity[i, sat_idx]
             records.append({
