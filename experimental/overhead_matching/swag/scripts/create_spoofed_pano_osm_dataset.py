@@ -216,6 +216,43 @@ def generate_osm_custom_id(business_name: str, address: str) -> str:
     return custom_id_from_props(props)
 
 
+def create_openai_batch_response_format(custom_id: str, content: str) -> dict:
+    """Create a fake OpenAI batch API response format for sentence storage.
+
+    This format matches what make_sentence_dict_from_json expects.
+
+    Args:
+        custom_id: The custom ID for the response
+        content: The sentence content (plain text for OSM, JSON string for pano)
+
+    Returns:
+        Dict in OpenAI batch API response format
+    """
+    return {
+        "id": f"spoofed_{custom_id[:16]}",
+        "custom_id": custom_id,
+        "response": {
+            "status_code": 200,
+            "request_id": f"spoofed_{custom_id[:16]}",
+            "body": {
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": content,
+                            "refusal": None,
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"completion_tokens": 0},
+            },
+        },
+        "error": None,
+    }
+
+
 def get_embeddings_batch(
     client: openai.OpenAI, sentences: list[str], max_retries: int = 5
 ) -> list[list[float]]:
@@ -307,10 +344,11 @@ def save_pano_embeddings(
         landmark_id_to_idx[business_custom_id] = sentence_to_idx[
             business_sentence
         ]
+        panorama_id = f"{pano_id},{lat:.6f},{lon:.6f},"
         pano_landmark_metadata.append(
             {
                 "custom_id": business_custom_id,
-                "panorama_id": f"{pano_id},{lat},{lon},",
+                "panorama_id": panorama_id,
                 "landmark_idx": 0,
                 "yaw_angles": [0, 90, 180, 270],
             }
@@ -325,7 +363,7 @@ def save_pano_embeddings(
         pano_landmark_metadata.append(
             {
                 "custom_id": address_custom_id,
-                "panorama_id": f"{pano_id},{lat},{lon},",
+                "panorama_id": panorama_id,
                 "landmark_idx": 1,
                 "yaw_angles": [0, 90, 180, 270],
             }
@@ -350,6 +388,44 @@ def save_pano_embeddings(
     with open(requests_dir / "panorama_metadata.jsonl", "w") as f:
         for metadata in pano_landmark_metadata:
             f.write(json.dumps(metadata) + "\n")
+
+    # Save sentences.jsonl
+    sentences_dir = output_path / "sentences"
+    sentences_dir.mkdir(parents=True, exist_ok=True)
+
+    with open(sentences_dir / "sentences.jsonl", "w") as f:
+        for pano_idx, row in pano_metadata.iterrows():
+            if pano_idx not in pano_to_combo:
+                continue
+
+            business_name, address = pano_to_combo[pano_idx]
+            pano_id = row["pano_id"]
+            lat = row["lat"]
+            lon = row["lon"]
+            panorama_id = f"{pano_id},{lat:.6f},{lon:.6f},"
+
+            business_sentence = PANO_BUSINESS_TEMPLATE.format(
+                business_name=business_name
+            )
+            address_sentence = PANO_ADDRESS_TEMPLATE.format(address=address)
+
+            # Create landmarks JSON content (matching pano_v1 format)
+            content = json.dumps(
+                {
+                    "landmarks": [
+                        {
+                            "description": business_sentence,
+                            "yaw_angles": [0, 90, 180, 270],
+                        },
+                        {
+                            "description": address_sentence,
+                            "yaw_angles": [0, 90, 180, 270],
+                        },
+                    ]
+                }
+            )
+            response = create_openai_batch_response_format(panorama_id, content)
+            f.write(json.dumps(response) + "\n")
 
     print(f"Saved {len(new_landmark_id_to_idx)} pano landmarks to {output_path}")
 
@@ -414,6 +490,159 @@ def save_osm_embeddings(
             f.write(json.dumps(metadata) + "\n")
 
     print(f"Saved {len(new_landmark_id_to_idx)} OSM landmarks to {output_path}")
+
+
+def save_merged_osm_embeddings(
+    output_path: Path,
+    all_sat_to_combos: dict[str, dict[int, list[tuple[str, str]]]],
+    embeddings_array: np.ndarray,
+    sentence_to_idx: dict[str, int],
+):
+    """Save merged OSM embeddings and metadata across all cities.
+
+    Args:
+        output_path: Base output path (e.g., output_base / "osm_spoofed")
+        all_sat_to_combos: Dict mapping city -> {sat_idx -> [(business_name, address), ...]}
+        embeddings_array: All embeddings as numpy array
+        sentence_to_idx: Mapping from sentence to index in embeddings_array
+    """
+    embeddings_dir = output_path / "embeddings"
+    embeddings_dir.mkdir(parents=True, exist_ok=True)
+    sentences_dir = output_path / "sentences"
+    sentences_dir.mkdir(parents=True, exist_ok=True)
+
+    # Build merged landmark ID to embedding index mapping
+    landmark_id_to_idx = {}
+    sat_landmark_metadata = []
+    sentence_data = []
+    seen_custom_ids = set()
+
+    for city, sat_to_combos in all_sat_to_combos.items():
+        for sat_idx, combos in sat_to_combos.items():
+            sat_landmarks = []
+            for business_name, address in combos:
+                osm_sentence = OSM_TEMPLATE.format(
+                    business_name=business_name, address=address
+                )
+                osm_custom_id = generate_osm_custom_id(business_name, address)
+
+                if osm_custom_id not in landmark_id_to_idx:
+                    landmark_id_to_idx[osm_custom_id] = sentence_to_idx[osm_sentence]
+
+                if osm_custom_id not in seen_custom_ids:
+                    seen_custom_ids.add(osm_custom_id)
+                    sentence_data.append(
+                        create_openai_batch_response_format(osm_custom_id, osm_sentence)
+                    )
+
+                sat_landmarks.append(osm_custom_id)
+
+            sat_landmark_metadata.append(
+                {
+                    "sat_idx": int(sat_idx),
+                    "landmark_custom_ids": sat_landmarks,
+                    "city": city,
+                }
+            )
+
+    # Create embeddings tensor with proper indexing
+    embedding_indices = list(landmark_id_to_idx.values())
+    embeddings_tensor = torch.tensor(
+        embeddings_array[embedding_indices], dtype=torch.float32
+    )
+
+    # Remap indices to be consecutive
+    new_landmark_id_to_idx = {
+        lid: new_idx for new_idx, lid in enumerate(landmark_id_to_idx.keys())
+    }
+
+    # Save embeddings.pkl
+    with open(embeddings_dir / "embeddings.pkl", "wb") as f:
+        pickle.dump((embeddings_tensor, new_landmark_id_to_idx), f)
+
+    # Save satellite_metadata.jsonl
+    with open(output_path / "satellite_metadata.jsonl", "w") as f:
+        for metadata in sat_landmark_metadata:
+            f.write(json.dumps(metadata) + "\n")
+
+    # Save sentences.jsonl
+    with open(sentences_dir / "sentences.jsonl", "w") as f:
+        for sentence_entry in sentence_data:
+            f.write(json.dumps(sentence_entry) + "\n")
+
+    print(f"Saved {len(new_landmark_id_to_idx)} merged OSM landmarks to {output_path}")
+
+
+def save_pano_v2_format(
+    output_path: Path,
+    pano_metadata: pd.DataFrame,
+    pano_to_combo: dict[int, tuple[str, str]],
+):
+    """Save panorama data in v2.0 pickle format for CLIPTextLandmarkExtractor.
+
+    The v2.0 format is:
+    {
+        "version": "2.0",
+        "panoramas": {
+            "pano_id": {
+                "landmarks": [
+                    {"description": "...", "landmark_idx": 0, "bounding_boxes": [...]}
+                ]
+            }
+        }
+    }
+
+    Args:
+        output_path: Base output path for this city (e.g., output_base/pano_spoofed_v2/Chicago)
+        pano_metadata: DataFrame with panorama metadata
+        pano_to_combo: Dict mapping pano_idx -> (business_name, address)
+    """
+    embeddings_dir = output_path / "embeddings"
+    embeddings_dir.mkdir(parents=True, exist_ok=True)
+
+    panoramas = {}
+
+    for pano_idx, row in pano_metadata.iterrows():
+        if pano_idx not in pano_to_combo:
+            continue
+
+        business_name, address = pano_to_combo[pano_idx]
+        pano_id = row["pano_id"]
+
+        business_sentence = PANO_BUSINESS_TEMPLATE.format(business_name=business_name)
+        address_sentence = PANO_ADDRESS_TEMPLATE.format(address=address)
+
+        landmarks = [
+            {
+                "description": business_sentence,
+                "landmark_idx": 0,
+                "bounding_boxes": [
+                    {"yaw_angle": "0"},
+                    {"yaw_angle": "90"},
+                    {"yaw_angle": "180"},
+                    {"yaw_angle": "270"},
+                ],
+            },
+            {
+                "description": address_sentence,
+                "landmark_idx": 1,
+                "bounding_boxes": [
+                    {"yaw_angle": "0"},
+                    {"yaw_angle": "90"},
+                    {"yaw_angle": "180"},
+                    {"yaw_angle": "270"},
+                ],
+            },
+        ]
+
+        panoramas[pano_id] = {"landmarks": landmarks}
+
+    output = {"version": "2.0", "panoramas": panoramas}
+
+    with open(embeddings_dir / "embeddings.pkl", "wb") as f:
+        pickle.dump(output, f)
+
+    print(f"Saved {len(panoramas)} panoramas in v2.0 format to {output_path}")
 
 
 def save_landmarks_feather(
@@ -618,12 +847,12 @@ def main():
 
     print(f"Embeddings shape: {embeddings_array.shape}")
 
-    # Save outputs for each city
+    # Save pano outputs for each city
     for city in args.cities:
-        print(f"\nSaving {city} outputs...")
+        print(f"\nSaving {city} pano outputs...")
         data = city_data[city]
 
-        # Pano embeddings
+        # Pano embeddings (per city) - old format for quatro_robot
         pano_output = output_base / "pano_spoofed" / city
         save_pano_embeddings(
             pano_output,
@@ -633,13 +862,12 @@ def main():
             sentence_to_idx,
         )
 
-        # OSM embeddings
-        osm_output = output_base / "osm_spoofed" / city
-        save_osm_embeddings(
-            osm_output,
-            data["sat_to_combos"],
-            embeddings_array,
-            sentence_to_idx,
+        # Pano v2.0 format (per city) - for third_robot CLIPTextLandmarkExtractor
+        pano_v2_output = output_base / "pano_spoofed_v2" / city
+        save_pano_v2_format(
+            pano_v2_output,
+            data["pano_metadata"],
+            data["pano_to_combo"],
         )
 
         # Landmarks feather file (for SemanticLandmarkExtractor compatibility)
@@ -649,6 +877,17 @@ def main():
             data["pano_to_combo"],
             args.landmark_version,
         )
+
+    # Save merged OSM outputs (all cities combined)
+    print("\nSaving merged OSM outputs...")
+    osm_output = output_base / "osm_spoofed"
+    all_sat_to_combos = {city: city_data[city]["sat_to_combos"] for city in args.cities}
+    save_merged_osm_embeddings(
+        osm_output,
+        all_sat_to_combos,
+        embeddings_array,
+        sentence_to_idx,
+    )
 
     # Save metadata
     metadata_dir = output_base / "metadata"

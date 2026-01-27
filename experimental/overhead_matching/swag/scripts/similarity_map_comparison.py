@@ -45,6 +45,19 @@ def _(Path, lsm):
 
 
 @app.cell
+def _(osm_pano_model):
+    osm_pano_model._extractor_by_name["panorama_semantic_landmark_extractor"].load_files()
+    return
+
+
+@app.cell
+def _(osm_pano_model):
+
+    osm_pano_model._extractor_by_name["panorama_semantic_landmark_extractor"].all_sentences.keys()
+    return
+
+
+@app.cell
 def _(F, dataset, osm_pano_model, osm_sat_model, torch, tqdm, vd):
     # run models on datasets
     def concat_list_of_3_dim_tensors_with_pad(list_of_tensors: list)-> torch.Tensor:
@@ -102,7 +115,55 @@ def _(F, dataset, osm_pano_model, osm_sat_model, torch, tqdm, vd):
     for _k in sat_inference_data.keys():
         if _k not in ["input_metadata"]:
            sat_inference_data[_k] = concat_list_of_3_dim_tensors_with_pad(sat_inference_data[_k])
-    return (sat_inference_data,)
+    return pano_inference_data, sat_inference_data
+
+
+@app.cell
+def _(pano_inference_data):
+    pano_inference_data["panorama_semantic_landmark_extractor"].shape
+    return
+
+
+@app.cell
+def _(sat_inference_data):
+    sat_inference_data["point_semantic_landmark_extractor"].shape
+    return
+
+
+@app.cell
+def _(pano_inference_data):
+    pano_inference_data["input_metadata"][0]
+    return
+
+
+@app.cell
+def _(torch):
+    def decode_sentence_tensor(sentence_tensor: torch.Tensor)-> list[str]:
+        _sentences = []
+        for _i in range(sentence_tensor.shape[0]):
+            _sentence = bytes(sentence_tensor[_i].tolist()).decode("utf-8").rstrip("\x00")
+            if _sentence:
+                _sentences.append(_sentence)
+        return _sentences
+    return (decode_sentence_tensor,)
+
+
+@app.cell
+def _(decode_sentence_tensor, pano_inference_data):
+    decode_sentence_tensor(pano_inference_data["panorama_semantic_landmark_extractor"][0])
+    return
+
+
+@app.cell
+def _(decode_sentence_tensor, sat_inference_data):
+    decode_sentence_tensor(sat_inference_data["point_semantic_landmark_extractor"][3738])
+    return
+
+
+@app.cell
+def _(pano_inferencata, sat_inference_data):
+    (pano_inferencata["pano_embedding_vector"][0] * sat_inference_data["sat_embedding_vector"][3737]).sum()
+    return
 
 
 @app.cell
@@ -330,18 +391,6 @@ def _():
 def _(sat_inference_data):
     sat_inference_data['input_metadata'][0]
     return
-
-
-@app.cell
-def _(torch):
-    def decode_sentence_tensor(sentence_tensor: torch.Tensor)-> list[str]:
-        _sentences = []
-        for _i in range(sentence_tensor.shape[0]):
-            _sentence = bytes(sentence_tensor[_i].tolist()).decode("utf-8").rstrip("\x00")
-            if _sentence:
-                _sentences.append(_sentence)
-        return _sentences
-    return (decode_sentence_tensor,)
 
 
 @app.cell

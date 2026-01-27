@@ -18,7 +18,8 @@ from experimental.overhead_matching.swag.model.swag_model_input_output import (
 from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
     load_all_jsonl_from_folder, make_embedding_dict_from_json, make_sentence_dict_from_json,
     prune_landmark, make_sentence_dict_from_pano_jsons, convert_embeddings_to_tensors,
-    custom_id_from_props, load_embeddings)
+    custom_id_from_props, load_embeddings, string_to_hash_embedding,
+    parse_thing_and_place_from_sentence)
 from multiprocessing import Pool
 from functools import partial
 import tqdm
@@ -208,6 +209,11 @@ class SemanticLandmarkExtractor(torch.nn.Module):
         self.all_sentences = None
         self._batch_counter = 0
 
+        # Check for hash-bit mode
+        self._use_hash_bit = config.hash_bit_config is not None
+        if self._use_hash_bit:
+            self._hash_bit_dim = config.hash_bit_config.embedding_dim
+
     def load_files(self):
         # lazy setup to speed things up when we're using caching
         sentence_directory = self.semantic_embedding_base_path / self.config.embedding_version / "sentences"
@@ -216,13 +222,15 @@ class SemanticLandmarkExtractor(torch.nn.Module):
             self.all_sentences, _ = make_sentence_dict_from_json(
                 load_all_jsonl_from_folder(sentence_directory))
 
-        self.all_embeddings_tensor, self.landmark_id_to_idx = load_embeddings(
-            embedding_directory,
-            output_dim=self.config.openai_embedding_size,
-            normalize=True)
+        # Skip loading pre-computed embeddings if using hash-bit mode
+        if not self._use_hash_bit:
+            self.all_embeddings_tensor, self.landmark_id_to_idx = load_embeddings(
+                embedding_directory,
+                output_dim=self.config.openai_embedding_size,
+                normalize=True)
 
-        # Validate embeddings
-        assert len(self.landmark_id_to_idx) != 0, f"Failed to load any embeddings from {embedding_directory}"
+            # Validate embeddings
+            assert len(self.landmark_id_to_idx) != 0, f"Failed to load any embeddings from {embedding_directory}"
 
         self.files_loaded = True
 
@@ -239,20 +247,25 @@ class SemanticLandmarkExtractor(torch.nn.Module):
 
         is_panorama = 'pano_id' in model_input.metadata[0]
 
-        mask = torch.ones((batch_size, max_num_landmarks), dtype=torch.bool)
-        features = torch.zeros((batch_size, max_num_landmarks, self.output_dim))
-        positions = torch.zeros((batch_size, max_num_landmarks, 2, 2))
+        # In hash-bit mode, each landmark produces 2 tokens (thing + place)
+        tokens_per_landmark = 2 if self._use_hash_bit else 1
+        max_num_tokens = max_num_landmarks * tokens_per_landmark
+
+        mask = torch.ones((batch_size, max_num_tokens), dtype=torch.bool)
+        features = torch.zeros((batch_size, max_num_tokens, self.output_dim))
+        positions = torch.zeros((batch_size, max_num_tokens, 2, 2))
 
         max_description_length = 0
         for i, item in enumerate(model_input.metadata):
             num_landmarks_for_item = valid_landmarks[i]
-            # Compute the positions of the landmarks
+
+            # Compute positions for landmarks (not tokens yet)
             if num_landmarks_for_item > 0:
                 if is_panorama:
-                    positions[i, :num_landmarks_for_item] = compute_landmark_pano_positions(
+                    landmark_positions = compute_landmark_pano_positions(
                         item, model_input.image.shape[-2:], landmark_mask=landmark_mask[i])
                 else:
-                    positions[i, :num_landmarks_for_item] = compute_landmark_sat_positions(
+                    landmark_positions = compute_landmark_sat_positions(
                         item, landmark_mask=landmark_mask[i])
 
             landmark_index = 0
@@ -264,20 +277,60 @@ class SemanticLandmarkExtractor(torch.nn.Module):
                 props = landmark['pruned_props']
                 landmark_id = custom_id_from_props(props)
 
-                if landmark_id not in self.landmark_id_to_idx:
-                    print(f"Warning: missing embedding for props: {props}, ID {landmark_id}")
-                    continue
+                if self._use_hash_bit:
+                    # Hash-bit mode: parse thing/place from sentence and create 2 tokens
+                    if self.all_sentences is None or landmark_id not in self.all_sentences:
+                        print(f"Warning: missing sentence for props: {props}, ID {landmark_id}")
+                        landmark_index += 1
+                        continue
 
-                emb_idx = self.landmark_id_to_idx[landmark_id]
-                features[i, landmark_index, :] = self.all_embeddings_tensor[emb_idx]
-                mask[i, landmark_index] = False
+                    sentence = self.all_sentences[landmark_id]
+                    thing, place = parse_thing_and_place_from_sentence(sentence)
+
+                    token_base_idx = landmark_index * 2
+
+                    # Token 0: thing (business name)
+                    if thing is not None:
+                        thing_emb = string_to_hash_embedding(thing, self._hash_bit_dim)
+                        features[i, token_base_idx, :] = torch.from_numpy(thing_emb)
+                        mask[i, token_base_idx] = False
+
+                    # Token 1: place (address)
+                    if place is not None:
+                        place_emb = string_to_hash_embedding(place, self._hash_bit_dim)
+                        features[i, token_base_idx + 1, :] = torch.from_numpy(place_emb)
+                        mask[i, token_base_idx + 1] = False
+
+                    # Duplicate position for both tokens
+                    if num_landmarks_for_item > 0 and landmark_index < len(landmark_positions):
+                        positions[i, token_base_idx, :, :] = landmark_positions[landmark_index]
+                        positions[i, token_base_idx + 1, :, :] = landmark_positions[landmark_index]
+
+                    max_description_length = max(max_description_length, len(sentence.encode("utf-8")))
+
+                else:
+                    # Original mode: look up pre-computed embedding
+                    if landmark_id not in self.landmark_id_to_idx:
+                        print(f"Warning: missing embedding for props: {props}, ID {landmark_id}")
+                        continue
+
+                    emb_idx = self.landmark_id_to_idx[landmark_id]
+                    features[i, landmark_index, :] = self.all_embeddings_tensor[emb_idx]
+                    mask[i, landmark_index] = False
+
+                    if num_landmarks_for_item > 0 and landmark_index < len(landmark_positions):
+                        positions[i, landmark_index, :, :] = landmark_positions[landmark_index]
+
+                    if self.all_sentences is not None and landmark_id in self.all_sentences:
+                        max_description_length = max(max_description_length, len(
+                            self.all_sentences[landmark_id].encode("utf-8")))
+
                 landmark_index += 1
-                if self.all_sentences is not None:
-                    max_description_length = max(max_description_length, len(
-                        self.all_sentences[landmark_id].encode("utf-8")))
 
+        # Create debug tensor with appropriate size
+        debug_tokens = max_num_tokens if self._use_hash_bit else max_num_landmarks
         sentence_debug = torch.zeros(
-            (batch_size, max_num_landmarks, max_description_length), dtype=torch.uint8)
+            (batch_size, debug_tokens, max_description_length), dtype=torch.uint8)
 
         # Store the sentences in a debug tensor
         if self.all_sentences is not None:
@@ -291,12 +344,20 @@ class SemanticLandmarkExtractor(torch.nn.Module):
                     landmark_id = custom_id_from_props(props)
                     if landmark_id not in self.all_sentences:
                         continue
-                    sentence_tensors.append(torch.tensor(list(self.all_sentences[landmark_id].encode('utf-8')), dtype=torch.uint8))
+                    sentence_bytes = self.all_sentences[landmark_id].encode('utf-8')
+                    sentence_tensor = torch.tensor(list(sentence_bytes), dtype=torch.uint8)
+                    if self._use_hash_bit:
+                        # Duplicate sentence for both tokens
+                        sentence_tensors.append(sentence_tensor)
+                        sentence_tensors.append(sentence_tensor)
+                    else:
+                        sentence_tensors.append(sentence_tensor)
                 if len(sentence_tensors):
                     landmarks_sentences_tensor = torch.nested.nested_tensor(sentence_tensors)
+                    num_sentence_slots = num_landmarks_for_item * tokens_per_landmark
                     landmarks_sentences_tensor = landmarks_sentences_tensor.to_padded_tensor(
-                        padding=0, output_size=(num_landmarks_for_item, max_description_length))
-                    sentence_debug[i, :num_landmarks_for_item] = landmarks_sentences_tensor
+                        padding=0, output_size=(num_sentence_slots, max_description_length))
+                    sentence_debug[i, :num_sentence_slots] = landmarks_sentences_tensor
 
         return ExtractorOutput(
             features=features.to(model_input.image.device),
@@ -306,6 +367,8 @@ class SemanticLandmarkExtractor(torch.nn.Module):
 
     @property
     def output_dim(self):
+        if self._use_hash_bit:
+            return self._hash_bit_dim
         return self.config.openai_embedding_size
 
     @property

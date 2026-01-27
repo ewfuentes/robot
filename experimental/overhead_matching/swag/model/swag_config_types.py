@@ -48,17 +48,28 @@ class LandmarkType(StrEnum):
     MULTIPOLYGON = "multipolygon"
 
 
+class HashBitEmbeddingConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    """Config for fixed hash-bit embeddings.
+
+    When enabled, text is hashed via SHA256 and unpacked into a fixed
+    embedding vector. The same string always produces the same embedding.
+    """
+    embedding_dim: int = 256  # Max 256 for single SHA256 hash
+
+
 class SemanticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     landmark_type: LandmarkType
     openai_embedding_size: int  # if smaller than the true embedding dim (1536), will crop and renormalize embedding
     embedding_version: str
     auxiliary_info_key: str
+    hash_bit_config: HashBitEmbeddingConfig | None = None  # If set, use hash-bit embeddings instead of pre-computed
 
 
 class PanoramaSemanticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     openai_embedding_size: int  # if smaller than the true embedding dim (1536), will crop and renormalize embedding
     embedding_version: str
     auxiliary_info_key: str
+    hash_bit_config: HashBitEmbeddingConfig | None = None  # If set, use hash-bit embeddings instead of pre-computed
 
 
 class SyntheticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):

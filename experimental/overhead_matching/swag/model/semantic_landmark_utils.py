@@ -8,9 +8,9 @@ import base64
 import hashlib
 import json
 import pickle
-import hashlib
-import base64
 from pathlib import Path
+
+import numpy as np
 import pandas as pd
 import torch
 
@@ -281,4 +281,54 @@ def custom_id_from_props(props: dict | frozenset) -> str:
         hashlib.sha256(json_props.encode('utf-8')).digest()
     ).decode('utf-8')
     return custom_id
+
+
+def string_to_hash_embedding(text: str, embedding_dim: int = 256) -> np.ndarray:
+    """Convert a string to a fixed hash-bit embedding.
+
+    Uses SHA256 to hash the text, then unpacks the bits into a float array
+    with values in [-1, 1]. The same string always produces the same embedding.
+
+    Args:
+        text: The text string to hash
+        embedding_dim: Dimension of the output embedding (max 256 for single SHA256)
+
+    Returns:
+        numpy array of shape (embedding_dim,) with values in [-1, 1]
+    """
+    hash_bytes = hashlib.sha256(text.encode('utf-8')).digest()
+    hash_array = np.frombuffer(hash_bytes, dtype=np.uint8)
+    bits = np.unpackbits(hash_array, count=embedding_dim)
+    return (2.0 * bits - 1.0).astype(np.float32)
+
+
+def parse_thing_and_place_from_sentence(sentence: str) -> tuple[str | None, str | None]:
+    """Extract thing (business name) and place (address) from a spoofed sentence.
+
+    Parses sentences in the formats:
+    - Pano business: "...with a sign for {business_name}"
+    - Pano address: "A street sign with the address {address}"
+    - OSM: "{business_name} location on {address}"
+
+    Args:
+        sentence: The sentence to parse
+
+    Returns:
+        Tuple of (thing, place) where either can be None if not present
+    """
+    if "with a sign for " in sentence:
+        # Pano business landmark
+        thing = sentence.split("with a sign for ")[-1]
+        return (thing, None)
+    elif "with the address " in sentence:
+        # Pano address landmark
+        place = sentence.split("with the address ")[-1]
+        return (None, place)
+    elif " location on " in sentence:
+        # OSM landmark
+        parts = sentence.split(" location on ")
+        thing = parts[0]
+        place = parts[1]
+        return (thing, place)
+    return (None, None)
 
