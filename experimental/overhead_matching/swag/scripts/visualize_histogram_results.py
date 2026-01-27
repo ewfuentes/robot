@@ -44,6 +44,10 @@ def load_evaluation_results(eval_path: Path, path_idx: int):
         results["mean_history"] = load_cpu(path_dir / "mean_history.pt")
     if (path_dir / "variance_history.pt").exists():
         results["variance_history"] = load_cpu(path_dir / "variance_history.pt")
+    if (path_dir / "prob_mass_by_radius.pt").exists():
+        results["prob_mass_by_radius"] = torch.load(
+            path_dir / "prob_mass_by_radius.pt", map_location='cpu'
+        )
     if (path_dir / "other_info.json").exists():
         with open(path_dir / "other_info.json") as f:
             results["other_info"] = json.load(f)
@@ -131,6 +135,112 @@ def plot_error_over_time(results: dict, ax: plt.Axes = None):
     return ax
 
 
+def plot_convergence_curves_single_path(results: dict, ax: plt.Axes = None):
+    """Plot probability mass within radius over distance for a single path."""
+    if "prob_mass_by_radius" not in results:
+        return None
+
+    if ax is None:
+        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+
+    prob_mass_by_radius = results["prob_mass_by_radius"]
+    distance = results["distance_traveled_m"].numpy()
+
+    colors = plt.cm.viridis(np.linspace(0, 0.8, len(prob_mass_by_radius)))
+
+    for (radius, prob_mass), color in zip(sorted(prob_mass_by_radius.items()), colors):
+        prob_mass_np = prob_mass.numpy()
+        # Align lengths (prob_mass has path_len + 1 entries, distance has path_len)
+        min_len = min(len(prob_mass_np), len(distance))
+        ax.plot(distance[:min_len], prob_mass_np[:min_len],
+                linewidth=2, color=color, label=f'{radius}m radius')
+
+    ax.set_xlabel('Distance Traveled (m)')
+    ax.set_ylabel('Probability Mass Within Radius')
+    ax.set_title('Convergence: Probability Mass Near True Position')
+    ax.set_ylim(0, 1.05)
+    ax.legend(loc='lower right')
+    ax.grid(True, alpha=0.3)
+
+    return ax
+
+
+def plot_convergence_curves_aggregate(
+    eval_path: Path,
+    num_paths: int,
+    ax: plt.Axes = None,
+):
+    """Plot aggregate convergence curves with median and IQR shading.
+
+    Collects convergence data from all paths and plots median with
+    interquartile range (25th-75th percentile) shading.
+    """
+    # Collect convergence data
+    all_prob_mass_by_radius: dict[int, list[tuple[np.ndarray, np.ndarray]]] = {}
+
+    for i in range(num_paths):
+        try:
+            results = load_evaluation_results(eval_path, i)
+            if "prob_mass_by_radius" not in results:
+                continue
+
+            distance = results["distance_traveled_m"].numpy()
+            for radius, prob_mass in results["prob_mass_by_radius"].items():
+                if radius not in all_prob_mass_by_radius:
+                    all_prob_mass_by_radius[radius] = []
+                prob_mass_np = prob_mass.numpy()
+                min_len = min(len(prob_mass_np), len(distance))
+                all_prob_mass_by_radius[radius].append(
+                    (distance[:min_len], prob_mass_np[:min_len])
+                )
+        except FileNotFoundError:
+            break
+
+    if not all_prob_mass_by_radius:
+        return None
+
+    if ax is None:
+        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+
+    # Create common distance bins for interpolation
+    max_distance = max(
+        d.max() for radius_data in all_prob_mass_by_radius.values()
+        for d, _ in radius_data
+    )
+    distance_bins = np.linspace(0, max_distance, 100)
+
+    colors = plt.cm.viridis(np.linspace(0, 0.8, len(all_prob_mass_by_radius)))
+
+    for (radius, curves), color in zip(sorted(all_prob_mass_by_radius.items()), colors):
+        # Interpolate all curves to common distance bins
+        interpolated = []
+        for dist, prob_mass in curves:
+            interp_values = np.interp(
+                distance_bins, dist, prob_mass,
+                left=prob_mass[0], right=prob_mass[-1]
+            )
+            interpolated.append(interp_values)
+
+        interpolated = np.array(interpolated)  # (num_paths, num_bins)
+
+        # Compute statistics
+        median = np.median(interpolated, axis=0)
+        q25 = np.percentile(interpolated, 25, axis=0)
+        q75 = np.percentile(interpolated, 75, axis=0)
+
+        ax.fill_between(distance_bins, q25, q75, alpha=0.3, color=color)
+        ax.plot(distance_bins, median, linewidth=2, color=color, label=f'{radius}m radius')
+
+    ax.set_xlabel('Distance Traveled (m)')
+    ax.set_ylabel('Probability Mass Within Radius')
+    ax.set_title('Convergence: Probability Mass Near True Position\n(Median + IQR)')
+    ax.set_ylim(0, 1.05)
+    ax.legend(loc='lower right')
+    ax.grid(True, alpha=0.3)
+
+    return ax
+
+
 def plot_multiple_paths_summary(eval_path: Path, vigor_dataset: vd.VigorDataset, num_paths: int = 10):
     """Plot summary of multiple paths."""
     # Load summary
@@ -141,6 +251,7 @@ def plot_multiple_paths_summary(eval_path: Path, vigor_dataset: vd.VigorDataset,
     all_final_errors = []
     all_error_curves = []
     all_distance_curves = []
+    has_convergence_data = False
 
     for i in range(num_paths):
         try:
@@ -148,10 +259,18 @@ def plot_multiple_paths_summary(eval_path: Path, vigor_dataset: vd.VigorDataset,
             all_final_errors.append(results["error"][-1].item())
             all_error_curves.append(results["error"].numpy())
             all_distance_curves.append(results["distance_traveled_m"].numpy())
+            if "prob_mass_by_radius" in results:
+                has_convergence_data = True
         except FileNotFoundError:
             break
 
-    fig, axes = plt.subplots(2, 2, figsize=(14, 12))
+    # Use different layout if convergence data is available
+    if has_convergence_data:
+        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+    else:
+        fig, axes = plt.subplots(2, 2, figsize=(14, 12))
+        # Flatten for consistent indexing
+        axes = np.array([[axes[0, 0], axes[0, 1], None], [axes[1, 0], axes[1, 1], None]])
 
     # Plot 1: Final error histogram
     ax = axes[0, 0]
@@ -173,19 +292,28 @@ def plot_multiple_paths_summary(eval_path: Path, vigor_dataset: vd.VigorDataset,
     ax.set_title('Error Curves for All Paths')
     ax.grid(True, alpha=0.3)
 
-    # Plot 3: Best path
+    # Plot 3: Convergence curves (if available)
+    if has_convergence_data:
+        plot_convergence_curves_aggregate(eval_path, num_paths, ax=axes[0, 2])
+
+    # Plot 4: Best path
     best_idx = np.argmin(all_final_errors)
     best_results = load_evaluation_results(eval_path, best_idx)
     plot_path_comparison(vigor_dataset, best_results, None,
                         title=f'Best Path (#{best_idx}, Error: {all_final_errors[best_idx]:.1f}m)',
                         ax=axes[1, 0])
 
-    # Plot 4: Worst path
+    # Plot 5: Worst path
     worst_idx = np.argmax(all_final_errors)
     worst_results = load_evaluation_results(eval_path, worst_idx)
     plot_path_comparison(vigor_dataset, worst_results, None,
                         title=f'Worst Path (#{worst_idx}, Error: {all_final_errors[worst_idx]:.1f}m)',
                         ax=axes[1, 1])
+
+    # Plot 6: Convergence for best path (if available)
+    if has_convergence_data and "prob_mass_by_radius" in best_results:
+        plot_convergence_curves_single_path(best_results, ax=axes[1, 2])
+        axes[1, 2].set_title(f'Convergence for Best Path (#{best_idx})')
 
     plt.tight_layout()
     return fig
@@ -271,10 +399,19 @@ def main():
         if args.debug:
             debug_path(vigor_dataset, results, args.path_idx)
 
-        fig, axes = plt.subplots(1, 2, figsize=(16, 7))
-        plot_path_comparison(vigor_dataset, results, None,
-                            title=f'Path #{args.path_idx}', ax=axes[0])
-        plot_error_over_time(results, ax=axes[1])
+        # Use 3 columns if convergence data is available
+        has_convergence = "prob_mass_by_radius" in results
+        if has_convergence:
+            fig, axes = plt.subplots(1, 3, figsize=(20, 6))
+            plot_path_comparison(vigor_dataset, results, None,
+                                title=f'Path #{args.path_idx}', ax=axes[0])
+            plot_error_over_time(results, ax=axes[1])
+            plot_convergence_curves_single_path(results, ax=axes[2])
+        else:
+            fig, axes = plt.subplots(1, 2, figsize=(16, 7))
+            plot_path_comparison(vigor_dataset, results, None,
+                                title=f'Path #{args.path_idx}', ax=axes[0])
+            plot_error_over_time(results, ax=axes[1])
         plt.tight_layout()
     else:
         # Show summary
