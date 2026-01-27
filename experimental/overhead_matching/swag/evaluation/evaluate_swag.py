@@ -408,9 +408,6 @@ def construct_inputs_and_evaluate_path(
     generator = torch.Generator(device=device).manual_seed(generator_seed)
     motion_deltas = get_motion_deltas_from_path(vigor_dataset, path).to(device)
 
-    # Path already contains pano_ids
-    panorama_ids = path
-
     # Get satellite patch locations
     satellite_patch_locations = vigor_dataset.get_patch_positions()
 
@@ -439,7 +436,7 @@ def construct_inputs_and_evaluate_path(
         belief_weighting=belief_weighting,
         initial_particle_state=initial_particle_state,
         motion_deltas=motion_deltas,
-        panorama_ids=panorama_ids,
+        panorama_ids=path,
         wag_config=wag_config,
         generator=generator,
         return_intermediates=return_intermediates)
@@ -518,9 +515,9 @@ def evaluate_model_on_paths(
             torch.save(var_sq_m_at_each_step, save_path / "var.pt")
             torch.save(path, save_path / "path.pt")
             torch.save(distance_traveled_m, save_path / "distance_traveled_m.pt")
-            # Convert pano_ids to indices for similarity matrix access
-            path_indices = vigor_dataset.pano_ids_to_indices(path)
-            torch.save(all_similarity[path_indices], save_path / "similarity.pt")
+            # Avoid saving similarity matrix for space savings
+            # path_indices = vigor_dataset.pano_ids_to_indices(path)
+            # torch.save(all_similarity[path_indices], save_path / "similarity.pt")
             if save_intermediate_filter_states:
                 pir = path_inference_result
                 torch.save(pir.particle_history, save_path / "particle_history.pt")
