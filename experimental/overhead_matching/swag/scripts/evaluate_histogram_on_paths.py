@@ -125,6 +125,11 @@ def run_histogram_filter_on_path(
                 belief, true_latlons[0], float(radius)
             )
             prob_mass_by_radius[radius].append(prob_mass)
+    else:
+        if true_latlons is None:
+            print("Not tracking convergence: true_latlons not provided")
+        if convergence_radii is None:
+            print("Not tracking convergence: convergence_radii not provided")
 
     path_len = path_similarity.shape[0]
 
@@ -271,20 +276,14 @@ def evaluate_histogram_on_paths(
         )
         print(f"Grid size: {grid_spec.num_rows} x {grid_spec.num_cols} = {grid_spec.num_rows * grid_spec.num_cols} cells")
 
-        # Get patch positions and build mapping (on CPU to avoid OOM, then move to GPU)
-        patch_positions_px = get_patch_positions_px(vigor_dataset, torch.device("cpu"))
+        # Get patch positions and build mapping
+        patch_positions_px = get_patch_positions_px(vigor_dataset, device)
         patch_half_size_px = config.patch_size_px / 2.0
         mapping = build_cell_to_patch_mapping(
             grid_spec=grid_spec,
             patch_positions_px=patch_positions_px,
             patch_half_size_px=patch_half_size_px,
-            device=torch.device("cpu"),
-        )
-        # Move mapping to GPU
-        mapping = CellToPatchMapping(
-            patch_indices=mapping.patch_indices.to(device),
-            cell_offsets=mapping.cell_offsets.to(device),
-            segment_ids=mapping.segment_ids.to(device),
+            device=device,
         )
         print(f"Built cell-to-patch mapping with {len(mapping.patch_indices)} overlaps")
 
@@ -305,8 +304,11 @@ def evaluate_histogram_on_paths(
             path_indices = vigor_dataset.pano_ids_to_indices(path)
             path_similarity = all_similarity[path_indices]  # (path_len, num_patches)
 
-            # Get ground truth positions for convergence metrics
-            true_latlons = vigor_dataset.get_panorama_positions(path).to(device)
+            # Get ground truth positions for convergence metrics (only if needed)
+            true_latlons = (
+                vigor_dataset.get_panorama_positions(path).to(device)
+                if convergence_radii else None
+            )
 
             # Run filter
             result = run_histogram_filter_on_path(
@@ -315,7 +317,7 @@ def evaluate_histogram_on_paths(
                 path_similarity=path_similarity,
                 mapping=mapping,
                 config=config,
-                true_latlons=true_latlons if convergence_radii else None,
+                true_latlons=true_latlons,
                 convergence_radii=convergence_radii,
             )
 

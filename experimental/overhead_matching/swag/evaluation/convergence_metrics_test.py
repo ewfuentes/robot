@@ -10,7 +10,6 @@ import torch
 import math
 
 from experimental.overhead_matching.swag.evaluation.convergence_metrics import (
-    get_meters_per_pixel,
     compute_probability_mass_within_radius,
     compute_convergence_cost,
 )
@@ -18,8 +17,8 @@ from experimental.overhead_matching.swag.filter.histogram_belief import (
     GridSpec,
     HistogramBelief,
 )
-from experimental.overhead_matching.swag.data.vigor_dataset import EARTH_RADIUS_M
 from common.gps import web_mercator
+from common.gps.web_mercator import EARTH_RADIUS_M, get_meters_per_pixel
 from common.math.haversine import find_d_on_unit_circle
 
 
@@ -306,6 +305,132 @@ class TestKnownGeometryGrid(unittest.TestCase):
         prob_mass = compute_probability_mass_within_radius(belief, true_latlon, 10000.0)
         self.assertAlmostEqual(prob_mass, 1.0, places=6)
 
+    def test_radius_masking_captures_correct_cells(self):
+        """Test that radii just past 1, 2, and 3 cell distances capture expected cells.
+
+        Creates a 1x5 row grid with uniform weights and verifies that increasing
+        radii capture exactly the expected number of cells.
+        """
+        device = torch.device("cpu")
+
+        # Create a 1x5 row grid for easy distance calculation
+        # Use raw GridSpec to have precise control over cell count
+        grid_spec = GridSpec(
+            origin_row_px=100_000_000.0,
+            origin_col_px=100_000_000.0,
+            num_rows=1,
+            num_cols=5,
+            zoom_level=20,
+            cell_size_px=100.0,
+        )
+
+        belief = HistogramBelief.from_uniform(grid_spec, device)
+
+        # Get cell centers
+        cell_centers_latlon = grid_spec.get_all_cell_centers_latlon(device)
+        cell_centers_px = grid_spec.get_all_cell_centers_px(device)
+
+        # True position at the center cell (index 2)
+        center_idx = 2
+        true_latlon = cell_centers_latlon[center_idx]
+        true_px = cell_centers_px[center_idx]
+
+        # Compute cell size in meters
+        center_lat = true_latlon[0].item()
+        mpp = get_meters_per_pixel(center_lat, grid_spec.zoom_level)
+        cell_size_m = grid_spec.cell_size_px * mpp
+
+        # Verify cell spacing: cells should be cell_size_px apart
+        # For 1x5 row: cells at columns 0, 1, 2, 3, 4
+        # Center is at 2, distances in cells: [-2, -1, 0, 1, 2]
+
+        # Test radii that capture 1, 3, and 5 cells (due to symmetry)
+        # Radius < 0.5 * cell_size: captures only center (1 cell)
+        # Radius > 1 * cell_size: captures center + 2 neighbors (3 cells)
+        # Radius > 2 * cell_size: captures all 5 cells
+
+        test_cases = [
+            # (radius_in_cell_sizes, expected_cells, expected_prob)
+            (0.4, 1, 1.0 / 5.0),   # Just center
+            (1.1, 3, 3.0 / 5.0),   # Center + immediate neighbors
+            (2.1, 5, 5.0 / 5.0),   # All 5 cells
+        ]
+
+        for radius_factor, expected_cells, expected_prob in test_cases:
+            radius_m = radius_factor * cell_size_m
+            prob_mass = compute_probability_mass_within_radius(belief, true_latlon, radius_m)
+
+            self.assertAlmostEqual(
+                prob_mass, expected_prob, delta=0.01,
+                msg=f"Radius {radius_factor}x cell_size ({radius_m:.2f}m): "
+                    f"expected {expected_cells} cells (prob={expected_prob}), "
+                    f"got prob={prob_mass:.4f}"
+            )
+
+    def test_radius_masking_nonuniform_weights(self):
+        """Test radius masking with non-uniform cell weights.
+
+        Creates a 1x3 row grid with weights [0.2, 0.3, 0.5] and verifies
+        that radii capture the correct probability mass.
+        """
+        device = torch.device("cpu")
+
+        # Create a 1x3 row grid
+        grid_spec = GridSpec(
+            origin_row_px=100_000_000.0,
+            origin_col_px=100_000_000.0,
+            num_rows=1,
+            num_cols=3,
+            zoom_level=20,
+            cell_size_px=100.0,
+        )
+
+        belief = HistogramBelief(grid_spec, device)
+
+        # Set non-uniform weights: [0.2, 0.3, 0.5]
+        weights = torch.tensor([[0.2, 0.3, 0.5]])
+        belief._log_belief = torch.log(weights)
+
+        # Get cell centers
+        cell_centers_latlon = grid_spec.get_all_cell_centers_latlon(device)
+
+        # True position at center cell (index 1, which has weight 0.3)
+        center_idx = 1
+        true_latlon = cell_centers_latlon[center_idx]
+
+        # Compute cell size in meters
+        center_lat = true_latlon[0].item()
+        mpp = get_meters_per_pixel(center_lat, grid_spec.zoom_level)
+        cell_size_m = grid_spec.cell_size_px * mpp
+
+        # Test cases:
+        # Radius < 0.5 * cell_size: captures only center (weight 0.3)
+        # Radius > 1 * cell_size: captures all 3 cells (weight 1.0)
+
+        test_cases = [
+            (0.4, 0.3),   # Just center cell
+            (1.1, 1.0),   # All 3 cells
+        ]
+
+        for radius_factor, expected_prob in test_cases:
+            radius_m = radius_factor * cell_size_m
+            prob_mass = compute_probability_mass_within_radius(belief, true_latlon, radius_m)
+
+            self.assertAlmostEqual(
+                prob_mass, expected_prob, delta=0.01,
+                msg=f"Radius {radius_factor}x cell_size ({radius_m:.2f}m): "
+                    f"expected prob={expected_prob}, got prob={prob_mass:.4f}"
+            )
+
+        # Additional test: true position at left cell (index 0, weight 0.2)
+        left_latlon = cell_centers_latlon[0]
+
+        # Radius that captures left + center but not right
+        radius_m = 1.1 * cell_size_m
+        prob_mass = compute_probability_mass_within_radius(belief, left_latlon, radius_m)
+        # Should capture left (0.2) + center (0.3) = 0.5
+        self.assertAlmostEqual(prob_mass, 0.5, delta=0.01)
+
 
 # =============================================================================
 # Test 4: Convergence Cost Analytical Tests
@@ -436,35 +561,6 @@ class TestConvergenceCostAnalytical(unittest.TestCase):
 class TestIntegration(unittest.TestCase):
     """Integration tests verifying consistency across the full pipeline."""
 
-    def test_symmetry_around_true_position(self):
-        """Symmetric belief around true position should give positive prob mass."""
-        device = torch.device("cpu")
-
-        # Create grid from valid lat/lon bounds
-        grid_spec = GridSpec.from_bounds_and_cell_size(
-            min_lat=40.700,
-            max_lat=40.705,
-            min_lon=-74.005,
-            max_lon=-74.000,
-            zoom_level=20,
-            cell_size_px=100.0,
-        )
-
-        # Create symmetric belief (Gaussian-like, centered at grid center)
-        cell_centers = grid_spec.get_all_cell_centers_latlon(device)
-        center_row = grid_spec.num_rows // 2
-        center_col = grid_spec.num_cols // 2
-        center_idx = center_row * grid_spec.num_cols + center_col
-        center_latlon = cell_centers[center_idx]
-
-        belief = HistogramBelief.from_gaussian(
-            grid_spec, center_latlon, std_deg=0.0001, device=device
-        )
-
-        # Probability mass should be positive for any reasonable radius
-        prob_mass = compute_probability_mass_within_radius(belief, center_latlon, 5.0)
-        self.assertGreater(prob_mass, 0)
-
     def test_increasing_radius_increases_prob_mass(self):
         """Larger radius should always capture more or equal probability mass."""
         device = torch.device("cpu")
@@ -561,9 +657,9 @@ class TestHaversineCrossValidation(unittest.TestCase):
         self.assertLess(rel_error, 0.001, f"Relative error {rel_error:.4f} too large")
 
     def test_meters_per_pixel_vs_haversine_midlat(self):
-        """At mid-latitude (45°), verify meters_per_pixel against haversine."""
+        """At mid-latitude, verify meters_per_pixel against haversine."""
         zoom = 20
-        lat = 45.0
+        lat = 43.2
 
         mpp = get_meters_per_pixel(lat, zoom)
         px_distance = 1000.0
