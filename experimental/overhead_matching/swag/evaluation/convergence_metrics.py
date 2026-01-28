@@ -7,36 +7,12 @@ radii of the ground truth position over the course of a path.
 
 import common.torch.load_torch_deps
 import torch
-import math
 
 from common.gps import web_mercator
-from experimental.overhead_matching.swag.data.vigor_dataset import EARTH_RADIUS_M
+from common.gps.web_mercator import get_meters_per_pixel
 from experimental.overhead_matching.swag.filter.histogram_belief import (
     HistogramBelief,
 )
-
-
-def get_meters_per_pixel(lat_deg: float, zoom_level: int) -> float:
-    """Compute meters per pixel at a given latitude and zoom level.
-
-    In Web Mercator projection, the scale factor varies with latitude.
-    At the equator, the circumference is 2*pi*R meters, and at zoom level z,
-    the map is 2^(8+z) pixels wide. At other latitudes, the east-west scale
-    is reduced by cos(lat).
-
-    Args:
-        lat_deg: Latitude in degrees
-        zoom_level: Web Mercator zoom level
-
-    Returns:
-        Meters per pixel at the given latitude
-    """
-    earth_circumference_m = 2 * math.pi * EARTH_RADIUS_M
-    map_size_px = 2 ** (8 + zoom_level)
-    meters_per_pixel_equator = earth_circumference_m / map_size_px
-    # Scale by cos(lat) for latitude correction
-    lat_rad = math.radians(lat_deg)
-    return meters_per_pixel_equator * math.cos(lat_rad)
 
 
 def compute_probability_mass_within_radius(
@@ -103,9 +79,18 @@ def compute_convergence_cost(
 
     Returns:
         Integrated convergence cost (lower is better)
+
+    Raises:
+        AssertionError: If input lengths don't match expected relationship
     """
     if len(prob_mass) < 3 or len(distance_traveled) < 2:
         return 0.0
+
+    # Verify expected length relationship: prob_mass has one more entry than distance_traveled
+    assert len(prob_mass) == len(distance_traveled) + 1, (
+        f"prob_mass length ({len(prob_mass)}) must equal "
+        f"distance_traveled length + 1 ({len(distance_traveled) + 1})"
+    )
 
     # Compute distance increments: delta_dist[i] = distance from step i to step i+1
     # This has (path_len - 1) elements
@@ -116,11 +101,9 @@ def compute_convergence_cost(
     # prob_mass indices: 0=initial, 1=after step 0, 2=after step 1, ...
     # So for delta_dist[i] (step i to i+1), use prob_mass[i+2] (after step i+1)
     # This means we use prob_mass[2:] which has (path_len - 1) elements
-    missing_prob = 1.0 - prob_mass[2:len(distance_traveled) + 1]
+    missing_prob = 1.0 - prob_mass[2:]
 
-    # Ensure same length
-    min_len = min(len(missing_prob), len(delta_dist))
-    return (missing_prob[:min_len] * delta_dist[:min_len]).sum().item()
+    return (missing_prob * delta_dist).sum().item()
 
 
 def compute_probability_mass_history(

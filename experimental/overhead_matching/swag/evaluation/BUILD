@@ -125,7 +125,6 @@ py_library(
     requirement("torch"),
     "//common/gps:web_mercator",
     "//common/torch:load_torch_deps",
-    "//experimental/overhead_matching/swag/data:vigor_dataset",
     "//experimental/overhead_matching/swag/filter:histogram_belief",
   ],
 )
@@ -139,7 +138,6 @@ py_test(
     "//common/math:haversine",
     "//common/torch:load_torch_deps",
     ":convergence_metrics",
-    "//experimental/overhead_matching/swag/data:vigor_dataset",
     "//experimental/overhead_matching/swag/filter:histogram_belief",
   ],
 )

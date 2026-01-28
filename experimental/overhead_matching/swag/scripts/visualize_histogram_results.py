@@ -179,6 +179,7 @@ def plot_convergence_curves_aggregate(
     all_prob_mass_by_radius: dict[int, list[tuple[np.ndarray, np.ndarray]]] = {}
 
     for i in range(num_paths):
+        # Some paths may have failed during evaluation or not have results saved
         try:
             results = load_evaluation_results(eval_path, i)
             if "prob_mass_by_radius" not in results:
