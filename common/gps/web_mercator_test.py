@@ -1,7 +1,62 @@
 
 import unittest
+import math
 
 from common.gps import web_mercator
+from common.gps.web_mercator import EARTH_RADIUS_M, get_meters_per_pixel
+
+
+class TestGetMetersPerPixel(unittest.TestCase):
+    """Verify get_meters_per_pixel against known values."""
+
+    def test_equator_zoom_20(self):
+        """At equator, meters_per_pixel has an exact formula."""
+        lat = 0.0
+        zoom = 20
+        earth_circumference_m = 2 * math.pi * EARTH_RADIUS_M
+        map_size_px = 2 ** (8 + zoom)
+        expected = earth_circumference_m / map_size_px
+
+        result = get_meters_per_pixel(lat, zoom)
+        self.assertAlmostEqual(result, expected, places=6)
+
+    def test_lat_60_is_half_equator(self):
+        """At lat=60°, cos(60°) = 0.5, so meters_per_pixel is half of equator."""
+        zoom = 20
+        equator_mpp = get_meters_per_pixel(0.0, zoom)
+        lat60_mpp = get_meters_per_pixel(60.0, zoom)
+
+        # cos(60°) = 0.5
+        expected_ratio = 0.5
+        actual_ratio = lat60_mpp / equator_mpp
+
+        self.assertAlmostEqual(actual_ratio, expected_ratio, places=6)
+
+    def test_cosine_scaling(self):
+        """Verify cos(lat) scaling at various latitudes."""
+        zoom = 18
+        equator_mpp = get_meters_per_pixel(0.0, zoom)
+
+        test_lats = [30.0, 45.0, 60.0, 75.0]
+        for lat in test_lats:
+            expected_ratio = math.cos(math.radians(lat))
+            actual_mpp = get_meters_per_pixel(lat, zoom)
+            actual_ratio = actual_mpp / equator_mpp
+
+            self.assertAlmostEqual(
+                actual_ratio, expected_ratio, places=6,
+                msg=f"At lat={lat}°"
+            )
+
+    def test_zoom_level_scaling(self):
+        """Each zoom level doubles the map size, halving meters_per_pixel."""
+        lat = 40.0
+        mpp_z18 = get_meters_per_pixel(lat, 18)
+        mpp_z19 = get_meters_per_pixel(lat, 19)
+        mpp_z20 = get_meters_per_pixel(lat, 20)
+
+        self.assertAlmostEqual(mpp_z18 / mpp_z19, 2.0, places=6)
+        self.assertAlmostEqual(mpp_z19 / mpp_z20, 2.0, places=6)
 
 
 class WebMercatorTest(unittest.TestCase):
