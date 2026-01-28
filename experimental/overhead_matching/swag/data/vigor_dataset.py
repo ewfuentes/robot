@@ -22,6 +22,7 @@ from scipy.spatial import cKDTree
 from typing import NamedTuple
 from common.math.haversine import find_d_on_unit_circle
 from common.gps import web_mercator
+from common.gps.web_mercator import EARTH_RADIUS_M
 from enum import StrEnum, auto
 from experimental.overhead_matching.swag.model.swag_model_input_output import ExtractorOutput
 from experimental.overhead_matching.swag.model.swag_config_types import CacheableExtractorInfo
@@ -31,8 +32,6 @@ from typing import Any
 # Configure logger for this module
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-EARTH_RADIUS_M = 6378137.0
 
 class HashStruct(msgspec.Struct, frozen=True):
     """Structure for computing cache hashes. Combines model config, patch dims, landmark version, panorama landmark radius, and landmark correspondence inflation factor."""
