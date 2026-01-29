@@ -345,47 +345,49 @@ def construct_path_eval_inputs_from_args(
     if (sat_model_path is None) != (pano_model_path is None):
         raise ValueError("Both sat_model_path and pano_model_path must be provided together, or neither.")
 
-    # Load models if paths provided
+    # Load models and set config values based on whether models are provided
     if sat_model_path and pano_model_path:
         pano_model = load_model(pano_model_path, device=device)
         sat_model = load_model(sat_model_path, device=device)
-
-        dataset_config = vd.VigorDatasetConfig(
-            panorama_tensor_cache_info=vd.TensorCacheInfo(
-                dataset_key=dataset_path.name,
-                model_type="panorama",
-                landmark_version=landmark_version,
-                panorama_landmark_radius_px=panorama_landmark_radius_px,
-                landmark_correspondence_inflation_factor=1.0,
-                extractor_info=pano_model.cache_info()),
-            satellite_tensor_cache_info=vd.TensorCacheInfo(
-                dataset_key=dataset_path.name,
-                model_type="satellite",
-                landmark_version=landmark_version,
-                panorama_landmark_radius_px=panorama_landmark_radius_px,
-                landmark_correspondence_inflation_factor=1.0,
-                extractor_info=sat_model.cache_info()),
-            panorama_neighbor_radius=panorama_neighbor_radius_deg,
-            satellite_patch_size=sat_model.patch_dims,
-            panorama_size=pano_model.patch_dims,
-            factor=factor,
+        panorama_tensor_cache_info = vd.TensorCacheInfo(
+            dataset_key=dataset_path.name,
+            model_type="panorama",
             landmark_version=landmark_version,
-        )
+            panorama_landmark_radius_px=panorama_landmark_radius_px,
+            landmark_correspondence_inflation_factor=1.0,
+            extractor_info=pano_model.cache_info())
+        satellite_tensor_cache_info = vd.TensorCacheInfo(
+            dataset_key=dataset_path.name,
+            model_type="satellite",
+            landmark_version=landmark_version,
+            panorama_landmark_radius_px=panorama_landmark_radius_px,
+            landmark_correspondence_inflation_factor=1.0,
+            extractor_info=sat_model.cache_info())
+        satellite_patch_size = sat_model.patch_dims
+        panorama_size = pano_model.patch_dims
+        should_load_images = True
+        should_load_landmarks = True
     else:
         pano_model = None
         sat_model = None
-        # Minimal config without model-specific caching
-        dataset_config = vd.VigorDatasetConfig(
-            panorama_tensor_cache_info=None,
-            satellite_tensor_cache_info=None,
-            panorama_neighbor_radius=panorama_neighbor_radius_deg,
-            satellite_patch_size=None,
-            panorama_size=None,
-            factor=factor,
-            landmark_version=landmark_version,
-            should_load_images=False,
-            should_load_landmarks=False,
-        )
+        panorama_tensor_cache_info = None
+        satellite_tensor_cache_info = None
+        satellite_patch_size = None
+        panorama_size = None
+        should_load_images = False
+        should_load_landmarks = False
+
+    dataset_config = vd.VigorDatasetConfig(
+        panorama_tensor_cache_info=panorama_tensor_cache_info,
+        satellite_tensor_cache_info=satellite_tensor_cache_info,
+        panorama_neighbor_radius=panorama_neighbor_radius_deg,
+        satellite_patch_size=satellite_patch_size,
+        panorama_size=panorama_size,
+        factor=factor,
+        landmark_version=landmark_version,
+        should_load_images=should_load_images,
+        should_load_landmarks=should_load_landmarks,
+    )
 
     vigor_dataset = vd.VigorDataset(dataset_path, dataset_config)
 
@@ -397,14 +399,11 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Evaluate histogram filter on paths")
 
-    # Create mutually exclusive group for similarity source
-    similarity_source = parser.add_mutually_exclusive_group(required=True)
-    similarity_source.add_argument("--similarity-matrix", type=str,
+    # Similarity source: either --similarity-matrix OR (--sat-path AND --pano-path)
+    parser.add_argument("--similarity-matrix", type=str, default=None,
                         help="Path to pre-computed similarity matrix (.pt file)")
-    similarity_source.add_argument("--sat-path", type=str,
+    parser.add_argument("--sat-path", type=str, default=None,
                         help="Model folder path for sat model")
-
-    # pano-path is required when using models (validated manually)
     parser.add_argument("--pano-path", type=str, default=None,
                         help="Model folder path for pano model (required with --sat-path)")
 
@@ -430,9 +429,17 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # Validate that pano-path is provided when using sat-path
-    if args.sat_path and not args.pano_path:
-        parser.error("--pano-path is required when using --sat-path")
+    # Validate: must provide either --similarity-matrix OR both --sat-path and --pano-path
+    has_similarity_matrix = args.similarity_matrix is not None
+    has_models = args.sat_path is not None and args.pano_path is not None
+    has_partial_models = (args.sat_path is not None) != (args.pano_path is not None)
+
+    if has_partial_models:
+        parser.error("--sat-path and --pano-path must be provided together")
+    if not has_similarity_matrix and not has_models:
+        parser.error("Must provide either --similarity-matrix OR both --sat-path and --pano-path")
+    if has_similarity_matrix and has_models:
+        parser.error("Cannot provide both --similarity-matrix and model paths")
 
     DEVICE = "cuda:0"
     torch.set_deterministic_debug_mode('error')
