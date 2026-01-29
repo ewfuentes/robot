@@ -171,42 +171,30 @@ def get_distance_error_from_mean_history(
 
 def evaluate_histogram_on_paths(
     vigor_dataset: vd.VigorDataset,
-    sat_model: torch.nn.Module,
-    pano_model: torch.nn.Module,
+    similarity: torch.Tensor,
     paths: list[list[str]],
     config: HistogramFilterConfig,
     seed: int,
     output_path: Path,
     device: torch.device = "cuda:0",
-    use_cached_similarity: bool = True,
     save_intermediate_states: bool = False,
 ) -> None:
     """Evaluate histogram filter on paths.
 
     Args:
         vigor_dataset: VIGOR dataset
-        sat_model: Satellite embedding model
-        pano_model: Panorama embedding model
+        similarity: Pre-computed similarity matrix (num_pano, num_sat)
         paths: List of paths (each path is list of pano_ids)
         config: Histogram filter configuration
         seed: Random seed for initial offset
         output_path: Directory to save results
         device: Torch device
-        use_cached_similarity: Whether to use cached similarity matrix
         save_intermediate_states: Whether to save belief history
     """
     all_final_error_meters = []
+    all_similarity = similarity
 
     with torch.no_grad():
-        # Compute similarity matrix
-        all_similarity = es.compute_cached_similarity_matrix(
-            sat_model=sat_model,
-            pano_model=pano_model,
-            dataset=vigor_dataset,
-            device=device,
-            use_cached_similarity=use_cached_similarity
-        )
-
         # Build GridSpec from dataset bounds with buffer of half patch size
         min_lat, max_lat, min_lon, max_lon = get_dataset_bounds(vigor_dataset)
         cell_size_px = config.patch_size_px / config.subdivision_factor
@@ -314,16 +302,31 @@ def evaluate_histogram_on_paths(
 
 
 def construct_path_eval_inputs_from_args(
-        sat_model_path: str,
-        pano_model_path: str,
         dataset_path: str,
         paths_path: str,
         panorama_neighbor_radius_deg: float,
         panorama_landmark_radius_px: int,
         device: torch.device,
-        landmark_version: str
+        landmark_version: str,
+        sat_model_path: str | None = None,
+        pano_model_path: str | None = None,
 ):
-    """Load models and dataset for evaluation."""
+    """Load dataset and optionally models for evaluation.
+
+    Args:
+        dataset_path: Path to VIGOR dataset
+        paths_path: Path to JSON file with evaluation paths
+        panorama_neighbor_radius_deg: Panorama neighbor radius in degrees
+        panorama_landmark_radius_px: Panorama landmark radius in pixels
+        device: Torch device
+        landmark_version: Landmark version string
+        sat_model_path: Optional path to satellite model (required if pano_model_path is set)
+        pano_model_path: Optional path to panorama model (required if sat_model_path is set)
+
+    Returns:
+        Tuple of (vigor_dataset, sat_model, pano_model, paths_data)
+        Models will be None if model paths are not provided.
+    """
     with open(paths_path, 'r') as f:
         paths_data = json.load(f)
     # Check that paths use pano_id strings, not old integer indices
@@ -334,32 +337,58 @@ def construct_path_eval_inputs_from_args(
             "Regenerate with create_evaluation_paths.py to get pano_id format (strings)."
         )
     factor = paths_data.get('args', {}).get('factor', 1.0)
-    pano_model = load_model(pano_model_path, device=device)
-    sat_model = load_model(sat_model_path, device=device)
     print(f"Dataset Factor: {factor}")
 
     dataset_path = Path(dataset_path).expanduser()
-    dataset_config = vd.VigorDatasetConfig(
-        panorama_tensor_cache_info=vd.TensorCacheInfo(
+
+    # Check that both model paths are provided or neither
+    if (sat_model_path is None) != (pano_model_path is None):
+        raise ValueError("Both sat_model_path and pano_model_path must be provided together, or neither.")
+
+    # Load models and set config values based on whether models are provided
+    if sat_model_path and pano_model_path:
+        pano_model = load_model(pano_model_path, device=device)
+        sat_model = load_model(sat_model_path, device=device)
+        panorama_tensor_cache_info = vd.TensorCacheInfo(
             dataset_key=dataset_path.name,
             model_type="panorama",
             landmark_version=landmark_version,
             panorama_landmark_radius_px=panorama_landmark_radius_px,
             landmark_correspondence_inflation_factor=1.0,
-            extractor_info=pano_model.cache_info()),
-        satellite_tensor_cache_info=vd.TensorCacheInfo(
+            extractor_info=pano_model.cache_info())
+        satellite_tensor_cache_info = vd.TensorCacheInfo(
             dataset_key=dataset_path.name,
             model_type="satellite",
             landmark_version=landmark_version,
             panorama_landmark_radius_px=panorama_landmark_radius_px,
             landmark_correspondence_inflation_factor=1.0,
-            extractor_info=sat_model.cache_info()),
+            extractor_info=sat_model.cache_info())
+        satellite_patch_size = sat_model.patch_dims
+        panorama_size = pano_model.patch_dims
+        should_load_images = True
+        should_load_landmarks = True
+    else:
+        pano_model = None
+        sat_model = None
+        panorama_tensor_cache_info = None
+        satellite_tensor_cache_info = None
+        satellite_patch_size = None
+        panorama_size = None
+        should_load_images = False
+        should_load_landmarks = False
+
+    dataset_config = vd.VigorDatasetConfig(
+        panorama_tensor_cache_info=panorama_tensor_cache_info,
+        satellite_tensor_cache_info=satellite_tensor_cache_info,
         panorama_neighbor_radius=panorama_neighbor_radius_deg,
-        satellite_patch_size=sat_model.patch_dims,
-        panorama_size=pano_model.patch_dims,
+        satellite_patch_size=satellite_patch_size,
+        panorama_size=panorama_size,
         factor=factor,
         landmark_version=landmark_version,
+        should_load_images=should_load_images,
+        should_load_landmarks=should_load_landmarks,
     )
+
     vigor_dataset = vd.VigorDataset(dataset_path, dataset_config)
 
     return vigor_dataset, sat_model, pano_model, paths_data
@@ -369,10 +398,15 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Evaluate histogram filter on paths")
-    parser.add_argument("--sat-path", type=str, required=True,
+
+    # Similarity source: either --similarity-matrix OR (--sat-path AND --pano-path)
+    parser.add_argument("--similarity-matrix", type=str, default=None,
+                        help="Path to pre-computed similarity matrix (.pt file)")
+    parser.add_argument("--sat-path", type=str, default=None,
                         help="Model folder path for sat model")
-    parser.add_argument("--pano-path", type=str, required=True,
-                        help="Model folder path for pano model")
+    parser.add_argument("--pano-path", type=str, default=None,
+                        help="Model folder path for pano model (required with --sat-path)")
+
     parser.add_argument("--paths-path", type=str, required=True,
                         help="Path to json file full of evaluation paths")
     parser.add_argument("--output-path", type=str, required=True,
@@ -395,6 +429,18 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    # Validate: must provide either --similarity-matrix OR both --sat-path and --pano-path
+    has_similarity_matrix = args.similarity_matrix is not None
+    has_models = args.sat_path is not None and args.pano_path is not None
+    has_partial_models = (args.sat_path is not None) != (args.pano_path is not None)
+
+    if has_partial_models:
+        parser.error("--sat-path and --pano-path must be provided together")
+    if not has_similarity_matrix and not has_models:
+        parser.error("Must provide either --similarity-matrix OR both --sat-path and --pano-path")
+    if has_similarity_matrix and has_models:
+        parser.error("Cannot provide both --similarity-matrix and model paths")
+
     DEVICE = "cuda:0"
     torch.set_deterministic_debug_mode('error')
 
@@ -402,20 +448,47 @@ if __name__ == "__main__":
     with open(Path(args.output_path) / "args.json", "w") as f:
         json.dump(vars(args), f, indent=4)
 
-    args.sat_model_path = Path(args.sat_path).expanduser()
-    args.pano_model_path = Path(args.pano_path).expanduser()
     args.output_path = Path(args.output_path).expanduser()
 
+    # Determine model paths (may be None if using similarity matrix)
+    sat_model_path = Path(args.sat_path).expanduser() if args.sat_path else None
+    pano_model_path = Path(args.pano_path).expanduser() if args.pano_path else None
+
     vigor_dataset, sat_model, pano_model, paths_data = construct_path_eval_inputs_from_args(
-        sat_model_path=args.sat_model_path,
-        pano_model_path=args.pano_model_path,
         dataset_path=args.dataset_path,
         paths_path=args.paths_path,
         panorama_neighbor_radius_deg=args.panorama_neighbor_radius_deg,
         panorama_landmark_radius_px=args.panorama_landmark_radius_px,
         device=DEVICE,
         landmark_version=args.landmark_version,
+        sat_model_path=sat_model_path,
+        pano_model_path=pano_model_path,
     )
+
+    # Get similarity matrix (from file or compute from models)
+    if args.similarity_matrix:
+        print(f"Loading pre-computed similarity matrix from {args.similarity_matrix}")
+        all_similarity = torch.load(args.similarity_matrix, weights_only=True)
+        # Move to device if needed
+        all_similarity = all_similarity.to(DEVICE)
+    else:
+        print("Computing similarity matrix from models...")
+        all_similarity = es.compute_cached_similarity_matrix(
+            sat_model=sat_model,
+            pano_model=pano_model,
+            dataset=vigor_dataset,
+            device=DEVICE,
+            use_cached_similarity=True
+        )
+
+    # Validate dimensions
+    num_panos = len(vigor_dataset._panorama_metadata)
+    num_sats = len(vigor_dataset._satellite_metadata)
+    if all_similarity.shape != (num_panos, num_sats):
+        raise ValueError(
+            f"Similarity matrix shape {all_similarity.shape} doesn't match "
+            f"dataset dimensions ({num_panos} panos, {num_sats} sats)"
+        )
 
     # Build config
     def degrees_from_meters(dist_m):
@@ -443,8 +516,7 @@ if __name__ == "__main__":
 
     evaluate_histogram_on_paths(
         vigor_dataset=vigor_dataset,
-        sat_model=sat_model,
-        pano_model=pano_model,
+        similarity=all_similarity,
         paths=paths_data['paths'],
         config=config,
         seed=args.seed,
