@@ -4,6 +4,7 @@ load("@pip//:requirements.bzl", "requirement")
 py_library(
   name = "vigor_dataset",
   srcs = ["vigor_dataset.py"],
+  data = ["//planning:a_star_python.so"],
   visibility = [
     "//experimental/overhead_matching/swag:__subpackages__",
     "//common/python:__subpackages__",

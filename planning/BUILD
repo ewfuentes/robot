@@ -59,6 +59,15 @@ cc_library(
   visibility = ["//visibility:public"],
 )
 
+pybind_extension(
+  name = "a_star_python",
+  srcs = ["a_star_python.cc"],
+  visibility = ["//visibility:public"],
+  deps = [
+    ":a_star",
+  ]
+)
+
 cc_test(
   name = "a_star_test",
   srcs = ["a_star_test.cc"],
