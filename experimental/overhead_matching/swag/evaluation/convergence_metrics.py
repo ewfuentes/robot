@@ -104,27 +104,3 @@ def compute_convergence_cost(
     missing_prob = 1.0 - prob_mass[2:]
 
     return (missing_prob * delta_dist).sum().item()
-
-
-def compute_probability_mass_history(
-    belief_history: list[HistogramBelief],
-    true_latlons: torch.Tensor,
-    radius_meters: float,
-) -> torch.Tensor:
-    """Compute probability mass within radius for a sequence of beliefs.
-
-    Args:
-        belief_history: List of histogram beliefs at each step
-        true_latlons: (path_len, 2) tensor of ground truth positions [lat, lon]
-        radius_meters: Radius in meters
-
-    Returns:
-        (path_len,) tensor of probability mass values
-    """
-    prob_masses = []
-    for belief, true_latlon in zip(belief_history, true_latlons):
-        prob_mass = compute_probability_mass_within_radius(
-            belief, true_latlon, radius_meters
-        )
-        prob_masses.append(prob_mass)
-    return torch.tensor(prob_masses)
