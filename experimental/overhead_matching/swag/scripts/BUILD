@@ -144,6 +144,7 @@ py_binary(
     "//experimental/overhead_matching/swag/data:vigor_dataset",
   ]
 )
+
 py_binary(
   name="evaluate_model_on_paths",
   srcs=["evaluate_model_on_paths.py"],
