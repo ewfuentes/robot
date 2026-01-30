@@ -21,6 +21,9 @@ from experimental.overhead_matching.swag.filter.histogram_belief import (
     HistogramBelief,
     build_cell_to_patch_mapping,
 )
+from experimental.overhead_matching.swag.filter.particle_filter import (
+    wag_observation_log_likelihood_from_similarity_matrix,
+)
 import experimental.overhead_matching.swag.evaluation.evaluate_swag as es
 import common.torch.load_and_save_models as lsm
 from experimental.overhead_matching.swag.model import patch_embedding, swag_patch_embedding
@@ -89,8 +92,11 @@ def run_filter_with_history(
     path_len = path_similarity.shape[0]
 
     for step_idx in range(path_len - 1):
-        # Observation update
-        belief.apply_observation(path_similarity[step_idx], mapping, sigma_obs)
+        # Observation update - convert similarity to log-likelihoods
+        obs_log_ll = wag_observation_log_likelihood_from_similarity_matrix(
+            path_similarity[step_idx], sigma_obs
+        )
+        belief.apply_observation(obs_log_ll, mapping)
         history.append({
             'stage': f'obs_{step_idx}',
             'log_belief': belief.get_log_belief().clone().cpu(),
@@ -107,8 +113,11 @@ def run_filter_with_history(
             'gt_idx': step_idx + 1,
         })
 
-    # Final observation
-    belief.apply_observation(path_similarity[-1], mapping, sigma_obs)
+    # Final observation - convert similarity to log-likelihoods
+    obs_log_ll = wag_observation_log_likelihood_from_similarity_matrix(
+        path_similarity[-1], sigma_obs
+    )
+    belief.apply_observation(obs_log_ll, mapping)
     history.append({
         'stage': f'obs_{path_len-1}',
         'log_belief': belief.get_log_belief().clone().cpu(),

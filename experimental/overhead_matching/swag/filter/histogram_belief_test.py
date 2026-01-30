@@ -12,6 +12,9 @@ from experimental.overhead_matching.swag.filter.histogram_belief import (
     segment_logsumexp,
     build_cell_to_patch_mapping,
 )
+from experimental.overhead_matching.swag.filter.particle_filter import (
+    wag_observation_log_likelihood_from_similarity_matrix,
+)
 
 
 class TestGridSpec(unittest.TestCase):
@@ -469,7 +472,9 @@ class TestApplyObservation(unittest.TestCase):
         similarity[4] = 0.9  # High similarity at center
         similarity[0] = 0.1  # Low elsewhere
 
-        belief.apply_observation(similarity, mapping, sigma=0.1)
+        # Convert similarity to log-likelihoods
+        obs_log_ll = wag_observation_log_likelihood_from_similarity_matrix(similarity, sigma=0.1)
+        belief.apply_observation(obs_log_ll, mapping)
 
         # Center cell should have highest probability
         probs = belief.get_belief()
@@ -502,7 +507,9 @@ class TestApplyObservation(unittest.TestCase):
         belief = HistogramBelief.from_uniform(grid_spec, torch.device("cpu"))
         similarity = torch.rand(4)
 
-        belief.apply_observation(similarity, mapping, sigma=0.1)
+        # Convert similarity to log-likelihoods
+        obs_log_ll = wag_observation_log_likelihood_from_similarity_matrix(similarity, sigma=0.1)
+        belief.apply_observation(obs_log_ll, mapping)
 
         # Should still sum to 1
         prob_sum = belief.get_belief().sum().item()

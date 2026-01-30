@@ -8,7 +8,6 @@ py_library(
         requirement("torch"),
         "//common/gps:web_mercator",
         "//common/torch:load_torch_deps",
-        ":particle_filter",
     ],
 )
 
@@ -19,6 +18,7 @@ py_test(
         requirement("torch"),
         "//common/torch:load_torch_deps",
         ":histogram_belief",
+        ":particle_filter",
     ],
 )
 
@@ -42,4 +42,18 @@ py_test(
     "//common/torch:load_torch_deps",
     ":particle_filter",
   ],
+)
+
+py_library(
+    name = "adaptive_aggregators",
+    srcs = ["adaptive_aggregators.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("msgspec"),
+        requirement("pandas"),
+        requirement("torch"),
+        "//common/python:serialization",
+        "//common/torch:load_torch_deps",
+        ":particle_filter",
+    ],
 )

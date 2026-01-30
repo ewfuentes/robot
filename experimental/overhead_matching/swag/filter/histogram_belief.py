@@ -5,9 +5,6 @@ import math
 from dataclasses import dataclass
 
 from common.gps import web_mercator
-from experimental.overhead_matching.swag.filter.particle_filter import (
-    wag_observation_log_likelihood_from_similarity_matrix,
-)
 
 
 @dataclass
@@ -569,11 +566,10 @@ class HistogramBelief:
 
     def apply_observation(
         self,
-        similarity_matrix: torch.Tensor,
+        observation_log_likelihoods: torch.Tensor,
         mapping: CellToPatchMapping,
-        sigma: float,
     ) -> None:
-        """Apply observation update using satellite patch similarities.
+        """Apply observation update using pre-computed log-likelihoods.
 
         For each cell, uses the maximum log-likelihood among all overlapping
         patches. This is similar to how the particle filter works (each particle
@@ -581,17 +577,11 @@ class HistogramBelief:
         counts at patch boundaries.
 
         Args:
-            similarity_matrix: (num_patches,) similarity scores for current observation
+            observation_log_likelihoods: (num_patches,) log-likelihoods for each satellite patch
             mapping: Precomputed cell-to-patch mapping
-            sigma: Gaussian sigma for similarity → log-likelihood conversion
         """
-        # Convert similarities to log-likelihoods (per patch)
-        patch_log_ll = wag_observation_log_likelihood_from_similarity_matrix(
-            similarity_matrix, sigma
-        )
-
         # Gather log-likelihoods for all overlapping patches
-        all_log_ll = patch_log_ll[mapping.patch_indices]  # (total_overlaps,)
+        all_log_ll = observation_log_likelihoods[mapping.patch_indices]  # (total_overlaps,)
 
         # Take max log-likelihood over overlapping patches for each cell
         cell_log_ll = segment_max(
@@ -602,5 +592,10 @@ class HistogramBelief:
         cell_log_ll_grid = cell_log_ll.reshape(
             self.grid_spec.num_rows, self.grid_spec.num_cols
         )
+        if torch.isnan(cell_log_ll_grid).any():
+            raise ValueError(
+                "NaN values in observation log-likelihoods. "
+                "Check similarity matrix for NaN or missing data."
+            )
         self._log_belief = self._log_belief + cell_log_ll_grid
         self.normalize()
