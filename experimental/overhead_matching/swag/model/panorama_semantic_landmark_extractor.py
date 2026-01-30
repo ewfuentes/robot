@@ -2,11 +2,11 @@
 import common.torch.load_torch_deps
 import torch
 import pickle
-import math
 import json
 from pathlib import Path
 from experimental.overhead_matching.swag.model.swag_config_types import (
-    PanoramaSemanticLandmarkExtractorConfig, ExtractorDataRequirement)
+    PanoramaSemanticLandmarkExtractorConfig,
+    ExtractorDataRequirement)
 from experimental.overhead_matching.swag.model.swag_model_input_output import (
     ModelInput, ExtractorOutput)
 from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
