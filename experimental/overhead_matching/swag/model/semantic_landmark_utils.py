@@ -8,9 +8,9 @@ import base64
 import hashlib
 import json
 import pickle
-import hashlib
-import base64
 from pathlib import Path
+
+import numpy as np
 import pandas as pd
 import torch
 
@@ -97,17 +97,22 @@ def make_sentence_dict_from_json(sentence_jsons: list) -> tuple[dict[str, str], 
 
 
 def make_sentence_dict_from_pano_jsons(sentence_jsons: list) -> tuple[dict[str, str], dict, int]:
-    """Create a dictionary mapping landmark_custom_id to sentence description. For panorama outputs where a json object is returned by OpenAI
+    """Create a dictionary mapping landmark_custom_id to sentence description.
+
+    Handles both basic and enhanced panorama schemas (with general_vibe and proper_nouns).
 
     Returns:
         tuple of (sentences_dict, metadata_by_pano_id, output_tokens) where:
         - sentences_dict: maps landmark_custom_id to description string
-        - metadata_by_pano_id: maps panorama_id to list of landmark metadata dicts
+        - metadata_by_pano_id: maps panorama_id to dict with:
+            - 'general_vibe': (optional) overall environment description
+            - 'landmarks': list of landmark metadata dicts
         - output_tokens: total number of output tokens used
     """
     pano_out = {}
-    metadata = {}  # Maps pano_id -> list of landmarks
+    metadata = {}  # Maps pano_id -> dict with general_vibe and landmarks
     out, output_tokens = make_sentence_dict_from_json(sentence_jsons)
+
     for custom_id, content_str in out.items():
         try:
             content = json.loads(content_str)
@@ -116,16 +121,23 @@ def make_sentence_dict_from_pano_jsons(sentence_jsons: list) -> tuple[dict[str, 
             continue
 
         landmarks = content.get("landmarks", [])
+        general_vibe = content.get("general_vibe", None)
 
         # Create entries for each landmark in this panorama
         panorama_id = custom_id
 
         if panorama_id not in metadata:
-            metadata[panorama_id] = []
+            metadata[panorama_id] = {
+                "general_vibe": general_vibe,
+                "landmarks": []
+            }
 
         for idx, landmark in enumerate(landmarks):
             description = landmark["description"]
-            yaw_angles = landmark["yaw_angles"]
+            yaw_angles = landmark.get("yaw_angles", [])  # May not exist for bbox mode
+            proper_nouns = landmark.get("proper_nouns", [])
+            bounding_boxes = landmark.get("bounding_boxes", [])
+
             if not description:
                 raise RuntimeError(f"No description! {landmark}")
 
@@ -133,11 +145,20 @@ def make_sentence_dict_from_pano_jsons(sentence_jsons: list) -> tuple[dict[str, 
             pano_out[landmark_custom_id] = description
 
             # Append to metadata list for this panorama
-            metadata[panorama_id].append({
+            landmark_metadata = {
                 "landmark_idx": idx,
                 "custom_id": landmark_custom_id,
-                "yaw_angles": yaw_angles
-            })
+                "proper_nouns": proper_nouns
+            }
+
+            # Add yaw_angles or bounding_boxes depending on schema
+            if yaw_angles:
+                landmark_metadata["yaw_angles"] = yaw_angles
+            if bounding_boxes:
+                landmark_metadata["bounding_boxes"] = bounding_boxes
+
+            metadata[panorama_id]["landmarks"].append(landmark_metadata)
+
     return pano_out, metadata, output_tokens
 
 
@@ -281,4 +302,23 @@ def custom_id_from_props(props: dict | frozenset) -> str:
         hashlib.sha256(json_props.encode('utf-8')).digest()
     ).decode('utf-8')
     return custom_id
+
+
+def string_to_hash_embedding(text: str, embedding_dim: int = 256) -> np.ndarray:
+    """Convert a string to a fixed hash-bit embedding.
+
+    Uses SHA256 to hash the text, then unpacks the bits into a float array
+    with values in [-1, 1]. The same string always produces the same embedding.
+
+    Args:
+        text: The text string to hash
+        embedding_dim: Dimension of the output embedding (max 256 for single SHA256)
+
+    Returns:
+        numpy array of shape (embedding_dim,) with values in [-1, 1]
+    """
+    hash_bytes = hashlib.sha256(text.encode('utf-8')).digest()
+    hash_array = np.frombuffer(hash_bytes, dtype=np.uint8)
+    bits = np.unpackbits(hash_array, count=embedding_dim)
+    return (2.0 * bits - 1.0).astype(np.float32)
 
