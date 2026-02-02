@@ -158,6 +158,17 @@ py_binary(
   ]
 )
 
+py_test(
+  name="create_evaluation_paths_test",
+  srcs=["create_evaluation_paths_test.py"],
+  data=["@vigor_snippet//:files"],
+  deps=[
+    requirement("torch"),
+    "//common/torch:load_torch_deps",
+    ":create_evaluation_paths",
+  ]
+)
+
 py_binary(
   name="evaluate_model_on_paths",
   srcs=["evaluate_model_on_paths.py"],
