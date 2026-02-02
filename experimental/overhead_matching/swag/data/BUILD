@@ -36,7 +36,10 @@ py_library(
   name = "vigor_filters",
   srcs = ["vigor_filters.py"],
   visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
-  deps = [":vigor_dataset"],
+  deps = [
+    requirement("pandas"),
+    ":vigor_dataset",
+  ],
 )
 
 py_test(

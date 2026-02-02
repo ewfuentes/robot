@@ -1,15 +1,93 @@
 """Filters for VIGOR dataset that can be applied after dataset creation."""
 
 import logging
+import pickle
 from pathlib import Path
 
-from experimental.overhead_matching.swag.data.vigor_dataset import (
-    VigorDataset,
-    compute_proper_noun_matches,
-    load_pano_gemini_proper_nouns,
-)
+import pandas as pd
+
+from experimental.overhead_matching.swag.data.vigor_dataset import VigorDataset
 
 logger = logging.getLogger(__name__)
+
+# OSM text keys for proper noun matching
+OSM_TEXT_KEYS = ['name', 'brand', 'operator', 'addr:street', 'network',
+                 'alt_name', 'official_name', 'short_name', 'old_name', 'description']
+
+
+def get_osm_text_from_landmark(landmark_dict: dict) -> list[str]:
+    """Extract text fields from OSM landmark for matching."""
+    texts = []
+    for key in OSM_TEXT_KEYS:
+        value = landmark_dict.get(key)
+        if value and isinstance(value, str):
+            texts.append(value)
+    return texts
+
+
+def check_proper_noun_match(proper_noun: str, osm_texts: list[str]) -> bool:
+    """Check if proper_noun.lower() appears in any OSM text (case-insensitive)."""
+    pn_lower = proper_noun.lower()
+    return any(pn_lower in text.lower() for text in osm_texts)
+
+
+def load_pano_gemini_proper_nouns(base_path: Path, city_names: list[str]) -> dict[str, list[str]]:
+    """Load pano_gemini data and return dict mapping pano_id -> all proper nouns."""
+    pano_proper_nouns = {}
+
+    for city_name in city_names:
+        pickle_path = base_path / city_name / "embeddings" / "embeddings.pkl"
+        if not pickle_path.exists():
+            logger.warning(f"pano_gemini not found: {pickle_path}")
+            continue
+        with open(pickle_path, 'rb') as f:
+            data = pickle.load(f)
+        if data.get('version') != '2.0':
+            raise ValueError(f"Expected pano_gemini version '2.0', got '{data.get('version')}' in {pickle_path}")
+        for pano_key, pano_data in data.get('panoramas', {}).items():
+            pano_id = pano_key.split(',')[0]
+            all_pns = []
+            for lm in pano_data.get('landmarks', []):
+                all_pns.extend(lm.get('proper_nouns', []))
+            if all_pns:
+                pano_proper_nouns[pano_id] = all_pns
+    return pano_proper_nouns
+
+
+def compute_proper_noun_matches(
+    pano_metadata: pd.DataFrame,
+    satellite_metadata: pd.DataFrame,
+    landmark_metadata: pd.DataFrame,
+    pano_proper_nouns: dict[str, list[str]]
+) -> dict[int, set[int]]:
+    """Return dict mapping pano_idx -> set of sat_idxs with proper noun matches."""
+    matching_pairs = {}  # pano_idx -> set of sat_idxs
+
+    for pano_idx, pano_row in pano_metadata.iterrows():
+        pano_id = pano_row['pano_id']
+        proper_nouns = pano_proper_nouns.get(pano_id, [])
+        if not proper_nouns:
+            continue
+
+        matching_sats = set()
+        for sat_idx in pano_row["positive_satellite_idxs"] + pano_row["semipositive_satellite_idxs"]:
+            # Get OSM texts for THIS specific satellite
+            osm_texts = []
+            landmark_idxs = satellite_metadata.iloc[sat_idx].get('landmark_idxs', [])
+            for lm_idx in landmark_idxs:
+                lm_dict = landmark_metadata.iloc[lm_idx]['as_dict']
+                osm_texts.extend(get_osm_text_from_landmark(dict(lm_dict)))
+
+            # Check if any proper noun matches this satellite's OSM texts
+            for pn in proper_nouns:
+                if check_proper_noun_match(pn, osm_texts):
+                    matching_sats.add(sat_idx)
+                    break
+
+        if matching_sats:
+            matching_pairs[pano_idx] = matching_sats
+
+    return matching_pairs
 
 
 def apply_proper_noun_filter(
