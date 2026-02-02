@@ -33,12 +33,14 @@ class AStarPythonTest(unittest.TestCase):
     def test_shortest_path_not_fewest_hops(self):
         """Test A* finds shortest path by cost, not fewest edges.
 
-        Graph structure:
-              1
-            / | \
-           2  |  4
-          /   |   \
-         0----3----5
+        Graph structure (expensive edges marked with $):
+            2
+            |
+        0---1---4
+         \  |   |
+          $ |   |
+           \|   |
+            3-$-5
 
         Direct path 0->3->5 has 2 hops but cost 10+10=20.
         Path 0->1->4->5 has 3 hops but cost 1+1+1=3.
