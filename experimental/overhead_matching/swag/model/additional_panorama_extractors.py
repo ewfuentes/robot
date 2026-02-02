@@ -1,3 +1,17 @@
+"""Panorama extractors for proper nouns and location types.
+
+This module contains extractors for additional panorama features beyond the main
+semantic landmark descriptions. It also exports shared helper functions used by
+PanoramaSemanticLandmarkExtractor.
+
+Shared functions exported:
+- extract_yaw_angles_from_bboxes: Extract yaw angles from bounding box list
+- load_v2_pickle: Load a v2.0 format embedding pickle
+- iter_city_directories: Iterate over city directories in a base path
+- normalize_cropped_embeddings: Re-normalize embeddings after cropping
+- load_embedding_dict_across_cities: Load embeddings as a dict across cities
+- extract_panorama_data_across_cities: Extract per-panorama data using a custom function
+"""
 
 import common.torch.load_torch_deps
 import torch
@@ -9,11 +23,40 @@ from experimental.overhead_matching.swag.model.swag_config_types import (
     ExtractorDataRequirement)
 from experimental.overhead_matching.swag.model.swag_model_input_output import (
     ModelInput, ExtractorOutput)
-from experimental.overhead_matching.swag.model.panorama_semantic_landmark_extractor import (
-    yaw_angles_to_binary_vector)
 
 
-def _extract_yaw_angles_from_bboxes(bounding_boxes: list[dict]) -> list[float]:
+def yaw_angles_to_binary_vector(yaw_degrees: list[float]) -> list[float]:
+    """Convert yaw angles to a 4D binary vector indicating which yaws are present.
+
+    Since only yaws 0° (north), 90° (west), 180°, 270° are possible, this creates a 4-element
+    vector where each element is 1.0 if that yaw is present, 0.0 otherwise.
+
+    Args:
+        yaw_degrees: List of yaw angles (each should be 0, 90, 180, or 270)
+
+    Returns:
+        4-element list of floats: [yaw_0_present, yaw_90_present, yaw_180_present, yaw_270_present]
+
+    Examples:
+        [0] -> [1.0, 0.0, 0.0, 0.0]
+        [0, 90] -> [1.0, 1.0, 0.0, 0.0]
+        [90, 270] -> [0.0, 1.0, 0.0, 1.0]
+        [] -> [0.0, 0.0, 0.0, 0.0]
+    """
+    vector = [0.0, 0.0, 0.0, 0.0]
+    yaw_to_idx = {0: 0, 90: 1, 180: 2, 270: 3}
+
+    for yaw in yaw_degrees:
+        yaw_int = int(yaw)
+        if yaw_int in yaw_to_idx:
+            vector[yaw_to_idx[yaw_int]] = 1.0
+        else:
+            raise ValueError(f"Invalid yaw angle: {yaw}. Must be 0, 90, 180, or 270.")
+
+    return vector
+
+
+def extract_yaw_angles_from_bboxes(bounding_boxes: list[dict]) -> list[float]:
     """Extract valid yaw angles from a list of bounding boxes.
 
     Args:
@@ -31,7 +74,7 @@ def _extract_yaw_angles_from_bboxes(bounding_boxes: list[dict]) -> list[float]:
     return yaw_angles
 
 
-def _load_v2_pickle(pickle_path: Path) -> dict | None:
+def load_v2_pickle(pickle_path: Path) -> dict | None:
     """Load a v2.0 format pickle file.
 
     Args:
@@ -49,7 +92,7 @@ def _load_v2_pickle(pickle_path: Path) -> dict | None:
     return data
 
 
-def _iter_city_directories(base_path: Path):
+def iter_city_directories(base_path: Path):
     """Iterate over city directories in a base path.
 
     Args:
@@ -72,7 +115,7 @@ def _iter_city_directories(base_path: Path):
         yield city_dir.name, city_dir
 
 
-def _normalize_cropped_embeddings(features: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+def normalize_cropped_embeddings(features: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     """Re-normalize embeddings after cropping to a shorter length.
 
     Args:
@@ -89,32 +132,30 @@ def _normalize_cropped_embeddings(features: torch.Tensor, mask: torch.Tensor) ->
     return features
 
 
-def load_embedding_type_across_cities(
+def load_embedding_dict_across_cities(
     base_path: Path,
     embedding_key: str,
     id_to_idx_key: str,
-    default_dim: int,
-    dedupe_keys: bool = False,
-) -> tuple[torch.Tensor, dict[str, int]]:
-    """Load specific embedding type from all city v2.0 pickles with offset handling.
+) -> dict[str, torch.Tensor]:
+    """Load specific embedding type from all city v2.0 pickles into a dict.
+
+    Uses a simple dict-keyed approach (like panorama_semantic_landmark_extractor.py
+     Duplicate keys across cities are naturally
+    handled by dict.update() (later cities overwrite earlier ones).
 
     Args:
         base_path: Path containing city subdirectories.
         embedding_key: Key for the embedding tensor in pickle (e.g., "proper_noun_embeddings").
         id_to_idx_key: Key for the id->index dict in pickle (e.g., "proper_noun_to_idx").
-        default_dim: Default embedding dimension if no embeddings found.
-        dedupe_keys: If True, skip duplicate keys across cities (for shared vocab like location types).
 
     Returns:
-        Tuple of (concatenated embedding tensor, combined id_to_idx dict with offsets applied).
-        Returns (empty tensor, empty dict) if no cities have the requested embedding type.
+        Dict mapping string key -> embedding tensor.
     """
-    all_tensors = []
-    all_id_to_idx = {}
+    all_embeddings = {}
 
-    for city_name, city_dir in _iter_city_directories(base_path):
+    for city_name, city_dir in iter_city_directories(base_path):
         pickle_path = city_dir / "embeddings" / "embeddings.pkl"
-        data = _load_v2_pickle(pickle_path)
+        data = load_v2_pickle(pickle_path)
         if data is None:
             print(f"  Warning: {pickle_path} missing or not v2.0 format, skipping")
             continue
@@ -126,18 +167,14 @@ def load_embedding_type_across_cities(
         tensor = data[embedding_key]
         id_to_idx = data[id_to_idx_key]
 
-        offset = len(all_id_to_idx)
-        for k, v in id_to_idx.items():
-            if dedupe_keys and k in all_id_to_idx:
-                continue
-            all_id_to_idx[k] = v + offset
+        city_embeddings = {}
+        for key, idx in id_to_idx.items():
+            city_embeddings[key] = tensor[idx]
 
-        all_tensors.append(tensor)
+        all_embeddings.update(city_embeddings)
         print(f"  Loaded {len(id_to_idx)} {embedding_key} for {city_name}")
 
-    if all_tensors:
-        return torch.cat(all_tensors, dim=0), all_id_to_idx
-    return torch.zeros((0, default_dim)), {}
+    return all_embeddings
 
 
 def extract_panorama_data_across_cities(
@@ -156,9 +193,9 @@ def extract_panorama_data_across_cities(
     """
     result = {}
 
-    for city_name, city_dir in _iter_city_directories(base_path):
+    for city_name, city_dir in iter_city_directories(base_path):
         pickle_path = city_dir / "embeddings" / "embeddings.pkl"
-        data = _load_v2_pickle(pickle_path)
+        data = load_v2_pickle(pickle_path)
         if data is None:
             print(f"  Warning: {pickle_path} missing or not v2.0 format, skipping")
             continue
@@ -189,18 +226,16 @@ class PanoramaProperNounExtractor(torch.nn.Module):
         self.config = config
         self.semantic_embedding_base_path = Path(semantic_embedding_base_path).expanduser()
         self.files_loaded = False
-        self.proper_noun_embeddings = None  # torch.Tensor of shape (num_nouns, embedding_dim)
-        self.proper_noun_to_idx = None  # dict: proper_noun_str -> index
+        self.proper_noun_embeddings = None  # dict: proper_noun_str -> embedding tensor
         self.panorama_proper_nouns = None  # dict: pano_id -> list of (landmark_idx, proper_nouns, yaw_angles)
 
     def load_files(self):
         """Load proper noun embeddings from v2.0 pickle format."""
         base_path = self.semantic_embedding_base_path / self.config.embedding_version
 
-        # Load proper noun embeddings
-        self.proper_noun_embeddings, self.proper_noun_to_idx = load_embedding_type_across_cities(
-            base_path, "proper_noun_embeddings", "proper_noun_to_idx",
-            self.config.openai_embedding_size)
+        # Load proper noun embeddings as dict (simpler, avoids offset bugs)
+        self.proper_noun_embeddings = load_embedding_dict_across_cities(
+            base_path, "proper_noun_embeddings", "proper_noun_to_idx")
 
         # Extract panorama proper nouns mapping
         def extract_proper_nouns(pano_id_clean, pano_data):
@@ -212,7 +247,7 @@ class PanoramaProperNounExtractor(torch.nn.Module):
                 landmarks.append({
                     "landmark_idx": lm["landmark_idx"],
                     "proper_nouns": proper_nouns,
-                    "yaw_angles": _extract_yaw_angles_from_bboxes(lm.get("bounding_boxes", []))
+                    "yaw_angles": extract_yaw_angles_from_bboxes(lm.get("bounding_boxes", []))
                 })
             return landmarks if landmarks else None
 
@@ -220,7 +255,7 @@ class PanoramaProperNounExtractor(torch.nn.Module):
             base_path, extract_proper_nouns)
 
         self.files_loaded = True
-        print(f"Total proper noun embeddings loaded: {len(self.proper_noun_to_idx)}")
+        print(f"Total proper noun embeddings loaded: {len(self.proper_noun_embeddings)}")
         print(f"Total panoramas with proper nouns: {len(self.panorama_proper_nouns)}")
 
     def forward(self, model_input: ModelInput) -> ExtractorOutput:
@@ -246,7 +281,7 @@ class PanoramaProperNounExtractor(torch.nn.Module):
             count = 0
             for lm in self.panorama_proper_nouns[pano_id]:
                 for noun in lm["proper_nouns"]:
-                    if noun in self.proper_noun_to_idx:
+                    if noun in self.proper_noun_embeddings:
                         count += 1
                         max_sentence_length = max(max_sentence_length, len(noun.encode('utf-8')))
             max_proper_nouns = max(max_proper_nouns, count)
@@ -279,11 +314,10 @@ class PanoramaProperNounExtractor(torch.nn.Module):
                 yaw_vector = yaw_angles_to_binary_vector(yaw_angles) if yaw_angles else [0.0, 0.0, 0.0, 0.0]
 
                 for noun in landmark_data["proper_nouns"]:
-                    if noun not in self.proper_noun_to_idx:
+                    if noun not in self.proper_noun_embeddings:
                         continue
 
-                    idx = self.proper_noun_to_idx[noun]
-                    embedding = self.proper_noun_embeddings[idx][:self.config.openai_embedding_size]
+                    embedding = self.proper_noun_embeddings[noun][:self.config.openai_embedding_size]
                     features[i, token_idx, :] = embedding
 
                     # Position: same yaw as parent landmark
@@ -299,7 +333,7 @@ class PanoramaProperNounExtractor(torch.nn.Module):
                     token_idx += 1
 
         # Re-normalize embeddings if we cropped them
-        features = _normalize_cropped_embeddings(features, mask)
+        features = normalize_cropped_embeddings(features, mask)
 
         return ExtractorOutput(
             features=features.to(model_input.image.device),
@@ -333,18 +367,16 @@ class PanoramaLocationTypeExtractor(torch.nn.Module):
         self.config = config
         self.semantic_embedding_base_path = Path(semantic_embedding_base_path).expanduser()
         self.files_loaded = False
-        self.location_type_embeddings = None  # torch.Tensor of shape (num_types, embedding_dim)
-        self.location_type_to_idx = None  # dict: location_type_str -> index
+        self.location_type_embeddings = None  # dict: location_type_str -> embedding tensor
         self.panorama_location_types = None  # dict: pano_id -> location_type_str
 
     def load_files(self):
         """Load location type embeddings from v2.0 pickle format."""
         base_path = self.semantic_embedding_base_path / self.config.embedding_version
 
-        # Load location type embeddings (dedupe_keys=True since same types appear across cities)
-        self.location_type_embeddings, self.location_type_to_idx = load_embedding_type_across_cities(
-            base_path, "location_type_embeddings", "location_type_to_idx",
-            self.config.openai_embedding_size, dedupe_keys=True)
+        # Load location type embeddings as dict (simpler, avoids offset bugs)
+        self.location_type_embeddings = load_embedding_dict_across_cities(
+            base_path, "location_type_embeddings", "location_type_to_idx")
 
         # Extract panorama location types mapping
         def extract_location_type(pano_id_clean, pano_data):
@@ -355,7 +387,7 @@ class PanoramaLocationTypeExtractor(torch.nn.Module):
             base_path, extract_location_type)
 
         self.files_loaded = True
-        print(f"Total location type embeddings loaded: {len(self.location_type_to_idx)}")
+        print(f"Total location type embeddings loaded: {len(self.location_type_embeddings)}")
         print(f"Total panoramas with location types: {len(self.panorama_location_types)}")
 
     def forward(self, model_input: ModelInput) -> ExtractorOutput:
@@ -380,7 +412,7 @@ class PanoramaLocationTypeExtractor(torch.nn.Module):
             pano_id = item['pano_id']
             if pano_id in self.panorama_location_types:
                 location_type = self.panorama_location_types[pano_id]
-                if location_type in self.location_type_to_idx:
+                if location_type in self.location_type_embeddings:
                     max_sentence_length = max(max_sentence_length, len(location_type.encode('utf-8')))
 
         # Initialize output tensors
@@ -396,11 +428,10 @@ class PanoramaLocationTypeExtractor(torch.nn.Module):
                 continue
 
             location_type = self.panorama_location_types[pano_id]
-            if location_type not in self.location_type_to_idx:
+            if location_type not in self.location_type_embeddings:
                 continue
 
-            idx = self.location_type_to_idx[location_type]
-            embedding = self.location_type_embeddings[idx][:self.config.openai_embedding_size]
+            embedding = self.location_type_embeddings[location_type][:self.config.openai_embedding_size]
             features[i, 0, :] = embedding
             mask[i, 0] = False
             # Position stays at zero (global scene descriptor)
@@ -411,7 +442,7 @@ class PanoramaLocationTypeExtractor(torch.nn.Module):
             sentence_debug[i, 0, :len(sentence_bytes)] = sentence_tensor
 
         # Re-normalize embeddings if we cropped them
-        features = _normalize_cropped_embeddings(features, mask)
+        features = normalize_cropped_embeddings(features, mask)
 
         return ExtractorOutput(
             features=features.to(model_input.image.device),

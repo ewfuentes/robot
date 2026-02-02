@@ -1,3 +1,8 @@
+"""Extractor for panorama-based semantic landmarks.
+
+This module contains PanoramaSemanticLandmarkExtractor which extracts embeddings
+for landmark descriptions from panorama images.
+"""
 
 import common.torch.load_torch_deps
 import torch
@@ -11,40 +16,12 @@ from experimental.overhead_matching.swag.model.swag_model_input_output import (
     ModelInput, ExtractorOutput)
 from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
     load_all_jsonl_from_folder, make_embedding_dict_from_json, make_sentence_dict_from_pano_jsons)
-
-
-def yaw_angles_to_binary_vector(yaw_degrees: list[int]) -> list[float]:
-    """
-    Convert yaw angles to a 4D binary vector indicating which yaws are present.
-
-    Since only yaws 0° (north), 90° (west), 180°, 270° are possible, this creates a 4-element
-    vector where each element is 1.0 if that yaw is present, 0.0 otherwise.
-
-    Args:
-        yaw_degrees: List of yaw angles (each should be 0, 90, 180, or 270)
-
-    Returns:
-        4-element list of floats: [yaw_0_present, yaw_90_present, yaw_180_present, yaw_270_present]
-
-    Examples:
-        [0] -> [1.0, 0.0, 0.0, 0.0]
-        [0, 90] -> [1.0, 1.0, 0.0, 0.0]
-        [90, 270] -> [0.0, 1.0, 0.0, 1.0]
-        [] -> [0.0, 0.0, 0.0, 0.0]
-    """
-    # Initialize all to 0.0
-    vector = [0.0, 0.0, 0.0, 0.0]
-
-    # Map yaw degrees to indices
-    yaw_to_idx = {0: 0, 90: 1, 180: 2, 270: 3}
-
-    for yaw in yaw_degrees:
-        if yaw in yaw_to_idx:
-            vector[yaw_to_idx[yaw]] = 1.0
-        else:
-            raise ValueError(f"Invalid yaw angle: {yaw}. Must be 0, 90, 180, or 270.")
-
-    return vector
+from experimental.overhead_matching.swag.model.additional_panorama_extractors import (
+    yaw_angles_to_binary_vector,
+    extract_yaw_angles_from_bboxes,
+    load_v2_pickle,
+    normalize_cropped_embeddings,
+)
 
 
 class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
@@ -54,6 +31,9 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
     Unlike SemanticLandmarkExtractor which matches landmarks by OSM properties,
     this extractor works with landmarks extracted directly from panorama images
     by vision models. Landmarks are associated with panoramas by ID alone.
+
+    Supports both v1.0 format (separate files for embeddings, sentences, metadata)
+    and v2.0 format (single pickle with all data).
     """
 
     def __init__(self, config: PanoramaSemanticLandmarkExtractorConfig, semantic_embedding_base_path: Path):
@@ -61,9 +41,9 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
         self.config = config
         self.semantic_embedding_base_path = Path(semantic_embedding_base_path).expanduser()
         self.files_loaded = False
-        self.all_embeddings = None
-        self.all_sentences = None
-        self.panorama_metadata = None  # Maps pano_id -> list of (landmark_idx, custom_id, yaw_angles)
+        self.all_embeddings = None  # dict: custom_id -> embedding (list or tensor)
+        self.all_sentences = None  # dict: custom_id -> sentence string
+        self.panorama_metadata = None  # dict: pano_id -> list of landmark metadata dicts
         self._found_pano_ids = set()
         self._missing_pano_ids = set()
 
@@ -74,89 +54,149 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
         if not base_path.exists():
             raise FileNotFoundError(f"Embedding base path does not exist: {base_path}")
 
-        # Find all city directories (e.g., Chicago, Seattle, etc.)
+        # Find all city directories
         city_dirs = [d for d in base_path.iterdir() if d.is_dir()]
-
         if not city_dirs:
             raise FileNotFoundError(f"No city directories found in {base_path}")
 
         self.all_embeddings = {}
         self.all_sentences = {}
         self.panorama_metadata = {}
+
         for city_dir in city_dirs:
             city_name = city_dir.name
             print(f"Loading panorama landmarks for city: {city_name}")
 
-            # Load embeddings
-            embedding_dir = city_dir / "embeddings"
-            if embedding_dir.exists():
-                pickle_path = embedding_dir / "embeddings.pkl"
+            # Check for v2.0 pickle format first
+            pickle_path = city_dir / "embeddings" / "embeddings.pkl"
+            data = load_v2_pickle(pickle_path)
+
+            if data is not None:
+                # v2.0 format
+                city_embeddings, city_sentences, new_metadata = self._load_v2_data(data)
+                self.all_embeddings.update(city_embeddings)
+                self.all_sentences.update(city_sentences)
+                self.panorama_metadata.update(new_metadata)
+                print(f"  Loaded {len(city_embeddings)} embeddings from v2.0 pickle")
+                print(f"  Loaded {len(city_sentences)} sentences from v2.0 pickle")
+                print(f"  Loaded metadata for {len(new_metadata)} panoramas from v2.0 pickle")
+                continue
+            else:  # v1 format
+                # v1.0 format: try to load from pickle or JSONL
                 if pickle_path.exists():
                     with open(pickle_path, 'rb') as f:
                         embedding_data = pickle.load(f)
-                        tensor, id_to_idx = embedding_data
-                        city_embeddings = {}
-                        for custom_id, idx in id_to_idx.items():
-                            city_embeddings[custom_id] = tensor[idx].tolist()
-                    print(f"  Loaded {len(city_embeddings)} embeddings from pickle")
+                    # v1.0 pickle format: (tensor, id_to_idx) tuple
+                    tensor, id_to_idx = embedding_data
+                    city_embeddings = {}
+                    for custom_id, idx in id_to_idx.items():
+                        city_embeddings[custom_id] = tensor[idx].tolist()
+                    self.all_embeddings.update(city_embeddings)
+                    print(f"  Loaded {len(city_embeddings)} embeddings from v1.0 pickle")
                 else:
-                    # Fall back to JSONL loading
-                    city_embeddings = make_embedding_dict_from_json(
-                        load_all_jsonl_from_folder(embedding_dir))
-                    print(f"  Loaded {len(city_embeddings)} embeddings from JSONL")
+                    # v1.0 JSONL fallback
+                    embedding_dir = city_dir / "embeddings"
+                    if embedding_dir.exists():
+                        city_embeddings = make_embedding_dict_from_json(
+                            load_all_jsonl_from_folder(embedding_dir))
+                        self.all_embeddings.update(city_embeddings)
+                        print(f"  Loaded {len(city_embeddings)} embeddings from JSONL")
 
-                self.all_embeddings.update(city_embeddings)
 
-            # Load sentences (optional)
-            sentence_dir = city_dir / "sentences"
-            metadata_from_sentences = None
-            if sentence_dir.exists():
-                city_sentences, metadata_from_sentences, _ = make_sentence_dict_from_pano_jsons(
-                    load_all_jsonl_from_folder(sentence_dir))
-                self.all_sentences.update(city_sentences)
-                print(f"  Loaded {len(city_sentences)} sentences")
-            else:
-                print(f"  Sentences dir {sentence_dir} does not exist, skipping loading sentences")
+                # v1.0 format: Load sentences from separate directory
+                sentence_dir = city_dir / "sentences"
+                metadata_from_sentences = None
+                if sentence_dir.exists():
+                    city_sentences, metadata_from_sentences, _ = make_sentence_dict_from_pano_jsons(
+                        load_all_jsonl_from_folder(sentence_dir))
+                    self.all_sentences.update(city_sentences)
+                    print(f"  Loaded {len(city_sentences)} sentences")
 
-            # Load panorama metadata
-            metadata_file = city_dir / "embedding_requests" / "panorama_metadata.jsonl"
-            if metadata_file.exists():
-                new_metadata = {}
-                with open(metadata_file, 'r') as f:
-                    for line in f:
-                        meta = json.loads(line)
-                        pano_id = meta["panorama_id"]
-                        landmark_idx = meta["landmark_idx"]
-                        custom_id = meta["custom_id"]
-                        yaw_angles = meta.get("yaw_angles", [])
+                # v1.0 format: Load panorama metadata from separate file
+                metadata_file = city_dir / "embedding_requests" / "panorama_metadata.jsonl"
+                if metadata_file.exists():
+                    new_metadata = {}
+                    with open(metadata_file, 'r') as f:
+                        for line in f:
+                            meta = json.loads(line)
+                            pano_id = meta["panorama_id"]
+                            landmark_idx = meta["landmark_idx"]
+                            custom_id = meta["custom_id"]
+                            yaw_angles = meta.get("yaw_angles", [])
 
-                        if pano_id not in new_metadata:
-                            new_metadata[pano_id] = []
+                            if pano_id not in new_metadata:
+                                new_metadata[pano_id] = []
 
-                        new_metadata[pano_id].append({
-                            "landmark_idx": landmark_idx,
-                            "custom_id": custom_id,
-                            "yaw_angles": yaw_angles
-                        })
-                new_pano_metadata_len = len(new_metadata)
-                old_metadata_size = len(self.panorama_metadata)
-                print(f"  Loaded metadata for {len(new_metadata)} panoramas")
-                if metadata_from_sentences is not None:
-                    assert metadata_from_sentences == new_metadata
-                self.panorama_metadata.update(new_metadata)
-                assert len(self.panorama_metadata) == old_metadata_size + new_pano_metadata_len
+                            new_metadata[pano_id].append({
+                                "landmark_idx": landmark_idx,
+                                "custom_id": custom_id,
+                                "yaw_angles": yaw_angles
+                            })
+                    new_pano_metadata_len = len(new_metadata)
+                    old_metadata_size = len(self.panorama_metadata)
+                    print(f"  Loaded metadata for {len(new_metadata)} panoramas")
+                    if metadata_from_sentences is not None:
+                        assert metadata_from_sentences == new_metadata
+                    self.panorama_metadata.update(new_metadata)
+                    assert len(self.panorama_metadata) == old_metadata_size + new_pano_metadata_len
 
         assert len(self.all_embeddings) > 0, f"Failed to load any embeddings from {base_path}"
-        assert len(next(iter(self.all_embeddings.values()))) >= self.config.openai_embedding_size, \
-            f"Requested embedding length ({self.config.openai_embedding_size}) longer than available ({len(next(iter(self.all_embeddings.values())))})"
+        first_embedding = next(iter(self.all_embeddings.values()))
+        embedding_len = len(first_embedding) if isinstance(first_embedding, list) else first_embedding.shape[0]
+        assert embedding_len >= self.config.openai_embedding_size, \
+            f"Requested embedding length ({self.config.openai_embedding_size}) longer than available ({embedding_len})"
 
-        # remove coordinates from keys in self.panorama_metadata:
+        # Remove coordinates from keys in self.panorama_metadata
         self.panorama_metadata = {k.split(",")[0]: v for k, v in self.panorama_metadata.items()}
 
         self.files_loaded = True
 
         print(f"Total embeddings loaded: {len(self.all_embeddings)}")
         print(f"Total panoramas with landmarks: {len(self.panorama_metadata)}")
+
+    def _load_v2_data(self, data: dict) -> tuple[dict, dict, dict]:
+        """Load embeddings, sentences, and metadata from v2.0 pickle format.
+
+        Args:
+            data: The loaded v2.0 pickle dict.
+
+        Returns:
+            Tuple of (embeddings_dict, sentences_dict, metadata_dict).
+        """
+        # Extract embeddings using dict-based approach (avoids offset bugs)
+        tensor = data["description_embeddings"]
+        id_to_idx = data["description_id_to_idx"]
+        embeddings = {}
+        for custom_id, idx in id_to_idx.items():
+            embeddings[custom_id] = tensor[idx]
+
+        # Extract sentences and metadata from panoramas
+        sentences = {}
+        metadata = {}
+        for pano_id, pano_data in data.get("panoramas", {}).items():
+            pano_id_clean = pano_id.split(",")[0]
+            if pano_id_clean not in metadata:
+                metadata[pano_id_clean] = []
+
+            for landmark in pano_data.get("landmarks", []):
+                landmark_idx = landmark["landmark_idx"]
+                description = landmark["description"]
+                custom_id = f"{pano_id}__landmark_{landmark_idx}"
+
+                # Store sentence
+                sentences[custom_id] = description
+
+                # Extract yaw angles from bounding boxes using shared function
+                yaw_angles = extract_yaw_angles_from_bboxes(
+                    landmark.get("bounding_boxes", []))
+
+                metadata[pano_id_clean].append({
+                    "landmark_idx": landmark_idx,
+                    "custom_id": custom_id,
+                    "yaw_angles": yaw_angles,
+                })
+
+        return embeddings, sentences, metadata
 
     def forward(self, model_input: ModelInput) -> ExtractorOutput:
         """Extract panorama-based semantic landmark features."""
@@ -179,7 +219,6 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
             if pano_id not in self.panorama_metadata:
                 continue
             matching_landmarks = self.panorama_metadata[pano_id]
-
             num_landmarks = len(matching_landmarks)
             valid_landmarks.append(num_landmarks)
 
@@ -216,8 +255,10 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
                     continue
 
                 # Crop embedding if needed
-                features[i, landmark_idx, :] = torch.tensor(
-                    self.all_embeddings[custom_id])[:self.config.openai_embedding_size]
+                embedding = self.all_embeddings[custom_id]
+                if isinstance(embedding, list):
+                    embedding = torch.tensor(embedding)
+                features[i, landmark_idx, :] = embedding[:self.config.openai_embedding_size]
 
                 # Convert yaw angles to binary presence vector
                 yaw_vector = yaw_angles_to_binary_vector(yaw_angles)
@@ -238,13 +279,13 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
                     len(self.all_sentences.get(custom_id, "").encode("utf-8")))
 
         # Re-normalize embeddings if we cropped them
-        features[~mask] = features[~mask] / torch.norm(features[~mask], dim=-1).unsqueeze(-1)
+        features = normalize_cropped_embeddings(features, mask)
 
         debug = {}
 
         # Create debug tensor for sentences
         sentence_debug = torch.zeros(
-            (batch_size, max_num_landmarks, max_description_length), dtype=torch.uint8)
+            (batch_size, max_num_landmarks, max(max_description_length, 1)), dtype=torch.uint8)
 
         for i, item in enumerate(model_input.metadata):
             pano_id = item['pano_id']
@@ -253,7 +294,6 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
 
             # Find matching panorama metadata
             matching_landmarks = self.panorama_metadata[pano_id]
-
             matching_landmarks = sorted(matching_landmarks, key=lambda x: x["landmark_idx"])
 
             for landmark_idx, landmark_meta in enumerate(matching_landmarks):

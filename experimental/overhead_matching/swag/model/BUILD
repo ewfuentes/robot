@@ -225,6 +225,7 @@ py_library(
   deps = [
     requirement("torch"),
     "//common/torch:load_torch_deps",
+    ":additional_panorama_extractors",
     ":swag_model_input_output",
     ":swag_config_types",
     ":semantic_landmark_utils",
@@ -254,7 +255,19 @@ py_library(
     "//common/torch:load_torch_deps",
     ":swag_model_input_output",
     ":swag_config_types",
-    ":panorama_semantic_landmark_extractor",
+  ]
+)
+
+py_test(
+  name = "additional_panorama_extractors_test",
+  srcs = ["additional_panorama_extractors_test.py"],
+  deps = [
+    requirement("torch"),
+    requirement("numpy"),
+    "//common/torch:load_torch_deps",
+    ":additional_panorama_extractors",
+    ":swag_config_types",
+    ":swag_model_input_output",
   ]
 )
 
