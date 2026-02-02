@@ -32,6 +32,13 @@ py_library(
   ]
 )
 
+py_library(
+  name = "vigor_filters",
+  srcs = ["vigor_filters.py"],
+  visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+  deps = [":vigor_dataset"],
+)
+
 py_test(
   name = "vigor_dataset_test",
   srcs = ["vigor_dataset_test.py"],

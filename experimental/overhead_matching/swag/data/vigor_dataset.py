@@ -96,8 +96,6 @@ class VigorDatasetConfig(NamedTuple):
     load_cache_debug: bool = False
     panorama_landmark_radius_px: float = 640
     landmark_correspondence_inflation_factor: float = 1.0
-    require_proper_noun_match: bool = False
-    pano_gemini_base_path: None | str = None
 
 
 class VigorDatasetItem(NamedTuple):
@@ -613,94 +611,6 @@ class VigorDataset(torch.utils.data.Dataset):
         else:
             log_progress("Skipped landmark correspondences")
 
-        if config.require_proper_noun_match:
-            if not config.should_load_landmarks:
-                raise ValueError("require_proper_noun_match requires should_load_landmarks=True")
-
-            if not config.pano_gemini_base_path:
-                raise ValueError("require_proper_noun_match requires pano_gemini_base_path to be set")
-            pano_gemini_base = Path(config.pano_gemini_base_path)
-
-            city_names = list(set(self._panorama_metadata['dataset_key'].unique()))
-            log_progress(f"Loading pano_gemini data for cities: {city_names}")
-
-            pano_proper_nouns = load_pano_gemini_proper_nouns(pano_gemini_base, city_names)
-            log_progress(f"Loaded proper nouns for {len(pano_proper_nouns)} panoramas")
-
-            matching_pairs = compute_proper_noun_matches(
-                self._panorama_metadata, self._satellite_metadata,
-                self._landmark_metadata, pano_proper_nouns)
-
-            original_pano_count = len(self._panorama_metadata)
-
-            # Filter positive/semipositive lists at pair level
-            def filter_sat_idxs(sat_idxs, matching_set):
-                return [idx for idx in sat_idxs if idx in matching_set]
-
-            new_positive_sat_idxs = []
-            new_semipositive_sat_idxs = []
-            panos_to_keep = []
-
-            for pano_idx in range(len(self._panorama_metadata)):
-                pano_row = self._panorama_metadata.iloc[pano_idx]
-                matching_sats = matching_pairs.get(pano_idx, set())
-
-                filtered_pos = filter_sat_idxs(pano_row["positive_satellite_idxs"], matching_sats)
-                filtered_semipos = filter_sat_idxs(pano_row["semipositive_satellite_idxs"], matching_sats)
-
-                if filtered_pos or filtered_semipos:
-                    panos_to_keep.append(pano_idx)
-                    new_positive_sat_idxs.append(filtered_pos)
-                    new_semipositive_sat_idxs.append(filtered_semipos)
-
-            # Update panorama metadata with filtered lists
-            self._panorama_metadata = self._panorama_metadata.iloc[panos_to_keep].reset_index(drop=True)
-            self._panorama_metadata["positive_satellite_idxs"] = new_positive_sat_idxs
-            self._panorama_metadata["semipositive_satellite_idxs"] = new_semipositive_sat_idxs
-
-            # Update satellite_idx (nearest) - pick first positive or semipositive
-            def pick_nearest(pos, semipos):
-                return pos[0] if pos else semipos[0]
-            self._panorama_metadata["satellite_idx"] = [
-                pick_nearest(p, s) for p, s in zip(new_positive_sat_idxs, new_semipositive_sat_idxs)]
-
-            log_progress(f"Filtered panoramas: {original_pano_count} -> {len(self._panorama_metadata)} using pair-level proper noun matching")
-
-            # Create mapping from old panorama indices to new indices
-            old_to_new_pano_idx = {old_idx: new_idx for new_idx, old_idx in enumerate(panos_to_keep)}
-            kept_pano_idxs = set(panos_to_keep)
-
-            # Update satellite metadata's positive/semipositive_panorama_idxs
-            # Re-compute based on filtered pairs
-            def compute_new_pano_idxs_for_sat(sat_idx, pano_list_column):
-                new_pano_idxs = []
-                for new_pano_idx, old_pano_idx in enumerate(panos_to_keep):
-                    sat_idxs_for_pano = self._panorama_metadata.iloc[new_pano_idx][pano_list_column]
-                    if sat_idx in sat_idxs_for_pano:
-                        new_pano_idxs.append(new_pano_idx)
-                return new_pano_idxs
-
-            new_pos_pano_idxs = []
-            new_semipos_pano_idxs = []
-            for sat_idx in range(len(self._satellite_metadata)):
-                new_pos_pano_idxs.append(compute_new_pano_idxs_for_sat(sat_idx, "positive_satellite_idxs"))
-                new_semipos_pano_idxs.append(compute_new_pano_idxs_for_sat(sat_idx, "semipositive_satellite_idxs"))
-
-            self._satellite_metadata["positive_panorama_idxs"] = new_pos_pano_idxs
-            self._satellite_metadata["semipositive_panorama_idxs"] = new_semipos_pano_idxs
-            log_progress("Updated satellite metadata with remapped panorama indices")
-
-            # Update landmark metadata's panorama_idxs if landmarks were loaded
-            if config.should_load_landmarks and "panorama_idxs" in self._landmark_metadata.columns:
-                def remap_pano_idxs(old_idxs):
-                    return [old_to_new_pano_idx[idx] for idx in old_idxs if idx in kept_pano_idxs]
-                self._landmark_metadata["panorama_idxs"] = self._landmark_metadata["panorama_idxs"].apply(remap_pano_idxs)
-                log_progress("Updated landmark metadata with remapped panorama indices")
-
-            # Rebuild KD-tree with filtered panoramas
-            self._panorama_kdtree = cKDTree(self._panorama_metadata.loc[:, ["lat", "lon"]].values)
-            log_progress("Rebuilt panorama KD-tree after filtering")
-
         self._panorama_metadata["neighbor_panorama_idxs"] = compute_neighboring_panoramas(
             self._panorama_kdtree, config.panorama_neighbor_radius)
         log_progress("Computed panorama neighbors")
@@ -720,6 +630,186 @@ class VigorDataset(torch.utils.data.Dataset):
         self._satellite_tensor_caches = load_tensor_caches(self._config.satellite_tensor_cache_info)
         log_progress(f"Loaded satellite caches for {len(self._satellite_tensor_caches)} dataset(s)")
         log_progress("Dataset initialization complete")
+
+    def drop_to_subset(
+        self,
+        # Step 1: Pair filtering (applied FIRST, uses pre-drop indices)
+        new_positive_sat_idxs_per_pano: list[list[int]] | None = None,
+        new_semipositive_sat_idxs_per_pano: list[list[int]] | None = None,
+        # Step 2: Drop panoramas (applied SECOND)
+        pano_idxs_to_keep: list[int] | None = None,
+        # Step 3: Drop satellites (applied THIRD, after pano indices remapped)
+        sat_idxs_to_keep: list[int] | None = None,
+    ) -> None:
+        """Subset the dataset by filtering pairs, dropping panoramas, and/or dropping satellites.
+
+        IMPORTANT: Operations are applied in parameter order (1→2→3):
+          1. Pair filtering uses ORIGINAL indices (before any dropping)
+          2. Panorama dropping remaps all panorama indices
+          3. Satellite dropping remaps all satellite indices (including those in pair lists)
+
+        Args:
+            new_positive_sat_idxs_per_pano: Filtered positive satellite indices for each
+                panorama, using ORIGINAL satellite indices. Length must match the number
+                of panoramas that will be kept (i.e., len(pano_idxs_to_keep) if provided,
+                otherwise current panorama count). Applied before any dropping.
+            new_semipositive_sat_idxs_per_pano: Same as above for semipositive satellites.
+            pano_idxs_to_keep: Which panoramas to keep (original indices). If provided
+                with pair filtering, the pair lists should be aligned to the kept panoramas
+                (i.e., new_positive_sat_idxs_per_pano[i] corresponds to pano_idxs_to_keep[i]).
+            sat_idxs_to_keep: Which satellites to keep (original indices). Satellite
+                indices in pair lists will be remapped automatically.
+        """
+        # Step 1: Apply pair-level filtering (before any dropping)
+        # The pair lists are aligned with pano_idxs_to_keep if provided
+        if new_positive_sat_idxs_per_pano is not None or new_semipositive_sat_idxs_per_pano is not None:
+            # If we're also dropping panoramas, pair lists are aligned with kept panos
+            # Otherwise they should match current panorama count
+            if pano_idxs_to_keep is not None:
+                expected_len = len(pano_idxs_to_keep)
+            else:
+                expected_len = len(self._panorama_metadata)
+
+            if new_positive_sat_idxs_per_pano is not None:
+                if len(new_positive_sat_idxs_per_pano) != expected_len:
+                    raise ValueError(
+                        f"new_positive_sat_idxs_per_pano length ({len(new_positive_sat_idxs_per_pano)}) "
+                        f"must match expected panorama count ({expected_len})")
+
+            if new_semipositive_sat_idxs_per_pano is not None:
+                if len(new_semipositive_sat_idxs_per_pano) != expected_len:
+                    raise ValueError(
+                        f"new_semipositive_sat_idxs_per_pano length ({len(new_semipositive_sat_idxs_per_pano)}) "
+                        f"must match expected panorama count ({expected_len})")
+
+        # Step 2: Drop panoramas and remap panorama indices
+        if pano_idxs_to_keep is not None:
+            old_to_new_pano_idx = {old_idx: new_idx for new_idx, old_idx in enumerate(pano_idxs_to_keep)}
+            kept_pano_idxs_set = set(pano_idxs_to_keep)
+
+            # Filter panorama metadata
+            self._panorama_metadata = self._panorama_metadata.iloc[pano_idxs_to_keep].reset_index(drop=True)
+
+            # Apply pair filtering now (pair lists are aligned with kept panoramas)
+            if new_positive_sat_idxs_per_pano is not None:
+                self._panorama_metadata["positive_satellite_idxs"] = new_positive_sat_idxs_per_pano
+            if new_semipositive_sat_idxs_per_pano is not None:
+                self._panorama_metadata["semipositive_satellite_idxs"] = new_semipositive_sat_idxs_per_pano
+
+            # Update satellite_idx (nearest) - pick first positive or semipositive
+            def pick_nearest(pos, semipos):
+                return pos[0] if pos else semipos[0]
+            self._panorama_metadata["satellite_idx"] = [
+                pick_nearest(p, s) for p, s in zip(
+                    self._panorama_metadata["positive_satellite_idxs"],
+                    self._panorama_metadata["semipositive_satellite_idxs"])]
+
+            # Update satellite metadata's positive/semipositive_panorama_idxs
+            # Re-compute based on filtered pairs
+            def compute_new_pano_idxs_for_sat(sat_idx, pano_list_column):
+                new_pano_idxs = []
+                for new_pano_idx in range(len(self._panorama_metadata)):
+                    sat_idxs_for_pano = self._panorama_metadata.iloc[new_pano_idx][pano_list_column]
+                    if sat_idx in sat_idxs_for_pano:
+                        new_pano_idxs.append(new_pano_idx)
+                return new_pano_idxs
+
+            new_pos_pano_idxs = []
+            new_semipos_pano_idxs = []
+            for sat_idx in range(len(self._satellite_metadata)):
+                new_pos_pano_idxs.append(compute_new_pano_idxs_for_sat(sat_idx, "positive_satellite_idxs"))
+                new_semipos_pano_idxs.append(compute_new_pano_idxs_for_sat(sat_idx, "semipositive_satellite_idxs"))
+
+            self._satellite_metadata["positive_panorama_idxs"] = new_pos_pano_idxs
+            self._satellite_metadata["semipositive_panorama_idxs"] = new_semipos_pano_idxs
+
+            # Update landmark metadata's panorama_idxs if landmarks were loaded
+            if self._landmark_metadata is not None and "panorama_idxs" in self._landmark_metadata.columns:
+                def remap_pano_idxs(old_idxs):
+                    return [old_to_new_pano_idx[idx] for idx in old_idxs if idx in kept_pano_idxs_set]
+                self._landmark_metadata["panorama_idxs"] = self._landmark_metadata["panorama_idxs"].apply(remap_pano_idxs)
+
+            # Rebuild panorama KD-tree
+            self._panorama_kdtree = cKDTree(self._panorama_metadata.loc[:, ["lat", "lon"]].values)
+
+        elif new_positive_sat_idxs_per_pano is not None or new_semipositive_sat_idxs_per_pano is not None:
+            # Just pair filtering without dropping panoramas
+            if new_positive_sat_idxs_per_pano is not None:
+                self._panorama_metadata["positive_satellite_idxs"] = new_positive_sat_idxs_per_pano
+            if new_semipositive_sat_idxs_per_pano is not None:
+                self._panorama_metadata["semipositive_satellite_idxs"] = new_semipositive_sat_idxs_per_pano
+
+            # Update satellite_idx (nearest)
+            def pick_nearest(pos, semipos):
+                return pos[0] if pos else semipos[0]
+            self._panorama_metadata["satellite_idx"] = [
+                pick_nearest(p, s) for p, s in zip(
+                    self._panorama_metadata["positive_satellite_idxs"],
+                    self._panorama_metadata["semipositive_satellite_idxs"])]
+
+            # Re-compute satellite metadata's panorama lists
+            def compute_new_pano_idxs_for_sat(sat_idx, pano_list_column):
+                new_pano_idxs = []
+                for pano_idx in range(len(self._panorama_metadata)):
+                    sat_idxs_for_pano = self._panorama_metadata.iloc[pano_idx][pano_list_column]
+                    if sat_idx in sat_idxs_for_pano:
+                        new_pano_idxs.append(pano_idx)
+                return new_pano_idxs
+
+            new_pos_pano_idxs = []
+            new_semipos_pano_idxs = []
+            for sat_idx in range(len(self._satellite_metadata)):
+                new_pos_pano_idxs.append(compute_new_pano_idxs_for_sat(sat_idx, "positive_satellite_idxs"))
+                new_semipos_pano_idxs.append(compute_new_pano_idxs_for_sat(sat_idx, "semipositive_satellite_idxs"))
+
+            self._satellite_metadata["positive_panorama_idxs"] = new_pos_pano_idxs
+            self._satellite_metadata["semipositive_panorama_idxs"] = new_semipos_pano_idxs
+
+        # Step 3: Drop satellites and remap satellite indices
+        if sat_idxs_to_keep is not None:
+            old_to_new_sat_idx = {old_idx: new_idx for new_idx, old_idx in enumerate(sat_idxs_to_keep)}
+            kept_sat_idxs_set = set(sat_idxs_to_keep)
+
+            # Filter satellite metadata
+            self._satellite_metadata = self._satellite_metadata.iloc[sat_idxs_to_keep].reset_index(drop=True)
+
+            # Remap satellite indices in panorama metadata
+            def remap_sat_idxs(old_idxs):
+                return [old_to_new_sat_idx[idx] for idx in old_idxs if idx in kept_sat_idxs_set]
+
+            self._panorama_metadata["positive_satellite_idxs"] = self._panorama_metadata["positive_satellite_idxs"].apply(remap_sat_idxs)
+            self._panorama_metadata["semipositive_satellite_idxs"] = self._panorama_metadata["semipositive_satellite_idxs"].apply(remap_sat_idxs)
+
+            # Remap satellite_idx (nearest) - need to handle case where it was dropped
+            def remap_nearest_sat(old_idx):
+                if old_idx in kept_sat_idxs_set:
+                    return old_to_new_sat_idx[old_idx]
+                # If the nearest was dropped, pick from remaining positives/semipositives
+                return None  # Will be recomputed below
+
+            self._panorama_metadata["satellite_idx"] = self._panorama_metadata["satellite_idx"].apply(remap_nearest_sat)
+
+            # Recompute satellite_idx for any that became None
+            for pano_idx in range(len(self._panorama_metadata)):
+                if self._panorama_metadata.iloc[pano_idx]["satellite_idx"] is None:
+                    pos = self._panorama_metadata.iloc[pano_idx]["positive_satellite_idxs"]
+                    semipos = self._panorama_metadata.iloc[pano_idx]["semipositive_satellite_idxs"]
+                    if pos:
+                        self._panorama_metadata.at[pano_idx, "satellite_idx"] = pos[0]
+                    elif semipos:
+                        self._panorama_metadata.at[pano_idx, "satellite_idx"] = semipos[0]
+
+            # Update landmark metadata's satellite_idxs if landmarks were loaded
+            if self._landmark_metadata is not None and "satellite_idxs" in self._landmark_metadata.columns:
+                self._landmark_metadata["satellite_idxs"] = self._landmark_metadata["satellite_idxs"].apply(remap_sat_idxs)
+
+            # Rebuild satellite KD-tree
+            self._satellite_pixel_kdtree = cKDTree(self._satellite_metadata.loc[:, ["web_mercator_x", "web_mercator_y"]].values)
+
+        # Step 4: Finalize - recompute neighbors and pairs
+        self._panorama_metadata["neighbor_panorama_idxs"] = compute_neighboring_panoramas(
+            self._panorama_kdtree, self._config.panorama_neighbor_radius)
+        self._pairs = populate_pairs(self._panorama_metadata, self._satellite_metadata, self._config.sample_mode)
 
     @property
     def num_satellite_patches(self):

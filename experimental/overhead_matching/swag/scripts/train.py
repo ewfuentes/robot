@@ -12,7 +12,7 @@ from experimental.overhead_matching.swag.scripts.losses import LossConfig, compu
 from experimental.overhead_matching.swag.scripts.distances import DistanceConfig, create_distance_from_config
 from experimental.overhead_matching.swag.scripts.pairing import PairingType, create_pairs, create_anchors, Pairs, PairingDataType
 from experimental.overhead_matching.swag.data import (
-    vigor_dataset, satellite_embedding_database as sed)
+    vigor_dataset, satellite_embedding_database as sed, vigor_filters)
 from experimental.overhead_matching.swag.model import (
     patch_embedding, swag_patch_embedding)
 from experimental.overhead_matching.swag.model.swag_config_types import ExtractorDataRequirement
@@ -751,12 +751,16 @@ def main(
         landmark_version=train_config.dataset_config.landmark_version,
         load_cache_debug=capture_model_data,
         panorama_landmark_radius_px=train_config.dataset_config.panorama_landmark_radius_px,
-        landmark_correspondence_inflation_factor=train_config.dataset_config.landmark_correspondence_inflation_factor,
-        require_proper_noun_match=train_config.dataset_config.require_proper_noun_match,
-        pano_gemini_base_path=train_config.dataset_config.pano_gemini_base_path)
+        landmark_correspondence_inflation_factor=train_config.dataset_config.landmark_correspondence_inflation_factor)
 
     dataset_paths = [dataset_base_path / p for p in train_config.dataset_config.paths]
     dataset = vigor_dataset.VigorDataset(dataset_paths, dataset_config)
+
+    # Apply proper noun filter if configured
+    if train_config.dataset_config.require_proper_noun_match:
+        vigor_filters.apply_proper_noun_filter(
+            dataset,
+            Path(train_config.dataset_config.pano_gemini_base_path))
 
     validation_datasets = {}
     for validation_dataset_config in train_config.validation_dataset_configs:
@@ -764,7 +768,7 @@ def main(
         validation_dataset_paths = [dataset_base_path / p for p in validation_dataset_config.paths]
 
         # Use same data requirements for validation datasets
-        validation_datasets[validation_dataset_paths[0].name] = vigor_dataset.VigorDataset(
+        val_dataset = vigor_dataset.VigorDataset(
             validation_dataset_paths,
             vigor_dataset.VigorDatasetConfig(
                 satellite_patch_size=satellite_model.patch_dims,
@@ -789,9 +793,15 @@ def main(
                 should_load_landmarks=should_load_landmarks,
                 landmark_version=validation_dataset_config.landmark_version,
                 panorama_landmark_radius_px=validation_dataset_config.panorama_landmark_radius_px,
-                landmark_correspondence_inflation_factor=validation_dataset_config.landmark_correspondence_inflation_factor,
-                require_proper_noun_match=validation_dataset_config.require_proper_noun_match,
-                pano_gemini_base_path=validation_dataset_config.pano_gemini_base_path))
+                landmark_correspondence_inflation_factor=validation_dataset_config.landmark_correspondence_inflation_factor))
+
+        # Apply proper noun filter if configured for this validation dataset
+        if validation_dataset_config.require_proper_noun_match:
+            vigor_filters.apply_proper_noun_filter(
+                val_dataset,
+                Path(validation_dataset_config.pano_gemini_base_path))
+
+        validation_datasets[validation_dataset_paths[0].name] = val_dataset
 
     # Add datetime prefix to output directory
     timestamp = datetime.datetime.now().strftime("%y%m%d_%H%M%S")
