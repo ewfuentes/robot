@@ -420,7 +420,6 @@ def _(
 
 @app.cell(hide_code=True)
 def _(Path, load_sat_data_from_sat_id, load_vigor_dataset, mo, pickle, slu):
-
     def _load_pano_data_from_pano_id(pano_base_path, vigor_dataset):
         pano_metadata = vigor_dataset._panorama_metadata.set_index('pano_id')
         emb_pkl = pickle.loads((pano_base_path / "embeddings/embeddings.pkl").read_bytes())
@@ -645,37 +644,55 @@ def _():
 
 
 @app.cell
-def _(EVAL_CITY, Path, es, load_vigor_dataset, lsm, torch):
+def _(
+    EVAL_CITY,
+    Path,
+    es,
+    load_vigor_dataset,
+    lsm,
+    proper_noun_datasets,
+    torch,
+):
 
     # Load the similarities for the baseline
 
-    def compute_baseline_similarity(d):
+    def compute_baseline_similarity(d, pano_id_subset=None):
         _city = d["city"]
         _baseline_model_path = Path('/data/overhead_matching/models/20250707_dino_features/all_chicago_dino_project_512/')
         _baseline_sat_model = lsm.load_model(_baseline_model_path / "0059_satellite")
         _baseline_pano_model = lsm.load_model(_baseline_model_path / "0059_panorama")
         _vd = load_vigor_dataset(_city)
-    
+        if pano_id_subset is None:
+            pano_id_subset = list(_vd._panorama_metadata.pano_id)
+
         _baseline_similarity = es.compute_cached_similarity_matrix(
             _baseline_sat_model, _baseline_pano_model, _vd, 'cuda', use_cached_similarity=True)
-    
+
         _positives = torch.zeros(_baseline_similarity.shape, dtype=torch.bool)
-    
+
         for _sat_idx, _row in _vd._satellite_metadata.iterrows():
             _pano_idxs = _row.positive_panorama_idxs + _row.semipositive_panorama_idxs
             if len(_pano_idxs) > 0:
                 _positives[_pano_idxs, _sat_idx] = True
-    
+
+        valid_idxs = []
+        for pano_idx, row in _vd._panorama_metadata.iterrows():
+            if row.pano_id in pano_id_subset: 
+                valid_idxs.append(pano_idx)
+
+        _baseline_similarity = _baseline_similarity[valid_idxs]
+        _positives = _positives[valid_idxs]
         return {
             "similarity": _baseline_similarity,
             "positives": _positives,
         }
 
     baseline_sims = compute_baseline_similarity({"city":EVAL_CITY})
+    pnd_baseline_sims = compute_baseline_similarity({"city": EVAL_CITY},
+                                                    pano_id_subset=list(proper_noun_datasets[EVAL_CITY.lower()]["pano_data_from_pano_id"].keys()))
 
 
-
-    return baseline_sims, compute_baseline_similarity
+    return baseline_sims, compute_baseline_similarity, pnd_baseline_sims
 
 
 @app.cell
@@ -865,6 +882,7 @@ def _(
     lm_sims,
     mo,
     plt,
+    pnd_baseline_sims,
     pnd_lm_sims,
     pnd_proper_noun_sims,
     sns,
@@ -891,6 +909,7 @@ def _(
         return 1.0 / rank
 
     baseline_recip_ranks = _compute_pano_patch_sim_recip_rank(baseline_sims)
+    pnd_baseline_recip_ranks = _compute_pano_patch_sim_recip_rank(pnd_baseline_sims)
     lm_recip_ranks = _compute_pano_patch_sim_recip_rank(lm_sims)
     pnd_lm_recip_ranks = _compute_pano_patch_sim_recip_rank(pnd_lm_sims)
     pnd_proper_noun_recip_ranks = _compute_pano_patch_sim_recip_rank(pnd_proper_noun_sims)
@@ -900,6 +919,7 @@ def _(
     sns.ecdfplot(pnd_lm_recip_ranks, label="Proper Noun Subset w/ Embeddings")
     sns.ecdfplot(pnd_proper_noun_recip_ranks, label="Proper Noun Subset w/ Text Match")
     sns.ecdfplot(baseline_recip_ranks.cpu(), label="Overhead Imagery Baseline")
+    sns.ecdfplot(pnd_baseline_recip_ranks.cpu(), label="Proper Noun Subset Overhead Imagery Baseline")
     plt.legend()
     plt.xlabel('Recip. Rank')
     mo.mpl.interactive(plt.gcf())
