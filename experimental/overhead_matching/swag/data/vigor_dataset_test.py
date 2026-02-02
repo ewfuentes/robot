@@ -15,6 +15,11 @@ from PIL import Image, ImageDraw
 
 from experimental.overhead_matching.swag.data import vigor_dataset
 from experimental.overhead_matching.swag.scripts.distances import CosineDistance, CosineDistanceConfig
+from experimental.overhead_matching.swag.scripts.create_evaluation_paths import (
+    compute_city_bounding_box,
+    compute_bbox_coverage_ratio,
+    generate_goal_directed_path,
+)
 
 class VigorDatasetTest(unittest.TestCase):
 
@@ -400,7 +405,8 @@ class VigorDatasetTest(unittest.TestCase):
         SEED = 123
 
         # action
-        path = dataset.generate_goal_directed_path(
+        path = generate_goal_directed_path(
+            dataset._panorama_metadata,
             torch.manual_seed(SEED),
             PATH_LENGTH_M,
             goal_reached_threshold_m=100.0,
@@ -430,17 +436,20 @@ class VigorDatasetTest(unittest.TestCase):
         SEED = 456
 
         # action
-        path1 = dataset.generate_goal_directed_path(
+        path1 = generate_goal_directed_path(
+            dataset._panorama_metadata,
             torch.manual_seed(SEED),
             PATH_LENGTH_M,
             min_bbox_coverage_ratio=0.0,
         )
-        path2 = dataset.generate_goal_directed_path(
+        path2 = generate_goal_directed_path(
+            dataset._panorama_metadata,
             torch.manual_seed(SEED),
             PATH_LENGTH_M,
             min_bbox_coverage_ratio=0.0,
         )
-        path3 = dataset.generate_goal_directed_path(
+        path3 = generate_goal_directed_path(
+            dataset._panorama_metadata,
             torch.manual_seed(SEED - 10),
             PATH_LENGTH_M,
             min_bbox_coverage_ratio=0.0,
@@ -463,7 +472,7 @@ class VigorDatasetTest(unittest.TestCase):
             Path("external/vigor_snippet/vigor_snippet"), config)
 
         # Test city bounding box
-        city_bbox = dataset._compute_city_bounding_box()
+        city_bbox = compute_city_bounding_box(dataset._panorama_metadata)
         self.assertEqual(len(city_bbox), 4)
         min_lat, max_lat, min_lon, max_lon = city_bbox
         self.assertLess(min_lat, max_lat)
@@ -471,7 +480,7 @@ class VigorDatasetTest(unittest.TestCase):
 
         # Test bbox coverage ratio
         # Full city should have ratio 1.0
-        coverage = dataset._compute_bbox_coverage_ratio(city_bbox, city_bbox)
+        coverage = compute_bbox_coverage_ratio(city_bbox, city_bbox)
         self.assertAlmostEqual(coverage, 1.0)
 
         # Half-size bbox should have ratio 0.25
@@ -481,7 +490,7 @@ class VigorDatasetTest(unittest.TestCase):
             min_lon,
             (min_lon + max_lon) / 2,
         )
-        coverage = dataset._compute_bbox_coverage_ratio(half_bbox, city_bbox)
+        coverage = compute_bbox_coverage_ratio(half_bbox, city_bbox)
         self.assertAlmostEqual(coverage, 0.25, places=5)
 
 

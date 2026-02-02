@@ -4,7 +4,6 @@ load("@pip//:requirements.bzl", "requirement")
 py_library(
   name = "vigor_dataset",
   srcs = ["vigor_dataset.py"],
-  data = ["//planning:a_star_python.so"],
   visibility = [
     "//experimental/overhead_matching/swag:__subpackages__",
     "//common/python:__subpackages__",
@@ -46,6 +45,7 @@ py_test(
     "//common/torch:load_torch_deps",
     ":vigor_dataset",
     "//experimental/overhead_matching/swag/scripts:distances",
+    "//experimental/overhead_matching/swag/scripts:create_evaluation_paths",
   ]
 )
 
