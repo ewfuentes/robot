@@ -74,6 +74,15 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
             if data is not None:
                 # v2.0 format
                 city_embeddings, city_sentences, new_metadata = self._load_v2_data(data)
+
+                # Assert no key overlap - custom_ids include pano_id so should be unique across cities
+                embedding_overlap = set(self.all_embeddings.keys()) & set(city_embeddings.keys())
+                assert not embedding_overlap, f"Unexpected embedding key overlap: {embedding_overlap}"
+                sentence_overlap = set(self.all_sentences.keys()) & set(city_sentences.keys())
+                assert not sentence_overlap, f"Unexpected sentence key overlap: {sentence_overlap}"
+                metadata_overlap = set(self.panorama_metadata.keys()) & set(new_metadata.keys())
+                assert not metadata_overlap, f"Unexpected metadata key overlap: {metadata_overlap}"
+
                 self.all_embeddings.update(city_embeddings)
                 self.all_sentences.update(city_sentences)
                 self.panorama_metadata.update(new_metadata)
