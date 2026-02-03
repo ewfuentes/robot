@@ -524,3 +524,9 @@ py_binary(
     "//experimental/overhead_matching/swag/model:swag_patch_embedding",
   ]
 )
+
+py_binary(
+  name="osm_extraction_visualizer",
+  srcs=["osm_extraction_visualizer.py"],
+  deps=[]
+)
