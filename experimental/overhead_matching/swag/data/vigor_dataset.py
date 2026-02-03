@@ -569,51 +569,43 @@ class VigorDataset(torch.utils.data.Dataset):
 
         Args:
             new_positive_sat_idxs_per_pano: Filtered positive satellite indices for each
-                panorama, using ORIGINAL satellite indices. Length must match the number
-                of panoramas that will be kept (i.e., len(pano_idxs_to_keep) if provided,
-                otherwise current panorama count). Applied before any dropping.
+                panorama, using ORIGINAL satellite indices. Length must match the current
+                panorama count (before any dropping). Applied before panorama dropping.
             new_semipositive_sat_idxs_per_pano: Same as above for semipositive satellites.
-            pano_idxs_to_keep: Which panoramas to keep (original indices). If provided
-                with pair filtering, the pair lists should be aligned to the kept panoramas
-                (i.e., new_positive_sat_idxs_per_pano[i] corresponds to pano_idxs_to_keep[i]).
+            pano_idxs_to_keep: Which panoramas to keep (original indices).
             sat_idxs_to_keep: Which satellites to keep (original indices). Satellite
                 indices in pair lists will be remapped automatically.
         """
         # Step 1: Apply pair-level filtering (before any dropping)
-        # The pair lists are aligned with pano_idxs_to_keep if provided
+        # Pair lists must always match current panorama count
+        current_pano_count = len(self._panorama_metadata)
         if new_positive_sat_idxs_per_pano is not None or new_semipositive_sat_idxs_per_pano is not None:
-            # If we're also dropping panoramas, pair lists are aligned with kept panos
-            # Otherwise they should match current panorama count
-            if pano_idxs_to_keep is not None:
-                expected_len = len(pano_idxs_to_keep)
-            else:
-                expected_len = len(self._panorama_metadata)
-
             if new_positive_sat_idxs_per_pano is not None:
-                if len(new_positive_sat_idxs_per_pano) != expected_len:
+                if len(new_positive_sat_idxs_per_pano) != current_pano_count:
                     raise ValueError(
                         f"new_positive_sat_idxs_per_pano length ({len(new_positive_sat_idxs_per_pano)}) "
-                        f"must match expected panorama count ({expected_len})")
+                        f"must match current panorama count ({current_pano_count})")
 
             if new_semipositive_sat_idxs_per_pano is not None:
-                if len(new_semipositive_sat_idxs_per_pano) != expected_len:
+                if len(new_semipositive_sat_idxs_per_pano) != current_pano_count:
                     raise ValueError(
                         f"new_semipositive_sat_idxs_per_pano length ({len(new_semipositive_sat_idxs_per_pano)}) "
-                        f"must match expected panorama count ({expected_len})")
+                        f"must match current panorama count ({current_pano_count})")
+
+        # Apply pair filtering first (before dropping panoramas)
+        # Pair lists have original length, so apply them directly
+        if new_positive_sat_idxs_per_pano is not None:
+            self._panorama_metadata["positive_satellite_idxs"] = new_positive_sat_idxs_per_pano
+        if new_semipositive_sat_idxs_per_pano is not None:
+            self._panorama_metadata["semipositive_satellite_idxs"] = new_semipositive_sat_idxs_per_pano
 
         # Step 2: Drop panoramas and remap panorama indices
         if pano_idxs_to_keep is not None:
             old_to_new_pano_idx = {old_idx: new_idx for new_idx, old_idx in enumerate(pano_idxs_to_keep)}
             kept_pano_idxs_set = set(pano_idxs_to_keep)
 
-            # Filter panorama metadata
+            # Filter panorama metadata (pair lists already applied above)
             self._panorama_metadata = self._panorama_metadata.iloc[pano_idxs_to_keep].reset_index(drop=True)
-
-            # Apply pair filtering now (pair lists are aligned with kept panoramas)
-            if new_positive_sat_idxs_per_pano is not None:
-                self._panorama_metadata["positive_satellite_idxs"] = new_positive_sat_idxs_per_pano
-            if new_semipositive_sat_idxs_per_pano is not None:
-                self._panorama_metadata["semipositive_satellite_idxs"] = new_semipositive_sat_idxs_per_pano
 
             # Update satellite_idx (nearest) - pick first positive or semipositive
             def pick_nearest(pos, semipos):
@@ -652,12 +644,7 @@ class VigorDataset(torch.utils.data.Dataset):
             self._panorama_kdtree = cKDTree(self._panorama_metadata.loc[:, ["lat", "lon"]].values)
 
         elif new_positive_sat_idxs_per_pano is not None or new_semipositive_sat_idxs_per_pano is not None:
-            # Just pair filtering without dropping panoramas
-            if new_positive_sat_idxs_per_pano is not None:
-                self._panorama_metadata["positive_satellite_idxs"] = new_positive_sat_idxs_per_pano
-            if new_semipositive_sat_idxs_per_pano is not None:
-                self._panorama_metadata["semipositive_satellite_idxs"] = new_semipositive_sat_idxs_per_pano
-
+            # Just pair filtering without dropping panoramas (pair lists already applied above)
             # Update satellite_idx (nearest)
             def pick_nearest(pos, semipos):
                 return pos[0] if pos else semipos[0]

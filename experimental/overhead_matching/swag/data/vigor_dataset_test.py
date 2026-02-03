@@ -732,6 +732,7 @@ class DropToSubsetTest(unittest.TestCase):
         dataset = self._create_dataset()
         original_pano_count = len(dataset._panorama_metadata)
 
+        # Build pair lists for ALL panoramas (original length required)
         # Keep only panoramas with at least one positive satellite
         panos_to_keep = []
         new_positive = []
@@ -741,7 +742,12 @@ class DropToSubsetTest(unittest.TestCase):
             pano_row = dataset._panorama_metadata.iloc[pano_idx]
             if pano_row["positive_satellite_idxs"]:
                 panos_to_keep.append(pano_idx)
+                # Keep only first positive, clear semipositives
                 new_positive.append(pano_row["positive_satellite_idxs"][:1])
+                new_semipositive.append([])
+            else:
+                # Panoramas being dropped still need entries (will be filtered out)
+                new_positive.append([])
                 new_semipositive.append([])
 
         dataset.drop_to_subset(

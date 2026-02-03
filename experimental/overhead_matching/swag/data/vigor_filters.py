@@ -128,7 +128,8 @@ def apply_proper_noun_filter(
 
     original_pano_count = len(dataset._panorama_metadata)
 
-    # Build filtered pair lists and determine which panoramas to keep
+    # Build filtered pair lists for ALL panoramas (original length)
+    # and determine which panoramas to keep (those with at least one match)
     def filter_sat_idxs(sat_idxs, matching_set):
         return [idx for idx in sat_idxs if idx in matching_set]
 
@@ -143,10 +144,13 @@ def apply_proper_noun_filter(
         filtered_pos = filter_sat_idxs(pano_row["positive_satellite_idxs"], matching_sats)
         filtered_semipos = filter_sat_idxs(pano_row["semipositive_satellite_idxs"], matching_sats)
 
+        # Store filtered pairs for ALL panoramas (original length required by drop_to_subset)
+        new_positive_sat_idxs.append(filtered_pos)
+        new_semipositive_sat_idxs.append(filtered_semipos)
+
+        # Track which panoramas have at least one match
         if filtered_pos or filtered_semipos:
             panos_to_keep.append(pano_idx)
-            new_positive_sat_idxs.append(filtered_pos)
-            new_semipositive_sat_idxs.append(filtered_semipos)
 
     logger.info(f"Proper noun filter: keeping {len(panos_to_keep)}/{original_pano_count} panoramas")
 
