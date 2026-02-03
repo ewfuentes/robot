@@ -6,8 +6,6 @@ import numpy as np
 from pathlib import Path
 import json
 import argparse
-import math
-import msgspec
 
 import dash
 from dash import dcc, html, dash_table
@@ -21,33 +19,13 @@ from experimental.overhead_matching.swag.filter.histogram_belief import (
     HistogramBelief,
     build_cell_to_patch_mapping,
 )
+from experimental.overhead_matching.swag.filter.adaptive_aggregators import (
+    ObservationLogLikelihoodAggregator,
+    load_aggregator_config,
+    aggregator_from_config,
+)
 import experimental.overhead_matching.swag.evaluation.evaluate_swag as es
-import common.torch.load_and_save_models as lsm
-from experimental.overhead_matching.swag.model import patch_embedding, swag_patch_embedding
 from common.gps import web_mercator
-
-
-def load_model(path, device='cuda'):
-    """Load a model from path."""
-    try:
-        model = lsm.load_model(path, device=device)
-        model.patch_dims
-        model.model_input_from_batch
-    except Exception as e:
-        print("Failed to load model via lsm, trying fallback:", e)
-        training_config_path = path.parent / "config.json"
-        training_config_json = json.loads(training_config_path.read_text())
-        model_config_json = training_config_json["sat_model_config"] if 'satellite' in path.name else training_config_json["pano_model_config"]
-        config = msgspec.json.decode(
-                json.dumps(model_config_json),
-                type=patch_embedding.WagPatchEmbeddingConfig | swag_patch_embedding.SwagPatchEmbeddingConfig)
-
-        model_weights = torch.load(path / 'model_weights.pt', weights_only=True)
-        model_type = patch_embedding.WagPatchEmbedding if isinstance(config, patch_embedding.WagPatchEmbeddingConfig) else swag_patch_embedding.SwagPatchEmbedding
-        model = model_type(config)
-        model.load_state_dict(model_weights)
-        model = model.to(device)
-    return model
 
 
 def get_dataset_bounds(vigor_dataset: vd.VigorDataset):
@@ -71,8 +49,8 @@ def run_filter_with_history(
     mapping,
     initial_belief: HistogramBelief,
     motion_deltas: torch.Tensor,
-    path_similarity: torch.Tensor,
-    sigma_obs: float,
+    path_pano_ids: list[str],
+    log_likelihood_aggregator: ObservationLogLikelihoodAggregator,
     noise_percent: float,
 ):
     """Run filter and save belief at each step."""
@@ -86,11 +64,12 @@ def run_filter_with_history(
         'gt_idx': 0,
     })
 
-    path_len = path_similarity.shape[0]
+    path_len = len(path_pano_ids)
 
     for step_idx in range(path_len - 1):
-        # Observation update
-        belief.apply_observation(path_similarity[step_idx], mapping, sigma_obs)
+        # Observation update - get log-likelihoods from aggregator
+        obs_log_ll = log_likelihood_aggregator(path_pano_ids[step_idx])
+        belief.apply_observation(obs_log_ll, mapping)
         history.append({
             'stage': f'obs_{step_idx}',
             'log_belief': belief.get_log_belief().clone().cpu(),
@@ -107,8 +86,9 @@ def run_filter_with_history(
             'gt_idx': step_idx + 1,
         })
 
-    # Final observation
-    belief.apply_observation(path_similarity[-1], mapping, sigma_obs)
+    # Final observation - get log-likelihoods from aggregator
+    obs_log_ll = log_likelihood_aggregator(path_pano_ids[-1])
+    belief.apply_observation(obs_log_ll, mapping)
     history.append({
         'stage': f'obs_{path_len-1}',
         'log_belief': belief.get_log_belief().clone().cpu(),
@@ -193,11 +173,8 @@ def main():
                         help="Path to evaluation results directory")
     parser.add_argument("--dataset-path", type=str, required=True,
                         help="Path to VIGOR dataset")
-    parser.add_argument("--sat-path", type=str, required=True,
-                        help="Path to satellite model")
-    parser.add_argument("--pano-path", type=str, required=True,
-                        help="Path to panorama model")
-    parser.add_argument("--sigma-obs", type=float, default=None)
+    parser.add_argument("--aggregator-config", type=str, required=True,
+                        help="Path to YAML config file for aggregator (see adaptive_aggregators.py)")
     parser.add_argument("--noise-percent", type=float, default=None)
     parser.add_argument("--port", type=int, default=8050)
 
@@ -205,18 +182,15 @@ def main():
 
     eval_path = Path(args.eval_path).expanduser()
     dataset_path = Path(args.dataset_path).expanduser()
-    sat_model_path = Path(args.sat_path).expanduser()
-    pano_model_path = Path(args.pano_path).expanduser()
 
     # Load config
     with open(eval_path / "args.json") as f:
         eval_args = json.load(f)
 
-    sigma_obs = args.sigma_obs if args.sigma_obs is not None else eval_args.get("sigma_obs_prob_from_sim", 0.1)
     noise_percent = args.noise_percent if args.noise_percent is not None else eval_args.get("noise_percent", 0.02)
     subdivision_factor = eval_args.get("subdivision_factor", 4)
 
-    print(f"Config: sigma_obs={sigma_obs}, noise_percent={noise_percent}, subdivision={subdivision_factor}")
+    print(f"Config: noise_percent={noise_percent}, subdivision={subdivision_factor}")
 
     # Load path statistics
     print("Loading path statistics...")
@@ -235,11 +209,6 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
-    # Load models
-    print("Loading models...")
-    sat_model = load_model(sat_model_path, device=device)
-    pano_model = load_model(pano_model_path, device=device)
-
     # Load dataset
     dataset_config = vd.VigorDatasetConfig(
         panorama_tensor_cache_info=None,
@@ -252,14 +221,14 @@ def main():
     )
     vigor_dataset = vd.VigorDataset(dataset_path, dataset_config)
 
-    # Compute similarity matrix
-    print("Computing similarity matrix (cached)...")
-    all_similarity = es.compute_cached_similarity_matrix(
-        sat_model=sat_model,
-        pano_model=pano_model,
-        dataset=vigor_dataset,
-        device=device,
-        use_cached_similarity=True,
+    # Load aggregator config and create aggregator
+    print("Loading aggregator config...")
+    aggregator_config = load_aggregator_config(Path(args.aggregator_config))
+    print(f"Loaded aggregator config: {type(aggregator_config).__name__}")
+    log_likelihood_aggregator = aggregator_from_config(
+        aggregator_config,
+        vigor_dataset,
+        device,
     )
 
     # Use CPU for filter computations (visualization doesn't need GPU)
@@ -403,10 +372,6 @@ def main():
         # Get ground truth positions
         gt_positions = vigor_dataset.get_panorama_positions(path).numpy()
 
-        # Get similarity for this path - convert pano_ids to indices
-        path_indices = vigor_dataset.pano_ids_to_indices(path)
-        path_similarity = all_similarity[path_indices].cpu()
-
         # Get motion deltas
         motion_deltas = es.get_motion_deltas_from_path(vigor_dataset, path)
 
@@ -414,8 +379,8 @@ def main():
         belief = HistogramBelief.from_uniform(grid_spec, filter_device)
         history = run_filter_with_history(
             grid_spec, mapping, belief,
-            motion_deltas, path_similarity,
-            sigma_obs, noise_percent
+            motion_deltas, path,
+            log_likelihood_aggregator, noise_percent
         )
 
         # Store in server-side cache (not sent to browser)

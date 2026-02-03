@@ -11,11 +11,18 @@ from experimental.overhead_matching.swag.filter.histogram_belief import (
     CellToPatchMapping,
     build_cell_to_patch_mapping,
 )
+from experimental.overhead_matching.swag.filter.adaptive_aggregators import (
+    ObservationLogLikelihoodAggregator,
+    AggregatorConfig,
+    aggregator_from_config,
+    load_aggregator_config,
+)
 import common.torch.load_and_save_models as lsm
 from experimental.overhead_matching.swag.model import patch_embedding, swag_patch_embedding
 from pathlib import Path
 from common.gps import web_mercator
 from common.math.haversine import find_d_on_unit_circle
+import shutil
 import msgspec
 import json
 import math
@@ -51,7 +58,6 @@ def load_model(path, device='cuda'):
 class HistogramFilterConfig:
     """Configuration for histogram filter evaluation."""
     noise_percent: float = 0.02  # Motion noise as fraction of motion magnitude
-    sigma_obs: float = 0.1  # Observation likelihood sigma
     subdivision_factor: int = 4  # Grid subdivision (4 = 160px cells at zoom 20)
     initial_std_deg: float = 0.0267  # ~2970m initial uncertainty
     initial_offset_std_deg: float = 0.0117  # ~1300m offset
@@ -91,7 +97,8 @@ def get_patch_positions_px(vigor_dataset: vd.VigorDataset, device: torch.device)
 def run_histogram_filter_on_path(
     belief: HistogramBelief,
     motion_deltas: torch.Tensor,
-    path_similarity: torch.Tensor,
+    path_pano_ids: list[str],
+    log_likelihood_aggregator: ObservationLogLikelihoodAggregator,
     mapping: CellToPatchMapping,
     config: HistogramFilterConfig,
     true_latlons: torch.Tensor | None = None,
@@ -102,7 +109,8 @@ def run_histogram_filter_on_path(
     Args:
         belief: Initial histogram belief
         motion_deltas: (path_len - 1, 2) motion deltas in lat/lon degrees
-        path_similarity: (path_len, num_patches) similarity scores
+        path_pano_ids: List of pano_ids for the path
+        log_likelihood_aggregator: Aggregator to compute observation log-likelihoods
         mapping: Cell-to-patch mapping
         config: Filter configuration
         true_latlons: (path_len, 2) ground truth positions for convergence metrics
@@ -131,11 +139,12 @@ def run_histogram_filter_on_path(
         if convergence_radii is None:
             print("Not tracking convergence: convergence_radii not provided")
 
-    path_len = path_similarity.shape[0]
+    path_len = len(path_pano_ids)
 
     for step_idx in range(path_len - 1):
         # Observation update
-        belief.apply_observation(path_similarity[step_idx], mapping, config.sigma_obs)
+        obs_log_ll = log_likelihood_aggregator(path_pano_ids[step_idx])
+        belief.apply_observation(obs_log_ll, mapping)
 
         # Motion prediction
         belief.apply_motion(motion_deltas[step_idx], config.noise_percent)
@@ -152,7 +161,8 @@ def run_histogram_filter_on_path(
                 prob_mass_by_radius[radius].append(prob_mass)
 
     # Final observation
-    belief.apply_observation(path_similarity[-1], mapping, config.sigma_obs)
+    obs_log_ll = log_likelihood_aggregator(path_pano_ids[-1])
+    belief.apply_observation(obs_log_ll, mapping)
     mean_history.append(belief.get_mean_latlon())
     variance_history.append(belief.get_variance_deg_sq())
 
@@ -221,7 +231,7 @@ def get_distance_error_from_mean_history(
 
 def evaluate_histogram_on_paths(
     vigor_dataset: vd.VigorDataset,
-    similarity: torch.Tensor,
+    log_likelihood_aggregator: ObservationLogLikelihoodAggregator,
     paths: list[list[str]],
     config: HistogramFilterConfig,
     seed: int,
@@ -234,7 +244,7 @@ def evaluate_histogram_on_paths(
 
     Args:
         vigor_dataset: VIGOR dataset
-        similarity: Pre-computed similarity matrix (num_pano, num_sat)
+        log_likelihood_aggregator: Aggregator to compute observation log-likelihoods
         paths: List of paths (each path is list of pano_ids)
         config: Histogram filter configuration
         seed: Random seed for initial offset
@@ -244,7 +254,6 @@ def evaluate_histogram_on_paths(
         convergence_radii: List of radii in meters for convergence metrics
     """
     all_final_error_meters = []
-    all_similarity = similarity
     # Track convergence costs per radius
     convergence_costs_by_radius: dict[int, list[float]] = {}
     if convergence_radii:
@@ -298,11 +307,8 @@ def evaluate_histogram_on_paths(
                 device=device,
             )
 
-            # Get motion deltas and similarities for this path
+            # Get motion deltas for this path
             motion_deltas = es.get_motion_deltas_from_path(vigor_dataset, path).to(device)
-            # Convert pano_ids to indices for similarity matrix access
-            path_indices = vigor_dataset.pano_ids_to_indices(path)
-            path_similarity = all_similarity[path_indices]  # (path_len, num_patches)
 
             # Get ground truth positions for convergence metrics (only if needed)
             true_latlons = (
@@ -314,7 +320,8 @@ def evaluate_histogram_on_paths(
             result = run_histogram_filter_on_path(
                 belief=belief,
                 motion_deltas=motion_deltas,
-                path_similarity=path_similarity,
+                path_pano_ids=path,
+                log_likelihood_aggregator=log_likelihood_aggregator,
                 mapping=mapping,
                 config=config,
                 true_latlons=true_latlons,
@@ -490,13 +497,8 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Evaluate histogram filter on paths")
 
-    # Similarity source: either --similarity-matrix OR (--sat-path AND --pano-path)
-    parser.add_argument("--similarity-matrix", type=str, default=None,
-                        help="Path to pre-computed similarity matrix (.pt file)")
-    parser.add_argument("--sat-path", type=str, default=None,
-                        help="Model folder path for sat model")
-    parser.add_argument("--pano-path", type=str, default=None,
-                        help="Model folder path for pano model (required with --sat-path)")
+    parser.add_argument("--aggregator-config", type=str, required=True,
+                        help="Path to YAML config file for aggregator (see adaptive_aggregators.py)")
 
     parser.add_argument("--paths-path", type=str, required=True,
                         help="Path to json file full of evaluation paths")
@@ -511,8 +513,6 @@ if __name__ == "__main__":
                         default=0.0005, help="Panorama neighbor radius deg")
     parser.add_argument("--panorama-landmark-radius-px", type=int,
                         default=640, help="Panorama landmark radius in pixels")
-    parser.add_argument("--sigma_obs_prob_from_sim", type=float, default=0.1,
-                        help="Observation likelihood sigma")
     parser.add_argument("--noise-percent", type=float, default=0.02,
                         help="Motion noise as fraction of motion magnitude")
     parser.add_argument("--subdivision-factor", type=int, default=4,
@@ -521,18 +521,6 @@ if __name__ == "__main__":
                         help="Comma-separated list of radii (meters) for convergence metrics")
 
     args = parser.parse_args()
-
-    # Validate: must provide either --similarity-matrix OR both --sat-path and --pano-path
-    has_similarity_matrix = args.similarity_matrix is not None
-    has_models = args.sat_path is not None and args.pano_path is not None
-    has_partial_models = (args.sat_path is not None) != (args.pano_path is not None)
-
-    if has_partial_models:
-        parser.error("--sat-path and --pano-path must be provided together")
-    if not has_similarity_matrix and not has_models:
-        parser.error("Must provide either --similarity-matrix OR both --sat-path and --pano-path")
-    if has_similarity_matrix and has_models:
-        parser.error("Cannot provide both --similarity-matrix and model paths")
 
     # Parse convergence radii
     convergence_radii = [int(r.strip()) for r in args.convergence_radii.split(",")]
@@ -546,9 +534,8 @@ if __name__ == "__main__":
 
     args.output_path = Path(args.output_path).expanduser()
 
-    # Determine model paths (may be None if using similarity matrix)
-    sat_model_path = Path(args.sat_path).expanduser() if args.sat_path else None
-    pano_model_path = Path(args.pano_path).expanduser() if args.pano_path else None
+    # Copy aggregator config to output directory for reproducibility
+    shutil.copy(args.aggregator_config, args.output_path / "aggregator_config.yaml")
 
     vigor_dataset, sat_model, pano_model, paths_data = construct_path_eval_inputs_from_args(
         dataset_path=args.dataset_path,
@@ -557,34 +544,16 @@ if __name__ == "__main__":
         panorama_landmark_radius_px=args.panorama_landmark_radius_px,
         device=DEVICE,
         landmark_version=args.landmark_version,
-        sat_model_path=sat_model_path,
-        pano_model_path=pano_model_path,
     )
 
-    # Get similarity matrix (from file or compute from models)
-    if args.similarity_matrix:
-        print(f"Loading pre-computed similarity matrix from {args.similarity_matrix}")
-        all_similarity = torch.load(args.similarity_matrix, weights_only=True)
-        # Move to device if needed
-        all_similarity = all_similarity.to(DEVICE)
-    else:
-        print("Computing similarity matrix from models...")
-        all_similarity = es.compute_cached_similarity_matrix(
-            sat_model=sat_model,
-            pano_model=pano_model,
-            dataset=vigor_dataset,
-            device=DEVICE,
-            use_cached_similarity=True
-        )
-
-    # Validate dimensions
-    num_panos = len(vigor_dataset._panorama_metadata)
-    num_sats = len(vigor_dataset._satellite_metadata)
-    if all_similarity.shape != (num_panos, num_sats):
-        raise ValueError(
-            f"Similarity matrix shape {all_similarity.shape} doesn't match "
-            f"dataset dimensions ({num_panos} panos, {num_sats} sats)"
-        )
+    # Load aggregator config and create aggregator
+    aggregator_config = load_aggregator_config(Path(args.aggregator_config))
+    print(f"Loaded aggregator config: {type(aggregator_config).__name__}")
+    log_likelihood_aggregator = aggregator_from_config(
+        aggregator_config,
+        vigor_dataset,
+        DEVICE,
+    )
 
     # Build config
     def degrees_from_meters(dist_m):
@@ -593,7 +562,6 @@ if __name__ == "__main__":
 
     config = HistogramFilterConfig(
         noise_percent=args.noise_percent,
-        sigma_obs=args.sigma_obs_prob_from_sim,
         subdivision_factor=args.subdivision_factor,
         initial_std_deg=degrees_from_meters(2970.0),
         initial_offset_std_deg=degrees_from_meters(1300.0),
@@ -602,7 +570,6 @@ if __name__ == "__main__":
     with open(Path(args.output_path) / "histogram_config.json", "w") as f:
         json.dump({
             "noise_percent": config.noise_percent,
-            "sigma_obs": config.sigma_obs,
             "subdivision_factor": config.subdivision_factor,
             "initial_std_deg": config.initial_std_deg,
             "initial_offset_std_deg": config.initial_offset_std_deg,
@@ -612,7 +579,7 @@ if __name__ == "__main__":
 
     evaluate_histogram_on_paths(
         vigor_dataset=vigor_dataset,
-        similarity=all_similarity,
+        log_likelihood_aggregator=log_likelihood_aggregator,
         paths=paths_data['paths'],
         config=config,
         seed=args.seed,
