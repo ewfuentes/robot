@@ -53,7 +53,7 @@ class CreateEvaluationPathsTest(unittest.TestCase):
             self.assertIn(item, valid_pano_ids, f"pano_id {item} not in dataset")
 
     def test_goal_directed_path_length_accuracy(self):
-        """Test that generated path length is within 100m of target length."""
+        """Test that generated path length is within 1% of target length."""
         config = vigor_dataset.VigorDatasetConfig(
             satellite_tensor_cache_info=None,
             panorama_tensor_cache_info=None,
@@ -64,9 +64,9 @@ class CreateEvaluationPathsTest(unittest.TestCase):
         dataset = vigor_dataset.VigorDataset(
             Path("external/vigor_snippet/vigor_snippet"), config)
 
-        TARGET_LENGTH_M = 1000  # 1 km target
+        TARGET_LENGTH_M = 5000  # 5 km target (longer path = smaller % overshoot)
         SEED = 789
-        TOLERANCE_M = 100  # Allow 100m tolerance
+        TOLERANCE_PERCENT = 0.01  # 1% tolerance
 
         # action
         path = generate_goal_directed_path(
@@ -100,11 +100,12 @@ class CreateEvaluationPathsTest(unittest.TestCase):
             f"Path length {actual_length_m:.1f}m should be >= target {TARGET_LENGTH_M}m"
         )
 
-        # Verify path length is within tolerance of target
+        # Verify path length is within 1% of target
+        tolerance_m = TARGET_LENGTH_M * TOLERANCE_PERCENT
         self.assertLess(
-            actual_length_m - TARGET_LENGTH_M, TOLERANCE_M,
+            actual_length_m - TARGET_LENGTH_M, tolerance_m,
             f"Path length {actual_length_m:.1f}m exceeds target {TARGET_LENGTH_M}m "
-            f"by more than {TOLERANCE_M}m tolerance"
+            f"by more than {TOLERANCE_PERCENT*100:.0f}% ({tolerance_m:.1f}m)"
         )
 
     def test_goal_directed_path_is_reproducible(self):
