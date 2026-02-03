@@ -862,7 +862,7 @@ class VigorDataset(torch.utils.data.Dataset):
         while distance_traveled_m < max_length_m:
             path.append(last_index)
             last_item = self._panorama_metadata.loc[last_index]
-            last_coord = torch.tensor([last_item['lon'], last_item['lat']])
+            last_coord = torch.tensor([last_item['lat'], last_item['lon']])
             last_neighbors = last_item['neighbor_panorama_idxs']
 
             # calculate distribution over neighbors
@@ -871,7 +871,7 @@ class VigorDataset(torch.utils.data.Dataset):
             neighbor_directions = torch.zeros(len(last_neighbors), 2)
             for i, neighbor_pano_idx in enumerate(last_neighbors):
                 neighbor_item = self._panorama_metadata.loc[neighbor_pano_idx]
-                neighbor_coords[i] = torch.tensor([neighbor_item['lon'], neighbor_item['lat']])
+                neighbor_coords[i] = torch.tensor([neighbor_item['lat'], neighbor_item['lon']])
                 neighbor_directions[i] = neighbor_coords[i] - last_coord
                 similarity = torch.dot(
                     neighbor_directions[i], last_direction) / torch.norm(neighbor_directions[i]) / torch.norm(last_direction)

@@ -1,5 +1,6 @@
 package(features=["warning_compile_flags"])
 
+load("@pip//:requirements.bzl", "requirement")
 load("//common/proto:proto.bzl", "multi_proto_library")
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
 
@@ -57,6 +58,24 @@ cc_library(
   name = "a_star",
   hdrs = ["a_star.hh"],
   visibility = ["//visibility:public"],
+)
+
+pybind_extension(
+  name = "a_star_python",
+  srcs = ["a_star_python.cc"],
+  visibility = ["//visibility:public"],
+  deps = [
+    ":a_star",
+  ]
+)
+
+py_test(
+  name = "a_star_python_test",
+  srcs = ["a_star_python_test.py"],
+  data = [":a_star_python.so"],
+  deps = [
+    requirement("numpy"),
+  ]
 )
 
 cc_test(

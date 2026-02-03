@@ -134,17 +134,44 @@ py_wheel(
   deps=[":train_package"],
 )
 
-py_binary(
-  name="create_evaluation_paths",
+py_library(
+  name="create_evaluation_paths_lib",
   srcs=["create_evaluation_paths.py"],
+  data=["//planning:a_star_python.so"],
+  visibility=["//experimental/overhead_matching/swag:__subpackages__"],
   deps=[
+    requirement("numpy"),
     requirement("torch"),
     requirement("tqdm"),
     requirement("matplotlib"),
+    "//common/math:haversine",
     "//common/torch:load_torch_deps",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
   ]
 )
+
+py_binary(
+  name="create_evaluation_paths",
+  srcs=["create_evaluation_paths.py"],
+  main="create_evaluation_paths.py",
+  deps=[
+    ":create_evaluation_paths_lib",
+  ]
+)
+
+py_test(
+  name="create_evaluation_paths_test",
+  srcs=["create_evaluation_paths_test.py"],
+  data=["@vigor_snippet//:files"],
+  deps=[
+    requirement("numpy"),
+    requirement("torch"),
+    "//common/math:haversine",
+    "//common/torch:load_torch_deps",
+    ":create_evaluation_paths_lib",
+  ]
+)
+
 py_binary(
   name="evaluate_model_on_paths",
   srcs=["evaluate_model_on_paths.py"],

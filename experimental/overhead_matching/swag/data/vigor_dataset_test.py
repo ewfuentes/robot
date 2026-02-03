@@ -376,7 +376,7 @@ class VigorDatasetTest(unittest.TestCase):
         )
         dataset = vigor_dataset.VigorDataset(
             Path("external/vigor_snippet/vigor_snippet"), config)
-        # action 
+        # action
         path1 = dataset.generate_random_path(torch.manual_seed(SEED), PATH_LENGTH_M, 0.1)
 
         fig, ax = dataset.visualize(path=path1)
