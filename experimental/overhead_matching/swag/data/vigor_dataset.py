@@ -699,24 +699,42 @@ class VigorDataset(torch.utils.data.Dataset):
             self._panorama_metadata["positive_satellite_idxs"] = self._panorama_metadata["positive_satellite_idxs"].apply(remap_sat_idxs)
             self._panorama_metadata["semipositive_satellite_idxs"] = self._panorama_metadata["semipositive_satellite_idxs"].apply(remap_sat_idxs)
 
-            # Remap satellite_idx (nearest) - need to handle case where it was dropped
-            def remap_nearest_sat(old_idx):
-                if old_idx in kept_sat_idxs_set:
-                    return old_to_new_sat_idx[old_idx]
-                # If the nearest was dropped, pick from remaining positives/semipositives
-                return None  # Will be recomputed below
-
-            self._panorama_metadata["satellite_idx"] = self._panorama_metadata["satellite_idx"].apply(remap_nearest_sat)
-
-            # Recompute satellite_idx for any that became None
+            # Identify panoramas that still have at least one satellite association
+            panos_with_sats = []
             for pano_idx in range(len(self._panorama_metadata)):
-                if self._panorama_metadata.iloc[pano_idx]["satellite_idx"] is None:
-                    pos = self._panorama_metadata.iloc[pano_idx]["positive_satellite_idxs"]
-                    semipos = self._panorama_metadata.iloc[pano_idx]["semipositive_satellite_idxs"]
-                    if pos:
-                        self._panorama_metadata.at[pano_idx, "satellite_idx"] = pos[0]
-                    elif semipos:
-                        self._panorama_metadata.at[pano_idx, "satellite_idx"] = semipos[0]
+                pos = self._panorama_metadata.iloc[pano_idx]["positive_satellite_idxs"]
+                semipos = self._panorama_metadata.iloc[pano_idx]["semipositive_satellite_idxs"]
+                if pos or semipos:
+                    panos_with_sats.append(pano_idx)
+
+            # If some panoramas lost all satellites, we need to drop them
+            if len(panos_with_sats) < len(self._panorama_metadata):
+                old_to_new_pano_idx = {old_idx: new_idx for new_idx, old_idx in enumerate(panos_with_sats)}
+                kept_pano_idxs_set = set(panos_with_sats)
+
+                self._panorama_metadata = self._panorama_metadata.iloc[panos_with_sats].reset_index(drop=True)
+
+                # Update satellite metadata's panorama lists
+                def remap_pano_idxs(old_idxs):
+                    return [old_to_new_pano_idx[idx] for idx in old_idxs if idx in kept_pano_idxs_set]
+
+                self._satellite_metadata["positive_panorama_idxs"] = self._satellite_metadata["positive_panorama_idxs"].apply(remap_pano_idxs)
+                self._satellite_metadata["semipositive_panorama_idxs"] = self._satellite_metadata["semipositive_panorama_idxs"].apply(remap_pano_idxs)
+
+                # Update landmark metadata's panorama_idxs if present
+                if self._landmark_metadata is not None and "panorama_idxs" in self._landmark_metadata.columns:
+                    self._landmark_metadata["panorama_idxs"] = self._landmark_metadata["panorama_idxs"].apply(remap_pano_idxs)
+
+                # Rebuild panorama KD-tree
+                self._panorama_kdtree = cKDTree(self._panorama_metadata.loc[:, ["lat", "lon"]].values)
+
+            # Recompute satellite_idx (nearest) for each panorama
+            def pick_nearest(pos, semipos):
+                return pos[0] if pos else semipos[0]
+            self._panorama_metadata["satellite_idx"] = [
+                pick_nearest(p, s) for p, s in zip(
+                    self._panorama_metadata["positive_satellite_idxs"],
+                    self._panorama_metadata["semipositive_satellite_idxs"])]
 
             # Update landmark metadata's satellite_idxs if landmarks were loaded
             if self._landmark_metadata is not None and "satellite_idxs" in self._landmark_metadata.columns:
