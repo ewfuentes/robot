@@ -852,10 +852,11 @@ class DropToSubsetTest(unittest.TestCase):
         generator = torch.Generator().manual_seed(42)
         path = dataset.generate_random_path(generator, max_length_m=100, turn_temperature=1.0)
 
-        # All indices in path should be valid
-        for idx in path:
-            self.assertLess(idx, len(dataset._panorama_metadata))
-            self.assertGreaterEqual(idx, 0)
+        # All pano_ids in path should be valid strings that exist in the dataset
+        valid_pano_ids = set(dataset._panorama_metadata['pano_id'].values)
+        for pano_id in path:
+            self.assertIsInstance(pano_id, str, f"Path should contain pano_ids (strings), got {type(pano_id)}")
+            self.assertIn(pano_id, valid_pano_ids, f"pano_id {pano_id} not found in dataset")
 
     def test_length_validation_for_pair_filtering(self):
         """Test that mismatched pair list lengths raise errors."""
