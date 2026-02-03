@@ -837,8 +837,9 @@ def create_panorama_description_requests(args):
             - output_base: Path for output batch request files
             - num_workers: Number of parallel workers for image encoding
             - max_requests_per_batch: Maximum requests per batch file
-            - launch: Whether to launch batch jobs automatically (prints batch file path for vertex_batch_manager)
             - disable_tqdm: Whether to disable progress bars
+            - pano_ids_file: Optional file with panorama IDs to process
+            - max_panoramas: Optional limit on number of panoramas to process
     """
     from pathlib import Path
 
@@ -862,8 +863,8 @@ def create_panorama_description_requests(args):
             pano_ids_to_process = set(line.strip() for line in f if line.strip())
         print(f"Loaded {len(pano_ids_to_process)} panorama IDs from {pano_ids_file}")
 
-    # Find all panorama subfolders
-    all_panorama_folders = [f for f in pinhole_dir.iterdir() if f.is_dir()]
+    # Find all panorama subfolders (sorted for deterministic ordering)
+    all_panorama_folders = sorted([f for f in pinhole_dir.iterdir() if f.is_dir()], key=lambda f: f.name)
 
     # Filter by pano IDs if provided
     if pano_ids_to_process is not None:
@@ -1044,6 +1045,61 @@ def create_embedding_dict(args):
         p.starmap(_process_embedding_path, base_path.walk())
 
 
+def create_sentences_pickle(args):
+    """Create a pickle file mapping pruned_tags (frozenset) to LLM sentences.
+
+    This creates the format expected by OSMPairedDatasetConfig:
+        dict[frozenset[tuple[str, str]], str]
+
+    The pickle maps each unique set of landmark tags to its corresponding
+    LLM-generated sentence description.
+    """
+    geojson_paths = [Path(p) for p in args.geojson]
+    sentences_dir = Path(args.sentences_dir)
+    output_path = Path(args.output)
+
+    print(f"Loading landmarks from {len(geojson_paths)} geojson file(s)...")
+    landmarks_df = _load_landmarks(geojson_paths)
+    print(f"Loaded {len(landmarks_df):,} landmarks")
+
+    # Get unique pruned_tags and their custom_ids
+    print("Computing unique pruned_tags...")
+    pruned_tags_to_custom_id: dict[frozenset, str] = {}
+    for _, row in tqdm.tqdm(landmarks_df.iterrows(), total=len(landmarks_df), desc="Processing landmarks"):
+        props = row.dropna().to_dict()
+        pruned_tags = prune_landmark(props)
+        if pruned_tags not in pruned_tags_to_custom_id:
+            custom_id = custom_id_from_props(pruned_tags)
+            pruned_tags_to_custom_id[pruned_tags] = custom_id
+
+    print(f"Found {len(pruned_tags_to_custom_id):,} unique pruned_tags")
+
+    # Load sentences from directory
+    print(f"Loading sentences from {sentences_dir}...")
+    all_responses = load_all_jsonl_from_folder(sentences_dir)
+    sentence_dict, output_tokens = make_sentence_dict_from_json(all_responses)
+    print(f"Loaded {len(sentence_dict):,} sentences (output tokens: {output_tokens:,})")
+
+    # Build the mapping: pruned_tags -> sentence
+    pruned_tags_to_sentence: dict[frozenset[tuple[str, str]], str] = {}
+    missing_count = 0
+    for pruned_tags, custom_id in pruned_tags_to_custom_id.items():
+        if custom_id in sentence_dict:
+            pruned_tags_to_sentence[pruned_tags] = sentence_dict[custom_id]
+        else:
+            missing_count += 1
+
+    print(f"Matched {len(pruned_tags_to_sentence):,} pruned_tags to sentences")
+    if missing_count > 0:
+        print(f"Warning: {missing_count:,} pruned_tags had no matching sentence")
+
+    # Save to pickle
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, 'wb') as f:
+        pickle.dump(pruned_tags_to_sentence, f)
+    print(f"Saved sentences pickle to {output_path}")
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
@@ -1097,6 +1153,16 @@ if __name__ == "__main__":
     embedding_dict_parser.add_argument('--embedding_dir', type=str, default="/tmp/",
                                        help='Base path for output batch request files')
     embedding_dict_parser.set_defaults(func=create_embedding_dict)
+
+    sentences_pickle_parser = subparsers.add_parser('create_sentences_pickle',
+                                            help='Create pickle file mapping pruned_tags to sentences for training')
+    sentences_pickle_parser.add_argument('--geojson', required=True, nargs="+",
+                                 help='GeoJSON or feather files containing landmarks')
+    sentences_pickle_parser.add_argument('--sentences_dir', type=str, required=True,
+                                 help='Directory containing sentence JSONL files from OpenAI batch API')
+    sentences_pickle_parser.add_argument('--output', type=str, required=True,
+                                 help='Output path for the pickle file (e.g., /data/sentences.pkl)')
+    sentences_pickle_parser.set_defaults(func=create_sentences_pickle)
 
     args = parser.parse_args()
     import ipdb
