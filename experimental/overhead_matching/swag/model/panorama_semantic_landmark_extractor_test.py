@@ -1,8 +1,6 @@
 
 import unittest
 import tempfile
-import json
-import math
 import hashlib
 import pickle
 
@@ -12,61 +10,9 @@ from pathlib import Path
 import numpy as np
 
 import experimental.overhead_matching.swag.model.panorama_semantic_landmark_extractor as psle
+from experimental.overhead_matching.swag.model.additional_panorama_extractors import yaw_angles_to_binary_vector
 from experimental.overhead_matching.swag.model.swag_config_types import PanoramaSemanticLandmarkExtractorConfig
 from experimental.overhead_matching.swag.model.swag_model_input_output import ModelInput
-
-
-def create_embedding_response(custom_id, embedding):
-    """Create an OpenAI batch API response in the expected format"""
-    return {
-        "id": f"batch_req_{custom_id[:16]}",
-        "custom_id": custom_id,
-        "response": {
-            "status_code": 200,
-            "request_id": "test_request",
-            "body": {
-                "object": "list",
-                "data": [{
-                    "object": "embedding",
-                    "index": 0,
-                    "embedding": embedding
-                }],
-                "model": "text-embedding-3-small",
-                "usage": {"prompt_tokens": 1, "total_tokens": 1}
-            }
-        },
-        "error": None
-    }
-
-
-def create_sentence_response(pano_id, landmarks):
-    """Create a sentence response with multiple landmarks for a panorama"""
-    return {
-        "id": f"batch_req_{pano_id[:16]}",
-        "custom_id": pano_id,
-        "response": {
-            "status_code": 200,
-            "request_id": "test_request",
-            "body": {
-                "id": "chatcmpl-test",
-                "object": "chat.completion",
-                "created": 1234567890,
-                "model": "gpt-5-2025-08-07",
-                "choices": [{
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": json.dumps({"landmarks": landmarks}),
-                        "refusal": None,
-                        "annotations": []
-                    },
-                    "finish_reason": "stop"
-                }],
-                "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}
-            }
-        },
-        "error": None
-    }
 
 
 def create_random_embedding_vector(category: str):
@@ -78,14 +24,43 @@ def create_random_embedding_vector(category: str):
     return scaled_bits
 
 
+def create_v2_pickle(panoramas: dict, descriptions: list) -> dict:
+    """Create a v2.0 format pickle dict for testing.
+
+    Args:
+        panoramas: Dict mapping pano_id to panorama data (landmarks, location_type, etc.)
+        descriptions: List of (custom_id, description) tuples
+
+    Returns:
+        Dict in v2.0 pickle format.
+    """
+    description_embeddings = torch.stack([
+        torch.tensor(create_random_embedding_vector(desc)) for _, desc in descriptions
+    ])
+    description_id_to_idx = {cid: i for i, (cid, _) in enumerate(descriptions)}
+
+    return {
+        "version": "2.0",
+        "embedding_model": "text-embedding-3-small",
+        "embedding_dim": 1536,
+        "task_type": "SEMANTIC_SIMILARITY",
+        "panoramas": panoramas,
+        "description_embeddings": description_embeddings,
+        "description_id_to_idx": description_id_to_idx,
+        "location_type_embeddings": torch.zeros((0, 1536)),
+        "location_type_to_idx": {},
+        "proper_noun_embeddings": torch.zeros((0, 1536)),
+        "proper_noun_to_idx": {},
+    }
+
+
 class PanoramaSemanticLandmarkExtractorTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        # Create temporary directory structure
+        # Create temporary directory structure with v2.0 pickle format
         cls._temp_dir = tempfile.TemporaryDirectory()
         base_path = Path(cls._temp_dir.name)
 
-        # Create test data for two cities
         version = "test_v1"
         cities = ["Chicago", "Seattle"]
 
@@ -106,14 +81,12 @@ class PanoramaSemanticLandmarkExtractorTest(unittest.TestCase):
         for city in cities:
             city_dir = base_path / version / city
             embedding_dir = city_dir / "embeddings"
-            sentence_dir = city_dir / "sentences"
-            metadata_dir = city_dir / "embedding_requests"
-
             embedding_dir.mkdir(parents=True, exist_ok=True)
-            sentence_dir.mkdir(parents=True, exist_ok=True)
-            metadata_dir.mkdir(parents=True, exist_ok=True)
 
-            # Create test panoramas
+            # Build panorama data for this city
+            city_panoramas = {}
+            city_descriptions = []
+
             for pano_idx in range(2):
                 pano_id = f"pano_{city}_{pano_idx},41.85,-87.65,"
 
@@ -122,51 +95,42 @@ class PanoramaSemanticLandmarkExtractorTest(unittest.TestCase):
 
                 # Create 3 landmarks per panorama
                 landmarks = []
-                embeddings = []
-                metadata_entries = []
-
                 for lm_idx in range(3):
                     custom_id = f"{pano_id}__landmark_{lm_idx}"
-
-                    # Get assigned class for this landmark and generate matching embedding
                     assigned_class = landmark_classes[lm_idx]
-                    embedding = create_random_embedding_vector(assigned_class).tolist()
+                    description = f"{city} landmark {lm_idx}"
 
                     yaw_angles = [0, 90] if lm_idx == 0 else ([180] if lm_idx == 1 else [270])
 
+                    city_descriptions.append((custom_id, assigned_class))
+
                     landmarks.append({
-                        "description": f"{city} landmark {lm_idx}",
-                        "yaw_angles": yaw_angles
-                    })
-                    embeddings.append(create_embedding_response(custom_id, embedding))
-                    metadata_entries.append({
-                        "custom_id": custom_id,
-                        "panorama_id": pano_id,
+                        "description": description,
+                        "bounding_boxes": [
+                            {"yaw_angle": str(yaw), "ymin": 0, "xmin": 0, "ymax": 100, "xmax": 100}
+                            for yaw in yaw_angles
+                        ],
+                        "proper_nouns": [],
                         "landmark_idx": lm_idx,
-                        "yaw_angles": yaw_angles
                     })
 
-                # Write embeddings
-                with open(embedding_dir / f"pano_{pano_idx}.jsonl", "w") as f:
-                    for emb in embeddings:
-                        f.write(json.dumps(emb) + "\n")
-
-                # Write sentences
-                with open(sentence_dir / f"pano_{pano_idx}.jsonl", "w") as f:
-                    f.write(json.dumps(create_sentence_response(pano_id, landmarks)) + "\n")
-
-                # Write metadata
-                with open(metadata_dir / "panorama_metadata.jsonl", "a") as f:
-                    for meta in metadata_entries:
-                        f.write(json.dumps(meta) + "\n")
+                city_panoramas[pano_id] = {
+                    "location_type": "Urban area",
+                    "landmarks": landmarks,
+                }
 
                 # Store for testing
                 pano_id_no_coords = pano_id.split(",")[0]
                 cls.test_panoramas[pano_id_no_coords] = {
                     "city": city,
-                    "landmarks": landmarks,
+                    "landmarks": [{"description": f"{city} landmark {i}", "yaw_angles": [0, 90] if i == 0 else ([180] if i == 1 else [270])} for i in range(3)],
                     "custom_ids": [f"{pano_id}__landmark_{i}" for i in range(3)],
                 }
+
+            # Create v2.0 pickle for this city
+            city_data = create_v2_pickle(city_panoramas, city_descriptions)
+            with open(embedding_dir / "embeddings.pkl", "wb") as f:
+                pickle.dump(city_data, f)
 
     @classmethod
     def tearDownClass(cls):
@@ -224,39 +188,39 @@ class PanoramaSemanticLandmarkExtractorTest(unittest.TestCase):
     def test_yaw_binary_vector_computation(self):
         """Test that yaw angles are correctly converted to binary presence vectors"""
         # Test single yaw angles
-        vec = psle.yaw_angles_to_binary_vector([0])
+        vec = yaw_angles_to_binary_vector([0])
         self.assertEqual(vec, [1.0, 0.0, 0.0, 0.0])
 
-        vec = psle.yaw_angles_to_binary_vector([90])
+        vec = yaw_angles_to_binary_vector([90])
         self.assertEqual(vec, [0.0, 1.0, 0.0, 0.0])
 
-        vec = psle.yaw_angles_to_binary_vector([180])
+        vec = yaw_angles_to_binary_vector([180])
         self.assertEqual(vec, [0.0, 0.0, 1.0, 0.0])
 
-        vec = psle.yaw_angles_to_binary_vector([270])
+        vec = yaw_angles_to_binary_vector([270])
         self.assertEqual(vec, [0.0, 0.0, 0.0, 1.0])
 
         # Test multiple yaw angles
-        vec = psle.yaw_angles_to_binary_vector([0, 90])
+        vec = yaw_angles_to_binary_vector([0, 90])
         self.assertEqual(vec, [1.0, 1.0, 0.0, 0.0])
 
-        vec = psle.yaw_angles_to_binary_vector([90, 270])
+        vec = yaw_angles_to_binary_vector([90, 270])
         self.assertEqual(vec, [0.0, 1.0, 0.0, 1.0])
 
-        vec = psle.yaw_angles_to_binary_vector([0, 180])
+        vec = yaw_angles_to_binary_vector([0, 180])
         self.assertEqual(vec, [1.0, 0.0, 1.0, 0.0])
 
         # Test all yaws present
-        vec = psle.yaw_angles_to_binary_vector([0, 90, 180, 270])
+        vec = yaw_angles_to_binary_vector([0, 90, 180, 270])
         self.assertEqual(vec, [1.0, 1.0, 1.0, 1.0])
 
         # Test empty list
-        vec = psle.yaw_angles_to_binary_vector([])
+        vec = yaw_angles_to_binary_vector([])
         self.assertEqual(vec, [0.0, 0.0, 0.0, 0.0])
 
         # Test that invalid yaw raises error
         with self.assertRaises(ValueError):
-            psle.yaw_angles_to_binary_vector([45])
+            yaw_angles_to_binary_vector([45])
 
     def test_error_on_satellite_data(self):
         """Test that extractor raises error when given satellite data"""

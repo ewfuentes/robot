@@ -6,16 +6,12 @@ for landmark descriptions from panorama images.
 
 import common.torch.load_torch_deps
 import torch
-import pickle
-import json
 from pathlib import Path
 from experimental.overhead_matching.swag.model.swag_config_types import (
     PanoramaSemanticLandmarkExtractorConfig,
     ExtractorDataRequirement)
 from experimental.overhead_matching.swag.model.swag_model_input_output import (
     ModelInput, ExtractorOutput)
-from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
-    load_all_jsonl_from_folder, make_embedding_dict_from_json, make_sentence_dict_from_pano_jsons)
 from experimental.overhead_matching.swag.model.additional_panorama_extractors import (
     yaw_angles_to_binary_vector,
     extract_yaw_angles_from_bboxes,
@@ -32,8 +28,7 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
     this extractor works with landmarks extracted directly from panorama images
     by vision models. Landmarks are associated with panoramas by ID alone.
 
-    Supports both v1.0 format (separate files for embeddings, sentences, metadata)
-    and v2.0 format (single pickle with all data).
+    Requires v2.0 format pickle files (single pickle with all data per city).
     """
 
     def __init__(self, config: PanoramaSemanticLandmarkExtractorConfig, semantic_embedding_base_path: Path):
@@ -48,7 +43,11 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
         self._missing_pano_ids = set()
 
     def load_files(self):
-        """Load embeddings, sentences, and metadata from multi-city directory structure."""
+        """Load embeddings, sentences, and metadata from multi-city directory structure.
+
+        Requires v2.0 format pickle files. Each city directory must contain:
+            embeddings/embeddings.pkl - v2.0 format pickle with all data
+        """
         base_path = self.semantic_embedding_base_path / self.config.embedding_version
 
         if not base_path.exists():
@@ -67,87 +66,33 @@ class PanoramaSemanticLandmarkExtractor(torch.nn.Module):
             city_name = city_dir.name
             print(f"Loading panorama landmarks for city: {city_name}")
 
-            # Check for v2.0 pickle format first
+            # Load v2.0 pickle format
             pickle_path = city_dir / "embeddings" / "embeddings.pkl"
             data = load_v2_pickle(pickle_path)
 
-            if data is not None:
-                # v2.0 format
-                city_embeddings, city_sentences, new_metadata = self._load_v2_data(data)
+            if data is None:
+                raise FileNotFoundError(
+                    f"v2.0 pickle not found at {pickle_path}. "
+                    f"PanoramaSemanticLandmarkExtractor requires v2.0 format pickle files."
+                )
 
-                # Assert no key overlap - custom_ids include pano_id so should be unique across cities
-                embedding_overlap = set(self.all_embeddings.keys()) & set(city_embeddings.keys())
-                assert not embedding_overlap, f"Unexpected embedding key overlap: {embedding_overlap}"
-                sentence_overlap = set(self.all_sentences.keys()) & set(city_sentences.keys())
-                assert not sentence_overlap, f"Unexpected sentence key overlap: {sentence_overlap}"
-                metadata_overlap = set(self.panorama_metadata.keys()) & set(new_metadata.keys())
-                assert not metadata_overlap, f"Unexpected metadata key overlap: {metadata_overlap}"
+            # v2.0 format
+            city_embeddings, city_sentences, new_metadata = self._load_v2_data(data)
 
-                self.all_embeddings.update(city_embeddings)
-                self.all_sentences.update(city_sentences)
-                self.panorama_metadata.update(new_metadata)
-                print(f"  Loaded {len(city_embeddings)} embeddings from v2.0 pickle")
-                print(f"  Loaded {len(city_sentences)} sentences from v2.0 pickle")
-                print(f"  Loaded metadata for {len(new_metadata)} panoramas from v2.0 pickle")
-                continue
-            else:  # v1 format
-                # v1.0 format: try to load from pickle or JSONL
-                if pickle_path.exists():
-                    with open(pickle_path, 'rb') as f:
-                        embedding_data = pickle.load(f)
-                    # v1.0 pickle format: (tensor, id_to_idx) tuple
-                    tensor, id_to_idx = embedding_data
-                    city_embeddings = {}
-                    for custom_id, idx in id_to_idx.items():
-                        city_embeddings[custom_id] = tensor[idx].tolist()
-                    self.all_embeddings.update(city_embeddings)
-                    print(f"  Loaded {len(city_embeddings)} embeddings from v1.0 pickle")
-                else:
-                    # v1.0 JSONL fallback
-                    embedding_dir = city_dir / "embeddings"
-                    if embedding_dir.exists():
-                        city_embeddings = make_embedding_dict_from_json(
-                            load_all_jsonl_from_folder(embedding_dir))
-                        self.all_embeddings.update(city_embeddings)
-                        print(f"  Loaded {len(city_embeddings)} embeddings from JSONL")
+            # Assert no key overlap - custom_ids include pano_id so should be unique across cities
+            embedding_overlap = set(self.all_embeddings.keys()) & set(city_embeddings.keys())
+            assert not embedding_overlap, f"Unexpected embedding key overlap: {embedding_overlap}"
+            sentence_overlap = set(self.all_sentences.keys()) & set(city_sentences.keys())
+            assert not sentence_overlap, f"Unexpected sentence key overlap: {sentence_overlap}"
+            metadata_overlap = set(self.panorama_metadata.keys()) & set(new_metadata.keys())
+            assert not metadata_overlap, f"Unexpected metadata key overlap: {metadata_overlap}"
 
-
-                # v1.0 format: Load sentences from separate directory
-                sentence_dir = city_dir / "sentences"
-                metadata_from_sentences = None
-                if sentence_dir.exists():
-                    city_sentences, metadata_from_sentences, _ = make_sentence_dict_from_pano_jsons(
-                        load_all_jsonl_from_folder(sentence_dir))
-                    self.all_sentences.update(city_sentences)
-                    print(f"  Loaded {len(city_sentences)} sentences")
-
-                # v1.0 format: Load panorama metadata from separate file
-                metadata_file = city_dir / "embedding_requests" / "panorama_metadata.jsonl"
-                if metadata_file.exists():
-                    new_metadata = {}
-                    with open(metadata_file, 'r') as f:
-                        for line in f:
-                            meta = json.loads(line)
-                            pano_id = meta["panorama_id"]
-                            landmark_idx = meta["landmark_idx"]
-                            custom_id = meta["custom_id"]
-                            yaw_angles = meta.get("yaw_angles", [])
-
-                            if pano_id not in new_metadata:
-                                new_metadata[pano_id] = []
-
-                            new_metadata[pano_id].append({
-                                "landmark_idx": landmark_idx,
-                                "custom_id": custom_id,
-                                "yaw_angles": yaw_angles
-                            })
-                    new_pano_metadata_len = len(new_metadata)
-                    old_metadata_size = len(self.panorama_metadata)
-                    print(f"  Loaded metadata for {len(new_metadata)} panoramas")
-                    if metadata_from_sentences is not None:
-                        assert metadata_from_sentences == new_metadata
-                    self.panorama_metadata.update(new_metadata)
-                    assert len(self.panorama_metadata) == old_metadata_size + new_pano_metadata_len
+            self.all_embeddings.update(city_embeddings)
+            self.all_sentences.update(city_sentences)
+            self.panorama_metadata.update(new_metadata)
+            print(f"  Loaded {len(city_embeddings)} embeddings from v2.0 pickle")
+            print(f"  Loaded {len(city_sentences)} sentences from v2.0 pickle")
+            print(f"  Loaded metadata for {len(new_metadata)} panoramas from v2.0 pickle")
 
         assert len(self.all_embeddings) > 0, f"Failed to load any embeddings from {base_path}"
         first_embedding = next(iter(self.all_embeddings.values()))
