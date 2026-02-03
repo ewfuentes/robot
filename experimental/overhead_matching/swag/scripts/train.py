@@ -758,7 +758,7 @@ def main(
 
     # Apply proper noun filter if configured
     if train_config.dataset_config.require_proper_noun_match:
-        vigor_filters.apply_proper_noun_filter(
+        vigor_filters.filter_to_proper_noun_matching_pairs(
             dataset,
             Path(train_config.dataset_config.pano_gemini_base_path))
 
@@ -797,7 +797,7 @@ def main(
 
         # Apply proper noun filter if configured for this validation dataset
         if validation_dataset_config.require_proper_noun_match:
-            vigor_filters.apply_proper_noun_filter(
+            vigor_filters.filter_to_proper_noun_matching_pairs(
                 val_dataset,
                 Path(validation_dataset_config.pano_gemini_base_path))
 

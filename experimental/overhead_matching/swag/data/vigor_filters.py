@@ -54,13 +54,31 @@ def load_pano_gemini_proper_nouns(base_path: Path, city_names: list[str]) -> dic
     return pano_proper_nouns
 
 
-def compute_proper_noun_matches(
+def find_true_pairs_with_proper_noun_match(
     pano_metadata: pd.DataFrame,
     satellite_metadata: pd.DataFrame,
     landmark_metadata: pd.DataFrame,
     pano_proper_nouns: dict[str, list[str]]
 ) -> dict[int, set[int]]:
-    """Return dict mapping pano_idx -> set of sat_idxs with proper noun matches."""
+    """Find positive/semipositive pairs where panorama proper nouns match satellite OSM text.
+
+    This function filters the existing positive/semipositive satellite associations
+    to only those where proper nouns detected in the panorama image match OSM text
+    fields in landmarks visible in the satellite patch.
+
+    Args:
+        pano_metadata: DataFrame with panorama metadata including positive_satellite_idxs
+            and semipositive_satellite_idxs columns.
+        satellite_metadata: DataFrame with satellite metadata including landmark_idxs column.
+        landmark_metadata: DataFrame with landmark metadata including as_dict column.
+        pano_proper_nouns: Dict mapping pano_id -> list of proper noun strings detected
+            in the panorama image.
+
+    Returns:
+        Dict mapping pano_idx -> set of sat_idxs where at least one proper noun from
+        the panorama matches an OSM text field in a landmark visible in the satellite.
+        Only panoramas with at least one matching satellite are included in the dict.
+    """
     matching_pairs = {}  # pano_idx -> set of sat_idxs
 
     for pano_idx, pano_row in pano_metadata.iterrows():
@@ -90,17 +108,17 @@ def compute_proper_noun_matches(
     return matching_pairs
 
 
-def apply_proper_noun_filter(
+def filter_to_proper_noun_matching_pairs(
     dataset: VigorDataset,
     pano_gemini_base_path: Path,
 ) -> None:
-    """Apply proper noun filtering to dataset in-place.
+    """Filter dataset to keep only positive/semipositive pairs with proper noun matches.
 
-    This filter keeps only panorama-satellite pairs where a proper noun detected
-    in the panorama image matches an OSM text field in a landmark visible in
-    the satellite patch.
+    This function filters the existing positive/semipositive satellite associations
+    to only those where proper nouns detected in the panorama image match OSM text
+    fields in landmarks visible in the satellite patch.
 
-    Panoramas with no matching pairs after filtering are dropped entirely.
+    Panoramas with no remaining matches after filtering are dropped entirely.
 
     Args:
         dataset: The VigorDataset to filter in-place.
@@ -112,7 +130,7 @@ def apply_proper_noun_filter(
             proper noun matching).
     """
     if dataset._landmark_metadata is None:
-        raise ValueError("apply_proper_noun_filter requires landmarks to be loaded in the dataset")
+        raise ValueError("filter_to_proper_noun_matching_pairs requires landmarks to be loaded in the dataset")
 
     city_names = list(set(dataset._panorama_metadata['dataset_key'].unique()))
     logger.info(f"Loading pano_gemini data for cities: {city_names}")
@@ -120,7 +138,7 @@ def apply_proper_noun_filter(
     pano_proper_nouns = load_pano_gemini_proper_nouns(pano_gemini_base_path, city_names)
     logger.info(f"Loaded proper nouns for {len(pano_proper_nouns)} panoramas")
 
-    matching_pairs = compute_proper_noun_matches(
+    matching_pairs = find_true_pairs_with_proper_noun_match(
         dataset._panorama_metadata,
         dataset._satellite_metadata,
         dataset._landmark_metadata,

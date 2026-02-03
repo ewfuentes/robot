@@ -547,6 +547,9 @@ class DropToSubsetTest(unittest.TestCase):
         original_pano_count = len(dataset._panorama_metadata)
         original_sat_count = len(dataset._satellite_metadata)
 
+        # Capture original pano_ids before dropping
+        original_pano_ids = list(dataset._panorama_metadata['pano_id'])
+
         # Keep only even-indexed panoramas
         panos_to_keep = [i for i in range(original_pano_count) if i % 2 == 0]
 
@@ -556,6 +559,11 @@ class DropToSubsetTest(unittest.TestCase):
         self.assertEqual(len(dataset._panorama_metadata), len(panos_to_keep))
         self.assertEqual(len(dataset._satellite_metadata), original_sat_count)  # sats unchanged
 
+        # Verify exact pano_ids are the ones we kept
+        expected_pano_ids = [original_pano_ids[i] for i in panos_to_keep]
+        actual_pano_ids = list(dataset._panorama_metadata['pano_id'])
+        self.assertEqual(expected_pano_ids, actual_pano_ids)
+
         # Verify consistency
         self._verify_dataset_consistency(dataset)
 
@@ -564,17 +572,26 @@ class DropToSubsetTest(unittest.TestCase):
         dataset = self._create_dataset()
         original_pano_count = len(dataset._panorama_metadata)
 
+        # Capture original pano_ids before dropping
+        original_pano_ids = list(dataset._panorama_metadata['pano_id'])
+
         # Keep first half of panoramas
         panos_to_keep = list(range(original_pano_count // 2))
+        expected_pano_ids = [original_pano_ids[i] for i in panos_to_keep]
         dataset.drop_to_subset(pano_idxs_to_keep=panos_to_keep)
 
-        # Index into every item
+        # Index into every item and verify they have correct IDs
+        seen_pano_ids = set()
         for i in range(len(dataset)):
             item = dataset[i]
             self.assertIsNotNone(item.panorama_metadata)
             self.assertIsNotNone(item.satellite_metadata)
             self.assertIsNotNone(item.panorama)
             self.assertIsNotNone(item.satellite)
+            # Verify the item's pano_id is one we kept
+            self.assertIn(item.panorama_metadata['pano_id'], expected_pano_ids,
+                f"Item {i} has pano_id '{item.panorama_metadata['pano_id']}' which was not in kept list")
+            seen_pano_ids.add(item.panorama_metadata['pano_id'])
 
     def test_drop_panoramas_iteration_works(self):
         """Test that iteration works correctly after dropping panoramas."""
@@ -597,15 +614,21 @@ class DropToSubsetTest(unittest.TestCase):
         dataset = self._create_dataset()
         original_pano_count = len(dataset._panorama_metadata)
 
+        # Capture original pano_ids before dropping
+        original_pano_ids = list(dataset._panorama_metadata['pano_id'])
+
         panos_to_keep = list(range(original_pano_count // 2))
+        expected_pano_ids = set(original_pano_ids[i] for i in panos_to_keep)
         dataset.drop_to_subset(pano_idxs_to_keep=panos_to_keep)
 
-        # Test pano view
+        # Test pano view - verify each item has correct pano_id
         pano_view = dataset.get_pano_view()
         self.assertEqual(len(pano_view), len(panos_to_keep))
         for i in range(len(pano_view)):
             item = pano_view[i]
             self.assertIsNotNone(item.panorama)
+            self.assertIn(item.panorama_metadata['pano_id'], expected_pano_ids,
+                f"Pano view item {i} has unexpected pano_id")
 
         # Test sat view (should be unchanged in count)
         sat_view = dataset.get_sat_patch_view()
@@ -618,17 +641,73 @@ class DropToSubsetTest(unittest.TestCase):
         dataset = self._create_dataset()
         original_pano_count = len(dataset._panorama_metadata)
 
+        # Pick a panorama that will be kept and capture its location
+        kept_pano_idx = 2
+        original_pano_id = dataset._panorama_metadata.iloc[kept_pano_idx]['pano_id']
+        original_coords = dataset._panorama_metadata.iloc[kept_pano_idx][["lat", "lon"]].values
+
         panos_to_keep = list(range(original_pano_count // 2))
+        self.assertIn(kept_pano_idx, panos_to_keep, "Test setup: kept_pano_idx must be in panos_to_keep")
+
         dataset.drop_to_subset(pano_idxs_to_keep=panos_to_keep)
 
         # The KD-tree should have the right number of points
         self.assertEqual(dataset._panorama_kdtree.n, len(panos_to_keep))
 
-        # Query should work
-        test_point = dataset._panorama_metadata.iloc[0][["lat", "lon"]].values
-        dist, idx = dataset._panorama_kdtree.query(test_point)
-        self.assertGreaterEqual(idx, 0)
-        self.assertLess(idx, len(panos_to_keep))
+        # Query the KD-tree with the known coordinates - should return the correct panorama
+        dist, new_idx = dataset._panorama_kdtree.query(original_coords)
+        result_pano_id = dataset._panorama_metadata.iloc[new_idx]['pano_id']
+        self.assertEqual(result_pano_id, original_pano_id,
+            f"KD-tree query returned wrong panorama: expected {original_pano_id}, got {result_pano_id}")
+        self.assertAlmostEqual(dist, 0.0, places=10, msg="Distance to exact point should be ~0")
+
+    def test_drop_panoramas_preserves_sat_mapping_for_others(self):
+        """Verify that dropping panorama A doesn't affect sat/pano pair mapping for other panoramas."""
+        dataset = self._create_dataset()
+        original_pano_count = len(dataset._panorama_metadata)
+
+        # Pick a panorama to keep (not at index 0 so we drop something before it)
+        kept_pano_original_idx = 5
+        self.assertLess(kept_pano_original_idx, original_pano_count, "Test setup needs enough panoramas")
+
+        # Capture the satellite associations for the panorama we're keeping
+        original_pano_id = dataset._panorama_metadata.iloc[kept_pano_original_idx]['pano_id']
+        original_positive_sats = dataset._panorama_metadata.iloc[kept_pano_original_idx]['positive_satellite_idxs'].copy()
+        original_semipos_sats = dataset._panorama_metadata.iloc[kept_pano_original_idx]['semipositive_satellite_idxs'].copy()
+
+        # Get the satellite paths for verification (since indices will change)
+        original_positive_sat_paths = [dataset._satellite_metadata.iloc[sat_idx]['path']
+                                       for sat_idx in original_positive_sats]
+        original_semipos_sat_paths = [dataset._satellite_metadata.iloc[sat_idx]['path']
+                                      for sat_idx in original_semipos_sats]
+
+        # Drop some panoramas but keep the one we're tracking
+        panos_to_keep = [i for i in range(original_pano_count) if i % 2 == 1]  # Keep odd indices
+        if kept_pano_original_idx not in panos_to_keep:
+            panos_to_keep.append(kept_pano_original_idx)
+            panos_to_keep.sort()
+
+        dataset.drop_to_subset(pano_idxs_to_keep=panos_to_keep)
+
+        # Find the new index of our panorama
+        new_pano_idx = None
+        for idx, row in dataset._panorama_metadata.iterrows():
+            if row['pano_id'] == original_pano_id:
+                new_pano_idx = idx
+                break
+        self.assertIsNotNone(new_pano_idx, f"Kept panorama {original_pano_id} not found after drop")
+
+        # Get the satellite paths after dropping
+        new_positive_sat_paths = [dataset._satellite_metadata.iloc[sat_idx]['path']
+                                  for sat_idx in dataset._panorama_metadata.iloc[new_pano_idx]['positive_satellite_idxs']]
+        new_semipos_sat_paths = [dataset._satellite_metadata.iloc[sat_idx]['path']
+                                 for sat_idx in dataset._panorama_metadata.iloc[new_pano_idx]['semipositive_satellite_idxs']]
+
+        # Satellite associations should be unchanged (same satellites, just remapped indices)
+        self.assertEqual(original_positive_sat_paths, new_positive_sat_paths,
+            "Positive satellite associations changed after dropping other panoramas")
+        self.assertEqual(original_semipos_sat_paths, new_semipos_sat_paths,
+            "Semipositive satellite associations changed after dropping other panoramas")
 
     def test_drop_satellites_basic(self):
         """Test dropping satellites updates all indices correctly.
@@ -639,8 +718,12 @@ class DropToSubsetTest(unittest.TestCase):
         original_pano_count = len(dataset._panorama_metadata)
         original_sat_count = len(dataset._satellite_metadata)
 
+        # Capture original satellite paths (unique identifiers)
+        original_sat_paths = list(dataset._satellite_metadata['path'])
+
         # Keep only even-indexed satellites
         sats_to_keep = [i for i in range(original_sat_count) if i % 2 == 0]
+        expected_sat_paths = [original_sat_paths[i] for i in sats_to_keep]
 
         dataset.drop_to_subset(sat_idxs_to_keep=sats_to_keep)
 
@@ -648,6 +731,10 @@ class DropToSubsetTest(unittest.TestCase):
         self.assertEqual(len(dataset._satellite_metadata), len(sats_to_keep))
         # Panorama count may decrease if some panoramas lost all satellite associations
         self.assertLessEqual(len(dataset._panorama_metadata), original_pano_count)
+
+        # Verify exact satellites are the ones we kept
+        actual_sat_paths = list(dataset._satellite_metadata['path'])
+        self.assertEqual(expected_sat_paths, actual_sat_paths)
 
         # Verify consistency
         self._verify_dataset_consistency(dataset)
@@ -657,40 +744,67 @@ class DropToSubsetTest(unittest.TestCase):
         dataset = self._create_dataset()
         original_sat_count = len(dataset._satellite_metadata)
 
+        # Capture original satellite paths
+        original_sat_paths = list(dataset._satellite_metadata['path'])
+
         sats_to_keep = list(range(original_sat_count // 2))
+        expected_sat_paths = set(original_sat_paths[i] for i in sats_to_keep)
         dataset.drop_to_subset(sat_idxs_to_keep=sats_to_keep)
 
-        # Index into items
+        # Index into items and verify satellites are from the kept set
         for i in range(min(len(dataset), 20)):
             item = dataset[i]
             # Satellite index in metadata should be valid
             self.assertLess(item.satellite_metadata["index"], len(sats_to_keep))
+            # Satellite path should be one we kept
+            self.assertIn(item.satellite_metadata["path"], expected_sat_paths,
+                f"Item {i} has satellite path not in kept list")
 
     def test_drop_satellites_views_work(self):
         """Test that sat_patch_view works after dropping satellites."""
         dataset = self._create_dataset()
         original_sat_count = len(dataset._satellite_metadata)
 
+        # Capture original satellite paths
+        original_sat_paths = list(dataset._satellite_metadata['path'])
+
         sats_to_keep = list(range(original_sat_count // 2))
+        expected_sat_paths = set(original_sat_paths[i] for i in sats_to_keep)
         dataset.drop_to_subset(sat_idxs_to_keep=sats_to_keep)
 
-        # Test sat view
+        # Test sat view - verify each satellite is from the kept set
         sat_view = dataset.get_sat_patch_view()
         self.assertEqual(len(sat_view), len(sats_to_keep))
         for i in range(len(sat_view)):
             item = sat_view[i]
             self.assertIsNotNone(item.satellite)
+            self.assertIn(item.satellite_metadata['path'], expected_sat_paths,
+                f"Sat view item {i} has unexpected satellite path")
 
     def test_drop_satellites_kdtree_works(self):
         """Test that satellite KD-tree is rebuilt after dropping satellites."""
         dataset = self._create_dataset()
         original_sat_count = len(dataset._satellite_metadata)
 
+        # Pick a satellite that will be kept and capture its location
+        kept_sat_idx = 2
+        original_sat_path = dataset._satellite_metadata.iloc[kept_sat_idx]['path']
+        original_coords = dataset._satellite_metadata.iloc[kept_sat_idx][["web_mercator_x", "web_mercator_y"]].values
+
         sats_to_keep = list(range(original_sat_count // 2))
+        self.assertIn(kept_sat_idx, sats_to_keep, "Test setup: kept_sat_idx must be in sats_to_keep")
+
         dataset.drop_to_subset(sat_idxs_to_keep=sats_to_keep)
 
         # The KD-tree should have the right number of points
         self.assertEqual(dataset._satellite_pixel_kdtree.n, len(sats_to_keep))
+
+        # Query the KD-tree with the known coordinates - should return the correct satellite
+        dist, new_idx = dataset._satellite_pixel_kdtree.query(original_coords)
+        result_sat_path = dataset._satellite_metadata.iloc[new_idx]['path']
+        self.assertEqual(result_sat_path, original_sat_path,
+            f"KD-tree query returned wrong satellite: expected {original_sat_path}, got {result_sat_path}")
+        self.assertAlmostEqual(dist, 0.0, places=10, msg="Distance to exact point should be ~0")
 
     def test_pair_filtering_only(self):
         """Test filtering pairs without dropping panoramas or satellites."""
@@ -910,6 +1024,84 @@ class DropToSubsetTest(unittest.TestCase):
             for lm_idx, lm_row in dataset._landmark_metadata.iterrows():
                 for sat_idx in lm_row["satellite_idxs"]:
                     self.assertLess(sat_idx, len(dataset._satellite_metadata))
+
+    def _create_vigor_snippet_dataset(self):
+        """Helper to create a dataset from the vigor_snippet fixture."""
+        config = vigor_dataset.VigorDatasetConfig(
+            satellite_tensor_cache_info=None,
+            panorama_tensor_cache_info=None,
+            panorama_neighbor_radius=0.0005,
+            satellite_patch_size=None,
+            panorama_size=None,
+            should_load_landmarks=False,  # vigor_snippet may not have landmarks
+        )
+        return vigor_dataset.VigorDataset(
+            Path("external/vigor_snippet/vigor_snippet"), config)
+
+    def test_drop_panoramas_on_vigor_snippet(self):
+        """Test dropping panoramas on real vigor_snippet data."""
+        dataset = self._create_vigor_snippet_dataset()
+        original_pano_count = len(dataset._panorama_metadata)
+
+        # Capture original pano_ids
+        original_pano_ids = list(dataset._panorama_metadata['pano_id'])
+
+        # Keep every third panorama
+        panos_to_keep = list(range(0, original_pano_count, 3))
+        expected_pano_ids = [original_pano_ids[i] for i in panos_to_keep]
+
+        dataset.drop_to_subset(pano_idxs_to_keep=panos_to_keep)
+
+        # Verify exact pano_ids
+        actual_pano_ids = list(dataset._panorama_metadata['pano_id'])
+        self.assertEqual(expected_pano_ids, actual_pano_ids)
+
+        # Verify consistency
+        self._verify_dataset_consistency(dataset)
+
+    def test_drop_satellites_on_vigor_snippet(self):
+        """Test dropping satellites on real vigor_snippet data."""
+        dataset = self._create_vigor_snippet_dataset()
+        original_sat_count = len(dataset._satellite_metadata)
+
+        # Capture original satellite paths
+        original_sat_paths = list(dataset._satellite_metadata['path'])
+
+        # Keep every other satellite
+        sats_to_keep = list(range(0, original_sat_count, 2))
+        expected_sat_paths = [original_sat_paths[i] for i in sats_to_keep]
+
+        dataset.drop_to_subset(sat_idxs_to_keep=sats_to_keep)
+
+        # Verify exact satellites
+        actual_sat_paths = list(dataset._satellite_metadata['path'])
+        self.assertEqual(expected_sat_paths, actual_sat_paths)
+
+        # Verify consistency
+        self._verify_dataset_consistency(dataset)
+
+    def test_combined_drop_on_vigor_snippet(self):
+        """Test combined panorama and satellite dropping on vigor_snippet."""
+        dataset = self._create_vigor_snippet_dataset()
+        original_pano_count = len(dataset._panorama_metadata)
+        original_sat_count = len(dataset._satellite_metadata)
+
+        # Keep every other of each
+        panos_to_keep = list(range(0, original_pano_count, 2))
+        sats_to_keep = list(range(0, original_sat_count, 2))
+
+        dataset.drop_to_subset(
+            pano_idxs_to_keep=panos_to_keep,
+            sat_idxs_to_keep=sats_to_keep)
+
+        # Verify consistency
+        self._verify_dataset_consistency(dataset)
+
+        # Should be able to iterate
+        for i in range(min(len(dataset), 10)):
+            item = dataset[i]
+            self.assertIsNotNone(item.panorama_metadata)
+            self.assertIsNotNone(item.satellite_metadata)
 
 
 class HardNegativeMinerTest(unittest.TestCase):

@@ -544,11 +544,29 @@ class VigorDataset(torch.utils.data.Dataset):
         self._pairs = populate_pairs(self._panorama_metadata, self._satellite_metadata, config.sample_mode)
         log_progress(f"Created {len(self._pairs)} training pairs")
 
+        # Verify all panoramas have at least one satellite association
+        self._verify_all_panos_have_satellites()
+
         self._panorama_tensor_caches = load_tensor_caches(self._config.panorama_tensor_cache_info)
         log_progress(f"Loaded panorama caches for {len(self._panorama_tensor_caches)} dataset(s)")
         self._satellite_tensor_caches = load_tensor_caches(self._config.satellite_tensor_cache_info)
         log_progress(f"Loaded satellite caches for {len(self._satellite_tensor_caches)} dataset(s)")
         log_progress("Dataset initialization complete")
+
+    def _verify_all_panos_have_satellites(self):
+        """Verify all panoramas have at least one satellite association.
+
+        Raises:
+            ValueError: If any panorama has no positive or semipositive satellite associations.
+        """
+        for pano_idx in range(len(self._panorama_metadata)):
+            pos = self._panorama_metadata.iloc[pano_idx]["positive_satellite_idxs"]
+            semipos = self._panorama_metadata.iloc[pano_idx]["semipositive_satellite_idxs"]
+            if not pos and not semipos:
+                pano_id = self._panorama_metadata.iloc[pano_idx]["pano_id"]
+                raise ValueError(
+                    f"Panorama {pano_id} (idx={pano_idx}) has no positive or semipositive "
+                    "satellite associations. This indicates a data issue.")
 
     def drop_to_subset(
         self,
@@ -734,6 +752,9 @@ class VigorDataset(torch.utils.data.Dataset):
         self._panorama_metadata["neighbor_panorama_idxs"] = compute_neighboring_panoramas(
             self._panorama_kdtree, self._config.panorama_neighbor_radius)
         self._pairs = populate_pairs(self._panorama_metadata, self._satellite_metadata, self._config.sample_mode)
+
+        # Verify all panoramas still have at least one satellite association
+        self._verify_all_panos_have_satellites()
 
     @property
     def num_satellite_patches(self):
