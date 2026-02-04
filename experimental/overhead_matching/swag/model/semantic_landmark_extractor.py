@@ -24,6 +24,7 @@ from functools import partial
 import tqdm
 from pydantic import BaseModel, Field
 from typing import List
+from enum import Enum
 
 BATCH_SIZE = 49_999
 MAX_BATCH_FILE_SIZE_OPENAI = 190_000_000  # 190 MB for OpenAI
