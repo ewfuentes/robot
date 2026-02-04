@@ -470,29 +470,8 @@ py_binary(
     "//common/math:haversine",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
     "//experimental/overhead_matching/swag/evaluation:evaluate_swag",
-    "//experimental/overhead_matching/swag/evaluation:wag_config_proto_py",
-    "//experimental/overhead_matching/swag/filter:histogram_belief",
-    "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
-    "//experimental/overhead_matching/swag/model:patch_embedding",
-    "//experimental/overhead_matching/swag/model:swag_patch_embedding",
-  ]
-)
-
-py_binary(
-  name="profile_histogram_gpu_memory",
-  srcs=["profile_histogram_gpu_memory.py"],
-  deps=[
-    ":evaluate_histogram_on_paths",
-    requirement("torch"),
-    requirement("tqdm"),
-    requirement("msgspec"),
-    "//common/torch:load_torch_deps",
-    "//common/torch:load_and_save_models",
-    "//common/gps:web_mercator",
-    "//common/math:haversine",
-    "//experimental/overhead_matching/swag/data:vigor_dataset",
-    "//experimental/overhead_matching/swag/evaluation:evaluate_swag",
     "//experimental/overhead_matching/swag/evaluation:convergence_metrics",
+    "//experimental/overhead_matching/swag/evaluation:wag_config_proto_py",
     "//experimental/overhead_matching/swag/filter:histogram_belief",
     "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
     "//experimental/overhead_matching/swag/model:patch_embedding",
