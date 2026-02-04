@@ -288,14 +288,19 @@ def build_cell_to_patch_mapping(
     patch_positions_px: torch.Tensor,
     patch_half_size_px: float,
     device: torch.device,
+    chunk_size: int = 4096,
 ) -> CellToPatchMapping:
     """Build mapping from histogram cells to overlapping satellite patches.
+
+    Processes cells in chunks to avoid materializing a full
+    (num_cells, num_patches, 2) tensor on GPU.
 
     Args:
         grid_spec: The histogram grid specification
         patch_positions_px: (num_patches, 2) patch centers in pixels [row, col]
         patch_half_size_px: Half the patch size (e.g., 320 for 640px patches)
         device: Torch device
+        chunk_size: Number of cells to process at once (controls peak memory)
 
     Returns:
         CellToPatchMapping with CSR-format overlaps
@@ -304,28 +309,38 @@ def build_cell_to_patch_mapping(
     num_cells = cell_centers_px.shape[0]
     patch_positions_px = patch_positions_px.to(device)
 
-    # Vectorized: compute L∞ distance from each cell to each patch
-    # cell_centers_px: (num_cells, 2)
-    # patch_positions_px: (num_patches, 2)
-    # diff: (num_cells, num_patches, 2)
-    diff = cell_centers_px.unsqueeze(1) - patch_positions_px.unsqueeze(0)
-    linf_dist = diff.abs().max(dim=2).values  # (num_cells, num_patches)
+    # Process cells in chunks to keep peak memory bounded.
+    # Each chunk materializes (chunk_size, num_patches, 2) instead of the
+    # full (num_cells, num_patches, 2).
+    all_cell_idxs = []
+    all_patch_idxs = []
+    counts = torch.zeros(num_cells, dtype=torch.long, device=device)
 
-    # Find which (cell, patch) pairs overlap
-    overlaps = linf_dist < patch_half_size_px  # (num_cells, num_patches)
+    for start in range(0, num_cells, chunk_size):
+        end = min(start + chunk_size, num_cells)
+        chunk_cells = cell_centers_px[start:end]  # (chunk, 2)
 
-    # Convert to CSR format
-    # Get cell indices and patch indices for all overlaps
-    cell_idxs, patch_idxs = torch.where(overlaps)
+        # L∞ distance from each cell in chunk to each patch
+        diff = chunk_cells.unsqueeze(1) - patch_positions_px.unsqueeze(0)  # (chunk, num_patches, 2)
+        linf_dist = diff.abs().max(dim=2).values  # (chunk, num_patches)
+        del diff
 
-    # Sort by cell index to get CSR ordering
-    sort_order = torch.argsort(cell_idxs)
-    cell_idxs = cell_idxs[sort_order]
-    patch_idxs = patch_idxs[sort_order]
+        # Find overlapping (cell, patch) pairs within this chunk
+        local_cell_idxs, patch_idxs = torch.where(linf_dist < patch_half_size_px)
+        del linf_dist
 
-    # Build offsets
-    # Count overlaps per cell
-    counts = torch.bincount(cell_idxs, minlength=num_cells)
+        # Offset local cell indices to global
+        global_cell_idxs = local_cell_idxs + start
+
+        all_cell_idxs.append(global_cell_idxs)
+        all_patch_idxs.append(patch_idxs)
+        counts[start:end] = torch.bincount(local_cell_idxs, minlength=end - start)
+
+    # Concatenate results from all chunks (already in cell-index order)
+    cell_idxs = torch.cat(all_cell_idxs)
+    patch_idxs = torch.cat(all_patch_idxs)
+
+    # Build CSR offsets from counts
     offsets = torch.zeros(num_cells + 1, dtype=torch.long, device=device)
     offsets[1:] = torch.cumsum(counts, dim=0)
 

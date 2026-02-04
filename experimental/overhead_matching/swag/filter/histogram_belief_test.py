@@ -439,6 +439,180 @@ class TestBuildCellToPatchMapping(unittest.TestCase):
         self.assertEqual(len(mapping.patch_indices), 2)
 
 
+def _build_cell_to_patch_mapping_unchunked(
+    grid_spec: GridSpec,
+    patch_positions_px: torch.Tensor,
+    patch_half_size_px: float,
+    device: torch.device,
+) -> CellToPatchMapping:
+    """Original unchunked implementation for reference testing."""
+    cell_centers_px = grid_spec.get_all_cell_centers_px(device)
+    num_cells = cell_centers_px.shape[0]
+    patch_positions_px = patch_positions_px.to(device)
+
+    diff = cell_centers_px.unsqueeze(1) - patch_positions_px.unsqueeze(0)
+    linf_dist = diff.abs().max(dim=2).values
+
+    overlaps = linf_dist < patch_half_size_px
+
+    cell_idxs, patch_idxs = torch.where(overlaps)
+
+    sort_order = torch.argsort(cell_idxs)
+    cell_idxs = cell_idxs[sort_order]
+    patch_idxs = patch_idxs[sort_order]
+
+    counts = torch.bincount(cell_idxs, minlength=num_cells)
+    offsets = torch.zeros(num_cells + 1, dtype=torch.long, device=device)
+    offsets[1:] = torch.cumsum(counts, dim=0)
+
+    return CellToPatchMapping(
+        patch_indices=patch_idxs,
+        cell_offsets=offsets,
+        segment_ids=cell_idxs,
+    )
+
+
+class TestBuildCellToPatchMappingChunkedEquivalence(unittest.TestCase):
+    """Verify that the chunked build_cell_to_patch_mapping produces
+    identical results to the original unchunked implementation."""
+
+    def _assert_mappings_equal(self, a: CellToPatchMapping, b: CellToPatchMapping):
+        # cell_offsets must be identical (same number of overlaps per cell)
+        self.assertTrue(torch.equal(a.cell_offsets, b.cell_offsets),
+                        f"cell_offsets differ: {a.cell_offsets} vs {b.cell_offsets}")
+        # Within each cell's segment the patch indices may be in a different
+        # order (torch.where ordering vs chunk iteration order), but the *set*
+        # of patches per cell must be identical.
+        num_cells = len(a.cell_offsets) - 1
+        for c in range(num_cells):
+            s, e = a.cell_offsets[c].item(), a.cell_offsets[c + 1].item()
+            a_patches = a.patch_indices[s:e].sort().values
+            b_patches = b.patch_indices[s:e].sort().values
+            self.assertTrue(torch.equal(a_patches, b_patches),
+                            f"cell {c}: patches differ: {a_patches} vs {b_patches}")
+
+    def test_single_patch_full_coverage(self):
+        """One patch covers all cells."""
+        grid_spec = GridSpec(
+            zoom_level=20, cell_size_px=100.0,
+            origin_row_px=0.0, origin_col_px=0.0,
+            num_rows=3, num_cols=3,
+        )
+        patches = torch.tensor([[150.0, 150.0]])
+        half_size = 200.0
+        device = torch.device("cpu")
+
+        ref = _build_cell_to_patch_mapping_unchunked(grid_spec, patches, half_size, device)
+        for chunk_size in [1, 2, 5, 9, 100]:
+            chunked = build_cell_to_patch_mapping(grid_spec, patches, half_size, device,
+                                                  chunk_size=chunk_size)
+            self._assert_mappings_equal(ref, chunked)
+
+    def test_many_patches_partial_overlap(self):
+        """Multiple patches with varying overlap patterns."""
+        grid_spec = GridSpec(
+            zoom_level=20, cell_size_px=50.0,
+            origin_row_px=0.0, origin_col_px=0.0,
+            num_rows=10, num_cols=8,
+        )
+        torch.manual_seed(42)
+        patches = torch.rand(25, 2) * 500.0
+        half_size = 80.0
+        device = torch.device("cpu")
+
+        ref = _build_cell_to_patch_mapping_unchunked(grid_spec, patches, half_size, device)
+        for chunk_size in [1, 3, 7, 20, 80, 1000]:
+            chunked = build_cell_to_patch_mapping(grid_spec, patches, half_size, device,
+                                                  chunk_size=chunk_size)
+            self._assert_mappings_equal(ref, chunked)
+
+    def test_no_overlaps(self):
+        """Patches far from all cells — empty mapping."""
+        grid_spec = GridSpec(
+            zoom_level=20, cell_size_px=100.0,
+            origin_row_px=0.0, origin_col_px=0.0,
+            num_rows=3, num_cols=3,
+        )
+        patches = torch.tensor([[9999.0, 9999.0]])
+        half_size = 10.0
+        device = torch.device("cpu")
+
+        ref = _build_cell_to_patch_mapping_unchunked(grid_spec, patches, half_size, device)
+        chunked = build_cell_to_patch_mapping(grid_spec, patches, half_size, device,
+                                              chunk_size=2)
+        self._assert_mappings_equal(ref, chunked)
+
+    def test_chunk_size_equals_one(self):
+        """Extreme: one cell per chunk."""
+        grid_spec = GridSpec(
+            zoom_level=20, cell_size_px=100.0,
+            origin_row_px=0.0, origin_col_px=0.0,
+            num_rows=4, num_cols=4,
+        )
+        torch.manual_seed(7)
+        patches = torch.rand(10, 2) * 400.0
+        half_size = 120.0
+        device = torch.device("cpu")
+
+        ref = _build_cell_to_patch_mapping_unchunked(grid_spec, patches, half_size, device)
+        chunked = build_cell_to_patch_mapping(grid_spec, patches, half_size, device,
+                                              chunk_size=1)
+        self._assert_mappings_equal(ref, chunked)
+
+    def test_chunk_boundary_does_not_split_cells(self):
+        """Ensure cells at chunk boundaries are handled correctly.
+
+        Uses a grid where num_cells is not divisible by chunk_size,
+        so the last chunk is a partial batch.
+        """
+        grid_spec = GridSpec(
+            zoom_level=20, cell_size_px=100.0,
+            origin_row_px=0.0, origin_col_px=0.0,
+            num_rows=7, num_cols=5,  # 35 cells
+        )
+        torch.manual_seed(99)
+        patches = torch.rand(15, 2) * 700.0
+        half_size = 150.0
+        device = torch.device("cpu")
+
+        ref = _build_cell_to_patch_mapping_unchunked(grid_spec, patches, half_size, device)
+        # 35 cells / chunk_size=10 → 3 full chunks + 1 chunk of 5
+        chunked = build_cell_to_patch_mapping(grid_spec, patches, half_size, device,
+                                              chunk_size=10)
+        self._assert_mappings_equal(ref, chunked)
+
+    def test_apply_observation_identical_through_both_mappings(self):
+        """End-to-end: apply_observation gives the same belief with either mapping."""
+        grid_spec = GridSpec(
+            zoom_level=20, cell_size_px=50.0,
+            origin_row_px=0.0, origin_col_px=0.0,
+            num_rows=10, num_cols=8,
+        )
+        torch.manual_seed(42)
+        patches = torch.rand(25, 2) * 500.0
+        half_size = 80.0
+        device = torch.device("cpu")
+
+        ref_mapping = _build_cell_to_patch_mapping_unchunked(
+            grid_spec, patches, half_size, device)
+        chunked_mapping = build_cell_to_patch_mapping(
+            grid_spec, patches, half_size, device, chunk_size=7)
+
+        # Create identical beliefs and apply the same observation
+        obs_log_ll = wag_observation_log_likelihood_from_similarity_matrix(
+            torch.rand(25), sigma=0.1)
+
+        belief_ref = HistogramBelief.from_uniform(grid_spec, device)
+        belief_ref.apply_observation(obs_log_ll, ref_mapping)
+
+        belief_chunked = HistogramBelief.from_uniform(grid_spec, device)
+        belief_chunked.apply_observation(obs_log_ll, chunked_mapping)
+
+        self.assertTrue(
+            torch.allclose(belief_ref.get_belief(), belief_chunked.get_belief(), atol=1e-7),
+            "Belief after apply_observation differs between unchunked and chunked mapping")
+
+
 class TestApplyObservation(unittest.TestCase):
     def test_observation_concentrates_belief(self):
         """Test that observation update concentrates belief toward high-likelihood areas."""
