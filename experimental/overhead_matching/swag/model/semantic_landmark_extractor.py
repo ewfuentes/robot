@@ -24,6 +24,7 @@ from functools import partial
 import tqdm
 from pydantic import BaseModel, Field
 from typing import List
+from enum import Enum
 
 BATCH_SIZE = 49_999
 MAX_BATCH_FILE_SIZE_OPENAI = 190_000_000  # 190 MB for OpenAI
@@ -67,6 +68,68 @@ class PanoramaLandmarksWithBBox(BaseModel):
         description=location_type_description)
     landmarks: List[LandmarkWithBBox] = Field(
         description="List of OpenStreetMap-relevant landmarks visible in the panorama")
+
+
+# OSM Tag extraction schemas
+class OSMPrimaryTagKey(str, Enum):
+    """Primary OSM tag keys"""
+    AMENITY = "amenity"
+    SHOP = "shop"
+    BUILDING = "building"
+    TOURISM = "tourism"
+    LEISURE = "leisure"
+    HIGHWAY = "highway"
+    MAN_MADE = "man_made"
+    HISTORIC = "historic"
+    NATURAL = "natural"
+    OFFICE = "office"
+    CRAFT = "craft"
+    RAILWAY = "railway"
+    POWER = "power"
+    LANDUSE = "landuse"
+    EMERGENCY = "emergency"
+    PUBLIC_TRANSPORT = "public_transport"
+
+
+class OSMPrimaryTag(BaseModel):
+    """Primary OSM tag (key=value pair)"""
+    key: OSMPrimaryTagKey = Field(description="OSM tag key")
+    value: str = Field(description="OSM tag value")
+
+
+class OSMAdditionalTag(BaseModel):
+    """Additional OSM tag (key=value pair)"""
+    key: str = Field(description="OSM tag key (e.g., 'name', 'brand', 'cuisine')")
+    value: str = Field(description="OSM tag value")
+
+
+class Confidence(str, Enum):
+    """Confidence level for landmark identification"""
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
+class OSMLandmarkWithBBox(BaseModel):
+    """A landmark with OSM tags and bounding boxes"""
+    primary_tag: OSMPrimaryTag = Field(
+        description="Primary OSM tag categorizing this landmark")
+    additional_tags: List[OSMAdditionalTag] = Field(
+        description="Additional OSM tags (name, brand, cuisine, building:levels, etc.)")
+    confidence: Confidence = Field(
+        description="Confidence level for this identification")
+    bounding_boxes: List[BoundingBox] = Field(
+        description="List of bounding boxes showing where this landmark appears across different yaw angles")
+    description: str = Field(
+        description="Brief description for debugging purposes")
+
+
+class OSMTagExtraction(BaseModel):
+    """OSM tag extraction from panorama images"""
+    location_type: str = Field(
+        description="Scene type classification (e.g., 'urban_commercial', 'suburban', 'rural')")
+    landmarks: List[OSMLandmarkWithBBox] = Field(
+        description="List of landmarks with OSM tags")
 
 
 def _add_required_no_add_props(schema: dict) -> dict:
@@ -130,6 +193,26 @@ def get_panorama_schema() -> dict:
     """
     # Generate base schema from Pydantic
     schema = PanoramaLandmarksWithBBox.model_json_schema()
+
+    schema = _resolve_refs(schema)
+    schema = _add_required_no_add_props(schema)
+
+    return schema
+
+
+def get_osm_tags_schema() -> dict:
+    """Get the JSON schema for OSM tag extraction from panorama images.
+
+    Args:
+        use_gcp: If True, return GCP-compatible schema; otherwise return OpenAI format
+
+    Returns:
+        dict: JSON schema for the response format
+    """
+    model_class = OSMTagExtraction
+
+    # Generate base schema from Pydantic
+    schema = model_class.model_json_schema()
 
     schema = _resolve_refs(schema)
     schema = _add_required_no_add_props(schema)
@@ -588,10 +671,73 @@ Provide your response as a json object that conforms to the assigned schema.
 Remember: Bounding box coordinates are normalized 0-1000, where (0,0) is top-left and (1000,1000) is bottom-right of each image.
 </output_format>
 """,
+    'osm_tags': """<role>
+You are an expert at identifying landmarks in street-level imagery and mapping them to OpenStreetMap (OSM) tags.
+</role>
+
+<instructions>
+Given four images which show the same location from yaws 0°, 90°, 180°, and 270° respectively, identify distinctive, permanent landmarks and classify them using OSM's key=value tagging system.
+
+For each landmark:
+- Assign a primary OSM tag (e.g., amenity=cafe, shop=pharmacy, building=apartments)
+- Add relevant additional tags (name, brand, cuisine, building:levels, etc.)
+- Specify which yaw angle(s)/images the landmark appears in and provide bounding boxes for each
+- Rate your confidence (high/medium/low)
+- Provide a brief description for debugging
+
+Based on the images, classify the location type (e.g., urban_commercial, suburban, rural).
+Finally, review your work and confirm you have not included any information you cannot confidently make out from the images.
+</instructions>
+
+<osm_tag_guidelines>
+## Primary OSM Tag Categories
+
+- `amenity`: facilities providing services (restaurants, cafes, banks, hospitals, fuel stations, parking)
+- `shop`: retail stores (grocery, clothing, hardware, pharmacy, convenience)
+- `building`: structures with a roof (residential, commercial, retail, church, industrial). Use `building=yes` if unclear.
+- `tourism`: visitor attractions (hotels, museums, viewpoints)
+- `leisure`: recreation (parks, playgrounds, sports facilities)
+- `office`: professional services (lawyer, accountant, insurance)
+- `craft`: custom workshops (carpenter, tailor, jeweller)
+- `highway`: road infrastructure (traffic_signals, crossing, bus_stop, street_lamp)
+- `man_made`: non-building structures (towers, piers, bridges, chimneys, water towers)
+- `historic`: historically significant features (monuments, memorials, ruins)
+- `natural`: natural features (trees, water bodies)
+
+## Key Distinctions
+
+- **amenity vs shop**: Use amenity for services (eating, banking, fuel); shop for goods to take away
+- **man_made vs building**: Use building if it has walls and roof for human use; man_made for towers, piers, etc.
+- **leisure vs tourism**: Use leisure for local recreation; tourism for visitor attractions
+
+## Branded Locations
+For chains, include both category and brand:
+- Starbucks -> amenity=cafe, brand=Starbucks
+- Shell -> amenity=fuel, brand=Shell
+- CVS -> shop=pharmacy, brand=CVS
+</osm_tag_guidelines>
+
+<constraints>
+- Focus on OSM-mappable features within ~100 meters
+- Extract visible text for name/brand tags only if clearly readable
+- Be conservative: only output tags you can confidently identify
+- Exclude transient objects (cars, pedestrians, temporary items)
+- Do not mention location in image or relative to other landmarks
+</constraints>
+
+<output_format>
+Provide your response as a JSON object conforming to the assigned schema.
+Bounding box coordinates are normalized 0-1000, where (0,0) is top-left and (1000,1000) is bottom-right.
+</output_format>
+""",
 }
 
 panorama_user_prompt = """
 Based on the four images above (which show the same location from yaws 0°, 90°, 180°, and 270° respectively), extract the OpenStreetMap-relevant landmarks.
+"""
+
+osm_tags_user_prompt = """
+Based on the four images above (which show the same location from yaws 0°, 90°, 180°, and 270° respectively), identify all landmarks and classify them using OSM tags.
 """
 
 def _create_requests(landmarks, prompt_type="default"):
@@ -910,13 +1056,21 @@ def create_panorama_description_requests(args):
 
     print(f"Processing {len(panorama_image_map)} complete panoramas")
 
-    # Get system prompt and schema (Gemini format)
-    system_prompt = SYSTEM_PROMPTS['panorama']
-    schema = get_panorama_schema()
+    prompt_type = getattr(args, 'prompt_type', 'panorama')
+    print(f"Prompt type: {prompt_type}")
+
+    if prompt_type == 'osm_tags':
+        system_prompt = SYSTEM_PROMPTS['osm_tags']
+        schema = get_osm_tags_schema()
+        user_prompt = osm_tags_user_prompt
+    else:  # panorama (default)
+        system_prompt = SYSTEM_PROMPTS['panorama']
+        schema = get_panorama_schema()
+        user_prompt = panorama_user_prompt
 
     # Process in batches to avoid OOM
     # We'll encode and write requests in chunks
-    PANORAMA_CHUNK_SIZE = 1000 
+    PANORAMA_CHUNK_SIZE = 1000
 
     panorama_items = list(panorama_image_map.items())
 
@@ -948,8 +1102,6 @@ def create_panorama_description_requests(args):
         chunk_image_to_base64 = dict(zip(chunk_image_paths, chunk_base64_images))
 
         # Create requests for this chunk
-        user_prompt = panorama_user_prompt
-
         for pano_stem, images_for_pano in chunk:
             # Sort by yaw angle to ensure consistent ordering
             images_for_pano = sorted(images_for_pano, key=lambda x: x[0])
@@ -1136,6 +1288,9 @@ if __name__ == "__main__":
                                  help='Directory containing panorama subfolders with pinhole images')
     panorama_parser.add_argument('--output_base', type=str, default="/tmp/",
                                  help='Base path for output batch request files')
+    panorama_parser.add_argument('--prompt_type', type=str, default='panorama',
+                                 choices=['panorama', 'osm_tags'],
+                                 help='Prompt type: "panorama" (natural language descriptions) or "osm_tags" (structured OSM tags)')
     panorama_parser.add_argument('--num_workers', type=int, default=8,
                                  help='Number of parallel workers for image encoding')
     panorama_parser.add_argument('--max_requests_per_batch', type=int, default=10000,
