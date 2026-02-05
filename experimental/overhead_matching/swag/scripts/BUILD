@@ -471,10 +471,25 @@ py_binary(
     "//experimental/overhead_matching/swag/data:vigor_dataset",
     "//experimental/overhead_matching/swag/evaluation:evaluate_swag",
     "//experimental/overhead_matching/swag/evaluation:wag_config_proto_py",
+    "//experimental/overhead_matching/swag/evaluation:odometry_noise",
     "//experimental/overhead_matching/swag/filter:histogram_belief",
     "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
     "//experimental/overhead_matching/swag/model:patch_embedding",
     "//experimental/overhead_matching/swag/model:swag_patch_embedding",
+  ]
+)
+
+py_binary(
+  name="plot_noised_paths",
+  srcs=["plot_noised_paths.py"],
+  deps=[
+    requirement("torch"),
+    requirement("matplotlib"),
+    requirement("numpy"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/evaluation:evaluate_swag",
+    "//experimental/overhead_matching/swag/evaluation:odometry_noise",
   ]
 )
 

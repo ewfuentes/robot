@@ -141,3 +141,22 @@ py_test(
     "//experimental/overhead_matching/swag/filter:histogram_belief",
   ],
 )
+
+py_library(
+  name = "odometry_noise",
+  srcs = ["odometry_noise.py"],
+  visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+  deps = [
+    requirement("torch"),
+  ],
+)
+
+py_test(
+  name = "odometry_noise_test",
+  srcs = ["odometry_noise_test.py"],
+  deps = [
+    requirement("torch"),
+    "//common/torch:load_torch_deps",
+    ":odometry_noise",
+  ],
+)
