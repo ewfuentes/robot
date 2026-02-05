@@ -33,6 +33,7 @@ import sys
 import time
 import warnings
 from collections import Counter
+from typing import Optional
 from pathlib import Path
 
 # IMPORTANT: Must import torch deps before torch to load CUDA libraries
