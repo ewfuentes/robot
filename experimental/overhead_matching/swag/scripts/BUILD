@@ -480,20 +480,6 @@ py_binary(
 )
 
 py_binary(
-  name="plot_noised_paths",
-  srcs=["plot_noised_paths.py"],
-  deps=[
-    requirement("torch"),
-    requirement("matplotlib"),
-    requirement("numpy"),
-    "//common/torch:load_torch_deps",
-    "//experimental/overhead_matching/swag/data:vigor_dataset",
-    "//experimental/overhead_matching/swag/evaluation:evaluate_swag",
-    "//experimental/overhead_matching/swag/evaluation:odometry_noise",
-  ]
-)
-
-py_binary(
   name="visualize_histogram_results",
   srcs=["visualize_histogram_results.py"],
   deps=[
