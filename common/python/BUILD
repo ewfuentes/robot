@@ -12,6 +12,7 @@ py_binary(
   data = [
     "//:.marimo.toml",
     "//common/openstreetmap:extract_landmarks_python.so",
+    "//experimental/overhead_matching/swag/evaluation:proper_noun_matcher_python.so",
   ],
   deps = [
     requirement("marimo"),
@@ -19,6 +20,7 @@ py_binary(
     requirement("altair"),
     requirement("pandas"),
     requirement("seaborn"),
+    requirement("watchdog"),
     requirement("tensorboard"),
     requirement("osmnx"),
     requirement("supervision"),
