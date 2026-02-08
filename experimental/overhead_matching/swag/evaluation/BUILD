@@ -148,6 +148,7 @@ py_library(
   visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
   deps = [
     requirement("torch"),
+    "//common/gps:web_mercator",
   ],
 )
 

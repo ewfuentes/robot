@@ -351,8 +351,7 @@ def evaluate_histogram_on_paths(
                 vigor_dataset, path, result.mean_history)
 
             # Variance in meters squared (convert from degrees)
-            # Approximate: 1 degree lat ≈ 111km
-            var_sq_m = result.variance_history[-len(path):].sum(dim=-1) * (111_000 ** 2)
+            var_sq_m = result.variance_history[-len(path):].sum(dim=-1) * (web_mercator.METERS_PER_DEG_LAT ** 2)
 
             all_final_error_meters.append(error_meters[-1].item())
 
@@ -538,7 +537,7 @@ if __name__ == "__main__":
     # Odometry noise arguments
     parser.add_argument("--odometry-noise-frac", type=float, default=None,
                         help="Noise std as fraction of step distance (isotropic north/east)")
-    parser.add_argument("--odometry-noise-seed", type=int, default=42,
+    parser.add_argument("--odometry-noise-seed", type=int, default=7919,
                         help="Seed for odometry noise generation")
 
     args = parser.parse_args()
@@ -588,6 +587,7 @@ if __name__ == "__main__":
             sigma_noise_frac=args.odometry_noise_frac,
             seed=args.odometry_noise_seed,
         )
+        print(f"Odometry noise enabled: sigma_frac={odometry_noise_config.sigma_noise_frac}, seed={odometry_noise_config.seed}")
 
     config = HistogramFilterConfig(
         noise_percent=args.noise_percent,

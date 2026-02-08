@@ -30,6 +30,7 @@ import base64
 from PIL import Image
 import io
 
+from common.gps.web_mercator import METERS_PER_DEG_LAT
 import experimental.overhead_matching.swag.data.vigor_dataset as vd
 from experimental.overhead_matching.swag.evaluation.observation_likelihood import (
     compute_cached_landmark_similarity_data,
@@ -828,9 +829,10 @@ def create_app(vigor_dataset, all_similarity, landmark_obs_calculator, obs_confi
         # Find best match location
         best_patch_idx = np.argmax(similarity_values)
         best_patch_pos = satellite_positions[best_patch_idx]
+        meters_per_deg_lon = METERS_PER_DEG_LAT * math.cos(math.radians(pano_pos[0]))
         distance_to_best = np.sqrt(
-            ((pano_pos[0] - best_patch_pos[0]) * 111000) ** 2 +  # Approximate m/deg
-            ((pano_pos[1] - best_patch_pos[1]) * 85000) ** 2   # Approximate m/deg at ~40°N
+            ((pano_pos[0] - best_patch_pos[0]) * METERS_PER_DEG_LAT) ** 2 +
+            ((pano_pos[1] - best_patch_pos[1]) * meters_per_deg_lon) ** 2
         )
 
         stats_children = [

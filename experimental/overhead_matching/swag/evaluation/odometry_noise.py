@@ -12,7 +12,7 @@ import math
 import torch
 from dataclasses import dataclass
 
-METERS_PER_DEG_LAT = 111_320.0
+from common.gps.web_mercator import METERS_PER_DEG_LAT
 
 
 @dataclass
@@ -24,7 +24,13 @@ class OdometryNoiseConfig:
         sampled from N(0, sigma_noise_frac * d) meters.
     """
     sigma_noise_frac: float = 0.05    # fraction of step size
-    seed: int = 42
+    seed: int = 7919
+
+    def __post_init__(self):
+        if self.sigma_noise_frac < 0:
+            raise ValueError(
+                f"sigma_noise_frac must be non-negative, got {self.sigma_noise_frac}"
+            )
 
 
 def compute_positions_from_deltas(
@@ -40,6 +46,11 @@ def compute_positions_from_deltas(
     Returns:
         (N+1, 2) positions [lat, lon] in degrees, starting with start_latlon.
     """
+    if start_latlon.shape != (2,):
+        raise ValueError(f"start_latlon must have shape (2,), got {start_latlon.shape}")
+    if motion_deltas.ndim != 2 or motion_deltas.shape[1] != 2:
+        raise ValueError(f"motion_deltas must have shape (N, 2), got {motion_deltas.shape}")
+
     cumulative = torch.cumsum(motion_deltas, dim=0)
     positions = torch.cat([start_latlon.unsqueeze(0), start_latlon.unsqueeze(0) + cumulative], dim=0)
     return positions
@@ -65,6 +76,11 @@ def add_noise_to_motion_deltas(
     Returns:
         (N, 2) noised deltas in degrees, same device as input.
     """
+    if motion_deltas.ndim != 2 or motion_deltas.shape[1] != 2:
+        raise ValueError(f"motion_deltas must have shape (N, 2), got {motion_deltas.shape}")
+    if start_latlon.shape != (2,):
+        raise ValueError(f"start_latlon must have shape (2,), got {start_latlon.shape}")
+
     original_dtype = motion_deltas.dtype
     original_device = motion_deltas.device
 
