@@ -155,10 +155,12 @@ def compute_osm_tag_match_similarity(dataset: dict) -> dict:
     # Compute substring matching using C++ implementation
     if len(pano_lm_tags_list) > 0 and num_osm > 0:
         print(f"Computing substring matches: {len(pano_lm_tags_list)} pano landmarks x {num_osm} OSM landmarks")
-        match_matrix = pnm.compute_keyed_substring_matches(
+        q, t, k = pnm.compute_keyed_substring_matches_detailed(
             pano_lm_tags_list, osm_tags_by_idx
         )
-        match_matrix_t = torch.from_numpy(match_matrix)  # (num_pano_lm, num_osm)
+        match_matrix_t = torch.zeros(len(pano_lm_tags_list), num_osm)
+        if len(q) > 0:
+            match_matrix_t[torch.from_numpy(q), torch.from_numpy(t)] = 1.0
 
         pano_for_lm_t = torch.tensor(pano_for_lm, dtype=torch.long)
         num_lm_per_pano_t = torch.tensor(num_lm_per_pano, dtype=torch.float)

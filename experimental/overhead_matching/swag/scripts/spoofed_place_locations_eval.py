@@ -861,16 +861,8 @@ def _(EVAL_CITY, datasets, mo, pnm, proper_noun_datasets, torch, tqdm):
     )
 
 
-
-
 @app.cell
-def _(
-    EVAL_CITY,
-    Path,
-    load_vigor_dataset,
-    mo,
-    ots,
-):
+def _(EVAL_CITY, Path, load_vigor_dataset, mo, ots):
     # Load and evaluate OSM tag extraction predictions
     # Add extraction paths for each city here
     osm_extraction_paths = {

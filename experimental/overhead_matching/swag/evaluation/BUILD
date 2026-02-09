@@ -146,7 +146,10 @@ py_library(
   name = "osm_tag_similarity",
   srcs = ["osm_tag_similarity.py"],
   data = [":proper_noun_matcher_python.so"],
-  visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+    "//common/python:__subpackages__",
+  ],
   deps = [
     requirement("torch"),
     requirement("tqdm"),
