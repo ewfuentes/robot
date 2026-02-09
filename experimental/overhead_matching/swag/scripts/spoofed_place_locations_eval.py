@@ -34,6 +34,9 @@ def _():
     import matplotlib
     matplotlib.style.use('ggplot')
     import matplotlib.pyplot as plt
+
+    from experimental.overhead_matching.swag.evaluation import proper_noun_matcher_python as pnm
+
     return (
         Path,
         es,
@@ -42,6 +45,7 @@ def _():
         mo,
         pickle,
         plt,
+        pnm,
         sentence_configs,
         sentence_embedding_model,
         slu,
@@ -512,7 +516,9 @@ def _(Path, load_sat_data_from_sat_id, load_vigor_dataset, mo, pickle, slu):
             place_semipositives = None,
         )
 
+        print(f"before filtering: {sum([len(x["landmarks"]) for x in out["pano_data_from_pano_id"].values()])=} {len(out["osm_sentence_from_osm_id"])=}")
         _filter_for_proper_nouns(out)
+        print(f"after filtering: {sum([len(x["landmarks"]) for x in out["pano_data_from_pano_id"].values()])=} {len(out["osm_sentence_from_osm_id"])=}")
 
         return out
 
@@ -696,9 +702,8 @@ def _(
 
 
 @app.cell
-def _(EVAL_CITY, datasets, mo, proper_noun_datasets, torch, tqdm):
+def _(EVAL_CITY, datasets, mo, pnm, proper_noun_datasets, torch, tqdm):
     # Compute pano <-> satellite similarity
-
     OSM_TEXT_KEYS = ['name', 'brand', 'operator', 'addr:street', 'network']
 
     def get_osm_texts_from_pruned_props(pruned_props: frozenset) -> list[str]:
@@ -706,16 +711,8 @@ def _(EVAL_CITY, datasets, mo, proper_noun_datasets, torch, tqdm):
         props_dict = dict(pruned_props)
         return [v for k, v in props_dict.items() if k in OSM_TEXT_KEYS and isinstance(v, str)]
 
-    def check_proper_noun_match(proper_nouns: list[str], osm_texts: list[str]) -> bool:
-        """Check if any proper noun appears in any OSM text (case-insensitive)."""
-        for pn in proper_nouns:
-            pn_lower = pn.lower()
-            if any(pn_lower in text.lower() for text in osm_texts):
-                return True
-        return False
-
     @mo.persistent_cache
-    def compute_proper_noun_binary_similarity(dataset, chunk_size=512):
+    def compute_proper_noun_binary_similarity(dataset):
         """Compute binary similarity based on proper noun matches with OSM text fields.
 
         Returns dict with "similarity" and "positives" tensors, same format as compute_patch_similarity.
@@ -734,7 +731,6 @@ def _(EVAL_CITY, datasets, mo, proper_noun_datasets, torch, tqdm):
             osm_texts_by_idx[emb_idx] = get_osm_texts_from_pruned_props(osm_id)
 
         # Pre-collect pano landmark data
-        all_lm_idxs = []
         pano_for_lm = []
         proper_nouns_for_lm = []
 
@@ -743,31 +739,20 @@ def _(EVAL_CITY, datasets, mo, proper_noun_datasets, torch, tqdm):
             for lm in pano_data["landmarks"]:
                 lm_key = (pano_id, lm["landmark_idx"])
                 if lm_key in dataset["embedding_idx_from_pano_landmark_id"]:
-                    all_lm_idxs.append(dataset["embedding_idx_from_pano_landmark_id"][lm_key])
                     pano_for_lm.append(pano_idx)
                     proper_nouns_for_lm.append(lm.get("proper_nouns", []))
 
-        # Compute binary match matrix in chunks
-        pano_for_lm_t = torch.tensor(pano_for_lm, device='cuda')
-        best_osm_match_from_pano = torch.zeros((num_panos, num_osm), device='cuda')
+        # Compute binary match matrix using C++ implementation
+        pano_for_lm_t = torch.tensor(pano_for_lm, device='cpu')
+        best_osm_match_from_pano = torch.zeros((num_panos, num_osm), device='cpu')
 
-        for start in tqdm.tqdm(range(0, len(all_lm_idxs), chunk_size), desc="proper_noun_matching"):
-            end = min(start + chunk_size, len(all_lm_idxs))
-            chunk_pano = pano_for_lm_t[start:end]
-
-            # Compute binary matches for this chunk
-            chunk_match = torch.zeros((end - start, num_osm), device='cuda')
-            for i, lm_offset in enumerate(range(start, end)):
-                pn_list = proper_nouns_for_lm[lm_offset]
-                if not pn_list:
-                    continue
-                for osm_idx in range(num_osm):
-                    if check_proper_noun_match(pn_list, osm_texts_by_idx[osm_idx]):
-                        chunk_match[i, osm_idx] = 1.0
-
-            best_osm_match_from_pano.index_add_(0, chunk_pano, chunk_match)
-
-        best_osm_match_from_pano = best_osm_match_from_pano.cpu()
+        if len(proper_nouns_for_lm) > 0:
+            # Call C++ proper noun matcher
+            match_matrix = pnm.compute_proper_noun_matches(
+                proper_nouns_for_lm, osm_texts_by_idx
+            )
+            chunk_match = torch.from_numpy(match_matrix)
+            best_osm_match_from_pano.index_add_(0, pano_for_lm_t, chunk_match)
 
         # Contract to satellite patches
         for sat_idx, sat_data in tqdm.tqdm(dataset['sat_data_from_sat_id'].items(), desc="sat_contraction"):
@@ -821,7 +806,7 @@ def _(EVAL_CITY, datasets, mo, proper_noun_datasets, torch, tqdm):
         pano_for_lm_t = torch.tensor(pano_for_lm, device='cuda')
 
         # Batched matmul + scatter-add to aggregate per panorama
-        best_osm_match_from_pano = torch.zeros((num_panos, num_osm), device='cuda')
+        best_osm_match_from_pano = torch.zeros((num_panos, num_osm), device='cpu')
         for start in tqdm.tqdm(range(0, len(all_lm_idxs), chunk_size), desc="pano_lm_contraction"):
             chunk_lm_idxs = all_lm_idxs_t[start:start + chunk_size]
             chunk_pano = pano_for_lm_t[start:start + chunk_size]
@@ -832,9 +817,9 @@ def _(EVAL_CITY, datasets, mo, proper_noun_datasets, torch, tqdm):
                 chunk_sim += emb["pano_embeddings"][chunk_lm_idxs].cuda() @ gpu_osm.T
 
             chunk_sim *= idf_weight[None, :]
-            best_osm_match_from_pano.index_add_(0, chunk_pano, chunk_sim)
+            best_osm_match_from_pano.index_add_(0, chunk_pano.cpu(), chunk_sim.cpu())
 
-        best_osm_match_from_pano = best_osm_match_from_pano.cpu()
+        # best_osm_match_from_pano = best_osm_match_from_pano.cpu()
 
         for sat_idx, sat_data in tqdm.tqdm(dataset['sat_data_from_sat_id'].items(), desc="sat_contraction"):
             # Get the osm landmarks that are in the current OSM patch
@@ -875,12 +860,434 @@ def _(EVAL_CITY, datasets, mo, proper_noun_datasets, torch, tqdm):
 
 
 @app.cell
+def _(Path, json):
+    def load_osm_tag_extraction_jsonl(input_dir: Path) -> dict[str, dict]:
+        """Load OSM tag extraction predictions from JSONL files.
+
+        Args:
+            input_dir: Directory containing prediction JSONL files (can be nested)
+
+        Returns:
+            Dict mapping pano_key ("pano_id,lat,lon,") to parsed prediction dict
+        """
+        panoramas = {}
+        for jsonl_file in input_dir.rglob("*.jsonl"):
+            for line in jsonl_file.read_text().splitlines():
+                if not line.strip():
+                    continue
+                record = json.loads(line)
+                pano_key = record["key"]  # "pano_id,lat,lon,"
+                response_text = record["response"]["candidates"][0]["content"]["parts"][0]["text"]
+                try:
+                    parsed = json.loads(response_text)
+                    panoramas[pano_key] = parsed
+                except:
+                    print(f"Failed to load response for {pano_key} from {jsonl_file}")
+        return panoramas
+    return (load_osm_tag_extraction_jsonl,)
+
+
+@app.cell
+def _(Path, load_osm_tag_extraction_jsonl, load_vigor_dataset):
+    def create_osm_tag_extraction_dataset(extraction_path: Path, city: str) -> dict:
+        """Create dataset from OSM tag extraction, joined with VIGOR.
+
+        Returns a unified dict matching the existing dataset interface used by
+        create_vigor_datasets and create_proper_noun_datasets.
+
+        Args:
+            extraction_path: Path to the extraction output directory
+            city: City name (e.g., "Chicago", "Seattle")
+
+        Returns:
+            Dict with keys:
+                - pano_data_from_pano_id: {pano_id: {"landmarks": [...], "sat_idxs": [...]}}
+                - sat_data_from_sat_id: {sat_idx: {"landmark_ids": [...], "pano_ids": [...]}}
+        """
+        vigor_dataset = load_vigor_dataset(city)
+        pano_metadata = vigor_dataset._panorama_metadata.set_index('pano_id')
+
+        raw_predictions = load_osm_tag_extraction_jsonl(extraction_path)
+
+        pano_data_from_pano_id = {}
+        for pano_key, pred in raw_predictions.items():
+            pano_id = pano_key.split(',')[0]
+            if pano_id not in pano_metadata.index:
+                continue
+            row = pano_metadata.loc[pano_id]
+            sat_idxs = row.positive_satellite_idxs + row.semipositive_satellite_idxs
+            pano_data_from_pano_id[pano_id] = {
+                "landmarks": pred["landmarks"],
+                "location_type": pred.get("location_type"),
+                "sat_idxs": sat_idxs
+            }
+
+        # Build sat_data_from_sat_id from vigor_dataset (matching existing pattern)
+        sat_data_from_sat_id = {}
+        for sat_idx, row in vigor_dataset._satellite_metadata.iterrows():
+            lm_idxs = row.landmark_idxs
+            landmark_ids = [vigor_dataset._landmark_metadata.iloc[i].pruned_props for i in lm_idxs]
+            pano_idxs = row.positive_panorama_idxs + row.semipositive_panorama_idxs
+            pano_ids = vigor_dataset._panorama_metadata.iloc[pano_idxs].pano_id.tolist()
+            sat_data_from_sat_id[sat_idx] = {"landmark_ids": landmark_ids, "pano_ids": pano_ids}
+
+        return {
+            "pano_data_from_pano_id": pano_data_from_pano_id,
+            "sat_data_from_sat_id": sat_data_from_sat_id,
+        }
+    return (create_osm_tag_extraction_dataset,)
+
+
+@app.cell
+def _(pnm, torch, tqdm):
+    def compute_osm_tag_match_similarity(dataset):
+        """Compute similarity based on OSM tag substring matching with multiple aggregations.
+
+        Uses C++ implementation for fast keyed substring matching:
+        For each (pano_landmark, osm_landmark) pair, checks if any extracted tag
+        (key, value) has a matching key in OSM where the extracted value is a
+        case-insensitive substring of the OSM value.
+
+        Aggregation methods (applied per pano-satellite pair):
+        - max: 1 if any pano landmark matched any OSM landmark in the sat patch
+        - mean: fraction of pano landmarks that matched at least one OSM landmark
+        - coverage: same as mean for binary matching
+        - sum: count of pano landmarks that matched
+
+        Args:
+            dataset: Dict with "pano_data_from_pano_id" and "sat_data_from_sat_id"
+
+        Returns:
+            Dict with aggregation method keys, each containing {"similarity": tensor, "positives": tensor}
+        """
+        num_sat_patches = max(dataset['sat_data_from_sat_id'].keys()) + 1
+        num_panos = len(dataset["pano_data_from_pano_id"])
+
+        out_max = torch.full((num_panos, num_sat_patches), -torch.inf)
+        out_mean = torch.full((num_panos, num_sat_patches), -torch.inf)
+        out_coverage = torch.full((num_panos, num_sat_patches), -torch.inf)
+        out_sum = torch.full((num_panos, num_sat_patches), -torch.inf)
+        positives = torch.zeros((num_panos, num_sat_patches), dtype=torch.bool)
+
+        # Build index of unique OSM landmarks
+        osm_idx_from_props = {}
+        osm_tags_by_idx = []
+        for sat_idx, sat_data in dataset['sat_data_from_sat_id'].items():
+            for osm_props in sat_data["landmark_ids"]:
+                if osm_props not in osm_idx_from_props:
+                    osm_idx_from_props[osm_props] = len(osm_tags_by_idx)
+                    osm_tags_by_idx.append(list(osm_props))
+        num_osm = len(osm_tags_by_idx)
+
+        # Collect pano landmark data, tracking which pano each landmark belongs to
+        pano_for_lm = []
+        pano_lm_tags_list = []
+        num_lm_per_pano = []  # number of landmarks per pano
+
+        for pano_idx, (pano_id, pano_info) in enumerate(tqdm.tqdm(
+                dataset["pano_data_from_pano_id"].items(), desc="collecting_tags")):
+            positives[pano_idx, pano_info["sat_idxs"]] = True
+
+            lm_count = 0
+            for pano_lm in pano_info["landmarks"]:
+                primary = pano_lm.get("primary_tag", {})
+                extracted = []
+                if primary.get("key") and primary.get("value"):
+                    extracted.append((primary["key"], primary["value"]))
+                for tag in pano_lm.get("additional_tags", []):
+                    if tag.get("key") and tag.get("value"):
+                        extracted.append((tag["key"], tag["value"]))
+                if extracted:
+                    pano_for_lm.append(pano_idx)
+                    pano_lm_tags_list.append(extracted)
+                    lm_count += 1
+            num_lm_per_pano.append(lm_count)
+
+        # Compute substring matching using C++ implementation
+        if len(pano_lm_tags_list) > 0 and num_osm > 0:
+            print(f"Computing substring matches: {len(pano_lm_tags_list)} pano landmarks x {num_osm} OSM landmarks")
+            match_matrix = pnm.compute_keyed_substring_matches(
+                pano_lm_tags_list, osm_tags_by_idx
+            )
+            match_matrix_t = torch.from_numpy(match_matrix)  # (num_pano_lm, num_osm)
+
+            pano_for_lm_t = torch.tensor(pano_for_lm, dtype=torch.long)
+            num_lm_per_pano_t = torch.tensor(num_lm_per_pano, dtype=torch.float)
+
+            # For each satellite patch, compute aggregations using vectorized operations
+            for sat_idx, sat_data in tqdm.tqdm(dataset['sat_data_from_sat_id'].items(), desc="aggregating"):
+                osm_idxs = [osm_idx_from_props[x] for x in sat_data["landmark_ids"]]
+                if len(osm_idxs) == 0:
+                    continue
+
+                # Get match scores for OSM landmarks in this sat patch
+                # sat_matches: (num_pano_lm, num_osm_in_sat)
+                sat_matches = match_matrix_t[:, osm_idxs]
+
+                # For each pano landmark, did it match ANY osm landmark in this sat patch?
+                # best_per_lm: (num_pano_lm,) - 1 if matched, 0 otherwise
+                best_per_lm = sat_matches.max(dim=1).values
+
+                # Aggregate by pano using scatter operations
+                # Sum of best scores per pano
+                sum_scores = torch.zeros(num_panos)
+                sum_scores.scatter_add_(0, pano_for_lm_t, best_per_lm)
+
+                # For max: use scatter_reduce with 'amax'
+                max_scores = torch.full((num_panos,), -torch.inf)
+                max_scores.scatter_reduce_(0, pano_for_lm_t, best_per_lm, reduce='amax', include_self=False)
+
+                # Mean = sum / count (avoid div by zero)
+                mean_scores = sum_scores / num_lm_per_pano_t.clamp(min=1)
+
+                # Coverage = (sum of matches > 0) / count
+                # For binary scores, coverage = sum / count = mean
+                coverage_scores = mean_scores
+
+                # Set outputs (only for panos with landmarks)
+                has_landmarks = num_lm_per_pano_t > 0
+                out_max[has_landmarks, sat_idx] = max_scores[has_landmarks]
+                out_mean[has_landmarks, sat_idx] = mean_scores[has_landmarks]
+                out_coverage[has_landmarks, sat_idx] = coverage_scores[has_landmarks]
+                out_sum[has_landmarks, sat_idx] = sum_scores[has_landmarks]
+
+        return {
+            "max": {"similarity": out_max, "positives": positives},
+            "mean": {"similarity": out_mean, "positives": positives},
+            "coverage": {"similarity": out_coverage, "positives": positives},
+            "sum": {"similarity": out_sum, "positives": positives},
+        }
+    return (compute_osm_tag_match_similarity,)
+
+
+@app.cell
+def _(
+    EVAL_CITY,
+    Path,
+    compute_osm_tag_match_similarity,
+    create_osm_tag_extraction_dataset,
+    mo,
+):
+    # Load and evaluate OSM tag extraction predictions
+    # Add extraction paths for each city here
+    osm_extraction_paths = {
+        "Chicago": Path('/tmp/pano_osm_extraction/test_2_output/'),
+        "Seattle": Path('/data/overhead_matching/datasets/semantic_landmark_embeddings/pano_v2/Seattle/sentences/'),
+    }
+
+    @mo.persistent_cache
+    def _load_osm_tag_sims(city: str, extraction_path: Path):
+        osm_tag_dataset = create_osm_tag_extraction_dataset(extraction_path, city)
+        print(f"Loaded {len(osm_tag_dataset['pano_data_from_pano_id'])} panoramas with OSM tag extractions for {city}")
+        return osm_tag_dataset, compute_osm_tag_match_similarity(osm_tag_dataset)
+
+    if EVAL_CITY in osm_extraction_paths:
+        osm_tag_dataset, osm_tag_sims = _load_osm_tag_sims(EVAL_CITY, osm_extraction_paths[EVAL_CITY])
+    else:
+        print(f"No OSM extraction path configured for {EVAL_CITY}")
+        osm_tag_dataset, osm_tag_sims = None, None
+
+    return osm_tag_dataset, osm_tag_sims
+
+
+@app.cell
+def _(osm_tag_dataset):
+    osm_tag_dataset["pano_data_from_pano_id"] if osm_tag_dataset else None
+    return
+
+
+@app.cell
+def _(
+    EVAL_CITY,
+    osm_tag_dataset,
+    osm_tag_sims,
+    pnd_proper_noun_sims,
+    proper_noun_datasets,
+    torch,
+):
+    # Find pano-satellite pairs with largest discrepancy between proper noun and tag matching
+    # Only look at positive (ground truth) satellite patches for each panorama
+
+    if osm_tag_sims is None or osm_tag_dataset is None:
+        print("OSM tag sims not available")
+        discrepancy_analysis = None
+    else:
+        _pnd = proper_noun_datasets[EVAL_CITY.lower()]
+        _tag_dataset = osm_tag_dataset
+
+        # Find common pano_ids between the two datasets
+        pnd_pano_ids = list(_pnd["pano_data_from_pano_id"].keys())
+        tag_pano_ids = list(_tag_dataset["pano_data_from_pano_id"].keys())
+        common_pano_ids = set(pnd_pano_ids) & set(tag_pano_ids)
+        print(f"Common panos: {len(common_pano_ids)} (pnd: {len(pnd_pano_ids)}, tag: {len(tag_pano_ids)})")
+
+        # Build index mappings
+        pnd_idx_from_pano_id = {pid: i for i, pid in enumerate(pnd_pano_ids)}
+        tag_idx_from_pano_id = {pid: i for i, pid in enumerate(tag_pano_ids)}
+
+        # Get similarities for common panos
+        pn_sims = pnd_proper_noun_sims["similarity"]  # (num_pnd_panos, num_sats)
+        tag_sims = osm_tag_sims["max"]["similarity"]  # (num_tag_panos, num_sats)
+
+        num_sats = tag_sims.shape[1]
+
+        # Build index arrays for common panos
+        common_pano_list = list(common_pano_ids)
+        common_pnd_idxs = torch.tensor([pnd_idx_from_pano_id[pid] for pid in common_pano_list])
+        common_tag_idxs = torch.tensor([tag_idx_from_pano_id[pid] for pid in common_pano_list])
+
+        # Build positives mask for common panos
+        common_positives_mask = torch.zeros((len(common_pano_list), num_sats), dtype=torch.bool)
+        for i, pano_id in enumerate(common_pano_list):
+            pnd_pano_data = _pnd["pano_data_from_pano_id"][pano_id]
+            common_positives_mask[i, pnd_pano_data["sat_idxs"]] = True
+
+        # Get similarities for common panos
+        common_pn_sims = pn_sims[common_pnd_idxs]  # (num_common, num_sats)
+        common_tag_sims = tag_sims[common_tag_idxs]  # (num_common, num_sats)
+
+        # Matched masks
+        pn_matched_mask = common_pn_sims > 0
+        tag_matched_mask = common_tag_sims > 0
+
+        # Compute stats vectorized
+        pn_tp = (common_positives_mask & pn_matched_mask).sum().item()
+        pn_fp = (~common_positives_mask & pn_matched_mask).sum().item()
+        tag_tp = (common_positives_mask & tag_matched_mask).sum().item()
+        tag_fp = (~common_positives_mask & tag_matched_mask).sum().item()
+        both_tp = (common_positives_mask & pn_matched_mask & tag_matched_mask).sum().item()
+        total_positives = common_positives_mask.sum().item()
+        total_negatives = (~common_positives_mask).sum().item()
+
+        # Compute precision and recall
+        pn_precision = pn_tp / (pn_tp + pn_fp) if (pn_tp + pn_fp) > 0 else 0
+        tag_precision = tag_tp / (tag_tp + tag_fp) if (tag_tp + tag_fp) > 0 else 0
+        pn_recall = pn_tp / total_positives if total_positives > 0 else 0
+        tag_recall = tag_tp / total_positives if total_positives > 0 else 0
+
+        # Find discrepancies: positive pairs where tag didn't match
+        discrepancy_mask = common_positives_mask & ~tag_matched_mask
+        discrepancy_indices = discrepancy_mask.nonzero(as_tuple=False)  # (num_discrepancies, 2)
+
+        discrepancies = []
+        for idx in range(min(len(discrepancy_indices), 100)):  # Limit to 100 for memory
+            i, sat_idx = discrepancy_indices[idx].tolist()
+            pano_id = common_pano_list[i]
+            pnd_idx = common_pnd_idxs[i].item()
+            tag_idx = common_tag_idxs[i].item()
+            discrepancies.append({
+                "pano_id": pano_id,
+                "sat_idx": sat_idx,
+                "pn_sim": common_pn_sims[i, sat_idx].item(),
+                "tag_sim": common_tag_sims[i, sat_idx].item(),
+                "pnd_idx": pnd_idx,
+                "tag_idx": tag_idx,
+                "is_positive": True,
+                "pn_matched": pn_matched_mask[i, sat_idx].item(),
+            })
+
+        # Sort by proper noun similarity (highest first)
+        discrepancies.sort(key=lambda x: -x["pn_sim"])
+
+        print(f"\n{'='*70}")
+        print(f"COMMON PANOS ONLY ({len(common_pano_ids)} panos)")
+        print(f"{'='*70}")
+        print(f"  {total_positives} positive pairs, {total_negatives} negative pairs")
+        print(f"\n  Proper noun matching:")
+        print(f"    Recall:    {pn_tp}/{total_positives} = {100*pn_recall:.1f}%")
+        print(f"    Precision: {pn_tp}/{pn_tp + pn_fp} = {100*pn_precision:.1f}%")
+        print(f"\n  Tag matching (substring):")
+        print(f"    Recall:    {tag_tp}/{total_positives} = {100*tag_recall:.1f}%")
+        print(f"    Precision: {tag_tp}/{tag_tp + tag_fp} = {100*tag_precision:.1f}%")
+        print(f"\n  Both matched: {both_tp} ({100*both_tp/total_positives:.1f}% of positives)")
+
+        # Compute stats on ALL OSM tag dataset panos (vectorized)
+        # Build positives mask for all tag panos
+        all_positives_mask = torch.zeros((len(tag_pano_ids), num_sats), dtype=torch.bool)
+        for tag_idx, pano_id in enumerate(tag_pano_ids):
+            tag_pano_data = _tag_dataset["pano_data_from_pano_id"][pano_id]
+            all_positives_mask[tag_idx, tag_pano_data["sat_idxs"]] = True
+
+        # Matched mask: similarity > 0
+        all_matched_mask = tag_sims > 0
+
+        # Compute TP, FP, etc. using vectorized operations
+        all_tp = (all_positives_mask & all_matched_mask).sum().item()
+        all_fp = (~all_positives_mask & all_matched_mask).sum().item()
+        all_tag_positives = all_positives_mask.sum().item()
+        all_tag_negatives = (~all_positives_mask).sum().item()
+
+        all_tag_recall = all_tp / all_tag_positives if all_tag_positives > 0 else 0
+        all_tag_precision = all_tp / (all_tp + all_fp) if (all_tp + all_fp) > 0 else 0
+
+        print(f"\n{'='*70}")
+        print(f"ALL OSM TAG PANOS ({len(tag_pano_ids)} panos)")
+        print(f"{'='*70}")
+        print(f"  {all_tag_positives} positive pairs, {all_tag_negatives} negative pairs")
+        print(f"\n  Tag matching (substring):")
+        print(f"    Recall:    {all_tp}/{all_tag_positives} = {100*all_tag_recall:.1f}%")
+        print(f"    Precision: {all_tp}/{all_tp + all_fp} = {100*all_tag_precision:.1f}%")
+        print(f"\nFound {len(discrepancies)} positive pairs where tag matching failed")
+        print("\nPositive pairs where tag matching failed:")
+        for i, d in enumerate(discrepancies[:20]):
+            pano_id = d["pano_id"]
+            sat_idx = d["sat_idx"]
+
+            # Get proper nouns from pnd dataset (per landmark)
+            pnd_pano_data = _pnd["pano_data_from_pano_id"][pano_id]
+            proper_nouns_by_lm = [lm.get("proper_nouns", []) for lm in pnd_pano_data["landmarks"]]
+
+            # Get extracted tags from tag dataset (per landmark)
+            tag_pano_data = _tag_dataset["pano_data_from_pano_id"][pano_id]
+            extracted_tags_by_lm = []
+            for lm in tag_pano_data["landmarks"]:
+                lm_tags = []
+                primary = lm.get("primary_tag", {})
+                if primary.get("key") and primary.get("value"):
+                    lm_tags.append((primary["key"], primary["value"]))
+                for tag in lm.get("additional_tags", []):
+                    if tag.get("key") and tag.get("value"):
+                        lm_tags.append((tag["key"], tag["value"]))
+                if lm_tags:
+                    extracted_tags_by_lm.append(lm_tags)
+
+            # Get OSM props for this satellite patch (per OSM landmark)
+            sat_data = _tag_dataset["sat_data_from_sat_id"].get(sat_idx, {})
+            osm_landmarks = list(sat_data.get("landmark_ids", []))
+
+            print(f"\n{'='*60}")
+            pn_status = "PN:YES" if d.get('pn_matched') else "PN:NO"
+            print(f"{i+1}. pano={pano_id}, sat={sat_idx}, {pn_status}, pn_sim={d['pn_sim']:.2f}, tag_sim={d['tag_sim']:.2f}")
+
+            print(f"\n   PANO LANDMARKS (proper nouns):")
+            for lm_idx, pns in enumerate(proper_nouns_by_lm[:5]):
+                if pns:
+                    print(f"     [{lm_idx}]: {pns}")
+
+            print(f"\n   PANO LANDMARKS (extracted tags):")
+            for lm_idx, tags in enumerate(extracted_tags_by_lm[:5]):
+                print(f"     [{lm_idx}]: {tags}")
+
+            print(f"\n   OSM LANDMARKS in satellite patch ({len(osm_landmarks)} total):")
+            for osm_idx, osm_props in enumerate(osm_landmarks[:5]):
+                # Show all tags for this OSM landmark, highlighting name-like keys
+                props_list = list(osm_props)
+                name_tags = [(k, v) for k, v in props_list if k in ('name', 'brand', 'operator')]
+                other_tags = [(k, v) for k, v in props_list if k not in ('name', 'brand', 'operator')]
+                print(f"     [{osm_idx}]: names={name_tags}, other={other_tags[:3]}{'...' if len(other_tags) > 3 else ''}")
+
+        discrepancy_analysis = discrepancies
+    return
+
+
+@app.cell
 def _(
     EVAL_CITY,
     baseline_sims,
     datasets,
     lm_sims,
     mo,
+    osm_tag_sims,
     plt,
     pnd_baseline_sims,
     pnd_lm_sims,
@@ -914,14 +1321,31 @@ def _(
     pnd_lm_recip_ranks = _compute_pano_patch_sim_recip_rank(pnd_lm_sims)
     pnd_proper_noun_recip_ranks = _compute_pano_patch_sim_recip_rank(pnd_proper_noun_sims)
 
-    plt.figure()
+    # Compute recip ranks for all OSM tag matching methods
+    osm_tag_methods = ["max", "mean", "coverage", "sum", "idf_max"]
+    if osm_tag_sims is not None:
+        osm_tag_recip_ranks = {
+            method: _compute_pano_patch_sim_recip_rank(osm_tag_sims[method])
+            for method in osm_tag_methods
+        }
+    else:
+        osm_tag_recip_ranks = {}
+
+    plt.figure(figsize=(10, 6))
+    sns.set_palette(sns.color_palette('tab20'))
     sns.ecdfplot(lm_recip_ranks, label="All Landmarks")
     sns.ecdfplot(pnd_lm_recip_ranks, label="Proper Noun Subset w/ Embeddings")
     sns.ecdfplot(pnd_proper_noun_recip_ranks, label="Proper Noun Subset w/ Text Match")
     sns.ecdfplot(baseline_recip_ranks.cpu(), label="Overhead Imagery Baseline")
     sns.ecdfplot(pnd_baseline_recip_ranks.cpu(), label="Proper Noun Subset Overhead Imagery Baseline")
-    plt.legend()
+
+    # Plot all OSM tag matching methods
+    for method in osm_tag_recip_ranks:
+        sns.ecdfplot(osm_tag_recip_ranks[method], label=f"OSM Tag: {method}")
+
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
     plt.xlabel('Recip. Rank')
+    plt.tight_layout()
     mo.mpl.interactive(plt.gcf())
     return
 
@@ -930,8 +1354,10 @@ def _(
 def _(
     Path,
     compute_baseline_similarity,
+    compute_osm_tag_match_similarity,
     compute_patch_similarity,
     compute_proper_noun_binary_similarity,
+    create_osm_tag_extraction_dataset,
     datasets,
     load_vigor_dataset,
     proper_noun_datasets,
@@ -971,6 +1397,23 @@ def _(
             _sims = _fn(_datasets[_city])
             _sim_mat = export_similarity_kernel(_sims, _datasets[_city], load_vigor_dataset(_city.title()))
             torch.save(_sim_mat, _out_base_path / f"{_name}_{_city}.pt")
+
+    # Export OSM tag matching similarities
+    osm_extraction_paths = {
+        "chicago": Path('/tmp/pano_osm_extraction/test_2_output/'),
+        "seattle": Path('/data/overhead_matching/datasets/semantic_landmark_embeddings/pano_v2/Seattle/'),
+    }
+    for _city, _extraction_path in osm_extraction_paths.items():
+        if not _extraction_path.exists():
+            print(f"Skipping OSM tag export for {_city}: {_extraction_path} does not exist")
+            continue
+        print(f"osm_tag_match {_city}")
+        _osm_dataset = create_osm_tag_extraction_dataset(_extraction_path, _city.title())
+        _osm_sims = compute_osm_tag_match_similarity(_osm_dataset)
+        _vigor_dataset = load_vigor_dataset(_city.title())
+        for _method, _sims_and_pos in _osm_sims.items():
+            _sim_mat = export_similarity_kernel(_sims_and_pos, _osm_dataset, _vigor_dataset)
+            torch.save(_sim_mat, _out_base_path / f"osm_tag_match_{_method}_{_city}.pt")
 
     _baseline_seattle_sims = compute_baseline_similarity({"city": "Seattle"})
     _baseline_chicago_sims = compute_baseline_similarity({"city": "Chicago"})
