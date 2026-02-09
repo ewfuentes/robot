@@ -134,7 +134,18 @@ def main():
         if summary:
             print(f"  Final error: {summary['average_final_error']:.2f}m")
 
-    distance_bins = np.linspace(0, args.xlim, 200)
+    # Auto-detect xlim from data if not specified (xlim <= 0)
+    if args.xlim <= 0:
+        max_dist = max(
+            d.max()
+            for data in run_data.values()
+            for d in data["distances"]
+        )
+        xlim = float(max_dist)
+    else:
+        xlim = args.xlim
+
+    distance_bins = np.linspace(0, xlim, 200)
     colors = [f"C{i}" for i in range(len(run_data))]
 
     # Figure layout: 2 rows x 2 cols
@@ -172,7 +183,7 @@ def main():
         ax.set_ylabel("P(mass within radius)")
         ax.set_title(f"Convergence @ {radius}m radius\nMean CC: {title_cc}")
         ax.set_ylim(0, 1.05)
-        ax.set_xlim(0, args.xlim)
+        ax.set_xlim(0, xlim)
         ax.legend(loc="lower right", fontsize=9)
         ax.grid(True, alpha=0.3)
 
@@ -205,7 +216,7 @@ def main():
     ax.set_xlabel("Distance Traveled (m)")
     ax.set_ylabel("Error (m)")
     ax.set_title("Median Localization Error")
-    ax.set_xlim(0, args.xlim)
+    ax.set_xlim(0, xlim)
     ax.set_ylim(0, 500)
     ax.legend(fontsize=9)
     ax.grid(True, alpha=0.3)
@@ -231,7 +242,7 @@ def main():
     path_counts = [len(d["errors"]) for d in run_data.values()]
     n_paths = path_counts[0] if len(set(path_counts)) == 1 else "/".join(map(str, path_counts))
     fig.suptitle(
-        f"Histogram Filter Comparison (first {args.xlim:.0f}m)\n"
+        f"Histogram Filter Comparison (first {xlim:.0f}m)\n"
         f"{n_paths} paths, solid line = median, shading = IQR (25th-75th percentile)",
         fontsize=13,
         fontweight="bold",
