@@ -3,7 +3,7 @@ commands = [
     './tp_setup.sh',
     'export PATH="$PATH:~/.local/bin"',
     # create tensor caching
-    "bazel run //experimental/overhead_matching/swag/scripts:populate_tensor_cache -- --dataset_base /data/overhead_matching/datasets/VIGOR/ --train_config $(pwd)/config.yaml",
+    "bazel run //experimental/overhead_matching/swag/scripts:populate_tensor_cache -- --dataset_base /data/overhead_matching/datasets/VIGOR/ --train_config $(pwd)/config.yaml --no_ipdb --skip-existing",
     "MAX_DATALOADER_WORKERS=3 bazel run //experimental/overhead_matching/swag/scripts:train -- --dataset_base /data/overhead_matching/datasets/VIGOR/ --output_base /data/overhead_matching/training_outputs/ --no_ipdb --train_config $(pwd)/config.yaml",
 ]
 instance_type = "1xH100" # https://docs.tensorpool.dev/resources/instance-types
