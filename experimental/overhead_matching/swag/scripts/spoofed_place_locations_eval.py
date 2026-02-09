@@ -646,7 +646,7 @@ def _(df, mo, plt, sns):
 def _():
     import numpy as np
     import pandas as pd
-    return np, pd
+    return (pd,)
 
 
 @app.cell
@@ -878,8 +878,11 @@ def _(Path, json):
                 record = json.loads(line)
                 pano_key = record["key"]  # "pano_id,lat,lon,"
                 response_text = record["response"]["candidates"][0]["content"]["parts"][0]["text"]
-                parsed = json.loads(response_text)
-                panoramas[pano_key] = parsed
+                try:
+                    parsed = json.loads(response_text)
+                    panoramas[pano_key] = parsed
+                except:
+                    print(f"Failed to load response for {pano_key} from {jsonl_file}")
         return panoramas
     return (load_osm_tag_extraction_jsonl,)
 
@@ -1069,7 +1072,7 @@ def _(
     # Add extraction paths for each city here
     osm_extraction_paths = {
         "Chicago": Path('/tmp/pano_osm_extraction/test_2_output/'),
-        "Seattle": Path('/tmp/pano_osm_extraction/test_seattle_output/'),
+        "Seattle": Path('/data/overhead_matching/datasets/semantic_landmark_embeddings/pano_v2/Seattle/sentences/'),
     }
 
     @mo.persistent_cache
@@ -1094,7 +1097,14 @@ def _(osm_tag_dataset):
 
 
 @app.cell
-def _(osm_tag_dataset, osm_tag_sims, pnd_proper_noun_sims, proper_noun_datasets, EVAL_CITY, torch):
+def _(
+    EVAL_CITY,
+    osm_tag_dataset,
+    osm_tag_sims,
+    pnd_proper_noun_sims,
+    proper_noun_datasets,
+    torch,
+):
     # Find pano-satellite pairs with largest discrepancy between proper noun and tag matching
     # Only look at positive (ground truth) satellite patches for each panorama
 
@@ -1267,7 +1277,7 @@ def _(osm_tag_dataset, osm_tag_sims, pnd_proper_noun_sims, proper_noun_datasets,
                 print(f"     [{osm_idx}]: names={name_tags}, other={other_tags[:3]}{'...' if len(other_tags) > 3 else ''}")
 
         discrepancy_analysis = discrepancies
-    return (discrepancy_analysis,)
+    return
 
 
 @app.cell
@@ -1391,7 +1401,7 @@ def _(
     # Export OSM tag matching similarities
     osm_extraction_paths = {
         "chicago": Path('/tmp/pano_osm_extraction/test_2_output/'),
-        "seattle": Path('/tmp/pano_osm_extraction/test_seattle_output/'),
+        "seattle": Path('/data/overhead_matching/datasets/semantic_landmark_embeddings/pano_v2/Seattle/'),
     }
     for _city, _extraction_path in osm_extraction_paths.items():
         if not _extraction_path.exists():
