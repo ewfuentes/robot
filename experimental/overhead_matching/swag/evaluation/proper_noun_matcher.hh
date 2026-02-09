@@ -20,8 +20,7 @@ namespace robot::experimental::overhead_matching::swag::evaluation {
 //   1.0f for matches and 0.0f for non-matches. Row-major order.
 std::vector<float> compute_proper_noun_matches(
     const std::vector<std::vector<std::string>>& proper_nouns,
-    const std::vector<std::vector<std::string>>& osm_texts,
-    int num_threads = 0);
+    const std::vector<std::vector<std::string>>& osm_texts, int num_threads = 0);
 
 // Computes a binary similarity matrix between keyed tags using substring matching.
 // For each pair (i, j), result[i * num_targets + j] = 1 if any (key, value) in
