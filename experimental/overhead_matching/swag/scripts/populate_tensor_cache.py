@@ -18,6 +18,7 @@ import hashlib
 import io
 import dataclasses
 import sys
+from contextlib import nullcontext
 
 
 def compute_config_hash(obj):
@@ -628,6 +629,8 @@ if __name__ == "__main__":
                         help='Batch size for processing')
     parser.add_argument("--skip-existing", action='store_true',
                         help='Skip caches that already exist')
+    parser.add_argument("--no_ipdb", action="store_true",
+                        help="Don't launch ipdb on exception")
 
     output_path = Path('~/.cache/robot/overhead_matching/tensor_cache/').expanduser()
     args = parser.parse_args()
@@ -642,8 +645,13 @@ if __name__ == "__main__":
     # Convert train_config paths to Path objects
     train_config_paths = [Path(p) for p in args.train_config]
 
-    import ipdb
-    with ipdb.launch_ipdb_on_exception():
+    if args.no_ipdb:
+        ctx = nullcontext()
+    else:
+        import ipdb
+        ctx = ipdb.launch_ipdb_on_exception()
+
+    with ctx:
         main(train_config_paths=train_config_paths,
              base_output_path=output_path,
              batch_size=args.batch_size,
