@@ -133,6 +133,15 @@ py_test(
   ]
 )
 
+py_test(
+  name = "proper_noun_matcher_test",
+  srcs = ["proper_noun_matcher_test.py"],
+  data = [":proper_noun_matcher_python.so"],
+  deps = [
+    requirement("numpy"),
+  ],
+)
+
 py_library(
   name = "osm_tag_similarity",
   srcs = ["osm_tag_similarity.py"],
