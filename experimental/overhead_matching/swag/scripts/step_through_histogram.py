@@ -6,6 +6,9 @@ import numpy as np
 from pathlib import Path
 import json
 import argparse
+import io
+import base64
+from PIL import Image as PILImage
 
 import dash
 from dash import dcc, html, dash_table
@@ -26,6 +29,16 @@ from experimental.overhead_matching.swag.filter.adaptive_aggregators import (
 )
 import experimental.overhead_matching.swag.evaluation.evaluate_swag as es
 from common.gps import web_mercator
+
+
+def tensor_to_base64(img_tensor: torch.Tensor) -> str:
+    """Convert a (C, H, W) float32 tensor to a base64 JPEG data URI."""
+    arr = (img_tensor.clamp(0, 1) * 255).byte().permute(1, 2, 0).cpu().numpy()
+    img = PILImage.fromarray(arr)
+    buffer = io.BytesIO()
+    img.save(buffer, format='JPEG', quality=85)
+    img_str = base64.b64encode(buffer.getvalue()).decode()
+    return f"data:image/jpeg;base64,{img_str}"
 
 
 def get_dataset_bounds(vigor_dataset: vd.VigorDataset):
@@ -62,19 +75,25 @@ def run_filter_with_history(
         'log_belief': belief.get_log_belief().clone().cpu(),
         'mean': belief.get_mean_latlon().clone().cpu(),
         'gt_idx': 0,
+        'pano_id': path_pano_ids[0],
+        'obs_log_ll': None,
     })
 
     path_len = len(path_pano_ids)
 
+    filter_device = belief.get_log_belief().device
+
     for step_idx in range(path_len - 1):
         # Observation update - get log-likelihoods from aggregator
-        obs_log_ll = log_likelihood_aggregator(path_pano_ids[step_idx])
+        obs_log_ll = log_likelihood_aggregator(path_pano_ids[step_idx]).to(filter_device)
         belief.apply_observation(obs_log_ll, mapping)
         history.append({
             'stage': f'obs_{step_idx}',
             'log_belief': belief.get_log_belief().clone().cpu(),
             'mean': belief.get_mean_latlon().clone().cpu(),
             'gt_idx': step_idx,
+            'pano_id': path_pano_ids[step_idx],
+            'obs_log_ll': obs_log_ll.clone().cpu(),
         })
 
         # Motion prediction
@@ -84,16 +103,20 @@ def run_filter_with_history(
             'log_belief': belief.get_log_belief().clone().cpu(),
             'mean': belief.get_mean_latlon().clone().cpu(),
             'gt_idx': step_idx + 1,
+            'pano_id': path_pano_ids[step_idx + 1],
+            'obs_log_ll': None,
         })
 
     # Final observation - get log-likelihoods from aggregator
-    obs_log_ll = log_likelihood_aggregator(path_pano_ids[-1])
+    obs_log_ll = log_likelihood_aggregator(path_pano_ids[-1]).to(filter_device)
     belief.apply_observation(obs_log_ll, mapping)
     history.append({
         'stage': f'obs_{path_len-1}',
         'log_belief': belief.get_log_belief().clone().cpu(),
         'mean': belief.get_mean_latlon().clone().cpu(),
         'gt_idx': path_len - 1,
+        'pano_id': path_pano_ids[-1],
+        'obs_log_ll': obs_log_ll.clone().cpu(),
     })
 
     return history
@@ -176,6 +199,8 @@ def main():
     parser.add_argument("--aggregator-config", type=str, required=True,
                         help="Path to YAML config file for aggregator (see adaptive_aggregators.py)")
     parser.add_argument("--noise-percent", type=float, default=None)
+    parser.add_argument("--simple", action="store_true",
+                        help="Disable new features (pano/patch images, likelihood coloring)")
     parser.add_argument("--port", type=int, default=8050)
 
     args = parser.parse_args()
@@ -187,6 +212,7 @@ def main():
     with open(eval_path / "args.json") as f:
         eval_args = json.load(f)
 
+    simple_mode = args.simple
     noise_percent = args.noise_percent if args.noise_percent is not None else eval_args.get("noise_percent", 0.02)
     subdivision_factor = eval_args.get("subdivision_factor", 4)
 
@@ -216,7 +242,7 @@ def main():
         panorama_neighbor_radius=0.0005,
         satellite_patch_size=(640, 640),
         panorama_size=(640, 640),
-        factor=0.3,
+        factor=1.0,
         landmark_version=eval_args.get("landmark_version", "v4_202001"),
     )
     vigor_dataset = vd.VigorDataset(dataset_path, dataset_config)
@@ -338,6 +364,23 @@ def main():
         # Main plot
         dcc.Graph(id='main-plot', style={'height': '70vh'}),
 
+        # Panorama and top satellite patches (hidden in simple mode)
+        html.Div([
+            # Left: panorama image
+            html.Div([
+                html.H4(id='pano-title', children='Panorama'),
+                html.Img(id='pano-image', style={'width': '100%', 'maxHeight': '300px', 'objectFit': 'contain'}),
+            ], style={'width': '30%', 'display': 'inline-block', 'verticalAlign': 'top', 'padding': '10px'}),
+
+            # Right: top satellite patches
+            html.Div([
+                html.H4(id='top-patches-title', children='Top Satellite Patches by Observation Likelihood'),
+                html.Div(id='top-patches-container', style={
+                    'display': 'flex', 'flexWrap': 'wrap', 'gap': '8px',
+                }),
+            ], style={'width': '68%', 'display': 'inline-block', 'verticalAlign': 'top', 'padding': '10px'}),
+        ], style={'marginTop': '20px', 'display': 'none' if simple_mode else 'block'}),
+
         # Minimal client-side state (just path index and step count)
         dcc.Store(id='path-metadata-store'),
     ])
@@ -417,11 +460,16 @@ def main():
 
     @app.callback(
         [Output('main-plot', 'figure'),
-         Output('step-info', 'children')],
+         Output('step-info', 'children'),
+         Output('pano-image', 'src'),
+         Output('pano-title', 'children'),
+         Output('top-patches-container', 'children'),
+         Output('top-patches-title', 'children')],
         [Input('step-slider', 'value'),
          Input('path-metadata-store', 'data')]
     )
     def update_plot(step_idx, metadata):
+        empty_outputs = ("", "Panorama", [], "Top Satellite Patches by Observation Likelihood")
         if not metadata or cache['history'] is None:
             # Return empty figure
             fig = go.Figure()
@@ -429,7 +477,7 @@ def main():
                 title="Select a path from the table above",
                 height=600,
             )
-            return fig, "No path selected"
+            return fig, "No path selected", *empty_outputs
 
         # Get data from server-side cache
         path_idx = cache['current_path_idx']
@@ -440,6 +488,8 @@ def main():
         log_belief = step['log_belief']
         mean = step['mean'].numpy()
         gt_idx = step['gt_idx']
+        pano_id = step['pano_id']
+        obs_log_ll = step['obs_log_ll']
 
         # Create heatmap data
         belief_data, lat_coords, lon_coords = create_belief_heatmap(log_belief, grid_spec)
@@ -464,19 +514,42 @@ def main():
             row=1, col=1
         )
 
-        # Satellite patches (subsample for performance)
-        step_size = max(1, len(sat_positions) // 500)
-        fig.add_trace(
-            go.Scatter(
-                x=sat_positions[::step_size, 1],
-                y=sat_positions[::step_size, 0],
-                mode='markers',
-                marker=dict(size=3, color='lightblue', opacity=0.3),
-                name='Sat patches',
-                showlegend=True,
-            ),
-            row=1, col=1
-        )
+        # Satellite patches — color by obs likelihood on obs steps (unless simple mode)
+        if not simple_mode and obs_log_ll is not None:
+            ll_np = obs_log_ll.numpy()
+            for subplot_col, marker_size in [(1, 3), (2, 5)]:
+                fig.add_trace(
+                    go.Scatter(
+                        x=sat_positions[:, 1],
+                        y=sat_positions[:, 0],
+                        mode='markers',
+                        marker=dict(
+                            size=marker_size,
+                            color=ll_np,
+                            colorscale='Viridis',
+                            opacity=0.6,
+                            showscale=(subplot_col == 2),
+                            colorbar=dict(title='Log LL') if subplot_col == 2 else None,
+                        ),
+                        name='Obs likelihood' if subplot_col == 1 else None,
+                        showlegend=(subplot_col == 1),
+                    ),
+                    row=1, col=subplot_col
+                )
+        else:
+            step_size = max(1, len(sat_positions) // 500)
+            for subplot_col, marker_size in [(1, 3), (2, 5)]:
+                fig.add_trace(
+                    go.Scatter(
+                        x=sat_positions[::step_size, 1],
+                        y=sat_positions[::step_size, 0],
+                        mode='markers',
+                        marker=dict(size=marker_size, color='lightblue', opacity=0.3 if subplot_col == 1 else 0.5),
+                        name='Sat patches' if subplot_col == 1 else None,
+                        showlegend=(subplot_col == 1),
+                    ),
+                    row=1, col=subplot_col
+                )
 
         # GT path up to current position
         fig.add_trace(
@@ -524,17 +597,6 @@ def main():
                 colorscale='Hot',
                 showscale=True,
                 opacity=0.7,
-            ),
-            row=1, col=2
-        )
-
-        fig.add_trace(
-            go.Scatter(
-                x=sat_positions[::step_size, 1],
-                y=sat_positions[::step_size, 0],
-                mode='markers',
-                marker=dict(size=5, color='lightblue', opacity=0.5),
-                showlegend=False,
             ),
             row=1, col=2
         )
@@ -594,7 +656,46 @@ def main():
 
         info = f"Path {path_idx} | Stage: {stage} | GT idx: {gt_idx} | Error: {error_m:.1f}m"
 
-        return fig, info
+        # Load panorama and top satellite patches (skip in simple mode)
+        if simple_mode:
+            pano_src = ""
+            pano_title = "Panorama"
+            patch_children = []
+            patches_title = "Top Satellite Patches by Observation Likelihood"
+        else:
+            pano_row = vigor_dataset._panorama_metadata[
+                vigor_dataset._panorama_metadata['pano_id'] == pano_id
+            ]
+            if not pano_row.empty:
+                pano_path = pano_row.iloc[0]['path']
+                pano_img, _ = vd.load_image(pano_path, (320, 640))
+                pano_src = tensor_to_base64(pano_img)
+            else:
+                pano_src = ""
+            pano_title = f"Panorama: {pano_id}"
+
+            if obs_log_ll is not None:
+                top_k = min(10, len(obs_log_ll))
+                top_indices = torch.argsort(obs_log_ll, descending=True)[:top_k]
+                patch_children = []
+                for rank, idx in enumerate(top_indices):
+                    idx_int = idx.item()
+                    ll_val = obs_log_ll[idx_int].item()
+                    sat_path = vigor_dataset._satellite_metadata.iloc[idx_int]['path']
+                    sat_img, _ = vd.load_image(sat_path, (160, 160))
+                    sat_src = tensor_to_base64(sat_img)
+                    patch_children.append(
+                        html.Div([
+                            html.Img(src=sat_src, style={'width': '140px', 'height': '140px', 'objectFit': 'cover'}),
+                            html.Div(f"#{rank+1} LL:{ll_val:.2f}", style={'fontSize': '11px', 'textAlign': 'center'}),
+                        ], style={'display': 'inline-block', 'textAlign': 'center'})
+                    )
+                patches_title = f"Top {top_k} Satellite Patches by Observation Likelihood"
+            else:
+                patch_children = [html.Div("No observation at this step", style={'color': 'gray', 'fontStyle': 'italic'})]
+                patches_title = "Top Satellite Patches by Observation Likelihood"
+
+        return fig, info, pano_src, pano_title, patch_children, patches_title
 
     print(f"Starting server at http://localhost:{args.port}")
     app.run(debug=False, port=args.port)
