@@ -155,7 +155,6 @@ def main():
 
     # Convergence plots for each radius
     for ax, radius in zip([axes[0, 0], axes[0, 1], axes[1, 0]], [25, 50, 100]):
-        cc_parts = []
         for (label, data), color in zip(run_data.items(), colors):
             if radius not in data["prob_mass"]:
                 continue
@@ -171,17 +170,15 @@ def main():
             cc_key = f"convergence_cost_{radius}m"
             cc_val = np.mean(s[cc_key]) if s and cc_key in s else None
             cc_str = f", CC={cc_val:.0f}" if cc_val is not None else ""
-            cc_parts.append(f"{label}: {cc_val:.0f}" if cc_val is not None else label)
 
             ax.plot(
                 distance_bins, median, linewidth=2, color=color,
                 label=f"{label}{cc_str}",
             )
 
-        title_cc = "  |  ".join(cc_parts)
         ax.set_xlabel("Distance Traveled (m)")
         ax.set_ylabel("P(mass within radius)")
-        ax.set_title(f"Convergence @ {radius}m radius\nMean CC: {title_cc}")
+        ax.set_title(f"Convergence @ {radius}m radius")
         ax.set_ylim(0, 1.05)
         ax.set_xlim(0, xlim)
         ax.legend(loc="lower right", fontsize=9)
