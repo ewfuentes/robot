@@ -936,157 +936,123 @@ def _(Path, load_osm_tag_extraction_jsonl, load_vigor_dataset):
 
 
 @app.cell
-def _(np, pnm, torch, tqdm):
-    def compute_osm_tag_match_similarity(dataset, chunk_size=512):
-        """Compute similarity based on OSM tag matching with multiple aggregation strategies.
+def _(pnm, torch, tqdm):
+    def compute_osm_tag_match_similarity(dataset):
+        """Compute similarity based on OSM tag substring matching with multiple aggregations.
 
-        For each (pano_landmark, osm_landmark) pair:
-            extracted_tags = {(primary_tag.key, primary_tag.value)} |
-                            {(t.key, t.value) for t in additional_tags}
-            matching = len(extracted_tags & osm_pruned_props)
-            score = matching / len(extracted_tags) if extracted_tags else 0
+        Uses C++ implementation for fast keyed substring matching:
+        For each (pano_landmark, osm_landmark) pair, checks if any extracted tag
+        (key, value) has a matching key in OSM where the extracted value is a
+        case-insensitive substring of the OSM value.
 
-        Returns multiple similarity matrices for comparison:
-            - max: Max over all (pano_lm, osm_lm) pairs (exact match)
-            - mean: Mean of best OSM match per pano landmark (exact match)
-            - coverage: Fraction of pano landmarks with any match (score > 0) (exact match)
-            - sum: Sum of best OSM match per pano landmark (exact match)
-            - idf_max: Max with IDF-weighted tag matching (exact match)
-            - substring: Substring matching on tag values (keys must match)
+        Aggregation methods (applied per pano-satellite pair):
+        - max: 1 if any pano landmark matched any OSM landmark in the sat patch
+        - mean: fraction of pano landmarks that matched at least one OSM landmark
+        - coverage: same as mean for binary matching
+        - sum: count of pano landmarks that matched
 
         Args:
             dataset: Dict with "pano_data_from_pano_id" and "sat_data_from_sat_id"
-            chunk_size: Unused, kept for interface compatibility
 
         Returns:
-            Dict with "positives" tensor and per-method "similarity" tensors
+            Dict with aggregation method keys, each containing {"similarity": tensor, "positives": tensor}
         """
         num_sat_patches = max(dataset['sat_data_from_sat_id'].keys()) + 1
         num_panos = len(dataset["pano_data_from_pano_id"])
 
-        # Initialize output tensors for each method
         out_max = torch.full((num_panos, num_sat_patches), -torch.inf)
         out_mean = torch.full((num_panos, num_sat_patches), -torch.inf)
         out_coverage = torch.full((num_panos, num_sat_patches), -torch.inf)
         out_sum = torch.full((num_panos, num_sat_patches), -torch.inf)
-        out_idf_max = torch.full((num_panos, num_sat_patches), -torch.inf)
-        out_substring = torch.full((num_panos, num_sat_patches), -torch.inf)
         positives = torch.zeros((num_panos, num_sat_patches), dtype=torch.bool)
 
-        # Build index of unique OSM landmarks for substring matching
+        # Build index of unique OSM landmarks
         osm_idx_from_props = {}
         osm_tags_by_idx = []
         for sat_idx, sat_data in dataset['sat_data_from_sat_id'].items():
             for osm_props in sat_data["landmark_ids"]:
                 if osm_props not in osm_idx_from_props:
                     osm_idx_from_props[osm_props] = len(osm_tags_by_idx)
-                    # Convert frozenset of (key, value) tuples to list of tuples
                     osm_tags_by_idx.append(list(osm_props))
         num_osm = len(osm_tags_by_idx)
 
-        # Compute IDF weights for each tag
-        # Count how many satellite patches contain each tag
-        tag_sat_count = {}
-        for sat_idx, sat_data in dataset['sat_data_from_sat_id'].items():
-            sat_tags = set()
-            for osm_props in sat_data["landmark_ids"]:
-                sat_tags.update(osm_props)
-            for tag in sat_tags:
-                tag_sat_count[tag] = tag_sat_count.get(tag, 0) + 1
-
-        # IDF = log(num_sat_patches / count), with smoothing
-        tag_idf = {}
-        for tag, count in tag_sat_count.items():
-            tag_idf[tag] = np.log(num_sat_patches / (count + 1))
-
-        # Collect pano landmark data for substring matching
+        # Collect pano landmark data, tracking which pano each landmark belongs to
         pano_for_lm = []
         pano_lm_tags_list = []
+        num_lm_per_pano = []  # number of landmarks per pano
 
         for pano_idx, (pano_id, pano_info) in enumerate(tqdm.tqdm(
-                dataset["pano_data_from_pano_id"].items(), desc="tag_matching")):
+                dataset["pano_data_from_pano_id"].items(), desc="collecting_tags")):
             positives[pano_idx, pano_info["sat_idxs"]] = True
 
-            # Pre-extract tags for all pano landmarks
-            pano_lm_tags = []
+            lm_count = 0
             for pano_lm in pano_info["landmarks"]:
                 primary = pano_lm.get("primary_tag", {})
-                extracted = set()
+                extracted = []
                 if primary.get("key") and primary.get("value"):
-                    extracted.add((primary["key"], primary["value"]))
+                    extracted.append((primary["key"], primary["value"]))
                 for tag in pano_lm.get("additional_tags", []):
                     if tag.get("key") and tag.get("value"):
-                        extracted.add((tag["key"], tag["value"]))
+                        extracted.append((tag["key"], tag["value"]))
                 if extracted:
-                    pano_lm_tags.append(extracted)
                     pano_for_lm.append(pano_idx)
-                    pano_lm_tags_list.append(list(extracted))
-
-            if not pano_lm_tags:
-                continue
-
-            for sat_idx, sat_data in dataset['sat_data_from_sat_id'].items():
-                osm_landmarks = sat_data["landmark_ids"]
-                if not osm_landmarks:
-                    continue
-
-                # Compute best score for each pano landmark
-                best_scores = []
-                best_idf_scores = []
-                for extracted in pano_lm_tags:
-                    best_score = 0.0
-                    best_idf_score = 0.0
-                    for osm_props in osm_landmarks:
-                        matching_tags = extracted & osm_props
-                        if matching_tags:
-                            score = len(matching_tags) / len(extracted)
-                            best_score = max(best_score, score)
-
-                            # IDF-weighted score
-                            idf_sum = sum(tag_idf.get(tag, 0) for tag in matching_tags)
-                            total_idf = sum(tag_idf.get(tag, 0) for tag in extracted)
-                            if total_idf > 0:
-                                idf_score = idf_sum / total_idf
-                                best_idf_score = max(best_idf_score, idf_score)
-
-                    best_scores.append(best_score)
-                    best_idf_scores.append(best_idf_score)
-
-                # Aggregate across pano landmarks
-                out_max[pano_idx, sat_idx] = max(best_scores)
-                out_mean[pano_idx, sat_idx] = sum(best_scores) / len(best_scores)
-                out_coverage[pano_idx, sat_idx] = sum(1 for s in best_scores if s > 0) / len(best_scores)
-                out_sum[pano_idx, sat_idx] = sum(best_scores)
-                out_idf_max[pano_idx, sat_idx] = max(best_idf_scores)
+                    pano_lm_tags_list.append(extracted)
+                    lm_count += 1
+            num_lm_per_pano.append(lm_count)
 
         # Compute substring matching using C++ implementation
         if len(pano_lm_tags_list) > 0 and num_osm > 0:
-            # Call C++ keyed substring matcher
+            print(f"Computing substring matches: {len(pano_lm_tags_list)} pano landmarks x {num_osm} OSM landmarks")
             match_matrix = pnm.compute_keyed_substring_matches(
                 pano_lm_tags_list, osm_tags_by_idx
             )
-            chunk_match = torch.from_numpy(match_matrix)
+            match_matrix_t = torch.from_numpy(match_matrix)  # (num_pano_lm, num_osm)
 
-            # Aggregate by pano
-            pano_for_lm_t = torch.tensor(pano_for_lm, device='cpu')
-            best_osm_match_from_pano = torch.zeros((num_panos, num_osm), device='cpu')
-            best_osm_match_from_pano.index_add_(0, pano_for_lm_t, chunk_match)
+            pano_for_lm_t = torch.tensor(pano_for_lm, dtype=torch.long)
+            num_lm_per_pano_t = torch.tensor(num_lm_per_pano, dtype=torch.float)
 
-            # Contract to satellite patches
-            for sat_idx, sat_data in dataset['sat_data_from_sat_id'].items():
+            # For each satellite patch, compute aggregations using vectorized operations
+            for sat_idx, sat_data in tqdm.tqdm(dataset['sat_data_from_sat_id'].items(), desc="aggregating"):
                 osm_idxs = [osm_idx_from_props[x] for x in sat_data["landmark_ids"]]
                 if len(osm_idxs) == 0:
-                    out_substring[:, sat_idx] = -torch.inf
-                else:
-                    out_substring[:, sat_idx] = torch.max(best_osm_match_from_pano[:, osm_idxs], 1).values
+                    continue
+
+                # Get match scores for OSM landmarks in this sat patch
+                # sat_matches: (num_pano_lm, num_osm_in_sat)
+                sat_matches = match_matrix_t[:, osm_idxs]
+
+                # For each pano landmark, did it match ANY osm landmark in this sat patch?
+                # best_per_lm: (num_pano_lm,) - 1 if matched, 0 otherwise
+                best_per_lm = sat_matches.max(dim=1).values
+
+                # Aggregate by pano using scatter operations
+                # Sum of best scores per pano
+                sum_scores = torch.zeros(num_panos)
+                sum_scores.scatter_add_(0, pano_for_lm_t, best_per_lm)
+
+                # For max: use scatter_reduce with 'amax'
+                max_scores = torch.full((num_panos,), -torch.inf)
+                max_scores.scatter_reduce_(0, pano_for_lm_t, best_per_lm, reduce='amax', include_self=False)
+
+                # Mean = sum / count (avoid div by zero)
+                mean_scores = sum_scores / num_lm_per_pano_t.clamp(min=1)
+
+                # Coverage = (sum of matches > 0) / count
+                # For binary scores, coverage = sum / count = mean
+                coverage_scores = mean_scores
+
+                # Set outputs (only for panos with landmarks)
+                has_landmarks = num_lm_per_pano_t > 0
+                out_max[has_landmarks, sat_idx] = max_scores[has_landmarks]
+                out_mean[has_landmarks, sat_idx] = mean_scores[has_landmarks]
+                out_coverage[has_landmarks, sat_idx] = coverage_scores[has_landmarks]
+                out_sum[has_landmarks, sat_idx] = sum_scores[has_landmarks]
 
         return {
             "max": {"similarity": out_max, "positives": positives},
             "mean": {"similarity": out_mean, "positives": positives},
             "coverage": {"similarity": out_coverage, "positives": positives},
             "sum": {"similarity": out_sum, "positives": positives},
-            "idf_max": {"similarity": out_idf_max, "positives": positives},
-            "substring": {"similarity": out_substring, "positives": positives},
         }
     return (compute_osm_tag_match_similarity,)
 
@@ -1151,62 +1117,109 @@ def _(osm_tag_dataset, osm_tag_sims, pnd_proper_noun_sims, proper_noun_datasets,
 
         # Get similarities for common panos
         pn_sims = pnd_proper_noun_sims["similarity"]  # (num_pnd_panos, num_sats)
-        tag_sims = osm_tag_sims["substring"]["similarity"]  # (num_tag_panos, num_sats)
+        tag_sims = osm_tag_sims["max"]["similarity"]  # (num_tag_panos, num_sats)
 
-        # Find largest discrepancies where proper noun matches but tag doesn't
-        # Only consider positive (ground truth) satellite patches
-        discrepancies = []
-        total_positives = 0
-        pn_matched_positives = 0
-        tag_matched_positives = 0
-        both_matched_positives = 0
+        num_sats = tag_sims.shape[1]
 
-        for pano_id in common_pano_ids:
-            pnd_idx = pnd_idx_from_pano_id[pano_id]
-            tag_idx = tag_idx_from_pano_id[pano_id]
+        # Build index arrays for common panos
+        common_pano_list = list(common_pano_ids)
+        common_pnd_idxs = torch.tensor([pnd_idx_from_pano_id[pid] for pid in common_pano_list])
+        common_tag_idxs = torch.tensor([tag_idx_from_pano_id[pid] for pid in common_pano_list])
 
-            # Get positive sat indices for this pano
+        # Build positives mask for common panos
+        common_positives_mask = torch.zeros((len(common_pano_list), num_sats), dtype=torch.bool)
+        for i, pano_id in enumerate(common_pano_list):
             pnd_pano_data = _pnd["pano_data_from_pano_id"][pano_id]
-            positive_sat_idxs = set(pnd_pano_data["sat_idxs"])
+            common_positives_mask[i, pnd_pano_data["sat_idxs"]] = True
 
-            pn_row = pn_sims[pnd_idx]
-            tag_row = tag_sims[tag_idx]
+        # Get similarities for common panos
+        common_pn_sims = pn_sims[common_pnd_idxs]  # (num_common, num_sats)
+        common_tag_sims = tag_sims[common_tag_idxs]  # (num_common, num_sats)
 
-            for sat_idx in positive_sat_idxs:
-                total_positives += 1
-                pn_matched = pn_row[sat_idx].item() > 0
-                tag_matched = tag_row[sat_idx].item() > 0
+        # Matched masks
+        pn_matched_mask = common_pn_sims > 0
+        tag_matched_mask = common_tag_sims > 0
 
-                if pn_matched:
-                    pn_matched_positives += 1
-                if tag_matched:
-                    tag_matched_positives += 1
-                if pn_matched and tag_matched:
-                    both_matched_positives += 1
+        # Compute stats vectorized
+        pn_tp = (common_positives_mask & pn_matched_mask).sum().item()
+        pn_fp = (~common_positives_mask & pn_matched_mask).sum().item()
+        tag_tp = (common_positives_mask & tag_matched_mask).sum().item()
+        tag_fp = (~common_positives_mask & tag_matched_mask).sum().item()
+        both_tp = (common_positives_mask & pn_matched_mask & tag_matched_mask).sum().item()
+        total_positives = common_positives_mask.sum().item()
+        total_negatives = (~common_positives_mask).sum().item()
 
-                # Record discrepancy where proper noun matched but tag didn't
-                if pn_matched and not tag_matched:
-                    discrepancies.append({
-                        "pano_id": pano_id,
-                        "sat_idx": sat_idx,
-                        "pn_sim": pn_row[sat_idx].item(),
-                        "tag_sim": tag_row[sat_idx].item(),
-                        "pnd_idx": pnd_idx,
-                        "tag_idx": tag_idx,
-                        "is_positive": True,
-                    })
+        # Compute precision and recall
+        pn_precision = pn_tp / (pn_tp + pn_fp) if (pn_tp + pn_fp) > 0 else 0
+        tag_precision = tag_tp / (tag_tp + tag_fp) if (tag_tp + tag_fp) > 0 else 0
+        pn_recall = pn_tp / total_positives if total_positives > 0 else 0
+        tag_recall = tag_tp / total_positives if total_positives > 0 else 0
+
+        # Find discrepancies: positive pairs where tag didn't match
+        discrepancy_mask = common_positives_mask & ~tag_matched_mask
+        discrepancy_indices = discrepancy_mask.nonzero(as_tuple=False)  # (num_discrepancies, 2)
+
+        discrepancies = []
+        for idx in range(min(len(discrepancy_indices), 100)):  # Limit to 100 for memory
+            i, sat_idx = discrepancy_indices[idx].tolist()
+            pano_id = common_pano_list[i]
+            pnd_idx = common_pnd_idxs[i].item()
+            tag_idx = common_tag_idxs[i].item()
+            discrepancies.append({
+                "pano_id": pano_id,
+                "sat_idx": sat_idx,
+                "pn_sim": common_pn_sims[i, sat_idx].item(),
+                "tag_sim": common_tag_sims[i, sat_idx].item(),
+                "pnd_idx": pnd_idx,
+                "tag_idx": tag_idx,
+                "is_positive": True,
+                "pn_matched": pn_matched_mask[i, sat_idx].item(),
+            })
 
         # Sort by proper noun similarity (highest first)
         discrepancies.sort(key=lambda x: -x["pn_sim"])
 
-        print(f"\nPositive pair statistics:")
-        print(f"  Total positive pairs: {total_positives}")
-        print(f"  Proper noun matched: {pn_matched_positives} ({100*pn_matched_positives/total_positives:.1f}%)")
-        print(f"  Tag matched: {tag_matched_positives} ({100*tag_matched_positives/total_positives:.1f}%)")
-        print(f"  Both matched: {both_matched_positives} ({100*both_matched_positives/total_positives:.1f}%)")
-        print(f"\nFound {len(discrepancies)} positive pairs where proper noun matched but tag didn't")
-        print("\nTop 10 discrepancies (proper noun matched, tag didn't, on positive pairs):")
-        for i, d in enumerate(discrepancies[:10]):
+        print(f"\n{'='*70}")
+        print(f"COMMON PANOS ONLY ({len(common_pano_ids)} panos)")
+        print(f"{'='*70}")
+        print(f"  {total_positives} positive pairs, {total_negatives} negative pairs")
+        print(f"\n  Proper noun matching:")
+        print(f"    Recall:    {pn_tp}/{total_positives} = {100*pn_recall:.1f}%")
+        print(f"    Precision: {pn_tp}/{pn_tp + pn_fp} = {100*pn_precision:.1f}%")
+        print(f"\n  Tag matching (substring):")
+        print(f"    Recall:    {tag_tp}/{total_positives} = {100*tag_recall:.1f}%")
+        print(f"    Precision: {tag_tp}/{tag_tp + tag_fp} = {100*tag_precision:.1f}%")
+        print(f"\n  Both matched: {both_tp} ({100*both_tp/total_positives:.1f}% of positives)")
+
+        # Compute stats on ALL OSM tag dataset panos (vectorized)
+        # Build positives mask for all tag panos
+        all_positives_mask = torch.zeros((len(tag_pano_ids), num_sats), dtype=torch.bool)
+        for tag_idx, pano_id in enumerate(tag_pano_ids):
+            tag_pano_data = _tag_dataset["pano_data_from_pano_id"][pano_id]
+            all_positives_mask[tag_idx, tag_pano_data["sat_idxs"]] = True
+
+        # Matched mask: similarity > 0
+        all_matched_mask = tag_sims > 0
+
+        # Compute TP, FP, etc. using vectorized operations
+        all_tp = (all_positives_mask & all_matched_mask).sum().item()
+        all_fp = (~all_positives_mask & all_matched_mask).sum().item()
+        all_tag_positives = all_positives_mask.sum().item()
+        all_tag_negatives = (~all_positives_mask).sum().item()
+
+        all_tag_recall = all_tp / all_tag_positives if all_tag_positives > 0 else 0
+        all_tag_precision = all_tp / (all_tp + all_fp) if (all_tp + all_fp) > 0 else 0
+
+        print(f"\n{'='*70}")
+        print(f"ALL OSM TAG PANOS ({len(tag_pano_ids)} panos)")
+        print(f"{'='*70}")
+        print(f"  {all_tag_positives} positive pairs, {all_tag_negatives} negative pairs")
+        print(f"\n  Tag matching (substring):")
+        print(f"    Recall:    {all_tp}/{all_tag_positives} = {100*all_tag_recall:.1f}%")
+        print(f"    Precision: {all_tp}/{all_tp + all_fp} = {100*all_tag_precision:.1f}%")
+        print(f"\nFound {len(discrepancies)} positive pairs where tag matching failed")
+        print("\nPositive pairs where tag matching failed:")
+        for i, d in enumerate(discrepancies[:20]):
             pano_id = d["pano_id"]
             sat_idx = d["sat_idx"]
 
@@ -1233,7 +1246,8 @@ def _(osm_tag_dataset, osm_tag_sims, pnd_proper_noun_sims, proper_noun_datasets,
             osm_landmarks = list(sat_data.get("landmark_ids", []))
 
             print(f"\n{'='*60}")
-            print(f"{i+1}. pano={pano_id}, sat={sat_idx}, pn_sim={d['pn_sim']:.2f}, tag_sim={d['tag_sim']:.2f}")
+            pn_status = "PN:YES" if d.get('pn_matched') else "PN:NO"
+            print(f"{i+1}. pano={pano_id}, sat={sat_idx}, {pn_status}, pn_sim={d['pn_sim']:.2f}, tag_sim={d['tag_sim']:.2f}")
 
             print(f"\n   PANO LANDMARKS (proper nouns):")
             for lm_idx, pns in enumerate(proper_nouns_by_lm[:5]):
