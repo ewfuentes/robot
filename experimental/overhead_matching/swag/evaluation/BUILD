@@ -151,6 +151,7 @@ py_library(
     "//common/python:__subpackages__",
   ],
   deps = [
+    requirement("numpy"),
     requirement("torch"),
     requirement("tqdm"),
     "//experimental/overhead_matching/swag/data:vigor_dataset",

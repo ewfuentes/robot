@@ -5,8 +5,10 @@ and computes pano-to-satellite similarity matrices using keyed substring matchin
 """
 
 import json
+import math
 from pathlib import Path
 
+import numpy as np
 import torch
 import tqdm
 
@@ -98,10 +100,14 @@ def compute_osm_tag_match_similarity(dataset: dict) -> dict:
     case-insensitive substring of the OSM value.
 
     Aggregation methods (applied per pano-satellite pair):
-    - max: 1 if any pano landmark matched any OSM landmark in the sat patch
-    - mean: fraction of pano landmarks that matched at least one OSM landmark
-    - coverage: same as mean for binary matching
-    - sum: count of pano landmarks that matched
+    Binary (unit weight):
+    - max_unit_max: 1 if any pano landmark matched any OSM landmark
+    - max_unit_mean: fraction of pano landmarks that matched
+    - max_unit_sum: count of pano landmarks that matched
+    IDF-weighted:
+    - sum_idf_max: max IDF-weighted match score across pano landmarks
+    - sum_idf_mean: mean IDF-weighted match score across pano landmarks
+    - sum_idf_sum: sum of IDF-weighted match scores across pano landmarks
 
     Args:
         dataset: Dict with "pano_data_from_pano_id" and "sat_data_from_sat_id"
@@ -112,10 +118,14 @@ def compute_osm_tag_match_similarity(dataset: dict) -> dict:
     num_sat_patches = max(dataset['sat_data_from_sat_id'].keys()) + 1
     num_panos = len(dataset["pano_data_from_pano_id"])
 
-    out_max = torch.full((num_panos, num_sat_patches), -torch.inf)
-    out_mean = torch.full((num_panos, num_sat_patches), -torch.inf)
-    out_coverage = torch.full((num_panos, num_sat_patches), -torch.inf)
-    out_sum = torch.full((num_panos, num_sat_patches), -torch.inf)
+    # Binary (unit weight) outputs
+    out_max_unit_max = torch.full((num_panos, num_sat_patches), -torch.inf)
+    out_max_unit_mean = torch.full((num_panos, num_sat_patches), -torch.inf)
+    out_max_unit_sum = torch.full((num_panos, num_sat_patches), -torch.inf)
+    # IDF-weighted outputs
+    out_sum_idf_max = torch.full((num_panos, num_sat_patches), -torch.inf)
+    out_sum_idf_mean = torch.full((num_panos, num_sat_patches), -torch.inf)
+    out_sum_idf_sum = torch.full((num_panos, num_sat_patches), -torch.inf)
     positives = torch.zeros((num_panos, num_sat_patches), dtype=torch.bool)
 
     # Build index of unique OSM landmarks
@@ -162,6 +172,18 @@ def compute_osm_tag_match_similarity(dataset: dict) -> dict:
         if len(q) > 0:
             match_matrix_t[torch.from_numpy(q), torch.from_numpy(t)] = 1.0
 
+        # Compute per-pano-landmark IDF weights
+        # Group matches by (q, k) to get df for each pano tag
+        pano_lm_idf = torch.zeros(len(pano_lm_tags_list))
+        if len(q) > 0:
+            qk_pairs = np.stack([q, k], axis=1)
+            unique_qk, _, match_counts = np.unique(
+                qk_pairs, axis=0, return_inverse=True, return_counts=True
+            )
+            # Sum IDF of matched tags into each pano landmark's weight
+            for i, (qi, ki) in enumerate(unique_qk):
+                pano_lm_idf[qi] += math.log(num_osm / match_counts[i])
+
         pano_for_lm_t = torch.tensor(pano_for_lm, dtype=torch.long)
         num_lm_per_pano_t = torch.tensor(num_lm_per_pano, dtype=torch.float)
 
@@ -191,20 +213,31 @@ def compute_osm_tag_match_similarity(dataset: dict) -> dict:
             # Mean = sum / count (avoid div by zero)
             mean_scores = sum_scores / num_lm_per_pano_t.clamp(min=1)
 
-            # Coverage = (sum of matches > 0) / count
-            # For binary scores, coverage = sum / count = mean
-            coverage_scores = mean_scores
+            # IDF-weighted: binary best-per-landmark * per-landmark IDF weight
+            idf_best_per_lm = best_per_lm * pano_lm_idf
+
+            idf_sum_scores = torch.zeros(num_panos)
+            idf_sum_scores.scatter_add_(0, pano_for_lm_t, idf_best_per_lm)
+
+            idf_max_scores = torch.full((num_panos,), -torch.inf)
+            idf_max_scores.scatter_reduce_(0, pano_for_lm_t, idf_best_per_lm, reduce='amax', include_self=False)
+
+            idf_mean_scores = idf_sum_scores / num_lm_per_pano_t.clamp(min=1)
 
             # Set outputs (only for panos with landmarks)
             has_landmarks = num_lm_per_pano_t > 0
-            out_max[has_landmarks, sat_idx] = max_scores[has_landmarks]
-            out_mean[has_landmarks, sat_idx] = mean_scores[has_landmarks]
-            out_coverage[has_landmarks, sat_idx] = coverage_scores[has_landmarks]
-            out_sum[has_landmarks, sat_idx] = sum_scores[has_landmarks]
+            out_max_unit_max[has_landmarks, sat_idx] = max_scores[has_landmarks]
+            out_max_unit_mean[has_landmarks, sat_idx] = mean_scores[has_landmarks]
+            out_max_unit_sum[has_landmarks, sat_idx] = sum_scores[has_landmarks]
+            out_sum_idf_max[has_landmarks, sat_idx] = idf_max_scores[has_landmarks]
+            out_sum_idf_mean[has_landmarks, sat_idx] = idf_mean_scores[has_landmarks]
+            out_sum_idf_sum[has_landmarks, sat_idx] = idf_sum_scores[has_landmarks]
 
     return {
-        "max": {"similarity": out_max, "positives": positives},
-        "mean": {"similarity": out_mean, "positives": positives},
-        "coverage": {"similarity": out_coverage, "positives": positives},
-        "sum": {"similarity": out_sum, "positives": positives},
+        "max_unit_max": {"similarity": out_max_unit_max, "positives": positives},
+        "max_unit_mean": {"similarity": out_max_unit_mean, "positives": positives},
+        "max_unit_sum": {"similarity": out_max_unit_sum, "positives": positives},
+        "sum_idf_max": {"similarity": out_sum_idf_max, "positives": positives},
+        "sum_idf_mean": {"similarity": out_sum_idf_mean, "positives": positives},
+        "sum_idf_sum": {"similarity": out_sum_idf_sum, "positives": positives},
     }

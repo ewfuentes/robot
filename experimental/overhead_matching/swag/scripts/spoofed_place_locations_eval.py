@@ -700,7 +700,7 @@ def _(
                                                     pano_id_subset=list(proper_noun_datasets[EVAL_CITY.lower()]["pano_data_from_pano_id"].keys()))
 
 
-    return baseline_sims, compute_baseline_similarity, pnd_baseline_sims
+    return baseline_sims, pnd_baseline_sims
 
 
 @app.cell
@@ -852,13 +852,7 @@ def _(EVAL_CITY, datasets, mo, pnm, proper_noun_datasets, torch, tqdm):
 
     pnd_proper_noun_sims = compute_proper_noun_binary_similarity(_pnd)
 
-    return (
-        compute_patch_similarity,
-        compute_proper_noun_binary_similarity,
-        lm_sims,
-        pnd_lm_sims,
-        pnd_proper_noun_sims,
-    )
+    return lm_sims, pnd_lm_sims, pnd_proper_noun_sims
 
 
 @app.cell
@@ -922,7 +916,7 @@ def _(
 
         # Get similarities for common panos
         pn_sims = pnd_proper_noun_sims["similarity"]  # (num_pnd_panos, num_sats)
-        tag_sims = osm_tag_sims["max"]["similarity"]  # (num_tag_panos, num_sats)
+        tag_sims = osm_tag_sims["max_unit_max"]["similarity"]  # (num_tag_panos, num_sats)
 
         num_sats = tag_sims.shape[1]
 
@@ -1117,7 +1111,7 @@ def _(
     pnd_proper_noun_recip_ranks = _compute_pano_patch_sim_recip_rank(pnd_proper_noun_sims)
 
     # Compute recip ranks for all OSM tag matching methods
-    osm_tag_methods = ["max", "mean", "coverage", "sum", "idf_max"]
+    osm_tag_methods = ["max_unit_max", "max_unit_mean", "max_unit_sum", "sum_idf_max", "sum_idf_mean", "sum_idf_sum"]
     if osm_tag_sims is not None:
         osm_tag_recip_ranks = {
             method: _compute_pano_patch_sim_recip_rank(osm_tag_sims[method])
@@ -1145,26 +1139,13 @@ def _(
     return
 
 
-@app.cell
-def _(
-    Path,
-    compute_baseline_similarity,
-    compute_patch_similarity,
-    compute_proper_noun_binary_similarity,
-    datasets,
-    load_vigor_dataset,
-    ots,
-    proper_noun_datasets,
-    torch,
-):
-    def export_similarity_kernel(sims_and_pos, dataset, vigor_dataset):
-        emb_idx_from_pano_id = {k: i for i, k in enumerate(dataset["pano_data_from_pano_id"].keys())}
-        assert len(dataset["sat_data_from_sat_id"]) == len(vigor_dataset._satellite_metadata)
-        num_sats = len(dataset["sat_data_from_sat_id"])
-        # sat_idxs = list(dataset["sat_data_from_sat_idx"].keys())
-        # sat_metadata = vigor_dataset._satellite_metadata
+app._unparsable_cell(
+    r"""
+    ========def export_similarity_kernel(sims_and_pos, dataset, vigor_dataset):
+        emb_idx_from_pano_id = {k: i for i, k in enumerate(dataset[\"pano_data_from_pano_id\"].keys())}
+        assert len(dataset[\"sat_data_from_sat_id\"]) == len(vigor_dataset._satellite_metadata)
+        num_sats = len(dataset[\"sat_data_from_sat_id\"])
         pano_metadata = vigor_dataset._panorama_metadata
-
 
         out = torch.full((len(pano_metadata), num_sats), -torch.inf)
         for out_pano_idx, row in pano_metadata.iterrows():
@@ -1172,48 +1153,54 @@ def _(
             if in_pano_idx is None:
                 continue
 
-            out[out_pano_idx] = sims_and_pos["similarity"][in_pano_idx]
+            out[out_pano_idx] = sims_and_pos[\"similarity\"][in_pano_idx]
 
-        return out
+        return {
+            \"similarity\": out,
+            \"pano_ids\": pano_metadata.pano_id.tolist(),
+            \"sat_idxs\": list(range(num_sats)),
+        }
 
-    _out_base_path = Path("/tmp/similarities")
+    _out_base_path = Path(\"/tmp/new_similarities\")
     _out_base_path.mkdir(exist_ok=True)
-    _EMB_TYPES = ["template_w_llm", "template_w_llm_place", "template_w_llm_thing"]
-    to_export = {
-        "landmark_only": (lambda  x: compute_patch_similarity(x, [x["embeddings"][y] for y in _EMB_TYPES]), datasets),
-        "proper_noun_embedding": (lambda  x: compute_patch_similarity(x, [x["embeddings"][y] for y in _EMB_TYPES]), proper_noun_datasets),
-        "proper_noun_text_match": (compute_proper_noun_binary_similarity, proper_noun_datasets),
-    }
-
-    for _name, (_fn, _datasets) in to_export.items():
-        for _city in _datasets:
-            print(_name, _city)
-            _sims = _fn(_datasets[_city])
-            _sim_mat = export_similarity_kernel(_sims, _datasets[_city], load_vigor_dataset(_city.title()))
-            torch.save(_sim_mat, _out_base_path / f"{_name}_{_city}.pt")
+    # _EMB_TYPES = [\"template_w_llm\", \"template_w_llm_place\", \"template_w_llm_thing\"]
+    # to_export = {
+    #     \"landmark_only\": (lambda  x: compute_patch_similarity(x, [x[\"embeddings\"][y] for y in _EMB_TYPES]), datasets),
+    #     \"proper_noun_embedding\": (lambda  x: compute_patch_similarity(x, [x[\"embeddings\"][y] for y in _EMB_TYPES]), proper_noun_datasets),
+    #     \"proper_noun_text_match\": (compute_proper_noun_binary_similarity, proper_noun_datasets),
+    # }
+    # 
+    # for _name, (_fn, _datasets) in to_export.items():
+    #     for _city in _datasets:
+    #         print(_name, _city)
+    #         _sims = _fn(_datasets[_city])
+    #         _sim_mat = export_similarity_kernel(_sims, _datasets[_city], load_vigor_dataset(_city.title()))
+    #         torch.save(_sim_mat, _out_base_path / f\"{_name}_{_city}.pt\")
 
     # Export OSM tag matching similarities
-    osm_extraction_paths = {
-        "chicago": Path('/tmp/pano_osm_extraction/test_2_output/'),
-        "seattle": Path('/data/overhead_matching/datasets/semantic_landmark_embeddings/pano_v2/Seattle/'),
+    _osm_extraction_paths = {
+        \"chicago\": Path('/tmp/pano_osm_extraction/test_2_output/'),
+        \"seattle\": Path('/data/overhead_matching/datasets/semantic_landmark_embeddings/pano_v2/Seattle/sentences/'),
     }
-    for _city, _extraction_path in osm_extraction_paths.items():
+    for _city, _extraction_path in _osm_extraction_paths.items():
         if not _extraction_path.exists():
-            print(f"Skipping OSM tag export for {_city}: {_extraction_path} does not exist")
+            print(f\"Skipping OSM tag export for {_city}: {_extraction_path} does not exist\")
             continue
-        print(f"osm_tag_match {_city}")
+        print(f\"osm_tag_match {_city}\")
         _osm_dataset = ots.create_osm_tag_extraction_dataset(_extraction_path, load_vigor_dataset(_city.title()))
         _osm_sims = ots.compute_osm_tag_match_similarity(_osm_dataset)
         _vigor_dataset = load_vigor_dataset(_city.title())
         for _method, _sims_and_pos in _osm_sims.items():
             _sim_mat = export_similarity_kernel(_sims_and_pos, _osm_dataset, _vigor_dataset)
-            torch.save(_sim_mat, _out_base_path / f"osm_tag_match_{_method}_{_city}.pt")
+            torch.save(_sim_mat, _out_base_path / f\"osm_tag_match_{_method}_{_city}.pt\")
 
-    _baseline_seattle_sims = compute_baseline_similarity({"city": "Seattle"})
-    _baseline_chicago_sims = compute_baseline_similarity({"city": "Chicago"})
-    torch.save(_baseline_seattle_sims, _out_base_path / f"baseline_seattle.pt")
-    torch.save(_baseline_chicago_sims, _out_base_path / f"baseline_chicago.pt")
-    return
+    _baseline_seattle_sims = compute_baseline_similarity({\"city\": \"Seattle\"})
+    _baseline_chicago_sims = compute_baseline_similarity({\"city\": \"Chicago\"})
+    torch.save(_baseline_seattle_sims, _out_base_path / f\"baseline_seattle.pt\")
+    torch.save(_baseline_chicago_sims, _out_base_path / f\"baseline_chicago.pt\")
+    """,
+    name="_"
+)
 
 
 @app.cell
