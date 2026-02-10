@@ -652,7 +652,7 @@ def main():
         # Compute error
         error_deg = np.sqrt((mean[0] - gt_positions[gt_idx, 0])**2 +
                            (mean[1] - gt_positions[gt_idx, 1])**2)
-        error_m = error_deg * 111000
+        error_m = error_deg * web_mercator.METERS_PER_DEG_LAT
 
         info = f"Path {path_idx} | Stage: {stage} | GT idx: {gt_idx} | Error: {error_m:.1f}m"
 

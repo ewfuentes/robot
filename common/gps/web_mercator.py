@@ -9,6 +9,10 @@ MAX_LAT_RAD = 2 * np.arctan(np.pi) - np.pi / 2.0
 # WGS84 Earth radius in meters
 EARTH_RADIUS_M = 6378137.0
 
+# Meters per degree of latitude (arc length along a meridian)
+# Derived from EARTH_RADIUS_M: 2 * pi * R / 360
+METERS_PER_DEG_LAT = 2 * math.pi * EARTH_RADIUS_M / 360.0
+
 
 def latlon_to_pixel_coords(lat_deg: float, lon_deg: float, zoom_level: int):
     if isinstance(lat_deg, torch.Tensor):
