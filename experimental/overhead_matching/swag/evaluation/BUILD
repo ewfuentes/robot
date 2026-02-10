@@ -1,5 +1,21 @@
 load("//common/proto:proto.bzl", "multi_proto_library")
+load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
 load("@pip//:requirements.bzl", "requirement")
+
+cc_library(
+  name = "proper_noun_matcher",
+  srcs = ["proper_noun_matcher.cc"],
+  hdrs = ["proper_noun_matcher.hh"],
+  deps = ["@bs_thread_pool"],
+  visibility = ["//visibility:public"],
+)
+
+pybind_extension(
+  name = "proper_noun_matcher_python",
+  srcs = ["proper_noun_matcher_python.cc"],
+  deps = [":proper_noun_matcher"],
+  visibility = ["//visibility:public"],
+)
 
 multi_proto_library(
   name = "wag_config_proto",

@@ -634,23 +634,19 @@ class VigorDataset(torch.utils.data.Dataset):
                     self._panorama_metadata["semipositive_satellite_idxs"])]
 
             # Update satellite metadata's positive/semipositive_panorama_idxs
-            # Re-compute based on filtered pairs
-            def compute_new_pano_idxs_for_sat(sat_idx, pano_list_column):
-                new_pano_idxs = []
-                for new_pano_idx in range(len(self._panorama_metadata)):
-                    sat_idxs_for_pano = self._panorama_metadata.iloc[new_pano_idx][pano_list_column]
-                    if sat_idx in sat_idxs_for_pano:
-                        new_pano_idxs.append(new_pano_idx)
-                return new_pano_idxs
+            # Build reverse mapping in a single pass over panoramas (O(panos * avg_sats))
+            num_sats = len(self._satellite_metadata)
+            pos_pano_idxs_by_sat = [[] for _ in range(num_sats)]
+            semipos_pano_idxs_by_sat = [[] for _ in range(num_sats)]
+            for new_pano_idx in range(len(self._panorama_metadata)):
+                row = self._panorama_metadata.iloc[new_pano_idx]
+                for sat_idx in row["positive_satellite_idxs"]:
+                    pos_pano_idxs_by_sat[sat_idx].append(new_pano_idx)
+                for sat_idx in row["semipositive_satellite_idxs"]:
+                    semipos_pano_idxs_by_sat[sat_idx].append(new_pano_idx)
 
-            new_pos_pano_idxs = []
-            new_semipos_pano_idxs = []
-            for sat_idx in range(len(self._satellite_metadata)):
-                new_pos_pano_idxs.append(compute_new_pano_idxs_for_sat(sat_idx, "positive_satellite_idxs"))
-                new_semipos_pano_idxs.append(compute_new_pano_idxs_for_sat(sat_idx, "semipositive_satellite_idxs"))
-
-            self._satellite_metadata["positive_panorama_idxs"] = new_pos_pano_idxs
-            self._satellite_metadata["semipositive_panorama_idxs"] = new_semipos_pano_idxs
+            self._satellite_metadata["positive_panorama_idxs"] = pos_pano_idxs_by_sat
+            self._satellite_metadata["semipositive_panorama_idxs"] = semipos_pano_idxs_by_sat
 
             # Update landmark metadata's panorama_idxs if landmarks were loaded
             if self._landmark_metadata is not None and "panorama_idxs" in self._landmark_metadata.columns:
@@ -672,22 +668,19 @@ class VigorDataset(torch.utils.data.Dataset):
                     self._panorama_metadata["semipositive_satellite_idxs"])]
 
             # Re-compute satellite metadata's panorama lists
-            def compute_new_pano_idxs_for_sat(sat_idx, pano_list_column):
-                new_pano_idxs = []
-                for pano_idx in range(len(self._panorama_metadata)):
-                    sat_idxs_for_pano = self._panorama_metadata.iloc[pano_idx][pano_list_column]
-                    if sat_idx in sat_idxs_for_pano:
-                        new_pano_idxs.append(pano_idx)
-                return new_pano_idxs
+            # Build reverse mapping in a single pass over panoramas (O(panos * avg_sats))
+            num_sats = len(self._satellite_metadata)
+            pos_pano_idxs_by_sat = [[] for _ in range(num_sats)]
+            semipos_pano_idxs_by_sat = [[] for _ in range(num_sats)]
+            for pano_idx in range(len(self._panorama_metadata)):
+                row = self._panorama_metadata.iloc[pano_idx]
+                for sat_idx in row["positive_satellite_idxs"]:
+                    pos_pano_idxs_by_sat[sat_idx].append(pano_idx)
+                for sat_idx in row["semipositive_satellite_idxs"]:
+                    semipos_pano_idxs_by_sat[sat_idx].append(pano_idx)
 
-            new_pos_pano_idxs = []
-            new_semipos_pano_idxs = []
-            for sat_idx in range(len(self._satellite_metadata)):
-                new_pos_pano_idxs.append(compute_new_pano_idxs_for_sat(sat_idx, "positive_satellite_idxs"))
-                new_semipos_pano_idxs.append(compute_new_pano_idxs_for_sat(sat_idx, "semipositive_satellite_idxs"))
-
-            self._satellite_metadata["positive_panorama_idxs"] = new_pos_pano_idxs
-            self._satellite_metadata["semipositive_panorama_idxs"] = new_semipos_pano_idxs
+            self._satellite_metadata["positive_panorama_idxs"] = pos_pano_idxs_by_sat
+            self._satellite_metadata["semipositive_panorama_idxs"] = semipos_pano_idxs_by_sat
 
         # Step 3: Drop satellites and remap satellite indices
         if sat_idxs_to_keep is not None:
