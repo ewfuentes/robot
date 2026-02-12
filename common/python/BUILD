@@ -20,6 +20,7 @@ py_binary(
     requirement("altair"),
     requirement("pandas"),
     requirement("seaborn"),
+    requirement("polars"),
     requirement("watchdog"),
     requirement("tensorboard"),
     requirement("osmnx"),
