@@ -277,8 +277,8 @@ class EntropyAdaptiveAggregator(ObservationLogLikelihoodAggregator):
 
         log_p_lm = torch.log_softmax(lm_sim / self.sigma, dim=0)
 
-        img_conf = self._compute_confidence(log_p_img)
-        lm_conf = self._compute_confidence(log_p_lm)
+        img_conf = self._compute_confidence(img_sim)
+        lm_conf = self._compute_confidence(lm_sim)
         eps = 1e-12
         alpha = img_conf / (img_conf + lm_conf + eps)
         fused_log_p = alpha * log_p_img + (1 - alpha) * log_p_lm

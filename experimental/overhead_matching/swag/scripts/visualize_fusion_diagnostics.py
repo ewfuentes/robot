@@ -257,11 +257,8 @@ def format_osm_props(props: dict, show_all: bool = False) -> str:
     parts = []
     if "name" in props:
         parts.append(props["name"])
-    for k in ("amenity", "shop", "cuisine", "brand", "tourism", "leisure",
-              "office", "railway", "highway", "building", "natural",
-              "man_made", "emergency", "sport", "religion", "crossing",
-              "description", "operator", "alt_name", "official_name"):
-        if k in props and k != "name":
+    for k in sorted(_OSM_DISPLAY_KEYS - {"name"}):
+        if k in props:
             parts.append(f"{k}={props[k]}")
     return ", ".join(parts)
 
