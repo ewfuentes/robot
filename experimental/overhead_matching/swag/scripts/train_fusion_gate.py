@@ -86,7 +86,7 @@ def build_dataset_from_city(img_sim_path, lm_sim_path, dataset_path, landmark_ve
         features = extract_gate_features(img_sim, lm_sim, sigma)
         all_features.append(features)
         row = pano_metadata.iloc[pano_idx]
-        true_indices = list(row["positive_satellite_idxs"])
+        true_indices = list(row["positive_satellite_idxs"]) + list(row["semipositive_satellite_idxs"])
         all_true_indices.append(true_indices)
 
     features_tensor = torch.stack(all_features)

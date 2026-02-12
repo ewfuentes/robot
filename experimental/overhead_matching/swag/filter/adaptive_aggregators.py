@@ -425,6 +425,11 @@ class ProductOfExpertsAggregator(ObservationLogLikelihoodAggregator):
         img_sim = self.image_similarity_matrix[pano_index]
         lm_sim = self.landmark_similarity_matrix[pano_index]
 
+        # Use log_softmax (not wag_observation_log_likelihood_from_similarity_matrix)
+        # because PoE requires normalized log-probability distributions so that
+        # adding them in log space corresponds to multiplying proper distributions.
+        # The Gaussian transform in wag_observation_log_likelihood is unnormalized,
+        # so summing two of them wouldn't correctly implement product of experts.
         log_p_img = torch.log_softmax(img_sim / self.tau_img, dim=0)
 
         # Fall back to image-only when landmark data is missing (all -inf)
