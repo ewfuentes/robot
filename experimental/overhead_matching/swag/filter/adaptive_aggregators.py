@@ -137,21 +137,30 @@ def extract_gate_features(
     img_peak_sharpness = img_sim.max() - img_sim.mean()
     img_max_sim = img_sim.max()
 
-    # Landmark features
-    lm_log_probs = torch.nn.functional.log_softmax(lm_sim / sigma, dim=0)
-    lm_probs = torch.exp(lm_log_probs)
-    lm_entropy = -(lm_probs * lm_log_probs).sum()
-    lm_peak_sharpness = lm_sim.max() - lm_sim.mean()
-    lm_max_sim = lm_sim.max()
+    # Landmark features (guard against all-`-inf` when no landmark data exists)
+    lm_finite = torch.isfinite(lm_sim)
+    if lm_finite.any():
+        lm_log_probs = torch.nn.functional.log_softmax(lm_sim / sigma, dim=0)
+        lm_probs = torch.exp(lm_log_probs)
+        lm_entropy = -(lm_probs * lm_log_probs).sum()
+        lm_finite_vals = lm_sim[lm_finite]
+        lm_peak_sharpness = lm_finite_vals.max() - lm_finite_vals.mean()
+        lm_max_sim = lm_finite_vals.max()
+    else:
+        lm_entropy = torch.tensor(0.0)
+        lm_peak_sharpness = torch.tensor(0.0)
+        lm_max_sim = torch.tensor(0.0)
 
     # Cross features
-    stacked = torch.stack([img_sim, lm_sim])
-    corrcoef = torch.corrcoef(stacked)
-    agreement = corrcoef[0, 1]
-    # Handle NaN from corrcoef (e.g. when one vector is all zeros)
-    if torch.isnan(agreement):
-        agreement = torch.tensor(0.0)
     num_nonzero = (lm_sim.abs() > 1e-6).float().sum() / lm_sim.shape[0]
+    if lm_finite.any():
+        stacked = torch.stack([img_sim, lm_sim])
+        corrcoef = torch.corrcoef(stacked)
+        agreement = corrcoef[0, 1]
+        if torch.isnan(agreement):
+            agreement = torch.tensor(0.0)
+    else:
+        agreement = torch.tensor(0.0)
 
     return torch.tensor(
         [
@@ -510,17 +519,18 @@ class LearnedGateAggregator(ObservationLogLikelihoodAggregator):
         img_sim = self.image_similarity_matrix[pano_index]
         lm_sim = self.landmark_similarity_matrix[pano_index]
 
-        features = self._extract_features(img_sim, lm_sim)  # (8,)
-        alpha = torch.sigmoid(self.gate_mlp(features))  # scalar
-
         # Normalize to log-probability space first (makes different scales commensurate)
         log_p_img = torch.log_softmax(img_sim.to(self.device) / self.sigma, dim=0)
-        log_p_lm = torch.log_softmax(lm_sim.to(self.device) / self.sigma, dim=0)
 
+        # Fall back to image-only when landmark data is missing (all -inf)
         lm_finite_mask = torch.isfinite(lm_sim).to(self.device)
         if not lm_finite_mask.any():
             return _replace_nan_with_zero(log_p_img)
 
+        features = self._extract_features(img_sim, lm_sim)  # (8,)
+        alpha = torch.sigmoid(self.gate_mlp(features))  # scalar
+
+        log_p_lm = torch.log_softmax(lm_sim.to(self.device) / self.sigma, dim=0)
         fused_log_p = alpha * log_p_img + (1 - alpha) * log_p_lm
         fused_log_p = torch.where(lm_finite_mask, fused_log_p, log_p_img)
 

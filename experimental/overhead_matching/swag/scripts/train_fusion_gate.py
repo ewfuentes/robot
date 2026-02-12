@@ -150,16 +150,13 @@ def main():
         )
         city_datasets.append(city_ds)
 
-    # Concatenate all city datasets
+    # Concatenate all city datasets (pad sim matrices if cities have different patch counts)
     all_features = torch.cat([ds.features for ds in city_datasets], dim=0)
-    all_img_sims = torch.cat([ds.img_sim_rows for ds in city_datasets], dim=0)
-    all_lm_sims = torch.cat([ds.lm_sim_rows for ds in city_datasets], dim=0)
     all_true_indices = []
     for ds in city_datasets:
         for indices in ds.true_patch_indices:
             all_true_indices.append(indices)
 
-    # Handle different number of patches per city by padding
     num_patches_per_city = [ds.img_sim_rows.shape[1] for ds in city_datasets]
     if len(set(num_patches_per_city)) > 1:
         max_patches = max(num_patches_per_city)
@@ -176,6 +173,9 @@ def main():
                 padded_lm_sims.append(ds.lm_sim_rows)
         all_img_sims = torch.cat(padded_img_sims, dim=0)
         all_lm_sims = torch.cat(padded_lm_sims, dim=0)
+    else:
+        all_img_sims = torch.cat([ds.img_sim_rows for ds in city_datasets], dim=0)
+        all_lm_sims = torch.cat([ds.lm_sim_rows for ds in city_datasets], dim=0)
 
     combined_dataset = FusionGateDataset(
         features=all_features,
