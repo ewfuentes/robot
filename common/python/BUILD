@@ -33,6 +33,7 @@ py_binary(
     "//experimental/overhead_matching/learned/scripts:train_clevr_transformer",
     "//experimental/overhead_matching/swag/scripts:train",
     "//experimental/overhead_matching/swag/evaluation:evaluate_swag",
+    "//experimental/overhead_matching/swag/evaluation:osm_tag_similarity",
     "//experimental/overhead_matching/swag/scripts:evaluate_model_on_paths",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
     "//experimental/overhead_matching/swag/data:alphaearth_registry",
