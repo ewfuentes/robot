@@ -78,66 +78,6 @@ def _load_similarity_matrix(path: Path) -> torch.Tensor:
     return data
 
 
-def extract_gate_features(
-    img_sim: torch.Tensor, lm_sim: torch.Tensor, sigma: float
-) -> torch.Tensor:
-    """Extract 8 scalar features from image and landmark similarity vectors.
-
-    Features:
-        0: img_entropy - entropy of softmax(img_sim / sigma)
-        1: lm_entropy - entropy of softmax(lm_sim / sigma)
-        2: img_peak_sharpness - img_sim.max() - img_sim.mean()
-        3: lm_peak_sharpness - lm_sim.max() - lm_sim.mean()
-        4: img_max_sim - max of image similarity
-        5: lm_max_sim - max of landmark similarity
-        6: agreement - Pearson correlation between img_sim and lm_sim
-        7: num_nonzero - fraction of landmark similarities with abs > 1e-6
-
-    Args:
-        img_sim: (num_sat_patches,) image similarity vector
-        lm_sim: (num_sat_patches,) landmark similarity vector
-        sigma: temperature for softmax
-
-    Returns:
-        (8,) feature tensor
-    """
-    # Image features
-    img_log_probs = torch.nn.functional.log_softmax(img_sim / sigma, dim=0)
-    img_probs = torch.exp(img_log_probs)
-    img_entropy = -(img_probs * img_log_probs).sum()
-    img_peak_sharpness = img_sim.max() - img_sim.mean()
-    img_max_sim = img_sim.max()
-
-    # Landmark features
-    lm_log_probs = torch.nn.functional.log_softmax(lm_sim / sigma, dim=0)
-    lm_probs = torch.exp(lm_log_probs)
-    lm_entropy = -(lm_probs * lm_log_probs).sum()
-    lm_peak_sharpness = lm_sim.max() - lm_sim.mean()
-    lm_max_sim = lm_sim.max()
-
-    # Cross features
-    stacked = torch.stack([img_sim, lm_sim])
-    corrcoef = torch.corrcoef(stacked)
-    agreement = corrcoef[0, 1]
-    # Handle NaN from corrcoef (e.g. when one vector is all zeros)
-    if torch.isnan(agreement):
-        agreement = torch.tensor(0.0)
-    num_nonzero = (lm_sim.abs() > 1e-6).float().sum() / lm_sim.shape[0]
-
-    return torch.tensor(
-        [
-            img_entropy.item(),
-            lm_entropy.item(),
-            img_peak_sharpness.item(),
-            lm_peak_sharpness.item(),
-            img_max_sim.item(),
-            lm_max_sim.item(),
-            agreement.item(),
-            num_nonzero.item(),
-        ]
-    )
-
-
 # ============ Aggregator Classes ============
 
 
