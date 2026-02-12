@@ -472,7 +472,6 @@ py_binary(
     "//experimental/overhead_matching/swag/evaluation:evaluate_swag",
     "//experimental/overhead_matching/swag/evaluation:convergence_metrics",
     "//experimental/overhead_matching/swag/evaluation:wag_config_proto_py",
-    "//experimental/overhead_matching/swag/evaluation:odometry_noise",
     "//experimental/overhead_matching/swag/filter:histogram_belief",
     "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
     "//experimental/overhead_matching/swag/model:patch_embedding",
@@ -515,14 +514,13 @@ py_binary(
     requirement("msgspec"),
     requirement("dash"),
     requirement("plotly"),
-    requirement("pillow"),
     "//common/torch:load_torch_deps",
     "//common/torch:load_and_save_models",
     "//common/gps:web_mercator",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
     "//experimental/overhead_matching/swag/evaluation:evaluate_swag",
-    "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
     "//experimental/overhead_matching/swag/filter:histogram_belief",
+    "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
     "//experimental/overhead_matching/swag/filter:particle_filter",
     "//experimental/overhead_matching/swag/model:patch_embedding",
     "//experimental/overhead_matching/swag/model:swag_patch_embedding",
@@ -533,4 +531,43 @@ py_binary(
   name="osm_extraction_visualizer",
   srcs=["osm_extraction_visualizer.py"],
   deps=[]
+)
+
+py_binary(
+  name="compare_histogram_evaluations",
+  srcs=["compare_histogram_evaluations.py"],
+  deps=[
+    requirement("torch"),
+    requirement("matplotlib"),
+    requirement("numpy"),
+    "//common/torch:load_torch_deps",
+  ]
+)
+
+py_binary(
+  name="analyze_fusion_diagnostics",
+  srcs=["analyze_fusion_diagnostics.py"],
+  deps=[
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("pandas"),
+    requirement("matplotlib"),
+    requirement("marimo"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+  ]
+)
+
+py_binary(
+  name="visualize_fusion_diagnostics",
+  srcs=["visualize_fusion_diagnostics.py"],
+  deps=[
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("dash"),
+    requirement("plotly"),
+    requirement("pillow"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+  ]
 )

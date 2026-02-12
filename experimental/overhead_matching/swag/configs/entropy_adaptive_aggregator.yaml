@@ -1,0 +1,5 @@
+kind: EntropyAdaptiveAggregatorConfig
+image_similarity_matrix_path: /tmp/similarities/baseline_seattle.pt
+landmark_similarity_matrix_path: /tmp/similarities/proper_noun_embedding_seattle.pt
+sigma: 0.25
+confidence_mode: peak_sharpness

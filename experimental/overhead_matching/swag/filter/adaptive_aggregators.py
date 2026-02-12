@@ -35,10 +35,20 @@ class ImageLandmarkPrivilegedInformationFusionConfig(
     include_semipositive: bool = True
 
 
+class EntropyAdaptiveAggregatorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    """Config for entropy-adaptive weighted fusion aggregator."""
+
+    image_similarity_matrix_path: Path
+    landmark_similarity_matrix_path: Path
+    sigma: float
+    confidence_mode: str = "peak_sharpness"
+
+
 # Union type for polymorphic deserialization
 AggregatorConfig = (
     SingleSimilarityMatrixAggregatorConfig
     | ImageLandmarkPrivilegedInformationFusionConfig
+    | EntropyAdaptiveAggregatorConfig
 )
 
 
@@ -66,6 +76,66 @@ def _load_similarity_matrix(path: Path) -> torch.Tensor:
             f"Available keys: {list(data.keys())}"
         )
     return data
+
+
+def extract_gate_features(
+    img_sim: torch.Tensor, lm_sim: torch.Tensor, sigma: float
+) -> torch.Tensor:
+    """Extract 8 scalar features from image and landmark similarity vectors.
+
+    Features:
+        0: img_entropy - entropy of softmax(img_sim / sigma)
+        1: lm_entropy - entropy of softmax(lm_sim / sigma)
+        2: img_peak_sharpness - img_sim.max() - img_sim.mean()
+        3: lm_peak_sharpness - lm_sim.max() - lm_sim.mean()
+        4: img_max_sim - max of image similarity
+        5: lm_max_sim - max of landmark similarity
+        6: agreement - Pearson correlation between img_sim and lm_sim
+        7: num_nonzero - fraction of landmark similarities with abs > 1e-6
+
+    Args:
+        img_sim: (num_sat_patches,) image similarity vector
+        lm_sim: (num_sat_patches,) landmark similarity vector
+        sigma: temperature for softmax
+
+    Returns:
+        (8,) feature tensor
+    """
+    # Image features
+    img_log_probs = torch.nn.functional.log_softmax(img_sim / sigma, dim=0)
+    img_probs = torch.exp(img_log_probs)
+    img_entropy = -(img_probs * img_log_probs).sum()
+    img_peak_sharpness = img_sim.max() - img_sim.mean()
+    img_max_sim = img_sim.max()
+
+    # Landmark features
+    lm_log_probs = torch.nn.functional.log_softmax(lm_sim / sigma, dim=0)
+    lm_probs = torch.exp(lm_log_probs)
+    lm_entropy = -(lm_probs * lm_log_probs).sum()
+    lm_peak_sharpness = lm_sim.max() - lm_sim.mean()
+    lm_max_sim = lm_sim.max()
+
+    # Cross features
+    stacked = torch.stack([img_sim, lm_sim])
+    corrcoef = torch.corrcoef(stacked)
+    agreement = corrcoef[0, 1]
+    # Handle NaN from corrcoef (e.g. when one vector is all zeros)
+    if torch.isnan(agreement):
+        agreement = torch.tensor(0.0)
+    num_nonzero = (lm_sim.abs() > 1e-6).float().sum() / lm_sim.shape[0]
+
+    return torch.tensor(
+        [
+            img_entropy.item(),
+            lm_entropy.item(),
+            img_peak_sharpness.item(),
+            lm_peak_sharpness.item(),
+            img_max_sim.item(),
+            lm_max_sim.item(),
+            agreement.item(),
+            num_nonzero.item(),
+        ]
+    )
 
 
 # ============ Aggregator Classes ============
@@ -190,6 +260,112 @@ class ImageLandmarkPrivilegedInformationFusion(ObservationLogLikelihoodAggregato
         )
 
 
+class EntropyAdaptiveAggregator(ObservationLogLikelihoodAggregator):
+    """Fuses image and landmark similarity matrices using confidence-weighted averaging.
+
+    Computes a per-source confidence score and uses it to blend the two similarity
+    vectors before converting to log-likelihoods.
+
+    Supported confidence modes:
+        - "peak_sharpness": max(sim) - mean(sim)
+        - "entropy": negative entropy of softmax(sim / sigma) (higher = more confident)
+        - "top2_gap": gap between top-2 similarity values
+    """
+
+    VALID_CONFIDENCE_MODES = ("peak_sharpness", "entropy", "top2_gap")
+
+    def __init__(
+        self,
+        image_similarity_matrix: torch.Tensor,
+        landmark_similarity_matrix: torch.Tensor,
+        panorama_metadata: pd.DataFrame,
+        sigma: float,
+        device: torch.device,
+        confidence_mode: str = "peak_sharpness",
+    ):
+        if confidence_mode not in self.VALID_CONFIDENCE_MODES:
+            raise ValueError(
+                f"Unknown confidence_mode '{confidence_mode}'. "
+                f"Must be one of {self.VALID_CONFIDENCE_MODES}"
+            )
+        self.image_similarity_matrix = image_similarity_matrix
+        self.landmark_similarity_matrix = landmark_similarity_matrix
+        self.sigma = sigma
+        self.device = device
+        self.confidence_mode = confidence_mode
+        self._pano_id_index = pd.Index(panorama_metadata["pano_id"])
+
+    def _compute_confidence(self, sim: torch.Tensor) -> torch.Tensor:
+        """Compute a scalar confidence score for a similarity vector.
+
+        Only considers finite values to avoid -inf entries corrupting the result.
+
+        Args:
+            sim: (num_patches,) similarity vector
+
+        Returns:
+            Scalar confidence value (higher = more confident)
+        """
+        finite_sim = sim[torch.isfinite(sim)]
+        if len(finite_sim) < 2:
+            return torch.tensor(0.0)
+        if self.confidence_mode == "peak_sharpness":
+            return finite_sim.max() - finite_sim.mean()
+        elif self.confidence_mode == "entropy":
+            probs = torch.softmax(finite_sim / self.sigma, dim=0)
+            entropy = -(probs * torch.log(probs + 1e-12)).sum()
+            return -entropy
+        elif self.confidence_mode == "top2_gap":
+            sorted_sim = torch.sort(finite_sim).values
+            return sorted_sim[-1] - sorted_sim[-2]
+        else:
+            raise ValueError(f"Unknown confidence_mode: {self.confidence_mode}")
+
+    def __call__(self, pano_id: str) -> torch.Tensor:
+        pano_index = self._pano_id_index.get_loc(pano_id)
+
+        img_sim = self.image_similarity_matrix[pano_index]
+        lm_sim = self.landmark_similarity_matrix[pano_index]
+
+        # Normalize to log-probability space first (makes different scales commensurate)
+        log_p_img = torch.log_softmax(img_sim / self.sigma, dim=0)
+
+        # Fall back to image-only when landmark data is missing (all -inf)
+        lm_finite_mask = torch.isfinite(lm_sim)
+        if not lm_finite_mask.any():
+            return _replace_nan_with_zero(log_p_img).to(self.device)
+
+        log_p_lm = torch.log_softmax(lm_sim / self.sigma, dim=0)
+
+        img_conf = self._compute_confidence(log_p_img)
+        lm_conf = self._compute_confidence(log_p_lm)
+        eps = 1e-12
+        alpha = img_conf / (img_conf + lm_conf + eps)
+        fused_log_p = alpha * log_p_img + (1 - alpha) * log_p_lm
+        # Where landmark has -inf, use image-only to avoid eliminating patches
+        fused_log_p = torch.where(lm_finite_mask, fused_log_p, log_p_img)
+
+        return _replace_nan_with_zero(fused_log_p).to(self.device)
+
+    @classmethod
+    def from_config(
+        cls,
+        config: EntropyAdaptiveAggregatorConfig,
+        vigor_dataset: vd.VigorDataset,
+        device: torch.device,
+    ) -> "EntropyAdaptiveAggregator":
+        image_sim = _load_similarity_matrix(config.image_similarity_matrix_path)
+        landmark_sim = _load_similarity_matrix(config.landmark_similarity_matrix_path)
+        return cls(
+            image_sim,
+            landmark_sim,
+            vigor_dataset._panorama_metadata,
+            config.sigma,
+            device,
+            config.confidence_mode,
+        )
+
+
 def aggregator_from_config(
     config: AggregatorConfig,
     vigor_dataset: vd.VigorDataset,
@@ -210,6 +386,8 @@ def aggregator_from_config(
         return ImageLandmarkPrivilegedInformationFusion.from_config(
             config, vigor_dataset, device
         )
+    elif isinstance(config, EntropyAdaptiveAggregatorConfig):
+        return EntropyAdaptiveAggregator.from_config(config, vigor_dataset, device)
     else:
         raise ValueError(f"Unknown config type: {type(config)}")
 

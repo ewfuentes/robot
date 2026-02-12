@@ -19,10 +19,6 @@ from experimental.overhead_matching.swag.filter.adaptive_aggregators import (
 )
 import common.torch.load_and_save_models as lsm
 from experimental.overhead_matching.swag.model import patch_embedding, swag_patch_embedding
-from experimental.overhead_matching.swag.evaluation.odometry_noise import (
-    OdometryNoiseConfig,
-    add_noise_to_motion_deltas,
-)
 from pathlib import Path
 from common.gps import web_mercator
 from common.math.haversine import find_d_on_unit_circle
@@ -67,7 +63,6 @@ class HistogramFilterConfig:
     initial_offset_std_deg: float = 0.0117  # ~1300m offset
     zoom_level: int = 20
     patch_size_px: int = 640
-    odometry_noise: OdometryNoiseConfig | None = None  # Optional odometry noise config
 
 
 @dataclass
@@ -151,9 +146,6 @@ def run_histogram_filter_on_path(
         obs_log_ll = log_likelihood_aggregator(path_pano_ids[step_idx])
         belief.apply_observation(obs_log_ll, mapping)
 
-        # Motion prediction
-        belief.apply_motion(motion_deltas[step_idx], config.noise_percent)
-
         mean_history.append(belief.get_mean_latlon())
         variance_history.append(belief.get_variance_deg_sq())
 
@@ -164,6 +156,10 @@ def run_histogram_filter_on_path(
                     belief, true_latlons[step_idx + 1], float(radius)
                 )
                 prob_mass_by_radius[radius].append(prob_mass)
+
+        # Motion prediction
+        belief.apply_motion(motion_deltas[step_idx], config.noise_percent)
+
 
     # Final observation
     obs_log_ll = log_likelihood_aggregator(path_pano_ids[-1])
@@ -315,16 +311,6 @@ def evaluate_histogram_on_paths(
             # Get motion deltas for this path
             motion_deltas = es.get_motion_deltas_from_path(vigor_dataset, path).to(device)
 
-            # Apply odometry noise if configured
-            if config.odometry_noise is not None:
-                start_latlon = vigor_dataset.get_panorama_positions(path)[0].to(device)
-                noise_gen = torch.Generator(device='cpu').manual_seed(
-                    config.odometry_noise.seed * (i + 1))
-                motion_deltas = add_noise_to_motion_deltas(
-                    motion_deltas.cpu(), start_latlon.cpu(), config.odometry_noise,
-                    generator=noise_gen,
-                ).to(device)
-
             # Get ground truth positions for convergence metrics (only if needed)
             true_latlons = (
                 vigor_dataset.get_panorama_positions(path).to(device)
@@ -351,7 +337,8 @@ def evaluate_histogram_on_paths(
                 vigor_dataset, path, result.mean_history)
 
             # Variance in meters squared (convert from degrees)
-            var_sq_m = result.variance_history[-len(path):].sum(dim=-1) * (web_mercator.METERS_PER_DEG_LAT ** 2)
+            # Approximate: 1 degree lat ≈ 111km
+            var_sq_m = result.variance_history[-len(path):].sum(dim=-1) * (111_000 ** 2)
 
             all_final_error_meters.append(error_meters[-1].item())
 
@@ -534,12 +521,6 @@ if __name__ == "__main__":
     parser.add_argument("--convergence-radii", type=str, default="25,50,100",
                         help="Comma-separated list of radii (meters) for convergence metrics")
 
-    # Odometry noise arguments
-    parser.add_argument("--odometry-noise-frac", type=float, default=None,
-                        help="Noise std as fraction of step distance (isotropic north/east)")
-    parser.add_argument("--odometry-noise-seed", type=int, default=7919,
-                        help="Seed for odometry noise generation")
-
     args = parser.parse_args()
 
     # Parse convergence radii
@@ -580,39 +561,22 @@ if __name__ == "__main__":
         EARTH_RADIUS_M = 6_371_000.0
         return math.degrees(dist_m / EARTH_RADIUS_M)
 
-    # Build odometry noise config
-    odometry_noise_config = None
-    if args.odometry_noise_frac is not None:
-        odometry_noise_config = OdometryNoiseConfig(
-            sigma_noise_frac=args.odometry_noise_frac,
-            seed=args.odometry_noise_seed,
-        )
-        print(f"Odometry noise enabled: sigma_frac={odometry_noise_config.sigma_noise_frac}, seed={odometry_noise_config.seed}")
-
     config = HistogramFilterConfig(
         noise_percent=args.noise_percent,
         subdivision_factor=args.subdivision_factor,
         initial_std_deg=degrees_from_meters(2970.0),
         initial_offset_std_deg=degrees_from_meters(1300.0),
-        odometry_noise=odometry_noise_config,
     )
 
-    histogram_config_dict = {
-        "noise_percent": config.noise_percent,
-        "subdivision_factor": config.subdivision_factor,
-        "initial_std_deg": config.initial_std_deg,
-        "initial_offset_std_deg": config.initial_offset_std_deg,
-        "zoom_level": config.zoom_level,
-        "patch_size_px": config.patch_size_px,
-    }
-    if odometry_noise_config is not None:
-        histogram_config_dict["odometry_noise"] = {
-            "sigma_noise_frac": odometry_noise_config.sigma_noise_frac,
-            "seed": odometry_noise_config.seed,
-        }
-
     with open(Path(args.output_path) / "histogram_config.json", "w") as f:
-        json.dump(histogram_config_dict, f, indent=4)
+        json.dump({
+            "noise_percent": config.noise_percent,
+            "subdivision_factor": config.subdivision_factor,
+            "initial_std_deg": config.initial_std_deg,
+            "initial_offset_std_deg": config.initial_offset_std_deg,
+            "zoom_level": config.zoom_level,
+            "patch_size_px": config.patch_size_px,
+        }, f, indent=4)
 
     evaluate_histogram_on_paths(
         vigor_dataset=vigor_dataset,
