@@ -235,29 +235,29 @@ class EntropyAdaptiveAggregator(ObservationLogLikelihoodAggregator):
         self.confidence_mode = confidence_mode
         self._pano_id_index = pd.Index(panorama_metadata["pano_id"])
 
-    def _compute_confidence(self, sim: torch.Tensor) -> torch.Tensor:
-        """Compute a scalar confidence score for a similarity vector.
+    def _compute_confidence(self, log_probs: torch.Tensor) -> torch.Tensor:
+        """Compute a scalar confidence score for a log-probability vector.
 
         Only considers finite values to avoid -inf entries corrupting the result.
 
         Args:
-            sim: (num_patches,) similarity vector
+            log_probs: (num_patches,) log-probability vector (from log_softmax)
 
         Returns:
             Scalar confidence value (higher = more confident)
         """
-        finite_sim = sim[torch.isfinite(sim)]
-        if len(finite_sim) < 2:
+        finite_lp = log_probs[torch.isfinite(log_probs)]
+        if len(finite_lp) < 2:
             return torch.tensor(0.0)
         if self.confidence_mode == "peak_sharpness":
-            return finite_sim.max() - finite_sim.mean()
+            return finite_lp.max() - finite_lp.mean()
         elif self.confidence_mode == "entropy":
-            probs = torch.softmax(finite_sim / self.sigma, dim=0)
-            entropy = -(probs * torch.log(probs + 1e-12)).sum()
+            probs = torch.exp(finite_lp)
+            entropy = -(probs * finite_lp).sum()
             return -entropy
         elif self.confidence_mode == "top2_gap":
-            sorted_sim = torch.sort(finite_sim).values
-            return sorted_sim[-1] - sorted_sim[-2]
+            sorted_lp = torch.sort(finite_lp).values
+            return sorted_lp[-1] - sorted_lp[-2]
         else:
             raise ValueError(f"Unknown confidence_mode: {self.confidence_mode}")
 
@@ -277,8 +277,8 @@ class EntropyAdaptiveAggregator(ObservationLogLikelihoodAggregator):
 
         log_p_lm = torch.log_softmax(lm_sim / self.sigma, dim=0)
 
-        img_conf = self._compute_confidence(img_sim)
-        lm_conf = self._compute_confidence(lm_sim)
+        img_conf = self._compute_confidence(log_p_img)
+        lm_conf = self._compute_confidence(log_p_lm)
         eps = 1e-12
         alpha = img_conf / (img_conf + lm_conf + eps)
         fused_log_p = alpha * log_p_img + (1 - alpha) * log_p_lm
