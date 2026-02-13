@@ -151,19 +151,19 @@ def run_histogram_filter_on_path(
         obs_log_ll = log_likelihood_aggregator(path_pano_ids[step_idx])
         belief.apply_observation(obs_log_ll, mapping)
 
-        # Motion prediction
-        belief.apply_motion(motion_deltas[step_idx], config.noise_percent)
-
         mean_history.append(belief.get_mean_latlon())
         variance_history.append(belief.get_variance_deg_sq())
 
-        # Track convergence after motion (aligned with next position)
+        # Track convergence after observation (before motion blurs the belief)
         if track_convergence:
             for radius in convergence_radii:
                 prob_mass = compute_probability_mass_within_radius(
                     belief, true_latlons[step_idx + 1], float(radius)
                 )
                 prob_mass_by_radius[radius].append(prob_mass)
+
+        # Motion prediction
+        belief.apply_motion(motion_deltas[step_idx], config.noise_percent)
 
     # Final observation
     obs_log_ll = log_likelihood_aggregator(path_pano_ids[-1])

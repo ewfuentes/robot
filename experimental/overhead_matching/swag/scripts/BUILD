@@ -534,3 +534,4 @@ py_binary(
   srcs=["osm_extraction_visualizer.py"],
   deps=[]
 )
+
