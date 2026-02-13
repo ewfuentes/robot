@@ -535,3 +535,13 @@ py_binary(
   deps=[]
 )
 
+py_binary(
+  name="train_fusion_gate",
+  srcs=["train_fusion_gate.py"],
+  deps=[
+    requirement("torch"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
+  ]
+)
