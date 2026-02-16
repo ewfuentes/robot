@@ -1,11 +1,13 @@
-"""Compare histogram filter evaluations across multiple approaches.
+"""Compare histogram filter convergence across multiple evaluation runs.
 
-Produces separate convergence plots for each radius (25m, 50m, 100m) and
-a final error comparison. Each plot shows median with IQR shading for all
-runs, making it easy to compare convergence speed across methods.
+Used to look at how quickly different aggregation strategies (e.g., image-only
+vs. landmark-fused) converge during histogram filter localization. Produces a
+2x2 plot grid: convergence probability at 25m/50m/100m radii vs. distance
+traveled, plus median localization error over time. Each curve shows the median
+with IQR shading across all paths in a run.
 
 Usage:
-    bazel run //experimental/overhead_matching/swag/scripts:compare_histogram_evaluations -- \
+    bazel run //experimental/overhead_matching/swag/analysis:compare_histogram_evaluations -- \
         --eval-dirs /path/to/run1 /path/to/run2 ... \
         --labels "Baseline" "EA proper_noun" ... \
         --output /tmp/comparison.png \

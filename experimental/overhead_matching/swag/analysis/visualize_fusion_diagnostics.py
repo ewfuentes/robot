@@ -1,7 +1,10 @@
-"""Interactive Dash web app for fusion diagnostics visualization.
+"""Interactive Dash web app for inspecting individual panorama fusion behavior.
 
-Allows comparing image-based vs landmark-based similarity matrices
-with click-to-inspect panorama details and side-by-side analysis.
+Used to look at per-panorama differences between image and landmark similarity
+sources: shows a scatter plot of image-rank vs. landmark-rank for all panoramas,
+a sortable/filterable table of diagnostics, and a click-to-inspect panel that
+displays the panorama image, Gemini-extracted landmarks, top-5 satellite patches
+from each source (with OSM tags), and sorted similarity distributions.
 """
 
 import common.torch.load_torch_deps

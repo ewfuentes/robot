@@ -1,3 +1,8 @@
+# Marimo notebook for analyzing fusion diagnostics between image and landmark
+# similarity matrices. Computes per-panorama metrics (entropy, peak sharpness,
+# true-patch rank) for each source and compares them side-by-side with scatter
+# plots, rank ECDFs, and oracle best-of-both analysis.
+
 import marimo
 
 __generated_with = "0.14.17"
