@@ -35,10 +35,19 @@ class ImageLandmarkPrivilegedInformationFusionConfig(
     include_semipositive: bool = True
 
 
+class EntropyAdaptiveAggregatorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    """Config for entropy-adaptive weighted fusion aggregator."""
+
+    image_similarity_matrix_path: Path
+    landmark_similarity_matrix_path: Path
+    sigma: float
+
+
 # Union type for polymorphic deserialization
 AggregatorConfig = (
     SingleSimilarityMatrixAggregatorConfig
     | ImageLandmarkPrivilegedInformationFusionConfig
+    | EntropyAdaptiveAggregatorConfig
 )
 
 
@@ -190,6 +199,87 @@ class ImageLandmarkPrivilegedInformationFusion(ObservationLogLikelihoodAggregato
         )
 
 
+class EntropyAdaptiveAggregator(ObservationLogLikelihoodAggregator):
+    """Fuses image and landmark similarity matrices using confidence-weighted averaging.
+
+    Computes a per-source peak sharpness confidence score (max - mean of log-probs)
+    and uses it to blend the two similarity vectors before converting to log-likelihoods.
+    """
+
+    def __init__(
+        self,
+        image_similarity_matrix: torch.Tensor,
+        landmark_similarity_matrix: torch.Tensor,
+        panorama_metadata: pd.DataFrame,
+        sigma: float,
+        device: torch.device,
+    ):
+        self.image_similarity_matrix = image_similarity_matrix
+        self.landmark_similarity_matrix = landmark_similarity_matrix
+        self.sigma = sigma
+        self.device = device
+        self._pano_id_index = pd.Index(panorama_metadata["pano_id"])
+
+    def _compute_confidence(self, log_probs: torch.Tensor) -> torch.Tensor:
+        """Compute peak sharpness confidence: max(log_probs) - mean(log_probs).
+
+        Only considers finite values to avoid -inf entries corrupting the result.
+
+        Args:
+            log_probs: (num_patches,) log-probability vector (from log_softmax)
+
+        Returns:
+            Scalar confidence value (higher = more confident)
+        """
+        finite_lp = log_probs[torch.isfinite(log_probs)]
+        if len(finite_lp) < 2:
+            return torch.tensor(0.0)
+        return finite_lp.max() - finite_lp.mean()
+
+    def __call__(self, pano_id: str) -> torch.Tensor:
+        pano_index = self._pano_id_index.get_loc(pano_id)
+
+        img_sim = self.image_similarity_matrix[pano_index]
+        lm_sim = self.landmark_similarity_matrix[pano_index]
+
+        # Normalize to log-probability space first (makes different scales commensurate)
+        log_p_img = torch.log_softmax(img_sim / self.sigma, dim=0)
+
+        # Fall back to image-only when landmark data is missing (all -inf)
+        lm_finite_mask = torch.isfinite(lm_sim)
+        if not lm_finite_mask.any():
+            return _replace_nan_with_zero(log_p_img).to(self.device)
+
+        log_p_lm = torch.log_softmax(lm_sim / self.sigma, dim=0)
+
+        img_conf = self._compute_confidence(log_p_img)
+        lm_conf = self._compute_confidence(log_p_lm)
+        eps = 1e-12
+        alpha = img_conf / (img_conf + lm_conf + eps)
+        fused_log_p = alpha * log_p_img + (1 - alpha) * log_p_lm
+        # Where landmark has -inf, use image-only to avoid eliminating patches
+        fused_log_p = torch.where(lm_finite_mask, fused_log_p, log_p_img)
+
+        return _replace_nan_with_zero(fused_log_p).to(self.device)
+
+    @classmethod
+    def from_config(
+        cls,
+        config: EntropyAdaptiveAggregatorConfig,
+        vigor_dataset: vd.VigorDataset,
+        device: torch.device,
+    ) -> "EntropyAdaptiveAggregator":
+        image_sim = _load_similarity_matrix(config.image_similarity_matrix_path)
+        landmark_sim = _load_similarity_matrix(config.landmark_similarity_matrix_path)
+        return cls(
+            image_sim,
+            landmark_sim,
+            vigor_dataset._panorama_metadata,
+            config.sigma,
+            device,
+        )
+
+
 def aggregator_from_config(
     config: AggregatorConfig,
     vigor_dataset: vd.VigorDataset,
@@ -210,6 +300,8 @@ def aggregator_from_config(
         return ImageLandmarkPrivilegedInformationFusion.from_config(
             config, vigor_dataset, device
         )
+    elif isinstance(config, EntropyAdaptiveAggregatorConfig):
+        return EntropyAdaptiveAggregator.from_config(config, vigor_dataset, device)
     else:
         raise ValueError(f"Unknown config type: {type(config)}")
 
