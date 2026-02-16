@@ -1,3 +1,12 @@
+# Compare two histogram filter evaluation runs side-by-side.
+# Loads summary_statistics.json and per-path results from a shared result
+# directory, then provides:
+#   - Scatter plot of per-path convergence cost (approach A vs B)
+#   - Statistical delta tables (all paths, worst/best 50%) at multiple radii
+#   - Per-path drill-down: convergence curves, localization error, panorama
+#     viewer with landmark annotations, and geographic path map
+#   - Geographic density maps of best vs worst starting locations
+
 import marimo
 
 __generated_with = "0.14.17"
