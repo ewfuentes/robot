@@ -204,8 +204,6 @@ class LearnedDistanceFunction(torch.nn.Module):
             self.output_proj = torch.nn.Linear(self.config.embedding_dim, 1)
 
         elif config.architecture == "transformer_encoder":
-            # CLS token for aggregating information
-            self.cls_token = torch.nn.Parameter(torch.randn(1, 1, self.config.embedding_dim))
             # Learnable identifier tokens to distinguish pano vs sat embeddings
             self.pano_identifier = torch.nn.Parameter(torch.randn(1, 1, self.config.embedding_dim))
             self.sat_identifier = torch.nn.Parameter(torch.randn(1, 1, self.config.embedding_dim))
@@ -250,16 +248,19 @@ class LearnedDistanceFunction(torch.nn.Module):
         pano_identified = pano_batch + self.pano_identifier
         sat_identified = sat_batch + self.sat_identifier
 
-        cls_token = self.cls_token.expand(batch_size, -1, -1)  # batch_size x 1 x d_emb
-        sequence = torch.cat([cls_token, pano_identified, sat_identified], dim=1)  # batch_size x (1 + n_emb_pano + n_emb_sat) x d_emb
+        sequence = torch.cat([pano_identified, sat_identified], dim=1)  # batch_size x (n_emb_pano + n_emb_sat) x d_emb
         padding_mask = torch.any(torch.isnan(sequence), dim=2, keepdim=False)
         assert padding_mask.dtype == torch.bool
         sequence[padding_mask] = 0.0
 
         # Pass through transformer encoder
         output = self.transformer_encoder(sequence, src_key_padding_mask=padding_mask)  # batch x seq_len x d_emb
-        output = output[:, 0, :]
-        sim = self.output_proj(output)  # batch x 1
+
+        # Mean pool over non-masked positions
+        valid_mask = ~padding_mask  # batch x seq_len
+        output[padding_mask] = 0.0
+        pooled = output.sum(dim=1) / valid_mask.sum(dim=1, keepdim=True)  # batch x d_emb
+        sim = self.output_proj(pooled)  # batch x 1
 
         return sim
 
