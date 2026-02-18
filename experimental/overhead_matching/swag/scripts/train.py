@@ -541,9 +541,9 @@ def train(config: TrainConfig,
                         if param.grad is None and param.requires_grad:
                             raise RuntimeError(
                                 f"Parameter {name} for model {model_name} requires grad, but had no update.")
-                        if param.grad is not None and torch.any(torch.isinf(param.grad)):
+                        if param.grad is not None and (torch.any(torch.isinf(param.grad)) or torch.any(torch.isnan(param.grad))):
                             print(
-                                f"Warining: INF was found in parameter gradient: {name} in model {model_name}")
+                                f"Warning: INF/NaN was found in parameter gradient: {name} in model {model_name}")
 
             log_gradient_stats(writer, panorama_model, "panorama", total_batches)
             log_gradient_stats(writer, satellite_model, "satellite", total_batches)
