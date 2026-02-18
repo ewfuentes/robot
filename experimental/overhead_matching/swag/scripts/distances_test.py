@@ -62,7 +62,7 @@ class DistancesTest(unittest.TestCase):
         pano_embeddings = torch.randn(3, 4, 128)  # 3 pano images, 4 embeddings each, 128 dim
 
         config = LearnedDistanceFunctionConfig(
-            architecture="transformer_decoder",
+            architecture="transformer_encoder",
             embedding_dim=128,
             num_pano_embed=4,
             num_sat_embed=3,
@@ -152,10 +152,10 @@ class DistancesTest(unittest.TestCase):
         assert output.shape == (2, 5), f"Expected shape (2, 5), got {output.shape}"
 
 
-    def test_learned_distance_function_cls_token(self):
-        """Test that CLS token is properly initialized for transformer."""
+    def test_learned_distance_function_identifier_tokens(self):
+        """Test that pano/sat identifier tokens are properly initialized for transformer."""
         config = LearnedDistanceFunctionConfig(
-            architecture="transformer_decoder",
+            architecture="transformer_encoder",
             embedding_dim=128,
             num_pano_embed=4,
             num_sat_embed=3,
@@ -165,9 +165,12 @@ class DistancesTest(unittest.TestCase):
         )
         model = LearnedDistanceFunction(config)
 
-        assert hasattr(model, 'cls_token'), "Transformer model should have cls_token"
-        assert model.cls_token.shape == (1, 1, 128), f"CLS token shape should be (1, 1, 128), got {model.cls_token.shape}"
-        assert model.cls_token.requires_grad, "CLS token should be trainable"
+        assert hasattr(model, 'pano_identifier'), "Transformer model should have pano_identifier"
+        assert hasattr(model, 'sat_identifier'), "Transformer model should have sat_identifier"
+        assert model.pano_identifier.shape == (1, 1, 128)
+        assert model.sat_identifier.shape == (1, 1, 128)
+        assert model.pano_identifier.requires_grad
+        assert model.sat_identifier.requires_grad
 
 
     def test_normalize_embeddings(self):

@@ -569,6 +569,68 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
         self.assertAlmostEqual(num_kept, expected_kept, delta=5,
                               msg=f"Expected ~{expected_kept} landmarks, got {num_kept}")
 
+    def test_skip_aggregation_mode(self):
+        """Test that skip_aggregation mode returns all input tokens without class tokens."""
+        # Setup
+        BATCH_DIM = 2
+        NUM_IMAGE_ROWS = 28
+        NUM_IMAGE_COLS = 42
+        NUM_EMBEDDINGS = 1
+        config = spe.SwagPatchEmbeddingConfig(
+            feature_map_extractor_config=spe.DinoFeatureMapExtractorConfig(),
+            semantic_token_extractor_config=spe.SemanticEmbeddingMatrixConfig(
+                vocabulary=["a", "b", "c"],
+                embedding_dim=8),
+            position_embedding_config=spe.PlanarPositionEmbeddingConfig(
+                min_scale=0.1, scale_step=2.0, embedding_dim=64),
+            aggregation_config=spe.TransformerAggregatorConfig(
+                num_transformer_layers=4,
+                num_attention_heads=4,
+                hidden_dim=64,
+                dropout_frac=0.1),
+            patch_dims=(NUM_IMAGE_ROWS, NUM_IMAGE_COLS),
+            output_dim=16,
+            num_embeddings=NUM_EMBEDDINGS,
+            skip_aggregation=True)
+
+        model = spe.SwagPatchEmbedding(config)
+        input_image = torch.zeros((BATCH_DIM, 3, NUM_IMAGE_ROWS, NUM_IMAGE_COLS))
+        metadata = [
+                {"web_mercator_y": 100.0,
+                 "web_mercator_x": 200.0,
+                 "original_shape": (NUM_IMAGE_ROWS, NUM_IMAGE_COLS),
+                 "landmarks": [
+                    {"web_mercator_y": 95.0, "web_mercator_x": 210.0, "landmark_type": "a"},
+                    {"web_mercator_y": 90.0, "web_mercator_x": 190.0, "landmark_type": "b"},
+                    {"web_mercator_y": 105.0, "web_mercator_x": 195.0, "landmark_type": "a"}]},
+                {"web_mercator_y": 300.0,
+                 "web_mercator_x": 400.0,
+                 "original_shape": (NUM_IMAGE_ROWS, NUM_IMAGE_COLS),
+                 "landmarks": [
+                    {"web_mercator_y": 275.0, "web_mercator_x": 425.0, "landmark_type": "c"},
+                    {"web_mercator_y": 350.0, "web_mercator_x": 390.0, "landmark_type": "b"}]}]
+
+        # Action
+        model_input = spe.ModelInput(image=input_image, metadata=metadata)
+        result, _ = model(model_input)
+
+        # Verification
+        self.assertEqual(result.shape[0], BATCH_DIM)
+        self.assertEqual(result.shape[2], config.output_dim)
+
+        # Should have more tokens than just the class tokens (should have DINO patches + semantic tokens)
+        # DINO extracts patch tokens, and we have 3 and 2 landmarks respectively
+        # The number of tokens should be: DINO patch tokens + semantic tokens
+        # For a 28x42 image with patch size 14 (DINO default for small models), we get 2x3 = 6 patches
+        # Plus 3 semantic tokens for first sample, so > NUM_EMBEDDINGS
+        self.assertGreater(result.shape[1], NUM_EMBEDDINGS)
+
+        # Verify embeddings are normalized
+        if config.normalize_embeddings:
+            norms = torch.linalg.norm(result, dim=2)
+            expected_norms = torch.ones((BATCH_DIM, result.shape[1]))
+            self.assertTrue(torch.allclose(norms, expected_norms, atol=1e-6))
+
 
 if __name__ == "__main__":
     unittest.main()

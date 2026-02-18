@@ -116,6 +116,7 @@ class OptimizationConfig:
 
     random_sample_type: vigor_dataset.HardNegativeMiner.RandomSampleType
 
+    use_hard_negative_mining: bool = True
     lr_sweep_config: LearningRateSweepConfig | None = None
 
 
@@ -540,9 +541,9 @@ def train(config: TrainConfig,
                         if param.grad is None and param.requires_grad:
                             raise RuntimeError(
                                 f"Parameter {name} for model {model_name} requires grad, but had no update.")
-                        if param.grad is not None and torch.any(torch.isinf(param.grad)):
+                        if param.grad is not None and (torch.any(torch.isinf(param.grad)) or torch.any(torch.isnan(param.grad))):
                             print(
-                                f"Warining: INF was found in parameter gradient: {name} in model {model_name}")
+                                f"Warning: INF/NaN was found in parameter gradient: {name} in model {model_name}")
 
             log_gradient_stats(writer, panorama_model, "panorama", total_batches)
             log_gradient_stats(writer, satellite_model, "satellite", total_batches)
@@ -551,10 +552,11 @@ def train(config: TrainConfig,
             log_feature_counts(writer, debug_dict['pano'], debug_dict['sat'], total_batches)
 
             # Hard Negative Mining
-            miner.consume(
-                panorama_embeddings=panorama_embeddings.detach(),
-                satellite_embeddings=satellite_embeddings.detach(),
-                batch=batch)
+            if opt_config.use_hard_negative_mining:
+                miner.consume(
+                    panorama_embeddings=panorama_embeddings.detach(),
+                    satellite_embeddings=satellite_embeddings.detach(),
+                    batch=batch)
 
             # Logging
             log_batch_metrics(
@@ -572,22 +574,23 @@ def train(config: TrainConfig,
             print()
         lr_scheduler.step()
 
-        if epoch_idx >= opt_config.enable_hard_negative_sampling_after_epoch_idx:
-            miner.set_sample_mode(vigor_dataset.HardNegativeMiner.SampleMode.HARD_NEGATIVE)
+        if opt_config.use_hard_negative_mining:
+            if epoch_idx >= opt_config.enable_hard_negative_sampling_after_epoch_idx:
+                miner.set_sample_mode(vigor_dataset.HardNegativeMiner.SampleMode.HARD_NEGATIVE)
 
-        if miner.sample_mode == vigor_dataset.HardNegativeMiner.SampleMode.HARD_NEGATIVE:
-            # Since we are hard negative mining, we want to update the embedding vectors for any
-            # satellite patches that were not observed as part of the epoch
-            unobserved_patch_dataset = torch.utils.data.Subset(
-                dataset.get_sat_patch_view(), list(miner.unobserved_sat_idxs))
-            unobserved_dataloader = vigor_dataset.get_dataloader(
-                unobserved_patch_dataset, num_workers=8, batch_size=128)
+            if miner.sample_mode == vigor_dataset.HardNegativeMiner.SampleMode.HARD_NEGATIVE:
+                # Since we are hard negative mining, we want to update the embedding vectors for any
+                # satellite patches that were not observed as part of the epoch
+                unobserved_patch_dataset = torch.utils.data.Subset(
+                    dataset.get_sat_patch_view(), list(miner.unobserved_sat_idxs))
+                unobserved_dataloader = vigor_dataset.get_dataloader(
+                    unobserved_patch_dataset, num_workers=8, batch_size=128)
 
-            for batch in tqdm.tqdm(unobserved_dataloader, desc="Unobserved sat batches", disable=quiet):
-                with torch.no_grad():
-                    miner_satellite_embeddings, _ = satellite_model(
-                        satellite_model.model_input_from_batch(batch).to("cuda"))
-                miner.consume(None, miner_satellite_embeddings, batch)
+                for batch in tqdm.tqdm(unobserved_dataloader, desc="Unobserved sat batches", disable=quiet):
+                    with torch.no_grad():
+                        miner_satellite_embeddings, _ = satellite_model(
+                            satellite_model.model_input_from_batch(batch).to("cuda"))
+                    miner.consume(None, miner_satellite_embeddings, batch)
 
         # compute validation set metrics
         debug_log(f"Computing validation metrics for epoch {epoch_idx}")
