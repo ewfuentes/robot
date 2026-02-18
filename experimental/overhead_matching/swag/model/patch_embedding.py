@@ -37,8 +37,13 @@ class WagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field='kind'):
 class DinoFeatureExtractor(torch.nn.Module):
     def __init__(self, model_str: str, project: int | None):
         super().__init__()
-        self.dino = torch.hub.load("facebookresearch/dinov2", model_str)
+        # Model strings are like "dinov2_vitb14" or "dinov3_vitb16";
+        # the repo name is the prefix before the first underscore.
+        repo_name = f"facebookresearch/{model_str.split('_')[0]}"
+        self.dino = torch.hub.load(repo_name, model_str)
         self.dino.eval()
+        for param in self.dino.parameters():
+            param.requires_grad = False
 
         if project is None:
             self.project = torch.nn.Identity()
@@ -130,6 +135,10 @@ class WagPatchEmbedding(torch.nn.Module):
         return self._output_dim
 
     @property
+    def num_embeddings(self):
+        return 1
+
+    @property
     def patch_dims(self):
         return self._patch_dims
 
@@ -155,11 +164,13 @@ class WagPatchEmbedding(torch.nn.Module):
         else:
             return batch_item.satellite
 
-    def forward(self, x):
+    def forward(self, x, landmark_dropout_scheduler=None):
+        assert landmark_dropout_scheduler is None, "WAG does not support landmark dropout"
         features = extract_features(self._backbone, x)
         batch_size, num_channels, _, _ = features.shape
         attention = self.safa(features)
         vectorized_features = torch.reshape(features, (batch_size, num_channels, -1))
         per_head_embedding = torch.einsum('bci,bdi->bdc', vectorized_features, attention)
         embedding = torch.reshape(per_head_embedding, (batch_size, -1))
-        return F.normalize(embedding)
+        # Return (batch, 1, output_dim) to match SwagPatchEmbedding interface
+        return F.normalize(embedding, dim=-1).unsqueeze(1), {}
