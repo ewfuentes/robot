@@ -62,7 +62,7 @@ class DistancesTest(unittest.TestCase):
         pano_embeddings = torch.randn(3, 4, 128)  # 3 pano images, 4 embeddings each, 128 dim
 
         config = LearnedDistanceFunctionConfig(
-            architecture="transformer_decoder",
+            architecture="transformer_encoder",
             embedding_dim=128,
             num_pano_embed=4,
             num_sat_embed=3,
@@ -155,7 +155,7 @@ class DistancesTest(unittest.TestCase):
     def test_learned_distance_function_cls_token(self):
         """Test that CLS token is properly initialized for transformer."""
         config = LearnedDistanceFunctionConfig(
-            architecture="transformer_decoder",
+            architecture="transformer_encoder",
             embedding_dim=128,
             num_pano_embed=4,
             num_sat_embed=3,
