@@ -65,6 +65,7 @@ class SwagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
     auxiliary_info: dict[str, Any] = {}
 
     normalize_embeddings: bool = True
+    normalize_input_tokens: bool = True
 
     # These are here for backwards compatibility
     feature_map_extractor_config: FeatureMapExtractorConfig | None = None
@@ -515,7 +516,7 @@ class SwagPatchEmbedding(torch.nn.Module):
         batch_size = model_input.image.shape[0]
         cls_token = self._cls_token.expand(batch_size, -1, -1)
         input_tokens = torch.cat([cls_token] + list(input_tokens_by_name.values()), dim=1)
-        if self._normalize_embeddings:
+        if self._config.normalize_input_tokens:
             input_tokens = F.normalize(input_tokens, dim=-1)
 
         cls_mask = torch.zeros(
