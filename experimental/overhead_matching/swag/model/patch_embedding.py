@@ -173,4 +173,4 @@ class WagPatchEmbedding(torch.nn.Module):
         per_head_embedding = torch.einsum('bci,bdi->bdc', vectorized_features, attention)
         embedding = torch.reshape(per_head_embedding, (batch_size, -1))
         # Return (batch, 1, output_dim) to match SwagPatchEmbedding interface
-        return F.normalize(embedding).unsqueeze(1), {}
+        return F.normalize(embedding, dim=-1).unsqueeze(1), {}
