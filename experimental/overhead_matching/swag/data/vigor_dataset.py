@@ -346,6 +346,8 @@ def load_tensor_caches(info: TensorCacheInfo) -> dict[str, list[TensorCache]]:
         Dict mapping dataset_key -> list of TensorCache objects for that dataset.
         Returns empty dict if info is None or has no extractor_info.
     """
+    # extractor_info is a dict; check for None or empty since models without
+    # cacheable extractors pass an empty dict rather than None.
     if info is None or not info.extractor_info:
         return {}
 

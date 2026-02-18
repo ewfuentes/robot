@@ -37,6 +37,8 @@ class WagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field='kind'):
 class DinoFeatureExtractor(torch.nn.Module):
     def __init__(self, model_str: str, project: int | None):
         super().__init__()
+        # Model strings are like "dinov2_vitb14" or "dinov3_vitb16";
+        # the repo name is the prefix before the first underscore.
         repo_name = f"facebookresearch/{model_str.split('_')[0]}"
         self.dino = torch.hub.load(repo_name, model_str)
         self.dino.eval()
@@ -163,6 +165,7 @@ class WagPatchEmbedding(torch.nn.Module):
             return batch_item.satellite
 
     def forward(self, x, landmark_dropout_scheduler=None):
+        assert landmark_dropout_scheduler is None, "WAG does not support landmark dropout"
         features = extract_features(self._backbone, x)
         batch_size, num_channels, _, _ = features.shape
         attention = self.safa(features)
