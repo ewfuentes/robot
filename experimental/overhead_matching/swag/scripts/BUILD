@@ -529,5 +529,11 @@ py_binary(
 py_binary(
   name="osm_extraction_visualizer",
   srcs=["osm_extraction_visualizer.py"],
-  deps=[]
+  deps=[
+    requirement("shapely"),
+    requirement("geopandas"),
+    requirement("pandas"),
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//common/gps:web_mercator",
+  ]
 )

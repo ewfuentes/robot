@@ -9,11 +9,111 @@ import math
 from pathlib import Path
 
 import numpy as np
+import polars as pl
+import common.torch.load_torch_deps
 import torch
 import tqdm
 
 from experimental.overhead_matching.swag.data import vigor_dataset as vd
 from experimental.overhead_matching.swag.evaluation import proper_noun_matcher_python as pnm
+
+
+class MatchTableSchema:
+    """Shared enum types for match tables, usable in other DataFrames."""
+
+    def __init__(self, pano_ids: list[str], tag_keys: list[str]):
+        self.pano_id = pl.Enum(sorted(pano_ids))
+        self.tag_key = pl.Enum(sorted(tag_keys))
+
+
+def build_match_tables(q, t, k, pano_lm_tags, osm_tags, pano_lm_ranges,
+                       osm_idxs_from_sat_idx) -> tuple[pl.DataFrame, pl.DataFrame, MatchTableSchema]:
+    """Build normalized match tables for tag matching analysis.
+
+    Returns:
+        matches: One row per (pano_landmark, osm_landmark, tag) match.
+            Columns: pano_id, pano_lm_idx, tag_key, osm_idx,
+                     pano_lm_value, sat_lm_value
+        osm_to_sat: Mapping from deduplicated OSM landmarks to sat patches.
+            Columns: osm_idx, sat_idx, sat_lm_idx
+        schema: Shared enum types for use in other DataFrames.
+
+    Join on osm_idx to materialize matches for specific sat patches.
+    """
+    # Build osm_to_sat table
+    osm_to_sat_rows = []
+    for sat_idx, osm_idxs in osm_idxs_from_sat_idx.items():
+        for local_idx, osm_idx in enumerate(osm_idxs):
+            osm_to_sat_rows.append((osm_idx, sat_idx, local_idx))
+
+    osm_to_sat = pl.DataFrame(
+        osm_to_sat_rows,
+        schema={"osm_idx": pl.Int32, "sat_idx": pl.Int32, "sat_lm_idx": pl.Int32},
+        orient="row",
+    )
+
+    # Collect all tag keys across pano and osm landmarks
+    all_tag_keys = set()
+    for tags in pano_lm_tags:
+        for key, _ in tags:
+            all_tag_keys.add(key)
+    for tags in osm_tags:
+        for key, _ in tags:
+            all_tag_keys.add(key)
+
+    table_schema = MatchTableSchema(
+        pano_ids=list(pano_lm_ranges.keys()),
+        tag_keys=list(all_tag_keys),
+    )
+    match_schema = {
+        "pano_id": table_schema.pano_id, "pano_lm_idx": pl.Int32,
+        "tag_key": table_schema.tag_key,
+        "osm_idx": pl.Int32, "pano_lm_value": pl.Utf8, "sat_lm_value": pl.Utf8,
+    }
+    if len(q) == 0:
+        return pl.DataFrame(schema=match_schema), osm_to_sat, table_schema
+
+    q_np = q.numpy() if isinstance(q, torch.Tensor) else q
+    t_np = t.numpy() if isinstance(t, torch.Tensor) else t
+    k_np = k.numpy() if isinstance(k, torch.Tensor) else k
+
+    # Reverse mapping: global pano lm index -> (pano_id, local_idx)
+    pano_id_per_lm = []
+    local_idx_per_lm = []
+    for pano_id, (start, end) in pano_lm_ranges.items():
+        for i in range(end - start):
+            pano_id_per_lm.append(pano_id)
+            local_idx_per_lm.append(i)
+
+    pano_ids = [pano_id_per_lm[qi] for qi in q_np]
+    pano_lm_idxs = [local_idx_per_lm[qi] for qi in q_np]
+    tag_keys = [pano_lm_tags[qi][ki][0] for qi, ki in zip(q_np, k_np)]
+    pano_values = [pano_lm_tags[qi][ki][1] for qi, ki in zip(q_np, k_np)]
+    osm_idxs = t_np.tolist()
+
+    sat_values = []
+    for qi, ti, ki in zip(q_np, t_np, k_np):
+        pano_key = pano_lm_tags[qi][ki][0]
+        sat_val = ""
+        for ok, ov in osm_tags[ti]:
+            if ok == pano_key:
+                sat_val = ov
+                break
+        sat_values.append(sat_val)
+
+    matches = pl.DataFrame(
+        {
+            "pano_id": pano_ids,
+            "pano_lm_idx": pano_lm_idxs,
+            "tag_key": tag_keys,
+            "osm_idx": osm_idxs,
+            "pano_lm_value": pano_values,
+            "sat_lm_value": sat_values,
+        },
+        schema=match_schema,
+    )
+
+    return matches, osm_to_sat, table_schema
 
 
 def load_osm_tag_extraction_jsonl(input_dir: Path) -> dict[str, dict]:
@@ -32,8 +132,8 @@ def load_osm_tag_extraction_jsonl(input_dir: Path) -> dict[str, dict]:
                 continue
             record = json.loads(line)
             pano_key = record["key"]  # "pano_id,lat,lon,"
-            response_text = record["response"]["candidates"][0]["content"]["parts"][0]["text"]
             try:
+                response_text = record["response"]["candidates"][0]["content"]["parts"][0]["text"]
                 parsed = json.loads(response_text)
                 panoramas[pano_key] = parsed
             except Exception:
@@ -142,11 +242,13 @@ def compute_osm_tag_match_similarity(dataset: dict) -> dict:
     pano_for_lm = []
     pano_lm_tags_list = []
     num_lm_per_pano = []  # number of landmarks per pano
+    pano_lm_ranges = {}  # {pano_id: (start, end)} into pano_lm_tags_list
 
     for pano_idx, (pano_id, pano_info) in enumerate(tqdm.tqdm(
             dataset["pano_data_from_pano_id"].items(), desc="collecting_tags")):
         positives[pano_idx, pano_info["sat_idxs"]] = True
 
+        start = len(pano_lm_tags_list)
         lm_count = 0
         for pano_lm in pano_info["landmarks"]:
             primary = pano_lm.get("primary_tag", {})
@@ -160,6 +262,7 @@ def compute_osm_tag_match_similarity(dataset: dict) -> dict:
                 pano_for_lm.append(pano_idx)
                 pano_lm_tags_list.append(extracted)
                 lm_count += 1
+        pano_lm_ranges[pano_id] = (start, start + lm_count)
         num_lm_per_pano.append(lm_count)
 
     # Compute substring matching using C++ implementation
@@ -187,9 +290,14 @@ def compute_osm_tag_match_similarity(dataset: dict) -> dict:
         pano_for_lm_t = torch.tensor(pano_for_lm, dtype=torch.long)
         num_lm_per_pano_t = torch.tensor(num_lm_per_pano, dtype=torch.float)
 
+        # Build sat_idx -> osm landmark indices mapping
+        osm_idxs_from_sat_idx = {}
+        for sat_idx, sat_data in dataset['sat_data_from_sat_id'].items():
+            osm_idxs_from_sat_idx[sat_idx] = [osm_idx_from_props[x] for x in sat_data["landmark_ids"]]
+
         # For each satellite patch, compute aggregations using vectorized operations
         for sat_idx, sat_data in tqdm.tqdm(dataset['sat_data_from_sat_id'].items(), desc="aggregating"):
-            osm_idxs = [osm_idx_from_props[x] for x in sat_data["landmark_ids"]]
+            osm_idxs = osm_idxs_from_sat_idx[sat_idx]
             if len(osm_idxs) == 0:
                 continue
 
@@ -233,6 +341,14 @@ def compute_osm_tag_match_similarity(dataset: dict) -> dict:
             out_sum_idf_mean[has_landmarks, sat_idx] = idf_mean_scores[has_landmarks]
             out_sum_idf_sum[has_landmarks, sat_idx] = idf_sum_scores[has_landmarks]
 
+    matches, osm_to_sat, table_schema = build_match_tables(
+        q=q, t=t, k=k,
+        pano_lm_tags=pano_lm_tags_list,
+        osm_tags=osm_tags_by_idx,
+        pano_lm_ranges=pano_lm_ranges,
+        osm_idxs_from_sat_idx=osm_idxs_from_sat_idx,
+    )
+
     return {
         "max_unit_max": {"similarity": out_max_unit_max, "positives": positives},
         "max_unit_mean": {"similarity": out_max_unit_mean, "positives": positives},
@@ -240,4 +356,4 @@ def compute_osm_tag_match_similarity(dataset: dict) -> dict:
         "sum_idf_max": {"similarity": out_sum_idf_max, "positives": positives},
         "sum_idf_mean": {"similarity": out_sum_idf_mean, "positives": positives},
         "sum_idf_sum": {"similarity": out_sum_idf_sum, "positives": positives},
-    }
+    }, (matches, osm_to_sat, table_schema)
