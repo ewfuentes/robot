@@ -20,6 +20,7 @@ def _():
 
 @app.cell
 def _(Path, mo, ost, vd):
+    CITY = "Seattle"
     @mo.persistent_cache
     def load_city(city):
         _config = vd.VigorDatasetConfig(
@@ -30,7 +31,7 @@ def _(Path, mo, ost, vd):
             landmark_version='v4_202001'
         )
         _vd_dataset = vd.VigorDataset(
-            Path('/data/overhead_matching/datasets/VIGOR/Seattle/'),
+            Path(f'/data/overhead_matching/datasets/VIGOR/{city}/'),
             _config
         )
 
@@ -39,12 +40,12 @@ def _(Path, mo, ost, vd):
             _vd_dataset
         )
 
-    dataset = load_city('Seattle')
-    return (dataset,)
+    dataset = load_city(CITY)
+    return CITY, dataset
 
 
 @app.cell
-def _(Path, vd):
+def _(CITY, Path, vd):
     import shapely
     import networkx as nx
     _config = vd.VigorDatasetConfig(
@@ -55,7 +56,7 @@ def _(Path, vd):
         landmark_version='v4_202001'
     )
     _vd_dataset = vd.VigorDataset(
-        Path('/data/overhead_matching/datasets/VIGOR/Seattle/'),
+        Path(f'/data/overhead_matching/datasets/VIGOR/{CITY}'),
         _config
     )
     _PATCH_HALF_WIDTH = 320
@@ -78,7 +79,7 @@ def _(Path, vd):
 
 
 @app.cell
-def _(Path, dataset, mo, ost, pl, vd):
+def _(CITY, Path, dataset, mo, ost, pl, vd):
     @mo.persistent_cache
     def load_matches(dataset):
         _config = vd.VigorDatasetConfig(
@@ -88,7 +89,7 @@ def _(Path, dataset, mo, ost, pl, vd):
             should_load_landmarks=False,
             landmark_version='v4_202001')
         _vd_dataset = vd.VigorDataset(
-            Path('/data/overhead_matching/datasets/VIGOR/Seattle/'),
+            Path(f'/data/overhead_matching/datasets/VIGOR/{CITY}/'),
             _config
         )  
         _sims, (pano_osm_matches, sat_osm_table, match_schema) = ost.compute_osm_tag_match_similarity(dataset)
@@ -98,6 +99,18 @@ def _(Path, dataset, mo, ost, pl, vd):
 
     pano_osm_matches, sat_osm_table, match_schema = load_matches(dataset)
     return match_schema, pano_osm_matches, sat_osm_table
+
+
+@app.cell
+def _(pano_osm_matches, pl, sat_osm_table):
+    pano_osm_matches.filter(pl.col("osm_idx").is_in(sat_osm_table["osm_idx"]))["osm_idx"].unique()
+    return
+
+
+@app.cell
+def _(sat_osm_table):
+    sat_osm_table
+    return
 
 
 @app.cell
@@ -181,7 +194,7 @@ def _(pl):
     return (compute_pano_sat_similarity,)
 
 
-@app.cell(disabled=True)
+@app.cell
 def _(
     PANO_SAT_PATCH_CUTOFF,
     compute_pano_sat_similarity,
@@ -194,8 +207,11 @@ def _(
     tag_sat_counts,
 ):
     import math 
-    _tag_agg_methods = {'max': pl.max, 'sum': pl.sum}
-    _lm_max_thresholds = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
+    _tag_agg_methods = {
+        'max': pl.max ,
+    #     'sum': pl.sum
+    }
+    _lm_max_thresholds = [0.25, 1.0, 2.0, 4.0]
     _match_thresholds = np.linspace(0, 30, 250)
 
     _pos_by_distance = [pano_distance.filter(pl.col("dist") <= x).height for x in range(PANO_SAT_PATCH_CUTOFF)]
@@ -527,46 +543,160 @@ def _(mo, pl, plt, sat_patch_sims, sns):
     )
 
     best_max_pos = max_pano_patch_pairs.join(best_pos_pano_patch_pairs, on=["pano_id"], suffix="_best")
-    sns.scatterplot(best_max_pos, x="best_pos_patch_idf", y="max_patch_idf", alpha=0.05)
-    mo.mpl.interactive(plt.gcf())
-
-    return (best_max_pos,)
-
-
-@app.cell
-def _(best_max_pos, pl):
-    low_pos_score_high_max = best_max_pos.filter((pl.col('best_pos_patch_idf') < 1) & (pl.col("max_patch_idf") > 6))
-    return (low_pos_score_high_max,)
-
-
-@app.cell
-def _(low_pos_score_high_max):
-    low_pos_score_high_max
-    return
-
-
-@app.cell
-def _(
-    low_pos_score_high_max,
-    mo,
-    pano_osm_matches,
-    pl,
-    sat_osm_table,
-    tag_sat_counts,
-):
-    _df = (low_pos_score_high_max
-        .join(sat_osm_table, on=["sat_idx"])
-        .join(pano_osm_matches, on=["pano_id", "osm_idx"])
-        .join(tag_sat_counts, on=["tag_key", "pano_lm_value"])
+    best_max_pos = (best_max_pos
+        .with_columns((pl.col("max_patch_idf") - pl.col("best_pos_patch_idf")).alias("max_best_gap"))
+        .sort(["max_best_gap", "pano_id", "sat_idx"], descending=[True, True, True])
     )
 
     _links = [
         mo.Html(f'<a href="http://localhost:8080/view/{_pano_id}?sat_idx={_sat_idx}" target="_blank">link</a>')
-        for _pano_id, _sat_idx in _df.select("pano_id", "sat_idx").iter_rows()
+        for _pano_id, _sat_idx in best_max_pos.select("pano_id", "sat_idx").iter_rows()
     ]
+    best_max_pos = best_max_pos.with_columns(pl.Series("link", _links))
 
-    _df = _df.with_columns(pl.Series("link", _links))
-    _df
+    sns.scatterplot(best_max_pos.drop("link"), x="best_pos_patch_idf", y="max_best_gap", alpha=0.05)
+    mo.mpl.interactive(plt.gcf())
+    return (best_max_pos,)
+
+
+@app.cell
+def _(pl):
+    annotations = pl.read_parquet("/home/erick/scratch/annotated_outcomes.parquet")
+    return (annotations,)
+
+
+@app.cell
+def _(annotations):
+    annotations
+    return
+
+
+@app.cell
+def _(best_max_pos, mo):
+    get_notes, set_notes = mo.state({})  # {row_index: "note text"}
+    slider = mo.ui.slider(0, len(best_max_pos) - 1, step=1, label="Row")
+    return get_notes, set_notes, slider
+
+
+@app.cell
+def _(
+    best_max_pos,
+    get_notes,
+    mo,
+    pano_osm_matches,
+    pl,
+    sat_osm_table,
+    set_notes,
+    slider,
+    tag_sat_counts,
+):
+    _idx = slider.value
+    _row = best_max_pos.row(_idx, named=True)
+
+    _max_sub_table = (pano_osm_matches
+        .filter((pl.col("pano_id") == _row["pano_id"]))
+        .join(sat_osm_table.filter(pl.col("sat_idx") == _row["sat_idx"]), on="osm_idx")
+        .join(tag_sat_counts, on=["tag_key", "pano_lm_value"])
+    )
+
+    _best_pos_sub_table = (pano_osm_matches
+        .filter((pl.col("pano_id") == _row["pano_id"]))
+        .join(sat_osm_table.filter(pl.col("sat_idx") == _row["sat_idx_best"]), on="osm_idx")
+        .join(tag_sat_counts, on=["tag_key", "pano_lm_value"])
+    )
+
+    header = mo.md(f"""
+    {slider}
+
+    **Row {_idx} of {len(best_max_pos) - 1}**
+
+    Inspection Link: {_row["link"]["_serialized_mime_bundle"]["data"]}
+
+     - Pano ID: {_row["pano_id"]}
+     - Best Positive (Sat Idx, Score): ({_row["sat_idx_best"]}, {_row["best_pos_patch_idf"]:0.3f})
+     - Max (Sat Idx, Score, Dist): ({_row["sat_idx"]}, {_row["max_patch_idf"]:0.3f}, {_row["dist"]})
+     - Gap: {_row["max_best_gap"]: 0.3f}
+
+    Max Subtable
+    -------------
+
+    | pano_lm_idx | sat_lm_idx | osm_idx | tag_key | pano_lm_value | sat_lm_value | idf |
+    | --- | --- | --- | --- | --- | --- | --- |
+    """
+    + '\n'.join([
+        f'| {_row["pano_lm_idx"]} | {_row["sat_lm_idx"]} | {_row["osm_idx"]} | {_row["tag_key"]} | {_row["pano_lm_value"]} | {_row["sat_lm_value"]} | {_row["idf"]} |'
+        for _row in _max_sub_table.iter_rows(named=True)
+    ]) +
+    f"""
+
+    Best Subtable
+    -------------
+
+    | pano_lm_idx | sat_lm_idx | osm_idx | tag_key | pano_lm_value | sat_lm_value | idf |
+    | --- | --- | --- | --- | --- | --- | --- |
+    """
+    + '\n'.join([
+        f'| {_row["pano_lm_idx"]} | {_row["sat_lm_idx"]} | {_row["osm_idx"]} | {_row["tag_key"]} | {_row["pano_lm_value"]} | {_row["sat_lm_value"]} | {_row["idf"]} |'
+        for _row in _best_pos_sub_table.iter_rows(named=True)
+    ]))
+
+    note_input = mo.ui.text_area(
+        value=get_notes().get(slider.value, ""),
+        label="Notes for this row",
+    )
+
+    def _save(_):
+        notes = get_notes().copy()
+        notes[slider.value] = note_input.value
+        set_notes(notes)
+
+        annotated = best_max_pos.with_columns(
+          pl.Series("notes", [notes.get(i, "") for i in range(len(best_max_pos))])
+        )
+        annotated.write_parquet("/home/erick/scratch/annotated_outcomes.parquet")
+
+    save_btn = mo.ui.button(label="Save note", on_click=_save)
+    mo.vstack([header, note_input, save_btn])
+    return
+
+
+@app.cell
+def _(df, get_notes, mo, pl):
+    def _export(_):
+        notes = get_notes()
+        annotated = df.with_columns(
+          pl.Series("notes", [notes.get(i, "") for i in range(len(df))])
+        )
+        annotated.write_parquet("annotated_outcomes.parquet")
+
+    mo.ui.button(label="Export to parquet", on_click=_export)
+    return
+
+
+@app.cell
+def _(pano_osm_matches, pl, sat_osm_table):
+    (pano_osm_matches
+        .filter(pl.col("pano_id") == 'XyxgUL57N5wHwga3Z8eVHQ')
+        .join(sat_osm_table, on=["osm_idx"])
+        .filter(pl.col("sat_idx") == 6333)
+    )
+    return
+
+
+@app.cell
+def _():
+    return
+
+
+@app.cell
+def _(df, get_notes, mo, pl):
+    def _export(_):
+        notes = get_notes()
+        annotated = df.with_columns(
+          pl.Series("notes", [notes.get(i, "") for i in range(len(df))])
+        )
+        annotated.write_parquet("annotated_outcomes.parquet")
+    mo.ui.button(label="Export to parquet", on_click=_export)
     return
 
 
