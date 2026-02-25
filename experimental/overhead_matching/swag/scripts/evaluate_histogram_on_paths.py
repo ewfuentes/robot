@@ -68,6 +68,8 @@ class HistogramFilterConfig:
     zoom_level: int = 20
     patch_size_px: int = 640
     odometry_noise: OdometryNoiseConfig | None = None  # Optional odometry noise config
+    skip_motion: bool = False  # Replace motion with isotropic blur
+    skip_observation: bool = False  # Skip observation updates
 
 
 @dataclass
@@ -97,6 +99,43 @@ def get_patch_positions_px(vigor_dataset: vd.VigorDataset, device: torch.device)
         vigor_dataset._satellite_metadata[["web_mercator_y", "web_mercator_x"]].values,
         device=device, dtype=torch.float32)
     return patch_positions_px
+
+
+def compute_max_motion_delta_cells(
+    motion_deltas: torch.Tensor,
+    grid_spec: GridSpec,
+) -> float:
+    """Compute the max motion delta magnitude in cell units.
+
+    Args:
+        motion_deltas: (N-1, 2) motion deltas in lat/lon degrees
+        grid_spec: Grid specification for pixel/cell conversion
+
+    Returns:
+        Max motion magnitude in cells
+    """
+    # Find grid center in pixel space, convert to lat/lon for reference
+    center_row_px = grid_spec.origin_row_px + grid_spec.num_rows * grid_spec.cell_size_px / 2
+    center_col_px = grid_spec.origin_col_px + grid_spec.num_cols * grid_spec.cell_size_px / 2
+    center_lat, center_lon = web_mercator.pixel_coords_to_latlon(
+        center_row_px, center_col_px, grid_spec.zoom_level
+    )
+    ref_y, ref_x = center_row_px, center_col_px
+
+    max_magnitude_cells = 0.0
+    for i in range(motion_deltas.shape[0]):
+        dlat = motion_deltas[i, 0].item()
+        dlon = motion_deltas[i, 1].item()
+        new_y, new_x = web_mercator.latlon_to_pixel_coords(
+            center_lat + dlat, center_lon + dlon, grid_spec.zoom_level
+        )
+        dy_px = new_y - ref_y
+        dx_px = new_x - ref_x
+        magnitude_px = math.sqrt(dy_px ** 2 + dx_px ** 2)
+        magnitude_cells = magnitude_px / grid_spec.cell_size_px
+        max_magnitude_cells = max(max_magnitude_cells, magnitude_cells)
+
+    return max_magnitude_cells
 
 
 def run_histogram_filter_on_path(
@@ -146,13 +185,34 @@ def run_histogram_filter_on_path(
 
     path_len = len(path_pano_ids)
 
+    # Precompute blur sigma for skip_motion mode
+    if config.skip_motion:
+        blur_sigma_cells = compute_max_motion_delta_cells(
+            motion_deltas, belief.grid_spec
+        )
+        # Estimate meters: convert 1 cell of pixels to lat delta at grid center
+        gs = belief.grid_spec
+        center_row = gs.origin_row_px + gs.num_rows * gs.cell_size_px / 2
+        center_col = gs.origin_col_px + gs.num_cols * gs.cell_size_px / 2
+        _, ref_lon = web_mercator.pixel_coords_to_latlon(center_row, center_col, gs.zoom_level)
+        offset_lat, _ = web_mercator.pixel_coords_to_latlon(
+            center_row + blur_sigma_cells * gs.cell_size_px, center_col, gs.zoom_level)
+        ref_lat, _ = web_mercator.pixel_coords_to_latlon(center_row, center_col, gs.zoom_level)
+        blur_sigma_meters = abs(offset_lat - ref_lat) * web_mercator.METERS_PER_DEG_LAT
+        print(f"  skip_motion: blur sigma = {blur_sigma_cells:.2f} cells (~{blur_sigma_meters:.1f}m)")
+
     for step_idx in range(path_len - 1):
         # Observation update
-        obs_log_ll = log_likelihood_aggregator(path_pano_ids[step_idx])
-        belief.apply_observation(obs_log_ll, mapping)
+        if not config.skip_observation:
+            obs_log_ll = log_likelihood_aggregator(path_pano_ids[step_idx])
+            belief.apply_observation(obs_log_ll, mapping)
 
         # Motion prediction
-        belief.apply_motion(motion_deltas[step_idx], config.noise_percent)
+        if config.skip_motion:
+            belief.apply_motion_blur(blur_sigma_cells)
+            belief.normalize()
+        else:
+            belief.apply_motion(motion_deltas[step_idx], config.noise_percent)
 
         mean_history.append(belief.get_mean_latlon())
         variance_history.append(belief.get_variance_deg_sq())
@@ -166,8 +226,9 @@ def run_histogram_filter_on_path(
                 prob_mass_by_radius[radius].append(prob_mass)
 
     # Final observation
-    obs_log_ll = log_likelihood_aggregator(path_pano_ids[-1])
-    belief.apply_observation(obs_log_ll, mapping)
+    if not config.skip_observation:
+        obs_log_ll = log_likelihood_aggregator(path_pano_ids[-1])
+        belief.apply_observation(obs_log_ll, mapping)
     mean_history.append(belief.get_mean_latlon())
     variance_history.append(belief.get_variance_deg_sq())
 
@@ -534,6 +595,12 @@ if __name__ == "__main__":
     parser.add_argument("--convergence-radii", type=str, default="25,50,100",
                         help="Comma-separated list of radii (meters) for convergence metrics")
 
+    # Ablation arguments
+    parser.add_argument("--skip-motion", action='store_true',
+                        help="Skip motion update (replace with isotropic blur)")
+    parser.add_argument("--skip-observation", action='store_true',
+                        help="Skip observation update")
+
     # Odometry noise arguments
     parser.add_argument("--odometry-noise-frac", type=float, default=None,
                         help="Noise std as fraction of step distance (isotropic north/east)")
@@ -595,7 +662,14 @@ if __name__ == "__main__":
         initial_std_deg=degrees_from_meters(2970.0),
         initial_offset_std_deg=degrees_from_meters(1300.0),
         odometry_noise=odometry_noise_config,
+        skip_motion=args.skip_motion,
+        skip_observation=args.skip_observation,
     )
+
+    if config.skip_motion:
+        print("ABLATION: skip_motion enabled — motion updates replaced with isotropic blur")
+    if config.skip_observation:
+        print("ABLATION: skip_observation enabled — observation updates skipped")
 
     histogram_config_dict = {
         "noise_percent": config.noise_percent,
@@ -604,6 +678,8 @@ if __name__ == "__main__":
         "initial_offset_std_deg": config.initial_offset_std_deg,
         "zoom_level": config.zoom_level,
         "patch_size_px": config.patch_size_px,
+        "skip_motion": config.skip_motion,
+        "skip_observation": config.skip_observation,
     }
     if odometry_noise_config is not None:
         histogram_config_dict["odometry_noise"] = {

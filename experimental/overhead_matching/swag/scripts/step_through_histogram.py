@@ -65,6 +65,8 @@ def run_filter_with_history(
     path_pano_ids: list[str],
     log_likelihood_aggregator: ObservationLogLikelihoodAggregator,
     noise_percent: float,
+    skip_motion: bool = False,
+    skip_observation: bool = False,
 ):
     """Run filter and save belief at each step."""
     belief = initial_belief.clone()
@@ -83,10 +85,21 @@ def run_filter_with_history(
 
     filter_device = belief.get_log_belief().device
 
+    # Precompute blur sigma for skip_motion mode
+    if skip_motion:
+        from experimental.overhead_matching.swag.scripts.evaluate_histogram_on_paths import (
+            compute_max_motion_delta_cells,
+        )
+        blur_sigma_cells = compute_max_motion_delta_cells(
+            motion_deltas.to(filter_device), grid_spec
+        )
+        print(f"  skip_motion: blur sigma = {blur_sigma_cells:.2f} cells")
+
     for step_idx in range(path_len - 1):
-        # Observation update - get log-likelihoods from aggregator
+        # Observation update
         obs_log_ll = log_likelihood_aggregator(path_pano_ids[step_idx]).to(filter_device)
-        belief.apply_observation(obs_log_ll, mapping)
+        if not skip_observation:
+            belief.apply_observation(obs_log_ll, mapping)
         history.append({
             'stage': f'obs_{step_idx}',
             'log_belief': belief.get_log_belief().clone().cpu(),
@@ -97,7 +110,11 @@ def run_filter_with_history(
         })
 
         # Motion prediction
-        belief.apply_motion(motion_deltas[step_idx], noise_percent)
+        if skip_motion:
+            belief.apply_motion_blur(blur_sigma_cells)
+            belief.normalize()
+        else:
+            belief.apply_motion(motion_deltas[step_idx], noise_percent)
         history.append({
             'stage': f'motion_{step_idx}',
             'log_belief': belief.get_log_belief().clone().cpu(),
@@ -107,9 +124,10 @@ def run_filter_with_history(
             'obs_log_ll': None,
         })
 
-    # Final observation - get log-likelihoods from aggregator
+    # Final observation
     obs_log_ll = log_likelihood_aggregator(path_pano_ids[-1]).to(filter_device)
-    belief.apply_observation(obs_log_ll, mapping)
+    if not skip_observation:
+        belief.apply_observation(obs_log_ll, mapping)
     history.append({
         'stage': f'obs_{path_len-1}',
         'log_belief': belief.get_log_belief().clone().cpu(),
@@ -215,6 +233,8 @@ def main():
     simple_mode = args.simple
     noise_percent = args.noise_percent if args.noise_percent is not None else eval_args.get("noise_percent", 0.02)
     subdivision_factor = eval_args.get("subdivision_factor", 4)
+    skip_motion = eval_args.get("skip_motion", False)
+    skip_observation = eval_args.get("skip_observation", False)
 
     print(f"Config: noise_percent={noise_percent}, subdivision={subdivision_factor}")
 
@@ -244,6 +264,8 @@ def main():
         panorama_size=(640, 640),
         factor=1.0,
         landmark_version=eval_args.get("landmark_version", "v4_202001"),
+        should_load_images=not simple_mode,
+        should_load_landmarks=not simple_mode,
     )
     vigor_dataset = vd.VigorDataset(dataset_path, dataset_config)
 
@@ -423,7 +445,9 @@ def main():
         history = run_filter_with_history(
             grid_spec, mapping, belief,
             motion_deltas, path,
-            log_likelihood_aggregator, noise_percent
+            log_likelihood_aggregator, noise_percent,
+            skip_motion=skip_motion,
+            skip_observation=skip_observation,
         )
 
         # Store in server-side cache (not sent to browser)
