@@ -553,3 +553,13 @@ py_binary(
   deps=[]
 )
 
+py_binary(
+  name="create_tag_key_vocabulary",
+  srcs=["create_tag_key_vocabulary.py"],
+  deps=[
+    requirement("geopandas"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
+  ]
+)
+
