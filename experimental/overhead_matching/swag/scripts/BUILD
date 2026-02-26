@@ -534,3 +534,23 @@ py_binary(
   srcs=["osm_extraction_visualizer.py"],
   deps=[]
 )
+
+py_binary(
+  name="classify_bad_performance",
+  srcs=["classify_bad_performance.py"],
+  deps=[
+    requirement("torch"),
+    requirement("torchvision"),
+    requirement("tqdm"),
+    requirement("scikit-learn"),
+    requirement("pandas"),
+    requirement("numpy"),
+    requirement("msgspec"),
+    "//common/torch:load_torch_deps",
+    "//common/torch:load_and_save_models",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/evaluation:evaluate_swag",
+    "//experimental/overhead_matching/swag/model:patch_embedding",
+    "//experimental/overhead_matching/swag/model:swag_patch_embedding",
+  ]
+)
