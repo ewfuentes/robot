@@ -530,6 +530,24 @@ py_binary(
 )
 
 py_binary(
+  name="export_similarity_matrix",
+  srcs=["export_similarity_matrix.py"],
+  deps=[
+    requirement("torch"),
+    requirement("tqdm"),
+    requirement("msgspec"),
+    requirement("pyyaml"),
+    "//common/torch:load_torch_deps",
+    "//common/torch:load_and_save_models",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/data:satellite_embedding_database",
+    "//experimental/overhead_matching/swag/evaluation:evaluate_swag",
+    "//experimental/overhead_matching/swag/model:patch_embedding",
+    "//experimental/overhead_matching/swag/model:swag_patch_embedding",
+  ]
+)
+
+py_binary(
   name="osm_extraction_visualizer",
   srcs=["osm_extraction_visualizer.py"],
   deps=[]
