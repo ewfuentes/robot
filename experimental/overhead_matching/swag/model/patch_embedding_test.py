@@ -23,11 +23,10 @@ class PatchEmbeddingTest(unittest.TestCase):
         input = torch.rand((BATCH, CHANNELS, *PATCH_DIMS))
 
         # Action
-        embedding = model(input)
+        embedding, debug = model(input)
 
         # Verification
-        self.assertEqual(embedding.shape[0], BATCH)
-        self.assertEqual(embedding.shape[1], NUM_HEADS * CHANNEL_DIM)
+        self.assertEqual(embedding.shape, (BATCH, 1, NUM_HEADS * CHANNEL_DIM))
 
     def test_dino_patch_embedding(self):
         # Setup
@@ -46,11 +45,10 @@ class PatchEmbeddingTest(unittest.TestCase):
         input = torch.rand((BATCH, CHANNELS, *PATCH_DIMS))
 
         # Action
-        embedding = model(input)
+        embedding, debug = model(input)
 
         # Verification
-        self.assertEqual(embedding.shape[0], BATCH)
-        self.assertEqual(embedding.shape[1], NUM_HEADS * CHANNEL_DIM)
+        self.assertEqual(embedding.shape, (BATCH, 1, NUM_HEADS * CHANNEL_DIM))
 
 
 if __name__ == "__main__":

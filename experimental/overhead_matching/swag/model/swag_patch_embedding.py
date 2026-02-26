@@ -66,6 +66,7 @@ class SwagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
 
     normalize_embeddings: bool = True
     skip_aggregation: bool = False
+    normalize_input_tokens: bool = True
 
     # These are here for backwards compatibility
     feature_map_extractor_config: FeatureMapExtractorConfig | None = None
@@ -522,7 +523,7 @@ class SwagPatchEmbedding(torch.nn.Module):
         if include_class_tokens:
             cls_token = self._cls_token.expand(batch_size, -1, -1)
             input_tokens = torch.cat([cls_token] + list(input_tokens_by_name.values()), dim=1)
-            if self._normalize_embeddings:
+            if self._config.normalize_input_tokens:
                 input_tokens = F.normalize(input_tokens, dim=-1)
 
             cls_mask = torch.zeros(
@@ -531,7 +532,7 @@ class SwagPatchEmbedding(torch.nn.Module):
                                    [v.mask for v in extractor_outputs_by_name.values()], dim=1)
         else:
             input_tokens = torch.cat(list(input_tokens_by_name.values()), dim=1)
-            if self._normalize_embeddings:
+            if self._config.normalize_input_tokens:
                 input_tokens = F.normalize(input_tokens, dim=-1)
 
             input_mask = torch.cat([v.mask for v in extractor_outputs_by_name.values()], dim=1)
@@ -583,5 +584,6 @@ class SwagPatchEmbedding(torch.nn.Module):
     
     @property
     def num_embeddings(self):
+        """Number of class tokens used for aggregation. Only meaningful when skip_aggregation=False."""
         return self._config.num_embeddings
 
