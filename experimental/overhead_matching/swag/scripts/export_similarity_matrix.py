@@ -13,13 +13,15 @@ import msgspec
 import json
 
 
-def load_model(path, device='cuda'):
+def load_model(path, device='cuda', fallback_to_config=False):
     path = Path(path)
     try:
         model = lsm.load_model(path, device=device)
         model.patch_dims
         model.model_input_from_batch
     except Exception as e:
+        if not fallback_to_config:
+            raise
         print("Failed to load model via pickle, falling back to config+weights:", e)
         config_field = ("sat_model_config" if 'satellite' in path.name
                         else "pano_model_config")
@@ -58,18 +60,25 @@ def get_latest_checkpoint(p: Path):
     checkpoints = []
     for dir in p.glob("[0-9]*"):
         checkpoints.append(dir.name.split('_')[0])
+    if not checkpoints:
+        raise FileNotFoundError(
+            f"No checkpoint directories matching '[0-9]*' found in {p}. "
+            f"Contents: {[x.name for x in p.iterdir()] if p.exists() else '(directory does not exist)'}")
     return sorted(checkpoints)[-1]
 
 
-def load_models_from_training_output(base_path: Path, device='cuda', checkpoint='latest'):
+def load_models_from_training_output(base_path: Path, device='cuda', checkpoint='latest',
+                                     fallback_to_config=False):
     if checkpoint == 'latest':
         checkpoint = get_latest_checkpoint(base_path)
     sat_path = base_path / f"{checkpoint}_satellite"
     pano_path = base_path / f"{checkpoint}_panorama"
     print(f"Loading satellite model from {sat_path}")
-    sat_model = load_model(sat_path, device=device)
+    sat_model = load_model(sat_path, device=device, fallback_to_config=fallback_to_config)
     print(f"Loading panorama model from {pano_path}")
-    pano_model = load_model(pano_path, device=device)
+    pano_model = load_model(pano_path, device=device, fallback_to_config=fallback_to_config)
+    sat_model.eval()
+    pano_model.eval()
     return pano_model, sat_model, checkpoint
 
 
@@ -86,7 +95,8 @@ def get_git_info():
             "git_branch": branch,
             "git_dirty": bool(dirty),
         }
-    except Exception:
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        print(f"WARNING: Could not collect git info: {e}")
         return {"git_commit": "unknown", "git_branch": "unknown", "git_dirty": None}
 
 
@@ -105,11 +115,14 @@ def main():
     parser.add_argument("--landmark_version", type=str, default="v1")
     parser.add_argument("--checkpoint", type=str, default="best",
                         help="Checkpoint prefix to load (e.g. 'best', 'last', '0050', or 'latest' for highest numbered)")
+    parser.add_argument("--fallback_to_config", action="store_true",
+                        help="If pickle loading fails, fall back to loading from config+weights")
     args = parser.parse_args()
 
     model_path = Path(args.model_path)
     pano_model, sat_model, checkpoint_idx = load_models_from_training_output(
-        model_path, device=args.device, checkpoint=args.checkpoint)
+        model_path, device=args.device, checkpoint=args.checkpoint,
+        fallback_to_config=args.fallback_to_config)
 
     dataset_config = vd.VigorDatasetConfig(
         satellite_tensor_cache_info=None,
@@ -132,7 +145,7 @@ def main():
         pano_model=pano_model,
         sat_model=sat_model,
         device=args.device,
-        use_cached_similarity=True)
+        use_cached_similarity=False)
 
     output_path = Path(args.output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
