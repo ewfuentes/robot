@@ -64,7 +64,7 @@ class SwagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
 
     auxiliary_info: dict[str, Any] = {}
 
-    normalize_embeddings: bool = True
+    normalize_output_embeddings: bool = True
     skip_aggregation: bool = False
     normalize_input_tokens: bool = True
 
@@ -411,7 +411,7 @@ class SwagPatchEmbedding(torch.nn.Module):
         self._extractor_by_name = torch.nn.ModuleDict({
             k: create_extractor(c, config.auxiliary_info)
             for k, c in config.extractor_config_by_name.items()})
-        self._normalize_embeddings = config.normalize_embeddings
+        self._normalize_output_embeddings = config.normalize_output_embeddings
         self._token_marker_by_name = torch.nn.ParameterDict({
                 k: torch.nn.Parameter(torch.randn(1, 1, config.output_dim))
                 for k in config.extractor_config_by_name})
@@ -564,7 +564,7 @@ class SwagPatchEmbedding(torch.nn.Module):
             model_output = output_tokens[:, :self._cls_token.shape[1], :]  # B, num_class_tokens, D_emb
 
             # output is batch x num_class_tokens x feature_dim
-            if self._normalize_embeddings:
+            if self._normalize_output_embeddings:
                 model_output = F.normalize(model_output, dim=2)
 
             return model_output, extractor_outputs_by_name

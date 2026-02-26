@@ -2487,7 +2487,7 @@ def compute_item_embedding(sentences: list[str], mode: str):
     all_tokens = torch.cat([cls_token, tokens_with_marker], dim=1)  # (batch_size, num_embeddings + N_sentences, output_dim)
 
     # CRITICAL: Normalize all input tokens before aggregator (swag_patch_embedding.py:508-509)
-    if model._normalize_embeddings:
+    if model._normalize_output_embeddings:
         all_tokens = F.normalize(all_tokens, dim=-1)
 
     # Create mask (all tokens are valid)
@@ -2500,7 +2500,7 @@ def compute_item_embedding(sentences: list[str], mode: str):
     cls_output = aggregated[:, :model._config.num_embeddings, :].mean(dim=1).squeeze(0)  # (output_dim,)
 
     # Final normalization if configured
-    if model._normalize_embeddings:
+    if model._normalize_output_embeddings:
         cls_output = F.normalize(cls_output, dim=-1)
 
     return cls_output
