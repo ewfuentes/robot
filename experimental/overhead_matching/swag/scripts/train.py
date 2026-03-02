@@ -9,7 +9,7 @@ import itertools
 from pathlib import Path
 from common.python.serialization import flatten_dict, msgspec_enc_hook, msgspec_dec_hook
 from experimental.overhead_matching.swag.scripts.losses import LossConfig, compute_loss, LossFunctionType, create_losses_from_loss_config_list, InfoNCELossConfig
-from experimental.overhead_matching.swag.scripts.distances import DistanceConfig, create_distance_from_config
+from experimental.overhead_matching.swag.scripts.distances import DistanceConfig, LearnedDistanceFunctionConfig, create_distance_from_config
 from experimental.overhead_matching.swag.scripts.pairing import PairingType, create_pairs, create_anchors, Pairs, PairingDataType
 from experimental.overhead_matching.swag.data import (
     vigor_dataset, satellite_embedding_database as sed, vigor_filters)
@@ -390,6 +390,18 @@ def train(config: TrainConfig,
 
     distance_model = create_distance_from_config(config.distance_model_config)
     loss_functions = create_losses_from_loss_config_list(config.loss_configs)
+
+    # Validate that skip_aggregation is only used with transformer_encoder distance
+    for model_name, model_config in [("sat", config.sat_model_config), ("pano", config.pano_model_config)]:
+        if (isinstance(model_config, swag_patch_embedding.SwagPatchEmbeddingConfig)
+                and model_config.skip_aggregation):
+            if not (isinstance(config.distance_model_config, LearnedDistanceFunctionConfig)
+                    and config.distance_model_config.architecture == "transformer_encoder"):
+                raise RuntimeError(
+                    f"{model_name}_model_config has skip_aggregation=True, which requires "
+                    f"distance_model_config to be LearnedDistanceFunctionConfig with "
+                    f"architecture='transformer_encoder'. Got: {type(config.distance_model_config).__name__}")
+
     # Setup models using extracted function
     panorama_model, satellite_model, distance_model = setup_models_for_training(
         panorama_model, satellite_model, distance_model)
@@ -535,15 +547,15 @@ def train(config: TrainConfig,
             if torch.isnan(loss_dict["loss"]):
                 raise RuntimeError("Got NaN loss!")
             # perform checks that all parameters we expect to update have gradients for the first set of batches
-            if total_batches < 50:
+            if total_batches < 50 or total_batches % 5 == 0:
                 for model_name, model in zip(["pano", "sat"], [panorama_model, satellite_model]):
                     for name, param in model.named_parameters():
                         if param.grad is None and param.requires_grad:
                             raise RuntimeError(
                                 f"Parameter {name} for model {model_name} requires grad, but had no update.")
                         if param.grad is not None and (torch.any(torch.isinf(param.grad)) or torch.any(torch.isnan(param.grad))):
-                            print(
-                                f"Warning: INF/NaN was found in parameter gradient: {name} in model {model_name}")
+                            raise RuntimeError(
+                                f"INF/NaN found in parameter gradient: {name} in model {model_name} at batch {total_batches}")
 
             log_gradient_stats(writer, panorama_model, "panorama", total_batches)
             log_gradient_stats(writer, satellite_model, "satellite", total_batches)

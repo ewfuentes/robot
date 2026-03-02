@@ -254,7 +254,7 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
                 hidden_dim=64,
                 dropout_frac=0.1),
             patch_dims=(NUM_IMAGE_ROWS, NUM_IMAGE_COLS),
-            normalize_output_embeddings=True,
+            normalize_embeddings=True,
             output_dim=16,
             num_embeddings=NUM_EMBEDDINGS)
 
@@ -625,11 +625,113 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
         # Plus 3 semantic tokens for first sample, so > NUM_EMBEDDINGS
         self.assertGreater(result.shape[1], NUM_EMBEDDINGS)
 
-        # Verify embeddings are normalized
-        if config.normalize_output_embeddings:
-            norms = torch.linalg.norm(result, dim=2)
-            expected_norms = torch.ones((BATCH_DIM, result.shape[1]))
-            self.assertTrue(torch.allclose(norms, expected_norms, atol=1e-6))
+        # Verify non-NaN tokens are normalized (NaN tokens are masked positions)
+        if config.normalize_embeddings:
+            nan_mask = torch.any(torch.isnan(result), dim=2)
+            valid_tokens = result[~nan_mask]
+            norms = torch.linalg.norm(valid_tokens, dim=-1)
+            self.assertTrue(torch.allclose(norms, torch.ones_like(norms), atol=1e-6))
+
+
+    def test_skip_aggregation_cls_token_and_aggregator_are_none(self):
+        """Verify that _cls_token and _aggregator_model are None in skip_aggregation mode."""
+        config = spe.SwagPatchEmbeddingConfig(
+            extractor_config_by_name={
+                "test_extractor": spe.SemanticEmbeddingMatrixConfig(
+                    vocabulary=["a", "b", "c"],
+                    embedding_dim=8),
+            },
+            position_embedding_config=spe.NullPositionEmbeddingConfig(),
+            aggregation_config=spe.TransformerAggregatorConfig(
+                num_transformer_layers=2,
+                num_attention_heads=4,
+                hidden_dim=64,
+                dropout_frac=0.1),
+            patch_dims=(28, 42),
+            output_dim=16,
+            num_embeddings=1,
+            skip_aggregation=True)
+
+        model = spe.SwagPatchEmbedding(config)
+        self.assertIsNone(model._cls_token)
+        self.assertIsNone(model._aggregator_model)
+
+    def test_num_embeddings_property_both_modes(self):
+        """Verify num_embeddings property works in both normal and skip_aggregation modes."""
+        base_kwargs = dict(
+            extractor_config_by_name={
+                "test_extractor": spe.SemanticEmbeddingMatrixConfig(
+                    vocabulary=["a", "b", "c"],
+                    embedding_dim=8),
+            },
+            position_embedding_config=spe.NullPositionEmbeddingConfig(),
+            aggregation_config=spe.TransformerAggregatorConfig(
+                num_transformer_layers=2,
+                num_attention_heads=4,
+                hidden_dim=64,
+                dropout_frac=0.1),
+            patch_dims=(28, 42),
+            output_dim=16,
+            num_embeddings=3)
+
+        normal_model = spe.SwagPatchEmbedding(spe.SwagPatchEmbeddingConfig(**base_kwargs))
+        skip_model = spe.SwagPatchEmbedding(spe.SwagPatchEmbeddingConfig(**base_kwargs, skip_aggregation=True))
+
+        self.assertEqual(normal_model.num_embeddings, 3)
+        self.assertEqual(skip_model.num_embeddings, 3)
+
+    def test_skip_aggregation_normalized_output(self):
+        """Verify non-NaN tokens are normalized and masked positions are NaN when normalize_embeddings=True."""
+        BATCH_DIM = 2
+        NUM_IMAGE_ROWS = 320
+        NUM_IMAGE_COLS = 640
+        config = spe.SwagPatchEmbeddingConfig(
+            extractor_config_by_name={
+                "test_extractor": spe.SemanticEmbeddingMatrixConfig(
+                    vocabulary=["a", "b", "c"],
+                    embedding_dim=8),
+            },
+            position_embedding_config=spe.NullPositionEmbeddingConfig(),
+            aggregation_config=spe.TransformerAggregatorConfig(
+                num_transformer_layers=2,
+                num_attention_heads=4,
+                hidden_dim=64,
+                dropout_frac=0.1),
+            patch_dims=(NUM_IMAGE_ROWS, NUM_IMAGE_COLS),
+            output_dim=16,
+            num_embeddings=1,
+            skip_aggregation=True,
+            normalize_embeddings=True)
+
+        model = spe.SwagPatchEmbedding(config)
+        input_image = torch.zeros((BATCH_DIM, 3, NUM_IMAGE_ROWS, NUM_IMAGE_COLS))
+
+        # Different number of landmarks per batch element to create masked positions
+        metadata = [
+            {"web_mercator_y": 100.0,
+             "web_mercator_x": 200.0,
+             "landmarks": [
+                {"web_mercator_y": 95.0, "web_mercator_x": 210.0, "landmark_type": "a"},
+                {"web_mercator_y": 90.0, "web_mercator_x": 190.0, "landmark_type": "b"},
+                {"web_mercator_y": 105.0, "web_mercator_x": 195.0, "landmark_type": "a"}]},
+            {"web_mercator_y": 300.0,
+             "web_mercator_x": 400.0,
+             "landmarks": [
+                {"web_mercator_y": 275.0, "web_mercator_x": 425.0, "landmark_type": "c"}]}]
+
+        model_input = spe.ModelInput(image=input_image, metadata=metadata)
+        result, _ = model(model_input)
+
+        # Check that masked positions are NaN
+        # Second batch element has fewer landmarks, so it should have NaN-padded positions
+        nan_mask = torch.any(torch.isnan(result), dim=2)
+        self.assertTrue(nan_mask[1, -1].item(), "Last token of shorter sequence should be NaN")
+
+        # Check that non-NaN tokens are normalized
+        valid_tokens = result[~nan_mask]
+        norms = torch.linalg.norm(valid_tokens, dim=-1)
+        self.assertTrue(torch.allclose(norms, torch.ones_like(norms), atol=1e-6),
+                       "Non-NaN tokens should be unit normalized")
 
 
 if __name__ == "__main__":

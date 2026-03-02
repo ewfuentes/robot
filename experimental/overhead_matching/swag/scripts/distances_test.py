@@ -56,7 +56,7 @@ class DistancesTest(unittest.TestCase):
 
 
     def test_learned_distance_function_transformer(self):
-        """Test transformer decoder architecture forward pass."""
+        """Test transformer encoder architecture forward pass."""
         torch.manual_seed(42)
         sat_embeddings = torch.randn(2, 3, 128)  # 2 sat images, 3 embeddings each, 128 dim
         pano_embeddings = torch.randn(3, 4, 128)  # 3 pano images, 4 embeddings each, 128 dim
@@ -172,6 +172,37 @@ class DistancesTest(unittest.TestCase):
         assert model.pano_identifier.requires_grad
         assert model.sat_identifier.requires_grad
 
+
+    def test_transformer_encoder_nan_padded_variable_length(self):
+        """Test transformer encoder handles NaN-padded variable-length inputs."""
+        torch.manual_seed(42)
+        # Simulate variable-length embeddings: sat has 5 tokens, pano has 3 tokens,
+        # but both are padded to length 5 with NaN
+        sat_embeddings = torch.randn(2, 5, 128)
+        pano_embeddings = torch.randn(3, 5, 128)
+        # NaN-pad pano embeddings at different lengths
+        pano_embeddings[0, 3:, :] = float('nan')  # 3 valid tokens
+        pano_embeddings[1, 4:, :] = float('nan')  # 4 valid tokens
+        pano_embeddings[2, 2:, :] = float('nan')  # 2 valid tokens
+        # NaN-pad one sat embedding too
+        sat_embeddings[1, 4:, :] = float('nan')   # 4 valid tokens
+
+        config = LearnedDistanceFunctionConfig(
+            architecture="transformer_encoder",
+            embedding_dim=128,
+            num_pano_embed=None,
+            num_sat_embed=None,
+            hidden_dim=256,
+            num_heads=8,
+            num_layers=1
+        )
+        model = LearnedDistanceFunction(config)
+
+        output = model(sat_embeddings, pano_embeddings)
+
+        # Check output shape: n_pano x n_sat
+        assert output.shape == (3, 2), f"Expected shape (3, 2), got {output.shape}"
+        assert torch.isfinite(output).all(), "Output contains non-finite values"
 
     def test_normalize_embeddings(self):
         """Test the normalize_embeddings utility function."""

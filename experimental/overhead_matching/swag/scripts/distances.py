@@ -188,6 +188,10 @@ class LearnedDistanceFunction(torch.nn.Module):
         self.config = config
 
         if config.architecture == "mlp":
+            if config.num_pano_embed is None or config.num_sat_embed is None:
+                raise ValueError(
+                    f"MLP architecture requires num_pano_embed and num_sat_embed to be set. "
+                    f"Got num_pano_embed={config.num_pano_embed}, num_sat_embed={config.num_sat_embed}")
             num_input_dim = self.config.embedding_dim * (self.config.num_pano_embed + self.config.num_sat_embed)
             self.model = torch.nn.Sequential(
                 torch.nn.Linear(num_input_dim, self.config.hidden_dim),
@@ -258,8 +262,11 @@ class LearnedDistanceFunction(torch.nn.Module):
 
         # Mean pool over non-masked positions
         valid_mask = ~padding_mask  # batch x seq_len
+        valid_counts = valid_mask.sum(dim=1, keepdim=True)  # batch x 1
+        if torch.any(valid_counts == 0):
+            raise RuntimeError("Mean pooling encountered a row with zero valid tokens. All tokens in a pano-sat pair are masked.")
         output[padding_mask] = 0.0
-        pooled = output.sum(dim=1) / valid_mask.sum(dim=1, keepdim=True)  # batch x d_emb
+        pooled = output.sum(dim=1) / valid_counts  # batch x d_emb
         sim = self.output_proj(pooled)  # batch x 1
 
         return sim

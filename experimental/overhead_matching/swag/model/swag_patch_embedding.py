@@ -64,7 +64,9 @@ class SwagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
 
     auxiliary_info: dict[str, Any] = {}
 
-    normalize_output_embeddings: bool = True
+    # When skip_aggregation=False: normalizes the aggregated output embeddings (class tokens)
+    # When skip_aggregation=True: normalizes the raw output tokens before NaN masking
+    normalize_embeddings: bool = True
     skip_aggregation: bool = False
     normalize_input_tokens: bool = True
 
@@ -411,7 +413,7 @@ class SwagPatchEmbedding(torch.nn.Module):
         self._extractor_by_name = torch.nn.ModuleDict({
             k: create_extractor(c, config.auxiliary_info)
             for k, c in config.extractor_config_by_name.items()})
-        self._normalize_output_embeddings = config.normalize_output_embeddings
+        self._normalize_embeddings = config.normalize_embeddings
         self._token_marker_by_name = torch.nn.ParameterDict({
                 k: torch.nn.Parameter(torch.randn(1, 1, config.output_dim))
                 for k in config.extractor_config_by_name})
@@ -555,6 +557,9 @@ class SwagPatchEmbedding(torch.nn.Module):
             # Skip aggregation mode: return all input tokens without class tokens
             input_tokens, input_mask, extractor_outputs_by_name = self._get_input_tokens(
                 model_input, landmark_dropout_scheduler, include_class_tokens=False)
+            if self._normalize_embeddings:
+                input_tokens = F.normalize(input_tokens, dim=-1)
+            input_tokens[input_mask] = float('nan')
             return input_tokens, extractor_outputs_by_name
         else:
             # Normal mode: add class tokens, run aggregation, return class tokens
@@ -564,7 +569,7 @@ class SwagPatchEmbedding(torch.nn.Module):
             model_output = output_tokens[:, :self._cls_token.shape[1], :]  # B, num_class_tokens, D_emb
 
             # output is batch x num_class_tokens x feature_dim
-            if self._normalize_output_embeddings:
+            if self._normalize_embeddings:
                 model_output = F.normalize(model_output, dim=2)
 
             return model_output, extractor_outputs_by_name
