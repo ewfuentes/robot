@@ -110,12 +110,17 @@ PANO_LANDMARK_IDXS = []  # list of list[int], parallel to PANORAMAS
 PANO_CATEGORIES_GEMINI = []  # list of str, parallel to PANORAMAS
 PANO_CATEGORIES_OSM = []  # list of str, parallel to PANORAMAS
 GEMINI_PREDICTIONS = {}  # pano_id -> {"location_type": str, "landmarks": [...]}
-PANO_LABELS = {}  # pano_idx -> "useful" | "not_useful"
+PANO_LABELS = {}  # pano_id -> "useful" | "not_useful"
 TAG_OVERRIDES = {}  # (key, val) -> "always_distinctive" | "never_distinctive"
 TAG_SCORES = {}  # (key, val) -> P(useful|tag)
 PANO_CATEGORIES_LEARNED = []  # parallel to PANORAMAS
 PANO_TAGS = []  # list of set[(key, val)], parallel to PANORAMAS — precomputed at startup
 LABELS_PATH = None  # Path to labels JSON file
+PANO_ID_TO_IDX = {}  # pano_id -> pano_idx, built once at startup
+
+# Landmark annotation: which OSM landmarks are the "distinctive thing" for each panorama
+RELEVANT_LANDMARKS = {}  # pano_id -> list of osm_id strings ([] = reviewed, no relevant)
+OSM_ID_TO_LM_IDX = {}  # osm_id string -> index in LANDMARK_METADATA
 
 # DINO-based visual distinctiveness prediction
 DINO_FEATURES = None     # np.ndarray (N, 3072) or None
@@ -123,6 +128,13 @@ DINO_PANO_MAP = {}       # pano_id -> row index in DINO_FEATURES
 DINO_MODEL = None        # sklearn LogisticRegression or None
 PANO_CATEGORIES_DINO = []  # parallel to PANORAMAS: "distinctive"/"generic"/"no_data"
 DINO_CONFIDENCES = []    # parallel to PANORAMAS: float confidence or None
+
+# Active learning queue for prioritizing which panoramas to label next
+ACTIVE_LEARNING_QUEUE = []    # [(score, pano_idx), ...] sorted descending by score
+SPATIAL_K = 5
+AL_W_UNCERTAINTY = 0.5
+AL_W_DISAGREEMENT = 0.25
+AL_W_ISOLATION = 0.25
 
 USEFUL_TOP_KEYS = {
     "amenity", "shop", "leisure", "tourism", "historic", "natural",
@@ -175,29 +187,59 @@ def _categorize_panorama_osm(pano_idx):
 
 
 def _load_labels():
-    """Load panorama labels and tag overrides from the labels JSON file."""
-    global PANO_LABELS, TAG_OVERRIDES
+    """Load panorama labels and tag overrides from the labels JSON file.
+
+    Returns True if migration from old (pano_idx) format was performed.
+    """
+    global PANO_LABELS, TAG_OVERRIDES, RELEVANT_LANDMARKS
     if LABELS_PATH is None or not LABELS_PATH.exists():
-        return
+        return False
     with open(LABELS_PATH) as f:
         data = json.load(f)
-    PANO_LABELS = {int(k): v for k, v in data.get("panorama_labels", {}).items()}
+
+    raw_labels = data.get("panorama_labels", {})
+    migrated = False
+
+    # Detect old format: keys are numeric strings like "123"
+    is_old_format = raw_labels and all(k.isdigit() for k in raw_labels)
+    if is_old_format and PANORAMAS:
+        print("Migrating labels from pano_idx to pano_id format...")
+        import shutil
+        backup_path = Path(str(LABELS_PATH) + ".bak")
+        shutil.copy2(LABELS_PATH, backup_path)
+        print(f"  Backed up old labels to {backup_path}")
+        PANO_LABELS = {}
+        for k, v in raw_labels.items():
+            idx = int(k)
+            if 0 <= idx < len(PANORAMAS):
+                PANO_LABELS[PANORAMAS[idx]["id"]] = v
+            else:
+                print(f"  Warning: skipping out-of-range pano_idx {idx}")
+        print(f"  Migrated {len(PANO_LABELS)} labels")
+        migrated = True
+    else:
+        PANO_LABELS = dict(raw_labels)
+
     TAG_OVERRIDES = {}
     for tag_str, override in data.get("tag_overrides", {}).items():
         if "=" in tag_str:
             key, value = tag_str.split("=", 1)
             TAG_OVERRIDES[(key, value)] = override
 
+    RELEVANT_LANDMARKS = data.get("relevant_landmarks", {})
+    return migrated
+
 
 def _save_labels():
-    """Save panorama labels and tag overrides to the labels JSON file."""
+    """Save panorama labels, tag overrides, and relevant landmarks to JSON."""
     if LABELS_PATH is None:
         return
     data = {
-        "panorama_labels": {str(k): v for k, v in PANO_LABELS.items()},
+        "panorama_labels": dict(PANO_LABELS),
         "tag_overrides": {
             f"{k}={v}": override for (k, v), override in TAG_OVERRIDES.items()
         },
+        "relevant_landmarks": RELEVANT_LANDMARKS,
     }
     with open(LABELS_PATH, "w") as f:
         json.dump(data, f, indent=2)
@@ -235,7 +277,10 @@ def _recompute_learned_categories():
     # Count per-tag occurrences in labeled panoramas
     tag_useful = {}  # (key, val) -> count in "useful" panos
     tag_total = {}   # (key, val) -> count in any labeled pano
-    for pano_idx, label in PANO_LABELS.items():
+    for pano_id, label in PANO_LABELS.items():
+        pano_idx = PANO_ID_TO_IDX.get(pano_id)
+        if pano_idx is None:
+            continue
         tags = _get_pano_tags(pano_idx)
         for tag in tags:
             tag_total[tag] = tag_total.get(tag, 0) + 1
@@ -277,15 +322,14 @@ def _recompute_learned_categories():
 
 def _retrain_dino_model():
     """Retrain logistic regression on DINO features from labeled panoramas."""
-    global DINO_MODEL, PANO_CATEGORIES_DINO, DINO_CONFIDENCES
+    global DINO_MODEL, PANO_CATEGORIES_DINO, DINO_CONFIDENCES, ACTIVE_LEARNING_QUEUE
 
     if DINO_FEATURES is None:
         return
 
     # Collect features and labels for labeled panoramas that have DINO data
     X, y = [], []
-    for pano_idx, label in PANO_LABELS.items():
-        pano_id = PANORAMAS[pano_idx]["id"]
+    for pano_id, label in PANO_LABELS.items():
         row_idx = DINO_PANO_MAP.get(pano_id)
         if row_idx is None:
             continue
@@ -298,6 +342,7 @@ def _retrain_dino_model():
         DINO_MODEL = None
         PANO_CATEGORIES_DINO = ["no_data"] * len(PANORAMAS)
         DINO_CONFIDENCES = [None] * len(PANORAMAS)
+        ACTIVE_LEARNING_QUEUE = []
         return
 
     from sklearn.linear_model import LogisticRegression
@@ -330,6 +375,101 @@ def _retrain_dino_model():
           f"distinctive={counts.get('distinctive', 0)}, "
           f"generic={counts.get('generic', 0)}, "
           f"no_data={counts.get('no_data', 0)}")
+
+    _recompute_active_learning_queue()
+
+
+def _recompute_active_learning_queue():
+    """Recompute the active learning priority queue from DINO confidences.
+
+    Uses three signals:
+    - Uncertainty: how close the model's confidence is to 0.5
+    - Spatial disagreement: model prediction vs. nearby labeled panoramas
+    - Spatial isolation: distance from nearest labeled panorama
+    """
+    global ACTIVE_LEARNING_QUEUE
+
+    if DINO_MODEL is None or not DINO_CONFIDENCES:
+        ACTIVE_LEARNING_QUEUE = []
+        return
+
+    from scipy.spatial import cKDTree
+
+    labeled_idxs = sorted(
+        PANO_ID_TO_IDX[pid] for pid in PANO_LABELS if pid in PANO_ID_TO_IDX
+    )
+    if not labeled_idxs:
+        ACTIVE_LEARNING_QUEUE = []
+        return
+
+    # Build KDTree from labeled panorama coordinates
+    labeled_coords = np.array([
+        [PANORAMAS[i]["lat"], PANORAMAS[i]["lon"]] for i in labeled_idxs
+    ])
+    tree = cKDTree(labeled_coords)
+
+    # Identify unlabeled panoramas that have DINO data
+    labeled_pano_ids = set(PANO_LABELS.keys())
+    unlabeled = []
+    unlabeled_coords = []
+    unlabeled_confs = []
+    for i in range(len(PANORAMAS)):
+        if PANORAMAS[i]["id"] in labeled_pano_ids:
+            continue
+        conf = DINO_CONFIDENCES[i]
+        if conf is None:
+            continue
+        unlabeled.append(i)
+        unlabeled_coords.append([PANORAMAS[i]["lat"], PANORAMAS[i]["lon"]])
+        unlabeled_confs.append(conf)
+
+    if not unlabeled:
+        ACTIVE_LEARNING_QUEUE = []
+        return
+
+    unlabeled_coords = np.array(unlabeled_coords)
+    unlabeled_confs = np.array(unlabeled_confs)
+
+    # Query K nearest labeled neighbors for each unlabeled panorama
+    k = min(SPATIAL_K, len(labeled_idxs))
+    distances, neighbor_indices = tree.query(unlabeled_coords, k=k)
+    # Ensure 2D shape even when k=1
+    if k == 1:
+        distances = distances.reshape(-1, 1)
+        neighbor_indices = neighbor_indices.reshape(-1, 1)
+
+    # Uncertainty: 1 = maximally uncertain (conf=0.5), 0 = confident
+    uncertainty = 1.0 - 2.0 * np.abs(unlabeled_confs - 0.5)
+
+    # Spatial disagreement: compare model confidence to fraction of useful neighbors
+    frac_useful = np.zeros(len(unlabeled))
+    for j in range(len(unlabeled)):
+        n_useful = sum(
+            1 for ni in neighbor_indices[j]
+            if PANO_LABELS.get(PANORAMAS[labeled_idxs[ni]]["id"]) == "useful"
+        )
+        frac_useful[j] = n_useful / k
+    spatial_disagreement = np.abs(unlabeled_confs - frac_useful)
+
+    # Spatial isolation: distance to nearest labeled panorama
+    nearest_dist = distances[:, 0]
+    p95 = np.percentile(nearest_dist, 95) if len(nearest_dist) > 0 else 1.0
+    if p95 > 0:
+        spatial_isolation = np.clip(nearest_dist / p95, 0.0, 1.0)
+    else:
+        spatial_isolation = np.zeros(len(unlabeled))
+
+    # Combined score
+    scores = (AL_W_UNCERTAINTY * uncertainty
+              + AL_W_DISAGREEMENT * spatial_disagreement
+              + AL_W_ISOLATION * spatial_isolation)
+
+    # Sort descending by score
+    order = np.argsort(-scores)
+    ACTIVE_LEARNING_QUEUE = [(float(scores[j]), unlabeled[j]) for j in order]
+
+    print(f"Active learning queue: {len(ACTIVE_LEARNING_QUEUE)} candidates, "
+          f"top score={ACTIVE_LEARNING_QUEUE[0][0]:.3f}")
 
 
 def _load_gemini_predictions(predictions_dir):
@@ -497,9 +637,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
     <input type="text" id="search-id" style="width:200px" placeholder="pano ID" onkeydown="if(event.key==='Enter') searchById()">
     <span id="pano-info" class="pano-info"></span>
     <span style="margin-left:12px; border-left:1px solid #0f3460; padding-left:12px; display:flex; align-items:center; gap:6px;">
-        <button class="label-btn" id="btn-useful" onclick="setLabel('useful')" title="Useful (u)">Useful (u)</button>
-        <button class="label-btn" id="btn-not-useful" onclick="setLabel('not_useful')" title="Not Useful (n)">Not Useful (n)</button>
+        <button class="label-btn" id="btn-useful" onclick="setLabel('useful')" title="Good (g)">Good (g)</button>
+        <button class="label-btn" id="btn-not-useful" onclick="setLabel('not_useful')" title="Bad (b)">Bad (b)</button>
         <button class="label-btn" id="btn-clear-label" onclick="setLabel(null)" title="Clear (x)">Clear</button>
+        <button class="label-btn" id="btn-next-al" onclick="goToNextLabel()" title="Next to label (n)" style="margin-left:4px;background:#1a2a4e;">Next (n)</button>
         <span class="label-stats" id="label-stats"></span>
     </span>
     <span id="dino-prediction" style="margin-left:8px; font-size:12px; color:#a0a0c0;"></span>
@@ -1010,19 +1151,20 @@ async function loadPanoLabel(idx) {
 }
 
 async function setLabel(label) {
-    // Toggle: if clicking the same label, clear it
-    if (label === currentLabel) label = null;
+    const idx = currentIndex;
     const resp = await fetch('/api/pano_label', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({pano_idx: currentIndex, label: label}),
+        body: JSON.stringify({pano_idx: idx, label: label}),
     });
     const data = await resp.json();
+    // Only update UI if we're still on the same panorama
+    if (currentIndex !== idx) return;
     currentLabel = label;
     labelStats = {total: data.total_labels, n_useful: data.n_useful, n_not_useful: data.n_not_useful};
     updateLabelButtons();
-    loadTagScores(currentIndex);
-    loadDinoPrediction(currentIndex);
+    loadTagScores(idx);
+    loadDinoPrediction(idx);
 }
 
 function updateLabelButtons() {
@@ -1102,14 +1244,87 @@ function renderOverrideBtn(key, value) {
     return `<button class="override-btn" onclick="event.stopPropagation(); cycleOverride('${key}','${value}', this)" title="Cycle override">\u25CB</button>`;
 }
 
+// Active learning: go to most informative unlabeled panorama
+async function goToNextLabel() {
+    try {
+        const resp = await fetch('/api/next_to_label');
+        const data = await resp.json();
+        if (data.pano_idx !== null && data.pano_idx !== undefined) {
+            const conf = data.confidence !== null ? (data.confidence * 100).toFixed(0) + '%' : '?';
+            document.getElementById('save-status').textContent =
+                `Next: #${data.pano_idx} (score=${data.score}, conf=${conf}, queue=${data.queue_size})`;
+            setTimeout(() => document.getElementById('save-status').textContent = '', 5000);
+            loadPanorama(data.pano_idx);
+        } else {
+            const reason = data.reason === 'no_model' ? 'Need 5+ labels per class for DINO model' : 'No candidates';
+            document.getElementById('save-status').textContent = reason;
+            setTimeout(() => document.getElementById('save-status').textContent = '', 4000);
+        }
+    } catch(e) {
+        console.error('Failed to get next label:', e);
+    }
+}
+
 // Keyboard shortcuts
 window.addEventListener('keydown', e => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
     if (e.key === 'ArrowLeft') { navigate(-1); e.preventDefault(); }
     if (e.key === 'ArrowRight') { navigate(1); e.preventDefault(); }
-    if (e.key === 'u') { setLabel('useful'); e.preventDefault(); }
-    if (e.key === 'n') { setLabel('not_useful'); e.preventDefault(); }
+    if (e.key === 'g') { setLabel('useful'); e.preventDefault(); }
+    if (e.key === 'b') { setLabel('not_useful'); e.preventDefault(); }
     if (e.key === 'x') { setLabel(null); e.preventDefault(); }
+    if (e.key === 'n') { goToNextLabel(); e.preventDefault(); }
+});
+</script>
+</body>
+</html>
+"""
+
+
+LANDING_PAGE = r"""
+<!DOCTYPE html>
+<html>
+<head>
+<title>Panorama Tools</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #1a1a2e; color: #e0e0e0; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+.container { max-width: 600px; width: 100%; padding: 24px; }
+h1 { color: #a0c0ff; margin-bottom: 24px; font-size: 28px; }
+.card { display: block; padding: 20px; margin: 12px 0; background: #16213e; border: 1px solid #0f3460; border-radius: 8px; text-decoration: none; color: #e0e0e0; transition: all 0.15s; }
+.card:hover { border-color: #a0c0ff; background: #1a2a4e; }
+.card h2 { color: #a0c0ff; font-size: 18px; margin-bottom: 6px; }
+.card p { color: #a0a0c0; font-size: 14px; line-height: 1.4; }
+.stats { margin-top: 24px; padding: 16px; background: #16213e; border-radius: 8px; border: 1px solid #0f3460; font-size: 13px; color: #a0a0c0; }
+.stats span { color: #a0c0ff; font-weight: bold; }
+</style>
+</head>
+<body>
+<div class="container">
+    <h1>Panorama Tools</h1>
+    <a class="card" href="/tagger">
+        <h2>Panorama Tagger</h2>
+        <p>Browse panoramas, label them as useful/not useful, search OSM tags, and build landmark annotations with Gemini predictions.</p>
+    </a>
+    <a class="card" href="/map">
+        <h2>Overview Map</h2>
+        <p>View all panoramas on a map colored by category (Gemini, OSM, Learned, DINO). Click panoramas to inspect details.</p>
+    </a>
+    <a class="card" href="/annotate">
+        <h2>Landmark Annotation</h2>
+        <p>For each useful-labeled panorama, review nearby OSM landmarks and mark which ones are the distinctive feature.</p>
+    </a>
+    <div class="stats" id="stats">Loading stats...</div>
+</div>
+<script>
+fetch('/api/annotate_queue').then(r => r.json()).then(aq => {
+    fetch('/api/panorama_map_data').then(r => r.json()).then(md => {
+        const s = md.label_stats;
+        document.getElementById('stats').innerHTML =
+            `<span>${md.panoramas.length}</span> panoramas | ` +
+            `<span>${s.n_useful}</span> useful, <span>${s.n_not_useful}</span> not useful (${s.total} labeled) | ` +
+            `<span>${aq.done}</span>/${aq.total} landmarks annotated`;
+    });
 });
 </script>
 </body>
@@ -1119,6 +1334,11 @@ window.addEventListener('keydown', e => {
 
 @app.route("/")
 def index():
+    return Response(LANDING_PAGE, content_type="text/html")
+
+
+@app.route("/tagger")
+def tagger_page():
     return Response(HTML_PAGE, content_type="text/html")
 
 
@@ -1159,11 +1379,15 @@ def reproject_image(index):
     yaw = float(request.args.get("yaw", 0.0))
     pitch = float(request.args.get("pitch", 0.0))
     fov = float(request.args.get("fov", math.pi / 2.0))
+    fov_y = float(request.args.get("fov_y", fov))
+    w = 768
+    h = int(w * math.tan(fov_y / 2.0) / math.tan(fov / 2.0)) if fov > 0 else w
+    h = max(1, h)
     pano_arr = _load_panorama(index)
     out = REPROJECTOR.reproject(
         pano_arr,
-        output_shape=(768, 768),
-        fov=(fov, fov),
+        output_shape=(h, w),
+        fov=(fov, fov_y),
         yaw=yaw,
         pitch=pitch,
     )
@@ -1264,27 +1488,34 @@ def set_pano_label():
     if not data or "pano_idx" not in data:
         return "Missing pano_idx", 400
     pano_idx = int(data["pano_idx"])
+    pano_id = PANORAMAS[pano_idx]["id"]
     label = data.get("label")  # "useful", "not_useful", or null to clear
     if label:
-        PANO_LABELS[pano_idx] = label
-    elif pano_idx in PANO_LABELS:
-        del PANO_LABELS[pano_idx]
+        PANO_LABELS[pano_id] = label
+    elif pano_id in PANO_LABELS:
+        del PANO_LABELS[pano_id]
     _recompute_learned_categories()
     _retrain_dino_model()
     _save_labels()
     n_useful = sum(1 for v in PANO_LABELS.values() if v == "useful")
     n_not_useful = sum(1 for v in PANO_LABELS.values() if v == "not_useful")
-    return jsonify({
+    result = {
         "ok": True,
         "total_labels": len(PANO_LABELS),
         "n_useful": n_useful,
         "n_not_useful": n_not_useful,
-    })
+    }
+    if ACTIVE_LEARNING_QUEUE:
+        score, next_idx = ACTIVE_LEARNING_QUEUE[0]
+        result["next_to_label"] = next_idx
+        result["next_to_label_score"] = round(score, 3)
+    return jsonify(result)
 
 
 @app.route("/api/pano_label/<int:index>")
 def get_pano_label(index):
-    label = PANO_LABELS.get(index)
+    pano_id = PANORAMAS[index]["id"] if 0 <= index < len(PANORAMAS) else None
+    label = PANO_LABELS.get(pano_id) if pano_id else None
     return jsonify({"label": label})
 
 
@@ -1343,6 +1574,109 @@ def dino_prediction(index):
     return jsonify({
         "category": PANO_CATEGORIES_DINO[index],
         "confidence": DINO_CONFIDENCES[index] if DINO_CONFIDENCES else None,
+    })
+
+
+@app.route("/api/next_to_label")
+def next_to_label():
+    if DINO_MODEL is None:
+        return jsonify({"pano_idx": None, "reason": "no_model"})
+    if not ACTIVE_LEARNING_QUEUE:
+        return jsonify({"pano_idx": None, "reason": "no_candidates"})
+    score, pano_idx = ACTIVE_LEARNING_QUEUE[0]
+    conf = DINO_CONFIDENCES[pano_idx] if DINO_CONFIDENCES else None
+    return jsonify({
+        "pano_idx": pano_idx,
+        "score": round(score, 3),
+        "confidence": conf,
+        "queue_size": len(ACTIVE_LEARNING_QUEUE),
+    })
+
+
+# ---------------------------------------------------------------------------
+# Landmark annotation endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.route("/api/nearby_landmarks_annotate/<int:index>")
+def nearby_landmarks_annotate(index):
+    """Like nearby_landmarks but includes osm_id and relevant status."""
+    if index < 0 or index >= len(PANORAMAS) or LANDMARK_METADATA is None:
+        return jsonify({"features": [], "relevant_osm_ids": []})
+
+    pano_id = PANORAMAS[index]["id"]
+    lm_idxs = PANO_LANDMARK_IDXS[index]
+    relevant_osm_ids = RELEVANT_LANDMARKS.get(pano_id, [])
+    features = []
+    for lm_idx in lm_idxs:
+        row = LANDMARK_METADATA.iloc[lm_idx]
+        geom = row["geometry"]
+        osm_id = str(row["id"]) if "id" in row.index else ""
+        props = {"osm_id": osm_id}
+        for k, v in row["pruned_props"]:
+            props[k] = v
+        features.append({
+            "type": "Feature",
+            "geometry": _geom_to_geojson(geom),
+            "properties": props,
+        })
+    return jsonify({"features": features, "relevant_osm_ids": relevant_osm_ids})
+
+
+@app.route("/api/relevant_landmark", methods=["POST"])
+def toggle_relevant_landmark():
+    """Toggle whether an OSM landmark is relevant for a panorama."""
+    data = request.get_json()
+    if not data or "pano_idx" not in data or "osm_id" not in data:
+        return "Missing pano_idx or osm_id", 400
+    pano_idx = int(data["pano_idx"])
+    pano_id = PANORAMAS[pano_idx]["id"]
+    osm_id = data["osm_id"]
+    relevant = data.get("relevant", True)
+
+    current = RELEVANT_LANDMARKS.get(pano_id, [])
+    if relevant and osm_id not in current:
+        current.append(osm_id)
+    elif not relevant and osm_id in current:
+        current.remove(osm_id)
+    RELEVANT_LANDMARKS[pano_id] = current
+    _save_labels()
+    return jsonify({"ok": True, "relevant_osm_ids": current})
+
+
+@app.route("/api/mark_no_relevant", methods=["POST"])
+def mark_no_relevant():
+    """Mark a panorama as having no relevant OSM landmarks."""
+    data = request.get_json()
+    if not data or "pano_idx" not in data:
+        return "Missing pano_idx", 400
+    pano_idx = int(data["pano_idx"])
+    pano_id = PANORAMAS[pano_idx]["id"]
+    RELEVANT_LANDMARKS[pano_id] = []
+    _save_labels()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/annotate_queue")
+def annotate_queue():
+    """Return list of useful-labeled panoramas with annotation status."""
+    useful_panos = []
+    n_annotated = 0
+    for i, p in enumerate(PANORAMAS):
+        if PANO_LABELS.get(p["id"]) != "useful":
+            continue
+        annotated = p["id"] in RELEVANT_LANDMARKS
+        if annotated:
+            n_annotated += 1
+        useful_panos.append({
+            "pano_idx": i,
+            "pano_id": p["id"],
+            "annotated": annotated,
+        })
+    return jsonify({
+        "queue": useful_panos,
+        "total": len(useful_panos),
+        "done": n_annotated,
     })
 
 
@@ -1594,7 +1928,7 @@ async function showPanoInfo(idx, pano) {
             <tr><td>User label</td><td>${userLabel}</td></tr>
             <tr><td>OSM landmarks</td><td>${pano.n_landmarks}</td></tr>
         </table>
-        <a class="btn" href="/?goto=${idx}" target="_blank">Open in tagger</a>
+        <a class="btn" href="/tagger?goto=${idx}" target="_blank">Open in tagger</a>
         <div id="gemini-section" style="margin-top:12px;"><em>Loading...</em></div>
         <div id="osm-section" style="margin-top:12px;"></div>`;
 
@@ -1674,7 +2008,7 @@ def panorama_map_data():
                 "category_osm": PANO_CATEGORIES_OSM[i],
                 "category_learned": PANO_CATEGORIES_LEARNED[i] if PANO_CATEGORIES_LEARNED else "no_data",
                 "category_dino": PANO_CATEGORIES_DINO[i] if PANO_CATEGORIES_DINO else "no_data",
-                "label": PANO_LABELS.get(i),
+                "label": PANO_LABELS.get(p["id"]),
                 "n_landmarks": len(PANO_LANDMARK_IDXS[i]),
             }
             for i, p in enumerate(PANORAMAS)
@@ -1685,6 +2019,409 @@ def panorama_map_data():
             "n_not_useful": n_not_useful,
         },
     })
+
+
+# ---------------------------------------------------------------------------
+# Landmark annotation page
+# ---------------------------------------------------------------------------
+
+ANNOTATE_PAGE = r"""
+<!DOCTYPE html>
+<html>
+<head>
+<title>Landmark Annotation</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #1a1a2e; color: #e0e0e0; }
+.top-bar { display: flex; align-items: center; gap: 12px; padding: 8px 16px; background: #16213e; border-bottom: 1px solid #0f3460; flex-wrap: wrap; }
+.top-bar button { padding: 6px 14px; border: 1px solid #0f3460; background: #1a1a2e; color: #e0e0e0; border-radius: 4px; cursor: pointer; font-size: 14px; }
+.top-bar button:hover { background: #0f3460; }
+.top-bar .progress { color: #a0c0ff; font-size: 14px; font-weight: bold; }
+.top-bar .pano-info { color: #a0a0c0; font-size: 13px; }
+.btn-none { padding: 6px 14px; border: 2px solid #6a2d2d; background: #1a1a2e; color: #ff9090; border-radius: 4px; cursor: pointer; font-size: 14px; }
+.btn-none:hover { background: #4a1c1c; }
+.btn-none.active { background: #4a1c1c; border-color: #ff6b6b; }
+.main-content { display: flex; height: calc(100vh - 50px); }
+.left-panel { width: 60%; display: flex; flex-direction: column; overflow: hidden; }
+.right-panel { width: 40%; display: flex; flex-direction: column; overflow: hidden; border-left: 1px solid #0f3460; }
+.pinhole-row { display: flex; gap: 4px; padding: 8px; background: #16213e; justify-content: center; flex-shrink: 0; }
+.pinhole-row img { height: 140px; border-radius: 4px; border: 2px solid #0f3460; cursor: pointer; transition: border-color 0.15s; }
+.pinhole-row img:hover { border-color: #a0c0ff; }
+.interactive-view { flex: 1; position: relative; display: flex; align-items: center; justify-content: center; padding: 8px; }
+.interactive-view img { max-width: 100%; max-height: 100%; border-radius: 4px; cursor: grab; }
+.interactive-view img:active { cursor: grabbing; }
+.interactive-view .overlay { position: absolute; top: 16px; left: 16px; background: rgba(0,0,0,0.6); padding: 4px 8px; border-radius: 4px; font-size: 12px; color: #a0c0ff; pointer-events: none; }
+#landmark-map { height: 45%; min-height: 250px; flex-shrink: 0; }
+.landmark-list { flex: 1; overflow: hidden; padding: 8px; display: flex; flex-direction: column; }
+#lm-cards { flex: 1; overflow-y: auto; }
+.landmark-list h3 { color: #a0c0ff; font-size: 14px; margin-bottom: 8px; padding: 0 4px; }
+.lm-card { padding: 8px 10px; margin: 4px 0; background: #16213e; border-radius: 6px; border: 2px solid #0f3460; cursor: pointer; transition: all 0.15s; }
+.lm-card:hover { border-color: #a0c0ff; }
+.lm-card.relevant { border-color: #2d6a4f; background: #1b4332; }
+.lm-card .lm-name { font-weight: bold; font-size: 13px; margin-bottom: 4px; }
+.lm-card .lm-tags { font-size: 11px; color: #a0a0c0; }
+.lm-card .lm-tag { display: inline-block; padding: 1px 5px; background: #0f3460; border-radius: 3px; margin: 1px; }
+.lm-card.relevant .lm-tag { background: #2d6a4f; }
+.lm-card .lm-id { font-size: 10px; color: #666; margin-top: 3px; }
+</style>
+</head>
+<body>
+
+<div class="top-bar">
+    <button onclick="navigateAnnotate(-1)" title="Prev (←)">&#8592; Prev</button>
+    <button onclick="navigateAnnotate(1)" title="Next (→)">Next &#8594;</button>
+    <button onclick="skipAnnotate()" title="Next unannotated (s)">Next unannotated (s)</button>
+    <button class="btn-none" id="btn-none-relevant" onclick="markNoneRelevant()" title="None relevant (0)">None relevant (0)</button>
+    <span class="progress" id="ann-progress">Loading...</span>
+    <span class="pano-info" id="ann-pano-info"></span>
+    <span style="margin-left:auto;">
+        <a href="/tagger" style="color:#a0c0ff;font-size:13px;">Tagger</a>
+        &nbsp;|&nbsp;
+        <a href="/map" style="color:#a0c0ff;font-size:13px;">Map</a>
+    </span>
+</div>
+
+<div class="main-content">
+    <div class="left-panel">
+        <div class="pinhole-row" id="ann-pinhole-row"></div>
+        <div class="interactive-view">
+            <img id="ann-interactive-img" src="" draggable="false">
+            <div class="overlay" id="ann-view-overlay">yaw: 0.0  pitch: 0.0  fov: 90</div>
+            <div class="overlay" style="top:8px;left:auto;right:8px;pointer-events:auto;cursor:pointer;">
+                <label style="cursor:pointer;"><input type="checkbox" id="lock-street" onchange="onLockStreet()"> Street view</label>
+            </div>
+        </div>
+    </div>
+    <div class="right-panel">
+        <div id="landmark-map"></div>
+        <div class="landmark-list" id="landmark-list-container">
+            <h3>Nearby Landmarks (<span id="lm-count">0</span>)</h3>
+            <input type="text" id="lm-filter" placeholder="Filter landmarks..." oninput="renderLandmarkCards()" style="width:100%;padding:6px 8px;border:1px solid #0f3460;background:#1a1a2e;color:#e0e0e0;border-radius:4px;margin-bottom:8px;font-size:13px;">
+            <div id="lm-cards"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+let annQueue = [];        // [{pano_idx, pano_id, annotated}, ...]
+let annQueuePos = 0;      // current position in queue
+let annTotal = 0;
+let annDone = 0;
+let annCurrentIdx = -1;   // current pano_idx
+let annFeatures = [];     // current landmarks
+let annRelevantIds = [];   // current relevant osm_ids
+let annPanoList = [];     // full panorama list for image endpoints
+
+// View state
+let vYaw = 0, vPitch = 0, vFov = 90;
+let dragging = false, dStartX = 0, dStartY = 0, dStartYaw = 0, dStartPitch = 0;
+let reprojectTimer = null;
+let loadingRP = false;
+let amap = null, aLandmarkLayer = null;
+
+window.addEventListener('DOMContentLoaded', async () => {
+    // Init map
+    amap = L.map('landmark-map', {zoomControl: true}).setView([41.88, -87.63], 18);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OSM', maxZoom: 20,
+    }).addTo(amap);
+    aLandmarkLayer = L.layerGroup().addTo(amap);
+
+    // Load panorama list (for coordinates)
+    const pResp = await fetch('/api/panorama_list');
+    const pData = await pResp.json();
+    annPanoList = pData.panoramas;
+
+    // Load annotation queue
+    await refreshQueue();
+
+    // Find first unannotated or start at 0
+    const firstUnannotated = annQueue.findIndex(q => !q.annotated);
+    annQueuePos = firstUnannotated >= 0 ? firstUnannotated : 0;
+    if (annQueue.length > 0) loadAnnotatePano(annQueuePos);
+
+    setupAnnotateDrag();
+});
+
+async function refreshQueue() {
+    const resp = await fetch('/api/annotate_queue');
+    const data = await resp.json();
+    annQueue = data.queue;
+    annTotal = data.total;
+    annDone = data.done;
+    updateProgress();
+}
+
+function updateProgress() {
+    document.getElementById('ann-progress').textContent =
+        `${annDone}/${annTotal} annotated`;
+}
+
+async function loadAnnotatePano(queuePos) {
+    if (queuePos < 0 || queuePos >= annQueue.length) return;
+    annQueuePos = queuePos;
+    const entry = annQueue[queuePos];
+    annCurrentIdx = entry.pano_idx;
+    const pano = annPanoList[annCurrentIdx];
+
+    // Update info
+    const mapsUrl = `https://www.google.com/maps/place/${pano.lat},${pano.lon}/@${pano.lat},${pano.lon},18z`;
+    document.getElementById('ann-pano-info').innerHTML =
+        `#${queuePos + 1} of ${annQueue.length} | idx=${annCurrentIdx} | ${entry.pano_id} | ` +
+        `<a href="${mapsUrl}" target="_blank" style="color:#a0c0ff;">(${pano.lat.toFixed(5)}, ${pano.lon.toFixed(5)})</a>` +
+        ` | <a href="/tagger?goto=${annCurrentIdx}" target="_blank" style="color:#a0c0ff;">tagger</a>`;
+
+    // Load pinholes
+    const row = document.getElementById('ann-pinhole-row');
+    row.innerHTML = '';
+    for (const yaw of [0, 90, 180, 270]) {
+        const img = document.createElement('img');
+        img.src = `/api/image/pinhole/${annCurrentIdx}/${yaw}`;
+        img.title = `${yaw}\u00b0`;
+        img.onclick = () => { vYaw = yaw; vPitch = 0; vFov = 90; updateAnnOverlay(); loadAnnReproject(); };
+        row.appendChild(img);
+    }
+
+    // Reset view
+    vYaw = 0; vPitch = 0; vFov = 90;
+    updateAnnOverlay();
+    loadAnnReproject();
+
+    // Load landmarks
+    const filterInput = document.getElementById('lm-filter');
+    if (filterInput) filterInput.value = '';
+    await loadAnnotateLandmarks(annCurrentIdx);
+}
+
+async function loadAnnotateLandmarks(idx) {
+    const pano = annPanoList[idx];
+    amap.setView([pano.lat, pano.lon], 18);
+    aLandmarkLayer.clearLayers();
+
+    // Panorama marker
+    L.circleMarker([pano.lat, pano.lon], {
+        radius: 6, fillColor: '#ff4444', color: '#fff', weight: 2, fillOpacity: 1,
+    }).bindPopup('Panorama').addTo(aLandmarkLayer);
+
+    const resp = await fetch(`/api/nearby_landmarks_annotate/${idx}`);
+    const data = await resp.json();
+    annFeatures = data.features;
+    annRelevantIds = data.relevant_osm_ids || [];
+
+    renderLandmarkCards();
+    renderLandmarksOnMap();
+    updateNoneBtn();
+}
+
+function renderLandmarkCards() {
+    const container = document.getElementById('lm-cards');
+    const filterText = (document.getElementById('lm-filter')?.value || '').toLowerCase();
+    const filtered = annFeatures.filter(f => {
+        if (!filterText) return true;
+        const p = f.properties;
+        const searchable = Object.entries(p)
+            .map(([k, v]) => `${k} ${v}`)
+            .join(' ')
+            .toLowerCase();
+        return searchable.includes(filterText);
+    });
+    document.getElementById('lm-count').textContent =
+        filterText ? `${filtered.length}/${annFeatures.length}` : `${annFeatures.length}`;
+    if (filtered.length === 0) {
+        container.innerHTML = `<div style="color:#a0a0c0;font-size:13px;padding:8px;">${annFeatures.length === 0 ? 'No nearby landmarks' : 'No matches'}</div>`;
+        return;
+    }
+    container.innerHTML = filtered.map((f, i) => {
+        const p = f.properties;
+        const osmId = p.osm_id || '';
+        const isRelevant = annRelevantIds.includes(osmId);
+        const name = p.name || '';
+        const tags = Object.entries(p)
+            .filter(([k]) => k !== 'osm_id' && k !== 'name' && !k.startsWith('addr:') && !k.startsWith('tiger:'))
+            .slice(0, 10)
+            .map(([k,v]) => `<span class="lm-tag">${k}=${v}</span>`)
+            .join(' ');
+        return `<div class="lm-card${isRelevant ? ' relevant' : ''}" data-osm-id="${osmId}" onclick="toggleLandmark(this.dataset.osmId)">
+            ${name ? `<div class="lm-name">${name}</div>` : ''}
+            <div class="lm-tags">${tags}</div>
+            <div class="lm-id">${osmId}</div>
+        </div>`;
+    }).join('');
+}
+
+function renderLandmarksOnMap() {
+    // Remove existing GeoJSON layers (keep panorama marker)
+    aLandmarkLayer.eachLayer(l => {
+        if (l._isGeoJSON) aLandmarkLayer.removeLayer(l);
+    });
+
+    annFeatures.forEach(f => {
+        const osmId = f.properties.osm_id || '';
+        const isRelevant = annRelevantIds.includes(osmId);
+        const color = isRelevant ? '#2d9e2d' : '#4fc3f7';
+        const fillColor = isRelevant ? '#2d9e2d' : '#4fc3f7';
+        const weight = isRelevant ? 3 : 2;
+
+        const layer = L.geoJSON(f, {
+            style: { color, weight, fillColor, fillOpacity: isRelevant ? 0.5 : 0.3 },
+            pointToLayer: (feature, latlng) => L.circleMarker(latlng, {
+                radius: isRelevant ? 7 : 5, fillColor, color: '#fff',
+                weight: isRelevant ? 3 : 1, fillOpacity: isRelevant ? 0.8 : 0.7,
+            }),
+            onEachFeature: (feature, layer) => {
+                const props = feature.properties;
+                const lines = Object.entries(props)
+                    .filter(([k,v]) => v && k !== 'osm_id' && !k.startsWith('addr:') && !k.startsWith('tiger:'))
+                    .slice(0, 12)
+                    .map(([k,v]) => `<b>${k}</b>: ${v}`);
+                if (lines.length) layer.bindPopup(lines.join('<br>'), {maxWidth: 300});
+            },
+        });
+        layer._isGeoJSON = true;
+        layer.addTo(aLandmarkLayer);
+    });
+}
+
+async function toggleLandmark(osmId) {
+    if (!osmId) return;
+    const isCurrentlyRelevant = annRelevantIds.includes(osmId);
+    const resp = await fetch('/api/relevant_landmark', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({pano_idx: annCurrentIdx, osm_id: osmId, relevant: !isCurrentlyRelevant}),
+    });
+    const data = await resp.json();
+    annRelevantIds = data.relevant_osm_ids;
+    renderLandmarkCards();
+    renderLandmarksOnMap();
+    updateNoneBtn();
+    // Update queue annotation status
+    annQueue[annQueuePos].annotated = true;
+    annDone = annQueue.filter(q => q.annotated).length;
+    updateProgress();
+}
+
+async function markNoneRelevant() {
+    const resp = await fetch('/api/mark_no_relevant', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({pano_idx: annCurrentIdx}),
+    });
+    annRelevantIds = [];
+    annQueue[annQueuePos].annotated = true;
+    annDone = annQueue.filter(q => q.annotated).length;
+    renderLandmarkCards();
+    renderLandmarksOnMap();
+    updateNoneBtn();
+    updateProgress();
+}
+
+function updateNoneBtn() {
+    const btn = document.getElementById('btn-none-relevant');
+    const panoId = annQueue[annQueuePos]?.pano_id;
+    // "None relevant" is active when the entry exists and is empty
+    const isNone = annRelevantIds.length === 0 && annQueue[annQueuePos]?.annotated;
+    btn.className = 'btn-none' + (isNone ? ' active' : '');
+}
+
+function navigateAnnotate(delta) {
+    const newPos = annQueuePos + delta;
+    if (newPos >= 0 && newPos < annQueue.length) loadAnnotatePano(newPos);
+}
+
+async function skipAnnotate() {
+    await refreshQueue();
+    // Move to next unannotated from current position
+    for (let i = annQueuePos + 1; i < annQueue.length; i++) {
+        if (!annQueue[i].annotated) { loadAnnotatePano(i); return; }
+    }
+    // Wrap around
+    for (let i = 0; i < annQueuePos; i++) {
+        if (!annQueue[i].annotated) { loadAnnotatePano(i); return; }
+    }
+    // All annotated, just go next
+    navigateAnnotate(1);
+}
+
+// --- Drag/zoom for interactive view ---
+
+function setupAnnotateDrag() {
+    const img = document.getElementById('ann-interactive-img');
+    img.addEventListener('mousedown', e => {
+        dragging = true; dStartX = e.clientX; dStartY = e.clientY;
+        dStartYaw = vYaw; dStartPitch = vPitch; e.preventDefault();
+    });
+    window.addEventListener('mousemove', e => {
+        if (!dragging) return;
+        const dx = e.clientX - dStartX, dy = e.clientY - dStartY;
+        const sensitivity = vFov / 600;
+        vYaw = dStartYaw + dx * sensitivity;
+        const locked = document.getElementById('lock-street')?.checked;
+        vPitch = locked ? 0 : Math.max(-80, Math.min(80, dStartPitch + dy * sensitivity));
+        updateAnnOverlay();
+        if (reprojectTimer) clearTimeout(reprojectTimer);
+        reprojectTimer = setTimeout(() => loadAnnReproject(), 80);
+    });
+    window.addEventListener('mouseup', () => { if (dragging) { dragging = false; loadAnnReproject(); } });
+    img.addEventListener('wheel', e => {
+        e.preventDefault();
+        const locked = document.getElementById('lock-street')?.checked;
+        if (!locked) {
+            vFov = Math.max(20, Math.min(150, vFov + e.deltaY * 0.1));
+        }
+        updateAnnOverlay(); loadAnnReproject();
+    });
+}
+
+function onLockStreet() {
+    const locked = document.getElementById('lock-street').checked;
+    if (locked) { vPitch = 0; vFov = 90; }
+    updateAnnOverlay();
+    loadAnnReproject();
+}
+
+function updateAnnOverlay() {
+    document.getElementById('ann-view-overlay').textContent =
+        `yaw: ${vYaw.toFixed(1)}  pitch: ${vPitch.toFixed(1)}  fov: ${vFov.toFixed(0)}`;
+}
+
+async function loadAnnReproject() {
+    if (loadingRP) return;
+    loadingRP = true;
+    const locked = document.getElementById('lock-street')?.checked;
+    const yR = vYaw * Math.PI / 180, pR = vPitch * Math.PI / 180, fR = vFov * Math.PI / 180;
+    const fovYR = locked ? (45 * Math.PI / 180) : fR;
+    try {
+        const resp = await fetch(`/api/image/reproject/${annCurrentIdx}?yaw=${yR}&pitch=${pR}&fov=${fR}&fov_y=${fovYR}`);
+        if (resp.ok) {
+            const blob = await resp.blob();
+            const img = document.getElementById('ann-interactive-img');
+            const oldSrc = img.src;
+            img.src = URL.createObjectURL(blob);
+            if (oldSrc.startsWith('blob:')) URL.revokeObjectURL(oldSrc);
+        }
+    } finally { loadingRP = false; }
+}
+
+// Keyboard shortcuts
+window.addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.key === 'ArrowLeft') { navigateAnnotate(-1); e.preventDefault(); }
+    if (e.key === 'ArrowRight') { navigateAnnotate(1); e.preventDefault(); }
+    if (e.key === '0') { markNoneRelevant(); e.preventDefault(); }
+    if (e.key === 's') { skipAnnotate(); e.preventDefault(); }
+});
+</script>
+</body>
+</html>
+"""
+
+
+@app.route("/annotate")
+def annotate_page():
+    return Response(ANNOTATE_PAGE, content_type="text/html")
 
 
 def _parse_panorama_filename(filename):
@@ -1766,6 +2503,9 @@ def main():
             PANORAMAS.append(parsed)
     print(f"Found {len(PANORAMAS)} panoramas")
 
+    # Build pano_id -> pano_idx reverse lookup
+    PANO_ID_TO_IDX.update({p["id"]: i for i, p in enumerate(PANORAMAS)})
+
     # Build tag search index
     print(f"Loading OSM data from {args.feather}...")
     df = pd.read_feather(args.feather)
@@ -1777,6 +2517,14 @@ def main():
     print("Loading landmark geometries...")
     LANDMARK_METADATA = load_landmark_geojson(args.feather, zoom_level=20)
     print(f"Loaded {len(LANDMARK_METADATA)} landmarks with geometries")
+
+    # Build OSM ID reverse lookup for landmark annotation
+    if "id" in LANDMARK_METADATA.columns:
+        OSM_ID_TO_LM_IDX.update({
+            str(LANDMARK_METADATA.iloc[i]["id"]): i
+            for i in range(len(LANDMARK_METADATA))
+        })
+        print(f"Built OSM ID index: {len(OSM_ID_TO_LM_IDX)} entries")
 
     print("Computing panorama-landmark associations...")
     pano_metadata = load_panorama_metadata(args.panorama_dir, zoom_level=20)
@@ -1843,7 +2591,9 @@ def main():
     # Load panorama labels and tag overrides
     LABELS_PATH = args.output.parent / (args.output.stem + ".labels.json")
     print(f"Loading labels from {LABELS_PATH}...")
-    _load_labels()
+    migrated = _load_labels()
+    if migrated:
+        _save_labels()
     print(f"Loaded {len(PANO_LABELS)} panorama labels, {len(TAG_OVERRIDES)} tag overrides")
 
     # Compute learned categories
@@ -1877,7 +2627,7 @@ def main():
 
     print(f"\nStarting server on {args.host}:{args.port}")
     print(f"Output: {args.output}")
-    app.run(host=args.host, port=args.port, debug=False)
+    app.run(host=args.host, port=args.port, debug=False, threaded=True)
 
 
 if __name__ == "__main__":
