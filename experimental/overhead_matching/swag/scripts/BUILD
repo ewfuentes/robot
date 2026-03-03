@@ -50,6 +50,7 @@ py_library(
   deps=[
     "//common/python:serialization",
     requirement("msgspec"),
+    requirement("tqdm"),
     requirement("torch"),
   ]
 )
