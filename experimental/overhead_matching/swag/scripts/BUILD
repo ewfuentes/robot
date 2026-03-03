@@ -255,8 +255,6 @@ py_binary(
     requirement("geopandas"),
     requirement("shapely"),
     requirement("pyarrow"),
-    "//experimental/overhead_matching/swag/data:vigor_dataset",
-    "//common/gps:web_mercator",
   ]
 )
 
@@ -534,4 +532,11 @@ py_binary(
   srcs=["osm_extraction_visualizer.py"],
   deps=[]
 )
+
+py_binary(
+  name="extract_gemini_landmarks_from_panoramas",
+  srcs=["extract_gemini_landmarks_from_panoramas.py"],
+  deps=[],
+)
+
 
