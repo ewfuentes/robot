@@ -1,0 +1,118 @@
+opt_config:
+  num_epochs: 200
+  batch_size: 32
+  lr_schedule:
+    initial_lr: 0.0001
+    lr_step_factor: 1.0
+    num_epochs_at_lr: 20
+    warmup_factor: 1.0
+    num_warmup_epochs: 5
+  enable_hard_negative_sampling_after_epoch_idx: 200
+  hard_negative_pool_size: 25
+  random_sample_type: nearest
+  use_hard_negative_mining: false
+
+sat_model_config:
+  kind: SwagPatchEmbeddingConfig
+  position_embedding_config:
+    kind: NullPositionEmbeddingConfig
+  aggregation_config:
+    kind: TransformerAggregatorConfig
+    num_transformer_layers: 1
+    num_attention_heads: 8
+    hidden_dim: 1024
+    dropout_frac: 0.1
+  patch_dims:
+  - 320
+  - 320
+  output_dim: 256
+  num_embeddings: 1
+  normalize_embeddings: true
+  skip_aggregation: true
+  extractor_config_by_name:
+    osm_tag_tokens:
+      kind: OSMTagTokenExtractorConfig
+      token_dim: 256
+      key_embedding_dim: 64
+      value_embedding_dim: 64
+      ngram_bucket_size: 10000
+      key_vocabulary_file: /data/overhead_matching/datasets/semantic_landmark_embeddings/tag_key_vocabulary.txt
+      auxiliary_info_key: semantic_embedding_base_path
+      embedding_version: v5_202001_w_addresses
+      include_description_embeddings: true
+      description_embedding_dim: 1536
+      max_tag_key_vocab_size: 100
+  auxiliary_info:
+    semantic_embedding_base_path: /data/overhead_matching/datasets/semantic_landmark_embeddings
+
+pano_model_config:
+  kind: SwagPatchEmbeddingConfig
+  position_embedding_config:
+    kind: NullPositionEmbeddingConfig
+  aggregation_config:
+    kind: TransformerAggregatorConfig
+    num_transformer_layers: 1
+    num_attention_heads: 8
+    hidden_dim: 1024
+    dropout_frac: 0.1
+  patch_dims:
+  - 320
+  - 640
+  output_dim: 256
+  num_embeddings: 1
+  normalize_embeddings: true
+  skip_aggregation: true
+  extractor_config_by_name:
+    pano_tag_tokens:
+      kind: PanoTagTokenExtractorConfig
+      token_dim: 256
+      key_embedding_dim: 64
+      value_embedding_dim: 64
+      ngram_bucket_size: 10000
+      key_vocabulary_file: /data/overhead_matching/datasets/semantic_landmark_embeddings/tag_key_vocabulary.txt
+      auxiliary_info_key: semantic_embedding_base_path
+      embedding_version: pano_v2
+      include_description_embeddings: true
+      description_embedding_dim: 1536
+      max_tag_key_vocab_size: 100
+  auxiliary_info:
+    semantic_embedding_base_path: /data/overhead_matching/datasets/semantic_landmark_embeddings
+
+distance_model_config:
+  kind: LearnedDistanceFunctionConfig
+  architecture: transformer_encoder
+  embedding_dim: 256
+  num_pano_embed: null
+  num_sat_embed: null
+  hidden_dim: 1024
+  num_heads: 8
+  num_layers: 4
+  max_batch_size: 32
+
+dataset_config:
+  paths:
+  - Chicago
+  landmark_version: v4_202001
+  factor: 1.0
+
+validation_dataset_configs:
+- paths:
+  - Seattle
+  landmark_version: v4_202001
+  factor: 1.0
+- paths:
+  - Chicago
+  landmark_version: v4_202001
+  factor: 0.3
+
+loss_configs:
+- kind: PairwiseContrastiveLossConfig
+  positive_weight: 5.0
+  avg_positive_similarity: 0.0
+  semipositive_weight: 6.0
+  avg_semipositive_similarity: 0.3
+  negative_weight: 20.0
+  avg_negative_similarity: 0.7
+
+output_dir: tag_token_v1
+tensorboard_output: null

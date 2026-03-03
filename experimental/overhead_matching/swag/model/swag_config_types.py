@@ -83,6 +83,32 @@ class PanoramaLocationTypeExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS)
     auxiliary_info_key: str
 
 
+class OSMTagTokenExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    token_dim: int  # output dimension of each tag token
+    key_embedding_dim: int  # dimension of learned key embeddings
+    value_embedding_dim: int  # dimension of character n-gram hashed value embeddings
+    ngram_bucket_size: int  # number of hash buckets for character n-gram value encoding
+    key_vocabulary_file: str  # path to text file with one tag key per line
+    auxiliary_info_key: str  # key into auxiliary_info dict for embedding base path
+    embedding_version: str  # subdirectory name for embedding version
+    include_description_embeddings: bool = True  # fold sentence description embeddings into tag tokens
+    description_embedding_dim: int = 1536  # input dimension of precomputed description embeddings
+    max_tag_key_vocab_size: int = 100  # max landmarks to tokenize; sizes the landmark index embedding
+
+
+class PanoTagTokenExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    token_dim: int  # output dimension of each tag token
+    key_embedding_dim: int  # dimension of learned key embeddings
+    value_embedding_dim: int  # dimension of character n-gram hashed value embeddings
+    ngram_bucket_size: int  # number of hash buckets for character n-gram value encoding
+    key_vocabulary_file: str  # path to text file with one tag key per line
+    auxiliary_info_key: str  # key into auxiliary_info dict for embedding base path
+    embedding_version: str  # subdirectory name for embedding version
+    include_description_embeddings: bool = True  # fold sentence description embeddings into tag tokens
+    description_embedding_dim: int = 1536  # input dimension of precomputed description embeddings
+    max_tag_key_vocab_size: int = 100  # max landmarks to tokenize; sizes the landmark index embedding
+
+
 class SyntheticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     log_grid_spacing: int
     grid_bounds_px: int
@@ -128,6 +154,8 @@ ExtractorConfig = Union[
     PanoramaSemanticLandmarkExtractorConfig,
     PanoramaProperNounExtractorConfig,
     PanoramaLocationTypeExtractorConfig,
+    OSMTagTokenExtractorConfig,
+    PanoTagTokenExtractorConfig,
     SyntheticLandmarkExtractorConfig,
     AbsolutePositionExtractorConfig,
 ]

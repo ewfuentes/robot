@@ -379,11 +379,11 @@ class OSMLandmarkCollector:
         self.files_processed = 0
 
     def collect(self) -> dict:
-        """Scan directory and parse all batch output JSONL files."""
-        jsonl_files = list(self.input_dir.glob("*.jsonl"))
+        """Scan directory and parse all batch output files (JSONL format, any extension)."""
+        jsonl_files = [f for f in self.input_dir.iterdir() if f.is_file() and f.suffix != '.pkl']
 
         if not jsonl_files:
-            raise FileNotFoundError(f"No JSONL files found in {self.input_dir}")
+            raise FileNotFoundError(f"No files found in {self.input_dir}")
 
         print(f"Found {len(jsonl_files)} JSONL file(s) to process")
 
@@ -535,6 +535,225 @@ class FlatEmbeddingStorage:
         print("="*80)
 
 
+class TagBatchOutputCollector:
+    """Scan directory and collect panorama data from pano_v2 osm_tags-format JSONL files.
+
+    Parses the OSM tag extraction format (primary_tag, additional_tags, confidence)
+    instead of the original panorama format (proper_nouns).
+    """
+
+    def __init__(self, input_dir: Path, recursive: bool = True):
+        self.input_dir = Path(input_dir)
+        self.recursive = recursive
+        self.panoramas = {}  # pano_id → panorama data
+        self.errors = []
+        self.files_processed = 0
+
+    def collect(self) -> dict:
+        """Scan directory and parse all JSONL files."""
+        pattern = "**/*.jsonl" if self.recursive else "*.jsonl"
+        jsonl_files = list(self.input_dir.glob(pattern))
+
+        if not jsonl_files:
+            print(f"Warning: No JSONL files found in {self.input_dir}")
+            return self.panoramas
+
+        print(f"Found {len(jsonl_files)} JSONL file(s) to process")
+
+        for file_path in tqdm(jsonl_files, desc="Scanning JSONL files"):
+            self._process_file(file_path)
+
+        if self.errors:
+            print(f"\nWarning: {len(self.errors)} error(s) encountered during parsing")
+            print("First 5 errors:")
+            for error in self.errors[:5]:
+                print(f"  {error}")
+
+        return self.panoramas
+
+    def _process_file(self, file_path: Path):
+        """Parse a single JSONL file."""
+        self.files_processed += 1
+
+        with open(file_path, 'r') as f:
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
+                if not line:
+                    continue
+
+                try:
+                    data = json.loads(line)
+                    self._extract_panorama(data)
+                except json.JSONDecodeError as e:
+                    self.errors.append(f"{file_path}:{line_num}: JSON decode error: {e}")
+                except KeyError as e:
+                    self.errors.append(f"{file_path}:{line_num}: Missing key: {e}")
+                except Exception as e:
+                    self.errors.append(f"{file_path}:{line_num}: {type(e).__name__}: {e}")
+
+    def _extract_panorama(self, data: dict):
+        """Extract panorama data from batch output JSON (OSM tags format)."""
+        pano_id = data["key"]
+
+        response = data.get("response", {})
+        if not response:
+            raise ValueError("No response field")
+
+        candidates = response.get("candidates", [])
+        if not candidates:
+            raise ValueError("No candidates in response")
+
+        text_content = candidates[0]["content"]["parts"][0]["text"]
+        parsed = json.loads(text_content)
+
+        if "landmarks" not in parsed:
+            raise KeyError("'landmarks' key missing from response")
+        landmarks = parsed["landmarks"]
+        if not landmarks:
+            warnings.warn(f"Panorama {pano_id} has empty landmarks list")
+
+        # Add landmark_idx and validate tag structure
+        for idx, landmark in enumerate(landmarks):
+            if "landmark_idx" not in landmark:
+                landmark["landmark_idx"] = idx
+
+        self.panoramas[pano_id] = {
+            "location_type": parsed.get("location_type", ""),
+            "landmarks": landmarks,
+        }
+
+
+class TagStatisticsReporter:
+    """Generate statistics for panorama tag data."""
+
+    def __init__(self, panoramas: dict):
+        self.panoramas = panoramas
+
+    def report(self):
+        """Print comprehensive statistics."""
+        total_landmarks = sum(len(p["landmarks"]) for p in self.panoramas.values())
+        total_tags = 0
+        key_counter = Counter()
+        confidence_counter = Counter()
+
+        for pano_data in self.panoramas.values():
+            for lm in pano_data["landmarks"]:
+                # Count primary tag
+                primary_tag = lm.get("primary_tag", {})
+                if primary_tag:
+                    key_counter[primary_tag.get("key", "unknown")] += 1
+                    total_tags += 1
+
+                # Count additional tags
+                for tag in lm.get("additional_tags", []):
+                    key_counter[tag.get("key", "unknown")] += 1
+                    total_tags += 1
+
+                # Confidence
+                confidence_counter[lm.get("confidence", "unknown")] += 1
+
+        # Location types
+        location_types = Counter(p.get("location_type", "") for p in self.panoramas.values())
+
+        print("\n" + "="*80)
+        print("TAG BATCH OUTPUT STATISTICS")
+        print("="*80)
+        print(f"Total panoramas: {len(self.panoramas):,}")
+        print(f"Total landmarks: {total_landmarks:,}")
+        print(f"Total tags: {total_tags:,}")
+        print(f"Avg tags per landmark: {total_tags / max(total_landmarks, 1):.1f}")
+
+        print(f"\nTag key distribution ({len(key_counter)} unique keys):")
+        for key, count in key_counter.most_common(20):
+            print(f"  {key}: {count:,}")
+        if len(key_counter) > 20:
+            print(f"  ... and {len(key_counter) - 20} more")
+
+        print(f"\nConfidence distribution:")
+        for conf, count in confidence_counter.most_common():
+            print(f"  {conf}: {count:,}")
+
+        print(f"\nLocation types ({len(location_types)} unique):")
+        for loc_type, count in location_types.most_common(10):
+            print(f"  {loc_type}: {count}")
+        if len(location_types) > 10:
+            print(f"  ... and {len(location_types) - 10} more")
+
+        print("="*80)
+
+
+class TagHierarchicalEmbeddingStorage:
+    """Build and save tag-format hierarchical pickle (version 2.0_tags)."""
+
+    def __init__(self, panoramas: dict, generator: Optional[VertexEmbeddingGenerator] = None):
+        self.panoramas = panoramas
+        self.generator = generator
+
+    def build_and_save(self, output_file: Path):
+        """Generate description embeddings and save to pickle."""
+        if self.generator is None:
+            raise ValueError("VertexEmbeddingGenerator required for embedding generation")
+
+        # Collect descriptions
+        print("\nCollecting description texts for embedding...")
+        descriptions, desc_ids = self._collect_descriptions()
+        print(f"  Descriptions: {len(descriptions):,}")
+
+        # Generate embeddings
+        print("\nGenerating description embeddings with Vertex AI...")
+        desc_embeddings = self.generator.embed_texts(descriptions, "Descriptions")
+        print(f"  Description embeddings shape: {desc_embeddings.shape}")
+
+        # Build index mapping
+        desc_id_to_idx = {desc_id: i for i, desc_id in enumerate(desc_ids)}
+
+        # Build structure
+        data = {
+            "version": "2.0_tags",
+            "embedding_model": self.generator.model,
+            "embedding_dim": desc_embeddings.shape[1] if len(desc_embeddings) > 0 else self.generator.output_dimensionality,
+            "task_type": self.generator.task_type,
+            "panoramas": self.panoramas,
+            "description_embeddings": desc_embeddings,
+            "description_id_to_idx": desc_id_to_idx,
+        }
+
+        # Save pickle
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        print(f"\nSaving to {output_file}...")
+        with open(output_file, 'wb') as f:
+            pickle.dump(data, f)
+
+        # Report
+        file_size_mb = output_file.stat().st_size / 1024 / 1024
+
+        print("\n" + "="*80)
+        print("TAG EMBEDDING GENERATION COMPLETE")
+        print("="*80)
+        print(f"Output file: {output_file}")
+        print(f"File size: {file_size_mb:.1f} MB")
+        print(f"Version: 2.0_tags")
+        print(f"Total panoramas: {len(self.panoramas):,}")
+        print(f"Total description embeddings: {len(desc_ids):,}")
+        print("="*80)
+
+    def _collect_descriptions(self) -> tuple[list[str], list[str]]:
+        """Collect all landmark descriptions with custom IDs."""
+        descriptions = []
+        desc_ids = []
+
+        for pano_id, pano_data in sorted(self.panoramas.items()):
+            for landmark in pano_data["landmarks"]:
+                landmark_idx = landmark["landmark_idx"]
+                custom_id = f"{pano_id}__landmark_{landmark_idx}"
+                description = landmark.get("description", "")
+                if description:
+                    descriptions.append(description)
+                    desc_ids.append(custom_id)
+
+        return descriptions, desc_ids
+
+
 def main():
     """CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -563,8 +782,8 @@ Environment variables:
         '--mode',
         type=str,
         required=True,
-        choices=['panorama', 'osm'],
-        help='Processing mode: "panorama" for Vertex AI Gemini outputs, "osm" for OpenAI batch outputs'
+        choices=['panorama', 'osm', 'panorama_tags'],
+        help='Processing mode: "panorama" for Vertex AI Gemini outputs, "osm" for OpenAI batch outputs, "panorama_tags" for OSM tag-format pano outputs'
     )
     parser.add_argument(
         '--input_dir',
@@ -625,23 +844,25 @@ Environment variables:
 
     args = parser.parse_args()
 
-    # Set default recursive based on mode
-    if args.recursive is None:
-        args.recursive = (args.mode == 'panorama')
-
     # Validate arguments
     if not args.stats_only and not args.validate_only and not args.output_file:
         parser.error("--output_file is required unless using --stats_only or --validate_only")
 
     # Validate mode-specific flags
-    if args.validate_only and args.mode == 'osm':
-        parser.error("--validate_only is only available for panorama mode")
+    if args.validate_only and args.mode not in ('panorama', 'panorama_tags'):
+        parser.error("--validate_only is only available for panorama/panorama_tags mode")
+
+    # Set default recursive based on mode
+    if args.recursive is None:
+        args.recursive = (args.mode in ('panorama', 'panorama_tags'))
 
     # Route to mode-specific pipeline
     if args.mode == 'panorama':
         return main_panorama(args)
     elif args.mode == 'osm':
         return main_osm(args)
+    elif args.mode == 'panorama_tags':
+        return main_panorama_tags(args)
     else:
         parser.error(f"Unknown mode: {args.mode}")
 
@@ -770,6 +991,62 @@ def main_osm(args):
         return 0
     except Exception as e:
         print(f"\n✗ Error creating embeddings: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
+
+
+def main_panorama_tags(args):
+    """Panorama tags mode: Process Vertex AI Gemini batch outputs with OSM tag format."""
+    # Phase 1: Collection & Validation
+    print("="*80)
+    print("PHASE 1: COLLECTION & VALIDATION (Panorama Tags Mode)")
+    print("="*80)
+
+    collector = TagBatchOutputCollector(Path(args.input_dir), recursive=args.recursive)
+    panoramas = collector.collect()
+
+    if not panoramas:
+        print("\nNo panoramas found. Exiting.")
+        return 0
+
+    print(f"\nCollected {len(panoramas):,} panorama(s) from {collector.files_processed} file(s)")
+
+    # Generate statistics
+    reporter = TagStatisticsReporter(panoramas)
+    reporter.report()
+
+    # Exit early if only stats requested
+    if args.stats_only:
+        return 0
+
+    # Phase 2 & 3: Embedding Generation & Storage
+    print("\n" + "="*80)
+    print("PHASE 2 & 3: EMBEDDING GENERATION & STORAGE")
+    print("="*80)
+
+    try:
+        generator = VertexEmbeddingGenerator(
+            model=args.model,
+            task_type=args.task_type,
+            batch_size=args.batch_size,
+            output_dimensionality=args.output_dimensionality
+        )
+    except Exception as e:
+        print(f"\nError initializing Vertex AI: {e}")
+        print("\nMake sure you have:")
+        print("  1. Set GOOGLE_CLOUD_PROJECT environment variable")
+        print("  2. Authenticated with: gcloud auth application-default login")
+        return 1
+
+    storage = TagHierarchicalEmbeddingStorage(panoramas, generator)
+
+    try:
+        storage.build_and_save(Path(args.output_file))
+        print("\n✓ Successfully created tag embeddings!")
+        return 0
+    except Exception as e:
+        print(f"\n✗ Error creating tag embeddings: {e}")
         import traceback
         traceback.print_exc()
         return 1

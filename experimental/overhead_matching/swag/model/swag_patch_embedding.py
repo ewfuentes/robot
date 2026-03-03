@@ -18,6 +18,10 @@ from experimental.overhead_matching.swag.model.additional_panorama_extractors im
     PanoramaProperNounExtractor,
     PanoramaLocationTypeExtractor,
 )
+from experimental.overhead_matching.swag.model.tag_token_extractor import (
+    OSMTagTokenExtractor,
+    PanoTagTokenExtractor,
+)
 from torch.nn.init import xavier_uniform_
 from experimental.overhead_matching.swag.model.synthetic_landmark_extractor import SyntheticLandmarkExtractor
 from experimental.overhead_matching.swag.model.absolute_position_extractor import AbsolutePositionExtractor
@@ -34,6 +38,8 @@ from experimental.overhead_matching.swag.model.swag_config_types import (
     PanoramaSemanticLandmarkExtractorConfig,
     PanoramaProperNounExtractorConfig,
     PanoramaLocationTypeExtractorConfig,
+    OSMTagTokenExtractorConfig,
+    PanoTagTokenExtractorConfig,
     AbsolutePositionExtractorConfig,
     SyntheticLandmarkExtractorConfig,
 
@@ -86,6 +92,8 @@ def create_extractor(config: ExtractorConfig, auxiliary_info: dict[str, Any]):
         case PanoramaSemanticLandmarkExtractorConfig(): return PanoramaSemanticLandmarkExtractor(config, auxiliary_info[config.auxiliary_info_key])
         case PanoramaProperNounExtractorConfig(): return PanoramaProperNounExtractor(config, auxiliary_info[config.auxiliary_info_key])
         case PanoramaLocationTypeExtractorConfig(): return PanoramaLocationTypeExtractor(config, auxiliary_info[config.auxiliary_info_key])
+        case OSMTagTokenExtractorConfig(): return OSMTagTokenExtractor(config, auxiliary_info[config.auxiliary_info_key])
+        case PanoTagTokenExtractorConfig(): return PanoTagTokenExtractor(config, auxiliary_info[config.auxiliary_info_key])
         case SemanticSegmentExtractorConfig(): return SemanticSegmentExtractor(config)
         case SyntheticLandmarkExtractorConfig(): return SyntheticLandmarkExtractor(config)
         case AbsolutePositionExtractorConfig(): return AbsolutePositionExtractor(config)
