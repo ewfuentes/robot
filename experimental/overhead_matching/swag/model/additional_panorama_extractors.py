@@ -92,6 +92,27 @@ def load_v2_pickle(pickle_path: Path) -> dict | None:
     return data
 
 
+def load_v2_tags_pickle(pickle_path: Path) -> dict | None:
+    """Load a v2.0_tags format pickle file.
+
+    Args:
+        pickle_path: Path to the embeddings.pkl file.
+
+    Returns:
+        The loaded dict if it's v2.0_tags format, None if file doesn't exist.
+
+    Raises:
+        RuntimeError: If the pickle exists but is not version 2.0_tags.
+    """
+    if not pickle_path.exists():
+        return None
+    with open(pickle_path, 'rb') as f:
+        data = pickle.load(f)
+    if isinstance(data, dict) and data.get("version") != "2.0_tags":
+        raise RuntimeError("Embedding pickle was not version 2.0_tags")
+    return data
+
+
 def iter_city_directories(base_path: Path):
     """Iterate over city directories in a base path.
 

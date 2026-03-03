@@ -83,6 +83,34 @@ class PanoramaLocationTypeExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS)
     auxiliary_info_key: str
 
 
+class OSMTagTokenExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    token_dim: int
+    key_embedding_dim: int
+    value_embedding_dim: int
+    ngram_bucket_size: int
+    key_vocabulary_file: str
+    auxiliary_info_key: str
+    embedding_version: str
+    include_description_embeddings: bool = True
+    description_embedding_dim: int = 1536
+    description_projection_dim: int = 32
+    max_landmarks: int = 30
+
+
+class PanoTagTokenExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    token_dim: int
+    key_embedding_dim: int
+    value_embedding_dim: int
+    ngram_bucket_size: int
+    key_vocabulary_file: str
+    auxiliary_info_key: str
+    embedding_version: str
+    include_description_embeddings: bool = True
+    description_embedding_dim: int = 1536
+    description_projection_dim: int = 32
+    max_landmarks: int = 30
+
+
 class SyntheticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     log_grid_spacing: int
     grid_bounds_px: int
@@ -128,6 +156,8 @@ ExtractorConfig = Union[
     PanoramaSemanticLandmarkExtractorConfig,
     PanoramaProperNounExtractorConfig,
     PanoramaLocationTypeExtractorConfig,
+    OSMTagTokenExtractorConfig,
+    PanoTagTokenExtractorConfig,
     SyntheticLandmarkExtractorConfig,
     AbsolutePositionExtractorConfig,
 ]

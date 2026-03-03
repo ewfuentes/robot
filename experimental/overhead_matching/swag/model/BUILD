@@ -272,6 +272,39 @@ py_test(
 )
 
 py_library(
+  name = "tag_token_extractor",
+  srcs = ["tag_token_extractor.py"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+    "//common/python:__subpackages__",
+  ],
+  deps = [
+    requirement("torch"),
+    "//common/torch:load_torch_deps",
+    ":additional_panorama_extractors",
+    ":semantic_landmark_extractor",
+    ":semantic_landmark_utils",
+    ":swag_model_input_output",
+    ":swag_config_types",
+  ]
+)
+
+py_test(
+  name = "tag_token_extractor_test",
+  srcs = ["tag_token_extractor_test.py"],
+  deps = [
+    requirement("torch"),
+    requirement("numpy"),
+    "//common/torch:load_torch_deps",
+    ":tag_token_extractor",
+    ":additional_panorama_extractors",
+    ":swag_config_types",
+    ":swag_model_input_output",
+    ":semantic_landmark_utils",
+  ]
+)
+
+py_library(
   name = "synthetic_landmark_extractor",
   srcs = ["synthetic_landmark_extractor.py"],
   deps = [
