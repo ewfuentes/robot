@@ -16,7 +16,7 @@ from experimental.overhead_matching.swag.model.tag_token_extractor import (
     _load_key_vocabulary,
 )
 from experimental.overhead_matching.swag.model.additional_panorama_extractors import (
-    load_v2_tags_pickle,
+    load_v2_pickle,
 )
 from experimental.overhead_matching.swag.model.swag_config_types import (
     OSMTagTokenExtractorConfig,
@@ -128,12 +128,12 @@ class LoadV2TagsPickleTest(unittest.TestCase):
             data = {"version": "2.0_tags", "panoramas": {}}
             pickle.dump(data, f)
             f.flush()
-            result = load_v2_tags_pickle(Path(f.name))
+            result = load_v2_pickle(Path(f.name), version="2.0_tags")
             self.assertIsNotNone(result)
             self.assertEqual(result["version"], "2.0_tags")
 
     def test_returns_none_for_missing_file(self):
-        result = load_v2_tags_pickle(Path("/tmp/nonexistent_test_file.pkl"))
+        result = load_v2_pickle(Path("/tmp/nonexistent_test_file.pkl"), version="2.0_tags")
         self.assertIsNone(result)
 
     def test_raises_on_wrong_version(self):
@@ -142,7 +142,7 @@ class LoadV2TagsPickleTest(unittest.TestCase):
             pickle.dump(data, f)
             f.flush()
             with self.assertRaises(RuntimeError):
-                load_v2_tags_pickle(Path(f.name))
+                load_v2_pickle(Path(f.name), version="2.0_tags")
 
 
 class TagPickleEmbeddingAssociationTest(unittest.TestCase):
@@ -290,7 +290,7 @@ class TagPickleEmbeddingAssociationTest(unittest.TestCase):
 
         for city_dir in sorted(base_path.iterdir()):
             pickle_path = city_dir / "embeddings" / "embeddings.pkl"
-            data = load_v2_tags_pickle(pickle_path)
+            data = load_v2_pickle(pickle_path, version="2.0_tags")
             self.assertIsNotNone(data)
 
             tensor = data["description_embeddings"]
@@ -307,7 +307,7 @@ class TagPickleEmbeddingAssociationTest(unittest.TestCase):
         """Verify panoramas dict preserves full tag structure."""
         base_path = Path(self._temp_dir.name) / self.version
         chicago_pickle = base_path / "1_Chicago" / "embeddings" / "embeddings.pkl"
-        data = load_v2_tags_pickle(chicago_pickle)
+        data = load_v2_pickle(chicago_pickle, version="2.0_tags")
 
         pano_data = data["panoramas"]["pano_chi_0,41.85,-87.65,"]
         lm0 = pano_data["landmarks"][0]
@@ -324,7 +324,7 @@ class TagPickleEmbeddingAssociationTest(unittest.TestCase):
         base_path = Path(self._temp_dir.name) / self.version
         for city_dir in base_path.iterdir():
             pickle_path = city_dir / "embeddings" / "embeddings.pkl"
-            data = load_v2_tags_pickle(pickle_path)
+            data = load_v2_pickle(pickle_path, version="2.0_tags")
             self.assertEqual(data["version"], "2.0_tags")
 
 
@@ -467,7 +467,7 @@ class PanoTagTokenExtractorTest(unittest.TestCase):
             embedding_version=self.version,
             include_description_embeddings=include_descs,
             description_embedding_dim=1536,
-            max_landmarks=30,
+            max_tag_key_vocab_size=30,
         )
 
     def test_forward_output_shape(self):
@@ -710,7 +710,7 @@ class OSMTagTokenExtractorTest(unittest.TestCase):
             embedding_version=self.version,
             include_description_embeddings=include_descs,
             description_embedding_dim=1536,
-            max_landmarks=30,
+            max_tag_key_vocab_size=30,
         )
 
     def _make_metadata_with_landmarks(self):
@@ -864,8 +864,8 @@ class OSMTagTokenExtractorTest(unittest.TestCase):
             (~out_dict.mask).sum().item(),
             (~out_frozen.mask).sum().item())
 
-    def test_max_landmarks_enforcement(self):
-        """Set max_landmarks=1, provide 3 landmarks, verify only first landmark's tags appear."""
+    def test_max_tag_key_vocab_size_enforcement(self):
+        """Set max_tag_key_vocab_size=1, provide 3 landmarks, verify only first landmark's tags appear."""
         config = OSMTagTokenExtractorConfig(
             token_dim=64,
             key_embedding_dim=32,
@@ -876,7 +876,7 @@ class OSMTagTokenExtractorTest(unittest.TestCase):
             embedding_version=self.version,
             include_description_embeddings=False,
             description_embedding_dim=1536,
-            max_landmarks=1,
+            max_tag_key_vocab_size=1,
         )
         extractor = OSMTagTokenExtractor(config, Path(self._temp_dir.name))
 

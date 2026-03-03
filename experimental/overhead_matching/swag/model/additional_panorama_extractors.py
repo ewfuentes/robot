@@ -74,42 +74,25 @@ def extract_yaw_angles_from_bboxes(bounding_boxes: list[dict]) -> list[float]:
     return yaw_angles
 
 
-def load_v2_pickle(pickle_path: Path) -> dict | None:
-    """Load a v2.0 format pickle file.
+def load_v2_pickle(pickle_path: Path, version: str = "2.0") -> dict | None:
+    """Load a versioned format pickle file.
 
     Args:
         pickle_path: Path to the embeddings.pkl file.
+        version: Expected version string (e.g. "2.0", "2.0_tags").
 
     Returns:
-        The loaded dict if it's v2.0 format, None otherwise.
-    """
-    if not pickle_path.exists():
-        return None
-    with open(pickle_path, 'rb') as f:
-        data = pickle.load(f)
-    if isinstance(data, dict) and data.get("version") != "2.0":
-        raise RuntimeError("Embedding pickle was not version 2")
-    return data
-
-
-def load_v2_tags_pickle(pickle_path: Path) -> dict | None:
-    """Load a v2.0_tags format pickle file.
-
-    Args:
-        pickle_path: Path to the embeddings.pkl file.
-
-    Returns:
-        The loaded dict if it's v2.0_tags format, None if file doesn't exist.
+        The loaded dict if it matches the expected version, None if file doesn't exist.
 
     Raises:
-        RuntimeError: If the pickle exists but is not version 2.0_tags.
+        RuntimeError: If the pickle exists but version doesn't match.
     """
     if not pickle_path.exists():
         return None
     with open(pickle_path, 'rb') as f:
         data = pickle.load(f)
-    if isinstance(data, dict) and data.get("version") != "2.0_tags":
-        raise RuntimeError("Embedding pickle was not version 2.0_tags")
+    if isinstance(data, dict) and data.get("version") != version:
+        raise RuntimeError(f"Embedding pickle was not version {version}")
     return data
 
 

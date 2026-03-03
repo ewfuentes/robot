@@ -84,31 +84,29 @@ class PanoramaLocationTypeExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS)
 
 
 class OSMTagTokenExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
-    token_dim: int
-    key_embedding_dim: int
-    value_embedding_dim: int
-    ngram_bucket_size: int
-    key_vocabulary_file: str
-    auxiliary_info_key: str
-    embedding_version: str
-    include_description_embeddings: bool = True
-    description_embedding_dim: int = 1536
-    description_projection_dim: int = 32
-    max_landmarks: int = 30
+    token_dim: int  # output dimension of each tag token
+    key_embedding_dim: int  # dimension of learned key embeddings
+    value_embedding_dim: int  # dimension of character n-gram hashed value embeddings
+    ngram_bucket_size: int  # number of hash buckets for character n-gram value encoding
+    key_vocabulary_file: str  # path to text file with one tag key per line
+    auxiliary_info_key: str  # key into auxiliary_info dict for embedding base path
+    embedding_version: str  # subdirectory name for embedding version
+    include_description_embeddings: bool = True  # fold sentence description embeddings into tag tokens
+    description_embedding_dim: int = 1536  # input dimension of precomputed description embeddings
+    max_tag_key_vocab_size: int = 100  # max landmarks to tokenize; sizes the landmark index embedding
 
 
 class PanoTagTokenExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
-    token_dim: int
-    key_embedding_dim: int
-    value_embedding_dim: int
-    ngram_bucket_size: int
-    key_vocabulary_file: str
-    auxiliary_info_key: str
-    embedding_version: str
-    include_description_embeddings: bool = True
-    description_embedding_dim: int = 1536
-    description_projection_dim: int = 32
-    max_landmarks: int = 30
+    token_dim: int  # output dimension of each tag token
+    key_embedding_dim: int  # dimension of learned key embeddings
+    value_embedding_dim: int  # dimension of character n-gram hashed value embeddings
+    ngram_bucket_size: int  # number of hash buckets for character n-gram value encoding
+    key_vocabulary_file: str  # path to text file with one tag key per line
+    auxiliary_info_key: str  # key into auxiliary_info dict for embedding base path
+    embedding_version: str  # subdirectory name for embedding version
+    include_description_embeddings: bool = True  # fold sentence description embeddings into tag tokens
+    description_embedding_dim: int = 1536  # input dimension of precomputed description embeddings
+    max_tag_key_vocab_size: int = 100  # max landmarks to tokenize; sizes the landmark index embedding
 
 
 class SyntheticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):

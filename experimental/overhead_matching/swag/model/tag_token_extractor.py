@@ -24,7 +24,7 @@ from experimental.overhead_matching.swag.model.swag_model_input_output import (
 from experimental.overhead_matching.swag.model.additional_panorama_extractors import (
     yaw_angles_to_binary_vector,
     extract_yaw_angles_from_bboxes,
-    load_v2_tags_pickle,
+    load_v2_pickle,
     iter_city_directories,
 )
 from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
@@ -120,14 +120,14 @@ class OSMTagTokenExtractor(nn.Module):
         tag_proj_input_dim = config.key_embedding_dim + config.value_embedding_dim
         if config.include_description_embeddings:
             self._desc_projection = nn.Linear(
-                config.description_embedding_dim, config.description_projection_dim)
-            tag_proj_input_dim += config.description_projection_dim
+                config.description_embedding_dim, config.value_embedding_dim)
+            tag_proj_input_dim += config.value_embedding_dim
 
         # Project concatenated (key_emb, value_emb[, desc_proj]) to token_dim
         self._tag_projection = nn.Linear(tag_proj_input_dim, config.token_dim)
 
         # Landmark index embeddings (OSM-specific)
-        self._landmark_idx_embedding = nn.Embedding(config.max_landmarks, config.token_dim)
+        self._landmark_idx_embedding = nn.Embedding(config.max_tag_key_vocab_size, config.token_dim)
 
         # Lazy-loaded embeddings
         self.files_loaded = False
@@ -176,7 +176,7 @@ class OSMTagTokenExtractor(nn.Module):
             landmarks = item.get("landmarks", [])
 
             for lm_idx, landmark in enumerate(landmarks):
-                if lm_idx >= self.config.max_landmarks:
+                if lm_idx >= self.config.max_tag_key_vocab_size:
                     break
                 props = landmark.get('pruned_props', {})
                 if isinstance(props, frozenset):
@@ -249,7 +249,7 @@ class OSMTagTokenExtractor(nn.Module):
                 if self.config.include_description_embeddings:
                     desc_proj = desc_projections.get(
                         lm_idx,
-                        torch.zeros(self.config.description_projection_dim, device=dev))
+                        torch.zeros(self.config.value_embedding_dim, device=dev))
                     token_vec = self._tag_projection(
                         torch.cat([key_emb, val_emb, desc_proj]))
                 else:
@@ -315,14 +315,14 @@ class PanoTagTokenExtractor(nn.Module):
         tag_proj_input_dim = config.key_embedding_dim + config.value_embedding_dim
         if config.include_description_embeddings:
             self._desc_projection = nn.Linear(
-                config.description_embedding_dim, config.description_projection_dim)
-            tag_proj_input_dim += config.description_projection_dim
+                config.description_embedding_dim, config.value_embedding_dim)
+            tag_proj_input_dim += config.value_embedding_dim
 
         # Project concatenated (key_emb, value_emb[, desc_proj]) to token_dim
         self._tag_projection = nn.Linear(tag_proj_input_dim, config.token_dim)
 
         # Landmark index embeddings (panorama-specific, separate from OSM)
-        self._landmark_idx_embedding = nn.Embedding(config.max_landmarks, config.token_dim)
+        self._landmark_idx_embedding = nn.Embedding(config.max_tag_key_vocab_size, config.token_dim)
 
         # Lazy-loaded pickle data
         self.files_loaded = False
@@ -339,7 +339,7 @@ class PanoTagTokenExtractor(nn.Module):
 
         for city_name, city_dir in iter_city_directories(base_path):
             pickle_path = city_dir / "embeddings" / "embeddings.pkl"
-            data = load_v2_tags_pickle(pickle_path)
+            data = load_v2_pickle(pickle_path, version="2.0_tags")
             if data is None:
                 print(f"  Warning: {pickle_path} missing or not v2.0_tags format, skipping")
                 continue
@@ -413,7 +413,7 @@ class PanoTagTokenExtractor(nn.Module):
             )
 
             for lm_idx, landmark in enumerate(pano_info.get("landmarks", [])):
-                if lm_idx >= self.config.max_landmarks:
+                if lm_idx >= self.config.max_tag_key_vocab_size:
                     break
 
                 # Primary tag
@@ -481,7 +481,7 @@ class PanoTagTokenExtractor(nn.Module):
             # Precompute yaw positions per landmark
             lm_positions = {}
             for lm_idx, landmark in enumerate(pano_info.get("landmarks", [])):
-                if lm_idx >= self.config.max_landmarks:
+                if lm_idx >= self.config.max_tag_key_vocab_size:
                     break
                 yaw_angles = extract_yaw_angles_from_bboxes(
                     landmark.get("bounding_boxes", []))
@@ -508,7 +508,7 @@ class PanoTagTokenExtractor(nn.Module):
                 if self.config.include_description_embeddings:
                     desc_proj = desc_projections.get(
                         lm_idx,
-                        torch.zeros(self.config.description_projection_dim, device=dev))
+                        torch.zeros(self.config.value_embedding_dim, device=dev))
                     token_vec = self._tag_projection(
                         torch.cat([key_emb, val_emb, desc_proj]))
                 else:
