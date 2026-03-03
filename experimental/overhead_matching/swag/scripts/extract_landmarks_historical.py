@@ -84,7 +84,7 @@ def main(
     else:
         raise ValueError("Must provide either --bbox or --dataset_path")
 
-    # Tag filters (matching original script)
+    # Tag filters (matching original script + waterway)
     tag_filters = {
         "amenity": True,
         "building": True,
@@ -104,6 +104,7 @@ def main(
         "power": True,
         "public_transport": True,
         "railway": True,
+        "waterway": True,
     }
 
     print(f"Extracting landmarks from {pbf_path}...")

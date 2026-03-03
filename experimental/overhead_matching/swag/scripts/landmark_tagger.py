@@ -117,6 +117,9 @@ PANO_CATEGORIES_LEARNED = []  # parallel to PANORAMAS
 PANO_TAGS = []  # list of set[(key, val)], parallel to PANORAMAS — precomputed at startup
 LABELS_PATH = None  # Path to labels JSON file
 PANO_ID_TO_IDX = {}  # pano_id -> pano_idx, built once at startup
+PANO_PX = []  # list of shapely.Point in pixel coords, parallel to PANORAMAS
+
+BAD_GPS_PANOS = set()  # set of pano_id strings flagged as bad GPS
 
 # Landmark annotation: which OSM landmarks are the "distinctive thing" for each panorama
 RELEVANT_LANDMARKS = {}  # pano_id -> list of osm_id strings ([] = reviewed, no relevant)
@@ -135,6 +138,39 @@ SPATIAL_K = 5
 AL_W_UNCERTAINTY = 0.5
 AL_W_DISAGREEMENT = 0.25
 AL_W_ISOLATION = 0.25
+
+# Landmark relevance model (tag-based logistic regression)
+LANDMARK_RELEVANCE_MODEL = None   # sklearn LogisticRegression or None
+LANDMARK_RELEVANCE_VOCAB = {}     # feature_name -> column index
+LANDMARK_RELEVANCE_DIRTY = False  # set True on annotation change, cleared after refit
+
+# Tag featurization constants for landmark relevance model
+# Primary category tags: full key=value features
+PRIMARY_TAG_KEYS = {
+    "amenity", "shop", "tourism", "leisure", "historic", "natural",
+    "man_made", "building", "highway", "office", "healthcare", "craft",
+    "sport", "railway", "power", "landuse", "emergency", "public_transport",
+    "barrier", "waterway", "place", "aeroway", "military", "club",
+    "advertising", "geological",
+}
+# Tags where presence matters but value is free-text
+PRESENCE_ONLY_KEYS = {
+    "name", "brand", "cuisine", "religion", "denomination",
+    "height", "building:levels", "colour", "building:colour",
+    "architect", "material", "building:material", "roof:material",
+    "description", "inscription", "note",
+    "addr:housenumber", "addr:street",
+    "phone", "operator", "ref",
+}
+# Keys to skip entirely
+SKIP_TAG_KEYS = {
+    "source", "source:name", "source_ref", "created_by",
+    "image", "facebook", "contact:website", "contact:facebook",
+    "contact:twitter", "contact:email", "contact:fax", "contact:phone",
+    "brand:website", "brand:wikidata", "brand:wikipedia",
+    "wikidata", "wikipedia", "artist:wikidata",
+    "import_uuid",
+}
 
 USEFUL_TOP_KEYS = {
     "amenity", "shop", "leisure", "tourism", "historic", "natural",
@@ -191,7 +227,7 @@ def _load_labels():
 
     Returns True if migration from old (pano_idx) format was performed.
     """
-    global PANO_LABELS, TAG_OVERRIDES, RELEVANT_LANDMARKS
+    global PANO_LABELS, TAG_OVERRIDES, RELEVANT_LANDMARKS, BAD_GPS_PANOS
     if LABELS_PATH is None or not LABELS_PATH.exists():
         return False
     with open(LABELS_PATH) as f:
@@ -227,6 +263,7 @@ def _load_labels():
             TAG_OVERRIDES[(key, value)] = override
 
     RELEVANT_LANDMARKS = data.get("relevant_landmarks", {})
+    BAD_GPS_PANOS = set(data.get("bad_gps", []))
     return migrated
 
 
@@ -240,6 +277,7 @@ def _save_labels():
             f"{k}={v}": override for (k, v), override in TAG_OVERRIDES.items()
         },
         "relevant_landmarks": RELEVANT_LANDMARKS,
+        "bad_gps": sorted(BAD_GPS_PANOS),
     }
     with open(LABELS_PATH, "w") as f:
         json.dump(data, f, indent=2)
@@ -263,6 +301,135 @@ def _precompute_pano_tags():
         PANO_TAGS.append(tags)
     total_tags = sum(len(t) for t in PANO_TAGS)
     print(f"Precomputed tags: {total_tags} tag instances across {len(PANO_TAGS)} panoramas")
+
+
+LANDMARK_RADIUS_PX = 640  # search radius in pixel coords (matches compute_panorama_from_landmarks)
+
+
+def _featurize_landmark(row):
+    """Extract sparse binary feature set from a landmark row's pruned_props.
+
+    Returns a set of feature name strings using hybrid featurization:
+      - Primary category tags (amenity, shop, etc.): "key=value"
+      - Presence-only tags (name, brand, etc.): "has:key"
+      - Metadata tags (source, wikidata, tiger:*, etc.): skipped
+      - Other tags: "key=value" (default)
+    """
+    features = set()
+    for key, value in row["pruned_props"]:
+        if key in SKIP_TAG_KEYS or key.startswith("tiger:") or key.startswith("gnis:"):
+            continue
+        if key in PRIMARY_TAG_KEYS:
+            features.add(f"{key}={value}")
+        elif key in PRESENCE_ONLY_KEYS:
+            features.add(f"has:{key}")
+        else:
+            features.add(f"{key}={value}")
+    return features
+
+
+def _landmark_distance_px(pano_idx, lm_idx):
+    """Compute pixel distance from panorama to nearest point of a landmark geometry."""
+    pano_pt = PANO_PX[pano_idx]
+    lm_geom = LANDMARK_METADATA.iloc[lm_idx]["geometry_px"]
+    return pano_pt.distance(lm_geom)
+
+
+def _retrain_landmark_relevance_model():
+    """Retrain logistic regression on OSM tag features + distance from landmark annotations."""
+    global LANDMARK_RELEVANCE_MODEL, LANDMARK_RELEVANCE_VOCAB, LANDMARK_RELEVANCE_DIRTY
+    LANDMARK_RELEVANCE_DIRTY = False
+
+    if not RELEVANT_LANDMARKS:
+        LANDMARK_RELEVANCE_MODEL = None
+        LANDMARK_RELEVANCE_VOCAB = {}
+        return
+
+    # Collect training examples: for each annotated panorama, each nearby landmark
+    feature_sets = []
+    distances = []
+    labels = []
+    for pano_id, osm_ids in RELEVANT_LANDMARKS.items():
+        pano_idx = PANO_ID_TO_IDX.get(pano_id)
+        if pano_idx is None:
+            continue
+        relevant_set = set(osm_ids)
+        for lm_idx in PANO_LANDMARK_IDXS[pano_idx]:
+            row = LANDMARK_METADATA.iloc[lm_idx]
+            osm_id = str(row["id"])
+            feats = _featurize_landmark(row)
+            if not feats:
+                continue
+            feature_sets.append(feats)
+            distances.append(_landmark_distance_px(pano_idx, lm_idx))
+            labels.append(1 if osm_id in relevant_set else 0)
+
+    n_pos = sum(labels)
+    n_neg = len(labels) - n_pos
+    if n_pos < 10 or n_neg < 10:
+        LANDMARK_RELEVANCE_MODEL = None
+        LANDMARK_RELEVANCE_VOCAB = {}
+        return
+
+    # Build vocabulary from all observed features
+    all_features = set()
+    for fs in feature_sets:
+        all_features.update(fs)
+    vocab = {feat: i for i, feat in enumerate(sorted(all_features))}
+    LANDMARK_RELEVANCE_VOCAB = vocab
+
+    # Build feature matrix: sparse tag columns + 2 dense distance columns
+    from scipy.sparse import hstack, lil_matrix
+    from sklearn.linear_model import LogisticRegression
+
+    n = len(labels)
+    n_tag_feats = len(vocab)
+    X_tags = lil_matrix((n, n_tag_feats), dtype=np.float32)
+    for i, fs in enumerate(feature_sets):
+        for feat in fs:
+            if feat in vocab:
+                X_tags[i, vocab[feat]] = 1.0
+
+    # Distance features: normalized distance and inverse distance
+    dist_arr = np.array(distances, dtype=np.float32)
+    norm_dist = dist_arr / LANDMARK_RADIUS_PX  # 0 to ~1
+    inv_dist = 1.0 / (1.0 + dist_arr)  # 1 at distance 0, decays toward 0
+    X_dense = np.column_stack([norm_dist, inv_dist])
+
+    X = hstack([X_tags.tocsr(), X_dense]).tocsr()
+    y = np.array(labels)
+
+    model = LogisticRegression(C=1.0, max_iter=1000)
+    model.fit(X, y)
+    LANDMARK_RELEVANCE_MODEL = model
+    print(f"Landmark relevance model retrained ({n_pos}+/{n_neg}-): "
+          f"{n_tag_feats} tag features + 2 distance features")
+
+
+def _score_landmark_relevance(row, pano_idx, lm_idx):
+    """Score a landmark's relevance probability from its OSM tags and distance.
+
+    Returns P(relevant | tags, distance) from the fitted model, or 0.5 if no model.
+    """
+    if LANDMARK_RELEVANCE_MODEL is None:
+        return 0.5
+    feats = _featurize_landmark(row)
+    if not feats:
+        return 0.5
+    from scipy.sparse import hstack, lil_matrix
+    n_tag_feats = len(LANDMARK_RELEVANCE_VOCAB)
+    x_tags = lil_matrix((1, n_tag_feats), dtype=np.float32)
+    for feat in feats:
+        col = LANDMARK_RELEVANCE_VOCAB.get(feat)
+        if col is not None:
+            x_tags[0, col] = 1.0
+    dist = _landmark_distance_px(pano_idx, lm_idx)
+    x_dense = np.array([[dist / LANDMARK_RADIUS_PX, 1.0 / (1.0 + dist)]], dtype=np.float32)
+    x = hstack([x_tags.tocsr(), x_dense]).tocsr()
+    prob = LANDMARK_RELEVANCE_MODEL.predict_proba(x)[0]
+    cls = LANDMARK_RELEVANCE_MODEL.classes_
+    p_relevant = prob[1] if cls[1] == 1 else prob[0]
+    return float(p_relevant)
 
 
 def _recompute_learned_categories():
@@ -618,6 +785,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
 .label-btn:hover { background: #0f3460; }
 .label-btn.active-useful { background: #1b4332; border-color: #2d6a4f; color: #a0e0c0; }
 .label-btn.active-not-useful { background: #4a1c1c; border-color: #6a2d2d; color: #ff9090; }
+.label-btn.active-bad-gps { background: #4a3a1c; border-color: #6a5a2d; color: #e6c860; }
 .label-stats { color: #a0a0c0; font-size: 12px; margin-left: 4px; }
 .override-btn { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%; border: 1px solid #555; background: transparent; cursor: pointer; font-size: 12px; margin-right: 6px; flex-shrink: 0; }
 .override-btn.always { background: #1b4332; border-color: #2d6a4f; color: #a0e0c0; }
@@ -640,6 +808,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
         <button class="label-btn" id="btn-useful" onclick="setLabel('useful')" title="Good (g)">Good (g)</button>
         <button class="label-btn" id="btn-not-useful" onclick="setLabel('not_useful')" title="Bad (b)">Bad (b)</button>
         <button class="label-btn" id="btn-clear-label" onclick="setLabel(null)" title="Clear (x)">Clear</button>
+        <button class="label-btn" id="btn-bad-gps" onclick="toggleBadGps()" title="Bad GPS (p)" style="margin-left:4px;">Bad GPS (p)</button>
         <button class="label-btn" id="btn-next-al" onclick="goToNextLabel()" title="Next to label (n)" style="margin-left:4px;background:#1a2a4e;">Next (n)</button>
         <span class="label-stats" id="label-stats"></span>
     </span>
@@ -737,6 +906,7 @@ let loadingReproject = false;
 let lmap = null;
 let landmarkLayer = null;
 let currentLabel = null;  // "useful", "not_useful", or null
+let badGps = false;
 let labelStats = {total: 0, n_useful: 0, n_not_useful: 0};
 
 // Init
@@ -1147,6 +1317,7 @@ async function loadPanoLabel(idx) {
     const resp = await fetch(`/api/pano_label/${idx}`);
     const data = await resp.json();
     currentLabel = data.label || null;
+    badGps = data.bad_gps || false;
     updateLabelButtons();
 }
 
@@ -1167,11 +1338,27 @@ async function setLabel(label) {
     loadDinoPrediction(idx);
 }
 
+async function toggleBadGps() {
+    const idx = currentIndex;
+    const newVal = !badGps;
+    const resp = await fetch('/api/bad_gps', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({pano_idx: idx, bad_gps: newVal}),
+    });
+    const data = await resp.json();
+    if (currentIndex !== idx) return;
+    badGps = data.bad_gps;
+    updateLabelButtons();
+}
+
 function updateLabelButtons() {
     const btnU = document.getElementById('btn-useful');
     const btnN = document.getElementById('btn-not-useful');
+    const btnG = document.getElementById('btn-bad-gps');
     btnU.className = 'label-btn' + (currentLabel === 'useful' ? ' active-useful' : '');
     btnN.className = 'label-btn' + (currentLabel === 'not_useful' ? ' active-not-useful' : '');
+    btnG.className = 'label-btn' + (badGps ? ' active-bad-gps' : '');
     document.getElementById('label-stats').textContent =
         labelStats.total > 0 ? `${labelStats.n_useful}/${labelStats.total} labeled useful` : '';
 }
@@ -1273,6 +1460,7 @@ window.addEventListener('keydown', e => {
     if (e.key === 'g') { setLabel('useful'); e.preventDefault(); }
     if (e.key === 'b') { setLabel('not_useful'); e.preventDefault(); }
     if (e.key === 'x') { setLabel(null); e.preventDefault(); }
+    if (e.key === 'p') { toggleBadGps(); e.preventDefault(); }
     if (e.key === 'n') { goToNextLabel(); e.preventDefault(); }
 });
 </script>
@@ -1516,7 +1704,23 @@ def set_pano_label():
 def get_pano_label(index):
     pano_id = PANORAMAS[index]["id"] if 0 <= index < len(PANORAMAS) else None
     label = PANO_LABELS.get(pano_id) if pano_id else None
-    return jsonify({"label": label})
+    bad_gps = pano_id in BAD_GPS_PANOS if pano_id else False
+    return jsonify({"label": label, "bad_gps": bad_gps})
+
+
+@app.route("/api/bad_gps", methods=["POST"])
+def toggle_bad_gps():
+    data = request.get_json()
+    if not data or "pano_idx" not in data:
+        return "Missing pano_idx", 400
+    pano_idx = int(data["pano_idx"])
+    pano_id = PANORAMAS[pano_idx]["id"]
+    if data.get("bad_gps", True):
+        BAD_GPS_PANOS.add(pano_id)
+    else:
+        BAD_GPS_PANOS.discard(pano_id)
+    _save_labels()
+    return jsonify({"ok": True, "bad_gps": pano_id in BAD_GPS_PANOS})
 
 
 @app.route("/api/tag_override", methods=["POST"])
@@ -1600,9 +1804,18 @@ def next_to_label():
 
 @app.route("/api/nearby_landmarks_annotate/<int:index>")
 def nearby_landmarks_annotate(index):
-    """Like nearby_landmarks but includes osm_id and relevant status."""
+    """Like nearby_landmarks but includes osm_id and relevant status.
+
+    Landmarks are sorted by predicted relevance (most likely relevant first)
+    using the tag-based relevance model when available.
+    """
+    global LANDMARK_RELEVANCE_DIRTY
     if index < 0 or index >= len(PANORAMAS) or LANDMARK_METADATA is None:
         return jsonify({"features": [], "relevant_osm_ids": []})
+
+    # Retrain relevance model if annotations changed since last fit
+    if LANDMARK_RELEVANCE_DIRTY:
+        _retrain_landmark_relevance_model()
 
     pano_id = PANORAMAS[index]["id"]
     lm_idxs = PANO_LANDMARK_IDXS[index]
@@ -1612,7 +1825,8 @@ def nearby_landmarks_annotate(index):
         row = LANDMARK_METADATA.iloc[lm_idx]
         geom = row["geometry"]
         osm_id = str(row["id"]) if "id" in row.index else ""
-        props = {"osm_id": osm_id}
+        relevance_score = _score_landmark_relevance(row, index, lm_idx)
+        props = {"osm_id": osm_id, "relevance_score": round(relevance_score, 3)}
         for k, v in row["pruned_props"]:
             props[k] = v
         features.append({
@@ -1620,6 +1834,8 @@ def nearby_landmarks_annotate(index):
             "geometry": _geom_to_geojson(geom),
             "properties": props,
         })
+    # Sort by predicted relevance descending
+    features.sort(key=lambda f: -f["properties"]["relevance_score"])
     return jsonify({"features": features, "relevant_osm_ids": relevant_osm_ids})
 
 
@@ -1639,8 +1855,16 @@ def toggle_relevant_landmark():
         current.append(osm_id)
     elif not relevant and osm_id in current:
         current.remove(osm_id)
-    RELEVANT_LANDMARKS[pano_id] = current
+    if current:
+        RELEVANT_LANDMARKS[pano_id] = current
+    else:
+        # Don't store empty list from toggling — that's reserved for explicit
+        # "none relevant" via mark_no_relevant. Remove the entry so the panorama
+        # reverts to unannotated state.
+        RELEVANT_LANDMARKS.pop(pano_id, None)
     _save_labels()
+    global LANDMARK_RELEVANCE_DIRTY
+    LANDMARK_RELEVANCE_DIRTY = True
     return jsonify({"ok": True, "relevant_osm_ids": current})
 
 
@@ -1654,6 +1878,8 @@ def mark_no_relevant():
     pano_id = PANORAMAS[pano_idx]["id"]
     RELEVANT_LANDMARKS[pano_id] = []
     _save_labels()
+    global LANDMARK_RELEVANCE_DIRTY
+    LANDMARK_RELEVANCE_DIRTY = True
     return jsonify({"ok": True})
 
 
@@ -2043,6 +2269,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
 .btn-none { padding: 6px 14px; border: 2px solid #6a2d2d; background: #1a1a2e; color: #ff9090; border-radius: 4px; cursor: pointer; font-size: 14px; }
 .btn-none:hover { background: #4a1c1c; }
 .btn-none.active { background: #4a1c1c; border-color: #ff6b6b; }
+.btn-none.active-bad-gps { background: #4a3a1c; border-color: #e6c860; color: #e6c860; }
 .main-content { display: flex; height: calc(100vh - 50px); }
 .left-panel { width: 60%; display: flex; flex-direction: column; overflow: hidden; }
 .right-panel { width: 40%; display: flex; flex-direction: column; overflow: hidden; border-left: 1px solid #0f3460; }
@@ -2057,7 +2284,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
 .landmark-list { flex: 1; overflow: hidden; padding: 8px; display: flex; flex-direction: column; }
 #lm-cards { flex: 1; overflow-y: auto; }
 .landmark-list h3 { color: #a0c0ff; font-size: 14px; margin-bottom: 8px; padding: 0 4px; }
-.lm-card { padding: 8px 10px; margin: 4px 0; background: #16213e; border-radius: 6px; border: 2px solid #0f3460; cursor: pointer; transition: all 0.15s; }
+.lm-card { padding: 8px 10px; margin: 4px 0; background: #16213e; border-radius: 6px; border: 2px solid #0f3460; cursor: pointer; transition: all 0.15s; position: relative; }
+.lm-card .lm-score { position: absolute; top: 6px; right: 8px; font-size: 11px; color: #a0a0c0; font-weight: bold; }
 .lm-card:hover { border-color: #a0c0ff; }
 .lm-card.relevant { border-color: #2d6a4f; background: #1b4332; }
 .lm-card .lm-name { font-weight: bold; font-size: 13px; margin-bottom: 4px; }
@@ -2074,6 +2302,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
     <button onclick="navigateAnnotate(1)" title="Next (→)">Next &#8594;</button>
     <button onclick="skipAnnotate()" title="Next unannotated (s)">Next unannotated (s)</button>
     <button class="btn-none" id="btn-none-relevant" onclick="markNoneRelevant()" title="None relevant (0)">None relevant (0)</button>
+    <button class="btn-none" id="ann-btn-bad-gps" onclick="annToggleBadGps()" title="Bad GPS (p)" style="border-color:#6a5a2d;">Bad GPS (p)</button>
     <span class="progress" id="ann-progress">Loading...</span>
     <span class="pano-info" id="ann-pano-info"></span>
     <span style="margin-left:auto;">
@@ -2110,6 +2339,7 @@ let annQueuePos = 0;      // current position in queue
 let annTotal = 0;
 let annDone = 0;
 let annCurrentIdx = -1;   // current pano_idx
+let annBadGps = false;    // current panorama bad GPS flag
 let annFeatures = [];     // current landmarks
 let annRelevantIds = [];   // current relevant osm_ids
 let annPanoList = [];     // full panorama list for image endpoints
@@ -2193,6 +2423,11 @@ async function loadAnnotatePano(queuePos) {
     const filterInput = document.getElementById('lm-filter');
     if (filterInput) filterInput.value = '';
     await loadAnnotateLandmarks(annCurrentIdx);
+    // Load bad GPS flag
+    const labelResp = await fetch(`/api/pano_label/${annCurrentIdx}`);
+    const labelData = await labelResp.json();
+    annBadGps = labelData.bad_gps || false;
+    updateAnnBadGpsBtn();
 }
 
 async function loadAnnotateLandmarks(idx) {
@@ -2239,11 +2474,13 @@ function renderLandmarkCards() {
         const isRelevant = annRelevantIds.includes(osmId);
         const name = p.name || '';
         const tags = Object.entries(p)
-            .filter(([k]) => k !== 'osm_id' && k !== 'name' && !k.startsWith('addr:') && !k.startsWith('tiger:'))
+            .filter(([k]) => k !== 'osm_id' && k !== 'name' && k !== 'relevance_score' && !k.startsWith('tiger:'))
             .slice(0, 10)
             .map(([k,v]) => `<span class="lm-tag">${k}=${v}</span>`)
             .join(' ');
+        const score = p.relevance_score != null ? `${Math.round(p.relevance_score * 100)}%` : '';
         return `<div class="lm-card${isRelevant ? ' relevant' : ''}" data-osm-id="${osmId}" onclick="toggleLandmark(this.dataset.osmId)">
+            ${score ? `<div class="lm-score">${score}</div>` : ''}
             ${name ? `<div class="lm-name">${name}</div>` : ''}
             <div class="lm-tags">${tags}</div>
             <div class="lm-id">${osmId}</div>
@@ -2296,10 +2533,11 @@ async function toggleLandmark(osmId) {
     annRelevantIds = data.relevant_osm_ids;
     renderLandmarkCards();
     renderLandmarksOnMap();
-    updateNoneBtn();
-    // Update queue annotation status
-    annQueue[annQueuePos].annotated = true;
+    // Mark annotated only if there are selected landmarks; toggling all off
+    // reverts to unannotated (use "None relevant" for explicit empty).
+    annQueue[annQueuePos].annotated = annRelevantIds.length > 0;
     annDone = annQueue.filter(q => q.annotated).length;
+    updateNoneBtn();
     updateProgress();
 }
 
@@ -2324,6 +2562,23 @@ function updateNoneBtn() {
     // "None relevant" is active when the entry exists and is empty
     const isNone = annRelevantIds.length === 0 && annQueue[annQueuePos]?.annotated;
     btn.className = 'btn-none' + (isNone ? ' active' : '');
+}
+
+async function annToggleBadGps() {
+    const newVal = !annBadGps;
+    const resp = await fetch('/api/bad_gps', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({pano_idx: annCurrentIdx, bad_gps: newVal}),
+    });
+    const data = await resp.json();
+    annBadGps = data.bad_gps;
+    updateAnnBadGpsBtn();
+}
+
+function updateAnnBadGpsBtn() {
+    const btn = document.getElementById('ann-btn-bad-gps');
+    btn.className = 'btn-none' + (annBadGps ? ' active-bad-gps' : '');
 }
 
 function navigateAnnotate(delta) {
@@ -2411,6 +2666,7 @@ window.addEventListener('keydown', e => {
     if (e.key === 'ArrowLeft') { navigateAnnotate(-1); e.preventDefault(); }
     if (e.key === 'ArrowRight') { navigateAnnotate(1); e.preventDefault(); }
     if (e.key === '0') { markNoneRelevant(); e.preventDefault(); }
+    if (e.key === 'p') { annToggleBadGps(); e.preventDefault(); }
     if (e.key === 's') { skipAnnotate(); e.preventDefault(); }
 });
 </script>
@@ -2506,6 +2762,7 @@ def main():
     # Build pano_id -> pano_idx reverse lookup
     PANO_ID_TO_IDX.update({p["id"]: i for i, p in enumerate(PANORAMAS)})
 
+
     # Build tag search index
     print(f"Loading OSM data from {args.feather}...")
     df = pd.read_feather(args.feather)
@@ -2528,6 +2785,9 @@ def main():
 
     print("Computing panorama-landmark associations...")
     pano_metadata = load_panorama_metadata(args.panorama_dir, zoom_level=20)
+    # Build panorama pixel coordinate points for distance calculations
+    for _, row in pano_metadata.iterrows():
+        PANO_PX.append(shapely.Point(row["web_mercator_x"], row["web_mercator_y"]))
     correspondences = compute_panorama_from_landmarks(
         pano_metadata, LANDMARK_METADATA, args.landmark_radius_px,
     )
@@ -2606,6 +2866,13 @@ def main():
             print(f"  {cat}: {c} ({c / len(PANORAMAS) * 100:.1f}%)")
     else:
         print("  No labels yet, all panoramas set to no_data")
+
+    # Train landmark relevance model from existing annotations
+    if RELEVANT_LANDMARKS:
+        print("Training initial landmark relevance model from existing annotations...")
+        _retrain_landmark_relevance_model()
+    else:
+        print("No landmark annotations yet, skipping relevance model")
 
     # Load DINO features if provided
     if args.dino_cache and args.dino_cache.exists():
