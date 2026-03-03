@@ -116,7 +116,6 @@ class OptimizationConfig:
 
     random_sample_type: vigor_dataset.HardNegativeMiner.RandomSampleType
 
-    use_hard_negative_mining: bool = True
     lr_sweep_config: LearningRateSweepConfig | None = None
 
 
@@ -402,6 +401,20 @@ def train(config: TrainConfig,
                     f"distance_model_config to be LearnedDistanceFunctionConfig with "
                     f"architecture='transformer_encoder'. Got: {type(config.distance_model_config).__name__}")
 
+    # Derive whether hard negative mining is used from epoch threshold
+    use_hard_negative_mining = (
+        config.opt_config.enable_hard_negative_sampling_after_epoch_idx < config.opt_config.num_epochs)
+
+    # Validate that skip_aggregation models don't use hard negative mining
+    if use_hard_negative_mining:
+        for model_name, model_config in [("sat", config.sat_model_config), ("pano", config.pano_model_config)]:
+            if (isinstance(model_config, swag_patch_embedding.SwagPatchEmbeddingConfig)
+                    and model_config.skip_aggregation):
+                raise RuntimeError(
+                    f"{model_name}_model_config has skip_aggregation=True, which is incompatible with "
+                    f"hard negative mining. Set enable_hard_negative_sampling_after_epoch_idx >= num_epochs "
+                    f"to disable hard negative mining.")
+
     # Setup models using extracted function
     panorama_model, satellite_model, distance_model = setup_models_for_training(
         panorama_model, satellite_model, distance_model)
@@ -564,7 +577,7 @@ def train(config: TrainConfig,
             log_feature_counts(writer, debug_dict['pano'], debug_dict['sat'], total_batches)
 
             # Hard Negative Mining
-            if opt_config.use_hard_negative_mining:
+            if use_hard_negative_mining:
                 miner.consume(
                     panorama_embeddings=panorama_embeddings.detach(),
                     satellite_embeddings=satellite_embeddings.detach(),
@@ -586,7 +599,7 @@ def train(config: TrainConfig,
             print()
         lr_scheduler.step()
 
-        if opt_config.use_hard_negative_mining:
+        if use_hard_negative_mining:
             if epoch_idx >= opt_config.enable_hard_negative_sampling_after_epoch_idx:
                 miner.set_sample_mode(vigor_dataset.HardNegativeMiner.SampleMode.HARD_NEGATIVE)
 

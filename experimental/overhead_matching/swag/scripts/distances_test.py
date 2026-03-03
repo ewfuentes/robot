@@ -204,6 +204,25 @@ class DistancesTest(unittest.TestCase):
         assert output.shape == (3, 2), f"Expected shape (3, 2), got {output.shape}"
         assert torch.isfinite(output).all(), "Output contains non-finite values"
 
+        # Verify mask construction: call _process_transformer_batch directly
+        # to inspect the padding mask for a specific pano-sat pair
+        pano_single = pano_embeddings[2:3]  # 2 valid tokens out of 5
+        sat_single = sat_embeddings[0:1]    # all 5 valid
+        pano_identified = pano_single + model.pano_identifier
+        sat_identified = sat_single + model.sat_identifier
+        sequence = torch.cat([pano_identified, sat_identified], dim=1)
+        padding_mask = torch.any(torch.isnan(sequence), dim=2)
+
+        assert padding_mask.dtype == torch.bool, f"Expected bool mask, got {padding_mask.dtype}"
+        # pano has 2 valid + 3 NaN, sat has 5 valid = total 10 tokens, 3 masked
+        assert padding_mask.shape == (1, 10), f"Expected shape (1, 10), got {padding_mask.shape}"
+        assert padding_mask.sum().item() == 3, f"Expected 3 masked tokens, got {padding_mask.sum().item()}"
+        # First 2 pano tokens valid, next 3 pano tokens masked, all 5 sat tokens valid
+        expected_mask = torch.tensor([[False, False, True, True, True,
+                                       False, False, False, False, False]])
+        assert torch.equal(padding_mask, expected_mask), (
+            f"Mask mismatch: got {padding_mask} expected {expected_mask}")
+
     def test_normalize_embeddings(self):
         """Test the normalize_embeddings utility function."""
         torch.manual_seed(42)
