@@ -188,6 +188,10 @@ class LearnedDistanceFunction(torch.nn.Module):
         self.config = config
 
         if config.architecture == "mlp":
+            if config.num_pano_embed is None or config.num_sat_embed is None:
+                raise ValueError(
+                    f"MLP architecture requires num_pano_embed and num_sat_embed to be set. "
+                    f"Got num_pano_embed={config.num_pano_embed}, num_sat_embed={config.num_sat_embed}")
             num_input_dim = self.config.embedding_dim * (self.config.num_pano_embed + self.config.num_sat_embed)
             self.model = torch.nn.Sequential(
                 torch.nn.Linear(num_input_dim, self.config.hidden_dim),
@@ -240,11 +244,19 @@ class LearnedDistanceFunction(torch.nn.Module):
 
         return torch.cat(similarities, dim=0)
 
-    def _process_transformer_batch(self, pano_batch, sat_batch):
-        """Process a batch of pano-sat pairs using transformer encoder."""
-        batch_size = pano_batch.shape[0]
+    def _build_transformer_input(self, pano_batch, sat_batch):
+        """Build the transformer input sequence and padding mask from pano/sat embeddings.
 
-        # Add identifier tokens to distinguish pano vs sat embeddings
+        Adds identifier tokens, concatenates pano and sat along the sequence dimension,
+        builds a padding mask from NaN positions, and zeros out masked positions.
+
+        Note: The padding mask uses PyTorch's src_key_padding_mask convention where
+        True means "ignore this token".
+
+        Returns:
+            sequence: (batch x seq_len x d_emb) with NaN positions zeroed out
+            padding_mask: (batch x seq_len) bool tensor, True for padded positions
+        """
         pano_identified = pano_batch + self.pano_identifier
         sat_identified = sat_batch + self.sat_identifier
 
@@ -252,14 +264,22 @@ class LearnedDistanceFunction(torch.nn.Module):
         padding_mask = torch.any(torch.isnan(sequence), dim=2, keepdim=False)
         assert padding_mask.dtype == torch.bool
         sequence[padding_mask] = 0.0
+        return sequence, padding_mask
+
+    def _process_transformer_batch(self, pano_batch, sat_batch):
+        """Process a batch of pano-sat pairs using transformer encoder."""
+        sequence, padding_mask = self._build_transformer_input(pano_batch, sat_batch)
 
         # Pass through transformer encoder
         output = self.transformer_encoder(sequence, src_key_padding_mask=padding_mask)  # batch x seq_len x d_emb
 
         # Mean pool over non-masked positions
         valid_mask = ~padding_mask  # batch x seq_len
+        valid_counts = valid_mask.sum(dim=1, keepdim=True)  # batch x 1
+        if torch.any(valid_counts == 0):
+            raise RuntimeError("Mean pooling encountered a row with zero valid tokens. All tokens in a pano-sat pair are masked.")
         output[padding_mask] = 0.0
-        pooled = output.sum(dim=1) / valid_mask.sum(dim=1, keepdim=True)  # batch x d_emb
+        pooled = output.sum(dim=1) / valid_counts  # batch x d_emb
         sim = self.output_proj(pooled)  # batch x 1
 
         return sim

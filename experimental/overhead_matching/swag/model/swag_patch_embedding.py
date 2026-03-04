@@ -70,7 +70,10 @@ class SwagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
 
     auxiliary_info: dict[str, Any] = {}
 
+    # When skip_aggregation=False: normalizes the aggregated output embeddings (class tokens)
+    # When skip_aggregation=True: normalizes the raw output tokens before NaN masking
     normalize_embeddings: bool = True
+    skip_aggregation: bool = False
     normalize_input_tokens: bool = True
     skip_aggregation: bool = False
 
@@ -531,7 +534,7 @@ class SwagPatchEmbedding(torch.nn.Module):
         if include_class_tokens:
             cls_token = self._cls_token.expand(batch_size, -1, -1)
             input_tokens = torch.cat([cls_token] + list(input_tokens_by_name.values()), dim=1)
-            if self._normalize_embeddings:
+            if self._config.normalize_input_tokens:
                 input_tokens = F.normalize(input_tokens, dim=-1)
 
             cls_mask = torch.zeros(
@@ -540,7 +543,7 @@ class SwagPatchEmbedding(torch.nn.Module):
                                    [v.mask for v in extractor_outputs_by_name.values()], dim=1)
         else:
             input_tokens = torch.cat(list(input_tokens_by_name.values()), dim=1)
-            if self._normalize_embeddings:
+            if self._config.normalize_input_tokens:
                 input_tokens = F.normalize(input_tokens, dim=-1)
 
             input_mask = torch.cat([v.mask for v in extractor_outputs_by_name.values()], dim=1)
@@ -563,6 +566,9 @@ class SwagPatchEmbedding(torch.nn.Module):
             # Skip aggregation mode: return all input tokens without class tokens
             input_tokens, input_mask, extractor_outputs_by_name = self._get_input_tokens(
                 model_input, landmark_dropout_scheduler, include_class_tokens=False)
+            if self._normalize_embeddings:
+                input_tokens = F.normalize(input_tokens, dim=-1)
+            input_tokens[input_mask] = float('nan')
             return input_tokens, extractor_outputs_by_name
         else:
             # Normal mode: add class tokens, run aggregation, return class tokens
@@ -592,5 +598,6 @@ class SwagPatchEmbedding(torch.nn.Module):
     
     @property
     def num_embeddings(self):
+        """Number of class tokens used for aggregation. Only meaningful when skip_aggregation=False."""
         return self._config.num_embeddings
 

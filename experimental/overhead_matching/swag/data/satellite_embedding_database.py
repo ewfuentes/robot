@@ -25,6 +25,10 @@ def build_embeddings_from_model(model: torch.nn.Module,
             if isinstance(embeddings, tuple):
                 embeddings = embeddings[0]
             inf_results.extend(e.cpu() for e in embeddings.unbind(0))
+    # pad_sequence handles both fixed-size (B, num_embeddings, D) and variable-length
+    # (skip_aggregation) embeddings. For variable-length, shorter sequences are NaN-padded
+    # to match the longest. For fixed-size (e.g. WAG with num_embeddings=1), all tensors
+    # have the same shape so no padding occurs — same result as torch.stack after unbind.
     embeddings = pad_sequence(inf_results, batch_first=True, padding_value=torch.nan)
     return embeddings
 
