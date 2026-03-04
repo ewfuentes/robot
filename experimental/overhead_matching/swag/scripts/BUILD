@@ -554,3 +554,31 @@ py_binary(
   deps=[]
 )
 
+py_binary(
+  name="create_tag_key_vocabulary",
+  srcs=["create_tag_key_vocabulary.py"],
+  deps=[
+    requirement("geopandas"),
+    requirement("pyarrow"),
+    requirement("pandas"),
+    requirement("torch"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
+  ]
+)
+
+py_binary(
+  name="geometric_filter_viewer",
+  srcs=["geometric_filter_viewer.py"],
+  deps=[
+    requirement("flask"),
+    requirement("geopandas"),
+    requirement("shapely"),
+    requirement("numpy"),
+    requirement("pandas"),
+    requirement("pyarrow"),
+    "//common/gps:web_mercator",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
+  ]
+)
+

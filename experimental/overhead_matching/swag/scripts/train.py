@@ -69,6 +69,18 @@ def setup_reproducibility(seed: int | None) -> torch.Generator | None:
     return generator
 
 
+import psutil
+
+def log_memory(label: str, log_file: str = "/tmp/training_debug.log"):
+    """Log RSS memory and GPU memory to persistent file."""
+    proc = psutil.Process()
+    rss_gb = proc.memory_info().rss / (1024 ** 3)
+    gpu_allocated_gb = torch.cuda.memory_allocated() / (1024 ** 3) if torch.cuda.is_available() else 0
+    gpu_reserved_gb = torch.cuda.memory_reserved() / (1024 ** 3) if torch.cuda.is_available() else 0
+    msg = f"[MEM {label}] RSS={rss_gb:.2f}GB GPU_alloc={gpu_allocated_gb:.2f}GB GPU_reserved={gpu_reserved_gb:.2f}GB"
+    debug_log(msg, log_file)
+
+
 def debug_log(message: str, log_file: str = "/tmp/training_debug.log"):
     """Write log message to file with timestamp and flush. Also prints to stdout."""
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
@@ -77,7 +89,7 @@ def debug_log(message: str, log_file: str = "/tmp/training_debug.log"):
     # Print to stdout
     print(log_msg, flush=True)
 
-    # Write to debug log file with flush
+    # Write to debug log file with flush (truncated at process start via _init_debug_log)
     try:
         with open(log_file, 'a') as f:
             f.write(log_msg + '\n')
@@ -116,6 +128,7 @@ class OptimizationConfig:
 
     random_sample_type: vigor_dataset.HardNegativeMiner.RandomSampleType
 
+    use_hard_negative_mining: bool = True
     lr_sweep_config: LearningRateSweepConfig | None = None
 
 
@@ -223,19 +236,26 @@ def compute_validation_metrics(
 ):
     out = {}
     for name, dataset in validation_datasets.items():
+        val_num_workers = int(os.environ.get("MAX_DATALOADER_WORKERS", 8))
+        log_memory(f"val/{name}/before_sat_db")
         sat_embeddings = sed.build_satellite_db(
             sat_model,
-            vigor_dataset.get_dataloader(dataset.get_sat_patch_view(), batch_size=64, num_workers=8),
+            vigor_dataset.get_dataloader(dataset.get_sat_patch_view(), batch_size=64, num_workers=val_num_workers),
             verbose=not quiet)
+        log_memory(f"val/{name}/after_sat_db (n={len(sat_embeddings)})")
         pano_embeddings = sed.build_panorama_db(
             pano_model,
-            vigor_dataset.get_dataloader(dataset.get_pano_view(), batch_size=64, num_workers=8),
+            vigor_dataset.get_dataloader(dataset.get_pano_view(), batch_size=64, num_workers=val_num_workers),
             verbose=not quiet)
+        log_memory(f"val/{name}/after_pano_db (n={len(pano_embeddings)})")
         similarity = distance_model(
             pano_embeddings_unnormalized=pano_embeddings,
             sat_embeddings_unnormalized=sat_embeddings
         )
+        log_memory(f"val/{name}/after_similarity")
         similarity = similarity.to("cpu")
+        del sat_embeddings, pano_embeddings
+        log_memory(f"val/{name}/after_cleanup")
         out |= validation_metrics_from_similarity(name, similarity, panorama_metadata=dataset._panorama_metadata)
 
     return out
@@ -371,6 +391,8 @@ def train(config: TrainConfig,
           generator: torch.Generator | None = None):
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    # Truncate debug log at start of each run
+    open("/tmp/training_debug.log", 'w').close()
     # save config:
     config_json = msgspec.json.encode(config, enc_hook=msgspec_enc_hook)
     config_dict = json.loads(config_json)
@@ -497,6 +519,58 @@ def train(config: TrainConfig,
     total_batches = 0
     for epoch_idx in tqdm.tqdm(range(opt_config.num_epochs),  desc="Epoch", disable=quiet):
         debug_log(f"Starting epoch {epoch_idx}")
+        log_memory(f"epoch_{epoch_idx}/start")
+
+        # compute validation set metrics (before training so we get epoch-0 baseline)
+        log_memory(f"epoch_{epoch_idx}/before_validation")
+        debug_log(f"Computing validation metrics for epoch {epoch_idx}")
+        validation_metrics = compute_validation_metrics(
+            sat_model=satellite_model,
+            pano_model=panorama_model,
+            validation_datasets=validation_datasets,
+            distance_model=distance_model,
+            quiet=quiet)
+        log_validation_metrics(
+            writer=writer,
+            validation_metrics=validation_metrics,
+            epoch_idx=epoch_idx,
+            quiet=quiet)
+        log_memory(f"epoch_{epoch_idx}/after_validation")
+
+        # Check if this is the best model
+        is_best = False
+        if use_mrr_for_best:
+            mrr_values = []
+            for name in non_training_val_datasets:
+                key = f"{name}/positive_mean_recip_rank"
+                if key not in validation_metrics:
+                    raise KeyError(f"Expected validation metric '{key}' not found in validation_metrics")
+                mrr_values.append(validation_metrics[key])
+            current_metric = sum(mrr_values) / len(mrr_values)
+            if best_metric is None or current_metric > best_metric:
+                best_metric = current_metric
+                best_epoch = epoch_idx
+                is_best = True
+                debug_log(f"New best model at epoch {epoch_idx} with avg validation MRR: {current_metric:.4f}")
+        elif 'loss_dict' in dir():
+            current_metric = loss_dict["loss"].item()
+            if best_metric is None or current_metric < best_metric:
+                best_metric = current_metric
+                best_epoch = epoch_idx
+                is_best = True
+                debug_log(f"New best model at epoch {epoch_idx} with loss: {current_metric:.4f}")
+
+        if is_best:
+            debug_log(f"Saving best model (epoch {epoch_idx})")
+            save_checkpoint(
+                output_dir=output_dir,
+                checkpoint_name="best",
+                panorama_model=panorama_model,
+                satellite_model=satellite_model,
+                distance_model=distance_model,
+                dataset=dataset,
+                remove_existing=True,
+            )
 
         # Update epoch for dropout schedulers
         if pano_dropout_scheduler is not None:
@@ -616,59 +690,6 @@ def train(config: TrainConfig,
                         miner_satellite_embeddings, _ = satellite_model(
                             satellite_model.model_input_from_batch(batch).to("cuda"))
                     miner.consume(None, miner_satellite_embeddings, batch)
-
-        # compute validation set metrics
-        debug_log(f"Computing validation metrics for epoch {epoch_idx}")
-        validation_metrics = compute_validation_metrics(
-            sat_model=satellite_model,
-            pano_model=panorama_model,
-            validation_datasets=validation_datasets,
-            distance_model=distance_model,
-            quiet=quiet)
-        log_validation_metrics(
-            writer=writer,
-            validation_metrics=validation_metrics,
-            epoch_idx=epoch_idx,
-            quiet=quiet)
-
-        # Check if this is the best model
-        is_best = False
-        if use_mrr_for_best:
-            # Compute average MRR across non-training validation datasets
-            mrr_values = []
-            for name in non_training_val_datasets:
-                key = f"{name}/positive_mean_recip_rank"
-                if key not in validation_metrics:
-                    raise KeyError(f"Expected validation metric '{key}' not found in validation_metrics")
-                mrr_values.append(validation_metrics[key])
-            current_metric = sum(mrr_values) / len(mrr_values)
-            if best_metric is None or current_metric > best_metric:
-                best_metric = current_metric
-                best_epoch = epoch_idx
-                is_best = True
-                debug_log(f"New best model at epoch {epoch_idx} with avg validation MRR: {current_metric:.4f}")
-        else:
-            # Fall back to using loss (lower is better)
-            # We need to track average loss over the epoch - use the last batch's loss as proxy
-            current_metric = loss_dict["loss"].item()
-            if best_metric is None or current_metric < best_metric:
-                best_metric = current_metric
-                best_epoch = epoch_idx
-                is_best = True
-                debug_log(f"New best model at epoch {epoch_idx} with loss: {current_metric:.4f}")
-
-        # Save best model if this is the best so far
-        if is_best:
-            debug_log(f"Saving best model (epoch {epoch_idx})")
-            save_checkpoint(
-                output_dir=output_dir,
-                checkpoint_name="best",
-                panorama_model=panorama_model,
-                satellite_model=satellite_model,
-                distance_model=distance_model,
-                dataset=dataset,
-                remove_existing=True,
-            )
 
         # Periodic checkpoint every 50 epochs
         if epoch_idx > 0 and epoch_idx % 50 == 0:

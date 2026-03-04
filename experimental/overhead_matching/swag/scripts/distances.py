@@ -328,28 +328,20 @@ class LearnedDistanceFunction(torch.nn.Module):
             return similarity
 
         elif self.config.architecture in ["attention", "transformer_encoder"]:
-            # Generate all pano-sat pairs (indices only to avoid memory issues)
-            # Keep embeddings on CPU, move batches to GPU as needed
-            pair_indices = []
-
-            for p_idx in range(n_pano):
-                for s_idx in range(n_sat):
-                    pair_indices.append((p_idx, s_idx))
-
-            # Process pairs in batches
-            all_similarities = []
+            # Compute pair indices on-the-fly from flat index to avoid
+            # materializing O(n_pano * n_sat) list of tuples.
+            total_pairs = n_pano * n_sat
             batch_size = self.config.max_batch_size
+            all_similarities = []
 
-            for i in tqdm.tqdm(range(0, len(pair_indices), batch_size), desc="dist iter"):
-                batch_indices = pair_indices[i:i+batch_size]
+            for i in tqdm.tqdm(range(0, total_pairs, batch_size), desc="dist iter"):
+                end = min(i + batch_size, total_pairs)
+                flat_indices = torch.arange(i, end)
+                p_indices = flat_indices // n_sat
+                s_indices = flat_indices % n_sat
 
-                # Stack pairs for batch processing and move to device
-                pano_batch = torch.stack([
-                    pano_embeddings_unnormalized[p_idx] for p_idx, _ in batch_indices
-                ]).to(model_device)  # batch_size x n_emb_pano x d_emb
-                sat_batch = torch.stack([
-                    sat_embeddings_unnormalized[s_idx] for _, s_idx in batch_indices
-                ]).to(model_device)  # batch_size x n_emb_sat x d_emb
+                pano_batch = pano_embeddings_unnormalized[p_indices].to(model_device)
+                sat_batch = sat_embeddings_unnormalized[s_indices].to(model_device)
 
                 if self.config.architecture == "attention":
                     batch_similarities = self._process_attention_batch(pano_batch, sat_batch)
@@ -358,10 +350,7 @@ class LearnedDistanceFunction(torch.nn.Module):
 
                 all_similarities.append(batch_similarities.cpu())
 
-            # Concatenate all batch results
             similarities = torch.cat(all_similarities, dim=0)  # (n_pano * n_sat) x 1
-
-            # Reshape to n_pano x n_sat
             similarities = similarities.view(n_pano, n_sat).to(model_device)
             return similarities
 
