@@ -24,7 +24,7 @@ def build_embeddings_from_model(model: torch.nn.Module,
             # Keep only the embedding outputs
             if isinstance(embeddings, tuple):
                 embeddings = embeddings[0]
-            inf_results.extend(embeddings.unbind(0))
+            inf_results.extend(e.cpu() for e in embeddings.unbind(0))
     embeddings = pad_sequence(inf_results, batch_first=True, padding_value=torch.nan)
     return embeddings
 

@@ -87,7 +87,7 @@ distance_model_config:
   hidden_dim: 1024
   num_heads: 8
   num_layers: 4
-  max_batch_size: 32
+  max_batch_size: 128
 
 dataset_config:
   paths:
@@ -99,7 +99,7 @@ validation_dataset_configs:
 - paths:
   - Seattle
   landmark_version: v4_202001
-  factor: 1.0
+  factor: 0.3
 - paths:
   - Chicago
   landmark_version: v4_202001
