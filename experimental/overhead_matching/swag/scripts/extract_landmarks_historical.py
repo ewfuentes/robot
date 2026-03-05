@@ -64,12 +64,12 @@ def compute_bbox_from_dataset(dataset_path: Path, zoom_level: int = 20):
     )
 
 
-def bbox_from_dataset_path(dataset_path: Path):
+def bbox_from_dataset_path(dataset_path: Path, zoom_level: int = 20):
     """Read bounding box from satellite_bbox.json, falling back to computing from dataset."""
     bbox_path = dataset_path / "satellite_bbox.json"
     if not bbox_path.exists():
-        print(f"satellite_bbox.json not found at {bbox_path}, computing from dataset metadata (zoom_level=20)...")
-        return compute_bbox_from_dataset(dataset_path)
+        print(f"satellite_bbox.json not found at {bbox_path}, computing from dataset metadata (zoom_level={zoom_level})...")
+        return compute_bbox_from_dataset(dataset_path, zoom_level)
 
     with open(bbox_path) as f:
         meta = json.load(f)
@@ -93,6 +93,7 @@ def main(
     pbf_path: Path,
     dataset_path: Path | None,
     bbox: tuple[float, float, float, float] | None,
+    zoom_level: int,
     output_path: Path,
 ):
     # Determine bounding box
@@ -100,7 +101,7 @@ def main(
         bbox_obj = elm.BoundingBox(*bbox)
         print(f"Using provided bounding box: {bbox}")
     elif dataset_path is not None:
-        bbox_obj = bbox_from_dataset_path(dataset_path)
+        bbox_obj = bbox_from_dataset_path(dataset_path, zoom_level)
         print(
             f"Loaded bounding box from satellite_bbox.json: "
             f"[{bbox_obj.left_deg}, {bbox_obj.bottom_deg}, {bbox_obj.right_deg}, {bbox_obj.top_deg}]"
@@ -202,8 +203,10 @@ if __name__ == "__main__":
         help="Bounding box as: left bottom right top (e.g., -87.7 41.8 -87.6 41.9)",
     )
 
+    parser.add_argument("--zoom_level", type=int, default=20,
+                        help="Zoom level for satellite metadata (used when falling back from satellite_bbox.json, default: 20)")
     parser.add_argument("--output_path", required=True, type=Path, help="Output path for landmarks (will create .feather)")
 
     args = parser.parse_args()
 
-    main(args.pbf_file, args.dataset_path, args.bbox, args.output_path)
+    main(args.pbf_file, args.dataset_path, args.bbox, args.zoom_level, args.output_path)
