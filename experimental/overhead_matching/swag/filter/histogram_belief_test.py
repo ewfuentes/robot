@@ -472,6 +472,11 @@ def _build_cell_to_patch_mapping_unchunked(
     )
 
 
+def _chunk_size_to_max_chunk_bytes(chunk_size: int, num_patches: int, element_size: int = 4) -> int:
+    """Convert a desired chunk_size (cells per chunk) to max_chunk_bytes for build_cell_to_patch_mapping."""
+    return chunk_size * num_patches * 2 * element_size
+
+
 class TestBuildCellToPatchMappingChunkedEquivalence(unittest.TestCase):
     """Verify that the chunked build_cell_to_patch_mapping produces
     identical results to the original unchunked implementation."""
@@ -503,9 +508,10 @@ class TestBuildCellToPatchMappingChunkedEquivalence(unittest.TestCase):
         device = torch.device("cpu")
 
         ref = _build_cell_to_patch_mapping_unchunked(grid_spec, patches, half_size, device)
-        for chunk_size in [1, 2, 5, 9, 100]:
+        for cs in [1, 2, 5, 9, 100]:
+            mcb = _chunk_size_to_max_chunk_bytes(cs, patches.shape[0])
             chunked = build_cell_to_patch_mapping(grid_spec, patches, half_size, device,
-                                                  chunk_size=chunk_size)
+                                                  max_chunk_bytes=mcb)
             self._assert_mappings_equal(ref, chunked)
 
     def test_many_patches_partial_overlap(self):
@@ -521,9 +527,10 @@ class TestBuildCellToPatchMappingChunkedEquivalence(unittest.TestCase):
         device = torch.device("cpu")
 
         ref = _build_cell_to_patch_mapping_unchunked(grid_spec, patches, half_size, device)
-        for chunk_size in [1, 3, 7, 20, 80, 1000]:
+        for cs in [1, 3, 7, 20, 80, 1000]:
+            mcb = _chunk_size_to_max_chunk_bytes(cs, patches.shape[0])
             chunked = build_cell_to_patch_mapping(grid_spec, patches, half_size, device,
-                                                  chunk_size=chunk_size)
+                                                  max_chunk_bytes=mcb)
             self._assert_mappings_equal(ref, chunked)
 
     def test_no_overlaps(self):
@@ -538,8 +545,9 @@ class TestBuildCellToPatchMappingChunkedEquivalence(unittest.TestCase):
         device = torch.device("cpu")
 
         ref = _build_cell_to_patch_mapping_unchunked(grid_spec, patches, half_size, device)
+        mcb = _chunk_size_to_max_chunk_bytes(2, patches.shape[0])
         chunked = build_cell_to_patch_mapping(grid_spec, patches, half_size, device,
-                                              chunk_size=2)
+                                              max_chunk_bytes=mcb)
         self._assert_mappings_equal(ref, chunked)
 
     def test_chunk_size_equals_one(self):
@@ -555,8 +563,9 @@ class TestBuildCellToPatchMappingChunkedEquivalence(unittest.TestCase):
         device = torch.device("cpu")
 
         ref = _build_cell_to_patch_mapping_unchunked(grid_spec, patches, half_size, device)
+        mcb = _chunk_size_to_max_chunk_bytes(1, patches.shape[0])
         chunked = build_cell_to_patch_mapping(grid_spec, patches, half_size, device,
-                                              chunk_size=1)
+                                              max_chunk_bytes=mcb)
         self._assert_mappings_equal(ref, chunked)
 
     def test_chunk_boundary_does_not_split_cells(self):
@@ -577,8 +586,9 @@ class TestBuildCellToPatchMappingChunkedEquivalence(unittest.TestCase):
 
         ref = _build_cell_to_patch_mapping_unchunked(grid_spec, patches, half_size, device)
         # 35 cells / chunk_size=10 → 3 full chunks + 1 chunk of 5
+        mcb = _chunk_size_to_max_chunk_bytes(10, patches.shape[0])
         chunked = build_cell_to_patch_mapping(grid_spec, patches, half_size, device,
-                                              chunk_size=10)
+                                              max_chunk_bytes=mcb)
         self._assert_mappings_equal(ref, chunked)
 
     def test_apply_observation_identical_through_both_mappings(self):
@@ -595,8 +605,9 @@ class TestBuildCellToPatchMappingChunkedEquivalence(unittest.TestCase):
 
         ref_mapping = _build_cell_to_patch_mapping_unchunked(
             grid_spec, patches, half_size, device)
+        mcb = _chunk_size_to_max_chunk_bytes(7, patches.shape[0])
         chunked_mapping = build_cell_to_patch_mapping(
-            grid_spec, patches, half_size, device, chunk_size=7)
+            grid_spec, patches, half_size, device, max_chunk_bytes=mcb)
 
         # Create identical beliefs and apply the same observation
         obs_log_ll = wag_observation_log_likelihood_from_similarity_matrix(

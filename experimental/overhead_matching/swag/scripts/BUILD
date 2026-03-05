@@ -50,6 +50,7 @@ py_library(
   deps=[
     "//common/python:serialization",
     requirement("msgspec"),
+    requirement("tqdm"),
     requirement("torch"),
   ]
 )
@@ -562,4 +563,21 @@ py_binary(
     "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
   ]
 )
+
+py_binary(
+  name="create_sequential_evaluation_paths",
+  srcs=["create_sequential_evaluation_paths.py"],
+  deps=[
+    requirement("numpy"),
+    requirement("pandas"),
+    "//common/math:haversine",
+  ]
+)
+
+py_binary(
+  name="extract_gemini_landmarks_from_panoramas",
+  srcs=["extract_gemini_landmarks_from_panoramas.py"],
+  deps=[],
+)
+
 

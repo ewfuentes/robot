@@ -9,7 +9,7 @@ import itertools
 from pathlib import Path
 from common.python.serialization import flatten_dict, msgspec_enc_hook, msgspec_dec_hook
 from experimental.overhead_matching.swag.scripts.losses import LossConfig, compute_loss, LossFunctionType, create_losses_from_loss_config_list, InfoNCELossConfig
-from experimental.overhead_matching.swag.scripts.distances import DistanceConfig, create_distance_from_config
+from experimental.overhead_matching.swag.scripts.distances import DistanceConfig, LearnedDistanceFunctionConfig, create_distance_from_config
 from experimental.overhead_matching.swag.scripts.pairing import PairingType, create_pairs, create_anchors, Pairs, PairingDataType
 from experimental.overhead_matching.swag.data import (
     vigor_dataset, satellite_embedding_database as sed, vigor_filters)
@@ -389,6 +389,32 @@ def train(config: TrainConfig,
 
     distance_model = create_distance_from_config(config.distance_model_config)
     loss_functions = create_losses_from_loss_config_list(config.loss_configs)
+
+    # Validate that skip_aggregation is only used with transformer_encoder distance
+    for model_name, model_config in [("sat", config.sat_model_config), ("pano", config.pano_model_config)]:
+        if (isinstance(model_config, swag_patch_embedding.SwagPatchEmbeddingConfig)
+                and model_config.skip_aggregation):
+            if not (isinstance(config.distance_model_config, LearnedDistanceFunctionConfig)
+                    and config.distance_model_config.architecture == "transformer_encoder"):
+                raise RuntimeError(
+                    f"{model_name}_model_config has skip_aggregation=True, which requires "
+                    f"distance_model_config to be LearnedDistanceFunctionConfig with "
+                    f"architecture='transformer_encoder'. Got: {type(config.distance_model_config).__name__}")
+
+    # Derive whether hard negative mining is used from epoch threshold
+    use_hard_negative_mining = (
+        config.opt_config.enable_hard_negative_sampling_after_epoch_idx < config.opt_config.num_epochs)
+
+    # Validate that skip_aggregation models don't use hard negative mining
+    if use_hard_negative_mining:
+        for model_name, model_config in [("sat", config.sat_model_config), ("pano", config.pano_model_config)]:
+            if (isinstance(model_config, swag_patch_embedding.SwagPatchEmbeddingConfig)
+                    and model_config.skip_aggregation):
+                raise RuntimeError(
+                    f"{model_name}_model_config has skip_aggregation=True, which is incompatible with "
+                    f"hard negative mining. Set enable_hard_negative_sampling_after_epoch_idx >= num_epochs "
+                    f"to disable hard negative mining.")
+
     # Setup models using extracted function
     panorama_model, satellite_model, distance_model = setup_models_for_training(
         panorama_model, satellite_model, distance_model)
@@ -534,15 +560,15 @@ def train(config: TrainConfig,
             if torch.isnan(loss_dict["loss"]):
                 raise RuntimeError("Got NaN loss!")
             # perform checks that all parameters we expect to update have gradients for the first set of batches
-            if total_batches < 50:
+            if total_batches < 50 or total_batches % 5 == 0:
                 for model_name, model in zip(["pano", "sat"], [panorama_model, satellite_model]):
                     for name, param in model.named_parameters():
                         if param.grad is None and param.requires_grad:
                             raise RuntimeError(
                                 f"Parameter {name} for model {model_name} requires grad, but had no update.")
-                        if param.grad is not None and torch.any(torch.isinf(param.grad)):
-                            print(
-                                f"Warining: INF was found in parameter gradient: {name} in model {model_name}")
+                        if param.grad is not None and (torch.any(torch.isinf(param.grad)) or torch.any(torch.isnan(param.grad))):
+                            raise RuntimeError(
+                                f"INF/NaN found in parameter gradient: {name} in model {model_name} at batch {total_batches}")
 
             log_gradient_stats(writer, panorama_model, "panorama", total_batches)
             log_gradient_stats(writer, satellite_model, "satellite", total_batches)
@@ -551,10 +577,11 @@ def train(config: TrainConfig,
             log_feature_counts(writer, debug_dict['pano'], debug_dict['sat'], total_batches)
 
             # Hard Negative Mining
-            miner.consume(
-                panorama_embeddings=panorama_embeddings.detach(),
-                satellite_embeddings=satellite_embeddings.detach(),
-                batch=batch)
+            if use_hard_negative_mining:
+                miner.consume(
+                    panorama_embeddings=panorama_embeddings.detach(),
+                    satellite_embeddings=satellite_embeddings.detach(),
+                    batch=batch)
 
             # Logging
             log_batch_metrics(
@@ -572,22 +599,23 @@ def train(config: TrainConfig,
             print()
         lr_scheduler.step()
 
-        if epoch_idx >= opt_config.enable_hard_negative_sampling_after_epoch_idx:
-            miner.set_sample_mode(vigor_dataset.HardNegativeMiner.SampleMode.HARD_NEGATIVE)
+        if use_hard_negative_mining:
+            if epoch_idx >= opt_config.enable_hard_negative_sampling_after_epoch_idx:
+                miner.set_sample_mode(vigor_dataset.HardNegativeMiner.SampleMode.HARD_NEGATIVE)
 
-        if miner.sample_mode == vigor_dataset.HardNegativeMiner.SampleMode.HARD_NEGATIVE:
-            # Since we are hard negative mining, we want to update the embedding vectors for any
-            # satellite patches that were not observed as part of the epoch
-            unobserved_patch_dataset = torch.utils.data.Subset(
-                dataset.get_sat_patch_view(), list(miner.unobserved_sat_idxs))
-            unobserved_dataloader = vigor_dataset.get_dataloader(
-                unobserved_patch_dataset, num_workers=8, batch_size=128)
+            if miner.sample_mode == vigor_dataset.HardNegativeMiner.SampleMode.HARD_NEGATIVE:
+                # Since we are hard negative mining, we want to update the embedding vectors for any
+                # satellite patches that were not observed as part of the epoch
+                unobserved_patch_dataset = torch.utils.data.Subset(
+                    dataset.get_sat_patch_view(), list(miner.unobserved_sat_idxs))
+                unobserved_dataloader = vigor_dataset.get_dataloader(
+                    unobserved_patch_dataset, num_workers=8, batch_size=128)
 
-            for batch in tqdm.tqdm(unobserved_dataloader, desc="Unobserved sat batches", disable=quiet):
-                with torch.no_grad():
-                    miner_satellite_embeddings, _ = satellite_model(
-                        satellite_model.model_input_from_batch(batch).to("cuda"))
-                miner.consume(None, miner_satellite_embeddings, batch)
+                for batch in tqdm.tqdm(unobserved_dataloader, desc="Unobserved sat batches", disable=quiet):
+                    with torch.no_grad():
+                        miner_satellite_embeddings, _ = satellite_model(
+                            satellite_model.model_input_from_batch(batch).to("cuda"))
+                    miner.consume(None, miner_satellite_embeddings, batch)
 
         # compute validation set metrics
         debug_log(f"Computing validation metrics for epoch {epoch_idx}")

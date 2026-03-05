@@ -40,4 +40,27 @@ std::vector<float> compute_keyed_substring_matches(
     const std::vector<std::vector<std::pair<std::string, std::string>>>& target_tags,
     int num_threads = 0);
 
+struct KeyedSubstringMatchResults {
+    std::vector<size_t> query_idxs;
+    std::vector<size_t> target_idxs;
+    std::vector<size_t> key_idxs;  // index into query_tags[query_idx] that matched
+};
+
+// Computes detailed per-key substring matches between keyed tags.
+// Unlike compute_keyed_substring_matches which returns a binary matrix,
+// this returns one (query_idx, target_idx, key_idx) triple per individual
+// matching tag, where key_idx is the index into query_tags[query_idx].
+//
+// Args:
+//   query_tags: List of lists of (key, value) pairs (from extracted pano tags)
+//   target_tags: List of lists of (key, value) pairs (from OSM tags)
+//   num_threads: Number of threads to use (0 = auto-detect)
+//
+// Returns:
+//   Three parallel vectors of equal length, one entry per individual match.
+KeyedSubstringMatchResults compute_keyed_substring_matches_detailed(
+    const std::vector<std::vector<std::pair<std::string, std::string>>>& query_tags,
+    const std::vector<std::vector<std::pair<std::string, std::string>>>& target_tags,
+    int num_threads = 0);
+
 }  // namespace robot::experimental::overhead_matching::swag::evaluation

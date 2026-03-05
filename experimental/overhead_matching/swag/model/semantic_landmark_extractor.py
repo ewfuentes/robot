@@ -680,13 +680,13 @@ Given four images which show the same location from yaws 0°, 90°, 180°, and 2
 
 For each landmark:
 - Assign a primary OSM tag (e.g., amenity=cafe, shop=pharmacy, building=apartments)
-- Add relevant additional tags (name, brand, cuisine, building:levels, etc.)
+- Add relevant additional tags (name, brand, cuisine, building:levels, etc. Do not give 2 of the same tags to a single landmark)
 - Specify which yaw angle(s)/images the landmark appears in and provide bounding boxes for each
 - Rate your confidence (high/medium/low)
-- Provide a brief description for debugging
+- Provide a brief description
 
 Based on the images, classify the location type (e.g., urban_commercial, suburban, rural).
-Finally, review your work and confirm you have not included any information you cannot confidently make out from the images.
+- If street name signs are readable, include them as highway landmarks with appropriate tags (e.g., highway=tertiary, name=James Street), but ONLY if they are readable.
 </instructions>
 
 <osm_tag_guidelines>
@@ -699,7 +699,7 @@ Finally, review your work and confirm you have not included any information you 
 - `leisure`: recreation (parks, playgrounds, sports facilities)
 - `office`: professional services (lawyer, accountant, insurance)
 - `craft`: custom workshops (carpenter, tailor, jeweller)
-- `highway`: road infrastructure (traffic_signals, crossing, bus_stop, street_lamp)
+- `highway`: roads and road infrastructure (residential, tertiary, secondary, primary, trunk; also traffic_signals, crossing, bus_stop, street_lamp)
 - `man_made`: non-building structures (towers, piers, bridges, chimneys, water towers)
 - `historic`: historically significant features (monuments, memorials, ruins)
 - `natural`: natural features (trees, water bodies)
@@ -718,10 +718,11 @@ For chains, include both category and brand:
 </osm_tag_guidelines>
 
 <constraints>
-- Focus on OSM-mappable features within ~100 meters
+- Focus on OSM-mappable features within 100 meters, don't include street lamps and fire hydrants.
 - Extract visible text for name/brand tags only if clearly readable
 - Be conservative: only output tags you can confidently identify
 - Exclude transient objects (cars, pedestrians, temporary items)
+- Do NOT extract text from billboards, advertisement banners (e.g., on lampposts), or other commercial advertisements — these are temporary and not OSM-mappable
 - Do not mention location in image or relative to other landmarks
 </constraints>
 
@@ -941,18 +942,34 @@ def _create_panorama_batch_request(
     system_prompt: str,
     images: list[tuple[str, str]],  # list of (mime_type, base64_data)
     schema: dict,
+    media_resolution: str = "MEDIA_RESOLUTION_HIGH",
+    thinking_level: str = "HIGH",
 ) -> dict:
     """Create a batch request object for Gemini (native format)."""
     # Native Gemini format (using Python SDK field names)
     parts = []
     for mime_type, b64_data in images:
-        parts.append({
+        part = {
             "inline_data": {
                 "mime_type": mime_type,
                 "data": b64_data
             }
-        })
+        }
+        # ULTRA_HIGH must be set per-part as a message, not in generationConfig
+        if media_resolution == "MEDIA_RESOLUTION_ULTRA_HIGH":
+            part["media_resolution"] = {"level": media_resolution}
+        parts.append(part)
     parts.append({"text": user_prompt})
+
+    generation_config = {
+        "responseMimeType": "application/json",
+        "responseSchema": schema,  # responseJsonSchema for some cursed reason, this needs to be responseSchema for non-batch submisions, but can't be for batch
+        "thinkingConfig": {"thinkingLevel": thinking_level},
+    }
+    # For non-ULTRA_HIGH, set mediaResolution globally in generationConfig
+    if media_resolution != "MEDIA_RESOLUTION_ULTRA_HIGH":
+        generation_config["mediaResolution"] = media_resolution
+
     return {
         "key": custom_id,
         "request": {
@@ -963,12 +980,7 @@ def _create_panorama_batch_request(
             "systemInstruction": {
                 "parts": [{"text": system_prompt}]
             },
-            "generationConfig": {
-                "responseMimeType": "application/json",
-                "responseSchema": schema,  # responseJsonSchema for some cursed reason, this needs to be responseSchema for non-batch submisions, but can't be for batch
-                "thinkingConfig": {"thinkingLevel": "HIGH"},
-                "mediaResolution": "MEDIA_RESOLUTION_HIGH"
-            }
+            "generationConfig": generation_config,
         }
     }
 
@@ -1119,6 +1131,8 @@ def create_panorama_description_requests(args):
                 system_prompt=system_prompt,
                 images=image_data_list,
                 schema=schema,
+                media_resolution=args.media_resolution,
+                thinking_level=args.thinking_level,
             )
 
             # Add to batch with size monitoring
@@ -1301,6 +1315,13 @@ if __name__ == "__main__":
                                  help='Optional file containing panorama IDs to process (one per line). If not provided, all panoramas are processed.')
     panorama_parser.add_argument('--max_panoramas', type=int, default=None,
                                  help='Maximum number of panoramas to process (useful for testing). If not provided, all panoramas are processed.')
+    panorama_parser.add_argument('--media_resolution', type=str, default='MEDIA_RESOLUTION_HIGH',
+                                 choices=['MEDIA_RESOLUTION_LOW', 'MEDIA_RESOLUTION_MEDIUM',
+                                          'MEDIA_RESOLUTION_HIGH', 'MEDIA_RESOLUTION_ULTRA_HIGH'],
+                                 help='Media resolution for image processing (default: MEDIA_RESOLUTION_HIGH)')
+    panorama_parser.add_argument('--thinking_level', type=str, default='HIGH',
+                                 choices=['OFF', 'LOW', 'MEDIUM', 'HIGH'],
+                                 help='Thinking level for Gemini (default: HIGH)')
     panorama_parser.set_defaults(func=create_panorama_description_requests)
 
     embedding_dict_parser = subparsers.add_parser('create_embedding_dict',

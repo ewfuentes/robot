@@ -6,6 +6,7 @@ py_library(
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
         requirement("torch"),
+        requirement("tqdm"),
         "//common/gps:web_mercator",
         "//common/torch:load_torch_deps",
     ],

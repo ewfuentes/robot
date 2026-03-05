@@ -1,6 +1,7 @@
 import common.torch.load_torch_deps
 import torch.nn.functional as F
 import torch
+import tqdm
 import msgspec
 from typing import Union
 from common.python.serialization import MSGSPEC_STRUCT_OPTS
@@ -163,13 +164,13 @@ class MahalanobisDistance(torch.nn.Module):
 
 
 class LearnedDistanceFunctionConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
-    architecture: str  # "mlp", "attention", or "transformer_decoder"
+    architecture: str  # "mlp", "attention", or "transformer_encoder"
     embedding_dim: int
-    num_pano_embed: int
-    num_sat_embed: int
+    num_pano_embed: int | None  # needed for MLP
+    num_sat_embed: int | None  # needed for MLP
     hidden_dim: int  # hidden embedding for transformer/attention, hidden layer dim for MLP
-    num_heads: int = 8  # for attention and transformer_decoder
-    num_layers: int = 1  # for transformer_decoder
+    num_heads: int = 8  # for attention and transformer_encoder
+    num_layers: int = 1  # for transformer_encoder
     max_batch_size: int = 64  # maximum number of pano-sat pairs to process in a single batch
 
 
@@ -178,7 +179,7 @@ class LearnedDistanceFunction(torch.nn.Module):
     Learned distance function with three architecture options:
     - mlp: Simple MLP on concatenated embeddings
     - attention: Multi-head attention between pano and sat embeddings
-    - transformer_decoder: Transformer decoder with cross-attention
+    - transformer_encoder: Transformer encoder with self-attention
     """
 
     def __init__(self,
@@ -187,6 +188,10 @@ class LearnedDistanceFunction(torch.nn.Module):
         self.config = config
 
         if config.architecture == "mlp":
+            if config.num_pano_embed is None or config.num_sat_embed is None:
+                raise ValueError(
+                    f"MLP architecture requires num_pano_embed and num_sat_embed to be set. "
+                    f"Got num_pano_embed={config.num_pano_embed}, num_sat_embed={config.num_sat_embed}")
             num_input_dim = self.config.embedding_dim * (self.config.num_pano_embed + self.config.num_sat_embed)
             self.model = torch.nn.Sequential(
                 torch.nn.Linear(num_input_dim, self.config.hidden_dim),
@@ -202,18 +207,18 @@ class LearnedDistanceFunction(torch.nn.Module):
             )
             self.output_proj = torch.nn.Linear(self.config.embedding_dim, 1)
 
-        elif config.architecture == "transformer_decoder":
-            # CLS token for aggregating information
-            self.cls_token = torch.nn.Parameter(torch.randn(1, 1, self.config.embedding_dim))
-
-            decoder_layer = torch.nn.TransformerDecoderLayer(
+        elif config.architecture == "transformer_encoder":
+            # Learnable identifier tokens to distinguish pano vs sat embeddings
+            self.pano_identifier = torch.nn.Parameter(torch.randn(1, 1, self.config.embedding_dim))
+            self.sat_identifier = torch.nn.Parameter(torch.randn(1, 1, self.config.embedding_dim))
+            encoder_layer = torch.nn.TransformerEncoderLayer(
                 d_model=self.config.embedding_dim,
                 nhead=self.config.num_heads,
                 dim_feedforward=self.config.hidden_dim,
                 batch_first=True
             )
-            self.transformer_decoder = torch.nn.TransformerDecoder(
-                decoder_layer,
+            self.transformer_encoder = torch.nn.TransformerEncoder(
+                encoder_layer,
                 num_layers=self.config.num_layers
             )
             self.output_proj = torch.nn.Linear(self.config.embedding_dim, 1)
@@ -239,25 +244,45 @@ class LearnedDistanceFunction(torch.nn.Module):
 
         return torch.cat(similarities, dim=0)
 
+    def _build_transformer_input(self, pano_batch, sat_batch):
+        """Build the transformer input sequence and padding mask from pano/sat embeddings.
+
+        Adds identifier tokens, concatenates pano and sat along the sequence dimension,
+        builds a padding mask from NaN positions, and zeros out masked positions.
+
+        Note: The padding mask uses PyTorch's src_key_padding_mask convention where
+        True means "ignore this token".
+
+        Returns:
+            sequence: (batch x seq_len x d_emb) with NaN positions zeroed out
+            padding_mask: (batch x seq_len) bool tensor, True for padded positions
+        """
+        pano_identified = pano_batch + self.pano_identifier
+        sat_identified = sat_batch + self.sat_identifier
+
+        sequence = torch.cat([pano_identified, sat_identified], dim=1)  # batch_size x (n_emb_pano + n_emb_sat) x d_emb
+        padding_mask = torch.any(torch.isnan(sequence), dim=2, keepdim=False)
+        assert padding_mask.dtype == torch.bool
+        sequence[padding_mask] = 0.0
+        return sequence, padding_mask
+
     def _process_transformer_batch(self, pano_batch, sat_batch):
-        """Process a batch of pano-sat pairs using transformer decoder."""
-        batch_size = pano_batch.shape[0]
-        similarities = []
+        """Process a batch of pano-sat pairs using transformer encoder."""
+        sequence, padding_mask = self._build_transformer_input(pano_batch, sat_batch)
 
-        for i in range(batch_size):
-            pano_emb = pano_batch[i:i+1]  # 1 x n_emb_pano x d_emb
-            sat_emb = sat_batch[i:i+1]    # 1 x n_emb_sat x d_emb
+        # Pass through transformer encoder
+        output = self.transformer_encoder(sequence, src_key_padding_mask=padding_mask)  # batch x seq_len x d_emb
 
-            # Use CLS token as target, sat+pano as memory
-            cls_token = self.cls_token.expand(1, -1, -1)  # 1 x 1 x d_emb
-            memory = torch.cat([pano_emb, sat_emb], dim=1)  # 1 x (n_emb_pano + n_emb_sat) x d_emb
+        # Mean pool over non-masked positions
+        valid_mask = ~padding_mask  # batch x seq_len
+        valid_counts = valid_mask.sum(dim=1, keepdim=True)  # batch x 1
+        if torch.any(valid_counts == 0):
+            raise RuntimeError("Mean pooling encountered a row with zero valid tokens. All tokens in a pano-sat pair are masked.")
+        output[padding_mask] = 0.0
+        pooled = output.sum(dim=1) / valid_counts  # batch x d_emb
+        sim = self.output_proj(pooled)  # batch x 1
 
-            # Pass through transformer decoder
-            output = self.transformer_decoder(cls_token, memory)  # 1 x 1 x d_emb
-            sim = self.output_proj(output.squeeze(1))  # 1 x 1
-            similarities.append(sim)
-
-        return torch.cat(similarities, dim=0)
+        return sim
 
     def forward(self,
                 sat_embeddings_unnormalized: torch.Tensor,  # n_sat x n_emb_sat x D_emb
@@ -302,7 +327,7 @@ class LearnedDistanceFunction(torch.nn.Module):
             similarity = torch.cat(all_similarities, dim=0).to(model_device)  # n_pano x n_sat
             return similarity
 
-        elif self.config.architecture in ["attention", "transformer_decoder"]:
+        elif self.config.architecture in ["attention", "transformer_encoder"]:
             # Generate all pano-sat pairs (indices only to avoid memory issues)
             # Keep embeddings on CPU, move batches to GPU as needed
             pair_indices = []
@@ -315,7 +340,7 @@ class LearnedDistanceFunction(torch.nn.Module):
             all_similarities = []
             batch_size = self.config.max_batch_size
 
-            for i in range(0, len(pair_indices), batch_size):
+            for i in tqdm.tqdm(range(0, len(pair_indices), batch_size), desc="dist iter"):
                 batch_indices = pair_indices[i:i+batch_size]
 
                 # Stack pairs for batch processing and move to device
@@ -328,7 +353,7 @@ class LearnedDistanceFunction(torch.nn.Module):
 
                 if self.config.architecture == "attention":
                     batch_similarities = self._process_attention_batch(pano_batch, sat_batch)
-                else:  # transformer_decoder
+                else:  # transformer_encoder
                     batch_similarities = self._process_transformer_batch(pano_batch, sat_batch)
 
                 all_similarities.append(batch_similarities.cpu())
