@@ -190,6 +190,9 @@ def apply_landmark_dropout_schedules(
     if len(schedules) == 0:
         return extractor_outputs_by_name
 
+    if total_epochs == 0:
+        return extractor_outputs_by_name
+
     # Determine if this is panorama input (has pano_id) vs satellite (has sat_id)
     assert len(model_input.metadata) > 0
     is_panorama = 'pano_id' in model_input.metadata[0]
