@@ -4,7 +4,8 @@ import torch
 import numpy as np
 import math
 
-MAX_LAT_RAD = 2 * np.arctan(np.pi) - np.pi / 2.0
+# https://en.wikipedia.org/wiki/Web_Mercator_projection
+MAX_LAT_RAD = 2 * np.arctan(np.exp(np.pi)) - np.pi / 2.0
 
 # WGS84 Earth radius in meters
 EARTH_RADIUS_M = 6378137.0

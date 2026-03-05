@@ -358,7 +358,7 @@ def plot_convergence_cost_hist(summary: dict, ax: plt.Axes):
     ax.grid(True, alpha=0.3)
 
 
-def plot_multiple_paths_summary(eval_path: Path, vigor_dataset: vd.VigorDataset, num_paths: int = 10):
+def plot_multiple_paths_summary(eval_path: Path, vigor_dataset: vd.VigorDataset, num_paths: int = 10, title: str = None):
     """Plot summary of multiple paths with full range and zoomed views."""
     # Load summary
     with open(eval_path / "summary_statistics.json") as f:
@@ -482,6 +482,8 @@ def plot_multiple_paths_summary(eval_path: Path, vigor_dataset: vd.VigorDataset,
         axes[2, 2].text(0.5, 0.5, 'No paths converged', ha='center', va='center')
         axes[2, 2].set_title('Converged Paths (None)')
 
+    if title:
+        fig.suptitle(title, fontsize=16, fontweight='bold', y=1.02)
     plt.tight_layout()
     return fig
 
@@ -537,6 +539,8 @@ def main():
                         help="Number of paths to include in summary")
     parser.add_argument("--debug", action="store_true",
                         help="Print debug info")
+    parser.add_argument("--title", type=str, default=None,
+                        help="Title for the plot (default: derived from dataset path)")
 
     args = parser.parse_args()
 
@@ -582,7 +586,8 @@ def main():
         plt.tight_layout()
     else:
         # Show summary
-        fig = plot_multiple_paths_summary(eval_path, vigor_dataset, args.num_paths)
+        title = args.title or dataset_path.name
+        fig = plot_multiple_paths_summary(eval_path, vigor_dataset, args.num_paths, title=title)
 
     if args.output:
         plt.savefig(args.output, dpi=150, bbox_inches='tight')

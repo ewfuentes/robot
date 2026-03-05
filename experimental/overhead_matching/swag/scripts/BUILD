@@ -554,3 +554,20 @@ py_binary(
   deps=[]
 )
 
+py_binary(
+  name="create_sequential_evaluation_paths",
+  srcs=["create_sequential_evaluation_paths.py"],
+  deps=[
+    requirement("numpy"),
+    requirement("pandas"),
+    "//common/math:haversine",
+  ],
+)
+
+py_binary(
+  name="extract_gemini_landmarks_from_panoramas",
+  srcs=["extract_gemini_landmarks_from_panoramas.py"],
+  deps=[],
+)
+
+

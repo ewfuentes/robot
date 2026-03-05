@@ -7,9 +7,9 @@ and saves to Feather format for compatibility with the existing pipeline.
 """
 
 import argparse
+import json
 from pathlib import Path
 import geopandas as gpd
-import pandas as pd
 from shapely.geometry import Point, LineString, Polygon, MultiPolygon
 
 from common.openstreetmap import extract_landmarks_python as elm
@@ -42,7 +42,7 @@ def create_shapely_geometry(geom):
         raise ValueError(f"Unknown geometry type: {type(geom)}")
 
 
-def compute_bbox_from_dataset(dataset_path: Path, zoom_level: int):
+def compute_bbox_from_dataset(dataset_path: Path, zoom_level: int = 20):
     """Compute bounding box from VIGOR satellite metadata."""
     sat_metadata = vd.load_satellite_metadata(dataset_path / "satellite", zoom_level)
 
@@ -57,10 +57,35 @@ def compute_bbox_from_dataset(dataset_path: Path, zoom_level: int):
     width_delta = right - left
 
     return elm.BoundingBox(
-        left - 0.1 * width_delta,   # left_deg
-        bottom - 0.1 * height_delta,  # bottom_deg
-        right + 0.1 * width_delta,  # right_deg
-        top + 0.1 * height_delta,    # top_deg
+        left - 0.1 * width_delta,
+        bottom - 0.1 * height_delta,
+        right + 0.1 * width_delta,
+        top + 0.1 * height_delta,
+    )
+
+
+def bbox_from_dataset_path(dataset_path: Path, zoom_level: int = 20):
+    """Read bounding box from satellite_bbox.json, falling back to computing from dataset."""
+    bbox_path = dataset_path / "satellite_bbox.json"
+    if not bbox_path.exists():
+        print(f"satellite_bbox.json not found at {bbox_path}, computing from dataset metadata (zoom_level={zoom_level})...")
+        return compute_bbox_from_dataset(dataset_path, zoom_level)
+
+    with open(bbox_path) as f:
+        meta = json.load(f)
+
+    west, south = meta["west"], meta["south"]
+    east, north = meta["east"], meta["north"]
+
+    # Add 10% buffer
+    height_delta = north - south
+    width_delta = east - west
+
+    return elm.BoundingBox(
+        west - 0.1 * width_delta,
+        south - 0.1 * height_delta,
+        east + 0.1 * width_delta,
+        north + 0.1 * height_delta,
     )
 
 
@@ -76,9 +101,9 @@ def main(
         bbox_obj = elm.BoundingBox(*bbox)
         print(f"Using provided bounding box: {bbox}")
     elif dataset_path is not None:
-        bbox_obj = compute_bbox_from_dataset(dataset_path, zoom_level)
+        bbox_obj = bbox_from_dataset_path(dataset_path, zoom_level)
         print(
-            f"Computed bounding box from dataset: "
+            f"Loaded bounding box from satellite_bbox.json: "
             f"[{bbox_obj.left_deg}, {bbox_obj.bottom_deg}, {bbox_obj.right_deg}, {bbox_obj.top_deg}]"
         )
     else:
@@ -168,7 +193,7 @@ if __name__ == "__main__":
     bbox_group.add_argument(
         "--dataset_path",
         type=Path,
-        help="Path to VIGOR dataset (will compute bbox from satellite metadata)",
+        help="Path to VIGOR dataset (reads bbox from satellite_bbox.json)",
     )
     bbox_group.add_argument(
         "--bbox",
@@ -178,8 +203,9 @@ if __name__ == "__main__":
         help="Bounding box as: left bottom right top (e.g., -87.7 41.8 -87.6 41.9)",
     )
 
-    parser.add_argument("--output_path", required=True, type=Path, help="Output path for landmarks (will create .json and .feather)")
-    parser.add_argument("--zoom_level", type=int, default=20, help="Zoom level for dataset (default: 20)")
+    parser.add_argument("--zoom_level", type=int, default=20,
+                        help="Zoom level for satellite metadata (used when falling back from satellite_bbox.json, default: 20)")
+    parser.add_argument("--output_path", required=True, type=Path, help="Output path for landmarks (will create .feather)")
 
     args = parser.parse_args()
 

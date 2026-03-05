@@ -49,8 +49,10 @@ except ImportError:
 
 # Job states
 ACTIVE_STATES = {
+    JobState.JOB_STATE_QUEUED,
     JobState.JOB_STATE_PENDING,
     JobState.JOB_STATE_RUNNING,
+    JobState.JOB_STATE_CANCELLING,
 }
 
 COMPLETED_STATES = {

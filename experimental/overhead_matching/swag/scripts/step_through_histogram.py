@@ -122,25 +122,177 @@ def run_filter_with_history(
     return history
 
 
-def create_belief_heatmap(log_belief, grid_spec):
-    """Convert log belief to plotly heatmap data."""
-    # Normalize for visualization
-    belief = torch.exp(log_belief - log_belief.max()).numpy()
+CHECKPOINT_INTERVAL = 50  # Save full belief every N steps
 
-    # Get lat/lon coordinates for each cell
+
+def run_filter_lightweight(
+    grid_spec: GridSpec,
+    mapping,
+    initial_belief: HistogramBelief,
+    motion_deltas: torch.Tensor,
+    path_pano_ids: list[str],
+    log_likelihood_aggregator: ObservationLogLikelihoodAggregator,
+    noise_percent: float,
+):
+    """Run filter saving summaries per step and full belief at checkpoints.
+
+    Full belief is saved every CHECKPOINT_INTERVAL steps. For other steps,
+    use replay_filter_to_step() which replays from the nearest checkpoint.
+    """
+    belief = initial_belief.clone()
+
+    history = []
+    checkpoints = {}  # step_idx -> log_belief tensor (cpu)
+
+    def save_step(stage, gt_idx, pano_id, obs_log_ll, step_num):
+        entry = {
+            'stage': stage,
+            'mean': belief.get_mean_latlon().clone().cpu(),
+            'gt_idx': gt_idx,
+            'pano_id': pano_id,
+        }
+        history.append(entry)
+        if step_num % CHECKPOINT_INTERVAL == 0:
+            checkpoints[step_num] = belief.get_log_belief().clone().cpu()
+
+    step_num = 0
+    save_step('init', 0, path_pano_ids[0], None, step_num)
+
+    path_len = len(path_pano_ids)
+    filter_device = belief.get_log_belief().device
+
+    for step_idx in range(path_len - 1):
+        obs_log_ll = log_likelihood_aggregator(path_pano_ids[step_idx]).to(filter_device)
+        belief.apply_observation(obs_log_ll, mapping)
+        step_num += 1
+        save_step(f'obs_{step_idx}', step_idx, path_pano_ids[step_idx], obs_log_ll, step_num)
+
+        belief.apply_motion(motion_deltas[step_idx], noise_percent)
+        step_num += 1
+        save_step(f'motion_{step_idx}', step_idx + 1, path_pano_ids[step_idx + 1], None, step_num)
+
+    obs_log_ll = log_likelihood_aggregator(path_pano_ids[-1]).to(filter_device)
+    belief.apply_observation(obs_log_ll, mapping)
+    step_num += 1
+    save_step(f'obs_{path_len-1}', path_len - 1, path_pano_ids[-1], obs_log_ll, step_num)
+
+    # Always checkpoint the last step
+    checkpoints[step_num] = belief.get_log_belief().clone().cpu()
+
+    return history, checkpoints
+
+
+def replay_filter_to_step(
+    grid_spec: GridSpec,
+    mapping,
+    filter_device: torch.device,
+    motion_deltas: torch.Tensor,
+    path_pano_ids: list[str],
+    log_likelihood_aggregator: ObservationLogLikelihoodAggregator,
+    noise_percent: float,
+    target_step: int,
+    checkpoints: dict[int, torch.Tensor],
+):
+    """Replay from the nearest checkpoint to target_step.
+
+    Steps follow the same ordering as run_filter_lightweight:
+      0: init
+      1: obs_0, 2: motion_0, 3: obs_1, 4: motion_1, ...
+    """
+    # Find nearest checkpoint at or before target_step
+    valid_checkpoints = [s for s in checkpoints if s <= target_step]
+    if valid_checkpoints:
+        start_step = max(valid_checkpoints)
+        belief = HistogramBelief.from_uniform(grid_spec, filter_device)
+        belief._log_belief = checkpoints[start_step].to(filter_device)
+    else:
+        start_step = 0
+        belief = HistogramBelief.from_uniform(grid_spec, filter_device)
+
+    if start_step == target_step:
+        # Determine obs_log_ll: obs steps are odd (1, 3, 5, ...) -> step_idx = (step-1)//2
+        obs_log_ll = None
+        if target_step > 0 and target_step % 2 == 1:
+            pano_idx = (target_step - 1) // 2
+            obs_log_ll = log_likelihood_aggregator(path_pano_ids[pano_idx]).to(filter_device).clone().cpu()
+        return belief.get_log_belief().clone().cpu(), obs_log_ll
+
+    current_step = start_step
+    obs_log_ll = None
+    path_len = len(path_pano_ids)
+
+    # Determine which step_idx in the loop corresponds to current_step
+    # step 0=init, then pairs: (2*i+1=obs_i, 2*i+2=motion_i) for i in 0..path_len-2
+    # final: 2*(path_len-1)+1 = obs_{path_len-1}
+    for step_idx in range(path_len - 1):
+        obs_step = 2 * step_idx + 1
+        motion_step = 2 * step_idx + 2
+
+        if obs_step > target_step:
+            break
+        if obs_step > current_step:
+            obs_log_ll = log_likelihood_aggregator(path_pano_ids[step_idx]).to(filter_device)
+            belief.apply_observation(obs_log_ll, mapping)
+            current_step = obs_step
+            if current_step == target_step:
+                return belief.get_log_belief().clone().cpu(), obs_log_ll.clone().cpu()
+
+        if motion_step > target_step:
+            break
+        if motion_step > current_step:
+            belief.apply_motion(motion_deltas[step_idx], noise_percent)
+            current_step = motion_step
+            obs_log_ll = None
+            if current_step == target_step:
+                return belief.get_log_belief().clone().cpu(), None
+
+    # Final observation
+    final_obs_step = 2 * (path_len - 1) + 1
+    if final_obs_step > current_step and final_obs_step <= target_step:
+        obs_log_ll = log_likelihood_aggregator(path_pano_ids[-1]).to(filter_device)
+        belief.apply_observation(obs_log_ll, mapping)
+        current_step = final_obs_step
+        if current_step == target_step:
+            return belief.get_log_belief().clone().cpu(), obs_log_ll.clone().cpu()
+
+    raise ValueError(f"target_step {target_step} not reached (got to {current_step})")
+
+
+def create_belief_heatmap(log_belief, grid_spec, max_heatmap_dim: int | None = None):
+    """Convert log belief to plotly heatmap data, optionally downsampled for rendering."""
+    # Normalize for visualization
+    belief = torch.exp(log_belief - log_belief.max())
+
+    nr, nc = belief.shape
+    row_stride = 1
+    col_stride = 1
+
+    if max_heatmap_dim is not None:
+        row_stride = max(1, nr // max_heatmap_dim)
+        col_stride = max(1, nc // max_heatmap_dim)
+        if row_stride > 1 or col_stride > 1:
+            nr_trim = (nr // row_stride) * row_stride
+            nc_trim = (nc // col_stride) * col_stride
+            belief_trimmed = belief[:nr_trim, :nc_trim]
+            belief = belief_trimmed.reshape(nr_trim // row_stride, row_stride,
+                                            nc_trim // col_stride, col_stride).amax(dim=(1, 3))
+
+    belief_np = belief.numpy()
+
+    row_indices = torch.arange(belief_np.shape[0]) * row_stride + row_stride / 2
+    col_indices = torch.arange(belief_np.shape[1]) * col_stride + col_stride / 2
+
     lat_coords = []
-    lon_coords = []
-    for row in range(grid_spec.num_rows):
-        lat, lon = grid_spec.cell_indices_to_latlon(
-            torch.tensor(float(row)), torch.tensor(0.0))
+    for row in row_indices:
+        lat, _ = grid_spec.cell_indices_to_latlon(row, torch.tensor(0.0))
         lat_coords.append(lat.item())
 
-    for col in range(grid_spec.num_cols):
-        lat, lon = grid_spec.cell_indices_to_latlon(
-            torch.tensor(0.0), torch.tensor(float(col)))
+    lon_coords = []
+    for col in col_indices:
+        _, lon = grid_spec.cell_indices_to_latlon(torch.tensor(0.0), col)
         lon_coords.append(lon.item())
 
-    return belief, lat_coords, lon_coords
+    return belief_np, lat_coords, lon_coords
 
 
 def load_path_statistics(eval_path: Path) -> list[dict]:
@@ -201,6 +353,13 @@ def main():
     parser.add_argument("--noise-percent", type=float, default=None)
     parser.add_argument("--simple", action="store_true",
                         help="Disable new features (pano/patch images, likelihood coloring)")
+    parser.add_argument("--lightweight", action="store_true",
+                        help="Don't store full belief history in RAM. Recomputes belief on demand per step. "
+                             "Use for large grids (e.g., Norway) that would otherwise OOM.")
+    parser.add_argument("--downsample-heatmap", type=int, default=None,
+                        help="Max rows/cols for belief heatmap. If not set, no heatmap downsampling.")
+    parser.add_argument("--downsample-scatter", type=int, default=None,
+                        help="Max scatter points for obs likelihood overlay. If not set, no scatter downsampling.")
     parser.add_argument("--port", type=int, default=8050)
 
     args = parser.parse_args()
@@ -213,6 +372,7 @@ def main():
         eval_args = json.load(f)
 
     simple_mode = args.simple
+    lightweight_mode = args.lightweight
     noise_percent = args.noise_percent if args.noise_percent is not None else eval_args.get("noise_percent", 0.02)
     subdivision_factor = eval_args.get("subdivision_factor", 4)
 
@@ -236,6 +396,9 @@ def main():
     print(f"Using device: {device}")
 
     # Load dataset
+    import time as _time
+    _t0 = _time.time()
+    print("Loading dataset...")
     dataset_config = vd.VigorDatasetConfig(
         panorama_tensor_cache_info=None,
         satellite_tensor_cache_info=None,
@@ -246,8 +409,10 @@ def main():
         landmark_version=eval_args.get("landmark_version", "v4_202001"),
     )
     vigor_dataset = vd.VigorDataset(dataset_path, dataset_config)
+    print(f"Dataset loaded in {_time.time() - _t0:.1f}s")
 
     # Load aggregator config and create aggregator
+    _t0 = _time.time()
     print("Loading aggregator config...")
     aggregator_config = load_aggregator_config(Path(args.aggregator_config))
     print(f"Loaded aggregator config: {type(aggregator_config).__name__}")
@@ -256,6 +421,7 @@ def main():
         vigor_dataset,
         device,
     )
+    print(f"Aggregator loaded in {_time.time() - _t0:.1f}s")
 
     # Use CPU for filter computations (visualization doesn't need GPU)
     filter_device = torch.device('cpu')
@@ -279,8 +445,12 @@ def main():
     )
     print(f"Grid: {grid_spec.num_rows} x {grid_spec.num_cols}")
 
-    patch_positions_px = get_patch_positions_px(vigor_dataset, filter_device)
-    mapping = build_cell_to_patch_mapping(grid_spec, patch_positions_px, 320.0, filter_device)
+    # Build mapping on GPU (much faster), then move to CPU for filter operations
+    patch_positions_px = get_patch_positions_px(vigor_dataset, device)
+    _t0 = _time.time()
+    mapping = build_cell_to_patch_mapping(grid_spec, patch_positions_px, 320.0, device)
+    mapping = mapping.to(filter_device)
+    print(f"Cell-to-patch mapping built in {_time.time() - _t0:.1f}s")
 
     sat_positions = vigor_dataset._satellite_metadata[['lat', 'lon']].values
 
@@ -298,7 +468,10 @@ def main():
     cache = {
         'current_path_idx': None,
         'history': None,
+        'checkpoints': {},
         'gt_positions': None,
+        'motion_deltas': None,
+        'path': None,
     }
 
     # Create Dash app
@@ -419,17 +592,29 @@ def main():
         motion_deltas = es.get_motion_deltas_from_path(vigor_dataset, path)
 
         # Initialize and run filter
-        belief = HistogramBelief.from_uniform(grid_spec, filter_device)
-        history = run_filter_with_history(
-            grid_spec, mapping, belief,
-            motion_deltas, path,
-            log_likelihood_aggregator, noise_percent
-        )
+        if lightweight_mode:
+            history, checkpoints = run_filter_lightweight(
+                grid_spec, mapping,
+                HistogramBelief.from_uniform(grid_spec, filter_device),
+                motion_deltas, path,
+                log_likelihood_aggregator, noise_percent
+            )
+        else:
+            history = run_filter_with_history(
+                grid_spec, mapping,
+                HistogramBelief.from_uniform(grid_spec, filter_device),
+                motion_deltas, path,
+                log_likelihood_aggregator, noise_percent
+            )
+            checkpoints = {}
 
         # Store in server-side cache (not sent to browser)
         cache['current_path_idx'] = path_idx
         cache['history'] = history
+        cache['checkpoints'] = checkpoints
         cache['gt_positions'] = gt_positions
+        cache['motion_deltas'] = motion_deltas
+        cache['path'] = path
 
         num_steps = len(history)
         marks = {i: str(i) for i in range(0, num_steps, max(1, num_steps // 20))}
@@ -469,6 +654,9 @@ def main():
          Input('path-metadata-store', 'data')]
     )
     def update_plot(step_idx, metadata):
+        import time as _time
+        _t_start = _time.time()
+
         empty_outputs = ("", "Panorama", [], "Top Satellite Patches by Observation Likelihood")
         if not metadata or cache['history'] is None:
             # Return empty figure
@@ -485,14 +673,29 @@ def main():
         step = cache['history'][step_idx]
 
         stage = step['stage']
-        log_belief = step['log_belief']
         mean = step['mean'].numpy()
         gt_idx = step['gt_idx']
         pano_id = step['pano_id']
-        obs_log_ll = step['obs_log_ll']
+
+        if 'log_belief' in step:
+            # Full history mode
+            log_belief = step['log_belief']
+            obs_log_ll = step['obs_log_ll']
+        else:
+            # Lightweight mode — replay from nearest checkpoint
+            _t0 = _time.time()
+            log_belief, obs_log_ll = replay_filter_to_step(
+                grid_spec, mapping, filter_device,
+                cache['motion_deltas'], cache['path'],
+                log_likelihood_aggregator, noise_percent,
+                step_idx, cache['checkpoints'],
+            )
+            print(f"  Replay: {_time.time() - _t0:.2f}s")
 
         # Create heatmap data
-        belief_data, lat_coords, lon_coords = create_belief_heatmap(log_belief, grid_spec)
+        _t0 = _time.time()
+        belief_data, lat_coords, lon_coords = create_belief_heatmap(log_belief, grid_spec, args.downsample_heatmap)
+        print(f"  Heatmap data: {belief_data.shape}, {_time.time() - _t0:.2f}s")
 
         # Create subplots
         fig = make_subplots(
@@ -517,15 +720,28 @@ def main():
         # Satellite patches — color by obs likelihood on obs steps (unless simple mode)
         if not simple_mode and obs_log_ll is not None:
             ll_np = obs_log_ll.numpy()
+            n_pts = len(ll_np)
+            max_scatter = args.downsample_scatter
+            if max_scatter is not None and n_pts > max_scatter:
+                # Keep top-k by likelihood + uniform subsample for coverage
+                top_k = max_scatter // 2
+                top_indices = np.argpartition(ll_np, -top_k)[-top_k:]
+                remaining = np.setdiff1d(np.arange(n_pts), top_indices)
+                uniform_indices = remaining[np.linspace(0, len(remaining) - 1,
+                                                        max_scatter - top_k, dtype=int)]
+                scatter_idx = np.concatenate([top_indices, uniform_indices])
+                scatter_idx.sort()
+            else:
+                scatter_idx = np.arange(n_pts)
             for subplot_col, marker_size in [(1, 3), (2, 5)]:
                 fig.add_trace(
                     go.Scatter(
-                        x=sat_positions[:, 1],
-                        y=sat_positions[:, 0],
+                        x=sat_positions[scatter_idx, 1],
+                        y=sat_positions[scatter_idx, 0],
                         mode='markers',
                         marker=dict(
                             size=marker_size,
-                            color=ll_np,
+                            color=ll_np[scatter_idx],
                             colorscale='Viridis',
                             opacity=0.6,
                             showscale=(subplot_col == 2),
@@ -695,6 +911,7 @@ def main():
                 patch_children = [html.Div("No observation at this step", style={'color': 'gray', 'fontStyle': 'italic'})]
                 patches_title = "Top Satellite Patches by Observation Likelihood"
 
+        print(f"  Total update_plot: {_time.time() - _t_start:.2f}s")
         return fig, info, pano_src, pano_title, patch_children, patches_title
 
     print(f"Starting server at http://localhost:{args.port}")
