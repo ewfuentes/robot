@@ -6,6 +6,9 @@ import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
 
+from experimental.overhead_matching.swag.scripts.pairing import PairingType, create_pairs, create_anchors, Pairs
+from experimental.overhead_matching.swag.data import vigor_dataset
+
 
 @dataclass
 class LearningRateSweepConfig:
@@ -27,6 +30,8 @@ def run_lr_sweep(
         compute_forward_pass_and_loss_fn,
         create_training_components_fn,
         setup_models_for_training_fn,
+        loss_functions,
+        pairing_type: PairingType,
         quiet: bool = False,
         generator: torch.Generator | None = None) -> float:
     """
@@ -69,13 +74,34 @@ def run_lr_sweep(
             
         opt.zero_grad()
         
+        # Create pairing data from batch metadata
+        match pairing_type:
+            case PairingType.PAIRS:
+                pairing_data = create_pairs(
+                    batch.panorama_metadata,
+                    batch.satellite_metadata
+                )
+                if opt_config.random_sample_type == vigor_dataset.HardNegativeMiner.RandomSampleType.NEAREST:
+                    pairing_data = Pairs(
+                        positive_pairs=pairing_data.positive_pairs + pairing_data.semipositive_pairs,
+                        semipositive_pairs=[],
+                        negative_pairs=pairing_data.negative_pairs)
+            case PairingType.ANCHOR_SETS:
+                pairing_data = create_anchors(
+                    batch.panorama_metadata,
+                    batch.satellite_metadata,
+                    use_pano_as_anchor=False
+                )
+            case _:
+                raise RuntimeError(f"Pairing type not recongnized, {pairing_type}")
+
         # Use extracted function for forward pass and loss
-        loss_dict, pairs, panorama_embeddings, sat_embeddings = compute_forward_pass_and_loss_fn(
-            batch, panorama_model, satellite_model, opt_config)
-        
+        loss_dict, panorama_embeddings, sat_embeddings, debug_dict = compute_forward_pass_and_loss_fn(
+            batch, panorama_model, satellite_model, distance_model, pairing_data, loss_functions)
+
         loss = loss_dict["loss"]
         burn_in_loss = loss.item()
-        
+
         # Record burn-in data for plotting
         learning_rates.append(lr_sweep_config.burn_in_lr)
         losses.append(loss.item())
@@ -116,10 +142,31 @@ def run_lr_sweep(
         
         opt.zero_grad()
         
+        # Create pairing data from batch metadata
+        match pairing_type:
+            case PairingType.PAIRS:
+                pairing_data = create_pairs(
+                    batch.panorama_metadata,
+                    batch.satellite_metadata
+                )
+                if opt_config.random_sample_type == vigor_dataset.HardNegativeMiner.RandomSampleType.NEAREST:
+                    pairing_data = Pairs(
+                        positive_pairs=pairing_data.positive_pairs + pairing_data.semipositive_pairs,
+                        semipositive_pairs=[],
+                        negative_pairs=pairing_data.negative_pairs)
+            case PairingType.ANCHOR_SETS:
+                pairing_data = create_anchors(
+                    batch.panorama_metadata,
+                    batch.satellite_metadata,
+                    use_pano_as_anchor=False
+                )
+            case _:
+                raise RuntimeError(f"Pairing type not recongnized, {pairing_type}")
+
         # Use extracted function for forward pass and loss
-        loss_dict, pairs, panorama_embeddings, sat_embeddings = compute_forward_pass_and_loss_fn(
-            batch, panorama_model, satellite_model, opt_config)
-        
+        loss_dict, panorama_embeddings, sat_embeddings, debug_dict = compute_forward_pass_and_loss_fn(
+            batch, panorama_model, satellite_model, distance_model, pairing_data, loss_functions)
+
         loss = loss_dict["loss"]
         
         # Early stopping if loss explodes

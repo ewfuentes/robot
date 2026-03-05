@@ -29,6 +29,17 @@ py_test(
   ]
 )
 
+py_test(
+  name="losses_test",
+  srcs=["losses_test.py"],
+  deps=[
+    ":losses",
+    ":pairing",
+    "//common/torch:load_torch_deps",
+    requirement("torch"),
+  ]
+)
+
 py_library(
   name="losses",
   srcs=["losses.py"],
@@ -68,9 +79,11 @@ py_library(
   srcs = ["lr_sweep.py"],
   visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
   deps = [
+    ":pairing",
     requirement("torch"),
     requirement("numpy"),
     requirement("matplotlib"),
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
   ]
 )
 

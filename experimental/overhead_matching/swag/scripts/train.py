@@ -30,7 +30,6 @@ import pandas as pd
 import tqdm
 import msgspec
 from pprint import pprint
-import ipdb
 from contextlib import nullcontext
 import datetime
 import random
@@ -847,6 +846,11 @@ def main(
             train_config.opt_config.lr_sweep_config = LearningRateSweepConfig()
 
         distance_model = create_distance_from_config(train_config.distance_model_config)
+        loss_functions = create_losses_from_loss_config_list(train_config.loss_configs)
+        pairing_type = PairingType.PAIRS
+        for loss_config in train_config.loss_configs:
+            if isinstance(loss_config, InfoNCELossConfig):
+                pairing_type = PairingType.ANCHOR_SETS
         optimal_lr = run_lr_sweep(
             lr_sweep_config=train_config.opt_config.lr_sweep_config,
             dataset=dataset,
@@ -858,6 +862,8 @@ def main(
             compute_forward_pass_and_loss_fn=compute_forward_pass_and_loss,
             create_training_components_fn=create_training_components,
             setup_models_for_training_fn=setup_models_for_training,
+            loss_functions=loss_functions,
+            pairing_type=pairing_type,
             quiet=quiet,
             generator=generator
         )
@@ -867,7 +873,12 @@ def main(
         if not quiet:
             print(f"Updated initial learning rate to {optimal_lr:.2e}")
 
-    with ipdb.launch_ipdb_on_exception() if not no_ipdb else nullcontext():
+    if not no_ipdb:
+        import ipdb
+        ctx = ipdb.launch_ipdb_on_exception()
+    else:
+        ctx = nullcontext()
+    with ctx:
         train(
             train_config,
             output_dir=output_dir,
