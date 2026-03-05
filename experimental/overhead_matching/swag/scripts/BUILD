@@ -555,13 +555,23 @@ py_binary(
 )
 
 py_binary(
+  name="create_tag_key_vocabulary",
+  srcs=["create_tag_key_vocabulary.py"],
+  deps=[
+    requirement("geopandas"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
+  ]
+)
+
+py_binary(
   name="create_sequential_evaluation_paths",
   srcs=["create_sequential_evaluation_paths.py"],
   deps=[
     requirement("numpy"),
     requirement("pandas"),
     "//common/math:haversine",
-  ],
+  ]
 )
 
 py_binary(
