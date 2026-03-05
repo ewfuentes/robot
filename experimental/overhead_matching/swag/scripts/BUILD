@@ -256,6 +256,8 @@ py_binary(
     requirement("geopandas"),
     requirement("shapely"),
     requirement("pyarrow"),
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//common/gps:web_mercator",
   ]
 )
 

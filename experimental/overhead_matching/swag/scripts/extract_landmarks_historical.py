@@ -13,6 +13,8 @@ import geopandas as gpd
 from shapely.geometry import Point, LineString, Polygon, MultiPolygon
 
 from common.openstreetmap import extract_landmarks_python as elm
+from experimental.overhead_matching.swag.data import vigor_dataset as vd
+from common.gps import web_mercator
 
 
 def create_shapely_geometry(geom):
@@ -40,14 +42,35 @@ def create_shapely_geometry(geom):
         raise ValueError(f"Unknown geometry type: {type(geom)}")
 
 
-def bbox_from_satellite_bbox_json(dataset_path: Path):
-    """Read bounding box from satellite_bbox.json in the dataset directory."""
+def compute_bbox_from_dataset(dataset_path: Path, zoom_level: int = 20):
+    """Compute bounding box from VIGOR satellite metadata."""
+    sat_metadata = vd.load_satellite_metadata(dataset_path / "satellite", zoom_level)
+
+    min_yx_pixel = sat_metadata[["web_mercator_y", "web_mercator_x"]].min().to_numpy()
+    max_yx_pixel = sat_metadata[["web_mercator_y", "web_mercator_x"]].max().to_numpy()
+
+    top, left = web_mercator.pixel_coords_to_latlon(*min_yx_pixel, zoom_level)
+    bottom, right = web_mercator.pixel_coords_to_latlon(*max_yx_pixel, zoom_level)
+
+    # Add 10% buffer
+    height_delta = top - bottom
+    width_delta = right - left
+
+    return elm.BoundingBox(
+        left - 0.1 * width_delta,
+        bottom - 0.1 * height_delta,
+        right + 0.1 * width_delta,
+        top + 0.1 * height_delta,
+    )
+
+
+def bbox_from_dataset_path(dataset_path: Path):
+    """Read bounding box from satellite_bbox.json, falling back to computing from dataset."""
     bbox_path = dataset_path / "satellite_bbox.json"
     if not bbox_path.exists():
-        raise FileNotFoundError(
-            f"satellite_bbox.json not found at {bbox_path}. "
-            "Run download_tiles.py first, or provide --bbox manually."
-        )
+        print(f"satellite_bbox.json not found at {bbox_path}, computing from dataset metadata (zoom_level=20)...")
+        return compute_bbox_from_dataset(dataset_path)
+
     with open(bbox_path) as f:
         meta = json.load(f)
 
@@ -77,7 +100,7 @@ def main(
         bbox_obj = elm.BoundingBox(*bbox)
         print(f"Using provided bounding box: {bbox}")
     elif dataset_path is not None:
-        bbox_obj = bbox_from_satellite_bbox_json(dataset_path)
+        bbox_obj = bbox_from_dataset_path(dataset_path)
         print(
             f"Loaded bounding box from satellite_bbox.json: "
             f"[{bbox_obj.left_deg}, {bbox_obj.bottom_deg}, {bbox_obj.right_deg}, {bbox_obj.top_deg}]"
