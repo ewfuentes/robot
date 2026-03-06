@@ -19,6 +19,7 @@ from experimental.overhead_matching.swag.model.additional_panorama_extractors im
     load_v2_pickle,
 )
 from experimental.overhead_matching.swag.model.swag_config_types import (
+    ExtractorDataRequirement,
     OSMTagTokenExtractorConfig,
     PanoTagTokenExtractorConfig,
 )
@@ -566,7 +567,7 @@ class PanoTagTokenExtractorTest(unittest.TestCase):
         extractor = PanoTagTokenExtractor(config, Path(self._temp_dir.name))
         self.assertEqual(extractor.output_dim, 64)
         self.assertEqual(extractor.num_position_outputs, 2)
-        self.assertEqual(extractor.data_requirements, [])
+        self.assertEqual(extractor.data_requirements, [ExtractorDataRequirement.LANDMARKS])
 
     def test_gradient_flow(self):
         """Forward + backward produces non-zero grad on _tag_projection.weight."""
@@ -930,6 +931,176 @@ class OSMTagTokenExtractorTest(unittest.TestCase):
 
         # Features should be non-zero (desc embeddings contribute to each tag)
         self.assertTrue(output.features[0, :unmasked].abs().sum() > 0)
+
+    def test_include_value_ngrams_false(self):
+        """With include_value_ngrams=False, tokens still produced but without value hashing."""
+        config = OSMTagTokenExtractorConfig(
+            token_dim=64,
+            key_embedding_dim=32,
+            value_embedding_dim=32,
+            ngram_bucket_size=1000,
+            key_vocabulary_file=str(self.vocab_file),
+            auxiliary_info_key="test",
+            embedding_version=self.version,
+            include_description_embeddings=True,
+            description_embedding_dim=1536,
+            max_tag_key_vocab_size=30,
+            include_value_ngrams=False,
+        )
+        extractor = OSMTagTokenExtractor(config, Path(self._temp_dir.name))
+
+        metadata = self._make_metadata_with_landmarks()
+        model_input = ModelInput(
+            image=torch.zeros((1, 3, 320, 320)),
+            metadata=metadata,
+        )
+        output = extractor(model_input)
+
+        # Same token count as with value ngrams (4 tags across 2 landmarks)
+        unmasked = (~output.mask[0]).sum().item()
+        self.assertEqual(unmasked, 4)
+        self.assertEqual(output.features.shape[-1], 64)
+        self.assertFalse(hasattr(extractor, '_value_hasher'))
+
+    def test_debug_stats_key_hits_and_misses(self):
+        """Debug dict tracks key vocabulary hits and misses."""
+        config = self._make_config(include_descs=False)
+        extractor = OSMTagTokenExtractor(config, Path(self._temp_dir.name))
+
+        metadata = [{
+            "landmarks": [{
+                "pruned_props": {"amenity": "cafe", "name": "Test", "fake_key": "val"},
+                "geometry_px": _FakePoint(41.85, -87.65),
+                "geometry": _FakePoint(41.85, -87.65),
+            }],
+            "web_mercator_y": 41.855,
+            "web_mercator_x": -87.645,
+        }]
+        model_input = ModelInput(
+            image=torch.zeros((1, 3, 320, 320)),
+            metadata=metadata,
+        )
+        output = extractor(model_input)
+
+        self.assertEqual(output.debug['key_hits'], 2)   # amenity, name
+        self.assertEqual(output.debug['key_misses'], 1)  # fake_key
+
+    def test_debug_stats_desc_hits_and_misses(self):
+        """Debug dict tracks description embedding hits and misses."""
+        config = self._make_config(include_descs=True)
+        extractor = OSMTagTokenExtractor(config, Path(self._temp_dir.name))
+
+        # First landmark has embeddings (from setUpClass), second does not
+        metadata = [{
+            "landmarks": [
+                {
+                    "pruned_props": dict(self.landmark_props[0]),
+                    "geometry_px": _FakePoint(41.85, -87.65),
+                    "geometry": _FakePoint(41.85, -87.65),
+                },
+                {
+                    "pruned_props": {"amenity": "unknown_place"},
+                    "geometry_px": _FakePoint(41.86, -87.64),
+                    "geometry": _FakePoint(41.86, -87.64),
+                },
+            ],
+            "web_mercator_y": 41.855,
+            "web_mercator_x": -87.645,
+        }]
+        model_input = ModelInput(
+            image=torch.zeros((1, 3, 320, 320)),
+            metadata=metadata,
+        )
+        output = extractor(model_input)
+
+        self.assertEqual(output.debug['desc_hits'], 1)   # first landmark found
+        self.assertEqual(output.debug['desc_misses'], 1)  # second landmark not found
+
+
+class PanoDebugStatsTest(unittest.TestCase):
+    """Test debug stats and include_value_ngrams for PanoTagTokenExtractor."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._temp_dir = tempfile.TemporaryDirectory()
+        base_path = Path(cls._temp_dir.name)
+        cls.version = "test_pano_debug"
+
+        cls.vocab_file = base_path / "tag_key_vocabulary.txt"
+        cls.vocab_file.write_text("\n".join(TEST_KEY_VOCABULARY))
+
+        panoramas = {
+            "pano_a,41.85,-87.65,": {
+                "location_type": "urban_commercial",
+                "landmarks": [{
+                    "primary_tag": {"key": "amenity", "value": "cafe"},
+                    "additional_tags": [
+                        {"key": "name", "value": "Test"},
+                        {"key": "fake_unknown_key", "value": "val"},
+                    ],
+                    "confidence": "high",
+                    "bounding_boxes": [],
+                    "description": "A cafe",
+                    "landmark_idx": 0,
+                }],
+            },
+        }
+
+        descriptions = [("pano_a,41.85,-87.65,__landmark_0", "A cafe")]
+        city_dir = base_path / cls.version / "1_TestCity" / "embeddings"
+        city_dir.mkdir(parents=True, exist_ok=True)
+        pickle_data = create_v2_tags_pickle_data(panoramas, descriptions)
+        with open(city_dir / "embeddings.pkl", "wb") as f:
+            pickle.dump(pickle_data, f)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._temp_dir.cleanup()
+
+    def _make_config(self, include_value_ngrams=True):
+        return PanoTagTokenExtractorConfig(
+            token_dim=64,
+            key_embedding_dim=32,
+            value_embedding_dim=32,
+            ngram_bucket_size=1000,
+            key_vocabulary_file=str(self.vocab_file),
+            auxiliary_info_key="test",
+            embedding_version=self.version,
+            include_description_embeddings=True,
+            description_embedding_dim=1536,
+            max_tag_key_vocab_size=30,
+            include_value_ngrams=include_value_ngrams,
+        )
+
+    def test_debug_stats(self):
+        config = self._make_config()
+        extractor = PanoTagTokenExtractor(config, Path(self._temp_dir.name))
+        model_input = ModelInput(
+            image=torch.zeros((1, 3, 256, 512)),
+            metadata=[{"pano_id": "pano_a"}],
+        )
+        output = extractor(model_input)
+
+        # amenity + name hit, fake_unknown_key misses
+        self.assertEqual(output.debug['key_hits'], 2)
+        self.assertEqual(output.debug['key_misses'], 1)
+        self.assertEqual(output.debug['desc_hits'], 1)
+        self.assertEqual(output.debug['desc_misses'], 0)
+
+    def test_include_value_ngrams_false(self):
+        config = self._make_config(include_value_ngrams=False)
+        extractor = PanoTagTokenExtractor(config, Path(self._temp_dir.name))
+        model_input = ModelInput(
+            image=torch.zeros((1, 3, 256, 512)),
+            metadata=[{"pano_id": "pano_a"}],
+        )
+        output = extractor(model_input)
+
+        # 2 tokens (amenity + name; fake_unknown_key skipped)
+        unmasked = (~output.mask[0]).sum().item()
+        self.assertEqual(unmasked, 2)
+        self.assertEqual(output.features.shape[-1], 64)
+        self.assertFalse(hasattr(extractor, '_value_hasher'))
 
 
 class _FakePoint:

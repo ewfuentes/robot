@@ -570,4 +570,4 @@ class PanoTagTokenExtractor(nn.Module):
 
     @property
     def data_requirements(self) -> list[ExtractorDataRequirement]:
-        return []
+        return [ExtractorDataRequirement.LANDMARKS]
