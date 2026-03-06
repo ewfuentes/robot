@@ -31,16 +31,6 @@ until nslookup github.com > /dev/null 2>&1; do
     sleep 2
 done
 
-if [ "${ARCH}" = "aarch64" ]; then
-    # We need to regenerate the python requirements. Use uv
-    command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh
-    ~/.local/bin/uv python install 3.12
-    rm third_party/python/requirements_3_12.txt
-    ~/.local/bin/uv pip compile --python-version 3.12 -o third_party/python/requirements_3_12.txt \
-        --format requirements.txt --index-strategy unsafe-best-match --generate-hashes \
-        --emit-index-url third_party/python/requirements_3_12.in
-fi
-
 # Install bazelisk if not found
 if command -v bazel > /dev/null 2>&1; then
     :
@@ -56,6 +46,12 @@ else
     mkdir -p ~/.local/bin
     curl -o ~/.local/bin/bazel -L "${BAZELISK_URL}"
     chmod +x ~/.local/bin/bazel
+fi
+
+if [ "${ARCH}" = "aarch64" ]; then
+    # Regenerate python requirements for aarch64 using uv
+    command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh
+    bazel run //third_party/python:requirements_3_12.update
 fi
 
 if command -v ollama > /dev/null 2>&1; then
