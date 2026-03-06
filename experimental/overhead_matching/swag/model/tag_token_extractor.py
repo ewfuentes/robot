@@ -107,23 +107,23 @@ class OSMTagTokenExtractor(nn.Module):
         self._key_to_idx = {k: i + 1 for i, k in enumerate(key_vocab)}  # 0 = padding/unknown
         num_keys = len(key_vocab) + 1
 
-        # Learnable key embeddings
+        # Learnable key embeddings (always included)
         self._key_embedding = nn.Embedding(num_keys, config.key_embedding_dim, padding_idx=0)
+        tag_proj_input_dim = config.key_embedding_dim
 
-        # Character n-gram hasher for values
-        self._value_hasher = CharNgramHasher(
-            num_buckets=config.ngram_bucket_size,
-            embedding_dim=config.value_embedding_dim,
-        )
-
-        # Description embedding projection (if enabled)
-        tag_proj_input_dim = config.key_embedding_dim + config.value_embedding_dim
-        if config.include_description_embeddings:
-            self._desc_projection = nn.Linear(
-                config.description_embedding_dim, config.value_embedding_dim)
+        # Character n-gram hasher for values (optional)
+        if config.include_value_ngrams:
+            self._value_hasher = CharNgramHasher(
+                num_buckets=config.ngram_bucket_size,
+                embedding_dim=config.value_embedding_dim,
+            )
             tag_proj_input_dim += config.value_embedding_dim
 
-        # Project concatenated (key_emb, value_emb[, desc_proj]) to token_dim
+        # Raw description embeddings concatenated directly (no projection)
+        if config.include_description_embeddings:
+            tag_proj_input_dim += config.description_embedding_dim
+
+        # Project concatenated components to token_dim
         self._tag_projection = nn.Linear(tag_proj_input_dim, config.token_dim)
 
         # Landmark index embeddings (OSM-specific)
@@ -169,10 +169,14 @@ class OSMTagTokenExtractor(nn.Module):
         batch_tokens_data = []
         batch_desc_projections = []
         max_tokens = 0
+        total_key_hits = 0
+        total_key_misses = 0
+        total_desc_hits = 0
+        total_desc_misses = 0
 
         for item in model_input.metadata:
             tokens = []
-            desc_projections = {}  # landmark_idx -> projected desc embedding
+            desc_embeddings = {}  # landmark_idx -> raw desc embedding
             landmarks = item.get("landmarks", [])
 
             for lm_idx, landmark in enumerate(landmarks):
@@ -186,31 +190,42 @@ class OSMTagTokenExtractor(nn.Module):
                 for key, value in (props.items() if isinstance(props, dict) else props):
                     key_idx = self._key_to_idx.get(key, 0)
                     if key_idx == 0:
+                        total_key_misses += 1
                         continue  # Unknown key, skip
+                    total_key_hits += 1
                     tokens.append({
                         'key_idx': key_idx,
                         'value': str(value),
                         'landmark_idx': lm_idx,
                     })
 
-                # Precompute description projection for this landmark
+                # Look up raw description embedding for this landmark
                 if self.config.include_description_embeddings and self.all_embeddings_tensor is not None:
                     landmark_id = custom_id_from_props(props)
                     if landmark_id in self.landmark_id_to_idx:
                         emb_idx = self.landmark_id_to_idx[landmark_id]
-                        desc_emb = self.all_embeddings_tensor[emb_idx].to(dev)
-                        desc_projections[lm_idx] = self._desc_projection(desc_emb)
+                        desc_embeddings[lm_idx] = self.all_embeddings_tensor[emb_idx].to(dev)
+                        total_desc_hits += 1
+                    else:
+                        total_desc_misses += 1
 
             batch_tokens_data.append(tokens)
-            batch_desc_projections.append(desc_projections)
+            batch_desc_projections.append(desc_embeddings)
             max_tokens = max(max_tokens, len(tokens))
+
+        debug_stats = {
+            'key_hits': total_key_hits,
+            'key_misses': total_key_misses,
+            'desc_hits': total_desc_hits,
+            'desc_misses': total_desc_misses,
+        }
 
         if max_tokens == 0:
             return ExtractorOutput(
                 features=torch.zeros((batch_size, 0, self.config.token_dim), device=dev),
                 positions=torch.zeros((batch_size, 0, 2, 2), device=dev),
                 mask=torch.ones((batch_size, 0), dtype=torch.bool, device=dev),
-                debug={},
+                debug=debug_stats,
             )
 
         # Build output tensors
@@ -218,7 +233,7 @@ class OSMTagTokenExtractor(nn.Module):
         positions = torch.zeros((batch_size, max_tokens, 2, 2), device=dev)
         mask = torch.ones((batch_size, max_tokens), dtype=torch.bool, device=dev)
 
-        for i, (item, tokens, desc_projections) in enumerate(
+        for i, (item, tokens, desc_embeddings) in enumerate(
                 zip(model_input.metadata, batch_tokens_data, batch_desc_projections)):
             landmarks = item.get("landmarks", [])
 
@@ -233,29 +248,27 @@ class OSMTagTokenExtractor(nn.Module):
             else:
                 lm_positions = torch.zeros((0, 2, 2))
 
-            # Batch-hash all tag values
-            tag_values = [t['value'] for t in tokens]
-            hashed_values = self._value_hasher(tag_values) if tag_values else None
+            # Batch-hash all tag values (only when value ngrams enabled)
+            hashed_values = None
+            if self.config.include_value_ngrams:
+                tag_values = [t['value'] for t in tokens]
+                hashed_values = self._value_hasher(tag_values) if tag_values else None
 
             for j, token_data in enumerate(tokens):
                 lm_idx = token_data['landmark_idx']
                 landmark_idx_emb = self._landmark_idx_embedding(
                     torch.tensor(lm_idx, device=dev))
 
-                key_emb = self._key_embedding(
-                    torch.tensor(token_data['key_idx'], device=dev))
-                val_emb = hashed_values[j]
-
+                parts = [self._key_embedding(
+                    torch.tensor(token_data['key_idx'], device=dev))]
+                if self.config.include_value_ngrams:
+                    parts.append(hashed_values[j])
                 if self.config.include_description_embeddings:
-                    desc_proj = desc_projections.get(
+                    parts.append(desc_embeddings.get(
                         lm_idx,
-                        torch.zeros(self.config.value_embedding_dim, device=dev))
-                    token_vec = self._tag_projection(
-                        torch.cat([key_emb, val_emb, desc_proj]))
-                else:
-                    token_vec = self._tag_projection(
-                        torch.cat([key_emb, val_emb]))
+                        torch.zeros(self.config.description_embedding_dim, device=dev)))
 
+                token_vec = self._tag_projection(torch.cat(parts))
                 features[i, j] = token_vec + landmark_idx_emb
 
                 # Set position from landmark positions
@@ -268,7 +281,7 @@ class OSMTagTokenExtractor(nn.Module):
             features=features,
             positions=positions.to(dev),
             mask=mask.to(dev),
-            debug={},
+            debug=debug_stats,
         )
 
     @property
@@ -302,23 +315,23 @@ class PanoTagTokenExtractor(nn.Module):
         self._key_to_idx = {k: i + 1 for i, k in enumerate(key_vocab)}  # 0 = padding/unknown
         num_keys = len(key_vocab) + 1
 
-        # Learnable key embeddings
+        # Learnable key embeddings (always included)
         self._key_embedding = nn.Embedding(num_keys, config.key_embedding_dim, padding_idx=0)
+        tag_proj_input_dim = config.key_embedding_dim
 
-        # Character n-gram hasher for values
-        self._value_hasher = CharNgramHasher(
-            num_buckets=config.ngram_bucket_size,
-            embedding_dim=config.value_embedding_dim,
-        )
-
-        # Description embedding projection (if enabled)
-        tag_proj_input_dim = config.key_embedding_dim + config.value_embedding_dim
-        if config.include_description_embeddings:
-            self._desc_projection = nn.Linear(
-                config.description_embedding_dim, config.value_embedding_dim)
+        # Character n-gram hasher for values (optional)
+        if config.include_value_ngrams:
+            self._value_hasher = CharNgramHasher(
+                num_buckets=config.ngram_bucket_size,
+                embedding_dim=config.value_embedding_dim,
+            )
             tag_proj_input_dim += config.value_embedding_dim
 
-        # Project concatenated (key_emb, value_emb[, desc_proj]) to token_dim
+        # Raw description embeddings concatenated directly (no projection)
+        if config.include_description_embeddings:
+            tag_proj_input_dim += config.description_embedding_dim
+
+        # Project concatenated components to token_dim
         self._tag_projection = nn.Linear(tag_proj_input_dim, config.token_dim)
 
         # Landmark index embeddings (panorama-specific, separate from OSM)
@@ -392,15 +405,19 @@ class PanoTagTokenExtractor(nn.Module):
         batch_tokens_data = []
         batch_desc_projections = []
         max_tokens = 0
+        total_key_hits = 0
+        total_key_misses = 0
+        total_desc_hits = 0
+        total_desc_misses = 0
 
         for item in model_input.metadata:
             pano_id = item['pano_id']
             tokens = []
-            desc_projections = {}  # landmark_idx -> projected desc embedding
+            desc_embeddings = {}  # landmark_idx -> raw desc embedding
 
             if pano_id not in self.panorama_data:
                 batch_tokens_data.append(tokens)
-                batch_desc_projections.append(desc_projections)
+                batch_desc_projections.append(desc_embeddings)
                 continue
 
             pano_info = self.panorama_data[pano_id]
@@ -423,11 +440,14 @@ class PanoTagTokenExtractor(nn.Module):
                     value = primary_tag.get("value", "")
                     key_idx = self._key_to_idx.get(key, 0)
                     if key_idx > 0:
+                        total_key_hits += 1
                         tokens.append({
                             'key_idx': key_idx,
                             'value': value,
                             'landmark_idx': lm_idx,
                         })
+                    else:
+                        total_key_misses += 1
 
                 # Additional tags
                 for tag in landmark.get("additional_tags", []):
@@ -435,13 +455,16 @@ class PanoTagTokenExtractor(nn.Module):
                     value = tag.get("value", "")
                     key_idx = self._key_to_idx.get(key, 0)
                     if key_idx > 0:
+                        total_key_hits += 1
                         tokens.append({
                             'key_idx': key_idx,
                             'value': value,
                             'landmark_idx': lm_idx,
                         })
+                    else:
+                        total_key_misses += 1
 
-                # Precompute description projection for this landmark
+                # Look up raw description embedding for this landmark
                 if self.config.include_description_embeddings:
                     landmark_idx_val = landmark.get("landmark_idx", lm_idx)
                     if pano_id_with_coords:
@@ -449,19 +472,28 @@ class PanoTagTokenExtractor(nn.Module):
                     else:
                         custom_id = f"{pano_id}__landmark_{landmark_idx_val}"
                     if custom_id in self._desc_embeddings_dict:
-                        desc_emb = self._desc_embeddings_dict[custom_id].to(dev)
-                        desc_projections[lm_idx] = self._desc_projection(desc_emb)
+                        desc_embeddings[lm_idx] = self._desc_embeddings_dict[custom_id].to(dev)
+                        total_desc_hits += 1
+                    else:
+                        total_desc_misses += 1
 
             batch_tokens_data.append(tokens)
-            batch_desc_projections.append(desc_projections)
+            batch_desc_projections.append(desc_embeddings)
             max_tokens = max(max_tokens, len(tokens))
+
+        debug_stats = {
+            'key_hits': total_key_hits,
+            'key_misses': total_key_misses,
+            'desc_hits': total_desc_hits,
+            'desc_misses': total_desc_misses,
+        }
 
         if max_tokens == 0:
             return ExtractorOutput(
                 features=torch.zeros((batch_size, 0, self.config.token_dim), device=dev),
                 positions=torch.zeros((batch_size, 0, 2, 2), device=dev),
                 mask=torch.ones((batch_size, 0), dtype=torch.bool, device=dev),
-                debug={},
+                debug=debug_stats,
             )
 
         # Build output tensors
@@ -469,7 +501,7 @@ class PanoTagTokenExtractor(nn.Module):
         positions = torch.zeros((batch_size, max_tokens, 2, 2), device=dev)
         mask = torch.ones((batch_size, max_tokens), dtype=torch.bool, device=dev)
 
-        for i, (item, tokens, desc_projections) in enumerate(
+        for i, (item, tokens, desc_embeddings) in enumerate(
                 zip(model_input.metadata, batch_tokens_data, batch_desc_projections)):
             pano_id = item['pano_id']
 
@@ -492,29 +524,27 @@ class PanoTagTokenExtractor(nn.Module):
                     [yaw_vector[2], yaw_vector[3]],
                 ])
 
-            # Batch-hash all tag values
-            tag_values = [t['value'] for t in tokens]
-            hashed_values = self._value_hasher(tag_values) if tag_values else None
+            # Batch-hash all tag values (only when value ngrams enabled)
+            hashed_values = None
+            if self.config.include_value_ngrams:
+                tag_values = [t['value'] for t in tokens]
+                hashed_values = self._value_hasher(tag_values) if tag_values else None
 
             for j, token_data in enumerate(tokens):
                 lm_idx = token_data['landmark_idx']
                 landmark_idx_emb = self._landmark_idx_embedding(
                     torch.tensor(lm_idx, device=dev))
 
-                key_emb = self._key_embedding(
-                    torch.tensor(token_data['key_idx'], device=dev))
-                val_emb = hashed_values[j]
-
+                parts = [self._key_embedding(
+                    torch.tensor(token_data['key_idx'], device=dev))]
+                if self.config.include_value_ngrams:
+                    parts.append(hashed_values[j])
                 if self.config.include_description_embeddings:
-                    desc_proj = desc_projections.get(
+                    parts.append(desc_embeddings.get(
                         lm_idx,
-                        torch.zeros(self.config.value_embedding_dim, device=dev))
-                    token_vec = self._tag_projection(
-                        torch.cat([key_emb, val_emb, desc_proj]))
-                else:
-                    token_vec = self._tag_projection(
-                        torch.cat([key_emb, val_emb]))
+                        torch.zeros(self.config.description_embedding_dim, device=dev)))
 
+                token_vec = self._tag_projection(torch.cat(parts))
                 features[i, j] = token_vec + landmark_idx_emb
 
                 # Set position from precomputed yaw
@@ -527,7 +557,7 @@ class PanoTagTokenExtractor(nn.Module):
             features=features,
             positions=positions.to(dev),
             mask=mask.to(dev),
-            debug={},
+            debug=debug_stats,
         )
 
     @property

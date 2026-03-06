@@ -94,6 +94,7 @@ class OSMTagTokenExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     include_description_embeddings: bool = True  # fold sentence description embeddings into tag tokens
     description_embedding_dim: int = 1536  # input dimension of precomputed description embeddings
     max_tag_key_vocab_size: int = 100  # max landmarks to tokenize; sizes the landmark index embedding
+    include_value_ngrams: bool = True  # include character n-gram hash of tag values
 
 
 class PanoTagTokenExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
@@ -107,6 +108,7 @@ class PanoTagTokenExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     include_description_embeddings: bool = True  # fold sentence description embeddings into tag tokens
     description_embedding_dim: int = 1536  # input dimension of precomputed description embeddings
     max_tag_key_vocab_size: int = 100  # max landmarks to tokenize; sizes the landmark index embedding
+    include_value_ngrams: bool = True  # include character n-gram hash of tag values
 
 
 class SyntheticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):

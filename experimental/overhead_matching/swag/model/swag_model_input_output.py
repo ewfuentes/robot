@@ -104,7 +104,7 @@ class ExtractorOutput:
             features=self.features.to(*args, **kwargs),
             positions=self.positions.to(*args, **kwargs),
             mask=self.mask.to(*args, **kwargs),
-            debug={k: v.to(*args, **kwargs) for k, v in self.debug.items()})
+            debug={k: v.to(*args, **kwargs) if torch.is_tensor(v) else v for k, v in self.debug.items()})
 
 
 def derive_data_requirements_from_model(model, use_cached_extractors=None):
