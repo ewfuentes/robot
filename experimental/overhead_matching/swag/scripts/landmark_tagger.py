@@ -144,6 +144,14 @@ LANDMARK_RELEVANCE_MODEL = None   # sklearn LogisticRegression or None
 LANDMARK_RELEVANCE_VOCAB = {}     # feature_name -> column index
 LANDMARK_RELEVANCE_DIRTY = False  # set True on annotation change, cleared after refit
 
+# Gemini evaluation: correspondences between Gemini-extracted and OSM landmarks
+GEMINI_EVAL = {}           # pano_id -> {"reviewed": bool, "matches": {...}}
+GEMINI_EVAL_QUEUE = []     # list of pano_idx for panoramas with Gemini preds + "useful" label
+
+# Auto-labeling generic Gemini landmarks via sklearn classifier
+GENERIC_CLF = None         # trained RandomForestClassifier (or None if not enough data)
+GENERIC_VEC = None         # fitted DictVectorizer
+
 # Tag featurization constants for landmark relevance model
 # Primary category tags: full key=value features
 PRIMARY_TAG_KEYS = {
@@ -222,12 +230,103 @@ def _categorize_panorama_osm(pano_idx):
     return "generic"
 
 
+def _extract_landmark_features(glm):
+    """Extract feature dict from a single Gemini landmark for the generic classifier.
+
+    Returns a dict suitable for sklearn DictVectorizer (mix of one-hot string
+    features and numeric features).
+    """
+    import re
+
+    pt = glm.get("primary_tag") or {}
+    key = pt.get("key", "")
+    value = pt.get("value", "")
+    addl = glm.get("additional_tags") or []
+    desc = glm.get("description", "") or ""
+    confidence = glm.get("confidence", "medium")
+    bboxes = glm.get("bounding_boxes") or []
+
+    has_name = any(t.get("key") == "name" for t in addl)
+    # Check for proper nouns in description: words starting with uppercase
+    # that aren't at the start of a sentence
+    words = desc.split()
+    has_proper_nouns = any(
+        w[0].isupper() and not re.match(r"^[A-Z]\.", w)
+        for w in words[1:]
+        if w and w[0].isalpha()
+    ) if len(words) > 1 else False
+
+    feat = {
+        f"key={key}": 1,
+        f"value={value}": 1,
+        f"conf={confidence}": 1,
+        "has_name": int(has_name),
+        "has_proper_nouns": int(has_proper_nouns),
+        "n_additional_tags": len(addl),
+        "desc_length": len(desc),
+        "n_bboxes": len(bboxes),
+    }
+    return feat
+
+
+def _train_generic_classifier():
+    """Train a RandomForest to predict generic landmarks from reviewed GEMINI_EVAL data.
+
+    Sets globals GENERIC_CLF and GENERIC_VEC. No-ops if insufficient labeled data.
+    """
+    global GENERIC_CLF, GENERIC_VEC
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.feature_extraction import DictVectorizer
+
+    features = []
+    labels = []
+
+    for pano_id, ev in GEMINI_EVAL.items():
+        if not ev.get("reviewed"):
+            continue
+        pred = GEMINI_PREDICTIONS.get(pano_id, {})
+        landmarks = pred.get("landmarks", [])
+        for gi_str, match in ev.get("matches", {}).items():
+            status = match.get("status", "unreviewed")
+            if status == "unreviewed":
+                continue
+            gi = int(gi_str)
+            if gi >= len(landmarks):
+                continue
+            feat = _extract_landmark_features(landmarks[gi])
+            labels.append(1 if status == "generic" else 0)
+            features.append(feat)
+
+    n_generic = sum(labels)
+    n_total = len(labels)
+
+    if n_total < 20 or n_generic < 5:
+        GENERIC_CLF = None
+        GENERIC_VEC = None
+        print(f"Generic classifier: insufficient data ({n_total} total, {n_generic} generic) — skipping")
+        return
+
+    vec = DictVectorizer(sparse=False)
+    X = vec.fit_transform(features)
+    y = np.array(labels)
+
+    clf = RandomForestClassifier(n_estimators=50, random_state=42)
+    clf.fit(X, y)
+
+    # Simple training accuracy for logging
+    train_acc = clf.score(X, y)
+    GENERIC_CLF = clf
+    GENERIC_VEC = vec
+    print(f"Generic classifier: trained on {n_total} landmarks "
+          f"({n_generic} generic), accuracy {train_acc:.2f}")
+
+
 def _load_labels():
     """Load panorama labels and tag overrides from the labels JSON file.
 
     Returns True if migration from old (pano_idx) format was performed.
     """
-    global PANO_LABELS, TAG_OVERRIDES, RELEVANT_LANDMARKS, BAD_GPS_PANOS
+    global PANO_LABELS, TAG_OVERRIDES, RELEVANT_LANDMARKS, BAD_GPS_PANOS, GEMINI_EVAL
     if LABELS_PATH is None or not LABELS_PATH.exists():
         return False
     with open(LABELS_PATH) as f:
@@ -264,6 +363,7 @@ def _load_labels():
 
     RELEVANT_LANDMARKS = data.get("relevant_landmarks", {})
     BAD_GPS_PANOS = set(data.get("bad_gps", []))
+    GEMINI_EVAL = data.get("gemini_eval", {})
     return migrated
 
 
@@ -278,6 +378,7 @@ def _save_labels():
         },
         "relevant_landmarks": RELEVANT_LANDMARKS,
         "bad_gps": sorted(BAD_GPS_PANOS),
+        "gemini_eval": GEMINI_EVAL,
     }
     with open(LABELS_PATH, "w") as f:
         json.dump(data, f, indent=2)
@@ -404,6 +505,236 @@ def _retrain_landmark_relevance_model():
     LANDMARK_RELEVANCE_MODEL = model
     print(f"Landmark relevance model retrained ({n_pos}+/{n_neg}-): "
           f"{n_tag_feats} tag features + 2 distance features")
+
+
+def _auto_match_gemini_osm(pano_idx):
+    """Auto-match Gemini landmarks to OSM landmarks for a panorama.
+
+    Uses tag key/value matching and name similarity. Greedy 1:1 assignment
+    with minimum threshold. Returns dict of gemini_idx -> {osm_ids, status}.
+    """
+    import difflib
+
+    pano_id = PANORAMAS[pano_idx]["id"]
+    pred = GEMINI_PREDICTIONS.get(pano_id)
+    if not pred or not pred.get("landmarks"):
+        return {}
+
+    gemini_landmarks = pred["landmarks"]
+    lm_idxs = PANO_LANDMARK_IDXS[pano_idx]
+
+    # Build OSM landmark info list
+    osm_info = []
+    for lm_idx in lm_idxs:
+        row = LANDMARK_METADATA.iloc[lm_idx]
+        osm_id = str(row["id"]) if "id" in row.index else ""
+        props = dict(row["pruned_props"])
+        name = props.get("name", "")
+        # Find primary tag key
+        primary_key = None
+        primary_value = None
+        for k in PRIMARY_TAG_KEYS:
+            if k in props:
+                primary_key = k
+                primary_value = props[k]
+                break
+        osm_info.append({
+            "osm_id": osm_id,
+            "props": props,
+            "name": name,
+            "primary_key": primary_key,
+            "primary_value": primary_value,
+        })
+
+    # Score all pairs
+    scores = []
+    for gi, glm in enumerate(gemini_landmarks):
+        pt = glm.get("primary_tag") or {}
+        g_key = pt.get("key", "")
+        g_value = pt.get("value", "")
+        g_addl = {(t.get("key", ""), t.get("value", "")) for t in (glm.get("additional_tags") or [])}
+        g_name = ""
+        for t in (glm.get("additional_tags") or []):
+            if t.get("key") == "name":
+                g_name = t.get("value", "")
+                break
+        if not g_name:
+            g_name = glm.get("description", "")
+
+        for oi, osm in enumerate(osm_info):
+            score = 0.0
+            # Primary tag key match
+            if g_key and osm["primary_key"] and g_key == osm["primary_key"]:
+                score += 2.0
+                # Primary tag value match
+                if g_value and osm["primary_value"]:
+                    if g_value.lower() == osm["primary_value"].lower():
+                        score += 3.0
+                    elif difflib.SequenceMatcher(None, g_value.lower(), osm["primary_value"].lower()).ratio() > 0.6:
+                        score += 1.5
+
+            # Name match
+            if g_name and osm["name"]:
+                ratio = difflib.SequenceMatcher(None, g_name.lower(), osm["name"].lower()).ratio()
+                score += ratio * 5.0
+
+            # Additional tag overlap
+            for ak, av in g_addl:
+                if ak in osm["props"] and osm["props"][ak].lower() == av.lower():
+                    score += 1.0
+
+            if score > 0:
+                scores.append((score, gi, oi))
+
+    # Greedy 1:1 assignment
+    scores.sort(reverse=True)
+    used_gemini = set()
+    used_osm = set()
+    matches = {}
+    min_threshold = 2.0
+
+    for score, gi, oi in scores:
+        if gi in used_gemini or oi in used_osm:
+            continue
+        if score < min_threshold:
+            break
+        used_gemini.add(gi)
+        used_osm.add(oi)
+        matches[str(gi)] = {"osm_ids": [osm_info[oi]["osm_id"]], "status": "matched"}
+
+    # Unmatched Gemini landmarks: auto-label obvious generics, rest unreviewed
+    for gi in range(len(gemini_landmarks)):
+        if str(gi) not in matches:
+            status = "unreviewed"
+            if GENERIC_CLF is not None:
+                feat = _extract_landmark_features(gemini_landmarks[gi])
+                X = GENERIC_VEC.transform([feat])
+                proba = GENERIC_CLF.predict_proba(X)[0]
+                generic_idx = list(GENERIC_CLF.classes_).index(1)
+                if proba[generic_idx] > 0.8:
+                    status = "generic"
+            matches[str(gi)] = {"osm_ids": [], "status": status}
+
+    return matches
+
+
+def _build_gemini_eval_queue():
+    """Build queue of panoramas eligible for Gemini evaluation.
+
+    Includes panoramas with both Gemini predictions AND 'useful' label.
+    """
+    global GEMINI_EVAL_QUEUE
+    GEMINI_EVAL_QUEUE = []
+    for i, p in enumerate(PANORAMAS):
+        pano_id = p["id"]
+        if PANO_LABELS.get(pano_id) != "useful":
+            continue
+        pred = GEMINI_PREDICTIONS.get(pano_id)
+        if not pred or not pred.get("landmarks"):
+            continue
+        GEMINI_EVAL_QUEUE.append(i)
+
+
+def _compute_gemini_eval_stats():
+    """Compute aggregate statistics from GEMINI_EVAL across reviewed panoramas."""
+    reviewed_panos = []
+    for pano_id, ev in GEMINI_EVAL.items():
+        if ev.get("reviewed"):
+            reviewed_panos.append((pano_id, ev))
+
+    total_in_queue = len(GEMINI_EVAL_QUEUE)
+    n_reviewed = len(reviewed_panos)
+
+    n_matched = 0
+    n_hallucination = 0
+    n_novel = 0
+    n_misidentified = 0
+    n_generic = 0
+    n_out_of_range = 0
+    n_unreviewed = 0
+    conf_bins = {"high": [0, 0], "medium": [0, 0], "low": [0, 0]}  # [matched, total]
+
+    for pano_id, ev in reviewed_panos:
+        pred = GEMINI_PREDICTIONS.get(pano_id, {})
+        landmarks = pred.get("landmarks", [])
+        for gi_str, match in ev.get("matches", {}).items():
+            status = match.get("status", "unreviewed")
+            gi = int(gi_str)
+            conf = landmarks[gi].get("confidence", "medium") if gi < len(landmarks) else "medium"
+            if status == "matched":
+                n_matched += 1
+                if conf in conf_bins:
+                    conf_bins[conf][0] += 1
+                    conf_bins[conf][1] += 1
+            elif status == "hallucination":
+                n_hallucination += 1
+                if conf in conf_bins:
+                    conf_bins[conf][1] += 1
+            elif status == "novel":
+                n_novel += 1
+                if conf in conf_bins:
+                    conf_bins[conf][0] += 1
+                    conf_bins[conf][1] += 1
+            elif status == "misidentified":
+                n_misidentified += 1
+                if conf in conf_bins:
+                    conf_bins[conf][1] += 1
+            elif status == "generic":
+                n_generic += 1
+            elif status == "out_of_range":
+                n_out_of_range += 1
+                if conf in conf_bins:
+                    conf_bins[conf][0] += 1
+                    conf_bins[conf][1] += 1
+            else:
+                n_unreviewed += 1
+
+    total_landmarks = n_matched + n_hallucination + n_novel + n_misidentified + n_generic + n_out_of_range + n_unreviewed
+
+    # Relevant recall: of user-marked relevant OSM landmarks in evaluated panos,
+    # fraction with a Gemini match
+    relevant_total = 0
+    relevant_matched = 0
+    matched_osm_ids = set()
+    for pano_id, ev in reviewed_panos:
+        for match in ev.get("matches", {}).values():
+            if match.get("status") in ("matched", "misidentified"):
+                for oid in match.get("osm_ids", []):
+                    matched_osm_ids.add((pano_id, oid))
+
+    for pano_id, ev in reviewed_panos:
+        for osm_id in RELEVANT_LANDMARKS.get(pano_id, []):
+            relevant_total += 1
+            if (pano_id, osm_id) in matched_osm_ids:
+                relevant_matched += 1
+
+    # Confidence calibration
+    calibration = {}
+    for level, (m, t) in conf_bins.items():
+        calibration[level] = {"matched": m, "total": t, "rate": m / t if t > 0 else None}
+
+    return {
+        "progress": {"reviewed": n_reviewed, "total": total_in_queue},
+        "landmarks": {
+            "total": total_landmarks,
+            "matched": n_matched,
+            "hallucination": n_hallucination,
+            "novel": n_novel,
+            "misidentified": n_misidentified,
+            "generic": n_generic,
+            "out_of_range": n_out_of_range,
+            "unreviewed": n_unreviewed,
+            "match_rate": n_matched / total_landmarks if total_landmarks > 0 else None,
+            "hallucination_rate": n_hallucination / total_landmarks if total_landmarks > 0 else None,
+            "misidentified_rate": n_misidentified / total_landmarks if total_landmarks > 0 else None,
+        },
+        "relevant_recall": {
+            "matched": relevant_matched,
+            "total": relevant_total,
+            "recall": relevant_matched / relevant_total if relevant_total > 0 else None,
+        },
+        "calibration": calibration,
+    }
 
 
 def _score_landmark_relevance(row, pano_idx, lm_idx):
@@ -1502,6 +1833,10 @@ h1 { color: #a0c0ff; margin-bottom: 24px; font-size: 28px; }
         <h2>Landmark Annotation</h2>
         <p>For each useful-labeled panorama, review nearby OSM landmarks and mark which ones are the distinctive feature.</p>
     </a>
+    <a class="card" href="/gemini_eval">
+        <h2>Gemini Evaluation</h2>
+        <p>Evaluate Gemini landmark extraction quality by matching predictions to OSM landmarks. Track hallucinations, novel finds, and confidence calibration.</p>
+    </a>
     <div class="stats" id="stats">Loading stats...</div>
 </div>
 <script>
@@ -1684,6 +2019,7 @@ def set_pano_label():
         del PANO_LABELS[pano_id]
     _recompute_learned_categories()
     _retrain_dino_model()
+    _build_gemini_eval_queue()
     _save_labels()
     n_useful = sum(1 for v in PANO_LABELS.values() if v == "useful")
     n_not_useful = sum(1 for v in PANO_LABELS.values() if v == "not_useful")
@@ -1795,6 +2131,849 @@ def next_to_label():
         "confidence": conf,
         "queue_size": len(ACTIVE_LEARNING_QUEUE),
     })
+
+
+# ---------------------------------------------------------------------------
+# Gemini evaluation endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.route("/api/gemini_eval_queue")
+def gemini_eval_queue():
+    """Return eval queue with review status."""
+    items = []
+    n_reviewed = 0
+    for pano_idx in GEMINI_EVAL_QUEUE:
+        pano_id = PANORAMAS[pano_idx]["id"]
+        ev = GEMINI_EVAL.get(pano_id, {})
+        reviewed = ev.get("reviewed", False)
+        if reviewed:
+            n_reviewed += 1
+        items.append({
+            "pano_idx": pano_idx,
+            "pano_id": pano_id,
+            "reviewed": reviewed,
+        })
+    return jsonify({"queue": items, "total": len(items), "reviewed": n_reviewed})
+
+
+@app.route("/api/gemini_eval_data/<int:index>")
+def gemini_eval_data(index):
+    """Return Gemini + OSM landmarks + match state for one panorama.
+
+    Auto-matches if visiting for the first time.
+    """
+    if index < 0 or index >= len(PANORAMAS):
+        return jsonify({"error": "Index out of range"}), 404
+
+    pano_id = PANORAMAS[index]["id"]
+
+    # Auto-match if no existing eval data
+    if pano_id not in GEMINI_EVAL:
+        matches = _auto_match_gemini_osm(index)
+        GEMINI_EVAL[pano_id] = {"reviewed": False, "matches": matches}
+        _save_labels()
+
+    ev = GEMINI_EVAL[pano_id]
+
+    # Gemini landmarks
+    pred = GEMINI_PREDICTIONS.get(pano_id, {})
+    gemini_landmarks = pred.get("landmarks", [])
+
+    # OSM landmarks with osm_id
+    lm_idxs = PANO_LANDMARK_IDXS[index]
+    osm_landmarks = []
+    for lm_idx in lm_idxs:
+        row = LANDMARK_METADATA.iloc[lm_idx]
+        osm_id = str(row["id"]) if "id" in row.index else ""
+        props = {}
+        for k, v in row["pruned_props"]:
+            props[k] = v
+        osm_landmarks.append({"osm_id": osm_id, "props": props})
+
+    # Relevant OSM IDs
+    relevant_osm_ids = RELEVANT_LANDMARKS.get(pano_id, [])
+
+    return jsonify({
+        "pano_id": pano_id,
+        "reviewed": ev.get("reviewed", False),
+        "matches": ev.get("matches", {}),
+        "gemini_landmarks": gemini_landmarks,
+        "osm_landmarks": osm_landmarks,
+        "relevant_osm_ids": relevant_osm_ids,
+        "location_type": pred.get("location_type"),
+    })
+
+
+@app.route("/api/gemini_eval_match", methods=["POST"])
+def gemini_eval_match():
+    """Set/update a match for a Gemini landmark.
+
+    For status="matched", toggles osm_id in the osm_ids list.
+    For other statuses (hallucination/novel/unreviewed), clears osm_ids.
+    """
+    data = request.get_json()
+    if not data or "pano_idx" not in data or "gemini_idx" not in data:
+        return "Missing pano_idx or gemini_idx", 400
+
+    pano_idx = int(data["pano_idx"])
+    pano_id = PANORAMAS[pano_idx]["id"]
+    gemini_idx = str(data["gemini_idx"])
+    osm_id = data.get("osm_id")
+    status = data.get("status", "matched")
+
+    if pano_id not in GEMINI_EVAL:
+        matches = _auto_match_gemini_osm(pano_idx)
+        GEMINI_EVAL[pano_id] = {"reviewed": False, "matches": matches}
+
+    current = GEMINI_EVAL[pano_id]["matches"].get(gemini_idx, {"osm_ids": [], "status": "unreviewed"})
+    osm_ids = current.get("osm_ids", [])
+    # Migrate old single osm_id format if present
+    if "osm_id" in current and "osm_ids" not in current:
+        osm_ids = [current["osm_id"]] if current["osm_id"] else []
+
+    keep_links = data.get("keep_links", False)
+
+    if status == "matched" and osm_id:
+        # Toggle: add if not present, remove if already there
+        if osm_id in osm_ids:
+            osm_ids.remove(osm_id)
+        else:
+            osm_ids.append(osm_id)
+        # If all OSM IDs removed, revert to unreviewed
+        final_status = "matched" if osm_ids else "unreviewed"
+        GEMINI_EVAL[pano_id]["matches"][gemini_idx] = {
+            "osm_ids": osm_ids,
+            "status": final_status,
+        }
+    elif keep_links:
+        # Change status but preserve existing osm_ids (e.g. misidentified)
+        GEMINI_EVAL[pano_id]["matches"][gemini_idx] = {
+            "osm_ids": osm_ids,
+            "status": status,
+        }
+    else:
+        # hallucination / novel / unreviewed — clear osm_ids
+        GEMINI_EVAL[pano_id]["matches"][gemini_idx] = {
+            "osm_ids": [],
+            "status": status,
+        }
+
+    _save_labels()
+    return jsonify({"ok": True, "matches": GEMINI_EVAL[pano_id]["matches"]})
+
+
+@app.route("/api/gemini_eval_reviewed", methods=["POST"])
+def gemini_eval_reviewed():
+    """Toggle a panorama's reviewed status."""
+    data = request.get_json()
+    if not data or "pano_idx" not in data:
+        return "Missing pano_idx", 400
+
+    pano_idx = int(data["pano_idx"])
+    pano_id = PANORAMAS[pano_idx]["id"]
+
+    if pano_id not in GEMINI_EVAL:
+        matches = _auto_match_gemini_osm(pano_idx)
+        GEMINI_EVAL[pano_id] = {"reviewed": False, "matches": matches}
+
+    reviewed = data.get("reviewed")
+    if reviewed is None:
+        # Toggle
+        reviewed = not GEMINI_EVAL[pano_id].get("reviewed", False)
+    GEMINI_EVAL[pano_id]["reviewed"] = reviewed
+    _save_labels()
+    _train_generic_classifier()
+    return jsonify({"ok": True, "reviewed": reviewed})
+
+
+@app.route("/api/gemini_eval_stats")
+def gemini_eval_stats():
+    """Return aggregate evaluation statistics."""
+    return jsonify(_compute_gemini_eval_stats())
+
+
+# ---------------------------------------------------------------------------
+# Gemini evaluation page
+# ---------------------------------------------------------------------------
+
+GEMINI_EVAL_PAGE = r"""
+<!DOCTYPE html>
+<html>
+<head>
+<title>Gemini Evaluation</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #1a1a2e; color: #e0e0e0; }
+.top-bar { display: flex; align-items: center; gap: 12px; padding: 8px 16px; background: #16213e; border-bottom: 1px solid #0f3460; flex-wrap: wrap; }
+.top-bar button { padding: 6px 14px; border: 1px solid #0f3460; background: #1a1a2e; color: #e0e0e0; border-radius: 4px; cursor: pointer; font-size: 14px; }
+.top-bar button:hover { background: #0f3460; }
+.top-bar .progress { color: #a0c0ff; font-size: 14px; font-weight: bold; }
+.top-bar .pano-info { color: #a0a0c0; font-size: 13px; }
+.stats-bar { display: flex; gap: 16px; padding: 4px 16px; background: #12192e; font-size: 12px; color: #a0a0c0; border-bottom: 1px solid #0f3460; }
+.stats-bar .stat { display: flex; gap: 4px; }
+.stats-bar .stat-val { color: #a0c0ff; font-weight: bold; }
+.main-content { display: flex; height: calc(100vh - 90px); }
+.left-panel { width: 60%; display: flex; flex-direction: column; overflow: hidden; }
+.right-panel { width: 40%; display: flex; flex-direction: column; overflow: hidden; border-left: 1px solid #0f3460; }
+.pinhole-row { display: flex; gap: 4px; padding: 8px; background: #16213e; justify-content: center; flex-shrink: 0; }
+.pinhole-container { position: relative; display: inline-block; }
+.pinhole-container img { height: 140px; border-radius: 4px; border: 2px solid #0f3460; cursor: pointer; transition: border-color 0.15s; display: block; }
+.pinhole-container img:hover { border-color: #a0c0ff; }
+.bbox-overlay { position: absolute; border: 2px solid #ff6b6b; background: rgba(255,107,107,0.15); pointer-events: none; border-radius: 2px; }
+.interactive-view { flex: 1; position: relative; display: flex; align-items: center; justify-content: center; padding: 8px; }
+.interactive-view img { max-width: 100%; max-height: 100%; border-radius: 4px; cursor: grab; }
+.interactive-view img:active { cursor: grabbing; }
+.interactive-view .overlay { position: absolute; top: 16px; left: 16px; background: rgba(0,0,0,0.6); padding: 4px 8px; border-radius: 4px; font-size: 12px; color: #a0c0ff; pointer-events: none; }
+.panel-section { flex: 1; overflow-y: auto; padding: 8px; min-height: 0; }
+.panel-section h3 { color: #a0c0ff; font-size: 14px; margin-bottom: 8px; padding: 0 4px; flex-shrink: 0; }
+.gemini-card { padding: 8px 10px; margin: 4px 0; background: #16213e; border-radius: 6px; border: 2px solid #555; cursor: pointer; transition: all 0.15s; }
+.gemini-card:hover { border-color: #a0c0ff; }
+.gemini-card.selected { border-color: #4fc3f7 !important; background: #1a2a4e; box-shadow: 0 0 12px rgba(79,195,247,0.5), inset 0 0 0 1px rgba(79,195,247,0.3); }
+.gemini-card.selected .gc-idx { background: #4fc3f7; color: #1a1a2e; border-radius: 3px; padding: 0 4px; }
+.gemini-card.status-matched { border-color: #2d6a4f; }
+.gemini-card.status-hallucination { border-color: #6a2d2d; }
+.gemini-card.status-novel { border-color: #6a5a2d; }
+.gemini-card.status-misidentified { border-color: #6a4a2d; }
+.gemini-card.status-generic { border-color: #4a4a4a; }
+.gemini-card.status-out_of_range { border-color: #2d4a6a; }
+.gemini-card.status-unreviewed { border-color: #555; }
+.gemini-card .gc-header { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.gemini-card .gc-idx { color: #a0a0c0; font-size: 11px; font-weight: bold; min-width: 18px; }
+.gemini-card .gc-status { font-size: 10px; padding: 1px 6px; border-radius: 3px; font-weight: bold; }
+.gc-status.matched { background: #1b4332; color: #a0e0c0; }
+.gc-status.hallucination { background: #4a1c1c; color: #ff9090; }
+.gc-status.novel { background: #4a3a1c; color: #e6c860; }
+.gc-status.misidentified { background: #4a3420; color: #e6a860; }
+.gc-status.generic { background: #3a3a3a; color: #aaa; }
+.gc-status.out_of_range { background: #1a3450; color: #80b0e0; }
+.gc-status.unreviewed { background: #333; color: #999; }
+.gemini-card .gc-conf { font-size: 11px; color: #a0a0c0; margin-left: auto; }
+.gemini-card .gc-match-info { font-size: 11px; color: #a0e0c0; margin-top: 4px; padding: 3px 6px; background: #1b4332; border-radius: 3px; }
+.tag-badge-primary { display: inline-block; padding: 1px 5px; background: #2d6a4f; border-radius: 3px; margin: 1px; font-size: 11px; color: #a0e0c0; }
+.tag-badge-addl { display: inline-block; padding: 1px 5px; background: #0f3460; border-radius: 3px; margin: 1px; font-size: 11px; color: #a0a0c0; }
+.gc-desc { color: #808090; font-size: 11px; margin-top: 2px; }
+.osm-card { padding: 8px 10px; margin: 4px 0; background: #16213e; border-radius: 6px; border: 2px solid #0f3460; cursor: pointer; transition: all 0.15s; }
+.osm-card:hover { border-color: #a0c0ff; }
+.osm-card.matched { border-color: #2d6a4f; background: #1b4332; }
+.osm-card .osm-name { font-weight: bold; font-size: 13px; margin-bottom: 4px; }
+.osm-card .osm-tags { font-size: 11px; color: #a0a0c0; }
+.osm-card .osm-tag { display: inline-block; padding: 1px 5px; background: #0f3460; border-radius: 3px; margin: 1px; }
+.osm-card.matched .osm-tag { background: #2d6a4f; }
+.osm-card .osm-id { font-size: 10px; color: #666; margin-top: 3px; }
+.osm-card .relevant-star { color: #e6c860; margin-left: 4px; }
+.divider { border-top: 1px solid #0f3460; margin: 4px 0; }
+#ge-landmark-map { height: 280px; flex-shrink: 0; border-bottom: 1px solid #0f3460; }
+.btn-reviewed-active { background: #1b4332 !important; border-color: #2d6a4f !important; color: #a0e0c0 !important; }
+.help-btn { position: fixed; bottom: 16px; left: 16px; z-index: 1000; padding: 6px 12px; border: 1px solid #0f3460; background: #16213e; color: #a0a0c0; border-radius: 4px; cursor: pointer; font-size: 13px; }
+.help-btn:hover { background: #0f3460; color: #e0e0e0; }
+.help-panel { position: fixed; bottom: 50px; left: 16px; z-index: 1000; background: #16213e; border: 1px solid #0f3460; border-radius: 8px; padding: 14px 18px; display: none; min-width: 240px; box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
+.help-panel.visible { display: block; }
+.help-panel h4 { color: #a0c0ff; margin-bottom: 8px; font-size: 14px; }
+.help-panel table { font-size: 13px; }
+.help-panel td { padding: 2px 0; }
+.help-panel td:first-child { color: #a0c0ff; font-weight: bold; padding-right: 14px; white-space: nowrap; }
+</style>
+</head>
+<body>
+
+<div class="top-bar">
+    <button onclick="geNavigate(-1)" title="Prev (Left)">&#8592; Prev</button>
+    <button onclick="geNavigate(1)" title="Next (Right)">Next &#8594;</button>
+    <button onclick="geSkipUnreviewed()" title="Next unreviewed (s)">Skip unreviewed (s)</button>
+    <button onclick="geToggleReviewed()" title="Toggle reviewed (r)" id="ge-btn-reviewed">Mark reviewed (r)</button>
+    <span class="progress" id="ge-progress">Loading...</span>
+    <span class="pano-info" id="ge-pano-info"></span>
+    <span style="margin-left:auto;">
+        <a href="/tagger" style="color:#a0c0ff;font-size:13px;">Tagger</a>
+        &nbsp;|&nbsp;
+        <a href="/annotate" style="color:#a0c0ff;font-size:13px;">Annotate</a>
+        &nbsp;|&nbsp;
+        <a href="/map" style="color:#a0c0ff;font-size:13px;">Map</a>
+    </span>
+</div>
+<div class="stats-bar" id="ge-stats-bar">Loading stats...</div>
+
+<div class="main-content">
+    <div class="left-panel">
+        <div class="pinhole-row" id="ge-pinhole-row"></div>
+        <div class="interactive-view">
+            <img id="ge-interactive-img" src="" draggable="false">
+            <div class="overlay" id="ge-view-overlay">yaw: 0.0  pitch: 0.0  fov: 90</div>
+        </div>
+    </div>
+    <div class="right-panel">
+        <div class="panel-section" style="border-bottom: 1px solid #0f3460;">
+            <h3>Gemini Landmarks (<span id="ge-gemini-count">0</span>)</h3>
+            <div id="ge-gemini-cards"></div>
+        </div>
+        <div id="ge-landmark-map"></div>
+        <div class="panel-section">
+            <h3>OSM Landmarks (<span id="ge-osm-count">0</span>)</h3>
+            <div id="ge-osm-cards"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+let geQueue = [];
+let geQueuePos = 0;
+let geCurrentIdx = -1;
+let gePanoList = [];
+let geData = null;       // current eval data from API
+let geGeoJson = null;    // GeoJSON FeatureCollection from nearby_landmarks
+let geSelectedGemini = null;  // currently selected gemini index (int or null)
+
+// Map state
+let geMap = null;
+let geLandmarkLayer = null;
+
+// View state
+let geYaw = 0, gePitch = 0, geFov = 90;
+let geDragging = false, geDsX = 0, geDsY = 0, geDsYaw = 0, geDsPitch = 0;
+let geRpTimer = null, geLoadingRP = false;
+
+window.addEventListener('DOMContentLoaded', async () => {
+    // Init map
+    geMap = L.map('ge-landmark-map', {zoomControl: true}).setView([41.88, -87.63], 18);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OSM', maxZoom: 20,
+    }).addTo(geMap);
+    geLandmarkLayer = L.layerGroup().addTo(geMap);
+
+    const pResp = await fetch('/api/panorama_list');
+    const pData = await pResp.json();
+    gePanoList = pData.panoramas;
+
+    await geRefreshQueue();
+
+    // Start at first unreviewed
+    const firstUnreviewed = geQueue.findIndex(q => !q.reviewed);
+    geQueuePos = firstUnreviewed >= 0 ? firstUnreviewed : 0;
+    if (geQueue.length > 0) geLoadPano(geQueuePos);
+
+    geSetupDrag();
+    geLoadStats();
+});
+
+async function geRefreshQueue() {
+    const resp = await fetch('/api/gemini_eval_queue');
+    const data = await resp.json();
+    geQueue = data.queue;
+    geUpdateProgress(data.reviewed, data.total);
+}
+
+function geUpdateProgress(reviewed, total) {
+    document.getElementById('ge-progress').textContent = `${reviewed}/${total} reviewed`;
+}
+
+async function geLoadStats() {
+    const resp = await fetch('/api/gemini_eval_stats');
+    const stats = await resp.json();
+    const lm = stats.landmarks;
+    const rr = stats.relevant_recall;
+    const cal = stats.calibration;
+    let html = '';
+    html += `<div class="stat">Progress: <span class="stat-val">${stats.progress.reviewed}/${stats.progress.total}</span></div>`;
+    if (lm.total > 0) {
+        html += `<div class="stat">Matched: <span class="stat-val">${lm.matched}</span> (${(lm.match_rate*100).toFixed(0)}%)</div>`;
+        html += `<div class="stat">Hallucinations: <span class="stat-val">${lm.hallucination}</span> (${(lm.hallucination_rate*100).toFixed(0)}%)</div>`;
+        html += `<div class="stat">Misidentified: <span class="stat-val">${lm.misidentified}</span> (${(lm.misidentified_rate*100).toFixed(0)}%)</div>`;
+        html += `<div class="stat">Generic: <span class="stat-val">${lm.generic}</span></div>`;
+        html += `<div class="stat">Novel: <span class="stat-val">${lm.novel}</span></div>`;
+        html += `<div class="stat">Out of range: <span class="stat-val">${lm.out_of_range}</span></div>`;
+    }
+    if (rr.total > 0) {
+        html += `<div class="stat">Relevant recall: <span class="stat-val">${rr.matched}/${rr.total}</span> (${(rr.recall*100).toFixed(0)}%)</div>`;
+    }
+    for (const [level, c] of Object.entries(cal)) {
+        if (c.total > 0) {
+            html += `<div class="stat">${level}: <span class="stat-val">${c.matched}/${c.total}</span> (${(c.rate*100).toFixed(0)}%)</div>`;
+        }
+    }
+    document.getElementById('ge-stats-bar').innerHTML = html || 'No stats yet';
+}
+
+async function geLoadPano(queuePos) {
+    if (queuePos < 0 || queuePos >= geQueue.length) return;
+    geQueuePos = queuePos;
+    const entry = geQueue[queuePos];
+    geCurrentIdx = entry.pano_idx;
+    geSelectedGemini = null;
+    const pano = gePanoList[geCurrentIdx];
+
+    // Update info
+    const mapsUrl = `https://www.google.com/maps/place/${pano.lat},${pano.lon}/@${pano.lat},${pano.lon},18z`;
+    document.getElementById('ge-pano-info').innerHTML =
+        `#${queuePos + 1} of ${geQueue.length} | idx=${geCurrentIdx} | ${entry.pano_id} | ` +
+        `<a href="${mapsUrl}" target="_blank" style="color:#a0c0ff;">(${pano.lat.toFixed(5)}, ${pano.lon.toFixed(5)})</a>` +
+        ` | <a href="/tagger?goto=${geCurrentIdx}" target="_blank" style="color:#a0c0ff;">tagger</a>`;
+
+    // Load pinholes
+    const row = document.getElementById('ge-pinhole-row');
+    row.innerHTML = '';
+    for (const yaw of [0, 90, 180, 270]) {
+        const container = document.createElement('div');
+        container.className = 'pinhole-container';
+        container.dataset.yaw = yaw;
+        const img = document.createElement('img');
+        img.src = `/api/image/pinhole/${geCurrentIdx}/${yaw}`;
+        img.title = `${yaw}\u00b0`;
+        img.onclick = () => { geYaw = yaw; gePitch = 0; geFov = 90; geUpdateOverlay(); geLoadReproject(); };
+        container.appendChild(img);
+        row.appendChild(container);
+    }
+
+    // Reset view
+    geYaw = 0; gePitch = 0; geFov = 90;
+    geUpdateOverlay();
+    geLoadReproject();
+
+    // Load eval data and GeoJSON in parallel
+    const [evalResp, geoResp] = await Promise.all([
+        fetch(`/api/gemini_eval_data/${geCurrentIdx}`),
+        fetch(`/api/nearby_landmarks/${geCurrentIdx}`),
+    ]);
+    geData = await evalResp.json();
+    geGeoJson = await geoResp.json();
+    geRenderAll();
+}
+
+function geRenderAll() {
+    if (!geData) return;
+    geRenderGeminiCards();
+    geRenderOsmCards();
+    geRenderBboxes();
+    geRenderMap();
+    geUpdateReviewedBtn();
+}
+
+function geRenderGeminiCards() {
+    const container = document.getElementById('ge-gemini-cards');
+    const landmarks = geData.gemini_landmarks || [];
+    const matches = geData.matches || {};
+    document.getElementById('ge-gemini-count').textContent = landmarks.length;
+
+    if (landmarks.length === 0) {
+        container.innerHTML = '<div style="color:#a0a0c0;font-size:13px;padding:8px;">No Gemini landmarks</div>';
+        return;
+    }
+
+    container.innerHTML = landmarks.map((lm, i) => {
+        const m = matches[String(i)] || {status: 'unreviewed'};
+        const status = m.status || 'unreviewed';
+        const selected = geSelectedGemini === i ? ' selected' : '';
+        const pt = lm.primary_tag || {};
+        const primary = pt.key ? `<span class="tag-badge-primary">${pt.key}=${pt.value}</span>` : '';
+        const addl = (lm.additional_tags || []).map(t =>
+            `<span class="tag-badge-addl">${t.key}=${t.value}</span>`
+        ).join('');
+        const conf = lm.confidence || '';
+        const desc = lm.description ? `<div class="gc-desc">${lm.description}</div>` : '';
+
+        // Show matched OSM info
+        let matchInfo = '';
+        const osmIds = m.osm_ids || [];
+        if ((status === 'matched' || status === 'misidentified') && osmIds.length > 0) {
+            const names = osmIds.map(oid => {
+                const osmLm = (geData.osm_landmarks || []).find(o => o.osm_id === oid);
+                return osmLm ? (osmLm.props.name || oid) : oid;
+            });
+            matchInfo = `<div class="gc-match-info">&#8594; ${names.join(', ')}</div>`;
+        }
+
+        return `<div class="gemini-card status-${status}${selected}" data-gi="${i}" onclick="geSelectGemini(${i})">
+            <div class="gc-header">
+                <span class="gc-idx">${i + 1}</span>
+                ${primary} ${addl}
+                <span class="gc-status ${status}">${status}</span>
+                <span class="gc-conf">[${conf}]</span>
+            </div>
+            ${desc}${matchInfo}
+        </div>`;
+    }).join('');
+}
+
+function geRenderOsmCards() {
+    const container = document.getElementById('ge-osm-cards');
+    const osmLandmarks = geData.osm_landmarks || [];
+    const matches = geData.matches || {};
+    const relevantIds = geData.relevant_osm_ids || [];
+    document.getElementById('ge-osm-count').textContent = osmLandmarks.length;
+
+    // Build set of highlighted OSM IDs: only the selected Gemini landmark's matches,
+    // or all matched/misidentified if nothing is selected
+    const linkedStatuses = new Set(['matched', 'misidentified']);
+    const highlightedOsmIds = new Set();
+    if (geSelectedGemini !== null) {
+        const selMatch = matches[String(geSelectedGemini)];
+        if (selMatch && linkedStatuses.has(selMatch.status)) {
+            for (const oid of (selMatch.osm_ids || [])) highlightedOsmIds.add(oid);
+        }
+    } else {
+        for (const [gi, m] of Object.entries(matches)) {
+            if (linkedStatuses.has(m.status)) {
+                for (const oid of (m.osm_ids || [])) highlightedOsmIds.add(oid);
+            }
+        }
+    }
+
+    if (osmLandmarks.length === 0) {
+        container.innerHTML = '<div style="color:#a0a0c0;font-size:13px;padding:8px;">No OSM landmarks</div>';
+        return;
+    }
+
+    // Sort: relevant first, then rest
+    const sorted = [...osmLandmarks].sort((a, b) => {
+        const aR = relevantIds.includes(a.osm_id) ? 0 : 1;
+        const bR = relevantIds.includes(b.osm_id) ? 0 : 1;
+        return aR - bR;
+    });
+
+    container.innerHTML = sorted.map((osm, i) => {
+        const isMatched = highlightedOsmIds.has(osm.osm_id);
+        const isRelevant = relevantIds.includes(osm.osm_id);
+        const name = osm.props.name || '';
+        const tags = Object.entries(osm.props)
+            .filter(([k]) => k !== 'name' && !k.startsWith('tiger:') && !k.startsWith('gnis:'))
+            .slice(0, 10)
+            .map(([k, v]) => `<span class="osm-tag">${k}=${v}</span>`)
+            .join(' ');
+        const star = isRelevant ? '<span class="relevant-star">&#9733;</span>' : '';
+        return `<div class="osm-card${isMatched ? ' matched' : ''}" data-osm-id="${osm.osm_id}" onclick="geMatchToOsm(this.dataset.osmId)">
+            ${name ? `<div class="osm-name">${name}${star}</div>` : (star ? `<div>${star}</div>` : '')}
+            <div class="osm-tags">${tags}</div>
+            <div class="osm-id">${osm.osm_id}</div>
+        </div>`;
+    }).join('');
+}
+
+function geRenderBboxes() {
+    // Clear existing bboxes
+    document.querySelectorAll('.bbox-overlay').forEach(el => el.remove());
+
+    if (geSelectedGemini === null || !geData) return;
+    const lm = (geData.gemini_landmarks || [])[geSelectedGemini];
+    if (!lm || !lm.bounding_boxes) return;
+
+    const yawMap = {'0': 0, '90': 1, '180': 2, '270': 3};
+    const containers = document.querySelectorAll('.pinhole-container');
+
+    for (const bb of lm.bounding_boxes) {
+        const yawKey = String(bb.yaw_angle);
+        const containerIdx = yawMap[yawKey];
+        if (containerIdx === undefined || containerIdx >= containers.length) continue;
+        const container = containers[containerIdx];
+        const img = container.querySelector('img');
+        if (!img) continue;
+
+        const div = document.createElement('div');
+        div.className = 'bbox-overlay';
+        // Coordinates are normalized 0-1000
+        const scale = img.offsetHeight / 1000;
+        div.style.left = (bb.xmin * scale) + 'px';
+        div.style.top = (bb.ymin * scale) + 'px';
+        div.style.width = ((bb.xmax - bb.xmin) * scale) + 'px';
+        div.style.height = ((bb.ymax - bb.ymin) * scale) + 'px';
+        container.appendChild(div);
+    }
+}
+
+function geRenderMap() {
+    if (!geMap || !geGeoJson) return;
+    const pano = gePanoList[geCurrentIdx];
+    geMap.setView([pano.lat, pano.lon], 18);
+    geLandmarkLayer.clearLayers();
+
+    // Panorama marker
+    L.circleMarker([pano.lat, pano.lon], {
+        radius: 6, fillColor: '#ff4444', color: '#fff', weight: 2, fillOpacity: 1,
+    }).bindPopup('Panorama').addTo(geLandmarkLayer);
+
+    // Build sets for styling
+    const matches = (geData && geData.matches) || {};
+    const relevantIds = (geData && geData.relevant_osm_ids) || [];
+    const linkedStatuses = new Set(['matched', 'misidentified']);
+    const matchedOsmIds = new Set();
+    for (const [gi, m] of Object.entries(matches)) {
+        if (linkedStatuses.has(m.status)) {
+            for (const oid of (m.osm_ids || [])) matchedOsmIds.add(oid);
+        }
+    }
+    // Selected Gemini's linked OSM IDs
+    const selectedOsmIds = new Set();
+    if (geSelectedGemini !== null) {
+        const selMatch = matches[String(geSelectedGemini)];
+        if (selMatch && linkedStatuses.has(selMatch.status)) {
+            for (const oid of (selMatch.osm_ids || [])) selectedOsmIds.add(oid);
+        }
+    }
+
+    // Map osm_id from eval data to GeoJSON features via tag matching
+    const osmLandmarks = (geData && geData.osm_landmarks) || [];
+
+    geGeoJson.features.forEach((f, i) => {
+        const osmId = osmLandmarks[i] ? osmLandmarks[i].osm_id : '';
+        const isRelevant = relevantIds.includes(osmId);
+        const isSelected = selectedOsmIds.has(osmId);
+        const isMatched = matchedOsmIds.has(osmId);
+
+        let color = '#4fc3f7';
+        let weight = 2;
+        let fillOpacity = 0.3;
+        let radius = 5;
+        if (isSelected) {
+            color = '#4fc3f7'; weight = 4; fillOpacity = 0.7; radius = 8;
+        } else if (isMatched) {
+            color = '#2d9e2d'; weight = 3; fillOpacity = 0.5; radius = 7;
+        } else if (isRelevant) {
+            color = '#e6c860'; weight = 3; fillOpacity = 0.5; radius = 7;
+        }
+
+        const layer = L.geoJSON(f, {
+            style: { color, weight, fillColor: color, fillOpacity },
+            pointToLayer: (feature, latlng) => L.circleMarker(latlng, {
+                radius, fillColor: color, color: '#fff',
+                weight: isSelected ? 3 : (isMatched || isRelevant ? 2 : 1),
+                fillOpacity: isSelected ? 0.9 : fillOpacity,
+            }),
+            onEachFeature: (feature, layer) => {
+                const props = feature.properties;
+                const lines = Object.entries(props)
+                    .filter(([k,v]) => v && !k.startsWith('addr:') && !k.startsWith('tiger:'))
+                    .slice(0, 12)
+                    .map(([k,v]) => `<b>${k}</b>: ${v}`);
+                if (lines.length) layer.bindPopup(lines.join('<br>'), {maxWidth: 300});
+            },
+        });
+        layer.addTo(geLandmarkLayer);
+    });
+
+    // Invalidate size in case map was hidden
+    setTimeout(() => geMap.invalidateSize(), 100);
+}
+
+function geSelectGemini(idx) {
+    if (geSelectedGemini === idx) {
+        geSelectedGemini = null;
+    } else {
+        geSelectedGemini = idx;
+    }
+    geRenderAll();
+}
+
+async function geMatchToOsm(osmId) {
+    if (geSelectedGemini === null) return;
+    const resp = await fetch('/api/gemini_eval_match', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            pano_idx: geCurrentIdx,
+            gemini_idx: geSelectedGemini,
+            osm_id: osmId,
+            status: 'matched',
+        }),
+    });
+    const data = await resp.json();
+    geData.matches = data.matches;
+    geRenderAll();
+}
+
+async function geSetStatus(status) {
+    if (geSelectedGemini === null) return;
+    const resp = await fetch('/api/gemini_eval_match', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            pano_idx: geCurrentIdx,
+            gemini_idx: geSelectedGemini,
+            osm_id: null,
+            status: status,
+        }),
+    });
+    const data = await resp.json();
+    geData.matches = data.matches;
+    geAdvanceSelection();
+    geRenderAll();
+}
+
+async function geSetStatusKeepLinks(status) {
+    // Change status but preserve existing osm_ids links
+    if (geSelectedGemini === null) return;
+    const resp = await fetch('/api/gemini_eval_match', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            pano_idx: geCurrentIdx,
+            gemini_idx: geSelectedGemini,
+            status: status,
+            keep_links: true,
+        }),
+    });
+    const data = await resp.json();
+    geData.matches = data.matches;
+    geAdvanceSelection();
+    geRenderAll();
+}
+
+function geAdvanceSelection() {
+    // Move to next unreviewed gemini landmark after current
+    const landmarks = geData.gemini_landmarks || [];
+    const matches = geData.matches || {};
+    for (let i = geSelectedGemini + 1; i < landmarks.length; i++) {
+        const m = matches[String(i)];
+        if (!m || m.status === 'unreviewed') {
+            geSelectedGemini = i;
+            return;
+        }
+    }
+    geSelectedGemini = null;
+}
+
+async function geToggleReviewed() {
+    const resp = await fetch('/api/gemini_eval_reviewed', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({pano_idx: geCurrentIdx}),
+    });
+    const result = await resp.json();
+    const nowReviewed = result.reviewed;
+    geQueue[geQueuePos].reviewed = nowReviewed;
+    geData.reviewed = nowReviewed;
+    const reviewed = geQueue.filter(q => q.reviewed).length;
+    geUpdateProgress(reviewed, geQueue.length);
+    geUpdateReviewedBtn();
+    geLoadStats();
+    if (nowReviewed) geNavigate(1);
+}
+
+function geUpdateReviewedBtn() {
+    const btn = document.getElementById('ge-btn-reviewed');
+    if (!btn || !geData) return;
+    if (geData.reviewed) {
+        btn.classList.add('btn-reviewed-active');
+        btn.textContent = 'Reviewed (r)';
+    } else {
+        btn.classList.remove('btn-reviewed-active');
+        btn.textContent = 'Mark reviewed (r)';
+    }
+}
+
+function geNavigate(delta) {
+    const newPos = geQueuePos + delta;
+    if (newPos >= 0 && newPos < geQueue.length) geLoadPano(newPos);
+}
+
+async function geSkipUnreviewed() {
+    await geRefreshQueue();
+    for (let i = geQueuePos + 1; i < geQueue.length; i++) {
+        if (!geQueue[i].reviewed) { geLoadPano(i); return; }
+    }
+    for (let i = 0; i < geQueuePos; i++) {
+        if (!geQueue[i].reviewed) { geLoadPano(i); return; }
+    }
+    geNavigate(1);
+}
+
+// --- Drag/zoom for interactive view ---
+function geSetupDrag() {
+    const img = document.getElementById('ge-interactive-img');
+    img.addEventListener('mousedown', e => {
+        geDragging = true; geDsX = e.clientX; geDsY = e.clientY;
+        geDsYaw = geYaw; geDsPitch = gePitch; e.preventDefault();
+    });
+    window.addEventListener('mousemove', e => {
+        if (!geDragging) return;
+        const dx = e.clientX - geDsX, dy = e.clientY - geDsY;
+        const sensitivity = geFov / 600;
+        geYaw = geDsYaw + dx * sensitivity;
+        gePitch = Math.max(-80, Math.min(80, geDsPitch + dy * sensitivity));
+        geUpdateOverlay();
+        if (geRpTimer) clearTimeout(geRpTimer);
+        geRpTimer = setTimeout(() => geLoadReproject(), 80);
+    });
+    window.addEventListener('mouseup', () => { if (geDragging) { geDragging = false; geLoadReproject(); } });
+    img.addEventListener('wheel', e => {
+        e.preventDefault();
+        geFov = Math.max(20, Math.min(150, geFov + e.deltaY * 0.1));
+        geUpdateOverlay(); geLoadReproject();
+    });
+}
+
+function geUpdateOverlay() {
+    document.getElementById('ge-view-overlay').textContent =
+        `yaw: ${geYaw.toFixed(1)}  pitch: ${gePitch.toFixed(1)}  fov: ${geFov.toFixed(0)}`;
+}
+
+async function geLoadReproject() {
+    if (geLoadingRP) return;
+    geLoadingRP = true;
+    const yR = geYaw * Math.PI / 180, pR = gePitch * Math.PI / 180, fR = geFov * Math.PI / 180;
+    try {
+        const resp = await fetch(`/api/image/reproject/${geCurrentIdx}?yaw=${yR}&pitch=${pR}&fov=${fR}`);
+        if (resp.ok) {
+            const blob = await resp.blob();
+            const img = document.getElementById('ge-interactive-img');
+            const oldSrc = img.src;
+            img.src = URL.createObjectURL(blob);
+            if (oldSrc.startsWith('blob:')) URL.revokeObjectURL(oldSrc);
+        }
+    } finally { geLoadingRP = false; }
+}
+
+// Keyboard shortcuts
+window.addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.key === 'ArrowLeft') { geNavigate(-1); e.preventDefault(); }
+    if (e.key === 'ArrowRight') { geNavigate(1); e.preventDefault(); }
+    if (e.key === 's') { geSkipUnreviewed(); e.preventDefault(); }
+    if (e.key === 'r') { geToggleReviewed(); e.preventDefault(); }
+    if (e.key === 'h') { geSetStatus('hallucination'); e.preventDefault(); }
+    if (e.key === 'n') { geSetStatus('novel'); e.preventDefault(); }
+    if (e.key === 'm') { geSetStatusKeepLinks('misidentified'); e.preventDefault(); }
+    if (e.key === 'g') { geSetStatus('generic'); e.preventDefault(); }
+    if (e.key === 'o') { geSetStatus('out_of_range'); e.preventDefault(); }
+    if (e.key === 'x') { geSetStatus('unreviewed'); e.preventDefault(); }
+    if (e.key === 'Escape') { geSelectedGemini = null; geRenderAll(); e.preventDefault(); }
+    // 1-9 to select gemini landmarks
+    if (e.key >= '1' && e.key <= '9') {
+        const idx = parseInt(e.key) - 1;
+        if (geData && idx < (geData.gemini_landmarks || []).length) {
+            geSelectGemini(idx);
+            e.preventDefault();
+        }
+    }
+});
+</script>
+
+<button class="help-btn" onclick="document.getElementById('help-panel').classList.toggle('visible')">? Keys</button>
+<div class="help-panel" id="help-panel">
+    <h4>Keyboard Shortcuts</h4>
+    <table>
+        <tr><td>1-9</td><td>Select Gemini landmark</td></tr>
+        <tr><td>Esc</td><td>Deselect</td></tr>
+        <tr><td>h</td><td>Mark hallucination</td></tr>
+        <tr><td>n</td><td>Mark novel</td></tr>
+        <tr><td>m</td><td>Mark misidentified</td></tr>
+        <tr><td>g</td><td>Mark generic</td></tr>
+        <tr><td>o</td><td>Mark out of range</td></tr>
+        <tr><td>x</td><td>Clear to unreviewed</td></tr>
+        <tr><td>r</td><td>Toggle reviewed</td></tr>
+        <tr><td>s</td><td>Skip to next unreviewed</td></tr>
+        <tr><td>&larr; &rarr;</td><td>Prev / Next</td></tr>
+    </table>
+</div>
+
+</body>
+</html>
+"""
+
+
+@app.route("/gemini_eval")
+def gemini_eval_page():
+    return Response(GEMINI_EVAL_PAGE, content_type="text/html")
 
 
 # ---------------------------------------------------------------------------
@@ -2891,6 +4070,15 @@ def main():
             _retrain_dino_model()
     elif args.dino_cache:
         print(f"Warning: DINO cache not found at {args.dino_cache}")
+
+    # Build Gemini evaluation queue
+    _build_gemini_eval_queue()
+    n_ge_reviewed = sum(1 for i in GEMINI_EVAL_QUEUE
+                        if GEMINI_EVAL.get(PANORAMAS[i]["id"], {}).get("reviewed"))
+    print(f"Gemini eval queue: {len(GEMINI_EVAL_QUEUE)} panoramas "
+          f"({n_ge_reviewed} reviewed)")
+
+    _train_generic_classifier()
 
     print(f"\nStarting server on {args.host}:{args.port}")
     print(f"Output: {args.output}")
