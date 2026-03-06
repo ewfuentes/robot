@@ -48,9 +48,11 @@ else
     chmod +x ~/.local/bin/bazel
 fi
 
+# Install uv (used by bazel run //third_party/python:requirements_X_Y.update)
+command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh
+
 if [ "${ARCH}" = "aarch64" ]; then
-    # Regenerate python requirements for aarch64 using uv
-    command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh
+    # aarch64 wheels differ from x86_64, so regenerate the lockfile
     bazel run //third_party/python:requirements_3_12.update
 fi
 
