@@ -21,7 +21,6 @@ py_binary(
     requirement("pandas"),
     requirement("polars"),
     requirement("seaborn"),
-    requirement("polars"),
     requirement("watchdog"),
     requirement("tensorboard"),
     requirement("osmnx"),
