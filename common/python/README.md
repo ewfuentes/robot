@@ -30,7 +30,7 @@ multi_pip_parse(
 )
 ```
 
-In `//third_party/python:BUILD`, add a `uv_compile_pip_requirements` entry (loaded from `//third_party/python:uv_compile_pip_requirements.bzl`) for the new version. To generate the requirements file, run `bazel run //third_party/python:requirements_<new_version>.update`. Note that you may need to create an empty file first before the rule succeeds. This requires `uv` on PATH.
+In `//third_party/python:BUILD`, add a `uv_compile_pip_requirements` entry (loaded from `//third_party/python:uv_compile_pip_requirements.bzl`) for the new version. To generate the requirements file, run `bazel run //third_party/python:requirements_<new_version>.update`. Note that you may need to create an empty file first before the rule succeeds.
 
 ## Building Against Different Python Versions
 
