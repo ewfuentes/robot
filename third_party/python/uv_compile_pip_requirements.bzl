@@ -1,3 +1,5 @@
+load("@rules_python//python:versions.bzl", "MINOR_MAPPING")
+
 def uv_compile_pip_requirements(name, requirements_in, requirements_txt, python_version):
     """Drop-in replacement for compile_pip_requirements using uv.
 
@@ -6,6 +8,7 @@ def uv_compile_pip_requirements(name, requirements_in, requirements_txt, python_
       - {name}: bazel test target to check lockfile freshness
     """
     version_dotted = python_version.replace("_", ".")
+    version_dotted = MINOR_MAPPING.get(version_dotted, version_dotted)
 
     uv_data = select({
         "@platforms//cpu:x86_64": ["@uv_x86_64//:uv"],
