@@ -83,7 +83,7 @@ Python dependencies are managed through requirements files in `third_party/pytho
 - `requirements_3_10.txt`
 - `requirements_3_12.txt`
 
-To update requirements (requires `uv` on PATH):
+To update requirements:
 ```bash
 bazel run //third_party/python:requirements_3_12.update
 ```
