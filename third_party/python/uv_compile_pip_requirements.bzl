@@ -8,7 +8,7 @@ def uv_compile_pip_requirements(name, requirements_in, requirements_txt, python_
       - {name}: bazel test target to check lockfile freshness
     """
     version_dotted = python_version.replace("_", ".")
-    version_dotted = MINOR_MAPPING.get(version_dotted, version_dotted)
+    resolution_version_dotted = MINOR_MAPPING.get(version_dotted, version_dotted)
 
     uv_data = select({
         "@platforms//cpu:x86_64": ["@uv_x86_64//:uv"],
@@ -21,6 +21,7 @@ def uv_compile_pip_requirements(name, requirements_in, requirements_txt, python_
         args = [
             "update",
             version_dotted,
+            resolution_version_dotted,
             "$(location {})".format(requirements_in),
             "$(rootpath {})".format(requirements_txt),
         ],
@@ -34,6 +35,7 @@ def uv_compile_pip_requirements(name, requirements_in, requirements_txt, python_
         args = [
             "test",
             version_dotted,
+            resolution_version_dotted,
             "$(location {})".format(requirements_in),
             "$(location {})".format(requirements_txt),
         ],
