@@ -189,7 +189,7 @@ beautifulsoup4==4.12.2 \
     #   -r third_party/python/requirements_3_12.in
     #   gdown
     #   nbconvert
-bleach==6.2.0 \
+bleach[css]==6.2.0 \
     --hash=sha256:117d9c6097a7c3d22fd578fcd8d35ff1e125df6736f554da4e432fdd63f31e5e \
     --hash=sha256:123e894118b8a599fd80d3ec1a6d4cc7ce4e5882b1317a7e1ba69b56e95f991f
     # via
@@ -964,7 +964,7 @@ fvcore==0.1.5.post20221221 \
     # via
     #   -c constraints.txt
     #   dinov2
-gdown==5.2.0 \
+gdown==5.2.0 ; platform_machine == 'x86_64' \
     --hash=sha256:2145165062d85520a3cd98b356c9ed522c5e7984d408535409fd46f94defc787 \
     --hash=sha256:33083832d82b1101bdd0e9df3edd0fbc0e1c5f14c9d8c38d2a35bf1683b526d6
     # via
@@ -983,7 +983,7 @@ google-api-core==2.28.1 \
     #   -c constraints.txt
     #   google-cloud-core
     #   google-cloud-storage
-google-auth==2.45.0 \
+google-auth[requests]==2.45.0 \
     --hash=sha256:82344e86dc00410ef5382d99be677c6043d72e502b625aa4f4afa0bdacca0f36 \
     --hash=sha256:90d3f41b6b72ea72dd9811e765699ee491ab24139f34ebf1ca2b9cc0c38708f3
     # via
@@ -1122,7 +1122,7 @@ h11==0.16.0 \
     #   -c constraints.txt
     #   httpcore
     #   uvicorn
-h5py==3.14.0 \
+h5py==3.14.0 ; platform_machine == 'x86_64' \
     --hash=sha256:016e89d3be4c44f8d5e115fab60548e518ecd9efe9fa5c5324505a90773e6f03 \
     --hash=sha256:0cbd41f4e3761f150aa5b662df991868ca533872c95467216f2bec5fcad84882 \
     --hash=sha256:1223b902ef0b5d90bcc8a4778218d6d6cd0f5561861611eda59fa6c52b922f4d \
@@ -1152,7 +1152,7 @@ h5py==3.14.0 \
     # via
     #   -c constraints.txt
     #   hloc
-hf-xet==1.1.7 \
+hf-xet==1.1.7 ; platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64' \
     --hash=sha256:18b61bbae92d56ae731b92087c44efcac216071182c603fc535f8e29ec4b09b8 \
     --hash=sha256:20cec8db4561338824a3b5f8c19774055b04a8df7fff0cb1ff2cb1a0c1607b80 \
     --hash=sha256:2e356da7d284479ae0f1dea3cf5a2f74fdf925d6dca84ac4341930d892c7cb34 \
@@ -1164,7 +1164,7 @@ hf-xet==1.1.7 \
     # via
     #   -c constraints.txt
     #   huggingface-hub
-hloc @ git+https://github.com/cvg/Hierarchical-Localization.git@2e2a5517d88c7c84db0efd77d720c858da19edcd
+hloc @ git+https://github.com/cvg/Hierarchical-Localization.git@2e2a5517d88c7c84db0efd77d720c858da19edcd ; platform_machine == 'x86_64'
     # via
     #   -c constraints.txt
     #   -r third_party/python/requirements_3_12.in
@@ -1439,7 +1439,7 @@ jsonpointer==3.0.0 \
     # via
     #   -c constraints.txt
     #   jsonschema
-jsonschema==4.25.0 \
+jsonschema[format-nongpl]==4.25.0 \
     --hash=sha256:24c2e8da302de79c8b9382fee3e76b355e44d2a4364bb207159ce10b517bd716 \
     --hash=sha256:e63acf5c11762c0e6672ffb61482bdf57f0876684d8d249c0fe2d730d48bc55f
     # via
@@ -1695,7 +1695,7 @@ lazy-loader==0.4 \
     # via
     #   -c constraints.txt
     #   scikit-image
-lightglue @ git+https://github.com/cvg/LightGlue@eb42fee2d71449efb0aa5c10549752b5d75384d8
+lightglue @ git+https://github.com/cvg/LightGlue@eb42fee2d71449efb0aa5c10549752b5d75384d8 ; platform_machine == 'x86_64'
     # via
     #   -c constraints.txt
     #   hloc
@@ -1754,7 +1754,7 @@ lmdb==1.7.2 \
     # via
     #   -c constraints.txt
     #   -r third_party/python/requirements_3_12.in
-loro==1.5.4 \
+loro==1.5.4 ; python_full_version < '3.14' \
     --hash=sha256:04a9f0c04bc5952877238ee36cd2e2e9364e3ea21ad4daec73911ddc06b1f8b5 \
     --hash=sha256:05e9c83433e290b66d796f628857f808fcd624906dca0967132147f18dabdf60 \
     --hash=sha256:06765745f4a572b7da84aefc4919933971ae9c9f0f7c27d5ef2506c15480f121 \
@@ -2247,7 +2247,7 @@ numpy==1.26.4 \
     #   torchmetrics
     #   torchvision
     #   transformers
-nvidia-cublas-cu12==12.8.3.14 \
+nvidia-cublas-cu12==12.8.3.14 ; platform_machine == 'x86_64' and sys_platform == 'linux' \
     --hash=sha256:3f0e05e7293598cf61933258b73e66a160c27d59c4422670bf0b79348c04be44 \
     --hash=sha256:93a4e0e386cc7f6e56c822531396de8170ed17068a1e18f987574895044cd8c3 \
     --hash=sha256:9ae5eae500aead01fc4bdfc458209df638b1a3551557ce11a78eea9ece602ae9
@@ -2256,62 +2256,62 @@ nvidia-cublas-cu12==12.8.3.14 \
     #   nvidia-cudnn-cu12
     #   nvidia-cusolver-cu12
     #   torch
-nvidia-cuda-cupti-cu12==12.8.57 \
+nvidia-cuda-cupti-cu12==12.8.57 ; platform_machine == 'x86_64' and sys_platform == 'linux' \
     --hash=sha256:8e0b2eb847de260739bee4a3f66fac31378f4ff49538ff527a38a01a9a39f950 \
     --hash=sha256:bbed719c52a476958a74cfc42f2b95a3fd6b3fd94eb40134acc4601feb4acac3 \
     --hash=sha256:ff154211724fd824e758ce176b66007b558eea19c9a5135fc991827ee147e317
     # via
     #   -c constraints.txt
     #   torch
-nvidia-cuda-nvrtc-cu12==12.8.61 \
+nvidia-cuda-nvrtc-cu12==12.8.61 ; platform_machine == 'x86_64' and sys_platform == 'linux' \
     --hash=sha256:9c8887bf5e5dffc441018ba8c5dc59952372a6f4806819e8c1f03d62637dbeea \
     --hash=sha256:a0fa9c2a21583105550ebd871bd76e2037205d56f33f128e69f6d2a55e0af9ed \
     --hash=sha256:b1f376bf58111ca73dde4fd4df89a462b164602e074a76a2c29c121ca478dcd4
     # via
     #   -c constraints.txt
     #   torch
-nvidia-cuda-runtime-cu12==12.8.57 \
+nvidia-cuda-runtime-cu12==12.8.57 ; platform_machine == 'x86_64' and sys_platform == 'linux' \
     --hash=sha256:534ccebd967b6a44292678fa5da4f00666029cb2ed07a79515ea41ef31fe3ec7 \
     --hash=sha256:75342e28567340b7428ce79a5d6bb6ca5ff9d07b69e7ce00d2c7b4dc23eff0be \
     --hash=sha256:89be637e3ee967323865b85e0f147d75f9a5bd98360befa37481b02dd57af8f5
     # via
     #   -c constraints.txt
     #   torch
-nvidia-cudnn-cu12==9.7.1.26 \
+nvidia-cudnn-cu12==9.7.1.26 ; platform_machine == 'x86_64' and sys_platform == 'linux' \
     --hash=sha256:6d011159a158f3cfc47bf851aea79e31bcff60d530b70ef70474c84cac484d07 \
     --hash=sha256:7b805b9a4cf9f3da7c5f4ea4a9dff7baf62d1a612d6154a7e0d2ea51ed296241 \
     --hash=sha256:848a61d40ef3b32bd4e1fadb599f0cf04a4b942fbe5fb3be572ad75f9b8c53ef
     # via
     #   -c constraints.txt
     #   torch
-nvidia-cufft-cu12==11.3.3.41 \
+nvidia-cufft-cu12==11.3.3.41 ; platform_machine == 'x86_64' and sys_platform == 'linux' \
     --hash=sha256:68509dcd7e3306e69d0e2d8a6d21c8b25ed62e6df8aac192ce752f17677398b5 \
     --hash=sha256:da650080ab79fcdf7a4b06aa1b460e99860646b176a43f6208099bdc17836b6a \
     --hash=sha256:f9760612886786601d27a0993bb29ce1f757e6b8b173499d0ecfa850d31b50f8
     # via
     #   -c constraints.txt
     #   torch
-nvidia-cufile-cu12==1.13.0.11 \
+nvidia-cufile-cu12==1.13.0.11 ; platform_machine == 'x86_64' and sys_platform == 'linux' \
     --hash=sha256:2acbee65dc2eaf58331f0798c5e6bcdd790c4acb26347530297e63528c9eba5d \
     --hash=sha256:483f434c541806936b98366f6d33caef5440572de8ddf38d453213729da3e7d4
     # via
     #   -c constraints.txt
     #   torch
-nvidia-curand-cu12==10.3.9.55 \
+nvidia-curand-cu12==10.3.9.55 ; platform_machine == 'x86_64' and sys_platform == 'linux' \
     --hash=sha256:570d82475fe7f3d8ed01ffbe3b71796301e0e24c98762ca018ff8ce4f5418e1f \
     --hash=sha256:8387d974240c91f6a60b761b83d4b2f9b938b7e0b9617bae0f0dafe4f5c36b86 \
     --hash=sha256:b6bb90c044fa9b07cedae2ef29077c4cf851fb6fdd6d862102321f359dca81e9
     # via
     #   -c constraints.txt
     #   torch
-nvidia-cusolver-cu12==11.7.2.55 \
+nvidia-cusolver-cu12==11.7.2.55 ; platform_machine == 'x86_64' and sys_platform == 'linux' \
     --hash=sha256:0fd9e98246f43c15bee5561147ad235dfdf2d037f5d07c9d41af3f7f72feb7cc \
     --hash=sha256:4d1354102f1e922cee9db51920dba9e2559877cf6ff5ad03a00d853adafb191b \
     --hash=sha256:a5a516c55da5c5aba98420d9bc9bcab18245f21ec87338cc1f930eb18dd411ac
     # via
     #   -c constraints.txt
     #   torch
-nvidia-cusparse-cu12==12.5.7.53 \
+nvidia-cusparse-cu12==12.5.7.53 ; platform_machine == 'x86_64' and sys_platform == 'linux' \
     --hash=sha256:3c1b61eb8c85257ea07e9354606b26397612627fdcd327bfd91ccf6155e7c86d \
     --hash=sha256:82c201d6781bacf6bb7c654f0446728d0fe596dfdd82ef4a04c204ce3e107441 \
     --hash=sha256:d869c6146ca80f4305b62e02d924b4aaced936f8173e3cef536a67eed2a91af1
@@ -2319,20 +2319,20 @@ nvidia-cusparse-cu12==12.5.7.53 \
     #   -c constraints.txt
     #   nvidia-cusolver-cu12
     #   torch
-nvidia-cusparselt-cu12==0.6.3 \
+nvidia-cusparselt-cu12==0.6.3 ; platform_machine == 'x86_64' and sys_platform == 'linux' \
     --hash=sha256:3b325bcbd9b754ba43df5a311488fca11a6b5dc3d11df4d190c000cf1a0765c7 \
     --hash=sha256:8371549623ba601a06322af2133c4a44350575f5a3108fb75f3ef20b822ad5f1 \
     --hash=sha256:e5c8a26c36445dd2e6812f1177978a24e2d37cacce7e090f297a688d1ec44f46
     # via
     #   -c constraints.txt
     #   torch
-nvidia-nccl-cu12==2.26.2 \
+nvidia-nccl-cu12==2.26.2 ; platform_machine == 'x86_64' and sys_platform == 'linux' \
     --hash=sha256:5c196e95e832ad30fbbb50381eb3cbd1fadd5675e587a548563993609af19522 \
     --hash=sha256:694cf3879a206553cc9d7dbda76b13efaf610fdb70a50cba303de1b0d1530ac6
     # via
     #   -c constraints.txt
     #   torch
-nvidia-nvjitlink-cu12==12.8.61 \
+nvidia-nvjitlink-cu12==12.8.61 ; platform_machine == 'x86_64' and sys_platform == 'linux' \
     --hash=sha256:1166a964d25fdc0eae497574d38824305195a5283324a21ccb0ce0c802cbf41c \
     --hash=sha256:45fd79f2ae20bd67e8bc411055939049873bfd8fac70ff13bd4865e0b9bdab17 \
     --hash=sha256:9b80ecab31085dda3ce3b41d043be0ec739216c3fc633b8abe212d5a30026df0
@@ -2342,7 +2342,7 @@ nvidia-nvjitlink-cu12==12.8.61 \
     #   nvidia-cusolver-cu12
     #   nvidia-cusparse-cu12
     #   torch
-nvidia-nvtx-cu12==12.8.55 \
+nvidia-nvtx-cu12==12.8.55 ; platform_machine == 'x86_64' and sys_platform == 'linux' \
     --hash=sha256:2dd0780f1a55c21d8e06a743de5bd95653de630decfff40621dbde78cc307102 \
     --hash=sha256:9022681677aef1313458f88353ad9c0d2fbbe6402d6b07c9f00ba0e3ca8774d3 \
     --hash=sha256:c38405335fbc0f0bf363eaeaeb476e8dfa8bae82fada41d25ace458b9ba9f3db
@@ -2534,7 +2534,7 @@ parso==0.8.4 \
     # via
     #   -c constraints.txt
     #   jedi
-pexpect==4.9.0 \
+pexpect==4.9.0 ; sys_platform != 'emscripten' and sys_platform != 'win32' \
     --hash=sha256:7236d1e080e4936be2dc3e326cec0af72acf9212a7e1d060210e70a47e253523 \
     --hash=sha256:ee7d41123f3c9911050ea2c2dac107568dc43b2d3b0c7557a33212c398ead30f
     # via
@@ -2775,7 +2775,7 @@ psutil==7.0.0 \
     #   -r third_party/python/requirements_3_12.in
     #   ipykernel
     #   marimo
-ptyprocess==0.7.0 \
+ptyprocess==0.7.0 ; os_name != 'nt' or (sys_platform != 'emscripten' and sys_platform != 'win32') \
     --hash=sha256:4b41f3967fce3af57cc7e94b888626c18bf37a083e3651ca8feeb66d492fef35 \
     --hash=sha256:5c5d0a3b48ceee0b48485e0c26037c0acd7d29765ca3fbb5cb3831d347423220
     # via
@@ -2924,7 +2924,7 @@ pyclipper==1.3.0.post6 \
     # via
     #   -c constraints.txt
     #   easyocr
-pycolmap==3.12.5 \
+pycolmap==3.12.5 ; platform_machine == 'x86_64' \
     --hash=sha256:048c7e414770482c8b521f6e4de6c5806a29a57583fa21a3c4b4fccebd6c4f84 \
     --hash=sha256:12b17456fe9614ce908a5b1bde84451dae681e99c1ad1acfece02c900ea00839 \
     --hash=sha256:143a6b5a6e5f733db9d66c68e30f57aed256d4b239922e5a0e8ccd011f1cfdcb \
@@ -3204,7 +3204,7 @@ pyproj==3.7.2 \
     #   -c constraints.txt
     #   -r third_party/python/requirements_3_12.in
     #   geopandas
-pysocks==1.7.1 \
+pysocks==1.7.1 ; platform_machine == 'x86_64' \
     --hash=sha256:08e69f092cc6dbe92a0fdd16eeb9b9ffbc13cadfe5ca4c7bd92ffb078b293299 \
     --hash=sha256:2725bd0a9925919b9b51739eea5f9e2bae91e83288108a9ad338b2e3a4435ee5 \
     --hash=sha256:3f8804571ebe159c380ac6de37643bb4685970655d3bba243530d6558b799aa0
@@ -3658,6 +3658,12 @@ requests==2.32.4 \
     #   osmnx
     #   supervision
     #   transformers
+requests[socks]==2.32.4 ; platform_machine == 'x86_64' \
+    --hash=sha256:27babd3cda2a6d50b30443204ee89830707d396671944c998b5975b031ac2b2c \
+    --hash=sha256:27d0316682c8a29834d3264820024b62a36942083d52caf2f14c0591336d3422
+    # via
+    #   -c constraints.txt
+    #   gdown
 retrying==1.4.2 \
     --hash=sha256:bbc004aeb542a74f3569aeddf42a2516efefcdaff90df0eb38fbfbf19f179f59 \
     --hash=sha256:d102e75d53d8d30b88562d45361d6c6c934da06fab31bd81c0420acb97a8ba39
@@ -3862,7 +3868,7 @@ ruamel-yaml==0.18.14 \
     # via
     #   -c constraints.txt
     #   rosbags
-ruamel-yaml-clib==0.2.12 \
+ruamel-yaml-clib==0.2.12 ; python_full_version < '3.14' and platform_python_implementation == 'CPython' \
     --hash=sha256:040ae85536960525ea62868b642bdb0c2cc6021c9f9d507810c0c604e66f5a7b \
     --hash=sha256:0467c5965282c62203273b838ae77c0d29d7638c8a4e3a1c8bdd3602c10904e4 \
     --hash=sha256:0b7e75b4965e1d4690e93021adfcecccbca7d61c7bddd8e22406ef2ff20d74ef \
@@ -4487,7 +4493,7 @@ transformers==4.47.1 \
     #   -c constraints.txt
     #   -r third_party/python/requirements_3_12.in
     #   sentence-transformers
-triton==3.3.0 \
+triton==3.3.0 ; sys_platform == 'linux' \
     --hash=sha256:0f12a8611eff721d3fd837d0cc2a1f2f8a4d382ec3fc3a8d6a07a5b1e535c81c \
     --hash=sha256:36936c23df3056a1e93313485e6a2396de7dbf53fd93b445f321b6e951639e43 \
     --hash=sha256:4198996c9fa3fd811e3bc007f0fc9853c784be3dae6d30714f579c5106d70616 \

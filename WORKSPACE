@@ -137,6 +137,22 @@ http_archive(
     urls = ["https://github.com/madler/zlib/archive/v1.2.11.tar.gz"],
 )
 
+http_archive(
+    name = "uv_x86_64",
+    url = "https://github.com/astral-sh/uv/releases/download/0.10.9/uv-x86_64-unknown-linux-gnu.tar.gz",
+    sha256 = "20d79708222611fa540b5c9ed84f352bcd3937740e51aacc0f8b15b271c57594",
+    strip_prefix = "uv-x86_64-unknown-linux-gnu",
+    build_file = "//third_party:BUILD.uv",
+)
+
+http_archive(
+    name = "uv_aarch64",
+    url = "https://github.com/astral-sh/uv/releases/download/0.10.9/uv-aarch64-unknown-linux-gnu.tar.gz",
+    sha256 = "cc0c5a8573e7d6d78aecb954e0a62b5c0d18217bb81f1e19363b428c57a9962a",
+    strip_prefix = "uv-aarch64-unknown-linux-gnu",
+    build_file = "//third_party:BUILD.uv",
+)
+
 # Note that rules_python must be loaded before protobuf
 http_archive(
     name = "rules_python",

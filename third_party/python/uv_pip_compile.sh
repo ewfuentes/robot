@@ -6,8 +6,17 @@ PYTHON_VERSION="$2" # e.g. "3.12"
 IN_FILE="$3"        # path to requirements_X_Y.in
 OUT_FILE="$4"       # path to requirements_X_Y.txt
 
-if ! command -v uv &> /dev/null; then
-    echo "uv not found. Install: curl -LsSf https://astral.sh/uv/install.sh | sh"
+# Locate the uv binary from Bazel runfiles.
+RUNFILES="${RUNFILES_DIR:-${BASH_SOURCE[0]}.runfiles}"
+ARCH="$(uname -m)"
+case "${ARCH}" in
+    x86_64)  UV="${RUNFILES}/uv_x86_64/uv" ;;
+    aarch64) UV="${RUNFILES}/uv_aarch64/uv" ;;
+    *) echo "ERROR: Unsupported architecture: ${ARCH}"; exit 1 ;;
+esac
+
+if [ ! -x "${UV}" ]; then
+    echo "ERROR: Could not find uv binary at ${UV}"
     exit 1
 fi
 
@@ -30,10 +39,12 @@ elif [ -f "${OUT_FILE}" ]; then
     CONSTRAINT_ARGS=(-c "${OUT_FILE}")
 fi
 
-uv pip compile \
+"${UV}" pip compile \
     --python-version "${PYTHON_VERSION}" \
     --no-header \
     --format requirements.txt \
+    --no-strip-extras \
+    --no-strip-markers \
     --index-strategy unsafe-best-match \
     --generate-hashes \
     --emit-index-url \

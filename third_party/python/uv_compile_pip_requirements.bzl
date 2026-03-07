@@ -7,6 +7,11 @@ def uv_compile_pip_requirements(name, requirements_in, requirements_txt, python_
     """
     version_dotted = python_version.replace("_", ".")
 
+    uv_data = select({
+        "@platforms//cpu:x86_64": ["@uv_x86_64//:uv"],
+        "@platforms//cpu:aarch64": ["@uv_aarch64//:uv"],
+    })
+
     native.sh_binary(
         name = name + ".update",
         srcs = ["//third_party/python:uv_pip_compile.sh"],
@@ -16,7 +21,7 @@ def uv_compile_pip_requirements(name, requirements_in, requirements_txt, python_
             "$(location {})".format(requirements_in),
             "$(rootpath {})".format(requirements_txt),
         ],
-        data = [requirements_in, requirements_txt],
+        data = [requirements_in, requirements_txt] + uv_data,
         tags = ["requires-network"],
     )
 
@@ -29,7 +34,7 @@ def uv_compile_pip_requirements(name, requirements_in, requirements_txt, python_
             "$(location {})".format(requirements_in),
             "$(location {})".format(requirements_txt),
         ],
-        data = [requirements_in, requirements_txt],
+        data = [requirements_in, requirements_txt] + uv_data,
         tags = ["no-cache", "requires-network", "external"],
-        timeout = "eternal",
+        timeout = "moderate",
     )
