@@ -1,22 +1,20 @@
 """Extract OSM tags from panorama images using Ollama with tool calling.
 
 Local alternative to OpenAI/Gemini batch APIs. Uses an Ollama model (default:
-qwen3.5:35b) with two tools that let the LLM fuzzy-search the local OSM tag
-database while extracting landmarks.
+qwen3.5:35b) with a SQL tool that queries a running ``osm_tag_server`` for
+OSM tag lookups during landmark extraction.
 
 Usage::
 
-    # Explicit image paths:
-    bazel run //experimental/overhead_matching/swag/scripts:ollama_osm_extraction -- \
-      --images /path/to/0.jpg /path/to/90.jpg /path/to/180.jpg /path/to/270.jpg \
-      --feather /data/.../landmarks.feather \
-      --ollama-base-url http://localhost:11434 \
-      --output /tmp/result.json
+    # Start the tag server first (separate terminal):
+    bazel run //experimental/overhead_matching/swag/scripts:osm_tag_server -- \
+      --feather /data/.../landmarks.feather
 
-    # By city + panorama ID (auto-resolves paths):
+    # Then run extraction:
     bazel run //experimental/overhead_matching/swag/scripts:ollama_osm_extraction -- \
       --city Chicago --pano-id 005T5CAKugPnibKVcndUSA \
-      --ollama-base-url http://localhost:11434
+      --ollama-base-url http://localhost:11434 \
+      --tag-server-url http://localhost:8421
 """
 
 from __future__ import annotations
@@ -27,23 +25,21 @@ import sys
 from pathlib import Path
 
 import ollama as ollama_sdk
-import pandas as pd
+import requests
 
 from common.ollama.pyollama import Ollama
 from experimental.overhead_matching.swag.model.semantic_landmark_extractor import (
     OSMTagExtraction,
     encode_image_to_base64,
-    get_osm_tags_schema,
     osm_tags_user_prompt,
 )
-from experimental.overhead_matching.swag.scripts.search_osm_tags import TagSearchIndex
 
 OSM_TAGS_SYSTEM_PROMPT = """<role>
 You are an expert at identifying landmarks in street-level imagery and mapping them to OpenStreetMap (OSM) tags.
 </role>
 
 <instructions>
-Given four images which show the same location from yaws 0°, 90°, 180°, and 270° respectively, identify distinctive, permanent landmarks and classify them using OSM's key=value tagging system.
+Given four images which show the same location from yaws 0° (facing north), 90° (facing west), 180° (facing south), and 270° (facing east) respectively, identify distinctive, permanent landmarks and classify them using OSM's key=value tagging system.
 
 For each landmark:
 - Assign a primary OSM tag (e.g., amenity=cafe, shop=pharmacy, building=apartments)
@@ -52,23 +48,30 @@ For each landmark:
 - Rate your confidence (high/medium/low)
 - Provide a brief description for debugging
 
+If you cannot confidently idenitify any visually distinct landmarks, it is acceptable to return an empty list of landmarks.
 Based on the images, classify the location type (e.g., urban_commercial, suburban, rural).
 Finally, review your work and confirm you have not included any information you cannot confidently make out from the images.
 </instructions>
 
 <landmark_selection>
 Focus on landmarks that are VISUALLY DISTINCTIVE and useful for identifying a specific location. Prioritize:
+- Readable street names on signs (e.g., "Adams St", "Michigan Ave") — these are extremely
+  informative for localization. Tag the street itself: highway=residential (or tertiary,
+  secondary, primary depending on size) with name=<street name>. Use the tool to look up
+  the street name and find its exact tags.
 - Named businesses, restaurants, shops with visible signage
-- Architecturally unique buildings (churches, historic buildings, distinctive facades)
+- Architecturally unique buildings (churches, historic buildings)
 - Branded locations (gas stations, chain stores, banks)
 - Named parks, monuments, public art, memorials
-- Distinctive infrastructure (water towers, clock towers, unique bridges)
+- Distinctive infrastructure (clock towers, unique bridges)
 
 DO NOT include generic, ubiquitous features such as:
 - Traffic signals, street lamps, fire hydrants
 - Crosswalks, stop signs, generic road markings
 - Plain sidewalks, curbs, gutters
 - Trees, bushes, or grass unless they are a notable landmark (e.g., a named park)
+- Apartment buildings or residential complexes, even if visually distinctive — these are
+  rarely represented in the map data and are not useful for localization
 - Generic buildings described only by their appearance (e.g., "a multi-story brick building",
   "a low-rise commercial building"). Only include a building if you can identify at least one of:
   - A readable building number or address
@@ -110,7 +113,7 @@ For chains, include both category and brand:
 - Focus on OSM-mappable features within ~100 meters
 - Extract visible text for name/brand tags only if clearly readable
 - Be conservative: only output tags you can confidently identify
-- Exclude transient objects (cars, pedestrians, temporary items)
+- Exclude transient objects (cars, pedestrians, temporary items, construction areas)
 - Do not mention location in image or relative to other landmarks
 </constraints>
 
@@ -120,101 +123,191 @@ Bounding box coordinates are normalized 0-1000, where (0,0) is top-left and (100
 </output_format>
 """
 
-DEFAULT_DATASET_BASE = "/data/overhead_matching/datasets/VIGOR"
 DEFAULT_PINHOLE_BASE = "/data/overhead_matching/datasets/pinhole_images"
-DEFAULT_FEATHER_NAME = "v4_202001.feather"
+DEFAULT_TAG_SERVER_URL = "http://localhost:8421"
 
 TOOL_INSTRUCTIONS = """
 
 <tools>
-You have access to two tools that let you search the local OSM tag database for
-the city these images were taken in. Use them to find the correct tag key=value
-pairs for the landmarks you identify. You may call the tools multiple times.
+You have a tool `query_landmarks` that executes SQL against a database of ALL
+OSM landmarks in the city these images were taken in.
 
-1. **search_tags(query, limit)** - fuzzy-search for OSM tag values matching a
-   query string. Returns [{key, value, count}].
-2. **get_tag_context(key, value, limit)** - given a specific tag, show which
-   other tags commonly co-occur with it. Returns {total, co_occurring_tags}.
+IMPORTANT: Use this tool to find the correct OSM tag vocabulary for landmarks you
+see. Do NOT use it to identify which specific landmark something is — the database
+contains every landmark in the entire city, not just ones near this location.
 
-search_tags uses fzf for fuzzy matching. Every word in your query must appear
-(in some fuzzy form) in the result, so keep queries short — ideally a single
-word or substring. If you can only partially read a sign (e.g. "harma" from
-"Pharmacy"), query for just that substring and the fuzzy matcher will find it.
-Multi-word queries like "italian restaurant" will only match values containing
-both words.
+For example, if you see a church, query for what tags churches typically have, but do NOT pick
+a specific church name from the results unless you can read that name in the image.
+Only output tags that are directly supported by what you see in the panorama.
 
-Workflow: first identify landmarks visually, then use search_tags to find
-appropriate OSM tags, optionally use get_tag_context to discover additional tags,
-and finally output the JSON result.
+The database is NOT all-inclusive — some landmarks visible in the panorama may not
+be in the map. That's fine; tag them with whatever you can justify from the image.
+However, when you DO have a confident match (e.g. you can read a name or brand),
+query the database for that landmark and extract as many tags as you can justify
+from the image. Some landmarks are unique (e.g. "Statue of Liberty" appears once)
+while others have multiple locations (e.g. "CVS" appears many times) — a unique
+match lets you pull more tags confidently than a chain with many locations.
+
+IMPORTANT: The tool can only tell you that a landmark exists in the map, it cannot
+confirm that the landmark you see is in fact the one that you suspect. For example,
+if you see that you are on a bridge, but you do not see any indications of which bridge it is,
+just because you think that it might be the Lake Street bridge, verifying that the Lake Street
+bridge is in the map DOES NOT confirm that you are on the Lake Street bridge.
+
+Tables:
+- tags(key, value, count) — all unique key=value tags across the city with occurrence counts
+- landmark_tags(landmark_id, key, value) — per-landmark tags for co-occurrence queries
+
+Workflow:
+1. Look at the images and identify candidate landmarks
+2. For each candidate, query the database to find appropriate tags:
+   - What tags does this type of landmark use? e.g. query for amenity=place_of_worship to see co-occurring tags
+   - If you can read a name/brand in the image, verify it exists: SELECT * FROM landmark_tags WHERE key='name' AND value LIKE '%readable text%'
+   - If the name is unique (count=1), pull all its tags — many will apply
+   - If the name has multiple locations (count>1), only include tags common to all or visible in the image
+3. Only output tags you can justify from the image:
+   - You CAN read "Walgreens" on a sign → include name=Walgreens, query for its full tag set
+   - You see a church but cannot read its name → include amenity=place_of_worship, but do NOT guess a name
+   - You see a generic storefront → do NOT assume what shop it is
+
+Example queries:
+- Find all tags for a named landmark: SELECT DISTINCT lt2.key, lt2.value FROM landmark_tags lt1 JOIN landmark_tags lt2 ON lt1.landmark_id = lt2.landmark_id WHERE lt1.key='name' AND lt1.value LIKE '%walgreen%'
+- Browse names: SELECT value, count FROM tags WHERE key='name' ORDER BY count DESC LIMIT 20
+- Browse brands: SELECT value, count FROM tags WHERE key='brand' ORDER BY count DESC LIMIT 20
+- Find tags: SELECT key, value, count FROM tags WHERE value LIKE '%cafe%' ORDER BY count DESC LIMIT 10
+- Check existence: SELECT count FROM tags WHERE key='shop' AND value='pharmacy'
+
+Use LIKE '%substring%' for partial matches. Keep queries simple.
 </tools>"""
 
 TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "search_tags",
+            "name": "query_landmarks",
             "description": (
-                "Fuzzy-search for OSM key=value tags matching a query string. "
-                "Returns a list of matching tags sorted by occurrence count."
+                "Execute a read-only SQL query against the OSM landmark database. "
+                "Available tables: tags(key, value, count) and "
+                "landmark_tags(landmark_id, key, value). "
+                "Returns {columns, rows} or {error}."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {
+                    "sql": {
                         "type": "string",
-                        "description": "Search query (e.g. 'cafe', 'pharmacy', 'residential')",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum number of results to return (default 10)",
+                        "description": "SQL SELECT query to execute",
                     },
                 },
-                "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_tag_context",
-            "description": (
-                "Given a specific OSM tag (key=value), show which other tags "
-                "commonly co-occur with it in the local dataset."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "key": {
-                        "type": "string",
-                        "description": "OSM tag key (e.g. 'amenity')",
-                    },
-                    "value": {
-                        "type": "string",
-                        "description": "OSM tag value (e.g. 'cafe')",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum number of co-occurring tags to return (default 10)",
-                    },
-                },
-                "required": ["key", "value"],
+                "required": ["sql"],
             },
         },
     },
 ]
 
 
-def dispatch_tool(name: str, args: dict, index: TagSearchIndex) -> str:
-    if name == "search_tags":
-        results = index.search_tags(args["query"], limit=args.get("limit", 10))
-        return json.dumps([{"key": k, "value": v, "count": c} for k, v, c in results])
-    elif name == "get_tag_context":
-        results, total = index.get_tag_context(
-            args["key"], args["value"], limit=args.get("limit", 10)
-        )
-        return json.dumps(
-            {"total": total, "co_occurring": [{"key": k, "value": v, "count": c} for k, v, c in results]}
-        )
+OSM_EXTRACTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "location_type": {
+            "type": "string",
+            "description": "Scene type classification (e.g., 'urban_commercial', 'suburban', 'rural')",
+        },
+        "landmarks": {
+            "type": "array",
+            "description": "List of landmarks with OSM tags",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "primary_tag": {
+                        "type": "object",
+                        "properties": {
+                            "key": {
+                                "type": "string",
+                                "enum": [
+                                    "amenity", "shop", "building", "tourism",
+                                    "leisure", "highway", "man_made", "historic",
+                                    "natural", "office", "craft", "railway",
+                                    "power", "landuse", "emergency", "public_transport",
+                                ],
+                                "description": "OSM tag key",
+                            },
+                            "value": {
+                                "type": "string",
+                                "description": "OSM tag value",
+                            },
+                        },
+                        "required": ["key", "value"],
+                    },
+                    "additional_tags": {
+                        "type": "array",
+                        "description": "Additional OSM tags (name, brand, cuisine, building:levels, etc.)",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "key": {
+                                    "type": "string",
+                                    "description": "OSM tag key (e.g., 'name', 'brand', 'cuisine')",
+                                },
+                                "value": {
+                                    "type": "string",
+                                    "description": "OSM tag value",
+                                },
+                            },
+                            "required": ["key", "value"],
+                        },
+                    },
+                    "confidence": {
+                        "type": "string",
+                        "enum": ["high", "medium", "low"],
+                        "description": "Confidence level for this identification",
+                    },
+                    "bounding_boxes": {
+                        "type": "array",
+                        "description": "List of bounding boxes showing where this landmark appears",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "yaw_angle": {
+                                    "type": "string",
+                                    "enum": ["0", "90", "180", "270"],
+                                    "description": "Which yaw image this bounding box refers to",
+                                },
+                                "ymin": {"type": "integer", "description": "Min y (0-1000)"},
+                                "xmin": {"type": "integer", "description": "Min x (0-1000)"},
+                                "ymax": {"type": "integer", "description": "Max y (0-1000)"},
+                                "xmax": {"type": "integer", "description": "Max x (0-1000)"},
+                            },
+                            "required": ["yaw_angle", "ymin", "xmin", "ymax", "xmax"],
+                        },
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Brief description for debugging purposes",
+                    },
+                },
+                "required": [
+                    "primary_tag", "additional_tags", "confidence",
+                    "bounding_boxes", "description",
+                ],
+            },
+        },
+    },
+    "required": ["location_type", "landmarks"],
+}
+
+
+def dispatch_tool(name: str, args: dict, server_url: str) -> str:
+    if name == "query_landmarks":
+        try:
+            resp = requests.post(
+                f"{server_url}/query",
+                json={"sql": args["sql"]},
+                timeout=10,
+            )
+            return resp.text
+        except requests.RequestException as e:
+            return json.dumps({"error": f"Server request failed: {e}"})
     else:
         return json.dumps({"error": f"Unknown tool: {name}"})
 
@@ -247,8 +340,8 @@ def run_extraction(
     client: ollama_sdk.Client,
     model: str,
     image_paths: list[Path],
-    index: TagSearchIndex,
-    max_tool_rounds: int = 5,
+    server_url: str,
+    max_tool_rounds: int = 15,
 ) -> OSMTagExtraction:
     system_prompt = OSM_TAGS_SYSTEM_PROMPT + TOOL_INSTRUCTIONS
 
@@ -257,8 +350,8 @@ def run_extraction(
         build_user_message(image_paths),
     ]
 
-    chat_kwargs = dict(model=model, options={"think": True})
-    schema = get_osm_tags_schema()
+    chat_kwargs = dict(model=model, think=True)
+    schema = OSM_EXTRACTION_SCHEMA
 
     # Tool-calling loop
     for round_idx in range(max_tool_rounds):
@@ -278,7 +371,7 @@ def run_extraction(
             name = tool_call.function.name
             args = tool_call.function.arguments
             print(f"  [tool round {round_idx + 1}] {name}({json.dumps(args)})", file=sys.stderr)
-            result = dispatch_tool(name, args, index)
+            result = dispatch_tool(name, args, server_url)
             print(f"    -> {result[:200]}", file=sys.stderr)
             messages.append({"role": "tool", "content": result})
 
@@ -290,14 +383,31 @@ def run_extraction(
 
     print(f"  [generating structured output]", file=sys.stderr)
     messages.append({"role": "user", "content": "Now output your final answer as JSON."})
-    response = client.chat(messages=messages, format=schema, **chat_kwargs)
-    if getattr(response.message, "thinking", None):
-        print(f"  [thinking] {response.message.thinking}", file=sys.stderr)
-    if response.message.content:
-        print(f"  [response] {response.message.content}", file=sys.stderr)
 
-    raw = json.loads(response.message.content)
-    return OSMTagExtraction.model_validate(raw)
+    max_retries = 3
+    for attempt in range(max_retries):
+        response = client.chat(messages=messages, format=schema, **chat_kwargs)
+        if getattr(response.message, "thinking", None):
+            print(f"  [thinking] {response.message.thinking}", file=sys.stderr)
+
+        content = response.message.content
+        if not content or not content.strip():
+            print(f"  [empty response, retry {attempt + 1}/{max_retries}]", file=sys.stderr)
+            continue
+
+        try:
+            raw = json.loads(content)
+            return OSMTagExtraction.model_validate(raw)
+        except (json.JSONDecodeError, Exception) as e:
+            print(f"  [bad response, retry {attempt + 1}/{max_retries}]: {e}", file=sys.stderr)
+            print(f"  [content] {content[:200]}", file=sys.stderr)
+            messages.append(response.message)
+            messages.append({
+                "role": "user",
+                "content": f"Your response was not valid JSON: {e}. Please try again.",
+            })
+
+    raise RuntimeError("Failed to get valid structured output after retries")
 
 
 def resolve_pano_images(pinhole_base: Path, city: str, pano_id: str) -> list[Path]:
@@ -336,14 +446,6 @@ def resolve_pano_images(pinhole_base: Path, city: str, pano_id: str) -> list[Pat
     return images
 
 
-def resolve_feather(dataset_base: Path, city: str, feather_name: str = DEFAULT_FEATHER_NAME) -> Path:
-    """Find the feather file for a city."""
-    p = dataset_base / city / "landmarks" / feather_name
-    if not p.exists():
-        raise FileNotFoundError(f"Feather file not found: {p}")
-    return p
-
-
 def main():
     parser = argparse.ArgumentParser(
         description="Extract OSM tags from panorama images using Ollama with tool calling"
@@ -375,29 +477,17 @@ def main():
     # Directories for city+pano-id resolution
     dir_group = parser.add_argument_group("directory configuration (for --city/--pano-id)")
     dir_group.add_argument(
-        "--dataset-base",
-        type=Path,
-        default=Path(DEFAULT_DATASET_BASE),
-        help=f"Base dataset directory (default: {DEFAULT_DATASET_BASE})",
-    )
-    dir_group.add_argument(
         "--pinhole-base",
         type=Path,
         default=Path(DEFAULT_PINHOLE_BASE),
         help=f"Base directory for pinhole images (default: {DEFAULT_PINHOLE_BASE})",
     )
-    dir_group.add_argument(
-        "--feather-name",
-        type=str,
-        default=DEFAULT_FEATHER_NAME,
-        help=f"Feather filename under <city>/landmarks/ (default: {DEFAULT_FEATHER_NAME})",
-    )
 
     parser.add_argument(
-        "--feather",
-        type=Path,
-        default=None,
-        help="OSM landmarks feather file (overrides auto-resolution from --city)",
+        "--tag-server-url",
+        type=str,
+        default=DEFAULT_TAG_SERVER_URL,
+        help=f"URL of the OSM tag server (default: {DEFAULT_TAG_SERVER_URL})",
     )
     parser.add_argument(
         "--model", type=str, default="qwen3.5:35b", help="Ollama model tag"
@@ -411,7 +501,7 @@ def main():
     parser.add_argument(
         "--max-tool-rounds",
         type=int,
-        default=5,
+        default=15,
         help="Max tool-calling iterations",
     )
     parser.add_argument(
@@ -431,37 +521,23 @@ def main():
     else:
         parser.error("Provide either --images or both --city and --pano-id")
 
-    # Resolve feather path
-    if args.feather:
-        feather_path = args.feather
-    elif args.city:
-        feather_path = resolve_feather(args.dataset_base, args.city, args.feather_name)
-        print(f"Resolved feather: {feather_path}", file=sys.stderr)
-    else:
-        parser.error("Provide --feather or --city (to auto-resolve)")
-
     # Validate image paths
     for p in image_paths:
         if not p.exists():
             parser.error(f"Image not found: {p}")
 
-    # Build tag search index
-    print(f"Loading feather file: {feather_path}", file=sys.stderr)
-    df = pd.read_feather(feather_path)
-    print(f"Building tag search index from {len(df)} landmarks...", file=sys.stderr)
-    index = TagSearchIndex(df)
-    print(f"Index ready: {len(index._values)} unique values", file=sys.stderr)
+    server_url = args.tag_server_url
 
     # Create ollama client
     if args.ollama_base_url:
         print(f"Using existing Ollama server at {args.ollama_base_url}", file=sys.stderr)
         client = ollama_sdk.Client(host=args.ollama_base_url)
-        result = run_extraction(client, args.model, image_paths, index, args.max_tool_rounds)
+        result = run_extraction(client, args.model, image_paths, server_url, args.max_tool_rounds)
     else:
         print(f"Starting managed Ollama server for model {args.model}...", file=sys.stderr)
         with Ollama(args.model) as server:
             client = ollama_sdk.Client(host=server.base_url())
-            result = run_extraction(client, args.model, image_paths, index, args.max_tool_rounds)
+            result = run_extraction(client, args.model, image_paths, server_url, args.max_tool_rounds)
 
     # Output
     output_json = result.model_dump_json(indent=2)

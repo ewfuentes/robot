@@ -652,16 +652,24 @@ py_binary(
 )
 
 py_binary(
+  name="osm_tag_server",
+  srcs=["osm_tag_server.py"],
+  deps=[
+    requirement("pandas"),
+    requirement("pyarrow"),
+    ":search_osm_tags_lib",
+  ]
+)
+
+py_binary(
   name="ollama_osm_extraction",
   srcs=["ollama_osm_extraction.py"],
   deps=[
     requirement("ollama"),
-    requirement("pandas"),
-    requirement("pyarrow"),
     requirement("pydantic"),
+    requirement("requests"),
     "//common/ollama:pyollama",
     "//experimental/overhead_matching/swag/model:semantic_landmark_extractor",
-    ":search_osm_tags_lib",
   ]
 )
 
