@@ -307,6 +307,17 @@ py_binary(
   ]
 )
 
+py_library(
+  name="panorama_to_pinhole_lib",
+  srcs=["panorama_to_pinhole.py"],
+  deps=[
+    requirement("numpy"),
+    requirement("scipy"),
+    requirement("pillow"),
+    requirement("tqdm"),
+  ]
+)
+
 py_binary(
   name="panorama_to_pinhole",
   srcs=["panorama_to_pinhole.py"],
@@ -315,6 +326,14 @@ py_binary(
     requirement("scipy"),
     requirement("pillow"),
     requirement("tqdm"),
+  ]
+)
+
+py_library(
+  name="search_osm_tags_lib",
+  srcs=["search_osm_tags.py"],
+  deps=[
+    requirement("pandas"),
   ]
 )
 
@@ -330,6 +349,39 @@ py_binary(
     "//experimental/overhead_matching/swag/data:vigor_dataset",
     "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
     "//common/gps:web_mercator",
+  ]
+)
+
+py_binary(
+  name="landmark_tagger",
+  srcs=["landmark_tagger.py"],
+  deps=[
+    requirement("flask"),
+    requirement("numpy"),
+    requirement("scipy"),
+    requirement("opencv-python"),
+    requirement("pillow"),
+    requirement("pandas"),
+    requirement("pyarrow"),
+    requirement("shapely"),
+    requirement("geopandas"),
+    requirement("scikit-learn"),
+    ":panorama_to_pinhole_lib",
+    ":search_osm_tags_lib",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+  ]
+)
+
+py_binary(
+  name="extract_dino_cls_tokens",
+  srcs=["extract_dino_cls_tokens.py"],
+  deps=[
+    requirement("numpy"),
+    requirement("pillow"),
+    requirement("torch"),
+    requirement("torchvision"),
+    requirement("tqdm"),
+    "//common/torch:load_torch_deps",
   ]
 )
 
