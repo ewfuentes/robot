@@ -35,7 +35,13 @@ from experimental.overhead_matching.swag.scripts.panorama_to_pinhole import (
     reproject_pinhole,
     spherical_pixel_from_azimuth_elevation,
 )
+from experimental.overhead_matching.swag.scripts.evaluate_extraction import (
+    extract_llm_tags,
+    load_extractions,
+)
 from experimental.overhead_matching.swag.scripts.search_osm_tags import (
+    EXCLUDE_KEYS,
+    META_COLS,
     TagSearchIndex,
 )
 
@@ -147,6 +153,9 @@ LANDMARK_RELEVANCE_DIRTY = False  # set True on annotation change, cleared after
 # Gemini evaluation: correspondences between Gemini-extracted and OSM landmarks
 GEMINI_EVAL = {}           # pano_id -> {"reviewed": bool, "matches": {...}}
 GEMINI_EVAL_QUEUE = []     # list of pano_idx for panoramas with Gemini preds + "useful" label
+
+# Ollama extractions for comparison tool
+OLLAMA_EXTRACTIONS = {}    # pano_id -> {"landmarks": [...]}
 
 # Auto-labeling generic Gemini landmarks via sklearn classifier
 GENERIC_CLF = None         # trained RandomForestClassifier (or None if not enough data)
@@ -1774,7 +1783,8 @@ async function goToNextLabel() {
             setTimeout(() => document.getElementById('save-status').textContent = '', 5000);
             loadPanorama(data.pano_idx);
         } else {
-            const reason = data.reason === 'no_model' ? 'Need 5+ labels per class for DINO model' : 'No candidates';
+            const reason = data.reason === 'no_dino' ? 'No DINO features loaded (pass --dino_cache)' :
+                           data.reason === 'no_model' ? 'Need 5+ labels per class to train DINO model' : 'No candidates';
             document.getElementById('save-status').textContent = reason;
             setTimeout(() => document.getElementById('save-status').textContent = '', 4000);
         }
@@ -1836,6 +1846,10 @@ h1 { color: #a0c0ff; margin-bottom: 24px; font-size: 28px; }
     <a class="card" href="/gemini_eval">
         <h2>Gemini Evaluation</h2>
         <p>Evaluate Gemini landmark extraction quality by matching predictions to OSM landmarks. Track hallucinations, novel finds, and confidence calibration.</p>
+    </a>
+    <a class="card" href="/compare">
+        <h2>LLM Extraction Comparison</h2>
+        <p>Compare Gemini and Ollama extraction results side-by-side against labeled OSM landmarks. See match quality and browse with hover highlighting.</p>
     </a>
     <div class="stats" id="stats">Loading stats...</div>
 </div>
@@ -2119,6 +2133,8 @@ def dino_prediction(index):
 
 @app.route("/api/next_to_label")
 def next_to_label():
+    if DINO_FEATURES is None:
+        return jsonify({"pano_idx": None, "reason": "no_dino"})
     if DINO_MODEL is None:
         return jsonify({"pano_idx": None, "reason": "no_model"})
     if not ACTIVE_LEARNING_QUEUE:
@@ -2974,6 +2990,459 @@ window.addEventListener('keydown', e => {
 @app.route("/gemini_eval")
 def gemini_eval_page():
     return Response(GEMINI_EVAL_PAGE, content_type="text/html")
+
+
+# ---------------------------------------------------------------------------
+# LLM extraction comparison tool
+# ---------------------------------------------------------------------------
+
+
+def _extract_osm_tags_from_row(row):
+    """Extract (key, value) tag pairs from a landmark metadata row."""
+    tags = []
+    for k, v in row["pruned_props"]:
+        tags.append((k, v))
+    return tags
+
+
+def _compute_llm_osm_matches(landmarks, osm_tags_list):
+    """Compute match indices between LLM landmarks and OSM tag lists.
+
+    Returns dict of llm_idx -> list of osm_idx.
+    """
+    from experimental.overhead_matching.swag.evaluation import (
+        proper_noun_matcher_python as pnm,
+    )
+
+    llm_tags_list = []
+    for lm in landmarks:
+        tags = extract_llm_tags(lm)
+        llm_tags_list.append(tags if tags else [("_dummy", "_dummy")])
+
+    if not llm_tags_list or not osm_tags_list:
+        return {}
+
+    match_matrix = pnm.compute_keyed_substring_matches(
+        llm_tags_list, osm_tags_list
+    )
+
+    matches = {}
+    for i in range(len(llm_tags_list)):
+        matched = [j for j in range(len(osm_tags_list)) if match_matrix[i, j] > 0]
+        if matched:
+            matches[i] = matched
+    return matches
+
+
+def _build_llm_landmark_info(landmark, idx, gemini_eval_matches=None):
+    """Build JSON-serializable info for one LLM landmark."""
+    tags = extract_llm_tags(landmark)
+    info = {
+        "idx": idx,
+        "primary_tag": landmark.get("primary_tag", {}),
+        "additional_tags": landmark.get("additional_tags", []),
+        "confidence": landmark.get("confidence", ""),
+        "description": landmark.get("description", ""),
+        "tags": [{"key": k, "value": v} for k, v in tags],
+    }
+    if gemini_eval_matches is not None:
+        eval_entry = gemini_eval_matches.get(str(idx))
+        if eval_entry:
+            info["eval_status"] = eval_entry.get("status", "")
+    return info
+
+
+@app.route("/api/compare_list")
+def compare_list():
+    """Return list of labeled panoramas with extraction availability."""
+    items = []
+    for pano_id, label in PANO_LABELS.items():
+        rel_lms = RELEVANT_LANDMARKS.get(pano_id, [])
+        items.append({
+            "pano_id": pano_id,
+            "pano_idx": PANO_ID_TO_IDX.get(pano_id, -1),
+            "label": label,
+            "has_relevant": len(rel_lms) > 0,
+            "num_relevant": len(rel_lms),
+            "has_gemini": pano_id in GEMINI_PREDICTIONS,
+            "has_ollama": pano_id in OLLAMA_EXTRACTIONS,
+            "gemini_reviewed": pano_id in GEMINI_EVAL,
+        })
+    return jsonify(items)
+
+
+@app.route("/api/compare_detail/<pano_id>")
+def compare_detail(pano_id):
+    """Return full comparison data for one panorama."""
+    pano_idx = PANO_ID_TO_IDX.get(pano_id, -1)
+    label = PANO_LABELS.get(pano_id, "unknown")
+    rel_osm_ids = RELEVANT_LANDMARKS.get(pano_id, [])
+
+    # Build OSM landmarks from nearby landmarks, marking relevance
+    osm_landmarks = []
+    osm_tags_list = []  # for matching
+    if pano_idx >= 0:
+        lm_idxs = PANO_LANDMARK_IDXS[pano_idx]
+        for lm_idx in lm_idxs:
+            row = LANDMARK_METADATA.iloc[lm_idx]
+            osm_id = str(row["id"]) if "id" in row.index else ""
+            tags = _extract_osm_tags_from_row(row)
+            is_relevant = osm_id in rel_osm_ids
+            osm_landmarks.append({
+                "osm_id": osm_id,
+                "is_relevant": is_relevant,
+                "tags": [{"key": k, "value": v} for k, v in tags],
+                "landmark_type": str(row.get("landmark_type", "")),
+            })
+            if is_relevant:
+                osm_tags_list.append(tags if tags else [("_dummy", "_dummy")])
+
+    # Build Gemini landmarks
+    gemini_eval_entry = GEMINI_EVAL.get(pano_id, {})
+    gemini_eval_matches = gemini_eval_entry.get("matches")
+    gemini_data = GEMINI_PREDICTIONS.get(pano_id, {})
+    gemini_landmarks_raw = gemini_data.get("landmarks", [])
+    gemini_landmarks = [
+        _build_llm_landmark_info(lm, i, gemini_eval_matches)
+        for i, lm in enumerate(gemini_landmarks_raw)
+    ]
+
+    # Gemini matches against relevant OSM landmarks
+    real_osm_tags = [t for t in osm_tags_list if t != [("_dummy", "_dummy")]]
+    gemini_osm_matches = {}
+    if gemini_landmarks_raw and real_osm_tags:
+        gemini_osm_matches = _compute_llm_osm_matches(
+            gemini_landmarks_raw, real_osm_tags
+        )
+
+    # Build Ollama landmarks
+    ollama_data = OLLAMA_EXTRACTIONS.get(pano_id, {})
+    ollama_landmarks_raw = ollama_data.get("landmarks", [])
+    ollama_landmarks = [
+        _build_llm_landmark_info(lm, i, None)
+        for i, lm in enumerate(ollama_landmarks_raw)
+    ]
+
+    # Ollama matches
+    ollama_osm_matches = {}
+    if ollama_landmarks_raw and real_osm_tags:
+        ollama_osm_matches = _compute_llm_osm_matches(
+            ollama_landmarks_raw, real_osm_tags
+        )
+
+    # Attach match info
+    for i, lm in enumerate(gemini_landmarks):
+        lm["osm_matches"] = gemini_osm_matches.get(i, [])
+    for i, lm in enumerate(ollama_landmarks):
+        lm["osm_matches"] = ollama_osm_matches.get(i, [])
+
+    return jsonify({
+        "pano_id": pano_id,
+        "pano_idx": pano_idx,
+        "label": label,
+        "osm_landmarks": osm_landmarks,
+        "gemini_landmarks": gemini_landmarks,
+        "gemini_reviewed": pano_id in GEMINI_EVAL,
+        "ollama_landmarks": ollama_landmarks,
+    })
+
+
+COMPARE_PAGE = r"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>LLM Extraction Comparison</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #1a1a2e; color: #e0e0e0; display: flex; height: 100vh; }
+
+/* Sidebar */
+#sidebar { width: 320px; min-width: 320px; background: #16213e; border-right: 1px solid #0f3460; display: flex; flex-direction: column; }
+#sidebar-header { padding: 12px; border-bottom: 1px solid #0f3460; }
+#sidebar-header h2 { font-size: 14px; margin-bottom: 8px; color: #a0c0ff; }
+#sidebar-header a { color: #a0c0ff; font-size: 12px; text-decoration: none; }
+#sidebar-header a:hover { text-decoration: underline; }
+#filter-input { width: 100%; padding: 6px 8px; border: 1px solid #0f3460; border-radius: 4px; font-size: 13px; background: #1a1a2e; color: #e0e0e0; }
+#filter-buttons { display: flex; gap: 4px; margin-top: 8px; flex-wrap: wrap; }
+.filter-btn { padding: 3px 8px; border: 1px solid #0f3460; border-radius: 12px; font-size: 11px; cursor: pointer; background: #16213e; color: #a0a0c0; }
+.filter-btn.active { background: #0f3460; color: #a0c0ff; border-color: #a0c0ff; }
+#pano-list { flex: 1; overflow-y: auto; }
+.pano-item { padding: 8px 12px; cursor: pointer; border-bottom: 1px solid #0f3460; font-size: 12px; display: flex; align-items: center; gap: 6px; }
+.pano-item:hover { background: #1a2a4e; }
+.pano-item.selected { background: #0f3460; }
+.badge { padding: 1px 6px; border-radius: 8px; font-size: 10px; font-weight: 600; }
+.badge-useful { background: #1b5e20; color: #a5d6a7; }
+.badge-not-useful { background: #b71c1c; color: #ef9a9a; }
+.badge-gemini { background: #0d47a1; color: #90caf9; }
+.badge-ollama { background: #4a148c; color: #ce93d8; }
+.badge-reviewed { background: #f57f17; color: #fff9c4; }
+.pano-id-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; color: #e0e0e0; }
+
+/* Main */
+#main { flex: 1; overflow-y: auto; padding: 16px; }
+#images { display: flex; gap: 8px; margin-bottom: 16px; }
+#images img { flex: 1; max-width: 25%; height: auto; border-radius: 4px; border: 1px solid #0f3460; }
+#columns { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+.column { background: #16213e; border-radius: 8px; padding: 12px; border: 1px solid #0f3460; }
+.column h3 { font-size: 14px; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 2px solid; }
+.col-osm h3 { border-color: #4caf50; color: #a5d6a7; }
+.col-gemini h3 { border-color: #2196f3; color: #90caf9; }
+.col-ollama h3 { border-color: #9c27b0; color: #ce93d8; }
+
+.landmark-card { padding: 8px; margin-bottom: 8px; border-radius: 6px; border: 1px solid #0f3460; font-size: 12px; transition: background 0.15s; background: #1a1a2e; }
+.landmark-card.relevant { border-color: #4caf50; }
+.landmark-card.not-relevant { opacity: 0.5; }
+.landmark-card.highlight { background: #3e2723 !important; border-color: #ff9800 !important; opacity: 1 !important; }
+.landmark-card .lm-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.landmark-card .lm-name { font-weight: 600; color: #e0e0e0; }
+.tag-pill { display: inline-block; padding: 1px 6px; margin: 2px; border-radius: 10px; font-size: 11px; background: #0f3460; }
+.tag-pill .tag-key { color: #a0a0c0; }
+.tag-pill .tag-val { color: #e0e0e0; font-weight: 500; }
+.confidence-badge { padding: 1px 6px; border-radius: 8px; font-size: 10px; font-weight: 600; }
+.confidence-high { background: #1b5e20; color: #a5d6a7; }
+.confidence-medium { background: #f57f17; color: #fff9c4; }
+.confidence-low { background: #b71c1c; color: #ef9a9a; }
+.eval-badge { padding: 1px 6px; border-radius: 8px; font-size: 10px; font-weight: 600; margin-left: 4px; }
+.eval-matched { background: #1b5e20; color: #a5d6a7; }
+.eval-generic { background: #37474f; color: #b0bec5; }
+.eval-misidentified { background: #b71c1c; color: #ef9a9a; }
+.match-indicator { font-size: 10px; color: #ff9800; margin-top: 4px; }
+.lm-description { font-size: 11px; color: #a0a0c0; margin-top: 4px; font-style: italic; }
+.osm-type { font-size: 10px; color: #a0a0c0; }
+#empty-state { text-align: center; color: #a0a0c0; margin-top: 100px; font-size: 16px; }
+.stats { font-size: 11px; color: #a0a0c0; margin-bottom: 8px; }
+</style>
+</head>
+<body>
+<div id="sidebar">
+  <div id="sidebar-header">
+    <a href="/">&larr; Back to tools</a>
+    <h2>LLM Extraction Comparison</h2>
+    <input id="filter-input" placeholder="Filter by pano ID..." />
+    <div id="filter-buttons">
+      <span class="filter-btn active" data-filter="all">All</span>
+      <span class="filter-btn" data-filter="useful">Useful</span>
+      <span class="filter-btn" data-filter="not_useful">Not Useful</span>
+      <span class="filter-btn" data-filter="has_relevant">Has Labels</span>
+      <span class="filter-btn" data-filter="has_gemini">Has Gemini</span>
+      <span class="filter-btn" data-filter="has_ollama">Has Ollama</span>
+      <span class="filter-btn" data-filter="reviewed">Reviewed</span>
+    </div>
+  </div>
+  <div id="pano-list"></div>
+</div>
+<div id="main">
+  <div id="empty-state">Select a panorama from the sidebar</div>
+  <div id="content" style="display:none;">
+    <div id="images"></div>
+    <div id="columns">
+      <div class="column col-osm"><h3>OSM Landmarks</h3><div id="osm-list"></div></div>
+      <div class="column col-gemini"><h3>Gemini</h3><div id="gemini-list"></div></div>
+      <div class="column col-ollama"><h3>Ollama</h3><div id="ollama-list"></div></div>
+    </div>
+  </div>
+</div>
+<script>
+let allPanos = [];
+let currentFilter = 'all';
+let textFilter = '';
+
+async function init() {
+  const resp = await fetch('/api/compare_list');
+  allPanos = await resp.json();
+  allPanos.sort((a, b) => a.pano_id.localeCompare(b.pano_id));
+  renderList();
+
+  document.getElementById('filter-input').addEventListener('input', e => {
+    textFilter = e.target.value.toLowerCase();
+    renderList();
+  });
+
+  document.querySelectorAll('.filter-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      currentFilter = btn.dataset.filter;
+      renderList();
+    });
+  });
+}
+
+function filterPanos() {
+  return allPanos.filter(p => {
+    if (textFilter && !p.pano_id.toLowerCase().includes(textFilter)) return false;
+    switch (currentFilter) {
+      case 'useful': return p.label === 'useful';
+      case 'not_useful': return p.label === 'not_useful';
+      case 'has_relevant': return p.has_relevant;
+      case 'has_gemini': return p.has_gemini;
+      case 'has_ollama': return p.has_ollama;
+      case 'reviewed': return p.gemini_reviewed;
+      default: return true;
+    }
+  });
+}
+
+function renderList() {
+  const list = document.getElementById('pano-list');
+  const filtered = filterPanos();
+  list.innerHTML = filtered.map(p => `
+    <div class="pano-item" data-id="${p.pano_id}" data-idx="${p.pano_idx}" onclick="selectPano('${p.pano_id}', ${p.pano_idx})">
+      <span class="badge badge-${p.label === 'useful' ? 'useful' : 'not-useful'}">${p.label === 'useful' ? 'U' : 'N'}</span>
+      <span class="pano-id-text">${p.pano_id}</span>
+      ${p.has_relevant ? '<span class="badge badge-useful">' + p.num_relevant + '</span>' : ''}
+      ${p.has_gemini ? '<span class="badge badge-gemini">G</span>' : ''}
+      ${p.has_ollama ? '<span class="badge badge-ollama">O</span>' : ''}
+      ${p.gemini_reviewed ? '<span class="badge badge-reviewed">R</span>' : ''}
+    </div>
+  `).join('');
+}
+
+async function selectPano(panoId, panoIdx) {
+  document.querySelectorAll('.pano-item').forEach(el => el.classList.toggle('selected', el.dataset.id === panoId));
+  document.getElementById('empty-state').style.display = 'none';
+  document.getElementById('content').style.display = 'block';
+
+  const resp = await fetch(`/api/compare_detail/${panoId}`);
+  const data = await resp.json();
+  renderPano(data);
+}
+
+function renderPano(data) {
+  // Images via existing pinhole reprojection
+  const imgDiv = document.getElementById('images');
+  if (data.pano_idx >= 0) {
+    const yaws = [0, 90, 180, 270];
+    const labels = ['North (0)', 'East (90)', 'South (180)', 'West (270)'];
+    imgDiv.innerHTML = yaws.map((y, i) =>
+      `<img src="/api/image/pinhole/${data.pano_idx}/${y}" alt="${labels[i]}" title="${labels[i]}">`
+    ).join('');
+  } else {
+    imgDiv.innerHTML = '<div style="color:#a0a0c0;padding:20px;">No images available</div>';
+  }
+
+  // OSM column: show relevant landmarks first, then non-relevant dimmed
+  const relevant = data.osm_landmarks.filter(l => l.is_relevant);
+  const other = data.osm_landmarks.filter(l => !l.is_relevant);
+  renderOsmColumn(relevant, other);
+
+  // Gemini column
+  const geminiHeader = data.gemini_reviewed ? ' <span class="badge badge-reviewed">Reviewed</span>' : '';
+  document.querySelector('.col-gemini h3').innerHTML = 'Gemini (' + data.gemini_landmarks.length + ')' + geminiHeader;
+  renderLlmColumn('gemini-list', data.gemini_landmarks, 'gemini');
+
+  // Ollama column
+  document.querySelector('.col-ollama h3').innerHTML = 'Ollama (' + data.ollama_landmarks.length + ')';
+  renderLlmColumn('ollama-list', data.ollama_landmarks, 'ollama');
+}
+
+function renderOsmColumn(relevant, other) {
+  const el = document.getElementById('osm-list');
+  let html = '';
+  if (relevant.length) {
+    html += '<div class="stats">Relevant (' + relevant.length + ')</div>';
+    html += relevant.map((lm, i) => renderOsmCard(lm, i, true)).join('');
+  }
+  if (other.length) {
+    html += '<div class="stats" style="margin-top:12px;">Other nearby (' + other.length + ')</div>';
+    html += other.map((lm, i) => renderOsmCard(lm, i + relevant.length, false)).join('');
+  }
+  if (!relevant.length && !other.length) {
+    html = '<div class="stats">No nearby landmarks</div>';
+  }
+  el.innerHTML = html;
+}
+
+function renderOsmCard(lm, idx, isRelevant) {
+  const cls = isRelevant ? 'relevant' : 'not-relevant';
+  return `
+    <div class="landmark-card ${cls}" data-osm-idx="${idx}"
+         onmouseenter="highlightOsm(${idx})" onmouseleave="clearHighlights()">
+      <div class="lm-header">
+        <span class="lm-name">${escHtml(lm.osm_id)}</span>
+        ${lm.landmark_type ? '<span class="osm-type">' + escHtml(lm.landmark_type) + '</span>' : ''}
+      </div>
+      <div>${(lm.tags || []).map(t => `<span class="tag-pill"><span class="tag-key">${escHtml(t.key)}</span>=<span class="tag-val">${escHtml(t.value)}</span></span>`).join('')}</div>
+    </div>`;
+}
+
+function renderLlmColumn(containerId, landmarks, source) {
+  const el = document.getElementById(containerId);
+  if (!landmarks.length) {
+    el.innerHTML = '<div class="stats">No landmarks extracted</div>';
+    return;
+  }
+  el.innerHTML = landmarks.map((lm, i) => {
+    const conf = lm.confidence || '';
+    const confClass = conf === 'high' ? 'confidence-high' : conf === 'medium' ? 'confidence-medium' : conf === 'low' ? 'confidence-low' : '';
+    const evalBadge = lm.eval_status ? `<span class="eval-badge eval-${lm.eval_status}">${lm.eval_status}</span>` : '';
+    const matchInfo = (lm.osm_matches && lm.osm_matches.length)
+      ? `<div class="match-indicator">Matches OSM: ${lm.osm_matches.map(j => '#' + j).join(', ')}</div>`
+      : '';
+    return `
+      <div class="landmark-card" data-${source}-idx="${i}" data-osm-matches="${(lm.osm_matches||[]).join(',')}"
+           onmouseenter="highlightLlm('${source}', ${i})" onmouseleave="clearHighlights()">
+        <div class="lm-header">
+          <span class="lm-name">${escHtml((lm.primary_tag && lm.primary_tag.value) || '?')}</span>
+          <span>
+            ${conf ? '<span class="confidence-badge ' + confClass + '">' + conf + '</span>' : ''}
+            ${evalBadge}
+          </span>
+        </div>
+        <div>${lm.tags.map(t => `<span class="tag-pill"><span class="tag-key">${escHtml(t.key)}</span>=<span class="tag-val">${escHtml(t.value)}</span></span>`).join('')}</div>
+        ${lm.description ? '<div class="lm-description">' + escHtml(lm.description) + '</div>' : ''}
+        ${matchInfo}
+      </div>`;
+  }).join('');
+}
+
+function highlightOsm(osmIdx) {
+  document.querySelectorAll('.landmark-card').forEach(card => {
+    const matches = card.dataset.osmMatches;
+    if (matches && matches.split(',').includes(String(osmIdx))) {
+      card.classList.add('highlight');
+    }
+    if (card.dataset.osmIdx === String(osmIdx)) {
+      card.classList.add('highlight');
+    }
+  });
+}
+
+function highlightLlm(source, llmIdx) {
+  const card = document.querySelector(`[data-${source}-idx="${llmIdx}"]`);
+  if (!card) return;
+  card.classList.add('highlight');
+  const matches = card.dataset.osmMatches;
+  if (matches) {
+    matches.split(',').forEach(j => {
+      if (j !== '') {
+        const osmCard = document.querySelector(`[data-osm-idx="${j}"]`);
+        if (osmCard) osmCard.classList.add('highlight');
+      }
+    });
+  }
+}
+
+function clearHighlights() {
+  document.querySelectorAll('.landmark-card.highlight').forEach(c => c.classList.remove('highlight'));
+}
+
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+init();
+</script>
+</body>
+</html>
+"""
+
+
+@app.route("/compare")
+def compare_page():
+    return Response(COMPARE_PAGE, content_type="text/html")
 
 
 # ---------------------------------------------------------------------------
@@ -3917,6 +4386,12 @@ def main():
         default=None,
         help="Path to .npz file with DINO CLS tokens (from extract_dino_cls_tokens.py)",
     )
+    parser.add_argument(
+        "--ollama_dir",
+        type=Path,
+        default=None,
+        help="Directory with Ollama extraction results (for compare tool)",
+    )
     parser.add_argument("--port", type=int, default=5001)
     parser.add_argument("--host", type=str, default="localhost")
     args = parser.parse_args()
@@ -4079,6 +4554,14 @@ def main():
           f"({n_ge_reviewed} reviewed)")
 
     _train_generic_classifier()
+
+    # Load Ollama extractions if provided
+    if args.ollama_dir:
+        print(f"Loading Ollama extractions from {args.ollama_dir}...")
+        OLLAMA_EXTRACTIONS.update(load_extractions(args.ollama_dir))
+        n_match = sum(1 for p in PANORAMAS if p["id"] in OLLAMA_EXTRACTIONS)
+        print(f"Loaded {len(OLLAMA_EXTRACTIONS)} Ollama extractions "
+              f"({n_match} matching loaded panoramas)")
 
     print(f"\nStarting server on {args.host}:{args.port}")
     print(f"Output: {args.output}")
