@@ -355,6 +355,9 @@ py_binary(
 py_binary(
   name="landmark_tagger",
   srcs=["landmark_tagger.py"],
+  data=[
+    "//experimental/overhead_matching/swag/evaluation:proper_noun_matcher_python.so",
+  ],
   deps=[
     requirement("flask"),
     requirement("numpy"),
@@ -366,6 +369,7 @@ py_binary(
     requirement("shapely"),
     requirement("geopandas"),
     requirement("scikit-learn"),
+    ":evaluate_extraction_lib",
     ":panorama_to_pinhole_lib",
     ":search_osm_tags_lib",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
@@ -659,6 +663,21 @@ py_binary(
     requirement("pyarrow"),
     ":search_osm_tags_lib",
   ]
+)
+
+py_library(
+  name="evaluate_extraction_lib",
+  srcs=["evaluate_extraction.py"],
+  data=[
+    "//experimental/overhead_matching/swag/evaluation:proper_noun_matcher_python.so",
+  ],
+  visibility=["//experimental/overhead_matching/swag:__subpackages__"],
+  deps=[
+    requirement("pandas"),
+    requirement("pyarrow"),
+    requirement("numpy"),
+    ":search_osm_tags_lib",
+  ],
 )
 
 py_binary(
