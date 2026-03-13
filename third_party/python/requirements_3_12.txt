@@ -834,7 +834,9 @@ dinov2 @ git+https://github.com/ewfuentes/dinov2.git@3680537d078b8cc2924f29657b8
     #   -c constraints.txt
     #   -r third_party/python/requirements_3_12.in
 dinov3 @ git+https://github.com/facebookresearch/dinov3.git@6e50ab28b75133230b6cc3a846a8adc3c300b27d
-    # via -r third_party/python/requirements_3_12.in
+    # via
+    #   -c constraints.txt
+    #   -r third_party/python/requirements_3_12.in
 distro==1.9.0 \
     --hash=sha256:2fa77c6fd8940f116ee1d6b94a2f90b13b5ea8d019b98bc8bafdcabcdd9bdbed \
     --hash=sha256:7bffd925d65168f85027d8da9af6bddab658135b840670a223589bc0c8ef02b2
