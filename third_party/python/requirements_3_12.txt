@@ -833,6 +833,10 @@ dinov2 @ git+https://github.com/ewfuentes/dinov2.git@3680537d078b8cc2924f29657b8
     # via
     #   -c constraints.txt
     #   -r third_party/python/requirements_3_12.in
+dinov3 @ git+https://github.com/facebookresearch/dinov3.git@6e50ab28b75133230b6cc3a846a8adc3c300b27d
+    # via
+    #   -c constraints.txt
+    #   -r third_party/python/requirements_3_12.in
 distro==1.9.0 \
     --hash=sha256:2fa77c6fd8940f116ee1d6b94a2f90b13b5ea8d019b98bc8bafdcabcdd9bdbed \
     --hash=sha256:7bffd925d65168f85027d8da9af6bddab658135b840670a223589bc0c8ef02b2
@@ -958,6 +962,7 @@ ftfy==6.3.1 \
     --hash=sha256:9b3c3d90f84fb267fe64d375a07b7f8912d817cf86009ae134aa03e1819506ec
     # via
     #   -c constraints.txt
+    #   dinov3
     #   open-clip-torch
 fvcore==0.1.5.post20221221 \
     --hash=sha256:f2fb0bb90572ae651c11c78e20493ed19b2240550a7e4bbb2d6de87bdd037860
@@ -2361,6 +2366,7 @@ omegaconf==2.3.0 \
     # via
     #   -c constraints.txt
     #   dinov2
+    #   dinov3
     #   hydra-core
 open-clip-torch==2.32.0 \
     --hash=sha256:0220bc111162527eb738c1fe20dbfd6ea45dfe44726b54a4de18d3945d8f2f00 \
@@ -3634,6 +3640,7 @@ regex==2025.7.34 \
     --hash=sha256:fd5edc3f453de727af267c7909d083e19f6426fc9dd149e332b6034f2a5611e6
     # via
     #   -c constraints.txt
+    #   dinov3
     #   open-clip-torch
     #   transformers
 reportlab==4.1.0 \
@@ -4003,6 +4010,7 @@ scikit-learn==1.6.1 \
     # via
     #   -c constraints.txt
     #   -r third_party/python/requirements_3_12.in
+    #   dinov3
     #   sentence-transformers
 scipy==1.16.1 \
     --hash=sha256:0851f6a1e537fe9399f35986897e395a1aa61c574b178c0d456be5b1a0f5ca1f \
@@ -4257,6 +4265,7 @@ submitit==1.5.3 \
     # via
     #   -c constraints.txt
     #   dinov2
+    #   dinov3
 supervision==0.25.1 \
     --hash=sha256:61781b4abe4fa6ff95c58af6aec7dd3451a78e7e6a797e9ea2787f93771dd031 \
     --hash=sha256:ebc015c22983bc64563beda75f5f529e465e4020b318da07948ce03148307a72
@@ -4298,6 +4307,7 @@ termcolor==3.1.0 \
     --hash=sha256:6a6dd7fbee581909eeec6a756cff1d7f7c376063b14e4a298dc4980309e55970
     # via
     #   -c constraints.txt
+    #   dinov3
     #   fvcore
 terminado==0.18.1 \
     --hash=sha256:a4468e1b37bb318f8a86514f65814e1afc977cf29b3992a4500d9dd305dcceb0 \
@@ -4387,6 +4397,7 @@ torch==2.7.0+cu128 \
     #   -r third_party/python/requirements_3_12.in
     #   depth-pro
     #   dinov2
+    #   dinov3
     #   easyocr
     #   hloc
     #   kornia
@@ -4408,6 +4419,7 @@ torchmetrics==1.7.4 \
     # via
     #   -c constraints.txt
     #   dinov2
+    #   dinov3
 torchvision==0.22.0+cu128 \
     --hash=sha256:03b454b867f7a0aa9861a463042141448c4f15bec784def19eed39a57fac217b \
     --hash=sha256:06c101f40e1ff94869be14487c91fd5352e376f202fdeafb8f53c58cee2fbeb5 \
@@ -4425,6 +4437,7 @@ torchvision==0.22.0+cu128 \
     #   -c constraints.txt
     #   depth-pro
     #   dinov2
+    #   dinov3
     #   easyocr
     #   hloc
     #   lightglue
