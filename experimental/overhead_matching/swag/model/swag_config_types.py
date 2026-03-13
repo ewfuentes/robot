@@ -83,6 +83,19 @@ class PanoramaLocationTypeExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS)
     auxiliary_info_key: str
 
 
+class OSMFieldExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    """Config for extracting embeddings for a single OSM tag field.
+
+    Works with v2.0 pickle format where each tag type has its own
+    pre-computed embeddings indexed by custom_id.
+    """
+    tag: str
+    openai_embedding_size: int
+    embedding_version: str
+    auxiliary_info_key: str
+    landmark_type: LandmarkType | None = None
+
+
 class SyntheticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     log_grid_spacing: int
     grid_bounds_px: int
@@ -128,6 +141,7 @@ ExtractorConfig = Union[
     PanoramaSemanticLandmarkExtractorConfig,
     PanoramaProperNounExtractorConfig,
     PanoramaLocationTypeExtractorConfig,
+    OSMFieldExtractorConfig,
     SyntheticLandmarkExtractorConfig,
     AbsolutePositionExtractorConfig,
 ]

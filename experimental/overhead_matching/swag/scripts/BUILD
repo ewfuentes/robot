@@ -524,3 +524,17 @@ py_binary(
     "//experimental/overhead_matching/swag/model:swag_patch_embedding",
   ]
 )
+
+py_binary(
+  name="verify_osm_field_extractor",
+  srcs=["verify_osm_field_extractor.py"],
+  deps=[
+    requirement("torch"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/model:osm_field_extractor",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
+    "//experimental/overhead_matching/swag/model:swag_config_types",
+    "//experimental/overhead_matching/swag/model:swag_model_input_output",
+  ]
+)

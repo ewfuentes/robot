@@ -346,7 +346,7 @@ def load_tensor_caches(info: TensorCacheInfo) -> dict[str, list[TensorCache]]:
         Dict mapping dataset_key -> list of TensorCache objects for that dataset.
         Returns empty dict if info is None or has no extractor_info.
     """
-    if info is None or info.extractor_info is None:
+    if info is None or not info.extractor_info:
         return {}
 
     base_path = Path("~/.cache/robot/overhead_matching/tensor_cache").expanduser()

@@ -67,6 +67,7 @@ py_library(
     ":semantic_landmark_extractor",
     ":panorama_semantic_landmark_extractor",
     ":additional_panorama_extractors",
+    ":osm_field_extractor",
     ":synthetic_landmark_extractor",
     ":semantic_segment_extractor",
     ":absolute_position_extractor",
@@ -212,6 +213,24 @@ py_test(
     ":semantic_landmark_extractor",
     ":semantic_landmark_utils",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
+  ]
+)
+
+py_library(
+  name = "osm_field_extractor",
+  srcs = ["osm_field_extractor.py"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+    "//common/python:__subpackages__",
+  ],
+  deps = [
+    requirement("torch"),
+    "//common/torch:load_torch_deps",
+    ":additional_panorama_extractors",
+    ":swag_model_input_output",
+    ":swag_config_types",
+    ":semantic_landmark_utils",
+    ":semantic_landmark_extractor",
   ]
 )
 
