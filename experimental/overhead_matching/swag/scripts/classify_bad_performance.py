@@ -1,14 +1,19 @@
 import common.torch.load_torch_deps
 import torch
+import torch.nn as nn
 import torchvision as tv
 import numpy as np
 import pandas as pd
 import json
 import pickle
 import argparse
+import random
 import tqdm
 from pathlib import Path
 from sklearn.linear_model import LogisticRegression
+from sklearn.neural_network import MLPClassifier
+from sklearn.kernel_approximation import Nystroem
+from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import cross_val_score
 from sklearn.metrics import (
@@ -103,6 +108,252 @@ def extract_dino_cls_tokens(dataset, dino_model, device, batch_size):
             all_cls.append(cls_tokens.float().cpu())
 
     return torch.cat(all_cls, dim=0)
+
+
+def extract_dino_patch_tokens(images, dino_model):
+    """Extract spatial DINO patch tokens from a batch of images.
+
+    Args:
+        images: [B, 3, H, W] tensor, already on device and normalized
+        dino_model: frozen DINO model on the same device
+
+    Returns:
+        [B, embed_dim, num_patch_rows, num_patch_cols] tensor
+    """
+    batch_size, _, img_height, img_width = images.shape
+    patch_height, patch_width = dino_model.patch_embed.patch_size
+    num_patch_cols = int((img_width + patch_width / 2) // patch_width)
+    num_patch_rows = int((img_height + patch_height / 2) // patch_height)
+
+    patch_tokens = dino_model.forward_features(images)["x_norm_patchtokens"]
+    return patch_tokens.transpose(-1, -2).reshape(
+        batch_size, -1, num_patch_rows, num_patch_cols)
+
+
+class PatchCNNClassifier(nn.Module):
+    def __init__(self, in_channels=768):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv2d(in_channels, 256, 3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(),
+            nn.Conv2d(256, 128, 3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(128, 1),
+        )
+
+    def forward(self, x):
+        return self.net(x).squeeze(-1)
+
+
+class RawCNNClassifier(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 32, 7, stride=2, padding=3),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Conv2d(32, 64, 3, stride=2, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.Conv2d(64, 128, 3, stride=2, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+        )
+        self.head = nn.Sequential(
+            nn.Dropout(0.3),
+            nn.Linear(128, 1),
+        )
+
+    def forward(self, x):
+        return self.head(self.features(x)).squeeze(-1)
+
+
+class LabeledPanoDataset(torch.utils.data.Dataset):
+    """Wraps VIGOR dataset(s) with binary labels for panorama classification."""
+
+    def __init__(self, datasets_and_labels):
+        """Args:
+            datasets_and_labels: list of (VigorDataset, labels_array) tuples
+        """
+        self.entries = []  # (dataset, pano_idx, label)
+        for dataset, labels in datasets_and_labels:
+            for i in range(len(labels)):
+                self.entries.append((dataset, i, int(labels[i])))
+
+    def __len__(self):
+        return len(self.entries)
+
+    def __getitem__(self, idx):
+        dataset, pano_idx, label = self.entries[idx]
+        pano_view = dataset.get_pano_view()
+        batch = pano_view[pano_idx]
+        image = batch.panorama  # [3, H, W]
+        return image, label
+
+
+def train_pytorch_classifier(model, train_dataset, val_dataset, args, dino_model=None):
+    """Train a PyTorch binary classifier with early stopping on validation AUC.
+
+    For patch_cnn mode, dino_model must be provided (frozen, on GPU).
+    For raw_cnn mode, dino_model should be None.
+    """
+    device = args.device
+    is_patch_cnn = args.classifier == "patch_cnn"
+    model = model.to(device)
+
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset, batch_size=args.train_batch_size, shuffle=True,
+        num_workers=8, pin_memory=True, drop_last=True)
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset, batch_size=args.train_batch_size, shuffle=False,
+        num_workers=8, pin_memory=True)
+
+    # Compute pos_weight from training labels
+    if hasattr(train_dataset, 'entries'):
+        num_pos = sum(1 for _, _, l in train_dataset.entries if l == 1)
+    elif hasattr(train_dataset, 'dataset') and hasattr(train_dataset, 'indices'):
+        # torch.utils.data.Subset
+        num_pos = sum(1 for i in train_dataset.indices if train_dataset.dataset.entries[i][2] == 1)
+    else:
+        num_pos = len(train_dataset) // 2
+    num_neg = len(train_dataset) - num_pos
+    pos_weight = torch.tensor([num_neg / max(num_pos, 1)], device=device)
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    scaler = torch.amp.GradScaler()
+
+    best_val_auc = 0.0
+    best_state = None
+    patience_counter = 0
+
+    for epoch in range(args.num_epochs):
+        # Train
+        model.train()
+        train_loss = 0.0
+        for images, labels in tqdm.tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.num_epochs} [train]"):
+            images = images.to(device)
+            labels = labels.float().to(device)
+
+            images = tv.transforms.functional.normalize(
+                images, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+
+            optimizer.zero_grad()
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                if is_patch_cnn:
+                    with torch.no_grad():
+                        images = extract_dino_patch_tokens(images, dino_model)
+                logits = model(images)
+                loss = criterion(logits, labels)
+
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+            train_loss += loss.item() * len(labels)
+
+        train_loss /= len(train_dataset)
+
+        # Validate
+        model.eval()
+        val_probs = []
+        val_labels = []
+        val_loss = 0.0
+        with torch.no_grad():
+            for images, labels in tqdm.tqdm(val_loader, desc=f"Epoch {epoch+1}/{args.num_epochs} [val]"):
+                images = images.to(device)
+                labels_dev = labels.float().to(device)
+
+                images = tv.transforms.functional.normalize(
+                    images, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+
+                with torch.autocast("cuda", dtype=torch.bfloat16):
+                    if is_patch_cnn:
+                        images = extract_dino_patch_tokens(images, dino_model)
+                    logits = model(images)
+                    loss = criterion(logits, labels_dev)
+
+                val_loss += loss.item() * len(labels)
+                val_probs.append(torch.sigmoid(logits.float()).cpu())
+                val_labels.append(labels)
+
+        val_loss /= len(val_dataset)
+        val_probs = torch.cat(val_probs).numpy()
+        val_labels = torch.cat(val_labels).numpy()
+
+        if len(np.unique(val_labels)) > 1:
+            val_auc = roc_auc_score(val_labels, val_probs)
+        else:
+            val_auc = 0.0
+
+        print(f"  Epoch {epoch+1}: train_loss={train_loss:.4f}  val_loss={val_loss:.4f}  val_auc={val_auc:.4f}")
+
+        if val_auc > best_val_auc:
+            best_val_auc = val_auc
+            best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            patience_counter = 0
+        else:
+            patience_counter += 1
+            if patience_counter >= args.patience:
+                print(f"  Early stopping at epoch {epoch+1} (patience={args.patience})")
+                break
+
+    print(f"  Best validation AUC: {best_val_auc:.4f}")
+    if best_state is not None:
+        model.load_state_dict(best_state)
+    model = model.to(device)
+    return model, best_val_auc
+
+
+def evaluate_pytorch_classifier(model, dataset, args, split_name, dino_model=None):
+    """Evaluate a trained PyTorch classifier, returning metrics dict."""
+    device = args.device
+    is_patch_cnn = args.classifier == "patch_cnn"
+    model.eval()
+
+    loader = torch.utils.data.DataLoader(
+        dataset, batch_size=args.train_batch_size, shuffle=False,
+        num_workers=8, pin_memory=True)
+
+    all_probs = []
+    all_labels = []
+    with torch.no_grad():
+        for images, labels in tqdm.tqdm(loader, desc=f"Evaluating {split_name}"):
+            images = images.to(device)
+            images = tv.transforms.functional.normalize(
+                images, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                if is_patch_cnn:
+                    images = extract_dino_patch_tokens(images, dino_model)
+                logits = model(images)
+
+            all_probs.append(torch.sigmoid(logits.float()).cpu())
+            all_labels.append(labels)
+
+    y_prob = torch.cat(all_probs).numpy()
+    y = torch.cat(all_labels).numpy()
+    y_pred = (y_prob >= 0.5).astype(np.int64)
+
+    metrics = {
+        "split": split_name,
+        "accuracy": accuracy_score(y, y_pred),
+        "precision": precision_score(y, y_pred, zero_division=0),
+        "recall": recall_score(y, y_pred, zero_division=0),
+        "f1": f1_score(y, y_pred, zero_division=0),
+        "roc_auc": roc_auc_score(y, y_prob) if len(np.unique(y)) > 1 else float("nan"),
+        "confusion_matrix": confusion_matrix(y, y_pred).tolist(),
+        "num_samples": len(y),
+        "num_bad": int(y.sum()),
+        "num_good": int((y == 0).sum()),
+    }
+    return metrics
 
 
 def evaluate_classifier(clf, scaler, X, y, split_name):
@@ -213,6 +464,21 @@ def main():
                         help="City or cities to train classifier on")
     parser.add_argument("--test-city", type=str, default="Seattle",
                         help="City to evaluate classifier on")
+    parser.add_argument("--classifier", type=str, default="logistic",
+                        choices=["logistic", "mlp", "kernel", "patch_cnn", "raw_cnn"],
+                        help="Classifier type")
+    parser.add_argument("--mlp-hidden", type=int, nargs="+", default=[256, 128],
+                        help="MLP hidden layer sizes")
+    parser.add_argument("--kernel-components", type=int, default=1000,
+                        help="Number of Nystroem components for kernel classifier")
+    # PyTorch classifier args (patch_cnn / raw_cnn)
+    parser.add_argument("--num-epochs", type=int, default=20)
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--train-batch-size", type=int, default=32,
+                        help="Batch size for CNN training (separate from --batch-size for DINO extraction)")
+    parser.add_argument("--val-fraction", type=float, default=0.15)
+    parser.add_argument("--patience", type=int, default=5)
+    parser.add_argument("--weight-decay", type=float, default=1e-4)
 
     args = parser.parse_args()
 
@@ -270,100 +536,217 @@ def main():
         city_labels[city] = labels
         del similarities[city]
 
-    # Step 4: Extract DINOv2 CLS tokens (separate phase to avoid OOM)
-    dino_repo = "facebookresearch/dinov3" if args.dino_model.startswith("dinov3") else "facebookresearch/dinov2"
-    print(f"\nLoading DINO model: {args.dino_model} from {dino_repo}")
-    dino_model = torch.hub.load(dino_repo, args.dino_model)
-    dino_model = dino_model.to(device)
-    dino_model.eval()
+    clf_type = args.classifier
+    use_pytorch = clf_type in ("patch_cnn", "raw_cnn")
 
-    city_X = {}
-    for city in all_cities:
-        X, labels, ranks = extract_and_save_city_cls(
-            city, datasets[city], dino_model, args.batch_size, device,
-            output_path, city_ranks[city], city_labels[city])
-        city_X[city] = X
-        city_labels[city] = labels
-        city_ranks[city] = ranks
+    if use_pytorch:
+        # ---- PyTorch CNN classifier path ----
+        dino_model = None
+        if clf_type == "patch_cnn":
+            dino_repo = "facebookresearch/dinov3" if args.dino_model.startswith("dinov3") else "facebookresearch/dinov2"
+            print(f"\nLoading DINO model: {args.dino_model} from {dino_repo}")
+            dino_model = torch.hub.load(dino_repo, args.dino_model)
+            dino_model = dino_model.to(device)
+            dino_model.eval()
 
-    del dino_model
-    torch.cuda.empty_cache()
+        # Build train/val/test datasets
+        train_pairs = [(datasets[c], city_labels[c]) for c in train_cities]
+        full_train_dataset = LabeledPanoDataset(train_pairs)
 
-    # Combine training data from all train cities
-    train_X = np.concatenate([city_X[c] for c in train_cities], axis=0)
-    train_y = np.concatenate([city_labels[c] for c in train_cities], axis=0)
-    test_X = city_X[test_city]
-    test_y = city_labels[test_city]
+        # Split train into train/val
+        n_total = len(full_train_dataset)
+        n_val = int(n_total * args.val_fraction)
+        n_train = n_total - n_val
+        indices = list(range(n_total))
+        random.seed(42)
+        random.shuffle(indices)
+        train_indices = indices[:n_train]
+        val_indices = indices[n_train:]
+        train_subset = torch.utils.data.Subset(full_train_dataset, train_indices)
+        val_subset = torch.utils.data.Subset(full_train_dataset, val_indices)
 
-    # Step 5: Train classifier
-    print("\n" + "=" * 60)
-    print(f"Training logistic regression on {train_cities_label}")
-    print(f"  Total train samples: {len(train_y)} "
-          f"({int(train_y.sum())} bad, {int((train_y == 0).sum())} good)")
-    print("=" * 60)
+        test_dataset = LabeledPanoDataset([(datasets[test_city], city_labels[test_city])])
 
-    scaler = StandardScaler()
-    train_X_scaled = scaler.fit_transform(train_X)
+        train_y = np.array([full_train_dataset.entries[i][2] for i in train_indices])
+        print("\n" + "=" * 60)
+        print(f"Training {clf_type} classifier on {train_cities_label}")
+        print(f"  Train samples: {n_train} ({int(train_y.sum())} bad, {int((train_y == 0).sum())} good)")
+        print(f"  Val samples: {n_val}")
+        print(f"  Test samples: {len(test_dataset)}")
+        print("=" * 60)
 
-    # 5-fold cross-validation for AUC estimate
-    clf = LogisticRegression(class_weight="balanced", max_iter=1000, random_state=42)
-    cv_scores = cross_val_score(
-        clf, train_X_scaled, train_y, cv=5, scoring="roc_auc"
-    )
-    print(f"{train_cities_label} 5-fold CV AUC: {cv_scores.mean():.4f} (+/- {cv_scores.std():.4f})")
+        # Build model
+        if clf_type == "patch_cnn":
+            cnn_model = PatchCNNClassifier(in_channels=dino_model.num_features)
+        else:
+            cnn_model = RawCNNClassifier()
 
-    # Fit on full train set
-    clf.fit(train_X_scaled, train_y)
+        cnn_model, best_val_auc = train_pytorch_classifier(
+            cnn_model, train_subset, val_subset, args, dino_model=dino_model)
 
-    # Step 6: Evaluate on train (in-sample) and test (out-of-sample)
-    train_metrics = evaluate_classifier(clf, scaler, train_X, train_y, f"{train_cities_label}_train")
-    test_metrics = evaluate_classifier(clf, scaler, test_X, test_y, f"{test_city}_test")
+        # Evaluate
+        train_metrics = evaluate_pytorch_classifier(
+            cnn_model, train_subset, args, f"{train_cities_label}_train", dino_model=dino_model)
+        test_metrics = evaluate_pytorch_classifier(
+            cnn_model, test_dataset, args, f"{test_city}_test", dino_model=dino_model)
 
-    # Per-city train metrics
-    per_city_train_metrics = {}
-    for city in train_cities:
-        per_city_train_metrics[city] = evaluate_classifier(
-            clf, scaler, city_X[city], city_labels[city], f"{city}_train")
+        per_city_train_metrics = {}
+        for city in train_cities:
+            city_ds = LabeledPanoDataset([(datasets[city], city_labels[city])])
+            per_city_train_metrics[city] = evaluate_pytorch_classifier(
+                cnn_model, city_ds, args, f"{city}_train", dino_model=dino_model)
 
-    print("\n" + "=" * 60)
-    print(f"{train_cities_label} (train, combined) metrics:")
-    for k, v in train_metrics.items():
-        if k != "confusion_matrix":
-            print(f"  {k}: {v}")
-    print(f"  confusion_matrix:\n    {train_metrics['confusion_matrix']}")
+        # Print results
+        print("\n" + "=" * 60)
+        print(f"{train_cities_label} (train) metrics:")
+        for k, v in train_metrics.items():
+            if k != "confusion_matrix":
+                print(f"  {k}: {v}")
+        print(f"  confusion_matrix:\n    {train_metrics['confusion_matrix']}")
 
-    for city in train_cities:
-        m = per_city_train_metrics[city]
-        print(f"\n  {city} (train, individual):")
-        print(f"    accuracy={m['accuracy']:.4f}  f1={m['f1']:.4f}  "
-              f"roc_auc={m['roc_auc']:.4f}  bad={m['num_bad']}/{m['num_samples']}")
+        for city in train_cities:
+            m = per_city_train_metrics[city]
+            print(f"\n  {city} (train, individual):")
+            print(f"    accuracy={m['accuracy']:.4f}  f1={m['f1']:.4f}  "
+                  f"roc_auc={m['roc_auc']:.4f}  bad={m['num_bad']}/{m['num_samples']}")
 
-    print(f"\n{test_city} (test) metrics:")
-    for k, v in test_metrics.items():
-        if k != "confusion_matrix":
-            print(f"  {k}: {v}")
-    print(f"  confusion_matrix:\n    {test_metrics['confusion_matrix']}")
-    print("=" * 60)
+        print(f"\n{test_city} (test) metrics:")
+        for k, v in test_metrics.items():
+            if k != "confusion_matrix":
+                print(f"  {k}: {v}")
+        print(f"  confusion_matrix:\n    {test_metrics['confusion_matrix']}")
+        print("=" * 60)
 
-    # Step 7: Save results
-    all_metrics = {
-        "train_cities": train_cities,
-        "test_city": test_city,
-        f"{train_cities_label.lower()}_cv_auc_mean": float(cv_scores.mean()),
-        f"{train_cities_label.lower()}_cv_auc_std": float(cv_scores.std()),
-        f"{train_cities_label.lower()}_cv_auc_per_fold": cv_scores.tolist(),
-        f"{train_cities_label.lower()}_train": train_metrics,
-        f"{test_city.lower()}_test": test_metrics,
-        "rank_threshold": args.rank_threshold,
-    }
-    for city in train_cities:
-        all_metrics[f"{city.lower()}_train"] = per_city_train_metrics[city]
+        # Save results
+        all_metrics = {
+            "train_cities": train_cities,
+            "test_city": test_city,
+            "best_val_auc": best_val_auc,
+            f"{train_cities_label.lower()}_train": train_metrics,
+            f"{test_city.lower()}_test": test_metrics,
+            "rank_threshold": args.rank_threshold,
+        }
+        for city in train_cities:
+            all_metrics[f"{city.lower()}_train"] = per_city_train_metrics[city]
 
-    with open(output_path / "metrics.json", "w") as f:
-        json.dump(all_metrics, f, indent=4)
+        with open(output_path / "metrics.json", "w") as f:
+            json.dump(all_metrics, f, indent=4)
 
-    with open(output_path / "classifier.pkl", "wb") as f:
-        pickle.dump({"clf": clf, "scaler": scaler}, f)
+        torch.save(cnn_model.state_dict(), output_path / "classifier_weights.pt")
+
+        if dino_model is not None:
+            del dino_model
+        torch.cuda.empty_cache()
+
+    else:
+        # ---- sklearn classifier path (logistic / mlp / kernel) ----
+
+        # Step 4: Extract DINOv2 CLS tokens (separate phase to avoid OOM)
+        dino_repo = "facebookresearch/dinov3" if args.dino_model.startswith("dinov3") else "facebookresearch/dinov2"
+        print(f"\nLoading DINO model: {args.dino_model} from {dino_repo}")
+        dino_model = torch.hub.load(dino_repo, args.dino_model)
+        dino_model = dino_model.to(device)
+        dino_model.eval()
+
+        city_X = {}
+        for city in all_cities:
+            X, labels, ranks = extract_and_save_city_cls(
+                city, datasets[city], dino_model, args.batch_size, device,
+                output_path, city_ranks[city], city_labels[city])
+            city_X[city] = X
+            city_labels[city] = labels
+            city_ranks[city] = ranks
+
+        del dino_model
+        torch.cuda.empty_cache()
+
+        # Combine training data from all train cities
+        train_X = np.concatenate([city_X[c] for c in train_cities], axis=0)
+        train_y = np.concatenate([city_labels[c] for c in train_cities], axis=0)
+        test_X = city_X[test_city]
+        test_y = city_labels[test_city]
+
+        # Step 5: Train classifier
+        print("\n" + "=" * 60)
+        print(f"Training {clf_type} classifier on {train_cities_label}")
+        print(f"  Total train samples: {len(train_y)} "
+              f"({int(train_y.sum())} bad, {int((train_y == 0).sum())} good)")
+        print("=" * 60)
+
+        scaler = StandardScaler()
+        train_X_scaled = scaler.fit_transform(train_X)
+
+        if clf_type == "mlp":
+            hidden = tuple(args.mlp_hidden)
+            print(f"  MLP hidden layers: {hidden}")
+            clf = MLPClassifier(
+                hidden_layer_sizes=hidden, max_iter=500, random_state=42,
+                early_stopping=True, validation_fraction=0.1)
+        elif clf_type == "kernel":
+            n_comp = args.kernel_components
+            print(f"  Nystroem RBF kernel with {n_comp} components")
+            clf = make_pipeline(
+                Nystroem(kernel="rbf", n_components=n_comp, random_state=42),
+                LogisticRegression(class_weight="balanced", max_iter=1000, random_state=42),
+            )
+        else:
+            clf = LogisticRegression(class_weight="balanced", max_iter=1000, random_state=42)
+
+        cv_scores = cross_val_score(
+            clf, train_X_scaled, train_y, cv=5, scoring="roc_auc"
+        )
+        print(f"{train_cities_label} 5-fold CV AUC: {cv_scores.mean():.4f} (+/- {cv_scores.std():.4f})")
+
+        clf.fit(train_X_scaled, train_y)
+
+        # Step 6: Evaluate
+        train_metrics = evaluate_classifier(clf, scaler, train_X, train_y, f"{train_cities_label}_train")
+        test_metrics = evaluate_classifier(clf, scaler, test_X, test_y, f"{test_city}_test")
+
+        per_city_train_metrics = {}
+        for city in train_cities:
+            per_city_train_metrics[city] = evaluate_classifier(
+                clf, scaler, city_X[city], city_labels[city], f"{city}_train")
+
+        print("\n" + "=" * 60)
+        print(f"{train_cities_label} (train, combined) metrics:")
+        for k, v in train_metrics.items():
+            if k != "confusion_matrix":
+                print(f"  {k}: {v}")
+        print(f"  confusion_matrix:\n    {train_metrics['confusion_matrix']}")
+
+        for city in train_cities:
+            m = per_city_train_metrics[city]
+            print(f"\n  {city} (train, individual):")
+            print(f"    accuracy={m['accuracy']:.4f}  f1={m['f1']:.4f}  "
+                  f"roc_auc={m['roc_auc']:.4f}  bad={m['num_bad']}/{m['num_samples']}")
+
+        print(f"\n{test_city} (test) metrics:")
+        for k, v in test_metrics.items():
+            if k != "confusion_matrix":
+                print(f"  {k}: {v}")
+        print(f"  confusion_matrix:\n    {test_metrics['confusion_matrix']}")
+        print("=" * 60)
+
+        # Step 7: Save results
+        all_metrics = {
+            "train_cities": train_cities,
+            "test_city": test_city,
+            f"{train_cities_label.lower()}_cv_auc_mean": float(cv_scores.mean()),
+            f"{train_cities_label.lower()}_cv_auc_std": float(cv_scores.std()),
+            f"{train_cities_label.lower()}_cv_auc_per_fold": cv_scores.tolist(),
+            f"{train_cities_label.lower()}_train": train_metrics,
+            f"{test_city.lower()}_test": test_metrics,
+            "rank_threshold": args.rank_threshold,
+        }
+        for city in train_cities:
+            all_metrics[f"{city.lower()}_train"] = per_city_train_metrics[city]
+
+        with open(output_path / "metrics.json", "w") as f:
+            json.dump(all_metrics, f, indent=4)
+
+        with open(output_path / "classifier.pkl", "wb") as f:
+            pickle.dump({"clf": clf, "scaler": scaler}, f)
 
     print(f"\nResults saved to {output_path}")
 
