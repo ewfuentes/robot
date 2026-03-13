@@ -84,6 +84,13 @@ def main():
     matches_path = str(tables_dir / f"{city_name}_pano_osm_matches.parquet")
     sat_osm_path = str(tables_dir / f"{city_name}_sat_osm_table.parquet")
 
+    for path in [matches_path, sat_osm_path]:
+        if not Path(path).exists():
+            raise FileNotFoundError(
+                f"Expected parquet file not found: {path}\n"
+                f"Run export_landmark_tables first, or check --city_name and --landmark_tables_dir."
+            )
+
     # Resolve output path
     if args.output_path is not None:
         output_path = args.output_path.expanduser().resolve()
@@ -96,6 +103,13 @@ def main():
     # 1. Load weights
     print(f"Loading weights from {weights_path}")
     weights_data = torch.load(weights_path, weights_only=False)
+    if not isinstance(weights_data, dict) or "theta" not in weights_data or "tag_keys" not in weights_data:
+        keys_info = (list(weights_data.keys()) if isinstance(weights_data, dict)
+                     else type(weights_data).__name__)
+        raise ValueError(
+            f"Invalid weights file: {weights_path}. "
+            f"Expected dict with 'theta' and 'tag_keys', got: {keys_info}"
+        )
     theta = weights_data["theta"]
     tag_keys = weights_data["tag_keys"]
     print(f"  {len(tag_keys)} tag keys, theta shape: {theta.shape}")

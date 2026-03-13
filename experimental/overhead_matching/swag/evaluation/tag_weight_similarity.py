@@ -8,6 +8,7 @@ Extracted from the tag_weight_optimization.py marimo notebook. Provides:
 """
 
 from collections import defaultdict
+from pathlib import Path
 
 import numpy as np
 import polars as pl
@@ -22,13 +23,12 @@ class MatchData:
 
     Stores condensed (osm_idx, key_idx, count) matches per panorama as flat
     arrays, plus an osm_idx → sat_idx expansion table. Scores are computed
-    on-the-fly during optimization — no (pano × sat × key) matrix needed.
+    on-the-fly in build_similarity_matrix — no (pano × sat × key) matrix needed.
     """
 
     def __init__(self, num_panos, num_sats, num_keys,
                  match_osm_idxs, match_key_idxs, match_counts,
-                 pano_boundaries, osm_to_sat_idxs, osm_to_sat_offsets,
-                 positive_sat_idxs_per_pano):
+                 pano_boundaries, osm_to_sat_idxs, osm_to_sat_offsets):
         self.num_panos = num_panos
         self.num_sats = num_sats
         self.num_keys = num_keys
@@ -41,8 +41,6 @@ class MatchData:
         # Flat CSR for osm_idx → list of sat_idxs
         self.osm_to_sat_idxs = osm_to_sat_idxs      # int32 (num_osm_sat_pairs,)
         self.osm_to_sat_offsets = osm_to_sat_offsets  # int32 (max_osm_idx+2,)
-        # Ground truth
-        self.positive_sat_idxs_per_pano = positive_sat_idxs_per_pano  # list of sets
 
 
 def precompute_match_data(
@@ -55,10 +53,9 @@ def precompute_match_data(
     """Condense match parquet into compact per-panorama arrays.
 
     Groups by (pano_id, osm_idx, tag_key) in chunks, then builds flat
-    arrays sorted by pano_idx. ~1-2 GB total.
+    arrays sorted by pano_idx.
     """
     import tempfile
-    import os
 
     num_keys = len(vocab)
     key_to_idx = {k: i for i, k in enumerate(vocab)}
@@ -69,6 +66,8 @@ def precompute_match_data(
 
     # --- Build osm → sat CSR from small table ---
     sat_osm_df = pl.read_parquet(sat_osm_path).select("osm_idx", "sat_idx").unique()
+    if len(sat_osm_df) == 0:
+        raise ValueError(f"sat_osm table at {sat_osm_path} is empty — no OSM-satellite correspondences found")
     max_osm = sat_osm_df["osm_idx"].max()
     # Some osm_idxs in matches may not appear in sat table — size CSR to cover all
     max_osm_matches = (
@@ -98,40 +97,47 @@ def precompute_match_data(
     num_chunks = (total_rows + chunk_rows - 1) // chunk_rows
     print(f"  Total matches: {total_rows}, condensing in {num_chunks} chunks")
 
-    tmp_dir = tempfile.mkdtemp(prefix="tag_weight_")
-    chunk_paths = []
-    for i in tqdm(range(num_chunks), desc="Condensing chunks"):
-        offset = i * chunk_rows
-        condensed = (
-            pl.scan_parquet(matches_path)
-            .slice(offset, chunk_rows)
-            .filter(pl.col("tag_key").is_in(vocab))
-            .select("pano_id", "osm_idx", "tag_key")
-            .group_by("pano_id", "osm_idx", "tag_key")
-            .len()
-            .collect()
-        )
-        if len(condensed) > 0:
-            chunk_path = os.path.join(tmp_dir, f"chunk_{i:04d}.parquet")
-            condensed.write_parquet(chunk_path)
-            chunk_paths.append(chunk_path)
+    with tempfile.TemporaryDirectory(prefix="tag_weight_") as tmp_dir:
+        chunk_paths = []
+        for i in tqdm(range(num_chunks), desc="Condensing chunks"):
+            offset = i * chunk_rows
+            condensed = (
+                pl.scan_parquet(matches_path)
+                .slice(offset, chunk_rows)
+                .filter(pl.col("tag_key").is_in(vocab))
+                .select("pano_id", "osm_idx", "tag_key")
+                .group_by("pano_id", "osm_idx", "tag_key")
+                .len()
+                .collect()
+            )
+            if len(condensed) > 0:
+                chunk_path = Path(tmp_dir) / f"chunk_{i:04d}.parquet"
+                condensed.write_parquet(chunk_path)
+                chunk_paths.append(chunk_path)
 
-    # --- Merge chunks and build flat arrays ---
-    # Stream chunks into per-pano lists
-    pano_matches = defaultdict(list)  # pano_idx -> list of (osm_idx, key_idx, count)
-    total_condensed = 0
-    for chunk_path in tqdm(chunk_paths, desc="Merging chunks"):
-        chunk = pl.read_parquet(chunk_path)
-        total_condensed += len(chunk)
-        for pano_id, osm_idx, tag_key, count in chunk.iter_rows():
-            pano_idx = pano_id_to_idx.get(pano_id)
-            if pano_idx is None:
-                continue
-            kid = key_to_idx[tag_key]
-            pano_matches[pano_idx].append((osm_idx, kid, count))
-        del chunk
-        os.remove(chunk_path)
-    os.rmdir(tmp_dir)
+        # --- Merge chunks and build flat arrays ---
+        # Stream chunks into per-pano lists
+        pano_matches = defaultdict(list)  # pano_idx -> list of (osm_idx, key_idx, count)
+        total_condensed = 0
+        skipped_rows = 0
+        for chunk_path in tqdm(chunk_paths, desc="Merging chunks"):
+            chunk = pl.read_parquet(chunk_path)
+            total_condensed += len(chunk)
+            for pano_id, osm_idx, tag_key, count in chunk.iter_rows():
+                pano_idx = pano_id_to_idx.get(pano_id)
+                if pano_idx is None:
+                    skipped_rows += 1
+                    continue
+                kid = key_to_idx[tag_key]
+                pano_matches[pano_idx].append((osm_idx, kid, count))
+            del chunk
+    if total_condensed > 0 and skipped_rows > 0:
+        pct = skipped_rows / total_condensed * 100
+        print(f"  WARNING: {skipped_rows}/{total_condensed} rows ({pct:.1f}%) had pano_ids not in dataset")
+        if pct > 50:
+            raise ValueError(
+                f"{pct:.1f}% of rows had unmatched pano_ids — likely a dataset/parquet mismatch"
+            )
     print(f"  Condensed rows: {total_condensed}, panos with matches: {len(pano_matches)}")
 
     # Note: same (pano, osm, key) can appear in multiple chunks — merge counts
@@ -161,11 +167,6 @@ def precompute_match_data(
     mem_mb = (match_osm_idxs.nbytes + match_key_idxs.nbytes + match_counts.nbytes) / 1e6
     print(f"  Final: {total_matches} condensed matches, {mem_mb:.0f} MB")
 
-    # Ground truth positive sets
-    positive_sat_idxs_per_pano = [
-        set(pano_meta.iloc[i]["positive_satellite_idxs"]) for i in range(num_panos)
-    ]
-
     return MatchData(
         num_panos=num_panos, num_sats=num_sats, num_keys=num_keys,
         match_osm_idxs=match_osm_idxs,
@@ -174,7 +175,6 @@ def precompute_match_data(
         pano_boundaries=boundaries,
         osm_to_sat_idxs=osm_to_sat_flat,
         osm_to_sat_offsets=osm_to_sat_offsets,
-        positive_sat_idxs_per_pano=positive_sat_idxs_per_pano,
     )
 
 
@@ -200,6 +200,11 @@ def build_similarity_matrix(
         Float32 tensor of shape (num_panos, num_sats)
     """
     md = match_data
+    if theta.shape[0] != md.num_keys:
+        raise ValueError(
+            f"theta has {theta.shape[0]} elements but match_data has {md.num_keys} keys — "
+            f"ensure weights were trained on the same vocabulary as the match data"
+        )
     sim = torch.zeros(md.num_panos, md.num_sats, dtype=torch.float32)
 
     for p in tqdm(range(md.num_panos), desc="Building similarity matrix"):
@@ -252,20 +257,20 @@ def compute_top_k_metrics(
     Args:
         similarity: (num_panos, num_sats) similarity matrix
         dataset: VigorDataset with panorama metadata containing positive_satellite_idxs
+            and semipositive_satellite_idxs (both are treated as positives for ranking)
         ks: list of k values for recall@k
 
     Returns:
         dict with keys "recall@{k}" for each k, and "mrr"
     """
     rankings = torch.argsort(similarity, dim=1, descending=True)
-    num_panos = similarity.shape[0]
 
     reciprocal_ranks = []
     hit_counts = {k: 0 for k in ks}
     total = 0
 
-    for i, row in dataset._panorama_metadata.iterrows():
-        positive_idxs = list(row.positive_satellite_idxs) + list(row.get('semipositive_satellite_idxs', []))
+    for pano_idx, (_, row) in enumerate(dataset._panorama_metadata.iterrows()):
+        positive_idxs = list(row.positive_satellite_idxs) + list(row.semipositive_satellite_idxs)
         if len(positive_idxs) == 0:
             continue
         total += 1
@@ -273,7 +278,7 @@ def compute_top_k_metrics(
         # Find best rank among all positive/semipositive satellites
         best_rank = similarity.shape[1]  # worst case
         for sat_idx in positive_idxs:
-            rank = torch.argwhere(rankings[i] == sat_idx).item()
+            rank = torch.argwhere(rankings[pano_idx] == sat_idx).item()
             best_rank = min(best_rank, rank)
 
         reciprocal_ranks.append(1.0 / (best_rank + 1))
