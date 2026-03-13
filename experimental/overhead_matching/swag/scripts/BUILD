@@ -729,3 +729,27 @@ py_binary(
   ]
 )
 
+py_binary(
+  name="export_landmark_tables",
+  srcs=["export_landmark_tables.py"],
+  deps=[
+    requirement("polars"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/evaluation:osm_tag_similarity",
+  ]
+)
+
+py_binary(
+  name="export_tag_weight_similarity",
+  srcs=["export_tag_weight_similarity.py"],
+  deps=[
+    requirement("torch"),
+    requirement("polars"),
+    requirement("tqdm"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/evaluation:tag_weight_similarity",
+  ]
+)
+
