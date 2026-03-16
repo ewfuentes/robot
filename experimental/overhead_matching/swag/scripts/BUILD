@@ -743,5 +743,20 @@ py_binary(
   ]
 )
 
+py_binary(
+  name="generate_sft_data",
+  srcs=["generate_sft_data.py"],
+  deps=[
+    requirement("ollama"),
+    requirement("pandas"),
+    requirement("pyarrow"),
+    requirement("google-genai"),
+    ":ollama_osm_extraction_lib",
+    ":evaluate_extraction_lib",
+    "//common/ollama:pyollama",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_extractor",
+  ]
+)
+
 
 
