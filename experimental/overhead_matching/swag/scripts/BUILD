@@ -121,7 +121,7 @@ py_binary(
     "//experimental/overhead_matching/swag/data:vigor_dataset",
     "//experimental/overhead_matching/swag/data:vigor_filters",
     "//experimental/overhead_matching/swag/data:satellite_embedding_database",
-    "//experimental/overhead_matching/swag/evaluation:tag_weight_similarity",
+    "//experimental/overhead_matching/swag/evaluation:retrieval_metrics",
     "//experimental/overhead_matching/swag/model:patch_embedding",
     "//experimental/overhead_matching/swag/model:swag_patch_embedding",
   ]
@@ -750,6 +750,7 @@ py_binary(
     requirement("tqdm"),
     "//common/torch:load_torch_deps",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/evaluation:retrieval_metrics",
     "//experimental/overhead_matching/swag/evaluation:tag_weight_similarity",
   ]
 )

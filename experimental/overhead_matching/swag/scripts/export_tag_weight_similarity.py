@@ -18,6 +18,7 @@ import common.torch.load_torch_deps  # noqa: F401 — must precede torch import
 import torch
 
 from experimental.overhead_matching.swag.data import vigor_dataset as vd
+from experimental.overhead_matching.swag.evaluation import retrieval_metrics as rm
 from experimental.overhead_matching.swag.evaluation import tag_weight_similarity as tws
 
 
@@ -145,7 +146,7 @@ def main():
     print(f"Similarity matrix shape: {similarity.shape}")
 
     # 5. Compute and print metrics
-    metrics = tws.compute_top_k_metrics(similarity, dataset, ks=ks)
+    metrics = rm.compute_top_k_metrics(similarity, dataset, ks=ks)
     print(f"\nMetrics for {city_name} (weights trained on {args.train_city_name}):")
     for key, value in metrics.items():
         print(f"  {key}: {value:.4f}")

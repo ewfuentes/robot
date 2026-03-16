@@ -148,7 +148,7 @@ class TrainConfig:
     sat_landmark_dropout_schedules: list[LandmarkDropoutScheduleConfig] = None
     seed: int | None = None
 
-from experimental.overhead_matching.swag.evaluation.tag_weight_similarity import validation_metrics_from_similarity
+from experimental.overhead_matching.swag.evaluation.retrieval_metrics import validation_metrics_from_similarity
 
 @torch.no_grad
 def compute_validation_metrics(

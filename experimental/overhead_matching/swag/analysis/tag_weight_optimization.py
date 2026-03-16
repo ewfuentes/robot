@@ -28,8 +28,12 @@ def _():
     from tqdm import tqdm
 
     from experimental.overhead_matching.swag.data import vigor_dataset as vd
+    from experimental.overhead_matching.swag.evaluation.tag_weight_similarity import (
+        precompute_match_data as lib_precompute_match_data,
+        build_similarity_matrix,
+    )
 
-    return Path, np, pickle, pl, torch, tqdm, vd
+    return Path, build_similarity_matrix, lib_precompute_match_data, np, pickle, pl, torch, tqdm, vd
 
 
 @app.cell
@@ -195,201 +199,21 @@ def _(seattle_dataset):
 
 
 @app.cell
-def _(np, pl, torch, tqdm, vd):
-    from collections import defaultdict
-
-    class MatchData:
-        """Compact per-panorama match data for on-the-fly score computation.
-
-        Stores condensed (osm_idx, key_idx, count) matches per panorama as flat
-        arrays, plus an osm_idx → sat_idx expansion table. Scores are computed
-        on-the-fly during optimization — no (pano × sat × key) matrix needed.
-        """
-        def __init__(self, num_panos, num_sats, num_keys,
-                     match_osm_idxs, match_key_idxs, match_counts,
-                     pano_boundaries, osm_to_sat_idxs, osm_to_sat_offsets,
-                     positive_sat_idxs_per_pano):
-            self.num_panos = num_panos
-            self.num_sats = num_sats
-            self.num_keys = num_keys
-            # Flat arrays over all condensed matches, sorted by pano_idx
-            self.match_osm_idxs = match_osm_idxs        # int32 (num_condensed,)
-            self.match_key_idxs = match_key_idxs        # int16 (num_condensed,)
-            self.match_counts = match_counts             # int16 (num_condensed,)
-            # (start, end) into match arrays for each pano_idx
-            self.pano_boundaries = pano_boundaries       # list of (int, int)
-            # Flat CSR for osm_idx → list of sat_idxs
-            self.osm_to_sat_idxs = osm_to_sat_idxs      # int32 (num_osm_sat_pairs,)
-            self.osm_to_sat_offsets = osm_to_sat_offsets  # int32 (max_osm_idx+2,)
-            # Ground truth
-            self.positive_sat_idxs_per_pano = positive_sat_idxs_per_pano  # list of sets
-
-        def compute_pano_scores(self, theta, pano_idx):
-            """Compute score(pano_idx, sat_idx) for all sats, given weight vector theta.
-
-            Returns a dense float64 tensor of shape (num_sats,).
-            Fully vectorized via scatter_add (no Python loop).
-            """
-            start, end = self.pano_boundaries[pano_idx]
-            scores = torch.zeros(self.num_sats, dtype=torch.float64)
-            if start == end:
-                return scores
-
-            osm_idxs = self.match_osm_idxs[start:end].long()
-            key_idxs = self.match_key_idxs[start:end].long()
-            counts = self.match_counts[start:end].double()
-
-            weights = theta[key_idxs] * counts  # (M,)
-
-            # Vectorized osm→sat expansion
-            o_starts = self.osm_to_sat_offsets[osm_idxs]
-            o_ends = self.osm_to_sat_offsets[osm_idxs + 1]
-            sizes = (o_ends - o_starts).long()
-            total_expanded = sizes.sum().item()
-            if total_expanded == 0:
-                return scores
-
-            expanded_weights = torch.repeat_interleave(weights, sizes)
-            cumsize = sizes.cumsum(0)
-            cumsize_prev = torch.cat([torch.zeros(1, dtype=torch.long), cumsize[:-1]])
-            rep_o_starts = torch.repeat_interleave(o_starts.long(), sizes)
-            rep_cumsize_prev = torch.repeat_interleave(cumsize_prev, sizes)
-            flat_idx = rep_o_starts + torch.arange(total_expanded, dtype=torch.long) - rep_cumsize_prev
-            expanded_sat_idxs = self.osm_to_sat_idxs[flat_idx].long()
-
-            scores.scatter_add_(0, expanded_sat_idxs, expanded_weights)
-            return scores
-
+def _(lib_precompute_match_data, torch, tqdm, vd):
     def precompute_match_data(
         matches_path: str,
         sat_osm_path: str,
         vigor_dataset: vd.VigorDataset,
         vocab: list[str],
         chunk_rows: int = 10_000_000,
-    ) -> MatchData:
-        """Condense match parquet into compact per-panorama arrays.
-
-        Groups by (pano_id, osm_idx, tag_key) in chunks, then builds flat
-        arrays sorted by pano_idx. ~1-2 GB total.
-        """
-        import tempfile, os
-
-        num_keys = len(vocab)
-        key_to_idx = {k: i for i, k in enumerate(vocab)}
+    ):
+        """Wrapper around library precompute_match_data that adds positive_sat_idxs_per_pano."""
+        md = lib_precompute_match_data(matches_path, sat_osm_path, vigor_dataset, vocab, chunk_rows)
         pano_meta = vigor_dataset._panorama_metadata
-        num_panos = len(pano_meta)
-        num_sats = len(vigor_dataset._satellite_metadata)
-        pano_id_to_idx = {row["pano_id"]: idx for idx, (_, row) in enumerate(pano_meta.iterrows())}
-
-        # --- Build osm → sat CSR from small table ---
-        sat_osm_df = pl.read_parquet(sat_osm_path).select("osm_idx", "sat_idx").unique()
-        max_osm = sat_osm_df["osm_idx"].max()
-        # Some osm_idxs in matches may not appear in sat table — size CSR to cover all
-        max_osm_matches = (
-            pl.scan_parquet(matches_path)
-            .select(pl.col("osm_idx").max())
-            .collect()
-            .item()
-        )
-        max_osm = max(max_osm, max_osm_matches)
-        osm_to_sat_lists = defaultdict(list)
-        for osm_idx, sat_idx in zip(sat_osm_df["osm_idx"], sat_osm_df["sat_idx"]):
-            osm_to_sat_lists[osm_idx].append(sat_idx)
-        # Build CSR
-        osm_to_sat_offsets = np.zeros(max_osm + 2, dtype=np.int32)
-        all_sat_idxs = []
-        for osm in range(max_osm + 1):
-            sats = osm_to_sat_lists.get(osm, [])
-            all_sat_idxs.extend(sats)
-            osm_to_sat_offsets[osm + 1] = osm_to_sat_offsets[osm] + len(sats)
-        osm_to_sat_flat = torch.tensor(all_sat_idxs, dtype=torch.int32)
-        osm_to_sat_offsets = torch.tensor(osm_to_sat_offsets, dtype=torch.int32)
-        del sat_osm_df, osm_to_sat_lists
-        print(f"  osm→sat CSR: {len(osm_to_sat_flat)} entries, max_osm={max_osm}")
-
-        # --- Condense matches: group by (pano_id, osm_idx, tag_key) in chunks ---
-        total_rows = pl.scan_parquet(matches_path).select(pl.len()).collect().item()
-        num_chunks = (total_rows + chunk_rows - 1) // chunk_rows
-        print(f"  Total matches: {total_rows}, condensing in {num_chunks} chunks")
-
-        tmp_dir = tempfile.mkdtemp(prefix="tag_weight_")
-        chunk_paths = []
-        for i in tqdm(range(num_chunks), desc="Condensing chunks"):
-            offset = i * chunk_rows
-            condensed = (
-                pl.scan_parquet(matches_path)
-                .slice(offset, chunk_rows)
-                .filter(pl.col("tag_key").is_in(vocab))
-                .select("pano_id", "osm_idx", "tag_key")
-                .group_by("pano_id", "osm_idx", "tag_key")
-                .len()
-                .collect()
-            )
-            if len(condensed) > 0:
-                chunk_path = os.path.join(tmp_dir, f"chunk_{i:04d}.parquet")
-                condensed.write_parquet(chunk_path)
-                chunk_paths.append(chunk_path)
-
-        # --- Merge chunks and build flat arrays ---
-        # Stream chunks into per-pano lists
-        pano_matches = defaultdict(list)  # pano_idx -> list of (osm_idx, key_idx, count)
-        total_condensed = 0
-        for ci, chunk_path in enumerate(tqdm(chunk_paths, desc="Merging chunks")):
-            chunk = pl.read_parquet(chunk_path)
-            total_condensed += len(chunk)
-            for pano_id, osm_idx, tag_key, count in chunk.iter_rows():
-                pano_idx = pano_id_to_idx.get(pano_id)
-                if pano_idx is None:
-                    continue
-                kid = key_to_idx[tag_key]
-                pano_matches[pano_idx].append((osm_idx, kid, count))
-            del chunk
-            os.remove(chunk_path)
-        os.rmdir(tmp_dir)
-        print(f"  Condensed rows: {total_condensed}, panos with matches: {len(pano_matches)}")
-
-        # Note: same (pano, osm, key) can appear in multiple chunks — merge counts
-        all_osm = []
-        all_key = []
-        all_count = []
-        boundaries = []
-        for p in range(num_panos):
-            start = len(all_osm)
-            if p in pano_matches:
-                # Merge duplicates from different chunks
-                merged = defaultdict(int)
-                for osm_idx, kid, count in pano_matches[p]:
-                    merged[(osm_idx, kid)] += count
-                for (osm_idx, kid), count in merged.items():
-                    all_osm.append(osm_idx)
-                    all_key.append(kid)
-                    all_count.append(count)
-            boundaries.append((start, len(all_osm)))
-        del pano_matches
-
-        match_osm_idxs = torch.tensor(all_osm, dtype=torch.int32)
-        match_key_idxs = torch.tensor(all_key, dtype=torch.int16)
-        match_counts = torch.tensor(all_count, dtype=torch.int16)
-
-        total_matches = len(match_osm_idxs)
-        mem_mb = (match_osm_idxs.nbytes + match_key_idxs.nbytes + match_counts.nbytes) / 1e6
-        print(f"  Final: {total_matches} condensed matches, {mem_mb:.0f} MB")
-
-        # Ground truth positive sets
-        positive_sat_idxs_per_pano = [
-            set(pano_meta.iloc[i]["positive_satellite_idxs"]) for i in range(num_panos)
+        md.positive_sat_idxs_per_pano = [
+            set(pano_meta.iloc[i]["positive_satellite_idxs"]) for i in range(md.num_panos)
         ]
-
-        return MatchData(
-            num_panos=num_panos, num_sats=num_sats, num_keys=num_keys,
-            match_osm_idxs=match_osm_idxs,
-            match_key_idxs=match_key_idxs,
-            match_counts=match_counts,
-            pano_boundaries=boundaries,
-            osm_to_sat_idxs=osm_to_sat_flat,
-            osm_to_sat_offsets=osm_to_sat_offsets,
-            positive_sat_idxs_per_pano=positive_sat_idxs_per_pano,
-        )
+        return md
 
     def compute_loss_and_mrr(match_data, theta):
         """Compute softmax cross-entropy loss and MRR (evaluation only, no grad)."""
@@ -835,51 +659,23 @@ def _(
 @app.cell
 def _(
     Path,
+    build_similarity_matrix,
     chi_match_data,
     learned_theta,
     sea_match_data,
     tag_keys,
     torch,
-    tqdm,
     train_history,
 ):
-    # Build full (num_panos, num_sats) similarity matrix from learned weights
     _save_prefix = "osm_tag_lbfgs"
     for _city, _match_data in zip(["chicago", "seattle"], [chi_match_data, sea_match_data]):
-        _theta = learned_theta
-        _md = _match_data
-        _sim = torch.zeros(_md.num_panos, _md.num_sats, dtype=torch.float32)
-    
-        for p in tqdm(range(_md.num_panos), desc="Building similarity matrix"):
-          start, end = _md.pano_boundaries[p]
-          if start == end:
-              continue
-          osm_idxs = _md.match_osm_idxs[start:end].long()
-          key_idxs = _md.match_key_idxs[start:end].long()
-          counts = _md.match_counts[start:end].float()
-          weights = _theta[key_idxs] * counts
-    
-          o_starts = _md.osm_to_sat_offsets[osm_idxs]
-          o_ends = _md.osm_to_sat_offsets[osm_idxs + 1]
-          sizes = (o_ends - o_starts).long()
-          if sizes.sum() == 0:
-              continue
-          exp_weights = torch.repeat_interleave(weights, sizes)
-          cumsize = sizes.cumsum(0)
-          cumsize_prev = torch.cat([torch.zeros(1, dtype=torch.long), cumsize[:-1]])
-          rep_o_starts = torch.repeat_interleave(o_starts.long(), sizes)
-          rep_cp = torch.repeat_interleave(cumsize_prev, sizes)
-          flat_idx = rep_o_starts + torch.arange(sizes.sum(), dtype=torch.long) - rep_cp
-          sat_idxs = _md.osm_to_sat_idxs[flat_idx].long()
-          _sim[p].scatter_add_(0, sat_idxs, exp_weights)
-    
-        _city = "chicago"  # change for seattle
-    
+        _sim = build_similarity_matrix(_match_data, learned_theta)
+
         _path = Path(f"~/scratch/similarities/{_save_prefix}/{_city}.pt").expanduser()
         _path.parent.mkdir(exist_ok=True)
         torch.save(_sim, _path)
         print(f"Saved {_sim.shape} to {_path}")
-    
+
     _save = {
       "theta": learned_theta,
       "tag_keys": tag_keys,
