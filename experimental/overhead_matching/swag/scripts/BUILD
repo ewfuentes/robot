@@ -372,7 +372,10 @@ py_binary(
     ":evaluate_extraction_lib",
     ":panorama_to_pinhole_lib",
     ":search_osm_tags_lib",
+    ":osm_tag_server_lib",
+    ":ollama_osm_extraction_lib",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_extractor",
   ]
 )
 
@@ -655,6 +658,17 @@ py_binary(
   deps=[],
 )
 
+py_library(
+  name="osm_tag_server_lib",
+  srcs=["osm_tag_server.py"],
+  visibility=["//experimental/overhead_matching/swag:__subpackages__"],
+  deps=[
+    requirement("pandas"),
+    requirement("pyarrow"),
+    ":search_osm_tags_lib",
+  ]
+)
+
 py_binary(
   name="osm_tag_server",
   srcs=["osm_tag_server.py"],
@@ -728,4 +742,6 @@ py_binary(
     "//common/ollama:pyollama",
   ]
 )
+
+
 
