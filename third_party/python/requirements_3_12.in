@@ -48,6 +48,7 @@ pyarrow==21.0.0
 z3-solver==4.15.4.0
 watchdog==6.0.0
 dinov2 @ git+https://github.com/ewfuentes/dinov2.git@3680537d078b8cc2924f29657b8322cba8b4bb3d
+dinov3 @ git+https://github.com/facebookresearch/dinov3.git@6e50ab28b75133230b6cc3a846a8adc3c300b27d
 torch-kdtree @ git+https://github.com/ewfuentes/torch_kdtree.git@583b92b105fcc7aefdc0020136229f9ed32566b7
 sam-2 @ git+https://github.com/IDEA-Research/Grounded-SAM-2.git@dd4c5141b75e4838dd486c64f773c43b4db3a07b
 sdprlayers @ git+https://github.com/ewfuentes/sdprlayer.git@0d0663f96c106db549fa9bc5653af71620bc2861
