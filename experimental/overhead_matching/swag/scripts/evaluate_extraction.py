@@ -70,7 +70,11 @@ def load_extractions(extractions_dir: Path) -> dict[str, dict]:
         for json_file in extractions_dir.rglob("*.json"):
             pano_id = json_file.stem
             with open(json_file) as f:
-                result[pano_id] = json.load(f)
+                data = json.load(f)
+            # Support conversation format (has extraction_result key)
+            if "extraction_result" in data:
+                data = data["extraction_result"]
+            result[pano_id] = data
         return result
 
 
@@ -272,6 +276,12 @@ def main():
         default=None,
         help="Optional path for JSON dump of all match details",
     )
+    parser.add_argument(
+        "--filter-panos-from",
+        type=Path,
+        default=None,
+        help="Only evaluate pano IDs present in this extraction directory",
+    )
     args = parser.parse_args()
 
     # Resolve feather path
@@ -301,6 +311,12 @@ def main():
     # Load extractions
     extractions = load_extractions(args.extractions_dir)
     print(f"Loaded {len(extractions)} extractions")
+
+    if args.filter_panos_from:
+        filter_extractions = load_extractions(args.filter_panos_from)
+        filter_ids = set(filter_extractions.keys())
+        extractions = {k: v for k, v in extractions.items() if k in filter_ids}
+        print(f"Filtered to {len(extractions)} extractions (matching {len(filter_ids)} pano IDs)")
 
     # --- Panorama-level evaluation ---
     pano_metrics = evaluate_panorama_level(panorama_labels, extractions)
