@@ -41,6 +41,11 @@ You are an expert at identifying landmarks in street-level imagery and mapping t
 <instructions>
 Given four images which show the same location from yaws 0° (facing north), 90° (facing west), 180° (facing south), and 270° (facing east) respectively, identify distinctive, permanent landmarks and classify them using OSM's key=value tagging system.
 
+Your workflow should be:
+ 1. Analyze the images for any visually distinctive landmarks and useful signs. Summarize what you have found.
+ 2. Use tools at your disposal to discover what OSM tags are appropriate and justifiable for each identified landmark.
+ 3. Report your results using the specified JSON schema.
+
 For each landmark:
 - Assign a primary OSM tag (e.g., amenity=cafe, shop=pharmacy, building=apartments)
 - Add relevant additional tags (name, brand, cuisine, building:levels, etc.)
@@ -127,7 +132,6 @@ DEFAULT_PINHOLE_BASE = "/data/overhead_matching/datasets/pinhole_images"
 DEFAULT_TAG_SERVER_URL = "http://localhost:8421"
 
 TOOL_INSTRUCTIONS = """
-
 <tools>
 You have a tool `query_landmarks` that executes SQL against a database of ALL
 OSM landmarks in the city these images were taken in.
@@ -157,6 +161,7 @@ bridge is in the map DOES NOT confirm that you are on the Lake Street bridge.
 Tables:
 - tags(key, value, count) — all unique key=value tags across the city with occurrence counts
 - landmark_tags(landmark_id, key, value) — per-landmark tags for co-occurrence queries
+- landmarks(landmark_id, geom) — spatial geometries (SpatiaLite); use ST_Distance(a.geom, b.geom, 1) for meters
 
 Workflow:
 1. Look at the images and identify candidate landmarks
@@ -297,8 +302,73 @@ OSM_EXTRACTION_SCHEMA = {
 }
 
 
+def load_examples(conversations_dir: Path) -> str:
+    """Load conversation JSONs and format as text examples for the system prompt.
+
+    Serializes the reasoning, tool calls, tool results, and final answer from
+    each conversation into an ``<examples>`` block.  Images and system prompt
+    are omitted (redundant with the live prompt).
+    """
+    if not conversations_dir or not conversations_dir.is_dir():
+        return ""
+
+    parts = []
+    for json_file in sorted(conversations_dir.glob("*.json")):
+        with open(json_file) as f:
+            data = json.load(f)
+        messages = data.get("messages", [])
+
+        lines = []
+        for msg in messages:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            tool_calls = msg.get("tool_calls")
+
+            if role == "system":
+                continue
+            elif role == "user":
+                # Skip the initial image prompt — it's the same every time
+                if msg.get("image_paths") or "four images above" in content:
+                    continue
+                lines.append(f"User: {content}")
+            elif role == "assistant":
+                if tool_calls:
+                    for tc in tool_calls:
+                        fn = tc["function"]
+                        sql = fn["arguments"].get("sql", "")
+                        lines.append(f"Assistant: [calls query_landmarks]\nSQL: {sql}")
+                elif content:
+                    lines.append(f"Assistant: {content}")
+            elif role == "tool":
+                lines.append(f"Tool result: {content}")
+
+        if lines:
+            parts.append("\n\n".join(lines))
+
+    if not parts:
+        return ""
+
+    examples_text = "\n\n---\n\n".join(
+        f"<example_{i + 1}>\n{text}\n</example_{i + 1}>"
+        for i, text in enumerate(parts)
+    )
+    return f"""
+<examples>
+The following are examples of good extraction conversations. Note how the assistant:
+- Describes what it sees before querying
+- Uses the tool to discover correct OSM tag vocabulary
+- Checks co-occurring tags to find additional relevant tags
+- Only includes tags that can be justified from the images
+- Explicitly states when it cannot justify additional tags
+
+{examples_text}
+</examples>"""
+
+
 def dispatch_tool(name: str, args: dict, server_url: str) -> str:
     if name == "query_landmarks":
+        if "sql" not in args or not args["sql"]:
+            return json.dumps({"error": "Missing required 'sql' argument"})
         try:
             resp = requests.post(
                 f"{server_url}/query",
@@ -342,8 +412,10 @@ def run_extraction(
     image_paths: list[Path],
     server_url: str,
     max_tool_rounds: int = 15,
+    examples_dir: Path | None = None,
 ) -> OSMTagExtraction:
-    system_prompt = OSM_TAGS_SYSTEM_PROMPT + TOOL_INSTRUCTIONS
+    examples_text = load_examples(examples_dir) if examples_dir else ""
+    system_prompt = OSM_TAGS_SYSTEM_PROMPT + TOOL_INSTRUCTIONS + examples_text
 
     messages = [
         {"role": "system", "content": system_prompt},

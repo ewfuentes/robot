@@ -81,6 +81,12 @@ def main():
         default=None,
         help="Max number of panoramas to process (for testing)",
     )
+    parser.add_argument(
+        "--examples-dir",
+        type=Path,
+        default=None,
+        help="Directory with example conversation JSONs for in-context learning",
+    )
     args = parser.parse_args()
 
     # Load labels
@@ -130,6 +136,7 @@ def main():
                     image_paths,
                     args.tag_server_url,
                     args.max_tool_rounds,
+                    examples_dir=args.examples_dir,
                 )
                 output_path.write_text(result.model_dump_json(indent=2))
                 num_lm = len(result.landmarks)

@@ -17,6 +17,7 @@ import argparse
 import io
 import json
 import math
+import sqlite3
 from pathlib import Path
 
 import numpy as np
@@ -43,6 +44,9 @@ from experimental.overhead_matching.swag.scripts.search_osm_tags import (
     EXCLUDE_KEYS,
     META_COLS,
     TagSearchIndex,
+)
+from experimental.overhead_matching.swag.scripts.osm_tag_server import (
+    build_database,
 )
 
 import pandas as pd
@@ -156,6 +160,13 @@ GEMINI_EVAL_QUEUE = []     # list of pano_idx for panoramas with Gemini preds + 
 
 # Ollama extractions for comparison tool
 OLLAMA_EXTRACTIONS = {}    # pano_id -> {"landmarks": [...]}
+
+# In-process SQLite database for OSM tag queries (built from feather at startup)
+TAG_DB = None  # sqlite3.Connection
+
+# Conversation builder state
+CONVERSATIONS_DIR = None  # Path — where to save conversation JSONs
+PINHOLE_BASE = None  # Path — base dir for pinhole images (for image_paths in saved convos)
 
 # Auto-labeling generic Gemini landmarks via sklearn classifier
 GENERIC_CLF = None         # trained RandomForestClassifier (or None if not enough data)
@@ -1850,6 +1861,10 @@ h1 { color: #a0c0ff; margin-bottom: 24px; font-size: 28px; }
     <a class="card" href="/compare">
         <h2>LLM Extraction Comparison</h2>
         <p>Compare Gemini and Ollama extraction results side-by-side against labeled OSM landmarks. See match quality and browse with hover highlighting.</p>
+    </a>
+    <a class="card" href="/conversation_builder">
+        <h2>Conversation Builder</h2>
+        <p>Manually craft SFT training conversations: view panorama images, write model reasoning, execute SQL tool calls against OSM tags, and save complete conversations.</p>
     </a>
     <div class="stats" id="stats">Loading stats...</div>
 </div>
@@ -4328,6 +4343,896 @@ def annotate_page():
     return Response(ANNOTATE_PAGE, content_type="text/html")
 
 
+# ---------------------------------------------------------------------------
+# Conversation Builder
+# ---------------------------------------------------------------------------
+
+MAX_SQL_ROWS = 50
+
+CONVERSATION_BUILDER_PAGE = r"""
+<!DOCTYPE html>
+<html>
+<head>
+<title>Conversation Builder</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; background: #1a1a2e; color: #e0e0e0; }
+.top-bar { display: flex; align-items: center; gap: 12px; padding: 8px 16px; background: #0f3460; }
+.top-bar button { padding: 6px 14px; border: 1px solid #a0c0ff; background: transparent; color: #a0c0ff; border-radius: 4px; cursor: pointer; font-size: 13px; }
+.top-bar button:hover { background: #1a2a4e; }
+.top-bar .pano-info { color: #a0c0ff; font-size: 14px; flex: 1; }
+.pinhole-row { display: flex; gap: 4px; padding: 8px 16px; background: #16213e; justify-content: center; flex-shrink: 0; }
+.pinhole-row img { height: 480px; border-radius: 4px; border: 2px solid #0f3460; }
+.main-area { display: flex; height: calc(100vh - 540px); }
+.chat-panel { flex: 2; display: flex; flex-direction: column; border-right: 1px solid #0f3460; }
+.chat-messages { flex: 1; overflow-y: auto; padding: 12px; }
+.chat-input-area { padding: 12px; border-top: 1px solid #0f3460; background: #16213e; }
+.tool-panel { flex: 1; display: flex; flex-direction: column; min-width: 380px; }
+.tool-panel h3 { padding: 8px 12px; background: #0f3460; color: #a0c0ff; font-size: 14px; }
+.tool-templates { padding: 12px; overflow-y: auto; flex: 1; }
+
+/* Chat message styling */
+.msg { margin-bottom: 12px; padding: 8px 12px; border-radius: 6px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
+.msg-system { background: #1a2a4e; border-left: 3px solid #555; color: #999; font-size: 11px; max-height: 60px; overflow: hidden; cursor: pointer; }
+.msg-system.expanded { max-height: none; }
+.msg-user { background: #1a3a5e; border-left: 3px solid #4a90d9; }
+.msg-assistant { background: #2a1a3e; border-left: 3px solid #9a5ad9; }
+.msg-tool-call { background: #1a3a2e; border-left: 3px solid #4ad95a; font-family: monospace; font-size: 12px; }
+.msg-tool-result { background: #1a2e2e; border-left: 3px solid #4ad9d9; font-family: monospace; font-size: 11px; max-height: 200px; overflow-y: auto; }
+.msg-label { font-size: 10px; color: #888; text-transform: uppercase; margin-bottom: 4px; }
+.msg .delete-btn { float: right; cursor: pointer; color: #ff6b6b; font-size: 16px; opacity: 0.5; padding: 2px 4px; }
+.msg .delete-btn:hover { opacity: 1; }
+
+/* Input area */
+.chat-input-area textarea { width: 100%; height: 80px; background: #1a1a2e; color: #e0e0e0; border: 1px solid #0f3460; border-radius: 4px; padding: 8px; font-family: inherit; font-size: 13px; resize: vertical; }
+.chat-input-area .btn-row { display: flex; gap: 8px; margin-top: 8px; }
+.chat-input-area button { padding: 6px 14px; border: 1px solid #555; background: transparent; color: #e0e0e0; border-radius: 4px; cursor: pointer; font-size: 12px; }
+.chat-input-area button:hover { background: #1a2a4e; border-color: #a0c0ff; }
+.chat-input-area button.primary { border-color: #9a5ad9; color: #c8a0ff; }
+.chat-input-area button.tool-btn { border-color: #4ad95a; color: #7dffaa; }
+
+/* Tool templates */
+.template-card { margin-bottom: 12px; padding: 10px; background: #1a2a3e; border: 1px solid #0f3460; border-radius: 6px; }
+.template-card h4 { color: #7dffaa; font-size: 12px; margin-bottom: 6px; }
+.template-card p { color: #999; font-size: 11px; margin-bottom: 6px; }
+.template-card input { width: 100%; padding: 4px 8px; background: #1a1a2e; color: #e0e0e0; border: 1px solid #0f3460; border-radius: 3px; font-family: monospace; font-size: 12px; margin-bottom: 4px; }
+.template-card .sql-preview { font-family: monospace; font-size: 11px; color: #7dffaa; background: #0a1a0e; padding: 6px; border-radius: 3px; margin: 6px 0; white-space: pre-wrap; }
+.template-card button { padding: 4px 10px; border: 1px solid #4ad95a; background: transparent; color: #7dffaa; border-radius: 3px; cursor: pointer; font-size: 11px; }
+.template-card button:hover { background: #1a3a2e; }
+
+/* Saved conversations list */
+.saved-list { padding: 12px; font-size: 12px; }
+.saved-item { padding: 4px 8px; margin: 2px 0; background: #1a2a3e; border-radius: 3px; cursor: pointer; }
+.saved-item:hover { background: #1a3a4e; }
+.saved-item.current { border-left: 3px solid #a0c0ff; }
+
+/* Tabs */
+.tab { background: #0f3460; color: #666; border: none; }
+.tab.active { color: #a0c0ff; border-bottom: 2px solid #a0c0ff; }
+
+/* Landmark form */
+.lm-form { margin-bottom: 10px; padding: 10px; background: #1a2a3e; border: 1px solid #0f3460; border-radius: 6px; position: relative; }
+.lm-form .lm-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.lm-form .lm-header span { font-size: 13px; color: #a0c0ff; font-weight: bold; }
+.lm-form .lm-remove { position: absolute; top: 6px; right: 8px; cursor: pointer; color: #ff6b6b; font-size: 12px; opacity: 0.5; }
+.lm-form .lm-remove:hover { opacity: 1; }
+.lm-form label { display: block; font-size: 11px; color: #888; margin: 6px 0 2px; }
+.lm-form input, .lm-form select, .lm-form textarea { width: 100%; padding: 4px 6px; background: #1a1a2e; color: #e0e0e0; border: 1px solid #0f3460; border-radius: 3px; font-size: 12px; font-family: monospace; }
+.lm-form textarea { height: 36px; resize: vertical; }
+.lm-form .tag-row { display: flex; gap: 4px; margin-bottom: 2px; align-items: center; }
+.lm-form .tag-row select { width: 160px; flex-shrink: 0; }
+.lm-form .tag-row input { flex: 1; min-width: 0; }
+.lm-form .tag-row .tag-rm { cursor: pointer; color: #ff6b6b; font-size: 14px; padding: 0 4px; }
+.lm-form .add-tag-btn { font-size: 11px; color: #7dffaa; cursor: pointer; margin-top: 2px; }
+</style>
+</head>
+<body>
+
+<div class="top-bar">
+    <button onclick="navigateConv(-1)">&larr; Prev</button>
+    <span class="pano-info" id="cb-pano-info">Loading...</span>
+    <button onclick="navigateConv(1)">Next &rarr;</button>
+    <button onclick="saveConversation()" style="border-color: #4ad95a; color: #7dffaa;">Save</button>
+    <button onclick="clearConversation()" style="border-color: #ff6b6b; color: #ff6b6b;">Clear</button>
+    <a href="/" style="color: #a0c0ff; text-decoration: none; font-size: 13px;">Home</a>
+</div>
+
+<div class="pinhole-row" id="cb-pinhole-row"></div>
+
+<div class="main-area">
+    <div class="chat-panel">
+        <div class="chat-messages" id="cb-messages"></div>
+        <div class="chat-input-area">
+            <textarea id="cb-input" placeholder="Type reasoning text here..."></textarea>
+            <div class="btn-row">
+                <button class="primary" onclick="addAssistantMsg()">Add as Assistant</button>
+                <button onclick="addUserMsg()">Add as User</button>
+                <button class="primary" onclick="addFinalAnswer()">Add Final Answer JSON</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="tool-panel">
+        <div style="display:flex; border-bottom:1px solid #0f3460;">
+            <h3 class="tab active" id="tab-sql" onclick="switchTab('sql')" style="cursor:pointer; flex:1; text-align:center; padding:8px; margin:0;">SQL Queries</h3>
+            <h3 class="tab" id="tab-landmarks" onclick="switchTab('landmarks')" style="cursor:pointer; flex:1; text-align:center; padding:8px; margin:0; color:#666;">Landmarks</h3>
+        </div>
+
+        <div class="tool-templates" id="panel-sql">
+
+            <div class="template-card">
+                <h4>Find tags by value</h4>
+                <p>Search for tags matching a keyword</p>
+                <input id="tpl-search-val" placeholder="e.g. tennis" oninput="updatePreview('search')">
+                <div class="sql-preview" id="tpl-search-preview">SELECT key, value, count FROM tags WHERE value LIKE '%____%' ORDER BY count DESC LIMIT 20</div>
+                <button onclick="execTemplate('search')">Execute</button>
+            </div>
+
+            <div class="template-card">
+                <h4>Find tags by key</h4>
+                <p>Browse all values for a key</p>
+                <input id="tpl-key-val" placeholder="e.g. amenity" oninput="updatePreview('key')">
+                <div class="sql-preview" id="tpl-key-preview">SELECT value, count FROM tags WHERE key='____' ORDER BY count DESC LIMIT 20</div>
+                <button onclick="execTemplate('key')">Execute</button>
+            </div>
+
+            <div class="template-card">
+                <h4>Co-occurring tags</h4>
+                <p>Find tags that appear on the same landmarks as key=value</p>
+                <input id="tpl-cokey" placeholder="key, e.g. sport" oninput="updatePreview('co')">
+                <input id="tpl-coval" placeholder="value, e.g. tennis" oninput="updatePreview('co')">
+                <div class="sql-preview" id="tpl-co-preview">SELECT lt2.key, lt2.value, COUNT(*) as cnt FROM landmark_tags lt1 JOIN landmark_tags lt2 ON lt1.landmark_id = lt2.landmark_id WHERE lt1.key='____' AND lt1.value='____' AND (lt2.key != lt1.key OR lt2.value != lt1.value) GROUP BY lt2.key, lt2.value ORDER BY cnt DESC LIMIT 20</div>
+                <button onclick="execTemplate('co')">Execute</button>
+            </div>
+
+            <div class="template-card">
+                <h4>Find by name</h4>
+                <p>Look up a landmark by its name</p>
+                <input id="tpl-name-val" placeholder="e.g. walgreen" oninput="updatePreview('name')">
+                <div class="sql-preview" id="tpl-name-preview">SELECT DISTINCT lt2.key, lt2.value FROM landmark_tags lt1 JOIN landmark_tags lt2 ON lt1.landmark_id = lt2.landmark_id WHERE lt1.key='name' AND lt1.value LIKE '%____%'</div>
+                <button onclick="execTemplate('name')">Execute</button>
+            </div>
+
+            <div class="template-card" style="border-color:#4a90d9;">
+                <h4 style="color:#4a90d9;">Nearby: tags on landmarks near anchor</h4>
+                <p>I see [anchor]. What tags do nearby landmarks have? Optionally filter nearby by key.</p>
+                <input id="tpl-nearco-key" placeholder="anchor key, e.g. leisure" oninput="updatePreview('nearco')">
+                <input id="tpl-nearco-val" placeholder="anchor value, e.g. park" oninput="updatePreview('nearco')">
+                <input id="tpl-nearco-filter" placeholder="filter nearby by key (optional), e.g. railway" oninput="updatePreview('nearco')">
+                <input id="tpl-nearco-dist" placeholder="distance meters, e.g. 800" value="800" oninput="updatePreview('nearco')">
+                <div class="sql-preview" id="tpl-nearco-preview"></div>
+                <button onclick="execTemplate('nearco')">Execute</button>
+            </div>
+
+            <div class="template-card" style="border-color:#4a90d9;">
+                <h4 style="color:#4a90d9;">Nearby: landmarks matching multiple tags near anchor</h4>
+                <p>I see [anchor] near something with [tag1] AND [tag2]. Find matching landmarks.</p>
+                <input id="tpl-near2-akey" placeholder="anchor key, e.g. leisure" oninput="updatePreview('near2')">
+                <input id="tpl-near2-aval" placeholder="anchor value, e.g. park" oninput="updatePreview('near2')">
+                <input id="tpl-near2-key1" placeholder="nearby tag1 key, e.g. railway" oninput="updatePreview('near2')">
+                <input id="tpl-near2-val1" placeholder="nearby tag1 value (optional)" oninput="updatePreview('near2')">
+                <input id="tpl-near2-key2" placeholder="nearby tag2 key, e.g. bridge" oninput="updatePreview('near2')">
+                <input id="tpl-near2-val2" placeholder="nearby tag2 value (optional), e.g. yes" oninput="updatePreview('near2')">
+                <input id="tpl-near2-dist" placeholder="distance meters, e.g. 800" value="800" oninput="updatePreview('near2')">
+                <div class="sql-preview" id="tpl-near2-preview"></div>
+                <button onclick="execTemplate('near2')">Execute</button>
+            </div>
+
+            <div class="template-card">
+                <h4>Custom SQL</h4>
+                <p>Tables: tags(key, value, count), landmark_tags(landmark_id, key, value), landmarks(landmark_id, geom). Use ST_Distance(a.geom, b.geom, 1) for meters.</p>
+                <textarea id="tpl-custom-sql" style="width:100%; height:60px; background:#1a1a2e; color:#e0e0e0; border:1px solid #0f3460; border-radius:3px; font-family:monospace; font-size:11px; padding:6px;" placeholder="SELECT ..."></textarea>
+                <button onclick="execTemplate('custom')">Execute</button>
+            </div>
+
+        </div>
+
+        <div class="tool-templates" id="panel-landmarks" style="display:none;">
+
+            <div style="margin-bottom:8px; font-size:12px; color:#999;">
+                Build landmarks here, then click "Add Final Answer" to insert the JSON into the conversation.
+            </div>
+
+            <div class="template-card">
+                <h4>Location Type</h4>
+                <select id="lm-location-type" style="width:100%; padding:4px; background:#1a1a2e; color:#e0e0e0; border:1px solid #0f3460; border-radius:3px; font-size:12px;">
+                    <option value="urban_commercial">urban_commercial</option>
+                    <option value="urban_residential">urban_residential</option>
+                    <option value="suburban">suburban</option>
+                    <option value="rural">rural</option>
+                    <option value="industrial">industrial</option>
+                    <option value="park">park</option>
+                </select>
+            </div>
+
+            <div id="lm-list"></div>
+
+            <button onclick="addLandmarkForm()" style="width:100%; padding:8px; margin:8px 0; border:1px dashed #4ad95a; background:transparent; color:#7dffaa; border-radius:4px; cursor:pointer; font-size:12px;">+ Add Landmark</button>
+
+            <div style="margin-top:8px;">
+                <div class="sql-preview" id="lm-json-preview" style="max-height:200px; overflow-y:auto; font-size:10px;"></div>
+                <button onclick="insertFinalAnswer()" style="width:100%; padding:8px; margin-top:8px; border:1px solid #9a5ad9; background:transparent; color:#c8a0ff; border-radius:4px; cursor:pointer; font-size:13px; font-weight:bold;">Add Final Answer to Conversation</button>
+            </div>
+
+        </div>
+    </div>
+</div>
+
+<script>
+let cbQueue = [];       // list of {pano_idx, pano_id}
+let cbQueuePos = 0;
+let cbMessages = [];    // the conversation being built
+
+function init() {
+    fetch('/api/cb_queue').then(r => r.json()).then(data => {
+        cbQueue = data.queue;
+        if (cbQueue.length === 0) {
+            document.getElementById('cb-pano-info').textContent = 'No panoramas with relevant landmarks';
+            return;
+        }
+        loadPano();
+    });
+}
+
+function loadPano() {
+    const item = cbQueue[cbQueuePos];
+    document.getElementById('cb-pano-info').textContent =
+        `[${cbQueuePos + 1}/${cbQueue.length}] ${item.pano_id}` +
+        (item.has_saved ? ' (saved)' : '');
+
+    // Load pinhole images
+    const row = document.getElementById('cb-pinhole-row');
+    row.innerHTML = '';
+    for (const yaw of [0, 90, 180, 270]) {
+        const img = document.createElement('img');
+        img.src = `/api/image/pinhole/${item.pano_idx}/${yaw}`;
+        img.alt = `yaw ${yaw}`;
+        img.title = `Yaw ${yaw}° (${['North','West','South','East'][yaw/90]})`;
+        row.appendChild(img);
+    }
+
+    // Try to load existing conversation
+    fetch(`/api/cb_load/${item.pano_id}`).then(r => r.json()).then(data => {
+        if (data.messages) {
+            cbMessages = data.messages;
+            // Patch image_paths on the user message from server-resolved paths
+            if (data.image_paths && data.image_paths.length > 0) {
+                const userMsg = cbMessages.find(m => m.role === 'user' && m.hasOwnProperty('image_paths'));
+                if (userMsg) userMsg.image_paths = data.image_paths;
+            }
+        } else {
+            // Initialize with system prompt + user message
+            cbMessages = [
+                {role: 'system', content: data.system_prompt},
+                {role: 'user', content: data.user_prompt, image_paths: data.image_paths},
+            ];
+        }
+        renderMessages();
+    });
+}
+
+function renderMessages() {
+    const container = document.getElementById('cb-messages');
+    container.innerHTML = '';
+    cbMessages.forEach((msg, i) => {
+        const div = document.createElement('div');
+        const cls = msg.role === 'system' ? 'msg-system' :
+                    msg.role === 'user' ? 'msg-user' :
+                    msg.role === 'assistant' ? 'msg-assistant' :
+                    msg.role === 'tool_call' ? 'msg-tool-call' :
+                    msg.role === 'tool' ? 'msg-tool-result' : 'msg-user';
+        div.className = 'msg ' + cls;
+
+        let label = msg.role;
+        if (msg.role === 'tool_call') label = 'tool call';
+        if (msg.role === 'tool') label = 'tool result';
+        if (msg.image_paths) label += ' (with images)';
+
+        let actionsHtml = '';
+        if (i >= 2) {  // don't edit/delete system/user prompt
+            actionsHtml = `<span class="delete-btn" onclick="editMsg(${i})" style="color:#a0c0ff; margin-right:6px;">&#x270E;</span>` +
+                          `<span class="delete-btn" onclick="deleteMsg(${i})">&#x2715;</span>`;
+        }
+
+        let content = msg.content || '';
+        if (msg.tool_calls) {
+            content += '\n' + msg.tool_calls.map(tc =>
+                `<tool_call>\n{"name": "${tc.function.name}", "arguments": ${JSON.stringify(tc.function.arguments)}}\n</tool_call>`
+            ).join('\n');
+        }
+
+        div.innerHTML = `<div class="msg-label">${label}${actionsHtml}</div><div class="msg-content">${escapeHtml(content)}</div>`;
+
+        if (msg.role === 'system') {
+            div.onclick = (e) => { if (!e.target.closest('.delete-btn')) div.classList.toggle('expanded'); };
+        }
+
+        container.appendChild(div);
+    });
+    container.scrollTop = container.scrollHeight;
+}
+
+function escapeHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function deleteMsg(i) {
+    cbMessages.splice(i, 1);
+    renderMessages();
+    autoSave();
+}
+
+function editMsg(i) {
+    const msg = cbMessages[i];
+    const msgDiv = document.querySelectorAll('.msg')[i];
+    const contentDiv = msgDiv.querySelector('.msg-content');
+    if (contentDiv.querySelector('textarea')) return; // already editing
+
+    // For tool_call messages, edit the SQL; for others, edit the content
+    const hasToolCalls = msg.tool_calls && msg.tool_calls.length > 0;
+    const text = hasToolCalls ? msg.tool_calls[0].function.arguments.sql : (msg.content || '');
+
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'width:100%; min-height:60px; background:#1a1a2e; color:#e0e0e0; border:1px solid #a0c0ff; border-radius:3px; padding:6px; font-family:monospace; font-size:12px; resize:vertical;';
+    ta.rows = Math.max(3, text.split('\n').length);
+
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'margin-top:4px; display:flex; gap:6px;';
+    const saveBtn = document.createElement('button');
+    saveBtn.textContent = hasToolCalls ? 'Re-run' : 'Done';
+    saveBtn.style.cssText = 'padding:3px 10px; border:1px solid #4ad95a; background:transparent; color:#7dffaa; border-radius:3px; cursor:pointer; font-size:11px;';
+    saveBtn.onclick = () => {
+        if (hasToolCalls) {
+            const newSql = ta.value.trim();
+            msg.tool_calls[0].function.arguments.sql = newSql;
+            msg.content = '';
+            // Re-execute and update the following tool result
+            fetch('/api/cb_query', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({sql: newSql}),
+            })
+            .then(r => r.json())
+            .then(data => {
+                let resultText;
+                if (data.error) {
+                    resultText = JSON.stringify({error: data.error});
+                } else {
+                    resultText = JSON.stringify({columns: data.columns, rows: data.rows}, null, 2);
+                }
+                // Update the next message if it's a tool result, otherwise insert one
+                if (i + 1 < cbMessages.length && cbMessages[i + 1].role === 'tool') {
+                    cbMessages[i + 1].content = resultText;
+                } else {
+                    cbMessages.splice(i + 1, 0, {role: 'tool', content: resultText});
+                }
+                renderMessages();
+                autoSave();
+            });
+        } else {
+            msg.content = ta.value;
+            renderMessages();
+            autoSave();
+        }
+    };
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.style.cssText = 'padding:3px 10px; border:1px solid #555; background:transparent; color:#999; border-radius:3px; cursor:pointer; font-size:11px;';
+    cancelBtn.onclick = () => renderMessages();
+    btnRow.appendChild(saveBtn);
+    btnRow.appendChild(cancelBtn);
+
+    contentDiv.innerHTML = '';
+    contentDiv.appendChild(ta);
+    contentDiv.appendChild(btnRow);
+    ta.focus();
+}
+
+function addAssistantMsg() {
+    const text = document.getElementById('cb-input').value.trim();
+    if (!text) return;
+    cbMessages.push({role: 'assistant', content: text});
+    document.getElementById('cb-input').value = '';
+    renderMessages();
+    autoSave();
+}
+
+function addUserMsg() {
+    const text = document.getElementById('cb-input').value.trim();
+    if (!text) return;
+    cbMessages.push({role: 'user', content: text});
+    document.getElementById('cb-input').value = '';
+    renderMessages();
+    autoSave();
+}
+
+function addFinalAnswer() {
+    const text = document.getElementById('cb-input').value.trim();
+    if (!text) return;
+    cbMessages.push({role: 'user', content: 'Now output your final answer as JSON.'});
+    cbMessages.push({role: 'assistant', content: text});
+    document.getElementById('cb-input').value = '';
+    renderMessages();
+    autoSave();
+}
+
+// --- Tab switching ---
+
+function switchTab(tab) {
+    document.getElementById('panel-sql').style.display = tab === 'sql' ? '' : 'none';
+    document.getElementById('panel-landmarks').style.display = tab === 'landmarks' ? '' : 'none';
+    document.getElementById('tab-sql').className = 'tab' + (tab === 'sql' ? ' active' : '');
+    document.getElementById('tab-landmarks').className = 'tab' + (tab === 'landmarks' ? ' active' : '');
+    if (tab === 'landmarks') updateLandmarkPreview();
+}
+
+// --- Landmark Form Builder ---
+
+const PRIMARY_KEYS = [
+    'amenity', 'shop', 'building', 'tourism', 'leisure', 'highway',
+    'man_made', 'historic', 'natural', 'office', 'craft', 'railway',
+    'power', 'landuse', 'emergency', 'public_transport',
+];
+let landmarks = [];
+
+function addLandmarkForm() {
+    landmarks.push({
+        primary_key: 'amenity',
+        primary_value: '',
+        additional_tags: [],
+        confidence: 'high',
+        description: '',
+        bounding_boxes: [],
+    });
+    renderLandmarkForms();
+}
+
+function removeLandmark(i) {
+    landmarks.splice(i, 1);
+    renderLandmarkForms();
+}
+
+function addTag(lmIdx) {
+    landmarks[lmIdx].additional_tags.push({key: '', value: ''});
+    renderLandmarkForms();
+}
+
+function removeTag(lmIdx, tagIdx) {
+    landmarks[lmIdx].additional_tags.splice(tagIdx, 1);
+    renderLandmarkForms();
+}
+
+function syncLandmarkField(lmIdx, field, value) {
+    landmarks[lmIdx][field] = value;
+    updateLandmarkPreview();
+}
+
+function syncTagField(lmIdx, tagIdx, field, value) {
+    landmarks[lmIdx].additional_tags[tagIdx][field] = value;
+    updateLandmarkPreview();
+}
+
+function renderLandmarkForms() {
+    const container = document.getElementById('lm-list');
+    container.innerHTML = '';
+    landmarks.forEach((lm, i) => {
+        const div = document.createElement('div');
+        div.className = 'lm-form';
+
+        let tagsHtml = lm.additional_tags.map((t, j) =>
+            `<div class="tag-row">
+                <input placeholder="key" value="${escapeAttr(t.key)}" onchange="syncTagField(${i},${j},'key',this.value)">
+                <input placeholder="value" value="${escapeAttr(t.value)}" onchange="syncTagField(${i},${j},'value',this.value)">
+                <span class="tag-rm" onclick="removeTag(${i},${j})">&times;</span>
+            </div>`
+        ).join('');
+
+        div.innerHTML = `
+            <span class="lm-remove" onclick="removeLandmark(${i})">&times;</span>
+            <div class="lm-header"><span>Landmark ${i + 1}</span></div>
+            <label>Primary Tag</label>
+            <div class="tag-row">
+                <select onchange="syncLandmarkField(${i},'primary_key',this.value)">
+                    ${PRIMARY_KEYS.map(k => `<option value="${k}" ${k === lm.primary_key ? 'selected' : ''}>${k}</option>`).join('')}
+                </select>
+                <input placeholder="value, e.g. cafe" value="${escapeAttr(lm.primary_value)}" onchange="syncLandmarkField(${i},'primary_value',this.value)">
+            </div>
+            <label>Additional Tags</label>
+            ${tagsHtml}
+            <span class="add-tag-btn" onclick="addTag(${i})">+ add tag</span>
+            <label>Confidence</label>
+            <select onchange="syncLandmarkField(${i},'confidence',this.value)">
+                <option value="high" ${lm.confidence === 'high' ? 'selected' : ''}>high</option>
+                <option value="medium" ${lm.confidence === 'medium' ? 'selected' : ''}>medium</option>
+                <option value="low" ${lm.confidence === 'low' ? 'selected' : ''}>low</option>
+            </select>
+            <label>Description</label>
+            <input placeholder="Brief description" value="${escapeAttr(lm.description)}" onchange="syncLandmarkField(${i},'description',this.value)">
+        `;
+        container.appendChild(div);
+    });
+    updateLandmarkPreview();
+}
+
+function escapeAttr(s) {
+    return (s || '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+}
+
+function buildFinalJson() {
+    const locationType = document.getElementById('lm-location-type').value;
+    return {
+        location_type: locationType,
+        landmarks: landmarks.map(lm => ({
+            primary_tag: {key: lm.primary_key, value: lm.primary_value},
+            additional_tags: lm.additional_tags.filter(t => t.key && t.value),
+            confidence: lm.confidence,
+            bounding_boxes: lm.bounding_boxes,
+            description: lm.description,
+        })),
+    };
+}
+
+function updateLandmarkPreview() {
+    const el = document.getElementById('lm-json-preview');
+    if (el) el.textContent = JSON.stringify(buildFinalJson(), null, 2);
+}
+
+function insertFinalAnswer() {
+    const json = buildFinalJson();
+    if (json.landmarks.length === 0) {
+        if (!confirm('No landmarks added. Insert empty result?')) return;
+    }
+    const text = JSON.stringify(json, null, 2);
+    cbMessages.push({role: 'user', content: 'Now output your final answer as JSON.'});
+    cbMessages.push({role: 'assistant', content: text});
+    renderMessages();
+    autoSave();
+}
+
+// Update preview when location type changes
+document.getElementById('lm-location-type')?.addEventListener('change', updateLandmarkPreview);
+
+// --- SQL Template Helpers ---
+
+function buildSql(tplName) {
+    if (tplName === 'search') {
+        const v = document.getElementById('tpl-search-val').value;
+        return `SELECT key, value, count FROM tags WHERE value LIKE '%${v}%' ORDER BY count DESC LIMIT 20`;
+    } else if (tplName === 'key') {
+        const k = document.getElementById('tpl-key-val').value;
+        return `SELECT value, count FROM tags WHERE key='${k}' ORDER BY count DESC LIMIT 20`;
+    } else if (tplName === 'co') {
+        const k = document.getElementById('tpl-cokey').value;
+        const v = document.getElementById('tpl-coval').value;
+        return `SELECT lt2.key, lt2.value, COUNT(*) as cnt FROM landmark_tags lt1 JOIN landmark_tags lt2 ON lt1.landmark_id = lt2.landmark_id WHERE lt1.key='${k}' AND lt1.value='${v}' AND (lt2.key != lt1.key OR lt2.value != lt1.value) GROUP BY lt2.key, lt2.value ORDER BY cnt DESC LIMIT 20`;
+    } else if (tplName === 'name') {
+        const n = document.getElementById('tpl-name-val').value;
+        return `SELECT DISTINCT lt2.key, lt2.value FROM landmark_tags lt1 JOIN landmark_tags lt2 ON lt1.landmark_id = lt2.landmark_id WHERE lt1.key='name' AND lt1.value LIKE '%${n}%'`;
+    } else if (tplName === 'nearco') {
+        const k = document.getElementById('tpl-nearco-key').value;
+        const v = document.getElementById('tpl-nearco-val').value;
+        const f = document.getElementById('tpl-nearco-filter').value;
+        const d = document.getElementById('tpl-nearco-dist').value || '800';
+        const deg = (parseFloat(d) / 111000).toFixed(4);
+        const filterClause = f ? `AND lt2.key='${f}'` : '';
+        return `SELECT lt2.key, lt2.value, COUNT(DISTINCT l2.landmark_id) as cnt
+FROM landmark_tags lt1
+JOIN landmarks l1 ON lt1.landmark_id = l1.landmark_id
+JOIN landmarks l2 ON l2.landmark_id != l1.landmark_id
+  AND l2.ROWID IN (
+    SELECT ROWID FROM SpatialIndex
+    WHERE f_table_name='landmarks' AND f_geometry_column='geom'
+    AND search_frame = BuildCircleMbr(ST_X(ST_Centroid(l1.geom)), ST_Y(ST_Centroid(l1.geom)), ${deg}, 4326))
+  AND ST_Distance(l1.geom, l2.geom, 1) < ${d}
+JOIN landmark_tags lt2 ON l2.landmark_id = lt2.landmark_id
+WHERE lt1.key='${k}' AND lt1.value='${v}' ${filterClause}
+GROUP BY lt2.key, lt2.value ORDER BY cnt DESC LIMIT 20`;
+    } else if (tplName === 'near2') {
+        const ak = document.getElementById('tpl-near2-akey').value;
+        const av = document.getElementById('tpl-near2-aval').value;
+        const k1 = document.getElementById('tpl-near2-key1').value;
+        const v1 = document.getElementById('tpl-near2-val1').value;
+        const k2 = document.getElementById('tpl-near2-key2').value;
+        const v2 = document.getElementById('tpl-near2-val2').value;
+        const d = document.getElementById('tpl-near2-dist').value || '800';
+        const deg = (parseFloat(d) / 111000).toFixed(4);
+        let tagJoins = '';
+        let tagWheres = '';
+        if (k1) {
+            tagJoins += `\nJOIN landmark_tags lf1 ON l2.landmark_id = lf1.landmark_id`;
+            tagWheres += v1
+                ? `AND lf1.key='${k1}' AND lf1.value='${v1}'`
+                : `AND lf1.key='${k1}'`;
+        }
+        if (k2) {
+            tagJoins += `\nJOIN landmark_tags lf2 ON l2.landmark_id = lf2.landmark_id`;
+            tagWheres += v2
+                ? ` AND lf2.key='${k2}' AND lf2.value='${v2}'`
+                : ` AND lf2.key='${k2}'`;
+        }
+        return `SELECT DISTINCT lt2.key, lt2.value
+FROM landmark_tags lt1
+JOIN landmarks l1 ON lt1.landmark_id = l1.landmark_id
+JOIN landmarks l2 ON l2.landmark_id != l1.landmark_id
+  AND l2.ROWID IN (
+    SELECT ROWID FROM SpatialIndex
+    WHERE f_table_name='landmarks' AND f_geometry_column='geom'
+    AND search_frame = BuildCircleMbr(ST_X(ST_Centroid(l1.geom)), ST_Y(ST_Centroid(l1.geom)), ${deg}, 4326))
+  AND ST_Distance(l1.geom, l2.geom, 1) < ${d}${tagJoins}
+JOIN landmark_tags lt2 ON l2.landmark_id = lt2.landmark_id
+WHERE lt1.key='${ak}' AND lt1.value='${av}' ${tagWheres}
+ORDER BY lt2.key, lt2.value LIMIT 30`;
+    } else if (tplName === 'custom') {
+        return document.getElementById('tpl-custom-sql').value;
+    }
+    return '';
+}
+
+function updatePreview(tplName) {
+    const sql = buildSql(tplName);
+    const el = document.getElementById(`tpl-${tplName}-preview`);
+    if (el) el.textContent = sql;
+}
+
+function execTemplate(tplName) {
+    const sql = buildSql(tplName);
+    if (!sql.trim()) return;
+
+    fetch('/api/cb_query', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({sql: sql}),
+    })
+    .then(r => r.json())
+    .then(data => {
+        // Add tool_call message
+        cbMessages.push({
+            role: 'assistant',
+            content: '',
+            tool_calls: [{
+                function: {
+                    name: 'query_landmarks',
+                    arguments: {sql: sql},
+                }
+            }],
+        });
+
+        // Add tool result
+        let resultText;
+        if (data.error) {
+            resultText = JSON.stringify({error: data.error});
+        } else {
+            resultText = JSON.stringify({columns: data.columns, rows: data.rows}, null, 2);
+        }
+        cbMessages.push({role: 'tool', content: resultText});
+
+        renderMessages();
+        autoSave();
+    })
+    .catch(err => {
+        alert('Query failed: ' + err);
+    });
+}
+
+// --- Navigation ---
+
+function navigateConv(delta) {
+    cbQueuePos = Math.max(0, Math.min(cbQueue.length - 1, cbQueuePos + delta));
+    loadPano();
+}
+
+function clearConversation() {
+    if (!confirm('Clear conversation and start over?')) return;
+    // Reset to system + user prompt
+    fetch(`/api/cb_load/${cbQueue[cbQueuePos].pano_id}`).then(r => r.json()).then(data => {
+        cbMessages = [
+            {role: 'system', content: data.system_prompt},
+            {role: 'user', content: data.user_prompt, image_paths: data.image_paths},
+        ];
+        renderMessages();
+    });
+}
+
+function saveConversation(silent) {
+    const item = cbQueue[cbQueuePos];
+    fetch('/api/cb_save', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            pano_id: item.pano_id,
+            messages: cbMessages,
+        }),
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.ok) {
+            item.has_saved = true;
+            document.getElementById('cb-pano-info').textContent =
+                `[${cbQueuePos + 1}/${cbQueue.length}] ${item.pano_id} (saved)`;
+            if (!silent) alert('Saved: ' + data.path);
+        } else if (!silent) {
+            alert('Save failed: ' + (data.error || 'unknown'));
+        }
+    });
+}
+
+function autoSave() {
+    if (cbMessages.length > 2) saveConversation(true);
+}
+
+// Keyboard: Ctrl+Enter to add assistant message
+document.getElementById('cb-input').addEventListener('keydown', e => {
+    if (e.ctrlKey && e.key === 'Enter') { addAssistantMsg(); e.preventDefault(); }
+});
+
+init();
+</script>
+</body>
+</html>
+"""
+
+
+@app.route("/conversation_builder")
+def conversation_builder_page():
+    return Response(CONVERSATION_BUILDER_PAGE, content_type="text/html")
+
+
+@app.route("/api/cb_queue")
+def cb_queue():
+    """Return list of panoramas that have relevant_landmarks annotations."""
+    from experimental.overhead_matching.swag.scripts.ollama_osm_extraction import (
+        OSM_TAGS_SYSTEM_PROMPT,
+        TOOL_INSTRUCTIONS,
+    )
+
+    queue = []
+    for pano_id, osm_ids in RELEVANT_LANDMARKS.items():
+        if not osm_ids:
+            continue
+        idx = PANO_ID_TO_IDX.get(pano_id)
+        if idx is None:
+            continue
+        has_saved = (
+            CONVERSATIONS_DIR is not None
+            and (CONVERSATIONS_DIR / f"{pano_id}.json").exists()
+        )
+        queue.append({
+            "pano_idx": idx,
+            "pano_id": pano_id,
+            "has_saved": has_saved,
+        })
+    return jsonify({"queue": queue})
+
+
+@app.route("/api/cb_load/<pano_id>")
+def cb_load(pano_id):
+    """Load an existing conversation or return initial prompts for a new one."""
+    from experimental.overhead_matching.swag.scripts.ollama_osm_extraction import (
+        OSM_TAGS_SYSTEM_PROMPT,
+        TOOL_INSTRUCTIONS,
+    )
+    from experimental.overhead_matching.swag.model.semantic_landmark_extractor import (
+        osm_tags_user_prompt,
+    )
+
+    system_prompt = OSM_TAGS_SYSTEM_PROMPT + TOOL_INSTRUCTIONS
+
+    # Build image paths if pinhole_base is configured
+    image_paths = []
+    if PINHOLE_BASE:
+        idx = PANO_ID_TO_IDX.get(pano_id)
+        if idx is not None:
+            pano = PANORAMAS[idx]
+            # Convention: {pinhole_base}/Chicago/{pano_id},{lat},{lon},/yaw_000.jpg
+            city_dirs = [d for d in PINHOLE_BASE.iterdir() if d.is_dir()] if PINHOLE_BASE.is_dir() else []
+            for city_dir in city_dirs:
+                matches = [
+                    d for d in city_dir.iterdir()
+                    if d.is_dir() and d.name.startswith(f"{pano_id},")
+                ]
+                if matches:
+                    pano_dir = matches[0]
+                    for yaw in [0, 90, 180, 270]:
+                        for ext in ("jpg", "png"):
+                            p = pano_dir / f"yaw_{yaw:03d}.{ext}"
+                            if p.exists():
+                                image_paths.append(str(p))
+                                break
+                    break
+
+    # Try loading existing saved conversation
+    if CONVERSATIONS_DIR and (CONVERSATIONS_DIR / f"{pano_id}.json").exists():
+        with open(CONVERSATIONS_DIR / f"{pano_id}.json") as f:
+            data = json.load(f)
+        return jsonify({
+            "messages": data.get("messages", []),
+            "system_prompt": system_prompt,
+            "user_prompt": osm_tags_user_prompt.strip(),
+            "image_paths": image_paths,
+        })
+
+    return jsonify({
+        "messages": None,
+        "system_prompt": system_prompt,
+        "user_prompt": osm_tags_user_prompt.strip(),
+        "image_paths": image_paths,
+    })
+
+
+SQL_TIMEOUT_SECONDS = 20
+
+
+@app.route("/api/cb_query", methods=["POST"])
+def cb_query():
+    """Execute a SQL query against the in-process OSM tag database."""
+    import time
+
+    data = request.get_json()
+    sql = data.get("sql", "")
+
+    stripped = sql.strip().upper()
+    if not stripped.startswith("SELECT") and not stripped.startswith("WITH"):
+        return jsonify({"error": "Only SELECT queries are allowed"}), 400
+
+    deadline = time.monotonic() + SQL_TIMEOUT_SECONDS
+
+    def _check_timeout():
+        return 1 if time.monotonic() > deadline else 0
+
+    TAG_DB.set_progress_handler(_check_timeout, 1000)
+    try:
+        cursor = TAG_DB.execute(sql)
+        columns = [desc[0] for desc in cursor.description]
+        rows = cursor.fetchmany(MAX_SQL_ROWS)
+        return jsonify({"columns": columns, "rows": [list(r) for r in rows]})
+    except sqlite3.OperationalError as e:
+        if "interrupt" in str(e).lower():
+            return jsonify({"error": f"Query timed out after {SQL_TIMEOUT_SECONDS}s"}), 400
+        return jsonify({"error": str(e)}), 400
+    except sqlite3.Error as e:
+        return jsonify({"error": str(e)}), 400
+    finally:
+        TAG_DB.set_progress_handler(None, 0)
+
+
+@app.route("/api/cb_save", methods=["POST"])
+def cb_save():
+    """Save a conversation to the conversations directory."""
+    if not CONVERSATIONS_DIR:
+        return jsonify({"ok": False, "error": "No --conversations_dir configured"}), 400
+
+    data = request.get_json()
+    pano_id = data.get("pano_id")
+    messages = data.get("messages", [])
+
+    if not pano_id or not messages:
+        return jsonify({"ok": False, "error": "Missing pano_id or messages"}), 400
+
+    # Extract the final assistant message as extraction_result if it looks like JSON
+    extraction_result = {}
+    if messages and messages[-1].get("role") == "assistant":
+        try:
+            extraction_result = json.loads(messages[-1]["content"])
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    osm_ids = RELEVANT_LANDMARKS.get(pano_id, [])
+
+    output = {
+        "pano_id": pano_id,
+        "city": "Chicago",
+        "hints": "",
+        "ground_truth_osm_ids": osm_ids,
+        "messages": messages,
+        "extraction_result": extraction_result,
+    }
+
+    output_path = CONVERSATIONS_DIR / f"{pano_id}.json"
+    output_path.write_text(json.dumps(output, indent=2))
+    return jsonify({"ok": True, "path": str(output_path)})
+
+
 def _parse_panorama_filename(filename):
     """Parse panorama filename like '{pano_id},{lat},{lon},.jpg'."""
     stem = Path(filename).stem
@@ -4348,6 +5253,7 @@ def main():
     global PANORAMAS, TAG_INDEX, OUTPUT_PATH, LANDMARK_METADATA, PANO_LANDMARK_IDXS
     global PANO_CATEGORIES_GEMINI, PANO_CATEGORIES_OSM, LABELS_PATH
     global DINO_FEATURES, DINO_PANO_MAP, PANO_CATEGORIES_DINO, DINO_CONFIDENCES
+    global TAG_DB, CONVERSATIONS_DIR, PINHOLE_BASE
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -4392,6 +5298,19 @@ def main():
         default=None,
         help="Directory with Ollama extraction results (for compare tool)",
     )
+    parser.add_argument(
+        "--conversations_dir",
+        type=Path,
+        default=None,
+        help="Directory to save/load conversation JSONs for SFT training data",
+    )
+    parser.add_argument(
+        "--pinhole_base",
+        type=Path,
+        default=None,
+        help="Base directory containing pinhole images (e.g. /data/.../pinhole). "
+             "Used to record image_paths in saved conversations.",
+    )
     parser.add_argument("--port", type=int, default=5001)
     parser.add_argument("--host", type=str, default="localhost")
     args = parser.parse_args()
@@ -4423,6 +5342,18 @@ def main():
     print(f"Building tag search index from {len(df)} landmarks...")
     TAG_INDEX = TagSearchIndex(df)
     print(f"Index ready: {len(TAG_INDEX._values)} unique tag values")
+
+    # Build in-process SQLite database for SQL queries (conversation builder)
+    print("Building SQLite tag database...")
+    TAG_DB = build_database([args.feather])
+
+    # Conversation builder dirs
+    CONVERSATIONS_DIR = args.conversations_dir
+    if CONVERSATIONS_DIR:
+        CONVERSATIONS_DIR.mkdir(parents=True, exist_ok=True)
+        n_existing = len(list(CONVERSATIONS_DIR.glob("*.json")))
+        print(f"Conversations dir: {CONVERSATIONS_DIR} ({n_existing} existing)")
+    PINHOLE_BASE = args.pinhole_base
 
     # Load landmark geometries and compute panorama associations
     print("Loading landmark geometries...")

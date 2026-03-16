@@ -18,12 +18,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sqlite3
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pandas as pd
+import shapely
 
 from experimental.overhead_matching.swag.scripts.search_osm_tags import (
     EXCLUDE_KEYS,
@@ -36,8 +38,11 @@ MAX_ROWS = 50
 
 
 def build_database(feather_paths: list[Path]) -> sqlite3.Connection:
-    """Load feather file(s) into an in-memory SQLite database."""
-    conn = sqlite3.connect(":memory:")
+    """Load feather file(s) into an in-memory SpatiaLite database."""
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    conn.enable_load_extension(True)
+    conn.load_extension("mod_spatialite")
+    conn.execute("SELECT InitSpatialMetaData(1)")
     conn.execute("PRAGMA journal_mode = OFF")
     conn.execute("PRAGMA synchronous = OFF")
 
@@ -56,6 +61,14 @@ def build_database(feather_paths: list[Path]) -> sqlite3.Connection:
             value TEXT NOT NULL
         )"""
     )
+    conn.execute(
+        """CREATE TABLE landmarks (
+            landmark_id INTEGER PRIMARY KEY
+        )"""
+    )
+    conn.execute(
+        "SELECT AddGeometryColumn('landmarks', 'geom', 4326, 'GEOMETRY', 'XY')"
+    )
 
     landmark_id = 0
     tag_counts: dict[tuple[str, str], int] = {}
@@ -68,7 +81,12 @@ def build_database(feather_paths: list[Path]) -> sqlite3.Connection:
             for c in df.columns
             if c not in META_COLS and c not in EXCLUDE_KEYS
         ]
-        print(f"  {len(df)} landmarks, {len(tag_cols)} tag columns", file=sys.stderr)
+        has_geom = "geometry" in df.columns
+        print(
+            f"  {len(df)} landmarks, {len(tag_cols)} tag columns"
+            f"{', with geometry' if has_geom else ''}",
+            file=sys.stderr,
+        )
 
         for _, row in df.iterrows():
             row_tags = []
@@ -86,6 +104,19 @@ def build_database(feather_paths: list[Path]) -> sqlite3.Connection:
                         "INSERT INTO landmark_tags (landmark_id, key, value) VALUES (?, ?, ?)",
                         (landmark_id, key, value),
                     )
+                # Insert geometry if available
+                if has_geom and pd.notna(row["geometry"]):
+                    wkb = row["geometry"]
+                    conn.execute(
+                        "INSERT INTO landmarks (landmark_id, geom) "
+                        "VALUES (?, GeomFromWKB(?, 4326))",
+                        (landmark_id, wkb),
+                    )
+                else:
+                    conn.execute(
+                        "INSERT INTO landmarks (landmark_id) VALUES (?)",
+                        (landmark_id,),
+                    )
                 landmark_id += 1
 
     # Populate tags summary table
@@ -96,7 +127,44 @@ def build_database(feather_paths: list[Path]) -> sqlite3.Connection:
         )
 
     conn.execute("CREATE INDEX idx_lt_key_value ON landmark_tags(key, value)")
+    conn.execute(
+        "CREATE INDEX idx_lt_key_value_lid ON landmark_tags(key, value, landmark_id)"
+    )
     conn.execute("CREATE INDEX idx_lt_landmark ON landmark_tags(landmark_id)")
+    conn.execute(
+        "SELECT CreateSpatialIndex('landmarks', 'geom')"
+    )
+
+    # Add MBR extent columns for efficient B-tree spatial joins.
+    # SpatiaLite's SpatialIndex virtual table doesn't integrate well with
+    # SQLite's query planner for correlated joins. Plain REAL columns with
+    # B-tree indexes let SQLite use native BETWEEN range scans, which is
+    # orders of magnitude faster for spatial joins between filtered sets.
+    for col in ("min_x", "max_x", "min_y", "max_y"):
+        conn.execute(f"ALTER TABLE landmarks ADD COLUMN {col} REAL")
+    conn.execute(
+        """UPDATE landmarks SET
+            min_x = MbrMinX(geom),
+            max_x = MbrMaxX(geom),
+            min_y = MbrMinY(geom),
+            max_y = MbrMaxY(geom)
+        WHERE geom IS NOT NULL"""
+    )
+    conn.execute("CREATE INDEX idx_lm_minx ON landmarks(min_x)")
+    conn.execute("CREATE INDEX idx_lm_maxx ON landmarks(max_x)")
+    conn.execute("CREATE INDEX idx_lm_miny ON landmarks(min_y)")
+    conn.execute("CREATE INDEX idx_lm_maxy ON landmarks(max_y)")
+
+    # Register meters_to_deg() so queries can use meters instead of degrees.
+    # Returns a conservative (overestimated) degree padding for a given radius
+    # at a given latitude.
+    def _meters_to_deg(meters, lat_deg):
+        lat_r = 1.0 / 111320.0
+        lon_r = 1.0 / (111320.0 * max(math.cos(math.radians(lat_deg)), 0.01))
+        return max(lat_r, lon_r) * meters
+
+    conn.create_function("meters_to_deg", 2, _meters_to_deg)
+
     conn.commit()
 
     # Make read-only
@@ -108,9 +176,12 @@ def build_database(feather_paths: list[Path]) -> sqlite3.Connection:
     n_landmarks = conn.execute(
         "SELECT COUNT(DISTINCT landmark_id) FROM landmark_tags"
     ).fetchone()[0]
+    n_geom = conn.execute(
+        "SELECT COUNT(*) FROM landmarks WHERE geom IS NOT NULL"
+    ).fetchone()[0]
     print(
         f"Database ready: {n_tags} unique tags, {n_landmarks} landmarks, "
-        f"{n_lt} landmark-tag rows",
+        f"{n_lt} landmark-tag rows, {n_geom} with geometry",
         file=sys.stderr,
     )
 
