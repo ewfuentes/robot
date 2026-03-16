@@ -247,6 +247,95 @@ def build_similarity_matrix(
     return sim
 
 
+@torch.no_grad()
+def validation_metrics_from_similarity(
+    name: str,
+    similarity: torch.Tensor,  # num_panos x num_sat
+    panorama_metadata: "pd.DataFrame",
+) -> dict:
+    """Compute detailed retrieval metrics from a similarity matrix.
+
+    Returns name-prefixed metrics suitable for tensorboard logging:
+    positive MRR, max pos/semipos MRR, pos recall@K, any/all pos_semipos recall@K.
+
+    Args:
+        name: prefix for metric keys (e.g. city name)
+        similarity: (num_panos, num_sats) similarity matrix
+        panorama_metadata: DataFrame with positive_satellite_idxs and
+            semipositive_satellite_idxs columns
+    """
+    import pandas as pd
+
+    num_panos = similarity.shape[0]
+
+    # Determine max columns needed (positives + semipositives)
+    max_cols = max(
+        len(row.positive_satellite_idxs) + len(row.semipositive_satellite_idxs)
+        for _, row in panorama_metadata.iterrows()
+    )
+    max_cols = max(max_cols, 1)
+
+    invalid_mask = torch.ones((num_panos, max_cols), dtype=torch.bool)
+    sat_idxs = torch.zeros((num_panos, max_cols), dtype=torch.int32)
+    for pano_idx, pano_metadata in panorama_metadata.iterrows():
+        num_pos = len(pano_metadata.positive_satellite_idxs)
+        for col_idx, sat_idx in enumerate(pano_metadata.positive_satellite_idxs):
+            sat_idxs[pano_idx, col_idx] = sat_idx
+            invalid_mask[pano_idx, col_idx] = False
+
+        for col_idx, sat_idx in enumerate(pano_metadata.semipositive_satellite_idxs):
+            sat_idxs[pano_idx, num_pos + col_idx] = sat_idx
+            invalid_mask[pano_idx, num_pos + col_idx] = False
+
+    row_idxs = torch.arange(num_panos).reshape(-1, 1).expand(-1, max_cols)
+    pos_semipos_similarities = similarity[row_idxs, sat_idxs]
+    pos_semipos_similarities[invalid_mask] = torch.nan
+
+    ranks = (similarity[:, None, :] >= pos_semipos_similarities[:, :, None]).sum(dim=-1)
+
+    positive_recip_ranks = 1.0 / ranks[:, 0]
+    positive_recip_ranks[invalid_mask[:, 0]] = torch.nan
+    positive_mean_recip_rank = torch.nanmean(positive_recip_ranks)
+
+    max_pos_semi_pos_recip_ranks = 1.0 / ranks.max(dim=-1).values
+    max_pos_semi_pos_recip_ranks = torch.nanmean(max_pos_semi_pos_recip_ranks)
+
+    k_values = [1, 5, 10, 100]
+    pos_recall = {
+        f"{name}/pos_recall@{k}": (
+            ranks[~(invalid_mask[:, 0]), 0] <= k
+        ).float().mean().item()
+        for k in k_values
+    }
+
+    invalid_mask_cuda = invalid_mask.cuda()
+    ranks_cuda = ranks.cuda()
+    any_pos_semipos_recall = {
+        f"{name}/any pos_semipos_recall@{k}": (
+            (ranks_cuda <= k) & (~invalid_mask_cuda)
+        ).any(dim=-1).float().mean().item()
+        for k in k_values
+    }
+
+    all_pos_semipos_recall = {
+        f"{name}/all pos_semipos_recall@{k}": (
+            ranks_cuda <= k
+        ).all(dim=-1).float().mean().item()
+        for k in k_values[1:]
+    }
+
+    out = (
+        {
+            f"{name}/positive_mean_recip_rank": positive_mean_recip_rank.item(),
+            f"{name}/max_pos_semi_pos_recip_rank": max_pos_semi_pos_recip_ranks.item(),
+        }
+        | pos_recall
+        | any_pos_semipos_recall
+        | all_pos_semipos_recall
+    )
+    return out
+
+
 def compute_top_k_metrics(
     similarity: torch.Tensor,
     dataset: vd.VigorDataset,
