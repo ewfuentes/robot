@@ -2,7 +2,8 @@
 
 Builds `{city}_pano_osm_matches.parquet` and `{city}_sat_osm_table.parquet`
 by calling `create_osm_tag_extraction_dataset` and `compute_osm_tag_match_similarity`
-from `osm_tag_similarity.py`, which returns the match tables alongside similarity matrices.
+from `osm_tag_similarity.py` and extracting the match tables from the result
+(the similarity matrices are discarded).
 """
 
 import argparse

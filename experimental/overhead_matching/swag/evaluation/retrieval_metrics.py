@@ -5,6 +5,9 @@ Provides:
 - compute_top_k_metrics(): simple recall@k and MRR from a similarity matrix
 """
 
+from __future__ import annotations
+
+import pandas as pd
 import torch
 
 from experimental.overhead_matching.swag.data import vigor_dataset as vd
@@ -13,13 +16,14 @@ from experimental.overhead_matching.swag.data import vigor_dataset as vd
 @torch.no_grad()
 def validation_metrics_from_similarity(
     name: str,
-    similarity: torch.Tensor,  # num_panos x num_sat
-    panorama_metadata: "pd.DataFrame",
+    similarity: torch.Tensor,
+    panorama_metadata: pd.DataFrame,
 ) -> dict:
     """Compute detailed retrieval metrics from a similarity matrix.
 
     Returns name-prefixed metrics suitable for tensorboard logging:
-    positive MRR, max pos/semipos MRR, pos recall@K, any/all pos_semipos recall@K.
+    positive MRR, worst-positive/semipositive MRR, pos recall@K,
+    any/all pos_semipos recall@K.
 
     Args:
         name: prefix for metric keys (e.g. city name)
@@ -27,7 +31,10 @@ def validation_metrics_from_similarity(
         panorama_metadata: DataFrame with positive_satellite_idxs and
             semipositive_satellite_idxs columns
     """
-    import pandas as pd
+    if len(panorama_metadata) == 0:
+        raise ValueError(
+            f"panorama_metadata is empty — cannot compute retrieval metrics for '{name}'"
+        )
 
     num_panos = similarity.shape[0]
 
@@ -71,18 +78,19 @@ def validation_metrics_from_similarity(
         for k in k_values
     }
 
-    invalid_mask_cuda = invalid_mask.cuda()
-    ranks_cuda = ranks.cuda()
+    device = similarity.device
+    invalid_mask_d = invalid_mask.to(device)
+    ranks_d = ranks.to(device)
     any_pos_semipos_recall = {
         f"{name}/any pos_semipos_recall@{k}": (
-            (ranks_cuda <= k) & (~invalid_mask_cuda)
+            (ranks_d <= k) & (~invalid_mask_d)
         ).any(dim=-1).float().mean().item()
         for k in k_values
     }
 
     all_pos_semipos_recall = {
         f"{name}/all pos_semipos_recall@{k}": (
-            ranks_cuda <= k
+            ranks_d <= k
         ).all(dim=-1).float().mean().item()
         for k in k_values[1:]
     }
@@ -138,8 +146,14 @@ def compute_top_k_metrics(
             if best_rank < k:
                 hit_counts[k] += 1
 
+    if total == 0:
+        raise ValueError(
+            "No panoramas had positive or semipositive satellite indices — "
+            "metrics are undefined. Check dataset configuration."
+        )
+
     metrics = {}
     for k in ks:
-        metrics[f"recall@{k}"] = hit_counts[k] / total if total > 0 else 0.0
-    metrics["mrr"] = sum(reciprocal_ranks) / total if total > 0 else 0.0
+        metrics[f"recall@{k}"] = hit_counts[k] / total
+    metrics["mrr"] = sum(reciprocal_ranks) / total
     return metrics

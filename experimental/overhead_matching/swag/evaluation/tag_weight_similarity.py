@@ -75,6 +75,8 @@ def precompute_match_data(
         .collect()
         .item()
     )
+    if max_osm_matches is None:
+        raise ValueError(f"Matches parquet at {matches_path} is empty — no pano-OSM matches found")
     max_osm = max(max_osm, max_osm_matches)
     osm_to_sat_lists = defaultdict(list)
     for osm_idx, sat_idx in zip(sat_osm_df["osm_idx"], sat_osm_df["sat_idx"]):

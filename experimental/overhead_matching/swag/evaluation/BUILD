@@ -189,6 +189,7 @@ py_library(
   srcs = ["retrieval_metrics.py"],
   visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
   deps = [
+    requirement("pandas"),
     requirement("torch"),
     "//experimental/overhead_matching/swag/data:vigor_dataset",
   ],

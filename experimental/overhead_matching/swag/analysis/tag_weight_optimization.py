@@ -216,9 +216,10 @@ def _(lib_precompute_match_data, torch, tqdm, vd):
         return md
 
     def compute_loss_and_mrr(match_data, theta):
-        """Compute softmax cross-entropy loss and MRR (evaluation only, no grad)."""
-        bd = prepare_batched_data(match_data)
-        loss, mrr, _ = run_batched_epoch(match_data, bd, theta, l2=0.0)
+        """Compute softmax cross-entropy loss and MRR (evaluation only)."""
+        with torch.no_grad():
+            bd = prepare_batched_data(match_data)
+            loss, mrr, _ = run_batched_epoch(match_data, bd, theta, l2=0.0)
         return loss, mrr
 
     def _expand_osm_to_sat(md, osm_idxs):
