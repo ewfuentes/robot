@@ -24,6 +24,7 @@ from experimental.overhead_matching.swag.model.landmark_scheduler import (
 from experimental.overhead_matching.swag.scripts.logging_utils import (
     log_batch_metrics, log_embedding_stats, log_gradient_stats, log_validation_metrics, log_feature_counts)
 from experimental.overhead_matching.swag.scripts.model_inspector import ModelInspector
+from experimental.overhead_matching.swag.evaluation.retrieval_metrics import validation_metrics_from_similarity
 from typing import Union
 from dataclasses import dataclass
 import pandas as pd
@@ -147,8 +148,6 @@ class TrainConfig:
     pano_landmark_dropout_schedules: list[LandmarkDropoutScheduleConfig] = None
     sat_landmark_dropout_schedules: list[LandmarkDropoutScheduleConfig] = None
     seed: int | None = None
-
-from experimental.overhead_matching.swag.evaluation.retrieval_metrics import validation_metrics_from_similarity
 
 @torch.no_grad
 def compute_validation_metrics(
