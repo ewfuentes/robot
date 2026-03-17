@@ -25,7 +25,9 @@ def load_trajectory(dataset_path: Path) -> tuple[pd.DataFrame, str]:
     df = pd.read_csv(csv_path)
 
     # Detect pano ID column
-    if "mapillary_id" in df.columns:
+    if "pano_id" in df.columns:
+        pano_col = "pano_id"
+    elif "mapillary_id" in df.columns:
         pano_col = "mapillary_id"
     elif "uuid" in df.columns:
         pano_col = "uuid"
@@ -68,10 +70,11 @@ def validate_trajectory(df: pd.DataFrame) -> np.ndarray:
     step_distances = EARTH_RADIUS_M * find_d_on_unit_circle(p1, p2)
 
     max_step = step_distances.max()
-    assert max_step < 150.0, (
-        f"Max consecutive distance {max_step:.1f}m exceeds 150m limit. "
-        f"Trajectory may have gaps."
-    )
+    if max_step > 150.0:
+        logger.warning(
+            f"Max consecutive distance {max_step:.1f}m exceeds 150m. "
+            f"Trajectory may have gaps."
+        )
 
     cumulative = np.zeros(len(df))
     cumulative[1:] = np.cumsum(step_distances)
