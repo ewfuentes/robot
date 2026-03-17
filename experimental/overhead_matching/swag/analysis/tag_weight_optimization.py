@@ -215,7 +215,7 @@ def _(lib_precompute_match_data, torch, tqdm, vd):
         ]
         return md
 
-    def compute_loss_and_mrr(match_data, theta):
+    def evaluate_loss_and_mrr(match_data, theta):
         """Compute softmax cross-entropy loss and MRR (evaluation only)."""
         with torch.no_grad():
             bd = prepare_batched_data(match_data)
@@ -378,7 +378,7 @@ def _(lib_precompute_match_data, torch, tqdm, vd):
         return loss, mrr, grad_accum.cpu()
 
     return (
-        compute_loss_and_mrr,
+        evaluate_loss_and_mrr,
         precompute_match_data,
         prepare_batched_data,
         run_batched_epoch,
@@ -614,7 +614,7 @@ def _(learned_theta, mo, np, tag_keys):
 @app.cell
 def _(
     chi_match_data,
-    compute_loss_and_mrr,
+    evaluate_loss_and_mrr,
     learned_theta,
     mo,
     sea_match_data,
@@ -626,14 +626,14 @@ def _(
     _zeros = torch.zeros(len(tag_keys), dtype=torch.float32)
 
     print("Evaluating on Chicago (train)...")
-    _chi_loss, _chi_mrr = compute_loss_and_mrr(chi_match_data, _theta)
-    _chi_uni_loss, _chi_uni_mrr = compute_loss_and_mrr(chi_match_data, _uniform)
-    _chi_zero_loss, _chi_zero_mrr = compute_loss_and_mrr(chi_match_data, _zeros)
+    _chi_loss, _chi_mrr = evaluate_loss_and_mrr(chi_match_data, _theta)
+    _chi_uni_loss, _chi_uni_mrr = evaluate_loss_and_mrr(chi_match_data, _uniform)
+    _chi_zero_loss, _chi_zero_mrr = evaluate_loss_and_mrr(chi_match_data, _zeros)
 
     print("Evaluating on Seattle (val)...")
-    _sea_loss, _sea_mrr = compute_loss_and_mrr(sea_match_data, _theta)
-    _sea_uni_loss, _sea_uni_mrr = compute_loss_and_mrr(sea_match_data, _uniform)
-    _sea_zero_loss, _sea_zero_mrr = compute_loss_and_mrr(sea_match_data, _zeros)
+    _sea_loss, _sea_mrr = evaluate_loss_and_mrr(sea_match_data, _theta)
+    _sea_uni_loss, _sea_uni_mrr = evaluate_loss_and_mrr(sea_match_data, _uniform)
+    _sea_zero_loss, _sea_zero_mrr = evaluate_loss_and_mrr(sea_match_data, _zeros)
 
     mo.md(f"""
     ### Evaluation Results
