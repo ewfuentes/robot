@@ -121,6 +121,7 @@ py_binary(
     "//experimental/overhead_matching/swag/data:vigor_dataset",
     "//experimental/overhead_matching/swag/data:vigor_filters",
     "//experimental/overhead_matching/swag/data:satellite_embedding_database",
+    "//experimental/overhead_matching/swag/evaluation:retrieval_metrics",
     "//experimental/overhead_matching/swag/model:patch_embedding",
     "//experimental/overhead_matching/swag/model:swag_patch_embedding",
   ]
@@ -744,6 +745,31 @@ py_binary(
 )
 
 py_binary(
+  name="export_landmark_tables",
+  srcs=["export_landmark_tables.py"],
+  deps=[
+    requirement("polars"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/evaluation:osm_tag_similarity",
+  ]
+)
+
+py_binary(
+  name="export_tag_weight_similarity",
+  srcs=["export_tag_weight_similarity.py"],
+  deps=[
+    requirement("torch"),
+    requirement("polars"),
+    requirement("tqdm"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/evaluation:retrieval_metrics",
+    "//experimental/overhead_matching/swag/evaluation:tag_weight_similarity",
+  ]
+)
+
+py_binary(
   name="generate_sft_data",
   srcs=["generate_sft_data.py"],
   deps=[
@@ -757,6 +783,4 @@ py_binary(
     "//experimental/overhead_matching/swag/model:semantic_landmark_extractor",
   ]
 )
-
-
 
