@@ -106,6 +106,12 @@ def main():
         default=5000,
         help="Maximum number of paths to load per run",
     )
+    parser.add_argument(
+        "--title",
+        type=str,
+        default=None,
+        help="Title for the plot (default: 'Histogram Filter Comparison')",
+    )
     args = parser.parse_args()
 
     assert len(args.eval_dirs) == len(args.labels), (
@@ -240,8 +246,9 @@ def main():
     # Build subtitle with path count info
     path_counts = [len(d["errors"]) for d in run_data.values()]
     n_paths = path_counts[0] if len(set(path_counts)) == 1 else "/".join(map(str, path_counts))
+    title_prefix = args.title or "Histogram Filter Comparison"
     fig.suptitle(
-        f"Histogram Filter Comparison (first {xlim:.0f}m)\n"
+        f"{title_prefix} (first {xlim:.0f}m)\n"
         f"{n_paths} paths, solid line = median, shading = IQR (25th-75th percentile)",
         fontsize=13,
         fontweight="bold",

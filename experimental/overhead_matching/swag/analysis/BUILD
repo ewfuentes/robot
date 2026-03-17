@@ -27,6 +27,17 @@ py_binary(
 )
 
 py_binary(
+  name="plot_perrow_temperature",
+  srcs=["plot_perrow_temperature.py"],
+  deps=[
+    requirement("torch"),
+    requirement("matplotlib"),
+    requirement("numpy"),
+    "//common/torch:load_torch_deps",
+  ]
+)
+
+py_binary(
   name="visualize_fusion_diagnostics",
   srcs=["visualize_fusion_diagnostics.py"],
   deps=[

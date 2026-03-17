@@ -346,7 +346,10 @@ py_binary(
     requirement("geopandas"),
     requirement("shapely"),
     requirement("pandas"),
+    requirement("polars"),
     requirement("ipdb"),
+    requirement("torch"),
+    "//common/torch:load_torch_deps",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
     "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
     "//common/gps:web_mercator",
@@ -527,6 +530,21 @@ py_binary(
   deps=[
     requirement("google-genai"),
     requirement("google-cloud-storage"),
+  ]
+)
+
+py_binary(
+  name="compute_mrr_on_cities",
+  srcs=["compute_mrr_on_cities.py"],
+  deps=[
+    requirement("torch"),
+    requirement("pyyaml"),
+    "//common/torch:load_torch_deps",
+    "//common/torch:load_and_save_models",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/data:satellite_embedding_database",
+    "//experimental/overhead_matching/swag/model:patch_embedding",
+    "//experimental/overhead_matching/swag/model:swag_patch_embedding",
   ]
 )
 
@@ -741,6 +759,29 @@ py_binary(
     requirement("ollama"),
     ":ollama_osm_extraction_lib",
     "//common/ollama:pyollama",
+  ]
+)
+py_binary(
+  name="export_landmark_tables",
+  srcs=["export_landmark_tables.py"],
+  deps=[
+    requirement("polars"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/evaluation:osm_tag_similarity",
+  ]
+)
+
+py_binary(
+  name="export_tag_weight_similarity",
+  srcs=["export_tag_weight_similarity.py"],
+  deps=[
+    requirement("torch"),
+    requirement("polars"),
+    requirement("tqdm"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/evaluation:tag_weight_similarity",
   ]
 )
 
