@@ -68,6 +68,7 @@ class HistogramFilterConfig:
     zoom_level: int = 20
     patch_size_px: int = 640
     odometry_noise: OdometryNoiseConfig | None = None  # Optional odometry noise config
+    max_chunk_gib: float = 2.0  # Peak GPU memory per chunk for cell-to-patch mapping
 
 
 @dataclass
@@ -298,6 +299,7 @@ def evaluate_histogram_on_paths(
             patch_positions_px=patch_positions_px,
             patch_half_size_px=patch_half_size_px,
             device=device,
+            max_chunk_bytes=int(config.max_chunk_gib * 1024**3),
         )
         print(f"Built cell-to-patch mapping with {len(mapping.patch_indices)} overlaps")
 
@@ -533,6 +535,8 @@ if __name__ == "__main__":
                         help="Grid subdivision factor (4 = 160px cells)")
     parser.add_argument("--convergence-radii", type=str, default="25,50,100",
                         help="Comma-separated list of radii (meters) for convergence metrics")
+    parser.add_argument("--max-chunk-gib", type=float, default=2.0,
+                        help="Peak GPU memory per chunk in GiB for cell-to-patch mapping (default: 2)")
 
     # Odometry noise arguments
     parser.add_argument("--odometry-noise-frac", type=float, default=None,
@@ -595,6 +599,7 @@ if __name__ == "__main__":
         initial_std_deg=degrees_from_meters(2970.0),
         initial_offset_std_deg=degrees_from_meters(1300.0),
         odometry_noise=odometry_noise_config,
+        max_chunk_gib=args.max_chunk_gib,
     )
 
     histogram_config_dict = {

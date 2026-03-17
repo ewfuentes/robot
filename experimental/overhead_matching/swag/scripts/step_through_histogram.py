@@ -360,6 +360,8 @@ def main():
                         help="Max rows/cols for belief heatmap. If not set, no heatmap downsampling.")
     parser.add_argument("--downsample-scatter", type=int, default=None,
                         help="Max scatter points for obs likelihood overlay. If not set, no scatter downsampling.")
+    parser.add_argument("--max-chunk-gib", type=float, default=None,
+                        help="Max GiB per chunk for cell-to-patch mapping. Defaults to eval_args value or 2.0.")
     parser.add_argument("--port", type=int, default=8050)
 
     args = parser.parse_args()
@@ -448,7 +450,9 @@ def main():
     # Build mapping on GPU (much faster), then move to CPU for filter operations
     patch_positions_px = get_patch_positions_px(vigor_dataset, device)
     _t0 = _time.time()
-    mapping = build_cell_to_patch_mapping(grid_spec, patch_positions_px, 320.0, device)
+    max_chunk_gib = args.max_chunk_gib if args.max_chunk_gib is not None else eval_args.get("max_chunk_gib", 2.0)
+    mapping = build_cell_to_patch_mapping(grid_spec, patch_positions_px, 320.0, device,
+                                          max_chunk_bytes=int(max_chunk_gib * 1024**3))
     mapping = mapping.to(filter_device)
     print(f"Cell-to-patch mapping built in {_time.time() - _t0:.1f}s")
 
