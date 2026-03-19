@@ -339,6 +339,7 @@ py_library(
   ],
   deps = [
     requirement("torch"),
+    "//common/torch:load_torch_deps",
     ":semantic_landmark_utils",
   ]
 )
