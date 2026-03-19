@@ -21,6 +21,8 @@ TagBundleEncoder processes each key=value tag in a bundle:
 import math
 from dataclasses import dataclass, field
 
+import common.torch.load_torch_deps  # noqa: F401 - Must import before torch
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -171,7 +173,11 @@ class TagBundleEncoderConfig:
     text_input_dim: int = 768
     text_proj_dim: int = 128
     per_tag_dim: int = 64
-    repr_dim: int = 128  # Output: mean + max pool of per_tag_dim
+
+    @property
+    def repr_dim(self) -> int:
+        """Output dimension: mean + max pool of per_tag_dim."""
+        return 2 * self.per_tag_dim
 
 
 @dataclass

@@ -358,7 +358,7 @@ def train(config: dict) -> None:
     use_amp = config.get("use_amp", True) and device.type == "cuda"
     if use_amp:
         scaler = GradScaler()
-        print("Mixed precision training enabled (bfloat16)")
+        print("Mixed precision training enabled (float16)")
 
     # TensorBoard
     tb_dir = output_dir / "tensorboard"

@@ -153,6 +153,7 @@ py_library(
   ],
   deps = [
     requirement("torch"),
+    "//common/torch:load_torch_deps",
     "//experimental/overhead_matching/swag/model:landmark_correspondence_model",
   ],
 )

@@ -18,6 +18,8 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
+import common.torch.load_torch_deps  # noqa: F401 - Must import before torch
+
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
