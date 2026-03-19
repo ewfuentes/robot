@@ -787,8 +787,8 @@ py_binary(
 )
 
 py_binary(
-  name="convert_gemini_responses",
-  srcs=["convert_gemini_responses.py"],
+  name="convert_gemini_landmark_pairing_responses_to_viewer_json",
+  srcs=["convert_gemini_landmark_pairing_responses_to_viewer_json.py"],
   deps=[
     requirement("pandas"),
     requirement("pyarrow"),
