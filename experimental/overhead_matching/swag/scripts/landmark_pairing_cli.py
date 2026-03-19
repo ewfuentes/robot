@@ -48,6 +48,7 @@ of the match or how similar the two sides are.
   2 = common category (e.g., amenity=restaurant)
   3 = moderately specific (e.g., shop=convenience; brand=7-Eleven)
   4 = quite distinctive (e.g., amenity=library; name=Harold Washington Library)
+  5 = highly unique/unmistakable (e.g., tourism=attraction; name=Cloud Gate)
 
 Only propose matches you are confident about. Some landmarks may have no match."""
 
@@ -63,6 +64,7 @@ of the match or how similar the two sides are.
   2 = common category (e.g., amenity=restaurant)
   3 = moderately specific (e.g., shop=convenience; brand=7-Eleven)
   4 = quite distinctive (e.g., amenity=library; name=Harold Washington Library)
+  5 = highly unique/unmistakable (e.g., tourism=attraction; name=Cloud Gate)
 
 For each Set 1 landmark, also provide 0-2 negative examples from Set 2 — landmarks that
 are NOT a match. Label each as "hard" or "easy":
@@ -83,6 +85,7 @@ of the match or how similar the two sides are.
   2 = common category (e.g., amenity=restaurant)
   3 = moderately specific (e.g., shop=convenience; brand=7-Eleven)
   4 = quite distinctive (e.g., amenity=library; name=Harold Washington Library)
+  5 = highly unique/unmistakable (e.g., tourism=attraction; name=Cloud Gate)
 
 For each Set 1 landmark, also provide 0-2 negative examples from Set 2 — landmarks that
 are NOT a match. Label each as "hard" or "easy":
@@ -478,11 +481,11 @@ def main():
 
     def handle_result(r):
         nonlocal total_input, total_output, total_cost, consecutive_errors, stop_early
-        total_input += r["input_tokens"]
-        total_output += r["output_tokens"]
-        total_cost += r["cost_usd"]
 
         with print_lock:
+            total_input += r["input_tokens"]
+            total_output += r["output_tokens"]
+            total_cost += r["cost_usd"]
             lines = []
             lines.append(f"{'='*80}")
             lines.append(f"Panorama: {r['pano_id']}")
@@ -508,9 +511,15 @@ def main():
             for match in parsed.get("matches", []):
                 set1 = match["set_1_id"]
                 score = match.get("uniqueness_score", 0)
+                if set1 < 0 or set1 >= len(pano_tags):
+                    lines.append(f"  WARNING: set_1_id={set1} out of bounds (max {len(pano_tags)-1}), skipping")
+                    continue
                 pano_tag_str = format_tags(pano_tags[set1]["tags"])
                 lines.append(f"  [U{score}] Pano {set1}: {pano_tag_str}")
                 for set2 in match["set_2_matches"]:
+                    if set2 < 0 or set2 >= len(osm_tags):
+                        lines.append(f"         WARNING: set_2_id={set2} out of bounds (max {len(osm_tags)-1}), skipping")
+                        continue
                     osm_tag_str = format_tags(osm_tags[set2])
                     lines.append(f"         -> OSM {set2}: {osm_tag_str}")
 

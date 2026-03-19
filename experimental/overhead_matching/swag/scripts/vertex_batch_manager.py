@@ -394,19 +394,24 @@ def cmd_run_online(args):
                 records.append(json.loads(line))
     print(f"Loaded {len(records)} requests from {args.input}")
 
-    # Resume: skip already-processed keys
+    # Resume: skip already-processed keys (exclude error records so they get retried)
     done_keys = set()
+    error_keys = set()
     output_path = Path(args.output)
     if output_path.exists():
         with open(output_path) as f:
             for line in f:
                 if line.strip():
                     try:
-                        done_keys.add(json.loads(line)["key"])
+                        rec = json.loads(line)
+                        if rec.get("error") is not None:
+                            error_keys.add(rec["key"])
+                        else:
+                            done_keys.add(rec["key"])
                     except (json.JSONDecodeError, KeyError):
                         pass
-        if done_keys:
-            print(f"Resuming: {len(done_keys)} already done, skipping")
+        if done_keys or error_keys:
+            print(f"Resuming: {len(done_keys)} succeeded, {len(error_keys)} errors (will retry errors)")
             records = [r for r in records if r["key"] not in done_keys]
 
     if not records:
@@ -420,14 +425,19 @@ def cmd_run_online(args):
     print(f"Model: {args.model}, thinking: {thinking_level}, parallel: {args.parallel}")
     print(f"Processing {len(records)} requests...")
 
+    MAX_CONSECUTIVE_ERRORS = 3
     total_prompt = 0
     total_output = 0
     total_thinking = 0
     completed = 0
     errors = 0
+    consecutive_errors = 0
+    stop_early = False
     print_lock = Lock()
     start_time = time.time()
     out_file = open(args.output, 'a')
+    errors_path = Path(args.output).with_suffix('.errors.jsonl')
+    errors_file = open(errors_path, 'a')
 
     def process_one(record):
         req = record["request"]
@@ -457,23 +467,30 @@ def cmd_run_online(args):
                 "error": None,
             }
         except Exception as e:
-            return {"key": record["key"], "request": req, "response": None, "error": str(e)}
+            return {"key": record["key"], "request": req, "response": None, "error": f"{type(e).__name__}: {e}"}
 
     def handle_result(result):
         nonlocal total_prompt, total_output, total_thinking, completed, errors
+        nonlocal consecutive_errors, stop_early
         with print_lock:
             if result["error"]:
                 errors += 1
+                consecutive_errors += 1
                 print(f"  ERROR {result['key']}: {result['error']}")
+                errors_file.write(json.dumps(result) + '\n')
+                errors_file.flush()
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                    print(f"  STOPPING: {consecutive_errors} consecutive errors, likely quota/auth issue")
+                    stop_early = True
             else:
+                consecutive_errors = 0
                 usage = result["response"]["usageMetadata"]
                 total_prompt += usage["promptTokenCount"]
                 total_output += usage["candidatesTokenCount"]
                 total_thinking += usage.get("thoughtsTokenCount", 0)
                 completed += 1
-
-            out_file.write(json.dumps(result) + '\n')
-            out_file.flush()
+                out_file.write(json.dumps(result) + '\n')
+                out_file.flush()
 
             elapsed = time.time() - start_time
             total_done = completed + errors
@@ -487,10 +504,15 @@ def cmd_run_online(args):
             futures = {executor.submit(process_one, rec): rec["key"] for rec in records}
             for future in as_completed(futures):
                 handle_result(future.result())
+                if stop_early:
+                    for f in futures:
+                        f.cancel()
+                    break
     except KeyboardInterrupt:
         print("\nInterrupted.")
     finally:
         out_file.close()
+        errors_file.close()
 
     elapsed = time.time() - start_time
     print(f"\n{'='*60}")
