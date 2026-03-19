@@ -143,3 +143,26 @@ py_library(
     "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
   ],
 )
+
+py_library(
+  name = "landmark_correspondence_dataset",
+  srcs = ["landmark_correspondence_dataset.py"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+    "//common/python:__subpackages__",
+  ],
+  deps = [
+    requirement("torch"),
+    "//experimental/overhead_matching/swag/model:landmark_correspondence_model",
+  ],
+)
+
+py_test(
+  name = "landmark_correspondence_dataset_test",
+  srcs = ["landmark_correspondence_dataset_test.py"],
+  deps = [
+    requirement("torch"),
+    "//common/torch:load_torch_deps",
+    ":landmark_correspondence_dataset",
+  ],
+)
