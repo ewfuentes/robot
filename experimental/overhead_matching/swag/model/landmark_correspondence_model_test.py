@@ -11,6 +11,7 @@ from experimental.overhead_matching.swag.model.landmark_correspondence_model imp
     NUM_TAG_KEYS,
     NUMERIC_KEYS,
     TAG_KEY_TO_IDX,
+    ValueType,
     CorrespondenceClassifier,
     CorrespondenceClassifierConfig,
     TagBundleEncoder,
@@ -33,12 +34,16 @@ class TestValueParsing:
         assert parse_boolean("maybe") == 0.5
 
     def test_parse_numeric(self):
-        assert parse_numeric("5") == 5.0
-        assert parse_numeric("55 mph") == 55.0
-        assert parse_numeric("20+") == 20.0
-        assert parse_numeric("high") == 20.0
-        assert parse_numeric("multi") == 5.0
-        assert math.isnan(parse_numeric("unknown"))
+        assert parse_numeric("5") == (5.0, False)
+        assert parse_numeric("55 mph") == (55.0, False)
+        # "20+" encodes as 20.0 with is_lower_bound=True
+        assert parse_numeric("20+") == (20.0, True)
+        # "high"/"multi" are key-aware: only resolve for level keys
+        assert parse_numeric("high", key="building:levels") == (20.0, False)
+        assert parse_numeric("multi", key="levels") == (5.0, False)
+        assert math.isnan(parse_numeric("high")[0])  # without key context → NaN
+        assert math.isnan(parse_numeric("multi")[0])
+        assert math.isnan(parse_numeric("unknown")[0])
 
     def test_parse_maxheight(self):
         assert abs(parse_maxheight("13'6\"") - 13.5) < 0.01
@@ -53,14 +58,20 @@ class TestValueParsing:
 
     def test_encode_numeric(self):
         enc = encode_numeric_value(100.0)
-        assert len(enc) == 3
+        assert len(enc) == 4
         assert abs(enc[0] - math.log1p(100)) < 1e-6
         assert abs(enc[1] - 0.1) < 1e-6
-        assert enc[2] == 1.0
+        assert enc[2] == 1.0  # presence flag
+        assert enc[3] == 0.0  # not a lower bound
+
+    def test_encode_numeric_lower_bound(self):
+        enc = encode_numeric_value(20.0, is_lower_bound=True)
+        assert len(enc) == 4
+        assert enc[3] == 1.0  # is_lower_bound flag
 
     def test_encode_numeric_nan(self):
         enc = encode_numeric_value(float("nan"))
-        assert enc == [0.0, 0.0, 0.0]
+        assert enc == [0.0, 0.0, 0.0, 0.0]
 
     def test_encode_housenumber(self):
         enc = encode_housenumber_value(665.0, 667.0)
@@ -70,19 +81,19 @@ class TestValueParsing:
 class TestKeyType:
     def test_boolean_keys(self):
         for k in BOOLEAN_KEYS:
-            assert key_type(k) == "boolean"
+            assert key_type(k) == ValueType.BOOLEAN
 
     def test_numeric_keys(self):
         for k in NUMERIC_KEYS:
-            assert key_type(k) == "numeric"
+            assert key_type(k) == ValueType.NUMERIC
 
     def test_housenumber(self):
-        assert key_type("addr:housenumber") == "housenumber"
+        assert key_type("addr:housenumber") == ValueType.HOUSENUMBER
 
     def test_text_keys(self):
-        assert key_type("name") == "text"
-        assert key_type("building") == "text"
-        assert key_type("amenity") == "text"
+        assert key_type("name") == ValueType.TEXT
+        assert key_type("building") == ValueType.TEXT
+        assert key_type("amenity") == ValueType.TEXT
 
     def test_all_tags_have_index(self):
         assert NUM_TAG_KEYS > 100  # Should be ~112 keys
@@ -94,7 +105,7 @@ class TestTagBundleEncoder:
             key_indices=torch.randint(0, NUM_TAG_KEYS, (batch_size, max_tags)),
             value_type=torch.randint(0, 4, (batch_size, max_tags)),
             boolean_values=torch.randint(0, 3, (batch_size, max_tags)),
-            numeric_values=torch.randn(batch_size, max_tags, 3),
+            numeric_values=torch.randn(batch_size, max_tags, 4),
             numeric_nan_mask=torch.zeros(batch_size, max_tags, dtype=torch.bool),
             housenumber_values=torch.randn(batch_size, max_tags, 4),
             housenumber_nan_mask=torch.zeros(batch_size, max_tags, dtype=torch.bool),
@@ -153,7 +164,7 @@ class TestCorrespondenceClassifier:
                 key_indices=torch.randint(0, NUM_TAG_KEYS, (batch_size, max_tags)),
                 value_type=torch.randint(0, 4, (batch_size, max_tags)),
                 boolean_values=torch.randint(0, 3, (batch_size, max_tags)),
-                numeric_values=torch.randn(batch_size, max_tags, 3),
+                numeric_values=torch.randn(batch_size, max_tags, 4),
                 numeric_nan_mask=torch.zeros(batch_size, max_tags, dtype=torch.bool),
                 housenumber_values=torch.randn(batch_size, max_tags, 4),
                 housenumber_nan_mask=torch.zeros(batch_size, max_tags, dtype=torch.bool),
