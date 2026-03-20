@@ -151,36 +151,35 @@ Set 2 (map database):
 
 
 class TestCrossFeatures(unittest.TestCase):
-    # Feature layout (17 total):
+    # Feature layout (13 total):
     #  [0]     Jaccard similarity
     #  [1]     shared keys / 10
     #  [2]     exact matches / 10
-    #  [3..6]  primary category match: building, amenity, highway, shop
-    #  [7..9]  text sim: max, mean, name
-    #  [10..15] numeric proximity in sorted key order:
-    #           building:levels, heritage, lanes, levels, maxheight, maxspeed
-    #  [16]    housenumber overlap
+    #  [3..5]  text sim: max, mean, name
+    #  [6..11] numeric proximity in sorted key order:
+    #          building:levels, heritage, lanes, levels, maxheight, maxspeed
+    #  [12]   housenumber overlap
 
     def test_feature_count(self):
         pano = {"building": "yes", "name": "Library"}
         osm = {"building": "yes", "name": "Library"}
         feats = compute_cross_features(pano, osm)
-        self.assertEqual(len(feats), 17)
+        self.assertEqual(len(feats), 13)
 
     def test_numeric_feature_order(self):
         """Numeric proximity features must follow sorted(NUMERIC_KEYS) order."""
-        # building:levels is at index 10, lanes at 12, maxspeed at 15
+        # building:levels is at index 6, lanes at 8, maxspeed at 11
         pano = {"building:levels": "3", "lanes": "2", "maxspeed": "30 mph"}
         osm = {"building:levels": "3", "lanes": "2", "maxspeed": "30 mph"}
         feats = compute_cross_features(pano, osm)
         # Exact matches → exp(0) = 1.0
-        self.assertEqual(feats[10], 1.0, "building:levels should be at index 10")
-        self.assertEqual(feats[12], 1.0, "lanes should be at index 12")
-        self.assertEqual(feats[15], 1.0, "maxspeed should be at index 15")
-        # heritage (11), levels (13), maxheight (14) are absent → 0.0
-        self.assertEqual(feats[11], 0.0, "heritage absent")
-        self.assertEqual(feats[13], 0.0, "levels absent")
-        self.assertEqual(feats[14], 0.0, "maxheight absent")
+        self.assertEqual(feats[6], 1.0, "building:levels should be at index 6")
+        self.assertEqual(feats[8], 1.0, "lanes should be at index 8")
+        self.assertEqual(feats[11], 1.0, "maxspeed should be at index 11")
+        # heritage (7), levels (9), maxheight (10) are absent → 0.0
+        self.assertEqual(feats[7], 0.0, "heritage absent")
+        self.assertEqual(feats[9], 0.0, "levels absent")
+        self.assertEqual(feats[10], 0.0, "maxheight absent")
 
     def test_identical_tags_high_similarity(self):
         tags = {"building": "yes", "name": "Library", "amenity": "library"}
@@ -281,7 +280,7 @@ class TestCollation(unittest.TestCase):
         self.assertEqual(batch.pano_key_indices.shape[0], 2)  # batch size
         self.assertEqual(batch.osm_key_indices.shape[0], 2)
         self.assertEqual(batch.labels.shape, (2,))
-        self.assertEqual(batch.cross_features.shape, (2, 17))
+        self.assertEqual(batch.cross_features.shape, (2, 13))
         self.assertEqual(batch.labels[0], 1.0)
         self.assertEqual(batch.labels[1], 0.0)
 
