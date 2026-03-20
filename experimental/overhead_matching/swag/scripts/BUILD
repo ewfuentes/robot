@@ -833,6 +833,7 @@ py_library(
   ],
   deps = [
     requirement("msgspec"),
+    requirement("pyyaml"),
     "//common/python:serialization",
   ],
 )
