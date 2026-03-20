@@ -1,19 +1,21 @@
+import unittest
+
 import numpy as np
 
 from experimental.overhead_matching.swag.evaluation import proper_noun_matcher_python as pnm
 
 
-class TestComputeKeyedSubstringMatchesDetailed:
+class TestComputeKeyedSubstringMatchesDetailed(unittest.TestCase):
     def test_single_match(self):
         query_tags = [[("name", "starbucks")]]
         target_tags = [[("name", "Starbucks Coffee")]]
 
         q, t, k = pnm.compute_keyed_substring_matches_detailed(query_tags, target_tags)
 
-        assert len(q) == 1
-        assert q[0] == 0
-        assert t[0] == 0
-        assert k[0] == 0
+        self.assertEqual(len(q), 1)
+        self.assertEqual(q[0], 0)
+        self.assertEqual(t[0], 0)
+        self.assertEqual(k[0], 0)
 
     def test_no_match_different_keys(self):
         query_tags = [[("name", "starbucks")]]
@@ -21,7 +23,7 @@ class TestComputeKeyedSubstringMatchesDetailed:
 
         q, t, k = pnm.compute_keyed_substring_matches_detailed(query_tags, target_tags)
 
-        assert len(q) == 0
+        self.assertEqual(len(q), 0)
 
     def test_no_match_substring_not_found(self):
         query_tags = [[("name", "starbucks")]]
@@ -29,7 +31,7 @@ class TestComputeKeyedSubstringMatchesDetailed:
 
         q, t, k = pnm.compute_keyed_substring_matches_detailed(query_tags, target_tags)
 
-        assert len(q) == 0
+        self.assertEqual(len(q), 0)
 
     def test_multiple_keys_match_independently(self):
         query_tags = [[("name", "central"), ("amenity", "cafe")]]
@@ -37,7 +39,7 @@ class TestComputeKeyedSubstringMatchesDetailed:
 
         q, t, k = pnm.compute_keyed_substring_matches_detailed(query_tags, target_tags)
 
-        assert len(q) == 2
+        self.assertEqual(len(q), 2)
         np.testing.assert_array_equal(q, [0, 0])
         np.testing.assert_array_equal(t, [0, 0])
         np.testing.assert_array_equal(k, [0, 1])
@@ -56,7 +58,7 @@ class TestComputeKeyedSubstringMatchesDetailed:
         q, t, k = pnm.compute_keyed_substring_matches_detailed(query_tags, target_tags)
 
         matches = set(zip(q.tolist(), t.tolist(), k.tolist()))
-        assert matches == {(0, 0, 0), (0, 2, 0), (1, 1, 0), (1, 2, 0)}
+        self.assertEqual(matches, {(0, 0, 0), (0, 2, 0), (1, 1, 0), (1, 2, 0)})
 
     def test_case_insensitive(self):
         query_tags = [[("name", "HELLO")]]
@@ -64,25 +66,25 @@ class TestComputeKeyedSubstringMatchesDetailed:
 
         q, t, k = pnm.compute_keyed_substring_matches_detailed(query_tags, target_tags)
 
-        assert len(q) == 1
+        self.assertEqual(len(q), 1)
 
     def test_empty_inputs(self):
         q, t, k = pnm.compute_keyed_substring_matches_detailed([], [])
-        assert len(q) == 0
-        assert len(t) == 0
-        assert len(k) == 0
+        self.assertEqual(len(q), 0)
+        self.assertEqual(len(t), 0)
+        self.assertEqual(len(k), 0)
 
     def test_empty_query_tags(self):
         q, t, k = pnm.compute_keyed_substring_matches_detailed(
             [[]], [[("name", "foo")]]
         )
-        assert len(q) == 0
+        self.assertEqual(len(q), 0)
 
     def test_empty_target_tags(self):
         q, t, k = pnm.compute_keyed_substring_matches_detailed(
             [[("name", "foo")]], [[]]
         )
-        assert len(q) == 0
+        self.assertEqual(len(q), 0)
 
     def test_key_idx_reflects_query_position(self):
         query_tags = [[("addr", "main"), ("cuisine", "pizza"), ("name", "joe")]]
@@ -90,8 +92,8 @@ class TestComputeKeyedSubstringMatchesDetailed:
 
         q, t, k = pnm.compute_keyed_substring_matches_detailed(query_tags, target_tags)
 
-        assert len(q) == 1
-        assert k[0] == 2  # "name" is at index 2 in the query
+        self.assertEqual(len(q), 1)
+        self.assertEqual(k[0], 2)  # "name" is at index 2 in the query
 
     def test_returns_int64_arrays(self):
         query_tags = [[("name", "test")]]
@@ -99,9 +101,9 @@ class TestComputeKeyedSubstringMatchesDetailed:
 
         q, t, k = pnm.compute_keyed_substring_matches_detailed(query_tags, target_tags)
 
-        assert q.dtype == np.int64
-        assert t.dtype == np.int64
-        assert k.dtype == np.int64
+        self.assertEqual(q.dtype, np.int64)
+        self.assertEqual(t.dtype, np.int64)
+        self.assertEqual(k.dtype, np.int64)
 
     def test_agrees_with_binary_version(self):
         """The set of (query, target) pairs with any match should equal the
@@ -126,3 +128,7 @@ class TestComputeKeyedSubstringMatchesDetailed:
             reconstructed[qi, ti] = 1.0
 
         np.testing.assert_array_equal(binary, reconstructed)
+
+
+if __name__ == "__main__":
+    unittest.main()
