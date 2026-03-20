@@ -70,9 +70,6 @@ HOUSENUMBER_KEY = "addr:housenumber"
 TAG_KEY_TO_IDX: dict[str, int] = {k: i for i, k in enumerate(_TAGS_TO_KEEP)}
 NUM_TAG_KEYS = len(_TAGS_TO_KEEP)
 
-# Primary category keys used for cross-pair features
-PRIMARY_CATEGORY_KEYS = ["building", "amenity", "highway", "shop"]
-
 
 def key_type(key: str) -> ValueType:
     """Return the encoding type for a tag key."""
@@ -220,7 +217,7 @@ class CorrespondenceClassifierConfig:
     encoder: TagBundleEncoderConfig = field(default_factory=TagBundleEncoderConfig)
     mlp_hidden_dim: int = 128
     dropout: float = 0.1
-    num_cross_features: int = 17  # Jaccard(1) + shared_keys(1) + exact_matches(1) + category(4) + text_sim(3) + numeric(6) + housenumber(1)
+    num_cross_features: int = 13  # Jaccard(1) + shared_keys(1) + exact_matches(1) + text_sim(3) + numeric(6) + housenumber(1)
 
 
 # ---------------------------------------------------------------------------

@@ -161,7 +161,7 @@ class TestTagBundleEncoder(unittest.TestCase):
 
 
 class TestCorrespondenceClassifier(unittest.TestCase):
-    def _make_dummy_batch(self, batch_size=4, max_tags=5, text_dim=768, num_cross=17):
+    def _make_dummy_batch(self, batch_size=4, max_tags=5, text_dim=768, num_cross=13):
         def make_side():
             return dict(
                 key_indices=torch.randint(0, NUM_TAG_KEYS, (batch_size, max_tags)),
