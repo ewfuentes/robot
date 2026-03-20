@@ -11,13 +11,14 @@ TagBundleEncoder processes each key=value tag in a bundle:
   1. Key embedding (learned, 112 keys × key_dim)
   2. Value encoding by type:
      - Boolean: single learned embedding (true/false/unknown → 8-dim)
-     - Numeric: [log(1+|x|), x/1000, 1.0] → linear → 16-dim
+     - Numeric: [log(1+|x|), x/1000, 1.0, is_lower_bound] → linear → 16-dim
      - Housenumber: [log(1+lo), log(1+hi), log(1+hi-lo), mean/2000] → linear → 16-dim
      - Text: pre-computed embedding → linear projection → text_proj_dim
   3. Per-tag MLP: concat(key_emb, value_emb) → 64-dim
   4. Pooling: mean + max → 128-dim representation
 """
 
+import enum
 import math
 from dataclasses import dataclass, field
 
@@ -30,6 +31,23 @@ import torch.nn.functional as F
 from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
     _TAGS_TO_KEEP,
 )
+
+
+# ---------------------------------------------------------------------------
+# Enums for value types
+# ---------------------------------------------------------------------------
+
+class ValueType(enum.IntEnum):
+    BOOLEAN = 0
+    NUMERIC = 1
+    HOUSENUMBER = 2
+    TEXT = 3
+
+
+class BooleanValue(enum.IntEnum):
+    TRUE = 0
+    FALSE = 1
+    UNKNOWN = 2
 
 # ---------------------------------------------------------------------------
 # Tag key classification
@@ -56,15 +74,15 @@ NUM_TAG_KEYS = len(_TAGS_TO_KEEP)
 PRIMARY_CATEGORY_KEYS = ["building", "amenity", "highway", "shop"]
 
 
-def key_type(key: str) -> str:
+def key_type(key: str) -> ValueType:
     """Return the encoding type for a tag key."""
     if key == HOUSENUMBER_KEY:
-        return "housenumber"
+        return ValueType.HOUSENUMBER
     if key in BOOLEAN_KEYS:
-        return "boolean"
+        return ValueType.BOOLEAN
     if key in NUMERIC_KEYS:
-        return "numeric"
-    return "text"
+        return ValueType.NUMERIC
+    return ValueType.TEXT
 
 
 # ---------------------------------------------------------------------------
@@ -81,22 +99,35 @@ def parse_boolean(value: str) -> float:
     return 0.5
 
 
-def parse_numeric(value: str) -> float:
-    """Parse numeric tag value to float, handling units and text."""
+_LEVEL_KEYS = frozenset(["building:levels", "levels"])
+
+
+def parse_numeric(value: str, key: str | None = None) -> tuple[float, bool]:
+    """Parse numeric tag value to (float, is_lower_bound).
+
+    The is_lower_bound flag is True when the raw value had a '+' suffix
+    (e.g. "20+" means "20 or more").
+    """
     v = value.strip().lower()
     # Strip common suffixes
     for suffix in (" mph", " km/h", " m", " ft"):
         if v.endswith(suffix):
             v = v[:-len(suffix)]
-    # Handle special text values
-    v = v.strip("+")
-    special = {"high": 20.0, "multi": 5.0, "yes": 1.0, "no": 0.0}
+    # Detect and strip "+" (lower-bound indicator, e.g. "20+")
+    is_lower_bound = v.endswith("+")
+    if is_lower_bound:
+        v = v[:-1].strip()
+    # Key-aware special text values: "high"→20, "multi"→5 only for level keys
+    special: dict[str, float] = {"yes": 1.0, "no": 0.0}
+    if key is not None and key in _LEVEL_KEYS:
+        special["high"] = 20.0
+        special["multi"] = 5.0
     if v in special:
-        return special[v]
+        return (special[v], is_lower_bound)
     try:
-        return float(v)
+        return (float(v), is_lower_bound)
     except ValueError:
-        return float("nan")
+        return (float("nan"), False)
 
 
 def parse_maxheight(value: str) -> float:
@@ -142,11 +173,15 @@ def parse_housenumber(value: str) -> tuple[float, float]:
         return (float("nan"), float("nan"))
 
 
-def encode_numeric_value(x: float) -> list[float]:
-    """Encode numeric value as [log(1+|x|), x/1000, 1.0]."""
+def encode_numeric_value(x: float, is_lower_bound: bool = False) -> list[float]:
+    """Encode numeric value as [log(1+|x|), x/1000, 1.0, is_lower_bound].
+
+    The third element (1.0) is a presence flag: it distinguishes a valid zero
+    encoding [0, 0, 1.0, ...] from the NaN encoding [0, 0, 0, 0].
+    """
     if math.isnan(x):
-        return [0.0, 0.0, 0.0]  # Will use NaN embedding instead
-    return [math.log1p(abs(x)), x / 1000.0, 1.0]
+        return [0.0, 0.0, 0.0, 0.0]  # Will use NaN embedding instead
+    return [math.log1p(abs(x)), x / 1000.0, 1.0, 1.0 if is_lower_bound else 0.0]
 
 
 def encode_housenumber_value(lo: float, hi: float) -> list[float]:
@@ -208,8 +243,8 @@ class TagBundleEncoder(nn.Module):
         # Boolean encoder: 3 embeddings (true, false, unknown)
         self.boolean_embedding = nn.Embedding(3, config.boolean_dim)
 
-        # Numeric encoder: linear 3 → numeric_dim
-        self.numeric_linear = nn.Linear(3, config.numeric_dim)
+        # Numeric encoder: linear 4 → numeric_dim
+        self.numeric_linear = nn.Linear(4, config.numeric_dim)
         self.numeric_nan_embedding = nn.Parameter(torch.randn(config.numeric_dim) * 0.01)
 
         # Housenumber encoder: linear 4 → housenumber_dim
@@ -244,7 +279,7 @@ class TagBundleEncoder(nn.Module):
         key_indices: torch.Tensor,      # (B, max_tags) int
         value_type: torch.Tensor,        # (B, max_tags) int: 0=bool, 1=numeric, 2=housenum, 3=text
         boolean_values: torch.Tensor,    # (B, max_tags) int: 0=true, 1=false, 2=unknown
-        numeric_values: torch.Tensor,    # (B, max_tags, 3) float
+        numeric_values: torch.Tensor,    # (B, max_tags, 4) float
         numeric_nan_mask: torch.Tensor,  # (B, max_tags) bool: True if NaN
         housenumber_values: torch.Tensor,  # (B, max_tags, 4) float
         housenumber_nan_mask: torch.Tensor,  # (B, max_tags) bool: True if NaN
@@ -264,7 +299,7 @@ class TagBundleEncoder(nn.Module):
         # Boolean: (B, T, boolean_dim) → (B, T, max_value_dim)
         bool_emb = self.boolean_proj(self.boolean_embedding(boolean_values))
 
-        # Numeric: (B, T, 3) → (B, T, numeric_dim)
+        # Numeric: (B, T, 4) → (B, T, numeric_dim)
         num_emb = self.numeric_linear(numeric_values)
         # Replace NaN entries with learned NaN embedding
         nan_expand = self.numeric_nan_embedding.unsqueeze(0).unsqueeze(0).expand(B, T, -1)
@@ -374,6 +409,9 @@ class CorrespondenceClassifier(nn.Module):
             osm_text_embeddings, osm_tag_mask,
         )
 
+        # Elementwise product captures multiplicative interaction between pano
+        # and osm representations. Motivated by ESIM (Chen et al. 2016,
+        # arXiv:1609.06038) and InferSent (Conneau et al. 2017, arXiv:1705.02364).
         combined = torch.cat([
             pano_repr,
             osm_repr,

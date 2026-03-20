@@ -39,7 +39,6 @@ import common.torch.load_torch_deps  # noqa: F401 - Must import before torch
 import numpy as np
 import torch
 import torch.nn.functional as F
-import yaml
 from sklearn.metrics import roc_auc_score
 from torch.amp import GradScaler, autocast
 from torch.optim import AdamW
@@ -62,6 +61,11 @@ from experimental.overhead_matching.swag.model.landmark_correspondence_model imp
     CorrespondenceClassifier,
     CorrespondenceClassifierConfig,
     TagBundleEncoderConfig,
+)
+from experimental.overhead_matching.swag.scripts.correspondence_configs import (
+    CorrespondenceTrainConfig,
+    load_config,
+    save_config,
 )
 
 
@@ -244,38 +248,35 @@ def evaluate(
     return avg_loss, metrics
 
 
-def train(config: dict) -> None:
+def train(config: CorrespondenceTrainConfig) -> None:
     """Main training function."""
-    seed = config.get("seed", 42)
-    setup_reproducibility(seed)
+    setup_reproducibility(config.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    output_dir = Path(config["output_dir"])
+    output_dir = config.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Save config
-    with open(output_dir / "config.yaml", "w") as f:
-        yaml.dump(config, f)
+    save_config(config, output_dir / "config.yaml")
 
     # Load text embeddings
     text_embeddings = None
-    text_input_dim = config.get("encoder", {}).get("text_input_dim", 768)
-    if config.get("text_embeddings_path"):
-        emb_path = Path(config["text_embeddings_path"])
-        print(f"Loading text embeddings from {emb_path}...")
-        text_embeddings = load_text_embeddings(emb_path)
-        print(f"Loaded {len(text_embeddings):,} text embeddings")
-        # Infer dim from first embedding
-        first_emb = next(iter(text_embeddings.values()))
-        text_input_dim = first_emb.shape[0]
-        print(f"Text embedding dim: {text_input_dim}")
+    text_input_dim = config.encoder.text_input_dim
+    emb_path = config.text_embeddings_path
+    print(f"Loading text embeddings from {emb_path}...")
+    text_embeddings = load_text_embeddings(emb_path)
+    print(f"Loaded {len(text_embeddings):,} text embeddings")
+    # Infer dim from first embedding
+    first_emb = next(iter(text_embeddings.values()))
+    text_input_dim = first_emb.shape[0]
+    print(f"Text embedding dim: {text_input_dim}")
 
     # Load data
-    data_dir = Path(config["data_dir"])
-    train_city = config.get("train_city", "Chicago")
-    val_city = config.get("val_city", "Seattle")
-    include_difficulties = tuple(config.get("include_difficulties", ["positive", "easy"]))
+    data_dir = config.data_dir
+    train_city = config.train_city
+    val_city = config.val_city
+    include_difficulties = tuple(config.include_difficulties)
 
     print(f"\nLoading training data ({train_city})...")
     train_pairs = load_pairs_from_directory(data_dir / train_city)
@@ -313,8 +314,8 @@ def train(config: dict) -> None:
     )
     print(f"After filtering: train={len(train_dataset):,}, val={len(val_dataset):,}")
 
-    batch_size = config.get("batch_size", 512)
-    num_workers = config.get("num_workers", 4)
+    batch_size = config.batch_size
+    num_workers = config.num_workers
     train_loader = DataLoader(
         train_dataset, batch_size=batch_size, shuffle=True,
         collate_fn=collate_correspondence, num_workers=num_workers,
@@ -329,33 +330,30 @@ def train(config: dict) -> None:
     # Create model
     encoder_config = TagBundleEncoderConfig(
         text_input_dim=text_input_dim,
-        text_proj_dim=config.get("encoder", {}).get("text_proj_dim", 128),
+        text_proj_dim=config.encoder.text_proj_dim,
     )
     classifier_config = CorrespondenceClassifierConfig(
         encoder=encoder_config,
-        mlp_hidden_dim=config.get("classifier", {}).get("mlp_hidden_dim", 128),
-        dropout=config.get("classifier", {}).get("dropout", 0.1),
+        mlp_hidden_dim=config.classifier.mlp_hidden_dim,
+        dropout=config.classifier.dropout,
     )
     model = CorrespondenceClassifier(classifier_config).to(device)
     num_params = sum(p.numel() for p in model.parameters())
     print(f"\nModel: {num_params:,} parameters")
 
     # Optimizer
-    lr = config.get("lr", 1e-3)
-    weight_decay = config.get("weight_decay", 0.01)
-    optimizer = AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    optimizer = AdamW(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
 
-    num_epochs = config.get("num_epochs", 20)
+    num_epochs = config.num_epochs
     total_steps = len(train_loader) * num_epochs
-    warmup_fraction = config.get("warmup_fraction", 0.05)
-    warmup_steps = int(total_steps * warmup_fraction)
+    warmup_steps = int(total_steps * config.warmup_fraction)
     scheduler = create_lr_scheduler(optimizer, warmup_steps, total_steps)
 
-    gradient_clip_norm = config.get("gradient_clip_norm", 1.0)
+    gradient_clip_norm = config.gradient_clip_norm
 
     # Mixed precision
     scaler = None
-    use_amp = config.get("use_amp", True) and device.type == "cuda"
+    use_amp = config.use_amp and device.type == "cuda"
     if use_amp:
         scaler = GradScaler()
         print("Mixed precision training enabled (float16)")
@@ -416,25 +414,9 @@ def train(config: dict) -> None:
 def main():
     parser = argparse.ArgumentParser(description="Train landmark correspondence classifier")
     parser.add_argument("--config", type=Path, required=True, help="YAML config file")
-    # Allow CLI overrides
-    parser.add_argument("--output_dir", type=Path)
-    parser.add_argument("--batch_size", type=int)
-    parser.add_argument("--num_epochs", type=int)
-    parser.add_argument("--lr", type=float)
     args = parser.parse_args()
 
-    with open(args.config) as f:
-        config = yaml.safe_load(f)
-
-    if args.output_dir:
-        config["output_dir"] = str(args.output_dir)
-    if args.batch_size:
-        config["batch_size"] = args.batch_size
-    if args.num_epochs:
-        config["num_epochs"] = args.num_epochs
-    if args.lr:
-        config["lr"] = args.lr
-
+    config = load_config(args.config)
     train(config)
 
 

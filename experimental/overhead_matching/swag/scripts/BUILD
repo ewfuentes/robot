@@ -825,6 +825,18 @@ py_binary(
   ]
 )
 
+py_library(
+  name = "correspondence_configs",
+  srcs = ["correspondence_configs.py"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+  ],
+  deps = [
+    requirement("msgspec"),
+    "//common/python:serialization",
+  ],
+)
+
 py_binary(
   name="train_landmark_correspondence",
   srcs=["train_landmark_correspondence.py"],
@@ -833,8 +845,8 @@ py_binary(
     requirement("tensorboard"),
     requirement("tqdm"),
     requirement("numpy"),
-    requirement("pyyaml"),
     requirement("scikit-learn"),
+    ":correspondence_configs",
     "//common/torch:load_torch_deps",
     "//experimental/overhead_matching/swag/data:landmark_correspondence_dataset",
     "//experimental/overhead_matching/swag/model:landmark_correspondence_model",

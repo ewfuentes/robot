@@ -26,11 +26,13 @@ from torch.utils.data import Dataset
 
 from experimental.overhead_matching.swag.model.landmark_correspondence_model import (
     BOOLEAN_KEYS,
+    BooleanValue,
     HOUSENUMBER_KEY,
     NUMERIC_KEYS,
     NUM_TAG_KEYS,
     PRIMARY_CATEGORY_KEYS,
     TAG_KEY_TO_IDX,
+    ValueType,
     encode_housenumber_value,
     encode_numeric_value,
     key_type,
@@ -102,7 +104,7 @@ class CorrespondencePair:
     osm_tags: dict[str, str]
     label: float  # 1.0 = positive, 0.0 = negative
     difficulty: str  # "positive", "hard", "easy"
-    uniqueness_score: int  # 1-5, from Gemini
+    uniqueness_score: int | None  # 1-5, from Gemini; None if not provided
     pano_id: str
 
 
@@ -136,7 +138,7 @@ def parse_jsonl_line(line_data: dict) -> list[CorrespondencePair]:
             continue
 
         pano_tags = set1_landmarks[set1_id]
-        uniqueness = match.get("uniqueness_score", 0)
+        uniqueness = match.get("uniqueness_score", None)
 
         # Positive pairs
         for set2_id in match.get("set_2_matches", []):
@@ -156,7 +158,9 @@ def parse_jsonl_line(line_data: dict) -> list[CorrespondencePair]:
             set2_id = neg.get("set_2_id")
             if set2_id is None or set2_id < 0 or set2_id >= len(set2_landmarks):
                 continue
-            difficulty = neg.get("difficulty", "easy")
+            difficulty = neg.get("difficulty")
+            if difficulty is None:
+                continue
             pairs.append(CorrespondencePair(
                 pano_tags=pano_tags,
                 osm_tags=set2_landmarks[set2_id],
@@ -210,8 +214,8 @@ def compute_cross_features(
       - Exact value match count / 10 (1)
       - Primary category match: building, amenity, highway, shop (4)
       - Text cosine similarity: max, mean, name-specific (3)
-      - Numeric proximity per numeric key (6: building:levels, levels, lanes,
-        maxspeed, maxheight, heritage)
+      - Numeric proximity per numeric key (6, sorted: building:levels, heritage,
+        lanes, levels, maxheight, maxspeed)
       - Housenumber range overlap (1)
     """
     pano_keys = set(pano_tags.keys())
@@ -244,7 +248,7 @@ def compute_cross_features(
         text_sims = []
         name_sim = 0.0
         for k in shared_keys:
-            if key_type(k) != "text":
+            if key_type(k) != ValueType.TEXT:
                 continue
             pv = pano_tags[k]
             ov = osm_tags[k]
@@ -262,12 +266,15 @@ def compute_cross_features(
         features.extend([0.0, 0.0, 0.0])
 
     # Numeric proximity (6 features, one per numeric key)
-    numeric_keys_ordered = ["building:levels", "levels", "lanes", "maxspeed", "maxheight", "heritage"]
+    numeric_keys_ordered = sorted(NUMERIC_KEYS)
     for nk in numeric_keys_ordered:
         if nk in pano_tags and nk in osm_tags:
-            parser = parse_maxheight if nk == "maxheight" else parse_numeric
-            a = parser(pano_tags[nk])
-            b = parser(osm_tags[nk])
+            if nk == "maxheight":
+                a = parse_maxheight(pano_tags[nk])
+                b = parse_maxheight(osm_tags[nk])
+            else:
+                a, _ = parse_numeric(pano_tags[nk], key=nk)
+                b, _ = parse_numeric(osm_tags[nk], key=nk)
             if not (math.isnan(a) or math.isnan(b)):
                 scale = 10.0 if nk in ("maxspeed",) else 2.0
                 features.append(math.exp(-abs(a - b) / scale))
@@ -306,9 +313,9 @@ def encode_tag_bundle(
 
     Returns dict with:
       key_indices: list[int]
-      value_types: list[int]  (0=bool, 1=numeric, 2=housenumber, 3=text)
-      boolean_values: list[int]  (0=true, 1=false, 2=unknown)
-      numeric_values: list[list[float]]  (each is 3-dim)
+      value_types: list[int]  (ValueType enum: 0=bool, 1=numeric, 2=housenumber, 3=text)
+      boolean_values: list[int]  (BooleanValue enum: 0=true, 1=false, 2=unknown)
+      numeric_values: list[list[float]]  (each is 4-dim)
       numeric_nan_mask: list[bool]
       housenumber_values: list[list[float]]  (each is 4-dim)
       housenumber_nan_mask: list[bool]
@@ -332,43 +339,57 @@ def encode_tag_bundle(
         key_indices.append(TAG_KEY_TO_IDX[k])
         kt = key_type(k)
 
-        if kt == "boolean":
-            value_types.append(0)
+        if kt == ValueType.BOOLEAN:
+            value_types.append(ValueType.BOOLEAN)
             bval = parse_boolean(v)
-            boolean_values.append(0 if bval > 0.7 else (1 if bval < 0.3 else 2))
-            numeric_values.append([0.0, 0.0, 0.0])
+            boolean_values.append(
+                BooleanValue.TRUE if bval > 0.7
+                else (BooleanValue.FALSE if bval < 0.3 else BooleanValue.UNKNOWN)
+            )
+            numeric_values.append([0.0, 0.0, 0.0, 0.0])
             numeric_nan_masks.append(False)
             housenumber_vals.append([0.0, 0.0, 0.0, 0.0])
             housenumber_nan_masks.append(False)
             text_embs.append(zero_text)
 
-        elif kt == "numeric":
-            value_types.append(1)
-            boolean_values.append(2)
-            parser = parse_maxheight if k == "maxheight" else parse_numeric
-            x = parser(v)
+        elif kt == ValueType.NUMERIC:
+            value_types.append(ValueType.NUMERIC)
+            boolean_values.append(BooleanValue.UNKNOWN)
+            if k == "maxheight":
+                x = parse_maxheight(v)
+                is_lower_bound = False
+            else:
+                x, is_lower_bound = parse_numeric(v, key=k)
             is_nan = math.isnan(x)
-            numeric_values.append(encode_numeric_value(x))
+            enc = encode_numeric_value(x, is_lower_bound)
+            assert all(abs(e) <= 30 for e in enc), (
+                f"Numeric encoding magnitude >30 for key={k!r}, value={v!r}: {enc}"
+            )
+            numeric_values.append(enc)
             numeric_nan_masks.append(is_nan)
             housenumber_vals.append([0.0, 0.0, 0.0, 0.0])
             housenumber_nan_masks.append(False)
             text_embs.append(zero_text)
 
-        elif kt == "housenumber":
-            value_types.append(2)
-            boolean_values.append(2)
-            numeric_values.append([0.0, 0.0, 0.0])
+        elif kt == ValueType.HOUSENUMBER:
+            value_types.append(ValueType.HOUSENUMBER)
+            boolean_values.append(BooleanValue.UNKNOWN)
+            numeric_values.append([0.0, 0.0, 0.0, 0.0])
             numeric_nan_masks.append(False)
             lo, hi = parse_housenumber(v)
             is_nan = math.isnan(lo) or math.isnan(hi)
-            housenumber_vals.append(encode_housenumber_value(lo, hi))
+            enc = encode_housenumber_value(lo, hi)
+            assert all(abs(e) <= 30 for e in enc), (
+                f"Housenumber encoding magnitude >30 for value={v!r}: {enc}"
+            )
+            housenumber_vals.append(enc)
             housenumber_nan_masks.append(is_nan)
             text_embs.append(zero_text)
 
         else:  # text
-            value_types.append(3)
-            boolean_values.append(2)
-            numeric_values.append([0.0, 0.0, 0.0])
+            value_types.append(ValueType.TEXT)
+            boolean_values.append(BooleanValue.UNKNOWN)
+            numeric_values.append([0.0, 0.0, 0.0, 0.0])
             numeric_nan_masks.append(False)
             housenumber_vals.append([0.0, 0.0, 0.0, 0.0])
             housenumber_nan_masks.append(False)
@@ -500,7 +521,7 @@ def _pad_encoded(encoded_list: list[dict], text_input_dim: int) -> dict[str, tor
     key_indices = torch.zeros(B, max_tags, dtype=torch.long)
     value_types = torch.zeros(B, max_tags, dtype=torch.long)
     boolean_values = torch.full((B, max_tags), 2, dtype=torch.long)  # default: unknown
-    numeric_values = torch.zeros(B, max_tags, 3)
+    numeric_values = torch.zeros(B, max_tags, 4)
     numeric_nan_mask = torch.zeros(B, max_tags, dtype=torch.bool)
     housenumber_values = torch.zeros(B, max_tags, 4)
     housenumber_nan_mask = torch.zeros(B, max_tags, dtype=torch.bool)
@@ -537,13 +558,25 @@ def _pad_encoded(encoded_list: list[dict], text_input_dim: int) -> dict[str, tor
 
 def collate_correspondence(samples: list[dict]) -> CorrespondenceBatch:
     """Collate function for DataLoader."""
-    text_input_dim = 768
-    # Infer dim from first sample with text embeddings
+    # Infer text embedding dim from first sample with a text embedding
+    text_input_dim = None
     for s in samples:
         for emb in s["pano"]["text_embeddings"]:
             if emb.shape[0] > 0:
                 text_input_dim = emb.shape[0]
                 break
+        if text_input_dim is not None:
+            break
+        for emb in s["osm"]["text_embeddings"]:
+            if emb.shape[0] > 0:
+                text_input_dim = emb.shape[0]
+                break
+        if text_input_dim is not None:
+            break
+    if text_input_dim is None:
+        raise ValueError(
+            "Cannot infer text_input_dim: no samples have text embeddings"
+        )
 
     pano_encoded = [s["pano"] for s in samples]
     osm_encoded = [s["osm"] for s in samples]
@@ -635,7 +668,7 @@ def scan_parse_failures(
 
                 kt = key_type(k)
 
-                if kt == "boolean":
+                if kt == ValueType.BOOLEAN:
                     parsed = parse_boolean(v)
                     if parsed == 0.5:
                         failures.append(ParseFailure(
@@ -643,16 +676,18 @@ def scan_parse_failures(
                             failure_reason="unknown_boolean",
                         ))
 
-                elif kt == "numeric":
-                    parser = parse_maxheight if k == "maxheight" else parse_numeric
-                    parsed = parser(v)
+                elif kt == ValueType.NUMERIC:
+                    if k == "maxheight":
+                        parsed = parse_maxheight(v)
+                    else:
+                        parsed, _ = parse_numeric(v, key=k)
                     if math.isnan(parsed):
                         failures.append(ParseFailure(
                             key=k, raw_value=v, key_type_str="numeric",
                             failure_reason="nan",
                         ))
 
-                elif kt == "housenumber":
+                elif kt == ValueType.HOUSENUMBER:
                     lo, hi = parse_housenumber(v)
                     if math.isnan(lo) or math.isnan(hi):
                         failures.append(ParseFailure(
@@ -660,7 +695,7 @@ def scan_parse_failures(
                             failure_reason="nan",
                         ))
 
-                elif kt == "text":
+                elif kt == ValueType.TEXT:
                     if text_embeddings is not None and v not in text_embeddings:
                         failures.append(ParseFailure(
                             key=k, raw_value=v, key_type_str="text",

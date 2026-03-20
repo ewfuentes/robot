@@ -35,6 +35,10 @@ class TestTagStringParsing:
         tags = parse_tag_string("name=Route 66=Historic")
         assert tags == {"name": "Route 66=Historic"}
 
+    def test_duplicate_keys_last_wins(self):
+        tags = parse_tag_string("building=yes; building=commercial")
+        assert tags == {"building": "commercial"}
+
 
 class TestPromptParsing:
     SAMPLE_PROMPT = """Set 1 (street-level observations):
@@ -141,11 +145,36 @@ Set 2 (map database):
 
 
 class TestCrossFeatures:
+    # Feature layout (17 total):
+    #  [0]     Jaccard similarity
+    #  [1]     shared keys / 10
+    #  [2]     exact matches / 10
+    #  [3..6]  primary category match: building, amenity, highway, shop
+    #  [7..9]  text sim: max, mean, name
+    #  [10..15] numeric proximity in sorted key order:
+    #           building:levels, heritage, lanes, levels, maxheight, maxspeed
+    #  [16]    housenumber overlap
+
     def test_feature_count(self):
         pano = {"building": "yes", "name": "Library"}
         osm = {"building": "yes", "name": "Library"}
         feats = compute_cross_features(pano, osm)
         assert len(feats) == 17
+
+    def test_numeric_feature_order(self):
+        """Numeric proximity features must follow sorted(NUMERIC_KEYS) order."""
+        # building:levels is at index 10, lanes at 12, maxspeed at 15
+        pano = {"building:levels": "3", "lanes": "2", "maxspeed": "30 mph"}
+        osm = {"building:levels": "3", "lanes": "2", "maxspeed": "30 mph"}
+        feats = compute_cross_features(pano, osm)
+        # Exact matches → exp(0) = 1.0
+        assert feats[10] == 1.0, "building:levels should be at index 10"
+        assert feats[12] == 1.0, "lanes should be at index 12"
+        assert feats[15] == 1.0, "maxspeed should be at index 15"
+        # heritage (11), levels (13), maxheight (14) are absent → 0.0
+        assert feats[11] == 0.0, "heritage absent"
+        assert feats[13] == 0.0, "levels absent"
+        assert feats[14] == 0.0, "maxheight absent"
 
     def test_identical_tags_high_similarity(self):
         tags = {"building": "yes", "name": "Library", "amenity": "library"}
