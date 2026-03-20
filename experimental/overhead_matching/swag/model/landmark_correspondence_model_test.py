@@ -1,6 +1,7 @@
 """Tests for landmark correspondence model."""
 
 import math
+import unittest
 
 import common.torch.load_torch_deps  # noqa: F401
 import torch
@@ -26,80 +27,80 @@ from experimental.overhead_matching.swag.model.landmark_correspondence_model imp
 )
 
 
-class TestValueParsing:
+class TestValueParsing(unittest.TestCase):
     def test_parse_boolean(self):
-        assert parse_boolean("yes") == 1.0
-        assert parse_boolean("no") == 0.0
-        assert parse_boolean("-1") == 0.0
-        assert parse_boolean("maybe") == 0.5
+        self.assertEqual(parse_boolean("yes"), 1.0)
+        self.assertEqual(parse_boolean("no"), 0.0)
+        self.assertEqual(parse_boolean("-1"), 0.0)
+        self.assertEqual(parse_boolean("maybe"), 0.5)
 
     def test_parse_numeric(self):
-        assert parse_numeric("5") == (5.0, False)
-        assert parse_numeric("55 mph") == (55.0, False)
+        self.assertEqual(parse_numeric("5"), (5.0, False))
+        self.assertEqual(parse_numeric("55 mph"), (55.0, False))
         # "20+" encodes as 20.0 with is_lower_bound=True
-        assert parse_numeric("20+") == (20.0, True)
+        self.assertEqual(parse_numeric("20+"), (20.0, True))
         # "high"/"multi" are key-aware: only resolve for level keys
-        assert parse_numeric("high", key="building:levels") == (20.0, False)
-        assert parse_numeric("multi", key="levels") == (5.0, False)
-        assert math.isnan(parse_numeric("high")[0])  # without key context → NaN
-        assert math.isnan(parse_numeric("multi")[0])
-        assert math.isnan(parse_numeric("unknown")[0])
+        self.assertEqual(parse_numeric("high", key="building:levels"), (20.0, False))
+        self.assertEqual(parse_numeric("multi", key="levels"), (5.0, False))
+        self.assertTrue(math.isnan(parse_numeric("high")[0]))  # without key context → NaN
+        self.assertTrue(math.isnan(parse_numeric("multi")[0]))
+        self.assertTrue(math.isnan(parse_numeric("unknown")[0]))
 
     def test_parse_maxheight(self):
-        assert abs(parse_maxheight("13'6\"") - 13.5) < 0.01
-        assert parse_maxheight("2") == 2.0
-        assert math.isnan(parse_maxheight("default"))
+        self.assertAlmostEqual(parse_maxheight("13'6\""), 13.5, places=2)
+        self.assertEqual(parse_maxheight("2"), 2.0)
+        self.assertTrue(math.isnan(parse_maxheight("default")))
 
     def test_parse_housenumber(self):
-        assert parse_housenumber("665-667") == (665.0, 667.0)
-        assert parse_housenumber("1858") == (1858.0, 1858.0)
+        self.assertEqual(parse_housenumber("665-667"), (665.0, 667.0))
+        self.assertEqual(parse_housenumber("1858"), (1858.0, 1858.0))
         lo, hi = parse_housenumber("abc")
-        assert math.isnan(lo) and math.isnan(hi)
+        self.assertTrue(math.isnan(lo) and math.isnan(hi))
 
     def test_encode_numeric(self):
         enc = encode_numeric_value(100.0)
-        assert len(enc) == 4
-        assert abs(enc[0] - math.log1p(100)) < 1e-6
-        assert abs(enc[1] - 0.1) < 1e-6
-        assert enc[2] == 1.0  # presence flag
-        assert enc[3] == 0.0  # not a lower bound
+        self.assertEqual(len(enc), 4)
+        self.assertAlmostEqual(enc[0], math.log1p(100), places=6)
+        self.assertAlmostEqual(enc[1], 0.1, places=6)
+        self.assertEqual(enc[2], 1.0)  # presence flag
+        self.assertEqual(enc[3], 0.0)  # not a lower bound
 
     def test_encode_numeric_lower_bound(self):
         enc = encode_numeric_value(20.0, is_lower_bound=True)
-        assert len(enc) == 4
-        assert enc[3] == 1.0  # is_lower_bound flag
+        self.assertEqual(len(enc), 4)
+        self.assertEqual(enc[3], 1.0)  # is_lower_bound flag
 
     def test_encode_numeric_nan(self):
         enc = encode_numeric_value(float("nan"))
-        assert enc == [0.0, 0.0, 0.0, 0.0]
+        self.assertEqual(enc, [0.0, 0.0, 0.0, 0.0])
 
     def test_encode_housenumber(self):
         enc = encode_housenumber_value(665.0, 667.0)
-        assert len(enc) == 4
+        self.assertEqual(len(enc), 4)
 
 
-class TestKeyType:
+class TestKeyType(unittest.TestCase):
     def test_boolean_keys(self):
         for k in BOOLEAN_KEYS:
-            assert key_type(k) == ValueType.BOOLEAN
+            self.assertEqual(key_type(k), ValueType.BOOLEAN)
 
     def test_numeric_keys(self):
         for k in NUMERIC_KEYS:
-            assert key_type(k) == ValueType.NUMERIC
+            self.assertEqual(key_type(k), ValueType.NUMERIC)
 
     def test_housenumber(self):
-        assert key_type("addr:housenumber") == ValueType.HOUSENUMBER
+        self.assertEqual(key_type("addr:housenumber"), ValueType.HOUSENUMBER)
 
     def test_text_keys(self):
-        assert key_type("name") == ValueType.TEXT
-        assert key_type("building") == ValueType.TEXT
-        assert key_type("amenity") == ValueType.TEXT
+        self.assertEqual(key_type("name"), ValueType.TEXT)
+        self.assertEqual(key_type("building"), ValueType.TEXT)
+        self.assertEqual(key_type("amenity"), ValueType.TEXT)
 
     def test_all_tags_have_index(self):
-        assert NUM_TAG_KEYS > 100  # Should be ~112 keys
+        self.assertGreater(NUM_TAG_KEYS, 100)  # Should be ~112 keys
 
 
-class TestTagBundleEncoder:
+class TestTagBundleEncoder(unittest.TestCase):
     def _make_dummy_input(self, batch_size=4, max_tags=5, text_dim=768):
         return dict(
             key_indices=torch.randint(0, NUM_TAG_KEYS, (batch_size, max_tags)),
@@ -118,7 +119,7 @@ class TestTagBundleEncoder:
         encoder = TagBundleEncoder(config)
         inputs = self._make_dummy_input()
         output = encoder(**inputs)
-        assert output.shape == (4, config.repr_dim)
+        self.assertEqual(output.shape, (4, config.repr_dim))
 
     def test_masked_tags_dont_affect_output(self):
         config = TagBundleEncoderConfig()
@@ -142,7 +143,7 @@ class TestTagBundleEncoder:
         out2 = encoder(**inputs2)
         # Max pool may differ due to padding, but mean pool should be close
         # Just verify shapes match
-        assert out1.shape == out2.shape
+        self.assertEqual(out1.shape, out2.shape)
 
     def test_gradient_flow(self):
         config = TagBundleEncoderConfig()
@@ -152,12 +153,14 @@ class TestTagBundleEncoder:
         loss = output.sum()
         loss.backward()
 
+        # absent_embedding is only used for absent tags, which this test doesn't exercise
+        skip = {"absent_embedding"}
         for name, param in encoder.named_parameters():
-            if param.requires_grad:
-                assert param.grad is not None, f"No gradient for {name}"
+            if param.requires_grad and name not in skip:
+                self.assertIsNotNone(param.grad, f"No gradient for {name}")
 
 
-class TestCorrespondenceClassifier:
+class TestCorrespondenceClassifier(unittest.TestCase):
     def _make_dummy_batch(self, batch_size=4, max_tags=5, text_dim=768, num_cross=17):
         def make_side():
             return dict(
@@ -185,7 +188,7 @@ class TestCorrespondenceClassifier:
         model = CorrespondenceClassifier(config)
         batch = self._make_dummy_batch()
         output = model(**batch)
-        assert output.shape == (4, 1)
+        self.assertEqual(output.shape, (4, 1))
 
     def test_gradient_flow(self):
         config = CorrespondenceClassifierConfig()
@@ -201,7 +204,7 @@ class TestCorrespondenceClassifier:
             if "encoder" in name and param.requires_grad and param.grad is not None:
                 has_encoder_grad = True
                 break
-        assert has_encoder_grad, "Encoder should receive gradients"
+        self.assertTrue(has_encoder_grad, "Encoder should receive gradients")
 
     def test_output_is_logit(self):
         """Output should be unbounded logits (not probabilities)."""
@@ -211,4 +214,8 @@ class TestCorrespondenceClassifier:
         with torch.no_grad():
             output = model(**batch).squeeze(-1)
         # Logits can be any real number, but shouldn't all be identical
-        assert output.std() > 0, "Logits should have some variance"
+        self.assertGreater(output.std(), 0, "Logits should have some variance")
+
+
+if __name__ == "__main__":
+    unittest.main()

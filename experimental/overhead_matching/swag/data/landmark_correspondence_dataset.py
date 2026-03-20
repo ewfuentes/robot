@@ -201,18 +201,23 @@ def load_pairs_from_directory(data_dir: Path) -> list[CorrespondencePair]:
 # Cross-pair feature computation
 # ---------------------------------------------------------------------------
 
+NUM_CROSS_FEATURES_WITH_CATEGORY = 17
+NUM_CROSS_FEATURES_WITHOUT_CATEGORY = 13
+
+
 def compute_cross_features(
     pano_tags: dict[str, str],
     osm_tags: dict[str, str],
     text_embeddings: dict[str, torch.Tensor] | None = None,
+    include_category_features: bool = True,
 ) -> list[float]:
     """Compute cross-pair features between two tag bundles.
 
-    Features (17 total):
+    Features (17 with category, 13 without):
       - Key Jaccard similarity (1)
       - Number of shared keys / 10 (1)
       - Exact value match count / 10 (1)
-      - Primary category match: building, amenity, highway, shop (4)
+      - Primary category match: building, amenity, highway, shop (4) [optional]
       - Text cosine similarity: max, mean, name-specific (3)
       - Numeric proximity per numeric key (6, sorted: building:levels, heritage,
         lanes, levels, maxheight, maxspeed)
@@ -236,12 +241,13 @@ def compute_cross_features(
     exact_matches = sum(1 for k in shared_keys if pano_tags[k] == osm_tags[k])
     features.append(exact_matches / 10.0)
 
-    # Primary category matches (4 binary features)
-    for cat_key in PRIMARY_CATEGORY_KEYS:
-        if cat_key in pano_tags and cat_key in osm_tags:
-            features.append(1.0 if pano_tags[cat_key] == osm_tags[cat_key] else 0.0)
-        else:
-            features.append(0.0)
+    # Primary category matches (4 binary features, optional)
+    if include_category_features:
+        for cat_key in PRIMARY_CATEGORY_KEYS:
+            if cat_key in pano_tags and cat_key in osm_tags:
+                features.append(1.0 if pano_tags[cat_key] == osm_tags[cat_key] else 0.0)
+            else:
+                features.append(0.0)
 
     # Text cosine similarities (3 features)
     if text_embeddings is not None:
@@ -296,7 +302,8 @@ def compute_cross_features(
     else:
         features.append(0.0)
 
-    assert len(features) == 17, f"Expected 17 cross features, got {len(features)}"
+    expected = NUM_CROSS_FEATURES_WITH_CATEGORY if include_category_features else NUM_CROSS_FEATURES_WITHOUT_CATEGORY
+    assert len(features) == expected, f"Expected {expected} cross features, got {len(features)}"
     return features
 
 
@@ -393,10 +400,17 @@ def encode_tag_bundle(
             numeric_nan_masks.append(False)
             housenumber_vals.append([0.0, 0.0, 0.0, 0.0])
             housenumber_nan_masks.append(False)
-            if text_embeddings is not None and v in text_embeddings:
-                text_embs.append(text_embeddings[v])
-            else:
-                text_embs.append(zero_text)
+            if text_embeddings is None:
+                raise ValueError(
+                    f"text_embeddings is required but not provided "
+                    f"(key={k!r}, value={v!r})"
+                )
+            if v not in text_embeddings:
+                raise KeyError(
+                    f"Text value {v!r} for key {k!r} not found in "
+                    f"text_embeddings ({len(text_embeddings)} entries)"
+                )
+            text_embs.append(text_embeddings[v])
 
     return {
         "key_indices": key_indices,
@@ -423,6 +437,7 @@ class LandmarkCorrespondenceDataset(Dataset):
         text_embeddings: dict[str, torch.Tensor] | None = None,
         text_input_dim: int = 768,
         include_difficulties: tuple[str, ...] = ("positive", "easy"),
+        include_category_features: bool = True,
     ):
         """Initialize dataset.
 
@@ -431,10 +446,12 @@ class LandmarkCorrespondenceDataset(Dataset):
             text_embeddings: Pre-computed {value_string: tensor} for text keys
             text_input_dim: Dimension of pre-computed text embeddings
             include_difficulties: Which pair types to include
+            include_category_features: Whether to include primary category match features
         """
         self.pairs = [p for p in pairs if p.difficulty in include_difficulties]
         self.text_embeddings = text_embeddings
         self.text_input_dim = text_input_dim
+        self.include_category_features = include_category_features
 
     def __len__(self) -> int:
         return len(self.pairs)
@@ -448,7 +465,8 @@ class LandmarkCorrespondenceDataset(Dataset):
             pair.osm_tags, self.text_embeddings, self.text_input_dim
         )
         cross_feats = compute_cross_features(
-            pair.pano_tags, pair.osm_tags, self.text_embeddings
+            pair.pano_tags, pair.osm_tags, self.text_embeddings,
+            self.include_category_features,
         )
         return {
             "pano": pano_encoded,

@@ -48,6 +48,8 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from experimental.overhead_matching.swag.data.landmark_correspondence_dataset import (
+    NUM_CROSS_FEATURES_WITH_CATEGORY,
+    NUM_CROSS_FEATURES_WITHOUT_CATEGORY,
     PARSE_REPORT_PATH,
     CorrespondenceBatch,
     LandmarkCorrespondenceDataset,
@@ -306,11 +308,14 @@ def train(config: CorrespondenceTrainConfig) -> None:
             PARSE_REPORT_PATH.unlink()
         print("  No parse failures found")
 
+    include_category = config.include_category_features
     train_dataset = LandmarkCorrespondenceDataset(
         train_pairs, text_embeddings, text_input_dim, include_difficulties,
+        include_category_features=include_category,
     )
     val_dataset = LandmarkCorrespondenceDataset(
         val_pairs, text_embeddings, text_input_dim, include_difficulties,
+        include_category_features=include_category,
     )
     print(f"After filtering: train={len(train_dataset):,}, val={len(val_dataset):,}")
 
@@ -332,10 +337,12 @@ def train(config: CorrespondenceTrainConfig) -> None:
         text_input_dim=text_input_dim,
         text_proj_dim=config.encoder.text_proj_dim,
     )
+    num_cross = NUM_CROSS_FEATURES_WITH_CATEGORY if include_category else NUM_CROSS_FEATURES_WITHOUT_CATEGORY
     classifier_config = CorrespondenceClassifierConfig(
         encoder=encoder_config,
         mlp_hidden_dim=config.classifier.mlp_hidden_dim,
         dropout=config.classifier.dropout,
+        num_cross_features=num_cross,
     )
     model = CorrespondenceClassifier(classifier_config).to(device)
     num_params = sum(p.numel() for p in model.parameters())
