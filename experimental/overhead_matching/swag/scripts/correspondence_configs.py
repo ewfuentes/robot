@@ -35,6 +35,7 @@ class CorrespondenceTrainConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     seed: int
     encoder: CorrespondenceEncoderConfig
     classifier: CorrespondenceClassifierMlpConfig
+    cosine_schedule: bool = False
 
 
 def _enc_hook(obj):

@@ -32,6 +32,7 @@ from experimental.overhead_matching.swag.data.landmark_correspondence_dataset im
     parse_prompt_landmarks,
 )
 from experimental.overhead_matching.swag.model.landmark_correspondence_model import (
+    ValueType,
     key_type,
 )
 
@@ -67,7 +68,7 @@ def collect_unique_text_values(data_dir: Path) -> dict[str, int]:
                     for landmarks in [set1, set2]:
                         for tags in landmarks:
                             for k, v in tags.items():
-                                if key_type(k) == "text":
+                                if key_type(k) == ValueType.TEXT:
                                     value_counts[v] += 1
                 except (json.JSONDecodeError, KeyError, ValueError):
                     continue

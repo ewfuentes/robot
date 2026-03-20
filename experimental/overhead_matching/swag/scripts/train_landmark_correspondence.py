@@ -31,6 +31,7 @@ Config format (YAML):
 """
 
 import argparse
+import math
 import random
 from pathlib import Path
 
@@ -79,13 +80,15 @@ def setup_reproducibility(seed: int) -> None:
 
 def create_lr_scheduler(
     optimizer: AdamW, warmup_steps: int, total_steps: int,
+    cosine: bool = False,
 ) -> LambdaLR:
     def lr_lambda(step: int) -> float:
         if step < warmup_steps:
             return step / max(warmup_steps, 1)
-        remaining = total_steps - step
-        total_decay = total_steps - warmup_steps
-        return max(0.0, remaining / total_decay)
+        progress = (step - warmup_steps) / max(total_steps - warmup_steps, 1)
+        if cosine:
+            return 0.5 * (1.0 + math.cos(math.pi * progress))
+        return max(0.0, 1.0 - progress)
     return LambdaLR(optimizer, lr_lambda)
 
 
@@ -266,6 +269,11 @@ def train(config: CorrespondenceTrainConfig) -> None:
     emb_path = config.text_embeddings_path
     print(f"Loading text embeddings from {emb_path}...")
     text_embeddings = load_text_embeddings(emb_path)
+    if not text_embeddings:
+        raise RuntimeError(
+            f"Text embeddings file is empty: {emb_path}. "
+            f"Re-run precompute_value_embeddings.py."
+        )
     print(f"Loaded {len(text_embeddings):,} text embeddings")
     # Infer dim from first embedding
     first_emb = next(iter(text_embeddings.values()))
@@ -313,6 +321,11 @@ def train(config: CorrespondenceTrainConfig) -> None:
         val_pairs, text_embeddings, text_input_dim, include_difficulties,
     )
     print(f"After filtering: train={len(train_dataset):,}, val={len(val_dataset):,}")
+    if len(train_dataset) == 0:
+        raise RuntimeError(
+            f"No training pairs after filtering for {include_difficulties}. "
+            f"Check data_dir={data_dir} and train_city={train_city}."
+        )
 
     batch_size = config.batch_size
     num_workers = config.num_workers
@@ -347,7 +360,7 @@ def train(config: CorrespondenceTrainConfig) -> None:
     num_epochs = config.num_epochs
     total_steps = len(train_loader) * num_epochs
     warmup_steps = int(total_steps * config.warmup_fraction)
-    scheduler = create_lr_scheduler(optimizer, warmup_steps, total_steps)
+    scheduler = create_lr_scheduler(optimizer, warmup_steps, total_steps, cosine=config.cosine_schedule)
 
     gradient_clip_norm = config.gradient_clip_norm
 
