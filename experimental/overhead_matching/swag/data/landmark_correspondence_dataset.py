@@ -747,9 +747,13 @@ def write_parse_report(
     # Summary
     lines.append("SUMMARY BY TYPE")
     lines.append("-" * 40)
+    _type_name_to_enum = {
+        "boolean": ValueType.BOOLEAN, "numeric": ValueType.NUMERIC,
+        "housenumber": ValueType.HOUSENUMBER, "text": ValueType.TEXT,
+    }
     for kt in ["boolean", "numeric", "housenumber", "text"]:
         n_fail = len(by_type.get(kt, []))
-        n_total = type_counts.get(kt, 0)
+        n_total = type_counts.get(_type_name_to_enum[kt], 0)
         pct = (n_fail / n_total * 100) if n_total > 0 else 0
         lines.append(f"  {kt:15s}: {n_fail:5d} / {n_total:5d} unique values failed ({pct:.1f}%)")
     lines.append(f"  {'TOTAL':15s}: {len(failures):5d} / {sum(type_counts.values()):5d}")
