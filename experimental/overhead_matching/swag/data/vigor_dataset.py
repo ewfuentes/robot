@@ -132,9 +132,19 @@ def series_to_dict_with_index(series: pd.Series, index_key: str = "index"):
     return d
 
 
+def _deduplicate_paths(paths: list[Path]) -> list[Path]:
+    """If both image and .pt files exist, prefer .pt files."""
+    by_stem = {}
+    for p in paths:
+        stem = p.stem
+        if stem not in by_stem or p.suffix == '.pt':
+            by_stem[stem] = p
+    return sorted(by_stem.values())
+
+
 def load_satellite_metadata(path: Path, zoom_level: int):
     out = []
-    for p in sorted(list(path.iterdir())):
+    for p in _deduplicate_paths(list(path.iterdir())):
         _, lat, lon = p.stem.split("_")
         lat = float(lat)
         lon = float(lon)
@@ -145,7 +155,7 @@ def load_satellite_metadata(path: Path, zoom_level: int):
 
 def load_panorama_metadata(path: Path, zoom_level: int):
     out = []
-    for p in sorted(list(path.iterdir())):
+    for p in _deduplicate_paths(list(path.iterdir())):
         pano_id, lat, lon, _ = p.stem.split(",")
         lat = float(lat)
         lon = float(lon)
@@ -316,7 +326,17 @@ def compute_neighboring_panoramas(pano_kdtree, max_dist):
     return neighbors_by_pano_idx
 
 
+ORIGINAL_SATELLITE_SIZE = (640, 640)
+ORIGINAL_PANORAMA_SIZE = (1024, 2048)
+
+
 def load_image(path: Path, resize_shape: None | tuple[int, int]):
+    # Check for pre-decoded tensor file (avoids PNG/JPEG decode + resize)
+    pt_path = path.with_suffix('.pt')
+    if pt_path.exists():
+        img = torch.load(pt_path, weights_only=True)
+        img = tv.transforms.functional.convert_image_dtype(img)
+        return img, img.shape[1:]
     img = tv.io.read_image(path, mode=tv.io.ImageReadMode.RGB)
     original_shape = img.shape[1:]
     img = tv.transforms.functional.convert_image_dtype(img)
@@ -499,8 +519,8 @@ class VigorDataset(torch.utils.data.Dataset):
             self._landmark_metadata = None
         log_progress(f"Concatenated metadata: {len(self._satellite_metadata)} sats, {len(self._panorama_metadata)} panos, {len(self._landmark_metadata) if self._landmark_metadata is not None else 'NOT_LOADED'} landmarks")
 
-        _, self._original_satellite_patch_size = load_image(self._satellite_metadata.iloc[0].path, None)
-        _, self._original_panorama_size = load_image(self._panorama_metadata.iloc[0].path, None)
+        self._original_satellite_patch_size = ORIGINAL_SATELLITE_SIZE
+        self._original_panorama_size = ORIGINAL_PANORAMA_SIZE
 
         self._satellite_pixel_kdtree = cKDTree(self._satellite_metadata.loc[:, ["web_mercator_x", "web_mercator_y"]].values)
         self._panorama_kdtree = cKDTree(self._panorama_metadata.loc[:, ["lat", "lon"]].values)

@@ -1,11 +1,14 @@
 #!/bin/bash
 set -e
+DEBIAN_FRONTEND=noninteractive apt install -y python3-pip
 pip install tensorpool || pip install --break-system-packages tensorpool
-tp cluster attach $(hostname) s-x9o8dimbyx --no-input
+ls /mnt/flex-s-x9o8dimbyx || tp cluster attach $(hostname) s-x9o8dimbyx --wait
 ./setup.sh
 mkdir -p /data/overhead_matching/{datasets,training_outputs}/
 # copy datasets (took ~15 minutes)
 rclone copy /mnt/flex-s-x9o8dimbyx/datasets/ /data/overhead_matching/datasets/ --transfers 8 --checkers 8 --ignore-checksum --progress
+mkdir -p ~/.cache/torch
+rclone copy /mnt/flex-s-x9o8dimbyx/torch/ ~/.cache/torch/ --transfers 8 --checkers 8 --ignore-checksum --progress
 
 # extract any tar.gz files (parallel)
 BASE_DIR="${1:-/data/overhead_matching/datasets}"

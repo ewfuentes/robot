@@ -391,12 +391,14 @@ class TransformerAggregator(torch.nn.Module):
                 nhead=config.num_attention_heads,
                 dim_feedforward=config.hidden_dim,
                 dropout=config.dropout_frac,
-                batch_first=True)
+                batch_first=True,
+                norm_first=True)
 
         self._encoder = torch.nn.TransformerEncoder(
                 transformer_layer,
                 enable_nested_tensor=False,
-                num_layers=config.num_transformer_layers)
+                num_layers=config.num_transformer_layers,
+                norm=torch.nn.LayerNorm(output_dim))
         # see warning at https://docs.pytorch.org/docs/stable/generated/torch.nn.TransformerEncoder.html
         init_xavier(self._encoder)
 

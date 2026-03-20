@@ -248,6 +248,7 @@ def create_training_components(dataset,
     worker_seed = generator.initial_seed() if generator is not None else None
     dataloader = vigor_dataset.get_dataloader(
         dataset, batch_sampler=miner, num_workers=num_workers, persistent_workers=(num_workers > 0),
+        pin_memory=True, prefetch_factor=2,
         worker_seed=worker_seed)
 
     # Create optimizer
@@ -273,10 +274,10 @@ def compute_forward_pass_and_loss(batch,
 
     with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
         panorama_embeddings, pano_debug = panorama_model(
-            panorama_model.model_input_from_batch(batch).to("cuda"),
+            panorama_model.model_input_from_batch(batch).to("cuda", non_blocking=True),
             pano_dropout_scheduler)
         sat_embeddings, sat_debug = satellite_model(
-            satellite_model.model_input_from_batch(batch).to("cuda"),
+            satellite_model.model_input_from_batch(batch).to("cuda", non_blocking=True),
             sat_dropout_scheduler)
 
         similarity = distance_model(
@@ -402,7 +403,7 @@ def train(config: TrainConfig,
         schedulers=[warmup_lr_scheduler, step_lr_scheduler],
         milestones=[opt_config.lr_schedule.num_warmup_epochs])
 
-    grad_scaler = torch.amp.GradScaler()
+    grad_scaler = torch.amp.GradScaler(enabled=False)
 
     torch.set_printoptions(linewidth=200)
 
@@ -439,7 +440,10 @@ def train(config: TrainConfig,
             pano_dropout_scheduler.set_epoch(epoch_idx)
         if sat_dropout_scheduler is not None:
             sat_dropout_scheduler.set_epoch(epoch_idx)
+        _batch_timer = time.time()
         for batch_idx, batch in enumerate(dataloader):
+            _t0 = time.time()
+            _data_wait = _t0 - _batch_timer
             match pairing_type:
                 case PairingType.PAIRS:
                     pairing_data = create_pairs(
@@ -460,6 +464,7 @@ def train(config: TrainConfig,
                     )
                 case _:
                     raise RuntimeError(f"Pairing type not recongnized, {pairing_type}")
+            _t1 = time.time()
             opt.zero_grad()
 
             # Use extracted function for forward pass and loss
@@ -472,6 +477,8 @@ def train(config: TrainConfig,
                 loss_functions=loss_functions,
                 pano_dropout_scheduler=pano_dropout_scheduler,
                 sat_dropout_scheduler=sat_dropout_scheduler)
+            torch.cuda.synchronize()
+            _t2 = time.time()
 
             # Capture model inputs and extractor outputs if inspector is enabled
             if inspector is not None and inspector.should_capture(total_batches):
@@ -493,6 +500,8 @@ def train(config: TrainConfig,
             grad_scaler.scale(loss_dict["loss"]).backward()
             grad_scaler.step(opt)
             grad_scaler.update()
+            torch.cuda.synchronize()
+            _t3 = time.time()
             if torch.isnan(loss_dict["loss"]):
                 raise RuntimeError("Got NaN loss!")
             # perform checks that all parameters we expect to update have gradients for the first set of batches
@@ -505,12 +514,14 @@ def train(config: TrainConfig,
                         if param.grad is not None and (torch.any(torch.isinf(param.grad)) or torch.any(torch.isnan(param.grad))):
                             raise RuntimeError(
                                 f"INF/NaN found in parameter gradient: {name} in model {model_name} at batch {total_batches}")
+            _t4 = time.time()
 
             log_gradient_stats(writer, panorama_model, "panorama", total_batches)
             log_gradient_stats(writer, satellite_model, "satellite", total_batches)
             log_embedding_stats(writer, "pano", panorama_embeddings.detach(), total_batches)
             log_embedding_stats(writer, "sat", satellite_embeddings.detach(), total_batches)
             log_feature_counts(writer, debug_dict['pano'], debug_dict['sat'], total_batches)
+            _t5 = time.time()
 
             # Hard Negative Mining
             if use_hard_negative_mining:
@@ -518,6 +529,11 @@ def train(config: TrainConfig,
                     panorama_embeddings=panorama_embeddings.detach(),
                     satellite_embeddings=satellite_embeddings.detach(),
                     batch=batch)
+            _t6 = time.time()
+
+            if batch_idx < 20:
+                print(f"[TIMING] batch {batch_idx}: data_wait={_data_wait*1000:.0f}ms pairing={(_t1-_t0)*1000:.0f}ms forward={(_t2-_t1)*1000:.0f}ms backward={(_t3-_t2)*1000:.0f}ms grad_check={(_t4-_t3)*1000:.0f}ms logging={(_t5-_t4)*1000:.0f}ms miner={(_t6-_t5)*1000:.0f}ms total={(_t6-_batch_timer)*1000:.0f}ms", flush=True)
+            _batch_timer = time.time()
 
             # Logging
             log_batch_metrics(
@@ -554,6 +570,9 @@ def train(config: TrainConfig,
                     miner.consume(None, miner_satellite_embeddings, batch)
 
         # compute validation set metrics
+        satellite_model.eval()
+        panorama_model.eval()
+        distance_model.eval()
         debug_log(f"Computing validation metrics for epoch {epoch_idx}")
         validation_metrics = compute_validation_metrics(
             sat_model=satellite_model,
@@ -566,6 +585,9 @@ def train(config: TrainConfig,
             validation_metrics=validation_metrics,
             epoch_idx=epoch_idx,
             quiet=quiet)
+        satellite_model.train()
+        panorama_model.train()
+        distance_model.train()
 
         # Check if this is the best model
         is_best = False

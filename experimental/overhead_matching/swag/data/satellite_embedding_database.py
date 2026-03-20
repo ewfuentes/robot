@@ -13,7 +13,7 @@ def build_embeddings_from_model(model: torch.nn.Module,
                                 verbose: bool = True) -> torch.Tensor:
     """Embeddings will match the order of the dataloader"""
 
-    model.to(device)
+    model = model.to(device)
     model.eval()
     inf_results = []
     with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
