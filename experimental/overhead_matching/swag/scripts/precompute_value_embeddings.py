@@ -1,14 +1,24 @@
 #!/usr/bin/env python3
-"""Pre-compute text embeddings for all unique tag values in the JSONL data.
+"""Pre-compute text embeddings for all unique tag values.
 
-Scans all JSONL response files, collects unique value strings for text-type keys,
-embeds them via Vertex AI text-embedding-005, and saves as pickle:
-  {value_string: numpy_array (768-dim)}
+Two modes:
+  1. --data_dir: Scan JSONL batch response files (original mode)
+  2. --feather_dirs + --pano_v2_base: Scan .feather landmark files and pano_v2 pickles
+
+Use --base_embeddings to load an existing embeddings file and only embed new values.
 
 Usage:
-    bazel run //experimental/overhead_matching/swag/scripts:precompute_value_embeddings -- \
-        --data_dir /data/overhead_matching/datasets/landmark_correspondence/neg_v3_full \
-        --output /data/overhead_matching/datasets/landmark_correspondence/text_embeddings.pkl
+    # From JSONL responses (original):
+    bazel run ...precompute_value_embeddings -- \
+        --data_dir /data/.../landmark_correspondence/chicago_seattle_neg_v3_full \
+        --output /data/.../text_embeddings.pkl
+
+    # From feather + pano_v2 (expand to new cities):
+    bazel run ...precompute_value_embeddings -- \
+        --feather_dirs /data/.../VIGOR/mapillary/MiamiBeach /data/.../VIGOR/NewYork \
+        --pano_v2_base /data/.../semantic_landmark_embeddings/mapillary \
+        --base_embeddings /data/.../eval_text_embeddings.pkl \
+        --output /data/.../eval_text_embeddings_expanded.pkl
 
 Prerequisites:
     export GOOGLE_CLOUD_PROJECT=your-project-id
@@ -26,14 +36,22 @@ from pathlib import Path
 import common.torch.load_torch_deps  # noqa: F401 - Must import before torch
 
 import numpy as np
+import pandas as pd
 from tqdm import tqdm
 
 from experimental.overhead_matching.swag.data.landmark_correspondence_dataset import (
     parse_prompt_landmarks,
 )
 from experimental.overhead_matching.swag.model.landmark_correspondence_model import (
+    TAG_KEY_TO_IDX,
     ValueType,
     key_type,
+)
+from experimental.overhead_matching.swag.model.additional_panorama_extractors import (
+    extract_panorama_data_across_cities,
+)
+from experimental.overhead_matching.swag.scripts.landmark_pairing_cli import (
+    extract_tags_from_pano_data,
 )
 
 
@@ -78,6 +96,54 @@ def collect_unique_text_values(data_dir: Path) -> dict[str, int]:
     print(f"Scanned {total_lines} lines from {len(jsonl_files)} files")
     if skipped:
         print(f"WARNING: Skipped {skipped} unparseable lines")
+    return value_counts
+
+
+def collect_text_values_from_feather(feather_dirs: list[Path]) -> Counter:
+    """Collect text-type tag values from OSM landmark .feather files.
+
+    Scans the pruned_props column (frozenset of (key, value) tuples).
+    """
+    value_counts: Counter = Counter()
+    for city_dir in feather_dirs:
+        landmarks_dir = city_dir / "landmarks"
+        if not landmarks_dir.exists():
+            print(f"  Warning: No landmarks/ dir in {city_dir}")
+            continue
+        for feather_path in landmarks_dir.glob("*.feather"):
+            df = pd.read_feather(feather_path)
+            if "pruned_props" not in df.columns:
+                # Raw feather without pruned_props — prune on the fly
+                from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
+                    prune_landmark,
+                )
+                df["pruned_props"] = df.apply(
+                    lambda row: prune_landmark(row.dropna().to_dict()), axis=1)
+            n_lm = 0
+            for props in df["pruned_props"]:
+                if not props:
+                    continue
+                n_lm += 1
+                for k, v in props:
+                    if k in TAG_KEY_TO_IDX and key_type(k) == ValueType.TEXT:
+                        value_counts[v] += 1
+            print(f"  {feather_path.name}: {n_lm} landmarks, "
+                  f"{len(value_counts)} unique text values so far")
+    return value_counts
+
+
+def collect_text_values_from_pano_v2(pano_v2_base: Path) -> Counter:
+    """Collect text-type tag values from pano_v2 landmark pickles."""
+    value_counts: Counter = Counter()
+    pano_tags = extract_panorama_data_across_cities(
+        pano_v2_base, extract_tags_from_pano_data,
+    )
+    for pano_id, landmarks in pano_tags.items():
+        for lm in landmarks:
+            for k, v in lm["tags"]:
+                if k in TAG_KEY_TO_IDX and key_type(k) == ValueType.TEXT:
+                    value_counts[v] += 1
+    print(f"  {len(pano_tags)} panoramas, {len(value_counts)} unique text values")
     return value_counts
 
 
@@ -128,8 +194,20 @@ def embed_texts_vertex(
 def main():
     parser = argparse.ArgumentParser(description="Pre-compute text embeddings for tag values")
     parser.add_argument(
-        "--data_dir", type=Path, required=True,
-        help="Root directory with {Chicago,Seattle}/responses/ subdirs",
+        "--data_dir", type=Path, default=None,
+        help="Root directory with JSONL responses (original mode)",
+    )
+    parser.add_argument(
+        "--feather_dirs", type=Path, nargs="+", default=None,
+        help="VIGOR city dirs containing landmarks/*.feather files",
+    )
+    parser.add_argument(
+        "--pano_v2_base", type=Path, default=None,
+        help="Base path for pano_v2 embeddings (contains city subdirs)",
+    )
+    parser.add_argument(
+        "--base_embeddings", type=Path, default=None,
+        help="Existing embeddings pickle to merge with (only new values are embedded)",
     )
     parser.add_argument(
         "--output", type=Path, required=True,
@@ -153,38 +231,78 @@ def main():
     )
     args = parser.parse_args()
 
-    # Collect unique values
-    value_counts = collect_unique_text_values(args.data_dir)
-    print(f"\nUnique text values: {len(value_counts):,}")
+    if not args.data_dir and not args.feather_dirs and not args.pano_v2_base:
+        parser.error("Provide --data_dir (JSONL mode) or --feather_dirs/--pano_v2_base (feather mode)")
+
+    # Collect unique values from all sources
+    value_counts: Counter = Counter()
+
+    if args.data_dir:
+        print("Collecting from JSONL responses...")
+        value_counts += collect_unique_text_values(args.data_dir)
+
+    if args.feather_dirs:
+        print(f"Collecting from {len(args.feather_dirs)} feather directories...")
+        value_counts += collect_text_values_from_feather(args.feather_dirs)
+
+    if args.pano_v2_base:
+        print(f"Collecting from pano_v2 at {args.pano_v2_base}...")
+        value_counts += collect_text_values_from_pano_v2(args.pano_v2_base)
+
+    print(f"\nTotal unique text values: {len(value_counts):,}")
     print(f"Total occurrences: {sum(value_counts.values()):,}")
 
-    # Show top values
-    print("\nTop 20 most common values:")
-    for val, count in value_counts.most_common(20):
-        print(f"  {count:6d}  {val[:80]}")
+    # Load base embeddings to determine what's new
+    base_embeddings = {}
+    if args.base_embeddings:
+        print(f"\nLoading base embeddings from {args.base_embeddings}")
+        with open(args.base_embeddings, "rb") as f:
+            base_embeddings = pickle.load(f)
+        print(f"  {len(base_embeddings):,} existing embeddings")
 
-    # Show value length stats
-    lengths = [len(v) for v in value_counts]
-    print(f"\nValue length: min={min(lengths)}, max={max(lengths)}, "
-          f"mean={sum(lengths)/len(lengths):.1f}")
+    already_have = set(base_embeddings.keys())
+    new_values = sorted(v for v in value_counts if v not in already_have)
+    print(f"Already embedded: {len(already_have & set(value_counts)):,}")
+    print(f"New values to embed: {len(new_values):,}")
+
+    # Show top new values
+    if new_values:
+        print("\nTop 20 most common NEW values:")
+        new_counts = {v: value_counts[v] for v in new_values}
+        for val, count in Counter(new_counts).most_common(20):
+            print(f"  {count:6d}  {val[:80]}")
+
+        lengths = [len(v) for v in new_values]
+        print(f"\nNew value length: min={min(lengths)}, max={max(lengths)}, "
+              f"mean={sum(lengths)/len(lengths):.1f}")
 
     if args.stats_only:
         return 0
 
-    # Embed
-    values = sorted(value_counts.keys())  # Deterministic ordering
-    print(f"\nEmbedding {len(values):,} unique values with {args.model}...")
+    if not new_values:
+        print("\nNo new values to embed.")
+        if base_embeddings and args.output != args.base_embeddings:
+            # Copy base to output
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            with open(args.output, "wb") as f:
+                pickle.dump(base_embeddings, f)
+            print(f"Copied base embeddings to {args.output}")
+        return 0
 
+    # Embed new values
+    print(f"\nEmbedding {len(new_values):,} new values with {args.model}...")
     embeddings = embed_texts_vertex(
-        values,
+        new_values,
         model=args.model,
         output_dimensionality=args.output_dimensionality,
         batch_size=args.batch_size,
     )
     print(f"Embedding shape: {embeddings.shape}")
 
-    # Save as {value_string: numpy_array}
-    result = {v: embeddings[i] for i, v in enumerate(values)}
+    # Merge with base
+    result = dict(base_embeddings)
+    for i, v in enumerate(new_values):
+        result[v] = embeddings[i]
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with open(args.output, "wb") as f:
@@ -192,7 +310,8 @@ def main():
 
     file_size_mb = args.output.stat().st_size / 1024 / 1024
     print(f"\nSaved to {args.output} ({file_size_mb:.1f} MB)")
-    print(f"  {len(result):,} embeddings, {args.output_dimensionality}-dim each")
+    print(f"  {len(result):,} total embeddings ({len(base_embeddings):,} base + "
+          f"{len(new_values):,} new)")
     return 0
 
 

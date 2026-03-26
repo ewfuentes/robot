@@ -187,7 +187,7 @@ py_test(
 py_library(
   name = "retrieval_metrics",
   srcs = ["retrieval_metrics.py"],
-  visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+  visibility = ["//experimental/overhead_matching/swag:__subpackages__", "//common/python:__subpackages__"],
   deps = [
     requirement("pandas"),
     requirement("torch"),
@@ -225,5 +225,20 @@ py_test(
     requirement("torch"),
     "//common/torch:load_torch_deps",
     ":odometry_noise",
+  ],
+)
+
+py_library(
+  name = "correspondence_similarity",
+  srcs = ["correspondence_similarity.py"],
+  visibility = ["//experimental/overhead_matching/swag:__subpackages__", "//common/python:__subpackages__"],
+  deps = [
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("scipy"),
+    requirement("tqdm"),
+    requirement("psutil"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:landmark_correspondence_dataset",
   ],
 )
