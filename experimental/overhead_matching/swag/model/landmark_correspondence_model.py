@@ -182,14 +182,14 @@ def encode_numeric_value(x: float, is_lower_bound: bool = False) -> list[float]:
 
 
 def encode_housenumber_value(lo: float, hi: float) -> list[float]:
-    """Encode housenumber range as [log(1+lo), log(1+hi), log(1+hi-lo), mean/2000]."""
+    """Encode housenumber range as [log(1+lo), log(1+hi), log(1+hi-lo), log(1+mean)]."""
     if math.isnan(lo) or math.isnan(hi):
         return [0.0, 0.0, 0.0, 0.0]  # Will use NaN embedding instead
     # Ensure lo <= hi and both non-negative for log1p
     lo, hi = max(lo, 0.0), max(hi, 0.0)
     if lo > hi:
         lo, hi = hi, lo
-    return [math.log1p(lo), math.log1p(hi), math.log1p(hi - lo), (lo + hi) / 4000.0]
+    return [math.log1p(lo), math.log1p(hi), math.log1p(hi - lo), math.log1p((lo + hi) / 2.0)]
 
 
 # ---------------------------------------------------------------------------
@@ -413,4 +413,27 @@ class CorrespondenceClassifier(nn.Module):
             cross_features,
         ], dim=-1)
 
+        return self.classifier(combined)
+
+    def classify_from_reprs(
+        self,
+        pano_repr: torch.Tensor,
+        osm_repr: torch.Tensor,
+        cross_features: torch.Tensor,
+    ) -> torch.Tensor:
+        """Run just the MLP classifier on pre-computed encoder representations.
+
+        Args:
+            pano_repr: (B, repr_dim)
+            osm_repr: (B, repr_dim)
+            cross_features: (B, num_cross_features)
+
+        Returns: (B, 1) logits
+        """
+        combined = torch.cat([
+            pano_repr,
+            osm_repr,
+            pano_repr * osm_repr,
+            cross_features,
+        ], dim=-1)
         return self.classifier(combined)
