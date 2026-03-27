@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 
 import common.torch.load_torch_deps  # noqa: F401 — must precede torch import
+import numpy as np
 import torch
 
 from experimental.overhead_matching.swag.data import vigor_dataset as vd
@@ -108,8 +109,15 @@ def main():
     if args.from_raw:
         print(f"Loading precomputed raw data from {args.from_raw}")
         data = torch.load(args.from_raw, weights_only=False)
+        # Support both formats: inline cost_matrix or separate .npy file
+        if 'cost_matrix' in data:
+            cost_matrix = data['cost_matrix']
+        else:
+            cost_npy = data['cost_matrix_path']
+            print(f"  Loading cost matrix from {cost_npy}")
+            cost_matrix = np.load(cost_npy)
         raw = cs.RawCorrespondenceData(
-            cost_matrix=data['cost_matrix'],
+            cost_matrix=cost_matrix,
             pano_id_to_lm_rows=data['pano_id_to_lm_rows'],
             pano_lm_tags=data['pano_lm_tags'],
             osm_lm_indices=data['osm_lm_indices'],
@@ -202,18 +210,27 @@ def main():
             checkpoint_dir=_ckpt_dir,
         )
 
-        # Save raw data
+        # Save raw data — cost matrix as .npy (handles large arrays without pickle OOM),
+        # metadata as torch .pt
         output_path = args.output_path.expanduser().resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        cost_npy_path = output_path.parent / (output_path.stem + "_cost_matrix.npy")
+
+        print(f"Saving cost matrix ({raw_data.cost_matrix.shape}) to {cost_npy_path}...")
+        np.save(cost_npy_path, raw_data.cost_matrix)
+        # Free the big array before saving metadata
+        del raw_data.cost_matrix
+
         save_dict = {
-            "cost_matrix": raw_data.cost_matrix,
+            "cost_matrix_path": str(cost_npy_path),
             "pano_id_to_lm_rows": raw_data.pano_id_to_lm_rows,
             "pano_lm_tags": raw_data.pano_lm_tags,
             "osm_lm_indices": raw_data.osm_lm_indices,
             "osm_lm_tags": raw_data.osm_lm_tags,
         }
         torch.save(save_dict, output_path, pickle_protocol=4)
-        print(f"\nSaved raw cost data {raw_data.cost_matrix.shape} to {output_path}")
+        print(f"Saved metadata to {output_path}")
+        print(f"Saved raw cost data to {cost_npy_path} + {output_path}")
 
         # Clean up checkpoints after successful save
         import shutil
