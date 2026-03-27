@@ -996,8 +996,12 @@ def main():
     # 1. Load precomputed data
     print("Loading precomputed data...")
     data = torch.load(args.precomputed_data, weights_only=False)
+    if 'cost_matrix' in data:
+        _cost = data['cost_matrix']
+    else:
+        _cost = np.load(data['cost_matrix_path'])
     RAW_DATA = RawCorrespondenceData(
-        cost_matrix=data['cost_matrix'],
+        cost_matrix=_cost,
         pano_id_to_lm_rows=data['pano_id_to_lm_rows'],
         pano_lm_tags=data['pano_lm_tags'],
         osm_lm_indices=data['osm_lm_indices'],
