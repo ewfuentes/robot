@@ -228,9 +228,10 @@ py_test(
 py_library(
     name="depth_models_lib",
     srcs=["depth_models.py"],
+    visibility=["//visibility:public"],
     deps=[
         requirement("transformers"),
-        requirement("depth_pro"),
+        requirement("unidepth"),
         "//common/torch:load_torch_deps",
     ],
 )

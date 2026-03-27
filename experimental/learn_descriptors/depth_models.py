@@ -3,7 +3,6 @@ import common.torch.load_torch_deps
 from PIL import Image
 from pathlib import Path
 import torch
-import depth_pro
 import numpy as np
 
 from transformers import pipeline
@@ -121,11 +120,69 @@ class DepthAnythingV2(DepthModel):
             self._save_depth_for_image(Path(img_path), depth, dir_out_relative)
 
 
+class UniDepthV2(DepthModel):
+    MODELS = {
+        "small": "lpiccinelli/unidepth-v2-vits14",
+        "base": "lpiccinelli/unidepth-v2-vitb14",
+        "large": "lpiccinelli/unidepth-v2-vitl14",
+    }
+
+    def __init__(
+        self,
+        model_size: Literal["small", "base", "large"] = "large",
+        device: str = "cuda:0",
+        intrinsics: np.ndarray | None = None,
+    ):
+        # Disable xformers before importing unidepth — its CUDA kernels
+        # may not support the current GPU architecture (e.g. sm_120/Blackwell).
+        # UniDepth falls back to PyTorch's scaled_dot_product_attention.
+        import sys
+        import types
+        _fake_xformers = types.ModuleType("xformers")
+        _fake_xformers.ops = types.ModuleType("xformers.ops")
+        sys.modules.setdefault("xformers", _fake_xformers)
+        sys.modules.setdefault("xformers.ops", _fake_xformers.ops)
+
+        from unidepth.models import UniDepthV2 as _UniDepthV2
+
+        self.device = torch.device(device)
+        self.model = _UniDepthV2.from_pretrained(
+            UniDepthV2.MODELS[model_size]
+        )
+        self.model.to(self.device)
+        self.model.eval()
+
+        # Camera intrinsics: 3x3 matrix [[fx, 0, cx], [0, fy, cy], [0, 0, 1]]
+        if intrinsics is not None:
+            self.intrinsics = torch.from_numpy(intrinsics).float()
+        else:
+            self.intrinsics = None
+
+    def infer_batch(self, paths_img: list[Path]):
+        depths = []
+        for p in paths_img:
+            assert p.exists()
+            rgb = torch.from_numpy(
+                np.array(Image.open(p).convert("RGB"))
+            ).permute(2, 0, 1).float()  # [3, H, W]
+
+            camera = self.intrinsics.to(self.device) if self.intrinsics is not None else None
+
+            with torch.no_grad():
+                preds = self.model.infer(rgb.to(self.device), camera=camera)
+            # preds["depth"] is [1, H, W] tensor in meters
+            depth_m = preds["depth"].squeeze(0).cpu().numpy()
+            depths.append(depth_m)
+        return depths
+
+
 class DepthPro(DepthModel):
     # NOTE: I could only find models for DepthPro for indoor use
     def __init__(
         self, path_model: Path, device: str = "cuda:0", default_focal_px: float = None
     ):
+        import depth_pro
+
         assert path_model.exists()
         self.device = torch.device(device)
         config = depth_pro.depth_pro.DepthProConfig(
@@ -142,6 +199,8 @@ class DepthPro(DepthModel):
         self.model.eval()
 
     def infer_batch(self, paths: list[Path]):
+        import depth_pro
+
         assert len(paths) > 0
 
         imgs = []

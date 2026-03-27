@@ -773,6 +773,58 @@ py_binary(
 )
 
 py_binary(
+  name="save_discarded_landmarks",
+  srcs=["save_discarded_landmarks.py"],
+  deps=[
+    requirement("numpy"),
+    requirement("matplotlib"),
+    requirement("pillow"),
+    requirement("tqdm"),
+    "//common/torch:load_torch_deps",
+    "//experimental/learn_descriptors:depth_models_lib",
+  ]
+)
+
+py_binary(
+  name="save_depth_examples",
+  srcs=["save_depth_examples.py"],
+  deps=[
+    requirement("numpy"),
+    requirement("matplotlib"),
+    requirement("pillow"),
+    "//common/torch:load_torch_deps",
+    "//experimental/learn_descriptors:depth_models_lib",
+  ]
+)
+
+py_binary(
+  name="compute_landmark_depths",
+  srcs=["compute_landmark_depths.py"],
+  deps=[
+    requirement("numpy"),
+    requirement("pillow"),
+    requirement("tqdm"),
+    "//common/torch:load_torch_deps",
+    "//experimental/learn_descriptors:depth_models_lib",
+  ]
+)
+
+py_binary(
+  name="filter_far_landmarks",
+  srcs=["filter_far_landmarks.py"],
+  deps=[
+    requirement("marimo"),
+    requirement("numpy"),
+    requirement("matplotlib"),
+    requirement("pillow"),
+    requirement("tqdm"),
+    requirement("torch"),
+    "//common/torch:load_torch_deps",
+    "//experimental/learn_descriptors:depth_models_lib",
+  ]
+)
+
+py_binary(
   name="generate_sft_data",
   srcs=["generate_sft_data.py"],
   deps=[

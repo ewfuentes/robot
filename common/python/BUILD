@@ -43,6 +43,7 @@ py_binary(
     "//experimental/overhead_matching/swag/model:patch_embedding",
     "//experimental/overhead_matching/swag/model:swag_patch_embedding",
     "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
+    "//experimental/learn_descriptors:depth_models_lib",
   ]
 )
 
