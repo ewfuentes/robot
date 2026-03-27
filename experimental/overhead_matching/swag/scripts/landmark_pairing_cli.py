@@ -1,31 +1,23 @@
 #!/usr/bin/env python3
-"""Landmark pairing CLI prototype using Claude CLI for prompt iteration.
+"""Landmark pairing CLI for matching pano_v2 tags to OSM landmarks.
 
-Loads VIGOR dataset + pano_v2 tags, constructs the same prompt format used
-for Gemini batch requests, and pipes each prompt to `claude --print` for
-interactive testing and iteration.
+Loads VIGOR dataset + pano_v2 tags, prunes tags through a keep-list, and
+builds prompts pairing street-level observations against OSM database entries.
+Supports prompt preview and Gemini batch JSONL generation.
 
 Usage:
+    # Preview prompts without calling any model
     bazel run //experimental/overhead_matching/swag/scripts:landmark_pairing_cli -- \
-        --random_n 3
+        --pano_ids "EZd0yEWwrNSoGQhljhV1Uw" --prompt_only
 
+    # Generate Gemini batch JSONL (with hard/easy negatives)
     bazel run //experimental/overhead_matching/swag/scripts:landmark_pairing_cli -- \
-        --pano_ids "EZd0yEWwrNSoGQhljhV1Uw,--z0RFQbsumsJC2wWUUKIg" \
-        --prompt_only
-
-    bazel run //experimental/overhead_matching/swag/scripts:landmark_pairing_cli -- \
-        --random_n 20 --parallel 5 --output /tmp/matches.json
+        --all --with_negatives --generate_batch /tmp/batch.jsonl
 """
 
 import argparse
 import json
-import os
-import signal
-import subprocess
-import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from threading import Lock
 
 import numpy as np
 
@@ -235,110 +227,15 @@ Set 2 (map database):
 {itemized_list(format_tags(x) for x in osm_tags)}"""
 
 
-# Global list of child processes for Ctrl-C cleanup
-_child_procs = []
-_child_procs_lock = Lock()
-
-
-def _cleanup_children(signum, frame):
-    with _child_procs_lock:
-        for proc in _child_procs:
-            try:
-                proc.terminate()
-            except Exception:
-                pass
-    sys.exit(1)
-
-
-def run_claude(cmd):
-    """Run claude subprocess, interruptible by Ctrl-C."""
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    with _child_procs_lock:
-        _child_procs.append(proc)
-    try:
-        stdout, stderr = proc.communicate()
-    finally:
-        with _child_procs_lock:
-            if proc in _child_procs:
-                _child_procs.remove(proc)
-    return proc.returncode, stdout, stderr
-
-
-def process_pano(pano_id, pano_tags_from_pano_id, dataset, model):
-    """Process a single panorama: build prompt, call Claude, parse result."""
-    user_prompt = create_prompt(pano_id, pano_tags_from_pano_id, dataset)
-
-    cmd = [
-        "claude", "--print",
-        "--output-format", "json",
-        "--system-prompt", SYSTEM_PROMPT,
-        "--json-schema", JSON_SCHEMA,
-        "--tools", "",
-        "--model", model,
-        "-p", user_prompt,
-    ]
-
-    returncode, stdout, stderr = run_claude(cmd)
-
-    result = {
-        "pano_id": pano_id,
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "cost_usd": 0.0,
-        "matches": None,
-        "error": None,
-    }
-
-    if returncode != 0:
-        result["error"] = stderr.strip()
-        return result
-
-    try:
-        envelope = json.loads(stdout)
-    except json.JSONDecodeError:
-        result["error"] = f"Could not parse claude output: {stdout[:200]}"
-        return result
-
-    usage = envelope.get("usage", {})
-    result["input_tokens"] = usage.get("input_tokens", 0) + usage.get("cache_read_input_tokens", 0)
-    result["output_tokens"] = usage.get("output_tokens", 0)
-    result["cost_usd"] = envelope.get("total_cost_usd", 0)
-
-    # --json-schema puts parsed result in structured_output
-    parsed = envelope.get("structured_output")
-    if parsed is None:
-        response_text = envelope.get("result", "")
-        try:
-            parsed = json.loads(response_text)
-        except (json.JSONDecodeError, TypeError):
-            result["error"] = f"No structured output: {response_text[:200]}"
-            return result
-
-    result["matches"] = parsed
-    return result
-
-
-def _write_outputs(output_path, all_results, log_lines, total_input, total_output, total_cost, completed, total):
-    """Write JSON results and human-readable log if output path is set."""
-    if not output_path or not all_results:
-        return
-    out = Path(output_path)
-    out.write_text(json.dumps(all_results, indent=2))
-    print(f"Wrote results to {out}")
-
-    readable_path = out.with_suffix('.readable.txt')
-    readable_path.write_text('\n'.join(log_lines) + '\n')
-    print(f"Wrote readable log to {readable_path}")
-
 
 def main():
-    parser = argparse.ArgumentParser(description='Landmark pairing CLI using Claude')
+    parser = argparse.ArgumentParser(description='Landmark pairing CLI')
     parser.add_argument('--city', default='Chicago', help='City name')
     parser.add_argument('--pano_ids', help='Comma-separated panorama IDs')
     parser.add_argument('--random_n', type=int, help='Pick N random panoramas')
     parser.add_argument('--all', action='store_true', help='Use all panoramas that have both pano_v2 and dataset data')
     parser.add_argument('--prompt_only', action='store_true',
-                        help='Print prompt without calling Claude')
+                        help='Print prompts without calling any model')
     parser.add_argument('--generate_batch', type=str, default=None,
                         help='Write Gemini batch JSONL to this path and exit')
     parser.add_argument('--thinking_level', default='HIGH',
@@ -346,12 +243,6 @@ def main():
                         help='Gemini thinking level for batch requests (default: HIGH)')
     parser.add_argument('--with_negatives', action='store_true',
                         help='Include hard/easy negative examples in output')
-    parser.add_argument('--model', default='sonnet',
-                        help='Claude model to use (default: sonnet)')
-    parser.add_argument('--output', type=str, default=None,
-                        help='Write results JSON to this path')
-    parser.add_argument('--parallel', type=int, default=1,
-                        help='Number of panoramas to process in parallel (default: 1)')
     parser.add_argument('--dataset_base', default='/data/overhead_matching/datasets/VIGOR/',
                         help='Base path for VIGOR dataset')
     parser.add_argument('--pano_v2_base',
@@ -361,7 +252,8 @@ def main():
                         help='Landmark version for VIGOR dataset')
     args = parser.parse_args()
 
-    signal.signal(signal.SIGINT, _cleanup_children)
+    if not args.prompt_only and not args.generate_batch:
+        parser.error("Must specify --prompt_only or --generate_batch")
 
     # Load dataset
     dataset_path = Path(args.dataset_base) / args.city
@@ -449,142 +341,6 @@ def main():
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text('\n'.join(batch_lines) + '\n')
         print(f"Wrote {len(batch_lines)} Gemini batch requests to {out_path}")
-        return
-
-    # Resume: load existing results and skip already-processed panos
-    all_results = {}
-    log_lines = []
-    if args.output and Path(args.output).exists():
-        try:
-            all_results = json.loads(Path(args.output).read_text())
-            already_done = set(all_results.keys()) & set(valid_pano_ids)
-            if already_done:
-                print(f"Resuming: {len(already_done)} panos already in {args.output}, skipping them")
-                valid_pano_ids = [pid for pid in valid_pano_ids if pid not in already_done]
-                log_lines.append(f"Resumed from {args.output} ({len(already_done)} already done)")
-        except (json.JSONDecodeError, TypeError):
-            pass
-
-    if not valid_pano_ids:
-        print("All panoramas already processed.")
-        return
-
-    # Process panoramas (possibly in parallel)
-    print(f"\nProcessing {len(valid_pano_ids)} panoramas (parallel={args.parallel})...")
-    total_input = 0
-    total_output = 0
-    total_cost = 0.0
-    consecutive_errors = 0
-    MAX_CONSECUTIVE_ERRORS = 3
-    stop_early = False
-    print_lock = Lock()
-
-    def handle_result(r):
-        nonlocal total_input, total_output, total_cost, consecutive_errors, stop_early
-
-        with print_lock:
-            total_input += r["input_tokens"]
-            total_output += r["output_tokens"]
-            total_cost += r["cost_usd"]
-            lines = []
-            lines.append(f"{'='*80}")
-            lines.append(f"Panorama: {r['pano_id']}")
-            lines.append(f"  Tokens: {r['input_tokens']} in / {r['output_tokens']} out  Cost: ${r['cost_usd']:.4f}")
-
-            if r["error"]:
-                consecutive_errors += 1
-                lines.append(f"  ERROR: {r['error']}")
-                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
-                    lines.append(f"  STOPPING: {consecutive_errors} consecutive errors, likely quota/auth issue")
-                    stop_early = True
-                for l in lines:
-                    print(l)
-                log_lines.extend(lines)
-                return
-
-            consecutive_errors = 0
-
-            parsed = r["matches"]
-            pano_tags = pano_tags_from_pano_id[r["pano_id"]]
-            osm_tags, _ = osm_landmarks_from_pano_id(r["pano_id"], dataset)
-
-            for match in parsed.get("matches", []):
-                set1 = match["set_1_id"]
-                score = match.get("uniqueness_score", 0)
-                if set1 < 0 or set1 >= len(pano_tags):
-                    lines.append(f"  WARNING: set_1_id={set1} out of bounds (max {len(pano_tags)-1}), skipping")
-                    continue
-                pano_tag_str = format_tags(pano_tags[set1]["tags"])
-                lines.append(f"  [U{score}] Pano {set1}: {pano_tag_str}")
-                for set2 in match["set_2_matches"]:
-                    if set2 < 0 or set2 >= len(osm_tags):
-                        lines.append(f"         WARNING: set_2_id={set2} out of bounds (max {len(osm_tags)-1}), skipping")
-                        continue
-                    osm_tag_str = format_tags(osm_tags[set2])
-                    lines.append(f"         -> OSM {set2}: {osm_tag_str}")
-
-            if not parsed.get("matches"):
-                lines.append("  (no matches)")
-
-            for l in lines:
-                print(l)
-            log_lines.extend(lines)
-
-            # Build output entry
-            pano_lms = [{"tags": format_tags(lm["tags"]),
-                         "confidence": lm["confidence"],
-                         "yaw_angles": lm["yaw_angles"]} for lm in pano_tags]
-
-            osm_lms = [{"tags": format_tags(tags), "index": idx}
-                       for idx, tags in enumerate(osm_tags)]
-
-            all_results[r["pano_id"]] = {
-                "pano": pano_lms,
-                "osm": osm_lms,
-                "matches": parsed,
-            }
-
-    try:
-        if args.parallel <= 1:
-            for pano_id in valid_pano_ids:
-                if stop_early:
-                    break
-                r = process_pano(pano_id, pano_tags_from_pano_id, dataset, args.model)
-                handle_result(r)
-        else:
-            with ThreadPoolExecutor(max_workers=args.parallel) as executor:
-                futures = {
-                    executor.submit(process_pano, pid, pano_tags_from_pano_id, dataset, args.model): pid
-                    for pid in valid_pano_ids
-                }
-                for future in as_completed(futures):
-                    handle_result(future.result())
-                    if stop_early:
-                        for f in futures:
-                            f.cancel()
-                        break
-    except KeyboardInterrupt:
-        print("\n\nInterrupted. Cleaning up...")
-        with _child_procs_lock:
-            for proc in _child_procs:
-                try:
-                    proc.terminate()
-                except Exception:
-                    pass
-        # Still write partial results if we have an output path
-        _write_outputs(args.output, all_results, log_lines, total_input, total_output, total_cost, len(all_results), len(valid_pano_ids))
-        sys.exit(1)
-
-    summary = f"Total: {total_input} input + {total_output} output tokens, ${total_cost:.4f}"
-    completed = f"Completed: {len(all_results)}/{len(valid_pano_ids)} panoramas"
-    print(f"\n{'='*80}")
-    print(summary)
-    print(completed)
-    log_lines.append(f"{'='*80}")
-    log_lines.append(summary)
-    log_lines.append(completed)
-
-    _write_outputs(args.output, all_results, log_lines, total_input, total_output, total_cost, len(all_results), len(valid_pano_ids))
 
 
 if __name__ == '__main__':
