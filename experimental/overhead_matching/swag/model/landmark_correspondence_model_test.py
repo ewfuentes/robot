@@ -25,6 +25,9 @@ from experimental.overhead_matching.swag.model.landmark_correspondence_model imp
     parse_maxheight,
     parse_numeric,
 )
+from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
+    prune_landmark,
+)
 
 
 class TestValueParsing(unittest.TestCase):
@@ -97,7 +100,7 @@ class TestKeyType(unittest.TestCase):
         self.assertEqual(key_type("amenity"), ValueType.TEXT)
 
     def test_all_tags_have_index(self):
-        self.assertGreater(NUM_TAG_KEYS, 100)  # Should be ~112 keys
+        self.assertGreater(NUM_TAG_KEYS, 100)  # Should be ~108 keys
 
 
 class TestTagBundleEncoder(unittest.TestCase):
@@ -153,10 +156,8 @@ class TestTagBundleEncoder(unittest.TestCase):
         loss = output.sum()
         loss.backward()
 
-        # absent_embedding is only used for absent tags, which this test doesn't exercise
-        skip = {"absent_embedding"}
         for name, param in encoder.named_parameters():
-            if param.requires_grad and name not in skip:
+            if param.requires_grad:
                 self.assertIsNotNone(param.grad, f"No gradient for {name}")
 
 
@@ -215,6 +216,23 @@ class TestCorrespondenceClassifier(unittest.TestCase):
             output = model(**batch).squeeze(-1)
         # Logits can be any real number, but shouldn't all be identical
         self.assertGreater(output.std(), 0, "Logits should have some variance")
+
+
+class TestPruneLandmark(unittest.TestCase):
+    def test_keeps_relevant_tags(self):
+        props = {"building": "yes", "name": "Library"}
+        result = prune_landmark(props)
+        self.assertEqual(result, frozenset([("building", "yes"), ("name", "Library")]))
+
+    def test_drops_irrelevant_tags(self):
+        props = {"building": "yes", "opening_hours": "9-5", "name": "Library"}
+        result = prune_landmark(props)
+        self.assertIn(("building", "yes"), result)
+        self.assertIn(("name", "Library"), result)
+        self.assertNotIn(("opening_hours", "9-5"), result)
+
+    def test_empty_input(self):
+        self.assertEqual(prune_landmark({}), frozenset())
 
 
 if __name__ == "__main__":

@@ -351,5 +351,6 @@ py_test(
     requirement("torch"),
     "//common/torch:load_torch_deps",
     ":landmark_correspondence_model",
+    ":semantic_landmark_utils",
   ]
 )

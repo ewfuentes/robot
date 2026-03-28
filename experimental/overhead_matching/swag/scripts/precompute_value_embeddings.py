@@ -54,6 +54,7 @@ def collect_unique_text_values(data_dir: Path) -> dict[str, int]:
     print(f"Scanning {len(jsonl_files)} JSONL file(s)...")
 
     total_lines = 0
+    skipped = 0
     for jsonl_path in tqdm(jsonl_files, desc="Scanning JSONL"):
         with open(jsonl_path) as f:
             for line in f:
@@ -71,9 +72,12 @@ def collect_unique_text_values(data_dir: Path) -> dict[str, int]:
                                 if key_type(k) == ValueType.TEXT:
                                     value_counts[v] += 1
                 except (json.JSONDecodeError, KeyError, ValueError):
+                    skipped += 1
                     continue
 
     print(f"Scanned {total_lines} lines from {len(jsonl_files)} files")
+    if skipped:
+        print(f"WARNING: Skipped {skipped} unparseable lines")
     return value_counts
 
 
