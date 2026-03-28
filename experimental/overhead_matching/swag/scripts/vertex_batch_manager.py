@@ -397,6 +397,7 @@ def cmd_run_online(args):
     # Resume: skip already-processed keys (exclude error records so they get retried)
     done_keys = set()
     error_keys = set()
+    skipped = 0
     output_path = Path(args.output)
     if output_path.exists():
         with open(output_path) as f:
@@ -409,7 +410,10 @@ def cmd_run_online(args):
                         else:
                             done_keys.add(rec["key"])
                     except (json.JSONDecodeError, KeyError):
+                        skipped += 1
                         pass
+        if skipped:
+            print(f"WARNING: Skipped {skipped} corrupted lines in {output_path}")
         if done_keys or error_keys:
             print(f"Resuming: {len(done_keys)} succeeded, {len(error_keys)} errors (will retry errors)")
             records = [r for r in records if r["key"] not in done_keys]
@@ -505,8 +509,7 @@ def cmd_run_online(args):
             for future in as_completed(futures):
                 handle_result(future.result())
                 if stop_early:
-                    for f in futures:
-                        f.cancel()
+                    executor.shutdown(wait=False, cancel_futures=True)
                     break
     except KeyboardInterrupt:
         print("\nInterrupted.")

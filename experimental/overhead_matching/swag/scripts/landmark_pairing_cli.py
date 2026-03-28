@@ -44,28 +44,6 @@ of the match or how similar the two sides are.
 
 Only propose matches you are confident about. Some landmarks may have no match."""
 
-# Looser negative rules (v2), kept for reference.
-_SYSTEM_PROMPT_WITH_NEGATIVES_V2 = """You are a landmark matching expert. Given two sets of OpenStreetMap-style tag bundles,
-identify which landmarks from Set 1 (extracted from street-level imagery) represent the same physical object as a
-landmark in Set 2 (from an OpenStreetMap database). Both sets use key=value tag notation.
-
-For each Set 1 landmark that has a match, rate the uniqueness of that landmark's tag set (1-5).
-The score describes how distinctive the panorama landmark is on its own — NOT the quality
-of the match or how similar the two sides are.
-  1 = extremely generic (e.g., building=yes)
-  2 = common category (e.g., amenity=restaurant)
-  3 = moderately specific (e.g., shop=convenience; brand=7-Eleven)
-  4 = quite distinctive (e.g., amenity=library; name=Harold Washington Library)
-  5 = highly unique/unmistakable (e.g., tourism=attraction; name=Cloud Gate)
-
-For each Set 1 landmark, also provide 0-2 negative examples from Set 2 — landmarks that
-are NOT a match. Label each as "hard" or "easy":
-  - hard: shares some superficial similarity but is clearly a different landmark.
-    If it could possibly be the same landmark (e.g., a tag was just not labeled) do NOT include it as a negative.
-  - easy: obviously unrelated (completely different type).
-
-Only propose matches you are confident about. Some landmarks may have no match."""
-
 SYSTEM_PROMPT_WITH_NEGATIVES = """You are a landmark matching expert. Given two sets of OpenStreetMap-style tag bundles,
 identify which landmarks from Set 1 (extracted from street-level imagery) represent the same physical object as a
 landmark in Set 2 (from an OpenStreetMap database). Both sets use key=value tag notation.
@@ -300,10 +278,14 @@ def main():
         parser.error("Must specify --pano_ids, --random_n, or --all")
 
     # Filter to valid pano_ids
-    valid_pano_ids = [pid for pid in pano_ids if pid in pano_tags_from_pano_id]
+    valid_pano_ids = [pid for pid in pano_ids
+                      if pid in pano_tags_from_pano_id and pid in dataset_pano_ids]
     skipped = len(pano_ids) - len(valid_pano_ids)
     if skipped:
-        print(f"WARNING: {skipped} pano_ids not in pano_v2 data, skipping")
+        print(f"WARNING: {skipped} pano_ids not in pano_v2 or VIGOR data, skipping")
+    if not valid_pano_ids:
+        print("ERROR: No valid pano_ids remain after filtering.")
+        return
 
     if args.prompt_only:
         for pano_id in valid_pano_ids:
