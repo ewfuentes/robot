@@ -1,0 +1,26 @@
+# Landmark correspondence classifier config (v0: easy negatives only)
+data_dir: /data/overhead_matching/datasets/landmark_correspondence/chicago_seattle_neg_v3_full
+text_embeddings_path: /data/overhead_matching/datasets/landmark_correspondence/chicago_seattle_neg_v3_full/text_embeddings.pkl
+output_dir: /data/overhead_matching/training_outputs/landmark_correspondence/v0_easy
+
+train_city: Chicago
+val_city: Seattle
+include_difficulties: [positive, easy]
+
+batch_size: 512
+num_epochs: 20
+lr: 0.001
+weight_decay: 0.01
+warmup_fraction: 0.05
+gradient_clip_norm: 1.0
+use_amp: true
+num_workers: 4
+seed: 42
+
+encoder:
+  text_input_dim: 768
+  text_proj_dim: 128
+
+classifier:
+  mlp_hidden_dim: 128
+  dropout: 0.1

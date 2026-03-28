@@ -92,7 +92,7 @@ See `common/python/README.md` for detailed instructions on adding new Python ver
 
 ### Python Testing
 
-Python tests use pytest-style tests but are defined as `py_test` targets in BUILD files. Tests typically have the suffix `_test.py`.
+Python tests use `unittest.TestCase` and are defined as `py_test` targets in BUILD files. Tests typically have the suffix `_test.py`.
 
 ## Overhead Matching (SWAG) Project
 

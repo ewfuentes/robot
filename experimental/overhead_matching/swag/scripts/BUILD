@@ -811,3 +811,45 @@ py_binary(
     "//experimental/overhead_matching/swag/model:semantic_landmark_extractor",
   ]
 )
+
+py_binary(
+  name="precompute_value_embeddings",
+  srcs=["precompute_value_embeddings.py"],
+  deps=[
+    requirement("tqdm"),
+    requirement("numpy"),
+    requirement("google-genai"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:landmark_correspondence_dataset",
+    "//experimental/overhead_matching/swag/model:landmark_correspondence_model",
+  ]
+)
+
+py_library(
+  name = "correspondence_configs",
+  srcs = ["correspondence_configs.py"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+  ],
+  deps = [
+    requirement("msgspec"),
+    requirement("pyyaml"),
+    "//common/python:serialization",
+  ],
+)
+
+py_binary(
+  name="train_landmark_correspondence",
+  srcs=["train_landmark_correspondence.py"],
+  deps=[
+    requirement("torch"),
+    requirement("tensorboard"),
+    requirement("tqdm"),
+    requirement("numpy"),
+    requirement("scikit-learn"),
+    ":correspondence_configs",
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:landmark_correspondence_dataset",
+    "//experimental/overhead_matching/swag/model:landmark_correspondence_model",
+  ]
+)
