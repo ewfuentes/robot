@@ -33,6 +33,23 @@ from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
     prune_landmark, custom_id_from_props)
 from common.gps import web_mercator
 
+# Correspondence model imports (lazy-used when --correspondence_model_path provided)
+from experimental.overhead_matching.swag.evaluation.correspondence_similarity import (
+    compute_cost_matrix, match_and_aggregate, MatchingMethod, AggregationMode,
+)
+from experimental.overhead_matching.swag.data.landmark_correspondence_dataset import (
+    load_text_embeddings,
+)
+from experimental.overhead_matching.swag.model.landmark_correspondence_model import (
+    CorrespondenceClassifier, CorrespondenceClassifierConfig, TagBundleEncoderConfig,
+)
+from experimental.overhead_matching.swag.model.additional_panorama_extractors import (
+    extract_panorama_data_across_cities,
+)
+from experimental.overhead_matching.swag.scripts.landmark_pairing_cli import (
+    extract_tags_from_pano_data,
+)
+
 
 @dataclass
 class PanoramaLandmark:
@@ -83,6 +100,13 @@ PANO_OSM_MATCHES = None  # polars DataFrame
 SAT_OSM_TABLE = None  # polars DataFrame
 PANO_ID_TO_VIGOR_IDX: dict[str, int] = {}  # pano_id -> index in VigorDataset
 MRR_RANKING: list[dict] = []  # sorted list of {pano_idx, pano_id, mrr, best_rank}
+
+# Correspondence model data (loaded when --correspondence_model_path is provided)
+CORRESPONDENCE_MODEL = None
+CORRESPONDENCE_TEXT_EMBEDDINGS = None
+CORRESPONDENCE_TEXT_INPUT_DIM = None
+CORRESPONDENCE_DEVICE = None
+PANO_TAGS_FROM_PANO_ID: dict[str, list[dict]] = {}
 
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
@@ -482,6 +506,7 @@ HTML_TEMPLATE = '''
                     <tbody></tbody>
                 </table>
                 <div id="sat-osm-landmarks-section"></div>
+                <div id="sat-correspondence-section"></div>
             </div>
 
             <!-- Similarity histogram -->
@@ -542,6 +567,7 @@ HTML_TEMPLATE = '''
         let globalMatches = null; // Store global matches for selected landmark
         let panoIdToIndex = {}; // Map panorama ID to index for navigation
         let hasSimilarityMatrix = false; // Whether similarity matrix is loaded
+        let hasCorrespondenceModel = false; // Whether correspondence model is loaded
         let navMode = 'sequential'; // 'sequential', 'best_mrr', 'worst_mrr'
         let mrrRanking = null; // Sorted panorama indices by MRR
         let mrrRankingReverse = null; // Reverse sorted
@@ -1202,6 +1228,47 @@ HTML_TEMPLATE = '''
                 osmSection.appendChild(osmTable);
             }
 
+            // Correspondence details (if model is loaded)
+            const corrSection = document.getElementById('sat-correspondence-section');
+            if (corrSection) corrSection.innerHTML = '';
+            if (hasCorrespondenceModel && corrSection) {
+                corrSection.innerHTML = '<p style="color:#999;font-style:italic;">Loading correspondence details...</p>';
+                fetch(`/api/correspondence_details/${currentIndex}/${sat.sat_idx}`)
+                    .then(r => r.json())
+                    .then(corrData => {
+                        if (corrData.error && !corrData.matches) {
+                            corrSection.innerHTML = `<p style="color:#c00;">${corrData.error}</p>`;
+                            return;
+                        }
+                        let html = '<h4 style="margin:12px 0 4px 0;color:#555;">Correspondence Matching';
+                        html += ` <span style="font-size:12px;color:#666;">(score: ${corrData.similarity_score})</span></h4>`;
+
+                        if (corrData.matches && corrData.matches.length > 0) {
+                            html += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
+                            html += '<thead><tr><th style="padding:4px 8px;border-bottom:1px solid #eee;">P(match)</th>';
+                            html += '<th style="padding:4px 8px;border-bottom:1px solid #eee;">Pano Landmark</th>';
+                            html += '<th style="padding:4px 8px;border-bottom:1px solid #eee;">OSM Landmark</th></tr></thead><tbody>';
+                            corrData.matches.forEach(m => {
+                                const probPct = (m.prob * 100).toFixed(1);
+                                const cls = m.prob >= 0.8 ? 'high' : m.prob >= 0.5 ? 'medium' : 'low';
+                                html += `<tr>`;
+                                html += `<td style="padding:4px 8px;border-bottom:1px solid #eee;"><span class="similarity-badge ${cls}">${probPct}%</span></td>`;
+                                html += `<td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;">${m.pano_tags}</td>`;
+                                html += `<td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;">${m.osm_tags}</td>`;
+                                html += `</tr>`;
+                            });
+                            html += '</tbody></table>';
+                        } else {
+                            html += '<p style="color:#999;font-style:italic;">No landmark matches above threshold</p>';
+                        }
+                        corrSection.innerHTML = html;
+                    })
+                    .catch(err => {
+                        console.error('Error loading correspondence details:', err);
+                        corrSection.innerHTML = '<p style="color:#c00;">Failed to load correspondence details</p>';
+                    });
+            }
+
             panel.style.display = 'block';
         }
 
@@ -1397,6 +1464,7 @@ HTML_TEMPLATE = '''
                     panoIdToIndex[p.id] = p.index;
                 });
                 hasSimilarityMatrix = data.has_similarity_matrix || false;
+                hasCorrespondenceModel = data.has_correspondence_model || false;
 
                 // Show/hide UI elements based on similarity matrix
                 if (hasSimilarityMatrix) {
@@ -2521,7 +2589,8 @@ def get_panorama_list():
     global PANORAMA_DATA, SIMILARITY_MATRIX
     return jsonify({
         'panoramas': [{'id': pano['id'], 'index': i} for i, pano in enumerate(PANORAMA_DATA)],
-        'has_similarity_matrix': SIMILARITY_MATRIX is not None
+        'has_similarity_matrix': SIMILARITY_MATRIX is not None,
+        'has_correspondence_model': CORRESPONDENCE_MODEL is not None,
     })
 
 
@@ -2864,6 +2933,87 @@ def get_satellite_ranking(index):
     })
 
 
+@app.route('/api/correspondence_details/<int:index>/<int:sat_idx>')
+def get_correspondence_details(index, sat_idx):
+    """Compute on-the-fly correspondence matching between a panorama and satellite."""
+    global PANORAMA_DATA, VIGOR_DATASET, PANO_ID_TO_VIGOR_IDX
+    global CORRESPONDENCE_MODEL, CORRESPONDENCE_TEXT_EMBEDDINGS
+    global CORRESPONDENCE_TEXT_INPUT_DIM, CORRESPONDENCE_DEVICE, PANO_TAGS_FROM_PANO_ID
+
+    if CORRESPONDENCE_MODEL is None or VIGOR_DATASET is None:
+        return jsonify({'error': 'Correspondence model not loaded'}), 404
+
+    if index < 0 or index >= len(PANORAMA_DATA):
+        return jsonify({'error': 'Invalid index'}), 404
+
+    pano_id = PANORAMA_DATA[index]['id']
+    pano_landmarks = PANO_TAGS_FROM_PANO_ID.get(pano_id)
+    if pano_landmarks is None:
+        return jsonify({'error': f'No pano_v2 tags for {pano_id}', 'matches': [],
+                        'similarity_score': 0.0})
+
+    pano_tags_list = [dict(lm["tags"]) for lm in pano_landmarks]
+    if not pano_tags_list:
+        return jsonify({'error': 'No pano tags', 'matches': [],
+                        'similarity_score': 0.0})
+
+    # Get OSM landmarks on this satellite
+    sat_meta = VIGOR_DATASET._satellite_metadata.iloc[sat_idx]
+    lm_idxs = sat_meta.get('landmark_idxs', [])
+    if lm_idxs is None or len(lm_idxs) == 0:
+        return jsonify({'matches': [], 'similarity_score': 0.0,
+                        'pano_landmarks': ['; '.join(f'{k}={v}' for k, v in lm['tags']) for lm in pano_landmarks],
+                        'osm_landmarks': []})
+
+    osm_tags_list = []
+    osm_tag_strs = []
+    for lm_idx in lm_idxs:
+        lm_row = VIGOR_DATASET._landmark_metadata.iloc[lm_idx]
+        pruned = lm_row.get('pruned_props', frozenset())
+        if not pruned:
+            continue
+        tags = dict(pruned)
+        osm_tags_list.append(tags)
+        osm_tag_strs.append('; '.join(f'{k}={v}' for k, v in sorted(tags.items())))
+
+    if not osm_tags_list:
+        return jsonify({'matches': [], 'similarity_score': 0.0,
+                        'pano_landmarks': ['; '.join(f'{k}={v}' for k, v in lm['tags']) for lm in pano_landmarks],
+                        'osm_landmarks': []})
+
+    try:
+        cost_matrix = compute_cost_matrix(
+            pano_tags_list, osm_tags_list, CORRESPONDENCE_MODEL,
+            CORRESPONDENCE_TEXT_EMBEDDINGS, CORRESPONDENCE_TEXT_INPUT_DIM,
+            CORRESPONDENCE_DEVICE,
+        )
+        result = match_and_aggregate(cost_matrix, MatchingMethod.HUNGARIAN,
+                                     AggregationMode.SUM)
+    except Exception as e:
+        return jsonify({'error': str(e), 'matches': [], 'similarity_score': 0.0})
+
+    pano_tag_strs = ['; '.join(f'{k}={v}' for k, v in lm['tags']) for lm in pano_landmarks]
+
+    matches = []
+    for pi, oi, prob in zip(result.pano_lm_indices, result.osm_lm_indices,
+                            result.match_probs):
+        matches.append({
+            'pano_lm_idx': pi,
+            'osm_lm_idx': oi,
+            'pano_tags': pano_tag_strs[pi],
+            'osm_tags': osm_tag_strs[oi],
+            'prob': round(prob, 4),
+        })
+
+    return jsonify({
+        'matches': matches,
+        'similarity_score': round(result.similarity_score, 4),
+        'pano_landmarks': pano_tag_strs,
+        'osm_landmarks': osm_tag_strs,
+        'cost_matrix': cost_matrix.tolist(),
+    })
+
+
 @app.route('/api/similarity_histogram/<int:index>')
 def get_similarity_histogram(index):
     """Return histogram of similarity scores with a sample satellite per bin."""
@@ -3110,6 +3260,8 @@ def main():
     global OSM_EMBEDDINGS, OSM_EMBEDDING_INDEX, OSM_INDEX_REVERSE
     global SIMILARITY_MATRIX, VIGOR_DATASET, PANO_OSM_MATCHES, SAT_OSM_TABLE
     global PANO_ID_TO_VIGOR_IDX, MRR_RANKING
+    global CORRESPONDENCE_MODEL, CORRESPONDENCE_TEXT_EMBEDDINGS
+    global CORRESPONDENCE_TEXT_INPUT_DIM, CORRESPONDENCE_DEVICE, PANO_TAGS_FROM_PANO_ID
 
     parser = argparse.ArgumentParser(description='Panorama viewer web app')
     parser.add_argument('--panorama_dir', type=str, required=True,
@@ -3132,6 +3284,12 @@ def main():
                        help='Path to dir with parquet match tables')
     parser.add_argument('--city_name', type=str, default=None,
                        help='City name for table filenames (default: inferred from dataset_path)')
+    parser.add_argument('--correspondence_model_path', type=str, default=None,
+                       help='Path to trained CorrespondenceClassifier .pt file')
+    parser.add_argument('--correspondence_text_embeddings', type=str, default=None,
+                       help='Path to text embeddings pickle for correspondence model')
+    parser.add_argument('--pano_v2_base', type=str, default=None,
+                       help='Base path for pano_v2 embeddings (contains city subdirs)')
     parser.add_argument('--port', type=int, default=5000,
                        help='Port to run the web server on')
 
@@ -3320,6 +3478,69 @@ def main():
         print(f"  Loaded similarity data in {step5_time:.1f}s")
         avg_mrr = sum(r['mrr'] for r in MRR_RANKING) / len(MRR_RANKING) if MRR_RANKING else 0
         print(f"  Average MRR: {avg_mrr:.4f}, best: {MRR_RANKING[0]['mrr']:.4f}, worst: {MRR_RANKING[-1]['mrr']:.4f}")
+
+    # Step 6: Load correspondence model (optional)
+    if args.correspondence_model_path and args.correspondence_text_embeddings and args.pano_v2_base:
+        print("\n" + "="*60)
+        print("STEP 6: Loading correspondence model")
+        print("="*60)
+        step6_start = time.time()
+
+        CORRESPONDENCE_DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        # Load text embeddings
+        print(f"  Loading text embeddings from {args.correspondence_text_embeddings}")
+        CORRESPONDENCE_TEXT_EMBEDDINGS = load_text_embeddings(Path(args.correspondence_text_embeddings))
+        CORRESPONDENCE_TEXT_INPUT_DIM = next(iter(CORRESPONDENCE_TEXT_EMBEDDINGS.values())).shape[0]
+        print(f"  {len(CORRESPONDENCE_TEXT_EMBEDDINGS)} entries, dim={CORRESPONDENCE_TEXT_INPUT_DIM}")
+
+        # Load model
+        print(f"  Loading model from {args.correspondence_model_path}")
+        encoder_config = TagBundleEncoderConfig(
+            text_input_dim=CORRESPONDENCE_TEXT_INPUT_DIM, text_proj_dim=128)
+        classifier_config = CorrespondenceClassifierConfig(encoder=encoder_config)
+        CORRESPONDENCE_MODEL = CorrespondenceClassifier(classifier_config).to(CORRESPONDENCE_DEVICE)
+        CORRESPONDENCE_MODEL.load_state_dict(
+            torch.load(args.correspondence_model_path, map_location=CORRESPONDENCE_DEVICE,
+                       weights_only=True))
+        CORRESPONDENCE_MODEL.eval()
+        print(f"  Model loaded, device={CORRESPONDENCE_DEVICE}")
+
+        # Load VigorDataset if not already loaded in step 5
+        if VIGOR_DATASET is None and args.dataset_path:
+            from experimental.overhead_matching.swag.data import vigor_dataset as vd
+
+            dataset_path = Path(args.dataset_path)
+            landmark_version = args.landmark_version
+            if landmark_version is None:
+                landmarks_dir = dataset_path / "landmarks"
+                if landmarks_dir.exists():
+                    feather_files = list(landmarks_dir.glob("*.feather"))
+                    if len(feather_files) == 1:
+                        landmark_version = feather_files[0].stem
+                        print(f"  Auto-detected landmark version: {landmark_version}")
+
+            print(f"  Loading VigorDataset from {dataset_path}")
+            config = vd.VigorDatasetConfig(
+                satellite_tensor_cache_info=None,
+                panorama_tensor_cache_info=None,
+                should_load_images=False,
+                should_load_landmarks=True,
+                landmark_version=landmark_version,
+            )
+            VIGOR_DATASET = vd.VigorDataset(dataset_path, config)
+            print(f"  {len(VIGOR_DATASET._panorama_metadata)} panos, "
+                  f"{len(VIGOR_DATASET._satellite_metadata)} sats")
+
+        # Load pano_v2 tags
+        print(f"  Loading pano_v2 tags from {args.pano_v2_base}")
+        PANO_TAGS_FROM_PANO_ID = extract_panorama_data_across_cities(
+            Path(args.pano_v2_base), extract_tags_from_pano_data,
+        )
+        print(f"  Loaded tags for {len(PANO_TAGS_FROM_PANO_ID)} panoramas")
+
+        step6_time = time.time() - step6_start
+        print(f"  Loaded correspondence model in {step6_time:.1f}s")
 
     startup_time = time.time() - startup_start
     print("\n" + "="*60)

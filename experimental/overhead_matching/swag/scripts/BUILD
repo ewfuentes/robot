@@ -349,9 +349,16 @@ py_binary(
     requirement("polars"),
     requirement("ipdb"),
     requirement("torch"),
+    requirement("numpy"),
+    requirement("scipy"),
     "//common/torch:load_torch_deps",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/data:landmark_correspondence_dataset",
+    "//experimental/overhead_matching/swag/evaluation:correspondence_similarity",
+    "//experimental/overhead_matching/swag/model:landmark_correspondence_model",
+    "//experimental/overhead_matching/swag/model:additional_panorama_extractors",
     "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
+    ":landmark_pairing_cli_lib",
     "//common/gps:web_mercator",
   ]
 )
@@ -772,9 +779,10 @@ py_binary(
   ]
 )
 
-py_binary(
-  name="landmark_pairing_cli",
+py_library(
+  name="landmark_pairing_cli_lib",
   srcs=["landmark_pairing_cli.py"],
+  visibility=["//experimental/overhead_matching/swag:__subpackages__"],
   deps=[
     requirement("numpy"),
     requirement("pandas"),
@@ -783,6 +791,14 @@ py_binary(
     "//experimental/overhead_matching/swag/data:vigor_dataset",
     "//experimental/overhead_matching/swag/model:additional_panorama_extractors",
     "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
+  ]
+)
+
+py_binary(
+  name="landmark_pairing_cli",
+  srcs=["landmark_pairing_cli.py"],
+  deps=[
+    ":landmark_pairing_cli_lib",
   ]
 )
 
@@ -818,10 +834,15 @@ py_binary(
   deps=[
     requirement("tqdm"),
     requirement("numpy"),
+    requirement("pandas"),
+    requirement("pyarrow"),
     requirement("google-genai"),
     "//common/torch:load_torch_deps",
     "//experimental/overhead_matching/swag/data:landmark_correspondence_dataset",
     "//experimental/overhead_matching/swag/model:landmark_correspondence_model",
+    "//experimental/overhead_matching/swag/model:additional_panorama_extractors",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
+    ":landmark_pairing_cli_lib",
   ]
 )
 
@@ -839,6 +860,19 @@ py_library(
 )
 
 py_binary(
+  name="evaluate_correspondence_model",
+  srcs=["evaluate_correspondence_model.py"],
+  deps=[
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("scikit-learn"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:landmark_correspondence_dataset",
+    "//experimental/overhead_matching/swag/model:landmark_correspondence_model",
+  ]
+)
+
+py_binary(
   name="train_landmark_correspondence",
   srcs=["train_landmark_correspondence.py"],
   deps=[
@@ -851,5 +885,38 @@ py_binary(
     "//common/torch:load_torch_deps",
     "//experimental/overhead_matching/swag/data:landmark_correspondence_dataset",
     "//experimental/overhead_matching/swag/model:landmark_correspondence_model",
+  ]
+)
+
+py_binary(
+  name="export_correspondence_similarity",
+  srcs=["export_correspondence_similarity.py"],
+  deps=[
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("scipy"),
+    requirement("tqdm"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/data:landmark_correspondence_dataset",
+    "//experimental/overhead_matching/swag/evaluation:correspondence_similarity",
+    "//experimental/overhead_matching/swag/evaluation:retrieval_metrics",
+    "//experimental/overhead_matching/swag/model:landmark_correspondence_model",
+    "//experimental/overhead_matching/swag/model:additional_panorama_extractors",
+    ":landmark_pairing_cli_lib",
+  ]
+)
+
+py_binary(
+  name="correspondence_explorer",
+  srcs=["correspondence_explorer.py"],
+  deps=[
+    requirement("flask"),
+    requirement("numpy"),
+    requirement("scipy"),
+    requirement("torch"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/evaluation:correspondence_similarity",
   ]
 )
