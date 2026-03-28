@@ -377,6 +377,157 @@ def cmd_status(args):
         sys.exit(1)
 
 
+def cmd_run_online(args):
+    """Run batch requests online via live Vertex AI API."""
+    check_environment()
+
+    import json
+    from pathlib import Path
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from threading import Lock
+
+    # Load requests
+    records = []
+    with open(args.input) as f:
+        for line in f:
+            if line.strip():
+                records.append(json.loads(line))
+    print(f"Loaded {len(records)} requests from {args.input}")
+
+    # Resume: skip already-processed keys (exclude error records so they get retried)
+    done_keys = set()
+    error_keys = set()
+    skipped = 0
+    output_path = Path(args.output)
+    if output_path.exists():
+        with open(output_path) as f:
+            for line in f:
+                if line.strip():
+                    try:
+                        rec = json.loads(line)
+                        if rec.get("error") is not None:
+                            error_keys.add(rec["key"])
+                        else:
+                            done_keys.add(rec["key"])
+                    except (json.JSONDecodeError, KeyError):
+                        skipped += 1
+                        pass
+        if skipped:
+            print(f"WARNING: Skipped {skipped} corrupted lines in {output_path}")
+        if done_keys or error_keys:
+            print(f"Resuming: {len(done_keys)} succeeded, {len(error_keys)} errors (will retry errors)")
+            records = [r for r in records if r["key"] not in done_keys]
+
+    if not records:
+        print("All requests already processed.")
+        return
+
+    client = genai.Client(http_options=HttpOptions(api_version="v1"))
+
+    thinking_cfg = records[0]["request"]["generationConfig"].get("thinkingConfig", {})
+    thinking_level = thinking_cfg.get("thinkingLevel", "none")
+    print(f"Model: {args.model}, thinking: {thinking_level}, parallel: {args.parallel}")
+    print(f"Processing {len(records)} requests...")
+
+    MAX_CONSECUTIVE_ERRORS = 3
+    total_prompt = 0
+    total_output = 0
+    total_thinking = 0
+    completed = 0
+    errors = 0
+    consecutive_errors = 0
+    stop_early = False
+    print_lock = Lock()
+    start_time = time.time()
+    out_file = open(args.output, 'a')
+    errors_path = Path(args.output).with_suffix('.errors.jsonl')
+    errors_file = open(errors_path, 'a')
+
+    def process_one(record):
+        req = record["request"]
+        try:
+            response = client.models.generate_content(
+                model=args.model,
+                contents=req["contents"],
+                config={
+                    "system_instruction": req["systemInstruction"]["parts"][0]["text"],
+                    "response_mime_type": req["generationConfig"]["responseMimeType"],
+                    "response_schema": req["generationConfig"]["responseSchema"],
+                    "thinking_config": req["generationConfig"].get("thinkingConfig"),
+                },
+            )
+            return {
+                "key": record["key"],
+                "request": req,
+                "response": {
+                    "candidates": [{"content": {"parts": [{"text": response.text}], "role": "model"}}],
+                    "usageMetadata": {
+                        "promptTokenCount": response.usage_metadata.prompt_token_count,
+                        "candidatesTokenCount": response.usage_metadata.candidates_token_count,
+                        "thoughtsTokenCount": getattr(response.usage_metadata, 'thoughts_token_count', 0) or 0,
+                        "totalTokenCount": response.usage_metadata.total_token_count,
+                    },
+                },
+                "error": None,
+            }
+        except Exception as e:
+            return {"key": record["key"], "request": req, "response": None, "error": f"{type(e).__name__}: {e}"}
+
+    def handle_result(result):
+        nonlocal total_prompt, total_output, total_thinking, completed, errors
+        nonlocal consecutive_errors, stop_early
+        with print_lock:
+            if result["error"]:
+                errors += 1
+                consecutive_errors += 1
+                print(f"  ERROR {result['key']}: {result['error']}")
+                errors_file.write(json.dumps(result) + '\n')
+                errors_file.flush()
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                    print(f"  STOPPING: {consecutive_errors} consecutive errors, likely quota/auth issue")
+                    stop_early = True
+            else:
+                consecutive_errors = 0
+                usage = result["response"]["usageMetadata"]
+                total_prompt += usage["promptTokenCount"]
+                total_output += usage["candidatesTokenCount"]
+                total_thinking += usage.get("thoughtsTokenCount", 0)
+                completed += 1
+                out_file.write(json.dumps(result) + '\n')
+                out_file.flush()
+
+            elapsed = time.time() - start_time
+            total_done = completed + errors
+            rate = total_done / elapsed if elapsed > 0 else 0
+            remaining = (len(records) - total_done) / rate if rate > 0 else 0
+            print(f"  [{total_done}/{len(records)}] {result['key']} "
+                  f"({rate:.1f}/s, ~{remaining:.0f}s remaining)")
+
+    try:
+        with ThreadPoolExecutor(max_workers=args.parallel) as executor:
+            futures = {executor.submit(process_one, rec): rec["key"] for rec in records}
+            for future in as_completed(futures):
+                handle_result(future.result())
+                if stop_early:
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    break
+    except KeyboardInterrupt:
+        print("\nInterrupted.")
+    finally:
+        out_file.close()
+        errors_file.close()
+
+    elapsed = time.time() - start_time
+    print(f"\n{'='*60}")
+    print(f"Completed: {completed}/{len(records)} ({errors} errors) in {elapsed:.1f}s")
+    print(f"Token usage:")
+    print(f"  Prompt:   {total_prompt:,}")
+    print(f"  Output:   {total_output:,}")
+    print(f"  Thinking: {total_thinking:,}")
+    print(f"  Total:    {total_prompt + total_output + total_thinking:,}")
+    print(f"Output: {args.output}")
+
+
 def cmd_cancel(args):
     """Cancel a batch job."""
     check_environment()
@@ -480,6 +631,20 @@ def main():
         help='Job name (e.g., projects/.../batchPredictionJobs/123)'
     )
 
+    # RUN-ONLINE command
+    online_parser = subparsers.add_parser(
+        'run-online',
+        help='Run batch requests via live API (non-batched, resumable)'
+    )
+    online_parser.add_argument('--input', type=str, required=True,
+                               help='Input JSONL file (same format as batch requests)')
+    online_parser.add_argument('--output', type=str, required=True,
+                               help='Output JSONL file (same format as batch responses)')
+    online_parser.add_argument('--model', type=str, default='gemini-3-flash-preview',
+                               help='Model name (default: gemini-3-flash-preview)')
+    online_parser.add_argument('--parallel', type=int, default=5,
+                               help='Number of concurrent requests (default: 5)')
+
     # CANCEL command
     cancel_parser = subparsers.add_parser(
         'cancel',
@@ -510,6 +675,8 @@ def main():
         cmd_list(args)
     elif args.command == 'status':
         cmd_status(args)
+    elif args.command == 'run-online':
+        cmd_run_online(args)
     elif args.command == 'cancel':
         cmd_cancel(args)
     else:

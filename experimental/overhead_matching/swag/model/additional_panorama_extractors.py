@@ -87,8 +87,8 @@ def load_v2_pickle(pickle_path: Path) -> dict | None:
         return None
     with open(pickle_path, 'rb') as f:
         data = pickle.load(f)
-    if isinstance(data, dict) and data.get("version") != "2.0":
-        raise RuntimeError("Embedding pickle was not version 2")
+    if isinstance(data, dict) and not str(data.get("version", "")).startswith("2.0"):
+        raise RuntimeError(f"Embedding pickle version {data.get('version')!r} is not v2.0")
     return data
 
 
