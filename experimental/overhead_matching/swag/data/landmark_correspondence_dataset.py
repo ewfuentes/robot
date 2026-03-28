@@ -182,6 +182,7 @@ def load_pairs_from_directory(data_dir: Path) -> list[CorrespondencePair]:
     if not jsonl_files:
         jsonl_files = list(data_dir.rglob("*.jsonl"))
 
+    skipped = 0
     for jsonl_path in jsonl_files:
         with open(jsonl_path) as f:
             for line in f:
@@ -192,7 +193,10 @@ def load_pairs_from_directory(data_dir: Path) -> list[CorrespondencePair]:
                     data = json.loads(line)
                     pairs.extend(parse_jsonl_line(data))
                 except (json.JSONDecodeError, ValueError):
+                    skipped += 1
                     continue
+    if skipped:
+        print(f"WARNING: Skipped {skipped} unparseable JSONL lines across {len(jsonl_files)} files")
     return pairs
 
 
@@ -416,7 +420,7 @@ def encode_tag_bundle(
 # ---------------------------------------------------------------------------
 
 class LandmarkCorrespondenceDataset(Dataset):
-    """PyTorch dataset yielding (pano_tags, osm_tags, label, difficulty) tuples."""
+    """PyTorch dataset yielding dicts with encoded pano/osm tag bundles, cross-features, label, and difficulty."""
 
     def __init__(
         self,

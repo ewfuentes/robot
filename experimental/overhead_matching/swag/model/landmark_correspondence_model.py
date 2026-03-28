@@ -8,7 +8,7 @@ Architecture:
     OSM tags  → TagBundleEncoder → osm_repr  (D)
 
 TagBundleEncoder processes each key=value tag in a bundle:
-  1. Key embedding (learned, 112 keys × key_dim)
+  1. Key embedding (learned, NUM_TAG_KEYS × key_dim)
   2. Value encoding by type:
      - Boolean: single learned embedding (true/false/unknown → 8-dim)
      - Numeric: [log(1+|x|), x/1000, 1.0, is_lower_bound] → linear → 16-dim
@@ -252,9 +252,6 @@ class TagBundleEncoder(nn.Module):
 
         # Text encoder: linear projection from pre-computed embeddings
         self.text_projection = nn.Linear(config.text_input_dim, config.text_proj_dim)
-
-        # Absent value embeddings (one per type)
-        self.absent_embedding = nn.Parameter(torch.randn(config.text_proj_dim) * 0.01)
 
         # Per-tag MLP: concat(key_emb, value_emb) → per_tag_dim
         # Value dim varies by type; use the max (text_proj_dim) and pad smaller ones

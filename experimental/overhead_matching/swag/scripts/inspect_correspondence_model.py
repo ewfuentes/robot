@@ -159,6 +159,7 @@ def _(DATA_DIR, json, load_pairs_from_directory, mo, parse_prompt_landmarks):
     _jsonl_files = list(DATA_DIR.rglob("predictions.jsonl")) or list(
         DATA_DIR.rglob("*.jsonl")
     )
+    _skipped = 0
     for _jf in _jsonl_files:
         with open(_jf) as _f:
             for _line in _f:
@@ -172,7 +173,10 @@ def _(DATA_DIR, json, load_pairs_from_directory, mo, parse_prompt_landmarks):
                     _set1, _set2 = parse_prompt_landmarks(_prompt)
                     pano_id_to_pano_landmarks[_pid] = _set1
                 except (json.JSONDecodeError, KeyError, ValueError):
+                    _skipped += 1
                     continue
+    if _skipped:
+        print(f"WARNING: Skipped {_skipped} unparseable JSONL lines")
 
     pano_ids_in_val = sorted(pano_id_to_pano_landmarks.keys())
 

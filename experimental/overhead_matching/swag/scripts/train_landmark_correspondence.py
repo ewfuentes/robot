@@ -21,7 +21,10 @@ Config format (YAML):
     weight_decay: 0.01
     warmup_fraction: 0.05
     gradient_clip_norm: 1.0
+    use_amp: true
+    num_workers: 4
     seed: 42
+    cosine_schedule: false  # optional, defaults to false
     encoder:
         text_input_dim: 768
         text_proj_dim: 128
@@ -106,7 +109,8 @@ def compute_metrics(
     try:
         metrics["auc_roc"] = roc_auc_score(labels, probs)
     except ValueError:
-        metrics["auc_roc"] = 0.0
+        print("WARNING: Cannot compute AUC-ROC (only one class present in labels)")
+        metrics["auc_roc"] = float("nan")
 
     tp = ((preds == 1) & (labels == 1)).sum()
     fp = ((preds == 1) & (labels == 0)).sum()

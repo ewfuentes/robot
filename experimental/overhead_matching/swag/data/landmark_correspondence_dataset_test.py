@@ -209,6 +209,33 @@ class TestCrossFeatures(unittest.TestCase):
         feats = compute_cross_features(pano, osm)
         self.assertEqual(feats[-1], 0.0)
 
+    def test_text_cosine_similarity_features(self):
+        """Text sim features (indices 3-5) should be non-zero when embeddings provided."""
+        lib_emb = torch.tensor([1.0, 0.0, 0.0])
+        library_emb = torch.tensor([0.9, 0.1, 0.0])
+        text_embs = {"Library": library_emb, "Lib": lib_emb, "yes": torch.randn(3)}
+        pano = {"name": "Lib", "building": "yes"}
+        osm = {"name": "Library", "building": "yes"}
+        feats = compute_cross_features(pano, osm, text_embeddings=text_embs)
+        expected_name_sim = torch.nn.functional.cosine_similarity(
+            lib_emb.unsqueeze(0), library_emb.unsqueeze(0)
+        ).item()
+        expected_building_sim = 1.0  # same value "yes"
+        # max text sim
+        self.assertAlmostEqual(feats[3], max(expected_name_sim, expected_building_sim), places=4)
+        # mean text sim
+        self.assertAlmostEqual(feats[4], (expected_name_sim + expected_building_sim) / 2, places=4)
+        # name-specific sim
+        self.assertAlmostEqual(feats[5], expected_name_sim, places=4)
+
+    def test_text_sim_zero_without_name_key(self):
+        """Name-specific sim (index 5) should be 0 when 'name' key not shared."""
+        text_embs = {"yes": torch.randn(3), "commercial": torch.randn(3)}
+        pano = {"building": "yes"}
+        osm = {"building": "commercial"}
+        feats = compute_cross_features(pano, osm, text_embeddings=text_embs)
+        self.assertEqual(feats[5], 0.0)
+
 
 class TestTagBundleEncoding(unittest.TestCase):
     def test_text_tag_encoding(self):
@@ -283,6 +310,30 @@ class TestCollation(unittest.TestCase):
         self.assertEqual(batch.cross_features.shape, (2, 13))
         self.assertEqual(batch.labels[0], 1.0)
         self.assertEqual(batch.labels[1], 0.0)
+
+    def test_collate_with_unknown_keys(self):
+        """Samples where all tag keys are unrecognized should not crash collation."""
+        text_embs = _make_fake_text_embeddings("yes")
+        pairs = [
+            CorrespondencePair(
+                pano_tags={"unknown_xyz": "val"},
+                osm_tags={"building": "yes"},
+                label=0.0, difficulty="easy", uniqueness_score=1, pano_id="p1",
+            ),
+            CorrespondencePair(
+                pano_tags={"building": "yes"},
+                osm_tags={"building": "yes"},
+                label=1.0, difficulty="positive", uniqueness_score=3, pano_id="p2",
+            ),
+        ]
+        dataset = LandmarkCorrespondenceDataset(
+            pairs, text_embeddings=text_embs, text_input_dim=32,
+            include_difficulties=("positive", "easy"),
+        )
+        batch = collate_correspondence([dataset[0], dataset[1]])
+        self.assertEqual(batch.pano_key_indices.shape[0], 2)
+        # First sample's pano side has no recognized keys → mask should be all False
+        self.assertFalse(batch.pano_tag_mask[0].any())
 
     def test_collate_to_device(self):
         text_embs = _make_fake_text_embeddings("yes")
