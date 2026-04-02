@@ -773,6 +773,31 @@ py_binary(
 )
 
 py_binary(
+  name="landmark_pairing_cli",
+  srcs=["landmark_pairing_cli.py"],
+  deps=[
+    requirement("numpy"),
+    requirement("pandas"),
+    requirement("pyarrow"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/model:additional_panorama_extractors",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
+  ]
+)
+
+py_binary(
+  name="convert_gemini_landmark_pairing_responses_to_viewer_json",
+  srcs=["convert_gemini_landmark_pairing_responses_to_viewer_json.py"],
+  deps=[
+    requirement("pandas"),
+    requirement("pyarrow"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+  ]
+)
+
+py_binary(
   name="generate_sft_data",
   srcs=["generate_sft_data.py"],
   deps=[
@@ -786,4 +811,3 @@ py_binary(
     "//experimental/overhead_matching/swag/model:semantic_landmark_extractor",
   ]
 )
-
