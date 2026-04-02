@@ -43,6 +43,10 @@ py_binary(
     "//experimental/overhead_matching/swag/model:patch_embedding",
     "//experimental/overhead_matching/swag/model:swag_patch_embedding",
     "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
+    "//experimental/overhead_matching/swag/data:landmark_correspondence_dataset",
+    "//experimental/overhead_matching/swag/model:landmark_correspondence_model",
+    requirement("plotly"),
+    requirement("scikit-learn"),
   ]
 )
 

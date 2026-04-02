@@ -8,8 +8,6 @@ import base64
 import hashlib
 import json
 import pickle
-import hashlib
-import base64
 from pathlib import Path
 import pandas as pd
 import torch
@@ -253,8 +251,9 @@ _TAGS_TO_KEEP = [
     "waterway",
 ]
 
-# Entries ending with ':' are prefix matches (e.g. "building:" matches "building:levels").
-# All others are exact key matches.
+# Entries ending with ':' are treated as prefix matches (e.g. "building:" would match
+# "building:levels"). Currently all entries are exact matches; add a colon-terminated
+# entry to enable prefix matching.
 _TAGS_TO_KEEP_PREFIXES = [t for t in _TAGS_TO_KEEP if t.endswith(':')]
 _TAGS_TO_KEEP_SET = frozenset(t for t in _TAGS_TO_KEEP if not t.endswith(':'))
 
