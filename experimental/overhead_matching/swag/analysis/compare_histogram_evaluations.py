@@ -2,17 +2,20 @@
 
 Used to look at how quickly different aggregation strategies (e.g., image-only
 vs. landmark-fused) converge during histogram filter localization. Produces a
-plot grid: convergence probability at 25m/50m/100m radii vs. distance
-traveled, median localization error, and path survival. Each curve shows the
-median with IQR shading across only the paths that are still active at that
-distance.
+2x3 plot grid: convergence probability at 25m/50m/100m radii vs. distance
+traveled, median localization error, path survival, and a summary table. Each
+curve shows the median with IQR shading across only the paths that are still
+active at that distance. Paths that have ended are excluded from statistics
+rather than held at their final value.
 
 Usage:
     bazel run //experimental/overhead_matching/swag/analysis:compare_histogram_evaluations -- \
         --eval-dirs /path/to/run1 /path/to/run2 ... \
         --labels "Baseline" "EA proper_noun" ... \
         --output /tmp/comparison.png \
-        --xlim 1000
+        --xlim 1000 \
+        --title "Norway" \
+        --normalize-convergence
 """
 
 import argparse
@@ -54,8 +57,15 @@ def collect_path_data(eval_path: Path, num_paths: int):
                     all_prob_mass[radius].append(
                         (distance[:min_len], prob_mass_np[:min_len])
                     )
-        except FileNotFoundError:
-            break
+        except FileNotFoundError as e:
+            print(f"  Warning: skipping path {i} — missing file: {e.filename}")
+            continue
+
+    if not all_errors:
+        raise ValueError(
+            f"No valid path data found in {eval_path}. "
+            f"Expected subdirectories like 0000000/ with distance_traveled_m.pt and error.pt"
+        )
 
     return all_prob_mass, all_errors, all_distances
 
@@ -72,6 +82,8 @@ def interpolate_curves_masked(curves, distance_bins):
     values = np.full((n, m), np.nan)
 
     for i, (dist, vals) in enumerate(curves):
+        if len(dist) == 0:
+            continue  # leave row as NaN (will be masked)
         max_dist = dist[-1]
         # Only interpolate within the path's range
         valid = distance_bins <= max_dist
@@ -100,8 +112,8 @@ def compute_path_survival(distances_list, distance_bins):
     return survival
 
 
-def masked_percentile(masked_arr, q, axis=0):
-    """Compute percentile along axis, ignoring masked values.
+def masked_percentile(masked_arr, q):
+    """Compute percentile along axis 0, ignoring masked values.
 
     For bins where all values are masked, returns NaN.
     """
@@ -111,6 +123,24 @@ def masked_percentile(masked_arr, q, axis=0):
         if len(col) > 0:
             result[j] = np.percentile(col, q)
     return result
+
+
+def compute_cc_values(summary, distances, normalize, radii=(25, 50, 100)):
+    """Compute convergence cost values for given radii.
+
+    Returns list of floats (one per radius). Uses path-length normalization
+    if normalize is True.
+    """
+    cc_vals = []
+    for radius in radii:
+        costs = summary.get(f"convergence_cost_{radius}m", [float("nan")])
+        if normalize:
+            path_lengths = [d[-1] for d in distances]
+            normed = [c / l for c, l in zip(costs, path_lengths) if l > 0]
+            cc_vals.append(np.mean(normed) if normed else float("nan"))
+        else:
+            cc_vals.append(np.mean(costs))
+    return cc_vals
 
 
 def main():
@@ -211,10 +241,8 @@ def main():
         for d in data["distances"]
     )
 
-    # Figure layout: top row 3 convergence plots, bottom row error + survival
+    # Figure layout: top row 3 convergence plots, bottom row error + survival + summary table
     fig, axes = plt.subplots(2, 3, figsize=(22, 12))
-
-    all_axes = list(axes.flat)
 
     # Convergence plots for each radius (top row)
     for ax, radius in zip([axes[0, 0], axes[0, 1], axes[0, 2]], [25, 50, 100]):
@@ -232,14 +260,10 @@ def main():
             s = data["summary"]
             cc_key = f"convergence_cost_{radius}m"
             if s and cc_key in s:
-                costs = s[cc_key]
+                cc_val = compute_cc_values(s, data["distances"], args.normalize_convergence, [radius])[0]
                 if args.normalize_convergence:
-                    path_lengths = [d[-1] for d in data["distances"]]
-                    normed = [c / l for c, l in zip(costs, path_lengths) if l > 0]
-                    cc_val = np.mean(normed) if normed else None
-                    cc_str = f", nCC={cc_val:.2f}" if cc_val is not None else ""
+                    cc_str = f", nCC={cc_val:.2f}" if not np.isnan(cc_val) else ""
                 else:
-                    cc_val = np.mean(costs)
                     cc_str = f", CC={cc_val:.0f}"
             else:
                 cc_str = ""
@@ -288,7 +312,7 @@ def main():
 
     # Bottom middle: path survival
     ax = axes[1, 1]
-    # All runs share the same paths, so just use the first one
+    # All runs share the same evaluation paths, so just use the first one
     first_data = next(iter(run_data.values()))
     survival = compute_path_survival(first_data["distances"], distance_bins)
     ax.plot(distance_bins, survival, linewidth=2, color="black")
@@ -313,15 +337,7 @@ def main():
             table_data.append([label, "N/A", "", "", ""])
             continue
         err = s["average_final_error"]
-        cc_vals = []
-        for radius in [25, 50, 100]:
-            costs = s.get(f"convergence_cost_{radius}m", [float("nan")])
-            if args.normalize_convergence:
-                path_lengths = [d[-1] for d in data["distances"]]
-                normed = [c / l for c, l in zip(costs, path_lengths) if l > 0]
-                cc_vals.append(np.mean(normed) if normed else float("nan"))
-            else:
-                cc_vals.append(np.mean(costs))
+        cc_vals = compute_cc_values(s, data["distances"], args.normalize_convergence)
         if args.normalize_convergence:
             table_data.append([label, f"{err:.1f}", f"{cc_vals[0]:.2f}", f"{cc_vals[1]:.2f}", f"{cc_vals[2]:.2f}"])
         else:
@@ -349,15 +365,7 @@ def main():
             print(f"{label:<40} {'N/A':>8}")
             continue
         err = s["average_final_error"]
-        cc_vals = []
-        for radius in [25, 50, 100]:
-            costs = s.get(f"convergence_cost_{radius}m", [float("nan")])
-            if args.normalize_convergence:
-                path_lengths = [d[-1] for d in data["distances"]]
-                normed = [c / l for c, l in zip(costs, path_lengths) if l > 0]
-                cc_vals.append(np.mean(normed) if normed else float("nan"))
-            else:
-                cc_vals.append(np.mean(costs))
+        cc_vals = compute_cc_values(s, data["distances"], args.normalize_convergence)
         if args.normalize_convergence:
             print(f"{label:<40} {err:>8.2f} {cc_vals[0]:>8.3f} {cc_vals[1]:>8.3f} {cc_vals[2]:>8.3f}")
         else:

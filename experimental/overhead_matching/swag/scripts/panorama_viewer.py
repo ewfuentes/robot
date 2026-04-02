@@ -2496,7 +2496,7 @@ def find_common_panoramas(panorama_dir, pinhole_dir, pano_sentences, dataset_pat
     # Find intersection — require panorama image + pinhole dir, but not sentence data
     common_ids = set(pano_files.keys()) & set(pinhole_dirs.keys())
     with_landmarks = common_ids & set(pano_sentences.keys())
-    print(f"  Found {len(common_ids)} panoramas present in all locations "
+    print(f"  Found {len(common_ids)} panoramas with both panorama image and pinhole dir "
           f"({len(with_landmarks)} with landmarks, {len(common_ids) - len(with_landmarks)} without)")
 
     # Determine ordering: use pano_id_mapping.csv if available (sequential capture order)

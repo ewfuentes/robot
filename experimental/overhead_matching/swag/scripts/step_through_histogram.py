@@ -8,6 +8,7 @@ import json
 import argparse
 import io
 import base64
+import sys
 from PIL import Image as PILImage
 
 import dash
@@ -564,7 +565,7 @@ def main():
             ], style={'width': '68%', 'display': 'inline-block', 'verticalAlign': 'top', 'padding': '10px'}),
         ], style={'marginTop': '20px', 'display': 'none' if simple_mode else 'block'}),
 
-        # Minimal client-side state (just path index and step count)
+        # Minimal client-side state (path index, step count, and obs step indices)
         dcc.Store(id='path-metadata-store'),
     ])
 
@@ -783,9 +784,7 @@ def main():
             unique_lons = np.sort(np.unique(lons))
             n_rows, n_cols = len(unique_lats), len(unique_lons)
             if n_rows * n_cols == len(ll_np):
-                # Perfect grid — use argsort to map each point to its grid cell
-                lat_order = np.argsort(lats)
-                # Sort by lat then lon to get row-major grid
+                # Perfect grid — sort by (lat, lon) via lexsort to get row-major order
                 sorted_idx = np.lexsort((lons, lats))
                 obs_heatmap_data = ll_np[sorted_idx].reshape(n_rows, n_cols)
                 obs_lat_coords = unique_lats.tolist()
@@ -1019,7 +1018,6 @@ def main():
 
         _t_images = _time.time() - _t0
         _t_total = _time.time() - _t_start
-        import sys
         print(f"  Timing: belief_heatmap={_t_belief:.2f}s obs_heatmap={_t_obs:.2f}s "
               f"fig_build={_t_fig:.2f}s images={_t_images:.2f}s total={_t_total:.2f}s",
               file=sys.stderr, flush=True)
