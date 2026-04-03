@@ -2,7 +2,7 @@
 
 Loads a trained CorrespondenceClassifier, pano_v2 tags, and a VigorDataset
 to build a (num_panos, num_sats) similarity matrix using bipartite matching.
-Reports recall@k and MRR metricm.
+Reports recall@k and MRR metrics.
 
 Usage:
     bazel run //experimental/overhead_matching/swag/scripts:export_correspondence_similarity -- \
@@ -144,7 +144,7 @@ def main():
         metrics = rm.compute_top_k_metrics(similarity, dataset, ks=ks)
         city_name = dataset_path.name
         print(f"\nMetrics for {city_name}:")
-        for key, value in metricm.items():
+        for key, value in metrics.items():
             print(f"  {key}: {value:.4f}")
 
         output_path = args.output_path.expanduser().resolve()
@@ -258,7 +258,7 @@ def main():
         metrics = rm.compute_top_k_metrics(similarity, dataset, ks=ks)
         city_name = dataset_path.name
         print(f"\nMetrics for {city_name}:")
-        for key, value in metricm.items():
+        for key, value in metrics.items():
             print(f"  {key}: {value:.4f}")
 
         # 7. Save
