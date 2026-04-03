@@ -34,7 +34,7 @@ Create Gemini-labeled landmark correspondence pairs for training the classifier.
 bazel run //experimental/overhead_matching/swag/scripts:landmark_pairing_cli -- \
     --all --city Chicago --with_negatives \
     --generate_batch /tmp/chicago_correspondence_batch.jsonl \
-    --thinking_level HIGH
+    --thinking_level LOW
 ```
 
 This produces a JSONL file where each line pairs one panorama's pano_v2 landmarks against the OSM landmarks on its associated satellite tiles.
