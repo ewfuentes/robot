@@ -223,10 +223,9 @@ def main():
                         help='Include hard/easy negative examples in output')
     parser.add_argument('--dataset_base', default='/data/overhead_matching/datasets/VIGOR/',
                         help='Base path for VIGOR dataset')
-    parser.add_argument('--pano_v2_base',
-                        default='/data/overhead_matching/datasets/semantic_landmark_embeddings/pano_v2/',
-                        help='Base path for pano_v2 embeddings')
-    parser.add_argument('--landmark_version', default='v4_202001',
+    parser.add_argument('--pano_v2_base', required=True,
+                        help='Base path for pano_v2 embeddings (contains city subdirs)')
+    parser.add_argument('--landmark_version', required=True,
                         help='Landmark version for VIGOR dataset')
     args = parser.parse_args()
 
