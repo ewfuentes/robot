@@ -58,14 +58,10 @@ def collect_path_data(eval_path: Path, num_paths: int):
                         (distance[:min_len], prob_mass_np[:min_len])
                     )
         except FileNotFoundError as e:
-            print(f"  Warning: skipping path {i} — missing file: {e.filename}")
-            continue
-
-    if not all_errors:
-        raise ValueError(
-            f"No valid path data found in {eval_path}. "
-            f"Expected subdirectories like 0000000/ with distance_traveled_m.pt and error.pt"
-        )
+            raise FileNotFoundError(
+                f"Path {i} directory exists but is missing {e.filename}. "
+                f"This may indicate a partially completed evaluation run."
+            ) from e
 
     return all_prob_mass, all_errors, all_distances
 
