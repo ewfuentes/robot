@@ -145,6 +145,10 @@ HTML_TEMPLATE = '''
             <button onclick="navigate(-1)">&#9664;</button>
             <select id="pano-select" onchange="loadPanorama(this.value)"></select>
             <button onclick="navigate(1)">&#9654;</button>
+            <input type="text" id="pano-search" placeholder="Search pano ID..."
+                   style="padding:6px 10px;border-radius:4px;border:1px solid #ccc;font-size:13px;width:180px;"
+                   onkeydown="if(event.key==='Enter')searchPano()">
+            <button onclick="searchPano()">Go</button>
             <span id="pano-counter" style="font-size:12px;color:#666;"></span>
         </div>
         <div class="controls">
@@ -160,10 +164,11 @@ HTML_TEMPLATE = '''
                 <option value="log_odds">Log Odds</option>
             </select>
             <label>Thresh:</label>
-            <input type="range" id="threshold-slider" min="0" max="0.9" step="0.05" value="0.3"
+            <input type="range" id="threshold-slider" min="0" max="0.9" step="0.05" value="0.8"
                    oninput="document.getElementById('threshold-val').textContent=this.value">
-            <span id="threshold-val" style="font-size:12px;width:30px;">0.3</span>
+            <span id="threshold-val" style="font-size:12px;width:30px;">0.8</span>
             <button onclick="recomputeScores()" style="background:#2e7d32;">Recompute</button>
+            <label style="margin-left:12px;"><input type="checkbox" id="show-zeros" onchange="recomputeScores()"> Show zero patches</label>
         </div>
         <div class="metrics-bar" id="metrics-bar"></div>
     </div>
@@ -243,6 +248,23 @@ HTML_TEMPLATE = '''
             loadPanorama(panoIds[currentPanoIdx]);
         }
 
+        function searchPano() {
+            const query = document.getElementById('pano-search').value.trim();
+            if (!query) return;
+            // Exact match first, then substring match
+            let idx = panoIds.indexOf(query);
+            if (idx === -1) {
+                idx = panoIds.findIndex(id => id.includes(query));
+            }
+            if (idx !== -1) {
+                document.getElementById('pano-select').value = panoIds[idx];
+                loadPanorama(panoIds[idx]);
+                document.getElementById('pano-search').style.borderColor = '#ccc';
+            } else {
+                document.getElementById('pano-search').style.borderColor = '#c00';
+            }
+        }
+
         function loadPanorama(panoId) {
             currentPanoId = panoId;
             currentPanoIdx = panoIds.indexOf(panoId);
@@ -281,6 +303,7 @@ HTML_TEMPLATE = '''
                 method: document.getElementById('method-select').value,
                 aggregation: document.getElementById('agg-select').value,
                 prob_threshold: parseFloat(document.getElementById('threshold-slider').value),
+                show_zeros: document.getElementById('show-zeros').checked ? '1' : '0',
             };
         }
 
@@ -326,12 +349,14 @@ HTML_TEMPLATE = '''
             const maxScore = Math.max(...scores.filter(s => s > 0), 0.001);
 
             // Add satellite markers
+            const showZeros = document.getElementById('show-zeros').checked;
             sats.forEach(s => {
-                if (s.score <= 0 && !s.is_positive) return;  // skip zero-score non-positives
+                if (s.score <= 0 && !s.is_positive && !showZeros) return;
+                const isZero = s.score <= 0 && !s.is_positive;
                 const t = Math.min(s.score / maxScore, 1.0);
-                const color = viridisColor(t);
-                const radius = s.is_positive ? 7 : 4 + t * 4;
-                const opacity = s.is_positive ? 0.9 : 0.3 + t * 0.6;
+                const color = isZero ? '#888' : viridisColor(t);
+                const radius = s.is_positive ? 7 : isZero ? 3 : 4 + t * 4;
+                const opacity = s.is_positive ? 0.9 : isZero ? 0.4 : 0.3 + t * 0.6;
 
                 const marker = L.circleMarker([s.lat, s.lon], {
                     radius: radius,
@@ -340,7 +365,7 @@ HTML_TEMPLATE = '''
                     fillOpacity: opacity,
                     weight: s.is_positive ? 2 : 1,
                 });
-                marker.bindTooltip(`#${s.rank+1} score=${s.score.toFixed(3)}${s.is_positive ? ' ✓' : ''} (${s.n_landmarks} lm)`,
+                marker.bindTooltip(`#${s.rank+1} score=${s.score.toFixed(3)}${s.is_positive ? ' ✓' : ''}${isZero ? ' (zero)' : ''} (${s.n_landmarks} lm)`,
                     {direction: 'top'});
                 marker.on('click', () => loadSatDetail(s.sat_idx, s.rank, s.score, s.is_positive));
                 marker.addTo(satMap);
@@ -355,8 +380,9 @@ HTML_TEMPLATE = '''
             panoMarker.bindTooltip('Panorama', {permanent: true, direction: 'top'});
 
             // Fit bounds
-            const allLats = sats.filter(s => s.score > 0 || s.is_positive).map(s => s.lat).concat([data.pano_lat]);
-            const allLons = sats.filter(s => s.score > 0 || s.is_positive).map(s => s.lon).concat([data.pano_lon]);
+            const visibleSats = sats.filter(s => s.score > 0 || s.is_positive || showZeros);
+            const allLats = visibleSats.map(s => s.lat).concat([data.pano_lat]);
+            const allLons = visibleSats.map(s => s.lon).concat([data.pano_lon]);
             if (allLats.length > 0) {
                 satMap.fitBounds([[Math.min(...allLats), Math.min(...allLons)],
                                   [Math.max(...allLats), Math.max(...allLons)]],
@@ -850,6 +876,15 @@ def get_satellite_scores(pano_id):
     top_500 = set(ranking[:500].tolist())
     include_set = top_500 | positive_set | set(np.where(nonzero_mask)[0].tolist())
 
+    # Optionally include all zero-score satellites that have landmarks
+    show_zeros = params.get('show_zeros', '0') == '1'
+    if show_zeros:
+        for sat_idx in range(num_sats):
+            if sat_idx in include_set:
+                continue
+            if SAT_TO_COL_POSITIONS[sat_idx]:
+                include_set.add(sat_idx)
+
     satellites = []
     for sat_idx in include_set:
         sat_idx = int(sat_idx)
@@ -1037,9 +1072,23 @@ def main():
     for idx, (_, row) in enumerate(VIGOR_DATASET._panorama_metadata.iterrows()):
         PANO_ID_TO_VIGOR_IDX[row['pano_id']] = idx
 
-    PANO_ID_LIST = [pid for pid in RAW_DATA.pano_id_to_lm_rows.keys()
-                    if pid in PANO_ID_TO_VIGOR_IDX]
-    print(f"  {len(PANO_ID_LIST)} panoramas with cost data")
+    # Order by trajectory using pano_id_mapping.csv if available
+    valid_pano_ids = {pid for pid in RAW_DATA.pano_id_to_lm_rows.keys()
+                      if pid in PANO_ID_TO_VIGOR_IDX}
+    mapping_csv = dataset_path / "pano_id_mapping.csv"
+    if mapping_csv.exists():
+        import csv
+        with open(mapping_csv) as f:
+            reader = csv.DictReader(f)
+            trajectory_order = [row['pano_id'] for row in reader]
+        PANO_ID_LIST = [pid for pid in trajectory_order if pid in valid_pano_ids]
+        # Add any remaining not in mapping
+        remaining = valid_pano_ids - set(PANO_ID_LIST)
+        PANO_ID_LIST.extend(sorted(remaining))
+        print(f"  {len(PANO_ID_LIST)} panoramas with cost data (trajectory order)")
+    else:
+        PANO_ID_LIST = sorted(valid_pano_ids)
+        print(f"  {len(PANO_ID_LIST)} panoramas with cost data")
 
     # 4. Pre-build sat → col positions
     osm_idx_to_col = {idx: col for col, idx in enumerate(RAW_DATA.osm_lm_indices)}
