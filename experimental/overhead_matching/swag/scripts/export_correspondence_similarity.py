@@ -2,7 +2,7 @@
 
 Loads a trained CorrespondenceClassifier, pano_v2 tags, and a VigorDataset
 to build a (num_panos, num_sats) similarity matrix using bipartite matching.
-Reports recall@k and MRR metrics.
+Reports recall@k and MRR metricm.
 
 Usage:
     bazel run //experimental/overhead_matching/swag/scripts:export_correspondence_similarity -- \
@@ -27,7 +27,7 @@ from experimental.overhead_matching.swag.data.landmark_correspondence_dataset im
     load_text_embeddings,
 )
 from experimental.overhead_matching.swag.evaluation import (
-    correspondence_matching as cs,
+    correspondence_matching as cm,
 )
 from experimental.overhead_matching.swag.evaluation import retrieval_metrics as rm
 from experimental.overhead_matching.swag.model.additional_panorama_extractors import (
@@ -102,8 +102,8 @@ def main():
     dataset_path = args.dataset_path.expanduser().resolve()
     ks = [int(k) for k in args.ks.split(",")]
 
-    method = cs.MatchingMethod(args.method)
-    aggregation = cs.AggregationMode(args.aggregation)
+    method = cm.MatchingMethod(args.method)
+    aggregation = cm.AggregationMode(args.aggregation)
 
     # Fast path: build similarity from precomputed raw data (no model needed)
     if args.from_raw:
@@ -116,7 +116,7 @@ def main():
             cost_npy = data['cost_matrix_path']
             print(f"  Loading cost matrix from {cost_npy}")
             cost_matrix = np.load(cost_npy)
-        raw = cs.RawCorrespondenceData(
+        raw = cm.RawCorrespondenceData(
             cost_matrix=cost_matrix,
             pano_id_to_lm_rows=data['pano_id_to_lm_rows'],
             pano_lm_tags=data['pano_lm_tags'],
@@ -136,7 +136,7 @@ def main():
 
         print(f"Building similarity (method={args.method}, agg={args.aggregation}, "
               f"threshold={args.prob_threshold}, uniqueness={args.uniqueness_weighted})")
-        similarity = cs.similarity_from_raw_data(
+        similarity = cm.similarity_from_raw_data(
             raw, dataset, method, aggregation, args.prob_threshold,
             uniqueness_weighted=args.uniqueness_weighted,
         )
@@ -144,7 +144,7 @@ def main():
         metrics = rm.compute_top_k_metrics(similarity, dataset, ks=ks)
         city_name = dataset_path.name
         print(f"\nMetrics for {city_name}:")
-        for key, value in metrics.items():
+        for key, value in metricm.items():
             print(f"  {key}: {value:.4f}")
 
         output_path = args.output_path.expanduser().resolve()
@@ -200,7 +200,7 @@ def main():
         # Use checkpoint dir next to output for resumability
         _ckpt_dir = str(args.output_path.expanduser().resolve()) + ".checkpoints"
         print(f"Precomputing raw cost matrix data (checkpoints: {_ckpt_dir})...")
-        raw_data = cs.precompute_raw_cost_data(
+        raw_data = cm.precompute_raw_cost_data(
             model=model,
             text_embeddings=text_embeddings,
             text_input_dim=text_input_dim,
@@ -240,7 +240,7 @@ def main():
     else:
         print(f"Building similarity matrix (method={args.method}, agg={args.aggregation}, "
               f"threshold={args.prob_threshold}, uniqueness={args.uniqueness_weighted})")
-        similarity = cs.build_correspondence_similarity_matrix(
+        similarity = cm.build_correspondence_similarity_matrix(
             model=model,
             text_embeddings=text_embeddings,
             text_input_dim=text_input_dim,
@@ -258,7 +258,7 @@ def main():
         metrics = rm.compute_top_k_metrics(similarity, dataset, ks=ks)
         city_name = dataset_path.name
         print(f"\nMetrics for {city_name}:")
-        for key, value in metrics.items():
+        for key, value in metricm.items():
             print(f"  {key}: {value:.4f}")
 
         # 7. Save
