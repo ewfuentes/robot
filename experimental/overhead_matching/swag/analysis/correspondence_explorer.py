@@ -6,7 +6,7 @@ and lets you interactively change matching/aggregation methods to see how satell
 change spatially and in distribution.
 
 Usage:
-    bazel run //experimental/overhead_matching/swag/scripts:correspondence_explorer -- \
+    bazel run //experimental/overhead_matching/swag/analysis:correspondence_explorer -- \
         --precomputed_data /tmp/miami_corr_raw.pt \
         --dataset_path /data/overhead_matching/datasets/VIGOR/mapillary/MiamiBeach \
         --port 5003
@@ -22,7 +22,7 @@ import torch
 from flask import Flask, jsonify, request, send_file
 
 from experimental.overhead_matching.swag.data import vigor_dataset as vd
-from experimental.overhead_matching.swag.evaluation.correspondence_similarity import (
+from experimental.overhead_matching.swag.evaluation.correspondence_matching import (
     AggregationMode,
     MatchingMethod,
     RawCorrespondenceData,

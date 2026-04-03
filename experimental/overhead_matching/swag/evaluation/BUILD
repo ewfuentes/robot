@@ -229,8 +229,8 @@ py_test(
 )
 
 py_library(
-  name = "correspondence_similarity",
-  srcs = ["correspondence_similarity.py"],
+  name = "correspondence_matching",
+  srcs = ["correspondence_matching.py"],
   visibility = ["//experimental/overhead_matching/swag:__subpackages__", "//common/python:__subpackages__"],
   deps = [
     requirement("torch"),

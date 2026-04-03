@@ -1,11 +1,16 @@
-"""Correspondence-based pano × satellite similarity via bipartite matching.
+"""Core library for correspondence-based landmark matching and similarity.
 
-Uses a trained CorrespondenceClassifier to predict P(match) for all
-(pano_landmark, osm_landmark) pairs, then applies Hungarian or greedy
-1:1 matching to aggregate into a single similarity score per satellite.
+Provides the main building blocks used by the export script, panorama viewer,
+and correspondence explorer:
 
-Reuses encode_tag_bundle, compute_cross_features, collate_correspondence
-from landmark_correspondence_dataset.
+- Cost matrix computation: encode tag bundles through a trained
+  CorrespondenceClassifier and compute P(match) for all
+  (pano_landmark, osm_landmark) pairs
+- Bipartite matching: Hungarian or greedy 1:1 assignment
+- Aggregation: combine match probabilities into a single similarity score
+  (sum, max, or log-odds)
+- Similarity matrix construction: build (num_panos, num_sats) matrices
+  from per-pair scores with optional checkpointed precomputation
 """
 
 import enum

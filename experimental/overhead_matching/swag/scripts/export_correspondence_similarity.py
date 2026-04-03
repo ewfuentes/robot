@@ -27,7 +27,7 @@ from experimental.overhead_matching.swag.data.landmark_correspondence_dataset im
     load_text_embeddings,
 )
 from experimental.overhead_matching.swag.evaluation import (
-    correspondence_similarity as cs,
+    correspondence_matching as cs,
 )
 from experimental.overhead_matching.swag.evaluation import retrieval_metrics as rm
 from experimental.overhead_matching.swag.model.additional_panorama_extractors import (

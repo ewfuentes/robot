@@ -5,7 +5,9 @@ Two modes:
   1. --data_dir: Scan JSONL batch response files (original mode)
   2. --feather_dirs + --pano_v2_base: Scan .feather landmark files and pano_v2 pickles
 
-Use --base_embeddings to load an existing embeddings file and only embed new values.
+Use --base_embeddings to incrementally expand an existing embeddings file: all
+base entries are carried forward into the output, and only values not already in
+the base are sent to the embedding API. The output is a superset of the base.
 
 Usage:
     # From JSONL responses (original):
@@ -112,13 +114,16 @@ def collect_text_values_from_feather(feather_dirs: list[Path]) -> Counter:
             continue
         for feather_path in landmarks_dir.glob("*.feather"):
             df = pd.read_feather(feather_path)
-            if "pruned_props" not in df.columns:
-                # Raw feather without pruned_props — prune on the fly
-                from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
-                    prune_landmark,
+            if "pruned_props" in df.columns:
+                raise ValueError(
+                    f"{feather_path} already has pruned_props column — "
+                    f"this should never be precomputed in the feather file"
                 )
-                df["pruned_props"] = df.apply(
-                    lambda row: prune_landmark(row.dropna().to_dict()), axis=1)
+            from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
+                prune_landmark,
+            )
+            df["pruned_props"] = df.apply(
+                lambda row: prune_landmark(row.dropna().to_dict()), axis=1)
             n_lm = 0
             for props in df["pruned_props"]:
                 if not props:
@@ -207,7 +212,8 @@ def main():
     )
     parser.add_argument(
         "--base_embeddings", type=Path, default=None,
-        help="Existing embeddings pickle to merge with (only new values are embedded)",
+        help="Existing embeddings pickle to merge into the output. All base entries "
+             "are kept, and only values not in the base are sent to the embedding API.",
     )
     parser.add_argument(
         "--output", type=Path, required=True,

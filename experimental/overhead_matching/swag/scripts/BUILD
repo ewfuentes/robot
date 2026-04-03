@@ -354,7 +354,7 @@ py_binary(
     "//common/torch:load_torch_deps",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
     "//experimental/overhead_matching/swag/data:landmark_correspondence_dataset",
-    "//experimental/overhead_matching/swag/evaluation:correspondence_similarity",
+    "//experimental/overhead_matching/swag/evaluation:correspondence_matching",
     "//experimental/overhead_matching/swag/model:landmark_correspondence_model",
     "//experimental/overhead_matching/swag/model:additional_panorama_extractors",
     "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
@@ -899,7 +899,7 @@ py_binary(
     "//common/torch:load_torch_deps",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
     "//experimental/overhead_matching/swag/data:landmark_correspondence_dataset",
-    "//experimental/overhead_matching/swag/evaluation:correspondence_similarity",
+    "//experimental/overhead_matching/swag/evaluation:correspondence_matching",
     "//experimental/overhead_matching/swag/evaluation:retrieval_metrics",
     "//experimental/overhead_matching/swag/model:landmark_correspondence_model",
     "//experimental/overhead_matching/swag/model:additional_panorama_extractors",
@@ -907,16 +907,3 @@ py_binary(
   ]
 )
 
-py_binary(
-  name="correspondence_explorer",
-  srcs=["correspondence_explorer.py"],
-  deps=[
-    requirement("flask"),
-    requirement("numpy"),
-    requirement("scipy"),
-    requirement("torch"),
-    "//common/torch:load_torch_deps",
-    "//experimental/overhead_matching/swag/data:vigor_dataset",
-    "//experimental/overhead_matching/swag/evaluation:correspondence_similarity",
-  ]
-)

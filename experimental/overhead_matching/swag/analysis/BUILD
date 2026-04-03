@@ -27,6 +27,31 @@ py_binary(
 )
 
 py_binary(
+  name="correspondence_explorer",
+  srcs=["correspondence_explorer.py"],
+  deps=[
+    requirement("flask"),
+    requirement("numpy"),
+    requirement("scipy"),
+    requirement("torch"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/evaluation:correspondence_matching",
+  ]
+)
+
+py_binary(
+  name="correspondence_fusion_explorer",
+  srcs=["correspondence_fusion_explorer.py"],
+  deps=[
+    requirement("marimo"),
+    requirement("torch"),
+    requirement("numpy"),
+    "//common/torch:load_torch_deps",
+  ]
+)
+
+py_binary(
   name="visualize_fusion_diagnostics",
   srcs=["visualize_fusion_diagnostics.py"],
   deps=[

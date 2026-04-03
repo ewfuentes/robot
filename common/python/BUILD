@@ -45,7 +45,7 @@ py_binary(
     "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
     "//experimental/overhead_matching/swag/data:landmark_correspondence_dataset",
     "//experimental/overhead_matching/swag/model:landmark_correspondence_model",
-    "//experimental/overhead_matching/swag/evaluation:correspondence_similarity",
+    "//experimental/overhead_matching/swag/evaluation:correspondence_matching",
     "//experimental/overhead_matching/swag/evaluation:retrieval_metrics",
     requirement("plotly"),
     requirement("scikit-learn"),

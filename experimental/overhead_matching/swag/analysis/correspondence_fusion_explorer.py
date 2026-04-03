@@ -17,7 +17,7 @@ def _():
     from scipy.optimize import linear_sum_assignment
 
     import experimental.overhead_matching.swag.data.vigor_dataset as vd
-    from experimental.overhead_matching.swag.evaluation.correspondence_similarity import (
+    from experimental.overhead_matching.swag.evaluation.correspondence_matching import (
         RawCorrespondenceData,
         MatchingMethod,
         AggregationMode,

@@ -34,7 +34,7 @@ from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
 from common.gps import web_mercator
 
 # Correspondence model imports (lazy-used when --correspondence_model_path provided)
-from experimental.overhead_matching.swag.evaluation.correspondence_similarity import (
+from experimental.overhead_matching.swag.evaluation.correspondence_matching import (
     compute_cost_matrix, match_and_aggregate, MatchingMethod, AggregationMode,
 )
 from experimental.overhead_matching.swag.data.landmark_correspondence_dataset import (

@@ -4,15 +4,16 @@ End-to-end guide for building correspondence-based similarity matrices and evalu
 
 ## Overview
 
-The pipeline has 5 stages:
+The pipeline has 6 stages:
 
+0. **Generate correspondence data** — Create Gemini-labeled landmark match pairs for training
 1. **Text embeddings** — Embed all OSM tag values via Vertex AI
-2. **Train classifier** — Train `CorrespondenceClassifier` on Chicago/Seattle data
+2. **Train classifier** — Train `CorrespondenceClassifier` on Chicago (train) / Seattle (val)
 3. **Precompute raw scores** — Compute P(match) for all (pano_landmark, osm_landmark) pairs
 4. **Build similarity matrices** — Aggregate raw scores into (num_panos, num_sats) matrices
 5. **Evaluate on paths** — Run histogram filter with different fusion configs
 
-Each stage's outputs feed into the next. Stages 1-3 are expensive but run once; stages 4-5 are fast and support iteration.
+Each stage's outputs feed into the next. Stages 0-2 are expensive but run once; stages 3-5 are fast and support iteration.
 
 ## Prerequisites
 
@@ -21,6 +22,62 @@ Each stage's outputs feed into the next. Stages 1-3 are expensive but run once; 
 export GOOGLE_CLOUD_PROJECT=your-project-id
 gcloud auth application-default login
 ```
+
+## Stage 0: Generate Correspondence Data
+
+Create Gemini-labeled landmark correspondence pairs for training the classifier. For each panorama, the script pairs pano_v2 landmarks (Set 1) with nearby OSM database landmarks (Set 2) and asks Gemini to identify matches, assign uniqueness scores (1-5), and provide hard/easy negative examples.
+
+### Create batch requests
+
+```bash
+# Generate Gemini batch JSONL for a city
+bazel run //experimental/overhead_matching/swag/scripts:landmark_pairing_cli -- \
+    --all --city Chicago --with_negatives \
+    --generate_batch /tmp/chicago_correspondence_batch.jsonl \
+    --thinking_level HIGH
+```
+
+This produces a JSONL file where each line pairs one panorama's pano_v2 landmarks against the OSM landmarks on its associated satellite tiles.
+
+### Submit to Gemini
+
+Upload and submit the batch JSONL via Vertex AI:
+
+```bash
+# Upload to GCS
+gcloud storage cp /tmp/chicago_correspondence_batch.jsonl \
+    gs://crossview/correspondence_chicago/requests/
+
+# Submit batch job
+bazel run //experimental/overhead_matching/swag/scripts:vertex_batch_manager -- \
+    submit-all \
+    --input_prefix gs://crossview/correspondence_chicago/requests/ \
+    --output_prefix gs://crossview/correspondence_chicago/results/ \
+    --model gemini-3-flash-preview
+
+# Download results
+gcloud storage cp -r gs://crossview/correspondence_chicago/results/ \
+    /data/overhead_matching/datasets/landmark_correspondence/chicago_seattle_neg_v3_full/Chicago/responses/
+```
+
+Repeat for Seattle (validation city).
+
+### Expected output structure
+
+```
+chicago_seattle_neg_v3_full/
+├── Chicago/
+│   └── responses/
+│       └── prediction-model-{timestamp}/
+│           └── predictions.jsonl
+├── Seattle/
+│   └── responses/
+│       └── prediction-model-{timestamp}/
+│           └── predictions.jsonl
+└── text_embeddings.pkl  (created in Stage 1)
+```
+
+Each response contains matches (positive pairs), uniqueness scores, and hard/easy negatives that the training pipeline parses into `CorrespondencePair` objects.
 
 ## Stage 1: Text Embeddings
 
@@ -256,7 +313,7 @@ for run_dir in ['260310_all_non_vigor_datasets', '260325_correspondence_fusion']
 Explore satellite scores interactively with map visualization:
 
 ```bash
-bazel run //experimental/overhead_matching/swag/scripts:correspondence_explorer -- \
+bazel run //experimental/overhead_matching/swag/analysis:correspondence_explorer -- \
     --precomputed_data /data/.../correspondence_scores/v5_all_cities_raw.pt \
     --dataset_path /data/.../VIGOR/mapillary/MiamiBeach \
     --port 5003
@@ -268,7 +325,7 @@ Compare aggregation methods, analyze per-panorama and per-landmark behavior:
 
 ```bash
 bazel run //common/python:marimo_server -- edit \
-    /home/ekf/code/robot-tag-matcher-9000/experimental/overhead_matching/swag/scripts/correspondence_fusion_explorer.py
+    /home/ekf/code/robot-tag-matcher-9000/experimental/overhead_matching/swag/analysis/correspondence_fusion_explorer.py
 ```
 
 ## File Locations
