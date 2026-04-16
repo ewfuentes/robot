@@ -249,6 +249,24 @@ py_binary(
 )
 
 py_binary(
+  name = "dataset_statistics",
+  srcs = ["dataset_statistics.py"],
+  deps = [
+    requirement("geopandas"),
+    requirement("pandas"),
+    requirement("pyarrow"),
+    requirement("Pillow"),
+    "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
+    "//common/gps:web_mercator",
+  ]
+)
+
+py_binary(
+  name = "create_trajectory_paths",
+  srcs = ["create_trajectory_paths.py"],
+)
+
+py_binary(
   name = "extract_landmarks_for_vigor_dataset",
   srcs = ["extract_landmarks_for_vigor_dataset.py"],
   deps = [
@@ -886,6 +904,22 @@ py_binary(
     "//experimental/overhead_matching/swag/data:landmark_correspondence_dataset",
     "//experimental/overhead_matching/swag/model:landmark_correspondence_model",
   ]
+)
+
+py_binary(
+  name="paper_convergence_plot",
+  srcs=["paper_convergence_plot.py"],
+  deps=[
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("matplotlib"),
+    "//common/torch:load_torch_deps",
+  ]
+)
+
+py_binary(
+  name = "trim_dataset_start",
+  srcs = ["trim_dataset_start.py"],
 )
 
 py_binary(
