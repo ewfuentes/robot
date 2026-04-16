@@ -57,11 +57,12 @@ from experimental.overhead_matching.swag.scripts.landmark_pairing_cli import (
 )
 
 
-def collect_unique_text_values(data_dir: Path) -> dict[str, int]:
-    """Scan JSONL files and collect all unique text-type tag values with counts.
+def collect_unique_text_values(data_dir: Path, all_value_types: bool = False) -> dict[str, int]:
+    """Scan JSONL files and collect unique tag values with counts.
 
     Args:
         data_dir: Root directory containing {Chicago,Seattle}/responses/ subdirs
+        all_value_types: If True, collect ALL tag values (not just text-type keys)
 
     Returns:
         Counter mapping value strings to their occurrence counts
@@ -89,7 +90,7 @@ def collect_unique_text_values(data_dir: Path) -> dict[str, int]:
                     for landmarks in [set1, set2]:
                         for tags in landmarks:
                             for k, v in tags.items():
-                                if key_type(k) == ValueType.TEXT:
+                                if all_value_types or key_type(k) == ValueType.TEXT:
                                     value_counts[v] += 1
                 except (json.JSONDecodeError, KeyError, ValueError):
                     skipped += 1
@@ -235,6 +236,10 @@ def main():
         "--stats_only", action="store_true",
         help="Only print statistics, don't embed",
     )
+    parser.add_argument(
+        "--all_value_types", action="store_true",
+        help="Embed ALL tag values, not just text-type keys (includes numeric, boolean, housenumber)",
+    )
     args = parser.parse_args()
 
     if not args.data_dir and not args.feather_dirs and not args.pano_v2_base:
@@ -245,7 +250,7 @@ def main():
 
     if args.data_dir:
         print("Collecting from JSONL responses...")
-        value_counts += collect_unique_text_values(args.data_dir)
+        value_counts += collect_unique_text_values(args.data_dir, all_value_types=args.all_value_types)
 
     if args.feather_dirs:
         print(f"Collecting from {len(args.feather_dirs)} feather directories...")

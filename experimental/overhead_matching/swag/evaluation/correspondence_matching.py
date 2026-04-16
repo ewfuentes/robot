@@ -437,12 +437,13 @@ def batch_encode_landmarks(
     model,  # CorrespondenceClassifier
     device: torch.device,
     batch_size: int = 4096,
+    all_text: bool = False,
 ) -> torch.Tensor:
     """Encode a list of tag bundles through TagBundleEncoder in batches.
 
     Returns: (N, repr_dim) tensor of encoder representations on CPU.
     """
-    all_encoded = [encode_tag_bundle(t, text_embeddings, text_input_dim)
+    all_encoded = [encode_tag_bundle(t, text_embeddings, text_input_dim, all_text=all_text)
                    for t in tags_list]
 
     all_reprs = []
@@ -530,6 +531,7 @@ def compute_cost_matrix(
     text_input_dim: int,
     device: torch.device,
     max_pairs_per_batch: int = 50000,
+    all_text: bool = False,
 ) -> np.ndarray:
     """Compute P(match) for all (pano_lm, osm_lm) pairs.
 
@@ -556,10 +558,10 @@ def compute_cost_matrix(
         for pt in pano_tags_list:
             for ot in osm_chunk:
                 pano_encoded_list.append(
-                    encode_tag_bundle(pt, text_embeddings, text_input_dim)
+                    encode_tag_bundle(pt, text_embeddings, text_input_dim, all_text=all_text)
                 )
                 osm_encoded_list.append(
-                    encode_tag_bundle(ot, text_embeddings, text_input_dim)
+                    encode_tag_bundle(ot, text_embeddings, text_input_dim, all_text=all_text)
                 )
                 cross_features_list.append(
                     compute_cross_features(pt, ot, text_embeddings)
@@ -709,6 +711,7 @@ def precompute_raw_cost_data(
     device: torch.device,
     max_pairs_per_batch: int = 50000,
     checkpoint_dir: str | None = None,
+    all_text: bool = False,
 ) -> RawCorrespondenceData:
     """Precompute a flat (total_pano_lm × total_osm_lm) P(match) matrix.
 
@@ -747,6 +750,7 @@ def precompute_raw_cost_data(
     _log("  Encoding OSM landmarks through TagBundleEncoder...")
     osm_reprs = batch_encode_landmarks(
         osm_tags_list, text_embeddings, text_input_dim, model, device,
+        all_text=all_text,
     )
     _log(f"  OSM representations: {osm_reprs.shape}")
     _log_memory("after encoding OSM landmarks")
@@ -849,6 +853,7 @@ def precompute_raw_cost_data(
         # Encode all pano landmarks in one batch
         pano_reprs = batch_encode_landmarks(
             all_pano_tags, text_embeddings, text_input_dim, model, device,
+            all_text=all_text,
         )
 
         # Pano cross data is small (~200 landmarks)

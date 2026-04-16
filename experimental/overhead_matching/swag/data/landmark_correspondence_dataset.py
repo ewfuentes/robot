@@ -306,6 +306,7 @@ def encode_tag_bundle(
     tags: dict[str, str],
     text_embeddings: dict[str, torch.Tensor] | None,
     text_input_dim: int = 768,
+    all_text: bool = False,
 ) -> dict:
     """Encode a tag bundle into tensors for TagBundleEncoder.
 
@@ -335,7 +336,7 @@ def encode_tag_bundle(
             continue
 
         key_indices.append(TAG_KEY_TO_IDX[k])
-        kt = key_type(k)
+        kt = key_type(k) if not all_text else ValueType.TEXT
 
         if kt == ValueType.BOOLEAN:
             value_types.append(ValueType.BOOLEAN)
@@ -396,12 +397,16 @@ def encode_tag_bundle(
                     f"text_embeddings is required but not provided "
                     f"(key={k!r}, value={v!r})"
                 )
-            if v not in text_embeddings:
+            if v in text_embeddings:
+                text_embs.append(text_embeddings[v])
+            elif all_text:
+                text_embs.append(zero_text)
+            else:
                 raise KeyError(
                     f"Text value {v!r} for key {k!r} not found in "
                     f"text_embeddings ({len(text_embeddings)} entries)"
                 )
-            text_embs.append(text_embeddings[v])
+
 
     return {
         "key_indices": key_indices,
@@ -428,6 +433,7 @@ class LandmarkCorrespondenceDataset(Dataset):
         text_embeddings: dict[str, torch.Tensor] | None = None,
         text_input_dim: int = 768,
         include_difficulties: tuple[str, ...] = ("positive", "easy"),
+        all_text: bool = False,
     ):
         """Initialize dataset.
 
@@ -436,10 +442,12 @@ class LandmarkCorrespondenceDataset(Dataset):
             text_embeddings: Pre-computed {value_string: tensor} for text keys
             text_input_dim: Dimension of pre-computed text embeddings
             include_difficulties: Which pair types to include
+            all_text: If True, encode all tag values as text (no numeric/boolean/housenumber branches)
         """
         self.pairs = [p for p in pairs if p.difficulty in include_difficulties]
         self.text_embeddings = text_embeddings
         self.text_input_dim = text_input_dim
+        self.all_text = all_text
 
     def __len__(self) -> int:
         return len(self.pairs)
@@ -447,10 +455,12 @@ class LandmarkCorrespondenceDataset(Dataset):
     def __getitem__(self, idx: int) -> dict:
         pair = self.pairs[idx]
         pano_encoded = encode_tag_bundle(
-            pair.pano_tags, self.text_embeddings, self.text_input_dim
+            pair.pano_tags, self.text_embeddings, self.text_input_dim,
+            all_text=self.all_text,
         )
         osm_encoded = encode_tag_bundle(
-            pair.osm_tags, self.text_embeddings, self.text_input_dim
+            pair.osm_tags, self.text_embeddings, self.text_input_dim,
+            all_text=self.all_text,
         )
         cross_feats = compute_cross_features(
             pair.pano_tags, pair.osm_tags, self.text_embeddings,

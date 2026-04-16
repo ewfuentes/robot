@@ -888,6 +888,47 @@ py_binary(
   ]
 )
 
+py_library(
+  name="train_landmark_correspondence_lib",
+  srcs=["train_landmark_correspondence.py"],
+  visibility=["//experimental/overhead_matching/swag:__subpackages__"],
+  deps=[
+    requirement("torch"),
+    requirement("tensorboard"),
+    requirement("tqdm"),
+    requirement("numpy"),
+    requirement("scikit-learn"),
+    ":correspondence_configs",
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:landmark_correspondence_dataset",
+    "//experimental/overhead_matching/swag/model:landmark_correspondence_model",
+  ]
+)
+
+py_binary(
+  name="evaluate_ablation_sweep",
+  srcs=["evaluate_ablation_sweep.py"],
+  deps=[
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("scikit-learn"),
+    ":correspondence_configs",
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:landmark_correspondence_dataset",
+    "//experimental/overhead_matching/swag/model:landmark_correspondence_model",
+  ]
+)
+
+py_binary(
+  name="run_correspondence_ablation",
+  srcs=["run_correspondence_ablation.py"],
+  deps=[
+    ":train_landmark_correspondence_lib",
+    ":correspondence_configs",
+    "//common/torch:load_torch_deps",
+  ]
+)
+
 py_binary(
   name="export_correspondence_similarity",
   srcs=["export_correspondence_similarity.py"],

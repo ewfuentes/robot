@@ -97,6 +97,10 @@ def main():
     parser.add_argument("--uniqueness_weighted", action="store_true",
                         help="Weight matched pairs by pano landmark uniqueness "
                              "(1/log2(1 + n_matches))")
+    parser.add_argument("--ablation", nargs="*", default=[],
+                        help="Ablation flags for the model (e.g. no_numeric no_boolean)")
+    parser.add_argument("--all_text", action="store_true",
+                        help="Encode all tag values as text (no numeric/boolean/housenumber branches)")
     args = parser.parse_args()
 
     dataset_path = args.dataset_path.expanduser().resolve()
@@ -163,8 +167,11 @@ def main():
 
     # 2. Load model
     print(f"Loading model from {args.model_path}")
+    ablation = frozenset(args.ablation)
+    if ablation:
+        print(f"  Ablation: {sorted(ablation)}")
     encoder_config = TagBundleEncoderConfig(text_input_dim=text_input_dim, text_proj_dim=128)
-    classifier_config = CorrespondenceClassifierConfig(encoder=encoder_config)
+    classifier_config = CorrespondenceClassifierConfig(encoder=encoder_config, ablation=ablation)
     model = CorrespondenceClassifier(classifier_config).to(device)
     model.load_state_dict(torch.load(args.model_path, map_location=device, weights_only=True))
     model.eval()
@@ -208,6 +215,7 @@ def main():
             pano_tags_from_pano_id=pano_tags_from_pano_id,
             device=device,
             checkpoint_dir=_ckpt_dir,
+            all_text=args.all_text,
         )
 
         # Save raw data — cost matrix as .npy (handles large arrays without pickle OOM),

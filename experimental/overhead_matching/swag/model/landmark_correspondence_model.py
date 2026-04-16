@@ -218,6 +218,10 @@ class CorrespondenceClassifierConfig:
     mlp_hidden_dim: int = 128
     dropout: float = 0.1
     num_cross_features: int = 13  # Jaccard(1) + shared_keys(1) + exact_matches(1) + text_sim(3) + numeric(6) + housenumber(1)
+    # Ablation flags — each zeros out a feature group during forward pass.
+    # Valid flags: no_cross, no_text, no_numeric, no_boolean, no_housenumber,
+    #              no_keys, no_encoder
+    ablation: frozenset[str] = field(default_factory=frozenset)
 
 
 # ---------------------------------------------------------------------------
@@ -345,9 +349,19 @@ class CorrespondenceClassifier(nn.Module):
     Takes two tag bundles (pano, OSM) and predicts P(same physical object).
     """
 
+    VALID_ABLATION_FLAGS = frozenset([
+        "no_cross", "no_text", "no_numeric", "no_boolean",
+        "no_housenumber", "no_keys", "no_encoder", "only_text_cross",
+        "only_text_hn_cross",
+    ])
+
     def __init__(self, config: CorrespondenceClassifierConfig):
         super().__init__()
         self.config = config
+        self.ablation = config.ablation
+        bad_flags = self.ablation - self.VALID_ABLATION_FLAGS
+        if bad_flags:
+            raise ValueError(f"Unknown ablation flags: {bad_flags}")
 
         # Shared twin encoder
         self.encoder = TagBundleEncoder(config.encoder)
@@ -390,6 +404,29 @@ class CorrespondenceClassifier(nn.Module):
 
         Returns: (B, 1) logits
         """
+        abl = self.ablation
+
+        # Apply input-level ablations before encoding
+        if "no_text" in abl:
+            pano_text_embeddings = torch.zeros_like(pano_text_embeddings)
+            osm_text_embeddings = torch.zeros_like(osm_text_embeddings)
+        if "no_numeric" in abl:
+            pano_numeric_values = torch.zeros_like(pano_numeric_values)
+            pano_numeric_nan_mask = torch.ones_like(pano_numeric_nan_mask)
+            osm_numeric_values = torch.zeros_like(osm_numeric_values)
+            osm_numeric_nan_mask = torch.ones_like(osm_numeric_nan_mask)
+        if "no_boolean" in abl:
+            pano_boolean_values = torch.full_like(pano_boolean_values, BooleanValue.UNKNOWN)
+            osm_boolean_values = torch.full_like(osm_boolean_values, BooleanValue.UNKNOWN)
+        if "no_housenumber" in abl:
+            pano_housenumber_values = torch.zeros_like(pano_housenumber_values)
+            pano_housenumber_nan_mask = torch.ones_like(pano_housenumber_nan_mask)
+            osm_housenumber_values = torch.zeros_like(osm_housenumber_values)
+            osm_housenumber_nan_mask = torch.ones_like(osm_housenumber_nan_mask)
+        if "no_keys" in abl:
+            pano_key_indices = torch.zeros_like(pano_key_indices)
+            osm_key_indices = torch.zeros_like(osm_key_indices)
+
         pano_repr = self.encoder(
             pano_key_indices, pano_value_type, pano_boolean_values,
             pano_numeric_values, pano_numeric_nan_mask,
@@ -402,6 +439,22 @@ class CorrespondenceClassifier(nn.Module):
             osm_housenumber_values, osm_housenumber_nan_mask,
             osm_text_embeddings, osm_tag_mask,
         )
+
+        # Representation-level ablations
+        if "no_encoder" in abl:
+            pano_repr = torch.zeros_like(pano_repr)
+            osm_repr = torch.zeros_like(osm_repr)
+        if "no_cross" in abl:
+            cross_features = torch.zeros_like(cross_features)
+        elif "only_text_cross" in abl:
+            mask = torch.zeros_like(cross_features)
+            mask[:, 3:6] = 1.0  # keep text cosine sim (max, mean, name)
+            cross_features = cross_features * mask
+        elif "only_text_hn_cross" in abl:
+            mask = torch.zeros_like(cross_features)
+            mask[:, 3:6] = 1.0  # text cosine sim (max, mean, name)
+            mask[:, 12] = 1.0   # housenumber range overlap
+            cross_features = cross_features * mask
 
         # Elementwise product captures multiplicative interaction between pano
         # and osm representations. Motivated by ESIM (Chen et al. 2016,

@@ -318,11 +318,16 @@ def train(config: CorrespondenceTrainConfig) -> None:
             PARSE_REPORT_PATH.unlink()
         print("  No parse failures found")
 
+    all_text = config.all_text
+    if all_text:
+        print("all_text mode: encoding all tag values as text")
     train_dataset = LandmarkCorrespondenceDataset(
         train_pairs, text_embeddings, text_input_dim, include_difficulties,
+        all_text=all_text,
     )
     val_dataset = LandmarkCorrespondenceDataset(
         val_pairs, text_embeddings, text_input_dim, include_difficulties,
+        all_text=all_text,
     )
     print(f"After filtering: train={len(train_dataset):,}, val={len(val_dataset):,}")
     if len(train_dataset) == 0:
@@ -345,6 +350,7 @@ def train(config: CorrespondenceTrainConfig) -> None:
     )
 
     # Create model
+    ablation = frozenset(config.ablation)
     encoder_config = TagBundleEncoderConfig(
         text_input_dim=text_input_dim,
         text_proj_dim=config.encoder.text_proj_dim,
@@ -353,10 +359,13 @@ def train(config: CorrespondenceTrainConfig) -> None:
         encoder=encoder_config,
         mlp_hidden_dim=config.classifier.mlp_hidden_dim,
         dropout=config.classifier.dropout,
+        ablation=ablation,
     )
     model = CorrespondenceClassifier(classifier_config).to(device)
     num_params = sum(p.numel() for p in model.parameters())
     print(f"\nModel: {num_params:,} parameters")
+    if ablation:
+        print(f"Ablation: {sorted(ablation)}")
 
     # Optimizer
     optimizer = AdamW(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
