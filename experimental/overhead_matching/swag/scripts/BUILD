@@ -889,6 +889,22 @@ py_binary(
 )
 
 py_binary(
+  name="train_simple_correspondence",
+  srcs=["train_simple_correspondence.py"],
+  deps=[
+    requirement("torch"),
+    requirement("tensorboard"),
+    requirement("tqdm"),
+    requirement("numpy"),
+    requirement("scikit-learn"),
+    ":correspondence_configs",
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:simple_correspondence_dataset",
+    "//experimental/overhead_matching/swag/model:simple_correspondence_model",
+  ]
+)
+
+py_binary(
   name="export_correspondence_similarity",
   srcs=["export_correspondence_similarity.py"],
   deps=[
@@ -900,8 +916,10 @@ py_binary(
     "//experimental/overhead_matching/swag/data:vigor_dataset",
     "//experimental/overhead_matching/swag/data:landmark_correspondence_dataset",
     "//experimental/overhead_matching/swag/evaluation:correspondence_matching",
+    "//experimental/overhead_matching/swag/evaluation:simple_correspondence_export",
     "//experimental/overhead_matching/swag/evaluation:retrieval_metrics",
     "//experimental/overhead_matching/swag/model:landmark_correspondence_model",
+    "//experimental/overhead_matching/swag/model:simple_correspondence_model",
     "//experimental/overhead_matching/swag/model:additional_panorama_extractors",
     ":landmark_pairing_cli_lib",
   ]

@@ -242,3 +242,17 @@ py_library(
     "//experimental/overhead_matching/swag/data:landmark_correspondence_dataset",
   ],
 )
+
+py_library(
+  name = "simple_correspondence_export",
+  srcs = ["simple_correspondence_export.py"],
+  visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+  deps = [
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("tqdm"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:simple_correspondence_dataset",
+    ":correspondence_matching",
+  ],
+)

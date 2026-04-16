@@ -97,6 +97,8 @@ def main():
     parser.add_argument("--uniqueness_weighted", action="store_true",
                         help="Weight matched pairs by pano landmark uniqueness "
                              "(1/log2(1 + n_matches))")
+    parser.add_argument("--simple", action="store_true",
+                        help="Use SimpleCorrespondenceClassifier (text-only encoder, 4 cross features)")
     args = parser.parse_args()
 
     dataset_path = args.dataset_path.expanduser().resolve()
@@ -163,12 +165,22 @@ def main():
 
     # 2. Load model
     print(f"Loading model from {args.model_path}")
-    encoder_config = TagBundleEncoderConfig(text_input_dim=text_input_dim, text_proj_dim=128)
-    classifier_config = CorrespondenceClassifierConfig(encoder=encoder_config)
-    model = CorrespondenceClassifier(classifier_config).to(device)
+    if args.simple:
+        from experimental.overhead_matching.swag.model.simple_correspondence_model import (
+            SimpleCorrespondenceClassifier,
+            SimpleCorrespondenceClassifierConfig,
+            SimpleTagBundleEncoderConfig,
+        )
+        enc = SimpleTagBundleEncoderConfig(text_input_dim=text_input_dim, text_proj_dim=128)
+        cfg = SimpleCorrespondenceClassifierConfig(encoder=enc)
+        model = SimpleCorrespondenceClassifier(cfg).to(device)
+    else:
+        encoder_config = TagBundleEncoderConfig(text_input_dim=text_input_dim, text_proj_dim=128)
+        classifier_config = CorrespondenceClassifierConfig(encoder=encoder_config)
+        model = CorrespondenceClassifier(classifier_config).to(device)
     model.load_state_dict(torch.load(args.model_path, map_location=device, weights_only=True))
     model.eval()
-    print(f"  Model loaded, device={device}")
+    print(f"  Model loaded ({'simple' if args.simple else 'standard'}), device={device}")
 
     # 3. Load VigorDataset
     landmark_version = args.landmark_version or auto_detect_landmark_version(dataset_path)
@@ -197,18 +209,33 @@ def main():
 
     # 5. Precompute raw cost data or build similarity matrix
     if args.save_raw:
-        # Use checkpoint dir next to output for resumability
-        _ckpt_dir = str(args.output_path.expanduser().resolve()) + ".checkpoints"
-        print(f"Precomputing raw cost matrix data (checkpoints: {_ckpt_dir})...")
-        raw_data = cm.precompute_raw_cost_data(
-            model=model,
-            text_embeddings=text_embeddings,
-            text_input_dim=text_input_dim,
-            dataset=dataset,
-            pano_tags_from_pano_id=pano_tags_from_pano_id,
-            device=device,
-            checkpoint_dir=_ckpt_dir,
-        )
+        if args.simple:
+            print(f"Precomputing raw cost matrix data (simple)...")
+            from experimental.overhead_matching.swag.evaluation.simple_correspondence_export import (
+                simple_precompute_raw_cost_data,
+            )
+            raw_data = simple_precompute_raw_cost_data(
+                model=model,
+                text_embeddings=text_embeddings,
+                text_input_dim=text_input_dim,
+                dataset=dataset,
+                pano_tags_from_pano_id=pano_tags_from_pano_id,
+                device=device,
+            )
+            _ckpt_dir = None
+        else:
+            # Use checkpoint dir next to output for resumability
+            _ckpt_dir = str(args.output_path.expanduser().resolve()) + ".checkpoints"
+            print(f"Precomputing raw cost matrix data (checkpoints: {_ckpt_dir})...")
+            raw_data = cm.precompute_raw_cost_data(
+                model=model,
+                text_embeddings=text_embeddings,
+                text_input_dim=text_input_dim,
+                dataset=dataset,
+                pano_tags_from_pano_id=pano_tags_from_pano_id,
+                device=device,
+                checkpoint_dir=_ckpt_dir,
+            )
 
         # Save raw data — cost matrix as .npy (handles large arrays without pickle OOM),
         # metadata as torch .pt
@@ -233,10 +260,11 @@ def main():
         print(f"Saved raw cost data to {cost_npy_path} + {output_path}")
 
         # Clean up checkpoints after successful save
-        import shutil
-        if os.path.exists(_ckpt_dir):
-            shutil.rmtree(_ckpt_dir)
-            print(f"Cleaned up checkpoints at {_ckpt_dir}")
+        if _ckpt_dir is not None:
+            import shutil
+            if os.path.exists(_ckpt_dir):
+                shutil.rmtree(_ckpt_dir)
+                print(f"Cleaned up checkpoints at {_ckpt_dir}")
     else:
         print(f"Building similarity matrix (method={args.method}, agg={args.aggregation}, "
               f"threshold={args.prob_threshold}, uniqueness={args.uniqueness_weighted})")
