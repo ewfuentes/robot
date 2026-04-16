@@ -67,8 +67,18 @@ class HistogramFilterConfig:
     initial_offset_std_deg: float = 0.0117  # ~1300m offset
     zoom_level: int = 20
     patch_size_px: int = 640
+    # source_px: actual footprint of each satellite patch in zoom-level pixels.
+    # When satellite images are resolution-normalized (cropped to source_px and
+    # resized to patch_size_px), the ground footprint is source_px, not patch_size_px.
+    # Read from satellite_bbox.json; defaults to patch_size_px (no normalization).
+    source_px: int | None = None
     odometry_noise: OdometryNoiseConfig | None = None  # Optional odometry noise config
     max_chunk_gib: float = 2.0  # Peak GPU memory per chunk for cell-to-patch mapping
+
+    @property
+    def footprint_px(self) -> float:
+        """Ground footprint of each satellite patch in zoom-level pixels."""
+        return float(self.source_px if self.source_px is not None else self.patch_size_px)
 
 
 @dataclass
@@ -267,13 +277,14 @@ def evaluate_histogram_on_paths(
             convergence_costs_by_radius[radius] = []
 
     with torch.no_grad():
-        # Build GridSpec from dataset bounds with buffer of half patch size
+        # Build GridSpec from dataset bounds with buffer of half patch footprint
         min_lat, max_lat, min_lon, max_lon = get_dataset_bounds(vigor_dataset)
-        cell_size_px = config.patch_size_px / config.subdivision_factor
+        footprint_px = config.footprint_px
+        cell_size_px = footprint_px / config.subdivision_factor
 
-        # Add buffer of half patch size (in pixels at zoom level)
+        # Add buffer of half patch footprint (in pixels at zoom level)
         # Convert to degrees using web mercator at the center latitude
-        patch_half_size_px = config.patch_size_px / 2.0
+        patch_half_size_px = footprint_px / 2.0
         center_lat = (min_lat + max_lat) / 2
         ref_y, ref_x = web_mercator.latlon_to_pixel_coords(center_lat, min_lon, config.zoom_level)
         buf_lat, _ = web_mercator.pixel_coords_to_latlon(ref_y - patch_half_size_px, ref_x, config.zoom_level)
@@ -289,11 +300,11 @@ def evaluate_histogram_on_paths(
             zoom_level=config.zoom_level,
             cell_size_px=cell_size_px,
         )
-        print(f"Grid size: {grid_spec.num_rows} x {grid_spec.num_cols} = {grid_spec.num_rows * grid_spec.num_cols} cells")
+        print(f"Grid size: {grid_spec.num_rows} x {grid_spec.num_cols} = {grid_spec.num_rows * grid_spec.num_cols} cells "
+              f"(cell={cell_size_px:.0f}px, footprint={footprint_px:.0f}px)")
 
         # Get patch positions and build mapping
         patch_positions_px = get_patch_positions_px(vigor_dataset, device)
-        patch_half_size_px = config.patch_size_px / 2.0
         mapping = build_cell_to_patch_mapping(
             grid_spec=grid_spec,
             patch_positions_px=patch_positions_px,
@@ -593,11 +604,22 @@ if __name__ == "__main__":
         )
         print(f"Odometry noise enabled: sigma_frac={odometry_noise_config.sigma_noise_frac}, seed={odometry_noise_config.seed}")
 
+    # Read source_px from satellite_bbox.json if available
+    source_px = None
+    sat_bbox_path = Path(args.dataset_path) / "satellite_bbox.json"
+    if sat_bbox_path.exists():
+        with open(sat_bbox_path) as f:
+            sat_bbox = json.load(f)
+        source_px = sat_bbox.get("source_px")
+    if source_px is not None and source_px != 640:
+        print(f"Resolution-normalized dataset: source_px={source_px} (footprint {source_px}px, image 640px)")
+
     config = HistogramFilterConfig(
         noise_percent=args.noise_percent,
         subdivision_factor=args.subdivision_factor,
         initial_std_deg=degrees_from_meters(2970.0),
         initial_offset_std_deg=degrees_from_meters(1300.0),
+        source_px=source_px,
         odometry_noise=odometry_noise_config,
         max_chunk_gib=args.max_chunk_gib,
     )
@@ -609,6 +631,7 @@ if __name__ == "__main__":
         "initial_offset_std_deg": config.initial_offset_std_deg,
         "zoom_level": config.zoom_level,
         "patch_size_px": config.patch_size_px,
+        "source_px": config.source_px,
     }
     if odometry_noise_config is not None:
         histogram_config_dict["odometry_noise"] = {
