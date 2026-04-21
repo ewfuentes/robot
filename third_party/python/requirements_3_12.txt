@@ -482,6 +482,8 @@ cligj==0.7.2 \
     # via
     #   -c constraints.txt
     #   rasterio
+clip @ git+https://github.com/openai/CLIP.git@d05afc436d78f1c48dc0dbf8e5980a9d471f35f6
+    # via -r third_party/python/requirements_3_12.in
 cloudpickle==3.1.1 \
     --hash=sha256:b216fa8ae4019d5482a8ac3c95d8f6346115d8835911fd4aefd1a445e4242c64 \
     --hash=sha256:c8c5a44295039331ee9dad40ba100a9c7297b6f988e50e87ccdf3765a668350e
@@ -962,6 +964,7 @@ ftfy==6.3.1 \
     --hash=sha256:9b3c3d90f84fb267fe64d375a07b7f8912d817cf86009ae134aa03e1819506ec
     # via
     #   -c constraints.txt
+    #   clip
     #   dinov3
     #   open-clip-torch
 fvcore==0.1.5.post20221221 \
@@ -2452,6 +2455,7 @@ packaging==25.0 \
     # via
     #   -c constraints.txt
     #   altair
+    #   clip
     #   geopandas
     #   huggingface-hub
     #   hydra-core
@@ -3640,6 +3644,7 @@ regex==2025.7.34 \
     --hash=sha256:fd5edc3f453de727af267c7909d083e19f6426fc9dd149e332b6034f2a5611e6
     # via
     #   -c constraints.txt
+    #   clip
     #   dinov3
     #   open-clip-torch
     #   transformers
@@ -4395,6 +4400,7 @@ torch==2.7.0+cu128 \
     # via
     #   -c constraints.txt
     #   -r third_party/python/requirements_3_12.in
+    #   clip
     #   depth-pro
     #   dinov2
     #   dinov3
@@ -4435,6 +4441,7 @@ torchvision==0.22.0+cu128 \
     --hash=sha256:f5dae1307c34813425c0b753530c035e1cc72af0bded395d1ba64dcb2872889f
     # via
     #   -c constraints.txt
+    #   clip
     #   depth-pro
     #   dinov2
     #   dinov3
@@ -4470,6 +4477,7 @@ tqdm==4.67.1 \
     # via
     #   -c constraints.txt
     #   -r third_party/python/requirements_3_12.in
+    #   clip
     #   fvcore
     #   gdown
     #   hloc

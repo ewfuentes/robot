@@ -33,6 +33,17 @@ py_library(
 )
 
 py_library(
+  name = "cvgtext_dataset",
+  srcs = ["cvgtext_dataset.py"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+  ],
+  deps = [
+    requirement("pandas"),
+  ],
+)
+
+py_library(
   name = "vigor_filters",
   srcs = ["vigor_filters.py"],
   visibility = ["//experimental/overhead_matching/swag:__subpackages__"],

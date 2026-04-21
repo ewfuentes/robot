@@ -2,6 +2,29 @@
 load("@pip//:requirements.bzl", "requirement")
 load("@rules_python//python:packaging.bzl", "py_wheel", "py_package")
 
+py_binary(
+  name="inspect_cvgtext_checkpoint",
+  srcs=["inspect_cvgtext_checkpoint.py"],
+  deps=[
+    "//common/torch:load_torch_deps",
+    requirement("torch"),
+  ],
+)
+
+py_binary(
+  name="evaluate_cvgtext_crosstext2loc",
+  srcs=["evaluate_cvgtext_crosstext2loc.py"],
+  deps=[
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:cvgtext_dataset",
+    "//experimental/overhead_matching/swag/evaluation:retrieval_metrics",
+    requirement("torch"),
+    requirement("Pillow"),
+    requirement("tqdm"),
+    requirement("clip"),
+  ],
+)
+
 py_library(
   name="pairing",
   srcs=["pairing.py"],
