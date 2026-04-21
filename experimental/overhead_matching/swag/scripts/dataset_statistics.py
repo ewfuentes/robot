@@ -160,8 +160,8 @@ def parse_satellite_coords(sat_dir: Path) -> pd.DataFrame:
 def compute_trajectory_km(dataset_path: Path) -> float | None:
     if not (dataset_path / "pano_id_mapping.csv").exists():
         return None
-    pano_ids, cum_dist = load_trajectory(dataset_path)
-    if len(pano_ids) < 2:
+    _, cum_dist = load_trajectory(dataset_path)
+    if not cum_dist:
         return None
     return cum_dist[-1] / 1000.0
 
