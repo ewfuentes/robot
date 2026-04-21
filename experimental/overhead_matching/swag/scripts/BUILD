@@ -21,7 +21,7 @@ py_binary(
     requirement("torch"),
     requirement("Pillow"),
     requirement("tqdm"),
-    requirement("clip"),
+    requirement("crosstext2loc"),
   ],
 )
 

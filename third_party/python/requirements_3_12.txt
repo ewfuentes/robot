@@ -483,7 +483,10 @@ cligj==0.7.2 \
     #   -c constraints.txt
     #   rasterio
 clip @ git+https://github.com/openai/CLIP.git@d05afc436d78f1c48dc0dbf8e5980a9d471f35f6
-    # via -r third_party/python/requirements_3_12.in
+    # via
+    #   -c constraints.txt
+    #   -r third_party/python/requirements_3_12.in
+    #   crosstext2loc
 cloudpickle==3.1.1 \
     --hash=sha256:b216fa8ae4019d5482a8ac3c95d8f6346115d8835911fd4aefd1a445e4242c64 \
     --hash=sha256:c8c5a44295039331ee9dad40ba100a9c7297b6f988e50e87ccdf3765a668350e
@@ -580,6 +583,10 @@ contourpy==1.3.3 \
     #   -c constraints.txt
     #   matplotlib
     #   supervision
+crosstext2loc @ git+https://github.com/ewfuentes/CVG-Text.git@c3b5727fd8380c35c4f3886b590b8734131db34e
+    # via
+    #   -c constraints.txt
+    #   -r third_party/python/requirements_3_12.in
 cryptography==45.0.7 \
     --hash=sha256:06ce84dc14df0bf6ea84666f958e6080cdb6fe1231be2a51f3fc1267d9f3fb34 \
     --hash=sha256:16ede8a4f7929b4b7ff3642eba2bf79aa1d71f24ab6ee443935c0d269b6bc513 \
@@ -2217,6 +2224,7 @@ numpy==1.26.4 \
     #   cert-tools
     #   clarabel
     #   contourpy
+    #   crosstext2loc
     #   cvxpy
     #   cvxpylayers
     #   depth-pro
@@ -2634,6 +2642,7 @@ pillow==10.4.0 \
     # via
     #   -c constraints.txt
     #   -r third_party/python/requirements_3_12.in
+    #   crosstext2loc
     #   easyocr
     #   fvcore
     #   imageio
@@ -3412,6 +3421,7 @@ pyyaml==6.0.2 \
     # via
     #   -c constraints.txt
     #   -r third_party/python/requirements_3_12.in
+    #   crosstext2loc
     #   easyocr
     #   fvcore
     #   huggingface-hub
@@ -4401,6 +4411,7 @@ torch==2.7.0+cu128 \
     #   -c constraints.txt
     #   -r third_party/python/requirements_3_12.in
     #   clip
+    #   crosstext2loc
     #   depth-pro
     #   dinov2
     #   dinov3
@@ -4442,6 +4453,7 @@ torchvision==0.22.0+cu128 \
     # via
     #   -c constraints.txt
     #   clip
+    #   crosstext2loc
     #   depth-pro
     #   dinov2
     #   dinov3
@@ -4478,6 +4490,7 @@ tqdm==4.67.1 \
     #   -c constraints.txt
     #   -r third_party/python/requirements_3_12.in
     #   clip
+    #   crosstext2loc
     #   fvcore
     #   gdown
     #   hloc
@@ -4513,6 +4526,7 @@ transformers==4.47.1 \
     # via
     #   -c constraints.txt
     #   -r third_party/python/requirements_3_12.in
+    #   crosstext2loc
     #   sentence-transformers
 triton==3.3.0 ; sys_platform == 'linux' \
     --hash=sha256:0f12a8611eff721d3fd837d0cc2a1f2f8a4d382ec3fc3a8d6a07a5b1e535c81c \

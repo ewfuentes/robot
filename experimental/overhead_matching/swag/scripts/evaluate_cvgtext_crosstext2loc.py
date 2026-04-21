@@ -25,43 +25,15 @@ import subprocess
 from pathlib import Path
 
 import common.torch.load_torch_deps  # noqa: F401
-import clip
 import torch
 import torch.nn.functional as F
+from crosstext2loc import load_model
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 from experimental.overhead_matching.swag.data.cvgtext_dataset import CVGTextDataset
 from experimental.overhead_matching.swag.evaluation import retrieval_metrics
-
-
-MAX_TEXT_LEN = 300
-
-
-def _interpolate_text_positional_embedding(pos_embedding: torch.Tensor, new_len: int) -> torch.Tensor:
-    """Linear-interpolate text positional embedding from its trained length to `new_len`.
-
-    Standard ViT positional-embedding resize (Dosovitskiy et al.). CrossText2Loc
-    fine-tuned ViT-L/14@336 with text pos embedding pre-interpolated from 77 → 300
-    so longer captions fit; we reproduce that init here before loading the state dict.
-    """
-    # pos_embedding: (seq_len, dim) -> (1, dim, seq_len) for F.interpolate
-    x = pos_embedding.unsqueeze(0).permute(0, 2, 1)
-    x = F.interpolate(x, size=new_len, mode="linear", align_corners=False)
-    return x.permute(0, 2, 1).squeeze(0)
-
-
-def _expand_clip_text_context(model: torch.nn.Module, new_len: int) -> None:
-    """Mutate a `clip` model in place to accept up to `new_len` text tokens."""
-    model.positional_embedding = torch.nn.Parameter(
-        _interpolate_text_positional_embedding(model.positional_embedding.data, new_len)
-    )
-    mask = torch.empty(new_len, new_len, dtype=model.positional_embedding.dtype)
-    mask.fill_(float("-inf"))
-    mask.triu_(1)
-    for block in model.transformer.resblocks:
-        block.attn_mask = mask
 
 
 def _find_checkpoint(model_dir: Path, train_city: str, kind: str) -> Path:
@@ -74,45 +46,54 @@ def _find_checkpoint(model_dir: Path, train_city: str, kind: str) -> Path:
     return Path(matches[0])
 
 
-def _build_model(checkpoint_path: Path, device: torch.device) -> tuple[torch.nn.Module, object]:
-    model, preprocess = clip.load("ViT-L/14@336px", device="cpu", jit=False)
-    model = model.float()
-    _expand_clip_text_context(model, MAX_TEXT_LEN)
+def _build_model(checkpoint_path: Path, device: torch.device):
+    """Load CrossText2Loc's CLIP-L/14@336 via the upstream `load_model`.
 
-    state_dict = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-    if isinstance(state_dict, dict) and "state_dict" in state_dict and not any(
-        k.startswith("visual.") for k in state_dict
-    ):
-        state_dict = state_dict["state_dict"]
-    msg = model.load_state_dict(state_dict, strict=False)
-    if msg.missing_keys:
-        raise RuntimeError(
-            f"Missing keys when loading {checkpoint_path}: {msg.missing_keys[:5]}..."
-        )
-    if msg.unexpected_keys:
-        print(f"[load_state_dict] {len(msg.unexpected_keys)} unexpected keys (ignored)")
-
+    Upstream hard-wires `expand_text=True` (77→300 text pos-embed interp) and
+    `is_stv=False` (square 336×336 imagery) for the `sat` and `osm` retrieval
+    checkpoints, so that's what we pass here. The returned `preprocessor` is
+    the upstream callable that takes `(image, text)` and returns a tuple of
+    tensors — we call it with a dummy text for image batches and a dummy
+    image for text batches so both paths go through their canonical code.
+    """
+    model, preprocessor, _evaluator, _forward = load_model(
+        "CLIP-L/14@336",
+        expand_text=True,
+        checkpoint_path=str(checkpoint_path),
+        is_stv=False,
+    )
     model = model.to(device).eval()
-    return model, preprocess
+    return model, preprocessor
 
 
 class _ImagePathDataset(Dataset):
-    def __init__(self, paths: list[str], preprocess):
+    """Loads PNG paths and runs them through the upstream preprocessor.
+
+    Upstream's `preprocessor` is a `(image, text) -> (image_tensor, text_id)`
+    bundled callable; we pass an empty text so the tokenizer side is a no-op
+    and we only keep the image tensor. Going through upstream for image
+    preprocessing (rather than re-invoking `clip.load` ourselves) keeps the
+    transform pipeline identical to what CrossText2Loc's `zeroshot.py` would
+    have applied.
+    """
+
+    def __init__(self, paths: list[str], preprocessor):
         self.paths = paths
-        self.preprocess = preprocess
+        self.preprocessor = preprocessor
 
     def __len__(self) -> int:
         return len(self.paths)
 
     def __getitem__(self, idx: int):
         img = Image.open(self.paths[idx]).convert("RGB")
-        return self.preprocess(img)
+        image_tensor, _text_id = self.preprocessor(img, "")
+        return image_tensor
 
 
 @torch.no_grad()
 def _encode_images(
     model: torch.nn.Module,
-    preprocess,
+    preprocessor,
     paths: list[str],
     device: torch.device,
     batch_size: int,
@@ -120,7 +101,7 @@ def _encode_images(
     desc: str,
 ) -> torch.Tensor:
     loader = DataLoader(
-        _ImagePathDataset(paths, preprocess),
+        _ImagePathDataset(paths, preprocessor),
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
@@ -138,15 +119,24 @@ def _encode_images(
 @torch.no_grad()
 def _encode_texts(
     model: torch.nn.Module,
+    preprocessor,
     texts: list[str],
     device: torch.device,
     batch_size: int,
     desc: str,
 ) -> torch.Tensor:
+    """Tokenize via upstream's preprocessor so the tokenization (incl. the
+    `context_length=MAX_TEXT_LEN, truncate=True` args) matches `zeroshot.py`.
+
+    The upstream preprocessor needs an image too; we pass a tiny dummy and
+    discard the image tensor.
+    """
+    dummy_image = Image.new("RGB", (336, 336))
     feats = []
     for start in tqdm(range(0, len(texts), batch_size), desc=desc):
         chunk = texts[start : start + batch_size]
-        tokens = clip.tokenize(chunk, context_length=MAX_TEXT_LEN, truncate=True).to(device)
+        _image, tokens = preprocessor(dummy_image, chunk)
+        tokens = tokens.to(device)
         f = model.encode_text(tokens)
         f = F.normalize(f, dim=-1)
         feats.append(f.cpu())
@@ -237,14 +227,14 @@ def main():
     checkpoint_dir = args.dataset_root / "models"
     checkpoint_path = _find_checkpoint(checkpoint_dir, args.train_city, args.gallery_kind)
     print(f"Loading CrossText2Loc checkpoint: {checkpoint_path.name}")
-    model, preprocess = _build_model(checkpoint_path, device)
+    model, preprocessor = _build_model(checkpoint_path, device)
 
     text_feats = _encode_texts(
-        model, dataset.texts, device, args.text_batch_size, desc="text"
+        model, preprocessor, dataset.texts, device, args.text_batch_size, desc="text"
     )
     image_feats = _encode_images(
         model,
-        preprocess,
+        preprocessor,
         dataset.gallery_image_paths,
         device,
         args.image_batch_size,
