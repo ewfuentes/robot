@@ -248,8 +248,8 @@ py_binary(
   ]
 )
 
-py_library(
-  name = "dataset_statistics_lib",
+py_binary(
+  name = "dataset_statistics",
   srcs = ["dataset_statistics.py"],
   visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
   deps = [
@@ -257,34 +257,19 @@ py_library(
     requirement("pandas"),
     requirement("pyarrow"),
     requirement("Pillow"),
-    ":create_eval_paths_from_panorama_trajectory_lib",
+    ":create_eval_paths_from_panorama_trajectory",
     "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
     "//common/gps:web_mercator",
   ],
 )
 
 py_binary(
-  name = "dataset_statistics",
-  srcs = ["dataset_statistics.py"],
-  deps = [
-    ":dataset_statistics_lib",
-  ],
-)
-
-py_library(
-  name = "create_eval_paths_from_panorama_trajectory_lib",
+  name = "create_eval_paths_from_panorama_trajectory",
   srcs = ["create_eval_paths_from_panorama_trajectory.py"],
   visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
   deps = [
+    "//common/gps:web_mercator",
     "//common/math:haversine",
-  ],
-)
-
-py_binary(
-  name = "create_eval_paths_from_panorama_trajectory",
-  srcs = ["create_eval_paths_from_panorama_trajectory.py"],
-  deps = [
-    ":create_eval_paths_from_panorama_trajectory_lib",
   ],
 )
 
@@ -292,8 +277,9 @@ py_test(
   name = "create_eval_paths_from_panorama_trajectory_test",
   srcs = ["create_eval_paths_from_panorama_trajectory_test.py"],
   deps = [
-    ":create_eval_paths_from_panorama_trajectory_lib",
-    ":dataset_statistics_lib",
+    ":create_eval_paths_from_panorama_trajectory",
+    ":dataset_statistics",
+    "//common/gps:web_mercator",
     "//common/math:haversine",
   ],
 )

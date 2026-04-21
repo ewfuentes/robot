@@ -3,9 +3,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from common.gps.web_mercator import EARTH_RADIUS_M
 from common.math.haversine import find_d_on_unit_circle
 from experimental.overhead_matching.swag.scripts.create_eval_paths_from_panorama_trajectory import (
-    EARTH_RADIUS_M,
     load_trajectory,
 )
 from experimental.overhead_matching.swag.scripts.dataset_statistics import (

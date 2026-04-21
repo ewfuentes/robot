@@ -16,9 +16,8 @@ import csv
 import json
 from pathlib import Path
 
+from common.gps.web_mercator import EARTH_RADIUS_M
 from common.math.haversine import find_d_on_unit_circle
-
-EARTH_RADIUS_M = 6378137.0
 
 
 def load_trajectory(dataset_path: Path) -> tuple[list[str], list[float]]:
