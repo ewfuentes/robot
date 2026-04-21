@@ -135,8 +135,21 @@ def match_and_aggregate(
     aggregation: AggregationMode,
     prob_threshold: float = 0.3,
     uniqueness_weights: np.ndarray | None = None,
+    use_dustbin: bool = True,
 ) -> MatchResult:
-    """Run bipartite matching on a cost matrix and aggregate to a score."""
+    """Run bipartite matching on a cost matrix and aggregate to a score.
+
+    With `use_dustbin=True` (default, Hungarian only): the cost matrix is
+    augmented with n_pano extra "dustbin" columns each valued at
+    `prob_threshold`. Hungarian then optimizes jointly over real-column and
+    dustbin matches, so it picks a real column iff its probability exceeds
+    the threshold — avoiding the pathology where the globally-optimal
+    forced 1-to-1 assignment saddles a row with a bad partner that we'd
+    later discard anyway. Dustbin matches are stripped before aggregation.
+
+    `use_dustbin=False` reproduces the legacy post-hoc-threshold behavior,
+    useful for reproducing older similarity artifacts.
+    """
     n_pano, n_osm = cost_matrix.shape
     if n_pano == 0 or n_osm == 0:
         return MatchResult(
@@ -146,9 +159,18 @@ def match_and_aggregate(
 
     if method == MatchingMethod.HUNGARIAN:
         from scipy.optimize import linear_sum_assignment
-        row_ind, col_ind = linear_sum_assignment(-cost_matrix)
+        if use_dustbin:
+            dustbin = np.full(
+                (n_pano, n_pano), prob_threshold, dtype=cost_matrix.dtype,
+            )
+            aug = np.hstack([cost_matrix, dustbin])
+            row_ind, col_ind = linear_sum_assignment(-aug)
+        else:
+            row_ind, col_ind = linear_sum_assignment(-cost_matrix)
         pano_inds, osm_inds, probs = [], [], []
         for r, c in zip(row_ind, col_ind):
+            if c >= n_osm:  # dustbin column
+                continue
             p = cost_matrix[r, c]
             if p >= prob_threshold:
                 pano_inds.append(int(r))
@@ -652,8 +674,13 @@ def similarity_from_raw_data(
     aggregation: AggregationMode = AggregationMode.SUM,
     prob_threshold: float = 0.3,
     uniqueness_weighted: bool = False,
+    use_dustbin: bool = True,
 ) -> torch.Tensor:
-    """Build similarity matrix from precomputed raw cost data."""
+    """Build similarity matrix from precomputed raw cost data.
+
+    See `match_and_aggregate` for the meaning of `use_dustbin`. Pass
+    `use_dustbin=False` to reproduce legacy (post-hoc threshold) artifacts.
+    """
     num_panos = len(dataset._panorama_metadata)
     num_sats = len(dataset._satellite_metadata)
     similarity = torch.zeros(num_panos, num_sats)
@@ -691,6 +718,7 @@ def similarity_from_raw_data(
             result = match_and_aggregate(
                 sub_cost, method, aggregation, prob_threshold,
                 uniqueness_weights=u_weights,
+                use_dustbin=use_dustbin,
             )
             similarity[pano_idx, sat_idx] = result.similarity_score
 

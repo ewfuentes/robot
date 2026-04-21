@@ -224,5 +224,71 @@ class TestMatchAndAggregate(unittest.TestCase):
         self.assertAlmostEqual(result.similarity_score, 1.8, places=5)
 
 
+class TestDustbinHungarian(unittest.TestCase):
+    """Dustbin-augmented Hungarian should beat post-hoc thresholding when
+    an unforced 1-to-1 assignment saddles a row with a sub-threshold match
+    to free up a globally-optimal pairing.
+    """
+
+    def test_dustbin_routes_weak_rows_to_sink(self):
+        # pano0 has one strong candidate (0.90) and one weak (0.50); pano1
+        # only has weak options (0.70 and 0.75). With threshold 0.80 only
+        # pano0→osm0 (0.90) is acceptable.
+        #
+        # Post-hoc threshold (use_dustbin=False) still lets Hungarian force
+        # pano1→osm1 (0.75) temporarily, then drops it. pano0→osm0 survives.
+        # Dustbin should produce the same set of kept matches.
+        cost = np.array([[0.90, 0.50], [0.70, 0.75]], dtype=np.float32)
+
+        without = cm.match_and_aggregate(
+            cost, cm.MatchingMethod.HUNGARIAN, cm.AggregationMode.SUM,
+            prob_threshold=0.80, use_dustbin=False,
+        )
+        with_dustbin = cm.match_and_aggregate(
+            cost, cm.MatchingMethod.HUNGARIAN, cm.AggregationMode.SUM,
+            prob_threshold=0.80, use_dustbin=True,
+        )
+        np.testing.assert_allclose(without.match_probs, [0.9], rtol=1e-5)
+        np.testing.assert_allclose(with_dustbin.match_probs, [0.9], rtol=1e-5)
+
+    def test_dustbin_prevents_saddling(self):
+        # Classic failure case: the forced 1-to-1 assignment that maximizes
+        # total probability pairs pano0 with its 2nd choice so pano1 can
+        # take pano0's 1st choice, even though both end up sub-threshold.
+        # Post-hoc threshold drops both; dustbin keeps pano0's 1st choice
+        # and sends pano1 to the sink.
+        cost = np.array([
+            [0.85, 0.82],  # pano0 prefers osm0 (0.85), osm1 also ok (0.82)
+            [0.84, 0.10],  # pano1 needs osm0 but osm1 is way below
+        ], dtype=np.float32)
+        # Hungarian (maximize total) picks 0.82 + 0.84 = 1.66 over 0.85 + 0.10 = 0.95.
+        without = cm.match_and_aggregate(
+            cost, cm.MatchingMethod.HUNGARIAN, cm.AggregationMode.SUM,
+            prob_threshold=0.83, use_dustbin=False,
+        )
+        with_dustbin = cm.match_and_aggregate(
+            cost, cm.MatchingMethod.HUNGARIAN, cm.AggregationMode.SUM,
+            prob_threshold=0.83, use_dustbin=True,
+        )
+        # Without dustbin: forced assignment gives (pano0→osm1=0.82, pano1→osm0=0.84);
+        # 0.82 < 0.83 → dropped; 0.84 ≥ 0.83 → kept. Only pano1 survives.
+        np.testing.assert_allclose(sorted(without.match_probs), [0.84], rtol=1e-5)
+        # With dustbin: should pick the >threshold match (pano0→osm0=0.85)
+        # and sink pano1.
+        np.testing.assert_allclose(
+            sorted(with_dustbin.match_probs), [0.85], rtol=1e-5,
+        )
+
+    def test_dustbin_doesnt_fabricate_matches(self):
+        # All entries below threshold → all rows go to dustbin, zero matches.
+        cost = np.array([[0.1, 0.2], [0.3, 0.4]], dtype=np.float32)
+        result = cm.match_and_aggregate(
+            cost, cm.MatchingMethod.HUNGARIAN, cm.AggregationMode.SUM,
+            prob_threshold=0.5, use_dustbin=True,
+        )
+        self.assertEqual(result.match_probs, [])
+        self.assertEqual(result.similarity_score, 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

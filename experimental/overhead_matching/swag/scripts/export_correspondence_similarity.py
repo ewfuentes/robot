@@ -217,6 +217,14 @@ def main():
                         help="Min P(match) to include (used with --compute_similarity).")
     parser.add_argument("--uniqueness_weighted", action="store_true",
                         help="Weight matched pairs by pano landmark uniqueness.")
+    parser.add_argument("--no_dustbin", action="store_true",
+                        help="Disable the Hungarian dustbin (augment with "
+                             "threshold-valued sink columns). With the "
+                             "dustbin on (default), the threshold is baked "
+                             "into the optimization so low-prob rows route "
+                             "to the sink instead of saddling other rows "
+                             "with bad assignments. Use --no_dustbin to "
+                             "reproduce legacy post-hoc-threshold artifacts.")
     parser.add_argument("--ks", type=str, default="1,5,10",
                         help="Comma-separated top-k values for retrieval metrics "
                              "(used with --compute_similarity).")
@@ -248,7 +256,8 @@ def main():
     print(
         f"Building similarity matrix (method={args.method}, "
         f"agg={args.aggregation}, threshold={args.prob_threshold}, "
-        f"uniqueness={args.uniqueness_weighted})"
+        f"uniqueness={args.uniqueness_weighted}, "
+        f"dustbin={not args.no_dustbin})"
     )
     dataset = load_vigor_dataset(dataset_path, args.landmark_version,
                                  args.inflation_factor)
@@ -258,6 +267,7 @@ def main():
         cm.AggregationMode(args.aggregation),
         args.prob_threshold,
         uniqueness_weighted=args.uniqueness_weighted,
+        use_dustbin=not args.no_dustbin,
     )
 
     ks = [int(k) for k in args.ks.split(",")]
