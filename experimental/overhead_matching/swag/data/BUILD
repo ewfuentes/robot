@@ -39,7 +39,11 @@ py_library(
     "//experimental/overhead_matching/swag:__subpackages__",
   ],
   deps = [
+    ":vigor_dataset",
+    "//common/torch:load_torch_deps",
     requirement("pandas"),
+    requirement("torch"),
+    requirement("torchvision"),
   ],
 )
 

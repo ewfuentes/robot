@@ -16,6 +16,19 @@ py_binary(
   ],
 )
 
+py_binary(
+  name="evaluate_cvgtext_swag",
+  srcs=["evaluate_cvgtext_swag.py"],
+  deps=[
+    ":export_similarity_matrix",
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:cvgtext_dataset",
+    "//experimental/overhead_matching/swag/evaluation:evaluate_swag",
+    "//experimental/overhead_matching/swag/evaluation:retrieval_metrics",
+    requirement("torch"),
+  ],
+)
+
 py_library(
   name="pairing",
   srcs=["pairing.py"],
