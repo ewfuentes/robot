@@ -46,8 +46,6 @@ from experimental.overhead_matching.swag.data.landmark_correspondence_dataset im
 )
 from experimental.overhead_matching.swag.model.landmark_correspondence_model import (
     TAG_KEY_TO_IDX,
-    ValueType,
-    key_type,
 )
 from experimental.overhead_matching.swag.model.additional_panorama_extractors import (
     extract_panorama_data_across_cities,
@@ -58,7 +56,8 @@ from experimental.overhead_matching.swag.scripts.landmark_pairing_cli import (
 
 
 def collect_unique_text_values(data_dir: Path) -> dict[str, int]:
-    """Scan JSONL files and collect all unique text-type tag values with counts.
+    """Scan JSONL files and collect unique tag values (any key in TAG_KEY_TO_IDX)
+    with counts.
 
     Args:
         data_dir: Root directory containing {Chicago,Seattle}/responses/ subdirs
@@ -89,7 +88,7 @@ def collect_unique_text_values(data_dir: Path) -> dict[str, int]:
                     for landmarks in [set1, set2]:
                         for tags in landmarks:
                             for k, v in tags.items():
-                                if key_type(k) == ValueType.TEXT:
+                                if k in TAG_KEY_TO_IDX:
                                     value_counts[v] += 1
                 except (json.JSONDecodeError, KeyError, ValueError):
                     skipped += 1
@@ -130,15 +129,15 @@ def collect_text_values_from_feather(feather_dirs: list[Path]) -> Counter:
                     continue
                 n_lm += 1
                 for k, v in props:
-                    if k in TAG_KEY_TO_IDX and key_type(k) == ValueType.TEXT:
+                    if k in TAG_KEY_TO_IDX:
                         value_counts[v] += 1
             print(f"  {feather_path.name}: {n_lm} landmarks, "
-                  f"{len(value_counts)} unique text values so far")
+                  f"{len(value_counts)} unique values so far")
     return value_counts
 
 
 def collect_text_values_from_pano_v2(pano_v2_base: Path) -> Counter:
-    """Collect text-type tag values from pano_v2 landmark pickles."""
+    """Collect tag values from pano_v2 landmark pickles (any key in TAG_KEY_TO_IDX)."""
     value_counts: Counter = Counter()
     pano_tags = extract_panorama_data_across_cities(
         pano_v2_base, extract_tags_from_pano_data,
@@ -146,9 +145,9 @@ def collect_text_values_from_pano_v2(pano_v2_base: Path) -> Counter:
     for pano_id, landmarks in pano_tags.items():
         for lm in landmarks:
             for k, v in lm["tags"]:
-                if k in TAG_KEY_TO_IDX and key_type(k) == ValueType.TEXT:
+                if k in TAG_KEY_TO_IDX:
                     value_counts[v] += 1
-    print(f"  {len(pano_tags)} panoramas, {len(value_counts)} unique text values")
+    print(f"  {len(pano_tags)} panoramas, {len(value_counts)} unique values")
     return value_counts
 
 

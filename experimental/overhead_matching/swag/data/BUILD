@@ -158,21 +158,6 @@ py_library(
   ],
 )
 
-py_library(
-  name = "simple_correspondence_dataset",
-  srcs = ["simple_correspondence_dataset.py"],
-  visibility = [
-    "//experimental/overhead_matching/swag:__subpackages__",
-    "//common/python:__subpackages__",
-  ],
-  deps = [
-    requirement("torch"),
-    "//common/torch:load_torch_deps",
-    "//experimental/overhead_matching/swag/model:simple_correspondence_model",
-    ":landmark_correspondence_dataset",
-  ],
-)
-
 py_test(
   name = "landmark_correspondence_dataset_test",
   srcs = ["landmark_correspondence_dataset_test.py"],

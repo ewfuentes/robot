@@ -344,20 +344,6 @@ py_library(
   ]
 )
 
-py_library(
-  name = "simple_correspondence_model",
-  srcs = ["simple_correspondence_model.py"],
-  visibility = [
-    "//experimental/overhead_matching/swag:__subpackages__",
-    "//common/python:__subpackages__",
-  ],
-  deps = [
-    requirement("torch"),
-    "//common/torch:load_torch_deps",
-    ":semantic_landmark_utils",
-  ]
-)
-
 py_test(
   name = "landmark_correspondence_model_test",
   srcs = ["landmark_correspondence_model_test.py"],
