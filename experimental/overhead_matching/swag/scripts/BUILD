@@ -3,15 +3,6 @@ load("@pip//:requirements.bzl", "requirement")
 load("@rules_python//python:packaging.bzl", "py_wheel", "py_package")
 
 py_binary(
-  name="inspect_cvgtext_checkpoint",
-  srcs=["inspect_cvgtext_checkpoint.py"],
-  deps=[
-    "//common/torch:load_torch_deps",
-    requirement("torch"),
-  ],
-)
-
-py_binary(
   name="evaluate_cvgtext_crosstext2loc",
   srcs=["evaluate_cvgtext_crosstext2loc.py"],
   deps=[

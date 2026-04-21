@@ -144,12 +144,9 @@ def _encode_texts(
 
 
 def _git_sha() -> str:
-    try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=Path(__file__).parent, text=True
-        ).strip()
-    except Exception:
-        return "unknown"
+    return subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=Path(__file__).parent, text=True
+    ).strip()
 
 
 def main():
@@ -171,18 +168,6 @@ def main():
     parser.add_argument("--text_batch_size", type=int, default=64)
     parser.add_argument("--image_batch_size", type=int, default=32)
     parser.add_argument("--num_workers", type=int, default=8)
-    parser.add_argument(
-        "--max_queries",
-        type=int,
-        default=None,
-        help="Optional cap on #queries for smoke tests.",
-    )
-    parser.add_argument(
-        "--max_gallery",
-        type=int,
-        default=None,
-        help="Optional cap on gallery size for smoke tests.",
-    )
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
 
@@ -196,28 +181,6 @@ def main():
         split=args.split,
         gallery_kind=gallery_dir_kind,
     )
-    if args.max_queries is not None:
-        dataset._panorama_metadata = dataset._panorama_metadata.iloc[: args.max_queries].reset_index(drop=True)
-    if args.max_gallery is not None:
-        kept = dataset._satellite_metadata.iloc[: args.max_gallery].reset_index(drop=True)
-        dataset._satellite_metadata = kept
-        # Remap positive indices to the truncated gallery; drop queries whose GT was cut.
-        kept_filenames = set(kept["filename"])
-        filename_to_new_idx = {fn: i for i, fn in enumerate(kept["filename"])}
-        keep_mask = []
-        new_positive_idxs = []
-        for _, row in dataset._panorama_metadata.iterrows():
-            fn = row["filename"]
-            if fn in kept_filenames:
-                keep_mask.append(True)
-                new_positive_idxs.append([filename_to_new_idx[fn]])
-            else:
-                keep_mask.append(False)
-                new_positive_idxs.append([])
-        dataset._panorama_metadata = dataset._panorama_metadata[keep_mask].reset_index(drop=True)
-        dataset._panorama_metadata["positive_satellite_idxs"] = [
-            p for p, k in zip(new_positive_idxs, keep_mask) if k
-        ]
 
     print(
         f"CVG-Text: train={args.train_city}, test={args.test_city}, gallery={args.gallery_kind}"
@@ -263,8 +226,6 @@ def main():
             "gallery_kind": args.gallery_kind,
             "split": args.split,
             "checkpoint": checkpoint_path.name,
-            "max_queries": args.max_queries,
-            "max_gallery": args.max_gallery,
             "num_queries": dataset.num_queries,
             "num_gallery": dataset.num_gallery,
             "git_sha": _git_sha(),
