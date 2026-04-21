@@ -462,7 +462,7 @@ class LandmarkCorrespondenceDataset(Dataset):
         pairs: list[CorrespondencePair],
         text_embeddings: dict[str, torch.Tensor],
         text_input_dim: int,
-        include_difficulties: tuple[str, ...] = ("positive", "easy"),
+        include_difficulties: tuple[str, ...] = ("positive", "easy", "hard"),
         allow_missing_text_embeddings: bool = False,
     ):
         self.pairs = [p for p in pairs if p.difficulty in include_difficulties]
