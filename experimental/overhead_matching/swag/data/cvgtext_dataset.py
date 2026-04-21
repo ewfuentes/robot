@@ -11,10 +11,15 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
+import common.torch.load_torch_deps  # noqa: F401
 import pandas as pd
+import torch
+import torchvision as tv
+
+from experimental.overhead_matching.swag.data import vigor_dataset as vd
 
 _FILENAME_RE = re.compile(
     r"^(?P<lat>-?[\d.]+),(?P<lon>-?[\d.]+)_"
@@ -27,6 +32,17 @@ _FILENAME_RE = re.compile(
 
 CITIES = ("Brisbane", "NewYork", "Tokyo")
 GALLERY_KINDS = ("satellite", "OSM")
+
+
+@dataclass
+class _MinimalConfig:
+    """The subset of `VigorDatasetConfig` that `get_dataloader`'s `worker_init_fn`
+    reads from `dataset._config`. We don't run tensor caches on CVG-Text, so both
+    fields stay `None` and `load_tensor_caches` returns an empty dict.
+    """
+
+    panorama_tensor_cache_info: object | None = None
+    satellite_tensor_cache_info: object | None = None
 
 
 def _parse_filename(fn: str) -> dict:
@@ -55,6 +71,10 @@ class CVGTextDataset:
         gallery_kind: "satellite" or "OSM" — which reference gallery to retrieve against.
         query_view: "ground" (panoramas) or "photos-ground" (single-view). We default to
             "ground" — the paper's single-view variant is out of scope here.
+        panorama_size: `(H, W)` to which panoramas are resized when loading for image-
+            based retrieval (Exp A). Required if `get_pano_view()` is used.
+        satellite_patch_size: `(H, W)` to which satellite tiles are resized. Required if
+            `get_sat_patch_view()` is used.
     """
 
     root: Path
@@ -62,6 +82,8 @@ class CVGTextDataset:
     split: str = "test"
     gallery_kind: str = "satellite"
     query_view: str = "ground"
+    panorama_size: tuple[int, int] | None = None
+    satellite_patch_size: tuple[int, int] | None = None
 
     def __post_init__(self):
         self.root = Path(self.root)
@@ -122,6 +144,28 @@ class CVGTextDataset:
             )
         self._panorama_metadata = pd.DataFrame(query_rows).reset_index(drop=True)
 
+        # Filename GT consistency check: every query's positive_satellite_idxs must
+        # point at the gallery row whose filename matches the query's. If the
+        # filename parser or gallery-to-query join ever gets mis-wired, retrieval
+        # metrics would silently report noise instead of real performance.
+        for i, pano_row in self._panorama_metadata.iterrows():
+            pos_idxs = pano_row["positive_satellite_idxs"]
+            assert len(pos_idxs) == 1, (
+                f"Expected exactly one positive satellite for query {pano_row['filename']!r}, "
+                f"got {pos_idxs}"
+            )
+            gallery_fn = self._satellite_metadata.iloc[pos_idxs[0]]["filename"]
+            assert pano_row["filename"] == gallery_fn, (
+                f"Query/gallery filename mismatch at pano row {i}: "
+                f"{pano_row['filename']!r} vs gallery row {pos_idxs[0]} {gallery_fn!r}"
+            )
+
+        # Minimal config for `get_dataloader`'s `worker_init_fn`; we don't use
+        # tensor caches so both entries stay `None`.
+        self._config = _MinimalConfig()
+        self._panorama_tensor_caches = {}
+        self._satellite_tensor_caches = {}
+
     @property
     def num_queries(self) -> int:
         return len(self._panorama_metadata)
@@ -141,3 +185,73 @@ class CVGTextDataset:
     @property
     def gallery_image_paths(self) -> list[str]:
         return self._satellite_metadata["path"].tolist()
+
+    # --- image-view methods used by `evaluate_swag.compute_similarity_matrix` --- #
+
+    def get_sat_patch_view(self) -> torch.utils.data.Dataset:
+        """torch Dataset over gallery images. Each item yields a VigorDatasetItem
+        with only `satellite` populated. Resize target is `satellite_patch_size`.
+        """
+        if self.satellite_patch_size is None:
+            raise RuntimeError(
+                "satellite_patch_size is not set; pass it to CVGTextDataset() "
+                "to use get_sat_patch_view()."
+            )
+        return _SatPatchView(self)
+
+    def get_pano_view(self) -> torch.utils.data.Dataset:
+        """torch Dataset over query panoramas. Each item yields a VigorDatasetItem
+        with only `panorama` populated. Resize target is `panorama_size`.
+        """
+        if self.panorama_size is None:
+            raise RuntimeError(
+                "panorama_size is not set; pass it to CVGTextDataset() "
+                "to use get_pano_view()."
+            )
+        return _PanoView(self)
+
+
+class _SatPatchView(torch.utils.data.Dataset):
+    def __init__(self, dataset: CVGTextDataset):
+        super().__init__()
+        self.dataset = dataset
+
+    def __len__(self) -> int:
+        return len(self.dataset._satellite_metadata)
+
+    def __getitem__(self, idx: int) -> vd.VigorDatasetItem:
+        if idx >= len(self):
+            raise IndexError
+        row = self.dataset._satellite_metadata.iloc[idx]
+        sat, _ = vd.load_image(Path(row.path), self.dataset.satellite_patch_size)
+        return vd.VigorDatasetItem(
+            panorama_metadata=None,
+            satellite_metadata={"index": int(row.name), "filename": row.filename},
+            panorama=None,
+            satellite=sat,
+            cached_panorama_tensors=None,
+            cached_satellite_tensors={},
+        )
+
+
+class _PanoView(torch.utils.data.Dataset):
+    def __init__(self, dataset: CVGTextDataset):
+        super().__init__()
+        self.dataset = dataset
+
+    def __len__(self) -> int:
+        return len(self.dataset._panorama_metadata)
+
+    def __getitem__(self, idx: int) -> vd.VigorDatasetItem:
+        if idx >= len(self):
+            raise IndexError
+        row = self.dataset._panorama_metadata.iloc[idx]
+        pano, _ = vd.load_image(Path(row.path), self.dataset.panorama_size)
+        return vd.VigorDatasetItem(
+            panorama_metadata={"index": int(row.name), "filename": row.filename},
+            satellite_metadata=None,
+            panorama=pano,
+            satellite=None,
+            cached_panorama_tensors={},
+            cached_satellite_tensors=None,
+        )
