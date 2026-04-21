@@ -23,16 +23,19 @@ from common.math.haversine import find_d_on_unit_circle
 def load_trajectory(dataset_path: Path) -> tuple[list[str], list[float]]:
     """Load pano IDs and cumulative distances (meters) along the trajectory.
 
-    Returns ([], []) when the CSV has fewer than two rows — no trajectory can
-    be formed, and we don't touch any column so missing columns in the
-    degenerate case don't raise.
+    Raises ValueError if the CSV has fewer than two rows — no trajectory
+    can be formed from a single point. The row-count check runs before
+    column access so a degenerate CSV with missing columns still produces
+    a clear error instead of a KeyError.
     """
     mapping = dataset_path / "pano_id_mapping.csv"
     with open(mapping) as f:
         rows = list(csv.DictReader(f))
 
     if len(rows) < 2:
-        return [], []
+        raise ValueError(
+            f"{mapping} has {len(rows)} rows; at least 2 are required to form a trajectory"
+        )
 
     pano_ids = [r["pano_id"] for r in rows]
     latlons = [(float(r["lat"]), float(r["lon"])) for r in rows]
@@ -112,10 +115,6 @@ def main():
     args = parser.parse_args()
 
     pano_ids, cum_dist = load_trajectory(args.dataset_path)
-    if len(pano_ids) < 2:
-        raise ValueError(
-            f"{args.dataset_path}/pano_id_mapping.csv needs at least 2 rows to form a trajectory"
-        )
     total_dist = cum_dist[-1]
     print(f"Trajectory: {len(pano_ids)} panos, {total_dist:.0f}m")
 
