@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import numpy as np
 import json
+import re
 import argparse
 from pathlib import Path
 
@@ -34,6 +35,30 @@ DISPLAY_NAMES = {
 
 RADII = [25, 50, 100]
 
+_PATH_DIR_RE = re.compile(r"^\d{7}$")
+
+
+def _enumerate_path_dirs(eval_dir: Path) -> list[Path]:
+    """Return the list of path directories, asserting they are densely 0-indexed.
+
+    Raises if any ``{idx:07d}`` directory is missing between 0 and the highest
+    index present — i.e. refuses to silently truncate when a gap would drop
+    later paths from the sample.
+    """
+    present = sorted(
+        p for p in eval_dir.iterdir() if p.is_dir() and _PATH_DIR_RE.match(p.name)
+    )
+    if not present:
+        raise FileNotFoundError(f"No path directories (NNNNNNN) under {eval_dir}")
+    expected = [eval_dir / f"{i:07d}" for i in range(len(present))]
+    if [p.name for p in present] != [p.name for p in expected]:
+        missing = [e.name for e in expected if not e.exists()]
+        raise FileNotFoundError(
+            f"Path directories under {eval_dir} are not densely numbered 0..N; "
+            f"missing {missing}"
+        )
+    return present
+
 
 def load_per_path_convergence_costs(summary_path: Path) -> dict:
     """Load per-path convergence costs from summary_statistics.json."""
@@ -49,91 +74,66 @@ def load_per_path_convergence_costs(summary_path: Path) -> dict:
 def load_per_path_final_errors(eval_dir: Path) -> np.ndarray:
     """Load final localization error for each path from error.pt files."""
     errors = []
-    path_idx = 0
-    while True:
-        err_file = eval_dir / f"{path_idx:07d}" / "error.pt"
-        if not err_file.exists():
-            break
-        err = torch.load(err_file, map_location="cpu")
+    for path_dir in _enumerate_path_dirs(eval_dir):
+        err = torch.load(path_dir / "error.pt", map_location="cpu")
         errors.append(err[-1].item())
-        path_idx += 1
     return np.array(errors)
 
 
 def load_per_path_convergence_curves(
     eval_dir: Path, radius: int
-) -> tuple[list[np.ndarray], list[np.ndarray]]:
+) -> tuple[np.ndarray, np.ndarray]:
     """Load per-path convergence curves (prob mass vs distance traveled).
 
     Returns:
-        distances: list of 1-D arrays (distance traveled at each step)
-        prob_masses: list of 1-D arrays (prob mass within radius at each step)
+        distances:   (n_paths, path_len + 1) — cumulative distance at each step,
+                     with a prepended 0 for the initial state.
+        prob_masses: (n_paths, path_len + 1) — prob mass within ``radius`` at
+                     each step (initial + post each update).
+
+    Raises if path directories are not densely 0-indexed, if any path lacks
+    the requested radius in ``prob_mass_by_radius.pt``, or if paths have
+    different lengths.
     """
+    path_dirs = _enumerate_path_dirs(eval_dir)
+
     distances = []
     prob_masses = []
-    path_idx = 0
-    while True:
-        path_dir = eval_dir / f"{path_idx:07d}"
-        if not path_dir.exists():
-            break
+    for path_dir in path_dirs:
         dist = torch.load(path_dir / "distance_traveled_m.pt", map_location="cpu")
         pmr = torch.load(path_dir / "prob_mass_by_radius.pt", map_location="cpu")
-        if radius in pmr:
-            # prob_mass has shape (path_len + 1): initial + after each step
-            # distance has shape (path_len): cumulative distance at each step
-            # Align: use prob_mass[1:] (after first observation) with distance
-            pm = pmr[radius].numpy()
-            d = dist.numpy()
-            # Prepend 0 distance for the initial state
-            d_with_init = np.concatenate([[0.0], d])
-            distances.append(d_with_init)
-            prob_masses.append(pm)
-        path_idx += 1
-    return distances, prob_masses
+        if radius not in pmr:
+            raise KeyError(
+                f"{path_dir}/prob_mass_by_radius.pt is missing radius {radius}m; "
+                f"available: {sorted(pmr.keys())}"
+            )
+        pm = pmr[radius].numpy()
+        d = dist.numpy()
+        # prob_mass has length path_len + 1 (initial + after each step),
+        # distance has length path_len; prepend 0 for the initial state.
+        d_with_init = np.concatenate([[0.0], d])
+        if len(pm) != len(d_with_init):
+            raise ValueError(
+                f"{path_dir}: prob_mass length {len(pm)} does not match "
+                f"distance length {len(d_with_init)} (= path_len + 1)"
+            )
+        distances.append(d_with_init)
+        prob_masses.append(pm)
 
-
-def interpolate_curves_to_common_grid(
-    distances: list[np.ndarray],
-    values: list[np.ndarray],
-    grid_spacing_m: float = 50.0,
-    min_paths_fraction: float = 0.1,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Interpolate variable-length curves onto a common distance grid.
-
-    Returns:
-        grid: common distance grid
-        mean: mean value at each grid point
-        sem: SEM at each grid point
-        n_active: number of active paths at each grid point
-    """
-    max_dist = max(d[-1] for d in distances)
-    grid = np.arange(0, max_dist + grid_spacing_m, grid_spacing_m)
-
-    # Interpolate each path onto the grid
-    interpolated = np.full((len(distances), len(grid)), np.nan)
-    for i, (d, v) in enumerate(zip(distances, values)):
-        # Only interpolate within the path's distance range
-        mask = grid <= d[-1]
-        interpolated[i, mask] = np.interp(grid[mask], d, v)
-
-    # Compute statistics, masking where too few paths are active
-    n_active = np.sum(~np.isnan(interpolated), axis=0)
-    min_paths = max(1, int(len(distances) * min_paths_fraction))
-    valid = n_active >= min_paths
-
-    mean = np.nanmean(interpolated, axis=0)
-    std = np.nanstd(interpolated, axis=0, ddof=1)
-    ci95 = 1.96 * std / np.sqrt(n_active)
-
-    # Mask invalid points
-    mean[~valid] = np.nan
-    ci95[~valid] = np.nan
-
-    return grid, mean, ci95, n_active
+    expected_len = len(distances[0])
+    for i, (d, pm) in enumerate(zip(distances, prob_masses)):
+        if len(d) != expected_len:
+            raise ValueError(
+                f"{path_dirs[i]}: path length {len(d)} differs from path 0 "
+                f"length {expected_len}; this script requires fixed-length paths"
+            )
+    return np.asarray(distances), np.asarray(prob_masses)
 
 
 def compute_stats(values: np.ndarray) -> tuple[float, float]:
-    """Compute mean and 95% CI half-width (1.96 * SEM)."""
+    """Mean and half-width of the 95% normal-approximation CI for the mean
+    (i.e. 1.96 · SEM). Bounds the uncertainty in the mean estimate, not the
+    spread of the data."""
     mean = np.mean(values)
     ci95 = 1.96 * np.std(values, ddof=1) / np.sqrt(len(values))
     return mean, ci95
@@ -169,81 +169,6 @@ def load_method_data(method_dirs: dict[str, dict[str, Path]]):
     return convergence_costs, final_errors
 
 
-# -- Figure A: Grouped Bar Chart --
-
-
-def plot_grouped_bar_chart(
-    convergence_costs: dict,
-    final_errors: dict,
-    method_names: list[str],
-    output_path: Path,
-    method_colors: dict[str, str] | None = None,
-    method_labels: dict[str, str] | None = None,
-):
-    """Plot grouped bar chart of convergence cost across environments."""
-    if method_colors is None:
-        method_colors = {
-            method_names[0]: "#888888",
-            method_names[1]: "#2196F3",
-        }
-    if method_labels is None:
-        method_labels = {m: m for m in method_names}
-
-    fig, axes = plt.subplots(1, 3, figsize=(16, 5.5), sharey=False)
-    fig.subplots_adjust(wspace=0.3)
-
-    n_envs = len(ENVIRONMENTS)
-    n_methods = len(method_names)
-    bar_width = 0.8 / n_methods
-    x = np.arange(n_envs)
-
-    for ax, radius in zip(axes, RADII):
-        for j, method in enumerate(method_names):
-            means = []
-            sems = []
-            for env in ENVIRONMENTS:
-                costs = convergence_costs[method].get(env, {}).get(radius)
-                if costs is not None and len(costs) > 0:
-                    m, s = compute_stats(costs)
-                    means.append(m)
-                    sems.append(s)
-                else:
-                    means.append(0)
-                    sems.append(0)
-
-            offset = (j - (n_methods - 1) / 2) * bar_width
-            ax.bar(
-                x + offset,
-                means,
-                bar_width,
-                yerr=sems,
-                label=method_labels[method],
-                color=method_colors[method],
-                edgecolor="white",
-                linewidth=0.5,
-                capsize=2,
-                error_kw={"linewidth": 0.8},
-            )
-
-        ax.set_title(f"r = {radius}m", fontsize=14)
-        ax.set_xticks(x)
-        ax.set_xticklabels(
-            [DISPLAY_NAMES[e] for e in ENVIRONMENTS], rotation=45, ha="right", fontsize=11
-        )
-        ax.set_ylabel("Convergence cost (m)" if radius == RADII[0] else "", fontsize=12)
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-        ax.tick_params(labelsize=10)
-        ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
-
-    axes[0].legend(frameon=False, fontsize=12)
-    fig.tight_layout()
-    fig.savefig(output_path / "fig_a_grouped_bar.pdf", bbox_inches="tight", dpi=150)
-    fig.savefig(output_path / "fig_a_grouped_bar.png", bbox_inches="tight", dpi=150)
-    print(f"Saved grouped bar chart to {output_path / 'fig_a_grouped_bar.pdf'}")
-    plt.close(fig)
-
-
 # -- Figure B: Convergence Curves Over Distance --
 
 
@@ -256,7 +181,10 @@ def plot_convergence_curves(
     method_colors: dict[str, str] | None = None,
     method_labels: dict[str, str] | None = None,
 ):
-    """Plot convergence curves (prob mass vs distance) per environment."""
+    """Plot convergence curves (prob mass vs distance) per environment.
+
+    All paths under each (env, method) must have the same length; the
+    shaded band is a 95% CI for the mean (1.96 · SEM across paths)."""
     if method_colors is None:
         method_colors = {
             method_names[0]: "#888888",
@@ -288,26 +216,25 @@ def plot_convergence_curves(
                 distances, prob_masses = load_per_path_convergence_curves(
                     eval_dir, radius
                 )
-                if not distances:
-                    continue
+                n_paths = len(prob_masses)
+                mean_distance = distances.mean(axis=0)
+                mean_pm = prob_masses.mean(axis=0)
+                pm_std = prob_masses.std(axis=0, ddof=1)
+                ci95 = 1.96 * pm_std / np.sqrt(n_paths)
 
-                grid, mean, sem, n_active = interpolate_curves_to_common_grid(
-                    distances, prob_masses
-                )
-                valid = ~np.isnan(mean)
                 label = f"{method_labels[method]} (r={radius}m)"
                 ax.plot(
-                    grid[valid],
-                    mean[valid],
+                    mean_distance,
+                    mean_pm,
                     label=label,
                     color=method_colors[method],
                     linestyle=ls,
                     linewidth=1.5,
                 )
                 ax.fill_between(
-                    grid[valid],
-                    (mean - sem)[valid],
-                    (mean + sem)[valid],
+                    mean_distance,
+                    mean_pm - ci95,
+                    mean_pm + ci95,
                     alpha=0.15,
                     color=method_colors[method],
                 )
@@ -347,90 +274,6 @@ def plot_convergence_curves(
     print(
         f"Saved convergence curves to {output_path / f'fig_b_convergence_curves_r{suffix}.pdf'}"
     )
-    plt.close(fig)
-
-
-# -- Figure C: Dumbbell / Paired Dot Plot --
-
-
-def plot_dumbbell(
-    convergence_costs: dict,
-    method_names: list[str],
-    output_path: Path,
-    radius: int = 100,
-    method_colors: dict[str, str] | None = None,
-    method_labels: dict[str, str] | None = None,
-):
-    """Plot dumbbell chart comparing two methods across environments."""
-    if method_colors is None:
-        method_colors = {
-            method_names[0]: "#888888",
-            method_names[1]: "#2196F3",
-        }
-    if method_labels is None:
-        method_labels = {m: m for m in method_names}
-
-    fig, ax = plt.subplots(figsize=(8, 5))
-
-    y_positions = np.arange(len(ENVIRONMENTS))
-
-    for j, method in enumerate(method_names):
-        means = []
-        sems = []
-        for env in ENVIRONMENTS:
-            costs = convergence_costs[method].get(env, {}).get(radius)
-            if costs is not None and len(costs) > 0:
-                m, s = compute_stats(costs)
-                means.append(m)
-                sems.append(s)
-            else:
-                means.append(np.nan)
-                sems.append(0)
-
-        ax.errorbar(
-            means,
-            y_positions,
-            xerr=sems,
-            fmt="o",
-            color=method_colors[method],
-            label=method_labels[method],
-            markersize=7,
-            capsize=3,
-            linewidth=0,
-            elinewidth=1.2,
-            zorder=3,
-        )
-
-    # Draw connecting segments
-    for i, env in enumerate(ENVIRONMENTS):
-        vals = []
-        for method in method_names:
-            costs = convergence_costs[method].get(env, {}).get(radius)
-            if costs is not None and len(costs) > 0:
-                vals.append(np.mean(costs))
-            else:
-                vals.append(np.nan)
-        if len(vals) >= 2 and not any(np.isnan(vals)):
-            ax.plot(vals, [i, i], color="#cccccc", linewidth=1.5, zorder=1)
-
-    ax.set_yticks(y_positions)
-    ax.set_yticklabels([DISPLAY_NAMES[e] for e in ENVIRONMENTS], fontsize=12)
-    ax.set_xlabel(f"Convergence cost at r = {radius}m (m)", fontsize=13)
-    ax.invert_yaxis()
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    ax.legend(frameon=False, fontsize=12, loc="lower right")
-    ax.tick_params(labelsize=11)
-    ax.xaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
-
-    fig.tight_layout()
-    fig.savefig(
-        output_path / f"fig_c_dumbbell_r{radius}.pdf", bbox_inches="tight", dpi=150
-    )
-    fig.savefig(
-        output_path / f"fig_c_dumbbell_r{radius}.png", bbox_inches="tight", dpi=150
-    )
-    print(f"Saved dumbbell plot to {output_path / f'fig_c_dumbbell_r{radius}.pdf'}")
     plt.close(fig)
 
 
@@ -553,6 +396,13 @@ def main():
         help="Base directory for our method results",
     )
     parser.add_argument(
+        "--seattle_results_dir",
+        type=str,
+        default=None,
+        help="If set, override baseline_dir/ours_dir for the Seattle environment "
+             "(useful when Seattle lives in a different evaluation run)",
+    )
+    parser.add_argument(
         "--baseline_method",
         type=str,
         default="image_only",
@@ -582,20 +432,22 @@ def main():
     output_path = Path(args.output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    # Build method directories
     baseline_base = Path(args.baseline_dir)
     ours_base = Path(args.ours_dir)
+    seattle_base = Path(args.seattle_results_dir) if args.seattle_results_dir else None
 
-    # Seattle uses 260325 results (older run) since it's not in 260330
-    seattle_base = Path("/data/overhead_matching/evaluation/results/260325_correspondence_fusion")
+    def base_for(env: str, default_base: Path) -> Path:
+        if env == "Seattle" and seattle_base is not None:
+            return seattle_base
+        return default_base
 
     method_dirs = {
         "safa": {
-            env: (seattle_base if env == "Seattle" else baseline_base) / env / args.baseline_method
+            env: base_for(env, baseline_base) / env / args.baseline_method
             for env in ENVIRONMENTS
         },
         "ours": {
-            env: (seattle_base if env == "Seattle" else ours_base) / env / args.ours_method
+            env: base_for(env, ours_base) / env / args.ours_method
             for env in ENVIRONMENTS
         },
     }
@@ -607,17 +459,6 @@ def main():
     print("Loading convergence costs and final errors...")
     convergence_costs, final_errors = load_method_data(method_dirs)
 
-    # Figure A: Grouped bar chart
-    print("\nGenerating Figure A: Grouped bar chart...")
-    plot_grouped_bar_chart(
-        convergence_costs,
-        final_errors,
-        ["safa", "ours"],
-        output_path,
-        method_colors=method_colors,
-        method_labels=method_labels,
-    )
-
     # Figure B: Convergence curves
     print("\nGenerating Figure B: Convergence curves over distance...")
     xlim = args.xlim_m if args.xlim_m > 0 else None
@@ -627,17 +468,6 @@ def main():
         output_path,
         radii=args.curve_radii,
         xlim_m=xlim,
-        method_colors=method_colors,
-        method_labels=method_labels,
-    )
-
-    # Figure C: Dumbbell plot
-    print("\nGenerating Figure C: Dumbbell plot...")
-    plot_dumbbell(
-        convergence_costs,
-        ["safa", "ours"],
-        output_path,
-        radius=args.curve_radii[-1],
         method_colors=method_colors,
         method_labels=method_labels,
     )
