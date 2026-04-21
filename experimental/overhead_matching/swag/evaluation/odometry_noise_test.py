@@ -113,9 +113,9 @@ class TestNoiseScalesWithStepSize(unittest.TestCase):
         mean_small = sum(errors_small) / len(errors_small)
         mean_large = sum(errors_large) / len(errors_large)
         ratio = mean_large / mean_small
-        # Should be ~2.0 (50/25)
-        self.assertGreater(ratio, 1.5, f"Ratio {ratio:.2f} should be ~2.0")
-        self.assertLess(ratio, 2.5, f"Ratio {ratio:.2f} should be ~2.0")
+        # std ~ sigma * sqrt(d) (Wiener scaling), so ratio for d=50 vs d=25 is ~sqrt(2)=1.41
+        self.assertGreater(ratio, 1.25, f"Ratio {ratio:.2f} should be ~sqrt(2)=1.41")
+        self.assertLess(ratio, 1.6, f"Ratio {ratio:.2f} should be ~sqrt(2)=1.41")
 
 
 class TestNoiseIsIsotropic(unittest.TestCase):
