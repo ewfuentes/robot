@@ -33,6 +33,7 @@ from tqdm import tqdm
 from experimental.overhead_matching.swag.data.landmark_correspondence_dataset import (
     HOUSENUMBER_KEY,
     NUM_CROSS_FEATURES,
+    _pad_side,
     compute_cross_features,
     encode_tag_bundle,
     parse_housenumber,
@@ -104,15 +105,16 @@ def _aggregate_score(
         weights = [1.0] * len(match_probs)
     if aggregation == AggregationMode.SUM:
         return sum(p * w for p, w in zip(match_probs, weights))
-    if aggregation == AggregationMode.MAX:
+    elif aggregation == AggregationMode.MAX:
         return max(p * w for p, w in zip(match_probs, weights))
-    if aggregation == AggregationMode.LOG_ODDS:
+    elif aggregation == AggregationMode.LOG_ODDS:
         total = 0.0
         for p, w in zip(match_probs, weights):
             p_clamped = max(min(p, 1.0 - 1e-7), 1e-7)
             total += w * math.log(p_clamped / (1.0 - p_clamped))
         return total
-    raise ValueError(f"Unknown aggregation: {aggregation}")
+    else:
+        raise ValueError(f"Unknown aggregation: {aggregation}")
 
 
 def compute_uniqueness_weights(
@@ -215,37 +217,6 @@ def match_and_aggregate(
 # Encoder / cross-feature helpers used by the precompute path
 # ---------------------------------------------------------------------------
 
-def _pad_encoded(encoded_list: list[dict], text_input_dim: int) -> dict:
-    """Pad a list of encoded tag bundles into stacked (key_indices, text_embeddings, tag_mask) tensors."""
-    max_tags = max((len(e["key_indices"]) for e in encoded_list), default=1)
-    max_tags = max(max_tags, 1)
-
-    key_indices = []
-    text_embs = []
-    masks = []
-
-    for e in encoded_list:
-        n = len(e["key_indices"])
-        pad = max_tags - n
-        key_indices.append(
-            torch.tensor(e["key_indices"] + [0] * pad, dtype=torch.long)
-        )
-        if n > 0:
-            stacked = torch.stack(e["text_embeddings"])
-        else:
-            stacked = torch.zeros(0, text_input_dim)
-        if pad > 0:
-            stacked = torch.cat([stacked, torch.zeros(pad, text_input_dim)])
-        text_embs.append(stacked)
-        masks.append(torch.tensor([True] * n + [False] * pad, dtype=torch.bool))
-
-    return {
-        "key_indices": torch.stack(key_indices),
-        "text_embeddings": torch.stack(text_embs),
-        "tag_mask": torch.stack(masks),
-    }
-
-
 def batch_encode_landmarks(
     tags_list: list[dict[str, str]],
     text_embeddings: dict[str, torch.Tensor],
@@ -266,12 +237,12 @@ def batch_encode_landmarks(
     all_reprs = []
     for start in range(0, len(all_encoded), batch_size):
         chunk = all_encoded[start:start + batch_size]
-        tensors = _pad_encoded(chunk, text_input_dim)
+        key_indices, text_embs, tag_mask = _pad_side(chunk, text_input_dim)
         with torch.no_grad():
             reprs = model.encoder(
-                tensors["key_indices"].to(device),
-                tensors["text_embeddings"].to(device),
-                tensors["tag_mask"].to(device),
+                key_indices.to(device),
+                text_embs.to(device),
+                tag_mask.to(device),
             )
         all_reprs.append(reprs.cpu())
     return torch.cat(all_reprs, dim=0)
@@ -332,25 +303,6 @@ def compute_pairs_cost_matrix(
     return np.concatenate(chunks).reshape(n_pano, n_osm)
 
 
-def _compute_cross_features_for_pairs(
-    pano_tags_list: list[dict[str, str]],
-    osm_tags_list: list[dict[str, str]],
-    text_embeddings: dict[str, torch.Tensor],
-) -> np.ndarray:
-    """Reference (Python-loop) implementation of cross features.
-
-    Kept for tests to cross-check against the vectorized GPU path. Production
-    paths should call `_compute_cross_features_gpu`.
-    """
-    n_pano = len(pano_tags_list)
-    n_osm = len(osm_tags_list)
-    result = np.zeros((n_pano, n_osm, NUM_CROSS_FEATURES), dtype=np.float32)
-    for i, pt in enumerate(pano_tags_list):
-        for j, ot in enumerate(osm_tags_list):
-            result[i, j] = compute_cross_features(pt, ot, text_embeddings)
-    return result
-
-
 def _LandmarkTextTensors(tags_list: list[dict[str, str]],
                          text_embeddings: dict[str, torch.Tensor],
                          text_input_dim: int,
@@ -404,8 +356,8 @@ def _compute_cross_features_gpu(
     """Vectorized 4-feature cross computation on the GPU.
 
     Produces (n_pano, n_osm, NUM_CROSS_FEATURES) numpy array matching the
-    Python-loop output of `_compute_cross_features_for_pairs` up to floating
-    point tolerance.
+    Python-loop reference implementation (in correspondence_matching_test.py)
+    up to floating point tolerance.
     """
     n_pano = len(pano_tags_list)
     n_osm = len(osm_tags_list)

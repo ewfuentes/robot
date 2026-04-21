@@ -2989,7 +2989,7 @@ def get_correspondence_details(index, sat_idx):
             pano_tags_list, osm_tags_list, CORRESPONDENCE_MODEL,
             CORRESPONDENCE_TEXT_EMBEDDINGS, CORRESPONDENCE_TEXT_INPUT_DIM,
             CORRESPONDENCE_DEVICE,
-            allow_missing_text_embeddings=True,
+            allow_missing_text_embeddings=False,
         )
         result = match_and_aggregate(cost_matrix, MatchingMethod.HUNGARIAN,
                                      AggregationMode.SUM)

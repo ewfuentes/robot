@@ -16,6 +16,7 @@ import torch
 
 from experimental.overhead_matching.swag.data.landmark_correspondence_dataset import (
     NUM_CROSS_FEATURES,
+    compute_cross_features,
 )
 from experimental.overhead_matching.swag.evaluation import correspondence_matching as cm
 from experimental.overhead_matching.swag.model.landmark_correspondence_model import (
@@ -27,6 +28,25 @@ from experimental.overhead_matching.swag.model.landmark_correspondence_model imp
 
 
 _SOME_KEY = next(iter(TAG_KEY_TO_IDX))
+
+
+def _compute_cross_features_for_pairs_reference(
+    pano_tags_list: list[dict[str, str]],
+    osm_tags_list: list[dict[str, str]],
+    text_embeddings: dict[str, torch.Tensor],
+) -> np.ndarray:
+    """Python-loop reference for cross features. Test-only.
+
+    Kept here to cross-check the vectorized GPU path
+    (`_compute_cross_features_gpu`) in `TestCrossFeatureVectorization`.
+    """
+    n_pano = len(pano_tags_list)
+    n_osm = len(osm_tags_list)
+    result = np.zeros((n_pano, n_osm, NUM_CROSS_FEATURES), dtype=np.float32)
+    for i, pt in enumerate(pano_tags_list):
+        for j, ot in enumerate(osm_tags_list):
+            result[i, j] = compute_cross_features(pt, ot, text_embeddings)
+    return result
 
 
 def _build_fake_dataset(pano_ids, osm_landmarks, sat_to_landmark_idxs):
@@ -196,7 +216,7 @@ class TestCrossFeatureVectorization(unittest.TestCase):
         ]
 
         device = torch.device("cpu")
-        cpu = cm._compute_cross_features_for_pairs(
+        cpu = _compute_cross_features_for_pairs_reference(
             pano_tags_list, osm_tags_list, text_embeddings,
         )
         gpu = cm._compute_cross_features_gpu(
