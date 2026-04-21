@@ -166,6 +166,46 @@ class TestComputePairsCostMatrix(unittest.TestCase):
         self.assertTrue(np.all((cost >= 0.0) & (cost <= 1.0)))
 
 
+class TestCrossFeatureVectorization(unittest.TestCase):
+    def test_gpu_matches_python_loop(self):
+        torch.manual_seed(42)
+        text_input_dim = 16
+        # A handful of known values; also exercise missing-embedding case via
+        # tag values not present in the dict.
+        text_embeddings = {
+            "cafe": torch.randn(text_input_dim),
+            "bar": torch.randn(text_input_dim),
+            "library": torch.randn(text_input_dim),
+            "park": torch.randn(text_input_dim),
+        }
+        some_key = _SOME_KEY
+        name_key = "name" if "name" in TAG_KEY_TO_IDX else some_key
+
+        pano_tags_list = [
+            {some_key: "cafe", name_key: "cafe"},
+            {some_key: "bar"},
+            {"addr:housenumber": "100-110"},
+            {},
+        ]
+        osm_tags_list = [
+            {some_key: "cafe", name_key: "cafe"},
+            {some_key: "library"},
+            {"addr:housenumber": "105"},
+            {some_key: "not_in_embeddings"},
+            {name_key: "park"},
+        ]
+
+        device = torch.device("cpu")
+        cpu = cm._compute_cross_features_for_pairs(
+            pano_tags_list, osm_tags_list, text_embeddings,
+        )
+        gpu = cm._compute_cross_features_gpu(
+            pano_tags_list, osm_tags_list, text_embeddings,
+            text_input_dim, device,
+        )
+        np.testing.assert_allclose(gpu, cpu, atol=1e-5, rtol=1e-5)
+
+
 class TestMatchAndAggregate(unittest.TestCase):
     def test_empty_cost_matrix_returns_zero_score(self):
         result = cm.match_and_aggregate(

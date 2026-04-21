@@ -31,9 +31,15 @@ import torch
 from tqdm import tqdm
 
 from experimental.overhead_matching.swag.data.landmark_correspondence_dataset import (
+    HOUSENUMBER_KEY,
     NUM_CROSS_FEATURES,
     compute_cross_features,
     encode_tag_bundle,
+    parse_housenumber,
+)
+from experimental.overhead_matching.swag.model.landmark_correspondence_model import (
+    NUM_TAG_KEYS,
+    TAG_KEY_TO_IDX,
 )
 
 _LOG_PATH = "/tmp/correspondence_precompute.log"
@@ -278,8 +284,8 @@ def compute_pairs_cost_matrix(
         allow_missing_text_embeddings=allow_missing_text_embeddings,
     )
 
-    cross = _compute_cross_features_for_pairs(
-        pano_tags_list, osm_tags_list, text_embeddings,
+    cross = _compute_cross_features_gpu(
+        pano_tags_list, osm_tags_list, text_embeddings, text_input_dim, device,
     )
     cross_tensor = torch.from_numpy(cross.reshape(n_pano * n_osm, -1))
 
@@ -309,10 +315,10 @@ def _compute_cross_features_for_pairs(
     osm_tags_list: list[dict[str, str]],
     text_embeddings: dict[str, torch.Tensor],
 ) -> np.ndarray:
-    """Return (n_pano, n_osm, NUM_CROSS_FEATURES) cross features via Python loop.
+    """Reference (Python-loop) implementation of cross features.
 
-    Slow but simple reference implementation; see the vectorized replacement
-    in a follow-up commit.
+    Kept for tests to cross-check against the vectorized GPU path. Production
+    paths should call `_compute_cross_features_gpu`.
     """
     n_pano = len(pano_tags_list)
     n_osm = len(osm_tags_list)
@@ -320,6 +326,149 @@ def _compute_cross_features_for_pairs(
     for i, pt in enumerate(pano_tags_list):
         for j, ot in enumerate(osm_tags_list):
             result[i, j] = compute_cross_features(pt, ot, text_embeddings)
+    return result
+
+
+def _LandmarkTextTensors(tags_list: list[dict[str, str]],
+                         text_embeddings: dict[str, torch.Tensor],
+                         text_input_dim: int,
+                         device: torch.device):
+    """Build per-landmark tensors used by the vectorized cross-feature path.
+
+    Returns:
+        text: (N, NUM_TAG_KEYS, text_input_dim) — text embedding per key, zeros where absent.
+        text_norm: (N, NUM_TAG_KEYS) — L2 norm of the above along the last dim.
+        has_text: (N, NUM_TAG_KEYS) — 1.0 where text embedding present, else 0.0.
+        has_key: (N, NUM_TAG_KEYS) — 1.0 where key appears in the landmark, else 0.0.
+        hn_lo / hn_hi: (N,) — parsed housenumber bounds, nan when absent/unparseable.
+    """
+    n = len(tags_list)
+    text = torch.zeros(n, NUM_TAG_KEYS, text_input_dim)
+    has_text = torch.zeros(n, NUM_TAG_KEYS)
+    has_key = torch.zeros(n, NUM_TAG_KEYS)
+    hn_lo = torch.full((n,), float("nan"))
+    hn_hi = torch.full((n,), float("nan"))
+
+    for i, tags in enumerate(tags_list):
+        for k, v in tags.items():
+            idx = TAG_KEY_TO_IDX.get(k)
+            if idx is not None:
+                has_key[i, idx] = 1.0
+                if v in text_embeddings:
+                    text[i, idx] = text_embeddings[v]
+                    has_text[i, idx] = 1.0
+            if k == HOUSENUMBER_KEY:
+                lo, hi = parse_housenumber(v)
+                hn_lo[i] = lo
+                hn_hi[i] = hi
+
+    text = text.to(device)
+    text_norm = text.norm(dim=-1).to(device)  # (N, NUM_TAG_KEYS)
+    has_text = has_text.to(device)
+    has_key = has_key.to(device)
+    hn_lo = hn_lo.to(device)
+    hn_hi = hn_hi.to(device)
+    return text, text_norm, has_text, has_key, hn_lo, hn_hi
+
+
+def _compute_cross_features_gpu(
+    pano_tags_list: list[dict[str, str]],
+    osm_tags_list: list[dict[str, str]],
+    text_embeddings: dict[str, torch.Tensor],
+    text_input_dim: int,
+    device: torch.device,
+    osm_chunk_size: int = 2048,
+) -> np.ndarray:
+    """Vectorized 4-feature cross computation on the GPU.
+
+    Produces (n_pano, n_osm, NUM_CROSS_FEATURES) numpy array matching the
+    Python-loop output of `_compute_cross_features_for_pairs` up to floating
+    point tolerance.
+    """
+    n_pano = len(pano_tags_list)
+    n_osm = len(osm_tags_list)
+    if n_pano == 0 or n_osm == 0:
+        return np.zeros((n_pano, n_osm, NUM_CROSS_FEATURES), dtype=np.float32)
+
+    (pano_text, pano_text_norm, pano_has_text, pano_has_key,
+     pano_hn_lo, pano_hn_hi) = _LandmarkTextTensors(
+        pano_tags_list, text_embeddings, text_input_dim, device,
+    )
+    (osm_text, osm_text_norm, osm_has_text, osm_has_key,
+     osm_hn_lo, osm_hn_hi) = _LandmarkTextTensors(
+        osm_tags_list, text_embeddings, text_input_dim, device,
+    )
+
+    name_key_idx = TAG_KEY_TO_IDX.get("name")
+
+    eps = 1e-8
+    result = np.zeros((n_pano, n_osm, NUM_CROSS_FEATURES), dtype=np.float32)
+
+    # Chunk over OSM axis so the (n_pano, chunk, NUM_TAG_KEYS) intermediates stay
+    # bounded; flat memory ~ n_pano * chunk * NUM_TAG_KEYS floats.
+    for start in range(0, n_osm, osm_chunk_size):
+        end = min(start + osm_chunk_size, n_osm)
+        osm_text_c = osm_text[start:end]
+        osm_text_norm_c = osm_text_norm[start:end]
+        osm_has_text_c = osm_has_text[start:end]
+        osm_has_key_c = osm_has_key[start:end]
+        osm_hn_lo_c = osm_hn_lo[start:end]
+        osm_hn_hi_c = osm_hn_hi[start:end]
+
+        # Dot product per key: (n_pano, chunk, NUM_TAG_KEYS)
+        dot_ijk = torch.einsum("ikd,jkd->ijk", pano_text, osm_text_c)
+        norm_prod = (
+            pano_text_norm.unsqueeze(1) * osm_text_norm_c.unsqueeze(0)
+        )
+        sim_ijk = dot_ijk / (norm_prod + eps)
+
+        valid_ijk = (
+            pano_has_key.unsqueeze(1) * osm_has_key_c.unsqueeze(0)
+            * pano_has_text.unsqueeze(1) * osm_has_text_c.unsqueeze(0)
+        )
+        sim_masked = sim_ijk * valid_ijk
+
+        # text_max: max over keys with a valid sim; when no valid key, 0.
+        very_neg = torch.full_like(sim_ijk, -float("inf"))
+        sim_for_max = torch.where(valid_ijk > 0, sim_ijk, very_neg)
+        text_max = sim_for_max.max(dim=-1).values
+        any_valid = (valid_ijk.sum(dim=-1) > 0)
+        text_max = torch.where(any_valid, text_max, torch.zeros_like(text_max))
+
+        # text_mean: sum(sim) / count, 0 if count=0.
+        valid_count = valid_ijk.sum(dim=-1)
+        text_mean = sim_masked.sum(dim=-1) / valid_count.clamp(min=1)
+        text_mean = torch.where(
+            valid_count > 0, text_mean, torch.zeros_like(text_mean),
+        )
+
+        # text_name: sim at the "name" key if both sides have text there, else 0.
+        if name_key_idx is not None:
+            name_sim = sim_ijk[..., name_key_idx]
+            name_valid = valid_ijk[..., name_key_idx]
+            text_name = name_sim * name_valid
+        else:
+            text_name = torch.zeros_like(text_mean)
+
+        # Housenumber range overlap.
+        plo = pano_hn_lo.unsqueeze(1)
+        phi = pano_hn_hi.unsqueeze(1)
+        olo = osm_hn_lo_c.unsqueeze(0)
+        ohi = osm_hn_hi_c.unsqueeze(0)
+        hn_valid = (
+            torch.isfinite(plo) & torch.isfinite(phi)
+            & torch.isfinite(olo) & torch.isfinite(ohi)
+        )
+        hn_overlap = (
+            ((plo >= olo) & (plo <= ohi)) | ((olo >= plo) & (olo <= phi))
+        ) & hn_valid
+        hn_overlap_f = hn_overlap.to(torch.float32)
+
+        chunk = torch.stack(
+            [text_max, text_mean, text_name, hn_overlap_f], dim=-1,
+        )
+        result[:, start:end] = chunk.cpu().numpy()
+
     return result
 
 
@@ -432,8 +581,9 @@ def precompute_raw_cost_data(
             osm_chunk_tags = osm_tags_list[osm_start:osm_end]
             n_osm_chunk = osm_end - osm_start
 
-            cross_feats = _compute_cross_features_for_pairs(
+            cross_feats = _compute_cross_features_gpu(
                 all_pano_tags, osm_chunk_tags, text_embeddings,
+                text_input_dim, device,
             )
             cross_tensor = torch.from_numpy(
                 cross_feats.reshape(n_pano_lm * n_osm_chunk, -1),
