@@ -256,20 +256,20 @@ def main():
     s = _pano_prune_stats
     dropped_lm = s["total_landmarks"] - s["kept_landmarks"]
     dropped_tags = s["total_tags"] - s["kept_tags"]
-    print(f"Loaded tags for {len(pano_tags_from_pano_id)} panoramas")
+    print(f"Loaded tags for {len(pano_tags_from_pano_id)} panoramas (across all cities in {pano_v2_base})")
     print(f"  Pano landmarks: {s['kept_landmarks']}/{s['total_landmarks']} kept ({dropped_lm} dropped, all tags pruned)")
     print(f"  Pano tags: {s['kept_tags']}/{s['total_tags']} kept ({dropped_tags} dropped by keep-list filter)")
 
     # Select panorama IDs
     dataset_pano_ids = set(dataset._panorama_metadata.pano_id.values)
+    available = [pid for pid in pano_tags_from_pano_id if pid in dataset_pano_ids]
+    print(f"  {len(available)} panoramas overlap with {args.city} VIGOR dataset ({len(dataset_pano_ids)} VIGOR panos)")
     if args.pano_ids:
         pano_ids = args.pano_ids.split(',')
     elif args.all:
-        pano_ids = sorted([pid for pid in pano_tags_from_pano_id if pid in dataset_pano_ids])
+        pano_ids = sorted(available)
     elif args.random_n:
         rng = np.random.default_rng(42)
-        available = [pid for pid in pano_tags_from_pano_id
-                     if pid in dataset_pano_ids]
         pano_ids = rng.choice(
             available, size=min(args.random_n, len(available)),
             replace=False).tolist()

@@ -253,7 +253,7 @@ def generate_goal_directed_path(
     min_goal_distance_percentile: float = 0.75,
     min_bbox_coverage_ratio: float = 0.05,
     max_regeneration_attempts: int = 100,
-    max_astar_expansions: int = 50000,
+    max_astar_expansions: int = 100000,
     goal_resample_distance_m: float = 2000.0,
     # Exploration options
     epsilon_greedy: float = 0.0,
@@ -396,7 +396,7 @@ def generate_goal_directed_path(
                 consecutive_astar_failures += 1
                 if consecutive_astar_failures >= max_consecutive_failures:
                     # Graph might be disconnected at this location, start over
-                    logger.warning(f"A* failed {consecutive_astar_failures} times from node {current_idx}, trying new start")
+                    logger.warning(f"A* failed {consecutive_astar_failures} times from node {current_idx}, trying new start (max_expansions={max_astar_expansions})")
                     break
                 goal_idx = select_goal(current_idx)
                 distance_since_goal_change_m = 0.0
@@ -404,6 +404,8 @@ def generate_goal_directed_path(
 
             # Reset failure counter on success
             consecutive_astar_failures = 0
+            if result.num_nodes_expanded > max_astar_expansions * 0.5:
+                logger.info(f"A* used {result.num_nodes_expanded}/{max_astar_expansions} expansions (node {current_idx}->{goal_idx})")
 
             # Traverse A* path, accumulating distance
             a_star_path = result.states
@@ -507,11 +509,17 @@ if __name__ == "__main__":
         edge_costs_for_path = None
         if args.visited_penalty > 0 and args.goal_directed and base_edge_costs is not None:
             penalized_edge_costs = []
+            max_penalty = 0.0
             for node_idx, node_costs in enumerate(base_edge_costs):
                 penalty = 1.0 + args.visited_penalty * visit_counts[node_idx]
+                max_penalty = max(max_penalty, penalty)
                 penalized_costs = [cost * penalty for cost in node_costs]
                 penalized_edge_costs.append(penalized_costs)
             edge_costs_for_path = penalized_edge_costs
+            if (i + 1) % 100 == 0:
+                max_visits = max(visit_counts)
+                mean_visits = sum(visit_counts) / len(visit_counts)
+                logger.info(f"max_penalty={max_penalty:.1f}x, max_visits={max_visits}, mean_visits={mean_visits:.1f}")
 
         if args.goal_directed:
             paths.append(generate_goal_directed_path(
