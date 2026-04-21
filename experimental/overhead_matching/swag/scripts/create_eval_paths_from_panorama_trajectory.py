@@ -4,7 +4,7 @@ Creates paths of a fixed distance by sliding a window along the trajectory
 at uniform intervals. Half the paths go forward, half go backward.
 
 Usage:
-    bazel run //experimental/overhead_matching/swag/scripts:create_trajectory_paths -- \
+    bazel run //experimental/overhead_matching/swag/scripts:create_eval_paths_from_panorama_trajectory -- \
         --dataset_path /data/overhead_matching/datasets/VIGOR/mapillary/Framingham \
         --target_distance_m 3000 \
         --num_paths 1000 \
@@ -14,31 +14,26 @@ Usage:
 import argparse
 import csv
 import json
-import math
 from pathlib import Path
 
+from common.math.haversine import find_d_on_unit_circle
 
-def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    lat1, lon1, lat2, lon2 = map(math.radians, (lat1, lon1, lat2, lon2))
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
-    return 2 * 6378137 * math.asin(math.sqrt(a))
+EARTH_RADIUS_M = 6378137.0
 
 
 def load_trajectory(dataset_path: Path) -> tuple[list[str], list[float]]:
-    """Load pano IDs and cumulative distances along the trajectory."""
+    """Load pano IDs and cumulative distances (meters) along the trajectory."""
     mapping = dataset_path / "pano_id_mapping.csv"
     with open(mapping) as f:
         rows = list(csv.DictReader(f))
 
     pano_ids = [r["pano_id"] for r in rows]
-    lats = [float(r["lat"]) for r in rows]
-    lons = [float(r["lon"]) for r in rows]
+    latlons = [(float(r["lat"]), float(r["lon"])) for r in rows]
 
     cum_dist = [0.0]
     for i in range(1, len(pano_ids)):
-        cum_dist.append(cum_dist[-1] + haversine_m(lats[i - 1], lons[i - 1], lats[i], lons[i]))
+        step_m = EARTH_RADIUS_M * find_d_on_unit_circle(latlons[i - 1], latlons[i])
+        cum_dist.append(cum_dist[-1] + step_m)
 
     return pano_ids, cum_dist
 

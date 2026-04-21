@@ -11,6 +11,9 @@ import pandas as pd
 from PIL import Image
 
 from common.gps import web_mercator
+from experimental.overhead_matching.swag.scripts.create_eval_paths_from_panorama_trajectory import (
+    load_trajectory,
+)
 from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
     _TAGS_TO_KEEP_PREFIXES,
     _TAGS_TO_KEEP_SET,
@@ -154,27 +157,13 @@ def parse_satellite_coords(sat_dir: Path) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["lat", "lon"])
 
 
-def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    lat1, lon1, lat2, lon2 = map(math.radians, (lat1, lon1, lat2, lon2))
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
-    return 2 * 6378.137 * math.asin(math.sqrt(a))
-
-
-def compute_trajectory_km(mapping_path: Path) -> float | None:
-    import csv
-    with open(mapping_path) as f:
-        rows = list(csv.DictReader(f))
-    if len(rows) < 2:
+def compute_trajectory_km(dataset_path: Path) -> float | None:
+    if not (dataset_path / "pano_id_mapping.csv").exists():
         return None
-    total = 0.0
-    for i in range(1, len(rows)):
-        total += haversine_km(
-            float(rows[i - 1]["lat"]), float(rows[i - 1]["lon"]),
-            float(rows[i]["lat"]), float(rows[i]["lon"]),
-        )
-    return total
+    pano_ids, cum_dist = load_trajectory(dataset_path)
+    if len(pano_ids) < 2:
+        return None
+    return cum_dist[-1] / 1000.0
 
 
 def compute_bbox_area_km2(north: float, south: float, east: float, west: float) -> float:
@@ -288,9 +277,7 @@ def compute_stats(config: DatasetConfig, pano_embed_base: Path | None) -> Datase
 
     # Fall back to computing trajectory from pano_id_mapping.csv
     if trajectory_km is None:
-        mapping_path = config.path / "pano_id_mapping.csv"
-        if mapping_path.exists():
-            trajectory_km = compute_trajectory_km(mapping_path)
+        trajectory_km = compute_trajectory_km(config.path)
 
     # Satellite source
     sat_source = None

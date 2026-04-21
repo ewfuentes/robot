@@ -256,14 +256,27 @@ py_binary(
     requirement("pandas"),
     requirement("pyarrow"),
     requirement("Pillow"),
+    ":create_eval_paths_from_panorama_trajectory_lib",
     "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
     "//common/gps:web_mercator",
   ]
 )
 
+py_library(
+  name = "create_eval_paths_from_panorama_trajectory_lib",
+  srcs = ["create_eval_paths_from_panorama_trajectory.py"],
+  visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+  deps = [
+    "//common/math:haversine",
+  ],
+)
+
 py_binary(
-  name = "create_trajectory_paths",
-  srcs = ["create_trajectory_paths.py"],
+  name = "create_eval_paths_from_panorama_trajectory",
+  srcs = ["create_eval_paths_from_panorama_trajectory.py"],
+  deps = [
+    ":create_eval_paths_from_panorama_trajectory_lib",
+  ],
 )
 
 py_binary(
