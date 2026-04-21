@@ -188,27 +188,19 @@ def _(DATA_DIR, json, load_pairs_from_directory, mo, parse_prompt_landmarks):
 
 @app.cell
 def _(F, collate_correspondence, device, model, torch):
+    import functools as _functools
+
+    _collate = _functools.partial(collate_correspondence, text_input_dim=768)
+
     def run_model_on_batch(batch, _model=model, _device=device):
         """Run the correspondence model on a CorrespondenceBatch."""
         batch = batch.to(_device)
         with torch.no_grad():
             logits = _model(
                 pano_key_indices=batch.pano_key_indices,
-                pano_value_type=batch.pano_value_type,
-                pano_boolean_values=batch.pano_boolean_values,
-                pano_numeric_values=batch.pano_numeric_values,
-                pano_numeric_nan_mask=batch.pano_numeric_nan_mask,
-                pano_housenumber_values=batch.pano_housenumber_values,
-                pano_housenumber_nan_mask=batch.pano_housenumber_nan_mask,
                 pano_text_embeddings=batch.pano_text_embeddings,
                 pano_tag_mask=batch.pano_tag_mask,
                 osm_key_indices=batch.osm_key_indices,
-                osm_value_type=batch.osm_value_type,
-                osm_boolean_values=batch.osm_boolean_values,
-                osm_numeric_values=batch.osm_numeric_values,
-                osm_numeric_nan_mask=batch.osm_numeric_nan_mask,
-                osm_housenumber_values=batch.osm_housenumber_values,
-                osm_housenumber_nan_mask=batch.osm_housenumber_nan_mask,
                 osm_text_embeddings=batch.osm_text_embeddings,
                 osm_tag_mask=batch.osm_tag_mask,
                 cross_features=batch.cross_features,
@@ -220,7 +212,7 @@ def _(F, collate_correspondence, device, model, torch):
         all_logits, all_probs, all_losses = [], [], []
         _bs = 512
         for _start in range(0, len(samples_list), _bs):
-            _batch = collate_correspondence(samples_list[_start : _start + _bs])
+            _batch = _collate(samples_list[_start : _start + _bs])
             _logits = run_model_on_batch(_batch)
             _labels = _batch.labels.to(_logits.device)
             _loss = F.binary_cross_entropy_with_logits(
@@ -271,15 +263,18 @@ def _(
         )
     loss_df = pd.DataFrame(_meta)
 
+    import functools as _functools_inner
+
     # Run model
     _dataset = LandmarkCorrespondenceDataset(
-        _filtered, text_embeddings, 768, _include
+        _filtered, text_embeddings, 768, _include,
+        allow_missing_text_embeddings=True,
     )
     _loader = DataLoader(
         _dataset,
         batch_size=512,
         shuffle=False,
-        collate_fn=collate_correspondence,
+        collate_fn=_functools_inner.partial(collate_correspondence, text_input_dim=768),
         num_workers=4,
         pin_memory=True,
     )
@@ -429,14 +424,20 @@ def _(
         mo.md(f"Scoring `{_pano_tags_str}` against {len(osm_landmarks_df):,} OSM landmarks...")
     )
 
+    import functools as _functools_inspect
+
     # Encode pano side once
-    _pano_encoded = encode_tag_bundle(_pano_tags, text_embeddings, 768)
+    _pano_encoded = encode_tag_bundle(
+        _pano_tags, text_embeddings, 768, allow_missing_text_embeddings=True,
+    )
 
     # Build samples for all OSM landmarks
     _samples = []
     for _i, _row in osm_landmarks_df.iterrows():
         _osm_tags = _row["tags"]
-        _osm_encoded = encode_tag_bundle(_osm_tags, text_embeddings, 768)
+        _osm_encoded = encode_tag_bundle(
+            _osm_tags, text_embeddings, 768, allow_missing_text_embeddings=True,
+        )
         _cross = compute_cross_features(_pano_tags, _osm_tags, text_embeddings)
         _samples.append(
             {
@@ -449,11 +450,14 @@ def _(
         )
 
     # Batch model inference
+    _collate_inspect = _functools_inspect.partial(
+        collate_correspondence, text_input_dim=768,
+    )
     _all_logits = []
     _bs = 512
     with torch.no_grad():
         for _start in range(0, len(_samples), _bs):
-            _batch = collate_correspondence(_samples[_start : _start + _bs])
+            _batch = _collate_inspect(_samples[_start : _start + _bs])
             _logits = run_model_on_batch(_batch)
             _all_logits.extend(_logits.cpu().tolist())
 

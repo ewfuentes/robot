@@ -9,6 +9,7 @@ Usage:
 """
 
 import argparse
+import functools
 from pathlib import Path
 
 import common.torch.load_torch_deps  # noqa: F401
@@ -37,29 +38,20 @@ def eval_dataset(model, pairs, text_embeddings, text_input_dim, difficulties, de
     )
     if len(ds) == 0:
         return None
+    collate_fn = functools.partial(
+        collate_correspondence, text_input_dim=text_input_dim,
+    )
     loader = DataLoader(ds, batch_size=512, shuffle=False,
-                        collate_fn=collate_correspondence, num_workers=0)
+                        collate_fn=collate_fn, num_workers=0)
     all_labels, all_probs = [], []
     with torch.no_grad():
         for batch in loader:
             batch = batch.to(device)
             logits = model(
                 pano_key_indices=batch.pano_key_indices,
-                pano_value_type=batch.pano_value_type,
-                pano_boolean_values=batch.pano_boolean_values,
-                pano_numeric_values=batch.pano_numeric_values,
-                pano_numeric_nan_mask=batch.pano_numeric_nan_mask,
-                pano_housenumber_values=batch.pano_housenumber_values,
-                pano_housenumber_nan_mask=batch.pano_housenumber_nan_mask,
                 pano_text_embeddings=batch.pano_text_embeddings,
                 pano_tag_mask=batch.pano_tag_mask,
                 osm_key_indices=batch.osm_key_indices,
-                osm_value_type=batch.osm_value_type,
-                osm_boolean_values=batch.osm_boolean_values,
-                osm_numeric_values=batch.osm_numeric_values,
-                osm_numeric_nan_mask=batch.osm_numeric_nan_mask,
-                osm_housenumber_values=batch.osm_housenumber_values,
-                osm_housenumber_nan_mask=batch.osm_housenumber_nan_mask,
                 osm_text_embeddings=batch.osm_text_embeddings,
                 osm_tag_mask=batch.osm_tag_mask,
                 cross_features=batch.cross_features,

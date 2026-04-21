@@ -35,7 +35,7 @@ from common.gps import web_mercator
 
 # Correspondence model imports (lazy-used when --correspondence_model_path provided)
 from experimental.overhead_matching.swag.evaluation.correspondence_matching import (
-    compute_cost_matrix, match_and_aggregate, MatchingMethod, AggregationMode,
+    compute_pairs_cost_matrix, match_and_aggregate, MatchingMethod, AggregationMode,
 )
 from experimental.overhead_matching.swag.data.landmark_correspondence_dataset import (
     load_text_embeddings,
@@ -2985,10 +2985,11 @@ def get_correspondence_details(index, sat_idx):
                         'osm_landmarks': []})
 
     try:
-        cost_matrix = compute_cost_matrix(
+        cost_matrix = compute_pairs_cost_matrix(
             pano_tags_list, osm_tags_list, CORRESPONDENCE_MODEL,
             CORRESPONDENCE_TEXT_EMBEDDINGS, CORRESPONDENCE_TEXT_INPUT_DIM,
             CORRESPONDENCE_DEVICE,
+            allow_missing_text_embeddings=False,
         )
         result = match_and_aggregate(cost_matrix, MatchingMethod.HUNGARIAN,
                                      AggregationMode.SUM)

@@ -242,3 +242,18 @@ py_library(
     "//experimental/overhead_matching/swag/data:landmark_correspondence_dataset",
   ],
 )
+
+py_test(
+  name = "correspondence_matching_test",
+  srcs = ["correspondence_matching_test.py"],
+  deps = [
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("pandas"),
+    "//common/torch:load_torch_deps",
+    ":correspondence_matching",
+    "//experimental/overhead_matching/swag/data:landmark_correspondence_dataset",
+    "//experimental/overhead_matching/swag/model:landmark_correspondence_model",
+  ],
+)
+

@@ -1,8 +1,13 @@
 """Dataset for landmark correspondence classification.
 
-Parses Gemini batch JSONL responses to extract (pano_tags, osm_tags, label) pairs.
-Each JSONL line contains a prompt with Set 1 (pano) and Set 2 (OSM) tag bundles,
-plus a Gemini response identifying matches and negatives.
+Parses Gemini batch JSONL responses to extract (pano_tags, osm_tags, label)
+pairs. Each JSONL line contains a prompt with Set 1 (pano) and Set 2 (OSM)
+tag bundles plus a Gemini response identifying matches and negatives.
+
+All tag values are encoded as text via pre-computed embeddings. Values
+missing from the embeddings dict raise `KeyError` by default; callers that
+explicitly want silent fallback to zero vectors can pass
+`allow_missing_text_embeddings=True`.
 
 Yields:
   - Positive pairs: pano landmark matched to OSM landmark
@@ -14,9 +19,9 @@ import json
 import math
 import pickle
 import re
-from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
+from typing import List
 
 import common.torch.load_torch_deps  # noqa: F401 - Must import before torch
 
@@ -25,21 +30,35 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset
 
 from experimental.overhead_matching.swag.model.landmark_correspondence_model import (
-    BOOLEAN_KEYS,
-    BooleanValue,
-    HOUSENUMBER_KEY,
-    NUMERIC_KEYS,
-    NUM_TAG_KEYS,
+    NUM_CROSS_FEATURES,
     TAG_KEY_TO_IDX,
-    ValueType,
-    encode_housenumber_value,
-    encode_numeric_value,
-    key_type,
-    parse_boolean,
-    parse_housenumber,
-    parse_maxheight,
-    parse_numeric,
 )
+
+
+HOUSENUMBER_KEY = "addr:housenumber"
+
+
+# ---------------------------------------------------------------------------
+# Value parsing helpers
+# ---------------------------------------------------------------------------
+
+def parse_housenumber(value) -> tuple[float, float]:
+    """Parse addr:housenumber to (low, high) range.
+
+    "665-667" → (665, 667), "1858" → (1858, 1858). Any parse failure
+    (non-string input, alphabetic suffix, etc.) returns (nan, nan).
+    """
+    try:
+        v = value.strip()
+        if "-" in v:
+            parts = v.split("-", 1)
+            try:
+                return (float(parts[0].strip()), float(parts[1].strip()))
+            except (ValueError, TypeError):
+                pass
+        return (float(v), float(v))
+    except (ValueError, TypeError, AttributeError):
+        return (float("nan"), float("nan"))
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +76,9 @@ def parse_tag_string(tag_str: str) -> dict[str, str]:
     return tags
 
 
-def parse_prompt_landmarks(prompt_text: str) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+def parse_prompt_landmarks(
+    prompt_text: str,
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     """Parse the prompt to extract Set 1 and Set 2 landmark tag bundles.
 
     The prompt format is:
@@ -71,14 +92,12 @@ def parse_prompt_landmarks(prompt_text: str) -> tuple[list[dict[str, str]], list
 
     Returns: (set1_landmarks, set2_landmarks) where each is a list of tag dicts.
     """
-    # Split into Set 1 and Set 2 sections
     set2_marker = "\n\nSet 2 (map database):\n"
     if set2_marker not in prompt_text:
         raise ValueError("Could not find Set 2 marker in prompt")
 
     set1_text, set2_text = prompt_text.split(set2_marker, 1)
 
-    # Remove Set 1 header
     set1_header = "Set 1 (street-level observations):\n"
     if set1_text.startswith(set1_header):
         set1_text = set1_text[len(set1_header):]
@@ -87,7 +106,6 @@ def parse_prompt_landmarks(prompt_text: str) -> tuple[list[dict[str, str]], list
         landmarks = []
         for line in text.strip().split("\n"):
             line = line.strip()
-            # Match " N. tags..." pattern
             match = re.match(r"\d+\.\s+(.*)", line)
             if match:
                 landmarks.append(parse_tag_string(match.group(1)))
@@ -114,11 +132,9 @@ def parse_jsonl_line(line_data: dict) -> list[CorrespondencePair]:
     """
     pano_id = line_data["key"]
 
-    # Parse prompt to get tag bundles
     prompt_text = line_data["request"]["contents"][0]["parts"][0]["text"]
     set1_landmarks, set2_landmarks = parse_prompt_landmarks(prompt_text)
 
-    # Parse response
     response = line_data.get("response", {})
     candidates = response.get("candidates", [])
     if not candidates:
@@ -139,7 +155,6 @@ def parse_jsonl_line(line_data: dict) -> list[CorrespondencePair]:
         pano_tags = set1_landmarks[set1_id]
         uniqueness = match.get("uniqueness_score", None)
 
-        # Positive pairs
         for set2_id in match.get("set_2_matches", []):
             if set2_id < 0 or set2_id >= len(set2_landmarks):
                 continue
@@ -152,7 +167,6 @@ def parse_jsonl_line(line_data: dict) -> list[CorrespondencePair]:
                 pano_id=pano_id,
             ))
 
-        # Negative pairs
         for neg in match.get("negatives", []):
             set2_id = neg.get("set_2_id")
             if set2_id is None or set2_id < 0 or set2_id >= len(set2_landmarks):
@@ -196,15 +210,89 @@ def load_pairs_from_directory(data_dir: Path) -> list[CorrespondencePair]:
                     skipped += 1
                     continue
     if skipped:
-        print(f"WARNING: Skipped {skipped} unparseable JSONL lines across {len(jsonl_files)} files")
+        print(f"WARNING: Skipped {skipped} unparseable JSONL lines across "
+              f"{len(jsonl_files)} files")
     return pairs
 
 
 # ---------------------------------------------------------------------------
-# Cross-pair feature computation
+# Text embedding loading
 # ---------------------------------------------------------------------------
 
-NUM_CROSS_FEATURES = 13
+def load_text_embeddings(path: Path) -> dict[str, torch.Tensor]:
+    """Load pre-computed text embeddings from pickle file.
+
+    Expected format: {value_string: numpy_array_or_tensor}. All entries are
+    converted to float32 tensors and required to share a single embedding
+    dimension; otherwise a ValueError is raised up front so the caller sees
+    a meaningful error rather than a shape mismatch deep inside a forward pass.
+    """
+    with open(path, "rb") as f:
+        data = pickle.load(f)
+
+    result: dict[str, torch.Tensor] = {}
+    dim: int | None = None
+    for k, v in data.items():
+        t = v if isinstance(v, torch.Tensor) else torch.tensor(v, dtype=torch.float32)
+        if t.ndim != 1:
+            raise ValueError(
+                f"Text embedding for {k!r} has shape {tuple(t.shape)}; "
+                f"expected 1-D vector."
+            )
+        if dim is None:
+            dim = t.shape[0]
+        elif t.shape[0] != dim:
+            raise ValueError(
+                f"Text embedding dim mismatch at key {k!r}: "
+                f"got {t.shape[0]}, expected {dim} (inferred from earlier entries)."
+            )
+        result[k] = t.to(torch.float32)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Per-pair encoding
+# ---------------------------------------------------------------------------
+
+def encode_tag_bundle(
+    tags: dict[str, str],
+    text_embeddings: dict[str, torch.Tensor],
+    text_input_dim: int,
+    allow_missing_text_embeddings: bool = False,
+) -> dict:
+    """Encode a tag bundle into tensors. All values encoded as text.
+
+    Returns dict with `key_indices` (list[int]) and `text_embeddings`
+    (list[torch.Tensor]). The two lists are parallel and padded/stacked
+    downstream by `_pad_side`.
+
+    Raises KeyError if a value is not in `text_embeddings` unless
+    `allow_missing_text_embeddings=True`, in which case missing values fall
+    back to a zero vector.
+    """
+    key_indices = []
+    text_embs = []
+    zero_text = torch.zeros(text_input_dim)
+
+    for k, v in tags.items():
+        if k not in TAG_KEY_TO_IDX:
+            continue
+        if v in text_embeddings:
+            text_embs.append(text_embeddings[v])
+        elif allow_missing_text_embeddings:
+            text_embs.append(zero_text)
+        else:
+            raise KeyError(
+                f"Text value {v!r} for key {k!r} not found in "
+                f"text_embeddings ({len(text_embeddings)} entries). "
+                f"Pass allow_missing_text_embeddings=True to fall back to zeros."
+            )
+        key_indices.append(TAG_KEY_TO_IDX[k])
+
+    return {
+        "key_indices": key_indices,
+        "text_embeddings": text_embs,
+    }
 
 
 def compute_cross_features(
@@ -212,81 +300,40 @@ def compute_cross_features(
     osm_tags: dict[str, str],
     text_embeddings: dict[str, torch.Tensor] | None = None,
 ) -> list[float]:
-    """Compute cross-pair features between two tag bundles.
+    """Compute 4 cross-pair features.
 
-    Features (13 total):
-      - Key Jaccard similarity (1)
-      - Number of shared keys / 10 (1)
-      - Exact value match count / 10 (1)
-      - Text cosine similarity: max, mean, name-specific (3)
-      - Numeric proximity per numeric key (6, sorted: building:levels, heritage,
-        lanes, levels, maxheight, maxspeed)
-      - Housenumber range overlap (1)
+    Layout: [text_max, text_mean, text_name, housenumber_overlap].
+    When `text_embeddings` is None, the three text features fall back to 0.0.
     """
-    pano_keys = set(pano_tags.keys())
-    osm_keys = set(osm_tags.keys())
-    shared_keys = pano_keys & osm_keys
-    union_keys = pano_keys | osm_keys
+    features: list[float] = []
 
-    features = []
-
-    # Jaccard similarity
-    jaccard = len(shared_keys) / max(len(union_keys), 1)
-    features.append(jaccard)
-
-    # Shared key count (normalized)
-    features.append(len(shared_keys) / 10.0)
-
-    # Exact value match count
-    exact_matches = sum(1 for k in shared_keys if pano_tags[k] == osm_tags[k])
-    features.append(exact_matches / 10.0)
-
-    # Text cosine similarities (3 features)
+    shared_keys = set(pano_tags.keys()) & set(osm_tags.keys())
     if text_embeddings is not None:
-        text_sims = []
+        text_sims: list[float] = []
         name_sim = 0.0
         for k in shared_keys:
-            if key_type(k) != ValueType.TEXT:
-                continue
-            pv = pano_tags[k]
-            ov = osm_tags[k]
+            pv, ov = pano_tags[k], osm_tags[k]
             if pv in text_embeddings and ov in text_embeddings:
-                pe = text_embeddings[pv]
-                oe = text_embeddings[ov]
-                sim = F.cosine_similarity(pe.unsqueeze(0), oe.unsqueeze(0)).item()
+                sim = F.cosine_similarity(
+                    text_embeddings[pv].unsqueeze(0),
+                    text_embeddings[ov].unsqueeze(0),
+                ).item()
                 text_sims.append(sim)
                 if k == "name":
                     name_sim = sim
-        features.append(max(text_sims) if text_sims else 0.0)  # max
-        features.append(sum(text_sims) / max(len(text_sims), 1) if text_sims else 0.0)  # mean
-        features.append(name_sim)  # name-specific
+        features.append(max(text_sims) if text_sims else 0.0)
+        features.append(
+            sum(text_sims) / len(text_sims) if text_sims else 0.0
+        )
+        features.append(name_sim)
     else:
         features.extend([0.0, 0.0, 0.0])
-
-    # Numeric proximity (6 features, one per numeric key)
-    numeric_keys_ordered = sorted(NUMERIC_KEYS)
-    for nk in numeric_keys_ordered:
-        if nk in pano_tags and nk in osm_tags:
-            if nk == "maxheight":
-                a = parse_maxheight(pano_tags[nk])
-                b = parse_maxheight(osm_tags[nk])
-            else:
-                a, _ = parse_numeric(pano_tags[nk], key=nk)
-                b, _ = parse_numeric(osm_tags[nk], key=nk)
-            if not (math.isnan(a) or math.isnan(b)):
-                scale = 10.0 if nk in ("maxspeed",) else 2.0
-                features.append(math.exp(-abs(a - b) / scale))
-            else:
-                features.append(0.0)
-        else:
-            features.append(0.0)
 
     # Housenumber range overlap (1 feature)
     if HOUSENUMBER_KEY in pano_tags and HOUSENUMBER_KEY in osm_tags:
         plo, phi = parse_housenumber(pano_tags[HOUSENUMBER_KEY])
         olo, ohi = parse_housenumber(osm_tags[HOUSENUMBER_KEY])
         if not any(math.isnan(x) for x in (plo, phi, olo, ohi)):
-            # Check if either number falls in the other's range
             overlap = (plo >= olo and plo <= ohi) or (olo >= plo and olo <= phi)
             features.append(1.0 if overlap else 0.0)
         else:
@@ -294,125 +341,106 @@ def compute_cross_features(
     else:
         features.append(0.0)
 
-    assert len(features) == NUM_CROSS_FEATURES, f"Expected {NUM_CROSS_FEATURES} cross features, got {len(features)}"
+    assert len(features) == NUM_CROSS_FEATURES
     return features
 
 
 # ---------------------------------------------------------------------------
-# Tag encoding for model input
+# Batch dataclass and collation
 # ---------------------------------------------------------------------------
 
-def encode_tag_bundle(
-    tags: dict[str, str],
-    text_embeddings: dict[str, torch.Tensor] | None,
-    text_input_dim: int = 768,
-) -> dict:
-    """Encode a tag bundle into tensors for TagBundleEncoder.
+@dataclass
+class CorrespondenceBatch:
+    pano_key_indices: torch.Tensor       # (B, T) int
+    pano_text_embeddings: torch.Tensor   # (B, T, text_dim) float
+    pano_tag_mask: torch.Tensor          # (B, T) bool
+    osm_key_indices: torch.Tensor        # (B, T) int
+    osm_text_embeddings: torch.Tensor    # (B, T, text_dim) float
+    osm_tag_mask: torch.Tensor           # (B, T) bool
+    cross_features: torch.Tensor         # (B, NUM_CROSS_FEATURES) float
+    labels: torch.Tensor                 # (B,) float
 
-    Returns dict with:
-      key_indices: list[int]
-      value_types: list[int]  (ValueType enum: 0=bool, 1=numeric, 2=housenumber, 3=text)
-      boolean_values: list[int]  (BooleanValue enum: 0=true, 1=false, 2=unknown)
-      numeric_values: list[list[float]]  (each is 4-dim)
-      numeric_nan_mask: list[bool]
-      housenumber_values: list[list[float]]  (each is 4-dim)
-      housenumber_nan_mask: list[bool]
-      text_embeddings: list[torch.Tensor]  (each is text_input_dim-dim)
+    def to(self, device: torch.device | str) -> "CorrespondenceBatch":
+        return CorrespondenceBatch(**{
+            name: getattr(self, name).to(device)
+            for name in self.__dataclass_fields__
+        })
+
+    def pin_memory(self) -> "CorrespondenceBatch":
+        return CorrespondenceBatch(**{
+            name: getattr(self, name).pin_memory()
+            for name in self.__dataclass_fields__
+        })
+
+
+def _pad_side(encoded_list: List[dict], text_input_dim: int):
+    """Pad a list of encoded tag bundles to uniform length.
+
+    Returns (key_indices, text_embeddings, tag_mask) stacked across the batch.
+    Every sample ends up with at least T=1 slot (padded if empty); the mask
+    marks padded positions as False.
     """
+    max_tags = max(len(e["key_indices"]) for e in encoded_list)
+    max_tags = max(max_tags, 1)
+
     key_indices = []
-    value_types = []
-    boolean_values = []
-    numeric_values = []
-    numeric_nan_masks = []
-    housenumber_vals = []
-    housenumber_nan_masks = []
     text_embs = []
+    masks = []
 
-    zero_text = torch.zeros(text_input_dim)
+    for e in encoded_list:
+        n = len(e["key_indices"])
+        pad = max_tags - n
 
-    for k, v in tags.items():
-        if k not in TAG_KEY_TO_IDX:
-            continue
+        key_indices.append(
+            torch.tensor(e["key_indices"] + [0] * pad, dtype=torch.long)
+        )
+        if n > 0:
+            stacked = torch.stack(e["text_embeddings"])
+        else:
+            stacked = torch.zeros(0, text_input_dim)
+        if pad > 0:
+            stacked = torch.cat([stacked, torch.zeros(pad, text_input_dim)])
+        text_embs.append(stacked)
+        masks.append(
+            torch.tensor([True] * n + [False] * pad, dtype=torch.bool)
+        )
 
-        key_indices.append(TAG_KEY_TO_IDX[k])
-        kt = key_type(k)
+    return (
+        torch.stack(key_indices),
+        torch.stack(text_embs),
+        torch.stack(masks),
+    )
 
-        if kt == ValueType.BOOLEAN:
-            value_types.append(ValueType.BOOLEAN)
-            bval = parse_boolean(v)
-            boolean_values.append(
-                BooleanValue.TRUE if bval > 0.7
-                else (BooleanValue.FALSE if bval < 0.3 else BooleanValue.UNKNOWN)
-            )
-            numeric_values.append([0.0, 0.0, 0.0, 0.0])
-            numeric_nan_masks.append(False)
-            housenumber_vals.append([0.0, 0.0, 0.0, 0.0])
-            housenumber_nan_masks.append(False)
-            text_embs.append(zero_text)
 
-        elif kt == ValueType.NUMERIC:
-            value_types.append(ValueType.NUMERIC)
-            boolean_values.append(BooleanValue.UNKNOWN)
-            if k == "maxheight":
-                x = parse_maxheight(v)
-                is_lower_bound = False
-            else:
-                x, is_lower_bound = parse_numeric(v, key=k)
-            is_nan = math.isnan(x)
-            enc = encode_numeric_value(x, is_lower_bound)
-            assert all(abs(e) <= 30 for e in enc), (
-                f"Numeric encoding magnitude >30 for key={k!r}, value={v!r}: {enc}"
-            )
-            numeric_values.append(enc)
-            numeric_nan_masks.append(is_nan)
-            housenumber_vals.append([0.0, 0.0, 0.0, 0.0])
-            housenumber_nan_masks.append(False)
-            text_embs.append(zero_text)
+def collate_correspondence(
+    batch: list[dict],
+    text_input_dim: int,
+) -> CorrespondenceBatch:
+    """Collate function for DataLoader.
 
-        elif kt == ValueType.HOUSENUMBER:
-            value_types.append(ValueType.HOUSENUMBER)
-            boolean_values.append(BooleanValue.UNKNOWN)
-            numeric_values.append([0.0, 0.0, 0.0, 0.0])
-            numeric_nan_masks.append(False)
-            lo, hi = parse_housenumber(v)
-            is_nan = math.isnan(lo) or math.isnan(hi)
-            enc = encode_housenumber_value(lo, hi)
-            assert all(abs(e) <= 30 for e in enc), (
-                f"Housenumber encoding magnitude >30 for value={v!r}: {enc}"
-            )
-            housenumber_vals.append(enc)
-            housenumber_nan_masks.append(is_nan)
-            text_embs.append(zero_text)
+    `text_input_dim` must match the dimension of the text embeddings used by
+    the dataset; bind it via `functools.partial` when constructing the
+    DataLoader (see `LandmarkCorrespondenceDataset.text_input_dim`).
+    """
+    pano_keys, pano_text, pano_mask = _pad_side(
+        [b["pano"] for b in batch], text_input_dim
+    )
+    osm_keys, osm_text, osm_mask = _pad_side(
+        [b["osm"] for b in batch], text_input_dim
+    )
+    cross = torch.tensor([b["cross_features"] for b in batch], dtype=torch.float32)
+    labels = torch.tensor([b["label"] for b in batch], dtype=torch.float32)
 
-        else:  # text
-            value_types.append(ValueType.TEXT)
-            boolean_values.append(BooleanValue.UNKNOWN)
-            numeric_values.append([0.0, 0.0, 0.0, 0.0])
-            numeric_nan_masks.append(False)
-            housenumber_vals.append([0.0, 0.0, 0.0, 0.0])
-            housenumber_nan_masks.append(False)
-            if text_embeddings is None:
-                raise ValueError(
-                    f"text_embeddings is required but not provided "
-                    f"(key={k!r}, value={v!r})"
-                )
-            if v not in text_embeddings:
-                raise KeyError(
-                    f"Text value {v!r} for key {k!r} not found in "
-                    f"text_embeddings ({len(text_embeddings)} entries)"
-                )
-            text_embs.append(text_embeddings[v])
-
-    return {
-        "key_indices": key_indices,
-        "value_types": value_types,
-        "boolean_values": boolean_values,
-        "numeric_values": numeric_values,
-        "numeric_nan_mask": numeric_nan_masks,
-        "housenumber_values": housenumber_vals,
-        "housenumber_nan_mask": housenumber_nan_masks,
-        "text_embeddings": text_embs,
-    }
+    return CorrespondenceBatch(
+        pano_key_indices=pano_keys,
+        pano_text_embeddings=pano_text,
+        pano_tag_mask=pano_mask,
+        osm_key_indices=osm_keys,
+        osm_text_embeddings=osm_text,
+        osm_tag_mask=osm_mask,
+        cross_features=cross,
+        labels=labels,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -420,26 +448,68 @@ def encode_tag_bundle(
 # ---------------------------------------------------------------------------
 
 class LandmarkCorrespondenceDataset(Dataset):
-    """PyTorch dataset yielding dicts with encoded pano/osm tag bundles, cross-features, label, and difficulty."""
+    """Correspondence pairs encoded as text-embedding bundles.
+
+    At construction time, scans all pairs to summarize text-embedding
+    coverage and zero-tag rates. If any value string is missing from
+    `text_embeddings` and `allow_missing_text_embeddings` is False, raises
+    KeyError listing a handful of examples so the caller can spot bad data
+    early rather than degrading silently during training.
+    """
 
     def __init__(
         self,
         pairs: list[CorrespondencePair],
-        text_embeddings: dict[str, torch.Tensor] | None = None,
-        text_input_dim: int = 768,
-        include_difficulties: tuple[str, ...] = ("positive", "easy"),
+        text_embeddings: dict[str, torch.Tensor],
+        text_input_dim: int,
+        include_difficulties: tuple[str, ...] = ("positive", "easy", "hard"),
+        allow_missing_text_embeddings: bool = False,
     ):
-        """Initialize dataset.
-
-        Args:
-            pairs: List of CorrespondencePair from JSONL parsing
-            text_embeddings: Pre-computed {value_string: tensor} for text keys
-            text_input_dim: Dimension of pre-computed text embeddings
-            include_difficulties: Which pair types to include
-        """
         self.pairs = [p for p in pairs if p.difficulty in include_difficulties]
         self.text_embeddings = text_embeddings
         self.text_input_dim = text_input_dim
+        self.allow_missing_text_embeddings = allow_missing_text_embeddings
+
+        self._log_coverage()
+
+    def _log_coverage(self) -> None:
+        """Summarize text-embedding coverage and zero-tag rates on init."""
+        unique_values: set[str] = set()
+        zero_tag_pano = 0
+        zero_tag_osm = 0
+        for pair in self.pairs:
+            pano_keys = [k for k in pair.pano_tags if k in TAG_KEY_TO_IDX]
+            osm_keys = [k for k in pair.osm_tags if k in TAG_KEY_TO_IDX]
+            if not pano_keys:
+                zero_tag_pano += 1
+            if not osm_keys:
+                zero_tag_osm += 1
+            for k in pano_keys:
+                unique_values.add(pair.pano_tags[k])
+            for k in osm_keys:
+                unique_values.add(pair.osm_tags[k])
+
+        missing = [v for v in unique_values if v not in self.text_embeddings]
+        total = len(unique_values)
+        pct = 100.0 * len(missing) / total if total else 0.0
+        print(
+            f"LandmarkCorrespondenceDataset: {len(self.pairs)} pairs, "
+            f"{total} unique text values, {len(missing)} missing "
+            f"from embeddings ({pct:.2f}%)."
+        )
+        if zero_tag_pano or zero_tag_osm:
+            print(
+                f"  Zero-tag pairs: pano={zero_tag_pano}, osm={zero_tag_osm} "
+                f"(all tags filtered by TAG_KEY_TO_IDX whitelist)."
+            )
+        if missing and not self.allow_missing_text_embeddings:
+            sample = sorted(missing)[:5]
+            raise KeyError(
+                f"{len(missing)} of {total} unique text values missing from "
+                f"text_embeddings ({pct:.2f}%). Examples: {sample}. "
+                f"Pass allow_missing_text_embeddings=True to fall back to "
+                f"zero vectors."
+            )
 
     def __len__(self) -> int:
         return len(self.pairs)
@@ -447,10 +517,12 @@ class LandmarkCorrespondenceDataset(Dataset):
     def __getitem__(self, idx: int) -> dict:
         pair = self.pairs[idx]
         pano_encoded = encode_tag_bundle(
-            pair.pano_tags, self.text_embeddings, self.text_input_dim
+            pair.pano_tags, self.text_embeddings, self.text_input_dim,
+            allow_missing_text_embeddings=self.allow_missing_text_embeddings,
         )
         osm_encoded = encode_tag_bundle(
-            pair.osm_tags, self.text_embeddings, self.text_input_dim
+            pair.osm_tags, self.text_embeddings, self.text_input_dim,
+            allow_missing_text_embeddings=self.allow_missing_text_embeddings,
         )
         cross_feats = compute_cross_features(
             pair.pano_tags, pair.osm_tags, self.text_embeddings,
@@ -462,325 +534,3 @@ class LandmarkCorrespondenceDataset(Dataset):
             "label": pair.label,
             "difficulty": pair.difficulty,
         }
-
-
-# ---------------------------------------------------------------------------
-# Batch collation
-# ---------------------------------------------------------------------------
-
-@dataclass
-class CorrespondenceBatch:
-    """Collated batch for CorrespondenceClassifier."""
-    # Pano side (all B × max_pano_tags)
-    pano_key_indices: torch.Tensor
-    pano_value_type: torch.Tensor
-    pano_boolean_values: torch.Tensor
-    pano_numeric_values: torch.Tensor
-    pano_numeric_nan_mask: torch.Tensor
-    pano_housenumber_values: torch.Tensor
-    pano_housenumber_nan_mask: torch.Tensor
-    pano_text_embeddings: torch.Tensor
-    pano_tag_mask: torch.Tensor
-    # OSM side (all B × max_osm_tags)
-    osm_key_indices: torch.Tensor
-    osm_value_type: torch.Tensor
-    osm_boolean_values: torch.Tensor
-    osm_numeric_values: torch.Tensor
-    osm_numeric_nan_mask: torch.Tensor
-    osm_housenumber_values: torch.Tensor
-    osm_housenumber_nan_mask: torch.Tensor
-    osm_text_embeddings: torch.Tensor
-    osm_tag_mask: torch.Tensor
-    # Cross features (B × num_cross)
-    cross_features: torch.Tensor
-    # Labels (B,)
-    labels: torch.Tensor
-
-    def to(self, device: torch.device) -> "CorrespondenceBatch":
-        """Move all tensors to device."""
-        return CorrespondenceBatch(**{
-            name: getattr(self, name).to(device) for name in self.__dataclass_fields__
-        })
-
-    def pin_memory(self) -> "CorrespondenceBatch":
-        """Pin all tensors to memory for faster GPU transfer."""
-        return CorrespondenceBatch(**{
-            name: getattr(self, name).pin_memory() for name in self.__dataclass_fields__
-        })
-
-
-def _pad_encoded(encoded_list: list[dict], text_input_dim: int) -> dict[str, torch.Tensor]:
-    """Pad and stack encoded tag bundles into batch tensors.
-
-    Args:
-        encoded_list: List of dicts from encode_tag_bundle
-        text_input_dim: Dimension of text embeddings
-
-    Returns:
-        Dict of tensors, all with shape (B, max_tags, ...)
-    """
-    B = len(encoded_list)
-    max_tags = max(len(e["key_indices"]) for e in encoded_list) if encoded_list else 1
-    max_tags = max(max_tags, 1)  # At least 1 to avoid empty tensors
-
-    key_indices = torch.zeros(B, max_tags, dtype=torch.long)
-    value_types = torch.zeros(B, max_tags, dtype=torch.long)
-    boolean_values = torch.full((B, max_tags), 2, dtype=torch.long)  # default: unknown
-    numeric_values = torch.zeros(B, max_tags, 4)
-    numeric_nan_mask = torch.zeros(B, max_tags, dtype=torch.bool)
-    housenumber_values = torch.zeros(B, max_tags, 4)
-    housenumber_nan_mask = torch.zeros(B, max_tags, dtype=torch.bool)
-    text_embeddings = torch.zeros(B, max_tags, text_input_dim)
-    tag_mask = torch.zeros(B, max_tags, dtype=torch.bool)
-
-    for i, enc in enumerate(encoded_list):
-        n = len(enc["key_indices"])
-        if n == 0:
-            continue
-        tag_mask[i, :n] = True
-        key_indices[i, :n] = torch.tensor(enc["key_indices"], dtype=torch.long)
-        value_types[i, :n] = torch.tensor(enc["value_types"], dtype=torch.long)
-        boolean_values[i, :n] = torch.tensor(enc["boolean_values"], dtype=torch.long)
-        numeric_values[i, :n] = torch.tensor(enc["numeric_values"], dtype=torch.float)
-        numeric_nan_mask[i, :n] = torch.tensor(enc["numeric_nan_mask"], dtype=torch.bool)
-        housenumber_values[i, :n] = torch.tensor(enc["housenumber_values"], dtype=torch.float)
-        housenumber_nan_mask[i, :n] = torch.tensor(enc["housenumber_nan_mask"], dtype=torch.bool)
-        if enc["text_embeddings"]:
-            text_embeddings[i, :n] = torch.stack(enc["text_embeddings"])
-
-    return {
-        "key_indices": key_indices,
-        "value_type": value_types,
-        "boolean_values": boolean_values,
-        "numeric_values": numeric_values,
-        "numeric_nan_mask": numeric_nan_mask,
-        "housenumber_values": housenumber_values,
-        "housenumber_nan_mask": housenumber_nan_mask,
-        "text_embeddings": text_embeddings,
-        "tag_mask": tag_mask,
-    }
-
-
-def collate_correspondence(samples: list[dict]) -> CorrespondenceBatch:
-    """Collate function for DataLoader."""
-    # Infer text embedding dim from first sample with a text embedding
-    text_input_dim = None
-    for s in samples:
-        for emb in s["pano"]["text_embeddings"]:
-            if emb.shape[0] > 0:
-                text_input_dim = emb.shape[0]
-                break
-        if text_input_dim is not None:
-            break
-        for emb in s["osm"]["text_embeddings"]:
-            if emb.shape[0] > 0:
-                text_input_dim = emb.shape[0]
-                break
-        if text_input_dim is not None:
-            break
-    if text_input_dim is None:
-        raise ValueError(
-            "Cannot infer text_input_dim: no samples have text embeddings"
-        )
-
-    pano_encoded = [s["pano"] for s in samples]
-    osm_encoded = [s["osm"] for s in samples]
-
-    pano_tensors = _pad_encoded(pano_encoded, text_input_dim)
-    osm_tensors = _pad_encoded(osm_encoded, text_input_dim)
-
-    cross_features = torch.tensor([s["cross_features"] for s in samples], dtype=torch.float)
-    labels = torch.tensor([s["label"] for s in samples], dtype=torch.float)
-
-    return CorrespondenceBatch(
-        pano_key_indices=pano_tensors["key_indices"],
-        pano_value_type=pano_tensors["value_type"],
-        pano_boolean_values=pano_tensors["boolean_values"],
-        pano_numeric_values=pano_tensors["numeric_values"],
-        pano_numeric_nan_mask=pano_tensors["numeric_nan_mask"],
-        pano_housenumber_values=pano_tensors["housenumber_values"],
-        pano_housenumber_nan_mask=pano_tensors["housenumber_nan_mask"],
-        pano_text_embeddings=pano_tensors["text_embeddings"],
-        pano_tag_mask=pano_tensors["tag_mask"],
-        osm_key_indices=osm_tensors["key_indices"],
-        osm_value_type=osm_tensors["value_type"],
-        osm_boolean_values=osm_tensors["boolean_values"],
-        osm_numeric_values=osm_tensors["numeric_values"],
-        osm_numeric_nan_mask=osm_tensors["numeric_nan_mask"],
-        osm_housenumber_values=osm_tensors["housenumber_values"],
-        osm_housenumber_nan_mask=osm_tensors["housenumber_nan_mask"],
-        osm_text_embeddings=osm_tensors["text_embeddings"],
-        osm_tag_mask=osm_tensors["tag_mask"],
-        cross_features=cross_features,
-        labels=labels,
-    )
-
-
-def load_text_embeddings(path: Path) -> dict[str, torch.Tensor]:
-    """Load pre-computed text embeddings from pickle file.
-
-    Expected format: {value_string: numpy_array_or_tensor}
-    """
-    with open(path, "rb") as f:
-        data = pickle.load(f)
-    # Convert numpy arrays to tensors if needed
-    result = {}
-    for k, v in data.items():
-        if isinstance(v, torch.Tensor):
-            result[k] = v
-        else:
-            result[k] = torch.tensor(v, dtype=torch.float32)
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Parse failure reporting
-# ---------------------------------------------------------------------------
-
-PARSE_REPORT_PATH = Path("/tmp/landmark_correspondence_parse_report.txt")
-
-
-@dataclass
-class ParseFailure:
-    """A single parse failure."""
-    key: str
-    raw_value: str
-    key_type_str: str  # "boolean", "numeric", "housenumber"
-    failure_reason: str  # "nan", "unknown_boolean"
-
-
-def scan_parse_failures(
-    pairs: list[CorrespondencePair],
-    text_embeddings: dict[str, torch.Tensor] | None = None,
-) -> list[ParseFailure]:
-    """Scan all pairs and collect parse failures for non-text keys.
-
-    Failures are:
-      - Boolean: value parsed to 0.5 (unknown/unrecognized)
-      - Numeric: value parsed to NaN
-      - Housenumber: value parsed to (NaN, NaN)
-      - Text: value not in text_embeddings dict (missing embedding)
-    """
-    failures = []
-    seen = set()  # (key, raw_value) to avoid duplicate reports
-
-    for pair in pairs:
-        for tags in [pair.pano_tags, pair.osm_tags]:
-            for k, v in tags.items():
-                if (k, v) in seen:
-                    continue
-                seen.add((k, v))
-
-                kt = key_type(k)
-
-                if kt == ValueType.BOOLEAN:
-                    parsed = parse_boolean(v)
-                    if parsed == 0.5:
-                        failures.append(ParseFailure(
-                            key=k, raw_value=v, key_type_str="boolean",
-                            failure_reason="unknown_boolean",
-                        ))
-
-                elif kt == ValueType.NUMERIC:
-                    if k == "maxheight":
-                        parsed = parse_maxheight(v)
-                    else:
-                        parsed, _ = parse_numeric(v, key=k)
-                    if math.isnan(parsed):
-                        failures.append(ParseFailure(
-                            key=k, raw_value=v, key_type_str="numeric",
-                            failure_reason="nan",
-                        ))
-
-                elif kt == ValueType.HOUSENUMBER:
-                    lo, hi = parse_housenumber(v)
-                    if math.isnan(lo) or math.isnan(hi):
-                        failures.append(ParseFailure(
-                            key=k, raw_value=v, key_type_str="housenumber",
-                            failure_reason="nan",
-                        ))
-
-                elif kt == ValueType.TEXT:
-                    if text_embeddings is not None and v not in text_embeddings:
-                        failures.append(ParseFailure(
-                            key=k, raw_value=v, key_type_str="text",
-                            failure_reason="missing_embedding",
-                        ))
-
-    return failures
-
-
-def write_parse_report(
-    failures: list[ParseFailure],
-    pairs: list[CorrespondencePair],
-    report_path: Path = PARSE_REPORT_PATH,
-) -> None:
-    """Write parse failure report to file.
-
-    Groups failures by key and type, shows raw values and counts.
-    """
-    # Count total values per key type to compute failure rates
-    type_counts: Counter = Counter()
-    key_value_counts: Counter = Counter()
-    seen = set()
-    for pair in pairs:
-        for tags in [pair.pano_tags, pair.osm_tags]:
-            for k, v in tags.items():
-                if (k, v) in seen:
-                    continue
-                seen.add((k, v))
-                kt = key_type(k)
-                type_counts[kt] += 1
-                key_value_counts[k] += 1
-
-    # Group failures
-    by_key: defaultdict[str, list[ParseFailure]] = defaultdict(list)
-    for f in failures:
-        by_key[f.key].append(f)
-
-    by_type: defaultdict[str, list[ParseFailure]] = defaultdict(list)
-    for f in failures:
-        by_type[f.key_type_str].append(f)
-
-    lines = []
-    lines.append("=" * 80)
-    lines.append("PARSE FAILURE REPORT")
-    lines.append("=" * 80)
-    lines.append("")
-
-    # Summary
-    lines.append("SUMMARY BY TYPE")
-    lines.append("-" * 40)
-    _type_name_to_enum = {
-        "boolean": ValueType.BOOLEAN, "numeric": ValueType.NUMERIC,
-        "housenumber": ValueType.HOUSENUMBER, "text": ValueType.TEXT,
-    }
-    for kt in ["boolean", "numeric", "housenumber", "text"]:
-        n_fail = len(by_type.get(kt, []))
-        n_total = type_counts.get(_type_name_to_enum[kt], 0)
-        pct = (n_fail / n_total * 100) if n_total > 0 else 0
-        lines.append(f"  {kt:15s}: {n_fail:5d} / {n_total:5d} unique values failed ({pct:.1f}%)")
-    lines.append(f"  {'TOTAL':15s}: {len(failures):5d} / {sum(type_counts.values()):5d}")
-    lines.append("")
-
-    # Per-key breakdown
-    lines.append("FAILURES BY KEY")
-    lines.append("-" * 40)
-    for key in sorted(by_key.keys()):
-        key_failures = by_key[key]
-        n_total = key_value_counts.get(key, 0)
-        n_fail = len(key_failures)
-        pct = (n_fail / n_total * 100) if n_total > 0 else 0
-        lines.append(f"\n  {key} ({key_failures[0].key_type_str}): "
-                      f"{n_fail}/{n_total} failed ({pct:.1f}%)")
-
-        # Show all failing values (sorted by value)
-        for f in sorted(key_failures, key=lambda x: x.raw_value):
-            lines.append(f"    {f.failure_reason:20s}  {f.raw_value!r}")
-
-    lines.append("")
-    lines.append("=" * 80)
-
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text("\n".join(lines) + "\n")
-    print(f"Parse failure report written to {report_path}")
