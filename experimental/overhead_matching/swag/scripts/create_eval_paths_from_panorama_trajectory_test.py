@@ -170,14 +170,19 @@ class GeneratePathsTest(unittest.TestCase):
 
         pano_idx = {pid: i for i, pid in enumerate(pano_ids)}
         num_fwd = num_paths // 2
+        # find_index_at_distance stops at the first index whose cum_dist ≥ target,
+        # so each path overshoots the target by at most one trajectory step.
+        max_span = self.TARGET_M + self.STEP_M + 1e-6
 
         for path in paths[:num_fwd]:
             span = cum_dist[pano_idx[path[-1]]] - cum_dist[pano_idx[path[0]]]
             self.assertGreaterEqual(span, self.TARGET_M - 1e-6)
+            self.assertLessEqual(span, max_span)
         for path in paths[num_fwd:]:
             # Backward paths are stored reversed, so path[0] is the later pano.
             span = cum_dist[pano_idx[path[0]]] - cum_dist[pano_idx[path[-1]]]
             self.assertGreaterEqual(span, self.TARGET_M - 1e-6)
+            self.assertLessEqual(span, max_span)
 
         # With uniform ~1m spacing, every path should be about target_m + 1
         # panos long (one pano per meter, inclusive endpoints). Accumulated
