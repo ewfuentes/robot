@@ -22,11 +22,46 @@ from pathlib import Path
 import common.torch.load_torch_deps  # noqa: F401
 import torch
 
+from experimental.overhead_matching.swag.data import satellite_embedding_database as sed
+from experimental.overhead_matching.swag.data import vigor_dataset as vd
 from experimental.overhead_matching.swag.data.cvgtext_dataset import CVGTextDataset
-from experimental.overhead_matching.swag.evaluation import evaluate_swag, retrieval_metrics
+from experimental.overhead_matching.swag.evaluation import retrieval_metrics
 from experimental.overhead_matching.swag.scripts.export_similarity_matrix import (
     load_models_from_training_output,
 )
+
+
+def _check_self_retrieval(embeddings: torch.Tensor, label: str, tol: float = 1e-5) -> None:
+    """Cosine-similarity self-retrieval sanity.
+
+    The invariant we care about is indexing-alignment: embedding[i] must be the
+    representation of the i-th metadata row. The strict "argmax == i" check is
+    too strong whenever two rows have identical images (duplicate tiles in the
+    dataset produce identical embeddings and therefore tied cosine similarities).
+    We instead assert `sim[i, i] >= sim[i].max() - tol` — i.e. self-similarity
+    is tied for max — which is exactly the alignment invariant.
+    """
+    emb = embeddings.squeeze()
+    assert emb.ndim == 2, f"Expected 2D embedding tensor for {label}, got shape {tuple(emb.shape)}"
+    n = emb.shape[0]
+    sim = emb @ emb.T
+    self_sim = sim.diagonal()
+    row_max = sim.max(dim=1).values
+    gap = row_max - self_sim
+    failing = (gap > tol).nonzero(as_tuple=True)[0]
+    assert failing.numel() == 0, (
+        f"{label}: self-similarity fell below row max on {failing.numel()}/{n} rows. "
+        f"First 5 rows: {failing[:5].tolist()} with gaps {gap[failing[:5]].tolist()}"
+    )
+    top1 = sim.argmax(dim=1)
+    tied = (top1 != torch.arange(n, device=top1.device)).nonzero(as_tuple=True)[0]
+    if tied.numel() > 0:
+        print(
+            f"[sanity] {label}: self-similarity == row-max on all {n} rows; "
+            f"{tied.numel()} rows have tied top-1 (duplicate entries in the data)"
+        )
+    else:
+        print(f"[sanity] {label}: self-retrieval R@1 = 1.0 across all {n} rows")
 
 
 def _git_sha() -> str:
@@ -94,11 +129,25 @@ def main():
         f"{dataset.num_queries} queries, {dataset.num_gallery} gallery entries"
     )
 
-    similarity = evaluate_swag.compute_similarity_matrix(
-        sat_model=sat_model,
-        pano_model=pano_model,
-        dataset=dataset,
-        device=device,
+    # Build the two embedding databases separately so we can run self-retrieval
+    # sanity checks on each before computing the cross-modal similarity.
+    sat_loader = vd.get_dataloader(
+        dataset.get_sat_patch_view(), batch_size=96, num_workers=8
+    )
+    pano_loader = vd.get_dataloader(
+        dataset.get_pano_view(), batch_size=96, num_workers=8
+    )
+    with torch.no_grad():
+        print("building satellite embedding database")
+        sat_embeddings = sed.build_satellite_db(sat_model, sat_loader, device=device)
+        print("building panorama embedding database")
+        pano_embeddings = sed.build_panorama_db(pano_model, pano_loader, device=device)
+
+    _check_self_retrieval(sat_embeddings, "sat")
+    _check_self_retrieval(pano_embeddings, "pano")
+
+    similarity = sed.calculate_cos_similarity_against_database(
+        pano_embeddings.squeeze(), sat_embeddings.squeeze()
     )
     print(f"similarity shape: {tuple(similarity.shape)}")
 

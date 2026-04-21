@@ -144,6 +144,22 @@ class CVGTextDataset:
             )
         self._panorama_metadata = pd.DataFrame(query_rows).reset_index(drop=True)
 
+        # Filename GT consistency check: every query's positive_satellite_idxs must
+        # point at the gallery row whose filename matches the query's. If the
+        # filename parser or gallery-to-query join ever gets mis-wired, retrieval
+        # metrics would silently report noise instead of real performance.
+        for i, pano_row in self._panorama_metadata.iterrows():
+            pos_idxs = pano_row["positive_satellite_idxs"]
+            assert len(pos_idxs) == 1, (
+                f"Expected exactly one positive satellite for query {pano_row['filename']!r}, "
+                f"got {pos_idxs}"
+            )
+            gallery_fn = self._satellite_metadata.iloc[pos_idxs[0]]["filename"]
+            assert pano_row["filename"] == gallery_fn, (
+                f"Query/gallery filename mismatch at pano row {i}: "
+                f"{pano_row['filename']!r} vs gallery row {pos_idxs[0]} {gallery_fn!r}"
+            )
+
         # Minimal config for `get_dataloader`'s `worker_init_fn`; we don't use
         # tensor caches so both entries stay `None`.
         self._config = _MinimalConfig()
