@@ -174,9 +174,14 @@ def embed_texts_vertex(
     all_embeddings = []
     num_batches = (len(texts) + batch_size - 1) // batch_size
 
+    # Vertex embedding quotas on new projects are tight enough that a 3-attempt,
+    # 1s/2s/4s backoff can't ride through a per-minute window. Bump retries and
+    # cap the backoff at 60 s so transient 429s recover without losing all progress.
+    max_retries = 10
+
     for i in tqdm(range(0, len(texts), batch_size), desc="Embedding", total=num_batches):
         batch = texts[i:i + batch_size]
-        for attempt in range(3):
+        for attempt in range(max_retries):
             try:
                 response = client.models.embed_content(
                     model=model,
@@ -186,10 +191,10 @@ def embed_texts_vertex(
                 all_embeddings.extend([emb.values for emb in response.embeddings])
                 break
             except Exception as e:
-                if attempt == 2:
+                if attempt == max_retries - 1:
                     raise
-                wait = 2 ** attempt
-                print(f"\nRetry {attempt + 1}/3 after {wait}s: {e}")
+                wait = min(2 ** attempt, 60)
+                print(f"\nRetry {attempt + 1}/{max_retries} after {wait}s: {e}")
                 time.sleep(wait)
 
     return np.array(all_embeddings, dtype=np.float32)
