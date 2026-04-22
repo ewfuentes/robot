@@ -3,6 +3,11 @@ load("@pip//:requirements.bzl", "requirement")
 load("@rules_python//python:packaging.bzl", "py_wheel", "py_package")
 
 py_binary(
+  name="stage_cvgtext_for_vigor",
+  srcs=["stage_cvgtext_for_vigor.py"],
+)
+
+py_binary(
   name="evaluate_cvgtext_crosstext2loc",
   srcs=["evaluate_cvgtext_crosstext2loc.py"],
   deps=[
