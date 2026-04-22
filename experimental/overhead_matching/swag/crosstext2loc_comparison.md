@@ -394,21 +394,3 @@ ranking including R@1/5/10.
    without re-running the expensive P(match) inference, pass
    `--from_raw <path>/<tag>_raw.pt --compute_similarity ...` to load the
    cached cost matrix and only re-aggregate. Seconds, no GPU.
-
-## Future work / knobs to sweep
-
-1. **Param sweep on Exp B** for Tokyo: lower `--prob_threshold` (0.8 →
-   0.5 / 0.3), try `--aggregation max` / `log_odds`, toggle
-   `--uniqueness_weighted`. Unlikely to close the Tokyo gap fully but
-   worth a data point.
-2. **Multilingual embedding model for Tokyo**: re-run
-   `precompute_value_embeddings.py` with `gemini-embedding-001` or a
-   multilingual `text-embedding-*` variant and retrain the classifier,
-   or use a classifier that cross-embeds Japanese↔romanized pairs.
-3. **Bootstrap confidence intervals** on recall@k and MRR (n=1000 test
-   queries → σ on R@k around 0.5–1.5 pp). Closes the Brisbane question
-   ("tie" vs "slight win").
-4. **CrossText2Loc OSM in-distribution**: reproducing their paper's
-   100-nearest-prior numbers would give an upper bound for the CT2L OSM
-   baseline, not relevant for our fair comparison but useful as a
-   sanity anchor.
