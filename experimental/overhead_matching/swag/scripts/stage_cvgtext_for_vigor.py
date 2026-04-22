@@ -265,35 +265,6 @@ def main() -> None:
             buffer_m=args.buffer_m,
         )
 
-    print("\nNext steps (run per city unless noted):")
-    print(
-        "  1. extract_gemini_landmarks_from_panoramas.py \\\n"
-        "       --panorama_dir <vigor_root>/cvgtext_<City>/panorama \\\n"
-        "       --name <City> --output_base <pano_v2_base> ...\n"
-        "     (Run on the staged panorama/ dir — keys line up with VigorDataset.)"
-    )
-    print(
-        "  2. extract_landmarks_historical.py \\\n"
-        "       --dataset_path <vigor_root>/cvgtext_<City> \\\n"
-        "       --pbf_file <geofabrik>.osm.pbf \\\n"
-        "       --output_path <vigor_root>/cvgtext_<City>/landmarks/cvgtext_<City>_v1_<YYMMDD>.feather"
-    )
-    print(
-        "  3. precompute_value_embeddings.py (once, covering all cities)\n"
-        "       --pano_v2_base <pano_v2_base> \\\n"
-        "       --feather_dirs <vigor_root>/cvgtext_Brisbane ... \\\n"
-        "       --base_embeddings <base_text_embeddings>.pkl \\\n"
-        "       --output <extended_text_embeddings>.pkl"
-    )
-    print(
-        "  4. export_correspondence_similarity.py (per city)\n"
-        "       --model_path <classifier>.pt \\\n"
-        "       --text_embeddings_path <extended_text_embeddings>.pkl \\\n"
-        "       --dataset_path <vigor_root>/cvgtext_<City> \\\n"
-        "       --pano_v2_base <pano_v2_base> \\\n"
-        "       --compute_similarity --prob_threshold 0.8 --uniqueness_weighted"
-    )
-
 
 if __name__ == "__main__":
     main()
