@@ -22,6 +22,28 @@ py_binary(
 )
 
 py_binary(
+  name="bootstrap_cvgtext_metrics",
+  srcs=["bootstrap_cvgtext_metrics.py"],
+  deps=[
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:cvgtext_dataset",
+    requirement("torch"),
+    requirement("numpy"),
+  ],
+)
+
+py_binary(
+  name="cvgtext_pano_landmark_viewer",
+  srcs=["cvgtext_pano_landmark_viewer.py"],
+  deps=[
+    requirement("flask"),
+    requirement("numpy"),
+    requirement("torch"),
+    "//common/torch:load_torch_deps",
+  ],
+)
+
+py_binary(
   name="evaluate_cvgtext_swag",
   srcs=["evaluate_cvgtext_swag.py"],
   deps=[
