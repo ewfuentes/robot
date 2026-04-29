@@ -1,6 +1,7 @@
 import common.torch.load_torch_deps
 import torch
 import tqdm
+from torch.nn.utils.rnn import pad_sequence
 
 import experimental.overhead_matching.swag.data.vigor_dataset as vig_dataset
 
@@ -23,8 +24,12 @@ def build_embeddings_from_model(model: torch.nn.Module,
             # Keep only the embedding outputs
             if isinstance(embeddings, tuple):
                 embeddings = embeddings[0]
-            inf_results.append(embeddings)
-    embeddings = torch.concatenate(inf_results, dim=0)
+            inf_results.extend(embeddings.unbind(0))
+    # pad_sequence handles both fixed-size (B, num_embeddings, D) and variable-length
+    # (skip_aggregation) embeddings. For variable-length, shorter sequences are NaN-padded
+    # to match the longest. For fixed-size (e.g. WAG with num_embeddings=1), all tensors
+    # have the same shape so no padding occurs — same result as torch.stack after unbind.
+    embeddings = pad_sequence(inf_results, batch_first=True, padding_value=torch.nan)
     return embeddings
 
 

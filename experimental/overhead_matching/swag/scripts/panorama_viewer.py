@@ -16,7 +16,7 @@ Note: pano_landmarks_dir and osm_landmarks_dir should contain 'sentences/' and '
 import argparse
 import json
 from pathlib import Path
-from flask import Flask, render_template_string, send_file, jsonify
+from flask import Flask, render_template_string, send_file, jsonify, request
 import base64
 import hashlib
 import pandas as pd
@@ -33,6 +33,23 @@ from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
     prune_landmark, custom_id_from_props)
 from common.gps import web_mercator
 
+# Correspondence model imports (lazy-used when --correspondence_model_path provided)
+from experimental.overhead_matching.swag.evaluation.correspondence_matching import (
+    compute_pairs_cost_matrix, match_and_aggregate, MatchingMethod, AggregationMode,
+)
+from experimental.overhead_matching.swag.data.landmark_correspondence_dataset import (
+    load_text_embeddings,
+)
+from experimental.overhead_matching.swag.model.landmark_correspondence_model import (
+    CorrespondenceClassifier, CorrespondenceClassifierConfig, TagBundleEncoderConfig,
+)
+from experimental.overhead_matching.swag.model.additional_panorama_extractors import (
+    extract_panorama_data_across_cities,
+)
+from experimental.overhead_matching.swag.scripts.landmark_pairing_cli import (
+    extract_tags_from_pano_data,
+)
+
 
 @dataclass
 class PanoramaLandmark:
@@ -42,6 +59,8 @@ class PanoramaLandmark:
     yaws: list[int]  # Yaw angles where this landmark is visible
     panorama_lat: float
     panorama_lon: float
+    primary_tag: Optional[dict] = None  # v2: {"key": "highway", "value": "secondary"}
+    additional_tags: list[dict] = None  # v2: [{"key": ..., "value": ...}, ...]
 
 
 @dataclass
@@ -74,11 +93,28 @@ OSM_INDEX_REVERSE: list[str] = []  # tensor row -> custom_id
 # Pre-computed associations (stores indices only, no data duplication)
 PANO_TO_OSM: dict[str, list[str]] = {}  # pano_id -> list of OSM custom_ids
 
+# Tag-weight similarity data (loaded when --similarity_matrix is provided)
+SIMILARITY_MATRIX: Optional[torch.Tensor] = None  # (num_panos, num_sats)
+VIGOR_DATASET = None  # VigorDataset instance
+PANO_OSM_MATCHES = None  # polars DataFrame
+SAT_OSM_TABLE = None  # polars DataFrame
+PANO_ID_TO_VIGOR_IDX: dict[str, int] = {}  # pano_id -> index in VigorDataset
+MRR_RANKING: list[dict] = []  # sorted list of {pano_idx, pano_id, mrr, best_rank}
+
+# Correspondence model data (loaded when --correspondence_model_path is provided)
+CORRESPONDENCE_MODEL = None
+CORRESPONDENCE_TEXT_EMBEDDINGS = None
+CORRESPONDENCE_TEXT_INPUT_DIM = None
+CORRESPONDENCE_DEVICE = None
+PANO_TAGS_FROM_PANO_ID: dict[str, list[dict]] = {}
+
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
 <head>
     <title>Panorama Viewer</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -254,6 +290,129 @@ HTML_TEMPLATE = '''
         .similarity-badge.low {
             background: #9e9e9e;
         }
+        /* Satellite ranking styles */
+        .sat-ranking-header {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+        .mrr-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-size: 14px;
+            font-weight: 600;
+            color: white;
+        }
+        .mrr-badge.good { background: #4caf50; }
+        .mrr-badge.medium { background: #ff9800; }
+        .mrr-badge.bad { background: #f44336; }
+        .sat-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+            gap: 12px;
+            margin-top: 15px;
+        }
+        .sat-card {
+            position: relative;
+            border: 3px solid #ddd;
+            border-radius: 6px;
+            overflow: hidden;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .sat-card:hover {
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+        }
+        .sat-card.positive { border-color: #4caf50; }
+        .sat-card.negative { border-color: #f44336; }
+        .sat-card img {
+            width: 100%;
+            display: block;
+        }
+        .sat-card-info {
+            padding: 6px 8px;
+            font-size: 11px;
+            background: #f5f5f5;
+        }
+        .sat-card-rank {
+            position: absolute;
+            top: 4px;
+            left: 4px;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .sat-detail-panel {
+            margin-top: 10px;
+            padding: 12px;
+            background: #f9f9f9;
+            border-radius: 6px;
+            border: 1px solid #ddd;
+            display: none;
+        }
+        .sat-detail-panel table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        .sat-detail-panel th, .sat-detail-panel td {
+            padding: 4px 8px;
+            border-bottom: 1px solid #eee;
+            text-align: left;
+        }
+        .sat-detail-panel th { font-weight: 600; color: #555; }
+        /* Landmark search styles */
+        .search-section {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: #f0f8ff;
+            border-radius: 6px;
+            border: 1px solid #d0e8ff;
+        }
+        .search-section.collapsed .search-results { display: none; }
+        .search-input-row {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        .search-input-row input {
+            flex: 1;
+            padding: 8px 12px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        .search-results {
+            margin-top: 10px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .search-results table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        .search-results th, .search-results td {
+            padding: 6px 10px;
+            border-bottom: 1px solid #ddd;
+            text-align: left;
+        }
+        .search-results th { background: #e8f0fe; font-weight: 600; }
+        /* Navigation mode selector */
+        .nav-mode-selector {
+            margin-top: 8px;
+            font-size: 13px;
+        }
+        .nav-mode-selector select {
+            padding: 4px 8px;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+        }
     </style>
 </head>
 <body>
@@ -278,7 +437,25 @@ HTML_TEMPLATE = '''
                     <button onclick="seekToPanorama()" style="white-space: nowrap;">Go to Panorama</button>
                     <span id="seek-status" style="font-size: 12px; color: #dc3545;"></span>
                 </div>
+                <div class="nav-mode-selector" id="nav-mode-container" style="display:none;">
+                    Navigate: <select id="nav-mode" onchange="changeNavMode(this.value)">
+                        <option value="sequential">Sequential</option>
+                        <option value="best_mrr">Best MRR first</option>
+                        <option value="worst_mrr">Worst MRR first</option>
+                    </select>
+                </div>
             </div>
+        </div>
+
+        <!-- OSM Landmark Search (only when similarity matrix loaded) -->
+        <div class="search-section" id="landmark-search-section" style="display:none;">
+            <div class="search-input-row">
+                <strong>Search OSM Landmarks:</strong>
+                <input type="text" id="landmark-search-input" placeholder="e.g. street, building, restaurant..."
+                       onkeypress="if(event.key === 'Enter') searchLandmarks()">
+                <button onclick="searchLandmarks()">Search</button>
+            </div>
+            <div class="search-results" id="landmark-search-results"></div>
         </div>
 
         <div>
@@ -298,6 +475,51 @@ HTML_TEMPLATE = '''
             <h2>Nearby OSM Landmarks</h2>
             <div id="osm-landmarks-container" style="columns: 2; column-gap: 20px;">
                 <!-- OSM landmarks will be inserted here -->
+            </div>
+        </div>
+
+        <!-- Satellite Ranking (only when similarity matrix loaded) -->
+        <div class="panorama-section" id="sat-ranking-section" style="display:none;">
+            <div class="sat-ranking-header">
+                <h2>Satellite Ranking (Tag-Weight Similarity)</h2>
+                <span class="mrr-badge" id="mrr-badge"></span>
+                <span id="mrr-detail" style="font-size:13px;color:#666;"></span>
+            </div>
+            <div style="display:flex;gap:30px;flex-wrap:wrap;">
+                <div style="flex:1;min-width:300px;">
+                    <h3 style="margin:8px 0;color:#555;font-size:14px;">Top Ranked</h3>
+                    <div class="sat-grid" id="sat-grid">
+                        <!-- Top satellite cards inserted by JS -->
+                    </div>
+                </div>
+                <div id="positive-sat-section" style="flex:1;min-width:300px;display:none;">
+                    <h3 style="margin:8px 0;color:#4caf50;font-size:14px;">Ground Truth Positives</h3>
+                    <div class="sat-grid" id="positive-sat-grid">
+                        <!-- Positive satellite cards inserted by JS -->
+                    </div>
+                </div>
+            </div>
+            <div class="sat-detail-panel" id="sat-detail-panel">
+                <h4 id="sat-detail-title"></h4>
+                <table id="sat-detail-table">
+                    <thead><tr><th>Tag Key</th><th>Pano Value</th><th>Sat Value</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+                <div id="sat-osm-landmarks-section"></div>
+                <div id="sat-correspondence-section"></div>
+            </div>
+
+            <!-- Similarity histogram -->
+            <div id="sim-histogram-container" style="margin-top:15px;">
+                <h3 style="margin:8px 0;color:#555;font-size:14px;">Observation Likelihood Distribution</h3>
+                <canvas id="sim-histogram-canvas" style="width:100%;height:250px;border:1px solid #ddd;border-radius:6px;cursor:crosshair;"></canvas>
+                <div id="sim-histogram-tooltip" style="display:none;position:absolute;background:white;border:1px solid #ccc;border-radius:6px;padding:10px;box-shadow:0 2px 8px rgba(0,0,0,0.15);max-width:350px;z-index:1000;font-size:12px;pointer-events:none;"></div>
+            </div>
+
+            <!-- Map of satellite match locations -->
+            <div id="sat-map-container" style="margin-top:15px;">
+                <h3 style="margin:8px 0;color:#555;font-size:14px;">Top-50 Satellite Match Locations</h3>
+                <div id="sat-map" style="height:400px;border:1px solid #ddd;border-radius:6px;"></div>
             </div>
         </div>
 
@@ -344,6 +566,11 @@ HTML_TEMPLATE = '''
         let currentSimilarityData = null; // Store current similarity data
         let globalMatches = null; // Store global matches for selected landmark
         let panoIdToIndex = {}; // Map panorama ID to index for navigation
+        let hasSimilarityMatrix = false; // Whether similarity matrix is loaded
+        let hasCorrespondenceModel = false; // Whether correspondence model is loaded
+        let navMode = 'sequential'; // 'sequential', 'best_mrr', 'worst_mrr'
+        let mrrRanking = null; // Sorted panorama indices by MRR
+        let mrrRankingReverse = null; // Reverse sorted
 
         // Color palette for landmarks (distinct colors)
         const LANDMARK_COLORS = [
@@ -600,6 +827,477 @@ HTML_TEMPLATE = '''
             }
         }
 
+        function changeNavMode(mode) {
+            navMode = mode;
+            if (mode === 'sequential') {
+                loadPanorama(0);
+            } else if (!mrrRanking) {
+                // Fetch MRR ranking, then navigate to first in that order
+                fetch('/api/panorama_mrr_ranking')
+                    .then(r => r.json())
+                    .then(data => {
+                        mrrRanking = data.ranking; // best MRR first
+                        mrrRankingReverse = [...mrrRanking].reverse(); // worst MRR first
+                        const order = getNavigationOrder();
+                        if (order && order.length > 0) loadPanorama(order[0].pano_idx);
+                    });
+            } else {
+                // Already have ranking, jump to first
+                const order = getNavigationOrder();
+                if (order && order.length > 0) loadPanorama(order[0].pano_idx);
+            }
+        }
+
+        function getNavigationOrder() {
+            if (navMode === 'best_mrr' && mrrRanking) return mrrRanking;
+            if (navMode === 'worst_mrr' && mrrRankingReverse) return mrrRankingReverse;
+            return null; // sequential
+        }
+
+        function loadSatelliteRanking(index) {
+            const section = document.getElementById('sat-ranking-section');
+            if (!hasSimilarityMatrix) {
+                section.style.display = 'none';
+                return;
+            }
+            section.style.display = '';
+
+            fetch('/api/satellite_ranking/' + index)
+                .then(r => r.json())
+                .then(data => {
+                    if (data.error) {
+                        section.style.display = 'none';
+                        return;
+                    }
+
+                    // Update MRR badge
+                    const badge = document.getElementById('mrr-badge');
+                    const detail = document.getElementById('mrr-detail');
+                    if (data.mrr !== null) {
+                        const mrr = data.mrr;
+                        badge.textContent = 'MRR: ' + mrr.toFixed(4);
+                        badge.className = 'mrr-badge ' + (mrr >= 0.5 ? 'good' : mrr >= 0.1 ? 'medium' : 'bad');
+                        detail.textContent = `Best positive rank: ${data.best_rank + 1} / ${data.num_sats} (${data.num_positives} positives)`;
+                    } else {
+                        badge.textContent = 'No positives';
+                        badge.className = 'mrr-badge bad';
+                        detail.textContent = '';
+                    }
+
+                    // Build top-ranked satellite grid
+                    const grid = document.getElementById('sat-grid');
+                    grid.innerHTML = '';
+
+                    data.satellites.forEach((sat, i) => {
+                        const card = document.createElement('div');
+                        card.className = 'sat-card ' + (sat.is_positive ? 'positive' : 'negative');
+                        card.innerHTML = `
+                            <span class="sat-card-rank">#${i + 1}</span>
+                            <img src="/api/image/satellite/${sat.sat_idx}" alt="Satellite ${sat.sat_idx}" loading="lazy">
+                            <div class="sat-card-info">
+                                Score: ${sat.similarity_score.toFixed(4)}
+                                ${sat.is_positive ? '<span style="color:#4caf50;font-weight:600;"> ✓</span>' : ''}
+                            </div>
+                        `;
+                        card.addEventListener('click', () => showSatelliteDetail(sat, i + 1));
+                        grid.appendChild(card);
+                    });
+
+                    // Build ground-truth positive satellites grid
+                    const posSection = document.getElementById('positive-sat-section');
+                    const posGrid = document.getElementById('positive-sat-grid');
+                    posGrid.innerHTML = '';
+
+                    // Include positives already in top-k + those not in top-k
+                    const topPositives = data.satellites.filter(s => s.is_positive);
+                    const extraPositives = data.positive_satellites || [];
+                    const allPositives = [...topPositives, ...extraPositives];
+
+                    if (allPositives.length > 0) {
+                        posSection.style.display = '';
+                        allPositives.forEach(sat => {
+                            const rankLabel = sat.rank_label ? `Rank #${sat.rank_label}` : 'In top-k';
+                            const card = document.createElement('div');
+                            card.className = 'sat-card positive';
+                            card.innerHTML = `
+                                <span class="sat-card-rank" style="background:#4caf50;">${rankLabel}</span>
+                                <img src="/api/image/satellite/${sat.sat_idx}" alt="Satellite ${sat.sat_idx}" loading="lazy">
+                                <div class="sat-card-info">
+                                    Score: ${sat.similarity_score.toFixed(4)}
+                                </div>
+                            `;
+                            card.addEventListener('click', () => showSatelliteDetail(sat, rankLabel));
+                            posGrid.appendChild(card);
+                        });
+                    } else {
+                        posSection.style.display = 'none';
+                    }
+                })
+                .catch(err => console.error('Error loading satellite ranking:', err));
+
+            // Also load map data and histogram
+            loadSatelliteMap(index);
+            loadSimilarityHistogram(index);
+        }
+
+        let satMap = null;
+        let satMapMarkers = [];
+
+        function loadSatelliteMap(index) {
+            const container = document.getElementById('sat-map-container');
+            if (!hasSimilarityMatrix) {
+                container.style.display = 'none';
+                return;
+            }
+            container.style.display = '';
+
+            fetch('/api/satellite_map/' + index)
+                .then(r => r.json())
+                .then(data => {
+                    if (data.error) return;
+
+                    // Initialize or reset map
+                    if (!satMap) {
+                        satMap = L.map('sat-map');
+                        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                            attribution: '&copy; OpenStreetMap',
+                            maxZoom: 19,
+                        }).addTo(satMap);
+                    }
+
+                    // Clear old markers
+                    satMapMarkers.forEach(m => satMap.removeLayer(m));
+                    satMapMarkers = [];
+
+                    // Add panorama marker (blue)
+                    const panoMarker = L.circleMarker([data.pano_lat, data.pano_lon], {
+                        radius: 10, color: '#1976d2', fillColor: '#1976d2', fillOpacity: 0.9, weight: 2,
+                    }).addTo(satMap).bindPopup('<b>Panorama</b>');
+                    satMapMarkers.push(panoMarker);
+
+                    // Add satellite markers
+                    const bounds = L.latLngBounds([[data.pano_lat, data.pano_lon]]);
+                    data.markers.forEach(m => {
+                        const color = m.is_positive ? '#4caf50' : '#e53935';
+                        const radius = m.is_positive ? 8 : 5;
+                        const opacity = Math.max(0.3, 1.0 - (m.rank - 1) / 50);
+                        const marker = L.circleMarker([m.lat, m.lon], {
+                            radius: radius, color: color, fillColor: color,
+                            fillOpacity: opacity, weight: m.is_positive ? 3 : 1,
+                        }).addTo(satMap);
+
+                        let popup = `<b>Rank #${m.rank}</b> (score: ${m.score.toFixed(4)})<br>`;
+                        popup += m.is_positive ? '<span style="color:#4caf50;font-weight:600;">Ground Truth</span><br>' : '';
+                        popup += `<img src="/api/image/satellite/${m.sat_idx}" style="width:150px;margin:4px 0;"><br>`;
+                        if (m.landmarks.length > 0) {
+                            popup += '<b>OSM Landmarks:</b><br>';
+                            m.landmarks.forEach(l => { popup += `<small>${l}</small><br>`; });
+                        }
+                        marker.bindPopup(popup, {maxWidth: 300});
+                        satMapMarkers.push(marker);
+                        bounds.extend([m.lat, m.lon]);
+                    });
+
+                    satMap.fitBounds(bounds, {padding: [30, 30]});
+                })
+                .catch(err => console.error('Error loading satellite map:', err));
+        }
+
+        let histogramData = null;
+
+        function loadSimilarityHistogram(index) {
+            const container = document.getElementById('sim-histogram-container');
+            if (!hasSimilarityMatrix) {
+                container.style.display = 'none';
+                return;
+            }
+            container.style.display = '';
+
+            fetch('/api/similarity_histogram/' + index)
+                .then(r => r.json())
+                .then(data => {
+                    if (data.error) return;
+                    histogramData = data;
+                    drawHistogram(data);
+                })
+                .catch(err => console.error('Error loading histogram:', err));
+        }
+
+        function drawHistogram(data) {
+            const canvas = document.getElementById('sim-histogram-canvas');
+            const rect = canvas.parentElement.getBoundingClientRect();
+            canvas.width = rect.width;
+            canvas.height = 250;
+            const ctx = canvas.getContext('2d');
+            const W = canvas.width, H = canvas.height;
+            const pad = {top: 15, right: 15, bottom: 40, left: 55};
+            const plotW = W - pad.left - pad.right;
+            const plotH = H - pad.top - pad.bottom;
+
+            ctx.clearRect(0, 0, W, H);
+
+            const numBins = data.counts.length;
+            const barW = plotW / numBins;
+
+            // Log scale: map count -> pixel height via log10(count+1)
+            const logMax = Math.log10(Math.max(...data.counts) + 1);
+            function countToH(c) {
+                return logMax > 0 ? (Math.log10(c + 1) / logMax) * plotH : 0;
+            }
+
+            // Draw bars
+            for (let i = 0; i < numBins; i++) {
+                const barH = countToH(data.counts[i]);
+                const x = pad.left + i * barW;
+                const y = pad.top + plotH - barH;
+
+                // Main bar
+                ctx.fillStyle = '#90caf9';
+                ctx.fillRect(x, y, barW - 1, barH);
+
+                // Positive overlay
+                if (data.positive_counts[i] > 0) {
+                    const posH = countToH(data.positive_counts[i]);
+                    ctx.fillStyle = '#4caf50';
+                    ctx.fillRect(x, pad.top + plotH - posH, barW - 1, posH);
+                }
+            }
+
+            // Axes
+            ctx.strokeStyle = '#333';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(pad.left, pad.top);
+            ctx.lineTo(pad.left, pad.top + plotH);
+            ctx.lineTo(pad.left + plotW, pad.top + plotH);
+            ctx.stroke();
+
+            // X-axis labels
+            ctx.fillStyle = '#333';
+            ctx.font = '11px Arial';
+            ctx.textAlign = 'center';
+            const nXLabels = 6;
+            for (let i = 0; i <= nXLabels; i++) {
+                const frac = i / nXLabels;
+                const val = data.bin_edges[0] + frac * (data.bin_edges[data.bin_edges.length - 1] - data.bin_edges[0]);
+                const x = pad.left + frac * plotW;
+                ctx.fillText(val.toFixed(2), x, pad.top + plotH + 15);
+            }
+            ctx.textAlign = 'center';
+            ctx.fillText('Similarity Score', pad.left + plotW / 2, H - 3);
+
+            // Y-axis labels (log scale ticks: 1, 10, 100, 1000, ...)
+            ctx.textAlign = 'right';
+            const maxCount = Math.max(...data.counts);
+            const maxPow = Math.ceil(Math.log10(maxCount + 1));
+            for (let p = 0; p <= maxPow; p++) {
+                const val = Math.pow(10, p);
+                if (val > maxCount * 1.5) break;
+                const frac = Math.log10(val + 1) / logMax;
+                const y = pad.top + plotH - frac * plotH;
+                ctx.fillText(val.toLocaleString(), pad.left - 5, y + 4);
+            }
+            ctx.save();
+            ctx.translate(12, pad.top + plotH / 2);
+            ctx.rotate(-Math.PI / 2);
+            ctx.textAlign = 'center';
+            ctx.fillText('Count (log)', 0, 0);
+            ctx.restore();
+
+            // Legend
+            ctx.fillStyle = '#90caf9';
+            ctx.fillRect(W - 160, 8, 12, 12);
+            ctx.fillStyle = '#333';
+            ctx.textAlign = 'left';
+            ctx.fillText('All patches', W - 144, 18);
+            ctx.fillStyle = '#4caf50';
+            ctx.fillRect(W - 160, 24, 12, 12);
+            ctx.fillStyle = '#333';
+            ctx.fillText('Ground truth', W - 144, 34);
+
+            // Store layout for hover
+            canvas._histLayout = {pad, plotW, plotH, barW, numBins, data};
+        }
+
+        // Histogram hover handler
+        (function() {
+            const canvas = document.getElementById('sim-histogram-canvas');
+            const tooltip = document.getElementById('sim-histogram-tooltip');
+
+            canvas.addEventListener('mousemove', function(e) {
+                if (!canvas._histLayout) return;
+                const {pad, plotW, plotH, barW, numBins, data} = canvas._histLayout;
+                const rect = canvas.getBoundingClientRect();
+                const mx = e.clientX - rect.left;
+                const my = e.clientY - rect.top;
+
+                const binIdx = Math.floor((mx - pad.left) / barW);
+                if (binIdx < 0 || binIdx >= numBins || mx < pad.left || mx > pad.left + plotW ||
+                    my < pad.top || my > pad.top + plotH) {
+                    tooltip.style.display = 'none';
+                    return;
+                }
+
+                const lo = data.bin_edges[binIdx].toFixed(3);
+                const hi = data.bin_edges[binIdx + 1].toFixed(3);
+                const count = data.counts[binIdx];
+                const posCount = data.positive_counts[binIdx];
+                const sample = data.bin_samples[binIdx];
+
+                let html = `<b>[${lo}, ${hi})</b><br>${count} patches`;
+                if (posCount > 0) html += ` <span style="color:#4caf50;">(${posCount} positive)</span>`;
+
+                if (sample) {
+                    html += `<hr style="margin:4px 0;">`;
+                    html += `<div style="display:flex;gap:8px;align-items:flex-start;">`;
+                    html += `<img src="/api/image/satellite/${sample.sat_idx}" style="width:80px;height:80px;border-radius:4px;flex-shrink:0;">`;
+                    html += `<div>`;
+                    html += `<b>Sat ${sample.sat_idx}</b> (${sample.score.toFixed(4)})`;
+                    if (sample.is_positive) html += ` <span style="color:#4caf50;">✓</span>`;
+                    if (sample.shared_landmarks.length > 0) {
+                        html += `<br><b>Matched tags:</b>`;
+                        sample.shared_landmarks.forEach(lm => {
+                            html += `<br><span style="color:#1976d2;">${lm.tag_key}</span>: ${lm.pano_value}`;
+                            if (lm.sat_value && lm.sat_value !== lm.pano_value)
+                                html += ` → ${lm.sat_value}`;
+                        });
+                    } else {
+                        html += `<br><i style="color:#999;">No tag matches</i>`;
+                    }
+                    html += `</div></div>`;
+                }
+
+                tooltip.innerHTML = html;
+                tooltip.style.display = 'block';
+                const tipW = tooltip.offsetWidth;
+                const tipH = tooltip.offsetHeight;
+                let left = e.pageX + 15;
+                let top = e.pageY - 10;
+                if (left + tipW > window.scrollX + window.innerWidth)
+                    left = e.pageX - tipW - 15;
+                if (top + tipH > window.scrollY + window.innerHeight)
+                    top = e.pageY - tipH - 10;
+                tooltip.style.left = left + 'px';
+                tooltip.style.top = top + 'px';
+            });
+
+            canvas.addEventListener('mouseleave', function() {
+                tooltip.style.display = 'none';
+            });
+        })();
+
+        function showSatelliteDetail(sat, rank) {
+            const panel = document.getElementById('sat-detail-panel');
+            const title = document.getElementById('sat-detail-title');
+            const tbody = document.querySelector('#sat-detail-table tbody');
+
+            title.textContent = `Rank #${rank} - Satellite ${sat.sat_idx} (score: ${sat.similarity_score.toFixed(4)})${sat.is_positive ? ' ✓ Positive' : ''}`;
+            tbody.innerHTML = '';
+
+            if (sat.shared_landmarks && sat.shared_landmarks.length > 0) {
+                sat.shared_landmarks.forEach(lm => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `<td>${lm.tag_key}</td><td>${lm.pano_lm_value}</td><td>${lm.sat_lm_value || '-'}</td>`;
+                    tbody.appendChild(tr);
+                });
+            } else {
+                tbody.innerHTML = '<tr><td colspan="3" style="color:#999;font-style:italic;">No shared tag matches from parquet tables</td></tr>';
+            }
+
+            // Show OSM landmarks on this satellite from .feather data
+            const osmSection = document.getElementById('sat-osm-landmarks-section');
+            osmSection.innerHTML = '';
+            if (sat.sat_osm_landmarks && sat.sat_osm_landmarks.length > 0) {
+                osmSection.innerHTML = '<h4 style="margin:12px 0 4px 0;color:#555;">OSM Landmarks on Satellite Patch (' + sat.sat_osm_landmarks.length + ')</h4>';
+                const osmTable = document.createElement('table');
+                osmTable.style.width = '100%';
+                osmTable.innerHTML = '<thead><tr><th>Tag</th><th>Value</th></tr></thead>';
+                const osmTbody = document.createElement('tbody');
+                sat.sat_osm_landmarks.forEach(lm => {
+                    Object.entries(lm).forEach(([key, val]) => {
+                        const tr = document.createElement('tr');
+                        tr.innerHTML = `<td>${key}</td><td>${val}</td>`;
+                        osmTbody.appendChild(tr);
+                    });
+                    // Separator between landmarks
+                    const sep = document.createElement('tr');
+                    sep.innerHTML = '<td colspan="2" style="border-bottom:1px solid #eee;"></td>';
+                    osmTbody.appendChild(sep);
+                });
+                osmTable.appendChild(osmTbody);
+                osmSection.appendChild(osmTable);
+            }
+
+            // Correspondence details (if model is loaded)
+            const corrSection = document.getElementById('sat-correspondence-section');
+            if (corrSection) corrSection.innerHTML = '';
+            if (hasCorrespondenceModel && corrSection) {
+                corrSection.innerHTML = '<p style="color:#999;font-style:italic;">Loading correspondence details...</p>';
+                fetch(`/api/correspondence_details/${currentIndex}/${sat.sat_idx}`)
+                    .then(r => r.json())
+                    .then(corrData => {
+                        if (corrData.error && !corrData.matches) {
+                            corrSection.innerHTML = `<p style="color:#c00;">${corrData.error}</p>`;
+                            return;
+                        }
+                        let html = '<h4 style="margin:12px 0 4px 0;color:#555;">Correspondence Matching';
+                        html += ` <span style="font-size:12px;color:#666;">(score: ${corrData.similarity_score})</span></h4>`;
+
+                        if (corrData.matches && corrData.matches.length > 0) {
+                            html += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
+                            html += '<thead><tr><th style="padding:4px 8px;border-bottom:1px solid #eee;">P(match)</th>';
+                            html += '<th style="padding:4px 8px;border-bottom:1px solid #eee;">Pano Landmark</th>';
+                            html += '<th style="padding:4px 8px;border-bottom:1px solid #eee;">OSM Landmark</th></tr></thead><tbody>';
+                            corrData.matches.forEach(m => {
+                                const probPct = (m.prob * 100).toFixed(1);
+                                const cls = m.prob >= 0.8 ? 'high' : m.prob >= 0.5 ? 'medium' : 'low';
+                                html += `<tr>`;
+                                html += `<td style="padding:4px 8px;border-bottom:1px solid #eee;"><span class="similarity-badge ${cls}">${probPct}%</span></td>`;
+                                html += `<td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;">${m.pano_tags}</td>`;
+                                html += `<td style="padding:4px 8px;border-bottom:1px solid #eee;font-size:12px;">${m.osm_tags}</td>`;
+                                html += `</tr>`;
+                            });
+                            html += '</tbody></table>';
+                        } else {
+                            html += '<p style="color:#999;font-style:italic;">No landmark matches above threshold</p>';
+                        }
+                        corrSection.innerHTML = html;
+                    })
+                    .catch(err => {
+                        console.error('Error loading correspondence details:', err);
+                        corrSection.innerHTML = '<p style="color:#c00;">Failed to load correspondence details</p>';
+                    });
+            }
+
+            panel.style.display = 'block';
+        }
+
+        function searchLandmarks() {
+            const input = document.getElementById('landmark-search-input');
+            const results = document.getElementById('landmark-search-results');
+            const query = input.value.trim();
+            if (!query) return;
+
+            fetch('/api/search_landmarks?q=' + encodeURIComponent(query))
+                .then(r => r.json())
+                .then(data => {
+                    if (!data.results || data.results.length === 0) {
+                        results.innerHTML = '<p style="color:#999;font-style:italic;">No matches found.</p>';
+                        return;
+                    }
+
+                    let html = '<table><thead><tr><th>Tag Key</th><th>Pano Value</th><th>Sat Value</th><th>Count</th><th>Panoramas</th></tr></thead><tbody>';
+                    data.results.forEach(r => {
+                        const panoLinks = r.pano_ids.slice(0, 5).map(id => makeClickablePanoId(id)).join(', ');
+                        const more = r.pano_ids.length > 5 ? ` +${r.pano_ids.length - 5} more` : '';
+                        html += `<tr><td>${r.tag_key}</td><td>${r.pano_lm_value}</td><td>${r.sat_lm_value || '-'}</td><td>${r.count}</td><td>${panoLinks}${more}</td></tr>`;
+                    });
+                    html += '</tbody></table>';
+                    results.innerHTML = html;
+                })
+                .catch(err => console.error('Error searching landmarks:', err));
+        }
+
         function loadPanorama(index) {
             // Load panorama data and similarity data in parallel
             Promise.all([
@@ -663,7 +1361,18 @@ HTML_TEMPLATE = '''
                             const color = getLandmarkColor(landmarkIdx);
                             const yawBadges = allYaws.map(y => `<span style="background:#ddd;padding:2px 4px;border-radius:2px;font-size:11px;margin-left:4px;">${y}°</span>`).join('');
 
-                            html += `<li class="landmark-all-mode" style="border-color:${color};background-color:${color}15;">${desc}${yawBadges}${countBadge}</li>`;
+                            // v2 tag badges
+                            let tagBadges = '';
+                            if (lm.primary_tag) {
+                                tagBadges += `<span style="background:#1976d2;color:white;padding:2px 6px;border-radius:2px;font-size:11px;margin-left:4px;">${lm.primary_tag.key}=${lm.primary_tag.value}</span>`;
+                            }
+                            if (lm.additional_tags) {
+                                lm.additional_tags.forEach(t => {
+                                    tagBadges += `<span style="background:#7b1fa2;color:white;padding:2px 6px;border-radius:2px;font-size:11px;margin-left:4px;">${t.key}=${t.value}</span>`;
+                                });
+                            }
+
+                            html += `<li class="landmark-all-mode" style="border-color:${color};background-color:${color}15;">${desc}${tagBadges}${yawBadges}${countBadge}</li>`;
                         });
                         html += `</ul>`;
                     }
@@ -675,14 +1384,33 @@ HTML_TEMPLATE = '''
 
                 // Update OSM landmarks
                 const osmContainer = document.getElementById('osm-landmarks-container');
+                let osmHtml = '';
+
+                // Old-style OSM landmarks (from geojson)
                 if (data.osm_landmarks && data.osm_landmarks.length > 0) {
-                    osmContainer.innerHTML = '<ul style="margin:0;padding-left:20px;">' +
+                    osmHtml += '<ul style="margin:0;padding-left:20px;">' +
                         data.osm_landmarks.map(lm => {
                             const count = lm.count || 1;
                             const countBadge = count > 1 ? `<span style="background:#28a745;color:white;padding:2px 6px;border-radius:2px;font-size:11px;margin-left:4px;font-weight:600;">x${count}</span>` : '';
                             return `<li style="margin-bottom:8px;break-inside:avoid;">${lm.text}${countBadge}</li>`;
                         }).join('') +
                         '</ul>';
+                }
+
+                // Tag-weight OSM matches (from parquet tables)
+                if (data.osm_tag_matches && data.osm_tag_matches.length > 0) {
+                    osmHtml += '<h4 style="margin-top:15px;">OSM Tag Matches (from landmark tables)</h4>';
+                    osmHtml += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
+                    osmHtml += '<thead><tr style="background:#e8f0fe;"><th style="padding:6px 10px;text-align:left;">Tag Key</th><th style="padding:6px 10px;text-align:left;">Pano Value</th><th style="padding:6px 10px;text-align:left;">OSM Matches</th><th style="padding:6px 10px;text-align:left;">Sat Values</th></tr></thead><tbody>';
+                    data.osm_tag_matches.forEach(m => {
+                        const satVals = m.sat_values.length > 0 ? m.sat_values.join(', ') : '-';
+                        osmHtml += `<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 10px;">${m.tag_key}</td><td style="padding:4px 10px;">${m.pano_value}</td><td style="padding:4px 10px;">${m.osm_count}</td><td style="padding:4px 10px;">${satVals}</td></tr>`;
+                    });
+                    osmHtml += '</tbody></table>';
+                }
+
+                if (osmHtml) {
+                    osmContainer.innerHTML = osmHtml;
                 } else {
                     osmContainer.innerHTML = '<p style="color:#999;font-style:italic;">No OSM landmarks found near this panorama.</p>';
                 }
@@ -692,16 +1420,33 @@ HTML_TEMPLATE = '''
                 selectedLandmark = null; // Reset selection when changing panorama
                 globalMatches = null; // Reset global matches when changing panorama
                 updateComparisonLists(similarityData);
+
+                // Load satellite ranking if available
+                loadSatelliteRanking(index);
+
+                // Hide detail panel
+                document.getElementById('sat-detail-panel').style.display = 'none';
             }).catch(err => {
                 console.error('Error loading panorama:', err);
             });
         }
 
         function navigate(delta) {
-            let newIndex = currentIndex + delta;
-            if (newIndex < 0) newIndex = totalPanoramas - 1;
-            if (newIndex >= totalPanoramas) newIndex = 0;
-            loadPanorama(newIndex);
+            const order = getNavigationOrder();
+            if (order) {
+                // Find current position in the ranking
+                let pos = order.findIndex(r => r.pano_idx === currentIndex);
+                if (pos === -1) pos = 0;
+                pos += delta;
+                if (pos < 0) pos = order.length - 1;
+                if (pos >= order.length) pos = 0;
+                loadPanorama(order[pos].pano_idx);
+            } else {
+                let newIndex = currentIndex + delta;
+                if (newIndex < 0) newIndex = totalPanoramas - 1;
+                if (newIndex >= totalPanoramas) newIndex = 0;
+                loadPanorama(newIndex);
+            }
         }
 
         // Keyboard navigation
@@ -718,6 +1463,15 @@ HTML_TEMPLATE = '''
                 data.panoramas.forEach(p => {
                     panoIdToIndex[p.id] = p.index;
                 });
+                hasSimilarityMatrix = data.has_similarity_matrix || false;
+                hasCorrespondenceModel = data.has_correspondence_model || false;
+
+                // Show/hide UI elements based on similarity matrix
+                if (hasSimilarityMatrix) {
+                    document.getElementById('nav-mode-container').style.display = '';
+                    document.getElementById('landmark-search-section').style.display = '';
+                }
+
                 // Now load the first panorama
                 loadPanorama(0);
             })
@@ -1021,7 +1775,14 @@ def load_osm_landmarks(geojson_path, sentences_dir, embeddings_dir=None):
                 print(f"    Loading from {pkl_file}...")
                 try:
                     with open(pkl_file, 'rb') as f:
-                        osm_embeddings, osm_embedding_index = pickle.load(f)
+                        pkl_data = pickle.load(f)
+
+                    # Detect format: v2 is a dict with "description_embeddings", v1 is a tuple
+                    if isinstance(pkl_data, dict) and "description_embeddings" in pkl_data:
+                        osm_embeddings = pkl_data["description_embeddings"]
+                        osm_embedding_index = pkl_data["description_id_to_idx"]
+                    else:
+                        osm_embeddings, osm_embedding_index = pkl_data
 
                     # Build reverse index
                     osm_index_reverse = [None] * len(osm_embedding_index)
@@ -1139,7 +1900,14 @@ def load_pano_embeddings(embeddings_dir, pano_sentences):
         start = time.time()
         try:
             with open(pkl_file, 'rb') as f:
-                embeddings_tensor, embedding_index_raw = pickle.load(f)
+                pkl_data = pickle.load(f)
+
+            # Detect format: v2 is a dict with "description_embeddings", v1 is a tuple
+            if isinstance(pkl_data, dict) and "description_embeddings" in pkl_data:
+                embeddings_tensor = pkl_data["description_embeddings"]
+                embedding_index_raw = pkl_data["description_id_to_idx"]
+            else:
+                embeddings_tensor, embedding_index_raw = pkl_data
 
             # Convert string landmark IDs to tuples
             # The pkl file stores keys as strings like "pano_id,lat,lon,__landmark_N"
@@ -1197,7 +1965,7 @@ def load_pano_embeddings(embeddings_dir, pano_sentences):
 
     print("  Reading embedding files...")
     files_processed = 0
-    for jsonl_file in embeddings_path.glob('*'):
+    for jsonl_file in embeddings_path.rglob('*'):
         if not jsonl_file.is_file() or jsonl_file.suffix == '.pkl':
             continue
 
@@ -1206,7 +1974,10 @@ def load_pano_embeddings(embeddings_dir, pano_sentences):
             for line in f:
                 try:
                     entry = json.loads(line)
-                    custom_id = entry['custom_id']
+                    # v1 uses 'custom_id', v2 uses 'key'
+                    custom_id = entry.get('custom_id') or entry.get('key')
+                    if not custom_id:
+                        continue
 
                     # Parse custom_id: "pano_id,lat,lon,__landmark_N"
                     parts = custom_id.split(',')
@@ -1330,8 +2101,9 @@ def load_sentence_data(sentence_dirs):
         entry_count = 0
 
         # Load all files in this directory (JSONL format)
-        for jsonl_file in sentence_path.glob('*'):
-            if not jsonl_file.is_file():
+        # Use rglob to handle v2's deep nesting (sentences/results/panorama_request_*/predictions.jsonl)
+        for jsonl_file in sentence_path.rglob('*'):
+            if not jsonl_file.is_file() or jsonl_file.suffix == '.pkl':
                 continue
 
             file_count += 1
@@ -1340,16 +2112,17 @@ def load_sentence_data(sentence_dirs):
                     entry_count += 1
                     try:
                         entry = json.loads(line)
-                        custom_id = entry['custom_id']
 
-                        # Only process "all mode" entries (custom_id format: "pano_id,lat,lon,")
+                        # Determine format: v1 uses 'custom_id', v2 uses 'key'
+                        custom_id = entry.get('custom_id') or entry.get('key')
+                        if not custom_id:
+                            continue
+
+                        # Only process "all mode" entries (format: "pano_id,lat,lon,")
                         # Skip "individual mode" entries (format: "pano_id_yaw_N")
-                        # All mode has commas, individual mode doesn't
                         if ',' not in custom_id:
                             continue
 
-                        # Parse custom_id to extract panorama_id, lat, lon
-                        # Format: "panorama_id,latitude,longitude,"
                         parts = custom_id.split(',')
                         if len(parts) < 3:
                             continue
@@ -1362,33 +2135,67 @@ def load_sentence_data(sentence_dirs):
                             print(f"Warning: Could not parse lat/lon from {custom_id}")
                             continue
 
-                        # Extract landmarks from response
-                        if 'response' not in entry or 'body' not in entry['response']:
+                        # Try v1 format first: response.body.choices[0].message.content
+                        content = None
+                        if 'response' in entry and 'body' in entry['response']:
+                            body = entry['response']['body']
+                            if 'choices' in body and len(body['choices']) > 0:
+                                content = body['choices'][0]['message']['content']
+
+                        # Try v2 (Gemini) format: response.candidates[0].content.parts[0].text
+                        if content is None and 'response' in entry:
+                            resp = entry['response']
+                            candidates = resp.get('candidates', [])
+                            if candidates:
+                                parts_list = candidates[0].get('content', {}).get('parts', [])
+                                if parts_list:
+                                    content = parts_list[0].get('text')
+
+                        if content is None:
                             continue
 
-                        body = entry['response']['body']
-                        if 'choices' not in body or len(body['choices']) == 0:
-                            continue
-
-                        content = body['choices'][0]['message']['content']
                         try:
-                            landmarks_data = json.loads(content)
+                            # Strip markdown code fences if present
+                            text = content.strip()
+                            if text.startswith('```'):
+                                lines = text.split('\n')
+                                # Remove first line (```json) and last line (```)
+                                lines = [l for l in lines if not l.strip().startswith('```')]
+                                text = '\n'.join(lines)
+
+                            landmarks_data = json.loads(text)
                             landmarks = landmarks_data.get('landmarks', [])
 
-                            # Create PanoramaLandmark objects
                             for lm_idx, lm in enumerate(landmarks):
                                 description = lm['description']
+
+                                # v1: yaw_angles is a list of ints
                                 yaw_angles = lm.get('yaw_angles', [])
+
+                                # v2: yaws are in bounding_boxes[].yaw_angle (string)
+                                if not yaw_angles and 'bounding_boxes' in lm:
+                                    yaw_set = set()
+                                    for bb in lm['bounding_boxes']:
+                                        try:
+                                            yaw_set.add(int(float(bb.get('yaw_angle', 0))))
+                                        except (ValueError, TypeError):
+                                            pass
+                                    yaw_angles = sorted(yaw_set)
+
+                                # v2 tags
+                                primary_tag = lm.get('primary_tag')
+                                additional_tags = lm.get('additional_tags', [])
 
                                 landmark = PanoramaLandmark(
                                     description=description,
                                     landmark_id=(pano_id, lm_idx),
                                     yaws=yaw_angles,
                                     panorama_lat=pano_lat,
-                                    panorama_lon=pano_lon
+                                    panorama_lon=pano_lon,
+                                    primary_tag=primary_tag,
+                                    additional_tags=additional_tags or [],
                                 )
 
-                                # Add to collection
                                 if pano_id not in pano_landmarks:
                                     pano_landmarks[pano_id] = []
                                 pano_landmarks[pano_id].append(landmark)
@@ -1659,7 +2466,7 @@ def get_global_similarity_matches(landmark_type, landmark_key, top_k=50):
         return matches[:top_k]
 
 
-def find_common_panoramas(panorama_dir, pinhole_dir, pano_sentences):
+def find_common_panoramas(panorama_dir, pinhole_dir, pano_sentences, dataset_path=None):
     """
     Find panoramas that exist in all required locations.
 
@@ -1667,6 +2474,8 @@ def find_common_panoramas(panorama_dir, pinhole_dir, pano_sentences):
         panorama_dir: Directory containing panorama images
         pinhole_dir: Directory containing pinhole image subdirectories
         pano_sentences: dict[str, list[PanoramaLandmark]] from load_sentence_data()
+        dataset_path: Optional path to VIGOR city dir; if pano_id_mapping.csv exists,
+                      uses its order for sequential navigation.
 
     Returns:
         List of panorama data dicts
@@ -1684,14 +2493,34 @@ def find_common_panoramas(panorama_dir, pinhole_dir, pano_sentences):
     pinhole_dirs = {d.name.split(',')[0]: d for d in pinhole_path.iterdir() if d.is_dir()}
     print(f"  Scanned {len(pinhole_dirs)} pinhole directories in {time.time()-t2:.1f}s")
 
-    # Find intersection with sentence data
-    common_ids = set(pano_files.keys()) & set(pinhole_dirs.keys()) & set(pano_sentences.keys())
-    print(f"  Found {len(common_ids)} panoramas present in all locations")
+    # Find intersection — require panorama image + pinhole dir, but not sentence data
+    # (so we can browse panoramas that have no extracted landmarks)
+    common_ids = set(pano_files.keys()) & set(pinhole_dirs.keys())
+    with_landmarks = common_ids & set(pano_sentences.keys())
+    print(f"  Found {len(common_ids)} panoramas with both panorama image and pinhole dir "
+          f"({len(with_landmarks)} with landmarks, {len(common_ids) - len(with_landmarks)} without)")
+
+    # Determine ordering: use pano_id_mapping.csv if available (sequential capture order)
+    ordered_ids = None
+    if dataset_path:
+        mapping_csv = Path(dataset_path) / "pano_id_mapping.csv"
+        if mapping_csv.exists():
+            import csv
+            with open(mapping_csv) as f:
+                reader = csv.DictReader(f)
+                ordered_ids = [row['pano_id'] for row in reader if row['pano_id'] in common_ids]
+            # Add any common_ids not in the mapping (shouldn't happen, but be safe)
+            remaining = common_ids - set(ordered_ids)
+            ordered_ids.extend(sorted(remaining))
+            print(f"  Using pano_id_mapping.csv for sequential order ({len(ordered_ids)} panos)")
+
+    if ordered_ids is None:
+        ordered_ids = sorted(common_ids)
 
     # Build panorama data
     t3 = time.time()
     panorama_data = []
-    for pano_id in sorted(common_ids):
+    for pano_id in ordered_ids:
         # Get yaw angles available in pinhole dir
         pinhole_subdir = pinhole_dirs[pano_id]
         yaw_angles = []
@@ -1760,9 +2589,11 @@ def collapse_string_list(strings):
 @app.route('/api/panorama_list')
 def get_panorama_list():
     """Return a list of all panorama IDs with their indices."""
-    global PANORAMA_DATA
+    global PANORAMA_DATA, SIMILARITY_MATRIX
     return jsonify({
-        'panoramas': [{'id': pano['id'], 'index': i} for i, pano in enumerate(PANORAMA_DATA)]
+        'panoramas': [{'id': pano['id'], 'index': i} for i, pano in enumerate(PANORAMA_DATA)],
+        'has_similarity_matrix': SIMILARITY_MATRIX is not None,
+        'has_correspondence_model': CORRESPONDENCE_MODEL is not None,
     })
 
 
@@ -1785,11 +2616,16 @@ def get_panorama_data(index):
                     landmarks_by_yaw[yaw] = []
 
                 # Convert landmark to dict for JSON
-                landmarks_by_yaw[yaw].append({
+                lm_dict = {
                     'description': landmark.description,
                     'landmark_id': landmark.landmark_id,  # (pano_id, idx)
-                    'all_yaws': landmark.yaws
-                })
+                    'all_yaws': landmark.yaws,
+                }
+                if landmark.primary_tag:
+                    lm_dict['primary_tag'] = landmark.primary_tag
+                if landmark.additional_tags:
+                    lm_dict['additional_tags'] = landmark.additional_tags
+                landmarks_by_yaw[yaw].append(lm_dict)
 
     # Collapse duplicates per yaw
     for yaw in landmarks_by_yaw:
@@ -1803,18 +2639,69 @@ def get_panorama_data(index):
             'landmarks': landmarks_by_yaw.get(yaw, [])
         })
 
-    # Resolve OSM landmarks (using indices, not duplicated data)
+    # Resolve OSM landmarks — prefer .feather data from VigorDataset when available
     osm_landmarks_data = []
-    if pano_id in PANO_TO_OSM:
+    if VIGOR_DATASET is not None and pano_id in PANO_ID_TO_VIGOR_IDX:
+        vigor_idx = PANO_ID_TO_VIGOR_IDX[pano_id]
+        pano_row = VIGOR_DATASET._panorama_metadata.iloc[vigor_idx]
+        landmark_idxs = pano_row.get('landmark_idxs', [])
+        raw_strings = []
+        if landmark_idxs is not None and len(landmark_idxs) > 0:
+            for lm_idx in landmark_idxs:
+                lm_row = VIGOR_DATASET._landmark_metadata.iloc[lm_idx]
+                pruned = lm_row.get('pruned_props', frozenset())
+                if pruned:
+                    tag_str = ", ".join(f"{k}={v}" for k, v in sorted(pruned))
+                    raw_strings.append(tag_str)
+        osm_landmarks_data = collapse_string_list(raw_strings)
+    elif pano_id in PANO_TO_OSM:
         osm_custom_ids = PANO_TO_OSM[pano_id]
         osm_landmarks_raw = [OSM_LANDMARKS[cid].description
                              for cid in osm_custom_ids
                              if cid in OSM_LANDMARKS]
         osm_landmarks_data = collapse_string_list(osm_landmarks_raw)
 
-    # Get coordinates from first landmark (all should have same coords)
+    # If parquet tables are loaded, also show OSM tag matches for this pano
+    osm_tag_matches = []
+    if PANO_OSM_MATCHES is not None:
+        import polars as pl
+        pano_matches = PANO_OSM_MATCHES.filter(
+            pl.col("pano_id").cast(pl.Utf8) == pano_id
+        )
+        if len(pano_matches) > 0:
+            # Group by tag_key + pano_lm_value, show unique values
+            grouped = (
+                pano_matches
+                .with_columns([
+                    pl.col("tag_key").cast(pl.Utf8),
+                    pl.col("pano_lm_value").cast(pl.Utf8),
+                    pl.col("sat_lm_value").cast(pl.Utf8),
+                ])
+                .group_by("tag_key", "pano_lm_value")
+                .agg([
+                    pl.col("osm_idx").n_unique().alias("osm_count"),
+                    pl.col("sat_lm_value").unique().alias("sat_values"),
+                ])
+                .sort("osm_count", descending=True)
+                .head(30)
+            )
+            for row in grouped.iter_rows(named=True):
+                sat_vals = [v for v in row['sat_values'] if v]
+                osm_tag_matches.append({
+                    'tag_key': row['tag_key'],
+                    'pano_value': row['pano_lm_value'],
+                    'osm_count': row['osm_count'],
+                    'sat_values': sat_vals[:5],
+                })
+
+    # Get coordinates — prefer VigorDataset, fall back to sentence landmarks
     lat, lon = None, None
-    if pano_id in PANO_SENTENCES and len(PANO_SENTENCES[pano_id]) > 0:
+    if VIGOR_DATASET is not None and pano_id in PANO_ID_TO_VIGOR_IDX:
+        vigor_idx = PANO_ID_TO_VIGOR_IDX[pano_id]
+        pano_row = VIGOR_DATASET._panorama_metadata.iloc[vigor_idx]
+        lat = float(pano_row['lat'])
+        lon = float(pano_row['lon'])
+    elif pano_id in PANO_SENTENCES and len(PANO_SENTENCES[pano_id]) > 0:
         first_landmark = PANO_SENTENCES[pano_id][0]
         lat = first_landmark.panorama_lat
         lon = first_landmark.panorama_lon
@@ -1825,6 +2712,7 @@ def get_panorama_data(index):
         'yaw_angles': pano['yaw_angles'],
         'yaw_data': yaw_data,
         'osm_landmarks': osm_landmarks_data,
+        'osm_tag_matches': osm_tag_matches,
         'lat': lat,
         'lon': lon
     })
@@ -1905,10 +2793,479 @@ def get_pinhole_image(index, yaw):
         return 'Image not found', 404
 
 
+@app.route('/api/image/satellite/<int:sat_idx>')
+def get_satellite_image(sat_idx):
+    """Serve satellite image from VigorDataset metadata."""
+    global VIGOR_DATASET
+    if VIGOR_DATASET is None:
+        return 'Similarity matrix not loaded', 404
+    if sat_idx < 0 or sat_idx >= len(VIGOR_DATASET._satellite_metadata):
+        return 'Invalid satellite index', 404
+    sat_path = VIGOR_DATASET._satellite_metadata.iloc[sat_idx]['path']
+    return send_file(sat_path)
+
+
+@app.route('/api/satellite_ranking/<int:index>')
+def get_satellite_ranking(index):
+    """Get top-k satellite patches for a panorama from the similarity matrix."""
+    global PANORAMA_DATA, SIMILARITY_MATRIX, VIGOR_DATASET, PANO_ID_TO_VIGOR_IDX
+    global PANO_OSM_MATCHES, SAT_OSM_TABLE
+
+    if SIMILARITY_MATRIX is None or VIGOR_DATASET is None:
+        return jsonify({'error': 'Similarity matrix not loaded'}), 404
+
+    if index < 0 or index >= len(PANORAMA_DATA):
+        return jsonify({'error': 'Invalid index'}), 404
+
+    pano_id = PANORAMA_DATA[index]['id']
+    pano_idx = PANO_ID_TO_VIGOR_IDX.get(pano_id)
+    if pano_idx is None:
+        return jsonify({'error': f'Panorama {pano_id} not found in VigorDataset'}), 404
+
+    # Get similarity row and top-k
+    sim_row = SIMILARITY_MATRIX[pano_idx]
+    top_k = min(4, sim_row.shape[0])
+    top_vals, top_idxs = torch.topk(sim_row, top_k)
+
+    # Get positive satellite set
+    pano_row = VIGOR_DATASET._panorama_metadata.iloc[pano_idx]
+    positive_set = set(pano_row['positive_satellite_idxs']) | set(pano_row.get('semipositive_satellite_idxs', []))
+
+    # Find best rank among positives
+    if positive_set:
+        rankings = torch.argsort(sim_row, descending=True)
+        best_rank = sim_row.shape[0]
+        for pos_idx in positive_set:
+            rank = (rankings == pos_idx).nonzero(as_tuple=True)[0].item()
+            best_rank = min(best_rank, rank)
+        mrr = 1.0 / (best_rank + 1)
+    else:
+        best_rank = -1
+        mrr = None
+
+    # Helper to build satellite info dict
+    import polars as pl
+    # Pre-filter pano matches once (used by all satellites)
+    pano_matches_filtered = None
+    if PANO_OSM_MATCHES is not None and SAT_OSM_TABLE is not None:
+        try:
+            pano_matches_filtered = PANO_OSM_MATCHES.filter(
+                pl.col("pano_id").cast(pl.Utf8) == pano_id
+            )
+            if len(pano_matches_filtered) == 0:
+                pano_matches_filtered = None
+        except Exception:
+            pass
+
+    def build_sat_info(sat_idx, score, rank_label=None):
+        shared_landmarks = []
+        if pano_matches_filtered is not None:
+            try:
+                sat_osm_idxs = SAT_OSM_TABLE.filter(
+                    pl.col("sat_idx") == sat_idx
+                ).select("osm_idx")
+                if len(sat_osm_idxs) > 0:
+                    joined = pano_matches_filtered.join(sat_osm_idxs, on="osm_idx", how="inner")
+                    joined_str = joined.with_columns([
+                        pl.col("tag_key").cast(pl.Utf8),
+                        pl.col("pano_lm_value").cast(pl.Utf8),
+                        pl.col("sat_lm_value").cast(pl.Utf8),
+                    ])
+                    for row in joined_str.head(20).iter_rows(named=True):
+                        shared_landmarks.append({
+                            'tag_key': row.get('tag_key', ''),
+                            'pano_lm_value': row.get('pano_lm_value', ''),
+                            'sat_lm_value': row.get('sat_lm_value', ''),
+                        })
+            except Exception:
+                pass
+
+        sat_osm_landmarks = []
+        try:
+            sat_meta = VIGOR_DATASET._satellite_metadata.iloc[sat_idx]
+            sat_lm_idxs = sat_meta.get('landmark_idxs', [])
+            if sat_lm_idxs is not None:
+                for lm_idx in sat_lm_idxs[:30]:
+                    lm_row = VIGOR_DATASET._landmark_metadata.iloc[lm_idx]
+                    pruned = lm_row.get('pruned_props', frozenset())
+                    if pruned:
+                        sat_osm_landmarks.append(
+                            {k: str(v) for k, v in sorted(pruned)})
+        except Exception:
+            pass
+
+        info = {
+            'sat_idx': sat_idx,
+            'similarity_score': score,
+            'is_positive': sat_idx in positive_set,
+            'shared_landmarks': shared_landmarks,
+            'sat_osm_landmarks': sat_osm_landmarks,
+        }
+        if rank_label is not None:
+            info['rank_label'] = rank_label
+        return info
+
+    # Build top-k satellites
+    satellites = []
+    top_k_set = set()
+    for i in range(top_k):
+        sat_idx = top_idxs[i].item()
+        top_k_set.add(sat_idx)
+        satellites.append(build_sat_info(sat_idx, top_vals[i].item()))
+
+    # Build ground-truth positive satellites (excluding any already in top-k)
+    positive_satellites = []
+    if positive_set:
+        for pos_idx in sorted(positive_set):
+            pos_idx = int(pos_idx)
+            if pos_idx in top_k_set:
+                continue
+            score = sim_row[pos_idx].item()
+            rank = (rankings == pos_idx).nonzero(as_tuple=True)[0].item()
+            info = build_sat_info(pos_idx, score, rank_label=int(rank) + 1)
+            positive_satellites.append(info)
+
+    return jsonify({
+        'pano_id': pano_id,
+        'mrr': mrr,
+        'best_rank': best_rank,
+        'num_positives': len(positive_set),
+        'num_sats': sim_row.shape[0],
+        'satellites': satellites,
+        'positive_satellites': positive_satellites,
+    })
+
+
+@app.route('/api/correspondence_details/<int:index>/<int:sat_idx>')
+def get_correspondence_details(index, sat_idx):
+    """Compute on-the-fly correspondence matching between a panorama and satellite."""
+    global PANORAMA_DATA, VIGOR_DATASET, PANO_ID_TO_VIGOR_IDX
+    global CORRESPONDENCE_MODEL, CORRESPONDENCE_TEXT_EMBEDDINGS
+    global CORRESPONDENCE_TEXT_INPUT_DIM, CORRESPONDENCE_DEVICE, PANO_TAGS_FROM_PANO_ID
+
+    if CORRESPONDENCE_MODEL is None or VIGOR_DATASET is None:
+        return jsonify({'error': 'Correspondence model not loaded'}), 404
+
+    if index < 0 or index >= len(PANORAMA_DATA):
+        return jsonify({'error': 'Invalid index'}), 404
+
+    pano_id = PANORAMA_DATA[index]['id']
+    pano_landmarks = PANO_TAGS_FROM_PANO_ID.get(pano_id)
+    if pano_landmarks is None:
+        return jsonify({'error': f'No pano_v2 tags for {pano_id}', 'matches': [],
+                        'similarity_score': 0.0})
+
+    pano_tags_list = [dict(lm["tags"]) for lm in pano_landmarks]
+    if not pano_tags_list:
+        return jsonify({'error': 'No pano tags', 'matches': [],
+                        'similarity_score': 0.0})
+
+    # Get OSM landmarks on this satellite
+    sat_meta = VIGOR_DATASET._satellite_metadata.iloc[sat_idx]
+    lm_idxs = sat_meta.get('landmark_idxs', [])
+    if lm_idxs is None or len(lm_idxs) == 0:
+        return jsonify({'matches': [], 'similarity_score': 0.0,
+                        'pano_landmarks': ['; '.join(f'{k}={v}' for k, v in lm['tags']) for lm in pano_landmarks],
+                        'osm_landmarks': []})
+
+    osm_tags_list = []
+    osm_tag_strs = []
+    for lm_idx in lm_idxs:
+        lm_row = VIGOR_DATASET._landmark_metadata.iloc[lm_idx]
+        pruned = lm_row.get('pruned_props', frozenset())
+        if not pruned:
+            continue
+        tags = dict(pruned)
+        osm_tags_list.append(tags)
+        osm_tag_strs.append('; '.join(f'{k}={v}' for k, v in sorted(tags.items())))
+
+    if not osm_tags_list:
+        return jsonify({'matches': [], 'similarity_score': 0.0,
+                        'pano_landmarks': ['; '.join(f'{k}={v}' for k, v in lm['tags']) for lm in pano_landmarks],
+                        'osm_landmarks': []})
+
+    try:
+        cost_matrix = compute_pairs_cost_matrix(
+            pano_tags_list, osm_tags_list, CORRESPONDENCE_MODEL,
+            CORRESPONDENCE_TEXT_EMBEDDINGS, CORRESPONDENCE_TEXT_INPUT_DIM,
+            CORRESPONDENCE_DEVICE,
+            allow_missing_text_embeddings=False,
+        )
+        result = match_and_aggregate(cost_matrix, MatchingMethod.HUNGARIAN,
+                                     AggregationMode.SUM)
+    except Exception as e:
+        return jsonify({'error': str(e), 'matches': [], 'similarity_score': 0.0})
+
+    pano_tag_strs = ['; '.join(f'{k}={v}' for k, v in lm['tags']) for lm in pano_landmarks]
+
+    matches = []
+    for pi, oi, prob in zip(result.pano_lm_indices, result.osm_lm_indices,
+                            result.match_probs):
+        matches.append({
+            'pano_lm_idx': pi,
+            'osm_lm_idx': oi,
+            'pano_tags': pano_tag_strs[pi],
+            'osm_tags': osm_tag_strs[oi],
+            'prob': round(prob, 4),
+        })
+
+    return jsonify({
+        'matches': matches,
+        'similarity_score': round(result.similarity_score, 4),
+        'pano_landmarks': pano_tag_strs,
+        'osm_landmarks': osm_tag_strs,
+        'cost_matrix': cost_matrix.tolist(),
+    })
+
+
+@app.route('/api/similarity_histogram/<int:index>')
+def get_similarity_histogram(index):
+    """Return histogram of similarity scores with a sample satellite per bin."""
+    global PANORAMA_DATA, SIMILARITY_MATRIX, VIGOR_DATASET, PANO_ID_TO_VIGOR_IDX
+    global PANO_OSM_MATCHES, SAT_OSM_TABLE
+    import numpy as np
+
+    if SIMILARITY_MATRIX is None or VIGOR_DATASET is None:
+        return jsonify({'error': 'Similarity matrix not loaded'}), 404
+    if index < 0 or index >= len(PANORAMA_DATA):
+        return jsonify({'error': 'Invalid index'}), 404
+
+    pano_id = PANORAMA_DATA[index]['id']
+    pano_idx = PANO_ID_TO_VIGOR_IDX.get(pano_id)
+    if pano_idx is None:
+        return jsonify({'error': f'Panorama {pano_id} not found in VigorDataset'}), 404
+
+    sim_row = SIMILARITY_MATRIX[pano_idx].numpy()
+
+    # Get positive set
+    pano_row = VIGOR_DATASET._panorama_metadata.iloc[pano_idx]
+    positive_set = set(pano_row['positive_satellite_idxs']) | set(pano_row.get('semipositive_satellite_idxs', []))
+
+    # Build histogram
+    num_bins = int(request.args.get('bins', 50))
+    counts, bin_edges = np.histogram(sim_row, bins=num_bins)
+
+    # Pre-filter pano matches once
+    import polars as pl
+    pano_matches_filtered = None
+    if PANO_OSM_MATCHES is not None and SAT_OSM_TABLE is not None:
+        try:
+            pano_matches_filtered = PANO_OSM_MATCHES.filter(
+                pl.col("pano_id").cast(pl.Utf8) == pano_id
+            )
+            if len(pano_matches_filtered) == 0:
+                pano_matches_filtered = None
+        except Exception:
+            pass
+
+    # For each bin, pick the satellite closest to the bin center and get its tag matches
+    bin_samples = []
+    digitized = np.digitize(sim_row, bin_edges[1:-1])  # bin index per satellite (0-based)
+    for bin_idx in range(num_bins):
+        if counts[bin_idx] == 0:
+            bin_samples.append(None)
+            continue
+
+        # Find satellites in this bin
+        mask = digitized == bin_idx
+        bin_sat_idxs = np.where(mask)[0]
+        bin_center = (bin_edges[bin_idx] + bin_edges[bin_idx + 1]) / 2
+        distances = np.abs(sim_row[bin_sat_idxs] - bin_center)
+        sample_sat_idx = int(bin_sat_idxs[np.argmin(distances)])
+
+        # Get tag matches for this sample satellite
+        shared_landmarks = []
+        if pano_matches_filtered is not None:
+            try:
+                sat_osm_idxs = SAT_OSM_TABLE.filter(
+                    pl.col("sat_idx") == sample_sat_idx
+                ).select("osm_idx")
+                if len(sat_osm_idxs) > 0:
+                    joined = pano_matches_filtered.join(sat_osm_idxs, on="osm_idx", how="inner")
+                    joined_str = joined.with_columns([
+                        pl.col("tag_key").cast(pl.Utf8),
+                        pl.col("pano_lm_value").cast(pl.Utf8),
+                        pl.col("sat_lm_value").cast(pl.Utf8),
+                    ])
+                    for row in joined_str.head(20).iter_rows(named=True):
+                        shared_landmarks.append({
+                            'tag_key': row.get('tag_key', ''),
+                            'pano_value': row.get('pano_lm_value', ''),
+                            'sat_value': row.get('sat_lm_value', ''),
+                        })
+            except Exception:
+                pass
+
+        bin_samples.append({
+            'sat_idx': sample_sat_idx,
+            'score': float(sim_row[sample_sat_idx]),
+            'is_positive': sample_sat_idx in positive_set,
+            'shared_landmarks': shared_landmarks,
+        })
+
+    # Also mark which bins contain positives
+    positive_counts = np.zeros(num_bins, dtype=int)
+    for pos_idx in positive_set:
+        pos_idx = int(pos_idx)
+        b = min(digitized[pos_idx], num_bins - 1)
+        positive_counts[b] += 1
+
+    return jsonify({
+        'bin_edges': bin_edges.tolist(),
+        'counts': counts.tolist(),
+        'positive_counts': positive_counts.tolist(),
+        'bin_samples': bin_samples,
+        'num_sats': len(sim_row),
+    })
+
+
+@app.route('/api/panorama_mrr_ranking')
+def get_panorama_mrr_ranking():
+    """Return panoramas sorted by MRR (best first)."""
+    global MRR_RANKING
+    return jsonify({'ranking': MRR_RANKING})
+
+
+@app.route('/api/satellite_map/<int:index>')
+def get_satellite_map_data(index):
+    """Get top-50 satellite locations + positives for map display."""
+    global PANORAMA_DATA, SIMILARITY_MATRIX, VIGOR_DATASET, PANO_ID_TO_VIGOR_IDX
+
+    if SIMILARITY_MATRIX is None or VIGOR_DATASET is None:
+        return jsonify({'error': 'Similarity matrix not loaded'}), 404
+
+    if index < 0 or index >= len(PANORAMA_DATA):
+        return jsonify({'error': 'Invalid index'}), 404
+
+    pano_id = PANORAMA_DATA[index]['id']
+    pano_idx = PANO_ID_TO_VIGOR_IDX.get(pano_id)
+    if pano_idx is None:
+        return jsonify({'error': f'Panorama {pano_id} not found'}), 404
+
+    sim_row = SIMILARITY_MATRIX[pano_idx]
+    top_k = min(50, sim_row.shape[0])
+    top_vals, top_idxs = torch.topk(sim_row, top_k)
+
+    pano_row = VIGOR_DATASET._panorama_metadata.iloc[pano_idx]
+    positive_set = set(pano_row['positive_satellite_idxs']) | set(pano_row.get('semipositive_satellite_idxs', []))
+    pano_lat = float(pano_row['lat'])
+    pano_lon = float(pano_row['lon'])
+
+    markers = []
+    for i in range(top_k):
+        sat_idx = top_idxs[i].item()
+        sat_meta = VIGOR_DATASET._satellite_metadata.iloc[sat_idx]
+        # Get landmark summary
+        lm_tags = []
+        sat_lm_idxs = sat_meta.get('landmark_idxs', [])
+        if sat_lm_idxs is not None:
+            for lm_idx in sat_lm_idxs[:10]:
+                pruned = VIGOR_DATASET._landmark_metadata.iloc[lm_idx].get('pruned_props', frozenset())
+                if pruned:
+                    lm_tags.append(", ".join(f"{k}={v}" for k, v in sorted(pruned)))
+        markers.append({
+            'sat_idx': sat_idx,
+            'lat': float(sat_meta['lat']),
+            'lon': float(sat_meta['lon']),
+            'rank': i + 1,
+            'score': top_vals[i].item(),
+            'is_positive': sat_idx in positive_set,
+            'landmarks': lm_tags[:5],
+        })
+
+    # Also add positives not in top-k
+    rankings = torch.argsort(sim_row, descending=True)
+    top_k_idx_set = set(top_idxs.tolist())
+    for pos_idx in sorted(positive_set):
+        pos_idx = int(pos_idx)
+        if pos_idx in top_k_idx_set:
+            continue
+        sat_meta = VIGOR_DATASET._satellite_metadata.iloc[pos_idx]
+        rank = int((rankings == pos_idx).nonzero(as_tuple=True)[0].item())
+        lm_tags = []
+        sat_lm_idxs = sat_meta.get('landmark_idxs', [])
+        if sat_lm_idxs is not None:
+            for lm_idx in sat_lm_idxs[:10]:
+                pruned = VIGOR_DATASET._landmark_metadata.iloc[lm_idx].get('pruned_props', frozenset())
+                if pruned:
+                    lm_tags.append(", ".join(f"{k}={v}" for k, v in sorted(pruned)))
+        markers.append({
+            'sat_idx': pos_idx,
+            'lat': float(sat_meta['lat']),
+            'lon': float(sat_meta['lon']),
+            'rank': rank + 1,
+            'score': float(sim_row[pos_idx].item()),
+            'is_positive': True,
+            'landmarks': lm_tags[:5],
+        })
+
+    return jsonify({
+        'pano_lat': pano_lat,
+        'pano_lon': pano_lon,
+        'markers': markers,
+    })
+
+
+@app.route('/api/search_landmarks')
+def search_landmarks():
+    """Search OSM landmarks from .feather data by tag key or value substring."""
+    global VIGOR_DATASET, PANO_ID_TO_VIGOR_IDX
+
+    if VIGOR_DATASET is None or VIGOR_DATASET._landmark_metadata is None:
+        return jsonify({'results': []})
+
+    query = request.args.get('q', '').strip().lower()
+    if not query:
+        return jsonify({'results': []})
+
+    # Search through pruned_props of each landmark for matching tag keys/values
+    from collections import defaultdict
+    # Group: (tag_key, tag_value) -> list of landmark indices
+    matches_by_tag = defaultdict(list)
+    for lm_idx, lm_row in VIGOR_DATASET._landmark_metadata.iterrows():
+        pruned = lm_row.get('pruned_props', frozenset())
+        if not pruned:
+            continue
+        for k, v in pruned:
+            if query in str(k).lower() or query in str(v).lower():
+                matches_by_tag[(str(k), str(v))].append(lm_idx)
+
+    if not matches_by_tag:
+        return jsonify({'results': []})
+
+    # For each tag match, find associated panorama IDs
+    pano_id_from_idx = {idx: row['pano_id']
+                        for idx, (_, row) in enumerate(VIGOR_DATASET._panorama_metadata.iterrows())}
+    results = []
+    for (tag_key, tag_value), lm_idxs in sorted(matches_by_tag.items(), key=lambda x: -len(x[1]))[:50]:
+        # Find panoramas that have any of these landmarks
+        pano_ids = set()
+        for lm_idx in lm_idxs:
+            pano_idxs_list = VIGOR_DATASET._landmark_metadata.iloc[lm_idx].get('panorama_idxs', [])
+            if pano_idxs_list:
+                for pi in pano_idxs_list:
+                    pid = pano_id_from_idx.get(pi)
+                    if pid:
+                        pano_ids.add(pid)
+        results.append({
+            'tag_key': tag_key,
+            'pano_lm_value': tag_value,
+            'sat_lm_value': '',
+            'count': len(lm_idxs),
+            'pano_ids': list(pano_ids)[:20],
+        })
+
+    return jsonify({'results': results})
+
+
 def main():
     global PANORAMA_DATA, PANO_SENTENCES, OSM_LANDMARKS, PANO_TO_OSM
     global PANO_EMBEDDINGS, PANO_EMBEDDING_INDEX, PANO_INDEX_REVERSE
     global OSM_EMBEDDINGS, OSM_EMBEDDING_INDEX, OSM_INDEX_REVERSE
+    global SIMILARITY_MATRIX, VIGOR_DATASET, PANO_OSM_MATCHES, SAT_OSM_TABLE
+    global PANO_ID_TO_VIGOR_IDX, MRR_RANKING
+    global CORRESPONDENCE_MODEL, CORRESPONDENCE_TEXT_EMBEDDINGS
+    global CORRESPONDENCE_TEXT_INPUT_DIM, CORRESPONDENCE_DEVICE, PANO_TAGS_FROM_PANO_ID
 
     parser = argparse.ArgumentParser(description='Panorama viewer web app')
     parser.add_argument('--panorama_dir', type=str, required=True,
@@ -1921,6 +3278,22 @@ def main():
                        help='Directory containing OSM landmarks (expects sentences/ and embeddings/ subdirs)')
     parser.add_argument('--osm_landmarks_geojson', type=str, default=None,
                        help='Path to OSM landmarks GeoJSON file')
+    parser.add_argument('--similarity_matrix', type=str, default=None,
+                       help='Path to .pt similarity matrix file')
+    parser.add_argument('--dataset_path', type=str, default=None,
+                       help='Path to VIGOR city directory (needed for similarity matrix mode)')
+    parser.add_argument('--landmark_version', type=str, default=None,
+                       help='Landmark version string (default: auto-detect)')
+    parser.add_argument('--landmark_tables_dir', type=str, default=None,
+                       help='Path to dir with parquet match tables')
+    parser.add_argument('--city_name', type=str, default=None,
+                       help='City name for table filenames (default: inferred from dataset_path)')
+    parser.add_argument('--correspondence_model_path', type=str, default=None,
+                       help='Path to trained CorrespondenceClassifier .pt file')
+    parser.add_argument('--correspondence_text_embeddings', type=str, default=None,
+                       help='Path to text embeddings pickle for correspondence model')
+    parser.add_argument('--pano_v2_base', type=str, default=None,
+                       help='Base path for pano_v2 embeddings (contains city subdirs)')
     parser.add_argument('--port', type=int, default=5000,
                        help='Port to run the web server on')
 
@@ -2005,7 +3378,8 @@ def main():
     PANORAMA_DATA = find_common_panoramas(
         args.panorama_dir,
         args.pinhole_dir,
-        PANO_SENTENCES
+        PANO_SENTENCES,
+        dataset_path=args.dataset_path if hasattr(args, 'dataset_path') else None,
     )
     step4_time = time.time() - step4_start
     print(f"Found {len(PANORAMA_DATA)} panoramas with complete data in {step4_time:.1f}s")
@@ -2014,6 +3388,164 @@ def main():
         print("ERROR: No panoramas found with complete data!")
         return
 
+    # Step 5: Load similarity matrix (optional)
+    if args.similarity_matrix and args.dataset_path:
+        print("\n" + "="*60)
+        print("STEP 5: Loading tag-weight similarity matrix")
+        print("="*60)
+        step5_start = time.time()
+
+        import polars as pl
+        from experimental.overhead_matching.swag.data import vigor_dataset as vd
+
+        dataset_path = Path(args.dataset_path)
+        city_name = args.city_name or dataset_path.name.lower()
+
+        # Auto-detect landmark version
+        landmark_version = args.landmark_version
+        if landmark_version is None:
+            landmarks_dir = dataset_path / "landmarks"
+            if landmarks_dir.exists():
+                feather_files = list(landmarks_dir.glob("*.feather"))
+                if len(feather_files) == 1:
+                    landmark_version = feather_files[0].stem
+                    print(f"  Auto-detected landmark version: {landmark_version}")
+                elif len(feather_files) == 0:
+                    print("  Warning: No .feather files in landmarks/ dir")
+                else:
+                    print(f"  Warning: Multiple .feather files, specify --landmark_version")
+
+        # Load VigorDataset
+        print(f"  Loading VigorDataset from {dataset_path}")
+        config = vd.VigorDatasetConfig(
+            satellite_tensor_cache_info=None,
+            panorama_tensor_cache_info=None,
+            should_load_images=False,
+            should_load_landmarks=True,
+            landmark_version=landmark_version,
+        )
+        VIGOR_DATASET = vd.VigorDataset(dataset_path, config)
+        print(f"  {len(VIGOR_DATASET._panorama_metadata)} panos, "
+              f"{len(VIGOR_DATASET._satellite_metadata)} sats")
+
+        # Build pano_id -> vigor_idx mapping
+        for idx, (_, row) in enumerate(VIGOR_DATASET._panorama_metadata.iterrows()):
+            PANO_ID_TO_VIGOR_IDX[row['pano_id']] = idx
+
+        # Load similarity matrix
+        print(f"  Loading similarity matrix from {args.similarity_matrix}")
+        SIMILARITY_MATRIX = torch.load(args.similarity_matrix, weights_only=False)
+        print(f"  Similarity matrix shape: {SIMILARITY_MATRIX.shape}")
+
+        # Load parquet match tables
+        tables_dir = Path(args.landmark_tables_dir) if args.landmark_tables_dir else dataset_path / "landmark_tables"
+        matches_path = tables_dir / f"{city_name}_pano_osm_matches.parquet"
+        sat_osm_path = tables_dir / f"{city_name}_sat_osm_table.parquet"
+
+        if matches_path.exists() and sat_osm_path.exists():
+            print(f"  Loading match tables from {tables_dir}")
+            PANO_OSM_MATCHES = pl.read_parquet(str(matches_path))
+            SAT_OSM_TABLE = pl.read_parquet(str(sat_osm_path))
+            print(f"  Loaded {len(PANO_OSM_MATCHES)} pano-osm matches, {len(SAT_OSM_TABLE)} sat-osm entries")
+        else:
+            print(f"  Warning: Match tables not found at {tables_dir}")
+
+        # Compute per-panorama MRR for navigation
+        print("  Computing per-panorama MRR ranking...")
+        rankings = torch.argsort(SIMILARITY_MATRIX, dim=1, descending=True)
+        pano_id_to_data_idx = {pano['id']: i for i, pano in enumerate(PANORAMA_DATA)}
+
+        for pano_data_idx, pano in enumerate(PANORAMA_DATA):
+            pano_id = pano['id']
+            vigor_idx = PANO_ID_TO_VIGOR_IDX.get(pano_id)
+            if vigor_idx is None:
+                continue
+            vigor_row = VIGOR_DATASET._panorama_metadata.iloc[vigor_idx]
+            positive_set = set(vigor_row['positive_satellite_idxs']) | set(vigor_row.get('semipositive_satellite_idxs', []))
+            if not positive_set:
+                MRR_RANKING.append({'pano_idx': pano_data_idx, 'pano_id': pano_id, 'mrr': 0.0, 'best_rank': -1})
+                continue
+            best_rank = SIMILARITY_MATRIX.shape[1]
+            for pos_idx in positive_set:
+                rank = (rankings[vigor_idx] == pos_idx).nonzero(as_tuple=True)[0].item()
+                best_rank = min(best_rank, rank)
+            MRR_RANKING.append({
+                'pano_idx': pano_data_idx,
+                'pano_id': pano_id,
+                'mrr': 1.0 / (best_rank + 1),
+                'best_rank': best_rank,
+            })
+
+        MRR_RANKING.sort(key=lambda x: x['mrr'], reverse=True)
+
+        step5_time = time.time() - step5_start
+        print(f"  Loaded similarity data in {step5_time:.1f}s")
+        avg_mrr = sum(r['mrr'] for r in MRR_RANKING) / len(MRR_RANKING) if MRR_RANKING else 0
+        print(f"  Average MRR: {avg_mrr:.4f}, best: {MRR_RANKING[0]['mrr']:.4f}, worst: {MRR_RANKING[-1]['mrr']:.4f}")
+
+    # Step 6: Load correspondence model (optional)
+    if args.correspondence_model_path and args.correspondence_text_embeddings and args.pano_v2_base:
+        print("\n" + "="*60)
+        print("STEP 6: Loading correspondence model")
+        print("="*60)
+        step6_start = time.time()
+
+        CORRESPONDENCE_DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        # Load text embeddings
+        print(f"  Loading text embeddings from {args.correspondence_text_embeddings}")
+        CORRESPONDENCE_TEXT_EMBEDDINGS = load_text_embeddings(Path(args.correspondence_text_embeddings))
+        CORRESPONDENCE_TEXT_INPUT_DIM = next(iter(CORRESPONDENCE_TEXT_EMBEDDINGS.values())).shape[0]
+        print(f"  {len(CORRESPONDENCE_TEXT_EMBEDDINGS)} entries, dim={CORRESPONDENCE_TEXT_INPUT_DIM}")
+
+        # Load model
+        print(f"  Loading model from {args.correspondence_model_path}")
+        encoder_config = TagBundleEncoderConfig(
+            text_input_dim=CORRESPONDENCE_TEXT_INPUT_DIM, text_proj_dim=128)
+        classifier_config = CorrespondenceClassifierConfig(encoder=encoder_config)
+        CORRESPONDENCE_MODEL = CorrespondenceClassifier(classifier_config).to(CORRESPONDENCE_DEVICE)
+        CORRESPONDENCE_MODEL.load_state_dict(
+            torch.load(args.correspondence_model_path, map_location=CORRESPONDENCE_DEVICE,
+                       weights_only=True))
+        CORRESPONDENCE_MODEL.eval()
+        print(f"  Model loaded, device={CORRESPONDENCE_DEVICE}")
+
+        # Load VigorDataset if not already loaded in step 5
+        if VIGOR_DATASET is None and args.dataset_path:
+            from experimental.overhead_matching.swag.data import vigor_dataset as vd
+
+            dataset_path = Path(args.dataset_path)
+            landmark_version = args.landmark_version
+            if landmark_version is None:
+                landmarks_dir = dataset_path / "landmarks"
+                if landmarks_dir.exists():
+                    feather_files = list(landmarks_dir.glob("*.feather"))
+                    if len(feather_files) == 1:
+                        landmark_version = feather_files[0].stem
+                        print(f"  Auto-detected landmark version: {landmark_version}")
+
+            print(f"  Loading VigorDataset from {dataset_path}")
+            config = vd.VigorDatasetConfig(
+                satellite_tensor_cache_info=None,
+                panorama_tensor_cache_info=None,
+                should_load_images=False,
+                should_load_landmarks=True,
+                landmark_version=landmark_version,
+            )
+            VIGOR_DATASET = vd.VigorDataset(dataset_path, config)
+            print(f"  {len(VIGOR_DATASET._panorama_metadata)} panos, "
+                  f"{len(VIGOR_DATASET._satellite_metadata)} sats")
+
+        # Load pano_v2 tags
+        print(f"  Loading pano_v2 tags from {args.pano_v2_base}")
+        PANO_TAGS_FROM_PANO_ID = extract_panorama_data_across_cities(
+            Path(args.pano_v2_base), extract_tags_from_pano_data,
+        )
+        print(f"  Loaded tags for {len(PANO_TAGS_FROM_PANO_ID)} panoramas")
+
+        step6_time = time.time() - step6_start
+        print(f"  Loaded correspondence model in {step6_time:.1f}s")
+
     startup_time = time.time() - startup_start
     print("\n" + "="*60)
     print(f"TOTAL STARTUP TIME: {startup_time:.1f}s")
@@ -2021,7 +3553,7 @@ def main():
     print(f"Starting web server on http://localhost:{args.port}")
     print("Press Ctrl+C to stop")
     print("="*60)
-    app.run(debug=True, port=args.port, host='0.0.0.0')
+    app.run(debug=True, use_reloader=False, port=args.port, host='0.0.0.0')
 
 
 if __name__ == '__main__':

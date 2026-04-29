@@ -56,13 +56,13 @@ class DistancesTest(unittest.TestCase):
 
 
     def test_learned_distance_function_transformer(self):
-        """Test transformer decoder architecture forward pass."""
+        """Test transformer encoder architecture forward pass."""
         torch.manual_seed(42)
         sat_embeddings = torch.randn(2, 3, 128)  # 2 sat images, 3 embeddings each, 128 dim
         pano_embeddings = torch.randn(3, 4, 128)  # 3 pano images, 4 embeddings each, 128 dim
 
         config = LearnedDistanceFunctionConfig(
-            architecture="transformer_decoder",
+            architecture="transformer_encoder",
             embedding_dim=128,
             num_pano_embed=4,
             num_sat_embed=3,
@@ -152,10 +152,10 @@ class DistancesTest(unittest.TestCase):
         assert output.shape == (2, 5), f"Expected shape (2, 5), got {output.shape}"
 
 
-    def test_learned_distance_function_cls_token(self):
-        """Test that CLS token is properly initialized for transformer."""
+    def test_learned_distance_function_identifier_tokens(self):
+        """Test that pano/sat identifier tokens are properly initialized for transformer."""
         config = LearnedDistanceFunctionConfig(
-            architecture="transformer_decoder",
+            architecture="transformer_encoder",
             embedding_dim=128,
             num_pano_embed=4,
             num_sat_embed=3,
@@ -165,10 +165,62 @@ class DistancesTest(unittest.TestCase):
         )
         model = LearnedDistanceFunction(config)
 
-        assert hasattr(model, 'cls_token'), "Transformer model should have cls_token"
-        assert model.cls_token.shape == (1, 1, 128), f"CLS token shape should be (1, 1, 128), got {model.cls_token.shape}"
-        assert model.cls_token.requires_grad, "CLS token should be trainable"
+        assert hasattr(model, 'pano_identifier'), "Transformer model should have pano_identifier"
+        assert hasattr(model, 'sat_identifier'), "Transformer model should have sat_identifier"
+        assert model.pano_identifier.shape == (1, 1, 128)
+        assert model.sat_identifier.shape == (1, 1, 128)
+        assert model.pano_identifier.requires_grad
+        assert model.sat_identifier.requires_grad
 
+
+    def test_transformer_encoder_nan_padded_variable_length(self):
+        """Test transformer encoder handles NaN-padded variable-length inputs."""
+        torch.manual_seed(42)
+        # Simulate variable-length embeddings: sat has 5 tokens, pano has 3 tokens,
+        # but both are padded to length 5 with NaN
+        sat_embeddings = torch.randn(2, 5, 128)
+        pano_embeddings = torch.randn(3, 5, 128)
+        # NaN-pad pano embeddings at different lengths
+        pano_embeddings[0, 3:, :] = float('nan')  # 3 valid tokens
+        pano_embeddings[1, 4:, :] = float('nan')  # 4 valid tokens
+        pano_embeddings[2, 2:, :] = float('nan')  # 2 valid tokens
+        # NaN-pad one sat embedding too
+        sat_embeddings[1, 4:, :] = float('nan')   # 4 valid tokens
+
+        config = LearnedDistanceFunctionConfig(
+            architecture="transformer_encoder",
+            embedding_dim=128,
+            num_pano_embed=None,
+            num_sat_embed=None,
+            hidden_dim=256,
+            num_heads=8,
+            num_layers=1
+        )
+        model = LearnedDistanceFunction(config)
+
+        output = model(sat_embeddings, pano_embeddings)
+
+        # Check output shape: n_pano x n_sat
+        assert output.shape == (3, 2), f"Expected shape (3, 2), got {output.shape}"
+        assert torch.isfinite(output).all(), "Output contains non-finite values"
+
+        # Verify mask construction via _build_transformer_input
+        # pano[2] has 2 valid tokens out of 5, sat[0] has all 5 valid
+        sequence, padding_mask = model._build_transformer_input(
+            pano_embeddings[2:3], sat_embeddings[0:1])
+
+        assert padding_mask.dtype == torch.bool, f"Expected bool mask, got {padding_mask.dtype}"
+        # pano has 2 valid + 3 NaN, sat has 5 valid = total 10 tokens, 3 masked
+        assert padding_mask.shape == (1, 10), f"Expected shape (1, 10), got {padding_mask.shape}"
+        assert padding_mask.sum().item() == 3, f"Expected 3 masked tokens, got {padding_mask.sum().item()}"
+        # First 2 pano tokens valid, next 3 masked (NaN-padded), all 5 sat tokens valid
+        # Note: True means "ignore" in PyTorch's src_key_padding_mask convention
+        expected_mask = torch.tensor([[False, False, True, True, True,
+                                       False, False, False, False, False]])
+        assert torch.equal(padding_mask, expected_mask), (
+            f"Mask mismatch: got {padding_mask} expected {expected_mask}")
+        # Sequence should have NaN positions zeroed out
+        assert torch.isfinite(sequence).all(), "Sequence should have NaN positions zeroed out"
 
     def test_normalize_embeddings(self):
         """Test the normalize_embeddings utility function."""

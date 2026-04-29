@@ -23,6 +23,7 @@ py_library(
     "//toolchain:git_info",
     requirement("numpy"),
     requirement("dinov2"),
+    requirement("dinov3"),
   ]
 )
 

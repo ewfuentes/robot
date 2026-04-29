@@ -1,4 +1,5 @@
 import common.torch.load_torch_deps
+import warnings
 import torch
 import torch.nn.functional as F
 from common.python.serialization import MSGSPEC_STRUCT_OPTS
@@ -242,7 +243,7 @@ def compute_loss(sat_embeddings: torch.Tensor,  # N_sat x n_emb_sat x D_emb
         loss += l
         overlapping_keys = set(aux_info.keys()).intersection(set(new_aux.keys()))
         if len(overlapping_keys):
-            print("Warning: overwriting overlapping keys in loss aux info: ", overlapping_keys)
+            warnings.warn(f"Overwriting overlapping keys in loss aux info: {overlapping_keys}")
         aux_info |= new_aux
     assert "loss" not in aux_info
     return {"loss": loss} | aux_info

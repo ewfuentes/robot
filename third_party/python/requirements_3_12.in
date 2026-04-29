@@ -5,7 +5,8 @@ numpy==1.26.4
 jupyterlab==4.0.8
 matplotlib==3.9.2
 Pillow==10.4.0
-pandas==1.5.3
+pandas==2.2.3
+polars==1.27.1
 scikit-learn==1.6.1
 tqdm==4.67.1
 opencv-python==4.7.0.72
@@ -26,11 +27,11 @@ depthai==2.28.0.0
 rosbags==0.9.23
 transformers==4.47.1
 supervision==0.25.1
-marimo==0.14.17
+marimo==0.19.9
 altair==5.5.0
 tensorboard==2.19.0
 protobuf==5.29.0rc2
-msgspec==0.19.0
+msgspec==0.20.0
 osmnx==2.0.5
 huggingface-hub==0.33.4
 open-clip-torch==2.32.0
@@ -41,13 +42,13 @@ sentence-transformers==5.1.0
 ollama==0.5.3
 paramiko==4.0.0
 psutil==7.0.0
-openai==1.109.1
 google-genai==1.56.0
 google-cloud-storage==3.7.0
 pyarrow==21.0.0
 z3-solver==4.15.4.0
 watchdog==6.0.0
 dinov2 @ git+https://github.com/ewfuentes/dinov2.git@3680537d078b8cc2924f29657b8322cba8b4bb3d
+dinov3 @ git+https://github.com/facebookresearch/dinov3.git@6e50ab28b75133230b6cc3a846a8adc3c300b27d
 torch-kdtree @ git+https://github.com/ewfuentes/torch_kdtree.git@583b92b105fcc7aefdc0020136229f9ed32566b7
 sam-2 @ git+https://github.com/IDEA-Research/Grounded-SAM-2.git@dd4c5141b75e4838dd486c64f773c43b4db3a07b
 sdprlayers @ git+https://github.com/ewfuentes/sdprlayer.git@0d0663f96c106db549fa9bc5653af71620bc2861
@@ -57,3 +58,5 @@ cert_tools @ git+https://github.com/utiasASRL/certifiable-tools.git@afcd203bb462
 chompack @ git+https://github.com/ewfuentes/chompack.git@844adda111241bb64f7008e0d0680525290958f3
 hloc @ git+https://github.com/cvg/Hierarchical-Localization.git@2e2a5517d88c7c84db0efd77d720c858da19edcd; platform_machine == "x86_64"
 depth_pro  @ git+https://github.com/apple/ml-depth-pro.git@9efe5c1def37a26c5367a71df664b18e1306c708
+clip @ git+https://github.com/openai/CLIP.git@d05afc436d78f1c48dc0dbf8e5980a9d471f35f6
+crosstext2loc @ git+https://github.com/ewfuentes/CVG-Text.git@c3b5727fd8380c35c4f3886b590b8734131db34e

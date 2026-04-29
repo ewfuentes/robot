@@ -1,6 +1,7 @@
 import common.torch.load_torch_deps
 import torch
 import torch.nn.functional as F
+import tqdm
 import math
 from dataclasses import dataclass
 
@@ -18,6 +19,13 @@ class CellToPatchMapping:
     patch_indices: torch.Tensor  # (total_overlaps,) - flat list of patch indices
     cell_offsets: torch.Tensor  # (num_cells + 1,) - start index for each cell
     segment_ids: torch.Tensor  # (total_overlaps,) - cell index for each overlap
+
+    def to(self, device: torch.device) -> "CellToPatchMapping":
+        return CellToPatchMapping(
+            patch_indices=self.patch_indices.to(device),
+            cell_offsets=self.cell_offsets.to(device),
+            segment_ids=self.segment_ids.to(device),
+        )
 
 
 @dataclass
@@ -288,7 +296,7 @@ def build_cell_to_patch_mapping(
     patch_positions_px: torch.Tensor,
     patch_half_size_px: float,
     device: torch.device,
-    chunk_size: int = 4096,
+    max_chunk_bytes: int = 10 * 1024**3,  # 10 GiB peak per chunk
 ) -> CellToPatchMapping:
     """Build mapping from histogram cells to overlapping satellite patches.
 
@@ -300,7 +308,7 @@ def build_cell_to_patch_mapping(
         patch_positions_px: (num_patches, 2) patch centers in pixels [row, col]
         patch_half_size_px: Half the patch size (e.g., 320 for 640px patches)
         device: Torch device
-        chunk_size: Number of cells to process at once (controls peak memory)
+        max_chunk_bytes: Target peak GPU memory per chunk in bytes
 
     Returns:
         CellToPatchMapping with CSR-format overlaps
@@ -309,6 +317,12 @@ def build_cell_to_patch_mapping(
     num_cells = cell_centers_px.shape[0]
     patch_positions_px = patch_positions_px.to(device)
 
+    # Auto-scale chunk_size so each (chunk_size, num_patches, 2) tensor
+    # stays within max_chunk_bytes.
+    num_patches = patch_positions_px.shape[0]
+    bytes_per_cell = num_patches * 2 * patch_positions_px.element_size()
+    chunk_size = max(1, max_chunk_bytes // bytes_per_cell)
+
     # Process cells in chunks to keep peak memory bounded.
     # Each chunk materializes (chunk_size, num_patches, 2) instead of the
     # full (num_cells, num_patches, 2).
@@ -316,7 +330,8 @@ def build_cell_to_patch_mapping(
     all_patch_idxs = []
     counts = torch.zeros(num_cells, dtype=torch.long, device=device)
 
-    for start in range(0, num_cells, chunk_size):
+    for start in tqdm.tqdm(range(0, num_cells, chunk_size), desc="Building cell-to-patch mapping",
+                           total=(num_cells + chunk_size - 1) // chunk_size):
         end = min(start + chunk_size, num_cells)
         chunk_cells = cell_centers_px[start:end]  # (chunk, 2)
 

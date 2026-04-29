@@ -19,11 +19,12 @@ from common.gps.web_mercator import METERS_PER_DEG_LAT
 class OdometryNoiseConfig:
     """Per-step odometry noise applied to each motion delta independently.
 
-    sigma_noise_frac: noise std as fraction of step distance.
+    sigma_noise_frac: noise intensity in m/sqrt(m).
         For a step of d meters, north and east offsets are each
-        sampled from N(0, sigma_noise_frac * d) meters.
+        sampled from N(0, sigma_noise_frac^2 * d) — i.e. variance
+        scales linearly with distance (Wiener process scaling).
     """
-    sigma_noise_frac: float = 0.05    # fraction of step size
+    sigma_noise_frac: float = 0.05    # m/sqrt(m)
     seed: int = 7919
 
     def __post_init__(self):
@@ -97,12 +98,12 @@ def add_noise_to_motion_deltas(
     east_m = deltas_f64[:, 1] * meters_per_deg_lon
     distance = torch.sqrt(north_m ** 2 + east_m ** 2)
 
-    # Sample north/east offsets in meters, proportional to step distance
+    # Sample north/east offsets in meters: variance = sigma_noise_frac^2 * d,
+    # so std = sigma_noise_frac * sqrt(d) (Wiener process scaling)
     N = deltas_f64.shape[0]
-    noise_north_m = torch.randn(N, dtype=torch.float64, device=deltas_f64.device, generator=generator) * (
-        config.sigma_noise_frac * distance)
-    noise_east_m = torch.randn(N, dtype=torch.float64, device=deltas_f64.device, generator=generator) * (
-        config.sigma_noise_frac * distance)
+    std_m = config.sigma_noise_frac * torch.sqrt(distance)
+    noise_north_m = torch.randn(N, dtype=torch.float64, device=deltas_f64.device, generator=generator) * std_m
+    noise_east_m = torch.randn(N, dtype=torch.float64, device=deltas_f64.device, generator=generator) * std_m
 
     # Convert offsets to lat/lon degrees and add to original deltas
     noise_lat = noise_north_m / METERS_PER_DEG_LAT

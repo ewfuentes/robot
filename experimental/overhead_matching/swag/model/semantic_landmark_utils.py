@@ -8,8 +8,6 @@ import base64
 import hashlib
 import json
 import pickle
-import hashlib
-import base64
 from pathlib import Path
 import pandas as pd
 import torch
@@ -142,11 +140,129 @@ def make_sentence_dict_from_pano_jsons(sentence_jsons: list) -> tuple[dict[str, 
 
 
 
-def prune_landmark(props):
-    """Prune landmark properties by removing unwanted fields.
+_TAGS_TO_KEEP = [
+    "access",
+    "addr:housenumber",
+    "addr:street",
+    "advertising",
+    "amenity",
+    "architect",
+    "architecture",
+    "artwork",
+    "artwork_type",
+    "banner",
+    "barrier",
+    "beauty",
+    "bicycle_parking",
+    "brand",
+    "brewery",
+    "bridge",
+    "bridge:structure",
+    "bridge:type",
+    "building",
+    "building:architecture",
+    "building:levels",
+    "building:part",
+    "building:use",
+    "construction",
+    "covered",
+    "craft",
+    "crane:type",
+    "crossing",
+    "crossing:barrier",
+    "cuisine",
+    "cycleway",
+    "denomination",
+    "description",
+    "design",
+    "drive_through",
+    "embankment",
+    "emergency",
+    "entrance",
+    "facade",
+    "fence",
+    "fence_type",
+    "fenced",
+    "fire_escape",
+    "fire_hydrant:type",
+    "footway",
+    "garden:type",
+    "handrail",
+    "healthcare",
+    "heritage",
+    "highway",
+    "historic",
+    "industrial",
+    "information",
+    "inscription",
+    "junction",
+    "lamp_mount",
+    "lamp_type",
+    "landuse",
+    "lanes",
+    "leisure",
+    "levels",
+    "light_source",
+    "man_made",
+    "mast:type",
+    "maxheight",
+    "maxspeed",
+    "memorial",
+    "mural",
+    "name",
+    "natural",
+    "office",
+    "oneway",
+    "operator",
+    "outdoor_seating",
+    "parking",
+    "phone",
+    "power",
+    "public_transport",
+    "railway",
+    "recycling_type",
+    "ref",
+    "religion",
+    "residential",
+    "roof:shape",
+    "service",
+    "shelter",
+    "shelter_type",
+    "shop",
+    "short_name",
+    "social_facility",
+    "sport",
+    "station",
+    "street_lamp",
+    "style",
+    "substation",
+    "support",
+    "theatre:type",
+    "tourism",
+    "tower:type",
+    "traffic_calming",
+    "traffic_sign",
+    "tunnel",
+    "type",
+    "vending",
+    "wall",
+    "waste",
+    "water",
+    "waterway",
+]
 
-    Removes metadata fields like indices, timestamps, and administrative data
-    that aren't relevant for landmark descriptions.
+# Entries ending with ':' are treated as prefix matches (e.g. "building:" would match
+# "building:levels"). Currently all entries are exact matches; add a colon-terminated
+# entry to enable prefix matching.
+_TAGS_TO_KEEP_PREFIXES = [t for t in _TAGS_TO_KEEP if t.endswith(':')]
+_TAGS_TO_KEEP_SET = frozenset(t for t in _TAGS_TO_KEEP if not t.endswith(':'))
+
+
+def prune_landmark(props):
+    """Keep only tags relevant for landmark matching.
+
+    Retains only tags that describe features visible from street level and
+    useful for matching between panorama observations and OSM database entries.
 
     Args:
         props: Dictionary of landmark properties
@@ -154,36 +270,9 @@ def prune_landmark(props):
     Returns:
         Frozenset of (key, value) tuples for relevant properties
     """
-    to_drop = [
-        "index",  # for props that come from a dataloader
-        "web_mercator",
-        "panorama_idxs",
-        "satellite_idxs",
-        "landmark_type",
-        "element",
-        "id",
-        "geometry",
-        "opening_hours",
-        "website",
-        "addr:city",
-        "addr:state",
-        'check_date',
-        'checked_exists',
-        'opening_date',
-        'chicago:building_id',
-        'survey:date',
-        'payment',
-        'disused',
-        'time',
-        'end_date']
     out = set()
     for (k, v) in props.items():
-        should_add = True
-        for prefix in to_drop:
-            if k.startswith(prefix):
-                should_add = False
-                break
-        if not should_add:
+        if k not in _TAGS_TO_KEEP_SET and not any(k.startswith(p) for p in _TAGS_TO_KEEP_PREFIXES):
             continue
         if pd.isna(v):
             continue

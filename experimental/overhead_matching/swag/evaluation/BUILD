@@ -133,6 +133,32 @@ py_test(
   ]
 )
 
+py_test(
+  name = "proper_noun_matcher_test",
+  srcs = ["proper_noun_matcher_test.py"],
+  data = [":proper_noun_matcher_python.so"],
+  deps = [
+    requirement("numpy"),
+  ],
+)
+
+py_library(
+  name = "osm_tag_similarity",
+  srcs = ["osm_tag_similarity.py"],
+  data = [":proper_noun_matcher_python.so"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+    "//common/python:__subpackages__",
+  ],
+  deps = [
+    requirement("numpy"),
+    requirement("torch"),
+    requirement("tqdm"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+  ],
+)
+
 py_library(
   name = "convergence_metrics",
   srcs = ["convergence_metrics.py"],
@@ -159,6 +185,30 @@ py_test(
 )
 
 py_library(
+  name = "retrieval_metrics",
+  srcs = ["retrieval_metrics.py"],
+  visibility = ["//experimental/overhead_matching/swag:__subpackages__", "//common/python:__subpackages__"],
+  deps = [
+    requirement("pandas"),
+    requirement("torch"),
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+  ],
+)
+
+py_library(
+  name = "tag_weight_similarity",
+  srcs = ["tag_weight_similarity.py"],
+  visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+  deps = [
+    requirement("torch"),
+    requirement("polars"),
+    requirement("numpy"),
+    requirement("tqdm"),
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+  ],
+)
+
+py_library(
   name = "odometry_noise",
   srcs = ["odometry_noise.py"],
   visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
@@ -177,3 +227,33 @@ py_test(
     ":odometry_noise",
   ],
 )
+
+py_library(
+  name = "correspondence_matching",
+  srcs = ["correspondence_matching.py"],
+  visibility = ["//experimental/overhead_matching/swag:__subpackages__", "//common/python:__subpackages__"],
+  deps = [
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("scipy"),
+    requirement("tqdm"),
+    requirement("psutil"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:landmark_correspondence_dataset",
+  ],
+)
+
+py_test(
+  name = "correspondence_matching_test",
+  srcs = ["correspondence_matching_test.py"],
+  deps = [
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("pandas"),
+    "//common/torch:load_torch_deps",
+    ":correspondence_matching",
+    "//experimental/overhead_matching/swag/data:landmark_correspondence_dataset",
+    "//experimental/overhead_matching/swag/model:landmark_correspondence_model",
+  ],
+)
+

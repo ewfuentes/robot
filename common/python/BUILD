@@ -19,6 +19,7 @@ py_binary(
     requirement("numpy"),
     requirement("altair"),
     requirement("pandas"),
+    requirement("polars"),
     requirement("seaborn"),
     requirement("watchdog"),
     requirement("tensorboard"),
@@ -33,6 +34,7 @@ py_binary(
     "//experimental/overhead_matching/learned/scripts:train_clevr_transformer",
     "//experimental/overhead_matching/swag/scripts:train",
     "//experimental/overhead_matching/swag/evaluation:evaluate_swag",
+    "//experimental/overhead_matching/swag/evaluation:osm_tag_similarity",
     "//experimental/overhead_matching/swag/scripts:evaluate_model_on_paths",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
     "//experimental/overhead_matching/swag/data:alphaearth_registry",
@@ -41,6 +43,12 @@ py_binary(
     "//experimental/overhead_matching/swag/model:patch_embedding",
     "//experimental/overhead_matching/swag/model:swag_patch_embedding",
     "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
+    "//experimental/overhead_matching/swag/data:landmark_correspondence_dataset",
+    "//experimental/overhead_matching/swag/model:landmark_correspondence_model",
+    "//experimental/overhead_matching/swag/evaluation:correspondence_matching",
+    "//experimental/overhead_matching/swag/evaluation:retrieval_metrics",
+    requirement("plotly"),
+    requirement("scikit-learn"),
   ]
 )
 

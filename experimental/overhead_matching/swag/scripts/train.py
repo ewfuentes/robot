@@ -9,7 +9,7 @@ import itertools
 from pathlib import Path
 from common.python.serialization import flatten_dict, msgspec_enc_hook, msgspec_dec_hook
 from experimental.overhead_matching.swag.scripts.losses import LossConfig, compute_loss, LossFunctionType, create_losses_from_loss_config_list, InfoNCELossConfig
-from experimental.overhead_matching.swag.scripts.distances import DistanceConfig, create_distance_from_config
+from experimental.overhead_matching.swag.scripts.distances import DistanceConfig, LearnedDistanceFunctionConfig, create_distance_from_config
 from experimental.overhead_matching.swag.scripts.pairing import PairingType, create_pairs, create_anchors, Pairs, PairingDataType
 from experimental.overhead_matching.swag.data import (
     vigor_dataset, satellite_embedding_database as sed, vigor_filters)
@@ -24,13 +24,13 @@ from experimental.overhead_matching.swag.model.landmark_scheduler import (
 from experimental.overhead_matching.swag.scripts.logging_utils import (
     log_batch_metrics, log_embedding_stats, log_gradient_stats, log_validation_metrics, log_feature_counts)
 from experimental.overhead_matching.swag.scripts.model_inspector import ModelInspector
+from experimental.overhead_matching.swag.evaluation.retrieval_metrics import validation_metrics_from_similarity
 from typing import Union
 from dataclasses import dataclass
 import pandas as pd
 import tqdm
 import msgspec
 from pprint import pprint
-import ipdb
 from contextlib import nullcontext
 import datetime
 import random
@@ -148,70 +148,6 @@ class TrainConfig:
     pano_landmark_dropout_schedules: list[LandmarkDropoutScheduleConfig] = None
     sat_landmark_dropout_schedules: list[LandmarkDropoutScheduleConfig] = None
     seed: int | None = None
-
-@torch.no_grad
-def validation_metrics_from_similarity(
-    name: str,
-    similarity: torch.Tensor,  # num_panos x num_sat
-    panorama_metadata: pd.DataFrame,
-) -> dict:
-    num_panos = similarity.shape[0]
-
-    invalid_mask = torch.ones((num_panos, 5), dtype=torch.bool)
-    sat_idxs = torch.zeros((num_panos, 5), dtype=torch.int32)
-    for pano_idx, pano_metadata in panorama_metadata.iterrows():
-        assert len(pano_metadata.positive_satellite_idxs) <= 1
-        assert len(pano_metadata.semipositive_satellite_idxs) <= 4
-
-        for col_idx, sat_idx in enumerate(pano_metadata.positive_satellite_idxs):
-            sat_idxs[pano_idx, col_idx] = sat_idx
-            invalid_mask[pano_idx, col_idx] = False
-
-        for col_idx, sat_idx in enumerate(pano_metadata.semipositive_satellite_idxs):
-            sat_idxs[pano_idx, col_idx+1] = sat_idx
-            invalid_mask[pano_idx, col_idx+1] = False
-
-    row_idxs = torch.arange(num_panos).reshape(-1, 1).expand(-1, 5)
-    pos_semipos_similarities = similarity[row_idxs, sat_idxs]
-    pos_semipos_similarities[invalid_mask] = torch.nan
-
-    # Since the invalid entries are set to nan, their ranks are set to zero
-    ranks = (similarity[:, None, :] >= pos_semipos_similarities[:, :, None]).sum(dim=-1)
-
-    #  Compute the mean reciprocal rank of the valid positive matches
-    positive_recip_ranks = 1.0 / ranks[:, 0]
-    positive_recip_ranks[invalid_mask[:, 0]] = torch.nan
-    positive_mean_recip_rank = torch.nanmean(positive_recip_ranks)
-
-    # Compute the mean reciprocal rank of the lowest ranked positive/semipositive matches
-    # All panoramas should have at least one positive or semipostive match, so the max
-    # rank is guaranteed to be greater than zero, to the reciprocal rank should be valid
-    max_pos_semi_pos_recip_ranks = 1.0 / ranks.max(dim=-1).values
-    max_pos_semi_pos_recip_ranks = torch.nanmean(max_pos_semi_pos_recip_ranks)
-
-    # compute the positive recall @ K
-    k_values = [1, 5, 10, 100]
-    pos_recall = {f"{name}/pos_recall@{k}": (ranks[~(invalid_mask[:, 0]), 0] <= k).float().mean().item()
-                    for k in k_values}
-
-    # compute the positive/semipositive recall @ K
-    invalid_mask_cuda = invalid_mask.cuda()
-    ranks_cuda = ranks.cuda()
-    any_pos_semipos_recall = {
-        f"{name}/any pos_semipos_recall@{k}": ((ranks_cuda <= k) & (~invalid_mask_cuda)).any(dim=-1).float().mean().item()
-        for k in k_values}
-
-    all_pos_semipos_recall = {
-        f"{name}/all pos_semipos_recall@{k}": (ranks_cuda <= k).all(dim=-1).float().mean().item()
-        for k in k_values[1:]}
-
-    out = ({
-        f"{name}/positive_mean_recip_rank": positive_mean_recip_rank.item(),
-        f"{name}/max_pos_semi_pos_recip_rank": max_pos_semi_pos_recip_ranks.item()}
-        | pos_recall
-        | any_pos_semipos_recall
-        | all_pos_semipos_recall)
-    return out
 
 @torch.no_grad
 def compute_validation_metrics(
@@ -389,6 +325,32 @@ def train(config: TrainConfig,
 
     distance_model = create_distance_from_config(config.distance_model_config)
     loss_functions = create_losses_from_loss_config_list(config.loss_configs)
+
+    # Validate that skip_aggregation is only used with transformer_encoder distance
+    for model_name, model_config in [("sat", config.sat_model_config), ("pano", config.pano_model_config)]:
+        if (isinstance(model_config, swag_patch_embedding.SwagPatchEmbeddingConfig)
+                and model_config.skip_aggregation):
+            if not (isinstance(config.distance_model_config, LearnedDistanceFunctionConfig)
+                    and config.distance_model_config.architecture == "transformer_encoder"):
+                raise RuntimeError(
+                    f"{model_name}_model_config has skip_aggregation=True, which requires "
+                    f"distance_model_config to be LearnedDistanceFunctionConfig with "
+                    f"architecture='transformer_encoder'. Got: {type(config.distance_model_config).__name__}")
+
+    # Derive whether hard negative mining is used from epoch threshold
+    use_hard_negative_mining = (
+        config.opt_config.enable_hard_negative_sampling_after_epoch_idx < config.opt_config.num_epochs)
+
+    # Validate that skip_aggregation models don't use hard negative mining
+    if use_hard_negative_mining:
+        for model_name, model_config in [("sat", config.sat_model_config), ("pano", config.pano_model_config)]:
+            if (isinstance(model_config, swag_patch_embedding.SwagPatchEmbeddingConfig)
+                    and model_config.skip_aggregation):
+                raise RuntimeError(
+                    f"{model_name}_model_config has skip_aggregation=True, which is incompatible with "
+                    f"hard negative mining. Set enable_hard_negative_sampling_after_epoch_idx >= num_epochs "
+                    f"to disable hard negative mining.")
+
     # Setup models using extracted function
     panorama_model, satellite_model, distance_model = setup_models_for_training(
         panorama_model, satellite_model, distance_model)
@@ -534,15 +496,15 @@ def train(config: TrainConfig,
             if torch.isnan(loss_dict["loss"]):
                 raise RuntimeError("Got NaN loss!")
             # perform checks that all parameters we expect to update have gradients for the first set of batches
-            if total_batches < 50:
+            if total_batches < 50 or total_batches % 5 == 0:
                 for model_name, model in zip(["pano", "sat"], [panorama_model, satellite_model]):
                     for name, param in model.named_parameters():
                         if param.grad is None and param.requires_grad:
                             raise RuntimeError(
                                 f"Parameter {name} for model {model_name} requires grad, but had no update.")
-                        if param.grad is not None and torch.any(torch.isinf(param.grad)):
-                            print(
-                                f"Warining: INF was found in parameter gradient: {name} in model {model_name}")
+                        if param.grad is not None and (torch.any(torch.isinf(param.grad)) or torch.any(torch.isnan(param.grad))):
+                            raise RuntimeError(
+                                f"INF/NaN found in parameter gradient: {name} in model {model_name} at batch {total_batches}")
 
             log_gradient_stats(writer, panorama_model, "panorama", total_batches)
             log_gradient_stats(writer, satellite_model, "satellite", total_batches)
@@ -551,10 +513,11 @@ def train(config: TrainConfig,
             log_feature_counts(writer, debug_dict['pano'], debug_dict['sat'], total_batches)
 
             # Hard Negative Mining
-            miner.consume(
-                panorama_embeddings=panorama_embeddings.detach(),
-                satellite_embeddings=satellite_embeddings.detach(),
-                batch=batch)
+            if use_hard_negative_mining:
+                miner.consume(
+                    panorama_embeddings=panorama_embeddings.detach(),
+                    satellite_embeddings=satellite_embeddings.detach(),
+                    batch=batch)
 
             # Logging
             log_batch_metrics(
@@ -572,22 +535,23 @@ def train(config: TrainConfig,
             print()
         lr_scheduler.step()
 
-        if epoch_idx >= opt_config.enable_hard_negative_sampling_after_epoch_idx:
-            miner.set_sample_mode(vigor_dataset.HardNegativeMiner.SampleMode.HARD_NEGATIVE)
+        if use_hard_negative_mining:
+            if epoch_idx >= opt_config.enable_hard_negative_sampling_after_epoch_idx:
+                miner.set_sample_mode(vigor_dataset.HardNegativeMiner.SampleMode.HARD_NEGATIVE)
 
-        if miner.sample_mode == vigor_dataset.HardNegativeMiner.SampleMode.HARD_NEGATIVE:
-            # Since we are hard negative mining, we want to update the embedding vectors for any
-            # satellite patches that were not observed as part of the epoch
-            unobserved_patch_dataset = torch.utils.data.Subset(
-                dataset.get_sat_patch_view(), list(miner.unobserved_sat_idxs))
-            unobserved_dataloader = vigor_dataset.get_dataloader(
-                unobserved_patch_dataset, num_workers=8, batch_size=128)
+            if miner.sample_mode == vigor_dataset.HardNegativeMiner.SampleMode.HARD_NEGATIVE:
+                # Since we are hard negative mining, we want to update the embedding vectors for any
+                # satellite patches that were not observed as part of the epoch
+                unobserved_patch_dataset = torch.utils.data.Subset(
+                    dataset.get_sat_patch_view(), list(miner.unobserved_sat_idxs))
+                unobserved_dataloader = vigor_dataset.get_dataloader(
+                    unobserved_patch_dataset, num_workers=8, batch_size=128)
 
-            for batch in tqdm.tqdm(unobserved_dataloader, desc="Unobserved sat batches", disable=quiet):
-                with torch.no_grad():
-                    miner_satellite_embeddings, _ = satellite_model(
-                        satellite_model.model_input_from_batch(batch).to("cuda"))
-                miner.consume(None, miner_satellite_embeddings, batch)
+                for batch in tqdm.tqdm(unobserved_dataloader, desc="Unobserved sat batches", disable=quiet):
+                    with torch.no_grad():
+                        miner_satellite_embeddings, _ = satellite_model(
+                            satellite_model.model_input_from_batch(batch).to("cuda"))
+                    miner.consume(None, miner_satellite_embeddings, batch)
 
         # compute validation set metrics
         debug_log(f"Computing validation metrics for epoch {epoch_idx}")
@@ -819,6 +783,11 @@ def main(
             train_config.opt_config.lr_sweep_config = LearningRateSweepConfig()
 
         distance_model = create_distance_from_config(train_config.distance_model_config)
+        loss_functions = create_losses_from_loss_config_list(train_config.loss_configs)
+        pairing_type = PairingType.PAIRS
+        for loss_config in train_config.loss_configs:
+            if isinstance(loss_config, InfoNCELossConfig):
+                pairing_type = PairingType.ANCHOR_SETS
         optimal_lr = run_lr_sweep(
             lr_sweep_config=train_config.opt_config.lr_sweep_config,
             dataset=dataset,
@@ -830,6 +799,8 @@ def main(
             compute_forward_pass_and_loss_fn=compute_forward_pass_and_loss,
             create_training_components_fn=create_training_components,
             setup_models_for_training_fn=setup_models_for_training,
+            loss_functions=loss_functions,
+            pairing_type=pairing_type,
             quiet=quiet,
             generator=generator
         )
@@ -839,7 +810,12 @@ def main(
         if not quiet:
             print(f"Updated initial learning rate to {optimal_lr:.2e}")
 
-    with ipdb.launch_ipdb_on_exception() if not no_ipdb else nullcontext():
+    if not no_ipdb:
+        import ipdb
+        ctx = ipdb.launch_ipdb_on_exception()
+    else:
+        ctx = nullcontext()
+    with ctx:
         train(
             train_config,
             output_dir=output_dir,

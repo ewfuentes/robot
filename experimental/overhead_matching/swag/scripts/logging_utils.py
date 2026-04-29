@@ -77,6 +77,8 @@ def log_batch_metrics(writer, loss_dict, lr_scheduler, pairing_data, step_idx, e
 @torch.no_grad()
 def _sample_pairwise_cosine(x: torch.Tensor, num_pairs: int = 2048) -> tuple[float, float]:
     """Return mean/std of sampled pairwise cosine similarities within a batch."""
+    if x.ndim == 3:
+        x = x.reshape(-1, x.shape[-1])  # [B*N_emb, D]
     n = x.shape[0]
     if n < 2:
         return float('nan'), float('nan')

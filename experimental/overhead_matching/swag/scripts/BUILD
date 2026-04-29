@@ -2,6 +2,62 @@
 load("@pip//:requirements.bzl", "requirement")
 load("@rules_python//python:packaging.bzl", "py_wheel", "py_package")
 
+py_binary(
+  name="stage_cvgtext_for_vigor",
+  srcs=["stage_cvgtext_for_vigor.py"],
+)
+
+py_binary(
+  name="evaluate_cvgtext_crosstext2loc",
+  srcs=["evaluate_cvgtext_crosstext2loc.py"],
+  deps=[
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:cvgtext_dataset",
+    "//experimental/overhead_matching/swag/evaluation:retrieval_metrics",
+    requirement("torch"),
+    requirement("Pillow"),
+    requirement("tqdm"),
+    requirement("crosstext2loc"),
+  ],
+)
+
+py_binary(
+  name="bootstrap_cvgtext_metrics",
+  srcs=["bootstrap_cvgtext_metrics.py"],
+  deps=[
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:cvgtext_dataset",
+    requirement("torch"),
+    requirement("numpy"),
+  ],
+)
+
+py_binary(
+  name="cvgtext_pano_landmark_viewer",
+  srcs=["cvgtext_pano_landmark_viewer.py"],
+  deps=[
+    requirement("flask"),
+    requirement("numpy"),
+    requirement("torch"),
+    "//common/torch:load_torch_deps",
+  ],
+)
+
+py_binary(
+  name="evaluate_cvgtext_swag",
+  srcs=["evaluate_cvgtext_swag.py"],
+  deps=[
+    ":export_similarity_matrix",
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:cvgtext_dataset",
+    "//experimental/overhead_matching/swag/data:satellite_embedding_database",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/evaluation:retrieval_metrics",
+    requirement("torch"),
+  ],
+)
+
+
 py_library(
   name="pairing",
   srcs=["pairing.py"],
@@ -29,6 +85,17 @@ py_test(
   ]
 )
 
+py_test(
+  name="losses_test",
+  srcs=["losses_test.py"],
+  deps=[
+    ":losses",
+    ":pairing",
+    "//common/torch:load_torch_deps",
+    requirement("torch"),
+  ]
+)
+
 py_library(
   name="losses",
   srcs=["losses.py"],
@@ -50,6 +117,7 @@ py_library(
   deps=[
     "//common/python:serialization",
     requirement("msgspec"),
+    requirement("tqdm"),
     requirement("torch"),
   ]
 )
@@ -67,9 +135,11 @@ py_library(
   srcs = ["lr_sweep.py"],
   visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
   deps = [
+    ":pairing",
     requirement("torch"),
     requirement("numpy"),
     requirement("matplotlib"),
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
   ]
 )
 
@@ -107,6 +177,7 @@ py_binary(
     "//experimental/overhead_matching/swag/data:vigor_dataset",
     "//experimental/overhead_matching/swag/data:vigor_filters",
     "//experimental/overhead_matching/swag/data:satellite_embedding_database",
+    "//experimental/overhead_matching/swag/evaluation:retrieval_metrics",
     "//experimental/overhead_matching/swag/model:patch_embedding",
     "//experimental/overhead_matching/swag/model:swag_patch_embedding",
   ]
@@ -234,6 +305,42 @@ py_binary(
 )
 
 py_binary(
+  name = "dataset_statistics",
+  srcs = ["dataset_statistics.py"],
+  visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+  deps = [
+    requirement("geopandas"),
+    requirement("pandas"),
+    requirement("pyarrow"),
+    requirement("Pillow"),
+    ":create_eval_paths_from_panorama_trajectory",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
+    "//common/gps:web_mercator",
+  ],
+)
+
+py_binary(
+  name = "create_eval_paths_from_panorama_trajectory",
+  srcs = ["create_eval_paths_from_panorama_trajectory.py"],
+  visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+  deps = [
+    "//common/gps:web_mercator",
+    "//common/math:haversine",
+  ],
+)
+
+py_test(
+  name = "create_eval_paths_from_panorama_trajectory_test",
+  srcs = ["create_eval_paths_from_panorama_trajectory_test.py"],
+  deps = [
+    ":create_eval_paths_from_panorama_trajectory",
+    ":dataset_statistics",
+    "//common/gps:web_mercator",
+    "//common/math:haversine",
+  ],
+)
+
+py_binary(
   name = "extract_landmarks_for_vigor_dataset",
   srcs = ["extract_landmarks_for_vigor_dataset.py"],
   deps = [
@@ -293,6 +400,17 @@ py_binary(
   ]
 )
 
+py_library(
+  name="panorama_to_pinhole_lib",
+  srcs=["panorama_to_pinhole.py"],
+  deps=[
+    requirement("numpy"),
+    requirement("scipy"),
+    requirement("pillow"),
+    requirement("tqdm"),
+  ]
+)
+
 py_binary(
   name="panorama_to_pinhole",
   srcs=["panorama_to_pinhole.py"],
@@ -304,6 +422,14 @@ py_binary(
   ]
 )
 
+py_library(
+  name="search_osm_tags_lib",
+  srcs=["search_osm_tags.py"],
+  deps=[
+    requirement("pandas"),
+  ]
+)
+
 py_binary(
   name="panorama_viewer",
   srcs=["panorama_viewer.py"],
@@ -312,10 +438,60 @@ py_binary(
     requirement("geopandas"),
     requirement("shapely"),
     requirement("pandas"),
+    requirement("polars"),
     requirement("ipdb"),
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("scipy"),
+    "//common/torch:load_torch_deps",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/data:landmark_correspondence_dataset",
+    "//experimental/overhead_matching/swag/evaluation:correspondence_matching",
+    "//experimental/overhead_matching/swag/model:landmark_correspondence_model",
+    "//experimental/overhead_matching/swag/model:additional_panorama_extractors",
     "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
+    ":landmark_pairing_cli_lib",
     "//common/gps:web_mercator",
+  ]
+)
+
+py_binary(
+  name="landmark_tagger",
+  srcs=["landmark_tagger.py"],
+  data=[
+    "//experimental/overhead_matching/swag/evaluation:proper_noun_matcher_python.so",
+  ],
+  deps=[
+    requirement("flask"),
+    requirement("numpy"),
+    requirement("scipy"),
+    requirement("opencv-python"),
+    requirement("pillow"),
+    requirement("pandas"),
+    requirement("pyarrow"),
+    requirement("shapely"),
+    requirement("geopandas"),
+    requirement("scikit-learn"),
+    ":evaluate_extraction_lib",
+    ":panorama_to_pinhole_lib",
+    ":search_osm_tags_lib",
+    ":osm_tag_server_lib",
+    ":ollama_osm_extraction_lib",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_extractor",
+  ]
+)
+
+py_binary(
+  name="extract_dino_cls_tokens",
+  srcs=["extract_dino_cls_tokens.py"],
+  deps=[
+    requirement("numpy"),
+    requirement("pillow"),
+    requirement("torch"),
+    requirement("torchvision"),
+    requirement("tqdm"),
+    "//common/torch:load_torch_deps",
   ]
 )
 
@@ -530,9 +706,33 @@ py_binary(
 )
 
 py_binary(
+  name="export_similarity_matrix",
+  srcs=["export_similarity_matrix.py"],
+  deps=[
+    requirement("torch"),
+    requirement("tqdm"),
+    requirement("msgspec"),
+    requirement("pyyaml"),
+    "//common/torch:load_torch_deps",
+    "//common/torch:load_and_save_models",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/data:satellite_embedding_database",
+    "//experimental/overhead_matching/swag/evaluation:evaluate_swag",
+    "//experimental/overhead_matching/swag/model:patch_embedding",
+    "//experimental/overhead_matching/swag/model:swag_patch_embedding",
+  ]
+)
+
+py_binary(
   name="osm_extraction_visualizer",
   srcs=["osm_extraction_visualizer.py"],
-  deps=[]
+  deps=[
+    requirement("shapely"),
+    requirement("geopandas"),
+    requirement("pandas"),
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//common/gps:web_mercator",
+  ]
 )
 
 py_binary(
@@ -554,3 +754,284 @@ py_binary(
     "//experimental/overhead_matching/swag/model:swag_patch_embedding",
   ]
 )
+
+py_binary(
+  name="create_tag_key_vocabulary",
+  srcs=["create_tag_key_vocabulary.py"],
+  deps=[
+    requirement("geopandas"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
+  ]
+)
+
+py_binary(
+  name="create_sequential_evaluation_paths",
+  srcs=["create_sequential_evaluation_paths.py"],
+  deps=[
+    requirement("numpy"),
+    requirement("pandas"),
+    "//common/math:haversine",
+  ]
+)
+
+py_binary(
+  name="extract_gemini_landmarks_from_panoramas",
+  srcs=["extract_gemini_landmarks_from_panoramas.py"],
+  deps=[],
+)
+
+py_library(
+  name="osm_tag_server_lib",
+  srcs=["osm_tag_server.py"],
+  visibility=["//experimental/overhead_matching/swag:__subpackages__"],
+  deps=[
+    requirement("pandas"),
+    requirement("pyarrow"),
+    ":search_osm_tags_lib",
+  ]
+)
+
+py_binary(
+  name="osm_tag_server",
+  srcs=["osm_tag_server.py"],
+  deps=[
+    requirement("pandas"),
+    requirement("pyarrow"),
+    ":search_osm_tags_lib",
+  ]
+)
+
+py_library(
+  name="evaluate_extraction_lib",
+  srcs=["evaluate_extraction.py"],
+  data=[
+    "//experimental/overhead_matching/swag/evaluation:proper_noun_matcher_python.so",
+  ],
+  visibility=["//experimental/overhead_matching/swag:__subpackages__"],
+  deps=[
+    requirement("pandas"),
+    requirement("pyarrow"),
+    requirement("numpy"),
+    ":search_osm_tags_lib",
+  ],
+)
+
+py_binary(
+  name="evaluate_extraction",
+  srcs=["evaluate_extraction.py"],
+  data=[
+    "//experimental/overhead_matching/swag/evaluation:proper_noun_matcher_python.so",
+  ],
+  deps=[
+    requirement("pandas"),
+    requirement("pyarrow"),
+    requirement("numpy"),
+    ":search_osm_tags_lib",
+  ],
+)
+
+py_library(
+  name="ollama_osm_extraction_lib",
+  srcs=["ollama_osm_extraction.py"],
+  visibility=["//experimental/overhead_matching/swag:__subpackages__"],
+  deps=[
+    requirement("ollama"),
+    requirement("pydantic"),
+    requirement("requests"),
+    "//common/ollama:pyollama",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_extractor",
+  ]
+)
+
+py_binary(
+  name="ollama_osm_extraction",
+  srcs=["ollama_osm_extraction.py"],
+  deps=[
+    requirement("ollama"),
+    requirement("pydantic"),
+    requirement("requests"),
+    "//common/ollama:pyollama",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_extractor",
+  ]
+)
+
+py_binary(
+  name="batch_ollama_extraction",
+  srcs=["batch_ollama_extraction.py"],
+  deps=[
+    requirement("ollama"),
+    ":ollama_osm_extraction_lib",
+    "//common/ollama:pyollama",
+  ]
+)
+
+py_binary(
+  name="export_landmark_tables",
+  srcs=["export_landmark_tables.py"],
+  deps=[
+    requirement("polars"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/evaluation:osm_tag_similarity",
+  ]
+)
+
+py_binary(
+  name="export_tag_weight_similarity",
+  srcs=["export_tag_weight_similarity.py"],
+  deps=[
+    requirement("torch"),
+    requirement("polars"),
+    requirement("tqdm"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/evaluation:retrieval_metrics",
+    "//experimental/overhead_matching/swag/evaluation:tag_weight_similarity",
+  ]
+)
+
+py_library(
+  name="landmark_pairing_cli_lib",
+  srcs=["landmark_pairing_cli.py"],
+  visibility=["//experimental/overhead_matching/swag:__subpackages__"],
+  deps=[
+    requirement("numpy"),
+    requirement("pandas"),
+    requirement("pyarrow"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/model:additional_panorama_extractors",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
+  ]
+)
+
+py_binary(
+  name="landmark_pairing_cli",
+  srcs=["landmark_pairing_cli.py"],
+  deps=[
+    ":landmark_pairing_cli_lib",
+  ]
+)
+
+py_binary(
+  name="convert_gemini_landmark_pairing_responses_to_viewer_json",
+  srcs=["convert_gemini_landmark_pairing_responses_to_viewer_json.py"],
+  deps=[
+    requirement("pandas"),
+    requirement("pyarrow"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+  ]
+)
+
+py_binary(
+  name="generate_sft_data",
+  srcs=["generate_sft_data.py"],
+  deps=[
+    requirement("ollama"),
+    requirement("pandas"),
+    requirement("pyarrow"),
+    requirement("google-genai"),
+    ":ollama_osm_extraction_lib",
+    ":evaluate_extraction_lib",
+    "//common/ollama:pyollama",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_extractor",
+  ]
+)
+
+py_binary(
+  name="precompute_value_embeddings",
+  srcs=["precompute_value_embeddings.py"],
+  deps=[
+    requirement("tqdm"),
+    requirement("numpy"),
+    requirement("pandas"),
+    requirement("pyarrow"),
+    requirement("google-genai"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:landmark_correspondence_dataset",
+    "//experimental/overhead_matching/swag/model:landmark_correspondence_model",
+    "//experimental/overhead_matching/swag/model:additional_panorama_extractors",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
+    ":landmark_pairing_cli_lib",
+  ]
+)
+
+py_library(
+  name = "correspondence_configs",
+  srcs = ["correspondence_configs.py"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+  ],
+  deps = [
+    requirement("msgspec"),
+    requirement("pyyaml"),
+    "//common/python:serialization",
+  ],
+)
+
+py_binary(
+  name="evaluate_correspondence_model",
+  srcs=["evaluate_correspondence_model.py"],
+  deps=[
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("scikit-learn"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:landmark_correspondence_dataset",
+    "//experimental/overhead_matching/swag/model:landmark_correspondence_model",
+  ]
+)
+
+py_binary(
+  name="train_landmark_correspondence",
+  srcs=["train_landmark_correspondence.py"],
+  deps=[
+    requirement("torch"),
+    requirement("tensorboard"),
+    requirement("tqdm"),
+    requirement("numpy"),
+    requirement("scikit-learn"),
+    ":correspondence_configs",
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:landmark_correspondence_dataset",
+    "//experimental/overhead_matching/swag/model:landmark_correspondence_model",
+  ]
+)
+
+py_binary(
+  name="paper_convergence_plot",
+  srcs=["paper_convergence_plot.py"],
+  deps=[
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("matplotlib"),
+    "//common/torch:load_torch_deps",
+  ]
+)
+
+py_binary(
+  name = "trim_dataset_start",
+  srcs = ["trim_dataset_start.py"],
+)
+
+py_binary(
+  name="export_correspondence_similarity",
+  srcs=["export_correspondence_similarity.py"],
+  deps=[
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("scipy"),
+    requirement("tqdm"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/data:landmark_correspondence_dataset",
+    "//experimental/overhead_matching/swag/evaluation:correspondence_matching",
+    "//experimental/overhead_matching/swag/evaluation:retrieval_metrics",
+    "//experimental/overhead_matching/swag/model:landmark_correspondence_model",
+    "//experimental/overhead_matching/swag/model:additional_panorama_extractors",
+    ":landmark_pairing_cli_lib",
+  ]
+)
+

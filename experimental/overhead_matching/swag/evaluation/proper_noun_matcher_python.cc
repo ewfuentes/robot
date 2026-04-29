@@ -98,6 +98,57 @@ PYBIND11_MODULE(proper_noun_matcher_python, m) {
             Float32 array of shape (len(query_tags), len(target_tags)) containing
             1.0 for matches and 0.0 for non-matches.
     )pbdoc");
+
+    m.def(
+        "compute_keyed_substring_matches_detailed",
+        [](const std::vector<std::vector<std::pair<std::string, std::string>>>& query_tags,
+           const std::vector<std::vector<std::pair<std::string, std::string>>>& target_tags,
+           int num_threads)
+            -> std::tuple<py::array_t<int64_t>, py::array_t<int64_t>, py::array_t<int64_t>> {
+            auto results =
+                compute_keyed_substring_matches_detailed(query_tags, target_tags, num_threads);
+
+            const auto n = static_cast<py::ssize_t>(results.query_idxs.size());
+
+            py::array_t<int64_t> query_arr(n);
+            py::array_t<int64_t> target_arr(n);
+            py::array_t<int64_t> key_arr(n);
+
+            auto* q_ptr = static_cast<int64_t*>(query_arr.request().ptr);
+            auto* t_ptr = static_cast<int64_t*>(target_arr.request().ptr);
+            auto* k_ptr = static_cast<int64_t*>(key_arr.request().ptr);
+
+            for (py::ssize_t i = 0; i < n; ++i) {
+                q_ptr[i] = static_cast<int64_t>(results.query_idxs[i]);
+                t_ptr[i] = static_cast<int64_t>(results.target_idxs[i]);
+                k_ptr[i] = static_cast<int64_t>(results.key_idxs[i]);
+            }
+
+            return {std::move(query_arr), std::move(target_arr), std::move(key_arr)};
+        },
+        py::arg("query_tags"), py::arg("target_tags"), py::arg("num_threads") = 0,
+        R"pbdoc(
+        Compute detailed per-key substring matches between keyed tags.
+
+        Unlike compute_keyed_substring_matches which returns a binary matrix,
+        this returns COO-style triples (query_idx, target_idx, key_idx) — one
+        per individual matching tag.
+
+        Parameters
+        ----------
+        query_tags : list[list[tuple[str, str]]]
+            List of lists of (key, value) pairs (from extracted pano tags)
+        target_tags : list[list[tuple[str, str]]]
+            List of lists of (key, value) pairs (from OSM tags)
+        num_threads : int, optional
+            Number of threads to use (0 = auto-detect, default)
+
+        Returns
+        -------
+        tuple[numpy.ndarray, numpy.ndarray, numpy.ndarray]
+            Three int64 arrays (query_idxs, target_idxs, key_idxs) of equal
+            length, one entry per individual match.
+    )pbdoc");
 }
 
 }  // namespace robot::experimental::overhead_matching::swag::evaluation

@@ -243,7 +243,7 @@ class VertexEmbeddingGenerator:
         # Convert to tensor
         return torch.tensor(all_embeddings, dtype=torch.float32)
 
-    def _embed_batch_with_retry(self, batch: list[str], max_retries: int = 3) -> list:
+    def _embed_batch_with_retry(self, batch: list[str], max_retries: int = 8) -> list:
         """Embed a batch with exponential backoff retry."""
         for attempt in range(max_retries):
             try:
@@ -261,7 +261,7 @@ class VertexEmbeddingGenerator:
                 if attempt == max_retries - 1:
                     print(f"\nFailed to embed batch after {max_retries} attempts: {e}")
                     raise
-                wait_time = 2 ** attempt
+                wait_time = min(2 ** attempt * 5, 300)  # 5s, 10s, 20s, 40s, ... up to 5min
                 print(f"\nEmbedding failed (attempt {attempt+1}/{max_retries}), "
                       f"retrying in {wait_time}s: {e}")
                 time.sleep(wait_time)
