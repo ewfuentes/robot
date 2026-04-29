@@ -23,6 +23,7 @@ import math
 import os
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
 import common.torch.load_torch_deps  # noqa: F401
 
@@ -469,8 +470,16 @@ def precompute_raw_cost_data(
     device: torch.device,
     max_pairs_per_batch: int = 50000,
     allow_missing_text_embeddings: bool = False,
+    cost_matrix_memmap_path: Path | None = None,
 ) -> RawCorrespondenceData:
-    """Precompute the flat (total_pano_lm × total_osm_lm) P(match) matrix."""
+    """Precompute the flat (total_pano_lm × total_osm_lm) P(match) matrix.
+
+    When `cost_matrix_memmap_path` is provided, the cost matrix is written
+    directly to a .npy file via `np.lib.format.open_memmap` so it never lives
+    fully in RAM (needed for large cities like NewYork where the matrix is
+    ~25 GB). The returned `RawCorrespondenceData.cost_matrix` is then the
+    memmap; callers should rely on the on-disk file rather than re-saving it.
+    """
     num_sats = len(dataset._satellite_metadata)
 
     # Collect unique OSM landmarks from satellite metadata
@@ -509,7 +518,6 @@ def precompute_raw_cost_data(
 
     pano_ids = sorted(dataset._panorama_metadata.pano_id.values)
     pano_id_to_lm_rows: dict[str, list[int]] = {}
-    all_cost_rows = []
     all_pano_lm_tags: list = []
     current_row = 0
 
@@ -522,6 +530,21 @@ def precompute_raw_cost_data(
         pano_list.append((pano_id, pano_tags_dicts, pano_landmarks))
 
     _log(f"  {len(pano_list)} panoramas with tags")
+
+    total_pano_lm = sum(len(pano_tags_dicts) for _, pano_tags_dicts, _ in pano_list)
+    if cost_matrix_memmap_path is not None:
+        cost_matrix_memmap_path.parent.mkdir(parents=True, exist_ok=True)
+        flat_cost = np.lib.format.open_memmap(
+            cost_matrix_memmap_path, mode="w+",
+            dtype=np.float32, shape=(total_pano_lm, n_osm),
+        )
+        all_cost_rows = None
+        _log(f"  Streaming cost matrix to {cost_matrix_memmap_path} "
+             f"(shape={(total_pano_lm, n_osm)}, "
+             f"~{total_pano_lm * n_osm * 4 / 1e9:.1f} GB)")
+    else:
+        flat_cost = None
+        all_cost_rows = []
 
     batch_size = 64
     for batch_start in tqdm(
@@ -594,12 +617,17 @@ def precompute_raw_cost_data(
             cost = all_cost[offset:offset + n_lm]
             row_indices = list(range(current_row, current_row + n_lm))
             pano_id_to_lm_rows[pano_id] = row_indices
-            all_cost_rows.append(cost)
+            if flat_cost is not None:
+                flat_cost[current_row:current_row + n_lm] = cost
+            else:
+                all_cost_rows.append(cost)
             for lm in pano_landmarks:
                 all_pano_lm_tags.append(lm["tags"])
             current_row += n_lm
 
-    if all_cost_rows:
+    if flat_cost is not None:
+        flat_cost.flush()
+    elif all_cost_rows:
         flat_cost = np.vstack(all_cost_rows)
     else:
         flat_cost = np.zeros((0, n_osm), dtype=np.float32)

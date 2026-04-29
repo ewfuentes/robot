@@ -61,7 +61,7 @@ def load_model(path, device='cuda'):
 @dataclass
 class HistogramFilterConfig:
     """Configuration for histogram filter evaluation."""
-    noise_percent: float = 0.02  # Motion noise as fraction of motion magnitude
+    motion_noise_frac: float = 0.05  # Wiener noise intensity (m/√m) for filter blur
     subdivision_factor: int = 4  # Grid subdivision (4 = 160px cells at zoom 20)
     initial_std_deg: float = 0.0267  # ~2970m initial uncertainty
     initial_offset_std_deg: float = 0.0117  # ~1300m offset
@@ -174,7 +174,7 @@ def run_histogram_filter_on_path(
                 prob_mass_by_radius[radius].append(prob_mass)
 
         # Motion prediction
-        belief.apply_motion(motion_deltas[step_idx], config.noise_percent)
+        belief.apply_motion(motion_deltas[step_idx], config.motion_noise_frac)
 
     # Final observation
     obs_log_ll = log_likelihood_aggregator(path_pano_ids[-1])
@@ -540,8 +540,12 @@ if __name__ == "__main__":
                         default=0.0005, help="Panorama neighbor radius deg")
     parser.add_argument("--panorama-landmark-radius-px", type=int,
                         default=640, help="Panorama landmark radius in pixels")
-    parser.add_argument("--noise-percent", type=float, default=0.02,
-                        help="Motion noise as fraction of motion magnitude")
+    parser.add_argument("--motion-noise-frac", type=float, default=0.05,
+                        help="Wiener noise intensity (m/√m) for the filter's "
+                             "process-model blur. Per step, blur std = "
+                             "motion_noise_frac × √step_distance_m. Same "
+                             "units as --odometry-noise-frac so a calibrated "
+                             "filter sets them equal.")
     parser.add_argument("--subdivision-factor", type=int, default=4,
                         help="Grid subdivision factor (4 = 160px cells)")
     parser.add_argument("--convergence-radii", type=str, default="25,50,100",
@@ -615,7 +619,7 @@ if __name__ == "__main__":
         print(f"Resolution-normalized dataset: source_px={source_px} (footprint {source_px}px, image 640px)")
 
     config = HistogramFilterConfig(
-        noise_percent=args.noise_percent,
+        motion_noise_frac=args.motion_noise_frac,
         subdivision_factor=args.subdivision_factor,
         initial_std_deg=degrees_from_meters(2970.0),
         initial_offset_std_deg=degrees_from_meters(1300.0),
@@ -625,7 +629,7 @@ if __name__ == "__main__":
     )
 
     histogram_config_dict = {
-        "noise_percent": config.noise_percent,
+        "motion_noise_frac": config.motion_noise_frac,
         "subdivision_factor": config.subdivision_factor,
         "initial_std_deg": config.initial_std_deg,
         "initial_offset_std_deg": config.initial_offset_std_deg,

@@ -1015,3 +1015,14 @@ py_binary(
   ]
 )
 
+py_binary(
+  name="compare_simple_v1_v3_vs_v6",
+  srcs=["compare_simple_v1_v3_vs_v6.py"],
+  deps=[
+    requirement("torch"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/evaluation:retrieval_metrics",
+  ]
+)
+

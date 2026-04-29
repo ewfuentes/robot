@@ -547,14 +547,23 @@ class HistogramBelief:
     def apply_motion(
         self,
         motion_delta_deg: torch.Tensor,
-        noise_percent: float,
+        motion_noise_frac: float,
         reference_latlon: torch.Tensor | None = None,
     ) -> None:
-        """Apply motion model: shift by delta and blur by noise.
+        """Apply motion model: shift by delta and Wiener-blur by noise.
+
+        Wiener (Brownian) scaling: per-step variance is linear in step distance,
+        so per-step std is `motion_noise_frac × √d` where `d` is the step
+        distance in meters. Units of `motion_noise_frac` are m/√m, matching
+        `OdometryNoiseConfig.sigma_noise_frac`. With this convention you can
+        set the filter's process model equal to the (true) input-noise constant
+        and the filter is calibrated by construction.
 
         Args:
             motion_delta_deg: (2,) tensor [delta_lat, delta_lon] in degrees
-            noise_percent: Noise as fraction of motion magnitude
+            motion_noise_frac: Wiener noise intensity in m/√m. For a step of
+                distance d meters, the blur std is `motion_noise_frac × √d`
+                meters (then converted to cells for the Gaussian blur).
             reference_latlon: Reference point for coordinate conversion.
                 If None, uses current belief mean.
         """
@@ -578,10 +587,19 @@ class HistogramBelief:
         shift_rows = delta_row_px / self.grid_spec.cell_size_px
         shift_cols = delta_col_px / self.grid_spec.cell_size_px
 
-        # Compute noise sigma in cell units
+        # Compute noise sigma via Wiener scaling in meters, then convert back
+        # to cells for the Gaussian blur. Doing the scaling in meters keeps
+        # `motion_noise_frac` in m/√m (matching OdometryNoiseConfig) so that
+        # input and process-model noise share units and can be set equal for
+        # a calibrated filter.
+        ref_lat_deg = float(reference_latlon[0]) if isinstance(
+            reference_latlon[0], torch.Tensor) else reference_latlon[0]
+        m_per_px = web_mercator.get_meters_per_pixel(
+            ref_lat_deg, self.grid_spec.zoom_level)
         delta_magnitude_px = torch.sqrt(delta_row_px**2 + delta_col_px**2)
-        sigma_px = delta_magnitude_px * noise_percent
-        sigma_cells = sigma_px / self.grid_spec.cell_size_px
+        delta_magnitude_m = delta_magnitude_px * m_per_px
+        sigma_m = motion_noise_frac * torch.sqrt(delta_magnitude_m)
+        sigma_cells = (sigma_m / m_per_px) / self.grid_spec.cell_size_px
 
         # Apply shift
         self._log_belief = _shift_grid(self._log_belief, shift_rows, shift_cols)

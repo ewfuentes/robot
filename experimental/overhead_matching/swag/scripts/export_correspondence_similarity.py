@@ -133,6 +133,12 @@ def build_raw_cost_data(args) -> cm.RawCorrespondenceData:
     print(f"  Total: {len(pano_tags_from_pano_id)} panoramas with tags")
 
     print("Precomputing raw cost matrix data...")
+    cost_matrix_memmap_path = None
+    if args.stream_cost_matrix:
+        cost_matrix_memmap_path = (
+            args.output_path.expanduser().resolve().parent
+            / (args.output_path.stem + "_cost_matrix.npy")
+        )
     return cm.precompute_raw_cost_data(
         model=model,
         text_embeddings=text_embeddings,
@@ -141,17 +147,36 @@ def build_raw_cost_data(args) -> cm.RawCorrespondenceData:
         pano_tags_from_pano_id=pano_tags_from_pano_id,
         device=device,
         allow_missing_text_embeddings=args.allow_missing_text_embeddings,
+        cost_matrix_memmap_path=cost_matrix_memmap_path,
     )
 
 
-def save_raw_cost_data(raw: cm.RawCorrespondenceData, output_path: Path) -> None:
-    """Write raw data as .npy (cost matrix) + .pt (metadata)."""
+def save_raw_cost_data(
+    raw: cm.RawCorrespondenceData,
+    output_path: Path,
+    model_path: Path,
+    text_embeddings_path: Path,
+) -> None:
+    """Write raw data as .npy (cost matrix) + .pt (metadata).
+
+    If `raw.cost_matrix` is already a memmap (stream-to-disk path), it has
+    been written in-place at the canonical location and we skip the np.save.
+
+    `model_path` and `text_embeddings_path` are recorded in the .pt for
+    provenance — they are the inputs that produced this cost matrix.
+    """
     cost_npy_path = output_path.parent / (output_path.stem + "_cost_matrix.npy")
-    print(f"Saving cost matrix ({raw.cost_matrix.shape}) to {cost_npy_path}...")
-    np.save(cost_npy_path, raw.cost_matrix)
+    if isinstance(raw.cost_matrix, np.memmap):
+        print(f"Cost matrix already streamed to {cost_npy_path} "
+              f"(shape={raw.cost_matrix.shape}); skipping np.save.")
+    else:
+        print(f"Saving cost matrix ({raw.cost_matrix.shape}) to {cost_npy_path}...")
+        np.save(cost_npy_path, raw.cost_matrix)
 
     save_dict = {
         "cost_matrix_path": str(cost_npy_path),
+        "model_path": str(Path(model_path).expanduser().resolve()),
+        "text_embeddings_path": str(Path(text_embeddings_path).expanduser().resolve()),
         "pano_id_to_lm_rows": raw.pano_id_to_lm_rows,
         "pano_lm_tags": raw.pano_lm_tags,
         "osm_lm_indices": raw.osm_lm_indices,
@@ -169,8 +194,8 @@ def load_raw_cost_data(raw_path: Path) -> cm.RawCorrespondenceData:
         cost_matrix = data["cost_matrix"]
     else:
         cost_npy = data["cost_matrix_path"]
-        print(f"  Loading cost matrix from {cost_npy}")
-        cost_matrix = np.load(cost_npy)
+        print(f"  Memory-mapping cost matrix from {cost_npy}")
+        cost_matrix = np.load(cost_npy, mmap_mode="r")
     return cm.RawCorrespondenceData(
         cost_matrix=cost_matrix,
         pano_id_to_lm_rows=data["pano_id_to_lm_rows"],
@@ -231,6 +256,12 @@ def main():
     parser.add_argument("--allow_missing_text_embeddings", action="store_true",
                         help="Silently substitute zero vectors for text values "
                              "not found in the embeddings pickle. Not recommended.")
+    parser.add_argument("--stream_cost_matrix", action="store_true",
+                        help="Stream the cost matrix directly to a memmapped "
+                             ".npy on disk during precompute, instead of "
+                             "accumulating rows in RAM and vstack'ing at the "
+                             "end. Required for cities whose cost matrix "
+                             "exceeds available RAM (e.g. NewYork at ~25 GB).")
     args = parser.parse_args()
 
     dataset_path = args.dataset_path.expanduser().resolve()
@@ -242,7 +273,7 @@ def main():
         raw = load_raw_cost_data(args.from_raw.expanduser().resolve())
     else:
         raw = build_raw_cost_data(args)
-        save_raw_cost_data(raw, output_path)
+        save_raw_cost_data(raw, output_path, args.model_path, args.text_embeddings_path)
 
     print(
         f"  {raw.cost_matrix.shape[0]} pano landmarks × "

@@ -65,7 +65,7 @@ def run_filter_with_history(
     motion_deltas: torch.Tensor,
     path_pano_ids: list[str],
     log_likelihood_aggregator: ObservationLogLikelihoodAggregator,
-    noise_percent: float,
+    motion_noise_frac: float,
 ):
     """Run filter and save belief at each step."""
     belief = initial_belief.clone()
@@ -98,7 +98,7 @@ def run_filter_with_history(
         })
 
         # Motion prediction
-        belief.apply_motion(motion_deltas[step_idx], noise_percent)
+        belief.apply_motion(motion_deltas[step_idx], motion_noise_frac)
         history.append({
             'stage': f'motion_{step_idx}',
             'log_belief': belief.get_log_belief().clone().cpu(),
@@ -133,7 +133,7 @@ def run_filter_lightweight(
     motion_deltas: torch.Tensor,
     path_pano_ids: list[str],
     log_likelihood_aggregator: ObservationLogLikelihoodAggregator,
-    noise_percent: float,
+    motion_noise_frac: float,
 ):
     """Run filter saving summaries per step and full belief at checkpoints.
 
@@ -168,7 +168,7 @@ def run_filter_lightweight(
         step_num += 1
         save_step(f'obs_{step_idx}', step_idx, path_pano_ids[step_idx], obs_log_ll, step_num)
 
-        belief.apply_motion(motion_deltas[step_idx], noise_percent)
+        belief.apply_motion(motion_deltas[step_idx], motion_noise_frac)
         step_num += 1
         save_step(f'motion_{step_idx}', step_idx + 1, path_pano_ids[step_idx + 1], None, step_num)
 
@@ -190,7 +190,7 @@ def replay_filter_to_step(
     motion_deltas: torch.Tensor,
     path_pano_ids: list[str],
     log_likelihood_aggregator: ObservationLogLikelihoodAggregator,
-    noise_percent: float,
+    motion_noise_frac: float,
     target_step: int,
     checkpoints: dict[int, torch.Tensor],
 ):
@@ -241,7 +241,7 @@ def replay_filter_to_step(
         if motion_step > target_step:
             break
         if motion_step > current_step:
-            belief.apply_motion(motion_deltas[step_idx], noise_percent)
+            belief.apply_motion(motion_deltas[step_idx], motion_noise_frac)
             current_step = motion_step
             obs_log_ll = None
             if current_step == target_step:
@@ -351,7 +351,9 @@ def main():
                         help="Path to VIGOR dataset")
     parser.add_argument("--aggregator-config", type=str, required=True,
                         help="Path to YAML config file for aggregator (see adaptive_aggregators.py)")
-    parser.add_argument("--noise-percent", type=float, default=None)
+    parser.add_argument("--motion-noise-frac", type=float, default=None,
+                        help="Wiener noise (m/√m). If unset, falls back to "
+                             "the saved eval's motion_noise_frac.")
     parser.add_argument("--simple", action="store_true",
                         help="Disable new features (pano/patch images, likelihood coloring)")
     parser.add_argument("--lightweight", action="store_true",
@@ -376,10 +378,17 @@ def main():
 
     simple_mode = args.simple
     lightweight_mode = args.lightweight
-    noise_percent = args.noise_percent if args.noise_percent is not None else eval_args.get("noise_percent", 0.02)
+    # Try the new key first, then fall back to the legacy "noise_percent" key
+    # for compatibility with previously-saved eval directories.
+    motion_noise_frac = (
+        args.motion_noise_frac
+        if args.motion_noise_frac is not None
+        else eval_args.get("motion_noise_frac",
+                           eval_args.get("noise_percent", 0.05))
+    )
     subdivision_factor = eval_args.get("subdivision_factor", 4)
 
-    print(f"Config: noise_percent={noise_percent}, subdivision={subdivision_factor}")
+    print(f"Config: motion_noise_frac={motion_noise_frac}, subdivision={subdivision_factor}")
 
     # Load path statistics
     print("Loading path statistics...")
@@ -626,14 +635,14 @@ def main():
                 grid_spec, mapping,
                 HistogramBelief.from_uniform(grid_spec, filter_device),
                 motion_deltas, path,
-                log_likelihood_aggregator, noise_percent
+                log_likelihood_aggregator, motion_noise_frac
             )
         else:
             history = run_filter_with_history(
                 grid_spec, mapping,
                 HistogramBelief.from_uniform(grid_spec, filter_device),
                 motion_deltas, path,
-                log_likelihood_aggregator, noise_percent
+                log_likelihood_aggregator, motion_noise_frac
             )
             checkpoints = {}
 
@@ -743,7 +752,7 @@ def main():
             log_belief, obs_log_ll = replay_filter_to_step(
                 grid_spec, mapping, filter_device,
                 cache['motion_deltas'], cache['path'],
-                log_likelihood_aggregator, noise_percent,
+                log_likelihood_aggregator, motion_noise_frac,
                 step_idx, cache['checkpoints'],
             )
             print(f"  Replay: {_time.time() - _t0:.2f}s")

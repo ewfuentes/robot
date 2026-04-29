@@ -298,7 +298,7 @@ class TestHistogramBelief(unittest.TestCase):
 
         # Apply motion: move north (+lat) and east (+lon)
         motion_delta = torch.tensor([0.001, 0.001])
-        belief.apply_motion(motion_delta, noise_percent=0.02)
+        belief.apply_motion(motion_delta, motion_noise_frac=0.05)
 
         mean_after = belief.get_mean_latlon()
 
