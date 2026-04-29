@@ -488,6 +488,24 @@ class HistogramBelief:
         lat, lon = self.grid_spec.cell_indices_to_latlon(mean_row, mean_col)
         return torch.stack([lat, lon])
 
+    def get_mode_latlon(self) -> torch.Tensor:
+        """Return lat/lon of the highest-probability cell (MAP estimate).
+
+        Useful when the posterior is multimodal — the weighted mean can sit
+        in a low-probability valley between peaks, while the mode points at
+        the dominant peak. Ties broken by lowest flat-index.
+
+        Returns:
+            (2,) tensor [lat, lon]
+        """
+        belief_probs = self.get_belief()
+        flat_idx = torch.argmax(belief_probs)
+        n_cols = self.grid_spec.num_cols
+        row = (flat_idx // n_cols).to(torch.float32)
+        col = (flat_idx % n_cols).to(torch.float32)
+        lat, lon = self.grid_spec.cell_indices_to_latlon(row, col)
+        return torch.stack([lat, lon])
+
     def get_variance_deg_sq(self) -> torch.Tensor:
         """Compute variance of belief in degrees squared.
 
