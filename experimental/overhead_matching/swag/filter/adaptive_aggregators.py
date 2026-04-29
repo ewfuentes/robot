@@ -114,6 +114,15 @@ class SingleSimilarityMatrixAggregator(ObservationLogLikelihoodAggregator):
     def __call__(self, pano_id: str) -> torch.Tensor:
         pano_index = self._pano_id_index.get_loc(pano_id)
         similarity = self.similarity_matrix[pano_index]
+        if similarity.numel() == 0:
+            raise RuntimeError(
+                f"SingleSimilarityMatrixAggregator: empty similarity slice for "
+                f"pano_id={pano_id!r}. matrix shape={tuple(self.similarity_matrix.shape)}, "
+                f"pano_index={pano_index!r} ({type(pano_index).__name__}), "
+                f"slice shape={tuple(similarity.shape)}. Likely cause: duplicate "
+                f"pano_id in panorama_metadata producing a boolean mask that selects "
+                f"zero rows, or a pano_id in the path JSON not present in the dataset."
+            )
         log_ll = wag_observation_log_likelihood_from_similarity_matrix(
             similarity, self.sigma
         )
