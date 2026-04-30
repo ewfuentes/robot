@@ -132,9 +132,14 @@ def series_to_dict_with_index(series: pd.Series, index_key: str = "index"):
     return d
 
 
+_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
+
+
 def load_satellite_metadata(path: Path, zoom_level: int):
     out = []
     for p in sorted(list(path.iterdir())):
+        if p.suffix.lower() not in _IMAGE_SUFFIXES:
+            continue  # skip cache/.pt sidecars that share filename stems
         _, lat, lon = p.stem.split("_")
         lat = float(lat)
         lon = float(lon)
@@ -146,6 +151,8 @@ def load_satellite_metadata(path: Path, zoom_level: int):
 def load_panorama_metadata(path: Path, zoom_level: int):
     out = []
     for p in sorted(list(path.iterdir())):
+        if p.suffix.lower() not in _IMAGE_SUFFIXES:
+            continue  # skip cache/.pt sidecars that share filename stems
         pano_id, lat, lon, _ = p.stem.split(",")
         lat = float(lat)
         lon = float(lon)
