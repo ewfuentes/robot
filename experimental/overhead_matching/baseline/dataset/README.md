@@ -20,39 +20,20 @@ tiles instead of overhead imagery, against the same panorama side.
    SQLite, applies the patched style, and rasterizes 640×640 PNGs at the same
    web-mercator bbox as each existing satellite tile.
 
-No PostGIS, no Docker, no Node, no HTTP server.
-
-## Prerequisites
-
-- **Java 21+** (for planetiler).
-- **xvfb** — added to `setup.sh`. On hosts without a working EGL/X setup pymgl
-  needs a virtual display for its GL context; wrap render commands with
-  `xvfb-run -a` in that case. Hosts with a working GL stack (e.g. existing X
-  display, or EGL software rendering) render directly.
-
 ## Smoke test (Seattle)
 
 ```bash
 bazel run //experimental/overhead_matching/baseline/dataset:bake_mbtiles -- \
-    --city Seattle
+    --city Seattle \
+    --vigor-root /data/overhead_matching/datasets/VIGOR
 bazel run //experimental/overhead_matching/baseline/dataset:render_osm_tiles -- \
-    --city Seattle --limit 1
+    --city Seattle --limit 1 \
+    --vigor-root /data/overhead_matching/datasets/VIGOR
 ```
-
-(Prefix `xvfb-run -a` if your host segfaults under pymgl without a display.)
 
 The first command writes `/data/overhead_matching/baseline/mbtiles/washington.mbtiles`
 (~3 MB, ~1 min on first run with auxiliary downloads, ~30 s thereafter).
 The second writes one PNG into `/data/overhead_matching/datasets/VIGOR/Seattle/satellite_osm/`.
-
-## VigorDataset integration smoke
-
-```bash
-bazel run //experimental/overhead_matching/baseline/dataset:integration_smoke
-```
-
-Loads `Seattle/satellite_osm/` via `VigorDatasetConfig(satellite_subdir='satellite_osm')`
-and confirms tile counts and tensor shape match the satellite-imagery path.
 
 ## Bake every city
 

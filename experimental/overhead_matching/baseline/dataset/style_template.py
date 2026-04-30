@@ -9,44 +9,22 @@ The upstream style targets MapTiler's hosted services. We swap three URLs:
                                  icon-image references quietly skip rendering.
 """
 import json
-import os
 from pathlib import Path
 
 
-def _runfiles_dir() -> Path:
-    runfiles = os.environ.get("RUNFILES_DIR")
-    if runfiles:
-        return Path(runfiles)
-    # __file__ is a symlink into the runfiles tree; do NOT resolve symlinks
-    # or we'll end up in the source repo, which has no .runfiles ancestor.
-    here = Path(os.path.abspath(__file__))
-    for parent in here.parents:
-        if parent.name.endswith(".runfiles"):
-            return parent
-    raise RuntimeError("could not locate runfiles tree; invoke via `bazel run` or `bazel test`")
-
-
-def _resolve_external(repo_name: str) -> Path:
-    """Locate the runfiles root of an external repo (e.g. @osm_bright_gl_style)."""
-    candidates = [
-        _runfiles_dir() / repo_name,
-        _runfiles_dir() / "_main" / "external" / repo_name,
-        _runfiles_dir().parent / repo_name,
-    ]
-    for c in candidates:
-        if c.exists():
-            return c
-    raise FileNotFoundError(
-        f"could not locate runfiles for @{repo_name}; tried: {[str(c) for c in candidates]}"
-    )
+def _runfiles():
+    from python.runfiles import Runfiles  # @rules_python//python/runfiles
+    return Runfiles.Create()
 
 
 def osm_bright_dir() -> Path:
-    return _resolve_external("osm_bright_gl_style")
+    return Path(_runfiles().Rlocation("osm_bright_gl_style/style.json")).parent
 
 
 def fonts_dir() -> Path:
-    return _resolve_external("openmaptiles_fonts")
+    # Probe a known font file inside the archive; its parent.parent is the dir.
+    pbf = _runfiles().Rlocation("openmaptiles_fonts/Noto Sans Regular/0-255.pbf")
+    return Path(pbf).parent.parent
 
 
 def render_style(mbtiles_path: Path, drop_text: bool = True) -> str:

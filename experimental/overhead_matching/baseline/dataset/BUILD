@@ -36,6 +36,7 @@ py_library(
         "@osm_bright_gl_style//:files",
         "@openmaptiles_fonts//:files",
     ],
+    deps = ["@rules_python//python/runfiles"],
 )
 
 py_test(
@@ -51,6 +52,7 @@ py_binary(
     deps = [
         ":city_pbf_map",
         ":tile_geometry",
+        "@rules_python//python/runfiles",
     ],
 )
 
@@ -63,15 +65,6 @@ py_binary(
         ":tile_geometry",
         requirement("pymgl"),
         requirement("tqdm"),
-    ],
-)
-
-py_binary(
-    name = "integration_smoke",
-    srcs = ["integration_smoke.py"],
-    deps = [
-        "//common/torch:load_torch_deps",
-        "//experimental/overhead_matching/swag/data:vigor_dataset",
     ],
 )
 
@@ -98,11 +91,3 @@ py_binary(
     ],
 )
 
-py_binary(
-    name = "check_bbox_alignment",
-    srcs = ["check_bbox_alignment.py"],
-    deps = [
-        ":tile_geometry",
-        requirement("pandas"),
-    ],
-)

@@ -5,7 +5,6 @@ will never render. The output mbtiles file feeds pymgl at render time.
 """
 import argparse
 import logging
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -20,33 +19,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_DUMPS_DIR = Path("/data/overhead_matching/datasets/osm_dumps")
 
 
-def _runfiles_dir() -> Path:
-    runfiles = os.environ.get("RUNFILES_DIR")
-    if runfiles:
-        return Path(runfiles)
-    # __file__ is a symlink into the runfiles tree; do NOT resolve symlinks
-    # or we'll end up in the source repo, which has no .runfiles ancestor.
-    here = Path(os.path.abspath(__file__))
-    for parent in here.parents:
-        if parent.name.endswith(".runfiles"):
-            return parent
-    raise RuntimeError("could not locate runfiles tree; invoke via `bazel run`")
-
-
 def planetiler_jar_path() -> Path:
-    candidates = [
-        _runfiles_dir() / "planetiler_jar" / "file" / "planetiler.jar",
-        _runfiles_dir() / "_main" / "external" / "planetiler_jar" / "file" / "planetiler.jar",
-    ]
-    for c in candidates:
-        if c.exists():
-            return c
-    env = os.environ.get("PLANETILER_JAR")
-    if env and Path(env).exists():
-        return Path(env)
-    raise FileNotFoundError(
-        f"planetiler.jar not found; tried {[str(c) for c in candidates]}"
-    )
+    from python.runfiles import Runfiles  # @rules_python//python/runfiles
+    return Path(Runfiles.Create().Rlocation("planetiler_jar/file/planetiler.jar"))
 
 
 def compute_vigor_bbox(satellite_dir: Path, buffer_km: float = 1.0) -> tile_geometry.TileBBox:
