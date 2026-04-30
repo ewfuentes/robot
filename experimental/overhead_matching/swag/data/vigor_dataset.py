@@ -89,6 +89,7 @@ class VigorDatasetConfig(NamedTuple):
     panorama_size: None | tuple[int, int] = None
     factor: float = 1.0
     satellite_zoom_level: int = 20
+    satellite_subdir: str = "satellite"
     sample_mode: SampleMode = SampleMode.NEAREST
     should_load_images: bool = True
     should_load_landmarks: bool = True
@@ -448,7 +449,7 @@ class VigorDataset(torch.utils.data.Dataset):
         landmark_metadatas = []
         log_progress(f"Starting dataset init for {[p.name for p in dataset_path]}")
         for p in dataset_path:
-            sat_metadata = load_satellite_metadata(p / "satellite", config.satellite_zoom_level)
+            sat_metadata = load_satellite_metadata(p / config.satellite_subdir, config.satellite_zoom_level)
             sat_metadata["dataset_key"] = p.name  # Track which dataset this came from
             log_progress(f"Loaded satellite metadata: {len(sat_metadata)} items")
             pano_metadata = load_panorama_metadata(p / "panorama", config.satellite_zoom_level)

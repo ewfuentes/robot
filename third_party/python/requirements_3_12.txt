@@ -2479,6 +2479,7 @@ packaging==25.0 \
     #   matplotlib
     #   nbconvert
     #   plotly
+    #   pymgl
     #   pyogrio
     #   scikit-image
     #   tensorboard
@@ -3107,6 +3108,25 @@ pymdown-extensions==10.16.1 \
     # via
     #   -c constraints.txt
     #   marimo
+pymgl==0.5.0 \
+    --hash=sha256:06eafb82fcf04565477332edd086a9615091d006cd0a78b726e83501ed18277c \
+    --hash=sha256:0bb0ab32abf5b96e16683a19b972958faf868fabc1ff8b537ec9a166ccd19c6c \
+    --hash=sha256:46fa4dfae2baf7d3acf23a060c059562d947cabd908cdd4bfdd11558f3cad4ee \
+    --hash=sha256:49a69cfd0b4f73bd26a5ca3266a271642e72d35cac36ebb9c71aa613abb83057 \
+    --hash=sha256:57a146031d795fe198e402191061e5c23be2ae8590c4d8e5689a4f02b9e7ac24 \
+    --hash=sha256:6c283d971691ff25cf9913f101db88747d551455fb081d86ec3e39c31106d0ee \
+    --hash=sha256:79cd0bd0011a040adfd8f7fe259f88e4a5b897133525a16c22bc67721f11aded \
+    --hash=sha256:7bbc9a0975c5df58fc12c3be9843e7c16fe7e2434d7636a49355d14472967883 \
+    --hash=sha256:9e2c66824201062bfde1ceee82e789819f283a3c821a2e574bf2e9af3602faa6 \
+    --hash=sha256:a0e90da9d45aaa2816e7f838507ccb16a9e12dd7c0765e6c565e030d8f1e66e1 \
+    --hash=sha256:a62704eb4b0111a72707cbbf977dd1bde917d5456c3176bf3e66fa8e74962110 \
+    --hash=sha256:ab29884fd0ae3d4a33859dc1effeaa77e7cd60bdcc1173e8e65054a77e65ba90 \
+    --hash=sha256:bbbd5a38b8616df88fb2715f4662c1e503fa51118c3caead32a6b7db61b562c1 \
+    --hash=sha256:c6820c1eb479af2e25e73c7c4f1259379a29f845fa8d7d266ca5a640de16fb08 \
+    --hash=sha256:e47d826f6d534e6b50ab54a30afa709aaa9c61c2e36eff8f51ef5bc39f139b47
+    # via
+    #   -c constraints.txt
+    #   -r third_party/python/requirements_3_12.in
 pynacl==1.5.0 \
     --hash=sha256:06b8f6fa7f5de8d5d2f7573fe8c863c051225a27b61e6860fd047b1775807858 \
     --hash=sha256:0c84947a22519e013607c9be43706dd42513f9e6ae5d39d3613ca1e142fba44d \

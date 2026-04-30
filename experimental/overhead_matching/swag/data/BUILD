@@ -6,6 +6,7 @@ py_library(
   srcs = ["vigor_dataset.py"],
   visibility = [
     "//experimental/overhead_matching/swag:__subpackages__",
+    "//experimental/overhead_matching/baseline:__subpackages__",
     "//common/python:__subpackages__",
   ],
   deps = [
