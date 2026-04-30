@@ -36,11 +36,30 @@ class ImageLandmarkPrivilegedInformationFusionConfig(
 
 
 class EntropyAdaptiveAggregatorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
-    """Config for entropy-adaptive weighted fusion aggregator."""
+    """Config for entropy-adaptive weighted fusion aggregator.
+
+    Set per-source sigmas via `image_sigma` and `landmark_sigma`. For
+    backward compatibility, a single `sigma` is also accepted and applied
+    to both sources (legacy behavior). At least one of (sigma) or
+    (image_sigma + landmark_sigma) must be supplied.
+    """
 
     image_similarity_matrix_path: Path
     landmark_similarity_matrix_path: Path
-    sigma: float
+    sigma: float | None = None
+    image_sigma: float | None = None
+    landmark_sigma: float | None = None
+
+    def resolve_sigmas(self) -> tuple[float, float]:
+        """Return (image_sigma, landmark_sigma), filling from `sigma` if needed."""
+        img = self.image_sigma if self.image_sigma is not None else self.sigma
+        lm = self.landmark_sigma if self.landmark_sigma is not None else self.sigma
+        if img is None or lm is None:
+            raise ValueError(
+                "EntropyAdaptiveAggregatorConfig requires either `sigma` "
+                "or both `image_sigma` and `landmark_sigma` to be set."
+            )
+        return float(img), float(lm)
 
 
 # Union type for polymorphic deserialization
@@ -213,6 +232,10 @@ class EntropyAdaptiveAggregator(ObservationLogLikelihoodAggregator):
 
     Computes a per-source peak sharpness confidence score (max - mean of log-probs)
     and uses it to blend the two similarity vectors before converting to log-likelihoods.
+
+    Image and landmark similarities are normalized through `log_softmax(x / sigma)`
+    with their own per-source sigmas (`image_sigma`, `landmark_sigma`) — these
+    parameterize how peaky each source's posterior is before fusion.
     """
 
     def __init__(
@@ -220,12 +243,14 @@ class EntropyAdaptiveAggregator(ObservationLogLikelihoodAggregator):
         image_similarity_matrix: torch.Tensor,
         landmark_similarity_matrix: torch.Tensor,
         panorama_metadata: pd.DataFrame,
-        sigma: float,
+        image_sigma: float,
+        landmark_sigma: float,
         device: torch.device,
     ):
         self.image_similarity_matrix = image_similarity_matrix
         self.landmark_similarity_matrix = landmark_similarity_matrix
-        self.sigma = sigma
+        self.image_sigma = image_sigma
+        self.landmark_sigma = landmark_sigma
         self.device = device
         self._pano_id_index = pd.Index(panorama_metadata["pano_id"])
 
@@ -252,14 +277,14 @@ class EntropyAdaptiveAggregator(ObservationLogLikelihoodAggregator):
         lm_sim = self.landmark_similarity_matrix[pano_index]
 
         # Normalize to log-probability space first (makes different scales commensurate)
-        log_p_img = torch.log_softmax(img_sim / self.sigma, dim=0)
+        log_p_img = torch.log_softmax(img_sim / self.image_sigma, dim=0)
 
         # Fall back to image-only when landmark data is missing (all -inf)
         lm_finite_mask = torch.isfinite(lm_sim)
         if not lm_finite_mask.any():
             return _replace_nan_with_zero(log_p_img).to(self.device)
 
-        log_p_lm = torch.log_softmax(lm_sim / self.sigma, dim=0)
+        log_p_lm = torch.log_softmax(lm_sim / self.landmark_sigma, dim=0)
 
         img_conf = self._compute_confidence(log_p_img)
         lm_conf = self._compute_confidence(log_p_lm)
@@ -280,11 +305,13 @@ class EntropyAdaptiveAggregator(ObservationLogLikelihoodAggregator):
     ) -> "EntropyAdaptiveAggregator":
         image_sim = _load_similarity_matrix(config.image_similarity_matrix_path)
         landmark_sim = _load_similarity_matrix(config.landmark_similarity_matrix_path)
+        image_sigma, landmark_sigma = config.resolve_sigmas()
         return cls(
             image_sim,
             landmark_sim,
             vigor_dataset._panorama_metadata,
-            config.sigma,
+            image_sigma,
+            landmark_sigma,
             device,
         )
 
