@@ -1,4 +1,6 @@
 
+import os
+from pathlib import Path
 import common.torch.load_torch_deps
 import torch
 import torch.nn.functional as F
@@ -28,10 +30,21 @@ class DinoConfig(msgspec.Struct, tag=True, tag_field='kind'):
 BackboneConfig = Union[VGGConfig, DinoConfig]
 
 
+class AggregationType(StrEnum):
+    SAFA = auto()
+    MEAN_POOL_MLP = auto()
+    CLS_CROSS_ATTENTION = auto()
+    SIGMOID_CROSS_ATTENTION = auto()
+    SAFA_BIASED_CROSS_ATTENTION = auto()
+
+
 class WagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field='kind'):
     patch_dims: tuple[int, int]
     num_aggregation_heads: int
     backbone_config: BackboneConfig
+    aggregation_type: AggregationType = AggregationType.SAFA
+    cls_cross_attention_d_k: int = 64
+    safa_init_model_path: str | None = None
 
 
 class DinoFeatureExtractor(torch.nn.Module):
@@ -40,7 +53,28 @@ class DinoFeatureExtractor(torch.nn.Module):
         # Model strings are like "dinov2_vitb14" or "dinov3_vitb16";
         # the repo name is the prefix before the first underscore.
         repo_name = f"facebookresearch/{model_str.split('_')[0]}"
-        self.dino = torch.hub.load(repo_name, model_str)
+        hub_dir = torch.hub.get_dir()
+        checkpoint_dir = os.path.join(hub_dir, "checkpoints")
+        # Find a cached checkpoint matching this model string to avoid downloading
+        cached_checkpoint = None
+        if os.path.isdir(checkpoint_dir):
+            for f in os.listdir(checkpoint_dir):
+                if f.startswith(model_str) and f.endswith(".pth"):
+                    cached_checkpoint = os.path.join(checkpoint_dir, f)
+                    break
+        if cached_checkpoint:
+            print(f"Loading {model_str} weights from cached checkpoint: {cached_checkpoint}")
+            self.dino = torch.hub.load(repo_name, model_str, pretrained=False)
+            state_dict = torch.load(cached_checkpoint, map_location="cpu", weights_only=True)
+            self.dino.load_state_dict(state_dict, strict=True)
+        else:
+            print(f"No cached checkpoint found for '{model_str}' in {checkpoint_dir}")
+            if os.path.isdir(checkpoint_dir):
+                print(f"  Files in checkpoint dir: {os.listdir(checkpoint_dir)}")
+            else:
+                print(f"  Checkpoint directory does not exist: {checkpoint_dir}")
+            print(f"  Falling back to torch.hub.load (requires network access)")
+            self.dino = torch.hub.load(repo_name, model_str)
         self.dino.eval()
         for param in self.dino.parameters():
             param.requires_grad = False
@@ -109,26 +143,161 @@ def extract_features(backbone, x):
         return dino_feature_extraction(backbone, x)
 
 
+class ClsCrossAttention(torch.nn.Module):
+    def __init__(self, n_channels, n_spatial, n_heads, d_k, use_sigmoid=False):
+        super().__init__()
+        self.n_heads = n_heads
+        self.d_k = d_k
+        self.use_sigmoid = use_sigmoid
+        self.cls = torch.nn.Parameter(torch.randn(n_heads, d_k) * 0.02)
+        self.W_k = torch.nn.Parameter(torch.randn(n_heads, n_channels, d_k) * 0.02)
+        self.pos_embed = torch.nn.Parameter(torch.randn(1, 1, n_spatial, d_k) * 0.02)
+
+    def forward(self, features):
+        B, C, H, W = features.shape
+        tokens = features.reshape(B, C, H * W).permute(0, 2, 1)  # (B, N, C)
+        K = torch.einsum('bnc,hcd->bhnd', tokens, self.W_k)      # (B, heads, N, d_k)
+        K = K + self.pos_embed
+        logits = torch.einsum('hd,bhnd->bhn', self.cls, K) / (self.d_k ** 0.5)
+        if self.use_sigmoid:
+            attn = torch.sigmoid(logits)                           # (B, heads, N)
+        else:
+            attn = torch.softmax(logits, dim=-1)                   # (B, heads, N)
+        out = torch.einsum('bhn,bnc->bhc', attn, tokens)          # (B, heads, C)
+        return out.reshape(B, -1)                                  # (B, heads * C)
+
+
+class SafaBiasedCrossAttention(torch.nn.Module):
+    """Hybrid SAFA + transformer cross-attention.
+
+    Uses SAFA's global spatial reasoning as an additive bias to transformer
+    attention logits, with a learnable gate to balance the two paths.
+    Sigmoid activation (not softmax) preserves per-position independence.
+    """
+    def __init__(self, n_channels, n_spatial, n_heads, d_k):
+        super().__init__()
+        self.n_heads = n_heads
+        self.d_k = d_k
+        self.n_spatial = n_spatial
+
+        # SAFA path: collapsed two-layer affine (N -> N)
+        self.safa_W = torch.nn.Parameter(
+            torch.randn(n_heads, n_spatial, n_spatial) * 0.005)
+        self.safa_b = torch.nn.Parameter(
+            torch.ones(1, n_heads, n_spatial) * 0.1)
+
+        # Transformer path: CLS cross-attention
+        self.cls = torch.nn.Parameter(torch.randn(n_heads, d_k) * 0.02)
+        self.W_k = torch.nn.Parameter(torch.randn(n_heads, n_channels, d_k) * 0.02)
+        self.pos_embed = torch.nn.Parameter(torch.randn(1, 1, n_spatial, d_k) * 0.02)
+
+        # Learnable gate, initialized to favor SAFA: sigmoid(2.0) ≈ 0.88
+        self.safa_gate = torch.nn.Parameter(torch.tensor(2.0))
+
+    def forward(self, features, extra_tokens=None):
+        B, C, H, W = features.shape
+        N_img = H * W
+        tokens = features.reshape(B, C, N_img).permute(0, 2, 1)  # (B, N, C)
+
+        # SAFA path: channel-max → learned affine
+        channel_max = features.max(dim=1).values.reshape(B, 1, N_img)  # (B, 1, N)
+        safa_logits = torch.einsum('bdi,dij->bdj', channel_max, self.safa_W) + self.safa_b
+        # safa_logits: (B, n_heads, N_img)
+
+        if extra_tokens is not None:
+            tokens = torch.cat([tokens, extra_tokens], dim=1)  # (B, N_img+M, C)
+            # SAFA bias is 0 for extra tokens (no spatial prior)
+            safa_logits = F.pad(safa_logits, (0, extra_tokens.shape[1]))
+
+        # Transformer path: CLS cross-attention
+        K = torch.einsum('bnc,hcd->bhnd', tokens, self.W_k)  # (B, heads, N, d_k)
+        # Position embedding only applies to image tokens
+        K[:, :, :N_img, :] = K[:, :, :N_img, :] + self.pos_embed
+        xattn_logits = torch.einsum('hd,bhnd->bhn', self.cls, K) / (self.d_k ** 0.5)
+
+        # Combine with learnable gate
+        gate = torch.sigmoid(self.safa_gate)
+        logits = gate * safa_logits + (1 - gate) * xattn_logits
+
+        # Sigmoid activation (per-position independence, like SAFA)
+        attn = torch.sigmoid(logits)
+        out = torch.einsum('bhn,bnc->bhc', attn, tokens)  # (B, heads, C)
+        return out.reshape(B, -1)  # (B, heads * C)
+
+
 class WagPatchEmbedding(torch.nn.Module):
     def __init__(self, config: WagPatchEmbeddingConfig):
         super().__init__()
         self._backbone = load_backbone(config.backbone_config)
         self._patch_dims = config.patch_dims
+        self._aggregation_type = config.aggregation_type
 
-        n_channels, input_safa_dim = compute_safa_input_dims(self._backbone, config.patch_dims)
-        safa_dims = [input_safa_dim // 2, input_safa_dim]
+        n_channels, n_spatial = compute_safa_input_dims(self._backbone, config.patch_dims)
         n_heads = config.num_aggregation_heads
         self._output_dim = n_channels * n_heads
 
-        self._safa_params = []
-        for layer_idx, output_safa_dim in enumerate(safa_dims):
-            safa_weight = torch.nn.Parameter(
-                    torch.randn((n_heads, input_safa_dim, output_safa_dim)) * 0.005)
-            safa_bias = torch.nn.Parameter(torch.ones((1, n_heads, output_safa_dim)) * 0.1)
-            self.register_parameter(f"safa_{layer_idx}_weight", safa_weight)
-            self.register_parameter(f"safa_{layer_idx}_bias", safa_bias)
-            self._safa_params.append((safa_weight, safa_bias))
-            input_safa_dim = output_safa_dim
+        match self._aggregation_type:
+            case AggregationType.SAFA:
+                input_safa_dim = n_spatial
+                safa_dims = [input_safa_dim // 2, input_safa_dim]
+                self._safa_params = []
+                for layer_idx, output_safa_dim in enumerate(safa_dims):
+                    safa_weight = torch.nn.Parameter(
+                            torch.randn((n_heads, input_safa_dim, output_safa_dim)) * 0.005)
+                    safa_bias = torch.nn.Parameter(torch.ones((1, n_heads, output_safa_dim)) * 0.1)
+                    self.register_parameter(f"safa_{layer_idx}_weight", safa_weight)
+                    self.register_parameter(f"safa_{layer_idx}_bias", safa_bias)
+                    self._safa_params.append((safa_weight, safa_bias))
+                    input_safa_dim = output_safa_dim
+
+            case AggregationType.MEAN_POOL_MLP:
+                self._pool_mlp = torch.nn.Sequential(
+                    torch.nn.Linear(n_channels, n_channels * 2),
+                    torch.nn.GELU(),
+                    torch.nn.Linear(n_channels * 2, self._output_dim),
+                )
+
+            case AggregationType.CLS_CROSS_ATTENTION:
+                self._cls_cross_attn = ClsCrossAttention(
+                    n_channels, n_spatial, n_heads, config.cls_cross_attention_d_k)
+
+            case AggregationType.SIGMOID_CROSS_ATTENTION:
+                self._cls_cross_attn = ClsCrossAttention(
+                    n_channels, n_spatial, n_heads, config.cls_cross_attention_d_k,
+                    use_sigmoid=True)
+
+            case AggregationType.SAFA_BIASED_CROSS_ATTENTION:
+                self._safa_biased_cross_attn = SafaBiasedCrossAttention(
+                    n_channels, n_spatial, n_heads, config.cls_cross_attention_d_k)
+
+        if config.safa_init_model_path is not None:
+            if self._aggregation_type != AggregationType.SAFA_BIASED_CROSS_ATTENTION:
+                raise ValueError(
+                    "safa_init_model_path is only supported with SAFA_BIASED_CROSS_ATTENTION")
+            raw_weights = torch.load(
+                Path(config.safa_init_model_path) / "model_weights.pt",
+                map_location="cpu", weights_only=True)
+            # Strip _orig_mod. prefix from torch.compile'd checkpoints
+            safa_weights = {k.removeprefix('_orig_mod.'): v for k, v in raw_weights.items()}
+
+            # Transfer the learned projection layer
+            self._backbone.project.weight.data.copy_(safa_weights['_backbone.project.weight'])
+            self._backbone.project.bias.data.copy_(safa_weights['_backbone.project.bias'])
+
+            # Collapse two-layer SAFA (no nonlinearity!) into single matrix
+            # out = (x @ W0 + b0) @ W1 + b1 = x @ (W0 @ W1) + (b0 @ W1 + b1)
+            W0 = safa_weights['safa_0_weight']   # (heads, N, N/2)
+            b0 = safa_weights['safa_0_bias']     # (1, heads, N/2)
+            W1 = safa_weights['safa_1_weight']   # (heads, N/2, N)
+            b1 = safa_weights['safa_1_bias']     # (1, heads, N)
+
+            collapsed_W = W0 @ W1                                       # (heads, N, N)
+            collapsed_b = torch.einsum('bdi,dij->bdj', b0, W1) + b1    # (1, heads, N)
+
+            self._safa_biased_cross_attn.safa_W.data.copy_(collapsed_W)
+            self._safa_biased_cross_attn.safa_b.data.copy_(collapsed_b)
+
+            print(f"Initialized SAFA path from {config.safa_init_model_path}")
 
     @property
     def output_dim(self):
@@ -168,9 +337,25 @@ class WagPatchEmbedding(torch.nn.Module):
         assert landmark_dropout_scheduler is None, "WAG does not support landmark dropout"
         features = extract_features(self._backbone, x)
         batch_size, num_channels, _, _ = features.shape
-        attention = self.safa(features)
-        vectorized_features = torch.reshape(features, (batch_size, num_channels, -1))
-        per_head_embedding = torch.einsum('bci,bdi->bdc', vectorized_features, attention)
-        embedding = torch.reshape(per_head_embedding, (batch_size, -1))
-        # Return (batch, 1, output_dim) to match SwagPatchEmbedding interface
+
+        match self._aggregation_type:
+            case AggregationType.SAFA:
+                attention = self.safa(features)
+                vectorized_features = torch.reshape(features, (batch_size, num_channels, -1))
+                per_head_embedding = torch.einsum('bci,bdi->bdc', vectorized_features, attention)
+                embedding = torch.reshape(per_head_embedding, (batch_size, -1))
+
+            case AggregationType.MEAN_POOL_MLP:
+                pooled = features.mean(dim=(-2, -1))
+                embedding = self._pool_mlp(pooled)
+
+            case AggregationType.CLS_CROSS_ATTENTION:
+                embedding = self._cls_cross_attn(features)
+
+            case AggregationType.SIGMOID_CROSS_ATTENTION:
+                embedding = self._cls_cross_attn(features)
+
+            case AggregationType.SAFA_BIASED_CROSS_ATTENTION:
+                embedding = self._safa_biased_cross_attn(features)
+
         return F.normalize(embedding, dim=-1).unsqueeze(1), {}

@@ -1,0 +1,80 @@
+opt_config:
+  num_epochs: 30
+  batch_size: 512
+  lr_schedule:
+    initial_lr: 0.0001
+    lr_step_factor: 1.0
+    num_epochs_at_lr: 20
+    warmup_factor: 1.0
+    num_warmup_epochs: 0
+  enable_hard_negative_sampling_after_epoch_idx: 20
+  hard_negative_pool_size: 25
+  random_sample_type: nearest
+  lr_sweep_config: null
+sat_model_config:
+  kind: WagPatchEmbeddingConfig
+  patch_dims:
+  - 320
+  - 320
+  num_aggregation_heads: 4
+  backbone_config:
+    kind: DinoConfig
+    project: 512
+    model: dinov3_vitb16
+    type: dinov2
+  aggregation_type: cls_cross_attention
+  cls_cross_attention_d_k: 64
+pano_model_config:
+  kind: WagPatchEmbeddingConfig
+  patch_dims:
+  - 320
+  - 640
+  num_aggregation_heads: 4
+  backbone_config:
+    kind: DinoConfig
+    project: 512
+    model: dinov3_vitb16
+    type: dinov2
+  aggregation_type: cls_cross_attention
+  cls_cross_attention_d_k: 64
+distance_model_config:
+  kind: CosineDistanceConfig
+dataset_config:
+  paths:
+  - Chicago
+  landmark_version: v1
+  factor: 1.0
+  panorama_landmark_radius_px: 640.0
+  landmark_correspondence_inflation_factor: 1.0
+  require_proper_noun_match: false
+  pano_gemini_base_path: null
+validation_dataset_configs:
+- paths:
+  - Seattle
+  landmark_version: v1
+  factor: 1.0
+  panorama_landmark_radius_px: 640.0
+  landmark_correspondence_inflation_factor: 1.0
+  require_proper_noun_match: false
+  pano_gemini_base_path: null
+- paths:
+  - Chicago
+  landmark_version: v1
+  factor: 0.3
+  panorama_landmark_radius_px: 640.0
+  landmark_correspondence_inflation_factor: 1.0
+  require_proper_noun_match: false
+  pano_gemini_base_path: null
+loss_configs:
+- kind: PairwiseContrastiveLossConfig
+  positive_weight: 5.0
+  avg_positive_similarity: 0.0
+  semipositive_weight: 6.0
+  avg_semipositive_similarity: 0.3
+  negative_weight: 20.0
+  avg_negative_similarity: 0.7
+- kind: BatchUniformityLossConfig
+  batch_uniformity_weight: 0.01
+  batch_uniformity_hinge_location: 0.7
+output_dir: "cls"
+tensorboard_output: null
