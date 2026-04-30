@@ -1,5 +1,5 @@
 workspace(name = "robot")
-load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive", "http_file")
 
 http_archive(
   name = "aarch64-none-linux-gnu",
@@ -700,4 +700,34 @@ http_archive(
   urls = ["https://www.dropbox.com/scl/fi/k05m15kfgr13e8pd5s65e/sacre_coeur.zip?rlkey=rv8lr6eiee07bee22r4qfqrat&st=dijow5kb&dl=1"],
   build_file = "//third_party:BUILD.zip_file",
   sha256 = "75c56d869bacc72e0c3686d39771c4ee27303136958ad63b10da682ec24a4608",
+)
+
+# planetiler converts .osm.pbf into vector .mbtiles in the OpenMapTiles schema.
+# Used by experimental/overhead_matching/baseline/dataset to render rasterized
+# OSM tiles for the Zhou et al. (IROS 2021) baseline.
+http_file(
+    name = "planetiler_jar",
+    urls = ["https://github.com/onthegomap/planetiler/releases/download/v0.10.2/planetiler.jar"],
+    sha256 = "f310bd0413e2e4512b27f4046d418664e8e1d3bf31603c2a70e23de06c167e4d",
+    downloaded_file_path = "planetiler.jar",
+    executable = False,
+)
+
+# OSM Bright MapLibre GL style targets the OpenMapTiles vector schema produced
+# by planetiler. Used together with @openmaptiles_fonts for offline rendering
+# via pymgl.
+http_archive(
+    name = "osm_bright_gl_style",
+    urls = ["https://github.com/openmaptiles/osm-bright-gl-style/archive/refs/tags/v1.11.zip"],
+    strip_prefix = "osm-bright-gl-style-1.11",
+    build_file = "//third_party:BUILD.zip_file",
+    sha256 = "79935903eff7f2c98d86444d1446841fc142f28c04f5176c80ebbbc29da8f0bf",
+)
+
+# Noto Sans glyph PBFs for font stacks referenced by osm-bright-gl-style.
+http_archive(
+    name = "openmaptiles_fonts",
+    urls = ["https://github.com/openmaptiles/fonts/releases/download/v2.0/noto-sans.zip"],
+    build_file = "//third_party:BUILD.zip_file",
+    sha256 = "d117316544b43a5dde7ee761b36e17701e9f85574e181d76a74814240fdbaf34",
 )
