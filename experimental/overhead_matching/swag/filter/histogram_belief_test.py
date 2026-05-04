@@ -701,5 +701,64 @@ class TestApplyObservation(unittest.TestCase):
         self.assertAlmostEqual(prob_sum, 1.0, places=4)
 
 
+class TestApplyObservationSurrogate(unittest.TestCase):
+    """The differentiable soft-max surrogate must approximate the hard max
+    aggregation as ``surrogate_tau → 0`` and must propagate gradients back to
+    the input log-likelihoods (the production hard-max path does not)."""
+
+    def _make_setup(self):
+        grid_spec = GridSpec(
+            zoom_level=20, cell_size_px=100.0,
+            origin_row_px=0.0, origin_col_px=0.0,
+            num_rows=3, num_cols=3,
+        )
+        patch_positions = torch.tensor([
+            [50.0, 50.0], [50.0, 150.0], [50.0, 250.0],
+            [150.0, 50.0], [150.0, 150.0], [150.0, 250.0],
+            [250.0, 50.0], [250.0, 150.0], [250.0, 250.0],
+        ])
+        # patch_half_size > cell_size makes adjacent cells share patches,
+        # so segment_max and segment_logsumexp differ meaningfully.
+        patch_half_size = 90.0
+        mapping = build_cell_to_patch_mapping(
+            grid_spec, patch_positions, patch_half_size, torch.device("cpu")
+        )
+        torch.manual_seed(0)
+        obs_log_ll = wag_observation_log_likelihood_from_similarity_matrix(
+            torch.rand(9), sigma=0.1
+        )
+        return grid_spec, mapping, obs_log_ll
+
+    def test_surrogate_recovers_max_in_low_tau_limit(self):
+        """At small ``surrogate_tau`` the soft-max belief should match hard max."""
+        grid_spec, mapping, obs_log_ll = self._make_setup()
+
+        belief_max = HistogramBelief.from_uniform(grid_spec, torch.device("cpu"))
+        belief_max.apply_observation(obs_log_ll, mapping)
+
+        belief_soft = HistogramBelief.from_uniform(grid_spec, torch.device("cpu"))
+        belief_soft.apply_observation(obs_log_ll, mapping, surrogate_tau=1e-3)
+
+        diff = (belief_max.get_belief() - belief_soft.get_belief()).abs().max().item()
+        self.assertLess(diff, 1e-3)
+
+    def test_surrogate_propagates_gradients(self):
+        """Gradients must flow through the differentiable path."""
+        grid_spec, mapping, obs_log_ll = self._make_setup()
+        obs_log_ll = obs_log_ll.detach().requires_grad_(True)
+
+        belief = HistogramBelief.from_uniform(grid_spec, torch.device("cpu"))
+        belief.apply_observation(obs_log_ll, mapping, surrogate_tau=0.5)
+
+        # Some scalar functional of the resulting belief, then differentiate.
+        loss = belief.get_belief().sum() + (belief._log_belief * 1e-6).sum()
+        loss.backward()
+        self.assertIsNotNone(obs_log_ll.grad)
+        self.assertTrue(torch.isfinite(obs_log_ll.grad).all())
+        # The hard-max path silently drops gradients, so the surrogate path
+        # must produce a non-zero grad on at least one log-likelihood entry.
+        self.assertGreater(obs_log_ll.grad.abs().max().item(), 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -62,11 +62,44 @@ class EntropyAdaptiveAggregatorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
         return float(img), float(lm)
 
 
-# Union type for polymorphic deserialization
+class LearnedAggregatorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    """Config for the learned per-step fusion policy.
+
+    The policy implementation lives in ``learned_aggregator`` (separate
+    module so this file has no torch.nn dependency); we only declare the
+    config here so it can join the polymorphic ``AggregatorConfig`` union.
+    """
+
+    image_similarity_matrix_path: Path
+    landmark_similarity_matrix_path: Path
+    policy_weights_path: Path
+
+
+class SafaPlusNormalizedLandmarkAggregatorConfig(
+    msgspec.Struct, **MSGSPEC_STRUCT_OPTS
+):
+    """Config for ``SafaPlusNormalizedLandmarkAggregator``.
+
+    Image stream uses SAFA-style Gaussian-on-residuals at ``image_sigma``.
+    Landmark stream divides each row by its ``row_max`` and applies
+    Gaussian-on-residuals to ``r_norm = 1 − sim_t / row_max`` at
+    ``landmark_sigma``. All-zero / constant landmark rows fall through
+    to image-only.
+    """
+
+    image_similarity_matrix_path: Path
+    landmark_similarity_matrix_path: Path
+    image_sigma: float
+    landmark_sigma: float
+
+
+# Union type for polymorphic deserialization.
 AggregatorConfig = (
     SingleSimilarityMatrixAggregatorConfig
     | ImageLandmarkPrivilegedInformationFusionConfig
     | EntropyAdaptiveAggregatorConfig
+    | LearnedAggregatorConfig
+    | SafaPlusNormalizedLandmarkAggregatorConfig
 )
 
 
@@ -316,6 +349,107 @@ class EntropyAdaptiveAggregator(ObservationLogLikelihoodAggregator):
         )
 
 
+class SafaPlusNormalizedLandmarkAggregator(ObservationLogLikelihoodAggregator):
+    """Per-patch observation likelihood by *summing* two Gaussian-on-residuals
+    log-likelihoods — image stream as in SAFA, landmark stream on a per-row
+    normalized residual.
+
+    Motivation. The EA softmax fusion implicitly normalizes mass over space
+    (sums to 1 across patches), which is incompatible with treating the
+    aggregator's output as a true per-patch ``log p(z | patch_j)`` that the
+    downstream histogram filter can multiply through its belief. This
+    aggregator is properly per-patch:
+
+      log_p_img[j] = -log(σ_img √2π) - 0.5 ((sim_max_img − img[j]) / σ_img)^2
+      log_p_lm[j]  = -log(σ_lm  √2π) - 0.5 ((1 − lm[j]/sim_max_lm) / σ_lm )^2
+
+      log_p[j] = log_p_img[j] + log_p_lm[j]   (conditional independence)
+
+    Why divide-by-row-max for the landmark stream? Because absolute landmark
+    similarity scales differ across cities (per-pair MLE on raw residuals
+    ranges 0.44–0.62 across Chicago/Seattle/NewYork/post_hurricane_ian),
+    while the per-row ``1 − sim_t / sim_max`` distribution overlaps
+    tightly across cities (σ_MLE ranges 0.66–0.74; ~12% spread). The
+    normalization makes a single ``σ_lm`` transfer cleanly.
+
+    All-zero / constant landmark rows are handled with a hard fall-through
+    to image-only: those rows are uninformative and we don't want them to
+    contaminate the fused log-likelihood with noise from the / row_max
+    division.
+    """
+
+    def __init__(
+        self,
+        image_similarity_matrix: torch.Tensor,
+        landmark_similarity_matrix: torch.Tensor,
+        panorama_metadata: pd.DataFrame,
+        image_sigma: float,
+        landmark_sigma: float,
+        device: torch.device,
+    ):
+        self.image_similarity_matrix = image_similarity_matrix
+        self.landmark_similarity_matrix = landmark_similarity_matrix
+        self.image_sigma = float(image_sigma)
+        self.landmark_sigma = float(landmark_sigma)
+        self.device = device
+        self._pano_id_index = pd.Index(panorama_metadata["pano_id"])
+
+    def __call__(self, pano_id: str) -> torch.Tensor:
+        pano_index = self._pano_id_index.get_loc(pano_id)
+
+        img_sim = self.image_similarity_matrix[pano_index].to(self.device)
+        lm_sim = self.landmark_similarity_matrix[pano_index].to(self.device)
+
+        # Image-side Gaussian-on-residuals (SAFA form).
+        log_p_img = wag_observation_log_likelihood_from_similarity_matrix(
+            img_sim, self.image_sigma
+        )
+
+        # Landmark-side: per-row /max normalization, then Gaussian-on-r_norm.
+        # Fall through to image-only when the landmark row is uninformative.
+        lm_finite_mask = torch.isfinite(lm_sim)
+        if not lm_finite_mask.any():
+            return _replace_nan_with_zero(log_p_img)
+        lm_finite = lm_sim[lm_finite_mask]
+        sim_max_lm = lm_finite.max()
+        sim_min_lm = lm_finite.min()
+        if (sim_max_lm <= 0) or (sim_max_lm == sim_min_lm):
+            # All-zero or constant row → landmark is uninformative.
+            return _replace_nan_with_zero(log_p_img)
+
+        norm_sim = lm_sim / sim_max_lm
+        r_norm = 1.0 - norm_sim
+        sigma_lm = self.landmark_sigma
+        log_norm_const = -torch.log(
+            torch.sqrt(torch.tensor(2 * torch.pi, device=lm_sim.device))
+        ) - torch.log(torch.tensor(sigma_lm, device=lm_sim.device))
+        log_p_lm = log_norm_const - 0.5 * torch.square(r_norm / sigma_lm)
+
+        # If a single entry is non-finite (e.g., -inf landmark), pass through
+        # image-only at that entry to avoid NaN propagation downstream.
+        log_p_lm = torch.where(lm_finite_mask, log_p_lm, torch.zeros_like(log_p_lm))
+
+        return _replace_nan_with_zero(log_p_img + log_p_lm)
+
+    @classmethod
+    def from_config(
+        cls,
+        config: SafaPlusNormalizedLandmarkAggregatorConfig,
+        vigor_dataset: vd.VigorDataset,
+        device: torch.device,
+    ) -> "SafaPlusNormalizedLandmarkAggregator":
+        image_sim = _load_similarity_matrix(config.image_similarity_matrix_path)
+        landmark_sim = _load_similarity_matrix(config.landmark_similarity_matrix_path)
+        return cls(
+            image_similarity_matrix=image_sim,
+            landmark_similarity_matrix=landmark_sim,
+            panorama_metadata=vigor_dataset._panorama_metadata,
+            image_sigma=config.image_sigma,
+            landmark_sigma=config.landmark_sigma,
+            device=device,
+        )
+
+
 def aggregator_from_config(
     config: AggregatorConfig,
     vigor_dataset: vd.VigorDataset,
@@ -338,6 +472,17 @@ def aggregator_from_config(
         )
     elif isinstance(config, EntropyAdaptiveAggregatorConfig):
         return EntropyAdaptiveAggregator.from_config(config, vigor_dataset, device)
+    elif isinstance(config, LearnedAggregatorConfig):
+        # Lazy import to avoid pulling torch.nn into modules that only need
+        # the per-config aggregators.
+        from experimental.overhead_matching.swag.filter import learned_aggregator
+        return learned_aggregator.LearnedAggregator.from_config(
+            config, vigor_dataset, device
+        )
+    elif isinstance(config, SafaPlusNormalizedLandmarkAggregatorConfig):
+        return SafaPlusNormalizedLandmarkAggregator.from_config(
+            config, vigor_dataset, device
+        )
     else:
         raise ValueError(f"Unknown config type: {type(config)}")
 

@@ -997,6 +997,109 @@ py_binary(
 )
 
 py_binary(
+  name="calibrate_sigma",
+  srcs=["calibrate_sigma.py"],
+  deps=[
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("matplotlib"),
+    requirement("scipy"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
+  ]
+)
+
+py_binary(
+  name="calibrate_fusion_sigma",
+  srcs=["calibrate_fusion_sigma.py"],
+  deps=[
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("matplotlib"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
+  ]
+)
+
+py_binary(
+  name="grid_search_convergence",
+  srcs=["grid_search_convergence.py"],
+  deps=[
+    ":evaluate_histogram_on_paths",
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("matplotlib"),
+    requirement("tqdm"),
+    "//common/torch:load_torch_deps",
+    "//common/gps:web_mercator",
+    "//common/math:haversine",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/evaluation:evaluate_swag",
+    "//experimental/overhead_matching/swag/evaluation:convergence_metrics",
+    "//experimental/overhead_matching/swag/evaluation:odometry_noise",
+    "//experimental/overhead_matching/swag/filter:histogram_belief",
+    "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
+  ]
+)
+
+py_binary(
+  name="train_learned_aggregator",
+  srcs=["train_learned_aggregator.py"],
+  deps=[
+    ":evaluate_histogram_on_paths",
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("tqdm"),
+    "//common/torch:load_torch_deps",
+    "//common/gps:web_mercator",
+    "//common/math:haversine",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/evaluation:evaluate_swag",
+    "//experimental/overhead_matching/swag/evaluation:convergence_metrics",
+    "//experimental/overhead_matching/swag/evaluation:odometry_noise",
+    "//experimental/overhead_matching/swag/filter:histogram_belief",
+    "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
+    "//experimental/overhead_matching/swag/filter:learned_aggregator",
+  ]
+)
+
+py_binary(
+  name="landmark_residual_exploration",
+  srcs=["landmark_residual_exploration.py"],
+  deps=[
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("matplotlib"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
+  ]
+)
+
+py_binary(
+  name="evaluate_learned_aggregator",
+  srcs=["evaluate_learned_aggregator.py"],
+  deps=[
+    ":evaluate_histogram_on_paths",
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("tqdm"),
+    "//common/torch:load_torch_deps",
+    "//common/gps:web_mercator",
+    "//common/math:haversine",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/evaluation:evaluate_swag",
+    "//experimental/overhead_matching/swag/evaluation:convergence_metrics",
+    "//experimental/overhead_matching/swag/evaluation:odometry_noise",
+    "//experimental/overhead_matching/swag/filter:histogram_belief",
+    "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
+    "//experimental/overhead_matching/swag/filter:learned_aggregator",
+  ]
+)
+
+py_binary(
   name="export_correspondence_similarity",
   srcs=["export_correspondence_similarity.py"],
   deps=[

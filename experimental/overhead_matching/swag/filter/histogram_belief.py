@@ -634,25 +634,46 @@ class HistogramBelief:
         self,
         observation_log_likelihoods: torch.Tensor,
         mapping: CellToPatchMapping,
+        surrogate_tau: float | None = None,
     ) -> None:
         """Apply observation update using pre-computed log-likelihoods.
 
-        For each cell, uses the maximum log-likelihood among all overlapping
-        patches. This is similar to how the particle filter works (each particle
-        uses its nearest/best patch) and avoids artifacts from varying overlap
-        counts at patch boundaries.
+        For each cell, aggregates the per-patch log-likelihoods over the
+        overlapping patches. Two aggregation modes:
+
+        * ``surrogate_tau is None`` (default): hard ``max`` over patches.
+          This matches the production particle-filter analogue (each particle
+          uses its nearest/best patch) and avoids artifacts from varying
+          overlap counts at patch boundaries. Non-differentiable in the
+          patch-similarity inputs.
+        * ``surrogate_tau > 0``: soft-max via
+          ``tau * logsumexp(values / tau)``. As ``tau → 0`` this recovers
+          the hard max; at ``tau = 1`` it is the natural log-of-sum
+          (combining overlapping patches as "OR of evidence"). This branch
+          is differentiable end-to-end and is used to train a learned
+          aggregator with backprop through the filter.
 
         Args:
-            observation_log_likelihoods: (num_patches,) log-likelihoods for each satellite patch
-            mapping: Precomputed cell-to-patch mapping
+            observation_log_likelihoods: (num_patches,) log-likelihoods.
+            mapping: Precomputed cell-to-patch mapping.
+            surrogate_tau: If not None, use soft-max with this temperature
+                (units: log-likelihood) instead of hard max. Smaller values
+                produce sharper aggregations; ``tau=1.0`` is the natural
+                logsumexp scale.
         """
         # Gather log-likelihoods for all overlapping patches
         all_log_ll = observation_log_likelihoods[mapping.patch_indices]  # (total_overlaps,)
 
-        # Take max log-likelihood over overlapping patches for each cell
-        cell_log_ll = segment_max(
-            all_log_ll, mapping.cell_offsets, mapping.segment_ids
-        )
+        # Aggregate over overlapping patches per cell
+        if surrogate_tau is None:
+            cell_log_ll = segment_max(
+                all_log_ll, mapping.cell_offsets, mapping.segment_ids
+            )
+        else:
+            inv_tau = 1.0 / float(surrogate_tau)
+            cell_log_ll = surrogate_tau * segment_logsumexp(
+                all_log_ll * inv_tau, mapping.cell_offsets, mapping.segment_ids,
+            )
 
         # Reshape to grid and apply to belief
         cell_log_ll_grid = cell_log_ll.reshape(

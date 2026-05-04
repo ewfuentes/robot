@@ -55,6 +55,43 @@ py_library(
         requirement("torch"),
         "//common/python:serialization",
         "//common/torch:load_torch_deps",
+        "//experimental/overhead_matching/swag/data:vigor_dataset",
         ":particle_filter",
+    ],
+)
+
+py_test(
+    name = "adaptive_aggregators_test",
+    srcs = ["adaptive_aggregators_test.py"],
+    deps = [
+        requirement("torch"),
+        requirement("pandas"),
+        "//common/torch:load_torch_deps",
+        ":adaptive_aggregators",
+        ":particle_filter",
+    ],
+)
+
+py_library(
+    name = "learned_aggregator",
+    srcs = ["learned_aggregator.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("pandas"),
+        requirement("torch"),
+        "//common/torch:load_torch_deps",
+        ":adaptive_aggregators",
+    ],
+)
+
+py_test(
+    name = "learned_aggregator_test",
+    srcs = ["learned_aggregator_test.py"],
+    deps = [
+        requirement("torch"),
+        requirement("pandas"),
+        "//common/torch:load_torch_deps",
+        ":adaptive_aggregators",
+        ":learned_aggregator",
     ],
 )
