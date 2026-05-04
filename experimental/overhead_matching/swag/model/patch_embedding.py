@@ -80,6 +80,8 @@ def load_backbone(backbone_config: BackboneConfig):
     match backbone_config:
         case VGGConfig():
             model = torchvision.models.vgg16()
+            for param in model.classifier.parameters():
+                param.requires_grad = False
         case DinoConfig(project, model_str):
             model = DinoFeatureExtractor(model_str, project)
     model.backbone_type = backbone_config.type
