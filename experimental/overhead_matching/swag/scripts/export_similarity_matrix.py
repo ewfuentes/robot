@@ -117,6 +117,9 @@ def main():
                         help="Checkpoint prefix to load (e.g. 'best', 'last', '0050', or 'latest' for highest numbered)")
     parser.add_argument("--fallback_to_config", action="store_true",
                         help="If pickle loading fails, fall back to loading from config+weights")
+    parser.add_argument("--satellite_subdir", type=str, default="satellite",
+                        help="Subdirectory of dataset_path holding satellite tiles "
+                             "(e.g. 'satellite' or 'satellite_osm'). Must match what the model was trained on.")
     args = parser.parse_args()
 
     model_path = Path(args.model_path)
@@ -133,6 +136,7 @@ def main():
         factor=args.factor,
         satellite_patch_size=sat_model.patch_dims,
         panorama_size=pano_model.patch_dims,
+        satellite_subdir=args.satellite_subdir,
     )
     print(f"Loading dataset from {args.dataset_path}")
     dataset = vd.VigorDataset(config=dataset_config, dataset_path=args.dataset_path)
@@ -159,6 +163,7 @@ def main():
         "checkpoint": checkpoint_idx,
         "dataset_path": str(Path(args.dataset_path).resolve()),
         "dataset_factor": args.factor,
+        "satellite_subdir": args.satellite_subdir,
         "landmark_version": args.landmark_version,
         "num_satellites": num_satellites,
         "num_panoramas": num_panoramas,
