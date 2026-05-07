@@ -39,8 +39,15 @@ def compute_samples(
     num_negative_samples_per_pano: int = 0,
     rng_seed: int = 0,
     exclude_constant_rows: bool = True,
+    residual_form: str = "raw",
 ):
     """Collect per-pair residuals and raw similarities for true and negative pairs.
+
+    `residual_form` selects the residual definition:
+      - "raw":        r = sim_max - sim_t   (matches SAFA image stream)
+      - "normalized": r = 1 - sim_t / sim_max
+        (matches SafaPlusNormalizedLandmarkAggregator's landmark stream;
+        sim_max == 0 rows are excluded as uninformative regardless of flag)
 
     Rows where every finite similarity is identical (e.g. the all-zero rows in
     the landmark Hungarian matrix) are uninformative — they would assign every
@@ -52,6 +59,9 @@ def compute_samples(
         residuals_pair, residuals_negative, sims_pair, sims_negative,
         valid_pano_idx, num_excluded_constant_rows, num_excluded_no_truepatch.
     """
+    if residual_form not in ("raw", "normalized"):
+        raise ValueError(f"residual_form must be 'raw' or 'normalized', got {residual_form!r}")
+
     residuals_pair = []
     residuals_negative = []
     sims_pair = []
@@ -75,6 +85,12 @@ def compute_samples(
         if exclude_constant_rows and sim_max == sim_min:
             n_constant += 1
             continue
+        if residual_form == "normalized" and sim_max == 0.0:
+            n_constant += 1
+            continue
+
+        def _residual(s: float) -> float:
+            return (sim_max - s) if residual_form == "raw" else (1.0 - s / sim_max)
 
         row = panorama_metadata.iloc[pano_idx]
         true_idxs = list(row["positive_satellite_idxs"])
@@ -92,7 +108,7 @@ def compute_samples(
 
         for ts in true_finite.tolist():
             sims_pair.append(ts)
-            residuals_pair.append(sim_max - ts)
+            residuals_pair.append(_residual(ts))
         valid_indices.append(pano_idx)
 
         if num_negative_samples_per_pano > 0:
@@ -106,7 +122,7 @@ def compute_samples(
             neg_finite = neg_sims[torch.isfinite(neg_sims)]
             for ns in neg_finite.tolist():
                 sims_negative.append(ns)
-                residuals_negative.append(sim_max - ns)
+                residuals_negative.append(_residual(ns))
 
     def _t(xs):
         return torch.tensor(xs, dtype=torch.float64)
@@ -176,7 +192,13 @@ def plot_residual_histogram(
     residuals_negative: torch.Tensor,
     sigma_mle_pair: float,
     output_path: Path,
+    residual_form: str = "raw",
 ) -> None:
+    xlabel = (
+        "residual = sim_max - sim_t"
+        if residual_form == "raw"
+        else "residual = 1 - sim_t / sim_max"
+    )
     r_pair = residuals_pair.numpy()
     r_neg = residuals_negative.numpy()
     pool = [r_pair, r_neg]
@@ -210,10 +232,10 @@ def plot_residual_histogram(
         axes[0], axes[1], r_pair, r_neg,
         bins=bins, xmin=0.0, xmax=xmax, vlines=vlines,
         fits_density=fits_density, fits_count=fits_count,
-        xlabel="residual = sim_max - sim_t",
-        title="Per-pair residuals (true vs negative)",
+        xlabel=xlabel,
+        title=f"Per-pair residuals — {residual_form} (true vs negative)",
     )
-    fig.suptitle(f"σ_MLE per-pair = {sigma_mle_pair:.4f}")
+    fig.suptitle(f"σ_MLE per-pair ({residual_form}) = {sigma_mle_pair:.4f}")
     fig.tight_layout()
     fig.savefig(output_path, dpi=130)
     plt.close(fig)
@@ -276,6 +298,13 @@ def main() -> None:
         "--name-prefix", type=str, default="",
         help="Filename prefix for outputs (e.g. 'image' or 'landmark') so "
              "multiple matrices can write into the same output directory")
+    parser.add_argument(
+        "--residual-form", choices=("raw", "normalized"), default="raw",
+        help="Residual definition for the half-normal MLE. "
+             "'raw' (default): r = sim_max - sim_t, calibrates σ_img for the "
+             "SAFA image stream. "
+             "'normalized': r = 1 - sim_t / sim_max, calibrates σ_lm for "
+             "SafaPlusNormalizedLandmarkAggregator's landmark stream.")
     args = parser.parse_args()
 
     output_path = Path(args.output_path).expanduser()
@@ -301,13 +330,14 @@ def main() -> None:
     assert sim_mat.shape[0] == len(pano_metadata)
     assert sim_mat.shape[1] == len(vigor_dataset._satellite_metadata)
 
-    print("Computing per-pair residuals and similarity samples...")
+    print(f"Computing per-pair residuals (form={args.residual_form}) and similarity samples...")
     rd = compute_samples(
         sim_mat, pano_metadata,
         include_semipositive=args.include_semipositive,
         num_negative_samples_per_pano=args.num_negative_samples_per_pano,
         rng_seed=args.negative_sample_seed,
         exclude_constant_rows=True,
+        residual_form=args.residual_form,
     )
     residuals_pair = rd["residuals_pair"]
     residuals_neg = rd["residuals_negative"]
@@ -332,6 +362,7 @@ def main() -> None:
         residuals_pair, residuals_neg,
         sigma_mle_pair,
         output_path / f"{prefix}residual_histogram.png",
+        residual_form=args.residual_form,
     )
     plot_similarity_distribution(
         sims_pair, sims_neg,
@@ -348,6 +379,7 @@ def main() -> None:
         "similarity_matrix_path": str(args.similarity_matrix_path),
         "dataset_path": str(args.dataset_path),
         "include_semipositive": args.include_semipositive,
+        "residual_form": args.residual_form,
         "num_panoramas_total": int(sim_mat.shape[0]),
         "num_pano_truepatch_pairs": int(len(residuals_pair)),
         "num_negative_samples": int(len(residuals_neg)),
